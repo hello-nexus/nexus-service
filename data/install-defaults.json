@@ -177,7 +177,9 @@
       "animationMode": "Static",
       "speed": "Medium",
       "direction": "Forward",
-      "brightness": 80,
+      "brightness": 80
+    },
+    "passiveLighting": {
       "keyReactive": false,
       "keyReactiveMask": false,
       "keyReactiveMode": "Off"

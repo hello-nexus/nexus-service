@@ -155,6 +155,7 @@ public sealed class KeebDefaults
     public string RotaryRight { get; set; } = "BrightnessAdjustment";
     public string RotarySensitivity { get; set; } = "Balanced";
     public KeebFirmwareLightingDefaults FirmwareLighting { get; set; } = new();
+    public KeebPassiveLightingDefaults PassiveLighting { get; set; } = new();
 }
 
 public sealed class KeebFirmwareLightingDefaults
@@ -163,6 +164,10 @@ public sealed class KeebFirmwareLightingDefaults
     public string Speed { get; set; } = "Medium";
     public string Direction { get; set; } = "Forward";
     public int Brightness { get; set; } = 80;
+}
+
+public sealed class KeebPassiveLightingDefaults
+{
     public bool KeyReactive { get; set; }
     public bool KeyReactiveMask { get; set; }
     public string KeyReactiveMode { get; set; } = "Off";

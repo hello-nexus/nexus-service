@@ -74,7 +74,8 @@ public sealed class JsonConfigStore : IConfigStore, IDisposable
                 var afterV1 = MigrateV1ToV2(afterOverlay);
                 var afterV2 = MigrateV2ToV3(afterV1);
                 var afterV3 = MigrateV3ToV4(afterV2);
-                var migratedJson = MigrateV4ToV5(afterV3);
+                var afterV4 = MigrateV4ToV5(afterV3);
+                var migratedJson = MigrateV5ToV6(afterV4);
                 if (!ReferenceEquals(migratedJson, json))
                 {
                     _dirty = true;
@@ -254,7 +255,7 @@ public sealed class JsonConfigStore : IConfigStore, IDisposable
     /// </summary>
     public static string MigrateLegacyJson(string json)
     {
-        return MigrateV4ToV5(MigrateV3ToV4(MigrateV2ToV3(MigrateV1ToV2(MigrateLegacyOverlayKeys(json)))));
+        return MigrateV5ToV6(MigrateV4ToV5(MigrateV3ToV4(MigrateV2ToV3(MigrateV1ToV2(MigrateLegacyOverlayKeys(json))))));
     }
 
     private static string MigrateLegacyOverlayKeys(string json)
@@ -591,6 +592,48 @@ public sealed class JsonConfigStore : IConfigStore, IDisposable
         }
 
         obj["schemaVersion"] = 5;
+        return obj.ToJsonString();
+    }
+
+    // v5 → v6: splits the key-reactive overlay out of `keeb.firmwareLighting` into
+    // `keeb.passiveLighting`. v5 stored `keyReactive`, `keyReactiveMask`,
+    // `keyReactiveMode`, `keyReactiveColor` flat alongside the firmware effect
+    // fields; v6 moves them into a sibling object because the firmware applies
+    // them through a separate code path. Idempotent: re-running on v6 data is a
+    // no-op.
+    private static string MigrateV5ToV6(string json)
+    {
+        JsonNode? root;
+        try { root = JsonNode.Parse(json); }
+        catch (JsonException) { return json; }
+        if (root is not JsonObject obj) return json;
+
+        int sv = 0;
+        if (obj.TryGetPropertyValue("schemaVersion", out var svNode) && svNode is JsonValue v && v.TryGetValue<int>(out var parsed))
+            sv = parsed;
+        if (sv >= 6) return json;
+
+        if (obj["keeb"] is JsonObject keeb)
+        {
+            // The firmware-lighting block was the home of the key-reactive
+            // overlay fields. Move them into a sibling passiveLighting block.
+            // If both blocks already exist (idempotency edge case) preserve
+            // whatever's in passiveLighting.
+            var passive = keeb["passiveLighting"] as JsonObject ?? new JsonObject();
+            if (keeb["firmwareLighting"] is JsonObject fw)
+            {
+                MoveField(fw, "keyReactive",      passive, "keyReactive");
+                MoveField(fw, "keyReactiveMask",  passive, "keyReactiveMask");
+                MoveField(fw, "keyReactiveMode",  passive, "keyReactiveMode");
+                MoveField(fw, "keyReactiveColor", passive, "keyReactiveColor");
+            }
+            if (passive.Count > 0 && keeb["passiveLighting"] is null)
+            {
+                keeb["passiveLighting"] = passive;
+            }
+        }
+
+        obj["schemaVersion"] = 6;
         return obj.ToJsonString();
     }
 }

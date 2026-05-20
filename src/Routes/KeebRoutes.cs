@@ -8,6 +8,41 @@ public static class KeebRoutes
 {
     public static void MapKeebEndpoints(this WebApplication app)
     {
+        app.MapGet("/keeb/state", (IKeebProvider k, int? layer) => k.GetState(layer ?? 0));
+        app.MapGet("/keeb/layer/{layer:int}", (int layer, IKeebProvider k) =>
+            new KeyboardState
+            {
+                IsConnected = k.GetState(layer).IsConnected,
+                Profile = 0,
+                Layout = k.GetState(layer).Layout,
+                Layer = layer,
+                Keys = k.GetLayer(layer),
+            });
+        app.MapPost("/keeb/layer/{layer:int}/key", (int layer, SetLayerKeyBody body, IKeebProvider k) =>
+        {
+            var connected = k.SetLayerKey(layer, body);
+            return new KeyboardState
+            {
+                IsConnected = connected,
+                Profile = 0,
+                Layer = layer,
+                Layout = k.GetState(layer).Layout,
+                Keys = k.GetLayer(layer),
+            };
+        });
+        app.MapPost("/keeb/layer/{layer:int}/reset", (int layer, IKeebProvider k) =>
+        {
+            var connected = k.ResetLayer(layer);
+            return new KeyboardState
+            {
+                IsConnected = connected,
+                Profile = 0,
+                Layer = layer,
+                Layout = k.GetState(layer).Layout,
+                Keys = k.GetLayer(layer),
+            };
+        });
+
         app.MapGet("/keeb/settings", (IKeebProvider k) => k.GetSettings());
         app.MapGet("/keeb/rotary/functions", (IKeebProvider k) =>
             new GetRotaryFunctionsResponse { Functions = k.GetRotaryFunctions() });
@@ -21,9 +56,16 @@ public static class KeebRoutes
             k.SetRotarySensitivity(body.Sensitivity);
             return ApiResponse.Ok();
         });
-        app.MapPost("/keeb/key-reactive", (SetFirmwareLightingBody body, IKeebProvider k) =>
+        // Legacy alias: kept so older nexus clients pointing at /keeb/key-reactive still work.
+        // New web should POST /keeb/passive-lighting instead.
+        app.MapPost("/keeb/key-reactive", (SetPassiveLightingBody body, IKeebProvider k) =>
         {
-            k.SetKeyReactive(body);
+            k.SetPassiveLighting(body);
+            return ApiResponse.Ok();
+        });
+        app.MapPost("/keeb/passive-lighting", (SetPassiveLightingBody body, IKeebProvider k) =>
+        {
+            k.SetPassiveLighting(body);
             return ApiResponse.Ok();
         });
         app.MapPost("/keeb/firmware/lighting", (SetFirmwareLightingBody body, IKeebProvider k) =>

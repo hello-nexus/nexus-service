@@ -138,9 +138,12 @@ public static class InstallDefaultsRoutes
                         Speed = s.Keeb.FirmwareLighting.Speed,
                         Direction = s.Keeb.FirmwareLighting.Direction,
                         Brightness = s.Keeb.FirmwareLighting.Brightness,
-                        KeyReactive = s.Keeb.FirmwareLighting.KeyReactive,
-                        KeyReactiveMask = s.Keeb.FirmwareLighting.KeyReactiveMask,
-                        KeyReactiveMode = s.Keeb.FirmwareLighting.KeyReactiveMode,
+                    },
+                    PassiveLighting = new KeebPassiveLightingDefaults
+                    {
+                        KeyReactive = s.Keeb.PassiveLighting.KeyReactive,
+                        KeyReactiveMask = s.Keeb.PassiveLighting.KeyReactiveMask,
+                        KeyReactiveMode = s.Keeb.PassiveLighting.KeyReactiveMode,
                     },
                 },
                 Cooling = new CoolingDefaults

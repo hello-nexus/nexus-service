@@ -18,9 +18,9 @@ public sealed class QosSettings
     /// a migration in <c>JsonConfigStore.Load()</c>. Lives as a constant so
     /// tests and tooling can reference "current" without bit-rotting.
     /// </summary>
-    public const int CurrentSchemaVersion = 5;
+    public const int CurrentSchemaVersion = 6;
 
-    /// <summary>Persisted profile schema. v2 nests Theme/Panel/Overlay/Monitoring out of UiSettings into matching top-level POCOs that mirror install-defaults.json. v3 drops the <c>{s/n/b}</c> wrapper on per-widget config values; values are raw JSON (string/number/bool/object/array). v4 retires the type-scoped marketplace <c>Widgets</c> bag — every placement keeps its own config under <see cref="Qos.Service.Models.Panel.PanelWidgetDto.Config"/>. v5 renames the <c>performance</c> cooling preset to <c>turbo</c>. <see cref="JsonConfigStore"/> migrates v1/v2/v3/v4 (or missing) records on load.</summary>
+    /// <summary>Persisted profile schema. v2 nests Theme/Panel/Overlay/Monitoring out of UiSettings into matching top-level POCOs that mirror install-defaults.json. v3 drops the <c>{s/n/b}</c> wrapper on per-widget config values; values are raw JSON (string/number/bool/object/array). v4 retires the type-scoped marketplace <c>Widgets</c> bag — every placement keeps its own config under <see cref="Qos.Service.Models.Panel.PanelWidgetDto.Config"/>. v5 renames the <c>performance</c> cooling preset to <c>turbo</c>. v6 splits the key-reactive overlay (<c>KeyReactive</c>, <c>KeyReactiveMask</c>, <c>KeyReactiveMode</c>, <c>KeyReactiveColor</c>) out of <c>Keeb.FirmwareLighting</c> into a separate <c>Keeb.PassiveLighting</c> block to match the two distinct firmware code paths. <see cref="JsonConfigStore"/> migrates v1/v2/v3/v4/v5 (or missing) records on load.</summary>
     public int SchemaVersion { get; set; } = CurrentSchemaVersion;
 
     public ThemeSettings Theme { get; set; } = new();
@@ -204,7 +204,10 @@ public sealed class KeebSettings
 
     public KeebGameMode GameMode { get; set; } = new();
     public KeebFirmwareLighting FirmwareLighting { get; set; } = new();
+    public KeebPassiveLighting PassiveLighting { get; set; } = new();
     public Dictionary<int, KeebMacroDocument> Macros { get; set; } = new();
+    /// <summary>Cached snapshot of the firmware key map per layer (0..3). Source of truth is firmware; this is for offline UI rendering and as a rollback target if a hot-swap fails mid-write.</summary>
+    public Dictionary<int, KeebLayerSnapshot> Layers { get; set; } = new();
 }
 
 public sealed class KeebRotaryAppOverride
@@ -228,11 +231,29 @@ public sealed class KeebFirmwareLighting
     public string Speed { get; set; } = InstallDefaults.Keeb.FirmwareLighting.Speed;
     public string Direction { get; set; } = InstallDefaults.Keeb.FirmwareLighting.Direction;
     public int Brightness { get; set; } = InstallDefaults.Keeb.FirmwareLighting.Brightness;
-    public bool KeyReactive { get; set; } = InstallDefaults.Keeb.FirmwareLighting.KeyReactive;
-    public bool KeyReactiveMask { get; set; } = InstallDefaults.Keeb.FirmwareLighting.KeyReactiveMask;
-    public string KeyReactiveMode { get; set; } = InstallDefaults.Keeb.FirmwareLighting.KeyReactiveMode;
-    public RgbaColor KeyReactiveColor { get; set; } = new();
     public bool KeyIndicator { get; set; }
+}
+
+/// <summary>Key-reactive overlay rendered alongside (or as a mask over) the firmware lighting effect. Separate code path on the device, so it's split from <see cref="KeebFirmwareLighting"/> here too.</summary>
+public sealed class KeebPassiveLighting
+{
+    public bool KeyReactive { get; set; } = InstallDefaults.Keeb.PassiveLighting.KeyReactive;
+    public bool KeyReactiveMask { get; set; } = InstallDefaults.Keeb.PassiveLighting.KeyReactiveMask;
+    public string KeyReactiveMode { get; set; } = InstallDefaults.Keeb.PassiveLighting.KeyReactiveMode;
+    public RgbaColor KeyReactiveColor { get; set; } = new() { R = 255, G = 255, B = 255, A = 255 };
+}
+
+/// <summary>Per-layer cached snapshot of the firmware key map. Indexed by `[row][col]` matching the UI layout's physical key positions; each entry mirrors a <see cref="Qos.Service.Models.Peripherals.Keeb.KeebKey"/> wire shape.</summary>
+public sealed class KeebLayerSnapshot
+{
+    public List<List<KeebLayerKey>> Keys { get; set; } = new();
+}
+
+public sealed class KeebLayerKey
+{
+    public string Mode { get; set; } = "";
+    public string Function { get; set; } = "";
+    public int? Input { get; set; }
 }
 
 public sealed class KeebMacroDocument

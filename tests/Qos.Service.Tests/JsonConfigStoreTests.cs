@@ -28,7 +28,7 @@ public class JsonConfigStoreTests : IDisposable
         var settings = store.Load();
 
         Assert.NotNull(settings);
-        Assert.Equal(5, settings.SchemaVersion);
+        Assert.Equal(QosSettings.CurrentSchemaVersion, settings.SchemaVersion);
         Assert.True(File.Exists(_settingsPath), "settings.json should be created on first load");
     }
 
@@ -70,7 +70,7 @@ public class JsonConfigStoreTests : IDisposable
         var settings = store.Load();
 
         Assert.NotNull(settings);
-        Assert.Equal(5, settings.SchemaVersion);
+        Assert.Equal(QosSettings.CurrentSchemaVersion, settings.SchemaVersion);
     }
 
     [Fact]

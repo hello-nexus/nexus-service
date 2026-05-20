@@ -7,7 +7,11 @@ public class KeyboardState
 {
     public bool IsConnected { get; set; }
     public int Profile { get; set; }
-    public string Layout { get; set; } = "TKL";
+    /// <summary>ANSI or ISO; the firmware reports this at handshake.</summary>
+    public string Layout { get; set; } = "ANSI";
+    /// <summary>Active layer (0-3) for the keys[][] payload. Layer is panel-side state but echoed here so a stale snapshot is self-describing.</summary>
+    public int Layer { get; set; }
+    /// <summary>Function assignments for the active layer, indexed `[row][col]` matching the UI keyboard render.</summary>
     public List<List<KeebKey>> Keys { get; set; } = new();
 }
 
@@ -53,6 +57,10 @@ public class GetKeebSettingsResponse : ApiResponse
     public string Direction { get; set; } = "Forward";
     public int Brightness { get; set; } = 80;
     public bool KeyIndicator { get; set; }
+    public bool KeyReactive { get; set; }
+    public bool KeyReactiveMask { get; set; }
+    public string KeyReactiveMode { get; set; } = "Off";
+    public RGBA KeyReactiveColor { get; set; }
 }
 
 public class SetFirmwareLightingBody
@@ -61,11 +69,25 @@ public class SetFirmwareLightingBody
     public string Speed { get; set; } = "Medium";
     public string Direction { get; set; } = "Forward";
     public int Brightness { get; set; } = 80;
+    public bool KeyIndicator { get; set; }
+}
+
+/// <summary>Key-reactive overlay settings. Separate body from <see cref="SetFirmwareLightingBody"/> because the firmware applies them through a different code path.</summary>
+public class SetPassiveLightingBody
+{
     public bool KeyReactive { get; set; }
     public bool KeyReactiveMask { get; set; }
     public string KeyReactiveMode { get; set; } = "Off";
     public RGBA KeyReactiveColor { get; set; }
-    public bool KeyIndicator { get; set; }
+}
+
+public class SetLayerKeyBody
+{
+    public int X { get; set; }
+    public int Y { get; set; }
+    public string Func { get; set; } = "";
+    public string Mode { get; set; } = "";
+    public int? Input { get; set; }
 }
 
 public class SetGameModeBody

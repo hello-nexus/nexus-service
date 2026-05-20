@@ -179,4 +179,25 @@ public class DeviceHandlerTests
         yield return new object[] { new KeebHandler() };
         yield return new object[] { new FanHubHandler() };
     }
+
+    [Fact]
+    public void Keeb_handler_detects_suoai_keeb_tkl()
+    {
+        var k = new KeebHandler();
+        Assert.True(k.IsConnected(new List<UsbDeviceEntry>
+        {
+            new() { VendorId = 0x3402, ProductId = 0x0300, Name = "HYTE Keeb TKL" },
+        }), "should match Keeb TKL VID/PID");
+
+        // Old MK9 PIDs are intentionally NOT in the identifier list — they used
+        // a different protocol that the service has never actually driven.
+        Assert.False(k.IsConnected(new List<UsbDeviceEntry>
+        {
+            new() { VendorId = 0x3402, ProductId = 0x0900, Name = "Legacy MK9" },
+        }), "MK9 (0x0900) should no longer be claimed by KeebHandler");
+        Assert.False(k.IsConnected(new List<UsbDeviceEntry>
+        {
+            new() { VendorId = 0x3402, ProductId = 0x0901, Name = "Legacy MK9 Pro" },
+        }), "MK9 Pro (0x0901) should no longer be claimed by KeebHandler");
+    }
 }
