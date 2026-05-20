@@ -148,6 +148,14 @@ public sealed class KeebTklCommand : IDisposable
                 var page = new byte[65];
                 Array.Copy(commands, i * 64, page, 1, 64);
                 WriteSafe(page, $"SetLayerKeyAssignment page {i}");
+                // Legacy nexus-control-service shipped with the inter-page
+                // wait commented out (the `_timerForStream5` reference). On
+                // this firmware revision the writes silently drop without it
+                // - bench-confirmed on T1 2026-05-20: the readback after
+                // SetLayer showed the previous (default) bytes regardless of
+                // what was sent. SetMacro already paces its 4 pages; we mirror
+                // that here to keep all multi-page writes uniform.
+                Sleep(SLEEP_MS);
             }
         }
     }

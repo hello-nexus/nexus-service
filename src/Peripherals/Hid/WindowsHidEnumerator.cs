@@ -312,6 +312,13 @@ public sealed class WindowsHidEnumerator : IHidEnumerator
         [DllImport("kernel32.dll", SetLastError = true)]
         [return: MarshalAs(UnmanagedType.Bool)]
         public static extern bool ReadFile(IntPtr handle, byte[] buffer, uint toRead, out uint read, IntPtr overlapped);
+
+        // Cancels pending I/O on a handle. Lets a synchronous ReadFile on a
+        // non-overlapped handle be unblocked from another thread - used by
+        // WindowsHidDevice.Read to enforce its timeoutMs argument.
+        [DllImport("kernel32.dll", SetLastError = true)]
+        [return: MarshalAs(UnmanagedType.Bool)]
+        public static extern bool CancelIoEx(IntPtr handle, IntPtr overlapped);
     }
 }
 #endif
