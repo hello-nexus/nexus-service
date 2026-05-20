@@ -191,7 +191,10 @@ public static class QosServiceCollectionExtensions
         services.AddSingleton<Qos.Service.Peripherals.PeripheralRegistry>();
 
         services.AddSingleton<StubKeebProvider>();
-        services.AddSingleton<IKeebProvider>(sp => sp.GetRequiredService<StubKeebProvider>());
+        services.AddSingleton<Qos.Service.Peripherals.Keeb.KeebSession>();
+        services.AddSingleton<Qos.Service.Peripherals.Keeb.HidKeebProvider>();
+        services.AddSingleton<IKeebProvider>(sp => sp.GetRequiredService<Qos.Service.Peripherals.Keeb.HidKeebProvider>());
+        services.AddHostedService<Qos.Service.Peripherals.Keeb.KeebHotswapHost>();
 #if WINDOWS
         services.AddSingleton<IInputterProvider, WindowsInputter>();
 #else
