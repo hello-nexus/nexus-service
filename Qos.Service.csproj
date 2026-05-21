@@ -80,6 +80,13 @@
     <TrimmerRootAssembly Include="SQLitePCLRaw.batteries_v2" />
   </ItemGroup>
 
+  <!-- System.IO.Ports: serial-port IO for HYTE NP50 (CDC virtual COM). The
+       Windows package brings native serial helpers; on Linux we read /dev/ttyACM
+       directly. AOT-compatible since .NET 7. -->
+  <ItemGroup>
+    <PackageReference Include="System.IO.Ports" Version="10.0.3" />
+  </ItemGroup>
+
   <!-- QRCoder: pure-managed QR code SVG generation for the panel phone pairing flow. -->
   <ItemGroup>
     <PackageReference Include="QRCoder" Version="1.6.0" />

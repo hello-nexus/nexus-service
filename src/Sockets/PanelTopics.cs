@@ -14,6 +14,7 @@ public static class PanelTopics
     public const string Prefs = "prefs";
     public const string Lighting = "lighting";
     public const string Cooling = "cooling";
+    public const string CoolingWarnings = "cooling/warnings";
     public const string PanelDevice = "panel/device";
     /// <summary>
     /// Manual pair-code lifecycle. Dashboard subscribes while the Pair
@@ -47,6 +48,22 @@ public static class PanelTopics
         var frame = new CoolingChangedFrame { Revision = Now() };
         var env = WsEnvelope.Build(Cooling, frame, AppJsonContext.Default.CoolingChangedFrame);
         _ = hub.BroadcastTopicAsync(Cooling, env);
+    }
+
+    /// <summary>
+    /// Broadcast a cooling-warnings-changed notification. Callers (the NP50
+    /// heartbeat worker and any future warning producers) invoke this when
+    /// the active warning set transitions. Subscribers refetch
+    /// <c>GET /cooling/warnings</c>; <paramref name="deviceId"/> lets the UI
+    /// scope which device's warnings to re-render.
+    /// </summary>
+    public static void BroadcastCoolingWarnings(MultiplexHub hub, string deviceId)
+    {
+        if (!hub.TopicHasSubscribers(CoolingWarnings))
+            return;
+        var frame = new CoolingWarningsChangedFrame { Revision = Now(), DeviceId = deviceId };
+        var env = WsEnvelope.Build(CoolingWarnings, frame, AppJsonContext.Default.CoolingWarningsChangedFrame);
+        _ = hub.BroadcastTopicAsync(CoolingWarnings, env);
     }
 
     public static void BroadcastPanelDevice(MultiplexHub hub, string deviceId)

@@ -61,7 +61,7 @@ public sealed class MacFanControlProvider : IFanControlProvider, ICoolingProvide
                 Name = NameFor(i, _fanCount),
                 DutyPercent = duty,
                 Rpm = rpm,
-                Mode = "Auto",
+                Mode = FanModes.Auto,
             });
         }
         return list;

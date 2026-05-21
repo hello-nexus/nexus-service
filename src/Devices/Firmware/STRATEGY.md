@@ -8,15 +8,22 @@ and controllable via the REST API.
 
 ## Storage
 
-Firmware binaries are stored in a local cache directory:
+Firmware binaries are stored in a local cache directory.
+
+- **Windows**: `%ProgramData%\Qos\firmware\` (machine-scope so the
+  LocalSystem service can write it and every user on the box sees the
+  same versions).
+- **Linux**: `$XDG_CACHE_HOME/Qos/firmware/` (defaults to
+  `~/.cache/Qos/firmware/`).
 
 ```
-~/.qos/firmware/
+firmware/
 ├── cnvs/
 │   ├── 1.2.3.bin
 │   └── manifest.json
-├── q60/
-│   └── ...
+├── np50/
+│   ├── 2.0.5.1.hex
+│   └── manifest.json
 └── ...
 ```
 
@@ -64,8 +71,8 @@ Task<bool> FlashFirmwareAsync(string firmwarePath, IProgress<int> progress);
 
 ## TODO
 
-- [ ] Implement FirmwareStore (local cache manager)
-- [ ] Define remote manifest URL per device type
+- [x] Implement FirmwareStore (local cache manager) — `FirmwareStore.cs`
+- [ ] Define remote manifest URL per device type (NP50 pending: see `plans/np50-support.md`)
 - [ ] Implement STM32 DFU flash protocol for CNVS
 - [ ] Add progress reporting via WebSocket
 - [ ] Add firmware rollback support

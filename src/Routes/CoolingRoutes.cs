@@ -103,7 +103,7 @@ public static class CoolingRoutes
             var derivedAfterSpeed = FanProfiles.DerivePresetFromCurves(store, f);
             store.Update(s => s.Cooling.ActivePreset = derivedAfterSpeed);
             PanelTopics.BroadcastCooling(hub);
-            return new SetFanSpeedResponse { ChannelId = id, Speed = actual, Mode = "Manual" };
+            return new SetFanSpeedResponse { ChannelId = id, Speed = actual, Mode = Qos.Service.Models.Cooling.FanModes.Manual };
         });
 
         app.MapPost("/cooling/fan/{id}/auto", (string id, IFanControlProvider f, Qos.Service.Persistence.IConfigStore store, MultiplexHub hub) =>
@@ -205,8 +205,8 @@ public static class CoolingRoutes
                 CalibrationState = runner.State.ToString().ToLowerInvariant(),
                 ActiveCurves = curves.Count,
                 FanCount = channels.Count,
-                ManualFans = channels.Count(c => c.Mode == "Manual"),
-                ActiveCurveFanCount = channels.Count(c => c.Mode == "Curve"),
+                ManualFans = channels.Count(c => c.Mode == Qos.Service.Models.Cooling.FanModes.Manual),
+                ActiveCurveFanCount = channels.Count(c => c.Mode == Qos.Service.Models.Cooling.FanModes.Curve),
             };
         }).AllowPanel();
     }

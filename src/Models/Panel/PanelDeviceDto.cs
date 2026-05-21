@@ -102,6 +102,18 @@ public sealed class CoolingChangedFrame
     public long Revision { get; set; }
 }
 
+/// <summary>
+/// Multiplex frame: cooling-device warning state changed (e.g. NP50 AmpScale
+/// current overload, LED count exceeded). Subscribers refetch
+/// <c>GET /cooling/warnings</c>; <c>DeviceId</c> lets a UI scope the refetch
+/// or restrict toast firing.
+/// </summary>
+public sealed class CoolingWarningsChangedFrame
+{
+    public long Revision { get; set; }
+    public string DeviceId { get; set; } = "";
+}
+
 public sealed class DevicesChangedFrame
 {
     public long Revision { get; set; }

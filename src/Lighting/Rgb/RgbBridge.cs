@@ -123,13 +123,33 @@ public sealed class RgbBridge : IDisposable
     // is safe here.
     private readonly HashSet<int> _touchedPhysicals = new();
 
-    public RgbBridge(OpenRgbProcessManager proc, IRgbController controller, LightingEngine engine, IConfigStore store, IUsbEnumerator usb)
+    private readonly IReadOnlyList<ILightingFrameContributor> _frameContributors;
+
+    public RgbBridge(OpenRgbProcessManager proc, IRgbController controller, LightingEngine engine, IConfigStore store, IUsbEnumerator usb,
+        IEnumerable<ILightingFrameContributor>? frameContributors = null)
     {
         _proc = proc;
         _controller = controller;
         _engine = engine;
         _store = store;
         _usb = usb;
+        _frameContributors = frameContributors is null
+            ? Array.Empty<ILightingFrameContributor>()
+            : new List<ILightingFrameContributor>(frameContributors);
+        // Re-run the device refresh whenever a contributor's topology changes
+        // (e.g. NP50 hot-plug or LS10 added/removed on a port) so its frames
+        // appear/disappear from the engine without a polling step.
+        foreach (var c in _frameContributors)
+        {
+            c.DevicesChanged += OnContributorDevicesChanged;
+        }
+    }
+
+    private void OnContributorDevicesChanged()
+    {
+        // Cheap fire-and-forget — RefreshDevicesAsync is the same path the
+        // periodic refresh loop uses and is debounced by _refreshSemaphore.
+        _ = RefreshDevicesAsync();
     }
 
     /// <summary>Latest device snapshot. Updated on connect, refresh tick, and DEVICE_LIST_UPDATED.</summary>
@@ -674,6 +694,16 @@ public sealed class RgbBridge : IDisposable
                     stripSlot++;
                     logicalOrdinal++;
                 }
+            }
+
+            // Append device frames contributed by non-OpenRGB lighting
+            // subsystems (NP50 today). They start at the next logical ordinal
+            // so SerializeAndBroadcast's per-device Index space stays packed
+            // and SampleDevicesFromCanvas processes them in one pass.
+            foreach (var contributor in _frameContributors)
+            {
+                var extra = contributor.BuildFrames(framesList.Count);
+                for (var i = 0; i < extra.Count; i++) framesList.Add(extra[i]);
             }
 
             var frames = framesList.ToArray();

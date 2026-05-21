@@ -55,6 +55,24 @@ namespace Qos.Service.Serialization;
 [JsonSerializable(typeof(GetAllCoolingResponse))]
 [JsonSerializable(typeof(SetCurvesBody))]
 [JsonSerializable(typeof(GetCurvesResponse))]
+[JsonSerializable(typeof(CoolingWarning))]
+[JsonSerializable(typeof(List<CoolingWarning>))]
+[JsonSerializable(typeof(GetCoolingWarningsResponse))]
+
+// NP50 device state surface
+[JsonSerializable(typeof(Qos.Service.Routes.Np50StateResponse))]
+[JsonSerializable(typeof(Qos.Service.Peripherals.Hyte.Np50.Np50State))]
+[JsonSerializable(typeof(Qos.Service.Peripherals.Hyte.Np50.Np50HubInfo))]
+[JsonSerializable(typeof(Qos.Service.Peripherals.Hyte.Np50.Np50Port))]
+[JsonSerializable(typeof(List<Qos.Service.Peripherals.Hyte.Np50.Np50Port>))]
+[JsonSerializable(typeof(Qos.Service.Peripherals.Hyte.Np50.Np50FanDevice))]
+[JsonSerializable(typeof(List<Qos.Service.Peripherals.Hyte.Np50.Np50FanDevice>))]
+[JsonSerializable(typeof(Qos.Service.Peripherals.Hyte.Np50.Np50WarningDetail))]
+[JsonSerializable(typeof(Qos.Service.Peripherals.Hyte.Np50.Np50PortWarning))]
+[JsonSerializable(typeof(Qos.Service.Routes.Np50LightingRequest))]
+[JsonSerializable(typeof(Qos.Service.Routes.Np50LedColor))]
+[JsonSerializable(typeof(List<Qos.Service.Routes.Np50LedColor>))]
+[JsonSerializable(typeof(Qos.Service.Routes.Np50FirmwareResponse))]
 
 // Fan control
 [JsonSerializable(typeof(FanChannel))]
@@ -134,6 +152,7 @@ namespace Qos.Service.Serialization;
 [JsonSerializable(typeof(List<Qos.Service.Models.Panel.OverlayWidgetDto>))]
 [JsonSerializable(typeof(Qos.Service.Models.Panel.LightingChangedFrame))]
 [JsonSerializable(typeof(Qos.Service.Models.Panel.CoolingChangedFrame))]
+[JsonSerializable(typeof(Qos.Service.Models.Panel.CoolingWarningsChangedFrame))]
 [JsonSerializable(typeof(Qos.Service.Models.Panel.DevicesChangedFrame))]
 [JsonSerializable(typeof(Qos.Service.Models.Panel.PanelDeviceChangedFrame))]
 [JsonSerializable(typeof(Qos.Service.Models.Panel.PanelPhonePairQrResponse))]

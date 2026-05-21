@@ -18,6 +18,7 @@ public static partial class DevicesRoutes
         MapDeviceListingEndpoints(app);
         MapDeviceSettingsEndpoints(app);
         MapLightingDevicesEndpoints(app);
+        MapNp50Endpoints(app);
     }
 
     /// <summary>

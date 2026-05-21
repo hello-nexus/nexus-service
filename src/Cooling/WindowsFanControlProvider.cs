@@ -70,15 +70,15 @@ public sealed class WindowsFanControlProvider : IFanControlProvider, ICoolingPro
             string mode;
             if (curveOutputs.Contains(m.Id))
             {
-                mode = "Curve";
+                mode = FanModes.Curve;
             }
             else if (_softwareControlled.Contains(m.Id))
             {
-                mode = "Manual";
+                mode = FanModes.Manual;
             }
             else
             {
-                mode = "Auto";
+                mode = FanModes.Auto;
             }
             var ch = new FanChannel
             {
