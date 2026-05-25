@@ -280,6 +280,22 @@ public sealed class Np50CoolingProvider : IFanControlProvider, ICoolingProvider
             System.Console.Error.WriteLine($"[np50-cooling] write to {channelId} dropped: hub not connected");
             return;
         }
+
+        // If the user has explicitly pinned the hub to Motherboard or Static
+        // (via PUT /devices/np50/cooling-mode), the hub is intentionally not
+        // accepting our PWM frames. Re-asserting Software here would yank the
+        // hub out of the mode the user just chose — exactly the bug where
+        // picking BIOS on a fan caused the displayed RPM to stay at the
+        // Nexus-driven value because the curve engine forced us right back
+        // into Software within one tick. Drop the channel write; when the
+        // user returns to Software mode the next curve tick / manual write
+        // will resume normally.
+        if (_hub.DesiredCoolingMode is byte pinned
+            && pinned != Np50Protocol.ModeSoftware)
+        {
+            return;
+        }
+
         // Driving a channel implies software control; record so the next
         // GetFanChannels reports Mode="Manual" and the panel doesn't snap
         // the user's Manual selection back to BIOS on the cooling-topic

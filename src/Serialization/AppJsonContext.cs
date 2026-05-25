@@ -73,6 +73,12 @@ namespace Nexus.Service.Serialization;
 [JsonSerializable(typeof(Nexus.Service.Routes.Np50LedColor))]
 [JsonSerializable(typeof(List<Nexus.Service.Routes.Np50LedColor>))]
 [JsonSerializable(typeof(Nexus.Service.Routes.Np50FirmwareResponse))]
+[JsonSerializable(typeof(Nexus.Service.Routes.Np50FirmwareDefaultsResponse))]
+[JsonSerializable(typeof(Nexus.Service.Routes.Np50FirmwareDefaultsRequest))]
+[JsonSerializable(typeof(Nexus.Service.Routes.Np50FirmwareAnimationResponse))]
+[JsonSerializable(typeof(Nexus.Service.Routes.Np50FirmwareAnimationRequest))]
+[JsonSerializable(typeof(Nexus.Service.Routes.Np50CoolingModeRequest))]
+[JsonSerializable(typeof(Nexus.Service.Routes.MiniHubCoolingModeRequest))]
 
 // Fan control
 [JsonSerializable(typeof(FanChannel))]

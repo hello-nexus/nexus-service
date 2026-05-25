@@ -45,11 +45,25 @@ public static class Np50Protocol
     /// <summary>Maximum daisy-chained fans per port the protocol can address.</summary>
     public const int MaxDevicesPerPort = 18;
 
-    // ── Cooling mode bytes ──
+    // ── Cooling mode bytes (live; opcode #3) ──
 
     public const byte ModeSoftware = 0x01;
     public const byte ModeMotherboard = 0x02;
     public const byte ModeStatic = 0x03;
+
+    // ── Firmware default-mode bytes (EEPROM; opcode #6 / #7) ──
+    //
+    // Distinct from the live cooling-mode bytes above — the firmware default
+    // is what runs when nexus isn't streaming. "Software" isn't meaningful as
+    // a default because by definition there's no software running then.
+    public const byte DefaultModeStatic = 0x00;
+    public const byte DefaultModeMotherboard = 0x01;
+
+    // ── Firmware animation bytes (opcode #13 / #14) ──
+    public const byte FwAnimationColor = 0x01;
+    public const byte FwAnimationRainbow = 0x02;
+    public const byte FwAnimationBreathe = 0x03;
+    public const byte FwAnimationRainbowGradient = 0x04;
 
     // ── Wire constants used by parsers + builders ──
 
@@ -145,6 +159,33 @@ public static class Np50Protocol
     /// </summary>
     public static byte[] BuildGetFirmwareDefaultMode()
         => new byte[] { Frame0, OpControl, 0x04, 0x00 };
+
+    /// <summary>
+    /// Build the "Set NP50 Default Cooling Mode" request (18 bytes, EEPROM
+    /// SAVE). Spec command #6: <c>FF CC 03 00 MODE FAN% [reserved×11] 01</c>.
+    /// Stores what the hub does when nexus isn't streaming (PC off, service
+    /// down). <see cref="DefaultModeStatic"/> plays the stored fan-speed
+    /// setpoint at <paramref name="fanPercent"/>; <see cref="DefaultModeMotherboard"/>
+    /// passes through motherboard PWM and ignores fan-percent.
+    ///
+    /// EEPROM endurance is ~10 000 writes — callers MUST read current state
+    /// via <see cref="BuildGetFirmwareDefaultMode"/> first and skip the
+    /// write when the bytes already match.
+    /// </summary>
+    public static byte[] BuildSetDefaultMode(byte defaultMode, byte fanPercent)
+    {
+        if (defaultMode != DefaultModeStatic && defaultMode != DefaultModeMotherboard)
+            throw new ArgumentException($"Unknown default mode 0x{defaultMode:X2}", nameof(defaultMode));
+        var pct = (byte)Math.Clamp((int)fanPercent, 0, 100);
+        var buf = new byte[18];
+        buf[0] = Frame0; buf[1] = OpControl; buf[2] = 0x03;
+        buf[3] = 0x00;
+        buf[4] = defaultMode;
+        buf[5] = pct;
+        // bytes 6..16 reserved (zero)
+        buf[17] = 0x01; // SAVE — commits to EEPROM
+        return buf;
+    }
 
 
     /// <summary>
@@ -304,6 +345,35 @@ public static class Np50Protocol
         byte StaticFanPercent,
         bool IsStartAnimationOff,
         bool IsFirmwareLightingOff);
+
+    /// <summary>Decoded firmware-animation block (opcode #14 response).</summary>
+    public readonly record struct Np50FwAnimation(
+        byte Animation,
+        byte R,
+        byte G,
+        byte B,
+        byte Brightness);
+
+    /// <summary>
+    /// Parse the 9-byte response to <see cref="BuildGetFirmwareAnimation"/>.
+    /// Layout per spec command #14 v2: 4-byte FF CC 0D 00 header echo, then
+    /// <c>[4]=Animation</c>, <c>[5]=R</c>, <c>[6]=G</c>, <c>[7]=B</c>,
+    /// <c>[8]=FwBrightness</c>.
+    /// </summary>
+    public static Np50FwAnimation ParseFirmwareAnimation(ReadOnlySpan<byte> response)
+    {
+        if (response.Length < 9)
+            throw new ArgumentException($"Firmware-animation response too short: {response.Length} bytes", nameof(response));
+        ExpectHeader(response, OpControl, "GetFirmwareAnimation");
+        if (response[2] != 0x0D)
+            throw new InvalidOperationException($"Unexpected fw-animation sub-opcode 0x{response[2]:X2}");
+        return new Np50FwAnimation(
+            Animation: response[4],
+            R: response[5],
+            G: response[6],
+            B: response[7],
+            Brightness: response[8]);
+    }
 
     /// <summary>
     /// Parse the 17-byte response to "Get Firmware Default Mode". Layout per

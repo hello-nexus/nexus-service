@@ -209,6 +209,16 @@ public sealed class MiniHubCoolingProvider : IFanControlProvider, ICoolingProvid
             Console.Error.WriteLine($"[minihub-cooling] write to {channelId} dropped: hub not connected");
             return;
         }
+
+        // User pinned Motherboard via the per-fan dropdown? Don't claw the
+        // hub back into Software on this tick. See Np50CoolingProvider for
+        // the same pattern + rationale (curve engine vs user mode pick).
+        if (_hub.DesiredFanControlMode is byte pinned
+            && pinned != MiniHubProtocol.FanModeSoftware)
+        {
+            return;
+        }
+
         // Driving this channel implies software control; record so the next
         // GetFanChannels returns Mode="Manual" and the panel doesn't snap
         // the user's selection back to BIOS on the cooling-topic refresh.

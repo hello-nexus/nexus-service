@@ -260,6 +260,40 @@ public sealed class Np50Hub : IDisposable
     }
 
     /// <summary>
+    /// Typed read of the EEPROM-persisted default-mode block. Returns null
+    /// when the hub is unreachable or the response is malformed.
+    /// </summary>
+    public Np50Protocol.Np50FirmwareDefaults? GetFirmwareDefaults()
+    {
+        var raw = GetFirmwareDefaultModeRaw();
+        if (raw is null) return null;
+        try
+        {
+            return Np50Protocol.ParseFirmwareDefaultMode(raw);
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine($"[np50] firmware-defaults parse failed: {ex.GetType().Name}: {ex.Message}");
+            return null;
+        }
+    }
+
+    /// <summary>
+    /// Persist the firmware default cooling mode + static fan-percent into
+    /// EEPROM (opcode #6). Read-before-write: if the hub already reports the
+    /// same values we skip the write to spare EEPROM endurance and avoid the
+    /// firmware briefly switching to the default on commit.
+    /// </summary>
+    public bool SetFirmwareDefaults(byte defaultMode, byte fanPercent)
+    {
+        var pct = (byte)Math.Clamp((int)fanPercent, 0, 100);
+        var current = GetFirmwareDefaults();
+        if (current is { } c && c.DefaultMode == defaultMode && c.StaticFanPercent == pct)
+            return true;
+        return SendOnly(Np50Protocol.BuildSetDefaultMode(defaultMode, pct));
+    }
+
+    /// <summary>
     /// Read raw 9-byte firmware-animation state (opcode 0xCC 0x0D). Payload
     /// layout after the 4-byte header: anim, R, G, B, brightness. Pair with
     /// <see cref="WriteFirmwareAnimationToMcu"/> to verify SAVE-byte writes
@@ -274,6 +308,43 @@ public sealed class Np50Hub : IDisposable
             timeoutMs: 300,
             response => result = response.ToArray());
         return ok ? result : null;
+    }
+
+    /// <summary>
+    /// Typed read of the firmware-animation state. Returns null when the hub
+    /// is unreachable or the response is malformed.
+    /// </summary>
+    public Np50Protocol.Np50FwAnimation? GetFirmwareAnimation()
+    {
+        var raw = GetFirmwareAnimationRaw();
+        if (raw is null) return null;
+        try
+        {
+            return Np50Protocol.ParseFirmwareAnimation(raw);
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine($"[np50] firmware-animation parse failed: {ex.GetType().Name}: {ex.Message}");
+            return null;
+        }
+    }
+
+    /// <summary>
+    /// Set the firmware-side LED animation (opcode #13, SAVE byte). The 0x0C
+    /// write persists to EEPROM AND updates the live MCU animation, so the
+    /// strips reflect the change immediately. Read-before-write preserves
+    /// EEPROM endurance when the hub already reports the requested state.
+    /// </summary>
+    public bool SetFirmwareAnimation(byte animation, byte r, byte g, byte b, byte brightness)
+    {
+        var br = (byte)Math.Clamp((int)brightness, 0, 100);
+        var current = GetFirmwareAnimation();
+        if (current is { } c
+            && c.Animation == animation
+            && c.R == r && c.G == g && c.B == b
+            && c.Brightness == br)
+            return true;
+        return SendOnly(Np50Protocol.BuildWriteFirmwareAnimationToMcu(animation, r, g, b, br));
     }
 
     public bool WriteLighting(int port, ReadOnlySpan<RgbColor> leds)

@@ -106,12 +106,33 @@ public sealed class MiniHubHub : IDisposable
         }
     }
 
+    /// <summary>
+    /// Last fan-control mode the user (or the cooling provider on their
+    /// behalf) explicitly pinned. Drives a guard in MiniHubCoolingProvider:
+    /// when this is Motherboard the provider drops PWM writes instead of
+    /// re-asserting Software on every tick — without the guard, picking
+    /// BIOS on a MiniHub fan would never take because the next channel
+    /// write would flip the hub right back to Software. Null = "no
+    /// explicit pin; provider is free to assert whatever the live state
+    /// needs."
+    /// </summary>
+    public byte? DesiredFanControlMode { get; private set; }
+
     public bool SetRgbControlMode(byte mode) => SendOnly(MiniHubProtocol.BuildSetRgbControlMode(mode));
 
     public bool WriteLighting(int channel, ReadOnlySpan<RgbColor> leds)
         => SendOnly(MiniHubProtocol.BuildLightingStream(channel, leds));
 
     public bool SetFanControlMode(byte mode) => SendOnly(MiniHubProtocol.BuildSetFanControlMode(mode));
+
+    /// <summary>Pin the user-facing fan-control mode. Writes the mode once,
+    /// and the provider's channel-write guard refuses to clobber it on the
+    /// next curve tick.</summary>
+    public void SetDesiredFanControlMode(byte? mode)
+    {
+        DesiredFanControlMode = mode;
+        if (mode is byte m) SetFanControlMode(m);
+    }
 
     /// <summary>
     /// Push a single port-pair PWM update to the hub. Both ports are written

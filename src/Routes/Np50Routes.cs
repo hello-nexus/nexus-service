@@ -1,5 +1,7 @@
+using System;
 using System.Collections.Generic;
 using Microsoft.AspNetCore.Http;
+using Nexus.Service.Models;
 using Nexus.Service.Models.Cooling;
 using Nexus.Service.Peripherals.Hyte.Np50;
 
@@ -101,6 +103,104 @@ public static partial class DevicesRoutes
             });
         });
 
+        // Read the EEPROM-persisted firmware defaults (default cooling mode +
+        // static fan%). What the hub does when nexus isn't streaming.
+        app.MapGet("/devices/np50/firmware-defaults", (Np50Hub hub) =>
+        {
+            if (!hub.IsConnected)
+                return Results.Conflict(new { error = "NP50 not connected" });
+            var d = hub.GetFirmwareDefaults();
+            if (d is null)
+                return Results.Problem("Failed to read firmware defaults from NP50.");
+            return Results.Ok(new Np50FirmwareDefaultsResponse
+            {
+                DefaultMode = d.Value.DefaultMode,
+                StaticFanPercent = d.Value.StaticFanPercent,
+                IsStartAnimationOff = d.Value.IsStartAnimationOff,
+                IsFirmwareLightingOff = d.Value.IsFirmwareLightingOff,
+            });
+        });
+
+        // Persist new firmware defaults to EEPROM. Read-before-write inside
+        // SetFirmwareDefaults — if the hub already reports the same values
+        // we do not issue a write (EEPROM endurance is ~10 000 cycles).
+        app.MapPut("/devices/np50/firmware-defaults", (Np50FirmwareDefaultsRequest body, Np50Hub hub) =>
+        {
+            if (!hub.IsConnected)
+                return Results.Conflict(new { error = "NP50 not connected" });
+            if (body.DefaultMode != Np50Protocol.DefaultModeStatic
+                && body.DefaultMode != Np50Protocol.DefaultModeMotherboard)
+            {
+                return Results.BadRequest(new { error = "defaultMode must be 0 (Static) or 1 (Motherboard)" });
+            }
+            var ok = hub.SetFirmwareDefaults((byte)body.DefaultMode, (byte)Math.Clamp(body.StaticFanPercent, 0, 100));
+            if (!ok)
+                return Results.Problem("Failed to write firmware defaults to NP50.");
+            return Results.Ok(ApiResponse.Ok());
+        });
+
+        // Read the firmware-side LED animation (effect + RGB + brightness).
+        // What the strips show when the firmware is driving them — i.e. PC
+        // off, service down, or hub in Software mode while nexus isn't
+        // streaming frames.
+        app.MapGet("/devices/np50/firmware-animation", (Np50Hub hub) =>
+        {
+            if (!hub.IsConnected)
+                return Results.Conflict(new { error = "NP50 not connected" });
+            var a = hub.GetFirmwareAnimation();
+            if (a is null)
+                return Results.Problem("Failed to read firmware animation from NP50.");
+            return Results.Ok(new Np50FirmwareAnimationResponse
+            {
+                Animation = a.Value.Animation,
+                R = a.Value.R,
+                G = a.Value.G,
+                B = a.Value.B,
+                Brightness = a.Value.Brightness,
+            });
+        });
+
+        // Write firmware-side LED animation. Read-before-write inside
+        // SetFirmwareAnimation; opcode 0x0C carries the SAVE byte and updates
+        // both EEPROM and the live MCU animation in one shot.
+        app.MapPut("/devices/np50/firmware-animation", (Np50FirmwareAnimationRequest body, Np50Hub hub) =>
+        {
+            if (!hub.IsConnected)
+                return Results.Conflict(new { error = "NP50 not connected" });
+            if (body.Animation < Np50Protocol.FwAnimationColor
+                || body.Animation > Np50Protocol.FwAnimationRainbowGradient)
+            {
+                return Results.BadRequest(new { error = "animation must be 1 (Color), 2 (Rainbow), 3 (Breathe), or 4 (Rainbow Gradient)" });
+            }
+            var ok = hub.SetFirmwareAnimation(
+                (byte)body.Animation,
+                (byte)Math.Clamp(body.R, 0, 255),
+                (byte)Math.Clamp(body.G, 0, 255),
+                (byte)Math.Clamp(body.B, 0, 255),
+                (byte)Math.Clamp(body.Brightness, 0, 100));
+            if (!ok)
+                return Results.Problem("Failed to write firmware animation to NP50.");
+            return Results.Ok(ApiResponse.Ok());
+        });
+
+        // Switch the LIVE cooling mode (opcode #3). Distinct from the
+        // EEPROM-persisted default above — this is what's actively driving
+        // the fans right now. SetDesiredCoolingMode also stores the value
+        // so the heartbeat re-asserts it if the firmware drifts back.
+        app.MapPut("/devices/np50/cooling-mode", (Np50CoolingModeRequest body, Np50Hub hub) =>
+        {
+            if (!hub.IsConnected)
+                return Results.Conflict(new { error = "NP50 not connected" });
+            if (body.Mode != Np50Protocol.ModeSoftware
+                && body.Mode != Np50Protocol.ModeMotherboard
+                && body.Mode != Np50Protocol.ModeStatic)
+            {
+                return Results.BadRequest(new { error = "mode must be 1 (Software), 2 (Motherboard), or 3 (Static/Firmware)" });
+            }
+            hub.SetDesiredCoolingMode((byte)body.Mode);
+            return Results.Ok(ApiResponse.Ok());
+        });
+
         // Push an LED frame at one of the three ports. Body shape is a flat list
         // of {r,g,b} triplets in linear order; the protocol handles GRB byte
         // packing. Used by the lighting engine in later phases and by the
@@ -182,6 +282,51 @@ public sealed class Np50LedColor
     public int R { get; set; }
     public int G { get; set; }
     public int B { get; set; }
+}
+
+/// <summary>Shape returned by GET /devices/np50/firmware-defaults.</summary>
+public sealed class Np50FirmwareDefaultsResponse
+{
+    /// <summary>0 = Static (uses StaticFanPercent), 1 = Motherboard PWM passthrough.</summary>
+    public byte DefaultMode { get; set; }
+    public byte StaticFanPercent { get; set; }
+    public bool IsStartAnimationOff { get; set; }
+    public bool IsFirmwareLightingOff { get; set; }
+}
+
+/// <summary>Body shape for PUT /devices/np50/firmware-defaults.</summary>
+public sealed class Np50FirmwareDefaultsRequest
+{
+    public int DefaultMode { get; set; }
+    public int StaticFanPercent { get; set; }
+}
+
+/// <summary>Shape returned by GET /devices/np50/firmware-animation.</summary>
+public sealed class Np50FirmwareAnimationResponse
+{
+    /// <summary>1=Color, 2=Rainbow, 3=Breathe, 4=Rainbow Gradient.</summary>
+    public byte Animation { get; set; }
+    public byte R { get; set; }
+    public byte G { get; set; }
+    public byte B { get; set; }
+    public byte Brightness { get; set; }
+}
+
+/// <summary>Body shape for PUT /devices/np50/firmware-animation.</summary>
+public sealed class Np50FirmwareAnimationRequest
+{
+    public int Animation { get; set; }
+    public int R { get; set; }
+    public int G { get; set; }
+    public int B { get; set; }
+    public int Brightness { get; set; }
+}
+
+/// <summary>Body shape for PUT /devices/np50/cooling-mode.</summary>
+public sealed class Np50CoolingModeRequest
+{
+    /// <summary>1=Software, 2=Motherboard, 3=Static (firmware fallback).</summary>
+    public int Mode { get; set; }
 }
 
 /// <summary>Shape returned by /devices/np50[/{serial}]. AOT-registered in <see cref="Serialization.AppJsonContext"/>.</summary>

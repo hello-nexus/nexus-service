@@ -19,6 +19,7 @@ public static partial class DevicesRoutes
         MapDeviceSettingsEndpoints(app);
         MapLightingDevicesEndpoints(app);
         MapNp50Endpoints(app);
+        MapMiniHubEndpoints(app);
     }
 
     /// <summary>

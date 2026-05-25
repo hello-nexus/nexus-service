@@ -130,6 +130,62 @@ public class Np50ProtocolTests
         Assert.Throws<ArgumentException>(() => Np50Protocol.BuildSetCoolingMode(0x99));
     }
 
+    [Theory]
+    [InlineData(Np50Protocol.DefaultModeStatic, 75)]
+    [InlineData(Np50Protocol.DefaultModeMotherboard, 0)]
+    public void BuildSetDefaultMode_emits_18_byte_buffer_with_SAVE_byte(byte mode, byte percent)
+    {
+        // Spec command #6: FF CC 03 00 MODE FAN% [reserved×11] 01(SAVE).
+        // This is the EEPROM-persisted "what the hub does when nexus isn't streaming" command.
+        var buf = Np50Protocol.BuildSetDefaultMode(mode, percent);
+        Assert.Equal(18, buf.Length);
+        Assert.Equal(new byte[] { 0xFF, 0xCC, 0x03, 0x00, mode, percent }, buf.AsSpan(0, 6).ToArray());
+        for (var i = 6; i <= 16; i++) Assert.Equal(0x00, buf[i]); // reserved
+        Assert.Equal(0x01, buf[17]); // SAVE
+    }
+
+    [Fact]
+    public void BuildSetDefaultMode_clamps_fan_percent_to_0_100()
+    {
+        Assert.Equal(100, Np50Protocol.BuildSetDefaultMode(Np50Protocol.DefaultModeStatic, 200)[5]);
+        Assert.Equal(0, Np50Protocol.BuildSetDefaultMode(Np50Protocol.DefaultModeStatic, 0)[5]);
+    }
+
+    [Fact]
+    public void BuildSetDefaultMode_rejects_invalid_mode_byte()
+    {
+        Assert.Throws<ArgumentException>(() => Np50Protocol.BuildSetDefaultMode(0x02, 50));
+        Assert.Throws<ArgumentException>(() => Np50Protocol.BuildSetDefaultMode(0x99, 50));
+    }
+
+    [Fact]
+    public void ParseFirmwareAnimation_decodes_anim_RGB_brightness()
+    {
+        // 9-byte response per spec command #14 v2:
+        // [0..3] FF CC 0D 00 header, [4] anim, [5..7] RGB, [8] brightness.
+        var response = new byte[] { 0xFF, 0xCC, 0x0D, 0x00, 0x02, 0x10, 0x20, 0x30, 0x40 };
+        var parsed = Np50Protocol.ParseFirmwareAnimation(response);
+        Assert.Equal(Np50Protocol.FwAnimationRainbow, parsed.Animation);
+        Assert.Equal(0x10, parsed.R);
+        Assert.Equal(0x20, parsed.G);
+        Assert.Equal(0x30, parsed.B);
+        Assert.Equal(0x40, parsed.Brightness);
+    }
+
+    [Fact]
+    public void ParseFirmwareAnimation_rejects_wrong_sub_opcode()
+    {
+        var response = new byte[] { 0xFF, 0xCC, 0x0E, 0x00, 0x01, 0, 0, 0, 100 };
+        Assert.Throws<InvalidOperationException>(() => Np50Protocol.ParseFirmwareAnimation(response));
+    }
+
+    [Fact]
+    public void ParseFirmwareAnimation_rejects_short_response()
+    {
+        var response = new byte[] { 0xFF, 0xCC, 0x0D, 0x00 };
+        Assert.Throws<ArgumentException>(() => Np50Protocol.ParseFirmwareAnimation(response));
+    }
+
     [Fact]
     public void BuildSetLegacyFanSpeed_clamps_and_places_percent_at_byte_5()
     {
