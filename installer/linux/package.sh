@@ -19,7 +19,7 @@ trap 'rm -rf "$STAGE"' EXIT
 APP="$STAGE/nexus"
 mkdir -p "$APP"
 
-# App payload (binary + wwwroot + openrgb + ffmpeg + widgets + native libs).
+# App payload (binary + wwwroot + openrgb + ffmpeg + apps + native libs).
 cp -a "$PUBLISH_DIR/." "$APP/"
 
 # Install tooling + service definition.

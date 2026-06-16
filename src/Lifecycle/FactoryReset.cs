@@ -26,7 +26,7 @@ namespace Nexus.Service.Lifecycle;
 /// the same directories the individual stores wrote to.
 ///
 /// The install/binary dir is never listed: it holds the running exe plus the
-/// bundled widgets and firmware. On Windows the PawnIO kernel-driver subfolder
+/// bundled apps and firmware. On Windows the PawnIO kernel-driver subfolder
 /// is preserved (it is re-extracted on boot anyway; no need to churn a loaded
 /// driver). The local HTTPS cert IS wiped, so the service mints a fresh one on
 /// next boot — a true clean-slate identity.
@@ -66,9 +66,9 @@ internal static class FactoryReset
             roots.Add(new Root(System.IO.Path.Combine(programData, "Nexus"), new[] { "PawnIO" }));
             // Per-user data the daemon can't reach via GetFolderPath: it runs as
             // LocalSystem, so ApplicationData / LocalApplicationData resolve to
-            // the SYSTEM profile. Widgets ("apps") the daemon installs land under
-            // the system profile's Roaming\Nexus; dashboard-bounds.json (written
-            // by the user-session overlay) lands in a real user's Local\Nexus.
+            // the SYSTEM profile. Apps the daemon installs land under the system
+            // profile's Roaming\Nexus; dashboard-bounds.json (written by the
+            // user-session overlay) lands in a real user's Local\Nexus.
             // WindowsUserProfiles() returns BOTH every C:\Users\* profile AND the
             // system profile, so each one's AppData\{Local,Roaming,LocalLow}\Nexus
             // gets wiped.
@@ -89,7 +89,7 @@ internal static class FactoryReset
         {
             // Linux splits user data across the XDG base dirs.
             roots.Add(new Root(XdgRoot("XDG_CONFIG_HOME", ".config"), Array.Empty<string>()));    // settings, screentime, cert, qseries, ffmpeg-pids
-            roots.Add(new Root(XdgRoot("XDG_DATA_HOME", ".local", "share"), Array.Empty<string>())); // media, widgets
+            roots.Add(new Root(XdgRoot("XDG_DATA_HOME", ".local", "share"), Array.Empty<string>())); // media, apps
             roots.Add(new Root(XdgRoot("XDG_CACHE_HOME", ".cache"), Array.Empty<string>()));      // firmware
             // logs: ~/.local/state/nexus/logs (lowercase, no XDG override in ServiceLog).
             roots.Add(new Root(UserPath(".local", "state", "nexus"), Array.Empty<string>()));

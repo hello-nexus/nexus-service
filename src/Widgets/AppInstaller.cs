@@ -81,9 +81,7 @@ public sealed class AppInstaller
             return new AppInstallResponse { Id = id, Installed = false, Error = "source widget not found" };
         }
 
-        // Compute the user widgets dir from the install paths enumerator;
-        // it's the entry whose Source is User. (On every supported OS that
-        // path is `<appdata>/Nexus/widgets/`.)
+        // Compute the user apps dir from the install paths enumerator.
         string? userRoot = null;
         foreach (var root in AppInstallPaths.Enumerate())
         {
@@ -95,7 +93,7 @@ public sealed class AppInstaller
         }
         if (userRoot is null)
         {
-            return new AppInstallResponse { Id = id, Installed = false, Error = "no user widgets directory" };
+            return new AppInstallResponse { Id = id, Installed = false, Error = "no user apps directory" };
         }
 
         try
@@ -129,7 +127,7 @@ public sealed class AppInstaller
         }
         if (userRoot is null)
         {
-            return new AppInstallResponse { Id = id, Installed = false, Error = "no user widgets directory" };
+            return new AppInstallResponse { Id = id, Installed = false, Error = "no user apps directory" };
         }
         var path = Path.Combine(userRoot, id);
         try

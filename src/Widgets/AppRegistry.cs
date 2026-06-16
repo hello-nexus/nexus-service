@@ -115,12 +115,24 @@ public sealed class AppRegistry
                     manifest.Driver = null;
                 }
 
+                DateTimeOffset? installedAt = null;
+                if (root.Source == AppInstallPaths.Source.User)
+                {
+                    try
+                    {
+                        var info = new DirectoryInfo(dir);
+                        installedAt = new DateTimeOffset(info.CreationTimeUtc, TimeSpan.Zero);
+                    }
+                    catch (Exception) { /* best effort */ }
+                }
+
                 var entry = new AppEntry
                 {
                     Id = manifest.Id,
                     RootPath = dir,
                     Manifest = manifest,
                     Source = root.Source,
+                    InstalledAt = installedAt,
                 };
                 // First write wins. Roots are enumerated in shadowing order
                 // (dev → user → bundled), so later roots cannot overwrite

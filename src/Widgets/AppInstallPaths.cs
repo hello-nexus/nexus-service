@@ -18,19 +18,19 @@ public static class AppInstallPaths
 {
     public enum Source
     {
-        /// <summary><c>widgets-dev/</c> - unpacked local copies authors symlink for iteration.</summary>
+        /// <summary><c>apps-dev/</c> - unpacked local copies authors symlink for iteration.</summary>
         Dev,
-        /// <summary><c>widgets/</c> in the user profile.</summary>
+        /// <summary><c>apps/</c> in the user profile.</summary>
         User,
-        /// <summary><c>widgets/</c> next to the service binary.</summary>
+        /// <summary><c>apps/</c> next to the service binary.</summary>
         Bundled,
     }
 
     public readonly record struct Root(string Path, Source Source);
 
     /// <summary>
-    /// All install roots that may contain widget directories, ordered such
-    /// that earlier roots shadow later roots for the same widget id.
+    /// All install roots that may contain app directories, ordered such
+    /// that earlier roots shadow later roots for the same app id.
     /// </summary>
     public static IReadOnlyList<Root> Enumerate(string? baseDir = null)
     {
@@ -38,12 +38,37 @@ public static class AppInstallPaths
         var appData = ResolveAppData();
         if (!string.IsNullOrEmpty(appData))
         {
-            roots.Add(new Root(Path.Combine(appData, "widgets-dev"), Source.Dev));
-            roots.Add(new Root(Path.Combine(appData, "widgets"), Source.User));
+            MigrateWidgetsDirs(appData);
+            roots.Add(new Root(Path.Combine(appData, "apps-dev"), Source.Dev));
+            roots.Add(new Root(Path.Combine(appData, "apps"), Source.User));
         }
         var bundled = string.IsNullOrEmpty(baseDir) ? AppContext.BaseDirectory : baseDir;
-        roots.Add(new Root(Path.Combine(bundled, "widgets"), Source.Bundled));
+        roots.Add(new Root(Path.Combine(bundled, "apps"), Source.Bundled));
         return roots;
+    }
+
+    /// <summary>
+    /// One-time migration: rename legacy on-disk dirs so existing user apps
+    /// are preserved. Runs once per process start; skipped if the new dirs
+    /// already exist or the old ones are absent.
+    /// </summary>
+    private static void MigrateWidgetsDirs(string appData)
+    {
+        TryRenameDir(Path.Combine(appData, "widgets-dev"), Path.Combine(appData, "apps-dev"));
+        TryRenameDir(Path.Combine(appData, "widgets"), Path.Combine(appData, "apps"));
+    }
+
+    private static void TryRenameDir(string oldPath, string newPath)
+    {
+        if (!Directory.Exists(oldPath) || Directory.Exists(newPath)) return;
+        try
+        {
+            Directory.Move(oldPath, newPath);
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine($"[apps] migration rename {oldPath} -> {newPath} failed: {ex.Message}");
+        }
     }
 
     private static string ResolveAppData()

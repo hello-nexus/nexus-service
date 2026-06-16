@@ -660,7 +660,7 @@
   <!-- First-party + community apps. Live in the separate `nexus-apps`
        submodule (../nexus-apps in this layout), one dir per app under apps/<id>/
        (manifest.json + the built widget.mjs). MSBuild copies them into
-       <output>/widgets/<id>/, the bundled-install root the AppRegistry scans
+       <output>/apps/<id>/, the bundled-install root the AppRegistry scans
        (an app's widget facet renders from widget.mjs in the sandboxed host).
        The Web SDK's default Content include sometimes shadows the Link
        metadata; remove + re-add to ensure our metadata wins. -->
@@ -674,7 +674,7 @@
   <ItemGroup>
     <Content Remove="$(NexusAppsRoot)\**\*" />
     <Content Include="$(NexusAppsRoot)\**\*">
-      <Link>widgets\%(RecursiveDir)%(Filename)%(Extension)</Link>
+      <Link>apps\%(RecursiveDir)%(Filename)%(Extension)</Link>
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
       <CopyToPublishDirectory>PreserveNewest</CopyToPublishDirectory>
     </Content>

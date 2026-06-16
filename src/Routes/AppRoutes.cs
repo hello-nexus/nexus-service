@@ -364,6 +364,7 @@ public static class AppRoutes
             // Preinstall is an OEM bake-in honored only for bundled apps; a user/dev
             // copy of the same id is a deliberate user choice, not a pre-install.
             Preinstalled = entry.Manifest.Preinstalled && entry.Source == AppInstallPaths.Source.Bundled,
+            InstalledAt = entry.InstalledAt?.ToString("o"),
         };
     }
 }

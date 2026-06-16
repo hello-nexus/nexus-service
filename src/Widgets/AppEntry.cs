@@ -1,3 +1,4 @@
+using System;
 using Nexus.Service.Models.Widgets;
 
 namespace Nexus.Service.Widgets;
@@ -12,4 +13,9 @@ public sealed class AppEntry
     public required string RootPath { get; init; }
     public required AppManifest Manifest { get; init; }
     public required AppInstallPaths.Source Source { get; init; }
+    /// <summary>
+    /// UTC install timestamp for user-source entries, derived from the app
+    /// directory's creation time. Null for bundled and dev sources.
+    /// </summary>
+    public DateTimeOffset? InstalledAt { get; init; }
 }
