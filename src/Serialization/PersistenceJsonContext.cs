@@ -9,6 +9,7 @@ namespace Nexus.Service.Serialization;
 [JsonSerializable(typeof(NexusSettings))]
 [JsonSerializable(typeof(FirmwareManifest))]
 [JsonSerializable(typeof(FirmwareFile))]
+[JsonSerializable(typeof(CloudAccountSettings))]
 [JsonSerializable(typeof(AuthSettings))]
 [JsonSerializable(typeof(ObsSettings))]
 [JsonSerializable(typeof(SteamSettings))]

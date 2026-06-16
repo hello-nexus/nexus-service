@@ -684,6 +684,22 @@ namespace Nexus.Service.Serialization;
 [JsonSerializable(typeof(Nexus.Service.Models.Webcam.WebcamStartRequest))]
 [JsonSerializable(typeof(Nexus.Service.Models.Webcam.WebcamStatusResponse))]
 
+// Store - cloud account link, library proxy, install pipeline.
+[JsonSerializable(typeof(Nexus.Service.Store.CloudDeviceGrantStartResponse))]
+[JsonSerializable(typeof(Nexus.Service.Store.CloudDeviceGrantPollRequest))]
+[JsonSerializable(typeof(Nexus.Service.Store.CloudDeviceGrantPollResponse))]
+[JsonSerializable(typeof(Nexus.Service.Store.CloudAccountInfo))]
+[JsonSerializable(typeof(Nexus.Service.Store.CloudLibraryResponse))]
+[JsonSerializable(typeof(Nexus.Service.Store.CloudEntitlement))]
+[JsonSerializable(typeof(Nexus.Service.Store.CloudInstallRecord))]
+[JsonSerializable(typeof(Nexus.Service.Store.CloudAppDownloadInfo))]
+[JsonSerializable(typeof(Nexus.Service.Store.CloudInstallReport))]
+[JsonSerializable(typeof(Nexus.Service.Store.StoreAccountLinkStartResponse))]
+[JsonSerializable(typeof(Nexus.Service.Store.StoreAccountStatusResponse))]
+[JsonSerializable(typeof(Nexus.Service.Store.StoreAccountInfo))]
+[JsonSerializable(typeof(Nexus.Service.Store.StoreInstallResponse))]
+[JsonSerializable(typeof(Nexus.Service.Store.StoreInstallRequest))]
+
 [JsonSourceGenerationOptions(
     PropertyNamingPolicy = JsonKnownNamingPolicy.CamelCase,
     DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull)]

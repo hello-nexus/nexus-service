@@ -28,6 +28,7 @@ public sealed class NexusSettings
     public PanelSettings Panel { get; set; } = new();
     public OverlaySettings Overlay { get; set; } = new();
     public AuthSettings? Auth { get; set; } = new();
+    public CloudAccountSettings CloudAccount { get; set; } = new();
     public LightingSettings Lighting { get; set; } = new();
     public KeebSettings Keeb { get; set; } = new();
     public CoolingSettings Cooling { get; set; } = new();
@@ -527,6 +528,16 @@ public sealed class CnvsSettings
 {
     public bool PlayAnimation { get; set; } = InstallDefaults.Cnvs.PlayAnimation;
     public bool PlayWhenPCOff { get; set; } = InstallDefaults.Cnvs.PlayWhenPCOff;
+}
+
+public sealed class CloudAccountSettings
+{
+    /// <summary>Bearer token from the cloud device-grant flow. Empty when not linked.</summary>
+    public string AccessToken { get; set; } = "";
+    /// <summary>Account email from the cloud. Empty when not linked.</summary>
+    public string AccountEmail { get; set; } = "";
+    /// <summary>Account id from the cloud. Empty when not linked.</summary>
+    public string AccountId { get; set; } = "";
 }
 
 public sealed class AuthSettings

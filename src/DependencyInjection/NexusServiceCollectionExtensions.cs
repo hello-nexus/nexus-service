@@ -830,6 +830,9 @@ public static class NexusServiceCollectionExtensions
         services.AddSingleton<Nexus.Service.Widgets.WidgetSettingsService>();
         services.AddSingleton<Nexus.Service.Widgets.AppProxyService>();
         services.AddSingleton<Nexus.Service.Widgets.AppInstaller>();
+        services.AddSingleton<Nexus.Service.Store.CloudApiClient>();
+        services.AddSingleton<Nexus.Service.Store.AccountLinkService>();
+        services.AddSingleton<Nexus.Service.Store.CloudStoreInstaller>();
         services.AddSingleton<Nexus.Service.Widgets.AppCodeSessionService>();
         services.AddSingleton<Nexus.Service.Widgets.AppActionRegistry>(sp =>
         {

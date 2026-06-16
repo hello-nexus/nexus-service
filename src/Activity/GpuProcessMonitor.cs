@@ -23,7 +23,9 @@ namespace Nexus.Service.Activity;
 public sealed class GpuProcessMonitor : BackgroundService
 {
     private readonly MultiplexHub _hub;
+#pragma warning disable IDE0044 // volatile and readonly are mutually exclusive
     private volatile IReadOnlyList<GpuProcessEntry> _latest = Array.Empty<GpuProcessEntry>();
+#pragma warning restore IDE0044
 
     public GpuProcessMonitor(MultiplexHub hub) => _hub = hub;
 
