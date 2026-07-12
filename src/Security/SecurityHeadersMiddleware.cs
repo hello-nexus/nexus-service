@@ -34,6 +34,10 @@ internal static class SecurityHeadersMiddleware
     // fetches the benchmark leaderboard + System Builder catalog directly from
     // it (VITE_API_URL in build:service), cross-origin from the service-served
     // http://localhost:9400 shell, so 'self' does not cover it.
+    //
+    // connect-src blob: because three.js's GLTFLoader loads a GLB's embedded
+    // textures by fetch()ing blob: object URLs (ImageBitmapLoader); img-src
+    // alone does not cover fetch, and without it models render untextured.
     private const string ContentSecurityPolicy =
         "default-src 'self'; " +
         "script-src 'self' 'unsafe-inline' blob:; " +
@@ -46,7 +50,7 @@ internal static class SecurityHeadersMiddleware
         "https://cdn.discordapp.com https://media.discordapp.net " +
         "https://usercontent.hellonexus.com; " +
         "media-src 'self' data: blob:; " +
-        "connect-src 'self' ws: wss: https://api.hellonexus.com; " +
+        "connect-src 'self' blob: ws: wss: https://api.hellonexus.com; " +
         "frame-ancestors 'self'; " +
         "base-uri 'self'; " +
         "object-src 'none'";
