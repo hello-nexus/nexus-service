@@ -31,6 +31,7 @@ public sealed class AppBundleResolverTests : IDisposable
     [InlineData("../../../etc/passwd")]
     [InlineData("..\\..\\secret")]
     [InlineData("sub/../../escape")]
+    [InlineData("../../../etc/x.nxpack")]
     public void Rejects_path_traversal(string requested)
         => Assert.Null(AppRoutes.ResolveBundleFile(_root, requested));
 
