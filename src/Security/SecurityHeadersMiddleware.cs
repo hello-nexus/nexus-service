@@ -40,7 +40,9 @@ internal static class SecurityHeadersMiddleware
     // alone does not cover fetch, and without it models render untextured.
     private const string ContentSecurityPolicy =
         "default-src 'self'; " +
-        "script-src 'self' 'unsafe-inline' blob:; " +
+        // wasm-unsafe-eval: the meshopt decoder (compressed avatar/GLB packs)
+        // instantiates its WASM module from inline bytes.
+        "script-src 'self' 'unsafe-inline' 'wasm-unsafe-eval' blob:; " +
         "worker-src 'self' blob:; " +
         "child-src 'self' blob:; " +
         "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; " +

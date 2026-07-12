@@ -282,7 +282,14 @@ public static class AppRoutes
         }
 
         ctx.Response.Headers.XContentTypeOptions = "nosniff";
-        ctx.Response.Headers.CacheControl = "no-store";
+        // Encrypted containers may sit in the browser's HTTP cache: the cached
+        // bytes are AES-GCM ciphertext (same protection as at rest on disk) and
+        // re-fetching tens of MB per widget mount dominates load time. The .key
+        // dev sidecar and everything else stays no-store.
+        ctx.Response.Headers.CacheControl =
+            Path.GetExtension(resolved).Equals(".nxpack", StringComparison.OrdinalIgnoreCase)
+                ? "private, max-age=86400"
+                : "no-store";
 
         var contentType = Path.GetExtension(resolved).ToLowerInvariant() switch
         {
