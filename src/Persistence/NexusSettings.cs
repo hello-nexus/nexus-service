@@ -19,9 +19,9 @@ public sealed class NexusSettings
     /// a migration in <c>JsonConfigStore.Load()</c>. Lives as a constant so
     /// tests and tooling can reference "current" without bit-rotting.
     /// </summary>
-    public const int CurrentSchemaVersion = 11;
+    public const int CurrentSchemaVersion = 12;
 
-    /// <summary>Persisted profile schema. v2 nests Theme/Panel/Overlay/Monitoring out of UiSettings into matching top-level POCOs that mirror install-defaults.json. v3 drops the <c>{s/n/b}</c> wrapper on per-widget config values; values are raw JSON (string/number/bool/object/array). v4 retires the type-scoped marketplace <c>Widgets</c> bag - every placement keeps its own config under <see cref="Nexus.Service.Models.Panel.PanelWidgetDto.Config"/>. v5 renames the <c>performance</c> cooling preset to <c>turbo</c>. v6 re-keys per-card LED map overrides/aspect ratios into the device-scoped segment-local <see cref="DevicesSettings.DeviceLedOverrides"/> / <see cref="DevicesSettings.DeviceAspectRatios"/> (zones model). v8 marks any pre-existing settings.json as already-onboarded (see <see cref="OnboardingCompleted"/>) so the first-run welcome screen only shows for installs with no settings.json at all. v9 prunes <see cref="AnimateSettings.Templates"/> to user deltas against the canonical defaults (see <see cref="Nexus.Service.Lighting.AnimateTemplateDefaults"/>). v10 prunes <see cref="AnimateSettings.States"/> entries equal to the effect's resolved selected-slot look. v11 rewrites the legacy <c>marketplace:</c> app-placement prefix to <c>app:</c> across all persisted widget types (see <see cref="Nexus.Service.Widgets.AppPrefixMigration"/>). The v1-v4 load-time migrations were removed; records now load as-is and a malformed/older file falls back to defaults (see <see cref="JsonConfigStore"/>).</summary>
+    /// <summary>Persisted profile schema. v2 nests Theme/Panel/Overlay/Monitoring out of UiSettings into matching top-level POCOs that mirror install-defaults.json. v3 drops the <c>{s/n/b}</c> wrapper on per-widget config values; values are raw JSON (string/number/bool/object/array). v4 retires the type-scoped marketplace <c>Widgets</c> bag - every placement keeps its own config under <see cref="Nexus.Service.Models.Panel.PanelWidgetDto.Config"/>. v5 renames the <c>performance</c> cooling preset to <c>turbo</c>. v6 re-keys per-card LED map overrides/aspect ratios into the device-scoped segment-local <see cref="DevicesSettings.DeviceLedOverrides"/> / <see cref="DevicesSettings.DeviceAspectRatios"/> (zones model). v8 marks any pre-existing settings.json as already-onboarded (see <see cref="OnboardingCompleted"/>) so the first-run welcome screen only shows for installs with no settings.json at all. v9 prunes <see cref="AnimateSettings.Templates"/> to user deltas against the canonical defaults (see <see cref="Nexus.Service.Lighting.AnimateTemplateDefaults"/>). v10 prunes <see cref="AnimateSettings.States"/> entries equal to the effect's resolved selected-slot look. v11 rewrites the legacy <c>marketplace:</c> app-placement prefix to <c>app:</c> across all persisted widget types (see <see cref="Nexus.Service.Widgets.AppPrefixMigration"/>). v12 adds the <see cref="ProfileSharing.Device"/> sharing category (Stream Deck bindings), defaulted to Shared so an upgrading install keeps today's workstation-global behavior. The v1-v4 load-time migrations were removed; records now load as-is and a malformed/older file falls back to defaults (see <see cref="JsonConfigStore"/>).</summary>
     public int SchemaVersion { get; set; } = CurrentSchemaVersion;
 
     public ThemeSettings Theme { get; set; } = new();
@@ -33,6 +33,7 @@ public sealed class NexusSettings
     public KeebSettings Keeb { get; set; } = new();
     public CoolingSettings Cooling { get; set; } = new();
     public Y70Settings Y70 { get; set; } = new();
+    public QSeriesSettings QSeries { get; set; } = new();
     public TryxSettings Tryx { get; set; } = new();
     public DevicesSettings Devices { get; set; } = new();
     public SmartLightsSettings SmartLights { get; set; } = new();
@@ -48,6 +49,9 @@ public sealed class NexusSettings
     /// <summary>Registered panel devices keyed by opaque deviceId. Each record carries the per-device layout + theme overrides + capabilities. NOT profile-scoped: device identity is hardware-level and survives profile switches.</summary>
     public Dictionary<string, Nexus.Service.Models.Panel.PanelDeviceRecord> PanelDevices { get; set; } = new();
 
+    /// <summary>EDID model identities ("CRX:ED00") panel auto-promotion has already acted on (or first observed as user-managed). A listed model is never auto-promoted again, so deleting an auto-created panel record sticks across port changes. NOT profile-scoped.</summary>
+    public List<string> AutoPromotedPanelModels { get; set; } = new();
+
     /// <summary>User-overridden display name for this host PC. Empty means "fall back to Environment.MachineName". Surfaced in the panel tray header and in the QR/claim payload paired phones see. NOT profile-scoped: a host has one name regardless of which profile is active.</summary>
     public string HostDisplayName { get; set; } = "";
 
@@ -57,8 +61,11 @@ public sealed class NexusSettings
     /// <summary>Profile id designated as the source for any category currently in <c>SharedCategories</c>. When a category is shared, switching profiles still loads its values from this profile, and edits to that category save back here. NOT profile-scoped: this routing decision is workstation-level and survives profile switches. Null means no Primary; shared categories then fall back to the active profile.</summary>
     public string? PrimaryProfileId { get; set; }
 
-    /// <summary>Category ids currently set to Shared. Allowed values: "lighting", "cooling", "theme", "dashboard". Categories not in this list are per-profile (the default). NOT profile-scoped: workstation-level. Hardware-bound state (Keeb, Y70, Devices, panel defaults) always lives at workstation root and is never per-profile, so it never appears here.</summary>
-    public List<string> SharedCategories { get; set; } = new();
+    /// <summary>Category ids currently set to Shared. Allowed values: "lighting", "cooling", "theme", "dashboard", "device". Categories not in this list are per-profile (the default); "device" defaults to Shared on a fresh install so Stream Deck bindings and keyboard personalization start out workstation-global. NOT profile-scoped: workstation-level. Hardware-bound state (Y70, Devices, panel defaults) always lives at workstation root and is never per-profile, so it never appears here.</summary>
+    public List<string> SharedCategories { get; set; } = new() { ProfileSharing.Device };
+
+    /// <summary>One-time flag: the device sharing category's initial seed of StreamDeck+Keeb into every profile file has run. Workstation-level, not profile-scoped.</summary>
+    public bool DeviceCategorySeeded { get; set; }
 
     /// <summary>OTA self-update settings. NOT profile-scoped: workstation-level.</summary>
     public UpdateSettings Update { get; set; } = new();
@@ -72,7 +79,7 @@ public sealed class NexusSettings
     /// and the welcome screen reappears.</summary>
     public bool OnboardingCompleted { get; set; }
 
-    /// <summary>Physical Stream Deck bindings, keyed by device serial. Workstation-level: survives Nexus profile switches and follows the deck across USB ports.</summary>
+    /// <summary>Physical Stream Deck bindings, keyed by device serial. Profile-scoped via the <see cref="ProfileSharing.Device"/> sharing category (defaults to Shared, so it behaves like a workstation-global setting until the user opts a profile out).</summary>
     public StreamDeckSettings StreamDeck { get; set; } = new();
 }
 
@@ -342,19 +349,29 @@ public sealed class KeebSettings
 {
     public string RotaryLeft { get; set; } = InstallDefaults.Keeb.RotaryLeft;
     public string RotaryRight { get; set; } = InstallDefaults.Keeb.RotaryRight;
-    public List<KeebRotaryAppOverride> RotaryApps { get; set; } = new();
-    public string RotarySensitivity { get; set; } = InstallDefaults.Keeb.RotarySensitivity;
 
     public KeebGameMode GameMode { get; set; } = new();
     public KeebFirmwareLighting FirmwareLighting { get; set; } = new();
+    // Keyed by the GLOBAL firmware macro slot (profile*16 + panel index).
     public Dictionary<int, KeebMacroDocument> Macros { get; set; } = new();
+
+    // Per-cell key remaps, applied over the pristine layer tables below.
+    public List<KeebKeyOverride> KeyOverrides { get; set; } = new();
+    // Factory 0xF2 tables captured from the device before Nexus's first write,
+    // keyed "<layout>|<profile>|<layer>", value = hex of the 520-byte page
+    // buffer. The base for every layer write and the reset-to-default source.
+    public Dictionary<string, string> PristineLayers { get; set; } = new();
 }
 
-public sealed class KeebRotaryAppOverride
+public sealed class KeebKeyOverride
 {
-    public string TargetId { get; set; } = "";
-    public string Left { get; set; } = "";
-    public string Right { get; set; } = "";
+    public int Profile { get; set; }
+    public int Layer { get; set; }
+    public int X { get; set; }
+    public int Y { get; set; }
+    public string Mode { get; set; } = "";
+    public string Function { get; set; } = "";
+    public int? Input { get; set; }
 }
 
 public sealed class KeebGameMode
@@ -375,7 +392,6 @@ public sealed class KeebFirmwareLighting
     public bool KeyReactiveMask { get; set; } = InstallDefaults.Keeb.FirmwareLighting.KeyReactiveMask;
     public string KeyReactiveMode { get; set; } = InstallDefaults.Keeb.FirmwareLighting.KeyReactiveMode;
     public RgbaColor KeyReactiveColor { get; set; } = new();
-    public bool KeyIndicator { get; set; }
 }
 
 public sealed class KeebMacroDocument
@@ -389,11 +405,6 @@ public sealed class KeebMacroKey
     public string Key { get; set; } = "";
     public int Duration { get; set; }
     public string Type { get; set; } = "KeyDown";
-    public string Category { get; set; } = "";
-    public bool Meta { get; set; }
-    public bool Ctrl { get; set; }
-    public bool Alt { get; set; }
-    public bool Shift { get; set; }
 }
 
 public sealed class CoolingSettings
@@ -415,6 +426,8 @@ public sealed class CoolingSettings
     public string ActivePreset { get; set; } = InstallDefaults.Cooling.ActivePreset;
     /// <summary>Last-known custom mapping of fan channel id -> curve id. Empty entries mean the fan was on BIOS Control. Used to restore custom assignments when leaving Silent/Balanced/Performance/Off.</summary>
     public Dictionary<string, string> CustomFanCurveAssignments { get; set; } = new();
+    /// <summary>Snapshot of <see cref="ManualSpeeds"/> taken when leaving the Custom preset, keyed by channel id. Restored (and re-driven) when Custom is re-applied - the manual-fan counterpart of <see cref="CustomFanCurveAssignments"/>, and the only copy that survives the Off preset's per-channel release.</summary>
+    public Dictionary<string, int> CustomManualSpeeds { get; set; } = new();
     /// <summary>User-defined display order for fan channels in the Cooling view. Nullable so a partial POST /preferences that omits this field doesn't clobber the saved order.</summary>
     public List<string>? FanChannelOrder { get; set; }
     /// <summary>User-chosen sensor id for the CPU "temperature" reading shown across the Cooling page, Monitoring dashboard, and Cooling widget. Storage layer: null = auto (UI falls back to its default picker), non-null = pinned sensor id. The patch layer collapses an inbound empty string to null on write so the persisted JSON only ever holds null or a real id.</summary>
@@ -499,6 +512,21 @@ public sealed class Y70Settings
     public bool ForceOrientation { get; set; } = InstallDefaults.Y70.ForceOrientation;
 }
 
+public sealed class QSeriesSettings
+{
+    /// <summary>"Portrait" or "PortraitFlipped" - the Q60/Q80 panel has no landscape mode.</summary>
+    public string Orientation { get; set; } = Nexus.Service.Models.Displays.DisplayOrientations.Portrait;
+
+    /// <summary>0-100, mapped to the 0-255 byte `settings put system screen_brightness` expects.</summary>
+    public int Brightness { get; set; } = 100;
+
+    public bool ScreenOff { get; set; }
+
+    /// <summary>When true, the panel screen sleeps when Windows suspends (or
+    /// shuts down) and wakes on resume.</summary>
+    public bool SleepWithHost { get; set; } = true;
+}
+
 /// <summary>Persisted shape of one Tryx overlay item; see
 /// <see cref="Nexus.Service.Peripherals.Tryx.Panorama.TryxOverlaySensorItem"/> for the
 /// runtime equivalent.</summary>
@@ -535,6 +563,8 @@ public sealed class TryxSettings
 public sealed class DevicesSettings
 {
     public List<string> DisabledLightingDevices { get; set; } = new();
+    /// <summary>Ids Nexus stops pushing frames to entirely, so firmware/vendor lighting can take over. Distinct from <see cref="DisabledLightingDevices"/>, which still streams black.</summary>
+    public List<string> UncontrolledLightingDevices { get; set; } = new();
     /// <summary>Handler ids the user explicitly opted out of (Nexus Control off). Overrides the brand default; a Hyte/iBUYPOWER handler absent here stays on.</summary>
     public List<string> NexusControlDisabled { get; set; } = new();
     /// <summary>Handler ids the user explicitly opted into (Nexus Control on). Overrides the brand default; a third-party handler absent here stays off.</summary>

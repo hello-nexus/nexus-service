@@ -1,11 +1,18 @@
+using System.Diagnostics;
+using System.Threading;
 using Nexus.Service.Auth;
+using Nexus.Service.Lifecycle;
 using Nexus.Service.Models;
 using Nexus.Service.Models.Displays;
 using Nexus.Service.Models.Panel;
+using Nexus.Service.Models.Peripherals.QSeries;
 using Nexus.Service.Models.Peripherals.Y70;
 using Nexus.Service.Panel;
+using Nexus.Service.Peripherals.Corsair.XeneonEdge;
 using Nexus.Service.Peripherals.QSeries;
 using Nexus.Service.Peripherals.Y70;
+using Nexus.Service.Persistence;
+using Nexus.Service.Platform;
 using Nexus.Service.Platform.Displays;
 using Nexus.Service.Serialization;
 using Nexus.Service.Sockets;
@@ -14,6 +21,12 @@ namespace Nexus.Service.Routes;
 
 public static class DisplayRoutes
 {
+#if WINDOWS
+    // Guards the setup-wizard route below: a second POST while MultiDigiMon
+    // is already running must not spawn another instance/poll.
+    private static int _touchWizardActive;
+#endif
+
     public static void MapDisplayEndpoints(this WebApplication app)
     {
         // Y70
@@ -41,6 +54,51 @@ public static class DisplayRoutes
         {
             y.SetToggle(body.Toggle);
             return new Y70BrightnessResponse { Brightness = 20 };
+        }).AllowPanel();
+
+        // Q-series (Q60/Q80) - 180 degree flip only, no landscape.
+        app.MapGet("/qseries/rotation", (IConfigStore store) => new QSeriesRotationParams
+        {
+            Orientation = store.Load().QSeries.Orientation,
+        }).AllowPanel();
+        app.MapPost("/qseries/rotation", (QSeriesRotationParams body, IConfigStore store, IServiceProvider sp) =>
+        {
+            if (body.Orientation is null)
+                return Results.Ok(ApiResponse.Ok());
+            if (body.Orientation != DisplayOrientations.Portrait && body.Orientation != DisplayOrientations.PortraitFlipped)
+                return Results.BadRequest(ApiResponse.Fail($"unknown orientation '{body.Orientation}'"));
+            store.Update(s => s.QSeries.Orientation = body.Orientation);
+            // The watcher is Windows-only (see AddNexusPanel), so GetService is
+            // null off Windows; the setting still persists there.
+            sp.GetService<Nexus.Service.QSeries.QSeriesPortWatcher>()?.AnnounceDisplayChange();
+            return Results.Ok(ApiResponse.Ok());
+        }).AllowPanel();
+
+        app.MapGet("/qseries/display", (IConfigStore store) =>
+        {
+            var qseries = store.Load().QSeries;
+            return new QSeriesDisplayParams
+            {
+                Brightness = qseries.Brightness,
+                ScreenOff = qseries.ScreenOff,
+                SleepWithHost = qseries.SleepWithHost,
+            };
+        }).AllowPanel();
+        app.MapPost("/qseries/display", (QSeriesDisplayParams body, IConfigStore store, IServiceProvider sp) =>
+        {
+            if (body.Brightness is int brightness && (brightness < 0 || brightness > 100))
+                return Results.BadRequest(ApiResponse.Fail("brightness must be between 0 and 100"));
+            if (body.Brightness is null && body.ScreenOff is null && body.SleepWithHost is null)
+                return Results.Ok(ApiResponse.Ok());
+
+            store.Update(s =>
+            {
+                if (body.Brightness is int b) s.QSeries.Brightness = b;
+                if (body.ScreenOff is bool off) s.QSeries.ScreenOff = off;
+                if (body.SleepWithHost is bool sleepWithHost) s.QSeries.SleepWithHost = sleepWithHost;
+            });
+            sp.GetService<Nexus.Service.QSeries.QSeriesPortWatcher>()?.AnnounceDisplayChange();
+            return Results.Ok(ApiResponse.Ok());
         }).AllowPanel();
 
         // System monitors (external DDC/CI + internal panels)
@@ -146,13 +204,16 @@ public static class DisplayRoutes
                 return Results.Unauthorized();
             if (!DisplayOrientations.IsValid(body.Orientation))
                 return Results.BadRequest(ApiResponse.Fail($"unknown orientation '{body.Orientation}'"));
-            var (ok, error) = orientation.SetDisplayOrientation(id, body.Orientation);
+            // Looked up before applying so the cover (if any) can use this
+            // panel's own background colour instead of the black fallback.
+            var record = registry.FindByDisplayId(id);
+            var coverColorHex = PanelDeviceRegistry.ResolveCoverBackgroundHex(record);
+            var (ok, error) = orientation.SetDisplayOrientation(id, body.Orientation, coverColorHex);
             if (!ok)
                 return Results.BadRequest(ApiResponse.Fail(string.IsNullOrEmpty(error) ? "rotation failed" : error));
             // Settings permanence: remember the applied orientation on the
             // bound record (when this display is a panel), same model as the
             // Y70's persisted orientation.
-            var record = registry.FindByDisplayId(id);
             if (record is not null)
             {
                 registry.UpdateDisplayOrientation(id, body.Orientation);
@@ -188,5 +249,229 @@ public static class DisplayRoutes
                 : Results.BadRequest(result);
         }).AllowPanel();
 
+        // Corsair Xeneon Edge native settings (brightness/backlight/contrast/
+        // RGB) over its vendor HID channel. Replaces the generic DDC path
+        // above for this family - see DisplayBrightnessController.IsXeneonEdge.
+        app.MapGet("/displays/{id}/xeneon-settings", async (
+            string id,
+            PanelDeviceRegistry registry,
+            XeneonEdgeOrientationWorker xeneon,
+            MultiplexHub hub,
+            CancellationToken ct) =>
+        {
+            var record = registry.FindByDisplayId(id);
+            if (record is null || record.Capabilities?.Family != KnownPanelDisplays.XeneonEdgeFamily)
+                return Results.NotFound(ApiResponse.Fail("not a Xeneon Edge panel"));
+
+            var block = await xeneon.ReadSettingsAsync(ct);
+            if (block is null)
+                return Results.UnprocessableEntity(ApiResponse.Fail("could not read the panel's settings"));
+
+            var dto = new XeneonEdgeSettingsDto
+            {
+                Brightness = block.Value.Brightness,
+                Backlight = block.Value.Backlight,
+                Contrast = block.Value.Contrast,
+                Red = block.Value.Red,
+                Green = block.Value.Green,
+                Blue = block.Value.Blue,
+            };
+            registry.UpdateXeneonEdgeSettings(id, dto);
+            PanelTopics.BroadcastPanelDevice(hub, record.Id);
+            return Results.Json(dto, AppJsonContext.Default.XeneonEdgeSettingsDto);
+        }).AllowPanel();
+
+        app.MapPost("/displays/{id}/xeneon-settings", async (
+            string id,
+            XeneonEdgeSettingsDto body,
+            PanelDeviceRegistry registry,
+            XeneonEdgeOrientationWorker xeneon,
+            MultiplexHub hub,
+            CancellationToken ct) =>
+        {
+            var record = registry.FindByDisplayId(id);
+            if (record is null || record.Capabilities?.Family != KnownPanelDisplays.XeneonEdgeFamily)
+                return Results.NotFound(ApiResponse.Fail("not a Xeneon Edge panel"));
+
+            var applied = new XeneonEdgeSettingsDto();
+            var wrote = false;
+
+            // Persists whatever DID apply before reporting a failure: a
+            // partial batch (e.g. brightness landed, contrast failed) must
+            // not leave the snapshot showing the pre-request brightness too.
+            IResult Fail(string message)
+            {
+                if (wrote)
+                {
+                    registry.UpdateXeneonEdgeSettings(id, applied);
+                    PanelTopics.BroadcastPanelDevice(hub, record.Id);
+                }
+                return Results.UnprocessableEntity(ApiResponse.Fail(message));
+            }
+
+            if (body.Brightness.HasValue)
+            {
+                var v = await xeneon.SetControlAsync(XeneonEdgeControl.Brightness, body.Brightness.Value, ct);
+                if (v is null) return Fail("failed to set brightness");
+                applied.Brightness = v;
+                wrote = true;
+            }
+            if (body.Backlight.HasValue)
+            {
+                var v = await xeneon.SetControlAsync(XeneonEdgeControl.Backlight, body.Backlight.Value, ct);
+                if (v is null) return Fail("failed to set backlight");
+                applied.Backlight = v;
+                wrote = true;
+            }
+            if (body.Contrast.HasValue)
+            {
+                var v = await xeneon.SetControlAsync(XeneonEdgeControl.Contrast, body.Contrast.Value, ct);
+                if (v is null) return Fail("failed to set contrast");
+                applied.Contrast = v;
+                wrote = true;
+            }
+            if (body.Red.HasValue)
+            {
+                var v = await xeneon.SetControlAsync(XeneonEdgeControl.Red, body.Red.Value, ct);
+                if (v is null) return Fail("failed to set red");
+                applied.Red = v;
+                wrote = true;
+            }
+            if (body.Green.HasValue)
+            {
+                var v = await xeneon.SetControlAsync(XeneonEdgeControl.Green, body.Green.Value, ct);
+                if (v is null) return Fail("failed to set green");
+                applied.Green = v;
+                wrote = true;
+            }
+            if (body.Blue.HasValue)
+            {
+                var v = await xeneon.SetControlAsync(XeneonEdgeControl.Blue, body.Blue.Value, ct);
+                if (v is null) return Fail("failed to set blue");
+                applied.Blue = v;
+                wrote = true;
+            }
+
+            if (!wrote)
+                return Results.BadRequest(ApiResponse.Fail("no settings provided"));
+
+            registry.UpdateXeneonEdgeSettings(id, applied);
+            PanelTopics.BroadcastPanelDevice(hub, record.Id);
+            return Results.Json(applied, AppJsonContext.Default.XeneonEdgeSettingsDto);
+        }).AllowPanel();
+
+        // Restores all six controls (brightness/backlight/contrast/RGB) to
+        // their factory values - the panel's own 0xff command only covers
+        // RGB, so XeneonEdgeOrientationWorker.RestoreDefaultsAsync writes
+        // each control individually.
+        app.MapPost("/displays/{id}/xeneon-settings/restore-defaults", async (
+            string id,
+            PanelDeviceRegistry registry,
+            XeneonEdgeOrientationWorker xeneon,
+            MultiplexHub hub,
+            CancellationToken ct) =>
+        {
+            var record = registry.FindByDisplayId(id);
+            if (record is null || record.Capabilities?.Family != KnownPanelDisplays.XeneonEdgeFamily)
+                return Results.NotFound(ApiResponse.Fail("not a Xeneon Edge panel"));
+
+            if (!await xeneon.RestoreDefaultsAsync(ct))
+                return Results.UnprocessableEntity(ApiResponse.Fail("restore failed"));
+
+            var dto = new XeneonEdgeSettingsDto
+            {
+                Brightness = XeneonEdgeDefaults.Brightness,
+                Backlight = XeneonEdgeDefaults.Backlight,
+                Contrast = XeneonEdgeDefaults.Contrast,
+                Red = XeneonEdgeDefaults.Red,
+                Green = XeneonEdgeDefaults.Green,
+                Blue = XeneonEdgeDefaults.Blue,
+            };
+            registry.UpdateXeneonEdgeSettings(id, dto);
+            PanelTopics.BroadcastPanelDevice(hub, record.Id);
+            return Results.Json(dto, AppJsonContext.Default.XeneonEdgeSettingsDto);
+        }).AllowPanel();
+
+        // Touch-mapping guard: runs a detect-and-repair pass synchronously.
+        // Also the manual entry point the auto-repair guard's background
+        // triggers (helper connect, displays-changed) call into.
+        app.MapPost("/displays/touch-mapping/repair", async (TouchMappingGuard guard, CancellationToken ct) =>
+        {
+            var outcome = await guard.RunPassAsync(ct);
+            var status = outcome.Result switch
+            {
+                TouchMappingPassResult.Repaired => "repaired",
+                TouchMappingPassResult.AlreadyCorrect => "alreadyCorrect",
+                TouchMappingPassResult.NoPanel => "noPanel",
+                TouchMappingPassResult.NoDigitizer => "noDigitizer",
+                TouchMappingPassResult.NoHelper => "noHelper",
+                _ => "failed",
+            };
+            return Results.Json(
+                new TouchMappingRepairResponse { Status = status, Detail = outcome.Detail },
+                AppJsonContext.Default.TouchMappingRepairResponse);
+        });
+
+        // Manual fallback: launches the OS wizard (Control Panel > Tablet PC
+        // Settings > Setup, now only reachable via MultiDigiMon.exe -touch on
+        // current Windows) for the rare case the auto-repair guard can't
+        // resolve the mapping itself. The kiosk is hidden first because the
+        // wizard's identifying-tap prompt renders on the panel.
+        app.MapPost("/displays/touch-mapping/setup-wizard", (
+            IConfigStore store,
+            PanelKioskLauncher kiosk) =>
+        {
+#if WINDOWS
+            if (!OperatingSystem.IsWindows())
+                return Results.UnprocessableEntity(ApiResponse.Fail("touch setup is only available on Windows"));
+
+            if (Interlocked.CompareExchange(ref _touchWizardActive, 1, 0) != 0)
+                return Results.Conflict(ApiResponse.Fail("touch setup wizard is already running"));
+
+            kiosk.Close();
+            var wizardPath = Path.Combine(Environment.SystemDirectory, "MultiDigiMon.exe");
+            var launched = UserHelperBootstrapper.RunInUserSession(
+                $"\"{wizardPath}\" -touch", "touch-setup-wizard", "NexusTouchSetupWizard");
+            if (!launched)
+            {
+                Interlocked.Exchange(ref _touchWizardActive, 0);
+                return Results.UnprocessableEntity(ApiResponse.Fail("no active console user session"));
+            }
+
+            _ = Task.Run(async () =>
+            {
+                try
+                {
+                    var deadline = DateTime.UtcNow + TimeSpan.FromMinutes(5);
+                    // No completion signal for a process launched in a different
+                    // session; poll for exit, bounded by the same window the
+                    // wizard's own UI would time out a stuck user interaction in.
+                    while (DateTime.UtcNow < deadline)
+                    {
+                        await Task.Delay(1000);
+                        if (Process.GetProcessesByName("MultiDigiMon").Length == 0) break;
+                    }
+                    if (Process.GetProcessesByName("MultiDigiMon").Length == 0)
+                    {
+                        if (store.Load().Panel.AutoLaunch) kiosk.Launch();
+                    }
+                    else
+                    {
+                        // Still mid-calibration past the deadline: relaunching
+                        // the kiosk would paint it over the identify prompt.
+                        // The next autoLaunch trigger brings the kiosk back.
+                        ServiceLog.Info("[touch-map] setup wizard still running past the poll deadline; leaving kiosk closed");
+                    }
+                }
+                finally
+                {
+                    Interlocked.Exchange(ref _touchWizardActive, 0);
+                }
+            });
+            return Results.Json(ApiResponse.Ok("touch setup wizard launched"), AppJsonContext.Default.ApiResponse, statusCode: 202);
+#else
+            return Results.UnprocessableEntity(ApiResponse.Fail("touch setup is only available on Windows"));
+#endif
+        });
     }
 }

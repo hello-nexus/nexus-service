@@ -19,7 +19,8 @@ public sealed class DeckAction
     /// <summary>
     /// launchApp | openFile | openFolder | openUrl | system | hotkey | text |
     /// power | audioOutput | audioInput | nexus | sequence | toggle | page |
-    /// pageIndicator | deckBrightness | deckSleep | hotkeySwitch | monitoring.
+    /// pageIndicator | deckBrightness | deckSleep | hotkeySwitch | monitoring |
+    /// weather | playAudio.
     /// </summary>
     public string Type { get; set; } = "";
 
@@ -65,14 +66,37 @@ public sealed class DeckAction
     public string? Category { get; set; }
     /// <summary>monitoring: a concrete HardwareSensor.Id, never the "Temperature" preferred-temp sentinel.</summary>
     public string? Sensor { get; set; }
-    /// <summary>monitoring: line | radial | number.</summary>
+    /// <summary>monitoring: line | segments | backdrop | number. Legacy "radial" reads as segments, never written back.</summary>
     public string? Style { get; set; }
-    /// <summary>monitoring: graph/arc accent hex color. Unset falls back to MonitoringTileRenderer.DefaultAccent.</summary>
+    /// <summary>monitoring: line/segments/backdrop accent hex color. Unset falls back to MonitoringTileRenderer.DefaultAccent.</summary>
     public string? Color { get; set; }
     /// <summary>monitoring: shows the sensor name label at top. Unset falls back to true.</summary>
     public bool? ShowName { get; set; }
     /// <summary>monitoring: none | taskManager | monitoringPage. Unset falls back to none.</summary>
     public string? Press { get; set; }
+
+    /// <summary>monitoring: custom top label. Unset or empty falls back to the sensor's display name.</summary>
+    public string? LabelText { get; set; }
+    /// <summary>monitoring: adaptive | fixed. Unset falls back to adaptive, the existing pinned domain rules.</summary>
+    public string? Scale { get; set; }
+    /// <summary>monitoring: fixed-scale range floor. Ignored unless Scale is fixed and Max is a greater finite value.</summary>
+    public double? Min { get; set; }
+    /// <summary>monitoring: fixed-scale range ceiling. Ignored unless Scale is fixed and Min is a lesser finite value.</summary>
+    public double? Max { get; set; }
+
+    /// <summary>weather: manual location latitude. Unset falls back to IP geolocation.</summary>
+    public double? Lat { get; set; }
+    /// <summary>weather: manual location longitude. Unset falls back to IP geolocation.</summary>
+    public double? Lon { get; set; }
+    /// <summary>weather: manual location display label. Unset falls back to the provider's IP-derived label.</summary>
+    public string? City { get; set; }
+    /// <summary>weather: manual location ISO 3166-1 alpha-2 country code, used for the auto C/F unit pick.</summary>
+    public string? Cc { get; set; }
+    /// <summary>weather: C | F | auto. Unset falls back to auto.</summary>
+    public string? Units { get; set; }
+
+    /// <summary>playAudio: playback volume percent, 0-100. Unset falls back to AudioFilePlayer's default.</summary>
+    public int? Volume { get; set; }
 }
 
 public sealed class DeckSystemAction
@@ -139,7 +163,7 @@ public sealed class DeckToggleState
 
 public sealed class DeckIcon
 {
-    /// <summary>lucide | emoji | app.</summary>
+    /// <summary>lucide | emoji | app | image -> the uploaded image id (sha256 hex), served from /deck/images/{id}.</summary>
     public string Kind { get; set; } = "";
     public string Value { get; set; } = "";
 }

@@ -1,4 +1,3 @@
-using System;
 using System.Runtime.InteropServices;
 
 namespace Nexus.Service.Lifecycle;
@@ -12,10 +11,9 @@ namespace Nexus.Service.Lifecycle;
 ///    it was installed by us via PawnIoInstaller or by the user via
 ///    PawnIO_setup.exe). Uses Microsoft.Win32.Registry which is AOT-safe.
 ///
-/// 2. IsOpen - tries to open the PawnIO kernel device handle at
-///    \\?\GLOBALROOT\Device\PawnIO. If the handle succeeds, the driver
-///    is loaded and running. The handle is closed immediately - we don't
-///    keep it open because sensor reading goes through LibreHardwareMonitor.
+/// 2. IsOpen - true when a \Device\PawnIO object exists (the driver is
+///    loaded and running). Delegates to PawnIoInstaller.IsDeviceAvailable,
+///    the probe the installer's self-heal path keys on.
 ///
 /// On non-Windows platforms both properties return false.
 /// </summary>
@@ -36,40 +34,5 @@ public sealed class PawnIoProvider : IPawnIoProvider
         }
     }
 
-    public bool IsOpen
-    {
-        get
-        {
-            if (!RuntimeInformation.IsOSPlatform(OSPlatform.Windows)) return false;
-            try
-            {
-                var handle = CreateFileW(
-                    @"\\?\GLOBALROOT\Device\PawnIO",
-                    0xC0000000, // GENERIC_READ | GENERIC_WRITE
-                    3,          // FILE_SHARE_READ | FILE_SHARE_WRITE
-                    IntPtr.Zero,
-                    3,          // OPEN_EXISTING
-                    0x80,       // FILE_ATTRIBUTE_NORMAL
-                    IntPtr.Zero);
-
-                if (handle == new IntPtr(-1)) return false;
-                CloseHandle(handle);
-                return true;
-            }
-            catch { return false; }
-        }
-    }
-
-    [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
-    private static extern IntPtr CreateFileW(
-        string lpFileName,
-        uint dwDesiredAccess,
-        uint dwShareMode,
-        IntPtr lpSecurityAttributes,
-        uint dwCreationDisposition,
-        uint dwFlagsAndAttributes,
-        IntPtr hTemplateFile);
-
-    [DllImport("kernel32.dll")]
-    private static extern bool CloseHandle(IntPtr hObject);
+    public bool IsOpen => PawnIoInstaller.IsDeviceAvailable();
 }

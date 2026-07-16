@@ -48,9 +48,13 @@ public class TryxMediaStoreTests
     }
 
     [Fact]
-    public void StoreDir_is_under_CommonApplicationData()
+    public void StoreDir_is_under_the_devices_tryx_root()
     {
-        var commonAppData = Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData);
-        Assert.StartsWith(commonAppData, TryxMediaStore.StoreDir, StringComparison.OrdinalIgnoreCase);
+        Assert.StartsWith(
+            Nexus.Service.Media.MediaLibrary.DeviceStoreDir("tryx"),
+            TryxMediaStore.StoreDir, StringComparison.Ordinal);
+        Assert.EndsWith(
+            System.IO.Path.Combine("devices", "tryx", "media"),
+            TryxMediaStore.StoreDir, StringComparison.Ordinal);
     }
 }

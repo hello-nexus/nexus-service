@@ -56,10 +56,20 @@ public class FanCalibrationLogicTests
     {
         var curve = MakeCurve(1890, 1700, 1500, 1300, 1100, 900, 700, 500, 350, 200, 0);
         var result = FanCalibrationLogic.Classify("fan/0", curve);
-        Assert.Equal("Stalling", result.Classification); // has 0 RPM at bottom
+        // Stopping at 0% duty is correct behaviour, not a stall.
+        Assert.Equal("Controllable", result.Classification);
         Assert.Equal(1890, result.MaxRpm);
         Assert.Equal(0, result.MinRpm); // true floor: the fan stops at duty 0
-        Assert.Equal(10, result.MinDuty); // duty=10 is the lowest non-zero (spin floor)
+        Assert.Equal(10, result.MinDuty); // lowest duty that still spun on the way down
+    }
+
+    [Fact]
+    public void Classify_Pump_NarrowButRealSpread_IsControllable()
+    {
+        // A pump's usable spread is a few percent of its range. Fixed strips a
+        // channel's duty control in the UI, so it must not swallow this.
+        var curve = MakeCurve(2900, 2880, 2865, 2850, 2835, 2820, 2805, 2790, 2775, 2760, 2750);
+        Assert.Equal("Controllable", FanCalibrationLogic.Classify("pump/0", curve).Classification);
     }
 
     [Fact]

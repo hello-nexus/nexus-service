@@ -74,6 +74,28 @@ public sealed class KeebSettingsApplier
     }
 
     /// <summary>
+    /// Read the device's current animation + brightness bytes and record them
+    /// as the sync baselines WITHOUT adopting them into the store. Called on
+    /// (re)connect, where the persisted desired state must win (the device
+    /// can't have changed while unplugged): the following <see cref="Apply"/>
+    /// pushes the store, and later knob turns still register as byte CHANGES
+    /// against these baselines and sync normally.
+    /// </summary>
+    public void SeedBaselines()
+    {
+        if (!_hub.IsConnected) return;
+        lock (_gate)
+        {
+            var raw = _hub.ReadSettings();
+            var animIndex = OperatingSystem.IsWindows() ? 3 : 2;
+            var brightIndex = animIndex + 1;
+            if (raw is null || raw.Length <= brightIndex) return;
+            _lastAnimByte = raw[animIndex];
+            _lastBrightByte = raw[brightIndex];
+        }
+    }
+
+    /// <summary>
     /// On a <paramref name="readByte"/> tick while a software effect streams, read the
     /// firmware brightness byte and, when it changed, set global = byte/100 directly. No
     /// smoothing: global mirrors the byte's 0-100 position. The frame writer calls this.

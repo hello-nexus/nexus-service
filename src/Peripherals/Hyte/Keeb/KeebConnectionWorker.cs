@@ -6,6 +6,8 @@ using Nexus.Service.Devices;
 using Nexus.Service.Devices.Detection;
 using Nexus.Service.Lighting;
 using Nexus.Service.Lighting.Engine;
+using Nexus.Service.Peripherals.Keeb;
+using Nexus.Service.Platform;
 
 namespace Nexus.Service.Peripherals.Hyte.Keeb;
 
@@ -26,16 +28,18 @@ public sealed class KeebConnectionWorker : BackgroundService
     private readonly HardwarePresence _presence;
     private readonly LightingEngine _engine;
     private readonly DeviceControlGate _gate;
+    private readonly IKeebProvider _provider;
     private readonly KeebLightingDeviceProvider? _lighting;
     private bool _lastConnected;
 
-    public KeebConnectionWorker(KeebHub hub, KeebSettingsApplier applier, HardwarePresence presence, LightingEngine engine, DeviceControlGate gate, KeebLightingDeviceProvider? lighting = null)
+    public KeebConnectionWorker(KeebHub hub, KeebSettingsApplier applier, HardwarePresence presence, LightingEngine engine, DeviceControlGate gate, IKeebProvider provider, KeebLightingDeviceProvider? lighting = null)
     {
         _hub = hub;
         _applier = applier;
         _presence = presence;
         _engine = engine;
         _gate = gate;
+        _provider = provider;
         _lighting = lighting;
     }
 
@@ -47,7 +51,7 @@ public sealed class KeebConnectionWorker : BackgroundService
             try { Tick(); }
             catch (Exception ex)
             {
-                Console.Error.WriteLine($"[keeb-conn] tick exception: {ex.GetType().Name}: {ex.Message}");
+                ServiceLog.Error($"[keeb-conn] tick exception: {ex.GetType().Name}: {ex.Message}");
             }
             try { await timer.WaitForNextTickAsync(stoppingToken); }
             catch (OperationCanceledException) { break; }
@@ -61,28 +65,37 @@ public sealed class KeebConnectionWorker : BackgroundService
         if (!_gate.IsEnabled("keeb"))
         {
             if (_hub.IsConnected) _hub.Disconnect();
+            NoteDisconnected();
             return;
         }
 
-        // Skip silently when disconnected and no keeb is on the bus; stay live
-        // while connected so an unplug is still noticed and broadcast below.
-        if (!_hub.IsConnected && !_presence.UsbPresent(KeebProtocol.VendorId, KeebProtocol.ProductId))
+        // USB presence is the fast unplug signal: reads/writes on a dead
+        // handle can keep "succeeding" at the HID layer for a while (or only
+        // fail sporadically), but the bus knows immediately.
+        var present = _presence.UsbPresent(KeebProtocol.VendorId, KeebProtocol.ProductId);
+        if (!present)
+        {
+            if (_hub.IsConnected) _hub.Disconnect();
+            NoteDisconnected();
             return;
+        }
 
         _hub.EnsureConnected();
         var connected = _hub.IsConnected;
         if (connected != _lastConnected)
         {
             _lastConnected = connected;
-            // On (re)connect, read device info (firmware version + layout), sync the
-            // device's current firmware effect + brightness into persisted state,
-            // then push the saved settings so game mode / rotary / animation take
-            // effect immediately.
             if (connected)
             {
+                // On (re)connect: read device info (firmware version + layout),
+                // seed the sync baselines WITHOUT adopting device bytes (the
+                // store is desired state - changes made while unplugged must
+                // win), push the saved settings, then re-push persisted key
+                // assignments + macros so onboard storage matches the store.
                 _hub.ReadDeviceInfo();
-                _applier.SyncFromDevice();
+                _applier.SeedBaselines();
                 _applier.Apply();
+                _provider.ApplyPersistedAssignments();
             }
             _lighting?.OnConnectionChanged();
             return;
@@ -94,5 +107,15 @@ public sealed class KeebConnectionWorker : BackgroundService
         // streams, the frame writer is the sole reader on a faster cadence - a second
         // reader here would race it and bounce the brightness mid-knob-turn.
         if (connected && _engine.CurrentEffectName == "none") _applier.SyncFromDevice();
+    }
+
+    // Flip the transition flag on every disconnect path (gate-off, bus
+    // removal, handle drop) so the NEXT connect is seen as a transition and
+    // re-runs the on-connect sequence.
+    private void NoteDisconnected()
+    {
+        if (!_lastConnected) return;
+        _lastConnected = false;
+        _lighting?.OnConnectionChanged();
     }
 }

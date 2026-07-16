@@ -125,18 +125,25 @@ public class LinuxNvidiaFanProviderTests
     }
 
     [Fact]
-    public void SetFanSpeed_PersistsManualDuty_AndRestoresAcrossRestart()
+    public void SetFanSpeed_PersistsManualDuty()
     {
+        // The persisted duty is replayed across restarts by CurveEngine's
+        // presence-gated replay (see CurveEngineTests), not by this provider.
         var store = new InMemoryConfigStore();
         new LinuxNvidiaFanProvider(DualFan, (_, _, _) => true, store).SetFanSpeed("nvidia:0:0", 70);
         Assert.Equal(70, store.Load().Cooling.ManualSpeeds["nvidia:0:0"]);
+    }
 
-        // A fresh instance (process restart) re-applies the saved duty on first
-        // enumeration and reports Manual - NVML resets fans to auto on reboot.
-        var applied = new List<(int gpu, int fan, int? duty)>();
-        var p2 = new LinuxNvidiaFanProvider(DualFan, (g, f, d) => { applied.Add((g, f, d)); return true; }, store);
-        Assert.Equal("Manual", p2.GetFanChannels().Single(c => c.Id == "nvidia:0:0").Mode);
-        Assert.Contains((0, 0, (int?)70), applied);
+    [Fact]
+    public void ReleaseAll_PreservesPersistedManualDuties()
+    {
+        // ReleaseAll runs on shutdown/profile switch; the persisted intent
+        // must survive for the replay. Only ReleaseFan drops an entry.
+        var store = new InMemoryConfigStore();
+        var p = new LinuxNvidiaFanProvider(DualFan, (_, _, _) => true, store);
+        p.SetFanSpeed("nvidia:0:0", 70);
+        p.ReleaseAll();
+        Assert.Equal(70, store.Load().Cooling.ManualSpeeds["nvidia:0:0"]);
     }
 
     [Fact]

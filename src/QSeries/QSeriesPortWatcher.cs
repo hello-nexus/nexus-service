@@ -4,6 +4,7 @@ using System.Diagnostics;
 using System.IO;
 using System.Linq;
 using System.Net.Sockets;
+using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
 using AdvancedSharpAdbClient;
@@ -17,7 +18,11 @@ using Nexus.Service.Devices.Detection;
 using Nexus.Service.Models.Panel;
 using Nexus.Service.Panel;
 using Nexus.Service.Peripherals.Hyte.QSeriesCooler;
+using Nexus.Service.Persistence;
 using Nexus.Service.Platform;
+#if WINDOWS
+using Microsoft.Win32;
+#endif
 
 namespace Nexus.Service.QSeries;
 
@@ -38,7 +43,7 @@ namespace Nexus.Service.QSeries;
 /// offline (a USB-level reset that restarts device-side adbd), plus an optional
 /// promote to adb-over-TCP when the panel has a LAN IP (dormant on stock touch-less
 /// units that can't enter WiFi creds), persisted to
-/// <c>%ProgramData%\Nexus\qseries-transports.json</c>.
+/// <c>&lt;data-root&gt;/Nexus/devices/transports/qseries-transports.json</c>.
 ///
 /// Every pass is idempotent: an already-applied reverse / already-promoted device
 /// is left alone, and adb-server-down / device-detached turn into no-ops that
@@ -94,6 +99,7 @@ public sealed class QSeriesPortWatcher : BackgroundService
     private readonly QSeriesTransportStore _transportStore;
     private readonly HardwarePresence _presence;
     private readonly DeviceControlGate _gate;
+    private readonly IConfigStore _configStore;
 
     /// <summary>
     /// Tunnel liveness monitor; when active, its inbound-activity timestamp is
@@ -176,16 +182,17 @@ public sealed class QSeriesPortWatcher : BackgroundService
     /// </summary>
     private readonly Dictionary<string, DateTimeOffset> _lastRecoveryByInstanceId = new(StringComparer.Ordinal);
 
-    public QSeriesPortWatcher(int servicePort, HardwarePresence presence, PanelDeviceRegistry panelDevices, DeviceControlGate gate, IAdbDeviceRegistry? deviceRegistry = null, Nexus.Service.Panel.PanelTunnelMonitor? tunnelMonitor = null)
-        : this(servicePort, presence, panelDevices, gate, new QSeriesTransportStore(), deviceRegistry, tunnelMonitor) { }
+    public QSeriesPortWatcher(int servicePort, HardwarePresence presence, PanelDeviceRegistry panelDevices, DeviceControlGate gate, IConfigStore configStore, IAdbDeviceRegistry? deviceRegistry = null, Nexus.Service.Panel.PanelTunnelMonitor? tunnelMonitor = null)
+        : this(servicePort, presence, panelDevices, gate, configStore, new QSeriesTransportStore(), deviceRegistry, tunnelMonitor) { }
 
     /// <summary>Test seam: inject a store pointing at a tmp path.</summary>
-    public QSeriesPortWatcher(int servicePort, HardwarePresence presence, PanelDeviceRegistry panelDevices, DeviceControlGate gate, QSeriesTransportStore transportStore, IAdbDeviceRegistry? deviceRegistry = null, Nexus.Service.Panel.PanelTunnelMonitor? tunnelMonitor = null)
+    public QSeriesPortWatcher(int servicePort, HardwarePresence presence, PanelDeviceRegistry panelDevices, DeviceControlGate gate, IConfigStore configStore, QSeriesTransportStore transportStore, IAdbDeviceRegistry? deviceRegistry = null, Nexus.Service.Panel.PanelTunnelMonitor? tunnelMonitor = null)
     {
         _servicePort = servicePort;
         _presence = presence;
         _panelDevices = panelDevices;
         _gate = gate;
+        _configStore = configStore;
         _deviceRegistry = deviceRegistry;
         _tunnelMonitor = tunnelMonitor;
         _deviceSpec = $"tcp:{servicePort}";
@@ -193,6 +200,30 @@ public sealed class QSeriesPortWatcher : BackgroundService
         _client = new AdbClient();
         _transportStore = transportStore;
         _promoted = _transportStore.Load();
+    }
+
+#if WINDOWS
+    /// <summary>Guards the Unsubscribe in StopAsync against a failed Subscribe.</summary>
+    private bool _powerEventsSubscribed;
+#endif
+
+    public override Task StartAsync(CancellationToken cancellationToken)
+    {
+#if WINDOWS
+        if (OperatingSystem.IsWindows())
+        {
+            try
+            {
+                SystemEvents.PowerModeChanged += OnPowerModeChanged;
+                _powerEventsSubscribed = true;
+            }
+            catch (Exception ex)
+            {
+                ServiceLog.Info($"[qseries-port-watcher] failed to subscribe to power events: {ex.GetType().Name}: {ex.Message}");
+            }
+        }
+#endif
+        return base.StartAsync(cancellationToken);
     }
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
@@ -217,8 +248,10 @@ public sealed class QSeriesPortWatcher : BackgroundService
                 ServiceLog.Error($"[qseries-port-watcher] tick failed: {ex.GetType().Name}: {ex.Message}");
             }
 
-            try { await Task.Delay(PollInterval, stoppingToken); }
-            catch (TaskCanceledException) { break; }
+            // The timeout carries the keep-alive cadence for work that has no
+            // signal; a wake returns early so a setting change applies now.
+            try { await _wake.WaitAsync(PollInterval, stoppingToken); }
+            catch (OperationCanceledException) { break; }
         }
     }
 
@@ -235,12 +268,24 @@ public sealed class QSeriesPortWatcher : BackgroundService
 
     public override async Task StopAsync(CancellationToken cancellationToken)
     {
+#if WINDOWS
+        if (_powerEventsSubscribed)
+        {
+            try { SystemEvents.PowerModeChanged -= OnPowerModeChanged; }
+            catch { }
+            _powerEventsSubscribed = false;
+        }
+#endif
         if (Lifecycle.HostShutdown.IsOsShutdown)
         {
             // Best-effort: runs before base.StopAsync cancels the tick loop
             // (awaiting an in-flight tick could eat the SCM shutdown allowance),
             // so it races the tick's collection mutations on another thread and
             // any failure is swallowed rather than aborting shutdown handling.
+            // SystemEvents has no shutdown-specific mode (Suspend/Resume only),
+            // so the sleep-with-host coupling needs this separate hook here.
+            try { TrySleepPanelsForHostPowerDown(); }
+            catch { }
             try { TryRebootStrandedPanelsForShutdown(); }
             catch { }
         }
@@ -287,8 +332,140 @@ public sealed class QSeriesPortWatcher : BackgroundService
         }
     }
 
+    /// <summary>KEYCODE_SLEEP: forces the display asleep, unlike KEYCODE_POWER
+    /// (26) which toggles and so can't be issued idempotently on every
+    /// attach/resume.</summary>
+    private const int KeyeventSleep = 223;
+
+    /// <summary>KEYCODE_WAKEUP: forces the display awake.</summary>
+    private const int KeyeventWakeup = 224;
+
+#if WINDOWS
+    [System.Runtime.Versioning.SupportedOSPlatform("windows")]
+    private void OnPowerModeChanged(object? sender, PowerModeChangedEventArgs e)
+    {
+        // Suspend runs inline: the machine stops once every subscriber returns,
+        // so handing off to the thread pool races the suspend and usually loses
+        // the keyevent. SendKeyeventBestEffort is capped at 1.5 s per serial and
+        // swallows its own failures, which bounds what this holds the shared
+        // SystemEvents pump thread for. Resume has no such deadline, so it hands
+        // off (the shape PowerEventListener uses for its resume-only handler).
+        if (e.Mode == PowerModes.Suspend)
+        {
+            TrySleepPanelsForHostPowerDown();
+        }
+        else if (e.Mode == PowerModes.Resume)
+        {
+            _ = Task.Run(TryRestorePanelsForHostResume);
+        }
+    }
+#endif
+
+    /// <summary>
+    /// Called inline on Windows suspend, and at OS shutdown from StopAsync
+    /// (SystemEvents has no shutdown mode of its own). Sends the sleep keyevent
+    /// to every known Q-series serial when SleepWithHost is on; a resume without
+    /// a USB reseat is restored by <see cref="TryRestorePanelsForHostResume"/>,
+    /// and a reseat is instead picked up by the per-attach reassert once the
+    /// device re-enumerates.
+    /// </summary>
+    private void TrySleepPanelsForHostPowerDown()
+    {
+        try
+        {
+            if (_knownQSeriesSerials.Count == 0) return;
+            if (!_configStore.Load().QSeries.SleepWithHost) return;
+            Interlocked.Exchange(ref _displayRecordStale, 1);
+            foreach (var serial in _knownQSeriesSerials.ToArray())
+            {
+                // One panel is known by both its USB serial and, once promoted,
+                // <ip>:5555. The TCP leg dials the LAN while the host's network
+                // stack is going down, so it burns the full timeout for a
+                // duplicate of what the USB leg already sent.
+                if (QSeriesTransport.IsTcpSerial(serial)) continue;
+                SendKeyeventBestEffort(serial, KeyeventSleep);
+            }
+        }
+        catch (Exception ex)
+        {
+            ServiceLog.Info($"[qseries-port-watcher] sleep-on-suspend failed: {ex.GetType().Name}: {ex.Message}");
+        }
+    }
+
+    /// <summary>Re-applies the stored screen state on resume: wakes unless the
+    /// user had the screen off already.</summary>
+    private void TryRestorePanelsForHostResume()
+    {
+        try
+        {
+            // Resume races the USB stack re-enumerating, so this one-shot can
+            // miss. Marking the record stale first, then announcing, hands the
+            // state to the tick loop's readback-verified retry, which is what
+            // actually guarantees it lands.
+            Interlocked.Exchange(ref _displayRecordStale, 1);
+            AnnounceDisplayChange();
+
+            if (_knownQSeriesSerials.Count == 0) return;
+            var qseries = _configStore.Load().QSeries;
+            if (!qseries.SleepWithHost) return;
+            var keycode = qseries.ScreenOff ? KeyeventSleep : KeyeventWakeup;
+            foreach (var serial in _knownQSeriesSerials.ToArray())
+            {
+                if (QSeriesTransport.IsTcpSerial(serial)) continue;
+                SendKeyeventBestEffort(serial, keycode);
+            }
+        }
+        catch (Exception ex)
+        {
+            ServiceLog.Info($"[qseries-port-watcher] restore-on-resume failed: {ex.GetType().Name}: {ex.Message}");
+        }
+    }
+
+    /// <summary>
+    /// Bypasses the tick thread that owns the transport: the host is suspending
+    /// or shutting down, so waiting for the next tick misses the window. The
+    /// resulting interleave with an in-flight tick is tolerable for one small
+    /// shell command; the USB-FFS wedges on record come from bulk transfers
+    /// (screencap, APK installs). The timeout shares the OS shutdown allowance
+    /// (WaitToKillServiceTimeout) with TryRebootStrandedPanelsForShutdown, so
+    /// both must fit. A bare serial routes by serial through the adb-server
+    /// rather than a transport id captured on an earlier tick.
+    /// </summary>
+    private void SendKeyeventBestEffort(string serial, int keycode)
+    {
+        try
+        {
+            using var cts = new CancellationTokenSource(TimeSpan.FromMilliseconds(1_500));
+            var device = new DeviceData { Serial = serial };
+            _client.ExecuteShellCommandAsync(device, $"input keyevent {keycode}", cts.Token)
+                .GetAwaiter().GetResult();
+        }
+        catch (Exception ex)
+        {
+            ServiceLog.Info($"[qseries-port-watcher] {serial}: keyevent {keycode} failed: {ex.GetType().Name}: {ex.Message}");
+        }
+    }
+
     private async Task TickAsync(CancellationToken ct)
     {
+        // A power hook drove the screen from the SystemEvents thread, so the
+        // record no longer matches the panel and the diff below would skip the
+        // very command needed to undo it.
+        if (Interlocked.Exchange(ref _displayRecordStale, 0) == 1)
+        {
+            _lastAppliedBySerial.Clear();
+        }
+
+        // Cross-thread signal from POST /qseries/rotation or /qseries/display:
+        // force every attached serial to re-apply this tick instead of waiting
+        // for a re-attach. The retry deadline resets with the latch, or a serial
+        // that already exhausted its window would re-latch after one retry.
+        if (Interlocked.Exchange(ref _displayDirty, 0) == 1)
+        {
+            _displayAppliedThisRun.Clear();
+            _displayFirstFailureBySerial.Clear();
+        }
+
         // Nexus Control off skips the whole pass: no reverse-tunnel or am-start
         // churn. Existing reverse forwards are left alone rather than torn down,
         // since a proactive adb teardown call risks the USB-FFS wedge documented
@@ -405,12 +582,21 @@ public sealed class QSeriesPortWatcher : BackgroundService
                 var reseated = _transportIdBySerial.TryGetValue(device.Serial, out var lastTransportId)
                     && lastTransportId != transportId;
                 _transportIdBySerial[device.Serial] = transportId;
+                if (reseated)
+                {
+                    // The panel re-enumerated, so it may have rebooted back to
+                    // user_rotation 0 without a tick ever seeing it offline. The
+                    // confirmed-state record cannot be trusted across that.
+                    _lastAppliedBySerial.Remove(device.Serial);
+                    _displayAppliedThisRun.Remove(device.Serial);
+                }
                 if (reseated && await TryRebootOnReseatAsync(device, lastTransportId!, transportId, ct))
                     continue; // device is rebooting; skip the reverse/qshell passes this tick
             }
 
             await EnsureReverseAsync(device, ct);
             await EnsureQshellForegroundAsync(device, ct);
+            await ReassertPanelDisplayAsync(device, ct);
             RegisterDeviceTarget(device.Serial);
             await SyncDeviceClockAsync(device, ct);
             await TryEscalateRebootAsync(device, ct);
@@ -439,9 +625,25 @@ public sealed class QSeriesPortWatcher : BackgroundService
         {
             _homePinnedThisRun.Remove(key);
         }
-        foreach (var key in _homePinFailuresBySerial.Keys.Where(k => !seenSerials.Contains(k)).ToList())
+        foreach (var key in _homePinFirstFailureBySerial.Keys.Where(k => !seenSerials.Contains(k)).ToList())
         {
-            _homePinFailuresBySerial.Remove(key);
+            _homePinFirstFailureBySerial.Remove(key);
+        }
+        // user_rotation does not survive a panel reboot (brightness does), so a
+        // re-attach re-applies. Dropping the confirmed-state record with the
+        // latch is what forces that apply to push everything rather than diff
+        // against a panel that may have rebooted underneath us.
+        foreach (var key in _displayAppliedThisRun.Where(k => !seenSerials.Contains(k)).ToList())
+        {
+            _displayAppliedThisRun.Remove(key);
+        }
+        foreach (var key in _displayFirstFailureBySerial.Keys.Where(k => !seenSerials.Contains(k)).ToList())
+        {
+            _displayFirstFailureBySerial.Remove(key);
+        }
+        foreach (var key in _lastAppliedBySerial.Keys.Where(k => !seenSerials.Contains(k)).ToList())
+        {
+            _lastAppliedBySerial.Remove(key);
         }
         // Re-arm the grace anchor on detach. _escalationRebootCountBySerial and
         // _lastEscalationRebootBySerial are deliberately NOT cleared here - like
@@ -960,16 +1162,74 @@ public sealed class QSeriesPortWatcher : BackgroundService
     /// </summary>
     private readonly HashSet<string> _homePinnedThisRun = new(StringComparer.Ordinal);
 
-    /// <summary>Serial -> consecutive failed pin attempts this attach; bounds the
+    /// <summary>Serial -> when the pin first failed this attach; bounds the
     /// un-latch retry below. Cleared on success and on detach.</summary>
-    private readonly Dictionary<string, int> _homePinFailuresBySerial = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, DateTimeOffset> _homePinFirstFailureBySerial = new(StringComparer.Ordinal);
+
 
     /// <summary>
-    /// Pin attempts per attach before giving up. Sized like
-    /// <see cref="EscalationGrace"/>: at the poll cadence the attempts span past
-    /// the slowest legitimate "package service not yet up" boot window.
+    /// Serials whose display state (orientation, brightness, screen power)
+    /// has been re-asserted this attach. <c>user_rotation</c> is confirmed
+    /// not to survive a panel reboot (unlike <c>set-fix-to-user-rotation</c>
+    /// and <c>accelerometer_rotation</c>, which persist); brightness
+    /// persistence across reboot is unconfirmed either way, and a fresh
+    /// Android boot always starts the screen on - so a re-attach re-applies
+    /// all three regardless. Cleared on detach and whenever
+    /// <see cref="AnnounceDisplayChange"/> flags a live setting change.
     /// </summary>
-    private const int MaxHomePinAttemptsPerAttach = 18;
+    private readonly HashSet<string> _displayAppliedThisRun = new(StringComparer.Ordinal);
+
+    /// <summary>Serial -> when the display apply first failed this attach;
+    /// bounds the un-latch retry below. Cleared on success and on detach.</summary>
+    private readonly Dictionary<string, DateTimeOffset> _displayFirstFailureBySerial = new(StringComparer.Ordinal);
+
+    /// <summary>Display state last confirmed on the panel.</summary>
+    private readonly record struct AppliedDisplayState(string Orientation, int Brightness, bool ScreenOff);
+
+    /// <summary>
+    /// Serial -> the state its last readback confirmed, so an apply only sends
+    /// what changed. Dropped on detach, on any failed apply, and whenever the
+    /// panel reboots, since the next apply must then push everything.
+    /// </summary>
+    private readonly Dictionary<string, AppliedDisplayState> _lastAppliedBySerial = new(StringComparer.Ordinal);
+
+
+    /// <summary>
+    /// Set by <see cref="AnnounceDisplayChange"/> from a request thread; 1
+    /// means the next tick must clear <see cref="_displayAppliedThisRun"/>
+    /// before its device loop, so a live setting change takes effect without
+    /// waiting for a re-attach. Interlocked because the per-attach HashSets
+    /// above are tick-thread-only and must never be touched from a request
+    /// thread.
+    /// </summary>
+    private int _displayDirty;
+
+    /// <summary>
+    /// Set when a power hook drives the panel's screen from the SystemEvents
+    /// pump thread. Interlocked because <see cref="_lastAppliedBySerial"/> it
+    /// invalidates is tick-thread-only.
+    /// </summary>
+    private int _displayRecordStale;
+
+    /// <summary>
+    /// Wakes the tick loop out of its poll wait; the adb calls stay on the tick
+    /// thread, which owns the transport. Counting, so a release while a tick is
+    /// already running persists and the following wait returns at once. A
+    /// consumer-reset primitive would drop that wake.
+    /// </summary>
+    private readonly SemaphoreSlim _wake = new(0, 1);
+
+    /// <summary>Called from POST /qseries/rotation or POST /qseries/display to
+    /// apply a changed display setting on the next tick instead of the next
+    /// physical attach.</summary>
+    internal void AnnounceDisplayChange()
+    {
+        Interlocked.Exchange(ref _displayDirty, 1);
+        // Full means a wake is already pending; the tick it triggers reads the
+        // flag set above, so dropping this release loses nothing.
+        try { _wake.Release(); }
+        catch (SemaphoreFullException) { }
+    }
 
     /// <summary>
     /// Last adb transport id per serial. A change (same serial) is the reliable reseat
@@ -1129,7 +1389,7 @@ public sealed class QSeriesPortWatcher : BackgroundService
             var output = receiver.ToString().Trim();
             if (SetHomeActivityTook(output))
             {
-                _homePinFailuresBySerial.Remove(device.Serial);
+                _homePinFirstFailureBySerial.Remove(device.Serial);
                 ServiceLog.Info(
                     $"[qseries-port-watcher] {device.Serial}: re-pinned default HOME to qshell ({output})");
             }
@@ -1149,26 +1409,31 @@ public sealed class QSeriesPortWatcher : BackgroundService
 
     /// <summary>
     /// Bounded pin retry: un-latch so the next tick retries, log the first
-    /// failure only, and at the attempt cap leave the serial latched (no further
-    /// shell calls or lines until re-attach). A persistently failing pin - boot
-    /// transient or not - must not shell out and log every tick until detach.
+    /// failure only, and once the window elapses leave the serial latched (no
+    /// further shell calls or lines until re-attach). A persistently failing pin
+    /// - boot transient or not - must not shell out and log every tick until
+    /// detach.
     /// </summary>
     private void RecordHomePinFailure(string serial, string detail)
     {
-        _homePinFailuresBySerial.TryGetValue(serial, out var failures);
-        _homePinFailuresBySerial[serial] = failures + 1;
-        if (failures + 1 >= MaxHomePinAttemptsPerAttach)
+        var now = DateTimeOffset.UtcNow;
+        if (!_homePinFirstFailureBySerial.TryGetValue(serial, out var firstFailure))
+        {
+            _homePinFirstFailureBySerial[serial] = now;
+            _homePinnedThisRun.Remove(serial);
+            ServiceLog.Info(
+                $"[qseries-port-watcher] {serial}: set-home-activity did not take ({detail}); retrying (suppressing repeats)");
+            return;
+        }
+        // EscalationGrace spans the slowest legitimate "package service
+        // not yet up" boot window.
+        if (now - firstFailure >= EscalationGrace)
         {
             ServiceLog.Info(
                 $"[qseries-port-watcher] {serial}: set-home-activity kept failing ({detail}); giving up until re-attach");
             return;
         }
         _homePinnedThisRun.Remove(serial);
-        if (failures == 0)
-        {
-            ServiceLog.Info(
-                $"[qseries-port-watcher] {serial}: set-home-activity did not take ({detail}); retrying (suppressing repeats)");
-        }
     }
 
     /// <summary>
@@ -1178,6 +1443,202 @@ public sealed class QSeriesPortWatcher : BackgroundService
     /// </summary>
     internal static bool SetHomeActivityTook(string output) =>
         output.Contains("Success", StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>
+    /// Re-assert the stored display state (orientation, brightness, screen
+    /// power), once per attach, sharing one latch and one bounded retry across
+    /// all three so a single stuck setting doesn't spam three separate log
+    /// lines every tick. qshell is pinned as the panel's default HOME, and
+    /// Android does not rotate the launcher stack; without
+    /// <c>set-fix-to-user-rotation enabled</c> the locked rotation is recorded
+    /// (<c>mUserRotation</c>) but the display itself never turns. None of the
+    /// apply commands print output on success, so each is read back
+    /// separately to confirm it took.
+    /// </summary>
+    private async Task ReassertPanelDisplayAsync(DeviceData device, CancellationToken ct)
+    {
+        if (!_displayAppliedThisRun.Add(device.Serial)) return;
+
+        var qseries = _configStore.Load().QSeries;
+        var userRotation = ToUserRotation(qseries.Orientation);
+        var brightnessByte = PercentToBrightnessByte(qseries.Brightness);
+        var wantAwake = !qseries.ScreenOff;
+
+        // Without a record of what this panel already has, its state is unknown
+        // (a reboot resets user_rotation) so everything is pushed. Afterwards
+        // only the settings that changed go over the wire; re-asserting the full
+        // set costs several adb round trips, one of which dumps 27 KB, where a
+        // lone brightness nudge needs two.
+        var known = _lastAppliedBySerial.TryGetValue(device.Serial, out var last);
+        var doOrientation = !known || last.Orientation != qseries.Orientation;
+        var doBrightness = !known || last.Brightness != qseries.Brightness;
+        var doScreen = !known || last.ScreenOff != qseries.ScreenOff;
+        if (!doOrientation && !doBrightness && !doScreen) return;
+
+        try
+        {
+            var commands = new List<string>(5);
+            if (doOrientation)
+            {
+                commands.Add("settings put system accelerometer_rotation 0");
+                commands.Add("cmd window set-fix-to-user-rotation enabled");
+                commands.Add($"cmd window set-user-rotation lock {userRotation}");
+            }
+            if (doBrightness) commands.Add($"settings put system screen_brightness {brightnessByte}");
+            if (doScreen) commands.Add($"input keyevent {(wantAwake ? KeyeventWakeup : KeyeventSleep)}");
+
+            // Any output from these is a failure ("Can't find service: window"
+            // early in panel boot, on a clean exit), so it carries the retry's
+            // only diagnostic.
+            var applyOutput = new StringBuilder();
+            foreach (var command in commands)
+            {
+                var receiver = new ConsoleOutputReceiver();
+                await _client.ExecuteShellCommandAsync(device, command, receiver, ct);
+                var text = receiver.ToString().Trim();
+                if (text.Length > 0) applyOutput.Append(text).Append("; ");
+            }
+
+            var rotationOutput = "";
+            var rotationOk = true;
+            if (doOrientation)
+            {
+                var rotationReadback = new ConsoleOutputReceiver();
+                await _client.ExecuteShellCommandAsync(
+                    device, "dumpsys window displays | grep mCurrentRotation", rotationReadback, ct);
+                rotationOutput = rotationReadback.ToString().Trim();
+                rotationOk = PanelOrientationTook(rotationOutput, userRotation);
+            }
+
+            var brightnessOutput = "";
+            var brightnessOk = true;
+            if (doBrightness)
+            {
+                // No /sys/class/backlight and dumpsys display exposes no
+                // brightness field on this panel, so `settings get` is the only
+                // readback.
+                var brightnessReadback = new ConsoleOutputReceiver();
+                await _client.ExecuteShellCommandAsync(
+                    device, "settings get system screen_brightness", brightnessReadback, ct);
+                brightnessOutput = brightnessReadback.ToString().Trim();
+                brightnessOk = PanelBrightnessTook(brightnessOutput, brightnessByte);
+            }
+
+            var powerOutput = "";
+            var powerOk = true;
+            if (doScreen)
+            {
+                var powerReadback = new ConsoleOutputReceiver();
+                await _client.ExecuteShellCommandAsync(
+                    device, "dumpsys power | grep mWakefulness=", powerReadback, ct);
+                powerOutput = powerReadback.ToString().Trim();
+                powerOk = PanelScreenPowerTook(powerOutput, wantAwake);
+            }
+
+            if (rotationOk && brightnessOk && powerOk)
+            {
+                _displayFirstFailureBySerial.Remove(device.Serial);
+                _lastAppliedBySerial[device.Serial] =
+                    new AppliedDisplayState(qseries.Orientation, qseries.Brightness, qseries.ScreenOff);
+                var applied = string.Join(" ", new[]
+                {
+                    doOrientation ? $"orientation={qseries.Orientation} (userRotation={userRotation}, {rotationOutput})" : null,
+                    doBrightness ? $"brightness={qseries.Brightness}% (byte={brightnessByte}, {brightnessOutput})" : null,
+                    doScreen ? $"screen={(wantAwake ? "on" : "off")} ({powerOutput})" : null,
+                }.Where(p => p is not null));
+                ServiceLog.Info($"[qseries-port-watcher] {device.Serial}: applied display state {applied}");
+            }
+            else
+            {
+                // The panel diverged from the record, so the next attempt pushes
+                // everything rather than trusting the diff.
+                _lastAppliedBySerial.Remove(device.Serial);
+                RecordDisplayFailure(
+                    device.Serial,
+                    $"rotation-ok={rotationOk} brightness-ok={brightnessOk} power-ok={powerOk} {applyOutput}{rotationOutput}; {brightnessOutput}; {powerOutput}");
+            }
+        }
+        catch (Exception ex) when (!ct.IsCancellationRequested)
+        {
+            _lastAppliedBySerial.Remove(device.Serial);
+            RecordDisplayFailure(device.Serial, ex.GetType().Name);
+        }
+    }
+
+    /// <summary>
+    /// Bounded display-apply retry: un-latch so the next tick retries, log the
+    /// first failure only, and once the window elapses leave the serial latched
+    /// (no further shell calls or lines until re-attach). Early in panel boot
+    /// <c>cmd</c> and <c>settings</c> answer "Can't find service: X" with a
+    /// clean exit, so only checking for exceptions would latch the apply as
+    /// done without it ever landing.
+    /// </summary>
+    private void RecordDisplayFailure(string serial, string detail)
+    {
+        var now = DateTimeOffset.UtcNow;
+        if (!_displayFirstFailureBySerial.TryGetValue(serial, out var firstFailure))
+        {
+            _displayFirstFailureBySerial[serial] = now;
+            _displayAppliedThisRun.Remove(serial);
+            ServiceLog.Info(
+                $"[qseries-port-watcher] {serial}: display state did not take ({detail}); retrying (suppressing repeats)");
+            return;
+        }
+        // EscalationGrace spans the slowest legitimate "Can't find service"
+        // boot window.
+        if (now - firstFailure >= EscalationGrace)
+        {
+            ServiceLog.Info(
+                $"[qseries-port-watcher] {serial}: display state kept failing ({detail}); giving up until re-attach");
+            return;
+        }
+        _displayAppliedThisRun.Remove(serial);
+    }
+
+    /// <summary>180 degree flip only: Portrait maps to Android user_rotation 0,
+    /// PortraitFlipped to 2. Both are portrait, so the panel resolution is
+    /// unchanged and there is no axis swap to account for.</summary>
+    internal static int ToUserRotation(string orientation) =>
+        orientation == Nexus.Service.Models.Displays.DisplayOrientations.PortraitFlipped ? 2 : 0;
+
+    /// <summary>0-100% mapped to the 0-255 byte `settings put system
+    /// screen_brightness` expects; out-of-range input is clamped defensively
+    /// even though the route already validates it.</summary>
+    internal static int PercentToBrightnessByte(int pct)
+    {
+        var clamped = Math.Clamp(pct, 0, 100);
+        return (int)Math.Round(clamped / 100.0 * 255.0, MidpointRounding.AwayFromZero);
+    }
+
+    /// <summary>
+    /// True when `settings get system screen_brightness` echoes exactly the
+    /// byte just written. That command is the only brightness readback
+    /// available: this panel has no /sys/class/backlight and dumpsys display
+    /// exposes no brightness field.
+    /// </summary>
+    internal static bool PanelBrightnessTook(string settingsGetOutput, int expectedByte) =>
+        settingsGetOutput.Trim() == expectedByte.ToString(System.Globalization.CultureInfo.InvariantCulture);
+
+    /// <summary>
+    /// True when `dumpsys power | grep mWakefulness=` reports the requested
+    /// power state. KEYCODE_SLEEP/KEYCODE_WAKEUP (223/224) set the state
+    /// rather than toggling it, unlike KEYCODE_POWER (26).
+    /// </summary>
+    internal static bool PanelScreenPowerTook(string dumpsysOutput, bool expectedAwake) =>
+        dumpsysOutput.Contains(expectedAwake ? "mWakefulness=Awake" : "mWakefulness=Asleep", StringComparison.Ordinal);
+
+    /// <summary>
+    /// True when <c>dumpsys window displays | grep mCurrentRotation</c> shows
+    /// the rotation the requested user_rotation should produce.
+    /// <c>ROTATION_0</c> is not a substring of <c>ROTATION_180</c>, so a plain
+    /// Contains distinguishes them without parsing the value. This confirms the
+    /// panel reached the requested rotation, not that the commands ran: for
+    /// Portrait the expected value is also the panel's boot rotation, so a
+    /// silent no-op reads as success. A flip away from Portrait re-runs all
+    /// three commands and is verified.
+    /// </summary>
+    internal static bool PanelOrientationTook(string dumpsysOutput, int userRotation) =>
+        dumpsysOutput.Contains(userRotation == 0 ? "ROTATION_0" : "ROTATION_180", StringComparison.Ordinal);
 
     /// <summary>
     /// A reseat (same serial, new transport id) leaves a degraded USB-FFS link that
@@ -1305,6 +1766,10 @@ public sealed class QSeriesPortWatcher : BackgroundService
         // qshell is not installed (pre-upgrade panel on the OEM launcher): a panel
         // running the OEM is the expected pre-install state, not a wedge to reboot.
         if (_qshellMissingBySerial.Contains(device.Serial)) return;
+        // Screen off by request: a stopped activity cannot bump LastSeenAt, so the
+        // liveness gate below reads a deliberately dark panel as a wedged one and
+        // reboots it back on.
+        if (_configStore.Load().QSeries.ScreenOff) return;
 
         var now = DateTimeOffset.UtcNow;
         var sinceFirstSeen = now - firstSeenAt;

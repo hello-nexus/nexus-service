@@ -47,6 +47,26 @@ public class Sm2Tests
     }
 
     [Fact]
+    public void Decrypt_round_trips_a_raw_C1_whose_x_coordinate_starts_with_0x04()
+    {
+        // A raw (unprefixed) C1 whose x coordinate's leading byte is 0x04 must
+        // not be mistaken for a SEC1 04 tag byte and stripped. Encrypt draws a
+        // random ephemeral key, so search for such a ciphertext, then assert it
+        // still round-trips. Expected hits ~ iterations / 256.
+        for (var i = 0; i < 5000; i++)
+        {
+            var cipherHex = Sm2.Encrypt("raw-c1-04-leading", TestPublicKeyHex);
+            if (cipherHex.StartsWith("04", StringComparison.Ordinal))
+            {
+                Assert.Equal("raw-c1-04-leading", Sm2.Decrypt(cipherHex, TestPrivateKeyHex));
+                return;
+            }
+        }
+
+        Assert.Fail("no 0x04-leading C1 produced in 5000 encrypts");
+    }
+
+    [Fact]
     public void Encrypt_output_is_well_formed_for_the_embedded_Kanali_public_key()
     {
         // The Kanali public key is real production data (decoded from the

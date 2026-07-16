@@ -1,4 +1,5 @@
 using System;
+using System.Text;
 
 namespace Nexus.Service.Platform.Clipboard;
 
@@ -64,17 +65,21 @@ public sealed class WindowsClipboardProvider : IClipboardProvider
     public bool SetText(string text)
     {
         if (!OperatingSystem.IsWindows()) return false;
-        try
+        // Carry the text as base64 (UTF-8) inside a script passed via
+        // -EncodedCommand (base64 UTF-16): both hops are ASCII on the command
+        // line, so an emoji's surrogate pair survives. Piping through stdin
+        // narrowed non-ANSI chars to "?" under the console's OEM codepage.
+        var textB64 = Convert.ToBase64String(Encoding.UTF8.GetBytes(text ?? ""));
+        var script = $"Set-Clipboard -Value ([Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('{textB64}')))";
+        var encoded = Convert.ToBase64String(Encoding.Unicode.GetBytes(script));
+        var exitCode = ShellExecutor.RunWithStdinExit("powershell", "", 4000, out var stderr,
+            "-NoProfile", "-EncodedCommand", encoded);
+        if (exitCode != 0)
         {
-            ShellExecutor.RunWithStdin("powershell", text ?? "", 4000,
-                "-NoProfile", "-Command", "$input | Set-Clipboard");
-            return true;
-        }
-        catch (Exception ex)
-        {
-            ServiceLog.Warn($"[clipboard-win] Set-Clipboard failed: {ex.Message}");
+            ServiceLog.Warn($"[clipboard-win] Set-Clipboard exited {exitCode}: {stderr.Trim()}");
             return false;
         }
+        return true;
     }
 }
 

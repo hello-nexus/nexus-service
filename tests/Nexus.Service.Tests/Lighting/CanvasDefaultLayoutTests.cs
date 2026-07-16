@@ -91,6 +91,46 @@ public class CanvasDefaultLayoutTests
         }
     }
 
+    /// <summary>
+    /// The UI draws a device's name at its card's center, so cards sharing a row
+    /// centre line put every name on one line and long names collide. Models a
+    /// long name ("B850I AORUS PRO - ARGB_V2_1" measures ~250 units) at each
+    /// card's center and requires the default layout to keep them apart, so a
+    /// layout reset lands on a readable canvas.
+    ///
+    /// Counts up to the cutoff only: at 29 the grid widens to 8 columns, cellW
+    /// drops to 122, and same-parity columns two apart sit 244 units apart -
+    /// closer than a label is wide, which no vertical offset can fix. The canvas
+    /// de-collides labels at render time, which is what covers that tail.
+    /// Counts below 7 are omitted: their cells are wider than a label, so they
+    /// pass with or without the stagger and would not catch a regression.
+    /// </summary>
+    [Theory]
+    [InlineData(7)]
+    [InlineData(12)]
+    [InlineData(18)]
+    [InlineData(28)]
+    public void CanvasGridLayout_default_slots_keep_device_names_apart(int totalCount)
+    {
+        const float labelW = 250f;
+        const float labelH = 22f;
+        var labels = new (float x, float y)[totalCount];
+        for (var i = 0; i < totalCount; i++)
+        {
+            var (x, y, w, h) = CanvasGridLayout.Slot(i, totalCount);
+            labels[i] = (x + w * 0.5f, y + h * 0.5f);
+        }
+        for (var i = 0; i < totalCount; i++)
+        for (var j = i + 1; j < totalCount; j++)
+        {
+            var a = labels[i];
+            var b = labels[j];
+            var overlap = MathF.Abs(a.x - b.x) < labelW && MathF.Abs(a.y - b.y) < labelH;
+            Assert.False(overlap,
+                $"name {i} at {a} overlaps name {j} at {b} at totalCount={totalCount}");
+        }
+    }
+
     [Theory]
     [InlineData(4)]
     [InlineData(12)]

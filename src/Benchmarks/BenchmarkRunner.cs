@@ -119,7 +119,7 @@ public sealed class BenchmarkRunner
         var started = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
         var subs = new System.Collections.Generic.List<BenchmarkSubScore>();
         var progressReporter = new Progress<BenchmarkPhaseProgress>(p => PushFrame(runId, p, subs));
-        var hardware = await CollectHardwareAsync(ct);
+        var (hardware, gpus) = await CollectHardwareAsync(ct);
 
         try
         {
@@ -144,6 +144,13 @@ public sealed class BenchmarkRunner
             {
                 BroadcastPhaseStart(runId, "gpu", subs);
                 gpu = await _provider.RunGpuAsync(progressReporter, ct);
+                if (!string.IsNullOrWhiteSpace(gpu.MeasuredDevice))
+                {
+                    // The GPU sub-score names the card clpeak/vkpeak actually
+                    // measured; realign the hardware identity to it now that
+                    // it is known (it was collected before this phase ran).
+                    hardware.GpuModels = SelectReportedGpus(gpus, gpu.MeasuredDevice);
+                }
             }
             else
             {
@@ -214,7 +221,7 @@ public sealed class BenchmarkRunner
         }
     }
 
-    private async Task<HardwareIdentity> CollectHardwareAsync(CancellationToken ct)
+    private async Task<(HardwareIdentity Hardware, System.Collections.Generic.IReadOnlyList<GpuReadout> Gpus)> CollectHardwareAsync(CancellationToken ct)
     {
         // RuntimeInformation.OSDescription reports the kernel version, which on
         // Windows 11 is "Microsoft Windows 10.0.<build>" (major.minor stays 10.0;
@@ -239,10 +246,11 @@ public sealed class BenchmarkRunner
             var ramBrand = _sensors.GetRamBrandModel() ?? "";
             var storageBrand = _sensors.GetStorageBrandModel() ?? "";
             var ramBytes = ParseRamBytes(_sensors.GetMemoryTotalFormatted());
-            return new HardwareIdentity
+            var gpus = _sensors.GetGpus();
+            var hardware = new HardwareIdentity
             {
                 CpuModel = _sensors.GetCpuModel() ?? "",
-                GpuModels = SelectReportedGpus(_sensors.GetGpus()),
+                GpuModels = SelectReportedGpus(gpus),
                 RamBytes = ramBytes,
                 RamModel = ramBrand,
                 StorageModel = storageBrand,
@@ -250,10 +258,12 @@ public sealed class BenchmarkRunner
                 Os = os,
                 Architecture = RuntimeInformation.OSArchitecture.ToString().ToLowerInvariant(),
             };
+            return (hardware, gpus);
         }
         catch
         {
-            return new HardwareIdentity { LogicalCores = Environment.ProcessorCount };
+            return (new HardwareIdentity { LogicalCores = Environment.ProcessorCount },
+                new System.Collections.Generic.List<GpuReadout>());
         }
     }
 
@@ -263,21 +273,49 @@ public sealed class BenchmarkRunner
     /// OpenCL device and the GPU sub-score keeps the max, so the dedicated card
     /// is always the one measured. Mirrors the client's primary-GPU default
     /// (first discrete, else first) using the provider's authoritative
-    /// <see cref="GpuReadout.Integrated"/> flag - the WMI/LHM signal, not clpeak's
-    /// device name (AMD reports a codename like "gfx1036"). With two discrete GPUs
-    /// the first is reported, which need not be clpeak's max.
+    /// <see cref="GpuReadout.Integrated"/> flag as the fallback - the WMI/LHM
+    /// signal, not clpeak's device name (AMD can report a bare codename like
+    /// "gfx1036" that shares no substring with the WMI-friendly name).
+    /// <paramref name="measuredDevice"/>, when it matches one of the sensor
+    /// entries, takes priority so two discrete GPUs report the one clpeak
+    /// actually measured rather than always the first.
     /// </summary>
     internal static System.Collections.Generic.List<string> SelectReportedGpus(
-        System.Collections.Generic.IReadOnlyList<GpuReadout> gpus)
+        System.Collections.Generic.IReadOnlyList<GpuReadout> gpus, string? measuredDevice = null)
     {
         if (gpus.Count == 0)
             return new System.Collections.Generic.List<string>();
+
+        var matched = MatchByMeasuredDevice(gpus, measuredDevice);
+        if (matched is not null)
+            return new System.Collections.Generic.List<string> { matched };
+
         foreach (var g in gpus)
         {
             if (!g.Integrated)
                 return new System.Collections.Generic.List<string> { g.Name };
         }
         return new System.Collections.Generic.List<string> { gpus[0].Name };
+    }
+
+    /// <summary>Case-insensitive substring match either direction, tolerant of the WMI/clpeak naming mismatch. Returns the sensor-side name (never clpeak's raw string) so downstream formatting stays consistent.</summary>
+    internal static string? MatchByMeasuredDevice(System.Collections.Generic.IReadOnlyList<GpuReadout> gpus, string? measuredDevice)
+    {
+        if (string.IsNullOrWhiteSpace(measuredDevice))
+            return null;
+        var needle = measuredDevice.Trim();
+        foreach (var g in gpus)
+        {
+            var hay = g.Name?.Trim() ?? "";
+            if (hay.Length == 0)
+                continue;
+            if (hay.Contains(needle, StringComparison.OrdinalIgnoreCase) ||
+                needle.Contains(hay, StringComparison.OrdinalIgnoreCase))
+            {
+                return g.Name;
+            }
+        }
+        return null;
     }
 
     /// <summary>

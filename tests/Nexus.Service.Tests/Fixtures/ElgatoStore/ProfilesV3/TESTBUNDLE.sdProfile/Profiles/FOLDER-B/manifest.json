@@ -1,0 +1,113 @@
+{
+  "Controllers": [
+    {
+      "Actions": {
+        "0,0": {
+          "ActionID": "action-back",
+          "LinkedTitle": false,
+          "Name": "Back",
+          "Resources": null,
+          "Settings": {},
+          "State": 0,
+          "States": [
+            {}
+          ],
+          "UUID": "com.elgato.streamdeck.profile.backtoparent"
+        },
+        "1,0": {
+          "ActionID": "action-open-folder-a-again",
+          "LinkedTitle": false,
+          "Name": "Open Folder A Again",
+          "Resources": null,
+          "Settings": {
+            "ProfileUUID": "folder-a"
+          },
+          "State": 0,
+          "States": [
+            {
+              "Title": "Folder A Again",
+              "ShowTitle": true,
+              "TitleAlignment": "bottom",
+              "TitleColor": "#ffffff",
+              "FontFamily": "",
+              "FontSize": 8,
+              "FontStyle": "",
+              "FontUnderline": false,
+              "OutlineThickness": 0
+            }
+          ],
+          "UUID": "com.elgato.streamdeck.profile.openchild"
+        },
+        "2,0": {
+          "ActionID": "action-alt-f4",
+          "LinkedTitle": false,
+          "Name": "Alt F4",
+          "Resources": null,
+          "Settings": {
+            "Coalesce": true,
+            "Hotkeys": [
+              {
+                "KeyCmd": false,
+                "KeyCtrl": false,
+                "KeyOption": true,
+                "KeyShift": false,
+                "KeyModifiers": 4,
+                "NativeCode": 118,
+                "QTKeyCode": 16777267,
+                "VKeyCode": 0
+              },
+              {
+                "KeyCmd": false,
+                "KeyCtrl": false,
+                "KeyOption": false,
+                "KeyShift": false,
+                "KeyModifiers": 0,
+                "NativeCode": -1,
+                "QTKeyCode": 33554431,
+                "VKeyCode": -1
+              },
+              {
+                "KeyCmd": false,
+                "KeyCtrl": false,
+                "KeyOption": false,
+                "KeyShift": false,
+                "KeyModifiers": 0,
+                "NativeCode": -1,
+                "QTKeyCode": 33554431,
+                "VKeyCode": -1
+              },
+              {
+                "KeyCmd": false,
+                "KeyCtrl": false,
+                "KeyOption": false,
+                "KeyShift": false,
+                "KeyModifiers": 0,
+                "NativeCode": -1,
+                "QTKeyCode": 33554431,
+                "VKeyCode": -1
+              }
+            ]
+          },
+          "State": 0,
+          "States": [
+            {
+              "Title": "Alt F4",
+              "ShowTitle": true,
+              "TitleAlignment": "bottom",
+              "TitleColor": "#ffffff",
+              "FontFamily": "",
+              "FontSize": 8,
+              "FontStyle": "",
+              "FontUnderline": false,
+              "OutlineThickness": 0
+            }
+          ],
+          "UUID": "com.elgato.streamdeck.system.hotkey"
+        }
+      },
+      "Type": "Keypad"
+    }
+  ],
+  "Icon": "",
+  "Name": "Folder B"
+}

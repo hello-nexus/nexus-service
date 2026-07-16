@@ -142,6 +142,11 @@ public sealed class CompositeFanControlProvider : IFanControlProvider, ICoolingP
         if (fanIds.Count == 0)
             return _motherboard.CalibrateAsync(fanIds, progress, ct);
         var motherboardOnly = fanIds.Where(id => !IsExternalId(id)).ToList();
+        // Empty means "all" to the motherboard provider, so a request naming only
+        // hub fans must stop here: falling through would calibrate every
+        // motherboard fan instead of none.
+        if (motherboardOnly.Count == 0)
+            return Task.FromResult<IReadOnlyList<FanCalibration>>(Array.Empty<FanCalibration>());
         return _motherboard.CalibrateAsync(motherboardOnly, progress, ct);
     }
 

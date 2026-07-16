@@ -1,0 +1,439 @@
+{
+  "Controllers": [
+    {
+      "Actions": {
+        "0,0": {
+          "ActionID": "action-open-folder-a",
+          "LinkedTitle": false,
+          "Name": "Open Folder A",
+          "Resources": null,
+          "Settings": {
+            "ProfileUUID": "folder-a"
+          },
+          "State": 0,
+          "States": [
+            {
+              "Title": "Folder A",
+              "ShowTitle": true,
+              "TitleAlignment": "bottom",
+              "TitleColor": "#ffffff",
+              "FontFamily": "",
+              "FontSize": 8,
+              "FontStyle": "",
+              "FontUnderline": false,
+              "OutlineThickness": 0
+            }
+          ],
+          "UUID": "com.elgato.streamdeck.profile.openchild"
+        },
+        "1,0": {
+          "ActionID": "action-good-multi",
+          "LinkedTitle": false,
+          "Name": "Good Multi",
+          "Resources": null,
+          "Settings": {},
+          "State": 0,
+          "States": [
+            {
+              "Title": "Good Multi",
+              "ShowTitle": true,
+              "TitleAlignment": "bottom",
+              "TitleColor": "#ffffff",
+              "FontFamily": "",
+              "FontSize": 8,
+              "FontStyle": "",
+              "FontUnderline": false,
+              "OutlineThickness": 0
+            }
+          ],
+          "UUID": "com.elgato.streamdeck.multiactions.routine2",
+          "Actions": [
+            {
+              "Actions": [
+                {
+                  "ActionID": "action-copy",
+                  "LinkedTitle": false,
+                  "Name": "Copy",
+                  "Resources": null,
+                  "Settings": {
+                    "Coalesce": true,
+                    "Hotkeys": [
+                      {
+                        "KeyCmd": false,
+                        "KeyCtrl": true,
+                        "KeyOption": false,
+                        "KeyShift": false,
+                        "KeyModifiers": 2,
+                        "NativeCode": 8,
+                        "QTKeyCode": 67,
+                        "VKeyCode": 0
+                      },
+                      {
+                        "KeyCmd": false,
+                        "KeyCtrl": false,
+                        "KeyOption": false,
+                        "KeyShift": false,
+                        "KeyModifiers": 0,
+                        "NativeCode": -1,
+                        "QTKeyCode": 33554431,
+                        "VKeyCode": -1
+                      },
+                      {
+                        "KeyCmd": false,
+                        "KeyCtrl": false,
+                        "KeyOption": false,
+                        "KeyShift": false,
+                        "KeyModifiers": 0,
+                        "NativeCode": -1,
+                        "QTKeyCode": 33554431,
+                        "VKeyCode": -1
+                      },
+                      {
+                        "KeyCmd": false,
+                        "KeyCtrl": false,
+                        "KeyOption": false,
+                        "KeyShift": false,
+                        "KeyModifiers": 0,
+                        "NativeCode": -1,
+                        "QTKeyCode": 33554431,
+                        "VKeyCode": -1
+                      }
+                    ]
+                  },
+                  "State": 0,
+                  "States": [
+                    {
+                      "Title": "Copy",
+                      "ShowTitle": true,
+                      "TitleAlignment": "bottom",
+                      "TitleColor": "#ffffff",
+                      "FontFamily": "",
+                      "FontSize": 8,
+                      "FontStyle": "",
+                      "FontUnderline": false,
+                      "OutlineThickness": 0
+                    }
+                  ],
+                  "UUID": "com.elgato.streamdeck.system.hotkey"
+                },
+                {
+                  "ActionID": "action-example",
+                  "LinkedTitle": false,
+                  "Name": "Example",
+                  "Resources": null,
+                  "Settings": {
+                    "openInBrowser": true,
+                    "path": "https://example.com"
+                  },
+                  "State": 0,
+                  "States": [
+                    {
+                      "Title": "Example",
+                      "ShowTitle": true,
+                      "TitleAlignment": "bottom",
+                      "TitleColor": "#ffffff",
+                      "FontFamily": "",
+                      "FontSize": 8,
+                      "FontStyle": "",
+                      "FontUnderline": false,
+                      "OutlineThickness": 0
+                    }
+                  ],
+                  "UUID": "com.elgato.streamdeck.system.website"
+                }
+              ]
+            }
+          ]
+        },
+        "2,0": {
+          "ActionID": "action-partial-multi",
+          "LinkedTitle": false,
+          "Name": "Partial Multi",
+          "Resources": null,
+          "Settings": {},
+          "State": 0,
+          "States": [
+            {
+              "Title": "Partial Multi",
+              "ShowTitle": true,
+              "TitleAlignment": "bottom",
+              "TitleColor": "#ffffff",
+              "FontFamily": "",
+              "FontSize": 8,
+              "FontStyle": "",
+              "FontUnderline": false,
+              "OutlineThickness": 0
+            }
+          ],
+          "UUID": "com.elgato.streamdeck.multiactions.routine2",
+          "Actions": [
+            {
+              "Actions": [
+                {
+                  "ActionID": "action-example2",
+                  "LinkedTitle": false,
+                  "Name": "Example2",
+                  "Resources": null,
+                  "Settings": {
+                    "openInBrowser": true,
+                    "path": "https://example.org"
+                  },
+                  "State": 0,
+                  "States": [
+                    {
+                      "Title": "Example2",
+                      "ShowTitle": true,
+                      "TitleAlignment": "bottom",
+                      "TitleColor": "#ffffff",
+                      "FontFamily": "",
+                      "FontSize": 8,
+                      "FontStyle": "",
+                      "FontUnderline": false,
+                      "OutlineThickness": 0
+                    }
+                  ],
+                  "UUID": "com.elgato.streamdeck.system.website"
+                },
+                {
+                  "ActionID": "action-air-horn",
+                  "LinkedTitle": false,
+                  "Name": "Air Horn",
+                  "Resources": null,
+                  "Settings": {
+                    "path": "/Users/test/sounds/airhorn.wav",
+                    "volume": 80
+                  },
+                  "State": 0,
+                  "States": [
+                    {
+                      "Title": "Air Horn",
+                      "ShowTitle": true,
+                      "TitleAlignment": "bottom",
+                      "TitleColor": "#ffffff",
+                      "FontFamily": "",
+                      "FontSize": 8,
+                      "FontStyle": "",
+                      "FontUnderline": false,
+                      "OutlineThickness": 0
+                    }
+                  ],
+                  "UUID": "com.elgato.streamdeck.soundboard.playaudio"
+                }
+              ]
+            }
+          ]
+        },
+        "3,0": {
+          "ActionID": "action-dead-multi",
+          "LinkedTitle": false,
+          "Name": "Dead Multi",
+          "Resources": null,
+          "Settings": {},
+          "State": 0,
+          "States": [
+            {
+              "Title": "Dead Multi",
+              "ShowTitle": true,
+              "TitleAlignment": "bottom",
+              "TitleColor": "#ffffff",
+              "FontFamily": "",
+              "FontSize": 8,
+              "FontStyle": "",
+              "FontUnderline": false,
+              "OutlineThickness": 0
+            }
+          ],
+          "UUID": "com.elgato.streamdeck.multiactions.routine2",
+          "Actions": [
+            {
+              "Actions": [
+                {
+                  "ActionID": "action-air-horn-2",
+                  "LinkedTitle": false,
+                  "Name": "Air Horn 2",
+                  "Resources": null,
+                  "Settings": {},
+                  "State": 0,
+                  "States": [
+                    {
+                      "Title": "Air Horn 2",
+                      "ShowTitle": true,
+                      "TitleAlignment": "bottom",
+                      "TitleColor": "#ffffff",
+                      "FontFamily": "",
+                      "FontSize": 8,
+                      "FontStyle": "",
+                      "FontUnderline": false,
+                      "OutlineThickness": 0
+                    }
+                  ],
+                  "UUID": "com.elgato.streamdeck.soundboard.playaudio"
+                }
+              ]
+            }
+          ]
+        },
+        "4,0": {
+          "ActionID": "action-next-page",
+          "LinkedTitle": false,
+          "Name": "Next Page",
+          "Resources": null,
+          "Settings": {},
+          "State": 0,
+          "States": [
+            {
+              "Title": "Next",
+              "ShowTitle": true,
+              "TitleAlignment": "bottom",
+              "TitleColor": "#ffffff",
+              "FontFamily": "",
+              "FontSize": 8,
+              "FontStyle": "",
+              "FontUnderline": false,
+              "OutlineThickness": 0
+            }
+          ],
+          "UUID": "com.elgato.streamdeck.page.next"
+        },
+        "0,1": {
+          "ActionID": "action-previous-page",
+          "LinkedTitle": false,
+          "Name": "Previous Page",
+          "Resources": null,
+          "Settings": {},
+          "State": 0,
+          "States": [
+            {
+              "Title": "Prev",
+              "ShowTitle": true,
+              "TitleAlignment": "bottom",
+              "TitleColor": "#ffffff",
+              "FontFamily": "",
+              "FontSize": 8,
+              "FontStyle": "",
+              "FontUnderline": false,
+              "OutlineThickness": 0
+            }
+          ],
+          "UUID": "com.elgato.streamdeck.page.previous"
+        },
+        "1,1": {
+          "ActionID": "action-open-notes",
+          "LinkedTitle": false,
+          "Name": "Open Notes",
+          "Resources": null,
+          "Settings": {
+            "path": "/Applications/Notes.app"
+          },
+          "State": 0,
+          "States": [
+            {
+              "Title": "Notes",
+              "ShowTitle": true,
+              "TitleAlignment": "bottom",
+              "TitleColor": "#ffffff",
+              "FontFamily": "",
+              "FontSize": 8,
+              "FontStyle": "",
+              "FontUnderline": false,
+              "OutlineThickness": 0
+            }
+          ],
+          "UUID": "com.elgato.streamdeck.system.openapp"
+        },
+        "2,1": {
+          "ActionID": "action-open-app-no-path",
+          "LinkedTitle": false,
+          "Name": "Open App No Path",
+          "Resources": null,
+          "Settings": {},
+          "State": 0,
+          "States": [
+            {
+              "Title": "No Path",
+              "ShowTitle": true,
+              "TitleAlignment": "bottom",
+              "TitleColor": "#ffffff",
+              "FontFamily": "",
+              "FontSize": 8,
+              "FontStyle": "",
+              "FontUnderline": false,
+              "OutlineThickness": 0
+            }
+          ],
+          "UUID": "com.elgato.streamdeck.system.openapp"
+        },
+        "3,1": {
+          "ActionID": "action-hotkey-switch",
+          "LinkedTitle": false,
+          "Name": "Hotkey Switch",
+          "Resources": null,
+          "Settings": {},
+          "State": 0,
+          "States": [
+            {
+              "Title": "Switch",
+              "ShowTitle": true,
+              "TitleAlignment": "bottom",
+              "TitleColor": "#ffffff",
+              "FontFamily": "",
+              "FontSize": 8,
+              "FontStyle": "",
+              "FontUnderline": false,
+              "OutlineThickness": 0
+            }
+          ],
+          "UUID": "com.elgato.streamdeck.system.hotkeyswitch"
+        },
+        "4,1": {
+          "ActionID": "action-cpu-usage",
+          "LinkedTitle": false,
+          "Name": "CPU Usage",
+          "Resources": null,
+          "Settings": {},
+          "State": 0,
+          "States": [
+            {
+              "Title": "CPU 42%",
+              "ShowTitle": true,
+              "Image": "Images/plugin.png",
+              "TitleAlignment": "bottom",
+              "TitleColor": "#ffffff",
+              "FontFamily": "",
+              "FontSize": 8,
+              "FontStyle": "",
+              "FontUnderline": false,
+              "OutlineThickness": 0
+            }
+          ],
+          "UUID": "com.elgato.cpu.cpu"
+        },
+        "0,2": {
+          "ActionID": "action-plugin-no-visual",
+          "LinkedTitle": false,
+          "Name": "CPU Meter",
+          "Resources": null,
+          "Settings": {},
+          "State": 0,
+          "States": [
+            {
+              "Title": "",
+              "ShowTitle": true,
+              "TitleAlignment": "middle",
+              "TitleColor": "#ffffff",
+              "FontFamily": "",
+              "FontSize": 17,
+              "FontStyle": "",
+              "FontUnderline": false,
+              "OutlineThickness": 2
+            }
+          ],
+          "UUID": "com.example.cpumeter.gauge"
+        }
+      },
+      "Type": "Keypad"
+    }
+  ],
+  "Icon": "",
+  "Name": "Page Two"
+}

@@ -42,4 +42,12 @@
     </Content>
   </ItemGroup>
 
+  <!-- Synthetic Elgato ProfilesV3 store (ElgatoProfileReader/Translator
+       tests) copies to the test output dir the same way. -->
+  <ItemGroup>
+    <Content Include="Fixtures/**/*">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </Content>
+  </ItemGroup>
+
 </Project>

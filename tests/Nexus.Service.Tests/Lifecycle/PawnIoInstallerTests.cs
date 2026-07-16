@@ -153,4 +153,79 @@ public class PawnIoInstallerTests
 
         Assert.False(PawnIoInstaller.ShouldPromptUpgrade(Bundled, Bundled, marker, BootTime));
     }
+
+    // --- NeedsRepair ---
+
+    [Fact]
+    public void NeedsRepair_returns_true_when_version_current_but_device_unavailable()
+    {
+        // The reported field state: the registry reads version-current while
+        // no \Device\PawnIO object exists.
+        Assert.True(PawnIoInstaller.NeedsRepair(Bundled, Bundled, deviceAvailable: false));
+    }
+
+    [Fact]
+    public void NeedsRepair_returns_true_when_installed_version_unknown_and_device_unavailable()
+    {
+        // Registered service whose ImagePath file is gone reads as unknown.
+        Assert.True(PawnIoInstaller.NeedsRepair(null, Bundled, deviceAvailable: false));
+    }
+
+    [Fact]
+    public void NeedsRepair_returns_true_when_installed_newer_and_device_unavailable()
+    {
+        Assert.True(PawnIoInstaller.NeedsRepair(new Version(2, 3, 0, 0), Bundled, deviceAvailable: false));
+    }
+
+    [Fact]
+    public void NeedsRepair_returns_false_when_device_is_available()
+    {
+        Assert.False(PawnIoInstaller.NeedsRepair(Bundled, Bundled, deviceAvailable: true));
+    }
+
+    [Fact]
+    public void NeedsRepair_returns_false_when_device_is_available_and_version_unknown()
+    {
+        // A working driver of unknown provenance is left alone.
+        Assert.False(PawnIoInstaller.NeedsRepair(null, Bundled, deviceAvailable: true));
+    }
+
+    [Fact]
+    public void NeedsRepair_returns_false_when_an_upgrade_will_run_instead()
+    {
+        // The upgrade path rebinds the device, so it subsumes the repair.
+        Assert.False(PawnIoInstaller.NeedsRepair(Older, Bundled, deviceAvailable: false));
+    }
+
+    // --- IsStagedThisBoot ---
+
+    [Fact]
+    public void IsStagedThisBoot_returns_true_for_matching_version_on_same_boot()
+    {
+        var marker = new PawnIoUpgradeMarker { StagedVersion = "2.2.0.0", StagedAtBootTimeUtc = BootTime };
+
+        Assert.True(PawnIoInstaller.IsStagedThisBoot(marker, Bundled, BootTime.AddSeconds(2)));
+    }
+
+    [Fact]
+    public void IsStagedThisBoot_returns_false_after_a_reboot()
+    {
+        var marker = new PawnIoUpgradeMarker { StagedVersion = "2.2.0.0", StagedAtBootTimeUtc = BootTime };
+
+        Assert.False(PawnIoInstaller.IsStagedThisBoot(marker, Bundled, BootTime.AddHours(1)));
+    }
+
+    [Fact]
+    public void IsStagedThisBoot_returns_false_for_a_different_staged_version()
+    {
+        var marker = new PawnIoUpgradeMarker { StagedVersion = "2.1.0.0", StagedAtBootTimeUtc = BootTime };
+
+        Assert.False(PawnIoInstaller.IsStagedThisBoot(marker, Bundled, BootTime));
+    }
+
+    [Fact]
+    public void IsStagedThisBoot_returns_false_without_a_marker()
+    {
+        Assert.False(PawnIoInstaller.IsStagedThisBoot(null, Bundled, BootTime));
+    }
 }

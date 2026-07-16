@@ -265,6 +265,65 @@ public class DeviceHandlerTests
         Assert.Equal(new[] { (0x3402, 0x0C00), (0x3402, 0x0C01), (0x3402, 0x0C02) }, ids);
     }
 
+    [Fact]
+    public void Aw5_id_and_metadata()
+    {
+        var h = new Aw5Handler();
+        Assert.Equal("aw5", h.Id);
+        Assert.Equal("iBUYPOWER AW5", h.Name);
+        Assert.Equal("cooler", h.Category);
+    }
+
+    [Fact]
+    public void Aw5_identifiers_are_the_published_driver_variants_only()
+    {
+        // One PID per ODM variant that has a published driver binary. Apaltek
+        // (0x0405) is deliberately absent - listing a cooler whose driver cannot
+        // be fetched would show a device Nexus can neither drive nor explain.
+        var ids = new Aw5Handler().Identifiers.Select(i => (i.VendorId, i.ProductId)).ToArray();
+        Assert.Equal(new[] { (0x3402, 0x0406), (0x3402, 0x0407) }, ids);
+    }
+
+    [Fact]
+    public void Aw5_detects_known_vid_pids()
+    {
+        var h = new Aw5Handler();
+        foreach (var id in h.Identifiers)
+        {
+            Assert.True(h.IsConnected(new List<UsbDeviceEntry> { Entry(id.VendorId, id.ProductId) }),
+                $"Aw5Handler should detect {id.VendorId:X4}:{id.ProductId:X4}");
+        }
+    }
+
+    [Fact]
+    public void Aw5_ignores_apaltek_and_sibling_ibuypower_hardware()
+    {
+        var h = new Aw5Handler();
+        // 0x0405 Apaltek (unpublished driver), 0x0900 MiniHub - same VID, not an AW5 we drive.
+        Assert.False(h.IsConnected(new List<UsbDeviceEntry> { Entry(0x3402, 0x0405) }));
+        Assert.False(h.IsConnected(new List<UsbDeviceEntry> { Entry(0x3402, 0x0900) }));
+    }
+
+    [Fact]
+    public void Aw5_offers_the_nexus_control_gate()
+    {
+        // Nexus never opens the cooler, but the gate still governs the vendor
+        // driver process, so the UI must show the switch.
+        Assert.True(((IDeviceHandler)new Aw5Handler()).SupportsNexusControl);
+        // The interface default stays true, so no existing handler is affected.
+        Assert.True(((IDeviceHandler)TestHandlers.FanHub()).SupportsNexusControl);
+    }
+
+    [Fact]
+    public void Aw5_is_first_party_so_it_carries_no_experimental_badge()
+    {
+        // Experimental no longer short-circuits on the control opt-out, so the brand
+        // list is the only thing keeping the badge off this first-party cooler. Read
+        // the id off the handler: a rename must fail here, not ship a badge.
+        var h = (IDeviceHandler)new Aw5Handler();
+        Assert.False(DeviceControlPolicy.IsExperimental(h.Id));
+    }
+
     public static IEnumerable<object[]> AllHandlers()
     {
         yield return new object[] { TestHandlers.Cnvs() };
@@ -272,5 +331,6 @@ public class DeviceHandlerTests
         yield return new object[] { TestHandlers.Y70() };
         yield return new object[] { new KeebHandler() };
         yield return new object[] { TestHandlers.FanHub() };
+        yield return new object[] { new Aw5Handler() };
     }
 }

@@ -85,7 +85,7 @@ public sealed class SmartLightFrameWriter : IHostedService, IDisposable
             }
             // Streamed-static devices (Govee razer/DreamView) only hold a color
             // while frames keep flowing - push every tick; the throttle paces the
-            // wire to each device's interval. No-op when none are driven.
+            // wire to each device's interval. No-op when none are controlled.
             _provider.MaintainStreamedStatic();
             return;
         }
@@ -95,6 +95,7 @@ public sealed class SmartLightFrameWriter : IHostedService, IDisposable
 
         var settings = _store.Load();
         var disabled = settings.Devices.DisabledLightingDevices;
+        var uncontrolled = settings.Devices.UncontrolledLightingDevices;
         var prefs = settings.Devices.LightingDevicePrefs;
         var global = Math.Clamp(settings.Lighting.GlobalBrightness, 0f, 1f);
         var streamed = false;
@@ -105,6 +106,7 @@ public sealed class SmartLightFrameWriter : IHostedService, IDisposable
             if (!_provider.Owns(frame.Id)) continue;
             if (frame.LedCount <= 0) continue;
             if (disabled.Contains(frame.Id)) continue;
+            if (uncontrolled.Contains(frame.Id)) continue;
 
             var devBrightness = prefs.TryGetValue(frame.Id, out var pref) ? pref.Brightness : 100;
             var b01 = Math.Min(Math.Clamp(devBrightness, 0, 100) / 100f, global);

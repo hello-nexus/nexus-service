@@ -28,19 +28,6 @@ public class SetRotaryWheelsBody
 {
     public string Left { get; set; } = "";
     public string Right { get; set; } = "";
-    public List<RotaryAppOverride> Apps { get; set; } = new();
-}
-
-public class RotaryAppOverride
-{
-    public string TargetId { get; set; } = "";
-    public string Left { get; set; } = "";
-    public string Right { get; set; } = "";
-}
-
-public class SetRotarySensitivityBody
-{
-    public string Sensitivity { get; set; } = "Balanced";
 }
 
 public class GetKeebSettingsResponse : ApiResponse
@@ -53,12 +40,10 @@ public class GetKeebSettingsResponse : ApiResponse
     // without it the panel cannot restore the wheels after a reload.
     public string RotaryLeft { get; set; } = "";
     public string RotaryRight { get; set; } = "";
-    public string RotarySensitivity { get; set; } = "Balanced";
     public string AnimationMode { get; set; } = "Static";
     public string Speed { get; set; } = "Medium";
     public string Direction { get; set; } = "Forward";
     public int Brightness { get; set; } = 80;
-    public bool KeyIndicator { get; set; }
     public bool KeyReactive { get; set; }
     public bool KeyReactiveMask { get; set; }
     public string KeyReactiveMode { get; set; } = "Off";
@@ -79,11 +64,23 @@ public class SetFirmwareLightingBody
     public string Speed { get; set; } = "Medium";
     public string Direction { get; set; } = "Forward";
     public int Brightness { get; set; } = 80;
-    public bool KeyReactive { get; set; }
-    public bool KeyReactiveMask { get; set; }
-    public string KeyReactiveMode { get; set; } = "Off";
-    public RGBA KeyReactiveColor { get; set; }
-    public bool KeyIndicator { get; set; }
+}
+
+/// <summary>One key-assignment write: web layout cell (x=row, y=index in row) plus the function to bind.</summary>
+public class SetLayerKeyBody
+{
+    public int X { get; set; }
+    public int Y { get; set; }
+    public string Func { get; set; } = "";
+    public string Mode { get; set; } = "";
+    public int? Input { get; set; }
+}
+
+public class SetLayerKeyResponse : ApiResponse
+{
+    public KeyboardState State { get; set; } = new();
+    /// <summary>False when the keyboard was disconnected or the onboard write could not be verified.</summary>
+    public bool WroteDevice { get; set; }
 }
 
 public class SetGameModeBody
@@ -99,6 +96,17 @@ public class GetMacroResponse : ApiResponse
     public KeebMacro Macro { get; set; } = new();
 }
 
+public class SetMacroResponse : ApiResponse
+{
+    public KeebMacro Macro { get; set; } = new();
+    /// <summary>True when the encoded actions overflowed the 256-byte onboard stream and were cut.</summary>
+    public bool Truncated { get; set; }
+    /// <summary>Key names with no HID mapping - persisted but never played by the firmware.</summary>
+    public string[] DroppedKeys { get; set; } = System.Array.Empty<string>();
+    /// <summary>False when the keyboard was disconnected or the onboard write could not be verified.</summary>
+    public bool WroteDevice { get; set; }
+}
+
 public class KeebMacro
 {
     public int Index { get; set; }
@@ -110,16 +118,11 @@ public class MacroKey
     public string Key { get; set; } = "";
     public int Duration { get; set; }
     public string Type { get; set; } = "KeyDown";
-    public string Category { get; set; } = "";
-    public bool Meta { get; set; }
-    public bool Ctrl { get; set; }
-    public bool Alt { get; set; }
-    public bool Shift { get; set; }
 }
 
 public class SetMacroBody
 {
-    public List<MacroKey> Keys { get; set; } = new();
+    public List<MacroKey>? Keys { get; set; }
 }
 
 public class InputterBody

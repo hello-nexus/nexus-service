@@ -1,6 +1,6 @@
 # Network Transport and Polling Inventory
 
-Current as of 2026-07-10. This document inventories the network traffic that
+Current as of 2026-07-16. This document inventories the network traffic that
 the app sends today between the desktop dashboard, the panel surfaces, and the
 local service, focused on transport semantics: cadence, WebSocket topics,
 multiplex behavior, snapshot-on-subscribe, and auth/reconnect. The exhaustive
@@ -59,7 +59,8 @@ is called out here:
   proxying (`/tryx/cloud/*`) and local media upload/select. No WebSocket
   topic.
 - `/cloud/*` - online account registration/login/sync endpoints
-  (`nexus-api`-backed). No WebSocket topic.
+  (`nexus-api`-backed), plus device reporting/management and the
+  `/cloud/benchmarks/submit` leaderboard forwarder. No WebSocket topic.
 - `/home-assistant/*` - Home Assistant entity config and control. Introduces
   the `homeAssistant` multiplex topic (see below).
 - `/rtc/offer` - WebRTC DataChannel direct P2P signaling: the phone posts an
@@ -238,6 +239,7 @@ Other slow / event-driven topics (e.g. `prefs`, `lighting`, `cooling`,
 | `system/accent` | event-driven on OS accent color change, Linux only | `{hex: string}` | `SystemAccentSync` | Live OS accent colour sync (watches the XDG portal). |
 | `transfer` | event-driven when a phone-to-PC transfer lands | event payload rides the frame directly | `TransferToasts` | No canonical resource to refetch; the payload is the notification. |
 | `update` | event-driven when an update becomes available or finishes staging | `{revision: long}` | dashboard `sidebar` | Push-driven refetch of `GET /update/status` instead of waiting out the sidebar's 60s poll. |
+| `streamdeckTiles` | `StreamDeckConnectionWorker` | event-driven per-tile on a wire-hash change, capped at 4 monitoring and 4 weather tiles per tick round-robin; no snapshot registry - a fresh subscriber clears every tracked hash so the following tick(s) re-broadcast every visible tile | `StreamDeckDevicePage` Customize tab | Live JPEG render of a visible monitoring/weather Stream Deck key, pixel-identical to what the physical key shows; broadcast only while subscribed. |
 
 Notes:
 

@@ -4,6 +4,7 @@ using System.Text.Json;
 using System.Threading.Tasks;
 using Microsoft.Extensions.DependencyInjection;
 using Nexus.Service.Common.ExternalTools;
+using Nexus.Service.Devices;
 using Nexus.Service.Devices.Detection;
 using Nexus.Service.Models.Widgets;
 using Nexus.Service.Serialization;
@@ -25,7 +26,10 @@ public static class AppInstallActions
             var toolManager = services.GetRequiredService<ExternalToolManager>();
             var adbRegistry = services.GetRequiredService<IAdbDeviceRegistry>();
 
-            if (!appRegistry.TryGet(appId, out var entry) || entry.Manifest.Driver is null)
+            // A blocked driver is reported as having no install block at all, so the
+            // app page offers no button for a path the service will refuse.
+            if (!appRegistry.TryGet(appId, out var entry) || entry.Manifest.Driver is null
+                || services.GetRequiredService<DriverExePolicy>().IsBlocked(entry.Manifest.Driver))
             {
                 var empty = new AppInstallStatusDto { HasInstall = false, State = "notrunning" };
                 var emptyJson = JsonSerializer.Serialize(empty, AppJsonContext.Default.AppInstallStatusDto);
@@ -134,6 +138,28 @@ public static class AppInstallActions
             }
 
             var driver = entry.Manifest.Driver;
+
+            if (services.GetRequiredService<DriverExePolicy>().IsBlocked(driver))
+            {
+                var blocked = new AppInstallTriggerDto { Started = false, Reason = "driver-exe-disabled" };
+                var blockedJson = JsonSerializer.Serialize(blocked, AppJsonContext.Default.AppInstallTriggerDto);
+                using var blockedDoc = JsonDocument.Parse(blockedJson);
+                return blockedDoc.RootElement.Clone();
+            }
+
+            // The device's Nexus Control gate governs this driver too, and the
+            // auto-launch worker would terminate anything started behind its back
+            // within a tick - so refuse rather than start a process that is killed
+            // seconds later while it holds the device.
+            if (driver.DeviceId is not null
+                && !services.GetRequiredService<DeviceControlGate>().IsEnabled(driver.DeviceId))
+            {
+                var gated = new AppInstallTriggerDto { Started = false, Reason = "nexus-control-off" };
+                var gatedJson = JsonSerializer.Serialize(gated, AppJsonContext.Default.AppInstallTriggerDto);
+                using var gatedDoc = JsonDocument.Parse(gatedJson);
+                return gatedDoc.RootElement.Clone();
+            }
+
             var variant = FirstValue(driver.Variants) ?? "default";
             var spec = DriverToolSpecFactory.Build(driver, variant, entry.RootPath);
 

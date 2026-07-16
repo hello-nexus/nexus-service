@@ -1,10 +1,18 @@
 using System.Collections.Generic;
 using Nexus.Service.Models.Common;
 using Nexus.Service.Models.Peripherals.Keeb;
+using Nexus.Service.Peripherals.Hyte.Keeb;
 using Nexus.Service.Persistence;
 
 namespace Nexus.Service.Peripherals.Keeb;
 
+/// <summary>
+/// No-hardware <see cref="IKeebProvider"/> (non-Windows platforms and the
+/// <see cref="IInputterProvider"/> fallback). Settings and macros persist as
+/// desired state; anything that requires the physical keyboard - key
+/// assignment, onboard verification - reports honestly that no device is
+/// connected instead of pretending.
+/// </summary>
 public sealed class StubKeebProvider : IKeebProvider, IInputterProvider
 {
     private readonly IConfigStore _store;
@@ -31,12 +39,10 @@ public sealed class StubKeebProvider : IKeebProvider, IInputterProvider
             WindowsKeyDisabled = k.GameMode.WindowsKey,
             RotaryLeft = k.RotaryLeft,
             RotaryRight = k.RotaryRight,
-            RotarySensitivity = k.RotarySensitivity,
             AnimationMode = k.FirmwareLighting.AnimationMode,
             Speed = k.FirmwareLighting.Speed,
             Direction = k.FirmwareLighting.Direction,
             Brightness = k.FirmwareLighting.Brightness,
-            KeyIndicator = k.FirmwareLighting.KeyIndicator,
             KeyReactive = k.FirmwareLighting.KeyReactive,
             KeyReactiveMask = k.FirmwareLighting.KeyReactiveMask,
             KeyReactiveMode = k.FirmwareLighting.KeyReactiveMode,
@@ -50,26 +56,13 @@ public sealed class StubKeebProvider : IKeebProvider, IInputterProvider
         };
     }
 
-    public string[] GetRotaryFunctions() => new[]
-    {
-        "VolumeAdjustment", "BrightnessAdjustment", "Scale", "AltTab", "ScrollX", "ScrollY",
-    };
+    public string[] GetRotaryFunctions() => KeebSettingsCodec.RotaryFunctions;
 
     public void SetRotary(SetRotaryWheelsBody body) => _store.Update(s =>
     {
         s.Keeb.RotaryLeft = body.Left;
         s.Keeb.RotaryRight = body.Right;
-        s.Keeb.RotaryApps.Clear();
-        foreach (var a in body.Apps)
-        {
-            s.Keeb.RotaryApps.Add(new KeebRotaryAppOverride { TargetId = a.TargetId, Left = a.Left, Right = a.Right });
-        }
     });
-
-    public void SetRotarySensitivity(string sensitivity) =>
-        _store.Update(s => s.Keeb.RotarySensitivity = sensitivity);
-
-    public void SetKeyReactive(SetFirmwareLightingBody body) => SetFirmwareLighting(body);
 
     public void SetFirmwareLighting(SetFirmwareLightingBody body) => _store.Update(s =>
     {
@@ -77,17 +70,6 @@ public sealed class StubKeebProvider : IKeebProvider, IInputterProvider
         s.Keeb.FirmwareLighting.Speed = body.Speed;
         s.Keeb.FirmwareLighting.Direction = body.Direction;
         s.Keeb.FirmwareLighting.Brightness = body.Brightness;
-        s.Keeb.FirmwareLighting.KeyReactive = body.KeyReactive;
-        s.Keeb.FirmwareLighting.KeyReactiveMask = body.KeyReactiveMask;
-        s.Keeb.FirmwareLighting.KeyReactiveMode = body.KeyReactiveMode;
-        s.Keeb.FirmwareLighting.KeyReactiveColor = new RgbaColor
-        {
-            R = body.KeyReactiveColor.R,
-            G = body.KeyReactiveColor.G,
-            B = body.KeyReactiveColor.B,
-            A = body.KeyReactiveColor.A,
-        };
-        s.Keeb.FirmwareLighting.KeyIndicator = body.KeyIndicator;
     });
 
     public void SetPassiveLighting(SetPassiveLightingBody body) => _store.Update(s =>
@@ -115,44 +97,50 @@ public sealed class StubKeebProvider : IKeebProvider, IInputterProvider
     public KeebMacro GetMacro(int index)
     {
         var s = _store.Load();
-        if (s.Keeb.Macros.TryGetValue(index, out var doc))
-        {
-            return Convert(doc);
-        }
+        if (s.Keeb.Macros.TryGetValue(index, out var doc)) return Convert(doc, index);
         return new() { Index = index };
     }
 
-    public KeebMacro SetMacro(int index, SetMacroBody body)
+    public SetMacroResponse SetMacro(int index, SetMacroBody body)
     {
-        _store.Update(s =>
+        var doc = new KeebMacroDocument { Index = index };
+        foreach (var k in body.Keys ?? new List<MacroKey>())
         {
-            var doc = new KeebMacroDocument { Index = index };
-            foreach (var k in body.Keys)
+            doc.Keys.Add(new Persistence.KeebMacroKey
             {
-                doc.Keys.Add(new Persistence.KeebMacroKey
-                {
-                    Key = k.Key,
-                    Duration = k.Duration,
-                    Type = k.Type,
-                    Category = k.Category,
-                    Meta = k.Meta,
-                    Ctrl = k.Ctrl,
-                    Alt = k.Alt,
-                    Shift = k.Shift,
-                });
-            }
-            s.Keeb.Macros[index] = doc;
-        });
-        return GetMacro(index);
+                Key = k.Key,
+                Duration = k.Duration,
+                Type = k.Type,
+            });
+        }
+        var built = KeebMacroCodec.Build(doc);
+        _store.Update(s => s.Keeb.Macros[index] = doc);
+        return new SetMacroResponse
+        {
+            Macro = GetMacro(index),
+            Truncated = built.Truncated,
+            DroppedKeys = built.DroppedKeys.ToArray(),
+            WroteDevice = false,
+        };
+    }
+
+    public SetLayerKeyResponse SetLayerKey(int layer, SetLayerKeyBody body)
+        => new() { Error = true, Msg = "keyboard is not connected", WroteDevice = false };
+
+    public SetLayerKeyResponse ResetLayer(int layer)
+        => new() { Error = true, Msg = "keyboard is not connected", WroteDevice = false };
+
+    public void ApplyPersistedAssignments()
+    {
     }
 
     public void Send(InputterBody body)
     {
     }
 
-    private static KeebMacro Convert(KeebMacroDocument doc)
+    private static KeebMacro Convert(KeebMacroDocument doc, int index)
     {
-        var m = new KeebMacro { Index = doc.Index };
+        var m = new KeebMacro { Index = index };
         foreach (var k in doc.Keys)
         {
             m.Keys.Add(new MacroKey
@@ -160,11 +148,6 @@ public sealed class StubKeebProvider : IKeebProvider, IInputterProvider
                 Key = k.Key,
                 Duration = k.Duration,
                 Type = k.Type,
-                Category = k.Category,
-                Meta = k.Meta,
-                Ctrl = k.Ctrl,
-                Alt = k.Alt,
-                Shift = k.Shift,
             });
         }
         return m;

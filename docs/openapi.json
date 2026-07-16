@@ -365,6 +365,28 @@
         }
       }
     },
+    "/system/pick-path": {
+      "post": {
+        "tags": [
+          "Nexus"
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PickPathBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        }
+      }
+    },
     "/system/open-task-manager": {
       "post": {
         "tags": [
@@ -537,6 +559,35 @@
             "application/json": {
               "schema": {
                 "$ref": "#/components/schemas/SetAudioDefaultBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/system/audio/play": {
+      "post": {
+        "tags": [
+          "Nexus"
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PlayAudioBody"
               }
             }
           },
@@ -1002,7 +1053,7 @@
         }
       }
     },
-    "/cooling/calibrations": {
+    "/cooling/calibration/results": {
       "get": {
         "tags": [
           "Nexus"
@@ -2888,6 +2939,35 @@
             "application/json": {
               "schema": {
                 "$ref": "#/components/schemas/SetLightingDevicePowerBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/devices/lighting-devices/controlled": {
+      "post": {
+        "tags": [
+          "Nexus"
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SetLightingDeviceControlledBody"
               }
             }
           },
@@ -4835,6 +4915,70 @@
         }
       }
     },
+    "/keeb/layer/{layer}/key": {
+      "post": {
+        "tags": [
+          "Nexus"
+        ],
+        "parameters": [
+          {
+            "name": "layer",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "pattern": "^-?(?:0|[1-9]\\d*)$",
+              "type": [
+                "integer",
+                "string"
+              ],
+              "format": "int32"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SetLayerKeyBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        }
+      }
+    },
+    "/keeb/layer/{layer}/reset": {
+      "post": {
+        "tags": [
+          "Nexus"
+        ],
+        "parameters": [
+          {
+            "name": "layer",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "pattern": "^-?(?:0|[1-9]\\d*)$",
+              "type": [
+                "integer",
+                "string"
+              ],
+              "format": "int32"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        }
+      }
+    },
     "/keeb/settings": {
       "get": {
         "tags": [
@@ -4883,35 +5027,6 @@
             "application/json": {
               "schema": {
                 "$ref": "#/components/schemas/SetRotaryWheelsBody"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "200": {
-            "description": "OK",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ApiResponse"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
-    "/keeb/rotary/sensitivity": {
-      "post": {
-        "tags": [
-          "Nexus"
-        ],
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/SetRotarySensitivityBody"
               }
             }
           },
@@ -5040,14 +5155,7 @@
         ],
         "responses": {
           "200": {
-            "description": "OK",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/GetMacroResponse"
-                }
-              }
-            }
+            "description": "OK"
           }
         }
       },
@@ -5082,14 +5190,7 @@
         },
         "responses": {
           "200": {
-            "description": "OK",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/GetMacroResponse"
-                }
-              }
-            }
+            "description": "OK"
           }
         }
       }
@@ -5287,6 +5388,18 @@
                 }
               }
             }
+          }
+        }
+      }
+    },
+    "/streamdeck/pending-edit": {
+      "get": {
+        "tags": [
+          "Nexus"
+        ],
+        "responses": {
+          "200": {
+            "description": "OK"
           }
         }
       }
@@ -5561,6 +5674,161 @@
               "type": "string"
             }
           },
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        }
+      }
+    },
+    "/streamdeck/elgato/profiles": {
+      "get": {
+        "tags": [
+          "Nexus"
+        ],
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        }
+      }
+    },
+    "/streamdeck/elgato/profiles/{id}/import": {
+      "post": {
+        "tags": [
+          "Nexus"
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        }
+      }
+    },
+    "/streamdeck/dev/sim-press": {
+      "post": {
+        "tags": [
+          "Nexus"
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/StreamDeckSimPressBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/streamdeck/dev/models": {
+      "get": {
+        "tags": [
+          "Nexus"
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StreamDeckDevModelsResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/streamdeck/dev/simulate": {
+      "post": {
+        "tags": [
+          "Nexus"
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/StreamDeckSimulateBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "Nexus"
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/deck/images": {
+      "post": {
+        "tags": [
+          "Nexus"
+        ],
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        }
+      }
+    },
+    "/deck/images/{id}": {
+      "get": {
+        "tags": [
+          "Nexus"
+        ],
+        "parameters": [
           {
             "name": "id",
             "in": "path",
@@ -5900,6 +6168,30 @@
           },
           "required": true
         },
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        }
+      }
+    },
+    "/displays/touch-mapping/repair": {
+      "post": {
+        "tags": [
+          "Nexus"
+        ],
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        }
+      }
+    },
+    "/displays/touch-mapping/setup-wizard": {
+      "post": {
+        "tags": [
+          "Nexus"
+        ],
         "responses": {
           "200": {
             "description": "OK"
@@ -10601,6 +10893,16 @@
         "properties": {
           "name": {
             "type": "string"
+          },
+          "config": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/DeckConfig"
+              }
+            ]
           }
         }
       },
@@ -12593,9 +12895,6 @@
           "rotaryRight": {
             "type": "string"
           },
-          "rotarySensitivity": {
-            "type": "string"
-          },
           "animationMode": {
             "type": "string"
           },
@@ -12612,9 +12911,6 @@
               "string"
             ],
             "format": "int32"
-          },
-          "keyIndicator": {
-            "type": "boolean"
           },
           "keyReactive": {
             "type": "boolean"
@@ -12647,20 +12943,6 @@
             "items": {
               "$ref": "#/components/schemas/LightingDevice"
             }
-          }
-        }
-      },
-      "GetMacroResponse": {
-        "type": "object",
-        "properties": {
-          "macro": {
-            "$ref": "#/components/schemas/KeebMacro"
-          },
-          "error": {
-            "type": "boolean"
-          },
-          "msg": {
-            "type": "string"
           }
         }
       },
@@ -13247,9 +13529,6 @@
           "rotaryRight": {
             "type": "string"
           },
-          "rotarySensitivity": {
-            "type": "string"
-          },
           "firmwareLighting": {
             "$ref": "#/components/schemas/KeebFirmwareLightingDefaults"
           }
@@ -13303,25 +13582,6 @@
               "string"
             ],
             "format": "int32"
-          }
-        }
-      },
-      "KeebMacro": {
-        "type": "object",
-        "properties": {
-          "index": {
-            "pattern": "^-?(?:0|[1-9]\\d*)$",
-            "type": [
-              "integer",
-              "string"
-            ],
-            "format": "int32"
-          },
-          "keys": {
-            "type": "array",
-            "items": {
-              "$ref": "#/components/schemas/MacroKey"
-            }
           }
         }
       },
@@ -13720,6 +13980,9 @@
           "ledsOn": {
             "type": "boolean"
           },
+          "controlled": {
+            "type": "boolean"
+          },
           "brightness": {
             "pattern": "^-?(?:0|[1-9]\\d*)$",
             "type": [
@@ -14039,21 +14302,6 @@
           },
           "type": {
             "type": "string"
-          },
-          "category": {
-            "type": "string"
-          },
-          "meta": {
-            "type": "boolean"
-          },
-          "ctrl": {
-            "type": "boolean"
-          },
-          "alt": {
-            "type": "boolean"
-          },
-          "shift": {
-            "type": "boolean"
           }
         }
       },
@@ -15406,6 +15654,15 @@
               "boolean"
             ]
           },
+          "widgetPadding": {
+            "pattern": "^-?(?:0|[1-9]\\d*)(?:\\.\\d+)?(?:[eE][+-]?\\d+)?$",
+            "type": [
+              "null",
+              "number",
+              "string"
+            ],
+            "format": "double"
+          },
           "themeSyncWithDesktop": {
             "type": [
               "null",
@@ -15491,6 +15748,15 @@
               "null",
               "string"
             ]
+          },
+          "singleWidgetConfigs": {
+            "type": [
+              "null",
+              "object"
+            ],
+            "additionalProperties": {
+              "type": "object"
+            }
           }
         }
       },
@@ -16059,6 +16325,14 @@
           }
         }
       },
+      "PickPathBody": {
+        "type": "object",
+        "properties": {
+          "folder": {
+            "type": "boolean"
+          }
+        }
+      },
       "PingResponse": {
         "type": "object",
         "properties": {
@@ -16076,6 +16350,23 @@
           },
           "machineName": {
             "type": "string"
+          }
+        }
+      },
+      "PlayAudioBody": {
+        "type": "object",
+        "properties": {
+          "path": {
+            "type": "string"
+          },
+          "volume": {
+            "pattern": "^-?(?:0|[1-9]\\d*)$",
+            "type": [
+              "null",
+              "integer",
+              "string"
+            ],
+            "format": "int32"
           }
         }
       },
@@ -16526,20 +16817,6 @@
         "type": "object",
         "properties": {
           "value": {
-            "type": "string"
-          }
-        }
-      },
-      "RotaryAppOverride": {
-        "type": "object",
-        "properties": {
-          "targetId": {
-            "type": "string"
-          },
-          "left": {
-            "type": "string"
-          },
-          "right": {
             "type": "string"
           }
         }
@@ -17006,21 +17283,6 @@
               "string"
             ],
             "format": "int32"
-          },
-          "keyReactive": {
-            "type": "boolean"
-          },
-          "keyReactiveMask": {
-            "type": "boolean"
-          },
-          "keyReactiveMode": {
-            "type": "string"
-          },
-          "keyReactiveColor": {
-            "$ref": "#/components/schemas/RGBA"
-          },
-          "keyIndicator": {
-            "type": "boolean"
           }
         }
       },
@@ -17038,6 +17300,42 @@
           },
           "windowsKey": {
             "type": "boolean"
+          }
+        }
+      },
+      "SetLayerKeyBody": {
+        "type": "object",
+        "properties": {
+          "x": {
+            "pattern": "^-?(?:0|[1-9]\\d*)$",
+            "type": [
+              "integer",
+              "string"
+            ],
+            "format": "int32"
+          },
+          "y": {
+            "pattern": "^-?(?:0|[1-9]\\d*)$",
+            "type": [
+              "integer",
+              "string"
+            ],
+            "format": "int32"
+          },
+          "func": {
+            "type": "string"
+          },
+          "mode": {
+            "type": "string"
+          },
+          "input": {
+            "pattern": "^-?(?:0|[1-9]\\d*)$",
+            "type": [
+              "null",
+              "integer",
+              "string"
+            ],
+            "format": "int32"
           }
         }
       },
@@ -17081,6 +17379,17 @@
           }
         }
       },
+      "SetLightingDeviceControlledBody": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "controlled": {
+            "type": "boolean"
+          }
+        }
+      },
       "SetLightingDevicePowerBody": {
         "type": "object",
         "properties": {
@@ -17096,7 +17405,10 @@
         "type": "object",
         "properties": {
           "keys": {
-            "type": "array",
+            "type": [
+              "null",
+              "array"
+            ],
             "items": {
               "$ref": "#/components/schemas/MacroKey"
             }
@@ -17149,14 +17461,6 @@
           }
         }
       },
-      "SetRotarySensitivityBody": {
-        "type": "object",
-        "properties": {
-          "sensitivity": {
-            "type": "string"
-          }
-        }
-      },
       "SetRotaryWheelsBody": {
         "type": "object",
         "properties": {
@@ -17165,12 +17469,6 @@
           },
           "right": {
             "type": "string"
-          },
-          "apps": {
-            "type": "array",
-            "items": {
-              "$ref": "#/components/schemas/RotaryAppOverride"
-            }
           }
         }
       },
@@ -17283,6 +17581,17 @@
             "type": "array",
             "items": {
               "type": "string"
+            }
+          },
+          "counts": {
+            "type": "object",
+            "additionalProperties": {
+              "pattern": "^-?(?:0|[1-9]\\d*)$",
+              "type": [
+                "integer",
+                "string"
+              ],
+              "format": "int32"
             }
           },
           "error": {
@@ -18291,6 +18600,57 @@
           }
         }
       },
+      "StreamDeckDevModelDto": {
+        "type": "object",
+        "properties": {
+          "productId": {
+            "pattern": "^-?(?:0|[1-9]\\d*)$",
+            "type": [
+              "integer",
+              "string"
+            ],
+            "format": "int32"
+          },
+          "name": {
+            "type": "string"
+          },
+          "rows": {
+            "pattern": "^-?(?:0|[1-9]\\d*)$",
+            "type": [
+              "integer",
+              "string"
+            ],
+            "format": "int32"
+          },
+          "cols": {
+            "pattern": "^-?(?:0|[1-9]\\d*)$",
+            "type": [
+              "integer",
+              "string"
+            ],
+            "format": "int32"
+          },
+          "keyCount": {
+            "pattern": "^-?(?:0|[1-9]\\d*)$",
+            "type": [
+              "integer",
+              "string"
+            ],
+            "format": "int32"
+          }
+        }
+      },
+      "StreamDeckDevModelsResponse": {
+        "type": "object",
+        "properties": {
+          "models": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/StreamDeckDevModelDto"
+            }
+          }
+        }
+      },
       "StreamDeckNavBody": {
         "type": "object",
         "properties": {
@@ -18315,6 +18675,35 @@
               ],
               "format": "int32"
             }
+          }
+        }
+      },
+      "StreamDeckSimPressBody": {
+        "type": "object",
+        "properties": {
+          "keyIndex": {
+            "pattern": "^-?(?:0|[1-9]\\d*)$",
+            "type": [
+              "integer",
+              "string"
+            ],
+            "format": "int32"
+          },
+          "pressed": {
+            "type": "boolean"
+          }
+        }
+      },
+      "StreamDeckSimulateBody": {
+        "type": "object",
+        "properties": {
+          "productId": {
+            "pattern": "^-?(?:0|[1-9]\\d*)$",
+            "type": [
+              "integer",
+              "string"
+            ],
+            "format": "int32"
           }
         }
       },
@@ -18412,6 +18801,25 @@
               "null",
               "string"
             ]
+          },
+          "currentPage": {
+            "pattern": "^-?(?:0|[1-9]\\d*)$",
+            "type": [
+              "integer",
+              "string"
+            ],
+            "format": "int32"
+          },
+          "folderPath": {
+            "type": "array",
+            "items": {
+              "pattern": "^-?(?:0|[1-9]\\d*)$",
+              "type": [
+                "integer",
+                "string"
+              ],
+              "format": "int32"
+            }
           }
         }
       },

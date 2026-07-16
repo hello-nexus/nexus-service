@@ -38,6 +38,12 @@ public sealed class CorsairLinkLightingFrameWriter : IHostedService, IDisposable
     // Scratch buffer for the concatenated wire frame; resized on demand.
     private byte[] _wireBuf = Array.Empty<byte>();
 
+    // Per-tick structure/zone resolution, cleared and repopulated each Tick so
+    // the uncontrolled check and the wire-building pass share one resolve per
+    // device instead of resolving zones twice.
+    private readonly List<DeviceStructure> _tickStructures = new();
+    private readonly List<IReadOnlyList<ResolvedZone>> _tickZones = new();
+
     public CorsairLinkLightingFrameWriter(
         LightingEngine engine, CorsairLinkHub hub, IConfigStore store, Np50IdentifyTracker identify)
     {
@@ -95,6 +101,7 @@ public sealed class CorsairLinkLightingFrameWriter : IHostedService, IDisposable
 
         var settings = _store.Load();
         var disabled = settings.Devices.DisabledLightingDevices;
+        var uncontrolled = settings.Devices.UncontrolledLightingDevices;
         var prefs = settings.Devices.LightingDevicePrefs;
         var globalBrightness = Math.Clamp(settings.Lighting.GlobalBrightness, 0f, 1f);
         var nowTicks = DateTime.UtcNow.Ticks;
@@ -105,25 +112,42 @@ public sealed class CorsairLinkLightingFrameWriter : IHostedService, IDisposable
         var effectiveBrightness = Math.Min(globalBrightness, portCap);
 
         var totalLeds = 0;
+        var anyChannel = false;
+        var hubFullyUncontrolled = true;
+        _tickStructures.Clear();
+        _tickZones.Clear();
         foreach (var dev in hubDevices)
         {
-            if (dev.LedCount > 0) totalLeds += dev.LedCount;
+            if (dev.LedCount <= 0) continue;
+            totalLeds += dev.LedCount;
+            anyChannel = true;
+            var id = $"corsair:ch{dev.Channel}";
+            var structure = CorsairLinkLightingDeviceProvider.BuildStructure(id, dev);
+            var zones = ZoneResolution.Resolve(structure, settings);
+            _tickStructures.Add(structure);
+            _tickZones.Add(zones);
+            if (hubFullyUncontrolled && !ZoneResolution.IsFullyUncontrolled(zones, uncontrolled)) hubFullyUncontrolled = false;
         }
         if (totalLeds == 0) return;
+
+        // Every channel uncontrolled: leave the whole hub alone so firmware /
+        // vendor lighting can take over.
+        if (anyChannel && hubFullyUncontrolled) return;
 
         var totalBytes = totalLeds * 3;
         if (_wireBuf.Length < totalBytes) _wireBuf = new byte[Math.Max(totalBytes, 512)];
 
         var wireOffset = 0;
+        var devIdx = 0;
         foreach (var dev in hubDevices)
         {
             if (dev.LedCount <= 0) continue;
-            var id = $"corsair:ch{dev.Channel}";
-            var structure = CorsairLinkLightingDeviceProvider.BuildStructure(id, dev);
-            var zones = ZoneResolution.Resolve(structure, settings);
+            var structure = _tickStructures[devIdx];
+            var zones = _tickZones[devIdx];
+            devIdx++;
             SegmentFrameComposer.EnsureBuffers(structure, ref _segBuf);
             SegmentFrameComposer.Compose(
-                structure, zones, devices, disabled, prefs, effectiveBrightness, 1.0, nowTicks, _identify, _segBuf);
+                structure, zones, devices, disabled, uncontrolled, prefs, effectiveBrightness, 1.0, nowTicks, _identify, _segBuf);
 
             // Segment 0 holds all LEDs for this device; copy as R,G,B (no swap).
             var buf = _segBuf[0];

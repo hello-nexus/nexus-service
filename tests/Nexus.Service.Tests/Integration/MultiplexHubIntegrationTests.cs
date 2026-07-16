@@ -140,17 +140,22 @@ public sealed class MultiplexHubIntegrationTests : IClassFixture<NexusAppFactory
         var ct = cts.Token;
         const string topic = "itest-disconnect";
 
-        var before = Hub.ClientCount;
+        // The hub is shared across this class's tests and server-side client
+        // cleanup runs in the receive loop's finally, lagging the client's
+        // close - a prior test's disconnect can still be draining here. Wait
+        // for the hub to quiesce (no persistent clients exist, so that means
+        // zero) before measuring, so the baseline is deterministic.
+        await WaitFor(() => Hub.ClientCount == 0, "hub quiescent before baseline");
         var ws = await ConnectAsync(ct);
         await Subscribe(ws, topic, ct);
         await WaitFor(() => Hub.TopicSubscriberCount(topic) == 1, "subscribed");
-        Assert.Equal(before + 1, Hub.ClientCount);
+        await WaitFor(() => Hub.ClientCount == 1, "client registered");
 
         await ws.CloseAsync(WebSocketCloseStatus.NormalClosure, "bye", ct);
         ws.Dispose();
 
         // The server's receive loop sees the close and runs its finally-cleanup.
         await WaitFor(() => Hub.TopicSubscriberCount(topic) == 0, "subscription cleaned up");
-        await WaitFor(() => Hub.ClientCount == before, "client entry removed (no leak)");
+        await WaitFor(() => Hub.ClientCount == 0, "client entry removed (no leak)");
     }
 }

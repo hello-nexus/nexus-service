@@ -1,0 +1,17 @@
+{
+  "Device": {
+    "Model": "20GAA9901",
+    "UUID": "@(1)[FAKE-SERIAL-001]"
+  },
+  "Name": "Test Profile",
+  "Pages": {
+    "Current": "page-one",
+    "Default": "page-one",
+    "Pages": [
+      "page-one",
+      "page-two",
+      "page-empty"
+    ]
+  },
+  "Version": "3.0"
+}

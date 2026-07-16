@@ -4,6 +4,7 @@ using System.Threading;
 using System.Threading.Tasks;
 using Microsoft.Extensions.Hosting;
 using Nexus.Service.Lighting.Engine;
+using Nexus.Service.Lighting.Zones;
 using Nexus.Service.Peripherals.Galahad2;
 using Nexus.Service.Persistence;
 
@@ -16,6 +17,7 @@ public sealed class Galahad2LightingFrameWriter : IHostedService, IDisposable
     private readonly LightingEngine _engine;
     private readonly Galahad2Hub _hub;
     private readonly IConfigStore _store;
+    private readonly Galahad2LightingDeviceProvider _provider;
     private CancellationTokenSource? _cts;
     private Task? _loop;
 
@@ -27,11 +29,12 @@ public sealed class Galahad2LightingFrameWriter : IHostedService, IDisposable
     // Null forces re-commit on next firmware-mode tick even when settings are unchanged.
     private int? _lastFirmwareSig;
 
-    public Galahad2LightingFrameWriter(LightingEngine engine, Galahad2Hub hub, IConfigStore store)
+    public Galahad2LightingFrameWriter(LightingEngine engine, Galahad2Hub hub, IConfigStore store, Galahad2LightingDeviceProvider provider)
     {
-        _engine = engine;
-        _hub    = hub;
-        _store  = store;
+        _engine   = engine;
+        _hub      = hub;
+        _store    = store;
+        _provider = provider;
     }
 
     public Task StartAsync(CancellationToken cancellationToken)
@@ -91,10 +94,29 @@ public sealed class Galahad2LightingFrameWriter : IHostedService, IDisposable
         var globalBrightness = Math.Clamp(settings.Lighting.GlobalBrightness, 0f, 1f);
         var brightnessRaw    = (byte)Math.Clamp((int)Math.Round(Math.Min((double)ls.Brightness, globalBrightness * 4.0)), 0, 4);
 
+        // Both rings share one wire packet: only leave the AIO alone entirely
+        // once every ring is uncontrolled. A single uncontrolled ring stays on the
+        // wire (TickCanvas blacks its color slot; the shared packet can't
+        // omit it without also silencing the still-controlled ring). Clearing
+        // both caches forces a resend on the next tick after re-enabling,
+        // rather than waiting on a color or setting change that may never
+        // come while an external app owns the AIO. Resolved against the
+        // live zones (not the default ring ids) so a persisted custom
+        // partition still gates correctly.
+        var uncontrolled = settings.Devices.UncontrolledLightingDevices;
+        var structure = _provider.BuildStructure();
+        var zones = ZoneResolution.Resolve(structure, settings);
+        if (ZoneResolution.IsFullyUncontrolled(zones, uncontrolled))
+        {
+            _lastFirmwareSig = null;
+            _lastWasCanvas   = false;
+            return;
+        }
+
         if (ls.Mode == "canvas")
         {
             _lastFirmwareSig = null;
-            TickCanvas(brightnessRaw);
+            TickCanvas(brightnessRaw, zones, uncontrolled);
             return;
         }
 
@@ -115,7 +137,7 @@ public sealed class Galahad2LightingFrameWriter : IHostedService, IDisposable
         _lastFirmwareSig = sig;
     }
 
-    private void TickCanvas(byte brightnessRaw)
+    private void TickCanvas(byte brightnessRaw, System.Collections.Generic.IReadOnlyList<ResolvedZone> zones, System.Collections.Generic.IReadOnlyList<string> uncontrolled)
     {
         var devices = _engine.Devices;
         byte innerR = 0, innerG = 0, innerB = 0;
@@ -132,6 +154,14 @@ public sealed class Galahad2LightingFrameWriter : IHostedService, IDisposable
                 var b = frame.LedBytes;
                 outerR = b[0]; outerG = b[1]; outerB = b[2];
             }
+        }
+        if (ZoneResolution.IsSegmentFullyUncontrolled(zones, Galahad2LightingDeviceProvider.InnerSegment, uncontrolled))
+        {
+            innerR = 0; innerG = 0; innerB = 0;
+        }
+        if (ZoneResolution.IsSegmentFullyUncontrolled(zones, Galahad2LightingDeviceProvider.OuterSegment, uncontrolled))
+        {
+            outerR = 0; outerG = 0; outerB = 0;
         }
 
         if (_lastWasCanvas

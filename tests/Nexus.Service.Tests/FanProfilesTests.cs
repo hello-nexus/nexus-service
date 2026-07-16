@@ -151,6 +151,158 @@ public class FanProfilesTests : IDisposable
     }
 
     [Fact]
+    public void SilentToCustom_RestoresManualDutiesAndDrivesHardware()
+    {
+        // Live bug 2026-07-13: custom-mode manual levels survived a
+        // silent -> custom round-trip only in the page's local state; the
+        // hardware stayed at the silent curve's last duty and a page remount
+        // revealed the loss. Manual duties must restore like curve
+        // assignments do.
+        _store.Update(s =>
+        {
+            s.Cooling.ActivePreset = "custom";
+            s.Cooling.ManualSpeeds["fan1"] = 37;
+            s.Cooling.ManualSpeeds["fan2"] = 81;
+        });
+
+        FanProfiles.Apply("silent", _fans, _store);
+        FanProfiles.Apply("custom", _fans, _store);
+
+        var s = _store.Load();
+        Assert.Equal(37, s.Cooling.ManualSpeeds["fan1"]);
+        Assert.Equal(81, s.Cooling.ManualSpeeds["fan2"]);
+        Assert.Contains(("fan1", 37), _fans.SpeedSet);
+        Assert.Contains(("fan2", 81), _fans.SpeedSet);
+    }
+
+    [Fact]
+    public void OffToCustom_RestoresManualDutiesDeletedByTheRelease()
+    {
+        _store.Update(s =>
+        {
+            s.Cooling.ActivePreset = "custom";
+            s.Cooling.ManualSpeeds["fan1"] = 42;
+        });
+
+        FanProfiles.Apply("off", _fans, _store);
+        // The real providers' ReleaseFan (called by Apply("off") for every
+        // channel) deletes the live ManualSpeeds entry; the fake records the
+        // release without a store, so mirror the deletion here.
+        Assert.Contains("fan1", _fans.Released);
+        _store.Update(s => s.Cooling.ManualSpeeds.Clear());
+
+        FanProfiles.Apply("custom", _fans, _store);
+
+        var s = _store.Load();
+        Assert.Equal(42, s.Cooling.ManualSpeeds["fan1"]);
+        Assert.Contains(("fan1", 42), _fans.SpeedSet);
+    }
+
+    [Fact]
+    public void SilentToCustom_ManualRestoreSkipsCurveAssignedFan()
+    {
+        // fan1 rides a user curve with a stale manual entry alongside it;
+        // the restored curve attachment must win - no manual write for fan1.
+        _store.Update(s =>
+        {
+            s.Cooling.ActivePreset = "custom";
+            s.Cooling.Curves.Add(new CurveDocument
+            {
+                Id = "user-curve-a",
+                Outputs = new List<CurveOutputDocument> { new() { Id = "fan1", Type = "Fan" } },
+            });
+            s.Cooling.ManualSpeeds["fan1"] = 30;
+            s.Cooling.ManualSpeeds["fan2"] = 60;
+        });
+
+        FanProfiles.Apply("silent", _fans, _store);
+        FanProfiles.Apply("custom", _fans, _store);
+
+        Assert.DoesNotContain(_fans.SpeedSet, w => w.Id == "fan1");
+        Assert.Contains(("fan2", 60), _fans.SpeedSet);
+    }
+
+    [Fact]
+    public void SilentToCustom_ManualRestoreSkipsLockedFan()
+    {
+        var fan1 = _fans.GetFanChannels().First(c => c.Id == "fan1");
+        _store.Update(s =>
+        {
+            s.Cooling.ActivePreset = "custom";
+            s.Cooling.ManualSpeeds["fan1"] = 40;
+            s.Cooling.ManualSpeeds["fan2"] = 70;
+        });
+        FanProfiles.SetLockOverride(fan1, true, _store);
+
+        FanProfiles.Apply("silent", _fans, _store);
+        FanProfiles.Apply("custom", _fans, _store);
+
+        // The locked fan keeps whatever drives it; only fan2 is re-driven.
+        Assert.DoesNotContain(_fans.SpeedSet, w => w.Id == "fan1");
+        Assert.Contains(("fan2", 70), _fans.SpeedSet);
+    }
+
+    [Fact]
+    public void SilentToCustom_ManualRestoreSkipsExplicitlyLockedAbsentFan()
+    {
+        // A locked fan whose hub is disconnected at apply time is missing
+        // from the live channel list (and so from lockedIds); its explicit
+        // lock override must still exempt it from the snapshot restore, or
+        // a duty changed while locked gets stomped and replayed on reconnect.
+        _store.Update(s =>
+        {
+            s.Cooling.ActivePreset = "custom";
+            s.Cooling.ManualSpeeds["ghost-fan"] = 20;
+            s.Cooling.ManualSpeeds["fan2"] = 70;
+            s.Cooling.FanLockOverrides["ghost-fan"] = true;
+        });
+
+        FanProfiles.Apply("silent", _fans, _store);
+        // While the preset is active the user adjusts the locked fan.
+        _store.Update(s => s.Cooling.ManualSpeeds["ghost-fan"] = 65);
+        FanProfiles.Apply("custom", _fans, _store);
+
+        var s = _store.Load();
+        Assert.Equal(65, s.Cooling.ManualSpeeds["ghost-fan"]);
+        Assert.Equal(70, s.Cooling.ManualSpeeds["fan2"]);
+    }
+
+    [Fact]
+    public void ApplyCustom_ToleratesExplicitNullManualSnapshot()
+    {
+        // Settings persisted as "customManualSpeeds": null must not fault
+        // the preset apply (same class as the assignments ?? guard).
+        _store.Update(s =>
+        {
+            s.Cooling.ActivePreset = "silent";
+            s.Cooling.CustomManualSpeeds = null!;
+        });
+
+        FanProfiles.Apply("custom", _fans, _store);
+
+        Assert.Equal("custom", _store.Load().Cooling.ActivePreset);
+    }
+
+    [Fact]
+    public void ReapplyCustomWhileCustom_DoesNotClobberLiveManualDuties()
+    {
+        _store.Update(s =>
+        {
+            s.Cooling.ActivePreset = "custom";
+            s.Cooling.ManualSpeeds["fan1"] = 37;
+        });
+        FanProfiles.Apply("silent", _fans, _store);
+        FanProfiles.Apply("custom", _fans, _store);
+
+        // User raises the duty while already in custom, then custom is
+        // re-applied (e.g. a second window): the newer value must survive.
+        _store.Update(s => s.Cooling.ManualSpeeds["fan1"] = 90);
+        FanProfiles.Apply("custom", _fans, _store);
+
+        Assert.Equal(90, _store.Load().Cooling.ManualSpeeds["fan1"]);
+    }
+
+    [Fact]
     public void ApplyOff_DetachesAllFansAndReleases()
     {
         _store.Update(s => s.Cooling.Curves.Add(new CurveDocument
@@ -844,6 +996,7 @@ public class FanProfilesTests : IDisposable
         private readonly List<FanChannel> _channels;
         private readonly List<TemperatureSource> _temps;
         public List<string> Released { get; } = new();
+        public List<(string Id, int Duty)> SpeedSet { get; } = new();
 
         public FakeFanProvider(List<FanChannel> channels, List<TemperatureSource> temps)
         {
@@ -854,7 +1007,11 @@ public class FanProfilesTests : IDisposable
         public IReadOnlyList<FanChannel> GetFanChannels() => _channels;
         public IReadOnlyList<TemperatureSource> GetTemperatureSources() => _temps;
         public float? ReadTemperature(string sensorId) => null;
-        public int SetFanSpeed(string channelId, int dutyPercent) => Math.Clamp(dutyPercent, 0, 100);
+        public int SetFanSpeed(string channelId, int dutyPercent)
+        {
+            SpeedSet.Add((channelId, dutyPercent));
+            return Math.Clamp(dutyPercent, 0, 100);
+        }
         public void DriveFanSpeed(string channelId, int dutyPercent) { }
         public void ReleaseFan(string channelId) => Released.Add(channelId);
         public void ReleaseAll() => Released.AddRange(_channels.Select(c => c.Id));

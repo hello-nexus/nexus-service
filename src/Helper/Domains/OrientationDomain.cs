@@ -21,6 +21,13 @@ public sealed class DisplayOrientationRequest
     /// the Y70 path (find the panel by its DDC controller names).
     /// </summary>
     public string DisplayId { get; set; } = "";
+    /// <summary>
+    /// "#rrggbb" panel background colour for the pre-rotation cover, resolved
+    /// service-side from <c>PanelDeviceRegistry</c> (the helper has no
+    /// registry access). Empty = fall back to opaque black. Only consulted
+    /// on the <see cref="DisplayId"/> path; the Y70 path never covers.
+    /// </summary>
+    public string CoverColorHex { get; set; } = "";
 }
 
 /// <summary>Helper reply: did the rotation apply, and why not if it did not.</summary>
@@ -45,8 +52,8 @@ public static class OrientationCommands
         => SendAsync(r, new DisplayOrientationRequest { Orientation = orientation }, ct);
 
     public static Task<DisplayOrientationResult> SetForDisplayAsync(
-        HelperRegistry r, string displayId, string orientation, CancellationToken ct = default)
-        => SendAsync(r, new DisplayOrientationRequest { Orientation = orientation, DisplayId = displayId }, ct);
+        HelperRegistry r, string displayId, string orientation, string coverColorHex, CancellationToken ct = default)
+        => SendAsync(r, new DisplayOrientationRequest { Orientation = orientation, DisplayId = displayId, CoverColorHex = coverColorHex }, ct);
 
     private static async Task<DisplayOrientationResult> SendAsync(
         HelperRegistry r, DisplayOrientationRequest request, CancellationToken ct)
@@ -106,7 +113,7 @@ public sealed class OrientationHandler
             }
             var (ok, err) = string.IsNullOrEmpty(req.DisplayId)
                 ? _provider.SetY70Orientation(req.Orientation)
-                : _provider.SetDisplayOrientation(req.DisplayId, req.Orientation);
+                : _provider.SetDisplayOrientation(req.DisplayId, req.Orientation, req.CoverColorHex);
             return Reply(env, new DisplayOrientationResult { Ok = ok, Error = err });
         });
     }

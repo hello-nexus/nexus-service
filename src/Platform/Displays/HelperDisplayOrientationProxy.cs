@@ -27,9 +27,9 @@ public sealed class HelperDisplayOrientationProxy : IDisplayOrientationProvider
         return (result.Ok, result.Error);
     }
 
-    public (bool Ok, string Error) SetDisplayOrientation(string displayId, string orientation)
+    public (bool Ok, string Error) SetDisplayOrientation(string displayId, string orientation, string coverColorHex)
     {
-        var result = OrientationCommands.SetForDisplayAsync(_registry, displayId, orientation).GetAwaiter().GetResult();
+        var result = OrientationCommands.SetForDisplayAsync(_registry, displayId, orientation, coverColorHex).GetAwaiter().GetResult();
         return (result.Ok, result.Error);
     }
 }

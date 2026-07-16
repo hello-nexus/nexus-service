@@ -2,6 +2,7 @@ using System;
 using System.Diagnostics;
 using System.Threading.Tasks;
 using LibreHardwareMonitor.Hardware;
+using Nexus.Service.Lifecycle;
 
 namespace Nexus.Service.Sensors;
 
@@ -20,9 +21,12 @@ namespace Nexus.Service.Sensors;
 /// critical path, the ctor schedules Open() on the thread pool and returns
 /// immediately. <see cref="Update"/> no-ops until Open() finishes, so any
 /// /sensors or /cooling/* request issued in the warmup window returns empty
-/// data instead of blocking - the dashboard hydrates on its next poll. The
-/// background open also matches AutoRestoreOnStart's 4 s delay and
-/// CurveEngine's 3 s delay so they consume real channel sets when they fire.
+/// data instead of blocking - the dashboard hydrates on its next poll. On a
+/// healthy boot the PawnIoBootGate wait below resolves in well under a
+/// second; on an install/repair boot it holds Open until the driver is
+/// usable. AutoRestoreOnStart waits for the open to finish before applying a
+/// preset (via SignalLhmOpened), and CurveEngine re-drives channels as they
+/// appear, so the delayed open never strands fan control.
 /// </summary>
 public sealed class LhmComputer : IDisposable
 {
@@ -45,8 +49,14 @@ public sealed class LhmComputer : IDisposable
             IsBatteryEnabled = true,
             IsPsuEnabled = true,
         };
-        _openTask = Task.Run(() =>
+        _openTask = Task.Run(async () =>
         {
+            // Open() enumerates SuperIO exactly once, and it needs the PawnIO
+            // device up - wait for the boot-time install/repair to finish so
+            // a just-repaired driver yields motherboard sensors in the same
+            // boot. Capped in the gate; no-op on unarmed hosts.
+            await PawnIoBootGate.WaitAsync(TimeSpan.FromSeconds(15)).ConfigureAwait(false);
+
             var sw = Stopwatch.StartNew();
             try
             {
@@ -56,6 +66,10 @@ public sealed class LhmComputer : IDisposable
             catch (Exception ex)
             {
                 Console.Error.WriteLine($"[lhm] background open failed after {sw.ElapsedMilliseconds}ms: {ex.Message}");
+            }
+            finally
+            {
+                PawnIoBootGate.SignalLhmOpened();
             }
         });
     }

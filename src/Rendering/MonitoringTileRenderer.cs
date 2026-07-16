@@ -14,21 +14,29 @@ public enum MonitoringTileStyle { Line, Segments, Backdrop, Number }
 
 /// <summary>
 /// Everything <see cref="MonitoringTileRenderer.Render"/> needs to draw one
-/// tile, already resolved by the caller (slot label vs sensor display name,
-/// title-style overrides vs deck defaults). History is the sample buffer to
+/// tile, already resolved by the caller (title-style overrides vs deck
+/// defaults) except the LabelText-vs-Name and fixed-vs-adaptive domain
+/// choices, which Render itself resolves. History is the sample buffer to
 /// plot, oldest first, with the current reading as its last entry; an empty
 /// buffer renders a blank graph with the current reading treated as 0.
 /// </summary>
 public sealed class MonitoringTileInput
 {
+    /// <summary>Default top label (already device-prefixed, e.g. "CPU Total"), shown when LabelText is unset or empty.</summary>
     public string Name { get; init; } = "";
+    /// <summary>Custom top label overriding Name. Empty or null falls back to Name.</summary>
+    public string? LabelText { get; init; }
     public bool ShowName { get; init; } = true;
-    /// <summary>The sensor's service-formatted display string (HardwareSensor.Formatted). Never reformatted here.</summary>
+    /// <summary>The value already formatted for display (unit-scaled, temp-unit converted, number-format localized by the caller). Never reformatted here.</summary>
     public string ValueText { get; init; } = "";
-    /// <summary>HardwareSensor.Type (Load, Temperature, Clock, ...), selects the graph/arc domain.</summary>
+    /// <summary>HardwareSensor.Type (Load, Temperature, Clock, ...), selects the graph/arc domain when Scale is not fixed.</summary>
     public string SensorType { get; init; } = "";
     public IReadOnlyList<float> History { get; init; } = Array.Empty<float>();
     public MonitoringTileStyle Style { get; init; } = MonitoringTileStyle.Line;
+    /// <summary>"fixed" pins the graph/fill domain to [Min,Max]; anything else (including null) is adaptive.</summary>
+    public string? Scale { get; init; }
+    public float? Min { get; init; }
+    public float? Max { get; init; }
     public string? AccentColorHex { get; init; }
     public string? BackgroundColorHex { get; init; }
     /// <summary>"default" | "arial" | "georgia" | "courierNew", matching nexus-web's DECK_TITLE_FONTS ids. Null/unrecognized falls back to the platform default.</summary>
@@ -43,8 +51,10 @@ public sealed class MonitoringTileInput
 /// <summary>
 /// Draws a monitoring deck tile (sensor name / value / graph) into a square
 /// ImageSharp image at any pixel size. Pure: no deck, HID, or persistence
-/// knowledge, so it is independently testable and reused for both the web
-/// preview parity check and the physical key bitmap.
+/// knowledge, so it is independently testable. This is the sole renderer for
+/// a physical key's bitmap; the same render also feeds the editor's live
+/// preview, broadcast as a streamdeckTiles frame, so the two are
+/// pixel-identical by construction rather than needing to be kept in parity.
 /// </summary>
 internal static class MonitoringTileRenderer
 {
@@ -66,22 +76,14 @@ internal static class MonitoringTileRenderer
     private const float LineBandBottom = 0.74f;
     private const float LineBandInsetXFraction = 0.08f;
 
-    /// <summary>Mirrors the SVG fill-opacity nexus-web's DeckMonitoringCell Sparkline defaults to for the line style.</summary>
     private const float LineFillAlpha = 0.4f;
-    /// <summary>
-    /// nexus-web pins its line stroke to a literal CSS px per surface
-    /// (GAUGE_LINE_THICKNESS in the panel gauge card, DeckMonitoringCell's
-    /// own strokeWidth in the deck cell) - both exactly 2% of their
-    /// Sparkline's width prop. Applied against the key's own pixel size
-    /// here instead of a fixed px count, so it scales across key sizes.
-    /// </summary>
+    /// <summary>Stroke thickness scales with the tile's pixel size, so it reads consistently across key sizes.</summary>
     private const float LineStrokeThicknessFraction = 0.02f;
     private const float LineStrokeMinPx = 1f;
 
-    /// <summary>Mirrors the dark-theme --accent-glow-shadow alpha (styles/variables.scss) BackdropGauge.tsx fills with.</summary>
+    /// <summary>Dimmer than Line/Segments' fill alpha so the value text Render overlays on top stays legible against the full-bleed history fill.</summary>
     private const float BackdropDimAlpha = 0.45f;
 
-    /// <summary>Mirrors nexus-web's DeckMonitoringCell SEGMENTS_COUNT.</summary>
     private const int SegmentsCount = 16;
     private const float SegmentsGapFraction = 0.014f;
 
@@ -111,8 +113,9 @@ internal static class MonitoringTileRenderer
         var titleFont = ResolveTitleFont(input.TitleFont);
         var titleFontStyle = ResolveFontStyle(input.TitleBold, input.TitleItalic);
         var titleSizePx = TitlePixelSize(input.TitleSize, pixelSize);
-        var nameShown = input.ShowName && !string.IsNullOrEmpty(input.Name);
-        var domain = ResolveDomain(input.SensorType, input.History);
+        var displayName = string.IsNullOrEmpty(input.LabelText) ? input.Name : input.LabelText;
+        var nameShown = input.ShowName && !string.IsNullOrEmpty(displayName);
+        var domain = ResolveDomain(input);
 
         image.Mutate(ctx =>
         {
@@ -129,7 +132,7 @@ internal static class MonitoringTileRenderer
             if (nameShown)
             {
                 var nameFont = titleFont.CreateFont(titleSizePx, titleFontStyle);
-                RenderKit.DrawCentered(ctx, input.Name, nameFont, titleColor, new PointF(pixelSize / 2f, pixelSize * NameYFraction));
+                RenderKit.DrawCentered(ctx, displayName!, nameFont, titleColor, new PointF(pixelSize / 2f, pixelSize * NameYFraction));
             }
 
             switch (input.Style)
@@ -185,11 +188,10 @@ internal static class MonitoringTileRenderer
     }
 
     /// <summary>
-    /// Mirrors nexus-web's DeckMonitoringCell 'line' style: a translucent
-    /// accent-fill area topped with a full-opacity accent stroke along the
-    /// series' top edge (the web draws a partial-opacity fill plus a
-    /// strokeColor line; this renderer's fill has no separate stroke
-    /// primitive of its own, so the stroke is drawn as an open path here).
+    /// Draws a translucent accent-fill area topped with a full-opacity accent
+    /// stroke along the series' top edge. ImageSharp's fill primitive has no
+    /// separate stroke of its own, so the stroke is drawn as a second, open
+    /// path over the fill.
     /// </summary>
     private static void RenderLine(IImageProcessingContext ctx, MonitoringTileInput input, int size, Color accent, (float Min, float Max) domain, bool nameShown)
     {
@@ -207,10 +209,9 @@ internal static class MonitoringTileRenderer
     }
 
     /// <summary>
-    /// Mirrors nexus-web's BackdropGauge.tsx: the full history series filled
-    /// edge to edge across the whole key face, in a dimmed accent rather than
-    /// the bold accent Line/Segments use, with the value overlaid on top
-    /// (see the Backdrop switch case in Render).
+    /// Fills the full history series edge to edge across the whole key face,
+    /// in a dimmed accent rather than the bold accent Line/Segments use; the
+    /// Backdrop case in Render overlays the value on top afterward.
     /// </summary>
     private static void RenderBackdrop(IImageProcessingContext ctx, MonitoringTileInput input, int size, Color accent, (float Min, float Max) domain)
     {
@@ -253,10 +254,9 @@ internal static class MonitoringTileRenderer
     }
 
     /// <summary>
-    /// Mirrors nexus-web's DeckMonitoringCell: a row of SegmentsCount
-    /// pill-shaped bars across the graph band, filled left to right by the
-    /// current reading's fill fraction. Reuses the Line band position so the
-    /// middle graph area lines up across styles.
+    /// A row of SegmentsCount pill-shaped bars across the graph band, filled
+    /// left to right by the current reading's fill fraction. Reuses the Line
+    /// band position so the middle graph area lines up across styles.
     /// </summary>
     private static void RenderSegments(IImageProcessingContext ctx, MonitoringTileInput input, int size, Color accent, (float Min, float Max) domain, bool nameShown)
     {
@@ -327,14 +327,49 @@ internal static class MonitoringTileRenderer
         }
         var centerY = size * (nameShown ? 0.58f : 0.52f);
         var bigFont = font.CreateFont(size * NumberBigFontFraction, FontStyle.Bold);
-        RenderKit.DrawCentered(ctx, numberText, bigFont, color, new PointF(size / 2f, centerY));
-
-        if (unitText.Length > 0)
+        if (unitText.Length == 0)
         {
-            var unitFont = font.CreateFont(size * NumberUnitFontFraction, FontStyle.Regular);
-            var unitY = centerY + size * NumberBigFontFraction * 0.62f;
-            RenderKit.DrawCentered(ctx, unitText, unitFont, color, new PointF(size / 2f, unitY));
+            RenderKit.DrawCentered(ctx, numberText, bigFont, color, new PointF(size / 2f, centerY));
+            return;
         }
+
+        // Value + unit sit on one line, the unit small and immediately after
+        // the value (bottom-aligned), the pair centered as a group.
+        var unitFont = font.CreateFont(size * NumberUnitFontFraction, FontStyle.Regular);
+        var numSize = TextMeasurer.MeasureSize(numberText, new TextOptions(bigFont));
+        var unitSize = TextMeasurer.MeasureSize(unitText, new TextOptions(unitFont));
+        var gap = size * 0.015f;
+        var groupLeft = size / 2f - (numSize.Width + gap + unitSize.Width) / 2f;
+        RenderKit.DrawCentered(ctx, numberText, bigFont, color, new PointF(groupLeft + numSize.Width / 2f, centerY));
+        var unitCenterX = groupLeft + numSize.Width + gap + unitSize.Width / 2f;
+        var unitCenterY = centerY + numSize.Height / 2f - unitSize.Height / 2f;
+        RenderKit.DrawCentered(ctx, unitText, unitFont, color, new PointF(unitCenterX, unitCenterY));
+    }
+
+    /// <summary>
+    /// A valid fixed scale ([min,max] both set, finite, max greater than min)
+    /// wins outright; otherwise falls back to the sensorType/history adaptive
+    /// rules. Governs the segments/backdrop fill and the line/backdrop series
+    /// axis; the number style does not consume a domain.
+    /// </summary>
+    internal static (float Min, float Max) ResolveDomain(MonitoringTileInput input) =>
+        TryFixedDomain(input.Scale, input.Min, input.Max, out var fixedDomain)
+            ? fixedDomain
+            : ResolveDomain(input.SensorType, input.History);
+
+    private static bool TryFixedDomain(string? scale, float? min, float? max, out (float Min, float Max) domain)
+    {
+        domain = default;
+        if (scale != "fixed" || min is null || max is null)
+        {
+            return false;
+        }
+        if (!float.IsFinite(min.Value) || !float.IsFinite(max.Value) || max.Value <= min.Value)
+        {
+            return false;
+        }
+        domain = (min.Value, max.Value);
+        return true;
     }
 
     /// <summary>
@@ -385,14 +420,22 @@ internal static class MonitoringTileRenderer
     /// Single-value fill fraction for value-fill styles (Segments' filled
     /// count): value/domainMax, not a min/max normalization like the line
     /// graph's y-axis, so a fixed 0-100 domain reads as a true percent-of-100
-    /// fill. A degenerate domain still renders a neutral mid-fill rather than
-    /// 0 or 100.
+    /// fill. A degenerate domain (including a NaN bound) still renders a
+    /// neutral mid-fill rather than 0 or 100 - the `!(Max &gt; Min)` guard
+    /// shape, not `Max &lt;= Min`, is what catches a NaN bound (every
+    /// comparison against NaN is false, so `Max &lt;= Min` would miss it and
+    /// fall through to dividing by it). A non-degenerate domain whose Max is
+    /// 0 or non-finite renders 0 rather than dividing by it.
     /// </summary>
     internal static float FillFraction(float value, (float Min, float Max) domain)
     {
-        if (domain.Max <= domain.Min)
+        if (!(domain.Max > domain.Min))
         {
             return 0.5f;
+        }
+        if (!float.IsFinite(domain.Max) || domain.Max == 0f)
+        {
+            return 0f;
         }
         return Math.Clamp(value / domain.Max, 0f, 1f);
     }

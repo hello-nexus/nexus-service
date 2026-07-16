@@ -77,25 +77,37 @@ public sealed class MiniHubLightingFrameWriter : IHostedService, IDisposable
         if (devices.Length == 0) return;
         var settings = _store.Load();
         var disabled = settings.Devices.DisabledLightingDevices;
+        var uncontrolled = settings.Devices.UncontrolledLightingDevices;
         var prefs = settings.Devices.LightingDevicePrefs;
         var globalBrightness = Math.Clamp(settings.Lighting.GlobalBrightness, 0f, 1f);
         var nowTicks = DateTime.UtcNow.Ticks;
 
         var hubId = _hub.DeviceId;
+
+        // Every port uncontrolled: leave the whole hub alone so it drops back to
+        // its firmware animation, same as never pushing at all.
+        if (uncontrolled.Count > 0
+            && uncontrolled.Contains($"{hubId}:port1") && uncontrolled.Contains($"{hubId}:port2")
+            && uncontrolled.Contains($"{hubId}:port3") && uncontrolled.Contains($"{hubId}:port4"))
+        {
+            return;
+        }
+
         // Push every channel every tick - even channels with zero declared
         // LEDs get a padded blank frame, which the hub firmware honours by
         // blacking out the strip. The per-channel padded buffer comes from
         // MiniHubProtocol.BuildLightingStream, so each WriteLighting call
         // emits exactly 307 bytes (channel 4) or 157 bytes (channels 1-3)
         // regardless of how many LEDs the user has wired.
-        TryPushZone(devices, $"{hubId}:port1", channel: 1, disabled, prefs, globalBrightness, nowTicks);
-        TryPushZone(devices, $"{hubId}:port2", channel: 2, disabled, prefs, globalBrightness, nowTicks);
-        TryPushZone(devices, $"{hubId}:port3", channel: 3, disabled, prefs, globalBrightness, nowTicks);
-        TryPushZone(devices, $"{hubId}:port4", channel: 4, disabled, prefs, globalBrightness, nowTicks);
+        TryPushZone(devices, $"{hubId}:port1", channel: 1, disabled, uncontrolled, prefs, globalBrightness, nowTicks);
+        TryPushZone(devices, $"{hubId}:port2", channel: 2, disabled, uncontrolled, prefs, globalBrightness, nowTicks);
+        TryPushZone(devices, $"{hubId}:port3", channel: 3, disabled, uncontrolled, prefs, globalBrightness, nowTicks);
+        TryPushZone(devices, $"{hubId}:port4", channel: 4, disabled, uncontrolled, prefs, globalBrightness, nowTicks);
     }
 
     private void TryPushZone(DeviceFrame[] devices, string id, int channel,
         System.Collections.Generic.IReadOnlyList<string> disabled,
+        System.Collections.Generic.IReadOnlyList<string> uncontrolled,
         System.Collections.Generic.IReadOnlyDictionary<string, LightingDevicePreference> prefs,
         float globalBrightness, long nowTicks)
     {
@@ -108,7 +120,7 @@ public sealed class MiniHubLightingFrameWriter : IHostedService, IDisposable
         // its firmware animation on that strip. Cheap: BuildLightingStream
         // produces a fixed 157/307-byte frame regardless of declared count.
         var ledCount = frame is null ? 0 : frame.LedCount;
-        var brightnessMul = ComputeBrightnessMul(id, disabled, prefs, globalBrightness);
+        var brightnessMul = ComputeBrightnessMul(id, disabled, uncontrolled, prefs, globalBrightness);
         var hasIdentify = _identify.TryGetActive(id, nowTicks, out var startTicks);
 
         var idx = channel - 1;
@@ -125,12 +137,17 @@ public sealed class MiniHubLightingFrameWriter : IHostedService, IDisposable
 
     private static double ComputeBrightnessMul(string id,
         System.Collections.Generic.IReadOnlyList<string> disabled,
+        System.Collections.Generic.IReadOnlyList<string> uncontrolled,
         System.Collections.Generic.IReadOnlyDictionary<string, LightingDevicePreference> prefs,
         float globalBrightness)
     {
         if (disabled.Count > 0)
         {
             foreach (var d in disabled) if (d == id) return 0.0;
+        }
+        if (uncontrolled.Count > 0)
+        {
+            foreach (var u in uncontrolled) if (u == id) return 0.0;
         }
         int devBrightness;
         try { devBrightness = prefs.TryGetValue(id, out var pref) ? pref.Brightness : 100; }

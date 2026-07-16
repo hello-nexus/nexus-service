@@ -14,6 +14,44 @@ namespace Nexus.Service.Tests.Cooling;
 
 public class CompositeFanControlProviderTests
 {
+    // Empty fanIds means "calibrate everything" to the motherboard provider, so
+    // a selection that filters down to nothing must never reach it.
+    [Fact]
+    public async Task CalibrateAsync_hub_only_selection_does_not_calibrate_the_motherboard()
+    {
+        var noPorts = new NoPorts();
+        var motherboard = new RecordingFans();
+        var composite = new CompositeFanControlProvider(
+            motherboard,
+            new Np50CoolingProvider(new Np50Hub(noPorts, _ => null!)),
+            new MiniHubCoolingProvider(new MiniHubHub(noPorts, _ => null!)),
+            new PluginProviderRegistry());
+
+        var results = await composite.CalibrateAsync(
+            new[] { "np50:fan0" }, new Progress<FanCalibrationProgress>(), CancellationToken.None);
+
+        Assert.Empty(results);
+        Assert.Empty(motherboard.Calls);
+    }
+
+    [Fact]
+    public async Task CalibrateAsync_empty_selection_still_means_all()
+    {
+        var noPorts = new NoPorts();
+        var motherboard = new RecordingFans();
+        var composite = new CompositeFanControlProvider(
+            motherboard,
+            new Np50CoolingProvider(new Np50Hub(noPorts, _ => null!)),
+            new MiniHubCoolingProvider(new MiniHubHub(noPorts, _ => null!)),
+            new PluginProviderRegistry());
+
+        await composite.CalibrateAsync(
+            Array.Empty<string>(), new Progress<FanCalibrationProgress>(), CancellationToken.None);
+
+        Assert.Single(motherboard.Calls);
+        Assert.Empty(motherboard.Calls[0]);
+    }
+
     // Regression guard: Extras() must iterate _extras (the platform sources), NOT
     // itself. A self-call recursed infinitely and stack-overflowed the live app on
     // the first GetFanChannels - invisible to other tests because they never build
@@ -101,5 +139,24 @@ public class CompositeFanControlProviderTests
         public Task<IReadOnlyList<FanCalibration>> CalibrateAsync(
             IReadOnlyList<string> fanIds, IProgress<FanCalibrationProgress> progress, CancellationToken ct)
             => Task.FromResult<IReadOnlyList<FanCalibration>>(Array.Empty<FanCalibration>());
+    }
+
+    /// <summary>Records what the motherboard side was asked to calibrate.</summary>
+    private sealed class RecordingFans : IFanControlProvider
+    {
+        public List<IReadOnlyList<string>> Calls { get; } = new();
+        public IReadOnlyList<FanChannel> GetFanChannels() => Array.Empty<FanChannel>();
+        public IReadOnlyList<TemperatureSource> GetTemperatureSources() => Array.Empty<TemperatureSource>();
+        public float? ReadTemperature(string sensorId) => null;
+        public int SetFanSpeed(string channelId, int dutyPercent) => dutyPercent;
+        public void DriveFanSpeed(string channelId, int dutyPercent) { }
+        public void ReleaseFan(string channelId) { }
+        public void ReleaseAll() { }
+        public Task<IReadOnlyList<FanCalibration>> CalibrateAsync(
+            IReadOnlyList<string> fanIds, IProgress<FanCalibrationProgress> progress, CancellationToken ct)
+        {
+            Calls.Add(fanIds);
+            return Task.FromResult<IReadOnlyList<FanCalibration>>(Array.Empty<FanCalibration>());
+        }
     }
 }

@@ -26,7 +26,7 @@ public sealed class MediaLibrary
     private readonly string _rootDir;
 
     public MediaLibrary()
-        : this(Path.Combine(ResolveDefaultRoot(), "Nexus", "media"))
+        : this(MediaStoreDir("effects"))
     {
     }
 
@@ -49,6 +49,15 @@ public sealed class MediaLibrary
         }
         return Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData);
     }
+
+    /// <c>&lt;data-root&gt;/Nexus</c>: %ProgramData% (Windows), ~/Library/Application Support (macOS), $XDG_DATA_HOME (Linux).
+    internal static string NexusDataDir() => Path.Combine(ResolveDefaultRoot(), "Nexus");
+
+    /// Per-device store root <c>.../Nexus/devices/&lt;family&gt;</c>. Shared so every device store lands under one root instead of hand-rolling a per-OS path.
+    internal static string DeviceStoreDir(string family) => Path.Combine(NexusDataDir(), "devices", family);
+
+    /// Non-device media content <c>.../Nexus/media/&lt;kind&gt;</c> (effects, gallery, deck-images).
+    internal static string MediaStoreDir(string kind) => Path.Combine(NexusDataDir(), "media", kind);
 
     public MediaLibrary(string rootDir)
     {

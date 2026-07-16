@@ -81,4 +81,139 @@ public sealed class PanelDeviceRegistryTests : IDisposable
         Assert.True(string.IsNullOrEmpty(allocated.DisplayId));
         Assert.Equal(2, _registry.List().Count);
     }
+
+    [Fact]
+    public void Patch_WidgetPadding_RoundTripsThroughGet()
+    {
+        var record = _registry.Allocate(null, Caps(PanelSurfaces.Phone));
+
+        var patched = _registry.Patch(record.Id, new PanelDevicePatch { WidgetPadding = 80 });
+        var fetched = _registry.Get(record.Id);
+
+        Assert.Equal(80, patched!.WidgetPadding);
+        Assert.Equal(80, fetched!.WidgetPadding);
+    }
+
+    [Fact]
+    public void Patch_OmittedWidgetPadding_DoesNotClobberStoredValue()
+    {
+        var record = _registry.Allocate(null, Caps(PanelSurfaces.Phone));
+        _registry.Patch(record.Id, new PanelDevicePatch { WidgetPadding = 0 });
+
+        var patched = _registry.Patch(record.Id, new PanelDevicePatch { DisplayName = "Renamed" });
+
+        Assert.Equal(0, patched!.WidgetPadding);
+        Assert.Equal("Renamed", patched.DisplayName);
+    }
+
+    /// <summary>
+    /// The service stores null until explicitly patched, same as WidgetOpacity/
+    /// WidgetLabels/WidgetBlur; the default percent is applied client-side.
+    /// </summary>
+    [Fact]
+    public void Allocate_WidgetPadding_AbsentIsNullNotServerDefaulted()
+    {
+        var record = _registry.Allocate(null, Caps(PanelSurfaces.Phone));
+
+        Assert.Null(record.WidgetPadding);
+    }
+
+    [Fact]
+    public void Patch_BackgroundEnabled_RoundTripsThroughGet()
+    {
+        var record = _registry.Allocate(null, Caps(PanelSurfaces.Monitor));
+
+        var patched = _registry.Patch(record.Id, new PanelDevicePatch { BackgroundEnabled = false });
+        var fetched = _registry.Get(record.Id);
+
+        Assert.False(patched!.BackgroundEnabled);
+        Assert.False(fetched!.BackgroundEnabled);
+    }
+
+    [Fact]
+    public void Patch_OmittedBackgroundEnabled_DoesNotClobberStoredValue()
+    {
+        var record = _registry.Allocate(null, Caps(PanelSurfaces.Monitor));
+        _registry.Patch(record.Id, new PanelDevicePatch { BackgroundEnabled = false });
+
+        var patched = _registry.Patch(record.Id, new PanelDevicePatch { DisplayName = "Renamed" });
+
+        Assert.False(patched!.BackgroundEnabled);
+    }
+
+    /// <summary>Null until explicitly patched; enabled is the client-side default.</summary>
+    [Fact]
+    public void Allocate_BackgroundEnabled_AbsentIsNullNotServerDefaulted()
+    {
+        var record = _registry.Allocate(null, Caps(PanelSurfaces.Monitor));
+
+        Assert.Null(record.BackgroundEnabled);
+    }
+
+    [Fact]
+    public void UpdateXeneonEdgeSettings_PartialUpdate_DoesNotClobberOtherStoredControls()
+    {
+        var (display, _) = _registry.AllocateForDisplay("DISP-XENEON", "Xeneon Edge", Caps(PanelSurfaces.Monitor));
+        _registry.UpdateXeneonEdgeSettings(display.DisplayId!, new XeneonEdgeSettingsDto { Brightness = 50, Red = 151 });
+
+        _registry.UpdateXeneonEdgeSettings(display.DisplayId!, new XeneonEdgeSettingsDto { Brightness = 80 });
+
+        var fetched = _registry.Get(display.Id);
+        Assert.Equal(80, fetched!.XeneonEdgeSettings!.Brightness);
+        Assert.Equal(151, fetched.XeneonEdgeSettings!.Red);
+    }
+
+    [Fact]
+    public void ResolveCoverBackgroundHex_NullRecord_ReturnsEmpty()
+    {
+        Assert.Equal("", PanelDeviceRegistry.ResolveCoverBackgroundHex(null));
+    }
+
+    [Fact]
+    public void ResolveCoverBackgroundHex_NoColoursSet_ReturnsEmpty()
+    {
+        var record = _registry.Allocate(null, Caps(PanelSurfaces.Monitor));
+
+        Assert.Equal("", PanelDeviceRegistry.ResolveCoverBackgroundHex(record));
+    }
+
+    [Fact]
+    public void ResolveCoverBackgroundHex_DefaultThemeMode_PrefersTheDarkSlot()
+    {
+        var record = _registry.Allocate(null, Caps(PanelSurfaces.Monitor));
+        var patched = _registry.Patch(record.Id, new PanelDevicePatch
+        {
+            BackgroundColor = "#1f0d36",
+            BackgroundColorLight = "#f3e8ff",
+        });
+
+        Assert.Equal("#1f0d36", PanelDeviceRegistry.ResolveCoverBackgroundHex(patched));
+    }
+
+    [Fact]
+    public void ResolveCoverBackgroundHex_ExplicitLightThemeMode_PrefersTheLightSlot()
+    {
+        var record = _registry.Allocate(null, Caps(PanelSurfaces.Monitor));
+        var patched = _registry.Patch(record.Id, new PanelDevicePatch
+        {
+            ThemeMode = "light",
+            BackgroundColor = "#1f0d36",
+            BackgroundColorLight = "#f3e8ff",
+        });
+
+        Assert.Equal("#f3e8ff", PanelDeviceRegistry.ResolveCoverBackgroundHex(patched));
+    }
+
+    [Fact]
+    public void ResolveCoverBackgroundHex_LightThemeModeButOnlyDarkSlotSet_FallsBackToTheDarkSlot()
+    {
+        var record = _registry.Allocate(null, Caps(PanelSurfaces.Monitor));
+        var patched = _registry.Patch(record.Id, new PanelDevicePatch
+        {
+            ThemeMode = "light",
+            BackgroundColor = "#1f0d36",
+        });
+
+        Assert.Equal("#1f0d36", PanelDeviceRegistry.ResolveCoverBackgroundHex(patched));
+    }
 }

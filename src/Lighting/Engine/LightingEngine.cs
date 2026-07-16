@@ -18,6 +18,17 @@ public sealed class LightingEngine : IDisposable
     public LightingEngine() { _canvas = new CanvasBuffer(160, 90); }
 
     public int FrameIntervalMs { get; set; } = 33;
+
+    /// <summary>
+    /// Selects the canvas-to-LED sampling technique. True = LED FOOTPRINT
+    /// SAMPLING: each LED integrates its cell of the device frame (see
+    /// <see cref="SampleLedFootprint"/>), so sparse content - music-reactive
+    /// bars, isolated lit pixels - registers anywhere inside the frame.
+    /// False = POINT SAMPLING: each LED reads the single canvas pixel under
+    /// its mapped point; content that misses those exact pixels leaves the
+    /// device dark. Flip to false to revert to the pre-footprint behaviour.
+    /// </summary>
+    public bool FootprintSamplingEnabled { get; set; } = true;
     public event Action<ReadOnlyMemory<byte>>? OnFrame;
     public event Action? OnEffectChanged;
     public string CurrentEffectName => _currentEffect?.Name ?? "none";
@@ -197,6 +208,15 @@ public sealed class LightingEngine : IDisposable
             if (devLedU is not null && devLedV is not null
                 && devLedU.Length == ledCount && devLedV.Length == ledCount)
             {
+                // Cell dims from a uniform cols x rows density estimate matched
+                // to the rect aspect. The true UV layout may be non-uniform, so
+                // neighbouring cells can overlap or leave small gaps; keyboards
+                // land at ~key-sized cells and keep per-key sharpness.
+                var aspect = rectH > 0.001f ? rectW / rectH : 1f;
+                var cols = Math.Max(1, (int)MathF.Round(MathF.Sqrt(ledCount * aspect)));
+                var rows = Math.Max(1, (ledCount + cols - 1) / cols);
+                var uvHalfW = Math.Max(1f, rectW / cols) * 0.5f;
+                var uvHalfH = Math.Max(1f, rectH / rows) * 0.5f;
                 for (int i = 0; i < ledCount; i++)
                 {
                     if (devLedDisabled is not null && i < devLedDisabled.Length && devLedDisabled[i])
@@ -226,9 +246,11 @@ public sealed class LightingEngine : IDisposable
                             vr = v;
                             break;
                     }
-                    var px = (int)(rectX + ur * rectW);
-                    var py = (int)(rectY + vr * rectH);
-                    var (r, g, b) = _canvas.GetPixel(px, py);
+                    var sx = rectX + ur * rectW;
+                    var sy = rectY + vr * rectH;
+                    var (r, g, b) = FootprintSamplingEnabled
+                        ? SampleLedFootprint(sx - uvHalfW, sy - uvHalfH, sx + uvHalfW, sy + uvHalfH)
+                        : _canvas.GetPixel((int)sx, (int)sy);
                     dev.SetLed(i, r, g, b);
                 }
                 continue;
@@ -257,6 +279,20 @@ public sealed class LightingEngine : IDisposable
                     dy = 0f;
                     break;
             }
+            // Each LED's cell spans the full frame breadth across the strip axis
+            // and one LED pitch along it, so content anywhere inside the frame
+            // reaches the LED at that position instead of only the centerline.
+            float linHalfW, linHalfH;
+            if (rot is 90 or 270)
+            {
+                linHalfW = Math.Max(1f, rectW) * 0.5f;
+                linHalfH = Math.Max(1f, rectH / ledCount) * 0.5f;
+            }
+            else
+            {
+                linHalfW = Math.Max(1f, rectW / ledCount) * 0.5f;
+                linHalfH = Math.Max(1f, rectH) * 0.5f;
+            }
             var denom = ledCount > 1 ? 1f / (ledCount - 1) : 0f;
             for (int i = 0; i < ledCount; i++)
             {
@@ -266,12 +302,58 @@ public sealed class LightingEngine : IDisposable
                     continue;
                 }
                 var t = ledCount > 1 ? i * denom - 0.5f : 0f;
-                var (r, g, b) = _canvas.GetPixel((int)(cx + t * dx), (int)(cy + t * dy));
+                var sx = cx + t * dx;
+                var sy = cy + t * dy;
+                var (r, g, b) = FootprintSamplingEnabled
+                    ? SampleLedFootprint(sx - linHalfW, sy - linHalfH, sx + linHalfW, sy + linHalfH)
+                    : _canvas.GetPixel((int)sx, (int)sy);
                 dev.SetLed(i, r, g, b);
             }
         }
 
         ApplyTestOverlays(devices);
+    }
+
+    /// <summary>
+    /// LED FOOTPRINT SAMPLING (gated by <see cref="FootprintSamplingEnabled"/>):
+    /// samples the LED's cell of the canvas instead of a single point, so sparse
+    /// content (music-reactive bars, isolated lit pixels) registers wherever it
+    /// lands inside the frame. Samples are weighted by max-channel luminance
+    /// squared: lit pixels dominate dark filler, an all-dark cell stays black,
+    /// and hue is preserved (a per-channel max would mix channels from different
+    /// pixels). Reads every canvas pixel in the cell; cells tile the frame
+    /// (linear) or partition it by LED density (UV), so per-device cost is
+    /// bounded by the frame's canvas-pixel area per rendered frame.
+    /// </summary>
+    private (byte r, byte g, byte b) SampleLedFootprint(float x0, float y0, float x1, float y1)
+    {
+        var ix0 = Math.Clamp((int)MathF.Floor(x0), 0, _canvas.Width - 1);
+        var iy0 = Math.Clamp((int)MathF.Floor(y0), 0, _canvas.Height - 1);
+        var ix1 = Math.Clamp((int)MathF.Ceiling(x1) - 1, ix0, _canvas.Width - 1);
+        var iy1 = Math.Clamp((int)MathF.Ceiling(y1) - 1, iy0, _canvas.Height - 1);
+        long wSum = 0, rSum = 0, gSum = 0, bSum = 0;
+        for (int py = iy0; py <= iy1; py++)
+        {
+            for (int px = ix0; px <= ix1; px++)
+            {
+                var (r, g, b) = _canvas.GetPixel(px, py);
+                int m = Math.Max(r, Math.Max(g, b));
+                if (m == 0)
+                {
+                    continue;
+                }
+                long w = m * m;
+                wSum += w;
+                rSum += w * r;
+                gSum += w * g;
+                bSum += w * b;
+            }
+        }
+        if (wSum == 0)
+        {
+            return (0, 0, 0);
+        }
+        return ((byte)(rSum / wSum), (byte)(gSum / wSum), (byte)(bSum / wSum));
     }
 
     private static void ApplyTestOverlays(DeviceFrame[] devices)

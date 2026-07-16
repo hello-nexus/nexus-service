@@ -18,6 +18,7 @@ public enum PawnIoInstallResult
     AlreadyInstalled,
     Installed,
     Upgraded,
+    Repaired,
     UpgradeStagedPendingReboot,
     UserDenied,
     Failed,
@@ -41,6 +42,14 @@ public enum PawnIoInstallResult
 /// (.cat) provides the trust chain that Windows accepts via the Driver Store
 /// install path. Direct SCM CreateService → StartService fails with
 /// ERROR_INVALID_IMAGE_HASH (577) without going through the catalog.
+///
+/// Registered is not running: the service registry key and the driver-store
+/// package survive states where \Device\PawnIO does not exist (deleted device
+/// node, a driver that failed to start after an upgrade). A version compare
+/// cannot see any of them, so every check also opens the device itself and a
+/// registered-but-dead driver triggers an elevated repair
+/// (--install-pawnio --repair) that reinstalls the package, rebinds - or
+/// recreates - the root device node, and verifies the device opens.
 /// </summary>
 public static class PawnIoInstaller
 {
@@ -60,14 +69,16 @@ public static class PawnIoInstaller
     private static readonly TimeSpan BootTimeMatchTolerance = TimeSpan.FromSeconds(30);
 
     /// <summary>
-    /// Ensures the PawnIO kernel driver is installed and up to date. If the
-    /// driver service isn't registered yet, spawns an elevated helper
-    /// (one-time UAC prompt) to install it. If it is registered but the
+    /// Ensures the PawnIO kernel driver is installed, up to date, and actually
+    /// running. If the driver service isn't registered yet, spawns an elevated
+    /// helper (one-time UAC prompt) to install it. If it is registered but the
     /// installed driver is older than the bundled one, spawns the same
     /// elevated helper to upgrade it in place - unless a prior run already
     /// staged that exact upgrade this boot, in which case it reports the
-    /// pending-reboot state without prompting again. Subsequent calls return
-    /// AlreadyInstalled without prompting once the versions match.
+    /// pending-reboot state without prompting again. If it is registered and
+    /// version-current but \Device\PawnIO does not open, spawns the helper to
+    /// repair it (reinstall + rebind/recreate the device node). Only a
+    /// registered, version-current, openable driver returns AlreadyInstalled.
     /// </summary>
     public static async Task<PawnIoInstallResult> EnsureInstalledAsync(CancellationToken ct = default)
     {
@@ -78,18 +89,52 @@ public static class PawnIoInstaller
 
         if (IsServiceRegistered())
         {
+            var deviceAvailable = IsDeviceAvailable();
             var bundled = GetBundledDriverVersion();
             if (bundled is null)
             {
+                // No bundled driver beside this exe (dev run) - nothing to
+                // upgrade or repair from, whatever the device state is.
+                ServiceLog.Info(
+                    $"[pawnio] registered, no bundled driver, device {(deviceAvailable ? "up" : "unavailable")} -> leaving as-is");
                 return PawnIoInstallResult.AlreadyInstalled;
             }
 
             var installed = GetInstalledDriverVersion();
+            if (NeedsRepair(installed, bundled, deviceAvailable))
+            {
+                var repairMarker = PawnIoUpgradeMarkerStore.Read();
+                var repairBootTimeUtc = GetBootTimeUtc();
+                if (IsStagedThisBoot(repairMarker, bundled, repairBootTimeUtc))
+                {
+                    ServiceLog.Info($"[pawnio] repair to {bundled} staged; pending reboot");
+                    return PawnIoInstallResult.UpgradeStagedPendingReboot;
+                }
+
+                ServiceLog.Info(
+                    $"[pawnio] installed {installed?.ToString() ?? "unknown"}, bundled {bundled}, device unavailable -> repairing");
+                var repairResult = await RunElevatedAsync(ElevatedRun.Repair, ct);
+                if (repairResult == PawnIoInstallResult.UpgradeStagedPendingReboot)
+                {
+                    PawnIoUpgradeMarkerStore.Write(new PawnIoUpgradeMarker
+                    {
+                        StagedVersion = bundled.ToString(),
+                        StagedAtBootTimeUtc = repairBootTimeUtc,
+                    });
+                }
+                else if (repairResult == PawnIoInstallResult.Repaired)
+                {
+                    PawnIoUpgradeMarkerStore.Delete();
+                }
+
+                return repairResult;
+            }
+
             if (!ShouldUpgrade(installed, bundled))
             {
                 PawnIoUpgradeMarkerStore.Delete();
                 ServiceLog.Info(
-                    $"[pawnio] installed {installed?.ToString() ?? "unknown"}, bundled {bundled} -> up to date");
+                    $"[pawnio] installed {installed?.ToString() ?? "unknown"}, bundled {bundled}, device up -> up to date");
                 return PawnIoInstallResult.AlreadyInstalled;
             }
 
@@ -101,8 +146,9 @@ public static class PawnIoInstaller
                 return PawnIoInstallResult.UpgradeStagedPendingReboot;
             }
 
-            ServiceLog.Info($"[pawnio] installed {installed}, bundled {bundled} -> upgrading");
-            var result = await RunElevatedAsync(upgrade: true, ct);
+            ServiceLog.Info(
+                $"[pawnio] installed {installed}, bundled {bundled}, device {(deviceAvailable ? "up" : "unavailable")} -> upgrading");
+            var result = await RunElevatedAsync(ElevatedRun.Upgrade, ct);
             if (result == PawnIoInstallResult.UpgradeStagedPendingReboot)
             {
                 PawnIoUpgradeMarkerStore.Write(new PawnIoUpgradeMarker
@@ -119,7 +165,36 @@ public static class PawnIoInstaller
             return result;
         }
 
-        return await RunElevatedAsync(upgrade: false, ct);
+        var installResult = await RunElevatedAsync(ElevatedRun.Install, ct);
+        if (installResult == PawnIoInstallResult.UpgradeStagedPendingReboot)
+        {
+            // Latch a reboot-staged fresh install like the upgrade and repair
+            // paths, or a same-boot service restart sees registered + dead and
+            // runs a redundant repair.
+            var stagedBundled = GetBundledDriverVersion();
+            if (stagedBundled is not null)
+            {
+                PawnIoUpgradeMarkerStore.Write(new PawnIoUpgradeMarker
+                {
+                    StagedVersion = stagedBundled.ToString(),
+                    StagedAtBootTimeUtc = GetBootTimeUtc(),
+                });
+            }
+        }
+
+        return installResult;
+    }
+
+    /// <summary>
+    /// True when the registered driver should be repaired rather than upgraded
+    /// or left alone: no device object exists and no upgrade is going to run
+    /// (an upgrade rebinds the device anyway, so it subsumes the repair). An
+    /// unknown installed version with a dead device is the deleted-ImagePath
+    /// state and also repairs.
+    /// </summary>
+    internal static bool NeedsRepair(Version? installed, Version bundled, bool deviceAvailable)
+    {
+        return !deviceAvailable && !ShouldUpgrade(installed, bundled);
     }
 
     private static DateTime GetBootTimeUtc() => DateTime.UtcNow - TimeSpan.FromMilliseconds(Environment.TickCount64);
@@ -138,20 +213,33 @@ public static class PawnIoInstaller
             return false;
         }
 
-        if (marker is not null
-            && Version.TryParse(marker.StagedVersion, out var stagedVersion)
-            && stagedVersion == bundled
-            && (marker.StagedAtBootTimeUtc - currentBootTimeUtc).Duration() <= BootTimeMatchTolerance)
-        {
-            return false;
-        }
-
-        return true;
+        return !IsStagedThisBoot(marker, bundled, currentBootTimeUtc);
     }
 
-    // Spawns the elevated --install-pawnio helper (fresh install or, with
-    // upgrade, --install-pawnio --upgrade) and waits for it to exit.
-    private static async Task<PawnIoInstallResult> RunElevatedAsync(bool upgrade, CancellationToken ct)
+    /// <summary>
+    /// True when the marker records this exact bundled version as staged on
+    /// the current boot - the pending package only needs a reboot, so neither
+    /// the upgrade nor the repair path should run the elevated helper again.
+    /// </summary>
+    internal static bool IsStagedThisBoot(
+        PawnIoUpgradeMarker? marker, Version bundled, DateTime currentBootTimeUtc)
+    {
+        return marker is not null
+            && Version.TryParse(marker.StagedVersion, out var stagedVersion)
+            && stagedVersion == bundled
+            && (marker.StagedAtBootTimeUtc - currentBootTimeUtc).Duration() <= BootTimeMatchTolerance;
+    }
+
+    private enum ElevatedRun
+    {
+        Install,
+        Upgrade,
+        Repair,
+    }
+
+    // Spawns the elevated --install-pawnio helper (with --upgrade or --repair
+    // for those modes) and waits for it to exit.
+    private static async Task<PawnIoInstallResult> RunElevatedAsync(ElevatedRun mode, CancellationToken ct)
     {
         var infPath = Path.Combine(AppContext.BaseDirectory, "pawnio", "PawnIO.inf");
         if (!File.Exists(infPath))
@@ -170,7 +258,12 @@ public static class PawnIoInstaller
         var psi = new ProcessStartInfo
         {
             FileName = exePath,
-            Arguments = upgrade ? "--install-pawnio --upgrade" : "--install-pawnio",
+            Arguments = mode switch
+            {
+                ElevatedRun.Upgrade => "--install-pawnio --upgrade",
+                ElevatedRun.Repair => "--install-pawnio --repair",
+                _ => "--install-pawnio",
+            },
             Verb = "runas",
             UseShellExecute = true,
             CreateNoWindow = true,
@@ -213,12 +306,12 @@ public static class PawnIoInstaller
             return PawnIoInstallResult.Failed;
         }
 
-        if (upgrade)
+        return mode switch
         {
-            return PawnIoInstallResult.Upgraded;
-        }
-
-        return IsServiceRegistered() ? PawnIoInstallResult.Installed : PawnIoInstallResult.Failed;
+            ElevatedRun.Upgrade => PawnIoInstallResult.Upgraded,
+            ElevatedRun.Repair => PawnIoInstallResult.Repaired,
+            _ => IsServiceRegistered() ? PawnIoInstallResult.Installed : PawnIoInstallResult.Failed,
+        };
     }
 
     /// <summary>
@@ -331,12 +424,13 @@ public static class PawnIoInstaller
     /// <summary>
     /// Elevated entry point. Called when Nexus.exe is launched with the
     /// --install-pawnio command-line arg (plus --upgrade when upgrading an
-    /// already-registered driver in place). Runs pnputil to install the
-    /// bundled driver. Returns 0 when the driver is live, 3010
+    /// already-registered driver in place, or --repair when the driver is
+    /// registered but \Device\PawnIO does not open). Runs pnputil to install
+    /// the bundled driver. Returns 0 when the driver is live, 3010
     /// (ERROR_SUCCESS_REBOOT_REQUIRED) when it is bound but needs a device
     /// restart or reboot to activate, 1 on failure.
     /// </summary>
-    public static int RunElevatedInstall(bool upgrade = false)
+    public static int RunElevatedInstall(bool upgrade = false, bool repair = false)
     {
         if (!RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
         {
@@ -345,7 +439,7 @@ public static class PawnIoInstaller
 
         try
         {
-            return upgrade ? DoUpgrade() : DoInstall();
+            return repair ? DoRepair() : upgrade ? DoUpgrade() : DoInstall();
         }
         catch (Exception ex)
         {
@@ -395,8 +489,20 @@ public static class PawnIoInstaller
             return 1;
         }
 
-        Log("install complete");
-        return bindResult == DriverBindResult.RebootRequired ? ErrorSuccessRebootRequired : 0;
+        if (bindResult == DriverBindResult.RebootRequired)
+        {
+            Log("install staged, reboot required to activate");
+            return ErrorSuccessRebootRequired;
+        }
+
+        if (!WaitForDeviceOpen())
+        {
+            LogError(@"driver bound but \Device\PawnIO does not open");
+            return 1;
+        }
+
+        Log("install complete, device open");
+        return 0;
     }
 
     [SupportedOSPlatform("windows")]
@@ -427,17 +533,122 @@ public static class PawnIoInstaller
             return 1;
         }
 
-        // The root device already exists from the original install - only
-        // rebind the driver, do not create a second device node.
+        // The root device normally exists from the original install - only
+        // rebind the driver, do not create a second device node. A missing
+        // node (the service key survives its deletion) is recreated instead.
         var bindResult = BindDriverToExistingDevice(infPath);
+        if (bindResult == DriverBindResult.NoDevice)
+        {
+            Log("device node missing; recreating it");
+            bindResult = CreateRootDeviceAndBindDriver(infPath);
+        }
+
         if (bindResult == DriverBindResult.Failed)
         {
-            LogError("failed to bind upgraded driver to existing device");
+            LogError("failed to bind upgraded driver");
             return 1;
         }
 
-        Log("upgrade complete");
-        return bindResult == DriverBindResult.RebootRequired ? ErrorSuccessRebootRequired : 0;
+        if (bindResult == DriverBindResult.RebootRequired)
+        {
+            return ErrorSuccessRebootRequired;
+        }
+
+        if (!WaitForDeviceOpen())
+        {
+            LogError(@"driver bound but \Device\PawnIO does not open");
+            return 1;
+        }
+
+        Log("upgrade complete, device open");
+        return 0;
+    }
+
+    /// <summary>
+    /// Elevated repair for a registered-but-dead driver: the service key and
+    /// driver-store package look healthy but \Device\PawnIO does not open
+    /// (deleted device node, a driver that failed to start). Reinstalls the
+    /// package, rebinds the existing device node - recreating it when it is
+    /// gone - and verifies the device opens before reporting success.
+    /// </summary>
+    [SupportedOSPlatform("windows")]
+    private static int DoRepair()
+    {
+        if (!IsCurrentProcessElevated())
+        {
+            LogError("not running as administrator");
+            return 1;
+        }
+
+        if (!IsServiceRegistered())
+        {
+            LogError("PawnIO service not registered, nothing to repair");
+            return 1;
+        }
+
+        var infPath = Path.Combine(AppContext.BaseDirectory, "pawnio", "PawnIO.inf");
+        if (!File.Exists(infPath))
+        {
+            LogError($"bundled INF not found at {infPath}");
+            return 1;
+        }
+        Log($"repairing driver from {infPath}");
+
+        if (!RunPnputilAddDriver(infPath))
+        {
+            return 1;
+        }
+
+        var bindResult = BindDriverToExistingDevice(infPath);
+        if (bindResult == DriverBindResult.NoDevice)
+        {
+            Log("device node missing; recreating it");
+            bindResult = CreateRootDeviceAndBindDriver(infPath);
+        }
+
+        if (bindResult == DriverBindResult.Failed)
+        {
+            LogError("failed to bind driver during repair");
+            return 1;
+        }
+
+        if (bindResult == DriverBindResult.RebootRequired)
+        {
+            Log("repair staged, reboot required to activate");
+            return ErrorSuccessRebootRequired;
+        }
+
+        if (!WaitForDeviceOpen())
+        {
+            LogError(@"driver bound but \Device\PawnIO still does not open");
+            return 1;
+        }
+
+        Log("repair complete, device open");
+        return 0;
+    }
+
+    // UpdateDriverForPlugAndPlayDevices returns once the install transaction
+    // commits; the device object can appear shortly after. Poll the device
+    // itself briefly so a 0 exit means "openable now", not "bind reported ok".
+    [SupportedOSPlatform("windows")]
+    private static bool WaitForDeviceOpen()
+    {
+        var deadline = Environment.TickCount64 + 5000;
+        while (true)
+        {
+            if (IsDeviceAvailable())
+            {
+                return true;
+            }
+
+            if (Environment.TickCount64 >= deadline)
+            {
+                return false;
+            }
+
+            Thread.Sleep(250);
+        }
     }
 
     [SupportedOSPlatform("windows")]
@@ -512,13 +723,20 @@ public static class PawnIoInstaller
     // Live: the new driver is loaded and running. RebootRequired: the
     // package is committed to the driver store and bound to the device, but
     // the currently loaded kernel image is unchanged until a device restart
-    // or reboot. Failed: the bind did not take at all.
+    // or reboot. NoDevice: no Root\PawnIO device node exists to bind to (the
+    // service registry key survives node deletion). Failed: the bind did not
+    // take at all.
     private enum DriverBindResult
     {
         Live,
         RebootRequired,
+        NoDevice,
         Failed,
     }
+
+    // SPAPI_E_NO_SUCH_DEVINST - UpdateDriverForPlugAndPlayDevices found no
+    // device node matching the hardware id.
+    private const int SpapiENoSuchDevinst = unchecked((int)0xE000020B);
 
     [SupportedOSPlatform("windows")]
     private static DriverBindResult CreateRootDeviceAndBindDriver(string infPath)
@@ -578,9 +796,11 @@ public static class PawnIoInstaller
             // Now bind the driver to our newly created device. INF path must be
             // absolute and the catalog file must be in the same directory.
             var bindResult = BindDriver(infPath);
-            if (bindResult == DriverBindResult.Failed)
+            if (bindResult is DriverBindResult.Failed or DriverBindResult.NoDevice)
             {
-                // Cleanup the device we just created since the driver bind failed.
+                // NoDevice against a node created lines above means the
+                // registration didn't take; either way the bind failed.
+                // Cleanup the device we just created.
                 SetupApi.SetupDiCallClassInstaller(SetupApi.DIF_REMOVE, deviceInfoSet, ref deviceInfoData);
                 return DriverBindResult.Failed;
             }
@@ -595,8 +815,8 @@ public static class PawnIoInstaller
     }
 
     // Rebinds the driver to the device node an earlier install already
-    // created. Used by the upgrade path, which must not create a second
-    // device node for the same hardware ID.
+    // created. Used by the upgrade and repair paths, which must not create a
+    // second device node for the same hardware ID.
     [SupportedOSPlatform("windows")]
     private static DriverBindResult BindDriverToExistingDevice(string infPath)
     {
@@ -609,10 +829,10 @@ public static class PawnIoInstaller
                 // unload. The new package is already in the driver store and
                 // bound to the device, so it activates on the next device
                 // restart or reboot without disrupting whoever is using it now.
-                Log("driver upgraded, reboot required to activate");
+                Log("driver bound to existing device, reboot required to activate");
                 break;
             case DriverBindResult.Live:
-                Log("driver upgraded and bound to existing device");
+                Log("driver bound to existing device");
                 break;
         }
 
@@ -644,6 +864,12 @@ public static class PawnIoInstaller
             return DriverBindResult.RebootRequired;
         }
 
+        if (err == SpapiENoSuchDevinst)
+        {
+            Log("no PawnIO device node exists to bind");
+            return DriverBindResult.NoDevice;
+        }
+
         LogError($"UpdateDriverForPlugAndPlayDevices failed: {err}");
         return DriverBindResult.Failed;
     }
@@ -665,6 +891,60 @@ public static class PawnIoInstaller
             return false;
         }
     }
+
+    private const int ErrorFileNotFound = 2;
+    private const int ErrorPathNotFound = 3;
+
+    /// <summary>
+    /// True when a \Device\PawnIO object exists - the driver is loaded and
+    /// running right now, regardless of what the registry says. Opening the
+    /// device is the same probe LibreHardwareMonitor uses to reach the driver,
+    /// so it is the authoritative liveness signal: a registered-but-dead
+    /// driver fails it and triggers the repair path, and every
+    /// install/upgrade/repair verifies against it before reporting success.
+    /// Only FILE/PATH_NOT_FOUND count as dead: any other open failure
+    /// (ERROR_ACCESS_DENIED from an unelevated caller, a sharing violation)
+    /// proves an object answered, and treating it as dead would force-rebind
+    /// a live driver on every unelevated interactive launch.
+    /// </summary>
+    internal static bool IsDeviceAvailable()
+    {
+        if (!RuntimeInformation.IsOSPlatform(OSPlatform.Windows)) return false;
+        try
+        {
+            var handle = CreateFileW(
+                @"\\?\GLOBALROOT\Device\PawnIO",
+                0xC0000000, // GENERIC_READ | GENERIC_WRITE
+                3,          // FILE_SHARE_READ | FILE_SHARE_WRITE
+                IntPtr.Zero,
+                3,          // OPEN_EXISTING
+                0x80,       // FILE_ATTRIBUTE_NORMAL
+                IntPtr.Zero);
+
+            if (handle != new IntPtr(-1))
+            {
+                CloseHandle(handle);
+                return true;
+            }
+
+            var err = Marshal.GetLastWin32Error();
+            return err != ErrorFileNotFound && err != ErrorPathNotFound;
+        }
+        catch { return false; }
+    }
+
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    private static extern IntPtr CreateFileW(
+        string lpFileName,
+        uint dwDesiredAccess,
+        uint dwShareMode,
+        IntPtr lpSecurityAttributes,
+        uint dwCreationDisposition,
+        uint dwFlagsAndAttributes,
+        IntPtr hTemplateFile);
+
+    [DllImport("kernel32.dll")]
+    private static extern bool CloseHandle(IntPtr hObject);
 
     [SupportedOSPlatform("windows")]
     private static bool IsCurrentProcessElevated()

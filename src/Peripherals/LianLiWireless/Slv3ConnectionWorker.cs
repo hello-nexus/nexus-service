@@ -2,7 +2,6 @@ using System;
 using System.Threading;
 using System.Threading.Tasks;
 using Microsoft.Extensions.Hosting;
-using Nexus.Service.Cooling;
 using Nexus.Service.Devices;
 using Nexus.Service.Lighting;
 using Nexus.Service.Platform;
@@ -23,15 +22,13 @@ public sealed class Slv3ConnectionWorker : BackgroundService
 
     private readonly Slv3Hub _hub;
     private readonly Slv3LightingDeviceProvider _lighting;
-    private readonly Slv3CoolingProvider _cooling;
     private readonly DeviceControlGate _gate;
 
     public Slv3ConnectionWorker(
-        Slv3Hub hub, Slv3LightingDeviceProvider lighting, Slv3CoolingProvider cooling, DeviceControlGate gate)
+        Slv3Hub hub, Slv3LightingDeviceProvider lighting, DeviceControlGate gate)
     {
         _hub = hub;
         _lighting = lighting;
-        _cooling = cooling;
         _gate = gate;
     }
 
@@ -69,13 +66,11 @@ public sealed class Slv3ConnectionWorker : BackgroundService
                                 }
                             }
                             // Picks up newly bound/unbound fan chains without
-                            // waiting for the RgbBridge periodic poll. Also
-                            // restores a persisted Manual duty onto a chain
-                            // freshly confirmed bound (Slv3CoolingProvider);
-                            // unlike lighting, cooling has no push signature to
-                            // diff, so only the post-DriveTick call does anything.
+                            // waiting for the RgbBridge periodic poll. Cooling
+                            // needs no call here: CurveEngine replays persisted
+                            // manual duties as bound chains surface in
+                            // GetFanChannels.
                             _lighting.OnHubStateUpdated();
-                            _cooling.OnHubStateUpdated();
                             await Task.Delay(TickPollMs, stoppingToken).ConfigureAwait(false);
                         }
                     }

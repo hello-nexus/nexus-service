@@ -160,7 +160,6 @@ public sealed class KeebDefaults
 {
     public string RotaryLeft { get; set; } = "VolumeAdjustment";
     public string RotaryRight { get; set; } = "BrightnessAdjustment";
-    public string RotarySensitivity { get; set; } = "Balanced";
     public KeebFirmwareLightingDefaults FirmwareLighting { get; set; } = new();
 }
 

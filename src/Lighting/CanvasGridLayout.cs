@@ -6,6 +6,10 @@ namespace Nexus.Service.Lighting;
 /// Default device-frame positions on the 1000x600 lighting canvas. The grid
 /// scales with the total device count so every card lands in a distinct,
 /// guaranteed-on-canvas cell.
+///
+/// nexus-web mirrors this in DeviceCanvas.tsx's defaultSlot(), which the canvas
+/// Minimize action uses so a minimized frame lands where a reset would put it.
+/// Change both together.
 /// </summary>
 internal static class CanvasGridLayout
 {
@@ -14,6 +18,13 @@ internal static class CanvasGridLayout
     private const float Pad = 12f;
     private const float MaxCardW = 240f;
     private const float MaxCardH = 60f;
+    /// <summary>
+    /// Half the vertical offset between neighbouring columns, before the
+    /// per-cell slack clamp in <see cref="Slot"/> bounds it. The UI draws a
+    /// device's name at its card's center, so cards sharing a row's center line
+    /// stack every name onto that line and long names overlap.
+    /// </summary>
+    private const float ColumnStaggerY = 24f;
 
     public static (float x, float y, float w, float h) Slot(int index, int totalCount)
     {
@@ -40,9 +51,18 @@ internal static class CanvasGridLayout
         var row = s / cols;
 
         var x = Pad + col * cellW + (cellW - cardW) * 0.5f;
-        var y = Pad + row * cellH + (cellH - cardH) * 0.5f;
+        // Clamped to the cell's spare height so a staggered card cannot reach the
+        // neighbouring row. Once the grid is dense enough for the clamp to bind,
+        // the card sits flush to its cell edge and neighbouring columns separate
+        // by twice the slack instead. Names still collide past roughly 28 devices,
+        // but horizontally - the cells go narrower than half a name - which no
+        // vertical offset can fix; the canvas de-collides labels at render time.
+        var slack = (cellH - cardH) * 0.5f;
+        var stagger = Math.Min(ColumnStaggerY, slack);
+        var y = Pad + row * cellH + slack + (col % 2 == 0 ? -stagger : stagger);
 
-        // Defensive clamp - the min-card floors can push a card slightly past the cell edge at very high counts.
+        // Defensive clamp - float residue at the cell edges, which a fully
+        // clamped stagger lands a card flush against, can fall a hair outside.
         if (x + cardW > CanvasW - Pad) x = CanvasW - Pad - cardW;
         if (y + cardH > CanvasH - Pad) y = CanvasH - Pad - cardH;
         if (x < Pad) x = Pad;

@@ -16,8 +16,9 @@ namespace Nexus.Service.Cooling;
 /// locked via <see cref="IsLocked"/>) are exempt and keep whatever already
 /// drives them.
 ///
-/// Applying Custom restores the last-known per-fan curve assignment that was
-/// active before a preset took over. Locked channels are exempt.
+/// Applying Custom restores the last-known per-fan curve assignments and
+/// manual duties that were active before a preset took over. Locked channels
+/// are exempt.
 ///
 /// Applying Off detaches every non-locked fan from every curve and releases
 /// every non-locked fan to BIOS Control.
@@ -85,12 +86,18 @@ public static class FanProfiles
         var lockOverrides = store.Load().Cooling.FanLockOverrides;
         var lockedIds = channels.Where(c => IsLocked(c, lockOverrides)).Select(c => c.Id).ToHashSet();
 
+        List<(string FanId, int Duty)>? restoredManual = null;
         store.Update(s =>
         {
-            // Snapshot the user's custom mapping on the way out of "custom".
+            // Snapshot the user's custom mapping on the way out of "custom":
+            // curve assignments and manual duties both, so Custom restores the
+            // full arrangement. The manual copy is load-bearing for the Off
+            // round-trip - Off's per-channel release deletes the live
+            // ManualSpeeds entries.
             if (s.Cooling.ActivePreset == "custom" && canonical != "custom")
             {
                 s.Cooling.CustomFanCurveAssignments = SnapshotMapping(s.Cooling.Curves, fanIds);
+                s.Cooling.CustomManualSpeeds = new Dictionary<string, int>(s.Cooling.ManualSpeeds);
             }
 
             switch (canonical)
@@ -131,6 +138,7 @@ public static class FanProfiles
                     }
                 case "custom":
                     {
+                        var wasCustom = s.Cooling.ActivePreset == "custom";
                         // Detach every preset curve, except locked channels already
                         // sitting on one - a locked channel must not move.
                         foreach (var curve in s.Cooling.Curves.Where(c => c.Preset is not null))
@@ -155,6 +163,27 @@ public static class FanProfiles
                             if (!curve.Outputs.Any(o => o.Id == fanId))
                             {
                                 curve.Outputs.Add(new CurveOutputDocument { Id = fanId, Type = "Fan" });
+                            }
+                        }
+                        // Restore the saved manual duties the same way; a curve
+                        // attachment restored above wins over a manual entry.
+                        // Gated on an actual transition INTO custom - re-applying
+                        // custom while custom must not clobber live manual state
+                        // with the stale exit snapshot. Unlike the assignment
+                        // restore, absent channels keep their restored entry:
+                        // the engine replays it when the channel appears. The
+                        // explicit lock-override check covers locked fans whose
+                        // hub is disconnected right now (absent from lockedIds).
+                        if (!wasCustom)
+                        {
+                            var manualSnapshot = s.Cooling.CustomManualSpeeds ?? new Dictionary<string, int>();
+                            foreach (var (fanId, duty) in manualSnapshot)
+                            {
+                                if (lockedIds.Contains(fanId)) continue;
+                                if (s.Cooling.FanLockOverrides.TryGetValue(fanId, out var lockedOverride) && lockedOverride) continue;
+                                if (s.Cooling.Curves.Any(c => c.Outputs.Any(o => o.Id == fanId))) continue;
+                                s.Cooling.ManualSpeeds[fanId] = duty;
+                                (restoredManual ??= new()).Add((fanId, duty));
                             }
                         }
                         s.Cooling.ActivePreset = "custom";
@@ -182,6 +211,22 @@ public static class FanProfiles
             foreach (var ch in channels)
             {
                 fans.ReleaseFan(ch.Id);
+            }
+        }
+
+        // Custom: drive the restored manual duties onto present channels here.
+        // CurveEngine's replay latch skips ids it already replayed this run,
+        // so entries deleted while Off (and re-created above) would otherwise
+        // never reach hardware. SetFanSpeed also re-records the entry via the
+        // provider, which is idempotent for the value just restored.
+        if (restoredManual is not null)
+        {
+            foreach (var (fanId, duty) in restoredManual)
+            {
+                if (fanIds.Contains(fanId))
+                {
+                    fans.SetFanSpeed(fanId, duty);
+                }
             }
         }
 

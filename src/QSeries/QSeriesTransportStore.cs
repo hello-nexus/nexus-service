@@ -13,7 +13,7 @@ namespace Nexus.Service.QSeries;
 /// so a service restart (or USB drop) can re-establish the panel transport
 /// without waiting for the device to re-enumerate over USB.
 ///
-/// File layout: <c>%ProgramData%\Nexus\qseries-transports.json</c>. Written
+/// File layout: <c>&lt;data-root&gt;/Nexus/devices/transports/qseries-transports.json</c>. Written
 /// atomically via <see cref="AtomicJsonFile"/> - a power loss mid-write
 /// leaves either the previous file or the new file intact, never a
 /// half-written one.
@@ -39,13 +39,7 @@ public sealed class QSeriesTransportStore
     }
 
     private static string DefaultPath()
-    {
-        // CommonApplicationData = %ProgramData% on Windows, equivalent
-        // machine-scope location on Linux/Mac. Same root the service
-        // already uses for logs, settings.json, screen-time db, etc.
-        var commonAppData = Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData);
-        return Path.Combine(commonAppData, "Nexus", "qseries-transports.json");
-    }
+        => Path.Combine(Nexus.Service.Media.MediaLibrary.DeviceStoreDir("transports"), "qseries-transports.json");
 
     /// <summary>
     /// Read the store from disk. Missing file, empty file, or unparseable

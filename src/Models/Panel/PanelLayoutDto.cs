@@ -22,6 +22,17 @@ public sealed class PanelLayoutDto
     public List<PanelPageDto> Pages { get; set; } = new();
 
     public string? ActivePageId { get; set; }
+
+    /// <summary>
+    /// Single-widget surfaces (Q-series) show one widget at a time. Swapping
+    /// which widget is shown would otherwise discard the outgoing widget's
+    /// config; this remembers each widget type's last config so switching back
+    /// restores it. Keyed by widget type ("clock", "media", ...). Null on
+    /// multi-widget surfaces, where each widget's config lives on its own
+    /// PanelWidgetDto in Pages. Values are raw JSON, same shape as
+    /// PanelWidgetDto.Config.
+    /// </summary>
+    public Dictionary<string, Dictionary<string, JsonElement>>? SingleWidgetConfigs { get; set; }
 }
 
 public sealed class PanelPageDto

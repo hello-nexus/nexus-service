@@ -244,6 +244,20 @@ public static class PanelRoutes
             return Results.Json(result, AppJsonContext.Default.PanelPhonePairCodeHostDecisionResponse);
         });
 
+        // The console user's current wallpaper, cropped to the requesting
+        // panel monitor's resolution when the shell has that crop cached.
+        // Panels render it as the background-off ("desktop") background: the
+        // wallpaper look without icons, taskbar, or windows. no-cache: the
+        // client busts via a revision query param on wallpaper-change frames.
+        app.MapGet("/panel/desktop-wallpaper", (HttpContext ctx, int? width, int? height) =>
+        {
+            var path = DesktopWallpaperProvider.TryResolve(width ?? 0, height ?? 0);
+            if (path is null)
+                return Results.NotFound(ApiResponse.Fail("wallpaper unavailable"));
+            ctx.Response.Headers.CacheControl = "no-cache";
+            return Results.File(path, "image/jpeg");
+        }).AllowPanel();
+
         app.MapGet("/panel/devices", (PanelDeviceRegistry registry, Platform.Displays.DisplayTopologyService topology) =>
         {
             var devices = registry.List().ToList();

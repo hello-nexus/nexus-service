@@ -32,7 +32,8 @@ internal sealed class FakeInputterProvider : Nexus.Service.Peripherals.Keeb.IInp
 internal sealed class FakeClipboardProvider : Nexus.Service.Platform.Clipboard.IClipboardProvider
 {
     public string? Last;
-    public bool SetText(string text) { Last = text; return true; }
+    public bool ShouldFail;
+    public bool SetText(string text) { Last = text; return !ShouldFail; }
 }
 
 internal sealed class FakeSystemPowerProvider : Nexus.Service.Platform.Power.ISystemPowerProvider
@@ -223,7 +224,8 @@ public sealed class DeckActionExecutorTests : IDisposable
 
         _executor = new DeckActionExecutor(
             system, _lightingDevices, _lighting, _fans, _store, _profiles, _y70, displayBrightness, _media, hub,
-            new Lazy<Nexus.Service.Deck.IDeckSurfaceControl>(() => _deckSurface));
+            new Lazy<Nexus.Service.Deck.IDeckSurfaceControl>(() => _deckSurface),
+            new Nexus.Service.Audio.AudioFilePlayer());
     }
 
     public void Dispose()
@@ -254,6 +256,7 @@ public sealed class DeckActionExecutorTests : IDisposable
         Assert.True(_inputter.Last.Strokes[0].Shift);
         Assert.Equal("keydown", _inputter.Last.Strokes[0].Type);
         Assert.Equal("keyup", _inputter.Last.Strokes[1].Type);
+        Assert.Equal(("ok", (string?)null), _executor.LastOutcome);
     }
 
     [Fact]
@@ -264,12 +267,44 @@ public sealed class DeckActionExecutorTests : IDisposable
     }
 
     [Fact]
+    public async Task Hotkey_PrintScreen_ParsesToThePrintScreenKey()
+    {
+        await Run(new DeckAction { Type = "hotkey", Keys = "printscreen" });
+        Assert.NotNull(_inputter.Last);
+        Assert.Equal("PrintScreen", _inputter.Last!.Strokes[0].Key);
+    }
+
+    [Fact]
+    public async Task Hotkey_MetaPeriod_ParsesToThePeriodKeyWithMeta()
+    {
+        await Run(new DeckAction { Type = "hotkey", Keys = "meta+." });
+        Assert.NotNull(_inputter.Last);
+        Assert.Equal("Period", _inputter.Last!.Strokes[0].Key);
+        Assert.True(_inputter.Last.Strokes[0].Meta);
+    }
+
+    [Fact]
     public async Task Text_SetsClipboardAndPastes()
     {
         await Run(new DeckAction { Type = "text", Text = "hello world" });
         Assert.Equal("hello world", _clipboard.Last);
         Assert.NotNull(_inputter.Last);
         Assert.Equal(2, _inputter.Last!.Strokes.Count);
+        Assert.Equal(("ok", (string?)null), _executor.LastOutcome);
+    }
+
+    /// <summary>
+    /// SendTextAsync's ApiResponse.Fail must not be silently discarded: the
+    /// paste chord is skipped and the dispatch reports outcome=failed with
+    /// the response's own error text, not outcome=ok.
+    /// </summary>
+    [Fact]
+    public async Task Text_ClipboardSetFails_ReportsFailedOutcomeAndSkipsThePaste()
+    {
+        _clipboard.ShouldFail = true;
+        await Run(new DeckAction { Type = "text", Text = "hello world" });
+        Assert.Null(_inputter.Last);
+        Assert.Equal(("failed", "clipboard unavailable"), _executor.LastOutcome);
     }
 
     [Fact]
@@ -373,6 +408,22 @@ public sealed class DeckActionExecutorTests : IDisposable
     }
 
     [Fact]
+    public async Task Weather_IsADisplayOnlyNoOpThatReportsOk()
+    {
+        await Run(new DeckAction { Type = "weather", City = "Boston", Units = "auto" });
+        Assert.Equal(("ok", (string?)null), _executor.LastOutcome);
+    }
+
+    // Uses a missing path - AudioFilePlayer's own File.Exists gate makes this
+    // a safe no-op, the same reasoning as OpenFile_WithMissingPath_IsANoOp.
+    [Fact]
+    public async Task PlayAudio_WithMissingPath_ReportsOkWithoutThrowing()
+    {
+        await Run(new DeckAction { Type = "playAudio", Path = "/does/not/exist.wav", Volume = 50 });
+        Assert.Equal(("ok", (string?)null), _executor.LastOutcome);
+    }
+
+    [Fact]
     public async Task Nexus_RgbEffect_StartsAnimateWithStartAnimateDefaults()
     {
         await Run(new DeckAction { Type = "nexus", NexusAction = new DeckNexusAction { Op = "rgbEffect", Effect = "rainbow" } });
@@ -455,6 +506,7 @@ public sealed class DeckActionExecutorTests : IDisposable
     public async Task UnknownActionType_DoesNotThrow()
     {
         await Run(new DeckAction { Type = "not-a-real-type" });
+        Assert.Equal(("unknown", (string?)null), _executor.LastOutcome);
     }
 
     [Fact]

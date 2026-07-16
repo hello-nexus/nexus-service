@@ -34,7 +34,9 @@ public interface IToolInstallStrategy
     /// The NoDevice decision stays with the manager.</summary>
     ToolStatus GetStatus(string toolId);
 
-    void Terminate(string toolId);
+    /// <summary>Stops the tool. True only when the process is confirmed gone, so a caller
+    /// that then touches the device knows it is the only writer.</summary>
+    bool Terminate(string toolId);
 
     void TerminateAll();
 }

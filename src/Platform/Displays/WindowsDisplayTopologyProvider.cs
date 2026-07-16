@@ -2,6 +2,7 @@
 using System;
 using System.Collections.Generic;
 using System.Runtime.InteropServices;
+using Nexus.Service.Devices.Detection.Native;
 using Nexus.Service.Models.Displays;
 
 namespace Nexus.Service.Platform.Displays;
@@ -134,6 +135,113 @@ public sealed class WindowsDisplayTopologyProvider : IDisplayTopologyProvider
     }
 
     /// <summary>
+    /// Digitizer/display association snapshot for the touch-mapping guard.
+    /// Each touch digitizer's raw-input interface path (bench-verified
+    /// byte-identical to the Windows Digimon registry value-name format) and
+    /// which monitor it is currently associated with, plus every monitor's
+    /// own interface path (the same value EnumerateTouchMonitors and
+    /// RawHardwareId use, since EDD_GET_DEVICE_INTERFACE_NAME returns one
+    /// string used both ways).
+    /// </summary>
+    public TouchMapSnapshot? EnumerateTouchMapSnapshot()
+    {
+        var previousContext = TrySetPerMonitorAwareV2();
+        try
+        {
+            var monitorsById = new Dictionary<IntPtr, (string Id, string Manufacturer, string Model, string MonitorInterfacePath)>();
+            bool Cb(IntPtr hMonitor, IntPtr _, IntPtr __, IntPtr ___)
+            {
+                try
+                {
+                    var info = new MONITORINFOEX { cbSize = (uint)Marshal.SizeOf<MONITORINFOEX>() };
+                    if (!GetMonitorInfoW(hMonitor, ref info)) return true;
+                    var (id, _, manufacturer, model, _) = WindowsDisplayIdentity.ResolveIdentity(info.szDevice);
+                    monitorsById[hMonitor] = (id, manufacturer, model, WindowsDisplayIdentity.ReadMonitorInterfacePath(info.szDevice));
+                }
+                catch (Exception ex)
+                {
+                    Console.Error.WriteLine($"[displays-win] touch-map monitor entry failed: {ex.Message}");
+                }
+                return true;
+            }
+            EnumDisplayMonitors(IntPtr.Zero, IntPtr.Zero, Cb, IntPtr.Zero);
+
+            var snapshot = new TouchMapSnapshot();
+            foreach (var (id, manufacturer, model, monitorInterfacePath) in monitorsById.Values)
+            {
+                // A non-interface DeviceID (older driver, no EDD_GET_DEVICE_INTERFACE_NAME
+                // support) cannot be written to Digimon; drop the display from
+                // the snapshot rather than let the guard match it.
+                if (!monitorInterfacePath.StartsWith(@"\\?\", StringComparison.Ordinal)) continue;
+                snapshot.Displays.Add(new TouchMapDisplayInfo
+                {
+                    Id = id,
+                    MonitorInterfacePath = monitorInterfacePath,
+                    Manufacturer = manufacturer,
+                    Model = model,
+                });
+            }
+
+            uint count = 0;
+            if (GetPointerDevices(ref count, null) && count > 0)
+            {
+                var devices = new POINTER_DEVICE_INFO[count];
+                if (GetPointerDevices(ref count, devices))
+                {
+                    for (var i = 0; i < count && i < devices.Length; i++)
+                    {
+                        if (devices[i].pointerDeviceType != POINTER_DEVICE_TYPE_TOUCH) continue;
+                        var interfacePath = ReadRawInputDeviceName(devices[i].device);
+                        if (string.IsNullOrEmpty(interfacePath)) continue;
+                        var associatedId = devices[i].monitor != IntPtr.Zero
+                            && monitorsById.TryGetValue(devices[i].monitor, out var m)
+                                ? m.Id
+                                : "";
+                        snapshot.Digitizers.Add(new TouchMapDigitizerInfo
+                        {
+                            InterfacePath = interfacePath,
+                            ProductString = devices[i].productString ?? "",
+                            AssociatedDisplayId = associatedId,
+                            IsUsbAttached = CfgMgr32.HasUsbAncestor(interfacePath),
+                            CompanionHardwareIds = CfgMgr32.GetUsbHubSiblingInstanceIds(interfacePath),
+                        });
+                    }
+                }
+            }
+            return snapshot;
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine($"[displays-win] touch-map enumerate failed: {ex.Message}");
+            return null;
+        }
+        finally
+        {
+            RestoreThreadDpiContext(previousContext);
+        }
+    }
+
+    private static string ReadRawInputDeviceName(IntPtr hDevice)
+    {
+        if (hDevice == IntPtr.Zero) return "";
+        uint size = 0;
+        // RIDI_DEVICENAME is the one GetRawInputDeviceInfoW command that
+        // returns a WCHAR count, not a byte count, in pcbSize.
+        RawInputInterop.GetRawInputDeviceInfoW(hDevice, RawInputInterop.RIDI_DEVICENAME, IntPtr.Zero, ref size);
+        if (size == 0) return "";
+        var buf = Marshal.AllocHGlobal((int)size * 2);
+        try
+        {
+            var written = RawInputInterop.GetRawInputDeviceInfoW(hDevice, RawInputInterop.RIDI_DEVICENAME, buf, ref size);
+            return written == unchecked((uint)-1) ? "" : Marshal.PtrToStringUni(buf) ?? "";
+        }
+        finally
+        {
+            Marshal.FreeHGlobal(buf);
+        }
+    }
+
+    /// <summary>
     /// The helper process sets no process-wide DPI awareness, so without this
     /// the system would virtualize rcMonitor to 96-DPI units. Returns the
     /// previous context (IntPtr.Zero when the API is unavailable / failed).
@@ -241,5 +349,16 @@ public sealed class WindowsDisplayTopologyProvider : IDisplayTopologyProvider
 
     [DllImport("user32.dll", SetLastError = true)]
     private static extern bool GetPointerDevices(ref uint deviceCount, [Out] POINTER_DEVICE_INFO[]? pointerDevices);
+}
+
+/// <summary>AOT-safe (LibraryImport) raw-input lookup, kept separate from the
+/// DllImport declarations above so this one member can use the source
+/// generator without converting the whole file.</summary>
+internal static partial class RawInputInterop
+{
+    internal const uint RIDI_DEVICENAME = 0x20000007;
+
+    [LibraryImport("user32.dll", SetLastError = true)]
+    internal static partial uint GetRawInputDeviceInfoW(IntPtr hDevice, uint uiCommand, IntPtr pData, ref uint pcbSize);
 }
 #endif

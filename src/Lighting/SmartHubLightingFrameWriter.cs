@@ -79,12 +79,25 @@ public sealed class SmartHubLightingFrameWriter : IHostedService, IDisposable
         // Firmware animation drives the ports; streaming would overwrite it.
         if (settings.Devices.SmartHubFirmwareControl) return;
         var disabled = settings.Devices.DisabledLightingDevices;
+        var uncontrolled = settings.Devices.UncontrolledLightingDevices;
         var prefs = settings.Devices.LightingDevicePrefs;
         var globalBrightness = Math.Clamp(settings.Lighting.GlobalBrightness, 0f, 1f);
         var nowTicks = DateTime.UtcNow.Ticks;
 
         var hubId = _hub.DeviceId;
         var mirror = SmartHubLightingDeviceProvider.ReadMirror(settings, hubId);
+
+        // Every port uncontrolled: leave the hub alone entirely so it drops back
+        // to its firmware animation. When mirrored, the single mirror id
+        // stands in for every physical port.
+        if (uncontrolled.Count > 0)
+        {
+            var fullyUncontrolled = mirror
+                ? uncontrolled.Contains(SmartHubLightingDeviceProvider.MirrorId(hubId))
+                : AllPortsUncontrolled(hubId, uncontrolled);
+            if (fullyUncontrolled) return;
+        }
+
         // Push every port every tick - even ports with zero declared LEDs get
         // a zero-length frame, which the hub honours by keeping the strip dark
         // and stops it falling back to the firmware animation. When mirrored,
@@ -92,12 +105,25 @@ public sealed class SmartHubLightingFrameWriter : IHostedService, IDisposable
         for (var channel = 1; channel <= SmartHubProtocol.ArgbPortCount; channel++)
         {
             var id = mirror ? SmartHubLightingDeviceProvider.MirrorId(hubId) : $"{hubId}:port{channel}";
-            TryPushZone(devices, id, channel, disabled, prefs, globalBrightness, nowTicks);
+            TryPushZone(devices, id, channel, disabled, uncontrolled, prefs, globalBrightness, nowTicks);
         }
+    }
+
+    private static bool AllPortsUncontrolled(string hubId, System.Collections.Generic.IReadOnlyList<string> uncontrolled)
+    {
+        for (var channel = 1; channel <= SmartHubProtocol.ArgbPortCount; channel++)
+        {
+            if (!uncontrolled.Contains($"{hubId}:port{channel}"))
+            {
+                return false;
+            }
+        }
+        return true;
     }
 
     private void TryPushZone(DeviceFrame[] devices, string id, int channel,
         System.Collections.Generic.IReadOnlyList<string> disabled,
+        System.Collections.Generic.IReadOnlyList<string> uncontrolled,
         System.Collections.Generic.IReadOnlyDictionary<string, LightingDevicePreference> prefs,
         float globalBrightness, long nowTicks)
     {
@@ -105,7 +131,7 @@ public sealed class SmartHubLightingFrameWriter : IHostedService, IDisposable
         for (var i = 0; i < devices.Length; i++)
         { if (devices[i].Id == id) { frame = devices[i]; break; } }
         var ledCount = frame is null ? 0 : frame.LedCount;
-        var brightnessMul = ComputeBrightnessMul(id, disabled, prefs, globalBrightness);
+        var brightnessMul = ComputeBrightnessMul(id, disabled, uncontrolled, prefs, globalBrightness);
         var hasIdentify = _identify.TryGetActive(id, nowTicks, out var startTicks);
 
         var idx = channel - 1;
@@ -122,12 +148,17 @@ public sealed class SmartHubLightingFrameWriter : IHostedService, IDisposable
 
     private static double ComputeBrightnessMul(string id,
         System.Collections.Generic.IReadOnlyList<string> disabled,
+        System.Collections.Generic.IReadOnlyList<string> uncontrolled,
         System.Collections.Generic.IReadOnlyDictionary<string, LightingDevicePreference> prefs,
         float globalBrightness)
     {
         if (disabled.Count > 0)
         {
             foreach (var d in disabled) if (d == id) return 0.0;
+        }
+        if (uncontrolled.Count > 0)
+        {
+            foreach (var u in uncontrolled) if (u == id) return 0.0;
         }
         int devBrightness;
         try { devBrightness = prefs.TryGetValue(id, out var pref) ? pref.Brightness : 100; }

@@ -37,10 +37,13 @@ public interface IFanControlProvider
     /// the override dict and trip preset-derivation logic.</summary>
     void DriveFanSpeed(string channelId, int dutyPercent);
 
-    /// <summary>Release fan channel back to BIOS/automatic control.</summary>
+    /// <summary>Release fan channel back to BIOS/automatic control and drop
+    /// its Cooling.ManualSpeeds entry - the user's explicit per-fan choice.</summary>
     void ReleaseFan(string channelId);
 
-    /// <summary>Release all fans back to BIOS/automatic control.</summary>
+    /// <summary>Release all fans back to BIOS/automatic control. Preserves
+    /// Cooling.ManualSpeeds: this runs on shutdown and profile switch, where
+    /// the persisted intent must survive for CurveEngine's replay.</summary>
     void ReleaseAll();
 
     /// <summary>

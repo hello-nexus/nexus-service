@@ -10,7 +10,7 @@ using Nexus.Service.Platform;
 namespace Nexus.Service.Update;
 
 /// <summary>
-/// Downloads an update installer to the staged-updates directory and verifies its
+/// Downloads an update installer to the updates staging directory and verifies its
 /// SHA-256 hash. Reports byte progress via an optional callback so the progress
 /// endpoint can show a percentage.
 ///
@@ -21,12 +21,12 @@ public sealed class UpdateDownloader
 {
     private const int CopyBufferSize = 81920;
 
-    /// <summary>Machine-wide staging dir: %ProgramData%\Nexus\staged-updates\</summary>
+    /// <summary>Machine-wide staging dir: %ProgramData%\Nexus\updates\</summary>
     public static string StagingDir =>
         Path.Combine(
             Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData),
             "Nexus",
-            "staged-updates");
+            "updates");
 
     /// <summary>
     /// Creates the staging dir and, on the LocalSystem service, locks it to

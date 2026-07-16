@@ -521,25 +521,6 @@ body.light .mark { fill:#5a5a5e; }
     private const int WsChrome = 0x00C00000 | 0x00040000 | 0x00080000 | 0x00020000 | 0x00010000;
     private const int SmCxScreen = 0, SmCyScreen = 1;
 
-    private static void Diag(string msg)
-    {
-        // File-based diagnostics: helper runs in the user session so
-        // stdout/stderr go nowhere visible. Co-located with nexus-service.log
-        // under the canonical logs dir; the user session owns the file it creates.
-        try
-        {
-            var dir = Nexus.Service.Platform.ServiceLog.LogsDirectory;
-            System.IO.Directory.CreateDirectory(dir);
-            using var fs = new System.IO.FileStream(
-                System.IO.Path.Combine(dir, "nexus-helper.log"),
-                System.IO.FileMode.Append,
-                System.IO.FileAccess.Write,
-                System.IO.FileShare.ReadWrite);
-            var line = $"{DateTime.Now:HH:mm:ss.fff} [{Environment.ProcessId}] {msg}\n";
-            var bytes = System.Text.Encoding.UTF8.GetBytes(line);
-            fs.Write(bytes, 0, bytes.Length);
-        }
-        catch { }
-    }
+    private static void Diag(string msg) => Nexus.Service.Platform.HelperLog.Write(msg);
 }
 #endif

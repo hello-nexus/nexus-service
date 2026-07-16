@@ -1,5 +1,6 @@
 using System.Collections.Concurrent;
 using Nexus.Service.Models.Displays;
+using Nexus.Service.Panel;
 
 namespace Nexus.Service.Platform.Displays;
 
@@ -12,16 +13,22 @@ namespace Nexus.Service.Platform.Displays;
 public sealed class DisplayBrightnessController
 {
     private readonly IDisplayBrightnessProvider _provider;
+    private readonly PanelDeviceRegistry? _panelDevices;
     private readonly ConcurrentDictionary<string, DisplayWriteState> _states = new();
 
-    public DisplayBrightnessController(IDisplayBrightnessProvider provider)
+    public DisplayBrightnessController(IDisplayBrightnessProvider provider, PanelDeviceRegistry? panelDevices = null)
     {
         _provider = provider;
+        _panelDevices = panelDevices;
     }
 
     public DisplayListResponse ListDisplays()
     {
         var displays = new List<DisplayDto>(_provider.Enumerate());
+        foreach (var display in displays)
+        {
+            if (IsXeneonEdge(display.Id)) SuppressBrightnessControl(display);
+        }
         return new DisplayListResponse
         {
             Displays = displays,
@@ -29,13 +36,26 @@ public sealed class DisplayBrightnessController
         };
     }
 
-    public int? GetBrightness(string id) => _provider.GetBrightness(id);
+    public int? GetBrightness(string id) => IsXeneonEdge(id) ? null : _provider.GetBrightness(id);
 
     public async Task<DisplayBrightnessDto> SetBrightnessAsync(
         string id,
         int percent,
         CancellationToken cancellationToken = default)
     {
+        if (IsXeneonEdge(id))
+        {
+            return new DisplayBrightnessDto
+            {
+                Id = id,
+                RequestedBrightness = ClampPercent(percent),
+                AppliedBrightness = 0,
+                Brightness = 0,
+                Status = DisplayBrightnessWriteStatuses.Unsupported,
+                Error = "This panel's brightness is controlled through its native settings, not DDC.",
+            };
+        }
+
         var state = _states.GetOrAdd(id, _ => new DisplayWriteState());
         var requested = ClampPercent(percent);
         var waiter = new TaskCompletionSource<DisplayBrightnessDto>(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -128,6 +148,33 @@ public sealed class DisplayBrightnessController
     }
 
     private static int ClampPercent(int value) => value < 0 ? 0 : value > 100 ? 100 : value;
+
+    /// <summary>
+    /// True when <paramref name="displayId"/> is a promoted Xeneon Edge
+    /// panel. Its DDC/CI brightness VCP drives the panel's Backlight
+    /// register, not its Brightness register - both are now reachable
+    /// through /displays/{id}/xeneon-settings, so the generic DDC path is
+    /// retired for this family rather than left to silently fight it.
+    /// </summary>
+    private bool IsXeneonEdge(string displayId)
+    {
+        if (_panelDevices is null) return false;
+        var record = _panelDevices.FindByDisplayId(displayId);
+        return record is not null
+            && string.Equals(record.Capabilities?.Family, KnownPanelDisplays.XeneonEdgeFamily, StringComparison.Ordinal);
+    }
+
+    private static void SuppressBrightnessControl(DisplayDto display)
+    {
+        display.Capabilities.Brightness = false;
+        display.BrightnessControl = new DisplayBrightnessControlDto
+        {
+            Supported = false,
+            ControlPath = DisplayBrightnessControlPaths.Unsupported,
+            WriteMode = DisplayBrightnessWriteModes.Unsupported,
+            UnsupportedReason = "Use this panel's native brightness/backlight controls instead.",
+        };
+    }
 
     private sealed class DisplayWriteState
     {

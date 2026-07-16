@@ -85,4 +85,78 @@ public class DeckConfigNavigationTests
         Assert.Equal("P0S0", onPage0!.Label);
         Assert.Equal("P1S0", onPage1!.Label);
     }
+
+    [Fact]
+    public void ParseImageRefSlotPath_RootLevelKey_ReturnsThePageAndAnEmptyFolderPath()
+    {
+        var parsed = DeckConfigNavigation.ParseImageRefSlotPath("0.3");
+
+        Assert.NotNull(parsed);
+        Assert.Equal(0, parsed!.Value.Page);
+        Assert.Empty(parsed.Value.FolderPath);
+        Assert.Equal(3, parsed.Value.SlotIndex);
+    }
+
+    [Fact]
+    public void ParseImageRefSlotPath_NestedFolderKey_ReturnsThePageAndTheFolderChain()
+    {
+        var parsed = DeckConfigNavigation.ParseImageRefSlotPath("2.1.5");
+
+        Assert.NotNull(parsed);
+        Assert.Equal(2, parsed!.Value.Page);
+        Assert.Equal(new List<int> { 1 }, parsed.Value.FolderPath);
+        Assert.Equal(5, parsed.Value.SlotIndex);
+    }
+
+    [Fact]
+    public void ParseImageRefSlotPath_MissingPageSegment_ReturnsNull()
+    {
+        // A legacy pre-v2 key ("3", no leading page segment) is an orphan
+        // under the v2 contract - it must not resolve to any page.
+        Assert.Null(DeckConfigNavigation.ParseImageRefSlotPath("3"));
+    }
+
+    [Fact]
+    public void ParseImageRefSlotPath_MalformedSegment_ReturnsNull()
+    {
+        Assert.Null(DeckConfigNavigation.ParseImageRefSlotPath("abc.3"));
+    }
+
+    [Fact]
+    public void BuildImageRefSlotPath_RootLevelSlot_MatchesTheWebsGrammar()
+    {
+        Assert.Equal("0.3", DeckConfigNavigation.BuildImageRefSlotPath(0, new List<int>(), 3));
+    }
+
+    [Fact]
+    public void BuildImageRefSlotPath_NestedFolderSlot_MatchesTheWebsGrammar()
+    {
+        Assert.Equal("2.1.5", DeckConfigNavigation.BuildImageRefSlotPath(2, new List<int> { 1 }, 5));
+    }
+
+    [Fact]
+    public void ParseImageRefSlotPath_RootLevelKey_FeedsResolveSlotToTheSamePageRootSlot()
+    {
+        var config = TwoPageConfig();
+        var key = DeckConfigNavigation.BuildImageRefSlotPath(1, new List<int>(), 0);
+
+        var parsed = DeckConfigNavigation.ParseImageRefSlotPath(key)!.Value;
+        var indices = new List<int>(parsed.FolderPath) { parsed.SlotIndex };
+        var slot = DeckConfigNavigation.ResolveSlot(config, parsed.Page, indices);
+
+        Assert.Equal("P1S0", slot!.Label);
+    }
+
+    [Fact]
+    public void ParseImageRefSlotPath_NestedFolderKey_FeedsResolveSlotToTheFolderChildSlot()
+    {
+        var config = TwoPageConfig();
+        var key = DeckConfigNavigation.BuildImageRefSlotPath(0, new List<int> { 1 }, 0);
+
+        var parsed = DeckConfigNavigation.ParseImageRefSlotPath(key)!.Value;
+        var indices = new List<int>(parsed.FolderPath) { parsed.SlotIndex };
+        var slot = DeckConfigNavigation.ResolveSlot(config, parsed.Page, indices);
+
+        Assert.Equal("P0F0S0", slot!.Label);
+    }
 }

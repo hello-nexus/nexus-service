@@ -206,8 +206,10 @@ public sealed class StreamDeckSleepAfterTests : IDisposable
             Deck = new DeckConfig { Pages = { new DeckPage { Slots = { new DeckSlot { Action = action } } } } },
         });
 
+        // Connect drives PushCurrentView's two-pass repaint for the one
+        // monitoring slot: an empty placeholder, then the real tile.
         _worker.Tick();
-        Assert.Equal(1, _simulated.SetKeyImageCallCount);
+        Assert.Equal(2, _simulated.SetKeyImageCallCount);
 
         _clock.Advance(TimeSpan.FromSeconds(31));
         _worker.Tick();
@@ -222,6 +224,6 @@ public sealed class StreamDeckSleepAfterTests : IDisposable
         _worker.Tick();
         _worker.Tick();
 
-        Assert.Equal(1, _simulated.SetKeyImageCallCount);
+        Assert.Equal(2, _simulated.SetKeyImageCallCount);
     }
 }

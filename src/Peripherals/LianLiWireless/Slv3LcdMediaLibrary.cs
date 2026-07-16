@@ -34,7 +34,7 @@ public sealed class Slv3LcdMediaLibrary
     private readonly string _rootDir;
 
     public Slv3LcdMediaLibrary()
-        : this(Path.Combine(MediaLibrary.ResolveDefaultRoot(), "Nexus", "lianli-wireless-lcd"))
+        : this(MediaLibrary.DeviceStoreDir("lianli-wireless"))
     {
     }
 

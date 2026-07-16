@@ -31,7 +31,7 @@ public static class DeviceControlPolicy
     // experimental (surfaced with a badge in the UI).
     private static readonly HashSet<string> FirstPartyHandlers = new(StringComparer.OrdinalIgnoreCase)
     {
-        "cnvs", "keeb", "np50", "smarthub", "y70", "qseries", "fan-hub",
+        "cnvs", "keeb", "np50", "smarthub", "y70", "qseries", "fan-hub", "aw5",
     };
 
     public static bool DefaultOn(string handlerId) => !ConflictAppByHandler.ContainsKey(handlerId);

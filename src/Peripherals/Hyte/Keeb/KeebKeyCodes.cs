@@ -17,7 +17,8 @@ public static class KeebKeyCodes
     private const byte CatMedia = 0x03; // media + system-media + web-media all live here
     private const byte CatSystem = 0x04;
     private const byte CatMacro = 0x05;
-    private const byte CatLayer = 0xF0;
+    private const byte CatRgb = 0x0A; // vendor lighting-control keys
+    private const byte CatLayer = 0xF0; // layer switches + profile keys
 
     // ── Macro Type bytes (Byte 2 of a macro code) ──
     private const byte MacroTypeNormal = 0x01;
@@ -26,90 +27,156 @@ public static class KeebKeyCodes
 
     private static readonly byte[] None = { 0x00, 0x00, 0x00, 0x00 };
 
+    /// <summary>Transparent / fall-through slot code (category 0xF8): the layer defers to the one below.</summary>
+    public static readonly byte[] Transparent = { 0x00, 0x00, 0x00, 0xF8 };
+
     /// <summary>
     /// 4-byte key-matrix code for a panel (mode, func, input). Byte 3 is the
-    /// category (01 standard/HID, 02 mouse, 03 media, 04 system, 05 macro,
-    /// F0 layer). Returns {0,0,0,0} (None / unassigned) for anything unknown.
+    /// category. Returns {0,0,0,0} (None / unassigned) for anything unknown.
     /// </summary>
     public static byte[] MatrixCode(string mode, string func, int? input)
+        => TryMatrixCode(mode, func, input, out var code) ? code : (byte[])None.Clone();
+
+    /// <summary>
+    /// Encode a (mode, func, input) triple into its 4-byte slot code. False
+    /// when the function is unknown for the mode - the route boundary uses
+    /// this to reject an assignment instead of silently writing zeros.
+    /// Byte values per the vendor KeyFunctionByteDictionary: category byte 3
+    /// (01 standard/HID, 02 mouse, 03 media, 04 system, 05 macro, 0A RGB,
+    /// F0 layer/profile, F8 transparent).
+    /// </summary>
+    public static bool TryMatrixCode(string mode, string func, int? input, out byte[] code)
     {
+        code = (byte[])None.Clone();
         switch (mode)
         {
             case "StandardKey":
-                // None / PassThrough mean "no remap" → all zeros.
-                if (func == "None" || func == "PassThrough")
-                    return (byte[])None.Clone();
+                if (func == "None") return true; // deliberate all-zeros: unassigned
+                if (func == "PassThrough")
+                {
+                    code = (byte[])Transparent.Clone();
+                    return true;
+                }
                 if (StandardHid.TryGetValue(func, out var usage))
-                    return new byte[] { usage, 0x00, 0x00, CatStandard };
-                return (byte[])None.Clone();
+                {
+                    code = new byte[] { usage, 0x00, 0x00, CatStandard };
+                    return true;
+                }
+                return false;
 
             case "MouseKey":
                 if (MouseCode.TryGetValue(func, out var mouse))
                 {
                     // Wheel/pan ones carry the value in Byte 1; plain buttons keep 0.
                     var b1 = mouse.UsesValue ? (byte)(input ?? 0) : (byte)0x00;
-                    return new byte[] { mouse.Code, b1, 0x00, CatMouse };
+                    code = new byte[] { mouse.Code, b1, 0x00, CatMouse };
+                    return true;
                 }
-                return (byte[])None.Clone();
+                return false;
 
             case "MediaKey":
                 if (MediaCode.TryGetValue(func, out var media))
-                    return new byte[] { media.B0, media.B1, 0x00, CatMedia };
-                return (byte[])None.Clone();
+                {
+                    code = new byte[] { media.B0, media.B1, 0x00, CatMedia };
+                    return true;
+                }
+                return false;
 
             case "SystemMediaKey":
                 if (SystemMediaCode.TryGetValue(func, out var sysMedia))
-                    return new byte[] { sysMedia.B0, sysMedia.B1, 0x00, CatMedia };
-                return (byte[])None.Clone();
+                {
+                    code = new byte[] { sysMedia.B0, sysMedia.B1, 0x00, CatMedia };
+                    return true;
+                }
+                return false;
 
             case "WebMediaKey":
                 if (WebMediaCode.TryGetValue(func, out var webB0))
-                    return new byte[] { webB0, 0x02, 0x00, CatMedia };
-                return (byte[])None.Clone();
+                {
+                    code = new byte[] { webB0, 0x02, 0x00, CatMedia };
+                    return true;
+                }
+                return false;
 
             case "SystemKey":
                 if (SystemCode.TryGetValue(func, out var sys))
-                    return new byte[] { sys, 0x00, 0x00, CatSystem };
-                return (byte[])None.Clone();
+                {
+                    code = new byte[] { sys, 0x00, 0x00, CatSystem };
+                    return true;
+                }
+                return false;
 
             case "MacroKey":
                 {
                     // func "Macro1".."Macro16" → 0-based index 0..15.
-                    if (!TryParseMacroIndex(func, out var index))
-                        return (byte[])None.Clone();
+                    if (!TryParseMacroIndex(func, out var index)) return false;
                     var type = input switch
                     {
                         2 => MacroTypeRepeat,
                         3 => MacroTypeHoldAndPlay,
                         _ => MacroTypeNormal, // null or 1 (or anything else) → Normal
                     };
-                    return new byte[] { index, 0x00, type, CatMacro };
+                    code = new byte[] { index, 0x00, type, CatMacro };
+                    return true;
                 }
 
             case "LayerKey":
-                // Doc only spells out MO (15 <0-3> 00 F0); MO/TG/TO/DF all use
-                // Byte 0 = 0x15 with the target layer in Byte 1 per the spec.
-                switch (func)
                 {
-                    case "MOSwitch":
-                    case "TGSwitch":
-                    case "TOSwitch":
-                    case "DFSwitch":
-                        return new byte[] { 0x15, (byte)(input ?? 0), 0x00, CatLayer };
-                    default:
-                        return (byte[])None.Clone();
+                    // Byte 0 per switch kind (vendor dict), target layer in Byte 1.
+                    byte b0 = func switch
+                    {
+                        "MOSwitch" => 0x15,
+                        "TGSwitch" => 0x16,
+                        "TOSwitch" => 0x17,
+                        "DFSwitch" => 0x18,
+                        _ => 0x00,
+                    };
+                    if (b0 == 0) return false;
+                    var layer = Math.Clamp(input ?? 0, 0, 3);
+                    code = new byte[] { b0, (byte)layer, 0x00, CatLayer };
+                    return true;
                 }
 
-            // RGB keys (mode "RGBKey") and Software keys (mode "SoftwareKey")
-            // are not in the firmware keycode doc: handled software-side, no
-            // firmware remap, so return {0,0,0,0} (a non-null array for the
-            // caller).
-            case "RGBKey":
-            case "SoftwareKey":
-                return (byte[])None.Clone();
+            case "ProfileKey":
+                // Category F0 with Byte 2 = 0x01. Plus/Minus are fixed-target
+                // shortcuts (profile 1 / profile 0); Value takes the target in
+                // Byte 1; Loop cycles.
+                switch (func)
+                {
+                    case "ProfilePlus": code = new byte[] { 0x04, 0x01, 0x01, CatLayer }; return true;
+                    case "ProfileMinus": code = new byte[] { 0x04, 0x00, 0x01, CatLayer }; return true;
+                    case "ProfilePlusLoop": code = new byte[] { 0x03, 0x00, 0x01, CatLayer }; return true;
+                    case "ProfileValue":
+                        code = new byte[] { 0x04, (byte)Math.Clamp(input ?? 0, 0, 1), 0x01, CatLayer };
+                        return true;
+                    default: return false;
+                }
 
+            case "RGBKey":
+                // Vendor category 0x0A: Byte 2 selects the parameter group
+                // (00 effect, 01 brightness, 02 speed, 03 color, 04 direction),
+                // Byte 0 the action (01 +, 02 -, 03 loop, 04 set), Byte 1 the
+                // set-value where applicable.
+                switch (func)
+                {
+                    case "RGBOnOff": code = new byte[] { 0xFF, 0x00, 0x00, CatRgb }; return true;
+                    case "RGBEffectLoop": code = new byte[] { 0x03, 0x00, 0x00, CatRgb }; return true;
+                    case "RGBEffectValue": code = new byte[] { 0x04, (byte)(input ?? 0), 0x00, CatRgb }; return true;
+                    case "BrightnessIncrease": code = new byte[] { 0x01, 0x00, 0x01, CatRgb }; return true;
+                    case "BrightnessDecrease": code = new byte[] { 0x02, 0x00, 0x01, CatRgb }; return true;
+                    case "SpeedIncrease": code = new byte[] { 0x01, 0x00, 0x02, CatRgb }; return true;
+                    case "SpeedDecrease": code = new byte[] { 0x02, 0x00, 0x02, CatRgb }; return true;
+                    case "SpeedLoop": code = new byte[] { 0x03, 0x00, 0x02, CatRgb }; return true;
+                    case "DirectionLoop": code = new byte[] { 0x03, 0x00, 0x04, CatRgb }; return true;
+                    case "DirectionValue": code = new byte[] { 0x04, (byte)(input ?? 0), 0x04, CatRgb }; return true;
+                    default: return false;
+                }
+
+            // Software keys need a host-side event consumer Nexus does not
+            // implement; reject rather than write a code that does nothing.
+            case "SoftwareKey":
             default:
-                return (byte[])None.Clone();
+                return false;
         }
     }
 
@@ -287,6 +354,7 @@ public static class KeebKeyCodes
         ["ControlLeft"] = 0xE0, ["ShiftLeft"] = 0xE1, ["AltLeft"] = 0xE2, ["MetaLeft"] = 0xE3,
         ["ControlRight"] = 0xE4, ["ShiftRight"] = 0xE5, ["AltRight"] = 0xE6, ["MetaRight"] = 0xE7,
         ["ContextMenu"] = 0x65,
+        ["IntlBackslash"] = 0x64, // ISO extra key (Europe 2)
         // F13..F24 → 0x68..0x73
         ["F13"] = 0x68, ["F14"] = 0x69, ["F15"] = 0x6A, ["F16"] = 0x6B, ["F17"] = 0x6C,
         ["F18"] = 0x6D, ["F19"] = 0x6E, ["F20"] = 0x6F, ["F21"] = 0x70, ["F22"] = 0x71,

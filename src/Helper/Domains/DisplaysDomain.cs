@@ -26,6 +26,9 @@ public sealed class DisplayTopologyResult
 /// </summary>
 public sealed class DisplaysChangedPayload { }
 
+/// <summary>Payload for <c>displays.touchmap</c>. Service-to-helper RPC, empty.</summary>
+public sealed class TouchMapRequest { }
+
 // JSON source-gen registration lives in src/Serialization/AppJsonContext.cs.
 
 [SupportedOSPlatform("windows")]
@@ -55,6 +58,28 @@ public static class DisplayTopologyCommands
     }
 }
 
+[SupportedOSPlatform("windows")]
+public static class TouchMapCommands
+{
+    public const string SnapshotType = "displays.touchmap";
+
+    /// <summary>Null = no helper connected.</summary>
+    public static async Task<TouchMapSnapshot?> SnapshotAsync(HelperRegistry registry, CancellationToken ct = default)
+    {
+        var conn = registry.GetAny();
+        if (conn is null) return null;
+        var res = await conn.SendCommandAsync(
+            type: SnapshotType,
+            payload: new TouchMapRequest(),
+            payloadType: AppJsonContext.Default.TouchMapRequest,
+            timeoutMs: 4000,
+            ct: ct).ConfigureAwait(false);
+        if (!res.Ok || res.Payload is null) return null;
+        try { return JsonSerializer.Deserialize(res.Payload.Value, AppJsonContext.Default.TouchMapSnapshot); }
+        catch { return null; }
+    }
+}
+
 /// <summary>Helper-side handler: runs the real topology provider in the user session.</summary>
 [SupportedOSPlatform("windows")]
 public sealed class DisplaysHandler
@@ -73,6 +98,16 @@ public sealed class DisplaysHandler
                 Payload = JsonSerializer.SerializeToElement(
                     new DisplayTopologyResult { Displays = new List<RawDisplayInfo>(displays) },
                     AppJsonContext.Default.DisplayTopologyResult),
+            });
+        });
+        registry.Register(TouchMapCommands.SnapshotType, (env, _) =>
+        {
+            var snapshot = _provider.EnumerateTouchMapSnapshot() ?? new TouchMapSnapshot();
+            return Task.FromResult(new HelperResult
+            {
+                Id = env.Id ?? "",
+                Ok = true,
+                Payload = JsonSerializer.SerializeToElement(snapshot, AppJsonContext.Default.TouchMapSnapshot),
             });
         });
     }

@@ -115,5 +115,14 @@ public static class SystemRoutes
             actions.SetDefaultOutput(body.DeviceId) ? ApiResponse.Ok() : ApiResponse.Fail("failed to set output device")).AllowPanel();
         app.MapPost("/system/audio/default-input", (SetAudioDefaultBody body, Nexus.Service.Actions.SystemActions actions) =>
             actions.SetDefaultInput(body.DeviceId) ? ApiResponse.Ok() : ApiResponse.Fail("failed to set input device")).AllowPanel();
+
+        // Touch deck widget's Play Audio press - the physical-deck path goes
+        // through DeckActionExecutor directly; this is the same playback for
+        // a virtual deck slot, reachable from a paired panel.
+        app.MapPost("/system/audio/play", (PlayAudioBody body, Nexus.Service.Audio.AudioFilePlayer player) =>
+        {
+            player.Play(body.Path, body.Volume);
+            return ApiResponse.Ok();
+        }).AllowPanel();
     }
 }

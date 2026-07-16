@@ -170,6 +170,54 @@ public static class ShellExecutor
         }
     }
 
+    /// <summary>
+    /// Run with stdin piped from the given string, returning the exit code
+    /// for a fire-and-verify write where success must be confirmed rather
+    /// than assumed from the process merely starting - unlike RunWithStdin,
+    /// which drops a non-zero exit silently. Returns -1 if the process could
+    /// not start (or threw), -2 on timeout; stderr carries the process's
+    /// error output (or the exception message on the -1 path).
+    /// </summary>
+    public static int RunWithStdinExit(string fileName, string stdin, int timeoutMs, out string stderr, params string[] args)
+    {
+        stderr = string.Empty;
+        try
+        {
+            var psi = BuildPsi(fileName, args);
+            psi.RedirectStandardInput = true;
+            using var proc = Process.Start(psi);
+            if (proc is null)
+                return -1;
+
+            // A process that exits before consuming stdin (e.g. `sh -c 'exit 3'`)
+            // closes the pipe, so the write faults with a broken pipe; that is not
+            // a failure - fall through to read the real exit code.
+            try
+            {
+                proc.StandardInput.Write(stdin);
+                proc.StandardInput.Close();
+            }
+            catch (System.IO.IOException) { }
+
+            var errTask = proc.StandardError.ReadToEndAsync();
+            var outTask = proc.StandardOutput.ReadToEndAsync();
+            if (!proc.WaitForExit(timeoutMs))
+            {
+                Console.Error.WriteLine($"[shell] timeout ({timeoutMs}ms) waiting for {fileName} {string.Join(' ', args)}");
+                try { proc.Kill(entireProcessTree: true); } catch { }
+                return -2;
+            }
+            try { stderr = errTask.GetAwaiter().GetResult(); } catch { }
+            try { _ = outTask.GetAwaiter().GetResult(); } catch { }
+            return proc.ExitCode;
+        }
+        catch (Exception ex)
+        {
+            stderr = ex.Message;
+            return -1;
+        }
+    }
+
     private static ProcessStartInfo BuildPsi(string fileName, string[] args)
     {
         var psi = new ProcessStartInfo

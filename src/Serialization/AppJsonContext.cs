@@ -14,6 +14,7 @@ using Nexus.Service.Models.Lighting;
 using Nexus.Service.Models.Obs;
 using Nexus.Service.Models.Peripherals;
 using Nexus.Service.Models.Peripherals.Keeb;
+using Nexus.Service.Models.Peripherals.QSeries;
 using Nexus.Service.Models.Peripherals.Y70;
 using Nexus.Service.Models.Sensors;
 using Nexus.Service.Models.Steam;
@@ -200,8 +201,10 @@ namespace Nexus.Service.Serialization;
 [JsonSerializable(typeof(Nexus.Service.Models.Panel.PanelWidgetDto))]
 [JsonSerializable(typeof(List<Nexus.Service.Models.Panel.PanelPageDto>))]
 [JsonSerializable(typeof(List<Nexus.Service.Models.Panel.PanelWidgetDto>))]
+[JsonSerializable(typeof(Dictionary<string, Dictionary<string, System.Text.Json.JsonElement>>))]
 [JsonSerializable(typeof(Nexus.Service.Models.Panel.PanelDeviceRecord))]
 [JsonSerializable(typeof(Nexus.Service.Models.Panel.PanelDeviceCapabilities))]
+[JsonSerializable(typeof(Nexus.Service.Models.Panel.XeneonEdgeSettingsDto))]
 [JsonSerializable(typeof(Nexus.Service.Models.Panel.PanelDevicePatch))]
 [JsonSerializable(typeof(Nexus.Service.Models.Panel.PanelDeviceCreateBody))]
 [JsonSerializable(typeof(Nexus.Service.Models.Panel.PanelDeviceListResponse))]
@@ -282,6 +285,12 @@ namespace Nexus.Service.Serialization;
 [JsonSerializable(typeof(Nexus.Service.Models.Displays.DisplayAssignmentDto))]
 [JsonSerializable(typeof(Nexus.Service.Models.Displays.DisplayAssignmentsResponse))]
 [JsonSerializable(typeof(Nexus.Service.Models.Displays.DisplayRotationBody))]
+[JsonSerializable(typeof(Nexus.Service.Models.Displays.TouchMapDigitizerInfo))]
+[JsonSerializable(typeof(List<Nexus.Service.Models.Displays.TouchMapDigitizerInfo>))]
+[JsonSerializable(typeof(Nexus.Service.Models.Displays.TouchMapDisplayInfo))]
+[JsonSerializable(typeof(List<Nexus.Service.Models.Displays.TouchMapDisplayInfo>))]
+[JsonSerializable(typeof(Nexus.Service.Models.Displays.TouchMapSnapshot))]
+[JsonSerializable(typeof(Nexus.Service.Models.Displays.TouchMappingRepairResponse))]
 
 // Streamed panels (off-screen render in the overlay, H.264 to a USB device).
 [JsonSerializable(typeof(Nexus.Service.Models.Panel.StreamAssignmentDto))]
@@ -409,6 +418,7 @@ namespace Nexus.Service.Serialization;
 [JsonSerializable(typeof(Nexus.Service.Models.Gallery.GalleryExcludeBody))]
 [JsonSerializable(typeof(Nexus.Service.Models.Panel.GalleryChangedFrame))]
 [JsonSerializable(typeof(Nexus.Service.Models.Panel.MediaLibraryChangedFrame))]
+[JsonSerializable(typeof(Nexus.Service.Models.Panel.DesktopWallpaperChangedFrame))]
 
 // Lighting
 [JsonSerializable(typeof(AudioStateSnapshot))]
@@ -563,6 +573,7 @@ namespace Nexus.Service.Serialization;
 [JsonSerializable(typeof(GetLightingDevicesResponse))]
 [JsonSerializable(typeof(SetDisabledLedsBody))]
 [JsonSerializable(typeof(SetLightingDevicePowerBody))]
+[JsonSerializable(typeof(SetLightingDeviceControlledBody))]
 [JsonSerializable(typeof(SetLightingDeviceBrightness))]
 [JsonSerializable(typeof(SetLightingDeviceHue))]
 [JsonSerializable(typeof(SetLightingDeviceSaturation))]
@@ -650,12 +661,14 @@ namespace Nexus.Service.Serialization;
 [JsonSerializable(typeof(GetKeebSettingsResponse))]
 [JsonSerializable(typeof(GetRotaryFunctionsResponse))]
 [JsonSerializable(typeof(SetRotaryWheelsBody))]
-[JsonSerializable(typeof(SetRotarySensitivityBody))]
 [JsonSerializable(typeof(SetFirmwareLightingBody))]
 [JsonSerializable(typeof(SetPassiveLightingBody))]
 [JsonSerializable(typeof(SetGameModeBody))]
 [JsonSerializable(typeof(GetMacroResponse))]
 [JsonSerializable(typeof(SetMacroBody))]
+[JsonSerializable(typeof(SetMacroResponse))]
+[JsonSerializable(typeof(SetLayerKeyBody))]
+[JsonSerializable(typeof(SetLayerKeyResponse))]
 [JsonSerializable(typeof(InputterBody))]
 
 // Displays
@@ -664,6 +677,8 @@ namespace Nexus.Service.Serialization;
 [JsonSerializable(typeof(Y70BrightnessParams))]
 [JsonSerializable(typeof(Y70ToggleScreenResponse))]
 [JsonSerializable(typeof(Y70ToggleScreenParams))]
+[JsonSerializable(typeof(QSeriesRotationParams))]
+[JsonSerializable(typeof(QSeriesDisplayParams))]
 
 // Activity
 [JsonSerializable(typeof(FocusSession))]
@@ -701,6 +716,7 @@ namespace Nexus.Service.Serialization;
 [JsonSerializable(typeof(List<AudioDevice>))]
 [JsonSerializable(typeof(AudioDeviceList))]
 [JsonSerializable(typeof(SetAudioDefaultBody))]
+[JsonSerializable(typeof(PlayAudioBody))]
 [JsonSerializable(typeof(GetAllShortcutsResponse))]
 [JsonSerializable(typeof(GetShortcutResponse))]
 [JsonSerializable(typeof(Nexus.Service.Activity.IconCacheMeta))]
@@ -800,6 +816,7 @@ namespace Nexus.Service.Serialization;
 [JsonSerializable(typeof(Nexus.Service.Helper.Domains.DisplayTopologyRequest))]
 [JsonSerializable(typeof(Nexus.Service.Helper.Domains.DisplayTopologyResult))]
 [JsonSerializable(typeof(Nexus.Service.Helper.Domains.DisplaysChangedPayload))]
+[JsonSerializable(typeof(Nexus.Service.Helper.Domains.TouchMapRequest))]
 // Screen mirror
 [JsonSerializable(typeof(Nexus.Service.Helper.Domains.ScreenMirrorStartPayload))]
 [JsonSerializable(typeof(Nexus.Service.Helper.Domains.ScreenMirrorStopPayload))]
@@ -998,6 +1015,9 @@ namespace Nexus.Service.Serialization;
 [JsonSerializable(typeof(Nexus.Service.Models.Peripherals.StreamDeck.StreamDeckConfigEnvelope))]
 [JsonSerializable(typeof(Nexus.Service.Models.Peripherals.StreamDeck.StreamDeckImageUploadResponse))]
 [JsonSerializable(typeof(Nexus.Service.Models.Peripherals.StreamDeck.StreamDeckChangedFrame))]
+[JsonSerializable(typeof(Nexus.Service.Models.Peripherals.StreamDeck.StreamDeckTileFrame))]
+[JsonSerializable(typeof(Nexus.Service.Models.Peripherals.StreamDeck.StreamDeckPendingEditDto))]
+[JsonSerializable(typeof(Nexus.Service.Models.Peripherals.StreamDeck.StreamDeckPendingEditResponse))]
 [JsonSerializable(typeof(Nexus.Service.Models.Peripherals.StreamDeck.StreamDeckSimPressBody))]
 [JsonSerializable(typeof(Nexus.Service.Models.Peripherals.StreamDeck.StreamDeckSimulateBody))]
 [JsonSerializable(typeof(Nexus.Service.Models.Peripherals.StreamDeck.StreamDeckNavBody))]
@@ -1026,6 +1046,16 @@ namespace Nexus.Service.Serialization;
 [JsonSerializable(typeof(Nexus.Service.Deck.DeckToggleState))]
 [JsonSerializable(typeof(Nexus.Service.Deck.DeckSequenceStep))]
 [JsonSerializable(typeof(List<Nexus.Service.Deck.DeckSequenceStep>))]
+// Deck key icon image store (POST/GET /deck/images)
+[JsonSerializable(typeof(Nexus.Service.Models.Deck.DeckImageUploadResponse))]
+// Elgato Stream Deck profile import
+[JsonSerializable(typeof(Nexus.Service.Models.Peripherals.StreamDeck.ElgatoProfileSummaryDto))]
+[JsonSerializable(typeof(List<Nexus.Service.Models.Peripherals.StreamDeck.ElgatoProfileSummaryDto>))]
+[JsonSerializable(typeof(Nexus.Service.Models.Peripherals.StreamDeck.ElgatoProfilesResponse))]
+[JsonSerializable(typeof(Nexus.Service.Models.Peripherals.StreamDeck.ElgatoUnmappedEntry))]
+[JsonSerializable(typeof(List<Nexus.Service.Models.Peripherals.StreamDeck.ElgatoUnmappedEntry>))]
+[JsonSerializable(typeof(Nexus.Service.Models.Peripherals.StreamDeck.ElgatoImportReport))]
+[JsonSerializable(typeof(Nexus.Service.Models.Peripherals.StreamDeck.ImportElgatoProfileResponse))]
 
 // Metadata-only: skips the per-type generated fast-path writer, a large AOT
 // code cost across this context's roots; serialization runs through the

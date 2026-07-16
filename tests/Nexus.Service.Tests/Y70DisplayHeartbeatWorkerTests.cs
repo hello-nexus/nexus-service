@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using Nexus.Service.Devices;
 using Nexus.Service.Devices.Detection;
+using Nexus.Service.Panel;
 using Nexus.Service.Peripherals.Hyte.Y70Display;
 using Nexus.Service.Peripherals.Y70;
 using Nexus.Service.Persistence;
@@ -17,14 +18,14 @@ namespace Nexus.Service.Tests;
 /// </summary>
 public class Y70DisplayHeartbeatWorkerTests
 {
-    private static Y70DisplayHeartbeatWorker Build(FakeY70Provider y70)
+    private static Y70DisplayHeartbeatWorker Build(FakeY70Provider y70, FakeOverlayHost? overlayHost = null, InMemoryConfigStore? store = null)
     {
         var hub = new Y70DisplayHub(
             new StubY70DisplayPortDiscovery(),
             _ => throw new InvalidOperationException("Y70 transport is not expected in these tests"));
         var presence = new HardwarePresence(new EmptyUsbEnumerator());
         var gate = new DeviceControlGate(new InMemoryConfigStore());
-        return new Y70DisplayHeartbeatWorker(hub, presence, gate, y70);
+        return new Y70DisplayHeartbeatWorker(hub, presence, gate, y70, overlayHost ?? new FakeOverlayHost(), store ?? new InMemoryConfigStore());
     }
 
     [Fact]
@@ -84,9 +85,75 @@ public class Y70DisplayHeartbeatWorkerTests
         Assert.Equal(0, y70.ApplyCount);
     }
 
+    [Fact]
+    public void Detection_starts_overlay_host_when_down()
+    {
+        var y70 = new FakeY70Provider { Connected = true };
+        var host = new FakeOverlayHost { Running = false };
+        var worker = Build(y70, host);
+
+        worker.Tick();
+        worker.Tick();               // started on the first tick; second is a no-op (running)
+
+        Assert.Equal(1, host.StartCalls);
+    }
+
+    [Fact]
+    public void Host_down_again_within_retry_interval_is_not_restarted()
+    {
+        var y70 = new FakeY70Provider { Connected = true };
+        var host = new FakeOverlayHost { Running = false };
+        var worker = Build(y70, host);
+
+        worker.Tick();               // start attempt (1)
+        host.Running = false;        // host died again
+        worker.Tick();
+        worker.Tick();
+
+        Assert.Equal(1, host.StartCalls);   // rate limit holds until the interval elapses
+    }
+
+    [Fact]
+    public void Detection_edge_skips_start_when_host_already_running()
+    {
+        var y70 = new FakeY70Provider { Connected = true };
+        var host = new FakeOverlayHost { Running = true };
+        var worker = Build(y70, host);
+
+        worker.Tick();
+
+        Assert.Equal(0, host.StartCalls);
+    }
+
+    [Fact]
+    public void Detection_edge_skips_start_when_autolaunch_off()
+    {
+        var y70 = new FakeY70Provider { Connected = true };
+        var host = new FakeOverlayHost { Running = false };
+        var store = new InMemoryConfigStore();
+        store.Update(s => s.Panel.AutoLaunch = false);
+        var worker = Build(y70, host, store);
+
+        worker.Tick();
+
+        Assert.Equal(0, host.StartCalls);
+    }
+
     private sealed class EmptyUsbEnumerator : IUsbEnumerator
     {
         public List<UsbDeviceEntry> Enumerate() => new();
+    }
+
+    private sealed class FakeOverlayHost : IOverlayHost
+    {
+        public bool Running;
+        public int StartCalls;
+
+        public bool Start() { StartCalls++; Running = true; return true; }
+        public void Stop() { Running = false; }
+        public bool IsRunning => Running;
+        public void SetAlwaysOnTop(bool value) { }
+        public void NotifyDisplayAssignmentsChanged() { }
     }
 
     private sealed class FakeY70Provider : IY70Provider

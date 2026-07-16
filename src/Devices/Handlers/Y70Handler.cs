@@ -53,7 +53,9 @@ public sealed class Y70Handler : IDeviceHandler
     // Known Y70 touch digitizers - the panel's USB touch function. Y70ti
     // enumerates an ILITEK digitizer with no 0x3402 serial function at all,
     // so the digitizer is the USB-cable presence signal for those units.
-    private static readonly UsbId[] TouchDigitizers =
+    // Internal (not private): TouchPanelCatalog references this set directly
+    // rather than duplicating the VID/PID pairs.
+    internal static readonly UsbId[] TouchDigitizers =
     {
         new(0x222A, 0x0001), // ILITEK (Y70ti)
         new(0x27C0, 0x0859), // Y70 Touch (bench Y70, serial variant)

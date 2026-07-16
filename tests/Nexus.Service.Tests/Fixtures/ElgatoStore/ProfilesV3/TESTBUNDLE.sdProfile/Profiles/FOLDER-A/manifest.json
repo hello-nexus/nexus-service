@@ -1,0 +1,113 @@
+{
+  "Controllers": [
+    {
+      "Actions": {
+        "0,0": {
+          "ActionID": "action-back",
+          "LinkedTitle": false,
+          "Name": "Back",
+          "Resources": null,
+          "Settings": {},
+          "State": 0,
+          "States": [
+            {}
+          ],
+          "UUID": "com.elgato.streamdeck.profile.backtoparent"
+        },
+        "1,0": {
+          "ActionID": "action-save-as",
+          "LinkedTitle": false,
+          "Name": "Save As",
+          "Resources": null,
+          "Settings": {
+            "Coalesce": true,
+            "Hotkeys": [
+              {
+                "KeyCmd": false,
+                "KeyCtrl": true,
+                "KeyOption": false,
+                "KeyShift": true,
+                "KeyModifiers": 3,
+                "NativeCode": 46,
+                "QTKeyCode": 77,
+                "VKeyCode": 0
+              },
+              {
+                "KeyCmd": false,
+                "KeyCtrl": false,
+                "KeyOption": false,
+                "KeyShift": false,
+                "KeyModifiers": 0,
+                "NativeCode": -1,
+                "QTKeyCode": 33554431,
+                "VKeyCode": -1
+              },
+              {
+                "KeyCmd": false,
+                "KeyCtrl": false,
+                "KeyOption": false,
+                "KeyShift": false,
+                "KeyModifiers": 0,
+                "NativeCode": -1,
+                "QTKeyCode": 33554431,
+                "VKeyCode": -1
+              },
+              {
+                "KeyCmd": false,
+                "KeyCtrl": false,
+                "KeyOption": false,
+                "KeyShift": false,
+                "KeyModifiers": 0,
+                "NativeCode": -1,
+                "QTKeyCode": 33554431,
+                "VKeyCode": -1
+              }
+            ]
+          },
+          "State": 0,
+          "States": [
+            {
+              "Title": "Save As",
+              "ShowTitle": true,
+              "TitleAlignment": "bottom",
+              "TitleColor": "#ffffff",
+              "FontFamily": "",
+              "FontSize": 8,
+              "FontStyle": "",
+              "FontUnderline": false,
+              "OutlineThickness": 0
+            }
+          ],
+          "UUID": "com.elgato.streamdeck.system.hotkey"
+        },
+        "2,0": {
+          "ActionID": "action-open-folder-b",
+          "LinkedTitle": false,
+          "Name": "Open Folder B",
+          "Resources": null,
+          "Settings": {
+            "ProfileUUID": "folder-b"
+          },
+          "State": 0,
+          "States": [
+            {
+              "Title": "Folder B",
+              "ShowTitle": true,
+              "TitleAlignment": "bottom",
+              "TitleColor": "#ffffff",
+              "FontFamily": "",
+              "FontSize": 8,
+              "FontStyle": "",
+              "FontUnderline": false,
+              "OutlineThickness": 0
+            }
+          ],
+          "UUID": "com.elgato.streamdeck.profile.openchild"
+        }
+      },
+      "Type": "Keypad"
+    }
+  ],
+  "Icon": "",
+  "Name": "Folder A"
+}

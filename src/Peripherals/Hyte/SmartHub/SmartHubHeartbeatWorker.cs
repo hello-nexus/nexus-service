@@ -122,6 +122,10 @@ public sealed class SmartHubHeartbeatWorker : BackgroundService
     /// restart), otherwise write <see cref="DefaultDutyPercent"/>. Curve-bound
     /// ports are skipped - <see cref="CurveEngine"/> drives those within a tick.
     /// Returns false (retry next tick) if any write fails.
+    /// The saved-speed write overlaps CurveEngine's manual replay (same value,
+    /// harmless) but is kept: the replay writes nothing to ports WITHOUT a
+    /// saved entry, so only this pass takes them off the 100% default, and
+    /// only this pass seeds the SeenFan presence latch.
     /// </summary>
     private bool ApplyInitialDuty()
     {

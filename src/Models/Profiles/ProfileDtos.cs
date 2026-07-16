@@ -47,6 +47,8 @@ public class SharingResponse : ApiResponse
     public string? PrimaryProfileId { get; set; }
     public List<string> SharedCategories { get; set; } = new();
     public List<string> AllCategories { get; set; } = new();
+    /// <summary>Preset count per category id for the active profile (lighting layout presets, Stream Deck presets across every deck). Categories with no preset concept report 0.</summary>
+    public Dictionary<string, int> Counts { get; set; } = new();
 }
 
 public class SetPrimaryBody

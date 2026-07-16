@@ -143,6 +143,7 @@ public sealed class MacInputter : IInputterProvider
         ["ArrowLeft"] = 123,
         ["ArrowRight"] = 124,
         ["CapsLock"] = 57,
+        ["Period"] = 47, // kVK_ANSI_Period
         // No macOS CGKeyboardEvent mapping (skipped): Insert, NumLock,
         // ScrollLock, PrintScreen, Pause, ContextMenu, and the media keys.
     };

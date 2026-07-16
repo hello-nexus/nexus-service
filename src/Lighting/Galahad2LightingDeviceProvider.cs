@@ -14,6 +14,9 @@ namespace Nexus.Service.Lighting;
 public sealed class Galahad2LightingDeviceProvider :
     ILightingDeviceProvider, ILightingFrameContributor, IDeviceStructureSource, IOpenRgbDeviceOwner
 {
+    internal const int InnerSegment = 0;
+    internal const int OuterSegment = 1;
+
     private readonly Galahad2Hub _hub;
     private readonly IConfigStore _store;
     private string _lastSignature = "";

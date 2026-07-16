@@ -60,6 +60,26 @@ public sealed class StubCoolingProvider : ICoolingProvider, ICurveProvider, IFan
                     Preset = string.IsNullOrEmpty(c.Preset) ? null : c.Preset,
                 });
             }
+
+            // Attaching a fan to a user curve supersedes its manual
+            // override. Prune the entry now, or CurveEngine's replay
+            // resurrects the stale duty after the fan is later detached
+            // back to BIOS through this same save path (which never calls
+            // ReleaseFan). Preset curves are exempt: saves replace the
+            // whole list so active-preset attachments always ride along,
+            // and FanProfiles.Apply preserves manual entries so a fan
+            // re-manualizes after leaving the preset.
+            foreach (var curve in s.Cooling.Curves)
+            {
+                if (curve.Preset is not null)
+                {
+                    continue;
+                }
+                foreach (var o in curve.Outputs)
+                {
+                    s.Cooling.ManualSpeeds.Remove(o.Id);
+                }
+            }
         });
     }
 

@@ -311,19 +311,26 @@ public sealed class MultiplexHub
     /// Test-only: register a phantom subscriber for <paramref name="topic"/> so
     /// <see cref="TopicHasSubscribers"/> returns true and the broadcaster runs
     /// its full gather path. Returns a disposable that removes the subscription.
+    /// Fires <see cref="OnTopicFirstSubscriber"/> after releasing
+    /// <see cref="_testSubsLock"/>, not while holding it - a handler that takes
+    /// its own lock (a worker's Tick loop, which then calls back into
+    /// <see cref="TopicHasSubscribers"/>) would otherwise invert lock order
+    /// against that same tick.
     /// </summary>
     internal IDisposable AddTestSubscription(string topic)
     {
+        bool wasFirst;
         lock (_testSubsLock)
         {
             _testSubs.TryGetValue(topic, out var count);
             _testSubs[topic] = count + 1;
-            if (count == 0)
-            {
-                try
-                { OnTopicFirstSubscriber?.Invoke(topic); }
-                catch { }
-            }
+            wasFirst = count == 0;
+        }
+        if (wasFirst)
+        {
+            try
+            { OnTopicFirstSubscriber?.Invoke(topic); }
+            catch { }
         }
         return new TestSubscriptionHandle(this, topic);
     }

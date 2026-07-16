@@ -23,8 +23,7 @@ public sealed class AppInstalledListing
     public List<AppManifestSettingEntry> Settings { get; set; } = new();
     public List<string> Sizes { get; set; } = new();
     public string? DefaultSize { get; set; }
-    public string Source { get; set; } = ""; // "dev" | "user" | "bundled"
-    public bool Trusted { get; set; }        // true when source != "dev"
+    public string Source { get; set; } = ""; // "user" | "bundled"
     public bool Preinstalled { get; set; }   // OEM bake-in: active at first boot, no user install
 }
 
@@ -44,7 +43,7 @@ public sealed class AppCatalogEntry
     public string? IconUrl { get; set; }
     public List<string> Surfaces { get; set; } = new();
     public AppManifestCapabilities Capabilities { get; set; } = new();
-    public string Source { get; set; } = ""; // "bundled" | "dev" | "user"
+    public string Source { get; set; } = ""; // "bundled" | "user"
     public bool Installed { get; set; }      // true if a copy exists under user widgets
     public bool Preinstalled { get; set; }   // OEM bake-in: active at first boot, no user install
 }

@@ -32,6 +32,10 @@ public sealed class PanelDeviceRecord
     /// </summary>
     public Dictionary<string, int>? BackgroundTemplates { get; set; }
     public double? BackgroundOpacity { get; set; }
+    /// <summary>Background layer on/off. False renders the panel page fully
+    /// transparent so a kiosk-hosted panel (y70 / promoted monitor) shows the
+    /// Windows desktop through. Null = enabled.</summary>
+    public bool? BackgroundEnabled { get; set; }
     /// <summary>Selected background-media asset id (PanelBgLibrary) for THIS
     /// panel; null = none. Only set for local panels (y70 / q-series).</summary>
     public string? BackgroundMediaId { get; set; }
@@ -43,6 +47,8 @@ public sealed class PanelDeviceRecord
     public double? WidgetOpacity { get; set; }
     public bool? WidgetLabels { get; set; }
     public bool? WidgetBlur { get; set; }
+    /// <summary>Percent 0-100. Null is unset; the client applies its own default.</summary>
+    public double? WidgetPadding { get; set; }
     public bool? ThemeSyncWithDesktop { get; set; }
     public bool? AccentSyncWithDesktop { get; set; }
     public long FirstSeenAt { get; set; }
@@ -62,6 +68,19 @@ public sealed class PanelDeviceRecord
     /// kiosk keeps using the global Panel.ReserveMonitor preference.
     /// </summary>
     public bool? ReserveMonitor { get; set; }
+    /// <summary>
+    /// Follow the panel's hardware orientation sensor and apply the matching
+    /// Windows display rotation (currently the Corsair Xeneon Edge only).
+    /// Display-bound records only; null = default (true).
+    /// </summary>
+    public bool? AutoOrient { get; set; }
+    /// <summary>
+    /// Last known Corsair Xeneon Edge native display settings (vendor HID),
+    /// applied/read through /displays/{id}/xeneon-settings. Display-bound
+    /// xeneon-edge records only; a control's field is null until it has been
+    /// read or set at least once through Nexus.
+    /// </summary>
+    public XeneonEdgeSettingsDto? XeneonEdgeSettings { get; set; }
     /// <summary>
     /// Whether this display-bound panel is currently turned ON (kiosk
     /// hosted). Turning a monitor's panel off keeps the record - layout,
@@ -108,6 +127,22 @@ public sealed class PanelDeviceCapabilities
 }
 
 /// <summary>
+/// Corsair Xeneon Edge native display settings. Used both as the persisted
+/// snapshot on <see cref="PanelDeviceRecord.XeneonEdgeSettings"/> and as the
+/// GET/POST body for /displays/{id}/xeneon-settings - a POST only carries
+/// the fields being changed, the rest are left null and untouched.
+/// </summary>
+public sealed class XeneonEdgeSettingsDto
+{
+    public int? Brightness { get; set; }
+    public int? Backlight { get; set; }
+    public int? Contrast { get; set; }
+    public int? Red { get; set; }
+    public int? Green { get; set; }
+    public int? Blue { get; set; }
+}
+
+/// <summary>
 /// Partial update body for POST /panel/devices/{id}. Every field is
 /// nullable so the handler can tell "client left this out" from "client
 /// explicitly cleared this".
@@ -127,15 +162,19 @@ public sealed class PanelDevicePatch
     /// (effect key → preset index). The client sends the whole map.</summary>
     public Dictionary<string, int>? BackgroundTemplates { get; set; }
     public double? BackgroundOpacity { get; set; }
+    public bool? BackgroundEnabled { get; set; }
     public string? BackgroundMediaId { get; set; }
     public string? BackgroundMediaType { get; set; }
     public double? WidgetOpacity { get; set; }
     public bool? WidgetLabels { get; set; }
     public bool? WidgetBlur { get; set; }
+    public double? WidgetPadding { get; set; }
     public bool? ThemeSyncWithDesktop { get; set; }
     public bool? AccentSyncWithDesktop { get; set; }
     /// <summary>Display-bound records only; ignored for other panels.</summary>
     public bool? ReserveMonitor { get; set; }
+    /// <summary>Display-bound records only; ignored for other panels.</summary>
+    public bool? AutoOrient { get; set; }
     public PanelDeviceCapabilities? Capabilities { get; set; }
 }
 
@@ -196,6 +235,15 @@ public sealed class GalleryChangedFrame
 }
 
 public sealed class MediaLibraryChangedFrame
+{
+    public long Revision { get; set; }
+}
+
+/// <summary>
+/// Multiplex frame: the console user's desktop wallpaper changed. Panels in
+/// wallpaper-background mode refetch <c>GET /panel/desktop-wallpaper</c>.
+/// </summary>
+public sealed class DesktopWallpaperChangedFrame
 {
     public long Revision { get; set; }
 }

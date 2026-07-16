@@ -24,6 +24,14 @@ public interface IDeviceHandler
     /// <summary>Returns true if any of the enumerated USB devices match this handler's identifiers.</summary>
     bool IsConnected(IReadOnlyList<UsbDeviceEntry> detectedDevices);
 
+    /// <summary>
+    /// False for a handler that only reports presence and never claims the
+    /// device, so the Nexus Control on/off gate would have nothing to gate and
+    /// the UI hides the switch. Defaults true: a first-party handler drives its
+    /// hardware through a gate-honoring connection worker.
+    /// </summary>
+    bool SupportsNexusControl => true;
+
     /// <summary>Current firmware version, or empty string if unavailable.</summary>
     string GetFirmwareVersion();
 

@@ -93,22 +93,35 @@ public sealed class ClipboardHandler
                 var p = JsonSerializer.Deserialize(env.Payload.Value, AppJsonContext.Default.ClipboardSetTextPayload);
                 ok = p is not null && _setText(p.Text ?? "");
             }
+            if (!ok)
+            {
+                Nexus.Service.Platform.ServiceLog.Warn("[clipboard-helper] clipboard.setText: Set-Clipboard did not commit (see the preceding [clipboard-win] line for the exit code/stderr)");
+            }
             return Task.FromResult(ok ? env.Ok() : HelperResult.Fail(env.Id, "clipboard set failed"));
         });
 
         registry.Register("clipboard.setTextAndPaste", (env, _) =>
         {
-            var ok = false;
-            if (env.Payload is not null)
+            if (env.Payload is null)
             {
-                var p = JsonSerializer.Deserialize(env.Payload.Value, AppJsonContext.Default.ClipboardSetTextPayload);
-                if (p is not null && _setText(p.Text ?? ""))
-                {
-                    SendPasteChord();
-                    ok = true;
-                }
+                return Task.FromResult(HelperResult.Fail(env.Id, "paste failed: no payload"));
             }
-            return Task.FromResult(ok ? env.Ok() : HelperResult.Fail(env.Id, "paste failed"));
+            var p = JsonSerializer.Deserialize(env.Payload.Value, AppJsonContext.Default.ClipboardSetTextPayload);
+            if (p is null)
+            {
+                return Task.FromResult(HelperResult.Fail(env.Id, "paste failed: bad payload"));
+            }
+            if (!_setText(p.Text ?? ""))
+            {
+                Nexus.Service.Platform.ServiceLog.Warn("[clipboard-helper] clipboard.setTextAndPaste: clipboard set failed, paste chord skipped (see the preceding [clipboard-win] line)");
+                return Task.FromResult(HelperResult.Fail(env.Id, "paste failed: clipboard set failed"));
+            }
+            if (!SendPasteChord())
+            {
+                Nexus.Service.Platform.ServiceLog.Warn("[clipboard-helper] clipboard.setTextAndPaste: Ctrl+V SendInput rejected - check whether the foreground window runs elevated (UIPI blocks a Medium-integrity helper injecting into a High-integrity window)");
+                return Task.FromResult(HelperResult.Fail(env.Id, "paste failed: keystroke injection rejected"));
+            }
+            return Task.FromResult(env.Ok());
         });
     }
 
@@ -116,8 +129,9 @@ public sealed class ClipboardHandler
     /// Runs in the user-session helper process, so SendInput lands on the
     /// interactive desktop. The same call from the Session-0 service lands on
     /// its own separate, invisible desktop instead, with no observable effect.
+    /// Returns false when the OS rejects any keystroke of the chord.
     /// </summary>
-    private static void SendPasteChord()
+    private static bool SendPasteChord()
     {
         Nexus.Service.Models.Peripherals.Keeb.MacroStroke V(string type) => new()
         {
@@ -125,7 +139,7 @@ public sealed class ClipboardHandler
             Ctrl = true,
             Type = type,
         };
-        new Nexus.Service.Peripherals.Keeb.WindowsInputter().Send(
+        return new Nexus.Service.Peripherals.Keeb.WindowsInputter().TrySend(
             new Nexus.Service.Models.Peripherals.Keeb.InputterBody { Strokes = { V("keydown"), V("keyup") } });
     }
 }

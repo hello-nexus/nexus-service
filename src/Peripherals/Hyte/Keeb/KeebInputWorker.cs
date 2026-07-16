@@ -25,14 +25,16 @@ public sealed class KeebInputWorker : BackgroundService
     private readonly KeebHub _hub;
     private readonly KeebSettingsApplier _applier;
     private readonly KeebReactiveRenderer _renderer;
+    private readonly Nexus.Service.Lighting.Engine.LightingEngine _engine;
     private IHidDevice? _reader;
 
-    public KeebInputWorker(IHidEnumerator hid, KeebHub hub, KeebSettingsApplier applier, KeebReactiveRenderer renderer)
+    public KeebInputWorker(IHidEnumerator hid, KeebHub hub, KeebSettingsApplier applier, KeebReactiveRenderer renderer, Nexus.Service.Lighting.Engine.LightingEngine engine)
     {
         _hid = hid;
         _hub = hub;
         _applier = applier;
         _renderer = renderer;
+        _engine = engine;
     }
 
     protected override Task ExecuteAsync(CancellationToken stoppingToken)
@@ -101,15 +103,20 @@ public sealed class KeebInputWorker : BackgroundService
             case KeebProtocol.KeebInputKind.ScrollMiddle:
                 // The middle button cycles the firmware effect on the device.
                 // Re-read immediately so the panel's Effect selector follows
-                // without waiting on the connection-worker poll.
+                // without waiting on the connection-worker poll. While a
+                // software effect streams the frame writer is the sole
+                // settings reader (see KeebSettingsApplier) - skip then.
                 ServiceLog.Info("[keeb-input] rotary middle click");
-                _applier.SyncFromDevice();
+                if (_engine.CurrentEffectName == "none") _applier.SyncFromDevice();
                 break;
             case KeebProtocol.KeebInputKind.SoftwareKey:
                 ServiceLog.Info($"[keeb-input] software key ap={ev.ApCode} pressed={ev.Pressed}");
                 break;
             case KeebProtocol.KeebInputKind.Profile:
+                // Track the active profile: key assignments and macros address
+                // onboard storage per profile (slot = profile*16 + index).
                 ServiceLog.Info($"[keeb-input] profile -> {ev.Profile}");
+                if (ev.Profile is 0 or 1) _hub.State.Profile = ev.Profile;
                 break;
         }
     }

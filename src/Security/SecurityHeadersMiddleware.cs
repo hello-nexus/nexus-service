@@ -33,11 +33,14 @@ internal static class SecurityHeadersMiddleware
     // connect-src must list the cloud API origin (api.hellonexus.com): the SPA
     // fetches the benchmark leaderboard + System Builder catalog directly from
     // it (VITE_API_URL in build:service), cross-origin from the service-served
-    // http://localhost:9400 shell, so 'self' does not cover it.
-    //
-    // connect-src blob: because three.js's GLTFLoader loads a GLB's embedded
-    // textures by fetch()ing blob: object URLs (ImageBitmapLoader); img-src
-    // alone does not cover fetch, and without it models render untextured.
+    // http://localhost:9400 shell, so 'self' does not cover it. It also
+    // mirrors the img-src CDN hosts, blob:, and the font endpoints: the panel
+    // screenshot exporter (PanelEmbedFrame capture) re-reads every rendered
+    // image and @font-face binary through fetch() to inline them, so any
+    // source img-src/font-src can display must also be connectable or the
+    // export degrades. blob: additionally covers three.js's GLTFLoader, which
+    // loads a GLB's embedded textures by fetch()ing blob: object URLs
+    // (ImageBitmapLoader) - without it avatar models render untextured.
     private const string ContentSecurityPolicy =
         "default-src 'self'; " +
         // wasm-unsafe-eval: the meshopt decoder (compressed avatar/GLB packs)
@@ -52,7 +55,11 @@ internal static class SecurityHeadersMiddleware
         "https://cdn.discordapp.com https://media.discordapp.net " +
         "https://usercontent.hellonexus.com; " +
         "media-src 'self' data: blob:; " +
-        "connect-src 'self' blob: ws: wss: https://api.hellonexus.com; " +
+        "connect-src 'self' ws: wss: blob: https://api.hellonexus.com " +
+        "https://fonts.googleapis.com https://fonts.gstatic.com " +
+        "https://*.steamstatic.com https://media.steampowered.com " +
+        "https://cdn.discordapp.com https://media.discordapp.net " +
+        "https://usercontent.hellonexus.com; " +
         "frame-ancestors 'self'; " +
         "base-uri 'self'; " +
         "object-src 'none'";

@@ -50,8 +50,8 @@ public class KeebKeyCodesTests
         => Assert.Equal(new byte[] { 0x00, 0x00, 0x00, 0x00 }, KeebKeyCodes.MatrixCode("StandardKey", "None", null));
 
     [Fact]
-    public void StandardKey_PassThrough_is_zeros()
-        => Assert.Equal(new byte[] { 0x00, 0x00, 0x00, 0x00 }, KeebKeyCodes.MatrixCode("StandardKey", "PassThrough", null));
+    public void StandardKey_PassThrough_is_the_transparent_category()
+        => Assert.Equal(new byte[] { 0x00, 0x00, 0x00, 0xF8 }, KeebKeyCodes.MatrixCode("StandardKey", "PassThrough", null));
 
     [Fact]
     public void MediaKey_PlayAndPause_is_CD_00_00_03()
@@ -102,12 +102,16 @@ public class KeebKeyCodesTests
         => Assert.Equal(new byte[] { 0x15, 0x02, 0x00, 0xF0 }, KeebKeyCodes.MatrixCode("LayerKey", "MOSwitch", 2));
 
     [Fact]
-    public void LayerKey_TGSwitch_default_layer_is_15_00_00_F0()
-        => Assert.Equal(new byte[] { 0x15, 0x00, 0x00, 0xF0 }, KeebKeyCodes.MatrixCode("LayerKey", "TGSwitch", null));
+    public void LayerKey_TGSwitch_default_layer_is_16_00_00_F0()
+        => Assert.Equal(new byte[] { 0x16, 0x00, 0x00, 0xF0 }, KeebKeyCodes.MatrixCode("LayerKey", "TGSwitch", null));
 
     [Fact]
-    public void RGBKey_is_zeros_software_handled()
+    public void RGBKey_unknown_function_is_zeros()
         => Assert.Equal(new byte[] { 0x00, 0x00, 0x00, 0x00 }, KeebKeyCodes.MatrixCode("RGBKey", "BrightnessUp", null));
+
+    [Fact]
+    public void RGBKey_EffectLoop_is_the_vendor_0A_code()
+        => Assert.Equal(new byte[] { 0x03, 0x00, 0x00, 0x0A }, KeebKeyCodes.MatrixCode("RGBKey", "RGBEffectLoop", null));
 
     [Fact]
     public void SoftwareKey_is_zeros_software_handled()

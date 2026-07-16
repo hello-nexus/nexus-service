@@ -489,7 +489,7 @@ public class Y70ProviderTests
             return (true, "");
         }
 
-        public (bool Ok, string Error) SetDisplayOrientation(string displayId, string orientation) => (true, "");
+        public (bool Ok, string Error) SetDisplayOrientation(string displayId, string orientation, string coverColorHex) => (true, "");
     }
 
     /// <summary>In-memory IConfigStore for unit tests - no disk I/O.</summary>

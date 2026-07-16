@@ -60,4 +60,30 @@ public static class WindowsDirectorySecurity
             catch { }
         }
     }
+
+    /// <summary>
+    /// True when <paramref name="dir"/> is owned by SYSTEM or Administrators.
+    /// <see cref="Protect"/>'s owner reset is best-effort - it needs
+    /// SeRestorePrivilege enabled, not merely held - and swallows its failure, so a
+    /// caller that must not trust a dir a non-admin still owns has to read the owner
+    /// back: an owner keeps WRITE_DAC whatever DACL was just written, and can grant
+    /// itself write again. False on any read failure. Windows-only; call under an
+    /// OperatingSystem.IsWindows() guard.
+    /// </summary>
+    [SupportedOSPlatform("windows")]
+    public static bool IsOwnedByAdmins(string dir)
+    {
+        try
+        {
+            var owner = new DirectorySecurity(dir, AccessControlSections.Owner)
+                .GetOwner(typeof(SecurityIdentifier)) as SecurityIdentifier;
+            return owner is not null
+                && (owner.IsWellKnown(WellKnownSidType.LocalSystemSid)
+                    || owner.IsWellKnown(WellKnownSidType.BuiltinAdministratorsSid));
+        }
+        catch
+        {
+            return false;
+        }
+    }
 }

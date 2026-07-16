@@ -1,10 +1,12 @@
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
 using Nexus.Service.Models.Cooling;
 using Nexus.Service.Persistence;
+using Nexus.Service.Platform;
 using Nexus.Service.Serialization;
 using Nexus.Service.Sockets;
 using Microsoft.Extensions.Hosting;
@@ -14,11 +16,14 @@ namespace Nexus.Service.Cooling;
 /// <summary>
 /// Background service that evaluates fan curves and drives fan speeds.
 /// Default tick is 1 s (configurable via SetInterval, minimum 500 ms):
-/// reads temperatures, evaluates curves, writes fan duty cycles, and
+/// reads temperatures, evaluates curves, writes fan duty cycles, replays
+/// persisted manual duties onto channels as they become drivable, and
 /// broadcasts state via WebSocket hubs.
 ///
 /// On shutdown, releases all fans back to BIOS control to prevent fans
-/// from being stuck at a low speed after the service exits.
+/// from being stuck at a low speed after the service exits. Persisted
+/// manual intent (Cooling.ManualSpeeds) survives the release; the replay
+/// re-applies it on the next run.
 /// </summary>
 public sealed class CurveEngine : BackgroundService
 {
@@ -34,6 +39,12 @@ public sealed class CurveEngine : BackgroundService
     // channel so PWM lines don't get hammered if the tick interval is lowered.
     private readonly Dictionary<string, (int Duty, long TickCountMs)> _lastWrite = new();
     private const int MinChannelWriteIntervalMs = 250;
+
+    // Ids whose persisted manual duty has been replayed onto hardware this
+    // run. An id is dropped while its channel is absent so a hub reconnect
+    // (which resets the hub's duty state) replays the saved value when the
+    // channel returns.
+    private readonly HashSet<string> _manualReplayed = new();
 
     private int _intervalMs = 1000;
 
@@ -54,6 +65,9 @@ public sealed class CurveEngine : BackgroundService
     {
         lock (_lastSpeed) { _lastSpeed.Clear(); }
         lock (_lastWrite) { _lastWrite.Clear(); }
+        // Re-arm the manual replay so the incoming profile's saved duties are
+        // applied on the next tick (the profile switch released all fans).
+        lock (_manualReplayed) { _manualReplayed.Clear(); }
     }
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
@@ -93,6 +107,34 @@ public sealed class CurveEngine : BackgroundService
     {
         var settings = _store.Load();
         var curves = settings.Cooling.Curves;
+        if (curves.Count == 0 && settings.Cooling.ManualSpeeds.Count == 0)
+        {
+            // Idle cooling config: skip the per-tick channel enumeration
+            // (on Windows it costs an LHM update + re-discovery).
+            ForgetWritesNotOwned(null);
+            return;
+        }
+
+        var owned = CurveOwnedIds(curves);
+
+        // A dedup record for a channel no curve references anymore would
+        // suppress the first write after the fan is re-attached: a hub can
+        // reset (losing its duty state) while unreferenced, and an
+        // unchanged duty would then dedup away the re-drive.
+        ForgetWritesNotOwned(owned);
+
+        // Channels the providers can drive right now. Hub channels appear
+        // seconds after boot (USB connect) and LHM discovery can surface a
+        // partial list at first, so per-tick presence gates both the curve
+        // write dedup and the manual-duty replay below.
+        var present = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var ch in _fans.GetFanChannels())
+        {
+            present.Add(ch.Id);
+        }
+
+        ReplayManualDuties(settings, present, owned);
+
         if (curves.Count == 0)
         {
             return;
@@ -135,9 +177,21 @@ public sealed class CurveEngine : BackgroundService
             foreach (var output in curveDoc.Outputs)
             {
                 var appliedSpeed = (int)Math.Round(smoothedSpeed);
-                if (TryReserveWrite(output.Id, appliedSpeed, nowMs))
+                if (present.Contains(output.Id))
                 {
-                    _fans.DriveFanSpeed(output.Id, appliedSpeed);
+                    if (TryReserveWrite(output.Id, appliedSpeed, nowMs))
+                    {
+                        _fans.DriveFanSpeed(output.Id, appliedSpeed);
+                    }
+                }
+                else
+                {
+                    // No dedup record for a channel that can't take the write:
+                    // the first tick after it appears must drive it even at an
+                    // unchanged duty. Also covers reconnects - the hub loses
+                    // its duty state, so the stale record must not suppress
+                    // the re-drive.
+                    ForgetWrite(output.Id);
                 }
                 drivenChannels.Add(output.Id);
                 outputStates.Add(new CurveOutputState
@@ -284,6 +338,129 @@ public sealed class CurveEngine : BackgroundService
             "Mixed" => doc.Mixed?.ResponseTime ?? 1.0,
             _ => 1.0,
         };
+    }
+
+    /// <summary>
+    /// Replays persisted user manual duties (Cooling.ManualSpeeds) onto
+    /// hardware as their channels become drivable. Runs every tick: hub
+    /// channels connect seconds after boot and LHM discovery can return a
+    /// partial channel list at first, so a one-shot restore pass misses
+    /// late channels. Ids owned by a curve output are skipped and re-armed:
+    /// the curve drives them for now, and the saved duty must replay when
+    /// the curve releases the channel (leaving a preset for Custom).
+    /// </summary>
+    private void ReplayManualDuties(NexusSettings settings, HashSet<string> present, HashSet<string> curveOwned)
+    {
+        var manual = settings.Cooling.ManualSpeeds;
+        if (manual.Count == 0)
+        {
+            return;
+        }
+
+        // Snapshot: SetFanSpeed below writes back into this dictionary, and
+        // route threads mutate it via store.Update without a shared lock.
+        // The enumerator's version check turns a racing structural change
+        // into InvalidOperationException (Dictionary.ToArray would take the
+        // ICollection fast path instead, whose race failures are an
+        // ArgumentException or torn null-key entries). Abort only the
+        // replay, not the tick's curve work; the next tick retries.
+        var snapshot = new List<KeyValuePair<string, int>>(manual.Count);
+        try
+        {
+            foreach (var kv in manual)
+            {
+                snapshot.Add(kv);
+            }
+        }
+        catch (InvalidOperationException) { return; }
+
+        // Collect under the lock, write hardware outside it: SetFanSpeed
+        // re-records the entry via IConfigStore.Update, whose OnChanged
+        // handlers must not run while the replay lock is held.
+        List<(string Id, int Duty)>? toApply = null;
+        lock (_manualReplayed)
+        {
+            foreach (var kv in snapshot)
+            {
+                if (!present.Contains(kv.Key))
+                {
+                    _manualReplayed.Remove(kv.Key);
+                    continue;
+                }
+                if (curveOwned.Contains(kv.Key))
+                {
+                    _manualReplayed.Remove(kv.Key);
+                    continue;
+                }
+                if (!_manualReplayed.Add(kv.Key))
+                {
+                    continue;
+                }
+                (toApply ??= new()).Add((kv.Key, kv.Value));
+            }
+        }
+
+        if (toApply is null)
+        {
+            return;
+        }
+        foreach (var (id, duty) in toApply)
+        {
+            _fans.SetFanSpeed(id, duty);
+            ServiceLog.Info($"[curve-engine] manual duty restored: {id} -> {duty}%");
+        }
+    }
+
+    private static HashSet<string> CurveOwnedIds(List<CurveDocument> curves)
+    {
+        var owned = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var curve in curves)
+        {
+            foreach (var o in curve.Outputs)
+            {
+                owned.Add(o.Id);
+            }
+        }
+        return owned;
+    }
+
+    private void ForgetWrite(string channelId)
+    {
+        lock (_lastWrite) { _lastWrite.Remove(channelId); }
+    }
+
+    /// <summary>Drop dedup records for channels not owned by any curve
+    /// (null = no curves, drop all), so a fan re-attached later is driven
+    /// on its first tick even at an unchanged duty.</summary>
+    private void ForgetWritesNotOwned(HashSet<string>? owned)
+    {
+        lock (_lastWrite)
+        {
+            if (_lastWrite.Count == 0)
+            {
+                return;
+            }
+            if (owned is null || owned.Count == 0)
+            {
+                _lastWrite.Clear();
+                return;
+            }
+            List<string>? stale = null;
+            foreach (var id in _lastWrite.Keys)
+            {
+                if (!owned.Contains(id))
+                {
+                    (stale ??= new()).Add(id);
+                }
+            }
+            if (stale is not null)
+            {
+                foreach (var id in stale)
+                {
+                    _lastWrite.Remove(id);
+                }
+            }
+        }
     }
 
     // Atomic check-and-reserve: returns true and records the write iff the

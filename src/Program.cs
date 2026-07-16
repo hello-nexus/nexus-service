@@ -88,6 +88,13 @@ string? emitOpenApiPath = null;
 var testHost = Environment.GetEnvironmentVariable("NEXUS_TEST_HOST") == "1"
     || emitOpenApiPath is not null;
 
+// Hold LhmComputer's background Open until the boot-time PawnIO check has
+// run, so a driver installed or repaired this boot is visible to SuperIO
+// enumeration immediately. Armed only where WireAppWindowAndPawnIo will
+// signal it; the test host and non-Windows platforms never wait.
+if (OperatingSystem.IsWindows() && !testHost)
+    Nexus.Service.Lifecycle.PawnIoBootGate.Arm();
+
 // Root system daemon (full hardware access) adopts the active user's session
 // env - D-Bus, runtime dir, config home, display - so the tray, MPRIS media,
 // volume, and dashboard launcher keep working. No-op for a --user install.
@@ -132,6 +139,17 @@ if (!serviceMode && !testHost)
 }
 using var _singleInstance = singleInstance;
 Nexus.Service.Lifecycle.BootTimer.Mark("after single-instance mutex");
+
+// TEMPORARY (remove ~2026-07-20 with DataLayoutMigration): migrate the flat data
+// layout to the grouped devices/ + media/ layout before any store resolves its
+// directory (a store must not create the new target ahead of the move). One-shot
+// and idempotent; skipped for the test/openapi hosts so doc generation never
+// touches a dev's data.
+if (!testHost)
+{
+    Nexus.Service.Lifecycle.DataLayoutMigration.Run();
+    Nexus.Service.Lifecycle.BootTimer.Mark("after DataLayoutMigration");
+}
 
 // Cold-start self-elevation: when the user double-clicks the EXE while no
 // service is running and we're not yet elevated, prompt for UAC and let the
@@ -385,6 +403,9 @@ Nexus.Service.Lifecycle.BootTimer.Mark("DI: AddNexusCloud");
 builder.Services.AddHostedService<Nexus.Service.Discovery.MdnsAdvertiser>();
 Nexus.Service.Lifecycle.BootTimer.Mark("after MdnsAdvertiser register");
 
+// Wallpaper-change push for panels rendering the desktop-wallpaper background.
+builder.Services.AddHostedService<Nexus.Service.Panel.DesktopWallpaperWatcher>();
+
 // Emit mode starts the host far enough to register endpoints for the OpenAPI
 // document (WebApplication defers that to StartAsync); drop every hosted service
 // so no background device work runs during that start.
@@ -516,6 +537,7 @@ app.MapDevicesEndpoints();
 app.MapPeripheralEndpoints();
 app.MapKeebEndpoints();
 app.MapStreamDeckEndpoints();
+app.MapDeckImageEndpoints();
 app.MapDisplayEndpoints();
 app.MapActivityEndpoints();
 app.MapLifecycleEndpoints();
@@ -678,10 +700,13 @@ return 0;
 #if WINDOWS
 // Do only what the OS won't do on process exit, concurrently under one hard
 // cap: persist debounced settings + dirty profile, release fans (the hubs hold
-// the last commanded PWM with no failsafe), and reap the cross-session UI the
-// kill-job can't hold (overlay host + tray helper). A wedged hub or a
-// disconnected helper can't push the exit past the cap; everything else - the
-// sockets, serial, HID, GPU, OpenRGB - dies with the process.
+// the last commanded PWM with no failsafe), reset any connected Stream Deck
+// (it holds its last-pushed frame with no failsafe either), kill the external
+// driver tools (plain Process.Start children, so no kill-job holds them), and
+// reap the cross-session UI the kill-job can't hold (overlay host + tray
+// helper). A wedged hub, deck, or disconnected helper can't push the exit past
+// the cap; everything else - the sockets, serial, remaining HID, GPU, OpenRGB -
+// dies with the process.
 static void FastServiceShutdown(WebApplication app)
 {
     var sp = app.Services;
@@ -695,6 +720,8 @@ static void FastServiceShutdown(WebApplication app)
             try { sp.GetService<Nexus.Service.Cloud.CloudProfileSyncService>()?.FlushPendingSyncBlocking(TimeSpan.FromMilliseconds(1000)); } catch { }
         }),
         Task.Run(() => { try { sp.GetService<IFanControlProvider>()?.ReleaseAll(); } catch { } }),
+        Task.Run(() => { try { sp.GetService<Nexus.Service.Peripherals.StreamDeck.StreamDeckConnectionWorker>()?.ResetConnectedSurfacesForShutdown(); } catch { } }),
+        Task.Run(() => { try { sp.GetService<Nexus.Service.Common.ExternalTools.ExternalToolManager>()?.TerminateAll(); } catch { } }),
         Task.Run(() => FastWindowsUiTeardown(sp)),
     }, millisecondsTimeout: 1500);
     Console.Error.WriteLine($"[shutdown] fast teardown {(done ? "complete" : "TIMED OUT")} in {sw.ElapsedMilliseconds}ms");

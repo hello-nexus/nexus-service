@@ -34,7 +34,6 @@ public sealed class LinuxNvidiaFanProvider : IFanControlProvider, ICoolingProvid
     private readonly Func<int, int, int?, bool> _control; // (gpu, fan, duty | null=auto) -> applied
     private readonly bool _forceAvailable;
     private readonly IConfigStore? _config;
-    private bool _manualRestored;
 
     private readonly object _lock = new();
     private readonly HashSet<string> _warned = new();
@@ -67,7 +66,6 @@ public sealed class LinuxNvidiaFanProvider : IFanControlProvider, ICoolingProvid
 
     public IReadOnlyList<FanChannel> GetFanChannels()
     {
-        RestoreManualOnce();
         var curveBound = CurveModes.BoundFanIds(_config);
         var channels = new List<FanChannel>();
         foreach (var g in Snapshot())
@@ -138,7 +136,7 @@ public sealed class LinuxNvidiaFanProvider : IFanControlProvider, ICoolingProvid
             lock (_lock) _manual.Add(channelId);
             // Persist an explicit user override (not the curve engine's per-tick
             // writes) so the manual duty survives a restart, mirroring
-            // WindowsFanControlProvider + restored by RestoreManualOnce.
+            // WindowsFanControlProvider; CurveEngine's replay re-applies it.
             if (persist)
                 _config?.Update(s => s.Cooling.ManualSpeeds[channelId] = dutyPercent);
         }
@@ -166,44 +164,10 @@ public sealed class LinuxNvidiaFanProvider : IFanControlProvider, ICoolingProvid
                 _control(g.Index, f.Fan, null);
         }
         lock (_lock) _manual.Clear();
-        // Only drop our own ids - ManualSpeeds is shared with the hwmon/liquidctl
-        // providers in the composite, so a blanket Clear() would wipe theirs.
-        _config?.Update(s =>
-        {
-            foreach (var k in s.Cooling.ManualSpeeds.Keys.Where(IsNvidiaId).ToList())
-                s.Cooling.ManualSpeeds.Remove(k);
-        });
-    }
-
-    /// <summary>
-    /// Re-apply the user's saved manual GPU duties once, lazily, on first
-    /// enumeration - so the reported mode matches reality after a service
-    /// restart or reboot (NVML resets fans to auto on reboot). Mirrors
-    /// <see cref="WindowsFanControlProvider"/>'s RestoreSavedManualSpeeds.
-    /// </summary>
-    private void RestoreManualOnce()
-    {
-        if (_manualRestored || _config is null)
-            return;
-        lock (_lock)
-        {
-            if (_manualRestored)
-                return;
-            _manualRestored = true;
-        }
-        var restored = 0;
-        foreach (var (id, duty) in _config.Load().Cooling.ManualSpeeds)
-        {
-            if (!TryParseFan(id, out var gpu, out var fan))
-                continue;
-            if (_control(gpu, fan, Math.Clamp(duty, 0, 100)))
-            {
-                lock (_lock) _manual.Add(id);
-                restored++;
-            }
-        }
-        if (restored > 0)
-            Console.Error.WriteLine($"[cooling] restored {restored} manual NVIDIA fan duty(ies) from config");
+        // Cooling.ManualSpeeds is preserved: ReleaseAll runs on shutdown and
+        // profile switch, where the persisted intent must survive so
+        // CurveEngine's replay can re-apply it. The explicit per-fan BIOS
+        // choice goes through ReleaseFan, which removes its entry.
     }
 
     public Task<IReadOnlyList<FanCalibration>> CalibrateAsync(

@@ -259,4 +259,42 @@ public sealed class ProfileRoutesIntegrationTests : IDisposable
             .GetProperty("profiles").GetArrayLength();
         Assert.Equal(countBefore, countAfter);
     }
+
+    [Fact]
+    public async Task Sharing_Counts_ReflectActiveProfilesLightingAndDevicePresets()
+    {
+        var client = AuthedClient();
+        var store = _factory.Services.GetRequiredService<IConfigStore>();
+        store.Update(s =>
+        {
+            s.Lighting.LayoutPresets = new List<LayoutPreset>
+            {
+                new() { Id = "l1", Name = "One" },
+                new() { Id = "l2", Name = "Two" },
+            };
+            s.StreamDeck.Decks["SN-1"] = new PhysicalDeckSettings
+            {
+                Presets = new List<DeckPreset> { new() { Id = "d1", Name = "Deck One" } },
+            };
+            s.StreamDeck.Decks["SN-2"] = new PhysicalDeckSettings
+            {
+                Presets = new List<DeckPreset>
+                {
+                    new() { Id = "d2", Name = "Deck Two" },
+                    new() { Id = "d3", Name = "Deck Three" },
+                },
+            };
+        });
+
+        var res = await client.GetAsync("/profiles/sharing");
+
+        Assert.Equal(HttpStatusCode.OK, res.StatusCode);
+        var body = await res.Content.ReadFromJsonAsync<JsonElement>();
+        var counts = body.GetProperty("counts");
+        Assert.Equal(2, counts.GetProperty("lighting").GetInt32());
+        Assert.Equal(3, counts.GetProperty("device").GetInt32());
+        Assert.Equal(0, counts.GetProperty("cooling").GetInt32());
+        Assert.Equal(0, counts.GetProperty("theme").GetInt32());
+        Assert.Equal(0, counts.GetProperty("dashboard").GetInt32());
+    }
 }

@@ -32,7 +32,15 @@ public sealed class CalibrationRunner
 
     public CalibrationState State { get; private set; } = CalibrationState.Idle;
     public List<FanCalibrationProgress> Progress { get; } = new();
-    public IReadOnlyList<FanCalibration> Results { get; private set; } = Array.Empty<FanCalibration>();
+
+    private volatile IReadOnlyList<FanCalibration> _results = Array.Empty<FanCalibration>();
+    /// <summary>The last run's results. Read by /cooling/calibration/results off
+    /// the request thread, written by the background run.</summary>
+    public IReadOnlyList<FanCalibration> Results
+    {
+        get => _results;
+        private set => _results = value;
+    }
 
     public bool Start(IFanControlProvider provider, IReadOnlyList<string> fanIds)
     {

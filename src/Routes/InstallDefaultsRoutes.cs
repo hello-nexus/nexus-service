@@ -136,7 +136,6 @@ public static class InstallDefaultsRoutes
                 {
                     RotaryLeft = s.Keeb.RotaryLeft,
                     RotaryRight = s.Keeb.RotaryRight,
-                    RotarySensitivity = s.Keeb.RotarySensitivity,
                     FirmwareLighting = new KeebFirmwareLightingDefaults
                     {
                         AnimationMode = s.Keeb.FirmwareLighting.AnimationMode,

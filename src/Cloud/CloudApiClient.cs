@@ -43,6 +43,13 @@ public sealed class CloudVoid
     public static readonly CloudVoid Instance = new();
 }
 
+/// <summary>Verbatim upstream response for a raw byte-forwarded call - the body is never parsed, so a caller with no typed DTO for the endpoint can still relay it as-is.</summary>
+public sealed class CloudRawResponse
+{
+    public string Body { get; init; } = "";
+    public string ContentType { get; init; } = "application/json";
+}
+
 /// <summary>
 /// Seam over the api.hellonexus.com account/profile-sync surface. Real HTTP in
 /// <see cref="CloudApiClient"/>; tests substitute a fake so CloudAccountService
@@ -66,6 +73,23 @@ public interface ICloudApiClient
     Task<CloudApiResult<CloudProfileDto>> GetProfileAsync(string accessToken, string profileId, CancellationToken ct);
     Task<CloudApiResult<CloudPutProfileResult>> PutProfileAsync(string accessToken, string profileId, CloudPutProfileRequest body, CancellationToken ct);
     Task<CloudApiResult<CloudVoid>> DeleteProfileAsync(string accessToken, string profileId, CancellationToken ct);
+
+    /// <summary>
+    /// Forwards a raw JSON request body to <paramref name="path"/> and returns
+    /// the upstream response body/content-type verbatim, with no DTO on either
+    /// side. Success covers every HTTP response actually received (including a
+    /// non-2xx one, e.g. a validation 400) - StatusCode always carries the real
+    /// upstream status; only a network/DNS/timeout failure sets Offline.
+    /// </summary>
+    Task<CloudApiResult<CloudRawResponse>> PostRawAsync(string path, string rawJsonBody, string? accessToken, CancellationToken ct);
+
+    /// <summary>
+    /// Same passthrough contract as <see cref="PostRawAsync"/> for an
+    /// arbitrary HTTP method. <paramref name="rawJsonBody"/> null omits a
+    /// request body entirely (GET/DELETE); non-null sends it as
+    /// application/json (PUT/PATCH/POST).
+    /// </summary>
+    Task<CloudApiResult<CloudRawResponse>> SendRawAsync(HttpMethod method, string path, string? rawJsonBody, string? accessToken, CancellationToken ct);
 }
 
 public sealed class CloudApiClient : ICloudApiClient
@@ -236,6 +260,34 @@ public sealed class CloudApiClient : ICloudApiClient
         catch (Exception ex) when (ex is not OperationCanceledException || !ct.IsCancellationRequested)
         {
             return CloudApiResult<CloudVoid>.NetworkError(ex.Message);
+        }
+    }
+
+    public Task<CloudApiResult<CloudRawResponse>> PostRawAsync(string path, string rawJsonBody, string? accessToken, CancellationToken ct) =>
+        SendRawAsync(HttpMethod.Post, path, rawJsonBody, accessToken, ct);
+
+    public async Task<CloudApiResult<CloudRawResponse>> SendRawAsync(HttpMethod method, string path, string? rawJsonBody, string? accessToken, CancellationToken ct)
+    {
+        try
+        {
+            using var client = CreateClient(accessToken);
+            using var request = new HttpRequestMessage(method, _baseUrl + path);
+            if (rawJsonBody is not null)
+            {
+                request.Content = new StringContent(rawJsonBody, System.Text.Encoding.UTF8, "application/json");
+            }
+            using var res = await client.SendAsync(request, ct).ConfigureAwait(false);
+            var body = await res.Content.ReadAsStringAsync(ct).ConfigureAwait(false);
+            var contentType = res.Content.Headers.ContentType?.MediaType ?? "application/json";
+            // Any HTTP response we actually received is "Success" here - the
+            // caller forwards the body/status verbatim regardless of whether
+            // upstream itself returned an error status.
+            return CloudApiResult<CloudRawResponse>.Ok(
+                new CloudRawResponse { Body = body, ContentType = contentType }, (int)res.StatusCode);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException || !ct.IsCancellationRequested)
+        {
+            return CloudApiResult<CloudRawResponse>.NetworkError(ex.Message);
         }
     }
 

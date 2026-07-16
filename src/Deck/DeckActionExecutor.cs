@@ -6,6 +6,7 @@ using System.Threading;
 using System.Threading.Tasks;
 using Nexus.Service.Actions;
 using Nexus.Service.Activity;
+using Nexus.Service.Audio;
 using Nexus.Service.Cooling;
 using Nexus.Service.Devices;
 using Nexus.Service.Lighting;
@@ -44,6 +45,7 @@ public sealed class DeckActionExecutor : IDeckActionExecutor
     private readonly IMediaProvider _media;
     private readonly MultiplexHub _hub;
     private readonly Lazy<IDeckSurfaceControl> _deckSurface;
+    private readonly AudioFilePlayer _audioPlayer;
 
     /// <summary>
     /// In-memory only, matching the web widget's per-tab <c>useState</c>
@@ -65,7 +67,8 @@ public sealed class DeckActionExecutor : IDeckActionExecutor
         DisplayBrightnessController displayBrightness,
         IMediaProvider media,
         MultiplexHub hub,
-        Lazy<IDeckSurfaceControl> deckSurface)
+        Lazy<IDeckSurfaceControl> deckSurface,
+        AudioFilePlayer audioPlayer)
     {
         _system = system;
         _lightingDevices = lightingDevices;
@@ -78,12 +81,17 @@ public sealed class DeckActionExecutor : IDeckActionExecutor
         _media = media;
         _hub = hub;
         _deckSurface = deckSurface;
+        _audioPlayer = audioPlayer;
     }
+
+    /// <summary>Test seam: the most recent dispatch's outcome ("ok" | "unknown" | "failed") and, for a failure, its error text - mirrors the [streamdeck] dispatch log line without needing a console-capture harness.</summary>
+    internal (string Outcome, string? Error) LastOutcome { get; private set; }
 
     public async Task ExecuteAsync(DeckAction? action, string serial, int keyIndex, string latchKey, CancellationToken ct)
     {
         if (action is null || string.IsNullOrEmpty(action.Type))
         {
+            LastOutcome = ("unknown", null);
             ServiceLog.Info($"[streamdeck] dispatch serial={serial} key={keyIndex} type=none outcome=unknown");
             return;
         }
@@ -96,9 +104,11 @@ public sealed class DeckActionExecutor : IDeckActionExecutor
         }
         catch (Exception ex)
         {
+            LastOutcome = ("failed", ex.Message);
             ServiceLog.Error($"[streamdeck] dispatch serial={serial} key={keyIndex} type={action.Type} outcome=failed ({ex.Message})");
             return;
         }
+        LastOutcome = (outcome, null);
         ServiceLog.Info($"[streamdeck] dispatch serial={serial} key={keyIndex} type={action.Type} outcome={outcome}");
     }
 
@@ -106,6 +116,8 @@ public sealed class DeckActionExecutor : IDeckActionExecutor
     {
         return TryLiveQuery(state, out var liveOn) ? liveOn : _latches.TryGetValue(latchKey, out var flip) && flip;
     }
+
+    public void OpenApp() => _system.OpenDashboard();
 
     private async Task<DispatchOutcome> DispatchAsync(DeckAction action, string serial, string latchKey, CancellationToken ct)
     {
@@ -140,8 +152,14 @@ public sealed class DeckActionExecutor : IDeckActionExecutor
                 await DispatchHotkeyAsync(action.Keys ?? "").ConfigureAwait(false);
                 return DispatchOutcome.Ok;
             case "text":
-                await _system.SendTextAsync(action.Text ?? "").ConfigureAwait(false);
+            {
+                var response = await _system.SendTextAsync(action.Text ?? "").ConfigureAwait(false);
+                if (response.Error)
+                {
+                    throw new InvalidOperationException(response.Msg);
+                }
                 return DispatchOutcome.Ok;
+            }
             case "power":
                 DispatchPower(action.PowerAction);
                 return DispatchOutcome.Ok;
@@ -179,6 +197,11 @@ public sealed class DeckActionExecutor : IDeckActionExecutor
                 return DispatchOutcome.Ok;
             case "monitoring":
                 DispatchMonitoringPress(action.Press);
+                return DispatchOutcome.Ok;
+            case "weather":
+                return DispatchOutcome.Ok;
+            case "playAudio":
+                _audioPlayer.Play(action.Path, action.Volume);
                 return DispatchOutcome.Ok;
             default:
                 // "page" is worker-handled (StreamDeckConnectionWorker
@@ -294,7 +317,7 @@ public sealed class DeckActionExecutor : IDeckActionExecutor
         {
             return;
         }
-        await _system.SendKeysAsync(new SendKeysBody
+        var response = await _system.SendKeysAsync(new SendKeysBody
         {
             Key = parsed.Value.Key,
             Ctrl = parsed.Value.Ctrl,
@@ -302,6 +325,10 @@ public sealed class DeckActionExecutor : IDeckActionExecutor
             Alt = parsed.Value.Alt,
             Meta = parsed.Value.Meta,
         }).ConfigureAwait(false);
+        if (response.Error)
+        {
+            throw new InvalidOperationException(response.Msg);
+        }
     }
 
     private void DispatchPower(string? powerAction)
@@ -586,6 +613,8 @@ public sealed class DeckActionExecutor : IDeckActionExecutor
             "down" => "ArrowDown",
             "left" => "ArrowLeft",
             "right" => "ArrowRight",
+            "." => "Period",
+            "printscreen" => "PrintScreen",
             _ => "",
         };
     }

@@ -209,7 +209,6 @@
   "keeb": {
     "rotaryLeft": "VolumeAdjustment",
     "rotaryRight": "BrightnessAdjustment",
-    "rotarySensitivity": "Balanced",
     "firmwareLighting": {
       "animationMode": "Static",
       "speed": "Standard",

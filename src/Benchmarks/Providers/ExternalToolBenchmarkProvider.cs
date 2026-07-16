@@ -186,6 +186,8 @@ public sealed class ExternalToolBenchmarkProvider : IBenchmarkProvider
                 Detail = singlePrimesPerSec > 0
                     ? $"single {Math.Round(singlePrimesPerSec / 1_000_000_000d, 3)} Gprimes/s | all-core {Math.Round(raw / 1_000_000_000d, 3)} Gprimes/s"
                     : $"all-core {Math.Round(raw / 1_000_000_000d, 3)} Gprimes/s",
+                SingleCoreRawValue = Math.Round(singlePrimesPerSec / 1_000_000_000d, 3),
+                SingleCoreRawUnit = "Gprimes/s",
             };
         }
         catch (OperationCanceledException) { throw; }
@@ -219,6 +221,14 @@ public sealed class ExternalToolBenchmarkProvider : IBenchmarkProvider
         return primes / seconds;
     }
 
+    // Matches clpeak's own documented default per-test time budget (its
+    // --max-time help text), long enough to fully sample GPU boost-clock ramp.
+    private const int ClpeakTrialMaxTimeMs = 500;
+    // Warmup budget: short, only needs to trigger the ICD's one-time kernel
+    // compile so it is cached (not timed) before any scored trial runs.
+    private const int ClpeakWarmupMaxTimeMs = 200;
+    private const int GpuTrialCount = 3;
+
     public async Task<BenchmarkSubScore> RunGpuAsync(
         IProgress<BenchmarkPhaseProgress> progress, CancellationToken ct)
     {
@@ -241,7 +251,9 @@ public sealed class ExternalToolBenchmarkProvider : IBenchmarkProvider
         double gflops = 0;
         double memGbPerSec = 0;
         string? versionStr = null;
+        string? deviceName = null;
         string detail = "";
+        var trials = new List<double>();
 
         try
         {
@@ -249,35 +261,31 @@ public sealed class ExternalToolBenchmarkProvider : IBenchmarkProvider
             {
                 // clpeak runs every test on every backend by default (~2 min). We
                 // only need peak single-precision GFLOPS + global bandwidth, so
-                // restrict to one backend, those two categories, and a 300 ms
-                // per-test budget. Below ~300 ms the GPU never reaches boost
-                // clocks and the result collapses (200 ms read ~20% of true).
-                // OpenCL is the most universal Windows backend; fall back to
-                // Vulkan if it yields nothing. The first run on a fresh machine
-                // pays a one-time kernel-JIT cost (driver caches it afterward),
-                // so the wallSeconds hard-cap stays generous.
-                async Task<bool> TryClpeak(string backend, string label)
+                // restrict to one backend and those two categories. OpenCL is the
+                // most universal Windows backend; fall back to Vulkan if it
+                // yields nothing across all trials.
+                async Task<(double gflops, double mem, string? device)> RunClpeakOnce(
+                    string backend, string label, int maxTimeMs, double start, double end)
                 {
                     var tmpJson = Path.Combine(Path.GetTempPath(), $"nexus-clpeak-{Guid.NewGuid():N}.json");
                     try
                     {
-                        progress.Report(new BenchmarkPhaseProgress { Phase = "gpu", Detail = label, Percent = 0 });
+                        progress.Report(new BenchmarkPhaseProgress { Phase = "gpu", Detail = label, Percent = start });
                         var (exit, _, _) = await RunProcessAsync(
                             clpeakPath,
-                            $"{backend} --no-cpu --fp-compute --bandwidth --max-time 300 --json-file \"{tmpJson}\"",
-                            progress, "gpu", label, 0, 0.9, 60, ct);
-                        if (exit == 0 && File.Exists(tmpJson))
+                            $"{backend} --no-cpu --fp-compute --bandwidth --max-time {maxTimeMs} --json-file \"{tmpJson}\"",
+                            progress, "gpu", label, start, end, 20, ct);
+                        if (exit != 0 || !File.Exists(tmpJson))
                         {
-                            var json = await File.ReadAllTextAsync(tmpJson, ct);
-                            var (g, m, ver) = ParseClpeakJson(json);
-                            gflops = g;
-                            memGbPerSec = m;
-                            if (ver is not null)
-                            {
-                                versionStr = $"clpeak {ver}";
-                            }
+                            return (0, 0, null);
                         }
-                        return gflops > 0;
+                        var json = await File.ReadAllTextAsync(tmpJson, ct);
+                        var (g, m, ver, device) = ParseClpeakJson(json);
+                        if (ver is not null)
+                        {
+                            versionStr = $"clpeak {ver}";
+                        }
+                        return (g, m, device);
                     }
                     finally
                     {
@@ -285,12 +293,48 @@ public sealed class ExternalToolBenchmarkProvider : IBenchmarkProvider
                     }
                 }
 
-                if (!await TryClpeak("--opencl", "clpeak (OpenCL)"))
+                // One discarded warmup invocation absorbs the one-time driver
+                // kernel-JIT cost (cached by the ICD afterward), then
+                // GpuTrialCount scored trials; the sub-score keeps the median.
+                async Task<bool> TryClpeakTrials(string backend, string backendLabel)
                 {
-                    await TryClpeak("--vulkan", "clpeak (Vulkan)");
+                    await RunClpeakOnce(backend, $"{backendLabel} warmup", ClpeakWarmupMaxTimeMs, 0, 0.1);
+
+                    for (int i = 0; i < GpuTrialCount; i++)
+                    {
+                        double start = 0.1 + i * 0.8 / GpuTrialCount;
+                        double end = 0.1 + (i + 1) * 0.8 / GpuTrialCount;
+                        var (g, m, device) = await RunClpeakOnce(
+                            backend, $"{backendLabel} {i + 1}/{GpuTrialCount}", ClpeakTrialMaxTimeMs, start, end);
+                        if (g <= 0)
+                        {
+                            continue;
+                        }
+                        trials.Add(g);
+                        if (m > memGbPerSec)
+                        {
+                            memGbPerSec = m;
+                        }
+                        if (device is not null)
+                        {
+                            deviceName = device;
+                        }
+                    }
+                    return trials.Count > 0;
                 }
 
-                if (gflops <= 0)
+                if (!await TryClpeakTrials("--opencl", "clpeak (OpenCL)"))
+                {
+                    trials.Clear();
+                    memGbPerSec = 0;
+                    await TryClpeakTrials("--vulkan", "clpeak (Vulkan)");
+                }
+
+                if (trials.Count > 0)
+                {
+                    gflops = Scoring.Median(trials);
+                }
+                else
                 {
                     detail = "clpeak parse-failed";
                 }
@@ -332,6 +376,10 @@ public sealed class ExternalToolBenchmarkProvider : IBenchmarkProvider
             string detailStr = memGbPerSec > 0
                 ? $"{Math.Round(gflops, 1)} GFLOPS sp | {Math.Round(memGbPerSec, 1)} GB/s mem"
                 : $"{Math.Round(gflops, 1)} GFLOPS sp";
+            if (trials.Count > 1)
+            {
+                detailStr += $" (median of {trials.Count})";
+            }
 
             return new BenchmarkSubScore
             {
@@ -341,6 +389,9 @@ public sealed class ExternalToolBenchmarkProvider : IBenchmarkProvider
                 RawValue = Math.Round(gflops, 1),
                 RawUnit = "GFLOPS",
                 Detail = detailStr,
+                Trials = trials.Count > 0 ? trials.ToArray() : null,
+                Spread = Scoring.RelativeSpread(trials),
+                MeasuredDevice = deviceName ?? "",
             };
         }
         catch (OperationCanceledException) { throw; }
@@ -350,7 +401,7 @@ public sealed class ExternalToolBenchmarkProvider : IBenchmarkProvider
         }
     }
 
-    internal static (double gflops, double memGbPerSec, string? version) ParseClpeakJson(string json)
+    internal static (double gflops, double memGbPerSec, string? version, string? device) ParseClpeakJson(string json)
     {
         try
         {
@@ -358,11 +409,12 @@ public sealed class ExternalToolBenchmarkProvider : IBenchmarkProvider
                 Nexus.Service.Serialization.AppJsonContext.Default.ClpeakResult);
             if (result?.Entries is null)
             {
-                return (0, 0, null);
+                return (0, 0, null, null);
             }
 
             double bestGflops = 0;
             double bestMem = 0;
+            string? bestDevice = null;
             foreach (var entry in result.Entries)
             {
                 // clpeak enumerates a "CPU" pseudo-device alongside GPUs; exclude
@@ -386,6 +438,7 @@ public sealed class ExternalToolBenchmarkProvider : IBenchmarkProvider
                     if (entry.Value > bestGflops)
                     {
                         bestGflops = entry.Value;
+                        bestDevice = entry.Device;
                     }
                 }
                 else if (string.Equals(test, "global_memory_bandwidth", StringComparison.OrdinalIgnoreCase) &&
@@ -397,11 +450,11 @@ public sealed class ExternalToolBenchmarkProvider : IBenchmarkProvider
                     }
                 }
             }
-            return (bestGflops, bestMem, result.ClpeakVersion);
+            return (bestGflops, bestMem, result.ClpeakVersion, bestDevice);
         }
         catch
         {
-            return (0, 0, null);
+            return (0, 0, null, null);
         }
     }
 
@@ -425,6 +478,8 @@ public sealed class ExternalToolBenchmarkProvider : IBenchmarkProvider
         return m.Success ? $"vkpeak {m.Groups[1].Value}" : "vkpeak";
     }
 
+    private const int RamTrialCount = 3;
+
     public async Task<BenchmarkSubScore> RunRamAsync(
         IProgress<BenchmarkPhaseProgress> progress, CancellationToken ct)
     {
@@ -441,33 +496,56 @@ public sealed class ExternalToolBenchmarkProvider : IBenchmarkProvider
         {
             _collectedTools["ram"] = "STREAM";
 
-            progress.Report(new BenchmarkPhaseProgress { Phase = "ram", Detail = "STREAM Triad", Percent = 0 });
-            var (exit, stdout, stderr) = await RunProcessAsync(
-                exePath, "", progress, "ram", "STREAM Triad", 0, 1.0, 15, ct);
-
-            double gbPerSec = ParseStreamTriad(stdout + stderr);
-
-            if (gbPerSec <= 0)
+            var trials = new List<double>();
+            int lastExit = 0;
+            string lastStdout = "";
+            for (int i = 0; i < RamTrialCount; i++)
             {
-                var truncated = stdout.Trim();
+                double start = (double)i / RamTrialCount;
+                double end = (double)(i + 1) / RamTrialCount;
+                string label = $"STREAM Triad {i + 1}/{RamTrialCount}";
+                progress.Report(new BenchmarkPhaseProgress { Phase = "ram", Detail = label, Percent = start });
+                var (exit, stdout, stderr) = await RunProcessAsync(
+                    exePath, "", progress, "ram", label, start, end, 15, ct);
+                lastExit = exit;
+                lastStdout = stdout;
+
+                double gbPerSec = ParseStreamTriad(stdout + stderr);
+                if (gbPerSec > 0)
+                {
+                    trials.Add(gbPerSec);
+                }
+            }
+
+            if (trials.Count == 0)
+            {
+                var truncated = lastStdout.Trim();
                 if (truncated.Length > 200)
                 {
                     truncated = truncated.Substring(0, 200);
                 }
 
                 return ParseFailure("ram", "RAM",
-                    $"STREAM parse failed (exit={exit}). stdout={truncated}");
+                    $"STREAM parse failed (exit={lastExit}). stdout={truncated}");
             }
 
-            double score = Scoring.Score(gbPerSec, Scoring.BaselineRamGbPerSec);
+            double gbPerSecMedian = Scoring.Median(trials);
+            double score = Scoring.Score(gbPerSecMedian, Scoring.BaselineRamGbPerSec);
+            string ramDetail = $"STREAM Triad {Math.Round(gbPerSecMedian, 2)} GB/s";
+            if (trials.Count > 1)
+            {
+                ramDetail += $" (median of {trials.Count})";
+            }
             return new BenchmarkSubScore
             {
                 Key = "ram",
                 Label = "RAM",
                 Score = score,
-                RawValue = Math.Round(gbPerSec, 2),
+                RawValue = Math.Round(gbPerSecMedian, 2),
                 RawUnit = "GB/s",
-                Detail = $"STREAM Triad {Math.Round(gbPerSec, 2)} GB/s",
+                Detail = ramDetail,
+                Trials = trials.ToArray(),
+                Spread = Scoring.RelativeSpread(trials),
             };
         }
         catch (OperationCanceledException) { throw; }
@@ -572,6 +650,8 @@ public sealed class ExternalToolBenchmarkProvider : IBenchmarkProvider
                 RawValue = Math.Round(seqMbPerSec, 1),
                 RawUnit = "MB/s",
                 Detail = detailStr,
+                RandomIops = Math.Round(randIops),
+                LatencyMs = Math.Round(latencyMs, 2),
             };
         }
         catch (OperationCanceledException) { throw; }

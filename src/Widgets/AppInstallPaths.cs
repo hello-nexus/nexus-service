@@ -9,20 +9,16 @@ namespace Nexus.Service.Widgets;
 
 /// <summary>
 /// Per-OS install roots scanned by <see cref="AppRegistry"/>. Precedence
-/// matches <c>plans/widget-sdk.md</c>: user installs (signed) shadow bundled
-/// (signed); dev installs (unsigned) shadow both but render a dev banner.
+/// matches <c>plans/third-party-app-sdk.md</c>: user installs shadow bundled.
 /// </summary>
 /// <remarks>
 /// Discovery + serving live here; install / uninstall writes are handled by
-/// <see cref="AppInstaller"/>. Signing verification and dev-banner
-/// rendering are still pending.
+/// <see cref="AppInstaller"/>. No root is signature-checked.
 /// </remarks>
 public static class AppInstallPaths
 {
     public enum Source
     {
-        /// <summary><c>apps-dev/</c> - unpacked local copies authors symlink for iteration.</summary>
-        Dev,
         /// <summary><c>apps/</c> in the user profile.</summary>
         User,
         /// <summary><c>apps/</c> next to the service binary.</summary>
@@ -41,7 +37,6 @@ public static class AppInstallPaths
         var appData = ResolveAppData();
         if (!string.IsNullOrEmpty(appData))
         {
-            roots.Add(new Root(Path.Combine(appData, "apps-dev"), Source.Dev));
             roots.Add(new Root(Path.Combine(appData, "apps"), Source.User));
         }
         var bundled = string.IsNullOrEmpty(baseDir) ? AppContext.BaseDirectory : baseDir;
@@ -56,7 +51,7 @@ public static class AppInstallPaths
             // Machine-wide under %ProgramData%, next to logs/settings, so the
             // LocalSystem daemon installs once for every user instead of burying
             // apps in the SYSTEM profile's Roaming. ProgramData is user-writable
-            // by default, so SecureUserRoots() locks apps/ + apps-dev/ in prod.
+            // by default, so SecureUserRoots() locks apps/ in prod.
             var programData = Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData);
             return string.IsNullOrEmpty(programData) ? "" : Path.Combine(programData, "Nexus");
         }
@@ -73,12 +68,12 @@ public static class AppInstallPaths
     }
 
     /// <summary>
-    /// Lock the user app roots (<c>apps/</c>, <c>apps-dev/</c>) so a non-admin
-    /// local user can't plant a widget the service then discovers and serves.
-    /// %ProgramData% is user-writable by default and app bundles execute (in the
-    /// SDK sandbox), so the dir must be writable only by SYSTEM + Administrators.
+    /// Lock the user app root (<c>apps/</c>) so a non-admin local user can't
+    /// plant a widget the service then discovers and serves. %ProgramData% is
+    /// user-writable by default and app bundles execute (in the SDK sandbox), so
+    /// the dir must be writable only by SYSTEM + Administrators.
     /// No-op unless running as the LocalSystem daemon: a dev running the service
-    /// interactively keeps the roots writable for apps-dev symlink iteration.
+    /// interactively keeps the root writable.
     /// Best-effort; never blocks startup.
     /// </summary>
     public static void SecureUserRoots()
@@ -93,7 +88,6 @@ public static class AppInstallPaths
             if (string.IsNullOrEmpty(appData))
                 return;
             SecureDir(Path.Combine(appData, "apps"));
-            SecureDir(Path.Combine(appData, "apps-dev"));
         }
         catch { /* never block startup on an ACL failure */ }
     }

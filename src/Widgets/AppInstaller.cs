@@ -7,8 +7,8 @@ using Nexus.Service.Sensors;
 namespace Nexus.Service.Widgets;
 
 /// <summary>
-/// Filesystem mover for marketplace widgets. v1 catalogue is the bundled +
-/// dev widgets discovered on disk; "install" copies the source bundle
+/// Filesystem mover for marketplace widgets. v1 catalogue is the bundled
+/// widgets discovered on disk; "install" copies the source bundle
 /// into the user widgets dir (creating it if needed), "uninstall" removes
 /// that user copy. The registry is refreshed afterwards so subsequent
 /// list / read calls see the new state.
@@ -26,7 +26,7 @@ public sealed class AppInstaller
 
     /// <summary>
     /// Catalogue = every widget the registry currently sees, decorated with
-    /// whether the user widgets dir holds a copy. Bundled + dev widgets show
+    /// whether the user widgets dir holds a copy. Bundled widgets show
     /// up alongside whatever the user has installed.
     /// </summary>
     public AppCatalogResponse Catalogue()
@@ -38,7 +38,6 @@ public sealed class AppInstaller
         {
             var source = entry.Source switch
             {
-                AppInstallPaths.Source.Dev => "dev",
                 AppInstallPaths.Source.User => "user",
                 AppInstallPaths.Source.Bundled => "bundled",
                 _ => "unknown",

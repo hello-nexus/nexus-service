@@ -24,7 +24,7 @@ public sealed class CorsairLinkLcdMediaLibrary
     private readonly string _rootDir;
 
     public CorsairLinkLcdMediaLibrary()
-        : this(Path.Combine(MediaLibrary.ResolveDefaultRoot(), "Nexus", "corsair-lcd"))
+        : this(MediaLibrary.DeviceStoreDir("corsair-lcd"))
     {
     }
 

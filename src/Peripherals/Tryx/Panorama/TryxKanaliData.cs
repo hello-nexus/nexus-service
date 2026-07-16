@@ -35,8 +35,7 @@ public static class TryxKanaliData
     private static DateTime _materialStamp;
 
     private static string CacheDir { get; } = Path.Combine(
-        Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData),
-        "Nexus", "tryx-kanali-thumbs");
+        Nexus.Service.Media.MediaLibrary.DeviceStoreDir("tryx"), "kanali-thumbs");
 
     // Kanali covers can be multi-MB PNGs; downscale to a small JPEG before inlining as a
     // data URL, then cap the encoded result the same as the upload thumbnail cache.

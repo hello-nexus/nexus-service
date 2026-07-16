@@ -234,6 +234,7 @@ public sealed class CompositeLightingDeviceProvider : ILightingDeviceProvider
         // here through the identity context, on the one settings snapshot
         // this call already loads.
         var settings = _store.Load();
+        var uncontrolled = settings.Devices.UncontrolledLightingDevices;
         foreach (var dev in rgb.Devices)
         {
             if (dev.DeviceId.Length == 0)
@@ -242,6 +243,7 @@ public sealed class CompositeLightingDeviceProvider : ILightingDeviceProvider
                 dev.EnabledLedCount = Nexus.Service.Lighting.Zones.ZoneResolution.CountEnabled(
                     structure: null, zone: null, dev.Id, dev.LedCount, zoneHint: 0, settings);
             }
+            dev.Controlled = uncontrolled.Count == 0 || !uncontrolled.Contains(dev.Id);
         }
 
         // Spread every device without a persisted layout across the grid. totalCount counts persisted devices too so the

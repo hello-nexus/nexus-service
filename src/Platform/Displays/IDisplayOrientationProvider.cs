@@ -21,12 +21,19 @@ public interface IDisplayOrientationProvider
     /// the Y70 variant, an absent display IS an error: the caller targeted a
     /// specific monitor.
     /// </summary>
-    (bool Ok, string Error) SetDisplayOrientation(string displayId, string orientation);
+    /// <param name="coverColorHex">
+    /// "#rrggbb" solid colour the Windows implementation may show over the
+    /// strip of desktop a resolution swap briefly exposes, mid-rotation.
+    /// Empty falls back to opaque black rather than skipping the cover; pass
+    /// the caller's panel background colour when known (see
+    /// <c>PanelDeviceRegistry.ResolveCoverBackgroundHex</c>).
+    /// </param>
+    (bool Ok, string Error) SetDisplayOrientation(string displayId, string orientation, string coverColorHex);
 }
 
 public sealed class NoopDisplayOrientationProvider : IDisplayOrientationProvider
 {
     public (bool Ok, string Error) SetY70Orientation(string orientation) => (true, "");
-    public (bool Ok, string Error) SetDisplayOrientation(string displayId, string orientation)
+    public (bool Ok, string Error) SetDisplayOrientation(string displayId, string orientation, string coverColorHex)
         => (false, "display rotation is not supported on this platform");
 }

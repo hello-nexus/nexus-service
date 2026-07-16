@@ -40,10 +40,13 @@ public class SensorSnapshotResolverTests
         public Task ReadyAsync(CancellationToken ct = default) => Task.CompletedTask;
     }
 
-    private static HardwareSensor MakeSensor(string id, string type, float value) => new()
+    private static HardwareSensor MakeSensor(string id, string type, float value) =>
+        MakeSensor(id, id, type, value);
+
+    private static HardwareSensor MakeSensor(string id, string name, string type, float value) => new()
     {
         Id = id,
-        Name = id,
+        Name = name,
         Type = type,
         Value = value,
         Units = "",
@@ -161,5 +164,217 @@ public class SensorSnapshotResolverTests
         var sensors = new StubSensors { CpuSensors = new[] { MakeSensor("cpu/core0", "Load", 12f) } };
 
         Assert.Null(SensorSnapshotResolver.Resolve(sensors, "fps", "cpu/core0"));
+    }
+
+    [Fact]
+    public void ResolveOrDefault_finds_an_exact_id_match()
+    {
+        var sensors = new StubSensors
+        {
+            CpuSensors = new[]
+            {
+                MakeSensor("cpu/total", "CPU Total", "Load", 21f),
+                MakeSensor("cpu/core0", "Core #0", "Load", 12f),
+            },
+        };
+
+        var found = SensorSnapshotResolver.ResolveOrDefault(sensors, "cpu", "cpu/core0");
+
+        Assert.NotNull(found);
+        Assert.Equal("cpu/core0", found!.Id);
+    }
+
+    /// <summary>
+    /// Every sensor here is distinct, so only the name rung can return Core #0:
+    /// the id rung misses, and both defaults would return CPU Total.
+    /// </summary>
+    [Fact]
+    public void ResolveOrDefault_falls_back_to_a_name_match_when_the_id_no_longer_resolves()
+    {
+        var sensors = new StubSensors
+        {
+            CpuSensors = new[]
+            {
+                MakeSensor("cpu/total", "CPU Total", "Load", 21f),
+                MakeSensor("cpu/core0/v2", "Core #0", "Load", 12f),
+            },
+        };
+
+        var found = SensorSnapshotResolver.ResolveOrDefault(sensors, "cpu", "Core #0");
+
+        Assert.NotNull(found);
+        Assert.Equal("cpu/core0/v2", found!.Id);
+    }
+
+    /// <summary>
+    /// resolveSensor's cpu branch has no first-sensor rung for a non-empty id
+    /// (MonitoringWidget.tsx:62-66), so an unresolvable id on a box without a
+    /// CPU Total sensor stays unresolved on the deck exactly as in the editor.
+    /// </summary>
+    [Fact]
+    public void ResolveOrDefault_returns_null_for_an_unresolvable_cpu_id_when_no_CpuTotal_exists()
+    {
+        var sensors = new StubSensors
+        {
+            CpuSensors = new[] { MakeSensor("cpu/core0", "Core #0", "Load", 12f) },
+        };
+
+        Assert.Null(SensorSnapshotResolver.ResolveOrDefault(sensors, "cpu", "cpu/gone"));
+    }
+
+    [Fact]
+    public void ResolveOrDefault_falls_back_to_the_quick_summary_default()
+    {
+        var sensors = new StubSensors { CpuSensors = new[] { MakeSensor("summary/cpu-temp", "Temperature", 55f) } };
+
+        var found = SensorSnapshotResolver.ResolveOrDefault(sensors, "quick", "/amdcpu/0");
+
+        Assert.NotNull(found);
+        Assert.Equal(55f, found!.Value);
+    }
+
+    /// <summary>
+    /// The Elgato import leaves every monitoring key's sensor empty, so the
+    /// empty id must reach the category default rather than name-matching a
+    /// nameless sensor.
+    /// </summary>
+    [Fact]
+    public void ResolveOrDefault_with_an_empty_id_takes_the_default_over_a_nameless_sensor()
+    {
+        var sensors = new StubSensors
+        {
+            CpuSensors = new[]
+            {
+                MakeSensor("cpu/unnamed", "", "Clock", 4200f),
+                MakeSensor("cpu/total", "CPU Total", "Load", 21f),
+            },
+        };
+
+        var found = SensorSnapshotResolver.ResolveOrDefault(sensors, "cpu", "");
+
+        Assert.NotNull(found);
+        Assert.Equal("CPU Total", found!.Name);
+    }
+
+    [Fact]
+    public void ResolveOrDefault_falls_back_to_CpuTotal_by_name_for_a_hardware_level_uid()
+    {
+        var sensors = new StubSensors
+        {
+            CpuSensors = new[]
+            {
+                MakeSensor("cpu/core0", "Load", 12f),
+                MakeSensor("cpu/total", "CPU Total", "Load", 34f),
+            },
+        };
+
+        var found = SensorSnapshotResolver.ResolveOrDefault(sensors, "cpu", "/amdcpu/0");
+
+        Assert.NotNull(found);
+        Assert.Equal(34f, found!.Value);
+    }
+
+    [Fact]
+    public void ResolveOrDefault_falls_back_to_the_first_cpu_sensor_when_no_CpuTotal_exists()
+    {
+        var sensors = new StubSensors { CpuSensors = new[] { MakeSensor("cpu/core0", "Core #0", "Load", 12f) } };
+
+        var found = SensorSnapshotResolver.ResolveOrDefault(sensors, "cpu", "");
+
+        Assert.NotNull(found);
+        Assert.Equal("cpu/core0", found!.Id);
+    }
+
+    [Fact]
+    public void ResolveOrDefault_falls_back_to_GpuCoreLoad_by_name_and_type()
+    {
+        var sensors = new StubSensors
+        {
+            Gpus = new[]
+            {
+                new GpuReadout
+                {
+                    Name = "GPU0",
+                    Sensors = new List<HardwareSensor>
+                    {
+                        MakeSensor("gpu/temp", "GPU Core", "Temperature", 60f),
+                        MakeSensor("gpu/load", "GPU Core", "Load", 91f),
+                    },
+                },
+            },
+        };
+
+        var found = SensorSnapshotResolver.ResolveOrDefault(sensors, "gpu", "/gpu-nvidia/0");
+
+        Assert.NotNull(found);
+        Assert.Equal(91f, found!.Value);
+    }
+
+    [Fact]
+    public void ResolveOrDefault_falls_back_to_the_first_gpu_sensor_when_no_GpuCoreLoad_exists()
+    {
+        var sensors = new StubSensors
+        {
+            Gpus = new[] { new GpuReadout { Name = "GPU0", Sensors = new List<HardwareSensor> { MakeSensor("gpu/temp", "Temperature", 60f) } } },
+        };
+
+        var found = SensorSnapshotResolver.ResolveOrDefault(sensors, "gpu", "/gpu-nvidia/0");
+
+        Assert.NotNull(found);
+        Assert.Equal(60f, found!.Value);
+    }
+
+    [Fact]
+    public void ResolveOrDefault_falls_back_to_MemoryUsage_by_name()
+    {
+        var sensors = new StubSensors
+        {
+            MemorySensors = new[]
+            {
+                MakeSensor("mem/used", "Data", 12.3f),
+                MakeSensor("mem/usage", "Memory Usage", "Level", 45f),
+            },
+        };
+
+        var found = SensorSnapshotResolver.ResolveOrDefault(sensors, "memory", "/ram/0");
+
+        Assert.NotNull(found);
+        Assert.Equal(45f, found!.Value);
+    }
+
+    [Fact]
+    public void ResolveOrDefault_falls_back_to_the_first_motherboard_sensor()
+    {
+        var sensors = new StubSensors { MotherboardSensors = new[] { MakeSensor("mobo/temp", "Temperature", 40f) } };
+
+        var found = SensorSnapshotResolver.ResolveOrDefault(sensors, "motherboard", "/lpc/nct6798d/0");
+
+        Assert.NotNull(found);
+        Assert.Equal(40f, found!.Value);
+    }
+
+    [Fact]
+    public void ResolveOrDefault_falls_back_to_the_first_storage_sensor()
+    {
+        var sensors = new StubSensors
+        {
+            StorageComponents = new Dictionary<string, StorageComponent>
+            {
+                ["C:"] = new StorageComponent { Sensors = new List<HardwareSensor> { MakeSensor("storage/used", "Load", 63f) } },
+            },
+        };
+
+        var found = SensorSnapshotResolver.ResolveOrDefault(sensors, "storage", "/nvme/0");
+
+        Assert.NotNull(found);
+        Assert.Equal(63f, found!.Value);
+    }
+
+    [Fact]
+    public void ResolveOrDefault_returns_null_when_the_category_has_no_sensors()
+    {
+        var sensors = new StubSensors();
+
+        Assert.Null(SensorSnapshotResolver.ResolveOrDefault(sensors, "cpu", "/amdcpu/0"));
     }
 }

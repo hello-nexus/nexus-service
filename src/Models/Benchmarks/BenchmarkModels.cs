@@ -22,6 +22,23 @@ public sealed class BenchmarkSubScore
     public double RawValue { get; set; }
     public string RawUnit { get; set; } = "";
     public string Detail { get; set; } = "";
+
+    /// <summary>Per-trial scored values (the same unit as RawValue) for axes that run multiple trials. Null when the axis runs a single measurement.</summary>
+    public double[]? Trials { get; set; }
+
+    /// <summary>(max - min) / median across Trials. Zero when Trials has fewer than two entries.</summary>
+    public double Spread { get; set; }
+
+    /// <summary>CPU only: the single-thread primesieve rate, alongside the all-core RawValue.</summary>
+    public double SingleCoreRawValue { get; set; }
+    public string SingleCoreRawUnit { get; set; } = "";
+
+    /// <summary>Storage only: DiskSpd's 4K random-access IOPS and average latency, alongside the sequential RawValue.</summary>
+    public double RandomIops { get; set; }
+    public double LatencyMs { get; set; }
+
+    /// <summary>GPU only: the device name clpeak/vkpeak actually measured, used to align HardwareIdentity.GpuModels with the scored card.</summary>
+    public string MeasuredDevice { get; set; } = "";
 }
 
 public sealed class BenchmarkPhaseProgress
@@ -29,8 +46,6 @@ public sealed class BenchmarkPhaseProgress
     public string Phase { get; set; } = "";
     public double Percent { get; set; }
     public string Detail { get; set; } = "";
-    public double CurrentRaw { get; set; }
-    public string CurrentUnit { get; set; } = "";
 }
 
 public sealed class BenchmarkProgressFrame

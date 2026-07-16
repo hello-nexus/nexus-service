@@ -64,16 +64,26 @@ public static class Sm2
     public static string Decrypt(string cipherHex, string privKeyHex)
     {
         var data = Convert.FromHexString(cipherHex);
-        var offset = data.Length > 0 && data[0] == 0x04 ? 1 : 0;
-        if (data.Length - offset < 64 + 32)
+        if (data.Length < 64 + 32)
         {
             throw new CryptographicException("SM2 ciphertext is shorter than C1||C3.");
         }
 
-        var x1 = new BigInteger(data.AsSpan(offset, 32), isUnsigned: true, isBigEndian: true);
-        var y1 = new BigInteger(data.AsSpan(offset + 32, 32), isUnsigned: true, isBigEndian: true);
-        var c1 = new EcPoint(x1, y1);
-        if (!IsOnCurve(c1))
+        // C1 is a raw 64-byte x||y point; Kanali may 0x04-prefix it (SEC1
+        // uncompressed tag). A raw C1 whose x coordinate starts with 0x04 is
+        // ambiguous with that tag, so pick the offset that yields an on-curve
+        // point rather than trusting data[0].
+        int offset;
+        EcPoint c1;
+        if (TryReadC1(data, 0, out c1))
+        {
+            offset = 0;
+        }
+        else if (data[0] == 0x04 && TryReadC1(data, 1, out c1))
+        {
+            offset = 1;
+        }
+        else
         {
             throw new CryptographicException("SM2 C1 point is not on sm2p256v1.");
         }
@@ -100,6 +110,24 @@ public static class Sm2
         }
 
         return Encoding.UTF8.GetString(msg);
+    }
+
+    private static bool TryReadC1(byte[] data, int offset, out EcPoint c1)
+    {
+        c1 = EcPoint.Infinity;
+        if (data.Length - offset < 64 + 32)
+        {
+            return false;
+        }
+        var x1 = new BigInteger(data.AsSpan(offset, 32), isUnsigned: true, isBigEndian: true);
+        var y1 = new BigInteger(data.AsSpan(offset + 32, 32), isUnsigned: true, isBigEndian: true);
+        var point = new EcPoint(x1, y1);
+        if (!IsOnCurve(point))
+        {
+            return false;
+        }
+        c1 = point;
+        return true;
     }
 
     // GM/T 0003.3 KDF: SM3(Z || counter[BE32]) chunks, counter starts at 1.

@@ -5,6 +5,8 @@ using Nexus.Service.Cooling;
 using Nexus.Service.Lighting;
 using Nexus.Service.Lighting.Engine;
 using Nexus.Service.Lighting.Engine.Gpu;
+using Nexus.Service.Peripherals.Hyte.Keeb;
+using Nexus.Service.Peripherals.Keeb;
 using Nexus.Service.Persistence;
 using Nexus.Service.Serialization;
 using Nexus.Service.Sockets;
@@ -110,6 +112,16 @@ internal static class AppBootstrap
                 // resumes after the switch instead of leaving the engines
                 // idle until the user clicks something.
                 LiveEngineSync.Apply(configStore, fans, lightingProvider);
+
+                // Keeb is profile-scoped via the Device sharing category;
+                // push the incoming profile's game mode/firmware lighting/
+                // rotary and re-send persisted key overrides + macros so the
+                // physical keyboard follows the switch. Both no-op when no
+                // keyboard is connected.
+                var keebApplier = sp.GetRequiredService<KeebSettingsApplier>();
+                var keebProvider = sp.GetRequiredService<IKeebProvider>();
+                keebApplier.Apply();
+                keebProvider.ApplyPersistedAssignments();
             }
             catch (Exception ex)
             {

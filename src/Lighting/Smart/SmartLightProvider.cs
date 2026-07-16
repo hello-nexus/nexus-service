@@ -487,10 +487,29 @@ public sealed class SmartLightProvider : ILightingDeviceProvider, ILightingFrame
         }
     }
 
+    /// <summary>Push one device's static (manual) color. Used when a light is
+    /// re-enabled from uncontrolled: while no effect runs, nothing else re-pushes
+    /// its configured color on its own, so this closes the gap explicitly.
+    /// No-op for a device this provider doesn't own or that isn't enabled.</summary>
+    public void RestoreStatic(string id)
+    {
+        if (!Owns(id)) return;
+        var settings = _store.Load();
+        foreach (var cfg in settings.SmartLights.Devices)
+        {
+            if (cfg.Id != id) continue;
+            if (cfg.Enabled)
+            {
+                PushStaticFrom(id, settings);
+            }
+            return;
+        }
+    }
+
     /// <summary>Re-push the static color for lights whose realtime mode lapses
     /// without a continuous stream (plan.StaticNeedsStreaming, e.g. Govee
     /// razer/DreamView reverts ~60s without frames). Called by the frame writer on
-    /// a keep-alive cadence while no effect runs; no-op when none are driven.</summary>
+    /// a keep-alive cadence while no effect runs; no-op when none are controlled.</summary>
     public void MaintainStreamedStatic()
     {
         if (_streamedStatic.IsEmpty) return;
@@ -503,6 +522,14 @@ public sealed class SmartLightProvider : ILightingDeviceProvider, ILightingFrame
 
     private void PushStaticFrom(string id, NexusSettings s)
     {
+        // Uncontrolled: submit nothing at all, not even On=false - the light is
+        // meant to keep whatever state its own app/scene left it in.
+        if (s.Devices.UncontrolledLightingDevices.Contains(id))
+        {
+            _streamedStatic.TryRemove(id, out _);
+            return;
+        }
+
         // Control can run before BuildFrames populated the cache (e.g. right
         // after pairing) - resolve a snapshot so SubmitFrame has a device.
         if (!_cache.TryGetValue(id, out var dev))

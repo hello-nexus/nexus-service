@@ -4,7 +4,6 @@ using System.Threading;
 using System.Threading.Tasks;
 using Nexus.Service.Models.Cooling;
 using Nexus.Service.Peripherals.LianLiWireless;
-using Nexus.Service.Persistence;
 using Nexus.Service.Platform;
 
 namespace Nexus.Service.Cooling;
@@ -26,14 +25,10 @@ public sealed class Slv3CoolingProvider : IFanControlProvider, ICoolingProvider
     private const string IdPrefix = "lianli-wireless:";
 
     private readonly Slv3Hub _hub;
-    private readonly IConfigStore _store;
-    private readonly object _restoreLock = new();
-    private readonly HashSet<string> _restoredMacs = new(StringComparer.Ordinal);
 
-    public Slv3CoolingProvider(Slv3Hub hub, IConfigStore store)
+    public Slv3CoolingProvider(Slv3Hub hub)
     {
         _hub = hub;
-        _store = store;
     }
 
     public static bool IsSlv3Id(string id) =>
@@ -162,31 +157,9 @@ public sealed class Slv3CoolingProvider : IFanControlProvider, ICoolingProvider
 
     // ── Internals ──
 
-    /// <summary>
-    /// Called by the connection worker each tick. Restores a persisted
-    /// Cooling.ManualSpeeds duty onto a chain the first time it is seen
-    /// bound this run, so a Manual port survives a service restart; a chain
-    /// never given a saved duty stays on the hub's motherboard-sync default.
-    /// </summary>
-    public void OnHubStateUpdated()
-    {
-        foreach (var fan in _hub.State.Fans)
-        {
-            if (!fan.BoundToUs) continue;
-            lock (_restoreLock)
-            {
-                if (!_restoredMacs.Add(fan.Mac)) continue;
-            }
-            var manual = _store.Load().Cooling.ManualSpeeds;
-            for (var port = 0; port < EffectivePortCount(fan); port++)
-            {
-                if (manual.TryGetValue(PortId(fan.Mac, port), out var saved))
-                {
-                    _hub.SetPortDuty(fan.Mac, port, saved);
-                }
-            }
-        }
-    }
+    // Persisted manual duties are replayed by CurveEngine as bound chains
+    // surface in GetFanChannels; a chain never given a saved duty stays on
+    // the hub's motherboard-sync default.
 
     private void ApplyWrite(string channelId, int dutyPercent)
     {

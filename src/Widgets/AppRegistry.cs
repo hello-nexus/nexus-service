@@ -104,7 +104,7 @@ public sealed class AppRegistry
 
                 // A `driver` block - which lets the host fetch and run a native
                 // executable - is honored only for a bundled app (one shipped in
-                // the trusted build / OEM image). A user- or dev-installed app
+                // the trusted build / OEM image). A user-installed app
                 // cannot grant itself a host-run driver; the widget facet still
                 // loads, only the driver block is dropped. (When app signing lands
                 // this becomes a cert-grant check.)
@@ -123,7 +123,7 @@ public sealed class AppRegistry
                     Source = root.Source,
                 };
                 // First write wins. Roots are enumerated in shadowing order
-                // (dev → user → bundled), so later roots cannot overwrite
+                // (user, then bundled), so later roots cannot overwrite
                 // an entry from a higher-precedence root.
                 _entries.TryAdd(manifest.Id, entry);
             }

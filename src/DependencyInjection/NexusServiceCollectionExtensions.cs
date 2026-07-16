@@ -476,6 +476,7 @@ public static class NexusServiceCollectionExtensions
             sp.GetRequiredService<Nexus.Service.Devices.Detection.HardwarePresence>(),
             sp.GetRequiredService<Nexus.Service.Lighting.Engine.LightingEngine>(),
             sp.GetRequiredService<Nexus.Service.Devices.DeviceControlGate>(),
+            sp.GetRequiredService<Nexus.Service.Peripherals.Keeb.IKeebProvider>(),
             sp.GetRequiredService<Nexus.Service.Lighting.KeebLightingDeviceProvider>()));
         services.AddHostedService<Nexus.Service.Peripherals.Hyte.Keeb.KeebInputWorker>();
 
@@ -483,9 +484,10 @@ public static class NexusServiceCollectionExtensions
         // 2026-07-10). Peripheral, not lighting - no frame contributor, no
         // 30 Hz tick; see plans/streamdeck-support.md Phase 0/1. The
         // connection worker always starts with no simulated deck; the
-        // DEV_TOOLS-only /streamdeck/dev/simulate route picks a model at
+        // localhost-only /streamdeck/dev/simulate route picks a model at
         // runtime via StreamDeckConnectionWorker.SetSimulatedModel, so a
-        // release build never constructs a SimulatedStreamDeckSurface at all.
+        // running app constructs a SimulatedStreamDeckSurface only if that
+        // route is called (a release web bundle exposes no UI to call it).
         services.AddSingleton<Nexus.Service.Peripherals.StreamDeck.StreamDeckImageCache>();
         // Lazy so resolving it does not construct StreamDeckConnectionWorker
         // right away - DeckActionExecutor needs it for deckBrightness/deckSleep,
@@ -497,6 +499,7 @@ public static class NexusServiceCollectionExtensions
         // dispatch, or the test-press route) triggered it.
         services.AddSingleton(sp => new System.Lazy<Nexus.Service.Deck.IDeckSurfaceControl>(
             () => sp.GetRequiredService<Nexus.Service.Peripherals.StreamDeck.StreamDeckConnectionWorker>()));
+        services.AddSingleton<Nexus.Service.Audio.AudioFilePlayer>();
         services.AddSingleton<Nexus.Service.Deck.DeckActionExecutor>();
         services.AddSingleton<Nexus.Service.Deck.IDeckActionExecutor>(sp =>
             sp.GetRequiredService<Nexus.Service.Deck.DeckActionExecutor>());
@@ -509,8 +512,14 @@ public static class NexusServiceCollectionExtensions
                 sp.GetRequiredService<Nexus.Service.Deck.IDeckActionExecutor>(),
                 sp.GetRequiredService<Nexus.Service.Peripherals.StreamDeck.StreamDeckImageCache>(),
                 sp.GetRequiredService<Nexus.Service.Sockets.MultiplexHub>(),
-                sp.GetRequiredService<Nexus.Service.Sensors.ISensorProvider>()));
+                sp.GetRequiredService<Nexus.Service.Sensors.ISensorProvider>(),
+                weather: sp.GetRequiredService<Nexus.Service.Platform.Weather.IWeatherProvider>()));
         services.AddHostedService(sp => sp.GetRequiredService<Nexus.Service.Peripherals.StreamDeck.StreamDeckConnectionWorker>());
+
+        // Elgato Stream Deck profile import: read-only against the local
+        // Elgato software's own store, never touching a physical deck.
+        services.AddSingleton<Nexus.Service.Peripherals.StreamDeck.ElgatoImport.ElgatoProfileLocator>();
+        services.AddSingleton<Nexus.Service.Peripherals.StreamDeck.ElgatoImport.ElgatoProfileTranslator>();
 
         // Lian Li Uni Hub SL-Infinity: HID connection worker + lighting + cooling.
         services.AddSingleton<Nexus.Service.Peripherals.LianLi.LianLiHub>();
@@ -698,6 +707,7 @@ public static class NexusServiceCollectionExtensions
         services.AddSingleton<IDeviceHandler, Nexus.Service.Devices.Handlers.Y70Handler>();
         services.AddSingleton<IDeviceHandler, Nexus.Service.Devices.Handlers.KeebHandler>();
         services.AddSingleton<IDeviceHandler, Nexus.Service.Devices.Handlers.FanHubHandler>();
+        services.AddSingleton<IDeviceHandler, Nexus.Service.Devices.Handlers.Aw5Handler>();
         services.AddSingleton<IDeviceHandler, Nexus.Service.Devices.Handlers.Np50Handler>();
         services.AddSingleton<IDeviceHandler, Nexus.Service.Devices.Handlers.SmartHubHandler>();
         services.AddSingleton<IDeviceHandler, Nexus.Service.Devices.Handlers.LianLiHandler>();
@@ -994,6 +1004,17 @@ public static class NexusServiceCollectionExtensions
         services.AddSingleton<Nexus.Service.Platform.Displays.DisplayTopologyWatcher>();
         services.AddHostedService(sp =>
             sp.GetRequiredService<Nexus.Service.Platform.Displays.DisplayTopologyWatcher>());
+        // Touch-mapping guard: repairs a touch digitizer mis-associated with
+        // the wrong monitor. Detection needs the same user-session APIs as
+        // topology; the registry write and devnode restart are session-
+        // independent, so only the snapshot source is helper-backed.
+        services.AddSingleton<Nexus.Service.Platform.Displays.ITouchMapSnapshotSource,
+            Nexus.Service.Platform.Displays.HelperTouchMapSnapshotSource>();
+        services.AddSingleton<Nexus.Service.Platform.Displays.IDigimonRegistryWriter,
+            Nexus.Service.Platform.Displays.WindowsDigimonRegistryWriter>();
+        services.AddSingleton<Nexus.Service.Platform.Displays.ITouchDigitizerDevnodeRestarter,
+            Nexus.Service.Platform.Displays.WindowsTouchDigitizerDevnodeRestarter>();
+        services.AddHostedService<Nexus.Service.Platform.Displays.TouchMappingGuardService>();
         // Screen-mirror frames also flow through the helper - DXGI desktop
         // duplication is Session 0-blind, so the helper captures + downsamples
         // and pushes canvas-resolution RGB24 over the pipe.
@@ -1028,7 +1049,17 @@ public static class NexusServiceCollectionExtensions
             Nexus.Service.Platform.DefaultMonitorEnumerator>();
         services.AddSingleton<Nexus.Service.Platform.Displays.IDisplayOrientationProvider,
             Nexus.Service.Platform.Displays.NoopDisplayOrientationProvider>();
+        // No touch-mapping mechanism outside Windows; the stub snapshot
+        // source always reports "no helper", so TouchMappingGuard stays a
+        // permanent no-op and never reaches the registry writer/restarter.
+        services.AddSingleton<Nexus.Service.Platform.Displays.ITouchMapSnapshotSource,
+            Nexus.Service.Platform.Displays.StubTouchMapSnapshotSource>();
+        services.AddSingleton<Nexus.Service.Platform.Displays.IDigimonRegistryWriter,
+            Nexus.Service.Platform.Displays.NullDigimonRegistryWriter>();
+        services.AddSingleton<Nexus.Service.Platform.Displays.ITouchDigitizerDevnodeRestarter,
+            Nexus.Service.Platform.Displays.NullTouchDigitizerDevnodeRestarter>();
 #endif
+        services.AddSingleton<Nexus.Service.Platform.Displays.TouchMappingGuard>();
         services.AddSingleton<Nexus.Service.Platform.Displays.DisplayBrightnessController>();
         services.AddSingleton<Nexus.Service.Platform.Displays.DisplayTopologyService>();
         return services;
@@ -1159,6 +1190,7 @@ public static class NexusServiceCollectionExtensions
         services.AddSingleton<ProfileManager>();
         services.AddSingleton<Nexus.Service.Media.MediaLibrary>();
         services.AddSingleton<Nexus.Service.Panel.PanelBgLibrary>();
+        services.AddSingleton<Nexus.Service.Deck.DeckImageStore>();
         services.AddSingleton<Nexus.Service.Gallery.GalleryLibrary>();
         // Also consumed by /system/pick-path (SystemRoutes.cs), not just gallery.
         services.AddSingleton<Nexus.Service.Platform.IFileDialogPicker, Nexus.Service.Platform.FileDialogPicker>();
@@ -1208,7 +1240,18 @@ public static class NexusServiceCollectionExtensions
             sp.GetRequiredService<Nexus.Service.Common.ExternalTools.ExternalToolManager>());
         // Auto-launches each installed bundled driver app's binary when its device
         // is present (runs at boot, pre-login).
+        services.AddSingleton<Nexus.Service.Common.ExternalTools.IDriverGateStopHook, Nexus.Service.Peripherals.Aw5.Aw5PanelBlanker>();
+        // false: the AW5 is driven natively below, and its vendor binary would be a
+        // second writer on the same HID. Flip to true to restore the vendor path,
+        // which stands the native worker down.
+        services.AddSingleton(new Nexus.Service.Common.ExternalTools.DriverExePolicy(enabled: false));
         services.AddHostedService<Nexus.Service.Common.ExternalTools.DriverAutoLaunchWorker>();
+
+        // Drives the AW5 pump displays in place of the vendor driver .exe. Exactly one
+        // of the two runs; DriverExePolicy picks which.
+        services.AddSingleton<Nexus.Service.Peripherals.Aw5.Aw5Hub>();
+        services.AddSingleton<Nexus.Service.Peripherals.Aw5.Aw5SensorReader>();
+        services.AddHostedService<Nexus.Service.Peripherals.Aw5.Aw5PanelWorker>();
         return services;
     }
 
@@ -1227,6 +1270,7 @@ public static class NexusServiceCollectionExtensions
                     sp.GetRequiredService<Nexus.Service.Devices.Detection.HardwarePresence>(),
                     sp.GetRequiredService<Nexus.Service.Panel.PanelDeviceRegistry>(),
                     sp.GetRequiredService<Nexus.Service.Devices.DeviceControlGate>(),
+                    sp.GetRequiredService<IConfigStore>(),
                     sp.GetRequiredService<Nexus.Service.Common.ExternalTools.IAdbDeviceRegistry>(),
                     sp.GetService<Nexus.Service.Panel.PanelTunnelMonitor>()));
             services.AddHostedService(sp =>
@@ -1263,6 +1307,20 @@ public static class NexusServiceCollectionExtensions
 #endif
         services.AddSingleton<Nexus.Service.Panel.PanelPhonePairingService>();
         services.AddSingleton<Nexus.Service.Panel.PanelDeviceRegistry>();
+        services.AddSingleton<Nexus.Service.Panel.PanelAutoPromotion>();
+
+        // Corsair Xeneon Edge auto-orientation + native settings: reads the
+        // panel's hardware orientation sensor over vendor HID and applies the
+        // matching Windows display rotation. Cross-platform HID read like the
+        // Keeb workers; the apply side degrades to a no-op off Windows via
+        // NoopDisplayOrientationProvider. Registered as a plain singleton
+        // (in addition to IHostedService below) so the /displays/{id}/xeneon-
+        // settings routes can resolve it directly to reach
+        // ReadSettingsAsync/SetControlAsync - it is the single owner of the
+        // HID handle those calls must serialize through.
+        services.AddSingleton<Nexus.Service.Peripherals.Corsair.XeneonEdge.XeneonEdgeOrientationWorker>();
+        services.AddHostedService(sp =>
+            sp.GetRequiredService<Nexus.Service.Peripherals.Corsair.XeneonEdge.XeneonEdgeOrientationWorker>());
 
         // Streamed panels: panels rendered off-screen by the overlay's stream
         // engine and piped as H.264 to USB display devices through swappable

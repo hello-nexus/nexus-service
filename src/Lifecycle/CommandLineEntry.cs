@@ -49,7 +49,11 @@ internal static class CommandLineEntry
     public static int? TryEarlyExit(string[] args)
     {
         if (args.Length > 0 && args[0] == "--install-pawnio")
-            return PawnIoInstaller.RunElevatedInstall(upgrade: args.Contains("--upgrade"));
+        {
+            return PawnIoInstaller.RunElevatedInstall(
+                upgrade: args.Contains("--upgrade"),
+                repair: args.Contains("--repair"));
+        }
 
         // Detached finalizer spawned by POST /service/factory-reset: waits for
         // the live service to exit, wipes every Nexus data dir, then restarts.

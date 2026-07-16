@@ -23,3 +23,11 @@ public sealed class SetAudioDefaultBody
 {
     public string DeviceId { get; set; } = "";
 }
+
+/// <summary>POST /system/audio/play body - the touch deck widget's Play Audio press, mirroring the physical deck's playAudio DeckAction.</summary>
+public sealed class PlayAudioBody
+{
+    public string Path { get; set; } = "";
+    /// <summary>Playback volume percent, 0-100. Unset falls back to AudioFilePlayer's default.</summary>
+    public int? Volume { get; set; }
+}

@@ -37,10 +37,11 @@ public sealed class DeviceManager
         var usbDevices = _enumerator.Enumerate();
         // Only first-party handlers have a gate-honoring connection worker; the
         // on/off switch is a no-op for plugin handlers, so don't advertise it.
+        // A first-party handler that only reports presence opts out the same way.
         var firstParty = new HashSet<IDeviceHandler>(_handlers);
         return AllHandlers.Select(h =>
         {
-            var supportsControl = firstParty.Contains(h);
+            var supportsControl = firstParty.Contains(h) && h.SupportsNexusControl;
             return new DeviceListItem
             {
                 Id = h.Id,

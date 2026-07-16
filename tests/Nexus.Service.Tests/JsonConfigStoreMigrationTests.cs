@@ -204,6 +204,58 @@ public class JsonConfigStoreMigrationTests : IDisposable
     }
 
     [Fact]
+    public void Load_V11_AddsDeviceToSharedCategories()
+    {
+        // A pre-feature install already carries sharedCategories WITHOUT
+        // device. The present array overrides the field initializer, so only
+        // the v12 migration Add can introduce device here - this is the
+        // load-bearing upgrade path.
+        var json = """
+        {
+          "schemaVersion": 11,
+          "sharedCategories": ["lighting"]
+        }
+        """;
+        File.WriteAllText(_settingsPath, json);
+
+        var store = new JsonConfigStore(_settingsPath);
+        var s = store.Load();
+        try
+        {
+            Assert.Equal(NexusSettings.CurrentSchemaVersion, s.SchemaVersion);
+            Assert.Equal(new List<string> { "lighting", "device" }, s.SharedCategories);
+        }
+        finally
+        {
+            store.Dispose();
+        }
+    }
+
+    [Fact]
+    public void Load_V11_WithDeviceAlreadyShared_DoesNotDuplicateIt()
+    {
+        var json = """
+        {
+          "schemaVersion": 11,
+          "sharedCategories": ["lighting", "device"]
+        }
+        """;
+        File.WriteAllText(_settingsPath, json);
+
+        var store = new JsonConfigStore(_settingsPath);
+        var s = store.Load();
+        try
+        {
+            Assert.Equal(NexusSettings.CurrentSchemaVersion, s.SchemaVersion);
+            Assert.Equal(new List<string> { "lighting", "device" }, s.SharedCategories);
+        }
+        finally
+        {
+            store.Dispose();
+        }
+    }
+
+    [Fact]
     public void Load_TryxOverlay_ItemsFontSizeAlignAndDocked_RoundTripThroughRealJson()
     {
         var json = """

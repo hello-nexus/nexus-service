@@ -22,7 +22,7 @@ public class Slv3CoolingProviderTests
     public void GetFanChannels_and_GetAll_empty_when_hub_disconnected()
     {
         var hub = new Slv3Hub(new Slv3TestHub.FakeDiscovery(), _ => throw new InvalidOperationException());
-        var provider = new Slv3CoolingProvider(hub, new InMemoryConfigStore());
+        var provider = new Slv3CoolingProvider(hub);
 
         Assert.Empty(provider.GetFanChannels());
         Assert.Empty(provider.GetAll());
@@ -43,7 +43,7 @@ public class Slv3CoolingProviderTests
                 Rpm = new[] { 0, 1200, 0, 0 },
             },
         };
-        var provider = new Slv3CoolingProvider(hub, new InMemoryConfigStore());
+        var provider = new Slv3CoolingProvider(hub);
 
         var channels = provider.GetFanChannels();
 
@@ -68,7 +68,7 @@ public class Slv3CoolingProviderTests
             new Slv3FanInfo { Mac = Mac, BoundToUs = true, FanCount = 1, FanType = 37 }, // SL-Infinity
             new Slv3FanInfo { Mac = "AABBCCDDEEFF", BoundToUs = true, FanCount = 1, FanType = 24 }, // SLV3-LCD
         };
-        var provider = new Slv3CoolingProvider(hub, new InMemoryConfigStore());
+        var provider = new Slv3CoolingProvider(hub);
 
         var channels = provider.GetFanChannels();
 
@@ -85,7 +85,7 @@ public class Slv3CoolingProviderTests
             new Slv3FanInfo { Mac = Mac, BoundToUs = false, FanCount = 2 },
             new Slv3FanInfo { Mac = "AABBCCDDEEFF", BoundToUs = true, FanCount = 0 },
         };
-        var provider = new Slv3CoolingProvider(hub, new InMemoryConfigStore());
+        var provider = new Slv3CoolingProvider(hub);
 
         var channels = provider.GetFanChannels();
         // Unbound chain skipped; the bound chain that reports no fan count still
@@ -114,7 +114,7 @@ public class Slv3CoolingProviderTests
                 Rpm = new[] { 900, 0, 0, 0 },
             },
         };
-        var provider = new Slv3CoolingProvider(hub, new InMemoryConfigStore());
+        var provider = new Slv3CoolingProvider(hub);
 
         var component = Assert.Single(provider.GetAll());
         Assert.Equal($"lianli-wireless:{Mac}", component.Id);
@@ -128,7 +128,7 @@ public class Slv3CoolingProviderTests
     {
         var (hub, _, _) = Slv3TestHub.CreateConnected();
         hub.State.Fans = new[] { new Slv3FanInfo { Mac = Mac, BoundToUs = true, FanCount = 2 } };
-        var provider = new Slv3CoolingProvider(hub, new InMemoryConfigStore());
+        var provider = new Slv3CoolingProvider(hub);
 
         var applied = provider.SetFanSpeed($"lianli-wireless:{Mac}:port0", 45);
 
@@ -145,7 +145,7 @@ public class Slv3CoolingProviderTests
     {
         var (hub, _, _) = Slv3TestHub.CreateConnected();
         hub.State.Fans = new[] { new Slv3FanInfo { Mac = Mac, BoundToUs = true, FanCount = 2 } };
-        var provider = new Slv3CoolingProvider(hub, new InMemoryConfigStore());
+        var provider = new Slv3CoolingProvider(hub);
         provider.SetFanSpeed($"lianli-wireless:{Mac}:port0", 60);
         provider.SetFanSpeed($"lianli-wireless:{Mac}:port1", 70);
 
@@ -162,7 +162,7 @@ public class Slv3CoolingProviderTests
         // Controller reports no fan count but the ports are still exposed and
         // drivable; ReleaseAll must clear them, not skip the chain.
         hub.State.Fans = new[] { new Slv3FanInfo { Mac = Mac, BoundToUs = true, FanCount = 0 } };
-        var provider = new Slv3CoolingProvider(hub, new InMemoryConfigStore());
+        var provider = new Slv3CoolingProvider(hub);
         provider.SetFanSpeed($"lianli-wireless:{Mac}:port0", 50);
         Assert.Equal(50, hub.GetPortDuty(Mac, 0));
 
@@ -171,24 +171,7 @@ public class Slv3CoolingProviderTests
         Assert.Null(hub.GetPortDuty(Mac, 0));
     }
 
-    [Fact]
-    public void OnHubStateUpdated_restores_a_persisted_manual_duty_once_per_mac()
-    {
-        var (hub, _, _) = Slv3TestHub.CreateConnected();
-        hub.State.Fans = new[] { new Slv3FanInfo { Mac = Mac, BoundToUs = true, FanCount = 2 } };
-        var store = new InMemoryConfigStore();
-        store.Update(s => s.Cooling.ManualSpeeds[$"lianli-wireless:{Mac}:port1"] = 33);
-        var provider = new Slv3CoolingProvider(hub, store);
-
-        provider.OnHubStateUpdated();
-
-        Assert.Null(hub.GetPortDuty(Mac, 0));    // no saved entry: stays mobo-sync
-        Assert.Equal(33, hub.GetPortDuty(Mac, 1));
-
-        // A live edit after the initial restore must survive a later tick -
-        // OnHubStateUpdated only restores once per MAC per run.
-        Assert.True(hub.SetPortDuty(Mac, 1, 80));
-        provider.OnHubStateUpdated();
-        Assert.Equal(80, hub.GetPortDuty(Mac, 1));
-    }
+    // Persisted-manual-duty restore is covered by CurveEngineTests: bound
+    // chains surface in GetFanChannels and the engine's presence-gated
+    // replay applies the saved duty through SetFanSpeed.
 }

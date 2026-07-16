@@ -134,12 +134,12 @@ public class AppRegistryTests : IDisposable
         {
             var registry = new AppRegistry(() => new List<AppInstallPaths.Root>
             {
-                new(_root, AppInstallPaths.Source.Dev),
-                new(secondRoot, AppInstallPaths.Source.User),
+                new(_root, AppInstallPaths.Source.User),
+                new(secondRoot, AppInstallPaths.Source.Bundled),
             });
 
             Assert.True(registry.TryGet("com.hellonexus.fixture-basic", out var entry));
-            Assert.Equal(AppInstallPaths.Source.Dev, entry.Source);
+            Assert.Equal(AppInstallPaths.Source.User, entry.Source);
         }
         finally
         {

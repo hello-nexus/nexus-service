@@ -77,8 +77,11 @@ public sealed class QSeriesLightingFrameWriter : IHostedService, IDisposable
     {
         if (!_hub.IsReadyForStreaming) return;
 
-        var devices = _engine.Devices;
+        var settings = _store.Load();
         var id = _hub.DeviceId;
+        if (settings.Devices.UncontrolledLightingDevices.Contains(id)) return;
+
+        var devices = _engine.Devices;
         DeviceFrame? frame = null;
         for (var i = 0; i < devices.Length; i++)
         { if (devices[i].Id == id) { frame = devices[i]; break; } }
@@ -92,7 +95,6 @@ public sealed class QSeriesLightingFrameWriter : IHostedService, IDisposable
             return;
         }
 
-        var settings = _store.Load();
         var disabled = settings.Devices.DisabledLightingDevices;
         var prefs = settings.Devices.LightingDevicePrefs;
         var globalBrightness = Math.Clamp(settings.Lighting.GlobalBrightness, 0f, 1f);

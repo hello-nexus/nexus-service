@@ -27,7 +27,7 @@ public sealed class PanelBgLibrary
     private readonly string _rootDir;
 
     public PanelBgLibrary()
-        : this(Path.Combine(MediaLibrary.ResolveDefaultRoot(), "Nexus", "panel-backgrounds"))
+        : this(MediaLibrary.DeviceStoreDir("panel-backgrounds"))
     {
     }
 

@@ -101,6 +101,13 @@ public sealed class CnvsLightingFrameWriter : IHostedService, IDisposable
         // is the explicit signal it flips when WriteSettings completes.
         if (!_hub.IsReadyForStreaming) return;
 
+        var settings = _store.Load();
+
+        // Uncontrolled: skip the firmware-anim-off handshake too, so the mat's
+        // own animation stays live instead of getting silenced for a stream
+        // that never comes.
+        if (settings.Devices.UncontrolledLightingDevices.Contains(_hub.DeviceId)) return;
+
         // Detect (re)connect: a new serial means the hub was reopened; we
         // need to re-send the firmware-anim-off handshake before our first
         // streamed frame, or the firmware overlay sits on top of it.
@@ -147,7 +154,6 @@ public sealed class CnvsLightingFrameWriter : IHostedService, IDisposable
             return;
         }
 
-        var settings = _store.Load();
         var disabled = settings.Devices.DisabledLightingDevices;
         var prefs = settings.Devices.LightingDevicePrefs;
         var globalBrightness = Math.Clamp(settings.Lighting.GlobalBrightness, 0f, 1f);

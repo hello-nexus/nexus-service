@@ -7,6 +7,7 @@ using System.Threading.Tasks;
 using Microsoft.Extensions.Hosting;
 using Nexus.Service.Helper;
 using Nexus.Service.Helper.Domains;
+using Nexus.Service.Panel;
 using Nexus.Service.Sockets;
 
 namespace Nexus.Service.Platform.Displays;
@@ -26,13 +27,15 @@ public sealed class DisplayTopologyWatcher : BackgroundService
     private readonly HelperRegistry _helpers;
     private readonly MultiplexHub _hub;
     private readonly DisplayTopologyService _topology;
+    private readonly PanelAutoPromotion _autoPromotion;
     private readonly Timer _debounce;
 
-    public DisplayTopologyWatcher(HelperRegistry helpers, MultiplexHub hub, DisplayTopologyService topology)
+    public DisplayTopologyWatcher(HelperRegistry helpers, MultiplexHub hub, DisplayTopologyService topology, PanelAutoPromotion autoPromotion)
     {
         _helpers = helpers;
         _hub = hub;
         _topology = topology;
+        _autoPromotion = autoPromotion;
         _debounce = new Timer(_ => Broadcast(), null, Timeout.Infinite, Timeout.Infinite);
     }
 
@@ -86,7 +89,15 @@ public sealed class DisplayTopologyWatcher : BackgroundService
             // Re-enumerate before broadcasting: GetTopology runs the
             // promoted-record capability sync, so display-bound records
             // track rotation/rescale even when no client refetches topology.
-            _topology.GetTopology();
+            var topology = _topology.GetTopology();
+            // Curated always-a-panel displays (Xeneon Edge) promote here so a
+            // fresh plug-in or boot hosts its kiosk with no manual step; the
+            // debounced topology edge is the exact moment a new display can
+            // appear. Broadcast created records so open dashboards update.
+            foreach (var recordId in _autoPromotion.Reconcile(topology))
+            {
+                PanelTopics.BroadcastPanelDevice(_hub, recordId);
+            }
             PanelTopics.BroadcastDisplays(_hub);
         }
         catch (Exception ex)

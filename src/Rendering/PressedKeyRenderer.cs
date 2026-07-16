@@ -7,22 +7,22 @@ using SixLabors.ImageSharp.Processing;
 namespace Nexus.Service.Rendering;
 
 /// <summary>
-/// Elgato-software push-in parity: scales a decoded key image down and
-/// composites it centered onto a background-filled canvas the same size as
-/// the source, so a physical key-down shows an inset variant of whatever the
-/// key currently displays. Pure ImageSharp compositing - no deck, HID, or
-/// wire-format knowledge, so it works on any already-decoded square image.
+/// Push-in feedback: scales a decoded key image down and composites it
+/// centered onto a black canvas the same size as the source, so a physical
+/// key-down shows an inset variant of whatever the key currently displays.
+/// The canvas is always black (the bezel color), never the slot color - a
+/// slot-colored canvas hides the inset on keys whose tile background is that
+/// same color, so the shrink read differently per key type. Pure ImageSharp
+/// compositing - no deck, HID, or wire-format knowledge, so it works on any
+/// already-decoded square image.
 /// </summary>
 internal static class PressedKeyRenderer
 {
-    /// <summary>Matches the Elgato Stream Deck software's own push-in inset.</summary>
-    internal const float PressScale = 0.88f;
+    /// <summary>User-tuned push-in inset amount.</summary>
+    internal const float PressScale = 0.80f;
 
-    private static readonly Color DefaultBackground = Color.ParseHex("0e1116");
-
-    public static Image<Rgba32> Render(Image<Rgba32> source, string? backgroundColorHex)
+    public static Image<Rgba32> Render(Image<Rgba32> source)
     {
-        var background = RenderKit.ParseColor(backgroundColorHex, DefaultBackground);
         var scaledWidth = Math.Max(1, (int)MathF.Round(source.Width * PressScale));
         var scaledHeight = Math.Max(1, (int)MathF.Round(source.Height * PressScale));
         var offsetX = (source.Width - scaledWidth) / 2;
@@ -32,7 +32,7 @@ internal static class PressedKeyRenderer
         var canvas = new Image<Rgba32>(source.Width, source.Height);
         canvas.Mutate(ctx =>
         {
-            ctx.Fill(background);
+            ctx.Fill(Color.Black);
             ctx.DrawImage(scaled, new Point(offsetX, offsetY), 1f);
         });
         return canvas;

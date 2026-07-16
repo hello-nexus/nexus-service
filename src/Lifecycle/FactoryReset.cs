@@ -60,9 +60,11 @@ internal static class FactoryReset
         if (OperatingSystem.IsWindows())
         {
             var programData = Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData);
-            // %ProgramData%\Nexus: settings, profiles, screentime.db, media,
-            // logs (nexus-service/overlay/tray/helper/volume/gpu/pawnio), firmware,
-            // https cert, qseries, ffmpeg-pids, DesktopWebView2, openrgb-config.
+            // %ProgramData%\Nexus: settings, profiles, screentime.db, devices/
+            // (device media + records), media/ (lighting content), drivers/, firmware,
+            // logs (nexus-service/overlay/tray/helper/volume/gpu/pawnio),
+            // https cert, ffmpeg-pids, DesktopWebView2, openrgb-config. Whole-tree
+            // wipe, so the grouped subdirs need no per-name upkeep here.
             // Preserve PawnIO\ (kernel driver).
             roots.Add(new Root(System.IO.Path.Combine(programData, "Nexus"), new[] { "PawnIO" }));
             // Per-user data the daemon can't reach via GetFolderPath: it runs as
@@ -90,9 +92,9 @@ internal static class FactoryReset
         else
         {
             // Linux splits user data across the XDG base dirs.
-            roots.Add(new Root(XdgRoot("XDG_CONFIG_HOME", ".config"), Array.Empty<string>()));    // settings, screentime, cert, qseries, ffmpeg-pids
-            roots.Add(new Root(XdgRoot("XDG_DATA_HOME", ".local", "share"), Array.Empty<string>())); // media, widgets
-            roots.Add(new Root(XdgRoot("XDG_CACHE_HOME", ".cache"), Array.Empty<string>()));      // firmware
+            roots.Add(new Root(XdgRoot("XDG_CONFIG_HOME", ".config"), Array.Empty<string>()));    // settings, screentime, cert, ffmpeg-pids
+            roots.Add(new Root(XdgRoot("XDG_DATA_HOME", ".local", "share"), Array.Empty<string>())); // devices, media, widgets
+            roots.Add(new Root(XdgRoot("XDG_CACHE_HOME", ".cache"), Array.Empty<string>()));      // firmware, drivers
             // logs: ~/.local/state/nexus/logs (lowercase, no XDG override in ServiceLog).
             roots.Add(new Root(UserPath(".local", "state", "nexus"), Array.Empty<string>()));
         }

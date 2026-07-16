@@ -11,44 +11,58 @@ namespace Nexus.Service.Peripherals.Keeb;
 /// </summary>
 public sealed class WindowsInputter : IInputterProvider
 {
-    public void Send(InputterBody body)
-    {
-        if (!RuntimeInformation.IsOSPlatform(OSPlatform.Windows)) return;
-        if (body.Strokes == null || body.Strokes.Count == 0) return;
+    public void Send(InputterBody body) => TrySend(body);
 
+    /// <summary>
+    /// Same injection as <see cref="Send"/>, but returns false when any
+    /// SendInput call is rejected by the OS (0 events queued) - the tell for
+    /// UIPI blocking a lower-integrity process from injecting into a
+    /// higher-integrity foreground window.
+    /// </summary>
+    public bool TrySend(InputterBody body)
+    {
+        if (!RuntimeInformation.IsOSPlatform(OSPlatform.Windows)) return false;
+        if (body.Strokes == null || body.Strokes.Count == 0) return false;
+
+        var allOk = true;
         foreach (var stroke in body.Strokes)
         {
             var vk = ParseKey(stroke.Key);
-            if (vk == 0) continue;
+            if (vk == 0)
+            {
+                allOk = false;
+                continue;
+            }
 
             bool isDown = string.Equals(stroke.Type, "keydown", StringComparison.OrdinalIgnoreCase);
 
             // Press modifiers
-            if (stroke.Ctrl) SendKey(VK_CONTROL, true);
-            if (stroke.Shift) SendKey(VK_SHIFT, true);
-            if (stroke.Alt) SendKey(VK_MENU, true);
-            if (stroke.Meta) SendKey(VK_LWIN, true);
+            if (stroke.Ctrl) allOk &= SendKey(VK_CONTROL, true);
+            if (stroke.Shift) allOk &= SendKey(VK_SHIFT, true);
+            if (stroke.Alt) allOk &= SendKey(VK_MENU, true);
+            if (stroke.Meta) allOk &= SendKey(VK_LWIN, true);
 
             // Key event
-            SendKey(vk, isDown);
+            allOk &= SendKey(vk, isDown);
 
             if (stroke.Duration > 0)
                 Thread.Sleep(stroke.Duration);
 
             // Release modifiers (reverse order)
-            if (stroke.Meta) SendKey(VK_LWIN, false);
-            if (stroke.Alt) SendKey(VK_MENU, false);
-            if (stroke.Shift) SendKey(VK_SHIFT, false);
-            if (stroke.Ctrl) SendKey(VK_CONTROL, false);
+            if (stroke.Meta) allOk &= SendKey(VK_LWIN, false);
+            if (stroke.Alt) allOk &= SendKey(VK_MENU, false);
+            if (stroke.Shift) allOk &= SendKey(VK_SHIFT, false);
+            if (stroke.Ctrl) allOk &= SendKey(VK_CONTROL, false);
         }
+        return allOk;
     }
 
-    private static void SendKey(ushort vk, bool down)
+    private static bool SendKey(ushort vk, bool down)
     {
         var input = new INPUT { type = INPUT_KEYBOARD };
         input.ki.wVk = vk;
         input.ki.dwFlags = down ? 0u : KEYEVENTF_KEYUP;
-        SendInput(1, ref input, Marshal.SizeOf<INPUT>());
+        return SendInput(1, ref input, Marshal.SizeOf<INPUT>()) == 1;
     }
 
     private static ushort ParseKey(string key)
@@ -91,6 +105,7 @@ public sealed class WindowsInputter : IInputterProvider
             "NumLock" => 0x90,
             "ScrollLock" => 0x91,
             "PrintScreen" => 0x2C,
+            "Period" => 0xBE, // VK_OEM_PERIOD
             "Pause" => 0x13,
             "ContextMenu" => 0x5D,
             "MediaPlayPause" => 0xB3,
@@ -112,6 +127,9 @@ public sealed class WindowsInputter : IInputterProvider
     private const ushort VK_MENU = 0x12;
     private const ushort VK_LWIN = 0x5B;
 
+    // SendInput validates cbSize against the OS INPUT layout: 40 bytes on
+    // x64 (4-byte type, 4 alignment, 32-byte union sized by MOUSEINPUT).
+    // Any other size fails the whole call with 0 events queued.
     [StructLayout(LayoutKind.Sequential)]
     private struct INPUT
     {
@@ -127,7 +145,7 @@ public sealed class WindowsInputter : IInputterProvider
         public uint dwFlags;
         public uint time;
         public IntPtr dwExtraInfo;
-        private readonly IntPtr _pad1, _pad2; // union padding to match MOUSEINPUT size
+        private readonly IntPtr _pad; // pads the 24 keyboard bytes to MOUSEINPUT's 32
     }
 
     [DllImport("user32.dll", SetLastError = true)]

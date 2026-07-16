@@ -213,8 +213,12 @@ public static class CoolingRoutes
             return new CalibrationStartResponse { SessionId = started ? "active" : "", Error = !started, Msg = started ? "Ok" : "Calibration already running" };
         });
 
-        app.MapGet("/cooling/calibrations", (Nexus.Service.Persistence.IConfigStore store) =>
-            new GetCalibrationsResponse { Calibrations = store.Load().Cooling.FanCalibrations.Values.ToList() }).AllowPanel();
+        // The last run's results, not every calibration ever stored: a fan whose
+        // chip has since stopped enumerating is not part of "calibration
+        // complete", and the panel rendered those stale keys as raw LHM ids.
+        // Each live fan's stored calibration ships on its channel in /cooling/fans.
+        app.MapGet("/cooling/calibration/results", (CalibrationRunner runner) =>
+            new GetCalibrationsResponse { Calibrations = runner.Results.ToList() }).AllowPanel();
 
         // Status summary
         app.MapGet("/cooling/status", (IFanControlProvider f, CalibrationRunner runner, Nexus.Service.Persistence.IConfigStore store) =>

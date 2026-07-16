@@ -101,6 +101,21 @@ internal static class WindowsDisplayIdentity
         return monitor.DeviceID ?? "";
     }
 
+    /// <summary>
+    /// Monitor device interface path (\\?\DISPLAY#...#{guid}) via
+    /// EDD_GET_DEVICE_INTERFACE_NAME only, with no flags=0 fallback: callers
+    /// that need the interface form specifically (Digimon registry values)
+    /// must never receive the different, non-interface DeviceID the flags=0
+    /// retry in ReadMonitorDeviceId returns. Empty when unavailable.
+    /// </summary>
+    internal static string ReadMonitorInterfacePath(string adapterDeviceName)
+    {
+        var monitor = new DISPLAY_DEVICE { cb = Marshal.SizeOf<DISPLAY_DEVICE>() };
+        return EnumDisplayDevicesW(adapterDeviceName, 0, ref monitor, EDD_GET_DEVICE_INTERFACE_NAME)
+            ? monitor.DeviceID ?? ""
+            : "";
+    }
+
     internal static string SanitizeId(string raw)
     {
         if (string.IsNullOrEmpty(raw)) return raw;

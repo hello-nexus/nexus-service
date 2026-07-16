@@ -12,8 +12,7 @@ namespace Nexus.Service.Peripherals.Tryx.Panorama;
 public static class TryxThumbnailCache
 {
     public static string CacheDir { get; } = Path.Combine(
-        Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData),
-        "Nexus", "tryx-thumbs");
+        Nexus.Service.Media.MediaLibrary.DeviceStoreDir("tryx"), "thumbs");
 
     public static string ThumbPath(string deviceFileName)
         => Path.Combine(CacheDir, deviceFileName + ".jpg");

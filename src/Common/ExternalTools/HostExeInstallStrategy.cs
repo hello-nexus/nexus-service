@@ -75,21 +75,31 @@ public sealed class HostExeInstallStrategy : IToolInstallStrategy
         return ToolStatus.NotRunning;
     }
 
-    public void Terminate(string toolId)
+    public bool Terminate(string toolId)
     {
-        if (!_running.TryRemove(toolId, out var proc)) return;
+        if (!_running.TryRemove(toolId, out var proc)) return false;
         try
         {
-            if (!proc.HasExited)
+            if (proc.HasExited)
             {
-                proc.Kill(entireProcessTree: true);
-                proc.WaitForExit(3000);
+                return true;
+            }
+            proc.Kill(entireProcessTree: true);
+            // The exit wait is the whole return value: callers that touch the
+            // device afterwards need to know the process really let go of it, and
+            // a kill can be refused or outlast the wait.
+            if (!proc.WaitForExit(3000))
+            {
+                ServiceLog.Warn($"[tools] terminate {toolId}: still alive after kill");
+                return false;
             }
             ServiceLog.Info($"[tools] terminated {toolId}");
+            return true;
         }
         catch (Exception ex)
         {
             ServiceLog.Warn($"[tools] terminate {toolId}: {ex.GetType().Name}: {ex.Message}");
+            return false;
         }
         finally
         {

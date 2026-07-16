@@ -107,6 +107,56 @@ public static class OpenRgbZoneSupport
         return structure;
     }
 
+    /// <summary>True when every card this device would emit is in the uncontrolled set, so the whole physical device should be left off direct mode / skipped on push. Mirrors the card-id derivation in <see cref="BuildCards"/>.</summary>
+    public static bool IsFullyUncontrolled(RgbDevice d, NexusSettings settings)
+    {
+        var uncontrolled = settings.Devices.UncontrolledLightingDevices;
+        if (uncontrolled.Count == 0)
+        {
+            return false;
+        }
+
+        var baseId = d.StableId;
+        var isSplitMotherboard = IsSplitMotherboard(d);
+        var structure = BuildStructure(d, settings);
+        var zones = ZoneResolution.Resolve(structure, settings);
+        var isDefault = zones.Count > 0 && zones[0].IsDefault;
+
+        if (isDefault && !isSplitMotherboard)
+        {
+            return uncontrolled.Contains(baseId);
+        }
+
+        if (isDefault)
+        {
+            if (d.Zones.Count == 0)
+            {
+                return false;
+            }
+            for (var z = 0; z < d.Zones.Count; z++)
+            {
+                if (!uncontrolled.Contains($"{baseId}-{z}"))
+                {
+                    return false;
+                }
+            }
+            return true;
+        }
+
+        if (zones.Count == 0)
+        {
+            return false;
+        }
+        foreach (var zone in zones)
+        {
+            if (!uncontrolled.Contains(zone.Id))
+            {
+                return false;
+            }
+        }
+        return true;
+    }
+
     /// <summary>Full GetAll card emission; static and bridge-free so tests cover it with fake controller data.</summary>
     public static GetLightingDevicesResponse BuildCards(IReadOnlyList<RgbDevice> devices, NexusSettings settings, bool isInit, IReadOnlySet<string>? drivableIds = null)
     {

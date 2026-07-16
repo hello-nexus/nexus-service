@@ -86,7 +86,7 @@ public sealed class AppManifest
     /// <summary>
     /// True when this app should be treated as installed + active at first boot
     /// (OEM pre-install) rather than waiting for a user "install" of the bundled
-    /// copy. Honored only for bundled apps; ignored on user/dev copies.
+    /// copy. Honored only for bundled apps; ignored on user copies.
     /// </summary>
     [JsonPropertyName("preinstalled")]
     public bool Preinstalled { get; set; }
@@ -94,7 +94,7 @@ public sealed class AppManifest
     /// <summary>
     /// Optional device-driver block: declares a native sidecar executable the host
     /// fetches from the app store and runs. Honored only for a <b>bundled</b> app
-    /// (the registry drops it from user/dev installs); the widget facet always
+    /// (the registry drops it from user installs); the widget facet always
     /// loads regardless. See <c>plans/third-party-app-sdk.md</c> §"Raw .exe".
     /// </summary>
     [JsonPropertyName("driver")]
@@ -125,6 +125,14 @@ public sealed class AppManifestDriver
     /// <summary>Stable tool id (e.g. <c>"acme-cooler"</c>). Names the cache folder + the store path.</summary>
     [JsonPropertyName("toolId")]
     public string ToolId { get; set; } = "";
+
+    /// <summary>
+    /// <see cref="Nexus.Service.Devices.IDeviceHandler.Id"/> of the device this driver
+    /// drives, so the handler's Nexus Control gate also governs the driver process.
+    /// Null leaves the driver ungated: it runs whenever its device is present.
+    /// </summary>
+    [JsonPropertyName("deviceId")]
+    public string? DeviceId { get; set; }
 
     /// <summary>USB match that triggers the driver (vendor + product ids, hex strings).</summary>
     [JsonPropertyName("match")]

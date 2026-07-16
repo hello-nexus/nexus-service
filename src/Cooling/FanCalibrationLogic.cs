@@ -12,6 +12,15 @@ namespace Nexus.Service.Cooling;
 /// </summary>
 public static class FanCalibrationLogic
 {
+    /// <summary>At or below this the fan is not reporting a usable tach.</summary>
+    private const int UnresponsiveMaxRpm = 100;
+    /// <summary>Tach jitter tolerated before a flat response counts as a spread.</summary>
+    private const int FixedSpreadFloorRpm = 50;
+    /// <summary>Spread within this fraction of max RPM is a flat response. The
+    /// relative term keeps a high-RPM pump, whose usable spread is a few percent
+    /// of its range, out of Fixed - which strips its duty control.</summary>
+    private const double FixedSpreadFraction = 0.03;
+
     public static bool IsStable(IEnumerable<int> samples)
     {
         var arr = samples.Select(s => (double)s).ToArray();
@@ -57,25 +66,32 @@ public static class FanCalibrationLogic
     {
         var rpms = curve.Select(p => p.Rpm).ToList();
         var maxRpm = rpms.Count > 0 ? rpms.Max() : 0;
-        // MinRpm is the true floor - 0 when the fan stops at low duty - so the
-        // reported range reflects that it stalls. The lowest duty that still
-        // spins the fan (its controllable floor) is kept separately in MinDuty.
+        // The true floor - 0 for a fan that stops at the bottom of the sweep.
         var minRpmAll = rpms.Count > 0 ? rpms.Min() : 0;
         var nonZero = curve.Where(p => p.Rpm > 0).ToList();
+        // The lowest duty that still spun on a DESCENDING ramp: the fan's
+        // sustain floor, not the duty needed to start it from rest, which is
+        // higher. Do not use this as a floor for driving a stopped fan.
         var minDuty = nonZero.Count > 0 ? nonZero.Min(p => p.Duty) : 0;
 
+        // Stopping at 0% duty is correct behaviour, so the stall test ignores
+        // that endpoint: Stalling means the fan drops out inside the band the
+        // user can select.
+        var stallsInBand = curve.Any(p => p.Duty > 0 && p.Rpm == 0);
+        var spreadGate = Math.Max(FixedSpreadFloorRpm, maxRpm * FixedSpreadFraction);
+
         string classification;
-        if (maxRpm <= 100)
+        if (maxRpm <= UnresponsiveMaxRpm)
         {
             classification = "Unresponsive";
         }
-        else if (maxRpm - minRpmAll <= 200)
-        {
-            classification = "Fixed";
-        }
-        else if (rpms.Any(r => r == 0) && maxRpm > 100)
+        else if (stallsInBand)
         {
             classification = "Stalling";
+        }
+        else if (maxRpm - minRpmAll <= spreadGate)
+        {
+            classification = "Fixed";
         }
         else
         {

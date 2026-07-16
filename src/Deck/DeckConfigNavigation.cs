@@ -6,10 +6,13 @@ namespace Nexus.Service.Deck;
 /// Walks a <see cref="DeckConfig"/> tree by page index + folder path /
 /// dot-joined slot path, mirroring nexus-web's <c>deckLayout.ts</c>
 /// resolution rules. Shared by the connection worker (physical key -> slot)
-/// and the routes (test-press, image slot addressing). The dot-joined slot
-/// path itself stays page-independent (matches nexus-web's
-/// computeViewUploadJobs, which does not prefix slotPath by page either) -
-/// only the page selects which page's slot tree the path walks.
+/// and the routes (test-press, image slot addressing). ParseSlotPath,
+/// BuildSlotPath, ResolveView and ResolveSlot stay page-independent (the
+/// page is always a separate argument) - that is the grammar test-press and
+/// physical key resolution use. ParseImageRefSlotPath/BuildImageRefSlotPath
+/// below are the separate, page-qualified grammar the ImageRefs wire
+/// contract (v2) uses instead: the page leads the same dot-chain as its own
+/// new first segment, matching nexus-web's deckImageSlotPath.
 /// </summary>
 public static class DeckConfigNavigation
 {
@@ -93,4 +96,31 @@ public static class DeckConfigNavigation
         sb.Append(slotIndex);
         return sb.ToString();
     }
+
+    /// <summary>
+    /// Splits a page-qualified ImageRefs slot path ("0.3", "2.1.5" - the
+    /// page leads the dot-chain) into the page index plus the page-relative
+    /// folder path and slot index that ResolveView/ResolveSlot expect. The
+    /// reserved "back" key never reaches this - callers special-case it
+    /// first, since it stays page-independent. Returns null when the string
+    /// does not parse into at least a page segment and a slot index (a
+    /// legacy pre-v2 single-segment path has no page and is treated as an
+    /// orphan, not resolved).
+    /// </summary>
+    public static (int Page, List<int> FolderPath, int SlotIndex)? ParseImageRefSlotPath(string slotPath)
+    {
+        var indices = ParseSlotPath(slotPath);
+        if (indices is null || indices.Count < 2)
+        {
+            return null;
+        }
+        var page = indices[0];
+        var folderPath = indices.GetRange(1, indices.Count - 2);
+        var slotIndex = indices[^1];
+        return (page, folderPath, slotIndex);
+    }
+
+    /// <summary>Builds the page-qualified ImageRefs slot path ("0.3", "2.1.5") for a slot at folderPath + slotIndex on the given page, matching nexus-web's deckImageSlotPath.</summary>
+    public static string BuildImageRefSlotPath(int page, IReadOnlyList<int> folderPath, int slotIndex) =>
+        $"{page}.{BuildSlotPath(folderPath, slotIndex)}";
 }

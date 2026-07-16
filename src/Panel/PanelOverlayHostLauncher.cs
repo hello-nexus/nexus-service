@@ -54,6 +54,14 @@ public sealed class PanelOverlayHostLauncher : IOverlayHost
     /// schtasks tasks.
     /// </summary>
     private volatile bool _starting;
+    /// <summary>
+    /// Bumped (under _lock) by every Start() and Stop(). An in-flight spawn
+    /// task carries the generation it was started with and abandons itself
+    /// when a newer Start/Stop has bumped it - otherwise a Stop-then-Start
+    /// during the console-user wait would revive the ordered-dead loop and
+    /// two spawn tasks would race to write _process and the PID file.
+    /// </summary>
+    private int _spawnGeneration;
 
     private static readonly string PidFilePath = Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData),
@@ -98,6 +106,7 @@ public sealed class PanelOverlayHostLauncher : IOverlayHost
         // back-to-back (e.g., the widget-add path that flips both
         // OverlayLayout and OverlayWidgetsEnabled in the same Update)
         // would otherwise queue multiple background tasks.
+        int generation;
         lock (_lock)
         {
             if (_starting) return true;
@@ -105,12 +114,13 @@ public sealed class PanelOverlayHostLauncher : IOverlayHost
             _starting = true;
             _stopRequested = false;
             _lastSpawnUtc = DateTime.UtcNow;
+            generation = ++_spawnGeneration;
         }
 
         _ = System.Threading.Tasks.Task.Run(() =>
         {
             if (!OperatingSystem.IsWindows()) return;
-            SpawnHostBlocking(hostPath);
+            SpawnHostBlocking(hostPath, generation);
         });
         return true;
     }
@@ -124,7 +134,7 @@ public sealed class PanelOverlayHostLauncher : IOverlayHost
     /// stale "starting in progress" flag and short-circuit.
     /// </summary>
     [SupportedOSPlatform("windows")]
-    private void SpawnHostBlocking(string hostPath)
+    private void SpawnHostBlocking(string hostPath, int generation)
     {
         try
         {
@@ -137,7 +147,7 @@ public sealed class PanelOverlayHostLauncher : IOverlayHost
             // back to a plain Process.Start.
             var workingDir = Path.GetDirectoryName(hostPath)!;
             var proc = System.Security.Principal.WindowsIdentity.GetCurrent().IsSystem
-                ? StartInActiveUserSession(hostPath, workingDir)
+                ? StartInActiveUserSessionWhenReady(hostPath, workingDir, generation)
                 : Process.Start(new ProcessStartInfo
                 {
                     FileName = hostPath,
@@ -145,20 +155,21 @@ public sealed class PanelOverlayHostLauncher : IOverlayHost
                     CreateNoWindow = true,
                     WorkingDirectory = workingDir,
                 });
-            _process = proc;
-            if (proc is not null)
+            if (proc is null) return;
+            lock (_lock)
             {
-                // A Stop() can land mid-spawn - the cross-session schtasks dance
-                // takes 1-3s, and Stop() set _stopRequested but had no process to
-                // kill yet. Honor it now so a shutdown that raced the spawn does
-                // not leave an orphaned host running past service exit.
-                if (_stopRequested)
+                // A Stop() (or a Stop-then-Start) can land mid-spawn - the
+                // cross-session dance can block on the console-user wait.
+                // A superseded task must not adopt the process it spawned:
+                // kill it instead of clobbering the current generation's
+                // _process / PID file.
+                if (_stopRequested || generation != _spawnGeneration)
                 {
                     try { if (!proc.HasExited) proc.Kill(entireProcessTree: true); } catch { /* gone */ }
                     try { proc.Dispose(); } catch { }
-                    _process = null;
                     return;
                 }
+                _process = proc;
                 WritePidFile(proc.Id);
                 proc.EnableRaisingEvents = true;
                 proc.Exited += OnExited;
@@ -167,8 +178,8 @@ public sealed class PanelOverlayHostLauncher : IOverlayHost
                     try { AssignProcessToJobObject(_jobHandle, proc.Handle); }
                     catch (Exception ex) { Console.Error.WriteLine($"[overlay-host] job-object assign failed: {ex.Message}"); }
                 }
-                Console.WriteLine($"[overlay-host] started pid {proc.Id}");
             }
+            Console.WriteLine($"[overlay-host] started pid {proc.Id}");
         }
         catch (Exception ex)
         {
@@ -178,8 +189,12 @@ public sealed class PanelOverlayHostLauncher : IOverlayHost
         {
             // Clear before returning so a same-thread OnExited that
             // synchronously queued its respawn Task (with 2s delay) sees
-            // _starting=false by the time the respawn runs.
-            _starting = false;
+            // _starting=false by the time the respawn runs. A superseded
+            // task leaves the flag alone - it belongs to the newer spawn.
+            lock (_lock)
+            {
+                if (generation == _spawnGeneration) _starting = false;
+            }
         }
     }
 
@@ -188,11 +203,17 @@ public sealed class PanelOverlayHostLauncher : IOverlayHost
         // Latch the stop intent BEFORE attempting Kill so that a queued
         // OnExited (already on the threadpool) sees it and skips respawn.
         _stopRequested = true;
-        // Also clear the spawn-in-flight flag; otherwise IsRunning would
-        // keep returning true until the background SpawnHostBlocking
-        // finishes, blocking a subsequent Start() during a quick stop /
-        // re-enable cycle.
-        _starting = false;
+        lock (_lock)
+        {
+            // Supersede any in-flight spawn task so it abandons itself even
+            // if a later Start() clears _stopRequested.
+            _spawnGeneration++;
+            // Also clear the spawn-in-flight flag; otherwise IsRunning would
+            // keep returning true until the background SpawnHostBlocking
+            // finishes, blocking a subsequent Start() during a quick stop /
+            // re-enable cycle.
+            _starting = false;
+        }
         var proc = _process;
         _process = null;
         if (proc is not null)
@@ -263,6 +284,39 @@ public sealed class PanelOverlayHostLauncher : IOverlayHost
     // windows actually render on the desktop. Implementation uses schtasks
     // (see comment inside StartInActiveUserSession for why).
     // -----------------------------------------------------------------------
+
+    /// <summary>
+    /// On a cold boot the service's ApplicationStarted fires before the
+    /// auto-login console session exists, so a cross-session spawn has no
+    /// launch target yet. Wait for the console session first, the same
+    /// shape as UserHelperBootstrapper.EnsureLaunched. Runs on the Start()
+    /// background task; a Stop() or superseding Start() abandons the wait.
+    /// </summary>
+    [SupportedOSPlatform("windows")]
+    private Process? StartInActiveUserSessionWhenReady(string exePath, string workingDir, int generation)
+    {
+        var deadline = DateTime.UtcNow + TimeSpan.FromMinutes(5);
+        var waitLogged = false;
+        while (!_stopRequested && generation == Volatile.Read(ref _spawnGeneration))
+        {
+            if (!string.IsNullOrEmpty(ResolveActiveConsoleUsername()))
+            {
+                return StartInActiveUserSession(exePath, workingDir);
+            }
+            if (!waitLogged)
+            {
+                waitLogged = true;
+                Console.WriteLine("[overlay-host] no active console user; waiting for logon");
+            }
+            if (DateTime.UtcNow >= deadline)
+            {
+                Console.Error.WriteLine("[overlay-host] no active console user after 5 min; giving up");
+                return null;
+            }
+            Thread.Sleep(2000);
+        }
+        return null;
+    }
 
     [SupportedOSPlatform("windows")]
     private static Process? StartInActiveUserSession(string exePath, string workingDir)
@@ -386,9 +440,10 @@ public sealed class PanelOverlayHostLauncher : IOverlayHost
 
     private void OnExited(object? sender, EventArgs e)
     {
+        var exited = sender as Process;
         var exitCode = "?";
         int? rawExitCode = null;
-        try { if (_process is not null) { rawExitCode = _process.ExitCode; exitCode = rawExitCode.Value.ToString(); } }
+        try { if (exited is not null) { rawExitCode = exited.ExitCode; exitCode = rawExitCode.Value.ToString(); } }
         catch { /* handle already gone */ }
         Console.WriteLine($"[overlay-host] OnExited fired; exit code {exitCode}");
 
@@ -397,6 +452,16 @@ public sealed class PanelOverlayHostLauncher : IOverlayHost
         // pending invocations). Don't respawn.
         if (_stopRequested) return;
 
+        lock (_lock)
+        {
+            // A stale callback from a superseded process (a Stop-then-Start
+            // adopted a newer host while this one's Exited was already
+            // queued) must not detach or respawn over the current
+            // generation's process.
+            if (!ReferenceEquals(exited, _process)) return;
+            _process = null;
+        }
+
         // Exit code 0 = deliberate self-shutdown (overlay idled out: no
         // widgets, no dashboard). The reconcile and the tray's
         // EnsureOverlayRunning re-spawn the host when something actually
@@ -404,7 +469,6 @@ public sealed class PanelOverlayHostLauncher : IOverlayHost
         if (rawExitCode == 0)
         {
             Console.WriteLine("[overlay-host] clean exit; not respawning");
-            _process = null;
             _consecutiveFailures = 0;
             return;
         }
@@ -426,7 +490,6 @@ public sealed class PanelOverlayHostLauncher : IOverlayHost
             _consecutiveFailures = 0;
         }
         Console.WriteLine($"[overlay-host] exited (code {exitCode}); restarting");
-        _process = null;
         // Give the host a moment before respawning. Run on the default
         // scheduler with explicit error handling so a Start() throw is
         // reported instead of disappearing into an unobserved task.

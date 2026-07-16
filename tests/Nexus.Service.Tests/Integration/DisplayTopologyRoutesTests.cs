@@ -336,11 +336,13 @@ public sealed class DisplayTopologyRoutesTests
     {
         public string? LastDisplayId;
         public string? LastOrientation;
+        public string? LastCoverColorHex;
         public (bool Ok, string Error) SetY70Orientation(string orientation) => (true, "");
-        public (bool Ok, string Error) SetDisplayOrientation(string displayId, string orientation)
+        public (bool Ok, string Error) SetDisplayOrientation(string displayId, string orientation, string coverColorHex)
         {
             LastDisplayId = displayId;
             LastOrientation = orientation;
+            LastCoverColorHex = coverColorHex;
             return (true, "");
         }
     }
@@ -374,6 +376,47 @@ public sealed class DisplayTopologyRoutesTests
             Assert.True(ok.IsSuccessStatusCode);
             Assert.Equal(MonitorId, fakeOrientation.LastDisplayId);
             Assert.Equal("Portrait", fakeOrientation.LastOrientation);
+            // No promoted panel for this display: nothing to resolve a colour from.
+            Assert.Equal("", fakeOrientation.LastCoverColorHex);
+        }
+    }
+
+    [Fact]
+    public async Task Rotation_endpoint_threads_the_promoted_panels_background_colour_as_the_cover_colour()
+    {
+        DisplayTopologyService.HostingSupportedOverrideForTests = true;
+        try
+        {
+            var fakeOrientation = new FakeOrientationProvider();
+            var factory = new NexusAppFactory().WithWebHostBuilder(b =>
+                b.ConfigureTestServices(s =>
+                {
+                    s.RemoveAll<IDisplayTopologyProvider>();
+                    s.AddSingleton<IDisplayTopologyProvider>(_provider);
+                    s.RemoveAll<IDisplayOrientationProvider>();
+                    s.AddSingleton<IDisplayOrientationProvider>(fakeOrientation);
+                }));
+            using (factory)
+            {
+                var client = factory.CreateClient();
+                client.DefaultRequestHeaders.Authorization =
+                    new AuthenticationHeaderValue("Bearer", factory.Services.GetRequiredService<TokenService>().Token);
+
+                var promote = await client.PostAsync($"/displays/{MonitorId}/panel", Json("{}"));
+                using var doc = JsonDocument.Parse(await promote.Content.ReadAsStringAsync());
+                var recordId = doc.RootElement.GetProperty("id").GetString();
+                var patch = await client.PostAsync($"/panel/devices/{recordId}", Json("{\"backgroundColor\":\"#2c0d0d\"}"));
+                Assert.True(patch.IsSuccessStatusCode);
+
+                var ok = await client.PostAsync($"/displays/{MonitorId}/rotation", Json("{\"orientation\":\"Portrait\"}"));
+
+                Assert.True(ok.IsSuccessStatusCode);
+                Assert.Equal("#2c0d0d", fakeOrientation.LastCoverColorHex);
+            }
+        }
+        finally
+        {
+            DisplayTopologyService.HostingSupportedOverrideForTests = null;
         }
     }
 

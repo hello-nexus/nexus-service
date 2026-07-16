@@ -51,7 +51,7 @@ public sealed class GalleryLibrary
     private long _lastEnumerationTicks;
 
     public GalleryLibrary()
-        : this(Path.Combine(MediaLibrary.ResolveDefaultRoot(), "Nexus", "gallery"))
+        : this(MediaLibrary.MediaStoreDir("gallery"))
     {
     }
 

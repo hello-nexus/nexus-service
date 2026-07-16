@@ -18,7 +18,6 @@ public class KeebProviderSettingsTests
         var provider = new StubKeebProvider(store);
 
         provider.SetRotary(new SetRotaryWheelsBody { Left = "ScrollY", Right = "Scale" });
-        provider.SetRotarySensitivity("Turbo");
         provider.SetPassiveLighting(new SetPassiveLightingBody
         {
             KeyReactive = true,
@@ -32,7 +31,6 @@ public class KeebProviderSettingsTests
 
         Assert.Equal("ScrollY", s.RotaryLeft);
         Assert.Equal("Scale", s.RotaryRight);
-        Assert.Equal("Turbo", s.RotarySensitivity);
         Assert.True(s.KeyReactive);
         Assert.True(s.KeyReactiveMask);
         Assert.Equal("Ripple", s.KeyReactiveMode);
@@ -53,6 +51,41 @@ public class KeebProviderSettingsTests
         // them rather than empty strings.
         Assert.Equal(Defaults.InstallDefaults.Keeb.RotaryLeft, s.RotaryLeft);
         Assert.Equal(Defaults.InstallDefaults.Keeb.RotaryRight, s.RotaryRight);
-        Assert.Equal(Defaults.InstallDefaults.Keeb.RotarySensitivity, s.RotarySensitivity);
+    }
+
+    [Fact]
+    public void StubProvider_RotaryFunctions_MatchTheRealCodecList()
+    {
+        var provider = new StubKeebProvider(new InMemoryConfigStore());
+        Assert.Equal(
+            Nexus.Service.Peripherals.Hyte.Keeb.KeebSettingsCodec.RotaryFunctions,
+            provider.GetRotaryFunctions());
+    }
+
+    [Fact]
+    public void StubProvider_SetLayerKey_RefusesHonestly()
+    {
+        var provider = new StubKeebProvider(new InMemoryConfigStore());
+        var r = provider.SetLayerKey(0, new SetLayerKeyBody { X = 2, Y = 0, Func = "A", Mode = "StandardKey" });
+        Assert.True(r.Error);
+        Assert.False(r.WroteDevice);
+    }
+
+    [Fact]
+    public void StubProvider_SetMacro_PersistsButReportsNoDeviceWrite()
+    {
+        var provider = new StubKeebProvider(new InMemoryConfigStore());
+        var r = provider.SetMacro(3, new SetMacroBody
+        {
+            Keys = new()
+            {
+                new MacroKey { Key = "KeyA", Type = "Make", Duration = 10 },
+                new MacroKey { Key = "Bogus", Type = "Make", Duration = 10 },
+            },
+        });
+        Assert.False(r.Error);
+        Assert.False(r.WroteDevice);
+        Assert.Equal(new[] { "Bogus" }, r.DroppedKeys);
+        Assert.Equal(2, provider.GetMacro(3).Keys.Count);
     }
 }

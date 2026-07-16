@@ -64,6 +64,7 @@ public class SegmentFrameComposerTests
         var touched = SegmentFrameComposer.Compose(
             structure, zones, new[] { keys, underglow },
             disabled: new List<string>(),
+            uncontrolled: new List<string>(),
             prefs: new Dictionary<string, LightingDevicePreference>(),
             globalBrightness: 1f, masterMul: 1.0, nowTicks: DateTime.UtcNow.Ticks, identify: null, buffers);
 
@@ -87,7 +88,7 @@ public class SegmentFrameComposerTests
         var buffers = Buffers(structure);
 
         SegmentFrameComposer.Compose(structure, zones, new[] { keys, underglow },
-            new List<string>(), prefs, globalBrightness: 0.8f, masterMul: 1.0,
+            new List<string>(), new List<string>(), prefs, globalBrightness: 0.8f, masterMul: 1.0,
             nowTicks: DateTime.UtcNow.Ticks, identify: null, buffers);
 
         // Master caps rather than scales: keys (37%) stay below the 80% master,
@@ -114,7 +115,7 @@ public class SegmentFrameComposerTests
         // master 0.5 over per-zone keys 50% / underglow default 100%, global 1.0:
         // effective = global * master * zone.
         SegmentFrameComposer.Compose(structure, zones, new[] { keys, underglow },
-            new List<string>(), prefs, globalBrightness: 1f, masterMul: 0.5,
+            new List<string>(), new List<string>(), prefs, globalBrightness: 1f, masterMul: 0.5,
             nowTicks: DateTime.UtcNow.Ticks, identify: null, buffers);
 
         Assert.Equal(LegacyFillZone(keys, KeebLayout.KeyLedCount, (1f * 50 / 100.0) * 0.5), buffers[0]);
@@ -131,12 +132,31 @@ public class SegmentFrameComposerTests
 
         var touched = SegmentFrameComposer.Compose(structure, zones, new[] { keys },
             new List<string> { HubId + ":keys" },
+            new List<string>(),
             new Dictionary<string, LightingDevicePreference>(),
             1f, 1.0, DateTime.UtcNow.Ticks, null, buffers);
 
         Assert.True(touched[0]);
         // Underglow frame absent: segment untouched, writer skips it.
         Assert.False(touched[1]);
+        Assert.All(buffers[0], c => Assert.Equal(default, c));
+    }
+
+    [Fact]
+    public void Uncontrolled_zone_goes_black()
+    {
+        var structure = KeebZoneSupport.BuildStructure(HubId);
+        var zones = ZoneResolution.Resolve(structure, new NexusSettings());
+        var keys = Frame(HubId + ":keys", KeebLayout.KeyLedCount, seed: 50);
+        var buffers = Buffers(structure);
+
+        var touched = SegmentFrameComposer.Compose(structure, zones, new[] { keys },
+            new List<string>(),
+            new List<string> { HubId + ":keys" },
+            new Dictionary<string, LightingDevicePreference>(),
+            1f, 1.0, DateTime.UtcNow.Ticks, null, buffers);
+
+        Assert.True(touched[0]);
         Assert.All(buffers[0], c => Assert.Equal(default, c));
     }
 
@@ -151,7 +171,7 @@ public class SegmentFrameComposerTests
         var buffers = Buffers(structure);
 
         SegmentFrameComposer.Compose(structure, zones, new[] { keys },
-            new List<string>(), new Dictionary<string, LightingDevicePreference>(),
+            new List<string>(), new List<string>(), new Dictionary<string, LightingDevicePreference>(),
             1f, 1.0, DateTime.UtcNow.Ticks, identify, buffers);
 
         // Scheduled just now: the flash starts in its on half-period.
@@ -189,7 +209,7 @@ public class SegmentFrameComposerTests
         var buffers = Buffers(structure);
 
         var touched = SegmentFrameComposer.Compose(structure, zones, new[] { span },
-            new List<string>(), new Dictionary<string, LightingDevicePreference>(),
+            new List<string>(), new List<string>(), new Dictionary<string, LightingDevicePreference>(),
             1f, 1.0, DateTime.UtcNow.Ticks, null, buffers);
 
         // The span zone touches both hardware segments.

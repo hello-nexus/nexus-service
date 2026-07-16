@@ -60,7 +60,7 @@ public sealed class UpdateBootLoopGuardTests : IDisposable
         var marker = new StagedInstallMarker
         {
             Version = "v3.1.0",
-            InstallerPath = @"C:\ProgramData\Nexus\staged-updates\Nexus-Setup-v3.1.0.exe",
+            InstallerPath = @"C:\ProgramData\Nexus\updates\Nexus-Setup-v3.1.0.exe",
             Sha256 = "abc123def456",
         };
 
@@ -69,7 +69,7 @@ public sealed class UpdateBootLoopGuardTests : IDisposable
         var read = ReadMarkerDirect();
         Assert.NotNull(read);
         Assert.Equal("v3.1.0", read.Version);
-        Assert.Equal(@"C:\ProgramData\Nexus\staged-updates\Nexus-Setup-v3.1.0.exe", read.InstallerPath);
+        Assert.Equal(@"C:\ProgramData\Nexus\updates\Nexus-Setup-v3.1.0.exe", read.InstallerPath);
         Assert.Equal("abc123def456", read.Sha256);
     }
 
@@ -99,7 +99,7 @@ public sealed class UpdateBootLoopGuardTests : IDisposable
         var marker = new StagedInstallMarker
         {
             Version = "v3.2.0",
-            InstallerPath = @"C:\ProgramData\Nexus\staged-updates\Nexus-Setup-v3.2.0.exe",
+            InstallerPath = @"C:\ProgramData\Nexus\updates\Nexus-Setup-v3.2.0.exe",
             Sha256 = "deadbeef00",
             State = StagedInstallMarkerStore.StatePending,
         };
@@ -115,7 +115,7 @@ public sealed class UpdateBootLoopGuardTests : IDisposable
         var marker = new StagedInstallMarker
         {
             Version = "v3.2.0",
-            InstallerPath = @"C:\ProgramData\Nexus\staged-updates\Nexus-Setup-v3.2.0.exe",
+            InstallerPath = @"C:\ProgramData\Nexus\updates\Nexus-Setup-v3.2.0.exe",
             Sha256 = "deadbeef00",
             State = StagedInstallMarkerStore.StateAttempted,
         };

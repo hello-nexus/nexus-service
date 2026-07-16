@@ -335,8 +335,12 @@ internal static class TrayBootstrap
         });
 
         // Auto-install the bundled PawnIO kernel driver if not already
-        // installed. Fire-and-forget; triggers a UAC prompt at first launch
-        // only. Subsequent launches detect the registered service and skip.
+        // installed, and repair a registered driver whose device is dead.
+        // Fire-and-forget; on unelevated interactive hosts an install or
+        // repair prompts UAC (the LocalSystem service elevates silently).
+        // LhmComputer's background Open waits on PawnIoBootGate so a driver
+        // installed or repaired here is enumerable in the same boot - signal
+        // it on every outcome or LHM waits out the full cap.
         _ = Task.Run(async () =>
         {
             try
@@ -347,6 +351,10 @@ internal static class TrayBootstrap
             catch (Exception ex)
             {
                 ServiceLog.Error($"[pawnio] install check failed: {ex.Message}");
+            }
+            finally
+            {
+                Nexus.Service.Lifecycle.PawnIoBootGate.Signal();
             }
         });
     }

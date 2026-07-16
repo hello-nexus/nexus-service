@@ -12,7 +12,7 @@ namespace Nexus.Service.Panel.Streams;
 /// streamed panel's device record identity and headless config overrides
 /// stable across service restarts and device re-attaches.
 ///
-/// File layout: <c>%ProgramData%\Nexus\streamed-panels.json</c>. Written
+/// File layout: <c>&lt;data-root&gt;/Nexus/devices/transports/streamed-panels.json</c>. Written
 /// atomically via <see cref="AtomicJsonFile"/> - a power loss mid-write
 /// leaves either the previous file or the new file intact, never a
 /// half-written one.
@@ -33,10 +33,7 @@ public sealed class StreamedPanelStore
     }
 
     private static string DefaultPath()
-    {
-        var commonAppData = Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData);
-        return Path.Combine(commonAppData, "Nexus", "streamed-panels.json");
-    }
+        => Path.Combine(Nexus.Service.Media.MediaLibrary.DeviceStoreDir("transports"), "streamed-panels.json");
 
     /// <summary>
     /// Read the store from disk. Missing file, empty file, or unparseable

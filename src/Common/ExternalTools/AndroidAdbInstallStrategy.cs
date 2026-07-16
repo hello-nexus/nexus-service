@@ -154,7 +154,8 @@ public sealed class AndroidAdbInstallStrategy : IToolInstallStrategy
         return ToolStatus.NotRunning;
     }
 
-    public void Terminate(string toolId) { }
+    /// <summary>An installed APK is not a host process; nothing to stop.</summary>
+    public bool Terminate(string toolId) => false;
 
     public void TerminateAll() { }
 

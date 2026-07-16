@@ -26,4 +26,12 @@ public interface IDeckActionExecutor
     /// recorded by the last dispatch through <paramref name="latchKey"/>.
     /// </summary>
     bool IsToggleOn(DeckToggleState? state, string latchKey);
+
+    /// <summary>
+    /// Opens or focuses the Nexus desktop app (SystemActions.OpenDashboard),
+    /// so a blank-key hold-to-edit can bring the editor to the foreground.
+    /// May block on an interactive-session launch; callers dispatch it off
+    /// their own thread.
+    /// </summary>
+    void OpenApp();
 }

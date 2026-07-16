@@ -35,28 +35,7 @@ public sealed class StreamDeckImageCache
         _root = root;
     }
 
-    private static string DefaultRoot()
-    {
-        // Mirrors JsonConfigStore.ResolveSettingsPath: CommonApplicationData is
-        // %ProgramData% only on Windows; on macOS it maps to the unwritable
-        // /usr/share, so the cache must live beside settings.json instead.
-        if (OperatingSystem.IsMacOS())
-        {
-            var home = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
-            return Path.Combine(home, "Library", "Application Support", "Nexus", "streamdeck");
-        }
-        if (OperatingSystem.IsWindows())
-        {
-            var programData = Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData);
-            return Path.Combine(programData, "Nexus", "streamdeck");
-        }
-        var xdg = Environment.GetEnvironmentVariable("XDG_CONFIG_HOME");
-        if (string.IsNullOrEmpty(xdg))
-        {
-            xdg = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".config");
-        }
-        return Path.Combine(xdg, "Nexus", "streamdeck");
-    }
+    private static string DefaultRoot() => Nexus.Service.Media.MediaLibrary.DeviceStoreDir("streamdeck");
 
     public static string Hash(byte[] bytes) => Convert.ToHexString(SHA256.HashData(bytes)).ToLowerInvariant();
 

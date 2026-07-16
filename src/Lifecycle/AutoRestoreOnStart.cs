@@ -20,7 +20,9 @@ namespace Nexus.Service.Lifecycle;
 ///
 /// Runs after a short delay so the fan provider has enumerated channels and
 /// the RGB bridge is initialized (CurveEngine itself waits 3s for the same
-/// reason).
+/// reason). On PawnIoBootGate-armed hosts it additionally waits for LHM's
+/// open to finish, since the preset apply rebuilds fan attachments from the
+/// channel list that open populates.
 /// </summary>
 internal sealed class AutoRestoreOnStart : BackgroundService
 {
@@ -57,6 +59,19 @@ internal sealed class AutoRestoreOnStart : BackgroundService
     {
         try { await Task.Delay(InitialDelay, stoppingToken); }
         catch (TaskCanceledException) { return; }
+
+        // FanProfiles.Apply rebuilds the active preset's outputs from the
+        // current channel list, so applying before LHM's open has surfaced
+        // the motherboard channels detaches every motherboard fan for the
+        // session (hub-fan channels arrive earlier and cannot stand in). On
+        // armed hosts the open can additionally be held behind a PawnIO
+        // install/repair, pushing it well past the initial delay - wait for
+        // the open itself, not a guess at its duration.
+        if (PawnIoBootGate.IsArmed)
+        {
+            await PawnIoBootGate.WaitForLhmOpenAsync(TimeSpan.FromSeconds(30));
+            if (stoppingToken.IsCancellationRequested) return;
+        }
 
         // Broadcast after each restoration: clients that connected during the
         // 4s init window fetched /lighting/status (or /cooling/status) before

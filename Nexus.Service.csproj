@@ -268,6 +268,12 @@
     <EmbeddedResource Include="src\Peripherals\Tryx\Panorama\PresetThumbs\*.jpg">
       <LogicalName>tryx-preset-%(Filename).jpg</LogicalName>
     </EmbeddedResource>
+    <!-- Lucide weather condition glyphs (white on transparent), rasterized from
+         the same lucide source nexus-web's WeatherIcon uses so the physical-key
+         tile matches DeckWeatherCell. Loaded by WeatherTileRenderer. -->
+    <EmbeddedResource Include="src\Rendering\WeatherIcons\*.png">
+      <LogicalName>weather-icon-%(Filename).png</LogicalName>
+    </EmbeddedResource>
   </ItemGroup>
 
   <!-- GLSL fragment shaders: one file per animate effect under

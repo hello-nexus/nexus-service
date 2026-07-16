@@ -116,6 +116,9 @@ public sealed class JsonConfigStore : IConfigStore, IDisposable
     /// are pruned; readers resolve missing slots via AnimateTemplateDefaults.
     /// v10: animate activation states shrink to deltas from the resolved
     /// selected-slot look; absent entries resolve through the templates.
+    /// v12: the "device" sharing category (Stream Deck bindings) is added to
+    /// SharedCategories so an upgrading install keeps today's
+    /// workstation-global behavior instead of defaulting to per-profile.
     /// </summary>
     private static void Migrate(NexusSettings doc)
     {
@@ -156,6 +159,14 @@ public sealed class JsonConfigStore : IConfigStore, IDisposable
         if (doc.SchemaVersion < 11)
         {
             Nexus.Service.Widgets.AppPrefixMigration.Apply(doc);
+        }
+        if (doc.SchemaVersion < 12)
+        {
+            doc.SharedCategories ??= new List<string>();
+            if (!doc.SharedCategories.Contains(ProfileSharing.Device))
+            {
+                doc.SharedCategories.Add(ProfileSharing.Device);
+            }
         }
         doc.SchemaVersion = NexusSettings.CurrentSchemaVersion;
     }

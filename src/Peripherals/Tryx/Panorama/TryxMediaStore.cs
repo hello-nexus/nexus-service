@@ -7,8 +7,7 @@ namespace Nexus.Service.Peripherals.Tryx.Panorama;
 public static class TryxMediaStore
 {
     public static string StoreDir { get; } = System.IO.Path.Combine(
-        Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData),
-        "Nexus", "tryx-media");
+        Nexus.Service.Media.MediaLibrary.DeviceStoreDir("tryx"), "media");
 
     public static string Path(string deviceFileName)
         => System.IO.Path.Combine(StoreDir, deviceFileName);

@@ -5,11 +5,9 @@ namespace Nexus.Service.Peripherals.StreamDeck;
 
 /// <summary>
 /// In-memory Stream Deck surface: no HID hardware needed. Used by Mac dev, the
-/// unit-test suite, and (dev-tools-gated at the DI/route level, matching
-/// FirmwareRoutes/D213PanelDiscovery's #if DEV_TOOLS convention) the
-/// <c>/streamdeck/dev/sim-press</c> bench route on Windows boxes with no
-/// physical deck attached. This class itself compiles and is tested
-/// unconditionally - only its wiring into the running app is dev-gated.
+/// unit-test suite, and the localhost-only <c>/streamdeck/dev/*</c> simulator
+/// routes on boxes with no physical deck attached. Constructed only on demand
+/// (a simulate route call), never at startup.
 /// </summary>
 public sealed class SimulatedStreamDeckSurface : IStreamDeckSurface
 {
@@ -33,6 +31,8 @@ public sealed class SimulatedStreamDeckSurface : IStreamDeckSurface
     public int ResetCount { get; private set; }
     /// <summary>Test hook: total successful SetKeyImage calls, so a test can prove a hash-unchanged push was skipped rather than merely re-rendering the same bytes.</summary>
     public int SetKeyImageCallCount { get; private set; }
+    /// <summary>Test hook: key index of every successful SetKeyImage call, in call order, so a test can prove a multi-pass repaint's push ordering (e.g. every key's placeholder before any key's real content).</summary>
+    public List<int> SetKeyImageOrder { get; } = new();
 
     public SimulatedStreamDeckSurface(StreamDeckModel model, string serial)
     {
@@ -65,6 +65,7 @@ public sealed class SimulatedStreamDeckSurface : IStreamDeckSurface
             }
             _keyImages[keyIndex] = wireBytes.ToArray();
             SetKeyImageCallCount++;
+            SetKeyImageOrder.Add(keyIndex);
             return true;
         }
     }

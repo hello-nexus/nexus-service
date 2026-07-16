@@ -34,6 +34,10 @@ public sealed class StreamDeckSummaryDto
     public string? Warning { get; set; }
     /// <summary>ConflictAppCatalog id to pass to POST /conflicts/kill when Warning is set; null otherwise.</summary>
     public string? ConflictAppId { get; set; }
+    /// <summary>Current page index (0-based), same semantics as StreamDeckChangedFrame.Page; 0 when the deck has no tracked live state (disconnected).</summary>
+    public int CurrentPage { get; set; }
+    /// <summary>Current folder path, same semantics as StreamDeckChangedFrame.FolderPath; empty (root) when the deck has no tracked live state (disconnected).</summary>
+    public List<int> FolderPath { get; set; } = new();
 }
 
 public sealed class GetStreamDecksResponse
@@ -68,15 +72,58 @@ public sealed class StreamDeckImageUploadResponse
 public sealed class StreamDeckChangedFrame
 {
     public long Revision { get; set; }
-    /// <summary>"decks" | "config" | "nav" | "press".</summary>
+    /// <summary>"decks" | "config" | "nav" | "press" | "editRequest".</summary>
     public string Kind { get; set; } = "";
     public string? Serial { get; set; }
-    /// <summary>Current page index, for "nav".</summary>
+    /// <summary>Current page index, for "nav" and "editRequest".</summary>
     public int? Page { get; set; }
-    /// <summary>Current folder path, for "nav" and "press".</summary>
+    /// <summary>Current folder path, for "nav", "press", and "editRequest".</summary>
     public List<int>? FolderPath { get; set; }
-    /// <summary>Logical slot index within the current folder view, for "press".</summary>
+    /// <summary>Logical slot index within the current folder view, for "press" and "editRequest".</summary>
     public int? KeyIndex { get; set; }
+    /// <summary>One-shot id (creation epoch ms) for "editRequest", so a client consumes each blank-key hold once across the live frame and the boot-time GET.</summary>
+    public long? Token { get; set; }
+}
+
+/// <summary>
+/// Multiplex frame for the "streamdeckTiles" topic: one live monitoring or
+/// weather key render, the same pixels pushed to the physical key. Broadcast
+/// only while the topic has a subscriber. SlotPath is page-relative
+/// (DeckConfigNavigation.BuildSlotPath - "3", "3.2"), never the page-prefixed
+/// ImageRefs form.
+/// </summary>
+public sealed class StreamDeckTileFrame
+{
+    public string Serial { get; set; } = "";
+    public int Page { get; set; }
+    public string SlotPath { get; set; } = "";
+    public string Mime { get; set; } = "image/jpeg";
+    /// <summary>Base64-encoded JPEG, upright: no orientation or model wire transform applied.</summary>
+    public string Data { get; set; } = "";
+}
+
+/// <summary>
+/// A pending blank-key hold-to-edit intent, served by GET
+/// /streamdeck/pending-edit so a freshly-opened dashboard can navigate to the
+/// deck's editor and select the held key.
+/// </summary>
+public sealed class StreamDeckPendingEditDto
+{
+    public string Serial { get; set; } = "";
+    public int Page { get; set; }
+    public List<int> FolderPath { get; set; } = new();
+    /// <summary>Logical slot index within the current folder view, same semantics as StreamDeckChangedFrame.KeyIndex.</summary>
+    public int KeyIndex { get; set; }
+    /// <summary>Matches the "editRequest" frame's Token; the client dedupes on it.</summary>
+    public long Token { get; set; }
+}
+
+/// <summary>GET /streamdeck/pending-edit envelope; Edit is null when no intent is pending (or the pending one has aged out).</summary>
+public sealed class StreamDeckPendingEditResponse
+{
+    // Always serialize; null = nothing pending. WhenWritingNull would omit it.
+    [JsonIgnore(Condition = JsonIgnoreCondition.Never)]
+    public StreamDeckPendingEditDto? Edit { get; set; }
 }
 
 public sealed class StreamDeckSimPressBody
@@ -134,6 +181,8 @@ public sealed class GetDeckPresetsResponse
 public sealed class CreateDeckPresetBody
 {
     public string Name { get; set; } = "";
+    /// <summary>When present, the preset is created from this config (deep-copied) instead of a snapshot of the deck's live config - the Elgato importer's path.</summary>
+    public DeckConfig? Config { get; set; }
 }
 
 public sealed class CreateDeckPresetResponse

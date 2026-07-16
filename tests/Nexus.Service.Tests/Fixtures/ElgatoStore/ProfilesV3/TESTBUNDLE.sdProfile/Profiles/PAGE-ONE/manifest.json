@@ -1,0 +1,586 @@
+{
+  "Controllers": [
+    {
+      "Actions": {
+        "0,0": {
+          "ActionID": "action-screenshot",
+          "LinkedTitle": false,
+          "Name": "Screenshot",
+          "Resources": null,
+          "Settings": {
+            "Coalesce": true,
+            "Hotkeys": [
+              {
+                "KeyCmd": true,
+                "KeyCtrl": false,
+                "KeyOption": false,
+                "KeyShift": true,
+                "KeyModifiers": 9,
+                "NativeCode": 23,
+                "QTKeyCode": 53,
+                "VKeyCode": 0
+              },
+              {
+                "KeyCmd": false,
+                "KeyCtrl": false,
+                "KeyOption": false,
+                "KeyShift": false,
+                "KeyModifiers": 0,
+                "NativeCode": -1,
+                "QTKeyCode": 33554431,
+                "VKeyCode": -1
+              },
+              {
+                "KeyCmd": false,
+                "KeyCtrl": false,
+                "KeyOption": false,
+                "KeyShift": false,
+                "KeyModifiers": 0,
+                "NativeCode": -1,
+                "QTKeyCode": 33554431,
+                "VKeyCode": -1
+              },
+              {
+                "KeyCmd": false,
+                "KeyCtrl": false,
+                "KeyOption": false,
+                "KeyShift": false,
+                "KeyModifiers": 0,
+                "NativeCode": -1,
+                "QTKeyCode": 33554431,
+                "VKeyCode": -1
+              }
+            ]
+          },
+          "State": 0,
+          "States": [
+            {
+              "Title": "Screenshot",
+              "ShowTitle": true,
+              "TitleAlignment": "bottom",
+              "TitleColor": "#ffffff",
+              "FontFamily": "",
+              "FontSize": 8,
+              "FontStyle": "",
+              "FontUnderline": false,
+              "OutlineThickness": 0
+            }
+          ],
+          "UUID": "com.elgato.streamdeck.system.hotkey"
+        },
+        "1,0": {
+          "ActionID": "action-snip",
+          "LinkedTitle": false,
+          "Name": "Snip",
+          "Resources": null,
+          "Settings": {
+            "Coalesce": true,
+            "Hotkeys": [
+              {
+                "KeyCmd": true,
+                "KeyCtrl": false,
+                "KeyOption": false,
+                "KeyShift": true,
+                "KeyModifiers": 9,
+                "NativeCode": 0,
+                "QTKeyCode": 83,
+                "VKeyCode": 83
+              },
+              {
+                "KeyCmd": false,
+                "KeyCtrl": false,
+                "KeyOption": false,
+                "KeyShift": false,
+                "KeyModifiers": 0,
+                "NativeCode": -1,
+                "QTKeyCode": 33554431,
+                "VKeyCode": -1
+              },
+              {
+                "KeyCmd": false,
+                "KeyCtrl": false,
+                "KeyOption": false,
+                "KeyShift": false,
+                "KeyModifiers": 0,
+                "NativeCode": -1,
+                "QTKeyCode": 33554431,
+                "VKeyCode": -1
+              },
+              {
+                "KeyCmd": false,
+                "KeyCtrl": false,
+                "KeyOption": false,
+                "KeyShift": false,
+                "KeyModifiers": 0,
+                "NativeCode": -1,
+                "QTKeyCode": 33554431,
+                "VKeyCode": -1
+              }
+            ]
+          },
+          "State": 0,
+          "States": [
+            {
+              "Title": "Snip",
+              "ShowTitle": true,
+              "TitleAlignment": "bottom",
+              "TitleColor": "#ffffff",
+              "FontFamily": "",
+              "FontSize": 8,
+              "FontStyle": "",
+              "FontUnderline": false,
+              "OutlineThickness": 0
+            }
+          ],
+          "UUID": "com.elgato.streamdeck.system.hotkey"
+        },
+        "2,0": {
+          "ActionID": "action-unmappable-punctuation",
+          "LinkedTitle": false,
+          "Name": "Unmappable Punctuation",
+          "Resources": null,
+          "Settings": {
+            "Coalesce": true,
+            "Hotkeys": [
+              {
+                "KeyCmd": true,
+                "KeyCtrl": false,
+                "KeyOption": false,
+                "KeyShift": false,
+                "KeyModifiers": 8,
+                "NativeCode": 0,
+                "QTKeyCode": 46,
+                "VKeyCode": 190
+              },
+              {
+                "KeyCmd": false,
+                "KeyCtrl": false,
+                "KeyOption": false,
+                "KeyShift": false,
+                "KeyModifiers": 0,
+                "NativeCode": -1,
+                "QTKeyCode": 33554431,
+                "VKeyCode": -1
+              },
+              {
+                "KeyCmd": false,
+                "KeyCtrl": false,
+                "KeyOption": false,
+                "KeyShift": false,
+                "KeyModifiers": 0,
+                "NativeCode": -1,
+                "QTKeyCode": 33554431,
+                "VKeyCode": -1
+              },
+              {
+                "KeyCmd": false,
+                "KeyCtrl": false,
+                "KeyOption": false,
+                "KeyShift": false,
+                "KeyModifiers": 0,
+                "NativeCode": -1,
+                "QTKeyCode": 33554431,
+                "VKeyCode": -1
+              }
+            ]
+          },
+          "State": 0,
+          "States": [
+            {
+              "Title": "Dot",
+              "ShowTitle": true,
+              "TitleAlignment": "bottom",
+              "TitleColor": "#ffffff",
+              "FontFamily": "",
+              "FontSize": 8,
+              "FontStyle": "",
+              "FontUnderline": false,
+              "OutlineThickness": 0
+            }
+          ],
+          "UUID": "com.elgato.streamdeck.system.hotkey"
+        },
+        "3,0": {
+          "ActionID": "action-unconfigured-hotkey",
+          "LinkedTitle": false,
+          "Name": "Unconfigured Hotkey",
+          "Resources": null,
+          "Settings": {
+            "Coalesce": true,
+            "Hotkeys": [
+              {
+                "KeyCmd": false,
+                "KeyCtrl": false,
+                "KeyOption": false,
+                "KeyShift": false,
+                "KeyModifiers": 0,
+                "NativeCode": -1,
+                "QTKeyCode": 33554431,
+                "VKeyCode": -1
+              },
+              {
+                "KeyCmd": false,
+                "KeyCtrl": false,
+                "KeyOption": false,
+                "KeyShift": false,
+                "KeyModifiers": 0,
+                "NativeCode": -1,
+                "QTKeyCode": 33554431,
+                "VKeyCode": -1
+              },
+              {
+                "KeyCmd": false,
+                "KeyCtrl": false,
+                "KeyOption": false,
+                "KeyShift": false,
+                "KeyModifiers": 0,
+                "NativeCode": -1,
+                "QTKeyCode": 33554431,
+                "VKeyCode": -1
+              },
+              {
+                "KeyCmd": false,
+                "KeyCtrl": false,
+                "KeyOption": false,
+                "KeyShift": false,
+                "KeyModifiers": 0,
+                "NativeCode": -1,
+                "QTKeyCode": 33554431,
+                "VKeyCode": -1
+              }
+            ]
+          },
+          "State": 0,
+          "States": [
+            {
+              "Title": "Empty",
+              "ShowTitle": true,
+              "TitleAlignment": "bottom",
+              "TitleColor": "#ffffff",
+              "FontFamily": "",
+              "FontSize": 8,
+              "FontStyle": "",
+              "FontUnderline": false,
+              "OutlineThickness": 0
+            }
+          ],
+          "UUID": "com.elgato.streamdeck.system.hotkey"
+        },
+        "4,0": {
+          "ActionID": "action-extra-slot-hotkey",
+          "LinkedTitle": false,
+          "Name": "Extra Slot Hotkey",
+          "Resources": null,
+          "Settings": {
+            "Coalesce": true,
+            "Hotkeys": [
+              {
+                "KeyCmd": false,
+                "KeyCtrl": true,
+                "KeyOption": true,
+                "KeyShift": false,
+                "KeyModifiers": 6,
+                "NativeCode": 17,
+                "QTKeyCode": 84,
+                "VKeyCode": 0
+              },
+              {
+                "KeyCmd": false,
+                "KeyCtrl": true,
+                "KeyOption": false,
+                "KeyShift": false,
+                "KeyModifiers": 2,
+                "NativeCode": 45,
+                "QTKeyCode": 78,
+                "VKeyCode": 0
+              },
+              {
+                "KeyCmd": false,
+                "KeyCtrl": false,
+                "KeyOption": false,
+                "KeyShift": false,
+                "KeyModifiers": 0,
+                "NativeCode": -1,
+                "QTKeyCode": 33554431,
+                "VKeyCode": -1
+              },
+              {
+                "KeyCmd": false,
+                "KeyCtrl": false,
+                "KeyOption": false,
+                "KeyShift": false,
+                "KeyModifiers": 0,
+                "NativeCode": -1,
+                "QTKeyCode": 33554431,
+                "VKeyCode": -1
+              }
+            ]
+          },
+          "State": 0,
+          "States": [
+            {
+              "Title": "New Terminal",
+              "ShowTitle": true,
+              "TitleAlignment": "bottom",
+              "TitleColor": "#ffffff",
+              "FontFamily": "",
+              "FontSize": 8,
+              "FontStyle": "",
+              "FontUnderline": false,
+              "OutlineThickness": 0
+            }
+          ],
+          "UUID": "com.elgato.streamdeck.system.hotkey"
+        },
+        "0,1": {
+          "ActionID": "action-open-safari",
+          "LinkedTitle": false,
+          "Name": "Open Safari",
+          "Resources": null,
+          "Settings": {
+            "path": "\"/Applications/Safari.app\""
+          },
+          "State": 0,
+          "States": [
+            {
+              "Title": "Safari",
+              "ShowTitle": true,
+              "TitleAlignment": "bottom",
+              "TitleColor": "#ffffff",
+              "FontFamily": "",
+              "FontSize": 8,
+              "FontStyle": "",
+              "FontUnderline": false,
+              "OutlineThickness": 0
+            }
+          ],
+          "UUID": "com.elgato.streamdeck.system.open"
+        },
+        "1,1": {
+          "ActionID": "action-open-notepad",
+          "LinkedTitle": false,
+          "Name": "Open Notepad",
+          "Resources": null,
+          "Settings": {
+            "path": "notepad"
+          },
+          "State": 0,
+          "States": [
+            {
+              "Title": "Notepad",
+              "ShowTitle": true,
+              "TitleAlignment": "bottom",
+              "TitleColor": "#ffffff",
+              "FontFamily": "",
+              "FontSize": 8,
+              "FontStyle": "",
+              "FontUnderline": false,
+              "OutlineThickness": 0
+            }
+          ],
+          "UUID": "com.elgato.streamdeck.system.open"
+        },
+        "2,1": {
+          "ActionID": "action-open-applications",
+          "LinkedTitle": false,
+          "Name": "Open Applications",
+          "Resources": null,
+          "Settings": {
+            "path": "\"/Applications/\""
+          },
+          "State": 0,
+          "States": [
+            {
+              "Title": "Applications",
+              "ShowTitle": true,
+              "TitleAlignment": "bottom",
+              "TitleColor": "#ffffff",
+              "FontFamily": "",
+              "FontSize": 8,
+              "FontStyle": "",
+              "FontUnderline": false,
+              "OutlineThickness": 0
+            }
+          ],
+          "UUID": "com.elgato.streamdeck.system.open"
+        },
+        "3,1": {
+          "ActionID": "action-twitch",
+          "LinkedTitle": false,
+          "Name": "Twitch",
+          "Resources": null,
+          "Settings": {
+            "openInBrowser": true,
+            "path": "https://twitch.tv"
+          },
+          "State": 0,
+          "States": [
+            {
+              "Title": "Twitch",
+              "ShowTitle": true,
+              "Image": "Images/website.png",
+              "TitleAlignment": "bottom",
+              "TitleColor": "#ffffff",
+              "FontFamily": "",
+              "FontSize": 8,
+              "FontStyle": "",
+              "FontUnderline": false,
+              "OutlineThickness": 0
+            }
+          ],
+          "UUID": "com.elgato.streamdeck.system.website"
+        },
+        "4,1": {
+          "ActionID": "action-wave",
+          "LinkedTitle": false,
+          "Name": "Wave",
+          "Resources": null,
+          "Settings": {
+            "isSendingEnter": false,
+            "pastedText": "Hello \ud83d\udc4b World"
+          },
+          "State": 0,
+          "States": [
+            {
+              "Title": "Wave",
+              "ShowTitle": true,
+              "TitleAlignment": "bottom",
+              "TitleColor": "#ffffff",
+              "FontFamily": "",
+              "FontSize": 8,
+              "FontStyle": "",
+              "FontUnderline": false,
+              "OutlineThickness": 0
+            }
+          ],
+          "UUID": "com.elgato.streamdeck.system.text"
+        },
+        "0,2": {
+          "ActionID": "action-enter-text",
+          "LinkedTitle": false,
+          "Name": "Enter Text",
+          "Resources": null,
+          "Settings": {
+            "isSendingEnter": true,
+            "pastedText": "Enter test"
+          },
+          "State": 0,
+          "States": [
+            {
+              "Title": "Enter Text",
+              "ShowTitle": true,
+              "TitleAlignment": "bottom",
+              "TitleColor": "#ffffff",
+              "FontFamily": "",
+              "FontSize": 8,
+              "FontStyle": "",
+              "FontUnderline": false,
+              "OutlineThickness": 0
+            }
+          ],
+          "UUID": "com.elgato.streamdeck.system.text"
+        },
+        "1,2": {
+          "ActionID": "action-volume-up",
+          "LinkedTitle": false,
+          "Name": "Volume Up",
+          "Resources": null,
+          "Settings": {
+            "actionIdx": 5
+          },
+          "State": 0,
+          "States": [
+            {
+              "Title": "Vol+",
+              "ShowTitle": true,
+              "TitleAlignment": "bottom",
+              "TitleColor": "#ffffff",
+              "FontFamily": "",
+              "FontSize": 8,
+              "FontStyle": "",
+              "FontUnderline": false,
+              "OutlineThickness": 0
+            }
+          ],
+          "UUID": "com.elgato.streamdeck.system.multimedia"
+        },
+        "2,2": {
+          "ActionID": "action-stop",
+          "LinkedTitle": false,
+          "Name": "Stop",
+          "Resources": null,
+          "Settings": {
+            "actionIdx": 3
+          },
+          "State": 0,
+          "States": [
+            {
+              "Title": "Stop",
+              "ShowTitle": true,
+              "TitleAlignment": "bottom",
+              "TitleColor": "#ffffff",
+              "FontFamily": "",
+              "FontSize": 8,
+              "FontStyle": "",
+              "FontUnderline": false,
+              "OutlineThickness": 0
+            }
+          ],
+          "UUID": "com.elgato.streamdeck.system.multimedia"
+        },
+        "3,2": {
+          "ActionID": "action-welcome-tile",
+          "LinkedTitle": false,
+          "Name": "Welcome Tile",
+          "Resources": null,
+          "Settings": {},
+          "State": 0,
+          "States": [
+            {
+              "Title": "Welcome",
+              "ShowTitle": true,
+              "TitleAlignment": "bottom",
+              "TitleColor": "#ffffff",
+              "FontFamily": "",
+              "FontSize": 8,
+              "FontStyle": "",
+              "FontUnderline": false,
+              "OutlineThickness": 0
+            }
+          ],
+          "UUID": "com.elgato.tutorial.welcome"
+        },
+        "4,2": {
+          "ActionID": "action-cpu-temp",
+          "LinkedTitle": false,
+          "Name": "CPU Temp",
+          "Resources": null,
+          "Settings": {
+            "sensorUid": "/amdcpu/0",
+            "readingLabel": "Core #1",
+            "min": 0,
+            "max": 100
+          },
+          "State": 0,
+          "States": [
+            {
+              "Title": "CPU",
+              "ShowTitle": true,
+              "TitleAlignment": "bottom",
+              "TitleColor": "#ffffff",
+              "FontFamily": "",
+              "FontSize": 8,
+              "FontStyle": "",
+              "FontUnderline": false,
+              "OutlineThickness": 0
+            }
+          ],
+          "UUID": "com.moeilijk.lhm.reading"
+        }
+      },
+      "Type": "Keypad"
+    }
+  ],
+  "Icon": "",
+  "Name": "Page One"
+}

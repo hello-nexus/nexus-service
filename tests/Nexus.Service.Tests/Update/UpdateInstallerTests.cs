@@ -57,8 +57,8 @@ public sealed class UpdateInstallerTests
     [Fact]
     public void IsWithinStagingDir_rejects_a_sibling_prefix_dir()
     {
-        // "staged-updates-evil" shares the staging dir's string prefix but is a
-        // different directory; the separator guard must reject it.
+        // A sibling like "updates-evil" shares the staging dir's string prefix but
+        // is a different directory; the separator guard must reject it.
         var sibling = UpdateDownloader.StagingDir + "-evil" + Path.DirectorySeparatorChar + "x.exe";
         Assert.False(UpdateInstaller.IsWithinStagingDir(sibling));
     }

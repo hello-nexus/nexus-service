@@ -4,16 +4,20 @@ using System.Collections.Generic;
 namespace Nexus.Service.Persistence;
 
 /// <summary>
-/// Routing helpers for the per-category profile sharing feature. Four
+/// Routing helpers for the per-category profile sharing feature. Five
 /// categories correspond to the NexusSettings sections that the user can pin to
 /// a Primary profile (so switching profiles still loads that profile's data
 /// for the pinned category). Theme copies the entire <see cref="ThemeSettings"/>
 /// block; Dashboard copies the desktop-side per-profile state (monitoring view
 /// state, fan-channel order, the desktop dashboard layout, overlay floating
-/// widgets, conflict-alert toggle). Panel cosmetics + AutoLaunch live at the
-/// NexusSettings root under <see cref="PanelSettings"/>; they're workstation-level
-/// (they describe how panel devices look and behave, not the active profile)
-/// so they are NEVER copied via sharing.
+/// widgets, conflict-alert toggle); Device copies the entire
+/// <see cref="StreamDeckSettings"/> and <see cref="KeebSettings"/> blocks,
+/// making Stream Deck bindings and keyboard personalization (macros, key
+/// overrides, rotary, game mode, firmware lighting, layers) profile-scoped
+/// instead of workstation-global. Panel cosmetics + AutoLaunch live at the
+/// NexusSettings root under <see cref="PanelSettings"/>; they're
+/// workstation-level (they describe how panel devices look and behave, not the
+/// active profile) so they are NEVER copied via sharing.
 /// </summary>
 public static class ProfileSharing
 {
@@ -21,10 +25,11 @@ public static class ProfileSharing
     public const string Cooling = "cooling";
     public const string Theme = "theme";
     public const string Dashboard = "dashboard";
+    public const string Device = "device";
 
     public static readonly IReadOnlyList<string> All = new[]
     {
-        Lighting, Cooling, Theme, Dashboard,
+        Lighting, Cooling, Theme, Dashboard, Device,
     };
 
     public static string? Normalize(string? id)
@@ -69,6 +74,10 @@ public static class ProfileSharing
                 target.Overlay = source.Overlay;
                 target.Ui.ShowConflictAlerts = source.Ui.ShowConflictAlerts;
                 break;
+            case Device:
+                target.StreamDeck = source.StreamDeck;
+                target.Keeb = source.Keeb;
+                break;
         }
     }
 
@@ -95,6 +104,10 @@ public static class ProfileSharing
                 target.Panel.DashboardLayout = null;
                 target.Overlay = new OverlaySettings();
                 target.Ui.ShowConflictAlerts = true;
+                break;
+            case Device:
+                target.StreamDeck = new StreamDeckSettings();
+                target.Keeb = new KeebSettings();
                 break;
         }
     }

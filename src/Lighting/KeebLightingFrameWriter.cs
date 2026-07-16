@@ -79,7 +79,7 @@ public sealed class KeebLightingFrameWriter : IHostedService, IDisposable
             try { Tick(); }
             catch (Exception ex)
             {
-                Console.Error.WriteLine($"[keeb-lighting-writer] tick exception: {ex.GetType().Name}: {ex.Message}");
+                Nexus.Service.Platform.ServiceLog.Error($"[keeb-lighting-writer] tick exception: {ex.GetType().Name}: {ex.Message}");
             }
             try { if (!await timer.WaitForNextTickAsync(ct).ConfigureAwait(false)) break; }
             catch (OperationCanceledException) { break; }
@@ -138,6 +138,7 @@ public sealed class KeebLightingFrameWriter : IHostedService, IDisposable
     private void TickSoftwareEffect(NexusSettings settings, RgbColor?[]? reactive, bool mask)
     {
         var disabled = settings.Devices.DisabledLightingDevices;
+        var uncontrolled = settings.Devices.UncontrolledLightingDevices;
         var prefs = settings.Devices.LightingDevicePrefs;
         var globalBrightness = Math.Clamp(settings.Lighting.GlobalBrightness, 0f, 1f);
         // The keeb software stream brightness is min(global, per-zone). The
@@ -156,9 +157,15 @@ public sealed class KeebLightingFrameWriter : IHostedService, IDisposable
         var zones = Nexus.Service.Lighting.Zones.ZoneResolution.Resolve(structure, settings);
         Nexus.Service.Lighting.Zones.SegmentFrameComposer.EnsureBuffers(structure, ref _segmentBuffers);
         var touched = Nexus.Service.Lighting.Zones.SegmentFrameComposer.Compose(
-            structure, zones, devices, disabled, prefs, globalBrightness, 1.0, nowTicks, _identify, _segmentBuffers);
+            structure, zones, devices, disabled, uncontrolled, prefs, globalBrightness, 1.0, nowTicks, _identify, _segmentBuffers);
 
-        if (touched[KeebZoneSupport.KeysSegment])
+        // Keys and underglow stream over separate HID reports, so each segment
+        // can be handed back to firmware independently: a fully uncontrolled
+        // segment simply isn't written this tick. Checked against the live
+        // resolved zones (not the default card ids) so a custom partition's
+        // zone ids still gate the write correctly.
+        if (touched[KeebZoneSupport.KeysSegment]
+            && !Nexus.Service.Lighting.Zones.ZoneResolution.IsSegmentFullyUncontrolled(zones, KeebZoneSupport.KeysSegment, uncontrolled))
         {
             if (reactive != null)
             {
@@ -166,7 +173,8 @@ public sealed class KeebLightingFrameWriter : IHostedService, IDisposable
             }
             _hub.WriteKeyboard(_segmentBuffers[KeebZoneSupport.KeysSegment]);
         }
-        if (touched[KeebZoneSupport.UnderglowSegment])
+        if (touched[KeebZoneSupport.UnderglowSegment]
+            && !Nexus.Service.Lighting.Zones.ZoneResolution.IsSegmentFullyUncontrolled(zones, KeebZoneSupport.UnderglowSegment, uncontrolled))
         {
             _hub.WriteSurround(_segmentBuffers[KeebZoneSupport.UnderglowSegment]);
         }

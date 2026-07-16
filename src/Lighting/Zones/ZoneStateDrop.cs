@@ -35,6 +35,18 @@ public static class ZoneStateDrop
                 }
                 settings.Devices.DisabledLightingDevices = next;
             }
+            if (settings.Devices.UncontrolledLightingDevices.Contains(id))
+            {
+                var next = new List<string>(settings.Devices.UncontrolledLightingDevices.Count);
+                foreach (var d in settings.Devices.UncontrolledLightingDevices)
+                {
+                    if (d != id)
+                    {
+                        next.Add(d);
+                    }
+                }
+                settings.Devices.UncontrolledLightingDevices = next;
+            }
         }
     }
 }

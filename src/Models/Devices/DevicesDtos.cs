@@ -15,7 +15,7 @@ public sealed class DeviceListItem
     public string FirmwareType { get; set; } = "";
     /// <summary>True when Nexus is allowed to claim/control this device. False means Nexus still detects it but never opens its port/handle.</summary>
     public bool NexusControlEnabled { get; set; } = true;
-    /// <summary>True only for first-party handlers whose connection worker honors the gate. Plugin-contributed handlers manage their own hardware, so the on/off switch does not apply and the UI hides it.</summary>
+    /// <summary>True only for first-party handlers whose gate does something: claiming the device through a gate-honoring connection worker, or starting/stopping the vendor driver process that drives it. False when the switch would gate nothing - a plugin handler managing its own hardware - and the UI hides it.</summary>
     public bool SupportsNexusControl { get; set; }
     /// <summary>True for a Nexus Control device driving non-Hyte/iBUYPOWER hardware (experimental support). Drives the "Experimental" badge in the UI. Always false when SupportsNexusControl is false.</summary>
     public bool Experimental { get; set; }
@@ -199,6 +199,8 @@ public class LightingDevice
     public string Type { get; set; } = "";
     public string IconType { get; set; } = "";
     public bool LedsOn { get; set; }
+    /// <summary>False when the user marked this device not controlled: Nexus stops pushing frames to it entirely so firmware/vendor lighting can take over. Distinct from <see cref="LedsOn"/> (power off still streams black).</summary>
+    public bool Controlled { get; set; } = true;
     public int Brightness { get; set; }
     public float Hue { get; set; }
     public float Saturation { get; set; }
@@ -234,6 +236,7 @@ public class GetLightingDevicesResponse
 
 public class SetDisabledLedsBody { public List<string> Devices { get; set; } = new(); }
 public class SetLightingDevicePowerBody { public string Id { get; set; } = ""; public bool On { get; set; } }
+public class SetLightingDeviceControlledBody { public string Id { get; set; } = ""; public bool Controlled { get; set; } }
 public class SetLightingDeviceBrightness { public string Id { get; set; } = ""; public int Brightness { get; set; } }
 public class SetLightingDeviceHue { public string Id { get; set; } = ""; public float Hue { get; set; } }
 public class SetLightingDeviceSaturation { public string Id { get; set; } = ""; public float Saturation { get; set; } }

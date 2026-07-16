@@ -82,7 +82,8 @@ public class AppInstallActionsTests : IDisposable
     private IServiceProvider BuildServices(
         AppRegistry registry,
         ExternalToolManager? toolManager = null,
-        IAdbDeviceRegistry? adbRegistry = null)
+        IAdbDeviceRegistry? adbRegistry = null,
+        bool driverExe = true)
     {
         var services = new ServiceCollection();
         services.AddSingleton(registry);
@@ -90,6 +91,9 @@ public class AppInstallActionsTests : IDisposable
         services.AddSingleton(adbRegistry ?? new AdbDeviceRegistry());
         services.AddSingleton<IUsbEnumerator, StubUsbEnumerator>();
         services.AddSingleton<IToolInstallStrategy, HostExeInstallStrategy>();
+        // This suite is the vendor driver path's coverage, so it enables it by
+        // default. It ships disabled (the AW5 is driven natively); see DriverExePolicy.
+        services.AddSingleton(new DriverExePolicy(enabled: driverExe));
         return services.BuildServiceProvider();
     }
 
@@ -263,6 +267,34 @@ public class AppInstallActionsTests : IDisposable
         var obj = result!.Value;
         Assert.False(obj.GetProperty("started").GetBoolean());
         Assert.Equal("no-install-block", obj.GetProperty("reason").GetString());
+    }
+
+    [Fact]
+    public async Task Install_refuses_while_the_vendor_driver_exe_is_disabled()
+    {
+        // The shipped configuration: Nexus drives the AW5 itself, so pressing
+        // Install must not fetch or start a second writer for the same device.
+        var registry = NewRegistry("com.example.app", withDriver: true, target: "host-exe");
+        var services = BuildServices(registry, driverExe: false);
+
+        var result = await InvokeAction("app.install", services);
+
+        var obj = result!.Value;
+        Assert.False(obj.GetProperty("started").GetBoolean());
+        Assert.Equal("driver-exe-disabled", obj.GetProperty("reason").GetString());
+    }
+
+    [Fact]
+    public async Task InstallStatus_offers_no_install_while_the_vendor_driver_exe_is_disabled()
+    {
+        // Reported as having no install block at all, so the app page renders no
+        // button for a path the service refuses.
+        var registry = NewRegistry("com.example.app", withDriver: true, target: "host-exe");
+        var services = BuildServices(registry, driverExe: false);
+
+        var result = await InvokeAction("app.installStatus", services);
+
+        Assert.False(result!.Value.GetProperty("hasInstall").GetBoolean());
     }
 
     [Fact]

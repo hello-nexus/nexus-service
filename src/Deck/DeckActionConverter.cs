@@ -125,6 +125,46 @@ public sealed class DeckActionConverter : JsonConverter<DeckAction>
         {
             action.Press = pressEl.GetString();
         }
+        if (root.TryGetProperty("labelText", out var labelTextEl) && labelTextEl.ValueKind == JsonValueKind.String)
+        {
+            action.LabelText = labelTextEl.GetString();
+        }
+        if (root.TryGetProperty("scale", out var scaleEl) && scaleEl.ValueKind == JsonValueKind.String)
+        {
+            action.Scale = scaleEl.GetString();
+        }
+        if (root.TryGetProperty("min", out var minEl) && minEl.ValueKind == JsonValueKind.Number)
+        {
+            action.Min = minEl.GetDouble();
+        }
+        if (root.TryGetProperty("max", out var maxEl) && maxEl.ValueKind == JsonValueKind.Number)
+        {
+            action.Max = maxEl.GetDouble();
+        }
+        if (root.TryGetProperty("lat", out var latEl) && latEl.ValueKind == JsonValueKind.Number)
+        {
+            action.Lat = latEl.GetDouble();
+        }
+        if (root.TryGetProperty("lon", out var lonEl) && lonEl.ValueKind == JsonValueKind.Number)
+        {
+            action.Lon = lonEl.GetDouble();
+        }
+        if (root.TryGetProperty("city", out var cityEl) && cityEl.ValueKind == JsonValueKind.String)
+        {
+            action.City = cityEl.GetString();
+        }
+        if (root.TryGetProperty("cc", out var ccEl) && ccEl.ValueKind == JsonValueKind.String)
+        {
+            action.Cc = ccEl.GetString();
+        }
+        if (root.TryGetProperty("units", out var unitsEl) && unitsEl.ValueKind == JsonValueKind.String)
+        {
+            action.Units = unitsEl.GetString();
+        }
+        if (root.TryGetProperty("volume", out var volumeEl) && volumeEl.ValueKind == JsonValueKind.Number)
+        {
+            action.Volume = volumeEl.GetInt32();
+        }
 
         if (root.TryGetProperty("action", out var actionEl))
         {
@@ -238,6 +278,46 @@ public sealed class DeckActionConverter : JsonConverter<DeckAction>
         if (value.Press is not null)
         {
             writer.WriteString("press", value.Press);
+        }
+        if (value.LabelText is not null)
+        {
+            writer.WriteString("labelText", value.LabelText);
+        }
+        if (value.Scale is not null)
+        {
+            writer.WriteString("scale", value.Scale);
+        }
+        if (value.Min is not null)
+        {
+            writer.WriteNumber("min", value.Min.Value);
+        }
+        if (value.Max is not null)
+        {
+            writer.WriteNumber("max", value.Max.Value);
+        }
+        if (value.Lat is not null)
+        {
+            writer.WriteNumber("lat", value.Lat.Value);
+        }
+        if (value.Lon is not null)
+        {
+            writer.WriteNumber("lon", value.Lon.Value);
+        }
+        if (value.City is not null)
+        {
+            writer.WriteString("city", value.City);
+        }
+        if (value.Cc is not null)
+        {
+            writer.WriteString("cc", value.Cc);
+        }
+        if (value.Units is not null)
+        {
+            writer.WriteString("units", value.Units);
+        }
+        if (value.Volume is not null)
+        {
+            writer.WriteNumber("volume", value.Volume.Value);
         }
 
         switch (value.Type)

@@ -10,18 +10,21 @@ public enum SummarySensorKind
 {
     CpuTemp,
     CpuUsage,
+    CpuClock,
     GpuTemp,
     GpuUsage,
+    GpuClock,
     MemoryUsage,
     VramUsage,
 }
 
 /// <summary>
-/// Single derivation of the "Quick" summary sensor set (CPU temp/usage, GPU
-/// temp/usage, memory usage, VRAM usage), shared by the summary WebSocket topic
-/// and the Lian Li wireless LCD reader so both pick the same underlying sensor.
-/// Most kinds clone a live sensor; VramUsage is computed (used / total) since
-/// LHM exposes VRAM as SmallData used+total, not a fill-percent Load sensor.
+/// Single derivation of the "Quick" summary sensor set (CPU temp/usage/clock, GPU
+/// temp/usage/clock, memory usage, VRAM usage), shared by the summary WebSocket
+/// topic, the Lian Li wireless LCD reader and the AW5 pump displays so they all pick
+/// the same underlying sensor. Most kinds clone a live sensor; VramUsage is computed
+/// (used / total) since LHM exposes VRAM as SmallData used+total, not a fill-percent
+/// Load sensor.
 /// </summary>
 public static class SummarySensors
 {
@@ -29,7 +32,8 @@ public static class SummarySensors
     private const string SummaryComponentName = "Quick";
 
     /// <summary>Builds the summary sensor list in fixed order (CpuTemp, CpuUsage,
-    /// GpuTemp, GpuUsage, MemoryUsage, VramUsage), omitting any kind whose source sensor is absent.</summary>
+    /// CpuClock, GpuTemp, GpuUsage, GpuClock, MemoryUsage, VramUsage), omitting any kind
+    /// whose source sensor is absent.</summary>
     public static List<HardwareSensor> Build(ISensorProvider sensors)
         => BuildFrom(sensors.GetCpuSensors(), PrimaryGpuSensors(sensors), sensors.GetMemorySensors());
 
@@ -46,11 +50,13 @@ public static class SummarySensors
         IReadOnlyList<HardwareSensor> gpuSensors,
         IReadOnlyList<HardwareSensor> memorySensors)
     {
-        var result = new List<HardwareSensor>(6);
+        var result = new List<HardwareSensor>(8);
         AddIfPresent(result, cpuSensors, gpuSensors, memorySensors, SummarySensorKind.CpuTemp);
         AddIfPresent(result, cpuSensors, gpuSensors, memorySensors, SummarySensorKind.CpuUsage);
+        AddIfPresent(result, cpuSensors, gpuSensors, memorySensors, SummarySensorKind.CpuClock);
         AddIfPresent(result, cpuSensors, gpuSensors, memorySensors, SummarySensorKind.GpuTemp);
         AddIfPresent(result, cpuSensors, gpuSensors, memorySensors, SummarySensorKind.GpuUsage);
+        AddIfPresent(result, cpuSensors, gpuSensors, memorySensors, SummarySensorKind.GpuClock);
         AddIfPresent(result, cpuSensors, gpuSensors, memorySensors, SummarySensorKind.MemoryUsage);
         AddIfPresent(result, cpuSensors, gpuSensors, memorySensors, SummarySensorKind.VramUsage);
         return result;
@@ -93,8 +99,15 @@ public static class SummarySensors
     {
         SummarySensorKind.CpuTemp => PreferElseFirst(cpuSensors, "Temperature", "Package"),
         SummarySensorKind.CpuUsage => PreferElseFirst(cpuSensors, "Load", "CPU Total"),
+        // The mean across cores, synthesized by CpuClockAggregates: LHM exposes only
+        // per-core clocks. Not PreferElseFirst - falling back to "the first Clock
+        // sensor" would land on Bus Speed (~100 MHz) and read as a dead CPU.
+        SummarySensorKind.CpuClock => FindSensor(cpuSensors, "Clock", "Core Average"),
         SummarySensorKind.GpuTemp => PreferElseFirst(gpuSensors, "Temperature", "Core"),
         SummarySensorKind.GpuUsage => PreferElseFirst(gpuSensors, "Load", "Core"),
+        // A GPU reports one core clock, so there is no mean to take. No fallback, for
+        // the same reason as CpuClock: the first Clock sensor may be memory or shader.
+        SummarySensorKind.GpuClock => FindSensor(gpuSensors, "Clock", "Core"),
         SummarySensorKind.MemoryUsage => FindSensor(memorySensors, "Load", null),
         _ => null,
     };
@@ -150,8 +163,10 @@ public static class SummarySensors
     {
         SummarySensorKind.CpuTemp => "summary/cpu-temp",
         SummarySensorKind.CpuUsage => "summary/cpu-usage",
+        SummarySensorKind.CpuClock => "summary/cpu-clock",
         SummarySensorKind.GpuTemp => "summary/gpu-temp",
         SummarySensorKind.GpuUsage => "summary/gpu-usage",
+        SummarySensorKind.GpuClock => "summary/gpu-clock",
         SummarySensorKind.MemoryUsage => "summary/memory-usage",
         SummarySensorKind.VramUsage => "summary/vram-usage",
         _ => "",
@@ -161,8 +176,10 @@ public static class SummarySensors
     {
         SummarySensorKind.CpuTemp => "CPU Temperature",
         SummarySensorKind.CpuUsage => "CPU Usage",
+        SummarySensorKind.CpuClock => "CPU Clock",
         SummarySensorKind.GpuTemp => "GPU Temperature",
         SummarySensorKind.GpuUsage => "GPU Usage",
+        SummarySensorKind.GpuClock => "GPU Clock",
         SummarySensorKind.MemoryUsage => "Memory Usage",
         SummarySensorKind.VramUsage => "VRAM Usage",
         _ => "",

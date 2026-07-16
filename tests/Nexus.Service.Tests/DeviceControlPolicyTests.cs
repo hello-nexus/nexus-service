@@ -1,6 +1,7 @@
 using System.Linq;
 using Nexus.Service.Devices;
 using Nexus.Service.Devices.Detection;
+using Nexus.Service.Devices.Handlers;
 using Nexus.Service.Plugins;
 using Xunit;
 
@@ -16,6 +17,7 @@ public class DeviceControlPolicyTests
     [InlineData("y70")]
     [InlineData("qseries")]
     [InlineData("fan-hub")]
+    [InlineData("aw5")]
     public void IsExperimental_FirstPartyHardware_IsFalse(string handlerId)
     {
         Assert.False(DeviceControlPolicy.IsExperimental(handlerId));
@@ -38,7 +40,7 @@ public class DeviceControlPolicyTests
     public void GetAll_FirstPartyHandlers_ReportSupportedAndNotExperimental()
     {
         var manager = new DeviceManager(
-            new IDeviceHandler[] { TestHandlers.Cnvs(), TestHandlers.FanHub(), TestHandlers.QSeries() },
+            new IDeviceHandler[] { TestHandlers.Cnvs(), TestHandlers.FanHub(), TestHandlers.QSeries(), new Aw5Handler() },
             new StubUsbEnumerator(),
             new PluginProviderRegistry(),
             new DeviceControlGate(new InMemoryConfigStore()));
