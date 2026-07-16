@@ -108,7 +108,7 @@ public sealed class PanelDeviceRegistryTests : IDisposable
 
     /// <summary>
     /// The service stores null until explicitly patched, same as WidgetOpacity/
-    /// WidgetLabels/WidgetBlur; the default percent is applied client-side.
+    /// WidgetLabels; the default percent is applied client-side.
     /// </summary>
     [Fact]
     public void Allocate_WidgetPadding_AbsentIsNullNotServerDefaulted()
@@ -139,6 +139,23 @@ public sealed class PanelDeviceRegistryTests : IDisposable
         var patched = _registry.Patch(record.Id, new PanelDevicePatch { DisplayName = "Renamed" });
 
         Assert.False(patched!.BackgroundEnabled);
+    }
+
+    [Fact]
+    public void Patch_BackgroundFrost_RoundTripsAndEmptyClears()
+    {
+        var record = _registry.Allocate(null, Caps(PanelSurfaces.Phone));
+        Assert.Null(record.BackgroundFrost);
+
+        var patched = _registry.Patch(record.Id, new PanelDevicePatch { BackgroundFrost = "heavy" });
+        Assert.Equal("heavy", patched!.BackgroundFrost);
+        Assert.Equal("heavy", _registry.Get(record.Id)!.BackgroundFrost);
+
+        var renamed = _registry.Patch(record.Id, new PanelDevicePatch { DisplayName = "Renamed" });
+        Assert.Equal("heavy", renamed!.BackgroundFrost);
+
+        var cleared = _registry.Patch(record.Id, new PanelDevicePatch { BackgroundFrost = "" });
+        Assert.Null(cleared!.BackgroundFrost);
     }
 
     /// <summary>Null until explicitly patched; enabled is the client-side default.</summary>

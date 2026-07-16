@@ -44,9 +44,11 @@ public sealed class PanelDeviceRecord
     /// does not need to refetch the library to know whether to use an img or
     /// video element.</summary>
     public string? BackgroundMediaType { get; set; }
+    /// <summary>Frosted-glass blur over the background layer (shader / media /
+    /// desktop wallpaper): "light" or "heavy". Null = none.</summary>
+    public string? BackgroundFrost { get; set; }
     public double? WidgetOpacity { get; set; }
     public bool? WidgetLabels { get; set; }
-    public bool? WidgetBlur { get; set; }
     /// <summary>Percent 0-100. Null is unset; the client applies its own default.</summary>
     public double? WidgetPadding { get; set; }
     public bool? ThemeSyncWithDesktop { get; set; }
@@ -165,9 +167,9 @@ public sealed class PanelDevicePatch
     public bool? BackgroundEnabled { get; set; }
     public string? BackgroundMediaId { get; set; }
     public string? BackgroundMediaType { get; set; }
+    public string? BackgroundFrost { get; set; }
     public double? WidgetOpacity { get; set; }
     public bool? WidgetLabels { get; set; }
-    public bool? WidgetBlur { get; set; }
     public double? WidgetPadding { get; set; }
     public bool? ThemeSyncWithDesktop { get; set; }
     public bool? AccentSyncWithDesktop { get; set; }

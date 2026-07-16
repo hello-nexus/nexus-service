@@ -60,7 +60,6 @@ public static class InstallDefaultsRoutes
                     BackgroundOpacity = s.Panel.BackgroundOpacity,
                     WidgetOpacity = s.Panel.WidgetOpacity,
                     WidgetLabels = s.Panel.WidgetLabels,
-                    WidgetBlur = s.Panel.WidgetBlur,
                     Layouts = new PanelLayoutsDefaults
                     {
                         Desktop = ProjectLayout(s.Panel.DashboardLayout, "desktop")

@@ -68,7 +68,6 @@ public sealed class PanelSettings
     public double PanelOpacity { get; set; } = 1.0;
     public double WidgetOpacity { get; set; } = 1.0;
     public bool WidgetLabels { get; set; } = false;
-    public bool WidgetBlur { get; set; } = false;
     /// <summary>Layout seeds for new device records + first-time desktop dashboard. Populated in install-defaults; null in the live profile (the embedded install-defaults table remains the source of truth for seeding new device records).</summary>
     public PanelLayoutsDefaults? Layouts { get; set; }
     /// <summary>Active desktop dashboard layout (profile-scoped). Null in install-defaults; null in the live profile means "seed from Layouts.Desktop on first load".</summary>

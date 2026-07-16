@@ -386,12 +386,12 @@ public sealed class PanelDeviceRegistry
                 record.BackgroundMediaId = NullIfEmpty(patch.BackgroundMediaId);
             if (patch.BackgroundMediaType is not null)
                 record.BackgroundMediaType = NullIfEmpty(patch.BackgroundMediaType);
+            if (patch.BackgroundFrost is not null)
+                record.BackgroundFrost = NullIfEmpty(patch.BackgroundFrost);
             if (patch.WidgetOpacity.HasValue)
                 record.WidgetOpacity = patch.WidgetOpacity.Value;
             if (patch.WidgetLabels.HasValue)
                 record.WidgetLabels = patch.WidgetLabels.Value;
-            if (patch.WidgetBlur.HasValue)
-                record.WidgetBlur = patch.WidgetBlur.Value;
             if (patch.WidgetPadding.HasValue)
                 record.WidgetPadding = patch.WidgetPadding.Value;
             if (patch.ThemeSyncWithDesktop.HasValue)
@@ -479,9 +479,9 @@ public sealed class PanelDeviceRegistry
             BackgroundEnabled = r.BackgroundEnabled,
             BackgroundMediaId = r.BackgroundMediaId,
             BackgroundMediaType = r.BackgroundMediaType,
+            BackgroundFrost = r.BackgroundFrost,
             WidgetOpacity = r.WidgetOpacity,
             WidgetLabels = r.WidgetLabels,
-            WidgetBlur = r.WidgetBlur,
             WidgetPadding = r.WidgetPadding,
             ThemeSyncWithDesktop = r.ThemeSyncWithDesktop,
             AccentSyncWithDesktop = r.AccentSyncWithDesktop,
