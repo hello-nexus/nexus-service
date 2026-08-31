@@ -24,8 +24,10 @@ namespace Nexus.Service.Routes;
 /// <item><c>GET /apps-api/installed</c> - everything the registry sees.</item>
 /// <item><c>GET /apps-api/installed/{id}</c> - one widget, including manifest view tree.</item>
 /// <item><c>GET /apps-api/installed/{id}/asset/{**path}</c> - static assets
-///   (icons, SVGs) under the widget bundle. Restricted to image extensions
-///   (PNG/JPG/WEBP/GIF/ICO/SVG); no manifest-tree binding enforced.</item>
+///   (icons, SVGs, and encrypted <c>.nxpack</c> asset containers with their
+///   <c>.key</c> dev sidecar) under the widget bundle. Restricted to image
+///   extensions (PNG/JPG/WEBP/GIF/ICO/SVG) plus nxpack/key; no manifest-tree
+///   binding enforced.</item>
 /// <item><c>GET / PATCH /apps-api/installed/{id}/settings</c> - per-widget user settings.</item>
 /// <item><c>GET /apps-api/code/{sessionId}/worker.js</c> + sibling module
 ///   files - the Tier 2 worker source, served behind a per-spawn session
@@ -43,7 +45,7 @@ public static class AppRoutes
     private static readonly HashSet<string> AllowedAssetExtensions = new(StringComparer.OrdinalIgnoreCase)
     {
         ".png", ".jpg", ".jpeg", ".webp", ".gif", ".ico",
-        ".svg",
+        ".svg", ".nxpack", ".key",
     };
 
     // Tier 2 widget worker source files. Restricted to JS modules and JSON
@@ -355,7 +357,14 @@ public static class AppRoutes
         }
 
         ctx.Response.Headers.XContentTypeOptions = "nosniff";
-        ctx.Response.Headers.CacheControl = "no-store";
+        // Encrypted containers may sit in the browser's HTTP cache: the cached
+        // bytes are AES-GCM ciphertext (same protection as at rest on disk) and
+        // re-fetching tens of MB per widget mount dominates load time. The .key
+        // dev sidecar and everything else stays no-store.
+        ctx.Response.Headers.CacheControl =
+            Path.GetExtension(resolved).Equals(".nxpack", StringComparison.OrdinalIgnoreCase)
+                ? "private, max-age=86400"
+                : "no-store";
 
         var contentType = Path.GetExtension(resolved).ToLowerInvariant() switch
         {
@@ -365,9 +374,10 @@ public static class AppRoutes
             ".gif" => "image/gif",
             ".ico" => "image/x-icon",
             ".svg" => "image/svg+xml",
+            ".nxpack" or ".key" => "application/octet-stream",
             _ => "application/octet-stream",
         };
-        return Results.Stream(File.OpenRead(resolved), contentType);
+        return Results.Stream(File.OpenRead(resolved), contentType, enableRangeProcessing: true);
     }
 
     /// <summary>
