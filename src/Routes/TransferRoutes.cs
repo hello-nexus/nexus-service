@@ -7,6 +7,7 @@ using Nexus.Service.Models;
 using Nexus.Service.Models.Transfer;
 using Nexus.Service.Panel;
 using Nexus.Service.Platform.Clipboard;
+using Nexus.Service.Serialization;
 using Nexus.Service.Sockets;
 using Nexus.Service.Transfer;
 
@@ -36,8 +37,22 @@ public static class TransferRoutes
             if (string.IsNullOrEmpty(boundary))
                 return Results.BadRequest(new TransferItemsResponse { Error = true, Msg = "Malformed form data" });
 
-            var dir = inbox.ResolveDir();
-            TransferInbox.SweepStalePartials(dir);
+            TransferInbox.InboxTarget target;
+            try
+            {
+                target = inbox.ResolveTarget();
+            }
+            // Locking the ProgramData fallback (ACL write, owner reset) can throw
+            // UnauthorizedAccess / PrivilegeNotHeld / IO as well as the explicit
+            // ownership refusal; none of them is the phone's fault.
+            catch (Exception e) when (e is not OperationCanceledException)
+            {
+                Console.Error.WriteLine($"[transfer] inbox unavailable: {e.GetType().Name}: {e.Message}");
+                return Results.Json(new TransferItemsResponse { Error = true, Msg = "transfer inbox unavailable" }, AppJsonContext.Default.TransferItemsResponse, statusCode: StatusCodes.Status503ServiceUnavailable);
+            }
+            using var _ = target;
+            var dir = target.Dir;
+            TransferInbox.SweepStalePartials(target);
 
             var from = SenderName(ctx, pairing);
             var saved = new List<TransferSavedItem>();
@@ -59,7 +74,7 @@ public static class TransferRoutes
                         !StringSegment.IsNullOrEmpty(disposition.FileNameStar) ? disposition.FileNameStar : disposition.FileName).Value;
                     try
                     {
-                        var item = await inbox.SaveAsync(section.Body, rawName, dir, ctx.RequestAborted);
+                        var item = await inbox.SaveAsync(section.Body, rawName, target, ctx.RequestAborted);
                         saved.Add(item);
                         PanelTopics.BroadcastTransfer(hub, new TransferReceivedFrame
                         {

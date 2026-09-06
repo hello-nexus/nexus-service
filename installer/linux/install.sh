@@ -24,9 +24,21 @@ for entry in "$HERE"/* "$HERE"/.[!.]*; do
 done
 sudo chmod +x "$APP_DIR/Nexus"
 [ -f "$APP_DIR/openrgb/openrgb-headless" ] && sudo chmod +x "$APP_DIR/openrgb/openrgb-headless" || true
-# SELinux: a system service can't exec from a user home (user_home_t); /opt gets
-# bin_t. restorecon stamps the default context so systemd can launch it.
-sudo restorecon -R "$APP_DIR" 2>/dev/null || true
+# SELinux: a system service can't exec from a user home (user_home_t). restorecon
+# stamps the default context so systemd can launch it - except on ostree distros
+# (Bazzite/Silverblue), where /opt is a symlink to /var/opt and the default there
+# is var_t, which systemd refuses to exec (203/EXEC). Pin bin_t on the physical
+# path first so restorecon stamps the right label.
+APP_REAL="$(readlink -f "$APP_DIR")"
+if [ "$APP_REAL" != "$APP_DIR" ] && command -v semanage >/dev/null 2>&1; then
+  sudo semanage fcontext -a -t bin_t "${APP_REAL}(/.*)?" >/dev/null 2>&1 || true
+fi
+sudo restorecon -R "$APP_REAL" 2>/dev/null || true
+# No semanage (or a policy that still resolves to var_t): label it directly.
+if command -v selinuxenabled >/dev/null 2>&1 && selinuxenabled 2>/dev/null \
+   && ! ls -Z "$APP_REAL/Nexus" 2>/dev/null | grep -q bin_t; then
+  sudo chcon -R -t bin_t "$APP_REAL" 2>/dev/null || true
+fi
 
 # Desktop menu entry just opens the dashboard - the binary is the service now,
 # not a user-launched app. (The tray's "Open Dashboard" gives the --app window.)

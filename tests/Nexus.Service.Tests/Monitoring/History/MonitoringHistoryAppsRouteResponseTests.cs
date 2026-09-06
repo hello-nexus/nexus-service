@@ -312,6 +312,19 @@ public class MonitoringHistoryAppsRouteResponseTests
     }
 
     [Fact]
+    public void MergeAppTail_CollapsesDuplicateDbTimestamps_LaterOccurrenceWins()
+    {
+        // A batch re-flushed after a partial store failure holds a tick
+        // twice; the merged series must carry it once.
+        var dbPoints = new[] { new AppRawPoint(1000, 10, null), new AppRawPoint(1005, 20, null), new AppRawPoint(1000, 11, null) };
+
+        var merged = MonitoringHistoryRoutes.MergeAppTail(dbPoints, Array.Empty<(long, AppMetricSample)>(), "app.exe");
+
+        Assert.Equal(new long[] { 1000, 1005 }, merged.Select(p => p.TsSec));
+        Assert.Equal(11, merged[0].Value);
+    }
+
+    [Fact]
     public void MergeAppTail_MergesDbPointsWithTailPoints_TailWinningOnOverlap()
     {
         var dbPoints = new[] { new AppRawPoint(1000, 10, null) };

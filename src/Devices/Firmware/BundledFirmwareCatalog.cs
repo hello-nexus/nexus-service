@@ -9,9 +9,10 @@ namespace Nexus.Service.Devices.Firmware;
 /// <summary>
 /// Read-only catalog of firmware images shipped inside the service binary.
 ///
-/// Firmware is embedded at build time (see the <c>data/firmware/**/*.hex</c>
-/// <c>EmbeddedResource</c> group in <c>Nexus.Service.csproj</c>) under the
-/// manifest name <c>firmware/&lt;deviceId&gt;/&lt;version&gt;.hex</c>, where
+/// Firmware is embedded at build time from the firmware directory the csproj
+/// finds (vendor images kept outside this repository; see the README's Build
+/// section) under the manifest name
+/// <c>firmware/&lt;deviceId&gt;/&lt;version&gt;.hex</c>, where
 /// <c>deviceId</c> matches <see cref="IDeviceHandler.Id"/>. There is no OTA /
 /// download path - the only versions a machine can install are the ones baked
 /// into the build it is running.

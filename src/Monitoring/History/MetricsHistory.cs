@@ -54,10 +54,6 @@ public static class MetricsHistory
     /// with true zeros.</summary>
     public const double AppUsageEpsilon = 0.0;
 
-    /// <summary>Default apps returned by GET /monitoring/history/apps when
-    /// maxApps is not specified.</summary>
-    public const int DefaultMaxApps = 15;
-
     /// <summary>Default points per app returned by GET /monitoring/history/apps
     /// when maxPoints is not specified.</summary>
     public const int DefaultMaxAppPoints = 100;

@@ -1,6 +1,7 @@
 using System.IO;
 using Nexus.Service.Models.Transfer;
 using Nexus.Service.Persistence;
+using Nexus.Service.Platform;
 
 namespace Nexus.Service.Transfer;
 
@@ -14,11 +15,39 @@ public sealed record TransferAttentionNotice(string Title, string Text, string? 
 /// <summary>
 /// Destination folder + safe-write helper for phone→PC transfers. Resolution
 /// order: explicit settings override → the interactive user's Downloads/Nexus
-/// (helper-reported on Windows - the Session-0 service can't resolve per-user
-/// known folders itself) → CommonApplicationData/Nexus/inbox.
+/// → CommonApplicationData/Nexus/inbox.
+///
+/// On Windows under LocalSystem the file is FOR the interactive user, so it is
+/// written AS that user whenever one is logged on, the settings override
+/// included: the Downloads folder is resolved from the helper's WTS-verified
+/// session id (never from a path the helper - any process in that session -
+/// reports), and every create/move runs impersonated under that session's
+/// token. A junction in the user's Downloads then reaches only what the user
+/// can already reach, instead of redirecting a SYSTEM write. With nobody logged
+/// on, the override or the fallback is written as SYSTEM; the fallback is
+/// locked so it cannot be a pre-planted junction, with Users keeping Modify on
+/// the files inside so they can still take them away later.
 /// </summary>
 public sealed class TransferInbox
 {
+    /// <summary>
+    /// A resolved destination plus, under LocalSystem, the interactive user's
+    /// token the writes are impersonated under. Dispose after the request.
+    /// </summary>
+    public sealed class InboxTarget : IDisposable
+    {
+        public string Dir { get; }
+        internal Microsoft.Win32.SafeHandles.SafeAccessTokenHandle? Token { get; }
+
+        internal InboxTarget(string dir, Microsoft.Win32.SafeHandles.SafeAccessTokenHandle? token = null)
+        {
+            Dir = dir;
+            Token = token;
+        }
+
+        public void Dispose() => Token?.Dispose();
+    }
+
     /// <summary>Per-request cap for /transfer/items - phone videos routinely exceed the global 100 MB Kestrel limit.</summary>
     public const long MaxUploadBytes = 2L * 1024 * 1024 * 1024;
     public const int MaxClipboardChars = 1024 * 1024;
@@ -66,27 +95,130 @@ public sealed class TransferInbox
         }
     }
 
-    public string ResolveDir()
+    public InboxTarget ResolveTarget()
     {
         var configured = _store.Load().TransferInboxPath;
-        if (!string.IsNullOrWhiteSpace(configured))
-            return configured;
+        var overrideDir = string.IsNullOrWhiteSpace(configured) ? null : configured;
 
 #if WINDOWS
-        var downloads = _services.GetService<Nexus.Service.Helper.HelperRegistry>()?.GetAny()?.DownloadsDir;
-        if (!string.IsNullOrWhiteSpace(downloads))
-            return Path.Combine(downloads, "Nexus");
+        if (WindowsDirectorySecurity.IsLocalSystem())
+        {
+            var helper = _services.GetService<Nexus.Service.Helper.HelperRegistry>()?.GetAny();
+            if (helper is not null && TryOpenSessionToken(helper.SessionId) is { } token)
+            {
+                var dir = overrideDir;
+                if (dir is null)
+                {
+                    var downloads = ResolveDownloadsDir(token);
+                    if (!string.IsNullOrWhiteSpace(downloads))
+                        dir = Path.Combine(downloads, "Nexus");
+                }
+                if (dir is not null)
+                    return new InboxTarget(dir, token);
+                token.Dispose();
+            }
+            if (overrideDir is not null)
+                return new InboxTarget(overrideDir);
+            // Nobody is logged on to receive it. The machine-wide fallback lives
+            // under %ProgramData%, where any local user can pre-create a subdir
+            // as a junction; SYSTEM writes there only once it owns a locked dir.
+            var fallback = FallbackDir();
+            WindowsDirectorySecurity.Protect(fallback, resetOwner: true, usersModifyChildren: true);
+            if (!WindowsDirectorySecurity.IsOwnedByAdmins(fallback))
+                throw new InvalidOperationException("transfer inbox is not owned by SYSTEM/Administrators");
+            return new InboxTarget(fallback);
+        }
+        // Interactive run: the service already runs as the user the helper
+        // serves, so the helper-reported folder carries no privilege gap.
+        if (overrideDir is not null)
+            return new InboxTarget(overrideDir);
+        var reported = _services.GetService<Nexus.Service.Helper.HelperRegistry>()?.GetAny()?.DownloadsDir;
+        if (!string.IsNullOrWhiteSpace(reported))
+            return new InboxTarget(Path.Combine(reported, "Nexus"));
+        return new InboxTarget(FallbackDir());
 #else
+        if (overrideDir is not null)
+            return new InboxTarget(overrideDir);
         var userDownloads = Path.Combine(
             Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), "Downloads");
         if (Directory.Exists(userDownloads))
-            return Path.Combine(userDownloads, "Nexus");
+            return new InboxTarget(Path.Combine(userDownloads, "Nexus"));
+        return new InboxTarget(FallbackDir());
 #endif
-        return Path.Combine(
-            Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData), "Nexus", "inbox");
     }
 
-    public async Task<TransferSavedItem> SaveAsync(Stream content, string? rawFileName, string dir, CancellationToken ct)
+    private static string FallbackDir() => Path.Combine(
+        Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData), "Nexus", "inbox");
+
+#if WINDOWS
+    private static Microsoft.Win32.SafeHandles.SafeAccessTokenHandle? TryOpenSessionToken(int sessionId)
+    {
+        if (sessionId < 0)
+            return null;
+        try
+        {
+            if (!WTSQueryUserToken((uint)sessionId, out var raw) || raw == IntPtr.Zero)
+                return null;
+            return new Microsoft.Win32.SafeHandles.SafeAccessTokenHandle(raw);
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    /// <summary>The session user's Downloads folder (relocatable via folder Properties → Location), resolved through their token.</summary>
+    private static string ResolveDownloadsDir(Microsoft.Win32.SafeHandles.SafeAccessTokenHandle token)
+    {
+        try
+        {
+            var downloads = new Guid("374DE290-123F-4565-9164-39C4925E467B"); // FOLDERID_Downloads
+            if (SHGetKnownFolderPath(in downloads, 0, token.DangerousGetHandle(), out var raw) == 0 && raw != IntPtr.Zero)
+            {
+                try
+                {
+                    return System.Runtime.InteropServices.Marshal.PtrToStringUni(raw) ?? "";
+                }
+                finally
+                {
+                    System.Runtime.InteropServices.Marshal.FreeCoTaskMem(raw);
+                }
+            }
+        }
+        catch { }
+        return "";
+    }
+
+    private static Task<T> RunAsTargetAsync<T>(InboxTarget target, Func<Task<T>> body)
+        => target.Token is { } token
+            ? System.Security.Principal.WindowsIdentity.RunImpersonatedAsync(token, body)
+            : body();
+
+    private static void RunAsTarget(InboxTarget target, Action body)
+    {
+        if (target.Token is { } token)
+            System.Security.Principal.WindowsIdentity.RunImpersonated(token, body);
+        else
+            body();
+    }
+
+    [System.Runtime.InteropServices.DllImport("wtsapi32.dll", SetLastError = true)]
+    private static extern bool WTSQueryUserToken(uint sessionId, out IntPtr token);
+
+    [System.Runtime.InteropServices.DllImport("shell32.dll")]
+    private static extern int SHGetKnownFolderPath(in Guid rfid, uint dwFlags, IntPtr hToken, out IntPtr ppszPath);
+#endif
+
+    public Task<TransferSavedItem> SaveAsync(Stream content, string? rawFileName, InboxTarget target, CancellationToken ct)
+    {
+#if WINDOWS
+        return RunAsTargetAsync(target, () => SaveCoreAsync(content, rawFileName, target.Dir, ct));
+#else
+        return SaveCoreAsync(content, rawFileName, target.Dir, ct);
+#endif
+    }
+
+    private static async Task<TransferSavedItem> SaveCoreAsync(Stream content, string? rawFileName, string dir, CancellationToken ct)
     {
         Directory.CreateDirectory(dir);
         var name = SanitizeFileName(rawFileName);
@@ -139,7 +271,16 @@ public sealed class TransferInbox
     }
 
     /// <summary>Best-effort removal of staging files orphaned by a crash mid-upload.</summary>
-    public static void SweepStalePartials(string dir)
+    public static void SweepStalePartials(InboxTarget target)
+    {
+#if WINDOWS
+        RunAsTarget(target, () => SweepStalePartials(target.Dir));
+#else
+        SweepStalePartials(target.Dir);
+#endif
+    }
+
+    internal static void SweepStalePartials(string dir)
     {
         try
         {

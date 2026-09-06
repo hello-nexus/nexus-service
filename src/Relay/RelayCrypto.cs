@@ -19,6 +19,8 @@ namespace Nexus.Service.Relay;
 ///   relayRoot = HKDF(IKM=utf8(token),    salt=∅,        info="nexus-relay-root-v1",       L=32)
 ///   rid       = b64url-nopad( HKDF(IKM=relayRoot, salt=∅, info="nexus-relay-rendezvous-v1", L=16) )
 ///   aeadKey   = HKDF(IKM=relayRoot,       salt=connSalt, info="nexus-relay-aead-v1",        L=32)
+///   aeadKey2  = HKDF(IKM=relayRoot,       salt=connSalt||hostNonce, info="nexus-relay-aead-v2", L=32)
+///               (protocol v2 in-band rekey, see SealedChannelKeys)
 ///
 /// Frame (AES-256-GCM, AAD empty):
 ///   frame = nonce(12) || ciphertext || tag(16)
@@ -32,6 +34,7 @@ public static class RelayCrypto
     public const int RidLength = 16;
     public const int AeadKeyLength = 32;
     public const int ConnSaltLength = 16;
+    public const int HostNonceLength = 16;
     public const int NonceLength = 12;
     public const int TagLength = 16;
 
@@ -44,6 +47,7 @@ public static class RelayCrypto
     private static readonly byte[] InfoRendezvous = Encoding.UTF8.GetBytes("nexus-relay-rendezvous-v1");
     private static readonly byte[] InfoHttpRendezvous = Encoding.UTF8.GetBytes("nexus-relay-http-rendezvous-v1");
     private static readonly byte[] InfoAead = Encoding.UTF8.GetBytes("nexus-relay-aead-v1");
+    private static readonly byte[] InfoAeadV2 = Encoding.UTF8.GetBytes("nexus-relay-aead-v2");
     private static readonly byte[] InfoPairRoot = Encoding.UTF8.GetBytes("nexus-relay-pairroot-v1");
 
     /// <summary>
@@ -117,6 +121,24 @@ public static class RelayCrypto
         ArgumentNullException.ThrowIfNull(connSalt);
         var output = new byte[AeadKeyLength];
         HKDF.DeriveKey(HashAlgorithmName.SHA256, relayRoot, output, salt: connSalt, info: InfoAead);
+        return output;
+    }
+
+    /// <summary>
+    /// aeadKey2 = HKDF-SHA256(IKM=relayRoot, salt=connSalt||hostNonce, info="nexus-relay-aead-v2", L=32).
+    /// The host's 16 random bytes keep the key fresh even when a client salt
+    /// repeats, so a recorded connection cannot replay (<see cref="SealedChannelKeys"/>).
+    /// </summary>
+    public static byte[] DeriveRekeyedAeadKey(byte[] relayRoot, byte[] connSalt, byte[] hostNonce)
+    {
+        ArgumentNullException.ThrowIfNull(relayRoot);
+        ArgumentNullException.ThrowIfNull(connSalt);
+        ArgumentNullException.ThrowIfNull(hostNonce);
+        var salt = new byte[connSalt.Length + hostNonce.Length];
+        connSalt.CopyTo(salt, 0);
+        hostNonce.CopyTo(salt, connSalt.Length);
+        var output = new byte[AeadKeyLength];
+        HKDF.DeriveKey(HashAlgorithmName.SHA256, relayRoot, output, salt: salt, info: InfoAeadV2);
         return output;
     }
 

@@ -57,10 +57,11 @@ public sealed class Slv3Transport : ISlv3Transport
     // Bounds a stalled read so RfRead's reassembly loop treats a timeout as
     // "no more data" instead of blocking indefinitely.
     private const uint TxPipeTimeoutMs = 500;
-    // The RX's GetDev reply polls fans over RF before answering, which the plan
-    // documents as taking up to several seconds; a short timeout here reads as
-    // "zero fans" instead of a slow-but-valid reply.
-    private const uint RxPipeTimeoutMs = 3000;
+    // A GetDev reply is on the pipe within a millisecond, in 64-byte packets
+    // padded out to the page length; the RX sometimes sends one padding packet
+    // fewer, and the read of the missing one then runs to this timeout, so it
+    // is L-Connect's short one (Y70 USBPcap 2026-09-04).
+    private const uint RxPipeTimeoutMs = 100;
 
     private readonly Microsoft.Win32.SafeHandles.SafeFileHandle _fileHandle;
     private readonly IntPtr _winUsbHandle;
@@ -124,6 +125,14 @@ public sealed class Slv3Transport : ISlv3Transport
         var buffer = frame.ToArray();
         lock (_ioLock)
         {
+            if (Role == Slv3DongleRole.Rx)
+            {
+                // A GetDev reply arrives as 64-byte packets; whatever a previous
+                // poll's read left buffered (the master's own record, a late
+                // packet) would otherwise head the next reply and fail its
+                // command-echo check. L-Connect flushes before every poll.
+                Slv3WinUsbInterop.WinUsb_FlushPipe(_winUsbHandle, Slv3Protocol.ReadPipeId);
+            }
             return Slv3WinUsbInterop.WinUsb_WritePipe(
                 _winUsbHandle, Slv3Protocol.WritePipeId, buffer, (uint)buffer.Length, out _, IntPtr.Zero);
         }

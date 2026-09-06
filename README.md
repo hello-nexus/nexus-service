@@ -1,254 +1,223 @@
 # nexus-service
 
-The local Nexus hardware service. One Native-AOT binary that runs on the user's PC (Windows, macOS, or Linux), talks to the hardware, and exposes a REST + WebSocket API that the [`nexus-web`](https://github.com/hello-nexus/nexus-web) dashboard, the on-device panels, and [`nexus-overlay`](https://github.com/hello-nexus/nexus-overlay) all consume.
-
-This is the engine of [Nexus](https://hellonexus.com). The other repos are clients of this one.
+The local Nexus hardware service: one Native-AOT binary per OS (Windows, macOS,
+Linux) that talks to the hardware and exposes a REST + WebSocket API on the
+user's PC. Everything else in [Nexus](https://hellonexus.com) is a client of
+this process: the [`nexus-web`](https://github.com/hello-nexus/nexus-web)
+dashboard, the on-device panels, the phone companions, and
+[`nexus-overlay`](https://github.com/hello-nexus/nexus-overlay).
 
 ## What it does
 
-- **Sensors / monitoring** - CPU, GPU, RAM, network, disk, fan, temp, FPS, battery (laptop), media sessions. LibreHardwareMonitor on Windows, IOKit on macOS, sysfs/hwmon on Linux. Timeline events (app opens, admin elevations, USB attach/detach, user-typed notes) are collected by `Monitoring/Events/MonitoringEventCollector` into an append-only binary log and served over `GET`/`POST`/`DELETE /monitoring/events` for the graph's event lane; privacy-capability access stays in its own store behind `GET /monitoring/privacy`. Per-drive SMART read intervals (a SMART read is an ATA pass-through that reloads a parked head) are configurable via `GET /monitoring/smart-poll` plus the `monitoring.smartPollSeconds` preference, and applied through LibreHardwareMonitor's `StorageDevice.SmartUpdateCycleCount`.
-- **Cooling** - fan curves, pump speed, AIO control. Per-device drivers under `Cooling/` + `QSeries/`.
-- **Lighting** - RGB control via a bundled [headless OpenRGB child process](https://github.com/hello-nexus/openrgb-headless), plus first-party HYTE and Lian Li peripheral protocols. Hardware OpenRGB can only find when told it exists (QMK-OpenRGB keyboards, E1.31/WLED devices) is registered through `/devices/openrgb/manual-devices/*`, which can also adopt an existing OpenRGB install's registrations. Effects engine, screen sync, audio sync, anime mode, game sync (drive your own hardware from a game's lighting: Razer Chroma, Alienware LightFX, and Logitech capture via bundled shims, plus CS2 Game State Integration).
-- **Peripherals** - first-party USB device drivers (HYTE Keeb/CNVS/hubs, the Lian Li Uni fan family, Galahad II AIO, Strimer, Corsair iCUE LINK and Xeneon Edge, iBUYPOWER AW5, Tryx, Q-Series, Y70, Nollie ARGB channel controllers) plus the curated supported-hardware catalogs behind `/peripherals/supported` and `/peripherals/all-supported` (`Peripherals/`).
-- **Tryx Panorama AIO screen** - drive the Panorama cooler's screen (custom video upload + transcode, presets, brightness, fan, sensor overlay) over CDC-ACM serial + ADB (`Peripherals/Tryx/`), exposed as a first-party device through the `/tryx/*` routes (`Routes/TryxRoutes.cs`); media uploads via `POST /tryx/media`.
-- **Elgato Stream Deck** - native gen1 (BMP) and gen2 (JPEG) HID transports across all 14 catalog models, from the button-only families to the screenless Pedal (bench-verified on the Mini; the rest transcribed from the MIT python-elgato-streamdeck and elgato-streamdeck references) over the existing HID stack (`Peripherals/StreamDeck/`), exposed as a first-party device with the full `/streamdeck/*` binding/config/image/dispatch contract (`Routes/StreamDeckRoutes.cs`) plus localhost-only bench/simulator routes (test-pattern, `dev/*` sim-press/simulate/models). Bindings share the same `DeckAction` union as the panel's Deck widget (`src/Deck/`), dispatched headlessly by `DeckActionExecutor`; the web layout editor is pending. A read-only importer (`Peripherals/StreamDeck/ElgatoImport/`, `GET`/`POST /streamdeck/elgato/*`) translates a local Elgato Stream Deck software profile (ProfilesV3 store) into a Nexus deck preset, never touching the Elgato install's own files. Key icons can also be user-supplied images (`DeckIcon` kind "image"), stored content-addressed and served through `POST`/`GET /deck/images` (`src/Deck/DeckImageStore.cs`).
-- **Diagnostics** - hardware failure surveillance: SMART/NVMe drive health, Windows event-log incidents (WHEA, bugchecks, TDRs, disk errors, app/game crashes), GPU throttle telemetry via the driver's NVML, AIO pump / fan stall detection, Windows Memory Diagnostic scheduling, and PnP problem sweep, aggregated into per-component health verdicts with tray alerts and a support-bundle ZIP export (`src/Diagnostics/`, `/diagnostics/*` routes).
-- **Panel runtimes** - pair + serve the React panel UIs for the HYTE Y70 secondary touch panel, mobile companion (`/panel/phone`), and Q-Series on-device screens.
-- **Streamed panels** - panels rendered off-screen by the overlay's stream engine and piped as H.264 to USB display devices through swappable transports (`src/Panel/Streams/`, `/panel/streams/*` routes); the ArtInChip D213 reference transport is DEV_TOOLS-only.
-- **Apps / widgets** - host for `nexus.app/1` SDK apps, with sensor bindings and a sandboxed Web Worker runtime. Legacy `nexus.widget/2` manifests still load.
-- **Activity** - screen-time, app detection, Steam / Discord / OBS integrations, shortcuts.
-- **Focus modes** - a named mode activates on a trigger (a catalog game's process, OBS streaming/recording, or by hand) and holds native notifications for release afterwards while deferring periodic cloud egress: heartbeat, telemetry flush, fleet retries, fps upload, OTA polling, cloud device reports. An opt-in extra puts every Nexus-rendered panel display to sleep. Modes are user-editable and one is active at a time, by list order (`src/FocusModes/`, `/api/focus*`, live on the `focus` WebSocket topic).
-- **Volume mixer** - per-application audio levels on the default output, one strip per process (`/system/audio/mixer/*`, live on the `audio/mixer` WebSocket topic). Windows only: the Core Audio session walk runs in the user-session helper, since Session 0 sees none of the interactive session's audio. Levels are remembered by process name and re-applied when the app next plays, and named presets apply a whole set at once (`src/Audio/AudioMixerService.cs`).
-- **Remote access** - relay client so the phone panel keeps working away from the LAN (nearest regional relay picked via the cloud API), with an opportunistic WebRTC DataChannel direct P2P upgrade (STUN only, signaled over the existing relay tunnel via `POST /rtc/offer`) so a relayed session stops paying relay hop latency once a direct path exists.
-- **Cloud accounts** - optional Nexus account (email/password); the service holds the tokens and backs this machine's profile library up to the account (debounced push, revision-based conflict resolution) and reports device specs, all through local `/cloud/*` routes (desktop-bearer only, never exposed to a paired phone). Profiles are keyed per machine, so a sync pass only ever touches rows this machine owns; copying config between machines is an explicit import (`/cloud/profiles/library`, `/cloud/profiles/{installId}/{profileId}/preview`, `/cloud/profiles/import`) that overwrites only the categories the user picks. Sync payloads carry the shareable categories only, so no integration credential and no machine-scoped state leaves the box.
-- **Webcam** - phone-as-webcam: the mobile companion streams its camera into an OS virtual camera device (`Webcam/`, per-OS backends).
-- **Pairing + auth** - local TLS on `:9443` with SPKI-pinned client sessions (the mobile apps and the dashboard), 6-digit pair codes with SAS verification, host-side approval.
-- **Tray + lifecycle** - Windows service install / scheduled-task launcher / system tray. macOS launchd. Linux root systemd daemon that adopts the login session for tray and media. Single-instance, self-elevation when needed.
-- **App store** - downloadable SDK apps from the cloud catalog. `Store/StoreCatalogProxy` fetches the listing from the cloud API (`NEXUS_CLOUD_API` overrides the base) and rewrites its asset URLs onto `/apps-api/store/media/*`: the CSP allows the catalog fetch (`connect-src` lists api.hellonexus.com) but not the imagery, since `img-src` has no entry for assets.hellonexus.com. `Store/StoreInstaller` composes the artifact URL itself from the app id and version rather than trusting a URL from the response, verifies the download against the catalog's sha256 (a missing hash is refused outright; the size is only checked when the caller supplies a nonzero one), and extracts into a staging dir that is moved into place only after the unpacked `manifest.json` agrees on id and version. `Store/StoreEntitlements` is the account half: an install first asks the cloud for a download grant with the active account's token, so an install without a linked account is refused here (`sign_in_required`) rather than in the UI, and the grant's hash supersedes whatever the caller sent. It also serves Manage purchases, joining the account's cloud entitlements with what is on disk (installed version, folder creation time, folder size). Routes: `GET /apps-api/store/apps`, `GET /apps-api/store/apps/{appId}`, `GET /apps-api/store/media/{**path}`, `POST /apps-api/store/install`, `GET /apps-api/store/library` (`Routes/AppRoutes.cs`).
-- **AI Integration** - an in-process MCP (Model Context Protocol) server, off by default, that lets an AI client read this PC's hardware telemetry and control cooling, lighting, and profiles over a dedicated loopback listener speaking Streamable HTTP (`src/Mcp/`). A bearer token separate from the dashboard's pairing token; per-capability consent (telemetry/cooling/lighting/profiles/history) checked live on every call; every non-read-only call audited to a SQLite-backed history store. Configured from the dashboard via `/ai/status`, `/ai/config`, `/ai/token/rotate` (`Routes/AiRoutes.cs`).
-- **Local AI assistant** - a natural-language query bar backed by a self-managed [Ollama](https://ollama.com) runtime and a small local model (Qwen3.5), off until the user installs it (`src/Mcp/Assistant/`). The service downloads the official portable Ollama archive from GitHub over HTTPS, verifies its SHA-256 against the release's published `sha256sum.txt`, and supervises `ollama serve` as a child process bound to loopback (or detects and reuses an already-installed system Ollama on the default port instead of downloading). Runtime + model data lives under the Nexus data dir's `assistant/` subfolder, never in the installer. A user query builds MCP tool definitions from the same `McpToolRegistry` the MCP listener uses, drives Ollama's tool-calling `/api/chat`, and runs every tool call through the registry so the SAME consent + audit gate applies. Surfaced at `/ai/assistant/*` (`Routes/AiAssistantRoutes.cs`) with live install/download/pull progress on the `aiAssistant` WebSocket topic.
+| Area | Summary |
+| --- | --- |
+| **Monitoring** | CPU, GPU, RAM, disk, network, fan, temperature, FPS and battery sensors (LibreHardwareMonitor on Windows, IOKit on macOS, sysfs on Linux), 1 Hz history, a timeline of system events, per-drive SMART health. |
+| **Cooling** | Fan curves, pump and AIO control across the first-party and vendor hubs the service drives, with calibration and safety limits. |
+| **Lighting** | RGB for the whole OpenRGB catalog through a bundled headless child process, plus first-party protocols. Effects engine, screen and audio sync, LAN smart lights (Hue, Nanoleaf, Govee), game sync (Razer Chroma, LightFX and Logitech capture shims, CS2 Game State Integration). |
+| **Devices** | Native USB drivers: HYTE (Y70, Q-series, Keeb, CNVS, hubs), Lian Li (Uni Fan, Galahad II, Strimer, wireless), Corsair iCUE LINK and Xeneon Edge, NZXT Kraken, iBUYPOWER (AW5, keyboards, mice), Tryx Panorama, Elgato Stream Deck, Nollie. Firmware updates, and detection of competing vendor software. |
+| **Panels** | Pairs and serves the React panel UIs for the Y70 touch panel, Q-series screens and the phone companion, and streams off-screen rendered panels as H.264 to USB display devices. |
+| **Apps** | Host for `nexus.app/1` SDK apps (sandboxed Web Worker runtime, sensor bindings) and the cloud app store. |
+| **Activity** | Screen time, app detection, installed-game catalog with per-game FPS sessions, focus modes, per-app volume mixer, media sessions, and the Steam, Discord, OBS, Twitch and Home Assistant integrations. |
+| **Diagnostics** | SMART/NVMe health, Windows event-log incidents, GPU throttling, pump and fan stall detection, rolled up into per-component health verdicts with a support-bundle export. |
+| **Remote** | Pairing (local TLS, SPKI pinning, pair codes), a regional relay for the phone away from the LAN with a WebRTC direct upgrade, and phone-as-webcam. |
+| **Cloud** | Optional Nexus account: profile backup and sync, device reporting, fleet telemetry, OTA self-update. Disabled in unofficial builds (see Build). |
+| **AI** | In-process MCP (Model Context Protocol) server, off by default, exposing telemetry, diagnostics, history and control behind per-capability consent and an audit log. Dev-tools builds add a local Ollama-backed assistant. |
+| **Lifecycle** | Windows service and tray, macOS launchd, Linux systemd daemon. Single instance, self-elevation, migration from Nexus 2 and FanControl. |
+
+Per-subsystem detail (routes, invariants, security notes) is in
+[`docs/subsystems.md`](docs/subsystems.md). The generated REST inventory is
+[`docs/openapi.json`](docs/openapi.json); WebSocket topics and polling cadence
+are in [`docs/network-transport.md`](docs/network-transport.md).
 
 ## Ports
 
-- `9400` HTTP (loopback) - default dashboard + panel transport.
-- `9401` HTTP (loopback, Windows-only) - Q-series panel tunnel listener; the host-side target of the panel's `adb reverse`, so inbound activity there proves the physical panel is alive. Skipped silently if the port is taken.
-- `9420` HTTP (loopback only) - MCP (Model Context Protocol) server for AI Integration, when enabled. Single endpoint `POST /mcp`, its own bearer token, off by default.
-- `9443` HTTPS - pairing and remote panel surfaces, served over a locally generated cert. The SPKI of that cert is what gets pinned by clients.
-- `11434` HTTP (loopback, internal) - the managed (or detected system) Ollama runtime backing the local AI assistant, when installed. Not reachable from outside the service process; the service talks to it over its own HTTP client. Configurable via `AiIntegration.AssistantRuntimePort` in settings.
-- `6742` TCP (loopback, internal) - OpenRGB SDK server (the headless OpenRGB child process).
-
-See `docs/network-transport.md` for the full polling/topic inventory and `docs/openapi.json` for the generated REST route inventory (regenerate with `dotnet run -- --emit-openapi docs/openapi.json`; see Build).
+| Port | Bind | Purpose |
+| --- | --- | --- |
+| `9400` | HTTP, loopback | Dashboard and panel transport. The bind address is the first CLI argument. |
+| `9443` | HTTPS | Pairing and remote panel surfaces over a locally generated certificate whose SPKI the clients pin. Derived from the HTTP port. |
+| `9401` | HTTP, loopback, Windows | Q-series panel tunnel: the host side of the panel's `adb reverse`. Skipped silently if taken. |
+| `9420` | HTTP, loopback | MCP server, when AI Integration is enabled. Single endpoint `POST /mcp`, its own bearer token. |
+| `6742` | TCP, loopback | OpenRGB SDK server of the headless child process. |
+| `11434` | HTTP, loopback | Managed Ollama runtime behind the local assistant (dev-tools builds only). |
 
 ## Develop
 
-Prerequisites: .NET 10 SDK. Node.js 22 LTS or newer if you want the
-embedded dashboard (the build pulls it in from a sibling `nexus-web`
-checkout).
+Prerequisites: .NET 10 SDK. Node.js 22 if you want the embedded dashboard;
+the build pulls it in from a sibling `nexus-web` checkout.
 
 ```sh
-# one-time: dashboard dependencies (skip if you don't need the web UI)
-cd ../nexus-web && npm install && cd ../nexus-service
+cd ../nexus-web && npm install && cd ../nexus-service   # once, for the web UI
 
-dotnet run          # JIT dev build at http://localhost:9400
-dotnet test         # xUnit suite
+dotnet run              # JIT dev build at http://localhost:9400
+dotnet test             # xUnit suite
+dotnet build -p:BuildWeb=false   # skip the nexus-web build when iterating on service code
 ```
 
-Notes:
+- The build runs `npm run build:service` in `../nexus-web` and copies its
+  `dist/` into `wwwroot/`.
+- OpenRGB binaries under `Bundled/<rid>/openrgb/` are optional in development;
+  without them RGB features report as unavailable.
+- `dotnet run -- http://localhost:9400` overrides the bind address.
 
-- The build auto-runs `npm run build:service` in `../nexus-web` and copies
-  its `dist/` into `wwwroot/`. Skip that step with
-  `dotnet build -p:BuildWeb=false` when iterating on service code only.
-- The OpenRGB bundle is optional for development: without binaries under
-  `Bundled/<rid>/openrgb/` the service runs with RGB features unavailable.
-- Bind address is the first CLI arg: `dotnet run -- http://localhost:9400`.
-- `NEXUS_OPENRGB_VERBOSITY` = `verbose` or `trace` raises what the OpenRGB
-  child process prints, which the service relays into its own log - use
-  `trace` to see per-device driver detail such as negotiated packet sizes.
-  Applies at daemon launch, so restart the service (and set it machine-scope,
-  since the Windows service runs as LocalSystem and cannot see a user-scope
-  variable). Unrecognized values are ignored. Unset it again afterwards; it is
-  a diagnostic, not a default.
-- `NEXUS_STOP_SETTLE_MS` overrides how long turning lighting off waits after
-  pushing the final black before the OpenRGB subprocess is killed (default 300,
-  clamped to 5000). OpenRGB applies a frame on a per-controller thread and the
-  SDK has no completion ack, so a shorter wait can kill the daemon before a slow
-  controller - RGB RAM over SMBus - has written, leaving it lit. Lower it only to
-  measure that boundary. Set it machine-scope on Windows: the service runs as
-  LocalSystem and cannot see a user-scope variable.
-- `NEXUS_DISCORD_PRESENCE_CLIENT_ID` overrides the Discord application whose
-  name and art Rich Presence publishes. Builds ship with the Nexus application
-  compiled in, so this is only needed to test presence against a scratch
-  application. Set it machine-scope on Windows: the service runs as LocalSystem
-  and cannot see a user-scope variable. Applies at service start.
+Diagnostic environment variables (on Windows set them machine-scope: the
+service runs as LocalSystem and cannot see user-scope variables):
+
+| Variable | Effect |
+| --- | --- |
+| `NEXUS_DATA_ROOT` | Data directory override on every platform, for pointing a test host at a throwaway store. |
+| `NEXUS_OPENRGB_VERBOSITY` | `verbose` or `trace` raises what the OpenRGB child prints into the service log. Applies at launch. |
+| `NEXUS_STOP_SETTLE_MS` | How long turning lighting off waits after the final black frame before the OpenRGB child is killed (default 300, max 5000). |
+| `NEXUS_DISCORD_PRESENCE_CLIENT_ID` | Discord application used for Rich Presence, to test against a scratch application. |
+| `NEXUS_API_BASE`, `NEXUS_CLOUD_API` | Cloud API base override for the account and LED-mapping clients, and for the store catalog proxy respectively. |
 
 ## Source layout
 
 ```
 src/
-  Program.cs          # AOT minimal-API host bootstrap
-  Routes/             # REST endpoint handlers (system, cooling, lighting, devices, ...)
-  Sockets/            # multiplex WebSocket + topic auth
-  Sensors/            # LibreHardwareMonitor (Win), IOKit (Mac), sysfs (Linux)
-  Cooling/  QSeries/  # fan/pump drivers
-  Lighting/           # OpenRGB bridge, HYTE protocols, effects, screen+audio sync
-  Peripherals/        # mouse/keyboard + USB hub drivers (Lian Li Uni/AIO/Strimer); Tryx/ = Panorama AIO screen (serial + ADB)
-  Panel/              # /panel/* pairing + token endpoints; Streams/ = streamed-panel sessions + H.264 ingest + device transports
-  Widgets/            # nexus.app/1 app host (manifest loader, data sources, worker sandbox)
-  Activity/           # screentime, app detection
-  Discord/ Steam/ Obs/# third-party integrations
-  Twitch/             # anonymous Twitch chat reader (IRC over WS) + emote CDN proxy, fanned out on twitch/chat/{channel}
-  Integrations/
-    HomeAssistant/    # Home Assistant: REST+WS client, entity cache, broadcast (GET/POST /home-assistant/*)
-  Media/              # media session state (GSMTC on Windows)
-  Diagnostics/        # failure diagnostics: event-log monitor, SMART/NVMe health, GPU/cooling/memory checks, health model + support bundle
-  Fps/                # FPS capture
-  Games/              # installed-game catalog (Steam/Epic/Ubisoft) + per-game fps session recorder/store (Windows)
-  Relay/              # off-LAN relay client for the phone panel
-  Rtc/                # WebRTC DataChannel direct P2P transport (SIPSorcery), signaled via POST /rtc/offer
-  Discovery/          # mDNS/Bonjour advertising
-  Auth/  Security/    # local pairing, SPKI pinning, token issuance
-  Store/              # downloadable SDK apps: cloud catalog proxy (rewrites media onto a same-origin route, which img-src requires), the artifact installer (hash-verified, staged then moved) and the account gate + purchase library
-  Cloud/              # Nexus cloud accounts: api.hellonexus.com client (NEXUS_API_BASE overrides the default base URL), profile sync, device reporting (/cloud/* routes, desktop-bearer only)
-  Persistence/        # IConfigStore (per-OS app-data location)
-  Net/                # local cert provisioning, loopback discovery
-  Lifecycle/          # service install/uninstall, scheduled task, tray entry, CLI flags
-  Platform/           # OS-specific shims behind interfaces
-  Update/             # OTA self-update engine (IUpdateSource, GitHubReleaseProvider, UpdateService poller, UpdateDownloader, UpdateIntegrity, UpdateInstaller)
-  Deck/               # shared DeckAction/DeckConfig binding model + headless executor (touch deck widget + physical Stream Deck)
-  Actions/            # SystemActions - OS-level actions (input, open-url/path, power, audio, volume) shared by /system/* routes and the deck executor
-  Mcp/                # AI Integration: the MCP (Model Context Protocol) server host, tool registry, read and write tools (telemetry, cooling, lighting, profiles), and the audit/history store; Assistant/ = the local AI assistant (managed Ollama runtime, HTTP client, model catalog, agentic query loop)
-  ...                 # supporting subsystems (Devices, Monitoring, Models, Plugins, Telemetry, ...)
+  Program.cs           # AOT minimal-API host bootstrap
+  Routes/              # one file per REST surface
+  Sockets/             # multiplexed WebSocket hub + topics
+  Auth/  Security/     # pairing tokens, panel/desktop access policy, local HTTPS cert, security headers
+  Sensors/             # LibreHardwareMonitor (Windows), IOKit (macOS), sysfs (Linux)
+  Monitoring/          # 1 Hz history store, timeline events, broadcaster
+  Cooling/             # curve engine, calibration, safety, per-hub cooling providers
+  QSeries/             # persisted adb transport to Q-series screens
+  Lighting/            # Engine/ effects + canvas, Rgb/ OpenRGB bridge, Zones/, Mappings/, Capture/, Smart/, GameSync/
+  Devices/             # device manager, USB detection, per-device handlers, firmware
+  Peripherals/         # protocol drivers per vendor (Hyte, LianLi*, Corsair*, Nzxt, Ibp, Tryx, StreamDeck, Keeb, Y70, ...)
+  Conflicts/           # competing vendor-software detection, device ownership, opt-in shutdown
+  Panel/               # panel pairing, kiosk launch, backgrounds; Streams/ = streamed-panel sessions + transports
+  Deck/  Rendering/    # deck action model + headless executor; server-rendered tiles and key images
+  Widgets/  Store/     # nexus.app/1 app host and installer; cloud app-store proxy, entitlements
+  Gallery/  Media/     # shared image sources; media import + library
+  Activity/            # screen time, app detection, audio analysis
+  Games/  Fps/         # installed-game catalog, FPS capture and per-game sessions
+  FocusModes/  Audio/  # focus modes; per-app volume mixer and audio playback
+  Steam/ Discord/ Obs/ Twitch/ Integrations/   # third-party integrations (Integrations/ = Home Assistant)
+  Diagnostics/         # event-log monitor, SMART/NVMe, GPU/cooling/memory checks, health model, support bundle
+  Relay/  Rtc/         # off-LAN relay client and sealed channels; WebRTC direct transport
+  Webcam/  Transfer/   # phone-as-webcam backends; phone-to-PC file transfer inbox
+  Discovery/  Net/     # mDNS advertising; local network helpers
+  Cloud/  Telemetry/   # account client, profile sync, device reporting; fleet telemetry
+  Update/              # OTA self-update engine
+  Mcp/                 # MCP server, tool registry, audit store; Assistant/ = local Ollama assistant
+  Lifecycle/  Platform/# install/uninstall, service and tray hosting, CLI flags; per-OS shims
+  Helper/              # user-session helper process (Windows): audio, displays, input, tray, and other work Session 0 cannot do
+  Persistence/         # settings, profiles, atomic JSON files, data paths
+  Migration/           # Nexus 2 and FanControl config import
+  Benchmarks/          # in-app hardware benchmark runner
+  Actions/ Common/ Defaults/ DependencyInjection/ Models/ Notifications/ Plugins/ Serialization/   # shared plumbing
 docs/
-  openapi.json        # generated REST route inventory (see Build)
-  network-transport.md# REST + WebSocket inventory + cadence
-  ws-topic-rbac.md    # who may subscribe to which WS topics
-  shader-benchmark.md # Q-series shader performance baseline
-Bundled/
-  win-x64/            # adb, dfu-util, dfu-driver, gamesync, pawnio, bench/ (clpeak, diskspd, primesieve, stream, vkpeak), d213/ (DevTools-gated panel blobs); openrgb + ffmpeg added at publish
-  osx-arm64/          # adb; openrgb + ffmpeg added at publish
-  linux-x64/          # adb; openrgb + ffmpeg added at publish
-  macos/  linux/      # tray/status icons, helpers, app icons
-installer/
-  Nexus.iss           # Inno Setup script
-  build-installer.ps1 # Windows installer assembly
-  msix/               # Microsoft Store MSIX packaging (full-trust launcher shell)
-  linux/              # tarball packager + install.sh (root systemd daemon)
+  subsystems.md        # per-subsystem detail: routes, invariants, security notes
+  openapi.json         # generated REST route inventory (see Build)
+  network-transport.md # WebSocket topics, polling cadence, reconnect semantics
+  ws-topic-rbac.md     # design note on per-topic WebSocket authorization
+  shader-benchmark.md  # Q-series shader performance baseline
+data/                  # shipped defaults: install defaults, animate templates, OpenRGB device catalog
+Bundled/               # per-RID third-party binaries (adb, dfu-util, pawnio, gamesync, bench CLIs), openrgb + ffmpeg added at publish; macos/ linux/ windows/ = first-party helpers, icons, macOS build scripts
+installer/             # Windows Inno Setup + web installer, MSIX, Linux tarball packager
 tests/
   Nexus.Service.Tests       # xUnit, AOT-safe
-  Nexus.Service.Benchmarks  # BenchmarkDotNet hot-path CPU/alloc, on-demand
-  aot-smoke.sh              # publishes the real AOT binary, smoke-tests JSON endpoints
+  Nexus.Service.Benchmarks  # BenchmarkDotNet hot paths, on-demand
 ```
 
 ## Build
 
-`NEXUS_CLIENT_TOKEN` (or `-p:NexusClientToken=`) carries the build credential
-minted by release CI; `~/.nexus-build/client-token` is the local fallback. Its
-presence defines `OFFICIAL_BUILD`, which is what wires up the cloud account,
-profile sync, relay, fleet telemetry, and OTA updater. A build without it -
-every public clone - is local-only: the hosted services are ours to run, and
-nothing in that binary dials them. `NEXUS_POSTHOG_KEY` is injected the same way.
-
-The project ships as a single AOT binary per OS. Windows targets `net10.0-windows10.0.19041.0` (C#/WinRT projections for GSMTC); macOS and Linux target plain `net10.0`.
+One AOT binary per OS. Windows targets `net10.0-windows10.0.19041.0`; macOS
+and Linux target `net10.0`.
 
 ```sh
-# Windows (from Mac or Windows; cross-compile from Mac is supported)
-dotnet publish -c Release -r win-x64 -o publish-win
-
-# macOS (Apple Silicon) - AOT is mandatory, do not pass -p:PublishAot=false
-dotnet publish -c Release -r osx-arm64 -o publish-mac
-
-# Linux (glibc x86-64)
+dotnet publish -c Release -r win-x64   -o publish-win     # cross-compiles from macOS too
+dotnet publish -c Release -r osx-arm64 -o publish-mac     # AOT is mandatory here; never pass -p:PublishAot=false
 dotnet publish -c Release -r linux-x64 -o publish-linux
 ```
 
-All publishes fail loudly if the bundled OpenRGB binaries aren't present under `Bundled/{rid}/openrgb/`. Build them from [`nexus-rgb`](https://github.com/hello-nexus/nexus-rgb) first - error messages from the csproj spell out the exact commands.
+- A publish fails loudly without the OpenRGB binaries under
+  `Bundled/<rid>/openrgb/`. Build them from
+  [`nexus-rgb`](https://github.com/hello-nexus/nexus-rgb) first; the csproj
+  error spells out the commands.
+- The bundled ffmpeg is stock upstream ffmpeg with a minimal LGPL-only
+  configuration, compiled by `scripts/build-ffmpeg-minimal.sh`. It is optional
+  at build time: `bash scripts/fetch-ffmpeg.sh all` (or `mac | win | linux`)
+  produces it once per RID.
+- Device firmware images are vendor files kept outside this repository. The
+  csproj embeds them from `NEXUS_FIRMWARE_DIR` (or `-p:NexusFirmwareDir=`), a
+  gitignored `data/firmware/`, or a sibling `firmware/` directory when one
+  exists. A public clone builds with an empty firmware catalog; an official
+  publish (one carrying the client token) fails without the images.
+- `-p:DevTools=true` compiles in internal tooling (the local AI assistant,
+  firmware downgrade paths, D213 panel discovery, the simulated Nexus 2
+  install). Distribution builds leave it unset.
+- `NEXUS_CLIENT_TOKEN` (or `-p:NexusClientToken=`) is the build credential
+  minted by release CI, with `~/.nexus-build/client-token` as the local
+  fallback. Its presence defines `OFFICIAL_BUILD`, which wires up the cloud
+  account, profile sync, relay, fleet telemetry and the OTA updater. A build
+  without it, which is every public clone, is local-only and dials none of the
+  hosted services. `NEXUS_POSTHOG_KEY` is injected the same way.
 
-The bundled ffmpeg has no separate repo: it is stock upstream ffmpeg compiled by `scripts/build-ffmpeg-minimal.sh` with a minimal LGPL-only configuration (image/gif/video decode for media import, scale/pad, screen and audio capture). It is optional at build time; produce it once per RID with:
+### Route inventory
 
-```sh
-bash scripts/fetch-ffmpeg.sh all    # or: mac | win | linux
-```
-
-### API route inventory
-
-`docs/openapi.json` is a generated OpenAPI 3.1 document listing every REST
-route the service exposes. It is produced from the live route registration -
-regenerate it after adding, removing, or renaming a route:
+`docs/openapi.json` is generated from the live route registration. Regenerate
+it whenever a route is added, removed or renamed:
 
 ```sh
 dotnet run -- --emit-openapi docs/openapi.json
 ```
 
-The flag starts the host only far enough to register endpoints (no hardware, no
-real port) and writes the document. In a `DEBUG` build the same document is also
-served live at `/openapi/v1.json`; a release build maps no such endpoint.
-Regenerate `docs/openapi.json` whenever a route is added, removed, or renamed.
+The flag starts the host only far enough to register endpoints. A `DEBUG`
+build also serves the document at `/openapi/v1.json`. The committed copy is
+the release flavour; dev-tools-only routes appear only when regenerated with
+`-p:DevTools=true`.
 
 ## Installers
 
-- **Windows** - after the publish, assemble `Nexus-Setup.exe`:
-
-  ```ps1
-  powershell -File installer/build-installer.ps1
-  ```
-
-- **Linux** - package the publish output into a tarball; end users extract
-  it and run `./install.sh`, which installs a root systemd daemon to
-  `/opt/nexus` (no udev rules or group membership needed). See
-  `installer/linux/README.md`:
-
-  ```sh
-  installer/linux/package.sh publish-linux
-  ```
-
-- **macOS** - `Bundled/macos/build-app.sh` wraps the publish output into
-  `Nexus.app`, relocating data out of `Contents/MacOS` into `Contents/Resources`
-  (symlinked back) so the bundle can be sealed. `Bundled/macos/sign-notarize.sh`
-  then deep-signs it with a Developer ID identity, packages `Nexus.dmg`,
-  notarizes via `notarytool`, and staples. Set `NEXUS_SKIP_CAMERA_EXTENSION=1`
-  to omit the camera system extension (CI, which can't provision it headlessly).
+- **Windows**: `powershell -File installer/build-installer.ps1` wraps the
+  publish output into `Nexus-Setup.exe`. `-Bootstrap` instead builds the two
+  payload-free web installers (`Nexus-Installer.exe`, `Nexus-Installer-Beta.exe`)
+  that hellonexus.com hands out; they are built once, not per release. See
+  `installer/README.md`.
+- **Linux**: `installer/linux/package.sh publish-linux` produces a tarball;
+  its `install.sh` installs a root systemd daemon to `/opt/nexus`. See
+  `installer/linux/README.md`.
+- **macOS**: `Bundled/macos/build-app.sh` wraps the publish output into
+  `Nexus.app`; `Bundled/macos/sign-notarize.sh` deep-signs it, packages
+  `Nexus.dmg`, notarizes and staples. `NEXUS_SKIP_CAMERA_EXTENSION=1` omits the
+  camera system extension (CI cannot provision it headlessly).
 
 ## Test
 
 ```sh
-dotnet test          # xUnit suite (JIT)
-tests/aot-smoke.sh   # publishes the real AOT binary and probes data endpoints
+dotnet test
 ```
 
-All tests are AOT-safe (no reflection-heavy frameworks). Network/parsing/state-machine logic is unit-tested; hardware drivers have provider-interface seams for fake implementations. The AOT smoke script exists because source-generated JSON gaps only show up in the trimmed binary, not under the JIT test host.
-
-The xUnit suite includes allocation-budget guards (`AllocationBudgetTests`) that
-assert the per-frame hot paths (lighting canvas, curve evaluation) stay
-zero-alloc and cap the monitoring-broadcast serialization. They use the
-thread-local GC counter, so they stay fast and deterministic in the default run.
-
-### Benchmarks (on-demand)
-
-`tests/Nexus.Service.Benchmarks` is a BenchmarkDotNet project measuring ns/op and
-bytes/op for the service hot paths (JSON broadcast serialization, lighting
-canvas ops, curve evaluation). It is not part of any solution or the publish, so
-it never affects the shipped binary. Run it explicitly:
+The suite is AOT-safe. Hardware drivers sit behind provider interfaces with
+fake implementations; allocation-budget tests keep the per-frame hot paths
+zero-alloc. `tests/Nexus.Service.Benchmarks` is a BenchmarkDotNet project for
+those hot paths, outside the solution and the publish:
 
 ```sh
-dotnet run -c Release -p:BuildWeb=false \
-  --project tests/Nexus.Service.Benchmarks -- --filter '*'
+dotnet run -c Release -p:BuildWeb=false --project tests/Nexus.Service.Benchmarks -- --filter '*'
 ```
 
 ## Releases
 
-Installer artifacts are published to [`hello-nexus/nexus`](https://github.com/hello-nexus/nexus) under semver tags (`v3.0.0`, `v3.1.0`, ...): `Nexus-Setup.exe` (Windows) and `Nexus.dmg` (macOS), alongside the mobile app builds from the wrapper repos. The download links on hellonexus.com point at `/releases/latest/download/<asset>`. Each release also carries a `SHA256SUMS` text asset containing the hex-encoded SHA-256 hash of `Nexus-Setup.exe`; the OTA engine uses this for integrity verification before installing.
-
-The canonical version lives in the `VERSION` file at the repo root (e.g. `3.0.0`). The build stamps `"v" + <VERSION content>` into `BuildInfo.Version` at compile time via the `SetGitVersion` MSBuild target.
+Installers are published as GitHub Releases on
+[`hello-nexus/nexus`](https://github.com/hello-nexus/nexus) under semver tags:
+`Nexus-Setup.exe`, `Nexus.dmg`, `Nexus-Linux-x64.tar.gz`, plus a `SHA256SUMS`
+asset the OTA engine verifies against before installing. The version is the
+`VERSION` file at the repo root; the build stamps it into `BuildInfo.Version`.
 
 ## Third-party
 
-OpenRGB (GPLv2) ships as a child process, source published at [`hello-nexus/openrgb-headless`](https://github.com/hello-nexus/openrgb-headless). A minimal LGPL-only ffmpeg build (`scripts/build-ffmpeg-minimal.sh`) ships alongside it. All bundled third-party components, including LibreHardwareMonitor, PawnIO, and dfu-util, are detailed with license info in [`THIRD-PARTY.md`](THIRD-PARTY.md).
+OpenRGB (GPLv2) ships as a separate child process, source at
+[`hello-nexus/openrgb-headless`](https://github.com/hello-nexus/openrgb-headless).
+Every bundled component (LibreHardwareMonitor, PawnIO, dfu-util, ffmpeg, ...)
+is listed with its license in [`THIRD-PARTY.md`](THIRD-PARTY.md).
 
 ## License
 
-`nexus-service` is licensed under the **GNU Affero General Public License v3.0**
-(AGPL-3.0); see [`LICENSE`](LICENSE) for the full text. Bundled third-party
-components retain their own licenses (OpenRGB ships as a separate child process
-under GPLv2; see the Third-party section above and [`THIRD-PARTY.md`](THIRD-PARTY.md)).
+`nexus-service` is licensed under the GNU Affero General Public License v3.0;
+see [`LICENSE`](LICENSE). Bundled third-party components keep their own
+licenses.
 
 Copyright (C) 2026 Hello Nexus

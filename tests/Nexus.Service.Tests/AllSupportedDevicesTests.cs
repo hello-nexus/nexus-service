@@ -65,6 +65,36 @@ public class AllSupportedDevicesTests
     }
 
     [Fact]
+    public void Merged_LeadsWithHyteAndIbuypowerInCatalogOrder()
+    {
+        var all = AllSupportedDevices.All;
+        var leading = all.TakeWhile(d => AllSupportedDevices.IsLeadingVendor(d.Vendor)).ToList();
+        Assert.NotEmpty(leading);
+        Assert.Contains(leading, d => d.Vendor == "HYTE");
+        Assert.Contains(leading, d => d.Vendor == "iBUYPOWER");
+        // No first-party row after the first foreign row.
+        Assert.DoesNotContain(all.Skip(leading.Count), d => AllSupportedDevices.IsLeadingVendor(d.Vendor));
+        Assert.Contains(all.Skip(leading.Count), d => d.Vendor == "Elgato");
+        // Catalog order survives inside the leading block.
+        var q60 = leading.FindIndex(d => d.Model == "THICC Q60");
+        var miniHub = leading.FindIndex(d => d.Model == "MiniHub");
+        Assert.True(q60 >= 0 && miniHub > q60);
+    }
+
+    [Fact]
+    public void LeadingVendorsFirst_IsAStablePartition()
+    {
+        Nexus.Service.Models.Peripherals.SupportedDeviceDto Row(string vendor, string model) =>
+            new() { Vendor = vendor, Model = model, VendorId = "-", ProductId = "-" };
+        var rows = new System.Collections.Generic.List<Nexus.Service.Models.Peripherals.SupportedDeviceDto>
+        {
+            Row("Elgato", "a"), Row("HYTE", "b"), Row("Corsair", "c"), Row("iBUYPOWER", "d"), Row("hyte", "e"), Row("Lian Li", "f"),
+        };
+        var ordered = AllSupportedDevices.LeadingVendorsFirst(rows).Select(d => d.Model).ToList();
+        Assert.Equal(new[] { "b", "d", "e", "a", "c", "f" }, ordered);
+    }
+
+    [Fact]
     public void Merged_OpenRgbDevicesCarryRgbCapability()
     {
         var openRgb = AllSupportedDevices.All.Where(d => d.Source == "openrgb").ToList();

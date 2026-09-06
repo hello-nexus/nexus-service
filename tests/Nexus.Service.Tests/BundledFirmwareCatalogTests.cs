@@ -1,40 +1,30 @@
+using System;
 using System.IO;
+using System.Linq;
 using Nexus.Service.Devices.Firmware;
 using Xunit;
 
 namespace Nexus.Service.Tests;
 
+// The real firmware images live outside this repository, so the catalog is
+// exercised against fixture images embedded in this test assembly under the
+// same firmware/<deviceId>/<version>.hex logical names the service build uses.
 public class BundledFirmwareCatalogTests
 {
-    private readonly BundledFirmwareCatalog _catalog = new();
+    private readonly BundledFirmwareCatalog _catalog = new(typeof(BundledFirmwareCatalogTests).Assembly);
 
     [Fact]
     public void Scans_the_embedded_firmware_for_every_bundled_device()
     {
-        Assert.Contains("np50", _catalog.DeviceIds);
-        Assert.Contains("cnvs-left", _catalog.DeviceIds);
-        Assert.Contains("cnvs-v1", _catalog.DeviceIds);
-        Assert.Contains("fan-hub", _catalog.DeviceIds);
-        Assert.Contains("q60", _catalog.DeviceIds);
-        Assert.Contains("q80", _catalog.DeviceIds);
-        Assert.Contains("y70-touch", _catalog.DeviceIds);
-        Assert.Contains("y70-infinite", _catalog.DeviceIds);
-        Assert.Contains("y70-truly", _catalog.DeviceIds);
+        Assert.Equal(new[] { "np50", "q60" }, _catalog.DeviceIds.OrderBy(x => x, StringComparer.Ordinal));
     }
 
-    [Theory]
-    [InlineData("np50", "2.0.5.1")]
-    [InlineData("cnvs-left", "1.0.2.1")]
-    [InlineData("cnvs-v1", "1.0.2.2")]
-    [InlineData("fan-hub", "1.0.1.1")]
-    [InlineData("q60", "2.0.9.1")]
-    [InlineData("q80", "1.0.9.1")]
-    [InlineData("y70-touch", "1.0.3.1")]
-    [InlineData("y70-infinite", "1.0.3.1")]
-    [InlineData("y70-truly", "1.0.3.1")]
-    public void GetLatestVersion_returns_the_bundled_version(string deviceId, string expected)
+    [Fact]
+    public void GetLatestVersion_picks_the_newest_bundled_version()
     {
-        Assert.Equal(expected, _catalog.GetLatestVersion(deviceId));
+        Assert.Equal("2.0.5.1", _catalog.GetLatestVersion("np50"));
+        Assert.Equal("2.0.9.1", _catalog.GetLatestVersion("q60"));
+        Assert.Equal(new[] { "2.0.5.1", "2.0.3.1" }, _catalog.GetAvailableVersions("np50"));
     }
 
     [Fact]

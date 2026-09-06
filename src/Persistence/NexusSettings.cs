@@ -173,6 +173,13 @@ public sealed class AiIntegrationSettings
     /// <summary>Port the managed (or detected system) Ollama runtime binds.
     /// 0 means the Ollama default (11434).</summary>
     public int AssistantRuntimePort { get; set; }
+
+    /// <summary>Opt-in to adopt an Ollama already listening on the default port
+    /// instead of the managed download. Off by default: the service runs as
+    /// LocalSystem, and whatever answers on the default port would otherwise
+    /// receive every prompt and drive the tool calls; any local process can
+    /// bind that port first.</summary>
+    public bool UseSystemOllama { get; set; }
 }
 
 /// <summary>Global on/off for each functional pillar. Additive, all default
@@ -780,7 +787,7 @@ public sealed class CoolingSettings
     public string ActivePreset { get; set; } = InstallDefaults.Cooling.ActivePreset;
     /// <summary>Last-known custom mapping of fan channel id -> curve id. Empty entries mean the fan was on BIOS Control. Used to restore custom assignments when leaving Silent/Balanced/Performance/Off.</summary>
     public Dictionary<string, string> CustomFanCurveAssignments { get; set; } = new();
-    /// <summary>Snapshot of <see cref="ManualSpeeds"/> taken when leaving the Custom preset, keyed by channel id. Restored (and re-driven) when Custom is re-applied - the manual-fan counterpart of <see cref="CustomFanCurveAssignments"/>, and the only copy that survives the Off preset's per-channel release.</summary>
+    /// <summary>Snapshot of <see cref="ManualSpeeds"/> taken when leaving the Custom preset, keyed by channel id. Restored (and re-driven) when Custom is re-applied - the manual-fan counterpart of <see cref="CustomFanCurveAssignments"/>, and the only copy that survives the Off preset, which clears the live entries.</summary>
     public Dictionary<string, int> CustomManualSpeeds { get; set; } = new();
     /// <summary>User-saved cooling configurations, selectable from the Cooling page's preset dropdown. Distinct from <see cref="ActivePreset"/>, which is the built-in mode (off/silent/balanced/turbo/custom) the UI calls a mode.</summary>
     public List<CoolingPreset> Presets { get; set; } = new();
@@ -1088,7 +1095,8 @@ public sealed class DevicesSettings
     /// device's OpenRGB stable id; the value snapshots identity at exclusion
     /// time so the card keeps rendering (and the exclusion can be lifted) while
     /// the hardware is deliberately no longer detected. DetectorName feeds the
-    /// detector denylist + placeholder_only list in the daemon's OpenRGB.json.
+    /// detector denylist + placeholder_only list in the daemon's OpenRGB.json;
+    /// DeviceName is what the card shows.
     /// </summary>
     public Dictionary<string, OpenRgbDetectorExclusion> OpenRgbDetectorExclusions { get; set; } = new();
 
@@ -1132,8 +1140,10 @@ public sealed class E131DeviceEntry
 /// <summary>Identity snapshot of an OpenRGB device taken when its detector was excluded.</summary>
 public sealed class OpenRgbDetectorExclusion
 {
-    /// <summary>OpenRGB device name; equals the REGISTER_*_DETECTOR string for HID controllers, so it keys the daemon's detector denylist. Exclusion is per detector name, i.e. per model.</summary>
+    /// <summary>Name of the detector to denylist in the daemon's OpenRGB.json, resolved through its detector-map.json; not the device name wherever one detector emits several models.</summary>
     public string DetectorName { get; set; } = "";
+    /// <summary>OpenRGB device name, for the synthesized card. Empty on snapshots taken before the two were told apart, where DetectorName held it.</summary>
+    public string DeviceName { get; set; } = "";
     public string Vendor { get; set; } = "";
     public string Serial { get; set; } = "";
     public string Location { get; set; } = "";
@@ -1192,6 +1202,16 @@ public sealed class LightingDevicePreference
     public int Brightness { get; set; } = InstallDefaults.Lighting.DevicePreference.Brightness;
     public float Hue { get; set; }
     public float Saturation { get; set; } = InstallDefaults.Lighting.DevicePreference.Saturation;
+    // Colour-tuning trims, applied to the frame on its way to the hardware.
+    // Distinct from Hue/Saturation above, which are a smart light's own colour
+    // rather than a correction: these five never change what the canvas shows.
+    // Neutral defaults, and DeviceColorAdjust owns the bounds these clamp to.
+    public float AdjustRed { get; set; } = 1f;
+    public float AdjustGreen { get; set; } = 1f;
+    public float AdjustBlue { get; set; } = 1f;
+    /// <summary>Negative is cooler, positive warmer.</summary>
+    public float AdjustTemperature { get; set; }
+    public float AdjustSaturation { get; set; } = 1f;
 }
 
 public sealed class MotherboardLedChannel
@@ -1302,6 +1322,8 @@ public sealed class LianLiWirelessScreenSettings
     public string? ColorB { get; set; }
     /// <summary>"c" | "f". Display unit for a temperature sensor source.</summary>
     public string? TempUnit { get; set; }
+    /// <summary>User-chosen list position (0-based) so the numbered tiles match the physical fans; -1 = not set.</summary>
+    public int Order { get; set; } = -1;
 }
 
 public sealed class LianLiLightingSettings

@@ -75,4 +75,32 @@ public class LinuxDisplayBrightnessTests
     [Fact]
     public void DecodeEdid_InvalidHeaderReturnsEmpty()
         => Assert.Equal(("", ""), LinuxDisplayBrightnessProvider.DecodeEdid(new byte[128]));
+
+    /// <summary>
+    /// The Y70 ships PNP id RTK0004 with model-name descriptor "HYTE Y70ti", so
+    /// Y70DisplayProtocol.DdcPanelHardwareNames only matches via the PNP id.
+    /// </summary>
+    [Fact]
+    public void DecodePnpId_ComposesManufacturerAndProductCode()
+    {
+        var edid = new byte[128];
+        edid[0] = 0x00;
+        edid[1] = 0xFF;
+        var id = ((18 & 0x1F) << 10) | ((20 & 0x1F) << 5) | (11 & 0x1F); // R,T,K
+        edid[8] = (byte)(id >> 8);
+        edid[9] = (byte)(id & 0xFF);
+        edid[10] = 0x04; // product code 0x0004, little-endian
+        edid[11] = 0x00;
+        edid[57] = 0xFC;
+        var name = Encoding.ASCII.GetBytes("HYTE Y70ti");
+        Array.Copy(name, 0, edid, 59, name.Length);
+        edid[59 + name.Length] = 0x0A;
+
+        Assert.Equal("RTK0004", LinuxDisplayBrightnessProvider.DecodePnpId(edid));
+        Assert.Equal("HYTE Y70ti", LinuxDisplayBrightnessProvider.DecodeEdid(edid).Model);
+    }
+
+    [Fact]
+    public void DecodePnpId_InvalidHeaderReturnsEmpty()
+        => Assert.Equal("", LinuxDisplayBrightnessProvider.DecodePnpId(new byte[128]));
 }

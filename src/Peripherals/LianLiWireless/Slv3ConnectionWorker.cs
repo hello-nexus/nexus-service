@@ -9,15 +9,15 @@ using Nexus.Service.Platform;
 namespace Nexus.Service.Peripherals.LianLiWireless;
 
 /// <summary>
-/// Connects the SLV3 dongles and drives the hub's periodic tick (device-list
-/// refresh, keepalive re-assert, bind/unbind state machine). The tick cadence
-/// matches the firmware's spec'd keepalive interval
-/// (plans/lianli-wireless-support.md section 3), not a race-avoidance sleep.
+/// Connects the SLV3 dongles and drives the hub on L-Connect's cadence
+/// (MasterDevice.Run): <see cref="Slv3Hub.PollTick"/> every
+/// <see cref="PollPeriodMs"/> and <see cref="Slv3Hub.DriveTick"/> on every
+/// other one.
 /// </summary>
 public sealed class Slv3ConnectionWorker : BackgroundService
 {
     private const int ConnectPollMs = 5000;
-    private const int TickPollMs = 1000;
+    private const int PollPeriodMs = 500;
     private const int MaxConsecutiveFailures = 3;
 
     private readonly Slv3Hub _hub;
@@ -51,9 +51,12 @@ public sealed class Slv3ConnectionWorker : BackgroundService
                     try
                     {
                         var failures = 0;
+                        var halfTick = false;
                         while (!stoppingToken.IsCancellationRequested && _gate.IsEnabled("lianli-wireless"))
                         {
-                            if (_hub.DriveTick())
+                            var ok = halfTick ? _hub.PollTick() : _hub.DriveTick();
+                            halfTick = !halfTick;
+                            if (ok)
                             {
                                 failures = 0;
                             }
@@ -71,7 +74,7 @@ public sealed class Slv3ConnectionWorker : BackgroundService
                             // manual duties as bound chains surface in
                             // GetFanChannels.
                             _lighting.OnHubStateUpdated();
-                            await Task.Delay(TickPollMs, stoppingToken).ConfigureAwait(false);
+                            await Task.Delay(PollPeriodMs, stoppingToken).ConfigureAwait(false);
                         }
                     }
                     finally

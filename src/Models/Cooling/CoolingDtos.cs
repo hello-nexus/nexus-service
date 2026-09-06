@@ -167,6 +167,18 @@ public sealed class FanChannel
     /// <summary>Sanitized id matching the monitoring history series key ("fan:" + SeriesId), per <see cref="Nexus.Service.Monitoring.History.MetricsHistory.SanitizeId"/>. Computed from <see cref="Id"/>; the sanitize rule is lossy and one-way, so this is never reverse-mapped back to Id.</summary>
     public string SeriesId { get; set; } = "";
 
+    /// <summary>
+    /// Identifier of the tachometer sensor this channel reads RPM from, matching
+    /// <see cref="Nexus.Service.Models.Sensors.HardwareSensor.Id"/> in the monitoring
+    /// motherboard and gpu components. <see cref="Id"/> is the PWM control sensor, a
+    /// different identifier, so this is the only key that joins a fan channel to the sensor
+    /// list widgets and deck keys pick from. Set only by the LibreHardwareMonitor-backed
+    /// Windows provider, for its motherboard and GPU fans. Null everywhere else, including
+    /// Linux, whose sensor list does carry fan tachs but keys its channels differently - so
+    /// a rename there stays on the Cooling page.
+    /// </summary>
+    public string? RpmSensorId { get; set; }
+
     // External-device metadata. All null for motherboard/GPU fans; populated
     // only when the channel belongs to a USB hub like NP50. Drives
     // device-grouped rendering on the cooling page.

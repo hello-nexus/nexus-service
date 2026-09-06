@@ -383,27 +383,40 @@ public static class NexusServiceCollectionExtensions
         services.AddSingleton<Nexus.Service.Monitoring.History.AppSampleBuffer>();
         services.AddSingleton<Nexus.Service.Monitoring.History.ProcessFirstSeenCache>();
 
+        // Pushes each sample onto the monitoring/history-tail multiplex topic;
+        // MetricsSampler resolves it as an optional constructor dependency.
+        services.AddSingleton<Nexus.Service.Monitoring.History.IMetricsSampleSink,
+            Nexus.Service.Monitoring.History.MonitoringHistoryTailBroadcaster>();
         services.AddSingleton<Nexus.Service.Monitoring.History.MetricsSampler>();
         services.AddHostedService(sp => sp.GetRequiredService<Nexus.Service.Monitoring.History.MetricsSampler>());
 
-        // IPrivacySessionStore resolves the same singleton instance as
-        // IMetricsHistoryStore (both interfaces land on one concrete store),
-        // sharing its connection and lock rather than opening a second one.
+        // IPrivacySessionStore wraps the same singleton instance as
+        // IMetricsHistoryStore (both interfaces land on one concrete store,
+        // sharing its connection and lock rather than opening a second one) in
+        // BroadcastingPrivacySessionStore, so every Upsert also pushes onto
+        // the monitoring/privacy multiplex topic.
         services.AddSingleton<Nexus.Service.Monitoring.History.IPrivacyAccessRegistryReader,
             Nexus.Service.Monitoring.History.PrivacyAccessRegistryReader>();
         services.AddSingleton<Nexus.Service.Monitoring.History.IPrivacySessionStore>(sp =>
-            (Nexus.Service.Monitoring.History.IPrivacySessionStore)sp.GetRequiredService<Nexus.Service.Monitoring.History.IMetricsHistoryStore>());
+            new Nexus.Service.Monitoring.History.BroadcastingPrivacySessionStore(
+                (Nexus.Service.Monitoring.History.IPrivacySessionStore)sp.GetRequiredService<Nexus.Service.Monitoring.History.IMetricsHistoryStore>(),
+                sp.GetRequiredService<Nexus.Service.Sockets.MultiplexHub>()));
         services.AddSingleton<Nexus.Service.Monitoring.History.PrivacyAccessWatcher>();
         services.AddHostedService(sp => sp.GetRequiredService<Nexus.Service.Monitoring.History.PrivacyAccessWatcher>());
 
-        // IMonitoringEventStore resolves the same singleton instance as
+        // IMonitoringEventStore wraps the same singleton instance as
         // IMetricsHistoryStore (both interfaces land on one concrete store),
-        // the same pattern as IPrivacySessionStore above. MonitoringEventCollector
+        // the same pattern as IPrivacySessionStore above, in
+        // BroadcastingMonitoringEventStore, so every Append (from
+        // MonitoringEventCollector or POST /monitoring/events) also pushes
+        // onto the monitoring/events multiplex topic. MonitoringEventCollector
         // depends on IUsbEnumerator, registered in AddNexusDevices - DI
         // resolution is deferred to host build, so registration order across
         // AddNexusX methods does not matter.
         services.AddSingleton<Nexus.Service.Monitoring.Events.IMonitoringEventStore>(sp =>
-            (Nexus.Service.Monitoring.Events.IMonitoringEventStore)sp.GetRequiredService<Nexus.Service.Monitoring.History.IMetricsHistoryStore>());
+            new Nexus.Service.Monitoring.Events.BroadcastingMonitoringEventStore(
+                (Nexus.Service.Monitoring.Events.IMonitoringEventStore)sp.GetRequiredService<Nexus.Service.Monitoring.History.IMetricsHistoryStore>(),
+                sp.GetRequiredService<Nexus.Service.Sockets.MultiplexHub>()));
         services.AddSingleton<Nexus.Service.Monitoring.Events.MonitoringEventCollector>();
         services.AddHostedService(sp => sp.GetRequiredService<Nexus.Service.Monitoring.Events.MonitoringEventCollector>());
         return services;
@@ -416,6 +429,7 @@ public static class NexusServiceCollectionExtensions
     public static IServiceCollection AddNexusFps(this IServiceCollection services)
     {
         services.AddSingleton<Nexus.Service.Games.GameCatalog>();
+        services.AddSingleton<Nexus.Service.Games.IGameInstallLocator>(sp => sp.GetRequiredService<Nexus.Service.Games.GameCatalog>());
         services.AddSingleton<Nexus.Service.Games.IGameArtResolver, Nexus.Service.Games.GameArtResolver>();
         services.AddSingleton(_ => new Nexus.Service.Games.BinaryFpsSessionStore(
             System.IO.Path.Combine(NexusDataPaths.DatabaseDir(), "fps")));
@@ -693,6 +707,22 @@ public static class NexusServiceCollectionExtensions
             sp.GetRequiredService<Nexus.Service.Lighting.KeebLightingDeviceProvider>()));
         services.AddHostedService<Nexus.Service.Peripherals.Hyte.Keeb.KeebInputWorker>();
 
+        // iBUYPOWER keyboards + mice: same shape as the Keeb stack, one hub
+        // holding every unit. The bundled OpenRGB has no detector for these PIDs.
+        services.AddSingleton<Nexus.Service.Peripherals.Ibp.IbpPeripheralHub>();
+        services.AddSingleton<Nexus.Service.Lighting.IbpPeripheralLightingDeviceProvider>();
+        services.AddSingleton<Nexus.Service.Lighting.ILightingFrameContributor>(
+            sp => sp.GetRequiredService<Nexus.Service.Lighting.IbpPeripheralLightingDeviceProvider>());
+        services.AddSingleton<Nexus.Service.Lighting.Zones.IDeviceStructureSource>(
+            sp => sp.GetRequiredService<Nexus.Service.Lighting.IbpPeripheralLightingDeviceProvider>());
+        services.AddSingleton<Nexus.Service.Lighting.IbpPeripheralLightingFrameWriter>();
+        services.AddHostedService(sp => sp.GetRequiredService<Nexus.Service.Lighting.IbpPeripheralLightingFrameWriter>());
+        services.AddHostedService(sp => new Nexus.Service.Peripherals.Ibp.IbpPeripheralConnectionWorker(
+            sp.GetRequiredService<Nexus.Service.Peripherals.Ibp.IbpPeripheralHub>(),
+            sp.GetRequiredService<Nexus.Service.Devices.Detection.HardwarePresence>(),
+            sp.GetRequiredService<Nexus.Service.Devices.DeviceControlGate>(),
+            sp.GetRequiredService<Nexus.Service.Lighting.IbpPeripheralLightingDeviceProvider>()));
+
         // Stream Deck: gen1-protocol button decks (Mini bench-verified
         // 2026-07-10). Peripheral, not lighting - no frame contributor, no
         // 30 Hz tick; see plans/streamdeck-support.md Phase 0/1. The
@@ -746,7 +776,9 @@ public static class NexusServiceCollectionExtensions
                 sp.GetRequiredService<Nexus.Service.Peripherals.StreamDeck.StreamDeckImageCache>(),
                 sp.GetRequiredService<Nexus.Service.Sockets.MultiplexHub>(),
                 sp.GetRequiredService<Nexus.Service.Sensors.ISensorProvider>(),
-                weather: sp.GetRequiredService<Nexus.Service.Platform.Weather.IWeatherProvider>()));
+                weather: sp.GetRequiredService<Nexus.Service.Platform.Weather.IWeatherProvider>(),
+                fps: sp.GetRequiredService<Nexus.Service.Fps.IFpsProvider>(),
+                fans: sp.GetRequiredService<Nexus.Service.Cooling.IFanControlProvider>()));
         services.AddHostedService(sp => sp.GetRequiredService<Nexus.Service.Peripherals.StreamDeck.StreamDeckConnectionWorker>());
 
         // Elgato Stream Deck profile import: read-only against the local
@@ -985,6 +1017,7 @@ public static class NexusServiceCollectionExtensions
                 sp.GetRequiredService<Nexus.Service.Lighting.CnvsLightingDeviceProvider>(),
                 sp.GetRequiredService<Nexus.Service.Lighting.QSeriesLightingDeviceProvider>(),
                 sp.GetRequiredService<Nexus.Service.Lighting.KeebLightingDeviceProvider>(),
+                sp.GetRequiredService<Nexus.Service.Lighting.IbpPeripheralLightingDeviceProvider>(),
                 sp.GetRequiredService<Nexus.Service.Lighting.LianLiLightingDeviceProvider>(),
                 sp.GetRequiredService<Nexus.Service.Lighting.Slv3LightingDeviceProvider>(),
                 sp.GetRequiredService<Nexus.Service.Lighting.CorsairLinkLightingDeviceProvider>(),
@@ -1006,6 +1039,7 @@ public static class NexusServiceCollectionExtensions
                 sp.GetRequiredService<Nexus.Service.Lighting.CnvsLightingDeviceProvider>(),
                 sp.GetRequiredService<Nexus.Service.Lighting.QSeriesLightingDeviceProvider>(),
                 sp.GetRequiredService<Nexus.Service.Lighting.KeebLightingDeviceProvider>(),
+                sp.GetRequiredService<Nexus.Service.Lighting.IbpPeripheralLightingDeviceProvider>(),
                 sp.GetRequiredService<Nexus.Service.Lighting.LianLiLightingDeviceProvider>(),
                 sp.GetRequiredService<Nexus.Service.Lighting.Slv3LightingDeviceProvider>(),
                 sp.GetRequiredService<Nexus.Service.Lighting.CorsairLinkLightingDeviceProvider>(),
@@ -1022,6 +1056,8 @@ public static class NexusServiceCollectionExtensions
         services.AddSingleton<IDeviceHandler, Nexus.Service.Devices.Handlers.QSeriesHandler>();
         services.AddSingleton<IDeviceHandler, Nexus.Service.Devices.Handlers.Y70Handler>();
         services.AddSingleton<IDeviceHandler, Nexus.Service.Devices.Handlers.KeebHandler>();
+        services.AddSingleton<IDeviceHandler, Nexus.Service.Devices.Handlers.IbpKeyboardHandler>();
+        services.AddSingleton<IDeviceHandler, Nexus.Service.Devices.Handlers.IbpMouseHandler>();
         services.AddSingleton<IDeviceHandler, Nexus.Service.Devices.Handlers.FanHubHandler>();
         services.AddSingleton<IDeviceHandler, Nexus.Service.Devices.Handlers.Aw5Handler>();
         services.AddSingleton<IDeviceHandler, Nexus.Service.Devices.Handlers.Np50Handler>();
@@ -1586,7 +1622,9 @@ public static class NexusServiceCollectionExtensions
         services.AddSingleton<Nexus.Service.Media.MediaLibrary>();
         services.AddSingleton<Nexus.Service.Panel.PanelBgLibrary>();
         services.AddSingleton<Nexus.Service.Deck.DeckImageStore>();
+        services.AddSingleton<Nexus.Service.Deck.ISiteIconResolver, Nexus.Service.Deck.SiteIconResolver>();
         services.AddSingleton<Nexus.Service.Gallery.GalleryLibrary>();
+        services.AddSingleton<Nexus.Service.Gallery.GalleryResizeCache>();
         // Also consumed by /system/pick-path (SystemRoutes.cs), not just gallery.
         services.AddSingleton<Nexus.Service.Platform.IFileDialogPicker, Nexus.Service.Platform.FileDialogPicker>();
         return services;
@@ -1661,9 +1699,10 @@ public static class NexusServiceCollectionExtensions
         // QSeriesPortWatcher keeps `adb reverse tcp:{servicePort}` alive
         // while a HYTE Q60 / Q80 USB display is attached. Without it,
         // every time Y70's adb-server restarts the panel's multiplex
-        // WebSocket on the Q-series silently freezes. Windows-only - the
-        // Q-series host stack lives on the Y70 PC.
-        if (OperatingSystem.IsWindows())
+        // WebSocket on the Q-series silently freezes. Windows and Linux only:
+        // macOS has no native Q-series cooler stack and the panel path is
+        // untested there.
+        if (OperatingSystem.IsWindows() || OperatingSystem.IsLinux())
         {
             services.AddSingleton<Nexus.Service.QSeries.QSeriesPortWatcher>(
                 sp => new Nexus.Service.QSeries.QSeriesPortWatcher(
@@ -1700,6 +1739,10 @@ public static class NexusServiceCollectionExtensions
 #elif WINDOWS
         services.AddSingleton<Nexus.Service.Panel.IOverlayHost>(sp =>
             sp.GetRequiredService<Nexus.Service.Panel.PanelOverlayHostLauncher>());
+#elif LINUX
+        // The Y70 kiosk is the only overlay-host duty Linux has; it rides the
+        // same Chromium kiosk host as promoted monitors.
+        services.AddSingleton<Nexus.Service.Panel.IOverlayHost, Nexus.Service.Platform.Linux.LinuxOverlayHost>();
 #else
         services.AddSingleton<Nexus.Service.Panel.IOverlayHost, Nexus.Service.Panel.NoopOverlayHost>();
 #endif
@@ -1919,6 +1962,24 @@ public static class NexusServiceCollectionExtensions
         services.AddSingleton<Nexus.Service.Mcp.IMcpTool, Nexus.Service.Mcp.Tools.QueryEventsTool>();
         services.AddSingleton<Nexus.Service.Mcp.IMcpTool, Nexus.Service.Mcp.Tools.GetTopAppsTool>();
         services.AddSingleton<Nexus.Service.Mcp.IMcpTool, Nexus.Service.Mcp.Tools.QueryAppHistoryTool>();
+        // Diagnostics read tools
+        services.AddSingleton<Nexus.Service.Mcp.IMcpTool, Nexus.Service.Mcp.Tools.GetHealthTool>();
+        services.AddSingleton<Nexus.Service.Mcp.IMcpTool, Nexus.Service.Mcp.Tools.GetStorageHealthTool>();
+        services.AddSingleton<Nexus.Service.Mcp.IMcpTool, Nexus.Service.Mcp.Tools.GetGpuHealthTool>();
+        services.AddSingleton<Nexus.Service.Mcp.IMcpTool, Nexus.Service.Mcp.Tools.GetSystemSpecsTool>();
+        services.AddSingleton<Nexus.Service.Mcp.IMcpTool, Nexus.Service.Mcp.Tools.GetConflictsTool>();
+        services.AddSingleton<Nexus.Service.Mcp.IMcpTool, Nexus.Service.Mcp.Tools.GetUpdateStatusTool>();
+        services.AddSingleton<Nexus.Service.Mcp.IMcpTool, Nexus.Service.Mcp.Tools.GetMemoryInfoTool>();
+
+        // History and action tools
+        services.AddSingleton<Nexus.Service.Mcp.IMcpTool, Nexus.Service.Mcp.Tools.GetIncidentsTool>();
+        services.AddSingleton<Nexus.Service.Mcp.IMcpTool, Nexus.Service.Mcp.Tools.GetTemperatureHistoryTool>();
+        services.AddSingleton<Nexus.Service.Mcp.IMcpTool, Nexus.Service.Mcp.Tools.GetGameSessionsTool>();
+        services.AddSingleton<Nexus.Service.Mcp.IMcpTool, Nexus.Service.Mcp.Tools.GetScreenTimeTool>();
+        services.AddSingleton<Nexus.Service.Mcp.IMcpTool, Nexus.Service.Mcp.Tools.GetProcessInfoTool>();
+        services.AddSingleton<Nexus.Service.Mcp.IMcpTool, Nexus.Service.Mcp.Tools.AddMonitoringEventTool>();
+        services.AddSingleton<Nexus.Service.Mcp.IMcpTool, Nexus.Service.Mcp.Tools.CalibrateFansTool>();
+
         services.AddSingleton<Nexus.Service.Mcp.McpToolRegistry>();
         services.AddSingleton<Nexus.Service.Mcp.McpServerHost>();
         services.AddHostedService(sp => sp.GetRequiredService<Nexus.Service.Mcp.McpServerHost>());

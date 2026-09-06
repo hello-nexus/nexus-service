@@ -51,6 +51,10 @@ Optional flags:
   uninstaller, and the installer via Azure Artifact Signing (see Code signing
   below); omit for a fast unsigned dev build
 - `-SignToolPath` / `-DlibPath`  override the auto-probed signtool / dlib paths
+- `-Bootstrap`          build the two Windows **web installers** instead (see
+  below); needs no publish dir
+- `-BootstrapBaseUrl`   point the web installers at a different site for a
+  local end-to-end test (default `https://hellonexus.com`)
 
 ### Keep it lean
 
@@ -71,9 +75,45 @@ intended (a new bundled feature) or junk; verify which.
   `wwwroot\assets\` holds only the current build's hashed bundles (a skipped
   wwwroot wipe accumulates every prior build's dead `*.js`).
 
+## Web installers (bootstrap)
+
+`hellonexus.com`'s Windows download buttons hand out `Nexus-Installer.exe`
+(stable) and `Nexus-Installer-Beta.exe`, not `Nexus-Setup.exe`. Both compile
+from `bootstrap\Nexus-Bootstrap.iss` with `-Bootstrap`:
+
+```powershell
+powershell -File installer\build-installer.ps1 -Bootstrap [-Sign]
+```
+
+They carry no payload. On Install they fetch the site's
+`/download/offline/sha256sums?channel=<stable|beta>`, then
+`/download/offline/windows?channel=<...>` pinned to the hash from that list
+(the site resolves both to the matching GitHub release), and run the
+downloaded `Nexus-Setup.exe` (its own UAC prompt, its own wizard). A silent
+stub run (`Nexus-Installer.exe /VERYSILENT`) passes `/VERYSILENT` through and
+exits non-zero on failure: 1 if the download or the hash check fails, 3 if
+the payload fails, is cancelled, or the UAC prompt is declined. The payload is downloaded without Mark-of-the-Web, the same as the
+in-app OTA, so it is not subject to a per-release SmartScreen check - which is
+the point: SmartScreen reputation is keyed on the downloaded file's hash, and
+a release every day or two never lets `Nexus-Setup.exe` accrue any. The web
+installers are built and signed **once** by the release CI's `web_installers`
+dispatch input and published as release assets on
+`github.com/hello-nexus/nexus-installer` (one release per `StubVersion`, so
+`releases/latest/download/<name>` is a fixed URL), then re-used unchanged
+across releases. **Rebuild them only when the bootstrap
+script changes** (bump its `StubVersion`); every rebuild is a new hash that
+starts from zero. `-Bootstrap` writes a `<name>.sha256` next to each output
+(same `<hash>  <name>` shape as `SHA256SUMS`).
+
+`Nexus-Setup.exe` keeps shipping on every release exactly as before: it is what
+the OTA downloads and what system integrators install from a USB stick, and
+the site links it as the "offline installer".
+
 ## Files
 
 - `Nexus.iss` - Inno Setup script (wizard config, install steps, uninstall)
+- `bootstrap\Nexus-Bootstrap.iss` - the web installers (both channels from one
+  script via `/DChannel=`), see above
 - `logo-small.bmp` - 58x58 logo shown top-right of the directory page; regenerated
   from `..\icon.ico` if you change the brand mark
 - `build-installer.ps1` - the build entry point, also strips macOS AppleDouble
@@ -151,43 +191,72 @@ and then opens the dashboard itself, because a silent Inno run skips its own
 `--open-app` step. It carries no service/driver logic of its own - everything
 above in this README still owns that.
 
+It deliberately does not pass `/DESKTOPICON=1`, so a Store install leaves the
+desktop alone: MSIX has no desktop-shortcut mechanism, only a Start entry, and
+Store-installed apps are expected to behave that way. The web installer passes
+the switch because a website download carries the opposite expectation.
+
 Build (Windows only, after building `Nexus-Setup.exe` per "Building" above).
 There are two distinct modes, and they take a different `-Publisher`:
 
 ```powershell
 # Store build - stays unsigned, Store re-signs on submission.
 powershell -File installer\msix\build-msix.ps1 `
-    -IdentityName <reserved Partner Center identity name> `
-    -Publisher "CN=<Partner Center publisher id>" `
-    -PublisherDisplayName "American Future Technology Corp."
+    -IdentityName "HelloNexus.HelloNexus" `
+    -Publisher "CN=62485AE2-77C6-4F70-A924-D5BA99963014" `
+    -PublisherDisplayName "Hello Nexus"
 
 # Local sideload verification only.
 powershell -File installer\msix\build-msix.ps1 -Sign `
-    -IdentityName <reserved Partner Center identity name> `
+    -IdentityName "HelloNexus.HelloNexus" `
     -Publisher "<Azure Artifact Signing cert Subject>" `
-    -PublisherDisplayName "American Future Technology Corp."
+    -PublisherDisplayName "Hello Nexus"
 ```
 
-Output: `installer\msix\output\Nexus-<version>.msix`.
+Output: `installer\msix\output\Nexus-<payload version>-<arch>.msix`, e.g.
+`Nexus-3.0.10-beta.4-x64.msix`. The file name carries the payload's full
+version (prerelease suffix included) and the architecture, neither of which the
+4-part package version can express; Partner Center never reads it. A build that
+passes `-Version`, or whose payload reports a product version disagreeing with
+its file version, is named for the package version instead.
 
 ### Identity tokens
 
 `AppxManifest.template.xml` carries five placeholders the build script
 substitutes: `{{IDENTITY_NAME}}`, `{{PUBLISHER}}`, `{{PUBLISHER_DISPLAY_NAME}}`,
-`{{VERSION}}`, `{{ARCH}}`. The first three come from the app identity reserved
-in Partner Center and are not checked in anywhere; the script's own parameter
-defaults are deliberately invalid placeholders so an un-overridden package is
-obviously wrong rather than silently plausible, and `-Sign` refuses to run
-against them. `{{ARCH}}` derives from `-Rid` (`win-x64` default, `win-arm64`
-allowed); cross-arch AOT publish is not dependable, so the RID must match the
-machine running the build.
-Values are XML-escaped before they reach the manifest, since they are
-operator-supplied strings, not build-time constants.
-`{{VERSION}}` derives from the repo's `VERSION` file: MSIX requires exactly
-four numeric parts and Partner Center rejects a nonzero fourth part, so any
-`-beta.N` prerelease suffix is dropped entirely (`3.0.0-beta.8` becomes
-`3.0.0.0`; MSIX has no prerelease-suffix concept, a beta channel would be a
-separate Store flight).
+`{{VERSION}}`, `{{ARCH}}`. `{{IDENTITY_NAME}}` and `{{PUBLISHER_DISPLAY_NAME}}`
+come from the app identity reserved in Partner Center and are the real values
+shown in both build commands above (they are public: any installed package
+exposes them). `{{PUBLISHER}}` differs by mode - the Partner Center id for a
+Store build, the signing cert subject for `-Sign` - see Signing below. The
+script's own parameter defaults are deliberately invalid placeholders so an
+un-overridden package is obviously wrong rather than silently plausible, and
+`-Sign` refuses to run against them. `{{ARCH}}` derives from `-Rid` (`win-x64`
+default, `win-arm64` allowed); cross-arch AOT publish is not dependable, so the
+RID must match the machine running the build. These substituted values are
+XML-escaped before they reach the manifest, since they are operator-supplied
+strings, not build-time constants.
+`{{VERSION}}` is read off the **bundled `Nexus-Setup.exe`**, not the repo's
+`VERSION` file. CI stamps `VERSION` from its workflow input at build time and
+never commits it back, so a checkout routinely sits several patches behind the
+released version, and a package claiming a version its own payload does not
+carry misreports itself in the Store. `build-installer.ps1` stamps the
+installer's `VersionInfoVersion` as `<numeric>.0`, which is already the exact
+shape MSIX needs: four numeric parts with a zero revision (Partner Center
+rejects a nonzero fourth part, and MSIX has no prerelease-suffix concept, so a
+beta channel would be a separate Store flight). `-Version` overrides that, and is
+validated the same way, but it makes the package claim a version its payload
+does not carry - and since Store package versions must strictly increase, a
+resubmission needs a higher one, which guarantees the mismatch. Prefer
+rebuilding the payload at the version you want to ship. The build fails rather
+than guessing if the payload carries no version, or reports the `0.0.0`
+placeholder from an installer built without `build-installer.ps1`.
+
+The two `DisplayName` values in the manifest are **not** placeholders and are
+not substituted. They read `Hello Nexus`, the reserved Store name; `Nexus`
+belongs to another publisher, and Partner Center rejects any package whose name
+is not one of the account's reserved names. The unpackaged suite the shell
+installs is unaffected and keeps its own `Nexus` branding from `Nexus.iss`.
 
 ### Signing
 
@@ -210,18 +279,57 @@ The script refuses `-Sign` when `-Publisher` looks like a bare Partner Center
 `CN=<GUID>` id, since that is never a valid signing subject; pass
 `-SkipPublisherModeCheck` if this heuristic misfires.
 
-### Write virtualization
+### Write virtualization: opt-out removed 2026-09-03
 
-The manifest disables MSIX AppData/HKCU write virtualization
-(`desktop6:FileSystemWriteVirtualization` / `RegistryWriteVirtualization`,
-`unvirtualizedResources` capability). Without it, `Nexus.exe` and
-`Nexus-Setup.exe` launched as direct children of this packaged launcher would
-inherit its package identity, so their writes would land in the package's
-private virtualized store instead of the real locations the already-installed,
-unpackaged service/tray helper read. **Not confirmed grantable:** Microsoft's
-own docs scope `unvirtualizedResources` to "certain types of desktop PC games
-... published by Microsoft and our partners" - Store certification may reject
-it for Nexus. Confirm with Microsoft/Partner Center before a real submission.
+The manifest used to disable MSIX write virtualization
+(`desktop6:FileSystemWriteVirtualization` / `RegistryWriteVirtualization` plus
+the `unvirtualizedResources` restricted capability), on the theory that
+`Nexus.exe` and `Nexus-Setup.exe` launched by the packaged launcher would
+inherit its package identity and have their writes redirected into the
+package's private store. All three are gone, because the redirection they
+guarded against cannot reach anything this package starts, and the capability
+was a standing certification risk: Microsoft scopes `unvirtualizedResources` to
+"certain types of desktop PC games ... published by Microsoft and our
+partners".
+
+**The argument is about scope, not about identity.** Write virtualization
+redirects only writes under `%USERPROFILE%\AppData` and `HKCU`
+(learn.microsoft.com/windows/msix/desktop/flexible-virtualization). Neither is
+in the launcher's path:
+
+- The only descendant the launcher creates is `Nexus.exe --open-app`
+  (`CommandLineEntry`), whose tree writes `%ProgramData%\Nexus\DashboardEdge`
+  (`TrayIcon`) - outside the redirected scope.
+- `Nexus-Setup.exe` writes Program Files, `%ProgramData%`, and HKLM. Also
+  outside it.
+- The suite's HKCU writers - the Run key (`WindowsStartupProvider`), the
+  `nexus:` protocol handler (`ProtocolHandler`), and the AUMID registration
+  (`ToastNotifications`) - all run in the daemon or the tray helper, which the
+  service starts through SCM or Task Scheduler. Neither is ever a descendant of
+  the launcher.
+
+That holds however package identity propagates, which is what makes it the
+load-bearing argument.
+
+**What was and was not measured on T1** (Windows 11 Home, self-signed sideload
+of a `runFullTrust`-only package):
+
+- Measured: the capability-free package installs, reports `caps=runFullTrust`,
+  and its launcher activates without error; `makeappx` packs the manifest under
+  the real Store identity.
+- **Not measured: whether a child of a Store-activated packaged app inherits
+  package identity.** An attempt using `Invoke-CommandInDesktopPackage` proved
+  nothing - that cmdlet creates children *without* context by default, which a
+  control run confirmed (default: child `NO_PACKAGE`; `-PreventBreakaway`:
+  child carries the package identity). A second attempt polling for the real
+  launcher's children caught neither the launcher nor any child, both being far
+  too short-lived for a 100ms poll. Catching them needs ETW process-start
+  tracing.
+
+**Residual risk, small and named:** if a launcher descendant does inherit
+identity *and* someone later adds an `%APPDATA%` or HKCU write to the
+`--open-app` path, that write would silently redirect into the package store.
+Nothing on that path writes to either location today.
 
 ### Assets
 

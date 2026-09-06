@@ -107,6 +107,7 @@ public sealed class WindowsFanControlProvider : IFanControlProvider, ICoolingPro
                 DutyPercent = (int)(m.ControlSensor.Value ?? 0f),
                 Rpm = (int)(m.FanSensor.Value ?? 0f),
                 Mode = mode,
+                RpmSensorId = m.FanSensorId,
             };
             if (calibrations.TryGetValue(m.Id, out var cal))
             {
@@ -531,5 +532,8 @@ public sealed class WindowsFanControlProvider : IFanControlProvider, ICoolingPro
         public required string Name { get; init; }
         public required ISensor FanSensor { get; init; }
         public required ISensor ControlSensor { get; init; }
+
+        /// <summary>The join key monitoring sensors carry; <see cref="Id"/> is the control sensor.</summary>
+        public string FanSensorId => FanSensor.Identifier.ToString();
     }
 }

@@ -25,6 +25,8 @@ public class Slv3ProtocolTests
         Assert.Equal(240, Slv3Protocol.RfPayloadSize);
         Assert.Equal(60, Slv3Protocol.RfChunkSize);
         Assert.Equal(6, Slv3Protocol.PwmFollowMotherboard);
+        Assert.Equal(255, Slv3Protocol.PwmScaleMax);
+        Assert.Equal(13, Slv3Protocol.MaxSlot);
     }
 
     // ── BuildUsbSendRf: 240 B payload -> 4 x 64 B frames ──
@@ -146,12 +148,100 @@ public class Slv3ProtocolTests
     }
 
     [Fact]
-    public void EncodeDuty_maps_literal_six_to_zero_and_clamps()
+    public void EncodeDuty_maps_percent_onto_the_255_scale_like_lconnect()
     {
-        Assert.Equal(0, Slv3Protocol.EncodeDuty(6));    // 6 is the mobo-sync sentinel
+        // Y70 USBPcap 2026-09-04: L-Connect put 127 / 255 / 63 / 12 on the wire
+        // for 50 / 100 / 25 / 5 %, truncating (int)Map(0,100,0,255).
+        Assert.Equal(127, Slv3Protocol.EncodeDuty(50));
+        Assert.Equal(255, Slv3Protocol.EncodeDuty(100));
+        Assert.Equal(63, Slv3Protocol.EncodeDuty(25));
+        Assert.Equal(12, Slv3Protocol.EncodeDuty(5));
+        Assert.Equal(0, Slv3Protocol.EncodeDuty(0));
         Assert.Equal(0, Slv3Protocol.EncodeDuty(-5));
-        Assert.Equal(100, Slv3Protocol.EncodeDuty(150));
-        Assert.Equal(55, Slv3Protocol.EncodeDuty(55));
+        Assert.Equal(255, Slv3Protocol.EncodeDuty(150));
+        Assert.Equal(15, Slv3Protocol.EncodeDuty(6));   // a percent of 6 is a real duty, not the sentinel
+    }
+
+    [Fact]
+    public void EncodeDuty_never_emits_the_mobo_sync_sentinel_byte()
+    {
+        for (var percent = 0; percent <= 100; percent++)
+        {
+            Assert.NotEqual(Slv3Protocol.PwmFollowMotherboard, Slv3Protocol.EncodeDuty(percent));
+        }
+    }
+
+    [Fact]
+    public void DecodeDuty_inverts_the_255_scale()
+    {
+        Assert.Equal(50, Slv3Protocol.DecodeDuty(127));
+        Assert.Equal(100, Slv3Protocol.DecodeDuty(255));
+        Assert.Equal(25, Slv3Protocol.DecodeDuty(63));
+        Assert.Equal(0, Slv3Protocol.DecodeDuty(0));
+        Assert.Equal(100, Slv3Protocol.DecodeDuty(300));
+    }
+
+    [Fact]
+    public void NeedSyncPwm_is_true_only_past_the_drift_threshold()
+    {
+        Assert.False(Slv3Protocol.NeedSyncPwm(new[] { 127, 127, 127, 127 }, new byte[] { 127, 127, 127, 127 }));
+        Assert.False(Slv3Protocol.NeedSyncPwm(new[] { 122, 132, 127, 127 }, new byte[] { 127, 127, 127, 127 }));
+        Assert.True(Slv3Protocol.NeedSyncPwm(new[] { 121, 127, 127, 127 }, new byte[] { 127, 127, 127, 127 }));
+        Assert.True(Slv3Protocol.NeedSyncPwm(new[] { 100, 100, 100, 100 }, new byte[] { 117, 117, 117, 117 }));
+        Assert.True(Slv3Protocol.NeedSyncPwm(new[] { 0, 0, 0, 0 }, new byte[] { 6, 6, 6, 6 }));
+    }
+
+    [Fact]
+    public void NextCmdSeq_increments_and_wraps_to_one()
+    {
+        Assert.Equal(1, Slv3Protocol.NextCmdSeq(0));
+        Assert.Equal(81, Slv3Protocol.NextCmdSeq(80));
+        Assert.Equal(1, Slv3Protocol.NextCmdSeq(254));
+        Assert.Equal(1, Slv3Protocol.NextCmdSeq(255));
+    }
+
+    [Fact]
+    public void BuildUnbind_clears_master_target_and_slot_but_keeps_the_pwm_tuple()
+    {
+        byte[] pwm = { 12, 12, 12, 12 };
+        var payload = Slv3Protocol.BuildUnbind(FanMac, targetChannel: 8, pwm);
+
+        Assert.Equal(0x10, payload[1]);
+        Assert.Equal(FanMac, payload.AsSpan(2, 6).ToArray());
+        Assert.Equal(new byte[6], payload.AsSpan(8, 6).ToArray());   // master all-zero
+        Assert.Equal(0, payload[14]);
+        Assert.Equal(8, payload[15]);
+        Assert.Equal(0, payload[16]);
+        Assert.Equal(pwm, payload.AsSpan(17, 4).ToArray());
+    }
+
+    [Fact]
+    public void BuildSequencedCommand_lays_out_target_channel_zero_slot_and_seq()
+    {
+        var payload = Slv3Protocol.BuildSequencedCommand(Slv3Protocol.RfSelect, FanMac, MasterMac, targetRx: 1, targetChannel: 8, cmdSeq: 0x50);
+
+        Assert.Equal(0x12, payload[0]);
+        Assert.Equal(Slv3Protocol.RfSelect, payload[1]);
+        Assert.Equal(FanMac, payload.AsSpan(2, 6).ToArray());
+        Assert.Equal(MasterMac, payload.AsSpan(8, 6).ToArray());
+        Assert.Equal(new byte[] { 0x01, 0x08, 0x00, 0x50 }, payload.AsSpan(14, 4).ToArray());
+        Assert.All(payload.AsSpan(18).ToArray(), b => Assert.Equal(0, b));
+    }
+
+    [Fact]
+    public void BuildClockSync_matches_the_lconnect_heartbeat_layout()
+    {
+        // Y70 USBPcap 2026-09-04: [14..45] = 0x14 x32, then year/month/day/h/m/s, then 0x14 x11.
+        var payload = Slv3Protocol.BuildClockSync(MasterMac, new DateTime(2026, 9, 4, 12, 44, 3));
+
+        Assert.Equal(0x12, payload[0]);
+        Assert.Equal(Slv3Protocol.RfClockSync, payload[1]);
+        Assert.Equal(new byte[6], payload.AsSpan(2, 6).ToArray());   // fan MAC zero, not broadcast
+        Assert.Equal(MasterMac, payload.AsSpan(8, 6).ToArray());
+        Assert.All(payload.AsSpan(14, 32).ToArray(), b => Assert.Equal(0x14, b));
+        Assert.Equal(new byte[] { 0x07, 0xEA, 0x09, 0x04, 0x0C, 0x2C, 0x03 }, payload.AsSpan(46, 7).ToArray());
+        Assert.All(payload.AsSpan(53, 11).ToArray(), b => Assert.Equal(0x14, b));
+        Assert.All(payload.AsSpan(64).ToArray(), b => Assert.Equal(0, b));
     }
 
     // ── FloorDuty / ResolvePortDuty / BuildPwmTuple (Phase 3) ──
@@ -177,22 +267,19 @@ public class Slv3ProtocolTests
     [Fact]
     public void ResolvePortDuty_floors_then_encodes_a_manual_percent()
     {
-        // 6 is within the floor band (0,14) so it floors to 14 before encode -
-        // it never reaches EncodeDuty's own literal-6 remap.
-        Assert.Equal(14, Slv3Protocol.ResolvePortDuty(6));
+        // 6 % is within the floor band (0,14) so it floors to 14 % = wire 35.
+        Assert.Equal(35, Slv3Protocol.ResolvePortDuty(6));
         Assert.Equal(0, Slv3Protocol.ResolvePortDuty(0));
-        Assert.Equal(75, Slv3Protocol.ResolvePortDuty(75));
+        Assert.Equal(191, Slv3Protocol.ResolvePortDuty(75));
     }
 
     [Fact]
-    public void BuildPwmTuple_defaults_to_mobo_sync_and_zeros_unoccupied_ports()
+    public void BuildPwmTuple_defaults_to_mobo_sync_and_mirrors_it_onto_unoccupied_ports()
     {
         var pwm = Slv3Protocol.BuildPwmTuple(new int?[] { null, null, null, null }, fanCount: 2);
 
-        Assert.Equal(Slv3Protocol.PwmFollowMotherboard, pwm[0]);
-        Assert.Equal(Slv3Protocol.PwmFollowMotherboard, pwm[1]);
-        Assert.Equal(0, pwm[2]);   // beyond fanCount: unoccupied
-        Assert.Equal(0, pwm[3]);
+        // L-Connect writes one uniform tuple; an unused port repeats its neighbour.
+        Assert.Equal(new byte[] { 6, 6, 6, 6 }, pwm);
     }
 
     [Fact]
@@ -204,7 +291,7 @@ public class Slv3ProtocolTests
         // commanded off.
         var pwm = Slv3Protocol.BuildPwmTuple(new int?[] { 40, null, null, null }, fanCount: 0);
 
-        Assert.Equal(40, pwm[0]);
+        Assert.Equal(102, pwm[0]);
         Assert.Equal(Slv3Protocol.PwmFollowMotherboard, pwm[1]);
         Assert.Equal(Slv3Protocol.PwmFollowMotherboard, pwm[2]);
         Assert.Equal(Slv3Protocol.PwmFollowMotherboard, pwm[3]);
@@ -216,10 +303,10 @@ public class Slv3ProtocolTests
         var targets = new int?[] { 50, null, 5, 100 };
         var pwm = Slv3Protocol.BuildPwmTuple(targets, fanCount: 3);
 
-        Assert.Equal(50, pwm[0]);
+        Assert.Equal(127, pwm[0]);
         Assert.Equal(Slv3Protocol.PwmFollowMotherboard, pwm[1]);
-        Assert.Equal(14, pwm[2]);  // 5 floored to the SLV3 minimum
-        Assert.Equal(0, pwm[3]);  // port 3 is beyond fanCount=3, stays 0 even though a target was set
+        Assert.Equal(35, pwm[2]);  // 5 floored to the SLV3 minimum of 14 %
+        Assert.Equal(35, pwm[3]);  // port 3 is beyond fanCount=3: mirrors port 2, its own target is ignored
     }
 
     [Fact]
@@ -227,10 +314,10 @@ public class Slv3ProtocolTests
     {
         var pwm = Slv3Protocol.BuildPwmTuple(new int?[] { 40 }, fanCount: 3);
 
-        Assert.Equal(40, pwm[0]);
+        Assert.Equal(102, pwm[0]);
         Assert.Equal(Slv3Protocol.PwmFollowMotherboard, pwm[1]);
         Assert.Equal(Slv3Protocol.PwmFollowMotherboard, pwm[2]);
-        Assert.Equal(0, pwm[3]);
+        Assert.Equal(Slv3Protocol.PwmFollowMotherboard, pwm[3]);
     }
 
     // ── SaveCfg / ResetAnother / video-mode frames (link-health) ──

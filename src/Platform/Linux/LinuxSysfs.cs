@@ -1,6 +1,8 @@
+using System;
 using System.Globalization;
 using System.IO;
 using System.Linq;
+using System.Runtime.InteropServices;
 
 namespace Nexus.Service.Platform.Linux;
 
@@ -11,8 +13,18 @@ namespace Nexus.Service.Platform.Linux;
 /// errors - a sysfs node can vanish or be permission-gated mid-access - and
 /// returns null / false rather than throwing.
 /// </summary>
-internal static class LinuxSysfs
+internal static partial class LinuxSysfs
 {
+    /// <summary>Hand a file the root daemon wrote into a user's home to that user; false on failure.</summary>
+    internal static bool TryChown(string path, uint uid, uint gid)
+    {
+        try { return OperatingSystem.IsLinux() && chown(path, uid, gid) == 0; }
+        catch { return false; }
+    }
+
+    [LibraryImport("libc", SetLastError = true, StringMarshalling = StringMarshalling.Utf8)]
+    private static partial int chown(string path, uint owner, uint group);
+
     /// <summary>Read a sysfs attribute as trimmed text, or null if absent/unreadable.</summary>
     internal static string? ReadText(string path)
     {

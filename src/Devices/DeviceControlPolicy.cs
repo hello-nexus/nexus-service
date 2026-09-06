@@ -33,6 +33,7 @@ public static class DeviceControlPolicy
     private static readonly HashSet<string> FirstPartyHandlers = new(StringComparer.OrdinalIgnoreCase)
     {
         "cnvs", "keeb", "np50", "smarthub", "y70", "qseries", "fan-hub", "aw5",
+        "ibp-keyboard", "ibp-mouse",
     };
 
     /// <summary>

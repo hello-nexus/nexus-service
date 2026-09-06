@@ -5,6 +5,7 @@ using System.IO;
 using System.Linq;
 using System.Net.Sockets;
 using System.Text;
+using System.Text.RegularExpressions;
 using System.Threading;
 using System.Threading.Tasks;
 using AdvancedSharpAdbClient;
@@ -382,6 +383,19 @@ public sealed class QSeriesPortWatcher : BackgroundService
 
     /// <summary>KEYCODE_WAKEUP: forces the display awake.</summary>
     private const int KeyeventWakeup = 224;
+
+    /// <summary>Host is about to suspend. Linux calls this from the logind
+    /// PrepareForSleep(true) signal; Windows from SystemEvents. Runs inline,
+    /// bounded by SendKeyeventBestEffort's per-serial cap.</summary>
+    public void OnHostSuspending() => TrySleepPanelsForHostPowerDown();
+
+    /// <summary>Host resumed. Stamps the resume before handing off so the tick
+    /// loop's reseat check reads a resume, not a reseat, whichever runs first.</summary>
+    public void OnHostResumed()
+    {
+        MarkHostResumed();
+        _ = Task.Run(TryRestorePanelsForHostResume);
+    }
 
 #if WINDOWS
     [System.Runtime.Versioning.SupportedOSPlatform("windows")]
@@ -798,6 +812,12 @@ public sealed class QSeriesPortWatcher : BackgroundService
         foreach (var key in _homePinFirstFailureBySerial.Keys.Where(k => !seenSerials.Contains(k)).ToList())
         {
             _homePinFirstFailureBySerial.Remove(key);
+        }
+        _homeChooserSeenBySerial.RemoveWhere(k => !seenSerials.Contains(k));
+        _homeTaskEnsuredThisRun.RemoveWhere(k => !seenSerials.Contains(k));
+        foreach (var key in _homeTaskAttemptsBySerial.Keys.Where(k => !seenSerials.Contains(k)).ToList())
+        {
+            _homeTaskAttemptsBySerial.Remove(key);
         }
         // user_rotation does not survive a panel reboot (brightness does), so a
         // re-attach re-applies. Dropping the confirmed-state record with the
@@ -1448,6 +1468,15 @@ public sealed class QSeriesPortWatcher : BackgroundService
     private const string QshellFocusMarker = QshellPackage;
 
     /// <summary>
+    /// True when <c>mCurrentFocus</c> holds a disambiguation chooser. The panel
+    /// keeps two HOME-eligible apps by design (qshell + the OEM launcher), so a
+    /// dropped default HOME resolves to one; a chooser raised for some other
+    /// intent only costs a redundant re-pin.
+    /// </summary>
+    internal static bool IsChooserFocus(string focus) =>
+        focus.Contains("ResolverActivity", StringComparison.Ordinal);
+
+    /// <summary>
     /// Last <c>am start</c> time per serial. Throttles re-launch; the foreground
     /// check itself is cheap and runs every tick.
     /// </summary>
@@ -1465,15 +1494,27 @@ public sealed class QSeriesPortWatcher : BackgroundService
     /// Serials whose default HOME has been re-pinned to qshell this run. The
     /// install-time <c>set-home-activity</c> (ApkFlasher) does not survive a panel
     /// cold boot on Android 11, so the panel comes up on the launcher chooser; the
-    /// per-tick am-start masks it but never restores the default. Re-assert the pin
-    /// once per attach, after qshell is confirmed installed, so the next cold boot
-    /// resolves HOME without the chooser. Cleared on detach so a reboot re-pins.
+    /// per-tick am-start masks it but never restores the default. Re-asserted
+    /// after qshell is confirmed installed - once per attach, plus again whenever
+    /// the chooser is seen in the foreground. Cleared on detach.
     /// </summary>
     private readonly HashSet<string> _homePinnedThisRun = new(StringComparer.Ordinal);
 
     /// <summary>Serial -> when the pin first failed this attach; bounds the
     /// un-latch retry below. Cleared on success and on detach.</summary>
     private readonly Dictionary<string, DateTimeOffset> _homePinFirstFailureBySerial = new(StringComparer.Ordinal);
+
+    /// <summary>Serials whose current chooser episode has already triggered a
+    /// re-pin. Cleared when qshell regains focus, and on detach.</summary>
+    private readonly HashSet<string> _homeChooserSeenBySerial = new(StringComparer.Ordinal);
+
+    /// <summary>Serials whose home-task state is settled for this attach. Cleared
+    /// on detach and on a chooser sighting; the attempt budget below is per attach
+    /// and is not reset by a chooser.</summary>
+    private readonly HashSet<string> _homeTaskEnsuredThisRun = new(StringComparer.Ordinal);
+
+    /// <summary>Serial -> re-home attempts this attach; bounds the per-tick retry.</summary>
+    private readonly Dictionary<string, int> _homeTaskAttemptsBySerial = new(StringComparer.Ordinal);
 
 
     /// <summary>
@@ -1765,12 +1806,34 @@ public sealed class QSeriesPortWatcher : BackgroundService
                 $"[qseries-port-watcher] {device.Serial}: foreground check failed: {ex.GetType().Name}");
             return;
         }
-        if (focusReceiver.ToString().Contains(QshellFocusMarker, StringComparison.Ordinal))
+        var focus = focusReceiver.ToString();
+        if (focus.Contains(QshellFocusMarker, StringComparison.Ordinal))
         {
             _qshellMissingBySerial.Remove(device.Serial);
             _activityMissingBySerial.Remove(device.Serial);
+            _homeChooserSeenBySerial.Remove(device.Serial);
             await ReassertQshellHomeAsync(device, ct);
+            await EnsureQshellIsHomeTaskAsync(device, ct);
             return;
+        }
+
+        // A chooser in focus means the default was dropped after the pin latched.
+        // Skipped while a pin is already failing, so the bounded give-up in
+        // RecordHomePinFailure stands.
+        // One repair per chooser episode: _homeChooserSeenBySerial is cleared only
+        // when qshell regains focus, so a chooser that outlives the re-pin does not
+        // re-shell every tick.
+        if (IsChooserFocus(focus)
+            && _homeChooserSeenBySerial.Add(device.Serial)
+            && !_homePinFirstFailureBySerial.ContainsKey(device.Serial)
+            && _homePinnedThisRun.Remove(device.Serial))
+        {
+            _homeTaskEnsuredThisRun.Remove(device.Serial);
+            ServiceLog.Info(
+                $"[qseries-port-watcher] {device.Serial}: HOME chooser in foreground; re-arming the default-HOME pin");
+#if DEV_TOOLS
+            await CaptureHomeDiagnosticsAsync(device, "chooser", focus, ct);
+#endif
         }
 
         // Throttle: give a just-issued am start time to take.
@@ -1928,7 +1991,7 @@ public sealed class QSeriesPortWatcher : BackgroundService
 
     /// <summary>
     /// Re-pin qshell as the panel's default HOME (<c>cmd package
-    /// set-home-activity</c>), once per attach. See <see cref="_homePinnedThisRun"/>
+    /// set-home-activity</c>) while unlatched. See <see cref="_homePinnedThisRun"/>
     /// for why the install-time pin is insufficient. Caller must have confirmed
     /// qshell is installed.
     /// </summary>
@@ -1960,6 +2023,188 @@ public sealed class QSeriesPortWatcher : BackgroundService
             RecordHomePinFailure(device.Serial, ex.GetType().Name);
         }
     }
+
+    private const int HomeTaskMaxAttempts = 3;
+
+    /// <summary>Root task line from <c>dumpsys activity activities</c>; on Android 11 a root task's stack id equals its id.</summary>
+    internal readonly record struct PanelTask(int Id, string Type, string Component, int StackId, int Size);
+
+    private static readonly Regex TaskLine = new(
+        @"Task\{[0-9a-f]+ #(?<id>\d+) visible=\w+ type=(?<type>\w+) mode=\S+ translucent=\w+ (?:A=\d+:(?<cmp>\S+)|I=(?<cmp>\S+)|\?\?) U=\d+ StackId=(?<stack>\d+) sz=(?<sz>\d+)\}",
+        RegexOptions.Compiled);
+
+    internal static List<PanelTask> ParsePanelTasks(string dump)
+    {
+        var seen = new HashSet<int>();
+        var tasks = new List<PanelTask>();
+        foreach (Match m in TaskLine.Matches(dump))
+        {
+            var id = int.Parse(m.Groups["id"].Value);
+            if (!seen.Add(id)) continue;
+            tasks.Add(new PanelTask(
+                id,
+                m.Groups["type"].Value,
+                m.Groups["cmp"].Success ? m.Groups["cmp"].Value : "",
+                int.Parse(m.Groups["stack"].Value),
+                int.Parse(m.Groups["sz"].Value)));
+        }
+        return tasks;
+    }
+
+    internal static bool IsStaleStandardTask(PanelTask t) =>
+        t.Type == "standard"
+        && (t.Component.Contains("ResolverActivity", StringComparison.Ordinal)
+            || t.Component.StartsWith(QshellPackage, StringComparison.Ordinal));
+
+    internal static bool IsQshellHomeTask(PanelTask t) =>
+        t.Type == "home" && t.Size > 0 && t.Component.StartsWith(QshellPackage, StringComparison.Ordinal);
+
+    /// <summary>
+    /// qshell must run in the HOME task: a component start from adb (uid 2000)
+    /// can only be a standard task (ActivityRecord.canLaunchHomeActivity), and an
+    /// emptied standard stack hands focus to whatever is beneath - the chooser.
+    /// Removing the chooser stack, then qshell's own, makes the emptied focus
+    /// launch HOME as the system, through the pin. Skipped while the pin is
+    /// failing, and qshell's stack stays when another app already holds home.
+    /// </summary>
+    private async Task EnsureQshellIsHomeTaskAsync(DeviceData device, CancellationToken ct)
+    {
+        if (_homeTaskEnsuredThisRun.Contains(device.Serial)) return;
+        if (_homePinFirstFailureBySerial.ContainsKey(device.Serial)) return;
+        var attempts = _homeTaskAttemptsBySerial.GetValueOrDefault(device.Serial);
+        if (attempts >= HomeTaskMaxAttempts) return;
+        _homeTaskAttemptsBySerial[device.Serial] = attempts + 1;
+        var lastAttempt = attempts + 1 >= HomeTaskMaxAttempts;
+
+        try
+        {
+            var raw = await DumpRawPanelTasksAsync(device, ct);
+            var tasks = ParsePanelTasks(raw);
+            if (attempts == 0)
+            {
+                ServiceLog.Info(
+                    $"[qseries-port-watcher] {device.Serial}: panel tasks {(tasks.Count == 0 ? $"(none parsed from {raw.Length} chars)" : DescribeTasks(tasks))}");
+            }
+            if (tasks.Count == 0)
+            {
+                if (lastAttempt) ServiceLog.Info($"[qseries-port-watcher] {device.Serial}: no panel tasks parsed; giving up re-homing until re-attach");
+                return;
+            }
+
+            // A live non-qshell home task (a "Just once" pick in the chooser is
+            // HOME-typed) would be what the emptied focus resumes, so qshell's
+            // standard stack stays put in that case; the chooser stack goes
+            // regardless.
+            var homeHeldByOther = tasks.Any(t => t.Type == "home" && t.Size > 0
+                && !t.Component.StartsWith(QshellPackage, StringComparison.Ordinal));
+            var stale = tasks.Where(IsStaleStandardTask)
+                .Where(t => !homeHeldByOther || !t.Component.StartsWith(QshellPackage, StringComparison.Ordinal))
+                .OrderBy(t => t.Component.StartsWith(QshellPackage, StringComparison.Ordinal) ? 1 : 0)
+                .ToList();
+            var removed = new List<string>();
+            foreach (var t in stale)
+            {
+                await _client.ExecuteShellCommandAsync(
+                    device, $"am stack remove {t.StackId}", new ConsoleOutputReceiver(), ct);
+                removed.Add($"#{t.Id}:{t.Component}");
+            }
+
+            var after = ParsePanelTasks(await DumpRawPanelTasksAsync(device, ct));
+            if (after.Any(IsQshellHomeTask) && !after.Any(IsStaleStandardTask))
+            {
+                _homeTaskEnsuredThisRun.Add(device.Serial);
+                _homeTaskAttemptsBySerial.Remove(device.Serial);
+                if (removed.Count > 0 || attempts > 0)
+                {
+                    ServiceLog.Info(
+                        $"[qseries-port-watcher] {device.Serial}: qshell is the home task; removed [{string.Join(", ", removed)}]; tasks {DescribeTasks(after)}");
+                }
+                return;
+            }
+            if (homeHeldByOther)
+            {
+                _homeTaskEnsuredThisRun.Add(device.Serial);
+                ServiceLog.Info(
+                    $"[qseries-port-watcher] {device.Serial}: home task held by another app; leaving qshell as a standard task; tasks {DescribeTasks(after)}");
+                return;
+            }
+            // The system's HOME launch is asynchronous; the next tick re-checks.
+            ServiceLog.Info(
+                $"[qseries-port-watcher] {device.Serial}: re-homing qshell (attempt {attempts + 1}{(lastAttempt ? ", last this attach" : "")}); removed [{string.Join(", ", removed)}]; tasks {DescribeTasks(after)}");
+        }
+        catch (Exception ex) when (!ct.IsCancellationRequested)
+        {
+            ServiceLog.Info(
+                $"[qseries-port-watcher] {device.Serial}: home-task check failed (attempt {attempts + 1}): {ex.GetType().Name}: {ex.Message}");
+        }
+    }
+
+    private async Task<string> DumpRawPanelTasksAsync(DeviceData device, CancellationToken ct)
+    {
+        var receiver = new ConsoleOutputReceiver();
+        await _client.ExecuteShellCommandAsync(
+            device, "dumpsys activity activities | grep -E \"\\* Task\\{\"", receiver, ct);
+        return receiver.ToString();
+    }
+
+    private static string DescribeTasks(List<PanelTask> tasks) =>
+        string.Join(" ", tasks.Select(t => $"#{t.Id}/{t.Type}/{(t.Component.Length == 0 ? "-" : t.Component)}/sz={t.Size}"));
+
+#if DEV_TOOLS
+    /// <summary>
+    /// Dev-tools probe for the recurring HOME chooser: dumps the panel-side state
+    /// that decides HOME resolution (candidate set, preferred record, role
+    /// holders, focus) plus a bounded logcat tail into a file under the logs dir.
+    /// Reads only; no bulk transfer.
+    /// </summary>
+    private async Task CaptureHomeDiagnosticsAsync(DeviceData device, string reason, string focus, CancellationToken ct)
+    {
+        var commands = new[]
+        {
+            "date -u +%Y-%m-%dT%H:%M:%SZ",
+            "getprop ro.build.version.release; getprop ro.build.version.sdk; getprop ro.build.fingerprint",
+            "cmd package query-activities --brief -a android.intent.action.MAIN -c android.intent.category.HOME",
+            "cmd package resolve-activity --brief -a android.intent.action.MAIN -c android.intent.category.HOME",
+            "dumpsys package preferred",
+            "dumpsys role",
+            "dumpsys window | grep -E \"mCurrentFocus|mFocusedApp\"",
+            "dumpsys activity activities | grep -E \"ResumedActivity|mLastPausedActivity|Hist #|TaskRecord|Task\\{\" | head -40",
+            "logcat -d -t 600 -v time ActivityManager:I ActivityTaskManager:I PackageManager:I AndroidRuntime:E WindowManager:I RoleControllerServiceImpl:I RoleManagerService:I Role:I *:S",
+            "logcat -d -b events -t 400 -v time am_proc_died:I am_kill:I am_finish_activity:I am_destroy_activity:I am_crash:I am_anr:I am_proc_start:I am_create_activity:I am_resume_activity:I am_pause_activity:I am_task_to_front:I *:S",
+        };
+        var sb = new StringBuilder();
+        sb.Append("host-utc ").Append(DateTimeOffset.UtcNow.ToString("O")).Append(" reason=").Append(reason).Append('\n');
+        if (focus.Length > 0) sb.Append("focus-at-trigger: ").Append(focus.Trim()).Append('\n');
+        foreach (var command in commands)
+        {
+            sb.Append("\n===== $ ").Append(command).Append('\n');
+            var receiver = new ConsoleOutputReceiver();
+            try
+            {
+                await _client.ExecuteShellCommandAsync(device, command, receiver, ct);
+                var text = receiver.ToString();
+                if (text.Length > 96_000) text = text.Substring(0, 96_000) + "\n...[truncated]\n";
+                sb.Append(text);
+            }
+            catch (Exception ex) when (!ct.IsCancellationRequested)
+            {
+                sb.Append("!! ").Append(ex.GetType().Name).Append(": ").Append(ex.Message).Append('\n');
+            }
+        }
+        try
+        {
+            var path = Path.Combine(
+                ServiceLog.LogsDirectory,
+                $"qseries-home-diag-{DateTimeOffset.UtcNow:yyyyMMdd-HHmmss}-{device.Serial}-{reason}.txt");
+            await File.WriteAllTextAsync(path, sb.ToString(), ct);
+            ServiceLog.Info($"[qseries-port-watcher] {device.Serial}: HOME diagnostics ({reason}) -> {path} ({sb.Length} chars)");
+        }
+        catch (Exception ex) when (!ct.IsCancellationRequested)
+        {
+            ServiceLog.Info($"[qseries-port-watcher] {device.Serial}: HOME diagnostics write failed: {ex.GetType().Name}: {ex.Message}");
+        }
+    }
+#endif
 
     /// <summary>
     /// Bounded pin retry: un-latch so the next tick retries, log the first
@@ -2270,13 +2515,23 @@ public sealed class QSeriesPortWatcher : BackgroundService
             // Timezone first so the wall clock lands in the right offset; the
             // host TZ is stable, but re-sending it is a cheap no-op.
             var iana = ResolveHostIanaTimeZone();
+            var tzDetail = "skipped (host zone unmapped)";
             if (iana is not null)
             {
+                var tzReceiver = new ConsoleOutputReceiver();
                 await _client.ExecuteShellCommandAsync(
-                    device, $"cmd alarm set-timezone {iana}", new ConsoleOutputReceiver(), ct);
+                    device, $"cmd alarm set-timezone {iana}", tzReceiver, ct);
+                // `cmd alarm` prints nothing on success, an error line on refusal.
+                var tzOut = tzReceiver.ToString().Trim();
+                tzDetail = tzOut.Length == 0 ? iana : $"{iana} -> {tzOut}";
             }
+            var timeReceiver = new ConsoleOutputReceiver();
             await _client.ExecuteShellCommandAsync(
-                device, $"cmd alarm set-time {now.ToUnixTimeMilliseconds()}", new ConsoleOutputReceiver(), ct);
+                device, $"cmd alarm set-time {now.ToUnixTimeMilliseconds()}", timeReceiver, ct);
+            var timeOut = timeReceiver.ToString().Trim();
+            ServiceLog.Info(
+                $"[qseries-port-watcher] {device.Serial}: clock sync tz={tzDetail}"
+                + $" time={(timeOut.Length == 0 ? "ok" : timeOut)}");
         }
         catch (Exception ex) when (!ct.IsCancellationRequested)
         {
@@ -2291,12 +2546,15 @@ public sealed class QSeriesPortWatcher : BackgroundService
     /// Host system timezone as an IANA id (<c>cmd alarm set-timezone</c> wants
     /// IANA, e.g. "America/Los_Angeles"); null when a Windows id has no IANA
     /// mapping, in which case the timezone is left as-is and only the clock set.
+    /// <see cref="WindowsTimeZoneMap"/> is the fallback the shipping
+    /// <c>InvariantGlobalization</c> publish depends on - see its remarks.
     /// </summary>
-    private static string? ResolveHostIanaTimeZone()
+    internal static string? ResolveHostIanaTimeZone()
     {
         var local = TimeZoneInfo.Local;
         if (local.HasIanaId) return local.Id;
-        return TimeZoneInfo.TryConvertWindowsIdToIanaId(local.Id, out var iana) ? iana : null;
+        if (TimeZoneInfo.TryConvertWindowsIdToIanaId(local.Id, out var iana)) return iana;
+        return WindowsTimeZoneMap.ToIana(local.Id);
     }
 
     /// <summary>

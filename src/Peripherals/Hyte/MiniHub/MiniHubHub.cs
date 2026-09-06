@@ -34,7 +34,9 @@ public sealed class MiniHubHub : IDisposable, IDfuFlashTarget
     private bool _disposed;
     // Starts at 0 (the silent default) so a device absent from boot never logs
     // "discovery returned 0"; only a real change (0->N found, or N->0 disconnect) logs.
-    private int _lastDiscoveredPortCount;
+    // -1 so the first attempt logs even when it finds nothing: a silent zero is
+    // indistinguishable from the worker never running.
+    private int _lastDiscoveredPortCount = -1;
 
     public MiniHubHub(INp50PortDiscovery discovery, Func<Np50PortInfo, INp50Transport> transportFactory)
     {

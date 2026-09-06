@@ -489,70 +489,208 @@ public class QSeriesCoolerProtocolTests
         Assert.False(QSeriesCoolerProtocol.TryParseFirmwareCurve(wrongHeader, out _));
     }
 
-    // ── Radiator fan telemetry (FF CC 01 02) ──
+    // ── Nexus Link channel devices (FF CC 01 &lt;channel&gt;) ──
+    // Fixtures are the raw Y70-box Q60 fw 2.0.9.1 captures from 2026-09-03:
+    // channel 1 = LS10 (20 LEDs) chained to LN70 (44 LEDs); channel 2 = five solo
+    // FP12 fans, tachs 621/705/715/731/727 rpm.
 
     [Fact]
     public void BuildGetChannelInfo_emits_FF_CC_01_channel()
     {
         Assert.Equal(new byte[] { 0xFF, 0xCC, 0x01, 0x02 },
             QSeriesCoolerProtocol.BuildGetChannelInfo(QSeriesCoolerProtocol.FanChannel));
+        Assert.Equal(new byte[] { 0xFF, 0xCC, 0x01, 0x01 },
+            QSeriesCoolerProtocol.BuildGetChannelInfo(QSeriesCoolerProtocol.LinkChannel1));
+    }
+
+    private static byte[] Channel1Fixture()
+    {
+        var r = new byte[QSeriesCoolerProtocol.ChannelInfoResponseLength];
+        r[0] = 0xFF; r[1] = 0xCC;
+        // Slot 0: LS10, 20 LEDs, orientation Down, chain continues.
+        r[2] = 0x01; r[3] = 0x01; r[4] = 0x01; r[5] = 0x14;
+        r[6] = 0x0D; r[7] = 0x1E; r[8] = 0x00; r[9] = 0x00;
+        r[10] = 0x01; r[11] = 0x00;
+        // Slot 1: LN70, 44 LEDs, orientation Front, chain ends.
+        r[14] = 0x02; r[15] = 0x07; r[16] = 0x01; r[17] = 0x2C;
+        r[18] = 0x11; r[19] = 0x2C; r[20] = 0x00; r[21] = 0x00;
+        r[22] = 0x03; r[23] = 0x01;
+        // Slot 2: empty - type byte 0x00, index byte lingers non-zero.
+        r[26] = 0x02;
+        return r;
+    }
+
+    private static byte[] Channel2Fixture()
+    {
+        var r = new byte[QSeriesCoolerProtocol.ChannelInfoResponseLength];
+        r[0] = 0xFF; r[1] = 0xCC;
+        // Five solo FP12 slots. Tachs decode to 621/705/715/731/727 rpm.
+        r[2] = 0x01; r[3] = 0x03; r[4] = 0x01; r[5] = 0x00;
+        r[6] = 0x21; r[7] = 0x3E; r[8] = 0x18; r[9] = 0x0F;
+        r[10] = 0x02; r[11] = 0x00;
+        r[14] = 0x02; r[15] = 0x03; r[16] = 0x01; r[17] = 0x00;
+        r[18] = 0x21; r[19] = 0x3B; r[20] = 0x15; r[21] = 0x1B;
+        r[22] = 0x02; r[23] = 0x01;
+        r[26] = 0x03; r[27] = 0x03; r[28] = 0x01; r[29] = 0x00;
+        r[30] = 0x22; r[31] = 0x63; r[32] = 0x14; r[33] = 0x61;
+        r[34] = 0x00; r[35] = 0x00;
+        r[38] = 0x04; r[39] = 0x03; r[40] = 0x01; r[41] = 0x00;
+        r[42] = 0x22; r[43] = 0x3D; r[44] = 0x14; r[45] = 0x33;
+        r[46] = 0x00; r[47] = 0x00;
+        r[50] = 0x05; r[51] = 0x03; r[52] = 0x01; r[53] = 0x00;
+        r[54] = 0x21; r[55] = 0x58; r[56] = 0x14; r[57] = 0x3E;
+        r[58] = 0x00; r[59] = 0x01;
+        // Slot 5: empty - type byte 0x00, index byte lingers non-zero.
+        r[62] = 0x05;
+        return r;
     }
 
     [Fact]
-    public void TryParseFanRpm_duo_reports_max_of_the_two_fans()
+    public void TryParseChannelDevices_parses_the_channel1_LS10_LN70_fixture()
     {
-        var resp = new byte[QSeriesCoolerProtocol.ChannelInfoResponseLength];
-        resp[0] = 0xFF; resp[1] = 0xCC;
-        resp[3] = 0x04;            // FT12Duo
-        resp[8] = 1; resp[9] = 0;  // fan 1 -> 1500 rpm
-        resp[4] = 2; resp[5] = 0;  // fan 2 -> 750 rpm
-        Assert.True(QSeriesCoolerProtocol.TryParseFanRpm(resp, out var rpm, out var present));
-        Assert.True(present);
-        Assert.Equal(1500, rpm);
+        Assert.True(QSeriesCoolerProtocol.TryParseChannelDevices(Channel1Fixture(), out var devices));
+
+        Assert.Collection(devices,
+            d =>
+            {
+                Assert.Equal(1, d.Slot);
+                Assert.Equal("LS10", d.Model);
+                Assert.Equal(20, d.LedCount);
+                Assert.Equal(0, d.FanCount);
+                Assert.Empty(d.FanRpm);
+                Assert.Equal("Down", d.Orientation);
+                Assert.False(d.GroupEnd);
+                Assert.Null(d.TemperatureC); // only an FT12 unit carries a probe
+            },
+            d =>
+            {
+                Assert.Equal(2, d.Slot);
+                Assert.Equal("LN70", d.Model);
+                Assert.Equal(44, d.LedCount);
+                Assert.Equal(0, d.FanCount);
+                Assert.Equal("Front", d.Orientation);
+                Assert.True(d.GroupEnd);
+            });
     }
 
     [Fact]
-    public void TryParseFanRpm_no_fan_unit_reports_absent()
+    public void TryParseChannelDevices_parses_the_channel2_five_solo_FP12_fixture()
     {
-        var resp = new byte[QSeriesCoolerProtocol.ChannelInfoResponseLength];
-        resp[0] = 0xFF; resp[1] = 0xCC; // category byte [3] left 0x00 = no device
-        Assert.True(QSeriesCoolerProtocol.TryParseFanRpm(resp, out var rpm, out var present));
-        Assert.False(present);
-        Assert.Equal(0, rpm);
+        Assert.True(QSeriesCoolerProtocol.TryParseChannelDevices(Channel2Fixture(), out var devices));
+
+        Assert.Equal(5, devices.Count);
+        var expectedRpm = new[] { 621, 705, 715, 731, 727 };
+        var expectedOrientation = new[] { "Up", "Up", "Back", "Back", "Back" };
+        var expectedGroupEnd = new[] { false, true, false, false, true };
+        for (var i = 0; i < 5; i++)
+        {
+            Assert.Equal(i + 1, devices[i].Slot);
+            Assert.Equal("FP12", devices[i].Model);
+            Assert.Equal(1, devices[i].FanCount);
+            Assert.Equal(0, devices[i].LedCount); // firmware reports 0 for FT12/FP12, no fallback constant exists
+            Assert.Equal(new[] { expectedRpm[i] }, devices[i].FanRpm);
+            Assert.Equal(expectedOrientation[i], devices[i].Orientation);
+            Assert.Equal(expectedGroupEnd[i], devices[i].GroupEnd);
+        }
     }
 
     [Fact]
-    public void TryParseFanRpm_rejects_short_or_misframed()
+    public void TryParseChannelDevices_00_00_header_means_no_data_yet()
     {
-        Assert.False(QSeriesCoolerProtocol.TryParseFanRpm(new byte[20], out _, out _));
+        var noData = new byte[QSeriesCoolerProtocol.ChannelInfoResponseLength]; // [0..1] left 0x00 0x00
+
+        Assert.False(QSeriesCoolerProtocol.TryParseChannelDevices(noData, out var devices));
+        Assert.Empty(devices);
+    }
+
+    [Fact]
+    public void TryParseChannelDevices_type_0_at_slot_0_is_an_empty_list()
+    {
+        var r = new byte[QSeriesCoolerProtocol.ChannelInfoResponseLength];
+        r[0] = 0xFF; r[1] = 0xCC; // valid header, but slot 0's type byte (r[3]) stays 0x00
+
+        Assert.True(QSeriesCoolerProtocol.TryParseChannelDevices(r, out var devices));
+        Assert.Empty(devices);
+    }
+
+    [Fact]
+    public void TryParseChannelDevices_rejects_short_or_misframed()
+    {
+        Assert.False(QSeriesCoolerProtocol.TryParseChannelDevices(new byte[20], out _));
         var wrong = new byte[QSeriesCoolerProtocol.ChannelInfoResponseLength];
         wrong[0] = 0xFF; wrong[1] = 0xDD;
-        Assert.False(QSeriesCoolerProtocol.TryParseFanRpm(wrong, out _, out _));
+        Assert.False(QSeriesCoolerProtocol.TryParseChannelDevices(wrong, out _));
     }
 
     [Fact]
-    public void BuildSetFanSpeed_lays_out_header_and_per_device_duty()
+    public void TryParseChannelDevices_duo_slot_expands_to_two_tachs_divided_by_10()
     {
-        var cmd = QSeriesCoolerProtocol.BuildSetFanSpeed(QSeriesCoolerProtocol.FanChannel, 60);
+        var r = new byte[QSeriesCoolerProtocol.ChannelInfoResponseLength];
+        r[0] = 0xFF; r[1] = 0xCC;
+        r[2] = 0x01; r[3] = 0x04; // FT12 Duo
+        r[8] = 1; r[9] = 0;       // fan 1 -> 1500 rpm
+        r[4] = 2; r[5] = 0;       // fan 2 -> 750 rpm
+
+        Assert.True(QSeriesCoolerProtocol.TryParseChannelDevices(r, out var devices));
+        var dev = Assert.Single(devices);
+        Assert.Equal("FT12 Duo", dev.Model);
+        Assert.Equal(2, dev.FanCount);
+        Assert.Equal(new[] { 1500, 750 }, dev.FanRpm);
+    }
+
+    [Fact]
+    public void TryParseChannelDevices_trio_slot_expands_to_three_tachs_with_packed_decode()
+    {
+        var r = new byte[QSeriesCoolerProtocol.ChannelInfoResponseLength];
+        r[0] = 0xFF; r[1] = 0xCC;
+        r[2] = 0x01; r[3] = 0x05;  // FT12 Trio
+        r[8] = 1; r[9] = 50;       // fan 1 -> 1%10*1000 + 50*10 = 1500 rpm
+        r[4] = 2; r[5] = 0;        // fan 2 -> 2000 rpm
+        r[10] = 3; r[11] = 25;     // fan 3 -> 3250 rpm
+
+        Assert.True(QSeriesCoolerProtocol.TryParseChannelDevices(r, out var devices));
+        var dev = Assert.Single(devices);
+        Assert.Equal("FT12 Trio", dev.Model);
+        Assert.Equal(3, dev.FanCount);
+        Assert.Equal(new[] { 1500, 2000, 3250 }, dev.FanRpm);
+    }
+
+    [Fact]
+    public void BuildSetChannelFanSpeeds_lays_out_per_slot_duties_and_zero_fills_unused_slots()
+    {
+        var duties = new[]
+        {
+            new QSeriesCoolerProtocol.QSeriesFanSlotDuty(60, 0, 0),      // solo
+            new QSeriesCoolerProtocol.QSeriesFanSlotDuty(40, 55, 0),     // duo
+            new QSeriesCoolerProtocol.QSeriesFanSlotDuty(20, 30, 45),    // trio
+        };
+        var cmd = QSeriesCoolerProtocol.BuildSetChannelFanSpeeds(QSeriesCoolerProtocol.FanChannel, duties);
+
         Assert.Equal(166, cmd.Length); // 18 device blocks * 9 + 4-byte header
         Assert.Equal(QSeriesCoolerProtocol.SetFanFrameLength, cmd.Length);
         Assert.Equal(new byte[] { 0xFF, 0xCC, 0x02, 0x02 }, cmd[0..4]);
-        // Device 0 block starts at byte 4: index, percentage, rpm-mode.
-        Assert.Equal(1, cmd[4]);   // 1-based device index
-        Assert.Equal(60, cmd[6]);  // percentage %
-        Assert.Equal(0, cmd[7]);   // RPM mode 0 = percentage
-        Assert.Equal(0, cmd[10]);  // reserve
-        Assert.Equal(0, cmd[11]);  // reserve
-        // Device 1 block at byte 13.
-        Assert.Equal(2, cmd[13]);
-        Assert.Equal(60, cmd[15]);
+
+        // Block 0 (solo): [idx=1, 0, 60, 0, 0, 0, 0, 0, 0].
+        Assert.Equal(new byte[] { 1, 0, 60, 0, 0, 0, 0, 0, 0 }, cmd[4..13]);
+        // Block 1 (duo): [idx=2, 0, 40, 0, 0, 0, 55, 0, 0].
+        Assert.Equal(new byte[] { 2, 0, 40, 0, 0, 0, 55, 0, 0 }, cmd[13..22]);
+        // Block 2 (trio): [idx=3, 0, 20, 0, 0, 0, 30, 45, 0].
+        Assert.Equal(new byte[] { 3, 0, 20, 0, 0, 0, 30, 45, 0 }, cmd[22..31]);
+        // Block 3 (unused slot): index still stamped, every duty byte zero.
+        Assert.Equal(new byte[] { 4, 0, 0, 0, 0, 0, 0, 0, 0 }, cmd[31..40]);
+        // Last block (17, 0-based) is still index-stamped and zero-filled.
+        Assert.Equal(18, cmd[cmd.Length - 9]);
+        for (var i = cmd.Length - 8; i < cmd.Length; i++) Assert.Equal(0, cmd[i]);
     }
 
     [Fact]
-    public void BuildSetFanSpeed_clamps_duty()
+    public void BuildSetChannelFanSpeeds_clamps_each_fan_duty()
     {
-        Assert.Equal(100, QSeriesCoolerProtocol.BuildSetFanSpeed(QSeriesCoolerProtocol.FanChannel, 150)[6]);
-        Assert.Equal(0, QSeriesCoolerProtocol.BuildSetFanSpeed(QSeriesCoolerProtocol.FanChannel, -5)[6]);
+        var duties = new[] { new QSeriesCoolerProtocol.QSeriesFanSlotDuty(150, -5, 250) };
+        var cmd = QSeriesCoolerProtocol.BuildSetChannelFanSpeeds(QSeriesCoolerProtocol.FanChannel, duties);
+        Assert.Equal(100, cmd[6]); // fan1 clamped up
+        Assert.Equal(0, cmd[10]);  // fan2 clamped down
+        Assert.Equal(100, cmd[11]); // fan3 clamped up
     }
 
     [Theory]

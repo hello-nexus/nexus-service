@@ -52,4 +52,36 @@ public class Crc32Tests
 
         Assert.NotEqual(0u, Crc32.Compute(zeros));
     }
+
+    [Fact]
+    public void Compute_MatchesTheByteAtATimeReference_ForEveryLengthAndAlignment()
+    {
+        // Covers the 8-byte-block paths (hardware on ARM64, slicing-by-8
+        // elsewhere) plus every tail length, starting from every offset so
+        // unaligned block reads are exercised too.
+        var rng = new Random(1234);
+        var bytes = new byte[4096];
+        rng.NextBytes(bytes);
+
+        for (var offset = 0; offset < 16; offset++)
+        {
+            for (var length = 0; length < 80; length++)
+            {
+                var slice = bytes.AsSpan(offset, length);
+                Assert.Equal(Crc32.ComputeReference(slice), Crc32.Compute(slice));
+                Assert.Equal(Crc32.ComputeReference(slice), Crc32.ComputeSlicing8ForTest(slice));
+            }
+        }
+
+        Assert.Equal(Crc32.ComputeReference(bytes), Crc32.Compute(bytes));
+        Assert.Equal(Crc32.ComputeReference(bytes), Crc32.ComputeSlicing8ForTest(bytes));
+    }
+
+    [Fact]
+    public void ComputeSlicing8_MatchesTheStandardCheckValue()
+    {
+        var bytes = Encoding.ASCII.GetBytes("123456789");
+
+        Assert.Equal(0xCBF43926u, Crc32.ComputeSlicing8ForTest(bytes));
+    }
 }

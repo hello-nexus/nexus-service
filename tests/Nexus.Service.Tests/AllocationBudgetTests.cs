@@ -98,7 +98,21 @@ public class AllocationBudgetTests
         var dst = new RgbColor[leds];
         var src = new byte[leds * 3];
         Assert.Equal(0, BytesPerIteration(ZeroAllocIterations,
-            () => Np50LightingFrameWriter.FillBufferSlice(dst, 0, src, leds, 1.0, false, 0, 0)));
+            () => Np50LightingFrameWriter.FillBufferSlice(dst, 0, src, leds, 1.0, default, false, 0, 0)));
+    }
+
+    // Same loop with a colour-tuning trim applied - the slower branch, and the
+    // one that would allocate if DeviceColorAdjust ever stopped being a struct.
+    [Fact]
+    public void Np50FillBufferSlice_WithColorAdjust_IsZeroAlloc()
+    {
+        const int leds = 120;
+        var dst = new RgbColor[leds];
+        var src = new byte[leds * 3];
+        var adjust = DeviceColorAdjust.Create(1.2f, 1f, 0.8f, 0.3f, 1.4f);
+        Assert.False(adjust.IsIdentity);
+        Assert.Equal(0, BytesPerIteration(ZeroAllocIterations,
+            () => Np50LightingFrameWriter.FillBufferSlice(dst, 0, src, leds, 1.0, adjust, false, 0, 0)));
     }
 
     // ── Monitoring broadcast: ~1 Hz composite + per-topic sub-frames. ──

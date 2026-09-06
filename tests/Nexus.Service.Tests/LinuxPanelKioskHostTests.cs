@@ -135,4 +135,41 @@ public class LinuxPanelKioskHostTests
             }
         }
     }
+
+    /// <summary>The Y70 slot self-registers: no device id in the URL, so the
+    /// kiosk allocates a y70 record from its own (compositor-shaped) viewport.</summary>
+    [Fact]
+    public void KioskUrl_Y70SlotLoadsPanelRootAndMonitorsLoadTheirRecord()
+    {
+        Assert.Equal("http://localhost:9400/panel?token=t%20k",
+            LinuxPanelKioskHost.KioskUrl(9400, LinuxPanelKioskHost.Y70Slot, "t k"));
+        Assert.Equal("http://localhost:9400/panel/abc%2F1?token=tok",
+            LinuxPanelKioskHost.KioskUrl(9400, "abc/1", "tok"));
+    }
+
+    [Fact]
+    public void Diff_TreatsTheY70SlotLikeAnyOtherAssignment()
+    {
+        var running = new Dictionary<string, string>();
+        var desired = new List<(string, string)> { (LinuxPanelKioskHost.Y70Slot, LinuxPanelKioskHost.Y70Slot) };
+        var (toClose, toOpen) = LinuxPanelKioskHost.Diff(running, desired);
+        Assert.Empty(toClose);
+        Assert.Equal((LinuxPanelKioskHost.Y70Slot, LinuxPanelKioskHost.Y70Slot), Assert.Single(toOpen));
+
+        running[LinuxPanelKioskHost.Y70Slot] = LinuxPanelKioskHost.Y70Slot;
+        (toClose, toOpen) = LinuxPanelKioskHost.Diff(running, new List<(string, string)>());
+        Assert.Equal(LinuxPanelKioskHost.Y70Slot, Assert.Single(toClose));
+        Assert.Empty(toOpen);
+    }
+
+    [Fact]
+    public void FlatpakAppId_RecognisesExportPathsOnly()
+    {
+        Assert.Equal("org.chromium.Chromium",
+            LinuxBrowsers.FlatpakAppId("/home/u/.local/share/flatpak/exports/bin/org.chromium.Chromium"));
+        Assert.Equal("com.brave.Browser",
+            LinuxBrowsers.FlatpakAppId("/var/lib/flatpak/exports/bin/com.brave.Browser"));
+        Assert.Null(LinuxBrowsers.FlatpakAppId("/usr/bin/chromium"));
+        Assert.Null(LinuxBrowsers.FlatpakAppId("/snap/bin/chromium"));
+    }
 }

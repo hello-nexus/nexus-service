@@ -159,6 +159,20 @@ public sealed class OpenRgbProcessManager : IDisposable
         return Path.Combine(baseDir, "Nexus", "openrgb-config");
     }
 
+    /// <summary>Test seam for the macOS split documented on
+    /// <see cref="AlwaysDisabledDetectors"/>. Static initializers
+    /// run in declaration order, so <see cref="DisabledDetectors"/> is declared
+    /// after the array it reads.</summary>
+    internal static string[] BuildDisabledDetectors(bool macOS)
+    {
+        var list = new System.Collections.Generic.List<string>(AlwaysDisabledDetectors);
+        if (!macOS)
+        {
+            list.Insert(1, "HYTE Nexus");
+        }
+        return list.ToArray();
+    }
+
     /// <summary>
     /// OpenRGB detectors nexus-service keeps disabled because it drives those
     /// devices directly over their own transport. The keeb rides raw HID, where
@@ -175,6 +189,13 @@ public sealed class OpenRgbProcessManager : IDisposable
     /// and the two stacks then interleave writes on the same pipe. OpenRGB also
     /// reads its fan chain as zero LEDs (its accessory table has no 0x1B entry),
     /// so nothing is lost by keeping it off.
+    /// "HYTE Nexus" (HYTENexusControllerDetect.cpp) covers exactly the THICC Q60
+    /// and the Nexus Portal NP50. On Windows and Linux both are driven natively
+    /// over CDC serial: on Windows the native workers open the COM port at
+    /// startup and OpenRGB's later open fails, but a Linux tty has no such
+    /// guard, so both stacks wrote frames to the same port and a static color
+    /// flashed whenever the two interleaved. macOS has no native NP50 or
+    /// Q-series discovery, so the detector stays enabled there.
     /// Unknown names in this list are ignored, so disabling the iCUE Link detector
     /// is a safe no-op on bundled builds that predate that controller.
     ///
@@ -186,7 +207,7 @@ public sealed class OpenRgbProcessManager : IDisposable
     /// unconditionally with no check for an existing controller, so the dedupe
     /// has to happen here.
     /// </summary>
-    private static readonly string[] DisabledDetectors = {
+    private static readonly string[] AlwaysDisabledDetectors = {
         "HYTE Keeb TKL", "Lian Li Uni Hub - SL Infinity", "Corsair iCUE Link System Hub",
         "NZXT Kraken 2024 ELITE Series RGB", "HID LampArray Device",
         // Nollie controllers are driven natively; names match the
@@ -195,6 +216,8 @@ public sealed class OpenRgbProcessManager : IDisposable
         "Nollie 28 L2", "Nollie 32_OS2", "Nollie 16_OS2", "Nollie 8_OS2", "Nollie 1_OS2",
         "Nollie 32_OS2_1", "Nollie 16_OS2_1", "Nollie 8_OS2_1", "Prism8 8_OS2_1", "Nollie 1_OS2_1",
     };
+
+    private static readonly string[] DisabledDetectors = BuildDisabledDetectors(OperatingSystem.IsMacOS());
 
     /// <summary>
     /// Detector names the user excluded by turning Nexus Control off for every

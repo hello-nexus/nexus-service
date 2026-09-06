@@ -277,6 +277,44 @@ public class SetLightingDeviceColor
     public int Slot { get; set; }
 }
 
+/// <summary>One card's colour-tuning trim. Every value is a multiplier around
+/// its neutral (1 for the channels and saturation, 0 for temperature), so an
+/// all-neutral entry means the device is untouched.</summary>
+public class LightingColorAdjustDto
+{
+    public float Red { get; set; } = 1f;
+    public float Green { get; set; } = 1f;
+    public float Blue { get; set; } = 1f;
+    public float Temperature { get; set; }
+    public float Saturation { get; set; } = 1f;
+}
+
+/// <summary>GET /devices/lighting-devices/color-adjust: the trims of every card
+/// that has one. Cards absent from the map are untouched - the client renders
+/// neutral for them rather than needing a row per device.</summary>
+public class LightingColorAdjustResponse
+{
+    public Dictionary<string, LightingColorAdjustDto> Adjustments { get; set; } = new();
+}
+
+/// <summary>POST /devices/lighting-devices/color-adjust. Takes a list of ids so
+/// tuning a multi-device selection is one write, not one per device.
+///
+/// Every value is optional and only the ones sent are applied: dragging one
+/// slider must not overwrite the four the user did not touch, which for a
+/// multi-device scope would flatten values that differ between devices.
+/// Brightness rides along so the modal's whole control set is one round trip.</summary>
+public class SetLightingColorAdjustBody
+{
+    public List<string> Ids { get; set; } = new();
+    public float? Red { get; set; }
+    public float? Green { get; set; }
+    public float? Blue { get; set; }
+    public float? Temperature { get; set; }
+    public float? Saturation { get; set; }
+    public int? Brightness { get; set; }
+}
+
 /// <summary>GET /devices/lighting-devices/static-looks: every per-device Static
 /// assignment, so a client can rebuild what each device wears (after a preset
 /// activate, a profile switch, or on a machine that has never seen them).</summary>

@@ -20,9 +20,9 @@ public class Np50Benchmarks
 
     [Benchmark]
     public void FillFullBrightness() =>
-        Np50LightingFrameWriter.FillBufferSlice(_dst, 0, _src, LedCount, 1.0, false, 0, 0);
+        Np50LightingFrameWriter.FillBufferSlice(_dst, 0, _src, LedCount, 1.0, default, false, 0, 0);
 
     [Benchmark]
     public void FillScaled() =>
-        Np50LightingFrameWriter.FillBufferSlice(_dst, 0, _src, LedCount, 0.5, false, 0, 0);
+        Np50LightingFrameWriter.FillBufferSlice(_dst, 0, _src, LedCount, 0.5, default, false, 0, 0);
 }

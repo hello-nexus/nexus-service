@@ -42,6 +42,18 @@ public static class SummarySensors
     public static float? Value(ISensorProvider sensors, SummarySensorKind kind)
         => Resolve(sensors.GetCpuSensors(), PrimaryGpuSensors(sensors), sensors.GetMemorySensors(), kind)?.Value;
 
+    /// <summary>Same derivation as <see cref="Value"/>, applied to sensor lists the
+    /// caller already fetched; a kind that reads only one list (CpuTemp reads cpu) can
+    /// be passed empty lists for the others.</summary>
+    internal static float? ValueFrom(
+        IReadOnlyList<HardwareSensor> cpuSensors,
+        IReadOnlyList<HardwareSensor> gpuSensors,
+        IReadOnlyList<HardwareSensor> memorySensors,
+        SummarySensorKind kind)
+        => kind == SummarySensorKind.VramUsage
+            ? VramUsagePercent(gpuSensors)
+            : Pick(cpuSensors, gpuSensors, memorySensors, kind)?.Value;
+
     /// <summary>Same derivation as <see cref="Build(ISensorProvider)"/>, applied to sensor
     /// lists a caller already fetched, so a caller that has already read cpu/gpu/memory
     /// sensors this tick does not trigger a second underlying read for the summary set.</summary>

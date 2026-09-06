@@ -22,6 +22,9 @@ public sealed record GameArt(string Url, byte[] Bytes)
 public interface IGameArtResolver
 {
     Task<GameArt> ResolveAsync(string gameKey, CancellationToken ct);
+
+    /// <summary>The installed executable's icon alone, for a caller whose store art failed to load.</summary>
+    GameArt ResolveIcon(string gameKey);
 }
 
 /// <summary>
@@ -42,7 +45,7 @@ public sealed class GameArtResolver : IGameArtResolver
     private static readonly TimeSpan RequestTimeout = TimeSpan.FromSeconds(6);
 
     private readonly IHttpClientFactory _http;
-    private readonly GameCatalog _catalog;
+    private readonly IGameInstallLocator _installs;
     private readonly IProcessIconProvider _icons;
     private readonly string _storeBaseUrl;
 
@@ -50,16 +53,16 @@ public sealed class GameArtResolver : IGameArtResolver
     private readonly Dictionary<string, Task<Resolved>> _inFlight = new(StringComparer.Ordinal);
     private readonly object _lock = new();
 
-    public GameArtResolver(IHttpClientFactory http, GameCatalog catalog, IProcessIconProvider icons)
-        : this(http, catalog, icons, DefaultStoreBaseUrl)
+    public GameArtResolver(IHttpClientFactory http, IGameInstallLocator installs, IProcessIconProvider icons)
+        : this(http, installs, icons, DefaultStoreBaseUrl)
     {
     }
 
     // Test-only ctor: loopback store base url.
-    internal GameArtResolver(IHttpClientFactory http, GameCatalog catalog, IProcessIconProvider icons, string storeBaseUrl)
+    internal GameArtResolver(IHttpClientFactory http, IGameInstallLocator installs, IProcessIconProvider icons, string storeBaseUrl)
     {
         _http = http;
-        _catalog = catalog;
+        _installs = installs;
         _icons = icons;
         _storeBaseUrl = storeBaseUrl.TrimEnd('/');
     }
@@ -93,15 +96,30 @@ public sealed class GameArtResolver : IGameArtResolver
         return resolved.Art;
     }
 
+    public GameArt ResolveIcon(string gameKey)
+    {
+        if (string.IsNullOrWhiteSpace(gameKey)) return GameArt.None;
+
+        var icon = ResolveExecutableIcon(gameKey);
+        return icon is { Length: > 0 } ? new GameArt("", icon) : GameArt.None;
+    }
+
     private async Task<Resolved> ResolveUncachedAsync(string gameKey, CancellationToken ct)
     {
         if (TryParseSteamAppId(gameKey, out var appId))
         {
             var resolved = await ResolveSteamAsync(appId, ct).ConfigureAwait(false);
             if (resolved.Length > 0) return new Resolved(new GameArt(resolved, Array.Empty<byte>()), PositiveTtl);
-            // The legacy capsule still answers for the back catalogue, but the
-            // store call failing is not evidence about this game, so it must
-            // not pin a 404 for post-2023 titles for a week.
+
+            // The installed binary's icon beats the legacy capsule path here:
+            // the capsule is a guess that 404s for anything published after
+            // Valve moved art behind a content hash, while the icon is on disk.
+            var installed = ResolveExecutableIcon(gameKey);
+            if (installed is { Length: > 0 }) return new Resolved(new GameArt("", installed), PositiveTtl);
+
+            // Not installed, or no icon: the capsule still answers for the back
+            // catalogue, and a failed store call is no evidence about this game,
+            // so it must not pin a 404 for a week either way.
             return new Resolved(new GameArt(LegacyCapsuleUrl(appId), Array.Empty<byte>()), TransientTtl);
         }
 
@@ -158,7 +176,7 @@ public sealed class GameArtResolver : IGameArtResolver
     /// <summary>Icon bytes, empty when there is none, or null when extraction could not be attempted (IProcessIconProvider's contract).</summary>
     private byte[]? ResolveExecutableIcon(string gameKey)
     {
-        if (!_catalog.TryGetInstallDir(gameKey, out var installDir)) return Array.Empty<byte>();
+        if (!_installs.TryGetInstallDir(gameKey, out var installDir)) return Array.Empty<byte>();
 
         var exe = PickGameExecutable(installDir);
         if (exe.Length == 0) return Array.Empty<byte>();

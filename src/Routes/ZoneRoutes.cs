@@ -215,7 +215,8 @@ public static partial class DevicesRoutes
         // the device's stored overrides wholesale.
         app.MapPost("/devices/lighting-devices/{deviceId}/device-map", (string deviceId, SaveDeviceMapBody body,
             ZoneTopology topology,
-            Nexus.Service.Persistence.IConfigStore store) =>
+            Nexus.Service.Persistence.IConfigStore store,
+            Nexus.Service.Sockets.MultiplexHub hub) =>
         {
             var structure = topology.FindStructure(deviceId);
             if (structure is null)
@@ -242,6 +243,7 @@ public static partial class DevicesRoutes
 
             foreach (var zone in topology.ZonesFor(structure, store.Load()))
                 topology.RefreshCardFrame(zone.Id);
+            Nexus.Service.Sockets.PanelTopics.BroadcastLighting(hub);
             return ApiResponse.Ok();
         });
 

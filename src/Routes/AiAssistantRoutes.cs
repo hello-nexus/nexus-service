@@ -43,6 +43,21 @@ public static class AiAssistantRoutes
             return Results.Json(await BuildStatusAsync(runtime, store, ct), AppJsonContext.Default.AssistantStatusResponse);
         });
 
+        // Opt-in to adopt an Ollama already listening on the default port. Off,
+        // the service only ever talks to the runtime it downloaded and launched
+        // itself; a foreign listener would otherwise receive every prompt and
+        // drive the tool calls.
+        app.MapPost("/ai/assistant/runtime/use-system", async (AssistantUseSystemRequest body, OllamaRuntimeManager runtime, IConfigStore store, CancellationToken ct) =>
+        {
+            store.Update(s => s.AiIntegration.UseSystemOllama = body.Enabled);
+            runtime.ApplyUseSystemOllama(body.Enabled);
+            if (body.Enabled)
+            {
+                await runtime.RefreshAsync(ct);
+            }
+            return Results.Json(await BuildStatusAsync(runtime, store, ct), AppJsonContext.Default.AssistantStatusResponse);
+        });
+
         app.MapPost("/ai/assistant/model/pull", async (AssistantModelPullRequest body, OllamaRuntimeManager runtime, IConfigStore store, CancellationToken ct) =>
         {
             if (string.IsNullOrWhiteSpace(body.Model))
@@ -115,6 +130,7 @@ public static class AiAssistantRoutes
         {
             RuntimeState = OllamaRuntimeManager.StateWireName(snap.State),
             SystemOllamaDetected = snap.SystemDetected,
+            UseSystemOllama = store.Load().AiIntegration.UseSystemOllama,
             DownloadProgress = snap.DownloadTotal is { } total && snap.DownloadReceived is { } received
                 ? new AssistantDownloadProgressDto { Received = received, Total = total }
                 : null,

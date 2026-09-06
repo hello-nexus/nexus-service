@@ -184,8 +184,13 @@ var
 function DesktopIconChecked(): Boolean;
 begin
   // False for a silent install (and so for OTA) - a background update must never
-  // recreate a desktop icon the user deleted; otherwise follow the dir-page box.
-  Result := (not WizardSilent()) and DesktopShortcutCheck.Checked;
+  // recreate a desktop icon the user deleted - unless the caller asks with
+  // /DESKTOPICON=1 (the web installer, which drives this wizard silently on a
+  // first install); otherwise follow the dir-page box.
+  if WizardSilent() then
+    Result := ExpandConstant('{param:DESKTOPICON|0}') = '1'
+  else
+    Result := DesktopShortcutCheck.Checked;
 end;
 
 procedure InitializeWizard();

@@ -50,14 +50,22 @@ public static class MonitoringHistoryRoutes
     private const int DecimatedPathMinStepSeconds = 60;
 
     private const int MinMaxApps = 1;
-    private const int MaxMaxApps = 100;
+    // Also bounds an absent maxApps (see clampedMaxApps below): every app
+    // sampled in the window, not a top-N, since the process search and the
+    // detail panel both read this list. TopAppsPerSample caps one tick's
+    // ranked set, but distinct app names across a day-long window churn well
+    // past that as different apps rank in and out over time, so this needs
+    // headroom above it to hold a busy desktop's full set without silently
+    // truncating. Internal so the test project can size a window against it
+    // directly instead of duplicating the value.
+    internal const int MaxMaxApps = 500;
     private const int MinMaxAppPoints = 1;
     private const int MaxMaxAppPoints = 2000;
 
     private const int MinEventsLimit = 1;
     private const int MaxEventsLimit = 2000;
     private const int DefaultEventsLimit = 500;
-    private const int MaxCustomEventLabelLength = 120;
+    internal const int MaxCustomEventLabelLength = 120;
 
     // POST /monitoring/events clamps a t further in the future than this to
     // now, per the wire contract - a client's clock skew should not park an
@@ -245,7 +253,10 @@ public static class MonitoringHistoryRoutes
             {
                 var fromSec = from.Value / 1000;
                 var toSec = to.Value / 1000;
-                var clampedMaxApps = Math.Clamp(maxApps ?? MetricsHistory.DefaultMaxApps, MinMaxApps, MaxMaxApps);
+                // Absent maxApps: every app up to MaxMaxApps, not a top-N (see its doc).
+                var clampedMaxApps = maxApps is { } requestedMaxApps
+                    ? Math.Clamp(requestedMaxApps, MinMaxApps, MaxMaxApps)
+                    : MaxMaxApps;
                 var clampedMaxPoints = Math.Clamp(maxPoints ?? MetricsHistory.DefaultMaxAppPoints, MinMaxAppPoints, MaxMaxAppPoints);
 
                 // Buffer read first, matching the sibling /monitoring/history
@@ -267,17 +278,6 @@ public static class MonitoringHistoryRoutes
                     .Select(t => (t.TsSec, Metric: t.Metric!))
                     .ToList();
 
-                // Ticks the metric was sampled across db+tail, ts-deduped so
-                // a tick straddling a flush boundary counts once - the same
-                // window-average denominator QueryTopApps uses, extended to
-                // cover ticks the tail has that the db doesn't have yet.
-                var sampledTicks = new HashSet<long>(appStore.QuerySampledTicks(series, fromSec, toSec));
-                foreach (var (ts, _) in tailForMetric)
-                {
-                    sampledTicks.Add(ts);
-                }
-                var expectedTicks = sampledTicks.Count;
-
                 List<AppWindowStat> topApps;
                 var seriesByApp = new Dictionary<string, IReadOnlyList<AppRawPoint>>(StringComparer.OrdinalIgnoreCase);
 
@@ -291,6 +291,7 @@ public static class MonitoringHistoryRoutes
                     // rather than the store's canonical (first-seen) casing;
                     // resolving that would cost a dedicated lookup this path
                     // exists to avoid.
+                    var expectedTicks = CountSampledTicks(appStore.QuerySampledTicks(series, fromSec, toSec), tailForMetric);
                     topApps = new List<AppWindowStat>();
                     if (expectedTicks > 0)
                     {
@@ -311,13 +312,14 @@ public static class MonitoringHistoryRoutes
                     // window wide enough for the db side to matter); every
                     // candidate's final avg/max/points is recomputed below from
                     // the db+tail merge, so a db-side ranking miss only costs a
-                    // wasted QueryAppSeries call, never a wrong number. Each
-                    // candidate is one sequential QueryAppSeries round trip, so
-                    // this scales with maxApps (bounded by MaxMaxApps) plus a
-                    // handful of tail-only names, not with window width.
-                    var dbTopApps = appStore.QueryTopApps(series, fromSec, toSec, clampedMaxApps);
+                    // wasted series, never a wrong number. One store pass
+                    // ranks and counts sampled ticks, a second fetches every
+                    // candidate's series, so this scales with the window's day
+                    // files, not with maxApps.
+                    var window = appStore.QueryWindow(series, fromSec, toSec, clampedMaxApps);
+                    var expectedTicks = CountSampledTicks(window.SampledTicks, tailForMetric);
 
-                    var candidateNames = new HashSet<string>(dbTopApps.Select(a => a.Name), StringComparer.OrdinalIgnoreCase);
+                    var candidateNames = new HashSet<string>(window.TopApps.Select(a => a.Name), StringComparer.OrdinalIgnoreCase);
                     foreach (var (_, metric) in tailForMetric)
                     {
                         foreach (var a in metric.Apps)
@@ -329,9 +331,11 @@ public static class MonitoringHistoryRoutes
                     var mergedApps = new List<AppWindowStat>();
                     if (expectedTicks > 0)
                     {
+                        var dbSeries = appStore.QueryAppSeriesBatch(series, candidateNames, fromSec, toSec);
                         foreach (var name in candidateNames)
                         {
-                            var merged = MergeAppTail(appStore.QueryAppSeries(series, name, fromSec, toSec), tailForMetric, name);
+                            var db = dbSeries.TryGetValue(name, out var s) ? s : Array.Empty<AppRawPoint>();
+                            var merged = MergeAppTail(db, tailForMetric, name);
                             if (merged.Count == 0)
                             {
                                 continue;
@@ -413,6 +417,21 @@ public static class MonitoringHistoryRoutes
             ctx.Response.Headers.CacheControl = "private, max-age=86400, immutable";
             return Results.File(bytes, "image/png", entityTag: etag);
         }).AllowPanel();
+    }
+
+    // Ticks the metric was sampled across db+tail, ts-deduped so a tick
+    // straddling a flush boundary counts once - the same window-average
+    // denominator QueryTopApps uses, extended to cover ticks the tail has
+    // that the db doesn't have yet.
+    private static int CountSampledTicks(
+        IReadOnlyList<long> dbSampledTicks, IReadOnlyList<(long TsSec, AppMetricSample Metric)> tailForMetric)
+    {
+        var sampledTicks = new HashSet<long>(dbSampledTicks);
+        foreach (var (ts, _) in tailForMetric)
+        {
+            sampledTicks.Add(ts);
+        }
+        return sampledTicks.Count;
     }
 
     private static IReadOnlyDictionary<string, long> ResolveLiveStartedAtByName(IReadOnlyList<ProcessInfo> procs)
@@ -519,25 +538,81 @@ public static class MonitoringHistoryRoutes
     // Db points and the buffered tail can overlap at the flush boundary;
     // the tail wins by ts (same precedence as MergeSamples), and a name
     // match is case-insensitive to match app_series' COLLATE NOCASE key.
+    // One point per ts: a db batch re-flushed after a partial store failure
+    // can hold a tick twice, and the later occurrence wins.
     internal static List<AppRawPoint> MergeAppTail(
         IReadOnlyList<AppRawPoint> dbPoints,
         IReadOnlyList<(long TsSec, AppMetricSample Metric)> tailForMetric,
         string name)
     {
-        var map = new SortedDictionary<long, AppRawPoint>();
-        foreach (var p in dbPoints)
+        var merged = new List<AppRawPoint>(dbPoints.Count + tailForMetric.Count);
+        merged.AddRange(dbPoints);
+        var sorted = true;
+        for (var i = 1; i < merged.Count; i++)
         {
-            map[p.TsSec] = p;
+            if (merged[i].TsSec < merged[i - 1].TsSec)
+            {
+                sorted = false;
+                break;
+            }
         }
+        if (!sorted)
+        {
+            merged.Sort((a, b) => a.TsSec.CompareTo(b.TsSec));
+        }
+        var write = 0;
+        for (var read = 0; read < merged.Count; read++)
+        {
+            if (write > 0 && merged[write - 1].TsSec == merged[read].TsSec)
+            {
+                merged[write - 1] = merged[read];
+            }
+            else
+            {
+                merged[write++] = merged[read];
+            }
+        }
+        merged.RemoveRange(write, merged.Count - write);
+
         foreach (var (ts, metric) in tailForMetric)
         {
             var point = metric.Apps.FirstOrDefault(a => string.Equals(a.Name, name, StringComparison.OrdinalIgnoreCase));
-            if (point is not null)
+            if (point is null)
             {
-                map[ts] = new AppRawPoint(ts, point.Value, point.VramMb);
+                continue;
+            }
+            var replacement = new AppRawPoint(ts, point.Value, point.VramMb);
+            var index = LowerBound(merged, ts);
+            if (index < merged.Count && merged[index].TsSec == ts)
+            {
+                merged[index] = replacement;
+            }
+            else
+            {
+                merged.Insert(index, replacement);
             }
         }
-        return map.Values.ToList();
+        return merged;
+    }
+
+    // First index whose ts is >= target in an ascending list (Count when none).
+    private static int LowerBound(List<AppRawPoint> points, long ts)
+    {
+        var lo = 0;
+        var hi = points.Count;
+        while (lo < hi)
+        {
+            var mid = lo + (hi - lo) / 2;
+            if (points[mid].TsSec < ts)
+            {
+                lo = mid + 1;
+            }
+            else
+            {
+                hi = mid;
+            }
+        }
+        return lo;
     }
 
     // Pure and directly unit-tested: every input is plain data the route
@@ -955,7 +1030,9 @@ public static class MonitoringHistoryRoutes
     internal static long ClampFutureEventTime(long t, long nowMs) =>
         t > nowMs + CustomEventFutureClampMs ? nowMs : t;
 
-    private static MonitoringEventDto ToEventDto(MonitoringEvent e) =>
+    // internal: also called by BroadcastingMonitoringEventStore so the
+    // monitoring/events push topic and the HTTP routes share one mapping.
+    internal static MonitoringEventDto ToEventDto(MonitoringEvent e) =>
         new(e.Id, e.TUtcMs, e.Kind, e.Label, e.Detail, e.Custom);
 
     private static HashSet<string>? ParseSeriesFilter(string? series)
@@ -1202,15 +1279,20 @@ public static class MonitoringHistoryRoutes
             Sessions = sessions
                 .Where(s => s.StartUtcSec <= toSec && (s.EndUtcSec is null || s.EndUtcSec >= fromSec))
                 .OrderBy(s => s.StartUtcSec)
-                .Select(s => new PrivacySessionWire
-                {
-                    App = s.AppId,
-                    Capability = s.Capability,
-                    Start = s.StartUtcSec * 1000,
-                    End = s.EndUtcSec is { } end ? end * 1000 : null,
-                })
+                .Select(ToPrivacySessionWire)
                 .ToList(),
         };
+
+    // internal: also called by BroadcastingPrivacySessionStore so the
+    // monitoring/privacy push topic and GET /monitoring/privacy share one
+    // mapping from seconds-based storage to the wire's milliseconds.
+    internal static PrivacySessionWire ToPrivacySessionWire(PrivacySession s) => new()
+    {
+        App = s.AppId,
+        Capability = s.Capability,
+        Start = s.StartUtcSec * 1000,
+        End = s.EndUtcSec is { } end ? end * 1000 : null,
+    };
 }
 
 // ----- Wire response wrappers -----

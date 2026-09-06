@@ -45,12 +45,15 @@ public static class DiagnosticsHealthRoutes
     private const int MaxIncidentDays = 30;
 
     private const int MinTemperatureHours = 1;
-    private const int MaxTemperatureHours = 336;
+    // get_temperature_history (Nexus.Service.Mcp.Tools.GetTemperatureHistoryTool)
+    // reuses this so its own window cap never exceeds the route's.
+    internal const int MaxTemperatureHours = 336;
     private const int DefaultTemperatureHours = 168;
 
     // Defensive backstop only: TemperatureInsights.TierWidthMinutesFor already
     // bounds each series well under this cap for every window up to MaxTemperatureHours.
-    private const int MaxPointsPerSeries = 600;
+    // get_temperature_history reuses this value too, for the same reason.
+    internal const int MaxPointsPerSeries = 600;
 
     public static void MapDiagnosticsHealthEndpoints(this WebApplication app)
     {
@@ -363,7 +366,9 @@ public static class DiagnosticsHealthRoutes
     private static bool IsRefresh(string? refresh) =>
         refresh is "1" || string.Equals(refresh, "true", StringComparison.OrdinalIgnoreCase);
 
-    private static IncidentsResponse BuildIncidentsResponse(
+    // internal: also called by the get_incidents MCP tool, so it serves the
+    // same grouped and game-decorated response the REST route does.
+    internal static IncidentsResponse BuildIncidentsResponse(
         EventLogMonitor events, SteamGameLibraryCache steamCache, int windowDays, bool group, bool includeGpuDriver = true)
     {
         IReadOnlyList<DiagnosticIncident> incidents = events.Snapshot(windowDays);

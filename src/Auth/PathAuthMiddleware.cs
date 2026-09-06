@@ -15,11 +15,16 @@ namespace Nexus.Service.Auth;
 //   1. OPTIONS preflight - always passes.
 //   2. Public paths (ping/pair/ready/hardware profile + a handful of phone-
 //      pairing endpoints whose own handlers enforce per-request validation).
-//   3. Static asset extensions (.js/.css/etc.) so the SPA bundle loads
-//      without a token before the user has paired.
-//   4. SPA shell fallback for unmatched top-level GET navigations.
-//   5. Localhost-only routes (LocalhostOnlyAccess metadata) - 404 from LAN.
-//   6. Bearer / query token - desktop session.
+//   3. SPA shell fallback for unmatched top-level GET navigations.
+//   4. Localhost-only routes (LocalhostOnlyAccess metadata) - 404 from LAN.
+//   5. Static asset extensions (.js/.css/etc.), GET/HEAD only, so images the
+//      SPA references by URL load without a token. Real files under wwwroot
+//      are already served by UseStaticFiles before this middleware runs, so
+//      this only reaches API routes whose last segment carries such a suffix.
+//      It sits after the localhost gate on purpose: a suffix must never open a
+//      LocalhostOnly route to the LAN, and never a mutation.
+//   6. Bearer / query token - desktop session (loopback remote AND a local
+//      Host header, so a DNS-rebound browser page cannot use it).
 //   7. Phone session cookie / token - paired phone session, gated by the
 //      Pair Remote killswitch.
 internal static class PathAuthMiddleware
@@ -124,6 +129,9 @@ internal static class PathAuthMiddleware
         return false;
     }
 
+    private static bool IsReadMethod(string method)
+        => HttpMethods.IsGet(method) || HttpMethods.IsHead(method);
+
     private static bool IsStaticAsset(string path)
     {
         foreach (var ext in StaticAssetExtensions)
@@ -142,7 +150,7 @@ internal static class PathAuthMiddleware
 
             var path = ctx.Request.Path.Value ?? string.Empty;
 
-            if (IsPublicEndpoint(ctx, path) || IsStaticAsset(path))
+            if (IsPublicEndpoint(ctx, path))
             {
                 await next(ctx);
                 return;
@@ -180,6 +188,12 @@ internal static class PathAuthMiddleware
                 }
             }
 
+            if (IsReadMethod(ctx.Request.Method) && IsStaticAsset(path))
+            {
+                await next(ctx);
+                return;
+            }
+
             var panelPairing = ctx.RequestServices.GetRequiredService<Nexus.Service.Panel.PanelPhonePairingService>();
 
             // Trusted in-process relay dispatch. A REST-over-relay tunnel request
@@ -191,12 +205,19 @@ internal static class PathAuthMiddleware
             // network caller can't set it; the value is identity-checked against a
             // private sentinel unreachable outside the relay assembly. The
             // remote-control killswitch still applies (OFF means OFF, even over
-            // the relay). The dispatcher already enforced the path allowlist.
+            // the relay), and so does the AllowPanel tier: a relayed phone is a
+            // phone session and reaches exactly what a LAN phone session reaches.
+            // The dispatcher already enforced the path allowlist.
             if (IsTrustedRelayDispatch(ctx, out var relaySessionId))
             {
                 if (!panelPairing.GetRemoteControlEnabled())
                 {
                     await AuthErrorResponse.WriteAsync(ctx, 403, "RemoteDisabled", "Remote control is currently disabled.");
+                    return;
+                }
+                if (!AuthRequestPolicy.IsPanelSessionAllowed(ctx))
+                {
+                    await AuthErrorResponse.WriteAsync(ctx, 403, "Forbidden", "This action requires the desktop app.");
                     return;
                 }
                 ctx.Items["PhoneSessionId"] = relaySessionId;
@@ -209,9 +230,14 @@ internal static class PathAuthMiddleware
             // The desktop token is a loopback-only credential: it is minted only
             // over loopback (/pair) and the desktop app always reaches the service
             // over 127.0.0.1. Honor it only from loopback so a leaked token can't
-            // drive the PC from another machine. Off-LAN access is the relay +
-            // phone-session path (handled above), which never presents this token.
-            if (AuthRequestPolicy.IsLoopbackRemote(ctx) && tokens.Validate(requestToken))
+            // drive the PC from another machine, and only under a local Host
+            // header: a browser page whose DNS name was rebound to 127.0.0.1 is a
+            // loopback remote too, and the Host header is the one thing it cannot
+            // fake. Off-LAN access is the relay + phone-session path (handled
+            // above), which never presents this token.
+            if (AuthRequestPolicy.IsLoopbackRemote(ctx)
+                && AuthRequestPolicy.IsLocalHostHeader(ctx)
+                && tokens.Validate(requestToken))
             {
                 await next(ctx);
                 return;

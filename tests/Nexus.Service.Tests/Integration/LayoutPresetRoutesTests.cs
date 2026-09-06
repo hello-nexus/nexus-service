@@ -718,6 +718,67 @@ public sealed class LayoutPresetRoutesTests : IClassFixture<StubDeviceHostFactor
         Assert.Equal(0.25f, preset.DevicePrefs["dev-a"].Hue);
     }
 
+    // Colour tuning rides on the same per-device preference the preset copies.
+    // The first cut of the copy dropped the trim fields, so saving a trim wrote
+    // a neutral copy into the active preset and the next activate reverted it.
+    [Fact]
+    public async Task Colour_trims_survive_a_preset_capture_and_activate()
+    {
+        var write = await _client.PostAsync(
+            "/devices/lighting-devices/color-adjust",
+            Json("""{"ids":["dev-a"],"red":1.3,"green":0.9,"blue":0.75,"temperature":0.4,"saturation":1.25}"""));
+        Assert.Equal(HttpStatusCode.OK, write.StatusCode);
+
+        var createRes = await _client.PostAsync(
+            "/devices/lighting-devices/layout-presets",
+            Json("""{"name":"Tuned"}"""));
+        using var createDoc = JsonDocument.Parse(await createRes.Content.ReadAsStringAsync());
+        var id = createDoc.RootElement.GetProperty("preset").GetProperty("id").GetString()!;
+
+        Assert.Equal(1.3f, Store.Load().Lighting.LayoutPresets[0].DevicePrefs!["dev-a"].AdjustRed);
+
+        // Drift away, then load the preset back over it. Written straight to
+        // the store: the route would mirror the drift into the ACTIVE preset
+        // (CaptureDeviceStateIntoActive), which is this preset, so the activate
+        // would restore the drift rather than what was captured.
+        Store.Update(s => s.Devices.LightingDevicePrefs["dev-a"] = new LightingDevicePreference());
+        var activate = await _client.PostAsync(
+            $"/devices/lighting-devices/layout-presets/{id}/activate", Json("{}"));
+        Assert.Equal(HttpStatusCode.OK, activate.StatusCode);
+
+        var pref = Store.Load().Devices.LightingDevicePrefs["dev-a"];
+        Assert.Equal(1.3f, pref.AdjustRed);
+        Assert.Equal(0.9f, pref.AdjustGreen);
+        Assert.Equal(0.75f, pref.AdjustBlue);
+        Assert.Equal(0.4f, pref.AdjustTemperature);
+        Assert.Equal(1.25f, pref.AdjustSaturation);
+    }
+
+    // A partial body leaves the fields it omits alone. Without this a drag on
+    // one slider would rewrite the other four, flattening values that differ
+    // between the devices in a multi-device scope.
+    [Fact]
+    public async Task Colour_trim_write_only_touches_the_fields_it_carries()
+    {
+        Store.Update(s => s.Devices.LightingDevicePrefs["dev-a"] = new LightingDevicePreference
+        {
+            AdjustRed = 1.4f,
+            AdjustSaturation = 0.6f,
+            Brightness = 55,
+        });
+
+        var res = await _client.PostAsync(
+            "/devices/lighting-devices/color-adjust",
+            Json("""{"ids":["dev-a"],"blue":0.8}"""));
+        Assert.Equal(HttpStatusCode.OK, res.StatusCode);
+
+        var pref = Store.Load().Devices.LightingDevicePrefs["dev-a"];
+        Assert.Equal(0.8f, pref.AdjustBlue);
+        Assert.Equal(1.4f, pref.AdjustRed);
+        Assert.Equal(0.6f, pref.AdjustSaturation);
+        Assert.Equal(55, pref.Brightness);
+    }
+
     [Fact]
     public async Task Activate_restores_static_device_looks_over_the_live_ones()
     {

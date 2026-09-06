@@ -45,12 +45,12 @@ public class Slv3RgbFrameTests
     }
 
     [Fact]
-    public void BuildPackets_header_packet_carries_common_fields_and_metadata()
+    public void BuildPackets_header_packet_carries_common_fields_and_metadata_and_no_data()
     {
         var raw = Slv3RgbFrame.BuildFrameBuffer(new[] { new RgbColor(10, 20, 30) }, 100);
         var compressed = TinyUz.Compress(raw);
 
-        var packets = Slv3RgbFrame.BuildPackets(FanMac, MasterMac, EffectIndex, compressed, ledCount: 40, totalFrames: 1, intervalMs: 100);
+        var packets = Slv3RgbFrame.BuildPackets(FanMac, MasterMac, EffectIndex, compressed, ledCount: 40, totalFrames: 30, intervalMs: 100);
 
         var header = packets[0];
         Assert.Equal(Slv3Protocol.RfPayloadSize, header.Length);
@@ -64,20 +64,20 @@ public class Slv3RgbFrameTests
 
         var complen = (header[20] << 24) | (header[21] << 16) | (header[22] << 8) | header[23];
         Assert.Equal(compressed.Length, complen);
-        var totalFrame = (header[25] << 8) | header[26];
-        Assert.Equal(1, totalFrame);
+        Assert.Equal(0, header[24]);
+        Assert.Equal(30, (header[25] << 8) | header[26]);
         Assert.Equal(40, header[27]);
-        var interval = (header[32] << 8) | header[33];
-        Assert.Equal(100, interval);
-
-        var firstChunkLen = Math.Min(Slv3RgbFrame.FirstPacketDataMax, compressed.Length);
-        Assert.Equal(
-            compressed.AsSpan(0, firstChunkLen).ToArray(),
-            header.AsSpan(Slv3RgbFrame.FirstPacketDataOffset, firstChunkLen).ToArray());
+        Assert.Equal(100, (header[32] << 8) | header[33]);
+        Assert.Equal(0, header[34]);                                  // whole-ms interval: no centi-fraction
+        Assert.Equal(100, (header[35] << 8) | header[36]);            // sub-ring interval mirrors the main one
+        Assert.Equal(0, header[37]);
+        Assert.Equal(30, (header[38] << 8) | header[39]);             // sub-ring frame count mirrors total frames
+        // L-Connect's part 0 is header-only: the stream starts in part 1.
+        Assert.All(header.AsSpan(40).ToArray(), b => Assert.Equal(0, b));
     }
 
     [Fact]
-    public void BuildPackets_reassembles_compressed_stream_across_all_parts()
+    public void BuildPackets_reassembles_compressed_stream_across_data_parts()
     {
         var leds = new RgbColor[160]; // 4 fans * 40 LEDs
         for (var i = 0; i < leds.Length; i++)
@@ -86,36 +86,36 @@ public class Slv3RgbFrameTests
         }
         var raw = Slv3RgbFrame.BuildFrameBuffer(leds, 100);
         var compressed = TinyUz.Compress(raw);
-        Assert.True(compressed.Length > Slv3RgbFrame.FirstPacketDataMax, "test needs a multi-packet payload");
+        Assert.True(compressed.Length > Slv3RgbFrame.DataPacketChunk, "test needs a multi-packet payload");
 
         var packets = Slv3RgbFrame.BuildPackets(FanMac, MasterMac, EffectIndex, compressed, ledCount: 160, totalFrames: 1, intervalMs: 50);
 
+        var dataParts = (compressed.Length + Slv3RgbFrame.DataPacketChunk - 1) / Slv3RgbFrame.DataPacketChunk;
+        Assert.Equal(dataParts + 1, packets.Length);
         var collected = new System.Collections.Generic.List<byte>();
-        for (var i = 0; i < packets.Length; i++)
+        for (var i = 1; i < packets.Length; i++)
         {
-            var offset = i == 0 ? Slv3RgbFrame.FirstPacketDataOffset : 20;
-            var max = i == 0 ? Slv3RgbFrame.FirstPacketDataMax : Slv3RgbFrame.DataPacketChunk;
             var remaining = compressed.Length - collected.Count;
-            var take = Math.Min(max, Math.Max(0, remaining));
-            collected.AddRange(packets[i].AsSpan(offset, take).ToArray());
+            var take = Math.Min(Slv3RgbFrame.DataPacketChunk, remaining);
+            collected.AddRange(packets[i].AsSpan(Slv3RgbFrame.DataPacketOffset, take).ToArray());
         }
         Assert.Equal(compressed, collected.ToArray());
     }
 
     [Fact]
-    public void BuildPackets_data_packet_index_and_total_are_correct()
+    public void BuildPackets_small_stream_is_one_header_plus_one_data_part()
     {
-        var leds = new RgbColor[160];
-        var raw = Slv3RgbFrame.BuildFrameBuffer(leds, 100);
-        // All-black data still compresses to a tiny stream (literal-only), so
-        // pad the ledCount claim up regardless; this test only checks framing.
-        var compressed = TinyUz.Compress(raw);
-        var packets = Slv3RgbFrame.BuildPackets(FanMac, MasterMac, EffectIndex, compressed, ledCount: 160, totalFrames: 1, intervalMs: 50);
+        // The Y70 captures: an 11-byte stream ships as part 0 (header) + part 1
+        // (data), [19] = 2 on both - never a trailing empty part.
+        var compressed = TinyUz.Compress(new byte[30 * 120 * 3]);
+        var packets = Slv3RgbFrame.BuildPackets(FanMac, MasterMac, EffectIndex, compressed, ledCount: 120, totalFrames: 30, intervalMs: 100);
 
+        Assert.Equal(2, packets.Length);
         for (var i = 0; i < packets.Length; i++)
         {
             Assert.Equal(i, packets[i][18]);
-            Assert.Equal(packets.Length, packets[i][19]);
+            Assert.Equal(2, packets[i][19]);
         }
+        Assert.Equal(compressed, packets[1].AsSpan(Slv3RgbFrame.DataPacketOffset, compressed.Length).ToArray());
     }
 }

@@ -4,6 +4,7 @@ using System.Threading;
 using System.Threading.Tasks;
 using Microsoft.Extensions.Hosting;
 using Nexus.Service.Devices;
+using Nexus.Service.Devices.Detection;
 using Nexus.Service.Lighting;
 using Nexus.Service.Peripherals.Hid;
 using Nexus.Service.Persistence;
@@ -28,15 +29,30 @@ public sealed class NollieConnectionWorker : BackgroundService
     private readonly NollieLightingDeviceProvider _lighting;
     private readonly DeviceControlGate _gate;
     private readonly IConfigStore _store;
+    private readonly HardwarePresence _presence;
     private readonly HashSet<(int, int)> _warnedUnmatched = new();
 
-    public NollieConnectionWorker(IHidEnumerator hid, NollieHub hub, NollieLightingDeviceProvider lighting, DeviceControlGate gate, IConfigStore store)
+    public NollieConnectionWorker(IHidEnumerator hid, NollieHub hub, NollieLightingDeviceProvider lighting, DeviceControlGate gate, IConfigStore store, HardwarePresence presence)
     {
         _hid = hid;
         _hub = hub;
         _lighting = lighting;
         _gate = gate;
         _store = store;
+        _presence = presence;
+    }
+
+    /// <summary>
+    /// True when any Nollie vendor is on the USB bus. Reconcile() calls FindAll(),
+    /// which opens every HID interface on the host and serial-queries each one.
+    /// </summary>
+    private bool AnyNolliePresent()
+    {
+        foreach (var vid in NollieProtocol.VendorIds)
+        {
+            if (_presence.UsbPresent(vid)) return true;
+        }
+        return false;
     }
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
@@ -54,9 +70,14 @@ public sealed class NollieConnectionWorker : BackgroundService
                         _lighting.OnHubStateUpdated();
                     }
                 }
-                else if (Reconcile())
+                // IsConnected first, so a removal is still noticed even if the bus
+                // check misses a device that is already attached.
+                else if (_hub.IsConnected || AnyNolliePresent())
                 {
-                    _lighting.OnHubStateUpdated();
+                    if (Reconcile())
+                    {
+                        _lighting.OnHubStateUpdated();
+                    }
                 }
             }
             catch (OperationCanceledException)

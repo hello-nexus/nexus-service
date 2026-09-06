@@ -112,17 +112,26 @@ public sealed class MacShortcutsProvider : IShortcutsProvider
             }
         }
 
+        // A targetId that is not a known shortcut may still be a bundle path a
+        // deck key was bound to directly; nothing else accepts a caller path,
+        // so it must be a fully-qualified .app that exists.
         var shortcut = GetById(targetId);
-        if (shortcut is null)
+        var path = shortcut?.Path;
+        if (path is null)
         {
-            return Array.Empty<byte>();
+            var isBundle = Path.GetExtension(targetId).Equals(".app", StringComparison.OrdinalIgnoreCase);
+            if (!isBundle || !Path.IsPathFullyQualified(targetId) || !Directory.Exists(targetId))
+            {
+                return Array.Empty<byte>();
+            }
+            path = targetId;
         }
 
         // A null (extractor timeout) is not cached, so a transient stall does
         // not pin an empty icon for the whole TTL. The smaller proposed size
         // keeps the TTL cache and the physical deck's per-key downscale at
         // list-icon weight rather than full app-icon reps.
-        var extracted = _iconExtractor.ExtractPng(shortcut.Path, ShortcutIconSizePts);
+        var extracted = _iconExtractor.ExtractPng(path, ShortcutIconSizePts);
         if (extracted is { Length: > 0 })
         {
             lock (_iconLock)

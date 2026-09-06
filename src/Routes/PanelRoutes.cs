@@ -318,8 +318,17 @@ public static class PanelRoutes
             return Results.Json(record, AppJsonContext.Default.PanelDeviceRecord);
         }).AllowPanel();
 
-        app.MapPost("/panel/devices/{id}", (string id, PanelDevicePatch body, PanelDeviceRegistry registry, MultiplexHub hub) =>
+        app.MapPost("/panel/devices/{id}", (string id, PanelDevicePatch body, HttpContext ctx, PanelDeviceRegistry registry, MultiplexHub hub, TokenService tokens) =>
         {
+            // A panel session may rearrange or remove the deck keys it has, but
+            // authoring a key that opens a file, sends a key chord, types text or
+            // plays an audio file is desktop-only: PanelDeckRoutes executes those
+            // in the user's session on the panel's behalf.
+            if (body.Layout is not null && !HasServiceToken(ctx, tokens)
+                && Nexus.Service.Deck.DeckLayoutPolicy.IntroducesPrivilegedActions(body.Layout, registry.Get(id)?.Layout))
+            {
+                return Results.Json(ApiResponse.Fail("deck_action_requires_desktop"), AppJsonContext.Default.ApiResponse, statusCode: 403);
+            }
             var updated = registry.Patch(id, body);
             if (updated is null)
                 return Results.NotFound(ApiResponse.Fail("device not found"));

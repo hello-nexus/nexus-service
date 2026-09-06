@@ -10,8 +10,10 @@ namespace Nexus.Service.Platform.Linux;
 
 /// <summary>
 /// Linux equivalent of <see cref="PowerEventListener"/>: bounces the OpenRGB
-/// subprocess on resume via systemd-logind's <c>PrepareForSleep(bool start)</c>
-/// signal on the SYSTEM bus. The shared session-bus <see cref="DBusConnection"/>
+/// subprocess on resume and forwards both edges to the Q-series watcher (sleep
+/// the panel before suspend; on resume, mark the USB re-enumeration as a resume
+/// so it is not read as a reseat and rebooted) via systemd-logind's
+/// <c>PrepareForSleep(bool start)</c> signal on the SYSTEM bus. The shared session-bus <see cref="DBusConnection"/>
 /// (tray, media) cannot see this signal, so this owns a private
 /// <see cref="DBusBusKind.System"/> connection instead. Fail-soft: a
 /// non-systemd distro (no logind on the bus) logs and leaves resume-bounce
@@ -26,12 +28,14 @@ public sealed class LinuxResumeListener : IHostedService, IDisposable
     private static readonly TimeSpan ReconnectDelay = TimeSpan.FromSeconds(10);
 
     private readonly RgbBridge _bridge;
+    private readonly Nexus.Service.QSeries.QSeriesPortWatcher? _qseries;
     private DBusConnection? _dbus;
     private CancellationTokenSource? _cts;
 
-    public LinuxResumeListener(RgbBridge bridge)
+    public LinuxResumeListener(RgbBridge bridge, Nexus.Service.QSeries.QSeriesPortWatcher? qseries = null)
     {
         _bridge = bridge;
+        _qseries = qseries;
     }
 
     public Task StartAsync(CancellationToken cancellationToken)
@@ -87,11 +91,16 @@ public sealed class LinuxResumeListener : IHostedService, IDisposable
                     }
 
                     // PrepareForSleep(true) fires just before suspend; false fires on
-                    // resume, which is the only edge that needs the bridge bounced.
-                    if (!new DBusReader(signal.Body).ReadBool())
+                    // resume, the only edge that needs the bridge bounced.
+                    if (new DBusReader(signal.Body).ReadBool())
+                    {
+                        _qseries?.OnHostSuspending();
+                    }
+                    else
                     {
                         ServiceLog.Info("[power-events] system resumed - bouncing OpenRGB subprocess");
                         _bridge.OnSystemResume();
+                        _qseries?.OnHostResumed();
                     }
                 }
             }

@@ -1,4 +1,5 @@
 using System;
+using System.Linq;
 using Nexus.Service.Mcp.History;
 using Nexus.Service.Monitoring.History;
 using Xunit;
@@ -223,5 +224,46 @@ public sealed class MonitoringSensorHistoryReaderTests
         Assert.Contains("fan.fan-0.rpm", ids);
         Assert.DoesNotContain("fan.fan-0.duty", ids);
         Assert.Contains("temp.ram:0", ids);
+    }
+
+    [Fact]
+    public void Summarize_CoversEveryFamilyAndEveryEntity_WhenTheStoreHoldsMultipleOfEach()
+    {
+        var store = new InMemoryMetricsHistoryStore();
+        var now = DateTime.UtcNow;
+        store.Append(new[]
+        {
+            new MetricSample(ToSec(now), 10, 20, 30, 40, 50,
+                new[]
+                {
+                    new GpuReading("gpu-0", "RTX 5080", "", 60, 70),
+                    new GpuReading("gpu-1", "RTX 4060", "", 65, 75),
+                },
+                new[]
+                {
+                    new FanReading("fan-0", "Front Fan", 1200, 80),
+                    new FanReading("fan-1", "Rear Fan", 1100, 85),
+                },
+                ComponentTemps: new[]
+                {
+                    new ComponentTempReading("storage:serial1", "storage", "Samsung 990 Pro", 45),
+                    new ComponentTempReading("ram:0", "ram", "DIMM_A1", 38),
+                },
+                DiskReadBytesPerSec: 90, DiskWriteBytesPerSec: 95),
+        }, null);
+        var reader = new MonitoringSensorHistoryReader(store);
+
+        var rows = reader.Summarize(ToMs(now.AddMinutes(-1)), ToMs(now.AddMinutes(1)));
+
+        var expected = new[]
+        {
+            "cpu.temp", "cpu.load", "mem.load", "net.in", "net.out", "disk.read", "disk.write",
+            "gpu.gpu-0.load", "gpu.gpu-0.temp", "gpu.gpu-1.load", "gpu.gpu-1.temp",
+            "fan.fan-0.rpm", "fan.fan-0.duty", "fan.fan-1.rpm", "fan.fan-1.duty",
+            "temp.ram:0", "temp.storage:serial1",
+        };
+        var ids = rows.Select(r => r.SensorId).ToList();
+        Assert.Equal(expected.Length, ids.Count);
+        Assert.Equal(expected.OrderBy(id => id, StringComparer.Ordinal), ids.OrderBy(id => id, StringComparer.Ordinal));
     }
 }

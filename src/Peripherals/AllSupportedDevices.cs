@@ -11,6 +11,7 @@ namespace Nexus.Service.Peripherals;
 /// are unioned, so e.g. a mouse that Nexus drives natively AND OpenRGB lights up
 /// shows once as a mouse carrying both its input caps and "rgb". Rows without a
 /// concrete VID:PID (some OpenRGB controllers report none) are never merged.
+/// HYTE and iBUYPOWER rows lead the list, in catalog order.
 ///
 /// Cached for the process lifetime.
 /// </summary>
@@ -18,6 +19,9 @@ public static class AllSupportedDevices
 {
     private static IReadOnlyList<SupportedDeviceDto>? _cache;
     private static readonly object _gate = new();
+
+    /// <summary>Vendors listed before every other row; the brands Nexus is built for.</summary>
+    internal static readonly string[] LeadingVendors = { "HYTE", "iBUYPOWER" };
 
     public static IReadOnlyList<SupportedDeviceDto> All
     {
@@ -66,7 +70,32 @@ public static class AllSupportedDevices
             byVidPid[key] = clone;
             result.Add(clone);
         }
-        return result;
+        return LeadingVendorsFirst(result);
+    }
+
+    /// <summary>Stable partition: <see cref="LeadingVendors"/> rows first, the
+    /// rest after, both in their incoming order.</summary>
+    internal static List<SupportedDeviceDto> LeadingVendorsFirst(List<SupportedDeviceDto> rows)
+    {
+        var ordered = new List<SupportedDeviceDto>(rows.Count);
+        foreach (var d in rows)
+        {
+            if (IsLeadingVendor(d.Vendor)) ordered.Add(d);
+        }
+        foreach (var d in rows)
+        {
+            if (!IsLeadingVendor(d.Vendor)) ordered.Add(d);
+        }
+        return ordered;
+    }
+
+    internal static bool IsLeadingVendor(string vendor)
+    {
+        foreach (var v in LeadingVendors)
+        {
+            if (string.Equals(v, vendor, System.StringComparison.OrdinalIgnoreCase)) return true;
+        }
+        return false;
     }
 
     private static string? VidPidKey(SupportedDeviceDto d)

@@ -8,15 +8,16 @@ namespace Nexus.Service.Peripherals.LianLiWireless;
 /// <summary>
 /// Singleton coordinator for the SLV3 wireless link: owns the TX + RX dongle
 /// transports, the master identity, the bind/unbind state machine, the
-/// device-list poll, RGB pushes, and the PWM keepalive (see
-/// plans/lianli-wireless-support.md).
+/// device-list poll, RGB pushes, and the PWM sync. The cadence and every
+/// frame mirror L-Connect's MasterDevice loop as captured on the Y70 with
+/// USBPcap (2026-09-04): <see cref="PollTick"/> is its 500 ms RefreshList +
+/// SyncControlInfo pass, <see cref="DriveTick"/> adds the once-a-second
+/// SyncPwm, QuerryMasterMac, SyncMasterClock and SaveConfig work.
 /// All hardware I/O and shared state are guarded by one lock: the connection
-/// worker's periodic tick and route-driven bind/unbind/identify calls both touch it.
+/// worker's ticks and route-driven bind/unbind/identify calls both touch it.
 /// </summary>
 public sealed class Slv3Hub : IDisposable
 {
-    private static readonly byte[] BroadcastMac = { 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF };
-
     // Shared read-only default (all null = motherboard-sync) for a chain that
     // has never had a duty set. Never mutated - safe to share across keys.
     private static readonly int?[] DefaultDutyTargets = new int?[Slv3Protocol.PortsPerRecord];
@@ -25,6 +26,11 @@ public sealed class Slv3Hub : IDisposable
     private readonly Func<Slv3PortInfo, ISlv3Transport> _transportFactory;
     private readonly object _lock = new();
     private readonly Dictionary<string, Slv3PendingOp> _pending = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, Slv3PendingCommand> _pendingCommands = new(StringComparer.Ordinal);
+    // Last cmd_seq issued per chain MAC hex, so back-to-back commands stay
+    // monotonic even before the chain's record echoes the previous one
+    // (L-Connect's per-device targe_cmd_seq).
+    private readonly Dictionary<string, byte> _lastIssuedSeq = new(StringComparer.Ordinal);
     private List<Slv3DeviceRecord> _lastFanRecords = new();
 
     // Last-known chains keyed by MAC hex. Under RGB traffic the RX misses
@@ -36,23 +42,13 @@ public sealed class Slv3Hub : IDisposable
 
     // Per-chain PWM port targets keyed by fan MAC hex; a missing key or a
     // null element means that port follows the motherboard PWM header. Read
-    // by SendBindFrameLocked, written by SetPortDuty; both hold _lock.
+    // by the PWM sync, written by SetPortDuty; both hold _lock.
     private readonly Dictionary<string, int?[]> _dutyTargets = new(StringComparer.Ordinal);
-
-    // Last bind/PWM tuple actually put on the air per chain MAC hex, so the
-    // tick can skip a keepalive that would say nothing new. L-Connect gates
-    // this frame on NeedSyncPwm; sending it unconditionally re-binds an
-    // already-bound chain once a second, and the chain controller reboots on
-    // that, taking the wired LCD screens hanging off it down with it (Y70,
-    // 2026-08-27: ~20 USB removal/arrival pairs a minute while bound, zero
-    // while unbound, hardware-bisected).
-    private readonly Dictionary<string, byte[]> _lastPwmSent = new(StringComparer.Ordinal);
 
     private ISlv3Transport? _tx;
     private ISlv3Transport? _rx;
     private byte[] _masterMac = new byte[Slv3Protocol.MacLength];
     private byte _channel = Slv3Protocol.DefaultChannel;
-    private byte _cmdSeq;
     private bool _disposed;
     private bool _videoModeActive;
     private int _videoModePreppedCount;
@@ -78,30 +74,39 @@ public sealed class Slv3Hub : IDisposable
     private int _rxFailStreak;
     private int _rxResetCount;
 
-    // RF_SaveCfg broadcast repeats after a confirmed bind/unbind (the reference
-    // sends 3); spaced one DriveTick apart instead of its 200 ms sleeps.
-    private const int SaveCfgRepeats = 3;
-    private int _saveCfgSendsRemaining;
+    // SaveCfg after a confirmed bind: L-Connect broadcasts one on every loop
+    // pass for a few seconds after Bind() (lastBindTime); here one per poll
+    // tick for the same span.
+    private const int SaveCfgBurstSends = 10;
+    private int _saveCfgBurstRemaining;
 
-    // Ticks a pending bind/unbind may re-send before it is dropped as
-    // non-converging (fan unreachable); ~1 s per tick.
-    private const int PendingOpTickBudget = 15;
+    // Throttled SaveCfg after any binding or effect change (RFController.SaveConfig):
+    // fires SaveCfgDelayMs after the first change, deferred by the same delay
+    // while the last change is younger than SaveCfgQuietMs. A live RGB stream
+    // never settles, so it saves once when the stream goes quiet.
+    private const long SaveCfgDelayMs = 10_000;
+    private const long SaveCfgQuietMs = 5_000;
+    private long _saveCfgDueMs;
+    private long _lastConfigChangeMs;
 
-    // Header-repeat tiers for RGB pushes (no CRC on this link - see
-    // SendRgbFrame). Reliable = one-shot effect application: 4 repeats spaced
-    // ~20 ms or the collided header locks the controller up. Streaming = a
-    // continuous frame flow where the next frame supersedes a lost one:
-    // 2 repeats, 2 ms apart (lian-li-linux rgb.rs uses this profile for its
-    // ~30 fps direct sends; 4x20 ms per frame is what capped ours at 10 fps
-    // and starved the telemetry beacon).
-    private const int ReliableHeaderRepeats = 4;
-    private const int ReliableHeaderGapMs = 20;
-    private const int StreamingHeaderRepeats = 2;
-    private const int StreamingHeaderGapMs = 2;
+    // Poll ticks a pending bind/unbind may re-send before it is dropped as
+    // non-converging (fan unreachable).
+    internal const int PendingOpTickBudget = 30;
 
-    // Device-list records span more than one 10-record page once enough chains
-    // are bound (up to MaxSlot=14, plus non-fan devices), so the poll requests
-    // ceil(count/10) pages. Clamp so a corrupt count can't trigger a runaway read.
+    // Sends a sequenced control frame (RF_Select / RF_RebootLcd) gets before it
+    // is dropped without an echo (L-Connect selected / reboot_lcd counters).
+    internal const int SequencedCommandBudget = 10;
+
+    // Header packet repeats for an RGB upload, the only profile L-Connect uses
+    // (no CRC on this link; a lost header sticks until the effect_index echo
+    // shows it).
+    private const int RgbHeaderRepeats = 4;
+    private const int RgbHeaderGapMs = 20;
+
+    // Device-list records span more than one page once enough chains are bound
+    // (up to MaxSlot, plus non-fan devices), so the poll requests
+    // ceil(count/RecordsPerPage) pages. Clamp so a corrupt count can't trigger
+    // a runaway read.
     private const int MaxDeviceListPages = 3;
     private int _lastRecordCount;
 
@@ -199,10 +204,13 @@ public sealed class Slv3Hub : IDisposable
         State.MotherboardPwmPercent = null;
         _lastFanRecords = new List<Slv3DeviceRecord>();
         _knownChains.Clear();
-        _lastPwmSent.Clear();
+        _pending.Clear();
+        _pendingCommands.Clear();
+        _lastIssuedSeq.Clear();
         _rxFailStreak = 0;
         _rxResetCount = 0;
-        _saveCfgSendsRemaining = 0;
+        _saveCfgBurstRemaining = 0;
+        _saveCfgDueMs = 0;
         _videoModeActive = false;
         _videoModePreppedCount = 0;
     }
@@ -266,58 +274,161 @@ public sealed class Slv3Hub : IDisposable
     }
 
     /// <summary>
-    /// One tick of the connection worker: refresh the device list, resolve any
-    /// pending bind/unbind against the fresh report, then re-send the bind frame
-    /// for every fan bound to us plus any still-pending target. This periodic
-    /// re-assert is the firmware's keepalive (plans/lianli-wireless-support.md
-    /// section 3) - without it a bound fan reverts to its default. Also
-    /// broadcasts the master-clock heartbeat the link expects every tick.
+    /// The 500 ms pass (L-Connect RefreshList + SyncControlInfo): refresh the
+    /// device list, resolve pending bind/unbind/select/reboot against the fresh
+    /// report, and re-send whatever is still pending. Returns false when the
+    /// link is down or the poll failed past its reset budget.
+    /// </summary>
+    public bool PollTick()
+    {
+        lock (_lock)
+        {
+            return PollLocked();
+        }
+    }
+
+    /// <summary>
+    /// The once-a-second pass: everything <see cref="PollTick"/> does, then
+    /// L-Connect's SyncPwm (a bind/PWM frame only for a chain whose reported
+    /// duty drifted from its target), QuerryMasterMac, SyncMasterClock, and
+    /// the SaveCfg burst/throttle.
     /// </summary>
     public bool DriveTick()
     {
         lock (_lock)
         {
-            if (!IsConnected)
+            if (!PollLocked())
             {
                 return false;
             }
-            if (!RefreshDeviceListLocked())
-            {
-                return false;
-            }
-
-            ResolvePendingLocked();
-
-            var sends = new Dictionary<string, (Slv3DeviceRecord Record, byte TargetSlot)>(StringComparer.Ordinal);
-            foreach (var record in _lastFanRecords)
-            {
-                if (IsBoundToUsLocked(record) && NeedsBindFrameLocked(record))
-                {
-                    sends[Convert.ToHexString(record.Mac)] = (record, record.RxType);
-                }
-            }
-            foreach (var op in _pending.Values)
-            {
-                if (TryFindRecordLocked(op.Mac, out var record))
-                {
-                    sends[Convert.ToHexString(op.Mac)] = (record, op.TargetSlot);
-                }
-            }
-
-            foreach (var send in sends.Values)
-            {
-                SendBindFrameLocked(send.Record, send.TargetSlot);
-            }
-
+            SyncPwmLocked();
+            RefreshMasterMacLocked();
             SendClockHeartbeatLocked();
-
-            if (_saveCfgSendsRemaining > 0)
-            {
-                _saveCfgSendsRemaining--;
-                SendSaveCfgLocked();
-            }
+            RunSaveCfgScheduleLocked();
             return true;
         }
+    }
+
+    private bool PollLocked()
+    {
+        if (!IsConnected)
+        {
+            return false;
+        }
+        if (!RefreshDeviceListLocked())
+        {
+            return false;
+        }
+        ResolvePendingLocked();
+        SyncControlLocked();
+        return true;
+    }
+
+    // Re-send every pending bind/unbind frame and sequenced command, and one
+    // SaveCfg of a post-bind burst. L-Connect does this on every loop pass
+    // until the device list echoes the result.
+    private void SyncControlLocked()
+    {
+        foreach (var op in _pending.Values)
+        {
+            if (TryFindRecordLocked(op.Mac, out var record))
+            {
+                SendBindFrameLocked(record, op.TargetSlot, op.Unbind);
+            }
+        }
+
+        List<string>? done = null;
+        List<(string Key, Slv3PendingCommand Cmd)>? ticked = null;
+        foreach (var (key, cmd) in _pendingCommands)
+        {
+            var found = TryFindRecordLocked(cmd.Mac, out var record);
+            if ((found && record.CmdSeq == cmd.TargetSeq) || cmd.SendsRemaining <= 0)
+            {
+                (done ??= new List<string>()).Add(key);
+                continue;
+            }
+            if (found)
+            {
+                SendSequencedCommandLocked(record, cmd.RfCmd, cmd.TargetSeq);
+            }
+            // A chain that dropped out of the list still spends its budget, so a
+            // stale command cannot outlive the chain and fire on its return.
+            (ticked ??= new List<(string, Slv3PendingCommand)>()).Add((key, cmd with { SendsRemaining = cmd.SendsRemaining - 1 }));
+        }
+        if (ticked is not null)
+        {
+            foreach (var (key, cmd) in ticked)
+            {
+                _pendingCommands[key] = cmd;
+            }
+        }
+        if (done is not null)
+        {
+            foreach (var key in done)
+            {
+                _pendingCommands.Remove(key);
+            }
+        }
+
+        if (_saveCfgBurstRemaining > 0)
+        {
+            _saveCfgBurstRemaining--;
+            SendSaveCfgLocked();
+        }
+    }
+
+    // L-Connect SyncPwm: for every chain bound to us that reports fans, send
+    // the bind/PWM frame only when a port's reported duty byte is more than
+    // PwmDriftThreshold from its target. The chain echoes the tuple it was
+    // last given, so a changed target converges after one frame and a settled
+    // chain gets nothing. A chain with a pending bind/unbind is left to the
+    // control pass. L-Connect skips a chain that enumerates no fans; here such
+    // a chain is still driven once the user sets a port duty on it (the cooling
+    // provider exposes its ports), and left alone on the mobo-sync default.
+    private void SyncPwmLocked()
+    {
+        foreach (var record in _lastFanRecords)
+        {
+            if (!IsBoundToUsLocked(record))
+            {
+                continue;
+            }
+            var key = Convert.ToHexString(record.Mac);
+            if (_pending.ContainsKey(key))
+            {
+                continue;
+            }
+            var targets = DutyTargetsLocked(record.Mac);
+            if (record.FanCount <= 0 && !HasManualTarget(targets))
+            {
+                continue;
+            }
+            var pwm = Slv3Protocol.BuildPwmTuple(targets, record.FanCount, record.Family);
+            if (Slv3Protocol.NeedSyncPwm(record.Pwm, pwm))
+            {
+                SendBindFrameLocked(record, record.RxType, unbind: false);
+            }
+        }
+    }
+
+    private static bool HasManualTarget(int?[] targets)
+    {
+        foreach (var target in targets)
+        {
+            if (target is not null)
+            {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    // L-Connect QuerryMasterMac once a second: refreshes the master identity,
+    // RF timer and TX firmware version. A missed reply keeps the last known
+    // values; the link is not torn down for it.
+    private void RefreshMasterMacLocked()
+    {
+        TryGetMacOnChannelLocked(_channel);
     }
 
     private void ResolvePendingLocked()
@@ -325,6 +436,7 @@ public sealed class Slv3Hub : IDisposable
         List<string>? resolved = null;
         List<string>? expired = null;
         List<(string Key, Slv3PendingOp Op)>? ticked = null;
+        var bindConfirmed = false;
         foreach (var (key, op) in _pending)
         {
             if (TryFindRecordLocked(op.Mac, out var record))
@@ -335,6 +447,7 @@ public sealed class Slv3Hub : IDisposable
                 if (done)
                 {
                     (resolved ??= new List<string>()).Add(key);
+                    bindConfirmed |= !op.Unbind;
                     continue;
                 }
             }
@@ -362,16 +475,50 @@ public sealed class Slv3Hub : IDisposable
             }
             // Persist the confirmed binding change to fan flash so it survives
             // a power cycle; a bind without SaveCfg lives only in firmware RAM.
-            _saveCfgSendsRemaining = SaveCfgRepeats;
+            if (bindConfirmed)
+            {
+                _saveCfgBurstRemaining = SaveCfgBurstSends;
+            }
+            NoteConfigChangedLocked();
         }
         if (expired is not null)
         {
             foreach (var key in expired)
             {
-                ServiceLog.Warn($"[lianli-wireless] bind/unbind for {key} did not converge in {PendingOpTickBudget} ticks, dropping");
+                ServiceLog.Warn($"[lianli-wireless] bind/unbind for {key} did not converge in {PendingOpTickBudget} polls, dropping");
                 _pending.Remove(key);
             }
         }
+    }
+
+    private void NoteConfigChangedLocked()
+    {
+        var now = _nowMs();
+        _lastConfigChangeMs = now;
+        if (_saveCfgDueMs == 0)
+        {
+            _saveCfgDueMs = now + SaveCfgDelayMs;
+        }
+    }
+
+    private void RunSaveCfgScheduleLocked()
+    {
+        if (_saveCfgDueMs == 0)
+        {
+            return;
+        }
+        var now = _nowMs();
+        if (now < _saveCfgDueMs)
+        {
+            return;
+        }
+        if (now - _lastConfigChangeMs < SaveCfgQuietMs)
+        {
+            _saveCfgDueMs = now + SaveCfgDelayMs;
+            return;
+        }
+        _saveCfgDueMs = 0;
+        SendSaveCfgLocked();
     }
 
     private void SendSaveCfgLocked()
@@ -401,11 +548,11 @@ public sealed class Slv3Hub : IDisposable
             return false;
         }
         // <=10 records/page - request ceil(count/10) pages so a device list that
-        // spans more than one page (up to MaxSlot=14 chains plus non-fan devices)
+        // spans more than one page (up to MaxSlot chains plus non-fan devices)
         // isn't truncated to the first 10. Dropped records vanish from the list,
         // so those chains can't be seen, paired, or confirm a bind. Seed pageCount
         // from the last poll's reported count (the reference auto-tunes the same
-        // way); a chain that just appeared is picked up on the next ~1 s poll.
+        // way); a chain that just appeared is picked up on the next poll.
         var pageCount = DeviceListPagesFor(_lastRecordCount);
         if (!_rx.RfSend(Slv3Protocol.BuildGetDev(pageCount)))
         {
@@ -455,7 +602,6 @@ public sealed class Slv3Hub : IDisposable
             {
                 ServiceLog.Info($"[lianli-wireless] chain {key} dropped ({ChainExpiryMs / 1000}s unseen)");
                 _knownChains.Remove(key);
-                _lastPwmSent.Remove(key);
             }
         }
 
@@ -512,9 +658,8 @@ public sealed class Slv3Hub : IDisposable
         return true;
     }
 
-    // This firmware does NOT clear the master MAC on unbind - it clears the slot
-    // (rx_type -> 0) and keeps the stale master. So "bound to us" is our master
-    // AND a valid slot (1..14); a slot-0 record is unbound even if master matches.
+    // Bound to us = our master MAC and a valid slot. A release clears both in
+    // the chain's record; a stale master with slot 0 is unbound.
     private bool IsBoundToUsLocked(Slv3DeviceRecord record) =>
         Slv3Protocol.MacEquals(record.MasterMac, _masterMac)
         && record.RxType >= Slv3Protocol.MinSlot
@@ -550,18 +695,45 @@ public sealed class Slv3Hub : IDisposable
         return false;
     }
 
+    // L-Connect writes the chain's 1-based position among the chains bound to
+    // this master (SyncControlInfo's running counter) at bind-frame byte [16],
+    // not its rx_type slot. Equal for a single chain; they diverge once a slot
+    // is freed in the middle.
+    private byte BindOrdinalLocked(byte[] mac)
+    {
+        var ordinal = 0;
+        foreach (var key in SortedChainKeysLocked())
+        {
+            var record = _knownChains[key].Record;
+            var bound = IsBoundToUsLocked(record)
+                || (_pending.TryGetValue(key, out var op) && !op.Unbind);
+            if (!bound)
+            {
+                continue;
+            }
+            ordinal++;
+            if (Slv3Protocol.MacEquals(record.Mac, mac))
+            {
+                return (byte)ordinal;
+            }
+        }
+        return (byte)Math.Max(1, ordinal + 1);
+    }
+
     // Sent addressed at the fan's CURRENT (channel, rxType) pipe from the last
     // device-list report, so the dongle steers to it regardless of which master
     // it is presently bound to; the payload's target fields carry what to
     // reconfigure to. Caller holds _lock.
-    private bool SendBindFrameLocked(Slv3DeviceRecord record, byte targetSlot)
+    private bool SendBindFrameLocked(Slv3DeviceRecord record, byte targetSlot, bool unbind)
     {
         if (_tx is null)
         {
             return false;
         }
         var pwm = Slv3Protocol.BuildPwmTuple(DutyTargetsLocked(record.Mac), record.FanCount, record.Family);
-        var payload = Slv3Protocol.BuildBind(record.Mac, _masterMac, targetRx: targetSlot, targetChannel: _channel, slot: targetSlot, pwm);
+        var payload = unbind
+            ? Slv3Protocol.BuildUnbind(record.Mac, _channel, pwm)
+            : Slv3Protocol.BuildBind(record.Mac, _masterMac, targetRx: targetSlot, targetChannel: _channel, slot: BindOrdinalLocked(record.Mac), pwm);
         foreach (var frame in Slv3Protocol.BuildUsbSendRf(record.Channel, record.RxType, payload))
         {
             if (!_tx.RfSend(frame))
@@ -569,28 +741,17 @@ public sealed class Slv3Hub : IDisposable
                 return false;
             }
         }
-        _lastPwmSent[Convert.ToHexString(record.Mac)] = pwm;
         return true;
     }
 
-    /// <summary>
-    /// Whether this tick's bind/PWM keepalive carries anything the chain does
-    /// not already have: nothing sent to it yet on this link, or a changed
-    /// target tuple.
-    ///
-    /// Intent only, deliberately. L-Connect's `NeedSyncPwm` also re-sends when
-    /// a port's REPORTED duty drifts off target, but this firmware reports
-    /// `fans_pwm` as all-zero whatever the commanded duty is, which
-    /// `TryParseRecord` then reads as 100 for a spinning fan (Y70, hardware:
-    /// commanded 14 and 100 both report 100 and both hold ~590 rpm). A drift
-    /// comparison against that can never converge, so it degenerates into the
-    /// per-tick re-bind this gate exists to prevent. Caller holds _lock.
-    /// </summary>
-    private bool NeedsBindFrameLocked(Slv3DeviceRecord record)
+    private bool SendSequencedCommandLocked(Slv3DeviceRecord record, byte rfCmd, byte cmdSeq)
     {
-        var pwm = Slv3Protocol.BuildPwmTuple(DutyTargetsLocked(record.Mac), record.FanCount, record.Family);
-        return !_lastPwmSent.TryGetValue(Convert.ToHexString(record.Mac), out var last)
-            || !last.AsSpan().SequenceEqual(pwm);
+        if (_tx is null)
+        {
+            return false;
+        }
+        var payload = Slv3Protocol.BuildSequencedCommand(rfCmd, record.Mac, _masterMac, record.RxType, record.Channel, cmdSeq);
+        return SendRfPayloadLocked(record.Channel, record.RxType, payload);
     }
 
     // Caller holds _lock.
@@ -600,30 +761,25 @@ public sealed class Slv3Hub : IDisposable
         return _dutyTargets.TryGetValue(key, out var targets) ? targets : DefaultDutyTargets;
     }
 
-    // All-zero body: carries no CPU/GPU sensor block (LCD themes are a later
-    // phase), which the plan confirms works for a fans-only link.
+    // L-Connect SyncMasterClock: once a second, broadcast pipe (USB rx 0xFF).
     private void SendClockHeartbeatLocked()
     {
         if (_tx is null)
         {
             return;
         }
-        var payload = new byte[Slv3Protocol.RfPayloadSize];
-        Slv3Protocol.WriteRfHeader(payload, Slv3Protocol.RfClockSync, BroadcastMac, _masterMac,
-            targetRx: 0, targetChannel: _channel, slot: 0, cmdSeq: NextSeqLocked());
-        foreach (var frame in Slv3Protocol.BuildUsbSendRf(_channel, 0, payload))
+        var payload = Slv3Protocol.BuildClockSync(_masterMac, DateTime.Now);
+        foreach (var frame in Slv3Protocol.BuildUsbSendRf(_channel, 0xFF, payload))
         {
             _tx.RfSend(frame);
         }
     }
 
-    private byte NextSeqLocked() => _cmdSeq++;
-
     /// <summary>
-    /// Requests a bind to the first free slot (1..14); the connection worker's
-    /// tick drives the state machine to completion. Fails if the MAC has never
-    /// been seen in a device-list report. A fan already bound to us is left on
-    /// its current slot rather than being reassigned a new one.
+    /// Requests a bind to the first free slot (1..13); the poll ticks drive the
+    /// state machine to completion. Fails if the MAC has never been seen in a
+    /// device-list report. A fan already bound to us is left on its current
+    /// slot rather than being reassigned a new one.
     /// </summary>
     public bool Bind(string macHex)
     {
@@ -649,15 +805,15 @@ public sealed class Slv3Hub : IDisposable
                 return false;
             }
             _pending[key] = new Slv3PendingOp(mac, (byte)slot, Unbind: false, PendingOpTickBudget);
-            // First frame goes out now; the tick re-sends until the device list
+            // First frame goes out now; the poll re-sends until the device list
             // confirms, so a request does not wait up to a full tick to start.
-            SendBindFrameLocked(existing, (byte)slot);
+            SendBindFrameLocked(existing, (byte)slot, unbind: false);
         }
         return true;
     }
 
     /// <summary>
-    /// Requests a release (slot 0); the connection worker's tick drives the
+    /// Requests a release (slot 0, master cleared); the poll ticks drive the
     /// state machine to completion. Fails if the MAC has never been seen in a
     /// device-list report. A fan already unbound is a no-op.
     /// </summary>
@@ -680,7 +836,7 @@ public sealed class Slv3Hub : IDisposable
                 return true;
             }
             _pending[key] = new Slv3PendingOp(mac, 0, Unbind: true, PendingOpTickBudget);
-            SendBindFrameLocked(existing, 0);
+            SendBindFrameLocked(existing, 0, unbind: true);
         }
         return true;
     }
@@ -735,53 +891,21 @@ public sealed class Slv3Hub : IDisposable
     }
 
     /// <summary>
-    /// Sends RF RebootLcd (0x16) at a chain 3x. Recovery attempt for a chain
-    /// that beacons header-only records (0 fans, no RPM) while staying
-    /// reachable; whether the command reboots the whole chain controller or
-    /// only its LCD subsystem is a hardware hypothesis pending bench
-    /// verification. Repeats are spaced with _lock released so the tick and
-    /// writer are not starved.
+    /// Sends RF RebootLcd (0x16) at a chain: the first frame now, then once per
+    /// poll until the chain's record echoes the command sequence (L-Connect
+    /// RebootLcdGroup, up to <see cref="SequencedCommandBudget"/> sends).
+    /// Recovery attempt for a chain that beacons header-only records (0 fans,
+    /// no RPM) while staying reachable.
     /// </summary>
-    public bool ResetChain(string macHex)
-    {
-        if (!TryParseMac(macHex, out var mac))
-        {
-            return false;
-        }
-        byte channel, rxType;
-        var payloads = new byte[3][];
-        lock (_lock)
-        {
-            if (_tx is null || !TryFindRecordLocked(mac, out var record))
-            {
-                return false;
-            }
-            channel = record.Channel;
-            rxType = record.RxType;
-            for (var i = 0; i < payloads.Length; i++)
-            {
-                payloads[i] = new byte[Slv3Protocol.RfPayloadSize];
-                Slv3Protocol.WriteRfHeader(payloads[i], Slv3Protocol.RfRebootChain, record.Mac, _masterMac,
-                    targetRx: rxType, targetChannel: channel, slot: rxType, cmdSeq: NextSeqLocked());
-            }
-        }
-        for (var i = 0; i < payloads.Length; i++)
-        {
-            if (i > 0)
-            {
-                Thread.Sleep(30);
-            }
-            if (!SendRfPayload(channel, rxType, payloads[i]))
-            {
-                return false;
-            }
-        }
-        ServiceLog.Info($"[lianli-wireless] chain reset sent to {macHex}");
-        return true;
-    }
+    public bool ResetChain(string macHex) => QueueSequencedCommand(macHex, Slv3Protocol.RfRebootChain, "chain reset");
 
-    /// <summary>Sends a one-shot RF_Select frame so the fan flashes for identification.</summary>
-    public bool Identify(string macHex)
+    /// <summary>
+    /// Flashes a fan for identification: RF_Select now, then once per poll
+    /// until the chain echoes the command sequence (L-Connect SelectedGroup).
+    /// </summary>
+    public bool Identify(string macHex) => QueueSequencedCommand(macHex, Slv3Protocol.RfSelect, "identify");
+
+    private bool QueueSequencedCommand(string macHex, byte rfCmd, string label)
     {
         if (!TryParseMac(macHex, out var mac))
         {
@@ -793,37 +917,32 @@ public sealed class Slv3Hub : IDisposable
             {
                 return false;
             }
-            var payload = new byte[Slv3Protocol.RfPayloadSize];
-            Slv3Protocol.WriteRfHeader(payload, Slv3Protocol.RfSelect, record.Mac, _masterMac,
-                targetRx: record.RxType, targetChannel: record.Channel, slot: record.RxType, cmdSeq: NextSeqLocked());
-            foreach (var frame in Slv3Protocol.BuildUsbSendRf(record.Channel, record.RxType, payload))
+            var key = Convert.ToHexString(mac);
+            _lastIssuedSeq.TryGetValue(key, out var lastIssued);
+            var seq = Slv3Protocol.NextCmdSeq((byte)Math.Max(lastIssued, record.CmdSeq));
+            if (!SendSequencedCommandLocked(record, rfCmd, seq))
             {
-                if (!_tx.RfSend(frame))
-                {
-                    return false;
-                }
+                return false;
             }
+            _lastIssuedSeq[key] = seq;
+            _pendingCommands[key] = new Slv3PendingCommand(mac, rfCmd, seq, SequencedCommandBudget - 1);
+            ServiceLog.Info($"[lianli-wireless] {label} sent to {macHex} (seq {seq})");
             return true;
         }
     }
 
     /// <summary>
-    /// Streams a single animation frame's RGB buffer to a bound fan chain:
-    /// builds the TinyUZ-compressed RF_RgbSync packet set and sends the header
-    /// packet (index 0) repeated per the selected tier, then each data packet
-    /// once, addressed to the fan's current (channel, rxType) pipe.
-    /// <paramref name="streaming"/> selects the tier: false = one-shot effect
-    /// application (4 header repeats, ~20 ms apart - collided headers lock the
-    /// controller up, plans/lianli-wireless-support.md section 2); true = a
-    /// continuous frame flow where the next frame supersedes a lost one
-    /// (2 repeats, 2 ms apart, the reference's live-stream profile).
-    /// Returns false (and sends nothing) if the fan is unknown, not bound to
-    /// us, or a send fails partway; <paramref name="effectIndexHex"/> carries
-    /// the effect_index actually sent on success, so the caller can compare
-    /// it against the fan's next device-list echo to detect a dropped push.
+    /// Uploads one animation frame set to a bound fan chain exactly as
+    /// L-Connect's SyncRgbData does: the header packet (index 0) four times
+    /// ~20 ms apart, then each data packet once, addressed to the fan's
+    /// current (channel, rxType) pipe. Returns false (and sends nothing) if
+    /// the fan is unknown, not bound to us, or a send fails partway;
+    /// <paramref name="effectIndexHex"/> carries the effect_index actually
+    /// sent on success, so the caller can compare it against the fan's next
+    /// device-list echo to detect a dropped push.
     /// </summary>
     public bool SendRgbFrame(
-        string macHex, ReadOnlySpan<RgbColor> leds, int brightnessPercent, int intervalMs, bool streaming, out string effectIndexHex)
+        string macHex, ReadOnlySpan<RgbColor> leds, int brightnessPercent, int intervalMs, out string effectIndexHex)
     {
         effectIndexHex = "";
         if (!TryParseMac(macHex, out var mac))
@@ -858,18 +977,14 @@ public sealed class Slv3Hub : IDisposable
             rxType = record.RxType;
         }
 
-        // The settle gaps run with _lock RELEASED so the 1 s device-list poll
-        // (DriveTick) keeps running even with several chains streaming; holding
-        // _lock across every gap starves that poll at 2+ bound chains. The
-        // repeats are identical, so a keepalive/poll frame slipping into a gap
-        // is harmless.
-        var repeats = streaming ? StreamingHeaderRepeats : ReliableHeaderRepeats;
-        var gapMs = streaming ? StreamingHeaderGapMs : ReliableHeaderGapMs;
-        for (var i = 0; i < repeats; i++)
+        // The header gaps run with _lock RELEASED so the device-list poll keeps
+        // running even with several chains streaming. The repeats are
+        // identical, so a keepalive/poll frame slipping into a gap is harmless.
+        for (var i = 0; i < RgbHeaderRepeats; i++)
         {
             if (i > 0)
             {
-                Thread.Sleep(gapMs);
+                Thread.Sleep(RgbHeaderGapMs);
             }
             if (!SendRfPayload(channel, rxType, packets[0]))
             {
@@ -892,6 +1007,7 @@ public sealed class Slv3Hub : IDisposable
                     return false;
                 }
             }
+            NoteConfigChangedLocked();
         }
 
         effectIndexHex = Convert.ToHexString(effectIndex);
@@ -926,12 +1042,12 @@ public sealed class Slv3Hub : IDisposable
     }
 
     /// <summary>
-    /// Sets a fan chain's port duty target for the next bind-frame keepalive
+    /// Sets a fan chain's port duty target for the next PWM sync
     /// (plans/lianli-wireless-support.md section 3): null follows the
     /// motherboard PWM header, otherwise a manual percent (0..100). Takes
-    /// effect on the connection worker's next ~1 s DriveTick - the keepalive
-    /// already re-sends every tick, so no separate re-assert call is needed.
-    /// Returns false for a malformed MAC or a port outside
+    /// effect on the connection worker's next DriveTick, where the reported
+    /// duty's drift from the new target sends the bind/PWM frame. Returns
+    /// false for a malformed MAC or a port outside
     /// [0, <see cref="Slv3Protocol.PortsPerRecord"/>).
     /// </summary>
     public bool SetPortDuty(string macHex, int port, int? percent)
@@ -971,7 +1087,7 @@ public sealed class Slv3Hub : IDisposable
         }
     }
 
-    /// <summary>Sets our operating channel; must be the default or an odd value (firmware rejects even). Applied to bound fans on the next tick's re-assert.</summary>
+    /// <summary>Sets our operating channel; must be the default or an odd value (firmware rejects even). Reaches a bound chain with its next bind/PWM frame.</summary>
     public bool SetChannel(int channel)
     {
         if (channel != Slv3Protocol.DefaultChannel && (channel < 1 || channel > 39 || channel % 2 == 0))
@@ -1052,6 +1168,8 @@ public sealed class Slv3Hub : IDisposable
     }
 
     private readonly record struct Slv3PendingOp(byte[] Mac, byte TargetSlot, bool Unbind, int TicksRemaining);
+
+    private readonly record struct Slv3PendingCommand(byte[] Mac, byte RfCmd, byte TargetSeq, int SendsRemaining);
 
     private readonly record struct Slv3KnownChain(Slv3DeviceRecord Record, long LastSeenMs);
 }

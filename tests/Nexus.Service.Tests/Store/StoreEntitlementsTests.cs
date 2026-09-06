@@ -131,6 +131,8 @@ public sealed class StoreEntitlementsTests : IDisposable
         Assert.Equal("Aquarium", row.Name);
         Assert.Equal("1.0.2", row.InstalledVersion);
         Assert.Null(row.AcquiredAt);
+        // No store verdict for a local-only row: null, not "delisted".
+        Assert.Null(row.Listed);
         Assert.True(row.SizeBytes > 0);
         Assert.NotNull(row.InstalledAt);
     }

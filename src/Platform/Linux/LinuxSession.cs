@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
+using System.Threading;
 using System.Runtime.InteropServices;
 using Nexus.Service.Platform;
 
@@ -35,6 +36,10 @@ public static partial class LinuxSession
     /// <summary>The session user's primary gid; pairs with <see cref="SessionUid"/>.</summary>
     public static uint? SessionGid { get; private set; }
 
+    // Startup wait for the user session (see AdoptActiveSessionEnv).
+    private const int SessionWaitMs = 30_000;
+    private const int SessionPollMs = 2_000;
+
     public static void AdoptActiveSessionEnv()
     {
         if (!OperatingSystem.IsLinux())
@@ -44,10 +49,21 @@ public static partial class LinuxSession
         if (!IsRoot() || HasSessionEnv())
             return;
 
+        // Ordered after graphical.target, the daemon still routinely starts
+        // before the user's session exists (autologin lands seconds later). A
+        // bounded wait covers that; a machine parked at the login screen past
+        // it keeps the documented restart-after-login behaviour.
         var s = Detect();
+        for (var waited = 0; s is null && waited < SessionWaitMs; waited += SessionPollMs)
+        {
+            if (waited == 0)
+                Console.Error.WriteLine("[session] root daemon: no graphical session yet; waiting for one");
+            Thread.Sleep(SessionPollMs);
+            s = Detect();
+        }
         if (s is null)
         {
-            Console.Error.WriteLine("[session] root daemon: no active graphical session found; session features (tray/media/volume) disabled this run");
+            Console.Error.WriteLine("[session] root daemon: no graphical session found; session features (tray/media/volume) disabled this run");
             return;
         }
 
@@ -95,32 +111,61 @@ public static partial class LinuxSession
     {
         // First session id on each line of `loginctl list-sessions --no-legend`.
         var list = ShellExecutor.Run("loginctl", "list-sessions", "--no-legend");
+        var sessions = new List<(string Id, Dictionary<string, string> Props)>();
         foreach (var raw in list.Split('\n'))
         {
             var id = raw.Trim().Split(' ', StringSplitOptions.RemoveEmptyEntries).FirstOrDefault();
             if (string.IsNullOrEmpty(id))
                 continue;
-            var props = ParseProps(ShellExecutor.Run(
-                "loginctl", "show-session", id, "-p", "Active", "-p", "Type", "-p", "User", "-p", "Display"));
-            if (!string.Equals(props.GetValueOrDefault("Active"), "yes", StringComparison.OrdinalIgnoreCase))
-                continue;
+            sessions.Add((id, ParseProps(ShellExecutor.Run(
+                "loginctl", "show-session", id,
+                "-p", "State", "-p", "Type", "-p", "Class", "-p", "User", "-p", "Display"))));
+        }
+        var chosen = SelectSession(sessions);
+        if (chosen is null)
+            return null;
+        var props = chosen.Value.Props;
+        var uid = uint.Parse(props["User"]);
+        var (gid, home) = PasswdForUid(uid);
+        if (string.IsNullOrEmpty(home))
+            return null; // no passwd entry - can't safely adopt this session
+        var display = props.GetValueOrDefault("Display");
+        return new SessionInfo(uid, gid, home, string.IsNullOrEmpty(display) ? null : display, WaylandSocket(uid));
+    }
+
+    /// <summary>
+    /// The user's graphical session in logind's own vocabulary: a <c>Class=user</c>
+    /// session of <c>Type</c> wayland/x11 whose <c>State</c> is <c>active</c>
+    /// (foreground on its seat) or <c>online</c> (logged in with live sockets but
+    /// not foreground - what logind reports after a resume or VT switch). Active
+    /// wins over online; <c>closing</c> is never adopted. Greeter/manager/background
+    /// sessions are skipped by class and system users (uid &lt; 1000, e.g. sddm)
+    /// by uid, since their bus is unusable for the user.
+    /// </summary>
+    internal static (string Id, Dictionary<string, string> Props)? SelectSession(
+        IReadOnlyList<(string Id, Dictionary<string, string> Props)> sessions)
+    {
+        (string, Dictionary<string, string>)? online = null;
+        foreach (var session in sessions)
+        {
+            var props = session.Props;
             var type = props.GetValueOrDefault("Type");
             if (type != "wayland" && type != "x11")
-                continue; // skip ttys / non-graphical sessions
-            if (!uint.TryParse(props.GetValueOrDefault("User"), out var uid))
                 continue;
-            // Skip the display-manager greeter and other system users - adopting
-            // gdm/sddm's session (uid < 1000) would point us at a bus the real
-            // user can't use.
-            if (uid < 1000)
+            if (!string.Equals(props.GetValueOrDefault("Class"), "user", StringComparison.Ordinal))
                 continue;
-            var (gid, home) = PasswdForUid(uid);
-            if (string.IsNullOrEmpty(home))
-                continue; // no passwd entry - can't safely adopt this session
-            var display = props.GetValueOrDefault("Display");
-            return new SessionInfo(uid, gid, home, string.IsNullOrEmpty(display) ? null : display, WaylandSocket(uid));
+            if (!uint.TryParse(props.GetValueOrDefault("User"), out var uid) || uid < 1000)
+                continue;
+            switch (props.GetValueOrDefault("State"))
+            {
+                case "active":
+                    return session;
+                case "online":
+                    online ??= session;
+                    break;
+            }
         }
-        return null;
+        return online;
     }
 
     // `key=value` lines from loginctl show-session.

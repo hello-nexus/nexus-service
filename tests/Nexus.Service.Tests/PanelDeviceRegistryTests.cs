@@ -374,4 +374,35 @@ public sealed class PanelDeviceRegistryTests : IDisposable
 
         Assert.Equal("#1f0d36", PanelDeviceRegistry.ResolveCoverBackgroundHex(patched));
     }
+
+    /// <summary>A Y70 kiosk that maps on the desktop monitor before the compositor
+    /// moves it reports that monitor's shape; the surface is identity, not a sample.</summary>
+    [Theory]
+    [InlineData(PanelSurfaces.Y70)]
+    [InlineData(PanelSurfaces.Q60)]
+    public void Patch_KeepsSingleInstanceSurface_WhenViewportSampleDisagrees(string surface)
+    {
+        var record = _registry.Allocate(null, Caps(surface));
+
+        var patched = _registry.Patch(record.Id, new PanelDevicePatch
+        {
+            Capabilities = new PanelDeviceCapabilities { Surface = PanelSurfaces.Phone, CssWidth = 2560, CssHeight = 1440, Dpr = 1 },
+        });
+
+        Assert.Equal(surface, patched!.Capabilities?.Surface);
+        Assert.Equal(2560, patched.Capabilities?.CssWidth);
+    }
+
+    [Fact]
+    public void Patch_LetsAPhoneRecordChangeSurface()
+    {
+        var record = _registry.Allocate(null, Caps(PanelSurfaces.Phone));
+
+        var patched = _registry.Patch(record.Id, new PanelDevicePatch
+        {
+            Capabilities = new PanelDeviceCapabilities { Surface = PanelSurfaces.Desktop },
+        });
+
+        Assert.Equal(PanelSurfaces.Desktop, patched!.Capabilities?.Surface);
+    }
 }

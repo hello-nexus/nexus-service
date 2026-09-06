@@ -61,11 +61,14 @@ public class AuthRequestPolicyTests
         await using var app = builder.Build();
         app.MapSystemEndpoints();
 
-        AssertPanelAllowedRoute(app, "POST", "/system/input/keys");
-        AssertPanelAllowedRoute(app, "POST", "/system/input/text");
+        // Free-form keystroke / text injection and open-path are desktop-only;
+        // a panel's deck keys reach them through POST /panel/deck/dispatch.
+        AssertPanelDeniedRoute(app, "POST", "/system/input/keys");
+        AssertPanelDeniedRoute(app, "POST", "/system/input/text");
+        AssertPanelDeniedRoute(app, "POST", "/system/audio/play");
         AssertPanelAllowedRoute(app, "POST", "/system/open-settings");
         AssertPanelAllowedRoute(app, "POST", "/system/open-url");
-        AssertPanelAllowedRoute(app, "POST", "/system/open-path");
+        AssertPanelDeniedRoute(app, "POST", "/system/open-path");
         AssertPanelAllowedRoute(app, "POST", "/system/open-task-manager");
         AssertPanelAllowedRoute(app, "POST", "/system/power/lock");
         AssertPanelAllowedRoute(app, "POST", "/system/power/sleep");
@@ -352,6 +355,35 @@ public class AuthRequestPolicyTests
     [InlineData("::1", "//index.html")]
     public void BlocksOffLoopbackStatic_NeverBlocksLoopback(string ip, string path)
         => Assert.False(AuthRequestPolicy.BlocksOffLoopbackStatic(WithRemote(ip, path)));
+
+    [Theory]
+    [InlineData("localhost", true)]
+    [InlineData("LOCALHOST", true)]
+    [InlineData("127.0.0.1", true)]
+    [InlineData("[::1]", true)]
+    [InlineData("192.168.1.235", true)]
+    [InlineData("evil.example", false)]
+    [InlineData("localhost.evil.example", false)]
+    [InlineData("my.localhost", false)]
+    public void IsLocalHostHeader_AcceptsOnlyNamesThatCannotBeRebound(string host, bool expected)
+    {
+        var ctx = NewContext("GET", "/pair");
+        ctx.Request.Host = new HostString(host, 9400);
+
+        Assert.Equal(expected, AuthRequestPolicy.IsLocalHostHeader(ctx));
+    }
+
+    [Fact]
+    public void IsLocalHostHeader_AcceptsTheMachineName_AndRejectsAnEmptyHost()
+    {
+        var named = NewContext("GET", "/pair");
+        named.Request.Host = new HostString(Environment.MachineName, 9400);
+        Assert.True(AuthRequestPolicy.IsLocalHostHeader(named));
+
+        var empty = NewContext("GET", "/pair");
+        empty.Request.Host = new HostString("");
+        Assert.False(AuthRequestPolicy.IsLocalHostHeader(empty));
+    }
 
     private static DefaultHttpContext WithRemote(string ip, string path = "/")
     {

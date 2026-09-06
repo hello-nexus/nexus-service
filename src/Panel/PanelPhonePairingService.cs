@@ -1672,6 +1672,16 @@ public sealed class PanelPhonePairingService
             if (_pairCode is not { } state || !string.Equals(state.RequestId, requestId, StringComparison.Ordinal))
                 return new PanelPhonePairCodeConfirmResponse { Status = "unknown" };
 
+            // Only the device that submitted the code may confirm or cancel it.
+            // The request id also rides the dashboard's WebSocket frame, so on
+            // its own it does not prove the caller is that phone.
+            // A relayed request has no remote address; pairing a new device is a
+            // LAN flow, so an empty address fails closed instead of matching another
+            // tunneled session's empty address.
+            var confirmRemote = NormalizeRemoteAddress(context.Connection.RemoteIpAddress?.ToString());
+            if (confirmRemote.Length == 0 || !string.Equals(state.PhoneRemoteAddress, confirmRemote, StringComparison.Ordinal))
+                return new PanelPhonePairCodeConfirmResponse { Status = "unknown" };
+
             if (state.ExpiresAt <= nowMs)
             {
                 _pairCode = null;

@@ -33,6 +33,13 @@ public class DeckMonitoringFormatTests
     [InlineData("motherboard", "System", "System")]
     [InlineData("storage", "Drive C", "Drive C")]
     [InlineData("quick", "Anything", "Anything")]
+    // network is the fourth prefixed category (sensorNames.ts' DEVICE_PREFIXES);
+    // the rest of the wider deck set names itself and stays untouched.
+    [InlineData("network", "Total", "Network Total")]
+    [InlineData("network", "Network Total", "Network Total")]
+    [InlineData("smart", "Temperature", "Temperature")]
+    [InlineData("memoryModule", "Temperature", "Temperature")]
+    [InlineData("fps", "FPS", "FPS")]
     public void ResolveLabel_SensorNameSet_MirrorsLabelForDeviceAndPrefixedSensorLabel(string category, string sensorName, string expected)
     {
         Assert.Equal(expected, DeckMonitoringFormat.ResolveLabel(category, sensorName));
@@ -45,6 +52,14 @@ public class DeckMonitoringFormatTests
     [InlineData("memory", "RAM")]
     [InlineData("motherboard", "MB")]
     [InlineData("storage", "Storage")]
+    [InlineData("memoryModule", "DIMM")]
+    [InlineData("smart", "SMART")]
+    [InlineData("network", "Network")]
+    [InlineData("fps", "FPS")]
+    [InlineData("battery", "BATT")]
+    [InlineData("cooler", "COOL")]
+    [InlineData("psu", "PSU")]
+    [InlineData("embeddedController", "EC")]
     public void ResolveLabel_NoSensorName_FallsBackToTheCategoryDisplayName(string category, string expected)
     {
         Assert.Equal(expected, DeckMonitoringFormat.ResolveLabel(category, ""));

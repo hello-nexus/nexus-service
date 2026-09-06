@@ -238,6 +238,11 @@ internal static class AppBootstrap
         var smartLights = app.Services.GetRequiredService<Nexus.Service.Lighting.Smart.SmartLightProvider>();
         smartLights.OnlineChanged += () => PanelTopics.BroadcastLighting(muxHub);
 
+        // The recovery poll loop can sign in after its dialog closed, so account changes are pushed.
+        var cloudAccounts = app.Services.GetRequiredService<Nexus.Service.Cloud.CloudAccountService>();
+        cloudAccounts.OnAccountActivated += _ => PanelTopics.BroadcastCloudAccounts(muxHub);
+        cloudAccounts.OnAccountLoggedOut += _ => PanelTopics.BroadcastCloudAccounts(muxHub);
+
         // Probe smart-light reachability only while a lighting view is open. A
         // smart light gives no event when it drops off the LAN (Govee frames are
         // fire-and-forget UDP), so an active per-brand probe is the only offline

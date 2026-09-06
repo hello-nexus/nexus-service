@@ -170,3 +170,9 @@ public sealed class CloudImportRequest
     /// <summary>Set after the user answers the name-conflict prompt; overwrites the local profile of the same name in place.</summary>
     public bool ReplaceExisting { get; set; }
 }
+
+/// <summary>Revision frame for the "cloud/accounts" multiplex topic; subscribers refetch GET /cloud/accounts.</summary>
+public sealed class CloudAccountsChangedFrame
+{
+    public long Revision { get; set; }
+}

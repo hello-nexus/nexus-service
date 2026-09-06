@@ -17,22 +17,26 @@
 #
 #   Store build (stays unsigned; Store re-signs on submission):
 #     powershell -File installer\msix\build-msix.ps1 `
-#       -IdentityName <reserved Partner Center identity name> `
-#       -Publisher "CN=<Partner Center publisher id>" `
-#       -PublisherDisplayName "American Future Technology Corp."
+#       -IdentityName "HelloNexus.HelloNexus" `
+#       -Publisher "CN=62485AE2-77C6-4F70-A924-D5BA99963014" `
+#       -PublisherDisplayName "Hello Nexus"
 #
 #   Local sideload verification (-Sign):
 #     powershell -File installer\msix\build-msix.ps1 -Sign `
-#       -IdentityName <reserved Partner Center identity name> `
+#       -IdentityName "HelloNexus.HelloNexus" `
 #       -Publisher "<Azure Artifact Signing cert Subject, e.g. from
 #                    (Get-AuthenticodeSignature .\Nexus-Setup.exe).SignerCertificate.Subject>" `
-#       -PublisherDisplayName "American Future Technology Corp."
+#       -PublisherDisplayName "Hello Nexus"
 
 param(
     [string]$IdentityName = "Nexus.DEV.CHANGEME",
     [string]$Publisher = "CN=CHANGEME-Not-A-Real-Publisher",
     [string]$PublisherDisplayName = "CHANGE ME - placeholder publisher, not for Store submission",
     [string]$SetupPath = "",
+    # Normally derived from the bundled Nexus-Setup.exe. Overriding makes the
+    # package claim a version its payload does not carry, so prefer rebuilding
+    # the payload; see the README's Identity tokens section.
+    [string]$Version = "",
     # Cross-arch AOT publish is not dependable, so this must match the host
     # building it: win-arm64 only for a build running on an ARM64 machine.
     [ValidateSet("win-x64", "win-arm64")]
@@ -145,14 +149,63 @@ function Resolve-Dlib {
     throw "Azure.CodeSigning.Dlib.dll (x64) not found. Install Microsoft.Azure.ArtifactSigningClientTools (winget) or pass -DlibPath."
 }
 
-# Version mapping: MSIX Identity/@Version requires exactly 4 numeric parts,
-# and Partner Center rejects a nonzero 4th (revision) part - so the repo's
-# semver VERSION file (e.g. "3.0.0-beta.8") maps to "3.0.0.0", dropping the
-# prerelease suffix entirely (MSIX has no prerelease-channel concept; Store
-# beta distribution is a separate flight, not a version suffix).
-$verFull = (Get-Content (Join-Path $repoRoot "VERSION") -Raw).Trim()
-$verNumeric = ($verFull -split '-')[0]
-$msixVersion = "$verNumeric.0"
+# Version mapping: MSIX Identity/@Version requires exactly 4 numeric parts, and
+# Partner Center rejects a nonzero 4th (revision) part (MSIX has no prerelease
+# concept either; a beta channel would be a separate Store flight, not a suffix).
+#
+# The version comes off the BUNDLED PAYLOAD, not the repo's VERSION file: CI
+# stamps VERSION at build time from its workflow input and never commits it back,
+# so a checkout routinely sits several patches behind the released version, and a
+# package claiming a version its own Nexus-Setup.exe does not carry misreports
+# itself in the Store. build-installer.ps1 stamps VersionInfoVersion as
+# "<numeric>.0" from VERSION, so the payload's own version resource already
+# carries exactly what this needs.
+if ($Version) {
+    # Same shape check as the payload branch: an unvalidated -Version reaches
+    # makeappx and fails there with a schema error instead of here.
+    $parts = $Version.Trim() -split '\.'
+    if ($parts.Count -lt 3 -or $parts.Count -gt 4 -or
+        @($parts[0..2] | Where-Object { $_ -notmatch '^\d+$' }).Count -gt 0) {
+        throw "-Version '$Version' is not a numeric 3- or 4-part version (e.g. 3.0.10 or 3.0.10.0)."
+    }
+    $msixVersion = "$($parts[0]).$($parts[1]).$($parts[2]).0"
+    $versionSource = "-Version $Version"
+    $payloadLabel = ""
+} else {
+    # The numeric VS_FIXEDFILEINFO parts, not the .FileVersion string: that
+    # string is StringFileInfo text, which matches only while Nexus.iss leaves
+    # VersionInfoTextVersion at its VersionInfoVersion default. These are ints
+    # by construction, so they need no parsing, and a resource-less exe reports
+    # 0.0.0, which the placeholder guard below still catches.
+    $vi = (Get-Item $SetupPath).VersionInfo
+    $msixVersion = "$($vi.FileMajorPart).$($vi.FileMinorPart).$($vi.FileBuildPart).0"
+    $versionSource = $SetupPath
+    # ProductVersion is the full semver, prerelease suffix included, which the
+    # 4-part MSIX version cannot express: two betas of one patch pack as the
+    # same 4-part version, so a filename built from that version alone would
+    # let them overwrite each other with no way to tell the payloads apart.
+    # The replace also drops the version resource's whitespace and NUL padding
+    # (String.Trim does not remove NULs), and caps length since this reaches a
+    # path.
+    $payloadLabel = $vi.ProductVersion
+    if ($payloadLabel) {
+        $payloadLabel = ($payloadLabel -replace '[^A-Za-z0-9.\-+]', '')
+        if ($payloadLabel.Length -gt 40) { $payloadLabel = $payloadLabel.Substring(0, 40) }
+        # Nexus.iss sets neither VersionInfoProductVersion nor
+        # VersionInfoProductTextVersion, so ProductVersion currently inherits
+        # AppVersion. If anyone sets either, this label could name a different
+        # version than the package carries; fall back rather than mislabel.
+        $numeric = "$($vi.FileMajorPart).$($vi.FileMinorPart).$($vi.FileBuildPart)"
+        if (-not $payloadLabel.StartsWith($numeric)) {
+            Write-Warning "Payload ProductVersion '$payloadLabel' disagrees with its file version $numeric; naming the package after the version instead."
+            $payloadLabel = ""
+        }
+    }
+}
+if ($msixVersion -like '0.0.0.*') {
+    throw "$versionSource reports the placeholder version $msixVersion (the Nexus.iss default). Build the installer with installer\build-installer.ps1 from a checkout whose VERSION is real, or pass -Version."
+}
+Write-Host "MSIX version: $msixVersion (from $versionSource)"
 
 $outputDir = Join-Path $scriptDir "output"
 $stagingDir = Join-Path $outputDir "staging"
@@ -214,7 +267,10 @@ $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
 [System.IO.File]::WriteAllText($manifestPath, $manifest, $utf8NoBom)
 
 $makeappx = Resolve-MakeAppx
-$msixName = "Nexus-$verFull.msix"
+# Partner Center never reads the file name, so it can carry what the package
+# version cannot: the payload's prerelease suffix, and the architecture, since
+# a Store submission holds one package per arch and they share an output dir.
+$msixName = if ($payloadLabel) { "Nexus-$payloadLabel-$arch.msix" } else { "Nexus-$msixVersion-$arch.msix" }
 $msixPath = Join-Path $outputDir $msixName
 & $makeappx pack /d $stagingDir /p $msixPath /o
 if ($LASTEXITCODE -ne 0) { throw "makeappx pack failed (exit $LASTEXITCODE)" }

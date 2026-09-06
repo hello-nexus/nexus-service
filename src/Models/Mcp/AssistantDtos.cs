@@ -8,6 +8,8 @@ public sealed class AssistantStatusResponse
     /// <summary>"notInstalled" | "downloading" | "installed" | "starting" | "running" | "error".</summary>
     public string RuntimeState { get; set; } = "";
     public bool SystemOllamaDetected { get; set; }
+    /// <summary>AiIntegration.UseSystemOllama: whether an Ollama already on the default port may be adopted.</summary>
+    public bool UseSystemOllama { get; set; }
     public AssistantDownloadProgressDto? DownloadProgress { get; set; }
     public List<AssistantInstalledModelDto> InstalledModels { get; set; } = new();
     public string ActiveModel { get; set; } = "";
@@ -57,6 +59,11 @@ public sealed class AssistantModelRemoveRequest
 public sealed class AssistantModelSelectRequest
 {
     public string Model { get; set; } = "";
+}
+
+public sealed class AssistantUseSystemRequest
+{
+    public bool Enabled { get; set; }
 }
 
 public sealed class AssistantQueryRequest

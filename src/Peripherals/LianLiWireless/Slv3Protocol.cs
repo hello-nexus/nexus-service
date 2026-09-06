@@ -61,9 +61,9 @@ public static class Slv3Protocol
     /// <summary>Default RF channel; user channels are odd (firmware rejects even).</summary>
     public const byte DefaultChannel = 8;
 
-    /// <summary>rx_type slot ids a master hands out to bound fans.</summary>
+    /// <summary>rx_type slot ids a master hands out to bound fans (L-Connect GetRxUnused allocates 1..13).</summary>
     public const int MinSlot = 1;
-    public const int MaxSlot = 14;
+    public const int MaxSlot = 13;
 
     // Device-list record (42 bytes, from the RX GetDev reply).
     public const int RecordLength = 42;
@@ -75,6 +75,28 @@ public static class Slv3Protocol
     /// <summary>PWM byte meaning "follow motherboard PWM header". Real duties skip 6.</summary>
     public const byte PwmFollowMotherboard = 6;
     public const int PortsPerRecord = 4;
+
+    /// <summary>
+    /// Bind-frame duty bytes are a 0..255 scale, not a percent: L-Connect maps
+    /// its 0..100 duty through Map(0,100,0,255) before the RF layer, and the
+    /// chain echoes the exact byte back in fans_pwm (Y70 USBPcap 2026-09-04:
+    /// 50% -> 127 -> 996 rpm, 100% -> 255 -> 1919 rpm, 25% -> 63 -> 541 rpm).
+    /// </summary>
+    public const int PwmScaleMax = 255;
+
+    /// <summary>
+    /// A bind/PWM frame is re-sent while any port's reported duty byte differs
+    /// from its target by more than this (L-Connect NeedSyncPwm).
+    /// </summary>
+    public const int PwmDriftThreshold = 5;
+
+    public static readonly byte[] ZeroMac = new byte[MacLength];
+
+    /// <summary>
+    /// Filler byte L-Connect writes across the 50-byte "cpuInfoParam" block of
+    /// every RF_ClockSync when no LCD theme data is configured (InitSensorDataByWiredLess).
+    /// </summary>
+    public const byte ClockSyncFillByte = 0x14;
 
     // dev_type ranges that identify our wireless LCD fans in a device record.
     public const byte DevTypeSlv3Fan = 20;      // 20-23 SLV3 LED, 24-26 SLV3 LCD
@@ -288,10 +310,11 @@ public static class Slv3Protocol
     }
 
     /// <summary>
-    /// Build the RF_Bind (0x10) payload. Doubles as the PWM keep-alive: [17..20]
-    /// carry four raw duty percents (0..100; <see cref="PwmFollowMotherboard"/>=mobo
-    /// sync). <paramref name="slot"/> 0 releases the fan (unbind). Unoccupied ports
-    /// must stay 0.
+    /// Build the RF_Bind (0x10) payload, which also carries the PWM tuple:
+    /// [17..20] are four duty bytes on the 0..255 scale
+    /// (<see cref="PwmFollowMotherboard"/> = mobo sync), one per port, as
+    /// <see cref="BuildPwmTuple"/> lays them out. <paramref name="slot"/> is the
+    /// chain's ordinal among bound chains; a release is <see cref="BuildUnbind"/>.
     /// </summary>
     public static byte[] BuildBind(
         ReadOnlySpan<byte> fanMac, ReadOnlySpan<byte> masterMac,
@@ -308,12 +331,42 @@ public static class Slv3Protocol
         return payload;
     }
 
-    /// <summary>Encode a duty percent to a wire byte, mapping a literal 6 to 0 so it is not read as mobo-sync.</summary>
+    /// <summary>
+    /// Encode a duty percent (0..100) to a bind-frame byte on the firmware's
+    /// 0..255 scale (<see cref="PwmScaleMax"/>), truncating like L-Connect's
+    /// (int)Map(duty, 0, 100, 0, 255) (50 -> 127, 25 -> 63). A result of 6 is
+    /// remapped to 0 so it is never read as the mobo-sync sentinel (SetFansRPM).
+    /// </summary>
     public static byte EncodeDuty(int percent)
     {
         var d = Math.Clamp(percent, 0, 100);
-        return d == PwmFollowMotherboard ? (byte)0 : (byte)d;
+        var wire = (int)(d * (double)PwmScaleMax / 100.0);
+        return wire == PwmFollowMotherboard ? (byte)0 : (byte)wire;
     }
+
+    /// <summary>Decode a reported fans_pwm byte (0..255) to a percent; the caller handles the mobo-sync sentinel.</summary>
+    public static int DecodeDuty(int wire) =>
+        Math.Clamp((int)Math.Round(Math.Clamp(wire, 0, PwmScaleMax) * 100.0 / PwmScaleMax), 0, 100);
+
+    /// <summary>
+    /// L-Connect's NeedSyncPwm: true when any port's reported duty byte is more
+    /// than <see cref="PwmDriftThreshold"/> away from its target byte. The chain
+    /// echoes a received tuple exactly, so this converges after one frame.
+    /// </summary>
+    public static bool NeedSyncPwm(ReadOnlySpan<int> reported, ReadOnlySpan<byte> target)
+    {
+        for (var i = 0; i < PortsPerRecord && i < reported.Length && i < target.Length; i++)
+        {
+            if (Math.Abs(reported[i] - target[i]) > PwmDriftThreshold)
+            {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /// <summary>Next per-device command sequence for RF_Select / RF_RebootLcd: increments and wraps to 1 past 254 (L-Connect targe_cmd_seq).</summary>
+    public static byte NextCmdSeq(byte current) => current >= 254 ? (byte)1 : (byte)(current + 1);
 
     /// <summary>SLV3 minimum non-zero duty percent; lower requests would stall the fan.</summary>
     public const int MinDutyPercent = 14;
@@ -338,33 +391,80 @@ public static class Slv3Protocol
 
     /// <summary>
     /// Builds the 4-port duty tuple for a bind frame from per-port targets. A
-    /// manual target (non-null) is always written so a user can drive a port
-    /// even on a chain whose controller does not enumerate its fans
-    /// (<paramref name="fanCount"/> 0). A port with no target follows the
-    /// motherboard PWM header when it is occupied or the count is unknown
-    /// (<paramref name="fanCount"/> 0), and stays 0 only when known-unoccupied
-    /// (at or beyond a non-zero <paramref name="fanCount"/>), so the keepalive
-    /// cannot command a real-but-unreported fan off.
+    /// manual target (non-null) is encoded on the 0..255 scale; a port with no
+    /// target follows the motherboard PWM header. Ports at or beyond a non-zero
+    /// <paramref name="fanCount"/> repeat the last occupied port's byte: L-Connect
+    /// always writes one uniform tuple (SetFanSpeed repeats the duty x4), and a 0
+    /// on an unused port is a value the firmware never sees from it. An unknown
+    /// count (0) treats every port as in play; the hub only sends such a chain a
+    /// tuple once a manual target exists for it.
     /// </summary>
     public static byte[] BuildPwmTuple(IReadOnlyList<int?> targets, int fanCount, Slv3FanFamily family = Slv3FanFamily.Slv3Lcd)
     {
         var pwm = new byte[PortsPerRecord];
+        var occupied = fanCount <= 0 ? PortsPerRecord : Math.Min(fanCount, PortsPerRecord);
         for (var port = 0; port < PortsPerRecord; port++)
         {
-            // Known-unoccupied (at or beyond a non-zero count) stays 0; an
-            // unknown-count chain treats every port as in play so the user can
-            // drive it.
-            var inPlay = fanCount <= 0 || port < fanCount;
-            if (!inPlay)
+            if (port < occupied)
             {
-                continue;
+                var target = port < targets.Count ? targets[port] : null;
+                pwm[port] = target is not null
+                    ? EncodeDuty(FloorDuty(target.Value, family))
+                    : PwmFollowMotherboard;
             }
-            var target = port < targets.Count ? targets[port] : null;
-            pwm[port] = target is not null
-                ? EncodeDuty(FloorDuty(target.Value, family))
-                : PwmFollowMotherboard;
+            else
+            {
+                pwm[port] = pwm[occupied - 1];
+            }
         }
         return pwm;
+    }
+
+    /// <summary>
+    /// RF_Bind payload that releases a fan (L-Connect RfDevice.unBind): master
+    /// MAC all-zero, targetRx 0, slot 0, the current duty tuple at [17..20].
+    /// The chain clears its bound master in the next device-list report; a
+    /// release that keeps our master MAC in the frame leaves it stale instead.
+    /// </summary>
+    public static byte[] BuildUnbind(ReadOnlySpan<byte> fanMac, byte targetChannel, ReadOnlySpan<byte> pwm4) =>
+        BuildBind(fanMac, ZeroMac, targetRx: 0, targetChannel, slot: 0, pwm4);
+
+    /// <summary>
+    /// Sequenced control frame (RF_Select 0x12 identify, RF_RebootLcd 0x16):
+    /// [14]=target rx, [15]=channel, [16]=0, [17]=cmdSeq. The chain echoes the
+    /// last cmdSeq it processed in its record's byte [40]; the sender repeats the
+    /// frame until that echo matches (L-Connect SyncControlInfo).
+    /// </summary>
+    public static byte[] BuildSequencedCommand(
+        byte rfCmd, ReadOnlySpan<byte> fanMac, ReadOnlySpan<byte> masterMac, byte targetRx, byte targetChannel, byte cmdSeq)
+    {
+        var payload = new byte[RfPayloadSize];
+        WriteRfHeader(payload, rfCmd, fanMac, masterMac, targetRx, targetChannel, slot: 0, cmdSeq);
+        return payload;
+    }
+
+    /// <summary>
+    /// RF_ClockSync (0x14) master heartbeat exactly as L-Connect's SyncMasterClock
+    /// puts it on the air once a second: fan MAC all-zero (not broadcast), our
+    /// master MAC, then the 50-byte cpuInfoParam block at [14..63]: 32 filler
+    /// bytes, the wall clock (year BE16, month, day, hour, minute, second) at
+    /// [46..52], 11 more filler bytes. Sent with USB rxType 0xFF.
+    /// </summary>
+    public static byte[] BuildClockSync(ReadOnlySpan<byte> masterMac, DateTime now)
+    {
+        var payload = new byte[RfPayloadSize];
+        payload[0] = RfFrameType;
+        payload[1] = RfClockSync;
+        masterMac.Slice(0, MacLength).CopyTo(payload.AsSpan(8));
+        payload.AsSpan(14, 50).Fill(ClockSyncFillByte);
+        payload[46] = (byte)(now.Year >> 8);
+        payload[47] = (byte)(now.Year & 0xFF);
+        payload[48] = (byte)now.Month;
+        payload[49] = (byte)now.Day;
+        payload[50] = (byte)now.Hour;
+        payload[51] = (byte)now.Minute;
+        payload[52] = (byte)now.Second;
+        return payload;
     }
 
     /// <summary>Number of valid records in a GetDev reply (first byte is the command echo, second is the count).</summary>
@@ -416,7 +516,8 @@ public static class Slv3Protocol
             if (rpm[k] > 0) anyRpm = true;
             pwm[k] = rec[36 + k];
         }
-        // A spinning fan reporting zero duty is at firmware default (full).
+        // A spinning chain reporting all-zero fans_pwm reads as 100 (L-Connect
+        // RefreshList's rule, on the same 0..255 scale as the rest of the bytes).
         if (anyRpm && pwm[0] == 0 && pwm[1] == 0 && pwm[2] == 0 && pwm[3] == 0)
         {
             for (var k = 0; k < PortsPerRecord; k++) pwm[k] = 100;

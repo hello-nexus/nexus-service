@@ -62,6 +62,19 @@ public class AppLocalIdMapTests : IDisposable
     }
 
     [Fact]
+    public void Flush_Twice_AppendsOnlyTheIdsAssignedSinceThePreviousFlush()
+    {
+        var map = AppLocalIdMap.LoadForWrite(_path);
+        map.GetOrAdd(42);
+        map.Flush();
+        map.GetOrAdd(7);
+        map.Flush();
+        map.Flush();
+
+        Assert.Equal(new[] { 42, 7 }, AppLocalIdMap.ReadOnly(_path));
+    }
+
+    [Fact]
     public void Flush_WithNothingNewSinceLoad_DoesNotCreateAFile()
     {
         var map = AppLocalIdMap.LoadForWrite(_path);

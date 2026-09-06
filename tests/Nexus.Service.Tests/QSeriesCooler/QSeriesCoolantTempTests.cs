@@ -4,6 +4,7 @@ using System.Linq;
 using Nexus.Service.Cooling;
 using Nexus.Service.Peripherals.Hyte.Np50;          // INp50Transport, Np50PortInfo
 using Nexus.Service.Peripherals.Hyte.QSeriesCooler;
+using Nexus.Service.Tests;
 using RgbColor = Nexus.Service.Peripherals.Hyte.MiniHub.RgbColor;
 
 namespace Nexus.Service.Tests.QSeriesCooler;
@@ -49,7 +50,7 @@ public class QSeriesCoolantTempTests
         t.Port0Response = BuildPort0(InHigh, InLow, OutHigh, OutLow);
         hub.PollTelemetry();
 
-        var sources = new QSeriesCoolerCoolingProvider(hub).GetTemperatureSources();
+        var sources = new QSeriesCoolerCoolingProvider(hub, new InMemoryConfigStore()).GetTemperatureSources();
 
         Assert.Collection(sources,
             s =>
@@ -73,7 +74,7 @@ public class QSeriesCoolantTempTests
         var hub = NewConnectedHub(out var t);
         t.Port0Response = BuildPort0(InHigh, InLow, OutHigh, OutLow);
         hub.PollTelemetry();
-        var provider = new QSeriesCoolerCoolingProvider(hub);
+        var provider = new QSeriesCoolerCoolingProvider(hub, new InMemoryConfigStore());
 
         Assert.Equal(50f, provider.ReadTemperature("qseries:QTEST123:coolant-in"));
         Assert.Equal(25f, provider.ReadTemperature("qseries:QTEST123:coolant-out"));
@@ -90,7 +91,7 @@ public class QSeriesCoolantTempTests
         hub.PollTelemetry();
 
         Assert.Null(hub.State.CoolantTempInC);
-        Assert.Empty(new QSeriesCoolerCoolingProvider(hub).GetTemperatureSources());
+        Assert.Empty(new QSeriesCoolerCoolingProvider(hub, new InMemoryConfigStore()).GetTemperatureSources());
     }
 
     [Fact]
@@ -100,7 +101,7 @@ public class QSeriesCoolantTempTests
         t.Port0Response = BuildPort0(InHigh, InLow, OutHigh, OutLow);
         hub.PollTelemetry();
 
-        var pump = new QSeriesCoolerCoolingProvider(hub).GetAll()
+        var pump = new QSeriesCoolerCoolingProvider(hub, new InMemoryConfigStore()).GetAll()
             .Single().Devices.Single(d => d.Id == "qseries:QTEST123:pump");
 
         Assert.Equal(50f, pump.PumpTempIn);

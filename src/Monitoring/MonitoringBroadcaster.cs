@@ -10,6 +10,7 @@ using Nexus.Service.Fps;
 using Nexus.Service.Models.Activity;
 using Nexus.Service.Models.Monitoring;
 using Nexus.Service.Models.Sensors;
+using Nexus.Service.Persistence;
 using Nexus.Service.Platform;
 using Nexus.Service.Sensors;
 using Nexus.Service.Serialization;
@@ -35,6 +36,8 @@ public sealed class MonitoringBroadcaster : BackgroundService
     private readonly IFpsProvider _fps;
     // Cooling-hub probes are not visible to the platform sensor provider; null in tests that don't need them.
     private readonly IFanControlProvider? _fans;
+    // Only read for the cooling page's fan-header renames; null in tests that don't need them.
+    private readonly IConfigStore? _config;
     private readonly MultiplexHub _hub;
     private readonly TimeProvider _timeProvider;
 
@@ -76,8 +79,9 @@ public sealed class MonitoringBroadcaster : BackgroundService
         IVolumeProvider volume,
         IFpsProvider fps,
         MultiplexHub hub,
-        IFanControlProvider? fans = null)
-        : this(sensors, processes, gpuProcesses, network, performance, screenTime, volume, fps, hub, TimeProvider.System, fans)
+        IFanControlProvider? fans = null,
+        IConfigStore? config = null)
+        : this(sensors, processes, gpuProcesses, network, performance, screenTime, volume, fps, hub, TimeProvider.System, fans, config)
     {
     }
 
@@ -92,7 +96,8 @@ public sealed class MonitoringBroadcaster : BackgroundService
         IFpsProvider fps,
         MultiplexHub hub,
         TimeProvider timeProvider,
-        IFanControlProvider? fans = null)
+        IFanControlProvider? fans = null,
+        IConfigStore? config = null)
     {
         _sensors = sensors;
         _processes = processes;
@@ -104,6 +109,7 @@ public sealed class MonitoringBroadcaster : BackgroundService
         _fps = fps;
         _hub = hub;
         _fans = fans;
+        _config = config;
         _timeProvider = timeProvider;
         _hub.OnTopicFirstSubscriber += OnTopicFirstSubscriber;
         _hub.OnTopicLastUnsubscriber += OnTopicLastUnsubscriber;
@@ -204,12 +210,14 @@ public sealed class MonitoringBroadcaster : BackgroundService
         ScreenTimeFrame? screenTimeFrame = needScreenTime ? BuildScreenTimeFrame() : null;
         HardwareComponent? fpsComponent = needFps ? _fps.GetComponent() : null;
         HardwareComponent? cpuComponent = needCpu ? BuildCpuComponent() : null;
-        List<HardwareComponent>? gpuComponents = needGpu ? BuildGpuComponents() : null;
+        // Read once per tick: both fan-carrying components need it, and it costs a fan-channel walk.
+        var fanHeaderNames = needGpu || needMotherboard ? FanHeaderNames() : null;
+        List<HardwareComponent>? gpuComponents = needGpu ? BuildGpuComponents(fanHeaderNames) : null;
         HardwareComponent? memoryComponent = needMemory ? BuildMemoryComponent() : null;
         Dictionary<string, StorageComponent>? storageComponents = needStorage
             ? new Dictionary<string, StorageComponent>(_sensors.GetStorageComponents())
             : null;
-        HardwareComponent? motherboardComponent = needMotherboard ? BuildMotherboardComponent() : null;
+        HardwareComponent? motherboardComponent = needMotherboard ? BuildMotherboardComponent(fanHeaderNames) : null;
         // needSummary implies needCpu/needGpu/needMemory above, so these are populated
         // whenever a summary component is needed.
         HardwareComponent? summaryComponent = needSummary
@@ -359,7 +367,7 @@ public sealed class MonitoringBroadcaster : BackgroundService
         Sensors = new List<HardwareSensor>(_sensors.GetCpuSensors()),
     };
 
-    private List<HardwareComponent> BuildGpuComponents()
+    private List<HardwareComponent> BuildGpuComponents(IReadOnlyDictionary<string, string>? fanHeaderNames)
     {
         // One component per physical GPU, each carrying only its own sensors.
         // Discrete first, so any consumer that still reads gpu[0] defaults to the
@@ -377,7 +385,7 @@ public sealed class MonitoringBroadcaster : BackgroundService
                 Vendor = g.Vendor,
                 Integrated = g.Integrated,
                 AdapterLuid = string.IsNullOrEmpty(g.AdapterLuid) ? null : g.AdapterLuid,
-                Sensors = g.Sensors,
+                Sensors = AsList(FanSensorNames.WithRenames(g.Sensors, fanHeaderNames)),
             });
         }
         return result;
@@ -390,12 +398,39 @@ public sealed class MonitoringBroadcaster : BackgroundService
         Sensors = new List<HardwareSensor>(_sensors.GetMemorySensors()),
     };
 
-    private HardwareComponent BuildMotherboardComponent() => new()
+    private HardwareComponent BuildMotherboardComponent(IReadOnlyDictionary<string, string>? fanHeaderNames) => new()
     {
         Id = "motherboard",
         Name = _sensors.GetMotherboardModel(),
-        Sensors = new List<HardwareSensor>(_sensors.GetMotherboardSensors()),
+        Sensors = new List<HardwareSensor>(
+            FanSensorNames.WithRenames(_sensors.GetMotherboardSensors(), fanHeaderNames)),
     };
+
+    /// <summary>Avoids re-copying when WithRenames already returned a fresh list.</summary>
+    private static List<HardwareSensor> AsList(IReadOnlyList<HardwareSensor> sensors) =>
+        sensors as List<HardwareSensor> ?? new List<HardwareSensor>(sensors);
+
+    /// <summary>Both halves of the rename join are injected; optional ctor params fail silently otherwise.</summary>
+    internal bool FanHeaderRenamesWired => _fans is not null && _config is not null;
+
+    /// <summary>
+    /// The cooling page's renamed fan headers keyed by tach sensor id. Null unless something
+    /// is renamed, so the common case never walks the fan channels.
+    /// </summary>
+    private IReadOnlyDictionary<string, string>? FanHeaderNames()
+    {
+        if (_fans is null || _config is null) return null;
+        var fanNames = _config.Load().Cooling.FanNames;
+        if (fanNames.Count == 0) return null;
+        // Same containment as the hub-cooler read: a torn read of provider state must cost
+        // the renames, not the whole motherboard topic.
+        try { return FanSensorNames.BuildMap(_fans.GetFanChannels(), fanNames); }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine($"[monitoring-broadcaster] fan header names skipped: {ex.GetType().Name}: {ex.Message}");
+            return null;
+        }
+    }
 
     private static HardwareComponent BuildSummaryComponent(
         HardwareComponent cpuComponent, List<HardwareComponent> gpuComponents, HardwareComponent memoryComponent) => new()

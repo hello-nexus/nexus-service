@@ -78,4 +78,29 @@ public class LinuxSerialDiscoveryTests
         t.Dir("dev");
         Assert.Empty(LinuxSerialDiscovery.FindIn(Dev(t), SysTty(t), 0x3402, 0x0901));
     }
+
+    /// <summary>
+    /// Real sysfs shape, which <see cref="AddDevice"/> does not reproduce:
+    /// <c>/sys/class/tty/&lt;node&gt;</c> is itself a symlink into
+    /// <c>/sys/devices/…</c>, and its <c>device</c> entry is a RELATIVE link.
+    /// Resolving that target against the literal class path lands outside the
+    /// device tree and drops every port.
+    /// </summary>
+    [NonWindowsFact]
+    public void FindIn_RelativeDeviceLink_UnderSymlinkedClassEntry_StillMatches()
+    {
+        using var t = new TempDir();
+        t.Write("dev/ttyACM0", "");
+        t.Write("sys/devices/usb1/1-13/idVendor", "3402\n");
+        t.Write("sys/devices/usb1/1-13/idProduct", "0400\n");
+        t.Write("sys/devices/usb1/1-13/serial", "Q60SERIAL\n");
+        t.Dir("sys/devices/usb1/1-13/1-13:1.0");
+        var ttyNode = t.Dir("sys/devices/usb1/1-13/1-13:1.0/tty/ttyACM0");
+        t.Symlink("sys/devices/usb1/1-13/1-13:1.0/tty/ttyACM0/device", "../../../1-13:1.0");
+        t.Symlink("sys/class/tty/ttyACM0", ttyNode);
+
+        var m = Assert.Single(LinuxSerialDiscovery.FindIn(Dev(t), SysTty(t), 0x3402, 0x0400));
+        Assert.Equal("Q60SERIAL", m.Serial);
+        Assert.Equal(0x0400, m.ProductId);
+    }
 }

@@ -51,6 +51,7 @@ internal static class McpTestHarness
     {
         public List<HardwareSensor> Cpu { get; set; } = new();
         public List<HardwareSensor> Gpu { get; set; } = new();
+        public List<GpuReadout> Gpus { get; set; } = new();
         public List<HardwareSensor> Memory { get; set; } = new();
         public List<HardwareSensor> Motherboard { get; set; } = new();
         public Dictionary<string, StorageComponent> Storage { get; set; } = new();
@@ -60,7 +61,7 @@ internal static class McpTestHarness
         public (bool Healthy, float DistanceToTJMax) GetCpuHealth() => (true, 10f);
         public IReadOnlyList<string> GetGpuModels() => new List<string> { "Test GPU" };
         public IReadOnlyList<HardwareSensor> GetGpuSensors() => Gpu;
-        public IReadOnlyList<GpuReadout> GetGpus() => Array.Empty<GpuReadout>();
+        public IReadOnlyList<GpuReadout> GetGpus() => Gpus;
         public IReadOnlyList<HardwareSensor> GetMemorySensors() => Memory;
         public string GetMemoryTotalFormatted() => "32 GB";
         public string GetRamBrandModel() => "";

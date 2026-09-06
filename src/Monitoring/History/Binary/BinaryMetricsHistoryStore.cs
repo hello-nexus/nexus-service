@@ -462,6 +462,13 @@ public sealed class BinaryMetricsHistoryStore : IMetricsHistoryStore, IAppUsageH
     public IReadOnlyList<long> QuerySampledTicks(string metric, long fromSec, long toSec) =>
         _apps.QuerySampledTicks(metric, fromSec, toSec);
 
+    public AppUsageWindow QueryWindow(string metric, long fromSec, long toSec, int maxApps) =>
+        _apps.QueryWindow(metric, fromSec, toSec, maxApps);
+
+    public IReadOnlyDictionary<string, IReadOnlyList<AppRawPoint>> QueryAppSeriesBatch(
+        string metric, IReadOnlyCollection<string> appNames, long fromSec, long toSec) =>
+        _apps.QueryAppSeriesBatch(metric, appNames, fromSec, toSec);
+
     public long? QueryFirstSeen(string appName) => _apps.QueryFirstSeen(appName);
 
     // ----- IPrivacySessionStore -----

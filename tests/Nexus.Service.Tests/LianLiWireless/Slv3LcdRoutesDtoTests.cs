@@ -1,4 +1,6 @@
 using System.Text.Json;
+using Nexus.Service.Peripherals.LianLiWireless;
+using Nexus.Service.Persistence;
 using Nexus.Service.Routes;
 using Nexus.Service.Serialization;
 
@@ -69,6 +71,58 @@ public class Slv3LcdRoutesDtoTests
         Assert.Equal("SER1", body.Serial);
         Assert.Equal((byte)50, body.Brightness);
         Assert.Equal((byte)1, body.Rotation);
+    }
+
+    [Fact]
+    public void OrderRequest_deserializes_the_serial_list()
+    {
+        const string json = """{ "serials": ["SER2", "SER1"] }""";
+
+        var body = JsonSerializer.Deserialize(json, AppJsonContext.Default.Slv3LcdOrderRequest);
+
+        Assert.NotNull(body);
+        Assert.Equal(new[] { "SER2", "SER1" }, body.Serials);
+    }
+
+    [Fact]
+    public void ScreensResponse_carries_order_with_minus_one_when_unset()
+    {
+        var response = new Slv3LcdScreensResponse { Screens = { new Slv3LcdScreenDto { Serial = "SER1" } } };
+
+        var json = JsonSerializer.Serialize(response, AppJsonContext.Default.Slv3LcdScreensResponse);
+
+        Assert.Contains("\"order\":-1", json);
+    }
+
+    [Fact]
+    public void OrderScreens_puts_saved_orders_first_and_keeps_discovery_order_for_the_rest()
+    {
+        var screens = new[]
+        {
+            new Slv3LcdScreenInfo { Serial = "A" },
+            new Slv3LcdScreenInfo { Serial = "B" },
+            new Slv3LcdScreenInfo { Serial = "C" },
+            new Slv3LcdScreenInfo { Serial = "D" },
+        };
+        var settings = new Dictionary<string, LianLiWirelessScreenSettings>
+        {
+            ["C"] = new() { Order = 0 },
+            ["A"] = new() { Order = 1 },
+        };
+
+        var ordered = Slv3LcdRoutes.OrderScreens(screens, settings);
+
+        Assert.Equal(new[] { "C", "A", "B", "D" }, ordered.ConvertAll(x => x.Serial));
+    }
+
+    [Fact]
+    public void OrderScreens_without_saved_orders_keeps_discovery_order()
+    {
+        var screens = new[] { new Slv3LcdScreenInfo { Serial = "B" }, new Slv3LcdScreenInfo { Serial = "A" } };
+
+        var ordered = Slv3LcdRoutes.OrderScreens(screens, new Dictionary<string, LianLiWirelessScreenSettings>());
+
+        Assert.Equal(new[] { "B", "A" }, ordered.ConvertAll(x => x.Serial));
     }
 
     [Fact]

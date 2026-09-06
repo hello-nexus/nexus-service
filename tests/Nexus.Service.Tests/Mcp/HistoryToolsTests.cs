@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.IO;
 using System.Text.Json;
 using System.Threading;
@@ -6,6 +7,7 @@ using System.Threading.Tasks;
 using Nexus.Service.Mcp.History;
 using Nexus.Service.Mcp.History.Binary;
 using Nexus.Service.Mcp.Tools;
+using Nexus.Service.Models.Sensors;
 using Nexus.Service.Monitoring.History;
 using Xunit;
 
@@ -43,12 +45,17 @@ public sealed class HistoryToolsTests : IDisposable
     private static MetricSample CpuTempSample(DateTime utc, double value) =>
         new(new DateTimeOffset(utc).ToUnixTimeSeconds(), null, null, null, null, value, Array.Empty<GpuReading>(), Array.Empty<FanReading>());
 
+    private static McpTestHarness.StubSensorProvider EmptySensors() => new();
+
+    private static QuerySensorHistoryTool Tool(MonitoringSensorHistoryReader reader, McpTestHarness.StubSensorProvider? sensors = null) =>
+        new(reader, sensors ?? EmptySensors());
+
     // ── query_sensor_history ─────────────────────────────────────────────────
 
     [Fact]
     public async Task QuerySensorHistory_missing_sensorId_is_error()
     {
-        var tool = new QuerySensorHistoryTool(new MonitoringSensorHistoryReader(new InMemoryMetricsHistoryStore()));
+        var tool = Tool(new MonitoringSensorHistoryReader(new InMemoryMetricsHistoryStore()));
 
         var result = await tool.ExecuteAsync(JsonSerializer.SerializeToElement(new { minutes = 10 }), CancellationToken.None);
 
@@ -58,7 +65,7 @@ public sealed class HistoryToolsTests : IDisposable
     [Fact]
     public async Task QuerySensorHistory_missing_minutes_is_error()
     {
-        var tool = new QuerySensorHistoryTool(new MonitoringSensorHistoryReader(new InMemoryMetricsHistoryStore()));
+        var tool = Tool(new MonitoringSensorHistoryReader(new InMemoryMetricsHistoryStore()));
 
         var result = await tool.ExecuteAsync(JsonSerializer.SerializeToElement(new { sensorId = "cpu.temp" }), CancellationToken.None);
 
@@ -70,7 +77,7 @@ public sealed class HistoryToolsTests : IDisposable
     {
         var store = new InMemoryMetricsHistoryStore();
         store.Append(new[] { CpuTempSample(DateTime.UtcNow, 55) }, null);
-        var tool = new QuerySensorHistoryTool(new MonitoringSensorHistoryReader(store));
+        var tool = Tool(new MonitoringSensorHistoryReader(store));
 
         var result = await tool.ExecuteAsync(
             JsonSerializer.SerializeToElement(new { sensorId = "does.not.exist", minutes = 10 }), CancellationToken.None);
@@ -82,7 +89,7 @@ public sealed class HistoryToolsTests : IDisposable
     [Fact]
     public async Task QuerySensorHistory_unknown_sensor_with_nothing_recorded_says_so()
     {
-        var tool = new QuerySensorHistoryTool(new MonitoringSensorHistoryReader(new InMemoryMetricsHistoryStore()));
+        var tool = Tool(new MonitoringSensorHistoryReader(new InMemoryMetricsHistoryStore()));
 
         var result = await tool.ExecuteAsync(
             JsonSerializer.SerializeToElement(new { sensorId = "does.not.exist", minutes = 10 }), CancellationToken.None);
@@ -96,7 +103,7 @@ public sealed class HistoryToolsTests : IDisposable
     {
         var store = new InMemoryMetricsHistoryStore();
         store.Append(new[] { CpuTempSample(DateTime.UtcNow, 55) }, null);
-        var tool = new QuerySensorHistoryTool(new MonitoringSensorHistoryReader(store));
+        var tool = Tool(new MonitoringSensorHistoryReader(store));
 
         var result = await tool.ExecuteAsync(
             JsonSerializer.SerializeToElement(new { sensorId = "cpu.temp", minutes = 5 }), CancellationToken.None);
@@ -109,6 +116,75 @@ public sealed class HistoryToolsTests : IDisposable
         Assert.Equal("raw", doc.RootElement.GetProperty("tier").GetString());
         var points = doc.RootElement.GetProperty("points").EnumerateArray();
         Assert.Single(points);
+    }
+
+    [Fact]
+    public async Task QuerySensorHistory_accepts_a_raw_cpu_sensor_id_from_get_sensors()
+    {
+        var store = new InMemoryMetricsHistoryStore();
+        store.Append(new[] { CpuTempSample(DateTime.UtcNow, 55) }, null);
+        var sensors = EmptySensors();
+        sensors.Cpu = new List<HardwareSensor>
+        {
+            new() { Id = "/amdcpu/0/temperature/2", Name = "Core (Tctl/Tdie)", Type = "Temperature" },
+        };
+        var tool = Tool(new MonitoringSensorHistoryReader(store), sensors);
+
+        var result = await tool.ExecuteAsync(
+            JsonSerializer.SerializeToElement(new { sensorId = "/amdcpu/0/temperature/2", minutes = 5 }), CancellationToken.None);
+
+        Assert.False(result.IsError);
+        using var doc = JsonDocument.Parse(result.Text);
+        Assert.Equal("cpu.temp", doc.RootElement.GetProperty("sensorId").GetString());
+    }
+
+    [Fact]
+    public async Task QuerySensorHistory_accepts_a_raw_gpu_sensor_id_from_get_sensors()
+    {
+        var store = new InMemoryMetricsHistoryStore();
+        store.Append(new[]
+        {
+            new MetricSample(new DateTimeOffset(DateTime.UtcNow).ToUnixTimeSeconds(), null, null, null, null, null,
+                new[] { new GpuReading("gpu-0", "RTX 5080", "", 55, 65) }, Array.Empty<FanReading>()),
+        }, null);
+        var sensors = EmptySensors();
+        sensors.Gpus = new List<GpuReadout>
+        {
+            new()
+            {
+                Id = "gpu-0",
+                Name = "RTX 5080",
+                Sensors = new List<HardwareSensor>
+                {
+                    new() { Id = "/nvidiagpu/0/load/0", Name = "GPU Core", Type = "Load" },
+                },
+            },
+        };
+        var tool = Tool(new MonitoringSensorHistoryReader(store), sensors);
+
+        var result = await tool.ExecuteAsync(
+            JsonSerializer.SerializeToElement(new { sensorId = "/nvidiagpu/0/load/0", minutes = 5 }), CancellationToken.None);
+
+        Assert.False(result.IsError);
+        using var doc = JsonDocument.Parse(result.Text);
+        Assert.Equal("gpu.gpu-0.load", doc.RootElement.GetProperty("sensorId").GetString());
+    }
+
+    [Fact]
+    public async Task QuerySensorHistory_unresolvable_raw_id_still_reports_the_original_id_in_the_error()
+    {
+        var sensors = EmptySensors();
+        sensors.Motherboard = new List<HardwareSensor>
+        {
+            new() { Id = "/lpc/nct6798d/0/fan/2", Name = "Fan 3", Type = "Fan" },
+        };
+        var tool = Tool(new MonitoringSensorHistoryReader(new InMemoryMetricsHistoryStore()), sensors);
+
+        var result = await tool.ExecuteAsync(
+            JsonSerializer.SerializeToElement(new { sensorId = "/lpc/nct6798d/0/fan/2", minutes = 5 }), CancellationToken.None);
+
+        Assert.True(result.IsError);
+        Assert.Contains("/lpc/nct6798d/0/fan/2", result.Text, StringComparison.Ordinal);
     }
 
     // ── get_history_summary ──────────────────────────────────────────────────

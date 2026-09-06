@@ -66,11 +66,17 @@ public static class SystemRoutes
         }).AllowPanel();
 
         // ── Keyboard / text injection (deck hotkey + type-text actions) ──
+        // Desktop-token only: a free-form virtual keyboard into the console
+        // session is code execution as the user. A paired panel triggers the
+        // hotkey / text actions saved in its deck layout through
+        // POST /panel/deck/dispatch instead (PanelDeckRoutes), which executes
+        // the stored action server-side and never takes keys or text from the
+        // panel request.
         app.MapPost("/system/input/keys", (SendKeysBody body, Nexus.Service.Actions.SystemActions actions) =>
-            actions.SendKeysAsync(body)).AllowPanel();
+            actions.SendKeysAsync(body));
 
         app.MapPost("/system/input/text", (SendTextBody body, Nexus.Service.Actions.SystemActions actions) =>
-            actions.SendTextAsync(body.Text ?? "")).AllowPanel();
+            actions.SendTextAsync(body.Text ?? ""));
 
         // ── Open URL / file / folder / OS settings / task manager (deck launch actions) ──
         app.MapPost("/system/open-settings", (Nexus.Service.Actions.SystemActions actions) =>
@@ -79,11 +85,13 @@ public static class SystemRoutes
         app.MapPost("/system/open-url", (OpenUrlRequest body, Nexus.Service.Actions.SystemActions actions) =>
             actions.OpenUrlAsync(body.Url ?? "")).AllowPanel();
 
-        // open-path is denied on the relay (RelayHttpAllowlist.cs) since it
-        // opens arbitrary local files, but is reachable from a paired phone
-        // directly over LAN.
+        // open-path opens any existing local file with its default handler in
+        // the user's session, so it is desktop-token only (and relay-denied in
+        // RelayHttpAllowlist.cs). A paired panel's deck "open file / folder"
+        // keys go through POST /panel/deck/dispatch, which opens the path saved
+        // in the layout rather than one named by the panel request.
         app.MapPost("/system/open-path", (OpenPathBody body, Nexus.Service.Actions.SystemActions actions) =>
-            actions.OpenPathAsync(body.Path ?? "")).AllowPanel();
+            actions.OpenPathAsync(body.Path ?? ""));
 
         // Native OS file/folder picker for the deck action Browse button
         // (openFile/openFolder ActionFields). Desktop-tier only - no
@@ -128,14 +136,14 @@ public static class SystemRoutes
             return ApiResponse.Ok();
         }).AllowPanel();
 
-        // Touch deck widget's Play Audio press - the physical-deck path goes
-        // through DeckActionExecutor directly; this is the same playback for
-        // a virtual deck slot, reachable from a paired panel.
+        // Desktop-token only: the path is caller-named. A panel's playAudio deck
+        // key plays the layout's saved path through POST /panel/deck/dispatch,
+        // and the physical deck goes through DeckActionExecutor directly.
         app.MapPost("/system/audio/play", (PlayAudioBody body, Nexus.Service.Audio.AudioFilePlayer player) =>
         {
             player.Play(body.Path, body.Volume);
             return ApiResponse.Ok();
-        }).AllowPanel();
+        });
 
         // ── Per-app volume mixer ──
         // Strips are pushed on the audio/mixer topic while a mixer is open; these

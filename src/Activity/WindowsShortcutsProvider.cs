@@ -171,14 +171,15 @@ public sealed class WindowsShortcutsProvider : IShortcutsProvider
         }
 
         var shortcut = GetById(targetId);
-        if (shortcut is null) return Array.Empty<byte>();
 
         byte[] iconBytes;
         try
         {
-            iconBytes = shortcut.Id.Contains('!')
-                ? ExtractUwpIcon(shortcut.Id)
-                : ExtractWin32Icon(shortcut);
+            iconBytes = shortcut is null
+                ? ExtractExecutablePathIcon(targetId)
+                : shortcut.Id.Contains('!')
+                    ? ExtractUwpIcon(shortcut.Id)
+                    : ExtractWin32Icon(shortcut);
         }
         catch
         {
@@ -187,11 +188,16 @@ public sealed class WindowsShortcutsProvider : IShortcutsProvider
 
         // Cache the outcome either way: a hit for the icon's full TTL, a miss
         // (empty bytes, incl. a thrown extraction) briefly so it isn't re-run on
-        // every view.
-        lock (_iconLock)
+        // every view. A miss on an unknown targetId is NOT cached: the key space
+        // there is caller-supplied and the map is never evicted, so a caller
+        // could otherwise grow it without bound.
+        if (iconBytes.Length > 0 || shortcut is not null)
         {
-            var ttl = iconBytes.Length > 0 ? IconCacheTtl : NegativeIconCacheTtl;
-            _iconCache[targetId] = (iconBytes, DateTime.UtcNow + ttl);
+            lock (_iconLock)
+            {
+                var ttl = iconBytes.Length > 0 ? IconCacheTtl : NegativeIconCacheTtl;
+                _iconCache[targetId] = (iconBytes, DateTime.UtcNow + ttl);
+            }
         }
 
         return iconBytes;
@@ -260,6 +266,59 @@ public sealed class WindowsShortcutsProvider : IShortcutsProvider
         {
             return false;
         }
+    }
+
+    /// <summary>A fully-qualified path on a local drive ("C:\..."), excluding UNC and device paths.</summary>
+    private static bool IsLocalRootedPath(string path)
+    {
+        if (!Path.IsPathFullyQualified(path))
+        {
+            return false;
+        }
+        var root = Path.GetPathRoot(path);
+        return root is not null && root.Length >= 2 && char.IsLetter(root[0]) && root[1] == ':';
+    }
+
+    /// <summary>Icon for a targetId that is an executable path rather than a Start-Menu id, so a deck key bound to a game's exe shows the game's icon.</summary>
+    private byte[] ExtractExecutablePathIcon(string targetId)
+    {
+        // Extension allowlist, not just File.Exists: GetIcon is panel-reachable,
+        // and this is the only branch that takes a caller-supplied path. The
+        // local-drive test is what keeps a UNC path out - File.Exists on
+        // \\host\share triggers outbound SMB auth and blocks this synchronous
+        // call for the SMB timeout.
+        var ext = Path.GetExtension(targetId);
+        var isExecutable =
+            ext.Equals(".exe", StringComparison.OrdinalIgnoreCase) ||
+            ext.Equals(".lnk", StringComparison.OrdinalIgnoreCase);
+        if (!isExecutable || !IsLocalRootedPath(targetId) || !File.Exists(targetId))
+        {
+            return Array.Empty<byte>();
+        }
+
+        DateTime sourceWriteTimeUtc;
+        try
+        {
+            sourceWriteTimeUtc = File.GetLastWriteTimeUtc(targetId);
+        }
+        catch
+        {
+            return Array.Empty<byte>();
+        }
+
+        var cached = _diskCache.TryGet(targetId, targetId, sourceWriteTimeUtc);
+        if (cached is not null)
+        {
+            return cached;
+        }
+
+        var png = _iconExtractor.ExtractPng(targetId, IconSizePx);
+        if (png.Length > 0)
+        {
+            _diskCache.Store(targetId, targetId, sourceWriteTimeUtc, png);
+        }
+
+        return png;
     }
 
     private byte[] ExtractWin32Icon(Shortcut shortcut)

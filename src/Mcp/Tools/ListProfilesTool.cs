@@ -19,10 +19,11 @@ public sealed class ListProfilesTool : IMcpTool
     public string Title => "List Profiles";
 
     public string Description =>
-        "Lists every saved settings profile (id, name, and whether it is currently active). Call " +
-        "this before apply_profile when the user names a profile you have not confirmed exists.";
+        "Lists every saved settings profile (id, name, and whether it is currently active) - " +
+        "read-only, so it works even when profile switching is turned off. Call this before " +
+        "apply_profile when the user names a profile you have not confirmed exists.";
 
-    public McpCapability Capability => McpCapability.Profiles;
+    public McpCapability Capability => McpCapability.Telemetry;
     public bool ReadOnly => true;
     public string InputSchemaJson => "{\"type\":\"object\",\"properties\":{},\"additionalProperties\":false}";
 

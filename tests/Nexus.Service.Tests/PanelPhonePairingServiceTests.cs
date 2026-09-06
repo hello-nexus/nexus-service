@@ -686,6 +686,32 @@ public class PanelPhonePairingServiceTests
     }
 
     [Fact]
+    public void ConfirmPairCode_FromAnotherAddress_IsUnknown()
+    {
+        // The request id also rides the dashboard's WebSocket frame; only the
+        // device that submitted the code may poll, cancel, or collect the token.
+        var store = new InMemoryConfigStore();
+        var service = NewService(store);
+        service.SpkiFingerprint = "fp-stub";
+        var start = service.StartPairCode();
+        var submit = service.SubmitPairCode(start.Code, NewContext(NativeIosUserAgent, "192.168.1.77", isHttps: true));
+        Assert.True(submit.Accepted);
+        Assert.Equal("approved", service.HostDecisionPairCode(submit.RequestId, approved: true).Status);
+
+        var stranger = service.ConfirmPairCode(submit.RequestId, approved: true, NewContext(NativeIosUserAgent, "192.168.1.99", isHttps: true));
+        Assert.Equal("unknown", stranger.Status);
+        Assert.True(string.IsNullOrEmpty(stranger.Token));
+
+        var strangerDeny = service.ConfirmPairCode(submit.RequestId, approved: false, NewContext(NativeIosUserAgent, "192.168.1.99", isHttps: true));
+        Assert.Equal("unknown", strangerDeny.Status);
+
+        // The real phone still collects its token afterwards.
+        var phone = service.ConfirmPairCode(submit.RequestId, approved: true, NewContext(NativeIosUserAgent, "192.168.1.77", isHttps: true));
+        Assert.Equal("approved", phone.Status);
+        Assert.False(string.IsNullOrEmpty(phone.Token));
+    }
+
+    [Fact]
     public void HostApprove_ThenPhonePoll_IssuesToken()
     {
         // The phone's polling /confirm IS the wait. There's no separate

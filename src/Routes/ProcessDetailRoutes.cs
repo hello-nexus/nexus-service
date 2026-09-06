@@ -41,33 +41,8 @@ public static class ProcessDetailRoutes
                 return Results.BadRequest();
             }
 
-            var path = processes.ResolveExecutablePath(name);
-            if (path is null)
-            {
-                return Results.NotFound();
-            }
-
-            try
-            {
-                var procs = processes.GetProcesses();
-                var live = procs.Where(p => string.Equals(p.Name, name, StringComparison.OrdinalIgnoreCase)).ToList();
-                var instanceCount = live.Count;
-                var canonicalName = live.Count > 0 ? live[0].Name : name;
-                var startedAtMs = ProcessAggregation.GroupByName(procs).GetValueOrDefault(canonicalName)?.StartedAtMs;
-
-                var fileDetail = detail.GetFileDetail(path);
-                var sha256 = await detail.ComputeSha256Async(path, ctx.RequestAborted);
-                var firstSeenMs = firstSeen.Resolve(canonicalName);
-
-                var response = BuildProcessInfoResponse(
-                    canonicalName, path, instanceCount, startedAtMs, fileDetail, sha256, firstSeenMs);
-                return Results.Ok(response);
-            }
-            catch (Exception ex)
-            {
-                ServiceLog.Warn($"[process-info] resolve failed for {name}: {ex.Message}");
-                return Results.Ok(new ProcessInfoResponse { Supported = false, Name = name });
-            }
+            var response = await ResolveProcessInfoAsync(name, processes, detail, firstSeen, ctx.RequestAborted);
+            return response is null ? Results.NotFound() : Results.Ok(response);
         });
 
         app.MapPost("/monitoring/process-kill", async (ProcessActionBody? body, IProcessActionsProvider actions) =>
@@ -128,9 +103,44 @@ public static class ProcessDetailRoutes
         Results.Json(ApiResponse.Fail("no active user session to perform this action"),
             AppJsonContext.Default.ApiResponse, statusCode: StatusCodes.Status503ServiceUnavailable);
 
-    // Pure and directly unit-tested: every input is plain data the route
-    // handler above already resolved (live snapshot, file detail, hash,
-    // first-seen), so this has no I/O of its own.
+    // internal: also called by the get_process_info MCP tool, so both serve
+    // identical resolution and fallback behavior. Null means path resolution
+    // failed (no running or recently seen process by that name); every other
+    // outcome, including the caught-exception fallback, returns a response.
+    internal static async Task<ProcessInfoResponse?> ResolveProcessInfoAsync(
+        string name, ProcessMonitor processes, IProcessDetailProvider detail,
+        ProcessFirstSeenCache firstSeen, CancellationToken ct)
+    {
+        var path = processes.ResolveExecutablePath(name);
+        if (path is null)
+        {
+            return null;
+        }
+
+        try
+        {
+            var procs = processes.GetProcesses();
+            var live = procs.Where(p => string.Equals(p.Name, name, StringComparison.OrdinalIgnoreCase)).ToList();
+            var instanceCount = live.Count;
+            var canonicalName = live.Count > 0 ? live[0].Name : name;
+            var startedAtMs = ProcessAggregation.GroupByName(procs).GetValueOrDefault(canonicalName)?.StartedAtMs;
+
+            var fileDetail = detail.GetFileDetail(path);
+            var sha256 = await detail.ComputeSha256Async(path, ct).ConfigureAwait(false);
+            var firstSeenMs = firstSeen.Resolve(canonicalName);
+
+            return BuildProcessInfoResponse(canonicalName, path, instanceCount, startedAtMs, fileDetail, sha256, firstSeenMs);
+        }
+        catch (Exception ex)
+        {
+            ServiceLog.Warn($"[process-info] resolve failed for {name}: {ex.Message}");
+            return new ProcessInfoResponse { Supported = false, Name = name };
+        }
+    }
+
+    // Pure and directly unit-tested: every input is plain data the caller
+    // already resolved (live snapshot, file detail, hash, first-seen), so
+    // this has no I/O of its own.
     internal static ProcessInfoResponse BuildProcessInfoResponse(
         string name, string path, int instanceCount, long? startedAtMs,
         ProcessFileDetail detail, string? sha256, long? firstSeenMs) => new()

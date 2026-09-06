@@ -11,6 +11,9 @@
          sources exist in the referenced assembly. -->
     <DefineConstants Condition="$(RuntimeIdentifier.StartsWith('osx')) OR ('$(RuntimeIdentifier)' == '' AND $([MSBuild]::IsOSPlatform('OSX')))">$(DefineConstants);MACOS</DefineConstants>
     <DefineConstants Condition="$(RuntimeIdentifier.StartsWith('linux')) OR ('$(RuntimeIdentifier)' == '' AND $([MSBuild]::IsOSPlatform('Linux')))">$(DefineConstants);LINUX</DefineConstants>
+    <!-- Mirror the service's DEV_TOOLS define (-p:DevTools=true) so dev-only
+         route contracts compile in the same flavour as the referenced assembly. -->
+    <DefineConstants Condition="'$(DevTools)' == 'true'">$(DefineConstants);DEV_TOOLS</DefineConstants>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
     <IsPackable>false</IsPackable>
@@ -60,6 +63,15 @@
     <!-- xUnit reads this from the output dir; without the copy the suite falls
          back to maxParallelThreads = processor count. -->
     <None Update="xunit.runner.json" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+
+  <!-- Fixture firmware images under the same firmware/<deviceId>/<version>.hex
+       logical names the service build uses, so BundledFirmwareCatalog is tested
+       without the real vendor images (which live outside the repository). -->
+  <ItemGroup>
+    <EmbeddedResource Include="Fixtures\firmware\**\*.hex">
+      <LogicalName>firmware/%(RecursiveDir)%(Filename)%(Extension)</LogicalName>
+    </EmbeddedResource>
   </ItemGroup>
 
 </Project>

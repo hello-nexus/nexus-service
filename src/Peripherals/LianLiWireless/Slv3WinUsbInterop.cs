@@ -84,6 +84,13 @@ internal static class Slv3WinUsbInterop
     [return: MarshalAs(UnmanagedType.Bool)]
     public static extern bool WinUsb_ResetPipe(IntPtr interfaceHandle, byte pipeId);
 
+    // Discards data the pipe has already buffered from the device. L-Connect
+    // flushes its reader before every GetDev so a poll never starts on the
+    // tail of the previous reply.
+    [DllImport("winusb.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    public static extern bool WinUsb_FlushPipe(IntPtr interfaceHandle, byte pipeId);
+
     // Cancels any pending transfer on a pipe so a blocked ReadPipe/WritePipe
     // returns instead of pinning the handle open through Dispose.
     [DllImport("winusb.dll", SetLastError = true)]

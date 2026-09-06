@@ -134,12 +134,19 @@ public static class AppRoutes
         // Media rides through the service because the dashboard's img-src is
         // 'self'; a cross-origin asset host renders as a broken image.
         app.MapGet("/apps-api/store/media/{**path}",
-            async (string path, Nexus.Service.Store.StoreCatalogProxy proxy, CancellationToken ct) =>
+            async (string path, Nexus.Service.Store.StoreCatalogProxy proxy, HttpContext http, CancellationToken ct) =>
         {
             var media = await proxy.MediaAsync(path, ct);
-            return media is null
-                ? Results.NotFound()
-                : Results.Bytes(media.Value.bytes, media.Value.contentType);
+            if (media is null)
+            {
+                return Results.NotFound();
+            }
+            http.Response.Headers.XContentTypeOptions = "nosniff";
+            if (media.Value.contentType == "image/svg+xml")
+            {
+                ApplySvgDocumentGuards(http.Response);
+            }
+            return Results.Bytes(media.Value.bytes, media.Value.contentType);
         }).AllowPanel();
 
         // Install one version from the asset CDN. Distinct path from the
@@ -336,6 +343,20 @@ public static class AppRoutes
         return Results.Stream(File.OpenRead(resolved), contentType);
     }
 
+    /// <summary>
+    /// An SVG is a document: navigated to directly it renders on the service
+    /// origin and runs any script it carries, with no CSP because the security
+    /// headers only cover HTML. As an <c>&lt;img&gt;</c> source it is inert, and
+    /// that is the only way the SPA uses these. Serve it so the image tag still
+    /// works while a top-level navigation downloads instead of rendering, and
+    /// pin an empty sandbox for any context that does treat it as a document.
+    /// </summary>
+    private static void ApplySvgDocumentGuards(HttpResponse response)
+    {
+        response.Headers.ContentDisposition = "attachment";
+        response.Headers.ContentSecurityPolicy = "sandbox; script-src 'none'";
+    }
+
     private static IResult ServeAsset(
         string id,
         string? path,
@@ -377,6 +398,10 @@ public static class AppRoutes
             ".nxpack" or ".key" => "application/octet-stream",
             _ => "application/octet-stream",
         };
+        if (contentType == "image/svg+xml")
+        {
+            ApplySvgDocumentGuards(ctx.Response);
+        }
         return Results.Stream(File.OpenRead(resolved), contentType, enableRangeProcessing: true);
     }
 

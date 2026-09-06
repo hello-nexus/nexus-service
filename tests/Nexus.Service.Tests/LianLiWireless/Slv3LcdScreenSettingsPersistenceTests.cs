@@ -23,6 +23,7 @@ public sealed class Slv3LcdScreenSettingsPersistenceTests
                             MediaId = "media-1",
                             Brightness = 80,
                             Rotation = 2,
+                            Order = 1,
                         },
                         ["BBBB444455556666"] = new()
                         {
@@ -49,6 +50,7 @@ public sealed class Slv3LcdScreenSettingsPersistenceTests
         Assert.Equal("media-1", screen.MediaId);
         Assert.Equal((byte)80, screen.Brightness);
         Assert.Equal((byte)2, screen.Rotation);
+        Assert.Equal(1, screen.Order);
 
         Assert.True(loaded.Devices.LianLiWireless.Screens.TryGetValue("BBBB444455556666", out var second));
         Assert.Equal("animation", second.ContentType);

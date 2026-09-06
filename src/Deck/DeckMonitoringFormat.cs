@@ -11,7 +11,8 @@ namespace Nexus.Service.Deck;
 /// formatScaledDataValue/formatSensorValue, and lib/units.ts's
 /// convertTemperature/localizeNumbers) so the physical key matches the
 /// touch-panel DeckMonitoringCell for the same sensor. Category strings are
-/// the deck monitoring v1 set: quick, cpu, gpu, memory, motherboard, storage.
+/// nexus-web's DeckMonitoringCategory set (deck/types.ts), equal to its
+/// monitoring picker's own DEVICE_OPTION_KEYS.
 /// </summary>
 internal static partial class DeckMonitoringFormat
 {
@@ -26,6 +27,7 @@ internal static partial class DeckMonitoringFormat
         "cpu" => "CPU",
         "gpu" => "GPU",
         "memory" => "Memory",
+        "network" => "Network",
         _ => null,
     };
 
@@ -49,14 +51,23 @@ internal static partial class DeckMonitoringFormat
             var bare = StripPrefix(sensorName, prefix);
             return bare.Length > 0 ? $"{prefix} {bare}" : prefix;
         }
+        // Mirrors labelForDevice's no-sensor fallbacks (MonitoringWidget.tsx).
         return category switch
         {
             "quick" => "Quick",
             "cpu" => "CPU",
             "gpu" => "GPU",
             "memory" => "RAM",
+            "memoryModule" => "DIMM",
             "motherboard" => "MB",
             "storage" => "Storage",
+            "smart" => "SMART",
+            "network" => "Network",
+            "fps" => "FPS",
+            "battery" => "BATT",
+            "cooler" => "COOL",
+            "psu" => "PSU",
+            "embeddedController" => "EC",
             _ => "",
         };
     }

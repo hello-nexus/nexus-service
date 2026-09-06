@@ -129,6 +129,17 @@ public sealed class MultiplexHub
     public Task HandleClientAsync(WebSocket socket, CancellationToken cancellationToken = default)
         => HandleClientAsync(socket, phoneSessionId: null, ClientTransport.Lan, cancellationToken);
 
+    /// <summary>
+    /// Topics only a desktop (loopback, service-token) socket may receive. The
+    /// pending pair request frame carries the request id + SAS the host uses to
+    /// approve a NEW device; a phone session that could read it would be able to
+    /// race the real phone's confirm and take that session, or cancel it.
+    /// </summary>
+    private static readonly HashSet<string> DesktopOnlyTopics = new(StringComparer.Ordinal)
+    {
+        PanelTopics.PairCodeRequest,
+    };
+
     public Task HandleClientAsync(WebSocket socket, string? phoneSessionId, CancellationToken cancellationToken = default)
         => HandleClientAsync(socket, phoneSessionId, ClientTransport.Lan, cancellationToken);
 
@@ -388,6 +399,8 @@ public sealed class MultiplexHub
                 {
                     var topic = item.GetString();
                     if (topic is null)
+                        continue;
+                    if (client.PhoneSessionId is not null && DesktopOnlyTopics.Contains(topic))
                         continue;
 
                     bool wasFirst = !TopicHasSubscribers(topic);

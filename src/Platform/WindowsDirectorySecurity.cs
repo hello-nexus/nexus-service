@@ -32,10 +32,14 @@ public static class WindowsDirectorySecurity
     /// resets the owner to Administrators - a dir a non-admin pre-created is
     /// owned by that user, who then retains WRITE_DAC and could rewrite the ACL
     /// back. Owner reset needs SeRestorePrivilege and is best-effort; the DACL is
-    /// always applied. Windows-only; call under an OperatingSystem.IsWindows() guard.
+    /// always applied. <paramref name="usersModifyChildren"/> additionally grants
+    /// Users Modify on the CHILDREN only (inherit-only ACE), for a drop folder
+    /// whose files the user must be able to delete while the dir itself stays
+    /// undeletable and unrenamable by them. Windows-only; call under an
+    /// OperatingSystem.IsWindows() guard.
     /// </summary>
     [SupportedOSPlatform("windows")]
-    public static void Protect(string dir, bool resetOwner = false)
+    public static void Protect(string dir, bool resetOwner = false, bool usersModifyChildren = false)
     {
         var info = Directory.CreateDirectory(dir);
         var sec = new DirectorySecurity();
@@ -47,6 +51,12 @@ public static class WindowsDirectorySecurity
         Allow(WellKnownSidType.LocalSystemSid, FileSystemRights.FullControl);
         Allow(WellKnownSidType.BuiltinAdministratorsSid, FileSystemRights.FullControl);
         Allow(WellKnownSidType.BuiltinUsersSid, FileSystemRights.ReadAndExecute);
+        if (usersModifyChildren)
+        {
+            sec.AddAccessRule(new FileSystemAccessRule(
+                new SecurityIdentifier(WellKnownSidType.BuiltinUsersSid, null), FileSystemRights.Modify,
+                inherit, PropagationFlags.InheritOnly, AccessControlType.Allow));
+        }
         info.SetAccessControl(sec);
 
         if (resetOwner)

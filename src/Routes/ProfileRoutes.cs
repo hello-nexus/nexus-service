@@ -405,8 +405,14 @@ public static class ProfileRoutes
             }
         });
 
-        app.MapPost("/preferences", (PreferencesPatch body, ProfileManager pm, MultiplexHub hub, Nexus.Service.Lifecycle.FeatureReconciler reconciler) =>
+        app.MapPost("/preferences", (PreferencesPatch body, ProfileManager pm, MultiplexHub hub, Nexus.Service.Lifecycle.FeatureReconciler reconciler, Nexus.Service.Telemetry.ITelemetry telemetry) =>
         {
+            // Captured inside the patch, emitted after it: the current mode
+            // also rides the telemetry person profile, but only a recorded
+            // transition separates a deliberate switch from the v15 migration
+            // that seeded every pre-existing install to "advanced".
+            (string From, string To)? lightingModeChange = null;
+            (string From, string To)? coolingModeChange = null;
             // ApplyPatch runs the mutation and the Features before/after
             // transition under the reconciler's own lock, so a concurrent
             // PATCH /preferences cannot interleave its own before-snapshot
@@ -488,6 +494,7 @@ public static class ProfileRoutes
                     if (monitoring.ShowWindowsTrayIcon.HasValue)  s.Monitoring.ShowWindowsTrayIcon  = monitoring.ShowWindowsTrayIcon.Value;
                     if (monitoring.DetailedCollapsed is not null) s.Monitoring.DetailedCollapsed   = monitoring.DetailedCollapsed;
                     if (monitoring.EventsEnabled.HasValue)        s.Monitoring.EventsEnabled        = monitoring.EventsEnabled.Value;
+                    if (monitoring.FpsOverlayEnabled.HasValue)    s.Monitoring.FpsOverlayEnabled    = monitoring.FpsOverlayEnabled.Value;
                     if (monitoring.EventKindsHidden is not null)  s.Monitoring.EventKindsHidden     = monitoring.EventKindsHidden;
                     if (monitoring.SmartPollSeconds is not null)  s.Monitoring.SmartPollSeconds     = SmartPollPolicy.Sanitize(monitoring.SmartPollSeconds);
                     if (monitoring.SmartPollDefaultSeconds.HasValue)
@@ -513,8 +520,18 @@ public static class ProfileRoutes
                     if (ui.ConflictAutoKillExclusions is not null) s.Ui.ConflictAutoKillExclusions = ui.ConflictAutoKillExclusions;
                     if (ui.OemAppSeeded.HasValue) s.Ui.OemAppSeeded = ui.OemAppSeeded.Value;
                     if (ui.PinnedSidebarApps is not null) s.Ui.PinnedSidebarApps = ui.PinnedSidebarApps;
-                    if (ui.LightingDashboardMode is "simple" or "advanced") s.Ui.LightingDashboardMode = ui.LightingDashboardMode;
-                    if (ui.CoolingDashboardMode is "simple" or "advanced") s.Ui.CoolingDashboardMode = ui.CoolingDashboardMode;
+                    if (ui.LightingDashboardMode is "simple" or "advanced")
+                    {
+                        if (!string.Equals(s.Ui.LightingDashboardMode, ui.LightingDashboardMode, StringComparison.Ordinal))
+                            lightingModeChange = (s.Ui.LightingDashboardMode, ui.LightingDashboardMode);
+                        s.Ui.LightingDashboardMode = ui.LightingDashboardMode;
+                    }
+                    if (ui.CoolingDashboardMode is "simple" or "advanced")
+                    {
+                        if (!string.Equals(s.Ui.CoolingDashboardMode, ui.CoolingDashboardMode, StringComparison.Ordinal))
+                            coolingModeChange = (s.Ui.CoolingDashboardMode, ui.CoolingDashboardMode);
+                        s.Ui.CoolingDashboardMode = ui.CoolingDashboardMode;
+                    }
                 }
                 if (body.Units is { } units)
                 {
@@ -579,6 +596,16 @@ public static class ProfileRoutes
                     }
                 }
             }, lightingPatchValue: body.Features?.Lighting);
+            if (lightingModeChange is { } lm)
+            {
+                telemetry.Capture(Nexus.Service.Telemetry.TelemetryEvents.DashboardModeChanged,
+                    ("surface", "lighting"), ("from", lm.From), ("to", lm.To));
+            }
+            if (coolingModeChange is { } cm)
+            {
+                telemetry.Capture(Nexus.Service.Telemetry.TelemetryEvents.DashboardModeChanged,
+                    ("surface", "cooling"), ("from", cm.From), ("to", cm.To));
+            }
             pm.MarkDirty();
             PanelTopics.BroadcastPrefs(hub);
             return ApiResponse.Ok();

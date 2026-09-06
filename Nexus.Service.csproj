@@ -200,8 +200,8 @@
   <!-- AdvancedSharpAdbClient: pure-managed adb-server protocol client used by
        QSeriesPortWatcher to keep `adb reverse tcp:9400` alive while a HYTE Q60/Q80
        USB display is attached. Smoke-tested AOT on win-x64 + osx-arm64
-       (see nexus/plans/q-series-nexus-native.md task #7 result, 2026-05-16) - no
-       trim warnings, no reflection-required types we hit at runtime. -->
+       (2026-05-16): no trim warnings, no reflection-required types we hit at
+       runtime. -->
   <ItemGroup>
     <PackageReference Include="AdvancedSharpAdbClient" Version="3.4.14" />
   </ItemGroup>
@@ -297,17 +297,38 @@
     </EmbeddedResource>
   </ItemGroup>
 
-  <!-- Bundled device firmware images, one .hex per (device, version) under
-       data/firmware/<deviceId>/<version>.hex. Embedded so the firmware ships
-       inside the single AOT binary (no loose files, no OTA download path).
-       BundledFirmwareCatalog enumerates these manifest names to report the
-       "available" version on the Firmware Updates page. deviceId matches
-       IDeviceHandler.Id; fan-hub bundles the Mini Hub image. -->
-  <ItemGroup>
-    <EmbeddedResource Include="data\firmware\**\*.hex">
+  <!-- Bundled device firmware images, <dir>/<deviceId>/<version>.hex, embedded as
+       firmware/<deviceId>/<version>.hex for BundledFirmwareCatalog. Vendor files
+       kept outside this repository; probe order: $(NexusFirmwareDir) or
+       NEXUS_FIRMWARE_DIR, the gitignored data/firmware drop-in, ../firmware,
+       ../../firmware. None found = empty catalog (see EnsureFirmwareBundle). -->
+  <PropertyGroup>
+    <NexusFirmwareDir Condition="'$(NexusFirmwareDir)' == ''">$(NEXUS_FIRMWARE_DIR)</NexusFirmwareDir>
+    <_NexusFirmwareDir Condition="'$(NexusFirmwareDir)' != '' AND Exists('$(NexusFirmwareDir)')">$(NexusFirmwareDir)</_NexusFirmwareDir>
+    <_NexusFirmwareDir Condition="'$(_NexusFirmwareDir)' == '' AND Exists('$(MSBuildThisFileDirectory)data\firmware')">$(MSBuildThisFileDirectory)data\firmware</_NexusFirmwareDir>
+    <_NexusFirmwareDir Condition="'$(_NexusFirmwareDir)' == '' AND Exists('$(MSBuildThisFileDirectory)..\firmware')">$(MSBuildThisFileDirectory)..\firmware</_NexusFirmwareDir>
+    <_NexusFirmwareDir Condition="'$(_NexusFirmwareDir)' == '' AND Exists('$(MSBuildThisFileDirectory)..\..\firmware')">$(MSBuildThisFileDirectory)..\..\firmware</_NexusFirmwareDir>
+  </PropertyGroup>
+  <ItemGroup Condition="'$(_NexusFirmwareDir)' != ''">
+    <EmbeddedResource Include="$(_NexusFirmwareDir)\**\*.hex">
       <LogicalName>firmware/%(RecursiveDir)%(Filename)%(Extension)</LogicalName>
     </EmbeddedResource>
   </ItemGroup>
+
+  <Target Name="ReportFirmwareBundle" BeforeTargets="CoreCompile" Condition="'$(DesignTimeBuild)' != 'true'">
+    <Error Condition="'$(NexusFirmwareDir)' != '' AND !Exists('$(NexusFirmwareDir)')"
+           Text="NexusFirmwareDir / NEXUS_FIRMWARE_DIR points at '$(NexusFirmwareDir)', which does not exist." />
+    <Message Importance="normal" Condition="'$(_NexusFirmwareDir)' != ''" Text="Bundled firmware: embedding images from $(_NexusFirmwareDir)" />
+    <Message Importance="high" Condition="'$(_NexusFirmwareDir)' == ''" Text="Bundled firmware: no image directory found; the firmware catalog will be empty (set NEXUS_FIRMWARE_DIR to embed images)" />
+  </Target>
+
+  <!-- A publish carrying the client token is one we ship, and it must not go
+       out without the firmware it advertises. Checked before the build so an
+       AOT compile is not wasted on a publish that cannot succeed. -->
+  <Target Name="EnsureFirmwareBundle" BeforeTargets="BeforeBuild" Condition="'$(_IsPublishing)' == 'true' AND '$(NexusClientToken)' != ''">
+    <Error Condition="'$(_NexusFirmwareDir)' == ''"
+           Text="Official publish without bundled firmware images: none of NexusFirmwareDir / NEXUS_FIRMWARE_DIR ('$(NexusFirmwareDir)'), data/firmware, ../firmware, ../../firmware exists. Point NEXUS_FIRMWARE_DIR at the private firmware directory, or publish without a client token for a local-only build." />
+  </Target>
 
   <!-- macOS status bar icons (template images that adapt to dark/light menu bar) -->
   <ItemGroup Condition="$(RuntimeIdentifier.StartsWith('osx')) OR ('$(RuntimeIdentifier)' == '' AND $([MSBuild]::IsOSPlatform('OSX')))">
@@ -790,7 +811,10 @@
     <Compile Remove="src/Platform/Linux/DBus/DBusConnection.cs" />
     <Compile Remove="src/Platform/Linux/DBus/DBusTypes.cs" />
     <Compile Remove="src/Platform/Linux/LinuxBrowsers.cs" />
+    <Compile Remove="src/Platform/Linux/LinuxKWinPanelPlacement.cs" />
     <Compile Remove="src/Platform/Linux/LinuxNotify.cs" />
+    <Compile Remove="src/Platform/Linux/LinuxOverlayHost.cs" />
+    <Compile Remove="src/Platform/Linux/LinuxScreenInhibit.cs" />
     <Compile Remove="src/Platform/Linux/LinuxPanelKioskHost.cs" />
     <Compile Remove="src/Platform/Linux/LinuxPerformanceProvider.cs" />
     <Compile Remove="src/Platform/Linux/LinuxResumeListener.cs" />
@@ -854,7 +878,7 @@
        launcher logs one line, no widgets render, no user-visible failure). -->
   <!-- Probe two layouts because Mac dev tree uses sibling `nexus-overlay/`
        while the Windows deploy strips the `nexus-` prefix to bare `overlay/`
-       (per .agents/skills/build-pc/SKILL.md). The first one that exists wins. -->
+       (the lab-PC deploy layout). The first one that exists wins. -->
   <PropertyGroup Condition="$(RuntimeIdentifier.StartsWith('win'))">
     <_OverlayProjectMac>$(MSBuildThisFileDirectory)..\nexus-overlay\Nexus.Overlay.csproj</_OverlayProjectMac>
     <_OverlayProjectPc>$(MSBuildThisFileDirectory)..\overlay\Nexus.Overlay.csproj</_OverlayProjectPc>

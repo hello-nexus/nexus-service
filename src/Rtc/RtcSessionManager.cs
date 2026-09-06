@@ -176,7 +176,9 @@ public sealed class RtcSessionManager
             },
         };
         var pc = new RTCPeerConnection(config);
-        var session = new RtcSession(this, phoneSessionId, pc, runtimeKey, httpKey);
+        var session = new RtcSession(this, phoneSessionId, pc, runtimeKey, httpKey,
+            hn => RelayCrypto.DeriveRekeyedAeadKey(relayRoot, runtimeSalt, hn),
+            hn => RelayCrypto.DeriveRekeyedAeadKey(relayRoot, httpSalt, hn));
         session.Wire();
         // Starts here, not after the answer: an escape from the negotiate
         // span below (a request-abort cancellation, an unexpected SIPSorcery
@@ -367,6 +369,8 @@ public sealed class RtcSessionManager
         private readonly RTCPeerConnection _pc;
         private readonly byte[] _runtimeKey;
         private readonly byte[] _httpKey;
+        private readonly Func<byte[], byte[]> _runtimeRekey;
+        private readonly Func<byte[], byte[]> _httpRekey;
         private readonly CancellationTokenSource _cts = new();
         private readonly object _lock = new();
 
@@ -375,13 +379,16 @@ public sealed class RtcSessionManager
         private volatile bool _runtimeOpened;
         private volatile bool _disposed;
 
-        public RtcSession(RtcSessionManager owner, string sessionId, RTCPeerConnection pc, byte[] runtimeKey, byte[] httpKey)
+        public RtcSession(RtcSessionManager owner, string sessionId, RTCPeerConnection pc, byte[] runtimeKey, byte[] httpKey,
+            Func<byte[], byte[]> runtimeRekey, Func<byte[], byte[]> httpRekey)
         {
             _owner = owner;
             _sessionId = sessionId;
             _pc = pc;
             _runtimeKey = runtimeKey;
             _httpKey = httpKey;
+            _runtimeRekey = runtimeRekey;
+            _httpRekey = httpRekey;
         }
 
         public void Wire()
@@ -415,7 +422,7 @@ public sealed class RtcSessionManager
 
             var transport = new RtcDataChannelTransport(dc);
             var relayWs = new RelayWebSocket(
-                transport, _runtimeKey, RelayCrypto.DirHostToClient, RelayCrypto.DirClientToHost);
+                transport, _runtimeKey, RelayCrypto.DirHostToClient, RelayCrypto.DirClientToHost, _runtimeRekey);
             transport.OnAborted += () => _owner.CloseSession(_sessionId, this);
             dc.onmessage += (_, proto, data) =>
             {
@@ -434,7 +441,7 @@ public sealed class RtcSessionManager
                     CloseDuplicateChannel(dc, "http");
                     return;
                 }
-                _httpChannel = new RtcHttpChannel(_owner._httpDispatcher, dc, _httpKey, _sessionId, _owner._log, _cts.Token);
+                _httpChannel = new RtcHttpChannel(_owner._httpDispatcher, dc, _httpKey, _sessionId, _owner._log, _cts.Token, _httpRekey);
             }
         }
 

@@ -104,13 +104,13 @@ public class NexusServiceCollectionExtensionsTests
         var sp = Build();
         Assert.NotNull(sp!.GetRequiredService<DeviceManager>());
         var handlers = sp.GetServices<IDeviceHandler>().ToArray();
-        // CNVS, QSeries (Q60+Q80 collapsed), Y70, Keeb, FanHub, AW5, NP50, SmartHub, LianLi,
-        // LianLiWireless, LianLiTl, Galahad2, CorsairLink, CorsairLinkLcd, Strimer, Tryx,
-        // StreamDeck, Kraken, plus one JpegPanelHandler per JpegPanelModel (Galahad II LCD,
-        // Corsair XC7, Corsair Elite Capellix, ID-Cooling FX-LCD).
+        // CNVS, QSeries (Q60+Q80 collapsed), Y70, Keeb, IbpKeyboard, IbpMouse, FanHub, AW5,
+        // NP50, SmartHub, LianLi, LianLiWireless, LianLiTl, Galahad2, CorsairLink,
+        // CorsairLinkLcd, Strimer, Tryx, StreamDeck, Kraken, plus one JpegPanelHandler per
+        // JpegPanelModel (Galahad II LCD, Corsair XC7, Corsair Elite Capellix, ID-Cooling FX-LCD).
         // ... plus one BulkPanelHandler per bulk-pipe driver (Thermalright, Ryujin, Screen 8.8).
         Assert.Equal(
-            18 + Nexus.Service.Peripherals.JpegPanels.JpegPanelModel.All.Length + 3,
+            20 + Nexus.Service.Peripherals.JpegPanels.JpegPanelModel.All.Length + 3,
             handlers.Length);
     }
 
@@ -139,5 +139,24 @@ public class NexusServiceCollectionExtensionsTests
         var a = sp!.GetRequiredService<MultiplexHub>();
         var b = sp.GetRequiredService<MultiplexHub>();
         Assert.Same(a, b);
+    }
+
+    [Fact]
+    public void Monitoring_broadcaster_gets_both_halves_of_the_fan_header_rename_join()
+    {
+        // Optional constructor parameters: an unregistered dependency binds to null and
+        // turns the rename off with nothing failing anywhere else.
+        var sp = Build();
+        Assert.True(sp!.GetRequiredService<Nexus.Service.Monitoring.MonitoringBroadcaster>().FanHeaderRenamesWired);
+    }
+
+    [Fact]
+    public void Stream_deck_worker_gets_the_fan_provider_the_rename_join_needs()
+    {
+        // Constructed by an explicit factory, so a missed argument there disables renamed
+        // fan names on physical keys while every other deck test stays green.
+        var sp = Build();
+        Assert.True(sp!.GetRequiredService<Nexus.Service.Peripherals.StreamDeck.StreamDeckConnectionWorker>()
+            .FanHeaderRenamesWired);
     }
 }

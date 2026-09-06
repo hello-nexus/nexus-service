@@ -85,6 +85,34 @@ public class OpenRgbExcludedCardsTests
     }
 
     [Fact]
+    public void The_card_shows_the_device_name_not_the_detector_that_was_denylisted()
+    {
+        var settings = new NexusSettings();
+        settings.Devices.UncontrolledLightingDevices.Add("openrgb-l-I2C__i801__address_0x18");
+        settings.Devices.OpenRgbDetectorExclusions["openrgb-l-I2C__i801__address_0x18"] = new OpenRgbDetectorExclusion
+        {
+            DetectorName = "Corsair DRAM",
+            DeviceName = "Corsair Vengeance RGB DDR5",
+            Vendor = "Corsair",
+            Location = "I2C: i801, address 0x18",
+            LedCount = 10,
+            Type = 10,
+        };
+
+        var card = Assert.Single(OpenRgbZoneSupport.BuildCards(System.Array.Empty<RgbDevice>(), settings, isInit: true).Devices);
+
+        Assert.Equal("Corsair Vengeance RGB DDR5", card.Name);
+    }
+
+    [Fact]
+    public void A_snapshot_without_a_device_name_still_shows_its_detector_name()
+    {
+        var card = Assert.Single(OpenRgbZoneSupport.BuildCards(System.Array.Empty<RgbDevice>(), ExcludedSettings(), isInit: true).Devices);
+
+        Assert.Equal("Corsair K70 RGB", card.Name);
+    }
+
+    [Fact]
     public void Unrelated_devices_keep_their_cards_alongside_the_snapshot()
     {
         var mouse = new RgbDevice

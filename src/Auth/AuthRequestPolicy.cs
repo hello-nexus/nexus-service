@@ -76,6 +76,31 @@ public static class AuthRequestPolicy
         return raw.Contains('\\') || TargetsRootShellDocument(ctx.Request.Path);
     }
 
+    /// <summary>
+    /// True when the Host header names this machine directly: an IP literal,
+    /// <c>localhost</c>, or the machine name. A DNS name that happens to resolve
+    /// to loopback (a browser page whose domain was rebound to 127.0.0.1) fails
+    /// this, which is what lets <c>/pair</c> and the desktop-token lane require
+    /// it on top of the loopback remote-address check. Every legitimate local
+    /// client (the desktop shell, the hosted web app, the kiosks, the overlay)
+    /// addresses the service as localhost or 127.0.0.1.
+    /// </summary>
+    public static bool IsLocalHostHeader(HttpContext ctx)
+    {
+        var host = ctx.Request.Host;
+        if (!host.HasValue)
+            return false;
+        var name = host.Host;
+        if (name.Length == 0)
+            return false;
+        if (name.Equals("localhost", StringComparison.OrdinalIgnoreCase))
+            return true;
+        if (name.Equals(Environment.MachineName, StringComparison.OrdinalIgnoreCase))
+            return true;
+        var literal = name.Length > 2 && name[0] == '[' && name[^1] == ']' ? name[1..^1] : name;
+        return IPAddress.TryParse(literal, out _);
+    }
+
     public static bool IsSpaShellFallbackAllowed(HttpContext ctx)
     {
         if (!IsGet(ctx.Request.Method))

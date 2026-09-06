@@ -74,6 +74,21 @@ public static class PanelTopics
     /// without polling.
     /// </summary>
     public const string Focus = "focus";
+    /// <summary>
+    /// The active cloud account changed (login, logout, switch, or a recovery
+    /// approved by the service's own poll loop while no page was watching).
+    /// Subscribers refetch GET /cloud/accounts.
+    /// </summary>
+    public const string CloudAccounts = "cloud/accounts";
+
+    public static void BroadcastCloudAccounts(MultiplexHub hub)
+    {
+        if (!hub.TopicHasSubscribers(CloudAccounts))
+            return;
+        var frame = new Models.Cloud.CloudAccountsChangedFrame { Revision = Now() };
+        var env = WsEnvelope.Build(CloudAccounts, frame, AppJsonContext.Default.CloudAccountsChangedFrame);
+        _ = hub.BroadcastTopicAsync(CloudAccounts, env);
+    }
 
     public static void BroadcastFocus(MultiplexHub hub)
     {
@@ -334,6 +349,27 @@ public static class PanelTopics
         var env = WsEnvelope.Build(AiAssistant, frame, AppJsonContext.Default.AssistantProgressFrame);
         _ = hub.BroadcastTopicAsync(AiAssistant, env);
     }
+
+    /// <summary>
+    /// One recorded 1Hz metrics sample, pushed by MetricsSampler through
+    /// MonitoringHistoryTailBroadcaster. Same MetricsHistoryResponse shape as
+    /// GET /monitoring/history's tail poll, decimated to one point per series.
+    /// </summary>
+    public const string MonitoringHistoryTail = "monitoring/history-tail";
+
+    /// <summary>
+    /// A monitoring timeline event was appended (USB attach/detach, app-open,
+    /// UAC escalation, or a custom POST /monitoring/events entry). Carries one
+    /// MonitoringEventDto, the same shape GET /monitoring/events returns.
+    /// </summary>
+    public const string MonitoringEvents = "monitoring/events";
+
+    /// <summary>
+    /// A privacy-capability access session was opened or closed. Carries one
+    /// PrivacySessionWire, the same shape an entry in GET /monitoring/privacy's
+    /// sessions array has.
+    /// </summary>
+    public const string MonitoringPrivacy = "monitoring/privacy";
 
     private static long Now() => DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
 }

@@ -188,13 +188,13 @@ var httpsPort = servicePort == 9400 ? 9443 : servicePort + 443;
 // the watcher's escalation reboot an attributable liveness signal - on the
 // main port, panel traffic is indistinguishable from the desktop dashboard
 // (both 127.0.0.1), so an open dashboard masked a stranded panel
-// indefinitely. Windows-only,
-// matching the Q-series host stack. A taken port deactivates the monitor
+// indefinitely. Windows and Linux, matching the QSeriesPortWatcher
+// registration. A taken port deactivates the monitor
 // (watcher falls back to the legacy record-based gate) instead of failing the
 // Kestrel bind and taking the service down.
 var panelTunnelPort = servicePort + 1;
 var panelTunnelMonitor = new Nexus.Service.Panel.PanelTunnelMonitor(
-    OperatingSystem.IsWindows() && !testHost && IsLoopbackPortFree(panelTunnelPort) ? panelTunnelPort : null);
+    (OperatingSystem.IsWindows() || OperatingSystem.IsLinux()) && !testHost && IsLoopbackPortFree(panelTunnelPort) ? panelTunnelPort : null);
 
 static bool IsLoopbackPortFree(int port)
 {
@@ -406,8 +406,11 @@ builder.Services.AddNexusCloud();
 Nexus.Service.Lifecycle.BootTimer.Mark("DI: AddNexusCloud");
 builder.Services.AddNexusMcp();
 Nexus.Service.Lifecycle.BootTimer.Mark("DI: AddNexusMcp");
+// Local assistant (Ollama download + model pulls): dev-tools builds only.
+#if DEV_TOOLS
 builder.Services.AddNexusAssistant();
 Nexus.Service.Lifecycle.BootTimer.Mark("DI: AddNexusAssistant");
+#endif
 
 // mDNS / Bonjour advertiser for the iOS companion app's Wi-Fi discovery.
 // Reads HttpsPort + SpkiFingerprint + MachineName off PanelPhonePairingService
@@ -594,6 +597,7 @@ app.MapGalleryEndpoints();
 app.MapTransferEndpoints();
 app.MapProfileEndpoints();
 app.MapPanelEndpoints();
+app.MapPanelDeckEndpoints();
 app.MapStreamedPanelEndpoints();
 app.MapOverlayEndpoints();
 app.MapWeatherEndpoints();
@@ -607,7 +611,9 @@ app.MapSlv3LcdEndpoints();
 app.MapUpdateEndpoints();
 app.MapCloudEndpoints();
 app.MapAiEndpoints();
+#if DEV_TOOLS
 app.MapAiAssistantEndpoints();
+#endif
 app.MapWebSocketEndpoints();
 app.MapRtcEndpoints();
 Nexus.Service.Lifecycle.BootTimer.Mark("after route mapping");
@@ -796,7 +802,9 @@ static void FastServiceShutdown(WebApplication app)
         }),
         Task.Run(() => { try { sp.GetService<Nexus.Service.Peripherals.StreamDeck.StreamDeckConnectionWorker>()?.ResetConnectedSurfacesForShutdown(); } catch { } }),
         Task.Run(() => { try { sp.GetService<Nexus.Service.Common.ExternalTools.ExternalToolManager>()?.TerminateAll(); } catch { } }),
+#if DEV_TOOLS
         Task.Run(() => { try { sp.GetService<Nexus.Service.Mcp.Assistant.OllamaRuntimeManager>()?.StopChildForShutdown(); } catch { } }),
+#endif
         Task.Run(() => FastWindowsUiTeardown(sp)),
     }, millisecondsTimeout: 1500);
     Console.Error.WriteLine($"[shutdown] fast teardown {(done ? "complete" : "TIMED OUT")} in {sw.ElapsedMilliseconds}ms");

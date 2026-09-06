@@ -13,8 +13,10 @@ namespace Nexus.Service.Monitoring.History;
 /// <summary>
 /// Production IMetricsSource: CPU/memory from IPerformanceProvider, network
 /// byte rates from NetworkRateReader, disk byte rates from DiskRateReader,
-/// CPU temperature via SummarySensors, per-GPU load/temperature from
-/// ISensorProvider.GetGpus, per-channel fan RPM/duty from
+/// CPU temperature and per-GPU load/temperature via FindSensor over
+/// ISensorProvider.GetCpuSensors/GetGpus (also the picker
+/// Nexus.Service.Mcp.History.HistoryIdMapping reuses for get_sensors'
+/// historyId field), per-channel fan RPM/duty from
 /// IFanControlProvider.GetFanChannels, and per-drive/per-DIMM temperature
 /// from ISmartHealthSource / ISensorProvider.GetMemorySensors - the same
 /// always-on channel state CurveEngine reads at its own 1Hz tick (fans) or
@@ -92,7 +94,7 @@ public sealed class SystemMetricsSource : IMetricsSource
         double? cpuTemp = null;
         try
         {
-            cpuTemp = SummarySensors.Value(_sensors, SummarySensorKind.CpuTemp);
+            cpuTemp = FindSensor(_sensors.GetCpuSensors(), "Temperature", "Package")?.Value;
         }
         catch (Exception ex)
         {
@@ -175,8 +177,21 @@ public sealed class SystemMetricsSource : IMetricsSource
             }
         }
 
-        var ramIndex = 0;
-        foreach (var sensor in _sensors.GetMemorySensors())
+        var ramSensors = FindRamTempSensors(_sensors.GetMemorySensors());
+        for (var i = 0; i < ramSensors.Count; i++)
+        {
+            result.Add(new ComponentTempReading($"ram:{i}", "ram", ramSensors[i].Name, ramSensors[i].Value));
+        }
+
+        return result;
+    }
+
+    // Shared with Nexus.Service.Mcp.History.HistoryIdMapping.RamSensorIds so its
+    // temp.ram:<index> mapping never drifts from what this sampler records.
+    internal static IReadOnlyList<HardwareSensor> FindRamTempSensors(IReadOnlyList<HardwareSensor> memorySensors)
+    {
+        var result = new List<HardwareSensor>();
+        foreach (var sensor in memorySensors)
         {
             if (!string.Equals(sensor.Type, "Temperature", StringComparison.OrdinalIgnoreCase))
             {
@@ -187,10 +202,8 @@ public sealed class SystemMetricsSource : IMetricsSource
             {
                 continue;
             }
-            result.Add(new ComponentTempReading($"ram:{ramIndex}", "ram", sensor.Name, sensor.Value));
-            ramIndex++;
+            result.Add(sensor);
         }
-
         return result;
     }
 
@@ -205,8 +218,8 @@ public sealed class SystemMetricsSource : IMetricsSource
         var result = new List<GpuReading>(readouts.Count);
         foreach (var g in readouts)
         {
-            var load = FindSensorValue(g.Sensors, "Load", "Core");
-            var temp = FindSensorValue(g.Sensors, "Temperature", "Core");
+            var load = FindSensor(g.Sensors, "Load", "Core")?.Value;
+            var temp = FindSensor(g.Sensors, "Temperature", "Core")?.Value;
             result.Add(new GpuReading(MetricsHistory.SanitizeId(g.Id), g.Name, g.AdapterLuid, load, temp));
         }
         return result;
@@ -229,10 +242,8 @@ public sealed class SystemMetricsSource : IMetricsSource
         return result;
     }
 
-    // Prefers a sensor whose name mentions nameContains (the GPU core reading,
-    // not a memory/hotspot/junction reading of the same type); falls back to
-    // the first sensor of the requested type if no such match exists.
-    private static double? FindSensorValue(IReadOnlyList<HardwareSensor> sensors, string type, string nameContains)
+    // Nexus.Service.Mcp.History.HistoryIdMapping reuses this exact match order so get_sensors' historyId stays in sync with sampling.
+    internal static HardwareSensor? FindSensor(IReadOnlyList<HardwareSensor> sensors, string type, string nameContains)
     {
         HardwareSensor? fallback = null;
         foreach (var s in sensors)
@@ -244,9 +255,9 @@ public sealed class SystemMetricsSource : IMetricsSource
             fallback ??= s;
             if (s.Name.Contains(nameContains, StringComparison.OrdinalIgnoreCase))
             {
-                return s.Value;
+                return s;
             }
         }
-        return fallback?.Value;
+        return fallback;
     }
 }

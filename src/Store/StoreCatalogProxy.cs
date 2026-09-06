@@ -1,4 +1,6 @@
 using System;
+using System.Collections.Generic;
+using System.IO;
 using System.Net.Http;
 using System.Threading;
 using System.Threading.Tasks;
@@ -66,20 +68,41 @@ public sealed class StoreCatalogProxy
         return string.IsNullOrWhiteSpace(configured) ? StoreInstaller.DefaultAssetsBase : configured.TrimEnd('/');
     }
 
+    /// <summary>Store media is screenshots and icons; anything else the bucket
+    /// hands back is refused rather than relayed onto the dashboard origin.</summary>
+    private static readonly HashSet<string> MediaContentTypes = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "image/png", "image/jpeg", "image/webp", "image/gif", "image/x-icon", "image/svg+xml",
+    };
+
+    public const int MaxMediaBytes = 8 * 1024 * 1024;
+
     /// <summary>
     /// Streams one media object. The path is confined to the assets host's
-    /// apps/ prefix, so this can never be turned into a general fetch proxy.
+    /// apps/ prefix, so this can never be turned into a general fetch proxy;
+    /// the reply is confined to image types under <see cref="MaxMediaBytes"/>,
+    /// so it can never render as a page on the dashboard origin either.
     /// </summary>
     public async Task<(byte[] bytes, string contentType)?> MediaAsync(string path, CancellationToken ct)
     {
         if (string.IsNullOrWhiteSpace(path) || path.Contains("..", StringComparison.Ordinal)) return null;
         try
         {
-            using var res = await _http.GetAsync($"{AssetsBase()}/apps/{path}", ct).ConfigureAwait(false);
+            using var res = await _http.GetAsync($"{AssetsBase()}/apps/{path}", HttpCompletionOption.ResponseHeadersRead, ct).ConfigureAwait(false);
             if (!res.IsSuccessStatusCode) return null;
-            var bytes = await res.Content.ReadAsByteArrayAsync(ct).ConfigureAwait(false);
-            var type = res.Content.Headers.ContentType?.MediaType ?? "application/octet-stream";
-            return (bytes, type);
+            var type = res.Content.Headers.ContentType?.MediaType ?? "";
+            if (!MediaContentTypes.Contains(type)) return null;
+            if (res.Content.Headers.ContentLength is > MaxMediaBytes) return null;
+            await using var stream = await res.Content.ReadAsStreamAsync(ct).ConfigureAwait(false);
+            using var buffer = new MemoryStream();
+            var chunk = new byte[64 * 1024];
+            int read;
+            while ((read = await stream.ReadAsync(chunk, ct).ConfigureAwait(false)) > 0)
+            {
+                if (buffer.Length + read > MaxMediaBytes) return null;
+                buffer.Write(chunk, 0, read);
+            }
+            return (buffer.ToArray(), type.ToLowerInvariant());
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {

@@ -43,6 +43,7 @@ public sealed class MetricsSampler : IHostedService, IDisposable
     private readonly IFpsProvider _fps;
     private readonly IScreenTimeProvider _screenTime;
     private readonly IConfigStore _config;
+    private readonly IMetricsSampleSink? _sink;
 
     private readonly CancellationTokenSource _stopCts = new();
     private Thread? _thread;
@@ -51,6 +52,7 @@ public sealed class MetricsSampler : IHostedService, IDisposable
     private int _tickCount;
     private DateTime _lastPruneUtc = DateTime.MinValue;
     private DateTime _lastWarnUtc = DateTime.MinValue;
+    private DateTime _lastSinkWarnUtc = DateTime.MinValue;
     // Tracks the Monitoring flag's previous tick so the disabled edge flushes
     // the pre-toggle tail exactly once instead of on every later tick.
     private bool _monitoringWasEnabled = true;
@@ -64,7 +66,7 @@ public sealed class MetricsSampler : IHostedService, IDisposable
         IMetricsHistoryStore store,
         IAppUsageSource appSource, AppSampleBuffer appBuffer, IAppUsageHistoryStore appStore,
         IFpsProvider fps, IScreenTimeProvider screenTime, IConfigStore config,
-        FeatureGates? gates = null)
+        FeatureGates? gates = null, IMetricsSampleSink? sink = null)
     {
         _sensors = sensors;
         _source = source;
@@ -77,6 +79,7 @@ public sealed class MetricsSampler : IHostedService, IDisposable
         _screenTime = screenTime;
         _config = config;
         _gates = gates ?? FeatureGates.AllEnabled;
+        _sink = sink;
     }
 
     // Test seam: set at the top of Run() from inside the dedicated thread, so
@@ -109,6 +112,11 @@ public sealed class MetricsSampler : IHostedService, IDisposable
 
     public void Dispose()
     {
+        // The host disposes this twice on shutdown (hosted-service teardown,
+        // then the provider); a second Cancel on the disposed source throws
+        // ObjectDisposedException and takes the process down mid-stop.
+        if (_disposed) return;
+        _disposed = true;
         // Cancel + Join unconditionally rather than gating on
         // IsCancellationRequested: if StopAsync's own Join already timed out
         // (a slow flush still in flight), this is a second bounded wait
@@ -118,6 +126,8 @@ public sealed class MetricsSampler : IHostedService, IDisposable
         _thread?.Join(StopJoinTimeout);
         _stopCts.Dispose();
     }
+
+    private bool _disposed;
 
     private void Run()
     {
@@ -230,6 +240,21 @@ public sealed class MetricsSampler : IHostedService, IDisposable
                 sample = sample with { Fps = fps };
         }
         _buffer.Append(sample);
+        try
+        {
+            _sink?.OnSample(sample, nowUtc);
+        }
+        catch (Exception ex)
+        {
+            // A throwing sink must not skip _tickCount++ below: that count
+            // drives the app-sample interval and the periodic flush, so a
+            // swallowed exception here would leave the buffer growing unbounded.
+            if (nowUtc - _lastSinkWarnUtc >= WarnThrottle)
+            {
+                _lastSinkWarnUtc = nowUtc;
+                ServiceLog.Warn($"[metrics-sampler] history-tail sink failed: {ex.Message}");
+            }
+        }
         _tickCount++;
 
         if (_tickCount % MetricsHistory.AppSampleIntervalSeconds == 0)

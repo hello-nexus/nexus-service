@@ -60,7 +60,10 @@ internal sealed class StubSensorProvider : ISensorProvider
         new Dictionary<string, StorageComponent>();
     public IReadOnlyList<string> GetStoragePartitions() => Array.Empty<string>();
     public IReadOnlyList<StorageDriveInfo> GetStorageInfo() => Array.Empty<StorageDriveInfo>();
-    public IReadOnlyList<HardwareSensor> GetMotherboardSensors() => Array.Empty<HardwareSensor>();
+    public List<HardwareSensor> MotherboardSensors { get; init; } = new();
+    // Fresh instances per call, matching LibreHardwareSensorProvider.
+    public IReadOnlyList<HardwareSensor> GetMotherboardSensors() =>
+        MotherboardSensors.Select(s => s.Clone()).ToList();
     public string GetMotherboardModel() => "test-mobo";
     public SensorExtras GetSensorExtras()
     {
@@ -231,7 +234,8 @@ public class MonitoringBroadcastTests
         TrackingFpsProvider? fps = null,
         TimeProvider? timeProvider = null,
         ProcessMonitor? processes = null,
-        Nexus.Service.Cooling.IFanControlProvider? fans = null)
+        Nexus.Service.Cooling.IFanControlProvider? fans = null,
+        Nexus.Service.Persistence.IConfigStore? config = null)
     {
         // Stub providers for every dependency so Tick can run end-to-end
         // without touching hardware.
@@ -244,8 +248,8 @@ public class MonitoringBroadcastTests
         var gpuProcesses = new GpuProcessMonitor(hub, new InMemoryConfigStore());
         var volume = new StubVolumeProvider();
         return timeProvider is null
-            ? new MonitoringBroadcaster(sensors, processes, gpuProcesses, network, performance, screenTime, volume, fps, hub, fans)
-            : new MonitoringBroadcaster(sensors, processes, gpuProcesses, network, performance, screenTime, volume, fps, hub, timeProvider, fans);
+            ? new MonitoringBroadcaster(sensors, processes, gpuProcesses, network, performance, screenTime, volume, fps, hub, fans, config)
+            : new MonitoringBroadcaster(sensors, processes, gpuProcesses, network, performance, screenTime, volume, fps, hub, timeProvider, fans, config);
     }
 
     [Fact]
@@ -449,6 +453,120 @@ public class MonitoringBroadcastTests
         // derivation must reuse that data instead of reading them again.
         Assert.Equal(1, sensors.CpuSensorReads);
         Assert.Equal(1, sensors.MemorySensorReads);
+    }
+
+    /// <summary>Motherboard fan channels keyed the way LibreHardwareMonitor keys them: the channel id is the PWM control sensor, the tach is a separate id.</summary>
+    private sealed class StubMotherboardFanProvider : Nexus.Service.Cooling.IFanControlProvider
+    {
+        public IReadOnlyList<Nexus.Service.Models.Cooling.FanChannel> GetFanChannels() => new[]
+        {
+            new Nexus.Service.Models.Cooling.FanChannel
+            {
+                Id = "/lpc/nct6797d/control/0", Name = "Fan #1", RpmSensorId = "/lpc/nct6797d/fan/0",
+            },
+            new Nexus.Service.Models.Cooling.FanChannel
+            {
+                Id = "/lpc/nct6797d/control/1", Name = "Fan #2", RpmSensorId = "/lpc/nct6797d/fan/1",
+            },
+        };
+
+        public IReadOnlyList<Nexus.Service.Models.Cooling.TemperatureSource> GetTemperatureSources() =>
+            System.Array.Empty<Nexus.Service.Models.Cooling.TemperatureSource>();
+        public IReadOnlyList<Nexus.Service.Models.Cooling.TemperatureSource> GetDeviceTemperatureSources() =>
+            System.Array.Empty<Nexus.Service.Models.Cooling.TemperatureSource>();
+        public float? ReadTemperature(string sensorId) => null;
+        public int SetFanSpeed(string channelId, int dutyPercent) => dutyPercent;
+        public void DriveFanSpeed(string channelId, int dutyPercent) { }
+        public void ReleaseFan(string channelId) { }
+        public void ReleaseAll() { }
+        public Task<IReadOnlyList<Nexus.Service.Models.Cooling.FanCalibration>> CalibrateAsync(
+            IReadOnlyList<string> fanIds,
+            IProgress<Nexus.Service.Models.Cooling.FanCalibrationProgress> progress,
+            CancellationToken ct)
+            => Task.FromResult<IReadOnlyList<Nexus.Service.Models.Cooling.FanCalibration>>(System.Array.Empty<Nexus.Service.Models.Cooling.FanCalibration>());
+    }
+
+    private static StubSensorProvider MotherboardFanSensors() => new()
+    {
+        MotherboardSensors =
+        {
+            new HardwareSensor
+            {
+                Id = "/lpc/nct6797d/fan/0", Name = "Fan #1", Type = "Fan", Value = 900,
+                Units = "RPM", Formatted = "900 RPM",
+                Parent = new SensorParent { Id = "motherboard", Name = "test-mobo" },
+            },
+            new HardwareSensor
+            {
+                Id = "/lpc/nct6797d/fan/1", Name = "Fan #2", Type = "Fan", Value = 1200,
+                Units = "RPM", Formatted = "1200 RPM",
+                Parent = new SensorParent { Id = "motherboard", Name = "test-mobo" },
+            },
+        },
+    };
+
+    private static List<string> BroadcastMotherboardSensorNames(byte[] payload)
+    {
+        using var doc = System.Text.Json.JsonDocument.Parse(payload);
+        return doc.RootElement.GetProperty("d").GetProperty("sensors").EnumerateArray()
+            .Select(s => s.GetProperty("name").GetString() ?? "").ToList();
+    }
+
+    [Fact]
+    public async Task Tick_MotherboardTopic_CarriesRenamedFanHeadersOntoTheirTachSensors()
+    {
+        var hub = new MultiplexHub();
+        var config = new InMemoryConfigStore();
+        config.Update(s => s.Cooling.FanNames["/lpc/nct6797d/control/0"] = "Radiator Fans");
+        var broadcaster = BuildBroadcaster(
+            hub, MotherboardFanSensors(), fans: new StubMotherboardFanProvider(), config: config);
+        var captured = new List<(string Topic, byte[] Payload)>();
+        hub.OnBroadcastForTest += (topic, payload) => captured.Add((topic, payload.ToArray()));
+
+        using var motherboard = hub.AddTestSubscription("motherboard");
+        await broadcaster.Tick(CancellationToken.None);
+
+        var payload = captured.First(c => c.Topic == "motherboard");
+        Assert.Equal(new[] { "Radiator Fans", "Fan #2" }, BroadcastMotherboardSensorNames(payload.Payload));
+    }
+
+    [Fact]
+    public async Task Tick_MotherboardTopic_KeepsHardwareNamesWhenNothingIsRenamed()
+    {
+        var hub = new MultiplexHub();
+        var broadcaster = BuildBroadcaster(
+            hub, MotherboardFanSensors(), fans: new StubMotherboardFanProvider(), config: new InMemoryConfigStore());
+        var captured = new List<(string Topic, byte[] Payload)>();
+        hub.OnBroadcastForTest += (topic, payload) => captured.Add((topic, payload.ToArray()));
+
+        using var motherboard = hub.AddTestSubscription("motherboard");
+        await broadcaster.Tick(CancellationToken.None);
+
+        var payload = captured.First(c => c.Topic == "motherboard");
+        Assert.Equal(new[] { "Fan #1", "Fan #2" }, BroadcastMotherboardSensorNames(payload.Payload));
+    }
+
+    [Fact]
+    public async Task Tick_MotherboardTopic_RenameDoesNotPersistIntoTheNextTick()
+    {
+        // Each tick rebuilds the map from settings, so clearing a rename takes effect on the
+        // next broadcast rather than sticking until a restart.
+        var hub = new MultiplexHub();
+        var config = new InMemoryConfigStore();
+        config.Update(s => s.Cooling.FanNames["/lpc/nct6797d/control/0"] = "Radiator Fans");
+        var broadcaster = BuildBroadcaster(
+            hub, MotherboardFanSensors(), fans: new StubMotherboardFanProvider(), config: config);
+        var captured = new List<(string Topic, byte[] Payload)>();
+        hub.OnBroadcastForTest += (topic, payload) => captured.Add((topic, payload.ToArray()));
+
+        using var motherboard = hub.AddTestSubscription("motherboard");
+        await broadcaster.Tick(CancellationToken.None);
+        config.Update(s => s.Cooling.FanNames.Clear());
+        await broadcaster.Tick(CancellationToken.None);
+
+        var payloads = captured.Where(c => c.Topic == "motherboard").ToList();
+        Assert.Equal(new[] { "Radiator Fans", "Fan #2" }, BroadcastMotherboardSensorNames(payloads[0].Payload));
+        Assert.Equal(new[] { "Fan #1", "Fan #2" }, BroadcastMotherboardSensorNames(payloads[1].Payload));
     }
 
     [Fact]

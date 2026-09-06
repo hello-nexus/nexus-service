@@ -221,6 +221,86 @@ public sealed class AuthMiddlewareIntegrationTests : IClassFixture<NexusAppFacto
         Assert.Equal(StatusCodes.Status200OK, ctx.Response.StatusCode);
     }
 
+    // ── Host header: a DNS-rebound browser page is a loopback remote too ──────
+
+    [Fact]
+    public async Task Pair_from_loopback_with_a_foreign_host_header_is_forbidden()
+    {
+        var ctx = await _factory.Server.SendAsync(c =>
+        {
+            c.Request.Method = "GET";
+            c.Request.Path = "/pair";
+            c.Request.Host = new HostString("evil.example", 9400);
+            c.Connection.RemoteIpAddress = IPAddress.Loopback;
+        });
+
+        Assert.Equal(StatusCodes.Status403Forbidden, ctx.Response.StatusCode);
+    }
+
+    [Fact]
+    public async Task Desktop_token_with_a_foreign_host_header_is_rejected()
+    {
+        var ctx = await _factory.Server.SendAsync(c =>
+        {
+            c.Request.Method = "GET";
+            c.Request.Path = "/defaults";
+            c.Request.Headers.Authorization = "Bearer " + Token;
+            c.Request.Host = new HostString("evil.example", 9400);
+            c.Connection.RemoteIpAddress = IPAddress.Loopback;
+        });
+
+        Assert.Equal(StatusCodes.Status401Unauthorized, ctx.Response.StatusCode);
+    }
+
+    [Fact]
+    public async Task Desktop_token_with_an_ip_literal_host_header_is_accepted()
+    {
+        var ctx = await _factory.Server.SendAsync(c =>
+        {
+            c.Request.Method = "GET";
+            c.Request.Path = "/defaults";
+            c.Request.Headers.Authorization = "Bearer " + Token;
+            c.Request.Host = new HostString("127.0.0.1", 9400);
+            c.Connection.RemoteIpAddress = IPAddress.Loopback;
+        });
+
+        Assert.Equal(StatusCodes.Status200OK, ctx.Response.StatusCode);
+    }
+
+    // ── A static-asset suffix never opens a mutation or a LocalhostOnly route ──
+
+    [Fact]
+    public async Task Static_suffix_on_a_mutation_still_requires_a_token()
+    {
+        // POST /streamdeck/decks/{serial} upserts a record for any serial; a
+        // ".json" serial used to ride the static-asset lane past every gate.
+        var ctx = await _factory.Server.SendAsync(c =>
+        {
+            c.Request.Method = "POST";
+            c.Request.Path = "/streamdeck/decks/x.json";
+            c.Request.ContentType = "application/json";
+            c.Request.Body = new MemoryStream(System.Text.Encoding.UTF8.GetBytes("{}"));
+            c.Connection.RemoteIpAddress = IPAddress.Loopback;
+        });
+
+        Assert.Equal(StatusCodes.Status401Unauthorized, ctx.Response.StatusCode);
+    }
+
+    [Fact]
+    public async Task Static_suffix_on_a_localhost_only_route_from_lan_is_404()
+    {
+        var ctx = await _factory.Server.SendAsync(c =>
+        {
+            c.Request.Method = "POST";
+            c.Request.Path = "/streamdeck/decks/x.json";
+            c.Request.ContentType = "application/json";
+            c.Request.Body = new MemoryStream(System.Text.Encoding.UTF8.GetBytes("{}"));
+            c.Connection.RemoteIpAddress = IPAddress.Parse("192.168.1.50");
+        });
+
+        Assert.Equal(StatusCodes.Status404NotFound, ctx.Response.StatusCode);
+    }
+
     // ── Dashboard shell / index.html not served off the loopback interface ────
 
     [Theory]

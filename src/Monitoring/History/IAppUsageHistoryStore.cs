@@ -1,3 +1,4 @@
+using System;
 using System.Collections.Generic;
 
 namespace Nexus.Service.Monitoring.History;
@@ -11,6 +12,13 @@ public sealed record AppWindowStat(string Name, double Avg, double Max);
 /// feeding MetricsDecimation for that app's sparkline points. VramMb is
 /// populated only for gpu metrics.</summary>
 public sealed record AppRawPoint(long TsSec, double? Value, double? VramMb);
+
+/// <summary>QuerySampledTicks and QueryTopApps answered together - see
+/// IAppUsageHistoryStore.QueryWindow.</summary>
+public sealed record AppUsageWindow(IReadOnlyList<long> SampledTicks, IReadOnlyList<AppWindowStat> TopApps)
+{
+    public static readonly AppUsageWindow Empty = new(Array.Empty<long>(), Array.Empty<AppWindowStat>());
+}
 
 /// <summary>
 /// Persistent store for per-app usage history. MetricsSampler is the only
@@ -47,4 +55,25 @@ public interface IAppUsageHistoryStore
     /// metric, or null when the app has never been recorded. Retention
     /// pruning can push this later over time as older rows age out.</summary>
     long? QueryFirstSeen(string appName);
+
+    /// <summary>QuerySampledTicks and QueryTopApps for the same window in
+    /// one call; a store that scans files answers both from a single pass.
+    /// Same results as the two calls made separately.</summary>
+    AppUsageWindow QueryWindow(string metric, long fromSec, long toSec, int maxApps) =>
+        new(QuerySampledTicks(metric, fromSec, toSec), QueryTopApps(metric, fromSec, toSec, maxApps));
+
+    /// <summary>QueryAppSeries for every name in appNames, keyed
+    /// case-insensitively by the requested name; a store that scans files
+    /// answers all of them from a single pass. Same per-name results as the
+    /// individual calls.</summary>
+    IReadOnlyDictionary<string, IReadOnlyList<AppRawPoint>> QueryAppSeriesBatch(
+        string metric, IReadOnlyCollection<string> appNames, long fromSec, long toSec)
+    {
+        var result = new Dictionary<string, IReadOnlyList<AppRawPoint>>(appNames.Count, StringComparer.OrdinalIgnoreCase);
+        foreach (var name in appNames)
+        {
+            result[name] = QueryAppSeries(metric, name, fromSec, toSec);
+        }
+        return result;
+    }
 }

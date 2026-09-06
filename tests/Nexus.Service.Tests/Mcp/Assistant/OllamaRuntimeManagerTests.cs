@@ -44,6 +44,16 @@ public sealed class OllamaRuntimeManagerTests : IDisposable
 
     private TestableConfigStore NewStore(string dataDir) => new(Path.Combine(dataDir, "settings.json"));
 
+    /// <summary>A store with the system-Ollama opt-in on. Off by default: a
+    /// LocalSystem service must not hand every prompt and tool call to whatever
+    /// local process bound the default port first.</summary>
+    private TestableConfigStore OptedInStore(string dataDir)
+    {
+        var store = NewStore(dataDir);
+        store.Update(s => s.AiIntegration.UseSystemOllama = true);
+        return store;
+    }
+
     [Fact]
     public async Task InstallRuntimeAsync_adopts_a_detected_system_ollama_without_any_download()
     {
@@ -52,7 +62,7 @@ public sealed class OllamaRuntimeManagerTests : IDisposable
         var processHost = new FakeProcessHost();
         var manager = new OllamaRuntimeManager(
             new HttpClient(new NeverCalledHandler()), processHost, _ => client,
-            NewStore(dataDir), new MultiplexHub(), dataDir);
+            OptedInStore(dataDir), new MultiplexHub(), dataDir);
 
         await manager.InstallRuntimeAsync(CancellationToken.None);
 
@@ -60,6 +70,42 @@ public sealed class OllamaRuntimeManagerTests : IDisposable
         Assert.True(manager.SystemOllamaDetected);
         Assert.Equal(0, processHost.StartCount);
         Assert.Same(client, manager.Client);
+    }
+
+    [Fact]
+    public async Task A_listener_on_the_default_port_is_ignored_unless_the_user_opted_in()
+    {
+        var dataDir = NewTempDir();
+        var client = new ToggleableClient(OllamaRuntimeManager.DefaultPort) { Ready = true };
+        var manager = new OllamaRuntimeManager(
+            new HttpClient(new NeverCalledHandler()), new FakeProcessHost(), _ => client,
+            NewStore(dataDir), new MultiplexHub(), dataDir);
+
+        await manager.RefreshAsync(CancellationToken.None);
+
+        Assert.Equal(AssistantRuntimeState.NotInstalled, manager.State);
+        Assert.False(manager.SystemOllamaDetected);
+        Assert.Equal(0, client.VersionProbes);
+    }
+
+    [Fact]
+    public async Task Turning_the_opt_in_off_drops_an_adopted_system_ollama()
+    {
+        var dataDir = NewTempDir();
+        var client = new ToggleableClient(OllamaRuntimeManager.DefaultPort) { Ready = true };
+        var store = OptedInStore(dataDir);
+        var manager = new OllamaRuntimeManager(
+            new HttpClient(new NeverCalledHandler()), new FakeProcessHost(), _ => client,
+            store, new MultiplexHub(), dataDir);
+        await manager.RefreshAsync(CancellationToken.None);
+        Assert.True(manager.SystemOllamaDetected);
+
+        store.Update(s => s.AiIntegration.UseSystemOllama = false);
+        manager.ApplyUseSystemOllama(false);
+
+        Assert.Equal(AssistantRuntimeState.NotInstalled, manager.State);
+        Assert.False(manager.SystemOllamaDetected);
+        Assert.Null(manager.Client);
     }
 
     [Fact]
@@ -283,7 +329,7 @@ public sealed class OllamaRuntimeManagerTests : IDisposable
         var client = new ToggleableClient(OllamaRuntimeManager.DefaultPort) { Ready = true };
         var manager = new OllamaRuntimeManager(
             new HttpClient(new NeverCalledHandler()), new FakeProcessHost(), _ => client,
-            NewStore(dataDir), new MultiplexHub(), dataDir);
+            OptedInStore(dataDir), new MultiplexHub(), dataDir);
         await manager.InstallRuntimeAsync(CancellationToken.None); // adopts the system install
 
         await manager.RemoveRuntimeAsync(deleteModels: false, CancellationToken.None);
@@ -331,7 +377,7 @@ public sealed class OllamaRuntimeManagerTests : IDisposable
         using var sub = hub.AddTestSubscription(PanelTopics.AiAssistant);
         var manager = new OllamaRuntimeManager(
             new HttpClient(new NeverCalledHandler()), new FakeProcessHost(), _ => client,
-            NewStore(dataDir), hub, dataDir);
+            OptedInStore(dataDir), hub, dataDir);
         await manager.InstallRuntimeAsync(CancellationToken.None);
 
         var gate = new SemaphoreSlim(0, 1);
@@ -538,7 +584,12 @@ public sealed class OllamaRuntimeManagerTests : IDisposable
         public Func<string, CancellationToken, Task<bool>>? DeleteBehavior { get; set; }
         public int Port { get; }
 
-        public Task<string?> TryGetVersionAsync(CancellationToken ct) => Task.FromResult(Ready ? "0.32.1" : null);
+        public int VersionProbes { get; private set; }
+        public Task<string?> TryGetVersionAsync(CancellationToken ct)
+        {
+            VersionProbes++;
+            return Task.FromResult(Ready ? "0.32.1" : null);
+        }
         public Task<IReadOnlyList<OllamaModelInfo>> ListModelsAsync(CancellationToken ct) =>
             Task.FromResult<IReadOnlyList<OllamaModelInfo>>(Array.Empty<OllamaModelInfo>());
         public Task<IReadOnlyList<OllamaModelInfo>> ListLoadedModelsAsync(CancellationToken ct) =>

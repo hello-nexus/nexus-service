@@ -176,7 +176,7 @@ public class FanProfilesTests : IDisposable
     }
 
     [Fact]
-    public void OffToCustom_RestoresManualDutiesDeletedByTheRelease()
+    public void OffToCustom_RestoresManualDutiesClearedByOff()
     {
         _store.Update(s =>
         {
@@ -185,11 +185,8 @@ public class FanProfilesTests : IDisposable
         });
 
         FanProfiles.Apply("off", _fans, _store);
-        // The real providers' ReleaseFan (called by Apply("off") for every
-        // channel) deletes the live ManualSpeeds entry; the fake records the
-        // release without a store, so mirror the deletion here.
         Assert.Contains("fan1", _fans.Released);
-        _store.Update(s => s.Cooling.ManualSpeeds.Clear());
+        Assert.Empty(_store.Load().Cooling.ManualSpeeds);
 
         FanProfiles.Apply("custom", _fans, _store);
 
@@ -970,6 +967,138 @@ public class FanProfilesTests : IDisposable
         FanProfiles.DetachFanFromCurves("fan2", _store);
 
         Assert.Equal("silent", FanProfiles.DerivePresetFromCurves(_store, _fans));
+    }
+
+    [Fact]
+    public void DerivePresetFromCurves_LockedCurveDrivenFans_AreNotOff()
+    {
+        // Locking every fan that has a curve leaves only the BIOS-control fans
+        // in the coverage set; without the locked half counted, derivation
+        // reads "all fans BIOS" and the page raises the Off banner while the
+        // locked fans are still curve-driven.
+        var fans = new FakeFanProvider(
+            channels: new List<FanChannel>
+            {
+                new() { Id = "fan1", Name = "Fan 1" },
+                new() { Id = "fan2", Name = "Fan 2" },
+                new() { Id = "fan3", Name = "Fan 3" },
+            },
+            temps: new List<TemperatureSource> { new() { Id = "cpu", Category = "CPU" } });
+        _store.Update(s =>
+        {
+            s.Cooling.Curves.Add(new CurveDocument
+            {
+                Id = "user-a",
+                Outputs = new List<CurveOutputDocument> { new() { Id = "fan1", Type = "Fan" } },
+            });
+        });
+        FanProfiles.SetLockOverride(fans.GetFanChannels().First(c => c.Id == "fan1"), true, _store);
+
+        Assert.Equal("custom", FanProfiles.DerivePresetFromCurves(_store, fans));
+    }
+
+    [Fact]
+    public void DerivePresetFromCurves_LockedFanOnManual_IsNotOff()
+    {
+        // Same shape through the manual path: a locked fan holding a manual
+        // duty is software-driven, so "every fan is on BIOS" is false.
+        var fan1 = _fans.GetFanChannels().First(c => c.Id == "fan1");
+        FanProfiles.SetLockOverride(fan1, true, _store);
+        _store.Update(s => s.Cooling.ManualSpeeds["fan1"] = 55);
+
+        Assert.Equal("custom", FanProfiles.DerivePresetFromCurves(_store, _fans));
+    }
+
+    [Fact]
+    public void DerivePresetFromCurves_LockedFanOnBios_StaysOff()
+    {
+        // The other side of the guard: a locked fan with no curve and no manual
+        // duty is on BIOS like the rest, so Off stays Off.
+        FanProfiles.Apply("off", _fans, _store);
+        FanProfiles.SetLockOverride(_fans.GetFanChannels().First(c => c.Id == "fan1"), true, _store);
+
+        Assert.Equal("off", FanProfiles.DerivePresetFromCurves(_store, _fans));
+    }
+
+    [Fact]
+    public void DerivePresetFromCurves_LockedUncontrolledOrUnresponsiveFan_StaysOff()
+    {
+        // The narrowing halves of the locked-fan check. An uncontrolled channel
+        // is inert at the write chokepoint and an unresponsive one is physically
+        // gone, so a stale attachment on either is not something Nexus drives.
+        var fans = new FakeFanProvider(
+            channels: new List<FanChannel>
+            {
+                new() { Id = "fan1", Name = "Fan 1" },
+                new() { Id = "fan2", Name = "Fan 2", Classification = "Unresponsive" },
+                new() { Id = "fan3", Name = "Fan 3" },
+            },
+            temps: new List<TemperatureSource> { new() { Id = "cpu", Category = "CPU" } });
+        foreach (var id in new[] { "fan2", "fan3" })
+        {
+            FanProfiles.SetLockOverride(fans.GetFanChannels().First(c => c.Id == id), true, _store);
+        }
+        FanControlledState.SetControlled("fan3", false, _store);
+        _store.Update(s =>
+        {
+            s.Cooling.Curves.Add(new CurveDocument
+            {
+                Id = "user-a",
+                Outputs = new List<CurveOutputDocument>
+                {
+                    new() { Id = "fan2", Type = "Fan" },
+                    new() { Id = "fan3", Type = "Fan" },
+                },
+            });
+        });
+
+        Assert.Equal("off", FanProfiles.DerivePresetFromCurves(_store, fans));
+    }
+
+    [Fact]
+    public void ApplyOff_DropsManualSpeedsOfAbsentChannels_ButNotUncontrolledOnes()
+    {
+        // A channel whose hub is disconnected takes no release, so its entry
+        // would sit there until the hub returns and CurveEngine replayed the
+        // duty into an off system. An uncontrolled channel is the opposite
+        // case: Off leaves what the user handed back alone.
+        FanControlledState.SetControlled("fan2", false, _store);
+        _store.Update(s =>
+        {
+            s.Cooling.ManualSpeeds["fan1"] = 40;
+            s.Cooling.ManualSpeeds["fan2"] = 50;
+            s.Cooling.ManualSpeeds["ghost-fan"] = 60;
+        });
+
+        FanProfiles.Apply("off", _fans, _store);
+
+        var speeds = _store.Load().Cooling.ManualSpeeds;
+        Assert.False(speeds.ContainsKey("fan1"));
+        Assert.False(speeds.ContainsKey("ghost-fan"));
+        Assert.Equal(50, speeds["fan2"]);
+    }
+
+    [Fact]
+    public void ApplyOff_DropsManualSpeeds_SoDerivationStaysOff()
+    {
+        // Only the motherboard providers' ReleaseFan deletes the entry, so a
+        // hub fan left Off with a stale manual duty would derive "custom" on
+        // the next write - and the preset apply after that would snapshot the
+        // all-BIOS state over the saved Custom mapping.
+        _store.Update(s =>
+        {
+            s.Cooling.ActivePreset = "custom";
+            s.Cooling.ManualSpeeds["fan1"] = 70;
+            s.Cooling.ManualSpeeds["fan2"] = 70;
+        });
+
+        FanProfiles.Apply("off", _fans, _store);
+
+        var s = _store.Load();
+        Assert.Empty(s.Cooling.ManualSpeeds);
+        // The exit snapshot still holds them, so Custom restores the duties.
+        Assert.Equal(70, s.Cooling.CustomManualSpeeds!["fan1"]);
+        Assert.Equal("off", FanProfiles.DerivePresetFromCurves(_store, _fans));
     }
 
     [Fact]

@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Text;
 using Nexus.Service.Peripherals.Hyte.MiniHub; // RgbColor: shared HYTE serial RGB triple
 
@@ -95,7 +96,10 @@ public static class QSeriesCoolerProtocol
     /// <summary>Length of the Q80 second-pump response (tach in bytes [3..4]).</summary>
     public const int Pump2ResponseLength = 7;
 
-    /// <summary>Type-M channel carrying the radiator fans (GetInfo channel byte).</summary>
+    /// <summary>UART1/FAN1 connector's Type-M channel (GetInfo channel byte).</summary>
+    public const byte LinkChannel1 = 0x01;
+
+    /// <summary>UART2/FAN2 connector's Type-M channel (GetInfo channel byte); typically wired to the radiator fans.</summary>
     public const byte FanChannel = 0x02;
 
     /// <summary>
@@ -105,11 +109,24 @@ public static class QSeriesCoolerProtocol
     public const int ChannelInfoResponseLength = 240;
     private const int ChannelDeviceStride = 12;
 
-    // Device-category codes in the channel-info block (byte [3] of device 0).
+    // Device-category codes in the channel-info block (byte [3] of a device slot).
     // Maps HYTE SmartDeviceMethods.ByteToSmartComponent.
+    private const byte CompLs10 = 0x01;
+    private const byte CompLs30 = 0x02;
     private const byte CompFt12 = 0x03;      // 1 fan
     private const byte CompFt12Duo = 0x04;   // 2 fans (Q60 radiator default)
     private const byte CompFt12Trio = 0x05;  // 3 fans
+    private const byte CompLn60 = 0x06;
+    private const byte CompLn70 = 0x07;
+
+    // LED counts used when the firmware's per-slot LED-count byte reads 0 (legacy
+    // LS10/LS30/LN4060/LN70 component classes). FT12/FP12 carries no such constant in
+    // nexus-control-service - its SmartComponents classes (FT12/FT12Duo/FT12Trio,
+    // CoolingBase) have no LED-count field - so an FP12 slot's LED count stays 0.
+    public const int Ls10LedCount = 20;
+    public const int Ls30LedCount = 62;
+    public const int Ln60LedCount = 40;
+    public const int Ln70LedCount = 44;
 
     // ── Lighting wire constants ──
     //
@@ -350,27 +367,106 @@ public static class QSeriesCoolerProtocol
     }
 
     /// <summary>
-    /// Parse the radiator-fan RPM from the per-channel device-info response
-    /// (FF CC 01 02). Device 0's 12-byte block (after the FF CC echo) carries the
-    /// FT12 fan unit: category at byte [3], fan tachs at [8..9] / [4..5] (and
-    /// [10..11] on a trio). Returns the representative (max) fan RPM;
-    /// <paramref name="present"/> is false when no fan unit is on the channel.
+    /// Parse a Nexus Link channel's device chain (FF CC 01 &lt;channel&gt;: 1 is the
+    /// FAN1/UART1 connector, 2 is FAN2/UART2) into a freshly allocated list - never mutates
+    /// a previously returned list, so a caller that publishes it as the shared state
+    /// reference never exposes a reader to an in-progress rebuild. A "00 00" header means
+    /// the firmware has no list yet (not an error), and a short/mis-echoed reply is likewise
+    /// rejected; both return false with <paramref name="devices"/> empty, so callers keep
+    /// whatever they published last. Stops at the first slot whose type byte is 0 - the
+    /// device-index byte at the same slot offset stays non-zero in empty trailing slots, so
+    /// it cannot be the stop condition.
     /// </summary>
-    public static bool TryParseFanRpm(ReadOnlySpan<byte> response, out int fanRpm, out bool present)
+    public static bool TryParseChannelDevices(ReadOnlySpan<byte> response, out IReadOnlyList<QSeriesLinkDevice> devices)
     {
-        fanRpm = 0;
-        present = false;
+        devices = Array.Empty<QSeriesLinkDevice>();
         if (response.Length < ChannelInfoResponseLength) return false;
+        if (response[0] == 0x00 && response[1] == 0x00) return false;
         if (response[0] != Frame0 || response[1] != OpCooler) return false;
-        var component = response[3];
-        if (component != CompFt12 && component != CompFt12Duo && component != CompFt12Trio)
-            return true; // valid reply, no fan unit on this channel
-        present = true;
-        var r1 = DecodeFanRpm(response[8], response[9], component);
-        var r2 = component != CompFt12 ? DecodeFanRpm(response[4], response[5], component) : 0;
-        var r3 = component == CompFt12Trio ? DecodeFanRpm(response[10], response[11], component) : 0;
-        fanRpm = Math.Max(r1, Math.Max(r2, r3));
+
+        var list = new List<QSeriesLinkDevice>();
+        var maxSlots = response.Length / ChannelDeviceStride;
+        for (var i = 0; i < maxSlots; i++)
+        {
+            var slot = response.Slice(i * ChannelDeviceStride, ChannelDeviceStride);
+            var typeByte = slot[3];
+            if (typeByte == 0x00) break;
+
+            var deviceIndex = slot[2];
+            var isTrio = typeByte == CompFt12Trio;
+            var fanCount = FanCountOf(typeByte);
+            list.Add(new QSeriesLinkDevice
+            {
+                Slot = deviceIndex > 0 ? deviceIndex : i + 1,
+                Model = ModelNameOf(typeByte),
+                LedCount = LedCountOf(typeByte, slot[5]),
+                FanCount = fanCount,
+                FanRpm = FanRpmsOf(slot, typeByte, fanCount),
+                TemperatureC = fanCount > 0
+                    ? HyteThermistor.NearestTempC(HyteThermistor.VoltageFromAdc(slot[6], slot[7]), fan: true)
+                    : null,
+                Orientation = OrientationOf(isTrio ? (byte)(slot[4] / 10) : slot[10]),
+                // Legacy SmartDeviceMethods.GetIsConnect: a trio packs the group-end flag into
+                // the tens place of the same byte its 3rd fan's tach-high shares (slot[10]);
+                // solo/duo read it straight from slot[11]. 0 = another device follows in this
+                // group, nonzero = group end.
+                GroupEnd = isTrio ? (byte)(slot[10] / 10) != 0 : slot[11] != 0,
+            });
+        }
+        devices = list;
         return true;
+    }
+
+    private static int FanCountOf(byte typeByte) => typeByte switch
+    {
+        CompFt12 => 1,
+        CompFt12Duo => 2,
+        CompFt12Trio => 3,
+        _ => 0,
+    };
+
+    private static string ModelNameOf(byte typeByte) => typeByte switch
+    {
+        CompLs10 => "LS10",
+        CompLs30 => "LS30",
+        CompFt12 => "FP12",
+        CompFt12Duo => "FT12 Duo",
+        CompFt12Trio => "FT12 Trio",
+        CompLn60 => "LN60",
+        CompLn70 => "LN70",
+        _ => "Unknown",
+    };
+
+    private static int LedCountOf(byte typeByte, byte firmwareLedCount)
+    {
+        if (firmwareLedCount != 0) return firmwareLedCount;
+        return typeByte switch
+        {
+            CompLs10 => Ls10LedCount,
+            CompLs30 => Ls30LedCount,
+            CompLn60 => Ln60LedCount,
+            CompLn70 => Ln70LedCount,
+            _ => 0,
+        };
+    }
+
+    private static string OrientationOf(byte raw) => raw switch
+    {
+        0x00 => "Back",
+        0x01 => "Down",
+        0x02 => "Up",
+        0x03 => "Front",
+        _ => "Back",
+    };
+
+    private static int[] FanRpmsOf(ReadOnlySpan<byte> slot, byte typeByte, int fanCount)
+    {
+        if (fanCount == 0) return Array.Empty<int>();
+        var rpm = new int[fanCount];
+        rpm[0] = DecodeFanRpm(slot[8], slot[9], typeByte);
+        if (fanCount >= 2) rpm[1] = DecodeFanRpm(slot[4], slot[5], typeByte);
+        if (fanCount >= 3) rpm[2] = DecodeFanRpm(slot[10], slot[11], typeByte);
+        return rpm;
     }
 
     /// <summary>The hub control mode the last Port-0 poll reported (byte [12]).</summary>
@@ -469,15 +565,22 @@ public static class QSeriesCoolerProtocol
     private const int FanDeviceBlock = 9;
 
     /// <summary>
-    /// Build the per-channel fan-speed frame (FF CC 02 &lt;channel&gt;) per the set-fan
-    /// spec: 18 nine-byte device blocks after the 4-byte header. Each block is
-    /// [device index, 0x00, percentage%, RPM-mode (0), RPM_H, RPM_L, reserve×3].
-    /// Plain 0-100% duty in the percentage byte; no voltage map. The cooler must
-    /// already be in software mode for this to take effect.
+    /// Per-slot fan duty for <see cref="BuildSetChannelFanSpeeds"/>. Fan2/Fan3 only apply to
+    /// a Duo/Trio slot; pass 0 there for a solo unit.
     /// </summary>
-    public static byte[] BuildSetFanSpeed(byte channel, int dutyPercent)
+    public readonly record struct QSeriesFanSlotDuty(int Fan1Percent, int Fan2Percent, int Fan3Percent);
+
+    /// <summary>
+    /// Build the per-channel fan-speed frame (FF CC 02 &lt;channel&gt;) per the set-fan
+    /// spec: 18 nine-byte device blocks after the 4-byte header, one block per Nexus Link
+    /// slot. Each block is [device index, 0x00, fan1%, RPM-mode (0), RPM_H, RPM_L, fan2%,
+    /// fan3%, reserve]; fan2/fan3 carry a Duo's second fan or a Trio's second and third.
+    /// Plain 0-100% duty, no voltage map. Slots beyond <paramref name="slotDuties"/> are
+    /// zero-filled. The cooler must already be in software mode for this to take effect.
+    /// </summary>
+    public static byte[] BuildSetChannelFanSpeeds(byte channel, IReadOnlyList<QSeriesFanSlotDuty> slotDuties)
     {
-        var duty = (byte)Math.Clamp(dutyPercent, 0, 100);
+        ArgumentNullException.ThrowIfNull(slotDuties);
         var cmd = new byte[SetFanFrameLength];
         cmd[0] = Frame0;
         cmd[1] = OpCooler;
@@ -487,7 +590,11 @@ public static class QSeriesCoolerProtocol
         {
             var b = 4 + i * FanDeviceBlock;
             cmd[b + 0] = (byte)(i + 1); // 1-based device index
-            cmd[b + 2] = duty;          // percentage % (RPM mode left 0)
+            if (i >= slotDuties.Count) continue;
+            var s = slotDuties[i];
+            cmd[b + 2] = (byte)Math.Clamp(s.Fan1Percent, 0, 100);
+            cmd[b + 6] = (byte)Math.Clamp(s.Fan2Percent, 0, 100);
+            cmd[b + 7] = (byte)Math.Clamp(s.Fan3Percent, 0, 100);
         }
         return cmd;
     }

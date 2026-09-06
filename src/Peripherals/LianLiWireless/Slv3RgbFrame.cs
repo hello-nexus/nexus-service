@@ -6,26 +6,21 @@ namespace Nexus.Service.Peripherals.LianLiWireless;
 /// <summary>
 /// Pure builders for the RF_RgbSync (0x20) wire format: the raw per-LED
 /// buffer (brightness + power cap applied) and its multi-part 240-byte RF
-/// payload framing. Field layout and packet-count arithmetic match
-/// phstudy/uni-wireless-sync's _transmit_led_effect (plans/lianli-wireless-support.md
-/// section 2), including its off-by-one: total_packets is always
-/// 1 + ceil(compressedLen / DataPacketChunk), even though the header packet's
-/// real capacity (<see cref="FirstPacketDataMax"/>) is smaller than
-/// DataPacketChunk - this can produce one trailing all-zero data packet, kept
-/// for parity with the hardware-tested reference rather than a tighter,
-/// unverified recount.
+/// payload framing, laid out exactly as L-Connect's MasterDevice.SyncRgbData
+/// puts it on the air (Y70 USBPcap 2026-09-04): part 0 is a header-only
+/// packet, parts 1..N carry the TinyUZ stream in 220-byte pieces at [20..],
+/// and byte [19] is the data-part count plus one.
 /// </summary>
 public static class Slv3RgbFrame
 {
     /// <summary>SL V2/V3 wire LED count per physical fan (slv3:92887).</summary>
     public const int LedsPerFan = 40;
 
-    /// <summary>Header packet (part 0) metadata occupies [20..34); compressed data starts at 34.</summary>
-    public const int FirstPacketDataOffset = 34;
-    public const int FirstPacketDataMax = Slv3Protocol.RfPayloadSize - FirstPacketDataOffset;
-
-    /// <summary>Compressed-data capacity of each non-header data packet (lzo_rgb_rf_valid_len).</summary>
+    /// <summary>Compressed-data capacity of each data packet (lzo_rgb_rf_valid_len).</summary>
     public const int DataPacketChunk = 220;
+
+    /// <summary>Offset of the compressed data inside a data packet.</summary>
+    public const int DataPacketOffset = 20;
 
     private const int PowerCapSum = 600;
     private const double PowerCapScale = 0.95;
@@ -67,17 +62,23 @@ public static class Slv3RgbFrame
     }
 
     /// <summary>
-    /// Builds the RF_RgbSync payload set: index 0 is the header packet
-    /// (common fields + metadata + the first compressed chunk at
-    /// <see cref="FirstPacketDataOffset"/>), indices 1..N carry the rest in
-    /// <see cref="DataPacketChunk"/>-sized pieces. Every returned array is
-    /// exactly <see cref="Slv3Protocol.RfPayloadSize"/> bytes.
+    /// Builds the RF_RgbSync payload set. Index 0 is the header packet: common
+    /// fields, then [20..23] compressed length BE32, [24] 0, [25..26] total
+    /// frames BE16, [27] LED count, [32..33] frame interval ms BE16, [34] the
+    /// interval's centi-fraction (0 for whole ms), [35..36] sub-ring interval,
+    /// [37] isOuterMatchMax 0, [38..39] sub-ring frame count. L-Connect derives
+    /// the sub-ring pair from its inner/outer renders; a frame set rendered as
+    /// one buffer runs both rings on the same clock, so they mirror the main
+    /// interval and frame count. Indices 1..N carry <see cref="DataPacketChunk"/>
+    /// bytes each at <see cref="DataPacketOffset"/>. Every array is exactly
+    /// <see cref="Slv3Protocol.RfPayloadSize"/> bytes.
     /// </summary>
     public static byte[][] BuildPackets(
         ReadOnlySpan<byte> fanMac, ReadOnlySpan<byte> masterMac, ReadOnlySpan<byte> effectIndex,
         ReadOnlySpan<byte> compressed, int ledCount, int totalFrames, int intervalMs)
     {
-        var totalPackets = 1 + (compressed.Length + DataPacketChunk - 1) / DataPacketChunk;
+        var dataPackets = (compressed.Length + DataPacketChunk - 1) / DataPacketChunk;
+        var totalPackets = dataPackets + 1;
         if (totalPackets > 255)
         {
             throw new InvalidOperationException("RGB payload is too large to transmit");
@@ -102,27 +103,24 @@ public static class Slv3RgbFrame
                 payload[21] = (byte)(compressed.Length >> 16);
                 payload[22] = (byte)(compressed.Length >> 8);
                 payload[23] = (byte)compressed.Length;
+                payload[24] = 0;
                 payload[25] = (byte)(totalFrames >> 8);
                 payload[26] = (byte)totalFrames;
                 payload[27] = (byte)ledCount;
                 payload[32] = (byte)(intervalMs >> 8);
                 payload[33] = (byte)intervalMs;
-
-                var firstChunkLen = Math.Min(FirstPacketDataMax, compressed.Length - dataOffset);
-                if (firstChunkLen > 0)
-                {
-                    compressed.Slice(dataOffset, firstChunkLen).CopyTo(payload.AsSpan(FirstPacketDataOffset));
-                    dataOffset += firstChunkLen;
-                }
+                payload[34] = 0;
+                payload[35] = (byte)(intervalMs >> 8);
+                payload[36] = (byte)intervalMs;
+                payload[37] = 0;
+                payload[38] = (byte)(totalFrames >> 8);
+                payload[39] = (byte)totalFrames;
             }
             else
             {
                 var chunkLen = Math.Min(DataPacketChunk, compressed.Length - dataOffset);
-                if (chunkLen > 0)
-                {
-                    compressed.Slice(dataOffset, chunkLen).CopyTo(payload.AsSpan(20));
-                    dataOffset += chunkLen;
-                }
+                compressed.Slice(dataOffset, chunkLen).CopyTo(payload.AsSpan(DataPacketOffset));
+                dataOffset += chunkLen;
             }
             packets[packetIndex] = payload;
         }

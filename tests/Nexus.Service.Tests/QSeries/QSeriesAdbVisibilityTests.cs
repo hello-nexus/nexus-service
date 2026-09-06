@@ -1,3 +1,5 @@
+using System;
+using System.Linq;
 using AdvancedSharpAdbClient.Models;
 using Nexus.Service.Devices;
 using Nexus.Service.QSeries;
@@ -90,5 +92,98 @@ public class BuildAdbVisibilitySignatureTests
             new UsbDeviceEntry[0]);
 
         Assert.Equal("adb=[ABC(Unauthorized,HYTE_Q60_Display)] mediatek-pnp=[]", signature);
+    }
+}
+
+public class WindowsTimeZoneMapTests
+{
+    // The service publishes with InvariantGlobalization, where
+    // TimeZoneInfo.TryConvertWindowsIdToIanaId returns false for every Windows id
+    // - which silently skipped `cmd alarm set-timezone` on every Windows host and
+    // left field panels on their factory zone.
+    [Theory]
+    [InlineData("India Standard Time", "Asia/Calcutta")]
+    [InlineData("Pacific Standard Time", "America/Los_Angeles")]
+    [InlineData("GMT Standard Time", "Europe/London")]
+    [InlineData("W. Europe Standard Time", "Europe/Berlin")]
+    [InlineData("UTC", "Etc/UTC")]
+    public void Maps_windows_ids_to_iana(string windowsId, string expected)
+    {
+        Assert.Equal(expected, WindowsTimeZoneMap.ToIana(windowsId));
+    }
+
+    [Fact]
+    public void Unknown_id_is_null_so_the_panel_zone_is_left_alone()
+    {
+        Assert.Null(WindowsTimeZoneMap.ToIana("Not A Real Standard Time"));
+    }
+
+    [Fact]
+    public void No_value_is_a_windows_registry_id()
+    {
+        // `cmd alarm set-timezone` only takes IANA; a Windows id reaching the
+        // panel is the bug this map exists to close.
+        foreach (var windowsId in new[] { "India Standard Time", "UTC", "Tokyo Standard Time" })
+        {
+            Assert.DoesNotContain("Standard Time", WindowsTimeZoneMap.ToIana(windowsId)!, StringComparison.Ordinal);
+        }
+    }
+}
+
+public class HomeChooserAndTaskTests
+{
+    // Real `dumpsys activity activities | grep -E "\* Task\{"` output from a Q60
+    // (MT8167 BSP, Android 11) while qshell was stacked on the launcher chooser.
+    private const string Dump = """
+    * Task{f48decd #20 visible=true type=standard mode=fullscreen translucent=false A=10064:com.hellonexus.qshell U=0 StackId=20 sz=1}
+    * Task{b6a066f #18 visible=true type=standard mode=fullscreen translucent=true I=android/com.android.internal.app.ResolverActivity U=0 StackId=18 sz=1}
+      * Task{f48decd #20 visible=true type=standard mode=fullscreen translucent=false A=10064:com.hellonexus.qshell U=0 StackId=20 sz=1}
+      * Task{b6a066f #18 visible=true type=standard mode=fullscreen translucent=true I=android/com.android.internal.app.ResolverActivity U=0 StackId=18 sz=1}
+      * Task{9278be3 #17 visible=true type=home mode=fullscreen translucent=true ?? U=0 StackId=17 sz=0}
+      * Task{d785ee4 #3 visible=false type=undefined mode=split-screen-primary translucent=true ?? U=0 StackId=3 sz=0}
+    """;
+
+    [Fact]
+    public void Chooser_focus_detected()
+    {
+        Assert.True(QSeriesPortWatcher.IsChooserFocus(
+            "  mCurrentFocus=Window{1a2b3c u0 android/com.android.internal.app.ResolverActivity}"));
+    }
+
+    [Fact]
+    public void Qshell_focus_is_not_a_chooser()
+    {
+        Assert.False(QSeriesPortWatcher.IsChooserFocus(
+            "  mCurrentFocus=Window{1a2b3c u0 com.hellonexus.qshell/com.hellonexus.qshell.MainActivity}"));
+        Assert.False(QSeriesPortWatcher.IsChooserFocus(""));
+    }
+
+    [Fact]
+    public void Parses_root_tasks_once_each()
+    {
+        var tasks = QSeriesPortWatcher.ParsePanelTasks(Dump);
+        Assert.Equal(new[] { 20, 18, 17, 3 }, tasks.Select(t => t.Id).ToArray());
+        var qshell = tasks.Single(t => t.Id == 20);
+        Assert.Equal(("standard", "com.hellonexus.qshell", 20, 1), (qshell.Type, qshell.Component, qshell.StackId, qshell.Size));
+        var home = tasks.Single(t => t.Id == 17);
+        Assert.Equal(("home", "", 0), (home.Type, home.Component, home.Size));
+    }
+
+    [Fact]
+    public void Zombie_chooser_and_standard_qshell_are_stale_and_the_empty_home_task_is_not_qshell_home()
+    {
+        var tasks = QSeriesPortWatcher.ParsePanelTasks(Dump);
+        Assert.Equal(new[] { 20, 18 }, tasks.Where(QSeriesPortWatcher.IsStaleStandardTask).Select(t => t.Id).ToArray());
+        Assert.DoesNotContain(tasks, QSeriesPortWatcher.IsQshellHomeTask);
+    }
+
+    [Fact]
+    public void Qshell_in_the_home_task_is_recognised_and_not_stale()
+    {
+        var tasks = QSeriesPortWatcher.ParsePanelTasks(
+            "    * Task{9278be3 #17 visible=true type=home mode=fullscreen translucent=false A=10064:com.hellonexus.qshell U=0 StackId=17 sz=1}");
+        Assert.Single(tasks);
+        Assert.True(QSeriesPortWatcher.IsQshellHomeTask(tasks[0]));
+        Assert.False(QSeriesPortWatcher.IsStaleStandardTask(tasks[0]));
     }
 }

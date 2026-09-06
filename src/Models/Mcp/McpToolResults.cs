@@ -1,4 +1,5 @@
 using System.Collections.Generic;
+using Nexus.Service.Models.Activity;
 using Nexus.Service.Models.Cooling;
 using Nexus.Service.Models.Sensors;
 
@@ -209,4 +210,112 @@ public sealed class McpAppHistoryResult
     /// <summary>Window-average dedicated VRAM in MB; only populated for a gpu/vram metric.</summary>
     public double? VramAvgMb { get; set; }
     public List<McpAppHistoryPoint> Points { get; set; } = new();
+}
+
+// History and action tools
+
+/// <summary>One temperature bucket for get_temperature_history, optionally
+/// annotated with the slot's dominant foreground app.</summary>
+public sealed class McpTemperaturePoint
+{
+    /// <summary>Unix milliseconds, the bucket's start.</summary>
+    public long T { get; set; }
+    public double Avg { get; set; }
+    public double Max { get; set; }
+    /// <summary>Most-used foreground app in this slot; null with no recorded activity.</summary>
+    public string? DominantApp { get; set; }
+}
+
+/// <summary>One component's temperature series for get_temperature_history.</summary>
+public sealed class McpTemperatureSeries
+{
+    /// <summary>cpu, gpu:&lt;id&gt;, storage:&lt;serial&gt;, or ram:&lt;id&gt;.</summary>
+    public string Id { get; set; } = "";
+    /// <summary>cpu | gpu | storage | ram.</summary>
+    public string Kind { get; set; } = "";
+    public string Name { get; set; } = "";
+    public List<McpTemperaturePoint> Points { get; set; } = new();
+}
+
+/// <summary>Payload for the get_temperature_history MCP tool.</summary>
+public sealed class McpTemperatureHistoryResult
+{
+    public int BucketMinutes { get; set; }
+    public List<McpTemperatureSeries> Series { get; set; } = new();
+}
+
+/// <summary>One game's fps rollup across every stored session, part of get_game_sessions.</summary>
+public sealed class McpGameSummary
+{
+    public string GameKey { get; set; } = "";
+    public string Name { get; set; } = "";
+    public string Store { get; set; } = "";
+    public int Sessions { get; set; }
+    public long FocusedSec { get; set; }
+    public long Frames { get; set; }
+    public int MinFps { get; set; }
+    public int MaxFps { get; set; }
+    public double AvgFps { get; set; }
+    /// <summary>Unix milliseconds of the most recent session.</summary>
+    public long LastPlayedUtcMs { get; set; }
+}
+
+/// <summary>One recorded session for one game, part of get_game_sessions.</summary>
+public sealed class McpGameSessionEntry
+{
+    public long StartedUtcMs { get; set; }
+    public long EndedUtcMs { get; set; }
+    public double AvgFps { get; set; }
+    public int MinFps { get; set; }
+    public int MaxFps { get; set; }
+    public int DispW { get; set; }
+    public int DispH { get; set; }
+    public int RefreshHz { get; set; }
+    public bool Fullscreen { get; set; }
+    public bool Capped { get; set; }
+    public int CapValue { get; set; }
+}
+
+/// <summary>Payload for the get_game_sessions MCP tool. Games is populated when
+/// called without 'game'; Game/Sessions are populated when 'game' is given.</summary>
+public sealed class McpGameSessionsResult
+{
+    /// <summary>False off Windows, where no fps recorder is registered.</summary>
+    public bool Supported { get; set; } = true;
+    public bool TrackingEnabled { get; set; } = true;
+    public List<McpGameSummary>? Games { get; set; }
+    public string? Game { get; set; }
+    public List<McpGameSessionEntry>? Sessions { get; set; }
+}
+
+/// <summary>Payload for the get_screen_time MCP tool. Exactly one of Day,
+/// Range, App, Hour is populated, matching the requested mode.</summary>
+public sealed class McpScreenTimeResult
+{
+    public bool TrackingEnabled { get; set; } = true;
+    /// <summary>day | range | app | hour.</summary>
+    public string Mode { get; set; } = "";
+    public DayBreakdown? Day { get; set; }
+    public List<DayTotal>? Range { get; set; }
+    public AppHistory? App { get; set; }
+    public List<AppUsage>? Hour { get; set; }
+}
+
+/// <summary>Payload for the add_monitoring_event MCP tool.</summary>
+public sealed class McpAddMonitoringEventResult
+{
+    public long Id { get; set; }
+    /// <summary>Unix milliseconds.</summary>
+    public long T { get; set; }
+    public string Kind { get; set; } = "";
+    public string Label { get; set; } = "";
+}
+
+/// <summary>Payload for the calibrate_fans MCP tool.</summary>
+public sealed class McpCalibrateFansResult
+{
+    public bool Started { get; set; }
+    /// <summary>Echoes the requested fan channel id; null when every fan was calibrated.</summary>
+    public string? Fan { get; set; }
+    public string Message { get; set; } = "";
 }

@@ -281,6 +281,12 @@ internal static class InstalledGameCollectors
 /// "ubisoft:&lt;slug&gt;"), slug being the lowercase alnum of Name.</summary>
 public sealed record GameIdentity(string GameKey, string Name, string Store, string AppId);
 
+/// <summary>Where a game key lives on disk, for callers that need the game itself rather than its identity.</summary>
+public interface IGameInstallLocator
+{
+    bool TryGetInstallDir(string gameKey, out string installDir);
+}
+
 /// <summary>
 /// Installed-game identity resolver: enumerates the same Steam/Epic/Ubisoft
 /// sources GameSyncGameScanner does (via InstalledGameCollectors, so both
@@ -289,7 +295,7 @@ public sealed record GameIdentity(string GameKey, string Name, string Store, str
 /// per RefreshRateLimitSeconds thereafter via NotifyUnknownExe, so a newly
 /// installed game is picked up without a service restart.
 /// </summary>
-public sealed class GameCatalog
+public sealed class GameCatalog : IGameInstallLocator
 {
     private const long RefreshRateLimitSeconds = 600;
 

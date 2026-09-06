@@ -33,13 +33,18 @@ public class ProcessAppUsageSourceTests
     private sealed class StubSensorProvider : ISensorProvider
     {
         public List<GpuReadout> Gpus { get; } = new();
+        public int GetGpusCalls { get; private set; }
 
         public string GetCpuModel() => "Stub CPU";
         public IReadOnlyList<HardwareSensor> GetCpuSensors() => Array.Empty<HardwareSensor>();
         public (bool Healthy, float DistanceToTJMax) GetCpuHealth() => (true, 20f);
         public IReadOnlyList<string> GetGpuModels() => Gpus.Select(g => g.Name).ToList();
         public IReadOnlyList<HardwareSensor> GetGpuSensors() => Array.Empty<HardwareSensor>();
-        public IReadOnlyList<GpuReadout> GetGpus() => Gpus;
+        public IReadOnlyList<GpuReadout> GetGpus()
+        {
+            GetGpusCalls++;
+            return Gpus;
+        }
         public IReadOnlyList<HardwareSensor> GetMemorySensors() => Array.Empty<HardwareSensor>();
         public string GetMemoryTotalFormatted() => "32 GB";
         public string GetRamBrandModel() => "";
@@ -515,6 +520,68 @@ public class ProcessAppUsageSourceTests
         Assert.Equal("game.exe", entry.Name);
         Assert.Equal(40, entry.Value);
         Assert.Equal(2048, entry.VramMb);
+    }
+
+    [Fact]
+    public void Sample_ReadsGpusOnce_WhileEveryAdapterLuidIsAlreadyMapped()
+    {
+        var (source, _, gpuProcesses, sensors, _) = Build();
+        sensors.Gpus.Add(new GpuReadout { Id = "/gpu-nvidia/0", Name = "RTX 5080", AdapterLuid = "10:20" });
+        gpuProcesses.SetSnapshotForTest(new[]
+        {
+            new GpuProcessEntry { Name = "game.exe", GpuPercent = 40, DedicatedMb = 2048, AdapterLuid = "10:20" },
+            new GpuProcessEntry { Name = "soft.exe", GpuPercent = 1, DedicatedMb = 1, AdapterLuid = "99:99" },
+        });
+
+        source.Sample();
+        source.Sample();
+        source.Sample();
+
+        // The unmapped 99:99 adapter does not force a rebuild either.
+        Assert.Equal(1, sensors.GetGpusCalls);
+    }
+
+    [Fact]
+    public void Sample_ReadsGpusAgain_WhileTheLastReadMappedNothing()
+    {
+        // Sensors not enumerated yet at the first sample (boot): the empty
+        // map must not be trusted once the adapters do appear.
+        var (source, _, gpuProcesses, sensors, _) = Build();
+        gpuProcesses.SetSnapshotForTest(new[]
+        {
+            new GpuProcessEntry { Name = "game.exe", GpuPercent = 40, DedicatedMb = 2048, AdapterLuid = "10:20" },
+        });
+        source.Sample();
+
+        sensors.Gpus.Add(new GpuReadout { Id = "/gpu-nvidia/0", Name = "RTX 5080", AdapterLuid = "10:20" });
+        var result = source.Sample();
+
+        Assert.Equal(2, sensors.GetGpusCalls);
+        Assert.Contains(result, m => m.Metric == "gpu:gpu-nvidia-0");
+    }
+
+    [Fact]
+    public void Sample_ReadsGpusAgain_WhenANewAdapterLuidAppears()
+    {
+        var (source, _, gpuProcesses, sensors, _) = Build();
+        sensors.Gpus.Add(new GpuReadout { Id = "/gpu-nvidia/0", Name = "RTX 5080", AdapterLuid = "10:20" });
+        gpuProcesses.SetSnapshotForTest(new[]
+        {
+            new GpuProcessEntry { Name = "game.exe", GpuPercent = 40, DedicatedMb = 2048, AdapterLuid = "10:20" },
+        });
+        source.Sample();
+
+        sensors.Gpus.Add(new GpuReadout { Id = "/gpu-amd/0", Name = "RX 7800", AdapterLuid = "30:40" });
+        gpuProcesses.SetSnapshotForTest(new[]
+        {
+            new GpuProcessEntry { Name = "game.exe", GpuPercent = 40, DedicatedMb = 2048, AdapterLuid = "10:20" },
+            new GpuProcessEntry { Name = "other.exe", GpuPercent = 20, DedicatedMb = 512, AdapterLuid = "30:40" },
+        });
+
+        var result = source.Sample();
+
+        Assert.Equal(2, sensors.GetGpusCalls);
+        Assert.Contains(result, m => m.Metric == "gpu:gpu-amd-0");
     }
 
     [Fact]

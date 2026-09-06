@@ -55,10 +55,24 @@ and any DKMS module are left in place.
 Sensors (hwmon), CPU/GPU performance, network, USB enumeration, screen-time,
 shortcuts, weather, audio-reactive lighting, system tray, start at boot -
 plus, in this build: RGB (OpenRGB, native i2c/hidraw), HYTE serial devices
-(NP50 / MiniHub / CNVS / Q-series cooler / Y70), motherboard fan control
-(hwmon PWM), keyboard macros (uinput), media (MPRIS), volume
+(NP50 / MiniHub / CNVS / Q-series cooler / Y70), the Q-series panel (Q60 /
+Q80, driven over the bundled adb; no USB-reset recovery on Linux yet),
+motherboard fan control (hwmon PWM), keyboard macros (uinput), media (MPRIS), volume
 (PipeWire/PulseAudio), display brightness (backlight + DDC/CI), and
 screen-mirror lighting (xdg-desktop-portal ScreenCast).
+
+The Y70 panel and any promoted monitor run as a Chromium-family kiosk window,
+so they need `chromium`, `chrome`, `brave` or `edge` installed - by package or
+flatpak. Display layout is the compositor's, and Nexus renders to whatever
+geometry it gives the kiosk:
+
+- Rotate the Y70 to portrait and keep your main monitor primary in the
+  desktop's display settings (KDE persists this in `kwinoutputconfig.json`).
+- Wayland gives clients no way to pick an output, and KWin puts a new
+  fullscreen window on the primary screen. On KDE the service loads a small
+  KWin script (`nexus-panel-y70`, alongside the `nexus-focus` one) that moves
+  the kiosk onto the portrait strip and keeps it fullscreen. Other
+  compositors need their own equivalent.
 
 Not available on Linux: the in-game FPS overlay and the floating
 desktop-widget overlay (no viable host).

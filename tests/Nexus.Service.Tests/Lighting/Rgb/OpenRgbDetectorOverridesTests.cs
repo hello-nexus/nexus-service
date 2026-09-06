@@ -55,6 +55,14 @@ public class OpenRgbDetectorOverridesTests : IDisposable
     }
 
     [Fact]
+    public void Hyte_nexus_detector_disabled_only_where_the_devices_are_driven_natively()
+    {
+        Assert.Contains("HYTE Nexus", OpenRgbProcessManager.BuildDisabledDetectors(macOS: false));
+        Assert.DoesNotContain("HYTE Nexus", OpenRgbProcessManager.BuildDisabledDetectors(macOS: true));
+        Assert.Contains("HYTE Keeb TKL", OpenRgbProcessManager.BuildDisabledDetectors(macOS: true));
+    }
+
+    [Fact]
     public void User_exclusion_lands_as_disabled_plus_placeholder_only()
     {
         OpenRgbProcessManager.EnsureDetectorOverrides(_dir, new[] { "Corsair K70 RGB" });

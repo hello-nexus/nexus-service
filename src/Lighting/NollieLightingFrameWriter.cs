@@ -109,9 +109,9 @@ public sealed class NollieLightingFrameWriter : IHostedService, IDisposable
 
                 var frame = FindFrame(devices, id);
                 var buf = Rent(id, Math.Max(ledCount, 1) * 3);
-                var brightnessMul = ComputeBrightnessMul(id, disabled, uncontrolled, prefs, globalBrightness);
+                var brightnessMul = ComputeBrightnessMul(id, disabled, uncontrolled, prefs, globalBrightness, out var adjust);
                 var hasIdentify = _identify.TryGetActive(id, nowTicks, out var startTicks);
-                Fill(buf, ledCount, frame, brightnessMul, hasIdentify, startTicks, nowTicks);
+                Fill(buf, ledCount, frame, brightnessMul, adjust, hasIdentify, startTicks, nowTicks);
 
                 if (controller.SendChannel(ch, new ReadOnlySpan<byte>(buf, 0, ledCount * 3)))
                 {
@@ -184,8 +184,10 @@ public sealed class NollieLightingFrameWriter : IHostedService, IDisposable
 
     private static double ComputeBrightnessMul(string id,
         IReadOnlyList<string> disabled, IReadOnlyList<string> uncontrolled,
-        IReadOnlyDictionary<string, LightingDevicePreference> prefs, float globalBrightness)
+        IReadOnlyDictionary<string, LightingDevicePreference> prefs, float globalBrightness,
+        out DeviceColorAdjust adjust)
     {
+        adjust = DeviceColorAdjust.Identity;
         if (disabled.Count > 0)
         {
             foreach (var d in disabled) if (d == id) return 0.0;
@@ -194,14 +196,26 @@ public sealed class NollieLightingFrameWriter : IHostedService, IDisposable
         {
             foreach (var u in uncontrolled) if (u == id) return 0.0;
         }
+        // One lookup feeds both the brightness and the colour trim.
         int devBrightness;
-        try { devBrightness = prefs.TryGetValue(id, out var pref) ? pref.Brightness : 100; }
+        try
+        {
+            if (prefs.TryGetValue(id, out var pref) && pref is not null)
+            {
+                devBrightness = pref.Brightness;
+                adjust = DeviceColorAdjust.For(pref);
+            }
+            else
+            {
+                devBrightness = 100;
+            }
+        }
         catch (InvalidOperationException) { devBrightness = 100; }
         return Math.Min(Math.Clamp(devBrightness, 0, 100) / 100.0, globalBrightness);
     }
 
     private static void Fill(byte[] dst, int ledCount, DeviceFrame? frame,
-        double brightnessMul, bool hasIdentify, long identifyStartTicks, long nowTicks)
+        double brightnessMul, DeviceColorAdjust adjust, bool hasIdentify, long identifyStartTicks, long nowTicks)
     {
         Array.Clear(dst, 0, Math.Min(dst.Length, ledCount * 3));
 
@@ -216,6 +230,20 @@ public sealed class NollieLightingFrameWriter : IHostedService, IDisposable
         if (frame is null || brightnessMul <= 0.0) return;
 
         var src = frame.LedBytes;
+        if (!adjust.IsIdentity)
+        {
+            for (var i = 0; i < ledCount; i++)
+            {
+                var off = i * 3;
+                if (off + 2 >= src.Length || off + 2 >= dst.Length) break;
+                adjust.Apply(src[off], src[off + 1], src[off + 2], brightnessMul,
+                    out var ar, out var ag, out var ab);
+                dst[off] = ar;
+                dst[off + 1] = ag;
+                dst[off + 2] = ab;
+            }
+            return;
+        }
         if (brightnessMul >= 0.999)
         {
             for (var i = 0; i < ledCount; i++)

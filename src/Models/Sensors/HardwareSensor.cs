@@ -26,6 +26,15 @@ public class HardwareSensor
     public string FormattedAverage { get; set; } = "";
     public string FormattedUsage { get; set; } = "";
     public SensorParent Parent { get; set; } = new();
+    // get_sensors only (WhenWritingNull hides it elsewhere): HistoryIdMapping's id for query_sensor_history, or null.
+    public string? HistoryId { get; set; }
+
+    /// <summary>
+    /// Copy for varying one property without touching the instance a provider handed out.
+    /// Shallow, so <see cref="Parent"/> is shared; nothing mutates it. MemberwiseClone so a
+    /// new property is never silently dropped.
+    /// </summary>
+    public HardwareSensor Clone() => (HardwareSensor)MemberwiseClone();
 }
 
 public class SensorParent

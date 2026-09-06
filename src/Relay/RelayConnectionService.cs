@@ -385,23 +385,24 @@ public sealed class RelayConnectionService : BackgroundService
             return;
 
         var aeadKey = RelayCrypto.DeriveAeadKey(relayRoot, connSalt);
+        Func<byte[], byte[]> rekeyDerive = hn => RelayCrypto.DeriveRekeyedAeadKey(relayRoot, connSalt, hn);
 
         // Promote the client to OPEN - mirrors the relay's peer-up. The web client
         // sends no sealed frame until it sees this.
         await SendControlAsync(socket, PeerUpFrame, ct).ConfigureAwait(false);
 
         if (isHttpLeg)
-            await RunInboundHttpAsync(socket, aeadKey, sessionId, ct).ConfigureAwait(false);
+            await RunInboundHttpAsync(socket, aeadKey, sessionId, rekeyDerive, ct).ConfigureAwait(false);
         else
-            await RunInboundRuntimeAsync(socket, aeadKey, sessionId, ct).ConfigureAwait(false);
+            await RunInboundRuntimeAsync(socket, aeadKey, sessionId, rekeyDerive, ct).ConfigureAwait(false);
     }
 
     /// <summary>Runtime leg: wrap the socket in a <see cref="RelayWebSocket"/> and
     /// drive the hub on it, feeding inbound frames as they arrive for decrypt.</summary>
-    private async Task RunInboundRuntimeAsync(WebSocket socket, byte[] aeadKey, string sessionId, CancellationToken ct)
+    private async Task RunInboundRuntimeAsync(WebSocket socket, byte[] aeadKey, string sessionId, Func<byte[], byte[]> rekeyDerive, CancellationToken ct)
     {
         var relayWs = new RelayWebSocket(
-            socket, aeadKey, RelayCrypto.DirHostToClient, RelayCrypto.DirClientToHost);
+            socket, aeadKey, RelayCrypto.DirHostToClient, RelayCrypto.DirClientToHost, rekeyDerive);
         var hubTask = _hub.HandleClientAsync(relayWs, sessionId, MultiplexHub.ClientTransport.Lan, ct);
         try
         {
@@ -416,9 +417,9 @@ public sealed class RelayConnectionService : BackgroundService
 
     /// <summary>HTTP leg: reuse <see cref="HttpChannel"/> to dispatch sealed REST
     /// requests through the endpoint pipeline as this session's phone session.</summary>
-    private async Task RunInboundHttpAsync(WebSocket socket, byte[] aeadKey, string sessionId, CancellationToken ct)
+    private async Task RunInboundHttpAsync(WebSocket socket, byte[] aeadKey, string sessionId, Func<byte[], byte[]> rekeyDerive, CancellationToken ct)
     {
-        var channel = new HttpChannel(this, socket, aeadKey, sessionId, ct);
+        var channel = new HttpChannel(this, socket, aeadKey, sessionId, ct, rekeyDerive);
         try
         {
             await ReadBinaryFramesAsync(socket, channel.OnRequestFrame, ct).ConfigureAwait(false);
@@ -718,9 +719,11 @@ public sealed class RelayConnectionService : BackgroundService
                     return (session, sessionTask);
 
                 var aeadKey = RelayCrypto.DeriveAeadKey(_root, connSalt);
+                var root = _root;
                 // Host endpoint: send dir=1 (host→client), expect dir=2 (client→host).
                 var relayWs = new RelayWebSocket(
-                    transport, aeadKey, RelayCrypto.DirHostToClient, RelayCrypto.DirClientToHost);
+                    transport, aeadKey, RelayCrypto.DirHostToClient, RelayCrypto.DirClientToHost,
+                    hn => RelayCrypto.DeriveRekeyedAeadKey(root, connSalt, hn));
 
                 // Drive the hub on this relayed socket, tagged with the phone
                 // session id so the killswitch can close it and marked as a
@@ -1031,7 +1034,9 @@ public sealed class RelayConnectionService : BackgroundService
 
                 current?.Dispose(); // defensive: relay should have sent peer-down first
                 var aeadKey = RelayCrypto.DeriveAeadKey(_root, connSalt);
-                return new HttpChannel(_owner, transport, aeadKey, SessionTag, ct);
+                var root = _root;
+                return new HttpChannel(_owner, transport, aeadKey, SessionTag, ct,
+                    hn => RelayCrypto.DeriveRekeyedAeadKey(root, connSalt, hn));
             }
 
             // peer-down / unknown: end the current channel; keep the host socket open.
@@ -1076,22 +1081,20 @@ public sealed class RelayConnectionService : BackgroundService
     {
         private readonly RelayConnectionService _owner;
         private readonly WebSocket _transport;
-        private readonly byte[] _aeadKey;
+        private readonly SealedChannelKeys _keys;
         private readonly string _sessionId;
         private readonly CancellationToken _ct;
         private readonly SemaphoreSlim _sendLock = new(1, 1);
         private readonly SemaphoreSlim _inFlight = new(MaxConcurrentHttpRequests, MaxConcurrentHttpRequests);
-        private ulong _sendCounter;
-        private long _lastRecvCounter = -1;
         private volatile bool _disposed;
 
         public HttpChannel(
             RelayConnectionService owner, WebSocket transport, byte[] aeadKey,
-            string sessionId, CancellationToken ct)
+            string sessionId, CancellationToken ct, Func<byte[], byte[]>? rekeyDerive = null)
         {
             _owner = owner;
             _transport = transport;
-            _aeadKey = aeadKey;
+            _keys = new SealedChannelKeys(aeadKey, rekeyDerive);
             _sessionId = sessionId;
             _ct = ct;
         }
@@ -1111,10 +1114,14 @@ public sealed class RelayConnectionService : BackgroundService
             RelayHttpRequest? request;
             try
             {
-                var (dir, counter, plaintext) = RelayCrypto.Open(_aeadKey, frame);
-                if (dir != RelayCrypto.DirClientToHost || (long)counter <= _lastRecvCounter)
+                var kind = _keys.Open(frame, RelayCrypto.DirClientToHost, out var plaintext);
+                if (kind == SealedChannelKeys.InboundKind.Rejected)
                     return; // wrong direction or replay/reorder ⇒ drop.
-                _lastRecvCounter = (long)counter;
+                if (kind == SealedChannelKeys.InboundKind.RekeyRequest)
+                {
+                    BeginRekey();
+                    return;
+                }
                 request = JsonSerializer.Deserialize(plaintext, AppJsonContext.Default.RelayHttpRequest);
             }
             catch (CryptographicException)
@@ -1138,6 +1145,59 @@ public sealed class RelayConnectionService : BackgroundService
             }
 
             _ = DispatchAndReplyAsync(request);
+        }
+
+        // Holds the send lock from the key switch until the host nonce is on the
+        // wire, so no frame sealed under the rekeyed key can precede it.
+        private void BeginRekey()
+        {
+            try
+            {
+                _sendLock.Wait(_ct);
+            }
+            catch (Exception)
+            {
+                return; // disposed or cancelled during teardown
+            }
+            byte[] frame;
+            try
+            {
+                frame = _keys.SealHostNonceAndRekey(RelayCrypto.DirHostToClient);
+            }
+            catch (Exception)
+            {
+                ReleaseSendLock();
+                return;
+            }
+            _ = SendHoldingLockAsync(frame);
+        }
+
+        // Dispose can run while a send still holds the lock; releasing a disposed
+        // semaphore must not surface as an unobserved exception.
+        private void ReleaseSendLock()
+        {
+            try { _sendLock.Release(); } catch (ObjectDisposedException) { }
+        }
+
+        private async Task SendHoldingLockAsync(byte[] frame)
+        {
+            try
+            {
+                if (!_disposed && _transport.State == WebSocketState.Open)
+                {
+                    await _transport
+                        .SendAsync(frame, WebSocketMessageType.Binary, endOfMessage: true, _ct)
+                        .ConfigureAwait(false);
+                }
+            }
+            catch (Exception ex)
+            {
+                _owner._log.LogDebug(ex, "relay http rekey reply failed");
+            }
+            finally
+            {
+                ReleaseSendLock();
+            }
         }
 
         private async Task DispatchAndReplyAsync(RelayHttpRequest request)
@@ -1179,8 +1239,7 @@ public sealed class RelayConnectionService : BackgroundService
             {
                 if (_disposed || _transport.State != WebSocketState.Open)
                     return;
-                var counter = _sendCounter++;
-                var frame = RelayCrypto.Seal(_aeadKey, RelayCrypto.DirHostToClient, counter, json);
+                var frame = _keys.Seal(RelayCrypto.DirHostToClient, json);
                 await _transport
                     .SendAsync(frame, WebSocketMessageType.Binary, endOfMessage: true, _ct)
                     .ConfigureAwait(false);

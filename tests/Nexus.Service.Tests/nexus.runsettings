@@ -16,7 +16,7 @@
   flag, so the only way to flip from "exclude Manual" to "include only
   Manual" is to point at a different runsettings file.
 
-  The build-pc skill and the pre-push hook rely on this default so the
+  The build-pc skill relies on this default so the
   per-build test gate stays fast.
 -->
 <RunSettings>

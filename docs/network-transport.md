@@ -60,7 +60,8 @@ is called out here:
   topic.
 - `/cloud/*` - online account registration/login/sync endpoints
   (`nexus-api`-backed), plus device reporting/management and the
-  `/cloud/benchmarks/submit` leaderboard forwarder. No WebSocket topic.
+  `/cloud/benchmarks/submit` leaderboard forwarder. The `cloud/accounts`
+  topic fires when the active account changes.
 - `/home-assistant/*` - Home Assistant entity config and control. Introduces
   the `homeAssistant` multiplex topic (see below).
 - `/rtc/offer` - WebRTC DataChannel direct P2P signaling: the phone posts an
@@ -231,6 +232,7 @@ Other slow / event-driven topics (e.g. `prefs`, `lighting`, `cooling`,
 | `cooling/warnings` | event-driven on an active-warning-set transition (NP50 heartbeat worker; future warning producers) | `{revision: long, deviceId: string}` | no current REST endpoint or React subscriber found | Broadcast infrastructure only; not yet wired to a route or UI. |
 | `panel/device` | event-driven on every panel device CRUD (`POST /panel/devices`, `POST /panel/devices/{id}`, `DELETE /panel/devices/{id}`) | `{revision: long, deviceId: string}` | `usePanelLayout` filters by `deviceId === mine` and refetches the device record | Cross-device layout sync; replaces the BroadcastChannel cross-tab path for cross-device updates. |
 | `gallery` | event-driven on gallery source add/remove/upload | `{revision: long}` | `GalleryPage`, `useGallery()` | Push-driven refetch of `GET /gallery/items`. |
+| `cloud/accounts` | event-driven on account activation or logout (login, switch, or a recovery the service's own poll loop approved) | `{revision: long}` | `useCloudAccounts()` | Push-driven refetch of `GET /cloud/accounts`, so a sign-in that no page requested still shows without a reload. |
 | `displays` | event-driven on display topology or monitor-panel assignment change | `{revision: long}` | `useDisplayTopology()` | Push-driven refetch of `GET /displays/topology`. |
 | `homeAssistant` | event-driven on Home Assistant entity cache change | `{revision: long}` | `HomeAssistantPage` | Push-driven refetch of `GET /home-assistant/entities`. |
 | `mediaLibrary` | event-driven on lighting media library mutation (import/commit/delete) | `{revision: long}` | `useMediaLibrary()` | Push-driven refetch of `GET /media/library`. |
@@ -241,6 +243,9 @@ Other slow / event-driven topics (e.g. `prefs`, `lighting`, `cooling`,
 | `update` | event-driven when an update becomes available or finishes staging | `{revision: long}` | dashboard `sidebar` | Push-driven refetch of `GET /update/status` instead of waiting out the sidebar's 60s poll. |
 | `twitch/chat/{channel}` | `TwitchChatHub` | event-driven, batched at `250 ms`, plus the retained buffer as a snapshot on subscribe | Twitch widget | Live chat for one channel, pre-split into text and emote runs. Demand-driven: the first subscriber makes the service JOIN the channel and the last unsubscriber makes it PART, so no Twitch connection is held for an unwatched widget. Emote images are proxied through `GET /api/twitch/emote/{id}`. |
 | `streamdeckTiles` | `StreamDeckConnectionWorker` | event-driven per-tile on a wire-hash change, capped at 4 monitoring and 4 weather tiles per tick round-robin; no snapshot registry - a fresh subscriber clears every tracked hash so the following tick(s) re-broadcast every visible tile | `StreamDeckDevicePage` Customize tab | Live JPEG render of a visible monitoring/weather Stream Deck key, pixel-identical to what the physical key shows; broadcast only while subscribed. |
+| `monitoring/history-tail` | `MonitoringHistoryTailBroadcaster`, fed by `MetricsSampler` | event-driven, once per 1 Hz sample, only while subscribed | Monitoring page's live history-tail hook | Same `MetricsHistoryResponse` shape as `GET /monitoring/history`'s tail poll, decimated to one point per series; additive push alongside the existing HTTP poll. |
+| `monitoring/events` | `BroadcastingMonitoringEventStore` | event-driven on every appended timeline event (USB attach/detach, app-open, UAC escalation, custom) | Monitoring page's live events hook | One `MonitoringEventDto`, same shape as `GET /monitoring/events`; additive push alongside the existing HTTP poll. |
+| `monitoring/privacy` | `BroadcastingPrivacySessionStore` | event-driven on every privacy-session open/close, Windows only | Monitoring page's live privacy hook | One `PrivacySessionWire`, same shape as an entry in `GET /monitoring/privacy`'s `sessions` array; additive push alongside the existing HTTP poll. |
 
 Notes:
 

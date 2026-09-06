@@ -22,7 +22,7 @@ public static class LightingRoutes
 
     public static void MapLightingEndpoints(this WebApplication app)
     {
-        app.MapPost("/lighting/stop", (ILightingProvider l, MultiplexHub hub) => { l.StopAll(); PanelTopics.BroadcastLighting(hub); return ApiResponse.Ok(); }).AllowPanel();
+        app.MapPost("/lighting/stop", (ILightingProvider l, MultiplexHub hub) => { l.StopAll(); ResetEffectSignature(); PanelTopics.BroadcastLighting(hub); return ApiResponse.Ok(); }).AllowPanel();
         app.MapGet("/lighting/current", (ILightingProvider l) => new CurrentSyncResponse { Sync = l.GetSync(), Paused = l.IsPaused }).AllowPanel();
         // Freeze/resume the active effect's rendered frame. No-op with no active
         // effect (engine not running); returns the resulting paused state either way.
@@ -219,17 +219,18 @@ public static class LightingRoutes
             return ApiResponse.Ok();
         }).LocalhostOnly();
         // Headless start endpoints
-        app.MapPost("/lighting/animate/headless-start", (AnimateHeadlessStart body, ILightingProvider l, MultiplexHub hub, FeatureGates gates) =>
+        app.MapPost("/lighting/animate/headless-start", (AnimateHeadlessStart body, ILightingProvider l, MultiplexHub hub, FeatureGates gates, Nexus.Service.Telemetry.ITelemetry telemetry) =>
         {
             if (!gates.Lighting)
             {
                 return Results.Conflict(new FeatureDisabledResponse { Feature = FeatureNames.Lighting });
             }
             l.StartAnimate(body);
+            CaptureEffect(telemetry, "animate", body.Effect);
             PanelTopics.BroadcastLighting(hub);
             return Results.Ok(ApiResponse.Ok());
         }).AllowPanel();
-        app.MapPost("/lighting/static/headless-start", (StaticHeadlessStart body, ILightingProvider l, MultiplexHub hub, FeatureGates gates) =>
+        app.MapPost("/lighting/static/headless-start", (StaticHeadlessStart body, ILightingProvider l, MultiplexHub hub, FeatureGates gates, Nexus.Service.Telemetry.ITelemetry telemetry) =>
         {
             if (!gates.Lighting)
             {
@@ -237,16 +238,18 @@ public static class LightingRoutes
             }
             try { l.StartStatic(body); }
             catch (System.ArgumentException ex) { return Results.Ok(ApiResponse.Fail(ex.Message)); }
+            CaptureEffect(telemetry, "static", body.Effect);
             PanelTopics.BroadcastLighting(hub);
             return Results.Ok(ApiResponse.Ok());
         }).AllowPanel();
-        app.MapPost("/lighting/screen/headless-start", (ScreenHeadlessStart body, ILightingProvider l, MultiplexHub hub, FeatureGates gates) =>
+        app.MapPost("/lighting/screen/headless-start", (ScreenHeadlessStart body, ILightingProvider l, MultiplexHub hub, FeatureGates gates, Nexus.Service.Telemetry.ITelemetry telemetry) =>
         {
             if (!gates.Lighting)
             {
                 return Results.Conflict(new FeatureDisabledResponse { Feature = FeatureNames.Lighting });
             }
             l.StartScreen(body);
+            CaptureEffect(telemetry, "screen", null);
             PanelTopics.BroadcastLighting(hub);
             return Results.Ok(ApiResponse.Ok());
         }).AllowPanel();
@@ -280,6 +283,66 @@ public static class LightingRoutes
             PanelTopics.BroadcastLighting(hub);
             return ApiResponse.Ok();
         }).AllowPanel();
+    }
+
+    // The three headless-start routes are re-posted on every slider move, so
+    // only a changed mode/effect pair is worth an event. One slot, not one per
+    // mode: it tracks what is currently applied, so switching away and back is
+    // two real transitions.
+    private static string _lastEffectSignature = "";
+
+    internal static void ResetEffectSignature() => Interlocked.Exchange(ref _lastEffectSignature, "");
+
+    internal static void CaptureEffect(Nexus.Service.Telemetry.ITelemetry telemetry, string routeMode, string? effect)
+    {
+        var (mode, slug) = ResolveEffect(routeMode, effect);
+        var signature = mode + ":" + slug;
+        // Both operands are typed string, so this is ordinal value equality;
+        // a change to ReferenceEquals would silently stop deduping.
+        if (Interlocked.Exchange(ref _lastEffectSignature, signature) == signature) return;
+        telemetry.Capture(Nexus.Service.Telemetry.TelemetryEvents.LightingEffectApplied,
+            ("mode", mode), ("effect", slug));
+    }
+
+    /// <summary>
+    /// The mode the provider actually ran, with the effect key it actually used.
+    /// StartAnimate reroutes any static-catalog key into Static, and an absent
+    /// key falls back to rainbow, so reporting the route and the raw body would
+    /// mislabel both. Screen mode ignores Effect entirely.
+    /// </summary>
+    internal static (string Mode, string Effect) ResolveEffect(string routeMode, string? effect)
+    {
+        if (routeMode == "screen") return ("screen", "screen");
+        var name = (effect ?? "").Trim().ToLowerInvariant();
+        if (routeMode == "animate")
+        {
+            if (name.Length == 0) name = "rainbow";
+            if (Nexus.Service.Lighting.StaticEffectCatalog.Contains(name)) return ("static", SafeSlug(name));
+        }
+        else if (name.Length == 0)
+        {
+            name = Nexus.Service.Lighting.StaticEffectCatalog.DefaultEffect;
+        }
+        return (routeMode, SafeSlug(name));
+    }
+
+    internal static string EffectSignature(string mode, string? effect)
+    {
+        var (m, e) = ResolveEffect(mode, effect);
+        return m + ":" + e;
+    }
+
+    /// <summary>Effect names arrive in a client POST, so the send boundary keeps
+    /// them to a lowercase ASCII slug; anything else reports as "other".</summary>
+    internal static string SafeSlug(string? value)
+    {
+        if (string.IsNullOrEmpty(value) || value.Length > 64) return "other";
+        foreach (var c in value)
+        {
+            var ok = (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '-' || c == '_';
+            if (!ok) return "other";
+        }
+        return value;
     }
 }
 
@@ -319,4 +382,5 @@ internal static class MultiGpuCache
         catch { }
         return false;
     }
+
 }

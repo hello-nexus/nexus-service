@@ -240,6 +240,11 @@ public static partial class DevicesRoutes
                 Brightness = kv.Value.Brightness,
                 Hue = kv.Value.Hue,
                 Saturation = kv.Value.Saturation,
+                AdjustRed = kv.Value.AdjustRed,
+                AdjustGreen = kv.Value.AdjustGreen,
+                AdjustBlue = kv.Value.AdjustBlue,
+                AdjustTemperature = kv.Value.AdjustTemperature,
+                AdjustSaturation = kv.Value.AdjustSaturation,
             };
         }
         return copy;
@@ -653,6 +658,117 @@ public static partial class DevicesRoutes
             ld.SetBrightness(body.Id, body.Brightness);
             return Results.Ok(ApiResponse.Ok());
         }).AllowPanel();
+        // Colour tuning: per-device channel / temperature / saturation trims,
+        // applied by the frame writers on the way to the hardware. Read as a
+        // sparse map - only cards the user actually trimmed appear, so a fresh
+        // install answers with an empty object.
+        app.MapGet("/devices/lighting-devices/color-adjust", (
+            Nexus.Service.Persistence.IConfigStore store) =>
+        {
+            var dto = new LightingColorAdjustResponse();
+            // Deliberately not store.Update: that marks settings dirty and
+            // fires OnChanged, so a read would schedule a settings.json flush
+            // and a cloud profile re-upload. The preference dictionary is
+            // mutated in place, so a concurrent insert can throw mid-iteration;
+            // retry once and answer with what resolved, same guard shape the
+            // frame writers use.
+            for (var attempt = 0; attempt < 2; attempt++)
+            {
+                dto.Adjustments.Clear();
+                try
+                {
+                    foreach (var (id, pref) in store.Load().Devices.LightingDevicePrefs)
+                    {
+                        if (pref is null
+                            || (pref.AdjustRed == 1f && pref.AdjustGreen == 1f && pref.AdjustBlue == 1f
+                                && pref.AdjustTemperature == 0f && pref.AdjustSaturation == 1f))
+                        {
+                            continue;
+                        }
+                        dto.Adjustments[id] = new LightingColorAdjustDto
+                        {
+                            Red = pref.AdjustRed,
+                            Green = pref.AdjustGreen,
+                            Blue = pref.AdjustBlue,
+                            Temperature = pref.AdjustTemperature,
+                            Saturation = pref.AdjustSaturation,
+                        };
+                    }
+                    break;
+                }
+                catch (InvalidOperationException)
+                {
+                    // Fall through to the retry; a second failure answers with
+                    // whatever the partial pass collected.
+                }
+            }
+            return Results.Json(
+                dto,
+                Nexus.Service.Serialization.AppJsonContext.Default.LightingColorAdjustResponse);
+        }).AllowPanel();
+
+        app.MapPost("/devices/lighting-devices/color-adjust", (
+            SetLightingColorAdjustBody body,
+            ILightingDeviceProvider ld,
+            Nexus.Service.Persistence.IConfigStore store,
+            FeatureGates gates) =>
+        {
+            if (!gates.Lighting)
+            {
+                return Results.Conflict(new FeatureDisabledResponse { Feature = FeatureNames.Lighting });
+            }
+            // Clamped here as well as in DeviceColorAdjust: the stored value is
+            // what the UI reads back, so a client sending an out-of-range trim
+            // must not come back as one.
+            static float? Channel(float? v) => v is null
+                ? null
+                : Math.Clamp(v.Value, Nexus.Service.Lighting.DeviceColorAdjust.MinChannel, Nexus.Service.Lighting.DeviceColorAdjust.MaxChannel);
+            var red = Channel(body.Red);
+            var green = Channel(body.Green);
+            var blue = Channel(body.Blue);
+            var temperature = body.Temperature is null ? (float?)null : Math.Clamp(body.Temperature.Value, -1f, 1f);
+            var saturation = body.Saturation is null
+                ? (float?)null
+                : Math.Clamp(body.Saturation.Value, Nexus.Service.Lighting.DeviceColorAdjust.MinSaturation, Nexus.Service.Lighting.DeviceColorAdjust.MaxSaturation);
+            store.Update(s =>
+            {
+                foreach (var id in body.Ids)
+                {
+                    if (string.IsNullOrEmpty(id))
+                    {
+                        continue;
+                    }
+                    if (!s.Devices.LightingDevicePrefs.TryGetValue(id, out var pref) || pref is null)
+                    {
+                        pref = new Nexus.Service.Persistence.LightingDevicePreference();
+                        s.Devices.LightingDevicePrefs[id] = pref;
+                    }
+                    // Absent means "leave alone", not "reset": one slider drag
+                    // must not flatten the other four across a mixed scope.
+                    if (red is not null) pref.AdjustRed = red.Value;
+                    if (green is not null) pref.AdjustGreen = green.Value;
+                    if (blue is not null) pref.AdjustBlue = blue.Value;
+                    if (temperature is not null) pref.AdjustTemperature = temperature.Value;
+                    if (saturation is not null) pref.AdjustSaturation = saturation.Value;
+                }
+            });
+            // Brightness keeps going through the provider, which is what the
+            // dedicated brightness route does; carrying it here only saves the
+            // client one HTTP call per device per drag.
+            if (body.Brightness is not null)
+            {
+                foreach (var id in body.Ids)
+                {
+                    if (!string.IsNullOrEmpty(id))
+                    {
+                        ld.SetBrightness(id, body.Brightness.Value);
+                    }
+                }
+            }
+            CaptureDeviceStateIntoActive(store);
+            return Results.Ok(ApiResponse.Ok());
+        }).AllowPanel();
+
         app.MapPost("/devices/lighting-devices/color", (
             SetLightingDeviceColor body,
             ILightingDeviceProvider ld,
@@ -696,14 +812,17 @@ public static partial class DevicesRoutes
             return Results.Ok(ApiResponse.Ok());
         }).AllowPanel();
 
-        // Motherboard ARGB zone LED count - persists and applies via OpenRGB RESIZEZONE
-        app.MapPost("/devices/lighting-devices/zone-size", (SetZoneLedCountBody body, ILightingDeviceProvider ld, FeatureGates gates) =>
+        // Motherboard ARGB zone LED count - persists and applies via OpenRGB RESIZEZONE.
+        // Broadcasts `lighting` so the device list (and its cards' LED counts)
+        // refetches without waiting for an unrelated mutation.
+        app.MapPost("/devices/lighting-devices/zone-size", (SetZoneLedCountBody body, ILightingDeviceProvider ld, FeatureGates gates, Nexus.Service.Sockets.MultiplexHub hub) =>
         {
             if (!gates.Lighting)
             {
                 return Results.Conflict(new FeatureDisabledResponse { Feature = FeatureNames.Lighting });
             }
             ld.SetZoneLedCount(body.Id, body.Count);
+            Nexus.Service.Sockets.PanelTopics.BroadcastLighting(hub);
             return Results.Ok(ApiResponse.Ok());
         });
 

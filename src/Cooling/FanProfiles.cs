@@ -128,8 +128,7 @@ public static class FanProfiles
             // Snapshot the user's custom mapping on the way out of "custom":
             // curve assignments and manual duties both, so Custom restores the
             // full arrangement. The manual copy is load-bearing for the Off
-            // round-trip - Off's per-channel release deletes the live
-            // ManualSpeeds entries.
+            // round-trip - Off clears the live ManualSpeeds entries below.
             if (s.Cooling.ActivePreset == "custom" && canonical != "custom")
             {
                 s.Cooling.CustomFanCurveAssignments = SnapshotMapping(s.Cooling.Curves, fanIds);
@@ -242,6 +241,21 @@ public static class FanProfiles
                         {
                             curve.Outputs.RemoveAll(o => fanIds.Contains(o.Id));
                         }
+                        // The manual entries go with it: only the motherboard
+                        // providers' ReleaseFan drops them, every hub provider
+                        // leaves the entry, and a survivor reads back as a fan
+                        // Nexus still drives. Absent channels included - their
+                        // hub can reconnect and CurveEngine replays the duty
+                        // into an off system. Uncontrolled ones keep theirs,
+                        // like the detach above: Off does not reach into what
+                        // the user handed back.
+                        foreach (var id in s.Cooling.ManualSpeeds.Keys.ToList())
+                        {
+                            if (!uncontrolledIds.Contains(id))
+                            {
+                                s.Cooling.ManualSpeeds.Remove(id);
+                            }
+                        }
                         s.Cooling.ActivePreset = "off";
                         break;
                     }
@@ -282,11 +296,16 @@ public static class FanProfiles
     /// fan resolves to one of: BIOS, Manual, or attached to a specific curve.
     /// Rules:
     ///   - Every fan BIOS (no curve attachment, no manual override) -> "off".
+    ///     Locked fans count for this check even though the preset checks below
+    ///     skip them: one still driven by a curve or a manual duty means the
+    ///     system is not off.
     ///   - Every fan attached to the same `preset-{name}` curve and no manual
     ///     overrides -> that preset.
     ///   - Anything else -> "custom".
     /// "Manual on at least one fan" never resolves to "off" or a preset; the
-    /// user explicitly broke out of the shared regime.
+    /// user explicitly broke out of the shared regime. For the preset half that
+    /// means an unlocked fan - a locked one is off the preset's books either
+    /// way, and only weighs on the "off" check above.
     /// Fans classified as Unresponsive are ignored: they're physically
     /// disconnected, can't be wired to any curve, and would otherwise force
     /// every preset check to fail on `fanIds.All(...)`.
@@ -303,9 +322,10 @@ public static class FanProfiles
         // ones: Apply never attaches them, so counting them would fail the
         // "all fans on the preset" check and pin the bar to "custom" forever.
         var uncontrolled = settings.Cooling.UncontrolledFanChannels;
+        var lockOverrides = settings.Cooling.FanLockOverrides;
         var fanIds = channels
             .Where(c => c.Classification != "Unresponsive"
-                && !IsLocked(c, settings.Cooling.FanLockOverrides)
+                && !IsLocked(c, lockOverrides)
                 && !uncontrolled.Contains(c.Id))
             .Select(c => c.Id)
             .ToHashSet();
@@ -333,8 +353,20 @@ public static class FanProfiles
             .Where(id => fanIds.Contains(id) && !attachment.ContainsKey(id))
             .ToHashSet();
 
+        // A locked fan is out of `fanIds` but is still a fan Nexus drives, so
+        // its curve attachment or manual duty has to be counted here: without
+        // it, locking every curve-driven fan leaves only BIOS fans in the set
+        // and derives "off" while software still drives the locked ones.
+        // Uncontrolled fans stay out - the write gate keeps them inert whatever
+        // a stale attachment says.
+        var lockedDriven = channels.Any(c => c.Classification != "Unresponsive"
+            && IsLocked(c, lockOverrides)
+            && !uncontrolled.Contains(c.Id)
+            && (settings.Cooling.ManualSpeeds.ContainsKey(c.Id)
+                || curves.Any(cv => cv.Outputs.Any(o => o.Id == c.Id))));
+
         // All fans BIOS = no attachment AND no manual override.
-        if (attachment.Count == 0 && manualUnattached.Count == 0) return "off";
+        if (attachment.Count == 0 && manualUnattached.Count == 0 && !lockedDriven) return "off";
 
         // All fans on the same preset curve, with no manual overrides.
         if (manualUnattached.Count == 0)

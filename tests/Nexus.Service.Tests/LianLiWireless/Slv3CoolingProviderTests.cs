@@ -43,6 +43,7 @@ public class Slv3CoolingProviderTests
                 Rpm = new[] { 0, 1200, 0, 0 },
             },
         };
+        hub.State.MotherboardPwmPercent = 35;
         var provider = new Slv3CoolingProvider(hub);
 
         var channels = provider.GetFanChannels();
@@ -50,10 +51,10 @@ public class Slv3CoolingProviderTests
         Assert.Equal(2, channels.Count);
         Assert.Equal($"lianli-wireless:{Mac}:port0", channels[0].Id);
         Assert.Equal(FanModes.Auto, channels[0].Mode);       // wire byte 6 -> mobo-sync
-        Assert.Equal(Slv3Protocol.PwmFollowMotherboard, channels[0].DutyPercent);
+        Assert.Equal(35, channels[0].DutyPercent);           // shows the header duty the RX measured
         Assert.Equal($"lianli-wireless:{Mac}:port1", channels[1].Id);
         Assert.Equal(FanModes.Manual, channels[1].Mode);
-        Assert.Equal(40, channels[1].DutyPercent);
+        Assert.Equal(16, channels[1].DutyPercent);           // wire byte 40 on the 0..255 scale
         Assert.Equal(1200, channels[1].Rpm);
         Assert.Equal(Slv3Protocol.MinDutyPercent, channels[1].MinDuty);
         Assert.All(channels, c => Assert.Equal($"lianli-wireless:{Mac}", c.DeviceId));
@@ -120,7 +121,7 @@ public class Slv3CoolingProviderTests
         Assert.Equal($"lianli-wireless:{Mac}", component.Id);
         Assert.Equal(3, component.Devices.Count);
         Assert.Equal(900, component.Devices[0].Rpm);
-        Assert.Equal(50, component.Devices[0].Pwm);
+        Assert.Equal(20, component.Devices[0].Pwm);          // wire byte 50 -> 20 %
     }
 
     [Fact]

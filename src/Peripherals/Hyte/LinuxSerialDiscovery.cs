@@ -46,7 +46,7 @@ internal static class LinuxSerialDiscovery
             try
             {
                 var name = Path.GetFileName(devPath); // e.g. "ttyACM0"
-                var usbDir = ResolveUsbDeviceDir(Path.Combine(sysTtyRoot, name, "device"));
+                var usbDir = ResolveUsbDeviceDir(Path.Combine(sysTtyRoot, name));
                 if (usbDir is null)
                     continue;
 
@@ -85,26 +85,15 @@ internal static class LinuxSerialDiscovery
     }
 
     /// <summary>
-    /// Resolve the <c>/sys/class/tty/&lt;name&gt;/device</c> symlink to the real
-    /// path, then walk up the USB device tree until a directory exposing
-    /// <c>idVendor</c> is found. The <c>device</c> link points at the USB
-    /// *interface* (e.g. <c>2-1:1.0</c>); the VID/PID/serial live on its parent
-    /// USB *device* node (e.g. <c>2-1</c>), so we climb a few levels.
+    /// Resolve <c>/sys/class/tty/&lt;name&gt;/device</c> to the real path, then walk up
+    /// the USB device tree until a directory exposing <c>idVendor</c> is found. The
+    /// <c>device</c> link points at the USB *interface* (e.g. <c>2-1:1.0</c>); the
+    /// VID/PID/serial live on its parent USB *device* node (e.g. <c>2-1</c>), so we
+    /// climb a few levels.
     /// </summary>
-    private static string? ResolveUsbDeviceDir(string deviceSymlink)
+    private static string? ResolveUsbDeviceDir(string classEntry)
     {
-        string? dir;
-        try
-        {
-            var target = Directory.ResolveLinkTarget(deviceSymlink, returnFinalTarget: true);
-            if (target is null)
-                return null; // not a symlink / unresolvable - don't walk the literal path
-            dir = target.FullName;
-        }
-        catch
-        {
-            return null;
-        }
+        var dir = ResolveDeviceLink(classEntry);
 
         for (var i = 0; i < 6 && !string.IsNullOrEmpty(dir); i++)
         {
@@ -113,5 +102,33 @@ internal static class LinuxSerialDiscovery
             dir = Directory.GetParent(dir)?.FullName;
         }
         return null;
+    }
+
+    /// <summary>
+    /// <c>readlink -f</c> semantics for the sysfs <c>device</c> link. Both halves are
+    /// symlinks in real sysfs: <c>/sys/class/tty/ttyACM0</c> points into
+    /// <c>/sys/devices/…</c>, and its <c>device</c> entry is a RELATIVE link
+    /// (<c>../../../1-13.3.3.2:1.0</c>). <see cref="Directory.ResolveLinkTarget"/>
+    /// resolves a relative target against the literal path it was handed, yielding
+    /// <c>/sys/1-13.3.3.2:1.0</c> - a path that does not exist, so every port was
+    /// silently dropped. Resolve the class entry first, then combine the leaf target
+    /// against that physical directory.
+    /// </summary>
+    private static string? ResolveDeviceLink(string classEntry)
+    {
+        try
+        {
+            var entry = Directory.ResolveLinkTarget(classEntry, returnFinalTarget: true)?.FullName
+                        ?? classEntry;
+            var device = new DirectoryInfo(Path.Combine(entry, "device"));
+            var target = device.LinkTarget;
+            if (target is null)
+                return device.Exists ? device.FullName : null;
+            return Path.GetFullPath(target, entry);
+        }
+        catch
+        {
+            return null;
+        }
     }
 }

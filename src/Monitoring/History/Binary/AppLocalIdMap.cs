@@ -29,13 +29,13 @@ internal sealed class AppLocalIdMap
     private readonly string _path;
     private readonly List<int> _globalIds;
     private readonly Dictionary<int, int> _localByGlobal;
-    private readonly int _initialCount;
+    private int _flushedCount;
 
     private AppLocalIdMap(string path, List<int> globalIds)
     {
         _path = path;
         _globalIds = globalIds;
-        _initialCount = globalIds.Count;
+        _flushedCount = globalIds.Count;
         _localByGlobal = new Dictionary<int, int>(globalIds.Count);
         for (var i = 0; i < globalIds.Count; i++)
         {
@@ -116,11 +116,23 @@ internal sealed class AppLocalIdMap
         return localId;
     }
 
-    /// <summary>Appends whatever GetOrAdd assigned since LoadForWrite, or
-    /// does nothing if nothing new was assigned.</summary>
+    /// <summary>Brings the file up to this instance's map: appends the ids
+    /// assigned since the previous Flush, or rewrites the whole map when the
+    /// file no longer holds exactly the ids already flushed (a partial
+    /// write, or the file deleted or truncated underneath a running
+    /// store). The in-memory map is authoritative - AppUsageStore is the
+    /// single writer - so a rewrite restores what the day's segment
+    /// records reference.</summary>
     public void Flush()
     {
-        if (_globalIds.Count == _initialCount)
+        var expectedLength = (long)_flushedCount * RecordBytes;
+        var onDisk = File.Exists(_path) ? new FileInfo(_path).Length : 0;
+        if (onDisk != expectedLength)
+        {
+            RewriteAll();
+            return;
+        }
+        if (_globalIds.Count == _flushedCount)
         {
             return;
         }
@@ -128,11 +140,41 @@ internal sealed class AppLocalIdMap
         using var fs = new FileStream(_path, FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.Read);
         fs.Seek(0, SeekOrigin.End);
         Span<byte> buf = stackalloc byte[RecordBytes];
-        for (var i = _initialCount; i < _globalIds.Count; i++)
+        for (var i = _flushedCount; i < _globalIds.Count; i++)
         {
             BinaryPrimitives.WriteInt32LittleEndian(buf, _globalIds[i]);
             fs.Write(buf);
         }
         fs.Flush(flushToDisk: true);
+        _flushedCount = _globalIds.Count;
+    }
+
+    // Write-then-rename so a crash mid-rewrite leaves the old file intact
+    // rather than a map shorter than the records that reference it.
+    private void RewriteAll()
+    {
+        if (_globalIds.Count == 0)
+        {
+            if (File.Exists(_path))
+            {
+                File.Delete(_path);
+            }
+            _flushedCount = 0;
+            return;
+        }
+
+        var tmp = _path + ".tmp";
+        using (var fs = new FileStream(tmp, FileMode.Create, FileAccess.Write, FileShare.None))
+        {
+            var bytes = new byte[_globalIds.Count * RecordBytes];
+            for (var i = 0; i < _globalIds.Count; i++)
+            {
+                BinaryPrimitives.WriteInt32LittleEndian(bytes.AsSpan(i * RecordBytes, RecordBytes), _globalIds[i]);
+            }
+            fs.Write(bytes);
+            fs.Flush(flushToDisk: true);
+        }
+        File.Move(tmp, _path, overwrite: true);
+        _flushedCount = _globalIds.Count;
     }
 }

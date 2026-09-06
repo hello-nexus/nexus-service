@@ -8,6 +8,7 @@ using System.Threading.Tasks;
 using Nexus.Service.Deck;
 using Nexus.Service.Devices;
 using Nexus.Service.Devices.Detection;
+using Nexus.Service.Fps;
 using Nexus.Service.Models.Sensors;
 using Nexus.Service.Peripherals.Hid;
 using Nexus.Service.Peripherals.StreamDeck;
@@ -64,6 +65,8 @@ internal sealed class FakeSensorProvider : ISensorProvider
     public IReadOnlyList<HardwareSensor> MemorySensors { get; set; } = Array.Empty<HardwareSensor>();
     public IReadOnlyList<HardwareSensor> MotherboardSensors { get; set; } = Array.Empty<HardwareSensor>();
     public IReadOnlyDictionary<string, StorageComponent> StorageComponents { get; set; } = new Dictionary<string, StorageComponent>();
+    public SensorExtras Extras { get; set; } = new();
+    public int ExtrasCalls { get; private set; }
 
     public string GetCpuModel() => "TestCPU";
     public IReadOnlyList<HardwareSensor> GetCpuSensors() => CpuSensors;
@@ -80,10 +83,32 @@ internal sealed class FakeSensorProvider : ISensorProvider
     public string GetStorageBrandModel() => "";
     public IReadOnlyList<HardwareSensor> GetMotherboardSensors() => MotherboardSensors;
     public string GetMotherboardModel() => "TestMobo";
-    public SensorExtras GetSensorExtras() => new();
+    public SensorExtras GetSensorExtras()
+    {
+        ExtrasCalls++;
+        return Extras;
+    }
     public string GetOsVersion() => "TestOS";
     public void SetPollingRate(int pollingRate) { }
     public Task ReadyAsync(CancellationToken ct = default) => Task.CompletedTask;
+}
+
+/// <summary>Minimal IFpsProvider recording SetDemand, for the fps monitoring category.</summary>
+internal sealed class FakeFpsProvider : IFpsProvider
+{
+    public HardwareComponent Component { get; set; } = new() { Id = "fps", Name = "FPS" };
+    public bool? LastDemand { get; private set; }
+    public int DemandCalls { get; private set; }
+
+    public void SetDemand(string source, bool wanted)
+    {
+        LastDemand = wanted;
+        DemandCalls++;
+    }
+
+    public HardwareComponent GetComponent() => Component;
+    public bool TryReadCurrentFps(out double fps) { fps = 0; return false; }
+    public void Dispose() { }
 }
 
 public class StreamDeckConnectionWorkerTests
@@ -118,8 +143,9 @@ public class StreamDeckConnectionWorkerTests
         return new Fixtures(hid, presence, gate, store, new FakeDeckActionExecutor(), imageCache, new MultiplexHub(), new FakeSensorProvider());
     }
 
-    private static StreamDeckConnectionWorker NewWorker(Fixtures f, SimulatedStreamDeckSurface? simulated = null) =>
-        new(f.Hid, f.Presence, f.Gate, f.Store, f.Executor, f.ImageCache, f.Hub, f.Sensors, simulated);
+    private static StreamDeckConnectionWorker NewWorker(
+        Fixtures f, SimulatedStreamDeckSurface? simulated = null, IFpsProvider? fps = null) =>
+        new(f.Hid, f.Presence, f.Gate, f.Store, f.Executor, f.ImageCache, f.Hub, f.Sensors, simulated, fps: fps);
 
     private static void AddMiniDevice(FakeWorkerHidEnumerator hid, string path, string serial)
     {
@@ -2664,5 +2690,165 @@ public class StreamDeckConnectionWorkerTests
     {
         public List<UsbDeviceEntry> Devices { get; } = new();
         public List<UsbDeviceEntry> Enumerate() => Devices;
+    }
+
+    // ── Wider monitoring category set (extras / fps / network) ──
+
+    private static void SeedDeck(Fixtures f, string serial, params DeckAction[] actions)
+    {
+        var page = new DeckPage();
+        foreach (var action in actions)
+        {
+            page.Slots.Add(new DeckSlot { Action = action });
+        }
+        f.Store.Update(s => s.StreamDeck.Decks[serial] = new PhysicalDeckSettings
+        {
+            Deck = new DeckConfig { Pages = { page } },
+        });
+    }
+
+    private static HardwareComponent ExtrasComponent(string id, params HardwareSensor[] sensors) =>
+        new() { Id = id, Name = id, Sensors = new List<HardwareSensor>(sensors) };
+
+    private static HardwareSensor Sensor(string id, string name, string type, float value, string formatted) =>
+        new() { Id = id, Name = name, Type = type, Value = value, Formatted = formatted, Parent = new SensorParent() };
+
+    [Fact]
+    public void Tick_MonitoringKeyOnAnExtrasCategory_SamplesItFromTheExtrasWalk()
+    {
+        var f = NewFixtures(devicePresent: false);
+        f.Sensors.Extras = new SensorExtras
+        {
+            MemoryModules = { ExtrasComponent("/memory/dimm/0", Sensor("dimm0/temp", "Temperature", "Temperature", 41f, "41.0 °C")) },
+        };
+        var simulated = new SimulatedStreamDeckSurface(Mini, "sim-0001");
+        SeedDeck(f, "sim-0001", new DeckAction
+        {
+            Type = "monitoring", Category = "memoryModule", Sensor = "dimm0/temp", Style = "number",
+        });
+        using var worker = NewWorker(f, simulated);
+
+        worker.Tick();
+
+        Assert.Equal(new[] { 41f }, worker.MonitoringHistoryForTests("sim-0001", 0, "0"));
+    }
+
+    /// <summary>
+    /// GetSensorExtras rebuilds every battery/NIC/DIMM/PSU component per call,
+    /// so a tick walks it once for the whole batch of keys - not once per key.
+    /// </summary>
+    [Fact]
+    public void Tick_SeveralExtrasBackedKeys_WalksSensorExtrasOncePerTick()
+    {
+        var f = NewFixtures(devicePresent: false);
+        f.Sensors.Extras = new SensorExtras
+        {
+            MemoryModules = { ExtrasComponent("/memory/dimm/0", Sensor("dimm0/temp", "Temperature", "Temperature", 41f, "41.0 °C")) },
+            Psus = { ExtrasComponent("/psu/0", Sensor("psu/watts", "Power", "Power", 310f, "310 W")) },
+        };
+        var simulated = new SimulatedStreamDeckSurface(Mini, "sim-0001");
+        SeedDeck(f, "sim-0001",
+            new DeckAction { Type = "monitoring", Category = "memoryModule", Sensor = "dimm0/temp", Style = "number" },
+            new DeckAction { Type = "monitoring", Category = "psu", Sensor = "psu/watts", Style = "number" });
+        using var worker = NewWorker(f, simulated);
+        worker.Tick();
+
+        var before = f.Sensors.ExtrasCalls;
+        worker.Tick();
+
+        Assert.Equal(1, f.Sensors.ExtrasCalls - before);
+    }
+
+    [Fact]
+    public void Tick_NoExtrasBackedKey_NeverWalksSensorExtras()
+    {
+        var f = NewFixtures(devicePresent: false);
+        f.Sensors.CpuSensors = new[] { Sensor("cpu/core0", "Core 0", "Load", 42f, "42%") };
+        var simulated = new SimulatedStreamDeckSurface(Mini, "sim-0001");
+        SeedDeck(f, "sim-0001", new DeckAction
+        {
+            Type = "monitoring", Category = "cpu", Sensor = "cpu/core0", Style = "number",
+        });
+        using var worker = NewWorker(f, simulated);
+
+        worker.Tick();
+        worker.Tick();
+
+        Assert.Equal(0, f.Sensors.ExtrasCalls);
+    }
+
+    [Fact]
+    public void Tick_NetworkKey_SamplesTheNicSummedAggregate()
+    {
+        var f = NewFixtures(devicePresent: false);
+        f.Sensors.Extras = new SensorExtras
+        {
+            Nics =
+            {
+                ExtrasComponent("eth",
+                    Sensor("a", "Download Speed", "Throughput", 1000f, "1000 B/s"),
+                    Sensor("b", "Upload Speed", "Throughput", 200f, "200 B/s")),
+            },
+        };
+        var simulated = new SimulatedStreamDeckSurface(Mini, "sim-0001");
+        SeedDeck(f, "sim-0001", new DeckAction
+        {
+            Type = "monitoring", Category = "network", Sensor = "Network Total", Style = "number",
+        });
+        using var worker = NewWorker(f, simulated);
+
+        worker.Tick();
+
+        Assert.Equal(new[] { 1200f }, worker.MonitoringHistoryForTests("sim-0001", 0, "0"));
+    }
+
+    /// <summary>
+    /// The fps sensors only exist while IFpsProvider capture runs, so the
+    /// worker registers demand from the visible keys and releases it as soon
+    /// as no key asks for the category any more.
+    /// </summary>
+    [Fact]
+    public void Tick_FpsKey_HoldsCaptureDemandAndReleasesItWhenTheKeyGoesAway()
+    {
+        var f = NewFixtures(devicePresent: false);
+        var fps = new FakeFpsProvider
+        {
+            Component = new HardwareComponent
+            {
+                Id = "fps", Name = "FPS",
+                Sensors = { Sensor("fps/current", "FPS", "Framerate", 144f, "144") },
+            },
+        };
+        var simulated = new SimulatedStreamDeckSurface(Mini, "sim-0001");
+        SeedDeck(f, "sim-0001", new DeckAction
+        {
+            Type = "monitoring", Category = "fps", Sensor = "FPS", Style = "number",
+        });
+        using var worker = NewWorker(f, simulated, fps);
+
+        worker.Tick();
+
+        Assert.True(fps.LastDemand);
+        Assert.Equal(new[] { 144f }, worker.MonitoringHistoryForTests("sim-0001", 0, "0"));
+
+        SeedDeck(f, "sim-0001", new DeckAction { Type = "hotkey", Keys = "ctrl+c" });
+        worker.Tick();
+
+        Assert.False(fps.LastDemand);
+    }
+
+    [Fact]
+    public void Tick_NoFpsKey_ReleasesCaptureDemandEveryTick()
+    {
+        var f = NewFixtures(devicePresent: false);
+        var fps = new FakeFpsProvider();
+        var simulated = new SimulatedStreamDeckSurface(Mini, "sim-0001");
+        SeedDeck(f, "sim-0001", new DeckAction { Type = "hotkey", Keys = "ctrl+c" });
+        using var worker = NewWorker(f, simulated, fps);
+
+        worker.Tick();
+
+        Assert.False(fps.LastDemand);
+        Assert.True(fps.DemandCalls > 0);
     }
 }

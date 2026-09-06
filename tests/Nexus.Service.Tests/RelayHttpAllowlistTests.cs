@@ -22,7 +22,6 @@ public class RelayHttpAllowlistTests
     [InlineData("GET", "/api/steam/status")]
     [InlineData("GET", "/ping")]
     [InlineData("GET", "/panel/status?foo=bar")] // query is ignored for matching
-    [InlineData("POST", "/system/input/keys")]   // deck hotkey injection (relay-allowed)
     [InlineData("POST", "/system/open-url")]      // deck open-url (relay-allowed)
     [InlineData("POST", "/system/power/lock")]    // deck power keys (relay-allowed)
     [InlineData("POST", "/system/power/sleep")]
@@ -43,6 +42,10 @@ public class RelayHttpAllowlistTests
     [InlineData("GET", "/")]                          // SPA shell
     [InlineData("GET", "/panelX")]                   // not a /panel segment boundary
     [InlineData("POST", "/system/open-path")]        // opens arbitrary local files - LAN-only
+    [InlineData("POST", "/system/input/keys")]       // raw keystroke injection - desktop only
+    [InlineData("POST", "/system/input/text")]
+    [InlineData("POST", "/system/audio/play")]       // plays an arbitrary local file - desktop only
+    [InlineData("GET", "/panel/phone/pair-qr")]      // mints pair tokens - desktop only
     [InlineData("POST", "/system/pick-path")]        // opens a native OS dialog on the host - desktop-only
     [InlineData("POST", "/devices/firmware/flash")]  // irreversible flash - brick risk over a lossy tunnel
     [InlineData("POST", "/devices/firmware/flash/")] // trailing slash still routes to the flash handler

@@ -136,7 +136,7 @@ public sealed class SmartHubLightingFrameWriter : IHostedService, IDisposable
         for (var i = 0; i < devices.Length; i++)
         { if (devices[i].Id == id) { frame = devices[i]; break; } }
         var ledCount = frame is null ? 0 : frame.LedCount;
-        var brightnessMul = ComputeBrightnessMul(id, disabled, uncontrolled, prefs, globalBrightness);
+        var brightnessMul = ComputeBrightnessMul(id, disabled, uncontrolled, prefs, globalBrightness, out var adjust);
         var hasIdentify = _identify.TryGetActive(id, nowTicks, out var startTicks);
 
         var idx = channel - 1;
@@ -146,7 +146,7 @@ public sealed class SmartHubLightingFrameWriter : IHostedService, IDisposable
         var dst = _portBuffers[idx]!;
         if (ledCount > 0 && frame is not null)
         {
-            FillBufferSlice(dst, 0, frame.LedBytes, ledCount, brightnessMul, hasIdentify, startTicks, nowTicks);
+            FillBufferSlice(dst, 0, frame.LedBytes, ledCount, brightnessMul, adjust, hasIdentify, startTicks, nowTicks);
         }
         _hub.WriteLighting(channel, new ReadOnlySpan<SmartHubColor>(dst, 0, ledCount));
     }
@@ -155,8 +155,10 @@ public sealed class SmartHubLightingFrameWriter : IHostedService, IDisposable
         System.Collections.Generic.IReadOnlyList<string> disabled,
         System.Collections.Generic.IReadOnlyList<string> uncontrolled,
         System.Collections.Generic.IReadOnlyDictionary<string, LightingDevicePreference> prefs,
-        float globalBrightness)
+        float globalBrightness,
+        out DeviceColorAdjust adjust)
     {
+        adjust = DeviceColorAdjust.Identity;
         if (disabled.Count > 0)
         {
             foreach (var d in disabled) if (d == id) return 0.0;
@@ -165,14 +167,26 @@ public sealed class SmartHubLightingFrameWriter : IHostedService, IDisposable
         {
             foreach (var u in uncontrolled) if (u == id) return 0.0;
         }
+        // One lookup feeds both the brightness and the colour trim.
         int devBrightness;
-        try { devBrightness = prefs.TryGetValue(id, out var pref) ? pref.Brightness : 100; }
+        try
+        {
+            if (prefs.TryGetValue(id, out var pref) && pref is not null)
+            {
+                devBrightness = pref.Brightness;
+                adjust = DeviceColorAdjust.For(pref);
+            }
+            else
+            {
+                devBrightness = 100;
+            }
+        }
         catch (InvalidOperationException) { devBrightness = 100; }
         return Math.Min(Math.Clamp(devBrightness, 0, 100) / 100.0, globalBrightness);
     }
 
     private static void FillBufferSlice(SmartHubColor[] dst, int dstStart, ReadOnlySpan<byte> src, int ledCount,
-        double brightnessMul, bool hasIdentify, long identifyStartTicks, long nowTicks)
+        double brightnessMul, DeviceColorAdjust adjust, bool hasIdentify, long identifyStartTicks, long nowTicks)
     {
         if (hasIdentify)
         {
@@ -185,6 +199,18 @@ public sealed class SmartHubLightingFrameWriter : IHostedService, IDisposable
         if (brightnessMul <= 0.0)
         {
             for (var i = 0; i < ledCount && dstStart + i < dst.Length; i++) dst[dstStart + i] = default;
+            return;
+        }
+        if (!adjust.IsIdentity)
+        {
+            for (var i = 0; i < ledCount && dstStart + i < dst.Length; i++)
+            {
+                var off = i * 3;
+                if (off + 2 >= src.Length) break;
+                adjust.Apply(src[off], src[off + 1], src[off + 2], brightnessMul,
+                    out var ar, out var ag, out var ab);
+                dst[dstStart + i] = new SmartHubColor(ar, ag, ab);
+            }
             return;
         }
         if (brightnessMul >= 0.999)

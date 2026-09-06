@@ -43,6 +43,15 @@ internal static class LinuxBrowsers
         };
     }
 
+    /// <summary>Application id for a flatpak export path (<c>…/flatpak/exports/bin/org.chromium.Chromium</c>), else null.</summary>
+    public static string? FlatpakAppId(string browserPath)
+    {
+        var dir = Path.GetDirectoryName(browserPath) ?? "";
+        return dir.Replace('\\', '/').EndsWith("/flatpak/exports/bin", StringComparison.Ordinal)
+            ? Path.GetFileName(browserPath)
+            : null;
+    }
+
     public static string? FindChromium()
     {
         foreach (var path in ChromiumFamily())
@@ -76,7 +85,10 @@ internal static class LinuxBrowsers
         // embedded panel (no native WebView host exists on Linux yet). Probe
         // order shared with the panel kiosk host.
         foreach (var path in ChromiumFamily())
-            list.Add(new Launcher(path, Array.Empty<string>(), true));
+            // Same keyring opt-out as the panel kiosk: a locked KWallet stalls
+            // Chromium's first navigation, and the dashboard window keeps no
+            // credentials either.
+            list.Add(new Launcher(path, new[] { "--password-store=basic" }, true));
         // Fallbacks: desktop-portal openers launch the default browser in the
         // user's session context (avoids the flatpak sandbox EPERM), normal window.
         list.Add(new Launcher("/usr/bin/xdg-open", Array.Empty<string>(), false));

@@ -23,8 +23,11 @@ namespace Nexus.Service.Peripherals.LianLiWireless;
 /// </summary>
 public static class TinyUz
 {
-    /// <summary>Dictionary window advertised in the stream header. 4096 (12-bit); a larger window crashes the firmware.</summary>
+    /// <summary>LZ77 dictionary window: 4096 (12-bit); a larger window crashes the firmware.</summary>
     public const int DictSize = 4096;
+
+    /// <summary>Little-endian value of the 4-byte stream header: the dictionary window size.</summary>
+    public const int StreamHeaderValue = DictSize;
 
     /// <summary>lzo_rgb_rf_valid_len cap; the firmware throws "out of max uz length" past this.</summary>
     public const int MaxCompressedLength = 12288;
@@ -74,9 +77,16 @@ public static class TinyUz
 
         var buf = data.ToArray();
         var code = new List<byte>(buf.Length + buf.Length / 8 + 8);
+        // Stream header: the reference's little-endian dictSize. L-Connect's
+        // yuz.dll writes 01 00 00 00 here instead (Y70 USBPcap 2026-09-04); its
+        // code bytes after the header match this encoder exactly, but the only
+        // L-Connect streams captured were all-black (distance-1 matches only),
+        // and the reference decoder rejects any match distance >= the header's
+        // dictSize, so a 1 here would break every real frame. 4096 is the value
+        // the fans have rendered from since 2026-07-03.
         for (var shift = 0; shift < 4; shift++)
         {
-            code.Add((byte)((DictSize >> (8 * shift)) & 0xFF));
+            code.Add((byte)((StreamHeaderValue >> (8 * shift)) & 0xFF));
         }
 
         var typeCount = 0;
@@ -292,12 +302,14 @@ public static class TinyUz
     /// back-reference distance within <see cref="DictSize"/>, which
     /// <see cref="Compress"/> guarantees. Used by tests as the firmware stand-in.
     /// </summary>
-    internal static (int DictSize, byte[] Data) Decompress(ReadOnlySpan<byte> encodedSpan)
+    internal static (int StreamHeader, byte[] Data) Decompress(ReadOnlySpan<byte> encodedSpan)
     {
         // Local functions below share mutable state across closures, which the
         // compiler cannot do over a ref-like Span; copy to an array first.
         var encoded = encodedSpan.ToArray();
-        var dictSize = encoded[0] | (encoded[1] << 8) | (encoded[2] << 16) | (encoded[3] << 24);
+        // The header is returned raw for the caller to check; decoding always
+        // runs over the fixed DictSize window the firmware uses.
+        var streamHeader = encoded[0] | (encoded[1] << 8) | (encoded[2] << 16) | (encoded[3] << 24);
         var pos = 4;
         var typeBits = 0;
         var bitsLeft = 0;
@@ -417,6 +429,6 @@ public static class TinyUz
             }
             throw new NotSupportedException($"unsupported TinyUZ control code {savedLen}");
         }
-        return (dictSize, output.ToArray());
+        return (streamHeader, output.ToArray());
     }
 }

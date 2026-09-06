@@ -123,6 +123,36 @@ public class SegmentFrameComposerTests
     }
 
     [Fact]
+    public void Colour_trim_applies_to_the_tuned_zone_only()
+    {
+        var structure = KeebZoneSupport.BuildStructure(HubId, KeebKeyMap.Ansi);
+        var zones = ZoneResolution.Resolve(structure, new NexusSettings());
+        var keys = Frame(HubId + ":keys", KeebKeyMap.Ansi.LedCount, seed: 44);
+        var underglow = Frame(HubId + ":underglow", KeebLayout.SurroundLedCount, seed: 12);
+        var prefs = new Dictionary<string, LightingDevicePreference>
+        {
+            [HubId + ":keys"] = new() { AdjustRed = 0.5f },
+        };
+        var buffers = Buffers(structure);
+
+        SegmentFrameComposer.Compose(structure, zones, new[] { keys, underglow },
+            new List<string>(), new List<string>(), prefs, globalBrightness: 1f, masterMul: 1.0,
+            nowTicks: DateTime.UtcNow.Ticks, identify: null, buffers);
+
+        // The trimmed zone loses half its red and keeps green/blue; the
+        // untrimmed one stays byte-identical to the legacy fill.
+        var src = keys.LedBytes;
+        for (var i = 0; i < KeebKeyMap.Ansi.LedCount; i++)
+        {
+            var off = i * 3;
+            Assert.Equal((byte)(src[off] * 0.5f), buffers[0][i].R);
+            Assert.Equal(src[off + 1], buffers[0][i].G);
+            Assert.Equal(src[off + 2], buffers[0][i].B);
+        }
+        Assert.Equal(LegacyFillZone(underglow, KeebLayout.SurroundLedCount, 1.0), buffers[1]);
+    }
+
+    [Fact]
     public void Disabled_zone_goes_black()
     {
         var structure = KeebZoneSupport.BuildStructure(HubId, KeebKeyMap.Ansi);

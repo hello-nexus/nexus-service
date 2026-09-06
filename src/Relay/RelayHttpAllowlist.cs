@@ -70,6 +70,10 @@ public static class RelayHttpAllowlist
         "/system/open-path", // opens arbitrary local files - LAN-only, never relayed
         "/system/pick-path", // opens a native OS dialog on the host - desktop-only, never relayed
         "/devices/firmware/flash", // irreversible flash - brick risk over a lossy tunnel
+        "/panel/phone/pair-qr", // mints pair tokens - the desktop dashboard only
+        "/system/input/keys", // raw keystroke injection - desktop-token only
+        "/system/input/text",
+        "/system/audio/play", // plays an arbitrary local file - desktop-token only
     };
 
     /// <summary>

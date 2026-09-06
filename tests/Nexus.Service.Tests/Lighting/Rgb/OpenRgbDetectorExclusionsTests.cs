@@ -1,3 +1,4 @@
+using System.Collections.Generic;
 using Nexus.Service.Lighting.Rgb;
 using Nexus.Service.Persistence;
 
@@ -197,6 +198,165 @@ public class OpenRgbDetectorExclusionsTests
         Assert.Single(settings.Devices.OpenRgbDetectorExclusions);
         Assert.Same(uncontrolledBefore, settings.Devices.UncontrolledLightingDevices);
     }
+
+    [Fact]
+    public void Detector_map_supplies_the_denylist_name()
+    {
+        var settings = new NexusSettings();
+        settings.Devices.UncontrolledLightingDevices.Add(Dimm().StableId);
+        var map = new Dictionary<string, string> { ["Corsair Vengeance RGB DDR5"] = "Corsair DRAM" };
+
+        var delta = OpenRgbDetectorExclusions.Compute(new[] { Dimm() }, settings, map);
+
+        var add = Assert.Single(delta.Add);
+        Assert.Equal("Corsair DRAM", add.Value.DetectorName);
+        Assert.Equal("Corsair Vengeance RGB DDR5", add.Value.DeviceName);
+    }
+
+    [Fact]
+    public void Unmapped_device_still_falls_back_to_its_own_name()
+    {
+        var settings = new NexusSettings();
+        settings.Devices.UncontrolledLightingDevices.Add("openrgb-s-K70A");
+
+        var delta = OpenRgbDetectorExclusions.Compute(new[] { Keyboard() }, settings, new Dictionary<string, string>());
+
+        var add = Assert.Single(delta.Add);
+        Assert.Equal("Corsair K70 RGB", add.Value.DetectorName);
+    }
+
+    [Fact]
+    public void Exclusion_naming_the_device_instead_of_the_detector_is_re_snapshotted()
+    {
+        // The pre-map bug: the denylist held the device name, matched no
+        // detector, and the DIMM stayed detected on every launch.
+        var settings = new NexusSettings();
+        var stored = new OpenRgbDetectorExclusion { DetectorName = "Corsair Vengeance RGB DDR5" };
+        settings.Devices.UncontrolledLightingDevices.Add(Dimm().StableId);
+        settings.Devices.OpenRgbDetectorExclusions[Dimm().StableId] = stored;
+        var map = new Dictionary<string, string> { ["Corsair Vengeance RGB DDR5"] = "Corsair DRAM" };
+
+        var delta = OpenRgbDetectorExclusions.Compute(new[] { Dimm() }, settings, map);
+
+        var add = Assert.Single(delta.Add);
+        Assert.Equal(Dimm().StableId, add.Key);
+        Assert.Equal("Corsair DRAM", add.Value.DetectorName);
+        Assert.NotSame(stored, add.Value);
+        Assert.Equal("Corsair Vengeance RGB DDR5", stored.DetectorName);
+        Assert.Empty(delta.UncontrolledAdds);
+        Assert.Empty(delta.Remove);
+    }
+
+    [Fact]
+    public void Exclusion_already_naming_the_detector_produces_no_delta()
+    {
+        var settings = new NexusSettings();
+        settings.Devices.UncontrolledLightingDevices.Add(Dimm().StableId);
+        settings.Devices.OpenRgbDetectorExclusions[Dimm().StableId] = new OpenRgbDetectorExclusion { DetectorName = "Corsair DRAM" };
+        var map = new Dictionary<string, string> { ["Corsair Vengeance RGB DDR5"] = "Corsair DRAM" };
+
+        var delta = OpenRgbDetectorExclusions.Compute(new[] { Dimm() }, settings, map);
+
+        Assert.True(delta.IsEmpty);
+    }
+
+    [Fact]
+    public void Missing_map_leaves_a_device_named_exclusion_alone()
+    {
+        var settings = new NexusSettings();
+        settings.Devices.UncontrolledLightingDevices.Add(Dimm().StableId);
+        settings.Devices.OpenRgbDetectorExclusions[Dimm().StableId] = new OpenRgbDetectorExclusion { DetectorName = "Corsair Vengeance RGB DDR5" };
+
+        var delta = OpenRgbDetectorExclusions.Compute(new[] { Dimm() }, settings);
+
+        Assert.True(delta.IsEmpty);
+    }
+
+    [Fact]
+    public void Map_miss_never_rewrites_a_repaired_exclusion_back_to_the_device_name()
+    {
+        // A torn or truncated map read parses to empty; re-snapshotting off
+        // the fallback would reinstate the exact bug the repair removed.
+        var settings = new NexusSettings();
+        settings.Devices.UncontrolledLightingDevices.Add(Dimm().StableId);
+        settings.Devices.OpenRgbDetectorExclusions[Dimm().StableId] = new OpenRgbDetectorExclusion { DetectorName = "Corsair DRAM" };
+
+        var delta = OpenRgbDetectorExclusions.Compute(new[] { Dimm() }, settings, new Dictionary<string, string>());
+
+        Assert.True(delta.IsEmpty);
+    }
+
+    [Fact]
+    public void A_controlled_sibling_of_the_same_detector_blocks_the_exclusion()
+    {
+        // Denylisting "Corsair DRAM" would take the Dominator kit off the bus
+        // too, and the user never un-controlled it.
+        var dominator = Dimm();
+        dominator.Name = "Corsair Dominator Platinum RGB";
+        dominator.Location = "I2C: i801, address 0x1A";
+        var settings = new NexusSettings();
+        settings.Devices.UncontrolledLightingDevices.Add(Dimm().StableId);
+        var map = new Dictionary<string, string>
+        {
+            ["Corsair Vengeance RGB DDR5"] = "Corsair DRAM",
+            ["Corsair Dominator Platinum RGB"] = "Corsair DRAM",
+        };
+
+        var delta = OpenRgbDetectorExclusions.Compute(new[] { Dimm(), dominator }, settings, map);
+
+        Assert.True(delta.IsEmpty);
+    }
+
+    [Fact]
+    public void Both_devices_of_one_detector_uncontrolled_are_excluded_together()
+    {
+        var dominator = Dimm();
+        dominator.Name = "Corsair Dominator Platinum RGB";
+        dominator.Location = "I2C: i801, address 0x1A";
+        var settings = new NexusSettings();
+        settings.Devices.UncontrolledLightingDevices.Add(Dimm().StableId);
+        settings.Devices.UncontrolledLightingDevices.Add(dominator.StableId);
+        var map = new Dictionary<string, string>
+        {
+            ["Corsair Vengeance RGB DDR5"] = "Corsair DRAM",
+            ["Corsair Dominator Platinum RGB"] = "Corsair DRAM",
+        };
+
+        var delta = OpenRgbDetectorExclusions.Compute(new[] { Dimm(), dominator }, settings, map);
+
+        Assert.Equal(2, delta.Add.Count);
+        Assert.All(delta.Add, a => Assert.Equal("Corsair DRAM", a.Value.DetectorName));
+    }
+
+    [Fact]
+    public void A_key_being_lifted_this_pass_is_not_re_seeded()
+    {
+        // A split motherboard keeps IsFullyUncontrolled true off its zone ids
+        // while the base id is being lifted, and its stale exclusion is
+        // repairable, so both loops reach it. Apply runs Add before Remove.
+        var settings = new NexusSettings();
+        settings.Devices.UncontrolledLightingDevices.Add("openrgb-s-MB01-0");
+        settings.Devices.UncontrolledLightingDevices.Add("openrgb-s-MB01-1");
+        settings.Devices.OpenRgbDetectorExclusions["openrgb-s-MB01"] = new OpenRgbDetectorExclusion { DetectorName = "B850I AORUS PRO" };
+        var map = new Dictionary<string, string> { ["B850I AORUS PRO"] = "Gigabyte RGB Fusion 2 SMBus" };
+
+        var delta = OpenRgbDetectorExclusions.Compute(new[] { Motherboard() }, settings, map);
+
+        Assert.Equal(new[] { "openrgb-s-MB01" }, delta.Remove);
+        Assert.Empty(delta.Add);
+        Assert.Empty(delta.UncontrolledAdds);
+    }
+
+    private static RgbDevice Dimm() => new()
+    {
+        Index = 0,
+        Name = "Corsair Vengeance RGB DDR5",
+        Vendor = "Corsair",
+        Type = 10,
+        LedCount = 10,
+        Location = "I2C: i801, address 0x18",
+        Zones = new() { new RgbZone { Name = "DRAM", ZoneType = 1, LedCount = 10 } },
+    };
 
     private static RgbDevice Motherboard() => new()
     {

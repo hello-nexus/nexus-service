@@ -208,8 +208,17 @@ public static class LightingDevicesCatalog
         Native("HYTE",    "Y70 Touch Infinite",     "case",     "0x3402", "0x0C01", screen: true, rgb: false),
         Native("HYTE",    "Y70 Touch Infinite",     "case",     "0x3402", "0x0C02", screen: true, rgb: false),
 
-        // iBUYPOWER - PID from src/Peripherals/Hyte/MiniHub/MiniHubProtocol.cs.
+        // iBUYPOWER - MiniHub PID from src/Peripherals/Hyte/MiniHub/MiniHubProtocol.cs;
+        // keyboard / mouse PIDs from src/Peripherals/Ibp/IbpPeripheralProtocol.cs
+        // (one row per model there - IbpPeripheralCatalogTests pins the pairing).
         Native("iBUYPOWER", "MiniHub",              "light",    "0x3402", "0x0900"),
+        Native("iBUYPOWER", "Chimera KM7 Keyboard", "keyboard", "0x3402", "0x0301"),
+        Native("iBUYPOWER", "Chimera KM7 Mouse",    "mouse",    "0x3402", "0x0200"),
+        Native("iBUYPOWER", "Chimera KM10 Keyboard","keyboard", "0x3402", "0x0305"),
+        Native("iBUYPOWER", "Chimera KM10 Mouse",   "mouse",    "0x3402", "0x0201"),
+        Native("iBUYPOWER", "MK9 Keyboard",         "keyboard", "0x3402", "0x0303"),
+        Native("iBUYPOWER", "MK9 Pro Keyboard",     "keyboard", "0x3402", "0x0304"),
+        Native("iBUYPOWER", "MEK 4 Keyboard",       "keyboard", "0x3402", "0x0302"),
 
         // Lian Li - PIDs from src/Peripherals/LianLi*, Strimer, Galahad2, LianLiTl,
         // LianLiWireless. SL/TL-LCD are the fan-mounted LCD screens.

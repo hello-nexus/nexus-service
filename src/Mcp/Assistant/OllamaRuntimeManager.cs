@@ -192,7 +192,7 @@ public sealed class OllamaRuntimeManager : IHostedService
     /// NEXUS_TEST_HOST so a route test never makes a real loopback connection.</summary>
     public async Task RefreshAsync(CancellationToken ct)
     {
-        if (State != AssistantRuntimeState.NotInstalled || _testHost)
+        if (State != AssistantRuntimeState.NotInstalled || _testHost || !UseSystemOllama)
         {
             return;
         }
@@ -221,7 +221,7 @@ public sealed class OllamaRuntimeManager : IHostedService
         }
         try
         {
-            if (await DetectSystemOllamaAsync(ct).ConfigureAwait(false))
+            if (UseSystemOllama && await DetectSystemOllamaAsync(ct).ConfigureAwait(false))
             {
                 AdoptSystemOllama();
                 return;
@@ -419,6 +419,36 @@ public sealed class OllamaRuntimeManager : IHostedService
 
     // ── System detection ────────────────────────────────────────────────────
 
+    /// <summary>User opt-in (AiIntegration.UseSystemOllama). Off, nothing on the
+    /// default port is ever probed or adopted: a listener there could be any
+    /// local process, and the adopted runtime sees every prompt and every tool
+    /// call the assistant makes as LocalSystem.</summary>
+    private bool UseSystemOllama => _store.Load().AiIntegration.UseSystemOllama;
+
+    /// <summary>Called when the opt-in changes. Turning it off while a system
+    /// Ollama is adopted drops back to NotInstalled so the next status poll
+    /// stops routing prompts to it; turning it on lets the next poll adopt.</summary>
+    public void ApplyUseSystemOllama(bool enabled)
+    {
+        if (enabled)
+        {
+            return;
+        }
+        lock (_lock)
+        {
+            if (!_systemDetected)
+            {
+                return;
+            }
+            _systemDetected = false;
+            _client = null;
+            _effectivePort = 0;
+            _state = AssistantRuntimeState.NotInstalled;
+            _lastError = null;
+        }
+        BroadcastProgress();
+    }
+
     private async Task<bool> DetectSystemOllamaAsync(CancellationToken ct)
     {
         var probe = _clientFactory(DefaultPort);
@@ -429,6 +459,12 @@ public sealed class OllamaRuntimeManager : IHostedService
     {
         lock (_lock)
         {
+            // The probe ran outside the lock; the user may have opted out (or a
+            // managed install may have started) while it was in flight.
+            if (!UseSystemOllama || _state != AssistantRuntimeState.NotInstalled)
+            {
+                return;
+            }
             _systemDetected = true;
             _effectivePort = DefaultPort;
             _client = _clientFactory(DefaultPort);
@@ -445,7 +481,7 @@ public sealed class OllamaRuntimeManager : IHostedService
         var assetName = ResolveAssetName();
         var (_, assetUrl, sumsUrl) = await ResolveReleaseAsync(assetName, ct).ConfigureAwait(false);
 
-        Directory.CreateDirectory(_runtimeDir);
+        EnsureRuntimeDirTrusted();
         var archivePath = Path.Combine(_runtimeDir, assetName);
         var tmpPath = archivePath + ".tmp";
         TryDeleteFile(tmpPath);
@@ -630,8 +666,30 @@ public sealed class OllamaRuntimeManager : IHostedService
         }
     }
 
+    /// <summary>
+    /// The runtime dir lives under %ProgramData%, whose default DACL lets any
+    /// local user create files and folders. A LocalSystem daemon must only
+    /// extract into, and launch a binary from, a dir it owns with a locked DACL
+    /// (same rule as the OTA staging dir and the external-tools cache). An
+    /// interactive run keeps the user's own permissions; nothing to lock.
+    /// </summary>
+    private void EnsureRuntimeDirTrusted()
+    {
+        Directory.CreateDirectory(_runtimeDir);
+        if (!OperatingSystem.IsWindows() || _testHost || !WindowsDirectorySecurity.IsLocalSystem())
+        {
+            return;
+        }
+        WindowsDirectorySecurity.Protect(_runtimeDir, resetOwner: true);
+        if (!WindowsDirectorySecurity.IsOwnedByAdmins(_runtimeDir))
+        {
+            throw new InvalidOperationException($"{_runtimeDir} is not owned by SYSTEM/Administrators; refusing to run a binary from it.");
+        }
+    }
+
     private async Task StartChildAsync(string exePath, CancellationToken ct)
     {
+        EnsureRuntimeDirTrusted();
         SetState(AssistantRuntimeState.Starting);
         BroadcastProgress();
 

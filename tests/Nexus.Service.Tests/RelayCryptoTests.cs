@@ -69,6 +69,24 @@ public class RelayCryptoTests
         Assert.NotEqual(RelayCrypto.DeriveRid(root), RelayCrypto.DeriveHttpRid(root));
     }
 
+    // Protocol v2 rekey vector, shared verbatim with nexus-web's relayCrypto.test.ts.
+    private const string RekeyRootHex = "0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20";
+    private const string RekeyConnSaltHex = "a0a1a2a3a4a5a6a7a8a9aaabacadaeaf";
+    private const string RekeyHostNonceHex = "b0b1b2b3b4b5b6b7b8b9babbbcbdbebf";
+    private const string RekeyedAeadKeyHex = "c4c69c871369455a57f8dde385b7ace9bb9695b9d96ea63828e3a3cfb115c173";
+    private const string RekeyV1AeadKeyHex = "3ee9775c9c7a4501e0a9992ba5a1724289b8a5168fa6e32ab3a5eb79de0545af";
+
+    [Fact]
+    public void DeriveRekeyedAeadKey_MatchesVector_AndDiffersFromTheConnectionKey()
+    {
+        var root = FromHex(RekeyRootHex);
+        var salt = FromHex(RekeyConnSaltHex);
+        Assert.Equal(RekeyV1AeadKeyHex, Hex(RelayCrypto.DeriveAeadKey(root, salt)));
+        Assert.Equal(RekeyedAeadKeyHex, Hex(RelayCrypto.DeriveRekeyedAeadKey(root, salt, FromHex(RekeyHostNonceHex))));
+        // A different host nonce is a different key: the property the replay fix rests on.
+        Assert.NotEqual(RekeyedAeadKeyHex, Hex(RelayCrypto.DeriveRekeyedAeadKey(root, salt, new byte[RelayCrypto.HostNonceLength])));
+    }
+
     [Fact]
     public void DeriveAeadKey_MatchesVector()
     {

@@ -5,6 +5,7 @@ using System.Threading;
 using System.Threading.Tasks;
 using Nexus.Service.Cooling;
 using Nexus.Service.Diagnostics.Storage;
+using Nexus.Service.Mcp.History;
 using Nexus.Service.Models.Cooling;
 using Nexus.Service.Models.Sensors;
 using Nexus.Service.Monitoring.History;
@@ -160,6 +161,29 @@ public class SystemMetricsSourceTests
         Assert.Equal(2, sample.ComponentTemps.Count);
         Assert.Equal("ram:0", sample.ComponentTemps[0].ComponentId);
         Assert.Equal("ram:1", sample.ComponentTemps[1].ComponentId);
+    }
+
+    [Fact]
+    public async Task SampleAsync_RamComponentIds_AgreeWithHistoryIdMappingsRamSensorIds()
+    {
+        var memorySensors = new[]
+        {
+            Sensor("Memory Controller", "Load", 10f),
+            Sensor("VRM", "Temperature", 35f),
+            Sensor("DIMM_A1", "Temperature", 40f),
+            Sensor("Memory Bank 2", "Temperature", 42f),
+        };
+        var sensors = new StubSensors { MemorySensors = memorySensors };
+        var source = CreateSource(sensors);
+
+        var sample = await source.SampleAsync(1000, CancellationToken.None);
+        var map = HistoryIdMapping.RamSensorIds(memorySensors);
+
+        Assert.Equal(2, sample.ComponentTemps.Count);
+        Assert.Equal("ram:0", sample.ComponentTemps[0].ComponentId);
+        Assert.Equal("ram:1", sample.ComponentTemps[1].ComponentId);
+        Assert.Equal("temp.ram:0", map[memorySensors[2].Id]);
+        Assert.Equal("temp.ram:1", map[memorySensors[3].Id]);
     }
 
     [Fact]

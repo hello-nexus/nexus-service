@@ -14,13 +14,23 @@
 #
 # Optional: -PublishDir <path>  override the AOT publish dir
 #           -OpenOutput          reveal the resulting Setup.exe in Explorer
+#           -Bootstrap           build bootstrap\Nexus-Bootstrap.iss instead:
+#                                the two web installers (stable + beta) that
+#                                download Nexus-Setup.exe at install time. Needs
+#                                no publish dir. See bootstrap\Nexus-Bootstrap.iss
+#                                for why these are rebuilt only when that
+#                                script changes.
+#           -BootstrapBaseUrl    override the site the web installers fetch
+#                                from (local end-to-end testing only)
 
 param(
     [string]$PublishDir = "",
     [switch]$OpenOutput,
     [switch]$Sign,
     [string]$SignToolPath = "",
-    [string]$DlibPath = ""
+    [string]$DlibPath = "",
+    [switch]$Bootstrap,
+    [string]$BootstrapBaseUrl = ""
 )
 
 if ([string]::IsNullOrEmpty($PublishDir)) {
@@ -99,6 +109,21 @@ function Resolve-Dlib {
 $signMaxAttempts = 4
 $signRetryBaseSeconds = 5
 
+# ISCC arguments that make Inno sign what it emits: Setup.exe and, where the
+# script enables it, the embedded uninstaller (SignedUninstaller in Nexus.iss -
+# the extracted unins000.exe is a PE on the installed image, so Smart App
+# Control checks it like everything else). $q is Inno's double-quote escape;
+# $f arrives pre-quoted from ISCC, so it must NOT get $q wrapping.
+function Get-IsccSignArgs {
+    if (-not (Test-Path $signMetadata)) { throw "Missing signing metadata: $signMetadata" }
+    $st = Resolve-SignTool
+    $dlib = Resolve-Dlib
+    return @(
+        ('/Snexussign=$q' + $st + '$q sign /fd SHA256 /tr ' + $timestampUrl + ' /td SHA256 /dlib $q' + $dlib + '$q /dmdf $q' + $signMetadata + '$q $f'),
+        "/DEnableSigning"
+    )
+}
+
 function Invoke-NexusSigning {
     param([string[]]$Files)
     $targets = @($Files | Where-Object { $_ -and (Test-Path $_) })
@@ -136,8 +161,46 @@ $isccCandidates = @(
 )
 $iscc = $isccCandidates | Where-Object { Test-Path $_ } | Select-Object -First 1
 
-if (-not (Test-Path $iss))  { throw "Missing Nexus.iss next to this script: $iss" }
 if (-not $iscc) { throw "Inno Setup 6 not installed. Run: winget install JRSoftware.InnoSetup (or 'choco install innosetup')" }
+
+# Web installers: no payload, so none of the publish-dir work below applies.
+# Both channels compile from one script; the output names come from the
+# script's Channel define (Nexus-Installer.exe / Nexus-Installer-Beta.exe).
+if ($Bootstrap) {
+    $bootDir = Join-Path $scriptDir "bootstrap"
+    $bootIss = Join-Path $bootDir "Nexus-Bootstrap.iss"
+    if (-not (Test-Path $bootIss)) { throw "Missing $bootIss" }
+    $baseArgs = @()
+    if ($Sign) { $baseArgs += Get-IsccSignArgs }
+    if ($BootstrapBaseUrl) { $baseArgs += "/DBaseUrl=$BootstrapBaseUrl" }
+    $built = @{ stable = "Nexus-Installer.exe"; beta = "Nexus-Installer-Beta.exe" }
+    foreach ($channel in @("stable", "beta")) {
+        Push-Location $bootDir
+        try {
+            & $iscc @baseArgs "/DChannel=$channel" Nexus-Bootstrap.iss
+            if ($LASTEXITCODE -ne 0) { throw "ISCC compile failed for the $channel web installer (exit $LASTEXITCODE)" }
+        } finally {
+            Pop-Location
+        }
+    }
+    Write-Host ""
+    foreach ($channel in @("stable", "beta")) {
+        $exe = Join-Path $scriptDir ("output\" + $built[$channel])
+        if (-not (Test-Path $exe)) { throw "ISCC produced no $exe" }
+        if ($Sign -and (Get-AuthenticodeSignature $exe).Status -ne 'Valid') {
+            throw "$($built[$channel]) is not validly signed after ISCC"
+        }
+        $hash = (Get-FileHash $exe -Algorithm SHA256).Hash.ToLower()
+        # Same "<hash>  <name>" shape as SHA256SUMS, one file per installer.
+        Set-Content -Path "$exe.sha256" -Value "$hash  $($built[$channel])" -NoNewline
+        $size = [math]::Round((Get-Item $exe).Length / 1MB, 2)
+        Write-Host "Built: $exe  ($size MB)"
+        Write-Host "SHA256: $hash"
+    }
+    return
+}
+
+if (-not (Test-Path $iss))  { throw "Missing Nexus.iss next to this script: $iss" }
 if (-not (Test-Path (Join-Path $PublishDir "Nexus.exe"))) {
     throw "AOT publish not found at $PublishDir. Run dotnet publish first."
 }
@@ -236,17 +299,7 @@ $verNumeric = ($verFull -split '-')[0]
 $verInfo = "$verNumeric.0"
 
 $isccArgs = @("/DPublishDir=$PublishDir", "/DMyAppVersion=$verFull", "/DMyAppVersionInfo=$verInfo")
-if ($Sign) {
-    # Hand ISCC the sign tool so it signs Setup.exe AND the embedded
-    # uninstaller (SignedUninstaller in Nexus.iss) - the extracted
-    # unins000.exe is a PE on the installed image, so Smart App Control
-    # checks it like everything else. $q is Inno's double-quote escape.
-    $st = Resolve-SignTool
-    $dlib = Resolve-Dlib
-    # $f arrives pre-quoted from ISCC, so it must NOT get $q wrapping.
-    $isccArgs += '/Snexussign=$q' + $st + '$q sign /fd SHA256 /tr ' + $timestampUrl + ' /td SHA256 /dlib $q' + $dlib + '$q /dmdf $q' + $signMetadata + '$q $f'
-    $isccArgs += "/DEnableSigning"
-}
+if ($Sign) { $isccArgs += Get-IsccSignArgs }
 
 Push-Location $scriptDir
 try {

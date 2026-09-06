@@ -30,6 +30,17 @@ public class TinyUzTests
     }
 
     [Fact]
+    public void Compress_black_30_frame_animation_matches_the_lconnect_capture_after_the_header()
+    {
+        // Y70 USBPcap 2026-09-04, lc12-static-red: L-Connect's data part for a
+        // 30-frame x 120-LED all-zero buffer was 01 00 00 00 b9 00 ab fb 97 01 00.
+        // The code bytes after its 4-byte header are this encoder's, byte for byte.
+        var expected = Convert.FromHexString("b900abfb970100");
+        var encoded = TinyUz.Compress(new byte[30 * 120 * 3]);
+        Assert.Equal(expected, encoded.AsSpan(4).ToArray());
+    }
+
+    [Fact]
     public void Compress_single_byte_matches_hand_derived_bytes()
     {
         // Header (4B dictSize=4096 LE) + one control byte (0x19) packing the
@@ -61,8 +72,8 @@ public class TinyUzTests
         // emits (it never splits into clips); bytes computed by the
         // reference bit-writer script described in the class summary.
         var encoded = new byte[] { 0x00, 0x10, 0x00, 0x00, 0x09, 0x41, 0x00, 0x19, 0x42, 0x00 };
-        var (dictSize, decoded) = TinyUz.Decompress(encoded);
-        Assert.Equal(TinyUz.DictSize, dictSize);
+        var (header, decoded) = TinyUz.Decompress(encoded);
+        Assert.Equal(TinyUz.StreamHeaderValue, header);
         Assert.Equal(new byte[] { 0x41, 0x42 }, decoded);
     }
 
@@ -73,9 +84,9 @@ public class TinyUzTests
         new Random(1234).NextBytes(data);
 
         var encoded = TinyUz.Compress(data);
-        var (dictSize, decoded) = TinyUz.Decompress(encoded);
+        var (header, decoded) = TinyUz.Decompress(encoded);
 
-        Assert.Equal(TinyUz.DictSize, dictSize);
+        Assert.Equal(TinyUz.StreamHeaderValue, header);
         Assert.Equal(data, decoded);
     }
 

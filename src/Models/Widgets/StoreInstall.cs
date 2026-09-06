@@ -71,8 +71,8 @@ public sealed class StorePurchase
     /// <summary>0 while every app is free.</summary>
     [JsonPropertyName("priceCents")] public int PriceCents { get; set; }
 
-    /// <summary>False once the store stops listing it; the purchase still stands.</summary>
-    [JsonPropertyName("listed")] public bool Listed { get; set; }
+    /// <summary>False once the store stops listing it; the purchase still stands. Null for a local-only row, where the store knows nothing about the app either way.</summary>
+    [JsonPropertyName("listed")] public bool? Listed { get; set; }
 
     [JsonPropertyName("installedVersion")] public string? InstalledVersion { get; set; }
     [JsonPropertyName("installedAt")] public DateTimeOffset? InstalledAt { get; set; }

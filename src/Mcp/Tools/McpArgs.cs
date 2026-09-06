@@ -20,6 +20,10 @@ internal static class McpArgs
             ? value.GetDouble()
             : null;
 
+    public static bool BoolArg(JsonElement? args, string name) =>
+        args is { } a && a.ValueKind == JsonValueKind.Object
+            && a.TryGetProperty(name, out var value) && value.ValueKind == JsonValueKind.True;
+
     /// <summary>Rounds a numeric arg to the nearest int; null if absent, non-numeric, or non-finite.</summary>
     public static int? IntArg(JsonElement? args, string name) =>
         NumberArg(args, name) is { } d && double.IsFinite(d) ? (int)System.Math.Round(d) : null;

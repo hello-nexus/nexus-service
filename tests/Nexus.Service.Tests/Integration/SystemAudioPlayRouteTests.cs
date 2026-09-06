@@ -51,10 +51,12 @@ public sealed class SystemAudioPlayRouteTests : IDisposable
     }
 
     [Fact]
-    public async Task PanelSession_CanReachTheRoute()
+    public async Task PanelSession_Is403()
     {
+        // The path is caller-named, so the route is desktop-token only; a panel
+        // deck's playAudio key goes through POST /panel/deck/dispatch instead.
         var res = await PanelClient().PostAsJsonAsync("/system/audio/play", new PlayAudioBody { Path = "" });
-        Assert.Equal(HttpStatusCode.OK, res.StatusCode);
+        Assert.Equal(HttpStatusCode.Forbidden, res.StatusCode);
     }
 
     [Fact]

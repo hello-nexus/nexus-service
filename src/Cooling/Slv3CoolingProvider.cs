@@ -53,7 +53,7 @@ public sealed class Slv3CoolingProvider : IFanControlProvider, ICoolingProvider
                 {
                     Id = PortId(fan.Mac, port),
                     Name = $"Wireless Fan {port + 1}",
-                    DutyPercent = PortPwm(fan, port),
+                    DutyPercent = PortDutyPercent(fan, port),
                     Rpm = PortRpm(fan, port),
                     Mode = PortPwm(fan, port) == Slv3Protocol.PwmFollowMotherboard ? FanModes.Auto : FanModes.Manual,
                     MinDuty = minDuty,
@@ -141,7 +141,7 @@ public sealed class Slv3CoolingProvider : IFanControlProvider, ICoolingProvider
                     Name = $"Wireless Fan {port + 1}",
                     Type = "Fan",
                     Rpm = rpmUnavailable ? null : PortRpm(fan, port),
-                    Pwm = PortPwm(fan, port),
+                    Pwm = PortDutyPercent(fan, port),
                 });
             }
             components.Add(new CoolingComponent
@@ -174,6 +174,17 @@ public sealed class Slv3CoolingProvider : IFanControlProvider, ICoolingProvider
     }
 
     private static int PortPwm(Slv3FanInfo fan, int port) => port < fan.Pwm.Length ? fan.Pwm[port] : 0;
+
+    // fans_pwm is the chain's echo of the bind-frame byte on the firmware's
+    // 0..255 scale; the sentinel 6 (follow the motherboard header) has no
+    // percent of its own and surfaces as the header duty the RX measured.
+    private int PortDutyPercent(Slv3FanInfo fan, int port)
+    {
+        var raw = PortPwm(fan, port);
+        return raw == Slv3Protocol.PwmFollowMotherboard
+            ? _hub.State.MotherboardPwmPercent ?? 0
+            : Slv3Protocol.DecodeDuty(raw);
+    }
 
     private static int PortRpm(Slv3FanInfo fan, int port)
     {

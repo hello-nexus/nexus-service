@@ -60,3 +60,8 @@ builds/
 
 # Local dev worktree symlink for the bundled app payload, kept per-machine, never committed.
 .worktrees/
+
+# Vendor device firmware images are not part of this repository; the build
+# embeds them from the private workspace (see the csproj). A local drop-in
+# here is picked up the same way.
+data/firmware/

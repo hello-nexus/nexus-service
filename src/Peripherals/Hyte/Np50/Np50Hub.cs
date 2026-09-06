@@ -315,7 +315,8 @@ public sealed class Np50Hub : IDisposable, IDfuFlashTarget
     /// 0xCC 0x04). Use this before issuing any SAVE-byte write to default-mode
     /// fields to verify what's actually there - `SendOnly` returning true only
     /// means the bytes left the wire, not that the firmware accepted them.
-    /// See `.agents/rules/failure-log.md` 2026-05-21 EEPROM read-before-write.
+    /// For any 0xFF 0xCC opcode carrying a SAVE byte, issue the matching GET
+    /// afterwards and diff the reply byte by byte.
     /// </summary>
     public byte[]? GetFirmwareDefaultModeRaw()
     {

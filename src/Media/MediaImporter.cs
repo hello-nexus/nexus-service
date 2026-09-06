@@ -217,12 +217,20 @@ public static class MediaImporter
     }
 
     // Hard cap on any single ffmpeg run. A pathological input that wedges the
-    // decoder must not park callers forever (gallery thumbnails serialize per
-    // item behind a semaphore, so one hung process would block that item's
-    // thumbnail for the process lifetime).
+    // decoder must not park an import forever.
     private const int FfmpegTimeoutSeconds = 120;
 
-    internal static async Task RunFfmpeg(params string[] args)
+    internal static Task RunFfmpeg(params string[] args) =>
+        RunFfmpeg(FfmpegTimeoutSeconds, CancellationToken.None, args);
+
+    /// <summary>
+    /// Runs ffmpeg with an explicit budget and an external cancellation token.
+    /// Callers sitting on a live HTTP request use this: the import default of
+    /// two minutes is far too long to hold a request open, and passing
+    /// RequestAborted means an abandoned fetch kills the child process instead
+    /// of leaving it to burn a core.
+    /// </summary>
+    internal static async Task RunFfmpeg(int timeoutSeconds, CancellationToken ct, string[] args)
     {
         var ffmpegPath = FfmpegResolver.Path
             ?? throw new InvalidOperationException("ffmpeg not found");
@@ -244,7 +252,8 @@ public static class MediaImporter
             ?? throw new InvalidOperationException("ffmpeg failed to start");
 
         var stderrTask = proc.StandardError.ReadToEndAsync();
-        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(FfmpegTimeoutSeconds));
+        using var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        cts.CancelAfter(TimeSpan.FromSeconds(timeoutSeconds));
         try
         {
             await proc.WaitForExitAsync(cts.Token);
@@ -256,7 +265,10 @@ public static class MediaImporter
                 proc.Kill(entireProcessTree: true);
             }
             catch { }
-            throw new InvalidOperationException($"ffmpeg timed out after {FfmpegTimeoutSeconds}s");
+            // A caller-cancelled run is not a timeout - let the caller's own
+            // token surface so it is not logged as an ffmpeg fault.
+            ct.ThrowIfCancellationRequested();
+            throw new InvalidOperationException($"ffmpeg timed out after {timeoutSeconds}s");
         }
         var stderr = await stderrTask;
         if (proc.ExitCode != 0)

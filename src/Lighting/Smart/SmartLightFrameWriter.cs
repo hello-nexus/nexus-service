@@ -114,7 +114,12 @@ public sealed class SmartLightFrameWriter : IHostedService, IDisposable
 
             var devBrightness = prefs.TryGetValue(frame.Id, out var pref) ? pref.Brightness : 100;
             var b01 = Math.Min(Math.Clamp(devBrightness, 0, 100) / 100f, global);
-            _provider.SubmitEffectFrame(frame.Id, frame.LedBytes, frame.LedCount, b01);
+            // A bulb is exactly the device that will not match a strip, so the
+            // colour trim has to reach here too. Brightness stays out of the
+            // trimmed bytes: the provider applies b01 itself.
+            var adjust = DeviceColorAdjust.For(pref);
+            var bytes = adjust.IsIdentity ? frame.LedBytes : Trim(frame.LedBytes, frame.LedCount, adjust);
+            _provider.SubmitEffectFrame(frame.Id, bytes, frame.LedCount, b01);
             streamed = true;
         }
 
@@ -122,4 +127,23 @@ public sealed class SmartLightFrameWriter : IHostedService, IDisposable
         _provider.FlushStreaming();
         if (streamed) _wasStreaming = true;
     }
+
+    // Reused across ticks so a trimmed frame allocates nothing after the first.
+    private byte[] _trimBuffer = Array.Empty<byte>();
+
+    private ReadOnlySpan<byte> Trim(ReadOnlySpan<byte> src, int ledCount, DeviceColorAdjust adjust)
+    {
+        var need = ledCount * 3;
+        if (need > src.Length) need = src.Length - src.Length % 3;
+        if (_trimBuffer.Length < need) _trimBuffer = new byte[need];
+        for (var i = 0; i + 2 < need; i += 3)
+        {
+            adjust.Apply(src[i], src[i + 1], src[i + 2], 1.0, out var r, out var g, out var b);
+            _trimBuffer[i] = r;
+            _trimBuffer[i + 1] = g;
+            _trimBuffer[i + 2] = b;
+        }
+        return new ReadOnlySpan<byte>(_trimBuffer, 0, need);
+    }
+
 }

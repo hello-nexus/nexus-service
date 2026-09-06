@@ -182,14 +182,21 @@ public class MetricsSamplerTests
         public long? QueryFirstSeen(string appName) => null;
     }
 
+    private sealed class RecordingSampleSink : IMetricsSampleSink
+    {
+        public List<(MetricSample Sample, DateTime NowUtc)> Calls { get; } = new();
+        public void OnSample(MetricSample sample, DateTime nowUtc) => Calls.Add((sample, nowUtc));
+    }
+
     private static MetricsSampler CreateSampler(
         StubMetricsSource source, RecordingMetricsHistoryStore store, MetricsSampleBuffer? buffer = null,
         IAppUsageSource? appSource = null, AppSampleBuffer? appBuffer = null, IAppUsageHistoryStore? appStore = null,
-        FeatureGates? gates = null, IFpsProvider? fps = null, IScreenTimeProvider? screenTime = null, IConfigStore? config = null) =>
+        FeatureGates? gates = null, IFpsProvider? fps = null, IScreenTimeProvider? screenTime = null, IConfigStore? config = null,
+        IMetricsSampleSink? sink = null) =>
         new(new StubSensors(), source, buffer ?? new MetricsSampleBuffer(), store,
             appSource ?? new StubAppUsageSource(), appBuffer ?? new AppSampleBuffer(), appStore ?? new RecordingAppUsageHistoryStore(),
             fps ?? new StubFpsProvider(), screenTime ?? new StubScreenTimeProvider(), config ?? new FakeConfigStore(),
-            gates);
+            gates, sink);
 
     [Fact]
     public async Task Tick_AppendsOneSampleToTheBuffer_PerCall()
@@ -202,6 +209,34 @@ public class MetricsSamplerTests
 
         Assert.Equal(1, source.Calls);
         Assert.Single(buffer.PendingSnapshot());
+    }
+
+    [Fact]
+    public async Task Tick_NoSinkRegistered_StillAppendsToTheBuffer()
+    {
+        var source = new StubMetricsSource();
+        var buffer = new MetricsSampleBuffer();
+        var sampler = CreateSampler(source, new RecordingMetricsHistoryStore(), buffer);
+
+        await sampler.Tick(new DateTime(2026, 1, 1, 0, 0, 0, DateTimeKind.Utc), CancellationToken.None);
+
+        Assert.Single(buffer.PendingSnapshot());
+    }
+
+    [Fact]
+    public async Task Tick_WithSinkRegistered_InvokesOnSample_WithTheAppendedSampleAndTickTime()
+    {
+        var source = new StubMetricsSource();
+        var buffer = new MetricsSampleBuffer();
+        var sink = new RecordingSampleSink();
+        var sampler = CreateSampler(source, new RecordingMetricsHistoryStore(), buffer, sink: sink);
+        var now = new DateTime(2026, 1, 1, 0, 0, 5, DateTimeKind.Utc);
+
+        await sampler.Tick(now, CancellationToken.None);
+
+        var call = Assert.Single(sink.Calls);
+        Assert.Equal(buffer.PendingSnapshot()[0], call.Sample);
+        Assert.Equal(now, call.NowUtc);
     }
 
     [Fact]

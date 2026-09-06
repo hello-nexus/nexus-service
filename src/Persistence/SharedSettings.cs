@@ -42,6 +42,8 @@ public sealed class MonitoringSettings
     public List<string> DetailedCollapsed { get; set; } = new();
     /// <summary>Global on/off for the monitoring timeline event overlay.</summary>
     public bool EventsEnabled { get; set; } = true;
+    /// <summary>Global on/off for the FPS overlay on the monitoring chart.</summary>
+    public bool FpsOverlayEnabled { get; set; } = true;
     /// <summary>Event kinds the user has hidden. Unknown/new kinds default to visible.</summary>
     public List<string> EventKindsHidden { get; set; } = new();
     /// <summary>Seconds between SMART reads per drive, keyed by LHM hardware identifier ("/hdd/0"). 0 = never read. A drive with no entry uses SmartPollDefaultSeconds.</summary>
@@ -323,6 +325,7 @@ public sealed class MonitoringSettingsPatch
     public bool? ShowWindowsTrayIcon { get; set; }
     public List<string>? DetailedCollapsed { get; set; }
     public bool? EventsEnabled { get; set; }
+    public bool? FpsOverlayEnabled { get; set; }
     public List<string>? EventKindsHidden { get; set; }
     public Dictionary<string, int>? SmartPollSeconds { get; set; }
     public int? SmartPollDefaultSeconds { get; set; }

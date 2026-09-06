@@ -1,10 +1,11 @@
 <Project Sdk="Microsoft.NET.Sdk">
 
   <!--
-    Standalone project, deliberately outside Nexus.slnx: this is packaging
-    glue for the Microsoft Store MSIX shell (see plans/windows-store-distribution.md
-    Option A), not part of the service build. installer/msix/build-msix.ps1
-    builds it explicitly, RID selected by its -Rid parameter.
+    Packaging glue for the Microsoft Store MSIX shell, not part of the service
+    itself. Nexus.slnx references it so an ordinary solution build compiles it
+    (nexus-service has no CI of its own; the umbrella's build.yml runs the same
+    solution build); it is never published by the service build. installer/msix/build-msix.ps1 publishes it separately, RID selected
+    by that script's -Rid parameter.
   -->
   <PropertyGroup>
     <TargetFramework>net10.0</TargetFramework>

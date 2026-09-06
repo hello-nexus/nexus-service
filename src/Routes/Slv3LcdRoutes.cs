@@ -36,6 +36,8 @@ public sealed class Slv3LcdScreenDto
     public string? ColorB { get; set; }
     /// <summary>"c" | "f". Display unit for a temperature sensor source.</summary>
     public string? TempUnit { get; set; }
+    /// <summary>User-chosen list position (0-based); -1 when not set. The list is already sorted by it.</summary>
+    public int Order { get; set; } = -1;
 }
 
 public sealed class Slv3LcdScreensResponse
@@ -48,6 +50,12 @@ public sealed class Slv3LcdSettingsRequest
     public string Serial { get; set; } = "";
     public byte? Brightness { get; set; }
     public byte? Rotation { get; set; }
+}
+
+public sealed class Slv3LcdOrderRequest
+{
+    /// <summary>Screen serials in the wanted list order; each gets its index as its order.</summary>
+    public List<string> Serials { get; set; } = new();
 }
 
 public sealed class Slv3LcdContentRequest
@@ -108,13 +116,35 @@ public static class Slv3LcdRoutes
     private static readonly string[] ValidAnimationIds = { "pulse", "spectrum", "spin" };
     private static readonly string[] ValidTempUnits = { "c", "f" };
 
+    /// <summary>
+    /// Screens with a saved order first, by that order; the rest keep the hub's
+    /// discovery order behind them. Stable, so an unordered set lists as before.
+    /// </summary>
+    internal static List<Slv3LcdScreenInfo> OrderScreens(
+        IReadOnlyList<Slv3LcdScreenInfo> screens, IReadOnlyDictionary<string, LianLiWirelessScreenSettings> settings)
+    {
+        var ordered = new List<(Slv3LcdScreenInfo Screen, int Order, int Index)>(screens.Count);
+        for (var i = 0; i < screens.Count; i++)
+        {
+            var order = settings.TryGetValue(screens[i].Serial, out var s) && s.Order >= 0 ? s.Order : int.MaxValue;
+            ordered.Add((screens[i], order, i));
+        }
+        ordered.Sort((a, b) => a.Order != b.Order ? a.Order.CompareTo(b.Order) : a.Index.CompareTo(b.Index));
+        var result = new List<Slv3LcdScreenInfo>(ordered.Count);
+        foreach (var entry in ordered)
+        {
+            result.Add(entry.Screen);
+        }
+        return result;
+    }
+
     public static void MapSlv3LcdEndpoints(this WebApplication app)
     {
         app.MapGet("/devices/lianli-wireless/screens", (Slv3LcdHub hub, IConfigStore store) =>
         {
             var screenSettings = store.Load().Devices.LianLiWireless.Screens;
             var response = new Slv3LcdScreensResponse();
-            foreach (var screen in hub.Screens)
+            foreach (var screen in OrderScreens(hub.Screens, screenSettings))
             {
                 var settings = screenSettings.TryGetValue(screen.Serial, out var s)
                     ? s
@@ -123,6 +153,7 @@ public static class Slv3LcdRoutes
                 {
                     Serial = screen.Serial,
                     Position = screen.Position,
+                    Order = settings.Order,
                     Brightness = settings.Brightness,
                     Rotation = settings.Rotation,
                     ContentType = settings.ContentType,
@@ -165,6 +196,39 @@ public static class Slv3LcdRoutes
                 if (body.Brightness.HasValue) screen.Brightness = body.Brightness.Value;
                 if (body.Rotation.HasValue) screen.Rotation = body.Rotation.Value;
                 s.Devices.LianLiWireless.Screens[body.Serial] = screen;
+            });
+
+            return Results.Json(ApiResponse.Ok(), AppJsonContext.Default.ApiResponse);
+        });
+
+        // GetPosIndex answers 0 for every screen on this firmware, so the saved
+        // list order is what lines the tile numbers up with the physical fans.
+        app.MapPost("/devices/lianli-wireless/screens/order", (Slv3LcdOrderRequest body, IConfigStore store) =>
+        {
+            var serials = body.Serials ?? new List<string>();
+            if (serials.Count == 0)
+            {
+                return Results.Json(ApiResponse.Fail("missing serials"), AppJsonContext.Default.ApiResponse);
+            }
+            var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            foreach (var serial in serials)
+            {
+                if (string.IsNullOrWhiteSpace(serial) || !seen.Add(serial))
+                {
+                    return Results.Json(ApiResponse.Fail("serials must be distinct and non-empty"), AppJsonContext.Default.ApiResponse);
+                }
+            }
+
+            store.Update(s =>
+            {
+                for (var i = 0; i < serials.Count; i++)
+                {
+                    var screen = s.Devices.LianLiWireless.Screens.TryGetValue(serials[i], out var existing)
+                        ? existing
+                        : new LianLiWirelessScreenSettings();
+                    screen.Order = i;
+                    s.Devices.LianLiWireless.Screens[serials[i]] = screen;
+                }
             });
 
             return Results.Json(ApiResponse.Ok(), AppJsonContext.Default.ApiResponse);

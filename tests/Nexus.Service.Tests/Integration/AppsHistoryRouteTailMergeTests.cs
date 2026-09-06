@@ -6,6 +6,7 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
 using Nexus.Service.Auth;
 using Nexus.Service.Monitoring.History;
+using Nexus.Service.Routes;
 
 namespace Nexus.Service.Tests.Integration;
 
@@ -254,5 +255,80 @@ public sealed class AppsHistoryRouteTailMergeTests : IDisposable
         // One sampled tick (db=1000 only, the empty tail tick does not
         // count): 40/1 = 40, not 40/2 = 20.
         Assert.Equal(40, app.GetProperty("avg").GetDouble());
+    }
+
+    // Descending-avg apps named appN.exe, ascending N as avg descends - each
+    // has one db point matching its avg, enough for MergeAppTail to produce
+    // a non-empty series per candidate.
+    private void SeedApps(int count)
+    {
+        _store.SampledTicks = new List<long> { 1000 };
+        _store.TopApps = new List<AppWindowStat>();
+        for (var i = 0; i < count; i++)
+        {
+            var name = $"app{i}.exe";
+            var avg = count - i;
+            _store.TopApps.Add(new AppWindowStat(name, avg, avg));
+            _store.Series[name] = new List<AppRawPoint> { new(1000, avg, null) };
+        }
+    }
+
+    [Fact]
+    public async Task AbsentMaxApps_ReturnsEveryAppInTheWindow_ForCpu()
+    {
+        SeedApps(40);
+
+        var res = await Client().GetAsync("/monitoring/history/apps?from=0&to=6000000&series=cpu");
+
+        using var doc = JsonDocument.Parse(await res.Content.ReadAsStringAsync());
+        Assert.Equal(40, doc.RootElement.GetProperty("apps").GetArrayLength());
+    }
+
+    [Fact]
+    public async Task AbsentMaxApps_ReturnsEveryAppInTheWindow_ForMemory()
+    {
+        SeedApps(40);
+
+        var res = await Client().GetAsync("/monitoring/history/apps?from=0&to=6000000&series=memory");
+
+        using var doc = JsonDocument.Parse(await res.Content.ReadAsStringAsync());
+        Assert.Equal(40, doc.RootElement.GetProperty("apps").GetArrayLength());
+    }
+
+    [Fact]
+    public async Task ExplicitMaxApps_StillClampsToTheRequestedTopN()
+    {
+        SeedApps(40);
+
+        var res = await Client().GetAsync("/monitoring/history/apps?from=0&to=6000000&series=cpu&maxApps=5");
+
+        using var doc = JsonDocument.Parse(await res.Content.ReadAsStringAsync());
+        var apps = doc.RootElement.GetProperty("apps");
+        Assert.Equal(5, apps.GetArrayLength());
+        Assert.Equal(new[] { "app0.exe", "app1.exe", "app2.exe", "app3.exe", "app4.exe" },
+            Enumerable.Range(0, 5).Select(i => apps[i].GetProperty("name").GetString()));
+    }
+
+    [Fact]
+    public async Task AbsentMaxApps_StillClampsAtTheHardCap_WhenTheWindowHasMore()
+    {
+        // Seeding the store at exactly MaxMaxApps leaves QueryTopApps's own
+        // Take(maxApps) a no-op (the fake already holds no more than that),
+        // so tail-only apps push the candidate set past the cap instead -
+        // only the route's own Take(clampedMaxApps) can be trimming it back
+        // down when this asserts the cap held.
+        const int tailOnlyAppCount = 10;
+        SeedApps(MonitoringHistoryRoutes.MaxMaxApps);
+
+        var appBuffer = _factory.Services.GetRequiredService<AppSampleBuffer>();
+        var tailOnlyApps = Enumerable.Range(MonitoringHistoryRoutes.MaxMaxApps, tailOnlyAppCount)
+            .Select(i => new AppUsagePoint($"app{i}.exe", 1, null))
+            .ToArray();
+        appBuffer.Append(new AppUsageTick(5000, new[] { new AppMetricSample("cpu", tailOnlyApps) }));
+
+        var res = await Client().GetAsync("/monitoring/history/apps?from=0&to=6000000&series=cpu");
+
+        using var doc = JsonDocument.Parse(await res.Content.ReadAsStringAsync());
+        Assert.Equal(MonitoringHistoryRoutes.MaxMaxApps, doc.RootElement.GetProperty("apps").GetArrayLength());
     }
 }

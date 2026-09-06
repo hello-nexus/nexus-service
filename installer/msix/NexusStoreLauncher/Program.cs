@@ -17,7 +17,9 @@ internal static partial class Program
 {
     private const uint MbOk = 0x00000000;
     private const uint MbIconError = 0x00000010;
-    private const string Caption = "Nexus";
+    // The packaged app is listed and installed as "Hello Nexus" ("Nexus" is
+    // reserved by another publisher); the suite it installs is still "Nexus".
+    private const string Caption = "Hello Nexus";
     private const int ErrorCancelled = 1223;
     private const int ExitOk = 0;
     private const int ExitFatalError = 1;
@@ -57,7 +59,7 @@ internal static partial class Program
         if (!File.Exists(setupExe))
         {
             return ShowFatalError(
-                "The Nexus setup file is missing from this package. Reinstall Nexus from the Microsoft Store, or download it from hellonexus.com.");
+                "The Nexus setup file is missing from this package. Reinstall Hello Nexus from the Microsoft Store, or download Nexus from hellonexus.com.");
         }
 
         var exitCode = RunSetup(setupExe);
@@ -116,6 +118,9 @@ internal static partial class Program
         // in Nexus.iss). ShellExecute honors that manifest and raises UAC; a direct
         // CreateProcess (UseShellExecute = false) from this unelevated full-trust
         // launcher cannot elevate the child.
+        // No /DESKTOPICON=1, deliberately: Nexus.iss creates one under a silent
+        // install only when asked, and a Store install places nothing on the
+        // desktop (see installer/README.md).
         var install = new ProcessStartInfo
         {
             FileName = setupExe,

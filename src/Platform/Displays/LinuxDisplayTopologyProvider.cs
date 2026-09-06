@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using Nexus.Service.Models.Displays;
+using Nexus.Service.Platform.Linux;
 
 namespace Nexus.Service.Platform.Displays;
 
@@ -26,13 +27,14 @@ public sealed class LinuxDisplayTopologyProvider : IDisplayTopologyProvider
         try
         {
             if (!Directory.Exists(DrmRoot)) return results;
+            var usb = ReadUsbTree();
             var connectors = Directory.GetDirectories(DrmRoot, "card*-*")
                 .OrderBy(p => p, StringComparer.Ordinal);
             foreach (var dir in connectors)
             {
                 try
                 {
-                    var entry = ReadConnector(dir, results.Count + 1);
+                    var entry = ReadConnector(dir, results.Count + 1, usb);
                     if (entry is not null) results.Add(entry);
                 }
                 catch (Exception ex)
@@ -48,7 +50,7 @@ public sealed class LinuxDisplayTopologyProvider : IDisplayTopologyProvider
         return results;
     }
 
-    private static RawDisplayInfo? ReadConnector(string dir, int number)
+    private static RawDisplayInfo? ReadConnector(string dir, int number, IReadOnlyList<UsbNode> usb)
     {
         var status = ReadFirstLine(Path.Combine(dir, "status"));
         if (!string.Equals(status, "connected", StringComparison.Ordinal)) return null;
@@ -93,8 +95,61 @@ public sealed class LinuxDisplayTopologyProvider : IDisplayTopologyProvider
             IsPrimary = false,
             IsInternal = connector.StartsWith("eDP", StringComparison.OrdinalIgnoreCase)
                       || connector.StartsWith("LVDS", StringComparison.OrdinalIgnoreCase),
+            IsTouch = HasDigitizer(id, usb),
             RawHardwareId = id,
         };
+    }
+
+    /// <summary>One USB device node: its ids and the sysfs parent, which is the hub
+    /// a companion-scoped digitizer must share with its companion.</summary>
+    private readonly record struct UsbNode(int VendorId, int ProductId, string Parent);
+
+    /// <summary>
+    /// True when this display matches a <see cref="TouchPanelCatalog"/> entry and that
+    /// entry's digitizer is on the bus. Windows derives touch from the digitizer-to-
+    /// monitor mapping; there is no such link in DRM, so presence of the paired
+    /// digitizer is the signal.
+    /// </summary>
+    private static bool HasDigitizer(string hardwareId, IReadOnlyList<UsbNode> usb)
+    {
+        var entry = TouchPanelCatalog.MatchDisplay(hardwareId);
+        if (entry is null) return false;
+        foreach (var node in usb)
+        {
+            var isDigitizer = entry.DigitizerIds.Any(
+                d => d.VendorId == node.VendorId && d.ProductId == node.ProductId);
+            if (!isDigitizer) continue;
+            if (!entry.IsCompanionScoped) return true;
+            // Descriptor-identical digitizers are told apart by a sibling on the
+            // same hub, mirroring TouchMapDigitizerInfo.CompanionHardwareIds.
+            var hasCompanion = usb.Any(sibling =>
+                string.Equals(sibling.Parent, node.Parent, StringComparison.Ordinal)
+                && entry.CompanionUsbIds!.Any(
+                    c => c.VendorId == sibling.VendorId && c.ProductId == sibling.ProductId));
+            if (hasCompanion) return true;
+        }
+        return false;
+    }
+
+    private static IReadOnlyList<UsbNode> ReadUsbTree()
+    {
+        var nodes = new List<UsbNode>();
+        try
+        {
+            foreach (var dir in Directory.GetDirectories("/sys/bus/usb/devices"))
+            {
+                var vid = LinuxSysfs.ReadHex(Path.Combine(dir, "idVendor"));
+                var pid = LinuxSysfs.ReadHex(Path.Combine(dir, "idProduct"));
+                if (vid is null || pid is null) continue;
+                var real = Directory.ResolveLinkTarget(dir, returnFinalTarget: true)?.FullName ?? dir;
+                nodes.Add(new UsbNode(vid.Value, pid.Value, Directory.GetParent(real)?.FullName ?? ""));
+            }
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine($"[displays-linux] usb scan failed: {ex.Message}");
+        }
+        return nodes;
     }
 
     /// <summary>"2560x1440" (optionally with a suffix) -> (2560, 1440).</summary>

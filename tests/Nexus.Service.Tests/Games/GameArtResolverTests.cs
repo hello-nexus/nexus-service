@@ -150,8 +150,31 @@ public sealed class GameArtResolverHttpTests : IDisposable
         }
     }
 
+    private sealed class StubInstalls : IGameInstallLocator
+    {
+        public string Dir { get; set; } = "";
+
+        public bool TryGetInstallDir(string gameKey, out string installDir)
+        {
+            installDir = Dir;
+            return Dir.Length > 0;
+        }
+    }
+
+    private const string InstalledGameKey = "steam:427520";
+
     private GameArtResolver Build(StubIcons icons) =>
-        new(new SingleClientFactory(), new GameCatalog(NullLogger<GameCatalog>.Instance), icons, BaseUrl);
+        new(new SingleClientFactory(), new StubInstalls(), icons, BaseUrl);
+
+    /// <summary>A resolver whose catalog reports one installed game holding a single executable.</summary>
+    private GameArtResolver BuildWithInstalledGame(StubIcons icons, out Action cleanup)
+    {
+        var dir = Path.Combine(Path.GetTempPath(), "nexus-art-" + Guid.NewGuid().ToString("n"));
+        Directory.CreateDirectory(dir);
+        File.WriteAllBytes(Path.Combine(dir, "TheGame.exe"), new byte[64]);
+        cleanup = () => Directory.Delete(dir, recursive: true);
+        return new GameArtResolver(new SingleClientFactory(), new StubInstalls { Dir = dir }, icons, BaseUrl);
+    }
 
     [Fact]
     public async Task UsesTheHeaderImageTheStoreReports()
@@ -187,6 +210,41 @@ public sealed class GameArtResolverHttpTests : IDisposable
         var art = await Build(new StubIcons()).ResolveAsync("steam:427520", CancellationToken.None);
 
         Assert.Equal(GameArtResolver.LegacyCapsuleUrl(427520), art.Url);
+    }
+
+    [Fact]
+    public async Task PrefersTheInstalledIconOverAGuessedCapsuleWhenTheStoreFails()
+    {
+        // The legacy capsule 404s for anything published after Valve moved art
+        // behind a content hash, so a real icon on disk is the better answer.
+        Response = () => Http(503, "{}");
+        var icons = new StubIcons { Result = new byte[] { 1, 2, 3 } };
+        var resolver = BuildWithInstalledGame(icons, out var cleanup);
+
+        try
+        {
+            var art = await resolver.ResolveAsync(InstalledGameKey, CancellationToken.None);
+
+            Assert.Equal(new byte[] { 1, 2, 3 }, art.Bytes);
+            Assert.Equal("", art.Url);
+        }
+        finally { cleanup(); }
+    }
+
+    [Fact]
+    public void ResolveIconServesTheInstalledIconWithoutTouchingTheStore()
+    {
+        var icons = new StubIcons { Result = new byte[] { 7, 7 } };
+        var resolver = BuildWithInstalledGame(icons, out var cleanup);
+
+        try
+        {
+            var art = resolver.ResolveIcon(InstalledGameKey);
+
+            Assert.Equal(new byte[] { 7, 7 }, art.Bytes);
+            Assert.Equal(0, Volatile.Read(ref _requests));
+        }
+        finally { cleanup(); }
     }
 
     [Fact]

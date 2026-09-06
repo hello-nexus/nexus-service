@@ -4,6 +4,7 @@ using System.Linq;
 using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
+using Nexus.Service.Mcp;
 using Nexus.Service.Mcp.Tools;
 using Nexus.Service.Persistence;
 using Nexus.Service.Sockets;
@@ -50,6 +51,24 @@ public sealed class ProfileToolsTests : IDisposable
         var profiles = doc.RootElement.GetProperty("profiles").EnumerateArray().ToList();
         var active = Assert.Single(profiles, p => p.GetProperty("active").GetBoolean());
         Assert.Equal("Default", active.GetProperty("name").GetString());
+    }
+
+    [Fact]
+    public void ListProfiles_is_gated_by_telemetry_not_profiles_consent()
+    {
+        // Read-only: list_profiles must stay usable with profile switching
+        // turned off, unlike apply_profile which actually changes state.
+        var tool = new ListProfilesTool(_profiles);
+
+        Assert.Equal(McpCapability.Telemetry, tool.Capability);
+    }
+
+    [Fact]
+    public void ApplyProfile_is_still_gated_by_profiles_consent()
+    {
+        var tool = new ApplyProfileTool(_profiles, new MultiplexHub());
+
+        Assert.Equal(McpCapability.Profiles, tool.Capability);
     }
 
     [Fact]

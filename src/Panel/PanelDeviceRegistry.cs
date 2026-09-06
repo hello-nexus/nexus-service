@@ -434,7 +434,20 @@ public sealed class PanelDeviceRegistry
             // sync (rebuilt from OS facts); a client value would ping-pong
             // with the next sync pass.
             if (patch.Capabilities is not null && string.IsNullOrEmpty(record.DisplayId))
+            {
+                // A single-instance surface is the record's identity, not a
+                // viewport sample: a Y70 kiosk that maps on the desktop monitor
+                // before the compositor moves it reports that monitor's shape
+                // and would rename the Y70 record "phone"; it re-reports the
+                // real size on the resize that follows. Keep the surface.
+                var keep = record.Capabilities?.Surface;
+                if (keep is PanelSurfaces.Y70 or PanelSurfaces.Q60
+                    && !string.Equals(patch.Capabilities.Surface, keep, StringComparison.Ordinal))
+                {
+                    patch.Capabilities.Surface = keep;
+                }
                 record.Capabilities = patch.Capabilities;
+            }
 
             record.LastSeenAt = now;
             snapshot = Clone(record);

@@ -102,19 +102,55 @@ public class Slv3LightingFrameWriterTests
         var countAfterFirst = tx.SentFrames.Count;
         Assert.True(countAfterFirst > 0);
 
-        // Content changes but less than the per-chain floor (one bound chain =
-        // one 33 ms tick) elapsed: suppress the push so the fan's telemetry
+        // Content changes but less than the per-chain floor (100 ms for one
+        // bound chain) elapsed: suppress the push so the fan's telemetry
         // beacon keeps RF air time (else the device list reads zero fans and
         // the controller looks "messed up").
         FillAll(frames, 200, 50, 5);
-        now += 20 * TimeSpan.TicksPerMillisecond;
+        now += 60 * TimeSpan.TicksPerMillisecond;
         writer.Tick();
         Assert.Equal(countAfterFirst, tx.SentFrames.Count);
 
         // Once the floor elapses, the latest frame goes out.
-        now += 33 * TimeSpan.TicksPerMillisecond;
+        now += 40 * TimeSpan.TicksPerMillisecond;
         writer.Tick();
         Assert.True(tx.SentFrames.Count > countAfterFirst);
+    }
+
+    [Fact]
+    public void Tick_does_not_resend_unchanged_content_before_the_echo_had_time_to_arrive()
+    {
+        var now = 0L;
+        var (_, net, tx, _, _, writer, frames) = CreateBoundSetup(() => now);
+        FillAll(frames, 10, 20, 30);
+        writer.Tick();
+        var countAfterFirst = tx.SentFrames.Count;
+
+        // The RX has not polled yet (the fake fan still reports the old
+        // effect_index): inside the confirm window that is not drift.
+        net.Fans[0].EffectIndex = new byte[4];
+        now += 1000 * TimeSpan.TicksPerMillisecond;
+        writer.Tick();
+        Assert.Equal(countAfterFirst, tx.SentFrames.Count);
+    }
+
+    [Fact]
+    public void Tick_resends_unchanged_content_once_the_echo_window_passes_without_a_match()
+    {
+        var now = 0L;
+        var (hub, net, tx, _, _, writer, frames) = CreateBoundSetup(() => now);
+        FillAll(frames, 10, 20, 30);
+        writer.Tick();
+        var countAfterFirst = tx.SentFrames.Count;
+
+        // The chain reset (effect_index back to 0) and the device list said so;
+        // past the confirm window the unchanged picture is pushed again.
+        net.Fans[0].EffectIndex = new byte[4];
+        Assert.True(hub.DriveTick());
+        now += 2000 * TimeSpan.TicksPerMillisecond;
+        var countBefore = tx.SentFrames.Count;
+        writer.Tick();
+        Assert.True(tx.SentFrames.Count > countBefore);
     }
 
     [Fact]

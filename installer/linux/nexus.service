@@ -4,10 +4,11 @@ Description=Nexus hardware monitoring and control service
 # access: motherboard pwm, NVML GPU fans, kernel modules, raw i2c/hidraw - no
 # udev rules or group juggling needed. It adopts the active user's session at
 # startup (see LinuxSession) so the tray, MPRIS media, volume, and dashboard
-# keep working. Ordered after graphical.target so a session exists to adopt;
-# the HTTP service + hardware run regardless.
+# keep working. Ordered after graphical.target so a session exists to adopt,
+# and therefore wanted BY graphical.target: wanting it from multi-user.target
+# is an ordering cycle (graphical is after multi-user), which systemd breaks
+# by deleting this unit's start job - the service then never starts at boot.
 After=graphical.target network.target
-Wants=graphical.target
 
 [Service]
 Type=simple
@@ -19,4 +20,4 @@ RestartSec=3
 # Runs as root (default for a system unit) - that is the point.
 
 [Install]
-WantedBy=multi-user.target
+WantedBy=graphical.target

@@ -60,7 +60,7 @@ public static class SegmentFrameComposer
             // The keeb firmware-brightness level (masterMul, set by the knob and
             // the Settings slider) multiplies the per-zone software level, which the
             // global master brightness caps: effective = min(global, zone) * masterMul.
-            var mul = ComputeBrightnessMul(zone.Id, disabled, uncontrolled, prefs, globalBrightness) * masterMul;
+            var mul = ComputeBrightnessMul(zone.Id, disabled, uncontrolled, prefs, globalBrightness, out var adjust) * masterMul;
             var identifying = false;
             var identifyOn = false;
             if (identify is not null && identify.TryGetActive(zone.Id, nowTicks, out var startTicks))
@@ -87,6 +87,20 @@ public static class SegmentFrameComposer
                     for (var i = 0; i < count; i++)
                     {
                         buf[slice.Start + i] = c;
+                    }
+                }
+                else if (!adjust.IsIdentity)
+                {
+                    for (var i = 0; i < count; i++)
+                    {
+                        var off = (zoneLocal + i) * 3;
+                        if (off + 2 >= src.Length || mul <= 0.0)
+                        {
+                            buf[slice.Start + i] = default;
+                            continue;
+                        }
+                        adjust.Apply(src[off], src[off + 1], src[off + 2], mul, out var ar, out var ag, out var ab);
+                        buf[slice.Start + i] = new RgbColor(ar, ag, ab);
                     }
                 }
                 else
@@ -142,8 +156,10 @@ public static class SegmentFrameComposer
         IReadOnlyList<string> disabled,
         IReadOnlyList<string> uncontrolled,
         IReadOnlyDictionary<string, LightingDevicePreference> prefs,
-        float globalBrightness)
+        float globalBrightness,
+        out DeviceColorAdjust adjust)
     {
+        adjust = DeviceColorAdjust.Identity;
         for (var i = 0; i < disabled.Count; i++)
         {
             if (disabled[i] == id)
@@ -159,10 +175,19 @@ public static class SegmentFrameComposer
             }
         }
         int devBrightness;
-        // Prefs dictionary is mutated in place by the brightness setters; a
-        // concurrent insert during this lock-free read can throw. Fall back
-        // to full brightness for this frame.
-        try { devBrightness = prefs.TryGetValue(id, out var pref) ? pref.Brightness : 100; }
+        // One lookup feeds both the brightness and the colour trim.
+        try
+        {
+            if (prefs.TryGetValue(id, out var pref) && pref is not null)
+            {
+                devBrightness = pref.Brightness;
+                adjust = DeviceColorAdjust.For(pref);
+            }
+            else
+            {
+                devBrightness = 100;
+            }
+        }
         catch (InvalidOperationException) { devBrightness = 100; }
         return Math.Min(Math.Clamp(devBrightness, 0, 100) / 100.0, globalBrightness);
     }

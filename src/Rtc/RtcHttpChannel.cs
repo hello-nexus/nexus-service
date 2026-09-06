@@ -32,25 +32,24 @@ public sealed class RtcHttpChannel : IDisposable
 
     private readonly RelayHttpDispatcher _httpDispatcher;
     private readonly RTCDataChannel _channel;
-    private readonly byte[] _aeadKey;
+    // Inbound state is mutated only from OnRequestFrame (SIPSorcery invokes
+    // onmessage serially, one SCTP receive thread per association); the rekey's
+    // key switch runs under _sendLock so concurrent replies see it.
+    private readonly SealedChannelKeys _keys;
     private readonly string _sessionId;
     private readonly ILogger _log;
     private readonly CancellationToken _ct;
     private readonly SemaphoreSlim _sendLock = new(1, 1);
     private readonly SemaphoreSlim _inFlight = new(MaxConcurrentHttpRequests, MaxConcurrentHttpRequests);
-    private ulong _sendCounter;
-    // Mutated only from OnRequestFrame, with no lock: SIPSorcery invokes
-    // onmessage serially, one SCTP receive thread per association.
-    private long _lastRecvCounter = -1;
     private volatile bool _disposed;
 
     public RtcHttpChannel(
         RelayHttpDispatcher httpDispatcher, RTCDataChannel channel, byte[] aeadKey,
-        string sessionId, ILogger log, CancellationToken ct)
+        string sessionId, ILogger log, CancellationToken ct, Func<byte[], byte[]>? rekeyDerive = null)
     {
         _httpDispatcher = httpDispatcher;
         _channel = channel;
-        _aeadKey = aeadKey;
+        _keys = new SealedChannelKeys(aeadKey, rekeyDerive);
         _sessionId = sessionId;
         _log = log;
         _ct = ct;
@@ -77,10 +76,14 @@ public sealed class RtcHttpChannel : IDisposable
         RelayHttpRequest? request;
         try
         {
-            var (dir, counter, plaintext) = RelayCrypto.Open(_aeadKey, frame);
-            if (dir != RelayCrypto.DirClientToHost || (long)counter <= _lastRecvCounter)
+            var kind = _keys.Open(frame, RelayCrypto.DirClientToHost, out var plaintext);
+            if (kind == SealedChannelKeys.InboundKind.Rejected)
                 return;
-            _lastRecvCounter = (long)counter;
+            if (kind == SealedChannelKeys.InboundKind.RekeyRequest)
+            {
+                BeginRekey();
+                return;
+            }
             request = JsonSerializer.Deserialize(plaintext, AppJsonContext.Default.RelayHttpRequest);
         }
         catch (CryptographicException)
@@ -102,6 +105,34 @@ public sealed class RtcHttpChannel : IDisposable
         }
 
         _ = DispatchAndReplyAsync(request);
+    }
+
+    // The send lock spans the key switch and the host-nonce send, so no frame
+    // sealed under the rekeyed key can precede it.
+    private void BeginRekey()
+    {
+        try
+        {
+            _sendLock.Wait(_ct);
+        }
+        catch (Exception)
+        {
+            return; // disposed or cancelled during teardown
+        }
+        try
+        {
+            var frame = _keys.SealHostNonceAndRekey(RelayCrypto.DirHostToClient);
+            if (!_disposed && _channel.readyState == RTCDataChannelState.open)
+                _channel.send(frame);
+        }
+        catch (Exception ex)
+        {
+            _log.LogDebug(ex, "rtc http rekey reply failed");
+        }
+        finally
+        {
+            try { _sendLock.Release(); } catch (ObjectDisposedException) { }
+        }
     }
 
     private async Task DispatchAndReplyAsync(RelayHttpRequest request)
@@ -148,8 +179,7 @@ public sealed class RtcHttpChannel : IDisposable
         {
             if (_disposed || _channel.readyState != RTCDataChannelState.open)
                 return;
-            var counter = _sendCounter++;
-            var frame = RelayCrypto.Seal(_aeadKey, RelayCrypto.DirHostToClient, counter, json);
+            var frame = _keys.Seal(RelayCrypto.DirHostToClient, json);
             _channel.send(frame);
         }
         finally

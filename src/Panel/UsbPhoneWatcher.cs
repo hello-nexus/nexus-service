@@ -285,7 +285,14 @@ public sealed class UsbPhoneWatcher : BackgroundService
         {
             await _client.ExecuteShellCommandAsync(
                 device,
-                $"am start -n {PanelComponent} --activity-single-top --ez nexus_usb true",
+                // MAIN/LAUNCHER are spelled out because the wrapper now targets
+                // Android 16 (API 36), whose safer-intents rules stop an
+                // intent with no action from matching an exported component's
+                // filters. Explicit -n still selects the component; the action
+                // and category only make the match legal, and are a no-op on
+                // older releases.
+                $"am start -a android.intent.action.MAIN -c android.intent.category.LAUNCHER "
+                    + $"-n {PanelComponent} --activity-single-top --ez nexus_usb true",
                 receiver,
                 ct);
             ServiceLog.Info($"[usb-phone-watcher] {device.Serial}: launched panel app ({receiver.ToString().Trim()})");

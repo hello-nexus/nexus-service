@@ -605,22 +605,24 @@ public sealed class CloudAccountService
 
     private void HandleRecoveryApproved(string grantId, CloudRecoveryPollResponse poll)
     {
-        var accountId = ApplySession(new CloudAuthSession
-        {
-            AccessToken = poll.AccessToken!,
-            RefreshToken = poll.RefreshToken!,
-            Account = poll.Account,
-        });
-
+        // ApplySession's activation event is pushed to clients, which then read
+        // the recovery-fresh window, so the window is written before it fires.
         lock (_recoveryLock)
         {
             if (_recoveryGrantId == grantId)
             {
                 _recoveryStatus = "approved";
             }
-            _recoveryFreshAccountId = accountId;
+            _recoveryFreshAccountId = poll.Account!.Id;
             _recoveryFreshUntil = _clock.GetUtcNow().Add(RecoveryFreshWindow);
         }
+
+        ApplySession(new CloudAuthSession
+        {
+            AccessToken = poll.AccessToken!,
+            RefreshToken = poll.RefreshToken!,
+            Account = poll.Account,
+        });
     }
 
     private void SetRecoveryStatus(string grantId, string status)

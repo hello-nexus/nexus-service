@@ -24,8 +24,8 @@ cp -a "$PUBLISH_DIR/." "$APP/"
 
 # Install tooling + service definition.
 cp "$HERE/install.sh" "$HERE/uninstall.sh" "$HERE/README.md" \
-   "$HERE/nexus.service" "$APP/"
-chmod +x "$APP/install.sh" "$APP/uninstall.sh" "$APP/Nexus"
+   "$HERE/nexus.service" "$HERE/setup-sensors.sh" "$APP/"
+chmod +x "$APP/install.sh" "$APP/uninstall.sh" "$APP/setup-sensors.sh" "$APP/Nexus"
 
 # App icon (best-effort - menu entry uses it).
 ICON="$HERE/../../Bundled/linux/nexus-512.png"

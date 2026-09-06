@@ -33,15 +33,12 @@ namespace Nexus.Service.Relay;
 public sealed class RelayWebSocket : WebSocket
 {
     private readonly WebSocket _transport;
-    private readonly byte[] _aeadKey;
+    private readonly SealedChannelKeys _keys;
     private readonly byte _sendDir;
     private readonly byte _expectRecvDir;
     private readonly SemaphoreSlim _sendLock = new(1, 1);
     private readonly Channel<byte[]> _inbound =
         Channel.CreateUnbounded<byte[]>(new UnboundedChannelOptions { SingleReader = true });
-
-    private ulong _sendCounter;
-    private long _lastRecvCounter = -1;
 
     // Carries the remainder of a decrypted message that didn't fit the hub's
     // receive buffer, so the next ReceiveAsync continues it (EndOfMessage
@@ -58,13 +55,17 @@ public sealed class RelayWebSocket : WebSocket
     /// <param name="aeadKey">Per-connection AES-256-GCM key (HKDF(relayRoot, connSalt)).</param>
     /// <param name="sendDir">dir byte stamped on outbound frames. The host uses 1.</param>
     /// <param name="expectRecvDir">dir byte required on inbound frames. The host expects 2.</param>
-    public RelayWebSocket(WebSocket transport, byte[] aeadKey, byte sendDir, byte expectRecvDir)
+    /// <param name="rekeyDerive">hostNonce to rekeyed key (SealedChannelKeys); null disables the v2 rekey.</param>
+    public RelayWebSocket(WebSocket transport, byte[] aeadKey, byte sendDir, byte expectRecvDir, Func<byte[], byte[]>? rekeyDerive = null)
     {
         _transport = transport ?? throw new ArgumentNullException(nameof(transport));
-        _aeadKey = aeadKey ?? throw new ArgumentNullException(nameof(aeadKey));
+        _keys = new SealedChannelKeys(aeadKey ?? throw new ArgumentNullException(nameof(aeadKey)), rekeyDerive);
         _sendDir = sendDir;
         _expectRecvDir = expectRecvDir;
     }
+
+    /// <summary>True once the v2 rekey completed on this channel.</summary>
+    public bool Rekeyed => _keys.Rekeyed;
 
     /// <summary>
     /// Push a raw inbound BINARY relay frame for the next <see cref="ReceiveAsync"/>
@@ -91,43 +92,82 @@ public sealed class RelayWebSocket : WebSocket
         if (_partial is not null)
             return ContinuePartial(buffer);
 
-        byte[] frame;
-        try
+        while (true)
         {
-            frame = await _inbound.Reader.ReadAsync(cancellationToken).ConfigureAwait(false);
-        }
-        catch (ChannelClosedException)
-        {
-            // Inbound completed (peer-down / relay drop): present an orderly close.
-            return CloseResult();
-        }
-        catch (OperationCanceledException)
-        {
-            return CloseResult();
-        }
-
-        byte[] plaintext;
-        try
-        {
-            var (dir, counter, opened) = RelayCrypto.Open(_aeadKey, frame);
-            // The peer must use the agreed inbound direction and never replay or
-            // reorder a counter. Either ⇒ tampering / a confused relay; abort.
-            if (dir != _expectRecvDir || (long)counter <= _lastRecvCounter)
+            byte[] frame;
+            try
             {
+                frame = await _inbound.Reader.ReadAsync(cancellationToken).ConfigureAwait(false);
+            }
+            catch (ChannelClosedException)
+            {
+                // Inbound completed (peer-down / relay drop): present an orderly close.
+                return CloseResult();
+            }
+            catch (OperationCanceledException)
+            {
+                return CloseResult();
+            }
+
+            byte[] plaintext;
+            try
+            {
+                // The peer must use the agreed inbound direction and never replay or
+                // reorder a counter. Either ⇒ tampering / a confused relay; abort.
+                var kind = _keys.Open(frame, _expectRecvDir, out plaintext);
+                if (kind == SealedChannelKeys.InboundKind.Rejected)
+                {
+                    Abort();
+                    return CloseResult();
+                }
+                if (kind == SealedChannelKeys.InboundKind.RekeyRequest)
+                {
+                    if (!await SendHostNonceAsync(cancellationToken).ConfigureAwait(false))
+                    {
+                        Abort();
+                        return CloseResult();
+                    }
+                    continue;
+                }
+            }
+            catch (CryptographicException)
+            {
+                // Tag-verify failed: drop the frame AND close the channel (spec).
                 Abort();
                 return CloseResult();
             }
-            _lastRecvCounter = (long)counter;
-            plaintext = opened;
-        }
-        catch (CryptographicException)
-        {
-            // Tag-verify failed: drop the frame AND close the channel (spec).
-            Abort();
-            return CloseResult();
-        }
 
-        return DeliverPlaintext(plaintext, buffer);
+            return DeliverPlaintext(plaintext, buffer);
+        }
+    }
+
+    /// <summary>False when the nonce could not be sent (cancelled or the transport failed); the channel must then close, never continue on a half-switched key.</summary>
+    private async Task<bool> SendHostNonceAsync(CancellationToken cancellationToken)
+    {
+        try
+        {
+            await _sendLock.WaitAsync(cancellationToken).ConfigureAwait(false);
+        }
+        catch (Exception)
+        {
+            return false;
+        }
+        try
+        {
+            var frame = _keys.SealHostNonceAndRekey(_sendDir);
+            await _transport
+                .SendAsync(frame, WebSocketMessageType.Binary, endOfMessage: true, cancellationToken)
+                .ConfigureAwait(false);
+            return true;
+        }
+        catch (Exception)
+        {
+            return false;
+        }
+        finally
+        {
+            _sendLock.Release();
+        }
     }
 
     private WebSocketReceiveResult DeliverPlaintext(byte[] plaintext, ArraySegment<byte> buffer)
@@ -183,8 +223,7 @@ public sealed class RelayWebSocket : WebSocket
         await _sendLock.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
-            var counter = _sendCounter++;
-            var frame = RelayCrypto.Seal(_aeadKey, _sendDir, counter, buffer.AsSpan());
+            var frame = _keys.Seal(_sendDir, buffer.AsSpan());
             await _transport
                 .SendAsync(frame, WebSocketMessageType.Binary, endOfMessage: true, cancellationToken)
                 .ConfigureAwait(false);

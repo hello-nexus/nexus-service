@@ -330,9 +330,11 @@ public static class OpenRgbZoneSupport
             foreach (var key in keys)
             {
                 var snap = exclusions[key];
+                // Pre-map snapshots kept the device name in DetectorName.
+                var snapName = string.IsNullOrEmpty(snap.DeviceName) ? snap.DetectorName : snap.DeviceName;
                 var snapDevice = new RgbDevice
                 {
-                    Name = snap.DetectorName,
+                    Name = snapName,
                     Vendor = snap.Vendor,
                     Serial = snap.Serial,
                     Location = snap.Location,
@@ -346,7 +348,7 @@ public static class OpenRgbZoneSupport
                 {
                     Id = key,
                     DeviceKey = DeviceKeyComputer.ForOpenRgbDevice(snapDevice),
-                    Name = snap.DetectorName,
+                    Name = snapName,
                     Type = OpenRgbTypeName(snap.Type),
                     IconType = OpenRgbTypeName(snap.Type),
                     LedsOn = !disabled.Contains(key),

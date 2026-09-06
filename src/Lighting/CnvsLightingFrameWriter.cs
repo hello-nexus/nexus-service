@@ -164,13 +164,13 @@ public sealed class CnvsLightingFrameWriter : IHostedService, IDisposable
         var globalBrightness = Math.Clamp(settings.Lighting.GlobalBrightness, 0f, 1f);
         var nowTicks = DateTime.UtcNow.Ticks;
 
-        var brightnessMul = ComputeBrightnessMul(id, disabled, prefs, globalBrightness);
+        var brightnessMul = ComputeBrightnessMul(id, disabled, prefs, globalBrightness, out var adjust);
         var hasIdentify = _identify.TryGetActive(id, nowTicks, out var startTicks);
 
         var ledCount = Math.Min(frame.LedCount, CnvsHub.LedCount);
         EnsureCapacity(CnvsHub.LedCount);
         var dst = _buffer!;
-        FillBufferSlice(dst, frame.LedBytes, ledCount, brightnessMul, hasIdentify, startTicks, nowTicks);
+        FillBufferSlice(dst, frame.LedBytes, ledCount, brightnessMul, adjust, hasIdentify, startTicks, nowTicks);
         // Any LEDs beyond the engine-frame count: zero so the mat is fully
         // owned by us, no firmware residue.
         for (var i = ledCount; i < CnvsHub.LedCount; i++) dst[i] = default;
@@ -194,20 +194,34 @@ public sealed class CnvsLightingFrameWriter : IHostedService, IDisposable
     private static double ComputeBrightnessMul(string id,
         System.Collections.Generic.IReadOnlyList<string> disabled,
         System.Collections.Generic.IReadOnlyDictionary<string, LightingDevicePreference> prefs,
-        float globalBrightness)
+        float globalBrightness,
+        out DeviceColorAdjust adjust)
     {
+        adjust = DeviceColorAdjust.Identity;
         if (disabled.Count > 0)
         {
             foreach (var d in disabled) if (d == id) return 0.0;
         }
+        // One lookup feeds both the brightness and the colour trim.
         int devBrightness;
-        try { devBrightness = prefs.TryGetValue(id, out var pref) ? pref.Brightness : 100; }
+        try
+        {
+            if (prefs.TryGetValue(id, out var pref) && pref is not null)
+            {
+                devBrightness = pref.Brightness;
+                adjust = DeviceColorAdjust.For(pref);
+            }
+            else
+            {
+                devBrightness = 100;
+            }
+        }
         catch (InvalidOperationException) { devBrightness = 100; }
         return Math.Min(Math.Clamp(devBrightness, 0, 100) / 100.0, globalBrightness);
     }
 
     private static void FillBufferSlice(CnvsColor[] dst, ReadOnlySpan<byte> src, int ledCount,
-        double brightnessMul, bool hasIdentify, long identifyStartTicks, long nowTicks)
+        double brightnessMul, DeviceColorAdjust adjust, bool hasIdentify, long identifyStartTicks, long nowTicks)
     {
         if (hasIdentify)
         {
@@ -220,6 +234,18 @@ public sealed class CnvsLightingFrameWriter : IHostedService, IDisposable
         if (brightnessMul <= 0.0)
         {
             for (var i = 0; i < ledCount && i < dst.Length; i++) dst[i] = default;
+            return;
+        }
+        if (!adjust.IsIdentity)
+        {
+            for (var i = 0; i < ledCount && i < dst.Length; i++)
+            {
+                var off = i * 3;
+                if (off + 2 >= src.Length) break;
+                adjust.Apply(src[off], src[off + 1], src[off + 2], brightnessMul,
+                    out var ar, out var ag, out var ab);
+                dst[i] = new CnvsColor(ar, ag, ab);
+            }
             return;
         }
         if (brightnessMul >= 0.999)

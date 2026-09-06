@@ -37,7 +37,7 @@ public sealed partial class LinuxDisplayBrightnessProvider : IDisplayBrightnessP
     private readonly object _gate = new();
     private readonly Dictionary<string, Target> _targets = new();
 
-    private sealed record Target(bool Internal, string? BacklightDir, int I2cBus, DisplayDto Dto);
+    private sealed record Target(bool Internal, string? BacklightDir, int I2cBus, DisplayDto Dto, string PnpId = "");
 
     public string Hint { get; private set; } = "";
 
@@ -138,7 +138,10 @@ public sealed partial class LinuxDisplayBrightnessProvider : IDisplayBrightnessP
             return null;
         foreach (var dto in Enumerate())
         {
-            var haystack = $"{dto.Name} {dto.Manufacturer} {dto.Model} {dto.Id}";
+            string pnpId;
+            lock (_gate)
+                pnpId = _targets.TryGetValue(dto.Id, out var t) ? t.PnpId : "";
+            var haystack = $"{dto.Name} {dto.Manufacturer} {dto.Model} {dto.Id} {pnpId}";
             if (nameFragments.Any(f => !string.IsNullOrEmpty(f) && haystack.Contains(f, StringComparison.OrdinalIgnoreCase)))
                 return dto.Id;
         }
@@ -230,7 +233,7 @@ public sealed partial class LinuxDisplayBrightnessProvider : IDisplayBrightnessP
             if (ReadDdcVcp(bus, VcpBrightness) is null)
                 continue;
 
-            var (mfg, model) = ReadEdidIdentity(bus);
+            var (mfg, model, pnpId) = ReadEdidIdentity(bus);
             var dto = new DisplayDto
             {
                 Id = $"linux-ddc-i2c-{bus}",
@@ -249,7 +252,7 @@ public sealed partial class LinuxDisplayBrightnessProvider : IDisplayBrightnessP
                     WriteCooldownMs = 50,
                 },
             };
-            yield return new Target(false, null, bus, dto);
+            yield return new Target(false, null, bus, dto, pnpId);
         }
     }
 
@@ -330,25 +333,40 @@ public sealed partial class LinuxDisplayBrightnessProvider : IDisplayBrightnessP
         finally { close(fd); }
     }
 
-    private static (string Mfg, string Model) ReadEdidIdentity(int bus)
+    private static (string Mfg, string Model, string PnpId) ReadEdidIdentity(int bus)
     {
         var fd = OpenI2c(bus);
         if (fd < 0)
-            return ("", "");
+            return ("", "", "");
         try
         {
             if (ioctl(fd, I2C_SLAVE, EdidAddress) < 0)
-                return ("", "");
+                return ("", "", "");
             Span<byte> off = stackalloc byte[] { 0x00 };
             if (!I2cWrite(fd, off))
-                return ("", "");
+                return ("", "", "");
             Span<byte> edid = stackalloc byte[128];
             if (!I2cRead(fd, edid))
-                return ("", "");
-            return DecodeEdid(edid);
+                return ("", "", "");
+            var (mfg, model) = DecodeEdid(edid);
+            return (mfg, model, DecodePnpId(edid));
         }
-        catch { return ("", ""); }
+        catch { return ("", "", ""); }
         finally { close(fd); }
+    }
+
+    /// <summary>
+    /// PNP id (<c>RTK0004</c>): manufacturer plus the EDID product code at bytes
+    /// 10-11 LE. The Y70 panel list keys on this form, and the 0xFC model-name
+    /// descriptor <see cref="DecodeEdid"/> returns ("HYTE Y70ti") never contains it.
+    /// </summary>
+    internal static string DecodePnpId(ReadOnlySpan<byte> edid)
+    {
+        var (mfg, _) = DecodeEdid(edid);
+        if (string.IsNullOrEmpty(mfg))
+            return "";
+        var product = (ushort)(edid[10] | (edid[11] << 8));
+        return mfg + product.ToString("X4");
     }
 
     /// <summary>Decode manufacturer (PNP ID) + model name (descriptor 0xFC) from a 128-byte EDID block.</summary>

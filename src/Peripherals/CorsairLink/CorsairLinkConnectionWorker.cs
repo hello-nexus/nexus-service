@@ -66,7 +66,11 @@ public sealed class CorsairLinkConnectionWorker : BackgroundService
 
                 if (!_hub.Initialize())
                 {
-                    ServiceLog.Warn("[corsair] initialize failed, retrying");
+                    // Detach clears Firmware, so read it before. Empty means the
+                    // firmware read itself never landed a full reply - the hub went
+                    // silent (or answered short) before the device-list read.
+                    var fw = _hub.State.Firmware;
+                    ServiceLog.Warn($"[corsair] initialize failed, retrying (fw={(string.IsNullOrEmpty(fw) ? "none" : fw)})");
                     _hub.Detach();
                     await Task.Delay(ConnectPollMs, stoppingToken).ConfigureAwait(false);
                     continue;

@@ -51,6 +51,8 @@ public sealed class LocalAssistantTests : IDisposable
             store,
             new MultiplexHub(),
             _tempDir);
+        // Adopting a listener on the default port is opt-in.
+        store.Update(s => s.AiIntegration.UseSystemOllama = true);
         manager.InstallRuntimeAsync(CancellationToken.None).GetAwaiter().GetResult();
         Assert.Equal(AssistantRuntimeState.Running, manager.State);
         return manager;

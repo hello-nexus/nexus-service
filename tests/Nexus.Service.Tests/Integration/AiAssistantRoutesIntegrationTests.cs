@@ -4,13 +4,16 @@ using System.Net.Http.Json;
 using System.Text.Json;
 using Microsoft.Extensions.DependencyInjection;
 using Nexus.Service.Auth;
+#if DEV_TOOLS
 using Nexus.Service.Persistence;
+#endif
 
 namespace Nexus.Service.Tests.Integration;
 
+#if DEV_TOOLS
 /// <summary>
 /// GET /ai/assistant/status and POST /ai/assistant/query over the real
-/// request pipeline. NexusAppFactory sets NEXUS_TEST_HOST=1, which the
+/// request pipeline. Compiles under -p:DevTools=true only, like the routes. NexusAppFactory sets NEXUS_TEST_HOST=1, which the
 /// DI-wired OllamaRuntimeManager reads to skip its system-Ollama detection
 /// probe entirely (see RefreshAsync) - so status stays "notInstalled" and no
 /// real loopback connection or download ever happens under this factory.
@@ -127,3 +130,55 @@ public sealed class AiAssistantRoutesIntegrationTests : IDisposable
         Assert.Equal(HttpStatusCode.Forbidden, res.StatusCode);
     }
 }
+#else
+/// <summary>
+/// Release contract: a build without DEV_TOOLS maps no /ai/assistant/* route,
+/// so the assistant (Ollama download, model pulls, query) is unreachable and
+/// the MCP surface at /ai/* is all a public build exposes.
+/// </summary>
+public sealed class AiAssistantRoutesIntegrationTests : IDisposable
+{
+    private readonly NexusAppFactory _factory = new();
+
+    public void Dispose() => _factory.Dispose();
+
+    private HttpClient AuthedClient()
+    {
+        var client = _factory.CreateClient();
+        var token = _factory.Services.GetRequiredService<TokenService>().Token;
+        client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", token);
+        return client;
+    }
+
+    [Theory]
+    [InlineData("GET", "/ai/assistant/status")]
+    [InlineData("POST", "/ai/assistant/runtime/install")]
+    [InlineData("POST", "/ai/assistant/model/pull")]
+    [InlineData("POST", "/ai/assistant/query")]
+    public async Task Assistant_routes_are_absent_in_a_release_build(string method, string path)
+    {
+        var client = AuthedClient();
+        using var req = new HttpRequestMessage(new HttpMethod(method), path);
+        if (method == "POST")
+        {
+            req.Content = JsonContent.Create(new { model = "qwen3.5:4b", prompt = "what's my cpu temp" });
+        }
+
+        var res = await client.SendAsync(req);
+
+        // 405 for POST, 404 for GET; either means no handler owns the route.
+        Assert.Contains(res.StatusCode, new[] { HttpStatusCode.NotFound, HttpStatusCode.MethodNotAllowed });
+    }
+
+    [Fact]
+    public async Task Mcp_status_route_still_answers_in_a_release_build()
+    {
+        var client = AuthedClient();
+        var res = await client.GetAsync("/ai/status");
+        Assert.Equal(HttpStatusCode.OK, res.StatusCode);
+
+        var body = await res.Content.ReadFromJsonAsync<JsonElement>();
+        Assert.False(body.GetProperty("enabled").GetBoolean());
+    }
+}
+#endif

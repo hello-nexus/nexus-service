@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using Nexus.Service.Devices.Firmware;
 using Nexus.Service.Peripherals.Hyte.Np50;
 using Nexus.Service.Platform;
@@ -30,11 +31,17 @@ public sealed class QSeriesCoolerHub : IDisposable, IDfuFlashTarget
     private string _portName = "";
     // Starts at 0 (the silent default) so a device absent from boot never logs
     // "discovery returned 0"; only a real change (0->N found, or N->0 disconnect) logs.
-    private int _lastDiscoveredPortCount;
-    // Last software-commanded pump / fan duty, echoed when toggling turbo or
-    // switching to software so the other channel isn't reset.
+    // -1 so the first attempt logs even when it finds nothing: a silent zero is
+    // indistinguishable from the worker never running.
+    private int _lastDiscoveredPortCount = -1;
+    // Last software-commanded pump duty, echoed when toggling turbo or switching
+    // to software so the pump isn't reset by an unrelated fan-channel write.
     private int _lastPumpDuty = 50;
-    private int _lastFanDuty = 50;
+    // Last channel topology the INF log line reported, so a poll that finds no
+    // model/LED-count change stays silent. Null until the first successful parse,
+    // so an initially empty channel still logs "(none)" once.
+    private IReadOnlyList<QSeriesLinkDevice>? _lastLoggedChannel1;
+    private IReadOnlyList<QSeriesLinkDevice>? _lastLoggedChannel2;
     // The cooling-policy "pinned" mode (null until the user picks one). The
     // cooling provider reads it to decide whether to swallow engine duty writes
     // so they don't flip the shared pump+fan hub back to software. Reset to null
@@ -113,11 +120,7 @@ public sealed class QSeriesCoolerHub : IDisposable, IDfuFlashTarget
             if (t is null) return;
             try
             {
-                if (!_rgbInSwControl)
-                {
-                    t.Write(QSeriesCoolerProtocol.BuildSetRgbControlMode(QSeriesCoolerProtocol.RgbModeSoftware));
-                    _rgbInSwControl = true;
-                }
+                AssertSoftwareRgbControlLocked(t);
                 var backlight = leds.Length >= QSeriesCoolerProtocol.BacklightLedCount
                     ? leds[..QSeriesCoolerProtocol.BacklightLedCount]
                     : leds;
@@ -127,16 +130,11 @@ public sealed class QSeriesCoolerHub : IDisposable, IDfuFlashTarget
                 var logo = logoAll.Length > QSeriesCoolerProtocol.LogoLedCount
                     ? logoAll[..QSeriesCoolerProtocol.LogoLedCount]
                     : logoAll;
-                for (var port = 1; port <= QSeriesCoolerProtocol.LedPortCount; port++)
-                {
-                    var slice = port switch
-                    {
-                        QSeriesCoolerProtocol.BacklightPort => backlight,
-                        QSeriesCoolerProtocol.LogoPort => logo,
-                        _ => default,
-                    };
-                    t.Write(QSeriesCoolerProtocol.BuildLightingStream(port, slice));
-                }
+                // Only the panel/logo ports: 1 and 2 are Nexus Link channels now driven by
+                // WriteLinkLighting, and re-writing them here with an empty slice every tick
+                // would blank whatever that call just streamed.
+                t.Write(QSeriesCoolerProtocol.BuildLightingStream(QSeriesCoolerProtocol.BacklightPort, backlight));
+                t.Write(QSeriesCoolerProtocol.BuildLightingStream(QSeriesCoolerProtocol.LogoPort, logo));
             }
             catch (Exception ex)
             {
@@ -144,6 +142,43 @@ public sealed class QSeriesCoolerHub : IDisposable, IDfuFlashTarget
                 Disconnect();
             }
         }
+    }
+
+    /// <summary>
+    /// Stream one frame to a Nexus Link port (1 or 2 - the same connectors channel-info
+    /// addresses as channels 1/2). Shares the connection lock and software-control
+    /// assertion with <see cref="WriteLighting"/> so the panel/logo and link ports never
+    /// race for the RGB-mode handshake.
+    /// </summary>
+    public void WriteLinkLighting(int port, ReadOnlySpan<RgbColor> leds)
+    {
+        if (port != QSeriesCoolerProtocol.LinkChannel1 && port != QSeriesCoolerProtocol.FanChannel)
+            throw new ArgumentOutOfRangeException(nameof(port), port, "Port must be 1 or 2.");
+        lock (_lock)
+        {
+            if (!EnsureConnected()) return;
+            var t = _transport;
+            if (t is null) return;
+            try
+            {
+                AssertSoftwareRgbControlLocked(t);
+                t.Write(QSeriesCoolerProtocol.BuildLightingStream(port, leds));
+            }
+            catch (Exception ex)
+            {
+                Console.Error.WriteLine($"[qseries-cooler] link lighting write failed: {ex.GetType().Name}: {ex.Message}");
+                Disconnect();
+            }
+        }
+    }
+
+    // Caller holds _lock. Asserts software RGB control once per connection; the LED
+    // streams on every port are ignored by firmware still on the motherboard-ARGB default.
+    private void AssertSoftwareRgbControlLocked(INp50Transport t)
+    {
+        if (_rgbInSwControl) return;
+        t.Write(QSeriesCoolerProtocol.BuildSetRgbControlMode(QSeriesCoolerProtocol.RgbModeSoftware));
+        _rgbInSwControl = true;
     }
 
     /// <summary>
@@ -313,12 +348,11 @@ public sealed class QSeriesCoolerHub : IDisposable, IDfuFlashTarget
     private const int FanReadTimeoutMs = 250;
 
     /// <summary>
-    /// Poll pump telemetry (Port-0, plus the Q80 second pump) into <see cref="State"/>.
-    /// Read-only on the wire - issues no control writes. Shares <c>_lock</c> with
-    /// the 30 Hz lighting stream, so it can't interleave with a frame write. A
-    /// short / mis-framed reply skips the update (leaving lighting streaming);
-    /// only a thrown transport error tears the port down for the heartbeat to
-    /// reconnect.
+    /// Poll pump telemetry (Port-0, plus the Q80 second pump) and both Nexus Link channels
+    /// into <see cref="State"/>. Read-only on the wire - issues no control writes. Shares
+    /// <c>_lock</c> with the 30 Hz lighting stream, so it can't interleave with a frame
+    /// write. A short / mis-framed reply skips the update (leaving lighting streaming);
+    /// only a thrown transport error tears the port down for the heartbeat to reconnect.
     /// </summary>
     public bool PollTelemetry()
     {
@@ -343,16 +377,8 @@ public sealed class QSeriesCoolerHub : IDisposable, IDfuFlashTarget
                 // Q80 has a single pump, same as Q60 - the second-pump port is
                 // not queried, so HasPump2 stays false and no Pump 2 is shown.
 
-                // Radiator fans on the Type-M channel (FF CC 01 02).
-                transport.DiscardInput();
-                transport.Write(QSeriesCoolerProtocol.BuildGetChannelInfo(QSeriesCoolerProtocol.FanChannel));
-                var fbuf = new byte[QSeriesCoolerProtocol.ChannelInfoResponseLength];
-                var fn = transport.Read(fbuf, FanReadTimeoutMs);
-                if (QSeriesCoolerProtocol.TryParseFanRpm(fbuf.AsSpan(0, fn), out var fanRpm, out var fanPresent))
-                {
-                    State.HasFan = fanPresent;
-                    State.FanRpm = fanRpm;
-                }
+                PollChannelDevices(transport, QSeriesCoolerProtocol.LinkChannel1, d => State.Channel1Devices = d, ref _lastLoggedChannel1);
+                PollChannelDevices(transport, QSeriesCoolerProtocol.FanChannel, d => State.Channel2Devices = d, ref _lastLoggedChannel2);
                 return true;
             }
             catch (Exception ex)
@@ -362,6 +388,35 @@ public sealed class QSeriesCoolerHub : IDisposable, IDfuFlashTarget
                 return false;
             }
         }
+    }
+
+    // Caller holds _lock and a live transport. Best-effort: a short/mis-framed/"no data
+    // yet" reply leaves the channel's published device list untouched. Publishes every
+    // successful parse (RPM changes every tick) but only builds and logs the topology
+    // string when the cheap structural compare finds a real change.
+    private void PollChannelDevices(INp50Transport transport, byte channel, Action<IReadOnlyList<QSeriesLinkDevice>> setDevices, ref IReadOnlyList<QSeriesLinkDevice>? lastLogged)
+    {
+        transport.DiscardInput();
+        transport.Write(QSeriesCoolerProtocol.BuildGetChannelInfo(channel));
+        var buf = new byte[QSeriesCoolerProtocol.ChannelInfoResponseLength];
+        var n = transport.Read(buf, FanReadTimeoutMs);
+        if (!QSeriesCoolerProtocol.TryParseChannelDevices(buf.AsSpan(0, n), out var devices)) return;
+        setDevices(devices);
+
+        if (lastLogged is not null && SameTopology(devices, lastLogged)) return;
+        lastLogged = devices;
+        var signature = string.Join(",", devices.Select(d => $"{d.Model}:{d.LedCount}"));
+        ServiceLog.Info($"[qseries-cooler] channel {channel} devices: {(signature.Length == 0 ? "(none)" : signature)}");
+    }
+
+    private static bool SameTopology(IReadOnlyList<QSeriesLinkDevice> a, IReadOnlyList<QSeriesLinkDevice> b)
+    {
+        if (a.Count != b.Count) return false;
+        for (var i = 0; i < a.Count; i++)
+        {
+            if (a[i].Model != b[i].Model || a[i].LedCount != b[i].LedCount) return false;
+        }
+        return true;
     }
 
     // Caller holds _lock. Reads the 20-byte Port-0 status into buf; false on a
@@ -431,11 +486,13 @@ public sealed class QSeriesCoolerHub : IDisposable, IDfuFlashTarget
     }
 
     /// <summary>
-    /// Drive the radiator fans at <paramref name="dutyPercent"/> (0-100) under
-    /// software control. Ensures the hub is in software mode first (preserving the
-    /// pump's last duty), then writes the per-channel fan frame. Plain 0-100% duty.
+    /// Drive every fan on one Nexus Link channel (1 or 2) at the given per-slot duties
+    /// under software control. Ensures the hub is in software mode first (preserving the
+    /// pump's last duty), caps each duty for turbo the same way the pump does, then writes
+    /// the full per-slot frame - callers resend all slots on every call since the wire
+    /// frame has no "leave unchanged" option.
     /// </summary>
-    public bool SetFanSpeed(int dutyPercent)
+    public bool SetChannelFanSpeeds(byte channel, IReadOnlyList<QSeriesCoolerProtocol.QSeriesFanSlotDuty> slotDuties)
     {
         lock (_lock)
         {
@@ -447,26 +504,31 @@ public sealed class QSeriesCoolerHub : IDisposable, IDfuFlashTarget
                 var port0 = new byte[QSeriesCoolerProtocol.Port0ResponseLength];
                 if (!ReadPort0(port0)) return false;
                 var turboOn = QSeriesCoolerProtocol.TurboOnOf(port0);
-                // Off-turbo the firmware ceilings fan duty; apply it host-side so
-                // the cooling-card limit line is the actual cap.
-                var fanDuty = QSeriesCoolerProtocol.CapFanDutyForTurbo(dutyPercent, turboOn);
+                var capped = new QSeriesCoolerProtocol.QSeriesFanSlotDuty[slotDuties.Count];
+                for (var i = 0; i < slotDuties.Count; i++)
+                {
+                    var s = slotDuties[i];
+                    capped[i] = new QSeriesCoolerProtocol.QSeriesFanSlotDuty(
+                        QSeriesCoolerProtocol.CapFanDutyForTurbo(s.Fan1Percent, turboOn),
+                        QSeriesCoolerProtocol.CapFanDutyForTurbo(s.Fan2Percent, turboOn),
+                        QSeriesCoolerProtocol.CapFanDutyForTurbo(s.Fan3Percent, turboOn));
+                }
                 // The fan frame only takes effect in software mode; switch if
                 // needed, preserving the pump's last commanded duty so we don't
-                // stall it while bringing the fan under control.
+                // stall it while bringing the fan channel under control.
                 if (QSeriesCoolerProtocol.ControlModeOf(port0) != QSeriesCoolerProtocol.ControlModeSoftware)
                 {
                     var pumpWire = QSeriesCoolerProtocol.MapPumpDutyToWire(_lastPumpDuty, turboOn);
                     var turboByte = turboOn ? QSeriesCoolerProtocol.TurboOnByte : QSeriesCoolerProtocol.TurboOffByte;
                     t.Write(QSeriesCoolerProtocol.BuildSetControl(QSeriesCoolerProtocol.ControlModeSoftware, pumpWire, turboByte, port0));
                 }
-                t.Write(QSeriesCoolerProtocol.BuildSetFanSpeed(QSeriesCoolerProtocol.FanChannel, fanDuty));
-                _lastFanDuty = fanDuty;
+                t.Write(QSeriesCoolerProtocol.BuildSetChannelFanSpeeds(channel, capped));
                 State.ControlMode = QSeriesCoolerProtocol.ControlModeSoftware;
                 return true;
             }
             catch (Exception ex)
             {
-                Console.Error.WriteLine($"[qseries-cooler] set fan speed failed: {ex.GetType().Name}: {ex.Message}");
+                Console.Error.WriteLine($"[qseries-cooler] set channel fan speeds failed: {ex.GetType().Name}: {ex.Message}");
                 Disconnect();
                 return false;
             }

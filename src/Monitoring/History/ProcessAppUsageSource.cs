@@ -64,6 +64,18 @@ public sealed class ProcessAppUsageSource : IAppUsageSource
     private Dictionary<string, (long BytesIn, long BytesOut)> _prevNetByName =
         new(StringComparer.OrdinalIgnoreCase);
 
+    // LUID -> sanitized gpu id, rebuilt from ISensorProvider.GetGpus (which
+    // maps and formats every gpu sensor per call) when the gpu process
+    // snapshot carries a LUID the last build did not see, when the last
+    // build mapped nothing (sensors not enumerated yet at boot, a transient
+    // DXGI failure), or every LuidMapRefreshMs regardless - the same bound
+    // GpuAdapterLuids puts on its own adapter cache.
+    private const long LuidMapRefreshMs = 60_000;
+    private Dictionary<string, string> _luidToGpuId = new(StringComparer.Ordinal);
+    private readonly HashSet<string> _unmappedLuids = new(StringComparer.Ordinal);
+    private bool _luidMapBuilt;
+    private long _luidMapBuiltAtMs;
+
     public ProcessAppUsageSource(
         ProcessMonitor processes, GpuProcessMonitor gpuProcesses, ISensorProvider sensors, INetworkProvider network)
     {
@@ -135,7 +147,7 @@ public sealed class ProcessAppUsageSource : IAppUsageSource
         var gpuEntries = _gpuProcesses.GetSnapshot();
         if (gpuEntries.Count > 0)
         {
-            var luidToGpuId = BuildLuidToGpuId();
+            var luidToGpuId = ResolveLuidToGpuId(gpuEntries);
             foreach (var group in gpuEntries.GroupBy(e => e.AdapterLuid))
             {
                 if (!luidToGpuId.TryGetValue(group.Key, out var gid))
@@ -287,14 +299,43 @@ public sealed class ProcessAppUsageSource : IAppUsageSource
         return points;
     }
 
-    private Dictionary<string, string> BuildLuidToGpuId()
+    private Dictionary<string, string> ResolveLuidToGpuId(IReadOnlyList<GpuProcessEntry> gpuEntries)
     {
+        var nowMs = Environment.TickCount64;
+        var rebuild = !_luidMapBuilt || _luidToGpuId.Count == 0 || nowMs - _luidMapBuiltAtMs >= LuidMapRefreshMs;
+        if (!rebuild)
+        {
+            foreach (var e in gpuEntries)
+            {
+                if (!_luidToGpuId.ContainsKey(e.AdapterLuid) && !_unmappedLuids.Contains(e.AdapterLuid))
+                {
+                    rebuild = true;
+                    break;
+                }
+            }
+        }
+        if (!rebuild)
+        {
+            return _luidToGpuId;
+        }
+
         var map = new Dictionary<string, string>(StringComparer.Ordinal);
         foreach (var g in _sensors.GetGpus())
         {
             if (!string.IsNullOrEmpty(g.AdapterLuid))
             {
                 map[g.AdapterLuid] = MetricsHistory.SanitizeId(g.Id);
+            }
+        }
+        _luidToGpuId = map;
+        _luidMapBuilt = true;
+        _luidMapBuiltAtMs = nowMs;
+        _unmappedLuids.Clear();
+        foreach (var e in gpuEntries)
+        {
+            if (!map.ContainsKey(e.AdapterLuid))
+            {
+                _unmappedLuids.Add(e.AdapterLuid);
             }
         }
         return map;

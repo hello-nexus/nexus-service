@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 
 namespace Nexus.Service.Peripherals.Nollie;
 
@@ -105,6 +106,23 @@ public static class NollieProtocol
         new(VendorIdOs2, 0x2C08, "Prism8 8_OS2_1",   8, 126, Identity, NollieTransport.Chunked, 2, ChunkStride: 6),
         new(VendorIdOs2, 0x2A01, "Nollie 1_OS2_1",   1, 630, Identity, NollieTransport.Chunked, 2, ChunkStride: 30),
     };
+
+    /// <summary>
+    /// Distinct vendor ids across <see cref="Devices"/>. Derived, not hand-listed:
+    /// the presence gate in NollieConnectionWorker keys on this, so a new row under
+    /// a fourth VID would otherwise become undetectable with nothing logged.
+    /// </summary>
+    public static readonly int[] VendorIds = BuildVendorIds();
+
+    private static int[] BuildVendorIds()
+    {
+        var ids = new List<int>();
+        foreach (var d in Devices)
+        {
+            if (!ids.Contains(d.VendorId)) ids.Add(d.VendorId);
+        }
+        return ids.ToArray();
+    }
 
     public static NollieDevice? Lookup(int vendorId, int productId)
     {
