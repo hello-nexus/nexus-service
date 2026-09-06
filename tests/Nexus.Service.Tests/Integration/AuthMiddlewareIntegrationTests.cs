@@ -174,6 +174,23 @@ public sealed class AuthMiddlewareIntegrationTests : IClassFixture<NexusAppFacto
             "panel shell must carry X-Content-Type-Options: nosniff");
     }
 
+    // Pins frame-src: without it child-src governs frames and the YouTube embed
+    // the avatar immersive view docks is refused.
+    [Fact]
+    public async Task Csp_frame_src_admits_the_youtube_embed_player()
+    {
+        var client = _factory.CreateClient();
+
+        var res = await client.GetAsync("/panel/phone");
+
+        var csp = string.Join(" ", res.Headers.GetValues("Content-Security-Policy"));
+        var frameSrc = csp.Split(';').Select(d => d.Trim()).FirstOrDefault(d => d.StartsWith("frame-src ", StringComparison.Ordinal));
+        Assert.NotNull(frameSrc);
+        Assert.Contains("https://www.youtube.com/embed/", frameSrc);
+        Assert.Contains("https://www.youtube-nocookie.com/embed/", frameSrc);
+        Assert.DoesNotContain("frame-src *", csp);
+    }
+
     // ── Desktop token is loopback-only (a leaked token can't drive from LAN) ──
 
     [Fact]
