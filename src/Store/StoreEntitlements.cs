@@ -68,6 +68,14 @@ public sealed class StoreEntitlements
         // SendRawAsync reports Success for any response it actually received, so
         // the status is what decides here; only a network failure sets Offline.
         if (result.Offline) return new StoreAuthorization(false, "store_unavailable", null);
+        // A launch-day refusal is also a 403, and it is not something signing in
+        // fixes - the storefront normally never offers the install, so this is
+        // the minute-wide window where the client's catalog copy is stale.
+        if (result.StatusCode == 403 && result.Value is not null
+            && result.Value.Body.Contains("not_yet_released", StringComparison.Ordinal))
+        {
+            return new StoreAuthorization(false, "not_yet_released", null);
+        }
         if (result.StatusCode is 401 or 403) return new StoreAuthorization(false, "sign_in_required", null);
         if (result.StatusCode == 404) return new StoreAuthorization(false, "version_unavailable", null);
         if (!result.Success || result.StatusCode >= 300 || result.Value is null)

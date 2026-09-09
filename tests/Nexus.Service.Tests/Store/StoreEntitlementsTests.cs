@@ -119,6 +119,20 @@ public sealed class StoreEntitlementsTests : IDisposable
     }
 
     [Fact]
+    public async Task Authorize_reads_a_launch_day_refusal_as_its_own_reason_not_a_sign_in()
+    {
+        var (ent, api, _) = Make(signedIn: true);
+        api.OnSendRaw = (_, _, _, _) => CloudApiResult<CloudRawResponse>.Ok(
+            new CloudRawResponse { Body = "{\"statusCode\":403,\"message\":\"not_yet_released\",\"error\":\"Forbidden\"}" },
+            403);
+
+        var auth = await ent.AuthorizeAsync("com.hellonexus.ina", "0.3.6", null, CancellationToken.None);
+
+        Assert.False(auth.Ok);
+        Assert.Equal("not_yet_released", auth.Reason);
+    }
+
+    [Fact]
     public async Task Library_signed_out_still_lists_what_is_installed_here()
     {
         WriteApp("com.hellonexus.aquarium", "1.0.2", "Aquarium");
