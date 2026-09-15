@@ -56,6 +56,8 @@ public sealed class PanelDeviceRecord
     public bool? BackgroundMediaShuffle { get; set; }
     /// <summary>A video slide plays whole before the next instead of being cut at the interval. Null is unset.</summary>
     public bool? BackgroundMediaFinishVideos { get; set; }
+    /// <summary>Asset ids in the order the grid shows and an in-order slideshow plays; ids not listed follow in import order.</summary>
+    public List<string>? BackgroundMediaOrder { get; set; }
     /// <summary>Frosted-glass blur over the background layer (shader / media /
     /// desktop wallpaper), percent 0-100. Null is unset; the client applies its
     /// own default. Never rename this to "backgroundFrost": stored records hold
@@ -207,6 +209,8 @@ public sealed class PanelDevicePatch
     public int? BackgroundMediaInterval { get; set; }
     public bool? BackgroundMediaShuffle { get; set; }
     public bool? BackgroundMediaFinishVideos { get; set; }
+    /// <summary>Full order list to replace this panel's; the client sends the whole list.</summary>
+    public List<string>? BackgroundMediaOrder { get; set; }
     public double? BackgroundFrostLevel { get; set; }
     public double? WidgetOpacity { get; set; }
     public bool? WidgetLabels { get; set; }

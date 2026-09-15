@@ -441,6 +441,8 @@ public sealed class PanelDeviceRegistry
                 record.BackgroundMediaShuffle = patch.BackgroundMediaShuffle.Value;
             if (patch.BackgroundMediaFinishVideos.HasValue)
                 record.BackgroundMediaFinishVideos = patch.BackgroundMediaFinishVideos.Value;
+            if (patch.BackgroundMediaOrder is not null)
+                record.BackgroundMediaOrder = new List<string>(patch.BackgroundMediaOrder);
             if (patch.BackgroundFrostLevel.HasValue)
                 record.BackgroundFrostLevel = patch.BackgroundFrostLevel.Value;
             if (patch.WidgetOpacity.HasValue)
@@ -535,6 +537,7 @@ public sealed class PanelDeviceRegistry
             record.BackgroundMediaInterval = null;
             record.BackgroundMediaShuffle = null;
             record.BackgroundMediaFinishVideos = null;
+            record.BackgroundMediaOrder = null;
             record.BackgroundFrostLevel = null;
             record.WidgetOpacity = null;
             record.WidgetLabels = null;
@@ -644,6 +647,7 @@ public sealed class PanelDeviceRegistry
             BackgroundMediaInterval = r.BackgroundMediaInterval,
             BackgroundMediaShuffle = r.BackgroundMediaShuffle,
             BackgroundMediaFinishVideos = r.BackgroundMediaFinishVideos,
+            BackgroundMediaOrder = r.BackgroundMediaOrder is null ? null : new List<string>(r.BackgroundMediaOrder),
             BackgroundFrostLevel = r.BackgroundFrostLevel,
             WidgetOpacity = r.WidgetOpacity,
             WidgetLabels = r.WidgetLabels,

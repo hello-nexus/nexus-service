@@ -227,6 +227,10 @@ public sealed class PanelDeviceRegistryTests : IDisposable
         var off = _registry.Patch(record.Id, new PanelDevicePatch { BackgroundMediaSlideshow = false });
         Assert.False(off!.BackgroundMediaSlideshow);
         Assert.Equal(60, off.BackgroundMediaInterval);
+
+        var ordered = _registry.Patch(record.Id, new PanelDevicePatch { BackgroundMediaOrder = new List<string> { "b", "a" } });
+        Assert.Equal(new[] { "b", "a" }, ordered!.BackgroundMediaOrder);
+        Assert.Equal(new[] { "b", "a" }, _registry.Patch(record.Id, new PanelDevicePatch { DisplayName = "Again" })!.BackgroundMediaOrder);
     }
 
     [Fact]
@@ -252,6 +256,7 @@ public sealed class PanelDeviceRegistryTests : IDisposable
             BackgroundMediaInterval = 300,
             BackgroundMediaShuffle = true,
             BackgroundMediaFinishVideos = false,
+            BackgroundMediaOrder = new List<string> { "asset-2", "asset-1" },
             BackgroundFrostLevel = 100,
             WidgetOpacity = 0.7,
             WidgetLabels = true,
@@ -284,6 +289,7 @@ public sealed class PanelDeviceRegistryTests : IDisposable
         Assert.Null(reset.BackgroundMediaInterval);
         Assert.Null(reset.BackgroundMediaShuffle);
         Assert.Null(reset.BackgroundMediaFinishVideos);
+        Assert.Null(reset.BackgroundMediaOrder);
         Assert.Null(reset.BackgroundFrostLevel);
         Assert.Null(reset.WidgetOpacity);
         Assert.Null(reset.WidgetLabels);
