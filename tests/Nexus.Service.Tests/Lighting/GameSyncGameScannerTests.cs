@@ -144,6 +144,86 @@ public class GameSyncGameScannerTests
         }
     }
 
+    // Hogwarts Legacy's layout: the Razer plugin DLL sits five directories
+    // below the install root, deeper than the byte-scan walk goes.
+    [Fact]
+    public void EmitsChroma_UnrealPluginDll_FiveDeep_ReturnsTrue()
+    {
+        var dir = Path.Combine(Path.GetTempPath(), Path.GetRandomFileName());
+        var pluginDir = Path.Combine(dir, "Phoenix", "Plugins", "ChromaSDKPlugin", "Binaries", "Win64");
+        Directory.CreateDirectory(pluginDir);
+        try
+        {
+            File.WriteAllBytes(Path.Combine(pluginDir, "CChromaEditorLibrary64.dll"), Array.Empty<byte>());
+
+            var result = GameSyncGameScanner.EmitsChroma(dir, NullLogger.Instance, out _, out _);
+
+            Assert.True(result);
+        }
+        finally
+        {
+            Directory.Delete(dir, true);
+        }
+    }
+
+    // Battlefield 6's shape: no bundled Chroma DLL, the only SDK reference is
+    // inside a 180 MB executable. The marker sits at the tail so the streamed
+    // read has to cover the whole length. SetLength is sparse on APFS/ext4; NTFS
+    // zero-fills up to the write, which costs a Windows run a second or two.
+    [Fact]
+    public void EmitsChroma_ChromaStringAtTailOfLargeExe_ReturnsTrue()
+    {
+        var dir = Path.Combine(Path.GetTempPath(), Path.GetRandomFileName());
+        Directory.CreateDirectory(dir);
+        try
+        {
+            var exe = Path.Combine(dir, "bf6.exe");
+            WriteFileWithTailMarker(exe, 180L * 1024 * 1024);
+
+            var result = GameSyncGameScanner.EmitsChroma(dir, NullLogger.Instance, out var scanned, out var skipped);
+
+            Assert.True(result);
+            Assert.Equal(1, scanned);
+            Assert.Equal(0, skipped);
+        }
+        finally
+        {
+            Directory.Delete(dir, true);
+        }
+    }
+
+    // Only executables and DLLs get the larger cap: an archive the same size is
+    // still skipped, so big root-level paks cannot eat the per-game byte budget.
+    [Fact]
+    public void EmitsChroma_ChromaStringAtTailOfLargePak_IsSkipped()
+    {
+        var dir = Path.Combine(Path.GetTempPath(), Path.GetRandomFileName());
+        Directory.CreateDirectory(dir);
+        try
+        {
+            var pak = Path.Combine(dir, "assets.pak");
+            WriteFileWithTailMarker(pak, 180L * 1024 * 1024);
+
+            var result = GameSyncGameScanner.EmitsChroma(dir, NullLogger.Instance, out var scanned, out var skipped);
+
+            Assert.False(result);
+            Assert.Equal(0, scanned);
+            Assert.Equal(1, skipped);
+        }
+        finally
+        {
+            Directory.Delete(dir, true);
+        }
+    }
+
+    private static void WriteFileWithTailMarker(string path, long length)
+    {
+        using var fs = new FileStream(path, FileMode.CreateNew, FileAccess.Write);
+        fs.SetLength(length);
+        fs.Seek(-64, SeekOrigin.End);
+        fs.Write(Encoding.ASCII.GetBytes("RzChromatic64.dll"));
+    }
+
     [Fact]
     public void DedupeByInstallDir_SameDir_CollapsesToOne()
     {

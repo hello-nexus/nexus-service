@@ -10,7 +10,24 @@ namespace Nexus.Service.Lighting;
 
 public sealed class GameSyncGameScanner
 {
-    private const long MaxScanFileSizeBytes = 150L * 1024 * 1024;
+    // Per-file caps for the byte scan. The read is streamed (StreamReadBufferSize),
+    // so these bound IO time, not memory. Executables and DLLs get the larger cap
+    // because a game may reference the SDK from nowhere else: Battlefield 6
+    // bundles no Chroma DLL and its bf6.exe is 180 MB. Archives keep the smaller
+    // one so a few root-level .pak/.dat files cannot eat MaxScanBytesPerGame
+    // before the walk reaches the executable.
+    private const long MaxScanBinarySizeBytes = 512L * 1024 * 1024;
+    private const long MaxScanArchiveSizeBytes = 150L * 1024 * 1024;
+
+    // Directory depth for the file-name pass. Unreal games keep the Razer plugin
+    // DLL at <Project>/Plugins/ChromaSDKPlugin/Binaries/Win64/, depth 5 (Hogwarts
+    // Legacy); 6 leaves one level of headroom.
+    private const int NameScanDepth = 6;
+
+    // The byte-scan pass stays shallower: it is budgeted (MaxScanFilesPerGame),
+    // and a deeper walk would spend that budget on engine ThirdParty DLLs before
+    // reaching the game's own binaries.
+    private const int ByteScanDepth = 4;
 
     // Per-game scan budget. A Steam library with many large games can easily reach
     // tens of GB if every .pak is read; cap both axes so a single scan stays bounded.
@@ -175,7 +192,7 @@ public sealed class GameSyncGameScanner
         }
 
         // Step 1: bundled DLL/file name check - no byte reading needed.
-        foreach (var file in EnumerateFilesDepthCapped(installDir, "*", 4, logger))
+        foreach (var file in EnumerateFilesDepthCapped(installDir, "*", NameScanDepth, logger))
         {
             var fileName = Path.GetFileName(file);
             if (IsBundledChromaFile(fileName))
@@ -193,7 +210,7 @@ public sealed class GameSyncGameScanner
 
         long totalBytesRead = 0;
 
-        foreach (var file in EnumerateFilesDepthCapped(installDir, "*", 4, logger))
+        foreach (var file in EnumerateFilesDepthCapped(installDir, "*", ByteScanDepth, logger))
         {
             if (scannedFiles + skippedFiles >= MaxScanFilesPerGame)
             {
@@ -224,7 +241,8 @@ public sealed class GameSyncGameScanner
                 continue;
             }
 
-            if (size > MaxScanFileSizeBytes)
+            var maxSize = IsBinaryExtension(ext) ? MaxScanBinarySizeBytes : MaxScanArchiveSizeBytes;
+            if (size > maxSize)
             {
                 logger.LogDebug("[game-sync-scanner] skipping large file {File} ({Size} bytes)", file, size);
                 skippedFiles++;
@@ -337,6 +355,10 @@ public sealed class GameSyncGameScanner
 
         return total;
     }
+
+    private static bool IsBinaryExtension(string ext)
+        => ext.Equals(".exe", StringComparison.OrdinalIgnoreCase)
+        || ext.Equals(".dll", StringComparison.OrdinalIgnoreCase);
 
     private static bool IsBundledChromaFile(string fileName)
     {
