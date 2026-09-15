@@ -48,19 +48,13 @@ public sealed class PanelDeviceRecord
     public string? BackgroundMediaType { get; set; }
     /// <summary>The selected asset kept its transparency, so it is a png/gif and renders in an img even when animated.</summary>
     public bool? BackgroundMediaAlpha { get; set; }
-    /// <summary>Cycle through every asset in this panel's background-media
-    /// library instead of holding BackgroundMediaId. That id is then the slide
-    /// the cycle starts from. Null/false = a single background.</summary>
+    /// <summary>Cycle the whole background-media library; BackgroundMediaId is then the slide the cycle opens on.</summary>
     public bool? BackgroundMediaSlideshow { get; set; }
-    /// <summary>Seconds each slide holds. Null is unset; the client applies its
-    /// own default.</summary>
+    /// <summary>Seconds each slide holds. Null is unset; the client applies its own default.</summary>
     public int? BackgroundMediaInterval { get; set; }
-    /// <summary>Slideshow visits the library in a shuffled order rather than
-    /// the library order.</summary>
+    /// <summary>Slideshow order is shuffled rather than import order.</summary>
     public bool? BackgroundMediaShuffle { get; set; }
-    /// <summary>A video slide plays whole (repeating to cover the interval)
-    /// before the slideshow moves on, instead of being cut at the interval.
-    /// Null is unset; the client applies its own default (on).</summary>
+    /// <summary>A video slide plays whole before the next instead of being cut at the interval. Null is unset.</summary>
     public bool? BackgroundMediaFinishVideos { get; set; }
     /// <summary>Frosted-glass blur over the background layer (shader / media /
     /// desktop wallpaper), percent 0-100. Null is unset; the client applies its
