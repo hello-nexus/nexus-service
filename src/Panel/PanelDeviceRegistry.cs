@@ -433,6 +433,14 @@ public sealed class PanelDeviceRegistry
                 record.BackgroundMediaType = NullIfEmpty(patch.BackgroundMediaType);
             if (patch.BackgroundMediaAlpha.HasValue)
                 record.BackgroundMediaAlpha = patch.BackgroundMediaAlpha.Value;
+            if (patch.BackgroundMediaSlideshow.HasValue)
+                record.BackgroundMediaSlideshow = patch.BackgroundMediaSlideshow.Value;
+            if (patch.BackgroundMediaInterval.HasValue)
+                record.BackgroundMediaInterval = patch.BackgroundMediaInterval.Value;
+            if (patch.BackgroundMediaShuffle.HasValue)
+                record.BackgroundMediaShuffle = patch.BackgroundMediaShuffle.Value;
+            if (patch.BackgroundMediaFinishVideos.HasValue)
+                record.BackgroundMediaFinishVideos = patch.BackgroundMediaFinishVideos.Value;
             if (patch.BackgroundFrostLevel.HasValue)
                 record.BackgroundFrostLevel = patch.BackgroundFrostLevel.Value;
             if (patch.WidgetOpacity.HasValue)
@@ -523,6 +531,10 @@ public sealed class PanelDeviceRegistry
             record.BackgroundMediaId = null;
             record.BackgroundMediaType = null;
             record.BackgroundMediaAlpha = null;
+            record.BackgroundMediaSlideshow = null;
+            record.BackgroundMediaInterval = null;
+            record.BackgroundMediaShuffle = null;
+            record.BackgroundMediaFinishVideos = null;
             record.BackgroundFrostLevel = null;
             record.WidgetOpacity = null;
             record.WidgetLabels = null;
@@ -628,6 +640,10 @@ public sealed class PanelDeviceRegistry
             BackgroundMediaId = r.BackgroundMediaId,
             BackgroundMediaType = r.BackgroundMediaType,
             BackgroundMediaAlpha = r.BackgroundMediaAlpha,
+            BackgroundMediaSlideshow = r.BackgroundMediaSlideshow,
+            BackgroundMediaInterval = r.BackgroundMediaInterval,
+            BackgroundMediaShuffle = r.BackgroundMediaShuffle,
+            BackgroundMediaFinishVideos = r.BackgroundMediaFinishVideos,
             BackgroundFrostLevel = r.BackgroundFrostLevel,
             WidgetOpacity = r.WidgetOpacity,
             WidgetLabels = r.WidgetLabels,

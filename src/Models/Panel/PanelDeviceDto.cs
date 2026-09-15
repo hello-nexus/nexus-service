@@ -48,6 +48,20 @@ public sealed class PanelDeviceRecord
     public string? BackgroundMediaType { get; set; }
     /// <summary>The selected asset kept its transparency, so it is a png/gif and renders in an img even when animated.</summary>
     public bool? BackgroundMediaAlpha { get; set; }
+    /// <summary>Cycle through every asset in this panel's background-media
+    /// library instead of holding BackgroundMediaId. That id is then the slide
+    /// the cycle starts from. Null/false = a single background.</summary>
+    public bool? BackgroundMediaSlideshow { get; set; }
+    /// <summary>Seconds each slide holds. Null is unset; the client applies its
+    /// own default.</summary>
+    public int? BackgroundMediaInterval { get; set; }
+    /// <summary>Slideshow visits the library in a shuffled order rather than
+    /// the library order.</summary>
+    public bool? BackgroundMediaShuffle { get; set; }
+    /// <summary>A video slide plays whole (repeating to cover the interval)
+    /// before the slideshow moves on, instead of being cut at the interval.
+    /// Null is unset; the client applies its own default (on).</summary>
+    public bool? BackgroundMediaFinishVideos { get; set; }
     /// <summary>Frosted-glass blur over the background layer (shader / media /
     /// desktop wallpaper), percent 0-100. Null is unset; the client applies its
     /// own default. Never rename this to "backgroundFrost": stored records hold
@@ -195,6 +209,10 @@ public sealed class PanelDevicePatch
     public string? BackgroundMediaId { get; set; }
     public string? BackgroundMediaType { get; set; }
     public bool? BackgroundMediaAlpha { get; set; }
+    public bool? BackgroundMediaSlideshow { get; set; }
+    public int? BackgroundMediaInterval { get; set; }
+    public bool? BackgroundMediaShuffle { get; set; }
+    public bool? BackgroundMediaFinishVideos { get; set; }
     public double? BackgroundFrostLevel { get; set; }
     public double? WidgetOpacity { get; set; }
     public bool? WidgetLabels { get; set; }

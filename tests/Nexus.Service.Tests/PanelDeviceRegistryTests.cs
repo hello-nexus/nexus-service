@@ -201,6 +201,35 @@ public sealed class PanelDeviceRegistryTests : IDisposable
     }
 
     [Fact]
+    public void Patch_BackgroundMediaSlideshow_RoundTripsAndSurvivesUnrelatedPatch()
+    {
+        var record = _registry.Allocate(null, Caps(PanelSurfaces.Phone));
+        Assert.Null(record.BackgroundMediaSlideshow);
+        Assert.Null(record.BackgroundMediaInterval);
+
+        var patched = _registry.Patch(record.Id, new PanelDevicePatch
+        {
+            BackgroundMediaSlideshow = true,
+            BackgroundMediaInterval = 60,
+            BackgroundMediaShuffle = true,
+            BackgroundMediaFinishVideos = false,
+        });
+        Assert.True(patched!.BackgroundMediaSlideshow);
+        Assert.Equal(60, patched.BackgroundMediaInterval);
+        Assert.True(patched.BackgroundMediaShuffle);
+        Assert.False(patched.BackgroundMediaFinishVideos);
+
+        var renamed = _registry.Patch(record.Id, new PanelDevicePatch { DisplayName = "Renamed" });
+        Assert.True(renamed!.BackgroundMediaSlideshow);
+        Assert.Equal(60, renamed.BackgroundMediaInterval);
+
+        // false is a real value (slideshow off), not "no change".
+        var off = _registry.Patch(record.Id, new PanelDevicePatch { BackgroundMediaSlideshow = false });
+        Assert.False(off!.BackgroundMediaSlideshow);
+        Assert.Equal(60, off.BackgroundMediaInterval);
+    }
+
+    [Fact]
     public void ResetToDefaults_ClearsCustomizations_KeepsIdentity()
     {
         var record = _registry.Allocate("My Panel", Caps(PanelSurfaces.Phone));
@@ -219,6 +248,10 @@ public sealed class PanelDeviceRegistryTests : IDisposable
             Backdrop = "desktop",
             BackgroundMediaId = "asset-1",
             BackgroundMediaType = "static",
+            BackgroundMediaSlideshow = true,
+            BackgroundMediaInterval = 300,
+            BackgroundMediaShuffle = true,
+            BackgroundMediaFinishVideos = false,
             BackgroundFrostLevel = 100,
             WidgetOpacity = 0.7,
             WidgetLabels = true,
@@ -247,6 +280,10 @@ public sealed class PanelDeviceRegistryTests : IDisposable
         Assert.Null(reset.Backdrop);
         Assert.Null(reset.BackgroundMediaId);
         Assert.Null(reset.BackgroundMediaType);
+        Assert.Null(reset.BackgroundMediaSlideshow);
+        Assert.Null(reset.BackgroundMediaInterval);
+        Assert.Null(reset.BackgroundMediaShuffle);
+        Assert.Null(reset.BackgroundMediaFinishVideos);
         Assert.Null(reset.BackgroundFrostLevel);
         Assert.Null(reset.WidgetOpacity);
         Assert.Null(reset.WidgetLabels);
