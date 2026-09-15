@@ -7,11 +7,11 @@ using Nexus.Service.Platform;
 namespace Nexus.Service.Panel.Streams;
 
 /// <summary>
-/// Byte sink turning the overlay's raw BGRA frame stream into JPEG uploads on a cooler LCD.
+/// Byte sink for cooler LCDs. The overlay supplies raw BGRA frames and this transport
+/// encodes them to the JPEG format accepted by the panel HID protocols.
 ///
-/// The interface is a byte stream, not a frame queue: the paced writer may split or
-/// concatenate writes, so this buffers to exactly one frame before encoding. Frames are
-/// fixed-size, which makes the boundary unambiguous.
+/// The raw-BGRA path is a byte stream rather than a frame queue, so it buffers to exactly
+/// one fixed-size frame before encoding.
 /// </summary>
 public sealed class JpegPanelStreamTransport : IStreamedPanelTransport, IOrientablePanelTransport, IBrightnessPanelTransport
 {
@@ -34,6 +34,7 @@ public sealed class JpegPanelStreamTransport : IStreamedPanelTransport, IOrienta
     private int _brightnessApplied = -1;
     private long _brightnessNextReadMs;
     private bool _brightnessFaultLogged;
+    private readonly object _brightnessLock = new();
 
     private readonly byte[] _turned;
 
@@ -63,17 +64,34 @@ public sealed class JpegPanelStreamTransport : IStreamedPanelTransport, IOrienta
         _brightnessNextReadMs = 0;
     }
 
-    /// <summary>Runs on the frame path, the only thread that owns this transport.</summary>
-    private void ApplyBrightness()
+    /// <summary>Applies a changed backlight from either the frame or settings path.</summary>
+    public bool ApplyBrightness()
+    {
+        lock (_brightnessLock)
+        {
+            _brightnessNextReadMs = 0;
+            return TryApplyBrightnessLocked();
+        }
+    }
+
+    private bool TryApplyBrightness()
+    {
+        lock (_brightnessLock)
+        {
+            return TryApplyBrightnessLocked();
+        }
+    }
+
+    private bool TryApplyBrightnessLocked()
     {
         if (_brightness is null)
         {
-            return;
+            return false;
         }
         long nowMs = Environment.TickCount64;
         if (nowMs < _brightnessNextReadMs)
         {
-            return;
+            return false;
         }
         _brightnessNextReadMs = nowMs + BrightnessTtlMs;
         int? wanted;
@@ -85,18 +103,24 @@ public sealed class JpegPanelStreamTransport : IStreamedPanelTransport, IOrienta
                 _brightnessFaultLogged = true;
                 ServiceLog.Warn($"[{_hub.Model.HandlerId}] backlight source threw: {ex.GetType().Name}: {ex.Message}");
             }
-            return;
+            return false;
         }
         // No record value means the panel keeps what it powered up with.
-        if (wanted is not int percent || percent == _brightnessApplied)
+        if (wanted is not int percent)
         {
-            return;
+            return true;
+        }
+        if (percent == _brightnessApplied)
+        {
+            return true;
         }
         if (_hub.SetBrightness(percent))
         {
             _brightnessApplied = percent;
             ServiceLog.Info($"[{_hub.Model.HandlerId}] backlight {percent}%");
+            return true;
         }
+        return false;
     }
 
     public string Serial { get; }
@@ -136,7 +160,7 @@ public sealed class JpegPanelStreamTransport : IStreamedPanelTransport, IOrienta
 
     private void PushFrame()
     {
-        ApplyBrightness();
+        TryApplyBrightness();
         ReadOnlySpan<byte> jpeg;
         try
         {

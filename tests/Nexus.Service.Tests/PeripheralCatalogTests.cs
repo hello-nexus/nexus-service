@@ -74,6 +74,17 @@ public class PeripheralCatalogTests
     }
 
     [Fact]
+    public void LightingDevicesCatalog_marks_galahad_lcd_as_rgb_and_screen_capable()
+    {
+        var galahad = Assert.Single(LightingDevicesCatalog.All,
+            d => d.Vendor == "Lian Li" && d.Model == "Galahad II LCD");
+
+        Assert.Contains("rgb", galahad.Capabilities);
+        Assert.Contains("screen", galahad.Capabilities);
+        Assert.Equal("0x7395", galahad.ProductId, ignoreCase: true);
+    }
+
+    [Fact]
     public void LightingDevicesCatalog_DropsMislabeledNexusCaseRow()
     {
         // The OpenRGB "HYTE Nexus" detector's row is mislabeled model "Nexus";

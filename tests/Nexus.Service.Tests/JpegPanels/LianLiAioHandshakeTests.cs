@@ -54,6 +54,43 @@ public class LianLiAioHandshakeTests
     }
 
     [Fact]
+    public void Galahad_attach_keeps_the_glass_in_application_mode()
+    {
+        var handshake = new LianLiAioHandshake(
+            "lianli-galahad2-lcd", 24, LianLiAioHandshake.Galahad2BrightnessMode);
+        var device = new ScriptedHidDevice();
+
+        Assert.True(handshake.OnAttach(device, ReportLength));
+
+        var control = device.Writes[1];
+        Assert.Equal(0x01, control[11]);
+        Assert.Equal(100, control[12]);
+    }
+
+    [Fact]
+    public void Galahad_brightness_packet_uses_the_hardware_verified_settings_mode()
+    {
+        var handshake = new LianLiAioHandshake(
+            "lianli-galahad2-lcd", 24, LianLiAioHandshake.Galahad2BrightnessMode);
+        var device = new ScriptedHidDevice();
+
+        Assert.True(handshake.OnAttach(device, ReportLength));
+        device.Writes.Clear();
+        handshake.SetBrightness(35);
+        Assert.True(handshake.ApplyBrightness(device, ReportLength));
+
+        var control = Assert.Single(device.Writes);
+        Assert.Equal(
+            new byte[]
+            {
+                0x02, 0x0C, 0x00, 0x00, 0x00, 0x08, 0x00, 0x00, 0x00, 0x00, 0x08,
+                0x04, 35, 0x00, 0x00, 0x00, 0x00, 0x00, 24,
+            },
+            control[..19]);
+        Assert.All(control[19..], b => Assert.Equal(0, b));
+    }
+
+    [Fact]
     public void A_brightness_change_rides_application_mode_so_the_glass_stays_claimed()
     {
         var handshake = new LianLiAioHandshake("lianli-hydroshift-lcd", 24);
@@ -73,7 +110,8 @@ public class LianLiAioHandshakeTests
     [Fact]
     public void The_backlight_survives_a_re_attach_because_the_claim_packet_carries_it()
     {
-        var handshake = new LianLiAioHandshake("lianli-galahad2-lcd", 24);
+        var handshake = new LianLiAioHandshake(
+            "lianli-galahad2-lcd", 24, LianLiAioHandshake.Galahad2BrightnessMode);
         handshake.SetBrightness(12);
 
         var device = new ScriptedHidDevice();
@@ -85,7 +123,8 @@ public class LianLiAioHandshakeTests
     [Fact]
     public void The_hand_back_restores_full_brightness_so_the_firmware_ui_is_not_left_dim()
     {
-        var handshake = new LianLiAioHandshake("lianli-galahad2-lcd", 24);
+        var handshake = new LianLiAioHandshake(
+            "lianli-galahad2-lcd", 24, LianLiAioHandshake.Galahad2BrightnessMode);
         var device = new ScriptedHidDevice();
         handshake.OnAttach(device, ReportLength);
         handshake.SetBrightness(0);

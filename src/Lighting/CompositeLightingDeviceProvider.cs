@@ -31,6 +31,7 @@ public sealed class CompositeLightingDeviceProvider : ILightingDeviceProvider
     private readonly CorsairLinkLightingDeviceProvider _corsair;
     private readonly StrimerLightingDeviceProvider _strimer;
     private readonly Galahad2LightingDeviceProvider _galahad2;
+    private readonly Galahad2LcdLightingDeviceProvider? _galahad2Lcd;
     private readonly NollieLightingDeviceProvider _nollie;
     private readonly KrakenLightingDeviceProvider _kraken;
     private readonly Nexus.Service.Lighting.Smart.SmartLightProvider _smart;
@@ -55,7 +56,8 @@ public sealed class CompositeLightingDeviceProvider : ILightingDeviceProvider
         KrakenLightingDeviceProvider kraken,
         Nexus.Service.Lighting.Smart.SmartLightProvider smart,
         IConfigStore store,
-        LightingEngine engine)
+        LightingEngine engine,
+        Galahad2LcdLightingDeviceProvider? galahad2Lcd = null)
     {
         _openRgb  = openRgb;
         _np50     = np50;
@@ -70,6 +72,7 @@ public sealed class CompositeLightingDeviceProvider : ILightingDeviceProvider
         _corsair  = corsair;
         _strimer  = strimer;
         _galahad2 = galahad2;
+        _galahad2Lcd = galahad2Lcd;
         _nollie   = nollie;
         _kraken   = kraken;
         _smart    = smart;
@@ -86,7 +89,7 @@ public sealed class CompositeLightingDeviceProvider : ILightingDeviceProvider
         }
     }
 
-    public bool IsConnected => _openRgb.IsConnected || _np50.IsConnected || _miniHub.IsConnected || _smartHub.IsConnected || _cnvs.IsConnected || _qseries.IsConnected || _keeb.IsConnected || _ibp.IsConnected || _lianLi.IsConnected || _lianLiWireless.IsConnected || _corsair.IsConnected || _strimer.IsConnected || _galahad2.IsConnected || _nollie.IsConnected || _kraken.IsConnected || _smart.IsConnected;
+    public bool IsConnected => _openRgb.IsConnected || _np50.IsConnected || _miniHub.IsConnected || _smartHub.IsConnected || _cnvs.IsConnected || _qseries.IsConnected || _keeb.IsConnected || _ibp.IsConnected || _lianLi.IsConnected || _lianLiWireless.IsConnected || _corsair.IsConnected || _strimer.IsConnected || _galahad2.IsConnected || (_galahad2Lcd?.IsConnected ?? false) || _nollie.IsConnected || _kraken.IsConnected || _smart.IsConnected;
 
     public GetLightingDevicesResponse GetAll()
     {
@@ -164,7 +167,7 @@ public sealed class CompositeLightingDeviceProvider : ILightingDeviceProvider
                 rgb.Devices.RemoveAll(d =>
                     d.Name.Contains("Lian Li Strimer", StringComparison.OrdinalIgnoreCase));
             }
-            if (_galahad2.IsConnected)
+            if (_galahad2.IsConnected || (_galahad2Lcd?.IsConnected ?? false))
             {
                 // OpenRGB names this device "Lian Li GAII Trinity".
                 rgb.Devices.RemoveAll(d =>
@@ -269,6 +272,13 @@ public sealed class CompositeLightingDeviceProvider : ILightingDeviceProvider
             TagControlHandler(galahad2.Devices, "lianli-aio");
             rgb.Devices.AddRange(galahad2.Devices);
         }
+        var galahad2Lcd = _galahad2Lcd?.GetAll();
+        if (galahad2Lcd is not null && galahad2Lcd.Devices.Count > 0)
+        {
+            rgb.IsInit = rgb.IsInit || galahad2Lcd.IsInit;
+            TagControlHandler(galahad2Lcd.Devices, "lianli-galahad2-lcd");
+            rgb.Devices.AddRange(galahad2Lcd.Devices);
+        }
         var kraken = _kraken.GetAll();
         if (kraken.Devices.Count > 0)
         {
@@ -348,6 +358,7 @@ public sealed class CompositeLightingDeviceProvider : ILightingDeviceProvider
         var corsairIds    = new List<string>(ids.Count);
         var strimerIds    = new List<string>(ids.Count);
         var galahad2Ids   = new List<string>(ids.Count);
+        var galahad2LcdIds = new List<string>(ids.Count);
         var krakenIds     = new List<string>(ids.Count);
         var smartLightIds = new List<string>(ids.Count);
         foreach (var id in ids)
@@ -363,6 +374,7 @@ public sealed class CompositeLightingDeviceProvider : ILightingDeviceProvider
             else if (IsLianLiWirelessId(id)) lianLiWirelessIds.Add(id);
             else if (IsCorsairId(id))   corsairIds.Add(id);
             else if (IsStrimerId(id))   strimerIds.Add(id);
+            else if (IsGalahad2LcdId(id)) galahad2LcdIds.Add(id);
             else if (IsGalahad2Id(id))  galahad2Ids.Add(id);
             else if (IsKrakenId(id))    krakenIds.Add(id);
             else if (_smart.Owns(id))   smartLightIds.Add(id);
@@ -380,6 +392,10 @@ public sealed class CompositeLightingDeviceProvider : ILightingDeviceProvider
         if (lianLiWirelessIds.Count > 0) _lianLiWireless.SetDisabled(lianLiWirelessIds);
         if (corsairIds.Count > 0)    _corsair.SetDisabled(corsairIds);
         if (strimerIds.Count > 0)    _strimer.SetDisabled(strimerIds);
+        if (galahad2LcdIds.Count > 0)
+        {
+            (_galahad2Lcd as ILightingDeviceProvider ?? _galahad2).SetDisabled(galahad2LcdIds);
+        }
         if (galahad2Ids.Count > 0)   _galahad2.SetDisabled(galahad2Ids);
         if (krakenIds.Count > 0)     _kraken.SetDisabled(krakenIds);
         if (smartLightIds.Count > 0) _smart.SetDisabled(smartLightIds);
@@ -404,6 +420,7 @@ public sealed class CompositeLightingDeviceProvider : ILightingDeviceProvider
         : IsLianLiWirelessId(id) ? _lianLiWireless
         : IsCorsairId(id)    ? _corsair
         : IsStrimerId(id)    ? _strimer
+        : IsGalahad2LcdId(id) ? (_galahad2Lcd as ILightingDeviceProvider ?? _galahad2)
         : IsGalahad2Id(id)   ? _galahad2
         : IsNollieId(id)     ? _nollie
         : IsKrakenId(id)     ? _kraken
@@ -448,6 +465,9 @@ public sealed class CompositeLightingDeviceProvider : ILightingDeviceProvider
 
     private static bool IsGalahad2Id(string id) =>
         !string.IsNullOrEmpty(id) && id.StartsWith("lianli-aio:", StringComparison.Ordinal);
+
+    private static bool IsGalahad2LcdId(string id) =>
+        string.Equals(id, Galahad2LcdLightingDeviceProvider.PumpZoneId, StringComparison.Ordinal);
 
     private static bool IsKrakenId(string id) =>
         !string.IsNullOrEmpty(id) && id.StartsWith("nzxt-kraken:", StringComparison.Ordinal);

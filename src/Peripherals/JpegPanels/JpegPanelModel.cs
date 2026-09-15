@@ -4,12 +4,13 @@ using System.Collections.Generic;
 namespace Nexus.Service.Peripherals.JpegPanels;
 
 /// <summary>
-/// One cooler LCD that takes a whole JPEG per frame over plain HID. These are all the
-/// same shape - open a vendor HID interface, chunk a JPEG across output reports - so one
-/// hub drives the family and a model is just a row here.
+/// One cooler LCD that takes a whole JPEG per frame over plain HID. These are all the same
+/// shape - open a vendor HID interface, chunk a JPEG across output reports - so one hub
+/// drives the family and a model is just a row here.
 ///
-/// Every row but <see cref="HydroShiftLcd"/> was reconstructed from third-party protocol
-/// documentation and has never been run against hardware: we own no unit of any of them.
+/// Every row but <see cref="HydroShiftLcd"/> and <see cref="GalahadIiLcd"/> was reconstructed
+/// from third-party protocol documentation and has never been run against hardware: we own
+/// no unit of any of them.
 /// They ship experimental with Nexus Control off by default so a build never grabs an
 /// untested cooler on its own.
 /// </summary>
@@ -63,7 +64,11 @@ public sealed record JpegPanelModel(
         HeaderStyle: JpegPanelHeaderStyle.LianLiSequenced,
         Selector: 0x0E,
         Surface: Models.Panel.PanelSurfaces.LcdRound)
-    { Fps = GalahadFps, Handshake = new LianLiAioHandshake("lianli-galahad2-lcd", GalahadFps) };
+    {
+        Fps = GalahadFps,
+        Handshake = new LianLiAioHandshake(
+            "lianli-galahad2-lcd", GalahadFps, LianLiAioHandshake.Galahad2BrightnessMode),
+    };
 
     /// <summary>Documented rate for the Galahad II glass.</summary>
     private const int GalahadFps = 24;

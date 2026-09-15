@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 using Nexus.Service.Devices;
+using Nexus.Service.Panel.Streams;
 using Nexus.Service.Peripherals.Hid;
 using Nexus.Service.Peripherals.JpegPanels;
 using Xunit;
@@ -72,7 +73,7 @@ public class JpegPanelHubTests
     [Fact]
     public void A_frame_goes_out_as_whole_reports_that_reassemble_to_the_jpeg()
     {
-        var model = JpegPanelModel.GalahadIiLcd;
+        var model = JpegPanelModel.HydroShiftLcd;
         using var hub = new JpegPanelHub(model);
         var device = new RecordingHidDevice();
         hub.Attach(device);
@@ -92,6 +93,53 @@ public class JpegPanelHubTests
             reassembled.AddRange(device.Writes[i].Skip(header).Take(declared));
         }
         Assert.Equal(jpeg, reassembled);
+    }
+
+    [Fact]
+    public void Galahad_frames_use_the_1024_byte_b_jpeg_reports()
+    {
+        var model = JpegPanelModel.GalahadIiLcd;
+        using var hub = new JpegPanelHub(model);
+        var device = new RecordingHidDevice();
+        hub.Attach(device);
+        device.Writes.Clear();
+        var jpeg = Enumerable.Range(0, 2500).Select(i => (byte)(i % 251)).ToArray();
+
+        Assert.True(hub.SendFrame(jpeg));
+
+        Assert.Equal(3, device.Writes.Count);
+        Assert.All(device.Writes, w => Assert.Equal(1024, w.Length));
+        Assert.All(device.Writes, w => Assert.Equal(0x02, w[0]));
+        Assert.All(device.Writes, w => Assert.Equal(0x0E, w[1]));
+        Assert.Equal(new byte[] { 0x00, 0x00, 0x09, 0xC4 }, device.Writes[0][2..6]);
+        Assert.Equal(new byte[] { 0x00, 0x00, 0x00 }, device.Writes[0][6..9]);
+        Assert.Equal(new byte[] { 0x00, 0x00, 0x01 }, device.Writes[1][6..9]);
+        Assert.Equal(new byte[] { 0x00, 0x00, 0x02 }, device.Writes[2][6..9]);
+    }
+
+    [Fact]
+    public void Galahad_discovery_asks_the_overlay_for_raw_bgra_and_encodes_jpeg()
+    {
+        using var hub = new JpegPanelHub(JpegPanelModel.GalahadIiLcd);
+        var device = new RecordingHidDevice();
+        hub.Attach(device);
+        device.Writes.Clear();
+
+        var discovery = new JpegPanelDiscovery(hub);
+        var info = Assert.Single(discovery.Discover());
+        Assert.Equal(StreamCodec.RawBgra, info.Profile.Codec);
+
+        using var transport = discovery.CreateTransport(info);
+        transport.Open();
+        transport.Write(new byte[JpegPanelModel.GalahadIiLcd.Width * JpegPanelModel.GalahadIiLcd.Height * 4]);
+
+        Assert.NotEmpty(device.Writes);
+        var report = device.Writes[0];
+        Assert.Equal(1024, report.Length);
+        Assert.Equal(0x02, report[0]);
+        Assert.Equal(0x0E, report[1]);
+        Assert.Equal(0xFF, report[11]);
+        Assert.Equal(0xD8, report[12]);
     }
 
     [Fact]
@@ -134,10 +182,70 @@ public class JpegPanelHubTests
         Assert.False(JpegPanelModel.CorsairXc7.SupportsBrightness);
     }
 
+    [Fact]
+    public void Galahad_uses_the_b_jpeg_frame_channel_and_control_stays_on_b()
+    {
+        Assert.Equal(1024, JpegPanelModel.GalahadIiLcd.ReportLength);
+        Assert.Equal(0x0E, JpegPanelModel.GalahadIiLcd.Selector);
+        Assert.Equal(JpegPanelHeaderStyle.LianLiSequenced, JpegPanelModel.GalahadIiLcd.HeaderStyle);
+    }
+
+    [Fact]
+    public void Galahad_pump_per_led_report_is_sent_as_a_padded_1024_byte_write()
+    {
+        using var hub = new JpegPanelHub(Dimmable());
+        var device = new RecordingHidDevice();
+        hub.Attach(device);
+        device.Writes.Clear();
+
+        Assert.True(hub.SendPumpPerLed(new byte[36]));
+
+        var report = Assert.Single(device.Writes);
+        Assert.Equal(1024, report.Length);
+        Assert.Equal(0x02, report[0]);
+        Assert.Equal(0x14, report[1]);
+        Assert.Equal(new byte[] { 0x00, 0x00, 0x00, 0x3D }, report[2..6]);
+        Assert.Equal(0x00, report[11]);
+    }
+
+    [Fact]
+    public void Galahad_pump_zone_effect_is_padded_to_the_control_report_size()
+    {
+        using var hub = new JpegPanelHub(Dimmable());
+        var device = new RecordingHidDevice();
+        hub.Attach(device);
+        device.Writes.Clear();
+
+        Assert.True(hub.SendPumpZoneLighting(2, 0x03, 4, 2, 0, new byte[] { 0xFF, 0x00, 0x00 }));
+
+        var report = Assert.Single(device.Writes);
+        Assert.Equal(1024, report.Length);
+        Assert.Equal(0x01, report[0]);
+        Assert.Equal(0x83, report[1]);
+        Assert.Equal(19, report[5]);
+        Assert.Equal(2, report[6]);
+        Assert.Equal(0xFF, report[10]);
+    }
+
+    [Fact]
+    public void Non_galahad_panel_hub_does_not_send_pump_reports()
+    {
+        using var hub = new JpegPanelHub(JpegPanelModel.CorsairXc7);
+        var device = new RecordingHidDevice();
+        hub.Attach(device);
+
+        Assert.False(hub.SendPumpPerLed(new byte[36]));
+        Assert.Empty(device.Writes);
+    }
+
     // The model table's handshakes are process-wide singletons, so a test that sets a
     // backlight takes its own instance rather than leaving one dimmed for the whole suite.
     private static JpegPanelModel Dimmable() =>
-        JpegPanelModel.GalahadIiLcd with { Handshake = new LianLiAioHandshake("test-lcd", 24) };
+        JpegPanelModel.GalahadIiLcd with
+        {
+            Handshake = new LianLiAioHandshake(
+                "test-lcd", 24, LianLiAioHandshake.Galahad2BrightnessMode),
+        };
 
     [Fact]
     public void SetBrightness_reaches_an_attached_panel_in_application_mode()
@@ -151,7 +259,7 @@ public class JpegPanelHubTests
 
         var control = Assert.Single(device.Writes);
         Assert.Equal(0x0C, control[1]);
-        Assert.Equal(0x01, control[11]);
+        Assert.Equal(LianLiAioHandshake.Galahad2BrightnessMode, control[11]);
         Assert.Equal(35, control[12]);
     }
 

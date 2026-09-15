@@ -194,6 +194,21 @@ public sealed class StreamedPanelCoordinator : BackgroundService
         return ids;
     }
 
+    /// <summary>Applies a persisted panel backlight change without waiting for a frame.</summary>
+    public bool ApplyBrightness(string panelDeviceId)
+    {
+        lock (_lock)
+        {
+            foreach (var ds in _bySerial.Values)
+            {
+                if (ds.Session.Closed || !string.Equals(ds.Session.PanelDeviceId, panelDeviceId, StringComparison.Ordinal))
+                    continue;
+                return ds.Transport is IBrightnessPanelTransport dimmable && dimmable.ApplyBrightness();
+            }
+        }
+        return false;
+    }
+
     /// <summary>Suppresses assignments while a focus mode asks for rendering to stop; the overlay closes its render hosts on the empty list and rebuilds them when it returns.</summary>
     public void SetRenderingPaused(bool paused)
     {

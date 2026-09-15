@@ -13,9 +13,9 @@ namespace Nexus.Service.Peripherals.JpegPanels;
 public enum JpegPanelHeaderStyle
 {
     /// <summary>
-    /// Lian Li HydroShift LCD and Galahad II LCD. 11 bytes: report id 0x02, command,
-    /// big-endian 32-bit total length, 24-bit sequence, 16-bit chunk length. 1013 payload
-    /// bytes in a 1024-byte report.
+    /// Lian Li HydroShift LCD and Galahad II LCD. 11 bytes: report id, command, big-endian
+    /// 32-bit total length, 24-bit sequence, 16-bit chunk length. The B report uses id 0x02
+    /// and carries 1013 bytes in a 1024-byte report.
     /// </summary>
     LianLiSequenced,
 

@@ -4,6 +4,7 @@ using System.IO;
 using System.Linq;
 using Microsoft.AspNetCore.Http;
 using Nexus.Service.Devices;
+using Nexus.Service.Models.Panel;
 using Nexus.Service.Panel;
 using Nexus.Service.Panel.Streams;
 using Nexus.Service.Persistence;
@@ -88,17 +89,47 @@ public sealed class StreamedPanelCoordinatorTests : IDisposable
         public void Dispose() { IsOpen = false; }
     }
 
+    private sealed class FakeBrightnessTransport : IStreamedPanelTransport, IBrightnessPanelTransport
+    {
+        public bool IsOpen { get; private set; }
+        public string Serial { get; }
+        public int ApplyCalls { get; private set; }
+        public int? LastApplied { get; private set; }
+        private Func<int?>? _source;
+
+        public FakeBrightnessTransport(string serial) { Serial = serial; }
+        public void Open() => IsOpen = true;
+        public void StartPlayer() { }
+        public void Write(ReadOnlySpan<byte> annexBAccessUnit) { }
+        public void Dispose() => IsOpen = false;
+        public void BindBrightness(Func<int?> source) => _source = source;
+        public bool ApplyBrightness()
+        {
+            ApplyCalls++;
+            LastApplied = _source?.Invoke();
+            return true;
+        }
+    }
+
     private sealed class FakeDiscovery : IStreamedPanelDiscovery
     {
         public string HandlerId => "fake-panel";
         public List<StreamedPanelDeviceInfo> Devices { get; } = new();
         public List<FakeTransport> Transports { get; } = new();
+        public List<FakeBrightnessTransport> BrightnessTransports { get; } = new();
+        public bool UseBrightnessTransport { get; set; }
         public bool FailOpen { get; set; }
 
         public IReadOnlyList<StreamedPanelDeviceInfo> Discover() => Devices.ToList();
 
         public IStreamedPanelTransport CreateTransport(StreamedPanelDeviceInfo info)
         {
+            if (UseBrightnessTransport)
+            {
+                var brightness = new FakeBrightnessTransport(info.Serial);
+                BrightnessTransports.Add(brightness);
+                return brightness;
+            }
             var t = new FakeTransport(info.Serial) { FailOpen = FailOpen };
             Transports.Add(t);
             return t;
@@ -237,5 +268,22 @@ public sealed class StreamedPanelCoordinatorTests : IDisposable
     {
         var coordinator = Coordinator();
         Assert.Null(coordinator.TryBindIngest("nope", new DefaultHttpContext()));
+    }
+
+    [Fact]
+    public void Brightness_change_can_apply_without_an_incoming_frame()
+    {
+        _discovery.UseBrightnessTransport = true;
+        _discovery.Devices.Add(Device());
+        var coordinator = Coordinator();
+        coordinator.TickOnce();
+        var assignment = Assert.Single(coordinator.GetAssignments().Assignments);
+
+        _registry.Patch(assignment.PanelDeviceId, new PanelDevicePatch { LcdBrightness = 35 });
+
+        Assert.True(coordinator.ApplyBrightness(assignment.PanelDeviceId));
+        var transport = Assert.Single(_discovery.BrightnessTransports);
+        Assert.Equal(1, transport.ApplyCalls);
+        Assert.Equal(35, transport.LastApplied);
     }
 }

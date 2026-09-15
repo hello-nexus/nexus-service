@@ -906,8 +906,8 @@ public static class NexusServiceCollectionExtensions
         // model; the hub is created here and captured so all four share it. Plain HID, so
         // unlike the Kraken's WinUSB bulk pipe there is nothing Windows-only about them.
         //
-        // Only the HydroShift LCD has been run against hardware; the rest are transcribed,
-        // and DeviceControlPolicy defaults every row OFF so a build never claims one itself.
+        // LCD rows remain gated by DeviceControlPolicy; Galahad's pump RGB protocol was
+        // verified separately and is driven through the same HID handle.
         foreach (var jpegPanelModel in Nexus.Service.Peripherals.JpegPanels.JpegPanelModel.All)
         {
             var jpegPanelHub = new Nexus.Service.Peripherals.JpegPanels.JpegPanelHub(jpegPanelModel);
@@ -923,6 +923,30 @@ public static class NexusServiceCollectionExtensions
                 _ => new Nexus.Service.Panel.Streams.JpegPanelDiscovery(jpegPanelHub));
             services.AddSingleton<IDeviceHandler>(
                 _ => new Nexus.Service.Devices.Handlers.JpegPanelHandler(jpegPanelHub));
+
+            if (jpegPanelModel.HandlerId == Nexus.Service.Peripherals.JpegPanels.JpegPanelModel.GalahadIiLcd.HandlerId)
+            {
+                services.AddSingleton<Nexus.Service.Lighting.Galahad2LcdLightingDeviceProvider>(
+                    sp => new Nexus.Service.Lighting.Galahad2LcdLightingDeviceProvider(
+                        jpegPanelHub,
+                        sp.GetRequiredService<Nexus.Service.Persistence.IConfigStore>()));
+                services.AddSingleton<Nexus.Service.Lighting.ILightingFrameContributor>(
+                    sp => sp.GetRequiredService<Nexus.Service.Lighting.Galahad2LcdLightingDeviceProvider>());
+                services.AddSingleton<Nexus.Service.Lighting.Zones.IDeviceStructureSource>(
+                    sp => sp.GetRequiredService<Nexus.Service.Lighting.Galahad2LcdLightingDeviceProvider>());
+                // JpegPanelHub is registered once per model under the same concrete type. The
+                // default constructor injection would resolve the last model's hub instead of
+                // this Galahad instance, leaving the writer permanently disconnected.
+                services.AddSingleton<Nexus.Service.Lighting.Galahad2LcdLightingFrameWriter>(sp =>
+                    new Nexus.Service.Lighting.Galahad2LcdLightingFrameWriter(
+                        sp.GetRequiredService<Nexus.Service.Lighting.Engine.LightingEngine>(),
+                        jpegPanelHub,
+                        sp.GetRequiredService<Nexus.Service.Persistence.IConfigStore>(),
+                        sp.GetRequiredService<Nexus.Service.Lighting.Galahad2LcdLightingDeviceProvider>(),
+                        sp.GetRequiredService<Nexus.Service.Lifecycle.FeatureGates>()));
+                services.AddHostedService(sp =>
+                    sp.GetRequiredService<Nexus.Service.Lighting.Galahad2LcdLightingFrameWriter>());
+            }
         }
 
         // Bulk-pipe cooler LCDs (ASUS Ryujin, Thermalright, Lian Li Universal Screen 8.8).
@@ -1044,7 +1068,8 @@ public static class NexusServiceCollectionExtensions
                 sp.GetRequiredService<Nexus.Service.Lighting.KrakenLightingDeviceProvider>(),
                 sp.GetRequiredService<Nexus.Service.Lighting.Smart.SmartLightProvider>(),
                 sp.GetRequiredService<Nexus.Service.Persistence.IConfigStore>(),
-                sp.GetRequiredService<Nexus.Service.Lighting.Engine.LightingEngine>()));
+                sp.GetRequiredService<Nexus.Service.Lighting.Engine.LightingEngine>(),
+                sp.GetService<Nexus.Service.Lighting.Galahad2LcdLightingDeviceProvider>()));
         }
         else
         {
@@ -1066,7 +1091,8 @@ public static class NexusServiceCollectionExtensions
                 sp.GetRequiredService<Nexus.Service.Lighting.KrakenLightingDeviceProvider>(),
                 sp.GetRequiredService<Nexus.Service.Lighting.Smart.SmartLightProvider>(),
                 sp.GetRequiredService<Nexus.Service.Persistence.IConfigStore>(),
-                sp.GetRequiredService<Nexus.Service.Lighting.Engine.LightingEngine>()));
+                sp.GetRequiredService<Nexus.Service.Lighting.Engine.LightingEngine>(),
+                sp.GetService<Nexus.Service.Lighting.Galahad2LcdLightingDeviceProvider>()));
         }
 
         services.AddSingleton<IDeviceHandler, Nexus.Service.Devices.Handlers.CnvsHandler>();

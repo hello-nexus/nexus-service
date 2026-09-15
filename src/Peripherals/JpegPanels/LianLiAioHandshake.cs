@@ -9,10 +9,9 @@ namespace Nexus.Service.Peripherals.JpegPanels;
 /// Puts a Lian Li AIO LCD into application mode - the state in which it renders pushed
 /// frames instead of its own firmware UI - and hands the glass back on detach.
 ///
-/// Shared by the HydroShift LCD and Galahad II families, which run one protocol over three
-/// report ids: A (report 1, 64 bytes) for pump/fan/firmware, B (report 2, 1024 bytes) for
-/// LCD control and frames, C (report 3, 512 bytes) for frames on newer firmware. Streaming
-/// needs only the B-command, so only it is implemented here.
+/// Shared by the HydroShift LCD and Galahad II families, which use report A (report 1,
+/// 64 bytes) for pump/fan/firmware and report B (report 2, 1024 bytes) for LCD control and
+/// JPEG frames. This handshake owns the shared B-command control path.
 ///
 /// Without this the panel accepts every frame report and keeps showing its local UI, which
 /// is why this family cannot be driven by fixed init reports the way ID-Cooling's is.
@@ -37,6 +36,9 @@ public sealed class LianLiAioHandshake : IJpegPanelHandshake, IJpegPanelBrightne
     private const byte ModeLocalUi = 0x00;
     private const byte ModeApplication = 0x01;
 
+    /// <summary>The Galahad II uses its settings value for brightness-only control packets.</summary>
+    internal const byte Galahad2BrightnessMode = 0x04;
+
     /// <summary>Backlight a panel runs at until the user sets one.</summary>
     public const byte DefaultBrightness = 100;
 
@@ -50,16 +52,18 @@ public sealed class LianLiAioHandshake : IJpegPanelHandshake, IJpegPanelBrightne
 
     private readonly string _handlerId;
     private readonly byte _fps;
+    private readonly byte _brightnessMode;
     private byte[]? _report;
 
     // The panel forgets the backlight across a power cycle; holding it here is what lets
     // the attach packet carry it back.
     private byte _brightness = DefaultBrightness;
 
-    public LianLiAioHandshake(string handlerId, int fps)
+    public LianLiAioHandshake(string handlerId, int fps, byte brightnessMode = ModeApplication)
     {
         _handlerId = handlerId;
         _fps = (byte)Math.Clamp(fps, 1, 60);
+        _brightnessMode = brightnessMode;
     }
 
     public bool OnAttach(IHidDevice device, int reportLength)
@@ -116,7 +120,7 @@ public sealed class LianLiAioHandshake : IJpegPanelHandshake, IJpegPanelBrightne
     public bool ApplyBrightness(IHidDevice device, int reportLength)
     {
         var report = Buffer(reportLength);
-        if (!SendLcdControl(device, report, ModeApplication, _brightness))
+        if (!SendLcdControl(device, report, _brightnessMode, _brightness))
         {
             return false;
         }

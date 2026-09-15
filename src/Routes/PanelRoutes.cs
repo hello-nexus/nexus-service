@@ -321,7 +321,7 @@ public static class PanelRoutes
             return Results.Json(record, AppJsonContext.Default.PanelDeviceRecord);
         }).AllowPanel();
 
-        app.MapPost("/panel/devices/{id}", (string id, PanelDevicePatch body, HttpContext ctx, PanelDeviceRegistry registry, MultiplexHub hub, TokenService tokens) =>
+        app.MapPost("/panel/devices/{id}", (string id, PanelDevicePatch body, HttpContext ctx, PanelDeviceRegistry registry, MultiplexHub hub, TokenService tokens, Nexus.Service.Panel.Streams.StreamedPanelCoordinator streams) =>
         {
             // A panel session may rearrange or remove the deck keys it has, but
             // authoring a key that opens a file, sends a key chord, types text or
@@ -335,6 +335,8 @@ public static class PanelRoutes
             var updated = registry.Patch(id, body);
             if (updated is null)
                 return Results.NotFound(ApiResponse.Fail("device not found"));
+            if (body.LcdBrightness.HasValue)
+                streams.ApplyBrightness(updated.Id);
             // PanelDevices is hardware-scoped (top-level on NexusSettings),
             // not part of any profile snapshot. Registry mutations already go
             // through _store.Update -> OnChanged -> ProfileManager.MarkDirty
