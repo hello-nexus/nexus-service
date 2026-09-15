@@ -66,12 +66,14 @@ internal static class CommandLineEntry
         if (args.Length > 0 && WindowsHandlers.TryGetValue(args[0], out var handler))
             return handler(args);
 
+#if !DEBUG
         // No-args means the user double-clicked Nexus.exe. With SCM owning the
         // daemon, the launcher just detects service state, spawns the tray if
         // missing, and opens the dashboard - no cold-start self-elevation.
         if (args.Length == 0)
             return WindowsLauncher.Run();
-
+#endif
+    
         // Protocol-handler URLs from the dashboard. start-admin is kept as a
         // legacy alias mapping onto restart-service; the service is already
         // LocalSystem so "restart as admin" is a no-op naming-wise.
