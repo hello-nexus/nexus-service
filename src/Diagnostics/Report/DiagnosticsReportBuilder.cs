@@ -39,10 +39,8 @@ public sealed record ReportSnapshot
 /// Builds the single-page PDF diagnostics report. <see cref="GatherAsync"/> is
 /// the DI-facing side that reads every live diagnostics module; it takes the
 /// health response and SMART snapshot as already-computed values (not the
-/// monitors that produce them) so a caller that also needs those values for
-/// its own response - the GET /diagnostics/bundle/download route - reads each
-/// exactly once and both outputs describe the same instant. <see cref="Build"/>
-/// is the pure layout function, safe to unit test with a hand-built snapshot.
+/// monitors that produce them). <see cref="Build"/> is the pure layout
+/// function, safe to unit test with a hand-built snapshot.
 ///
 /// Layout is a fixed budget: every section occupies the same page area and
 /// the same number of row slots no matter how much data exists (drive count,

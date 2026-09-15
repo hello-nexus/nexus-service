@@ -7,6 +7,7 @@ using System.Text.Json;
 using Nexus.Service.Diagnostics.Cooling;
 using Nexus.Service.Diagnostics.Storage;
 using Nexus.Service.Persistence;
+using Nexus.Service.Platform;
 using Nexus.Service.Routes;
 using Nexus.Service.Serialization;
 
@@ -17,6 +18,9 @@ public static class SupportBundleBuilder
 {
     /// <summary>Append-only logs (helper, gpu, tray) never rotate; only their tail ships.</summary>
     internal const long MaxLogBytes = 5 * 1024 * 1024;
+
+    private const string StartupSnapshotStart = "===== Nexus startup snapshot =====";
+    private const string StartupSnapshotEnd = "===== end snapshot =====";
 
     public sealed class Sources
     {
@@ -152,6 +156,45 @@ public static class SupportBundleBuilder
         using var stream = entry.Open();
         using var writer = new StreamWriter(stream);
         writer.Write(content);
+    }
+
+    /// <summary>The startup-diagnostics block of the current run's log, so the hardware profile is readable without grepping the log.</summary>
+    internal static string ReadStartupSnapshot()
+    {
+        var path = ServiceLog.LogFilePath ?? Path.Combine(ServiceLog.LogsDirectory, "nexus-service.log");
+        if (!File.Exists(path))
+        {
+            return "";
+        }
+
+        try
+        {
+            using var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
+            using var reader = new StreamReader(stream);
+            var lines = new List<string>();
+            var capturing = false;
+            string? line;
+            while ((line = reader.ReadLine()) is not null)
+            {
+                if (!capturing && line.Contains(StartupSnapshotStart, StringComparison.Ordinal))
+                {
+                    capturing = true;
+                }
+                if (capturing)
+                {
+                    lines.Add(line);
+                }
+                if (capturing && line.Contains(StartupSnapshotEnd, StringComparison.Ordinal))
+                {
+                    break;
+                }
+            }
+            return string.Join(Environment.NewLine, lines);
+        }
+        catch (IOException)
+        {
+            return "";
+        }
     }
 }
 

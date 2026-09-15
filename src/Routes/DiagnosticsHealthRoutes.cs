@@ -32,8 +32,8 @@ namespace Nexus.Service.Routes;
 /// the set the panel widget consumes; every other GET stays on the default
 /// token auth. The memory test POST/DELETE also stay on the default auth
 /// since scheduling a reboot diagnostic is a dashboard-only action;
-/// bundle/download is LocalhostOnly like the existing /diagnostics/open-logs
-/// route.
+/// support-bundle/download is LocalhostOnly like the existing
+/// /diagnostics/open-logs route.
 /// </summary>
 public static class DiagnosticsHealthRoutes
 {
@@ -132,43 +132,6 @@ public static class DiagnosticsHealthRoutes
         app.MapGet("/diagnostics/system", (string? refresh, PnpProblemScanner pnp, EventLogMonitor events) =>
             BuildSystemResponse(pnp, events, IsRefresh(refresh)));
 
-        app.MapGet("/diagnostics/bundle/download", async (
-            DiagnosticsHealthModel healthModel,
-            EventLogMonitor events,
-            SteamGameLibraryCache steamCache,
-            SmartHealthMonitor smart,
-            MemoryDiagnosticOrchestrator memDiag,
-            GpuHealthMonitor gpu,
-            CoolingStallDetector cooling,
-            PnpProblemScanner pnp,
-            SystemSpecsCollector specs) =>
-        {
-            var health = healthModel.BuildHealth();
-            // Bundle is the deep-analysis artifact: keep per-occurrence rows
-            // ungrouped so every timestamp survives, unlike the live route.
-            var incidents = BuildIncidentsResponse(events, steamCache, MaxIncidentDays, group: false);
-            var smartSnapshot = smart.Snapshot();
-            var memory = BuildMemoryResponse(memDiag);
-            var gpuResponse = BuildGpuResponse(gpu, events);
-            var coolingSnapshot = cooling.Snapshot();
-            var system = BuildSystemResponse(pnp, events);
-
-            byte[]? reportPdf = null;
-            try
-            {
-                var reportSnapshot = await DiagnosticsReportBuilder.GatherAsync(health, specs, smartSnapshot, gpu, events, memDiag, pnp);
-                reportPdf = DiagnosticsReportBuilder.Build(reportSnapshot);
-            }
-            catch (Exception ex)
-            {
-                ServiceLog.Warn($"[diagnostics-bundle] report pdf generation failed: {ex.Message}");
-            }
-
-            var zipBytes = DiagnosticsBundleBuilder.Build(health, incidents, smartSnapshot, memory, gpuResponse, coolingSnapshot, system, reportPdf);
-            var fileName = $"nexus-diagnostics-{Environment.MachineName}-{DateTime.Now:yyyyMMdd-HHmmss}.zip";
-            return Results.File(zipBytes, "application/zip", fileName);
-        }).LocalhostOnly();
-
         // Everything a bug report needs, as one download; loopback-only like open-logs.
         app.MapGet("/diagnostics/support-bundle/download", (
             DiagnosticsHealthModel healthModel,
@@ -210,7 +173,7 @@ public static class DiagnosticsHealthRoutes
                 OpenRgbConfigDirectory = Nexus.Service.Lighting.Rgb.OpenRgbProcessManager.ResolveConfigDir(),
                 Settings = store.Load(),
                 Info = info,
-                StartupSnapshot = DiagnosticsBundleBuilder.ReadStartupSnapshot(),
+                StartupSnapshot = SupportBundleBuilder.ReadStartupSnapshot(),
                 Health = healthModel.BuildHealth(),
                 Incidents = BuildIncidentsResponse(events, steamCache, MaxIncidentDays, group: false),
                 Smart = smart.Snapshot(),

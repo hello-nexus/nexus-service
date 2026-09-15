@@ -8548,18 +8548,6 @@
         }
       }
     },
-    "/diagnostics/bundle/download": {
-      "get": {
-        "tags": [
-          "Nexus"
-        ],
-        "responses": {
-          "200": {
-            "description": "OK"
-          }
-        }
-      }
-    },
     "/diagnostics/support-bundle/download": {
       "get": {
         "tags": [

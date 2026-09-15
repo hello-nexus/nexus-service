@@ -53,7 +53,7 @@ is called out here:
   carries framed H.264 access units for the life of the session (request
   body size and minimum data rate limits are lifted for this route).
 - `/diagnostics/*` - health/incident/SMART/GPU/memory snapshots plus
-  downloadable bundle (`/diagnostics/bundle/download`) and PDF report
+  downloadable support bundle (`/diagnostics/support-bundle/download`) and PDF report
   (`/diagnostics/report.pdf`) endpoints. No WebSocket topic.
 - `/tryx/*` - Tryx Panorama panel control, including cloud theme catalog
   proxying (`/tryx/cloud/*`) and local media upload/select. No WebSocket
