@@ -166,6 +166,28 @@ public class GameSyncGameScannerTests
         }
     }
 
+    // Fortnite's layout: the Razer plugin ships as an engine plugin, seven
+    // directories below the install root.
+    [Fact]
+    public void EmitsChroma_UnrealEnginePluginDll_SevenDeep_ReturnsTrue()
+    {
+        var dir = Path.Combine(Path.GetTempPath(), Path.GetRandomFileName());
+        var pluginDir = Path.Combine(dir, "Engine", "Plugins", "Experimental", "RazerChromaDevices", "Binaries", "ThirdParty", "Win64");
+        Directory.CreateDirectory(pluginDir);
+        try
+        {
+            File.WriteAllBytes(Path.Combine(pluginDir, "CChromaEditorLibrary64.dll"), Array.Empty<byte>());
+
+            var result = GameSyncGameScanner.EmitsChroma(dir, NullLogger.Instance, out _, out _);
+
+            Assert.True(result);
+        }
+        finally
+        {
+            Directory.Delete(dir, true);
+        }
+    }
+
     // Battlefield 6's shape: no bundled Chroma DLL, the only SDK reference is
     // inside a 180 MB executable. The marker sits at the tail so the streamed
     // read has to cover the whole length. SetLength is sparse on APFS/ext4; NTFS

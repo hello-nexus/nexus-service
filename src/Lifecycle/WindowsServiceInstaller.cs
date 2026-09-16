@@ -302,6 +302,12 @@ internal static class WindowsServiceInstaller
         try { Platform.Displays.WindowsEdgeSwipePolicy.RemovePolicy(); }
         catch (Exception ex) { Log($"WARN edge-swipe policy delete failed: {ex.Message}"); }
 
+        // A vendor SDK the user overrode goes back first: only slots with a
+        // .nexus-bak beside them are touched, and only our marked shim is removed.
+        Log("restoring overridden vendor SDKs");
+        try { Log($"vendor SDK restore: {GameSyncShimInstaller.SetVendorOverride(false)}"); }
+        catch (Exception ex) { Log($"WARN vendor SDK restore failed: {ex.Message}"); }
+
         // The Game Sync shims in System32/SysWOW64 and the CS2 GSI cfg are left
         // in place on uninstall by design. Our shim filenames are the vendor
         // names (RzChromaSDK64.dll, LightFX.dll, LogitechLedEnginesWrapper.dll),
