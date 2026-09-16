@@ -207,10 +207,10 @@ if (-not (Test-Path (Join-Path $PublishDir "Nexus.exe"))) {
 
 # Game Sync shim DLLs (produced by the nexus-gamesync component) ship under
 # tools\gamesync\, where GameSyncShimInstaller stages them at enable-time. The
-# runtime tolerates a missing bundle (Game Sync stays inactive), which is how
-# every CI release up to v3.0.14-beta.1 shipped without them and nobody
-# noticed. A signed build is a release: missing shims fail it. An unsigned
-# local build only warns, so a lab-PC installer still builds without MSVC.
+# runtime tolerates a missing bundle (Game Sync stays inactive), so a release
+# could ship without them unnoticed. A signed build is a release and fails
+# instead; an unsigned local build only warns, so a lab-PC installer still
+# builds without MSVC.
 $shimX64 = @("RzChromaSDK64.dll", "RzChromatic64.dll", "LightFX.dll", "LogitechLedEnginesWrapper.dll", "LogitechLed.dll")
 $shimX86 = @("RzChromaSDK.dll", "RzChromatic.dll", "LightFX.dll", "LogitechLedEnginesWrapper.dll", "LogitechLed.dll")
 $shimX64Dir = Join-Path $PublishDir "tools\gamesync\x64"

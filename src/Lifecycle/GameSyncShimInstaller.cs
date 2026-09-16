@@ -84,6 +84,7 @@ public static class GameSyncShimInstaller
     // A vendor DLL the user chose to override is renamed in place, never
     // deleted, so turning the override off (or uninstalling) puts it back.
     internal const string VendorBackupSuffix = ".nexus-bak";
+    private const string StaleSuffix = ".nexus-stale";
 
     // Source paths inside the publish output directory.
     private static string BundleX64Dir => Path.Combine(AppContext.BaseDirectory, "tools", "gamesync", "x64");
@@ -328,19 +329,47 @@ public static class GameSyncShimInstaller
             return VendorOverrideResult.NotElevated;
         }
 
+        // Checked before any rename: with no bundle to install, a set-aside
+        // vendor DLL would leave the slot empty and the game with no SDK at all.
+        if (!Directory.Exists(BundleX64Dir) || !Directory.Exists(BundleX86Dir))
+        {
+            ServiceLog.Warn("[chroma-shim] bundled shim directory missing; vendor SDK left in place");
+            return VendorOverrideResult.BundleMissing;
+        }
+
         var system32 = Environment.SystemDirectory;
         var sysWow64 = Environment.GetFolderPath(Environment.SpecialFolder.SystemX86);
-        if (!SetAsideVendorPair(system32, X64Names) || !SetAsideVendorPair(sysWow64, X86Names))
+        SweepStale(system32, X64Names);
+        SweepStale(sysWow64, X86Names);
+        // Both passes and the install always run, so a slot already emptied by
+        // the first pass is refilled even when the second pass fails.
+        var ok = SetAsideVendorPair(system32, X64Names);
+        ok &= SetAsideVendorPair(sysWow64, X86Names);
+        var install = DoEnsureInstalled();
+        if (!ok)
         {
             return VendorOverrideResult.Failed;
         }
-
-        return DoEnsureInstalled() switch
+        return install switch
         {
             ChromaShimInstallResult.Installed or ChromaShimInstallResult.AlreadyCurrent => VendorOverrideResult.Applied,
-            ChromaShimInstallResult.BundleMissing => VendorOverrideResult.BundleMissing,
             _ => VendorOverrideResult.Failed,
         };
+    }
+
+    // A shim moved aside while a game still mapped it (see RemoveOurShim)
+    // becomes deletable once that game exits.
+    private static void SweepStale(string dir, string[] names)
+    {
+        foreach (var name in names)
+        {
+            var stale = Path.Combine(dir, name + StaleSuffix);
+            if (!File.Exists(stale))
+            {
+                continue;
+            }
+            SweepStaleFile(stale);
+        }
     }
 
     // Renaming a mapped image is allowed on Windows (deleting one is not), so
@@ -409,7 +438,12 @@ public static class GameSyncShimInstaller
             {
                 if (File.Exists(path))
                 {
-                    if (!string.Equals(ReadCompanyName(path), OurCompanyName, StringComparison.OrdinalIgnoreCase))
+                    // Same split as DecideFile: a non-empty foreign CompanyName is
+                    // a vendor DLL (repaired back into place; keep it, drop the
+                    // backup); ours or unmarked is safe to replace.
+                    var company = ReadCompanyName(path);
+                    if (company.Length > 0 &&
+                        !string.Equals(company, OurCompanyName, StringComparison.OrdinalIgnoreCase))
                     {
                         ServiceLog.Info($"[chroma-shim] vendor {name} already back in {dir}; dropping stale backup");
                         File.Delete(backup);
@@ -429,8 +463,10 @@ public static class GameSyncShimInstaller
         return ok;
     }
 
-    // A shim a running game still maps cannot be deleted; move it out of the
-    // slot instead so the vendor DLL can take the name back now.
+    // A shim a running game still maps cannot be deleted (STATUS_CANNOT_DELETE
+    // surfaces as UnauthorizedAccessException, a sharing violation as
+    // IOException); move it out of the slot instead so the vendor DLL can take
+    // the name back now. SweepStale reclaims it later.
     [SupportedOSPlatform("windows")]
     private static void RemoveOurShim(string path)
     {
@@ -438,12 +474,22 @@ public static class GameSyncShimInstaller
         {
             File.Delete(path);
         }
-        catch (IOException)
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
         {
-            var stale = path + ".nexus-stale";
+            var stale = path + StaleSuffix;
+            SweepStaleFile(stale);
             File.Move(path, stale, overwrite: true);
             ServiceLog.Warn($"[chroma-shim] shim in use; moved to {stale}");
         }
+    }
+
+    private static void SweepStaleFile(string stale)
+    {
+        if (!File.Exists(stale))
+        {
+            return;
+        }
+        try { File.Delete(stale); } catch { /* still mapped; next sweep */ }
     }
 
     [SupportedOSPlatform("windows")]

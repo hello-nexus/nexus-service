@@ -19,11 +19,11 @@ public sealed class GameSyncGameScanner
     private const long MaxScanBinarySizeBytes = 512L * 1024 * 1024;
     private const long MaxScanArchiveSizeBytes = 150L * 1024 * 1024;
 
-    // Directory depth for the file-name pass. Unreal games keep the Razer plugin
-    // DLL at <Project>/Plugins/ChromaSDKPlugin/Binaries/Win64/, depth 5 (Hogwarts
-    // Legacy), or as an engine plugin at Engine/Plugins/Experimental/
-    // RazerChromaDevices/Binaries/ThirdParty/Win64/, depth 7 (Fortnite); 8
-    // leaves one level of headroom.
+    // Directory depth for the file-name pass: one level of headroom above the
+    // deepest known layout. Unreal games keep the Razer plugin DLL under
+    // <Project>/Plugins/ChromaSDKPlugin/Binaries/Win64/ (Hogwarts Legacy) or,
+    // as an engine plugin, under Engine/Plugins/Experimental/RazerChromaDevices/
+    // Binaries/ThirdParty/Win64/ (Fortnite).
     private const int NameScanDepth = 8;
 
     // The byte-scan pass stays shallower: it is budgeted (MaxScanFilesPerGame),
