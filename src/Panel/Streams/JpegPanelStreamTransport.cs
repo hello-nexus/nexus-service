@@ -34,6 +34,7 @@ public sealed class JpegPanelStreamTransport : IStreamedPanelTransport, IOrienta
     private int _brightnessApplied = -1;
     private long _brightnessNextReadMs;
     private bool _brightnessFaultLogged;
+    private readonly object _brightnessLock = new();
 
     private readonly byte[] _turned;
 
@@ -63,17 +64,26 @@ public sealed class JpegPanelStreamTransport : IStreamedPanelTransport, IOrienta
         _brightnessNextReadMs = 0;
     }
 
-    /// <summary>Runs on the frame path, the only thread that owns this transport.</summary>
-    private void ApplyBrightness()
+    /// <summary>Applies a changed backlight from either the frame or settings path.</summary>
+    public void ApplyBrightness()
+    {
+        lock (_brightnessLock)
+        {
+            _brightnessNextReadMs = 0;
+            TryApplyBrightnessLocked();
+        }
+    }
+
+    private bool TryApplyBrightnessLocked()
     {
         if (_brightness is null)
         {
-            return;
+            return false;
         }
         long nowMs = Environment.TickCount64;
         if (nowMs < _brightnessNextReadMs)
         {
-            return;
+            return false;
         }
         _brightnessNextReadMs = nowMs + BrightnessTtlMs;
         int? wanted;
@@ -85,18 +95,20 @@ public sealed class JpegPanelStreamTransport : IStreamedPanelTransport, IOrienta
                 _brightnessFaultLogged = true;
                 ServiceLog.Warn($"[{_hub.Model.HandlerId}] backlight source threw: {ex.GetType().Name}: {ex.Message}");
             }
-            return;
+            return false;
         }
         // No record value means the panel keeps what it powered up with.
         if (wanted is not int percent || percent == _brightnessApplied)
         {
-            return;
+            return true;
         }
         if (_hub.SetBrightness(percent))
         {
             _brightnessApplied = percent;
             ServiceLog.Info($"[{_hub.Model.HandlerId}] backlight {percent}%");
+            return true;
         }
+        return false;
     }
 
     public string Serial { get; }
@@ -136,7 +148,7 @@ public sealed class JpegPanelStreamTransport : IStreamedPanelTransport, IOrienta
 
     private void PushFrame()
     {
-        ApplyBrightness();
+        lock (_brightnessLock) { TryApplyBrightnessLocked(); }
         ReadOnlySpan<byte> jpeg;
         try
         {

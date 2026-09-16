@@ -37,6 +37,12 @@ public sealed class LianLiAioHandshake : IJpegPanelHandshake, IJpegPanelBrightne
     private const byte ModeLocalUi = 0x00;
     private const byte ModeApplication = 0x01;
 
+    /// <summary>
+    /// Family-wide LcdSetting mode used for brightness-only control packets (reference
+    /// driver: not Galahad-specific, HydroShift takes it too).
+    /// </summary>
+    internal const byte LcdSettingMode = 0x04;
+
     /// <summary>Backlight a panel runs at until the user sets one.</summary>
     public const byte DefaultBrightness = 100;
 
@@ -116,7 +122,7 @@ public sealed class LianLiAioHandshake : IJpegPanelHandshake, IJpegPanelBrightne
     public bool ApplyBrightness(IHidDevice device, int reportLength)
     {
         var report = Buffer(reportLength);
-        if (!SendLcdControl(device, report, ModeApplication, _brightness))
+        if (!SendLcdControl(device, report, LcdSettingMode, _brightness))
         {
             return false;
         }
