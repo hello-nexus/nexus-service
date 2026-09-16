@@ -16,7 +16,6 @@ public sealed class Galahad2LightingFrameWriter : IHostedService, IDisposable
     private const int TickPeriodMs = 200;
 
     private readonly LightingEngine _engine;
-    private readonly Galahad2Hub _hub;
     private readonly IConfigStore _store;
     private readonly Galahad2LightingDeviceProvider _provider;
     private CancellationTokenSource? _cts;
@@ -32,10 +31,9 @@ public sealed class Galahad2LightingFrameWriter : IHostedService, IDisposable
 
     private readonly FeatureGates _gates;
 
-    public Galahad2LightingFrameWriter(LightingEngine engine, Galahad2Hub hub, IConfigStore store, Galahad2LightingDeviceProvider provider, FeatureGates? gates = null)
+    public Galahad2LightingFrameWriter(LightingEngine engine, IConfigStore store, Galahad2LightingDeviceProvider provider, FeatureGates? gates = null)
     {
         _engine   = engine;
-        _hub      = hub;
         _store    = store;
         _provider = provider;
         _gates    = gates ?? FeatureGates.AllEnabled;
@@ -87,7 +85,7 @@ public sealed class Galahad2LightingFrameWriter : IHostedService, IDisposable
     private void Tick()
     {
         if (!_gates.Lighting) return;
-        if (!_hub.IsConnected)
+        if (!_provider.IsConnected)
         {
             _lastFirmwareSig = null;
             _lastWasCanvas   = false;
@@ -178,7 +176,7 @@ public sealed class Galahad2LightingFrameWriter : IHostedService, IDisposable
 
         // One R_BOTH (ring=2) packet: slot0=inner, slot1=outer. Matches OpenRGB SetMode_StaticColor.
         var bothColors = new byte[] { innerR, innerG, innerB, outerR, outerG, outerB };
-        _hub.SendLighting(2, 0x03, brightnessRaw, 0, 0, bothColors);
+        _provider.ActiveTransport?.SendLighting(2, 0x03, brightnessRaw, 0, 0, bothColors);
 
         _lastInnerR = innerR; _lastInnerG = innerG; _lastInnerB = innerB;
         _lastOuterR = outerR; _lastOuterG = outerG; _lastOuterB = outerB;
@@ -190,7 +188,7 @@ public sealed class Galahad2LightingFrameWriter : IHostedService, IDisposable
         var speed     = (byte)Math.Clamp(ls.Speed, 0, 4);
         var direction = (byte)Math.Clamp(ls.Direction, 0, 1);
 
-        _hub.SendLighting(2, mode.WireByte, brightnessRaw, speed, direction, BuildColorBytes(ls, mode));
+        _provider.ActiveTransport?.SendLighting(2, mode.WireByte, brightnessRaw, speed, direction, BuildColorBytes(ls, mode));
     }
 
     // staticColor: slot0 = InnerColor, slot1 = OuterColor. All other modes use ls.Colors.

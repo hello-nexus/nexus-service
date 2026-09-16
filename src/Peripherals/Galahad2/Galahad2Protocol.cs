@@ -9,6 +9,7 @@ internal static class Galahad2Protocol
     public const int VendorId = 0x0416;
     public const int ProductIdPerformance = 0x7371;
     public const int ProductIdRegular = 0x7373;
+    public const int ProductIdLcd = 0x7395;
 
     // Pump duty floored to keep coolant circulating; never command below this.
     public const int PumpDutyFloor = 50;

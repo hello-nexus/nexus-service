@@ -923,6 +923,14 @@ public static class NexusServiceCollectionExtensions
                 _ => new Nexus.Service.Panel.Streams.JpegPanelDiscovery(jpegPanelHub));
             services.AddSingleton<IDeviceHandler>(
                 _ => new Nexus.Service.Devices.Handlers.JpegPanelHandler(jpegPanelHub));
+
+            if (jpegPanelModel.HandlerId == Nexus.Service.Peripherals.JpegPanels.JpegPanelModel.GalahadIiLcd.HandlerId)
+            {
+                // JpegPanelHub is registered once per model under the same concrete type;
+                // capturing this instance (not resolving JpegPanelHub again) is what pins
+                // the transport to the Galahad LCD hub instead of the last model's.
+                services.AddSingleton<Nexus.Service.Peripherals.Galahad2.IGalahad2PumpTransport>(jpegPanelHub);
+            }
         }
 
         // Bulk-pipe cooler LCDs (ASUS Ryujin, Thermalright, Lian Li Universal Screen 8.8).

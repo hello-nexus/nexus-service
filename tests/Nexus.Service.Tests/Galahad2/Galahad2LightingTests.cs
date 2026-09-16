@@ -124,6 +124,7 @@ public class Galahad2LightingTests
         Assert.Equal(0,  packet[PayloadBase + 16]); // direction slot, must stay zero here
     }
 
+
     // ── Hub.SendLighting ──
 
     [Fact]
