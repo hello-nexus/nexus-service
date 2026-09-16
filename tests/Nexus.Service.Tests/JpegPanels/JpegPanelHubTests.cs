@@ -140,7 +140,7 @@ public class JpegPanelHubTests
         JpegPanelModel.GalahadIiLcd with { Handshake = new LianLiAioHandshake("test-lcd", 24) };
 
     [Fact]
-    public void SetBrightness_reaches_an_attached_panel_in_application_mode()
+    public void SetBrightness_reaches_an_attached_panel_in_lcd_setting_mode()
     {
         using var hub = new JpegPanelHub(Dimmable());
         var device = new RecordingHidDevice();
@@ -151,7 +151,7 @@ public class JpegPanelHubTests
 
         var control = Assert.Single(device.Writes);
         Assert.Equal(0x0C, control[1]);
-        Assert.Equal(0x01, control[11]);
+        Assert.Equal(LianLiAioHandshake.LcdSettingMode, control[11]);
         Assert.Equal(35, control[12]);
     }
 

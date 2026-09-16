@@ -321,7 +321,7 @@ public static class PanelRoutes
             return Results.Json(record, AppJsonContext.Default.PanelDeviceRecord);
         }).AllowPanel();
 
-        app.MapPost("/panel/devices/{id}", (string id, PanelDevicePatch body, HttpContext ctx, PanelDeviceRegistry registry, MultiplexHub hub, TokenService tokens) =>
+        app.MapPost("/panel/devices/{id}", (string id, PanelDevicePatch body, HttpContext ctx, PanelDeviceRegistry registry, MultiplexHub hub, TokenService tokens, Nexus.Service.Panel.Streams.StreamedPanelCoordinator streams) =>
         {
             // A panel session may rearrange or remove the deck keys it has, but
             // authoring a key that opens a file, sends a key chord, types text or
@@ -341,6 +341,8 @@ public static class PanelRoutes
             // for the active-profile flush of OTHER fields; we don't need the
             // explicit dirty pulse here, and keeping it implied PanelDevices
             // was profile-scoped, which is the bug this change fixes.
+            if (body.LcdBrightness.HasValue)
+                streams.ApplyBrightness(updated.Id);
             BroadcastDeviceChanged(hub, id);
             return Results.Json(updated, AppJsonContext.Default.PanelDeviceRecord);
         }).AllowPanel();
