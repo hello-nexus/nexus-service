@@ -1,8 +1,7 @@
-uniform float u_speed;
-uniform float u_density;  // extra: grid line density (3..30)
-uniform float u_pulse;    // extra: pulse flow intensity (0..2.5)
-uniform float u_glow;     // extra: line glow thickness (0.2..3)
-uniform float u_spread;   // extra: hue walk horizon -> viewer, 1 = one full wheel (0..1.5)
+uniform float u_density; // hint_range(3.0, 30.0, 1.0) = 12.0  grid line density
+uniform float u_pulse; // hint_range(0.0, 2.5, 0.05) = 1.2  pulse flow intensity
+uniform float u_glow; // hint_range(0.2, 3.0, 0.05) = 1.2  line glow thickness
+uniform float u_spread; // hint_range(0.0, 1.5, 0.05) = 0.75  hue walk horizon -> viewer, 1 = one full wheel
 
 // 80s outrun neon grid: perspective ground plane scrolling toward the
 // camera under a sunset horizon with a classic banded sun. Horizontal

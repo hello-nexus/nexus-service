@@ -1,7 +1,6 @@
-uniform float u_speed;
-uniform float u_rings;  // extra: rings per unit depth
-uniform float u_spokes; // extra: radial wall lines
-uniform float u_glow;   // extra: edge bloom
+uniform float u_rings; // hint_range(2.0, 20.0, 1.0) = 6.0  rings per unit depth
+uniform float u_spokes; // hint_range(0.0, 24.0, 1.0) = 8.0  radial wall lines
+uniform float u_glow; // hint_range(0.2, 3.0, 0.05) = 1.2  edge bloom
 
 // Diamond tunnel: concentric rotated squares racing out of a vanishing point,
 // each ring lit a step further along the palette so the walls read as a

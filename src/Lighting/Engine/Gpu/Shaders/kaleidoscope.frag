@@ -1,7 +1,6 @@
-uniform float u_speed;
-uniform float u_sides; // extra: fold count (3..12)
-uniform float u_spin;  // extra: rotation rate
-uniform float u_inner; // extra: inner pattern scale
+uniform float u_sides; // hint_range(3.0, 12.0, 1.0) = 8.0  fold count
+uniform float u_spin; // hint_range(-2.0, 2.0, 0.05) = 0.4  rotation rate
+uniform float u_inner; // hint_range(0.3, 3.0, 0.05) = 1.2  inner pattern scale
 
 // N-fold radial kaleidoscope. Polar-fold the coordinate into one wedge,
 // mirror across its center line, then sample a flowing noise pattern so

@@ -1,7 +1,6 @@
-uniform float u_speed;
-uniform float u_count;  // extra: bubble count (4..24)
-uniform float u_rise;   // extra: upward speed (0.2..2.5)
-uniform float u_irid;   // extra: iridescent band strength (0..1.5)
+uniform float u_count; // hint_range(4.0, 24.0, 1.0) = 12.0  bubble count
+uniform float u_rise; // hint_range(0.2, 2.5, 0.05) = 1.0  upward speed
+uniform float u_irid; // hint_range(0.0, 1.5, 0.05) = 0.8  iridescent band strength
 
 // Soft radial gaussian mask - used for halos and glow falloffs.
 float gauss(float r, float sigma) {

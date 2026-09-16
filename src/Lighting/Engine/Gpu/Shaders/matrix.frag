@@ -1,6 +1,5 @@
-uniform float u_speed;
-uniform float u_columns; // extra: column count (density)
-uniform float u_fade;    // extra: tail fade exponent
+uniform float u_columns; // hint_range(8.0, 60.0, 1.0) = 28.0  column count (density)
+uniform float u_fade; // hint_range(1.0, 12.0, 0.5) = 4.0  tail fade exponent
 void main() {
     vec2 uv = uv01();
     float cols = max(4.0, u_columns);

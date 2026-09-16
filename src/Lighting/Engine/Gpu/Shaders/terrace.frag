@@ -1,7 +1,6 @@
-uniform float u_speed;
-uniform float u_levels; // extra: contour levels (3..16)
-uniform float u_scale;  // extra: field scale (0.5..3)
-uniform float u_line;   // extra: contour line strength (0..1)
+uniform float u_levels; // hint_range(3.0, 16.0, 1.0) = 8.0  contour levels
+uniform float u_scale; // hint_range(0.5, 3.0, 0.05) = 1.4  field scale
+uniform float u_line; // hint_range(0.0, 1.0, 0.05) = 0.5  contour line strength
 
 // Topographic contour bands: a smooth analytic field (summed sines, no
 // noise) posterized into flat colour steps, with a bright line at each

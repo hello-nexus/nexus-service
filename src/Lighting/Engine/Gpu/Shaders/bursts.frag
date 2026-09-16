@@ -1,7 +1,6 @@
-uniform float u_speed;
-uniform float u_rate;      // extra: bursts per second (0.3..4)
-uniform float u_particles; // extra: particles per burst (4..20)
-uniform float u_size;      // extra: burst radius (0.2..1.8)
+uniform float u_rate; // hint_range(0.2, 6.0, 0.1) = 1.8  bursts per second
+uniform float u_particles; // hint_range(3.0, 20.0, 1.0) = 14.0  particles per burst
+uniform float u_size; // hint_range(0.2, 2.0, 0.05) = 1.1  burst radius
 
 void main() {
     vec2 uv = uvCentered();

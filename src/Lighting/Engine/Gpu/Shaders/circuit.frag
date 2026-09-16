@@ -1,7 +1,6 @@
-uniform float u_speed;
-uniform float u_density; // extra: trace density (4..16)
-uniform float u_pulse;   // extra: pulse rate along traces (0.3..3)
-uniform float u_glow;    // extra: pulse glow (0.3..2)
+uniform float u_density; // hint_range(4.0, 16.0, 1.0) = 9.0  trace density
+uniform float u_pulse; // hint_range(0.3, 3.0, 0.05) = 1.0  pulse rate along traces
+uniform float u_glow; // hint_range(0.3, 2.0, 0.05) = 1.0  pulse glow
 
 // Animated circuit-board traces with bright pulses traveling along
 // them. Each grid cell carries an L-shaped trace whose orientation is

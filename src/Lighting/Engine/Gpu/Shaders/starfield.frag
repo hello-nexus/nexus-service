@@ -1,7 +1,6 @@
-uniform float u_speed;
-uniform float u_density; // extra: stars per layer (10..60)
-uniform float u_layers;  // extra: depth layers (2..8)
-uniform float u_trail;   // extra: motion streak length (0..1)
+uniform float u_density; // hint_range(8.0, 60.0, 1.0) = 45.0  stars per layer
+uniform float u_layers; // hint_range(1.0, 8.0, 1.0) = 5.0  depth layers
+uniform float u_trail; // hint_range(0.0, 1.0, 0.02) = 0.6  motion streak length
 
 void main() {
     vec2 uv = uvCentered();

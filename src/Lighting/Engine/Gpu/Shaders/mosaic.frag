@@ -1,7 +1,6 @@
-uniform float u_speed;
-uniform float u_cells; // extra: tile density (3..18)
-uniform float u_wave;  // extra: colour-wave frequency (0.5..4)
-uniform float u_pop;   // extra: wave brightness pop (0..1.5)
+uniform float u_cells; // hint_range(3.0, 18.0, 1.0) = 9.0  tile density
+uniform float u_wave; // hint_range(0.5, 4.0, 0.05) = 1.5  colour-wave frequency
+uniform float u_pop; // hint_range(0.0, 1.5, 0.05) = 0.7  wave brightness pop
 
 // Triangular mosaic: a 60deg rhombus lattice split into two triangles per
 // cell, each flat-shaded with a hard edge, and a brightness wave travelling

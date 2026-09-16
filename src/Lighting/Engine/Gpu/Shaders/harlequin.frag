@@ -1,7 +1,6 @@
-uniform float u_speed;
-uniform float u_cells; // extra: diamond density (3..20)
-uniform float u_skew;  // extra: diamond aspect (0.3..2)
-uniform float u_shift; // extra: colour travel (0..2)
+uniform float u_cells; // hint_range(3.0, 20.0, 1.0) = 8.0  diamond density
+uniform float u_skew; // hint_range(0.3, 2.0, 0.05) = 1.0  diamond aspect
+uniform float u_shift; // hint_range(0.0, 2.0, 0.05) = 1.0  colour travel
 
 // Argyle diamond lattice: uv rotated 45deg into a diamond grid, two-tone by
 // cell parity, colour travelling diagonally. Thin groove on the cell border

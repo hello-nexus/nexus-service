@@ -1,7 +1,6 @@
-uniform float u_speed;
-uniform float u_points; // extra: grid cells across the frame
-uniform float u_reach;  // extra: longest link that still draws
-uniform float u_dots;   // extra: node size
+uniform float u_points; // hint_range(3.0, 10.0, 1.0) = 6.0  grid cells across the frame
+uniform float u_reach; // hint_range(0.6, 1.5, 0.05) = 1.4  longest link that still draws
+uniform float u_dots; // hint_range(0.2, 2.0, 0.05) = 1.3  node size
 
 // One drifting node per grid cell, each wandering on its own small ellipse.
 // A pixel gathers the 3x3 cells around it and draws the twelve lattice edges

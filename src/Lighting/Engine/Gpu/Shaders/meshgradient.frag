@@ -1,7 +1,6 @@
-uniform float u_speed;
-uniform float u_blobs;    // extra: colour source count (3..6)
-uniform float u_spread;   // extra: drift radius (0.3..1.2)
-uniform float u_softness; // extra: blend softness (0.3..1.5)
+uniform float u_blobs; // hint_range(3.0, 6.0, 1.0) = 5.0  colour source count
+uniform float u_spread; // hint_range(0.3, 1.2, 0.02) = 0.8  drift radius
+uniform float u_softness; // hint_range(0.3, 1.5, 0.02) = 0.8  blend softness
 
 // Soft drifting colour field: a few colour sources move on slow paths and
 // blend by gaussian weight. No texture, no edges. Aspect-locked so the

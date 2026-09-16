@@ -1,7 +1,6 @@
-uniform float u_speed;
-uniform float u_flow;        // extra: domain warp strength (0.3..3)
-uniform float u_iridescence; // extra: color band density (0.3..4)
-uniform float u_scale;       // extra: pattern scale (0.3..4)
+uniform float u_flow; // hint_range(0.1, 3.0, 0.05) = 1.5  domain warp strength
+uniform float u_iridescence; // hint_range(0.3, 4.0, 0.05) = 2.5  color band density
+uniform float u_scale; // hint_range(0.3, 4.0, 0.05) = 1.5  pattern scale
 
 // Iridescent oil-on-water: two layers of fbm-based domain warp feed into
 // a color band mapping that cycles through tintedPalette many times.

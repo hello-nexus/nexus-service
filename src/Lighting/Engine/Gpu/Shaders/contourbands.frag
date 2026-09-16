@@ -1,7 +1,6 @@
-uniform float u_speed;
-uniform float u_bands; // extra: contour count
-uniform float u_scale; // extra: blob size
-uniform float u_flow;  // extra: drift rate
+uniform float u_bands; // hint_range(1.0, 12.0, 1.0) = 4.0  contour count
+uniform float u_scale; // hint_range(0.6, 6.0, 0.05) = 2.2  blob size
+uniform float u_flow; // hint_range(0.0, 3.0, 0.05) = 1.0  drift rate
 
 // Two-tone topographic bands: one warped noise field sliced by a sine so the
 // duty stays even and the seams never snap at a fract() wrap. Three-octave

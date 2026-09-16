@@ -1,6 +1,5 @@
-uniform float u_speed;
-uniform float u_intensity;
-uniform float u_size; // extra: pulse ring reach (0.4..1.6)
+uniform float u_intensity; // hint_range(0.0, 1.0, 0.01) = 1.0
+uniform float u_size; // hint_range(0.4, 1.8, 0.02) = 1.2  pulse ring reach
 
 // Five overlapping radial emitters fire on their own phase so the frame is
 // never silent. Each cycle is an expanding ring that thickens as it grows,

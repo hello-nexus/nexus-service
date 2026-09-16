@@ -1,7 +1,7 @@
-uniform float u_speed;
-uniform float u_rings;      // extra: concentric ring count (1..8)
-uniform float u_ringSpeed;  // extra: outward ring velocity (0.3..3)
-uniform float u_halo;       // extra: centre halo intensity (0.3..2)
+uniform float u_rings; // hint_range(1.0, 8.0, 1.0) = 5.0  concentric ring count
+uniform float u_ringSpeed; // hint_range(0.3, 3.0, 0.05) = 1.0  outward ring velocity
+uniform float u_halo; // hint_range(0.3, 2.0, 0.05) = 1.0  centre halo intensity
+uniform float u_audioBoost; // hint_range(0.0, 2.0, 0.05) = 1.0
 
 // Concentric ring pulses radiating from the centre. Idle: a slow
 // heartbeat-like pulse every ~1.5s (always moving). Audio: every bass

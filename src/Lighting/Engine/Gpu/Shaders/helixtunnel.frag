@@ -1,7 +1,6 @@
-uniform float u_speed;
-uniform float u_pitch;   // extra: helix twist rate (1..6)
-uniform float u_strands; // extra: strand count (2..4)
-uniform float u_glow;    // extra: strand glow (0.3..2)
+uniform float u_pitch; // hint_range(1.0, 6.0, 0.1) = 3.0  helix twist rate
+uniform float u_strands; // hint_range(2.0, 4.0, 1.0) = 2.0  strand count
+uniform float u_glow; // hint_range(0.3, 2.0, 0.05) = 1.0  strand glow
 
 // Intertwined helical strands spiralling into the vanishing point, with
 // rung bands between turns. Depth = 1/r; each strand is a thin bright

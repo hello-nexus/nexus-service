@@ -1,7 +1,6 @@
-uniform float u_speed;
-uniform float u_depth; // extra: tunnel recede rate
-uniform float u_rings; // extra: circular band count
-uniform float u_twist; // extra: spiral strength
+uniform float u_depth; // hint_range(0.4, 3.0, 0.05) = 1.2  tunnel recede rate
+uniform float u_rings; // hint_range(2.0, 16.0, 1.0) = 5.0  circular band count
+uniform float u_twist; // hint_range(-2.0, 2.0, 0.05) = 0.6  spiral strength
 
 // 2D wormhole illusion: map radius to depth via 1/r, so samples near the
 // center appear "far". Twist rotates with depth so walls corkscrew. Two

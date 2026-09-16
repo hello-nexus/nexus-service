@@ -1,7 +1,6 @@
-uniform float u_speed;
-uniform float u_shape; // extra: 0=hex, 1=square, 2=triangle
-uniform float u_morph; // extra: tile pulse depth
-uniform float u_edge;  // extra: edge line width
+uniform float u_shape; // hint_range(0.0, 2.0, 1.0) = 0.0  0=hex, 1=square, 2=triangle
+uniform float u_morph; // hint_range(0.0, 1.3, 0.02) = 0.6  tile pulse depth
+uniform float u_edge; // hint_range(0.02, 0.35, 0.01) = 0.15  edge line width
 
 // Geometric tessellation: hex, square, or triangular tile grid whose cells
 // pulse in size and shift hue based on their grid position. Edge bands

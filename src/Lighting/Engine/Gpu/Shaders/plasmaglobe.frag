@@ -1,7 +1,6 @@
-uniform float u_speed;
-uniform float u_branches; // extra: tendril count (3..12)
-uniform float u_jitter;   // extra: path crackle (0.1..2)
-uniform float u_power;    // extra: energy intensity (0.3..2)
+uniform float u_branches; // hint_range(3.0, 12.0, 1.0) = 7.0  tendril count
+uniform float u_jitter; // hint_range(0.1, 2.0, 0.05) = 1.0  path crackle
+uniform float u_power; // hint_range(0.3, 2.0, 0.05) = 1.0  energy intensity
 
 // Tesla-coil style electrical tendrils branching out from a wandering
 // origin. Each tendril is a polyline whose segments jitter with fbm,

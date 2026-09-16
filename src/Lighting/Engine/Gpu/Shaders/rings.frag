@@ -1,11 +1,11 @@
-uniform float u_aHue;
-uniform float u_aSat;
-uniform float u_aVal;
-uniform float u_bHue;
-uniform float u_bSat;
-uniform float u_bVal;
-uniform float u_count;      // ring pairs from the centre out
-uniform float u_softness;   // 0 = hard rings, 1 = blended
+uniform float u_aHue; // hint_range(0.0, 1.0, 0.01) = 0.55
+uniform float u_aSat; // hint_range(0.0, 1.0, 0.01) = 1.0
+uniform float u_aVal; // hint_range(0.0, 1.0, 0.01) = 1.0
+uniform float u_bHue; // hint_range(0.0, 1.0, 0.01) = 0.88
+uniform float u_bSat; // hint_range(0.0, 1.0, 0.01) = 1.0
+uniform float u_bVal; // hint_range(0.0, 1.0, 0.01) = 1.0
+uniform float u_count; // hint_range(1.0, 8.0, 1.0) = 3.0  ring pairs from the centre out
+uniform float u_softness; // hint_range(0.0, 1.0, 0.01) = 0.05  0 = hard rings, 1 = blended
 
 // Concentric alternating rings.
 void main() {

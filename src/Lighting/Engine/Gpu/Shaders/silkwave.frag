@@ -1,7 +1,6 @@
-uniform float u_speed;
-uniform float u_folds;  // extra: fold count (2..12)
-uniform float u_flow;   // extra: drift speed (0..2)
-uniform float u_sheen;  // extra: specular highlight (0..2)
+uniform float u_folds; // hint_range(2.0, 12.0, 1.0) = 6.0  fold count
+uniform float u_flow; // hint_range(0.0, 2.0, 0.05) = 1.2  drift speed
+uniform float u_sheen; // hint_range(0.0, 2.0, 0.05) = 1.0  specular highlight
 
 void main() {
     vec2 uv = uvCentered();

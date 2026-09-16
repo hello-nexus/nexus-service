@@ -1,8 +1,7 @@
-uniform float u_speed;
-uniform float u_bands;     // extra: spatial frequency of each band stack
-uniform float u_sharpness; // extra: edge falloff exponent (1 = soft, 10 = razor)
-uniform float u_thickness; // extra: how much of each cycle reads as "in band" (0.15..0.95)
-uniform float u_drift;     // extra: source motion radius
+uniform float u_bands; // hint_range(1.0, 16.0, 1.0) = 4.0  spatial frequency of each band stack
+uniform float u_sharpness; // hint_range(1.0, 10.0, 0.1) = 7.0  edge falloff exponent (1 = soft, 10 = razor)
+uniform float u_thickness; // hint_range(0.15, 0.95, 0.01) = 0.6  how much of each cycle reads as "in band"
+uniform float u_drift; // hint_range(0.1, 1.2, 0.02) = 0.65  source motion radius
 
 // Sharp banded color waves emitted from four moving sources, blended
 // plasma-style. Each source radiates concentric rings whose v-value gets

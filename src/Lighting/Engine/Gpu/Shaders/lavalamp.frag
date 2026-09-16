@@ -1,7 +1,6 @@
-uniform float u_speed;
-uniform float u_count;     // extra: number of blobs (2..10)
-uniform float u_viscosity; // extra: merge smoothness (0.1..1.0)
-uniform float u_size;      // extra: blob radius (0.1..0.5)
+uniform float u_count; // hint_range(2.0, 10.0, 1.0) = 5.0  number of blobs
+uniform float u_viscosity; // hint_range(0.1, 1.0, 0.02) = 0.45  merge smoothness
+uniform float u_size; // hint_range(0.08, 0.5, 0.01) = 0.22  blob radius
 
 // Smooth-minimum: merges two distance fields with organic blending.
 float smin(float a, float b, float k) {

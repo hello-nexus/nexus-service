@@ -1,7 +1,6 @@
-uniform float u_speed;
-uniform float u_density;     // extra: dot grid density (8..30)
-uniform float u_scrollRate;  // extra: pattern scroll rate (0.2..3)
-uniform float u_complexity;  // extra: pattern variety (0..1)
+uniform float u_density; // hint_range(8.0, 30.0, 1.0) = 18.0  dot grid density
+uniform float u_scrollRate; // hint_range(0.2, 3.0, 0.05) = 1.0  pattern scroll rate
+uniform float u_complexity; // hint_range(0.0, 1.0, 0.05) = 0.5  pattern variety
 
 // LED dot-matrix display look. A grid of round dots whose colors come
 // from a scrolling 2D function (sin layers + fbm), giving the effect

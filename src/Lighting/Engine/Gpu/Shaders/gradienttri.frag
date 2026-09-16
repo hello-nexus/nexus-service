@@ -1,14 +1,14 @@
-uniform float u_aHue;
-uniform float u_aSat;
-uniform float u_aVal;
-uniform float u_bHue;
-uniform float u_bSat;
-uniform float u_bVal;
-uniform float u_cHue;
-uniform float u_cSat;
-uniform float u_cVal;
-uniform float u_angle;      // sweep direction in degrees
-uniform float u_midpoint;   // position of the middle colour along the sweep
+uniform float u_aHue; // hint_range(0.0, 1.0, 0.01) = 0.0
+uniform float u_aSat; // hint_range(0.0, 1.0, 0.01) = 1.0
+uniform float u_aVal; // hint_range(0.0, 1.0, 0.01) = 1.0
+uniform float u_bHue; // hint_range(0.0, 1.0, 0.01) = 0.33
+uniform float u_bSat; // hint_range(0.0, 1.0, 0.01) = 1.0
+uniform float u_bVal; // hint_range(0.0, 1.0, 0.01) = 1.0
+uniform float u_cHue; // hint_range(0.0, 1.0, 0.01) = 0.62
+uniform float u_cSat; // hint_range(0.0, 1.0, 0.01) = 1.0
+uniform float u_cVal; // hint_range(0.0, 1.0, 0.01) = 1.0
+uniform float u_angle; // hint_range(0.0, 360.0, 5.0) = 0.0  sweep direction in degrees
+uniform float u_midpoint; // hint_range(0.0, 1.0, 0.01) = 0.5  position of the middle colour along the sweep
 
 // Three-stop blend: A to B to C across the frame.
 void main() {

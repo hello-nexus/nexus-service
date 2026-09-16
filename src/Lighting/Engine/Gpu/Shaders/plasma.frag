@@ -1,6 +1,5 @@
-uniform float u_speed;
-uniform float u_warp;  // extra: domain-warp intensity
-uniform float u_zoom;  // extra: spatial frequency
+uniform float u_warp; // hint_range(0.0, 2.0, 0.05) = 1.0  domain-warp intensity
+uniform float u_zoom; // hint_range(0.5, 3.0, 0.05) = 1.0  spatial frequency
 void main() {
     vec2 uv = uvCentered() * max(0.1, u_zoom);
     float t = u_time * u_speed * 0.6;

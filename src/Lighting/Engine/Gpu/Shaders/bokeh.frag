@@ -1,7 +1,6 @@
-uniform float u_speed;
-uniform float u_lights; // extra: light count (5..30)
-uniform float u_size;   // extra: bokeh size (0.05..0.3)
-uniform float u_drift;  // extra: drift speed (0.1..2)
+uniform float u_lights; // hint_range(5.0, 30.0, 1.0) = 16.0  light count
+uniform float u_size; // hint_range(0.05, 0.3, 0.01) = 0.15  bokeh size
+uniform float u_drift; // hint_range(0.1, 2.0, 0.05) = 1.0  drift speed
 
 // Soft circular blurred lights drifting like nighttime city through a
 // rainy window. Each light is a gaussian disc whose centre wobbles

@@ -1,7 +1,6 @@
-uniform float u_speed;
-uniform float u_cellSize; // extra: hex cell size (0.05..0.4)
-uniform float u_zoomRate; // extra: forward zoom (0.3..3)
-uniform float u_neon;     // extra: neon edge intensity (0.3..2)
+uniform float u_cellSize; // hint_range(0.05, 0.4, 0.01) = 0.15  hex cell size
+uniform float u_zoomRate; // hint_range(0.3, 3.0, 0.05) = 1.0  forward zoom
+uniform float u_neon; // hint_range(0.3, 2.0, 0.05) = 1.0  neon edge intensity
 
 // Hexagonal-prism tunnel zooming forward. Polar UVs converted into a
 // hex grid with depth scrolling toward the camera. Each cell glows on

@@ -1,7 +1,6 @@
-uniform float u_speed;
-uniform float u_wind;    // extra: wind speed (0.3..3)
-uniform float u_density; // extra: particle density (0.3..2.5)
-uniform float u_gusts;   // extra: gust frequency (0.1..2)
+uniform float u_wind; // hint_range(0.3, 3.0, 0.05) = 1.2  wind speed
+uniform float u_density; // hint_range(0.3, 2.5, 0.05) = 1.0  particle density
+uniform float u_gusts; // hint_range(0.1, 2.0, 0.05) = 0.8  gust frequency
 
 mat2 rot2(float a) { float s = sin(a), c = cos(a); return mat2(c, -s, s, c); }
 

@@ -1,7 +1,6 @@
-uniform float u_speed;
-uniform float u_spread; // extra: bloom growth rate
-uniform float u_curl;   // extra: tendril turbulence
-uniform float u_fade;   // extra: lifespan falloff
+uniform float u_spread; // hint_range(0.3, 2.0, 0.05) = 1.0  bloom growth rate
+uniform float u_curl; // hint_range(0.0, 2.0, 0.05) = 0.6  tendril turbulence
+uniform float u_fade; // hint_range(0.3, 3.0, 0.05) = 0.7  lifespan falloff
 
 // Ink in water: three cyclic drops, each growing a fbm-bordered blob from a
 // fixed origin while fading with age. Additive blend of the three colours

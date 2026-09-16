@@ -1,7 +1,7 @@
-uniform float u_speed;
-uniform float u_ringDensity; // extra: ring density (3..12)
-uniform float u_twist;       // extra: per-ring twist (0..2)
-uniform float u_neon;        // extra: neon intensity (0.3..2)
+uniform float u_ringDensity; // hint_range(3.0, 12.0, 1.0) = 6.0  ring density
+uniform float u_twist; // hint_range(0.0, 2.0, 0.05) = 0.8  per-ring twist
+uniform float u_neon; // hint_range(0.3, 2.0, 0.05) = 1.0  neon intensity
+uniform float u_audioBoost; // hint_range(0.0, 2.0, 0.05) = 1.0
 
 // Perspective tunnel with concentric rings. Idle: rings zoom steadily
 // toward the camera at a base rate so there's always motion. Audio: the

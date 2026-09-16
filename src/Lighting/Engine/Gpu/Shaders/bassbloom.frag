@@ -1,7 +1,7 @@
-uniform float u_speed;
-uniform float u_petals;    // extra: bloom petal count (4..12)
-uniform float u_shimmer;   // extra: high-band shimmer (0..2)
-uniform float u_bloomSize; // extra: bloom base size (0.1..0.8)
+uniform float u_petals; // hint_range(4.0, 12.0, 1.0) = 7.0  bloom petal count
+uniform float u_shimmer; // hint_range(0.0, 2.0, 0.05) = 1.0  high-band shimmer
+uniform float u_bloomSize; // hint_range(0.1, 0.8, 0.02) = 0.4  bloom base size
+uniform float u_audioBoost; // hint_range(0.0, 2.0, 0.05) = 1.0
 
 // Central bloom that pumps on bass with high-frequency shimmer specks.
 // Idle: gentle slow-breathing bloom + drifting palette so the frame is

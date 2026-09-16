@@ -23,9 +23,20 @@ public sealed class ShaderEffect : IEffect
         void main() { gl_Position = vec4(a_pos, 0.0, 1.0); }
         """;
 
+    /// <summary>Uniforms bound through this class's dedicated fields rather than
+    /// ExtraParams. u_audioBoost is included because AudioBoost is never assigned
+    /// by any caller today - it reaches GL through ExtraParams like any other
+    /// per-effect param, so it must not also get a spec-default push.</summary>
+    public static readonly System.Collections.Generic.IReadOnlySet<string> BaseParamNames =
+        new System.Collections.Generic.HashSet<string>(System.StringComparer.Ordinal)
+        {
+            "u_speed", "u_intensity", "u_hue", "u_colorize", "u_saturation", "u_contrast", "u_audioBoost",
+        };
+
     private readonly GpuContext _ctx;
     private readonly string _fragSource;
     private readonly Action<GL, int, double>? _setUniforms;
+    private System.Collections.Generic.Dictionary<string, ShaderParamSpec>? _specs;
 
     private uint _program;
     private int _uResolution = -1;
@@ -127,6 +138,13 @@ public sealed class ShaderEffect : IEffect
 
     private void RenderPending() => RenderOnGlThread(_pendingCanvas!, _pendingTick);
 
+    // Parsed once per instance (GL thread only, no concurrent access) rather
+    // than every frame; RenderFrame is only ever invoked from the engine loop.
+    private System.Collections.Generic.Dictionary<string, ShaderParamSpec> Specs => _specs ??= ShaderParamSpec.Parse(_fragSource);
+
+    private float ClampBase(string uniformName, float value) =>
+        Specs.TryGetValue(uniformName, out var spec) ? ShaderParamSpec.Clamp(spec, value) : value;
+
     private void RenderOnGlThread(CanvasBuffer canvas, double tickMs)
     {
         {
@@ -164,27 +182,27 @@ public sealed class ShaderEffect : IEffect
             }
             if (_uSpeed >= 0)
             {
-                gl.Uniform1(_uSpeed, Speed);
+                gl.Uniform1(_uSpeed, ClampBase("u_speed", Speed));
             }
             if (_uIntensity >= 0)
             {
-                gl.Uniform1(_uIntensity, Intensity);
+                gl.Uniform1(_uIntensity, ClampBase("u_intensity", Intensity));
             }
             if (_uHue >= 0)
             {
-                gl.Uniform1(_uHue, Hue);
+                gl.Uniform1(_uHue, ClampBase("u_hue", Hue));
             }
             if (_uColorize >= 0)
             {
-                gl.Uniform1(_uColorize, Colorize);
+                gl.Uniform1(_uColorize, ClampBase("u_colorize", Colorize));
             }
             if (_uSaturation >= 0)
             {
-                gl.Uniform1(_uSaturation, Saturation);
+                gl.Uniform1(_uSaturation, ClampBase("u_saturation", Saturation));
             }
             if (_uContrast >= 0)
             {
-                gl.Uniform1(_uContrast, Contrast);
+                gl.Uniform1(_uContrast, ClampBase("u_contrast", Contrast));
             }
             if (_uAudioLevel >= 0)
             {
@@ -264,8 +282,30 @@ public sealed class ShaderEffect : IEffect
                     }
                     if (loc >= 0)
                     {
-                        gl.Uniform1(loc, kv.Value);
+                        var value = Specs.TryGetValue(kv.Key, out var spec) ? ShaderParamSpec.Clamp(spec, kv.Value) : kv.Value;
+                        gl.Uniform1(loc, value);
                     }
+                }
+            }
+            // A declared, annotated uniform the caller never sent (a preset
+            // predating the param) would otherwise stay at GL's post-link 0,
+            // not the shader's authored default.
+            foreach (var kv in Specs)
+            {
+                if (!kv.Value.Declared || BaseParamNames.Contains(kv.Key)
+                    || (ExtraParams is not null && ExtraParams.ContainsKey(kv.Key)))
+                {
+                    continue;
+                }
+                int loc;
+                if (!_uniformCache.TryGetValue(kv.Key, out loc))
+                {
+                    loc = gl.GetUniformLocation(_program, kv.Key);
+                    _uniformCache[kv.Key] = loc;
+                }
+                if (loc >= 0)
+                {
+                    gl.Uniform1(loc, kv.Value.Default);
                 }
             }
             _setUniforms?.Invoke(gl, (int)_program, tickMs);

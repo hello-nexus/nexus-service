@@ -1,7 +1,6 @@
-uniform float u_speed;
-uniform float u_density;   // extra: cloud thickness (0.3..2.0)
-uniform float u_stars;     // extra: star brightness (0..1)
-uniform float u_depth;     // extra: number of cloud layers (2..6)
+uniform float u_density; // hint_range(0.3, 2.0, 0.05) = 1.0  cloud thickness
+uniform float u_stars; // hint_range(0.0, 1.0, 0.02) = 0.6  star brightness
+uniform float u_depth; // hint_range(1.0, 6.0, 1.0) = 4.0  number of cloud layers
 
 void main() {
     vec2 uv = uvCentered();

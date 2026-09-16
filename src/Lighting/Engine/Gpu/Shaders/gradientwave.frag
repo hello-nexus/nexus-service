@@ -1,5 +1,4 @@
-uniform float u_speed;
-uniform float u_freq; // extra: horizontal frequency
+uniform float u_freq; // hint_range(2.0, 18.0, 0.5) = 6.0  horizontal frequency
 void main() {
     vec2 uv = uv01();
     float t = u_time * u_speed * 0.4;

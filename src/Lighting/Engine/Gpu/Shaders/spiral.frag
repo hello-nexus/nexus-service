@@ -1,6 +1,5 @@
-uniform float u_speed;
-uniform float u_arms;      // extra: number of spiral arms
-uniform float u_tightness; // extra: radial frequency
+uniform float u_arms; // hint_range(1.0, 10.0, 1.0) = 5.0  number of spiral arms
+uniform float u_tightness; // hint_range(2.0, 16.0, 0.5) = 8.0  radial frequency
 void main() {
     vec2 uv = uvCentered();
     float r = length(uv);

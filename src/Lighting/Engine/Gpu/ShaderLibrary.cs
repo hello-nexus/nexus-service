@@ -28,6 +28,7 @@ internal static class ShaderLibrary
     // after MSBuild normalises. Cached at first use, no IO on the hot path.
     private static readonly Assembly Asm = typeof(ShaderLibrary).Assembly;
     private static readonly ConcurrentDictionary<string, string> Cache = new();
+    private static readonly ConcurrentDictionary<string, IReadOnlyDictionary<string, ShaderParamSpec>> ParamsCache = new();
     private static readonly string Prelude = LoadRaw(PreludeResource);
 
     /// <summary>Resolve an effect name ("plasma") to its concatenated GLSL source.</summary>
@@ -42,6 +43,10 @@ internal static class ShaderLibrary
             return Prelude + "\n" + body;
         });
     }
+
+    /// <summary>hint_range specs parsed from the effect's composed source, cached like Get.</summary>
+    public static IReadOnlyDictionary<string, ShaderParamSpec> Params(string effectName) =>
+        ParamsCache.GetOrAdd(effectName, key => ShaderParamSpec.Parse(Get(key)));
 
     // ── Named accessors kept for call-site clarity ─────────────────────────
     // Every switch arm in LightingProvider.BuildAnimateEffect references these.

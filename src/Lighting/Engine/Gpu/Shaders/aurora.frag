@@ -1,7 +1,6 @@
-uniform float u_speed;
-uniform float u_curtains; // extra: number of overlapping curtain bands
-uniform float u_height;   // extra: how high the aurora reaches (0.2..1.0)
-uniform float u_shimmer;  // extra: high-freq flicker intensity
+uniform float u_curtains; // hint_range(1.0, 8.0, 1.0) = 4.0  number of overlapping curtain bands
+uniform float u_height; // hint_range(0.2, 1.0, 0.02) = 0.55  how high the aurora reaches
+uniform float u_shimmer; // hint_range(0.0, 1.0, 0.02) = 0.5  high-freq flicker intensity
 
 void main() {
     vec2 uv = uv01();

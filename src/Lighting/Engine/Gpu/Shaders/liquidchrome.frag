@@ -1,7 +1,6 @@
-uniform float u_speed;
-uniform float u_flow;      // extra: surface flow rate (0.2..3)
-uniform float u_thickness; // extra: surface variation (0.3..2)
-uniform float u_ripple;    // extra: ripple frequency (0.3..3)
+uniform float u_flow; // hint_range(0.2, 3.0, 0.05) = 1.0  surface flow rate
+uniform float u_thickness; // hint_range(0.3, 2.0, 0.05) = 1.0  surface variation
+uniform float u_ripple; // hint_range(0.3, 3.0, 0.05) = 1.0  ripple frequency
 
 // Quilted chrome: a tessellating tile pattern is carved into a flowing
 // mercury surface. Each tile has a rounded facet so the light bounces

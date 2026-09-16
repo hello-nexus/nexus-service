@@ -1,6 +1,5 @@
-uniform float u_speed;
-uniform float u_freq; // extra: wave frequency
-uniform float u_amp;  // extra: wave amplitude
+uniform float u_freq; // hint_range(2.0, 16.0, 0.5) = 8.0  wave frequency
+uniform float u_amp; // hint_range(0.05, 0.4, 0.01) = 0.18  wave amplitude
 void main() {
     vec2 uv = uv01();
     float t = u_time * u_speed * 0.9;

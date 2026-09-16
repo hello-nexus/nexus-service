@@ -1,6 +1,5 @@
-uniform float u_speed;
-uniform float u_blobs;    // extra: how many colour layers (2..6)
-uniform float u_softness; // extra: edge blurriness (0.1..1.0)
+uniform float u_blobs; // hint_range(2.0, 6.0, 1.0) = 3.0  how many colour layers
+uniform float u_softness; // hint_range(0.1, 1.0, 0.02) = 0.5  edge blurriness
 
 void main() {
     vec2 uv = uvCentered();

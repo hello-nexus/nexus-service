@@ -1,7 +1,6 @@
-uniform float u_speed;
-uniform float u_layers; // extra: nested shape count (2..8)
-uniform float u_edge;   // extra: edge glow width
-uniform float u_pulse;  // extra: pulsation rate
+uniform float u_layers; // hint_range(2.0, 8.0, 1.0) = 5.0  nested shape count
+uniform float u_edge; // hint_range(0.2, 1.2, 0.02) = 0.6  edge glow width
+uniform float u_pulse; // hint_range(0.3, 3.0, 0.05) = 1.0  pulsation rate
 
 // Mandala of nested rings and regular polygons. Each layer alternates
 // between a circle and an N-gon (sides = 3 + layer index), drifting

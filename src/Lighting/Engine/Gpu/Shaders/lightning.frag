@@ -1,7 +1,7 @@
-uniform float u_speed;
-uniform float u_boltRate; // extra: bolts per second (0.3..3)
-uniform float u_forks;    // extra: fork count per bolt (1..6)
-uniform float u_glow;     // extra: bolt glow halo (0.3..2)
+uniform float u_boltRate; // hint_range(0.3, 3.0, 0.05) = 0.8  bolts per second
+uniform float u_forks; // hint_range(0.0, 6.0, 1.0) = 3.0  fork count per bolt
+uniform float u_glow; // hint_range(0.3, 2.0, 0.05) = 1.0  bolt glow halo
+uniform float u_audioBoost;
 
 vec2 rot2(vec2 v, float a) {
     float c = cos(a), s = sin(a);

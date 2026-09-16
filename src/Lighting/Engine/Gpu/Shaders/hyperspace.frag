@@ -1,7 +1,6 @@
-uniform float u_speed;
-uniform float u_streaks; // extra: angular streak bins
-uniform float u_depth;   // extra: travel rate spread
-uniform float u_core;    // extra: centre bloom
+uniform float u_streaks; // hint_range(8.0, 120.0, 1.0) = 40.0  angular streak bins
+uniform float u_depth; // hint_range(0.2, 2.0, 0.05) = 1.0  travel rate spread
+uniform float u_core; // hint_range(0.0, 3.0, 0.05) = 1.0  centre bloom
 
 // Warp streaks pulled radially out of a hot core. Each angular bin carries one
 // comet per depth layer; three layers is enough to read as depth and keeps the

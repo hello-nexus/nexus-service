@@ -1,7 +1,6 @@
-uniform float u_speed;
-uniform float u_lines;     // extra: scanline count
-uniform float u_amplitude; // extra: wave height
-uniform float u_flow;      // extra: cross-frame travel
+uniform float u_lines; // hint_range(6.0, 90.0, 1.0) = 36.0  scanline count
+uniform float u_amplitude; // hint_range(0.0, 0.5, 0.01) = 0.18  wave height
+uniform float u_flow; // hint_range(0.0, 2.0, 0.05) = 1.0  cross-frame travel
 
 // Dense scanline field bent by two stacked sines. Every line carries the
 // palette position of its own height, so the sheet runs one hue at the top

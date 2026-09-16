@@ -1,7 +1,6 @@
-uniform float u_speed;
-uniform float u_density;  // extra: colour bars across the frame
-uniform float u_rotation; // extra: bar direction in degrees (0..360)
-uniform float u_position; // extra: split point inside each bar's cell
+uniform float u_density; // hint_range(1.0, 10.0, 0.5) = 5.0  colour bars across the frame
+uniform float u_rotation; // hint_range(0.0, 360.0, 5.0) = 0.0  bar direction in degrees
+uniform float u_position; // hint_range(0.05, 1.0, 0.01) = 0.5  split point inside each bar's cell
 
 // Hard-edged colour bars separated by unlit gaps, sliding across the frame.
 // Every band is one flat hue with no blend at all, and the space between bands

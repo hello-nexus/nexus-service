@@ -1,11 +1,11 @@
-uniform float u_aHue;
-uniform float u_aSat;
-uniform float u_aVal;
-uniform float u_bHue;
-uniform float u_bSat;
-uniform float u_bVal;
-uniform float u_radius;     // where the outer colour takes over
-uniform float u_softness;   // 0 = hard ring, 1 = full blend
+uniform float u_aHue; // hint_range(0.0, 1.0, 0.01) = 0.12
+uniform float u_aSat; // hint_range(0.0, 1.0, 0.01) = 1.0
+uniform float u_aVal; // hint_range(0.0, 1.0, 0.01) = 1.0
+uniform float u_bHue; // hint_range(0.0, 1.0, 0.01) = 0.75
+uniform float u_bSat; // hint_range(0.0, 1.0, 0.01) = 1.0
+uniform float u_bVal; // hint_range(0.0, 1.0, 0.01) = 1.0
+uniform float u_radius; // hint_range(0.0, 1.0, 0.01) = 0.45  where the outer colour takes over
+uniform float u_softness; // hint_range(0.0, 1.0, 0.01) = 0.8  0 = hard ring, 1 = full blend
 
 // Centre colour fading out to an edge colour.
 void main() {

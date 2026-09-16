@@ -1,8 +1,8 @@
-uniform float u_angle;      // ramp direction in degrees
-uniform float u_density;    // hue cycles across the frame
-uniform float u_aHue;       // starting hue
-uniform float u_aSat;       // colour saturation
-uniform float u_aVal;       // brightness
+uniform float u_angle; // hint_range(0.0, 360.0, 5.0) = 0.0  ramp direction in degrees
+uniform float u_density; // hint_range(0.2, 4.0, 0.05) = 1.0  hue cycles across the frame
+uniform float u_aHue; // hint_range(0.0, 1.0, 0.01) = 0.0  starting hue
+uniform float u_aSat; // hint_range(0.0, 1.0, 0.01) = 1.0  colour saturation
+uniform float u_aVal; // hint_range(0.0, 1.0, 0.01) = 1.0  brightness
 
 // Full-spectrum ramp held still: the rainbow, as a fixed painted strip.
 void main() {

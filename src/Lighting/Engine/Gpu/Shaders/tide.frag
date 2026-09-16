@@ -1,7 +1,6 @@
-uniform float u_speed;
-uniform float u_layers; // extra: wave layer count (2..7)
-uniform float u_amp;    // extra: wave height (0.02..0.18)
-uniform float u_freq;   // extra: wave frequency (1..8)
+uniform float u_layers; // hint_range(2.0, 7.0, 1.0) = 5.0  wave layer count
+uniform float u_amp; // hint_range(0.02, 0.18, 0.005) = 0.08  wave height
+uniform float u_freq; // hint_range(1.0, 8.0, 0.5) = 4.0  wave frequency
 
 // Stacked translucent wave layers scrolling with parallax: back layers
 // sit high and drift slowly, front layers sit low and move fast. uv01 so

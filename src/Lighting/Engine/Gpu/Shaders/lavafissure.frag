@@ -1,7 +1,6 @@
-uniform float u_speed;
-uniform float u_flow;       // extra: lava current rate
-uniform float u_crackWidth; // extra: ridge thickness 0.1..0.9
-uniform float u_shimmer;    // extra: heat-haze distortion
+uniform float u_flow; // hint_range(0.2, 2.5, 0.05) = 1.0  lava current rate
+uniform float u_crackWidth; // hint_range(0.1, 0.9, 0.02) = 0.35  ridge thickness 0.1..0.9
+uniform float u_shimmer; // hint_range(0.0, 1.5, 0.02) = 0.6  heat-haze distortion
 
 // Magma fissure: dark cracked rock with glowing lava rivers. Ridge-mask
 // carves channels where fbm crosses 0.5; a second warped field gives the

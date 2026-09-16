@@ -1,6 +1,5 @@
-uniform float u_speed;
-uniform float u_count; // extra: number of jellyfish (1..6)
-uniform float u_glow;  // extra: bioluminescence intensity (0.2..2.5)
+uniform float u_count; // hint_range(1.0, 6.0, 1.0) = 3.0  number of jellyfish
+uniform float u_glow; // hint_range(0.2, 2.5, 0.05) = 1.0  bioluminescence intensity
 
 // Half-dome bell: full ellipse with the bottom clipped so the shape
 // reads as a cap with a flat-ish underside. In our uvCentered frame
