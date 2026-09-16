@@ -62,7 +62,7 @@ public interface ICloudApiClient
     Task<CloudApiResult<CloudAuthSession>> LoginAsync(CloudLoginRequest body, CancellationToken ct);
     Task<CloudApiResult<CloudAuthSession>> RefreshAsync(string refreshToken, CancellationToken ct);
     Task<CloudApiResult<CloudVoid>> LogoutAsync(string refreshToken, CancellationToken ct);
-    Task<CloudApiResult<CloudVoid>> RecoveryStartAsync(CloudRecoveryStartRequest body, CancellationToken ct);
+    Task<CloudApiResult<CloudRecoveryStartResponse>> RecoveryStartAsync(CloudRecoveryStartRequest body, CancellationToken ct);
     Task<CloudApiResult<CloudRecoveryPollResponse>> RecoveryPollAsync(CloudRecoveryPollRequest body, CancellationToken ct);
     Task<CloudApiResult<CloudVoid>> ChangePasswordAsync(string accessToken, CloudChangePasswordRequest body, CancellationToken ct);
     Task<CloudApiResult<CloudVoid>> ChangeUsernameAsync(string accessToken, CloudChangeUsernameRequest body, CancellationToken ct);
@@ -132,8 +132,8 @@ public sealed class CloudApiClient : ICloudApiClient
         PostVoidAsync("/auth/logout", new CloudLogoutRequest { RefreshToken = refreshToken },
             AppJsonContext.Default.CloudLogoutRequest, ct);
 
-    public Task<CloudApiResult<CloudVoid>> RecoveryStartAsync(CloudRecoveryStartRequest body, CancellationToken ct) =>
-        PostVoidAsync("/auth/recovery/start", body, AppJsonContext.Default.CloudRecoveryStartRequest, ct);
+    public Task<CloudApiResult<CloudRecoveryStartResponse>> RecoveryStartAsync(CloudRecoveryStartRequest body, CancellationToken ct) =>
+        PostAsync("/auth/recovery/start", body, AppJsonContext.Default.CloudRecoveryStartRequest, AppJsonContext.Default.CloudRecoveryStartResponse, ct);
 
     public Task<CloudApiResult<CloudRecoveryPollResponse>> RecoveryPollAsync(CloudRecoveryPollRequest body, CancellationToken ct) =>
         PostAsync("/auth/recovery/poll", body, AppJsonContext.Default.CloudRecoveryPollRequest, AppJsonContext.Default.CloudRecoveryPollResponse, ct);

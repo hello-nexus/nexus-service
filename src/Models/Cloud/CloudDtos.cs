@@ -61,6 +61,14 @@ public sealed class CloudRecoveryStartRequest
     public string Email { get; set; } = "";
     public string GrantId { get; set; } = "";
     public string DeviceSecret { get; set; } = "";
+
+    /// <summary>Asks the api for a verification code this device displays; an api without the code omits it from the response.</summary>
+    public bool WantsCode { get; set; }
+}
+
+public sealed class CloudRecoveryStartResponse
+{
+    public string? Code { get; set; }
 }
 
 public sealed class CloudRecoveryPollRequest

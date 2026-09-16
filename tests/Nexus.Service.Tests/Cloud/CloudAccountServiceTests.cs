@@ -455,11 +455,57 @@ public sealed class CloudAccountServiceTests
     public async Task StartRecoveryAsync_refused_by_the_cloud_reports_idle_not_an_expired_link()
     {
         var (svc, api, _) = Make();
-        api.OnRecoveryStart = _ => CloudApiResult<CloudVoid>.Fail(429, "too_many_requests", "Slow down.");
+        api.OnRecoveryStart = _ => CloudApiResult<CloudRecoveryStartResponse>.Fail(429, "too_many_requests", "Slow down.");
 
-        var result = await svc.StartRecoveryAsync("nicola@example.com", CancellationToken.None);
+        var result = await svc.StartRecoveryAsync("nicola@example.com", true, CancellationToken.None);
 
         Assert.False(result.Success);
         Assert.Equal("idle", svc.GetRecoveryStatus().Status);
+    }
+
+    [Fact]
+    public async Task StartRecoveryAsync_asks_for_a_code_and_hands_back_what_the_cloud_minted()
+    {
+        var (svc, api, _) = Make();
+        CloudRecoveryStartRequest? sent = null;
+        api.OnRecoveryStart = body =>
+        {
+            sent = body;
+            return CloudApiResult<CloudRecoveryStartResponse>.Ok(new CloudRecoveryStartResponse { Code = "ABC-DEF" });
+        };
+
+        var result = await svc.StartRecoveryAsync("nicola@example.com", true, CancellationToken.None);
+
+        Assert.True(result.Success);
+        Assert.True(sent!.WantsCode);
+        Assert.Equal("ABC-DEF", result.Value);
+    }
+
+    [Fact]
+    public async Task StartRecoveryAsync_leaves_wantsCode_unset_for_a_bundle_that_did_not_ask()
+    {
+        var (svc, api, _) = Make();
+        CloudRecoveryStartRequest? sent = null;
+        api.OnRecoveryStart = body =>
+        {
+            sent = body;
+            return CloudApiResult<CloudRecoveryStartResponse>.Ok(new CloudRecoveryStartResponse());
+        };
+
+        await svc.StartRecoveryAsync("nicola@example.com", false, CancellationToken.None);
+
+        Assert.False(sent!.WantsCode);
+    }
+
+    [Fact]
+    public async Task StartRecoveryAsync_carries_no_code_when_the_cloud_predates_it()
+    {
+        var (svc, api, _) = Make();
+        api.OnRecoveryStart = _ => CloudApiResult<CloudRecoveryStartResponse>.Ok(new CloudRecoveryStartResponse());
+
+        var result = await svc.StartRecoveryAsync("nicola@example.com", true, CancellationToken.None);
+
+        Assert.True(result.Success);
+        Assert.Null(result.Value);
     }
 }

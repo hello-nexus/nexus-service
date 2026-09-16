@@ -509,7 +509,7 @@ public sealed class CloudAccountService
 
     // ── recovery (device-code style polling) ────────────────────────────
 
-    public async Task<CloudActionResult> StartRecoveryAsync(string email, CancellationToken ct)
+    public async Task<CloudActionResult<string?>> StartRecoveryAsync(string email, bool wantsCode, CancellationToken ct)
     {
         var grantId = Guid.NewGuid().ToString("N");
         var deviceSecret = GenerateDeviceSecret();
@@ -532,18 +532,18 @@ public sealed class CloudAccountService
         previousCts?.Dispose();
 
         var result = await _api.RecoveryStartAsync(
-            new CloudRecoveryStartRequest { Email = email, GrantId = grantId, DeviceSecret = deviceSecret }, ct).ConfigureAwait(false);
+            new CloudRecoveryStartRequest { Email = email, GrantId = grantId, DeviceSecret = deviceSecret, WantsCode = wantsCode }, ct).ConfigureAwait(false);
         if (!result.Success)
         {
             // No link was sent (throttled, offline), so the flow is back where it
             // started; reporting "expired" here is what put a "link expired" page
             // in front of users who never got a link.
             SetRecoveryStatus(grantId, "idle");
-            return CloudActionResult.FromError(result);
+            return CloudActionResult<string?>.FromError(result);
         }
 
         _ = Task.Run(() => PollRecoveryLoopAsync(grantId, deviceSecret, pollToken), CancellationToken.None);
-        return CloudActionResult.Ok();
+        return CloudActionResult<string?>.Ok(result.Value?.Code);
     }
 
     public CloudRecoveryStatusSnapshot GetRecoveryStatus()

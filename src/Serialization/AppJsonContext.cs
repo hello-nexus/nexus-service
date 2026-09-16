@@ -400,6 +400,8 @@ namespace Nexus.Service.Serialization;
 [JsonSerializable(typeof(Nexus.Service.Models.Cloud.CloudRefreshRequest))]
 [JsonSerializable(typeof(Nexus.Service.Models.Cloud.CloudLogoutRequest))]
 [JsonSerializable(typeof(Nexus.Service.Models.Cloud.CloudRecoveryStartRequest))]
+[JsonSerializable(typeof(Nexus.Service.Models.Cloud.CloudRecoveryStartResponse))]
+[JsonSerializable(typeof(Nexus.Service.Models.Cloud.CloudRecoveryStartLocalResponse))]
 [JsonSerializable(typeof(Nexus.Service.Models.Cloud.CloudRecoveryPollRequest))]
 [JsonSerializable(typeof(Nexus.Service.Models.Cloud.CloudRecoveryPollResponse))]
 [JsonSerializable(typeof(Nexus.Service.Models.Cloud.CloudChangePasswordRequest))]
