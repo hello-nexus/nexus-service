@@ -33,6 +33,8 @@ public sealed class IconDiskCache
 
     private static string DefaultRoot()
     {
+        if (Persistence.NexusDataPaths.SystemDaemonRoot is { } daemonRoot)
+            return Path.Combine(daemonRoot, "icon-cache");
         // Mirrors StreamDeckImageCache.DefaultRoot / JsonConfigStore.ResolveSettingsPath:
         // CommonApplicationData is %ProgramData% only on Windows; on macOS it maps
         // to the unwritable /usr/share, so the cache lives beside Application

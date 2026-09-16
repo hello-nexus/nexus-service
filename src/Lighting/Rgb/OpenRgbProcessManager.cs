@@ -152,6 +152,11 @@ public sealed class OpenRgbProcessManager : IDisposable
     /// </summary>
     public static string ResolveConfigDir()
     {
+        // Root system daemon: the machine root is root-owned and writable, and
+        // unlike a user home it exists before anyone logs in.
+        if (Nexus.Service.Persistence.NexusDataPaths.SystemDaemonRoot is { } daemonRoot)
+            return Path.Combine(daemonRoot, "openrgb-config");
+
         string baseDir;
         if (OperatingSystem.IsLinux())
         {

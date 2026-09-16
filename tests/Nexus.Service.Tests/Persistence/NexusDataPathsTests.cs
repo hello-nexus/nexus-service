@@ -55,6 +55,43 @@ public class NexusDataPathsTests
         }
     }
 
+    // The Linux root system daemon has no home of its own, so every store hangs
+    // off one fixed machine-scope root. Passed in rather than probed so the
+    // expectation holds on any host OS.
+
+    [Fact]
+    public void ResolveRoot_uses_the_fixed_machine_root_for_a_linux_system_daemon()
+    {
+        Assert.Equal("/var/lib/nexus", NexusDataPaths.ResolveRoot(null, linuxSystemDaemon: true));
+    }
+
+    [Fact]
+    public void ResolveRoot_machine_root_is_the_same_before_and_after_a_login()
+    {
+        // The two-configs bug was this value moving with the session: root's
+        // home before login, the user's after. It must read no environment at
+        // all, so both daemon calls land on one store.
+        var beforeLogin = NexusDataPaths.ResolveRoot(null, linuxSystemDaemon: true);
+        var afterLogin = NexusDataPaths.ResolveRoot(null, linuxSystemDaemon: true);
+
+        Assert.Equal(beforeLogin, afterLogin);
+        Assert.True(Path.IsPathRooted(beforeLogin));
+    }
+
+    [Fact]
+    public void ResolveRoot_override_still_wins_over_the_machine_root()
+    {
+        var overrideRoot = Path.Combine(Path.GetTempPath(), "nexus-data-root-test-" + Guid.NewGuid().ToString("N"));
+
+        Assert.Equal(overrideRoot, NexusDataPaths.ResolveRoot(overrideRoot, linuxSystemDaemon: true));
+    }
+
+    [Fact]
+    public void ResolveRoot_keeps_the_per_user_layout_when_not_a_system_daemon()
+    {
+        Assert.Equal(NexusDataPaths.ResolveRoot(null), NexusDataPaths.ResolveRoot(null, linuxSystemDaemon: false));
+    }
+
     // ResolveRoot(string?) is the test seam for the override's precedence and
     // expansion logic: it never touches the real environment, so these cases
     // carry no cross-test race risk regardless of suite parallelization.

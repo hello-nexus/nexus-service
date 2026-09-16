@@ -40,6 +40,9 @@ public sealed class LinuxScreenTimeProvider : IScreenTimeProvider, IHostedServic
     private long _sessionStartUtcMs;
     private long _lastEventUtcMs;
     private int _scriptId = -1;
+    // 1 while a start attempt is in flight or has registered on the bus; see
+    // LinuxTrayService for why a plain bool cannot gate this.
+    private int _starting;
 
     public LinuxScreenTimeProvider(DBusConnection dbus, IScreenTimeStore store, IConfigStore config)
     {
@@ -51,6 +54,18 @@ public sealed class LinuxScreenTimeProvider : IScreenTimeProvider, IHostedServic
 
     public async Task StartAsync(CancellationToken cancellationToken)
     {
+        // A root daemon that booted before login has no session bus yet; the
+        // session watcher re-runs this once the user logs in.
+        Platform.Linux.LinuxSession.SessionAdopted += OnSessionAdopted;
+        await StartOnSessionBusAsync(retry: false);
+    }
+
+    private void OnSessionAdopted() => _ = StartOnSessionBusAsync(retry: true);
+
+    private async Task StartOnSessionBusAsync(bool retry = false)
+    {
+        if (Interlocked.CompareExchange(ref _starting, 1, 0) != 0)
+            return;
         try
         {
             await _dbus.StartAsync();
@@ -58,7 +73,10 @@ public sealed class LinuxScreenTimeProvider : IScreenTimeProvider, IHostedServic
             var scriptPath = EnsureKWinScript();
             if (scriptPath is null)
             {
+                // The script dir hangs off the session user's home, so pre-login
+                // this is "not yet", not "never" - let a later adopt retry.
                 Console.Error.WriteLine("[screentime] KWin script dir unavailable; disabled");
+                Volatile.Write(ref _starting, 0);
                 return;
             }
 
@@ -114,11 +132,17 @@ public sealed class LinuxScreenTimeProvider : IScreenTimeProvider, IHostedServic
         catch (Exception ex)
         {
             Console.Error.WriteLine($"[screentime] startup failed: {ex.Message}");
+            Volatile.Write(ref _starting, 0);
+            // See LinuxTrayService: the one-shot event can fire while this
+            // attempt unwinds, its handler bouncing off our CAS.
+            if (!retry && Platform.Linux.LinuxSession.SessionUid is not null)
+                await StartOnSessionBusAsync(retry: true);
         }
     }
 
     public Task StopAsync(CancellationToken cancellationToken)
     {
+        Platform.Linux.LinuxSession.SessionAdopted -= OnSessionAdopted;
         _dbus.UnregisterHandler(ObjectPath);
         FlushCurrentSession();
         return Task.CompletedTask;

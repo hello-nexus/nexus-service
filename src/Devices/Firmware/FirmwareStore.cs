@@ -238,6 +238,8 @@ public sealed class FirmwareStore : IFirmwareStore
 
     private static string ResolveDefaultRoot()
     {
+        if (Nexus.Service.Persistence.NexusDataPaths.SystemDaemonRoot is { } daemonRoot)
+            return Path.Combine(daemonRoot, "firmware");
         if (RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
         {
             // Machine-scope: the LocalSystem service owns the cache so

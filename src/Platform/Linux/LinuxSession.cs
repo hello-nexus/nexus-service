@@ -17,8 +17,10 @@ namespace Nexus.Service.Platform.Linux;
 /// StatusNotifierItem), MPRIS media, <c>wpctl</c>/<c>pactl</c> volume, and the
 /// dashboard launcher need. This detects the active seat's user via
 /// <c>loginctl</c> and adopts their session environment (bus, runtime dir,
-/// config home, display) so those features keep working, and so the daemon
-/// reads the user's existing settings/profiles instead of root's empty home.
+/// config home, display) so those features keep working. The daemon's OWN
+/// data does not ride on that: it lives at a machine-scope root that needs no
+/// session (see <c>NexusDataPaths</c>), so booting before login can never
+/// strand it in a second config.
 ///
 /// No-ops unless running as root with no session env already set - so a normal
 /// <c>systemd --user</c> install or a dev run is untouched. Single active
@@ -36,9 +38,32 @@ public static partial class LinuxSession
     /// <summary>The session user's primary gid; pairs with <see cref="SessionUid"/>.</summary>
     public static uint? SessionGid { get; private set; }
 
-    // Startup wait for the user session (see AdoptActiveSessionEnv).
-    private const int SessionWaitMs = 30_000;
-    private const int SessionPollMs = 2_000;
+    /// <summary>
+    /// True when this process is the root system daemon (running as root with no
+    /// session env of its own), whether or not a graphical session was found.
+    /// Decided before any wait, so path resolution never depends on a login:
+    /// the daemon's data lives at a machine-scope root (see
+    /// <c>NexusDataPaths</c>), exactly like %ProgramData% on Windows. False for
+    /// a <c>systemd --user</c> install or a dev run, which keep the XDG layout.
+    /// </summary>
+    public static bool IsRootDaemon { get; private set; }
+
+    /// <summary>
+    /// Raised once the daemon adopts a graphical session that did not exist at
+    /// startup. Subsystems that need the session bus (tray, screen time) fail
+    /// at boot on a pre-login start and retry from here instead of forcing the
+    /// user to restart the service after logging in.
+    /// </summary>
+    public static event Action? SessionAdopted;
+
+    // Background poll for a user session that is not up yet (see AdoptActiveSessionEnv).
+    // Tight at first for an autologin landing seconds after boot, then slow, because
+    // a box can sit at the login screen for days and every tick is two loginctl
+    // processes. Never gives up: giving up is the restart-after-login step this
+    // whole path exists to remove.
+    private const int SessionPollFastMs = 2_000;
+    private const int SessionPollSlowMs = 30_000;
+    private const int SessionFastWindowMs = 2 * 60 * 1000;
 
     public static void AdoptActiveSessionEnv()
     {
@@ -48,25 +73,55 @@ public static partial class LinuxSession
         // daemon arrives here bare.
         if (!IsRoot() || HasSessionEnv())
             return;
+        IsRootDaemon = true;
 
         // Ordered after graphical.target, the daemon still routinely starts
-        // before the user's session exists (autologin lands seconds later). A
-        // bounded wait covers that; a machine parked at the login screen past
-        // it keeps the documented restart-after-login behaviour.
+        // before the user's session exists (autologin lands seconds later, a
+        // box parked at the login screen much later than that). Never block on
+        // it: hardware control - fans, pump, RGB - must come up at boot like
+        // the Windows service does, so a missing session only costs the
+        // session-bound extras, and a watcher attaches them when the user logs in.
         var s = Detect();
-        for (var waited = 0; s is null && waited < SessionWaitMs; waited += SessionPollMs)
-        {
-            if (waited == 0)
-                Console.Error.WriteLine("[session] root daemon: no graphical session yet; waiting for one");
-            Thread.Sleep(SessionPollMs);
-            s = Detect();
-        }
         if (s is null)
         {
-            Console.Error.WriteLine("[session] root daemon: no graphical session found; session features (tray/media/volume) disabled this run");
+            Console.Error.WriteLine("[session] root daemon: no graphical session yet; hardware control starts now, session features (tray/media/volume) attach at login");
+            StartSessionWatch();
             return;
         }
 
+        Apply(s);
+    }
+
+    // Poll for the session the daemon booted without, then adopt it and let the
+    // session-bound subsystems re-arm.
+    private static void StartSessionWatch()
+    {
+        var t = new Thread(() =>
+        {
+            var waited = 0;
+            while (true)
+            {
+                var nap = waited < SessionFastWindowMs ? SessionPollFastMs : SessionPollSlowMs;
+                Thread.Sleep(nap);
+                waited += nap;
+                SessionInfo? found;
+                try { found = Detect(); }
+                catch { continue; }
+                if (found is null)
+                    continue;
+                Apply(found);
+                try { SessionAdopted?.Invoke(); }
+                catch (Exception ex)
+                { Console.Error.WriteLine($"[session] adopt handler failed: {ex.Message}"); }
+                return;
+            }
+        })
+        { IsBackground = true, Name = "session-watch" };
+        t.Start();
+    }
+
+    private static void Apply(SessionInfo s)
+    {
         SessionUid = s.Uid;
         SessionGid = s.Gid;
         // Override unconditionally: this only runs as a root daemon with no
@@ -77,8 +132,10 @@ public static partial class LinuxSession
         Environment.SetEnvironmentVariable("DBUS_SESSION_BUS_ADDRESS", $"unix:path={run}/bus");
         if (!string.IsNullOrEmpty(s.Home))
         {
-            // Adopt the user's home so config (settings.json, openrgb-config,
-            // curves, profiles) and ~/.local browsers resolve to the user, not /root.
+            // Adopt the user's home so the DESKTOP files we read (dconf
+            // wallpaper, Plasma config, Steam library, .desktop shortcuts,
+            // ~/.local browsers) resolve to the user, not /root. Our own
+            // stores ignore HOME on this path - see NexusDataPaths.
             Environment.SetEnvironmentVariable("HOME", s.Home);
             Environment.SetEnvironmentVariable("XDG_CONFIG_HOME", Path.Combine(s.Home, ".config"));
         }

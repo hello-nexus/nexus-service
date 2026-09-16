@@ -2,10 +2,11 @@
 Description=Nexus hardware monitoring and control service
 # Root system daemon (like coolercontrol's coolercontrold) for full hardware
 # access: motherboard pwm, NVML GPU fans, kernel modules, raw i2c/hidraw - no
-# udev rules or group juggling needed. It adopts the active user's session at
-# startup (see LinuxSession) so the tray, MPRIS media, volume, and dashboard
-# keep working. Ordered after graphical.target so a session exists to adopt,
-# and therefore wanted BY graphical.target: wanting it from multi-user.target
+# udev rules or group juggling needed. Hardware control never waits for a login:
+# its data lives in StateDirectory, and it adopts a user session for the tray,
+# MPRIS media, volume, and dashboard whenever one shows up (see LinuxSession).
+# Ordered after graphical.target so the common case adopts immediately, and
+# therefore wanted BY graphical.target: wanting it from multi-user.target
 # is an ordering cycle (graphical is after multi-user), which systemd breaks
 # by deleting this unit's start job - the service then never starts at boot.
 After=graphical.target network.target
@@ -17,6 +18,11 @@ Type=simple
 ExecStart=/opt/nexus/Nexus
 Restart=on-failure
 RestartSec=3
+# /var/lib/nexus - settings, db, devices, media, apps, caches, logs. systemd
+# creates it, owns it and applies the right SELinux label on every start, so
+# the daemon has a writable store before anyone logs in.
+StateDirectory=nexus
+StateDirectoryMode=0755
 # Runs as root (default for a system unit) - that is the point.
 
 [Install]

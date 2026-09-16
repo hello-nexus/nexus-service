@@ -132,6 +132,10 @@ public static partial class LinuxScreenCastHelper
         try { if (!p.HasExited) p.Kill(entireProcessTree: true); } catch { }
     }
 
+    // Deliberately NOT on the system-daemon root: this is a per-user portal
+    // grant, and the helper that writes it runs unprivileged (setpriv, as the
+    // session user) so it could not write a root-owned dir anyway. Both sides
+    // read XDG_CONFIG_HOME, which the helper inherits from the adopting daemon.
     private static string TokenPath()
     {
         var cfg = Environment.GetEnvironmentVariable("XDG_CONFIG_HOME");
