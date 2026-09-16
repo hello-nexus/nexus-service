@@ -56,9 +56,6 @@ public sealed class CloudLogoutBody
 public sealed class CloudRecoveryStartBody
 {
     public string Email { get; set; } = "";
-
-    /// <summary>Set by a bundle that can display the verification code and send it back; an older bundle omits it and gets the codeless flow.</summary>
-    public bool WantsCode { get; set; }
 }
 
 public sealed class CloudRecoveryStartLocalResponse : ApiResponse
