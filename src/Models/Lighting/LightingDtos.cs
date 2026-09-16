@@ -241,6 +241,9 @@ public sealed class GameSyncStateResponse
     /// <summary>A real Razer Chroma SDK DLL was found; our shim was not installed.</summary>
     public bool SynapseConflict { get; set; }
 
+    /// <summary>The user set a vendor SDK aside (<c>*.nexus-bak</c>) so our shim holds its slot.</summary>
+    public bool VendorOverride { get; set; }
+
     public List<GameSyncDeviceInfo> Devices { get; set; } = new();
 
     /// <summary>Unix epoch milliseconds of the most recently ingested Chroma frame. Null when no frame has been received this session.</summary>
@@ -248,6 +251,11 @@ public sealed class GameSyncStateResponse
 
     /// <summary>Source application title from the most recent shim frame that carried one. Null when unknown.</summary>
     public string? ActiveApp { get; set; }
+}
+
+public sealed class GameSyncVendorOverrideBody
+{
+    public bool Enabled { get; set; }
 }
 
 public sealed class DetectedGame

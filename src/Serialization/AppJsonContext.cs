@@ -513,6 +513,7 @@ namespace Nexus.Service.Serialization;
 [JsonSerializable(typeof(Nexus.Service.Models.Lighting.GameSyncFrameBody))]
 [JsonSerializable(typeof(Nexus.Service.Models.Lighting.GameSyncDeviceInfo))]
 [JsonSerializable(typeof(Nexus.Service.Models.Lighting.GameSyncStateResponse))]
+[JsonSerializable(typeof(Nexus.Service.Models.Lighting.GameSyncVendorOverrideBody))]
 [JsonSerializable(typeof(List<Nexus.Service.Models.Lighting.GameSyncDeviceInfo>))]
 [JsonSerializable(typeof(Nexus.Service.Models.Lighting.DetectedGame))]
 [JsonSerializable(typeof(List<Nexus.Service.Models.Lighting.DetectedGame>))]
