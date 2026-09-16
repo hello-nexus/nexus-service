@@ -613,6 +613,14 @@ public static class ProfileRoutes
                         if (components.Cooling.HasValue) s.Diagnostics.Components.Cooling = components.Cooling.Value;
                         if (components.System.HasValue)  s.Diagnostics.Components.System  = components.System.Value;
                     }
+                    if (diagnostics.IgnoredComponents is { } ignored)
+                    {
+                        s.Diagnostics.IgnoredComponents = ignored
+                            .Where(id => !string.IsNullOrWhiteSpace(id))
+                            .Select(id => id.Trim())
+                            .Distinct(StringComparer.Ordinal)
+                            .ToList();
+                    }
                 }
             }, lightingPatchValue: body.Features?.Lighting);
             if (lightingModeChange is { } lm)

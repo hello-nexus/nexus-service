@@ -15053,6 +15053,12 @@
           },
           "components": {
             "$ref": "#/components/schemas/DiagnosticsComponents"
+          },
+          "ignoredComponents": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
           }
         }
       },
@@ -15097,6 +15103,15 @@
                 "$ref": "#/components/schemas/DiagnosticsComponentsPatch"
               }
             ]
+          },
+          "ignoredComponents": {
+            "type": [
+              "null",
+              "array"
+            ],
+            "items": {
+              "type": "string"
+            }
           }
         }
       },

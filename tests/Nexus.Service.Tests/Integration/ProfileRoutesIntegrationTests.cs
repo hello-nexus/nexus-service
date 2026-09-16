@@ -277,6 +277,8 @@ public sealed class ProfileRoutesIntegrationTests : IDisposable
                     cooldownMinutes = 30,
                 },
                 components = new { cpu = true, gpu = false, storage = true, ram = true, cooling = false, system = true },
+                // Blank, padded and duplicate entries are sanitized away.
+                ignoredComponents = new[] { "storage:Z52AFCNF", " cooling:pump-1 ", "", "storage:Z52AFCNF" },
             },
         };
 
@@ -313,6 +315,18 @@ public sealed class ProfileRoutesIntegrationTests : IDisposable
         Assert.True(components.GetProperty("ram").GetBoolean());
         Assert.False(components.GetProperty("cooling").GetBoolean());
         Assert.True(components.GetProperty("system").GetBoolean());
+
+        var ignored = diagnostics.GetProperty("ignoredComponents").EnumerateArray().Select(e => e.GetString()).ToList();
+        Assert.Equal(new[] { "storage:Z52AFCNF", "cooling:pump-1" }, ignored);
+
+        // A patch carrying the list replaces it whole; one without leaves it alone.
+        await client.PostAsJsonAsync("/preferences", new { diagnostics = new { warningLingerMinutes = 20 } });
+        var unchanged = await (await client.GetAsync("/preferences")).Content.ReadFromJsonAsync<JsonElement>();
+        Assert.Equal(2, unchanged.GetProperty("diagnostics").GetProperty("ignoredComponents").GetArrayLength());
+
+        await client.PostAsJsonAsync("/preferences", new { diagnostics = new { ignoredComponents = Array.Empty<string>() } });
+        var cleared = await (await client.GetAsync("/preferences")).Content.ReadFromJsonAsync<JsonElement>();
+        Assert.Equal(0, cleared.GetProperty("diagnostics").GetProperty("ignoredComponents").GetArrayLength());
     }
 
     [Fact]

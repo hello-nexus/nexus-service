@@ -100,6 +100,16 @@ public class DiagnosticsReportBuilderTests
     }
 
     [Fact]
+    public void Build_MarksAnIgnoredDrive_InsteadOfItsSmartStatus()
+    {
+        var snapshot = BuildSnapshot(2) with { IgnoredComponents = new HashSet<string> { "storage:drive1" } };
+        var content = PdfTestSupport.ExtractContentStream(DiagnosticsReportBuilder.Build(snapshot));
+
+        Assert.Contains("IGNORED", content);
+        Assert.DoesNotContain("IGNORED", PdfTestSupport.ExtractContentStream(DiagnosticsReportBuilder.Build(BuildSnapshot(2))));
+    }
+
+    [Fact]
     public void Build_LayoutIsIdentical_RegardlessOfDriveCount()
     {
         var oneDrivePdf = DiagnosticsReportBuilder.Build(BuildSnapshot(1));

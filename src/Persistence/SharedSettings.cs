@@ -240,6 +240,12 @@ public sealed class DiagnosticsSettings
     public int WarningLingerMinutes { get; set; }
     public DiagnosticsNotifications Notifications { get; set; } = new();
     public DiagnosticsComponents Components { get; set; } = new();
+    /// <summary>Health component ids (the HealthComponent.Id values, e.g.
+    /// "storage:&lt;serial&gt;", "cooling:&lt;deviceId&gt;", "gpu:0") the user
+    /// chose to ignore. An ignored component is dropped from GET
+    /// /diagnostics/health, so it never colours the overall status, the panel
+    /// widget or a notification; its own tab still lists the device.</summary>
+    public List<string> IgnoredComponents { get; set; } = new();
 }
 
 public sealed class DiagnosticsSettingsPatch
@@ -248,6 +254,8 @@ public sealed class DiagnosticsSettingsPatch
     public int? WarningLingerMinutes { get; set; }
     public DiagnosticsNotificationsPatch? Notifications { get; set; }
     public DiagnosticsComponentsPatch? Components { get; set; }
+    /// <summary>Replaces the whole list when present.</summary>
+    public List<string>? IgnoredComponents { get; set; }
 }
 
 // PATCH wrappers. POST /preferences accepts PreferencesPatch with optional

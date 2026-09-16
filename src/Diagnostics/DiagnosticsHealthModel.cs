@@ -77,6 +77,12 @@ public sealed class DiagnosticsHealthModel
     private readonly object _gate = new();
     private DiagnosticsHealthResponse? _cached;
     private DateTime _cachedAtUtc = DateTime.MinValue;
+    // The ignore list the cached result was computed with, so an Ignore /
+    // Include click bypasses the 30s cache on the next call. Compared per
+    // call rather than hooked on IConfigStore.OnChanged: that fires for every
+    // unrelated preference write (and not at all for Reload), while only this
+    // list changes the answer.
+    private IReadOnlyList<string> _cachedIgnored = Array.Empty<string>();
 
     public DiagnosticsHealthModel(
         SmartHealthMonitor smart,
@@ -108,14 +114,16 @@ public sealed class DiagnosticsHealthModel
         lock (_gate)
         {
             var now = DateTime.UtcNow;
-            if (!forceRefresh && _cached is not null && now - _cachedAtUtc < CacheTtl)
-            {
-                return _cached;
-            }
-
             // Single settings snapshot for this whole computation - thresholds
             // and the episode recency window both derive from it.
             var diagnostics = _store.Load().Diagnostics;
+            // An explicit JSON null in settings.json survives the initializer.
+            var ignoredNow = diagnostics.IgnoredComponents ?? new List<string>();
+            if (!forceRefresh && _cached is not null && now - _cachedAtUtc < CacheTtl
+                && _cachedIgnored.SequenceEqual(ignoredNow, StringComparer.Ordinal))
+            {
+                return _cached;
+            }
             var thresholdOverrides = new Dictionary<string, double>
             {
                 ["cpu"] = diagnostics.Thresholds.CpuC,
@@ -139,6 +147,7 @@ public sealed class DiagnosticsHealthModel
 
             _cached = result;
             _cachedAtUtc = now;
+            _cachedIgnored = ignoredNow.ToList();
             return result;
         }
     }
@@ -190,6 +199,7 @@ public sealed class DiagnosticsHealthModel
         DiagnosticsSettings? diagnostics = null)
     {
         var diag = diagnostics ?? new DiagnosticsSettings();
+        var ignored = new HashSet<string>(diag.IgnoredComponents ?? new List<string>(), StringComparer.Ordinal);
         var components = new List<HealthComponent>();
 
         // Storage surfaces off Windows too: AddStorageComponents returns early
@@ -222,16 +232,24 @@ public sealed class DiagnosticsHealthModel
                 AddSystemComponent(components, pnp);
             }
         }
-        AddCoolingComponents(components, cooling, tempEpisodes ?? Array.Empty<TemperatureEpisode>(), generatedAtUtc, diag);
+        AddCoolingComponents(components, cooling, tempEpisodes ?? Array.Empty<TemperatureEpisode>(), generatedAtUtc, diag, ignored);
 
         // Windows always reports the grid (its per-domain scanners exist even
         // when a domain is empty). Elsewhere the grid is meaningful only when
         // a working sub-domain (SMART, GPU, cooling) produced a component -
-        // otherwise the tab is hidden client-side.
+        // otherwise the tab is hidden client-side. Counted before the ignore
+        // filter: ignoring every device is still a working grid.
+        var supported = windowsSupported || components.Count > 0;
+
+        // User-ignored devices drop out here, after every module has run, so
+        // Overall, the alert service, the widget and the report grid all see
+        // the same filtered list.
+        components.RemoveAll(c => ignored.Contains(c.Id));
+
         return new DiagnosticsHealthResponse
         {
             GeneratedAt = generatedAtUtc,
-            Supported = windowsSupported || components.Count > 0,
+            Supported = supported,
             Overall = WorstStatus(components.Select(c => c.Status)),
             Components = components,
         };
@@ -292,19 +310,26 @@ public sealed class DiagnosticsHealthModel
     /// warning; the 24h+ episode history stays on GET /diagnostics/temperatures,
     /// which calls TemperatureInsights.DetectEpisodes directly and never
     /// passes through this recency filter.
+    ///
+    /// An episode whose ComponentId is an ignored component id is dropped
+    /// too: storage episodes carry the drive's own "storage:&lt;serial&gt;" id,
+    /// so an ignored drive that runs hot stays silent. (GPU episodes use the
+    /// adapter id, not the "gpu:&lt;n&gt;" health id, so they never match.)
     /// </summary>
     private static void AddCoolingComponents(
         List<HealthComponent> components,
         CoolingStallSnapshot cooling,
         IReadOnlyList<TemperatureEpisode> tempEpisodes,
         DateTime generatedAtUtc,
-        DiagnosticsSettings diagnostics)
+        DiagnosticsSettings diagnostics,
+        IReadOnlySet<string> ignored)
     {
         var recencyMinutes = Math.Max(TemperatureInsights.NativeBucketMinutes, diagnostics.WarningLingerMinutes);
         var cutoffUtc = generatedAtUtc.AddMinutes(-recencyMinutes);
         var recentEpisodes = tempEpisodes
             .Where(e => e.EndUtc >= cutoffUtc && e.StartUtc <= generatedAtUtc)
             .Where(e => IsTempKindEnabled(e.Kind, diagnostics.Components))
+            .Where(e => !ignored.Contains(e.ComponentId))
             .ToList();
 
         var stallEligible = diagnostics.Components.Cooling && cooling.Devices.Count > 0;

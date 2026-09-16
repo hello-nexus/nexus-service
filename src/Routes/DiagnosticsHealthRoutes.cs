@@ -193,11 +193,13 @@ public static class DiagnosticsHealthRoutes
             GpuHealthMonitor gpu,
             EventLogMonitor events,
             MemoryDiagnosticOrchestrator memDiag,
-            PnpProblemScanner pnp) =>
+            PnpProblemScanner pnp,
+            Nexus.Service.Persistence.IConfigStore store) =>
         {
             var health = healthModel.BuildHealth();
             var smartSnapshot = smart.Snapshot();
-            var snapshot = await DiagnosticsReportBuilder.GatherAsync(health, specs, smartSnapshot, gpu, events, memDiag, pnp);
+            var ignored = store.Load().Diagnostics.IgnoredComponents ?? new List<string>();
+            var snapshot = await DiagnosticsReportBuilder.GatherAsync(health, specs, smartSnapshot, gpu, events, memDiag, pnp, ignored);
             var pdfBytes = DiagnosticsReportBuilder.Build(snapshot);
             var fileName = $"nexus-diagnostics-report-{Environment.MachineName}-{DateTime.Now:yyyyMMdd-HHmm}.pdf";
             return Results.File(pdfBytes, "application/pdf", fileName);
