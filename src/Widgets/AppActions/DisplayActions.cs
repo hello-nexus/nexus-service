@@ -59,10 +59,8 @@ public static class DisplayActions
             var topology = services.GetRequiredService<DisplayTopologyService>();
             var variant = topology.DdcOnlyY70Variant();
 #if DEV_TOOLS
-            // Internal builds report the Ina panel when no DDC-only panel is
-            // attached, so a panel-gated app can be laid out and photographed
-            // on ordinary lab hardware. Never compiled into a release publish.
-            if (variant.Length == 0) variant = Y70DisplayProtocol.VariantIna;
+            // The Tools-page override stands in for a panel that is not attached.
+            if (variant.Length == 0) variant = DevPanelVariantOverride.Variant;
 #endif
             var buffer = new System.Buffers.ArrayBufferWriter<byte>();
             using (var writer = new Utf8JsonWriter(buffer))

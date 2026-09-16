@@ -9,6 +9,7 @@ using Nexus.Service.Models.Peripherals.QSeries;
 using Nexus.Service.Models.Peripherals.Y70;
 using Nexus.Service.Panel;
 using Nexus.Service.Peripherals.Corsair.XeneonEdge;
+using Nexus.Service.Peripherals.Hyte.Y70Display;
 using Nexus.Service.Peripherals.QSeries;
 using Nexus.Service.Peripherals.Y70;
 using Nexus.Service.Persistence;
@@ -29,6 +30,19 @@ public static class DisplayRoutes
 
     public static void MapDisplayEndpoints(this WebApplication app)
     {
+#if DEV_TOOLS
+        app.MapGet("/displays/dev/panel-variant", () => Results.Json(
+            new DevPanelVariantDto { Variant = DevPanelVariantOverride.Variant, Options = Y70DisplayProtocol.DdcOnlyVariantKeys },
+            AppJsonContext.Default.DevPanelVariantDto)).LocalhostOnly();
+        app.MapPut("/displays/dev/panel-variant", (DevPanelVariantDto body) =>
+        {
+            var variant = body.Variant ?? "";
+            if (variant.Length > 0 && Array.IndexOf(Y70DisplayProtocol.DdcOnlyVariantKeys, variant) < 0)
+                return Results.Json(ApiResponse.Fail("unknown variant"), AppJsonContext.Default.ApiResponse, statusCode: 400);
+            DevPanelVariantOverride.Variant = variant;
+            return Results.Json(ApiResponse.Ok(), AppJsonContext.Default.ApiResponse);
+        }).LocalhostOnly();
+#endif
         // Y70
         app.MapGet("/y70/rotation", (IY70Provider y) => new Y70RotationParams
         {
@@ -491,3 +505,12 @@ public static class DisplayRoutes
         });
     }
 }
+
+#if DEV_TOOLS
+/// <summary>Dev-tools panel-variant override: <c>Variant</c> is "" or one of <c>Options</c>.</summary>
+public sealed class DevPanelVariantDto
+{
+    public string? Variant { get; set; }
+    public string[] Options { get; set; } = [];
+}
+#endif
