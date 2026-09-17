@@ -37,7 +37,10 @@ internal static class GpuRenderSelect
     // Parent's backstop wait for a probe child. Must outlast the budget the
     // child pins on itself (see GpuProbe) so a working-but-slow card finishes on
     // its own and the parent only kills a truly wedged child.
-    private static readonly TimeSpan ProbeWait = TimeSpan.FromSeconds(15);
+    private static TimeSpan ProbeWait =>
+        string.Equals(Backend, "glfw", StringComparison.OrdinalIgnoreCase)
+            ? TimeSpan.FromSeconds(45)
+            : TimeSpan.FromSeconds(15);
 
     // A card slower than every budget still has to be remembered, or later boots
     // re-pay the probe for a card that works.
@@ -418,11 +421,17 @@ internal static class GpuRenderSelect
     /// </summary>
     public static void OnSessionLogon(GpuContext gpu)
     {
-        if (gpu.Available || gpu.InitAbandoned)
+        // Initializing: an attempt is already running and will answer on its
+        // own; rearming under it is refused anyway (GpuContext.RearmAfterLatch).
+        if (gpu.Available || gpu.InitAbandoned || gpu.Initializing)
         {
             return;
         }
-        Reselect(gpu, "a user session appeared", ref _reprobeTimer);
+        // Off the caller's thread on purpose: this arrives on the SCM control
+        // handler, which the SCM is waiting on, and a select can cost a probe
+        // child plus the init wait.
+        new Thread(() => Reselect(gpu, "a user session appeared", ref _reprobeTimer))
+        { IsBackground = true, Name = "nexus-gpu-logon-select" }.Start();
     }
 
     // The one path from a timer back into SelectAndWarm. Cancels the other

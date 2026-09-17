@@ -133,7 +133,10 @@ public sealed class GpuContext : IDisposable
     {
         lock (_lock)
         {
-            if (_disposed || _abandoned || _ready)
+            // An attempt that is still running owns the fields below and its own
+            // GL thread; resetting them under it starts a second init beside the
+            // first, which glfwInit/wgl both leave undefined.
+            if (_disposed || _abandoned || _ready || (_initStarted && !_failed))
             {
                 return false;
             }
@@ -156,8 +159,8 @@ public sealed class GpuContext : IDisposable
 #elif LINUX
             _eglUsed = false;
 #else
+            // _wgl is left alone: the GL thread owns it and frees it as it exits.
             _glfwWindow = IntPtr.Zero;
-            _wgl = default;
 #endif
             return true;
         }
@@ -283,13 +286,12 @@ public sealed class GpuContext : IDisposable
 #elif LINUX
             _eglUsed = false;
 #else
-            // WGL is already freed: the GL thread frees it on its way out, which
-            // is before an attempt can be reset. GLFW's window is deliberately
-            // not destroyed - that belongs to the thread that created it, and
-            // that thread has exited. One leaked hidden window per process is
-            // harmless; reaching across threads to free it is not.
+            // _wgl is not touched here: the GL thread owns it and frees it on
+            // its way out. GLFW's window is deliberately not destroyed - that
+            // belongs to the thread that created it, and that thread has
+            // exited. One leaked hidden window per process is harmless;
+            // reaching across threads to free it is not.
             _glfwWindow = IntPtr.Zero;
-            _wgl = default;
 #endif
             // Deliberately does NOT start the next attempt: the caller sets the
             // OS GPU preference (read at context-creation time) first.

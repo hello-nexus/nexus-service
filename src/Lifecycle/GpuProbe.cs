@@ -82,9 +82,16 @@ internal static class GpuProbe
             // "does this card hang?", and an inconclusive verdict condemns
             // nothing (GpuProbeExit.Verdict). GpuRenderSelect.ProbeWait outlasts
             // it. A healthy context takes tens of milliseconds.
+            // Sized to the backend under test: WGL lands in tens of
+            // milliseconds, while GLFW's own init is the slow thing the WGL
+            // path exists to avoid, and a budget below it would time out every
+            // probe and answer nothing.
+            var budget = string.Equals(backend, "glfw", StringComparison.OrdinalIgnoreCase)
+                ? TimeSpan.FromSeconds(35)
+                : TimeSpan.FromSeconds(6);
             var gpu = new Nexus.Service.Lighting.Engine.Gpu.GpuContext(160, 90)
             {
-                InitTimeout = TimeSpan.FromSeconds(6),
+                InitTimeout = budget,
                 BackendOverride = backend,
             };
             lock (gpu.Lock)
