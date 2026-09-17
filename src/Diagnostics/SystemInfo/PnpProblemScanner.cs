@@ -27,6 +27,7 @@ public sealed class PnpProblemScanner
     // a stuck client retry loop cannot make this spawn powershell.exe continuously.
     private static readonly TimeSpan ForceRefreshFloor = TimeSpan.FromSeconds(5);
     private const int ShellTimeoutMs = 15_000;
+    private const int CmProbDisabled = 22;
 
     private readonly object _gate = new();
     private PnpProblemSnapshot _cached = PnpProblemSnapshot.Unsupported;
@@ -107,7 +108,9 @@ public sealed class PnpProblemScanner
             if (c.ValueKind == JsonValueKind.Number) c.TryGetInt32(out code);
             else if (c.ValueKind == JsonValueKind.String) int.TryParse(c.GetString(), out code);
         }
-        if (code == 0) return;
+        // CM_PROB_DISABLED (22) means the user turned the device off in Device
+        // Manager - an intentional state, not a problem to report.
+        if (code == 0 || code == CmProbDisabled) return;
 
         result.Add(new PnpProblemDevice(name, deviceId, code, ProblemCodeName(code)));
     }
