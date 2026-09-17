@@ -29,7 +29,7 @@ public class PnpProblemScannerTests
     {
         const string json = """
             [
-              {"Name":"Device A","DeviceID":"PCI\\A","ConfigManagerErrorCode":22},
+              {"Name":"Device A","DeviceID":"PCI\\A","ConfigManagerErrorCode":10},
               {"Name":"Device B","DeviceID":"PCI\\B","ConfigManagerErrorCode":45}
             ]
             """;
@@ -37,8 +37,24 @@ public class PnpProblemScannerTests
         var devices = PnpProblemScanner.ParseJson(json);
 
         Assert.Equal(2, devices.Count);
-        Assert.Equal("CM_PROB_DISABLED", devices[0].ProblemText);
+        Assert.Equal("CM_PROB_FAILED_START", devices[0].ProblemText);
         Assert.Equal("CM_PROB_PHANTOM", devices[1].ProblemText);
+    }
+
+    [Fact]
+    public void ParseJson_DisabledDevice_IsNotReported()
+    {
+        const string json = """
+            [
+              {"Name":"Disabled device","DeviceID":"PCI\\A","ConfigManagerErrorCode":22},
+              {"Name":"Device B","DeviceID":"PCI\\B","ConfigManagerErrorCode":45}
+            ]
+            """;
+
+        var devices = PnpProblemScanner.ParseJson(json);
+
+        Assert.Single(devices);
+        Assert.Equal("Device B", devices[0].Name);
     }
 
     [Fact]
