@@ -41,6 +41,7 @@ public sealed class KlipyFileTypes
 {
     [JsonPropertyName("gif")] public KlipyFileMeta? Gif { get; set; }
     [JsonPropertyName("webp")] public KlipyFileMeta? Webp { get; set; }
+    [JsonPropertyName("mp4")] public KlipyFileMeta? Mp4 { get; set; }
 }
 
 public sealed class KlipyFileMeta

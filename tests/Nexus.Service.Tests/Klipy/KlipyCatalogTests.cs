@@ -136,6 +136,7 @@ public sealed class KlipyCatalogTests
         "{\"slug\":\"" + slug + "\",\"title\":\"" + title + "\",\"type\":\"" + type + "\"," +
         "\"blur_preview\":\"data:image/jpeg;base64,AAA\"," +
         "\"file\":{\"hd\":{\"gif\":{\"url\":\"" + host + "/" + slug + ".gif\",\"width\":220,\"height\":164,\"size\":244409}," +
+        "\"mp4\":{\"url\":\"" + host + "/" + slug + ".mp4\",\"width\":220,\"height\":164,\"size\":56139}," +
         "\"webp\":{\"url\":\"" + host + "/" + slug + "-hd.webp\",\"width\":220,\"height\":164,\"size\":140740}}," +
         "\"sm\":{\"webp\":{\"url\":\"" + host + "/" + slug + ".webp\",\"width\":220,\"height\":164,\"size\":137582}}}}";
 
@@ -275,28 +276,61 @@ public sealed class KlipyCatalogTests
     }
 
     [Fact]
-    public async Task Download_writes_the_memoized_gif_for_a_searched_slug()
+    public async Task Download_prefers_the_mp4_and_names_the_file_by_its_container()
+    {
+        using var server = new StubServer();
+        var host = $"http://127.0.0.1:{server.Port}";
+        var mp4 = new byte[] { 0x00, 0x00, 0x00, 0x18, 0x66, 0x74, 0x79, 0x70 };
+        server.ResponseFactory = line => line.Contains(".mp4")
+            ? Binary(mp4, "video/mp4")
+            : Json(Page(Item("happy-cat", host)));
+        var catalog = Make(server);
+        await catalog.SearchAsync("cat", 1, CancellationToken.None);
+        var dir = Path.Combine(Path.GetTempPath(), $"klipy-test-{Guid.NewGuid()}");
+        Directory.CreateDirectory(dir);
+
+        try
+        {
+            var path = await catalog.DownloadAsync("happy-cat", dir, CancellationToken.None);
+
+            Assert.NotNull(path);
+            Assert.Equal(".mp4", Path.GetExtension(path));
+            Assert.Equal(mp4, await File.ReadAllBytesAsync(path!));
+            Assert.DoesNotContain(server.RequestLines, l => l.Contains(".gif"));
+        }
+        finally
+        {
+            try { Directory.Delete(dir, recursive: true); }
+            catch { }
+        }
+    }
+
+    [Fact]
+    public async Task Download_falls_back_to_the_gif_when_there_is_no_mp4()
     {
         using var server = new StubServer();
         var host = $"http://127.0.0.1:{server.Port}";
         var gif = new byte[] { 0x47, 0x49, 0x46, 0x38, 0x39, 0x61 };
+        var gifOnly = Item("old-cat", host).Replace(
+            "\"mp4\":{\"url\":\"" + host + "/old-cat.mp4\",\"width\":220,\"height\":164,\"size\":56139},", "");
         server.ResponseFactory = line => line.Contains(".gif")
             ? Binary(gif, "image/gif")
-            : Json(Page(Item("happy-cat", host)));
+            : Json(Page(gifOnly));
         var catalog = Make(server);
         await catalog.SearchAsync("cat", 1, CancellationToken.None);
-        var dest = Path.Combine(Path.GetTempPath(), $"klipy-test-{Guid.NewGuid()}.gif");
+        var dir = Path.Combine(Path.GetTempPath(), $"klipy-test-{Guid.NewGuid()}");
+        Directory.CreateDirectory(dir);
 
         try
         {
-            var ok = await catalog.DownloadAsync("happy-cat", dest, CancellationToken.None);
+            var path = await catalog.DownloadAsync("old-cat", dir, CancellationToken.None);
 
-            Assert.True(ok);
-            Assert.Equal(gif, await File.ReadAllBytesAsync(dest));
+            Assert.NotNull(path);
+            Assert.Equal(".gif", Path.GetExtension(path));
         }
         finally
         {
-            try { File.Delete(dest); }
+            try { Directory.Delete(dir, recursive: true); }
             catch { }
         }
     }
@@ -306,12 +340,10 @@ public sealed class KlipyCatalogTests
     {
         using var server = new StubServer();
         var catalog = Make(server);
-        var dest = Path.Combine(Path.GetTempPath(), $"klipy-test-{Guid.NewGuid()}.gif");
 
-        var ok = await catalog.DownloadAsync("never-searched", dest, CancellationToken.None);
+        var path = await catalog.DownloadAsync("never-searched", Path.GetTempPath(), CancellationToken.None);
 
-        Assert.False(ok);
-        Assert.False(File.Exists(dest));
+        Assert.Null(path);
         Assert.Empty(server.RequestLines);
     }
 
@@ -335,8 +367,8 @@ public sealed class KlipyCatalogTests
         using var server = new StubServer();
         var host = $"http://127.0.0.1:{server.Port}";
         var sized = Item("has-size", host);
-        var unsized = Item("no-size", host)
-            .Replace("\"width\":220,\"height\":164,\"size\":244409", "\"size\":244409");
+        // Every variant loses its size, not just the gif the import used to prefer.
+        var unsized = Item("no-size", host).Replace("\"width\":220,\"height\":164,", "");
         server.ResponseFactory = _ => Json(Page(unsized + "," + sized));
         var catalog = Make(server);
 

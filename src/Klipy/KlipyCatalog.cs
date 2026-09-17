@@ -24,9 +24,10 @@ public interface IKlipyCatalog
     /// <summary>The GIF an import should download, or null when the slug is unknown to this process.</summary>
     KlipyResolvedGif? Resolve(string slug);
 
-    /// <summary>Downloads the slug's GIF to <paramref name="destPath"/>. False
-    /// when the slug is unknown, the fetch failed, or the file exceeded the cap.</summary>
-    Task<bool> DownloadAsync(string slug, string destPath, CancellationToken ct);
+    /// <summary>Downloads the slug's clip into <paramref name="destDir"/> and returns
+    /// its path, whose extension matches the container fetched. Null when the slug
+    /// is unknown, the fetch failed, or the file exceeded the cap.</summary>
+    Task<string?> DownloadAsync(string slug, string destDir, CancellationToken ct);
 
     /// <summary>Best-effort share ping; Klipy counts it for partner analytics.</summary>
     Task TriggerShareAsync(string slug);
@@ -34,7 +35,7 @@ public interface IKlipyCatalog
 
 /// <summary>What a search memoized for one slug: the two URLs an import and a
 /// grid cell need, plus the dimensions the client crops against.</summary>
-public readonly record struct KlipyResolvedGif(string ImportUrl, string ThumbUrl, int Width, int Height);
+public readonly record struct KlipyResolvedGif(string ImportUrl, string ImportExt, string ThumbUrl, int Width, int Height);
 
 /// <summary>
 /// Search/trending + thumbnail proxy for api.klipy.com. Service-side because the
@@ -175,7 +176,11 @@ public sealed class KlipyCatalog : IKlipyCatalog
             return null;
         }
 
-        var import = FirstWithUrl(item.File?.Hd?.Gif, item.File?.Md?.Gif, item.File?.Sm?.Gif);
+        // mp4 first: the same clip as gif runs 10-70x larger (a 498px gif can
+        // pass 30 MB where its mp4 is under 500 KB), and both importers decode it.
+        var mp4 = FirstWithUrl(item.File?.Hd?.Mp4, item.File?.Md?.Mp4, item.File?.Sm?.Mp4);
+        var import = mp4 ?? FirstWithUrl(item.File?.Hd?.Gif, item.File?.Md?.Gif, item.File?.Sm?.Gif);
+        var importExt = mp4 is not null ? ".mp4" : ".gif";
         // webp only: the thumbnail route serves these bytes as image/webp.
         var thumb = FirstWithUrl(item.File?.Sm?.Webp, item.File?.Md?.Webp, item.File?.Xs?.Webp, item.File?.Hd?.Webp);
         // Dimensions drive the client's centre crop, so an item that omits them
@@ -188,7 +193,7 @@ public sealed class KlipyCatalog : IKlipyCatalog
         var slug = item.Slug!;
         lock (_lock)
         {
-            _slugs[slug] = new KlipyResolvedGif(import.Url!, thumb.Url!, import.Width!.Value, import.Height!.Value);
+            _slugs[slug] = new KlipyResolvedGif(import.Url!, importExt, thumb.Url!, import.Width!.Value, import.Height!.Value);
             TouchSlug(slug);
             while (_slugLru.Count > SlugCacheCap && _slugLru.Last is { } oldest)
             {
@@ -241,13 +246,15 @@ public sealed class KlipyCatalog : IKlipyCatalog
         return null;
     }
 
-    public async Task<bool> DownloadAsync(string slug, string destPath, CancellationToken ct)
+    public async Task<string?> DownloadAsync(string slug, string destDir, CancellationToken ct)
     {
         if (Resolve(slug) is not { } resolved)
         {
-            return false;
+            Console.Error.WriteLine($"[klipy] download {slug}: not in this process's search memo");
+            return null;
         }
 
+        var destPath = Path.Combine(destDir, $"nexus-klipy-{Guid.NewGuid()}{resolved.ImportExt}");
         try
         {
             using var client = _http.CreateClient();
@@ -257,11 +264,13 @@ public sealed class KlipyCatalog : IKlipyCatalog
                 .ConfigureAwait(false);
             if (response.StatusCode != HttpStatusCode.OK)
             {
-                return false;
+                Console.Error.WriteLine($"[klipy] download {slug}: HTTP {(int)response.StatusCode} from {resolved.ImportUrl}");
+                return null;
             }
             if ((response.Content.Headers.ContentLength ?? 0) > MaxImportBytes)
             {
-                return false;
+                Console.Error.WriteLine($"[klipy] download {slug}: {response.Content.Headers.ContentLength} bytes exceeds the cap");
+                return null;
             }
 
             bool complete;
@@ -271,13 +280,19 @@ public sealed class KlipyCatalog : IKlipyCatalog
                 complete = await CopyCappedAsync(source, dest, MaxImportBytes, ct).ConfigureAwait(false);
             }
 
-            return complete && new FileInfo(destPath).Length > 0;
+            if (complete && new FileInfo(destPath).Length > 0)
+            {
+                return destPath;
+            }
+            Console.Error.WriteLine($"[klipy] download {slug}: response exceeded the cap or was empty");
         }
         catch (Exception ex)
         {
             Console.Error.WriteLine($"[klipy] download {slug} failed: {ex.Message}");
-            return false;
         }
+        try { File.Delete(destPath); }
+        catch { }
+        return null;
     }
 
     /// <summary>False the moment the source would pass <paramref name="cap"/>: a missing Content-Length must not write an unbounded file, and a truncated GIF is a failed import.</summary>

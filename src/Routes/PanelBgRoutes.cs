@@ -187,17 +187,19 @@ public static class PanelBgRoutes
                     return Results.BadRequest(new PanelBgStageResponse { Error = true, Msg = "invalid slug" });
                 }
 
-                var tempPath = Path.Combine(Path.GetTempPath(), $"nexus-klipy-bg-{System.Guid.NewGuid()}.gif");
+                string? tempPath = null;
                 try
                 {
-                    if (!await catalog.DownloadAsync(body.Slug, tempPath, ctx.RequestAborted))
+                    tempPath = await catalog.DownloadAsync(body.Slug, Path.GetTempPath(), ctx.RequestAborted);
+                    if (tempPath is null)
                     {
                         return Results.BadRequest(new PanelBgStageResponse { Error = true, Msg = "Download failed" });
                     }
 
-                    var staged = await PanelBgImporter.StageAsync(lib, deviceId, tempPath, $"{body.Slug}.gif");
+                    var staged = await PanelBgImporter.StageAsync(lib, deviceId, tempPath, body.Slug + Path.GetExtension(tempPath));
                     if (!staged.Ok)
                     {
+                        Console.Error.WriteLine($"[panel-bg-klipy] stage {body.Slug}: {staged.Error}");
                         return Results.BadRequest(new PanelBgStageResponse { Error = true, Msg = staged.Error ?? "Stage failed" });
                     }
 
@@ -212,8 +214,11 @@ public static class PanelBgRoutes
                 finally
                 {
                     // StageAsync moves the file into staging on success; a leftover means it did not.
-                    try { File.Delete(tempPath); }
-                    catch { }
+                    if (tempPath is not null)
+                    {
+                        try { File.Delete(tempPath); }
+                        catch { }
+                    }
                 }
             }).AllowPanel().DisableAntiforgery();
 

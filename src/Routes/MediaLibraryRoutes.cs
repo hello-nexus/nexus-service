@@ -178,17 +178,19 @@ public static class MediaLibraryRoutes
                 return Results.BadRequest(new MediaStageResponse { Error = true, Msg = "invalid slug" });
             }
 
-            var tempPath = Path.Combine(Path.GetTempPath(), $"nexus-klipy-{Guid.NewGuid()}.gif");
+            string? tempPath = null;
             try
             {
-                if (!await catalog.DownloadAsync(body.Slug, tempPath, ctx.RequestAborted))
+                tempPath = await catalog.DownloadAsync(body.Slug, Path.GetTempPath(), ctx.RequestAborted);
+                if (tempPath is null)
                 {
                     return Results.BadRequest(new MediaStageResponse { Error = true, Msg = "Download failed" });
                 }
 
-                var staged = await MediaImporter.StageAsync(lib, tempPath, $"{body.Slug}.gif");
+                var staged = await MediaImporter.StageAsync(lib, tempPath, body.Slug + Path.GetExtension(tempPath));
                 if (!staged.Ok)
                 {
+                    Console.Error.WriteLine($"[media-klipy] stage {body.Slug}: {staged.Error}");
                     return Results.BadRequest(new MediaStageResponse { Error = true, Msg = staged.Error ?? "Stage failed" });
                 }
 
@@ -203,8 +205,11 @@ public static class MediaLibraryRoutes
             finally
             {
                 // StageAsync moves the file into staging on success; a leftover means it did not.
-                try { File.Delete(tempPath); }
-                catch { }
+                if (tempPath is not null)
+                {
+                    try { File.Delete(tempPath); }
+                    catch { }
+                }
             }
         }).AllowPanel().DisableAntiforgery();
 

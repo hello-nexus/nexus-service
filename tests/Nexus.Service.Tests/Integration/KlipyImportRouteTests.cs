@@ -35,14 +35,16 @@ public sealed class KlipyImportRouteTests
 
         public KlipyResolvedGif? Resolve(string slug) => null;
 
-        public Task<bool> DownloadAsync(string slug, string destPath, CancellationToken ct)
+        public Task<string?> DownloadAsync(string slug, string destDir, CancellationToken ct)
         {
             DownloadedSlug = slug;
-            if (DownloadResult)
+            if (!DownloadResult)
             {
-                File.WriteAllBytes(destPath, new byte[] { 0x47, 0x49, 0x46 });
+                return Task.FromResult<string?>(null);
             }
-            return Task.FromResult(DownloadResult);
+            var path = Path.Combine(destDir, $"stub-{Guid.NewGuid()}.mp4");
+            File.WriteAllBytes(path, new byte[] { 0x00, 0x00, 0x00, 0x18 });
+            return Task.FromResult<string?>(path);
         }
 
         public Task TriggerShareAsync(string slug) => Task.CompletedTask;
