@@ -101,7 +101,7 @@ public static class MediaLibraryRoutes
                     return Results.BadRequest(new MediaStageResponse { Error = true, Msg = result.Error ?? "Stage failed" });
                 }
 
-                return Results.Ok(new MediaStageResponse { StageId = result.StageId });
+                return Results.Ok(new MediaStageResponse { StageId = result.StageId, MediaKind = MediaKinds.FromPath(file.FileName) });
             }
             finally
             {
@@ -125,6 +125,25 @@ public static class MediaLibraryRoutes
             }
 
             return Results.File(previewPath, "image/jpeg");
+        }).AllowPanel();
+
+        // The staged source itself, so the cropper can play an animated one
+        // rather than show the still preview. Range requests let a <video>
+        // seek without pulling the whole file.
+        app.MapGet("/media/stage/{stageId}/raw", (string stageId, MediaLibrary lib) =>
+        {
+            if (!MediaLibrary.IsValidId(stageId))
+            {
+                return Results.BadRequest("invalid stage id");
+            }
+
+            var rawPath = lib.FindStagedRaw(stageId);
+            if (rawPath is null || !File.Exists(rawPath))
+            {
+                return Results.NotFound();
+            }
+
+            return Results.File(rawPath, MediaKinds.ContentTypeFor(rawPath), enableRangeProcessing: true);
         }).AllowPanel();
 
         app.MapPost("/media/commit", async (HttpContext ctx, MediaLibrary lib, MultiplexHub hub) =>
@@ -195,7 +214,7 @@ public static class MediaLibraryRoutes
                 }
 
                 _ = catalog.TriggerShareAsync(body.Slug);
-                return Results.Ok(new MediaStageResponse { StageId = staged.StageId });
+                return Results.Ok(new MediaStageResponse { StageId = staged.StageId, MediaKind = MediaKinds.FromPath(tempPath) });
             }
             catch (Exception ex)
             {

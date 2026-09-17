@@ -43,6 +43,8 @@ public sealed class MediaCurrentResponse
 public sealed class MediaStageResponse
 {
     public string? StageId { get; set; }
+    /// <summary>video | gif | image: which element the cropper renders the source with.</summary>
+    public string? MediaKind { get; set; }
     public bool Error { get; set; }
     public string Msg { get; set; } = "Ok";
 }

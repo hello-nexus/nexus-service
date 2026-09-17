@@ -84,7 +84,12 @@ public static class PanelBgRoutes
                         return Results.BadRequest(new PanelBgStageResponse { Error = true, Msg = result.Error ?? "Stage failed" });
                     }
 
-                    return Results.Ok(new PanelBgStageResponse { StageId = result.StageId, Alpha = result.Alpha });
+                    return Results.Ok(new PanelBgStageResponse
+                    {
+                        StageId = result.StageId,
+                        Alpha = result.Alpha,
+                        MediaKind = MediaKinds.FromPath(file.FileName),
+                    });
                 }
                 finally
                 {
@@ -113,6 +118,23 @@ public static class PanelBgRoutes
             }).AllowPanel();
 
         // --- Commit phase: bake from staged raw using crop/dimensions ---
+
+        app.MapGet("/panel/devices/{deviceId}/background-media/stage/{stageId}/raw",
+            (string deviceId, string stageId, PanelBgLibrary lib) =>
+            {
+                if (!PanelBgLibrary.IsValidId(deviceId) || !PanelBgLibrary.IsValidId(stageId))
+                {
+                    return Results.BadRequest("invalid id");
+                }
+
+                var rawPath = lib.FindStagedRaw(deviceId, stageId);
+                if (rawPath is null || !File.Exists(rawPath))
+                {
+                    return Results.NotFound();
+                }
+
+                return Results.File(rawPath, MediaKinds.ContentTypeFor(rawPath), enableRangeProcessing: true);
+            }).AllowPanel();
 
         app.MapPost("/panel/devices/{deviceId}/background-media/commit",
             async (string deviceId, HttpContext ctx, PanelBgLibrary lib) =>
@@ -204,7 +226,12 @@ public static class PanelBgRoutes
                     }
 
                     _ = catalog.TriggerShareAsync(body.Slug);
-                    return Results.Ok(new PanelBgStageResponse { StageId = staged.StageId, Alpha = staged.Alpha });
+                    return Results.Ok(new PanelBgStageResponse
+                    {
+                        StageId = staged.StageId,
+                        Alpha = staged.Alpha,
+                        MediaKind = MediaKinds.FromPath(tempPath),
+                    });
                 }
                 catch (System.Exception ex)
                 {

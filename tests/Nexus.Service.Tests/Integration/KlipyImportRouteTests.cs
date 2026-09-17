@@ -136,4 +136,30 @@ public sealed class KlipyImportRouteTests
         Assert.Equal(HttpStatusCode.BadRequest, res.StatusCode);
         Assert.NotEqual("", body);
     }
+
+    [Theory]
+    [InlineData("/media/stage/no-such-stage/raw")]
+    [InlineData("/panel/devices/dev1/background-media/stage/no-such-stage/raw")]
+    public async Task Raw_stage_route_404s_an_unknown_stage(string path)
+    {
+        var (factory, client) = Boot();
+        using var _ = factory;
+
+        var res = await client.GetAsync(path);
+
+        Assert.Equal(HttpStatusCode.NotFound, res.StatusCode);
+    }
+
+    [Theory]
+    [InlineData("/media/stage/..%2Fsettings/raw")]
+    [InlineData("/panel/devices/dev1/background-media/stage/..%2Fx/raw")]
+    public async Task Raw_stage_route_refuses_an_invalid_id(string path)
+    {
+        var (factory, client) = Boot();
+        using var _ = factory;
+
+        var res = await client.GetAsync(path);
+
+        Assert.Equal(HttpStatusCode.BadRequest, res.StatusCode);
+    }
 }
