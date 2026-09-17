@@ -31,7 +31,7 @@ public static class MasterBrightness
     }
 
     /// <summary>The schedule's level, 0..1, at <paramref name="timeOfDay"/>:
-    /// a smooth curve through the points (<see cref="CurveEasing"/>), evaluated
+    /// straight lines between the points (<see cref="CurveEasing"/>), evaluated
     /// by the minute and wrapping midnight. Seconds are dropped so the level
     /// moves once a minute, never per frame. An empty schedule is no cap.</summary>
     public static float Scheduled(List<BrightnessSchedulePoint>? points, TimeSpan timeOfDay)
@@ -52,7 +52,7 @@ public static class MasterBrightness
             ys[i] = points[i].Brightness;
         }
         SortByX(xs, ys);
-        var level = CurveEasing.Interpolate(xs, ys, minute / 60.0, smooth: true, wrapMin: 0, wrapSpan: HoursPerDay);
+        var level = CurveEasing.Interpolate(xs, ys, minute / 60.0, smooth: false, wrapMin: 0, wrapSpan: HoursPerDay);
         return (float)Math.Clamp(level / 100.0, 0.0, 1.0);
     }
 

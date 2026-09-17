@@ -34,22 +34,22 @@ public sealed class MasterBrightnessTests
     }
 
     // Vectors shared with nexus-web's brightnessSchedule.test.ts: both sides
-    // evaluate the same Fritsch-Carlson spline, so the graph's readout and the
-    // LEDs never disagree.
+    // evaluate the same rule, so the graph's readout and the LEDs never
+    // disagree.
     [Theory]
-    [InlineData(1, 0, 17.1094)]
-    [InlineData(2, 0, 15.6250)]
-    [InlineData(3, 0, 15.0781)]
-    [InlineData(6, 0, 32.1875)]
-    [InlineData(10, 0, 85.3125)]
-    [InlineData(14, 0, 98.1250)]
-    [InlineData(18, 0, 71.2500)]
-    [InlineData(22, 0, 32.5000)]
-    [InlineData(23, 0, 25.1563)]
-    [InlineData(23, 30, 22.2461)]
-    public void Curves_through_the_default_points_like_the_web_does(int hour, int minute, double percent)
+    [InlineData(1, 0, 18.75)]
+    [InlineData(2, 0, 17.5)]
+    [InlineData(3, 0, 16.25)]
+    [InlineData(6, 0, 37.5)]
+    [InlineData(10, 0, 80)]
+    [InlineData(14, 0, 95)]
+    [InlineData(18, 0, 70)]
+    [InlineData(22, 0, 35)]
+    [InlineData(23, 0, 27.5)]
+    [InlineData(23, 30, 23.75)]
+    public void Follows_the_default_points_like_the_web_does(int hour, int minute, double percent)
     {
-        Assert.Equal(percent / 100, MasterBrightness.Scheduled(MasterBrightness.DefaultSchedule(), At(hour, minute)), 3);
+        Assert.Equal(percent / 100, MasterBrightness.Scheduled(MasterBrightness.DefaultSchedule(), At(hour, minute)), 4);
     }
 
     [Fact]
@@ -63,6 +63,16 @@ public sealed class MasterBrightnessTests
         // Seconds do not move it; the level steps once a minute.
         Assert.Equal(MasterBrightness.Scheduled(pts, At(6, 1)), MasterBrightness.Scheduled(pts, At(6, 1, 59)));
         Assert.NotEqual(MasterBrightness.Scheduled(pts, At(6, 1)), MasterBrightness.Scheduled(pts, At(6, 2)));
+    }
+
+    [Fact]
+    public void Interpolates_by_the_minute()
+    {
+        var pts = Points((6, 40), (8, 70));
+
+        // 6:01 is one minute of the 120-minute ramp: a quarter of a percent.
+        Assert.Equal(0.4025f, MasterBrightness.Scheduled(pts, At(6, 1)), 4);
+        Assert.Equal(0.55f, MasterBrightness.Scheduled(pts, At(7)), 4);
     }
 
     [Fact]
@@ -84,13 +94,12 @@ public sealed class MasterBrightnessTests
     {
         var pts = Points((2, 20), (22, 60));
 
-        // The wrap segment is one curve: the same instant reads the same from
-        // either side of the seam, and midnight sits inside it.
+        // 22:00 -> 02:00 is one four-hour ramp from 60 down to 20, the same
+        // from either side of the seam.
         Assert.Equal(MasterBrightness.Scheduled(pts, At(23, 59)), MasterBrightness.Scheduled(pts, TimeSpan.FromMinutes(-1)), 5);
-        var atMidnight = MasterBrightness.Scheduled(pts, At(0));
-        Assert.InRange(atMidnight, 0.2f, 0.6f);
-        Assert.True(MasterBrightness.Scheduled(pts, At(23)) > atMidnight);
-        Assert.True(atMidnight > MasterBrightness.Scheduled(pts, At(1)));
+        Assert.Equal(0.50f, MasterBrightness.Scheduled(pts, At(23)), 4);
+        Assert.Equal(0.40f, MasterBrightness.Scheduled(pts, At(0)), 4);
+        Assert.Equal(0.30f, MasterBrightness.Scheduled(pts, At(1)), 4);
     }
 
     [Fact]
