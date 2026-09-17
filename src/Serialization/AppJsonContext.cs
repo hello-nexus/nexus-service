@@ -110,6 +110,7 @@ namespace Nexus.Service.Serialization;
 [JsonSerializable(typeof(Nexus.Service.Peripherals.Tryx.Panorama.TryxPanoramaState))]
 [JsonSerializable(typeof(Nexus.Service.Routes.TryxStatusResponse))]
 [JsonSerializable(typeof(Nexus.Service.Routes.TryxOverlaySnapshot))]
+[JsonSerializable(typeof(Nexus.Service.Routes.TryxSlideshowSnapshot))]
 [JsonSerializable(typeof(Nexus.Service.Routes.TryxMediaImportResponse))]
 [JsonSerializable(typeof(Nexus.Service.Routes.TryxPresetListResponse))]
 [JsonSerializable(typeof(Nexus.Service.Routes.TryxMediaListResponse))]

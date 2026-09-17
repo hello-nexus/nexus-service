@@ -44,6 +44,7 @@ public sealed class TryxPanoramaHub : IDisposable
     // issue a concurrent adb command against the same device.
     private volatile bool _importInProgress;
     private readonly TryxOverlayConfig _overlay;
+    private readonly TryxSlideshow _slideshow = new(TryxThumbnailCache.ReadDuration);
 
     public TryxPanoramaHub(
         ITryxPanoramaPanelDiscovery discovery,
@@ -73,7 +74,16 @@ public sealed class TryxPanoramaHub : IDisposable
         State.CurrentMedia = saved.CurrentMedia;
         State.CurrentMediaIsCustom = saved.CurrentMediaIsCustom;
         State.Brightness = saved.Brightness;
+        _slideshow.Configure(new TryxSlideshowConfig
+        {
+            Enabled = saved.SlideshowEnabled,
+            IntervalSec = saved.SlideshowIntervalSec,
+            Shuffle = saved.SlideshowShuffle,
+            FinishVideos = saved.SlideshowFinishVideos,
+        }, State.CurrentMedia, Array.Empty<string>(), NowMs());
     }
+
+    private static long NowMs() => Environment.TickCount64;
 
     public TryxPanoramaState State { get; } = new();
 
@@ -83,6 +93,36 @@ public sealed class TryxPanoramaHub : IDisposable
     public bool IsConnected => _transport is { IsOpen: true };
 
     public TryxOverlayConfig Overlay => _overlay;
+
+    public TryxSlideshowConfig Slideshow => _slideshow.Config;
+
+    /// <summary>The custom-upload library the media list shows and the slideshow cycles:
+    /// the panel's reported /userdata/user/ files (device truth, so a Kanali upload with no
+    /// local thumbnail still counts) plus the local thumbnail record (a just-uploaded file
+    /// the panel's once-per-connection list has not caught yet), minus cloud downloads,
+    /// which Nexus's own install also lands in /userdata/user/.</summary>
+    public List<string> ListCustomMedia()
+        => AvailableCustomMediaFilenames.Concat(TryxThumbnailCache.ListCustomMedia())
+            .Where(n => !IsCloudDownload(n))
+            .Distinct(StringComparer.Ordinal).ToList();
+
+    // Cloud themes are named download_<materialId> by both Kanali's and Nexus's install paths.
+    public static bool IsCloudDownload(string name)
+        => name.StartsWith("download_", StringComparison.Ordinal)
+           && name.Length > 9 && char.IsAsciiDigit(name[9]);
+
+    public void SetSlideshow(TryxSlideshowConfig config)
+    {
+        _slideshow.Configure(config, State.CurrentMedia, ListCustomMedia(), NowMs());
+        var applied = _slideshow.Config;
+        _configStore.Update(s =>
+        {
+            s.Tryx.SlideshowEnabled = applied.Enabled;
+            s.Tryx.SlideshowIntervalSec = applied.IntervalSec;
+            s.Tryx.SlideshowShuffle = applied.Shuffle;
+            s.Tryx.SlideshowFinishVideos = applied.FinishVideos;
+        });
+    }
 
     /// <summary>Wallpaper preset ids the connected panel reported as on-device
     /// (see <see cref="ITryxPanoramaTransport.AvailableMediaIds"/>); empty before
@@ -281,6 +321,7 @@ public sealed class TryxPanoramaHub : IDisposable
                     BuildOverlayLines(), BuildOverlayPositions(), ParseHexColorRgb(_overlay.Color),
                     _overlay.Font, _overlay.Size, _overlay.Align));
             }
+            _slideshow.Rearm(State.CurrentMedia, NowMs());
             return true;
         }
         catch (Exception ex)
@@ -312,7 +353,11 @@ public sealed class TryxPanoramaHub : IDisposable
         try
         {
             SendConn();
-            if (!_importInProgress) SendStateAll();
+            if (!_importInProgress)
+            {
+                SendStateAll();
+                AdvanceSlideshowIfDue();
+            }
             // Once the connect-time device_info reply has given us the panel serial, request the
             // media list once for this connection (the panel only pushes it unprompted on a cold
             // boot). SendOnly re-enters _txGate (reentrant).
@@ -334,6 +379,18 @@ public sealed class TryxPanoramaHub : IDisposable
     }
 
     private bool OverlayUsesFps() => _overlay.Items.Any(i => i.Device == "fps");
+
+    // Runs on the heartbeat under _txGate. SelectCustomMedia re-arms the hold on success;
+    // on failure the pacer has already pushed the deadline out one interval.
+    private void AdvanceSlideshowIfDue()
+    {
+        var next = _slideshow.Tick(ListCustomMedia, NowMs());
+        if (next is null) return;
+        if (!SelectCustomMedia(next))
+        {
+            ServiceLog.Warn($"[tryx] slideshow: select {next} failed");
+        }
+    }
 
     public bool SendStateAll()
     {
@@ -382,6 +439,7 @@ public sealed class TryxPanoramaHub : IDisposable
                 s.Tryx.CurrentMedia = wallpaperMedia;
                 s.Tryx.CurrentMediaIsCustom = false;
             });
+            _slideshow.Rearm(wallpaperMedia, NowMs());
         }
         return ok;
     }
@@ -516,6 +574,8 @@ public sealed class TryxPanoramaHub : IDisposable
             // Thumbnail/duration from the source so the media list can render the entry.
             try { TryxThumbnailCache.Write(ffmpegPath, localPath, deviceFileName); } catch { }
             try { TryxThumbnailCache.WriteDuration(deviceFileName, TryxThumbnailCache.ProbeDuration(ffmpegPath, localPath)); } catch { }
+            // After the duration sidecar exists, so a "finish videos" hold is computed from it.
+            _slideshow.Rearm(deviceFileName, NowMs());
             return (true, "");
         }
         finally
@@ -796,6 +856,7 @@ public sealed class TryxPanoramaHub : IDisposable
         State.CurrentMediaIsCustom = true;
         State.ScreenEnabled = true;
         _configStore.Update(s => { s.Tryx.CurrentMedia = deviceFileName; s.Tryx.CurrentMediaIsCustom = true; });
+        _slideshow.Rearm(deviceFileName, NowMs());
         return true;
     }
 

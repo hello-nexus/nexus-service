@@ -36,6 +36,15 @@ public sealed class TryxOverlaySnapshot
     public bool Docked { get; set; }
 }
 
+/// <summary>Slideshow settings, shared shape for the request body and the status snapshot.</summary>
+public sealed class TryxSlideshowSnapshot
+{
+    public bool Enabled { get; set; }
+    public int IntervalSec { get; set; } = TryxSlideshowConfig.DefaultIntervalSec;
+    public bool Shuffle { get; set; }
+    public bool FinishVideos { get; set; } = true;
+}
+
 public sealed class TryxStatusResponse
 {
     public bool Connected { get; set; }
@@ -47,6 +56,7 @@ public sealed class TryxStatusResponse
     // truth the web reads instead of hardcoding its own copy of the spec value.
     public long MediaCapacityBytes { get; set; }
     public TryxOverlaySnapshot? Overlay { get; set; }
+    public TryxSlideshowSnapshot? Slideshow { get; set; }
 }
 
 public sealed class TryxMediaImportResponse
@@ -186,8 +196,21 @@ public static class TryxRoutes
                     Align = ov.Align,
                     Docked = ov.Docked,
                 },
+                Slideshow = BuildSlideshowSnapshot(hub.Slideshow),
             };
             return Results.Json(resp, AppJsonContext.Default.TryxStatusResponse);
+        });
+
+        app.MapPost("/tryx/slideshow", (TryxSlideshowSnapshot body, TryxPanoramaHub hub) =>
+        {
+            hub.SetSlideshow(new TryxSlideshowConfig
+            {
+                Enabled = body.Enabled,
+                IntervalSec = TryxSlideshowConfig.ClampInterval(body.IntervalSec),
+                Shuffle = body.Shuffle,
+                FinishVideos = body.FinishVideos,
+            });
+            return Results.Json(new TryxAckResponse { Ok = true }, AppJsonContext.Default.TryxAckResponse);
         });
 
         app.MapPost("/tryx/enable", (TryxEnableRequest body, TryxPanoramaHub hub) =>
@@ -480,6 +503,14 @@ public static class TryxRoutes
         };
     }
 
+    internal static TryxSlideshowSnapshot BuildSlideshowSnapshot(TryxSlideshowConfig slideshow) => new()
+    {
+        Enabled = slideshow.Enabled,
+        IntervalSec = slideshow.IntervalSec,
+        Shuffle = slideshow.Shuffle,
+        FinishVideos = slideshow.FinishVideos,
+    };
+
     internal static TryxOverlayItem[] BuildOverlayItems(TryxOverlayConfig overlay)
     {
         var items = new TryxOverlayItem[overlay.Items.Count];
@@ -571,19 +602,8 @@ public static class TryxRoutes
     private static List<string> ListMediaFiles(TryxPanoramaHub hub)
     {
         var adbSerial = hub.State.AdbSerial;
-        if (string.IsNullOrEmpty(adbSerial))
-        {
-            // RK firmware (usbprint, no adb): union of the panel's custom uploads (device truth,
-            // /userdata/user/ only - so a Kanali upload with no local thumbnail still appears, but
-            // presets and cloud downloads under /userdata/default/ are excluded) and the local
-            // thumbnail record (a just-uploaded file the panel's once-per-connection list hasn't
-            // caught yet). A cloud theme installed via Nexus lands in /userdata/user/ too, so drop
-            // the download_<id> cloud names as well - those belong to the cloud gallery.
-            var device = hub.AvailableCustomMediaFilenames;
-            return device.Concat(TryxThumbnailCache.ListCustomMedia())
-                .Where(n => !IsCloudDownload(n))
-                .Distinct(StringComparer.Ordinal).ToList();
-        }
+        // RK firmware (usbprint, no adb): the hub's library, which the slideshow cycles too.
+        if (string.IsNullOrEmpty(adbSerial)) return hub.ListCustomMedia();
         // Legacy serial firmware: enumerate /sdcard/pcMedia over adb, plus the thumbnail record.
         var files = TryxThumbnailCache.ListCustomMedia();
         var adbPath = AdbLocator.ResolveAdbPath();
@@ -620,13 +640,6 @@ public static class TryxRoutes
         catch { /* adb unavailable */ }
         return files;
     }
-
-    // Cloud themes are named download_<materialId> by both Kanali's and Nexus's install paths;
-    // Nexus's install writes them into /userdata/user/ next to real uploads, so they're excluded
-    // from the custom-upload list by name (they surface in the cloud gallery instead).
-    private static bool IsCloudDownload(string name)
-        => name.StartsWith("download_", StringComparison.Ordinal)
-           && name.Length > 9 && char.IsAsciiDigit(name[9]);
 
     private static TryxAckResponse DeleteMediaFile(TryxPanoramaHub hub, string name)
     {

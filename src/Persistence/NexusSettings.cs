@@ -1074,6 +1074,12 @@ public sealed class TryxSettings
     /// <summary>Cloud material ids installed on the panel; drives the catalog's installed
     /// badge (the panel's media-list push reports only built-in presets, not downloads).</summary>
     public List<int> InstalledCloudIds { get; set; } = new();
+    /// <summary>Custom-upload slideshow (see
+    /// <see cref="Nexus.Service.Peripherals.Tryx.Panorama.TryxSlideshowConfig"/>).</summary>
+    public bool SlideshowEnabled { get; set; }
+    public int SlideshowIntervalSec { get; set; } = 10;
+    public bool SlideshowShuffle { get; set; }
+    public bool SlideshowFinishVideos { get; set; } = true;
 }
 
 /// <summary>One NZXT Kraken channel's firmware animation. <see cref="Colors"/> holds
