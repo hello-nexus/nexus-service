@@ -30,15 +30,8 @@ public sealed class KlipyImportRequest
     public string Crop { get; set; } = "";
 }
 
-/// <summary>A Klipy pick imported as one device's panel background. w/h are the
-/// device's panel size, as /background-media/commit takes them.</summary>
-public sealed class KlipyPanelBgImportRequest
+/// <summary>A Klipy pick to stage for one device's cropper; /background-media/commit finishes it.</summary>
+public sealed class KlipyPanelBgStageRequest
 {
     public string Slug { get; set; } = "";
-    public string Crop { get; set; } = "";
-    public int W { get; set; }
-    public int H { get; set; }
-    public bool KeepTransparency { get; set; } = true;
-    /// <summary>Letterbox the whole frame instead of filling the panel.</summary>
-    public bool Fit { get; set; }
 }

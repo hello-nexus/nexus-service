@@ -171,75 +171,49 @@ public static class PanelBgRoutes
                 return Results.Ok(new PanelBgImportResponse { Item = result.Item });
             }).AllowPanel().DisableAntiforgery();
 
-        // A Klipy pick, staged and committed in one call: same shape as the
-        // lighting canvas import, with the device's panel size as the target.
-        app.MapPost("/panel/devices/{deviceId}/background-media/klipy/import",
-            async (string deviceId, KlipyPanelBgImportRequest body, PanelBgLibrary lib,
+        // A Klipy pick lands in staging like an upload would, so the cropper
+        // runs on it and the ordinary /commit finishes the import.
+        app.MapPost("/panel/devices/{deviceId}/background-media/klipy/stage",
+            async (string deviceId, KlipyPanelBgStageRequest body, PanelBgLibrary lib,
                    IKlipyCatalog catalog, HttpContext ctx) =>
             {
                 if (!PanelBgLibrary.IsValidId(deviceId))
                 {
-                    return Results.BadRequest(new PanelBgImportResponse { Error = true, Msg = "invalid deviceId" });
+                    return Results.BadRequest(new PanelBgStageResponse { Error = true, Msg = "invalid deviceId" });
                 }
 
                 if (!KlipyCatalog.IsValidSlug(body.Slug))
                 {
-                    return Results.BadRequest(new PanelBgImportResponse { Error = true, Msg = "invalid slug" });
-                }
-
-                if (!CropRect.TryParse(body.Crop, out var cropRect))
-                {
-                    return Results.BadRequest(new PanelBgImportResponse { Error = true, Msg = "crop is required (x,y,w,h)" });
-                }
-
-                if (body.W < 1 || body.W > 8192 || body.H < 1 || body.H > 8192)
-                {
-                    return Results.BadRequest(new PanelBgImportResponse { Error = true, Msg = "w and h are required (1..8192)" });
+                    return Results.BadRequest(new PanelBgStageResponse { Error = true, Msg = "invalid slug" });
                 }
 
                 var tempPath = Path.Combine(Path.GetTempPath(), $"nexus-klipy-bg-{System.Guid.NewGuid()}.gif");
-                string? stageId = null;
                 try
                 {
                     if (!await catalog.DownloadAsync(body.Slug, tempPath, ctx.RequestAborted))
                     {
-                        return Results.BadRequest(new PanelBgImportResponse { Error = true, Msg = "Download failed" });
+                        return Results.BadRequest(new PanelBgStageResponse { Error = true, Msg = "Download failed" });
                     }
 
                     var staged = await PanelBgImporter.StageAsync(lib, deviceId, tempPath, $"{body.Slug}.gif");
                     if (!staged.Ok)
                     {
-                        return Results.BadRequest(new PanelBgImportResponse { Error = true, Msg = staged.Error ?? "Stage failed" });
+                        return Results.BadRequest(new PanelBgStageResponse { Error = true, Msg = staged.Error ?? "Stage failed" });
                     }
 
-                    stageId = staged.StageId!;
-                    var result = await PanelBgImporter.CommitAsync(
-                        lib, deviceId, stageId, cropRect, body.W, body.H, body.KeepTransparency, body.Fit);
-                    if (!result.Ok)
-                    {
-                        return Results.BadRequest(new PanelBgImportResponse { Error = true, Msg = result.Error ?? "Commit failed" });
-                    }
-
-                    stageId = null;
                     _ = catalog.TriggerShareAsync(body.Slug);
-                    return Results.Ok(new PanelBgImportResponse { Item = result.Item });
+                    return Results.Ok(new PanelBgStageResponse { StageId = staged.StageId, Alpha = staged.Alpha });
                 }
                 catch (System.Exception ex)
                 {
-                    Console.Error.WriteLine($"[panel-bg-klipy] import {body.Slug} failed: {ex}");
-                    return Results.BadRequest(new PanelBgImportResponse { Error = true, Msg = "Import failed" });
+                    Console.Error.WriteLine($"[panel-bg-klipy] stage {body.Slug} failed: {ex}");
+                    return Results.BadRequest(new PanelBgStageResponse { Error = true, Msg = "Stage failed" });
                 }
                 finally
                 {
+                    // StageAsync moves the file into staging on success; a leftover means it did not.
                     try { File.Delete(tempPath); }
                     catch { }
-                    // CommitAsync clears its own stage; anything short of it leaves
-                    // one. A throw here would replace the response with an empty 500.
-                    if (stageId is not null)
-                    {
-                        try { lib.DeleteStage(deviceId, stageId); }
-                        catch { }
-                    }
                 }
             }).AllowPanel().DisableAntiforgery();
 
