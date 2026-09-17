@@ -106,6 +106,14 @@ public sealed class MasterBrightnessTests
     }
 
     [Fact]
+    public void Two_points_on_one_hour_read_as_the_earlier_like_the_cooling_engine()
+    {
+        var pts = Points((0, 20), (12, 50), (12, 70), (20, 80));
+
+        Assert.Equal(0.5f, MasterBrightness.Scheduled(pts, At(12)), 5);
+    }
+
+    [Fact]
     public void Empty_or_single_point_schedules_are_flat()
     {
         Assert.Equal(1f, MasterBrightness.Scheduled(null, At(12)));

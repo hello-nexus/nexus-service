@@ -44,8 +44,8 @@ public static class MasterBrightness
         // Read unlocked on the frame path. Safe only because the route replaces
         // the list wholesale and never mutates one that has been published.
         var count = points.Count;
-        Span<double> xs = count <= 64 ? stackalloc double[count] : new double[count];
-        Span<double> ys = count <= 64 ? stackalloc double[count] : new double[count];
+        Span<double> xs = count <= CurveEasing.StackPoints ? stackalloc double[count] : new double[count];
+        Span<double> ys = count <= CurveEasing.StackPoints ? stackalloc double[count] : new double[count];
         for (var i = 0; i < count; i++)
         {
             xs[i] = points[i].Hour;
@@ -76,8 +76,7 @@ public static class MasterBrightness
         }
     }
 
-    /// <summary>The out-of-box curve: full at midday, dim through the night,
-    /// one point every four hours.</summary>
+    /// <summary>The out-of-box curve: full at midday, dim through the night.</summary>
     public static List<BrightnessSchedulePoint> DefaultSchedule() => new()
     {
         new() { Hour = 0, Brightness = 20 },

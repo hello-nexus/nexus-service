@@ -9,6 +9,10 @@ namespace Nexus.Service.Lighting;
 /// </summary>
 public static class CurveEasing
 {
+    /// <summary>Point count up to which every evaluation stays on the stack:
+    /// the schedule is on the frame path and must not allocate per tick.</summary>
+    public const int StackPoints = 64;
+
     /// <summary>Value of the curve at <paramref name="x"/>. Points must be
     /// sorted by x. <paramref name="smooth"/> selects a monotone cubic spline
     /// (Fritsch-Carlson) through every point with no overshoot; otherwise the
@@ -35,11 +39,12 @@ public static class CurveEasing
         }
         // Segment i runs from point i to point i+1; on a wrapping axis the last
         // segment runs from the last point back to the first, one span later,
-        // and owns both ends of the axis.
+        // and owns both ends of the axis. Right-inclusive, first match, like the
+        // cooling engine: two points on one x read as the earlier one.
         var i = n - 1;
         for (var k = 0; k < n - 1; k++)
         {
-            if (xx >= xs[k] && xx < xs[k + 1]) { i = k; break; }
+            if (xx >= xs[k] && xx <= xs[k + 1]) { i = k; break; }
         }
         if (i == n - 1 && xx < xs[0]) xx += wrapSpan;
         var next = (i + 1) % n;
@@ -49,7 +54,7 @@ public static class CurveEasing
         if (h <= 0) return ys[i];
         var t = (xx - x0) / h;
         if (!smooth) return ys[i] + (ys[next] - ys[i]) * t;
-        Span<double> m = n <= 64 ? stackalloc double[n] : new double[n];
+        Span<double> m = n <= StackPoints ? stackalloc double[n] : new double[n];
         Tangents(xs, ys, wrap ? wrapSpan : 0, m);
         var t2 = t * t;
         var t3 = t2 * t;
@@ -67,7 +72,7 @@ public static class CurveEasing
         var n = xs.Length;
         var wrap = span > 0;
         var segments = wrap ? n : n - 1;
-        Span<double> d = segments <= 64 ? stackalloc double[segments] : new double[segments];
+        Span<double> d = segments <= StackPoints ? stackalloc double[segments] : new double[segments];
         for (var i = 0; i < segments; i++)
         {
             var next = (i + 1) % n;
