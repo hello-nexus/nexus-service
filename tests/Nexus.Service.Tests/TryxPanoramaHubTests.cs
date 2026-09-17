@@ -27,6 +27,7 @@ public class TryxPanoramaHubTests
         public string PortName => "COM1";
         public List<byte[]> Writes { get; } = new();
         public IReadOnlyList<string> AvailableMediaIds { get; set; } = Array.Empty<string>();
+        public IReadOnlyList<string> AvailableCustomMediaFilenames { get; set; } = Array.Empty<string>();
         public IReadOnlyDictionary<string, long> MediaFileSizes { get; set; } = new Dictionary<string, long>();
         public int MediaListVersion { get; set; }
         public void Write(ReadOnlySpan<byte> data) => Writes.Add(data.ToArray());
@@ -693,6 +694,146 @@ public class TryxPanoramaHubTests
         Assert.Contains(media, Encoding.UTF8.GetString(recording.Writes[0]));
         Assert.Equal(media, store.Load().Tryx.CurrentMedia);
         Assert.False(store.Load().Tryx.CurrentMediaIsCustom);
+    }
+
+    [Fact]
+    public void Constructor_loads_slideshow_from_config_store()
+    {
+        var store = new InMemoryConfigStore();
+        store.Update(s =>
+        {
+            s.Tryx.SlideshowEnabled = true;
+            s.Tryx.SlideshowIntervalSec = 60;
+            s.Tryx.SlideshowShuffle = true;
+            s.Tryx.SlideshowFinishVideos = false;
+        });
+
+        var hub = BuildHub(configStore: store);
+
+        Assert.True(hub.Slideshow.Enabled);
+        Assert.Equal(60, hub.Slideshow.IntervalSec);
+        Assert.True(hub.Slideshow.Shuffle);
+        Assert.False(hub.Slideshow.FinishVideos);
+    }
+
+    [Fact]
+    public void Slideshow_defaults_off_on_a_settings_file_that_predates_it()
+    {
+        var hub = BuildHub(configStore: new InMemoryConfigStore());
+
+        Assert.False(hub.Slideshow.Enabled);
+        Assert.Equal(TryxSlideshowConfig.DefaultIntervalSec, hub.Slideshow.IntervalSec);
+        Assert.False(hub.Slideshow.Shuffle);
+        Assert.True(hub.Slideshow.FinishVideos);
+    }
+
+    [Fact]
+    public void SetSlideshow_persists_the_clamped_settings()
+    {
+        var store = new InMemoryConfigStore();
+        var hub = BuildHub(configStore: store);
+
+        hub.SetSlideshow(new TryxSlideshowConfig { Enabled = true, IntervalSec = 1, Shuffle = true, FinishVideos = false });
+
+        Assert.True(store.Load().Tryx.SlideshowEnabled);
+        Assert.Equal(TryxSlideshowConfig.MinIntervalSec, store.Load().Tryx.SlideshowIntervalSec);
+        Assert.True(store.Load().Tryx.SlideshowShuffle);
+        Assert.False(store.Load().Tryx.SlideshowFinishVideos);
+        Assert.Equal(TryxSlideshowConfig.MinIntervalSec, hub.Slideshow.IntervalSec);
+    }
+
+    [Fact]
+    public void SendHeartbeatTick_starts_the_slideshow_on_the_first_custom_clip_when_enabled_over_a_preset()
+    {
+        var store = new InMemoryConfigStore();
+        var recording = new RecordingTransport { AvailableCustomMediaFilenames = ["a.mp4", "b.mp4"] };
+        var hub = BuildHub(discovery: new StubDiscovery(), transportFactory: _ => recording, configStore: store);
+        hub.EnsureConnected();
+        hub.SetPreset(TryxRkProtocol.PresetMediaFile(1));
+        recording.Writes.Clear();
+
+        hub.SetSlideshow(new TryxSlideshowConfig { Enabled = true, IntervalSec = 10 });
+        hub.SendHeartbeatTick();
+
+        Assert.Equal("a.mp4", hub.State.CurrentMedia);
+        Assert.True(hub.State.CurrentMediaIsCustom);
+        Assert.Equal("a.mp4", store.Load().Tryx.CurrentMedia);
+        Assert.Contains(recording.Writes, w => w.AsSpan().SequenceEqual(TryxRkProtocol.BuildPreset("a.mp4", true, hub.State.Brightness)));
+    }
+
+    [Fact]
+    public void SendHeartbeatTick_holds_a_custom_clip_for_the_interval_before_advancing()
+    {
+        var recording = new RecordingTransport { AvailableCustomMediaFilenames = ["a.mp4", "b.mp4"] };
+        var hub = BuildHub(discovery: new StubDiscovery(), transportFactory: _ => recording);
+        hub.EnsureConnected();
+        hub.SelectCustomMedia("a.mp4");
+        hub.SetSlideshow(new TryxSlideshowConfig { Enabled = true, IntervalSec = 3600 });
+        recording.Writes.Clear();
+
+        hub.SendHeartbeatTick();
+
+        Assert.Equal("a.mp4", hub.State.CurrentMedia);
+        Assert.DoesNotContain(recording.Writes, w => w.AsSpan().SequenceEqual(TryxRkProtocol.BuildPreset("b.mp4", true, hub.State.Brightness)));
+    }
+
+    [Fact]
+    public void SendHeartbeatTick_does_not_advance_the_slideshow_while_the_screen_is_off()
+    {
+        var recording = new RecordingTransport { AvailableCustomMediaFilenames = ["a.mp4", "b.mp4"] };
+        var hub = BuildHub(discovery: new StubDiscovery(), transportFactory: _ => recording);
+        hub.EnsureConnected();
+        hub.SetPreset(TryxRkProtocol.PresetMediaFile(1));
+        hub.SetEnabled(false);
+        hub.SetSlideshow(new TryxSlideshowConfig { Enabled = true, IntervalSec = 10 });
+        recording.Writes.Clear();
+
+        hub.SendHeartbeatTick();
+
+        Assert.False(hub.State.ScreenEnabled);
+        Assert.False(hub.State.CurrentMediaIsCustom);
+        Assert.DoesNotContain(recording.Writes, w => Encoding.UTF8.GetString(w).Contains("a.mp4"));
+    }
+
+    [Fact]
+    public async Task A_cloud_install_holds_the_installed_theme_for_a_full_interval()
+    {
+        var recording = new RecordingTransport { AvailableCustomMediaFilenames = ["a.mp4", "b.mp4"] };
+        var hub = BuildHub(discovery: new StubDiscovery(), transportFactory: _ => recording);
+        hub.EnsureConnected();
+        // Nothing in the library is on screen, so enabling leaves the slideshow due at once.
+        hub.SetSlideshow(new TryxSlideshowConfig { Enabled = true, IntervalSec = 3600 });
+
+        var path = WriteTempFile(100);
+        try
+        {
+            Assert.True(await hub.InstallLocalMediaAsync(path, "download_7", CancellationToken.None));
+            recording.Writes.Clear();
+
+            hub.SendHeartbeatTick();
+
+            Assert.Equal("download_7", hub.State.CurrentMedia);
+            Assert.DoesNotContain(recording.Writes, w => Encoding.UTF8.GetString(w).Contains("a.mp4"));
+        }
+        finally
+        {
+            File.Delete(path);
+        }
+    }
+
+    [Fact]
+    public void SendHeartbeatTick_leaves_the_panel_alone_while_the_slideshow_is_off()
+    {
+        var recording = new RecordingTransport { AvailableCustomMediaFilenames = ["a.mp4", "b.mp4"] };
+        var hub = BuildHub(discovery: new StubDiscovery(), transportFactory: _ => recording);
+        hub.EnsureConnected();
+        hub.SetPreset(TryxRkProtocol.PresetMediaFile(1));
+        recording.Writes.Clear();
+
+        hub.SendHeartbeatTick();
+
+        Assert.False(hub.State.CurrentMediaIsCustom);
+        Assert.DoesNotContain(recording.Writes, w => Encoding.UTF8.GetString(w).Contains("a.mp4"));
     }
 
     [Fact]

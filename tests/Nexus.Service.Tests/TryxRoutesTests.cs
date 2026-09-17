@@ -263,6 +263,20 @@ public class TryxRoutesTests
     }
 
     [Fact]
+    public void BuildSlideshowSnapshot_projects_every_field()
+    {
+        var snapshot = TryxRoutes.BuildSlideshowSnapshot(new TryxSlideshowConfig
+        {
+            Enabled = true, IntervalSec = 300, Shuffle = true, FinishVideos = false,
+        });
+
+        Assert.True(snapshot.Enabled);
+        Assert.Equal(300, snapshot.IntervalSec);
+        Assert.True(snapshot.Shuffle);
+        Assert.False(snapshot.FinishVideos);
+    }
+
+    [Fact]
     public void BuildOverlayItems_returns_empty_for_no_configured_items()
     {
         var overlay = new TryxOverlayConfig { Items = [] };

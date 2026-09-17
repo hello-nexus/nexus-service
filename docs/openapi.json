@@ -12232,6 +12232,28 @@
         }
       }
     },
+    "/tryx/slideshow": {
+      "post": {
+        "tags": [
+          "Nexus"
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TryxSlideshowSnapshot"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        }
+      }
+    },
     "/tryx/enable": {
       "post": {
         "tags": [
@@ -24734,6 +24756,28 @@
         "properties": {
           "id": {
             "type": "string"
+          }
+        }
+      },
+      "TryxSlideshowSnapshot": {
+        "type": "object",
+        "properties": {
+          "enabled": {
+            "type": "boolean"
+          },
+          "intervalSec": {
+            "pattern": "^-?(?:0|[1-9]\\d*)$",
+            "type": [
+              "integer",
+              "string"
+            ],
+            "format": "int32"
+          },
+          "shuffle": {
+            "type": "boolean"
+          },
+          "finishVideos": {
+            "type": "boolean"
           }
         }
       },
