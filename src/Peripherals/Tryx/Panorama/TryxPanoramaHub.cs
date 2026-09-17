@@ -381,9 +381,11 @@ public sealed class TryxPanoramaHub : IDisposable
     private bool OverlayUsesFps() => _overlay.Items.Any(i => i.Device == "fps");
 
     // Runs on the heartbeat under _txGate. SelectCustomMedia re-arms the hold on success;
-    // on failure the pacer has already pushed the deadline out one interval.
+    // on failure the pacer has already pushed the deadline out one interval. A select turns
+    // the screen on, so a screen the user switched off is left alone.
     private void AdvanceSlideshowIfDue()
     {
+        if (!State.ScreenEnabled) return;
         var next = _slideshow.Tick(ListCustomMedia, NowMs());
         if (next is null) return;
         if (!SelectCustomMedia(next))
@@ -408,7 +410,12 @@ public sealed class TryxPanoramaHub : IDisposable
         // Screen on/off rides the same f200.f5 config as brightness (f5.f1 = enable);
         // carry the current brightness so turning the screen back on restores it.
         var ok = SendReliable(TryxRkProtocol.BuildConfig(enable, State.Brightness));
-        if (ok) State.ScreenEnabled = enable;
+        if (ok)
+        {
+            State.ScreenEnabled = enable;
+            // The clip that comes back with the screen gets a full hold.
+            if (enable) _slideshow.Rearm(State.CurrentMedia, NowMs());
+        }
         return ok;
     }
 

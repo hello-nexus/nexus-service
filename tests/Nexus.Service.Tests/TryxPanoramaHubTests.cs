@@ -778,6 +778,24 @@ public class TryxPanoramaHubTests
     }
 
     [Fact]
+    public void SendHeartbeatTick_does_not_advance_the_slideshow_while_the_screen_is_off()
+    {
+        var recording = new RecordingTransport { AvailableCustomMediaFilenames = ["a.mp4", "b.mp4"] };
+        var hub = BuildHub(discovery: new StubDiscovery(), transportFactory: _ => recording);
+        hub.EnsureConnected();
+        hub.SetPreset(TryxRkProtocol.PresetMediaFile(1));
+        hub.SetEnabled(false);
+        hub.SetSlideshow(new TryxSlideshowConfig { Enabled = true, IntervalSec = 10 });
+        recording.Writes.Clear();
+
+        hub.SendHeartbeatTick();
+
+        Assert.False(hub.State.ScreenEnabled);
+        Assert.False(hub.State.CurrentMediaIsCustom);
+        Assert.DoesNotContain(recording.Writes, w => Encoding.UTF8.GetString(w).Contains("a.mp4"));
+    }
+
+    [Fact]
     public void SendHeartbeatTick_leaves_the_panel_alone_while_the_slideshow_is_off()
     {
         var recording = new RecordingTransport { AvailableCustomMediaFilenames = ["a.mp4", "b.mp4"] };
