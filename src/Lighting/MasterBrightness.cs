@@ -76,15 +76,16 @@ public static class MasterBrightness
         }
     }
 
-    /// <summary>The out-of-box curve: full at midday, dim through the night.</summary>
+    /// <summary>The out-of-box curve follows daylight: a dim night floor, a
+    /// short climb to full after sunrise, full through the day, and a fall
+    /// through dusk back to the floor.</summary>
     public static List<BrightnessSchedulePoint> DefaultSchedule() => new()
     {
-        new() { Hour = 0, Brightness = 20 },
-        new() { Hour = 4, Brightness = 15 },
-        new() { Hour = 8, Brightness = 60 },
-        new() { Hour = 12, Brightness = 100 },
-        new() { Hour = 16, Brightness = 90 },
-        new() { Hour = 20, Brightness = 50 },
+        new() { Hour = 5, Brightness = 10 },
+        new() { Hour = 8, Brightness = 100 },
+        new() { Hour = 17, Brightness = 100 },
+        new() { Hour = 20, Brightness = 30 },
+        new() { Hour = 22, Brightness = 10 },
     };
 
     private const int MinutesPerDay = 24 * 60;

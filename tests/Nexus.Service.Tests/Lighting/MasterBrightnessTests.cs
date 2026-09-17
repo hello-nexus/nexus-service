@@ -37,16 +37,16 @@ public sealed class MasterBrightnessTests
     // evaluate the same rule, so the graph's readout and the LEDs never
     // disagree.
     [Theory]
-    [InlineData(1, 0, 18.75)]
-    [InlineData(2, 0, 17.5)]
-    [InlineData(3, 0, 16.25)]
-    [InlineData(6, 0, 37.5)]
-    [InlineData(10, 0, 80)]
-    [InlineData(14, 0, 95)]
-    [InlineData(18, 0, 70)]
-    [InlineData(22, 0, 35)]
-    [InlineData(23, 0, 27.5)]
-    [InlineData(23, 30, 23.75)]
+    [InlineData(3, 0, 10)]
+    [InlineData(6, 0, 40)]
+    [InlineData(7, 0, 70)]
+    [InlineData(12, 0, 100)]
+    [InlineData(18, 0, 76.6667)]
+    [InlineData(19, 0, 53.3333)]
+    [InlineData(21, 0, 20)]
+    [InlineData(21, 30, 15)]
+    [InlineData(23, 0, 10)]
+    [InlineData(23, 30, 10)]
     public void Follows_the_default_points_like_the_web_does(int hour, int minute, double percent)
     {
         Assert.Equal(percent / 100, MasterBrightness.Scheduled(MasterBrightness.DefaultSchedule(), At(hour, minute)), 4);
@@ -136,10 +136,9 @@ public sealed class MasterBrightnessTests
     {
         var pts = MasterBrightness.DefaultSchedule();
 
-        Assert.Equal(6, pts.Count);
+        Assert.Equal(5, pts.Count);
         Assert.Equal(1f, MasterBrightness.Scheduled(pts, At(12)), 4);
-        Assert.True(MasterBrightness.Scheduled(pts, At(13)) > 0.95f);
-        Assert.True(MasterBrightness.Scheduled(pts, At(3)) < 0.25f);
+        Assert.Equal(0.1f, MasterBrightness.Scheduled(pts, At(3)), 4);
         Assert.True(MasterBrightness.Scheduled(pts, At(23)) < MasterBrightness.Scheduled(pts, At(19)));
     }
 
