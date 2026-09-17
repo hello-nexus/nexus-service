@@ -362,6 +362,20 @@ namespace Nexus.Service.Serialization;
 [JsonSerializable(typeof(Nexus.Service.Models.Weather.WeatherSavedLocationDto))]
 [JsonSerializable(typeof(List<Nexus.Service.Models.Weather.WeatherSavedLocationDto>))]
 
+// Klipy GIF picker (api.klipy.com wire + our own picker DTOs)
+[JsonSerializable(typeof(Nexus.Service.Models.Klipy.KlipySearchResponse))]
+[JsonSerializable(typeof(Nexus.Service.Models.Klipy.KlipyGifDto))]
+[JsonSerializable(typeof(List<Nexus.Service.Models.Klipy.KlipyGifDto>))]
+[JsonSerializable(typeof(Nexus.Service.Models.Klipy.KlipyImportRequest))]
+[JsonSerializable(typeof(Nexus.Service.Klipy.KlipyEnvelope))]
+[JsonSerializable(typeof(Nexus.Service.Klipy.KlipyPage))]
+[JsonSerializable(typeof(Nexus.Service.Klipy.KlipyWireItem))]
+[JsonSerializable(typeof(Nexus.Service.Klipy.KlipyWireItem[]))]
+[JsonSerializable(typeof(Nexus.Service.Klipy.KlipyFileSizes))]
+[JsonSerializable(typeof(Nexus.Service.Klipy.KlipyFileTypes))]
+[JsonSerializable(typeof(Nexus.Service.Klipy.KlipyFileMeta))]
+[JsonSerializable(typeof(Nexus.Service.Klipy.KlipyCustomerBody))]
+
 // Stocks
 [JsonSerializable(typeof(Nexus.Service.Models.Stocks.StockQuote))]
 [JsonSerializable(typeof(List<Nexus.Service.Models.Stocks.StockQuote>))]

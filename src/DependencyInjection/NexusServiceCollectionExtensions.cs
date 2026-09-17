@@ -505,6 +505,7 @@ public static class NexusServiceCollectionExtensions
         services.AddSingleton<Nexus.Service.Lighting.GameSyncGameScanner>();
         services.AddSingleton<IObsProvider, ObsProvider>();
         services.AddSingleton<Nexus.Service.Twitch.ITwitchEmoteCache, Nexus.Service.Twitch.TwitchEmoteCache>();
+        services.AddSingleton<Nexus.Service.Klipy.IKlipyCatalog, Nexus.Service.Klipy.KlipyCatalog>();
         services.AddSingleton<Nexus.Service.Twitch.TwitchChatHub>();
         services.AddHostedService(sp => sp.GetRequiredService<Nexus.Service.Twitch.TwitchChatHub>());
         services.AddSingleton<ISteamProvider, SteamProvider>();

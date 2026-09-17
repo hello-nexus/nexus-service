@@ -589,6 +589,7 @@ app.MapGameSyncEndpoints();
 app.MapWebcamEndpoints();
 app.MapObsEndpoints();
 app.MapTwitchEndpoints();
+app.MapKlipyEndpoints();
 app.MapSteamEndpoints();
 app.MapDiscordEndpoints();
 app.MapDevicesEndpoints();

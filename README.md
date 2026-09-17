@@ -93,7 +93,7 @@ src/
   Activity/            # screen time, app detection, audio analysis
   Games/  Fps/         # installed-game catalog, FPS capture and per-game sessions
   FocusModes/  Audio/  # focus modes; per-app volume mixer and audio playback
-  Steam/ Discord/ Obs/ Twitch/ Integrations/   # third-party integrations (Integrations/ = Home Assistant)
+  Steam/ Discord/ Obs/ Twitch/ Klipy/ Integrations/   # third-party integrations (Klipy/ = GIF catalog, Integrations/ = Home Assistant)
   Diagnostics/         # event-log monitor, SMART/NVMe, GPU/cooling/memory checks, health model, support bundle
   Relay/  Rtc/         # off-LAN relay client and sealed channels; WebRTC direct transport
   Webcam/  Transfer/   # phone-as-webcam backends; phone-to-PC file transfer inbox
