@@ -202,7 +202,7 @@ public static class PanelBgImporter
             {
                 var mediaPath = library.GetMediaPath(deviceId, assetId, alpha ? ".png" : ".jpg");
                 var args = new List<string> { "-y", "-i", stagedPath };
-                args.AddRange(CropScaleArgs(crop, targetW, targetH, matte, animated: false, fitWhole));
+                args.AddRange(CropScaleArgs(crop, targetW, targetH, matte, animated: false, fitWhole, alpha));
                 args.Add("-frames:v");
                 args.Add("1");
                 if (!alpha)
@@ -223,7 +223,7 @@ public static class PanelBgImporter
             var (thumbW, thumbH) = ThumbSize(targetW, targetH);
             var thumbPath = library.GetThumbPath(deviceId, assetId, alpha);
             var thumbArgs = new List<string> { "-y", "-i", stagedPath };
-            thumbArgs.AddRange(CropScaleArgs(crop, thumbW, thumbH, matte, animated: false, fitWhole));
+            thumbArgs.AddRange(CropScaleArgs(crop, thumbW, thumbH, matte, animated: false, fitWhole, alpha));
             thumbArgs.Add("-frames:v");
             thumbArgs.Add("1");
             if (!alpha)
@@ -361,26 +361,27 @@ public static class PanelBgImporter
         return new[]
         {
             "-filter_complex",
-            $"[0:v]{ScaleFilter(crop, w, h, fitWhole)}[fg];color=black:s={w}x{h}{rate}[bg];[bg][fg]overlay=shortest=1",
+            $"[0:v]{ScaleFilter(crop, w, h, fitWhole, alpha: false)}[fg];color=black:s={w}x{h}{rate}[bg];[bg][fg]overlay=shortest=1",
         };
     }
 
     /// <summary>Crop+scale for a source with nothing to matte.</summary>
-    private static string[] ScaleArgs(CropRect crop, int w, int h, bool fitWhole) =>
-        new[] { "-vf", ScaleFilter(crop, w, h, fitWhole) };
+    private static string[] ScaleArgs(CropRect crop, int w, int h, bool fitWhole, bool alpha) =>
+        new[] { "-vf", ScaleFilter(crop, w, h, fitWhole, alpha) };
 
     /// <summary>
     /// Fills the target by default: the crop is already at the target aspect, so
     /// a plain scale lands on it. fitWhole keeps the whole frame instead, which
-    /// needs decrease+pad - a plain scale would stretch it to the target.
+    /// needs decrease+pad - a plain scale would stretch it to the target. The
+    /// bars are transparent when the output keeps alpha, opaque otherwise.
     /// </summary>
-    private static string ScaleFilter(CropRect crop, int w, int h, bool fitWhole) =>
+    private static string ScaleFilter(CropRect crop, int w, int h, bool fitWhole, bool alpha) =>
         fitWhole
-            ? $"{crop.ToFfmpegCrop()},scale={w}:{h}:force_original_aspect_ratio=decrease,pad={w}:{h}:-1:-1:color=black"
+            ? $"{crop.ToFfmpegCrop()},scale={w}:{h}:force_original_aspect_ratio=decrease,pad={w}:{h}:-1:-1:color={(alpha ? "black@0" : "black")}"
             : $"{crop.ToFfmpegCrop()},scale={w}:{h}";
 
-    private static string[] CropScaleArgs(CropRect crop, int w, int h, bool matte, bool animated, bool fitWhole) =>
-        matte ? MatteArgs(crop, w, h, animated, fitWhole) : ScaleArgs(crop, w, h, fitWhole);
+    private static string[] CropScaleArgs(CropRect crop, int w, int h, bool matte, bool animated, bool fitWhole, bool alpha = false) =>
+        matte ? MatteArgs(crop, w, h, animated, fitWhole) : ScaleArgs(crop, w, h, fitWhole, alpha);
 
     // ffmpeg exits non-zero when invoked with only -i (no output), so stderr
     // must be captured with the exit code ignored.

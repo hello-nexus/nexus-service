@@ -367,7 +367,7 @@ public sealed class KlipyCatalogTests
         using var server = new StubServer();
         var host = $"http://127.0.0.1:{server.Port}";
         var sized = Item("has-size", host);
-        // Every variant loses its size, not just the gif the import used to prefer.
+        // Every variant loses its size.
         var unsized = Item("no-size", host).Replace("\"width\":220,\"height\":164,", "");
         server.ResponseFactory = _ => Json(Page(unsized + "," + sized));
         var catalog = Make(server);

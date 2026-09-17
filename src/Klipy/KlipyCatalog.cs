@@ -176,8 +176,8 @@ public sealed class KlipyCatalog : IKlipyCatalog
             return null;
         }
 
-        // mp4 first: the same clip as gif runs 10-70x larger (a 498px gif can
-        // pass 30 MB where its mp4 is under 500 KB), and both importers decode it.
+        // mp4 first: the same clip as gif is an order of magnitude larger, and
+        // both importers decode it.
         var mp4 = FirstWithUrl(item.File?.Hd?.Mp4, item.File?.Md?.Mp4, item.File?.Sm?.Mp4);
         var import = mp4 ?? FirstWithUrl(item.File?.Hd?.Gif, item.File?.Md?.Gif, item.File?.Sm?.Gif);
         var importExt = mp4 is not null ? ".mp4" : ".gif";
