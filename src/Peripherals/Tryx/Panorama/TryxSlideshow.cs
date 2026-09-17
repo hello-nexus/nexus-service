@@ -90,11 +90,11 @@ public sealed class TryxSlideshow
         lock (_lock)
         {
             if (!_config.Enabled || nowMs < _deadlineMs) return null;
+            // Push the deadline out first so a failed select, or a library with nothing to
+            // cycle, is re-checked at the interval cadence rather than every heartbeat.
+            _deadlineMs = nowMs + _config.IntervalSec * 1000L;
             var clips = library();
             if (clips.Count < 2) return null;
-            // A failed select leaves the deadline in the past; push it out so a panel that is
-            // not accepting writes is retried at the interval cadence, not every heartbeat.
-            _deadlineMs = nowMs + _config.IntervalSec * 1000L;
             return _config.Shuffle ? NextShuffledLocked(clips) : NextInOrderLocked(clips);
         }
     }

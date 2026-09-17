@@ -796,6 +796,32 @@ public class TryxPanoramaHubTests
     }
 
     [Fact]
+    public async Task A_cloud_install_holds_the_installed_theme_for_a_full_interval()
+    {
+        var recording = new RecordingTransport { AvailableCustomMediaFilenames = ["a.mp4", "b.mp4"] };
+        var hub = BuildHub(discovery: new StubDiscovery(), transportFactory: _ => recording);
+        hub.EnsureConnected();
+        // Nothing in the library is on screen, so enabling leaves the slideshow due at once.
+        hub.SetSlideshow(new TryxSlideshowConfig { Enabled = true, IntervalSec = 3600 });
+
+        var path = WriteTempFile(100);
+        try
+        {
+            Assert.True(await hub.InstallLocalMediaAsync(path, "download_7", CancellationToken.None));
+            recording.Writes.Clear();
+
+            hub.SendHeartbeatTick();
+
+            Assert.Equal("download_7", hub.State.CurrentMedia);
+            Assert.DoesNotContain(recording.Writes, w => Encoding.UTF8.GetString(w).Contains("a.mp4"));
+        }
+        finally
+        {
+            File.Delete(path);
+        }
+    }
+
+    [Fact]
     public void SendHeartbeatTick_leaves_the_panel_alone_while_the_slideshow_is_off()
     {
         var recording = new RecordingTransport { AvailableCustomMediaFilenames = ["a.mp4", "b.mp4"] };

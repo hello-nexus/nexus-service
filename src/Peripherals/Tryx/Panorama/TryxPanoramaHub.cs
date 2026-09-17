@@ -96,11 +96,12 @@ public sealed class TryxPanoramaHub : IDisposable
 
     public TryxSlideshowConfig Slideshow => _slideshow.Config;
 
-    /// <summary>The custom-upload library the media list shows and the slideshow cycles:
-    /// the panel's reported /userdata/user/ files (device truth, so a Kanali upload with no
-    /// local thumbnail still counts) plus the local thumbnail record (a just-uploaded file
-    /// the panel's once-per-connection list has not caught yet), minus cloud downloads,
-    /// which Nexus's own install also lands in /userdata/user/.</summary>
+    /// <summary>The custom-upload library the media list shows and the slideshow cycles on
+    /// RK firmware: the panel's reported /userdata/user/ files (device truth, so a Kanali
+    /// upload with no local thumbnail still counts) plus the local thumbnail record (a
+    /// just-uploaded file the panel's once-per-connection list has not caught yet), minus
+    /// cloud downloads, which Nexus's own install also lands in /userdata/user/. The legacy
+    /// adb firmware's /sdcard/pcMedia listing is not part of it.</summary>
     public List<string> ListCustomMedia()
         => AvailableCustomMediaFilenames.Concat(TryxThumbnailCache.ListCustomMedia())
             .Where(n => !IsCloudDownload(n))
@@ -436,19 +437,24 @@ public sealed class TryxPanoramaHub : IDisposable
     /// along so the panel keeps them.</summary>
     public bool SetPreset(string wallpaperMedia)
     {
-        var ok = SendReliable(TryxRkProtocol.BuildPreset(wallpaperMedia, State.ScreenEnabled, State.Brightness));
-        if (ok)
+        // Send, state and re-arm stay under the gate so a heartbeat slideshow advance
+        // cannot land between them and leave State pointing at a clip the panel left.
+        lock (_txGate)
         {
-            State.CurrentMedia = wallpaperMedia;
-            State.CurrentMediaIsCustom = false;
-            _configStore.Update(s =>
+            var ok = SendReliable(TryxRkProtocol.BuildPreset(wallpaperMedia, State.ScreenEnabled, State.Brightness));
+            if (ok)
             {
-                s.Tryx.CurrentMedia = wallpaperMedia;
-                s.Tryx.CurrentMediaIsCustom = false;
-            });
-            _slideshow.Rearm(wallpaperMedia, NowMs());
+                State.CurrentMedia = wallpaperMedia;
+                State.CurrentMediaIsCustom = false;
+                _configStore.Update(s =>
+                {
+                    s.Tryx.CurrentMedia = wallpaperMedia;
+                    s.Tryx.CurrentMediaIsCustom = false;
+                });
+                _slideshow.Rearm(wallpaperMedia, NowMs());
+            }
+            return ok;
         }
-        return ok;
     }
 
     public bool SetOverlay(TryxOverlayConfig overlay)
@@ -674,10 +680,14 @@ public sealed class TryxPanoramaHub : IDisposable
         }
         if (!SendFileTransfer(deviceFileName, bytes, fileType: "media", ct)) return false;
         RecordMediaUpload(deviceFileName, bytes.Length);
-        if (!SendReliable(TryxRkProtocol.BuildPreset(deviceFileName, State.ScreenEnabled, State.Brightness))) return false;
-        State.CurrentMedia = deviceFileName;
-        State.CurrentMediaIsCustom = false;
-        _configStore.Update(s => { s.Tryx.CurrentMedia = deviceFileName; s.Tryx.CurrentMediaIsCustom = false; });
+        lock (_txGate)
+        {
+            if (!SendReliable(TryxRkProtocol.BuildPreset(deviceFileName, State.ScreenEnabled, State.Brightness))) return false;
+            State.CurrentMedia = deviceFileName;
+            State.CurrentMediaIsCustom = false;
+            _configStore.Update(s => { s.Tryx.CurrentMedia = deviceFileName; s.Tryx.CurrentMediaIsCustom = false; });
+            _slideshow.Rearm(deviceFileName, NowMs());
+        }
         return true;
     }
 
@@ -858,12 +868,15 @@ public sealed class TryxPanoramaHub : IDisposable
     public bool SelectCustomMedia(string deviceFileName)
     {
         if (!TryxThumbnailCache.IsSafeDeviceName(deviceFileName)) return false;
-        if (!SendReliable(TryxRkProtocol.BuildPreset(deviceFileName, screenOn: true, State.Brightness))) return false;
-        State.CurrentMedia = deviceFileName;
-        State.CurrentMediaIsCustom = true;
-        State.ScreenEnabled = true;
-        _configStore.Update(s => { s.Tryx.CurrentMedia = deviceFileName; s.Tryx.CurrentMediaIsCustom = true; });
-        _slideshow.Rearm(deviceFileName, NowMs());
+        lock (_txGate)
+        {
+            if (!SendReliable(TryxRkProtocol.BuildPreset(deviceFileName, screenOn: true, State.Brightness))) return false;
+            State.CurrentMedia = deviceFileName;
+            State.CurrentMediaIsCustom = true;
+            State.ScreenEnabled = true;
+            _configStore.Update(s => { s.Tryx.CurrentMedia = deviceFileName; s.Tryx.CurrentMediaIsCustom = true; });
+            _slideshow.Rearm(deviceFileName, NowMs());
+        }
         return true;
     }
 
@@ -1179,7 +1192,8 @@ public sealed class TryxPanoramaHub : IDisposable
     // EnsureConnected reopens it and succeeds. Without this a single user action that
     // coincides with a re-enumeration silently no-ops (and can leave the panel mid-
     // load). The 1 Hz heartbeat / overlay-refresh path uses SendOnly directly - it
-    // re-sends on the next tick, so it needs no retry here.
+    // re-sends on the next tick, so it needs no retry here; the heartbeat's slideshow
+    // advance does go through here (a missed select is not re-sent until the next hold).
     // After a re-enumeration drop the panel re-appears on the bus almost at once but
     // is not write-ready for another ~0.2-1s (observed: "write failed" -> "connected"
     // ~200ms later in the service log, and the reopen's config write can still fail

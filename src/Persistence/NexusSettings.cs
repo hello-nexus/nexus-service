@@ -1077,7 +1077,7 @@ public sealed class TryxSettings
     /// <summary>Custom-upload slideshow (see
     /// <see cref="Nexus.Service.Peripherals.Tryx.Panorama.TryxSlideshowConfig"/>).</summary>
     public bool SlideshowEnabled { get; set; }
-    public int SlideshowIntervalSec { get; set; } = 10;
+    public int SlideshowIntervalSec { get; set; } = Nexus.Service.Peripherals.Tryx.Panorama.TryxSlideshowConfig.DefaultIntervalSec;
     public bool SlideshowShuffle { get; set; }
     public bool SlideshowFinishVideos { get; set; } = true;
 }

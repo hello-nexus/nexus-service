@@ -206,7 +206,7 @@ public static class TryxRoutes
             hub.SetSlideshow(new TryxSlideshowConfig
             {
                 Enabled = body.Enabled,
-                IntervalSec = TryxSlideshowConfig.ClampInterval(body.IntervalSec),
+                IntervalSec = body.IntervalSec,
                 Shuffle = body.Shuffle,
                 FinishVideos = body.FinishVideos,
             });
