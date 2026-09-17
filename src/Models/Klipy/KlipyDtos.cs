@@ -39,4 +39,6 @@ public sealed class KlipyPanelBgImportRequest
     public int W { get; set; }
     public int H { get; set; }
     public bool KeepTransparency { get; set; } = true;
+    /// <summary>Letterbox the whole frame instead of filling the panel.</summary>
+    public bool Fit { get; set; }
 }

@@ -158,9 +158,11 @@ public static class PanelBgRoutes
 
                 // Absent means keep: a client too old to send the field gets the default.
                 var keepTransparency = form["keepTransparency"].ToString() is not "0" and not "false";
+                // Absent means fill, which is what every client sent before the switch existed.
+                var fitWhole = form["fit"].ToString() is "1" or "true";
 
                 var result = await PanelBgImporter.CommitAsync(
-                    lib, deviceId, stageId, cropRect, targetW, targetH, keepTransparency);
+                    lib, deviceId, stageId, cropRect, targetW, targetH, keepTransparency, fitWhole);
                 if (!result.Ok)
                 {
                     return Results.BadRequest(new PanelBgImportResponse { Error = true, Msg = result.Error ?? "Commit failed" });
@@ -212,7 +214,7 @@ public static class PanelBgRoutes
 
                     stageId = staged.StageId!;
                     var result = await PanelBgImporter.CommitAsync(
-                        lib, deviceId, stageId, cropRect, body.W, body.H, body.KeepTransparency);
+                        lib, deviceId, stageId, cropRect, body.W, body.H, body.KeepTransparency, body.Fit);
                     if (!result.Ok)
                     {
                         return Results.BadRequest(new PanelBgImportResponse { Error = true, Msg = result.Error ?? "Commit failed" });
