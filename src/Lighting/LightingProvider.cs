@@ -125,6 +125,9 @@ public sealed class LightingProvider : ILightingProvider, IDisposable
     private void EnsureRgbActive()
     {
         _engine.StaticEffects?.Enabled = false;
+        // Only simple mode's sweep set samples every device across the whole
+        // canvas; StartAnimate re-asserts it, so a mode start cannot inherit it.
+        _engine.FullFrameSampling = false;
         _rgb?.Activate();
     }
 
@@ -342,6 +345,9 @@ public sealed class LightingProvider : ILightingProvider, IDisposable
         var contrast = body.Contrast;
         var extras = ParamsToDict(body.Params);
         var effectSpeed = name == "pulse" ? speed * 0.5f : speed;
+        // A sweep is meant to read end to end on every device at once, so the
+        // engine stops treating the canvas as a shared scene for these.
+        _engine.FullFrameSampling = ShaderLibrary.IsSweepEffect(name);
 
         // Fast path: if the currently running effect is the same shader, just
         // update its uniforms in place. Creating a new ShaderEffect every
@@ -911,6 +917,13 @@ public sealed class LightingProvider : ILightingProvider, IDisposable
         // Simple solid-colour fills all share one cheap shader; the colour is
         // carried by the post-process tint, not the GLSL.
         if (name.StartsWith("simple", System.StringComparison.Ordinal))
+        {
+            return MakeShader(name, ShaderLibrary.Get(name), effectSpeed, intensity, hue, colorize, saturation, contrast, extras);
+        }
+        // Simple mode's sweep set loads its own .frag by name, same as the
+        // static patterns below - the switch has no arm for them and its
+        // rainbow default would render all seven identically.
+        if (ShaderLibrary.IsSweepEffect(name))
         {
             return MakeShader(name, ShaderLibrary.Get(name), effectSpeed, intensity, hue, colorize, saturation, contrast, extras);
         }

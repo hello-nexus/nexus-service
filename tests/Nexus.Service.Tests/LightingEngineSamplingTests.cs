@@ -18,10 +18,11 @@ public class LightingEngineSamplingTests
         public void Dispose() { }
     }
 
-    private static async Task<byte[]> RenderOnce(DeviceFrame device, Action<CanvasBuffer> paint, bool footprintSampling = true)
+    private static async Task<byte[]> RenderOnce(DeviceFrame device, Action<CanvasBuffer> paint, bool footprintSampling = true, bool fullFrame = false)
     {
         using var engine = new LightingEngine();
         engine.FootprintSamplingEnabled = footprintSampling;
+        engine.FullFrameSampling = fullFrame;
         engine.UpdateDevices(new[] { device });
         engine.FrameIntervalMs = 10;
         var tcs = new TaskCompletionSource<byte[]>(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -169,6 +170,33 @@ public class LightingEngineSamplingTests
             if (i == 8) continue;
             Assert.Equal(((byte)0, (byte)0, (byte)0), Led(leds, i));
         }
+    }
+
+    // Simple mode's sweep set: every device reads the whole canvas, so a small
+    // frame parked in one corner still shows the pattern end to end.
+    [Fact]
+    public async Task FullFrameSampling_StripReadsWholeCanvas()
+    {
+        // A small frame parked in the canvas's top-left corner, over a canvas
+        // painted red on the left half and blue on the right.
+        var device = new DeviceFrame(0, "strip", 10, x: 20, y: 20, w: 100, h: 20);
+        void Paint(CanvasBuffer c)
+        {
+            c.Clear();
+            for (int y = 0; y < 90; y++)
+            {
+                for (int x = 0; x < 160; x++) { c.SetPixel(x, y, x < 80 ? (byte)255 : (byte)0, 0, x < 80 ? (byte)0 : (byte)255); }
+            }
+        }
+        var full = await RenderOnce(device, Paint, fullFrame: true);
+        Assert.Equal(((byte)255, (byte)0, (byte)0), Led(full, 0));
+        Assert.Equal(((byte)0, (byte)0, (byte)255), Led(full, 9));
+
+        // Same frame without the flag reads its own rect, which sits entirely
+        // in the red half - the difference the flag makes, not the paint.
+        var placed = await RenderOnce(device, Paint);
+        Assert.Equal(((byte)255, (byte)0, (byte)0), Led(placed, 0));
+        Assert.Equal(((byte)255, (byte)0, (byte)0), Led(placed, 9));
     }
 
     [Fact]

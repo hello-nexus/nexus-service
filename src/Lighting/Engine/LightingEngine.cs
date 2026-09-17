@@ -62,6 +62,19 @@ public sealed class LightingEngine : IDisposable
     /// device dark. Flip to false to revert to the pre-footprint behaviour.
     /// </summary>
     public bool FootprintSamplingEnabled { get; set; } = true;
+
+    /// <summary>
+    /// Every device samples the WHOLE canvas instead of the rect its layout
+    /// gives it, so each one shows the entire pattern rather than the slice its
+    /// frame covers. The saved layout is untouched - only this pass ignores it.
+    /// Written from the request thread, read by the render thread.
+    /// </summary>
+    public volatile bool FullFrameSampling;
+
+    /// <summary>Fraction of the canvas height a linear strip integrates under
+    /// <see cref="FullFrameSampling"/>; wide enough to reject single-pixel
+    /// noise, narrow enough to keep a band's edge.</summary>
+    private const float FullFrameStripBreadth = 0.08f;
     public event Action<ReadOnlyMemory<byte>>? OnFrame;
     public event Action? OnEffectChanged;
     public string CurrentEffectName => _currentEffect?.Name ?? "none";
@@ -687,20 +700,24 @@ public sealed class LightingEngine : IDisposable
             // unturned in units, rotated about (frameCx, frameCy), and only
             // then scaled onto the pixel grid. A stack slot is cut from the
             // unturned rect and turns with the whole frame.
-            var rectX = dev.X;
-            var rectY = dev.Y;
-            var rectW = dev.W;
-            var rectH = dev.H;
+            var fullFrame = FullFrameSampling;
+            var rectX = fullFrame ? 0f : dev.X;
+            var rectY = fullFrame ? 0f : dev.Y;
+            var rectW = fullFrame ? CW : dev.W;
+            var rectH = fullFrame ? CH : dev.H;
             var frameCx = rectX + rectW * 0.5f;
             var frameCy = rectY + rectH * 0.5f;
             var kx = cw / CW;
             var ky = ch / CH;
-            var rad = (((dev.Rotation % 360) + 360) % 360) * (MathF.PI / 180f);
+            // A full-frame device is not placed on the canvas at all, so it has
+            // no orientation to honour either: the pattern reads along its LED
+            // order whichever way its card is turned.
+            var rad = fullFrame ? 0f : (((dev.Rotation % 360) + 360) % 360) * (MathF.PI / 180f);
             var cos = MathF.Cos(rad);
             var sin = MathF.Sin(rad);
             var absCos = MathF.Abs(cos);
             var absSin = MathF.Abs(sin);
-            var slots = _stackSlots;
+            var slots = fullFrame ? null : _stackSlots;
             if (slots is not null && slots.TryGetValue(dev.Id, out var slot))
             {
                 (rectX, rectY, rectW, rectH) = Nexus.Service.Lighting.StackSlots.Slice(rectX, rectY, rectW, rectH, slot);
@@ -791,7 +808,11 @@ public sealed class LightingEngine : IDisposable
             // instead of only the centerline; the read is the turned cell's
             // bounding box.
             var pitchHalf = Math.Max(1f / kx, rectW / ledCount) * 0.5f;
-            var breadthHalf = Math.Max(1f / ky, rectH) * 0.5f;
+            // Full frame: a cell spanning the canvas top to bottom averages
+            // every band into one colour, so the strip reads a thin slice
+            // through the middle instead.
+            var breadth = fullFrame ? rectH * FullFrameStripBreadth : rectH;
+            var breadthHalf = Math.Max(1f / ky, breadth) * 0.5f;
             var linHalfW = (pitchHalf * absCos + breadthHalf * absSin) * kx;
             var linHalfH = (pitchHalf * absSin + breadthHalf * absCos) * ky;
             var midY = rectY + rectH * 0.5f - frameCy;

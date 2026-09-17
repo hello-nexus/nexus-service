@@ -16,11 +16,16 @@ namespace Nexus.Service.Mcp.Tools;
 public sealed class ApplyLightingScenarioTool : IMcpTool
 {
     // Built once from the real shader registry, not a hand-copied list, so the
-    // schema enum and validation never drift from what actually ships.
+    // schema enum and validation never drift from what actually ships. The
+    // sweep set is excluded: those are simple mode's nameless tiles, and only
+    // that page reflects one running.
+    private static readonly string[] ScenarioKeys =
+        ShaderLibrary.AllEffectKeys.Where(k => !ShaderLibrary.IsSweepEffect(k)).ToArray();
+
     private static readonly string SchemaJson =
         "{\"type\":\"object\",\"properties\":{" +
         "\"scenario\":{\"type\":\"string\",\"enum\":[" +
-        string.Join(",", ShaderLibrary.AllEffectKeys.Select(k => "\"" + k + "\"")) +
+        string.Join(",", ScenarioKeys.Select(k => "\"" + k + "\"")) +
         "]}},\"required\":[\"scenario\"],\"additionalProperties\":false}";
 
     private readonly ILightingProvider _lighting;
@@ -53,9 +58,9 @@ public sealed class ApplyLightingScenarioTool : IMcpTool
             return Task.FromResult(McpToolExecutionResult.Error("Lighting is disabled in Settings."));
         }
         var scenario = McpArgs.StringArg(args, "scenario");
-        if (string.IsNullOrEmpty(scenario) || !ShaderLibrary.AllEffectKeys.Contains(scenario))
+        if (string.IsNullOrEmpty(scenario) || !ScenarioKeys.Contains(scenario))
         {
-            var known = string.Join(", ", ShaderLibrary.AllEffectKeys);
+            var known = string.Join(", ", ScenarioKeys);
             return Task.FromResult(McpToolExecutionResult.Error($"Unknown scenario '{scenario}'. Expected one of: {known}."));
         }
 

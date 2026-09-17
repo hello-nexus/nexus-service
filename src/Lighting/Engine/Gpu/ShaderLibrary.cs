@@ -130,7 +130,22 @@ internal static class ShaderLibrary
         "beatstrobe", "harmonicstar", "audiotunnel", "bassbloom",
         "beatbuilder", "spectrumaurora", "neonwaveform", "liquidbeat",
         "beatburst",
+        // Simple mode's sweep set; mirrors SweepEffectKeys below, keep in sync.
+        "sweeprainbow", "sweepbars", "sweepbrush", "sweepcomet",
+        "sweepribbon", "sweepink", "sweepneon",
     };
+
+    /// <summary>Simple mode's sweep set. Every one travels on +x only: simple
+    /// mode turns them around with the speed sign, and a y-travelling shader
+    /// added here would collapse every linear strip to one colour under
+    /// <see cref="LightingEngine.FullFrameSampling"/>.</summary>
+    public static readonly HashSet<string> SweepEffectKeys = new(System.StringComparer.Ordinal)
+    {
+        "sweeprainbow", "sweepbars", "sweepbrush", "sweepcomet",
+        "sweepribbon", "sweepink", "sweepneon",
+    };
+
+    public static bool IsSweepEffect(string key) => SweepEffectKeys.Contains(key);
 
     /// <summary>
     /// Every key with its own .frag, animate plus the static catalog. The client
