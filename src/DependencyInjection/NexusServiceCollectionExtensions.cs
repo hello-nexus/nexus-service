@@ -869,6 +869,7 @@ public static class NexusServiceCollectionExtensions
         services.AddSingleton<Nexus.Service.Peripherals.LianLiTl.TlFanHub>();
         services.AddSingleton<Nexus.Service.Cooling.LianLiTlCoolingProvider>();
         services.AddHostedService<Nexus.Service.Peripherals.LianLiTl.TlFanConnectionWorker>();
+        services.AddHostedService<Nexus.Service.Lighting.TlLightingFrameWriter>();
 
         // Lian Li Galahad II Trinity AIO: hub + cooling provider + lighting + connection worker.
         services.AddSingleton<Nexus.Service.Peripherals.Galahad2.Galahad2Hub>();

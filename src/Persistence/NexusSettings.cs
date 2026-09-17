@@ -1147,6 +1147,7 @@ public sealed class DevicesSettings
     public LianLiSettings LianLi { get; set; } = new();
     public LianLiWirelessSettings LianLiWireless { get; set; } = new();
     public LianLiLightingSettings LianLiLighting { get; set; } = new();
+    public TlLightingSettings TlLighting { get; set; } = new();
     public StrimerLightingSettings StrimerLighting { get; set; } = new();
     public Galahad2LightingSettings Galahad2Lighting { get; set; } = new();
     public CorsairSettings Corsair { get; set; } = new();
@@ -1437,6 +1438,19 @@ public sealed class LianLiLightingSettings
     public int Speed { get; set; } = 2;
     public int Direction { get; set; } = 0;
     public int Brightness { get; set; } = 4;
+    public List<string> Colors { get; set; } = new();
+}
+
+public sealed class TlLightingSettings
+{
+    public string Mode { get; set; } = "rainbow";
+    public int Speed { get; set; } = 2;
+    public int Direction { get; set; } = 0;
+    public int Brightness { get; set; } = 4;
+
+    /// <summary>"all" drives each fan whole; "top"/"bottom" drive the halves through the declared groups.</summary>
+    public string Scope { get; set; } = "all";
+
     public List<string> Colors { get; set; } = new();
 }
 

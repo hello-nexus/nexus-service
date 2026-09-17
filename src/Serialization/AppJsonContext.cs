@@ -1108,6 +1108,9 @@ namespace Nexus.Service.Serialization;
 [JsonSerializable(typeof(Nexus.Service.Routes.Slv3LcdImportResponse))]
 // Lian Li Uni Fan TL hub.
 [JsonSerializable(typeof(Nexus.Service.Routes.LianLiTlStateResponse))]
+[JsonSerializable(typeof(Nexus.Service.Routes.LianLiTlLightingResponse))]
+[JsonSerializable(typeof(Nexus.Service.Routes.LianLiTlModeDto))]
+[JsonSerializable(typeof(Nexus.Service.Routes.LianLiTlLightingRequest))]
 [JsonSerializable(typeof(Nexus.Service.Routes.LianLiTlFanDto))]
 [JsonSerializable(typeof(Nexus.Service.Routes.LianLiTlFanDto[]))]
 // Lian Li Galahad II Trinity AIO.
