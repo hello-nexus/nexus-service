@@ -95,6 +95,37 @@ public sealed class KlipyImportRouteTests
     }
 
     [Fact]
+    public async Task Panel_background_import_refuses_an_invalid_device_id()
+    {
+        var (factory, client) = Boot();
+        using var _ = factory;
+
+        var res = await client.PostAsync(
+            "/panel/devices/..%2Fetc/background-media/klipy/import",
+            Json("{\"slug\":\"happy-cat\",\"crop\":\"0,0,1,1\",\"w\":720,\"h\":1280}"));
+
+        Assert.Equal(HttpStatusCode.BadRequest, res.StatusCode);
+        Assert.Null(_catalog.DownloadedSlug);
+    }
+
+    [Fact]
+    public async Task Panel_background_import_binds_keep_transparency_off()
+    {
+        var (factory, client) = Boot();
+        using var _ = factory;
+        _catalog.DownloadResult = false;
+
+        // The body reaches the handler intact: the download guard fires after
+        // every field is bound, so a refusal here proves the shape parsed.
+        var res = await client.PostAsync(
+            "/panel/devices/dev1/background-media/klipy/import",
+            Json("{\"slug\":\"happy-cat\",\"crop\":\"0,0,1,1\",\"w\":720,\"h\":1280,\"keepTransparency\":false}"));
+
+        Assert.Equal(HttpStatusCode.BadRequest, res.StatusCode);
+        Assert.Contains("Download failed", await res.Content.ReadAsStringAsync(), StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
     public async Task Panel_background_import_reports_a_failed_download()
     {
         var (factory, client) = Boot();

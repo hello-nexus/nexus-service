@@ -178,7 +178,9 @@ public sealed class KlipyCatalog : IKlipyCatalog
         var import = FirstWithUrl(item.File?.Hd?.Gif, item.File?.Md?.Gif, item.File?.Sm?.Gif);
         // webp only: the thumbnail route serves these bytes as image/webp.
         var thumb = FirstWithUrl(item.File?.Sm?.Webp, item.File?.Md?.Webp, item.File?.Xs?.Webp, item.File?.Hd?.Webp);
-        if (import is null || thumb is null)
+        // Dimensions drive the client's centre crop, so an item that omits them
+        // is dropped rather than imported against a guessed frame.
+        if (import is null || thumb is null || import.Width is not > 0 || import.Height is not > 0)
         {
             return null;
         }
@@ -186,7 +188,7 @@ public sealed class KlipyCatalog : IKlipyCatalog
         var slug = item.Slug!;
         lock (_lock)
         {
-            _slugs[slug] = new KlipyResolvedGif(import.Url!, thumb.Url!, import.Width ?? 0, import.Height ?? 0);
+            _slugs[slug] = new KlipyResolvedGif(import.Url!, thumb.Url!, import.Width!.Value, import.Height!.Value);
             TouchSlug(slug);
             while (_slugLru.Count > SlugCacheCap && _slugLru.Last is { } oldest)
             {
@@ -199,8 +201,8 @@ public sealed class KlipyCatalog : IKlipyCatalog
         {
             Slug = slug,
             Title = item.Title ?? "",
-            Width = import.Width ?? 0,
-            Height = import.Height ?? 0,
+            Width = import.Width!.Value,
+            Height = import.Height!.Value,
             BlurPreview = item.BlurPreview,
         };
     }

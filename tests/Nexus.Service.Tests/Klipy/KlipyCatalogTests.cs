@@ -330,6 +330,23 @@ public sealed class KlipyCatalogTests
     }
 
     [Fact]
+    public async Task An_item_without_dimensions_is_dropped_rather_than_cropped_blind()
+    {
+        using var server = new StubServer();
+        var host = $"http://127.0.0.1:{server.Port}";
+        var sized = Item("has-size", host);
+        var unsized = Item("no-size", host)
+            .Replace("\"width\":220,\"height\":164,\"size\":244409", "\"size\":244409");
+        server.ResponseFactory = _ => Json(Page(unsized + "," + sized));
+        var catalog = Make(server);
+
+        var result = await catalog.SearchAsync("cat", 1, CancellationToken.None);
+
+        Assert.Equal("has-size", Assert.Single(result.Items).Slug);
+        Assert.Null(catalog.Resolve("no-size"));
+    }
+
+    [Fact]
     public async Task An_item_pointing_off_host_is_dropped_from_results()
     {
         using var server = new StubServer();

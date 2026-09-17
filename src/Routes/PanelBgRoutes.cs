@@ -229,13 +229,15 @@ public static class PanelBgRoutes
                 }
                 finally
                 {
-                    // CommitAsync clears its own stage; anything short of it leaves one.
-                    if (stageId is not null)
-                    {
-                        lib.DeleteStage(deviceId, stageId);
-                    }
                     try { File.Delete(tempPath); }
                     catch { }
+                    // CommitAsync clears its own stage; anything short of it leaves
+                    // one. A throw here would replace the response with an empty 500.
+                    if (stageId is not null)
+                    {
+                        try { lib.DeleteStage(deviceId, stageId); }
+                        catch { }
+                    }
                 }
             }).AllowPanel().DisableAntiforgery();
 
