@@ -9,6 +9,8 @@ public sealed class MediaKindsTests
     [InlineData("clip.mp4", "video")]
     [InlineData("clip.WEBM", "video")]
     [InlineData("clip.mov", "video")]
+    [InlineData("clip.mkv", "image")]
+    [InlineData("clip.avi", "image")]
     [InlineData("loop.gif", "gif")]
     [InlineData("still.png", "image")]
     [InlineData("still.jpeg", "image")]

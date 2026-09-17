@@ -127,10 +127,8 @@ public static class MediaLibraryRoutes
             return Results.File(previewPath, "image/jpeg");
         }).AllowPanel();
 
-        // The staged source itself, so the cropper can play an animated one
-        // rather than show the still preview. Range requests let a <video>
-        // seek without pulling the whole file.
-        app.MapGet("/media/stage/{stageId}/raw", (string stageId, MediaLibrary lib) =>
+        // The staged source itself, so the cropper can play it; range requests let a <video> seek.
+        app.MapGet("/media/stage/{stageId}/raw", (string stageId, HttpContext ctx, MediaLibrary lib) =>
         {
             if (!MediaLibrary.IsValidId(stageId))
             {
@@ -143,6 +141,7 @@ public static class MediaLibraryRoutes
                 return Results.NotFound();
             }
 
+            ctx.Response.Headers.CacheControl = "no-store";
             return Results.File(rawPath, MediaKinds.ContentTypeFor(rawPath), enableRangeProcessing: true);
         }).AllowPanel();
 

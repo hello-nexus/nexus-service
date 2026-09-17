@@ -120,7 +120,7 @@ public static class PanelBgRoutes
         // --- Commit phase: bake from staged raw using crop/dimensions ---
 
         app.MapGet("/panel/devices/{deviceId}/background-media/stage/{stageId}/raw",
-            (string deviceId, string stageId, PanelBgLibrary lib) =>
+            (string deviceId, string stageId, HttpContext ctx, PanelBgLibrary lib) =>
             {
                 if (!PanelBgLibrary.IsValidId(deviceId) || !PanelBgLibrary.IsValidId(stageId))
                 {
@@ -133,6 +133,7 @@ public static class PanelBgRoutes
                     return Results.NotFound();
                 }
 
+                ctx.Response.Headers.CacheControl = "no-store";
                 return Results.File(rawPath, MediaKinds.ContentTypeFor(rawPath), enableRangeProcessing: true);
             }).AllowPanel();
 
