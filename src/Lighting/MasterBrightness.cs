@@ -77,12 +77,13 @@ public static class MasterBrightness
     }
 
     /// <summary>The out-of-box curve follows daylight: a dim night floor, a
-    /// short climb to full after sunrise, full through the day, and a fall
-    /// through dusk back to the floor.</summary>
+    /// dawn that starts slow and then climbs to full, full through the day,
+    /// and the same shape mirrored through dusk back to the floor.</summary>
     public static List<BrightnessSchedulePoint> DefaultSchedule() => new()
     {
         new() { Hour = 5, Brightness = 10 },
-        new() { Hour = 8, Brightness = 100 },
+        new() { Hour = 7, Brightness = 30 },
+        new() { Hour = 10, Brightness = 100 },
         new() { Hour = 17, Brightness = 100 },
         new() { Hour = 20, Brightness = 30 },
         new() { Hour = 22, Brightness = 10 },

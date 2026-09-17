@@ -38,8 +38,9 @@ public sealed class MasterBrightnessTests
     // disagree.
     [Theory]
     [InlineData(3, 0, 10)]
-    [InlineData(6, 0, 40)]
-    [InlineData(7, 0, 70)]
+    [InlineData(6, 0, 20)]
+    [InlineData(8, 0, 53.3333)]
+    [InlineData(9, 0, 76.6667)]
     [InlineData(12, 0, 100)]
     [InlineData(18, 0, 76.6667)]
     [InlineData(19, 0, 53.3333)]
@@ -136,10 +137,17 @@ public sealed class MasterBrightnessTests
     {
         var pts = MasterBrightness.DefaultSchedule();
 
-        Assert.Equal(5, pts.Count);
+        Assert.Equal(6, pts.Count);
         Assert.Equal(1f, MasterBrightness.Scheduled(pts, At(12)), 4);
         Assert.Equal(0.1f, MasterBrightness.Scheduled(pts, At(3)), 4);
         Assert.True(MasterBrightness.Scheduled(pts, At(23)) < MasterBrightness.Scheduled(pts, At(19)));
+        // Dawn mirrors dusk about the middle of the day.
+        for (var m = 0; m < 12 * 60; m += 15)
+        {
+            Assert.Equal(
+                MasterBrightness.Scheduled(pts, TimeSpan.FromMinutes(13.5 * 60 - m)),
+                MasterBrightness.Scheduled(pts, TimeSpan.FromMinutes(13.5 * 60 + m)), 5);
+        }
     }
 
     [Fact]
