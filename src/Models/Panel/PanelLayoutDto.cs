@@ -34,6 +34,14 @@ public sealed class PanelLayoutDto
     /// PanelWidgetDto.Config.
     /// </summary>
     public Dictionary<string, Dictionary<string, JsonElement>>? SingleWidgetConfigs { get; set; }
+
+    /// <summary>
+    /// Id of the widget the panel opens straight into immersive view on load,
+    /// skipping the dashboard. At most one per layout, and it must live on the
+    /// FIRST page - the web client clears this when the id names no widget
+    /// there. Null (the default) means the panel opens on the dashboard.
+    /// </summary>
+    public string? ImmersiveOnLoadWidgetId { get; set; }
 }
 
 public sealed class PanelPageDto
