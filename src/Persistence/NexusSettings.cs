@@ -587,6 +587,11 @@ public sealed class LightingSettings
     /// Windows writes the DirectX UserGpuPreferences key before the GL context
     /// inits; Linux matches it against the EGL device list. macOS ignores it.</summary>
     public string RenderGpu { get; set; } = "auto";
+    /// <summary>Which API creates the lighting GL context on Windows: "wgl"
+    /// (default, direct) or "glfw" (the pre-3.0.15 path, kept as an escape if a
+    /// driver refuses the direct one). Restart-to-apply. Ignored elsewhere:
+    /// macOS uses CGL and Linux EGL.</summary>
+    public string RenderBackend { get; set; } = "wgl";
     /// <summary>
     /// When true, Nexus blanks every lighting device it drives as the host
     /// suspends, and restores the running effect on resume. Devices that keep

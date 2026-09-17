@@ -44,8 +44,16 @@ internal static class AppBootstrap
                         ?.Load().Lighting.RenderGpu ?? "auto";
                     if (string.Equals(choice, "auto", StringComparison.OrdinalIgnoreCase))
                     {
+                        Nexus.Service.Lighting.Engine.Gpu.GpuRenderSelect.Backend =
+                            app.Services.GetService<Nexus.Service.Persistence.IConfigStore>()
+                                ?.Load().Lighting.RenderBackend ?? "";
                         app.Lifetime.ApplicationStopping.Register(
                             Nexus.Service.Lighting.Engine.Gpu.GpuRenderSelect.ClearCrashGuardOnStop);
+                        // Pre-login boots have no session; a card that needs one
+                        // gets its retry when a user arrives rather than waiting
+                        // out the off latch.
+                        WindowsServiceHost.SessionLogon += () =>
+                            Nexus.Service.Lighting.Engine.Gpu.GpuRenderSelect.OnSessionLogon(gpu);
                         Nexus.Service.Lighting.Engine.Gpu.GpuRenderSelect.SelectAndWarm(gpu, sw);
                         WatchForLateContext(app, gpu, sw);
                         return;

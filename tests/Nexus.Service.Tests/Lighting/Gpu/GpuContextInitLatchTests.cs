@@ -323,4 +323,13 @@ public class GpuContextInitLatchTests
         Assert.True(gpu.Available);
         Assert.False(gpu.Failed);
     }
+
+    // The Windows GL backend defaults to WGL: GLFW's own init measured 30.1s
+    // under LocalSystem where the WGL calls it wraps took 83ms, and the service
+    // pays context init on every start. "glfw" stays reachable as an escape.
+    [Fact]
+    public void Windows_gl_backend_defaults_to_wgl()
+    {
+        Assert.Equal("wgl", new Nexus.Service.Persistence.LightingSettings().RenderBackend);
+    }
 }

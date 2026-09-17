@@ -37,7 +37,7 @@ internal static class GpuRenderSelect
     // Parent's backstop wait for a probe child. Must outlast the budget the
     // child pins on itself (see GpuProbe) so a working-but-slow card finishes on
     // its own and the parent only kills a truly wedged child.
-    private static readonly TimeSpan ProbeWait = TimeSpan.FromSeconds(35);
+    private static readonly TimeSpan ProbeWait = TimeSpan.FromSeconds(15);
 
     // A card slower than every budget still has to be remembered, or later boots
     // re-pay the probe for a card that works.
@@ -61,6 +61,10 @@ internal static class GpuRenderSelect
     // second caller, so without it two probes and two inits could overlap.
     private static int _reselecting;
     private static readonly object TimerGate = new();
+
+    /// <summary>Backend the engine will use, handed to probe children. Set by
+    /// the warmup before the first select.</summary>
+    public static string Backend { get; set; } = "";
 
     public static void SelectAndWarm(GpuContext gpu, Stopwatch sw)
     {
@@ -406,6 +410,21 @@ internal static class GpuRenderSelect
             : "the GPU set or driver changed under the off latch", ref _reprobeTimer);
     }
 
+    /// <summary>
+    /// A user logged in. The service starts at boot, before any session exists,
+    /// and a card that only answers once one does would otherwise stay dark
+    /// until the off latch expires - the adapter watch does not fire for a
+    /// logon, because neither the adapter set nor the driver changed.
+    /// </summary>
+    public static void OnSessionLogon(GpuContext gpu)
+    {
+        if (gpu.Available || gpu.InitAbandoned)
+        {
+            return;
+        }
+        Reselect(gpu, "a user session appeared", ref _reprobeTimer);
+    }
+
     // The one path from a timer back into SelectAndWarm. Cancels the other
     // timer so the outcome's own scheduling starts clean.
     private static void Reselect(GpuContext gpu, string why, ref Timer? other)
@@ -498,6 +517,13 @@ internal static class GpuRenderSelect
             psi.ArgumentList.Add("--gpu-probe");
             psi.ArgumentList.Add("--set-pref");
             psi.ArgumentList.Add(cls.ToString());
+            // The child has no config store, so the engine's backend is handed
+            // to it; probing WGL for an engine pinned to GLFW answers nothing.
+            if (Backend.Length > 0)
+            {
+                psi.ArgumentList.Add("--backend");
+                psi.ArgumentList.Add(Backend);
+            }
             using var p = Process.Start(psi);
             if (p is null) return GpuProbeVerdict.Inconclusive;
             // Drain both pipes concurrently to avoid a buffer-full deadlock.

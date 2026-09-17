@@ -145,10 +145,10 @@
   </ItemGroup>
 
   <!-- Cross-platform OpenGL for GPU-rendered lighting effects. Silk.NET binds to
-       the native GL driver via P/Invoke (AOT-safe); the Windows path drives GLFW
-       directly (Silk.NET.GLFW) rather than through its windowing layer, whose
-       window creation does not null-check glfwCreateWindow. OpenTK.redist.glfw
-       ships the GLFW native blob - referenced with GeneratePathProperty so the
+       the native GL driver via P/Invoke (AOT-safe). Windows creates its context
+       against WGL directly (WinWglContext); GLFW stays for the RenderBackend
+       escape, and is what the pre-3.0.15 path used. OpenTK.redist.glfw ships the
+       GLFW native blob - referenced with GeneratePathProperty so the
        CopyGlfwNative target below finds the per-RID dll/dylib without
        hard-coding a version in the path. -->
   <ItemGroup>

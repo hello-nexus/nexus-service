@@ -218,6 +218,21 @@ public static class LightingRoutes
 #endif
             return ApiResponse.Ok();
         }).LocalhostOnly();
+        // The GL backend Windows creates the lighting context with. No UI: it is
+        // the escape if a driver ever refuses the direct WGL path, and support
+        // needs to be able to flip it without hand-editing settings.json as
+        // SYSTEM. Restart-to-apply.
+        app.MapGet("/lighting/render-backend", (Nexus.Service.Persistence.IConfigStore store) =>
+            new Models.Lighting.RenderGpuBody { Value = store.Load().Lighting.RenderBackend }).LocalhostOnly();
+        app.MapPost("/lighting/render-backend", (Models.Lighting.RenderGpuBody body,
+            Nexus.Service.Persistence.IConfigStore store) =>
+        {
+            var value = string.Equals(body.Value?.Trim(), "glfw", StringComparison.OrdinalIgnoreCase)
+                ? "glfw"
+                : "wgl";
+            store.Update(s => s.Lighting.RenderBackend = value);
+            return ApiResponse.Ok();
+        }).LocalhostOnly();
         // Headless start endpoints
         app.MapPost("/lighting/animate/headless-start", (AnimateHeadlessStart body, ILightingProvider l, MultiplexHub hub, FeatureGates gates, Nexus.Service.Telemetry.ITelemetry telemetry) =>
         {
