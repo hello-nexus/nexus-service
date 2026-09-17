@@ -485,7 +485,7 @@ public sealed class DiagnosticsHealthModel
         {
             reasons.Add(new HealthComponentReason("system.pnpProblems", HealthStatuses.Watch,
                 $"{pnp.Devices.Count} device(s) reporting a Device Manager problem",
-                "Windows Device Manager reports a non-zero ConfigManagerErrorCode for at least one device."));
+                "Windows Device Manager reports a fault on at least one device. Devices you disabled yourself are not counted."));
         }
 
         components.Add(new HealthComponent

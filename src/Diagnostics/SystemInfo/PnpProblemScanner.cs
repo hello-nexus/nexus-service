@@ -14,7 +14,8 @@ public sealed record PnpProblemSnapshot(bool Supported, IReadOnlyList<PnpProblem
 
 /// <summary>
 /// Scans Win32_PnPEntity for devices reporting a Device Manager problem code
-/// (ConfigManagerErrorCode != 0) via the existing powershell.exe shell-out
+/// (ConfigManagerErrorCode != 0, excluding the user-chosen CM_PROB_DISABLED)
+/// via the existing powershell.exe shell-out
 /// pattern (see LibreHardwareSensorProvider.GetStorageBrandModel). Windows-only;
 /// self-gates on <see cref="OperatingSystem.IsWindows"/>. Result is cached for
 /// 5 minutes - this is a diagnostics-page read, not a live poll.
@@ -108,8 +109,7 @@ public sealed class PnpProblemScanner
             if (c.ValueKind == JsonValueKind.Number) c.TryGetInt32(out code);
             else if (c.ValueKind == JsonValueKind.String) int.TryParse(c.GetString(), out code);
         }
-        // CM_PROB_DISABLED (22) means the user turned the device off in Device
-        // Manager - an intentional state, not a problem to report.
+        // A disabled device is a state the user chose, not a problem to report.
         if (code == 0 || code == CmProbDisabled) return;
 
         result.Add(new PnpProblemDevice(name, deviceId, code, ProblemCodeName(code)));
