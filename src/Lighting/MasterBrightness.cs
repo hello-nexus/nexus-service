@@ -31,9 +31,9 @@ public static class MasterBrightness
     }
 
     /// <summary>The schedule's level, 0..1, at <paramref name="timeOfDay"/>:
-    /// piecewise-linear between the points by the minute, wrapping midnight.
-    /// Seconds are dropped so the level moves once a minute, never per frame.
-    /// An empty schedule is no cap.</summary>
+    /// a smooth curve through the points (<see cref="CurveEasing"/>), evaluated
+    /// by the minute and wrapping midnight. Seconds are dropped so the level
+    /// moves once a minute, never per frame. An empty schedule is no cap.</summary>
     public static float Scheduled(List<BrightnessSchedulePoint>? points, TimeSpan timeOfDay)
     {
         if (points is null || points.Count == 0)
@@ -43,63 +43,51 @@ public static class MasterBrightness
         var minute = ((int)timeOfDay.TotalMinutes % MinutesPerDay + MinutesPerDay) % MinutesPerDay;
         // Read unlocked on the frame path. Safe only because the route replaces
         // the list wholesale and never mutates one that has been published.
-        BrightnessSchedulePoint? before = null, after = null, first = null, last = null;
-        for (int i = 0; i < points.Count; i++)
+        var count = points.Count;
+        Span<double> xs = count <= 64 ? stackalloc double[count] : new double[count];
+        Span<double> ys = count <= 64 ? stackalloc double[count] : new double[count];
+        for (var i = 0; i < count; i++)
         {
-            var p = points[i];
-            if (first is null || p.Hour < first.Hour) first = p;
-            if (last is null || p.Hour > last.Hour) last = p;
-            var at = p.Hour * 60;
-            if (at <= minute && (before is null || at > before.Hour * 60)) before = p;
-            if (at > minute && (after is null || at < after.Hour * 60)) after = p;
+            xs[i] = points[i].Hour;
+            ys[i] = points[i].Brightness;
         }
-        if (first is null || last is null)
+        SortByX(xs, ys);
+        var level = CurveEasing.Interpolate(xs, ys, minute / 60.0, smooth: true, wrapMin: 0, wrapSpan: HoursPerDay);
+        return (float)Math.Clamp(level / 100.0, 0.0, 1.0);
+    }
+
+    // Insertion sort: the route persists points sorted, so this is a no-op
+    // walk in practice and never allocates on the frame path.
+    private static void SortByX(Span<double> xs, Span<double> ys)
+    {
+        for (var i = 1; i < xs.Length; i++)
         {
-            return 1f;
+            var x = xs[i];
+            var y = ys[i];
+            var j = i - 1;
+            while (j >= 0 && xs[j] > x)
+            {
+                xs[j + 1] = xs[j];
+                ys[j + 1] = ys[j];
+                j--;
+            }
+            xs[j + 1] = x;
+            ys[j + 1] = y;
         }
-        // Wrap: before midnight the segment runs from the last point to the
-        // first point of the next day, and after midnight the other way round.
-        int fromMinute, toMinute;
-        float fromLevel, toLevel;
-        if (before is null)
-        {
-            fromMinute = last.Hour * 60 - MinutesPerDay; fromLevel = last.Brightness;
-            toMinute = first.Hour * 60; toLevel = first.Brightness;
-        }
-        else if (after is null)
-        {
-            fromMinute = last.Hour * 60; fromLevel = last.Brightness;
-            toMinute = first.Hour * 60 + MinutesPerDay; toLevel = first.Brightness;
-        }
-        else
-        {
-            fromMinute = before.Hour * 60; fromLevel = before.Brightness;
-            toMinute = after.Hour * 60; toLevel = after.Brightness;
-        }
-        var span = toMinute - fromMinute;
-        var level = span <= 0
-            ? fromLevel
-            : fromLevel + (toLevel - fromLevel) * ((minute - fromMinute) / (float)span);
-        return Math.Clamp(level / 100f, 0f, 1f);
     }
 
     /// <summary>The out-of-box curve: full at midday, dim through the night,
-    /// one point every two hours.</summary>
+    /// one point every four hours.</summary>
     public static List<BrightnessSchedulePoint> DefaultSchedule() => new()
     {
         new() { Hour = 0, Brightness = 20 },
-        new() { Hour = 2, Brightness = 15 },
         new() { Hour = 4, Brightness = 15 },
-        new() { Hour = 6, Brightness = 40 },
-        new() { Hour = 8, Brightness = 70 },
-        new() { Hour = 10, Brightness = 90 },
+        new() { Hour = 8, Brightness = 60 },
         new() { Hour = 12, Brightness = 100 },
-        new() { Hour = 14, Brightness = 100 },
         new() { Hour = 16, Brightness = 90 },
-        new() { Hour = 18, Brightness = 70 },
         new() { Hour = 20, Brightness = 50 },
-        new() { Hour = 22, Brightness = 30 },
     };
 
     private const int MinutesPerDay = 24 * 60;
+    private const double HoursPerDay = 24;
 }

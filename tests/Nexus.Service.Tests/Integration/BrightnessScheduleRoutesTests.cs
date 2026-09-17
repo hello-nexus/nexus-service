@@ -38,9 +38,9 @@ public sealed class BrightnessScheduleRoutesTests : IClassFixture<StubDeviceHost
 
         using var doc = JsonDocument.Parse(await res.Content.ReadAsStringAsync());
         Assert.False(doc.RootElement.GetProperty("enabled").GetBoolean());
-        Assert.Equal(12, doc.RootElement.GetProperty("points").GetArrayLength());
-        Assert.Equal(12, doc.RootElement.GetProperty("defaults").GetArrayLength());
-        Assert.Equal(100, doc.RootElement.GetProperty("points")[6].GetProperty("brightness").GetInt32());
+        Assert.Equal(6, doc.RootElement.GetProperty("points").GetArrayLength());
+        Assert.Equal(6, doc.RootElement.GetProperty("defaults").GetArrayLength());
+        Assert.Equal(100, doc.RootElement.GetProperty("points")[3].GetProperty("brightness").GetInt32());
     }
 
     [Fact]
