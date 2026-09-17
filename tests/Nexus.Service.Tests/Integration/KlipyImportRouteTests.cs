@@ -18,7 +18,7 @@ using Xunit;
 namespace Nexus.Service.Tests.Integration;
 
 /// <summary>
-/// POST /media/klipy/import over the real pipeline with the catalog swapped at
+/// The Klipy stage routes over the real pipeline with the catalog swapped at
 /// the DI seam, so the failure paths are exercised without a live Klipy call.
 /// </summary>
 public sealed class KlipyImportRouteTests
@@ -72,7 +72,7 @@ public sealed class KlipyImportRouteTests
         var (factory, client) = Boot();
         using var _ = factory;
 
-        var res = await client.PostAsync("/media/klipy/import", Json("{\"slug\":\"../etc\",\"crop\":\"0,0,1,1\"}"));
+        var res = await client.PostAsync("/media/klipy/stage", Json("{\"slug\":\"../etc\"}"));
 
         Assert.Equal(HttpStatusCode.BadRequest, res.StatusCode);
         Assert.Contains("invalid slug", await res.Content.ReadAsStringAsync(), StringComparison.OrdinalIgnoreCase);
@@ -127,7 +127,7 @@ public sealed class KlipyImportRouteTests
         using var _ = factory;
         _catalog.DownloadResult = false;
 
-        var res = await client.PostAsync("/media/klipy/import", Json("{\"slug\":\"happy-cat\",\"crop\":\"0,0,1,1\"}"));
+        var res = await client.PostAsync("/media/klipy/stage", Json("{\"slug\":\"happy-cat\"}"));
         var body = await res.Content.ReadAsStringAsync();
 
         Assert.Equal("happy-cat", _catalog.DownloadedSlug);

@@ -168,46 +168,42 @@ public static class MediaLibraryRoutes
             return Results.Ok(new MediaImportResponse { Item = result.Item });
         }).AllowPanel().DisableAntiforgery();
 
-        // One call, no staging: a pick has nothing to preview or crop by hand. The
-        // body carries a slug; the URL comes from the catalog's search memo.
-        app.MapPost("/media/klipy/import", async (
-            KlipyImportRequest body, MediaLibrary lib, IKlipyCatalog catalog, MultiplexHub hub, HttpContext ctx) =>
+        // A Klipy pick lands in staging like an upload, so the cropper runs on
+        // it and the ordinary /media/commit finishes the import.
+        app.MapPost("/media/klipy/stage", async (
+            KlipyImportRequest body, MediaLibrary lib, IKlipyCatalog catalog, HttpContext ctx) =>
         {
             if (!KlipyCatalog.IsValidSlug(body.Slug))
             {
-                return Results.BadRequest(new MediaImportResponse { Error = true, Msg = "invalid slug" });
+                return Results.BadRequest(new MediaStageResponse { Error = true, Msg = "invalid slug" });
             }
 
             var tempPath = Path.Combine(Path.GetTempPath(), $"nexus-klipy-{Guid.NewGuid()}.gif");
             try
             {
-                var downloaded = await catalog.DownloadAsync(body.Slug, tempPath, ctx.RequestAborted);
-                if (!downloaded)
+                if (!await catalog.DownloadAsync(body.Slug, tempPath, ctx.RequestAborted))
                 {
-                    return Results.BadRequest(new MediaImportResponse { Error = true, Msg = "Download failed" });
+                    return Results.BadRequest(new MediaStageResponse { Error = true, Msg = "Download failed" });
                 }
 
-                var result = await MediaImporter.ImportAsync(lib, tempPath, $"{body.Slug}.gif", body.Crop);
-                if (!result.Ok)
+                var staged = await MediaImporter.StageAsync(lib, tempPath, $"{body.Slug}.gif");
+                if (!staged.Ok)
                 {
-                    return Results.BadRequest(new MediaImportResponse { Error = true, Msg = result.Error ?? "Import failed" });
+                    return Results.BadRequest(new MediaStageResponse { Error = true, Msg = staged.Error ?? "Stage failed" });
                 }
 
                 _ = catalog.TriggerShareAsync(body.Slug);
-                PanelTopics.BroadcastMediaLibrary(hub);
-                return Results.Ok(new MediaImportResponse { Item = result.Item });
+                return Results.Ok(new MediaStageResponse { StageId = staged.StageId });
             }
             catch (Exception ex)
             {
-                // An unhandled throw here answers with an empty body, which reads
-                // as a silent failure in the picker.
-                Console.Error.WriteLine($"[media-klipy] import {body.Slug} failed: {ex}");
-                return Results.BadRequest(new MediaImportResponse { Error = true, Msg = "Import failed" });
+                Console.Error.WriteLine($"[media-klipy] stage {body.Slug} failed: {ex}");
+                return Results.BadRequest(new MediaStageResponse { Error = true, Msg = "Stage failed" });
             }
             finally
             {
-                try
-                { File.Delete(tempPath); }
+                // StageAsync moves the file into staging on success; a leftover means it did not.
+                try { File.Delete(tempPath); }
                 catch { }
             }
         }).AllowPanel().DisableAntiforgery();

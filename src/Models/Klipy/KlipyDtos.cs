@@ -23,11 +23,10 @@ public sealed class KlipySearchResponse
     public string Msg { get; set; } = "Ok";
 }
 
+/// <summary>A Klipy pick to stage for the lighting cropper; /media/commit finishes it.</summary>
 public sealed class KlipyImportRequest
 {
     public string Slug { get; set; } = "";
-    /// <summary>Normalized "x,y,w,h" against the source, as /media/commit takes.</summary>
-    public string Crop { get; set; } = "";
 }
 
 /// <summary>A Klipy pick to stage for one device's cropper; /background-media/commit finishes it.</summary>
