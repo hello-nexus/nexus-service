@@ -367,6 +367,7 @@ namespace Nexus.Service.Serialization;
 [JsonSerializable(typeof(Nexus.Service.Models.Klipy.KlipyGifDto))]
 [JsonSerializable(typeof(List<Nexus.Service.Models.Klipy.KlipyGifDto>))]
 [JsonSerializable(typeof(Nexus.Service.Models.Klipy.KlipyImportRequest))]
+[JsonSerializable(typeof(Nexus.Service.Models.Klipy.KlipyPanelBgImportRequest))]
 [JsonSerializable(typeof(Nexus.Service.Klipy.KlipyEnvelope))]
 [JsonSerializable(typeof(Nexus.Service.Klipy.KlipyPage))]
 [JsonSerializable(typeof(Nexus.Service.Klipy.KlipyWireItem))]

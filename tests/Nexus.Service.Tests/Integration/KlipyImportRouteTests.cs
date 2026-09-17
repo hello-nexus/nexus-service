@@ -78,6 +78,38 @@ public sealed class KlipyImportRouteTests
         Assert.Contains("invalid slug", await res.Content.ReadAsStringAsync(), StringComparison.OrdinalIgnoreCase);
     }
 
+    [Theory]
+    [InlineData("{\"slug\":\"../etc\",\"crop\":\"0,0,1,1\",\"w\":720,\"h\":1280}", "invalid slug")]
+    [InlineData("{\"slug\":\"happy-cat\",\"crop\":\"\",\"w\":720,\"h\":1280}", "crop")]
+    [InlineData("{\"slug\":\"happy-cat\",\"crop\":\"0,0,1,1\",\"w\":0,\"h\":1280}", "w and h")]
+    [InlineData("{\"slug\":\"happy-cat\",\"crop\":\"0,0,1,1\",\"w\":720,\"h\":99999}", "w and h")]
+    public async Task Panel_background_import_refuses_a_malformed_request(string body, string expected)
+    {
+        var (factory, client) = Boot();
+        using var _ = factory;
+
+        var res = await client.PostAsync("/panel/devices/dev1/background-media/klipy/import", Json(body));
+
+        Assert.Equal(HttpStatusCode.BadRequest, res.StatusCode);
+        Assert.Contains(expected, await res.Content.ReadAsStringAsync(), StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public async Task Panel_background_import_reports_a_failed_download()
+    {
+        var (factory, client) = Boot();
+        using var _ = factory;
+        _catalog.DownloadResult = false;
+
+        var res = await client.PostAsync(
+            "/panel/devices/dev1/background-media/klipy/import",
+            Json("{\"slug\":\"happy-cat\",\"crop\":\"0,0,1,1\",\"w\":720,\"h\":1280}"));
+
+        Assert.Equal("happy-cat", _catalog.DownloadedSlug);
+        Assert.Equal(HttpStatusCode.BadRequest, res.StatusCode);
+        Assert.Contains("Download failed", await res.Content.ReadAsStringAsync(), StringComparison.OrdinalIgnoreCase);
+    }
+
     [Fact]
     public async Task A_failed_download_answers_with_a_message_not_an_empty_body()
     {

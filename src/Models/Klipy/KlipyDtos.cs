@@ -29,3 +29,14 @@ public sealed class KlipyImportRequest
     /// <summary>Normalized "x,y,w,h" against the source, as /media/commit takes.</summary>
     public string Crop { get; set; } = "";
 }
+
+/// <summary>A Klipy pick imported as one device's panel background. w/h are the
+/// device's panel size, as /background-media/commit takes them.</summary>
+public sealed class KlipyPanelBgImportRequest
+{
+    public string Slug { get; set; } = "";
+    public string Crop { get; set; } = "";
+    public int W { get; set; }
+    public int H { get; set; }
+    public bool KeepTransparency { get; set; } = true;
+}
