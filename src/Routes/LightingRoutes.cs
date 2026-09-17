@@ -199,6 +199,45 @@ public static class LightingRoutes
             PanelTopics.BroadcastLighting(hub);
             return ApiResponse.Ok();
         }).AllowPanel();
+        // Time-of-day cap on master brightness. Read live by every frame writer
+        // through MasterBrightness.Effective, so a POST lands on the next push.
+        // AllowPanel like the slider: a paired phone toggles it from bed.
+        app.MapGet("/lighting/brightness-schedule", (Nexus.Service.Persistence.IConfigStore store) =>
+        {
+            var schedule = store.Load().Lighting.BrightnessSchedule ?? new();
+            return new Models.Lighting.BrightnessScheduleBody
+            {
+                Enabled = schedule.Enabled,
+                Points = schedule.Points,
+                Defaults = Nexus.Service.Lighting.MasterBrightness.DefaultSchedule(),
+            };
+        }).AllowPanel();
+        app.MapPost("/lighting/brightness-schedule", (Models.Lighting.BrightnessScheduleBody body,
+            Nexus.Service.Persistence.IConfigStore store, MultiplexHub hub) =>
+        {
+            // Two points is the floor the editor enforces; below that there is
+            // no curve to interpolate. Values are clamped rather than refused so
+            // a hand-edited hour 24 reads as 23 instead of failing the save.
+            if (body.Points is null || body.Points.Count < 2)
+            {
+                return Results.BadRequest(ApiResponse.Fail("at least two points"));
+            }
+            var points = new List<Nexus.Service.Persistence.BrightnessSchedulePoint>(body.Points.Count);
+            foreach (var p in body.Points)
+            {
+                points.Add(new Nexus.Service.Persistence.BrightnessSchedulePoint
+                {
+                    Hour = Math.Clamp(p.Hour, 0, 23),
+                    Brightness = Math.Clamp(p.Brightness, 0, 100),
+                });
+            }
+            points.Sort((a, b) => a.Hour.CompareTo(b.Hour));
+            // Replace the object, never mutate the list: frame writers walk the
+            // reference they read, unlocked.
+            store.Update(s => s.Lighting.BrightnessSchedule = new() { Enabled = body.Enabled, Points = points });
+            PanelTopics.BroadcastLighting(hub);
+            return Results.Ok(ApiResponse.Ok());
+        }).AllowPanel();
         // Render-GPU selection (which card runs the lighting shaders). Host-only
         // (LocalhostOnly) -- a paired phone must not flip the host's GPU. The POST
         // persists + writes the OS preference; applying it needs a service restart

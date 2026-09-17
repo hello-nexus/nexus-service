@@ -55,6 +55,17 @@ public class GlobalBrightnessBody
     public float Value { get; set; } = 1.0f;
 }
 
+/// <summary>GET response / POST body for /lighting/brightness-schedule: the
+/// time-of-day cap on master brightness. Points are whole hours 0..23 holding
+/// 0..100%. The GET also carries the out-of-box curve so the editor's reset
+/// needs no second copy of it; a POST leaves it null.</summary>
+public sealed class BrightnessScheduleBody
+{
+    public bool Enabled { get; set; }
+    public List<Nexus.Service.Persistence.BrightnessSchedulePoint> Points { get; set; } = new();
+    public List<Nexus.Service.Persistence.BrightnessSchedulePoint>? Defaults { get; set; }
+}
+
 /// <summary>GET response / POST body for /lighting/render-gpu. "auto" or a GPU
 /// model name (matches GpuReadout.Name). Restart-to-apply.</summary>
 public class RenderGpuBody

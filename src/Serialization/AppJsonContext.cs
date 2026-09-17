@@ -506,6 +506,7 @@ namespace Nexus.Service.Serialization;
 [JsonSerializable(typeof(Nexus.Service.Models.Devices.StaticDeviceLookDto))]
 [JsonSerializable(typeof(BrightnessScale))]
 [JsonSerializable(typeof(Nexus.Service.Models.Lighting.GlobalBrightnessBody))]
+[JsonSerializable(typeof(Nexus.Service.Models.Lighting.BrightnessScheduleBody))]
 [JsonSerializable(typeof(Nexus.Service.Models.Lighting.RenderGpuBody))]
 [JsonSerializable(typeof(SpeedScale))]
 [JsonSerializable(typeof(AnimateHeadlessStart))]

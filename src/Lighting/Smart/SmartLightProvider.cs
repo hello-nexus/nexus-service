@@ -553,7 +553,7 @@ public sealed class SmartLightProvider : ILightingDeviceProvider, ILightingFrame
         float hue = 0f, sat = 1f; int bri = 100;
         if (s.Devices.LightingDevicePrefs.TryGetValue(id, out var pref))
         { hue = pref.Hue; sat = pref.Saturation; bri = pref.Brightness; }
-        var global = Math.Clamp(s.Lighting.GlobalBrightness, 0f, 1f);
+        var global = MasterBrightness.Effective(s.Lighting);
         var (r, g, b) = ColorMath.HsvToRgb(hue, sat, 1f);
         var b01 = Math.Min(Math.Clamp(bri, 0, 100) / 100f, global);
 

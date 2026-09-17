@@ -142,7 +142,7 @@ public sealed class Slv3LightingFrameWriter : IHostedService, IDisposable
         if (devices.Length == 0) return;
 
         var settings = _store.Load();
-        var globalBrightness = Math.Clamp(settings.Lighting.GlobalBrightness, 0f, 1f);
+        var globalBrightness = MasterBrightness.Effective(settings.Lighting);
         var disabled = settings.Devices.DisabledLightingDevices;
         var uncontrolled = settings.Devices.UncontrolledLightingDevices;
         var prefs = settings.Devices.LightingDevicePrefs;
