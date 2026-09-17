@@ -31,6 +31,12 @@ public sealed class LianLiLightingFrameWriter : IHostedService, IDisposable
     // while leaving headroom for a real 30 Hz.
     private const int InterWriteSettleMs = 1;
 
+    // Hub writes are synchronous HidD_SetFeature, each taking LianLiHub._lock that
+    // fan control also takes, so a rejected commit backs off rather than
+    // re-acquiring it once per channel write every tick against a silent hub.
+    private const int RetryBaseMs = 1000;
+    private const int RetryMaxMs = 30_000;
+
     [DllImport("winmm.dll")] private static extern uint timeBeginPeriod(uint period);
     [DllImport("winmm.dll")] private static extern uint timeEndPeriod(uint period);
 
@@ -43,8 +49,16 @@ public sealed class LianLiLightingFrameWriter : IHostedService, IDisposable
 
     private RgbColor[][] _segmentBuffers = Array.Empty<RgbColor[]>();
 
-    // Last firmware-mode signature committed to hardware; null = nothing sent yet.
+    // Last firmware-mode signature the hardware accepted.
     private int? _lastFirmwareSig;
+
+    // Signature currently being attempted, so a retry is told apart from a settings change.
+    private int? _pendingFirmwareSig;
+
+    // Independent windows: a hub that rejects its attach commands must not gate
+    // custom-mode streaming, which does not depend on them landing.
+    private readonly RetryWindow _initRetry = new();
+    private readonly RetryWindow _commitRetry = new();
 
     // False until the attach-time commands (merge off, per-port quantity) have
     // gone out for the current connection; families with a per-frame start
@@ -136,7 +150,10 @@ public sealed class LianLiLightingFrameWriter : IHostedService, IDisposable
             // firmware mode even when settings are unchanged. The cooling path
             // re-asserts on reconnect for the same reason.
             _lastFirmwareSig = null;
+            _pendingFirmwareSig = null;
             _hubInitialised = false;
+            _initRetry.Reset();
+            _commitRetry.Reset();
             return;
         }
         var devices = _engine.Devices;
@@ -147,10 +164,19 @@ public sealed class LianLiLightingFrameWriter : IHostedService, IDisposable
         var globalBrightness = Math.Clamp(settings.Lighting.GlobalBrightness, 0f, 1f);
 
         var profile = _hub.Profile;
-        if (!_hubInitialised)
+        // A rejected init is retried on its own window but never aborts the tick:
+        // pre-retry this was fire-and-forget, and custom mode streams without it.
+        if (!_hubInitialised && !_initRetry.BackingOff(NowMs()))
         {
-            InitialiseHub(profile, settings.Devices.LianLi);
-            _hubInitialised = true;
+            if (InitialiseHub(profile, settings.Devices.LianLi))
+            {
+                NoteSuccess(_initRetry, "hub init");
+                _hubInitialised = true;
+            }
+            else
+            {
+                NoteFailure(_initRetry, "hub init");
+            }
         }
         var comp = LianLiZoneSupport.ReadComposition(settings, _hub.DeviceId);
         var composed = LianLiZoneSupport.Compose(_hub.DeviceId, profile, comp, settings.Devices.LianLi);
@@ -165,8 +191,11 @@ public sealed class LianLiLightingFrameWriter : IHostedService, IDisposable
                 timeBeginPeriod(1);
                 _highResTimer = true;
             }
-            // Reset firmware sig so the next firmware-mode switch re-commits.
+            // Reset firmware sig so the next firmware-mode switch re-commits,
+            // and its backoff with it so a stale deadline cannot gate that switch.
             _lastFirmwareSig = null;
+            _pendingFirmwareSig = null;
+            _commitRetry.Reset();
             TickCustom(settings, devices, globalBrightness, composed, profile);
             return;
         }
@@ -202,23 +231,91 @@ public sealed class LianLiLightingFrameWriter : IHostedService, IDisposable
             return;
         }
 
-        CommitFirmwareMode(ls, mode, globalBrightness, composed, profile, settings.Devices.DisabledLightingDevices, uncontrolled, _firmwareZonesByDevice);
-        _lastFirmwareSig = sig;
+        if (_pendingFirmwareSig != sig)
+        {
+            // New settings, not a retry: apply without serving out the old backoff.
+            _pendingFirmwareSig = sig;
+            _commitRetry.Reset();
+        }
+        else if (_commitRetry.BackingOff(NowMs()))
+        {
+            return;
+        }
+
+        if (CommitFirmwareMode(ls, mode, globalBrightness, composed, profile, settings.Devices.DisabledLightingDevices, uncontrolled, _firmwareZonesByDevice))
+        {
+            NoteSuccess(_commitRetry, "firmware commit");
+            _lastFirmwareSig = sig;
+        }
+        else
+        {
+            NoteFailure(_commitRetry, "firmware commit");
+        }
     }
 
-    private void InitialiseHub(in LianLiFanProfile profile, LianLiSettings fans)
+    /// <summary>Test seam: tests advance the backoff clock instead of sleeping out the cap.</summary>
+    internal Func<long> NowMs { get; set; } = static () => Environment.TickCount64;
+
+    /// <summary>Widening retry window in milliseconds: RetryBaseMs doubling per failure, capped at RetryMaxMs.</summary>
+    private sealed class RetryWindow
+    {
+        private int _streak;
+        private long _retryAtMs;
+
+        public int Streak => _streak;
+
+        public bool BackingOff(long nowMs) => _streak > 0 && nowMs < _retryAtMs;
+
+        public void Fail(long nowMs)
+        {
+            _streak++;
+            // Shift clamp is an overflow bound only; RetryMaxMs is the one cap.
+            _retryAtMs = nowMs + Math.Min((long)RetryBaseMs << Math.Min(_streak - 1, 30), RetryMaxMs);
+        }
+
+        public void Reset()
+        {
+            _streak = 0;
+            _retryAtMs = 0;
+        }
+    }
+
+    /// <summary>Logs once per streak so a hub that never answers cannot fill the log at tick rate.</summary>
+    private void NoteFailure(RetryWindow window, string what)
+    {
+        window.Fail(NowMs());
+        if (window.Streak == 1)
+        {
+            Console.Error.WriteLine(
+                $"[lianli-lighting-writer] {what} rejected by the hub; retrying with backoff (max {RetryMaxMs / 1000}s)");
+        }
+    }
+
+    private void NoteSuccess(RetryWindow window, string what)
+    {
+        if (window.Streak > 0)
+        {
+            Console.WriteLine(
+                $"[lianli-lighting-writer] {what} applied after {window.Streak} rejected attempt(s)");
+            window.Reset();
+        }
+    }
+
+    /// <summary>Attach-time commands; returns false on the first rejected write so the caller retries the whole sequence.</summary>
+    private bool InitialiseHub(in LianLiFanProfile profile, LianLiSettings fans)
     {
         if (profile.ClearMergeOnAttach)
         {
-            _hub.SendStopMerge();
+            if (!_hub.SendStopMerge()) return false;
             Thread.Sleep(InterWriteSettleMs);
         }
-        if (profile.StartActionPerFrame) return;
+        if (profile.StartActionPerFrame) return true;
         for (var p = 0; p < LianLiProtocol.PortCount; p++)
         {
-            _hub.SetQuantity(p, LianLiZoneSupport.ClampFans(fans.GetFans(p)));
+            if (!_hub.SetQuantity(p, LianLiZoneSupport.ClampFans(fans.GetFans(p)))) return false;
             Thread.Sleep(InterWriteSettleMs);
         }
+        return true;
     }
 
     private void TickCustom(
@@ -284,7 +381,8 @@ public sealed class LianLiLightingFrameWriter : IHostedService, IDisposable
         }
     }
 
-    private void CommitFirmwareMode(
+    /// <summary>Commits the firmware animation on every controlled channel; returns false on the first rejected write, leaving the signature unlatched so the next attempt re-sends every channel.</summary>
+    private bool CommitFirmwareMode(
         LianLiLightingSettings ls,
         LianLiModeInfo mode,
         float globalBrightness,
@@ -322,12 +420,12 @@ public sealed class LianLiLightingFrameWriter : IHostedService, IDisposable
                     var byteCount = numFans * ledsPerFan * 3;
                     if (profile.StartActionPerFrame)
                     {
-                        _hub.SendStartAction(ch / profile.ChannelsPerPort, numFans);
+                        if (!_hub.SendStartAction(ch / profile.ChannelsPerPort, numFans)) return false;
                         Thread.Sleep(InterWriteSettleMs);
                     }
-                    _hub.SendColorData(ch, _channelBuf.AsSpan(0, byteCount));
+                    if (!_hub.SendColorData(ch, _channelBuf.AsSpan(0, byteCount))) return false;
                     Thread.Sleep(InterWriteSettleMs);
-                    _hub.SendModeCommit(ch, mode.EffectByte, speedByte, dirByte, brightnessByte);
+                    if (!_hub.SendModeCommit(ch, mode.EffectByte, speedByte, dirByte, brightnessByte)) return false;
                     Thread.Sleep(InterWriteSettleMs);
                 }
             }
@@ -336,8 +434,9 @@ public sealed class LianLiLightingFrameWriter : IHostedService, IDisposable
         // The per-channel commits alone leave the firmware rendering the
         // previous speed/brightness; this latches them. Once for the whole
         // apply, after every port, exactly as L-Connect does.
-        _hub.SendFrameSync();
+        if (!_hub.SendFrameSync()) return false;
         Thread.Sleep(InterWriteSettleMs);
+        return true;
     }
 
     private static int NumFansForDevice(ComposedDevice device, in LianLiFanProfile profile)

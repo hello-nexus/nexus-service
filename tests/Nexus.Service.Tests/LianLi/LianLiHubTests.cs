@@ -18,6 +18,14 @@ internal sealed class HubTransportSpy : IHidDevice
     }
     public List<Call> Calls { get; } = new();
 
+    /// <summary>When true every write is rejected, as a hub that enumerated but is not answering does.</summary>
+    public bool RejectWrites { get; set; }
+
+    /// <summary>Accept this many writes, then reject the rest; negative disables staging. Reaches guards past the first.</summary>
+    public int RejectAfter { get; set; } = -1;
+
+    private bool Accept() => !RejectWrites && (RejectAfter < 0 || Calls.Count <= RejectAfter);
+
     public int VendorId => LianLiProtocol.VendorId;
     public int ProductId => LianLiProtocol.ProductId;
     public string Path => "spy";
@@ -25,11 +33,11 @@ internal sealed class HubTransportSpy : IHidDevice
     public int UsagePage => LianLiProtocol.VendorUsagePage;
     public int Usage => LianLiProtocol.VendorUsage;
 
-    public bool SetFeature(ReadOnlySpan<byte> report) { Calls.Add(new Call(CallKind.Feature, report.ToArray())); return true; }
-    public bool Write(ReadOnlySpan<byte> report) { Calls.Add(new Call(CallKind.Write, report.ToArray())); return true; }
+    public bool SetFeature(ReadOnlySpan<byte> report) { Calls.Add(new Call(CallKind.Feature, report.ToArray())); return Accept(); }
+    public bool Write(ReadOnlySpan<byte> report) { Calls.Add(new Call(CallKind.Write, report.ToArray())); return Accept(); }
     public bool GetFeature(Span<byte> buffer) => false;
     public bool GetInputReport(Span<byte> buffer) => false;
-    public bool SetOutputReport(ReadOnlySpan<byte> report) { Calls.Add(new Call(CallKind.OutputReport, report.ToArray())); return true; }
+    public bool SetOutputReport(ReadOnlySpan<byte> report) { Calls.Add(new Call(CallKind.OutputReport, report.ToArray())); return Accept(); }
     public int Read(Span<byte> buffer, int timeoutMs) => 0;
     public void Dispose() { }
 }
