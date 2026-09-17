@@ -17,8 +17,8 @@ public static class MasterBrightness
         Effective(lighting, DateTime.Now.TimeOfDay);
 
     /// <summary>Effective master level, 0..1, at <paramref name="timeOfDay"/>.
-    /// Clamps the slider exactly as the writers did before the schedule existed,
-    /// so a non-finite level still propagates unchanged.</summary>
+    /// The slider is clamped, not sanitised: a non-finite level propagates,
+    /// which the POST route guards against upstream.</summary>
     public static float Effective(LightingSettings lighting, TimeSpan timeOfDay)
     {
         var global = Math.Clamp(lighting.GlobalBrightness, 0f, 1f);
@@ -41,8 +41,8 @@ public static class MasterBrightness
             return 1f;
         }
         var minute = ((int)timeOfDay.TotalMinutes % MinutesPerDay + MinutesPerDay) % MinutesPerDay;
-        // The list is read unlocked while a route may swap it, so walk one
-        // reference and never index past the count seen here.
+        // Read unlocked on the frame path. Safe only because the route replaces
+        // the list wholesale and never mutates one that has been published.
         BrightnessSchedulePoint? before = null, after = null, first = null, last = null;
         for (int i = 0; i < points.Count; i++)
         {

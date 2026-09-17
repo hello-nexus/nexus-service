@@ -90,6 +90,14 @@ public sealed class MasterBrightnessTests
     }
 
     [Fact]
+    public void A_missing_schedule_is_the_slider_alone()
+    {
+        var lighting = new LightingSettings { GlobalBrightness = 0.4f, BrightnessSchedule = null! };
+
+        Assert.Equal(0.4f, MasterBrightness.Effective(lighting, At(12)));
+    }
+
+    [Fact]
     public void A_non_finite_slider_passes_through_as_before()
     {
         var lighting = new LightingSettings { GlobalBrightness = float.NaN };

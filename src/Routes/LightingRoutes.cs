@@ -208,30 +208,32 @@ public static class LightingRoutes
             return new Models.Lighting.BrightnessScheduleBody
             {
                 Enabled = schedule.Enabled,
-                Points = schedule.Points,
+                Points = schedule.Points ?? new(),
                 Defaults = Nexus.Service.Lighting.MasterBrightness.DefaultSchedule(),
             };
         }).AllowPanel();
         app.MapPost("/lighting/brightness-schedule", (Models.Lighting.BrightnessScheduleBody body,
             Nexus.Service.Persistence.IConfigStore store, MultiplexHub hub) =>
         {
-            // Two points is the floor the editor enforces; below that there is
-            // no curve to interpolate. Values are clamped rather than refused so
-            // a hand-edited hour 24 reads as 23 instead of failing the save.
+            // Below the editor's floor there is no curve to interpolate. Values
+            // are clamped rather than refused so an out-of-range hand edit still
+            // saves. One point per hour, the last sent winning, so the writers
+            // and the web readout never disagree on a shared hour.
             if (body.Points is null || body.Points.Count < 2)
             {
                 return Results.BadRequest(ApiResponse.Fail("at least two points"));
             }
-            var points = new List<Nexus.Service.Persistence.BrightnessSchedulePoint>(body.Points.Count);
+            var byHour = new SortedDictionary<int, Nexus.Service.Persistence.BrightnessSchedulePoint>();
             foreach (var p in body.Points)
             {
-                points.Add(new Nexus.Service.Persistence.BrightnessSchedulePoint
+                var hour = Math.Clamp(p.Hour, 0, 23);
+                byHour[hour] = new Nexus.Service.Persistence.BrightnessSchedulePoint
                 {
-                    Hour = Math.Clamp(p.Hour, 0, 23),
+                    Hour = hour,
                     Brightness = Math.Clamp(p.Brightness, 0, 100),
-                });
+                };
             }
-            points.Sort((a, b) => a.Hour.CompareTo(b.Hour));
+            var points = new List<Nexus.Service.Persistence.BrightnessSchedulePoint>(byHour.Values);
             // Replace the object, never mutate the list: frame writers walk the
             // reference they read, unlocked.
             store.Update(s => s.Lighting.BrightnessSchedule = new() { Enabled = body.Enabled, Points = points });

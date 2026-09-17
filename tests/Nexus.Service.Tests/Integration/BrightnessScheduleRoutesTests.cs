@@ -58,6 +58,33 @@ public sealed class BrightnessScheduleRoutesTests : IClassFixture<StubDeviceHost
     }
 
     [Fact]
+    public async Task Post_keeps_one_point_per_hour_the_last_sent_winning()
+    {
+        var res = await _client.PostAsync("/lighting/brightness-schedule", Json("""
+            {"enabled":true,"points":[{"hour":12,"brightness":50},{"hour":0,"brightness":10},{"hour":12,"brightness":80}]}
+            """));
+        Assert.Equal(HttpStatusCode.OK, res.StatusCode);
+
+        var saved = Store.Load().Lighting.BrightnessSchedule;
+        Assert.Equal(new[] { 0, 12 }, saved.Points.Select(p => p.Hour));
+        Assert.Equal(80, saved.Points[1].Brightness);
+    }
+
+    [Fact]
+    public async Task Get_survives_a_null_schedule_in_settings()
+    {
+        Store.Update(s => s.Lighting.BrightnessSchedule = new() { Enabled = true, Points = null! });
+
+        var res = await _client.GetAsync("/lighting/brightness-schedule");
+        Assert.Equal(HttpStatusCode.OK, res.StatusCode);
+        using var doc = JsonDocument.Parse(await res.Content.ReadAsStringAsync());
+        Assert.Equal(0, doc.RootElement.GetProperty("points").GetArrayLength());
+
+        Store.Update(s => s.Lighting.BrightnessSchedule = null!);
+        Assert.Equal(HttpStatusCode.OK, (await _client.GetAsync("/lighting/brightness-schedule")).StatusCode);
+    }
+
+    [Fact]
     public async Task Post_refuses_fewer_than_two_points()
     {
         var res = await _client.PostAsync("/lighting/brightness-schedule", Json("""
