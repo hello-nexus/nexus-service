@@ -153,4 +153,182 @@ public class LianLiLightingFrameWriterTests
         Assert.Equal(0x01, calls[1].Bytes[2]); // static latches the streamed frame
         Assert.Equal(0x60, calls[2].Bytes[1]);
     }
+
+    // ── Rejected-write retry (a commit the hub drops must not latch) ──
+
+    /// <summary>Drives the writer's backoff clock without sleeping.</summary>
+    private long _now;
+
+    private void UseFakeClock() => _writer.NowMs = () => _now;
+
+    private void Advance(long ms) => _now += ms;
+
+    [Fact]
+    public void Firmware_commit_rejected_by_the_hub_is_retried_after_the_backoff()
+    {
+        UseFakeClock();
+        Attach(0xA102, port: 0, fans: 4);
+        SetMode("rainbowWave");
+        _spy.RejectWrites = true;
+
+        _writer.Tick();
+        var afterFirst = Calls.Count;
+        Assert.True(afterFirst > 0, "the first attempt must reach the hub");
+
+        // Inside the 1s window the writer stays off the hub entirely.
+        _writer.Tick();
+        Assert.Equal(afterFirst, Calls.Count);
+
+        Advance(1000);
+        _writer.Tick();
+        Assert.True(Calls.Count > afterFirst, "the commit must be retried once the window elapses");
+    }
+
+    [Fact]
+    public void Firmware_commit_stops_retrying_once_the_hub_accepts_it()
+    {
+        UseFakeClock();
+        Attach(0xA102, port: 0, fans: 4);
+        SetMode("rainbowWave");
+        _spy.RejectWrites = true;
+
+        _writer.Tick();
+        Advance(1000);
+        _spy.RejectWrites = false;
+        _writer.Tick();
+        var afterAccepted = Calls.Count;
+
+        // Latched now: no further writes, however long we wait.
+        Advance(60_000);
+        _writer.Tick();
+        _writer.Tick();
+        Assert.Equal(afterAccepted, Calls.Count);
+    }
+
+    [Fact]
+    public void Firmware_commit_backoff_widens_and_caps_at_thirty_seconds()
+    {
+        UseFakeClock();
+        Attach(0xA102, port: 0, fans: 4);
+        SetMode("rainbowWave");
+        _spy.RejectWrites = true;
+
+        // 1s, 2s, 4s, 8s, 16s, then pinned at 30s.
+        foreach (var expected in new long[] { 1000, 2000, 4000, 8000, 16000, 30000, 30000 })
+        {
+            var before = Calls.Count;
+            _writer.Tick();
+            Assert.True(Calls.Count > before, "attempt must reach the hub");
+
+            // One tick short of the window sends nothing.
+            Advance(expected - 1);
+            var beforeEarly = Calls.Count;
+            _writer.Tick();
+            Assert.Equal(beforeEarly, Calls.Count);
+            Advance(1);
+        }
+    }
+
+    [Fact]
+    public void A_settings_change_cancels_the_backoff_and_applies_at_once()
+    {
+        UseFakeClock();
+        Attach(0xA102, port: 0, fans: 4);
+        SetMode("rainbowWave");
+        _spy.RejectWrites = true;
+
+        _writer.Tick();
+        var afterFirst = Calls.Count;
+        _writer.Tick();
+        Assert.Equal(afterFirst, Calls.Count); // backing off
+
+        // The user picks another mode: their change must not wait out the window.
+        SetMode("breathing");
+        _writer.Tick();
+        Assert.True(Calls.Count > afterFirst, "a settings change must retry immediately");
+    }
+
+    [Fact]
+    public void Hub_detach_clears_the_backoff_so_a_reconnect_commits_at_once()
+    {
+        UseFakeClock();
+        Attach(0xA102, port: 0, fans: 4);
+        SetMode("rainbowWave");
+        _spy.RejectWrites = true;
+
+        _writer.Tick();
+        var afterFirst = Calls.Count;
+
+        _hub.Detach();
+        _writer.Tick(); // observes the detach, resets state
+        _spy.RejectWrites = false;
+        _hub.Attach(_spy, Profile(0xA102));
+
+        _writer.Tick();
+        Assert.True(Calls.Count > afterFirst, "a reconnected hub must commit without serving out the old backoff");
+    }
+
+    [Fact]
+    public void A_rejected_write_abandons_the_rest_of_the_commit()
+    {
+        UseFakeClock();
+        Attach(0xA102, port: 0, fans: 4);
+        SetMode("rainbowWave");
+
+        _writer.Tick();
+        var fullCommit = Calls.Count;
+        Assert.Equal(7, fullCommit); // 2 channels x (start + colour + commit) + frame sync
+
+        // Same hub, a mode change to force a fresh commit, every write refused:
+        // it must stop at the first rejection instead of walking all 8 channels.
+        _spy.Calls.Clear();
+        _spy.RejectWrites = true;
+        SetMode("breathing");
+        _writer.Tick();
+
+        Assert.Single(Calls);
+    }
+
+    [Theory]
+    [InlineData(3)] // mid-sequence: refused on the second channel's colour write
+    [InlineData(6)] // only the trailing frame sync refused
+    public void A_commit_refused_partway_is_not_latched_and_re_sends_every_channel(int acceptedWrites)
+    {
+        UseFakeClock();
+        Attach(0xA102, port: 0, fans: 4);
+        SetMode("rainbowWave");
+        _spy.RejectAfter = acceptedWrites;
+
+        _writer.Tick();
+        Assert.Equal(acceptedWrites + 1, Calls.Count); // stops at the refused write
+
+        // Unlatched, so the retry re-sends the whole sequence, not the remainder.
+        _spy.Calls.Clear();
+        _spy.RejectAfter = -1;
+        Advance(1000);
+        _writer.Tick();
+        Assert.Equal(7, Calls.Count);
+    }
+
+    [Fact]
+    public void A_rejected_hub_init_does_not_freeze_custom_mode_streaming()
+    {
+        UseFakeClock();
+        // SL v1 is the family whose init actually writes (merge-off + quantities).
+        Attach(0xA100, port: 2, fans: 3);
+        SetMode("custom");
+        _spy.RejectWrites = true;
+
+        // The tick that attempts the init and has it refused must still stream:
+        // SL v1 colour data goes out on interrupt-OUT, so a Write call proves it
+        // got past the init block rather than aborting the tick there.
+        _writer.Tick();
+        Assert.Contains(Calls, c => c.Kind == HubTransportSpy.CallKind.Write);
+
+        // And the tick after, while the init backoff is still running.
+        _spy.Calls.Clear();
+        _spy.RejectWrites = false;
+        _writer.Tick();
+        Assert.Contains(Calls, c => c.Kind == HubTransportSpy.CallKind.Write);
+    }
 }
