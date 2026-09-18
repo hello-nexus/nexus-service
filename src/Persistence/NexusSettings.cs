@@ -59,6 +59,12 @@ public sealed class NexusSettings
     /// <summary>EDID model identities ("CRX:ED00") panel auto-promotion has already acted on (or first observed as user-managed). A listed model is never auto-promoted again, so deleting an auto-created panel record sticks across port changes. NOT profile-scoped.</summary>
     public List<string> AutoPromotedPanelModels { get; set; } = new();
 
+    /// <summary>App ids the hardware auto-installer fetched from the store for the hardware on this machine (see <see cref="Nexus.Service.Store.HardwareAppCatalog"/>). Drives the "placed for you" flag the dashboard reads to auto-arrange the app. NOT profile-scoped: it tracks hardware, not a profile.</summary>
+    public List<string> AutoInstalledApps { get; set; } = new();
+
+    /// <summary>App ids the user uninstalled by hand. Suppresses the hardware auto-installer for good, so an app the user removed does not come back on the next boot even though its hardware is still attached. NOT profile-scoped.</summary>
+    public List<string> UserRemovedApps { get; set; } = new();
+
     /// <summary>User-overridden display name for this host PC. Empty means "fall back to Environment.MachineName". Surfaced in the panel tray header and in the QR/claim payload paired phones see. NOT profile-scoped: a host has one name regardless of which profile is active.</summary>
     public string HostDisplayName { get; set; } = "";
 

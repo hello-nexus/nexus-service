@@ -8,6 +8,7 @@ using Microsoft.AspNetCore.Routing;
 using Nexus.Service.Auth;
 using Nexus.Service.Models;
 using Nexus.Service.Models.Widgets;
+using Nexus.Service.Persistence;
 using Nexus.Service.Sensors;
 using Nexus.Service.Serialization;
 using Nexus.Service.Widgets;
@@ -58,23 +59,24 @@ public static class AppRoutes
 
     public static void MapAppEndpoints(this WebApplication app)
     {
-        app.MapGet("/apps-api/installed", (AppRegistry registry, OemInfo oemInfo) =>
+        app.MapGet("/apps-api/installed", (AppRegistry registry, OemInfo oemInfo, IConfigStore store) =>
         {
             var response = new AppInstalledListingResponse();
+            var autoInstalled = store.Load().AutoInstalledApps;
             foreach (var entry in registry.All())
             {
                 if (IsOemHidden(entry, oemInfo)) continue;
-                response.Apps.Add(BuildListing(entry, oemInfo));
+                response.Apps.Add(BuildListing(entry, oemInfo, autoInstalled));
             }
             return Results.Json(response, AppJsonContext.Default.AppInstalledListingResponse);
         }).AllowPanel();
 
-        app.MapGet("/apps-api/installed/{id}", (string id, AppRegistry registry, OemInfo oemInfo) =>
+        app.MapGet("/apps-api/installed/{id}", (string id, AppRegistry registry, OemInfo oemInfo, IConfigStore store) =>
         {
             if (!AppIds.IsValid(id)) return Results.NotFound();
             if (!registry.TryGet(id, out var entry)) return Results.NotFound();
             if (IsOemHidden(entry, oemInfo)) return Results.NotFound();
-            return Results.Json(BuildListing(entry, oemInfo), AppJsonContext.Default.AppInstalledListing);
+            return Results.Json(BuildListing(entry, oemInfo, store.Load().AutoInstalledApps), AppJsonContext.Default.AppInstalledListing);
         }).AllowPanel();
 
         app.MapGet("/apps-api/instance/{instanceId}/settings",
@@ -153,29 +155,47 @@ public static class AppRoutes
         // sideload route above: that one activates a bundled app, this one
         // downloads a versioned artifact.
         //
-        // Getting an app needs a linked Nexus account: the cloud grant both
+        // Getting an app needs a linked Nexus account, whose grant both
         // authorizes the download and records the purchase Manage purchases
-        // lists. Its hash supersedes whatever the page sent, so the trust pin
-        // comes from the store rather than from the caller.
+        // lists; its hash supersedes whatever the page sent. The exception is
+        // an app that ships with hardware attached to this machine, which
+        // installs without an account (see HardwareAppCatalog).
         app.MapPost("/apps-api/store/install",
             async (StoreInstallRequest body, Nexus.Service.Store.StoreEntitlements entitlements,
-                   Nexus.Service.Store.StoreInstaller installer, HttpContext http, CancellationToken ct) =>
+                   Nexus.Service.Store.StoreInstaller installer,
+                   Nexus.Service.Store.HardwareAppCatalog hardware,
+                   IConfigStore store, HttpContext http, CancellationToken ct) =>
         {
+            var appId = body.AppId ?? "";
             var auth = await entitlements.AuthorizeAsync(
-                body.AppId ?? "", body.Version ?? "", http.Request.Query["nexusVersion"], ct);
+                appId, body.Version ?? "", http.Request.Query["nexusVersion"], ct);
             if (!auth.Ok || auth.Grant is null)
             {
-                return Results.Json(new StoreInstallResponse
+                // An app that ships with attached hardware needs no account, so
+                // the manual Install button behaves the same as the automatic
+                // path. The caller's hash still stands in for the grant's,
+                // which is safe because the catalog is where it came from.
+                var waived = auth.Reason == "sign_in_required" && hardware.IsMatched(appId);
+                if (!waived)
                 {
-                    AppId = body.AppId ?? "",
-                    Version = body.Version ?? "",
-                    Ok = false,
-                    Reason = auth.Reason ?? "store_unavailable",
-                }, AppJsonContext.Default.StoreInstallResponse);
+                    return Results.Json(new StoreInstallResponse
+                    {
+                        AppId = appId,
+                        Version = body.Version ?? "",
+                        Ok = false,
+                        Reason = auth.Reason ?? "store_unavailable",
+                    }, AppJsonContext.Default.StoreInstallResponse);
+                }
             }
-            body.Sha256 = auth.Grant.Sha256;
-            if (auth.Grant.Size > 0) body.Size = auth.Grant.Size;
+            else
+            {
+                body.Sha256 = auth.Grant.Sha256;
+                if (auth.Grant.Size > 0) body.Size = auth.Grant.Size;
+            }
             var result = await installer.InstallAsync(body, ct);
+            // A deliberate reinstall clears the suppression the uninstall set.
+            if (result.Ok)
+                store.Update(s => s.UserRemovedApps.Remove(appId));
             return Results.Json(result, AppJsonContext.Default.StoreInstallResponse);
         }).AllowPanel();
 
@@ -187,9 +207,20 @@ public static class AppRoutes
             return Results.Json(library, AppJsonContext.Default.StoreLibraryResponse);
         }).AllowPanel();
 
-        app.MapPost("/apps-api/uninstall", (AppInstallRequest body, AppInstaller installer) =>
+        app.MapPost("/apps-api/uninstall", (AppInstallRequest body, AppInstaller installer, IConfigStore store) =>
         {
-            var result = installer.Uninstall(body.Id ?? "");
+            var id = body.Id ?? "";
+            var result = installer.Uninstall(id);
+            // Removing an app the hardware auto-installer placed is a decision
+            // it must not overturn on the next tick.
+            if (result.Error is null)
+            {
+                store.Update(s =>
+                {
+                    s.AutoInstalledApps.Remove(id);
+                    if (!s.UserRemovedApps.Contains(id)) s.UserRemovedApps.Add(id);
+                });
+            }
             return Results.Json(result, AppJsonContext.Default.AppInstallResponse);
         }).AllowPanel();
 
@@ -458,7 +489,7 @@ public static class AppRoutes
             && !oemInfo.Matches(manufacturers);
     }
 
-    private static AppInstalledListing BuildListing(AppEntry entry, OemInfo oemInfo)
+    private static AppInstalledListing BuildListing(AppEntry entry, OemInfo oemInfo, List<string> autoInstalled)
     {
         // Icons / SVG assets are now served from `/apps-api/installed/{id}/asset/...`,
         // not the (removed) per-widget origin. Building the URL here keeps the
@@ -498,7 +529,11 @@ public static class AppRoutes
             Source = source,
             // Preinstall is an OEM bake-in honored only for bundled apps; a user
             // copy of the same id is a deliberate user choice, not a pre-install.
-            Preinstalled = entry.Manifest.Preinstalled && entry.Source == AppInstallPaths.Source.Bundled && oemMatch,
+            // A hardware auto-install is also "placed for you, unasked", which
+            // is what the dashboard acts on, so it reports the same flag from
+            // the user root.
+            Preinstalled = (entry.Manifest.Preinstalled && entry.Source == AppInstallPaths.Source.Bundled && oemMatch)
+                || autoInstalled.Contains(entry.Id),
             Immersive = entry.Manifest.Immersive,
             SingleInstance = entry.Manifest.SingleInstance,
         };

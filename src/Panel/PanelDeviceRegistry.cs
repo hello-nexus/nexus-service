@@ -321,6 +321,63 @@ public sealed class PanelDeviceRegistry
         return newest?.Backdrop ?? "";
     }
 
+    /// <summary>
+    /// Puts one widget on the attached Y70 panel if it is not already there, so
+    /// an app that ships with that panel is on screen without the user placing
+    /// it. <see cref="Y70WidgetPlacement.NoPanel"/> means the panel has not
+    /// registered yet (it does so when the kiosk first connects), so the caller
+    /// should retry rather than treat the placement as done.
+    /// </summary>
+    /// <remarks>
+    /// Appends rather than reflowing: the panel re-paginates on load, which
+    /// finds the widget a free slot without disturbing what the user arranged.
+    /// A null Layout means the record is still showing
+    /// <see cref="PanelLayoutDefaults"/>, so that default is materialized first
+    /// - otherwise saving a layout with only this widget would wipe the starter
+    /// set the user currently sees.
+    /// </remarks>
+    public Y70WidgetPlacement EnsureY70Widget(string widgetType, string size)
+    {
+        if (string.IsNullOrWhiteSpace(widgetType)) return Y70WidgetPlacement.NoPanel;
+
+        var result = Y70WidgetPlacement.NoPanel;
+        _store.Update(s =>
+        {
+            PanelDeviceRecord? newest = null;
+            foreach (var record in s.PanelDevices.Values)
+            {
+                if (!string.Equals(record.Capabilities?.Surface, PanelSurfaces.Y70, StringComparison.Ordinal)) continue;
+                if (newest is null || record.LastSeenAt > newest.LastSeenAt) newest = record;
+            }
+            if (newest is null) return;
+
+            var layout = newest.Layout ?? PanelLayoutDefaults.ForSurface(PanelSurfaces.Y70);
+            foreach (var page in layout.Pages)
+            {
+                foreach (var widget in page.Widgets)
+                {
+                    if (!string.Equals(widget.Type, widgetType, StringComparison.Ordinal)) continue;
+                    result = Y70WidgetPlacement.AlreadyPresent;
+                    return;
+                }
+            }
+
+            if (layout.Pages.Count == 0)
+                layout.Pages.Add(new PanelPageDto { Id = Guid.NewGuid().ToString() });
+            layout.Pages[0].Widgets.Add(new PanelWidgetDto
+            {
+                Id = Guid.NewGuid().ToString(),
+                Type = widgetType,
+                Size = size,
+                Col = 0,
+                Row = 0,
+            });
+            newest.Layout = layout;
+            result = Y70WidgetPlacement.Placed;
+        });
+        return result;
+    }
+
     public IReadOnlyList<PanelDeviceRecord> List()
     {
         var devices = _store.Load().PanelDevices;
@@ -677,4 +734,15 @@ public sealed class PanelDeviceRegistry
             Enabled = r.Enabled,
         };
     }
+}
+
+/// <summary>Outcome of <see cref="PanelDeviceRegistry.EnsureY70Widget"/>.</summary>
+public enum Y70WidgetPlacement
+{
+    /// <summary>No Y70 panel has registered yet; retry once the kiosk connects.</summary>
+    NoPanel,
+    /// <summary>The widget was already on the panel; nothing was written.</summary>
+    AlreadyPresent,
+    /// <summary>The widget was appended to the panel's layout.</summary>
+    Placed,
 }

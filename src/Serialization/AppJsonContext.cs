@@ -736,6 +736,7 @@ namespace Nexus.Service.Serialization;
 [JsonSerializable(typeof(RevokeCloudBody))]
 [JsonSerializable(typeof(DevicesSeenCloudBody))]
 [JsonSerializable(typeof(Nexus.Service.Models.Panel.MappingAutoAppliedFrame))]
+[JsonSerializable(typeof(Nexus.Service.Models.Panel.AppAutoInstalledFrame))]
 
 // Smart (network) lights
 [JsonSerializable(typeof(Nexus.Service.Models.SmartLights.SmartLightDto))]
@@ -1012,6 +1013,7 @@ namespace Nexus.Service.Serialization;
 [JsonSerializable(typeof(StoreInstallRequest))]
 [JsonSerializable(typeof(StoreInstallResponse))]
 [JsonSerializable(typeof(StoreDownloadGrant))]
+[JsonSerializable(typeof(StoreCatalogApp))]
 [JsonSerializable(typeof(StorePurchase))]
 [JsonSerializable(typeof(StoreLibraryResponse))]
 [JsonSerializable(typeof(CloudStoreEntitlement))]
