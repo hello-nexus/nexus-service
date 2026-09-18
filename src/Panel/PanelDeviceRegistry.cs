@@ -363,14 +363,22 @@ public sealed class PanelDeviceRegistry
 
             if (layout.Pages.Count == 0)
                 layout.Pages.Add(new PanelPageDto { Id = Guid.NewGuid().ToString() });
-            layout.Pages[0].Widgets.Add(new PanelWidgetDto
+            // First free rect, spilling to a new page when every page is full.
+            // Shared with the Nexus 2 import so both land a widget where the
+            // editor would have; appending at a fixed cell overlaps whatever
+            // already occupies it, and the client's repagination does not
+            // repair a page that cannot be repacked to fit.
+            var placing = new PanelWidgetDto
             {
                 Id = Guid.NewGuid().ToString(),
                 Type = widgetType,
                 Size = size,
-                Col = 0,
-                Row = 0,
-            });
+            };
+            if (!Nexus.Service.Migration.Nexus2LayoutPlacement.Append(layout.Pages, placing, size))
+            {
+                result = Y70WidgetPlacement.NoRoom;
+                return;
+            }
             newest.Layout = layout;
             result = Y70WidgetPlacement.Placed;
         });
@@ -766,6 +774,8 @@ public enum Y70WidgetPlacement
     NoPanel,
     /// <summary>The widget was already on the panel; nothing was written.</summary>
     AlreadyPresent,
-    /// <summary>The widget was appended to the panel's layout.</summary>
+    /// <summary>The widget was placed in the first free slot on the panel.</summary>
     Placed,
+    /// <summary>Every page is full and the page cap is reached; nothing was written.</summary>
+    NoRoom,
 }

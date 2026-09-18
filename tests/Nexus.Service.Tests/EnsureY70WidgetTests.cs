@@ -75,6 +75,71 @@ public class EnsureY70WidgetTests
         Assert.Equal(starterCount + 1, types.Count);
     }
 
+    // A 4x4 appended at a fixed cell landed on top of whatever already sat
+    // there, and the client's repagination cannot repair a page it fails to
+    // repack. Observed on the Y70: the Ina widget overlapped the clock.
+    [Fact]
+    public void PlacingNeverOverlapsAWidgetAlreadyOnThePage()
+    {
+        var layout = new PanelLayoutDto
+        {
+            Surface = PanelSurfaces.Y70,
+            Pages = new List<PanelPageDto>
+            {
+                new() { Id = "p1", Widgets = new List<PanelWidgetDto>
+                {
+                    new() { Id = "w1", Type = "clock", Size = "4x2", Col = 0, Row = 0 },
+                    new() { Id = "w2", Type = "cooling", Size = "2x2", Col = 0, Row = 2 },
+                } },
+            },
+        };
+        var (registry, store) = WithY70(layout);
+
+        Assert.Equal(Y70WidgetPlacement.Placed, registry.EnsureY70Widget(InaType, "4x4", out _));
+
+        var placed = store.Settings.PanelDevices["y70-1"].Layout!.Pages
+            .SelectMany(p => p.Widgets).Single(w => w.Type == InaType);
+        foreach (var other in store.Settings.PanelDevices["y70-1"].Layout!.Pages.SelectMany(p => p.Widgets))
+        {
+            if (ReferenceEquals(other, placed)) continue;
+            Assert.False(Overlaps(placed, other), $"Ina at ({placed.Col},{placed.Row}) overlaps {other.Type} at ({other.Col},{other.Row})");
+        }
+        // Old behaviour hard-coded (0,0), which is exactly where the clock sits.
+        Assert.False(placed.Col == 0 && placed.Row == 0);
+    }
+
+    private static bool Overlaps(PanelWidgetDto a, PanelWidgetDto b)
+    {
+        var (ac, ar) = Span(a.Size); var (bc, br) = Span(b.Size);
+        return a.Col < b.Col + bc && a.Col + ac > b.Col && a.Row < b.Row + br && a.Row + ar > b.Row;
+    }
+
+    private static (int Cols, int Rows) Span(string size) => size switch
+    {
+        "1x1" => (1, 1), "2x2" => (2, 2), "4x2" => (4, 2), "4x4" => (4, 4), _ => (2, 2),
+    };
+
+    // A full page must spill rather than stack on top of the existing widgets.
+    [Fact]
+    public void AFullPageSpillsToANewPage()
+    {
+        var full = new List<PanelWidgetDto>();
+        for (var r = 0; r < 16; r += 2) full.Add(new PanelWidgetDto { Id = $"w{r}", Type = "clock", Size = "4x2", Col = 0, Row = r });
+        var layout = new PanelLayoutDto
+        {
+            Surface = PanelSurfaces.Y70,
+            Pages = new List<PanelPageDto> { new() { Id = "p1", Widgets = full } },
+        };
+        var (registry, store) = WithY70(layout);
+
+        Assert.Equal(Y70WidgetPlacement.Placed, registry.EnsureY70Widget(InaType, "4x4", out _));
+
+        var pages = store.Settings.PanelDevices["y70-1"].Layout!.Pages;
+        Assert.Equal(2, pages.Count);
+        Assert.Contains(pages[1].Widgets, w => w.Type == InaType);
+        Assert.DoesNotContain(pages[0].Widgets, w => w.Type == InaType);
+    }
+
     [Fact]
     public void PlacingAppendsToAnExistingLayoutWithoutDisturbingIt()
     {
@@ -91,9 +156,10 @@ public class EnsureY70WidgetTests
         Assert.Equal(Y70WidgetPlacement.Placed, registry.EnsureY70Widget(InaType, "4x4", out _));
 
         Assert.Equal(new[] { "clock", InaType }, TypesOn(store));
-        var placed = store.Settings.PanelDevices["y70-1"].Layout!.Pages[0].Widgets[1];
+        var placed = store.Settings.PanelDevices["y70-1"].Layout!.Pages[0].Widgets.Single(w => w.Type == InaType);
         Assert.Equal("4x4", placed.Size);
         Assert.NotEqual("", placed.Id);
+        Assert.False(Overlaps(placed, store.Settings.PanelDevices["y70-1"].Layout!.Pages[0].Widgets[0]));
     }
 
     [Fact]

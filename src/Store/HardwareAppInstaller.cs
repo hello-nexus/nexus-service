@@ -131,6 +131,10 @@ public sealed class HardwareAppInstaller : BackgroundService
         {
             placement = _panels.EnsureY70Widget($"app:{appId}", InaWidgetSize, out panelId);
             if (placement == Y70WidgetPlacement.NoPanel) return false;
+            // A full panel still counts as settled: the app is installed and the
+            // user can place it, and retrying cannot free a slot.
+            if (placement == Y70WidgetPlacement.NoRoom)
+                ServiceLog.Warn($"[store] {appId} installed but the panel has no free slot");
         }
 
         _store.Update(s =>
