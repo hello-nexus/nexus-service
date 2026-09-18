@@ -1407,6 +1407,11 @@ public static class NexusServiceCollectionExtensions
             Nexus.Service.Platform.Displays.MacDisplayBrightnessProvider>();
         services.AddSingleton<Nexus.Service.Platform.Displays.IDisplayTopologyProvider,
             Nexus.Service.Platform.Displays.MacDisplayTopologyProvider>();
+        // CoreGraphics reconfiguration callbacks stand in for the helper's
+        // WM_DISPLAYCHANGE relay, so curated displays auto-promote here too.
+        services.AddSingleton<Nexus.Service.Platform.Displays.MacDisplayTopologyWatcher>();
+        services.AddHostedService(sp =>
+            sp.GetRequiredService<Nexus.Service.Platform.Displays.MacDisplayTopologyWatcher>());
 #elif LINUX
         services.AddSingleton<Nexus.Service.Platform.Displays.IDisplayBrightnessProvider,
             Nexus.Service.Platform.Displays.LinuxDisplayBrightnessProvider>();

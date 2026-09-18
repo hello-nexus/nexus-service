@@ -218,9 +218,9 @@ public sealed class DisplayTopologyService
     /// Fires with the record ids whose capabilities were refreshed by
     /// <see cref="SyncPromotedPanelCapabilities"/>, so a hub-owning listener
     /// can broadcast panel/device (this service has no hub reference). The
-    /// only subscriber is the Windows DisplayTopologyWatcher; on macOS/Linux
-    /// records still refresh but clients pick the change up on their next
-    /// fetch instead of a push.
+    /// Windows and macOS topology watchers subscribe; on Linux records still
+    /// refresh but clients pick the change up on their next fetch instead of
+    /// a push.
     /// </summary>
     public event Action<IReadOnlyList<string>>? PromotedPanelCapabilitiesChanged;
 
