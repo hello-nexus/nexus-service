@@ -173,9 +173,14 @@ public static class AppRoutes
             {
                 // An app that ships with attached hardware needs no account, so
                 // the manual Install button behaves the same as the automatic
-                // path. The caller's hash still stands in for the grant's,
-                // which is safe because the catalog is where it came from.
-                var waived = auth.Reason == "sign_in_required" && hardware.IsMatched(appId);
+                // path. Only a machine with no account at all is waived: a
+                // refused token reads sign_in_required too, and the grant is
+                // what records the purchase. Without it the caller's hash
+                // stands, which still pins the bytes and cannot redirect the
+                // download - StoreInstaller composes the URL itself.
+                var waived = auth.Reason == "sign_in_required"
+                    && !entitlements.HasLinkedAccount
+                    && hardware.IsMatched(appId);
                 if (!waived)
                 {
                     return Results.Json(new StoreInstallResponse
@@ -193,9 +198,18 @@ public static class AppRoutes
                 if (auth.Grant.Size > 0) body.Size = auth.Grant.Size;
             }
             var result = await installer.InstallAsync(body, ct);
-            // A deliberate reinstall clears the suppression the uninstall set.
-            if (result.Ok)
-                store.Update(s => s.UserRemovedApps.Remove(appId));
+            if (result.Ok && Nexus.Service.Store.HardwareAppCatalog.IsHardwareApp(appId))
+            {
+                store.Update(s =>
+                {
+                    // A deliberate reinstall clears the suppression an uninstall set.
+                    s.UserRemovedApps.Remove(appId);
+                    // Recorded so the hardware installer leaves this alone: it
+                    // would otherwise place the widget and announce an install
+                    // the user performed themselves.
+                    if (!s.AutoInstalledApps.Contains(appId)) s.AutoInstalledApps.Add(appId);
+                });
+            }
             return Results.Json(result, AppJsonContext.Default.StoreInstallResponse);
         }).AllowPanel();
 
@@ -212,8 +226,10 @@ public static class AppRoutes
             var id = body.Id ?? "";
             var result = installer.Uninstall(id);
             // Removing an app the hardware auto-installer placed is a decision
-            // it must not overturn on the next tick.
-            if (result.Error is null)
+            // it must not overturn on the next tick. Only those ids are
+            // recorded: Uninstall reports success even when no user copy
+            // existed, so tracking every id would grow without bound.
+            if (result.Error is null && Nexus.Service.Store.HardwareAppCatalog.IsHardwareApp(id))
             {
                 store.Update(s =>
                 {

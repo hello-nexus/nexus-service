@@ -21,7 +21,7 @@ namespace Nexus.Service.Store;
 /// <remarks>
 /// A machine matching nothing in <see cref="HardwareAppCatalog"/> never touches
 /// the network. A matched one still takes the entitled path when an account is
-/// linked, so the purchase is recorded, and only falls back when it is not.
+/// linked, so the purchase is recorded.
 /// </remarks>
 public sealed class HardwareAppInstaller : BackgroundService
 {
@@ -109,7 +109,7 @@ public sealed class HardwareAppInstaller : BackgroundService
         {
             if (settings.UserRemovedApps.Contains(appId)) continue;
             if (settings.AutoInstalledApps.Contains(appId)) continue;
-            if (!await ReconcileAsync(appId, ct).ConfigureAwait(false) && _registry.TryGet(appId, out _))
+            if (!await ReconcileAsync(appId, ct).ConfigureAwait(false) && IsUserInstalled(appId))
                 placementPending = true;
         }
         return placementPending;
@@ -118,18 +118,17 @@ public sealed class HardwareAppInstaller : BackgroundService
     /// <summary>Brings one app to "installed and placed", recording the id only once both halves hold so an outage or an unregistered panel retries instead of being written off as done.</summary>
     private async Task<bool> ReconcileAsync(string appId, CancellationToken ct)
     {
-        var installed = _registry.TryGet(appId, out _);
-        if (!installed)
+        if (!IsUserInstalled(appId))
         {
             if (FocusNetworkGate.IsHeld) return false;
-            installed = await InstallAsync(appId, ct).ConfigureAwait(false);
-            if (!installed) return false;
+            if (!await InstallAsync(appId, ct).ConfigureAwait(false)) return false;
         }
 
         var placement = Y70WidgetPlacement.AlreadyPresent;
+        var panelId = "";
         if (appId == HardwareAppCatalog.InaAppId)
         {
-            placement = _panels.EnsureY70Widget($"app:{appId}", InaWidgetSize);
+            placement = _panels.EnsureY70Widget($"app:{appId}", InaWidgetSize, out panelId);
             if (placement == Y70WidgetPlacement.NoPanel) return false;
         }
 
@@ -137,6 +136,9 @@ public sealed class HardwareAppInstaller : BackgroundService
         {
             if (!s.AutoInstalledApps.Contains(appId)) s.AutoInstalledApps.Add(appId);
         });
+        // A running kiosk PATCHes its whole layout back, so an append it has not
+        // refetched is overwritten on the next edit.
+        if (placement == Y70WidgetPlacement.Placed) PanelTopics.BroadcastPanelDevice(_hub, panelId);
         _registry.TryGet(appId, out var entry);
         PanelTopics.BroadcastAppAutoInstalled(_hub, new AppAutoInstalledFrame
         {
@@ -147,6 +149,10 @@ public sealed class HardwareAppInstaller : BackgroundService
         Console.Error.WriteLine($"[store] auto-installed {appId} for attached hardware");
         return true;
     }
+
+    /// <summary>A bundled build can already carry the same id, which is not the store copy this fetches and must not count as installed.</summary>
+    private bool IsUserInstalled(string appId) =>
+        _registry.TryGet(appId, out var entry) && entry.Source == AppInstallPaths.Source.User;
 
     /// <summary>Returns true when the app is on disk afterwards.</summary>
     private async Task<bool> InstallAsync(string appId, CancellationToken ct)
@@ -181,9 +187,10 @@ public sealed class HardwareAppInstaller : BackgroundService
             if (auth.Grant.Size > 0) request.Size = auth.Grant.Size;
             return request;
         }
-        // Only a missing account is waived; a store outage retries instead, so a
-        // signed-in user does not silently lose the entitlement record.
-        return auth.Reason == "sign_in_required" ? request : null;
+        // Only a machine with no account at all is waived. A refused or expired
+        // token reads sign_in_required too, and waiving that would silently drop
+        // the entitlement record for a user who has one.
+        return auth.Reason == "sign_in_required" && !_entitlements.HasLinkedAccount ? request : null;
     }
 
     /// <summary>Newest version this build can run, from the catalog route that takes no token and applies no storefront filter, so an unlisted app resolves.</summary>

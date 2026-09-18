@@ -43,7 +43,7 @@ public class EnsureY70WidgetTests
     public void NoPanelRecordIsRetryableRatherThanDone()
     {
         var registry = new PanelDeviceRegistry(new MemoryConfigStore());
-        Assert.Equal(Y70WidgetPlacement.NoPanel, registry.EnsureY70Widget(InaType, "4x4"));
+        Assert.Equal(Y70WidgetPlacement.NoPanel, registry.EnsureY70Widget(InaType, "4x4", out _));
     }
 
     [Fact]
@@ -56,7 +56,7 @@ public class EnsureY70WidgetTests
             Capabilities = new PanelDeviceCapabilities { Surface = "phone" },
         };
         var registry = new PanelDeviceRegistry(store);
-        Assert.Equal(Y70WidgetPlacement.NoPanel, registry.EnsureY70Widget(InaType, "4x4"));
+        Assert.Equal(Y70WidgetPlacement.NoPanel, registry.EnsureY70Widget(InaType, "4x4", out _));
     }
 
     // A null Layout means the record still shows the starter set, so saving
@@ -68,7 +68,7 @@ public class EnsureY70WidgetTests
         var starter = PanelLayoutDefaults.ForSurface(PanelSurfaces.Y70);
         var starterCount = starter.Pages.Sum(p => p.Widgets.Count);
 
-        Assert.Equal(Y70WidgetPlacement.Placed, registry.EnsureY70Widget(InaType, "4x4"));
+        Assert.Equal(Y70WidgetPlacement.Placed, registry.EnsureY70Widget(InaType, "4x4", out _));
 
         var types = TypesOn(store);
         Assert.Contains(InaType, types);
@@ -88,7 +88,7 @@ public class EnsureY70WidgetTests
         };
         var (registry, store) = WithY70(layout);
 
-        Assert.Equal(Y70WidgetPlacement.Placed, registry.EnsureY70Widget(InaType, "4x4"));
+        Assert.Equal(Y70WidgetPlacement.Placed, registry.EnsureY70Widget(InaType, "4x4", out _));
 
         Assert.Equal(new[] { "clock", InaType }, TypesOn(store));
         var placed = store.Settings.PanelDevices["y70-1"].Layout!.Pages[0].Widgets[1];
@@ -100,8 +100,8 @@ public class EnsureY70WidgetTests
     public void PlacingTwiceLeavesOneCopy()
     {
         var (registry, store) = WithY70();
-        Assert.Equal(Y70WidgetPlacement.Placed, registry.EnsureY70Widget(InaType, "4x4"));
-        Assert.Equal(Y70WidgetPlacement.AlreadyPresent, registry.EnsureY70Widget(InaType, "4x4"));
+        Assert.Equal(Y70WidgetPlacement.Placed, registry.EnsureY70Widget(InaType, "4x4", out _));
+        Assert.Equal(Y70WidgetPlacement.AlreadyPresent, registry.EnsureY70Widget(InaType, "4x4", out _));
         Assert.Single(TypesOn(store), t => t == InaType);
     }
 
@@ -118,8 +118,18 @@ public class EnsureY70WidgetTests
             },
         };
         var (registry, store) = WithY70(layout);
-        Assert.Equal(Y70WidgetPlacement.AlreadyPresent, registry.EnsureY70Widget(InaType, "4x4"));
+        Assert.Equal(Y70WidgetPlacement.AlreadyPresent, registry.EnsureY70Widget(InaType, "4x4", out _));
         Assert.Single(TypesOn(store), t => t == InaType);
+    }
+
+    // The caller broadcasts to this id; a running kiosk that never refetches
+    // PATCHes its whole layout back and drops the append.
+    [Fact]
+    public void PlacingNamesTheRecordItWroteTo()
+    {
+        var (registry, _) = WithY70();
+        Assert.Equal(Y70WidgetPlacement.Placed, registry.EnsureY70Widget(InaType, "4x4", out var deviceId));
+        Assert.Equal("y70-1", deviceId);
     }
 
     [Fact]
@@ -142,7 +152,7 @@ public class EnsureY70WidgetTests
         };
         var registry = new PanelDeviceRegistry(store);
 
-        Assert.Equal(Y70WidgetPlacement.Placed, registry.EnsureY70Widget(InaType, "4x4"));
+        Assert.Equal(Y70WidgetPlacement.Placed, registry.EnsureY70Widget(InaType, "4x4", out _));
 
         Assert.Contains(InaType, TypesOn(store, "new"));
         Assert.DoesNotContain(InaType, TypesOn(store, "old"));

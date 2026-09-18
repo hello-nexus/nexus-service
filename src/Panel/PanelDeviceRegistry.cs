@@ -329,27 +329,26 @@ public sealed class PanelDeviceRegistry
     /// should retry rather than treat the placement as done.
     /// </summary>
     /// <remarks>
-    /// Appends rather than reflowing: the panel re-paginates on load, which
-    /// finds the widget a free slot without disturbing what the user arranged.
-    /// A null Layout means the record is still showing
-    /// <see cref="PanelLayoutDefaults"/>, so that default is materialized first
-    /// - otherwise saving a layout with only this widget would wipe the starter
-    /// set the user currently sees.
+    /// A null Layout means the record still shows <see cref="PanelLayoutDefaults"/>,
+    /// so that default is materialized first; saving a layout holding only this
+    /// widget would wipe the starter set the user sees.
     /// </remarks>
-    public Y70WidgetPlacement EnsureY70Widget(string widgetType, string size)
+    public Y70WidgetPlacement EnsureY70Widget(string widgetType, string size, out string deviceId)
     {
+        deviceId = "";
         if (string.IsNullOrWhiteSpace(widgetType)) return Y70WidgetPlacement.NoPanel;
+        // Probed before Update, which marks settings dirty and fans out to every
+        // subscriber even when the mutator changes nothing - this is called on a
+        // retry cadence for as long as no panel has registered.
+        if (FindNewestY70(_store.Load()) is null) return Y70WidgetPlacement.NoPanel;
 
         var result = Y70WidgetPlacement.NoPanel;
+        var id = "";
         _store.Update(s =>
         {
-            PanelDeviceRecord? newest = null;
-            foreach (var record in s.PanelDevices.Values)
-            {
-                if (!string.Equals(record.Capabilities?.Surface, PanelSurfaces.Y70, StringComparison.Ordinal)) continue;
-                if (newest is null || record.LastSeenAt > newest.LastSeenAt) newest = record;
-            }
+            var newest = FindNewestY70(s);
             if (newest is null) return;
+            id = newest.Id;
 
             var layout = newest.Layout ?? PanelLayoutDefaults.ForSurface(PanelSurfaces.Y70);
             foreach (var page in layout.Pages)
@@ -375,7 +374,19 @@ public sealed class PanelDeviceRegistry
             newest.Layout = layout;
             result = Y70WidgetPlacement.Placed;
         });
+        deviceId = id;
         return result;
+    }
+
+    private static PanelDeviceRecord? FindNewestY70(NexusSettings settings)
+    {
+        PanelDeviceRecord? newest = null;
+        foreach (var record in settings.PanelDevices.Values)
+        {
+            if (!string.Equals(record.Capabilities?.Surface, PanelSurfaces.Y70, StringComparison.Ordinal)) continue;
+            if (newest is null || record.LastSeenAt > newest.LastSeenAt) newest = record;
+        }
+        return newest;
     }
 
     public IReadOnlyList<PanelDeviceRecord> List()

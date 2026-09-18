@@ -11,10 +11,9 @@ namespace Nexus.Service.Store;
 /// present, with no Nexus account required.
 /// </summary>
 /// <remarks>
-/// The pairing lives here rather than in the store catalog so the check stays
-/// local: a machine with none of this hardware makes no network call at all.
-/// A match waives the account gate, so this table is the whole allowlist and
-/// must name only free apps.
+/// The pairing is local so a machine with none of this hardware makes no
+/// network call. A match waives the account gate, so this table is the whole
+/// allowlist and must name only free apps.
 /// </remarks>
 public sealed class HardwareAppCatalog
 {
