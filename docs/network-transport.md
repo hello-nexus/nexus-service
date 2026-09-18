@@ -432,7 +432,7 @@ Panel widgets add traffic only when mounted in the current panel layout.
 | Monitoring widget network slots | no extra network | local store | Network In/Out/Total gauges read totals from the app-level `monitoring` store. |
 | Monitoring widget | WS topic `fps` via `useFpsSensors()` | default `1000 ms` only while an FPS slot is active | FPS gauge. This topic is not subscribed for non-FPS widget configs, so the service does not start ETW capture for ordinary monitoring widgets. |
 | Screen-time widget | no extra network | local store | Reads app-level `screentime` store. |
-| Media widget | WS topic `media` via `useMedia()` | on change only, plus snapshot on subscribe | Active media sessions. `useMedia` HTTP-polls `GET /api/media` at `2000 ms` only while the multiplex socket is down. |
+| Media widget | WS topic `media` via `useMedia()` | on change only, plus snapshot on subscribe | Active media sessions; no HTTP poll. |
 | Media widget | `GET /api/media/{source}/album-art` | on active song/source change | Album art blob. |
 | Media widget | `POST /api/media/{source}/control` | user action | Play/pause/next/previous. |
 | Weather widget | `GET /api/weather` | every `15 min` | Weather snapshot. |
