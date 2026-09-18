@@ -6,8 +6,8 @@ namespace Nexus.Service.Persistence;
 
 // Shared POCOs used by both install-defaults (the seed table) and the live
 // NexusSettings document. install-defaults populates the cosmetic + seed fields
-// and leaves runtime-only fields (DashboardLayout, OverlayLayout,
-// DetailedCollapsed) null; the live profile populates runtime-only fields and
+// and leaves runtime-only fields (DashboardLayout, DashboardGaugeGradient,
+// OverlayLayout, DetailedCollapsed) null; the live profile populates runtime-only fields and
 // usually leaves Layouts null because the install-defaults table remains the
 // source of truth for seeding new device records.
 
@@ -88,6 +88,8 @@ public sealed class PanelSettings
     public PanelLayoutsDefaults? Layouts { get; set; }
     /// <summary>Active desktop dashboard layout (profile-scoped). Null in install-defaults; null in the live profile means "seed from Layouts.Desktop on first load".</summary>
     public PanelLayoutDto? DashboardLayout { get; set; }
+    /// <summary>The desktop dashboard's gauge colour stops (profile-scoped); null = the client default. Device panels keep theirs on the device record.</summary>
+    public List<PanelGaugeGradientStop>? DashboardGaugeGradient { get; set; }
 }
 
 public sealed class OverlaySettings
@@ -315,6 +317,7 @@ public sealed class PanelSettingsPatch
     public double? WidgetOpacity { get; set; }
     public bool? WidgetLabels { get; set; }
     public PanelLayoutDto? DashboardLayout { get; set; }
+    public List<PanelGaugeGradientStop>? DashboardGaugeGradient { get; set; }
 }
 
 public sealed class OverlaySettingsPatch

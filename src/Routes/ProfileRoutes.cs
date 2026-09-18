@@ -463,6 +463,7 @@ public static class ProfileRoutes
                     if (panel.WidgetOpacity.HasValue)            s.Panel.WidgetOpacity         = panel.WidgetOpacity.Value;
                     if (panel.WidgetLabels.HasValue)             s.Panel.WidgetLabels          = panel.WidgetLabels.Value;
                     if (panel.DashboardLayout is not null)       s.Panel.DashboardLayout       = panel.DashboardLayout;
+                    if (panel.DashboardGaugeGradient is not null) s.Panel.DashboardGaugeGradient = panel.DashboardGaugeGradient;
                 }
                 if (body.Overlay is { } overlay)
                 {
