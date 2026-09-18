@@ -9,6 +9,7 @@ using Nexus.Service.Models.Panel;
 using Nexus.Service.Models.Widgets;
 using Nexus.Service.Panel;
 using Nexus.Service.Persistence;
+using Nexus.Service.Platform;
 using Nexus.Service.Serialization;
 using Nexus.Service.Sockets;
 using Nexus.Service.Widgets;
@@ -84,7 +85,7 @@ public sealed class HardwareAppInstaller : BackgroundService
             }
             catch (Exception ex)
             {
-                Console.Error.WriteLine($"[store] hardware auto-install tick failed: {ex.GetType().Name}: {ex.Message}");
+                ServiceLog.Error($"[store] hardware auto-install tick failed: {ex.GetType().Name}: {ex.Message}");
             }
         } while (await WaitAsync(timer, stoppingToken).ConfigureAwait(false));
     }
@@ -146,7 +147,7 @@ public sealed class HardwareAppInstaller : BackgroundService
             AppName = string.IsNullOrEmpty(entry?.Manifest.Name) ? appId : entry.Manifest.Name,
             Placed = placement == Y70WidgetPlacement.Placed,
         });
-        Console.Error.WriteLine($"[store] auto-installed {appId} for attached hardware");
+        ServiceLog.Info($"[store] auto-installed {appId} for attached hardware");
         return true;
     }
 
@@ -161,7 +162,7 @@ public sealed class HardwareAppInstaller : BackgroundService
         if (request is null) return false;
         var result = await _installer.InstallAsync(request, ct).ConfigureAwait(false);
         if (!result.Ok)
-            Console.Error.WriteLine($"[store] auto-install of {appId} failed: {result.Reason}");
+            ServiceLog.Warn($"[store] auto-install of {appId} failed: {result.Reason}");
         return result.Ok;
     }
 
