@@ -1,5 +1,6 @@
 #if WINDOWS
 using System;
+using System.Collections.Generic;
 using System.Runtime.InteropServices;
 
 namespace Nexus.Service.Platform.Displays;
@@ -18,19 +19,17 @@ internal static class WindowsDisplayIdentity
 
     /// <summary>
     /// Returns (stableId, friendlyName, manufacturer3, model, isInternal) for
-    /// the first monitor child of a GDI adapter device (\\.\DISPLAYn). Falls
+    /// the monitor child a GDI adapter device (\\.\DISPLAYn) is driving. Falls
     /// back to the adapter+index identifier when EnumDisplayDevices doesn't
     /// expose the PnP id.
     /// </summary>
     internal static (string Id, string Name, string Manufacturer, string Model, bool IsInternal) ResolveIdentity(string adapterDeviceName)
     {
-        var monitor = new DISPLAY_DEVICE { cb = Marshal.SizeOf<DISPLAY_DEVICE>() };
-        bool ok = EnumDisplayDevicesW(adapterDeviceName, 0, ref monitor, EDD_GET_DEVICE_INTERFACE_NAME);
+        bool ok = TryGetDrivenMonitor(adapterDeviceName, EDD_GET_DEVICE_INTERFACE_NAME, out var monitor);
         if (!ok)
         {
             // Retry without the interface-name flag for older drivers.
-            monitor = new DISPLAY_DEVICE { cb = Marshal.SizeOf<DISPLAY_DEVICE>() };
-            ok = EnumDisplayDevicesW(adapterDeviceName, 0, ref monitor, 0);
+            ok = TryGetDrivenMonitor(adapterDeviceName, 0, out monitor);
         }
         if (!ok)
         {
@@ -86,17 +85,16 @@ internal static class WindowsDisplayIdentity
     }
 
     /// <summary>
-    /// Raw monitor PnP DeviceID (e.g. \\?\DISPLAY#RTK0004#...) for the first
-    /// child monitor of an adapter - used to match a controller name before we
+    /// Raw monitor PnP DeviceID (e.g. \\?\DISPLAY#RTK0004#...) for the monitor
+    /// child an adapter is driving - used to match a controller name before we
     /// collapse it to the sanitized stable id.
     /// </summary>
     internal static string ReadMonitorDeviceId(string adapterDeviceName)
     {
-        var monitor = new DISPLAY_DEVICE { cb = Marshal.SizeOf<DISPLAY_DEVICE>() };
-        if (!EnumDisplayDevicesW(adapterDeviceName, 0, ref monitor, EDD_GET_DEVICE_INTERFACE_NAME))
+        if (!TryGetDrivenMonitor(adapterDeviceName, EDD_GET_DEVICE_INTERFACE_NAME, out var monitor)
+            && !TryGetDrivenMonitor(adapterDeviceName, 0, out monitor))
         {
-            monitor = new DISPLAY_DEVICE { cb = Marshal.SizeOf<DISPLAY_DEVICE>() };
-            if (!EnumDisplayDevicesW(adapterDeviceName, 0, ref monitor, 0)) return "";
+            return "";
         }
         return monitor.DeviceID ?? "";
     }
@@ -110,10 +108,36 @@ internal static class WindowsDisplayIdentity
     /// </summary>
     internal static string ReadMonitorInterfacePath(string adapterDeviceName)
     {
-        var monitor = new DISPLAY_DEVICE { cb = Marshal.SizeOf<DISPLAY_DEVICE>() };
-        return EnumDisplayDevicesW(adapterDeviceName, 0, ref monitor, EDD_GET_DEVICE_INTERFACE_NAME)
+        return TryGetDrivenMonitor(adapterDeviceName, EDD_GET_DEVICE_INTERFACE_NAME, out var monitor)
             ? monitor.DeviceID ?? ""
             : "";
+    }
+
+    /// <summary>
+    /// The monitor child the adapter is driving: the first one flagged
+    /// DISPLAY_DEVICE_ACTIVE, else child 0 (see
+    /// <see cref="MonitorChildSelection"/>). Never read child 0 directly - an
+    /// idle sibling devnode can sit there and shadow the real monitor.
+    /// </summary>
+    internal static bool TryGetDrivenMonitor(string adapterDeviceName, uint flags, out DISPLAY_DEVICE monitor)
+    {
+        var children = new List<DISPLAY_DEVICE>();
+        var flagsOnly = new List<uint>();
+        for (uint i = 0; ; i++)
+        {
+            var dd = new DISPLAY_DEVICE { cb = Marshal.SizeOf<DISPLAY_DEVICE>() };
+            if (!EnumDisplayDevicesW(adapterDeviceName, i, ref dd, flags)) break;
+            children.Add(dd);
+            flagsOnly.Add(dd.StateFlags);
+        }
+        var pick = MonitorChildSelection.Pick(flagsOnly);
+        if (pick < 0)
+        {
+            monitor = default;
+            return false;
+        }
+        monitor = children[pick];
+        return true;
     }
 
     internal static string SanitizeId(string raw)
@@ -148,7 +172,7 @@ internal static class WindowsDisplayIdentity
     // Win32 DISPLAY_DEVICEW ABI: WCHAR DeviceName[32] (NOT 128 - the
     // brightness provider's old private copy used 128, which skews every
     // subsequent field offset so DeviceID unmarshals empty and ids degrade
-    // to adapter fallbacks). Matches nexus-overlay's PanelDisplay struct.
+    // to adapter fallbacks). Matches nexus-overlay's DisplayIdentity struct.
     private const int CCHDEVICENAME = 32;
     private const int CCHDEVICESTRING = 128;
     private const int CCHDEVICEID = 128;
