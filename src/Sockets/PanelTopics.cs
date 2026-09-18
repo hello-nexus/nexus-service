@@ -17,6 +17,12 @@ public static class PanelTopics
     public const string Cooling = "cooling";
     public const string Volume = "volume";
     /// <summary>
+    /// Active media sessions, the same dictionary GET /api/media returns,
+    /// carried inline. Published by MediaTopicPublisher only on change, with
+    /// a fresh snapshot on subscribe.
+    /// </summary>
+    public const string Media = "media";
+    /// <summary>
     /// Per-app mixer strips. Carries the strips inline rather than a refetch
     /// revision: while a mixer is open this fires at meter rate, and a revision
     /// frame would turn every peak sample into an HTTP GET.
