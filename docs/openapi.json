@@ -2670,28 +2670,6 @@
         }
       }
     },
-    "/lighting/game-sync/vendor-override": {
-      "post": {
-        "tags": [
-          "Nexus"
-        ],
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/GameSyncVendorOverrideBody"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "200": {
-            "description": "OK"
-          }
-        }
-      }
-    },
     "/lighting/game-sync/state": {
       "get": {
         "tags": [
@@ -17203,14 +17181,6 @@
           },
           "app": {
             "type": "string"
-          }
-        }
-      },
-      "GameSyncVendorOverrideBody": {
-        "type": "object",
-        "properties": {
-          "enabled": {
-            "type": "boolean"
           }
         }
       },
