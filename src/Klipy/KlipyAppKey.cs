@@ -5,9 +5,10 @@ using Nexus.Service.Persistence;
 namespace Nexus.Service.Klipy;
 
 /// <summary>
-/// Resolves the api.klipy.com app key at runtime - NEXUS_KLIPY_KEY, then
-/// klipy-key.txt in the Nexus data directory - so no literal sits in the AOT
-/// binary for `strings` to read. Absent both, only the GIF picker is affected.
+/// Resolves the api.klipy.com app key: NEXUS_KLIPY_KEY, then klipy-key.txt in
+/// the Nexus data directory, then the key CI baked into BuildInfo (the same
+/// generator as the PostHog key). Absent all three, only the GIF picker is
+/// affected.
 /// </summary>
 internal static class KlipyAppKey
 {
@@ -27,7 +28,7 @@ internal static class KlipyAppKey
                 return _cached;
             }
             _resolved = true;
-            _cached = ReadEnv() ?? ReadFile();
+            _cached = ReadEnv() ?? ReadFile() ?? ReadBuiltIn();
             return _cached;
         }
     }
@@ -47,6 +48,9 @@ internal static class KlipyAppKey
         var value = Environment.GetEnvironmentVariable(EnvVar)?.Trim();
         return string.IsNullOrEmpty(value) ? null : value;
     }
+
+    private static string? ReadBuiltIn() =>
+        string.IsNullOrEmpty(BuildInfo.KlipyKey) ? null : BuildInfo.KlipyKey;
 
     private static string? ReadFile()
     {

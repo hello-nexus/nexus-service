@@ -154,7 +154,8 @@ dotnet publish -c Release -r linux-x64 -o publish-linux
   fallback. Its presence defines `OFFICIAL_BUILD`, which wires up the cloud
   account, profile sync, relay, fleet telemetry and the OTA updater. A build
   without it, which is every public clone, is local-only and dials none of the
-  hosted services. `NEXUS_POSTHOG_KEY` is injected the same way.
+  hosted services. `NEXUS_POSTHOG_KEY` and `NEXUS_KLIPY_KEY` (the GIF picker's
+  api.klipy.com app key) are injected the same way.
 
 ### Route inventory
 
