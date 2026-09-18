@@ -117,6 +117,12 @@
     <NexusPostHogKey Condition="'$(NexusPostHogKey)' == ''">$(NEXUS_POSTHOG_KEY)</NexusPostHogKey>
   </PropertyGroup>
 
+  <!-- The api.klipy.com app key for the GIF picker, injected the same way. The
+       service calls Klipy directly, so a release without it has no GIFs. -->
+  <PropertyGroup>
+    <NexusKlipyKey Condition="'$(NexusKlipyKey)' == ''">$(NEXUS_KLIPY_KEY)</NexusKlipyKey>
+  </PropertyGroup>
+
   <!-- DEV_TOOLS: internal/test builds only. Publish with -p:DevTools=true to
        include firmware downgrade / cross-branch flashing (status DevImages +
        the TryStart allowance). Off by default so release publishes don't carry
@@ -979,7 +985,7 @@
        the CI secret store and in obj/. Always written (empty when absent) so
        BuildInfo.ClientToken resolves in every configuration. -->
   <Target Name="SetClientCredential" BeforeTargets="CoreCompile">
-    <WriteLinesToFile File="$(IntermediateOutputPath)ClientCredential.g.cs" Lines="namespace Nexus.Service { internal static partial class BuildInfo { public const string ClientToken = &quot;$(NexusClientToken)&quot;%3B public const string PostHogKey = &quot;$(NexusPostHogKey)&quot;%3B } }" Overwrite="true" WriteOnlyWhenDifferent="true" />
+    <WriteLinesToFile File="$(IntermediateOutputPath)ClientCredential.g.cs" Lines="namespace Nexus.Service { internal static partial class BuildInfo { public const string ClientToken = &quot;$(NexusClientToken)&quot;%3B public const string PostHogKey = &quot;$(NexusPostHogKey)&quot;%3B public const string KlipyKey = &quot;$(NexusKlipyKey)&quot;%3B } }" Overwrite="true" WriteOnlyWhenDifferent="true" />
     <ItemGroup>
       <Compile Include="$(IntermediateOutputPath)ClientCredential.g.cs" />
     </ItemGroup>

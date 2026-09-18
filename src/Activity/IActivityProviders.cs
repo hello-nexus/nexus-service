@@ -57,6 +57,17 @@ public interface IMediaProvider
     byte[] GetAlbumArt(string source);
 }
 
+/// <summary>
+/// Implemented by media providers that learn of session changes from an
+/// event source (Windows: the helper's GSMTC pushes). The media topic
+/// publisher subscribes so a play/pause reaches the widget on the event
+/// instead of at its next poll.
+/// </summary>
+public interface IMediaChangeSource
+{
+    event Action? Changed;
+}
+
 public interface IVolumeProvider
 {
     VolumeState GetState();

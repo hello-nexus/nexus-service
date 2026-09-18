@@ -92,6 +92,7 @@ public static class ProfileSharing
                 target.Cooling.PreferredGpuTempSensorId = source.Cooling.PreferredGpuTempSensorId;
                 target.Cooling.PreferredGpuId = source.Cooling.PreferredGpuId;
                 target.Panel.DashboardLayout = source.Panel.DashboardLayout;
+                target.Panel.DashboardGaugeGradient = source.Panel.DashboardGaugeGradient;
                 target.Overlay = source.Overlay;
                 target.Ui.ShowConflictAlerts = source.Ui.ShowConflictAlerts;
                 target.Ui.AutoKillConflictsAtStartup = source.Ui.AutoKillConflictsAtStartup;
@@ -125,6 +126,7 @@ public static class ProfileSharing
                 target.Cooling.PreferredGpuTempSensorId = null;
                 target.Cooling.PreferredGpuId = null;
                 target.Panel.DashboardLayout = null;
+                target.Panel.DashboardGaugeGradient = null;
                 target.Overlay = new OverlaySettings();
                 target.Ui.ShowConflictAlerts = true;
                 target.Ui.AutoKillConflictsAtStartup = false;

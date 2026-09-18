@@ -831,7 +831,8 @@ public sealed partial class ProfileManager : IDisposable
             s.Cooling = data.Cooling ?? new CoolingSettings();
 
             // Theme + Dashboard categories now live in dedicated top-level
-            // blocks (Theme, Monitoring, Overlay, Panel.DashboardLayout) - no
+            // blocks (Theme, Monitoring, Overlay, Panel.DashboardLayout +
+            // Panel.DashboardGaugeGradient) - no
             // need to gate on `data.Ui` since that block is now reduced to
             // residual flags. Always copy both categories.
             ProfileSharing.ApplyCategory(s, data, ProfileSharing.Theme);

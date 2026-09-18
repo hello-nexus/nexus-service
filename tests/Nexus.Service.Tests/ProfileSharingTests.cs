@@ -22,6 +22,25 @@ public class ProfileSharingTests
     }
 
     [Fact]
+    public void ApplyCategory_Dashboard_CarriesAndResetsTheDashboardGaugeGradient()
+    {
+        var source = new NexusSettings();
+        source.Panel.DashboardGaugeGradient = new List<Nexus.Service.Models.Panel.PanelGaugeGradientStop>
+        {
+            new() { At = 0.2, Color = "accent" },
+            new() { At = 0.9, Color = "#ef4444" },
+        };
+
+        var target = new NexusSettings();
+        ProfileSharing.ApplyCategory(target, source, ProfileSharing.Dashboard);
+        Assert.NotNull(target.Panel.DashboardGaugeGradient);
+        Assert.Equal("accent", target.Panel.DashboardGaugeGradient![0].Color);
+
+        ProfileSharing.ResetCategory(target, ProfileSharing.Dashboard);
+        Assert.Null(target.Panel.DashboardGaugeGradient);
+    }
+
+    [Fact]
     public void ApplyCategory_Device_ReplacesTargetStreamDeckWithSources()
     {
         var source = new NexusSettings();

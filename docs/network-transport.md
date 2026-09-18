@@ -217,6 +217,7 @@ Other slow / event-driven topics (e.g. `prefs`, `lighting`, `cooling`,
 | `network` | `MonitoringBroadcaster` | default `1000 ms` | no direct current React subscriber | Network frame, also included in `monitoring`. |
 | `extras` | `MonitoringBroadcaster` | default `1000 ms` | `useSensorExtras()` | Detailed-tab sensor extras not carried in the composite `monitoring` frame. |
 | `volume` | `MonitoringBroadcaster.BroadcastVolumeIfChangedAsync` | event-driven, evaluated each `1000 ms` tick, plus snapshot on subscribe | `useSystemVolume()` | System default-render audio volume + mute (see Cooling view traffic below for the HTTP fallback). |
+| `media` | `MediaTopicPublisher` | on change only: the Windows helper's GSMTC event publishes at once, and a `1000 ms` poll (only while subscribed) is the floor on macOS/Linux; a fresh snapshot on subscribe | `useMedia()` | Active media sessions, the same dictionary as `GET /api/media`, carried inline. A frame is skipped while the only difference is the position advancing where the widget's own ticker already predicts it. |
 | `cooling-realtime` | `CurveEngine` | default `1000 ms` when curves exist | Cooling view | Live fan channel speed/RPM. |
 | `cooling-curves` | `CurveEngine` | default `1000 ms` when curves exist | Cooling view | Curve calculations and applied outputs. |
 | `conflicts` | `ConflictWatcher` | poll every `5000 ms` server-side, broadcasts only on change, plus snapshot on subscribe | `useConflictApps()` | Competing RGB/control app detection (iCUE, NZXT CAM, etc) driving the device-page conflict gate. |
@@ -431,7 +432,7 @@ Panel widgets add traffic only when mounted in the current panel layout.
 | Monitoring widget network slots | no extra network | local store | Network In/Out/Total gauges read totals from the app-level `monitoring` store. |
 | Monitoring widget | WS topic `fps` via `useFpsSensors()` | default `1000 ms` only while an FPS slot is active | FPS gauge. This topic is not subscribed for non-FPS widget configs, so the service does not start ETW capture for ordinary monitoring widgets. |
 | Screen-time widget | no extra network | local store | Reads app-level `screentime` store. |
-| Media widget | `GET /api/media` | default `2000 ms` | Active media sessions. |
+| Media widget | WS topic `media` via `useMedia()` | on change only, plus snapshot on subscribe | Active media sessions; no HTTP poll. |
 | Media widget | `GET /api/media/{source}/album-art` | on active song/source change | Album art blob. |
 | Media widget | `POST /api/media/{source}/control` | user action | Play/pause/next/previous. |
 | Weather widget | `GET /api/weather` | every `15 min` | Weather snapshot. |

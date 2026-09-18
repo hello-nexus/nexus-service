@@ -8,7 +8,7 @@ public sealed class PanelGaugeGradientStop
 {
     /// <summary>Position along the gauge scale, 0 (empty) to 1 (full).</summary>
     public double At { get; set; }
-    /// <summary>#rrggbb.</summary>
+    /// <summary>#rrggbb, or the literal <c>accent</c> for a stop that follows the panel accent.</summary>
     public string Color { get; set; } = "";
 }
 
