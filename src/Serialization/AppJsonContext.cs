@@ -244,6 +244,8 @@ namespace Nexus.Service.Serialization;
 [JsonSerializable(typeof(List<Nexus.Service.Models.Panel.PanelWidgetDto>))]
 [JsonSerializable(typeof(Dictionary<string, Dictionary<string, System.Text.Json.JsonElement>>))]
 [JsonSerializable(typeof(Nexus.Service.Models.Panel.PanelDeviceRecord))]
+[JsonSerializable(typeof(Nexus.Service.Models.Panel.PanelGaugeGradientStop))]
+[JsonSerializable(typeof(List<Nexus.Service.Models.Panel.PanelGaugeGradientStop>))]
 [JsonSerializable(typeof(Nexus.Service.Models.Panel.PanelDeviceCapabilities))]
 [JsonSerializable(typeof(Nexus.Service.Models.Panel.XeneonEdgeSettingsDto))]
 [JsonSerializable(typeof(Nexus.Service.Models.Panel.PanelDevicePatch))]

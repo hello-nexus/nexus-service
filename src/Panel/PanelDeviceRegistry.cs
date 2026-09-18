@@ -445,6 +445,8 @@ public sealed class PanelDeviceRegistry
                 record.BackgroundMediaOrder = new List<string>(patch.BackgroundMediaOrder);
             if (patch.BackgroundFrostLevel.HasValue)
                 record.BackgroundFrostLevel = patch.BackgroundFrostLevel.Value;
+            if (patch.GaugeGradient is not null)
+                record.GaugeGradient = CloneGaugeGradient(patch.GaugeGradient);
             if (patch.WidgetOpacity.HasValue)
                 record.WidgetOpacity = patch.WidgetOpacity.Value;
             if (patch.WidgetLabels.HasValue)
@@ -539,6 +541,7 @@ public sealed class PanelDeviceRegistry
             record.BackgroundMediaFinishVideos = null;
             record.BackgroundMediaOrder = null;
             record.BackgroundFrostLevel = null;
+            record.GaugeGradient = null;
             record.WidgetOpacity = null;
             record.WidgetLabels = null;
             record.WidgetPadding = null;
@@ -621,6 +624,14 @@ public sealed class PanelDeviceRegistry
             .TrimEnd('=');
     }
 
+    private static List<PanelGaugeGradientStop> CloneGaugeGradient(List<PanelGaugeGradientStop> stops)
+    {
+        var copy = new List<PanelGaugeGradientStop>(stops.Count);
+        foreach (var stop in stops)
+            copy.Add(new PanelGaugeGradientStop { At = stop.At, Color = stop.Color });
+        return copy;
+    }
+
     private static PanelDeviceRecord Clone(PanelDeviceRecord r)
     {
         return new PanelDeviceRecord
@@ -649,6 +660,7 @@ public sealed class PanelDeviceRegistry
             BackgroundMediaFinishVideos = r.BackgroundMediaFinishVideos,
             BackgroundMediaOrder = r.BackgroundMediaOrder is null ? null : new List<string>(r.BackgroundMediaOrder),
             BackgroundFrostLevel = r.BackgroundFrostLevel,
+            GaugeGradient = r.GaugeGradient is null ? null : CloneGaugeGradient(r.GaugeGradient),
             WidgetOpacity = r.WidgetOpacity,
             WidgetLabels = r.WidgetLabels,
             WidgetPadding = r.WidgetPadding,

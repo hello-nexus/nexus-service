@@ -201,6 +201,34 @@ public sealed class PanelDeviceRegistryTests : IDisposable
     }
 
     [Fact]
+    public void Patch_GaugeGradient_RoundTripsCopiesAndResets()
+    {
+        var record = _registry.Allocate(null, Caps(PanelSurfaces.Phone));
+        Assert.Null(record.GaugeGradient);
+
+        var stops = new List<PanelGaugeGradientStop>
+        {
+            new() { At = 0, Color = "#2563eb" },
+            new() { At = 0.7, Color = "#f59e0b" },
+            new() { At = 1, Color = "#ef4444" },
+        };
+        var patched = _registry.Patch(record.Id, new PanelDevicePatch { GaugeGradient = stops });
+        Assert.Equal(3, patched!.GaugeGradient!.Count);
+        Assert.Equal(0.7, patched.GaugeGradient[1].At);
+        Assert.Equal("#f59e0b", patched.GaugeGradient[1].Color);
+
+        // The record holds its own copy: mutating the caller's list changes nothing.
+        stops[1].Color = "#000000";
+        Assert.Equal("#f59e0b", _registry.Get(record.Id)!.GaugeGradient![1].Color);
+
+        var renamed = _registry.Patch(record.Id, new PanelDevicePatch { DisplayName = "Renamed" });
+        Assert.Equal(3, renamed!.GaugeGradient!.Count);
+
+        var reset = _registry.ResetToDefaults(record.Id);
+        Assert.Null(reset!.GaugeGradient);
+    }
+
+    [Fact]
     public void Patch_BackgroundMediaSlideshow_RoundTripsAndSurvivesUnrelatedPatch()
     {
         var record = _registry.Allocate(null, Caps(PanelSurfaces.Phone));
