@@ -374,7 +374,7 @@ public sealed class PanelDeviceRegistry
                 Type = widgetType,
                 Size = size,
             };
-            if (!Nexus.Service.Migration.Nexus2LayoutPlacement.Append(layout.Pages, placing, size))
+            if (!Y70LayoutPlacement.Append(layout.Pages, placing, size))
             {
                 result = Y70WidgetPlacement.NoRoom;
                 return;
