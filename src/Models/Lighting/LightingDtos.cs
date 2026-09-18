@@ -55,6 +55,17 @@ public class GlobalBrightnessBody
     public float Value { get; set; } = 1.0f;
 }
 
+/// <summary>GET response / POST body for /lighting/brightness-schedule: the
+/// time-of-day cap on master brightness. Points are whole hours 0..23 holding
+/// 0..100%. The GET also carries the out-of-box curve so the editor's reset
+/// needs no second copy of it; a POST leaves it null.</summary>
+public sealed class BrightnessScheduleBody
+{
+    public bool Enabled { get; set; }
+    public List<Nexus.Service.Persistence.BrightnessSchedulePoint> Points { get; set; } = new();
+    public List<Nexus.Service.Persistence.BrightnessSchedulePoint>? Defaults { get; set; }
+}
+
 /// <summary>GET response / POST body for /lighting/render-gpu. "auto" or a GPU
 /// model name (matches GpuReadout.Name). Restart-to-apply.</summary>
 public class RenderGpuBody
@@ -241,9 +252,6 @@ public sealed class GameSyncStateResponse
     /// <summary>A real Razer Chroma SDK DLL was found; our shim was not installed.</summary>
     public bool SynapseConflict { get; set; }
 
-    /// <summary>The user set a vendor SDK aside (<c>*.nexus-bak</c>) so our shim holds its slot.</summary>
-    public bool VendorOverride { get; set; }
-
     public List<GameSyncDeviceInfo> Devices { get; set; } = new();
 
     /// <summary>Unix epoch milliseconds of the most recently ingested Chroma frame. Null when no frame has been received this session.</summary>
@@ -251,11 +259,6 @@ public sealed class GameSyncStateResponse
 
     /// <summary>Source application title from the most recent shim frame that carried one. Null when unknown.</summary>
     public string? ActiveApp { get; set; }
-}
-
-public sealed class GameSyncVendorOverrideBody
-{
-    public bool Enabled { get; set; }
 }
 
 public sealed class DetectedGame

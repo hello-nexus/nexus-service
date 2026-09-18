@@ -540,6 +540,12 @@ public sealed class LightingSettings
     /// a zone can never render brighter than the master level.
     /// Range 0..1; default 1.0 (no cap).</summary>
     public float GlobalBrightness { get; set; } = 1.0f;
+    /// <summary>Time-of-day cap on <see cref="GlobalBrightness"/>: while enabled
+    /// the effective master level is <c>min(GlobalBrightness, schedule(now))</c>,
+    /// see <see cref="Nexus.Service.Lighting.MasterBrightness"/>. A whole-day
+    /// preference rather than a look, so unlike the slider it is not captured
+    /// into presets.</summary>
+    public BrightnessSchedule BrightnessSchedule { get; set; } = new();
     public Dictionary<string, int> SpeedScale { get; set; } = new();
     public bool SpeedEnabled { get; set; } = InstallDefaults.Lighting.SpeedEnabled;
     public int FrameRate { get; set; } = InstallDefaults.Lighting.FrameRate;
@@ -618,6 +624,27 @@ public sealed class LightingSettings
     /// login screen comes up lit.
     /// </summary>
     public bool LockBlackout { get; set; } = InstallDefaults.Lighting.LockBlackout;
+}
+
+/// <summary>
+/// Master brightness over a 24-hour day as a piecewise-linear curve. Points sit
+/// on whole hours (0..23) and hold 0..100%; the engine interpolates between
+/// them by the minute and wraps midnight, so the level drifts rather than
+/// steps. Off by default. Routes replace <see cref="Points"/> as a whole
+/// (frame writers iterate the list reference they read, unlocked).
+/// </summary>
+public sealed class BrightnessSchedule
+{
+    public bool Enabled { get; set; }
+    public List<BrightnessSchedulePoint> Points { get; set; } = Nexus.Service.Lighting.MasterBrightness.DefaultSchedule();
+}
+
+public sealed class BrightnessSchedulePoint
+{
+    /// <summary>Whole hour of the day, 0..23.</summary>
+    public int Hour { get; set; }
+    /// <summary>0..100.</summary>
+    public int Brightness { get; set; }
 }
 
 /// <summary>

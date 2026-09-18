@@ -118,7 +118,7 @@ public sealed class Np50LightingFrameWriter : IHostedService, IDisposable
         var disabled = settings.Devices.DisabledLightingDevices;
         var uncontrolled = settings.Devices.UncontrolledLightingDevices;
         var devicePrefs = settings.Devices.LightingDevicePrefs;
-        var globalBrightness = Math.Clamp(settings.Lighting.GlobalBrightness, 0f, 1f);
+        var globalBrightness = MasterBrightness.Effective(settings.Lighting);
         var nowTicks = DateTime.UtcNow.Ticks;
 
         // Classify each NP50 device frame this tick. We expect the engine's
