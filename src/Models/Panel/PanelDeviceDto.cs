@@ -289,6 +289,20 @@ public sealed class MappingAutoAppliedFrame
     public int AdopterCount { get; set; }
 }
 
+/// <summary>
+/// An app the hardware auto-installer fetched because its hardware is attached.
+/// Carries the name inline so the toast needs no follow-up request.
+/// </summary>
+public sealed class AppAutoInstalledFrame
+{
+    public long Revision { get; set; }
+    public string AppId { get; set; } = "";
+    public string AppName { get; set; } = "";
+
+    /// <summary>True when the widget was also placed on the Y70 panel.</summary>
+    public bool Placed { get; set; }
+}
+
 public sealed class CoolingChangedFrame
 {
     public long Revision { get; set; }

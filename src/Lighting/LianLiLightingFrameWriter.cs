@@ -161,7 +161,7 @@ public sealed class LianLiLightingFrameWriter : IHostedService, IDisposable
 
         var settings = _store.Load();
         var ls = settings.Devices.LianLiLighting;
-        var globalBrightness = Math.Clamp(settings.Lighting.GlobalBrightness, 0f, 1f);
+        var globalBrightness = MasterBrightness.Effective(settings.Lighting);
 
         var profile = _hub.Profile;
         // A rejected init is retried on its own window but never aborts the tick:

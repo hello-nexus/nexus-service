@@ -38,6 +38,25 @@ public sealed class StoreInstallResponse
 }
 
 /// <summary>
+/// The slice of the public catalog listing the hardware auto-installer needs.
+/// That endpoint takes no token and applies no storefront visibility filter, so
+/// it resolves an app that is deliberately unlisted.
+/// </summary>
+public sealed class StoreCatalogApp
+{
+    /// <summary>Newest version this client can run, or null when none can.</summary>
+    [JsonPropertyName("latest")] public StoreCatalogVersion? Latest { get; set; }
+}
+
+/// <summary>One catalog version. The hash is the trust pin the installer verifies against.</summary>
+public sealed class StoreCatalogVersion
+{
+    [JsonPropertyName("version")] public string Version { get; set; } = "";
+    [JsonPropertyName("sha256")] public string Sha256 { get; set; } = "";
+    [JsonPropertyName("size")] public long Size { get; set; }
+}
+
+/// <summary>
 /// What the cloud hands back for an entitled download: where the artifact is,
 /// what it must hash to, and when this account first acquired the app.
 /// </summary>

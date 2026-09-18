@@ -142,6 +142,22 @@ public static class PanelTopics
         _ = hub.BroadcastTopicAsync(MappingApplied, env);
     }
 
+    /// <summary>
+    /// An app installed itself because its hardware is attached. Payload rides
+    /// the frame directly so the toast needs no refetch; the dashboard also
+    /// reloads its installed-app registry to pick the new app up.
+    /// </summary>
+    public const string AppAutoInstalled = "apps/auto-installed";
+
+    public static void BroadcastAppAutoInstalled(MultiplexHub hub, AppAutoInstalledFrame frame)
+    {
+        if (!hub.TopicHasSubscribers(AppAutoInstalled))
+            return;
+        frame.Revision = Now();
+        var env = WsEnvelope.Build(AppAutoInstalled, frame, AppJsonContext.Default.AppAutoInstalledFrame);
+        _ = hub.BroadcastTopicAsync(AppAutoInstalled, env);
+    }
+
     public static void BroadcastCooling(MultiplexHub hub)
     {
         if (!hub.TopicHasSubscribers(Cooling))

@@ -509,6 +509,7 @@ namespace Nexus.Service.Serialization;
 [JsonSerializable(typeof(Nexus.Service.Models.Devices.StaticDeviceLookDto))]
 [JsonSerializable(typeof(BrightnessScale))]
 [JsonSerializable(typeof(Nexus.Service.Models.Lighting.GlobalBrightnessBody))]
+[JsonSerializable(typeof(Nexus.Service.Models.Lighting.BrightnessScheduleBody))]
 [JsonSerializable(typeof(Nexus.Service.Models.Lighting.RenderGpuBody))]
 [JsonSerializable(typeof(SpeedScale))]
 [JsonSerializable(typeof(AnimateHeadlessStart))]
@@ -533,7 +534,6 @@ namespace Nexus.Service.Serialization;
 [JsonSerializable(typeof(Nexus.Service.Models.Lighting.GameSyncFrameBody))]
 [JsonSerializable(typeof(Nexus.Service.Models.Lighting.GameSyncDeviceInfo))]
 [JsonSerializable(typeof(Nexus.Service.Models.Lighting.GameSyncStateResponse))]
-[JsonSerializable(typeof(Nexus.Service.Models.Lighting.GameSyncVendorOverrideBody))]
 [JsonSerializable(typeof(List<Nexus.Service.Models.Lighting.GameSyncDeviceInfo>))]
 [JsonSerializable(typeof(Nexus.Service.Models.Lighting.DetectedGame))]
 [JsonSerializable(typeof(List<Nexus.Service.Models.Lighting.DetectedGame>))]
@@ -738,6 +738,7 @@ namespace Nexus.Service.Serialization;
 [JsonSerializable(typeof(RevokeCloudBody))]
 [JsonSerializable(typeof(DevicesSeenCloudBody))]
 [JsonSerializable(typeof(Nexus.Service.Models.Panel.MappingAutoAppliedFrame))]
+[JsonSerializable(typeof(Nexus.Service.Models.Panel.AppAutoInstalledFrame))]
 
 // Smart (network) lights
 [JsonSerializable(typeof(Nexus.Service.Models.SmartLights.SmartLightDto))]
@@ -1014,6 +1015,8 @@ namespace Nexus.Service.Serialization;
 [JsonSerializable(typeof(StoreInstallRequest))]
 [JsonSerializable(typeof(StoreInstallResponse))]
 [JsonSerializable(typeof(StoreDownloadGrant))]
+[JsonSerializable(typeof(StoreCatalogApp))]
+[JsonSerializable(typeof(StoreCatalogVersion))]
 [JsonSerializable(typeof(StorePurchase))]
 [JsonSerializable(typeof(StoreLibraryResponse))]
 [JsonSerializable(typeof(CloudStoreEntitlement))]

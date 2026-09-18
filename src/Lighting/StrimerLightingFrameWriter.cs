@@ -106,7 +106,7 @@ public sealed class StrimerLightingFrameWriter : IHostedService, IDisposable
 
         var settings         = _store.Load();
         var ls               = settings.Devices.StrimerLighting;
-        var globalBrightness = Math.Clamp(settings.Lighting.GlobalBrightness, 0f, 1f);
+        var globalBrightness = MasterBrightness.Effective(settings.Lighting);
 
         if (ls.Mode == "custom")
         {
