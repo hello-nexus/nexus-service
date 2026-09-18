@@ -62,6 +62,7 @@ internal static class WindowsServiceHost
     // WTS session-change event types. Only the lock pair is handled: logon,
     // console connect and the rest all describe a session appearing, which is
     // not a user deciding to step away.
+    private const uint WTS_SESSION_LOGON = 0x5;
     private const uint WTS_SESSION_LOCK = 0x7;
     private const uint WTS_SESSION_UNLOCK = 0x8;
 
@@ -213,6 +214,11 @@ internal static class WindowsServiceHost
     /// </summary>
     internal static event Action<bool>? SessionLockChanged;
 
+    /// <summary>A user logged in. The GPU selection listens: the service starts
+    /// before any session exists, and a card that needs one has nothing else to
+    /// wake it.</summary>
+    internal static event Action? SessionLogon;
+
     [UnmanagedCallersOnly(CallConvs = new[] { typeof(System.Runtime.CompilerServices.CallConvStdcall) })]
     private static uint ControlHandler(uint dwControl, uint dwEventType, IntPtr lpEventData, IntPtr lpContext)
     {
@@ -239,6 +245,11 @@ internal static class WindowsServiceHost
                 if (dwEventType == WTS_SESSION_LOCK || dwEventType == WTS_SESSION_UNLOCK)
                 {
                     try { SessionLockChanged?.Invoke(dwEventType == WTS_SESSION_LOCK); }
+                    catch { }
+                }
+                else if (dwEventType == WTS_SESSION_LOGON)
+                {
+                    try { SessionLogon?.Invoke(); }
                     catch { }
                 }
                 return NO_ERROR;

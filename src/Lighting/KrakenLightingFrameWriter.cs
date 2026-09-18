@@ -117,7 +117,7 @@ public sealed class KrakenLightingFrameWriter : IHostedService, IDisposable
         var disabled = settings.Devices.DisabledLightingDevices;
         var uncontrolled = settings.Devices.UncontrolledLightingDevices;
         var prefs = settings.Devices.LightingDevicePrefs;
-        var globalBrightness = Math.Clamp(settings.Lighting.GlobalBrightness, 0f, 1f);
+        var globalBrightness = MasterBrightness.Effective(settings.Lighting);
         var nowTicks = DateTime.UtcNow.Ticks;
 
         var channels = _hub.Snapshot.Channels;

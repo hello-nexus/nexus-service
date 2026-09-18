@@ -59,6 +59,12 @@ public sealed class NexusSettings
     /// <summary>EDID model identities ("CRX:ED00") panel auto-promotion has already acted on (or first observed as user-managed). A listed model is never auto-promoted again, so deleting an auto-created panel record sticks across port changes. NOT profile-scoped.</summary>
     public List<string> AutoPromotedPanelModels { get; set; } = new();
 
+    /// <summary>App ids the hardware auto-installer has settled for this machine's hardware (see <see cref="Nexus.Service.Store.HardwareAppCatalog"/>), plus any the user installed by hand from that same set. Drives the "placed for you" flag the dashboard reads to arrange the app. NOT profile-scoped: it tracks hardware, not a profile.</summary>
+    public List<string> AutoInstalledApps { get; set; } = new();
+
+    /// <summary>Hardware-app ids the user uninstalled by hand. Suppresses the auto-installer for good, so an app the user removed does not come back on the next boot even though its hardware is still attached. NOT profile-scoped.</summary>
+    public List<string> UserRemovedApps { get; set; } = new();
+
     /// <summary>User-overridden display name for this host PC. Empty means "fall back to Environment.MachineName". Surfaced in the panel tray header and in the QR/claim payload paired phones see. NOT profile-scoped: a host has one name regardless of which profile is active.</summary>
     public string HostDisplayName { get; set; } = "";
 
@@ -534,6 +540,12 @@ public sealed class LightingSettings
     /// a zone can never render brighter than the master level.
     /// Range 0..1; default 1.0 (no cap).</summary>
     public float GlobalBrightness { get; set; } = 1.0f;
+    /// <summary>Time-of-day cap on <see cref="GlobalBrightness"/>: while enabled
+    /// the effective master level is <c>min(GlobalBrightness, schedule(now))</c>,
+    /// see <see cref="Nexus.Service.Lighting.MasterBrightness"/>. A whole-day
+    /// preference rather than a look, so unlike the slider it is not captured
+    /// into presets.</summary>
+    public BrightnessSchedule BrightnessSchedule { get; set; } = new();
     public Dictionary<string, int> SpeedScale { get; set; } = new();
     public bool SpeedEnabled { get; set; } = InstallDefaults.Lighting.SpeedEnabled;
     public int FrameRate { get; set; } = InstallDefaults.Lighting.FrameRate;
@@ -587,6 +599,11 @@ public sealed class LightingSettings
     /// Windows writes the DirectX UserGpuPreferences key before the GL context
     /// inits; Linux matches it against the EGL device list. macOS ignores it.</summary>
     public string RenderGpu { get; set; } = "auto";
+    /// <summary>Which API creates the lighting GL context on Windows: "wgl"
+    /// (default, direct) or "glfw" (the pre-3.0.15 path, kept as an escape if a
+    /// driver refuses the direct one). Restart-to-apply. Ignored elsewhere:
+    /// macOS uses CGL and Linux EGL.</summary>
+    public string RenderBackend { get; set; } = "wgl";
     /// <summary>
     /// When true, Nexus blanks every lighting device it drives as the host
     /// suspends, and restores the running effect on resume. Devices that keep
@@ -607,6 +624,27 @@ public sealed class LightingSettings
     /// login screen comes up lit.
     /// </summary>
     public bool LockBlackout { get; set; } = InstallDefaults.Lighting.LockBlackout;
+}
+
+/// <summary>
+/// Master brightness over a 24-hour day as a piecewise-linear curve. Points sit
+/// on whole hours (0..23) and hold 0..100%; the engine interpolates between
+/// them by the minute and wraps midnight, so the level drifts rather than
+/// steps. Off by default. Routes replace <see cref="Points"/> as a whole
+/// (frame writers iterate the list reference they read, unlocked).
+/// </summary>
+public sealed class BrightnessSchedule
+{
+    public bool Enabled { get; set; }
+    public List<BrightnessSchedulePoint> Points { get; set; } = Nexus.Service.Lighting.MasterBrightness.DefaultSchedule();
+}
+
+public sealed class BrightnessSchedulePoint
+{
+    /// <summary>Whole hour of the day, 0..23.</summary>
+    public int Hour { get; set; }
+    /// <summary>0..100.</summary>
+    public int Brightness { get; set; }
 }
 
 /// <summary>
@@ -1069,6 +1107,12 @@ public sealed class TryxSettings
     /// <summary>Cloud material ids installed on the panel; drives the catalog's installed
     /// badge (the panel's media-list push reports only built-in presets, not downloads).</summary>
     public List<int> InstalledCloudIds { get; set; } = new();
+    /// <summary>Custom-upload slideshow (see
+    /// <see cref="Nexus.Service.Peripherals.Tryx.Panorama.TryxSlideshowConfig"/>).</summary>
+    public bool SlideshowEnabled { get; set; }
+    public int SlideshowIntervalSec { get; set; } = Nexus.Service.Peripherals.Tryx.Panorama.TryxSlideshowConfig.DefaultIntervalSec;
+    public bool SlideshowShuffle { get; set; }
+    public bool SlideshowFinishVideos { get; set; } = true;
 }
 
 /// <summary>One NZXT Kraken channel's firmware animation. <see cref="Colors"/> holds

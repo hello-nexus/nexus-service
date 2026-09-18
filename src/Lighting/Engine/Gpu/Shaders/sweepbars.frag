@@ -1,4 +1,4 @@
-uniform float u_bars; // hint_range(2.0, 14.0, 1.0) = 6.0  bars across the frame
+uniform float u_bars; // hint_range(2.0, 14.0, 1.0) = 4.0  bars across the frame
 uniform float u_fill; // hint_range(0.2, 1.0, 0.01) = 0.45  bar width against the gap
 
 // Hard-edged red bars racing across an unlit frame, every other one dimmed so

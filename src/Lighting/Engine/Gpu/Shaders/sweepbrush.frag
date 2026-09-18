@@ -1,6 +1,6 @@
-uniform float u_strokes;  // hint_range(2.0, 12.0, 1.0) = 5.0  strokes across the frame
-uniform float u_feather;  // hint_range(0.02, 0.4, 0.01) = 0.14  taper at each stroke end
-uniform float u_fill;     // hint_range(0.2, 1.0, 0.01) = 0.52  painted share of each pass
+uniform float u_strokes;  // hint_range(2.0, 12.0, 1.0) = 4.0  strokes across the frame
+uniform float u_feather;  // hint_range(0.02, 0.4, 0.01) = 0.12  taper at each stroke end
+uniform float u_fill;     // hint_range(0.2, 1.0, 0.01) = 0.45  painted share of each pass
 
 // Loaded brushstrokes in blues: each pass tapers in and out and carries a
 // bristle grain, so the frame reads as paint dragged across it. Slower than

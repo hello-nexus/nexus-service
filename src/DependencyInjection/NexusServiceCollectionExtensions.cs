@@ -505,6 +505,7 @@ public static class NexusServiceCollectionExtensions
         services.AddSingleton<Nexus.Service.Lighting.GameSyncGameScanner>();
         services.AddSingleton<IObsProvider, ObsProvider>();
         services.AddSingleton<Nexus.Service.Twitch.ITwitchEmoteCache, Nexus.Service.Twitch.TwitchEmoteCache>();
+        services.AddSingleton<Nexus.Service.Klipy.IKlipyCatalog, Nexus.Service.Klipy.KlipyCatalog>();
         services.AddSingleton<Nexus.Service.Twitch.TwitchChatHub>();
         services.AddHostedService(sp => sp.GetRequiredService<Nexus.Service.Twitch.TwitchChatHub>());
         services.AddSingleton<ISteamProvider, SteamProvider>();
@@ -1679,6 +1680,8 @@ public static class NexusServiceCollectionExtensions
         services.AddSingleton<Nexus.Service.Store.StoreCatalogProxy>(sp => new Nexus.Service.Store.StoreCatalogProxy(
             sp.GetRequiredService<IHttpClientFactory>().CreateClient("StoreCatalog")));
         services.AddSingleton<Nexus.Service.Store.StoreEntitlements>();
+        services.AddSingleton<Nexus.Service.Store.HardwareAppCatalog>();
+        services.AddHostedService<Nexus.Service.Store.HardwareAppInstaller>();
         services.AddSingleton<Nexus.Service.Widgets.AppCodeSessionService>();
         services.AddSingleton<Nexus.Service.Widgets.AppActionRegistry>(sp =>
         {

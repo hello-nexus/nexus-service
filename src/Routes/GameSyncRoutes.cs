@@ -134,32 +134,6 @@ public static class GameSyncRoutes
                 return Results.Json(ApiResponse.Ok(), AppJsonContext.Default.ApiResponse);
             }).LocalhostOnly();
 
-        // One switch for the vendor conflict: on sets the real vendor SDK
-        // aside and installs our shims; off puts it back. The state response
-        // is the source of truth for the toggle, so it is returned here too.
-        app.MapPost("/lighting/game-sync/vendor-override",
-            (GameSyncVendorOverrideBody body, ILightingProvider l) =>
-            {
-                var result = GameSyncShimInstaller.SetVendorOverride(body.Enabled);
-                if (result is not (VendorOverrideResult.Applied or VendorOverrideResult.Restored))
-                {
-                    return Results.Json(
-                        new ApiResponse { Error = true, Msg = $"vendor override {result}" },
-                        AppJsonContext.Default.ApiResponse,
-                        statusCode: 500);
-                }
-                var state = GameSyncShimInstaller.GetState();
-                return Results.Json(
-                    new GameSyncStateResponse
-                    {
-                        Active = l.GetSync() == "gamesync",
-                        ProviderInstalled = state.ProviderInstalled,
-                        SynapseConflict = state.SynapseConflict,
-                        VendorOverride = state.VendorOverride,
-                    },
-                    AppJsonContext.Default.GameSyncStateResponse);
-            }).LocalhostOnly();
-
         // Current Game Sync mode state: whether it is active, whether our
         // Chroma shim DLLs are installed, whether a real Razer SDK conflicts,
         // and which devices the mode will drive.
@@ -196,7 +170,6 @@ public static class GameSyncRoutes
                         Active = active,
                         ProviderInstalled = shimState.ProviderInstalled,
                         SynapseConflict = shimState.SynapseConflict,
-                        VendorOverride = shimState.VendorOverride,
                         Devices = infos,
                         LastFrameAt = eff?.LastFrameAtMs,
                         ActiveApp = string.IsNullOrEmpty(eff?.ActiveApp) ? null : eff.ActiveApp,

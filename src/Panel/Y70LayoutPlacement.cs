@@ -1,16 +1,16 @@
 using System.Collections.Generic;
 using Nexus.Service.Models.Panel;
 
-namespace Nexus.Service.Migration;
+namespace Nexus.Service.Panel;
 
 /// <summary>
-/// First-free-rect widget placement mirroring nexus-web's
+/// First-free-rect widget placement on a Y70 layout, mirroring nexus-web's
 /// panelLayoutOps.appendWidget / paginate.firstFreeRect exactly (same stride
-/// and scan order), so an imported layout lands the way the editor would
-/// have placed the same sequence of appends. Y70 grid dimensions are fixed
-/// (see GridCols/GridRows); overflow spills to a new page, capped at MaxPages.
+/// and scan order), so a widget lands where the editor would have put it.
+/// Y70 grid dimensions are fixed (see GridCols/GridRows); overflow spills to a
+/// new page, capped at MaxPages.
 /// </summary>
-internal static class Nexus2LayoutPlacement
+internal static class Y70LayoutPlacement
 {
     public const int GridCols = 4;
     public const int GridRows = 16;
