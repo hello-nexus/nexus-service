@@ -109,8 +109,8 @@ public static class DeckRoutes
                 {
                     Id = DeckModesMigration.NewPresetId(),
                     Name = trimmedName,
-                    Cols = System.Math.Max(1, body.Cols),
-                    Rows = System.Math.Max(1, body.Rows),
+                    Cols = System.Math.Clamp(body.Cols, 1, 8),
+                    Rows = System.Math.Clamp(body.Rows, 1, 8),
                     Deck = deck,
                 };
                 s.StreamDeck.Presets.Add(created);
@@ -175,11 +175,11 @@ public static class DeckRoutes
                 }
                 if (body.Cols is not null)
                 {
-                    p.Cols = System.Math.Max(1, body.Cols.Value);
+                    p.Cols = System.Math.Clamp(body.Cols.Value, 1, 8);
                 }
                 if (body.Rows is not null)
                 {
-                    p.Rows = System.Math.Max(1, body.Rows.Value);
+                    p.Rows = System.Math.Clamp(body.Rows.Value, 1, 8);
                 }
                 updated = p;
             });
@@ -516,7 +516,11 @@ public static class DeckRoutes
             }
             foreach (var ch in widgetId)
             {
-                if (!char.IsLetterOrDigit(ch) && ch != '-' && ch != '_')
+                // ASCII only, matching the [A-Za-z0-9_-] contract exactly -
+                // char.IsLetterOrDigit is Unicode-aware and would accept
+                // characters the contract does not.
+                var isAsciiLetterOrDigit = (ch is >= 'a' and <= 'z') || (ch is >= 'A' and <= 'Z') || (ch is >= '0' and <= '9');
+                if (!isAsciiLetterOrDigit && ch != '-' && ch != '_')
                 {
                     return false;
                 }

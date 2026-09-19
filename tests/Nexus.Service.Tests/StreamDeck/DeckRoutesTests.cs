@@ -90,6 +90,21 @@ public sealed class DeckRoutesTests : IClassFixture<DeckRoutesHostFactory>
     }
 
     [Fact]
+    public async Task CreatePreset_ColsAndRowsOutOfRange_AreClampedTo1And8()
+    {
+        var (factory, client) = Boot();
+        using (factory)
+        {
+            var res = await client.PostAsync("/deck/presets", Json("""{"name":"Oversized","cols":99,"rows":0}"""));
+            Assert.True(res.IsSuccessStatusCode);
+            using var doc = JsonDocument.Parse(await res.Content.ReadAsStringAsync());
+            var preset = doc.RootElement.GetProperty("preset");
+            Assert.Equal(8, preset.GetProperty("cols").GetInt32());
+            Assert.Equal(1, preset.GetProperty("rows").GetInt32());
+        }
+    }
+
+    [Fact]
     public async Task CreatePreset_WithTemplateId_Returns501()
     {
         var (factory, client) = Boot();
@@ -397,6 +412,17 @@ public sealed class DeckRoutesTests : IClassFixture<DeckRoutesHostFactory>
         using (factory)
         {
             var res = await client.GetAsync("/deck/instances/not-a-valid-prefix");
+            Assert.Equal(HttpStatusCode.BadRequest, res.StatusCode);
+        }
+    }
+
+    [Fact]
+    public async Task GetInstance_WidgetIdWithNonAsciiCharacters_Returns400()
+    {
+        var (factory, client) = Boot();
+        using (factory)
+        {
+            var res = await client.GetAsync($"/deck/instances/{Uri.EscapeDataString("widget:café")}");
             Assert.Equal(HttpStatusCode.BadRequest, res.StatusCode);
         }
     }
