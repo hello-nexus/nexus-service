@@ -14,17 +14,25 @@ namespace Nexus.Service.Deck;
 
 /// <summary>
 /// Subscribes IScreenTimeProvider.FocusChanged (no dwell - Recent Apps
-/// reorders like alt+tab) and maintains the host-wide MRU ring: resolves each
-/// new entry's shortcutId once against a reverse index over
-/// IShortcutsProvider.GetAll() (rebuilt at most every ShortcutsRefreshInterval,
-/// or once more immediately on a miss), persists the ring, and coalesces the
+/// reorders like alt+tab) and maintains the host-wide MRU ring in
+/// RecentAppsState, the live in-memory authority every reader uses: a
+/// reorder is visible the instant it happens, never waiting on a disk
+/// write. Persistence to settings.json is a background concern, coalesced
+/// to at most once per PersistInterval (plus a flush on shutdown) - writing
+/// through IConfigStore.Update on every focus change would pulse every
+/// OnChanged consumer (profile dirty-marking, settings.json rewrites) on
+/// every alt+tab, most of which happen with no recentApps-mode instance
+/// even watching. Resolves each new ring entry's shortcutId once against a
+/// reverse index over IShortcutsProvider.GetAll() (rebuilt at most every
+/// ShortcutsRefreshInterval, or once more immediately on a miss). The
 /// "recents" deck-topic broadcast plus a RefreshView on every physical
-/// instance in recentApps mode to CoalesceDelay after the last focus change,
-/// so an alt+tab sweep writes HID once.
+/// instance in recentApps mode stay coalesced to CoalesceDelay, unrelated to
+/// the persist cadence.
 /// </summary>
 public sealed class RecentAppsService : BackgroundService
 {
     private static readonly TimeSpan CoalesceDelay = TimeSpan.FromMilliseconds(100);
+    private static readonly TimeSpan PersistInterval = TimeSpan.FromSeconds(5);
     private static readonly TimeSpan ShortcutsRefreshInterval = TimeSpan.FromSeconds(60);
 
     private readonly IConfigStore _store;
@@ -38,7 +46,9 @@ public sealed class RecentAppsService : BackgroundService
 
     private readonly object _gate = new();
     private ITimer? _coalesceTimer;
+    private ITimer? _persistTimer;
     private bool _subscribed;
+    private volatile bool _dirty;
 
     private Dictionary<string, string> _shortcutsByProcessKey = new(StringComparer.Ordinal);
     private DateTimeOffset _shortcutsIndexedAt = DateTimeOffset.MinValue;
@@ -65,9 +75,24 @@ public sealed class RecentAppsService : BackgroundService
 
     protected override Task ExecuteAsync(CancellationToken stoppingToken)
     {
+        var settings = _store.Load().StreamDeck;
+        // A pid from a previous run can be reused by an unrelated process by
+        // the time this run starts, so it is never trusted across a restart.
+        var seeded = settings.RecentApps.ConvertAll(a => new RecentApp
+        {
+            ProcessKey = a.ProcessKey,
+            Name = a.Name,
+            Pid = null,
+            ExePath = a.ExePath,
+            ShortcutId = a.ShortcutId,
+            LastFocusedUtcMs = a.LastFocusedUtcMs,
+        });
+        _state.Seed(seeded, settings.RecentAppsExcluded);
+
         lock (_gate)
         {
             _subscribed = true;
+            _persistTimer = _time.CreateTimer(_ => SafePersist(), null, PersistInterval, PersistInterval);
         }
         _screenTime.FocusChanged += OnFocusChanged;
         stoppingToken.Register(Unsubscribe);
@@ -88,7 +113,12 @@ public sealed class RecentAppsService : BackgroundService
             _screenTime.FocusChanged -= OnFocusChanged;
             _coalesceTimer?.Dispose();
             _coalesceTimer = null;
+            _persistTimer?.Dispose();
+            _persistTimer = null;
         }
+        // A clean shutdown must not lose ring changes the periodic persist
+        // has not caught up with yet.
+        SafePersist();
     }
 
     public override void Dispose()
@@ -119,8 +149,7 @@ public sealed class RecentAppsService : BackgroundService
             return;
         }
 
-        var excluded = _store.Load().StreamDeck.RecentAppsExcluded;
-        if (RecentAppsTracker.IsExcluded(processKey, excluded))
+        if (RecentAppsTracker.IsExcluded(processKey, _state.ExcludedSnapshot()))
         {
             // The desktop/shell itself holding focus is not "an app" for
             // Recent Apps purposes - no key is shown selected until a real
@@ -141,7 +170,10 @@ public sealed class RecentAppsService : BackgroundService
             LastFocusedUtcMs = _time.GetUtcNow().ToUnixTimeMilliseconds(),
         };
 
-        _store.Update(s => RecentAppsTracker.UpdateRing(s.StreamDeck.RecentApps, candidate, s.StreamDeck.RecentAppsExcluded));
+        if (_state.UpdateRing(candidate))
+        {
+            _dirty = true;
+        }
         _state.SetFocused(processKey);
         ScheduleBroadcast();
     }
@@ -210,15 +242,14 @@ public sealed class RecentAppsService : BackgroundService
 
     internal void Broadcast()
     {
-        var settings = _store.Load().StreamDeck;
         PanelTopics.BroadcastDeck(_hub, new DeckChangedFrame
         {
             Kind = "recents",
-            Apps = new List<RecentApp>(settings.RecentApps),
+            Apps = _state.RingSnapshot(),
             FocusedProcessKey = _state.FocusedProcessKey,
         });
 
-        foreach (var (instanceId, instance) in settings.Instances)
+        foreach (var (instanceId, instance) in _store.Load().StreamDeck.Instances)
         {
             if (instance.Mode != "recentApps" || !instanceId.StartsWith(DeckInstanceIdPrefix, StringComparison.Ordinal))
             {
@@ -226,6 +257,41 @@ public sealed class RecentAppsService : BackgroundService
             }
             _worker.RefreshView(instanceId[DeckInstanceIdPrefix.Length..]);
         }
+    }
+
+    private void SafePersist()
+    {
+        try
+        {
+            Persist();
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine($"[recent-apps] persist failed: {ex.Message}");
+        }
+    }
+
+    /// <summary>
+    /// Writes the live ring and excluded list to settings.json. force is
+    /// used by the PUT/DELETE recent-apps routes to flush an explicit user
+    /// edit immediately rather than waiting out PersistInterval; the
+    /// periodic timer and shutdown flush call it unforced, a no-op unless a
+    /// focus-driven ring change is pending.
+    /// </summary>
+    internal void Persist(bool force = false)
+    {
+        if (!force && !_dirty)
+        {
+            return;
+        }
+        _dirty = false;
+        var ring = _state.RingSnapshot();
+        var excluded = _state.ExcludedSnapshot();
+        _store.Update(s =>
+        {
+            s.StreamDeck.RecentApps = ring;
+            s.StreamDeck.RecentAppsExcluded = excluded;
+        });
     }
 
     private const string DeckInstanceIdPrefix = "streamdeck:";

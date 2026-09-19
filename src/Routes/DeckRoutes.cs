@@ -398,47 +398,48 @@ public static class DeckRoutes
             return Results.Json(new DeckInstanceResponse { Instance = result }, AppJsonContext.Default.DeckInstanceResponse);
         }).AllowPanel();
 
-        app.MapGet("/deck/recent-apps", (IConfigStore store, RecentAppsState state) =>
+        // RecentAppsState is the live ring - settings.json trails it by up to
+        // RecentAppsService's persist interval, so every recent-apps route
+        // reads/writes through the state, never store.Load().StreamDeck.RecentApps*
+        // directly.
+        app.MapGet("/deck/recent-apps", (RecentAppsState state) =>
         {
-            var settings = store.Load().StreamDeck;
             return Results.Json(new RecentAppsResponse
             {
-                Apps = new System.Collections.Generic.List<Nexus.Service.Persistence.RecentApp>(settings.RecentApps),
-                Excluded = new System.Collections.Generic.List<string>(settings.RecentAppsExcluded),
+                Apps = state.RingSnapshot(),
+                Excluded = state.ExcludedSnapshot(),
                 FocusedProcessKey = state.FocusedProcessKey,
             }, AppJsonContext.Default.RecentAppsResponse);
         }).AllowPanel();
 
-        app.MapPut("/deck/recent-apps/excluded", (SetRecentAppsExcludedRequest body, IConfigStore store, MultiplexHub hub, RecentAppsState state) =>
+        app.MapPut("/deck/recent-apps/excluded", (SetRecentAppsExcludedRequest body, MultiplexHub hub, RecentAppsState state, RecentAppsService recentApps) =>
         {
             var excluded = body.ProcessKeys.ConvertAll(Nexus.Service.Lighting.AppPresetMatching.ProcessKey);
-            store.Update(s =>
-            {
-                s.StreamDeck.RecentAppsExcluded = excluded;
-                // A key excluded after it already entered the ring disappears
-                // immediately rather than lingering until its next MRU update.
-                s.StreamDeck.RecentApps.RemoveAll(a => excluded.Contains(a.ProcessKey));
-            });
-            BroadcastRecentsChanged(hub, store, state);
+            // A key excluded after it already entered the ring disappears
+            // immediately rather than lingering until its next MRU update.
+            state.SetExcluded(excluded);
+            recentApps.Persist(force: true);
+            BroadcastRecentsChanged(hub, state);
             return Results.Json(ApiResponse.Ok(), AppJsonContext.Default.ApiResponse);
         }).LocalhostOnly();
 
-        app.MapDelete("/deck/recent-apps", (IConfigStore store, MultiplexHub hub, RecentAppsState state) =>
+        app.MapDelete("/deck/recent-apps", (MultiplexHub hub, RecentAppsState state, RecentAppsService recentApps) =>
         {
-            store.Update(s => s.StreamDeck.RecentApps.Clear());
-            BroadcastRecentsChanged(hub, store, state);
+            state.Clear();
+            recentApps.Persist(force: true);
+            BroadcastRecentsChanged(hub, state);
             return Results.Json(ApiResponse.Ok(), AppJsonContext.Default.ApiResponse);
         }).LocalhostOnly();
 
         app.MapPost("/deck/recent-apps/activate", async (
-            ActivateRecentAppRequest body, IConfigStore store, RecentAppsState state, RecentAppsActivator activator) =>
+            ActivateRecentAppRequest body, RecentAppsState state, RecentAppsActivator activator) =>
         {
             var processKey = body.ProcessKey ?? "";
             if (processKey.Length == 0 || processKey == state.FocusedProcessKey)
             {
                 return Results.Json(ApiResponse.Ok(), AppJsonContext.Default.ApiResponse);
             }
-            var entry = store.Load().StreamDeck.RecentApps.Find(a => a.ProcessKey == processKey);
+            var entry = state.RingSnapshot().Find(a => a.ProcessKey == processKey);
             if (entry is null)
             {
                 return Results.Json(ApiResponse.Fail("app not in the recent apps ring"), AppJsonContext.Default.ApiResponse, statusCode: 404);
@@ -448,13 +449,12 @@ public static class DeckRoutes
         }).AllowPanel();
     }
 
-    private static void BroadcastRecentsChanged(MultiplexHub hub, IConfigStore store, RecentAppsState state)
+    private static void BroadcastRecentsChanged(MultiplexHub hub, RecentAppsState state)
     {
-        var settings = store.Load().StreamDeck;
         PanelTopics.BroadcastDeck(hub, new DeckChangedFrame
         {
             Kind = "recents",
-            Apps = new System.Collections.Generic.List<Nexus.Service.Persistence.RecentApp>(settings.RecentApps),
+            Apps = state.RingSnapshot(),
             FocusedProcessKey = state.FocusedProcessKey,
         });
     }

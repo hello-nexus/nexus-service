@@ -453,12 +453,11 @@ public sealed class DeckRoutesTests : IClassFixture<DeckRoutesHostFactory>
         var (factory, client) = Boot();
         using (factory)
         {
-            var store = factory.Services.GetRequiredService<IConfigStore>();
-            store.Update(s =>
-            {
-                s.StreamDeck.RecentApps.Insert(0, new RecentApp { ProcessKey = "discord", Name = "Discord" });
-                s.StreamDeck.RecentAppsExcluded.Add("steam");
-            });
+            // GET /deck/recent-apps reads the live RecentAppsState, not
+            // settings.json directly - RecentAppsService (stripped as a
+            // hosted service on this test host) owns mirroring the two.
+            var state = factory.Services.GetRequiredService<RecentAppsState>();
+            state.Seed(new[] { new RecentApp { ProcessKey = "discord", Name = "Discord" } }, new[] { "steam" });
 
             var res = await client.GetAsync("/deck/recent-apps");
             Assert.True(res.IsSuccessStatusCode);
@@ -477,11 +476,17 @@ public sealed class DeckRoutesTests : IClassFixture<DeckRoutesHostFactory>
         using (factory)
         {
             var store = factory.Services.GetRequiredService<IConfigStore>();
-            store.Update(s => s.StreamDeck.RecentApps.Insert(0, new RecentApp { ProcessKey = "notion", Name = "Notion" }));
+            var state = factory.Services.GetRequiredService<RecentAppsState>();
+            state.Seed(new[] { new RecentApp { ProcessKey = "notion", Name = "Notion" } }, Array.Empty<string>());
 
             var res = await client.PutAsync("/deck/recent-apps/excluded", Json("""{"processKeys":["notion"]}"""));
             Assert.True(res.IsSuccessStatusCode);
 
+            // The route force-persists immediately (unlike the focus-driven
+            // ring, this is an explicit user edit), so settings.json already
+            // reflects it by the time the response returns.
+            Assert.Contains("notion", state.ExcludedSnapshot());
+            Assert.DoesNotContain(state.RingSnapshot(), a => a.ProcessKey == "notion");
             var settings = store.Load().StreamDeck;
             Assert.Contains("notion", settings.RecentAppsExcluded);
             Assert.DoesNotContain(settings.RecentApps, a => a.ProcessKey == "notion");
@@ -495,10 +500,12 @@ public sealed class DeckRoutesTests : IClassFixture<DeckRoutesHostFactory>
         using (factory)
         {
             var store = factory.Services.GetRequiredService<IConfigStore>();
-            store.Update(s => s.StreamDeck.RecentApps.Insert(0, new RecentApp { ProcessKey = "figma", Name = "Figma" }));
+            var state = factory.Services.GetRequiredService<RecentAppsState>();
+            state.Seed(new[] { new RecentApp { ProcessKey = "figma", Name = "Figma" } }, Array.Empty<string>());
 
             var res = await client.DeleteAsync("/deck/recent-apps");
             Assert.True(res.IsSuccessStatusCode);
+            Assert.DoesNotContain(state.RingSnapshot(), a => a.ProcessKey == "figma");
             Assert.DoesNotContain(store.Load().StreamDeck.RecentApps, a => a.ProcessKey == "figma");
         }
     }

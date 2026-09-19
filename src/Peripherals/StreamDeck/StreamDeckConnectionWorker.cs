@@ -1285,9 +1285,9 @@ public sealed class StreamDeckConnectionWorker : BackgroundService, IDeckSurface
     private void HandleRecentAppsKeyDown(IStreamDeckSurface surface, int physicalIndex)
     {
         var serial = surface.Serial;
-        var settings = _store.Load().StreamDeck;
+        var ring = _recentAppsState?.RingSnapshot() ?? new List<RecentApp>();
         var pages = Nexus.Service.Deck.RecentAppsTracker.BuildView(
-            settings.RecentApps, _recentAppsState?.FocusedProcessKey, surface.Model.Columns, surface.Model.Rows);
+            ring, _recentAppsState?.FocusedProcessKey, surface.Model.Columns, surface.Model.Rows);
         var pageCount = Math.Max(pages.Count, 1);
         var page = Math.Clamp(GetCurrentPageLocked(serial), 0, pageCount - 1);
         var keys = page < pages.Count ? pages[page] : new List<Nexus.Service.Deck.RecentKey>();
@@ -1309,7 +1309,7 @@ public sealed class StreamDeckConnectionWorker : BackgroundService, IDeckSurface
             return;
         }
 
-        var entry = settings.RecentApps.Find(a => a.ProcessKey == key.ProcessKey) ?? new RecentApp
+        var entry = ring.Find(a => a.ProcessKey == key.ProcessKey) ?? new RecentApp
         {
             ProcessKey = key.ProcessKey,
             Name = key.Name ?? key.ProcessKey,
@@ -2619,10 +2619,10 @@ public sealed class StreamDeckConnectionWorker : BackgroundService, IDeckSurface
     private void PushRecentAppsView(IStreamDeckSurface surface)
     {
         var serial = surface.Serial;
-        var settings = _store.Load().StreamDeck;
-        settings.Decks.TryGetValue(serial, out var deck);
+        _store.Load().StreamDeck.Decks.TryGetValue(serial, out var deck);
+        var ring = _recentAppsState?.RingSnapshot() ?? new List<RecentApp>();
         var pages = Nexus.Service.Deck.RecentAppsTracker.BuildView(
-            settings.RecentApps, _recentAppsState?.FocusedProcessKey, surface.Model.Columns, surface.Model.Rows);
+            ring, _recentAppsState?.FocusedProcessKey, surface.Model.Columns, surface.Model.Rows);
 
         var pageCount = Math.Max(pages.Count, 1);
         var page = Math.Clamp(GetCurrentPageLocked(serial), 0, pageCount - 1);

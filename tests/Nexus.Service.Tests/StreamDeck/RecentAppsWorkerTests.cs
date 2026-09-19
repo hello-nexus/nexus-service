@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using System.Threading.Tasks;
 using Microsoft.Extensions.DependencyInjection;
 using Nexus.Service.Activity;
@@ -81,17 +82,13 @@ public sealed class RecentAppsWorkerTests : IDisposable
         _worker.Tick();
     }
 
+    /// <summary>Seeds the live ring the worker actually reads (RecentAppsState), in the given order - RecentApps is no longer mirrored to _store synchronously, only on RecentAppsService's own coalesced persist.</summary>
     private void SeedRing(params (string Key, string Name)[] apps)
     {
-        _store.Update(s =>
-        {
-            s.StreamDeck.RecentApps.Clear();
-            foreach (var (key, name) in apps)
-            {
-                s.StreamDeck.RecentApps.Add(new RecentApp { ProcessKey = key, Name = name });
-            }
-        });
+        _state.Seed(apps.Select(a => new RecentApp { ProcessKey = a.Key, Name = a.Name }), Array.Empty<string>());
     }
+
+    private void SeedRing(params RecentApp[] apps) => _state.Seed(apps, Array.Empty<string>());
 
     [Fact]
     public void Connect_RendersRingEntriesThenBlanksTheRest()
@@ -154,8 +151,7 @@ public sealed class RecentAppsWorkerTests : IDisposable
     [Fact]
     public async Task Press_AppWithLiveWindow_ActivatesInsteadOfLaunching()
     {
-        SeedRing(("chrome", "Chrome"));
-        _store.Update(s => s.StreamDeck.RecentApps[0].Pid = 4242);
+        SeedRing(new RecentApp { ProcessKey = "chrome", Name = "Chrome", Pid = 4242 });
         _windowSet.WindowedPids.Add(4242);
         _processActions.ActivateResult = true;
 
@@ -175,8 +171,7 @@ public sealed class RecentAppsWorkerTests : IDisposable
     [Fact]
     public async Task Press_AppWithNoLiveWindow_LaunchesByShortcutId()
     {
-        SeedRing(("figma", "Figma"));
-        _store.Update(s => s.StreamDeck.RecentApps[0].ShortcutId = "shortcut-figma");
+        SeedRing(new RecentApp { ProcessKey = "figma", Name = "Figma", ShortcutId = "shortcut-figma" });
 
         ConnectInRecentAppsMode();
 
@@ -193,8 +188,7 @@ public sealed class RecentAppsWorkerTests : IDisposable
     [Fact]
     public async Task Press_FocusedKey_IsANoOp()
     {
-        SeedRing(("chrome", "Chrome"));
-        _store.Update(s => s.StreamDeck.RecentApps[0].ShortcutId = "shortcut-chrome");
+        SeedRing(new RecentApp { ProcessKey = "chrome", Name = "Chrome", ShortcutId = "shortcut-chrome" });
         _state.SetFocused("chrome");
 
         ConnectInRecentAppsMode();

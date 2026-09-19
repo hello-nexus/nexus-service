@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Threading;
+using System.Threading.Tasks;
 using Microsoft.Extensions.DependencyInjection;
 using Nexus.Service.Activity;
 using Nexus.Service.Deck;
@@ -58,6 +59,7 @@ public sealed class RecentAppsServiceTests : IDisposable
     }
 
     private IConfigStore Store => _factory.Services.GetRequiredService<IConfigStore>();
+    private RecentAppsState State => _factory.Services.GetRequiredService<RecentAppsState>();
 
     private RecentAppsService BuildService()
     {
@@ -88,7 +90,7 @@ public sealed class RecentAppsServiceTests : IDisposable
     {
         Focus("chrome");
 
-        Assert.Contains(Store.Load().StreamDeck.RecentApps, a => a.ProcessKey == "chrome");
+        Assert.Contains(State.RingSnapshot(), a => a.ProcessKey == "chrome");
     }
 
     [Fact]
@@ -97,7 +99,7 @@ public sealed class RecentAppsServiceTests : IDisposable
         Focus("chrome");
         Focus("discord");
 
-        var ring = Store.Load().StreamDeck.RecentApps;
+        var ring = State.RingSnapshot();
         Assert.Equal("discord", ring[0].ProcessKey);
         Assert.Contains(ring, a => a.ProcessKey == "chrome");
     }
@@ -109,7 +111,7 @@ public sealed class RecentAppsServiceTests : IDisposable
 
         Focus("obs");
 
-        Assert.DoesNotContain(Store.Load().StreamDeck.RecentApps, a => a.ProcessKey == "obs");
+        Assert.DoesNotContain(State.RingSnapshot(), a => a.ProcessKey == "obs");
     }
 
     [Fact]
@@ -119,8 +121,56 @@ public sealed class RecentAppsServiceTests : IDisposable
 
         Focus("chrome");
 
-        var entry = Store.Load().StreamDeck.RecentApps.Find(a => a.ProcessKey == "chrome");
+        var entry = State.RingSnapshot().Find(a => a.ProcessKey == "chrome");
         Assert.Equal("shortcut-chrome", entry?.ShortcutId);
+    }
+
+    /// <summary>
+    /// A store write on every alt+tab would pulse ProfileManager's dirty-mark
+    /// and every other IConfigStore.OnChanged subscriber regardless of
+    /// whether anything is even showing Recent Apps. The live ring updates
+    /// immediately (previous tests); settings.json must not until the
+    /// coalesced persist runs.
+    /// </summary>
+    [Fact]
+    public void FocusChange_DoesNotWriteToStoreBeforeThePersistIntervalElapses()
+    {
+        Focus("chrome");
+
+        Assert.DoesNotContain(Store.Load().StreamDeck.RecentApps, a => a.ProcessKey == "chrome");
+    }
+
+    [Fact]
+    public void ForcedPersist_WritesTheLiveRingToStore()
+    {
+        Focus("chrome");
+
+        _service!.Persist(force: true);
+
+        Assert.Contains(Store.Load().StreamDeck.RecentApps, a => a.ProcessKey == "chrome");
+    }
+
+    /// <summary>A pid from a previous service run can be reused by an unrelated process by the time this run starts, so ExecuteAsync must never seed one across a restart.</summary>
+    [Fact]
+    public async Task ExecuteAsync_NeverTrustsAPersistedPidAcrossARestart()
+    {
+        Store.Update(s => s.StreamDeck.RecentApps.Add(new RecentApp { ProcessKey = "stale", Name = "Stale", Pid = 9999 }));
+
+        var service = BuildService();
+        await service.StartAsync(CancellationToken.None);
+        // BackgroundService.StartAsync does not guarantee ExecuteAsync's body
+        // has completed by the time it returns; give the seed a moment.
+        Thread.Sleep(TimeSpan.FromMilliseconds(200));
+        try
+        {
+            var seeded = State.RingSnapshot().Find(a => a.ProcessKey == "stale");
+            Assert.NotNull(seeded);
+            Assert.Null(seeded!.Pid);
+        }
+        finally
+        {
+            service.Dispose();
+        }
     }
 
     [Fact]

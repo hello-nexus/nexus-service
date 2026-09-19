@@ -807,8 +807,10 @@ public static class NexusServiceCollectionExtensions
             sp.GetRequiredService<Nexus.Service.Activity.IShortcutsProvider>(),
             sp.GetRequiredService<Nexus.Service.Actions.SystemActions>(),
             windowSet: sp.GetService<Nexus.Service.Activity.IWindowSetProvider>()));
-        // Recent Apps ring: no dwell, rides the same FocusChanged event AppPresetSwitcher does.
-        services.AddHostedService(sp => new Nexus.Service.Deck.RecentAppsService(
+        // Recent Apps ring: no dwell, rides the same FocusChanged event AppPresetSwitcher
+        // does. Registered under its own type too (not just IHostedService) so
+        // DeckRoutes can force an immediate persist after an explicit exclude/clear edit.
+        services.AddSingleton(sp => new Nexus.Service.Deck.RecentAppsService(
             sp.GetRequiredService<Nexus.Service.Persistence.IConfigStore>(),
             sp.GetRequiredService<Nexus.Service.Activity.IScreenTimeProvider>(),
             sp.GetRequiredService<Nexus.Service.Activity.IShortcutsProvider>(),
@@ -816,6 +818,7 @@ public static class NexusServiceCollectionExtensions
             sp.GetRequiredService<Nexus.Service.Peripherals.StreamDeck.StreamDeckConnectionWorker>(),
             sp.GetRequiredService<Nexus.Service.Deck.RecentAppsState>(),
             focusDetails: sp.GetService<Nexus.Service.Activity.IFocusDetailsProvider>()));
+        services.AddHostedService(sp => sp.GetRequiredService<Nexus.Service.Deck.RecentAppsService>());
         // App Aware: activates a deck preset when an app bound to it takes focus.
         services.AddHostedService(sp => new Nexus.Service.Deck.DeckAppPresetSwitcher(
             sp.GetRequiredService<Nexus.Service.Persistence.IConfigStore>(),
