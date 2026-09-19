@@ -67,7 +67,7 @@ public sealed class ProfileDeckMigrationTests : IDisposable
 
         var settings = _store.Load();
         var instance = Assert.Contains("streamdeck:SERIAL-1", settings.StreamDeck.Instances);
-        Assert.Equal("fixed", instance.Mode);
+        Assert.Equal("custom", instance.Mode);
         var preset = settings.StreamDeck.Presets.Find(p => p.Id == instance.ActivePresetId);
         Assert.NotNull(preset);
         Assert.Equal("My Deck", preset!.Name);

@@ -22,7 +22,7 @@ internal static class DeckTestHelpers
         new FakeShortcutsProvider(),
         new FakeProcessIconProvider());
 
-    /// <summary>Hoists a test-seeded PhysicalDeckSettings.LegacyDeck into a preset + fixed instance, mirroring DeckModesMigration but with an explicit grid (Mini's, by default) instead of ProductId inference.</summary>
+    /// <summary>Hoists a test-seeded PhysicalDeckSettings.LegacyDeck into a preset + custom-mode instance, mirroring DeckModesMigration but with an explicit grid (Mini's, by default) instead of ProductId inference.</summary>
     public static void ActivateLegacyDeck(NexusSettings s, string serial) => ActivateLegacyDeck(s, serial, Mini.Columns, Mini.Rows);
 
     public static void ActivateLegacyDeck(NexusSettings s, string serial, int cols, int rows)
@@ -32,7 +32,7 @@ internal static class DeckTestHelpers
         var presetId = "p-test-" + serial;
         s.StreamDeck.Presets.RemoveAll(p => p.Id == presetId);
         s.StreamDeck.Presets.Add(new DeckPreset { Id = presetId, Name = serial, Cols = cols, Rows = rows, Deck = config });
-        s.StreamDeck.Instances[DeckInstanceResolver.PhysicalInstanceId(serial)] = new DeckInstance { Mode = "fixed", ActivePresetId = presetId };
+        s.StreamDeck.Instances[DeckInstanceResolver.PhysicalInstanceId(serial)] = new DeckInstance { Mode = "custom", ActivePresetId = presetId };
         deck.LegacyDeck = null;
     }
 

@@ -81,14 +81,14 @@ public sealed class DeckPresetActivatorTests : IDisposable
         var result = _activator.Activate("widget:w1", "p1");
 
         Assert.Equal("p1", result.ActivePresetId);
-        Assert.Equal("fixed", result.Mode);
+        Assert.Equal("custom", result.Mode);
         Assert.Equal("p1", _store.Load().StreamDeck.Instances["widget:w1"].ActivePresetId);
     }
 
     [Fact]
     public void Activate_ModeOnly_LeavesActivePresetIdUntouched()
     {
-        _store.Update(s => s.StreamDeck.Instances["widget:w1"] = new DeckInstance { Mode = "fixed", ActivePresetId = "p1" });
+        _store.Update(s => s.StreamDeck.Instances["widget:w1"] = new DeckInstance { Mode = "custom", ActivePresetId = "p1" });
 
         var result = _activator.Activate("widget:w1", presetId: null, mode: "appAware");
 

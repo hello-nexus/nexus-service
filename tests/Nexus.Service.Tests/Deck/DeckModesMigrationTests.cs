@@ -34,7 +34,7 @@ public sealed class DeckModesMigrationTests
         Assert.Null(deck.LegacyActivePresetId);
 
         var instance = doc.StreamDeck.Instances["streamdeck:SERIAL-1"];
-        Assert.Equal("fixed", instance.Mode);
+        Assert.Equal("custom", instance.Mode);
         var preset = doc.StreamDeck.Presets.Find(p => p.Id == instance.ActivePresetId);
         Assert.NotNull(preset);
         Assert.Equal("My Deck", preset!.Name);

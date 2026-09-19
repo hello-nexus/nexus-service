@@ -123,10 +123,10 @@ public sealed class DeckAppPresetSwitcherTests : IDisposable
     }
 
     [Fact]
-    public void FixedModeInstance_IsNeverTouched()
+    public void CustomModeInstance_IsNeverTouched()
     {
         var (bound, other) = SeedPresets(withBinding: true);
-        Store.Update(s => s.StreamDeck.Instances["widget:w1"] = new DeckInstance { Mode = "fixed", ActivePresetId = other });
+        Store.Update(s => s.StreamDeck.Instances["widget:w1"] = new DeckInstance { Mode = "custom", ActivePresetId = other });
 
         Focus("chrome");
 

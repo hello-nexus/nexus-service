@@ -375,7 +375,7 @@ public sealed class DeckRoutesTests : IClassFixture<DeckRoutesHostFactory>
                         Rows = mini.Rows,
                         Deck = new DeckConfig { Pages = { new DeckPage { Slots = { new DeckSlot { Label = "Before", Color = "#ff0000" } } } } },
                     });
-                    s.StreamDeck.Instances["streamdeck:" + serial] = new DeckInstance { Mode = "fixed", ActivePresetId = "p1" };
+                    s.StreamDeck.Instances["streamdeck:" + serial] = new DeckInstance { Mode = "custom", ActivePresetId = "p1" };
                 });
                 // Seeds a stable baseline: OnSurfaceConnected already painted
                 // the deck before the preset above existed, so its key
@@ -422,7 +422,7 @@ public sealed class DeckRoutesTests : IClassFixture<DeckRoutesHostFactory>
             {
                 s.StreamDeck.Presets.Add(new DeckPreset { Id = "p1", Name = "One", Cols = 2, Rows = 2 });
                 s.StreamDeck.Presets.Add(new DeckPreset { Id = "p2", Name = "Two", Cols = 2, Rows = 2 });
-                s.StreamDeck.Instances["widget:w1"] = new DeckInstance { Mode = "fixed", ActivePresetId = "p1" };
+                s.StreamDeck.Instances["widget:w1"] = new DeckInstance { Mode = "custom", ActivePresetId = "p1" };
             });
 
             var res = await client.DeleteAsync("/deck/presets/p1");
@@ -460,7 +460,7 @@ public sealed class DeckRoutesTests : IClassFixture<DeckRoutesHostFactory>
                         Rows = mini.Rows,
                         Deck = new DeckConfig { Pages = { new DeckPage { Slots = { new DeckSlot { Label = "Two", Color = "#0000ff" } } } } },
                     });
-                    s.StreamDeck.Instances["streamdeck:" + serial] = new DeckInstance { Mode = "fixed", ActivePresetId = "p1" };
+                    s.StreamDeck.Instances["streamdeck:" + serial] = new DeckInstance { Mode = "custom", ActivePresetId = "p1" };
                 });
                 worker.RefreshView(serial);
                 var sim = (SimulatedStreamDeckSurface)worker.Surfaces[StreamDeckConnectionWorker.SimulatedKey];
@@ -489,7 +489,7 @@ public sealed class DeckRoutesTests : IClassFixture<DeckRoutesHostFactory>
             store.Update(s =>
             {
                 s.StreamDeck.Presets.Add(new DeckPreset { Id = "p1", Name = "Only", Cols = 2, Rows = 2 });
-                s.StreamDeck.Instances["widget:w1"] = new DeckInstance { Mode = "fixed", ActivePresetId = "p1" };
+                s.StreamDeck.Instances["widget:w1"] = new DeckInstance { Mode = "custom", ActivePresetId = "p1" };
             });
 
             var res = await client.DeleteAsync("/deck/presets/p1");
@@ -522,7 +522,7 @@ public sealed class DeckRoutesTests : IClassFixture<DeckRoutesHostFactory>
         using (factory)
         {
             var store = factory.Services.GetRequiredService<IConfigStore>();
-            store.Update(s => s.StreamDeck.Instances["widget:w1"] = new DeckInstance { Mode = "fixed", ActivePresetId = "p1" });
+            store.Update(s => s.StreamDeck.Instances["widget:w1"] = new DeckInstance { Mode = "custom", ActivePresetId = "p1" });
 
             var res = await client.GetAsync("/deck/instances");
             Assert.True(res.IsSuccessStatusCode);
@@ -547,7 +547,7 @@ public sealed class DeckRoutesTests : IClassFixture<DeckRoutesHostFactory>
             var preset = Assert.Single(store.Load().StreamDeck.Presets, p => p.Id == presetId);
             Assert.Equal((4, 2), (preset.Cols, preset.Rows));
             Assert.Single(preset.Deck.Pages);
-            Assert.Equal("fixed", store.Load().StreamDeck.Instances["widget:fresh"].Mode);
+            Assert.Equal("custom", store.Load().StreamDeck.Instances["widget:fresh"].Mode);
         }
     }
 
@@ -699,6 +699,23 @@ public sealed class DeckRoutesTests : IClassFixture<DeckRoutesHostFactory>
             var instance = store.Load().StreamDeck.Instances["widget:w1"];
             Assert.Equal("recentApps", instance.Mode);
             Assert.Equal("p1", instance.ActivePresetId);
+        }
+    }
+
+    [Fact]
+    public async Task PutInstance_LegacyFixedMode_StoresAsCustom()
+    {
+        var (factory, client) = Boot();
+        using (factory)
+        {
+            var store = factory.Services.GetRequiredService<IConfigStore>();
+            store.Update(s => s.StreamDeck.Presets.Add(new DeckPreset { Id = "p1", Name = "One", Cols = 2, Rows = 2 }));
+
+            var res = await client.PutAsync("/deck/instances/widget:w1", Json("""{"mode":"fixed","activePresetId":"p1"}"""));
+            Assert.True(res.IsSuccessStatusCode);
+
+            var instance = store.Load().StreamDeck.Instances["widget:w1"];
+            Assert.Equal("custom", instance.Mode);
         }
     }
 

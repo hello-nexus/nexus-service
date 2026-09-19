@@ -63,7 +63,7 @@ internal static class DeckWidgetLayoutMigration
                 };
                 doc.StreamDeck.Presets.Add(preset);
                 doc.StreamDeck.Instances[DeckInstanceResolver.WidgetInstanceId(widget.Id)] =
-                    new DeckInstance { Mode = "fixed", ActivePresetId = preset.Id };
+                    new DeckInstance { Mode = "custom", ActivePresetId = preset.Id };
 
                 widget.Config!.Remove(DeckConfigKey);
                 if (widget.Config.Count == 0)

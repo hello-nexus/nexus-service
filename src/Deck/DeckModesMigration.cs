@@ -93,7 +93,7 @@ public static class DeckModesMigration
             activeId = empty.Id;
         }
 
-        streamDeck.Instances[DeckInstanceResolver.PhysicalInstanceId(serial)] = new DeckInstance { Mode = "fixed", ActivePresetId = activeId };
+        streamDeck.Instances[DeckInstanceResolver.PhysicalInstanceId(serial)] = new DeckInstance { Mode = "custom", ActivePresetId = activeId };
 
         deck.LegacyDeck = null;
         deck.LegacyImageRefs = null;

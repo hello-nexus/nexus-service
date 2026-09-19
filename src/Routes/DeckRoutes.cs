@@ -500,10 +500,12 @@ public static class DeckRoutes
             {
                 return Results.Json(ApiResponse.Fail("invalid instance id"), AppJsonContext.Default.ApiResponse, statusCode: 400);
             }
-            if (body.Mode is not null && body.Mode is not ("fixed" or "recentApps" or "appAware"))
+            if (body.Mode is not null && body.Mode is not ("fixed" or "custom" or "recentApps" or "appAware"))
             {
                 return Results.Json(ApiResponse.Fail("invalid mode"), AppJsonContext.Default.ApiResponse, statusCode: 400);
             }
+            // "fixed" is the pre-rename mode name; accept it as an alias so an older client keeps working.
+            var mode = body.Mode == "fixed" ? "custom" : body.Mode;
 
             // A physical deck is workstation hardware, not a panel's own
             // surface: only the desktop app may retarget one.
@@ -532,7 +534,7 @@ public static class DeckRoutes
                 }
             }
 
-            var result = activator.Activate(id, body.ActivePresetId, body.Mode);
+            var result = activator.Activate(id, body.ActivePresetId, mode);
             return Results.Json(new DeckInstanceResponse { Instance = result }, AppJsonContext.Default.DeckInstanceResponse);
         }).AllowPanel();
 
@@ -660,7 +662,7 @@ public static class DeckRoutes
                 s.StreamDeck.Presets.Add(preset);
                 presetId = preset.Id;
             }
-            created = new DeckInstance { Mode = "fixed", ActivePresetId = presetId };
+            created = new DeckInstance { Mode = "custom", ActivePresetId = presetId };
             s.StreamDeck.Instances[instanceId] = created;
         });
         return created!;
@@ -705,7 +707,7 @@ public static class DeckRoutes
                 s.StreamDeck.Presets.Add(preset);
                 presetId = preset.Id;
             }
-            created = new DeckInstance { Mode = "fixed", ActivePresetId = presetId };
+            created = new DeckInstance { Mode = "custom", ActivePresetId = presetId };
             s.StreamDeck.Instances[instanceId] = created;
         });
         return created;

@@ -207,7 +207,7 @@ public class StreamDeckConnectionWorkerTests
 
         var instanceId = DeckInstanceResolver.PhysicalInstanceId("SERIAL-1");
         var instance = Assert.Single(f.Store.Load().StreamDeck.Instances, kv => kv.Key == instanceId).Value;
-        Assert.Equal("fixed", instance.Mode);
+        Assert.Equal("custom", instance.Mode);
         Assert.Equal("p1", instance.ActivePresetId);
     }
 

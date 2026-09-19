@@ -92,7 +92,7 @@ public class StreamDeckPersistenceTests
             Version = "1.0.0",
             Description = "Chat controls",
         });
-        settings.StreamDeck.Instances["streamdeck:SERIAL-1"] = new DeckInstance { Mode = "fixed", ActivePresetId = "p-1" };
+        settings.StreamDeck.Instances["streamdeck:SERIAL-1"] = new DeckInstance { Mode = "custom", ActivePresetId = "p-1" };
         settings.StreamDeck.Instances["widget:w1"] = new DeckInstance { Mode = "recentApps" };
         settings.StreamDeck.RecentApps.Add(new RecentApp { ProcessKey = "discord", Name = "Discord", LastFocusedUtcMs = 123 });
         settings.StreamDeck.RecentAppsExcluded.Add("explorer");

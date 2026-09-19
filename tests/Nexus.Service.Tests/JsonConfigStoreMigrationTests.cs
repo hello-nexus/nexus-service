@@ -601,7 +601,7 @@ public class JsonConfigStoreMigrationTests : IDisposable
         {
             Assert.Equal(NexusSettings.CurrentSchemaVersion, s.SchemaVersion);
             var instance = Assert.Contains("streamdeck:SERIAL-1", s.StreamDeck.Instances);
-            Assert.Equal("fixed", instance.Mode);
+            Assert.Equal("custom", instance.Mode);
             var preset = s.StreamDeck.Presets.Find(p => p.Id == instance.ActivePresetId);
             Assert.NotNull(preset);
             Assert.Equal("My Deck", preset!.Name);
@@ -680,10 +680,54 @@ public class JsonConfigStoreMigrationTests : IDisposable
         {
             Assert.Single(s.StreamDeck.Presets);
             Assert.Equal("p1", s.StreamDeck.Instances["streamdeck:SERIAL-1"].ActivePresetId);
+            Assert.Equal("custom", s.StreamDeck.Instances["streamdeck:SERIAL-1"].Mode);
         }
         finally
         {
             store.Dispose();
+        }
+    }
+
+    /// <summary>"fixed" is the pre-rename instance mode name; JsonConfigStore.Load must normalize any already-persisted value to "custom" on every load, independently of SchemaVersion, since the rename is a value change rather than a structural migration.</summary>
+    [Fact]
+    public void Load_PersistedFixedMode_NormalizesToCustom()
+    {
+        var json = $$"""
+        {
+          "schemaVersion": {{NexusSettings.CurrentSchemaVersion}},
+          "streamDeck": {
+            "presets": [ { "id": "p1", "name": "Existing", "cols": 5, "rows": 3, "deck": { "pages": [] } } ],
+            "instances": {
+              "streamdeck:SERIAL-1": { "mode": "fixed", "activePresetId": "p1" },
+              "widget:w1": { "mode": "recentApps" }
+            }
+          }
+        }
+        """;
+        File.WriteAllText(_settingsPath, json);
+
+        var store = new JsonConfigStore(_settingsPath);
+        var s = store.Load();
+        try
+        {
+            Assert.Equal("custom", s.StreamDeck.Instances["streamdeck:SERIAL-1"].Mode);
+            Assert.Equal("recentApps", s.StreamDeck.Instances["widget:w1"].Mode);
+        }
+        finally
+        {
+            store.Dispose();
+        }
+
+        // The normalization must have persisted to disk, not just the in-memory
+        // cache, and re-loading an already-normalized document is a no-op.
+        var reloaded = new JsonConfigStore(_settingsPath);
+        try
+        {
+            Assert.Equal("custom", reloaded.Load().StreamDeck.Instances["streamdeck:SERIAL-1"].Mode);
+        }
+        finally
+        {
+            reloaded.Dispose();
         }
     }
 }

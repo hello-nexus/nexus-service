@@ -1496,9 +1496,9 @@ public sealed class DeckPreset : IAppBoundPreset
 /// <summary>One deck instance's mode + active preset. Keyed "streamdeck:&lt;serial&gt;" (never GC'd) or "widget:&lt;panelWidgetId&gt;" (GC'd when the widget id no longer appears in any layout).</summary>
 public sealed class DeckInstance
 {
-    /// <summary>"fixed" | "recentApps" | "appAware". Unrecognized reads as "fixed".</summary>
-    public string Mode { get; set; } = "fixed";
-    /// <summary>The preset this instance shows in Fixed/App Aware mode. Null only transiently, before the first preset is assigned.</summary>
+    /// <summary>"custom" | "recentApps" | "appAware". Unrecognized reads as "custom".</summary>
+    public string Mode { get; set; } = "custom";
+    /// <summary>The preset this instance shows in Custom/App Aware mode. Null only transiently, before the first preset is assigned.</summary>
     public string? ActivePresetId { get; set; }
 }
 

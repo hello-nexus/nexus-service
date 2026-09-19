@@ -152,7 +152,7 @@ public sealed class PanelDeckPolicyRouteTests : IDisposable
     {
         var panel = PanelClient();
 
-        var res = await panel.PutAsJsonAsync("/deck/instances/streamdeck:SERIAL-1", new { mode = "fixed" });
+        var res = await panel.PutAsJsonAsync("/deck/instances/streamdeck:SERIAL-1", new { mode = "custom" });
 
         Assert.Equal(HttpStatusCode.Forbidden, res.StatusCode);
         Assert.Contains("deck_action_requires_desktop", await res.Content.ReadAsStringAsync());
@@ -163,7 +163,7 @@ public sealed class PanelDeckPolicyRouteTests : IDisposable
     {
         var desktop = DesktopClient();
 
-        var res = await desktop.PutAsJsonAsync("/deck/instances/streamdeck:SERIAL-1", new { mode = "fixed" });
+        var res = await desktop.PutAsJsonAsync("/deck/instances/streamdeck:SERIAL-1", new { mode = "custom" });
 
         Assert.True(res.IsSuccessStatusCode);
     }

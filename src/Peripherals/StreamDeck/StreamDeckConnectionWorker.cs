@@ -864,7 +864,7 @@ public sealed class StreamDeckConnectionWorker : BackgroundService, IDeckSurface
                     s.StreamDeck.Presets.Add(preset);
                     presetId = preset.Id;
                 }
-                s.StreamDeck.Instances[instanceId] = new DeckInstance { Mode = "fixed", ActivePresetId = presetId };
+                s.StreamDeck.Instances[instanceId] = new DeckInstance { Mode = "custom", ActivePresetId = presetId };
             }
         });
 
@@ -1426,7 +1426,7 @@ public sealed class StreamDeckConnectionWorker : BackgroundService, IDeckSurface
     {
         var serial = surface.Serial;
         // Recent Apps mode has no config/folder view to resolve a slot from
-        // (ResolveView below is the fixed/appAware config tree), so a held key
+        // (ResolveView below is the custom/appAware config tree), so a held key
         // there is restored by re-rendering the tracked view instead. Dropping
         // only this key's hash and pushing unforced repaints just the
         // released key, not every key on the page.
@@ -1835,9 +1835,9 @@ public sealed class StreamDeckConnectionWorker : BackgroundService, IDeckSurface
             {
                 continue;
             }
-            // Recent Apps has no preset/config axis of its own - the fixed-mode
+            // Recent Apps has no preset/config axis of its own - the custom-mode
             // resolution below would clamp _currentPageBySerial to whatever
-            // (usually empty) fixed config this instance happens to carry,
+            // (usually empty) custom config this instance happens to carry,
             // stomping the page a recentApps press just set.
             if (IsRecentAppsMode(surface.Serial))
             {
@@ -2058,7 +2058,7 @@ public sealed class StreamDeckConnectionWorker : BackgroundService, IDeckSurface
                 continue;
             }
             // See the matching guard in RefreshWeatherKeys: Recent Apps has no
-            // fixed-mode page axis, so resolving one here would stomp the
+            // custom-mode page axis, so resolving one here would stomp the
             // page a recentApps nav press just set.
             if (IsRecentAppsMode(surface.Serial))
             {
@@ -2549,7 +2549,7 @@ public sealed class StreamDeckConnectionWorker : BackgroundService, IDeckSurface
         return slot?.Action?.Type == "monitoring";
     }
 
-    /// <summary>True when the physical instance for serial is in Recent Apps mode - the only place this worker checks instance mode, since every other mode (fixed, appAware) renders through the normal preset/FitToGrid path.</summary>
+    /// <summary>True when the physical instance for serial is in Recent Apps mode - the only place this worker checks instance mode, since every other mode (custom, appAware) renders through the normal preset/FitToGrid path.</summary>
     private bool IsRecentAppsMode(string serial) =>
         Nexus.Service.Deck.DeckInstanceResolver.ResolveMode(_store.Load().StreamDeck, Nexus.Service.Deck.DeckInstanceResolver.PhysicalInstanceId(serial)) == "recentApps";
 
@@ -2721,7 +2721,7 @@ public sealed class StreamDeckConnectionWorker : BackgroundService, IDeckSurface
     /// recentApps mode: the ring (persisted) plus the in-memory focused
     /// process key laid out via RecentAppsTracker.BuildView, one key per
     /// physical index, no folder concept. The tracked page (_currentPageBySerial,
-    /// shared with fixed mode - a mode switch always resets nav to 0 first)
+    /// shared with custom mode - a mode switch always resets nav to 0 first)
     /// clamps to the view's own page count. Each key's own last-pushed-hash
     /// gate means an ordinary focus-change refresh (viewChanged false) only
     /// writes the keys that actually changed; a real view change (connect,
@@ -2850,7 +2850,7 @@ public sealed class StreamDeckConnectionWorker : BackgroundService, IDeckSurface
         return model is null ? (5, 3) : (model.Columns, model.Rows);
     }
 
-    /// <summary>The page count of the current Recent Apps view (RecentAppsTracker.BuildView), matching PushRecentAppsView's own layout so SetNav clamps against pages that actually exist instead of the fixed preset's. Caller must hold _lock.</summary>
+    /// <summary>The page count of the current Recent Apps view (RecentAppsTracker.BuildView), matching PushRecentAppsView's own layout so SetNav clamps against pages that actually exist instead of the custom preset's. Caller must hold _lock.</summary>
     private int RecentAppsPageCountLocked(string serial)
     {
         var (cols, rows) = ResolveGridLocked(serial);

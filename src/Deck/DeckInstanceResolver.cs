@@ -25,14 +25,14 @@ public static class DeckInstanceResolver
         return settings.Presets.Find(p => p.Id == instance.ActivePresetId);
     }
 
-    /// <summary>The mode an instance is in ("fixed" | "recentApps" | "appAware"); unrecognized or missing resolves to "fixed".</summary>
+    /// <summary>The mode an instance is in ("custom" | "recentApps" | "appAware"); unrecognized or missing resolves to "custom".</summary>
     public static string ResolveMode(StreamDeckSettings settings, string instanceId)
     {
         if (!settings.Instances.TryGetValue(instanceId, out var instance))
         {
-            return "fixed";
+            return "custom";
         }
-        return instance.Mode is "fixed" or "recentApps" or "appAware" ? instance.Mode : "fixed";
+        return instance.Mode is "custom" or "recentApps" or "appAware" ? instance.Mode : "custom";
     }
 
     /// <summary>

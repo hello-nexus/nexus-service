@@ -82,17 +82,29 @@ public sealed class JsonConfigStore : IConfigStore, IDisposable
                     Migrate(_cached);
                     Persist(_cached);
                 }
-                else if (NeedsDeckModesRecovery(_cached))
+                else
                 {
-                    // A downgrade to a pre-deck-modes build (then a re-upgrade)
-                    // leaves SchemaVersion already at 18 - the schema-gated
-                    // migration above never runs again - while the old build's
-                    // own writes repopulated PhysicalDeckSettings.Legacy* with
-                    // nothing hoisted into Presets/Instances. Recover
-                    // independently of SchemaVersion whenever that exact
-                    // stranded shape shows up.
-                    Nexus.Service.Deck.DeckModesMigration.Apply(_cached);
-                    Persist(_cached);
+                    var recovered = false;
+                    if (NeedsDeckModesRecovery(_cached))
+                    {
+                        // A downgrade to a pre-deck-modes build (then a re-upgrade)
+                        // leaves SchemaVersion already at 18 - the schema-gated
+                        // migration above never runs again - while the old build's
+                        // own writes repopulated PhysicalDeckSettings.Legacy* with
+                        // nothing hoisted into Presets/Instances. Recover
+                        // independently of SchemaVersion whenever that exact
+                        // stranded shape shows up.
+                        Nexus.Service.Deck.DeckModesMigration.Apply(_cached);
+                        recovered = true;
+                    }
+                    if (NormalizeDeckInstanceModes(_cached))
+                    {
+                        recovered = true;
+                    }
+                    if (recovered)
+                    {
+                        Persist(_cached);
+                    }
                 }
             }
             catch (Exception ex)
@@ -234,6 +246,21 @@ public sealed class JsonConfigStore : IConfigStore, IDisposable
             Nexus.Service.Deck.DeckModesMigration.Apply(doc);
         }
         doc.SchemaVersion = NexusSettings.CurrentSchemaVersion;
+    }
+
+    /// <summary>Rewrites any persisted "fixed" instance mode (the pre-rename name) to "custom"; true when it changed anything. Runs on every load, independently of SchemaVersion, since this is a value rename rather than a structural migration.</summary>
+    private static bool NormalizeDeckInstanceModes(NexusSettings doc)
+    {
+        var changed = false;
+        foreach (var instance in doc.StreamDeck.Instances.Values)
+        {
+            if (instance.Mode == "fixed")
+            {
+                instance.Mode = "custom";
+                changed = true;
+            }
+        }
+        return changed;
     }
 
     /// <summary>True when every deck preset/instance is empty (nothing hoisted yet) while at least one deck still carries pre-v18 Legacy* content - the shape a downgrade-then-re-upgrade round trip leaves behind with SchemaVersion already at 18.</summary>

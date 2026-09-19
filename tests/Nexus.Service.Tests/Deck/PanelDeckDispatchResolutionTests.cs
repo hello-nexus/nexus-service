@@ -56,7 +56,7 @@ public sealed class PanelDeckDispatchResolutionTests
         {
             var config = JsonSerializer.Deserialize(DeckJson, AppJsonContext.Default.DeckConfig)!;
             settings.Presets.Add(new DeckPreset { Id = "p1", Name = "Deck", Cols = 2, Rows = 2, Deck = config });
-            settings.Instances[DeckInstanceResolver.WidgetInstanceId("deck1")] = new DeckInstance { Mode = "fixed", ActivePresetId = "p1" };
+            settings.Instances[DeckInstanceResolver.WidgetInstanceId("deck1")] = new DeckInstance { Mode = "custom", ActivePresetId = "p1" };
         }
         return settings;
     }
