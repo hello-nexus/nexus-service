@@ -177,6 +177,19 @@ public sealed class RecentAppsWorkerTests : IDisposable
     }
 
     [Fact]
+    public void SetNav_ClampsAgainstTheRecentsViewPageCountNotTheFixedPresetsPageCount()
+    {
+        // 8 entries on the Mini's 6 keys -> 2 pages (matching OverflowingRing_PagesWithNavKeysAndClamps),
+        // while the instance's own (unused, fixed-mode) preset has a single default empty page.
+        SeedRing(("p1", "A1"), ("p2", "A2"), ("p3", "A3"), ("p4", "A4"), ("p5", "A5"), ("p6", "A6"), ("p7", "A7"), ("p8", "A8"));
+        ConnectInRecentAppsMode();
+
+        Assert.True(_worker.SetNav("sim-0001", 1, Array.Empty<int>()));
+
+        Assert.Equal(1, _worker.GetCurrentPage("sim-0001"));
+    }
+
+    [Fact]
     public async Task Press_AppWithLiveWindow_ActivatesInsteadOfLaunching()
     {
         SeedRing(new RecentApp { ProcessKey = "chrome", Name = "Chrome", Pid = 4242 });

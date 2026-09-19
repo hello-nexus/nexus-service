@@ -386,8 +386,7 @@ public sealed class StreamDeckConnectionWorker : BackgroundService, IDeckSurface
             {
                 return false;
             }
-            var config = LoadConfig(serial);
-            var pageCount = Math.Max(config.Pages.Count, 1);
+            var pageCount = IsRecentAppsMode(serial) ? RecentAppsPageCountLocked(serial) : Math.Max(LoadConfig(serial).Pages.Count, 1);
             _currentPageBySerial[serial] = Math.Clamp(page, 0, pageCount - 1);
             _folderPathsBySerial[serial] = new List<int>(folderPath);
             var surface = FindBySerialLocked(serial);
@@ -2795,6 +2794,15 @@ public sealed class StreamDeckConnectionWorker : BackgroundService, IDeckSurface
             model = StreamDeckModels.ByProductId(deck.ProductId);
         }
         return model is null ? (5, 3) : (model.Columns, model.Rows);
+    }
+
+    /// <summary>The page count of the current Recent Apps view (RecentAppsTracker.BuildView), matching PushRecentAppsView's own layout so SetNav clamps against pages that actually exist instead of the fixed preset's. Caller must hold _lock.</summary>
+    private int RecentAppsPageCountLocked(string serial)
+    {
+        var (cols, rows) = ResolveGridLocked(serial);
+        var ring = _recentAppsState?.RingSnapshot() ?? new List<RecentApp>();
+        var pages = Nexus.Service.Deck.RecentAppsTracker.BuildView(ring, _recentAppsState?.FocusedProcessKey, cols, rows);
+        return Math.Max(pages.Count, 1);
     }
 
     /// <summary>
