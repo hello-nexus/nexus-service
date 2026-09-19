@@ -44,17 +44,24 @@ public sealed class RecentAppsState
         }
     }
 
-    /// <summary>Sets a ring entry's resolved shortcut id after the fact (RecentAppsService resolves off the focus-handling thread); false when the entry is gone or already holds this id.</summary>
-    public bool SetShortcutId(string processKey, string shortcutId)
+    /// <summary>Sets a ring entry's resolved shortcut id and display name after the fact (RecentAppsService resolves off the focus-handling thread); false when the entry is gone or already holds both.</summary>
+    public bool SetShortcut(string processKey, string shortcutId, string shortcutName)
     {
         lock (_lock)
         {
             var index = _ring.FindIndex(a => a.ProcessKey == processKey);
-            if (index < 0 || _ring[index].ShortcutId == shortcutId)
+            if (index < 0)
             {
                 return false;
             }
-            _ring[index].ShortcutId = shortcutId;
+            var entry = _ring[index];
+            var name = string.IsNullOrWhiteSpace(shortcutName) ? entry.Name : shortcutName.Trim();
+            if (entry.ShortcutId == shortcutId && entry.Name == name)
+            {
+                return false;
+            }
+            entry.ShortcutId = shortcutId;
+            entry.Name = name;
             return true;
         }
     }

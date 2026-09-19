@@ -56,7 +56,7 @@ public sealed class RecentAppsService : BackgroundService
     private bool _subscribed;
     private volatile bool _dirty;
 
-    private Dictionary<string, string> _shortcutsByProcessKey = new(StringComparer.Ordinal);
+    private Dictionary<string, (string Id, string Name)> _shortcutsByProcessKey = new(StringComparer.Ordinal);
     private DateTimeOffset _shortcutsIndexedAt = DateTimeOffset.MinValue;
     private readonly HashSet<string> _pendingShortcutResolve = new(StringComparer.Ordinal);
 
@@ -202,19 +202,20 @@ public sealed class RecentAppsService : BackgroundService
     /// negative cache: a shortcut installed moments ago simply waits out the
     /// same window a genuinely unresolvable app does.
     /// </summary>
-    private string? ResolveShortcutId(string processKey)
+    /// <summary>The Start-menu entry for a process key: its id launches the app and its name is the label a key shows ("Microsoft Edge", not "msedge").</summary>
+    private (string Id, string Name)? ResolveShortcut(string processKey)
     {
         var now = _time.GetUtcNow();
         if (now - _shortcutsIndexedAt >= ShortcutsRefreshInterval)
         {
             RebuildShortcutsIndex();
         }
-        return _shortcutsByProcessKey.TryGetValue(processKey, out var id) ? id : null;
+        return _shortcutsByProcessKey.TryGetValue(processKey, out var hit) ? hit : null;
     }
 
     private void RebuildShortcutsIndex()
     {
-        var index = new Dictionary<string, string>(StringComparer.Ordinal);
+        var index = new Dictionary<string, (string Id, string Name)>(StringComparer.Ordinal);
         foreach (var shortcut in _shortcuts.GetAll())
         {
             if (shortcut.ProcessName.Length == 0)
@@ -224,7 +225,7 @@ public sealed class RecentAppsService : BackgroundService
             var key = AppPresetMatching.ProcessKey(shortcut.ProcessName);
             if (key.Length > 0 && !index.ContainsKey(key))
             {
-                index[key] = shortcut.Id;
+                index[key] = (shortcut.Id, shortcut.Name);
             }
         }
         _shortcutsByProcessKey = index;
@@ -298,8 +299,8 @@ public sealed class RecentAppsService : BackgroundService
         }
         foreach (var processKey in pending)
         {
-            var id = ResolveShortcutId(processKey);
-            if (id is not null && _state.SetShortcutId(processKey, id))
+            var resolved = ResolveShortcut(processKey);
+            if (resolved is not null && _state.SetShortcut(processKey, resolved.Value.Id, resolved.Value.Name))
             {
                 _dirty = true;
             }

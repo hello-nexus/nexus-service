@@ -151,14 +151,16 @@ public sealed class RecentAppsServiceTests : IDisposable
     }
 
     [Fact]
-    public void FocusChange_ResolvesShortcutIdFromInstalledApps()
+    public void FocusChange_ResolvesShortcutIdAndDisplayNameFromInstalledApps()
     {
-        _shortcuts.All.Add(new Shortcut { Id = "shortcut-chrome", Name = "Chrome", ProcessName = "chrome" });
+        _shortcuts.All.Add(new Shortcut { Id = "shortcut-chrome", Name = "Google Chrome", ProcessName = "chrome" });
 
         Focus("chrome");
 
         var entry = State.RingSnapshot().Find(a => a.ProcessKey == "chrome");
         Assert.Equal("shortcut-chrome", entry?.ShortcutId);
+        // The key label is the Start-menu name, not the focus signal's process name.
+        Assert.Equal("Google Chrome", entry?.Name);
     }
 
     /// <summary>
