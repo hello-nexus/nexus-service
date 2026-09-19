@@ -435,6 +435,24 @@
     </Content>
   </ItemGroup>
 
+  <!-- libjpeg-turbo (TurboJPEG 3 API, BSD/IJG) committed under Bundled/{rid}/turbojpeg/
+       and copied next to the service binary. Every caller falls back to ImageSharp when
+       the library is absent, so a missing copy costs speed, not function. -->
+  <ItemGroup Condition="($([MSBuild]::IsOSPlatform('Windows')) OR $(RuntimeIdentifier.StartsWith('win'))) AND Exists('Bundled\win-x64\turbojpeg\turbojpeg.dll')">
+    <Content Include="Bundled\win-x64\turbojpeg\turbojpeg.dll">
+      <Link>turbojpeg.dll</Link>
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+      <CopyToPublishDirectory>PreserveNewest</CopyToPublishDirectory>
+    </Content>
+  </ItemGroup>
+  <ItemGroup Condition="($([MSBuild]::IsOSPlatform('OSX')) OR $(RuntimeIdentifier.StartsWith('osx'))) AND Exists('Bundled/osx-arm64/turbojpeg/libturbojpeg.dylib')">
+    <Content Include="Bundled/osx-arm64/turbojpeg/libturbojpeg.dylib">
+      <Link>libturbojpeg.dylib</Link>
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+      <CopyToPublishDirectory>PreserveNewest</CopyToPublishDirectory>
+    </Content>
+  </ItemGroup>
+
   <!-- ArtInChip D213 streamed-panel device players: patched mpp_video_test
        builds pushed to the board's /tmp by AdbStreamTransport. DEV_TOOLS-only,
        matching the discovery registration. -->
