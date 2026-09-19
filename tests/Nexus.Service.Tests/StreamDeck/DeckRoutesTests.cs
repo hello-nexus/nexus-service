@@ -440,4 +440,77 @@ public sealed class DeckRoutesTests : IClassFixture<DeckRoutesHostFactory>
             Assert.Equal(HttpStatusCode.NotFound, res.StatusCode);
         }
     }
+
+    // ───────────────────────── recent apps ─────────────────────────
+    // RecentAppsService is a real hosted service on this full app host and
+    // may add the test runner's own focused app to the ring in the
+    // background, so these assert on the specific entries each test seeds
+    // rather than on the ring being empty.
+
+    [Fact]
+    public async Task GetRecentApps_ReturnsSeededEntryAndExcluded()
+    {
+        var (factory, client) = Boot();
+        using (factory)
+        {
+            var store = factory.Services.GetRequiredService<IConfigStore>();
+            store.Update(s =>
+            {
+                s.StreamDeck.RecentApps.Insert(0, new RecentApp { ProcessKey = "discord", Name = "Discord" });
+                s.StreamDeck.RecentAppsExcluded.Add("steam");
+            });
+
+            var res = await client.GetAsync("/deck/recent-apps");
+            Assert.True(res.IsSuccessStatusCode);
+            using var doc = JsonDocument.Parse(await res.Content.ReadAsStringAsync());
+            var apps = doc.RootElement.GetProperty("apps");
+            Assert.Contains(System.Linq.Enumerable.Range(0, apps.GetArrayLength()), i => apps[i].GetProperty("processKey").GetString() == "discord");
+            var excluded = doc.RootElement.GetProperty("excluded");
+            Assert.Contains(System.Linq.Enumerable.Range(0, excluded.GetArrayLength()), i => excluded[i].GetString() == "steam");
+        }
+    }
+
+    [Fact]
+    public async Task PutRecentAppsExcluded_RemovesAlreadyRingedMatch()
+    {
+        var (factory, client) = Boot();
+        using (factory)
+        {
+            var store = factory.Services.GetRequiredService<IConfigStore>();
+            store.Update(s => s.StreamDeck.RecentApps.Insert(0, new RecentApp { ProcessKey = "notion", Name = "Notion" }));
+
+            var res = await client.PutAsync("/deck/recent-apps/excluded", Json("""{"processKeys":["notion"]}"""));
+            Assert.True(res.IsSuccessStatusCode);
+
+            var settings = store.Load().StreamDeck;
+            Assert.Contains("notion", settings.RecentAppsExcluded);
+            Assert.DoesNotContain(settings.RecentApps, a => a.ProcessKey == "notion");
+        }
+    }
+
+    [Fact]
+    public async Task DeleteRecentApps_RemovesSeededEntry()
+    {
+        var (factory, client) = Boot();
+        using (factory)
+        {
+            var store = factory.Services.GetRequiredService<IConfigStore>();
+            store.Update(s => s.StreamDeck.RecentApps.Insert(0, new RecentApp { ProcessKey = "figma", Name = "Figma" }));
+
+            var res = await client.DeleteAsync("/deck/recent-apps");
+            Assert.True(res.IsSuccessStatusCode);
+            Assert.DoesNotContain(store.Load().StreamDeck.RecentApps, a => a.ProcessKey == "figma");
+        }
+    }
+
+    [Fact]
+    public async Task ActivateRecentApp_UnknownProcessKey_Returns404()
+    {
+        var (factory, client) = Boot();
+        using (factory)
+        {
+            var res = await client.PostAsync("/deck/recent-apps/activate", Json("""{"processKey":"never-seen-app"}"""));
+            Assert.Equal(HttpStatusCode.NotFound, res.StatusCode);
+        }
+    }
 }
