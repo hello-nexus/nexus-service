@@ -228,4 +228,36 @@ public sealed class RecentAppsWorkerTests : IDisposable
         Assert.Null(_worker.LastDispatchTask);
         Assert.Null(_shortcuts.Launched);
     }
+
+    [Fact]
+    public void Press_AppKey_ShowsThePressedInsetThenRestoresOnRelease()
+    {
+        SeedRing(("chrome", "Chrome"), ("discord", "Discord"));
+        ConnectInRecentAppsMode();
+        var unpressed = _simulated.PeekKeyImage(0);
+        Assert.NotNull(unpressed);
+
+        _simulated.Poke(0, true);
+        _worker.Tick();
+        Assert.NotEqual(unpressed, _simulated.PeekKeyImage(0));
+
+        _simulated.Poke(0, false);
+        _worker.Tick();
+        Assert.Equal(unpressed, _simulated.PeekKeyImage(0));
+    }
+
+    [Fact]
+    public void Press_FocusedKey_StillShowsThePressedInsetDespiteBeingANoOpActivation()
+    {
+        SeedRing(new RecentApp { ProcessKey = "chrome", Name = "Chrome", ShortcutId = "shortcut-chrome" });
+        _state.SetFocused("chrome");
+        ConnectInRecentAppsMode();
+        var unpressed = _simulated.PeekKeyImage(0);
+
+        _simulated.Poke(0, true);
+        _worker.Tick();
+
+        Assert.NotEqual(unpressed, _simulated.PeekKeyImage(0));
+        Assert.Null(_worker.LastDispatchTask);
+    }
 }
