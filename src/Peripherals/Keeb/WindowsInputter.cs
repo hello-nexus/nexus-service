@@ -65,7 +65,7 @@ public sealed class WindowsInputter : IInputterProvider
         return SendInput(1, ref input, Marshal.SizeOf<INPUT>()) == 1;
     }
 
-    private static ushort ParseKey(string key)
+    internal static ushort ParseKey(string key)
     {
         if (string.IsNullOrEmpty(key)) return 0;
 
@@ -106,6 +106,16 @@ public sealed class WindowsInputter : IInputterProvider
             "ScrollLock" => 0x91,
             "PrintScreen" => 0x2C,
             "Period" => 0xBE, // VK_OEM_PERIOD
+            "Comma" => 0xBC, // VK_OEM_COMMA
+            "Slash" => 0xBF, // VK_OEM_2
+            "Semicolon" => 0xBA, // VK_OEM_1
+            "Quote" => 0xDE, // VK_OEM_7
+            "BracketLeft" => 0xDB, // VK_OEM_4
+            "BracketRight" => 0xDD, // VK_OEM_6
+            "Backslash" => 0xDC, // VK_OEM_5
+            "Minus" => 0xBD, // VK_OEM_MINUS
+            "Equal" => 0xBB, // VK_OEM_PLUS
+            "Backquote" => 0xC0, // VK_OEM_3
             "Pause" => 0x13,
             "ContextMenu" => 0x5D,
             "MediaPlayPause" => 0xB3,

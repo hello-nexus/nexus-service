@@ -27,6 +27,17 @@ public class MacInputterTests
     [InlineData("Escape", 53)]
     [InlineData("ArrowUp", 126)]
     [InlineData("CapsLock", 57)]
+    [InlineData("Period", 47)]
+    [InlineData("Comma", 43)]
+    [InlineData("Slash", 44)]
+    [InlineData("Semicolon", 41)]
+    [InlineData("Quote", 39)]
+    [InlineData("BracketLeft", 33)]
+    [InlineData("BracketRight", 30)]
+    [InlineData("Backslash", 42)]
+    [InlineData("Minus", 27)]
+    [InlineData("Equal", 24)]
+    [InlineData("Backquote", 50)]
     public void ParseKey_MapsToMacKeycode(string key, int code)
         => Assert.Equal((ushort)code, MacInputter.ParseKey(key));
 

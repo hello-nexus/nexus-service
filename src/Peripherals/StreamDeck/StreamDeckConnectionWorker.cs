@@ -1307,7 +1307,15 @@ public sealed class StreamDeckConnectionWorker : BackgroundService, IDeckSurface
             BroadcastNav(serial, _currentPageBySerial[serial], new List<int>());
             return;
         }
-        if (key.Kind != "app" || key.Focused || key.ProcessKey is null || _recentAppsActivator is null)
+        if (key.Kind != "app" || key.ProcessKey is null)
+        {
+            return;
+        }
+
+        MarkKeyHeld(serial, physicalIndex);
+        PushRecentAppKeyPressedVariant(surface, physicalIndex, key);
+
+        if (key.Focused || _recentAppsActivator is null)
         {
             return;
         }
@@ -1334,6 +1342,32 @@ public sealed class StreamDeckConnectionWorker : BackgroundService, IDeckSurface
     }
 
     /// <summary>
+    /// Pressed-inset feedback for a Recent Apps key (parity with
+    /// HandlePressVisual's static-key path, missing since this mode's launch).
+    /// Re-renders from the key's own view state rather than a bytes cache -
+    /// this mode has no per-key wire-bytes cache like monitoring's
+    /// _monitoringLastPushedBytes - and folds Focused into the pressed-cache
+    /// key since ComputeContentHash does not, so a focused/unfocused render of
+    /// the same app never collide.
+    /// </summary>
+    private void PushRecentAppKeyPressedVariant(IStreamDeckSurface surface, int physicalIndex, Nexus.Service.Deck.RecentKey key)
+    {
+        var deck = _store.Load().StreamDeck.Decks.TryGetValue(surface.Serial, out var d) ? d : null;
+        var slot = RecentKeyToSlot(key);
+        var bytes = _keyRenderer.Render(slot, isToggleOn: false, surface.Model, deck?.Orientation ?? 0, selected: key.Focused);
+        if (bytes is null)
+        {
+            return;
+        }
+        var hash = Nexus.Service.Rendering.DeckKeyRenderer.ComputeContentHash(slot, isToggleOn: false);
+        var pressed = GetOrRenderPressedVariant($"{hash}|recent|{key.Focused}", bytes, surface.Model);
+        if (pressed is not null)
+        {
+            surface.SetKeyImage(physicalIndex, pressed);
+        }
+    }
+
+    /// <summary>
     /// Restores a physical key's un-pressed image on release, mirroring
     /// HandleKeyDown's resolution. Skipped for a key HandlePressVisual never
     /// marked held: the back key and a folder/page-nav key (their PushCurrentView
@@ -1344,6 +1378,17 @@ public sealed class StreamDeckConnectionWorker : BackgroundService, IDeckSurface
     private void HandleKeyUp(IStreamDeckSurface surface, int physicalIndex)
     {
         var serial = surface.Serial;
+        // Recent Apps mode has no config/folder view to resolve a slot from
+        // (ResolveView below is the fixed/appAware config tree), so a held key
+        // there is restored by re-rendering the whole tracked view instead.
+        if (IsRecentAppsMode(serial))
+        {
+            if (UnmarkKeyHeld(serial, physicalIndex))
+            {
+                PushRecentAppsView(surface, viewChanged: true);
+            }
+            return;
+        }
         // Released before the hold-to-edit fired: drop the fill ring and go
         // back to blank. A hold that already fired is no longer tracked here
         // (AnimateHolds cleared it and blanked the key), so it falls through.
