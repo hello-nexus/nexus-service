@@ -51,10 +51,19 @@ public static class DeckRoutes
             {
                 return Results.Json(ApiResponse.Fail("templates are not available yet"), AppJsonContext.Default.ApiResponse, statusCode: 501);
             }
-            if (body.Deck is not null && !ServiceTokenRequests.HasServiceToken(ctx, tokens)
+            var isDesktopCreate = ServiceTokenRequests.HasServiceToken(ctx, tokens);
+            if (body.Deck is not null && !isDesktopCreate
                 && DeckLayoutPolicy.IntroducesPrivilegedActions(body.Deck, stored: null))
             {
                 return Results.Json(ApiResponse.Fail("deck_action_requires_desktop"), AppJsonContext.Default.ApiResponse, statusCode: 403);
+            }
+            if (body.CopyOfPresetId is not null && !isDesktopCreate)
+            {
+                var copySource = store.Load().StreamDeck.Presets.Find(p => p.Id == body.CopyOfPresetId);
+                if (copySource is not null && DeckLayoutPolicy.PrivilegedActions(copySource.Deck).Any())
+                {
+                    return Results.Json(ApiResponse.Fail("deck_action_requires_desktop"), AppJsonContext.Default.ApiResponse, statusCode: 403);
+                }
             }
 
             var trimmedName = (body.Name ?? "").Trim();
@@ -347,7 +356,7 @@ public static class DeckRoutes
         }).AllowPanel();
 
         app.MapPut("/deck/instances/{id}", (
-            string id, UpdateDeckInstanceRequest body, IConfigStore store, DeckPresetActivator activator) =>
+            string id, UpdateDeckInstanceRequest body, HttpContext ctx, TokenService tokens, IConfigStore store, DeckPresetActivator activator) =>
         {
             if (!IsValidInstanceId(id))
             {
@@ -357,9 +366,32 @@ public static class DeckRoutes
             {
                 return Results.Json(ApiResponse.Fail("invalid mode"), AppJsonContext.Default.ApiResponse, statusCode: 400);
             }
-            if (body.ActivePresetId is not null && !store.Load().StreamDeck.Presets.Any(p => p.Id == body.ActivePresetId))
+
+            // A physical deck is workstation hardware, not a panel's own
+            // surface: only the desktop app may retarget one.
+            var isDesktop = ServiceTokenRequests.HasServiceToken(ctx, tokens);
+            if (!isDesktop && id.StartsWith("streamdeck:", System.StringComparison.Ordinal))
             {
-                return Results.Json(ApiResponse.Fail("preset not found"), AppJsonContext.Default.ApiResponse, statusCode: 404);
+                return Results.Json(ApiResponse.Fail("deck_action_requires_desktop"), AppJsonContext.Default.ApiResponse, statusCode: 403);
+            }
+
+            if (body.ActivePresetId is not null)
+            {
+                var target = store.Load().StreamDeck.Presets.Find(p => p.Id == body.ActivePresetId);
+                if (target is null)
+                {
+                    return Results.Json(ApiResponse.Fail("preset not found"), AppJsonContext.Default.ApiResponse, statusCode: 404);
+                }
+                // A panel session must not point its own widget at a preset
+                // carrying desktop-authored privileged keys (file/hotkey/text/
+                // audio) - /panel/deck/dispatch executes whatever the resolved
+                // slot holds with no dispatch-time policy check of its own, so
+                // this reassignment is the only gate standing between a panel
+                // and code execution as the console user.
+                if (!isDesktop && DeckLayoutPolicy.PrivilegedActions(target.Deck).Any())
+                {
+                    return Results.Json(ApiResponse.Fail("deck_action_requires_desktop"), AppJsonContext.Default.ApiResponse, statusCode: 403);
+                }
             }
 
             var result = activator.Activate(id, body.ActivePresetId, body.Mode);
