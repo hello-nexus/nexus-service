@@ -131,4 +131,39 @@ public class BgraJpegEncoderTests
         Assert.Throws<ArgumentOutOfRangeException>(() => new BgraJpegEncoder(0, 240));
         Assert.Throws<ArgumentOutOfRangeException>(() => new BgraJpegEncoder(240, -1));
     }
+
+    /// <summary>
+    /// Without this the channel-order tests above would pass while silently exercising only
+    /// the ImageSharp fallback - the exact false green that would hide a wrong TJPF_* value.
+    /// The bundled library is copied next to the test binary by the csproj, so on a build
+    /// that shipped it this must be the native path.
+    /// </summary>
+    [Fact]
+    public void Bundled_turbojpeg_is_the_active_encoder()
+    {
+        var bundled = File.Exists(Path.Combine(AppContext.BaseDirectory, "turbojpeg.dll"))
+            || File.Exists(Path.Combine(AppContext.BaseDirectory, "libturbojpeg.dylib"));
+        if (!bundled)
+        {
+            return;
+        }
+        using var encoder = new BgraJpegEncoder(64, 64);
+        Assert.True(encoder.IsNative, "turbojpeg is bundled next to the test binary but the encoder fell back to ImageSharp");
+    }
+
+    [Fact]
+    public void Active_encoder_round_trips_to_the_requested_geometry()
+    {
+        using var encoder = new BgraJpegEncoder(160, 96);
+        var frame = SolidBgra(160, 96, 200, 120, 40);
+
+        var jpeg = encoder.Encode(frame).ToArray();
+
+        using var decoded = Image.Load<Rgba32>(jpeg);
+        Assert.Equal(160, decoded.Width);
+        Assert.Equal(96, decoded.Height);
+        // Whichever encoder is active: 4:2:0 at quality 85 on a flat fill lands well
+        // under the raw frame. Not a cross-check of the two - only one is ever live.
+        Assert.InRange(jpeg.Length, 100, frame.Length / 4);
+    }
 }
