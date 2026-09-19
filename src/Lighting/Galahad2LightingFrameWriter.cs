@@ -16,7 +16,6 @@ public sealed class Galahad2LightingFrameWriter : IHostedService, IDisposable
     private const int TickPeriodMs = 200;
 
     private readonly LightingEngine _engine;
-    private readonly Galahad2Hub _hub;
     private readonly IConfigStore _store;
     private readonly Galahad2LightingDeviceProvider _provider;
     private CancellationTokenSource? _cts;
@@ -27,15 +26,22 @@ public sealed class Galahad2LightingFrameWriter : IHostedService, IDisposable
     private byte _lastOuterR, _lastOuterG, _lastOuterB;
     private bool _lastWasCanvas;
 
+    // LCD pump (12 LEDs, per-LED path): tracks the last sent frame plus whether the
+    // 0x83 host-RGB-mode bootstrap has run - SignalRGB's plugin sends one setPumpColors()
+    // (0x83) in Initialize() before its per-frame setPumpPerLED() (0x14) calls.
+    private readonly byte[] _lastLcdColors = new byte[Galahad2Protocol.PumpLedCount * 3];
+    private bool _hasLastLcdColors;
+    private bool _lastLcdWasCanvas;
+    private byte? _lastLcdBrightness;
+
     // Null forces re-commit on next firmware-mode tick even when settings are unchanged.
     private int? _lastFirmwareSig;
 
     private readonly FeatureGates _gates;
 
-    public Galahad2LightingFrameWriter(LightingEngine engine, Galahad2Hub hub, IConfigStore store, Galahad2LightingDeviceProvider provider, FeatureGates? gates = null)
+    public Galahad2LightingFrameWriter(LightingEngine engine, IConfigStore store, Galahad2LightingDeviceProvider provider, FeatureGates? gates = null)
     {
         _engine   = engine;
-        _hub      = hub;
         _store    = store;
         _provider = provider;
         _gates    = gates ?? FeatureGates.AllEnabled;
@@ -87,10 +93,9 @@ public sealed class Galahad2LightingFrameWriter : IHostedService, IDisposable
     private void Tick()
     {
         if (!_gates.Lighting) return;
-        if (!_hub.IsConnected)
+        if (!_provider.IsConnected)
         {
-            _lastFirmwareSig = null;
-            _lastWasCanvas   = false;
+            ResetCanvasCaches();
             return;
         }
 
@@ -113,15 +118,21 @@ public sealed class Galahad2LightingFrameWriter : IHostedService, IDisposable
         var zones = ZoneResolution.Resolve(structure, settings);
         if (ZoneResolution.IsFullyUncontrolled(zones, uncontrolled))
         {
-            _lastFirmwareSig = null;
-            _lastWasCanvas   = false;
+            ResetCanvasCaches();
             return;
         }
 
         if (ls.Mode == "canvas")
         {
             _lastFirmwareSig = null;
-            TickCanvas(brightnessRaw, zones, uncontrolled);
+            if (_provider.IsLcdActive)
+            {
+                TickCanvasLcd(brightnessRaw, zones, uncontrolled);
+            }
+            else
+            {
+                TickCanvas(brightnessRaw, zones, uncontrolled);
+            }
             return;
         }
 
@@ -178,11 +189,65 @@ public sealed class Galahad2LightingFrameWriter : IHostedService, IDisposable
 
         // One R_BOTH (ring=2) packet: slot0=inner, slot1=outer. Matches OpenRGB SetMode_StaticColor.
         var bothColors = new byte[] { innerR, innerG, innerB, outerR, outerG, outerB };
-        _hub.SendLighting(2, 0x03, brightnessRaw, 0, 0, bothColors);
+        _provider.ActiveTransport?.SendLighting(2, 0x03, brightnessRaw, 0, 0, bothColors);
 
         _lastInnerR = innerR; _lastInnerG = innerG; _lastInnerB = innerB;
         _lastOuterR = outerR; _lastOuterG = outerG; _lastOuterB = outerB;
         _lastWasCanvas = true;
+    }
+
+    private void ResetCanvasCaches()
+    {
+        _lastFirmwareSig = null;
+        _lastWasCanvas = false;
+        _hasLastLcdColors = false;
+        _lastLcdWasCanvas = false;
+        _lastLcdBrightness = null;
+    }
+
+    private void TickCanvasLcd(byte brightnessRaw, System.Collections.Generic.IReadOnlyList<ResolvedZone> zones, System.Collections.Generic.IReadOnlyList<string> uncontrolled)
+    {
+        if (_provider.ActiveTransport is not Peripherals.JpegPanels.JpegPanelHub lcdHub)
+        {
+            return;
+        }
+
+        var wireColors = new byte[Galahad2Protocol.PumpLedCount * 3];
+        foreach (var frame in _engine.Devices)
+        {
+            if (frame.Id == "lianli-aio:pump" && frame.LedCount > 0)
+            {
+                frame.LedBytes[..wireColors.Length].CopyTo(wireColors);
+                break;
+            }
+        }
+        if (ZoneResolution.IsSegmentFullyUncontrolled(zones, 0, uncontrolled))
+        {
+            Array.Clear(wireColors);
+        }
+
+        var brightnessChanged = _lastLcdBrightness != brightnessRaw;
+        var needsBootstrap = !_lastLcdWasCanvas || brightnessChanged;
+        if (!needsBootstrap && _hasLastLcdColors && wireColors.AsSpan().SequenceEqual(_lastLcdColors))
+        {
+            return;
+        }
+
+        // The controller ignores 0x14 until an 0x83 write has put the pump channel in
+        // host-RGB mode (SignalRGB's Initialize() sends one before its per-frame 0x14s).
+        if (needsBootstrap && !lcdHub.SendLighting(0, 0x03, brightnessRaw, 0, 0, wireColors.AsSpan(0, 3)))
+        {
+            return;
+        }
+        if (!lcdHub.SendPumpPerLed(wireColors))
+        {
+            return;
+        }
+
+        wireColors.AsSpan().CopyTo(_lastLcdColors);
+        _hasLastLcdColors = true;
+        _lastLcdWasCanvas = true;
+        _lastLcdBrightness = brightnessRaw;
     }
 
     private void CommitFirmwareMode(Galahad2LightingSettings ls, Galahad2ModeInfo mode, byte brightnessRaw)
@@ -190,7 +255,7 @@ public sealed class Galahad2LightingFrameWriter : IHostedService, IDisposable
         var speed     = (byte)Math.Clamp(ls.Speed, 0, 4);
         var direction = (byte)Math.Clamp(ls.Direction, 0, 1);
 
-        _hub.SendLighting(2, mode.WireByte, brightnessRaw, speed, direction, BuildColorBytes(ls, mode));
+        _provider.ActiveTransport?.SendLighting(2, mode.WireByte, brightnessRaw, speed, direction, BuildColorBytes(ls, mode));
     }
 
     // staticColor: slot0 = InnerColor, slot1 = OuterColor. All other modes use ls.Colors.

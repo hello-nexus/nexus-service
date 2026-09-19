@@ -292,9 +292,9 @@ public static class LightingDevicesCatalog
         Native("NZXT",    "Kraken X3 RGB",          "aio",      "0x1E71", "0x2014"),
 
         // JPEG-over-HID cooler LCDs - PIDs from src/Peripherals/JpegPanels/JpegPanelModel.cs.
-        // Screen only: Nexus drives the glass on these, not their RGB. Only the HydroShift
-        // rows have been run against hardware; all ship with Nexus Control off by default.
-        Native("Lian Li",    "Galahad II LCD",      "aio",      "0x0416", "0x7395", screen: true, rgb: false),
+        // Galahad II LCD also exposes its pump's 12-LED ring for RGB; the other LCD
+        // rows remain screen-only until their lighting protocols are verified.
+        Native("Lian Li",    "Galahad II LCD",      "aio",      "0x0416", "0x7395", screen: true),
         Native("Lian Li",    "HydroShift LCD 360S", "aio",      "0x0416", "0x7398", screen: true, rgb: false),
         Native("Lian Li",    "HydroShift LCD 360R", "aio",      "0x0416", "0x7399", screen: true, rgb: false),
         Native("Lian Li",    "HydroShift LCD 360TL","aio",      "0x0416", "0x739A", screen: true, rgb: false),
