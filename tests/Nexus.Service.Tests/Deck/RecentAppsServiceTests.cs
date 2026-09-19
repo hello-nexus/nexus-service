@@ -39,6 +39,17 @@ public sealed class RecentAppsServiceTests : IDisposable
         public string ResolveProcessName(string targetId) => GetById(targetId)?.ProcessName ?? "";
     }
 
+    /// <summary>Records every GetAll() call so a test can assert it was never reached from the synchronous focus-handling path (see RecentAppsService's own class doc comment for why that would deadlock a Windows helper connection).</summary>
+    private sealed class RecordingShortcuts : IShortcutsProvider
+    {
+        public int GetAllCallCount;
+        public IReadOnlyList<Shortcut> GetAll() { GetAllCallCount++; return Array.Empty<Shortcut>(); }
+        public Shortcut? GetById(string targetId) => null;
+        public byte[] GetIcon(string targetId) => Array.Empty<byte>();
+        public bool Launch(string targetId) => true;
+        public string ResolveProcessName(string targetId) => "";
+    }
+
     private readonly StubDeviceHostFactory _factory;
     private readonly FakeScreenTime _screenTime = new();
     private readonly FakeShortcuts _shortcuts = new();
@@ -123,6 +134,39 @@ public sealed class RecentAppsServiceTests : IDisposable
 
         var entry = State.RingSnapshot().Find(a => a.ProcessKey == "chrome");
         Assert.Equal("shortcut-chrome", entry?.ShortcutId);
+    }
+
+    /// <summary>
+    /// On Windows, FocusChanged fires synchronously on HelperConnection's own
+    /// pipe read loop; a shortcuts lookup made from inside the focus handler
+    /// would block waiting for a reply only that same loop can deliver.
+    /// Resolution must run off this call entirely (RecentAppsService.Broadcast,
+    /// via the coalesce timer), never inline in Tick().
+    /// </summary>
+    [Fact]
+    public async Task FocusChange_NeverCallsTheShortcutsProviderSynchronously()
+    {
+        var recording = new RecordingShortcuts();
+        var service = new RecentAppsService(
+            Store,
+            _screenTime,
+            recording,
+            _factory.Services.GetRequiredService<MultiplexHub>(),
+            _factory.Services.GetRequiredService<Nexus.Service.Peripherals.StreamDeck.StreamDeckConnectionWorker>(),
+            State);
+        await service.StartAsync(CancellationToken.None);
+        try
+        {
+            recording.GetAllCallCount = 0;
+
+            _screenTime.Focus("chrome");
+
+            Assert.Equal(0, recording.GetAllCallCount);
+        }
+        finally
+        {
+            service.Dispose();
+        }
     }
 
     /// <summary>

@@ -22,12 +22,17 @@ namespace Nexus.Service.Deck;
 /// through IConfigStore.Update on every focus change would pulse every
 /// OnChanged consumer (profile dirty-marking, settings.json rewrites) on
 /// every alt+tab, most of which happen with no recentApps-mode instance
-/// even watching. Resolves each new ring entry's shortcutId once against a
-/// reverse index over IShortcutsProvider.GetAll() (rebuilt at most every
-/// ShortcutsRefreshInterval, or once more immediately on a miss). The
-/// "recents" deck-topic broadcast plus a RefreshView on every physical
-/// instance in recentApps mode stay coalesced to CoalesceDelay, unrelated to
-/// the persist cadence.
+/// even watching. On Windows, FocusChanged fires synchronously from
+/// HelperConnection.ReadLoopAsync (WindowsScreenTimeProvider.OnEnvelope ->
+/// FocusChanged), so the focus handler itself never calls
+/// IShortcutsProvider - a Windows HelperShortcutsProxy call blocks on a
+/// reply that only that same read loop can deliver, which would deadlock
+/// it against itself. Shortcut ids are resolved instead in Broadcast(),
+/// which the coalesce timer runs on a threadpool thread; a resolve queued
+/// there stays queued (never rebuilding the shortcuts index early) until
+/// ResolveShortcutId's own ShortcutsRefreshInterval check next rebuilds it,
+/// so a miss is negative-cached for that window rather than retried per
+/// focus event.
 /// </summary>
 public sealed class RecentAppsService : BackgroundService
 {
@@ -52,6 +57,7 @@ public sealed class RecentAppsService : BackgroundService
 
     private Dictionary<string, string> _shortcutsByProcessKey = new(StringComparer.Ordinal);
     private DateTimeOffset _shortcutsIndexedAt = DateTimeOffset.MinValue;
+    private readonly HashSet<string> _pendingShortcutResolve = new(StringComparer.Ordinal);
 
     public RecentAppsService(
         IConfigStore store,
@@ -160,13 +166,17 @@ public sealed class RecentAppsService : BackgroundService
         }
 
         var details = _focusDetails?.GetCurrentFocusDetails();
+        // ShortcutId starts unresolved: UpdateRing carries an already-known id
+        // forward from the existing ring entry (RecentAppsTracker.UpdateRing),
+        // and resolution for a genuinely new one runs in Broadcast(), off this
+        // (possibly helper-read-loop) thread.
         var candidate = new RecentApp
         {
             ProcessKey = processKey,
             Name = focusedName,
             Pid = details?.Pid,
             ExePath = details?.ExePath,
-            ShortcutId = ResolveShortcutId(processKey),
+            ShortcutId = null,
             LastFocusedUtcMs = _time.GetUtcNow().ToUnixTimeMilliseconds(),
         };
 
@@ -174,10 +184,23 @@ public sealed class RecentAppsService : BackgroundService
         {
             _dirty = true;
         }
+        if (candidate.ShortcutId is null)
+        {
+            lock (_gate)
+            {
+                _pendingShortcutResolve.Add(processKey);
+            }
+        }
         _state.SetFocused(processKey);
         ScheduleBroadcast();
     }
 
+    /// <summary>
+    /// A miss stays a miss until ShortcutsRefreshInterval's own time check
+    /// next rebuilds the index (no forced rebuild-on-miss here) - that is the
+    /// negative cache: a shortcut installed moments ago simply waits out the
+    /// same window a genuinely unresolvable app does.
+    /// </summary>
     private string? ResolveShortcutId(string processKey)
     {
         var now = _time.GetUtcNow();
@@ -185,15 +208,7 @@ public sealed class RecentAppsService : BackgroundService
         {
             RebuildShortcutsIndex();
         }
-        if (_shortcutsByProcessKey.TryGetValue(processKey, out var id))
-        {
-            return id;
-        }
-        // A miss can mean the index is stale (a shortcut installed since the
-        // last rebuild) rather than truly unresolvable - rebuild once more
-        // before giving up for this focus event.
-        RebuildShortcutsIndex();
-        return _shortcutsByProcessKey.TryGetValue(processKey, out var retried) ? retried : null;
+        return _shortcutsByProcessKey.TryGetValue(processKey, out var id) ? id : null;
     }
 
     private void RebuildShortcutsIndex()
@@ -242,6 +257,8 @@ public sealed class RecentAppsService : BackgroundService
 
     internal void Broadcast()
     {
+        ResolvePendingShortcuts();
+
         PanelTopics.BroadcastDeck(_hub, new DeckChangedFrame
         {
             Kind = "recents",
@@ -256,6 +273,35 @@ public sealed class RecentAppsService : BackgroundService
                 continue;
             }
             _worker.RefreshView(instanceId[DeckInstanceIdPrefix.Length..]);
+        }
+    }
+
+    /// <summary>
+    /// Resolves shortcut ids Tick() queued instead of resolving inline. The
+    /// coalesce timer that calls this runs on a threadpool thread, never the
+    /// helper's pipe read loop, so a Windows IShortcutsProvider.GetAll() round
+    /// trip here cannot deadlock against WindowsScreenTimeProvider's own
+    /// envelope handling.
+    /// </summary>
+    private void ResolvePendingShortcuts()
+    {
+        List<string> pending;
+        lock (_gate)
+        {
+            if (_pendingShortcutResolve.Count == 0)
+            {
+                return;
+            }
+            pending = new List<string>(_pendingShortcutResolve);
+            _pendingShortcutResolve.Clear();
+        }
+        foreach (var processKey in pending)
+        {
+            var id = ResolveShortcutId(processKey);
+            if (id is not null && _state.SetShortcutId(processKey, id))
+            {
+                _dirty = true;
+            }
         }
     }
 

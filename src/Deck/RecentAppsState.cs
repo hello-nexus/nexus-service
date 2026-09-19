@@ -44,6 +44,21 @@ public sealed class RecentAppsState
         }
     }
 
+    /// <summary>Sets a ring entry's resolved shortcut id after the fact (RecentAppsService resolves off the focus-handling thread); false when the entry is gone or already holds this id.</summary>
+    public bool SetShortcutId(string processKey, string shortcutId)
+    {
+        lock (_lock)
+        {
+            var index = _ring.FindIndex(a => a.ProcessKey == processKey);
+            if (index < 0 || _ring[index].ShortcutId == shortcutId)
+            {
+                return false;
+            }
+            _ring[index].ShortcutId = shortcutId;
+            return true;
+        }
+    }
+
     public void SetExcluded(IReadOnlyList<string> excluded)
     {
         lock (_lock)
