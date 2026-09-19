@@ -249,6 +249,8 @@ public sealed class StreamDeckConnectionWorker : BackgroundService, IDeckSurface
 
     private readonly TimeProvider _clock;
     private readonly SessionLockListener? _sessionLock;
+    private readonly Nexus.Service.Deck.RecentAppsState? _recentAppsState;
+    private readonly Nexus.Service.Deck.RecentAppsActivator? _recentAppsActivator;
 
     public StreamDeckConnectionWorker(
         IHidEnumerator hid,
@@ -264,7 +266,9 @@ public sealed class StreamDeckConnectionWorker : BackgroundService, IDeckSurface
         IWeatherProvider? weather = null,
         IFpsProvider? fps = null,
         Nexus.Service.Cooling.IFanControlProvider? fans = null,
-        SessionLockListener? sessionLock = null)
+        SessionLockListener? sessionLock = null,
+        Nexus.Service.Deck.RecentAppsState? recentAppsState = null,
+        Nexus.Service.Deck.RecentAppsActivator? recentAppsActivator = null)
     {
         _hid = hid;
         _presence = presence;
@@ -280,6 +284,8 @@ public sealed class StreamDeckConnectionWorker : BackgroundService, IDeckSurface
         _fps = fps;
         _fans = fans;
         _sessionLock = sessionLock;
+        _recentAppsState = recentAppsState;
+        _recentAppsActivator = recentAppsActivator;
         _hub.OnTopicFirstSubscriber += OnStreamDeckTilesFirstSubscriber;
         _sessionLock?.LockChanged += OnSessionLockChanged;
     }
@@ -1218,6 +1224,12 @@ public sealed class StreamDeckConnectionWorker : BackgroundService, IDeckSurface
     {
         WakeIfAsleep(surface);
 
+        if (IsRecentAppsMode(surface.Serial))
+        {
+            HandleRecentAppsKeyDown(surface, physicalIndex);
+            return;
+        }
+
         var serial = surface.Serial;
         var page = GetCurrentPageLocked(serial);
         if (!_folderPathsBySerial.TryGetValue(serial, out var folderPath))
@@ -1260,6 +1272,62 @@ public sealed class StreamDeckConnectionWorker : BackgroundService, IDeckSurface
 
         HandleSlotAction(serial, config, page, folderPath, slotIndex, slot);
         HandlePressVisual(surface, physicalIndex, page, folderPath, slotIndex, slot);
+    }
+
+    /// <summary>
+    /// Recent Apps mode key press: nav keys page the tracked view (no folder
+    /// concept in this mode), a press on the focused app is a no-op, and any
+    /// other app key dispatches through RecentAppsActivator off this thread -
+    /// never through HandleSlotAction/_executor, since this mode's DeckSlot
+    /// shape is render-only. No hold-to-edit: a blank filler key is simply
+    /// inert.
+    /// </summary>
+    private void HandleRecentAppsKeyDown(IStreamDeckSurface surface, int physicalIndex)
+    {
+        var serial = surface.Serial;
+        var settings = _store.Load().StreamDeck;
+        var pages = Nexus.Service.Deck.RecentAppsTracker.BuildView(
+            settings.RecentApps, _recentAppsState?.FocusedProcessKey, surface.Model.Columns, surface.Model.Rows);
+        var pageCount = Math.Max(pages.Count, 1);
+        var page = Math.Clamp(GetCurrentPageLocked(serial), 0, pageCount - 1);
+        var keys = page < pages.Count ? pages[page] : new List<Nexus.Service.Deck.RecentKey>();
+        if (physicalIndex < 0 || physicalIndex >= keys.Count)
+        {
+            return;
+        }
+        var key = keys[physicalIndex];
+
+        if (key.Kind is "navNext" or "navPrev")
+        {
+            _currentPageBySerial[serial] = Math.Clamp(page + (key.Kind == "navNext" ? 1 : -1), 0, pageCount - 1);
+            PushRecentAppsView(surface);
+            BroadcastNav(serial, _currentPageBySerial[serial], new List<int>());
+            return;
+        }
+        if (key.Kind != "app" || key.Focused || key.ProcessKey is null || _recentAppsActivator is null)
+        {
+            return;
+        }
+
+        var entry = settings.RecentApps.Find(a => a.ProcessKey == key.ProcessKey) ?? new RecentApp
+        {
+            ProcessKey = key.ProcessKey,
+            Name = key.Name ?? key.ProcessKey,
+            ShortcutId = key.ShortcutId,
+            ExePath = key.ExePath,
+        };
+        var activator = _recentAppsActivator;
+        LastDispatchTask = Task.Run(async () =>
+        {
+            try
+            {
+                await activator.ActivateAsync(entry).ConfigureAwait(false);
+            }
+            catch (Exception ex)
+            {
+                ServiceLog.Error($"[streamdeck] recent-apps activation crashed serial={serial} key={physicalIndex}: {ex.Message}");
+            }
+        });
     }
 
     /// <summary>
@@ -2380,8 +2448,18 @@ public sealed class StreamDeckConnectionWorker : BackgroundService, IDeckSurface
     /// changed - its own frame cache can be cleared client-side by undo/
     /// redo/reset/preset-delete.
     /// </summary>
+    /// <summary>True when the physical instance for serial is in Recent Apps mode - the only place this worker checks instance mode, since every other mode (fixed, appAware) renders through the normal preset/FitToGrid path.</summary>
+    private bool IsRecentAppsMode(string serial) =>
+        Nexus.Service.Deck.DeckInstanceResolver.ResolveMode(_store.Load().StreamDeck, Nexus.Service.Deck.DeckInstanceResolver.PhysicalInstanceId(serial)) == "recentApps";
+
     private void PushCurrentView(IStreamDeckSurface surface, bool viewChanged)
     {
+        if (IsRecentAppsMode(surface.Serial))
+        {
+            PushRecentAppsView(surface);
+            return;
+        }
+
         var entryPage = GetCurrentPageLocked(surface.Serial);
         if (!_folderPathsBySerial.TryGetValue(surface.Serial, out var folderPath))
         {
@@ -2512,6 +2590,92 @@ public sealed class StreamDeckConnectionWorker : BackgroundService, IDeckSurface
             surface.ClearKey(0);
         }
     }
+
+    /// <summary>
+    /// Renders and pushes the current Recent Apps page for a physical deck in
+    /// recentApps mode: the ring (persisted) plus the in-memory focused
+    /// process key laid out via RecentAppsTracker.BuildView, one key per
+    /// physical index, no folder concept. The tracked page (_currentPageBySerial,
+    /// shared with fixed mode - a mode switch always resets nav to 0 first)
+    /// clamps to the view's own page count. Every key broadcasts a
+    /// streamdeckTiles preview like a monitoring tile, since Recent Apps
+    /// content changes on focus rather than on a preset edit.
+    /// </summary>
+    private void PushRecentAppsView(IStreamDeckSurface surface)
+    {
+        var serial = surface.Serial;
+        var settings = _store.Load().StreamDeck;
+        settings.Decks.TryGetValue(serial, out var deck);
+        var pages = Nexus.Service.Deck.RecentAppsTracker.BuildView(
+            settings.RecentApps, _recentAppsState?.FocusedProcessKey, surface.Model.Columns, surface.Model.Rows);
+
+        var pageCount = Math.Max(pages.Count, 1);
+        var page = Math.Clamp(GetCurrentPageLocked(serial), 0, pageCount - 1);
+        _currentPageBySerial[serial] = page;
+        var keys = page < pages.Count ? pages[page] : new List<Nexus.Service.Deck.RecentKey>();
+
+        for (var i = 0; i < surface.Model.KeyCount; i++)
+        {
+            var key = i < keys.Count ? keys[i] : new Nexus.Service.Deck.RecentKey { Kind = "blank" };
+            var slot = RecentKeyToSlot(key);
+            var bytes = _keyRenderer.Render(slot, isToggleOn: false, surface.Model, deck?.Orientation ?? 0, selected: key.Focused);
+            if (bytes is not null)
+            {
+                surface.SetKeyImage(i, bytes);
+                BroadcastRecentAppsTile(serial, page, i, bytes);
+            }
+            else
+            {
+                surface.ClearKey(i);
+            }
+        }
+    }
+
+    /// <summary>
+    /// Renders a Recent Apps key's own wire bytes as a JPEG preview for
+    /// streamdeckTiles, mirroring the monitoring/weather tile broadcast
+    /// convention (slotPath = the key's plain index, no folder path exists in
+    /// this mode). DeckKeyRenderer only returns model wire bytes, so this
+    /// decodes them back to re-encode as JPEG - cheap next to the render
+    /// itself, and this runs on focus change, not every tick.
+    /// </summary>
+    private void BroadcastRecentAppsTile(string serial, int page, int keyIndex, byte[] wireBytes)
+    {
+        if (!_hub.TopicHasSubscribers(PanelTopics.StreamDeckTiles))
+        {
+            return;
+        }
+        try
+        {
+            using var decoded = Image.Load<Rgba32>(wireBytes);
+            BroadcastTile(serial, page, keyIndex.ToString(System.Globalization.CultureInfo.InvariantCulture), RenderKit.EncodeJpeg(decoded));
+        }
+        catch (Exception ex)
+        {
+            ServiceLog.Warn($"[streamdeck] recent-apps tile preview failed: {ex.Message}");
+        }
+    }
+
+    /// <summary>
+    /// Converts a Recent Apps view key into the DeckSlot shape DeckKeyRenderer
+    /// already knows how to paint. App keys carry an "openFile" action so the
+    /// renderer's existing icon fallback chain (shortcut icon, else process
+    /// icon by exe path) applies unchanged - this action is never dispatched,
+    /// since recentApps-mode presses are intercepted before HandleSlotAction
+    /// and routed through RecentAppsActivator instead.
+    /// </summary>
+    private static DeckSlot RecentKeyToSlot(Nexus.Service.Deck.RecentKey key) => key.Kind switch
+    {
+        "navNext" => new DeckSlot { Action = new DeckAction { Type = "page", Op = "next" }, Auto = true },
+        "navPrev" => new DeckSlot { Action = new DeckAction { Type = "page", Op = "prev" }, Auto = true },
+        "app" => new DeckSlot
+        {
+            Label = key.Name,
+            Icon = key.ShortcutId is not null ? new DeckIcon { Kind = "app", Value = key.ShortcutId } : null,
+            Action = new DeckAction { Type = "openFile", Path = key.ExePath },
+        },
+        _ => new DeckSlot(),
+    };
 
     /// <summary>The fitted config for a serial's live grid (live surface's model, else the persisted ProductId's, else a 5x3 fallback). Caller must hold _lock.</summary>
     private DeckConfig LoadConfig(string serial)

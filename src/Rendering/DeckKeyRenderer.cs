@@ -58,18 +58,23 @@ public sealed class DeckKeyRenderer
     /// <summary>The reserved folder-Back key's bitmap, matching nexus-web's renderDeckBackKeyBitmap.</summary>
     public byte[]? RenderBackKey(StreamDeckModel model, int orientation) => Render(BackKeySlot, isToggleOn: false, model, orientation);
 
+    /// <summary>Accent used for the Recent Apps focused-key ring, matching MonitoringTileRenderer's default accent.</summary>
+    private static readonly Color SelectedAccent = Color.ParseHex("4da3ff");
+
     /// <summary>
     /// Renders one slot's wire bytes at model/orientation. isToggleOn selects
     /// the on/off branch when the slot's action is a toggle; ignored
-    /// otherwise. Null when the encode fails or the model's wire format
-    /// rejects the length. A miss caused by a transient app-icon lookup
+    /// otherwise. selected paints the Recent Apps focused-key treatment
+    /// (accent ring plus a brighter fill) over the resolved background.
+    /// Null when the encode fails or the model's wire format rejects the
+    /// length. A miss caused by a transient app-icon lookup
     /// (IProcessIconProvider returning null - the helper is not connected
     /// yet) is never cached, so the next tick retries the icon instead of
     /// pinning a blank key.
     /// </summary>
-    public byte[]? Render(DeckSlot slot, bool isToggleOn, StreamDeckModel model, int orientation)
+    public byte[]? Render(DeckSlot slot, bool isToggleOn, StreamDeckModel model, int orientation, bool selected = false)
     {
-        var cacheKey = $"{ComputeContentHash(slot, isToggleOn)}|{model.ProductId}|{orientation}";
+        var cacheKey = $"{ComputeContentHash(slot, isToggleOn)}|{model.ProductId}|{orientation}|{selected}";
         lock (_cacheLock)
         {
             if (_cache.TryGetValue(cacheKey, out var cached))
@@ -81,7 +86,7 @@ public sealed class DeckKeyRenderer
 
         var display = ResolveDisplay(slot, isToggleOn);
         var transient = false;
-        using var image = RenderImage(display, model.KeyPixelSize, ref transient);
+        using var image = RenderImage(display, model.KeyPixelSize, ref transient, selected);
         var bytes = DeckWireImageEncoder.Encode(image, model, orientation);
         if (bytes is not null && !transient)
         {
@@ -150,10 +155,14 @@ public sealed class DeckKeyRenderer
         return new DisplaySlot(icon, slot.Label, isBlankOff ? "#000000" : colorHex!, slot.Title, isFolder, isBlankOff, effectiveAction);
     }
 
-    private Image<Rgba32> RenderImage(DisplaySlot display, int size, ref bool transient)
+    private Image<Rgba32> RenderImage(DisplaySlot display, int size, ref bool transient, bool selected = false)
     {
         var image = new Image<Rgba32>(size, size);
         var background = RenderKit.ParseColor(display.ColorHex, Color.Black);
+        if (selected)
+        {
+            background = Brighten(background, 0.25f);
+        }
         image.Mutate(ctx => ctx.Fill(background));
 
         if (display.IsBlankOff)
@@ -175,7 +184,22 @@ public sealed class DeckKeyRenderer
                 PaintLabel(image, display.Label!, size, titleStyle);
             }
         }
+
+        if (selected)
+        {
+            var ringWidth = MathF.Max(2f, size * 0.06f);
+            var rect = new RectangleF(ringWidth / 2f, ringWidth / 2f, size - ringWidth, size - ringWidth);
+            image.Mutate(ctx => ctx.Draw(SelectedAccent, ringWidth, rect));
+        }
         return image;
+    }
+
+    /// <summary>Lerps each channel toward white by amount (0..1), for the Recent Apps focused-key fill.</summary>
+    private static Color Brighten(Color color, float amount)
+    {
+        var rgba = color.ToPixel<Rgba32>();
+        byte Lerp(byte c) => (byte)MathF.Round(c + (255 - c) * amount);
+        return Color.FromRgba(Lerp(rgba.R), Lerp(rgba.G), Lerp(rgba.B), rgba.A);
     }
 
     private void PaintIcon(Image<Rgba32> image, DisplaySlot display, int size, ref bool transient)

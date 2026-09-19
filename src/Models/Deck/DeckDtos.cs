@@ -77,7 +77,7 @@ public sealed class UpdateDeckInstanceRequest
 public sealed class DeckChangedFrame
 {
     public long Revision { get; set; }
-    /// <summary>"preset" | "presets" | "active".</summary>
+    /// <summary>"preset" | "presets" | "active" | "recents".</summary>
     public string Kind { get; set; } = "";
     /// <summary>preset.</summary>
     public string? PresetId { get; set; }
@@ -91,4 +91,28 @@ public sealed class DeckChangedFrame
     public string? InstanceId { get; set; }
     /// <summary>active.</summary>
     public DeckInstance? Instance { get; set; }
+    /// <summary>recents.</summary>
+    public List<Nexus.Service.Persistence.RecentApp>? RecentApps { get; set; }
+    /// <summary>recents.</summary>
+    public string? FocusedProcessKey { get; set; }
+}
+
+/// <summary>GET /deck/recent-apps.</summary>
+public sealed class RecentAppsResponse
+{
+    public List<Nexus.Service.Persistence.RecentApp> Apps { get; set; } = new();
+    public List<string> Excluded { get; set; } = new();
+    public string? FocusedProcessKey { get; set; }
+}
+
+/// <summary>PUT /deck/recent-apps/excluded body.</summary>
+public sealed class SetRecentAppsExcludedRequest
+{
+    public List<string> ProcessKeys { get; set; } = new();
+}
+
+/// <summary>POST /deck/recent-apps/activate body.</summary>
+public sealed class ActivateRecentAppRequest
+{
+    public string ProcessKey { get; set; } = "";
 }

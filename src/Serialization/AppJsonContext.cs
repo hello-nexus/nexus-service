@@ -970,6 +970,8 @@ namespace Nexus.Service.Serialization;
 [JsonSerializable(typeof(Nexus.Service.Helper.Domains.ProcessKillResult))]
 [JsonSerializable(typeof(Nexus.Service.Helper.Domains.ProcessOpenLocationRequest))]
 [JsonSerializable(typeof(Nexus.Service.Helper.Domains.ProcessOpenLocationResult))]
+[JsonSerializable(typeof(Nexus.Service.Helper.Domains.ProcessActivateWindowRequest))]
+[JsonSerializable(typeof(Nexus.Service.Helper.Domains.ProcessActivateWindowResult))]
 // Native file/folder picker (IFileOpenDialog runs in the user-session helper)
 [JsonSerializable(typeof(Nexus.Service.Helper.Domains.FileDialogRequest))]
 [JsonSerializable(typeof(Nexus.Service.Helper.Domains.FileDialogResult))]
@@ -1291,6 +1293,12 @@ namespace Nexus.Service.Serialization;
 [JsonSerializable(typeof(Nexus.Service.Models.Deck.DeckInstanceResponse))]
 [JsonSerializable(typeof(Nexus.Service.Models.Deck.UpdateDeckInstanceRequest))]
 [JsonSerializable(typeof(Nexus.Service.Models.Deck.DeckChangedFrame))]
+// Deck Modes: Recent Apps ring (src/Deck/RecentAppsTracker.cs, RecentAppsService.cs).
+[JsonSerializable(typeof(Nexus.Service.Persistence.RecentApp))]
+[JsonSerializable(typeof(List<Nexus.Service.Persistence.RecentApp>))]
+[JsonSerializable(typeof(Nexus.Service.Models.Deck.RecentAppsResponse))]
+[JsonSerializable(typeof(Nexus.Service.Models.Deck.SetRecentAppsExcludedRequest))]
+[JsonSerializable(typeof(Nexus.Service.Models.Deck.ActivateRecentAppRequest))]
 [JsonSerializable(typeof(Nexus.Service.Persistence.PresetAppBinding))]
 [JsonSerializable(typeof(List<Nexus.Service.Persistence.PresetAppBinding>))]
 // Elgato Stream Deck profile import

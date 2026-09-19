@@ -783,6 +783,7 @@ public static class NexusServiceCollectionExtensions
             sp.GetRequiredService<Nexus.Service.Lifecycle.FeatureGates>()));
         services.AddSingleton<Nexus.Service.Deck.IDeckActionExecutor>(sp =>
             sp.GetRequiredService<Nexus.Service.Deck.DeckActionExecutor>());
+        services.AddSingleton<Nexus.Service.Deck.RecentAppsState>();
         services.AddSingleton<Nexus.Service.Peripherals.StreamDeck.StreamDeckConnectionWorker>(sp =>
             new Nexus.Service.Peripherals.StreamDeck.StreamDeckConnectionWorker(
                 sp.GetRequiredService<Nexus.Service.Peripherals.Hid.IHidEnumerator>(),
@@ -796,8 +797,24 @@ public static class NexusServiceCollectionExtensions
                 weather: sp.GetRequiredService<Nexus.Service.Platform.Weather.IWeatherProvider>(),
                 fps: sp.GetRequiredService<Nexus.Service.Fps.IFpsProvider>(),
                 fans: sp.GetRequiredService<Nexus.Service.Cooling.IFanControlProvider>(),
-                sessionLock: sp.GetService<Nexus.Service.Lighting.SessionLockListener>()));
+                sessionLock: sp.GetService<Nexus.Service.Lighting.SessionLockListener>(),
+                recentAppsState: sp.GetRequiredService<Nexus.Service.Deck.RecentAppsState>(),
+                recentAppsActivator: sp.GetRequiredService<Nexus.Service.Deck.RecentAppsActivator>()));
         services.AddHostedService(sp => sp.GetRequiredService<Nexus.Service.Peripherals.StreamDeck.StreamDeckConnectionWorker>());
+        services.AddSingleton<Nexus.Service.Deck.RecentAppsActivator>(sp => new Nexus.Service.Deck.RecentAppsActivator(
+            sp.GetRequiredService<Nexus.Service.Activity.IProcessActionsProvider>(),
+            sp.GetRequiredService<Nexus.Service.Activity.IShortcutsProvider>(),
+            sp.GetRequiredService<Nexus.Service.Actions.SystemActions>(),
+            windowSet: sp.GetService<Nexus.Service.Activity.IWindowSetProvider>()));
+        // Recent Apps ring: no dwell, rides the same FocusChanged event AppPresetSwitcher does.
+        services.AddHostedService(sp => new Nexus.Service.Deck.RecentAppsService(
+            sp.GetRequiredService<Nexus.Service.Persistence.IConfigStore>(),
+            sp.GetRequiredService<Nexus.Service.Activity.IScreenTimeProvider>(),
+            sp.GetRequiredService<Nexus.Service.Activity.IShortcutsProvider>(),
+            sp.GetRequiredService<Nexus.Service.Sockets.MultiplexHub>(),
+            sp.GetRequiredService<Nexus.Service.Peripherals.StreamDeck.StreamDeckConnectionWorker>(),
+            sp.GetRequiredService<Nexus.Service.Deck.RecentAppsState>(),
+            focusDetails: sp.GetService<Nexus.Service.Activity.IFocusDetailsProvider>()));
 
         // Elgato Stream Deck profile import: read-only against the local
         // Elgato software's own store, never touching a physical deck.

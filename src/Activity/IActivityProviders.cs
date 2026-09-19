@@ -124,6 +124,14 @@ public interface IProcessActionsProvider
     /// <summary>Reveals exePath in the OS file manager with the file
     /// selected. False on failure, including IsAvailable being false.</summary>
     Task<bool> OpenLocationAsync(string exePath);
+
+    /// <summary>Brings a live process's top-level window to the foreground
+    /// (Recent Apps deck mode: switch to a running app instead of relaunching
+    /// it). Windows-only in practice - the helper finds the window and calls
+    /// ForegroundNudge.TryForeground; other platforms return false so callers
+    /// fall back to their own launch path, which already activates a running
+    /// instance (e.g. macOS "open -a").</summary>
+    Task<bool> ActivateWindowAsync(int pid);
 }
 
 public interface INetworkProvider
