@@ -14,8 +14,7 @@ namespace Nexus.Service.Routes;
 /// Host-wide deck preset + instance contract (plan deck-modes.md CONTRACT
 /// ADDENDUM). Presets and instances are shared by every physical Stream Deck
 /// AND the on-screen Deck widget; a preset edit here repaints every instance
-/// that points at it. Phase 0 only: apps binding, export/import, templates
-/// and recent-apps stay unmapped (404) until their phases land.
+/// that points at it.
 /// </summary>
 public static class DeckRoutes
 {

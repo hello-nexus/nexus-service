@@ -76,6 +76,19 @@ is called out here:
 - `/deck/presets/{id}/apps` - App Aware bindings, mirroring
   `/devices/lighting-devices/layout-presets/{id}/apps`'s conflict semantics.
   Rides the `deck` topic's `preset` kind.
+- `/deck/templates`, `POST /deck/presets {templateId}` - the bundled
+  `.nexus-deck` template catalog (`data/deck-presets/`, `DeckPresetCatalog`),
+  read once from embedded resources and cached for the process lifetime; no
+  network call. `GET /deck/templates` resolves each template's installed app
+  against `GET /shortcuts`' live list on every request (no caching).
+- `GET /deck/presets/{id}/export` - a regular download (`application/zip`,
+  `Content-Disposition: attachment`), not chunked or streamed; the whole
+  package is built in memory first.
+- `POST /deck/presets/import` - raw zip body (no multipart), capped at
+  `DeckPresetPackage.MaxPackageBytes` (20 MB) via a per-request
+  `IHttpMaxRequestBodySizeFeature` override, buffered fully before parsing.
+  Broadcasts the `deck` topic's `presets` kind on success like every other
+  create path.
 
 ## Transport Topology
 
