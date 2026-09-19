@@ -816,6 +816,12 @@ public static class NexusServiceCollectionExtensions
             sp.GetRequiredService<Nexus.Service.Peripherals.StreamDeck.StreamDeckConnectionWorker>(),
             sp.GetRequiredService<Nexus.Service.Deck.RecentAppsState>(),
             focusDetails: sp.GetService<Nexus.Service.Activity.IFocusDetailsProvider>()));
+        // App Aware: activates a deck preset when an app bound to it takes focus.
+        services.AddHostedService(sp => new Nexus.Service.Deck.DeckAppPresetSwitcher(
+            sp.GetRequiredService<Nexus.Service.Persistence.IConfigStore>(),
+            sp.GetRequiredService<Nexus.Service.Activity.IScreenTimeProvider>(),
+            sp.GetRequiredService<Nexus.Service.Sockets.MultiplexHub>(),
+            sp.GetRequiredService<Nexus.Service.Deck.DeckPresetActivator>()));
 
         // Elgato Stream Deck profile import: read-only against the local
         // Elgato software's own store, never touching a physical deck.

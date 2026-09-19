@@ -375,6 +375,14 @@ public static class PanelTopics
     }
 
     /// <summary>
+    /// Subscription-only signal, AllowPanel: a Deck widget's edit sheet holds
+    /// this open while showing, and DeckAppPresetSwitcher reads its
+    /// subscriber count (alongside streamdeckTiles) to pause App Aware
+    /// switching while an editor is open. No frame is ever broadcast on it.
+    /// </summary>
+    public const string DeckEdit = "deck-edit";
+
+    /// <summary>
     /// Local AI assistant runtime/model progress (managed Ollama install,
     /// download bytes, active model pull). Subscribers use the frame directly
     /// for live progress bars; GET /ai/assistant/status is the canonical
