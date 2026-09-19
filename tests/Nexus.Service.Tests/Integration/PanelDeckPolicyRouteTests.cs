@@ -249,4 +249,30 @@ public sealed class PanelDeckPolicyRouteTests : IDisposable
 
         Assert.True(res.IsSuccessStatusCode, await res.Content.ReadAsStringAsync());
     }
+
+    // ───────────────────────── POST /deck/presets {templateId} ─────────────────────────
+    // The bundled photoshop template is all hotkey actions - a panel session
+    // must not get a desktop-authored privileged preset just by naming a
+    // template id instead of supplying its own deck.
+
+    [Fact]
+    public async Task Panel_cannot_create_a_preset_from_a_privileged_template()
+    {
+        var panel = PanelClient();
+
+        var res = await panel.PostAsJsonAsync("/deck/presets", new { templateId = "photoshop" });
+
+        Assert.Equal(HttpStatusCode.Forbidden, res.StatusCode);
+        Assert.Contains("deck_action_requires_desktop", await res.Content.ReadAsStringAsync());
+    }
+
+    [Fact]
+    public async Task Desktop_can_create_a_preset_from_a_privileged_template()
+    {
+        var desktop = DesktopClient();
+
+        var res = await desktop.PostAsJsonAsync("/deck/presets", new { templateId = "photoshop" });
+
+        Assert.True(res.IsSuccessStatusCode, await res.Content.ReadAsStringAsync());
+    }
 }

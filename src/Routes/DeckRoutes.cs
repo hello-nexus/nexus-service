@@ -47,11 +47,11 @@ public static class DeckRoutes
             {
                 return Results.Json(ApiResponse.Fail("specify at most one of deck, templateId, copyOfPresetId"), AppJsonContext.Default.ApiResponse, statusCode: 400);
             }
+            var isDesktopCreate = ServiceTokenRequests.HasServiceToken(ctx, tokens);
             if (body.TemplateId is not null)
             {
-                return CreateFromTemplate(body.TemplateId, store, hub, catalog, shortcuts);
+                return CreateFromTemplate(body.TemplateId, isDesktopCreate, store, hub, catalog, shortcuts);
             }
-            var isDesktopCreate = ServiceTokenRequests.HasServiceToken(ctx, tokens);
             if (body.Deck is not null && !isDesktopCreate
                 && DeckLayoutPolicy.IntroducesPrivilegedActions(body.Deck, stored: null))
             {
@@ -670,7 +670,7 @@ public static class DeckRoutes
 
     /// <summary>Copies a bundled template into a new host-wide preset: name unique-suffixed on collision (DeckModesMigration's numbered form, since a template has no natural device-name grouping to parenthesize), apps pre-bound to the resolved installed app when one exists and is not already bound to another preset.</summary>
     private static Microsoft.AspNetCore.Http.IResult CreateFromTemplate(
-        string templateId, IConfigStore store, MultiplexHub hub, DeckPresetCatalog catalog, Nexus.Service.Activity.IShortcutsProvider shortcuts)
+        string templateId, bool isDesktopCreate, IConfigStore store, MultiplexHub hub, DeckPresetCatalog catalog, Nexus.Service.Activity.IShortcutsProvider shortcuts)
     {
         var template = catalog.Open(templateId);
         if (template is null)
@@ -678,6 +678,13 @@ public static class DeckRoutes
             return Results.Json(ApiResponse.Fail("template not found"), AppJsonContext.Default.ApiResponse, statusCode: 404);
         }
         var manifest = template.Manifest!;
+        // A bundled template is trusted data, but a panel session still may
+        // not author a preset carrying a privileged (hotkey/file/text/audio)
+        // key any more than it may via a deck/templateId of its own.
+        if (!isDesktopCreate && DeckLayoutPolicy.PrivilegedActions(manifest.Deck).Any())
+        {
+            return Results.Json(ApiResponse.Fail("deck_action_requires_desktop"), AppJsonContext.Default.ApiResponse, statusCode: 403);
+        }
         var installedApp = ResolveInstalledApp(manifest.Match, shortcuts.GetAll());
 
         var capped = false;
