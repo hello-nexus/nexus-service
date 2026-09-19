@@ -396,13 +396,19 @@ public sealed class DeckActionSettingsLoadSurvivalTests : IDisposable
         // one page for this document to load at all. "deck" is
         // PhysicalDeckSettings.LegacyDeck's real pre-v18 wire name (its
         // JsonPropertyName), not the C# property's own name.
-        // schemaVersion is set to CurrentSchemaVersion so the v18 deck-modes
-        // migration does not run and hoist legacyDeck away before the
-        // assertions below read it.
+        // schemaVersion is set to CurrentSchemaVersion, and a preset/instance
+        // already exists, so neither the schema-gated deck-modes migration
+        // nor JsonConfigStore's downgrade-recovery path (empty presets +
+        // instances alongside a Legacy* deck) hoists legacyDeck away before
+        // the assertions below read it.
         var json = "{"
             + $"\"schemaVersion\":{NexusSettings.CurrentSchemaVersion},"
             + "\"lighting\":{\"globalBrightness\":0.42},"
-            + "\"streamDeck\":{\"decks\":{\"SERIAL-1\":{\"deck\":{\"slots\":[{\"action\":\"not an object\"}]}}}}"
+            + "\"streamDeck\":{"
+            + "\"presets\":[{\"id\":\"p1\",\"name\":\"Existing\",\"cols\":5,\"rows\":3,\"deck\":{\"pages\":[]}}],"
+            + "\"instances\":{\"streamdeck:OTHER\":{\"mode\":\"fixed\",\"activePresetId\":\"p1\"}},"
+            + "\"decks\":{\"SERIAL-1\":{\"deck\":{\"slots\":[{\"action\":\"not an object\"}]}}}"
+            + "}"
             + "}";
         File.WriteAllText(_path, json);
 

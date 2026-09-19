@@ -82,6 +82,18 @@ public sealed class JsonConfigStore : IConfigStore, IDisposable
                     Migrate(_cached);
                     Persist(_cached);
                 }
+                else if (NeedsDeckModesRecovery(_cached))
+                {
+                    // A downgrade to a pre-deck-modes build (then a re-upgrade)
+                    // leaves SchemaVersion already at 18 - the schema-gated
+                    // migration above never runs again - while the old build's
+                    // own writes repopulated PhysicalDeckSettings.Legacy* with
+                    // nothing hoisted into Presets/Instances. Recover
+                    // independently of SchemaVersion whenever that exact
+                    // stranded shape shows up.
+                    Nexus.Service.Deck.DeckModesMigration.Apply(_cached);
+                    Persist(_cached);
+                }
             }
             catch (Exception ex)
             {
@@ -222,6 +234,24 @@ public sealed class JsonConfigStore : IConfigStore, IDisposable
             Nexus.Service.Deck.DeckModesMigration.Apply(doc);
         }
         doc.SchemaVersion = NexusSettings.CurrentSchemaVersion;
+    }
+
+    /// <summary>True when every deck preset/instance is empty (nothing hoisted yet) while at least one deck still carries pre-v18 Legacy* content - the shape a downgrade-then-re-upgrade round trip leaves behind with SchemaVersion already at 18.</summary>
+    private static bool NeedsDeckModesRecovery(NexusSettings doc)
+    {
+        if (doc.StreamDeck.Presets.Count > 0 || doc.StreamDeck.Instances.Count > 0)
+        {
+            return false;
+        }
+        foreach (var deck in doc.StreamDeck.Decks.Values)
+        {
+            if (deck.LegacyDeck is not null || deck.LegacyImageRefs is not null
+                || deck.LegacyPresets is not null || deck.LegacyActivePresetId is not null)
+            {
+                return true;
+            }
+        }
+        return false;
     }
 
     public event Action? OnChanged;

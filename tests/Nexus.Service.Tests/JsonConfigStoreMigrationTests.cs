@@ -613,4 +613,77 @@ public class JsonConfigStoreMigrationTests : IDisposable
             store.Dispose();
         }
     }
+
+    /// <summary>
+    /// A downgrade to a pre-deck-modes build (then a re-upgrade) leaves
+    /// SchemaVersion already at 18 - the downgraded build wrote fresh
+    /// Legacy* content with its own older model, which knows nothing of
+    /// Presets/Instances - so the schema-gated migration never runs again on
+    /// re-upgrade. JsonConfigStore.Load must recover independently of
+    /// SchemaVersion whenever it sees empty presets/instances alongside a
+    /// deck that still carries Legacy* content.
+    /// </summary>
+    [Fact]
+    public void Load_SchemaAlreadyAtCurrent_StillRecoversAStrandedLegacyDeck()
+    {
+        var json = $$"""
+        {
+          "schemaVersion": {{NexusSettings.CurrentSchemaVersion}},
+          "streamDeck": {
+            "decks": {
+              "SERIAL-1": {
+                "name": "My Deck",
+                "productId": 99,
+                "deck": { "pages": [ { "slots": [ { "label": "Hi" } ] } ] }
+              }
+            }
+          }
+        }
+        """;
+        File.WriteAllText(_settingsPath, json);
+
+        var store = new JsonConfigStore(_settingsPath);
+        var s = store.Load();
+        try
+        {
+            var instance = Assert.Contains("streamdeck:SERIAL-1", s.StreamDeck.Instances);
+            var preset = s.StreamDeck.Presets.Find(p => p.Id == instance.ActivePresetId);
+            Assert.NotNull(preset);
+            Assert.Equal("Hi", preset!.Deck.Pages[0].Slots[0].Label);
+            Assert.Null(s.StreamDeck.Decks["SERIAL-1"].LegacyDeck);
+        }
+        finally
+        {
+            store.Dispose();
+        }
+    }
+
+    /// <summary>The recovery path above must not re-run once a preset/instance already exists - it only fires on the specific "empty presets and instances, but a deck still has Legacy* content" shape.</summary>
+    [Fact]
+    public void Load_SchemaAlreadyAtCurrent_WithAnExistingPreset_DoesNotReRunRecovery()
+    {
+        var json = $$"""
+        {
+          "schemaVersion": {{NexusSettings.CurrentSchemaVersion}},
+          "streamDeck": {
+            "presets": [ { "id": "p1", "name": "Existing", "cols": 5, "rows": 3, "deck": { "pages": [] } } ],
+            "instances": { "streamdeck:SERIAL-1": { "mode": "fixed", "activePresetId": "p1" } },
+            "decks": { "SERIAL-1": { "name": "My Deck", "productId": 99 } }
+          }
+        }
+        """;
+        File.WriteAllText(_settingsPath, json);
+
+        var store = new JsonConfigStore(_settingsPath);
+        var s = store.Load();
+        try
+        {
+            Assert.Single(s.StreamDeck.Presets);
+            Assert.Equal("p1", s.StreamDeck.Instances["streamdeck:SERIAL-1"].ActivePresetId);
+        }
+        finally
+        {
+            store.Dispose();
+        }
+    }
 }
