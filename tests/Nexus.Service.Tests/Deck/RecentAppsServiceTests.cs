@@ -53,6 +53,7 @@ public sealed class RecentAppsServiceTests : IDisposable
     private readonly StubDeviceHostFactory _factory;
     private readonly FakeScreenTime _screenTime = new();
     private readonly FakeShortcuts _shortcuts = new();
+    private readonly IDisposable _deckTopicSub;
     private RecentAppsService? _service;
 
     public RecentAppsServiceTests()
@@ -61,11 +62,16 @@ public sealed class RecentAppsServiceTests : IDisposable
         // live coalesce timer against the shared store.
         _factory = new StubDeviceHostFactory();
         _ = _factory.CreateClient();
+        // BroadcastDeck no-ops with zero subscribers; held for the test's
+        // whole lifetime so Focus() can wait on the broadcast it triggers
+        // instead of a fixed sleep.
+        _deckTopicSub = _factory.Services.GetRequiredService<MultiplexHub>().AddTestSubscription(PanelTopics.Deck);
     }
 
     public void Dispose()
     {
         _service?.Dispose();
+        _deckTopicSub.Dispose();
         _factory.Dispose();
     }
 
@@ -91,9 +97,28 @@ public sealed class RecentAppsServiceTests : IDisposable
             _service = BuildService();
             _service.StartAsync(CancellationToken.None).GetAwaiter().GetResult();
         }
-        _screenTime.Focus(app);
-        // The 100ms coalescer needs to fire before the ring/broadcast assertions.
-        Thread.Sleep(TimeSpan.FromMilliseconds(300));
+        var hub = _factory.Services.GetRequiredService<MultiplexHub>();
+        using var broadcasted = new ManualResetEventSlim(false);
+        void OnBroadcast(string topic, ReadOnlyMemory<byte> _)
+        {
+            if (topic == PanelTopics.Deck)
+            {
+                broadcasted.Set();
+            }
+        }
+        hub.OnBroadcastForTest += OnBroadcast;
+        try
+        {
+            _screenTime.Focus(app);
+            // Tick() always calls ScheduleBroadcast (even the excluded-app
+            // early return), so waiting for the coalesced "recents" frame is
+            // equivalent to waiting out the 100ms coalescer without a fixed sleep.
+            Assert.True(broadcasted.Wait(TimeSpan.FromSeconds(5)), "recents broadcast never fired");
+        }
+        finally
+        {
+            hub.OnBroadcastForTest -= OnBroadcast;
+        }
     }
 
     [Fact]
@@ -228,12 +253,21 @@ public sealed class RecentAppsServiceTests : IDisposable
 
         var service = BuildService();
         await service.StartAsync(CancellationToken.None);
-        // BackgroundService.StartAsync does not guarantee ExecuteAsync's body
-        // has completed by the time it returns; give the seed a moment.
-        Thread.Sleep(TimeSpan.FromMilliseconds(200));
         try
         {
-            var seeded = State.RingSnapshot().Find(a => a.ProcessKey == "stale");
+            // BackgroundService.StartAsync does not guarantee ExecuteAsync's
+            // body has completed by the time it returns; poll for the seed
+            // bounded, instead of sleeping a fixed guess.
+            RecentApp? seeded = null;
+            var deadline = DateTime.UtcNow + TimeSpan.FromSeconds(5);
+            while (seeded is null && DateTime.UtcNow < deadline)
+            {
+                seeded = State.RingSnapshot().Find(a => a.ProcessKey == "stale");
+                if (seeded is null)
+                {
+                    Thread.Sleep(10);
+                }
+            }
             Assert.NotNull(seeded);
             Assert.Null(seeded!.Pid);
         }
