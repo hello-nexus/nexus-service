@@ -44,6 +44,10 @@ public static class RelayHttpAllowlist
         // AllowPanel tier, so a blanket prefix would expose /gallery/pick (opens a
         // dialog on the host) and source mutations to relayed phone sessions.
         "/gallery/items",
+        // The touch-panel swipe-up hint's flag only. Never widen to
+        // "/onboarding": the rest of that surface (reset, the dashboard
+        // screens' flags) is LocalhostOnly by design.
+        "/onboarding/panel-swipe",
         "/y70",
         "/qseries",
         "/api", // /api/steam, /api/obs, /api/discord, /api/weather, /api/media, /api/screentime

@@ -83,6 +83,25 @@ public class AuthRequestPolicyTests
         AssertPanelDeniedRoute(app, "POST", "/system/pick-path");
     }
 
+    /// <summary>A paired phone is a touch panel, so the swipe-hint pair must be reachable off loopback.</summary>
+    [Fact]
+    public async Task OnboardingRoutes_MarksOnlyThePanelSwipePairAsPanelAllowed()
+    {
+        var builder = WebApplication.CreateSlimBuilder();
+        builder.Services.AddSingleton<Nexus.Service.Persistence.IConfigStore, InMemoryConfigStore>();
+        await using var app = builder.Build();
+        app.MapOnboardingEndpoints();
+
+        AssertPanelAllowedRoute(app, "GET", "/onboarding/panel-swipe");
+        AssertPanelAllowedRoute(app, "POST", "/onboarding/panel-swipe/complete");
+        Assert.Null(FindEndpoint(app, "GET", "/onboarding/panel-swipe")!.Metadata.GetMetadata<LocalhostOnlyAccess>());
+        Assert.Null(FindEndpoint(app, "POST", "/onboarding/panel-swipe/complete")!.Metadata.GetMetadata<LocalhostOnlyAccess>());
+        AssertPanelDeniedRoute(app, "GET", "/onboarding");
+        AssertPanelDeniedRoute(app, "POST", "/onboarding/complete");
+        AssertPanelDeniedRoute(app, "POST", "/onboarding/reset");
+        Assert.NotNull(FindEndpoint(app, "GET", "/onboarding")!.Metadata.GetMetadata<LocalhostOnlyAccess>());
+    }
+
     [Fact]
     public async Task PanelRoutes_MarksServiceInfoAsPanelAllowed()
     {

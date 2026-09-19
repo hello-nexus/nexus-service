@@ -128,6 +128,12 @@ public sealed class NexusSettings
     /// install sees the screen.</summary>
     public bool FeaturesOnboardingCompleted { get; set; }
 
+    /// <summary>True once a touch panel's actions tray has been opened; the
+    /// panel shows a swipe-up hint until then. Same scoping as
+    /// <see cref="OnboardingCompleted"/>. No schema migration on purpose:
+    /// every install shows the hint until the tray is opened once.</summary>
+    public bool PanelSwipeOnboardingCompleted { get; set; }
+
     /// <summary>True once at least one Nexus 2 personalization category has been
     /// imported through the migration screen. Install-scoped like
     /// <see cref="Nexus2MigrationOffered"/>: excluded from CloneSettings and
