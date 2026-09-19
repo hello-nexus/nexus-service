@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 using Microsoft.Extensions.Hosting;
@@ -322,13 +323,25 @@ public sealed class RecentAppsService : BackgroundService
     /// used by the PUT/DELETE recent-apps routes to flush an explicit user
     /// edit immediately rather than waiting out PersistInterval; the
     /// periodic timer and shutdown flush call it unforced, a no-op unless a
-    /// focus-driven ring change is pending.
+    /// focus-driven ring change is pending AND some instance is actually in
+    /// recentApps mode - every alt+tab on every host would otherwise pulse
+    /// IConfigStore.OnChanged (profile dirty-marking, a settings.json
+    /// rewrite) every PersistInterval regardless of whether Recent Apps is
+    /// even in use. _dirty is left set when skipped for this reason, so the
+    /// pending change persists as soon as an instance switches into the mode.
     /// </summary>
     internal void Persist(bool force = false)
     {
-        if (!force && !_dirty)
+        if (!force)
         {
-            return;
+            if (!_dirty)
+            {
+                return;
+            }
+            if (!_store.Load().StreamDeck.Instances.Values.Any(i => i.Mode == "recentApps"))
+            {
+                return;
+            }
         }
         _dirty = false;
         var ring = _state.RingSnapshot();

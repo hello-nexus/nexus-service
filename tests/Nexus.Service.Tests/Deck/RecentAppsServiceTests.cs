@@ -194,6 +194,32 @@ public sealed class RecentAppsServiceTests : IDisposable
         Assert.Contains(Store.Load().StreamDeck.RecentApps, a => a.ProcessKey == "chrome");
     }
 
+    /// <summary>
+    /// A periodic (unforced) persist must not mark the profile dirty for a
+    /// host where nothing is even in Recent Apps mode - only the routes'
+    /// forced flush (previous test) is unconditional.
+    /// </summary>
+    [Fact]
+    public void UnforcedPersist_SkipsWritingWhenNoInstanceIsInRecentAppsMode()
+    {
+        Focus("chrome");
+
+        _service!.Persist();
+
+        Assert.DoesNotContain(Store.Load().StreamDeck.RecentApps, a => a.ProcessKey == "chrome");
+    }
+
+    [Fact]
+    public void UnforcedPersist_WritesWhenAnInstanceIsInRecentAppsMode()
+    {
+        Store.Update(s => s.StreamDeck.Instances["streamdeck:sim-0001"] = new DeckInstance { Mode = "recentApps" });
+
+        Focus("chrome");
+        _service!.Persist();
+
+        Assert.Contains(Store.Load().StreamDeck.RecentApps, a => a.ProcessKey == "chrome");
+    }
+
     /// <summary>A pid from a previous service run can be reused by an unrelated process by the time this run starts, so ExecuteAsync must never seed one across a restart.</summary>
     [Fact]
     public async Task ExecuteAsync_NeverTrustsAPersistedPidAcrossARestart()
