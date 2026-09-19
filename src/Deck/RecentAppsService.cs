@@ -100,11 +100,22 @@ public sealed class RecentAppsService : BackgroundService
         {
             _subscribed = true;
             _persistTimer = _time.CreateTimer(_ => SafePersist(), null, PersistInterval, PersistInterval);
+            // Re-resolve every seeded entry so a label or shortcut that was
+            // missing (or stale) in the persisted ring is refreshed off the
+            // focus thread on the first broadcast.
+            foreach (var entry in seeded)
+            {
+                _pendingShortcutResolve.Add(entry.ProcessKey);
+            }
         }
         _screenTime.FocusChanged += OnFocusChanged;
         stoppingToken.Register(Unsubscribe);
         // Catch an app that was already focused when the service started.
         OnFocusChanged();
+        if (seeded.Count > 0)
+        {
+            ScheduleBroadcast();
+        }
         return Task.CompletedTask;
     }
 

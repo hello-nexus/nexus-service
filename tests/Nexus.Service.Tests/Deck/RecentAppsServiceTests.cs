@@ -279,6 +279,36 @@ public sealed class RecentAppsServiceTests : IDisposable
         }
     }
 
+    /// <summary>A ring persisted before a shortcut resolved (or under an older label) refreshes on startup, off the focus thread.</summary>
+    [Fact]
+    public async Task ExecuteAsync_ReResolvesSeededEntriesShortcutAndLabel()
+    {
+        Store.Update(s => s.StreamDeck.RecentApps.Add(new RecentApp { ProcessKey = "msedge", Name = "msedge" }));
+        _shortcuts.All.Add(new Shortcut { Id = "MSEdge", Name = "Microsoft Edge", ProcessName = "msedge" });
+
+        var service = BuildService();
+        await service.StartAsync(CancellationToken.None);
+        try
+        {
+            RecentApp? entry = null;
+            var deadline = DateTime.UtcNow + TimeSpan.FromSeconds(5);
+            while ((entry is null || entry.ShortcutId is null) && DateTime.UtcNow < deadline)
+            {
+                entry = State.RingSnapshot().Find(a => a.ProcessKey == "msedge");
+                if (entry?.ShortcutId is null)
+                {
+                    Thread.Sleep(10);
+                }
+            }
+            Assert.Equal("MSEdge", entry?.ShortcutId);
+            Assert.Equal("Microsoft Edge", entry?.Name);
+        }
+        finally
+        {
+            service.Dispose();
+        }
+    }
+
     [Fact]
     public void FocusChange_BroadcastsCoalescedRecentsFrame()
     {
