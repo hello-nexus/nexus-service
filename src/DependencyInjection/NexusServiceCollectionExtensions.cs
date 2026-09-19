@@ -801,6 +801,7 @@ public static class NexusServiceCollectionExtensions
                 recentAppsState: sp.GetRequiredService<Nexus.Service.Deck.RecentAppsState>(),
                 recentAppsActivator: sp.GetRequiredService<Nexus.Service.Deck.RecentAppsActivator>()));
         services.AddHostedService(sp => sp.GetRequiredService<Nexus.Service.Peripherals.StreamDeck.StreamDeckConnectionWorker>());
+        services.AddSingleton<Nexus.Service.Deck.DeckPresetActivator>();
         services.AddSingleton<Nexus.Service.Deck.RecentAppsActivator>(sp => new Nexus.Service.Deck.RecentAppsActivator(
             sp.GetRequiredService<Nexus.Service.Activity.IProcessActionsProvider>(),
             sp.GetRequiredService<Nexus.Service.Activity.IShortcutsProvider>(),

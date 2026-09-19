@@ -347,7 +347,7 @@ public static class DeckRoutes
         }).AllowPanel();
 
         app.MapPut("/deck/instances/{id}", (
-            string id, UpdateDeckInstanceRequest body, IConfigStore store, MultiplexHub hub, StreamDeckConnectionWorker worker) =>
+            string id, UpdateDeckInstanceRequest body, IConfigStore store, DeckPresetActivator activator) =>
         {
             if (!IsValidInstanceId(id))
             {
@@ -362,34 +362,8 @@ public static class DeckRoutes
                 return Results.Json(ApiResponse.Fail("preset not found"), AppJsonContext.Default.ApiResponse, statusCode: 404);
             }
 
-            DeckInstance? result = null;
-            store.Update(s =>
-            {
-                if (!s.StreamDeck.Instances.TryGetValue(id, out var instance))
-                {
-                    instance = new DeckInstance();
-                    s.StreamDeck.Instances[id] = instance;
-                }
-                if (body.Mode is not null)
-                {
-                    instance.Mode = body.Mode;
-                }
-                if (body.ActivePresetId is not null)
-                {
-                    instance.ActivePresetId = body.ActivePresetId;
-                }
-                result = instance;
-            });
-
-            if (id.StartsWith("streamdeck:", System.StringComparison.Ordinal))
-            {
-                var serial = id["streamdeck:".Length..];
-                worker.SetNav(serial, 0, System.Array.Empty<int>());
-                PanelTopics.BroadcastStreamDeck(hub, new Nexus.Service.Models.Peripherals.StreamDeck.StreamDeckChangedFrame { Kind = "config", Serial = serial });
-            }
-
-            PanelTopics.BroadcastDeck(hub, new DeckChangedFrame { Kind = "active", InstanceId = id, Instance = result! });
-            return Results.Json(new DeckInstanceResponse { Instance = result! }, AppJsonContext.Default.DeckInstanceResponse);
+            var result = activator.Activate(id, body.ActivePresetId, body.Mode);
+            return Results.Json(new DeckInstanceResponse { Instance = result }, AppJsonContext.Default.DeckInstanceResponse);
         }).AllowPanel();
 
         app.MapGet("/deck/recent-apps", (IConfigStore store, RecentAppsState state) =>
