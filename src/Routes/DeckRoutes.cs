@@ -102,7 +102,7 @@ public static class DeckRoutes
                 }
                 else
                 {
-                    deck = body.Deck is not null ? DeckConfigNavigation.DeepCopyConfig(body.Deck) : new DeckConfig();
+                    deck = body.Deck is not null ? DeckConfigNavigation.DeepCopyConfig(body.Deck) : DeckConfigNavigation.EmptyConfig();
                 }
 
                 created = new DeckPreset
@@ -172,6 +172,11 @@ public static class DeckRoutes
                 if (body.Deck is not null)
                 {
                     p.Deck = DeckConfigNavigation.DeepCopyConfig(body.Deck);
+                }
+                // A preset must always have at least one page for its editor to add keys to.
+                if (p.Deck.Pages.Count == 0)
+                {
+                    p.Deck.Pages.Add(new DeckPage());
                 }
                 if (body.Cols is not null)
                 {
@@ -602,6 +607,7 @@ public static class DeckRoutes
                     Name = DeckModesMigration.UniqueName(s.StreamDeck.Presets, "Deck", "widget"),
                     Cols = System.Math.Clamp(cols ?? 2, 1, 8),
                     Rows = System.Math.Clamp(rows ?? 2, 1, 8),
+                    Deck = DeckConfigNavigation.EmptyConfig(),
                 };
                 s.StreamDeck.Presets.Add(preset);
                 presetId = preset.Id;

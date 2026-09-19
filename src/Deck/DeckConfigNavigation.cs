@@ -21,6 +21,9 @@ public enum DeckTargetKind { Physical, Widget }
 /// </summary>
 public static class DeckConfigNavigation
 {
+    /// <summary>A preset always needs at least one page for its editor to add keys to; DeckConfigConverter.Write emits pages:[] for a bare `new DeckConfig()`, which only its own Read self-heals.</summary>
+    public static DeckConfig EmptyConfig() => new() { Pages = { new DeckPage() } };
+
     /// <summary>
     /// The slot list at the given page + folder path, or null when the page
     /// is out of range or the folder path no longer resolves (a folder was

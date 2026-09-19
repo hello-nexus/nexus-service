@@ -77,7 +77,7 @@ public sealed class DeckRoutesTests : IClassFixture<DeckRoutesHostFactory>
     }
 
     [Fact]
-    public async Task CreatePreset_WithNoOptions_CreatesAnEmptyPreset()
+    public async Task CreatePreset_WithNoOptions_CreatesAnEmptyPresetWithOnePage()
     {
         var (factory, client) = Boot();
         using (factory)
@@ -85,7 +85,11 @@ public sealed class DeckRoutesTests : IClassFixture<DeckRoutesHostFactory>
             var res = await client.PostAsync("/deck/presets", Json("""{"name":"Empty","cols":2,"rows":2}"""));
             Assert.True(res.IsSuccessStatusCode);
             using var doc = JsonDocument.Parse(await res.Content.ReadAsStringAsync());
-            Assert.Equal(0, doc.RootElement.GetProperty("preset").GetProperty("deck").GetProperty("pages").GetArrayLength());
+            var preset = doc.RootElement.GetProperty("preset");
+            Assert.Equal(1, preset.GetProperty("pageCount").GetInt32());
+            var pages = preset.GetProperty("deck").GetProperty("pages");
+            Assert.Equal(1, pages.GetArrayLength());
+            Assert.Equal(0, pages[0].GetProperty("slots").GetArrayLength());
         }
     }
 
@@ -284,6 +288,23 @@ public sealed class DeckRoutesTests : IClassFixture<DeckRoutesHostFactory>
     }
 
     [Fact]
+    public async Task UpdatePreset_ZeroPageDeck_NormalizesToOneEmptyPage()
+    {
+        var (factory, client) = Boot();
+        using (factory)
+        {
+            var store = factory.Services.GetRequiredService<IConfigStore>();
+            store.Update(s => s.StreamDeck.Presets.Add(new DeckPreset { Id = "p1", Name = "Old", Cols = 2, Rows = 2 }));
+            Assert.Empty(store.Load().StreamDeck.Presets.Find(p => p.Id == "p1")!.Deck.Pages);
+
+            var res = await client.PutAsync("/deck/presets/p1", Json("""{"name":"New"}"""));
+
+            Assert.True(res.IsSuccessStatusCode);
+            Assert.Single(store.Load().StreamDeck.Presets.Find(p => p.Id == "p1")!.Deck.Pages);
+        }
+    }
+
+    [Fact]
     public async Task UpdatePreset_UnknownId_Returns404()
     {
         var (factory, client) = Boot();
@@ -402,6 +423,7 @@ public sealed class DeckRoutesTests : IClassFixture<DeckRoutesHostFactory>
             var store = factory.Services.GetRequiredService<IConfigStore>();
             var preset = Assert.Single(store.Load().StreamDeck.Presets, p => p.Id == presetId);
             Assert.Equal((4, 2), (preset.Cols, preset.Rows));
+            Assert.Single(preset.Deck.Pages);
             Assert.Equal("fixed", store.Load().StreamDeck.Instances["widget:fresh"].Mode);
         }
     }
