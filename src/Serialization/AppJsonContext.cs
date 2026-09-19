@@ -1302,6 +1302,13 @@ namespace Nexus.Service.Serialization;
 [JsonSerializable(typeof(Nexus.Service.Models.Deck.ActivateRecentAppRequest))]
 [JsonSerializable(typeof(Nexus.Service.Persistence.PresetAppBinding))]
 [JsonSerializable(typeof(List<Nexus.Service.Persistence.PresetAppBinding>))]
+// Deck Modes: .nexus-deck package format (src/Deck/DeckPresetPackage.cs) + templates (GET /deck/templates).
+[JsonSerializable(typeof(Nexus.Service.Deck.DeckPackageManifest))]
+[JsonSerializable(typeof(Nexus.Service.Deck.DeckPackageMatch))]
+[JsonSerializable(typeof(Nexus.Service.Models.Deck.DeckTemplateSummary))]
+[JsonSerializable(typeof(Nexus.Service.Models.Deck.DeckTemplateDto))]
+[JsonSerializable(typeof(List<Nexus.Service.Models.Deck.DeckTemplateDto>))]
+[JsonSerializable(typeof(Nexus.Service.Models.Deck.DeckTemplatesListResponse))]
 // Elgato Stream Deck profile import
 [JsonSerializable(typeof(Nexus.Service.Models.Peripherals.StreamDeck.ElgatoProfileSummaryDto))]
 [JsonSerializable(typeof(List<Nexus.Service.Models.Peripherals.StreamDeck.ElgatoProfileSummaryDto>))]

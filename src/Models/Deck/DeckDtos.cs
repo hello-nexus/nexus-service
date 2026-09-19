@@ -49,6 +49,31 @@ public sealed class CreateDeckPresetRequest
     public string? CopyOfPresetId { get; set; }
 }
 
+/// <summary>One .nexus-deck template before per-request installed-app resolution (see <see cref="DeckPresetCatalog"/>).</summary>
+public class DeckTemplateSummary
+{
+    public string Id { get; set; } = "";
+    public string Name { get; set; } = "";
+    public string? Description { get; set; }
+    public int Cols { get; set; }
+    public int Rows { get; set; }
+    public DeckPackageMatch? Match { get; set; }
+    public int PageCount { get; set; }
+}
+
+/// <summary>GET /deck/templates response item: a summary plus the installed-app resolution against IShortcutsProvider.GetAll().</summary>
+public sealed class DeckTemplateDto : DeckTemplateSummary
+{
+    public string? InstalledAppId { get; set; }
+    public string? InstalledAppName { get; set; }
+    public string? ProcessName { get; set; }
+}
+
+public sealed class DeckTemplatesListResponse
+{
+    public List<DeckTemplateDto> Templates { get; set; } = new();
+}
+
 /// <summary>PUT /deck/presets/{id} body - the editor's auto-save; every field is optional.</summary>
 public sealed class UpdateDeckPresetRequest
 {

@@ -1,0 +1,202 @@
+{
+  "format": 1,
+  "id": "powerpoint",
+  "name": "Microsoft PowerPoint",
+  "author": "Nexus",
+  "version": "1.0.0",
+  "description": "Slideshow presenting and editing for PowerPoint.",
+  "match": {
+    "processNames": [
+      "powerpnt"
+    ],
+    "displayNames": [
+      "Microsoft PowerPoint",
+      "PowerPoint"
+    ]
+  },
+  "cols": 5,
+  "rows": 3,
+  "deck": {
+    "pages": [
+      {
+        "slots": [
+          {
+            "icon": {
+              "kind": "lucide",
+              "value": "Play"
+            },
+            "label": "Start Show",
+            "action": {
+              "type": "hotkey",
+              "keys": "f5"
+            },
+            "color": "#1e8449"
+          },
+          {
+            "icon": {
+              "kind": "lucide",
+              "value": "Play"
+            },
+            "label": "From Current",
+            "action": {
+              "type": "hotkey",
+              "keys": "shift+f5"
+            }
+          },
+          {
+            "icon": {
+              "kind": "lucide",
+              "value": "Power"
+            },
+            "label": "End Show",
+            "action": {
+              "type": "hotkey",
+              "keys": "escape"
+            },
+            "color": "#c0392b"
+          },
+          {
+            "icon": {
+              "kind": "lucide",
+              "value": "ChevronLeft"
+            },
+            "label": "Previous",
+            "action": {
+              "type": "hotkey",
+              "keys": "left"
+            },
+            "color": "#4a5568"
+          },
+          {
+            "icon": {
+              "kind": "lucide",
+              "value": "ChevronRight"
+            },
+            "label": "Next",
+            "action": {
+              "type": "hotkey",
+              "keys": "right"
+            },
+            "color": "#4a5568"
+          },
+          {
+            "icon": {
+              "kind": "lucide",
+              "value": "Moon"
+            },
+            "label": "Black Screen",
+            "action": {
+              "type": "hotkey",
+              "keys": "b"
+            }
+          },
+          {
+            "icon": {
+              "kind": "lucide",
+              "value": "Sun"
+            },
+            "label": "White Screen",
+            "action": {
+              "type": "hotkey",
+              "keys": "w"
+            }
+          },
+          {
+            "icon": {
+              "kind": "lucide",
+              "value": "MousePointer"
+            },
+            "label": "Laser",
+            "action": {
+              "type": "hotkey",
+              "keys": "ctrl+l"
+            }
+          },
+          {
+            "icon": {
+              "kind": "lucide",
+              "value": "Palette"
+            },
+            "label": "Pen",
+            "action": {
+              "type": "hotkey",
+              "keys": "ctrl+p"
+            }
+          },
+          {
+            "icon": {
+              "kind": "lucide",
+              "value": "Trash2"
+            },
+            "label": "Erase Ink",
+            "action": {
+              "type": "hotkey",
+              "keys": "e"
+            }
+          },
+          {
+            "icon": {
+              "kind": "lucide",
+              "value": "Monitor"
+            },
+            "label": "Presenter View",
+            "action": {
+              "type": "hotkey",
+              "keys": "alt+f5"
+            }
+          },
+          {
+            "icon": {
+              "kind": "lucide",
+              "value": "Plus"
+            },
+            "label": "New Slide",
+            "action": {
+              "type": "hotkey",
+              "keys": "ctrl+m"
+            }
+          },
+          {
+            "icon": {
+              "kind": "lucide",
+              "value": "Copy"
+            },
+            "label": "Duplicate",
+            "action": {
+              "type": "hotkey",
+              "keys": "ctrl+d"
+            }
+          },
+          {
+            "icon": {
+              "kind": "lucide",
+              "value": "Undo2"
+            },
+            "label": "Undo",
+            "action": {
+              "type": "hotkey",
+              "keys": "ctrl+z"
+            }
+          },
+          {
+            "icon": {
+              "kind": "lucide",
+              "value": "Save"
+            },
+            "label": "Save",
+            "action": {
+              "type": "hotkey",
+              "keys": "ctrl+s"
+            }
+          }
+        ]
+      }
+    ],
+    "defaultTitleStyle": {
+      "show": true,
+      "align": "bottom",
+      "size": 14,
+      "bold": true
+    }
+  }
+}

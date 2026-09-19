@@ -1,0 +1,202 @@
+{
+  "format": 1,
+  "id": "zoom",
+  "name": "Zoom",
+  "author": "Nexus",
+  "version": "1.0.0",
+  "description": "In-meeting controls for Zoom.",
+  "match": {
+    "processNames": [
+      "zoom"
+    ],
+    "displayNames": [
+      "Zoom",
+      "Zoom Workplace"
+    ]
+  },
+  "cols": 5,
+  "rows": 3,
+  "deck": {
+    "pages": [
+      {
+        "slots": [
+          {
+            "icon": {
+              "kind": "lucide",
+              "value": "MicOff"
+            },
+            "label": "Mute",
+            "action": {
+              "type": "hotkey",
+              "keys": "alt+a"
+            },
+            "color": "#c0392b"
+          },
+          {
+            "icon": {
+              "kind": "lucide",
+              "value": "Camera"
+            },
+            "label": "Video",
+            "action": {
+              "type": "hotkey",
+              "keys": "alt+v"
+            },
+            "color": "#2874a6"
+          },
+          {
+            "icon": {
+              "kind": "lucide",
+              "value": "Monitor"
+            },
+            "label": "Share",
+            "action": {
+              "type": "hotkey",
+              "keys": "alt+s"
+            }
+          },
+          {
+            "icon": {
+              "kind": "lucide",
+              "value": "Bell"
+            },
+            "label": "Raise Hand",
+            "action": {
+              "type": "hotkey",
+              "keys": "alt+y"
+            }
+          },
+          {
+            "icon": {
+              "kind": "lucide",
+              "value": "LogOut"
+            },
+            "label": "Leave",
+            "action": {
+              "type": "hotkey",
+              "keys": "alt+q"
+            },
+            "color": "#c0392b"
+          },
+          {
+            "icon": {
+              "kind": "lucide",
+              "value": "MessageSquare"
+            },
+            "label": "Chat",
+            "action": {
+              "type": "hotkey",
+              "keys": "alt+h"
+            }
+          },
+          {
+            "icon": {
+              "kind": "lucide",
+              "value": "AppWindow"
+            },
+            "label": "Participants",
+            "action": {
+              "type": "hotkey",
+              "keys": "alt+u"
+            }
+          },
+          {
+            "icon": {
+              "kind": "lucide",
+              "value": "Plus"
+            },
+            "label": "Invite",
+            "action": {
+              "type": "hotkey",
+              "keys": "alt+i"
+            }
+          },
+          {
+            "icon": {
+              "kind": "lucide",
+              "value": "Disc"
+            },
+            "label": "Record",
+            "action": {
+              "type": "hotkey",
+              "keys": "alt+r"
+            }
+          },
+          {
+            "icon": {
+              "kind": "lucide",
+              "value": "Pause"
+            },
+            "label": "Pause Share",
+            "action": {
+              "type": "hotkey",
+              "keys": "alt+t"
+            }
+          },
+          {
+            "icon": {
+              "kind": "lucide",
+              "value": "Tv"
+            },
+            "label": "Speaker View",
+            "action": {
+              "type": "hotkey",
+              "keys": "alt+f1"
+            }
+          },
+          {
+            "icon": {
+              "kind": "lucide",
+              "value": "Layers"
+            },
+            "label": "Gallery View",
+            "action": {
+              "type": "hotkey",
+              "keys": "alt+f2"
+            }
+          },
+          {
+            "icon": {
+              "kind": "lucide",
+              "value": "Monitor"
+            },
+            "label": "Fullscreen",
+            "action": {
+              "type": "hotkey",
+              "keys": "alt+f"
+            }
+          },
+          {
+            "icon": {
+              "kind": "lucide",
+              "value": "VolumeX"
+            },
+            "label": "Mute All",
+            "action": {
+              "type": "hotkey",
+              "keys": "alt+m"
+            },
+            "color": "#c0392b"
+          },
+          {
+            "icon": {
+              "kind": "lucide",
+              "value": "Camera"
+            },
+            "label": "Screenshot",
+            "action": {
+              "type": "hotkey",
+              "keys": "alt+shift+t"
+            }
+          }
+        ]
+      }
+    ],
+    "defaultTitleStyle": {
+      "show": true,
+      "align": "bottom",
+      "size": 14,
+      "bold": true
+    }
+  }
+}

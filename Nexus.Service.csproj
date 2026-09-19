@@ -304,6 +304,14 @@
     <EmbeddedResource Include="data\deck-icons\*.png">
       <LogicalName>deck-icon-%(Filename).png</LogicalName>
     </EmbeddedResource>
+    <!-- Bundled .nexus-deck preset templates, one source dir per app under
+         data/deck-presets/<id>/ (preset.json + optional assets/<sha256>.<ext>).
+         %(RecursiveDir) keeps the <id>/... shape; DeckPresetCatalog normalizes
+         the separator the same way BundledFirmwareCatalog does, since it
+         differs by build host. -->
+    <EmbeddedResource Include="data\deck-presets\**\*">
+      <LogicalName>deck-presets/%(RecursiveDir)%(Filename)%(Extension)</LogicalName>
+    </EmbeddedResource>
   </ItemGroup>
 
   <!-- GLSL fragment shaders: one file per animate effect under

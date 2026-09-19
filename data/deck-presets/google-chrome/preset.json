@@ -1,0 +1,200 @@
+{
+  "format": 1,
+  "id": "google-chrome",
+  "name": "Google Chrome",
+  "author": "Nexus",
+  "version": "1.0.0",
+  "description": "Tab, bookmark and navigation shortcuts for Chrome.",
+  "match": {
+    "processNames": [
+      "chrome"
+    ],
+    "displayNames": [
+      "Google Chrome"
+    ]
+  },
+  "cols": 5,
+  "rows": 3,
+  "deck": {
+    "pages": [
+      {
+        "slots": [
+          {
+            "icon": {
+              "kind": "lucide",
+              "value": "Plus"
+            },
+            "label": "New Tab",
+            "action": {
+              "type": "hotkey",
+              "keys": "ctrl+t"
+            }
+          },
+          {
+            "icon": {
+              "kind": "lucide",
+              "value": "Trash2"
+            },
+            "label": "Close Tab",
+            "action": {
+              "type": "hotkey",
+              "keys": "ctrl+w"
+            },
+            "color": "#c0392b"
+          },
+          {
+            "icon": {
+              "kind": "lucide",
+              "value": "RotateCcw"
+            },
+            "label": "Reopen Tab",
+            "action": {
+              "type": "hotkey",
+              "keys": "ctrl+shift+t"
+            }
+          },
+          {
+            "icon": {
+              "kind": "lucide",
+              "value": "ChevronLeft"
+            },
+            "label": "Prev Tab",
+            "action": {
+              "type": "hotkey",
+              "keys": "ctrl+shift+tab"
+            },
+            "color": "#4a5568"
+          },
+          {
+            "icon": {
+              "kind": "lucide",
+              "value": "ChevronRight"
+            },
+            "label": "Next Tab",
+            "action": {
+              "type": "hotkey",
+              "keys": "ctrl+tab"
+            },
+            "color": "#4a5568"
+          },
+          {
+            "icon": {
+              "kind": "lucide",
+              "value": "Star"
+            },
+            "label": "Bookmark",
+            "action": {
+              "type": "hotkey",
+              "keys": "ctrl+d"
+            }
+          },
+          {
+            "icon": {
+              "kind": "lucide",
+              "value": "Clock"
+            },
+            "label": "History",
+            "action": {
+              "type": "hotkey",
+              "keys": "ctrl+h"
+            }
+          },
+          {
+            "icon": {
+              "kind": "lucide",
+              "value": "Download"
+            },
+            "label": "Downloads",
+            "action": {
+              "type": "hotkey",
+              "keys": "ctrl+j"
+            }
+          },
+          {
+            "icon": {
+              "kind": "lucide",
+              "value": "Search"
+            },
+            "label": "Find",
+            "action": {
+              "type": "hotkey",
+              "keys": "ctrl+f"
+            }
+          },
+          {
+            "icon": {
+              "kind": "lucide",
+              "value": "RefreshCw"
+            },
+            "label": "Reload",
+            "action": {
+              "type": "hotkey",
+              "keys": "ctrl+r"
+            }
+          },
+          {
+            "icon": {
+              "kind": "lucide",
+              "value": "Eye"
+            },
+            "label": "Incognito",
+            "action": {
+              "type": "hotkey",
+              "keys": "ctrl+shift+n"
+            }
+          },
+          {
+            "icon": {
+              "kind": "lucide",
+              "value": "AppWindow"
+            },
+            "label": "New Window",
+            "action": {
+              "type": "hotkey",
+              "keys": "ctrl+n"
+            }
+          },
+          {
+            "icon": {
+              "kind": "lucide",
+              "value": "Monitor"
+            },
+            "label": "Fullscreen",
+            "action": {
+              "type": "hotkey",
+              "keys": "f11"
+            }
+          },
+          {
+            "icon": {
+              "kind": "lucide",
+              "value": "Terminal"
+            },
+            "label": "DevTools",
+            "action": {
+              "type": "hotkey",
+              "keys": "f12"
+            }
+          },
+          {
+            "icon": {
+              "kind": "lucide",
+              "value": "Globe"
+            },
+            "label": "Address Bar",
+            "action": {
+              "type": "hotkey",
+              "keys": "ctrl+l"
+            }
+          }
+        ]
+      }
+    ],
+    "defaultTitleStyle": {
+      "show": true,
+      "align": "bottom",
+      "size": 14,
+      "bold": true
+    }
+  }
+}

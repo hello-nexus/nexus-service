@@ -1,0 +1,312 @@
+{
+  "format": 1,
+  "id": "photoshop",
+  "name": "Adobe Photoshop",
+  "author": "Nexus",
+  "version": "1.0.0",
+  "description": "Tools, layers and adjustments for Photoshop.",
+  "match": {
+    "processNames": [
+      "photoshop"
+    ],
+    "displayNames": [
+      "Adobe Photoshop"
+    ]
+  },
+  "cols": 5,
+  "rows": 3,
+  "deck": {
+    "pages": [
+      {
+        "slots": [
+          {
+            "icon": {
+              "kind": "lucide",
+              "value": "MousePointer"
+            },
+            "label": "Move",
+            "action": {
+              "type": "hotkey",
+              "keys": "v"
+            }
+          },
+          {
+            "icon": {
+              "kind": "lucide",
+              "value": "Copy"
+            },
+            "label": "Marquee",
+            "action": {
+              "type": "hotkey",
+              "keys": "m"
+            }
+          },
+          {
+            "icon": {
+              "kind": "lucide",
+              "value": "Sparkles"
+            },
+            "label": "Lasso",
+            "action": {
+              "type": "hotkey",
+              "keys": "l"
+            }
+          },
+          {
+            "icon": {
+              "kind": "lucide",
+              "value": "Palette"
+            },
+            "label": "Brush",
+            "action": {
+              "type": "hotkey",
+              "keys": "b"
+            }
+          },
+          {
+            "icon": {
+              "kind": "lucide",
+              "value": "Trash2"
+            },
+            "label": "Eraser",
+            "action": {
+              "type": "hotkey",
+              "keys": "e"
+            }
+          },
+          {
+            "icon": {
+              "kind": "lucide",
+              "value": "Type"
+            },
+            "label": "Type",
+            "action": {
+              "type": "hotkey",
+              "keys": "t"
+            }
+          },
+          {
+            "icon": {
+              "kind": "lucide",
+              "value": "Image"
+            },
+            "label": "Crop",
+            "action": {
+              "type": "hotkey",
+              "keys": "c"
+            }
+          },
+          {
+            "icon": {
+              "kind": "lucide",
+              "value": "Search"
+            },
+            "label": "Zoom",
+            "action": {
+              "type": "hotkey",
+              "keys": "z"
+            }
+          },
+          {
+            "icon": {
+              "kind": "lucide",
+              "value": "Undo2"
+            },
+            "label": "Undo",
+            "action": {
+              "type": "hotkey",
+              "keys": "ctrl+z"
+            }
+          },
+          {
+            "icon": {
+              "kind": "lucide",
+              "value": "RotateCcw"
+            },
+            "label": "Redo",
+            "action": {
+              "type": "hotkey",
+              "keys": "ctrl+shift+z"
+            }
+          },
+          {
+            "icon": {
+              "kind": "lucide",
+              "value": "Plus"
+            },
+            "label": "New Layer",
+            "action": {
+              "type": "hotkey",
+              "keys": "ctrl+shift+n"
+            }
+          },
+          {
+            "icon": {
+              "kind": "lucide",
+              "value": "Layers"
+            },
+            "label": "Duplicate",
+            "action": {
+              "type": "hotkey",
+              "keys": "ctrl+j"
+            }
+          },
+          {
+            "icon": {
+              "kind": "lucide",
+              "value": "Sliders"
+            },
+            "label": "Transform",
+            "action": {
+              "type": "hotkey",
+              "keys": "ctrl+t"
+            }
+          },
+          {
+            "icon": {
+              "kind": "lucide",
+              "value": "Eye"
+            },
+            "label": "Deselect",
+            "action": {
+              "type": "hotkey",
+              "keys": "ctrl+d"
+            }
+          },
+          {
+            "icon": {
+              "kind": "lucide",
+              "value": "Save"
+            },
+            "label": "Save",
+            "action": {
+              "type": "hotkey",
+              "keys": "ctrl+s"
+            },
+            "color": "#1e8449"
+          }
+        ]
+      },
+      {
+        "slots": [
+          {
+            "icon": {
+              "kind": "lucide",
+              "value": "Monitor"
+            },
+            "label": "Fit Screen",
+            "action": {
+              "type": "hotkey",
+              "keys": "ctrl+0"
+            }
+          },
+          {
+            "icon": {
+              "kind": "lucide",
+              "value": "Sliders"
+            },
+            "label": "Levels",
+            "action": {
+              "type": "hotkey",
+              "keys": "ctrl+l"
+            }
+          },
+          {
+            "icon": {
+              "kind": "lucide",
+              "value": "Activity"
+            },
+            "label": "Curves",
+            "action": {
+              "type": "hotkey",
+              "keys": "ctrl+m"
+            }
+          },
+          {
+            "icon": {
+              "kind": "lucide",
+              "value": "Palette"
+            },
+            "label": "Hue / Sat",
+            "action": {
+              "type": "hotkey",
+              "keys": "ctrl+u"
+            }
+          },
+          {
+            "icon": {
+              "kind": "lucide",
+              "value": "Layers"
+            },
+            "label": "Merge Down",
+            "action": {
+              "type": "hotkey",
+              "keys": "ctrl+e"
+            }
+          },
+          {
+            "icon": {
+              "kind": "lucide",
+              "value": "RefreshCw"
+            },
+            "label": "Invert Sel",
+            "action": {
+              "type": "hotkey",
+              "keys": "ctrl+shift+i"
+            }
+          },
+          {
+            "icon": {
+              "kind": "lucide",
+              "value": "Upload"
+            },
+            "label": "Export",
+            "action": {
+              "type": "hotkey",
+              "keys": "ctrl+alt+shift+w"
+            }
+          },
+          {
+            "icon": {
+              "kind": "lucide",
+              "value": "Copy"
+            },
+            "label": "Select All",
+            "action": {
+              "type": "hotkey",
+              "keys": "ctrl+a"
+            }
+          },
+          {
+            "icon": {
+              "kind": "lucide",
+              "value": "Flame"
+            },
+            "label": "Fill",
+            "action": {
+              "type": "hotkey",
+              "keys": "shift+f5"
+            }
+          },
+          {
+            "icon": {
+              "kind": "lucide",
+              "value": "Sliders"
+            },
+            "label": "Free Transform",
+            "action": {
+              "type": "hotkey",
+              "keys": "ctrl+t"
+            }
+          }
+        ]
+      }
+    ],
+    "defaultTitleStyle": {
+      "show": true,
+      "align": "bottom",
+      "size": 14,
+      "bold": true
+    }
+  }
+}

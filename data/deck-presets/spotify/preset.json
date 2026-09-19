@@ -1,0 +1,199 @@
+{
+  "format": 1,
+  "id": "spotify",
+  "name": "Spotify",
+  "author": "Nexus",
+  "version": "1.0.0",
+  "description": "Playback, volume and library shortcuts for Spotify.",
+  "match": {
+    "processNames": [
+      "spotify"
+    ],
+    "displayNames": [
+      "Spotify"
+    ]
+  },
+  "cols": 5,
+  "rows": 3,
+  "deck": {
+    "pages": [
+      {
+        "slots": [
+          {
+            "icon": {
+              "kind": "lucide",
+              "value": "Play"
+            },
+            "label": "Play / Pause",
+            "action": {
+              "type": "hotkey",
+              "keys": "space"
+            },
+            "color": "#1e8449"
+          },
+          {
+            "icon": {
+              "kind": "lucide",
+              "value": "SkipBack"
+            },
+            "label": "Previous",
+            "action": {
+              "type": "hotkey",
+              "keys": "ctrl+left"
+            }
+          },
+          {
+            "icon": {
+              "kind": "lucide",
+              "value": "SkipForward"
+            },
+            "label": "Next",
+            "action": {
+              "type": "hotkey",
+              "keys": "ctrl+right"
+            }
+          },
+          {
+            "icon": {
+              "kind": "lucide",
+              "value": "Volume1"
+            },
+            "label": "Vol Down",
+            "action": {
+              "type": "hotkey",
+              "keys": "ctrl+down"
+            }
+          },
+          {
+            "icon": {
+              "kind": "lucide",
+              "value": "Volume2"
+            },
+            "label": "Vol Up",
+            "action": {
+              "type": "hotkey",
+              "keys": "ctrl+up"
+            }
+          },
+          {
+            "icon": {
+              "kind": "lucide",
+              "value": "Sparkles"
+            },
+            "label": "Shuffle",
+            "action": {
+              "type": "hotkey",
+              "keys": "ctrl+s"
+            }
+          },
+          {
+            "icon": {
+              "kind": "lucide",
+              "value": "RotateCcw"
+            },
+            "label": "Repeat",
+            "action": {
+              "type": "hotkey",
+              "keys": "ctrl+r"
+            }
+          },
+          {
+            "icon": {
+              "kind": "lucide",
+              "value": "Heart"
+            },
+            "label": "Like",
+            "action": {
+              "type": "hotkey",
+              "keys": "alt+shift+b"
+            }
+          },
+          {
+            "icon": {
+              "kind": "lucide",
+              "value": "ListOrdered"
+            },
+            "label": "Queue",
+            "action": {
+              "type": "hotkey",
+              "keys": "alt+shift+q"
+            }
+          },
+          {
+            "icon": {
+              "kind": "lucide",
+              "value": "Disc"
+            },
+            "label": "Now Playing",
+            "action": {
+              "type": "hotkey",
+              "keys": "alt+shift+j"
+            }
+          },
+          {
+            "icon": {
+              "kind": "lucide",
+              "value": "Home"
+            },
+            "label": "Home",
+            "action": {
+              "type": "hotkey",
+              "keys": "alt+shift+h"
+            }
+          },
+          {
+            "icon": {
+              "kind": "lucide",
+              "value": "Search"
+            },
+            "label": "Search",
+            "action": {
+              "type": "hotkey",
+              "keys": "ctrl+l"
+            }
+          },
+          {
+            "icon": {
+              "kind": "lucide",
+              "value": "Folder"
+            },
+            "label": "Library",
+            "action": {
+              "type": "hotkey",
+              "keys": "alt+shift+0"
+            }
+          },
+          {
+            "icon": {
+              "kind": "lucide",
+              "value": "VolumeX"
+            },
+            "label": "Mute",
+            "action": {
+              "type": "hotkey",
+              "keys": "ctrl+shift+down"
+            },
+            "color": "#c0392b"
+          },
+          {
+            "icon": {
+              "kind": "lucide",
+              "value": "Settings"
+            },
+            "label": "Settings",
+            "action": {
+              "type": "hotkey",
+              "keys": "ctrl+p"
+            }
+          }
+        ]
+      }
+    ],
+    "defaultTitleStyle": {
+      "show": true,
+      "align": "bottom",
+      "size": 14,
+      "bold": true
+    }
+  }
+}

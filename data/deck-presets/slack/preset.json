@@ -1,0 +1,203 @@
+{
+  "format": 1,
+  "id": "slack",
+  "name": "Slack",
+  "author": "Nexus",
+  "version": "1.0.0",
+  "description": "Navigation, unreads and huddle controls for Slack.",
+  "match": {
+    "processNames": [
+      "slack"
+    ],
+    "displayNames": [
+      "Slack"
+    ]
+  },
+  "cols": 5,
+  "rows": 3,
+  "deck": {
+    "pages": [
+      {
+        "slots": [
+          {
+            "icon": {
+              "kind": "lucide",
+              "value": "Search"
+            },
+            "label": "Quick Switch",
+            "action": {
+              "type": "hotkey",
+              "keys": "ctrl+k"
+            }
+          },
+          {
+            "icon": {
+              "kind": "lucide",
+              "value": "Mail"
+            },
+            "label": "All Unreads",
+            "action": {
+              "type": "hotkey",
+              "keys": "ctrl+shift+a"
+            }
+          },
+          {
+            "icon": {
+              "kind": "lucide",
+              "value": "MessageSquare"
+            },
+            "label": "Threads",
+            "action": {
+              "type": "hotkey",
+              "keys": "ctrl+shift+t"
+            }
+          },
+          {
+            "icon": {
+              "kind": "lucide",
+              "value": "Bell"
+            },
+            "label": "Mentions",
+            "action": {
+              "type": "hotkey",
+              "keys": "ctrl+shift+m"
+            }
+          },
+          {
+            "icon": {
+              "kind": "lucide",
+              "value": "AppWindow"
+            },
+            "label": "DMs",
+            "action": {
+              "type": "hotkey",
+              "keys": "ctrl+shift+k"
+            }
+          },
+          {
+            "icon": {
+              "kind": "lucide",
+              "value": "ArrowUp"
+            },
+            "label": "Prev Channel",
+            "action": {
+              "type": "hotkey",
+              "keys": "alt+up"
+            },
+            "color": "#4a5568"
+          },
+          {
+            "icon": {
+              "kind": "lucide",
+              "value": "ArrowDown"
+            },
+            "label": "Next Channel",
+            "action": {
+              "type": "hotkey",
+              "keys": "alt+down"
+            },
+            "color": "#4a5568"
+          },
+          {
+            "icon": {
+              "kind": "lucide",
+              "value": "ChevronLeft"
+            },
+            "label": "Prev Unread",
+            "action": {
+              "type": "hotkey",
+              "keys": "alt+shift+up"
+            },
+            "color": "#4a5568"
+          },
+          {
+            "icon": {
+              "kind": "lucide",
+              "value": "ChevronRight"
+            },
+            "label": "Next Unread",
+            "action": {
+              "type": "hotkey",
+              "keys": "alt+shift+down"
+            },
+            "color": "#4a5568"
+          },
+          {
+            "icon": {
+              "kind": "lucide",
+              "value": "Eye"
+            },
+            "label": "Mark All Read",
+            "action": {
+              "type": "hotkey",
+              "keys": "shift+escape"
+            }
+          },
+          {
+            "icon": {
+              "kind": "lucide",
+              "value": "Headphones"
+            },
+            "label": "Huddle",
+            "action": {
+              "type": "hotkey",
+              "keys": "ctrl+shift+h"
+            },
+            "color": "#1e8449"
+          },
+          {
+            "icon": {
+              "kind": "lucide",
+              "value": "MicOff"
+            },
+            "label": "Huddle Mute",
+            "action": {
+              "type": "hotkey",
+              "keys": "ctrl+shift+space"
+            },
+            "color": "#c0392b"
+          },
+          {
+            "icon": {
+              "kind": "lucide",
+              "value": "Sparkles"
+            },
+            "label": "Set Status",
+            "action": {
+              "type": "hotkey",
+              "keys": "ctrl+shift+y"
+            }
+          },
+          {
+            "icon": {
+              "kind": "lucide",
+              "value": "Upload"
+            },
+            "label": "Upload",
+            "action": {
+              "type": "hotkey",
+              "keys": "ctrl+u"
+            }
+          },
+          {
+            "icon": {
+              "kind": "lucide",
+              "value": "Settings"
+            },
+            "label": "Preferences",
+            "action": {
+              "type": "hotkey",
+              "keys": "ctrl+,"
+            }
+          }
+        ]
+      }
+    ],
+    "defaultTitleStyle": {
+      "show": true,
+      "align": "bottom",
+      "size": 14,
+      "bold": true
+    }
+  }
+}

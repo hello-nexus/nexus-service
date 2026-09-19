@@ -40,7 +40,8 @@ public static class DeckRoutes
         }).AllowPanel();
 
         app.MapPost("/deck/presets", (
-            CreateDeckPresetRequest body, HttpContext ctx, TokenService tokens, IConfigStore store, MultiplexHub hub) =>
+            CreateDeckPresetRequest body, HttpContext ctx, TokenService tokens, IConfigStore store, MultiplexHub hub,
+            DeckPresetCatalog catalog, Nexus.Service.Activity.IShortcutsProvider shortcuts) =>
         {
             var optionCount = (body.Deck is not null ? 1 : 0) + (body.TemplateId is not null ? 1 : 0) + (body.CopyOfPresetId is not null ? 1 : 0);
             if (optionCount > 1)
@@ -49,7 +50,7 @@ public static class DeckRoutes
             }
             if (body.TemplateId is not null)
             {
-                return Results.Json(ApiResponse.Fail("templates are not available yet"), AppJsonContext.Default.ApiResponse, statusCode: 501);
+                return CreateFromTemplate(body.TemplateId, store, hub, catalog, shortcuts);
             }
             var isDesktopCreate = ServiceTokenRequests.HasServiceToken(ctx, tokens);
             if (body.Deck is not null && !isDesktopCreate
@@ -328,6 +329,119 @@ public static class DeckRoutes
             return Results.Json(new DeckPresetAppsResponse { Preset = ToSummary(updated) }, AppJsonContext.Default.DeckPresetAppsResponse);
         }).LocalhostOnly();
 
+        app.MapGet("/deck/presets/{id}/export", (string id, IConfigStore store, DeckImageStore images) =>
+        {
+            var preset = store.Load().StreamDeck.Presets.Find(p => p.Id == id);
+            if (preset is null)
+            {
+                return Results.Json(ApiResponse.Fail("preset not found"), AppJsonContext.Default.ApiResponse, statusCode: 404);
+            }
+            var zipBytes = DeckPresetPackage.Write(preset, images);
+            return Results.File(zipBytes, "application/zip", SafeExportFileName(preset.Name) + ".nexus-deck");
+        }).LocalhostOnly();
+
+        app.MapPost("/deck/presets/import", async (
+            HttpContext ctx, IConfigStore store, MultiplexHub hub, DeckImageStore images, DeckPresetCatalog catalog) =>
+        {
+            var bodySize = ctx.Features.Get<Microsoft.AspNetCore.Http.Features.IHttpMaxRequestBodySizeFeature>();
+            if (bodySize is { IsReadOnly: false })
+            {
+                bodySize.MaxRequestBodySize = DeckPresetPackage.MaxPackageBytes;
+            }
+
+            using var buffered = new System.IO.MemoryStream();
+            try
+            {
+                await ctx.Request.Body.CopyToAsync(buffered, ctx.RequestAborted);
+            }
+            catch (System.Exception e) when (e is not System.OperationCanceledException)
+            {
+                return Results.Json(ApiResponse.Fail("package exceeds the 20 MB size limit"), AppJsonContext.Default.ApiResponse, statusCode: 400);
+            }
+            buffered.Position = 0;
+
+            DeckPackageReadResult read;
+            try
+            {
+                read = DeckPresetPackage.Read(new ZipPackageSource(buffered));
+            }
+            catch (System.IO.InvalidDataException)
+            {
+                return Results.Json(ApiResponse.Fail("not a valid .nexus-deck package"), AppJsonContext.Default.ApiResponse, statusCode: 400);
+            }
+            if (!read.Ok)
+            {
+                return Results.Json(ApiResponse.Fail(read.Error!), AppJsonContext.Default.ApiResponse, statusCode: 400);
+            }
+            var manifest = read.Manifest!;
+
+            var allowPrivileged = ctx.Request.Query["allowPrivileged"] == "1";
+            if (!allowPrivileged && DeckLayoutPolicy.PrivilegedActions(manifest.Deck).Any())
+            {
+                return Results.Json(ApiResponse.Fail("package contains privileged actions"), AppJsonContext.Default.ApiResponse, statusCode: 400);
+            }
+
+            var trimmedName = manifest.Name.Trim();
+            if (trimmedName.Length == 0)
+            {
+                return Results.Json(ApiResponse.Fail("preset.json is missing name"), AppJsonContext.Default.ApiResponse, statusCode: 400);
+            }
+
+            var capped = false;
+            var nameTaken = false;
+            DeckPreset? created = null;
+            store.Update(s =>
+            {
+                if (s.StreamDeck.Presets.Count >= PresetCap)
+                {
+                    capped = true;
+                    return;
+                }
+                if (s.StreamDeck.Presets.Any(p => string.Equals(p.Name, trimmedName, System.StringComparison.OrdinalIgnoreCase)))
+                {
+                    nameTaken = true;
+                    return;
+                }
+                created = new DeckPreset
+                {
+                    Id = DeckModesMigration.NewPresetId(),
+                    Name = trimmedName,
+                    Cols = System.Math.Clamp(manifest.Cols, 1, 8),
+                    Rows = System.Math.Clamp(manifest.Rows, 1, 8),
+                    Deck = DeckConfigNavigation.DeepCopyConfig(manifest.Deck),
+                    TemplateId = catalog.Open(manifest.Id) is not null ? manifest.Id : null,
+                    Author = manifest.Author,
+                    Version = manifest.Version,
+                    Description = manifest.Description,
+                };
+                s.StreamDeck.Presets.Add(created);
+            });
+
+            if (capped)
+            {
+                return Results.Json(ApiResponse.Fail("Deck preset cap of 50 reached"), AppJsonContext.Default.ApiResponse, statusCode: 400);
+            }
+            if (nameTaken)
+            {
+                return Results.Json(ApiResponse.Fail("preset_name_taken"), AppJsonContext.Default.ApiResponse, statusCode: 409);
+            }
+
+            foreach (var (assetId, asset) in read.Assets)
+            {
+                images.StoreValidated(assetId, asset.Ext, asset.Bytes);
+            }
+
+            BroadcastPresetsChanged(hub, store);
+            return Results.Json(new DeckPresetResponse { Preset = ToFull(created!) }, AppJsonContext.Default.DeckPresetResponse);
+        }).LocalhostOnly();
+
+        app.MapGet("/deck/templates", (DeckPresetCatalog catalog, Nexus.Service.Activity.IShortcutsProvider shortcuts) =>
+        {
+            var installed = shortcuts.GetAll();
+            var templates = catalog.Templates.Select(t => ResolveTemplate(t, installed)).ToList();
+            return Results.Json(new DeckTemplatesListResponse { Templates = templates }, AppJsonContext.Default.DeckTemplatesListResponse);
+        }).LocalhostOnly();
+
         app.MapGet("/deck/instances", (IConfigStore store) =>
         {
             var instances = new System.Collections.Generic.Dictionary<string, DeckInstance>(store.Load().StreamDeck.Instances);
@@ -547,6 +661,153 @@ public static class DeckRoutes
         {
             return "";
         }
+    }
+
+    /// <summary>Copies a bundled template into a new host-wide preset: name unique-suffixed on collision (DeckModesMigration's numbered form, since a template has no natural device-name grouping to parenthesize), apps pre-bound to the resolved installed app when one exists and is not already bound to another preset.</summary>
+    private static Microsoft.AspNetCore.Http.IResult CreateFromTemplate(
+        string templateId, IConfigStore store, MultiplexHub hub, DeckPresetCatalog catalog, Nexus.Service.Activity.IShortcutsProvider shortcuts)
+    {
+        var template = catalog.Open(templateId);
+        if (template is null)
+        {
+            return Results.Json(ApiResponse.Fail("template not found"), AppJsonContext.Default.ApiResponse, statusCode: 404);
+        }
+        var manifest = template.Manifest!;
+        var installedApp = ResolveInstalledApp(manifest.Match, shortcuts.GetAll());
+
+        var capped = false;
+        DeckPreset? created = null;
+        store.Update(s =>
+        {
+            if (s.StreamDeck.Presets.Count >= PresetCap)
+            {
+                capped = true;
+                return;
+            }
+            var name = s.StreamDeck.Presets.Any(p => string.Equals(p.Name, manifest.Name, System.StringComparison.OrdinalIgnoreCase))
+                ? DeckModesMigration.EnsureUnique(s.StreamDeck.Presets, manifest.Name)
+                : manifest.Name;
+
+            System.Collections.Generic.List<PresetAppBinding>? apps = null;
+            if (installedApp is not null)
+            {
+                var binding = new PresetAppBinding { Id = installedApp.Id, Name = installedApp.Name, ProcessName = installedApp.ProcessName };
+                if (FindAppBindingConflict(s.StreamDeck.Presets, binding) is null)
+                {
+                    apps = new System.Collections.Generic.List<PresetAppBinding> { binding };
+                }
+            }
+
+            created = new DeckPreset
+            {
+                Id = DeckModesMigration.NewPresetId(),
+                Name = name,
+                Cols = manifest.Cols,
+                Rows = manifest.Rows,
+                Deck = DeckConfigNavigation.DeepCopyConfig(manifest.Deck),
+                Apps = apps,
+                TemplateId = templateId,
+                Author = manifest.Author,
+                Version = manifest.Version,
+                Description = manifest.Description,
+            };
+            s.StreamDeck.Presets.Add(created);
+        });
+
+        if (capped)
+        {
+            return Results.Json(ApiResponse.Fail("Deck preset cap of 50 reached"), AppJsonContext.Default.ApiResponse, statusCode: 400);
+        }
+
+        BroadcastPresetsChanged(hub, store);
+        return Results.Json(new DeckPresetResponse { Preset = ToFull(created!) }, AppJsonContext.Default.DeckPresetResponse);
+    }
+
+    /// <summary>The first other preset's app binding that would clash with candidate (same app id, or same non-empty process name), mirroring PUT /deck/presets/{id}/apps' conflict check.</summary>
+    private static PresetAppBinding? FindAppBindingConflict(System.Collections.Generic.List<DeckPreset> presets, PresetAppBinding candidate)
+    {
+        foreach (var other in presets)
+        {
+            if (other.Apps is null)
+            {
+                continue;
+            }
+            foreach (var taken in other.Apps)
+            {
+                if (string.Equals(taken.Id, candidate.Id, System.StringComparison.OrdinalIgnoreCase)
+                    || (candidate.ProcessName.Length > 0 && string.Equals(candidate.ProcessName, taken.ProcessName, System.StringComparison.Ordinal)))
+                {
+                    return taken;
+                }
+            }
+        }
+        return null;
+    }
+
+    private static DeckTemplateDto ResolveTemplate(DeckTemplateSummary t, System.Collections.Generic.IReadOnlyList<Nexus.Service.Models.Activity.Shortcut> installed)
+    {
+        var dto = new DeckTemplateDto
+        {
+            Id = t.Id,
+            Name = t.Name,
+            Description = t.Description,
+            Cols = t.Cols,
+            Rows = t.Rows,
+            Match = t.Match,
+            PageCount = t.PageCount,
+        };
+        var app = ResolveInstalledApp(t.Match, installed);
+        if (app is not null)
+        {
+            dto.InstalledAppId = app.Id;
+            dto.InstalledAppName = app.Name;
+            dto.ProcessName = app.ProcessName;
+        }
+        return dto;
+    }
+
+    /// <summary>Process-name match against Shortcut.ProcessName first, then a display-name fallback - the same two-phase shape AppPresetMatching.Matches uses for one binding at a time.</summary>
+    private static Nexus.Service.Models.Activity.Shortcut? ResolveInstalledApp(DeckPackageMatch? match, System.Collections.Generic.IReadOnlyList<Nexus.Service.Models.Activity.Shortcut> installed)
+    {
+        if (match is null)
+        {
+            return null;
+        }
+        var processKeys = (match.ProcessNames ?? new()).Select(Nexus.Service.Lighting.AppPresetMatching.ProcessKey).Where(k => k.Length > 0).ToHashSet();
+        if (processKeys.Count > 0)
+        {
+            var byProcess = installed.FirstOrDefault(s => s.ProcessName.Length > 0 && processKeys.Contains(Nexus.Service.Lighting.AppPresetMatching.ProcessKey(s.ProcessName)));
+            if (byProcess is not null)
+            {
+                return byProcess;
+            }
+        }
+        var displayKeys = (match.DisplayNames ?? new()).Select(Nexus.Service.Lighting.AppPresetMatching.DisplayKey).Where(k => k.Length > 0).ToHashSet();
+        if (displayKeys.Count == 0)
+        {
+            return null;
+        }
+        return installed.FirstOrDefault(s => displayKeys.Contains(Nexus.Service.Lighting.AppPresetMatching.DisplayKey(s.Name)));
+    }
+
+    /// <summary>Strips control/reserved filename characters from a preset name for a Content-Disposition download name; "preset" if nothing usable remains.</summary>
+    private static string SafeExportFileName(string presetName)
+    {
+        var invalid = System.IO.Path.GetInvalidFileNameChars();
+        var chars = presetName.Trim().ToCharArray();
+        for (var i = 0; i < chars.Length; i++)
+        {
+            if (chars[i] < 0x20 || System.Array.IndexOf(invalid, chars[i]) >= 0)
+            {
+                chars[i] = '_';
+            }
+        }
+        var safe = new string(chars).Trim('.', ' ');
+        if (safe.Length == 0)
+        {
+            return "preset";
+        }
+        return safe.Length > 100 ? safe[..100] : safe;
     }
 
     private static DeckPresetSummary ToSummary(DeckPreset p) => new()

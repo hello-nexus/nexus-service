@@ -1,0 +1,204 @@
+{
+  "format": 1,
+  "id": "microsoft-teams",
+  "name": "Microsoft Teams",
+  "author": "Nexus",
+  "version": "1.0.0",
+  "description": "Meeting controls and app navigation for Microsoft Teams.",
+  "match": {
+    "processNames": [
+      "ms-teams",
+      "teams"
+    ],
+    "displayNames": [
+      "Microsoft Teams"
+    ]
+  },
+  "cols": 5,
+  "rows": 3,
+  "deck": {
+    "pages": [
+      {
+        "slots": [
+          {
+            "icon": {
+              "kind": "lucide",
+              "value": "MicOff"
+            },
+            "label": "Mute",
+            "action": {
+              "type": "hotkey",
+              "keys": "ctrl+shift+m"
+            },
+            "color": "#c0392b"
+          },
+          {
+            "icon": {
+              "kind": "lucide",
+              "value": "Camera"
+            },
+            "label": "Camera",
+            "action": {
+              "type": "hotkey",
+              "keys": "ctrl+shift+o"
+            },
+            "color": "#2874a6"
+          },
+          {
+            "icon": {
+              "kind": "lucide",
+              "value": "Bell"
+            },
+            "label": "Raise Hand",
+            "action": {
+              "type": "hotkey",
+              "keys": "ctrl+shift+k"
+            }
+          },
+          {
+            "icon": {
+              "kind": "lucide",
+              "value": "Monitor"
+            },
+            "label": "Share",
+            "action": {
+              "type": "hotkey",
+              "keys": "ctrl+shift+e"
+            }
+          },
+          {
+            "icon": {
+              "kind": "lucide",
+              "value": "LogOut"
+            },
+            "label": "Leave",
+            "action": {
+              "type": "hotkey",
+              "keys": "ctrl+shift+h"
+            },
+            "color": "#c0392b"
+          },
+          {
+            "icon": {
+              "kind": "lucide",
+              "value": "Image"
+            },
+            "label": "Blur",
+            "action": {
+              "type": "hotkey",
+              "keys": "ctrl+shift+p"
+            }
+          },
+          {
+            "icon": {
+              "kind": "lucide",
+              "value": "Headphones"
+            },
+            "label": "Accept Audio",
+            "action": {
+              "type": "hotkey",
+              "keys": "ctrl+shift+s"
+            },
+            "color": "#1e8449"
+          },
+          {
+            "icon": {
+              "kind": "lucide",
+              "value": "Camera"
+            },
+            "label": "Accept Video",
+            "action": {
+              "type": "hotkey",
+              "keys": "ctrl+shift+a"
+            },
+            "color": "#1e8449"
+          },
+          {
+            "icon": {
+              "kind": "lucide",
+              "value": "Power"
+            },
+            "label": "Decline",
+            "action": {
+              "type": "hotkey",
+              "keys": "ctrl+shift+d"
+            },
+            "color": "#c0392b"
+          },
+          {
+            "icon": {
+              "kind": "lucide",
+              "value": "MessageSquare"
+            },
+            "label": "Chat",
+            "action": {
+              "type": "hotkey",
+              "keys": "ctrl+2"
+            }
+          },
+          {
+            "icon": {
+              "kind": "lucide",
+              "value": "Layers"
+            },
+            "label": "Teams",
+            "action": {
+              "type": "hotkey",
+              "keys": "ctrl+3"
+            }
+          },
+          {
+            "icon": {
+              "kind": "lucide",
+              "value": "Calendar"
+            },
+            "label": "Calendar",
+            "action": {
+              "type": "hotkey",
+              "keys": "ctrl+4"
+            }
+          },
+          {
+            "icon": {
+              "kind": "lucide",
+              "value": "Headphones"
+            },
+            "label": "Calls",
+            "action": {
+              "type": "hotkey",
+              "keys": "ctrl+5"
+            }
+          },
+          {
+            "icon": {
+              "kind": "lucide",
+              "value": "Search"
+            },
+            "label": "Search",
+            "action": {
+              "type": "hotkey",
+              "keys": "ctrl+e"
+            }
+          },
+          {
+            "icon": {
+              "kind": "lucide",
+              "value": "Settings"
+            },
+            "label": "Settings",
+            "action": {
+              "type": "hotkey",
+              "keys": "ctrl+,"
+            }
+          }
+        ]
+      }
+    ],
+    "defaultTitleStyle": {
+      "show": true,
+      "align": "bottom",
+      "size": 14,
+      "bold": true
+    }
+  }
+}

@@ -115,7 +115,7 @@ public static class DeckModesMigration
             : candidate;
     }
 
-    private static string EnsureUnique(List<DeckPreset> presets, string baseName)
+    internal static string EnsureUnique(List<DeckPreset> presets, string baseName)
     {
         var n = 2;
         string candidate;

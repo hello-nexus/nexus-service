@@ -105,13 +105,46 @@ public sealed class DeckRoutesTests : IClassFixture<DeckRoutesHostFactory>
     }
 
     [Fact]
-    public async Task CreatePreset_WithTemplateId_Returns501()
+    public async Task CreatePreset_WithTemplateId_CreatesFromTheBundledTemplate()
     {
         var (factory, client) = Boot();
         using (factory)
         {
-            var res = await client.PostAsync("/deck/presets", Json("""{"name":"Template","cols":5,"rows":3,"templateId":"discord"}"""));
-            Assert.Equal(HttpStatusCode.NotImplemented, res.StatusCode);
+            var res = await client.PostAsync("/deck/presets", Json("""{"name":"","cols":0,"rows":0,"templateId":"discord"}"""));
+            Assert.True(res.IsSuccessStatusCode);
+            using var doc = JsonDocument.Parse(await res.Content.ReadAsStringAsync());
+            var preset = doc.RootElement.GetProperty("preset");
+            Assert.Equal("Discord", preset.GetProperty("name").GetString());
+            Assert.Equal("discord", preset.GetProperty("templateId").GetString());
+            Assert.Equal(5, preset.GetProperty("cols").GetInt32());
+            Assert.Equal(3, preset.GetProperty("rows").GetInt32());
+            Assert.True(preset.GetProperty("pageCount").GetInt32() > 0);
+        }
+    }
+
+    [Fact]
+    public async Task CreatePreset_WithUnknownTemplateId_Returns404()
+    {
+        var (factory, client) = Boot();
+        using (factory)
+        {
+            var res = await client.PostAsync("/deck/presets", Json("""{"name":"","cols":0,"rows":0,"templateId":"no-such-template"}"""));
+            Assert.Equal(HttpStatusCode.NotFound, res.StatusCode);
+        }
+    }
+
+    [Fact]
+    public async Task CreatePreset_WithTemplateId_NameCollision_SuffixesInstead()
+    {
+        var (factory, client) = Boot();
+        using (factory)
+        {
+            var first = await client.PostAsync("/deck/presets", Json("""{"name":"","cols":0,"rows":0,"templateId":"discord"}"""));
+            Assert.True(first.IsSuccessStatusCode);
+            var second = await client.PostAsync("/deck/presets", Json("""{"name":"","cols":0,"rows":0,"templateId":"discord"}"""));
+            Assert.True(second.IsSuccessStatusCode);
+            using var doc = JsonDocument.Parse(await second.Content.ReadAsStringAsync());
+            Assert.Equal("Discord 2", doc.RootElement.GetProperty("preset").GetProperty("name").GetString());
         }
     }
 

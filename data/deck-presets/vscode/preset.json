@@ -1,0 +1,199 @@
+{
+  "format": 1,
+  "id": "vscode",
+  "name": "Visual Studio Code",
+  "author": "Nexus",
+  "version": "1.0.0",
+  "description": "Editor, terminal and run shortcuts for VS Code.",
+  "match": {
+    "processNames": [
+      "code"
+    ],
+    "displayNames": [
+      "Visual Studio Code"
+    ]
+  },
+  "cols": 5,
+  "rows": 3,
+  "deck": {
+    "pages": [
+      {
+        "slots": [
+          {
+            "icon": {
+              "kind": "lucide",
+              "value": "Command"
+            },
+            "label": "Commands",
+            "action": {
+              "type": "hotkey",
+              "keys": "ctrl+shift+p"
+            }
+          },
+          {
+            "icon": {
+              "kind": "lucide",
+              "value": "Search"
+            },
+            "label": "Quick Open",
+            "action": {
+              "type": "hotkey",
+              "keys": "ctrl+p"
+            }
+          },
+          {
+            "icon": {
+              "kind": "lucide",
+              "value": "Terminal"
+            },
+            "label": "Terminal",
+            "action": {
+              "type": "hotkey",
+              "keys": "ctrl+`"
+            }
+          },
+          {
+            "icon": {
+              "kind": "lucide",
+              "value": "Layers"
+            },
+            "label": "Sidebar",
+            "action": {
+              "type": "hotkey",
+              "keys": "ctrl+b"
+            }
+          },
+          {
+            "icon": {
+              "kind": "lucide",
+              "value": "Search"
+            },
+            "label": "Find in Files",
+            "action": {
+              "type": "hotkey",
+              "keys": "ctrl+shift+f"
+            }
+          },
+          {
+            "icon": {
+              "kind": "lucide",
+              "value": "Play"
+            },
+            "label": "Run",
+            "action": {
+              "type": "hotkey",
+              "keys": "f5"
+            },
+            "color": "#1e8449"
+          },
+          {
+            "icon": {
+              "kind": "lucide",
+              "value": "Power"
+            },
+            "label": "Stop",
+            "action": {
+              "type": "hotkey",
+              "keys": "shift+f5"
+            },
+            "color": "#c0392b"
+          },
+          {
+            "icon": {
+              "kind": "lucide",
+              "value": "MessageSquare"
+            },
+            "label": "Comment",
+            "action": {
+              "type": "hotkey",
+              "keys": "ctrl+/"
+            }
+          },
+          {
+            "icon": {
+              "kind": "lucide",
+              "value": "Sparkles"
+            },
+            "label": "Format",
+            "action": {
+              "type": "hotkey",
+              "keys": "alt+shift+f"
+            }
+          },
+          {
+            "icon": {
+              "kind": "lucide",
+              "value": "Type"
+            },
+            "label": "Rename",
+            "action": {
+              "type": "hotkey",
+              "keys": "f2"
+            }
+          },
+          {
+            "icon": {
+              "kind": "lucide",
+              "value": "Folder"
+            },
+            "label": "Explorer",
+            "action": {
+              "type": "hotkey",
+              "keys": "ctrl+shift+e"
+            }
+          },
+          {
+            "icon": {
+              "kind": "lucide",
+              "value": "Upload"
+            },
+            "label": "Source Control",
+            "action": {
+              "type": "hotkey",
+              "keys": "ctrl+shift+g"
+            }
+          },
+          {
+            "icon": {
+              "kind": "lucide",
+              "value": "Plus"
+            },
+            "label": "Extensions",
+            "action": {
+              "type": "hotkey",
+              "keys": "ctrl+shift+x"
+            }
+          },
+          {
+            "icon": {
+              "kind": "lucide",
+              "value": "Bell"
+            },
+            "label": "Problems",
+            "action": {
+              "type": "hotkey",
+              "keys": "ctrl+shift+m"
+            }
+          },
+          {
+            "icon": {
+              "kind": "lucide",
+              "value": "Settings"
+            },
+            "label": "Settings",
+            "action": {
+              "type": "hotkey",
+              "keys": "ctrl+,"
+            }
+          }
+        ]
+      }
+    ],
+    "defaultTitleStyle": {
+      "show": true,
+      "align": "bottom",
+      "size": 14,
+      "bold": true
+    }
+  }
+}

@@ -1,0 +1,204 @@
+{
+  "format": 1,
+  "id": "discord",
+  "name": "Discord",
+  "author": "Nexus",
+  "version": "1.0.0",
+  "description": "Voice controls, channel navigation and inbox for Discord.",
+  "match": {
+    "processNames": [
+      "discord"
+    ],
+    "displayNames": [
+      "Discord"
+    ]
+  },
+  "cols": 5,
+  "rows": 3,
+  "deck": {
+    "pages": [
+      {
+        "slots": [
+          {
+            "icon": {
+              "kind": "lucide",
+              "value": "MicOff"
+            },
+            "label": "Mute",
+            "action": {
+              "type": "hotkey",
+              "keys": "ctrl+shift+m"
+            },
+            "color": "#c0392b"
+          },
+          {
+            "icon": {
+              "kind": "lucide",
+              "value": "Headphones"
+            },
+            "label": "Deafen",
+            "action": {
+              "type": "hotkey",
+              "keys": "ctrl+shift+d"
+            },
+            "color": "#c0392b"
+          },
+          {
+            "icon": {
+              "kind": "lucide",
+              "value": "Search"
+            },
+            "label": "Quick Switch",
+            "action": {
+              "type": "hotkey",
+              "keys": "ctrl+k"
+            }
+          },
+          {
+            "icon": {
+              "kind": "lucide",
+              "value": "Sparkles"
+            },
+            "label": "Emoji",
+            "action": {
+              "type": "hotkey",
+              "keys": "ctrl+e"
+            }
+          },
+          {
+            "icon": {
+              "kind": "lucide",
+              "value": "Upload"
+            },
+            "label": "Upload",
+            "action": {
+              "type": "hotkey",
+              "keys": "ctrl+shift+u"
+            }
+          },
+          {
+            "icon": {
+              "kind": "lucide",
+              "value": "ArrowUp"
+            },
+            "label": "Prev Channel",
+            "action": {
+              "type": "hotkey",
+              "keys": "alt+up"
+            },
+            "color": "#4a5568"
+          },
+          {
+            "icon": {
+              "kind": "lucide",
+              "value": "ArrowDown"
+            },
+            "label": "Next Channel",
+            "action": {
+              "type": "hotkey",
+              "keys": "alt+down"
+            },
+            "color": "#4a5568"
+          },
+          {
+            "icon": {
+              "kind": "lucide",
+              "value": "ChevronLeft"
+            },
+            "label": "Prev Server",
+            "action": {
+              "type": "hotkey",
+              "keys": "ctrl+alt+up"
+            },
+            "color": "#4a5568"
+          },
+          {
+            "icon": {
+              "kind": "lucide",
+              "value": "ChevronRight"
+            },
+            "label": "Next Server",
+            "action": {
+              "type": "hotkey",
+              "keys": "ctrl+alt+down"
+            },
+            "color": "#4a5568"
+          },
+          {
+            "icon": {
+              "kind": "lucide",
+              "value": "Undo2"
+            },
+            "label": "Back",
+            "action": {
+              "type": "hotkey",
+              "keys": "alt+left"
+            },
+            "color": "#4a5568"
+          },
+          {
+            "icon": {
+              "kind": "lucide",
+              "value": "Eye"
+            },
+            "label": "Mark Read",
+            "action": {
+              "type": "hotkey",
+              "keys": "escape"
+            }
+          },
+          {
+            "icon": {
+              "kind": "lucide",
+              "value": "Eye"
+            },
+            "label": "Server Read",
+            "action": {
+              "type": "hotkey",
+              "keys": "shift+escape"
+            }
+          },
+          {
+            "icon": {
+              "kind": "lucide",
+              "value": "Star"
+            },
+            "label": "Pins",
+            "action": {
+              "type": "hotkey",
+              "keys": "ctrl+p"
+            }
+          },
+          {
+            "icon": {
+              "kind": "lucide",
+              "value": "Mail"
+            },
+            "label": "Inbox",
+            "action": {
+              "type": "hotkey",
+              "keys": "ctrl+i"
+            }
+          },
+          {
+            "icon": {
+              "kind": "lucide",
+              "value": "Settings"
+            },
+            "label": "Settings",
+            "action": {
+              "type": "hotkey",
+              "keys": "ctrl+,"
+            }
+          }
+        ]
+      }
+    ],
+    "defaultTitleStyle": {
+      "show": true,
+      "align": "bottom",
+      "size": 14,
+      "bold": true
+    }
+  }
+}

@@ -67,14 +67,28 @@ public sealed class DeckImageStore
             return null;
         }
         var id = Convert.ToHexString(SHA256.HashData(bytes)).ToLowerInvariant();
+        WriteAtomic(id, ext, bytes);
+        return id;
+    }
+
+    /// <summary>
+    /// Writes bytes at a caller-computed content id, skipping Store()'s
+    /// 512 KB interactive-upload cap - a DeckPresetPackage asset may be up to
+    /// its own 4 MB cap, already validated (hash and size) before this is
+    /// called. Idempotent like Store().
+    /// </summary>
+    public void StoreValidated(string id, string ext, byte[] bytes) => WriteAtomic(id, ext, bytes);
+
+    private void WriteAtomic(string id, string ext, byte[] bytes)
+    {
         var path = Path.Combine(_rootDir, id + ext);
         if (File.Exists(path))
         {
-            return id;
+            return;
         }
         // Write to a unique temp file then rename into place: a reader never
         // sees a half-written content-addressed file, and two concurrent
-        // uploads of identical bytes resolve to the same final path without a
+        // writers of identical bytes resolve to the same final path without a
         // sharing violation (the rename loser's identical file is discarded).
         var tmp = Path.Combine(_rootDir, id + "." + Path.GetRandomFileName() + ".tmp");
         try
@@ -92,7 +106,6 @@ public sealed class DeckImageStore
                 File.Delete(tmp);
             }
         }
-        return id;
     }
 
     /// <summary>Returns the stored bytes and content type, or null when id is malformed or unknown.</summary>

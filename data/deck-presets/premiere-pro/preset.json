@@ -1,0 +1,199 @@
+{
+  "format": 1,
+  "id": "premiere-pro",
+  "name": "Adobe Premiere Pro",
+  "author": "Nexus",
+  "version": "1.0.0",
+  "description": "Timeline editing and playback for Premiere Pro.",
+  "match": {
+    "processNames": [
+      "adobe premiere pro"
+    ],
+    "displayNames": [
+      "Adobe Premiere Pro"
+    ]
+  },
+  "cols": 5,
+  "rows": 3,
+  "deck": {
+    "pages": [
+      {
+        "slots": [
+          {
+            "icon": {
+              "kind": "lucide",
+              "value": "Play"
+            },
+            "label": "Play / Pause",
+            "action": {
+              "type": "hotkey",
+              "keys": "space"
+            },
+            "color": "#1e8449"
+          },
+          {
+            "icon": {
+              "kind": "lucide",
+              "value": "SkipBack"
+            },
+            "label": "Reverse",
+            "action": {
+              "type": "hotkey",
+              "keys": "j"
+            }
+          },
+          {
+            "icon": {
+              "kind": "lucide",
+              "value": "Pause"
+            },
+            "label": "Stop",
+            "action": {
+              "type": "hotkey",
+              "keys": "k"
+            }
+          },
+          {
+            "icon": {
+              "kind": "lucide",
+              "value": "SkipForward"
+            },
+            "label": "Forward",
+            "action": {
+              "type": "hotkey",
+              "keys": "l"
+            }
+          },
+          {
+            "icon": {
+              "kind": "lucide",
+              "value": "Star"
+            },
+            "label": "Marker",
+            "action": {
+              "type": "hotkey",
+              "keys": "m"
+            }
+          },
+          {
+            "icon": {
+              "kind": "lucide",
+              "value": "MousePointer"
+            },
+            "label": "Select",
+            "action": {
+              "type": "hotkey",
+              "keys": "v"
+            }
+          },
+          {
+            "icon": {
+              "kind": "lucide",
+              "value": "Zap"
+            },
+            "label": "Razor",
+            "action": {
+              "type": "hotkey",
+              "keys": "c"
+            }
+          },
+          {
+            "icon": {
+              "kind": "lucide",
+              "value": "ChevronLeft"
+            },
+            "label": "Set In",
+            "action": {
+              "type": "hotkey",
+              "keys": "i"
+            }
+          },
+          {
+            "icon": {
+              "kind": "lucide",
+              "value": "ChevronRight"
+            },
+            "label": "Set Out",
+            "action": {
+              "type": "hotkey",
+              "keys": "o"
+            }
+          },
+          {
+            "icon": {
+              "kind": "lucide",
+              "value": "Sliders"
+            },
+            "label": "Add Edit",
+            "action": {
+              "type": "hotkey",
+              "keys": "ctrl+k"
+            }
+          },
+          {
+            "icon": {
+              "kind": "lucide",
+              "value": "Trash2"
+            },
+            "label": "Ripple Delete",
+            "action": {
+              "type": "hotkey",
+              "keys": "shift+delete"
+            },
+            "color": "#c0392b"
+          },
+          {
+            "icon": {
+              "kind": "lucide",
+              "value": "Undo2"
+            },
+            "label": "Undo",
+            "action": {
+              "type": "hotkey",
+              "keys": "ctrl+z"
+            }
+          },
+          {
+            "icon": {
+              "kind": "lucide",
+              "value": "RotateCcw"
+            },
+            "label": "Redo",
+            "action": {
+              "type": "hotkey",
+              "keys": "ctrl+shift+z"
+            }
+          },
+          {
+            "icon": {
+              "kind": "lucide",
+              "value": "Save"
+            },
+            "label": "Save",
+            "action": {
+              "type": "hotkey",
+              "keys": "ctrl+s"
+            }
+          },
+          {
+            "icon": {
+              "kind": "lucide",
+              "value": "Upload"
+            },
+            "label": "Export",
+            "action": {
+              "type": "hotkey",
+              "keys": "ctrl+m"
+            }
+          }
+        ]
+      }
+    ],
+    "defaultTitleStyle": {
+      "show": true,
+      "align": "bottom",
+      "size": 14,
+      "bold": true
+    }
+  }
+}
