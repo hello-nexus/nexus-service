@@ -479,6 +479,12 @@ public static class DeckRoutes
                 var lazy = CreateLazyWidgetInstance(store, id, cols, rows);
                 return Results.Json(new DeckInstanceResponse { Instance = lazy }, AppJsonContext.Default.DeckInstanceResponse);
             }
+            var serial = id["streamdeck:".Length..];
+            var lazyPhysical = settings.Decks.ContainsKey(serial) ? CreateLazyPhysicalInstance(store, serial) : null;
+            if (lazyPhysical is not null)
+            {
+                return Results.Json(new DeckInstanceResponse { Instance = lazyPhysical }, AppJsonContext.Default.DeckInstanceResponse);
+            }
             return Results.Json(ApiResponse.Fail("instance not found"), AppJsonContext.Default.ApiResponse, statusCode: 404);
         }).AllowPanel();
 
@@ -637,6 +643,51 @@ public static class DeckRoutes
             s.StreamDeck.Instances[instanceId] = created;
         });
         return created!;
+    }
+
+    /// <summary>
+    /// A physical deck's Instances row is normally upserted by
+    /// StreamDeckConnectionWorker.OnSurfaceConnected; this covers a Decks row
+    /// that predates that upsert (or a migration gap) using the same join-
+    /// first-preset-or-seed-fresh rule as <see cref="CreateLazyWidgetInstance"/>,
+    /// sized to the deck's own model grid. Null if the Decks row disappeared
+    /// between the caller's check and this update.
+    /// </summary>
+    private static DeckInstance? CreateLazyPhysicalInstance(IConfigStore store, string serial)
+    {
+        DeckInstance? created = null;
+        store.Update(s =>
+        {
+            var instanceId = DeckInstanceResolver.PhysicalInstanceId(serial);
+            if (s.StreamDeck.Instances.TryGetValue(instanceId, out var already))
+            {
+                created = already;
+                return;
+            }
+            if (!s.StreamDeck.Decks.TryGetValue(serial, out var persisted))
+            {
+                return;
+            }
+            var model = StreamDeckModels.ByProductId(persisted.ProductId);
+            var (cols, rows) = model is null ? (5, 3) : (model.Columns, model.Rows);
+            var presetId = s.StreamDeck.Presets.Count > 0 ? s.StreamDeck.Presets[0].Id : null;
+            if (presetId is null)
+            {
+                var preset = new DeckPreset
+                {
+                    Id = DeckModesMigration.NewPresetId(),
+                    Name = DeckModesMigration.UniqueName(s.StreamDeck.Presets, "Deck", model?.Name ?? serial),
+                    Cols = cols,
+                    Rows = rows,
+                    Deck = DeckConfigNavigation.EmptyConfig(),
+                };
+                s.StreamDeck.Presets.Add(preset);
+                presetId = preset.Id;
+            }
+            created = new DeckInstance { Mode = "fixed", ActivePresetId = presetId };
+            s.StreamDeck.Instances[instanceId] = created;
+        });
+        return created;
     }
 
     /// <summary>"streamdeck:&lt;serial per StreamDeckImageCache.IsValidSerial&gt;" or "widget:&lt;[A-Za-z0-9_-]{1,64}&gt;".</summary>

@@ -824,6 +824,30 @@ public sealed class StreamDeckConnectionWorker : BackgroundService, IDeckSurface
                 s.StreamDeck.Decks[surface.Serial] = persisted;
             }
             persisted.ProductId = surface.Model.ProductId;
+
+            // A deck seen for the first time since schema v18 has no
+            // instance row yet (the migration only hoists pre-v18 decks);
+            // join the first host-wide preset like CreateLazyWidgetInstance
+            // does, or seed a fresh one at this deck's own grid when none exist.
+            var instanceId = DeckInstanceResolver.PhysicalInstanceId(surface.Serial);
+            if (!s.StreamDeck.Instances.ContainsKey(instanceId))
+            {
+                var presetId = s.StreamDeck.Presets.Count > 0 ? s.StreamDeck.Presets[0].Id : null;
+                if (presetId is null)
+                {
+                    var preset = new DeckPreset
+                    {
+                        Id = DeckModesMigration.NewPresetId(),
+                        Name = DeckModesMigration.UniqueName(s.StreamDeck.Presets, "Deck", surface.Model.Name),
+                        Cols = surface.Model.Columns,
+                        Rows = surface.Model.Rows,
+                        Deck = DeckConfigNavigation.EmptyConfig(),
+                    };
+                    s.StreamDeck.Presets.Add(preset);
+                    presetId = preset.Id;
+                }
+                s.StreamDeck.Instances[instanceId] = new DeckInstance { Mode = "fixed", ActivePresetId = presetId };
+            }
         });
 
         _lastInputAt[surface.Serial] = _clock.GetUtcNow();

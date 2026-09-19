@@ -171,6 +171,42 @@ public class StreamDeckConnectionWorkerTests
         Assert.True(worker.FindBySerial("SERIAL-1")!.IsConnected);
     }
 
+    /// <summary>A deck seen for the first time since schema v18 has no migration to hoist an instance row for it; OnSurfaceConnected must seed one itself, joining the first host-wide preset like a widget's lazy GET does.</summary>
+    [Fact]
+    public void Tick_ConnectingANewDeck_JoinsTheFirstExistingPreset()
+    {
+        var f = NewFixtures(devicePresent: true);
+        AddMiniDevice(f.Hid, "path-1", "SERIAL-1");
+        f.Store.Update(s => s.StreamDeck.Presets.Add(new DeckPreset { Id = "p1", Name = "First", Cols = 5, Rows = 3 }));
+        using var worker = NewWorker(f);
+
+        worker.Tick();
+
+        var instanceId = DeckInstanceResolver.PhysicalInstanceId("SERIAL-1");
+        var instance = Assert.Single(f.Store.Load().StreamDeck.Instances, kv => kv.Key == instanceId).Value;
+        Assert.Equal("fixed", instance.Mode);
+        Assert.Equal("p1", instance.ActivePresetId);
+    }
+
+    /// <summary>With no presets at all yet, connecting a new deck seeds a fresh empty one at the deck's own model grid instead of leaving the instance row missing.</summary>
+    [Fact]
+    public void Tick_ConnectingANewDeck_WithNoPresets_SeedsAFreshEmptyPresetAtItsGrid()
+    {
+        var f = NewFixtures(devicePresent: true);
+        AddMiniDevice(f.Hid, "path-1", "SERIAL-1");
+        using var worker = NewWorker(f);
+
+        worker.Tick();
+
+        var settings = f.Store.Load().StreamDeck;
+        var instanceId = DeckInstanceResolver.PhysicalInstanceId("SERIAL-1");
+        Assert.True(settings.Instances.TryGetValue(instanceId, out var instance));
+        var preset = settings.Presets.Find(p => p.Id == instance!.ActivePresetId);
+        Assert.NotNull(preset);
+        Assert.Equal((Mini.Columns, Mini.Rows), (preset!.Cols, preset.Rows));
+        Assert.Single(preset.Deck.Pages);
+    }
+
     [Fact]
     public void Tick_DiscoversAndConnectsAGen2Deck()
     {

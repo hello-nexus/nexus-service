@@ -570,6 +570,85 @@ public sealed class DeckRoutesTests : IClassFixture<DeckRoutesHostFactory>
         }
     }
 
+    /// <summary>A Decks row can exist with no Instances row (a deck migrated or upserted before this route existed); GET must lazily create one, joining the first existing preset, instead of 404ing.</summary>
+    [Fact]
+    public async Task GetInstance_StreamdeckWithADecksRowButNoInstanceRow_LazilyJoinsTheFirstPreset()
+    {
+        var (factory, client) = Boot();
+        using (factory)
+        {
+            var store = factory.Services.GetRequiredService<IConfigStore>();
+            var mini = StreamDeckModels.ByProductId(0x0063)!;
+            store.Update(s =>
+            {
+                s.StreamDeck.Decks["SN-ORPHAN"] = new PhysicalDeckSettings { ProductId = mini.ProductId };
+                s.StreamDeck.Presets.Add(new DeckPreset { Id = "p1", Name = "First", Cols = 5, Rows = 3 });
+            });
+
+            var res = await client.GetAsync("/deck/instances/streamdeck:SN-ORPHAN");
+            Assert.True(res.IsSuccessStatusCode);
+            using var doc = JsonDocument.Parse(await res.Content.ReadAsStringAsync());
+            Assert.Equal("p1", doc.RootElement.GetProperty("instance").GetProperty("activePresetId").GetString());
+            Assert.Equal("p1", store.Load().StreamDeck.Instances["streamdeck:SN-ORPHAN"].ActivePresetId);
+        }
+    }
+
+    /// <summary>Same orphaned-Decks-row case with no preset at all yet: seeds a fresh empty one sized to the persisted ProductId's model grid.</summary>
+    [Fact]
+    public async Task GetInstance_StreamdeckWithADecksRowButNoInstanceRow_AndNoPresets_SeedsAFreshOne()
+    {
+        var (factory, client) = Boot();
+        using (factory)
+        {
+            var store = factory.Services.GetRequiredService<IConfigStore>();
+            var mini = StreamDeckModels.ByProductId(0x0063)!;
+            store.Update(s => s.StreamDeck.Decks["SN-ORPHAN"] = new PhysicalDeckSettings { ProductId = mini.ProductId });
+
+            var res = await client.GetAsync("/deck/instances/streamdeck:SN-ORPHAN");
+            Assert.True(res.IsSuccessStatusCode);
+            using var doc = JsonDocument.Parse(await res.Content.ReadAsStringAsync());
+            var presetId = doc.RootElement.GetProperty("instance").GetProperty("activePresetId").GetString();
+
+            var preset = store.Load().StreamDeck.Presets.Find(p => p.Id == presetId);
+            Assert.NotNull(preset);
+            Assert.Equal((mini.Columns, mini.Rows), (preset!.Cols, preset.Rows));
+        }
+    }
+
+    /// <summary>A simulated deck's Instances row must reappear across a disconnect (DELETE purges it) and reconnect - the fix must not be a one-time migration-style effect.</summary>
+    [Fact]
+    public async Task GetInstance_AfterSimulateDeleteAndReSimulate_InstanceRowExistsAgain()
+    {
+        var (factory, client) = Boot();
+        using (factory)
+        {
+            var worker = factory.Services.GetRequiredService<StreamDeckConnectionWorker>();
+            var mini = StreamDeckModels.ByProductId(0x0063)!;
+            try
+            {
+                var firstConnect = await client.PostAsync("/streamdeck/dev/simulate", Json($"{{\"productId\":{mini.ProductId}}}"));
+                Assert.True(firstConnect.IsSuccessStatusCode);
+                var serial = worker.Surfaces[StreamDeckConnectionWorker.SimulatedKey].Serial;
+
+                var firstGet = await client.GetAsync($"/deck/instances/streamdeck:{serial}");
+                Assert.True(firstGet.IsSuccessStatusCode);
+
+                Assert.True((await client.DeleteAsync("/streamdeck/dev/simulate")).IsSuccessStatusCode);
+                var afterDelete = await client.GetAsync($"/deck/instances/streamdeck:{serial}");
+                Assert.Equal(HttpStatusCode.NotFound, afterDelete.StatusCode);
+
+                var reconnect = await client.PostAsync("/streamdeck/dev/simulate", Json($"{{\"productId\":{mini.ProductId}}}"));
+                Assert.True(reconnect.IsSuccessStatusCode);
+                var secondGet = await client.GetAsync($"/deck/instances/streamdeck:{serial}");
+                Assert.True(secondGet.IsSuccessStatusCode);
+            }
+            finally
+            {
+                worker.ClearSimulatedModel();
+            }
+        }
+    }
+
     [Fact]
     public async Task GetInstance_InvalidId_Returns400()
     {
