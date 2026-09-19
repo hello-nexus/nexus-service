@@ -345,15 +345,37 @@ public sealed class DeckRoutesTests : IClassFixture<DeckRoutesHostFactory>
         var (factory, client) = Boot();
         using (factory)
         {
-            var res = await client.GetAsync("/deck/instances/widget:fresh");
+            var res = await client.GetAsync("/deck/instances/widget:fresh?cols=4&rows=2");
             Assert.True(res.IsSuccessStatusCode);
             using var doc = JsonDocument.Parse(await res.Content.ReadAsStringAsync());
             var presetId = doc.RootElement.GetProperty("instance").GetProperty("activePresetId").GetString();
             Assert.NotNull(presetId);
 
             var store = factory.Services.GetRequiredService<IConfigStore>();
-            Assert.Contains(store.Load().StreamDeck.Presets, p => p.Id == presetId);
+            var preset = Assert.Single(store.Load().StreamDeck.Presets, p => p.Id == presetId);
+            Assert.Equal((4, 2), (preset.Cols, preset.Rows));
             Assert.Equal("fixed", store.Load().StreamDeck.Instances["widget:fresh"].Mode);
+        }
+    }
+
+    [Fact]
+    public async Task GetInstance_UnknownWidgetInstance_JoinsTheFirstExistingPreset()
+    {
+        var (factory, client) = Boot();
+        using (factory)
+        {
+            var store = factory.Services.GetRequiredService<IConfigStore>();
+            store.Update(s =>
+            {
+                s.StreamDeck.Presets.Add(new DeckPreset { Id = "p1", Name = "First", Cols = 5, Rows = 3 });
+                s.StreamDeck.Presets.Add(new DeckPreset { Id = "p2", Name = "Second", Cols = 5, Rows = 3 });
+            });
+
+            var res = await client.GetAsync("/deck/instances/widget:fresh");
+            Assert.True(res.IsSuccessStatusCode);
+            using var doc = JsonDocument.Parse(await res.Content.ReadAsStringAsync());
+            Assert.Equal("p1", doc.RootElement.GetProperty("instance").GetProperty("activePresetId").GetString());
+            Assert.Equal(2, store.Load().StreamDeck.Presets.Count);
         }
     }
 

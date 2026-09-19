@@ -27,7 +27,7 @@ public static class DeckRoutes
         {
             var presets = store.Load().StreamDeck.Presets.Select(ToSummary).ToList();
             return Results.Json(new DeckPresetsListResponse { Presets = presets }, AppJsonContext.Default.DeckPresetsListResponse);
-        }).LocalhostOnly();
+        }).AllowPanel();
 
         app.MapGet("/deck/presets/{id}", (string id, IConfigStore store) =>
         {
@@ -37,7 +37,7 @@ public static class DeckRoutes
                 return Results.Json(ApiResponse.Fail("preset not found"), AppJsonContext.Default.ApiResponse, statusCode: 404);
             }
             return Results.Json(new DeckPresetResponse { Preset = ToFull(preset) }, AppJsonContext.Default.DeckPresetResponse);
-        }).LocalhostOnly();
+        }).AllowPanel();
 
         app.MapPost("/deck/presets", (
             CreateDeckPresetRequest body, HttpContext ctx, TokenService tokens, IConfigStore store, MultiplexHub hub) =>
@@ -244,7 +244,9 @@ public static class DeckRoutes
             return Results.Json(new DeckInstancesResponse { Instances = instances }, AppJsonContext.Default.DeckInstancesResponse);
         }).LocalhostOnly();
 
-        app.MapGet("/deck/instances/{id}", (string id, IConfigStore store) =>
+        // A widget passes its own grid so a first-time instance gets a preset
+        // authored at that size instead of the 2x2 fallback.
+        app.MapGet("/deck/instances/{id}", (string id, int? cols, int? rows, IConfigStore store) =>
         {
             if (!IsValidInstanceId(id))
             {
@@ -257,7 +259,7 @@ public static class DeckRoutes
             }
             if (!id.StartsWith("streamdeck:", System.StringComparison.Ordinal))
             {
-                var lazy = CreateLazyWidgetInstance(store, id);
+                var lazy = CreateLazyWidgetInstance(store, id, cols, rows);
                 return Results.Json(new DeckInstanceResponse { Instance = lazy }, AppJsonContext.Default.DeckInstanceResponse);
             }
             return Results.Json(ApiResponse.Fail("instance not found"), AppJsonContext.Default.ApiResponse, statusCode: 404);
@@ -317,7 +319,12 @@ public static class DeckRoutes
     }
 
     /// <summary>Creates and persists a fresh empty "Deck" preset + fixed instance for a widget id seen for the first time, so a Deck widget added after settings load still resolves an instance.</summary>
-    private static DeckInstance CreateLazyWidgetInstance(IConfigStore store, string instanceId)
+    /// <summary>
+    /// A new widget joins the first existing preset (adding a deck is like
+    /// plugging in a second Stream Deck, not starting a fresh layout); only a
+    /// host with no presets at all gets a fresh empty one at the widget's grid.
+    /// </summary>
+    private static DeckInstance CreateLazyWidgetInstance(IConfigStore store, string instanceId, int? cols, int? rows)
     {
         DeckInstance? created = null;
         store.Update(s =>
@@ -327,15 +334,20 @@ public static class DeckRoutes
                 created = already;
                 return;
             }
-            var preset = new DeckPreset
+            var presetId = s.StreamDeck.Presets.Count > 0 ? s.StreamDeck.Presets[0].Id : null;
+            if (presetId is null)
             {
-                Id = DeckModesMigration.NewPresetId(),
-                Name = DeckModesMigration.UniqueName(s.StreamDeck.Presets, "Deck", "widget"),
-                Cols = 2,
-                Rows = 2,
-            };
-            s.StreamDeck.Presets.Add(preset);
-            created = new DeckInstance { Mode = "fixed", ActivePresetId = preset.Id };
+                var preset = new DeckPreset
+                {
+                    Id = DeckModesMigration.NewPresetId(),
+                    Name = DeckModesMigration.UniqueName(s.StreamDeck.Presets, "Deck", "widget"),
+                    Cols = System.Math.Clamp(cols ?? 2, 1, 8),
+                    Rows = System.Math.Clamp(rows ?? 2, 1, 8),
+                };
+                s.StreamDeck.Presets.Add(preset);
+                presetId = preset.Id;
+            }
+            created = new DeckInstance { Mode = "fixed", ActivePresetId = presetId };
             s.StreamDeck.Instances[instanceId] = created;
         });
         return created!;
