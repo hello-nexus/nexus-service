@@ -105,6 +105,10 @@ public static class DeckRoutes
                 {
                     deck = body.Deck is not null ? DeckConfigNavigation.DeepCopyConfig(body.Deck) : DeckConfigNavigation.EmptyConfig();
                 }
+                if (deck.Pages.Count == 0)
+                {
+                    deck.Pages.Add(new DeckPage());
+                }
 
                 created = new DeckPreset
                 {
@@ -403,6 +407,7 @@ public static class DeckRoutes
             var capped = false;
             var nameTaken = false;
             DeckPreset? created = null;
+            var isBundledTemplate = catalog.Open(manifest.Id) is not null;
             store.Update(s =>
             {
                 if (s.StreamDeck.Presets.Count >= PresetCap)
@@ -422,7 +427,7 @@ public static class DeckRoutes
                     Cols = System.Math.Clamp(manifest.Cols, 1, 8),
                     Rows = System.Math.Clamp(manifest.Rows, 1, 8),
                     Deck = DeckConfigNavigation.DeepCopyConfig(manifest.Deck),
-                    TemplateId = catalog.Open(manifest.Id) is not null ? manifest.Id : null,
+                    TemplateId = isBundledTemplate ? manifest.Id : null,
                     Author = manifest.Author,
                     Version = manifest.Version,
                     Description = manifest.Description,
@@ -463,7 +468,7 @@ public static class DeckRoutes
 
         // A widget passes its own grid so a first-time instance gets a preset
         // authored at that size instead of the 2x2 fallback.
-        app.MapGet("/deck/instances/{id}", (string id, int? cols, int? rows, IConfigStore store) =>
+        app.MapGet("/deck/instances/{id}", (string id, int? cols, int? rows, HttpContext ctx, TokenService tokens, IConfigStore store) =>
         {
             if (!IsValidInstanceId(id))
             {
@@ -476,7 +481,7 @@ public static class DeckRoutes
             }
             if (!id.StartsWith("streamdeck:", System.StringComparison.Ordinal))
             {
-                var lazy = CreateLazyWidgetInstance(store, id, cols, rows);
+                var lazy = CreateLazyWidgetInstance(store, id, cols, rows, ServiceTokenRequests.HasServiceToken(ctx, tokens));
                 return Results.Json(new DeckInstanceResponse { Instance = lazy }, AppJsonContext.Default.DeckInstanceResponse);
             }
             var serial = id["streamdeck:".Length..];
@@ -545,7 +550,7 @@ public static class DeckRoutes
             }, AppJsonContext.Default.RecentAppsResponse);
         }).AllowPanel();
 
-        app.MapPut("/deck/recent-apps/excluded", (SetRecentAppsExcludedRequest body, MultiplexHub hub, RecentAppsState state, RecentAppsService recentApps) =>
+        app.MapPut("/deck/recent-apps/excluded", (SetRecentAppsExcludedRequest body, MultiplexHub hub, RecentAppsState state, RecentAppsService recentApps, IConfigStore store, StreamDeckConnectionWorker worker) =>
         {
             var excluded = body.ProcessKeys.ConvertAll(Nexus.Service.Lighting.AppPresetMatching.ProcessKey);
             // A key excluded after it already entered the ring disappears
@@ -553,14 +558,16 @@ public static class DeckRoutes
             state.SetExcluded(excluded);
             recentApps.Persist(force: true);
             BroadcastRecentsChanged(hub, state);
+            RefreshPhysicalRecentAppsInstances(store, worker);
             return Results.Json(ApiResponse.Ok(), AppJsonContext.Default.ApiResponse);
         }).LocalhostOnly();
 
-        app.MapDelete("/deck/recent-apps", (MultiplexHub hub, RecentAppsState state, RecentAppsService recentApps) =>
+        app.MapDelete("/deck/recent-apps", (MultiplexHub hub, RecentAppsState state, RecentAppsService recentApps, IConfigStore store, StreamDeckConnectionWorker worker) =>
         {
             state.Clear();
             recentApps.Persist(force: true);
             BroadcastRecentsChanged(hub, state);
+            RefreshPhysicalRecentAppsInstances(store, worker);
             return Results.Json(ApiResponse.Ok(), AppJsonContext.Default.ApiResponse);
         }).LocalhostOnly();
 
@@ -610,12 +617,24 @@ public static class DeckRoutes
         }
     }
 
+    /// <summary>Repaints every physical deck in Recent Apps mode after an explicit ring edit; RecentAppsService only repaints on focus changes.</summary>
+    private static void RefreshPhysicalRecentAppsInstances(IConfigStore store, StreamDeckConnectionWorker worker)
+    {
+        foreach (var (instanceId, instance) in store.Load().StreamDeck.Instances)
+        {
+            if (instance.Mode == "recentApps" && instanceId.StartsWith("streamdeck:", System.StringComparison.Ordinal))
+            {
+                worker.RefreshView(instanceId["streamdeck:".Length..]);
+            }
+        }
+    }
+
     /// <summary>
     /// A new widget joins the first existing preset (adding a deck is like
     /// plugging in a second Stream Deck, not starting a fresh layout); only a
     /// host with no presets at all gets a fresh empty one at the widget's grid.
     /// </summary>
-    private static DeckInstance CreateLazyWidgetInstance(IConfigStore store, string instanceId, int? cols, int? rows)
+    private static DeckInstance CreateLazyWidgetInstance(IConfigStore store, string instanceId, int? cols, int? rows, bool isDesktop)
     {
         DeckInstance? created = null;
         store.Update(s =>
@@ -625,7 +644,9 @@ public static class DeckRoutes
                 created = already;
                 return;
             }
-            var presetId = s.StreamDeck.Presets.Count > 0 ? s.StreamDeck.Presets[0].Id : null;
+            // A panel caller joins only what PUT would let it activate.
+            var presetId = s.StreamDeck.Presets
+                .FirstOrDefault(p => isDesktop || !DeckLayoutPolicy.PrivilegedActions(p.Deck).Any())?.Id;
             if (presetId is null)
             {
                 var preset = new DeckPreset

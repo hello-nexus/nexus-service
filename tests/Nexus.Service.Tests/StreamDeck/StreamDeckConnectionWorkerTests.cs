@@ -171,6 +171,29 @@ public class StreamDeckConnectionWorkerTests
         Assert.True(worker.FindBySerial("SERIAL-1")!.IsConnected);
     }
 
+    /// <summary>Keys painted before the user-session helper exists carry the generic app-icon fallback; the helper's connect must repaint every deck.</summary>
+    [Fact]
+    public void OnHelperConnected_RepaintsEveryConnectedDeck()
+    {
+        var f = NewFixtures(devicePresent: false);
+        var simulated = new SimulatedStreamDeckSurface(Mini, "sim-0001");
+        f.Store.Update(s => s.StreamDeck.Decks["sim-0001"] = new PhysicalDeckSettings
+        {
+            LegacyDeck = new DeckConfig
+            {
+                Pages = { new DeckPage { Slots = { new DeckSlot { Action = new DeckAction { Type = "launchApp", AppId = "app-1" } } } } },
+            },
+        });
+        f.Store.Update(s => ActivateLegacyDeck(s, "sim-0001"));
+        using var worker = NewWorker(f, simulated);
+        worker.Tick();
+        var before = simulated.SetKeyImageCallCount;
+
+        worker.OnHelperConnected();
+
+        Assert.True(simulated.SetKeyImageCallCount > before);
+    }
+
     /// <summary>A deck seen for the first time since schema v18 has no migration to hoist an instance row for it; OnSurfaceConnected must seed one itself, joining the first host-wide preset like a widget's lazy GET does.</summary>
     [Fact]
     public void Tick_ConnectingANewDeck_JoinsTheFirstExistingPreset()

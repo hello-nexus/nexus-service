@@ -165,6 +165,48 @@ public sealed class DeckKeyRendererTests : IDisposable
         Assert.Same(first, second);
     }
 
+    /// <summary>
+    /// An empty shortcut icon is what the Windows helper proxy answers while no
+    /// helper is connected (boot), so the generic fallback drawn for a launchApp
+    /// key must not be cached: once the helper connects, the next render has
+    /// to pick up the real icon.
+    /// </summary>
+    [Fact]
+    public void Render_LaunchAppWithNoShortcutIconYet_IsNotCached()
+    {
+        var shortcuts = new SwitchableShortcutsProvider();
+        var renderer = new DeckKeyRenderer(new DeckImageStore(_imagesDir), shortcuts, new NullProcessIconProvider());
+        var slot = new DeckSlot { Action = new DeckAction { Type = "launchApp", AppId = "app-1" } };
+
+        var fallback = renderer.Render(slot, false, Mk2, 0);
+        Assert.NotNull(fallback);
+
+        using (var icon = new Image<Rgba32>(16, 16))
+        {
+            icon.Mutate(ctx => ctx.Fill(Color.Lime));
+            using var ms = new MemoryStream();
+            icon.SaveAsPng(ms);
+            shortcuts.Icon = ms.ToArray();
+        }
+        var real = renderer.Render(slot, false, Mk2, 0);
+
+        Assert.NotNull(real);
+        Assert.NotSame(fallback, real);
+        Assert.NotEqual(fallback, real);
+        // With the icon available the face IS cached.
+        Assert.Same(real, renderer.Render(slot, false, Mk2, 0));
+    }
+
+    private sealed class SwitchableShortcutsProvider : IShortcutsProvider
+    {
+        public byte[] Icon = Array.Empty<byte>();
+        public System.Collections.Generic.IReadOnlyList<Shortcut> GetAll() => Array.Empty<Shortcut>();
+        public Shortcut? GetById(string targetId) => null;
+        public byte[] GetIcon(string targetId) => Icon;
+        public bool Launch(string targetId) => false;
+        public string ResolveProcessName(string targetId) => "";
+    }
+
     [Fact]
     public void Render_ImageIconFromDeckImageStore_CoverFillsTheKey()
     {

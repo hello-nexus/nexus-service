@@ -294,6 +294,24 @@ public sealed class StreamDeckConnectionWorker : BackgroundService, IDeckSurface
     }
 
     /// <summary>
+    /// The LocalSystem service connects a deck and paints its keys at boot,
+    /// before the user-session helper that serves app icons exists; those
+    /// keys went out with the generic fallback (uncached, see
+    /// DeckKeyRenderer), so repaint every deck now that icons resolve. Wired
+    /// to the helper registry's Connected event by the Windows DI registration.
+    /// </summary>
+    public void OnHelperConnected()
+    {
+        lock (_lock)
+        {
+            foreach (var surface in _surfaces.Values.ToList())
+            {
+                PushCurrentView(surface, viewChanged: false);
+            }
+        }
+    }
+
+    /// <summary>
     /// The streamdeckTiles topic carries no snapshot provider, so a fresh
     /// subscriber (e.g. the Customize tab opening) would otherwise see
     /// nothing until some tile's pixels next change. Dropping every
@@ -2531,6 +2549,10 @@ public sealed class StreamDeckConnectionWorker : BackgroundService, IDeckSurface
         return slot?.Action?.Type == "monitoring";
     }
 
+    /// <summary>True when the physical instance for serial is in Recent Apps mode - the only place this worker checks instance mode, since every other mode (fixed, appAware) renders through the normal preset/FitToGrid path.</summary>
+    private bool IsRecentAppsMode(string serial) =>
+        Nexus.Service.Deck.DeckInstanceResolver.ResolveMode(_store.Load().StreamDeck, Nexus.Service.Deck.DeckInstanceResolver.PhysicalInstanceId(serial)) == "recentApps";
+
     /// <summary>
     /// Repaints every key of a deck's current view. viewChanged is true for
     /// a real navigation (SetNav, folder/page nav, connect) and false for a
@@ -2554,10 +2576,6 @@ public sealed class StreamDeckConnectionWorker : BackgroundService, IDeckSurface
     /// changed - its own frame cache can be cleared client-side by undo/
     /// redo/reset/preset-delete.
     /// </summary>
-    /// <summary>True when the physical instance for serial is in Recent Apps mode - the only place this worker checks instance mode, since every other mode (fixed, appAware) renders through the normal preset/FitToGrid path.</summary>
-    private bool IsRecentAppsMode(string serial) =>
-        Nexus.Service.Deck.DeckInstanceResolver.ResolveMode(_store.Load().StreamDeck, Nexus.Service.Deck.DeckInstanceResolver.PhysicalInstanceId(serial)) == "recentApps";
-
     private void PushCurrentView(IStreamDeckSurface surface, bool viewChanged)
     {
         if (IsRecentAppsMode(surface.Serial))
@@ -2813,7 +2831,7 @@ public sealed class StreamDeckConnectionWorker : BackgroundService, IDeckSurface
         _ => new DeckSlot(),
     };
 
-    /// <summary>The fitted config for a serial's live grid (live surface's model, else the persisted ProductId's, else a 5x3 fallback). Caller must hold _lock.</summary>
+    /// <summary>The fitted config for a serial's live grid (live surface's model, else the persisted ProductId's, else the resolver's default grid). Caller must hold _lock.</summary>
     private DeckConfig LoadConfig(string serial)
     {
         var settings = _store.Load().StreamDeck;

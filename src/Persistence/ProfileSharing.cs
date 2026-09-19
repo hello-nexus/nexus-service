@@ -100,6 +100,10 @@ public static class ProfileSharing
                 break;
             case Device:
                 target.StreamDeck = source.StreamDeck;
+                // The recent-apps ring names this machine's processes and
+                // exe paths; it never rides a profile or cloud sync.
+                target.StreamDeck.RecentApps = new List<RecentApp>();
+                target.StreamDeck.RecentAppsExcluded = new List<string>();
                 target.Keeb = source.Keeb;
                 break;
         }

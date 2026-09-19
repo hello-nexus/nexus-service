@@ -179,6 +179,10 @@ public static class DeckPresetPackage
         {
             return DeckPackageReadResult.Fail("preset.json is missing id");
         }
+        if (manifest.Deck is null)
+        {
+            return DeckPackageReadResult.Fail("preset.json is missing deck");
+        }
         if (string.IsNullOrWhiteSpace(manifest.Name))
         {
             return DeckPackageReadResult.Fail("preset.json is missing name");

@@ -208,12 +208,13 @@ public sealed class RecentAppsService : BackgroundService
     }
 
     /// <summary>
+    /// The Start-menu entry for a process key: its id launches the app and
+    /// its name is the label a key shows ("Microsoft Edge", not "msedge").
     /// A miss stays a miss until ShortcutsRefreshInterval's own time check
-    /// next rebuilds the index (no forced rebuild-on-miss here) - that is the
+    /// next rebuilds the index (no forced rebuild-on-miss) - that is the
     /// negative cache: a shortcut installed moments ago simply waits out the
     /// same window a genuinely unresolvable app does.
     /// </summary>
-    /// <summary>The Start-menu entry for a process key: its id launches the app and its name is the label a key shows ("Microsoft Edge", not "msedge").</summary>
     private (string Id, string Name)? ResolveShortcut(string processKey)
     {
         var now = _time.GetUtcNow();

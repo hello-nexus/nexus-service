@@ -83,6 +83,15 @@ public sealed class DeckPresetPackageTests : IDisposable
     }
 
     [Fact]
+    public void Read_NullDeck_FailsInsteadOfThrowing()
+    {
+        var manifest = Encoding.UTF8.GetBytes("""{"format":1,"id":"x","name":"X","cols":2,"rows":2,"deck":null}""");
+        var result = DeckPresetPackage.Read(new ZipPackageSource(new MemoryStream(BuildZip(("preset.json", manifest)))));
+        Assert.False(result.Ok);
+        Assert.Contains("deck", result.Error);
+    }
+
+    [Fact]
     public void Read_UnsupportedFormat_Fails()
     {
         var manifest = Encoding.UTF8.GetBytes("""{"format":2,"id":"x","name":"X","cols":2,"rows":2,"deck":{"pages":[]}}""");

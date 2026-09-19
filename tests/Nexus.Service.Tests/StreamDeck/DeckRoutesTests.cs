@@ -113,6 +113,19 @@ public sealed class DeckRoutesTests : IClassFixture<DeckRoutesHostFactory>
     }
 
     [Fact]
+    public async Task CreatePreset_WithAZeroPageDeck_NormalizesToOnePage()
+    {
+        var (factory, client) = Boot();
+        using (factory)
+        {
+            var res = await client.PostAsync("/deck/presets", Json("""{"name":"Empty","cols":3,"rows":2,"deck":{"pages":[]}}"""));
+            Assert.True(res.IsSuccessStatusCode, await res.Content.ReadAsStringAsync());
+            using var doc = JsonDocument.Parse(await res.Content.ReadAsStringAsync());
+            Assert.Equal(1, doc.RootElement.GetProperty("preset").GetProperty("deck").GetProperty("pages").GetArrayLength());
+        }
+    }
+
+    [Fact]
     public async Task CreatePreset_WithTemplateId_CreatesFromTheBundledTemplate()
     {
         var (factory, client) = Boot();

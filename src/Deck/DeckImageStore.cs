@@ -73,8 +73,8 @@ public sealed class DeckImageStore
 
     /// <summary>
     /// Writes bytes at a caller-computed content id, skipping Store()'s
-    /// 512 KB interactive-upload cap - a DeckPresetPackage asset may be up to
-    /// its own 4 MB cap, already validated (hash and size) before this is
+    /// interactive-upload cap - a DeckPresetPackage asset has its own, larger
+    /// cap, already validated (hash and size) before this is
     /// called. Idempotent like Store().
     /// </summary>
     public void StoreValidated(string id, string ext, byte[] bytes) => WriteAtomic(id, ext, bytes);

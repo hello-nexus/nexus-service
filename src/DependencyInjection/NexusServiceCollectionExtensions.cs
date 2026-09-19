@@ -785,7 +785,8 @@ public static class NexusServiceCollectionExtensions
             sp.GetRequiredService<Nexus.Service.Deck.DeckActionExecutor>());
         services.AddSingleton<Nexus.Service.Deck.RecentAppsState>();
         services.AddSingleton<Nexus.Service.Peripherals.StreamDeck.StreamDeckConnectionWorker>(sp =>
-            new Nexus.Service.Peripherals.StreamDeck.StreamDeckConnectionWorker(
+        {
+            var worker = new Nexus.Service.Peripherals.StreamDeck.StreamDeckConnectionWorker(
                 sp.GetRequiredService<Nexus.Service.Peripherals.Hid.IHidEnumerator>(),
                 sp.GetRequiredService<Nexus.Service.Devices.Detection.HardwarePresence>(),
                 sp.GetRequiredService<Nexus.Service.Devices.DeviceControlGate>(),
@@ -799,7 +800,18 @@ public static class NexusServiceCollectionExtensions
                 fans: sp.GetRequiredService<Nexus.Service.Cooling.IFanControlProvider>(),
                 sessionLock: sp.GetService<Nexus.Service.Lighting.SessionLockListener>(),
                 recentAppsState: sp.GetRequiredService<Nexus.Service.Deck.RecentAppsState>(),
-                recentAppsActivator: sp.GetRequiredService<Nexus.Service.Deck.RecentAppsActivator>()));
+                recentAppsActivator: sp.GetRequiredService<Nexus.Service.Deck.RecentAppsActivator>());
+#if WINDOWS
+            // App icons come from the user-session helper; keys painted before
+            // it connects carry the generic fallback until this repaint.
+            var helperRegistry = sp.GetService<Nexus.Service.Helper.HelperRegistry>();
+            if (helperRegistry is not null)
+            {
+                helperRegistry.Connected += _ => worker.OnHelperConnected();
+            }
+#endif
+            return worker;
+        });
         services.AddHostedService(sp => sp.GetRequiredService<Nexus.Service.Peripherals.StreamDeck.StreamDeckConnectionWorker>());
         services.AddSingleton<Nexus.Service.Deck.DeckPresetActivator>();
         services.AddSingleton<Nexus.Service.Deck.DeckPresetCatalog>();

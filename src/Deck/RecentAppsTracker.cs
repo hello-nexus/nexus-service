@@ -44,8 +44,9 @@ public static class RecentAppsTracker
 
     /// <summary>
     /// Moves candidate to the front of ring by ProcessKey, preserving an
-    /// already-resolved ShortcutId across the move (the caller re-resolves at
-    /// most every 60s, never per focus event), dedupes, and caps at RingCap.
+    /// already-resolved ShortcutId across the move (RecentAppsService resolves
+    /// off the focus thread, on its broadcast timer), dedupes, and caps at
+    /// RingCap.
     /// No-op (returns false, ring untouched) for an empty or excluded process
     /// key.
     /// </summary>

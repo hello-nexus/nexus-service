@@ -266,6 +266,24 @@ public sealed class PanelDeckPolicyRouteTests : IDisposable
         Assert.Contains("deck_action_requires_desktop", await res.Content.ReadAsStringAsync());
     }
 
+    /// <summary>A panel's new widget joins only a preset the panel could activate itself; a hotkey preset at the head of the list is skipped.</summary>
+    [Fact]
+    public async Task Panel_widget_lazy_join_skips_a_privileged_preset()
+    {
+        var desktop = DesktopClient();
+        var privileged = await desktop.PostAsJsonAsync("/deck/presets", new { templateId = "photoshop" });
+        Assert.True(privileged.IsSuccessStatusCode, await privileged.Content.ReadAsStringAsync());
+        var plain = await desktop.PostAsJsonAsync("/deck/presets", new { name = "Plain" });
+        Assert.True(plain.IsSuccessStatusCode, await plain.Content.ReadAsStringAsync());
+        var plainId = (await plain.Content.ReadFromJsonAsync<JsonElement>()).GetProperty("preset").GetProperty("id").GetString();
+
+        var panel = PanelClient();
+        var res = await panel.GetAsync("/deck/instances/widget:lazy-panel-1");
+        Assert.True(res.IsSuccessStatusCode, await res.Content.ReadAsStringAsync());
+        var body = await res.Content.ReadFromJsonAsync<JsonElement>();
+        Assert.Equal(plainId, body.GetProperty("instance").GetProperty("activePresetId").GetString());
+    }
+
     [Fact]
     public async Task Desktop_can_create_a_preset_from_a_privileged_template()
     {

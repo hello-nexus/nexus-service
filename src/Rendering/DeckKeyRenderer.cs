@@ -263,6 +263,14 @@ public sealed class DeckKeyRenderer
                     return;
                 }
             }
+            else
+            {
+                // An empty shortcut icon is what the Windows helper proxy
+                // returns while no helper is connected (boot, before the user
+                // session exists), indistinguishable from a real miss - so the
+                // fallback below is drawn but never cached.
+                transient = true;
+            }
         }
 
         var name = icon is { Kind: "lucide" } ? icon.Value : DeckIconDefaults.AutoIconName(action, display.IsFolder);

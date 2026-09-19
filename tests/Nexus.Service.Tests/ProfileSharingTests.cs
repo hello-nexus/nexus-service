@@ -56,6 +56,20 @@ public class ProfileSharingTests
         Assert.Equal("Source Deck", deck.Value.Name);
     }
 
+    /// <summary>The recent-apps ring names this machine's processes and exe paths, so a profile export or cloud sync never carries it.</summary>
+    [Fact]
+    public void ApplyCategory_Device_NeverCarriesTheRecentAppsRing()
+    {
+        var source = new NexusSettings();
+        source.StreamDeck.RecentApps.Add(new RecentApp { ProcessKey = "msedge", Name = "Microsoft Edge", ExePath = @"C:\edge.exe" });
+        source.StreamDeck.RecentAppsExcluded.Add("explorer");
+
+        var extract = ProfileSharing.ExtractShareable(source);
+
+        Assert.Empty(extract.StreamDeck.RecentApps);
+        Assert.Empty(extract.StreamDeck.RecentAppsExcluded);
+    }
+
     [Fact]
     public void ApplyCategory_Device_ReplacesTargetKeebWithSources()
     {
