@@ -1459,13 +1459,17 @@ public sealed class PhysicalDeckSettings
     /// <summary>Last-known StreamDeckModel.ProductId, so a disconnected deck can still report its layout via StreamDeckModels.ByProductId.</summary>
     public int ProductId { get; set; }
 
-    /// <summary>Pre-v18 live config. Read once by DeckModesMigration, then nulled.</summary>
+    /// <summary>Pre-v18 live config, wire name "deck" (the pre-rename property). Read once by DeckModesMigration, then nulled.</summary>
+    [System.Text.Json.Serialization.JsonPropertyName("deck")]
     public DeckConfig? LegacyDeck { get; set; }
-    /// <summary>Pre-v18 keyed by "{slotPath}/{state}"; value is the StreamDeckImageCache content hash. Read once, then nulled.</summary>
+    /// <summary>Pre-v18 keyed by "{slotPath}/{state}", wire name "imageRefs"; value is the StreamDeckImageCache content hash. Read once, then nulled.</summary>
+    [System.Text.Json.Serialization.JsonPropertyName("imageRefs")]
     public Dictionary<string, string>? LegacyImageRefs { get; set; }
-    /// <summary>Pre-v18 per-serial preset list. Read once, then nulled.</summary>
+    /// <summary>Pre-v18 per-serial preset list, wire name "presets". Read once, then nulled.</summary>
+    [System.Text.Json.Serialization.JsonPropertyName("presets")]
     public List<DeckPreset>? LegacyPresets { get; set; }
-    /// <summary>Pre-v18 selected preset id. Read once, then nulled.</summary>
+    /// <summary>Pre-v18 selected preset id, wire name "activePresetId". Read once, then nulled.</summary>
+    [System.Text.Json.Serialization.JsonPropertyName("activePresetId")]
     public string? LegacyActivePresetId { get; set; }
 }
 

@@ -563,4 +563,54 @@ public class JsonConfigStoreMigrationTests : IDisposable
             store.Dispose();
         }
     }
+
+    /// <summary>
+    /// Regression test for a real-world data-loss bug: PhysicalDeckSettings'
+    /// pre-v18 fields (Deck/ImageRefs/Presets/ActivePresetId) were renamed to
+    /// LegacyDeck/etc. with no JsonPropertyName, so under CamelCase naming
+    /// they deserialized from "legacyDeck" instead of the actual on-disk
+    /// "deck" - every field bound to null, DeckModesMigration saw nothing to
+    /// hoist, and the schema version still advanced to 18, permanently
+    /// discarding the user's layout. This deserializes a literal pre-v18
+    /// settings.json through the real PersistenceJsonContext (not a C#
+    /// object graph built by hand) so a naming-attribute regression fails it
+    /// again.
+    /// </summary>
+    [Fact]
+    public void Load_V17_DeckModesMigration_HoistsLegacyDeckFromRawJson()
+    {
+        var json = """
+        {
+          "schemaVersion": 17,
+          "streamDeck": {
+            "decks": {
+              "SERIAL-1": {
+                "name": "My Deck",
+                "productId": 99,
+                "deck": { "pages": [ { "slots": [ { "label": "Hi" } ] } ] }
+              }
+            }
+          }
+        }
+        """;
+        File.WriteAllText(_settingsPath, json);
+
+        var store = new JsonConfigStore(_settingsPath);
+        var s = store.Load();
+        try
+        {
+            Assert.Equal(NexusSettings.CurrentSchemaVersion, s.SchemaVersion);
+            var instance = Assert.Contains("streamdeck:SERIAL-1", s.StreamDeck.Instances);
+            Assert.Equal("fixed", instance.Mode);
+            var preset = s.StreamDeck.Presets.Find(p => p.Id == instance.ActivePresetId);
+            Assert.NotNull(preset);
+            Assert.Equal("My Deck", preset!.Name);
+            Assert.Equal("Hi", preset.Deck.Pages[0].Slots[0].Label);
+            Assert.Null(s.StreamDeck.Decks["SERIAL-1"].LegacyDeck);
+        }
+        finally
+        {
+            store.Dispose();
+        }
+    }
 }
