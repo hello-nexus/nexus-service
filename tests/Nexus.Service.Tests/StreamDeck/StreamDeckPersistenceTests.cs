@@ -393,14 +393,16 @@ public sealed class DeckActionSettingsLoadSurvivalTests : IDisposable
     {
         // Also exercises the legacy pre-pagination "deck":{"slots":[...]}
         // shape (no "pages" key) - DeckConfigConverter must normalize it into
-        // one page for this document to load at all.
+        // one page for this document to load at all. "deck" is
+        // PhysicalDeckSettings.LegacyDeck's real pre-v18 wire name (its
+        // JsonPropertyName), not the C# property's own name.
         // schemaVersion is set to CurrentSchemaVersion so the v18 deck-modes
         // migration does not run and hoist legacyDeck away before the
         // assertions below read it.
         var json = "{"
             + $"\"schemaVersion\":{NexusSettings.CurrentSchemaVersion},"
             + "\"lighting\":{\"globalBrightness\":0.42},"
-            + "\"streamDeck\":{\"decks\":{\"SERIAL-1\":{\"legacyDeck\":{\"slots\":[{\"action\":\"not an object\"}]}}}}"
+            + "\"streamDeck\":{\"decks\":{\"SERIAL-1\":{\"deck\":{\"slots\":[{\"action\":\"not an object\"}]}}}}"
             + "}";
         File.WriteAllText(_path, json);
 
