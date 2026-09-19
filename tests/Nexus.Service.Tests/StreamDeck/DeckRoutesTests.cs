@@ -1,4 +1,6 @@
 using System;
+using System.Collections.Generic;
+using System.Linq;
 using System.Net;
 using System.Net.Http;
 using System.Net.Http.Headers;
@@ -8,7 +10,9 @@ using System.Threading.Tasks;
 using Microsoft.Extensions.DependencyInjection;
 using Nexus.Service.Auth;
 using Nexus.Service.Deck;
+using Nexus.Service.Peripherals.StreamDeck;
 using Nexus.Service.Persistence;
+using Nexus.Service.Sockets;
 using Nexus.Service.Tests.Integration;
 using Xunit;
 
@@ -334,6 +338,67 @@ public sealed class DeckRoutesTests : IClassFixture<DeckRoutesHostFactory>
     }
 
     [Fact]
+    public async Task UpdatePreset_RepaintsEveryPhysicalInstanceOnIt()
+    {
+        var (factory, client) = Boot();
+        using (factory)
+        {
+            var store = factory.Services.GetRequiredService<IConfigStore>();
+            var worker = factory.Services.GetRequiredService<StreamDeckConnectionWorker>();
+            var mini = StreamDeckModels.ByProductId(0x0063)!;
+            try
+            {
+                Assert.True(worker.SetSimulatedModel(mini.ProductId));
+                var serial = worker.Surfaces[StreamDeckConnectionWorker.SimulatedKey].Serial;
+
+                store.Update(s =>
+                {
+                    s.StreamDeck.Presets.Clear();
+                    s.StreamDeck.Presets.Add(new DeckPreset
+                    {
+                        Id = "p1",
+                        Name = "Repaint",
+                        Cols = mini.Columns,
+                        Rows = mini.Rows,
+                        Deck = new DeckConfig { Pages = { new DeckPage { Slots = { new DeckSlot { Label = "Before", Color = "#ff0000" } } } } },
+                    });
+                    s.StreamDeck.Instances["streamdeck:" + serial] = new DeckInstance { Mode = "fixed", ActivePresetId = "p1" };
+                });
+                // Seeds a stable baseline: OnSurfaceConnected already painted
+                // the deck before the preset above existed, so its key
+                // content and SetKeyImage count would otherwise reflect that
+                // earlier state.
+                worker.RefreshView(serial);
+                var sim = (SimulatedStreamDeckSurface)worker.Surfaces[StreamDeckConnectionWorker.SimulatedKey];
+                var callsBefore = sim.SetKeyImageCallCount;
+
+                var hub = factory.Services.GetRequiredService<MultiplexHub>();
+                using var tilesSub = hub.AddTestSubscription(PanelTopics.StreamDeckTiles);
+                var topics = new List<string>();
+                void OnBroadcast(string topic, ReadOnlyMemory<byte> _) => topics.Add(topic);
+                hub.OnBroadcastForTest += OnBroadcast;
+                try
+                {
+                    var res = await client.PutAsync("/deck/presets/p1", Json(
+                        """{"deck":{"pages":[{"slots":[{"label":"After","color":"#00ff00"}]}]}}"""));
+                    Assert.True(res.IsSuccessStatusCode);
+                }
+                finally
+                {
+                    hub.OnBroadcastForTest -= OnBroadcast;
+                }
+
+                Assert.True(sim.SetKeyImageCallCount > callsBefore, "PUT never repainted the physical deck");
+                Assert.Contains(PanelTopics.StreamDeckTiles, topics);
+            }
+            finally
+            {
+                worker.ClearSimulatedModel();
+            }
+        }
+    }
+
+    [Fact]
     public async Task DeletePreset_ReassignsInstancesToTheFirstRemainingPreset()
     {
         var (factory, client) = Boot();
@@ -353,6 +418,51 @@ public sealed class DeckRoutesTests : IClassFixture<DeckRoutesHostFactory>
             var settings = store.Load().StreamDeck;
             Assert.DoesNotContain(settings.Presets, p => p.Id == "p1");
             Assert.Equal("p2", settings.Instances["widget:w1"].ActivePresetId);
+        }
+    }
+
+    [Fact]
+    public async Task DeletePreset_ReassignsAPhysicalInstance_ResetsNavAndRepaints()
+    {
+        var (factory, client) = Boot();
+        using (factory)
+        {
+            var store = factory.Services.GetRequiredService<IConfigStore>();
+            var worker = factory.Services.GetRequiredService<StreamDeckConnectionWorker>();
+            var mini = StreamDeckModels.ByProductId(0x0063)!;
+            try
+            {
+                Assert.True(worker.SetSimulatedModel(mini.ProductId));
+                var serial = worker.Surfaces[StreamDeckConnectionWorker.SimulatedKey].Serial;
+
+                store.Update(s =>
+                {
+                    s.StreamDeck.Presets.Clear();
+                    s.StreamDeck.Presets.Add(new DeckPreset { Id = "p1", Name = "One", Cols = mini.Columns, Rows = mini.Rows });
+                    s.StreamDeck.Presets.Add(new DeckPreset
+                    {
+                        Id = "p2",
+                        Name = "Two",
+                        Cols = mini.Columns,
+                        Rows = mini.Rows,
+                        Deck = new DeckConfig { Pages = { new DeckPage { Slots = { new DeckSlot { Label = "Two", Color = "#0000ff" } } } } },
+                    });
+                    s.StreamDeck.Instances["streamdeck:" + serial] = new DeckInstance { Mode = "fixed", ActivePresetId = "p1" };
+                });
+                worker.RefreshView(serial);
+                var sim = (SimulatedStreamDeckSurface)worker.Surfaces[StreamDeckConnectionWorker.SimulatedKey];
+                var callsBefore = sim.SetKeyImageCallCount;
+
+                var res = await client.DeleteAsync("/deck/presets/p1");
+                Assert.True(res.IsSuccessStatusCode);
+
+                Assert.Equal("p2", store.Load().StreamDeck.Instances["streamdeck:" + serial].ActivePresetId);
+                Assert.True(sim.SetKeyImageCallCount > callsBefore, "DELETE never repainted the reassigned physical deck");
+            }
+            finally
+            {
+                worker.ClearSimulatedModel();
+            }
         }
     }
 

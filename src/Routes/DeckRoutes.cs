@@ -3,6 +3,7 @@ using Nexus.Service.Auth;
 using Nexus.Service.Deck;
 using Nexus.Service.Models;
 using Nexus.Service.Models.Deck;
+using Nexus.Service.Models.Peripherals.StreamDeck;
 using Nexus.Service.Persistence;
 using Nexus.Service.Peripherals.StreamDeck;
 using Nexus.Service.Serialization;
@@ -134,7 +135,7 @@ public static class DeckRoutes
         }).AllowPanel();
 
         app.MapPut("/deck/presets/{id}", (
-            string id, UpdateDeckPresetRequest body, HttpContext ctx, TokenService tokens, IConfigStore store, MultiplexHub hub) =>
+            string id, UpdateDeckPresetRequest body, HttpContext ctx, TokenService tokens, IConfigStore store, MultiplexHub hub, StreamDeckConnectionWorker worker) =>
         {
             var existing = store.Load().StreamDeck.Presets.Find(p => p.Id == id);
             if (existing is null)
@@ -199,10 +200,11 @@ public static class DeckRoutes
             }
 
             PanelTopics.BroadcastDeck(hub, new DeckChangedFrame { Kind = "preset", PresetId = id, Summary = ToSummary(updated), Deck = updated.Deck });
+            RefreshPhysicalInstancesOnPreset(store, worker, id);
             return Results.Json(new DeckPresetResponse { Preset = ToFull(updated) }, AppJsonContext.Default.DeckPresetResponse);
         }).AllowPanel();
 
-        app.MapDelete("/deck/presets/{id}", (string id, IConfigStore store, MultiplexHub hub) =>
+        app.MapDelete("/deck/presets/{id}", (string id, IConfigStore store, MultiplexHub hub, StreamDeckConnectionWorker worker) =>
         {
             var lastAndInUse = false;
             var movedInstanceIds = new System.Collections.Generic.List<string>();
@@ -244,10 +246,17 @@ public static class DeckRoutes
             var settings = store.Load().StreamDeck;
             foreach (var instanceId in movedInstanceIds)
             {
-                if (settings.Instances.TryGetValue(instanceId, out var instance))
+                if (!settings.Instances.TryGetValue(instanceId, out var instance))
                 {
-                    PanelTopics.BroadcastDeck(hub, new DeckChangedFrame { Kind = "active", InstanceId = instanceId, Instance = instance });
+                    continue;
                 }
+                if (instanceId.StartsWith("streamdeck:", System.StringComparison.Ordinal))
+                {
+                    var serial = instanceId["streamdeck:".Length..];
+                    worker.SetNav(serial, 0, System.Array.Empty<int>());
+                    PanelTopics.BroadcastStreamDeck(hub, new StreamDeckChangedFrame { Kind = "config", Serial = serial });
+                }
+                PanelTopics.BroadcastDeck(hub, new DeckChangedFrame { Kind = "active", InstanceId = instanceId, Instance = instance });
             }
             return Results.Json(ApiResponse.Ok(), AppJsonContext.Default.ApiResponse);
         }).LocalhostOnly();
@@ -581,6 +590,18 @@ public static class DeckRoutes
     {
         var presets = store.Load().StreamDeck.Presets.Select(ToSummary).ToList();
         PanelTopics.BroadcastDeck(hub, new DeckChangedFrame { Kind = "presets", Presets = presets });
+    }
+
+    /// <summary>Repaints every physical instance currently on presetId - an editor's PUT is the only path to a preset's content besides a physical key press, and the worker has no IConfigStore.OnChanged subscription of its own.</summary>
+    private static void RefreshPhysicalInstancesOnPreset(IConfigStore store, StreamDeckConnectionWorker worker, string presetId)
+    {
+        foreach (var (instanceId, instance) in store.Load().StreamDeck.Instances)
+        {
+            if (instance.ActivePresetId == presetId && instanceId.StartsWith("streamdeck:", System.StringComparison.Ordinal))
+            {
+                worker.RefreshView(instanceId["streamdeck:".Length..]);
+            }
+        }
     }
 
     /// <summary>
