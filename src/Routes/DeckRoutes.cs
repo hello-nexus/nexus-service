@@ -238,6 +238,87 @@ public static class DeckRoutes
             return Results.Json(ApiResponse.Ok(), AppJsonContext.Default.ApiResponse);
         }).LocalhostOnly();
 
+        // App Aware bindings, mirroring PUT /devices/lighting-devices/layout-presets/{id}/apps
+        // exactly: an app drives exactly one preset host-wide (deck presets and
+        // layout presets are separate pools), so assigning it here unbinds it
+        // from any other DECK preset only.
+        app.MapPut("/deck/presets/{id}/apps", (
+            string id, Nexus.Service.Models.Devices.SetPresetAppsBody body, IConfigStore store, Nexus.Service.Activity.IShortcutsProvider shortcuts, MultiplexHub hub) =>
+        {
+            var known = new System.Collections.Generic.Dictionary<string, string>(System.StringComparer.OrdinalIgnoreCase);
+            foreach (var preset in store.Load().StreamDeck.Presets)
+            {
+                if (preset.Apps is null) continue;
+                foreach (var b in preset.Apps)
+                {
+                    if (b.ProcessName.Length > 0) known[b.Id] = b.ProcessName;
+                }
+            }
+
+            var resolved = new System.Collections.Generic.List<PresetAppBinding>();
+            foreach (var app in body.Apps)
+            {
+                if (string.IsNullOrWhiteSpace(app.Id)
+                    || resolved.Exists(r => string.Equals(r.Id, app.Id, System.StringComparison.OrdinalIgnoreCase)))
+                {
+                    continue;
+                }
+                var processName = ResolveBindingProcessName(app.Id, shortcuts);
+                if (processName.Length == 0 && known.TryGetValue(app.Id, out var previous))
+                {
+                    processName = previous;
+                }
+                resolved.Add(new PresetAppBinding { Id = app.Id, Name = app.Name, ProcessName = processName });
+            }
+
+            var existing = store.Load().StreamDeck.Presets;
+            var target = existing.Find(p => p.Id == id);
+            if (target is null)
+            {
+                return Results.Json(ApiResponse.Fail("preset not found"), AppJsonContext.Default.ApiResponse, statusCode: 404);
+            }
+
+            foreach (var other in existing)
+            {
+                if (other.Id == id || other.Apps is null)
+                {
+                    continue;
+                }
+                foreach (var taken in other.Apps)
+                {
+                    var clash = resolved.Find(r =>
+                        string.Equals(r.Id, taken.Id, System.StringComparison.OrdinalIgnoreCase)
+                        || (r.ProcessName.Length > 0 && string.Equals(r.ProcessName, taken.ProcessName, System.StringComparison.Ordinal)));
+                    if (clash is not null)
+                    {
+                        return Results.Json(
+                            new Nexus.Service.Models.Devices.PresetAppConflictResponse { Error = true, Msg = "app_already_bound", AppName = clash.Name, PresetName = other.Name },
+                            AppJsonContext.Default.PresetAppConflictResponse,
+                            statusCode: 409);
+                    }
+                }
+            }
+
+            DeckPreset? updated = null;
+            store.Update(s =>
+            {
+                var preset = s.StreamDeck.Presets.Find(p => p.Id == id);
+                if (preset is null)
+                {
+                    return;
+                }
+                preset.Apps = resolved;
+                updated = preset;
+            });
+            if (updated is null)
+            {
+                return Results.Json(ApiResponse.Fail("preset not found"), AppJsonContext.Default.ApiResponse, statusCode: 404);
+            }
+
+            PanelTopics.BroadcastDeck(hub, new DeckChangedFrame { Kind = "preset", PresetId = id, Summary = ToSummary(updated), Deck = updated.Deck });
+            return Results.Json(new DeckPresetAppsResponse { Preset = ToSummary(updated) }, AppJsonContext.Default.DeckPresetAppsResponse);
+        }).LocalhostOnly();
+
         app.MapGet("/deck/instances", (IConfigStore store) =>
         {
             var instances = new System.Collections.Generic.Dictionary<string, DeckInstance>(store.Load().StreamDeck.Instances);
@@ -437,6 +518,26 @@ public static class DeckRoutes
             return true;
         }
         return false;
+    }
+
+    // Mirrors LightingDevicesRoutes' helper of the same name: a pick off the
+    // running-apps list already carries the process name, a Start-menu pick
+    // does not.
+    private static string ResolveBindingProcessName(string appId, Nexus.Service.Activity.IShortcutsProvider shortcuts)
+    {
+        const string RunningPrefix = "proc:";
+        if (appId.StartsWith(RunningPrefix, System.StringComparison.Ordinal))
+        {
+            return Nexus.Service.Lighting.AppPresetMatching.ProcessKey(appId[RunningPrefix.Length..]);
+        }
+        try
+        {
+            return Nexus.Service.Lighting.AppPresetMatching.ProcessKey(shortcuts.ResolveProcessName(appId));
+        }
+        catch
+        {
+            return "";
+        }
     }
 
     private static DeckPresetSummary ToSummary(DeckPreset p) => new()

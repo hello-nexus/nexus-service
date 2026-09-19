@@ -1285,6 +1285,7 @@ namespace Nexus.Service.Serialization;
 [JsonSerializable(typeof(Nexus.Service.Models.Deck.DeckPresetFull))]
 [JsonSerializable(typeof(Nexus.Service.Models.Deck.DeckPresetsListResponse))]
 [JsonSerializable(typeof(Nexus.Service.Models.Deck.DeckPresetResponse))]
+[JsonSerializable(typeof(Nexus.Service.Models.Deck.DeckPresetAppsResponse))]
 [JsonSerializable(typeof(Nexus.Service.Models.Deck.CreateDeckPresetRequest))]
 [JsonSerializable(typeof(Nexus.Service.Models.Deck.UpdateDeckPresetRequest))]
 [JsonSerializable(typeof(Nexus.Service.Persistence.DeckInstance))]

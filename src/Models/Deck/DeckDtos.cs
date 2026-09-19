@@ -32,6 +32,12 @@ public sealed class DeckPresetResponse
     public DeckPresetFull? Preset { get; set; }
 }
 
+/// <summary>PUT /deck/presets/{id}/apps response - a summary only, unlike the full-config PUT /deck/presets/{id}.</summary>
+public sealed class DeckPresetAppsResponse
+{
+    public DeckPresetSummary? Preset { get; set; }
+}
+
 /// <summary>POST /deck/presets body: at most one of Deck / TemplateId / CopyOfPresetId; none of the three creates an empty preset.</summary>
 public sealed class CreateDeckPresetRequest
 {

@@ -513,4 +513,99 @@ public sealed class DeckRoutesTests : IClassFixture<DeckRoutesHostFactory>
             Assert.Equal(HttpStatusCode.NotFound, res.StatusCode);
         }
     }
+
+    // ───────────────────────── App Aware bindings ─────────────────────────
+
+    [Fact]
+    public async Task PutPresetApps_BindsAndReturnsSummary()
+    {
+        var (factory, client) = Boot();
+        using (factory)
+        {
+            var store = factory.Services.GetRequiredService<IConfigStore>();
+            store.Update(s => s.StreamDeck.Presets.Add(new DeckPreset { Id = "p1", Name = "Discord", Cols = 3, Rows = 2 }));
+
+            var res = await client.PutAsync("/deck/presets/p1/apps", Json("""{"apps":[{"id":"proc:discord","name":"Discord"}]}"""));
+            Assert.True(res.IsSuccessStatusCode);
+            using var doc = JsonDocument.Parse(await res.Content.ReadAsStringAsync());
+            var apps = doc.RootElement.GetProperty("preset").GetProperty("apps");
+            Assert.Equal(1, apps.GetArrayLength());
+            Assert.Equal("discord", apps[0].GetProperty("processName").GetString());
+
+            var stored = store.Load().StreamDeck.Presets.Find(p => p.Id == "p1");
+            Assert.Single(stored!.Apps!);
+        }
+    }
+
+    [Fact]
+    public async Task PutPresetApps_UnknownPreset_Returns404()
+    {
+        var (factory, client) = Boot();
+        using (factory)
+        {
+            var res = await client.PutAsync("/deck/presets/missing/apps", Json("""{"apps":[]}"""));
+            Assert.Equal(HttpStatusCode.NotFound, res.StatusCode);
+        }
+    }
+
+    [Fact]
+    public async Task PutPresetApps_AppAlreadyBoundElsewhere_Returns409AndLeavesBothPresetsUnchanged()
+    {
+        var (factory, client) = Boot();
+        using (factory)
+        {
+            var store = factory.Services.GetRequiredService<IConfigStore>();
+            store.Update(s =>
+            {
+                s.StreamDeck.Presets.Add(new DeckPreset
+                {
+                    Id = "p1",
+                    Name = "Discord",
+                    Cols = 3,
+                    Rows = 2,
+                    Apps = new System.Collections.Generic.List<PresetAppBinding> { new() { Id = "proc:discord", Name = "Discord", ProcessName = "discord" } },
+                });
+                s.StreamDeck.Presets.Add(new DeckPreset { Id = "p2", Name = "Other", Cols = 3, Rows = 2 });
+            });
+
+            var res = await client.PutAsync("/deck/presets/p2/apps", Json("""{"apps":[{"id":"proc:discord","name":"Discord"}]}"""));
+            Assert.Equal(HttpStatusCode.Conflict, res.StatusCode);
+            using var doc = JsonDocument.Parse(await res.Content.ReadAsStringAsync());
+            Assert.Equal("app_already_bound", doc.RootElement.GetProperty("msg").GetString());
+
+            Assert.Null(store.Load().StreamDeck.Presets.Find(p => p.Id == "p2")!.Apps);
+        }
+    }
+
+    [Fact]
+    public async Task PutPresetApps_RebindingToAnotherPreset_UnbindsTheFirst()
+    {
+        var (factory, client) = Boot();
+        using (factory)
+        {
+            var store = factory.Services.GetRequiredService<IConfigStore>();
+            store.Update(s =>
+            {
+                s.StreamDeck.Presets.Add(new DeckPreset
+                {
+                    Id = "p1",
+                    Name = "Discord",
+                    Cols = 3,
+                    Rows = 2,
+                    Apps = new System.Collections.Generic.List<PresetAppBinding> { new() { Id = "proc:discord", Name = "Discord", ProcessName = "discord" } },
+                });
+                s.StreamDeck.Presets.Add(new DeckPreset { Id = "p2", Name = "Other", Cols = 3, Rows = 2 });
+            });
+
+            // Unbind p1 first (an empty apps list), then bind the same app on p2 - not a clash since p1 no longer claims it.
+            var unbind = await client.PutAsync("/deck/presets/p1/apps", Json("""{"apps":[]}"""));
+            Assert.True(unbind.IsSuccessStatusCode);
+
+            var res = await client.PutAsync("/deck/presets/p2/apps", Json("""{"apps":[{"id":"proc:discord","name":"Discord"}]}"""));
+            Assert.True(res.IsSuccessStatusCode);
+
+            Assert.Empty(store.Load().StreamDeck.Presets.Find(p => p.Id == "p1")!.Apps!);
+            Assert.Single(store.Load().StreamDeck.Presets.Find(p => p.Id == "p2")!.Apps!);
+        }
+    }
 }
