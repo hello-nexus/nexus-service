@@ -844,6 +844,13 @@ public sealed partial class ProfileManager : IDisposable
             // applied layout keeps resolving (idempotent).
             Nexus.Service.Widgets.AppPrefixMigration.Apply(s);
 
+            // Profile files never pass through JsonConfigStore.Migrate either
+            // (see the LayoutRotationMigration call above): a pre-v18 profile's
+            // Device category carries per-serial LegacyDeck/LegacyPresets, and
+            // its Dashboard category can carry deck widgets with inline
+            // config.deck. Idempotent - a no-op on an already-migrated profile.
+            Nexus.Service.Deck.DeckModesMigration.Apply(s);
+
             // PanelDevices is hardware-scoped, not profile-scoped: do NOT
             // entries that the loaded profile JSON happens to carry into
         });
