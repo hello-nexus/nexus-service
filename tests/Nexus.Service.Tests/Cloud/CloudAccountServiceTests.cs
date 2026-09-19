@@ -475,6 +475,10 @@ public sealed class CloudAccountServiceTests
                 ? CloudApiResult<CloudRecoveryStartResponse>.Ok(new CloudRecoveryStartResponse { Code = "ABC-DEF" })
                 : CloudApiResult<CloudRecoveryStartResponse>.Fail(429, "recovery_too_soon", "Wait a minute.");
         };
+        // The fake's default poll answer is "expired", and the poll loop's first
+        // request goes out as soon as the grant is accepted - under suite load
+        // it can land before the assertions below and flip the status.
+        api.OnRecoveryPoll = _ => CloudApiResult<CloudRecoveryPollResponse>.Ok(new CloudRecoveryPollResponse { Status = "pending" });
 
         var first = await svc.StartRecoveryAsync("nicola@example.com", CancellationToken.None);
         Assert.True(first.Success);
