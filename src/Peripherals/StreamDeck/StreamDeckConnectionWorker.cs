@@ -247,6 +247,9 @@ public sealed class StreamDeckConnectionWorker : BackgroundService, IDeckSurface
     /// </summary>
     private readonly Dictionary<string, uint> _tileBroadcastHash = new(StringComparer.Ordinal);
 
+    /// <summary>Per "{serial}:{keyIndex}" last-pushed Recent Apps key hash (0 reserved for a blank/cleared key), gating both the HID write and the tile broadcast - unlike monitoring, a Recent Apps key's content only changes when the ring does, so one hash serves both.</summary>
+    private readonly Dictionary<string, uint> _recentAppsLastHash = new(StringComparer.Ordinal);
+
     private readonly TimeProvider _clock;
     private readonly SessionLockListener? _sessionLock;
     private readonly Nexus.Service.Deck.RecentAppsState? _recentAppsState;
@@ -1300,7 +1303,7 @@ public sealed class StreamDeckConnectionWorker : BackgroundService, IDeckSurface
         if (key.Kind is "navNext" or "navPrev")
         {
             _currentPageBySerial[serial] = Math.Clamp(page + (key.Kind == "navNext" ? 1 : -1), 0, pageCount - 1);
-            PushRecentAppsView(surface);
+            PushRecentAppsView(surface, viewChanged: true);
             BroadcastNav(serial, _currentPageBySerial[serial], new List<int>());
             return;
         }
@@ -2344,6 +2347,17 @@ public sealed class StreamDeckConnectionWorker : BackgroundService, IDeckSurface
         }
         InvalidateMonitoringHashesForSerial(serial);
         InvalidateTileBroadcastHashesForSerial(serial);
+        InvalidateRecentAppsHashesForSerial(serial);
+    }
+
+    /// <summary>Drops last-pushed Recent Apps key hashes for this serial, so a disconnect/mode re-entry (or a real view change) never skips a repaint on a coincidental hash match left over from a previous session.</summary>
+    private void InvalidateRecentAppsHashesForSerial(string serial)
+    {
+        var prefix = serial + ":";
+        foreach (var k in _recentAppsLastHash.Keys.Where(k => k.StartsWith(prefix, StringComparison.Ordinal)).ToList())
+        {
+            _recentAppsLastHash.Remove(k);
+        }
     }
 
     /// <summary>
@@ -2471,7 +2485,7 @@ public sealed class StreamDeckConnectionWorker : BackgroundService, IDeckSurface
     {
         if (IsRecentAppsMode(surface.Serial))
         {
-            PushRecentAppsView(surface);
+            PushRecentAppsView(surface, viewChanged);
             return;
         }
 
@@ -2612,13 +2626,21 @@ public sealed class StreamDeckConnectionWorker : BackgroundService, IDeckSurface
     /// process key laid out via RecentAppsTracker.BuildView, one key per
     /// physical index, no folder concept. The tracked page (_currentPageBySerial,
     /// shared with fixed mode - a mode switch always resets nav to 0 first)
-    /// clamps to the view's own page count. Every key broadcasts a
-    /// streamdeckTiles preview like a monitoring tile, since Recent Apps
+    /// clamps to the view's own page count. Each key's own last-pushed-hash
+    /// gate means an ordinary focus-change refresh (viewChanged false) only
+    /// writes the keys that actually changed; a real view change (connect,
+    /// page nav, mode switch) forces every key to repaint since a stale hash
+    /// from a previous session could otherwise coincide. Every key broadcasts
+    /// a streamdeckTiles preview like a monitoring tile, since Recent Apps
     /// content changes on focus rather than on a preset edit.
     /// </summary>
-    private void PushRecentAppsView(IStreamDeckSurface surface)
+    private void PushRecentAppsView(IStreamDeckSurface surface, bool viewChanged = false)
     {
         var serial = surface.Serial;
+        if (viewChanged)
+        {
+            InvalidateRecentAppsHashesForSerial(serial);
+        }
         _store.Load().StreamDeck.Decks.TryGetValue(serial, out var deck);
         var ring = _recentAppsState?.RingSnapshot() ?? new List<RecentApp>();
         var pages = Nexus.Service.Deck.RecentAppsTracker.BuildView(
@@ -2631,23 +2653,37 @@ public sealed class StreamDeckConnectionWorker : BackgroundService, IDeckSurface
 
         for (var i = 0; i < surface.Model.KeyCount; i++)
         {
+            var hashKey = $"{serial}:{i}";
             var key = i < keys.Count ? keys[i] : new Nexus.Service.Deck.RecentKey { Kind = "blank" };
             if (key.Kind == "blank")
             {
+                if (_recentAppsLastHash.TryGetValue(hashKey, out var lastBlank) && lastBlank == 0)
+                {
+                    continue;
+                }
+                _recentAppsLastHash[hashKey] = 0;
                 surface.ClearKey(i);
                 continue;
             }
             var slot = RecentKeyToSlot(key);
             var bytes = _keyRenderer.Render(slot, isToggleOn: false, surface.Model, deck?.Orientation ?? 0, selected: key.Focused);
-            if (bytes is not null)
+            if (bytes is null)
             {
-                surface.SetKeyImage(i, bytes);
-                BroadcastRecentAppsTile(serial, page, i, bytes);
-            }
-            else
-            {
+                _recentAppsLastHash[hashKey] = 0;
                 surface.ClearKey(i);
+                continue;
             }
+            // 0 is reserved for "blank"; an all-zero content hash is
+            // astronomically unlikely for a real rendered key and would only
+            // cost one redundant repaint if it ever happened.
+            var hash = ComputeFnv1aHash(bytes);
+            if (_recentAppsLastHash.TryGetValue(hashKey, out var lastHash) && lastHash == hash)
+            {
+                continue;
+            }
+            _recentAppsLastHash[hashKey] = hash;
+            surface.SetKeyImage(i, bytes);
+            BroadcastRecentAppsTile(serial, page, i, bytes);
         }
     }
 

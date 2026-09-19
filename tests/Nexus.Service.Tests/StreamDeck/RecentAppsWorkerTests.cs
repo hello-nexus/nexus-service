@@ -106,6 +106,34 @@ public sealed class RecentAppsWorkerTests : IDisposable
     }
 
     [Fact]
+    public void RefreshWithNoRingChange_RepaintsNoKeys()
+    {
+        SeedRing(("chrome", "Chrome"), ("discord", "Discord"));
+        ConnectInRecentAppsMode();
+        var callsAfterConnect = _simulated.SetKeyImageCallCount;
+
+        _worker.RefreshView("sim-0001");
+
+        Assert.Equal(callsAfterConnect, _simulated.SetKeyImageCallCount);
+    }
+
+    [Fact]
+    public void RefreshAfterFocusChange_RepaintsOnlyTheChangedKeys()
+    {
+        SeedRing(("chrome", "Chrome"), ("discord", "Discord"));
+        ConnectInRecentAppsMode();
+        var callsAfterConnect = _simulated.SetKeyImageCallCount;
+
+        // Focusing the already-front-of-ring app changes only that one key's
+        // rendered content (the selected treatment); the rest of the layout
+        // is untouched.
+        _state.SetFocused("chrome");
+        _worker.RefreshView("sim-0001");
+
+        Assert.Equal(callsAfterConnect + 1, _simulated.SetKeyImageCallCount);
+    }
+
+    [Fact]
     public void FocusedApp_RendersDifferentlyFromUnfocusedKeys()
     {
         SeedRing(("chrome", "Chrome"), ("discord", "Discord"));
