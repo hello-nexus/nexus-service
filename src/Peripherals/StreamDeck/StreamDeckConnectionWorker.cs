@@ -1737,6 +1737,14 @@ public sealed class StreamDeckConnectionWorker : BackgroundService, IDeckSurface
             {
                 continue;
             }
+            // Recent Apps has no preset/config axis of its own - the fixed-mode
+            // resolution below would clamp _currentPageBySerial to whatever
+            // (usually empty) fixed config this instance happens to carry,
+            // stomping the page a recentApps press just set.
+            if (IsRecentAppsMode(surface.Serial))
+            {
+                continue;
+            }
             var config = DeckInstanceResolver.ResolveFittedConfig(
                 settings, DeckInstanceResolver.PhysicalInstanceId(surface.Serial), surface.Model.Columns, surface.Model.Rows, DeckTargetKind.Physical);
             var page = ClampCurrentPageLocked(surface.Serial, config);
@@ -1948,6 +1956,13 @@ public sealed class StreamDeckConnectionWorker : BackgroundService, IDeckSurface
                 continue;
             }
             if (!settings.Decks.TryGetValue(surface.Serial, out var deck))
+            {
+                continue;
+            }
+            // See the matching guard in RefreshWeatherKeys: Recent Apps has no
+            // fixed-mode page axis, so resolving one here would stomp the
+            // page a recentApps nav press just set.
+            if (IsRecentAppsMode(surface.Serial))
             {
                 continue;
             }
@@ -2617,6 +2632,11 @@ public sealed class StreamDeckConnectionWorker : BackgroundService, IDeckSurface
         for (var i = 0; i < surface.Model.KeyCount; i++)
         {
             var key = i < keys.Count ? keys[i] : new Nexus.Service.Deck.RecentKey { Kind = "blank" };
+            if (key.Kind == "blank")
+            {
+                surface.ClearKey(i);
+                continue;
+            }
             var slot = RecentKeyToSlot(key);
             var bytes = _keyRenderer.Render(slot, isToggleOn: false, surface.Model, deck?.Orientation ?? 0, selected: key.Focused);
             if (bytes is not null)
