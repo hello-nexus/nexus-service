@@ -135,4 +135,24 @@ public sealed class RecentAppsServiceTests : IDisposable
 
         Assert.Contains(PanelTopics.Deck, kinds);
     }
+
+    /// <summary>The recents frame's ring must serialize as "apps" (matching RecentAppsResponse and the CONTRACT ADDENDUM), not the C# property's own name.</summary>
+    [Fact]
+    public void FocusChange_RecentsFrame_SerializesRingUnderTheAppsKey()
+    {
+        var hub = _factory.Services.GetRequiredService<MultiplexHub>();
+        byte[]? payload = null;
+        hub.OnBroadcastForTest += (topic, bytes) => { if (topic == PanelTopics.Deck) payload = bytes.ToArray(); };
+        using var sub = hub.AddTestSubscription(PanelTopics.Deck);
+
+        Focus("chrome");
+
+        Assert.NotNull(payload);
+        using var doc = System.Text.Json.JsonDocument.Parse(payload);
+        var frame = doc.RootElement.GetProperty("d");
+        Assert.Equal("recents", frame.GetProperty("kind").GetString());
+        Assert.True(frame.TryGetProperty("apps", out var apps));
+        Assert.False(frame.TryGetProperty("recentApps", out _));
+        Assert.Contains(System.Linq.Enumerable.Range(0, apps.GetArrayLength()), i => apps[i].GetProperty("processKey").GetString() == "chrome");
+    }
 }

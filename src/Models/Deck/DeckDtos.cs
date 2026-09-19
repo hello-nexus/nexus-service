@@ -97,8 +97,8 @@ public sealed class DeckChangedFrame
     public string? InstanceId { get; set; }
     /// <summary>active.</summary>
     public DeckInstance? Instance { get; set; }
-    /// <summary>recents.</summary>
-    public List<Nexus.Service.Persistence.RecentApp>? RecentApps { get; set; }
+    /// <summary>recents. Wire name "apps", matching RecentAppsResponse and the CONTRACT ADDENDUM's recents shape.</summary>
+    public List<Nexus.Service.Persistence.RecentApp>? Apps { get; set; }
     /// <summary>recents.</summary>
     public string? FocusedProcessKey { get; set; }
 }

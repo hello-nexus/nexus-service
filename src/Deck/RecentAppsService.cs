@@ -214,7 +214,7 @@ public sealed class RecentAppsService : BackgroundService
         PanelTopics.BroadcastDeck(_hub, new DeckChangedFrame
         {
             Kind = "recents",
-            RecentApps = new List<RecentApp>(settings.RecentApps),
+            Apps = new List<RecentApp>(settings.RecentApps),
             FocusedProcessKey = _state.FocusedProcessKey,
         });
 

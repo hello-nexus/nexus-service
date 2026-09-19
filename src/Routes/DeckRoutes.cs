@@ -422,7 +422,7 @@ public static class DeckRoutes
         PanelTopics.BroadcastDeck(hub, new DeckChangedFrame
         {
             Kind = "recents",
-            RecentApps = new System.Collections.Generic.List<Nexus.Service.Persistence.RecentApp>(settings.RecentApps),
+            Apps = new System.Collections.Generic.List<Nexus.Service.Persistence.RecentApp>(settings.RecentApps),
             FocusedProcessKey = state.FocusedProcessKey,
         });
     }
