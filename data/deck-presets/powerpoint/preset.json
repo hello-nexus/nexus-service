@@ -26,6 +26,12 @@
               "value": "Play"
             },
             "label": "Start Show",
+            "title": {
+              "show": true,
+              "align": "bottom",
+              "size": 14,
+              "bold": true
+            },
             "action": {
               "type": "hotkey",
               "keys": "f5"
@@ -38,6 +44,12 @@
               "value": "Play"
             },
             "label": "From Current",
+            "title": {
+              "show": true,
+              "align": "bottom",
+              "size": 14,
+              "bold": true
+            },
             "action": {
               "type": "hotkey",
               "keys": "shift+f5"
@@ -49,6 +61,12 @@
               "value": "Power"
             },
             "label": "End Show",
+            "title": {
+              "show": true,
+              "align": "bottom",
+              "size": 14,
+              "bold": true
+            },
             "action": {
               "type": "hotkey",
               "keys": "escape"
@@ -61,6 +79,12 @@
               "value": "ChevronLeft"
             },
             "label": "Previous",
+            "title": {
+              "show": true,
+              "align": "bottom",
+              "size": 14,
+              "bold": true
+            },
             "action": {
               "type": "hotkey",
               "keys": "left"
@@ -73,6 +97,12 @@
               "value": "ChevronRight"
             },
             "label": "Next",
+            "title": {
+              "show": true,
+              "align": "bottom",
+              "size": 14,
+              "bold": true
+            },
             "action": {
               "type": "hotkey",
               "keys": "right"
@@ -85,6 +115,12 @@
               "value": "Moon"
             },
             "label": "Black Screen",
+            "title": {
+              "show": true,
+              "align": "bottom",
+              "size": 14,
+              "bold": true
+            },
             "action": {
               "type": "hotkey",
               "keys": "b"
@@ -96,6 +132,12 @@
               "value": "Sun"
             },
             "label": "White Screen",
+            "title": {
+              "show": true,
+              "align": "bottom",
+              "size": 14,
+              "bold": true
+            },
             "action": {
               "type": "hotkey",
               "keys": "w"
@@ -107,6 +149,12 @@
               "value": "MousePointer"
             },
             "label": "Laser",
+            "title": {
+              "show": true,
+              "align": "bottom",
+              "size": 14,
+              "bold": true
+            },
             "action": {
               "type": "hotkey",
               "keys": "ctrl+l"
@@ -118,6 +166,12 @@
               "value": "Palette"
             },
             "label": "Pen",
+            "title": {
+              "show": true,
+              "align": "bottom",
+              "size": 14,
+              "bold": true
+            },
             "action": {
               "type": "hotkey",
               "keys": "ctrl+p"
@@ -129,6 +183,12 @@
               "value": "Trash2"
             },
             "label": "Erase Ink",
+            "title": {
+              "show": true,
+              "align": "bottom",
+              "size": 14,
+              "bold": true
+            },
             "action": {
               "type": "hotkey",
               "keys": "e"
@@ -140,6 +200,12 @@
               "value": "Monitor"
             },
             "label": "Presenter View",
+            "title": {
+              "show": true,
+              "align": "bottom",
+              "size": 14,
+              "bold": true
+            },
             "action": {
               "type": "hotkey",
               "keys": "alt+f5"
@@ -151,6 +217,12 @@
               "value": "Plus"
             },
             "label": "New Slide",
+            "title": {
+              "show": true,
+              "align": "bottom",
+              "size": 14,
+              "bold": true
+            },
             "action": {
               "type": "hotkey",
               "keys": "ctrl+m"
@@ -162,6 +234,12 @@
               "value": "Copy"
             },
             "label": "Duplicate",
+            "title": {
+              "show": true,
+              "align": "bottom",
+              "size": 14,
+              "bold": true
+            },
             "action": {
               "type": "hotkey",
               "keys": "ctrl+d"
@@ -173,6 +251,12 @@
               "value": "Undo2"
             },
             "label": "Undo",
+            "title": {
+              "show": true,
+              "align": "bottom",
+              "size": 14,
+              "bold": true
+            },
             "action": {
               "type": "hotkey",
               "keys": "ctrl+z"
@@ -184,6 +268,12 @@
               "value": "Save"
             },
             "label": "Save",
+            "title": {
+              "show": true,
+              "align": "bottom",
+              "size": 14,
+              "bold": true
+            },
             "action": {
               "type": "hotkey",
               "keys": "ctrl+s"

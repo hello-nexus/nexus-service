@@ -25,6 +25,12 @@
               "value": "Play"
             },
             "label": "Play / Pause",
+            "title": {
+              "show": true,
+              "align": "bottom",
+              "size": 14,
+              "bold": true
+            },
             "action": {
               "type": "hotkey",
               "keys": "space"
@@ -37,6 +43,12 @@
               "value": "SkipBack"
             },
             "label": "Previous",
+            "title": {
+              "show": true,
+              "align": "bottom",
+              "size": 14,
+              "bold": true
+            },
             "action": {
               "type": "hotkey",
               "keys": "ctrl+left"
@@ -48,6 +60,12 @@
               "value": "SkipForward"
             },
             "label": "Next",
+            "title": {
+              "show": true,
+              "align": "bottom",
+              "size": 14,
+              "bold": true
+            },
             "action": {
               "type": "hotkey",
               "keys": "ctrl+right"
@@ -59,6 +77,12 @@
               "value": "Volume1"
             },
             "label": "Vol Down",
+            "title": {
+              "show": true,
+              "align": "bottom",
+              "size": 14,
+              "bold": true
+            },
             "action": {
               "type": "hotkey",
               "keys": "ctrl+down"
@@ -70,6 +94,12 @@
               "value": "Volume2"
             },
             "label": "Vol Up",
+            "title": {
+              "show": true,
+              "align": "bottom",
+              "size": 14,
+              "bold": true
+            },
             "action": {
               "type": "hotkey",
               "keys": "ctrl+up"
@@ -81,6 +111,12 @@
               "value": "Sparkles"
             },
             "label": "Shuffle",
+            "title": {
+              "show": true,
+              "align": "bottom",
+              "size": 14,
+              "bold": true
+            },
             "action": {
               "type": "hotkey",
               "keys": "ctrl+s"
@@ -92,6 +128,12 @@
               "value": "RotateCcw"
             },
             "label": "Repeat",
+            "title": {
+              "show": true,
+              "align": "bottom",
+              "size": 14,
+              "bold": true
+            },
             "action": {
               "type": "hotkey",
               "keys": "ctrl+r"
@@ -103,6 +145,12 @@
               "value": "Heart"
             },
             "label": "Like",
+            "title": {
+              "show": true,
+              "align": "bottom",
+              "size": 14,
+              "bold": true
+            },
             "action": {
               "type": "hotkey",
               "keys": "alt+shift+b"
@@ -114,6 +162,12 @@
               "value": "ListOrdered"
             },
             "label": "Queue",
+            "title": {
+              "show": true,
+              "align": "bottom",
+              "size": 14,
+              "bold": true
+            },
             "action": {
               "type": "hotkey",
               "keys": "alt+shift+q"
@@ -125,6 +179,12 @@
               "value": "Disc"
             },
             "label": "Now Playing",
+            "title": {
+              "show": true,
+              "align": "bottom",
+              "size": 14,
+              "bold": true
+            },
             "action": {
               "type": "hotkey",
               "keys": "alt+shift+j"
@@ -136,6 +196,12 @@
               "value": "Home"
             },
             "label": "Home",
+            "title": {
+              "show": true,
+              "align": "bottom",
+              "size": 14,
+              "bold": true
+            },
             "action": {
               "type": "hotkey",
               "keys": "alt+shift+h"
@@ -147,6 +213,12 @@
               "value": "Search"
             },
             "label": "Search",
+            "title": {
+              "show": true,
+              "align": "bottom",
+              "size": 14,
+              "bold": true
+            },
             "action": {
               "type": "hotkey",
               "keys": "ctrl+l"
@@ -158,6 +230,12 @@
               "value": "Folder"
             },
             "label": "Library",
+            "title": {
+              "show": true,
+              "align": "bottom",
+              "size": 14,
+              "bold": true
+            },
             "action": {
               "type": "hotkey",
               "keys": "alt+shift+0"
@@ -169,6 +247,12 @@
               "value": "VolumeX"
             },
             "label": "Mute",
+            "title": {
+              "show": true,
+              "align": "bottom",
+              "size": 14,
+              "bold": true
+            },
             "action": {
               "type": "hotkey",
               "keys": "ctrl+shift+down"
@@ -181,6 +265,12 @@
               "value": "Settings"
             },
             "label": "Settings",
+            "title": {
+              "show": true,
+              "align": "bottom",
+              "size": 14,
+              "bold": true
+            },
             "action": {
               "type": "hotkey",
               "keys": "ctrl+p"

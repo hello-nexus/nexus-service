@@ -25,6 +25,12 @@
               "value": "Search"
             },
             "label": "Quick Switch",
+            "title": {
+              "show": true,
+              "align": "bottom",
+              "size": 14,
+              "bold": true
+            },
             "action": {
               "type": "hotkey",
               "keys": "ctrl+k"
@@ -36,6 +42,12 @@
               "value": "Mail"
             },
             "label": "All Unreads",
+            "title": {
+              "show": true,
+              "align": "bottom",
+              "size": 14,
+              "bold": true
+            },
             "action": {
               "type": "hotkey",
               "keys": "ctrl+shift+a"
@@ -47,6 +59,12 @@
               "value": "MessageSquare"
             },
             "label": "Threads",
+            "title": {
+              "show": true,
+              "align": "bottom",
+              "size": 14,
+              "bold": true
+            },
             "action": {
               "type": "hotkey",
               "keys": "ctrl+shift+t"
@@ -58,6 +76,12 @@
               "value": "Bell"
             },
             "label": "Mentions",
+            "title": {
+              "show": true,
+              "align": "bottom",
+              "size": 14,
+              "bold": true
+            },
             "action": {
               "type": "hotkey",
               "keys": "ctrl+shift+m"
@@ -69,6 +93,12 @@
               "value": "AppWindow"
             },
             "label": "DMs",
+            "title": {
+              "show": true,
+              "align": "bottom",
+              "size": 14,
+              "bold": true
+            },
             "action": {
               "type": "hotkey",
               "keys": "ctrl+shift+k"
@@ -80,6 +110,12 @@
               "value": "ArrowUp"
             },
             "label": "Prev Channel",
+            "title": {
+              "show": true,
+              "align": "bottom",
+              "size": 14,
+              "bold": true
+            },
             "action": {
               "type": "hotkey",
               "keys": "alt+up"
@@ -92,6 +128,12 @@
               "value": "ArrowDown"
             },
             "label": "Next Channel",
+            "title": {
+              "show": true,
+              "align": "bottom",
+              "size": 14,
+              "bold": true
+            },
             "action": {
               "type": "hotkey",
               "keys": "alt+down"
@@ -104,6 +146,12 @@
               "value": "ChevronLeft"
             },
             "label": "Prev Unread",
+            "title": {
+              "show": true,
+              "align": "bottom",
+              "size": 14,
+              "bold": true
+            },
             "action": {
               "type": "hotkey",
               "keys": "alt+shift+up"
@@ -116,6 +164,12 @@
               "value": "ChevronRight"
             },
             "label": "Next Unread",
+            "title": {
+              "show": true,
+              "align": "bottom",
+              "size": 14,
+              "bold": true
+            },
             "action": {
               "type": "hotkey",
               "keys": "alt+shift+down"
@@ -128,6 +182,12 @@
               "value": "Eye"
             },
             "label": "Mark All Read",
+            "title": {
+              "show": true,
+              "align": "bottom",
+              "size": 14,
+              "bold": true
+            },
             "action": {
               "type": "hotkey",
               "keys": "shift+escape"
@@ -139,6 +199,12 @@
               "value": "Headphones"
             },
             "label": "Huddle",
+            "title": {
+              "show": true,
+              "align": "bottom",
+              "size": 14,
+              "bold": true
+            },
             "action": {
               "type": "hotkey",
               "keys": "ctrl+shift+h"
@@ -151,6 +217,12 @@
               "value": "MicOff"
             },
             "label": "Huddle Mute",
+            "title": {
+              "show": true,
+              "align": "bottom",
+              "size": 14,
+              "bold": true
+            },
             "action": {
               "type": "hotkey",
               "keys": "ctrl+shift+space"
@@ -163,6 +235,12 @@
               "value": "Sparkles"
             },
             "label": "Set Status",
+            "title": {
+              "show": true,
+              "align": "bottom",
+              "size": 14,
+              "bold": true
+            },
             "action": {
               "type": "hotkey",
               "keys": "ctrl+shift+y"
@@ -174,6 +252,12 @@
               "value": "Upload"
             },
             "label": "Upload",
+            "title": {
+              "show": true,
+              "align": "bottom",
+              "size": 14,
+              "bold": true
+            },
             "action": {
               "type": "hotkey",
               "keys": "ctrl+u"
@@ -185,6 +269,12 @@
               "value": "Settings"
             },
             "label": "Preferences",
+            "title": {
+              "show": true,
+              "align": "bottom",
+              "size": 14,
+              "bold": true
+            },
             "action": {
               "type": "hotkey",
               "keys": "ctrl+,"

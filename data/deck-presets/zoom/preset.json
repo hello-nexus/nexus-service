@@ -26,6 +26,12 @@
               "value": "MicOff"
             },
             "label": "Mute",
+            "title": {
+              "show": true,
+              "align": "bottom",
+              "size": 14,
+              "bold": true
+            },
             "action": {
               "type": "hotkey",
               "keys": "alt+a"
@@ -38,6 +44,12 @@
               "value": "Camera"
             },
             "label": "Video",
+            "title": {
+              "show": true,
+              "align": "bottom",
+              "size": 14,
+              "bold": true
+            },
             "action": {
               "type": "hotkey",
               "keys": "alt+v"
@@ -50,6 +62,12 @@
               "value": "Monitor"
             },
             "label": "Share",
+            "title": {
+              "show": true,
+              "align": "bottom",
+              "size": 14,
+              "bold": true
+            },
             "action": {
               "type": "hotkey",
               "keys": "alt+s"
@@ -61,6 +79,12 @@
               "value": "Bell"
             },
             "label": "Raise Hand",
+            "title": {
+              "show": true,
+              "align": "bottom",
+              "size": 14,
+              "bold": true
+            },
             "action": {
               "type": "hotkey",
               "keys": "alt+y"
@@ -72,6 +96,12 @@
               "value": "LogOut"
             },
             "label": "Leave",
+            "title": {
+              "show": true,
+              "align": "bottom",
+              "size": 14,
+              "bold": true
+            },
             "action": {
               "type": "hotkey",
               "keys": "alt+q"
@@ -84,6 +114,12 @@
               "value": "MessageSquare"
             },
             "label": "Chat",
+            "title": {
+              "show": true,
+              "align": "bottom",
+              "size": 14,
+              "bold": true
+            },
             "action": {
               "type": "hotkey",
               "keys": "alt+h"
@@ -95,6 +131,12 @@
               "value": "AppWindow"
             },
             "label": "Participants",
+            "title": {
+              "show": true,
+              "align": "bottom",
+              "size": 14,
+              "bold": true
+            },
             "action": {
               "type": "hotkey",
               "keys": "alt+u"
@@ -106,6 +148,12 @@
               "value": "Plus"
             },
             "label": "Invite",
+            "title": {
+              "show": true,
+              "align": "bottom",
+              "size": 14,
+              "bold": true
+            },
             "action": {
               "type": "hotkey",
               "keys": "alt+i"
@@ -117,6 +165,12 @@
               "value": "Disc"
             },
             "label": "Record",
+            "title": {
+              "show": true,
+              "align": "bottom",
+              "size": 14,
+              "bold": true
+            },
             "action": {
               "type": "hotkey",
               "keys": "alt+r"
@@ -128,6 +182,12 @@
               "value": "Pause"
             },
             "label": "Pause Share",
+            "title": {
+              "show": true,
+              "align": "bottom",
+              "size": 14,
+              "bold": true
+            },
             "action": {
               "type": "hotkey",
               "keys": "alt+t"
@@ -139,6 +199,12 @@
               "value": "Tv"
             },
             "label": "Speaker View",
+            "title": {
+              "show": true,
+              "align": "bottom",
+              "size": 14,
+              "bold": true
+            },
             "action": {
               "type": "hotkey",
               "keys": "alt+f1"
@@ -150,6 +216,12 @@
               "value": "Layers"
             },
             "label": "Gallery View",
+            "title": {
+              "show": true,
+              "align": "bottom",
+              "size": 14,
+              "bold": true
+            },
             "action": {
               "type": "hotkey",
               "keys": "alt+f2"
@@ -161,6 +233,12 @@
               "value": "Monitor"
             },
             "label": "Fullscreen",
+            "title": {
+              "show": true,
+              "align": "bottom",
+              "size": 14,
+              "bold": true
+            },
             "action": {
               "type": "hotkey",
               "keys": "alt+f"
@@ -172,6 +250,12 @@
               "value": "VolumeX"
             },
             "label": "Mute All",
+            "title": {
+              "show": true,
+              "align": "bottom",
+              "size": 14,
+              "bold": true
+            },
             "action": {
               "type": "hotkey",
               "keys": "alt+m"
@@ -184,6 +268,12 @@
               "value": "Camera"
             },
             "label": "Screenshot",
+            "title": {
+              "show": true,
+              "align": "bottom",
+              "size": 14,
+              "bold": true
+            },
             "action": {
               "type": "hotkey",
               "keys": "alt+shift+t"

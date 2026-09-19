@@ -25,6 +25,12 @@
               "value": "Plus"
             },
             "label": "New Tab",
+            "title": {
+              "show": true,
+              "align": "bottom",
+              "size": 14,
+              "bold": true
+            },
             "action": {
               "type": "hotkey",
               "keys": "ctrl+t"
@@ -36,6 +42,12 @@
               "value": "Trash2"
             },
             "label": "Close Tab",
+            "title": {
+              "show": true,
+              "align": "bottom",
+              "size": 14,
+              "bold": true
+            },
             "action": {
               "type": "hotkey",
               "keys": "ctrl+w"
@@ -48,6 +60,12 @@
               "value": "RotateCcw"
             },
             "label": "Reopen Tab",
+            "title": {
+              "show": true,
+              "align": "bottom",
+              "size": 14,
+              "bold": true
+            },
             "action": {
               "type": "hotkey",
               "keys": "ctrl+shift+t"
@@ -59,6 +77,12 @@
               "value": "ChevronLeft"
             },
             "label": "Prev Tab",
+            "title": {
+              "show": true,
+              "align": "bottom",
+              "size": 14,
+              "bold": true
+            },
             "action": {
               "type": "hotkey",
               "keys": "ctrl+shift+tab"
@@ -71,6 +95,12 @@
               "value": "ChevronRight"
             },
             "label": "Next Tab",
+            "title": {
+              "show": true,
+              "align": "bottom",
+              "size": 14,
+              "bold": true
+            },
             "action": {
               "type": "hotkey",
               "keys": "ctrl+tab"
@@ -83,6 +113,12 @@
               "value": "Star"
             },
             "label": "Bookmark",
+            "title": {
+              "show": true,
+              "align": "bottom",
+              "size": 14,
+              "bold": true
+            },
             "action": {
               "type": "hotkey",
               "keys": "ctrl+d"
@@ -94,6 +130,12 @@
               "value": "Clock"
             },
             "label": "History",
+            "title": {
+              "show": true,
+              "align": "bottom",
+              "size": 14,
+              "bold": true
+            },
             "action": {
               "type": "hotkey",
               "keys": "ctrl+h"
@@ -105,6 +147,12 @@
               "value": "Download"
             },
             "label": "Downloads",
+            "title": {
+              "show": true,
+              "align": "bottom",
+              "size": 14,
+              "bold": true
+            },
             "action": {
               "type": "hotkey",
               "keys": "ctrl+j"
@@ -116,6 +164,12 @@
               "value": "Search"
             },
             "label": "Find",
+            "title": {
+              "show": true,
+              "align": "bottom",
+              "size": 14,
+              "bold": true
+            },
             "action": {
               "type": "hotkey",
               "keys": "ctrl+f"
@@ -127,6 +181,12 @@
               "value": "RefreshCw"
             },
             "label": "Reload",
+            "title": {
+              "show": true,
+              "align": "bottom",
+              "size": 14,
+              "bold": true
+            },
             "action": {
               "type": "hotkey",
               "keys": "ctrl+r"
@@ -138,6 +198,12 @@
               "value": "Eye"
             },
             "label": "Incognito",
+            "title": {
+              "show": true,
+              "align": "bottom",
+              "size": 14,
+              "bold": true
+            },
             "action": {
               "type": "hotkey",
               "keys": "ctrl+shift+n"
@@ -149,6 +215,12 @@
               "value": "AppWindow"
             },
             "label": "New Window",
+            "title": {
+              "show": true,
+              "align": "bottom",
+              "size": 14,
+              "bold": true
+            },
             "action": {
               "type": "hotkey",
               "keys": "ctrl+n"
@@ -160,6 +232,12 @@
               "value": "Monitor"
             },
             "label": "Fullscreen",
+            "title": {
+              "show": true,
+              "align": "bottom",
+              "size": 14,
+              "bold": true
+            },
             "action": {
               "type": "hotkey",
               "keys": "f11"
@@ -171,6 +249,12 @@
               "value": "Terminal"
             },
             "label": "DevTools",
+            "title": {
+              "show": true,
+              "align": "bottom",
+              "size": 14,
+              "bold": true
+            },
             "action": {
               "type": "hotkey",
               "keys": "f12"
@@ -182,6 +266,12 @@
               "value": "Globe"
             },
             "label": "Address Bar",
+            "title": {
+              "show": true,
+              "align": "bottom",
+              "size": 14,
+              "bold": true
+            },
             "action": {
               "type": "hotkey",
               "keys": "ctrl+l"

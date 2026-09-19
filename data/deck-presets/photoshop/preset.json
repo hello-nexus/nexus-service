@@ -25,6 +25,12 @@
               "value": "MousePointer"
             },
             "label": "Move",
+            "title": {
+              "show": true,
+              "align": "bottom",
+              "size": 14,
+              "bold": true
+            },
             "action": {
               "type": "hotkey",
               "keys": "v"
@@ -36,6 +42,12 @@
               "value": "Copy"
             },
             "label": "Marquee",
+            "title": {
+              "show": true,
+              "align": "bottom",
+              "size": 14,
+              "bold": true
+            },
             "action": {
               "type": "hotkey",
               "keys": "m"
@@ -47,6 +59,12 @@
               "value": "Sparkles"
             },
             "label": "Lasso",
+            "title": {
+              "show": true,
+              "align": "bottom",
+              "size": 14,
+              "bold": true
+            },
             "action": {
               "type": "hotkey",
               "keys": "l"
@@ -58,6 +76,12 @@
               "value": "Palette"
             },
             "label": "Brush",
+            "title": {
+              "show": true,
+              "align": "bottom",
+              "size": 14,
+              "bold": true
+            },
             "action": {
               "type": "hotkey",
               "keys": "b"
@@ -69,6 +93,12 @@
               "value": "Trash2"
             },
             "label": "Eraser",
+            "title": {
+              "show": true,
+              "align": "bottom",
+              "size": 14,
+              "bold": true
+            },
             "action": {
               "type": "hotkey",
               "keys": "e"
@@ -80,6 +110,12 @@
               "value": "Type"
             },
             "label": "Type",
+            "title": {
+              "show": true,
+              "align": "bottom",
+              "size": 14,
+              "bold": true
+            },
             "action": {
               "type": "hotkey",
               "keys": "t"
@@ -91,6 +127,12 @@
               "value": "Image"
             },
             "label": "Crop",
+            "title": {
+              "show": true,
+              "align": "bottom",
+              "size": 14,
+              "bold": true
+            },
             "action": {
               "type": "hotkey",
               "keys": "c"
@@ -102,6 +144,12 @@
               "value": "Search"
             },
             "label": "Zoom",
+            "title": {
+              "show": true,
+              "align": "bottom",
+              "size": 14,
+              "bold": true
+            },
             "action": {
               "type": "hotkey",
               "keys": "z"
@@ -113,6 +161,12 @@
               "value": "Undo2"
             },
             "label": "Undo",
+            "title": {
+              "show": true,
+              "align": "bottom",
+              "size": 14,
+              "bold": true
+            },
             "action": {
               "type": "hotkey",
               "keys": "ctrl+z"
@@ -124,6 +178,12 @@
               "value": "RotateCcw"
             },
             "label": "Redo",
+            "title": {
+              "show": true,
+              "align": "bottom",
+              "size": 14,
+              "bold": true
+            },
             "action": {
               "type": "hotkey",
               "keys": "ctrl+shift+z"
@@ -135,6 +195,12 @@
               "value": "Plus"
             },
             "label": "New Layer",
+            "title": {
+              "show": true,
+              "align": "bottom",
+              "size": 14,
+              "bold": true
+            },
             "action": {
               "type": "hotkey",
               "keys": "ctrl+shift+n"
@@ -146,6 +212,12 @@
               "value": "Layers"
             },
             "label": "Duplicate",
+            "title": {
+              "show": true,
+              "align": "bottom",
+              "size": 14,
+              "bold": true
+            },
             "action": {
               "type": "hotkey",
               "keys": "ctrl+j"
@@ -157,6 +229,12 @@
               "value": "Sliders"
             },
             "label": "Transform",
+            "title": {
+              "show": true,
+              "align": "bottom",
+              "size": 14,
+              "bold": true
+            },
             "action": {
               "type": "hotkey",
               "keys": "ctrl+t"
@@ -168,6 +246,12 @@
               "value": "Eye"
             },
             "label": "Deselect",
+            "title": {
+              "show": true,
+              "align": "bottom",
+              "size": 14,
+              "bold": true
+            },
             "action": {
               "type": "hotkey",
               "keys": "ctrl+d"
@@ -179,6 +263,12 @@
               "value": "Save"
             },
             "label": "Save",
+            "title": {
+              "show": true,
+              "align": "bottom",
+              "size": 14,
+              "bold": true
+            },
             "action": {
               "type": "hotkey",
               "keys": "ctrl+s"
@@ -195,6 +285,12 @@
               "value": "Monitor"
             },
             "label": "Fit Screen",
+            "title": {
+              "show": true,
+              "align": "bottom",
+              "size": 14,
+              "bold": true
+            },
             "action": {
               "type": "hotkey",
               "keys": "ctrl+0"
@@ -206,6 +302,12 @@
               "value": "Sliders"
             },
             "label": "Levels",
+            "title": {
+              "show": true,
+              "align": "bottom",
+              "size": 14,
+              "bold": true
+            },
             "action": {
               "type": "hotkey",
               "keys": "ctrl+l"
@@ -217,6 +319,12 @@
               "value": "Activity"
             },
             "label": "Curves",
+            "title": {
+              "show": true,
+              "align": "bottom",
+              "size": 14,
+              "bold": true
+            },
             "action": {
               "type": "hotkey",
               "keys": "ctrl+m"
@@ -228,6 +336,12 @@
               "value": "Palette"
             },
             "label": "Hue / Sat",
+            "title": {
+              "show": true,
+              "align": "bottom",
+              "size": 14,
+              "bold": true
+            },
             "action": {
               "type": "hotkey",
               "keys": "ctrl+u"
@@ -239,6 +353,12 @@
               "value": "Layers"
             },
             "label": "Merge Down",
+            "title": {
+              "show": true,
+              "align": "bottom",
+              "size": 14,
+              "bold": true
+            },
             "action": {
               "type": "hotkey",
               "keys": "ctrl+e"
@@ -250,6 +370,12 @@
               "value": "RefreshCw"
             },
             "label": "Invert Sel",
+            "title": {
+              "show": true,
+              "align": "bottom",
+              "size": 14,
+              "bold": true
+            },
             "action": {
               "type": "hotkey",
               "keys": "ctrl+shift+i"
@@ -261,6 +387,12 @@
               "value": "Upload"
             },
             "label": "Export",
+            "title": {
+              "show": true,
+              "align": "bottom",
+              "size": 14,
+              "bold": true
+            },
             "action": {
               "type": "hotkey",
               "keys": "ctrl+alt+shift+w"
@@ -272,6 +404,12 @@
               "value": "Copy"
             },
             "label": "Select All",
+            "title": {
+              "show": true,
+              "align": "bottom",
+              "size": 14,
+              "bold": true
+            },
             "action": {
               "type": "hotkey",
               "keys": "ctrl+a"
@@ -283,6 +421,12 @@
               "value": "Flame"
             },
             "label": "Fill",
+            "title": {
+              "show": true,
+              "align": "bottom",
+              "size": 14,
+              "bold": true
+            },
             "action": {
               "type": "hotkey",
               "keys": "shift+f5"
@@ -294,6 +438,12 @@
               "value": "Sliders"
             },
             "label": "Free Transform",
+            "title": {
+              "show": true,
+              "align": "bottom",
+              "size": 14,
+              "bold": true
+            },
             "action": {
               "type": "hotkey",
               "keys": "ctrl+t"

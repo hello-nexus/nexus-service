@@ -25,6 +25,12 @@
               "value": "Play"
             },
             "label": "Play / Pause",
+            "title": {
+              "show": true,
+              "align": "bottom",
+              "size": 14,
+              "bold": true
+            },
             "action": {
               "type": "hotkey",
               "keys": "space"
@@ -37,6 +43,12 @@
               "value": "SkipBack"
             },
             "label": "Reverse",
+            "title": {
+              "show": true,
+              "align": "bottom",
+              "size": 14,
+              "bold": true
+            },
             "action": {
               "type": "hotkey",
               "keys": "j"
@@ -48,6 +60,12 @@
               "value": "Pause"
             },
             "label": "Stop",
+            "title": {
+              "show": true,
+              "align": "bottom",
+              "size": 14,
+              "bold": true
+            },
             "action": {
               "type": "hotkey",
               "keys": "k"
@@ -59,6 +77,12 @@
               "value": "SkipForward"
             },
             "label": "Forward",
+            "title": {
+              "show": true,
+              "align": "bottom",
+              "size": 14,
+              "bold": true
+            },
             "action": {
               "type": "hotkey",
               "keys": "l"
@@ -70,6 +94,12 @@
               "value": "Star"
             },
             "label": "Marker",
+            "title": {
+              "show": true,
+              "align": "bottom",
+              "size": 14,
+              "bold": true
+            },
             "action": {
               "type": "hotkey",
               "keys": "m"
@@ -81,6 +111,12 @@
               "value": "MousePointer"
             },
             "label": "Select",
+            "title": {
+              "show": true,
+              "align": "bottom",
+              "size": 14,
+              "bold": true
+            },
             "action": {
               "type": "hotkey",
               "keys": "v"
@@ -92,6 +128,12 @@
               "value": "Zap"
             },
             "label": "Razor",
+            "title": {
+              "show": true,
+              "align": "bottom",
+              "size": 14,
+              "bold": true
+            },
             "action": {
               "type": "hotkey",
               "keys": "c"
@@ -103,6 +145,12 @@
               "value": "ChevronLeft"
             },
             "label": "Set In",
+            "title": {
+              "show": true,
+              "align": "bottom",
+              "size": 14,
+              "bold": true
+            },
             "action": {
               "type": "hotkey",
               "keys": "i"
@@ -114,6 +162,12 @@
               "value": "ChevronRight"
             },
             "label": "Set Out",
+            "title": {
+              "show": true,
+              "align": "bottom",
+              "size": 14,
+              "bold": true
+            },
             "action": {
               "type": "hotkey",
               "keys": "o"
@@ -125,6 +179,12 @@
               "value": "Sliders"
             },
             "label": "Add Edit",
+            "title": {
+              "show": true,
+              "align": "bottom",
+              "size": 14,
+              "bold": true
+            },
             "action": {
               "type": "hotkey",
               "keys": "ctrl+k"
@@ -136,6 +196,12 @@
               "value": "Trash2"
             },
             "label": "Ripple Delete",
+            "title": {
+              "show": true,
+              "align": "bottom",
+              "size": 14,
+              "bold": true
+            },
             "action": {
               "type": "hotkey",
               "keys": "shift+delete"
@@ -148,6 +214,12 @@
               "value": "Undo2"
             },
             "label": "Undo",
+            "title": {
+              "show": true,
+              "align": "bottom",
+              "size": 14,
+              "bold": true
+            },
             "action": {
               "type": "hotkey",
               "keys": "ctrl+z"
@@ -159,6 +231,12 @@
               "value": "RotateCcw"
             },
             "label": "Redo",
+            "title": {
+              "show": true,
+              "align": "bottom",
+              "size": 14,
+              "bold": true
+            },
             "action": {
               "type": "hotkey",
               "keys": "ctrl+shift+z"
@@ -170,6 +248,12 @@
               "value": "Save"
             },
             "label": "Save",
+            "title": {
+              "show": true,
+              "align": "bottom",
+              "size": 14,
+              "bold": true
+            },
             "action": {
               "type": "hotkey",
               "keys": "ctrl+s"
@@ -181,6 +265,12 @@
               "value": "Upload"
             },
             "label": "Export",
+            "title": {
+              "show": true,
+              "align": "bottom",
+              "size": 14,
+              "bold": true
+            },
             "action": {
               "type": "hotkey",
               "keys": "ctrl+m"

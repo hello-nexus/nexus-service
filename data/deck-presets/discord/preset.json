@@ -25,6 +25,12 @@
               "value": "MicOff"
             },
             "label": "Mute",
+            "title": {
+              "show": true,
+              "align": "bottom",
+              "size": 14,
+              "bold": true
+            },
             "action": {
               "type": "hotkey",
               "keys": "ctrl+shift+m"
@@ -37,6 +43,12 @@
               "value": "Headphones"
             },
             "label": "Deafen",
+            "title": {
+              "show": true,
+              "align": "bottom",
+              "size": 14,
+              "bold": true
+            },
             "action": {
               "type": "hotkey",
               "keys": "ctrl+shift+d"
@@ -49,6 +61,12 @@
               "value": "Search"
             },
             "label": "Quick Switch",
+            "title": {
+              "show": true,
+              "align": "bottom",
+              "size": 14,
+              "bold": true
+            },
             "action": {
               "type": "hotkey",
               "keys": "ctrl+k"
@@ -60,6 +78,12 @@
               "value": "Sparkles"
             },
             "label": "Emoji",
+            "title": {
+              "show": true,
+              "align": "bottom",
+              "size": 14,
+              "bold": true
+            },
             "action": {
               "type": "hotkey",
               "keys": "ctrl+e"
@@ -71,6 +95,12 @@
               "value": "Upload"
             },
             "label": "Upload",
+            "title": {
+              "show": true,
+              "align": "bottom",
+              "size": 14,
+              "bold": true
+            },
             "action": {
               "type": "hotkey",
               "keys": "ctrl+shift+u"
@@ -82,6 +112,12 @@
               "value": "ArrowUp"
             },
             "label": "Prev Channel",
+            "title": {
+              "show": true,
+              "align": "bottom",
+              "size": 14,
+              "bold": true
+            },
             "action": {
               "type": "hotkey",
               "keys": "alt+up"
@@ -94,6 +130,12 @@
               "value": "ArrowDown"
             },
             "label": "Next Channel",
+            "title": {
+              "show": true,
+              "align": "bottom",
+              "size": 14,
+              "bold": true
+            },
             "action": {
               "type": "hotkey",
               "keys": "alt+down"
@@ -106,6 +148,12 @@
               "value": "ChevronLeft"
             },
             "label": "Prev Server",
+            "title": {
+              "show": true,
+              "align": "bottom",
+              "size": 14,
+              "bold": true
+            },
             "action": {
               "type": "hotkey",
               "keys": "ctrl+alt+up"
@@ -118,6 +166,12 @@
               "value": "ChevronRight"
             },
             "label": "Next Server",
+            "title": {
+              "show": true,
+              "align": "bottom",
+              "size": 14,
+              "bold": true
+            },
             "action": {
               "type": "hotkey",
               "keys": "ctrl+alt+down"
@@ -130,6 +184,12 @@
               "value": "Undo2"
             },
             "label": "Back",
+            "title": {
+              "show": true,
+              "align": "bottom",
+              "size": 14,
+              "bold": true
+            },
             "action": {
               "type": "hotkey",
               "keys": "alt+left"
@@ -142,6 +202,12 @@
               "value": "Eye"
             },
             "label": "Mark Read",
+            "title": {
+              "show": true,
+              "align": "bottom",
+              "size": 14,
+              "bold": true
+            },
             "action": {
               "type": "hotkey",
               "keys": "escape"
@@ -153,6 +219,12 @@
               "value": "Eye"
             },
             "label": "Server Read",
+            "title": {
+              "show": true,
+              "align": "bottom",
+              "size": 14,
+              "bold": true
+            },
             "action": {
               "type": "hotkey",
               "keys": "shift+escape"
@@ -164,6 +236,12 @@
               "value": "Star"
             },
             "label": "Pins",
+            "title": {
+              "show": true,
+              "align": "bottom",
+              "size": 14,
+              "bold": true
+            },
             "action": {
               "type": "hotkey",
               "keys": "ctrl+p"
@@ -175,6 +253,12 @@
               "value": "Mail"
             },
             "label": "Inbox",
+            "title": {
+              "show": true,
+              "align": "bottom",
+              "size": 14,
+              "bold": true
+            },
             "action": {
               "type": "hotkey",
               "keys": "ctrl+i"
@@ -186,6 +270,12 @@
               "value": "Settings"
             },
             "label": "Settings",
+            "title": {
+              "show": true,
+              "align": "bottom",
+              "size": 14,
+              "bold": true
+            },
             "action": {
               "type": "hotkey",
               "keys": "ctrl+,"

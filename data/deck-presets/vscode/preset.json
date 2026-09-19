@@ -25,6 +25,12 @@
               "value": "Command"
             },
             "label": "Commands",
+            "title": {
+              "show": true,
+              "align": "bottom",
+              "size": 14,
+              "bold": true
+            },
             "action": {
               "type": "hotkey",
               "keys": "ctrl+shift+p"
@@ -36,6 +42,12 @@
               "value": "Search"
             },
             "label": "Quick Open",
+            "title": {
+              "show": true,
+              "align": "bottom",
+              "size": 14,
+              "bold": true
+            },
             "action": {
               "type": "hotkey",
               "keys": "ctrl+p"
@@ -47,6 +59,12 @@
               "value": "Terminal"
             },
             "label": "Terminal",
+            "title": {
+              "show": true,
+              "align": "bottom",
+              "size": 14,
+              "bold": true
+            },
             "action": {
               "type": "hotkey",
               "keys": "ctrl+`"
@@ -58,6 +76,12 @@
               "value": "Layers"
             },
             "label": "Sidebar",
+            "title": {
+              "show": true,
+              "align": "bottom",
+              "size": 14,
+              "bold": true
+            },
             "action": {
               "type": "hotkey",
               "keys": "ctrl+b"
@@ -69,6 +93,12 @@
               "value": "Search"
             },
             "label": "Find in Files",
+            "title": {
+              "show": true,
+              "align": "bottom",
+              "size": 14,
+              "bold": true
+            },
             "action": {
               "type": "hotkey",
               "keys": "ctrl+shift+f"
@@ -80,6 +110,12 @@
               "value": "Play"
             },
             "label": "Run",
+            "title": {
+              "show": true,
+              "align": "bottom",
+              "size": 14,
+              "bold": true
+            },
             "action": {
               "type": "hotkey",
               "keys": "f5"
@@ -92,6 +128,12 @@
               "value": "Power"
             },
             "label": "Stop",
+            "title": {
+              "show": true,
+              "align": "bottom",
+              "size": 14,
+              "bold": true
+            },
             "action": {
               "type": "hotkey",
               "keys": "shift+f5"
@@ -104,6 +146,12 @@
               "value": "MessageSquare"
             },
             "label": "Comment",
+            "title": {
+              "show": true,
+              "align": "bottom",
+              "size": 14,
+              "bold": true
+            },
             "action": {
               "type": "hotkey",
               "keys": "ctrl+/"
@@ -115,6 +163,12 @@
               "value": "Sparkles"
             },
             "label": "Format",
+            "title": {
+              "show": true,
+              "align": "bottom",
+              "size": 14,
+              "bold": true
+            },
             "action": {
               "type": "hotkey",
               "keys": "alt+shift+f"
@@ -126,6 +180,12 @@
               "value": "Type"
             },
             "label": "Rename",
+            "title": {
+              "show": true,
+              "align": "bottom",
+              "size": 14,
+              "bold": true
+            },
             "action": {
               "type": "hotkey",
               "keys": "f2"
@@ -137,6 +197,12 @@
               "value": "Folder"
             },
             "label": "Explorer",
+            "title": {
+              "show": true,
+              "align": "bottom",
+              "size": 14,
+              "bold": true
+            },
             "action": {
               "type": "hotkey",
               "keys": "ctrl+shift+e"
@@ -148,6 +214,12 @@
               "value": "Upload"
             },
             "label": "Source Control",
+            "title": {
+              "show": true,
+              "align": "bottom",
+              "size": 14,
+              "bold": true
+            },
             "action": {
               "type": "hotkey",
               "keys": "ctrl+shift+g"
@@ -159,6 +231,12 @@
               "value": "Plus"
             },
             "label": "Extensions",
+            "title": {
+              "show": true,
+              "align": "bottom",
+              "size": 14,
+              "bold": true
+            },
             "action": {
               "type": "hotkey",
               "keys": "ctrl+shift+x"
@@ -170,6 +248,12 @@
               "value": "Bell"
             },
             "label": "Problems",
+            "title": {
+              "show": true,
+              "align": "bottom",
+              "size": 14,
+              "bold": true
+            },
             "action": {
               "type": "hotkey",
               "keys": "ctrl+shift+m"
@@ -181,6 +265,12 @@
               "value": "Settings"
             },
             "label": "Settings",
+            "title": {
+              "show": true,
+              "align": "bottom",
+              "size": 14,
+              "bold": true
+            },
             "action": {
               "type": "hotkey",
               "keys": "ctrl+,"
