@@ -59,8 +59,30 @@ public sealed class ZipPackageSource : IDeckPackageSource
     {
         using var stream = entry.Open();
         using var ms = new MemoryStream();
-        stream.CopyTo(ms);
+        // entry.Length is metadata from the zip's own central directory, never
+        // verified against the actual deflate stream, so a crafted entry can
+        // decompress to far more than it declares. Cap the real read at the
+        // smaller of the declared length and the package-wide limit so a
+        // lying zip cannot force an unbounded allocation here.
+        CopyBounded(stream, ms, Math.Min(entry.Length, DeckPresetPackage.MaxPackageBytes));
         return ms.ToArray();
+    }
+
+    /// <summary>Copies at most limit bytes from source to destination; throws InvalidDataException instead of reading further once source has more. Internal for direct testing.</summary>
+    internal static void CopyBounded(Stream source, Stream destination, long limit)
+    {
+        var buffer = new byte[81920];
+        long total = 0;
+        int read;
+        while ((read = source.Read(buffer, 0, (int)Math.Min(buffer.Length, limit - total + 1))) > 0)
+        {
+            total += read;
+            if (total > limit)
+            {
+                throw new InvalidDataException("package entry exceeds its declared length");
+            }
+            destination.Write(buffer, 0, read);
+        }
     }
 }
 

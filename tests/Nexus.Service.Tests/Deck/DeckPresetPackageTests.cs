@@ -145,6 +145,52 @@ public sealed class DeckPresetPackageTests : IDisposable
         Assert.Contains("20 MB", result.Error);
     }
 
+    /// <summary>A source that never returns 0, simulating a decompression stream whose actual output runs far past what its declared length promised (a zip bomb's shape from the reader's side).</summary>
+    private sealed class InfiniteStream : Stream
+    {
+        public override bool CanRead => true;
+        public override bool CanSeek => false;
+        public override bool CanWrite => false;
+        public override long Length => throw new NotSupportedException();
+        public override long Position { get => throw new NotSupportedException(); set => throw new NotSupportedException(); }
+        public override void Flush() { }
+        public override long Seek(long offset, SeekOrigin origin) => throw new NotSupportedException();
+        public override void SetLength(long value) => throw new NotSupportedException();
+        public override void Write(byte[] buffer, int offset, int count) => throw new NotSupportedException();
+
+        public override int Read(byte[] buffer, int offset, int count)
+        {
+            Array.Fill(buffer, (byte)1, offset, count);
+            return count;
+        }
+    }
+
+    [Fact]
+    public void CopyBounded_CopiesExactlyWhenSourceMatchesTheLimit()
+    {
+        var bytes = new byte[500];
+        new Random(1).NextBytes(bytes);
+        using var source = new MemoryStream(bytes);
+        using var destination = new MemoryStream();
+
+        ZipPackageSource.CopyBounded(source, destination, limit: 500);
+
+        Assert.Equal(bytes, destination.ToArray());
+    }
+
+    [Fact]
+    public void CopyBounded_ThrowsInsteadOfDrainingASourceThatExceedsTheLimit()
+    {
+        var source = new InfiniteStream();
+        using var destination = new MemoryStream();
+
+        Assert.Throws<InvalidDataException>(() => ZipPackageSource.CopyBounded(source, destination, limit: 1000));
+
+        // A source that would otherwise keep yielding gigabytes is stopped
+        // within one buffer chunk past the limit, never drained to EOF.
+        Assert.True(destination.Length <= 1000 + 81920);
+    }
+
     private static string ManifestWithIcon(string iconId) =>
         "{\"format\":1,\"id\":\"x\",\"name\":\"X\",\"cols\":2,\"rows\":2,\"deck\":{\"pages\":[{\"slots\":[{\"icon\":{\"kind\":\"image\",\"value\":\""
         + iconId + "\"}}]}]}}";
