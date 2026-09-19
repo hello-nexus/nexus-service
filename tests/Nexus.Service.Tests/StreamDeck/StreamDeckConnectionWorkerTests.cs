@@ -1460,10 +1460,65 @@ public class StreamDeckConnectionWorkerTests
         Assert.Equal(beforeMonitoringBytes, simulated.PeekKeyImage(0));
 
         // The broadcast hash was cleared regardless (the editor's own frame
-        // cache can be stale after undo/redo), so the tile still re-sends
-        // once - never a blank placeholder followed by the real content.
+        // cache can be stale after undo/redo), so the monitoring tile still
+        // re-sends once - never a blank placeholder followed by the real
+        // content - and the edited static key sends its new face.
         var tiles = captured.Where(c => c.Topic == PanelTopics.StreamDeckTiles).ToList();
-        Assert.Single(tiles);
+        Assert.Equal(2, tiles.Count);
+    }
+
+    /// <summary>
+    /// Static keys are service-rendered now, so the editor only ever sees
+    /// them through streamdeckTiles: a view push broadcasts every static
+    /// key's upright preview, and the first subscriber gets a full repaint
+    /// without waiting for a config edit.
+    /// </summary>
+    [Fact]
+    public void StaticKeys_BroadcastUprightPreviewTiles_OnPushAndOnFirstSubscriber()
+    {
+        var f = NewFixtures(devicePresent: false);
+        var simulated = new SimulatedStreamDeckSurface(Mini, "sim-0001");
+        f.Store.Update(s => s.StreamDeck.Decks["sim-0001"] = new PhysicalDeckSettings
+        {
+            LegacyDeck = new DeckConfig
+            {
+                Pages =
+                {
+                    new DeckPage
+                    {
+                        Slots =
+                        {
+                            new DeckSlot { Action = new DeckAction { Type = "openUrl", Url = "https://example.com" }, Label = "Web" },
+                            new DeckSlot { Action = new DeckAction { Type = "hotkey", Keys = "ctrl+c" }, Label = "Copy" },
+                        },
+                    },
+                },
+            },
+        });
+        f.Store.Update(s => ActivateLegacyDeck(s, "sim-0001"));
+        using var worker = NewWorker(f, simulated);
+        worker.Tick(); // connect with no editor listening - nothing to broadcast
+
+        var captured = CaptureBroadcasts(f.Hub);
+        using var sub = f.Hub.AddTestSubscription(PanelTopics.StreamDeckTiles);
+
+        var tiles = captured.Where(c => c.Topic == PanelTopics.StreamDeckTiles).Select(TileFramePayload).ToList();
+        Assert.Equal(new[] { "0", "1" }, tiles.Select(t => t.GetProperty("slotPath").GetString()).OrderBy(x => x).ToArray());
+        Assert.All(tiles, t =>
+        {
+            Assert.Equal("sim-0001", t.GetProperty("serial").GetString());
+            Assert.Equal(0, t.GetProperty("page").GetInt32());
+            // JPEG magic - an upright encode of the face, not the Mini's transformed BMP wire bytes.
+            var bytes = Convert.FromBase64String(t.GetProperty("data").GetString()!);
+            Assert.Equal(0xFF, bytes[0]);
+            Assert.Equal(0xD8, bytes[1]);
+        });
+
+        // A same-view refresh with nothing changed re-sends (the hash is
+        // cleared per push so an editor whose cache went stale recovers).
+        captured.Clear();
+        worker.RefreshView("sim-0001");
+        Assert.Equal(2, captured.Count(c => c.Topic == PanelTopics.StreamDeckTiles));
     }
 
     /// <summary>

@@ -39,7 +39,7 @@ public sealed class DeckKeyRenderer
 
     private const int CacheCapacity = 256;
     private readonly object _cacheLock = new();
-    private readonly Dictionary<string, byte[]> _cache = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, DeckKeyRender> _cache = new(StringComparer.Ordinal);
     private readonly LinkedList<string> _cacheLru = new();
 
     private readonly DeckImageStore _imageStore;
@@ -72,7 +72,16 @@ public sealed class DeckKeyRenderer
     /// yet) is never cached, so the next tick retries the icon instead of
     /// pinning a blank key.
     /// </summary>
-    public byte[]? Render(DeckSlot slot, bool isToggleOn, StreamDeckModel model, int orientation, bool selected = false)
+    public byte[]? Render(DeckSlot slot, bool isToggleOn, StreamDeckModel model, int orientation, bool selected = false) =>
+        RenderWithPreview(slot, isToggleOn, model, orientation, selected).Wire;
+
+    /// <summary>
+    /// Same as <see cref="Render"/>, plus the upright JPEG of the same face
+    /// (no orientation or model wire transform) for the streamdeckTiles
+    /// editor preview - the wire bytes are already rotated/mirrored for the
+    /// panel, so decoding them back would show the editor a transformed key.
+    /// </summary>
+    public DeckKeyRender RenderWithPreview(DeckSlot slot, bool isToggleOn, StreamDeckModel model, int orientation, bool selected = false)
     {
         var cacheKey = $"{ComputeContentHash(slot, isToggleOn)}|{model.ProductId}|{orientation}|{selected}";
         lock (_cacheLock)
@@ -88,14 +97,15 @@ public sealed class DeckKeyRenderer
         var transient = false;
         using var image = RenderImage(display, model.KeyPixelSize, ref transient, selected);
         var bytes = DeckWireImageEncoder.Encode(image, model, orientation);
+        var render = new DeckKeyRender(bytes, bytes is null ? null : RenderKit.EncodeJpeg(image));
         if (bytes is not null && !transient)
         {
             lock (_cacheLock)
             {
-                Insert(cacheKey, bytes);
+                Insert(cacheKey, render);
             }
         }
-        return bytes;
+        return render;
     }
 
     private void Touch(string key)
@@ -104,9 +114,9 @@ public sealed class DeckKeyRenderer
         _cacheLru.AddLast(key);
     }
 
-    private void Insert(string key, byte[] bytes)
+    private void Insert(string key, DeckKeyRender render)
     {
-        _cache[key] = bytes;
+        _cache[key] = render;
         Touch(key);
         if (_cache.Count > CacheCapacity)
         {
@@ -402,3 +412,6 @@ public sealed class DeckKeyRenderer
         });
     }
 }
+
+/// <summary>One rendered key face: the model's wire bytes for the panel and the upright JPEG preview for the editor. Both null when the encode failed.</summary>
+public sealed record DeckKeyRender(byte[]? Wire, byte[]? PreviewJpeg);

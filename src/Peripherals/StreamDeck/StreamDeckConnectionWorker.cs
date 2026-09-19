@@ -315,6 +315,12 @@ public sealed class StreamDeckConnectionWorker : BackgroundService, IDeckSurface
         lock (_lock)
         {
             _tileBroadcastHash.Clear();
+            // Static keys only broadcast from a view push, so the editor that
+            // just opened needs one; monitoring/weather catch up on their tick.
+            foreach (var surface in _surfaces.Values.ToList())
+            {
+                PushCurrentView(surface, viewChanged: false);
+            }
         }
     }
 
@@ -2626,10 +2632,11 @@ public sealed class StreamDeckConnectionWorker : BackgroundService, IDeckSurface
 
             var latchKey = BuildLatchKey(surface.Serial, folderPath, slotIndex);
             var isToggleOn = slot.Action?.Type == "toggle" && _executor.IsToggleOn(slot.Action.State, latchKey);
-            var bytes = _keyRenderer.Render(slot, isToggleOn, surface.Model, deck?.Orientation ?? 0);
-            if (bytes is not null)
+            var render = _keyRenderer.RenderWithPreview(slot, isToggleOn, surface.Model, deck?.Orientation ?? 0);
+            if (render.Wire is not null)
             {
-                surface.SetKeyImage(key, bytes);
+                surface.SetKeyImage(key, render.Wire);
+                BroadcastPreviewTile(surface.Serial, page, DeckConfigNavigation.BuildSlotPath(folderPath, slotIndex), render.PreviewJpeg);
             }
             else
             {
@@ -2713,13 +2720,18 @@ public sealed class StreamDeckConnectionWorker : BackgroundService, IDeckSurface
                 continue;
             }
             var slot = RecentKeyToSlot(key);
-            var bytes = _keyRenderer.Render(slot, isToggleOn: false, surface.Model, deck?.Orientation ?? 0, selected: key.Focused);
+            var render = _keyRenderer.RenderWithPreview(slot, isToggleOn: false, surface.Model, deck?.Orientation ?? 0, selected: key.Focused);
+            var bytes = render.Wire;
             if (bytes is null)
             {
                 _recentAppsLastHash[hashKey] = 0;
                 surface.ClearKey(i);
                 continue;
             }
+            // The editor preview has its own hash (cleared on first
+            // subscribe), so a key the panel already shows still reaches a
+            // freshly opened editor.
+            BroadcastPreviewTile(serial, page, i.ToString(System.Globalization.CultureInfo.InvariantCulture), render.PreviewJpeg);
             // 0 is reserved for "blank"; an all-zero content hash is
             // astronomically unlikely for a real rendered key and would only
             // cost one redundant repaint if it ever happened.
@@ -2730,33 +2742,30 @@ public sealed class StreamDeckConnectionWorker : BackgroundService, IDeckSurface
             }
             _recentAppsLastHash[hashKey] = hash;
             surface.SetKeyImage(i, bytes);
-            BroadcastRecentAppsTile(serial, page, i, bytes);
         }
     }
 
     /// <summary>
-    /// Renders a Recent Apps key's own wire bytes as a JPEG preview for
-    /// streamdeckTiles, mirroring the monitoring/weather tile broadcast
-    /// convention (slotPath = the key's plain index, no folder path exists in
-    /// this mode). DeckKeyRenderer only returns model wire bytes, so this
-    /// decodes them back to re-encode as JPEG - cheap next to the render
-    /// itself, and this runs on focus change, not every tick.
+    /// Pushes a key's upright JPEG preview on streamdeckTiles when the editor
+    /// is listening and the face changed since the last broadcast
+    /// (_tileBroadcastHash, cleared on first subscribe and per push of the
+    /// same view). slotPath follows the monitoring/weather convention:
+    /// page-relative dot chain, or the plain key index in Recent Apps mode.
     /// </summary>
-    private void BroadcastRecentAppsTile(string serial, int page, int keyIndex, byte[] wireBytes)
+    private void BroadcastPreviewTile(string serial, int page, string slotPath, byte[]? previewJpeg)
     {
-        if (!_hub.TopicHasSubscribers(PanelTopics.StreamDeckTiles))
+        if (previewJpeg is null || !_hub.TopicHasSubscribers(PanelTopics.StreamDeckTiles))
         {
             return;
         }
-        try
+        var tileKey = $"{serial}:{page}:{slotPath}";
+        var hash = ComputeFnv1aHash(previewJpeg);
+        if (_tileBroadcastHash.TryGetValue(tileKey, out var last) && last == hash)
         {
-            using var decoded = Image.Load<Rgba32>(wireBytes);
-            BroadcastTile(serial, page, keyIndex.ToString(System.Globalization.CultureInfo.InvariantCulture), RenderKit.EncodeJpeg(decoded));
+            return;
         }
-        catch (Exception ex)
-        {
-            ServiceLog.Warn($"[streamdeck] recent-apps tile preview failed: {ex.Message}");
-        }
+        _tileBroadcastHash[tileKey] = hash;
+        BroadcastTile(serial, page, slotPath, previewJpeg);
     }
 
     /// <summary>
