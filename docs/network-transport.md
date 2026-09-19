@@ -88,7 +88,11 @@ is called out here:
   `DeckPresetPackage.MaxPackageBytes` (20 MB) via a per-request
   `IHttpMaxRequestBodySizeFeature` override, buffered fully before parsing.
   Broadcasts the `deck` topic's `presets` kind on success like every other
-  create path.
+  create path. A malformed, oversized or missing-asset package is `400`;
+  a package containing privileged (file/hotkey/text/audio) actions without
+  `?allowPrivileged=1` is `403 deck_action_requires_desktop`, the same code
+  every other desktop-only deck gate uses, so the client can tell the two
+  failure kinds apart by status code.
 
 ## Transport Topology
 

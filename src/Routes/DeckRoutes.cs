@@ -382,7 +382,7 @@ public static class DeckRoutes
             var allowPrivileged = ctx.Request.Query["allowPrivileged"] == "1";
             if (!allowPrivileged && DeckLayoutPolicy.PrivilegedActions(manifest.Deck).Any())
             {
-                return Results.Json(ApiResponse.Fail("package contains privileged actions"), AppJsonContext.Default.ApiResponse, statusCode: 400);
+                return Results.Json(ApiResponse.Fail("deck_action_requires_desktop"), AppJsonContext.Default.ApiResponse, statusCode: 403);
             }
 
             var trimmedName = manifest.Name.Trim();

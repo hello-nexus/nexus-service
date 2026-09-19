@@ -199,7 +199,7 @@ public sealed class DeckTemplatesRoutesTests : IClassFixture<DeckTemplatesHostFa
     }
 
     [Fact]
-    public async Task Import_PrivilegedWithoutFlag_Returns400_ThenSucceedsWithFlag()
+    public async Task Import_PrivilegedWithoutFlag_Returns403_ThenSucceedsWithFlag()
     {
         var (factory, client) = Boot();
         using (factory)
@@ -217,8 +217,8 @@ public sealed class DeckTemplatesRoutesTests : IClassFixture<DeckTemplatesHostFa
             {
                 Headers = { ContentType = new MediaTypeHeaderValue("application/zip") },
             });
-            Assert.Equal(HttpStatusCode.BadRequest, blocked.StatusCode);
-            Assert.Contains("privileged", await blocked.Content.ReadAsStringAsync());
+            Assert.Equal(HttpStatusCode.Forbidden, blocked.StatusCode);
+            Assert.Contains("deck_action_requires_desktop", await blocked.Content.ReadAsStringAsync());
 
             var allowed = await client.PostAsync("/deck/presets/import?allowPrivileged=1", new ByteArrayContent(zipBytes)
             {
