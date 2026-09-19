@@ -738,7 +738,19 @@ public sealed class DeviceLayout
     public int Rotation { get; set; }
 }
 
-public sealed class LayoutPreset
+/// <summary>
+/// A preset that can auto-activate when one of its bound apps takes focus -
+/// implemented by <see cref="LayoutPreset"/> (lighting) and
+/// <see cref="DeckPreset"/> (deck), so AppPresetFocusTracker.Decide runs one
+/// state machine for both instead of forking the logic per domain.
+/// </summary>
+public interface IAppBoundPreset
+{
+    string Id { get; }
+    IReadOnlyList<PresetAppBinding>? Apps { get; }
+}
+
+public sealed class LayoutPreset : IAppBoundPreset
 {
     public string Id { get; set; } = "";
     public string Name { get; set; } = "";
@@ -765,6 +777,8 @@ public sealed class LayoutPreset
     /// on a preset saved before per-app activation existed; an app appears
     /// under at most one preset (the route unbinds it elsewhere on assign).</summary>
     public List<PresetAppBinding>? Apps { get; set; }
+
+    IReadOnlyList<PresetAppBinding>? IAppBoundPreset.Apps => Apps;
 }
 
 /// <summary>One app bound to a <see cref="LayoutPreset"/>. <see cref="ProcessName"/>
@@ -1456,7 +1470,7 @@ public sealed class PhysicalDeckSettings
 }
 
 /// <summary>One host-wide deck preset: config-only and grid-independent, shared by any physical deck or widget instance that points at it via <see cref="DeckInstance.ActivePresetId"/>.</summary>
-public sealed class DeckPreset
+public sealed class DeckPreset : IAppBoundPreset
 {
     public string Id { get; set; } = "";
     public string Name { get; set; } = "";
@@ -1471,6 +1485,8 @@ public sealed class DeckPreset
     public string? Author { get; set; }
     public string? Version { get; set; }
     public string? Description { get; set; }
+
+    IReadOnlyList<PresetAppBinding>? IAppBoundPreset.Apps => Apps;
 }
 
 /// <summary>One deck instance's mode + active preset. Keyed "streamdeck:&lt;serial&gt;" (never GC'd) or "widget:&lt;panelWidgetId&gt;" (GC'd when the widget id no longer appears in any layout).</summary>

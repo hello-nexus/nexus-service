@@ -41,7 +41,7 @@ public sealed class AppPresetFocusTracker
     public string? Decide(
         string focusedProcess,
         string? activePresetId,
-        IReadOnlyList<LayoutPreset> presets,
+        IReadOnlyList<IAppBoundPreset> presets,
         long nowMs)
     {
         // No focus reported (provider unavailable, or nothing focused) holds
@@ -95,7 +95,7 @@ public sealed class AppPresetFocusTracker
         return Contains(presets, restore) ? restore : null;
     }
 
-    private static bool Contains(IReadOnlyList<LayoutPreset> presets, string id)
+    private static bool Contains(IReadOnlyList<IAppBoundPreset> presets, string id)
     {
         foreach (var preset in presets)
         {
@@ -107,7 +107,7 @@ public sealed class AppPresetFocusTracker
         return false;
     }
 
-    private static LayoutPreset? FindPresetFor(string focusedProcess, IReadOnlyList<LayoutPreset> presets)
+    private static IAppBoundPreset? FindPresetFor(string focusedProcess, IReadOnlyList<IAppBoundPreset> presets)
     {
         foreach (var preset in presets)
         {
