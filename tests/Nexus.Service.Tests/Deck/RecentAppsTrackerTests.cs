@@ -38,13 +38,15 @@ public class RecentAppsTrackerTests
     }
 
     [Fact]
-    public void UpdateRing_ExistingEntry_PreservesResolvedShortcutIdWhenCandidateHasNone()
+    public void UpdateRing_ExistingEntry_PreservesResolvedShortcutIdAndLabelWhenCandidateHasNone()
     {
-        var ring = new List<RecentApp> { new() { ProcessKey = "a", Name = "A", ShortcutId = "shortcut-a" } };
+        var ring = new List<RecentApp> { new() { ProcessKey = "taskmgr", Name = "Task Manager", ShortcutId = "shortcut-tm" } };
 
-        RecentAppsTracker.UpdateRing(ring, new RecentApp { ProcessKey = "a", Name = "A" }, System.Array.Empty<string>());
+        // A focus event carries only the process name.
+        RecentAppsTracker.UpdateRing(ring, new RecentApp { ProcessKey = "taskmgr", Name = "Taskmgr" }, System.Array.Empty<string>());
 
-        Assert.Equal("shortcut-a", ring[0].ShortcutId);
+        Assert.Equal("shortcut-tm", ring[0].ShortcutId);
+        Assert.Equal("Task Manager", ring[0].Name);
     }
 
     [Fact]

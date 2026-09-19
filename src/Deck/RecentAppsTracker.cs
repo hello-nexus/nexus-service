@@ -59,7 +59,14 @@ public static class RecentAppsTracker
         var existingIndex = ring.FindIndex(a => a.ProcessKey == candidate.ProcessKey);
         if (existingIndex >= 0)
         {
-            candidate.ShortcutId ??= ring[existingIndex].ShortcutId;
+            var existing = ring[existingIndex];
+            if (candidate.ShortcutId is null && existing.ShortcutId is not null)
+            {
+                // A focus event only knows the process name; the resolved
+                // Start-menu entry (id + label) outranks it.
+                candidate.ShortcutId = existing.ShortcutId;
+                candidate.Name = existing.Name;
+            }
             ring.RemoveAt(existingIndex);
         }
         ring.Insert(0, candidate);
