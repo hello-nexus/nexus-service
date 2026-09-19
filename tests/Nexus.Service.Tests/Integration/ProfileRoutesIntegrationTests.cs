@@ -455,17 +455,11 @@ public sealed class ProfileRoutesIntegrationTests : IDisposable
                 new() { Id = "l1", Name = "One" },
                 new() { Id = "l2", Name = "Two" },
             };
-            s.StreamDeck.Decks["SN-1"] = new PhysicalDeckSettings
+            s.StreamDeck.Presets = new List<DeckPreset>
             {
-                Presets = new List<DeckPreset> { new() { Id = "d1", Name = "Deck One" } },
-            };
-            s.StreamDeck.Decks["SN-2"] = new PhysicalDeckSettings
-            {
-                Presets = new List<DeckPreset>
-                {
-                    new() { Id = "d2", Name = "Deck Two" },
-                    new() { Id = "d3", Name = "Deck Three" },
-                },
+                new() { Id = "d1", Name = "Deck One" },
+                new() { Id = "d2", Name = "Deck Two" },
+                new() { Id = "d3", Name = "Deck Three" },
             };
         });
 

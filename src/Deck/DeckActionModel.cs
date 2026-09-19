@@ -180,6 +180,8 @@ public sealed class DeckSlot
     /// <summary>A slot is an action, a folder, or empty - never both.</summary>
     public DeckAction? Action { get; set; }
     public DeckFolder? Folder { get; set; }
+    /// <summary>True on a page-next/prev key DeckConfigNavigation.FitToGrid synthesizes for overflow; never set on a persisted slot, so a fitted config only carries it transiently.</summary>
+    public bool? Auto { get; set; }
 }
 
 public sealed class DeckTitleStyle

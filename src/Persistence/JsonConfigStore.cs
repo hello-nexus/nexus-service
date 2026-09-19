@@ -139,6 +139,9 @@ public sealed class JsonConfigStore : IConfigStore, IDisposable
     /// they now store the unturned frame, so 90/270 records swap sides back.
     /// Profiles carry their own lighting document and migrate in
     /// ProfileManager.LoadProfileIntoSettings as they are applied.
+    /// v18: per-serial Stream Deck presets/live config hoist into the
+    /// host-wide StreamDeckSettings.Presets/Instances, and every deck
+    /// widget's inline layout config does the same (DeckModesMigration).
     /// </summary>
     private static void Migrate(NexusSettings doc)
     {
@@ -213,6 +216,10 @@ public sealed class JsonConfigStore : IConfigStore, IDisposable
         if (doc.SchemaVersion < 17)
         {
             Nexus.Service.Lighting.LayoutRotationMigration.Apply(doc.Lighting);
+        }
+        if (doc.SchemaVersion < 18)
+        {
+            Nexus.Service.Deck.DeckModesMigration.Apply(doc);
         }
         doc.SchemaVersion = NexusSettings.CurrentSchemaVersion;
     }

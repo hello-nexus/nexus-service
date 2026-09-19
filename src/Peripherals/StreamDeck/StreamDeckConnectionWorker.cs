@@ -88,7 +88,7 @@ public sealed class StreamDeckConnectionWorker : BackgroundService, IDeckSurface
     private readonly DeviceControlGate _gate;
     private readonly IConfigStore _store;
     private readonly IDeckActionExecutor _executor;
-    private readonly StreamDeckImageCache _imageCache;
+    private readonly Nexus.Service.Rendering.DeckKeyRenderer _keyRenderer;
     private readonly MultiplexHub _hub;
     private readonly ISensorProvider _sensors;
     private readonly IWeatherProvider? _weather;
@@ -256,7 +256,7 @@ public sealed class StreamDeckConnectionWorker : BackgroundService, IDeckSurface
         DeviceControlGate gate,
         IConfigStore store,
         IDeckActionExecutor executor,
-        StreamDeckImageCache imageCache,
+        Nexus.Service.Rendering.DeckKeyRenderer keyRenderer,
         MultiplexHub hub,
         ISensorProvider sensors,
         SimulatedStreamDeckSurface? simulated = null,
@@ -271,7 +271,7 @@ public sealed class StreamDeckConnectionWorker : BackgroundService, IDeckSurface
         _gate = gate;
         _store = store;
         _executor = executor;
-        _imageCache = imageCache;
+        _keyRenderer = keyRenderer;
         _hub = hub;
         _sensors = sensors;
         _simulated = simulated;
@@ -1315,7 +1315,9 @@ public sealed class StreamDeckConnectionWorker : BackgroundService, IDeckSurface
         }
 
         var deck = _store.Load().StreamDeck.Decks.TryGetValue(serial, out var d) ? d : null;
-        var (bytes, _) = ResolveSlotImage(serial, page, folderPath, slotIndex, slot, deck);
+        var latchKey = BuildLatchKey(serial, folderPath, slotIndex);
+        var isToggleOn = slot.Action?.Type == "toggle" && _executor.IsToggleOn(slot.Action.State, latchKey);
+        var bytes = _keyRenderer.Render(slot, isToggleOn, surface.Model, deck?.Orientation ?? 0);
         if (bytes is not null)
         {
             surface.SetKeyImage(physicalIndex, bytes);
@@ -1358,11 +1360,14 @@ public sealed class StreamDeckConnectionWorker : BackgroundService, IDeckSurface
         }
 
         var deck = _store.Load().StreamDeck.Decks.TryGetValue(serial, out var d) ? d : null;
-        var (bytes, hash) = ResolveSlotImage(serial, page, folderPath, slotIndex, slot, deck);
-        if (bytes is null || hash is null)
+        var latchKey = BuildLatchKey(serial, folderPath, slotIndex);
+        var isToggleOn = slot.Action?.Type == "toggle" && _executor.IsToggleOn(slot.Action.State, latchKey);
+        var bytes = _keyRenderer.Render(slot, isToggleOn, surface.Model, deck?.Orientation ?? 0);
+        if (bytes is null)
         {
             return;
         }
+        var hash = Nexus.Service.Rendering.DeckKeyRenderer.ComputeContentHash(slot, isToggleOn);
 
         var pressed = GetOrRenderPressedVariant(hash, bytes, surface.Model);
         if (pressed is not null)
@@ -1425,25 +1430,6 @@ public sealed class StreamDeckConnectionWorker : BackgroundService, IDeckSurface
     /// <summary>An unassigned key: no action, no folder, and no explicit background color, so it renders off (blank black) rather than an uploaded fill. A color-only slot stays a decorative colored key.</summary>
     private static bool IsBlankOffSlot(DeckSlot slot) =>
         slot.Action is null && slot.Folder is null && string.IsNullOrEmpty(slot.Color);
-
-    /// <summary>
-    /// Resolves the wire bytes currently mapped to a leaf/toggle slot (state
-    /// "0" or "1", matching PushCurrentView's per-key resolution) plus the
-    /// content hash they were stored under, keyed by the page-qualified v2
-    /// ImageRefs path (DeckConfigNavigation.BuildImageRefSlotPath) - or
-    /// (null, null) when unmapped. A legacy pre-v2 key never matches here,
-    /// so it renders as unmapped until the next editor sync re-uploads it
-    /// under its v2 key.
-    /// </summary>
-    private (byte[]? Bytes, string? Hash) ResolveSlotImage(string serial, int page, List<int> folderPath, int slotIndex, DeckSlot slot, PhysicalDeckSettings? deck)
-    {
-        var latchKey = BuildLatchKey(serial, folderPath, slotIndex);
-        var state = slot.Action?.Type == "toggle" && _executor.IsToggleOn(slot.Action.State, latchKey) ? "1" : "0";
-        var slotPath = DeckConfigNavigation.BuildImageRefSlotPath(page, folderPath, slotIndex);
-        var hash = deck is not null && deck.ImageRefs.TryGetValue($"{slotPath}/{state}", out var h) ? h : null;
-        var bytes = hash is not null ? _imageCache.Load(serial, hash) : null;
-        return (bytes, hash);
-    }
 
     /// <summary>Covers a handful of distinct source images held in memory at once without unbounded growth; a cache miss just re-renders.</summary>
     private const int PressedImageCacheCapacity = 64;
@@ -1683,7 +1669,8 @@ public sealed class StreamDeckConnectionWorker : BackgroundService, IDeckSurface
             {
                 continue;
             }
-            var config = deck.Deck;
+            var config = DeckInstanceResolver.ResolveFittedConfig(
+                settings, DeckInstanceResolver.PhysicalInstanceId(surface.Serial), surface.Model.Columns, surface.Model.Rows, DeckTargetKind.Physical);
             var page = ClampCurrentPageLocked(surface.Serial, config);
             var folderPath = _folderPathsBySerial.TryGetValue(surface.Serial, out var fp) ? fp : new List<int>();
             var view = DeckConfigNavigation.ResolveView(config, page, folderPath);
@@ -1834,7 +1821,7 @@ public sealed class StreamDeckConnectionWorker : BackgroundService, IDeckSurface
         var rendered = WeatherTileRenderer.Render(input, model.KeyPixelSize);
         try
         {
-            return (rendered, DeckImageToWireBytes(rendered, model, orientation));
+            return (rendered, DeckWireImageEncoder.Encode(rendered, model, orientation));
         }
         catch
         {
@@ -1896,7 +1883,8 @@ public sealed class StreamDeckConnectionWorker : BackgroundService, IDeckSurface
             {
                 continue;
             }
-            var config = deck.Deck;
+            var config = DeckInstanceResolver.ResolveFittedConfig(
+                settings, DeckInstanceResolver.PhysicalInstanceId(surface.Serial), surface.Model.Columns, surface.Model.Rows, DeckTargetKind.Physical);
             var page = ClampCurrentPageLocked(surface.Serial, config);
             var folderPath = _folderPathsBySerial.TryGetValue(surface.Serial, out var fp) ? fp : new List<int>();
             var view = DeckConfigNavigation.ResolveView(config, page, folderPath);
@@ -2138,34 +2126,13 @@ public sealed class StreamDeckConnectionWorker : BackgroundService, IDeckSurface
         var rendered = MonitoringTileRenderer.Render(input, model.KeyPixelSize);
         try
         {
-            return (rendered, DeckImageToWireBytes(rendered, model, orientation));
+            return (rendered, DeckWireImageEncoder.Encode(rendered, model, orientation));
         }
         catch
         {
             rendered.Dispose();
             throw;
         }
-    }
-
-    /// <summary>Orients (user rotation), applies the model's fixed wire transform, and encodes a square rendered key image to this model's wire bytes, or null when the encode fails or the length does not fit the model.</summary>
-    private static byte[]? DeckImageToWireBytes(Image<Rgba32> rendered, StreamDeckModel model, int orientation)
-    {
-        var raw = new DeckRawImage(rendered.Width, rendered.Height, RenderKit.ToRgba32Bytes(rendered));
-        var oriented = DeckKeyTransformer.ApplyOrientation(raw, orientation);
-        var transformed = DeckKeyTransformer.ApplyKeyTransform(oriented, DeckKeyTransformer.ParseTransform(model.Transform));
-
-        byte[] wireBytes;
-        using (var transformedImage = RenderKit.FromRgba32Bytes(transformed.Data, transformed.Width, transformed.Height))
-        {
-            wireBytes = model.ImageFormat switch
-            {
-                StreamDeckImageFormat.Bmp => BmpEncoder.Encode(RenderKit.ToRgb24(transformedImage), transformed.Width, transformed.Height),
-                StreamDeckImageFormat.Jpeg => RenderKit.EncodeJpeg(transformedImage),
-                _ => Array.Empty<byte>(),
-            };
-        }
-
-        return wireBytes.Length == 0 || !model.IsValidWireImageLength(wireBytes.Length) ? null : wireBytes;
     }
 
     /// <summary>
@@ -2425,7 +2392,8 @@ public sealed class StreamDeckConnectionWorker : BackgroundService, IDeckSurface
         var tempUnit = snapshot.Units.MonitoringTempUnit;
         var numberFormat = snapshot.Units.NumberFormat;
         settings.Decks.TryGetValue(surface.Serial, out var deck);
-        var config = deck?.Deck ?? new DeckConfig();
+        var config = DeckInstanceResolver.ResolveFittedConfig(
+            settings, DeckInstanceResolver.PhysicalInstanceId(surface.Serial), surface.Model.Columns, surface.Model.Rows, DeckTargetKind.Physical);
         EvictOrphanedMonitoringEntriesForSerial(surface.Serial, config);
         var page = ClampCurrentPageLocked(surface.Serial, config);
 
@@ -2502,7 +2470,9 @@ public sealed class StreamDeckConnectionWorker : BackgroundService, IDeckSurface
                 continue;
             }
 
-            var (bytes, _) = ResolveSlotImage(surface.Serial, page, folderPath, slotIndex, slot, deck);
+            var latchKey = BuildLatchKey(surface.Serial, folderPath, slotIndex);
+            var isToggleOn = slot.Action?.Type == "toggle" && _executor.IsToggleOn(slot.Action.State, latchKey);
+            var bytes = _keyRenderer.Render(slot, isToggleOn, surface.Model, deck?.Orientation ?? 0);
             if (bytes is not null)
             {
                 surface.SetKeyImage(key, bytes);
@@ -2530,13 +2500,9 @@ public sealed class StreamDeckConnectionWorker : BackgroundService, IDeckSurface
         }
     }
 
-    /// <summary>Reserved image-ref key the web uploads once per deck via PUT .../images/back/0 (not a real DeckSlot).</summary>
-    private const string BackSlotPath = "back";
-
     private void PushBackKey(IStreamDeckSurface surface, PhysicalDeckSettings? deck)
     {
-        var hash = deck is not null && deck.ImageRefs.TryGetValue($"{BackSlotPath}/0", out var h) ? h : null;
-        var bytes = hash is not null ? _imageCache.Load(surface.Serial, hash) : null;
+        var bytes = _keyRenderer.RenderBackKey(surface.Model, deck?.Orientation ?? 0);
         if (bytes is not null)
         {
             surface.SetKeyImage(0, bytes);
@@ -2547,10 +2513,23 @@ public sealed class StreamDeckConnectionWorker : BackgroundService, IDeckSurface
         }
     }
 
+    /// <summary>The fitted config for a serial's live grid (live surface's model, else the persisted ProductId's, else a 5x3 fallback). Caller must hold _lock.</summary>
     private DeckConfig LoadConfig(string serial)
     {
         var settings = _store.Load().StreamDeck;
-        return settings.Decks.TryGetValue(serial, out var deck) ? deck.Deck : new DeckConfig();
+        var (cols, rows) = ResolveGridLocked(serial);
+        return DeckInstanceResolver.ResolveFittedConfig(settings, DeckInstanceResolver.PhysicalInstanceId(serial), cols, rows, DeckTargetKind.Physical);
+    }
+
+    /// <summary>Caller must hold _lock.</summary>
+    private (int Cols, int Rows) ResolveGridLocked(string serial)
+    {
+        var model = FindBySerialLocked(serial)?.Model;
+        if (model is null && _store.Load().StreamDeck.Decks.TryGetValue(serial, out var deck))
+        {
+            model = StreamDeckModels.ByProductId(deck.ProductId);
+        }
+        return model is null ? (5, 3) : (model.Columns, model.Rows);
     }
 
     /// <summary>
@@ -2727,7 +2706,7 @@ public sealed class StreamDeckConnectionWorker : BackgroundService, IDeckSurface
         try
         {
             using var rendered = DeckHoldPromptRenderer.Render(fraction, model.KeyPixelSize);
-            var bytes = DeckImageToWireBytes(rendered, model, orientation);
+            var bytes = DeckWireImageEncoder.Encode(rendered, model, orientation);
             if (bytes is not null)
             {
                 _holdFrameCache[cacheKey] = bytes;

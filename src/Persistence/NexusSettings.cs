@@ -19,9 +19,9 @@ public sealed class NexusSettings
     /// a migration in <c>JsonConfigStore.Load()</c>. Lives as a constant so
     /// tests and tooling can reference "current" without bit-rotting.
     /// </summary>
-    public const int CurrentSchemaVersion = 17;
+    public const int CurrentSchemaVersion = 18;
 
-    /// <summary>Persisted profile schema. v2 nests Theme/Panel/Overlay/Monitoring out of UiSettings into matching top-level POCOs that mirror install-defaults.json. v3 drops the <c>{s/n/b}</c> wrapper on per-widget config values; values are raw JSON (string/number/bool/object/array). v4 retires the type-scoped marketplace <c>Widgets</c> bag - every placement keeps its own config under <see cref="Nexus.Service.Models.Panel.PanelWidgetDto.Config"/>. v5 renames the <c>performance</c> cooling preset to <c>turbo</c>. v6 re-keys per-card LED map overrides/aspect ratios into the device-scoped segment-local <see cref="DevicesSettings.DeviceLedOverrides"/> / <see cref="DevicesSettings.DeviceAspectRatios"/> (zones model). v8 marks any pre-existing settings.json as already-onboarded (see <see cref="OnboardingCompleted"/>) so the first-run welcome screen only shows for installs with no settings.json at all. v9 prunes <see cref="AnimateSettings.Templates"/> to user deltas against the canonical defaults (see <see cref="Nexus.Service.Lighting.AnimateTemplateDefaults"/>). v10 prunes <see cref="AnimateSettings.States"/> entries equal to the effect's resolved selected-slot look. v11 rewrites the legacy <c>marketplace:</c> app-placement prefix to <c>app:</c> across all persisted widget types (see <see cref="Nexus.Service.Widgets.AppPrefixMigration"/>). v12 adds the <see cref="ProfileSharing.Device"/> sharing category (Stream Deck bindings), defaulted to Shared so an upgrading install keeps today's workstation-global behavior. v13 marks any pre-existing settings.json as already lighting-onboarded (see <see cref="LightingOnboardingCompleted"/>) so the lighting device-selection screen only shows for fresh installs. v14 seeded a per-page density mode that was later removed; it is now a plain version bump. v15 seeds <see cref="UiSettings.LightingDashboardMode"/> and <see cref="UiSettings.CoolingDashboardMode"/> to "advanced" for any pre-existing settings.json, so the reintroduced per-page density mode default ("simple") only applies to fresh installs. v16 marks any pre-existing settings.json as already features-onboarded (see <see cref="FeaturesOnboardingCompleted"/>) so the feature-pillars onboarding screen only shows for fresh installs; <see cref="Features"/> itself is additive (every flag already defaults true) and carries no migration arm. The v1-v4 load-time migrations were removed; records now load as-is and a malformed/older file falls back to defaults (see <see cref="JsonConfigStore"/>).</summary>
+    /// <summary>Persisted profile schema. v2 nests Theme/Panel/Overlay/Monitoring out of UiSettings into matching top-level POCOs that mirror install-defaults.json. v3 drops the <c>{s/n/b}</c> wrapper on per-widget config values; values are raw JSON (string/number/bool/object/array). v4 retires the type-scoped marketplace <c>Widgets</c> bag - every placement keeps its own config under <see cref="Nexus.Service.Models.Panel.PanelWidgetDto.Config"/>. v5 renames the <c>performance</c> cooling preset to <c>turbo</c>. v6 re-keys per-card LED map overrides/aspect ratios into the device-scoped segment-local <see cref="DevicesSettings.DeviceLedOverrides"/> / <see cref="DevicesSettings.DeviceAspectRatios"/> (zones model). v8 marks any pre-existing settings.json as already-onboarded (see <see cref="OnboardingCompleted"/>) so the first-run welcome screen only shows for installs with no settings.json at all. v9 prunes <see cref="AnimateSettings.Templates"/> to user deltas against the canonical defaults (see <see cref="Nexus.Service.Lighting.AnimateTemplateDefaults"/>). v10 prunes <see cref="AnimateSettings.States"/> entries equal to the effect's resolved selected-slot look. v11 rewrites the legacy <c>marketplace:</c> app-placement prefix to <c>app:</c> across all persisted widget types (see <see cref="Nexus.Service.Widgets.AppPrefixMigration"/>). v12 adds the <see cref="ProfileSharing.Device"/> sharing category (Stream Deck bindings), defaulted to Shared so an upgrading install keeps today's workstation-global behavior. v13 marks any pre-existing settings.json as already lighting-onboarded (see <see cref="LightingOnboardingCompleted"/>) so the lighting device-selection screen only shows for fresh installs. v14 seeded a per-page density mode that was later removed; it is now a plain version bump. v15 seeds <see cref="UiSettings.LightingDashboardMode"/> and <see cref="UiSettings.CoolingDashboardMode"/> to "advanced" for any pre-existing settings.json, so the reintroduced per-page density mode default ("simple") only applies to fresh installs. v16 marks any pre-existing settings.json as already features-onboarded (see <see cref="FeaturesOnboardingCompleted"/>) so the feature-pillars onboarding screen only shows for fresh installs; <see cref="Features"/> itself is additive (every flag already defaults true) and carries no migration arm. v18 hoists per-serial Stream Deck presets/config into the host-wide <see cref="StreamDeckSettings.Presets"/> list plus per-instance <see cref="StreamDeckSettings.Instances"/>, and lifts every deck widget's inline layout config the same way (see <see cref="Nexus.Service.Deck.DeckModesMigration"/>). The v1-v4 load-time migrations were removed; records now load as-is and a malformed/older file falls back to defaults (see <see cref="JsonConfigStore"/>).</summary>
     public int SchemaVersion { get; set; } = CurrentSchemaVersion;
 
     public ThemeSettings Theme { get; set; } = new();
@@ -1416,11 +1416,19 @@ public sealed class LianLiWirelessSettings
 
 public sealed class StreamDeckSettings
 {
-    /// <summary>Per-deck bindings, keyed by device serial.</summary>
+    /// <summary>Per-deck HID prefs, keyed by device serial. Presets moved to <see cref="Presets"/> in schema v18.</summary>
     public Dictionary<string, PhysicalDeckSettings> Decks { get; set; } = new();
+    /// <summary>Host-wide preset list shared by every physical deck AND the on-screen Deck widget instances.</summary>
+    public List<DeckPreset> Presets { get; set; } = new();
+    /// <summary>Per-instance mode + active preset, keyed "streamdeck:&lt;serial&gt;" or "widget:&lt;panelWidgetId&gt;".</summary>
+    public Dictionary<string, DeckInstance> Instances { get; set; } = new();
+    /// <summary>Host-wide MRU app ring for Recent Apps mode instances, cap 64 (enforced by the ring writer, not here).</summary>
+    public List<RecentApp> RecentApps { get; set; } = new();
+    /// <summary>Process keys excluded from the Recent Apps ring, in addition to the built-in shell denylist.</summary>
+    public List<string> RecentAppsExcluded { get; set; } = new();
 }
 
-/// <summary>One physical Stream Deck's persisted name, brightness, key bindings, and uploaded-image references.</summary>
+/// <summary>One physical Stream Deck's persisted name, brightness and HID prefs. Layout lives on <see cref="StreamDeckSettings.Presets"/>/<see cref="StreamDeckSettings.Instances"/> since schema v18.</summary>
 public sealed class PhysicalDeckSettings
 {
     public const int DefaultBrightness = 60;
@@ -1428,7 +1436,7 @@ public sealed class PhysicalDeckSettings
     /// <summary>Empty falls back to the model name.</summary>
     public string Name { get; set; } = "";
     public int Brightness { get; set; } = DefaultBrightness;
-    /// <summary>User rotation composed on top of the model's wire Transform, in quarter-turn degree steps. Applied by both the web-rendered key bitmaps and the service's own monitoring tile renders.</summary>
+    /// <summary>User rotation composed on top of the model's wire Transform, in quarter-turn degree steps. Applied by both the service's rendered key bitmaps and its monitoring tile renders.</summary>
     public int Orientation { get; set; }
     /// <summary>Seconds of no key input before the deck blanks the display. A non-positive value disables sleep-after.</summary>
     public int SleepAfterSeconds { get; set; }
@@ -1436,22 +1444,55 @@ public sealed class PhysicalDeckSettings
     public bool SleepWhenLocked { get; set; } = true;
     /// <summary>Last-known StreamDeckModel.ProductId, so a disconnected deck can still report its layout via StreamDeckModels.ByProductId.</summary>
     public int ProductId { get; set; }
-    public DeckConfig Deck { get; set; } = new();
-    /// <summary>Keyed by "{slotPath}/{state}" (state "0" or "1" for a toggle); value is the cached image's content hash.</summary>
-    public Dictionary<string, string> ImageRefs { get; set; } = new();
-    // Named snapshots of Deck + ImageRefs. Capped by the route layer.
-    public List<DeckPreset> Presets { get; set; } = new();
-    // Preset the live Deck was last loaded from; null = none selected.
-    public string? ActivePresetId { get; set; }
+
+    /// <summary>Pre-v18 live config. Read once by DeckModesMigration, then nulled.</summary>
+    public DeckConfig? LegacyDeck { get; set; }
+    /// <summary>Pre-v18 keyed by "{slotPath}/{state}"; value is the StreamDeckImageCache content hash. Read once, then nulled.</summary>
+    public Dictionary<string, string>? LegacyImageRefs { get; set; }
+    /// <summary>Pre-v18 per-serial preset list. Read once, then nulled.</summary>
+    public List<DeckPreset>? LegacyPresets { get; set; }
+    /// <summary>Pre-v18 selected preset id. Read once, then nulled.</summary>
+    public string? LegacyActivePresetId { get; set; }
 }
 
-/// <summary>One named snapshot of a deck's config and uploaded-image references, for POST/activate under /streamdeck/decks/{serial}/presets.</summary>
+/// <summary>One host-wide deck preset: config-only and grid-independent, shared by any physical deck or widget instance that points at it via <see cref="DeckInstance.ActivePresetId"/>.</summary>
 public sealed class DeckPreset
 {
     public string Id { get; set; } = "";
     public string Name { get; set; } = "";
+    /// <summary>The grid this preset was authored in (seeded from the creating deck/widget); DeckConfigNavigation.FitToGrid chunks it onto whatever grid an instance actually has.</summary>
+    public int Cols { get; set; }
+    public int Rows { get; set; }
     public DeckConfig Deck { get; set; } = new();
-    public Dictionary<string, string> ImageRefs { get; set; } = new();
+    /// <summary>App Aware bindings. Null means unbound; an app appears under at most one preset (the apps route unbinds it elsewhere on assign).</summary>
+    public List<PresetAppBinding>? Apps { get; set; }
+    /// <summary>Set when this preset was created from a bundled/imported package (data/deck-presets/&lt;id&gt;.nexus-deck).</summary>
+    public string? TemplateId { get; set; }
+    public string? Author { get; set; }
+    public string? Version { get; set; }
+    public string? Description { get; set; }
+}
+
+/// <summary>One deck instance's mode + active preset. Keyed "streamdeck:&lt;serial&gt;" (never GC'd) or "widget:&lt;panelWidgetId&gt;" (GC'd when the widget id no longer appears in any layout).</summary>
+public sealed class DeckInstance
+{
+    /// <summary>"fixed" | "recentApps" | "appAware". Unrecognized reads as "fixed".</summary>
+    public string Mode { get; set; } = "fixed";
+    /// <summary>The preset this instance shows in Fixed/App Aware mode. Null only transiently, before the first preset is assigned.</summary>
+    public string? ActivePresetId { get; set; }
+}
+
+/// <summary>One entry of the host-wide Recent Apps MRU ring.</summary>
+public sealed class RecentApp
+{
+    /// <summary>AppPresetMatching.ProcessKey identity - the ring's dedup key.</summary>
+    public string ProcessKey { get; set; } = "";
+    public string Name { get; set; } = "";
+    public int? Pid { get; set; }
+    public string? ExePath { get; set; }
+    /// <summary>GET /shortcuts id, resolved once by process name against IShortcutsProvider.GetAll().</summary>
+    public string? ShortcutId { get; set; }
+    public long LastFocusedUtcMs { get; set; }
 }
 
 /// <summary>One SL-LCD Wireless fan screen's persisted content selection and display settings.</summary>

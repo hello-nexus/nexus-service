@@ -749,7 +749,6 @@ public static class NexusServiceCollectionExtensions
         // runtime via StreamDeckConnectionWorker.SetSimulatedModel, so a
         // running app constructs a SimulatedStreamDeckSurface only if that
         // route is called (a release web bundle exposes no UI to call it).
-        services.AddSingleton<Nexus.Service.Peripherals.StreamDeck.StreamDeckImageCache>();
         // Lazy so resolving it does not construct StreamDeckConnectionWorker
         // right away - DeckActionExecutor needs it for deckBrightness/deckSleep,
         // but the worker also depends on IDeckActionExecutor, and a direct
@@ -791,7 +790,7 @@ public static class NexusServiceCollectionExtensions
                 sp.GetRequiredService<Nexus.Service.Devices.DeviceControlGate>(),
                 sp.GetRequiredService<Nexus.Service.Persistence.IConfigStore>(),
                 sp.GetRequiredService<Nexus.Service.Deck.IDeckActionExecutor>(),
-                sp.GetRequiredService<Nexus.Service.Peripherals.StreamDeck.StreamDeckImageCache>(),
+                sp.GetRequiredService<Nexus.Service.Rendering.DeckKeyRenderer>(),
                 sp.GetRequiredService<Nexus.Service.Sockets.MultiplexHub>(),
                 sp.GetRequiredService<Nexus.Service.Sensors.ISensorProvider>(),
                 weather: sp.GetRequiredService<Nexus.Service.Platform.Weather.IWeatherProvider>(),
@@ -1654,6 +1653,7 @@ public static class NexusServiceCollectionExtensions
         services.AddSingleton<Nexus.Service.Panel.PanelBgLibrary>();
         services.AddSingleton<Nexus.Service.Deck.DeckImageStore>();
         services.AddSingleton<Nexus.Service.Deck.ISiteIconResolver, Nexus.Service.Deck.SiteIconResolver>();
+        services.AddSingleton<Nexus.Service.Rendering.DeckKeyRenderer>();
         services.AddSingleton<Nexus.Service.Gallery.GalleryLibrary>();
         services.AddSingleton<Nexus.Service.Gallery.GalleryResizeCache>();
         // Also consumed by /system/pick-path (SystemRoutes.cs), not just gallery.

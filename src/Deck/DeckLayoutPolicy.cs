@@ -78,20 +78,45 @@ public static class DeckLayoutPolicy
         {
             foreach (var widget in page.Widgets)
             {
-                var config = ReadDeckConfig(widget);
-                if (config is null)
+                foreach (var action in PrivilegedActions(ReadDeckConfig(widget)))
                 {
-                    continue;
-                }
-                foreach (var deckPage in config.Pages)
-                {
-                    foreach (var action in PrivilegedActions(deckPage.Slots))
-                    {
-                        yield return action;
-                    }
+                    yield return action;
                 }
             }
         }
+    }
+
+    public static IEnumerable<DeckAction> PrivilegedActions(DeckConfig? config)
+    {
+        if (config is null)
+        {
+            yield break;
+        }
+        foreach (var deckPage in config.Pages)
+        {
+            foreach (var action in PrivilegedActions(deckPage.Slots))
+            {
+                yield return action;
+            }
+        }
+    }
+
+    /// <summary>Same privileged-action-introduction check as the panel-layout overload, for a host-wide preset's own config (POST/PUT /deck/presets).</summary>
+    public static bool IntroducesPrivilegedActions(DeckConfig? incoming, DeckConfig? stored)
+    {
+        var known = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var action in PrivilegedActions(stored))
+        {
+            known.Add(Serialize(action));
+        }
+        foreach (var action in PrivilegedActions(incoming))
+        {
+            if (!known.Contains(Serialize(action)))
+            {
+                return true;
+            }
+        }
+        return false;
     }
 
     private static IEnumerable<DeckAction> PrivilegedActions(List<DeckSlot> slots)

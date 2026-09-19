@@ -297,6 +297,13 @@
     <EmbeddedResource Include="src\Rendering\WeatherIcons\*.png">
       <LogicalName>weather-icon-%(Filename).png</LogicalName>
     </EmbeddedResource>
+    <!-- Lucide deck-key glyphs (white on transparent, 128px), rasterized from
+         nexus-web's DECK_ICONS by nexus-web/scripts/export-deck-icons.mjs and
+         committed here so DeckKeyRenderer works with no network access. Empty
+         glob is a no-op until that script has run. -->
+    <EmbeddedResource Include="data\deck-icons\*.png">
+      <LogicalName>deck-icon-%(Filename).png</LogicalName>
+    </EmbeddedResource>
   </ItemGroup>
 
   <!-- GLSL fragment shaders: one file per animate effect under

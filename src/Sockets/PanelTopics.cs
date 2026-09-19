@@ -356,6 +356,25 @@ public static class PanelTopics
     }
 
     /// <summary>
+    /// Host-wide deck preset/instance changes, AllowPanel (the Deck widget's
+    /// panel session needs it too). Kind "preset" (config edited), "presets"
+    /// (create/delete/import) or "active" (an instance's mode or preset
+    /// changed, including the App Aware switcher) - see DeckChangedFrame.
+    /// </summary>
+    public const string Deck = "deck";
+
+    public static void BroadcastDeck(MultiplexHub hub, Nexus.Service.Models.Deck.DeckChangedFrame frame)
+    {
+        if (!hub.TopicHasSubscribers(Deck))
+        {
+            return;
+        }
+        frame.Revision = Now();
+        var env = WsEnvelope.Build(Deck, frame, AppJsonContext.Default.DeckChangedFrame);
+        _ = hub.BroadcastTopicAsync(Deck, env);
+    }
+
+    /// <summary>
     /// Local AI assistant runtime/model progress (managed Ollama install,
     /// download bytes, active model pull). Subscribers use the frame directly
     /// for live progress bars; GET /ai/assistant/status is the canonical

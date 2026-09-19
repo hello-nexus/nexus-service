@@ -1,5 +1,4 @@
 using System;
-using System.IO;
 using System.Threading.Tasks;
 using Nexus.Service.Deck;
 using Nexus.Service.Devices;
@@ -11,6 +10,7 @@ using Nexus.Service.Sockets;
 using SixLabors.ImageSharp;
 using SixLabors.ImageSharp.PixelFormats;
 using Xunit;
+using static Nexus.Service.Tests.StreamDeck.DeckTestHelpers;
 
 namespace Nexus.Service.Tests.StreamDeck;
 
@@ -25,12 +25,10 @@ public sealed class StreamDeckHoldToEditTests : IDisposable
 {
     private static readonly StreamDeckModel Mini = StreamDeckModels.ByProductId(0x0063)!;
 
-    private readonly string _imageCacheDir = Path.Combine(Path.GetTempPath(), "nexus-streamdeck-hold-test-" + Guid.NewGuid().ToString("N")[..8]);
     private readonly InMemoryConfigStore _store = new();
     private readonly FakeDeckActionExecutor _executor = new();
     private readonly FakeSensorProvider _sensors = new();
     private readonly ManualTimeProvider _clock = new(DateTimeOffset.UtcNow);
-    private readonly StreamDeckImageCache _imageCache;
     private readonly SimulatedStreamDeckSurface _simulated;
     private readonly StreamDeckConnectionWorker _worker;
 
@@ -40,21 +38,20 @@ public sealed class StreamDeckHoldToEditTests : IDisposable
         var presence = new HardwarePresence(new FixedUsbEnumerator());
         var gate = new DeviceControlGate(_store);
         gate.SetEnabled("streamdeck", true);
-        _imageCache = new StreamDeckImageCache(_imageCacheDir);
         _worker = new StreamDeckConnectionWorker(
-            new FakeWorkerHidEnumerator(), presence, gate, _store, _executor, _imageCache, new MultiplexHub(), _sensors,
+            new FakeWorkerHidEnumerator(), presence, gate, _store, _executor, NewTestKeyRenderer(), new MultiplexHub(), _sensors,
             _simulated, _clock);
     }
 
     public void Dispose()
     {
         _worker.Dispose();
-        try { Directory.Delete(_imageCacheDir, recursive: true); } catch { /* best effort */ }
     }
 
     private void ConnectWith(DeckConfig config, int brightness = 80)
     {
-        _store.Update(s => s.StreamDeck.Decks["sim-0001"] = new PhysicalDeckSettings { Brightness = brightness, Deck = config });
+        _store.Update(s => s.StreamDeck.Decks["sim-0001"] = new PhysicalDeckSettings { Brightness = brightness, LegacyDeck = config });
+        _store.Update(s => ActivateLegacyDeck(s, "sim-0001"));
         _worker.Tick();
     }
 
@@ -189,43 +186,21 @@ public sealed class StreamDeckHoldToEditTests : IDisposable
     }
 
     [Fact]
-    public void PushCurrentView_UnassignedKey_RendersOffDespiteUploadedImage()
+    public void PushCurrentView_UnassignedKey_RendersOff()
     {
-        // An empty, colorless slot with a stale uploaded fill (what the editor
-        // used to push for a blank key) must still render off (black), not grey.
-        var bytes = new byte[] { 9, 8, 7, 6 };
-        var hash = StreamDeckImageCache.Hash(bytes);
-        _imageCache.Store("sim-0001", hash, bytes);
-        _store.Update(s => s.StreamDeck.Decks["sim-0001"] = new PhysicalDeckSettings
-        {
-            Brightness = 80,
-            Deck = new DeckConfig { Pages = { new DeckPage { Slots = { new DeckSlot() } } } },
-            ImageRefs = { ["0.0/0"] = hash },
-        });
-
-        _worker.Tick();
+        // An empty, colorless slot renders off (black), not a rendered fill.
+        ConnectWith(new DeckConfig { Pages = { new DeckPage { Slots = { new DeckSlot() } } } });
 
         Assert.Null(_simulated.PeekKeyImage(0));
     }
 
     [Fact]
-    public void PushCurrentView_ColoredKey_KeepsUploadedFill()
+    public void PushCurrentView_ColoredKey_RendersItsFill()
     {
-        // A color-only slot (no action) is a decorative key, not "off": it keeps
-        // its uploaded fill.
-        var bytes = new byte[] { 9, 8, 7, 6 };
-        var hash = StreamDeckImageCache.Hash(bytes);
-        _imageCache.Store("sim-0001", hash, bytes);
-        _store.Update(s => s.StreamDeck.Decks["sim-0001"] = new PhysicalDeckSettings
-        {
-            Brightness = 80,
-            Deck = new DeckConfig { Pages = { new DeckPage { Slots = { new DeckSlot { Color = "#ff0000" } } } } },
-            ImageRefs = { ["0.0/0"] = hash },
-        });
+        // A color-only slot (no action) is a decorative key, not "off": it renders its own fill.
+        ConnectWith(new DeckConfig { Pages = { new DeckPage { Slots = { new DeckSlot { Color = "#ff0000" } } } } });
 
-        _worker.Tick();
-
-        Assert.Equal(bytes, _simulated.PeekKeyImage(0));
+        Assert.NotNull(_simulated.PeekKeyImage(0));
     }
 
     [Fact]
