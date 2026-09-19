@@ -127,6 +127,11 @@ public sealed class MacShortcutsProvider : IShortcutsProvider
             path = targetId;
         }
 
+        // NSWorkspace badges a symlinked bundle as a Finder alias (Safari lives in the cryptex), so extract from the resolved target.
+        try { path = new DirectoryInfo(path).ResolveLinkTarget(returnFinalTarget: true)?.FullName ?? path; }
+        catch (IOException) { }
+        catch (UnauthorizedAccessException) { }
+
         // A null (extractor timeout) is not cached, so a transient stall does
         // not pin an empty icon for the whole TTL. The smaller proposed size
         // keeps the TTL cache and the physical deck's per-key downscale at
