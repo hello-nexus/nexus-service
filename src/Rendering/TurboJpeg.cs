@@ -9,12 +9,10 @@ namespace Nexus.Service.Rendering;
 /// server-rendered device bitmap. The library ships next to the service binary
 /// (<c>Bundled/&lt;rid&gt;/turbojpeg</c>).
 ///
-/// Measured on a Ryzen 9800X3D at quality 85 against ImageSharp's managed encoder:
-/// 3.4x at 1080x2400, 3.9x at 480x480, with JPEG output within 0.5% of the same size.
-/// Small bitmaps (a 72x72 deck key) gain more because ImageSharp carries a fixed
-/// per-call cost of roughly 0.12 ms whatever the geometry.
-///
-/// Every caller keeps a managed fallback, so nothing here throws on load.
+/// Several times faster than ImageSharp's managed encoder at the same quality, for
+/// output of the same size; the ratio grows as the bitmap shrinks, because ImageSharp
+/// carries a fixed per-call cost. Every caller keeps a managed fallback, so nothing
+/// here throws on load.
 /// </summary>
 internal static unsafe class TurboJpeg
 {
@@ -29,7 +27,7 @@ internal static unsafe class TurboJpeg
     public const int PixelFormatBgrx = 3;
     public const int Subsamp420 = 2;
 
-    private static int _available = -1;
+    private static volatile int _available = -1;
 
     /// <summary>
     /// True once one call into the library has succeeded; false after a load failure.

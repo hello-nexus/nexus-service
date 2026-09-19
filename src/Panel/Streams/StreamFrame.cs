@@ -10,9 +10,12 @@ public sealed class StreamFrame
     /// <summary>
     /// Its own pool rather than <see cref="ArrayPool{T}.Shared"/>: Shared keeps a per-core
     /// cache, so multi-megabyte raw frames end up retained as one buffer per core that ever
-    /// handled one. A handful covers the queue depth plus the frame in flight.
+    /// handled one. This one is process-wide across sessions, so the per-bucket cap has to
+    /// clear the deepest queue any codec asks for - H.264 sits at max(30, fps*2)
+    /// (see StreamSession) against a raw panel's 2. Past the cap the pool still works, it
+    /// just allocates and drops the return, which is the behaviour this replaced.
     /// </summary>
-    public static readonly ArrayPool<byte> Pool = ArrayPool<byte>.Create(StreamFraming.MaxPayloadBytes, 6);
+    public static readonly ArrayPool<byte> Pool = ArrayPool<byte>.Create(StreamFraming.MaxPayloadBytes, 64);
 
     private int _released;
 
@@ -24,8 +27,15 @@ public sealed class StreamFrame
     /// <summary>Payload bytes actually in use; -1 means the whole array.</summary>
     public int Length { get; init; } = -1;
 
-    /// <summary>Rented from <see cref="Pool"/>, so <see cref="Release"/> must run once.</summary>
+    /// <summary>Rented from a pool, so <see cref="Release"/> must run once.</summary>
     public bool Pooled { get; init; }
+
+    /// <summary>
+    /// Where <see cref="Release"/> hands the payload back. Defaults to <see cref="Pool"/>,
+    /// which is what the reader rents from; a test substitutes a counting pool to assert
+    /// that every owner releases exactly once.
+    /// </summary>
+    public ArrayPool<byte> ReturnTo { get; init; } = Pool;
 
     public ReadOnlySpan<byte> Bytes => Payload.AsSpan(0, Length < 0 ? Payload.Length : Length);
 
@@ -40,7 +50,7 @@ public sealed class StreamFrame
     {
         if (Pooled && Interlocked.Exchange(ref _released, 1) == 0)
         {
-            Pool.Return(Payload);
+            ReturnTo.Return(Payload);
         }
     }
 }

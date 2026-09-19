@@ -152,7 +152,7 @@ public class BgraJpegEncoderTests
     }
 
     [Fact]
-    public void Both_encoders_agree_on_size_and_geometry()
+    public void Active_encoder_round_trips_to_the_requested_geometry()
     {
         using var encoder = new BgraJpegEncoder(160, 96);
         var frame = SolidBgra(160, 96, 200, 120, 40);
@@ -162,7 +162,8 @@ public class BgraJpegEncoderTests
         using var decoded = Image.Load<Rgba32>(jpeg);
         Assert.Equal(160, decoded.Width);
         Assert.Equal(96, decoded.Height);
-        // 4:2:0 at quality 85 on a flat fill lands well under the raw frame either way.
+        // Whichever encoder is active: 4:2:0 at quality 85 on a flat fill lands well
+        // under the raw frame. Not a cross-check of the two - only one is ever live.
         Assert.InRange(jpeg.Length, 100, frame.Length / 4);
     }
 }

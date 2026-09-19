@@ -59,7 +59,13 @@ public static class StreamFrameReader
         var payload = length == 0 ? Array.Empty<byte>() : StreamFrame.Pool.Rent((int)length);
         if (length > 0)
         {
-            reader.TryCopyTo(payload.AsSpan(0, (int)length));
+            // Checked because the buffer is pooled: a short copy used to leave a zeroed
+            // fresh array, and now it would leave the previous renter's bytes.
+            if (!reader.TryCopyTo(payload.AsSpan(0, (int)length)))
+            {
+                StreamFrame.Pool.Return(payload);
+                return false;
+            }
             reader.Advance(length);
         }
 
