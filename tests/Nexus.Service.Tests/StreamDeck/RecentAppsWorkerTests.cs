@@ -260,6 +260,21 @@ public sealed class RecentAppsWorkerTests : IDisposable
     }
 
     [Fact]
+    public void KeyRelease_RepaintsOnlyThatOneKey()
+    {
+        SeedRing(("chrome", "Chrome"), ("discord", "Discord"));
+        ConnectInRecentAppsMode();
+        _simulated.Poke(0, true);
+        _worker.Tick();
+        var callsAfterPress = _simulated.SetKeyImageCallCount;
+
+        _simulated.Poke(0, false);
+        _worker.Tick();
+
+        Assert.Equal(callsAfterPress + 1, _simulated.SetKeyImageCallCount);
+    }
+
+    [Fact]
     public void Press_FocusedKey_StillShowsThePressedInsetDespiteBeingANoOpActivation()
     {
         SeedRing(new RecentApp { ProcessKey = "chrome", Name = "Chrome", ShortcutId = "shortcut-chrome" });

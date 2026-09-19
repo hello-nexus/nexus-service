@@ -1379,12 +1379,15 @@ public sealed class StreamDeckConnectionWorker : BackgroundService, IDeckSurface
         var serial = surface.Serial;
         // Recent Apps mode has no config/folder view to resolve a slot from
         // (ResolveView below is the fixed/appAware config tree), so a held key
-        // there is restored by re-rendering the whole tracked view instead.
+        // there is restored by re-rendering the tracked view instead. Dropping
+        // only this key's hash and pushing unforced repaints just the
+        // released key, not every key on the page.
         if (IsRecentAppsMode(serial))
         {
             if (UnmarkKeyHeld(serial, physicalIndex))
             {
-                PushRecentAppsView(surface, viewChanged: true);
+                _recentAppsLastHash.Remove($"{serial}:{physicalIndex}");
+                PushRecentAppsView(surface, viewChanged: false);
             }
             return;
         }
