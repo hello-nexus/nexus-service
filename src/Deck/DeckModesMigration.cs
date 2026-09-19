@@ -16,7 +16,7 @@ namespace Nexus.Service.Deck;
 /// </summary>
 public static class DeckModesMigration
 {
-    /// <summary>5x3, the Stream Deck Original's grid - the fallback when a legacy deck's ProductId does not resolve to a known model.</summary>
+    /// <summary>The Stream Deck Original's grid - the fallback when a legacy deck's ProductId does not resolve to a known model.</summary>
     private const int FallbackCols = 5;
     private const int FallbackRows = 3;
 

@@ -29,7 +29,7 @@ public static class RecentAppsTracker
     /// <summary>Cap enforced here so every ring writer (RecentAppsService, the routes) gets it for free.</summary>
     public const int RingCap = 64;
 
-    /// <summary>Auto page-nav pages a Recent Apps view splits into before dropping the rest of the ring, matching the plan's decision 276.</summary>
+    /// <summary>Auto page-nav pages a Recent Apps view splits into before dropping the rest of the ring.</summary>
     private const int MaxPages = 4;
 
     /// <summary>Built-in shell/desktop processes never tracked, regardless of RecentAppsExcluded.</summary>

@@ -465,7 +465,6 @@ public static class DeckRoutes
         PanelTopics.BroadcastDeck(hub, new DeckChangedFrame { Kind = "presets", Presets = presets });
     }
 
-    /// <summary>Creates and persists a fresh empty "Deck" preset + fixed instance for a widget id seen for the first time, so a Deck widget added after settings load still resolves an instance.</summary>
     /// <summary>
     /// A new widget joins the first existing preset (adding a deck is like
     /// plugging in a second Stream Deck, not starting a fresh layout); only a
