@@ -155,7 +155,8 @@ public static class DeckConfigNavigation
     /// <summary>
     /// Projects a host-wide preset (authored at presetCols x presetRows) onto a
     /// concrete instance grid: same key count and folder-reservation rules as
-    /// the preset's own grid returns a byte-identical copy; otherwise each
+    /// the preset's own grid returns the preset's config unchanged (same
+    /// reference - callers must treat it as read-only); otherwise each
     /// authored page is trimmed of trailing empty slots, padded when it fits
     /// the target key count, or chunked across synthetic next/prev pages
     /// (DeckSlot.Auto) when it does not. Folders are trimmed and truncated to
@@ -173,7 +174,7 @@ public static class DeckConfigNavigation
         }
         if (presetCols * presetRows == targetKeyCount)
         {
-            return DeepCopyConfig(presetDeck);
+            return presetDeck;
         }
 
         var outPages = new List<DeckPage>();

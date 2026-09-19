@@ -1522,7 +1522,8 @@ public class StreamDeckConnectionWorkerTests
         f.Store.Update(s => ActivateLegacyDeck(s, "sim-0001"));
         using var worker = NewWorker(f, simulated);
         worker.Tick();
-        Assert.Null(simulated.PeekKeyImage(0)); // no uploaded image for the leaf slot
+        var beforeBytes = simulated.PeekKeyImage(0);
+        Assert.NotNull(beforeBytes); // the leaf slot renders its own key face
 
         f.Store.Update(s =>
             ActiveDeck(s, "sim-0001").Pages[0].Slots[0] =
@@ -1531,6 +1532,7 @@ public class StreamDeckConnectionWorkerTests
 
         var bytes = simulated.PeekKeyImage(0);
         Assert.NotNull(bytes);
+        Assert.NotEqual(beforeBytes, bytes);
         Assert.True(Mini.IsValidWireImageLength(bytes!.Length));
     }
 
@@ -1551,14 +1553,18 @@ public class StreamDeckConnectionWorkerTests
         f.Store.Update(s => ActivateLegacyDeck(s, "sim-0001"));
         using var worker = NewWorker(f, simulated);
         worker.Tick();
-        Assert.NotNull(simulated.PeekKeyImage(0));
+        var monitoringBytes = simulated.PeekKeyImage(0);
+        Assert.NotNull(monitoringBytes);
 
         f.Store.Update(s =>
             ActiveDeck(s, "sim-0001").Pages[0].Slots[0] =
-                new DeckSlot { Action = new DeckAction { Type = "openUrl", Url = "https://example.com" } }); // no ImageRef uploaded
+                new DeckSlot { Action = new DeckAction { Type = "openUrl", Url = "https://example.com" } });
         worker.RefreshView("sim-0001");
 
-        Assert.Null(simulated.PeekKeyImage(0));
+        // The key now renders the leaf slot's own face, not the departed monitoring tile's stale pixels.
+        var bytes = simulated.PeekKeyImage(0);
+        Assert.NotNull(bytes);
+        Assert.NotEqual(monitoringBytes, bytes);
     }
 
     /// <summary>
@@ -1636,13 +1642,13 @@ public class StreamDeckConnectionWorkerTests
         worker.Tick();
         Assert.NotNull(simulated.PeekKeyImage(0));
 
-        // Page 1's key 0 has no ImageRef, so navigating there clears the
-        // physical key the monitoring slot used to own.
+        // Page 1's key 0 is a leaf openUrl slot, so navigating there repaints
+        // the physical key the monitoring slot used to own with its own face.
         simulated.Poke(1, true);
         worker.Tick();
         simulated.Poke(1, false);
         worker.Tick();
-        Assert.Null(simulated.PeekKeyImage(0));
+        Assert.NotNull(simulated.PeekKeyImage(0));
 
         // Navigate back with the sensor reading unchanged from the first
         // push. A quantized-unchanged reading must not suppress the repaint
@@ -1861,13 +1867,15 @@ public class StreamDeckConnectionWorkerTests
         f.Store.Update(s => ActivateLegacyDeck(s, "sim-0001"));
         using var worker = NewWorker(f, simulated);
         worker.Tick();
-        Assert.Null(simulated.PeekKeyImage(0)); // page 0's slot has no ImageRef
+        var pageZeroImage = simulated.PeekKeyImage(0);
+        Assert.NotNull(pageZeroImage);
 
         simulated.Poke(1, true);
         worker.Tick();
 
         var bytes = simulated.PeekKeyImage(0);
         Assert.NotNull(bytes);
+        Assert.NotEqual(pageZeroImage, bytes);
         Assert.True(Mini.IsValidWireImageLength(bytes!.Length));
     }
 
@@ -1919,9 +1927,10 @@ public class StreamDeckConnectionWorkerTests
     /// <summary>
     /// The nav's own PushCurrentView pushes twice for the monitoring key (an
     /// empty placeholder, then the real tile - see PushCurrentView's two-pass
-    /// repaint), and that same tick's own RefreshMonitoringKeys pass must not
-    /// push a third time for the nav, nor push again on the next tick while
-    /// the reading is unchanged.
+    /// repaint) plus once for the landing view's other (leaf) key, and that
+    /// same tick's own RefreshMonitoringKeys pass must not push a fourth time
+    /// for the nav, nor push again on the next tick while the reading is
+    /// unchanged.
     /// </summary>
     [Fact]
     public void Tick_NavigatingToAMonitoringSlot_TheFollowingTickDoesNotRepushAnUnchangedTile()
@@ -1967,7 +1976,7 @@ public class StreamDeckConnectionWorkerTests
         simulated.Poke(1, false);
         worker.Tick();
         var callsAfterNav = simulated.SetKeyImageCallCount;
-        Assert.Equal(callsBeforeNav + 2, callsAfterNav);
+        Assert.Equal(callsBeforeNav + 3, callsAfterNav);
 
         worker.Tick();
         Assert.Equal(callsAfterNav, simulated.SetKeyImageCallCount);
