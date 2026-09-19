@@ -3,6 +3,7 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.AspNetCore.Http;
 using Nexus.Service.Auth;
 using Nexus.Service.Persistence;
+using Nexus.Service.Sockets;
 
 namespace Nexus.Service.Routes;
 
@@ -81,7 +82,7 @@ internal static class OnboardingRoutes
         // the migration routes own, not onboarding ones. An app that is no
         // longer installed still will not be offered: that gate also requires
         // live detection.
-        app.MapPost("/onboarding/reset", (IConfigStore store) =>
+        app.MapPost("/onboarding/reset", (IConfigStore store, MultiplexHub hub) =>
         {
             store.Update(s =>
             {
@@ -94,6 +95,8 @@ internal static class OnboardingRoutes
             });
             // Re-close, or notifications keep firing through the replay.
             Nexus.Service.Notifications.NotificationGate.Initialize(onboardingComplete: false);
+            // A live kiosk re-reads its swipe-hint flag on this topic.
+            PanelTopics.BroadcastPrefs(hub);
             return Results.Ok(Status(store));
         }).LocalhostOnly();
     }

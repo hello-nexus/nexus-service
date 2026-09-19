@@ -89,6 +89,7 @@ public class AuthRequestPolicyTests
     {
         var builder = WebApplication.CreateSlimBuilder();
         builder.Services.AddSingleton<Nexus.Service.Persistence.IConfigStore, InMemoryConfigStore>();
+        builder.Services.AddSingleton<Nexus.Service.Sockets.MultiplexHub>();
         await using var app = builder.Build();
         app.MapOnboardingEndpoints();
 
