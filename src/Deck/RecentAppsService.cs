@@ -227,6 +227,7 @@ public sealed class RecentAppsService : BackgroundService
 
     private void RebuildShortcutsIndex()
     {
+        var hadShortcuts = _shortcutsByProcessKey.Count > 0;
         var index = new Dictionary<string, (string Id, string Name)>(StringComparer.Ordinal);
         foreach (var shortcut in _shortcuts.GetAll())
         {
@@ -242,6 +243,20 @@ public sealed class RecentAppsService : BackgroundService
         }
         _shortcutsByProcessKey = index;
         _shortcutsIndexedAt = _time.GetUtcNow();
+        // The first non-empty index usually arrives after the user-session
+        // helper connects, i.e. after the seeded ring already missed once; give
+        // every entry another look so labels and launch ids catch up.
+        if (!hadShortcuts && index.Count > 0)
+        {
+            lock (_gate)
+            {
+                foreach (var entry in _state.RingSnapshot())
+                {
+                    _pendingShortcutResolve.Add(entry.ProcessKey);
+                }
+            }
+            ScheduleBroadcast();
+        }
     }
 
     private void ScheduleBroadcast()

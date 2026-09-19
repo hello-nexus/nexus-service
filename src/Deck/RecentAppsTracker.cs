@@ -35,7 +35,7 @@ public static class RecentAppsTracker
     /// <summary>Built-in shell/desktop processes never tracked, regardless of RecentAppsExcluded.</summary>
     public static readonly IReadOnlyCollection<string> BuiltInDenylist = new HashSet<string>(StringComparer.Ordinal)
     {
-        "nexus", "explorer", "searchhost", "startmenuexperiencehost", "shellexperiencehost",
+        "nexus", "nexus-overlay", "explorer", "searchhost", "startmenuexperiencehost", "shellexperiencehost",
         "lockapp", "applicationframehost", "finder", "dock", "loginwindow",
     };
 

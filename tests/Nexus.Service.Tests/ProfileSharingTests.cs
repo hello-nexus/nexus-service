@@ -68,6 +68,24 @@ public class ProfileSharingTests
 
         Assert.Empty(extract.StreamDeck.RecentApps);
         Assert.Empty(extract.StreamDeck.RecentAppsExcluded);
+        // Extracting must not touch the live ring itself.
+        Assert.Single(source.StreamDeck.RecentApps);
+        Assert.Single(source.StreamDeck.RecentAppsExcluded);
+    }
+
+    /// <summary>Loading a profile (whose file carries no ring) keeps the live machine's ring.</summary>
+    [Fact]
+    public void ApplyCategory_Device_KeepsTheTargetsRecentAppsRing()
+    {
+        var live = new NexusSettings();
+        live.StreamDeck.RecentApps.Add(new RecentApp { ProcessKey = "msedge", Name = "Microsoft Edge" });
+        var fromFile = new NexusSettings();
+        fromFile.StreamDeck.Decks["SN-1"] = new PhysicalDeckSettings { Name = "Deck" };
+
+        ProfileSharing.ApplyCategory(live, fromFile, ProfileSharing.Device);
+
+        Assert.Single(live.StreamDeck.Decks);
+        Assert.Single(live.StreamDeck.RecentApps);
     }
 
     [Fact]

@@ -99,11 +99,18 @@ public static class ProfileSharing
                 target.Ui.ConflictAutoKillExclusions = source.Ui.ConflictAutoKillExclusions;
                 break;
             case Device:
-                target.StreamDeck = source.StreamDeck;
-                // The recent-apps ring names this machine's processes and
-                // exe paths; it never rides a profile or cloud sync.
-                target.StreamDeck.RecentApps = new List<RecentApp>();
-                target.StreamDeck.RecentAppsExcluded = new List<string>();
+                // The recent-apps ring names this machine's processes and exe
+                // paths, so it stays with the target: a profile export starts
+                // from a fresh target (empty ring), and a profile load keeps
+                // the live ring instead of taking the file's.
+                target.StreamDeck = new StreamDeckSettings
+                {
+                    Decks = source.StreamDeck.Decks,
+                    Presets = source.StreamDeck.Presets,
+                    Instances = source.StreamDeck.Instances,
+                    RecentApps = target.StreamDeck.RecentApps,
+                    RecentAppsExcluded = target.StreamDeck.RecentAppsExcluded,
+                };
                 target.Keeb = source.Keeb;
                 break;
         }
