@@ -6,16 +6,23 @@ using System.Text.Json;
 namespace Nexus.Service.Devices.Detection;
 
 /// <summary>
-/// macOS USB enumeration via system_profiler SPUSBDataType -json.
-/// Parses the JSON output to extract vendor_id, product_id, manufacturer, serial,
-/// location_id, speed, and device name for each USB device.
+/// macOS USB enumeration: IOKit's IOUSBHostDevice registry entries first
+/// (idVendor/idProduct/USB Product Name/USB Serial Number/locationID), with
+/// the system_profiler SPUSBDataType -json parser as the fallback - on macOS
+/// 26 system_profiler prints an empty USB tree, which left every USB-gated
+/// device (Stream Deck, hubs, coolers) permanently absent.
 /// </summary>
-public sealed class MacUsbEnumerator : IUsbEnumerator
+public sealed unsafe class MacUsbEnumerator : IUsbEnumerator
 {
     public List<UsbDeviceEntry> Enumerate()
     {
         try
         {
+            var native = EnumerateIoKit();
+            if (native.Count > 0)
+            {
+                return native;
+            }
             var json = ShellOut("/usr/sbin/system_profiler", "SPUSBDataType", "-json");
             return ParseJson(json);
         }
@@ -25,6 +32,146 @@ public sealed class MacUsbEnumerator : IUsbEnumerator
             return new List<UsbDeviceEntry>();
         }
     }
+
+    private static List<UsbDeviceEntry> EnumerateIoKit()
+    {
+        var result = new List<UsbDeviceEntry>();
+        if (!OperatingSystem.IsMacOS())
+        {
+            return result;
+        }
+        var matching = IOServiceMatching("IOUSBHostDevice");
+        if (matching == IntPtr.Zero)
+        {
+            return result;
+        }
+        uint iterator;
+        // IOServiceGetMatchingServices consumes the matching dictionary.
+        if (IOServiceGetMatchingServices(0, matching, &iterator) != 0)
+        {
+            return result;
+        }
+        try
+        {
+            for (var service = IOIteratorNext(iterator); service != 0; service = IOIteratorNext(iterator))
+            {
+                try
+                {
+                    var vid = IntProperty(service, "idVendor");
+                    var pid = IntProperty(service, "idProduct");
+                    if (vid is null || pid is null || vid <= 0 || pid <= 0)
+                    {
+                        continue;
+                    }
+                    var location = IntProperty(service, "locationID");
+                    result.Add(new UsbDeviceEntry
+                    {
+                        VendorId = vid.Value,
+                        ProductId = pid.Value,
+                        Name = StringProperty(service, "USB Product Name"),
+                        Manufacturer = StringProperty(service, "USB Vendor Name"),
+                        Serial = StringProperty(service, "USB Serial Number"),
+                        Location = location is null ? "" : $"0x{location.Value:x8}",
+                        Class = "",
+                        Speed = "",
+                        Driver = "",
+                        HardwareId = $"USB\\VID_{vid.Value:X4}&PID_{pid.Value:X4}",
+                    });
+                }
+                finally
+                {
+                    IOObjectRelease(service);
+                }
+            }
+        }
+        finally
+        {
+            IOObjectRelease(iterator);
+        }
+        return result;
+    }
+
+    private static int? IntProperty(uint service, string key)
+    {
+        var cfKey = CFStringCreateWithCString(IntPtr.Zero, key, KCfStringEncodingUtf8);
+        try
+        {
+            var value = IORegistryEntryCreateCFProperty(service, cfKey, IntPtr.Zero, 0);
+            if (value == IntPtr.Zero)
+            {
+                return null;
+            }
+            try
+            {
+                if (CFGetTypeID(value) != CFNumberGetTypeID())
+                {
+                    return null;
+                }
+                int n;
+                return CFNumberGetValue(value, KCfNumberSInt32Type, &n) ? n : null;
+            }
+            finally
+            {
+                CFRelease(value);
+            }
+        }
+        finally
+        {
+            CFRelease(cfKey);
+        }
+    }
+
+    private static string StringProperty(uint service, string key)
+    {
+        var cfKey = CFStringCreateWithCString(IntPtr.Zero, key, KCfStringEncodingUtf8);
+        try
+        {
+            var value = IORegistryEntryCreateCFProperty(service, cfKey, IntPtr.Zero, 0);
+            if (value == IntPtr.Zero)
+            {
+                return "";
+            }
+            try
+            {
+                if (CFGetTypeID(value) != CFStringGetTypeID())
+                {
+                    return "";
+                }
+                var buffer = stackalloc byte[512];
+                if (!CFStringGetCString(value, buffer, 512, KCfStringEncodingUtf8))
+                {
+                    return "";
+                }
+                return System.Runtime.InteropServices.Marshal.PtrToStringUTF8((IntPtr)buffer)?.Trim() ?? "";
+            }
+            finally
+            {
+                CFRelease(value);
+            }
+        }
+        finally
+        {
+            CFRelease(cfKey);
+        }
+    }
+
+    private const string IOKit = "/System/Library/Frameworks/IOKit.framework/IOKit";
+    private const string CoreFoundation = "/System/Library/Frameworks/CoreFoundation.framework/CoreFoundation";
+    private const uint KCfStringEncodingUtf8 = 0x08000100;
+    private const int KCfNumberSInt32Type = 3;
+
+    [System.Runtime.InteropServices.DllImport(IOKit)] private static extern IntPtr IOServiceMatching([System.Runtime.InteropServices.MarshalAs(System.Runtime.InteropServices.UnmanagedType.LPStr)] string name);
+    [System.Runtime.InteropServices.DllImport(IOKit)] private static extern int IOServiceGetMatchingServices(uint mainPort, IntPtr matching, uint* iterator);
+    [System.Runtime.InteropServices.DllImport(IOKit)] private static extern uint IOIteratorNext(uint iterator);
+    [System.Runtime.InteropServices.DllImport(IOKit)] private static extern int IOObjectRelease(uint obj);
+    [System.Runtime.InteropServices.DllImport(IOKit)] private static extern IntPtr IORegistryEntryCreateCFProperty(uint entry, IntPtr key, IntPtr allocator, uint options);
+    [System.Runtime.InteropServices.DllImport(CoreFoundation)] private static extern IntPtr CFStringCreateWithCString(IntPtr allocator, [System.Runtime.InteropServices.MarshalAs(System.Runtime.InteropServices.UnmanagedType.LPStr)] string str, uint encoding);
+    [System.Runtime.InteropServices.DllImport(CoreFoundation)] private static extern void CFRelease(IntPtr cf);
+    [System.Runtime.InteropServices.DllImport(CoreFoundation)] private static extern nuint CFGetTypeID(IntPtr cf);
+    [System.Runtime.InteropServices.DllImport(CoreFoundation)] private static extern nuint CFStringGetTypeID();
+    [System.Runtime.InteropServices.DllImport(CoreFoundation)] private static extern nuint CFNumberGetTypeID();
+    [System.Runtime.InteropServices.DllImport(CoreFoundation)] [return: System.Runtime.InteropServices.MarshalAs(System.Runtime.InteropServices.UnmanagedType.I1)] private static extern bool CFNumberGetValue(IntPtr number, nint type, int* valuePtr);
+    [System.Runtime.InteropServices.DllImport(CoreFoundation)] [return: System.Runtime.InteropServices.MarshalAs(System.Runtime.InteropServices.UnmanagedType.I1)] private static extern bool CFStringGetCString(IntPtr str, byte* buffer, nint bufferSize, uint encoding);
 
     /// <summary>Pure parser exposed for unit tests.</summary>
     internal static List<UsbDeviceEntry> ParseJson(string json)

@@ -830,6 +830,10 @@
     <Compile Remove="src/Platform/Mac/MacSmc.cs" />
     <Compile Remove="src/Platform/Mac/MacStatusBar.cs" />
     <Compile Remove="src/Platform/Mac/MacWorkspaceFocusObserver.cs" />
+    <Compile Remove="src/Platform/Mac/MacLockInputWatch.cs" />
+    <Compile Remove="src/Peripherals/Hid/MacHidDevice.cs" />
+    <Compile Remove="src/Peripherals/Hid/MacHidEnumerator.cs" />
+    <Compile Remove="src/Peripherals/Hid/MacHidNative.cs" />
     <Compile Remove="src/Sensors/MacSensorProvider.cs" />
   </ItemGroup>
 

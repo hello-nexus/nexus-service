@@ -122,6 +122,32 @@ internal static class MacAppBootstrap
             screenTime.AttachWorkspaceObserver();
         }
 
+        // Lock-screen wake-on-input, as TrayBootstrap wires the Windows helper's
+        // poll: one watch runs while either consumer wants it, and every input
+        // reaches both.
+        var lockBlackout = app.Services.GetService<Nexus.Service.Lighting.SleepBlackoutCoordinator>();
+        var deckWorker = app.Services.GetService<Nexus.Service.Peripherals.StreamDeck.StreamDeckConnectionWorker>();
+        if (lockBlackout is not null || deckWorker is not null)
+        {
+            var lightingArmed = false;
+            var deckArmed = false;
+            var watch = new MacLockInputWatch(() =>
+            {
+                lockBlackout?.OnLockScreenInput();
+                deckWorker?.OnLockScreenInput();
+            });
+            lockBlackout?.LockInputWatch = enabled =>
+            {
+                lightingArmed = enabled;
+                watch.Set(lightingArmed || deckArmed);
+            };
+            deckWorker?.LockInputWatch = enabled =>
+            {
+                deckArmed = enabled;
+                watch.Set(lightingArmed || deckArmed);
+            };
+        }
+
         store.OnChanged += () =>
         {
             try { MacStatusBar.SetVisible(store.Load().Monitoring.ShowMacStatusBarIcon); }
