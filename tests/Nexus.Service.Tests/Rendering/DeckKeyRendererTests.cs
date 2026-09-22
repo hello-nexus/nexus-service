@@ -208,16 +208,18 @@ public sealed class DeckKeyRendererTests : IDisposable
     }
 
     [Fact]
-    public void Render_AppIcon_FillsTheKeyFaceOnBlack()
+    public void Render_AppIcon_IsTheKeyFaceOnBlack()
     {
         var shortcuts = new SwitchableShortcutsProvider { Icon = SolidPng(Color.Red, 4, 4) };
         var renderer = new DeckKeyRenderer(new DeckImageStore(_imagesDir), shortcuts, new NullProcessIconProvider());
         var slot = new DeckSlot { Action = new DeckAction { Type = "launchApp", AppId = "app-1" } };
 
         using var image = Decode(renderer.Render(slot, false, Mk2, 0)!);
-        // Contain-fit of a square icon covers the key edge to edge: no accent left in the corner.
-        var corner = image[1, 1];
-        Assert.True(corner.R > 150 && corner.G < 100 && corner.B < 100, $"expected the app icon at the key edge, got {corner}");
+        // Artwork at 82% of the key on black: black at the edge, red just inside the 9% inset.
+        var edge = image[1, 1];
+        var inset = image[(int)(Mk2.KeyPixelSize * 0.12f), Mk2.KeyPixelSize / 2];
+        Assert.True(edge.R < 24 && edge.G < 24 && edge.B < 24, $"expected black around the artwork, got {edge}");
+        Assert.True(inset.R > 150 && inset.G < 100 && inset.B < 100, $"expected the app icon inside the inset, got {inset}");
     }
 
     /// <summary>A macOS-style icon keeps a clear margin around its rounded square; the artwork, not the margin, fills the key.</summary>
@@ -236,8 +238,9 @@ public sealed class DeckKeyRendererTests : IDisposable
         var slot = new DeckSlot { Action = new DeckAction { Type = "launchApp", AppId = "app-1" } };
 
         using var image = Decode(renderer.Render(slot, false, Mk2, 0)!);
-        var corner = image[2, 2];
-        Assert.True(corner.R > 150 && corner.G < 100, $"expected the cropped artwork at the key edge, got {corner}");
+        // The 20px icon's 5px margin is cropped, so its 10px square lands at the same 82% as a margin-free icon.
+        var inset = image[(int)(Mk2.KeyPixelSize * 0.12f), Mk2.KeyPixelSize / 2];
+        Assert.True(inset.R > 150 && inset.G < 100, $"expected the cropped artwork inside the inset, got {inset}");
     }
 
     [Fact]

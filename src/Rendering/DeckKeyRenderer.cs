@@ -364,15 +364,18 @@ public sealed class DeckKeyRenderer
     /// <summary>Alpha below this is the icon's margin or drop shadow (macOS icons keep ~9% clear around the rounded square, shadow alpha peaks near 32), not artwork.</summary>
     private const byte AppIconOpaqueAlpha = 64;
 
+    /// <summary>Artwork size on the key: the Deck widget's look (a macOS icon's rounded square inside its own margin), applied uniformly whatever margin the icon ships with.</summary>
+    private const float AppIconFraction = 0.82f;
+
     /// <summary>
-    /// Fills the key face with the icon's artwork, as the Elgato app does: the
-    /// opaque bounding box is cropped out first so an icon's built-in clear
-    /// margin does not leave a visible band of key around it, then contain-
-    /// fit (object-fit: contain, DeckGrid.module.scss .appIconFull). A fully
-    /// opaque icon (Windows .ico) crops nothing.
+    /// Draws the icon's artwork at AppIconFraction of the key: the opaque
+    /// bounding box is cropped out first so a macOS icon's built-in margin
+    /// and a Windows icon's edge-to-edge art end up the same size, then
+    /// contain-fit centered on the black key.
     /// </summary>
     private static void DrawAppIcon(Image<Rgba32> image, Image<Rgba32> src, int size)
     {
+        var target = Math.Max(1, (int)MathF.Round(size * AppIconFraction));
         int minX = src.Width, minY = src.Height, maxX = -1, maxY = -1;
         src.ProcessPixelRows(accessor =>
         {
@@ -399,11 +402,11 @@ public sealed class DeckKeyRenderer
         var box = new Rectangle(minX, minY, maxX - minX + 1, maxY - minY + 1);
         if (box.Width == src.Width && box.Height == src.Height)
         {
-            DrawCentered(image, src, size / 2f, size / 2f, size);
+            DrawCentered(image, src, size / 2f, size / 2f, target);
             return;
         }
         using var cropped = src.Clone(c => c.Crop(box));
-        DrawCentered(image, cropped, size / 2f, size / 2f, size);
+        DrawCentered(image, cropped, size / 2f, size / 2f, target);
     }
 
     /// <summary>Glyph-sized centered fit, matching renderDeckKeyBitmap.ts's drawCentered.</summary>
