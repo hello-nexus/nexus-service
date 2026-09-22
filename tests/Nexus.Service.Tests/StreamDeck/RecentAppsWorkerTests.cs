@@ -134,6 +134,46 @@ public sealed class RecentAppsWorkerTests : IDisposable
     }
 
     [Fact]
+    public void FocusingAVisibleApp_HighlightsItInPlace()
+    {
+        SeedRing(("chrome", "Chrome"), ("discord", "Discord"));
+        ConnectInRecentAppsMode();
+        var chromeAtZero = _simulated.PeekKeyImage(0);
+        var callsAfterConnect = _simulated.SetKeyImageCallCount;
+
+        // Discord is on the visible page at key 1: the ring reorders (MRU) but
+        // the deck keeps its layout and only repaints discord as selected.
+        _state.UpdateRing(new RecentApp { ProcessKey = "discord", Name = "Discord" });
+        _state.SetFocused("discord");
+        _worker.RefreshView("sim-0001");
+
+        Assert.Equal(new[] { "discord", "chrome" }, _state.RingSnapshot().Select(a => a.ProcessKey));
+        Assert.Equal(chromeAtZero, _simulated.PeekKeyImage(0));
+        Assert.Equal(callsAfterConnect + 1, _simulated.SetKeyImageCallCount);
+        Assert.NotEqual(NewTestKeyRenderer().Render(
+            new Nexus.Service.Deck.DeckSlot { Label = "Discord", Action = new Nexus.Service.Deck.DeckAction { Type = "openFile" } },
+            isToggleOn: false, Mini, orientation: 0, selected: false), _simulated.PeekKeyImage(1));
+    }
+
+    [Fact]
+    public void FocusingANewApp_PushesItToTheFront()
+    {
+        SeedRing(("chrome", "Chrome"), ("discord", "Discord"));
+        ConnectInRecentAppsMode();
+        var chromeAtZero = _simulated.PeekKeyImage(0);
+        var discordAtOne = _simulated.PeekKeyImage(1);
+
+        _state.UpdateRing(new RecentApp { ProcessKey = "slack", Name = "Slack" });
+        _state.SetFocused("slack");
+        _worker.RefreshView("sim-0001");
+
+        // Slack takes key 0 (selected); chrome and discord shift right unchanged.
+        Assert.NotEqual(chromeAtZero, _simulated.PeekKeyImage(0));
+        Assert.Equal(chromeAtZero, _simulated.PeekKeyImage(1));
+        Assert.Equal(discordAtOne, _simulated.PeekKeyImage(2));
+    }
+
+    [Fact]
     public void FocusedApp_RendersDifferentlyFromUnfocusedKeys()
     {
         SeedRing(("chrome", "Chrome"), ("discord", "Discord"));

@@ -50,11 +50,17 @@ public sealed class KrakenHub : IDisposable
     // Last image pushed, stored unrotated so a rotation change can re-render it.
     private byte[]? _lastLcdFrame;
 
-    // Streaming state. Two buckets are allocated once, then alternated: the panel
-    // rejects a transfer into the bucket it is currently displaying (code 9), so a
-    // stream has to write the idle one and switch to it.
+    // Streaming state. The buckets are allocated once, then rotated: the panel rejects
+    // a transfer into the bucket it is currently displaying (code 9), so a stream has
+    // to write an idle one and switch to it.
     private bool _streamReady;
     private int _streamActiveBucket = -1;
+
+    // Three, not two. Ping-pong rewrites the bucket that just left the screen on the
+    // very next frame while the panel is still reading it, which shows as a band of
+    // decode garbage across the bottom rows. With three, a bucket sits out a full
+    // frame before it is reused.
+    private const int StreamBucketCount = 3;
 
     // Encode scratch, allocated once: a stream runs at panel rate and a per-frame buffer
     // this size would be pure garbage.
@@ -618,9 +624,9 @@ public sealed class KrakenHub : IDisposable
     }
 
     /// <summary>
-    /// Pushes one frame for a live stream, double-buffered. Allocates its two buckets on
-    /// the first call and alternates thereafter; unlike <see cref="UploadLcdImage"/> this
-    /// does not wipe the bucket table per frame, which is what makes a stream viable.
+    /// Pushes one frame for a live stream, triple-buffered. Allocates its buckets on the
+    /// first call and rotates thereafter; unlike <see cref="UploadLcdImage"/> this does
+    /// not wipe the bucket table per frame, which is what makes a stream viable.
     ///
     /// Frames arrive in capture order (BGRA); the colour swap and the rotation both ride
     /// the encode rather than costing a separate pass over 1.6 MB.
@@ -650,7 +656,7 @@ public sealed class KrakenHub : IDisposable
                     return false;
                 }
                 lcd = _lcd;
-                target = _streamActiveBucket == 0 ? 1 : 0;
+                target = (_streamActiveBucket + 1) % StreamBucketCount;
                 // Rotation rides the encode: the panel does not re-orient what it is sent.
                 encoded = EncodeLcdPayloadLocked(
                     bgra, _snapshot.LcdOrientationQuarterTurns, sourceIsBgra: true, out format);
@@ -716,7 +722,7 @@ public sealed class KrakenHub : IDisposable
         return true;
     }
 
-    /// <summary>Clears the bucket table and reserves two non-overlapping frame slots.</summary>
+    /// <summary>Clears the bucket table and reserves the stream's non-overlapping frame slots.</summary>
     private bool PrepareStreamBucketsLocked()
     {
         // Sized for a raw frame so any encoding fits, however incompressible the content.
@@ -726,7 +732,7 @@ public sealed class KrakenHub : IDisposable
         {
             ExchangeLocked(KrakenProtocol.EncodeDeleteBucket(i), 0x33, 0x02, CommandReadTimeoutMs);
         }
-        for (int bucket = 0; bucket < 2; bucket++)
+        for (int bucket = 0; bucket < StreamBucketCount; bucket++)
         {
             var setup = ExchangeLocked(
                 KrakenProtocol.EncodeSetupBucket(bucket, bucket * pages, pages), 0x33, 0x01, CommandReadTimeoutMs);
