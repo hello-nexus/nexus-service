@@ -33,7 +33,8 @@
             },
             "action": {
               "type": "hotkey",
-              "keys": "ctrl+k"
+              "keys": "ctrl+k",
+              "keysMac": "cmd+k"
             }
           },
           {
@@ -50,7 +51,8 @@
             },
             "action": {
               "type": "hotkey",
-              "keys": "ctrl+shift+a"
+              "keys": "ctrl+shift+a",
+              "keysMac": "cmd+shift+a"
             }
           },
           {
@@ -67,7 +69,8 @@
             },
             "action": {
               "type": "hotkey",
-              "keys": "ctrl+shift+t"
+              "keys": "ctrl+shift+t",
+              "keysMac": "cmd+shift+t"
             }
           },
           {
@@ -84,7 +87,8 @@
             },
             "action": {
               "type": "hotkey",
-              "keys": "ctrl+shift+m"
+              "keys": "ctrl+shift+m",
+              "keysMac": "cmd+shift+m"
             }
           },
           {
@@ -101,7 +105,8 @@
             },
             "action": {
               "type": "hotkey",
-              "keys": "ctrl+shift+k"
+              "keys": "ctrl+shift+k",
+              "keysMac": "cmd+shift+k"
             }
           },
           {
@@ -207,7 +212,8 @@
             },
             "action": {
               "type": "hotkey",
-              "keys": "ctrl+shift+h"
+              "keys": "ctrl+shift+h",
+              "keysMac": "cmd+shift+h"
             },
             "color": "#1e8449"
           },
@@ -225,7 +231,8 @@
             },
             "action": {
               "type": "hotkey",
-              "keys": "ctrl+shift+space"
+              "keys": "ctrl+shift+space",
+              "keysMac": "cmd+shift+space"
             },
             "color": "#c0392b"
           },
@@ -243,7 +250,8 @@
             },
             "action": {
               "type": "hotkey",
-              "keys": "ctrl+shift+y"
+              "keys": "ctrl+shift+y",
+              "keysMac": "cmd+shift+y"
             }
           },
           {
@@ -260,7 +268,8 @@
             },
             "action": {
               "type": "hotkey",
-              "keys": "ctrl+u"
+              "keys": "ctrl+u",
+              "keysMac": "cmd+u"
             }
           },
           {
@@ -277,7 +286,8 @@
             },
             "action": {
               "type": "hotkey",
-              "keys": "ctrl+,"
+              "keys": "ctrl+,",
+              "keysMac": "cmd+,"
             }
           }
         ]

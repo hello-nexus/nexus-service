@@ -34,7 +34,8 @@
             },
             "action": {
               "type": "hotkey",
-              "keys": "f5"
+              "keys": "f5",
+              "keysMac": "cmd+shift+enter"
             },
             "color": "#1e8449"
           },
@@ -52,7 +53,8 @@
             },
             "action": {
               "type": "hotkey",
-              "keys": "shift+f5"
+              "keys": "shift+f5",
+              "keysMac": "cmd+enter"
             }
           },
           {
@@ -157,7 +159,8 @@
             },
             "action": {
               "type": "hotkey",
-              "keys": "ctrl+l"
+              "keys": "ctrl+l",
+              "keysMac": "cmd+l"
             }
           },
           {
@@ -174,7 +177,8 @@
             },
             "action": {
               "type": "hotkey",
-              "keys": "ctrl+p"
+              "keys": "ctrl+p",
+              "keysMac": "cmd+p"
             }
           },
           {
@@ -208,7 +212,8 @@
             },
             "action": {
               "type": "hotkey",
-              "keys": "alt+f5"
+              "keys": "alt+f5",
+              "keysMac": "alt+enter"
             }
           },
           {
@@ -225,7 +230,8 @@
             },
             "action": {
               "type": "hotkey",
-              "keys": "ctrl+m"
+              "keys": "ctrl+m",
+              "keysMac": "cmd+shift+n"
             }
           },
           {
@@ -242,7 +248,8 @@
             },
             "action": {
               "type": "hotkey",
-              "keys": "ctrl+d"
+              "keys": "ctrl+d",
+              "keysMac": "cmd+d"
             }
           },
           {
@@ -259,7 +266,8 @@
             },
             "action": {
               "type": "hotkey",
-              "keys": "ctrl+z"
+              "keys": "ctrl+z",
+              "keysMac": "cmd+z"
             }
           },
           {
@@ -276,7 +284,8 @@
             },
             "action": {
               "type": "hotkey",
-              "keys": "ctrl+s"
+              "keys": "ctrl+s",
+              "keysMac": "cmd+s"
             }
           }
         ]

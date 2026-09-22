@@ -420,13 +420,15 @@ public static class DeckRoutes
                     nameTaken = true;
                     return;
                 }
+                var deck = DeckConfigNavigation.DeepCopyConfig(manifest.Deck);
+                DeckPlatformKeys.ApplyHost(deck, OperatingSystem.IsMacOS());
                 created = new DeckPreset
                 {
                     Id = DeckModesMigration.NewPresetId(),
                     Name = trimmedName,
                     Cols = System.Math.Clamp(manifest.Cols, 1, 8),
                     Rows = System.Math.Clamp(manifest.Rows, 1, 8),
-                    Deck = DeckConfigNavigation.DeepCopyConfig(manifest.Deck),
+                    Deck = deck,
                     TemplateId = isBundledTemplate ? manifest.Id : null,
                     Author = manifest.Author,
                     Version = manifest.Version,
@@ -805,13 +807,15 @@ public static class DeckRoutes
                 }
             }
 
+            var deck = DeckConfigNavigation.DeepCopyConfig(manifest.Deck);
+            DeckPlatformKeys.ApplyHost(deck, OperatingSystem.IsMacOS());
             created = new DeckPreset
             {
                 Id = DeckModesMigration.NewPresetId(),
                 Name = name,
                 Cols = manifest.Cols,
                 Rows = manifest.Rows,
-                Deck = DeckConfigNavigation.DeepCopyConfig(manifest.Deck),
+                Deck = deck,
                 Apps = apps,
                 TemplateId = templateId,
                 Author = manifest.Author,
@@ -894,7 +898,17 @@ public static class DeckRoutes
         {
             return null;
         }
-        return installed.FirstOrDefault(s => displayKeys.Contains(Nexus.Service.Lighting.AppPresetMatching.DisplayKey(s.Name)));
+        var exact = installed.FirstOrDefault(s => displayKeys.Contains(Nexus.Service.Lighting.AppPresetMatching.DisplayKey(s.Name)));
+        if (exact is not null)
+        {
+            return exact;
+        }
+        // A versioned macOS bundle name ("Adobe Photoshop 2025") is the template's display name plus a year; anything else after the prefix (Lightroom, ZoomIt, Code::Blocks) is another app.
+        return installed.FirstOrDefault(s =>
+        {
+            var key = Nexus.Service.Lighting.AppPresetMatching.DisplayKey(s.Name);
+            return displayKeys.Any(d => key.Length > d.Length && key.StartsWith(d, System.StringComparison.Ordinal) && char.IsDigit(key[d.Length]));
+        });
     }
 
     /// <summary>Strips control/reserved filename characters from a preset name for a Content-Disposition download name; "preset" if nothing usable remains.</summary>

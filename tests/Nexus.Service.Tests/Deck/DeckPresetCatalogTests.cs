@@ -100,6 +100,11 @@ public sealed class DeckPresetCatalogTests
             if (action.Type == "hotkey")
             {
                 Assert.True(DeckActionExecutor.ParseHotkey(action.Keys ?? "") is not null, $"{id}: unparseable hotkey '{action.Keys}'");
+                if (action.KeysMac is not null)
+                {
+                    Assert.True(DeckActionExecutor.ParseHotkey(action.KeysMac) is not null, $"{id}: unparseable keysMac '{action.KeysMac}'");
+                    Assert.NotEqual(action.Keys, action.KeysMac);
+                }
             }
             if (action.Type == "hotkeySwitch")
             {

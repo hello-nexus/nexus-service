@@ -32,6 +32,8 @@ public sealed class DeckAction
     public DeckNexusAction? NexusAction { get; set; }
 
     public string? Keys { get; set; }
+    /// <summary>Package-only: the macOS combo for Keys (cmd where Windows uses ctrl); DeckPlatformKeys folds it into Keys when a template is instantiated or a package imported, so a stored preset carries one combo.</summary>
+    public string? KeysMac { get; set; }
     /// <summary>text: always pastes immediately (clipboard set + paste chord injection).</summary>
     public string? Text { get; set; }
 

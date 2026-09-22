@@ -187,7 +187,8 @@
             },
             "action": {
               "type": "hotkey",
-              "keys": "ctrl+k"
+              "keys": "ctrl+k",
+              "keysMac": "cmd+k"
             }
           },
           {
@@ -222,7 +223,8 @@
             },
             "action": {
               "type": "hotkey",
-              "keys": "ctrl+z"
+              "keys": "ctrl+z",
+              "keysMac": "cmd+z"
             }
           },
           {
@@ -239,7 +241,8 @@
             },
             "action": {
               "type": "hotkey",
-              "keys": "ctrl+shift+z"
+              "keys": "ctrl+shift+z",
+              "keysMac": "cmd+shift+z"
             }
           },
           {
@@ -256,7 +259,8 @@
             },
             "action": {
               "type": "hotkey",
-              "keys": "ctrl+s"
+              "keys": "ctrl+s",
+              "keysMac": "cmd+s"
             }
           },
           {
@@ -273,7 +277,8 @@
             },
             "action": {
               "type": "hotkey",
-              "keys": "ctrl+m"
+              "keys": "ctrl+m",
+              "keysMac": "cmd+m"
             }
           }
         ]

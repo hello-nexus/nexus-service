@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
+using System.IO.Compression;
 using System.Net;
 using System.Net.Http;
 using System.Net.Http.Headers;
@@ -130,6 +131,86 @@ public sealed class DeckTemplatesRoutesTests : IClassFixture<DeckTemplatesHostFa
             using var doc = JsonDocument.Parse(await res.Content.ReadAsStringAsync());
             var spotify = FindTemplate(doc, "spotify");
             Assert.Equal("s2", spotify.GetProperty("installedAppId").GetString());
+        }
+    }
+
+    [Fact]
+    public async Task GetTemplates_VersionedMacBundleName_ResolvesByDisplayNamePrefix()
+    {
+        _host.Shortcuts.All.Add(new Shortcut { Id = "s3", Name = "Adobe Photoshop 2025", Path = "/Applications/Adobe Photoshop 2025.app", ProcessName = "Adobe Photoshop 2025" });
+        _host.Shortcuts.All.Add(new Shortcut { Id = "s4", Name = "zoom.us", Path = "/Applications/zoom.us.app", ProcessName = "zoom.us" });
+        var (factory, client) = Boot();
+        using (factory)
+        {
+            var res = await client.GetAsync("/deck/templates");
+            using var doc = JsonDocument.Parse(await res.Content.ReadAsStringAsync());
+            Assert.Equal("s3", FindTemplate(doc, "photoshop").GetProperty("installedAppId").GetString());
+            Assert.Equal("s4", FindTemplate(doc, "zoom").GetProperty("installedAppId").GetString());
+        }
+    }
+
+    [Fact]
+    public async Task GetTemplates_AnotherAppSharingThePrefix_DoesNotResolve()
+    {
+        _host.Shortcuts.All.Add(new Shortcut { Id = "s5", Name = "Adobe Photoshop Lightroom Classic", Path = "", ProcessName = "Lightroom" });
+        _host.Shortcuts.All.Add(new Shortcut { Id = "s6", Name = "ZoomIt", Path = "", ProcessName = "zoomit64" });
+        _host.Shortcuts.All.Add(new Shortcut { Id = "s7", Name = "Code::Blocks", Path = "", ProcessName = "codeblocks" });
+        var (factory, client) = Boot();
+        using (factory)
+        {
+            var res = await client.GetAsync("/deck/templates");
+            using var doc = JsonDocument.Parse(await res.Content.ReadAsStringAsync());
+            Assert.False(FindTemplate(doc, "photoshop").TryGetProperty("installedAppId", out _));
+            Assert.False(FindTemplate(doc, "zoom").TryGetProperty("installedAppId", out _));
+            Assert.False(FindTemplate(doc, "vscode").TryGetProperty("installedAppId", out _));
+        }
+    }
+
+    [Fact]
+    public async Task Import_PackageWithKeysMac_FoldsItForTheHostAndStripsIt()
+    {
+        const string presetJson = """
+{"format":1,"id":"pkg","name":"Pkg","cols":1,"rows":1,"deck":{"pages":[{"slots":[
+  {"label":"Mute","action":{"type":"hotkey","keys":"ctrl+shift+m","keysMac":"cmd+shift+m"}}]}]}}
+""";
+        using var zipStream = new MemoryStream();
+        using (var zip = new ZipArchive(zipStream, ZipArchiveMode.Create, leaveOpen: true))
+        {
+            using var entry = zip.CreateEntry("preset.json").Open();
+            entry.Write(Encoding.UTF8.GetBytes(presetJson));
+        }
+        var (factory, client) = Boot();
+        using (factory)
+        {
+            var res = await client.PostAsync("/deck/presets/import?allowPrivileged=1", new ByteArrayContent(zipStream.ToArray())
+            {
+                Headers = { ContentType = new MediaTypeHeaderValue("application/zip") },
+            });
+            Assert.Equal(HttpStatusCode.OK, res.StatusCode);
+            var body = await res.Content.ReadAsStringAsync();
+            Assert.DoesNotContain("keysMac", body);
+            using var doc = JsonDocument.Parse(body);
+            var keys = doc.RootElement.GetProperty("preset").GetProperty("deck").GetProperty("pages")[0].GetProperty("slots")[0]
+                .GetProperty("action").GetProperty("keys").GetString();
+            Assert.Equal(OperatingSystem.IsMacOS() ? "cmd+shift+m" : "ctrl+shift+m", keys);
+        }
+    }
+
+    [Fact]
+    public async Task CreateFromTemplate_StoresOneComboPerKey_NeverKeysMac()
+    {
+        var (factory, client) = Boot();
+        using (factory)
+        {
+            var res = await client.PostAsync("/deck/presets",
+                new StringContent("{\"templateId\":\"discord\"}", Encoding.UTF8, "application/json"));
+            Assert.Equal(HttpStatusCode.OK, res.StatusCode);
+            var body = await res.Content.ReadAsStringAsync();
+            Assert.DoesNotContain("keysMac", body);
+            using var doc = JsonDocument.Parse(body);
+            var mute = doc.RootElement.GetProperty("preset").GetProperty("deck").GetProperty("pages")[0].GetProperty("slots")[0]
+                .GetProperty("action").GetProperty("keys").GetString();
+            Assert.Equal(OperatingSystem.IsMacOS() ? "cmd+shift+m" : "ctrl+shift+m", mute);
         }
     }
 

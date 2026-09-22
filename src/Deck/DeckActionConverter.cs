@@ -64,6 +64,10 @@ public sealed class DeckActionConverter : JsonConverter<DeckAction>
         {
             action.Keys = keysEl.GetString();
         }
+        if (root.TryGetProperty("keysMac", out var keysMacEl) && keysMacEl.ValueKind == JsonValueKind.String)
+        {
+            action.KeysMac = keysMacEl.GetString();
+        }
         if (root.TryGetProperty("text", out var textEl) && textEl.ValueKind == JsonValueKind.String)
         {
             action.Text = textEl.GetString();
@@ -222,6 +226,10 @@ public sealed class DeckActionConverter : JsonConverter<DeckAction>
         if (value.Keys is not null)
         {
             writer.WriteString("keys", value.Keys);
+        }
+        if (value.KeysMac is not null)
+        {
+            writer.WriteString("keysMac", value.KeysMac);
         }
         if (value.Text is not null)
         {
