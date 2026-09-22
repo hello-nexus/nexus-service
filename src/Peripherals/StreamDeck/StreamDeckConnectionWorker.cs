@@ -249,6 +249,8 @@ public sealed class StreamDeckConnectionWorker : BackgroundService, IDeckSurface
 
     /// <summary>Per "{serial}:{keyIndex}" last-pushed Recent Apps key hash (0 reserved for a blank/cleared key), gating both the HID write and the tile broadcast - unlike monitoring, a Recent Apps key's content only changes when the ring does, so one hash serves both.</summary>
     private readonly Dictionary<string, uint> _recentAppsLastHash = new(StringComparer.Ordinal);
+    /// <summary>Each deck's Recent Apps display order (process keys) and the focus it was laid out for, so a change only reorders when RecentAppsTracker.StableOrder says so. Guarded by _lock.</summary>
+    private readonly Dictionary<string, (List<string> Order, string? Focused)> _recentAppsOrderBySerial = new(StringComparer.Ordinal);
 
     private readonly TimeProvider _clock;
     private readonly SessionLockListener? _sessionLock;
@@ -1335,9 +1337,7 @@ public sealed class StreamDeckConnectionWorker : BackgroundService, IDeckSurface
     private void HandleRecentAppsKeyDown(IStreamDeckSurface surface, int physicalIndex)
     {
         var serial = surface.Serial;
-        var ring = _recentAppsState?.RingSnapshot() ?? new List<RecentApp>();
-        var pages = Nexus.Service.Deck.RecentAppsTracker.BuildView(
-            ring, _recentAppsState?.FocusedProcessKey, surface.Model.Columns, surface.Model.Rows);
+        var pages = RecentAppsPagesLocked(serial, surface.Model.Columns, surface.Model.Rows);
         var pageCount = Math.Max(pages.Count, 1);
         var page = Math.Clamp(GetCurrentPageLocked(serial), 0, pageCount - 1);
         var keys = page < pages.Count ? pages[page] : new List<Nexus.Service.Deck.RecentKey>();
@@ -1367,6 +1367,7 @@ public sealed class StreamDeckConnectionWorker : BackgroundService, IDeckSurface
             return;
         }
 
+        var ring = _recentAppsState?.RingSnapshot() ?? new List<RecentApp>();
         var entry = ring.Find(a => a.ProcessKey == key.ProcessKey) ?? new RecentApp
         {
             ProcessKey = key.ProcessKey,
@@ -2443,6 +2444,7 @@ public sealed class StreamDeckConnectionWorker : BackgroundService, IDeckSurface
         InvalidateMonitoringHashesForSerial(serial);
         InvalidateTileBroadcastHashesForSerial(serial);
         InvalidateRecentAppsHashesForSerial(serial);
+        _recentAppsOrderBySerial.Remove(serial);
     }
 
     /// <summary>Drops last-pushed Recent Apps key hashes for this serial, so a disconnect/mode re-entry (or a real view change) never skips a repaint on a coincidental hash match left over from a previous session.</summary>
@@ -2738,9 +2740,7 @@ public sealed class StreamDeckConnectionWorker : BackgroundService, IDeckSurface
             InvalidateRecentAppsHashesForSerial(serial);
         }
         _store.Load().StreamDeck.Decks.TryGetValue(serial, out var deck);
-        var ring = _recentAppsState?.RingSnapshot() ?? new List<RecentApp>();
-        var pages = Nexus.Service.Deck.RecentAppsTracker.BuildView(
-            ring, _recentAppsState?.FocusedProcessKey, surface.Model.Columns, surface.Model.Rows);
+        var pages = RecentAppsPagesLocked(serial, surface.Model.Columns, surface.Model.Rows);
 
         var pageCount = Math.Max(pages.Count, 1);
         var page = Math.Clamp(GetCurrentPageLocked(serial), 0, pageCount - 1);
@@ -2854,9 +2854,23 @@ public sealed class StreamDeckConnectionWorker : BackgroundService, IDeckSurface
     private int RecentAppsPageCountLocked(string serial)
     {
         var (cols, rows) = ResolveGridLocked(serial);
+        return Math.Max(RecentAppsPagesLocked(serial, cols, rows).Count, 1);
+    }
+
+    /// <summary>
+    /// The deck's Recent Apps pages from the live ring and focus, through its
+    /// own kept display order (RecentAppsTracker.StableOrder against the
+    /// tracked page), which this call advances. Caller must hold _lock.
+    /// </summary>
+    private List<List<Nexus.Service.Deck.RecentKey>> RecentAppsPagesLocked(string serial, int cols, int rows)
+    {
         var ring = _recentAppsState?.RingSnapshot() ?? new List<RecentApp>();
-        var pages = Nexus.Service.Deck.RecentAppsTracker.BuildView(ring, _recentAppsState?.FocusedProcessKey, cols, rows);
-        return Math.Max(pages.Count, 1);
+        var focused = _recentAppsState?.FocusedProcessKey;
+        var hasPrevious = _recentAppsOrderBySerial.TryGetValue(serial, out var previous);
+        var ordered = Nexus.Service.Deck.RecentAppsTracker.StableOrder(
+            ring, hasPrevious ? previous.Order : null, previous.Focused, focused, cols, rows, GetCurrentPageLocked(serial));
+        _recentAppsOrderBySerial[serial] = (ordered.ConvertAll(a => a.ProcessKey), focused);
+        return Nexus.Service.Deck.RecentAppsTracker.Paginate(ordered, focused, cols, rows);
     }
 
     /// <summary>

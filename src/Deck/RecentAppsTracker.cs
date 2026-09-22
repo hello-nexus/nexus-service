@@ -79,20 +79,15 @@ public static class RecentAppsTracker
     }
 
     /// <summary>
-    /// Lays the ring out onto cols x rows keys: focused entry first (if it
-    /// resolves in the ring) rendered with Focused=true, then the rest in MRU
-    /// order. A view that fits in one page pads with blank keys; an
-    /// overflowing one paginates with FitToGrid-style next/prev reservations,
-    /// capped at MaxPages - entries beyond the cap are dropped.
+    /// The stateless layout: focused entry first (if it resolves in the ring)
+    /// rendered with Focused=true, then the rest in MRU order, paginated by
+    /// Paginate. Viewers that keep their own order use StableOrder + Paginate.
     /// </summary>
-    public static List<List<RecentKey>> BuildView(IReadOnlyList<RecentApp> ring, string? focusedProcessKey, int cols, int rows)
-    {
-        var targetKeyCount = cols * rows;
-        if (targetKeyCount <= 0)
-        {
-            return new List<List<RecentKey>>();
-        }
+    public static List<List<RecentKey>> BuildView(IReadOnlyList<RecentApp> ring, string? focusedProcessKey, int cols, int rows) =>
+        Paginate(FocusedFirst(ring, focusedProcessKey), focusedProcessKey, cols, rows);
 
+    private static List<RecentApp> FocusedFirst(IReadOnlyList<RecentApp> ring, string? focusedProcessKey)
+    {
         var focused = focusedProcessKey is null ? null : ring.FirstOrDefault(a => a.ProcessKey == focusedProcessKey);
         var ordered = new List<RecentApp>(ring.Count);
         if (focused is not null)
@@ -107,6 +102,81 @@ public static class RecentAppsTracker
             }
             ordered.Add(app);
         }
+        return ordered;
+    }
+
+    /// <summary>
+    /// One viewer's display order, kept stable across focus changes: an app
+    /// already visible on the viewer's current page only gets the focused
+    /// treatment, while a newly seen app, or one sitting on a page the viewer
+    /// is not showing, moves to the front. previousOrder is the viewer's last
+    /// result (process keys; null on first build, which is BuildView's
+    /// focused-first MRU order) and previousFocused the focus it was built
+    /// for: the visibility rule runs only when the focus actually changed, so
+    /// a page turn never shuffles the page the viewer just left. Entries gone
+    /// from the ring drop out, ring entries it lacks join at the front in ring
+    /// order. Same inputs give the same order, so repeat calls are no-ops.
+    /// </summary>
+    public static List<RecentApp> StableOrder(IReadOnlyList<RecentApp> ring, IReadOnlyList<string>? previousOrder, string? previousFocused, string? focusedProcessKey, int cols, int rows, int currentPage)
+    {
+        if (previousOrder is null)
+        {
+            return FocusedFirst(ring, focusedProcessKey);
+        }
+        var byKey = new Dictionary<string, RecentApp>(StringComparer.Ordinal);
+        foreach (var app in ring)
+        {
+            byKey.TryAdd(app.ProcessKey, app);
+        }
+        var kept = new List<RecentApp>();
+        var seen = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var key in previousOrder)
+        {
+            if (byKey.TryGetValue(key, out var app) && seen.Add(key))
+            {
+                kept.Add(app);
+            }
+        }
+        var ordered = new List<RecentApp>(ring.Count);
+        foreach (var app in ring)
+        {
+            if (!seen.Contains(app.ProcessKey))
+            {
+                ordered.Add(app);
+            }
+        }
+        ordered.AddRange(kept);
+
+        if (focusedProcessKey is null || focusedProcessKey == previousFocused || !byKey.ContainsKey(focusedProcessKey))
+        {
+            return ordered;
+        }
+        var pages = Paginate(ordered, focusedProcessKey, cols, rows);
+        var page = Math.Clamp(currentPage, 0, Math.Max(pages.Count - 1, 0));
+        if (page < pages.Count && pages[page].Any(k => k.Kind == "app" && k.ProcessKey == focusedProcessKey))
+        {
+            return ordered;
+        }
+        var focusedIndex = ordered.FindIndex(a => a.ProcessKey == focusedProcessKey);
+        var focusedApp = ordered[focusedIndex];
+        ordered.RemoveAt(focusedIndex);
+        ordered.Insert(0, focusedApp);
+        return ordered;
+    }
+
+    /// <summary>
+    /// Lays an already-ordered list onto cols x rows keys, marking the focused
+    /// entry: one padded page when it fits, else FitToGrid-style pages with
+    /// next/prev reservations, capped at MaxPages (entries beyond it dropped).
+    /// </summary>
+    public static List<List<RecentKey>> Paginate(IReadOnlyList<RecentApp> ordered, string? focusedProcessKey, int cols, int rows)
+    {
+        var targetKeyCount = cols * rows;
+        if (targetKeyCount <= 0)
+        {
+            return new List<List<RecentKey>>();
+        }
+        var focused = focusedProcessKey is null ? null : ordered.FirstOrDefault(a => a.ProcessKey == focusedProcessKey);
 
         if (ordered.Count <= targetKeyCount)
         {

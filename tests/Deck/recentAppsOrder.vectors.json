@@ -1,0 +1,350 @@
+{
+  "description": "Shared StableOrder test vectors for nexus-service (RecentAppsTracker.StableOrder) and nexus-web (recentAppsView.ts stableRecentAppsOrder). ring is in MRU order (index 0 = most recently focused); previousOrder is the viewer's last display order (null on first build) and previousFocused the focus it was built for; expected is the resulting display order. Copied verbatim between both repos; do not hand-edit one copy without the other.",
+  "cases": [
+    {
+      "name": "first_build_is_focused_first_mru",
+      "cols": 3,
+      "rows": 2,
+      "currentPage": 0,
+      "previousFocused": null,
+      "focusedProcessKey": "b",
+      "ring": [
+        "a",
+        "b",
+        "c"
+      ],
+      "previousOrder": null,
+      "expected": [
+        "b",
+        "a",
+        "c"
+      ]
+    },
+    {
+      "name": "focused_app_visible_on_current_page_keeps_order",
+      "cols": 3,
+      "rows": 2,
+      "currentPage": 0,
+      "previousFocused": "a",
+      "focusedProcessKey": "c",
+      "ring": [
+        "c",
+        "a",
+        "b"
+      ],
+      "previousOrder": [
+        "a",
+        "b",
+        "c"
+      ],
+      "expected": [
+        "a",
+        "b",
+        "c"
+      ]
+    },
+    {
+      "name": "new_app_moves_to_the_front",
+      "cols": 3,
+      "rows": 2,
+      "currentPage": 0,
+      "previousFocused": "c",
+      "focusedProcessKey": "d",
+      "ring": [
+        "d",
+        "a",
+        "b",
+        "c"
+      ],
+      "previousOrder": [
+        "a",
+        "b",
+        "c"
+      ],
+      "expected": [
+        "d",
+        "a",
+        "b",
+        "c"
+      ]
+    },
+    {
+      "name": "focused_app_on_another_page_moves_to_the_front",
+      "cols": 3,
+      "rows": 2,
+      "currentPage": 0,
+      "previousFocused": "a",
+      "focusedProcessKey": "g",
+      "ring": [
+        "g",
+        "a",
+        "b",
+        "c",
+        "d",
+        "e",
+        "f"
+      ],
+      "previousOrder": [
+        "a",
+        "b",
+        "c",
+        "d",
+        "e",
+        "f",
+        "g"
+      ],
+      "expected": [
+        "g",
+        "a",
+        "b",
+        "c",
+        "d",
+        "e",
+        "f"
+      ]
+    },
+    {
+      "name": "focused_app_visible_on_the_second_page_keeps_order",
+      "cols": 3,
+      "rows": 2,
+      "currentPage": 1,
+      "previousFocused": "a",
+      "focusedProcessKey": "g",
+      "ring": [
+        "g",
+        "a",
+        "b",
+        "c",
+        "d",
+        "e",
+        "f"
+      ],
+      "previousOrder": [
+        "a",
+        "b",
+        "c",
+        "d",
+        "e",
+        "f",
+        "g"
+      ],
+      "expected": [
+        "a",
+        "b",
+        "c",
+        "d",
+        "e",
+        "f",
+        "g"
+      ]
+    },
+    {
+      "name": "front_app_focused_while_viewing_page_two_stays_put",
+      "cols": 3,
+      "rows": 2,
+      "currentPage": 1,
+      "previousFocused": "g",
+      "focusedProcessKey": "a",
+      "ring": [
+        "a",
+        "b",
+        "c",
+        "d",
+        "e",
+        "f",
+        "g"
+      ],
+      "previousOrder": [
+        "a",
+        "b",
+        "c",
+        "d",
+        "e",
+        "f",
+        "g"
+      ],
+      "expected": [
+        "a",
+        "b",
+        "c",
+        "d",
+        "e",
+        "f",
+        "g"
+      ]
+    },
+    {
+      "name": "apps_gone_from_the_ring_drop_out",
+      "cols": 3,
+      "rows": 2,
+      "currentPage": 0,
+      "previousFocused": "a",
+      "focusedProcessKey": "c",
+      "ring": [
+        "c",
+        "a"
+      ],
+      "previousOrder": [
+        "a",
+        "b",
+        "c"
+      ],
+      "expected": [
+        "a",
+        "c"
+      ]
+    },
+    {
+      "name": "focus_outside_the_ring_changes_nothing",
+      "cols": 3,
+      "rows": 2,
+      "currentPage": 0,
+      "previousFocused": "a",
+      "focusedProcessKey": "zzz",
+      "ring": [
+        "a",
+        "b",
+        "c"
+      ],
+      "previousOrder": [
+        "c",
+        "b",
+        "a"
+      ],
+      "expected": [
+        "c",
+        "b",
+        "a"
+      ]
+    },
+    {
+      "name": "unfocused_newcomers_join_the_front_in_ring_order",
+      "cols": 3,
+      "rows": 2,
+      "currentPage": 0,
+      "previousFocused": null,
+      "focusedProcessKey": null,
+      "ring": [
+        "x",
+        "y",
+        "a",
+        "b"
+      ],
+      "previousOrder": [
+        "b",
+        "a"
+      ],
+      "expected": [
+        "x",
+        "y",
+        "b",
+        "a"
+      ]
+    },
+    {
+      "name": "repeat_call_is_a_no_op",
+      "cols": 3,
+      "rows": 2,
+      "currentPage": 0,
+      "previousFocused": "g",
+      "focusedProcessKey": "g",
+      "ring": [
+        "g",
+        "a",
+        "b",
+        "c",
+        "d",
+        "e",
+        "f"
+      ],
+      "previousOrder": [
+        "g",
+        "a",
+        "b",
+        "c",
+        "d",
+        "e",
+        "f"
+      ],
+      "expected": [
+        "g",
+        "a",
+        "b",
+        "c",
+        "d",
+        "e",
+        "f"
+      ]
+    },
+    {
+      "name": "page_turn_with_unchanged_focus_never_reorders",
+      "cols": 3,
+      "rows": 2,
+      "currentPage": 1,
+      "previousFocused": "c",
+      "focusedProcessKey": "c",
+      "ring": [
+        "c",
+        "a",
+        "b",
+        "d",
+        "e",
+        "f",
+        "g"
+      ],
+      "previousOrder": [
+        "a",
+        "b",
+        "c",
+        "d",
+        "e",
+        "f",
+        "g"
+      ],
+      "expected": [
+        "a",
+        "b",
+        "c",
+        "d",
+        "e",
+        "f",
+        "g"
+      ]
+    },
+    {
+      "name": "refocus_after_desktop_applies_the_rule",
+      "cols": 3,
+      "rows": 2,
+      "currentPage": 0,
+      "previousFocused": null,
+      "focusedProcessKey": "g",
+      "ring": [
+        "g",
+        "a",
+        "b",
+        "c",
+        "d",
+        "e",
+        "f"
+      ],
+      "previousOrder": [
+        "a",
+        "b",
+        "c",
+        "d",
+        "e",
+        "f",
+        "g"
+      ],
+      "expected": [
+        "g",
+        "a",
+        "b",
+        "c",
+        "d",
+        "e",
+        "f"
+      ]
+    }
+  ]
+}
