@@ -10,7 +10,8 @@
       "code"
     ],
     "displayNames": [
-      "Visual Studio Code"
+      "Visual Studio Code",
+      "Code"
     ]
   },
   "cols": 5,
@@ -33,7 +34,8 @@
             },
             "action": {
               "type": "hotkey",
-              "keys": "ctrl+shift+p"
+              "keys": "ctrl+shift+p",
+              "keysMac": "cmd+shift+p"
             }
           },
           {
@@ -50,7 +52,8 @@
             },
             "action": {
               "type": "hotkey",
-              "keys": "ctrl+p"
+              "keys": "ctrl+p",
+              "keysMac": "cmd+p"
             }
           },
           {
@@ -84,7 +87,8 @@
             },
             "action": {
               "type": "hotkey",
-              "keys": "ctrl+b"
+              "keys": "ctrl+b",
+              "keysMac": "cmd+b"
             }
           },
           {
@@ -101,7 +105,8 @@
             },
             "action": {
               "type": "hotkey",
-              "keys": "ctrl+shift+f"
+              "keys": "ctrl+shift+f",
+              "keysMac": "cmd+shift+f"
             }
           },
           {
@@ -154,7 +159,8 @@
             },
             "action": {
               "type": "hotkey",
-              "keys": "ctrl+/"
+              "keys": "ctrl+/",
+              "keysMac": "cmd+/"
             }
           },
           {
@@ -205,7 +211,8 @@
             },
             "action": {
               "type": "hotkey",
-              "keys": "ctrl+shift+e"
+              "keys": "ctrl+shift+e",
+              "keysMac": "cmd+shift+e"
             }
           },
           {
@@ -239,7 +246,8 @@
             },
             "action": {
               "type": "hotkey",
-              "keys": "ctrl+shift+x"
+              "keys": "ctrl+shift+x",
+              "keysMac": "cmd+shift+x"
             }
           },
           {
@@ -256,7 +264,8 @@
             },
             "action": {
               "type": "hotkey",
-              "keys": "ctrl+shift+m"
+              "keys": "ctrl+shift+m",
+              "keysMac": "cmd+shift+m"
             }
           },
           {
@@ -273,7 +282,8 @@
             },
             "action": {
               "type": "hotkey",
-              "keys": "ctrl+,"
+              "keys": "ctrl+,",
+              "keysMac": "cmd+,"
             }
           }
         ]
