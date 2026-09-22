@@ -157,7 +157,8 @@ internal static class ServiceControlRoutes
             // uses).
             Nexus.Service.Lifecycle.UserHelperBootstrapper.LaunchOpenApp();
 #elif MACOS
-            Nexus.Service.Platform.Mac.MacAppWindow.OpenOrFocus(Nexus.Service.Platform.ServiceLaunchIntent.LocalDashboardUrl(0));
+            // Focus only when a window exists (Windows parity - no reload).
+            Nexus.Service.Platform.Mac.MacAppWindow.OpenOrFocus(Nexus.Service.Platform.ServiceLaunchIntent.LocalDashboardUrl(0), navigateIfOpen: false);
 #elif LINUX
             Nexus.Service.Platform.Linux.LinuxBrowsers.OpenUrl(Nexus.Service.Platform.ServiceLaunchIntent.LocalDashboardUrl(0));
 #endif

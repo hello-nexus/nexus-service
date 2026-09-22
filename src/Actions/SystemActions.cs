@@ -420,7 +420,11 @@ public sealed class SystemActions
 #if MACOS
         if (OperatingSystem.IsMacOS())
         {
-            Nexus.Service.Platform.Mac.MacAppWindow.OpenOrFocus(Nexus.Service.Platform.ServiceLaunchIntent.LocalDashboardUrl(0));
+            // navigateIfOpen: false - an open window is only brought forward,
+            // as on Windows. A reload here would race the live 'editRequest'
+            // frame a blank-key hold sends first, throwing the page back to
+            // the dashboard root after it had already navigated to the editor.
+            Nexus.Service.Platform.Mac.MacAppWindow.OpenOrFocus(Nexus.Service.Platform.ServiceLaunchIntent.LocalDashboardUrl(0), navigateIfOpen: false);
         }
 #endif
 #if LINUX
