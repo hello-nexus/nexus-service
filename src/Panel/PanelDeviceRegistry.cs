@@ -386,6 +386,46 @@ public sealed class PanelDeviceRegistry
         return result;
     }
 
+    /// <summary>
+    /// Drops every placement of one widget type from every panel record and
+    /// returns the ids that changed, so an uninstall reaches panels holding the
+    /// app rather than waiting on each client's own reconcile.
+    /// </summary>
+    public IReadOnlyList<string> RemoveWidgetType(string widgetType)
+    {
+        if (string.IsNullOrWhiteSpace(widgetType)) return Array.Empty<string>();
+        // Probed before Update, which marks settings dirty and fans out to every
+        // subscriber even when the mutator changes nothing.
+        if (!_store.Load().PanelDevices.Values.Any(r => HasWidgetType(r, widgetType)))
+            return Array.Empty<string>();
+
+        var changed = new List<string>();
+        _store.Update(s =>
+        {
+            changed.Clear();
+            foreach (var record in s.PanelDevices.Values)
+            {
+                if (record.Layout is null) continue;
+                var removed = 0;
+                foreach (var page in record.Layout.Pages)
+                    removed += page.Widgets.RemoveAll(w => string.Equals(w.Type, widgetType, StringComparison.Ordinal));
+                if (removed == 0) continue;
+                var mark = record.Layout.ImmersiveOnLoadWidgetId;
+                if (!string.IsNullOrEmpty(mark)
+                    && !record.Layout.Pages.Any(p => p.Widgets.Any(w => string.Equals(w.Id, mark, StringComparison.Ordinal))))
+                {
+                    record.Layout.ImmersiveOnLoadWidgetId = null;
+                }
+                changed.Add(record.Id);
+            }
+        });
+        return changed;
+    }
+
+    private static bool HasWidgetType(PanelDeviceRecord record, string widgetType)
+        => record.Layout is not null
+           && record.Layout.Pages.Any(p => p.Widgets.Any(w => string.Equals(w.Type, widgetType, StringComparison.Ordinal)));
+
     private static PanelDeviceRecord? FindNewestY70(NexusSettings settings)
     {
         PanelDeviceRecord? newest = null;

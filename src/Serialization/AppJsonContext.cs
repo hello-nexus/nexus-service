@@ -739,6 +739,7 @@ namespace Nexus.Service.Serialization;
 [JsonSerializable(typeof(DevicesSeenCloudBody))]
 [JsonSerializable(typeof(Nexus.Service.Models.Panel.MappingAutoAppliedFrame))]
 [JsonSerializable(typeof(Nexus.Service.Models.Panel.AppAutoInstalledFrame))]
+[JsonSerializable(typeof(Nexus.Service.Models.Panel.AppsChangedFrame))]
 
 // Smart (network) lights
 [JsonSerializable(typeof(Nexus.Service.Models.SmartLights.SmartLightDto))]

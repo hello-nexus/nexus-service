@@ -8,9 +8,11 @@ using Microsoft.AspNetCore.Routing;
 using Nexus.Service.Auth;
 using Nexus.Service.Models;
 using Nexus.Service.Models.Widgets;
+using Nexus.Service.Panel;
 using Nexus.Service.Persistence;
 using Nexus.Service.Sensors;
 using Nexus.Service.Serialization;
+using Nexus.Service.Sockets;
 using Nexus.Service.Widgets;
 
 namespace Nexus.Service.Routes;
@@ -105,9 +107,10 @@ public static class AppRoutes
             return Results.Json(installer.Catalogue(), AppJsonContext.Default.AppCatalogResponse);
         }).AllowPanel();
 
-        app.MapPost("/apps-api/install", (AppInstallRequest body, AppInstaller installer) =>
+        app.MapPost("/apps-api/install", (AppInstallRequest body, AppInstaller installer, MultiplexHub hub) =>
         {
             var result = installer.Install(body.Id ?? "");
+            if (result.Error is null) PanelTopics.BroadcastAppsChanged(hub);
             return Results.Json(result, AppJsonContext.Default.AppInstallResponse);
         }).AllowPanel();
 
@@ -164,7 +167,7 @@ public static class AppRoutes
             async (StoreInstallRequest body, Nexus.Service.Store.StoreEntitlements entitlements,
                    Nexus.Service.Store.StoreInstaller installer,
                    Nexus.Service.Store.HardwareAppCatalog hardware,
-                   IConfigStore store, HttpContext http, CancellationToken ct) =>
+                   IConfigStore store, MultiplexHub hub, HttpContext http, CancellationToken ct) =>
         {
             var appId = body.AppId ?? "";
             var auth = await entitlements.AuthorizeAsync(
@@ -210,6 +213,7 @@ public static class AppRoutes
                     if (!s.AutoInstalledApps.Contains(appId)) s.AutoInstalledApps.Add(appId);
                 });
             }
+            if (result.Ok) PanelTopics.BroadcastAppsChanged(hub);
             return Results.Json(result, AppJsonContext.Default.StoreInstallResponse);
         }).AllowPanel();
 
@@ -221,7 +225,8 @@ public static class AppRoutes
             return Results.Json(library, AppJsonContext.Default.StoreLibraryResponse);
         }).AllowPanel();
 
-        app.MapPost("/apps-api/uninstall", (AppInstallRequest body, AppInstaller installer, IConfigStore store) =>
+        app.MapPost("/apps-api/uninstall", (AppInstallRequest body, AppInstaller installer, IConfigStore store,
+                                            AppRegistry registry, PanelDeviceRegistry panels, MultiplexHub hub) =>
         {
             var id = body.Id ?? "";
             var result = installer.Uninstall(id);
@@ -236,6 +241,18 @@ public static class AppRoutes
                     s.AutoInstalledApps.Remove(id);
                     if (!s.UserRemovedApps.Contains(id)) s.UserRemovedApps.Add(id);
                 });
+            }
+            if (result.Error is null)
+            {
+                // Uninstall reports success when it removed no user copy, and a
+                // bundled copy of the same id stays installed - so the registry,
+                // not the response, says whether the placements are now dead.
+                if (!registry.TryGet(id, out _))
+                {
+                    foreach (var deviceId in panels.RemoveWidgetType(WidgetSettingsService.AppTypePrefix + id))
+                        PanelTopics.BroadcastPanelDevice(hub, deviceId);
+                }
+                PanelTopics.BroadcastAppsChanged(hub);
             }
             return Results.Json(result, AppJsonContext.Default.AppInstallResponse);
         }).AllowPanel();

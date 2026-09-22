@@ -303,6 +303,15 @@ public sealed class AppAutoInstalledFrame
     public bool Placed { get; set; }
 }
 
+/// <summary>
+/// The installed-app set changed. A subscriber reloads its app registry before
+/// re-reading a layout: a placement it cannot resolve renders as nothing.
+/// </summary>
+public sealed class AppsChangedFrame
+{
+    public long Revision { get; set; }
+}
+
 public sealed class CoolingChangedFrame
 {
     public long Revision { get; set; }

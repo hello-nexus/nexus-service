@@ -164,6 +164,22 @@ public static class PanelTopics
         _ = hub.BroadcastTopicAsync(AppAutoInstalled, env);
     }
 
+    /// <summary>
+    /// Every install and uninstall, including the user's own; subscribers
+    /// reload their app registry, then refetch. <see cref="AppAutoInstalled"/>
+    /// stays the toast-bearing announcement of an install nobody asked for.
+    /// </summary>
+    public const string AppsChanged = "apps/changed";
+
+    public static void BroadcastAppsChanged(MultiplexHub hub)
+    {
+        if (!hub.TopicHasSubscribers(AppsChanged))
+            return;
+        var frame = new AppsChangedFrame { Revision = Now() };
+        var env = WsEnvelope.Build(AppsChanged, frame, AppJsonContext.Default.AppsChangedFrame);
+        _ = hub.BroadcastTopicAsync(AppsChanged, env);
+    }
+
     public static void BroadcastCooling(MultiplexHub hub)
     {
         if (!hub.TopicHasSubscribers(Cooling))

@@ -123,13 +123,17 @@ public sealed class HardwareAppInstaller : BackgroundService
         {
             if (FocusNetworkGate.IsHeld) return false;
             if (!await InstallAsync(appId, ct).ConfigureAwait(false)) return false;
+            // Announced as soon as it is on disk, so a panel still waiting for
+            // its record below has already refreshed the registry that resolves
+            // the placement.
+            PanelTopics.BroadcastAppsChanged(_hub);
         }
 
         var placement = Y70WidgetPlacement.AlreadyPresent;
         var panelId = "";
         if (appId == HardwareAppCatalog.InaAppId)
         {
-            placement = _panels.EnsureY70Widget($"app:{appId}", InaWidgetSize, out panelId);
+            placement = _panels.EnsureY70Widget(WidgetSettingsService.AppTypePrefix + appId, InaWidgetSize, out panelId);
             if (placement == Y70WidgetPlacement.NoPanel) return false;
             // A full panel still counts as settled: the app is installed and the
             // user can place it, and retrying cannot free a slot.
