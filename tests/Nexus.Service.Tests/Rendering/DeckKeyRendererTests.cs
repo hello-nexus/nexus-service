@@ -220,6 +220,26 @@ public sealed class DeckKeyRendererTests : IDisposable
         Assert.True(corner.R > 150 && corner.G < 100 && corner.B < 100, $"expected the app icon at the key edge, got {corner}");
     }
 
+    /// <summary>A macOS-style icon keeps a clear margin around its rounded square; the artwork, not the margin, fills the key.</summary>
+    [Fact]
+    public void Render_AppIconWithClearMargin_CropsTheMarginAway()
+    {
+        byte[] padded;
+        using (var icon = new Image<Rgba32>(20, 20))
+        {
+            icon.Mutate(ctx => ctx.Fill(Color.Red, new Rectangle(5, 5, 10, 10)));
+            using var ms = new MemoryStream();
+            icon.SaveAsPng(ms);
+            padded = ms.ToArray();
+        }
+        var renderer = new DeckKeyRenderer(new DeckImageStore(_imagesDir), new SwitchableShortcutsProvider { Icon = padded }, new NullProcessIconProvider());
+        var slot = new DeckSlot { Action = new DeckAction { Type = "launchApp", AppId = "app-1" } };
+
+        using var image = Decode(renderer.Render(slot, false, Mk2, 0)!);
+        var corner = image[2, 2];
+        Assert.True(corner.R > 150 && corner.G < 100, $"expected the cropped artwork at the key edge, got {corner}");
+    }
+
     [Fact]
     public void Render_SelectedAppIcon_KeepsBlackBehindTheIcon()
     {

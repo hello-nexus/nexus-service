@@ -212,7 +212,7 @@ public sealed class DeckKeyRenderer
         {
             using (appIcon)
             {
-                DrawContain(image, appIcon, size);
+                DrawAppIcon(image, appIcon, size);
             }
         }
         else if (iconPending)
@@ -361,9 +361,50 @@ public sealed class DeckKeyRenderer
         return processIcon.Length > 0 ? Image.Load<Rgba32>(processIcon) : null;
     }
 
-    /// <summary>Whole-key-face letterbox fit (object-fit: contain), matching DeckGrid.module.scss .appIconFull.</summary>
-    private static void DrawContain(Image<Rgba32> image, Image<Rgba32> src, int size) =>
-        DrawCentered(image, src, size / 2f, size / 2f, size);
+    /// <summary>Alpha below this is the icon's margin or drop shadow (macOS icons keep ~9% clear around the rounded square, shadow alpha peaks near 32), not artwork.</summary>
+    private const byte AppIconOpaqueAlpha = 64;
+
+    /// <summary>
+    /// Fills the key face with the icon's artwork, as the Elgato app does: the
+    /// opaque bounding box is cropped out first so an icon's built-in clear
+    /// margin does not leave a visible band of key around it, then contain-
+    /// fit (object-fit: contain, DeckGrid.module.scss .appIconFull). A fully
+    /// opaque icon (Windows .ico) crops nothing.
+    /// </summary>
+    private static void DrawAppIcon(Image<Rgba32> image, Image<Rgba32> src, int size)
+    {
+        int minX = src.Width, minY = src.Height, maxX = -1, maxY = -1;
+        src.ProcessPixelRows(accessor =>
+        {
+            for (var y = 0; y < accessor.Height; y++)
+            {
+                var row = accessor.GetRowSpan(y);
+                for (var x = 0; x < row.Length; x++)
+                {
+                    if (row[x].A < AppIconOpaqueAlpha)
+                    {
+                        continue;
+                    }
+                    if (x < minX) minX = x;
+                    if (x > maxX) maxX = x;
+                    if (y < minY) minY = y;
+                    if (y > maxY) maxY = y;
+                }
+            }
+        });
+        if (maxX < 0)
+        {
+            return;
+        }
+        var box = new Rectangle(minX, minY, maxX - minX + 1, maxY - minY + 1);
+        if (box.Width == src.Width && box.Height == src.Height)
+        {
+            DrawCentered(image, src, size / 2f, size / 2f, size);
+            return;
+        }
+        using var cropped = src.Clone(c => c.Crop(box));
+        DrawCentered(image, cropped, size / 2f, size / 2f, size);
+    }
 
     /// <summary>Glyph-sized centered fit, matching renderDeckKeyBitmap.ts's drawCentered.</summary>
     private static void DrawCentered(Image<Rgba32> image, Image<Rgba32> src, float cx, float cy, int targetSize)
