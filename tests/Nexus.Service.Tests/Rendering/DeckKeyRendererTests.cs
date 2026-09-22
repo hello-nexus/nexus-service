@@ -234,6 +234,38 @@ public sealed class DeckKeyRendererTests : IDisposable
         Assert.True(center.R > 150 && center.G < 100, $"expected the icon across the middle, got {center}");
     }
 
+    /// <summary>
+    /// A null process icon means extraction is still running: the face stays
+    /// blank and uncached, one provider call per render, and the next render
+    /// after the icon lands paints it full-face and caches.
+    /// </summary>
+    [Fact]
+    public void Render_ExeWithProcessIconPending_IsBlankUncachedAndQueriesOnce()
+    {
+        var processIcons = new CountingProcessIconProvider { Icon = null };
+        var renderer = new DeckKeyRenderer(new DeckImageStore(_imagesDir), new SwitchableShortcutsProvider(), processIcons);
+        var slot = new DeckSlot { Action = new DeckAction { Type = "openFile", Path = @"C:\Games\Hades\Hades.exe" } };
+
+        var pending = renderer.Render(slot, false, Mk2, 0);
+        Assert.NotNull(pending);
+        Assert.Equal(1, processIcons.Calls);
+        // Blank while pending: the bare category accent, no glyph.
+        Assert.Equal(renderer.Render(new DeckSlot { Color = DeckIconDefaults.CategoryColorHex(DeckCategory.Launch) }, false, Mk2, 0), pending);
+
+        processIcons.Icon = SolidPng(Color.Red, 4, 4);
+        var real = renderer.Render(slot, false, Mk2, 0);
+        Assert.Equal(2, processIcons.Calls);
+        Assert.NotEqual(pending, real);
+        Assert.Same(real, renderer.Render(slot, false, Mk2, 0));
+    }
+
+    private sealed class CountingProcessIconProvider : IProcessIconProvider
+    {
+        public byte[]? Icon;
+        public int Calls;
+        public byte[]? GetIcon(string exePath) { Calls++; return Icon; }
+    }
+
     private static byte[] SolidPng(Color color, int width, int height)
     {
         using var image = new Image<Rgba32>(width, height);

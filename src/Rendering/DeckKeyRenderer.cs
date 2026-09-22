@@ -171,9 +171,20 @@ public sealed class DeckKeyRenderer
     {
         var image = new Image<Rgba32>(size, size);
         var shouldPaintIcon = !display.IsBlankOff && (display.EffectiveAction is not null || display.IsFolder || display.Icon is not null);
-        // A loaded app icon is the key face (DeckGrid.tsx appIconFills): no
-        // accent behind it unless the slot has its own color.
-        var appIcon = shouldPaintIcon ? LoadAppIcon(display, ref transient) : null;
+        // Face precedence: a custom image, else the app icon (the key face,
+        // as DeckGrid.tsx appIconFills: no accent behind it unless the slot
+        // has its own color), else PaintIcon's emoji / lucide glyph.
+        Image<Rgba32>? customImage = null;
+        Image<Rgba32>? appIcon = null;
+        var iconPending = false;
+        if (shouldPaintIcon && display.Icon is { Kind: "image" } && _imageStore.TryLoad(display.Icon.Value) is { } loaded)
+        {
+            customImage = Image.Load<Rgba32>(loaded.Bytes);
+        }
+        else if (shouldPaintIcon && display.Icon is not { Kind: "emoji" })
+        {
+            appIcon = LoadAppIcon(display, ref transient, out iconPending);
+        }
         var background = appIcon is not null && !display.ExplicitColor ? Color.Black : RenderKit.ParseColor(display.ColorHex, Color.Black);
         if (selected)
         {
@@ -186,16 +197,28 @@ public sealed class DeckKeyRenderer
             return image;
         }
 
-        if (appIcon is not null)
+        if (customImage is not null)
+        {
+            using (customImage)
+            {
+                DrawCover(image, customImage, size);
+            }
+        }
+        else if (appIcon is not null)
         {
             using (appIcon)
             {
                 DrawContain(image, appIcon, size);
             }
         }
+        else if (iconPending)
+        {
+            // Process icon still resolving: blank face, never cached.
+            transient = true;
+        }
         else if (shouldPaintIcon)
         {
-            PaintIcon(image, display, size, ref transient);
+            PaintIcon(image, display, size);
         }
 
         if (!string.IsNullOrEmpty(display.Label))
@@ -224,7 +247,7 @@ public sealed class DeckKeyRenderer
         return Color.FromRgba(Lerp(rgba.R), Lerp(rgba.G), Lerp(rgba.B), rgba.A);
     }
 
-    private void PaintIcon(Image<Rgba32> image, DisplaySlot display, int size, ref bool transient)
+    private void PaintIcon(Image<Rgba32> image, DisplaySlot display, int size)
     {
         var target = (int)MathF.Round(size * IconFraction);
         if (target <= 0)
@@ -239,20 +262,6 @@ public sealed class DeckKeyRenderer
         if (icon is { Kind: "emoji" })
         {
             PaintEmoji(image, icon.Value, size, target);
-            return;
-        }
-
-        if (icon is { Kind: "image" } && _imageStore.TryLoad(icon.Value) is { } loaded)
-        {
-            using var src = Image.Load<Rgba32>(loaded.Bytes);
-            DrawCover(image, src, size);
-            return;
-        }
-
-        if (ResolveAppId(icon, action) is not null && ResolveExePath(action) is { } exePath && _processIcons.GetIcon(exePath) is null)
-        {
-            // Process icon still resolving: leave the face blank, uncached.
-            transient = true;
             return;
         }
 
@@ -316,12 +325,15 @@ public sealed class DeckKeyRenderer
     /// is what the Windows helper proxy returns while no helper is connected
     /// (boot, before the user session exists), indistinguishable from a real
     /// miss, so a miss without an exe fallback marks the render transient.
+    /// pending is true when the process icon is still being extracted (one
+    /// provider call per render; the caller leaves the face blank, uncached).
     /// </summary>
-    private Image<Rgba32>? LoadAppIcon(DisplaySlot display, ref bool transient)
+    private Image<Rgba32>? LoadAppIcon(DisplaySlot display, ref bool transient, out bool pending)
     {
+        pending = false;
         var action = display.EffectiveAction;
         var appId = ResolveAppId(display.Icon, action);
-        if (appId is null || display.Icon is { Kind: "emoji" } || (display.Icon is { Kind: "image" } && _imageStore.TryLoad(display.Icon.Value) is not null))
+        if (appId is null)
         {
             return null;
         }
@@ -337,7 +349,12 @@ public sealed class DeckKeyRenderer
             return null;
         }
         var processIcon = _processIcons.GetIcon(exePath);
-        return processIcon is { Length: > 0 } ? Image.Load<Rgba32>(processIcon) : null;
+        if (processIcon is null)
+        {
+            pending = true;
+            return null;
+        }
+        return processIcon.Length > 0 ? Image.Load<Rgba32>(processIcon) : null;
     }
 
     /// <summary>Whole-key-face letterbox fit (object-fit: contain), matching DeckGrid.module.scss .appIconFull.</summary>

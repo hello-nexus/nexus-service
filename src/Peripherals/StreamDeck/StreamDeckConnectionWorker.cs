@@ -2721,7 +2721,7 @@ public sealed class StreamDeckConnectionWorker : BackgroundService, IDeckSurface
     /// <summary>
     /// Renders and pushes the current Recent Apps page for a physical deck in
     /// recentApps mode: the ring (persisted) plus the in-memory focused
-    /// process key laid out via RecentAppsTracker.BuildView, one key per
+    /// process key laid out via RecentAppsPagesLocked, one key per
     /// physical index, no folder concept. The tracked page (_currentPageBySerial,
     /// shared with custom mode - a mode switch always resets nav to 0 first)
     /// clamps to the view's own page count. Each key's own last-pushed-hash
@@ -2850,7 +2850,7 @@ public sealed class StreamDeckConnectionWorker : BackgroundService, IDeckSurface
         return model is null ? (5, 3) : (model.Columns, model.Rows);
     }
 
-    /// <summary>The page count of the current Recent Apps view (RecentAppsTracker.BuildView), matching PushRecentAppsView's own layout so SetNav clamps against pages that actually exist instead of the custom preset's. Caller must hold _lock.</summary>
+    /// <summary>The page count of the current Recent Apps view (RecentAppsPagesLocked), matching PushRecentAppsView's own layout so SetNav clamps against pages that actually exist instead of the custom preset's. Caller must hold _lock.</summary>
     private int RecentAppsPageCountLocked(string serial)
     {
         var (cols, rows) = ResolveGridLocked(serial);
