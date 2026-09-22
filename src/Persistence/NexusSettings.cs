@@ -1241,8 +1241,6 @@ public sealed class DevicesSettings
     public List<string> MappingAutoApplyDeclined { get; set; } = new();
     /// <summary>Lighting-device ids ever seen on this install. A device not in this list is "new" and eligible for community-mapping auto-match.</summary>
     public List<string> MappingKnownDevices { get; set; } = new();
-    /// <summary>When true, the SmartHub's onboard firmware animation drives the ARGB ports and Nexus stops streaming to them.</summary>
-    public bool SmartHubFirmwareControl { get; set; }
     /// <summary>
     /// OpenRGB devices excluded from the bundled daemon's detection because the
     /// user turned Nexus Control off for every card they emit. Keyed by the

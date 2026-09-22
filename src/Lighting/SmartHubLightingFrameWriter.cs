@@ -82,8 +82,6 @@ public sealed class SmartHubLightingFrameWriter : IHostedService, IDisposable
         var devices = _engine.Devices;
         if (devices.Length == 0) return;
         var settings = _store.Load();
-        // Firmware animation drives the ports; streaming would overwrite it.
-        if (settings.Devices.SmartHubFirmwareControl) return;
         var disabled = settings.Devices.DisabledLightingDevices;
         var uncontrolled = settings.Devices.UncontrolledLightingDevices;
         var prefs = settings.Devices.LightingDevicePrefs;

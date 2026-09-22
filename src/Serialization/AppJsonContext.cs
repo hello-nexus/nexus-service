@@ -92,7 +92,6 @@ namespace Nexus.Service.Serialization;
 [JsonSerializable(typeof(Nexus.Service.Routes.SmartHubFanResponse[]))]
 [JsonSerializable(typeof(Nexus.Service.Routes.SmartHubFwSettingResponse))]
 [JsonSerializable(typeof(Nexus.Service.Routes.SmartHubFwSettingRequest))]
-[JsonSerializable(typeof(Nexus.Service.Routes.SmartHubFirmwareControlRequest))]
 [JsonSerializable(typeof(Nexus.Service.Routes.SmartHubCompositionResponse))]
 [JsonSerializable(typeof(Nexus.Service.Routes.SmartHubCompositionRequest))]
 

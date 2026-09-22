@@ -1023,6 +1023,30 @@
         }
       }
     },
+    "/onboarding/panel-swipe": {
+      "get": {
+        "tags": [
+          "Nexus"
+        ],
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        }
+      }
+    },
+    "/onboarding/panel-swipe/complete": {
+      "post": {
+        "tags": [
+          "Nexus"
+        ],
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        }
+      }
+    },
     "/onboarding/reset": {
       "post": {
         "tags": [
@@ -5532,28 +5556,6 @@
         }
       }
     },
-    "/devices/smarthub/firmware-control": {
-      "put": {
-        "tags": [
-          "Nexus"
-        ],
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/SmartHubFirmwareControlRequest"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "200": {
-            "description": "OK"
-          }
-        }
-      }
-    },
     "/devices/smarthub/composition": {
       "get": {
         "tags": [
@@ -5906,6 +5908,38 @@
         "tags": [
           "Nexus"
         ],
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        }
+      }
+    },
+    "/devices/lianli-tl/lighting": {
+      "get": {
+        "tags": [
+          "Nexus"
+        ],
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        }
+      },
+      "put": {
+        "tags": [
+          "Nexus"
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/LianLiTlLightingRequest"
+              }
+            }
+          },
+          "required": true
+        },
         "responses": {
           "200": {
             "description": "OK"
@@ -6724,72 +6758,6 @@
         }
       }
     },
-    "/streamdeck/decks/{serial}/config": {
-      "get": {
-        "tags": [
-          "Nexus"
-        ],
-        "parameters": [
-          {
-            "name": "serial",
-            "in": "path",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "OK",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/StreamDeckConfigEnvelope"
-                }
-              }
-            }
-          }
-        }
-      },
-      "put": {
-        "tags": [
-          "Nexus"
-        ],
-        "parameters": [
-          {
-            "name": "serial",
-            "in": "path",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
-          }
-        ],
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/StreamDeckConfigEnvelope"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "200": {
-            "description": "OK",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/StreamDeckConfigEnvelope"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
     "/streamdeck/decks/{serial}/nav": {
       "post": {
         "tags": [
@@ -6833,44 +6801,6 @@
       "get": {
         "tags": [
           "Nexus"
-        ],
-        "responses": {
-          "200": {
-            "description": "OK"
-          }
-        }
-      }
-    },
-    "/streamdeck/decks/{serial}/images/{slotPath}/{state}": {
-      "put": {
-        "tags": [
-          "Nexus"
-        ],
-        "parameters": [
-          {
-            "name": "serial",
-            "in": "path",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
-          },
-          {
-            "name": "slotPath",
-            "in": "path",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
-          },
-          {
-            "name": "state",
-            "in": "path",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
-          }
         ],
         "responses": {
           "200": {
@@ -6941,188 +6871,6 @@
                 }
               }
             }
-          }
-        }
-      }
-    },
-    "/streamdeck/decks/{serial}/presets": {
-      "get": {
-        "tags": [
-          "Nexus"
-        ],
-        "parameters": [
-          {
-            "name": "serial",
-            "in": "path",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "OK"
-          }
-        }
-      },
-      "post": {
-        "tags": [
-          "Nexus"
-        ],
-        "parameters": [
-          {
-            "name": "serial",
-            "in": "path",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
-          }
-        ],
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/CreateDeckPresetBody"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "200": {
-            "description": "OK"
-          }
-        }
-      }
-    },
-    "/streamdeck/decks/{serial}/presets/active": {
-      "put": {
-        "tags": [
-          "Nexus"
-        ],
-        "parameters": [
-          {
-            "name": "serial",
-            "in": "path",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
-          }
-        ],
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/SetActiveDeckPresetBody"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "200": {
-            "description": "OK"
-          }
-        }
-      }
-    },
-    "/streamdeck/decks/{serial}/presets/{id}": {
-      "put": {
-        "tags": [
-          "Nexus"
-        ],
-        "parameters": [
-          {
-            "name": "serial",
-            "in": "path",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
-          },
-          {
-            "name": "id",
-            "in": "path",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
-          }
-        ],
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/UpdateDeckPresetBody"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "200": {
-            "description": "OK"
-          }
-        }
-      },
-      "delete": {
-        "tags": [
-          "Nexus"
-        ],
-        "parameters": [
-          {
-            "name": "serial",
-            "in": "path",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
-          },
-          {
-            "name": "id",
-            "in": "path",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "OK"
-          }
-        }
-      }
-    },
-    "/streamdeck/decks/{serial}/presets/{id}/activate": {
-      "post": {
-        "tags": [
-          "Nexus"
-        ],
-        "parameters": [
-          {
-            "name": "serial",
-            "in": "path",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
-          },
-          {
-            "name": "id",
-            "in": "path",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "OK"
           }
         }
       }
@@ -7296,6 +7044,342 @@
             }
           }
         ],
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        }
+      }
+    },
+    "/deck/presets": {
+      "get": {
+        "tags": [
+          "Nexus"
+        ],
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "Nexus"
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateDeckPresetRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        }
+      }
+    },
+    "/deck/presets/{id}": {
+      "get": {
+        "tags": [
+          "Nexus"
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        }
+      },
+      "put": {
+        "tags": [
+          "Nexus"
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UpdateDeckPresetRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "Nexus"
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        }
+      }
+    },
+    "/deck/presets/{id}/apps": {
+      "put": {
+        "tags": [
+          "Nexus"
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SetPresetAppsBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        }
+      }
+    },
+    "/deck/presets/{id}/export": {
+      "get": {
+        "tags": [
+          "Nexus"
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        }
+      }
+    },
+    "/deck/presets/import": {
+      "post": {
+        "tags": [
+          "Nexus"
+        ],
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        }
+      }
+    },
+    "/deck/templates": {
+      "get": {
+        "tags": [
+          "Nexus"
+        ],
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        }
+      }
+    },
+    "/deck/instances": {
+      "get": {
+        "tags": [
+          "Nexus"
+        ],
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        }
+      }
+    },
+    "/deck/instances/{id}": {
+      "get": {
+        "tags": [
+          "Nexus"
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "cols",
+            "in": "query",
+            "schema": {
+              "pattern": "^-?(?:0|[1-9]\\d*)$",
+              "type": [
+                "integer",
+                "string"
+              ],
+              "format": "int32"
+            }
+          },
+          {
+            "name": "rows",
+            "in": "query",
+            "schema": {
+              "pattern": "^-?(?:0|[1-9]\\d*)$",
+              "type": [
+                "integer",
+                "string"
+              ],
+              "format": "int32"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        }
+      },
+      "put": {
+        "tags": [
+          "Nexus"
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UpdateDeckInstanceRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        }
+      }
+    },
+    "/deck/recent-apps": {
+      "get": {
+        "tags": [
+          "Nexus"
+        ],
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "Nexus"
+        ],
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        }
+      }
+    },
+    "/deck/recent-apps/excluded": {
+      "put": {
+        "tags": [
+          "Nexus"
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SetRecentAppsExcludedRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        }
+      }
+    },
+    "/deck/recent-apps/activate": {
+      "post": {
+        "tags": [
+          "Nexus"
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ActivateRecentAppRequest"
+              }
+            }
+          },
+          "required": true
+        },
         "responses": {
           "200": {
             "description": "OK"
@@ -13373,6 +13457,14 @@
   },
   "components": {
     "schemas": {
+      "ActivateRecentAppRequest": {
+        "type": "object",
+        "properties": {
+          "processKey": {
+            "type": "string"
+          }
+        }
+      },
       "AddE131DeviceBody": {
         "type": "object",
         "properties": {
@@ -14750,13 +14842,29 @@
           }
         }
       },
-      "CreateDeckPresetBody": {
+      "CreateDeckPresetRequest": {
         "type": "object",
         "properties": {
           "name": {
             "type": "string"
           },
-          "config": {
+          "cols": {
+            "pattern": "^-?(?:0|[1-9]\\d*)$",
+            "type": [
+              "integer",
+              "string"
+            ],
+            "format": "int32"
+          },
+          "rows": {
+            "pattern": "^-?(?:0|[1-9]\\d*)$",
+            "type": [
+              "integer",
+              "string"
+            ],
+            "format": "int32"
+          },
+          "deck": {
             "oneOf": [
               {
                 "type": "null"
@@ -14764,6 +14872,18 @@
               {
                 "$ref": "#/components/schemas/DeckConfig"
               }
+            ]
+          },
+          "templateId": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "copyOfPresetId": {
+            "type": [
+              "null",
+              "string"
             ]
           }
         }
@@ -18400,6 +18520,59 @@
           }
         }
       },
+      "LianLiTlLightingRequest": {
+        "type": "object",
+        "properties": {
+          "mode": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "speed": {
+            "pattern": "^-?(?:0|[1-9]\\d*)$",
+            "type": [
+              "null",
+              "integer",
+              "string"
+            ],
+            "format": "int32"
+          },
+          "direction": {
+            "pattern": "^-?(?:0|[1-9]\\d*)$",
+            "type": [
+              "null",
+              "integer",
+              "string"
+            ],
+            "format": "int32"
+          },
+          "brightness": {
+            "pattern": "^-?(?:0|[1-9]\\d*)$",
+            "type": [
+              "null",
+              "integer",
+              "string"
+            ],
+            "format": "int32"
+          },
+          "scope": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "colors": {
+            "type": [
+              "null",
+              "array"
+            ],
+            "items": {
+              "type": "string"
+            }
+          }
+        }
+      },
       "LightingAnimateDefaults": {
         "type": "object",
         "properties": {
@@ -20490,6 +20663,15 @@
             ],
             "format": "double"
           },
+          "gaugeGradient": {
+            "type": [
+              "null",
+              "array"
+            ],
+            "items": {
+              "$ref": "#/components/schemas/PanelGaugeGradientStop"
+            }
+          },
           "widgetOpacity": {
             "pattern": "^-?(?:0|[1-9]\\d*)(?:\\.\\d+)?(?:[eE][+-]?\\d+)?$",
             "type": [
@@ -20568,6 +20750,22 @@
                 "$ref": "#/components/schemas/PanelDeviceCapabilities"
               }
             ]
+          }
+        }
+      },
+      "PanelGaugeGradientStop": {
+        "type": "object",
+        "properties": {
+          "at": {
+            "pattern": "^-?(?:0|[1-9]\\d*)(?:\\.\\d+)?(?:[eE][+-]?\\d+)?$",
+            "type": [
+              "number",
+              "string"
+            ],
+            "format": "double"
+          },
+          "color": {
+            "type": "string"
           }
         }
       },
@@ -20914,6 +21112,15 @@
                 "$ref": "#/components/schemas/PanelLayoutDto"
               }
             ]
+          },
+          "dashboardGaugeGradient": {
+            "type": [
+              "null",
+              "array"
+            ],
+            "items": {
+              "$ref": "#/components/schemas/PanelGaugeGradientStop"
+            }
           }
         }
       },
@@ -21031,6 +21238,15 @@
                 "$ref": "#/components/schemas/PanelLayoutDto"
               }
             ]
+          },
+          "dashboardGaugeGradient": {
+            "type": [
+              "null",
+              "array"
+            ],
+            "items": {
+              "$ref": "#/components/schemas/PanelGaugeGradientStop"
+            }
           }
         }
       },
@@ -22166,17 +22382,6 @@
           }
         }
       },
-      "SetActiveDeckPresetBody": {
-        "type": "object",
-        "properties": {
-          "id": {
-            "type": [
-              "null",
-              "string"
-            ]
-          }
-        }
-      },
       "SetActivePresetBody": {
         "type": "object",
         "properties": {
@@ -22715,6 +22920,17 @@
           }
         }
       },
+      "SetRecentAppsExcludedRequest": {
+        "type": "object",
+        "properties": {
+          "processKeys": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        }
+      },
       "SetRotaryWheelsBody": {
         "type": "object",
         "properties": {
@@ -23146,14 +23362,6 @@
               "null",
               "boolean"
             ]
-          }
-        }
-      },
-      "SmartHubFirmwareControlRequest": {
-        "type": "object",
-        "properties": {
-          "enabled": {
-            "type": "boolean"
           }
         }
       },
@@ -23978,14 +24186,6 @@
           }
         }
       },
-      "StreamDeckConfigEnvelope": {
-        "type": "object",
-        "properties": {
-          "config": {
-            "$ref": "#/components/schemas/DeckConfig"
-          }
-        }
-      },
       "StreamDeckDevModelDto": {
         "type": "object",
         "properties": {
@@ -24209,6 +24409,9 @@
               ],
               "format": "int32"
             }
+          },
+          "instanceId": {
+            "type": "string"
           }
         }
       },
@@ -24923,7 +25126,24 @@
           }
         }
       },
-      "UpdateDeckPresetBody": {
+      "UpdateDeckInstanceRequest": {
+        "type": "object",
+        "properties": {
+          "mode": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "activePresetId": {
+            "type": [
+              "null",
+              "string"
+            ]
+          }
+        }
+      },
+      "UpdateDeckPresetRequest": {
         "type": "object",
         "properties": {
           "name": {
@@ -24932,8 +25152,33 @@
               "string"
             ]
           },
-          "saveCurrent": {
-            "type": "boolean"
+          "deck": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/DeckConfig"
+              }
+            ]
+          },
+          "cols": {
+            "pattern": "^-?(?:0|[1-9]\\d*)$",
+            "type": [
+              "null",
+              "integer",
+              "string"
+            ],
+            "format": "int32"
+          },
+          "rows": {
+            "pattern": "^-?(?:0|[1-9]\\d*)$",
+            "type": [
+              "null",
+              "integer",
+              "string"
+            ],
+            "format": "int32"
           }
         }
       },
