@@ -59,9 +59,9 @@ internal static class WindowsServiceHost
     private const uint SERVICE_CONTROL_INTERROGATE = 0x00000004;
     private const uint SERVICE_CONTROL_SESSIONCHANGE = 0x0000000E;
 
-    // WTS session-change event types. Only the lock pair is handled: logon,
-    // console connect and the rest all describe a session appearing, which is
-    // not a user deciding to step away.
+    // WTS session-change event types. The lock pair drives the blackout;
+    // logon re-arms the user-session helper spawn. Console connect and the
+    // rest describe a session appearing, which is neither.
     private const uint WTS_SESSION_LOGON = 0x5;
     private const uint WTS_SESSION_LOCK = 0x7;
     private const uint WTS_SESSION_UNLOCK = 0x8;

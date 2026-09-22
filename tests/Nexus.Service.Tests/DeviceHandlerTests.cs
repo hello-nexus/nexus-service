@@ -195,7 +195,9 @@ public class DeviceHandlerTests
     [InlineData(false, false, false, false, null)]                      // neither
     [InlineData(false, false, true, false, null)]                       // digitizer alone (no Y70 EDID) warns nothing
     [InlineData(false, false, false, true, null)]                       // GW/Ina EDID gone (unplugged) warns nothing
-    public void Y70_warning_matrix(bool serialConnected, bool hasDisplay, bool touchOnlyUsb, bool ddcOnlyPanel, string? expected)
+    [InlineData(true, null, false, false, null)]                        // topology unknown (no helper yet): serial up is not "cable unplugged"
+    [InlineData(false, null, false, false, null)]                       // topology unknown, no serial
+    public void Y70_warning_matrix(bool serialConnected, bool? hasDisplay, bool touchOnlyUsb, bool ddcOnlyPanel, string? expected)
     {
         Assert.Equal(expected, Y70Handler.ComputeWarning(serialConnected, hasDisplay, touchOnlyUsb, ddcOnlyPanel));
     }

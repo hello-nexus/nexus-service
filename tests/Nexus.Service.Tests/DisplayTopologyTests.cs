@@ -107,6 +107,21 @@ public sealed class DisplayTopologyTests : IDisposable
         Assert.Empty(topo.Displays);
         Assert.NotEqual("", topo.Hint);
         Assert.Null(service.GetAttachedIds());
+        Assert.Null(service.HasY70DisplayIfKnown());
+        Assert.False(service.HasY70Display());
+    }
+
+    [Fact]
+    public void Known_topology_answers_the_y70_question()
+    {
+        var withY70 = new DisplayTopologyService(new FakeProvider
+        {
+            Displays = new List<RawDisplayInfo> { Monitor("RTK0004-2", rawHw: @"\\?\DISPLAY#RTK0004#5&def#{guid}") },
+        }, _registry);
+        var without = new DisplayTopologyService(new FakeProvider { Displays = new List<RawDisplayInfo>() }, _registry);
+
+        Assert.True(withY70.HasY70DisplayIfKnown());
+        Assert.False(without.HasY70DisplayIfKnown());
     }
 
     [Fact]

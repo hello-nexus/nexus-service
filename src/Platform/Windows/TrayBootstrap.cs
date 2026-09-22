@@ -400,7 +400,8 @@ internal static class TrayBootstrap
                 // Always launch the user-session helper. Its lifetime is decoupled
                 // from any pref - the helper hosts the tray icon, screen-time
                 // poller, media/brightness providers, etc.
-                Nexus.Service.Lifecycle.UserHelperBootstrapper.EnsureLaunched();
+                Nexus.Service.Lifecycle.UserHelperBootstrapper.EnsureLaunched(
+                    app.Services.GetRequiredService<HelperRegistry>());
 #endif
             }
             else if (suppressStartupWindow)

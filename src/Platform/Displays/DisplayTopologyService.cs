@@ -144,6 +144,27 @@ public sealed class DisplayTopologyService
     public bool HasY70Display() => Y70DisplayId().Length > 0;
 
     /// <summary>
+    /// <see cref="HasY70Display"/>, or null while the topology is unknown
+    /// (Windows before the user-session helper connects). Callers that would
+    /// otherwise read "unknown" as "absent" use this form.
+    /// </summary>
+    public bool? HasY70DisplayIfKnown()
+    {
+        if (!TryGetCached(out var ids, out var y70Id, out _))
+        {
+            CacheAttachedIds(_provider.Enumerate());
+            // Both fields under one lock: a concurrent re-enumeration between
+            // the two reads would pair a known id set with an unknown id.
+            lock (_cacheLock)
+            {
+                ids = _attachedIds;
+                y70Id = _y70DisplayId;
+            }
+        }
+        return ids is null ? null : y70Id.Length > 0;
+    }
+
+    /// <summary>
     /// Id of the attached Y70 panel monitor in the /displays id space, or
     /// empty. Same cache as <see cref="HasY70Display"/>.
     /// </summary>
