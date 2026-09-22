@@ -208,6 +208,110 @@ public sealed class DeckKeyRendererTests : IDisposable
     }
 
     [Fact]
+    public void Render_AppIcon_IsTheKeyFaceOnBlack()
+    {
+        var shortcuts = new SwitchableShortcutsProvider { Icon = SolidPng(Color.Red, 4, 4) };
+        var renderer = new DeckKeyRenderer(new DeckImageStore(_imagesDir), shortcuts, new NullProcessIconProvider());
+        var slot = new DeckSlot { Action = new DeckAction { Type = "launchApp", AppId = "app-1" } };
+
+        using var image = Decode(renderer.Render(slot, false, Mk2, 0)!);
+        // Artwork at 82% of the key on black: black at the edge, red just inside the 9% inset.
+        var edge = image[1, 1];
+        var inset = image[(int)(Mk2.KeyPixelSize * 0.12f), Mk2.KeyPixelSize / 2];
+        Assert.True(edge.R < 24 && edge.G < 24 && edge.B < 24, $"expected black around the artwork, got {edge}");
+        Assert.True(inset.R > 150 && inset.G < 100 && inset.B < 100, $"expected the app icon inside the inset, got {inset}");
+    }
+
+    /// <summary>A macOS-style icon keeps a clear margin around its rounded square; the artwork, not the margin, fills the key.</summary>
+    [Fact]
+    public void Render_AppIconWithClearMargin_CropsTheMarginAway()
+    {
+        byte[] padded;
+        using (var icon = new Image<Rgba32>(20, 20))
+        {
+            icon.Mutate(ctx => ctx.Fill(Color.Red, new Rectangle(5, 5, 10, 10)));
+            using var ms = new MemoryStream();
+            icon.SaveAsPng(ms);
+            padded = ms.ToArray();
+        }
+        var renderer = new DeckKeyRenderer(new DeckImageStore(_imagesDir), new SwitchableShortcutsProvider { Icon = padded }, new NullProcessIconProvider());
+        var slot = new DeckSlot { Action = new DeckAction { Type = "launchApp", AppId = "app-1" } };
+
+        using var image = Decode(renderer.Render(slot, false, Mk2, 0)!);
+        // The 20px icon's 5px margin is cropped, so its 10px square lands at the same 82% as a margin-free icon.
+        var inset = image[(int)(Mk2.KeyPixelSize * 0.12f), Mk2.KeyPixelSize / 2];
+        Assert.True(inset.R > 150 && inset.G < 100, $"expected the cropped artwork inside the inset, got {inset}");
+    }
+
+    [Fact]
+    public void Render_SelectedAppIcon_KeepsBlackBehindTheIcon()
+    {
+        var shortcuts = new SwitchableShortcutsProvider { Icon = SolidPng(Color.Red, 4, 2) };
+        var renderer = new DeckKeyRenderer(new DeckImageStore(_imagesDir), shortcuts, new NullProcessIconProvider());
+        var slot = new DeckSlot { Action = new DeckAction { Type = "launchApp", AppId = "app-1" } };
+
+        using var image = Decode(renderer.Render(slot, false, Mk2, 0, selected: true)!);
+        // Inside the ring, above the 2:1 icon's letterbox: still black, no brightened fill.
+        var letterbox = image[Mk2.KeyPixelSize / 2, (int)(Mk2.KeyPixelSize * 0.12f)];
+        Assert.True(letterbox.R < 24 && letterbox.G < 24 && letterbox.B < 24, $"expected black in the letterbox of a selected app key, got {letterbox}");
+    }
+
+    [Fact]
+    public void Render_AppIcon_LetterboxesOnTheSlotsOwnColor()
+    {
+        var shortcuts = new SwitchableShortcutsProvider { Icon = SolidPng(Color.Red, 4, 2) };
+        var renderer = new DeckKeyRenderer(new DeckImageStore(_imagesDir), shortcuts, new NullProcessIconProvider());
+        var slot = new DeckSlot { Color = "#00ff00", Action = new DeckAction { Type = "launchApp", AppId = "app-1" } };
+
+        using var image = Decode(renderer.Render(slot, false, Mk2, 0)!);
+        var top = image[Mk2.KeyPixelSize / 2, 2];
+        var center = image[Mk2.KeyPixelSize / 2, Mk2.KeyPixelSize / 2];
+        Assert.True(top.G > 150 && top.R < 100, $"expected the slot color above a 2:1 icon, got {top}");
+        Assert.True(center.R > 150 && center.G < 100, $"expected the icon across the middle, got {center}");
+    }
+
+    /// <summary>
+    /// A null process icon means extraction is still running: the face stays
+    /// blank and uncached, one provider call per render, and the next render
+    /// after the icon lands paints it full-face and caches.
+    /// </summary>
+    [Fact]
+    public void Render_ExeWithProcessIconPending_IsBlankUncachedAndQueriesOnce()
+    {
+        var processIcons = new CountingProcessIconProvider { Icon = null };
+        var renderer = new DeckKeyRenderer(new DeckImageStore(_imagesDir), new SwitchableShortcutsProvider(), processIcons);
+        var slot = new DeckSlot { Action = new DeckAction { Type = "openFile", Path = @"C:\Games\Hades\Hades.exe" } };
+
+        var pending = renderer.Render(slot, false, Mk2, 0);
+        Assert.NotNull(pending);
+        Assert.Equal(1, processIcons.Calls);
+        // Blank while pending: the bare category accent, no glyph.
+        Assert.Equal(renderer.Render(new DeckSlot { Color = DeckIconDefaults.CategoryColorHex(DeckCategory.Launch) }, false, Mk2, 0), pending);
+
+        processIcons.Icon = SolidPng(Color.Red, 4, 4);
+        var real = renderer.Render(slot, false, Mk2, 0);
+        Assert.Equal(2, processIcons.Calls);
+        Assert.NotEqual(pending, real);
+        Assert.Same(real, renderer.Render(slot, false, Mk2, 0));
+    }
+
+    private sealed class CountingProcessIconProvider : IProcessIconProvider
+    {
+        public byte[]? Icon;
+        public int Calls;
+        public byte[]? GetIcon(string exePath) { Calls++; return Icon; }
+    }
+
+    private static byte[] SolidPng(Color color, int width, int height)
+    {
+        using var image = new Image<Rgba32>(width, height);
+        image.Mutate(ctx => ctx.Fill(color));
+        using var ms = new MemoryStream();
+        image.SaveAsPng(ms);
+        return ms.ToArray();
+    }
+
+    [Fact]
     public void Render_ImageIconFromDeckImageStore_CoverFillsTheKey()
     {
         byte[] redPng;

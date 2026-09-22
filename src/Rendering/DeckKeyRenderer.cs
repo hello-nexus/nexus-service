@@ -137,7 +137,7 @@ public sealed class DeckKeyRenderer
         return Convert.ToHexString(SHA256.HashData(combined));
     }
 
-    private readonly record struct DisplaySlot(DeckIcon? Icon, string? Label, string ColorHex, DeckTitleStyle? Title, bool IsFolder, bool IsBlankOff, DeckAction? EffectiveAction);
+    private readonly record struct DisplaySlot(DeckIcon? Icon, string? Label, string ColorHex, bool ExplicitColor, DeckTitleStyle? Title, bool IsFolder, bool IsBlankOff, DeckAction? EffectiveAction);
 
     /// <summary>Resolves the toggle branch (if any) and the background color, matching renderDeckKeyBitmap.ts's paintKey.</summary>
     private static DisplaySlot ResolveDisplay(DeckSlot slot, bool isToggleOn)
@@ -158,19 +158,39 @@ public sealed class DeckKeyRenderer
             effectiveAction = branch;
         }
 
+        var explicitColor = colorHex is not null;
         if (!isBlankOff && colorHex is null)
         {
             colorHex = DeckIconDefaults.CategoryColorHex(isFolder ? DeckCategory.Folder : DeckIconDefaults.Category(effectiveAction));
         }
 
-        return new DisplaySlot(icon, slot.Label, isBlankOff ? "#000000" : colorHex!, slot.Title, isFolder, isBlankOff, effectiveAction);
+        return new DisplaySlot(icon, slot.Label, isBlankOff ? "#000000" : colorHex!, explicitColor, slot.Title, isFolder, isBlankOff, effectiveAction);
     }
 
     private Image<Rgba32> RenderImage(DisplaySlot display, int size, ref bool transient, bool selected = false)
     {
         var image = new Image<Rgba32>(size, size);
-        var background = RenderKit.ParseColor(display.ColorHex, Color.Black);
-        if (selected)
+        var shouldPaintIcon = !display.IsBlankOff && (display.EffectiveAction is not null || display.IsFolder || display.Icon is not null);
+        // Face precedence: a custom image, else the app icon (the key face,
+        // as DeckGrid.tsx appIconFills: no accent behind it unless the slot
+        // has its own color), else PaintIcon's emoji / lucide glyph.
+        Image<Rgba32>? customImage = null;
+        Image<Rgba32>? appIcon = null;
+        var iconPending = false;
+        if (shouldPaintIcon && display.Icon is { Kind: "image" } && _imageStore.TryLoad(display.Icon.Value) is { } loaded)
+        {
+            customImage = Image.Load<Rgba32>(loaded.Bytes);
+        }
+        else if (shouldPaintIcon && display.Icon is not { Kind: "emoji" })
+        {
+            appIcon = LoadAppIcon(display, ref transient, out iconPending);
+        }
+        var iconOnBlack = appIcon is not null && !display.ExplicitColor;
+        var background = iconOnBlack ? Color.Black : RenderKit.ParseColor(display.ColorHex, Color.Black);
+        // Selected: brighten a real accent; an icon on black keeps the ring
+        // only (RecentAppsGrid.tsx .selected over a transparent face), so no
+        // grey square shows through the icon's transparent letterbox.
+        if (selected && !iconOnBlack)
         {
             background = Brighten(background, 0.25f);
         }
@@ -181,10 +201,28 @@ public sealed class DeckKeyRenderer
             return image;
         }
 
-        var shouldPaintIcon = display.EffectiveAction is not null || display.IsFolder || display.Icon is not null;
-        if (shouldPaintIcon)
+        if (customImage is not null)
         {
-            PaintIcon(image, display, size, ref transient);
+            using (customImage)
+            {
+                DrawCover(image, customImage, size);
+            }
+        }
+        else if (appIcon is not null)
+        {
+            using (appIcon)
+            {
+                DrawAppIcon(image, appIcon, size);
+            }
+        }
+        else if (iconPending)
+        {
+            // Process icon still resolving: blank face, never cached.
+            transient = true;
+        }
+        else if (shouldPaintIcon)
+        {
+            PaintIcon(image, display, size);
         }
 
         if (!string.IsNullOrEmpty(display.Label))
@@ -213,7 +251,7 @@ public sealed class DeckKeyRenderer
         return Color.FromRgba(Lerp(rgba.R), Lerp(rgba.G), Lerp(rgba.B), rgba.A);
     }
 
-    private void PaintIcon(Image<Rgba32> image, DisplaySlot display, int size, ref bool transient)
+    private void PaintIcon(Image<Rgba32> image, DisplaySlot display, int size)
     {
         var target = (int)MathF.Round(size * IconFraction);
         if (target <= 0)
@@ -229,49 +267,6 @@ public sealed class DeckKeyRenderer
         {
             PaintEmoji(image, icon.Value, size, target);
             return;
-        }
-
-        if (icon is { Kind: "image" } && _imageStore.TryLoad(icon.Value) is { } loaded)
-        {
-            using var src = Image.Load<Rgba32>(loaded.Bytes);
-            DrawCover(image, src, size);
-            return;
-        }
-
-        var appId = ResolveAppId(icon, action);
-        if (appId is not null)
-        {
-            var appIcon = _shortcuts.GetIcon(appId);
-            if (appIcon.Length > 0)
-            {
-                using var src = Image.Load<Rgba32>(appIcon);
-                DrawCentered(image, src, cx, cy, target);
-                return;
-            }
-            var exePath = ResolveExePath(action);
-            if (exePath is not null)
-            {
-                var processIcon = _processIcons.GetIcon(exePath);
-                if (processIcon is null)
-                {
-                    transient = true;
-                    return;
-                }
-                if (processIcon.Length > 0)
-                {
-                    using var src = Image.Load<Rgba32>(processIcon);
-                    DrawCentered(image, src, cx, cy, target);
-                    return;
-                }
-            }
-            else
-            {
-                // An empty shortcut icon is what the Windows helper proxy
-                // returns while no helper is connected (boot, before the user
-                // session exists), indistinguishable from a real miss - so the
-                // fallback below is drawn but never cached.
-                transient = true;
-            }
         }
 
         var name = icon is { Kind: "lucide" } ? icon.Value : DeckIconDefaults.AutoIconName(action, display.IsFolder);
@@ -327,6 +322,92 @@ public sealed class DeckKeyRenderer
         using var stream = asm.GetManifestResourceStream($"deck-icon-{key}.png");
         return stream is null ? null : Image.Load<Rgba32>(stream);
     });
+
+    /// <summary>
+    /// The slot's app icon (shortcut, then the exe's process icon), or null
+    /// when the slot has none or it is not available. An empty shortcut icon
+    /// is what the Windows helper proxy returns while no helper is connected
+    /// (boot, before the user session exists), indistinguishable from a real
+    /// miss, so a miss without an exe fallback marks the render transient.
+    /// pending is true when the process icon is still being extracted (one
+    /// provider call per render; the caller leaves the face blank, uncached).
+    /// </summary>
+    private Image<Rgba32>? LoadAppIcon(DisplaySlot display, ref bool transient, out bool pending)
+    {
+        pending = false;
+        var action = display.EffectiveAction;
+        var appId = ResolveAppId(display.Icon, action);
+        if (appId is null)
+        {
+            return null;
+        }
+        var appIcon = _shortcuts.GetIcon(appId);
+        if (appIcon.Length > 0)
+        {
+            return Image.Load<Rgba32>(appIcon);
+        }
+        var exePath = ResolveExePath(action);
+        if (exePath is null)
+        {
+            transient = true;
+            return null;
+        }
+        var processIcon = _processIcons.GetIcon(exePath);
+        if (processIcon is null)
+        {
+            pending = true;
+            return null;
+        }
+        return processIcon.Length > 0 ? Image.Load<Rgba32>(processIcon) : null;
+    }
+
+    /// <summary>Alpha below this is the icon's margin or drop shadow (macOS icons keep ~9% clear around the rounded square, shadow alpha peaks near 32), not artwork.</summary>
+    private const byte AppIconOpaqueAlpha = 64;
+
+    /// <summary>Artwork size on the key: the Deck widget's look (a macOS icon's rounded square inside its own margin), applied uniformly whatever margin the icon ships with.</summary>
+    private const float AppIconFraction = 0.82f;
+
+    /// <summary>
+    /// Draws the icon's artwork at AppIconFraction of the key: the opaque
+    /// bounding box is cropped out first so a macOS icon's built-in margin
+    /// and a Windows icon's edge-to-edge art end up the same size, then
+    /// contain-fit centered on the black key.
+    /// </summary>
+    private static void DrawAppIcon(Image<Rgba32> image, Image<Rgba32> src, int size)
+    {
+        var target = Math.Max(1, (int)MathF.Round(size * AppIconFraction));
+        int minX = src.Width, minY = src.Height, maxX = -1, maxY = -1;
+        src.ProcessPixelRows(accessor =>
+        {
+            for (var y = 0; y < accessor.Height; y++)
+            {
+                var row = accessor.GetRowSpan(y);
+                for (var x = 0; x < row.Length; x++)
+                {
+                    if (row[x].A < AppIconOpaqueAlpha)
+                    {
+                        continue;
+                    }
+                    if (x < minX) minX = x;
+                    if (x > maxX) maxX = x;
+                    if (y < minY) minY = y;
+                    if (y > maxY) maxY = y;
+                }
+            }
+        });
+        if (maxX < 0)
+        {
+            return;
+        }
+        var box = new Rectangle(minX, minY, maxX - minX + 1, maxY - minY + 1);
+        if (box.Width == src.Width && box.Height == src.Height)
+        {
+            DrawCentered(image, src, size / 2f, size / 2f, target);
+            return;
+        }
+        using var cropped = src.Clone(c => c.Crop(box));
+        DrawCentered(image, cropped, size / 2f, size / 2f, target);
+    }
 
     /// <summary>Glyph-sized centered fit, matching renderDeckKeyBitmap.ts's drawCentered.</summary>
     private static void DrawCentered(Image<Rgba32> image, Image<Rgba32> src, float cx, float cy, int targetSize)
