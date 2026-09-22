@@ -80,20 +80,31 @@ public static partial class DevicesRoutes
     // Mirror the live per-device power + ignore state into the active preset so
     // a toggle from any surface lands in the preset the user is sitting on.
     /// <summary>
-    /// Card ids whose Nexus Control state moves together with this one. A
-    /// chained port answers with every link on it; anything else answers with
-    /// itself, so the single-card path is unchanged.
+    /// Card ids whose Nexus Control state moves together with this one: every
+    /// port of a SmartHub, every link of a chained port, otherwise the card.
     /// </summary>
-    private static List<string> ChainControlGroup(string cardId,
+    private static List<string> ControlGroup(string cardId,
         Nexus.Service.Lighting.Zones.ZoneTopology topology,
         Nexus.Service.Persistence.NexusSettings settings)
     {
         var found = topology.FindZone(cardId, settings);
         if (found is null) return [cardId];
         var (structure, _) = found.Value;
+        var group = new List<string>();
+        // The SmartHub's firmware animation is all-or-nothing, so one controlled
+        // port keeps the hub streaming and a port beside it can only go black.
+        var hubId = Nexus.Service.Lighting.SmartHubLightingDeviceProvider.HubIdOf(structure.DeviceId);
+        if (hubId is not null)
+        {
+            foreach (var s in topology.AllStructures())
+            {
+                if (Nexus.Service.Lighting.SmartHubLightingDeviceProvider.HubIdOf(s.DeviceId) != hubId) continue;
+                foreach (var zone in topology.ZonesFor(s, settings)) group.Add(zone.Id);
+            }
+            return group.Count > 0 ? group : [cardId];
+        }
         if (Nexus.Service.Lighting.Zones.ZoneResolution.ChainOwnedSegments(structure, settings).Count == 0)
             return [cardId];
-        var group = new List<string>();
         foreach (var zone in topology.ZonesFor(structure, settings)) group.Add(zone.Id);
         return group.Count > 0 ? group : [cardId];
     }
@@ -727,7 +738,7 @@ public static partial class DevicesRoutes
             // A chained port is controlled as a whole: the links share one
             // wire, so handing the port to a vendor app while Nexus still
             // drives one link means neither owns it.
-            foreach (var id in ChainControlGroup(body.Id, topology, store.Load()))
+            foreach (var id in ControlGroup(body.Id, topology, store.Load()))
             {
                 Nexus.Service.Lighting.LightingControlledState.SetControlled(id, body.Controlled, store);
                 if (body.Controlled)
