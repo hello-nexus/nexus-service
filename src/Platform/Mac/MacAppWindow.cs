@@ -86,11 +86,8 @@ internal static class MacAppWindow
     /// the given URL. Safe to call from any thread - dispatches onto main.
     /// </summary>
     /// <param name="navigateIfOpen">
-    /// When the window is already open, true reissues loadRequest: (the
-    /// menu-bar "Open Dashboard" / "Settings" path) and false just brings the
-    /// window forward without reloading (the kAEReopenApplication / Dock
-    /// re-click path - clicking the Dock icon must not refresh the page).
-    /// New windows always navigate to the URL regardless of this flag.
+    /// On an existing window, true reissues loadRequest: and false only brings
+    /// it forward. New windows always navigate to the URL regardless of this flag.
     /// </param>
     public static void OpenOrFocus(string url, bool navigateIfOpen = true)
     {
