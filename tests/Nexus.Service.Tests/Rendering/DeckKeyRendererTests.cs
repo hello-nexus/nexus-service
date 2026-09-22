@@ -208,6 +208,42 @@ public sealed class DeckKeyRendererTests : IDisposable
     }
 
     [Fact]
+    public void Render_AppIcon_FillsTheKeyFaceOnBlack()
+    {
+        var shortcuts = new SwitchableShortcutsProvider { Icon = SolidPng(Color.Red, 4, 4) };
+        var renderer = new DeckKeyRenderer(new DeckImageStore(_imagesDir), shortcuts, new NullProcessIconProvider());
+        var slot = new DeckSlot { Action = new DeckAction { Type = "launchApp", AppId = "app-1" } };
+
+        using var image = Decode(renderer.Render(slot, false, Mk2, 0)!);
+        // Contain-fit of a square icon covers the key edge to edge: no accent left in the corner.
+        var corner = image[1, 1];
+        Assert.True(corner.R > 150 && corner.G < 100 && corner.B < 100, $"expected the app icon at the key edge, got {corner}");
+    }
+
+    [Fact]
+    public void Render_AppIcon_LetterboxesOnTheSlotsOwnColor()
+    {
+        var shortcuts = new SwitchableShortcutsProvider { Icon = SolidPng(Color.Red, 4, 2) };
+        var renderer = new DeckKeyRenderer(new DeckImageStore(_imagesDir), shortcuts, new NullProcessIconProvider());
+        var slot = new DeckSlot { Color = "#00ff00", Action = new DeckAction { Type = "launchApp", AppId = "app-1" } };
+
+        using var image = Decode(renderer.Render(slot, false, Mk2, 0)!);
+        var top = image[Mk2.KeyPixelSize / 2, 2];
+        var center = image[Mk2.KeyPixelSize / 2, Mk2.KeyPixelSize / 2];
+        Assert.True(top.G > 150 && top.R < 100, $"expected the slot color above a 2:1 icon, got {top}");
+        Assert.True(center.R > 150 && center.G < 100, $"expected the icon across the middle, got {center}");
+    }
+
+    private static byte[] SolidPng(Color color, int width, int height)
+    {
+        using var image = new Image<Rgba32>(width, height);
+        image.Mutate(ctx => ctx.Fill(color));
+        using var ms = new MemoryStream();
+        image.SaveAsPng(ms);
+        return ms.ToArray();
+    }
+
+    [Fact]
     public void Render_ImageIconFromDeckImageStore_CoverFillsTheKey()
     {
         byte[] redPng;

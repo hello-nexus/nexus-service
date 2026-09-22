@@ -137,7 +137,7 @@ public sealed class DeckKeyRenderer
         return Convert.ToHexString(SHA256.HashData(combined));
     }
 
-    private readonly record struct DisplaySlot(DeckIcon? Icon, string? Label, string ColorHex, DeckTitleStyle? Title, bool IsFolder, bool IsBlankOff, DeckAction? EffectiveAction);
+    private readonly record struct DisplaySlot(DeckIcon? Icon, string? Label, string ColorHex, bool ExplicitColor, DeckTitleStyle? Title, bool IsFolder, bool IsBlankOff, DeckAction? EffectiveAction);
 
     /// <summary>Resolves the toggle branch (if any) and the background color, matching renderDeckKeyBitmap.ts's paintKey.</summary>
     private static DisplaySlot ResolveDisplay(DeckSlot slot, bool isToggleOn)
@@ -158,18 +158,23 @@ public sealed class DeckKeyRenderer
             effectiveAction = branch;
         }
 
+        var explicitColor = colorHex is not null;
         if (!isBlankOff && colorHex is null)
         {
             colorHex = DeckIconDefaults.CategoryColorHex(isFolder ? DeckCategory.Folder : DeckIconDefaults.Category(effectiveAction));
         }
 
-        return new DisplaySlot(icon, slot.Label, isBlankOff ? "#000000" : colorHex!, slot.Title, isFolder, isBlankOff, effectiveAction);
+        return new DisplaySlot(icon, slot.Label, isBlankOff ? "#000000" : colorHex!, explicitColor, slot.Title, isFolder, isBlankOff, effectiveAction);
     }
 
     private Image<Rgba32> RenderImage(DisplaySlot display, int size, ref bool transient, bool selected = false)
     {
         var image = new Image<Rgba32>(size, size);
-        var background = RenderKit.ParseColor(display.ColorHex, Color.Black);
+        var shouldPaintIcon = !display.IsBlankOff && (display.EffectiveAction is not null || display.IsFolder || display.Icon is not null);
+        // A loaded app icon is the key face (DeckGrid.tsx appIconFills): no
+        // accent behind it unless the slot has its own color.
+        var appIcon = shouldPaintIcon ? LoadAppIcon(display, ref transient) : null;
+        var background = appIcon is not null && !display.ExplicitColor ? Color.Black : RenderKit.ParseColor(display.ColorHex, Color.Black);
         if (selected)
         {
             background = Brighten(background, 0.25f);
@@ -181,8 +186,14 @@ public sealed class DeckKeyRenderer
             return image;
         }
 
-        var shouldPaintIcon = display.EffectiveAction is not null || display.IsFolder || display.Icon is not null;
-        if (shouldPaintIcon)
+        if (appIcon is not null)
+        {
+            using (appIcon)
+            {
+                DrawContain(image, appIcon, size);
+            }
+        }
+        else if (shouldPaintIcon)
         {
             PaintIcon(image, display, size, ref transient);
         }
@@ -238,40 +249,11 @@ public sealed class DeckKeyRenderer
             return;
         }
 
-        var appId = ResolveAppId(icon, action);
-        if (appId is not null)
+        if (ResolveAppId(icon, action) is not null && ResolveExePath(action) is { } exePath && _processIcons.GetIcon(exePath) is null)
         {
-            var appIcon = _shortcuts.GetIcon(appId);
-            if (appIcon.Length > 0)
-            {
-                using var src = Image.Load<Rgba32>(appIcon);
-                DrawCentered(image, src, cx, cy, target);
-                return;
-            }
-            var exePath = ResolveExePath(action);
-            if (exePath is not null)
-            {
-                var processIcon = _processIcons.GetIcon(exePath);
-                if (processIcon is null)
-                {
-                    transient = true;
-                    return;
-                }
-                if (processIcon.Length > 0)
-                {
-                    using var src = Image.Load<Rgba32>(processIcon);
-                    DrawCentered(image, src, cx, cy, target);
-                    return;
-                }
-            }
-            else
-            {
-                // An empty shortcut icon is what the Windows helper proxy
-                // returns while no helper is connected (boot, before the user
-                // session exists), indistinguishable from a real miss - so the
-                // fallback below is drawn but never cached.
-                transient = true;
-            }
+            // Process icon still resolving: leave the face blank, uncached.
+            transient = true;
+            return;
         }
 
         var name = icon is { Kind: "lucide" } ? icon.Value : DeckIconDefaults.AutoIconName(action, display.IsFolder);
@@ -327,6 +309,40 @@ public sealed class DeckKeyRenderer
         using var stream = asm.GetManifestResourceStream($"deck-icon-{key}.png");
         return stream is null ? null : Image.Load<Rgba32>(stream);
     });
+
+    /// <summary>
+    /// The slot's app icon (shortcut, then the exe's process icon), or null
+    /// when the slot has none or it is not available. An empty shortcut icon
+    /// is what the Windows helper proxy returns while no helper is connected
+    /// (boot, before the user session exists), indistinguishable from a real
+    /// miss, so a miss without an exe fallback marks the render transient.
+    /// </summary>
+    private Image<Rgba32>? LoadAppIcon(DisplaySlot display, ref bool transient)
+    {
+        var action = display.EffectiveAction;
+        var appId = ResolveAppId(display.Icon, action);
+        if (appId is null || display.Icon is { Kind: "emoji" } || (display.Icon is { Kind: "image" } && _imageStore.TryLoad(display.Icon.Value) is not null))
+        {
+            return null;
+        }
+        var appIcon = _shortcuts.GetIcon(appId);
+        if (appIcon.Length > 0)
+        {
+            return Image.Load<Rgba32>(appIcon);
+        }
+        var exePath = ResolveExePath(action);
+        if (exePath is null)
+        {
+            transient = true;
+            return null;
+        }
+        var processIcon = _processIcons.GetIcon(exePath);
+        return processIcon is { Length: > 0 } ? Image.Load<Rgba32>(processIcon) : null;
+    }
+
+    /// <summary>Whole-key-face letterbox fit (object-fit: contain), matching DeckGrid.module.scss .appIconFull.</summary>
+    private static void DrawContain(Image<Rgba32> image, Image<Rgba32> src, int size) =>
+        DrawCentered(image, src, size / 2f, size / 2f, size);
 
     /// <summary>Glyph-sized centered fit, matching renderDeckKeyBitmap.ts's drawCentered.</summary>
     private static void DrawCentered(Image<Rgba32> image, Image<Rgba32> src, float cx, float cy, int targetSize)
