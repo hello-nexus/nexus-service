@@ -221,6 +221,19 @@ public sealed class DeckKeyRendererTests : IDisposable
     }
 
     [Fact]
+    public void Render_SelectedAppIcon_KeepsBlackBehindTheIcon()
+    {
+        var shortcuts = new SwitchableShortcutsProvider { Icon = SolidPng(Color.Red, 4, 2) };
+        var renderer = new DeckKeyRenderer(new DeckImageStore(_imagesDir), shortcuts, new NullProcessIconProvider());
+        var slot = new DeckSlot { Action = new DeckAction { Type = "launchApp", AppId = "app-1" } };
+
+        using var image = Decode(renderer.Render(slot, false, Mk2, 0, selected: true)!);
+        // Inside the ring, above the 2:1 icon's letterbox: still black, no brightened fill.
+        var letterbox = image[Mk2.KeyPixelSize / 2, (int)(Mk2.KeyPixelSize * 0.12f)];
+        Assert.True(letterbox.R < 24 && letterbox.G < 24 && letterbox.B < 24, $"expected black in the letterbox of a selected app key, got {letterbox}");
+    }
+
+    [Fact]
     public void Render_AppIcon_LetterboxesOnTheSlotsOwnColor()
     {
         var shortcuts = new SwitchableShortcutsProvider { Icon = SolidPng(Color.Red, 4, 2) };

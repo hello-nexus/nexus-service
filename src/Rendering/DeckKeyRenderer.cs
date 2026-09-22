@@ -185,8 +185,12 @@ public sealed class DeckKeyRenderer
         {
             appIcon = LoadAppIcon(display, ref transient, out iconPending);
         }
-        var background = appIcon is not null && !display.ExplicitColor ? Color.Black : RenderKit.ParseColor(display.ColorHex, Color.Black);
-        if (selected)
+        var iconOnBlack = appIcon is not null && !display.ExplicitColor;
+        var background = iconOnBlack ? Color.Black : RenderKit.ParseColor(display.ColorHex, Color.Black);
+        // Selected: brighten a real accent; an icon on black keeps the ring
+        // only (RecentAppsGrid.tsx .selected over a transparent face), so no
+        // grey square shows through the icon's transparent letterbox.
+        if (selected && !iconOnBlack)
         {
             background = Brighten(background, 0.25f);
         }
