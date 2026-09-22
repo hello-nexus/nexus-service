@@ -9,8 +9,7 @@ namespace Nexus.Service.Devices.Detection;
 /// macOS USB enumeration: IOKit's IOUSBHostDevice registry entries first
 /// (idVendor/idProduct/USB Product Name/USB Serial Number/locationID), with
 /// the system_profiler SPUSBDataType -json parser as the fallback - on macOS
-/// 26 system_profiler prints an empty USB tree, which left every USB-gated
-/// device (Stream Deck, hubs, coolers) permanently absent.
+/// 26 system_profiler prints an empty USB tree.
 /// </summary>
 public sealed unsafe class MacUsbEnumerator : IUsbEnumerator
 {

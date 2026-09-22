@@ -12,15 +12,18 @@ namespace Nexus.Service.Peripherals.Hid;
 /// macOS <see cref="IHidDevice"/> over one opened IOHIDDeviceRef. Reports keep
 /// the hidapi convention: byte 0 is the report id, and a report id of 0 is
 /// not sent on the wire. IOKit delivers input reports only through a callback
-/// scheduled on a run loop, so a handle opened forInput runs its own thread
-/// pumping CFRunLoopRun; the callback queues each report and <see cref="Read"/>
-/// waits on that queue. Removal flips the handle to gone so Read returns -1
-/// and the caller tears down, as on Linux when hidraw reports HUP.
+/// scheduled on a run loop, so the first <see cref="Read"/> starts a thread
+/// that pumps CFRunLoopRunInMode in one-second slices; the callback queues each
+/// report and Read waits on that queue. Removal (the callback, or the run
+/// loop finishing because IOKit dropped the device source) marks the handle
+/// gone so Read returns -1 and the caller tears down, as on Linux when hidraw
+/// reports HUP.
 /// </summary>
 public sealed unsafe class MacHidDevice : IHidDevice
 {
     private const int InputQueueCap = 64;
     private static readonly TimeSpan RunLoopStartTimeout = TimeSpan.FromSeconds(2);
+    private static readonly TimeSpan RunLoopStopTimeout = TimeSpan.FromSeconds(3);
 
     private readonly object _lock = new();
     private readonly Queue<byte[]> _inputQueue = new();
@@ -31,6 +34,7 @@ public sealed unsafe class MacHidDevice : IHidDevice
     private IntPtr _runLoop;
     private IntPtr _runLoopMode;
     private Thread? _runLoopThread;
+    private volatile bool _stopRequested;
     private bool _gone;
     private bool _disposed;
 
@@ -41,7 +45,7 @@ public sealed unsafe class MacHidDevice : IHidDevice
     public int UsagePage { get; }
     public int Usage { get; }
 
-    internal MacHidDevice(IntPtr device, HidDeviceInfo info, bool forInput)
+    internal MacHidDevice(IntPtr device, HidDeviceInfo info)
     {
         _device = device;
         VendorId = info.VendorId;
@@ -52,10 +56,6 @@ public sealed unsafe class MacHidDevice : IHidDevice
         Usage = info.Usage;
         // The report buffer IOKit fills must be at least the device's largest input report.
         _inputBuffer = new byte[Math.Max(info.InputReportByteLength, 64)];
-        if (forInput)
-        {
-            StartInputLoop();
-        }
     }
 
     public bool SetFeature(ReadOnlySpan<byte> report) => SetReport(ReportTypeFeature, report);
@@ -77,6 +77,14 @@ public sealed unsafe class MacHidDevice : IHidDevice
         }
         lock (_lock)
         {
+            if (_disposed)
+            {
+                return -1;
+            }
+            if (_runLoopThread is null && !_gone)
+            {
+                StartInputLoopLocked();
+            }
             if (_inputQueue.Count == 0 && !_gone && !_disposed)
             {
                 Monitor.Wait(_lock, Math.Max(timeoutMs, 0));
@@ -139,30 +147,54 @@ public sealed unsafe class MacHidDevice : IHidDevice
         }
     }
 
-    private void StartInputLoop()
+    // Caller holds _lock.
+    private void StartInputLoopLocked()
     {
         _inputBufferHandle = GCHandle.Alloc(_inputBuffer, GCHandleType.Pinned);
         _selfHandle = GCHandle.Alloc(this);
-        using var started = new ManualResetEventSlim(false);
-        _runLoopThread = new Thread(() =>
-        {
-            _runLoop = CFRunLoopGetCurrent();
-            _runLoopMode = CfString("kCFRunLoopDefaultMode");
-            var context = GCHandle.ToIntPtr(_selfHandle);
-            IOHIDDeviceRegisterInputReportCallback(_device, (byte*)_inputBufferHandle.AddrOfPinnedObject(), _inputBuffer.Length,
-                (IntPtr)(delegate* unmanaged[Cdecl]<IntPtr, int, IntPtr, int, uint, byte*, nint, void>)&OnInputReport, context);
-            IOHIDDeviceRegisterRemovalCallback(_device,
-                (IntPtr)(delegate* unmanaged[Cdecl]<IntPtr, int, IntPtr, void>)&OnRemoved, context);
-            IOHIDDeviceScheduleWithRunLoop(_device, _runLoop, _runLoopMode);
-            started.Set();
-            CFRunLoopRun();
-            IOHIDDeviceUnscheduleFromRunLoop(_device, _runLoop, _runLoopMode);
-        })
-        { IsBackground = true, Name = $"hid-mac-input:{Serial ?? Path}" };
+        var started = new ManualResetEventSlim(false);
+        _runLoopThread = new Thread(() => RunInputLoop(started)) { IsBackground = true, Name = $"hid-mac-input:{Serial ?? Path}" };
         _runLoopThread.Start();
         if (!started.Wait(RunLoopStartTimeout))
         {
             ServiceLog.Warn($"[hid-mac] input run loop did not start ({Path})");
+        }
+    }
+
+    private void RunInputLoop(ManualResetEventSlim started)
+    {
+        // The current thread's run loop is freed with the thread, so hold a reference for Dispose's CFRunLoopStop.
+        _runLoop = CFRetain(CFRunLoopGetCurrent());
+        _runLoopMode = CfString("kCFRunLoopDefaultMode");
+        var context = GCHandle.ToIntPtr(_selfHandle);
+        var device = _device;
+        IOHIDDeviceRegisterInputReportCallback(device, (byte*)_inputBufferHandle.AddrOfPinnedObject(), _inputBuffer.Length,
+            (IntPtr)(delegate* unmanaged[Cdecl]<IntPtr, int, IntPtr, int, uint, byte*, nint, void>)&OnInputReport, context);
+        IOHIDDeviceRegisterRemovalCallback(device,
+            (IntPtr)(delegate* unmanaged[Cdecl]<IntPtr, int, IntPtr, void>)&OnRemoved, context);
+        IOHIDDeviceScheduleWithRunLoop(device, _runLoop, _runLoopMode);
+        started.Set();
+        try
+        {
+            while (!_stopRequested)
+            {
+                if (CFRunLoopRunInMode(_runLoopMode, 1.0, false) == KCfRunLoopRunFinished)
+                {
+                    break;
+                }
+            }
+        }
+        finally
+        {
+            // Nothing may reach the callbacks or the pinned buffer once this thread is gone.
+            IOHIDDeviceRegisterInputReportCallback(device, (byte*)_inputBufferHandle.AddrOfPinnedObject(), _inputBuffer.Length, IntPtr.Zero, IntPtr.Zero);
+            IOHIDDeviceRegisterRemovalCallback(device, IntPtr.Zero, IntPtr.Zero);
+            IOHIDDeviceUnscheduleFromRunLoop(device, _runLoop, _runLoopMode);
+            lock (_lock)
+            {
+                _gone = true;
+                Monitor.PulseAll(_lock);
+            }
         }
     }
 
@@ -216,6 +248,7 @@ public sealed unsafe class MacHidDevice : IHidDevice
 
     public void Dispose()
     {
+        Thread? loopThread;
         lock (_lock)
         {
             if (_disposed)
@@ -223,15 +256,24 @@ public sealed unsafe class MacHidDevice : IHidDevice
                 return;
             }
             _disposed = true;
+            loopThread = _runLoopThread;
             Monitor.PulseAll(_lock);
         }
-        if (_runLoopThread is not null)
+        var loopStopped = true;
+        if (loopThread is not null)
         {
+            _stopRequested = true;
             if (_runLoop != IntPtr.Zero)
             {
                 CFRunLoopStop(_runLoop);
             }
-            _runLoopThread.Join(RunLoopStartTimeout);
+            loopStopped = loopThread.Join(RunLoopStopTimeout);
+        }
+        if (!loopStopped)
+        {
+            // The loop still owns the device source, the pinned buffer and the callback context: leaking them beats a use after free.
+            ServiceLog.Warn($"[hid-mac] input run loop did not stop; leaking the handle ({Path})");
+            return;
         }
         var device = _device;
         _device = IntPtr.Zero;
@@ -239,6 +281,11 @@ public sealed unsafe class MacHidDevice : IHidDevice
         {
             IOHIDDeviceClose(device, 0);
             CFRelease(device);
+        }
+        if (_runLoop != IntPtr.Zero)
+        {
+            CFRelease(_runLoop);
+            _runLoop = IntPtr.Zero;
         }
         if (_runLoopMode != IntPtr.Zero)
         {

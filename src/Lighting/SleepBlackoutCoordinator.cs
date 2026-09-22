@@ -137,10 +137,10 @@ public sealed class SleepBlackoutCoordinator
     private readonly Timer _lockWakeTimer;
 
     /// <summary>
-    /// Arms and disarms the helper's lock-screen input poll. Set by the Windows
-    /// helper wiring; null everywhere else, which simply means no wake-on-input.
-    /// A delegate rather than a HelperRegistry because that type is Windows-only
-    /// and this class is not.
+    /// Arms and disarms the lock-screen input poll: the Windows helper's via
+    /// TrayBootstrap, MacLockInputWatch via MacAppBootstrap; null on Linux,
+    /// which means no wake-on-input. A delegate rather than a HelperRegistry
+    /// because that type is Windows-only and this class is not.
     /// </summary>
     public Action<bool>? LockInputWatch { get; set; }
 

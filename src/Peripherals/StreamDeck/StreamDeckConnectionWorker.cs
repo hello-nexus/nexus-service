@@ -152,7 +152,7 @@ public sealed class StreamDeckConnectionWorker : BackgroundService, IDeckSurface
     /// <summary>Lock-free hint so the animation loop skips taking _lock every frame while no ramp is running; the authoritative check is _brightnessRamps under _lock.</summary>
     private volatile bool _anyRampActive;
 
-    /// <summary>Arms and disarms the helper's lock-screen input poll (see SleepBlackoutCoordinator.LockInputWatch). Set by the Windows helper wiring; null elsewhere, which means no wake-on-input.</summary>
+    /// <summary>Arms and disarms the lock-screen input poll (see SleepBlackoutCoordinator.LockInputWatch): the Windows helper's via TrayBootstrap, MacLockInputWatch via MacAppBootstrap; null on Linux, which means no wake-on-input.</summary>
     public Action<bool>? LockInputWatch { get; set; }
 
     private sealed class BrightnessRamp

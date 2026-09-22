@@ -1,7 +1,6 @@
 using System;
 using System.Collections.Generic;
 using System.Globalization;
-using Nexus.Service.Platform;
 using static Nexus.Service.Peripherals.Hid.MacHidNative;
 
 namespace Nexus.Service.Peripherals.Hid;
@@ -107,14 +106,14 @@ public sealed unsafe class MacHidEnumerator : IHidEnumerator
         {
             return null;
         }
-        var rc = IOHIDDeviceOpen(device, 0);
-        if (rc != KIoReturnSuccess)
+        // Callers log their own open failure per retry; a TCC-denied keyboard-class device would otherwise warn every second.
+        if (IOHIDDeviceOpen(device, 0) != KIoReturnSuccess)
         {
-            ServiceLog.Warn($"[hid-mac] IOHIDDeviceOpen({path}) failed: 0x{rc:x8}");
             CFRelease(device);
             return null;
         }
-        return new MacHidDevice(device, ReadInfo(device, path), forInput);
+        // forInput needs no distinct open mode here: the input run loop starts on the first Read.
+        return new MacHidDevice(device, ReadInfo(device, path));
     }
 
     private IntPtr EnsureManagerLocked()

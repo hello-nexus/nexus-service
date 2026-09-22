@@ -48,9 +48,13 @@ internal static unsafe class MacHidNative
     [DllImport(CoreFoundation)] public static extern nuint CFGetTypeID(IntPtr cf);
     [DllImport(CoreFoundation)] public static extern nuint CFStringGetTypeID();
     [DllImport(CoreFoundation)] public static extern nuint CFNumberGetTypeID();
+    [DllImport(CoreFoundation)] public static extern IntPtr CFRetain(IntPtr cf);
     [DllImport(CoreFoundation)] public static extern IntPtr CFRunLoopGetCurrent();
-    [DllImport(CoreFoundation)] public static extern void CFRunLoopRun();
+    [DllImport(CoreFoundation)] public static extern int CFRunLoopRunInMode(IntPtr mode, double seconds, [MarshalAs(UnmanagedType.I1)] bool returnAfterSourceHandled);
     [DllImport(CoreFoundation)] public static extern void CFRunLoopStop(IntPtr runLoop);
+
+    /// <summary>CFRunLoopRunInMode result when the mode has no sources left: IOKit dropped the device source, i.e. the device is gone.</summary>
+    public const int KCfRunLoopRunFinished = 1;
 
     /// <summary>Owned CFString for an IOKit property key or run-loop mode; caller releases.</summary>
     public static IntPtr CfString(string s) => CFStringCreateWithCString(IntPtr.Zero, s, KCfStringEncodingUtf8);

@@ -17,13 +17,15 @@ internal sealed class MacLockInputWatch : IDisposable
     private const int PollPeriodMs = 250;
     private const int EmitThrottleMs = 1000;
     private const int ArmGraceMs = 500;
+    /// <summary>Two samples of the same event differ by clock rounding only; a real new event moves the time by far more.</summary>
+    private const int InputSlackMs = 50;
     private const int HidSystemState = 1;
     private const uint AnyInputEventType = uint.MaxValue;
 
     private readonly Action _onInput;
     private readonly object _lock = new();
     private Timer? _timer;
-    private double _lastSeconds;
+    private long _lastInputAtMs;
     private long _armedAtMs;
     private long _lastEmitMs;
 
@@ -46,7 +48,7 @@ internal sealed class MacLockInputWatch : IDisposable
             {
                 return;
             }
-            _lastSeconds = SecondsSinceLastInput();
+            _lastInputAtMs = LastInputAtMs();
             _armedAtMs = Environment.TickCount64;
             _lastEmitMs = 0;
             _timer = new Timer(_ => Poll(), null, PollPeriodMs, PollPeriodMs);
@@ -62,10 +64,13 @@ internal sealed class MacLockInputWatch : IDisposable
             {
                 return;
             }
-            var seconds = SecondsSinceLastInput();
-            // Without input the counter grows by one poll period per tick; a restart means a new event.
-            var sawInput = seconds < _lastSeconds + PollPeriodMs / 1000.0 - 0.1;
-            _lastSeconds = seconds;
+            // Absolute last-input time, as GetLastInputInfo on Windows: immune to timer jitter.
+            var inputAtMs = LastInputAtMs();
+            var sawInput = inputAtMs > _lastInputAtMs + InputSlackMs;
+            if (sawInput)
+            {
+                _lastInputAtMs = inputAtMs;
+            }
             var now = Environment.TickCount64;
             emit = sawInput && now - _armedAtMs >= ArmGraceMs && now - _lastEmitMs >= EmitThrottleMs;
             if (emit)
@@ -80,10 +85,10 @@ internal sealed class MacLockInputWatch : IDisposable
         }
     }
 
-    private static double SecondsSinceLastInput()
+    private static long LastInputAtMs()
     {
-        try { return CGEventSourceSecondsSinceLastEventType(HidSystemState, AnyInputEventType); }
-        catch { return double.MaxValue; }
+        try { return Environment.TickCount64 - (long)(CGEventSourceSecondsSinceLastEventType(HidSystemState, AnyInputEventType) * 1000.0); }
+        catch { return long.MinValue / 2; }
     }
 
     public void Dispose() => Set(false);

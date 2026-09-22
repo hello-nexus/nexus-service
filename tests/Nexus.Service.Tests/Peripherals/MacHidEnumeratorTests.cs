@@ -32,9 +32,9 @@ public class MacHidEnumeratorTests
         Assert.Contains(all, d => d.VendorId != 0 && d.ProductId != 0);
     }
 
-    /// <summary>Hardware-conditional: exercises open, feature get/set and a second independent handle when a Stream Deck is plugged in; a no-op otherwise.</summary>
+    /// <summary>Hardware-conditional: exercises open, a feature read and a second independent handle when a Stream Deck is plugged in; a no-op otherwise. Read-only on purpose - the running service owns the deck's brightness.</summary>
     [MacOnlyFact]
-    public void StreamDeck_WhenPresent_OpensReadsFirmwareAndSetsBrightness()
+    public void StreamDeck_WhenPresent_OpensReadsFirmwareAndIdlesOnRead()
     {
         var hid = new MacHidEnumerator();
         var deck = StreamDeckModels.All
@@ -60,12 +60,7 @@ public class MacHidEnumeratorTests
             : StreamDeckProtocol.ExtractAsciiString(request, StreamDeckProtocol.Gen2FirmwareStringOffset);
         Assert.Matches(@"^\d+\.\d+", firmware);
 
-        var brightness = deck.Model.Protocol == StreamDeckProtocolGeneration.Gen1
-            ? StreamDeckProtocol.BuildBrightnessFeature(80)
-            : StreamDeckProtocol.BuildGen2BrightnessFeature(80);
-        Assert.True(control.SetFeature(brightness));
-
-        // No key is pressed during a unit test: an idle read times out cleanly, never errors.
+        // No key is pressed during a unit test: an idle read returns 0, never the -1 of a gone device.
         Assert.Equal(0, input!.Read(new byte[deck.Model.InputReportBufferLength], 150));
     }
 }
