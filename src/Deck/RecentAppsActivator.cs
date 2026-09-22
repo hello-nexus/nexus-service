@@ -49,7 +49,35 @@ public sealed class RecentAppsActivator
         }
         if (!string.IsNullOrEmpty(entry.ExePath))
         {
+#if LINUX
+            // xdg-open on an ELF binary is a document open, not a launch: spawn it in the user's session.
+            if (OperatingSystem.IsLinux())
+            {
+                LaunchExecutable(entry.ExePath);
+                return;
+            }
+#endif
             await _system.OpenPathAsync(entry.ExePath).ConfigureAwait(false);
         }
     }
+
+#if LINUX
+    private static void LaunchExecutable(string exePath)
+    {
+        try
+        {
+            var (file, args) = Nexus.Service.Platform.Linux.LinuxSession.WrapSpawnAsSessionUser(exePath, new System.Collections.Generic.List<string>());
+            var psi = new System.Diagnostics.ProcessStartInfo(file) { UseShellExecute = false };
+            foreach (var a in args)
+            {
+                psi.ArgumentList.Add(a);
+            }
+            System.Diagnostics.Process.Start(psi)?.Dispose();
+        }
+        catch (System.Exception ex)
+        {
+            System.Console.Error.WriteLine($"[recent-apps] launch {exePath} failed: {ex.Message}");
+        }
+    }
+#endif
 }

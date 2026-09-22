@@ -1541,7 +1541,10 @@ public static class NexusServiceCollectionExtensions
         // Tells the helper to stop enumerating when the Monitoring gate is off.
         services.AddHostedService<Nexus.Service.Activity.WindowSetDemandService>();
 #elif MACOS
-        services.AddSingleton<IScreenTimeProvider, MacScreenTimeProvider>();
+        // One instance behind IScreenTimeProvider and IFocusDetailsProvider, as on Windows.
+        services.AddSingleton<MacScreenTimeProvider>();
+        services.AddSingleton<IScreenTimeProvider>(sp => sp.GetRequiredService<MacScreenTimeProvider>());
+        services.AddSingleton<IFocusDetailsProvider>(sp => sp.GetRequiredService<MacScreenTimeProvider>());
         services.AddSingleton<IAppDetectionProvider, MacAppDetectionProvider>();
         // One extractor (one AppKit worker thread) behind both icon surfaces.
         services.AddSingleton<MacAppIconExtractor>();
@@ -1559,6 +1562,7 @@ public static class NexusServiceCollectionExtensions
         services.AddSingleton<Nexus.Service.Activity.LinuxScreenTimeProvider>();
         services.AddHostedService(sp => sp.GetRequiredService<Nexus.Service.Activity.LinuxScreenTimeProvider>());
         services.AddSingleton<IScreenTimeProvider>(sp => sp.GetRequiredService<Nexus.Service.Activity.LinuxScreenTimeProvider>());
+        services.AddSingleton<IFocusDetailsProvider>(sp => sp.GetRequiredService<Nexus.Service.Activity.LinuxScreenTimeProvider>());
         services.AddSingleton<IAppDetectionProvider, StubAppDetectionProvider>();
         services.AddSingleton<IShortcutsProvider, LinuxShortcutsProvider>();
         services.AddSingleton<IProcessIconProvider, LinuxProcessIconProvider>();

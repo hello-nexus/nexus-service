@@ -18,8 +18,9 @@ public interface IScreenTimeProvider
 /// <summary>Foreground window details beyond FocusSession's web-facing shape
 /// (app name, pid, elapsed durations): the exe path, client size, and owning
 /// monitor a game session needs to resolve catalog identity and a display
-/// snapshot. Windows-only (only WindowsScreenTimeProvider implements it);
-/// consumers resolve it optionally via DI.</summary>
+/// snapshot. Every platform's screen-time provider implements it; macOS and
+/// Linux report no window size or monitor, and macOS's ExePath is the .app
+/// bundle path. Consumers resolve it optionally via DI.</summary>
 public interface IFocusDetailsProvider
 {
     FocusDetails? GetCurrentFocusDetails();

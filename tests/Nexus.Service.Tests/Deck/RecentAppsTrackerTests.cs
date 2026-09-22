@@ -60,6 +60,20 @@ public class RecentAppsTrackerTests
         Assert.Empty(ring);
     }
 
+    [Theory]
+    [InlineData("spotlight")]
+    [InlineData("control center")]
+    [InlineData("plasmashell")]
+    public void UpdateRing_ShellSurfaces_Rejected(string processKey)
+    {
+        var ring = new List<RecentApp>();
+
+        var changed = RecentAppsTracker.UpdateRing(ring, new RecentApp { ProcessKey = processKey, Name = processKey }, System.Array.Empty<string>());
+
+        Assert.False(changed);
+        Assert.Empty(ring);
+    }
+
     [Fact]
     public void UpdateRing_UserExcludedEntry_Rejected()
     {

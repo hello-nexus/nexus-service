@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
+using System.IO;
 using System.Reflection;
 using System.Security.Cryptography;
 using System.Text.RegularExpressions;
@@ -296,7 +297,11 @@ public sealed class DeckKeyRenderer
     }
 
     private static string? ResolveExePath(DeckAction? action) =>
-        action is { Type: "openFile" } && action.Path is not null && ExecutablePathRegex.IsMatch(action.Path) ? action.Path : null;
+        action is { Type: "openFile" } && action.Path is not null && IsExecutablePath(action.Path) ? action.Path : null;
+
+    // Linux executables carry no extension (a Recent Apps entry's /proc/<pid>/exe target); the icon provider keys on the basename.
+    private static bool IsExecutablePath(string path) =>
+        ExecutablePathRegex.IsMatch(path) || (OperatingSystem.IsLinux() && !Path.HasExtension(path) && File.Exists(path));
 
     private static void PaintEmoji(Image<Rgba32> image, string emoji, int size, int target)
     {

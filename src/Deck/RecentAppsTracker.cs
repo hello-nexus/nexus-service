@@ -36,7 +36,8 @@ public static class RecentAppsTracker
     public static readonly IReadOnlyCollection<string> BuiltInDenylist = new HashSet<string>(StringComparer.Ordinal)
     {
         "nexus", "nexus-overlay", "explorer", "searchhost", "startmenuexperiencehost", "shellexperiencehost",
-        "lockapp", "applicationframehost", "finder", "dock", "loginwindow",
+        "lockapp", "applicationframehost", "finder", "dock", "loginwindow", "spotlight", "control center",
+        "notification center", "wallpaper", "systemuiserver", "screensaverengine", "plasmashell", "kwin_wayland", "kwin_x11",
     };
 
     public static bool IsExcluded(string processKey, IReadOnlyCollection<string> excluded) =>

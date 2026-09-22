@@ -326,12 +326,24 @@ public sealed class RecentAppsService : BackgroundService
         }
         foreach (var processKey in pending)
         {
-            var resolved = ResolveShortcut(processKey);
+            var resolved = ResolveShortcut(processKey) ?? ResolveBundleShortcut(processKey);
             if (resolved is not null && _state.SetShortcut(processKey, resolved.Value.Id, resolved.Value.Name))
             {
                 _dirty = true;
             }
         }
+    }
+
+    /// <summary>A macOS bundle path is its own shortcut id (MacShortcutsProvider.GetById); the ".app" gate keeps this off Windows, where GetById is a helper round trip.</summary>
+    private (string Id, string Name)? ResolveBundleShortcut(string processKey)
+    {
+        var exePath = _state.RingSnapshot().FirstOrDefault(a => a.ProcessKey == processKey)?.ExePath;
+        if (exePath is null || !exePath.EndsWith(".app", StringComparison.OrdinalIgnoreCase))
+        {
+            return null;
+        }
+        var shortcut = _shortcuts.GetById(exePath);
+        return shortcut is null ? null : (shortcut.Id, shortcut.Name);
     }
 
     private void SafePersist()

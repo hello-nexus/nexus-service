@@ -116,6 +116,12 @@ internal static class MacAppBootstrap
 
         MacStatusBar.SetVisible(showIcon);
 
+        // Main thread, after AppKit is up: the focus notification is delivered on the run loop pumped below.
+        if (app.Services.GetService<Nexus.Service.Activity.IScreenTimeProvider>() is Nexus.Service.Activity.MacScreenTimeProvider screenTime)
+        {
+            screenTime.AttachWorkspaceObserver();
+        }
+
         store.OnChanged += () =>
         {
             try { MacStatusBar.SetVisible(store.Load().Monitoring.ShowMacStatusBarIcon); }

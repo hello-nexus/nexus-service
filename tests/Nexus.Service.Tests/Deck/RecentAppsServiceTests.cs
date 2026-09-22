@@ -29,11 +29,25 @@ public sealed class RecentAppsServiceTests : IDisposable
         public IReadOnlyList<AppUsage> GetTodayUsage() => Array.Empty<AppUsage>();
     }
 
+    private sealed class FakeFocusDetails : IFocusDetailsProvider
+    {
+        public FocusDetails? Current;
+        public event Action<FocusSessionEnded>? SessionEnded { add { } remove { } }
+        public FocusDetails? GetCurrentFocusDetails() => Current;
+    }
+
     private sealed class FakeShortcuts : IShortcutsProvider
     {
         public readonly List<Shortcut> All = new();
+        /// <summary>Mirrors MacShortcutsProvider: a .app path is its own id.</summary>
+        public readonly Dictionary<string, Shortcut> Bundles = new();
+        public int GetByIdCallCount;
         public IReadOnlyList<Shortcut> GetAll() => All;
-        public Shortcut? GetById(string targetId) => All.Find(s => s.Id == targetId);
+        public Shortcut? GetById(string targetId)
+        {
+            GetByIdCallCount++;
+            return All.Find(s => s.Id == targetId) ?? (Bundles.TryGetValue(targetId, out var b) ? b : null);
+        }
         public byte[] GetIcon(string targetId) => Array.Empty<byte>();
         public bool Launch(string targetId) => true;
         public string ResolveProcessName(string targetId) => GetById(targetId)?.ProcessName ?? "";
@@ -53,6 +67,7 @@ public sealed class RecentAppsServiceTests : IDisposable
     private readonly StubDeviceHostFactory _factory;
     private readonly FakeScreenTime _screenTime = new();
     private readonly FakeShortcuts _shortcuts = new();
+    private readonly FakeFocusDetails _focusDetails = new();
     private readonly IDisposable _deckTopicSub;
     private RecentAppsService? _service;
 
@@ -87,7 +102,8 @@ public sealed class RecentAppsServiceTests : IDisposable
             _shortcuts,
             sp.GetRequiredService<MultiplexHub>(),
             sp.GetRequiredService<Nexus.Service.Peripherals.StreamDeck.StreamDeckConnectionWorker>(),
-            sp.GetRequiredService<RecentAppsState>());
+            sp.GetRequiredService<RecentAppsState>(),
+            focusDetails: _focusDetails);
     }
 
     private void Focus(string app)
@@ -161,6 +177,32 @@ public sealed class RecentAppsServiceTests : IDisposable
         Assert.Equal("shortcut-chrome", entry?.ShortcutId);
         // The key label is the Start-menu name, not the focus signal's process name.
         Assert.Equal("Google Chrome", entry?.Name);
+    }
+
+    [Fact]
+    public void FocusChange_MacBundlePath_ResolvesShortcutFromTheBundleWhenNoInstalledAppMatches()
+    {
+        const string bundle = "/System/Applications/Utilities/Terminal.app";
+        _shortcuts.Bundles[bundle] = new Shortcut { Id = bundle, Name = "Terminal", Path = bundle, ProcessName = "Terminal" };
+        _focusDetails.Current = new FocusDetails(42, "Terminal", 0, bundle, 0, 0, null);
+
+        Focus("Terminal");
+
+        var entry = State.RingSnapshot().Find(a => a.ProcessKey == "terminal");
+        Assert.Equal(bundle, entry?.ExePath);
+        Assert.Equal(bundle, entry?.ShortcutId);
+        Assert.Equal("Terminal", entry?.Name);
+    }
+
+    [Fact]
+    public void FocusChange_NonBundleExePath_NeverAsksGetById()
+    {
+        _focusDetails.Current = new FocusDetails(42, "notepad", 0, @"C:\Windows\notepad.exe", 0, 0, null);
+
+        Focus("notepad");
+
+        Assert.Null(State.RingSnapshot().Find(a => a.ProcessKey == "notepad")?.ShortcutId);
+        Assert.Equal(0, _shortcuts.GetByIdCallCount);
     }
 
     /// <summary>

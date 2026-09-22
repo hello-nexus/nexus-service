@@ -22,8 +22,8 @@ namespace Nexus.Service.Games;
 /// IFocusDetailsProvider.SessionEnded is raised synchronously from the
 /// helper pipe's read loop, so its handler only enqueues the event and
 /// returns; the poll loop drains the queue and does the actual close/persist
-/// work on its own background task. Registered as a hosted service only
-/// where IFocusDetailsProvider is registered (WindowsScreenTimeProvider).
+/// work on its own background task. Windows-only (the fps provider is), so
+/// its registration is #if WINDOWS in NexusServiceCollectionExtensions.
 /// </summary>
 public sealed class FpsSessionRecorder : IHostedService, IDisposable
 {

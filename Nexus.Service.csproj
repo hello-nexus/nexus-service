@@ -829,6 +829,7 @@
     <Compile Remove="src/Platform/Mac/MacProcInfo.cs" />
     <Compile Remove="src/Platform/Mac/MacSmc.cs" />
     <Compile Remove="src/Platform/Mac/MacStatusBar.cs" />
+    <Compile Remove="src/Platform/Mac/MacWorkspaceFocusObserver.cs" />
     <Compile Remove="src/Sensors/MacSensorProvider.cs" />
   </ItemGroup>
 
