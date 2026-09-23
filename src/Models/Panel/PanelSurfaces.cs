@@ -22,8 +22,7 @@ public static class PanelSurfaces
 
     /// <summary>
     /// Round cooler glass driven by pushed JPEG frames. Unlike <see cref="Kraken"/> this
-    /// is not one model's resolution: the panel record carries the real pixel size, so a
-    /// 480x480 Galahad II LCD and a 240x240 ID-Cooling FX-LCD share it.
+    /// is not one model's resolution: the panel record carries the real pixel size.
     /// </summary>
     public const string LcdRound = "lcd-round";
 
