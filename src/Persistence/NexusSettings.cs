@@ -1432,6 +1432,39 @@ public sealed class LianLiWirelessSettings
 {
     /// <summary>Per-screen LCD content and display settings, keyed by the SL-LCD Wireless screen's 16-hex serial.</summary>
     public Dictionary<string, LianLiWirelessScreenSettings> Screens { get; set; } = new();
+
+    /// <summary>Per-cable lighting mode for Strimer Wireless cables, keyed by the cable's MAC hex (uppercase).</summary>
+    public Dictionary<string, LianLiWirelessStrimerSettings> Strimers { get; set; } = new();
+}
+
+/// <summary>
+/// What a Strimer Wireless cable shows: the lighting engine's live frames
+/// (<see cref="ModeCustom"/>), or an animation uploaded once and played by the
+/// cable on its own (an effect key, or <see cref="ModePerLane"/>).
+/// </summary>
+public sealed class LianLiWirelessStrimerSettings
+{
+    public const string ModeCustom = "custom";
+    public const string ModePerLane = "perLane";
+
+    public string Mode { get; set; } = ModeCustom;
+    /// <summary>0 slowest .. 4 fastest.</summary>
+    public int Speed { get; set; } = 2;
+    /// <summary>0 forward, 1 reverse.</summary>
+    public int Direction { get; set; }
+    /// <summary>0 off .. 4 full.</summary>
+    public int Brightness { get; set; } = 4;
+    /// <summary>"#RRGGBB" user colours; empty = the effect's default palette.</summary>
+    public List<string> Colors { get; set; } = new();
+    /// <summary>One entry per lane, used by <see cref="ModePerLane"/>.</summary>
+    public List<LianLiWirelessStrimerLane> Lanes { get; set; } = new();
+}
+
+public sealed class LianLiWirelessStrimerLane
+{
+    public string Mode { get; set; } = "rainbow";
+    public int Direction { get; set; }
+    public string Color { get; set; } = "#FF0000";
 }
 
 public sealed class StreamDeckSettings

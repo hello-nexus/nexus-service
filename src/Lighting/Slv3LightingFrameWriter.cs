@@ -44,6 +44,11 @@ public sealed class Slv3LightingFrameWriter : IHostedService, IDisposable
     // firmware were looping multiple frames, which direct mode never sends.
     private const int IntervalMs = 100;
 
+    // Floor between two uploads of a Strimer's pre-rendered animation. An
+    // upload is up to ~56 RF payloads, so a brightness drag sends its settled
+    // value instead of every step.
+    private const int PresetMinPushIntervalMs = 500;
+
     // SegmentFrameComposer already applies the zone's LightingDevicePrefs
     // brightness and the global brightness to the composed colors, so this
     // pass-through leaves Slv3RgbFrame's brightness formula a no-op and lets
@@ -153,18 +158,6 @@ public sealed class Slv3LightingFrameWriter : IHostedService, IDisposable
 
         var minPushIntervalMs = MinPushIntervalMs * Math.Max(1, structures.Count);
 
-        Slv3FanInfo? FindFanInfo(string macHex)
-        {
-            foreach (var fan in _hub.State.Fans)
-            {
-                if (string.Equals(fan.Mac, macHex, StringComparison.OrdinalIgnoreCase))
-                {
-                    return fan;
-                }
-            }
-            return null;
-        }
-
         foreach (var structure in structures)
         {
             var macHex = Slv3LightingDeviceProvider.MacFromDeviceId(structure.DeviceId);
@@ -178,6 +171,14 @@ public sealed class Slv3LightingFrameWriter : IHostedService, IDisposable
                 // so its reactive/onboard mode can take over.
                 continue;
             }
+            if (Slv3LightingDeviceProvider.IsStrimerStructure(structure)
+                && settings.Devices.LianLiWireless.Strimers.TryGetValue(macHex, out var strimer)
+                && strimer.Mode != LianLiWirelessStrimerSettings.ModeCustom
+                && TickPreset(macHex, zones, disabled, strimer, globalBrightness, nowTicks))
+            {
+                continue;
+            }
+
             SegmentFrameComposer.EnsureBuffers(structure, ref _segmentBuffers);
             SegmentFrameComposer.Compose(
                 structure, zones, devices, disabled, uncontrolled, prefs, globalBrightness, 1.0, nowTicks, _identify, _segmentBuffers);
@@ -261,6 +262,142 @@ public sealed class Slv3LightingFrameWriter : IHostedService, IDisposable
                 _lastPushTicks.Remove(mac);
             }
         }
+    }
+
+    private Slv3FanInfo? FindFanInfo(string macHex)
+    {
+        foreach (var fan in _hub.State.Fans)
+        {
+            if (string.Equals(fan.Mac, macHex, StringComparison.OrdinalIgnoreCase))
+            {
+                return fan;
+            }
+        }
+        return null;
+    }
+
+    /// <summary>
+    /// Uploads a Strimer's pre-rendered animation when its settings, brightness
+    /// or power changed, or when the echo shows the last upload was lost; the
+    /// cable plays it on its own in between. False when the mode cannot be
+    /// rendered, so the caller streams the engine frames instead.
+    /// </summary>
+    private bool TickPreset(
+        string macHex, IReadOnlyList<ResolvedZone> zones, List<string> disabled, LianLiWirelessStrimerSettings strimer,
+        float globalBrightness, long nowTicks)
+    {
+        var fan = FindFanInfo(macHex);
+        if (fan is null)
+        {
+            return true;
+        }
+        var (lanes, ledsPerLane) = Slv3Protocol.StrimerGeometryFor((byte)fan.DevType);
+        if (lanes == 0)
+        {
+            return false;
+        }
+
+        var poweredOff = zones.Count > 0;
+        foreach (var zone in zones)
+        {
+            if (!disabled.Contains(zone.Id))
+            {
+                poweredOff = false;
+                break;
+            }
+        }
+        var brightnessPercent = poweredOff || _engine.Blackout
+            ? 0
+            : (int)Math.Round(Math.Clamp(strimer.Brightness, 0, 4) * 25 * globalBrightness);
+
+        var sig = PresetSignature(strimer, brightnessPercent);
+        _lastSent.TryGetValue(macHex, out var last);
+        var sinceLastPushMs = _lastPushTicks.TryGetValue(macHex, out var lastPush)
+            ? (nowTicks - lastPush) / TimeSpan.TicksPerMillisecond
+            : long.MaxValue;
+        var confirmed = fan.EffectIndex;
+        var lost = !string.IsNullOrEmpty(last.EffectIndexHex)
+            && confirmed.Length > 0
+            && sinceLastPushMs >= DriftConfirmWindowMs
+            && !string.Equals(confirmed, last.EffectIndexHex, StringComparison.OrdinalIgnoreCase);
+        if ((last.Hash == sig && !lost) || sinceLastPushMs < PresetMinPushIntervalMs)
+        {
+            return true;
+        }
+
+        var ledCount = lanes * ledsPerLane;
+        Slv3StrimerAnimation animation;
+        if (brightnessPercent == 0)
+        {
+            animation = new Slv3StrimerAnimation { Frames = new byte[ledCount * 3], FrameCount = 1, IntervalMs = IntervalMs };
+        }
+        else
+        {
+            try
+            {
+                animation = RenderPreset(strimer, lanes, ledsPerLane);
+            }
+            catch (ArgumentException)
+            {
+                return false;
+            }
+        }
+
+        if (_hub.SendRgbAnimation(
+                macHex, animation.Frames, ledCount, animation.FrameCount, animation.IntervalMs, brightnessPercent, out var sentEffectIndexHex))
+        {
+            _lastSent[macHex] = (sig, sentEffectIndexHex);
+            _lastPushTicks[macHex] = nowTicks;
+        }
+        return true;
+    }
+
+    private static Slv3StrimerAnimation RenderPreset(LianLiWirelessStrimerSettings strimer, int lanes, int ledsPerLane)
+    {
+        if (strimer.Mode == LianLiWirelessStrimerSettings.ModePerLane)
+        {
+            var laneSettings = new List<(string Key, int Direction, RgbColor Color)>(lanes);
+            for (var i = 0; i < lanes; i++)
+            {
+                var lane = i < strimer.Lanes.Count ? strimer.Lanes[i] : new LianLiWirelessStrimerLane();
+                laneSettings.Add((lane.Mode, lane.Direction, ParseColor(lane.Color)));
+            }
+            return Slv3StrimerEffects.RenderPerLane(lanes, ledsPerLane, strimer.Speed, laneSettings);
+        }
+        var colors = new List<RgbColor>(strimer.Colors.Count);
+        foreach (var hex in strimer.Colors)
+        {
+            colors.Add(ParseColor(hex));
+        }
+        return Slv3StrimerEffects.Render(strimer.Mode, lanes, ledsPerLane, strimer.Speed, strimer.Direction, colors);
+    }
+
+    private static RgbColor ParseColor(string hex)
+    {
+        var s = hex.StartsWith('#') ? hex[1..] : hex;
+        return s.Length == 6 && int.TryParse(s, System.Globalization.NumberStyles.HexNumber, null, out var v)
+            ? new RgbColor((byte)(v >> 16), (byte)(v >> 8), (byte)v)
+            : new RgbColor(0, 0, 0);
+    }
+
+    private static int PresetSignature(LianLiWirelessStrimerSettings strimer, int brightnessPercent)
+    {
+        var hc = new HashCode();
+        hc.Add(strimer.Mode);
+        hc.Add(strimer.Speed);
+        hc.Add(strimer.Direction);
+        hc.Add(brightnessPercent);
+        foreach (var c in strimer.Colors)
+        {
+            hc.Add(c);
+        }
+        foreach (var lane in strimer.Lanes)
+        {
+            hc.Add(lane.Mode);
+            hc.Add(lane.Direction);
+            hc.Add(lane.Color);
+        }
+        return hc.ToHashCode();
     }
 
     private void EnsureWireBuffer(int totalLeds)

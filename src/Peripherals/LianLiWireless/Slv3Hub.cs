@@ -972,7 +972,21 @@ public sealed class Slv3Hub : IDisposable
     /// device-list echo to detect a dropped push.
     /// </summary>
     public bool SendRgbFrame(
-        string macHex, ReadOnlySpan<RgbColor> leds, int brightnessPercent, int intervalMs, out string effectIndexHex)
+        string macHex, ReadOnlySpan<RgbColor> leds, int brightnessPercent, int intervalMs, out string effectIndexHex) =>
+        SendRgbData(macHex, Slv3RgbFrame.BuildFrameBuffer(leds, brightnessPercent), leds.Length, 1, intervalMs, out effectIndexHex);
+
+    /// <summary>
+    /// <see cref="SendRgbFrame"/> for a looping animation of
+    /// <paramref name="frameCount"/> frames (R,G,B per LED, frame-major) that
+    /// the chain plays on its own at <paramref name="intervalMs"/> per frame.
+    /// </summary>
+    public bool SendRgbAnimation(
+        string macHex, ReadOnlySpan<byte> frames, int ledCount, int frameCount, double intervalMs,
+        int brightnessPercent, out string effectIndexHex) =>
+        SendRgbData(macHex, Slv3RgbFrame.BuildFrameBuffer(frames, brightnessPercent), ledCount, frameCount, intervalMs, out effectIndexHex);
+
+    private bool SendRgbData(
+        string macHex, byte[] raw, int ledCount, int frameCount, double intervalMs, out string effectIndexHex)
     {
         effectIndexHex = "";
         if (!TryParseMac(macHex, out var mac))
@@ -989,7 +1003,6 @@ public sealed class Slv3Hub : IDisposable
                 return false;
             }
 
-            var raw = Slv3RgbFrame.BuildFrameBuffer(leds, brightnessPercent);
             byte[] compressed;
             try
             {
@@ -1002,7 +1015,7 @@ public sealed class Slv3Hub : IDisposable
 
             effectIndex = Slv3RgbFrame.BuildEffectIndex(DateTimeOffset.UtcNow.ToUnixTimeMilliseconds());
             packets = Slv3RgbFrame.BuildPackets(
-                record.Mac, _masterMac, effectIndex, compressed, leds.Length, totalFrames: 1, intervalMs);
+                record.Mac, _masterMac, effectIndex, compressed, ledCount, frameCount, intervalMs);
             channel = record.Channel;
             rxType = record.RxType;
         }
