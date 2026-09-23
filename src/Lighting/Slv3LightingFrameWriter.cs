@@ -172,10 +172,9 @@ public sealed class Slv3LightingFrameWriter : IHostedService, IDisposable
                 // so its reactive/onboard mode can take over.
                 continue;
             }
-            if (Slv3LightingDeviceProvider.IsStrimerStructure(structure)
-                && settings.Devices.LianLiWireless.Strimers.TryGetValue(macHex, out var strimer)
-                && strimer.Mode != LianLiWirelessStrimerSettings.ModeCustom
-                && TickPreset(macHex, zones, disabled, strimer, globalBrightness, nowTicks))
+            if (settings.Devices.LianLiWireless.Chains.TryGetValue(macHex, out var chainLighting)
+                && chainLighting.Mode != LianLiWirelessChainLighting.ModeCustom
+                && TickPreset(macHex, structure, zones, disabled, chainLighting, globalBrightness, nowTicks))
             {
                 continue;
             }
@@ -278,14 +277,14 @@ public sealed class Slv3LightingFrameWriter : IHostedService, IDisposable
     }
 
     /// <summary>
-    /// Uploads a Strimer's pre-rendered animation when its settings, brightness
+    /// Uploads a chain's pre-rendered animation when its settings, brightness
     /// or power changed, or when the echo shows the last upload was lost; the
-    /// cable plays it on its own in between. False when the mode cannot be
+    /// chain plays it on its own in between. False when the mode cannot be
     /// rendered, so the caller streams the engine frames instead.
     /// </summary>
     private bool TickPreset(
-        string macHex, IReadOnlyList<ResolvedZone> zones, List<string> disabled, LianLiWirelessStrimerSettings strimer,
-        float globalBrightness, long nowTicks)
+        string macHex, DeviceStructure structure, IReadOnlyList<ResolvedZone> zones, List<string> disabled,
+        LianLiWirelessChainLighting lighting, float globalBrightness, long nowTicks)
     {
         var fan = FindFanInfo(macHex);
         if (fan is null)
@@ -300,8 +299,14 @@ public sealed class Slv3LightingFrameWriter : IHostedService, IDisposable
                 return false;
             }
         }
+        var isStrimer = Slv3LightingDeviceProvider.IsStrimerStructure(structure);
         var (lanes, ledsPerLane) = Slv3Protocol.StrimerGeometryFor((byte)fan.DevType);
-        if (lanes == 0)
+        var family = Slv3Protocol.ClassifyFanFamily((byte)fan.FanType);
+        var fanCount = isStrimer
+            ? 0
+            : structure.Segments[Slv3LightingDeviceProvider.InnerSegment].LedCount / Slv3LightingDeviceProvider.RingLedsFor(fan);
+        var ledCount = isStrimer ? lanes * ledsPerLane : fanCount * Slv3Protocol.LedsPerFanFor(family);
+        if (ledCount <= 0 || (!isStrimer && (family == Slv3FanFamily.Unknown || fanCount > Slv3FanEffects.MaxFans)))
         {
             return false;
         }
@@ -317,9 +322,9 @@ public sealed class Slv3LightingFrameWriter : IHostedService, IDisposable
         }
         var brightnessPercent = poweredOff || _engine.Blackout
             ? 0
-            : (int)Math.Round(Math.Clamp(strimer.Brightness, 0, 4) * 25 * globalBrightness);
+            : (int)Math.Round(Math.Clamp(lighting.Brightness, 0, 4) * 25 * globalBrightness);
 
-        var sig = PresetSignature(strimer, brightnessPercent);
+        var sig = PresetSignature(lighting, brightnessPercent);
         _lastSent.TryGetValue(macHex, out var last);
         var sinceLastPushMs = _lastPushTicks.TryGetValue(macHex, out var lastPush)
             ? (nowTicks - lastPush) / TimeSpan.TicksPerMillisecond
@@ -334,7 +339,6 @@ public sealed class Slv3LightingFrameWriter : IHostedService, IDisposable
             return true;
         }
 
-        var ledCount = lanes * ledsPerLane;
         Slv3StrimerAnimation animation;
         if (brightnessPercent == 0)
         {
@@ -344,7 +348,9 @@ public sealed class Slv3LightingFrameWriter : IHostedService, IDisposable
         {
             try
             {
-                animation = RenderPreset(strimer, lanes, ledsPerLane);
+                animation = isStrimer
+                    ? RenderStrimerPreset(lighting, lanes, ledsPerLane)
+                    : Slv3FanEffects.Render(family, lighting.Mode, fanCount, lighting.Speed, lighting.Direction, ParseColors(lighting.Colors));
             }
             catch (ArgumentException)
             {
@@ -361,24 +367,29 @@ public sealed class Slv3LightingFrameWriter : IHostedService, IDisposable
         return true;
     }
 
-    private static Slv3StrimerAnimation RenderPreset(LianLiWirelessStrimerSettings strimer, int lanes, int ledsPerLane)
+    private static Slv3StrimerAnimation RenderStrimerPreset(LianLiWirelessChainLighting lighting, int lanes, int ledsPerLane)
     {
-        if (strimer.Mode == LianLiWirelessStrimerSettings.ModePerLane)
+        if (lighting.Mode == LianLiWirelessChainLighting.ModePerLane)
         {
             var laneSettings = new List<(string Key, int Direction, RgbColor Color)>(lanes);
             for (var i = 0; i < lanes; i++)
             {
-                var lane = i < strimer.Lanes.Count ? strimer.Lanes[i] : new LianLiWirelessStrimerLane();
+                var lane = i < lighting.Lanes.Count ? lighting.Lanes[i] : new LianLiWirelessLane();
                 laneSettings.Add((lane.Mode, lane.Direction, ParseColor(lane.Color)));
             }
-            return Slv3StrimerEffects.RenderPerLane(lanes, ledsPerLane, strimer.Speed, laneSettings);
+            return Slv3StrimerEffects.RenderPerLane(lanes, ledsPerLane, lighting.Speed, laneSettings);
         }
-        var colors = new List<RgbColor>(strimer.Colors.Count);
-        foreach (var hex in strimer.Colors)
+        return Slv3StrimerEffects.Render(lighting.Mode, lanes, ledsPerLane, lighting.Speed, lighting.Direction, ParseColors(lighting.Colors));
+    }
+
+    private static List<RgbColor> ParseColors(List<string> hexes)
+    {
+        var colors = new List<RgbColor>(hexes.Count);
+        foreach (var hex in hexes)
         {
             colors.Add(ParseColor(hex));
         }
-        return Slv3StrimerEffects.Render(strimer.Mode, lanes, ledsPerLane, strimer.Speed, strimer.Direction, colors);
+        return colors;
     }
 
     private static RgbColor ParseColor(string hex)
@@ -389,18 +400,18 @@ public sealed class Slv3LightingFrameWriter : IHostedService, IDisposable
             : new RgbColor(0, 0, 0);
     }
 
-    private static int PresetSignature(LianLiWirelessStrimerSettings strimer, int brightnessPercent)
+    private static int PresetSignature(LianLiWirelessChainLighting lighting, int brightnessPercent)
     {
         var hc = new HashCode();
-        hc.Add(strimer.Mode);
-        hc.Add(strimer.Speed);
-        hc.Add(strimer.Direction);
+        hc.Add(lighting.Mode);
+        hc.Add(lighting.Speed);
+        hc.Add(lighting.Direction);
         hc.Add(brightnessPercent);
-        foreach (var c in strimer.Colors)
+        foreach (var c in lighting.Colors)
         {
             hc.Add(c);
         }
-        foreach (var lane in strimer.Lanes)
+        foreach (var lane in lighting.Lanes)
         {
             hc.Add(lane.Mode);
             hc.Add(lane.Direction);

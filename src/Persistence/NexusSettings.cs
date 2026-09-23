@@ -1434,7 +1434,7 @@ public sealed class LianLiWirelessSettings
     public Dictionary<string, LianLiWirelessScreenSettings> Screens { get; set; } = new();
 
     /// <summary>Per-cable lighting mode for Strimer Wireless cables, keyed by the cable's MAC hex (uppercase).</summary>
-    public Dictionary<string, LianLiWirelessStrimerSettings> Strimers { get; set; } = new();
+    public Dictionary<string, LianLiWirelessChainLighting> Chains { get; set; } = new();
 }
 
 /// <summary>
@@ -1442,7 +1442,7 @@ public sealed class LianLiWirelessSettings
 /// (<see cref="ModeCustom"/>), or an animation uploaded once and played by the
 /// cable on its own (an effect key, or <see cref="ModePerLane"/>).
 /// </summary>
-public sealed class LianLiWirelessStrimerSettings
+public sealed class LianLiWirelessChainLighting
 {
     public const string ModeCustom = "custom";
     public const string ModePerLane = "perLane";
@@ -1459,10 +1459,10 @@ public sealed class LianLiWirelessStrimerSettings
     /// <summary>"#RRGGBB" user colours; empty = the effect's default palette.</summary>
     public List<string> Colors { get; set; } = new();
     /// <summary>One entry per lane, used by <see cref="ModePerLane"/>.</summary>
-    public List<LianLiWirelessStrimerLane> Lanes { get; set; } = new();
+    public List<LianLiWirelessLane> Lanes { get; set; } = new();
 }
 
-public sealed class LianLiWirelessStrimerLane
+public sealed class LianLiWirelessLane
 {
     public string Mode { get; set; } = "rainbow";
     public int Direction { get; set; }

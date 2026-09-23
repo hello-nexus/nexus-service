@@ -130,13 +130,13 @@ public class Slv3LightingFrameWriterTests
         return (hub, tx, store, engine, writer);
     }
 
-    private static void SetStrimer(InMemoryConfigStore store, Action<LianLiWirelessStrimerSettings> edit) => store.Update(s =>
+    private static void SetStrimer(InMemoryConfigStore store, Action<LianLiWirelessChainLighting> edit) => store.Update(s =>
     {
         var key = Convert.ToHexString(FanMac);
-        if (!s.Devices.LianLiWireless.Strimers.TryGetValue(key, out var ls))
+        if (!s.Devices.LianLiWireless.Chains.TryGetValue(key, out var ls))
         {
-            ls = new LianLiWirelessStrimerSettings();
-            s.Devices.LianLiWireless.Strimers[key] = ls;
+            ls = new LianLiWirelessChainLighting();
+            s.Devices.LianLiWireless.Chains[key] = ls;
         }
         edit(ls);
     });
@@ -270,11 +270,33 @@ public class Slv3LightingFrameWriterTests
     }
 
     [Fact]
+    public void Tick_uploads_a_fan_chain_preset_sized_to_its_fans()
+    {
+        var now = 0L;
+        var (hub, net, tx) = Slv3TestHub.CreateConnected();
+        net.Fans.Add(new Slv3TestHub.SimulatedFan { Mac = FanMac, MasterMac = net.MasterMac, RxType = 1, FanCount = 3, FansType = 24 });
+        Assert.True(hub.DriveTick());
+        var store = new InMemoryConfigStore();
+        var identify = new Np50IdentifyTracker();
+        var provider = new Slv3LightingDeviceProvider(hub, store, identify);
+        var engine = new LightingEngine();
+        engine.UpdateDevices(provider.BuildFrames(0).ToArray());
+        var writer = new Slv3LightingFrameWriter(engine, hub, store, identify, provider, () => now);
+        SetStrimer(store, ls => ls.Mode = "rainbow");
+
+        writer.Tick();
+
+        var header = LastRgbHeader(tx);
+        Assert.True(((header[25] << 8) | header[26]) > 1);
+        Assert.Equal(3 * Slv3Protocol.LedsPerFanFor(Slv3FanFamily.Slv3Lcd), header[27]);
+    }
+
+    [Fact]
     public void Tick_streams_engine_frames_to_a_strimer_in_custom_mode()
     {
         var now = 0L;
         var (_, tx, store, _, writer) = CreateStrimerSetup(() => now);
-        SetStrimer(store, ls => ls.Mode = LianLiWirelessStrimerSettings.ModeCustom);
+        SetStrimer(store, ls => ls.Mode = LianLiWirelessChainLighting.ModeCustom);
 
         writer.Tick();
 

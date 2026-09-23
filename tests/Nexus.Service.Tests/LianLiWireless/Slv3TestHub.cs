@@ -41,6 +41,8 @@ internal static class Slv3TestHub
         public byte RxType { get; set; }
         public byte DevType { get; set; }
         public byte FanCount { get; set; } = 1;
+        /// <summary>fans_type byte reported for every port; 0 = unclassified.</summary>
+        public byte FansType { get; set; }
         public byte[] EffectIndex { get; set; } = new byte[4];
     }
 
@@ -140,6 +142,7 @@ internal static class Slv3TestHub
                 rec[13] = fan.RxType;
                 rec[18] = fan.DevType;
                 rec[19] = fan.FanCount;
+                for (var p = 0; p < Slv3Protocol.PortsPerRecord; p++) rec[24 + p] = fan.FansType;
                 fan.EffectIndex.CopyTo(rec.Slice(20, 4));
                 rec[41] = Slv3Protocol.RecordValidator;
             }
