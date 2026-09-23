@@ -140,7 +140,7 @@ public static partial class Slv3StrimerEffects
         return resolved;
     }
 
-    private static double ScaledInterval(int speed, double baseMs) => baseMs * SpeedMultiplier[speed];
+    internal static double ScaledInterval(int speed, double baseMs) => baseMs * SpeedMultiplier[speed];
 
     /// <summary>Shared per-effect render state: geometry, user intent and resolved colors.</summary>
     private readonly struct EffectContext
@@ -160,6 +160,4 @@ public static partial class Slv3StrimerEffects
         public int Speed { get; }
         public RgbColor[] Colors { get; }
     }
-
-    private readonly record struct RawAnimation(byte[] Frames, int FrameCount, double IntervalMs);
 }

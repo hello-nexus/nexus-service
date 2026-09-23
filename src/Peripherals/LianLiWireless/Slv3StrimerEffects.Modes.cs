@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using DeterministicRandom = Nexus.Service.Peripherals.LianLiWireless.Slv3WirelessEffectMath.DeterministicRandom;
 using RgbColor = Nexus.Service.Peripherals.Hyte.Np50.RgbColor;
 
 namespace Nexus.Service.Peripherals.LianLiWireless;
