@@ -89,8 +89,11 @@ public sealed class Slv3Transport : ISlv3Transport
 
     private readonly Microsoft.Win32.SafeHandles.SafeFileHandle _fileHandle;
     private readonly IntPtr _winUsbHandle;
+    private const int ErrorSemTimeout = 121;
+
     private readonly object _ioLock = new();
     private bool _disposed;
+    private bool _dead;
 
     public Slv3Transport(string devicePath, Slv3DongleRole role)
     {
@@ -136,7 +139,7 @@ public sealed class Slv3Transport : ISlv3Transport
         }
     }
 
-    public bool IsOpen => !_disposed && !_fileHandle.IsInvalid && !_fileHandle.IsClosed;
+    public bool IsOpen => !_disposed && !_dead && !_fileHandle.IsInvalid && !_fileHandle.IsClosed;
     public Slv3DongleRole Role { get; }
     public string PortName { get; }
 
@@ -157,8 +160,23 @@ public sealed class Slv3Transport : ISlv3Transport
                 // command-echo check. L-Connect flushes before every poll.
                 Slv3WinUsbInterop.WinUsb_FlushPipe(_winUsbHandle, Slv3Protocol.ReadPipeId);
             }
-            return Slv3WinUsbInterop.WinUsb_WritePipe(
-                _winUsbHandle, Slv3Protocol.WritePipeId, buffer, (uint)buffer.Length, out _, IntPtr.Zero);
+            if (Slv3WinUsbInterop.WinUsb_WritePipe(
+                _winUsbHandle, Slv3Protocol.WritePipeId, buffer, (uint)buffer.Length, out _, IntPtr.Zero))
+            {
+                return true;
+            }
+            // Anything but a timeout means the device behind this handle is
+            // gone: an RX reset re-enumerates the TX, and every later write on
+            // the old handle fails. Closing it lets the hub see the link down
+            // and reconnect instead of writing into nothing.
+            var err = Marshal.GetLastWin32Error();
+            if (err != ErrorSemTimeout && !_dead)
+            {
+                _dead = true;
+                Nexus.Service.Platform.ServiceLog.Warn(
+                    $"[lianli-wireless] {Role} write failed ({err}), handle closed");
+            }
+            return false;
         }
     }
 
