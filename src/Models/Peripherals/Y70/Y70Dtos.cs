@@ -14,6 +14,13 @@ public class Y70RotationParams : ApiResponse
     public bool? ForceOrientation { get; set; }
 }
 
+public class Y70CompatibilityRenderingParams : ApiResponse
+{
+    public bool Enabled { get; set; }
+    /// <summary>GET only: the panel kiosk honours the setting (Windows, nexus-overlay).</summary>
+    public bool Supported { get; set; }
+}
+
 public class Y70BrightnessResponse : ApiResponse
 {
     public int Brightness { get; set; }

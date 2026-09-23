@@ -432,6 +432,8 @@ public sealed class UiSettings
     /// falls back to its local copy, so a machine-wiped browser recovers the
     /// pin from here instead of losing it (OemAppSeeded blocks a reseed).</summary>
     public List<string>? PinnedSidebarApps { get; set; }
+    /// <summary>User-dragged order of the sidebar's unpinned apps (below the separator). Null until the user reorders; the web then sorts them by name.</summary>
+    public List<string>? SidebarAppOrder { get; set; }
     /// <summary>Per-page density of the dashboard lighting/cooling pages, "simple" or "advanced"; migration seeds pre-existing installs to "advanced".</summary>
     public string LightingDashboardMode { get; set; } = "simple";
     public string CoolingDashboardMode { get; set; } = "simple";
@@ -464,6 +466,7 @@ public sealed class UiSettingsPatch
     public List<string>? ConflictAutoKillExclusions { get; set; }
     public bool? OemAppSeeded { get; set; }
     public List<string>? PinnedSidebarApps { get; set; }
+    public List<string>? SidebarAppOrder { get; set; }
     public string? LightingDashboardMode { get; set; }
     public string? CoolingDashboardMode { get; set; }
     public bool? ShowUncontrolledDevices { get; set; }
@@ -1073,6 +1076,11 @@ public sealed class Y70Settings
     /// <summary>When true, the effective orientation applied to hardware is
     /// always PortraitFlipped regardless of <see cref="Orientation"/>.</summary>
     public bool ForceOrientation { get; set; } = InstallDefaults.Y70.ForceOrientation;
+    /// <summary>When true, nexus-overlay starts the panel kiosk's WebView2
+    /// with DirectComposition disabled, in its own user-data folder. Works
+    /// around an AMD driver fault that scrambles a full-screen DirectComposition
+    /// window on a rotated display once focus or input changes.</summary>
+    public bool CompatibilityRendering { get; set; } = InstallDefaults.Y70.CompatibilityRendering;
 }
 
 public sealed class QSeriesSettings
