@@ -18,7 +18,7 @@ public sealed class BulkPanelStreamTransport : IStreamedPanelTransport, IOrienta
     private readonly BulkPanelHub _hub;
     private readonly byte[] _frame;
     private int _filled;
-    private bool _disposed;
+    private volatile bool _disposed;
     private bool _dropLogged;
     private readonly PanelOrientationFilter _orientation = new();
 
@@ -26,11 +26,13 @@ public sealed class BulkPanelStreamTransport : IStreamedPanelTransport, IOrienta
     // screen after a few seconds without one; the timer re-sends the last frame meanwhile.
     private Timer? _keepalive;
     private long _lastSendMs;
+    private int _keepaliveBusy;
 
     private readonly object _brightnessLock = new();
     private Func<int?>? _brightness;
     private int _brightnessApplied = -1;
     private long _brightnessNextReadMs;
+    private bool _brightnessFaultLogged;
 
     public BulkPanelStreamTransport(BulkPanelHub hub, string serial)
     {
@@ -81,7 +83,11 @@ public sealed class BulkPanelStreamTransport : IStreamedPanelTransport, IOrienta
         try { wanted = _brightness(); }
         catch (Exception ex)
         {
-            ServiceLog.Warn($"[{_hub.Driver.HandlerId}] backlight source threw: {ex.GetType().Name}: {ex.Message}");
+            if (!_brightnessFaultLogged)
+            {
+                _brightnessFaultLogged = true;
+                ServiceLog.Warn($"[{_hub.Driver.HandlerId}] backlight source threw: {ex.GetType().Name}: {ex.Message}");
+            }
             return;
         }
         // No record value means the panel keeps what it powered up with.
@@ -110,6 +116,7 @@ public sealed class BulkPanelStreamTransport : IStreamedPanelTransport, IOrienta
             throw new IOException($"{_hub.Driver.Name} panel size unknown");
         }
         _filled = 0;
+        Volatile.Write(ref _lastSendMs, Environment.TickCount64);
         int keepaliveMs = _hub.Driver.KeepaliveMs;
         if (keepaliveMs > 0)
         {
@@ -119,13 +126,25 @@ public sealed class BulkPanelStreamTransport : IStreamedPanelTransport, IOrienta
 
     private void Keepalive(int keepaliveMs)
     {
-        if (_disposed || Environment.TickCount64 - Volatile.Read(ref _lastSendMs) < keepaliveMs)
+        // Timer ticks keep coming while a stalled resend holds the hub; run one at a time.
+        if (Interlocked.Exchange(ref _keepaliveBusy, 1) == 1)
         {
             return;
         }
-        if (_hub.Resend())
+        try
         {
-            Volatile.Write(ref _lastSendMs, Environment.TickCount64);
+            if (_disposed || Environment.TickCount64 - Volatile.Read(ref _lastSendMs) < keepaliveMs)
+            {
+                return;
+            }
+            if (_hub.Resend())
+            {
+                Volatile.Write(ref _lastSendMs, Environment.TickCount64);
+            }
+        }
+        finally
+        {
+            Volatile.Write(ref _keepaliveBusy, 0);
         }
     }
 

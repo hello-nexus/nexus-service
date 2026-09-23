@@ -20,6 +20,7 @@ public sealed class ZMatricesPanelDriver : IBulkPanelDriver
     private int _transLength;
     private byte[]? _start;
     private int _pictures;
+    private bool _resync;
 
     public string HandlerId => "zmatrices-lcd";
     public string Name => "Aftershock Glacier Matrix LCD";
@@ -46,6 +47,7 @@ public sealed class ZMatricesPanelDriver : IBulkPanelDriver
             return null;
         }
         _pictures = 0;
+        _resync = false;
         _jpeg?.Dispose();
         _jpeg = new BgraJpegEncoder(Width, Height);
         ServiceLog.Info($"[{HandlerId}] picture mode on, streaming {Width}x{Height}");
@@ -71,10 +73,24 @@ public sealed class ZMatricesPanelDriver : IBulkPanelDriver
 
     public bool Resend(IBulkUsbPipe pipe, IHidDevice? hid) => _start is null || Send(pipe);
 
-    // A discarded slot gets a copy, so every frame reaches the glass.
-    private bool Send(IBulkUsbPipe pipe) =>
-        (_pictures % ZMatricesProtocol.DiscardedPictureInterval != 0 || SendPicture(pipe))
-        && SendPicture(pipe);
+    // A discarded slot gets a copy, so every frame reaches the glass. A failed transfer
+    // leaves the firmware's count unknown; picture mode restarts it.
+    private bool Send(IBulkUsbPipe pipe)
+    {
+        if (_resync)
+        {
+            if (!pipe.Write(ZMatricesProtocol.CommandPipe, ZMatricesProtocol.EncodePictureModeCommand()))
+            {
+                return false;
+            }
+            _pictures = 0;
+            _resync = false;
+        }
+        bool sent = (_pictures % ZMatricesProtocol.DiscardedPictureInterval != 0 || SendPicture(pipe))
+            && SendPicture(pipe);
+        _resync = !sent;
+        return sent;
+    }
 
     // The firmware finds Start and the trailer by packet boundary, so each is its own transfer.
     private bool SendPicture(IBulkUsbPipe pipe)

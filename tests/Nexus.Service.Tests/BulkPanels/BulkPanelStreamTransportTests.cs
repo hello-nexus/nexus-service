@@ -13,7 +13,7 @@ public class BulkPanelStreamTransportTests
     public void Brightness_is_sent_once_per_change()
     {
         var pipe = new RecordingPipe();
-        var hub = new BulkPanelHub(new ZMatricesPanelDriver());
+        using var hub = new BulkPanelHub(new ZMatricesPanelDriver());
         Assert.True(hub.Attach(pipe, null));
         var transport = new BulkPanelStreamTransport(hub, "serial");
         int? wanted = 40;
@@ -32,7 +32,7 @@ public class BulkPanelStreamTransportTests
     public void Panel_without_a_backlight_command_never_gets_one()
     {
         var pipe = new RecordingPipe();
-        var hub = new BulkPanelHub(new UniversalScreen88Driver());
+        using var hub = new BulkPanelHub(new UniversalScreen88Driver());
         hub.Attach(pipe, null);
         var transport = new BulkPanelStreamTransport(hub, "serial");
 
@@ -45,9 +45,9 @@ public class BulkPanelStreamTransportTests
     [Fact]
     public void Discovery_advertises_brightness_only_for_drivers_that_take_it()
     {
-        var zm = new BulkPanelHub(new ZMatricesPanelDriver());
+        using var zm = new BulkPanelHub(new ZMatricesPanelDriver());
         zm.Attach(new RecordingPipe(), null);
-        var screen88 = new BulkPanelHub(new UniversalScreen88Driver());
+        using var screen88 = new BulkPanelHub(new UniversalScreen88Driver());
         screen88.Attach(new RecordingPipe(), null);
 
         Assert.True(new BulkPanelDiscovery(zm).Discover().Single().Profile.SupportsBrightness);

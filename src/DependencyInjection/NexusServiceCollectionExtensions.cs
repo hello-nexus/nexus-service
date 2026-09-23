@@ -970,7 +970,8 @@ public static class NexusServiceCollectionExtensions
         // Bulk-pipe cooler LCDs (ASUS Ryujin, Thermalright, Lian Li Universal Screen 8.8, ZMatrices).
         // Their pixels ride a USB bulk endpoint rather than HID, so they are reachable only
         // where Windows has bound WinUSB; off Windows the factory is a null object and the
-        // workers simply never find a panel. Transcribed and untested, so they default OFF.
+        // workers simply never find a panel. All but ZMatrices are transcribed and untested,
+        // so they default OFF.
         services.AddSingleton<Nexus.Service.Peripherals.BulkPanels.IBulkUsbPipeFactory>(_ =>
 #if WINDOWS
             new Nexus.Service.Peripherals.BulkPanels.WindowsBulkUsbPipeFactory()

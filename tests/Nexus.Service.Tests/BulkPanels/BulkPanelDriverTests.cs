@@ -276,6 +276,27 @@ public class BulkPanelDriverTests
     }
 
     [Fact]
+    public void ZMatrices_failed_picture_restarts_picture_mode_and_the_copy_slot()
+    {
+        var driver = new ZMatricesPanelDriver();
+        var pipe = new FakeBulkPipe();
+        driver.Connect(pipe, null);
+        driver.SendFrame(pipe, null, Frame(ZMatricesPanelDriver.Width, ZMatricesPanelDriver.Height));
+        pipe.FailWrites = true;
+        Assert.False(driver.SendFrame(pipe, null, Frame(ZMatricesPanelDriver.Width, ZMatricesPanelDriver.Height)));
+        pipe.FailWrites = false;
+        pipe.Writes.Clear();
+        pipe.PipeWrites.Clear();
+
+        Assert.True(driver.SendFrame(pipe, null, Frame(ZMatricesPanelDriver.Width, ZMatricesPanelDriver.Height)));
+
+        var (pipeId, command) = Assert.Single(pipe.PipeWrites);
+        Assert.Equal(ZMatricesProtocol.CommandPipe, pipeId);
+        Assert.Equal(new byte[] { 0xAA, 0x2E, 0x05, 0x01 }, command[0..4]);
+        Assert.Equal(2, pipe.Writes.Chunk(3).Count());
+    }
+
+    [Fact]
     public void ZMatrices_resend_before_any_frame_writes_nothing()
     {
         var driver = new ZMatricesPanelDriver();
@@ -336,8 +357,14 @@ public class BulkPanelDriverTests
         /// <summary>Writes that named their pipe.</summary>
         public List<(byte Pipe, byte[] Data)> PipeWrites { get; } = new();
 
+        public bool FailWrites { get; set; }
+
         public bool Write(ReadOnlySpan<byte> data)
         {
+            if (FailWrites)
+            {
+                return false;
+            }
             Writes.Add(data.ToArray());
             return true;
         }
