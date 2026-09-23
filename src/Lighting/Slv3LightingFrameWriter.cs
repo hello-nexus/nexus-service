@@ -44,9 +44,10 @@ public sealed class Slv3LightingFrameWriter : IHostedService, IDisposable
     // firmware were looping multiple frames, which direct mode never sends.
     private const int IntervalMs = 100;
 
-    // Floor between two uploads of a Strimer's pre-rendered animation. An
-    // upload is up to ~56 RF payloads, so a brightness drag sends its settled
-    // value instead of every step.
+    // Floor between two upload attempts of a Strimer's pre-rendered animation:
+    // a max-size upload is dozens of RF payloads, so a brightness drag sends
+    // its settled value instead of every step, and a failing upload retries at
+    // this pace instead of every tick.
     private const int PresetMinPushIntervalMs = 500;
 
     // SegmentFrameComposer already applies the zone's LightingDevicePrefs
@@ -291,6 +292,14 @@ public sealed class Slv3LightingFrameWriter : IHostedService, IDisposable
         {
             return true;
         }
+        // An identify flash is composed into the engine frames, so it streams.
+        foreach (var zone in zones)
+        {
+            if (_identify.TryGetActive(zone.Id, nowTicks, out _))
+            {
+                return false;
+            }
+        }
         var (lanes, ledsPerLane) = Slv3Protocol.StrimerGeometryFor((byte)fan.DevType);
         if (lanes == 0)
         {
@@ -343,11 +352,11 @@ public sealed class Slv3LightingFrameWriter : IHostedService, IDisposable
             }
         }
 
+        _lastPushTicks[macHex] = nowTicks;
         if (_hub.SendRgbAnimation(
                 macHex, animation.Frames, ledCount, animation.FrameCount, animation.IntervalMs, brightnessPercent, out var sentEffectIndexHex))
         {
             _lastSent[macHex] = (sig, sentEffectIndexHex);
-            _lastPushTicks[macHex] = nowTicks;
         }
         return true;
     }

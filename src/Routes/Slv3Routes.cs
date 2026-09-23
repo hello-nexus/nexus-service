@@ -134,25 +134,21 @@ public static partial class Slv3Routes
                 return Results.BadRequest(ApiResponse.Fail(error));
             }
             var key = mac.ToUpperInvariant();
+            // The frame writer reads these settings without a lock, so the
+            // patched cable and the map holding it are built aside and swapped
+            // in by reference.
             store.Update(s =>
             {
-                var strimers = s.Devices.LianLiWireless.Strimers;
-                if (!strimers.TryGetValue(key, out var ls))
-                {
-                    ls = new LianLiWirelessStrimerSettings();
-                    strimers[key] = ls;
-                }
-                if (body.Mode is not null) ls.Mode = body.Mode;
-                if (body.Speed.HasValue) ls.Speed = Math.Clamp(body.Speed.Value, 0, Slv3StrimerEffects.SpeedLevels - 1);
-                if (body.Direction.HasValue) ls.Direction = Math.Clamp(body.Direction.Value, 0, 1);
-                if (body.Brightness.HasValue) ls.Brightness = Math.Clamp(body.Brightness.Value, 0, 4);
-                if (body.Colors is not null) ls.Colors = new List<string>(body.Colors);
+                var current = s.Devices.LianLiWireless.Strimers;
+                current.TryGetValue(key, out var old);
+                old ??= new LianLiWirelessStrimerSettings();
+                var lanes = old.Lanes;
                 if (body.LaneSettings is not null)
                 {
-                    ls.Lanes = new List<LianLiWirelessStrimerLane>(body.LaneSettings.Length);
+                    lanes = new List<LianLiWirelessStrimerLane>(body.LaneSettings.Length);
                     foreach (var lane in body.LaneSettings)
                     {
-                        ls.Lanes.Add(new LianLiWirelessStrimerLane
+                        lanes.Add(new LianLiWirelessStrimerLane
                         {
                             Mode = lane.Mode,
                             Direction = Math.Clamp(lane.Direction, 0, 1),
@@ -160,6 +156,19 @@ public static partial class Slv3Routes
                         });
                     }
                 }
+                var next = new Dictionary<string, LianLiWirelessStrimerSettings>(current)
+                {
+                    [key] = new LianLiWirelessStrimerSettings
+                    {
+                        Mode = body.Mode ?? old.Mode,
+                        Speed = body.Speed.HasValue ? Math.Clamp(body.Speed.Value, 0, Slv3StrimerEffects.SpeedLevels - 1) : old.Speed,
+                        Direction = body.Direction.HasValue ? Math.Clamp(body.Direction.Value, 0, 1) : old.Direction,
+                        Brightness = body.Brightness.HasValue ? Math.Clamp(body.Brightness.Value, 0, 4) : old.Brightness,
+                        Colors = body.Colors is not null ? new List<string>(body.Colors) : old.Colors,
+                        Lanes = lanes,
+                    },
+                };
+                s.Devices.LianLiWireless.Strimers = next;
             });
             Nexus.Service.Sockets.PanelTopics.BroadcastLighting(mux);
             return Results.Json(ApiResponse.Ok(), AppJsonContext.Default.ApiResponse);

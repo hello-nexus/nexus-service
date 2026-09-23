@@ -165,16 +165,16 @@ public sealed class Slv3Transport : ISlv3Transport
             {
                 return true;
             }
-            // Anything but a timeout means the device behind this handle is
-            // gone: an RX reset re-enumerates the TX, and every later write on
-            // the old handle fails. Closing it lets the hub see the link down
-            // and reconnect instead of writing into nothing.
+            // The RX reset (UsbResetAnother) re-enumerates the TX, after which
+            // every write on the old TX handle fails; anything but a timeout
+            // marks the link down so the worker reconnects. RX failures keep
+            // the hub's own reset escalation.
             var err = Marshal.GetLastWin32Error();
-            if (err != ErrorSemTimeout && !_dead)
+            if (Role == Slv3DongleRole.Tx && err != ErrorSemTimeout && !_dead)
             {
                 _dead = true;
                 Nexus.Service.Platform.ServiceLog.Warn(
-                    $"[lianli-wireless] {Role} write failed ({err}), handle closed");
+                    $"[lianli-wireless] TX write failed ({err}), marking the link down");
             }
             return false;
         }

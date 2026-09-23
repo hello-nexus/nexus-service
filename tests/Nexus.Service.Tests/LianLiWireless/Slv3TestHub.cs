@@ -64,10 +64,17 @@ internal static class Slv3TestHub
         public string PortName => "fake-tx";
         public List<byte[]> SentFrames { get; } = new();
 
+        /// <summary>Every send is recorded, then reported as failed.</summary>
+        public bool FailSends { get; set; }
+
         public bool RfSend(ReadOnlySpan<byte> frame)
         {
             var copy = frame.ToArray();
             SentFrames.Add(copy);
+            if (FailSends)
+            {
+                return false;
+            }
             // The chunkSeq-0 USB frame carries RF payload bytes [0..59], which
             // includes the RF_RgbSync header's effect_index at RF-offset
             // [14..18) - USB-frame offset [18..22). Mirrors real firmware

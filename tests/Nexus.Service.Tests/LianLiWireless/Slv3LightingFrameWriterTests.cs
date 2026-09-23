@@ -114,13 +114,15 @@ public class Slv3LightingFrameWriterTests
     }
 
     private static (Slv3Hub Hub, Slv3TestHub.FakeTxTransport Tx, InMemoryConfigStore Store, LightingEngine Engine, Slv3LightingFrameWriter Writer)
-        CreateStrimerSetup(Func<long> clock)
+        CreateStrimerSetup(Func<long> clock) => CreateStrimerSetup(clock, new Np50IdentifyTracker());
+
+    private static (Slv3Hub Hub, Slv3TestHub.FakeTxTransport Tx, InMemoryConfigStore Store, LightingEngine Engine, Slv3LightingFrameWriter Writer)
+        CreateStrimerSetup(Func<long> clock, Np50IdentifyTracker identify)
     {
         var (hub, net, tx) = Slv3TestHub.CreateConnected();
         net.Fans.Add(new Slv3TestHub.SimulatedFan { Mac = FanMac, MasterMac = net.MasterMac, RxType = 1, DevType = 2, FanCount = 0 });
         Assert.True(hub.DriveTick());
         var store = new InMemoryConfigStore();
-        var identify = new Np50IdentifyTracker();
         var provider = new Slv3LightingDeviceProvider(hub, store, identify);
         var engine = new LightingEngine();
         engine.UpdateDevices(provider.BuildFrames(0).ToArray());
@@ -228,6 +230,43 @@ public class Slv3LightingFrameWriterTests
         }
         var (_, raw) = TinyUz.Decompress(compressed.ToArray().AsSpan(0, compressedLen));
         Assert.All(raw, b => Assert.Equal(0, b));
+    }
+
+    [Fact]
+    public void Tick_streams_a_preset_strimer_while_it_is_identifying()
+    {
+        var now = DateTime.UtcNow.Ticks;
+        var identify = new Np50IdentifyTracker();
+        var (hub, tx, store, _, writer) = CreateStrimerSetup(() => now, identify);
+        SetStrimer(store, ls => ls.Mode = "rainbow");
+        var zoneId = new Slv3LightingDeviceProvider(hub, store, identify).GetAll().Devices[0].Id;
+        identify.Schedule(zoneId, 5_000);
+
+        writer.Tick();
+
+        var header = LastRgbHeader(tx);
+        Assert.Equal(1, (header[25] << 8) | header[26]);
+    }
+
+    [Fact]
+    public void Tick_retries_a_failed_preset_upload_no_faster_than_the_preset_floor()
+    {
+        var now = 0L;
+        var (_, tx, store, _, writer) = CreateStrimerSetup(() => now);
+        SetStrimer(store, ls => ls.Mode = "rainbow");
+        tx.FailSends = true;
+
+        writer.Tick();
+        var afterFirstAttempt = RgbSyncFrames(tx).Count;
+        Assert.True(afterFirstAttempt > 0);
+
+        now += 100 * TimeSpan.TicksPerMillisecond;
+        writer.Tick();
+        Assert.Equal(afterFirstAttempt, RgbSyncFrames(tx).Count);
+
+        now += 500 * TimeSpan.TicksPerMillisecond;
+        writer.Tick();
+        Assert.True(RgbSyncFrames(tx).Count > afterFirstAttempt);
     }
 
     [Fact]
