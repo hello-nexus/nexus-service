@@ -165,7 +165,7 @@
   },
 
   "lighting": {
-    "sync": "plasma",
+    "sync": "sweeprainbow",
     "brightnessEnabled": false,
     "speedEnabled": false,
     "frameRate": 60,
@@ -174,7 +174,7 @@
     "sleepBlackout": true,
     "staticColor": { "r": 255, "g": 0, "b": 0 },
     "animate": {
-      "effect": "plasma",
+      "effect": "sweeprainbow",
       "state": {
         "speed": 50,
         "intensity": 1.0,

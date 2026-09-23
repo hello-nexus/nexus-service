@@ -43,6 +43,7 @@ public class ShaderLibraryTests
     [InlineData("harlequin")]
     [InlineData("mosaic")]
     [InlineData("sharplines")]
+    [InlineData("breathing")]
     [InlineData("spectrumaurora")]
     [InlineData("neonwaveform")]
     [InlineData("liquidbeat")]
@@ -54,12 +55,12 @@ public class ShaderLibraryTests
     [InlineData("retropetals")]
     [InlineData("contourbands")]
     [InlineData("sweeprainbow")]
+    [InlineData("sweepbreathing")]
     [InlineData("sweepbars")]
     [InlineData("sweepbrush")]
     [InlineData("sweepcomet")]
-    [InlineData("sweepribbon")]
-    [InlineData("sweepink")]
-    [InlineData("sweepneon")]
+    [InlineData("sweepliquid")]
+    [InlineData("sweepcycle")]
     public void NewShaders_Are_Registered(string key)
     {
         Assert.Contains(key, ShaderLibrary.AllEffectKeys);
@@ -80,6 +81,16 @@ public class ShaderLibraryTests
         // animates its idle form while music plays.
         Assert.True(ShaderLibrary.IsAudioEffect(key));
         Assert.Contains("u_audio", ShaderLibrary.Get(key));
+    }
+
+    [Fact]
+    public void SourceTag_FollowsTheShaderSource()
+    {
+        // The tag is part of the thumbnail ETag: stable for one source, distinct
+        // across sources, and shared by keys that alias one .frag.
+        Assert.Equal(ShaderLibrary.SourceTag("sweepbars"), ShaderLibrary.SourceTag("sweepbars"));
+        Assert.NotEqual(ShaderLibrary.SourceTag("sweepbars"), ShaderLibrary.SourceTag("sweepbrush"));
+        Assert.Equal(ShaderLibrary.SourceTag("breathing"), ShaderLibrary.SourceTag("sweepbreathing"));
     }
 
     [Fact]

@@ -1,7 +1,7 @@
 uniform float u_comets; // hint_range(1.0, 8.0, 1.0) = 3.0  comets across the frame
 uniform float u_tail;   // hint_range(0.1, 1.0, 0.01) = 0.7  tail length
 
-// Amber comets with white-hot heads, the fastest tile in the set.
+// Gold shine: amber streaks with white-hot heads, the fastest tile in the set.
 void main() {
     float f = uv01().x * u_comets - u_time * u_speed * 1.8;
     float d = f - floor(f);
