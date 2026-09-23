@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Concurrent;
 using System.IO;
 using System.IO.Compression;
 using System.Net.Http;
@@ -28,6 +29,9 @@ public sealed class StoreInstaller
     private readonly HttpClient _http;
     private readonly AppRegistry _registry;
     private readonly Func<string?> _userRoot;
+
+    // One install per app at a time: two installs of one app share its staging paths and swap.
+    private readonly ConcurrentDictionary<string, SemaphoreSlim> _gates = new(StringComparer.Ordinal);
 
     /// <summary>Default asset host. NEXUS_STORE_ASSETS points it elsewhere for local testing.</summary>
     public const string DefaultAssetsBase = "https://assets.hellonexus.com";
@@ -75,7 +79,24 @@ public sealed class StoreInstaller
         return digits > 0 && dots == 2 && version[0] != '.' && version[^1] != '.';
     }
 
-    public async Task<StoreInstallResponse> InstallAsync(StoreInstallRequest req, CancellationToken ct)
+    public Task<StoreInstallResponse> InstallAsync(StoreInstallRequest req, CancellationToken ct) =>
+        GatedAsync(req, replaceOnly: false, ct);
+
+    /// <summary>Installs over an app already on disk, and refuses (not_installed) once it is gone, so an uninstall that lands mid-download stays uninstalled.</summary>
+    public Task<StoreInstallResponse> UpdateAsync(StoreInstallRequest req, CancellationToken ct) =>
+        GatedAsync(req, replaceOnly: true, ct);
+
+    private async Task<StoreInstallResponse> GatedAsync(StoreInstallRequest req, bool replaceOnly, CancellationToken ct)
+    {
+        var gate = _gates.GetOrAdd(req.AppId ?? "", _ => new SemaphoreSlim(1, 1));
+        await gate.WaitAsync(ct).ConfigureAwait(false);
+        try
+        { return await InstallCoreAsync(req, replaceOnly, ct).ConfigureAwait(false); }
+        finally
+        { gate.Release(); }
+    }
+
+    private async Task<StoreInstallResponse> InstallCoreAsync(StoreInstallRequest req, bool replaceOnly, CancellationToken ct)
     {
         var appId = req.AppId ?? "";
         var version = req.Version ?? "";
@@ -127,8 +148,24 @@ public sealed class StoreInstaller
             if (!ManifestAgrees(staging, appId, version)) return fail("manifest_mismatch");
 
             var dest = Path.Combine(userRoot, appId);
-            if (Directory.Exists(dest)) Directory.Delete(dest, recursive: true);
-            Directory.Move(staging, dest);
+            if (replaceOnly && !Directory.Exists(dest)) return fail("not_installed");
+            // Moved aside, not deleted: a file the service is streaming from the app
+            // (Windows) fails the rename and leaves the installed copy whole, where a
+            // recursive delete would stop halfway.
+            var aside = Path.Combine(userRoot, $".{appId}.replaced");
+            DeleteDir(aside);
+            if (Directory.Exists(dest)) Directory.Move(dest, aside);
+            try
+            { Directory.Move(staging, dest); }
+            catch
+            {
+                try
+                { if (Directory.Exists(aside) && !Directory.Exists(dest)) Directory.Move(aside, dest); }
+                catch (Exception rollback)
+                { Console.Error.WriteLine($"[store] {appId} left in {aside}: {rollback.Message}"); }
+                throw;
+            }
+            DeleteDir(aside);
         }
         catch (OperationCanceledException)
         {
@@ -172,8 +209,13 @@ public sealed class StoreInstaller
 
     private static void CleanUp(string staging, string archive)
     {
-        try { if (Directory.Exists(staging)) Directory.Delete(staging, recursive: true); } catch { /* best effort */ }
+        DeleteDir(staging);
         try { if (File.Exists(archive)) File.Delete(archive); } catch { /* best effort */ }
+    }
+
+    private static void DeleteDir(string dir)
+    {
+        try { if (Directory.Exists(dir)) Directory.Delete(dir, recursive: true); } catch { /* best effort */ }
     }
 
     private static string? DefaultUserRoot()

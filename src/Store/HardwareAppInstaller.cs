@@ -1,6 +1,5 @@
 using System;
 using System.Collections.Generic;
-using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
 using Microsoft.Extensions.Hosting;
@@ -10,7 +9,6 @@ using Nexus.Service.Models.Widgets;
 using Nexus.Service.Panel;
 using Nexus.Service.Persistence;
 using Nexus.Service.Platform;
-using Nexus.Service.Serialization;
 using Nexus.Service.Sockets;
 using Nexus.Service.Widgets;
 
@@ -178,44 +176,8 @@ public sealed class HardwareAppInstaller : BackgroundService
     private async Task<StoreInstallRequest?> ResolveAsync(string appId, CancellationToken ct)
     {
         var nexusVersion = BuildInfo.Version.TrimStart('v', 'V');
-        var latest = await LatestAsync(appId, nexusVersion, ct).ConfigureAwait(false);
+        var latest = await StoreRelease.LatestAsync(_catalog, appId, nexusVersion, ct).ConfigureAwait(false);
         if (latest is null) return null;
-
-        var request = new StoreInstallRequest
-        {
-            AppId = appId,
-            Version = latest.Version,
-            Sha256 = latest.Sha256,
-            Size = latest.Size,
-        };
-
-        var auth = await _entitlements.AuthorizeAsync(appId, latest.Version, nexusVersion, ct).ConfigureAwait(false);
-        if (auth is { Ok: true, Grant: not null } && !string.IsNullOrWhiteSpace(auth.Grant.Sha256))
-        {
-            request.Sha256 = auth.Grant.Sha256;
-            if (auth.Grant.Size > 0) request.Size = auth.Grant.Size;
-            return request;
-        }
-        // Only a machine with no account at all is waived. A refused or expired
-        // token reads sign_in_required too, and waiving that would silently drop
-        // the entitlement record for a user who has one.
-        return auth.Reason == "sign_in_required" && !_entitlements.HasLinkedAccount ? request : null;
-    }
-
-    /// <summary>Newest version this build can run, from the catalog route that takes no token and applies no storefront filter, so an unlisted app resolves.</summary>
-    private async Task<StoreCatalogVersion?> LatestAsync(string appId, string nexusVersion, CancellationToken ct)
-    {
-        var body = await _catalog.DetailAsync(appId, nexusVersion, null, ct).ConfigureAwait(false);
-        if (string.IsNullOrEmpty(body)) return null;
-        StoreCatalogApp? listing;
-        try
-        { listing = JsonSerializer.Deserialize(body, AppJsonContext.Default.StoreCatalogApp); }
-        catch (JsonException)
-        { return null; }
-
-        var latest = listing?.Latest;
-        if (latest is null) return null;
-        if (string.IsNullOrWhiteSpace(latest.Sha256) || !StoreInstaller.IsValidVersion(latest.Version)) return null;
-        return latest;
+        return await StoreRelease.ResolveAsync(_entitlements, appId, latest, nexusVersion, waiveAccount: true, ct).ConfigureAwait(false);
     }
 }
