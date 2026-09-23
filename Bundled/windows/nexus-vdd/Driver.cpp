@@ -75,10 +75,10 @@ namespace
         return { { g_Width, g_Height } };
     }
 
-    // EDID 1.4 describing the requested size as the native timing. An EDID-less monitor is a
-    // generic one whose saved desktop mode wins over the offered mode (1024x768 was kept and
-    // letterboxed into 1120x540); with this the monitor is "NXS0001" and starts at native size.
-    // The physical size is the one that makes the pixel density 96 dpi, so Windows scales 100%.
+    // EDID 1.4 with the requested size as its native timing. Without one the monitor is a
+    // generic display whose saved desktop mode overrides the offered mode; with it the monitor
+    // is "NXS0001" and starts at its native size. The physical size gives 96 dpi, which Windows
+    // maps to 100% scaling.
     BYTE g_Edid[128];
 
     void BuildEdid()
@@ -90,7 +90,7 @@ namespace
         e[8] = 0x3B; e[9] = 0x13;             // manufacturer "NXS"
         e[10] = 0x01; e[11] = 0x00;           // product 0x0001
         e[12] = 0x01;                         // serial 1
-        e[16] = 1; e[17] = 36;                // week 1 of 2026
+        e[16] = 1; e[17] = 36;                // manufacture week, year - 1990
         e[18] = 1; e[19] = 4;                 // EDID 1.4
         e[20] = 0xA5;                         // digital, 8 bits per colour, DisplayPort
         const DWORD widthMm = g_Width * 254 / 960;
@@ -98,7 +98,7 @@ namespace
         e[21] = (BYTE)((widthMm + 5) / 10);
         e[22] = (BYTE)((heightMm + 5) / 10);
         e[23] = 120;                          // gamma 2.2
-        e[24] = 0x06;                         // RGB 4:4:4, preferred timing is native
+        e[24] = 0x06;                         // RGB 4:4:4, sRGB default colour space, preferred timing is native
         const BYTE chroma[] = { 0xEE, 0x91, 0xA3, 0x54, 0x4C, 0x99, 0x26, 0x0F, 0x50, 0x54 };
         memcpy(e + 25, chroma, sizeof(chroma));
         for (int i = 38; i < 54; i += 2)

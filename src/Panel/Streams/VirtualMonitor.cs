@@ -16,6 +16,9 @@ public static class SecondaryMonitorStates
 /// <summary>Creates a Windows monitor whose desktop pixels the service can read back.</summary>
 public interface IVirtualMonitorHost
 {
+    /// <summary>The driver package ships with this install, so the setting is worth offering.</summary>
+    bool IsAvailable { get; }
+
     /// <summary>Null when the monitor cannot be created; <paramref name="failureState"/> then says why.</summary>
     IVirtualMonitor? Create(int width, int height, CancellationToken ct, out string failureState);
 }
@@ -28,10 +31,15 @@ public interface IVirtualMonitor : IDisposable
 
     /// <summary>Injects one touch pointer event at monitor pixel coordinates.</summary>
     bool InjectTouch(uint pointerId, TouchPhase phase, int x, int y);
+
+    /// <summary>False once the monitor is gone from under us (its host exited, the device was removed).</summary>
+    bool IsAlive { get; }
 }
 
 public sealed class NullVirtualMonitorHost : IVirtualMonitorHost
 {
+    public bool IsAvailable => false;
+
     public IVirtualMonitor? Create(int width, int height, CancellationToken ct, out string failureState)
     {
         failureState = SecondaryMonitorStates.Failed;

@@ -29,6 +29,7 @@ internal sealed class SecondaryMonitorFeed : IDisposable
     private Thread? _touch;
     private IVirtualMonitor? _monitor;
     private volatile string _state = SecondaryMonitorStates.Starting;
+    private volatile bool _finished;
 
     public SecondaryMonitorFeed(
         IVirtualMonitorHost host,
@@ -47,6 +48,9 @@ internal sealed class SecondaryMonitorFeed : IDisposable
 
     public string State => _state;
 
+    /// <summary>The frame thread has stopped: the monitor never came up or went away.</summary>
+    public bool Finished => _finished;
+
     public void Start() => _frames.Start();
 
     private void SetState(string state)
@@ -61,6 +65,23 @@ internal sealed class SecondaryMonitorFeed : IDisposable
     }
 
     private void RunFrames()
+    {
+        try
+        {
+            PumpFrames();
+        }
+        catch (Exception ex)
+        {
+            ServiceLog.Error($"[{_hub.Driver.HandlerId}] secondary monitor failed: {ex.GetType().Name}: {ex.Message}");
+            SetState(SecondaryMonitorStates.Failed);
+        }
+        finally
+        {
+            _finished = true;
+        }
+    }
+
+    private void PumpFrames()
     {
         int width = _hub.Width;
         int height = _hub.Height;
@@ -80,7 +101,7 @@ internal sealed class SecondaryMonitorFeed : IDisposable
             }
             _monitor = monitor;
         }
-        _touch = new Thread(() => RunTouch(monitor, width, height)) { IsBackground = true, Name = $"secondary-monitor-touch-{_hub.Driver.HandlerId}" };
+        _touch = new Thread(() => RunTouchGuarded(monitor, width, height)) { IsBackground = true, Name = $"secondary-monitor-touch-{_hub.Driver.HandlerId}" };
         _touch.Start();
 
         var frame = new byte[width * height * 4];
@@ -92,6 +113,12 @@ internal sealed class SecondaryMonitorFeed : IDisposable
             {
                 if (!monitor.TryReadFrame(frame, FrameWaitMs, _cts.Token))
                 {
+                    if (!monitor.IsAlive)
+                    {
+                        ServiceLog.Warn($"[{_hub.Driver.HandlerId}] secondary monitor went away");
+                        SetState(SecondaryMonitorStates.Failed);
+                        break;
+                    }
                     continue;
                 }
                 long wait = lastSent + interval - Stopwatch.GetTimestamp();
@@ -115,6 +142,18 @@ internal sealed class SecondaryMonitorFeed : IDisposable
                 SetState(SecondaryMonitorStates.Failed);
                 break;
             }
+        }
+    }
+
+    private void RunTouchGuarded(IVirtualMonitor monitor, int width, int height)
+    {
+        try
+        {
+            RunTouch(monitor, width, height);
+        }
+        catch (Exception ex)
+        {
+            ServiceLog.Error($"[{_hub.Driver.HandlerId}] touch reader stopped: {ex.GetType().Name}: {ex.Message}");
         }
     }
 
@@ -160,7 +199,7 @@ internal sealed class SecondaryMonitorFeed : IDisposable
                 tracker.Apply(report.TrackId, report.Phase, x, y, mapped, injections);
                 foreach (var injection in injections)
                 {
-                    bool ok = monitor.InjectTouch(injection.PointerId, injection.Phase, injection.X, injection.Y);
+                    bool ok = SafeInject(monitor, injection);
                     if (!logged)
                     {
                         logged = true;
@@ -173,7 +212,22 @@ internal sealed class SecondaryMonitorFeed : IDisposable
         tracker.ReleaseAll(injections);
         foreach (var injection in injections)
         {
-            monitor.InjectTouch(injection.PointerId, injection.Phase, injection.X, injection.Y);
+            SafeInject(monitor, injection);
+        }
+    }
+
+    // The helper pipe can break under us (logoff, helper restart); an escaped exception on
+    // this raw thread would end the service.
+    private bool SafeInject(IVirtualMonitor monitor, TouchContactTracker.Injection injection)
+    {
+        try
+        {
+            return monitor.InjectTouch(injection.PointerId, injection.Phase, injection.X, injection.Y);
+        }
+        catch (Exception ex)
+        {
+            ServiceLog.Warn($"[{_hub.Driver.HandlerId}] touch injection failed: {ex.GetType().Name}: {ex.Message}");
+            return false;
         }
     }
 

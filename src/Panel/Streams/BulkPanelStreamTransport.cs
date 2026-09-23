@@ -38,8 +38,14 @@ public sealed class BulkPanelStreamTransport : IStreamedPanelTransport, IOrienta
 
     private readonly IVirtualMonitorHost? _monitors;
     private readonly object _monitorLock = new();
+    // Held across a whole apply, including stopping the old monitor, so an "on" that races an
+    // "off" starts only after the previous monitor is gone.
+    private readonly object _applyLock = new();
     private Func<bool>? _wantsMonitor;
     private SecondaryMonitorFeed? _monitor;
+    private long _monitorStartedMs;
+    // A monitor that failed to come up or died is retried at this pace while the setting is on.
+    private const long MonitorRetryMs = 30_000;
 
     public BulkPanelStreamTransport(BulkPanelHub hub, string serial, IVirtualMonitorHost? monitors = null)
     {
@@ -74,19 +80,37 @@ public sealed class BulkPanelStreamTransport : IStreamedPanelTransport, IOrienta
 
     public void ApplySecondaryMonitor()
     {
-        if (_monitors is null)
+        if (_monitors is not { } monitors)
         {
             return;
         }
+        lock (_applyLock)
+        {
+            ApplySecondaryMonitorLocked(monitors);
+        }
+    }
+
+    private void ApplySecondaryMonitorLocked(IVirtualMonitorHost monitors)
+    {
         bool want = !_disposed && _hub.IsConnected && SafeWantsMonitor();
         SecondaryMonitorFeed? stopped = null;
         bool changed = false;
         lock (_monitorLock)
         {
-            if (want && _monitor is null)
+            // Dispose may have run since want was read; a feed started now would never be stopped.
+            want &= !_disposed;
+            if (want && _monitor is { Finished: true } finished
+                && Environment.TickCount64 - _monitorStartedMs >= MonitorRetryMs)
             {
-                var feed = new SecondaryMonitorFeed(_monitors, _hub, PushFrame, () => _orientationSource(), () => SecondaryMonitorStateChanged?.Invoke());
+                // Removed on this tick and restarted on the next: both would use the one device.
+                stopped = finished;
+                Volatile.Write(ref _monitor, null);
+            }
+            else if (want && _monitor is null)
+            {
+                var feed = new SecondaryMonitorFeed(monitors, _hub, PushFrame, () => _orientationSource(), () => SecondaryMonitorStateChanged?.Invoke());
                 Volatile.Write(ref _monitor, feed);
+                _monitorStartedMs = Environment.TickCount64;
                 feed.Start();
                 changed = true;
             }

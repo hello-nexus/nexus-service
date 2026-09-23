@@ -405,6 +405,7 @@ public static class PanelRoutes
             {
                 ResetPersonalization(registry, bgLibrary, id);
                 registry.ResetHardwareSettings(id);
+                sp.GetService<Nexus.Service.Panel.Streams.StreamedPanelCoordinator>()?.ApplySecondaryMonitor(id);
                 RestoreQSeriesDisplayDefaults(store, sp);
             }
             catch (Exception ex)
@@ -424,6 +425,7 @@ public static class PanelRoutes
             var record = registry.ResetHardwareSettings(id);
             if (record is null)
                 return Results.NotFound(ApiResponse.Fail("device not found"));
+            sp.GetService<Nexus.Service.Panel.Streams.StreamedPanelCoordinator>()?.ApplySecondaryMonitor(id);
 
             var surface = record.Capabilities?.Surface;
             var family = record.Capabilities?.Family;

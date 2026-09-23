@@ -105,10 +105,12 @@ public class BulkPanelStreamTransportTests
 
         Assert.True(new BulkPanelDiscovery(hub, new FakeMonitorHost()).Discover().Single().Profile.SupportsSecondaryMonitor);
         Assert.False(new BulkPanelDiscovery(hub).Discover().Single().Profile.SupportsSecondaryMonitor);
+        Assert.False(new BulkPanelDiscovery(hub, new NullVirtualMonitorHost()).Discover().Single().Profile.SupportsSecondaryMonitor);
     }
 
     private sealed class FakeMonitorHost : IVirtualMonitorHost
     {
+        public bool IsAvailable => true;
         public string? Failure { get; init; }
         public FakeMonitor? Monitor { get; private set; }
 
@@ -129,6 +131,7 @@ public class BulkPanelStreamTransportTests
         private int _frames;
         public ConcurrentQueue<(uint, TouchPhase, int, int)> Touches { get; } = new();
         public bool Disposed { get; private set; }
+        public bool IsAlive => !Disposed;
 
         public bool TryReadFrame(byte[] destination, int timeoutMs, CancellationToken ct)
         {

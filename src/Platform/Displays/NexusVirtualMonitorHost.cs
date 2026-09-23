@@ -31,34 +31,53 @@ public sealed class NexusVirtualMonitorHost : IVirtualMonitorHost
     private readonly HelperRegistry? _helpers;
     private readonly string _packageDir = Path.Combine(AppContext.BaseDirectory, "vdd");
     private int _installAttempted;
+    // One device instance and one stop event exist system-wide, so a start waits for the
+    // previous monitor to be fully gone.
+    private readonly object _gate = new();
 
     public NexusVirtualMonitorHost(HelperRegistry? helpers)
     {
         _helpers = helpers;
     }
 
+    public bool IsAvailable =>
+        File.Exists(Path.Combine(_packageDir, "NexusVirtualDisplay.inf"))
+        && File.Exists(Path.Combine(_packageDir, "NexusVirtualDisplayHost.exe"));
+
     public IVirtualMonitor? Create(int width, int height, CancellationToken ct, out string failureState)
+    {
+        lock (_gate)
+        {
+            return CreateLocked(width, height, ct, out failureState);
+        }
+    }
+
+    private IVirtualMonitor? CreateLocked(int width, int height, CancellationToken ct, out string failureState)
     {
         failureState = SecondaryMonitorStates.Failed;
         var inf = Path.Combine(_packageDir, "NexusVirtualDisplay.inf");
         var host = Path.Combine(_packageDir, "NexusVirtualDisplayHost.exe");
-        if (!File.Exists(inf) || !File.Exists(host) || !EnsureDriver(inf))
+        if (!IsAvailable || !EnsureDriver(inf))
         {
             failureState = SecondaryMonitorStates.DriverMissing;
             return null;
         }
 
-        // The driver reads the size when the device starts.
-        using (var key = Registry.LocalMachine.CreateSubKey(@"SOFTWARE\Nexus\VirtualDisplay"))
-        {
-            key.SetValue("Width", width, RegistryValueKind.DWord);
-            key.SetValue("Height", height, RegistryValueKind.DWord);
-        }
-
-        var stop = new EventWaitHandle(false, EventResetMode.ManualReset, StopEventName);
+        EventWaitHandle? stop = null;
         Process? process = null;
         try
         {
+            // The driver reads the size when the device starts.
+            using (var key = Registry.LocalMachine.CreateSubKey(@"SOFTWARE\Nexus\VirtualDisplay"))
+            {
+                key.SetValue("Width", width, RegistryValueKind.DWord);
+                key.SetValue("Height", height, RegistryValueKind.DWord);
+            }
+
+            // Named events outlive a handle another start still holds, so clear it explicitly.
+            stop = new EventWaitHandle(false, EventResetMode.ManualReset, StopEventName);
+            stop.Reset();
+
             var psi = new ProcessStartInfo(host)
             {
                 UseShellExecute = false,
@@ -86,7 +105,7 @@ public sealed class NexusVirtualMonitorHost : IVirtualMonitorHost
                     map = MemoryMappedFile.OpenExisting(FrameSection.SectionName, MemoryMappedFileRights.Read);
                     var ready = EventWaitHandle.OpenExisting(FrameSection.ReadyName);
                     ServiceLog.Info($"[virtual-monitor] {width}x{height} up in {sw.ElapsedMilliseconds} ms");
-                    return new Monitor(new FrameSection(map, ready, width, height), stop, process, _helpers);
+                    return new Monitor(this, new FrameSection(map, ready, width, height), stop, process, _helpers);
                 }
                 catch (Exception ex) when (ex is FileNotFoundException or WaitHandleCannotBeOpenedException)
                 {
@@ -114,6 +133,32 @@ public sealed class NexusVirtualMonitorHost : IVirtualMonitorHost
         return null;
     }
 
+    private void StopMonitor(EventWaitHandle stop, Process process)
+    {
+        lock (_gate)
+        {
+            Stop(stop, process);
+            // The next start must not open this monitor's section while its driver unloads.
+            for (int i = 0; i < 30 && SectionExists(); i++)
+            {
+                Thread.Sleep(100);
+            }
+        }
+    }
+
+    private static bool SectionExists()
+    {
+        try
+        {
+            using var map = MemoryMappedFile.OpenExisting(FrameSection.SectionName, MemoryMappedFileRights.Read);
+            return true;
+        }
+        catch (Exception ex) when (ex is FileNotFoundException or UnauthorizedAccessException or IOException)
+        {
+            return false;
+        }
+    }
+
     /// <summary>
     /// Adds the bundled package once per service run: pnputil installs it when it is new or newer
     /// and leaves an identical one alone. It succeeds silently only once the signing publisher is
@@ -137,10 +182,17 @@ public sealed class NexusVirtualMonitorHost : IVirtualMonitorHost
                 using var pnputil = Process.Start(psi);
                 if (pnputil is not null)
                 {
-                    var output = pnputil.StandardOutput.ReadToEnd();
-                    pnputil.WaitForExit(30_000);
-                    var summary = output.Split('\n').Select(l => l.Trim()).Where(l => l.Length > 0).LastOrDefault();
-                    ServiceLog.Info($"[virtual-monitor] driver package add exit={pnputil.ExitCode}: {summary}");
+                    var output = pnputil.StandardOutput.ReadToEndAsync();
+                    if (!pnputil.WaitForExit(30_000))
+                    {
+                        pnputil.Kill();
+                        ServiceLog.Warn("[virtual-monitor] driver package add timed out");
+                    }
+                    else
+                    {
+                        var summary = (output.Wait(1000) ? output.Result : "").Split('\n').Select(l => l.Trim()).Where(l => l.Length > 0).LastOrDefault();
+                        ServiceLog.Info($"[virtual-monitor] driver package add exit={pnputil.ExitCode}: {summary}");
+                    }
                 }
             }
             catch (Exception ex)
@@ -164,9 +216,9 @@ public sealed class NexusVirtualMonitorHost : IVirtualMonitorHost
         }
     }
 
-    private static void Stop(EventWaitHandle stop, Process? process)
+    private static void Stop(EventWaitHandle? stop, Process? process)
     {
-        try { stop.Set(); } catch (ObjectDisposedException) { }
+        try { stop?.Set(); } catch (ObjectDisposedException) { }
         if (process is not null)
         {
             try
@@ -179,7 +231,7 @@ public sealed class NexusVirtualMonitorHost : IVirtualMonitorHost
             catch (InvalidOperationException) { }
             process.Dispose();
         }
-        stop.Dispose();
+        stop?.Dispose();
     }
 
     private sealed class FrameSection : IDisposable
@@ -250,14 +302,16 @@ public sealed class NexusVirtualMonitorHost : IVirtualMonitorHost
 
     private sealed class Monitor : IVirtualMonitor
     {
+        private readonly NexusVirtualMonitorHost _owner;
         private readonly FrameSection _frames;
         private readonly EventWaitHandle _stop;
         private readonly Process _process;
         private readonly HelperRegistry? _helpers;
         private int _disposed;
 
-        public Monitor(FrameSection frames, EventWaitHandle stop, Process process, HelperRegistry? helpers)
+        public Monitor(NexusVirtualMonitorHost owner, FrameSection frames, EventWaitHandle stop, Process process, HelperRegistry? helpers)
         {
+            _owner = owner;
             _frames = frames;
             _stop = stop;
             _process = process;
@@ -266,6 +320,15 @@ public sealed class NexusVirtualMonitorHost : IVirtualMonitorHost
 
         public bool TryReadFrame(byte[] destination, int timeoutMs, CancellationToken ct) =>
             _frames.TryRead(destination, timeoutMs, ct);
+
+        public bool IsAlive
+        {
+            get
+            {
+                try { return !_process.HasExited; }
+                catch (InvalidOperationException) { return false; }
+            }
+        }
 
         public bool InjectTouch(uint pointerId, TouchPhase phase, int x, int y)
         {
@@ -295,7 +358,7 @@ public sealed class NexusVirtualMonitorHost : IVirtualMonitorHost
                 return;
             }
             _frames.Dispose();
-            Stop(_stop, _process);
+            _owner.StopMonitor(_stop, _process);
             ServiceLog.Info("[virtual-monitor] removed");
         }
     }
