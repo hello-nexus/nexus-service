@@ -74,6 +74,13 @@ public interface IVolumeProvider
     VolumeState GetState();
     void SetVolume(double volume);
     void SetMuted(bool muted);
+
+    /// <summary>Empty <paramref name="deviceId"/> means the default output.
+    /// Platforms with no per-device API (Linux, the stub) fall back to the
+    /// default-device overload, ignoring the id.</summary>
+    VolumeState GetState(string deviceId) => GetState();
+    void SetVolume(string deviceId, double volume) => SetVolume(volume);
+    void SetMuted(string deviceId, bool muted) => SetMuted(muted);
 }
 
 public interface IShortcutsProvider

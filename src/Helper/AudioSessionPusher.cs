@@ -1,6 +1,7 @@
 #if WINDOWS
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using System.Runtime.Versioning;
 using System.Threading;
 using System.Threading.Tasks;
@@ -132,6 +133,8 @@ public sealed class AudioSessionPusher : IDisposable
             if (!string.Equals(x.Id, y.Id, StringComparison.Ordinal)) return true;
             if (!string.Equals(x.Name, y.Name, StringComparison.Ordinal)) return true;
             if (x.Muted != y.Muted || x.Active != y.Active) return true;
+            if (x.OnDefault != y.OnDefault) return true;
+            if (!x.DeviceIds.SequenceEqual(y.DeviceIds)) return true;
             if (Pct(x.Volume) != Pct(y.Volume)) return true;
             if (Pct(x.Peak) != Pct(y.Peak)) return true;
         }
