@@ -434,6 +434,8 @@ public sealed class UiSettings
     public List<string>? PinnedSidebarApps { get; set; }
     /// <summary>User-dragged order of the sidebar's unpinned apps (below the separator). Null until the user reorders; the web then sorts them by name.</summary>
     public List<string>? SidebarAppOrder { get; set; }
+    /// <summary>True while the user has collapsed the dashboard sidebar by hand; false leaves it to the window-width auto-collapse.</summary>
+    public bool SidebarCollapsed { get; set; }
     /// <summary>Per-page density of the dashboard lighting/cooling pages, "simple" or "advanced"; migration seeds pre-existing installs to "advanced".</summary>
     public string LightingDashboardMode { get; set; } = "simple";
     public string CoolingDashboardMode { get; set; } = "simple";
@@ -467,6 +469,7 @@ public sealed class UiSettingsPatch
     public bool? OemAppSeeded { get; set; }
     public List<string>? PinnedSidebarApps { get; set; }
     public List<string>? SidebarAppOrder { get; set; }
+    public bool? SidebarCollapsed { get; set; }
     public string? LightingDashboardMode { get; set; }
     public string? CoolingDashboardMode { get; set; }
     public bool? ShowUncontrolledDevices { get; set; }
