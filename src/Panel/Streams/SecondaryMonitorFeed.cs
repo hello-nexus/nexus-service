@@ -49,17 +49,6 @@ internal sealed class SecondaryMonitorFeed : IDisposable
 
     public void Start() => _frames.Start();
 
-    /// <summary>Stable per panel model, so a restart reuses the monitor Windows already arranged.</summary>
-    internal static string InstanceKey(string handlerId)
-    {
-        uint hash = 2166136261;
-        foreach (var c in handlerId)
-        {
-            hash = (hash ^ c) * 16777619;
-        }
-        return $"nx{hash:X8}";
-    }
-
     private void SetState(string state)
     {
         if (_state == state || _cts.IsCancellationRequested)
@@ -75,7 +64,7 @@ internal sealed class SecondaryMonitorFeed : IDisposable
     {
         int width = _hub.Width;
         int height = _hub.Height;
-        var monitor = _host.Create(width, height, InstanceKey(_hub.Driver.HandlerId), _cts.Token, out var failure);
+        var monitor = _host.Create(width, height, _cts.Token, out var failure);
         if (monitor is null)
         {
             SetState(failure);

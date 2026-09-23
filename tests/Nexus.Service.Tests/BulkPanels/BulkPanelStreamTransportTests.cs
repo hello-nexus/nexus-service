@@ -112,7 +112,7 @@ public class BulkPanelStreamTransportTests
         public string? Failure { get; init; }
         public FakeMonitor? Monitor { get; private set; }
 
-        public IVirtualMonitor? Create(int width, int height, string instanceKey, CancellationToken ct, out string failureState)
+        public IVirtualMonitor? Create(int width, int height, CancellationToken ct, out string failureState)
         {
             failureState = Failure ?? SecondaryMonitorStates.Failed;
             if (Failure is not null)

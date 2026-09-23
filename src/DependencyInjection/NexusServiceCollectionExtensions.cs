@@ -975,7 +975,7 @@ public static class NexusServiceCollectionExtensions
         // Only the Windows host can create a monitor; elsewhere the setting is not offered.
 #if WINDOWS
         services.AddSingleton<Nexus.Service.Panel.Streams.IVirtualMonitorHost>(sp =>
-            new Nexus.Service.Peripherals.BulkPanels.ZMatricesVirtualMonitorHost(
+            new Nexus.Service.Platform.Displays.NexusVirtualMonitorHost(
                 sp.GetService<Nexus.Service.Helper.HelperRegistry>()));
 #endif
         services.AddSingleton<Nexus.Service.Peripherals.BulkPanels.IBulkUsbPipeFactory>(_ =>

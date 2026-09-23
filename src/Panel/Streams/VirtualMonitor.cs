@@ -17,7 +17,7 @@ public static class SecondaryMonitorStates
 public interface IVirtualMonitorHost
 {
     /// <summary>Null when the monitor cannot be created; <paramref name="failureState"/> then says why.</summary>
-    IVirtualMonitor? Create(int width, int height, string instanceKey, CancellationToken ct, out string failureState);
+    IVirtualMonitor? Create(int width, int height, CancellationToken ct, out string failureState);
 }
 
 /// <summary>A live virtual monitor. Disposing removes it from Windows.</summary>
@@ -32,7 +32,7 @@ public interface IVirtualMonitor : IDisposable
 
 public sealed class NullVirtualMonitorHost : IVirtualMonitorHost
 {
-    public IVirtualMonitor? Create(int width, int height, string instanceKey, CancellationToken ct, out string failureState)
+    public IVirtualMonitor? Create(int width, int height, CancellationToken ct, out string failureState)
     {
         failureState = SecondaryMonitorStates.Failed;
         return null;
