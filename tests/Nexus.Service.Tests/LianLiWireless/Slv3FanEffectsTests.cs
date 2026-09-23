@@ -420,4 +420,65 @@ public class Slv3FanEffectsTests
         Assert.Equal(a.IntervalMs, b.IntervalMs);
         Assert.Equal(a.Frames, b.Frames);
     }
+
+    [Fact]
+    public void CatalogFor_Cl_matches_SlInf_key_list()
+    {
+        Assert.Equal(SlInfKeys, Slv3FanEffects.CatalogFor(Slv3FanFamily.Cl).Select(i => i.Key));
+    }
+
+    public static IEnumerable<object[]> ClKeysAndFanCounts()
+    {
+        foreach (var key in SlInfKeys)
+        {
+            for (var fanCount = 1; fanCount <= Slv3FanEffects.MaxFans; fanCount++)
+            {
+                yield return new object[] { key, fanCount };
+            }
+        }
+    }
+
+    [Theory]
+    [MemberData(nameof(ClKeysAndFanCounts))]
+    public void Cl_buffer_length_matches_frame_count_times_fan_geometry(string key, int fanCount)
+    {
+        var anim = Slv3FanEffects.Render(Slv3FanFamily.Cl, key, fanCount, 2, 0, Array.Empty<RgbColor>());
+        var ledsPerFan = Slv3Protocol.LedsPerFanFor(Slv3FanFamily.Cl);
+        Assert.Equal(anim.FrameCount * fanCount * ledsPerFan * 3, anim.Frames.Length);
+    }
+
+    public static IEnumerable<object[]> ClKeysFanCountsAndSpeeds()
+    {
+        foreach (var key in SlInfKeys)
+        {
+            for (var fanCount = 1; fanCount <= Slv3FanEffects.MaxFans; fanCount++)
+            {
+                for (var speed = 0; speed < Slv3StrimerEffects.SpeedLevels; speed++)
+                {
+                    yield return new object[] { key, fanCount, speed };
+                }
+            }
+        }
+    }
+
+    [Theory]
+    [MemberData(nameof(ClKeysFanCountsAndSpeeds))]
+    public void Every_Cl_key_fanCount_and_speed_fits_the_wire_budget(string key, int fanCount, int speed)
+    {
+        var anim = Slv3FanEffects.Render(Slv3FanFamily.Cl, key, fanCount, speed, 0, Array.Empty<RgbColor>());
+        Assert.True(anim.FrameCount <= 2048);
+        var compressed = TinyUz.Compress(anim.Frames);
+        Assert.True(compressed.Length <= TinyUz.MaxCompressedLength,
+            $"{key} at {fanCount} fans speed {speed}: {compressed.Length} bytes compressed");
+    }
+
+    [Fact]
+    public void Cl_render_is_deterministic()
+    {
+        var a = Slv3FanEffects.Render(Slv3FanFamily.Cl, "candyBox", 4, 3, 1, Slv3StrimerEffects.DefaultColors);
+        var b = Slv3FanEffects.Render(Slv3FanFamily.Cl, "candyBox", 4, 3, 1, Slv3StrimerEffects.DefaultColors);
+        Assert.Equal(a.FrameCount, b.FrameCount);
+        Assert.Equal(a.IntervalMs, b.IntervalMs);
+        Assert.Equal(a.Frames, b.Frames);
+    }
 }
