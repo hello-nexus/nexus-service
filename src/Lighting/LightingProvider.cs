@@ -578,9 +578,11 @@ public sealed class LightingProvider : ILightingProvider, IDisposable
         // Render the requested preset slot's effective look (user delta or
         // canonical default). Tag the cache by that look (not the client's ?v
         // token), so a surface that keeps requesting the same token still
-        // re-renders once the slot's saved look changes.
+        // re-renders once the slot's saved look changes. The shader's own hash
+        // rides along: the tag is the HTTP ETag, and without it a browser keeps
+        // revalidating to the image of a shader a deploy has since changed.
         var state = ResolveSlotLook(name, slot);
-        var tag = (state is null ? "sig" : HashSlot(state)) + (frozen ? ":f" : "");
+        var tag = ShaderLibrary.SourceTag(name) + ":" + (state is null ? "sig" : HashSlot(state)) + (frozen ? ":f" : "");
         var cacheKey = name + ":" + slot + (frozen ? ":f" : "");
         if (!skipCache && _thumbnailCache.TryGetValue(cacheKey, out var cached) && cached.Tag == tag)
         {
@@ -591,7 +593,14 @@ public sealed class LightingProvider : ILightingProvider, IDisposable
         var effect = BuildThumbnailEffect(name, defaults, state, frozen);
         try
         {
-            effect.RenderFrame(canvas, ThumbnailFrameTimeMs);
+            if (!frozen && TimeLapseWindowMs(name) is var (start, span))
+            {
+                RenderTimeLapse(effect, canvas, start, span);
+            }
+            else
+            {
+                effect.RenderFrame(canvas, ThumbnailFrameTimeMs);
+            }
         }
         finally
         {
@@ -602,6 +611,45 @@ public sealed class LightingProvider : ILightingProvider, IDisposable
         var bytes = BmpEncoder.Encode(canvas.Pixels, canvas.Width, canvas.Height);
         _thumbnailCache[cacheKey] = (tag, bytes);
         return (bytes, tag);
+    }
+
+    // Effects that paint the whole frame one colour and change only over time.
+    // One frame of them is a flat swatch, so their thumbnail lays a stretch of
+    // time out left to right instead, picked for its colour at 1x speed on the
+    // default look: one whole breath, the blue one, and the cycle's pass
+    // through green. The windows follow the shaders' tempos and default colours.
+    private static (double StartMs, double SpanMs)? TimeLapseWindowMs(string name) => name switch
+    {
+        "breathing" or "sweepbreathing" => (14000.0, 4000.0),
+        "sweepcycle" => (3170.0, 2000.0),
+        _ => null,
+    };
+
+    private static void RenderTimeLapse(IEffect effect, Engine.CanvasBuffer canvas, double startMs, double spanMs)
+    {
+        // The window is timed at 1x, so a fast or reversed preset renders the
+        // same stretch rather than several breaths or the wrong colour.
+        if (effect is ShaderEffect shader)
+        {
+            shader.Speed = 1f;
+        }
+        // One frame per pixel column: coarser slices alias a fast preset's
+        // breaths into grey bands.
+        var slices = canvas.Width;
+        var frame = new Engine.CanvasBuffer(canvas.Width, canvas.Height);
+        for (var i = 0; i < slices; i++)
+        {
+            effect.RenderFrame(frame, startMs + (i + 0.5) * spanMs / slices);
+            var x1 = (i + 1) * canvas.Width / slices;
+            for (var x = i * canvas.Width / slices; x < x1; x++)
+            {
+                for (var y = 0; y < canvas.Height; y++)
+                {
+                    var (r, g, b) = frame.GetPixel(x, y);
+                    canvas.SetPixel(x, y, r, g, b);
+                }
+            }
+        }
     }
 
     /// <summary>
@@ -792,6 +840,7 @@ public sealed class LightingProvider : ILightingProvider, IDisposable
             => new(0.00f, 0.00f, 0f, 1.00f, 1.00f, 1f),
         "rainbow" => new(0.00f, 0.00f, 50f, 1.00f, 1.00f, 1f),
         "sharplines" => new(0.00f, 0.00f, 50f, 1.00f, 1.00f, 1f),
+        "breathing" => new(0.00f, 0.00f, 50f, 1.00f, 1.00f, 1f),
         "fire" => new(0.03f, 0.80f, 70f, 1.10f, 1.05f, 1f),
         "plasma" => new(0.85f, 0.30f, 60f, 1.00f, 1.00f, 1f),
         "spiral" => new(0.00f, 0.00f, 55f, 1.00f, 1.00f, 1f),
@@ -922,7 +971,7 @@ public sealed class LightingProvider : ILightingProvider, IDisposable
         }
         // Simple mode's sweep set loads its own .frag by name, same as the
         // static patterns below - the switch has no arm for them and its
-        // rainbow default would render all seven identically.
+        // rainbow default would render them all identically.
         if (ShaderLibrary.IsSweepEffect(name))
         {
             return MakeShader(name, ShaderLibrary.Get(name), effectSpeed, intensity, hue, colorize, saturation, contrast, extras);
@@ -1014,6 +1063,7 @@ public sealed class LightingProvider : ILightingProvider, IDisposable
             "harlequin" => ShaderLibrary.Get("harlequin"),
             "mosaic" => ShaderLibrary.Get("mosaic"),
             "sharplines" => ShaderLibrary.Get("sharplines"),
+            "breathing" => ShaderLibrary.Get("breathing"),
             "constellation" => ShaderLibrary.Get("constellation"),
             "cybertunnel" => ShaderLibrary.Get("cybertunnel"),
             "hyperspace" => ShaderLibrary.Get("hyperspace"),

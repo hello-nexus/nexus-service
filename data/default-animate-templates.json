@@ -3443,6 +3443,63 @@
    }
   ]
  },
+ "breathing": {
+  "selected": 0,
+  "slots": [
+   {
+    "speed": 50,
+    "intensity": 1,
+    "hue": 0,
+    "colorize": 0,
+    "saturation": 1,
+    "contrast": 1,
+    "params": {
+     "u_colors": 6,
+     "u_depth": 1,
+     "u_spread": 0
+    }
+   },
+   {
+    "speed": 100,
+    "intensity": 1,
+    "hue": 0,
+    "colorize": 0,
+    "saturation": 1,
+    "contrast": 1,
+    "params": {
+     "u_colors": 12,
+     "u_depth": 0.9,
+     "u_spread": 0
+    }
+   },
+   {
+    "speed": 30,
+    "intensity": 1,
+    "hue": 0.6,
+    "colorize": 0,
+    "saturation": 1,
+    "contrast": 1,
+    "params": {
+     "u_colors": 1,
+     "u_depth": 1,
+     "u_spread": 0
+    }
+   },
+   {
+    "speed": 40,
+    "intensity": 1,
+    "hue": 0.92,
+    "colorize": 0,
+    "saturation": 1,
+    "contrast": 1,
+    "params": {
+     "u_colors": 2,
+     "u_depth": 0.85,
+     "u_spread": 0.35
+    }
+   }
+  ]
+ },
  "silkwave": {
   "selected": 0,
   "slots": [
