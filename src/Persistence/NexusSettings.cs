@@ -1448,6 +1448,8 @@ public sealed class LianLiWirelessStrimerSettings
     public const string ModePerLane = "perLane";
 
     public string Mode { get; set; } = ModeCustom;
+    /// <summary>Last mode other than the Lighting page one, restored when Lighting page control is turned off.</summary>
+    public string? EffectMode { get; set; }
     /// <summary>0 slowest .. 4 fastest.</summary>
     public int Speed { get; set; } = 2;
     /// <summary>0 forward, 1 reverse.</summary>
@@ -1585,6 +1587,8 @@ public sealed class LianLiWirelessScreenSettings
 public sealed class LianLiLightingSettings
 {
     public string Mode { get; set; } = "rainbowWave";
+    /// <summary>Last mode other than the Lighting page one, restored when Lighting page control is turned off.</summary>
+    public string? EffectMode { get; set; }
     public int Speed { get; set; } = 2;
     public int Direction { get; set; } = 0;
     public int Brightness { get; set; } = 4;
@@ -1607,6 +1611,8 @@ public sealed class TlLightingSettings
 public sealed class StrimerLightingSettings
 {
     public string Mode { get; set; } = "rainbow";
+    /// <summary>Last mode other than the Lighting page one, restored when Lighting page control is turned off.</summary>
+    public string? EffectMode { get; set; }
     public int Speed { get; set; } = 2;
     public int Direction { get; set; } = 0;
     public int Brightness { get; set; } = 4;
@@ -1616,6 +1622,8 @@ public sealed class StrimerLightingSettings
 public sealed class Galahad2LightingSettings
 {
     public string Mode { get; set; } = "canvas";
+    /// <summary>Last mode other than the Lighting page one, restored when Lighting page control is turned off.</summary>
+    public string? EffectMode { get; set; }
     public int Speed { get; set; } = 2;
     public int Direction { get; set; } = 0;
     public int Brightness { get; set; } = 4;

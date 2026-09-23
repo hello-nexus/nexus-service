@@ -39,6 +39,8 @@ public sealed class Slv3StrimerDto
     public int Lanes { get; set; }
     public int LedsPerLane { get; set; }
     public string Mode { get; set; } = "";
+    /// <summary>The mode the device returns to when Lighting page control is turned off.</summary>
+    public string EffectMode { get; set; } = "";
     public int Speed { get; set; }
     public int Direction { get; set; }
     public int Brightness { get; set; }
@@ -161,6 +163,7 @@ public static partial class Slv3Routes
                     [key] = new LianLiWirelessStrimerSettings
                     {
                         Mode = body.Mode ?? old.Mode,
+                        EffectMode = body.Mode is not null && body.Mode != LianLiWirelessStrimerSettings.ModeCustom ? body.Mode : old.EffectMode,
                         Speed = body.Speed.HasValue ? Math.Clamp(body.Speed.Value, 0, Slv3StrimerEffects.SpeedLevels - 1) : old.Speed,
                         Direction = body.Direction.HasValue ? Math.Clamp(body.Direction.Value, 0, 1) : old.Direction,
                         Brightness = body.Brightness.HasValue ? Math.Clamp(body.Brightness.Value, 0, 4) : old.Brightness,
@@ -175,6 +178,7 @@ public static partial class Slv3Routes
         });
     }
 
+    private const string DefaultStrimerEffect = "rainbow";
     private const int MaxStrimerColors = 6;
     private const int MaxStrimerLanes = 6;
 
@@ -264,6 +268,7 @@ public static partial class Slv3Routes
                 Lanes = lanes,
                 LedsPerLane = ledsPerLane,
                 Mode = ls.Mode,
+                EffectMode = ls.Mode != LianLiWirelessStrimerSettings.ModeCustom ? ls.Mode : ls.EffectMode ?? DefaultStrimerEffect,
                 Speed = ls.Speed,
                 Direction = ls.Direction,
                 Brightness = ls.Brightness,

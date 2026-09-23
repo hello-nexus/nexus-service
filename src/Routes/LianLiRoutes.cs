@@ -184,9 +184,12 @@ public static partial class DevicesRoutes
             // family's catalog falls back to static there too.
             var persisted = LianLiLightingModes.Find(ls.Mode);
             var effectiveMode = persisted != null && !persisted.SupportedBy(family) ? "static" : ls.Mode;
+            var effect = LianLiLightingModes.Find(ls.Mode == "custom" ? ls.EffectMode ?? "rainbowWave" : ls.Mode);
+            var effectMode = effect != null && effect.Key != "custom" && effect.SupportedBy(family) ? effect.Key : "static";
             return Results.Json(new LianLiLightingResponse
             {
                 Mode = effectiveMode,
+                EffectMode = effectMode,
                 Speed = ls.Speed,
                 Direction = ls.Direction,
                 Brightness = ls.Brightness,
@@ -213,7 +216,11 @@ public static partial class DevicesRoutes
             store.Update(s =>
             {
                 var ls = s.Devices.LianLiLighting;
-                if (body.Mode != null) ls.Mode = body.Mode;
+                if (body.Mode != null)
+                {
+                    ls.Mode = body.Mode;
+                    if (body.Mode != "custom") ls.EffectMode = body.Mode;
+                }
                 if (body.Speed.HasValue) ls.Speed = Math.Clamp(body.Speed.Value, 0, 4);
                 if (body.Direction.HasValue) ls.Direction = Math.Clamp(body.Direction.Value, 0, 1);
                 if (body.Brightness.HasValue) ls.Brightness = Math.Clamp(body.Brightness.Value, 0, 4);
@@ -285,6 +292,8 @@ public sealed class LianLiModeInfoDto
 public sealed class LianLiLightingResponse
 {
     public string Mode { get; set; } = "";
+    /// <summary>The mode the device returns to when Lighting page control is turned off.</summary>
+    public string EffectMode { get; set; } = "";
     public int Speed { get; set; }
     public int Direction { get; set; }
     public int Brightness { get; set; }

@@ -53,4 +53,22 @@ public class Slv3StrimerRoutesTests
             Mode = LianLiWirelessStrimerSettings.ModePerLane,
             LaneSettings = new[] { new Slv3StrimerLaneDto { Mode = "rainbow", Color = "#FF0000" } },
         }));
+
+    [Theory]
+    [InlineData("meteor", null, "meteor")]
+    [InlineData("custom", "tide", "tide")]
+    [InlineData("custom", null, "rainbow")]
+    public void Strimers_report_the_animation_to_return_to(string mode, string? effectMode, string expected)
+    {
+        var (hub, net, _) = Slv3TestHub.CreateConnected();
+        net.Fans.Add(new Slv3TestHub.SimulatedFan { Mac = Convert.FromHexString(Mac), MasterMac = net.MasterMac, RxType = 1, DevType = 2, FanCount = 0 });
+        Assert.True(hub.DriveTick());
+        var settings = new NexusSettings();
+        settings.Devices.LianLiWireless.Strimers[Mac] = new LianLiWirelessStrimerSettings { Mode = mode, EffectMode = effectMode };
+
+        var dto = Assert.Single(Slv3Routes.BuildStrimersResponse(hub, settings).Strimers);
+
+        Assert.Equal(mode, dto.Mode);
+        Assert.Equal(expected, dto.EffectMode);
+    }
 }
