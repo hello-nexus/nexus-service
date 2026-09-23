@@ -1073,6 +1073,11 @@ public sealed class Y70Settings
     /// <summary>When true, the effective orientation applied to hardware is
     /// always PortraitFlipped regardless of <see cref="Orientation"/>.</summary>
     public bool ForceOrientation { get; set; } = InstallDefaults.Y70.ForceOrientation;
+    /// <summary>When true, nexus-overlay starts the panel kiosk's WebView2
+    /// with DirectComposition disabled, in its own user-data folder. Works
+    /// around an AMD driver fault that scrambles a full-screen DirectComposition
+    /// window on a rotated display once focus or input changes.</summary>
+    public bool CompatibilityRendering { get; set; } = InstallDefaults.Y70.CompatibilityRendering;
 }
 
 public sealed class QSeriesSettings

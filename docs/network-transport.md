@@ -378,7 +378,7 @@ Mounted Devices view traffic:
 | `GET /displays` | every `5000 ms` on Panels tab | `0.2 req/s` | Attached monitor inventory and brightness-control capability summary. |
 | `GET /panel/status` | every `5000 ms` on Panels tab | `0.2 req/s` | Panel host running state for directly managed panels. |
 | `GET /panel/phone/sessions` | every `5000 ms` on Panels tab | `0.2 req/s` | Paired phone/tablet panel presence metadata. |
-| `GET /y70/brightness`, `/y70/rotation`, `/y70/toggle` | one-shot when Y70 popup/widget mounts | event | Y70 controls hydration. |
+| `GET /y70/brightness`, `/y70/rotation`, `/y70/toggle`, `/y70/compatibility-rendering` | one-shot when Y70 popup/widget mounts | event | Y70 controls hydration. |
 
 The curated device list and raw USB list moved from 5s
 REST polling to a one-shot fetch plus the `devices` WS topic (see the
@@ -477,7 +477,7 @@ Panel widgets add traffic only when mounted in the current panel layout.
 | Steam widget | `GET /api/steam/status`, `/profile`, `/recent-games`, `/owned-games`, `/friends` | every `15000 ms` when ready | Steam status and lists. |
 | Steam widget | `GET /api/steam/achievements/{appId}` | on current game change | Current-game achievements. |
 | Steam widget | `POST /api/steam/launch` | user action | Launch Steam. |
-| Y70 Controls | `GET /y70/brightness`, `/y70/rotation`, `/y70/toggle` | once on mount | Hydrate controls. |
+| Y70 Controls | `GET /y70/brightness`, `/y70/rotation`, `/y70/toggle`, `/y70/compatibility-rendering` | once on mount | Hydrate controls. |
 | Y70 Controls | Y70 `POST` routes | user action | Brightness/orientation/screen toggle. |
 | Displays widget | `GET /displays` | on mount and every `5000 ms` | Enumerate monitors, current brightness, capabilities, and provider write policy. |
 | Displays widget | `POST /displays/{id}/brightness` | slider target changes | Sends brightness target values; service coalesces and paces hardware writes per display. |
