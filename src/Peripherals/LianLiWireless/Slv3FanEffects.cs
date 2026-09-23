@@ -67,6 +67,9 @@ public static partial class Slv3FanEffects
         var sl = BuildSlCatalog();
         map[Slv3FanFamily.Slv3Led] = sl;
         map[Slv3FanFamily.Slv3Lcd] = sl;
+        var tl = BuildTlCatalog();
+        map[Slv3FanFamily.Tlv2Led] = tl;
+        map[Slv3FanFamily.Tlv2Lcd] = tl;
         return map;
     }
 
@@ -91,6 +94,9 @@ public static partial class Slv3FanEffects
         var sl = BuildSlRenderers();
         map[Slv3FanFamily.Slv3Led] = sl;
         map[Slv3FanFamily.Slv3Lcd] = sl;
+        var tl = BuildTlRenderers();
+        map[Slv3FanFamily.Tlv2Led] = tl;
+        map[Slv3FanFamily.Tlv2Lcd] = tl;
         return map;
     }
 
