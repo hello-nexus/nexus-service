@@ -309,6 +309,10 @@ internal static class WindowsServiceInstaller
         // future removal must first verify the file is ours (CompanyName "Nexus"
         // AND byte-identical to the bundled shim), never delete by name alone.
 
+        Log("removing virtual display driver");
+        try { Platform.Displays.NexusVirtualMonitorHost.RemoveDriver(Log); }
+        catch (Exception ex) { Log($"WARN virtual display driver removal failed: {ex.Message}"); }
+
         Log("removing Add/Remove Programs entry");
         try { Registry.LocalMachine.DeleteSubKeyTree(UninstallRegKey, throwOnMissingSubKey: false); }
         catch (Exception ex) { Log($"WARN reg delete failed: {ex.Message}"); }

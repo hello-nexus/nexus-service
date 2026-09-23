@@ -120,7 +120,7 @@ public static class UpdateIntegrity
         => Nexus.Service.Platform.Windows.AuthenticodeSigner.TryGetSignerCertificate(path);
 
     [System.Runtime.Versioning.SupportedOSPlatform("windows")]
-    private static bool HasDurableIdentityEku(System.Security.Cryptography.X509Certificates.X509Certificate2 cert)
+    internal static bool HasDurableIdentityEku(System.Security.Cryptography.X509Certificates.X509Certificate2 cert)
     {
         foreach (var ext in cert.Extensions)
         {

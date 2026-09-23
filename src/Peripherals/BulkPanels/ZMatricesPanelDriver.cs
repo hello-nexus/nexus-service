@@ -31,7 +31,7 @@ public sealed class ZMatricesPanelDriver : IBulkPanelDriver
     public int Fps => 44;
     public byte WritePipeId => ZMatricesProtocol.PicturePipe;
 
-    public byte ReadPipeId => 0;
+    public byte ReadPipeId => ZMatricesProtocol.InputPipe;
 
     public bool NeedsHidChannel => false;
 
@@ -39,6 +39,8 @@ public sealed class ZMatricesPanelDriver : IBulkPanelDriver
     public int KeepaliveMs => 1000;
 
     public bool SupportsBrightness => true;
+
+    public bool SupportsSecondaryMonitor => true;
 
     public (int Width, int Height)? Connect(IBulkUsbPipe pipe, IHidDevice? hid)
     {

@@ -557,6 +557,18 @@
     </Content>
   </ItemGroup>
 
+  <!-- Nexus Virtual Display: the IddCx driver package (driver DLL, INF, signed catalog) and its
+       native device host, built out-of-band from Bundled/windows/nexus-vdd (build.ps1 on the PC).
+       Ships to {output}/vdd/, where NexusVirtualMonitorHost installs it on first use. Absent on
+       hosts without the build; the secondary monitor then reports the driver as missing. -->
+  <ItemGroup Condition="($([MSBuild]::IsOSPlatform('Windows')) OR $(RuntimeIdentifier.StartsWith('win'))) AND Exists('Bundled\win-x64\vdd\NexusVirtualDisplay.inf')">
+    <Content Include="Bundled\win-x64\vdd\NexusVirtualDisplay.dll;Bundled\win-x64\vdd\NexusVirtualDisplay.inf;Bundled\win-x64\vdd\nexusvirtualdisplay.cat;Bundled\win-x64\vdd\NexusVirtualDisplayHost.exe">
+      <Link>vdd\%(Filename)%(Extension)</Link>
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+      <CopyToPublishDirectory>PreserveNewest</CopyToPublishDirectory>
+    </Content>
+  </ItemGroup>
+
   <!-- Nexus Game Sync shim DLLs produced by the nexus-gamesync component.
        build.bat / build32.bat place them under Bundled/win-x64/gamesync/x64/
        (RzChromaSDK64.dll, RzChromatic64.dll, LightFX.dll,

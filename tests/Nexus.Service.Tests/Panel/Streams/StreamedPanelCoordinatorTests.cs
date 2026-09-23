@@ -60,8 +60,9 @@ public sealed class StreamedPanelCoordinatorTests : IDisposable
         return _coordinator;
     }
 
-    private static StreamedPanelProfile Profile(string kind = "fake-fs", int fps = 30) => new()
+    private static StreamedPanelProfile Profile(string kind = "fake-fs", int fps = 30, bool monitor = false) => new()
     {
+        SupportsSecondaryMonitor = monitor,
         Kind = kind,
         DisplayName = "Fake Panel",
         Surface = "monitor",
@@ -70,8 +71,8 @@ public sealed class StreamedPanelCoordinatorTests : IDisposable
         Fps = fps,
     };
 
-    private static StreamedPanelDeviceInfo Device(string serial = "d211_fake", string kind = "fake-fs", int fps = 30)
-        => new() { Serial = serial, Profile = Profile(kind, fps) };
+    private static StreamedPanelDeviceInfo Device(string serial = "d211_fake", string kind = "fake-fs", int fps = 30, bool monitor = false)
+        => new() { Serial = serial, Profile = Profile(kind, fps, monitor) };
 
     private sealed class FakeTransport : IStreamedPanelTransport
     {
@@ -284,5 +285,36 @@ public sealed class StreamedPanelCoordinatorTests : IDisposable
         var transport = Assert.Single(_discovery.BrightnessTransports);
         Assert.Equal(1, transport.ApplyCalls);
         Assert.Equal(35, transport.LastApplied);
+    }
+
+    [Fact]
+    public void A_panel_showing_the_desktop_gets_no_render_host_but_stays_listed()
+    {
+        _discovery.Devices.Add(Device(monitor: true));
+        var coordinator = Coordinator();
+        coordinator.TickOnce();
+        var panelId = Assert.Single(coordinator.GetAssignments().Assignments).PanelDeviceId;
+
+        _registry.Patch(panelId, new PanelDevicePatch { SecondaryMonitor = true });
+
+        Assert.Empty(coordinator.GetAssignments().Assignments);
+        Assert.Contains(panelId, coordinator.LivePanelDeviceIds());
+
+        _registry.Patch(panelId, new PanelDevicePatch { SecondaryMonitor = false });
+
+        Assert.Single(coordinator.GetAssignments().Assignments);
+    }
+
+    [Fact]
+    public void The_monitor_setting_is_ignored_where_the_panel_cannot_show_one()
+    {
+        _discovery.Devices.Add(Device());
+        var coordinator = Coordinator();
+        coordinator.TickOnce();
+        var panelId = Assert.Single(coordinator.GetAssignments().Assignments).PanelDeviceId;
+
+        _registry.Patch(panelId, new PanelDevicePatch { SecondaryMonitor = true });
+
+        Assert.Single(coordinator.GetAssignments().Assignments);
     }
 }

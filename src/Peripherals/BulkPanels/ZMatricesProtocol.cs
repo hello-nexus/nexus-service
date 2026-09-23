@@ -13,6 +13,9 @@ public static class ZMatricesProtocol
     public const byte CommandPipe = 0x04;
     public const byte PicturePipe = 0x02;
 
+    /// <summary>Touch reports and a 1 Hz ASCII status token.</summary>
+    public const byte InputPipe = 0x81;
+
     public const int PacketSize = 512;
     public const int TransHeaderSize = 7;
     public const int TransPayloadSize = PacketSize - TransHeaderSize;

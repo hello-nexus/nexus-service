@@ -272,10 +272,13 @@ public static class PanelRoutes
             var streamed = streams.LivePanelDeviceIds();
             if (streamed.Count > 0)
             {
+                var monitors = streams.SecondaryMonitorStates();
                 foreach (var device in devices)
                 {
                     if (streamed.Contains(device.Id))
                         device.Streamed = true;
+                    if (monitors.TryGetValue(device.Id, out var monitorState))
+                        device.SecondaryMonitorState = monitorState;
                 }
             }
             // displayAttached is response-only state for display-bound records
@@ -343,6 +346,8 @@ public static class PanelRoutes
             // was profile-scoped, which is the bug this change fixes.
             if (body.LcdBrightness.HasValue)
                 streams.ApplyBrightness(updated.Id);
+            if (body.SecondaryMonitor.HasValue)
+                streams.ApplySecondaryMonitor(updated.Id);
             BroadcastDeviceChanged(hub, id);
             return Results.Json(updated, AppJsonContext.Default.PanelDeviceRecord);
         }).AllowPanel();
@@ -400,6 +405,7 @@ public static class PanelRoutes
             {
                 ResetPersonalization(registry, bgLibrary, id);
                 registry.ResetHardwareSettings(id);
+                sp.GetService<Nexus.Service.Panel.Streams.StreamedPanelCoordinator>()?.ApplySecondaryMonitor(id);
                 RestoreQSeriesDisplayDefaults(store, sp);
             }
             catch (Exception ex)
@@ -419,6 +425,7 @@ public static class PanelRoutes
             var record = registry.ResetHardwareSettings(id);
             if (record is null)
                 return Results.NotFound(ApiResponse.Fail("device not found"));
+            sp.GetService<Nexus.Service.Panel.Streams.StreamedPanelCoordinator>()?.ApplySecondaryMonitor(id);
 
             var surface = record.Capabilities?.Surface;
             var family = record.Capabilities?.Family;
