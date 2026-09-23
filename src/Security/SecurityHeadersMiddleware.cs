@@ -51,7 +51,8 @@ internal static class SecurityHeadersMiddleware
         // frame-src: otherwise child-src governs frames and the YouTube embed the
         // avatar immersive view docks is refused. Path-scoped to the embed player,
         // the same allowlist as EMBED_HOSTS in nexus-web src/sandbox/ui/avatarStickers.ts.
-        "frame-src 'self' blob: https://www.youtube.com/embed/ https://www.youtube-nocookie.com/embed/; " +
+        // build.hellonexus.com: the Build app iframes the portal; its frame-ancestors must list the dashboard origins.
+        "frame-src 'self' blob: https://www.youtube.com/embed/ https://www.youtube-nocookie.com/embed/ https://build.hellonexus.com; " +
         "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; " +
         "font-src 'self' data: https://fonts.gstatic.com; " +
         "img-src 'self' data: blob: " +
