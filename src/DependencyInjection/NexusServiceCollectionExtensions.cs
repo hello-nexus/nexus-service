@@ -967,7 +967,7 @@ public static class NexusServiceCollectionExtensions
                 _ => new Nexus.Service.Devices.Handlers.JpegPanelHandler(jpegPanelHub));
         }
 
-        // Bulk-pipe cooler LCDs (ASUS Ryujin, Thermalright, Lian Li Universal Screen 8.8).
+        // Bulk-pipe cooler LCDs (ASUS Ryujin, Thermalright, Lian Li Universal Screen 8.8, ZMatrices).
         // Their pixels ride a USB bulk endpoint rather than HID, so they are reachable only
         // where Windows has bound WinUSB; off Windows the factory is a null object and the
         // workers simply never find a panel. Transcribed and untested, so they default OFF.
@@ -983,6 +983,7 @@ public static class NexusServiceCollectionExtensions
             new Nexus.Service.Peripherals.BulkPanels.ThermalrightPanelDriver(),
             new Nexus.Service.Peripherals.BulkPanels.RyujinPanelDriver(),
             new Nexus.Service.Peripherals.BulkPanels.UniversalScreen88Driver(),
+            new Nexus.Service.Peripherals.BulkPanels.ZMatricesPanelDriver(),
         })
         {
             var bulkPanelHub = new Nexus.Service.Peripherals.BulkPanels.BulkPanelHub(bulkPanelDriver);

@@ -109,9 +109,10 @@ public class NexusServiceCollectionExtensionsTests
         // CorsairLinkLcd, Strimer, Nollie, Tryx, StreamDeck, Kraken, SmbusDram (the chipset
         // bus as a device), plus one JpegPanelHandler per JpegPanelModel (Galahad II LCD,
         // Corsair XC7, Corsair Elite Capellix, ID-Cooling FX-LCD).
-        // ... plus one BulkPanelHandler per bulk-pipe driver (Thermalright, Ryujin, Screen 8.8).
+        // ... plus one BulkPanelHandler per bulk-pipe driver (Thermalright, Ryujin, Screen 8.8,
+        // ZMatrices).
         Assert.Equal(
-            22 + Nexus.Service.Peripherals.JpegPanels.JpegPanelModel.All.Length + 3,
+            22 + Nexus.Service.Peripherals.JpegPanels.JpegPanelModel.All.Length + 4,
             handlers.Length);
     }
 

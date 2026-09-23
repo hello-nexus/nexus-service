@@ -12,6 +12,9 @@ public interface IBulkUsbPipe : IDisposable
     /// <summary>Writes one bulk transfer on the OUT pipe. The caller decides the framing.</summary>
     bool Write(ReadOnlySpan<byte> data);
 
+    /// <summary>Writes one bulk transfer on another OUT pipe of the same interface.</summary>
+    bool Write(byte pipeId, ReadOnlySpan<byte> data);
+
     /// <summary>
     /// Reads one bulk transfer from the IN pipe. Returns the byte count, 0 on timeout,
     /// or -1 when the pipe is gone.

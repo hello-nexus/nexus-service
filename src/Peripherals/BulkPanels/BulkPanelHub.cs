@@ -79,6 +79,22 @@ public sealed class BulkPanelHub : IDisposable
         }
     }
 
+    public bool Resend()
+    {
+        lock (_lock)
+        {
+            return _attached && _pipe is not null && _driver.Resend(_pipe, _hid);
+        }
+    }
+
+    public bool SetBrightness(int percent)
+    {
+        lock (_lock)
+        {
+            return _attached && _pipe is not null && _driver.SetBrightness(_pipe, _hid, percent);
+        }
+    }
+
     public void Detach()
     {
         lock (_lock)

@@ -423,6 +423,17 @@ public static class ConflictAppCatalog
             ProcessNames = new[] { "Kanali" },
         },
 
+        // ── ZMatrices ──────────────────────────────────────────────────────
+        new()
+        {
+            // Cooler LCD app (Electron, C:\Program Files\ZMatrices); its sender process
+            // holds the panel's WinUSB handle Nexus drives directly.
+            Id = "zmatrices",
+            DisplayName = "ZMatrices",
+            Category = "cooling",
+            ProcessNames = new[] { "ZMatrices", "zmUsbSendJpg" },
+        },
+
         // ── Elgato ─────────────────────────────────────────────────────────
         new()
         {

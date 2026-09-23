@@ -44,6 +44,7 @@ public class LightingDevicesCatalogTests
     [InlineData("Lian Li", "SL-LCD", "0x1CBE", "0x0005")]
     [InlineData("Lian Li", "Strimer Wireless", "-", "-")]
     [InlineData("Tryx", "Panorama", "0x391A", "0x1011")]
+    [InlineData("Aftershock", "Glacier Matrix 360", "0x38C1", "0x0026")]
     [InlineData("Corsair", "iCUE LINK System Hub", "0x1B1C", "0x0C3F")]
     [InlineData("NZXT", "Kraken Z3", "0x1E71", "0x3008")]
     [InlineData("NZXT", "Kraken X3", "0x1E71", "0x2007")]

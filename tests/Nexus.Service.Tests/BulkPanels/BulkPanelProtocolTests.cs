@@ -292,4 +292,62 @@ public class BulkPanelProtocolTests
         var input = cipher.ToArray();
         return decryptor.TransformFinalBlock(input, 0, input.Length);
     }
+
+    // ── ZMatrices ──
+
+    [Fact]
+    public void ZMatrices_picture_mode_command_closes_with_a_sum16_of_the_first_41_bytes()
+    {
+        var command = ZMatricesProtocol.EncodePictureModeCommand();
+
+        Assert.Equal(43, command.Length);
+        Assert.Equal(new byte[] { 0xAA, 0x2E, 0x05, 0x01 }, command[0..4]);
+        Assert.All(command[4..41], b => Assert.Equal(0, b));
+        Assert.Equal(new byte[] { 0xDE, 0x00 }, command[41..43]); // 0xAA + 0x2E + 0x05 + 0x01
+    }
+
+    [Fact]
+    public void ZMatrices_start_frame_declares_length_checksum_and_packet_count()
+    {
+        var jpeg = Enumerable.Range(0, 1011).Select(i => (byte)i).ToArray();
+
+        var start = ZMatricesProtocol.EncodeStartFrame(jpeg);
+
+        Assert.Equal(16, start.Length);
+        Assert.Equal("Start"u8.ToArray(), start[0..5]);
+        Assert.Equal(1, start[5]);
+        Assert.Equal(1011, BitConverter.ToInt32(start, 6));
+        Assert.Equal(ZMatricesProtocol.Sum16(jpeg), BitConverter.ToUInt16(start, 10));
+        Assert.Equal(3, BitConverter.ToUInt16(start, 12));
+        Assert.Equal(0, BitConverter.ToUInt16(start, 14));
+    }
+
+    [Fact]
+    public void ZMatrices_trans_packets_are_full_512_except_a_short_last_one()
+    {
+        var jpeg = Enumerable.Range(0, 1011).Select(i => (byte)i).ToArray();
+        var buffer = new byte[3 * ZMatricesProtocol.PacketSize];
+
+        int written = ZMatricesProtocol.EncodeTransPackets(jpeg, buffer);
+
+        Assert.Equal(512 + 512 + 7 + 1, written);
+        for (int packet = 0; packet < 3; packet++)
+        {
+            var header = buffer.AsSpan(packet * 512, 7).ToArray();
+            Assert.Equal("Trans"u8.ToArray(), header[0..5]);
+            Assert.Equal(packet + 1, BitConverter.ToUInt16(header, 5));
+        }
+        Assert.Equal(jpeg[0..505], buffer[7..512]);
+        Assert.Equal(jpeg[505..1010], buffer[519..1024]);
+        Assert.Equal(jpeg[1010], buffer[1031]);
+    }
+
+    [Fact]
+    public void ZMatrices_jpeg_filling_the_last_packet_exactly_leaves_it_full()
+    {
+        var jpeg = new byte[505 * 2];
+        var buffer = new byte[2 * ZMatricesProtocol.PacketSize];
+
+        Assert.Equal(1024, ZMatricesProtocol.EncodeTransPackets(jpeg, buffer));
+    }
 }

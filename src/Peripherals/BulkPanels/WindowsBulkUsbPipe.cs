@@ -83,7 +83,9 @@ public sealed class WindowsBulkUsbPipe : IBulkUsbPipe
         }
     }
 
-    public bool Write(ReadOnlySpan<byte> data)
+    public bool Write(ReadOnlySpan<byte> data) => Write(_writePipeId, data);
+
+    public bool Write(byte pipeId, ReadOnlySpan<byte> data)
     {
         if (_disposed || data.Length == 0)
         {
@@ -94,7 +96,7 @@ public sealed class WindowsBulkUsbPipe : IBulkUsbPipe
         {
             // Re-checked inside the lock: writing through a handle Dispose already freed is
             // an access violation, not an exception.
-            return !_disposed && TransferLocked(_writePipeId, buffer, buffer.Length, TransferTimeoutMs, write: true) == buffer.Length;
+            return !_disposed && TransferLocked(pipeId, buffer, buffer.Length, TransferTimeoutMs, write: true) == buffer.Length;
         }
     }
 

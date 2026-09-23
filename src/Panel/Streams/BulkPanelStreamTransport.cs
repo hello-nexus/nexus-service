@@ -1,5 +1,6 @@
 using System;
 using System.IO;
+using System.Threading;
 using Nexus.Service.Peripherals.BulkPanels;
 using Nexus.Service.Platform;
 
@@ -10,14 +11,26 @@ namespace Nexus.Service.Panel.Streams;
 /// Buffers to exactly one frame before handing it to the driver, which owns whatever
 /// encoding its panel wants.
 /// </summary>
-public sealed class BulkPanelStreamTransport : IStreamedPanelTransport, IOrientablePanelTransport
+public sealed class BulkPanelStreamTransport : IStreamedPanelTransport, IOrientablePanelTransport, IBrightnessPanelTransport
 {
+    private const long BrightnessTtlMs = 500;
+
     private readonly BulkPanelHub _hub;
     private readonly byte[] _frame;
     private int _filled;
     private bool _disposed;
     private bool _dropLogged;
     private readonly PanelOrientationFilter _orientation = new();
+
+    // A static page produces no captured frames, and some panels fall back to their own
+    // screen after a few seconds without one; the timer re-sends the last frame meanwhile.
+    private Timer? _keepalive;
+    private long _lastSendMs;
+
+    private readonly object _brightnessLock = new();
+    private Func<int?>? _brightness;
+    private int _brightnessApplied = -1;
+    private long _brightnessNextReadMs;
 
     public BulkPanelStreamTransport(BulkPanelHub hub, string serial)
     {
@@ -31,6 +44,57 @@ public sealed class BulkPanelStreamTransport : IStreamedPanelTransport, IOrienta
     public bool IsOpen => !_disposed && _hub.IsConnected;
 
     public void BindOrientation(Func<(bool Flip180, bool Mirror)> source) => _orientation.Bind(source);
+
+    /// <summary>Ignored for a panel with no backlight command.</summary>
+    public void BindBrightness(Func<int?> source)
+    {
+        if (!_hub.Driver.SupportsBrightness)
+        {
+            return;
+        }
+        lock (_brightnessLock)
+        {
+            _brightness = source;
+            _brightnessApplied = -1;
+            _brightnessNextReadMs = 0;
+        }
+    }
+
+    public void ApplyBrightness()
+    {
+        lock (_brightnessLock)
+        {
+            _brightnessNextReadMs = 0;
+            TryApplyBrightnessLocked();
+        }
+    }
+
+    private void TryApplyBrightnessLocked()
+    {
+        long nowMs = Environment.TickCount64;
+        if (_brightness is null || nowMs < _brightnessNextReadMs)
+        {
+            return;
+        }
+        _brightnessNextReadMs = nowMs + BrightnessTtlMs;
+        int? wanted;
+        try { wanted = _brightness(); }
+        catch (Exception ex)
+        {
+            ServiceLog.Warn($"[{_hub.Driver.HandlerId}] backlight source threw: {ex.GetType().Name}: {ex.Message}");
+            return;
+        }
+        // No record value means the panel keeps what it powered up with.
+        if (wanted is not int percent || percent == _brightnessApplied)
+        {
+            return;
+        }
+        if (_hub.SetBrightness(percent))
+        {
+            _brightnessApplied = percent;
+            ServiceLog.Info($"[{_hub.Driver.HandlerId}] backlight {percent}%");
+        }
+    }
 
     public string Serial { get; }
 
@@ -46,6 +110,23 @@ public sealed class BulkPanelStreamTransport : IStreamedPanelTransport, IOrienta
             throw new IOException($"{_hub.Driver.Name} panel size unknown");
         }
         _filled = 0;
+        int keepaliveMs = _hub.Driver.KeepaliveMs;
+        if (keepaliveMs > 0)
+        {
+            _keepalive = new Timer(_ => Keepalive(keepaliveMs), null, keepaliveMs / 2, keepaliveMs / 2);
+        }
+    }
+
+    private void Keepalive(int keepaliveMs)
+    {
+        if (_disposed || Environment.TickCount64 - Volatile.Read(ref _lastSendMs) < keepaliveMs)
+        {
+            return;
+        }
+        if (_hub.Resend())
+        {
+            Volatile.Write(ref _lastSendMs, Environment.TickCount64);
+        }
     }
 
     public void StartPlayer()
@@ -73,7 +154,12 @@ public sealed class BulkPanelStreamTransport : IStreamedPanelTransport, IOrienta
             _filled = 0;
             if (_hub.SendFrame(_orientation.Apply(_frame, _hub.Width, _hub.Height)))
             {
+                Volatile.Write(ref _lastSendMs, Environment.TickCount64);
                 _dropLogged = false;
+                lock (_brightnessLock)
+                {
+                    TryApplyBrightnessLocked();
+                }
             }
             else if (!_dropLogged)
             {
@@ -83,5 +169,10 @@ public sealed class BulkPanelStreamTransport : IStreamedPanelTransport, IOrienta
         }
     }
 
-    public void Dispose() => _disposed = true;
+    public void Dispose()
+    {
+        _disposed = true;
+        _keepalive?.Dispose();
+        _keepalive = null;
+    }
 }
