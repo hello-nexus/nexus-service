@@ -515,6 +515,7 @@ public static class ProfileRoutes
                     if (ui.ConflictAutoKillExclusions is not null) s.Ui.ConflictAutoKillExclusions = ui.ConflictAutoKillExclusions;
                     if (ui.OemAppSeeded.HasValue) s.Ui.OemAppSeeded = ui.OemAppSeeded.Value;
                     if (ui.PinnedSidebarApps is not null) s.Ui.PinnedSidebarApps = ui.PinnedSidebarApps;
+                    if (ui.SidebarAppOrder is not null) s.Ui.SidebarAppOrder = ui.SidebarAppOrder;
                     if (ui.ShowUncontrolledDevices.HasValue) s.Ui.ShowUncontrolledDevices = ui.ShowUncontrolledDevices.Value;
                     if (ui.ShowUncontrolledLightingDevices.HasValue) s.Ui.ShowUncontrolledLightingDevices = ui.ShowUncontrolledLightingDevices.Value;
                     if (ui.ShowUncontrolledCoolingDevices.HasValue) s.Ui.ShowUncontrolledCoolingDevices = ui.ShowUncontrolledCoolingDevices.Value;

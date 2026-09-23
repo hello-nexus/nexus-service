@@ -77,6 +77,20 @@ public sealed class ConfigRoundTripIntegrationTests : IClassFixture<NexusAppFact
     }
 
     [Fact]
+    public async Task Sidebar_app_order_persists_and_survives_a_pinned_apps_patch()
+    {
+        var client = AuthedClient();
+
+        await client.PostAsync("/preferences", Json("{\"ui\":{\"sidebarAppOrder\":[\"weather\",\"clock\"]}}"));
+        await client.PostAsync("/preferences", Json("{\"ui\":{\"pinnedSidebarApps\":[\"monitoring\"]}}"));
+
+        using var doc = JsonDocument.Parse(await (await client.GetAsync("/preferences")).Content.ReadAsStringAsync());
+        var order = doc.RootElement.GetProperty("ui").GetProperty("sidebarAppOrder")
+            .EnumerateArray().Select(e => e.GetString()).ToArray();
+        Assert.Equal(new[] { "weather", "clock" }, order);
+    }
+
+    [Fact]
     public async Task Theme_partial_patch_does_not_clobber_sibling_fields()
     {
         var client = AuthedClient();
