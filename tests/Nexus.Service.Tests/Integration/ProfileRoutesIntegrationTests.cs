@@ -255,6 +255,25 @@ public sealed class ProfileRoutesIntegrationTests : IDisposable
     }
 
     [Fact]
+    public async Task Preferences_sidebar_collapsed_persists_and_round_trips_through_GET()
+    {
+        var client = AuthedClient();
+
+        var before = await (await client.GetAsync("/preferences")).Content.ReadFromJsonAsync<JsonElement>();
+        Assert.False(before.GetProperty("ui").GetProperty("sidebarCollapsed").GetBoolean());
+
+        var postRes = await client.PostAsJsonAsync("/preferences", new { ui = new { sidebarCollapsed = true } });
+        Assert.Equal(HttpStatusCode.OK, postRes.StatusCode);
+        var body = await (await client.GetAsync("/preferences")).Content.ReadFromJsonAsync<JsonElement>();
+        Assert.True(body.GetProperty("ui").GetProperty("sidebarCollapsed").GetBoolean());
+
+        // A patch that omits the field leaves it alone.
+        await client.PostAsJsonAsync("/preferences", new { ui = new { showConflictAlerts = false } });
+        body = await (await client.GetAsync("/preferences")).Content.ReadFromJsonAsync<JsonElement>();
+        Assert.True(body.GetProperty("ui").GetProperty("sidebarCollapsed").GetBoolean());
+    }
+
+    [Fact]
     public async Task Preferences_diagnostics_patch_persists_and_round_trips_through_GET()
     {
         var client = AuthedClient();
