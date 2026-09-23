@@ -769,6 +769,7 @@ namespace Nexus.Service.Serialization;
 [JsonSerializable(typeof(SetLayerKeyBody))]
 [JsonSerializable(typeof(SetLayerKeyResponse))]
 [JsonSerializable(typeof(InputterBody))]
+[JsonSerializable(typeof(Nexus.Service.Models.Panel.TouchInjectBody))]
 
 // Displays
 [JsonSerializable(typeof(Y70RotationParams))]

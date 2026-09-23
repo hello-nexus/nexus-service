@@ -49,6 +49,21 @@ public interface IBrightnessPanelTransport
     void ApplyBrightness();
 }
 
+/// <summary>Transport whose glass can be handed to Windows as a secondary monitor.</summary>
+public interface ISecondaryMonitorTransport
+{
+    /// <summary>Supplies whether the panel record wants the monitor; re-read on every keepalive tick.</summary>
+    void BindSecondaryMonitor(Func<bool> source);
+
+    /// <summary>Starts or stops the monitor to match the bound value now.</summary>
+    void ApplySecondaryMonitor();
+
+    /// <summary>A <see cref="SecondaryMonitorStates"/> value, or null while the monitor is off.</summary>
+    string? SecondaryMonitorState { get; }
+
+    event Action? SecondaryMonitorStateChanged;
+}
+
 /// <summary>
 /// Byte sink for one streamed panel device: encoded H.264 Annex-B access
 /// units in, glass on the other end. Implementations own device prep and

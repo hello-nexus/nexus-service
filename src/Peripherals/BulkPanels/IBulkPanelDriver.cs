@@ -62,4 +62,7 @@ public interface IBulkPanelDriver
 
     /// <summary>Sets the backlight, 0-100.</summary>
     bool SetBrightness(IBulkUsbPipe pipe, IHidDevice? hid, int percent) => false;
+
+    /// <summary>The glass can show a Windows virtual monitor, with touch read off <see cref="ReadPipeId"/>.</summary>
+    bool SupportsSecondaryMonitor => false;
 }

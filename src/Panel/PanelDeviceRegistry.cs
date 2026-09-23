@@ -259,7 +259,8 @@ public sealed class PanelDeviceRegistry
             && a.Dpr == b.Dpr
             && a.Dpi == b.Dpi
             && string.Equals(a.Family, b.Family, StringComparison.Ordinal)
-            && a.SupportsBrightness == b.SupportsBrightness;
+            && a.SupportsBrightness == b.SupportsBrightness
+            && a.SupportsSecondaryMonitor == b.SupportsSecondaryMonitor;
     }
 
     public PanelDeviceRecord? FindByDisplayId(string displayId)
@@ -478,6 +479,7 @@ public sealed class PanelDeviceRegistry
             Dpi = patch.Dpi ?? existing?.Dpi,
             Family = patch.Family ?? existing?.Family,
             SupportsBrightness = patch.SupportsBrightness ?? existing?.SupportsBrightness,
+            SupportsSecondaryMonitor = patch.SupportsSecondaryMonitor ?? existing?.SupportsSecondaryMonitor,
         };
     }
 
@@ -591,6 +593,8 @@ public sealed class PanelDeviceRegistry
             // cannot dim never read it.
             if (patch.LcdBrightness.HasValue)
                 record.LcdBrightness = Math.Clamp(patch.LcdBrightness.Value, 0, 100);
+            if (patch.SecondaryMonitor.HasValue)
+                record.SecondaryMonitor = patch.SecondaryMonitor.Value;
             // Capabilities on display-bound records are owned by the topology
             // sync (rebuilt from OS facts); a client value would ping-pong
             // with the next sync pass.
@@ -695,6 +699,7 @@ public sealed class PanelDeviceRegistry
             record.Flip180 = null;
             record.Mirror = null;
             record.LcdBrightness = null;
+            record.SecondaryMonitor = null;
             record.XeneonEdgeSettings = null;
             record.LastSeenAt = now;
             snapshot = Clone(record);
@@ -791,6 +796,7 @@ public sealed class PanelDeviceRegistry
             Flip180 = r.Flip180,
             Mirror = r.Mirror,
             LcdBrightness = r.LcdBrightness,
+            SecondaryMonitor = r.SecondaryMonitor,
             XeneonEdgeSettings = r.XeneonEdgeSettings is null
                 ? null
                 : new XeneonEdgeSettingsDto

@@ -114,6 +114,9 @@ public sealed class PanelDeviceRecord
     /// <summary>Backlight percent 0-100 for a cooler LCD whose panel takes a brightness
     /// command. Null = the panel's default. Ignored by surfaces that cannot dim.</summary>
     public int? LcdBrightness { get; set; }
+    /// <summary>Windows drives this glass as a secondary monitor instead of Nexus content.
+    /// Pushed-frame panels whose capabilities carry SupportsSecondaryMonitor; null = off.</summary>
+    public bool? SecondaryMonitor { get; set; }
     /// <summary>
     /// Last known Corsair Xeneon Edge native display settings (vendor HID),
     /// applied/read through /displays/{id}/xeneon-settings. Display-bound
@@ -142,6 +145,12 @@ public sealed class PanelDeviceRecord
     /// Never persisted (null on stored records).
     /// </summary>
     public bool? Streamed { get; set; }
+    /// <summary>
+    /// Route-computed on GET /panel/devices while <see cref="SecondaryMonitor"/> is on and a
+    /// stream session owns the record: starting, active, driver-missing or failed. Never
+    /// persisted (null on stored records).
+    /// </summary>
+    public string? SecondaryMonitorState { get; set; }
 }
 
 /// <summary>
@@ -175,6 +184,8 @@ public sealed class PanelDeviceCapabilities
     /// <summary>The panel's backlight is host-settable, so the dashboard offers the
     /// brightness control. Null/false on every surface that cannot dim.</summary>
     public bool? SupportsBrightness { get; set; }
+    /// <summary>The service can turn this panel into a Windows secondary monitor.</summary>
+    public bool? SupportsSecondaryMonitor { get; set; }
 }
 
 /// <summary>
@@ -245,6 +256,9 @@ public sealed class PanelDevicePatch
     /// <summary>Backlight percent 0-100 for a cooler LCD whose panel takes a brightness
     /// command. Null = the panel's default. Ignored by surfaces that cannot dim.</summary>
     public int? LcdBrightness { get; set; }
+    /// <summary>Windows drives this glass as a secondary monitor instead of Nexus content.
+    /// Pushed-frame panels whose capabilities carry SupportsSecondaryMonitor; null = off.</summary>
+    public bool? SecondaryMonitor { get; set; }
     public PanelDeviceCapabilities? Capabilities { get; set; }
 }
 

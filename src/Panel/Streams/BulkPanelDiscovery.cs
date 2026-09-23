@@ -13,10 +13,12 @@ namespace Nexus.Service.Panel.Streams;
 public sealed class BulkPanelDiscovery : IStreamedPanelDiscovery
 {
     private readonly BulkPanelHub _hub;
+    private readonly IVirtualMonitorHost? _monitors;
 
-    public BulkPanelDiscovery(BulkPanelHub hub)
+    public BulkPanelDiscovery(BulkPanelHub hub, IVirtualMonitorHost? monitors = null)
     {
         _hub = hub;
+        _monitors = monitors;
     }
 
     public string HandlerId => _hub.Driver.HandlerId;
@@ -44,6 +46,7 @@ public sealed class BulkPanelDiscovery : IStreamedPanelDiscovery
                     Dpr = 1.0,
                     Fps = driver.Fps,
                     SupportsBrightness = driver.SupportsBrightness,
+                    SupportsSecondaryMonitor = driver.SupportsSecondaryMonitor && _monitors is not null,
                     // The driver owns compression - JPEG for most, raw pixels for the
                     // Ryujin - so the overlay hands back whole frames either way.
                     Codec = StreamCodec.RawBgra,
@@ -53,5 +56,5 @@ public sealed class BulkPanelDiscovery : IStreamedPanelDiscovery
     }
 
     public IStreamedPanelTransport CreateTransport(StreamedPanelDeviceInfo info) =>
-        new BulkPanelStreamTransport(_hub, info.Serial);
+        new BulkPanelStreamTransport(_hub, info.Serial, _monitors);
 }

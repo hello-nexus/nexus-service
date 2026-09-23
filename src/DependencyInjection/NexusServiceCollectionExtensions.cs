@@ -972,6 +972,12 @@ public static class NexusServiceCollectionExtensions
         // where Windows has bound WinUSB; off Windows the factory is a null object and the
         // workers simply never find a panel. All but ZMatrices are transcribed and untested,
         // so they default OFF.
+        // Only the Windows host can create a monitor; elsewhere the setting is not offered.
+#if WINDOWS
+        services.AddSingleton<Nexus.Service.Panel.Streams.IVirtualMonitorHost>(sp =>
+            new Nexus.Service.Peripherals.BulkPanels.ZMatricesVirtualMonitorHost(
+                sp.GetService<Nexus.Service.Helper.HelperRegistry>()));
+#endif
         services.AddSingleton<Nexus.Service.Peripherals.BulkPanels.IBulkUsbPipeFactory>(_ =>
 #if WINDOWS
             new Nexus.Service.Peripherals.BulkPanels.WindowsBulkUsbPipeFactory()
@@ -996,8 +1002,9 @@ public static class NexusServiceCollectionExtensions
                     sp.GetRequiredService<Nexus.Service.Peripherals.BulkPanels.IBulkUsbPipeFactory>(),
                     bulkPanelHub,
                     sp.GetRequiredService<Nexus.Service.Devices.DeviceControlGate>()));
-            services.AddSingleton<Nexus.Service.Panel.Streams.IStreamedPanelDiscovery>(
-                _ => new Nexus.Service.Panel.Streams.BulkPanelDiscovery(bulkPanelHub));
+            services.AddSingleton<Nexus.Service.Panel.Streams.IStreamedPanelDiscovery>(sp =>
+                new Nexus.Service.Panel.Streams.BulkPanelDiscovery(
+                    bulkPanelHub, sp.GetService<Nexus.Service.Panel.Streams.IVirtualMonitorHost>()));
             services.AddSingleton<IDeviceHandler>(
                 _ => new Nexus.Service.Devices.Handlers.BulkPanelHandler(bulkPanelHub));
         }
@@ -1903,12 +1910,14 @@ public static class NexusServiceCollectionExtensions
                 };
             }
 #endif
+            var sockets = sp.GetRequiredService<Nexus.Service.Sockets.MultiplexHub>();
             return new Nexus.Service.Panel.Streams.StreamedPanelCoordinator(
                 sp.GetServices<Nexus.Service.Panel.Streams.IStreamedPanelDiscovery>(),
                 sp.GetRequiredService<Nexus.Service.Panel.Streams.StreamedPanelStore>(),
                 sp.GetRequiredService<Nexus.Service.Panel.PanelDeviceRegistry>(),
                 sp.GetRequiredService<Nexus.Service.Devices.DeviceControlGate>(),
-                notifyOverlay);
+                notifyOverlay,
+                notifyPanelChanged: id => Nexus.Service.Sockets.PanelTopics.BroadcastPanelDevice(sockets, id));
         });
         services.AddHostedService(sp =>
             sp.GetRequiredService<Nexus.Service.Panel.Streams.StreamedPanelCoordinator>());
