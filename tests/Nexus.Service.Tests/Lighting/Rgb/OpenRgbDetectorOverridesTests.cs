@@ -62,6 +62,22 @@ public class OpenRgbDetectorOverridesTests : IDisposable
         Assert.Contains("HYTE Keeb TKL", OpenRgbProcessManager.BuildDisabledDetectors(macOS: true));
     }
 
+    [Theory]
+    [InlineData("Lian Li Strimer L Connect")]
+    [InlineData("Lian Li Uni Hub - SL")]
+    [InlineData("Lian Li Uni Hub - AL")]
+    [InlineData("Lian Li Uni Hub - SL V2")]
+    [InlineData("Lian Li Uni Hub - AL V2")]
+    [InlineData("Lian Li Uni Hub - SL V2 v0.5")]
+    [InlineData("Lian Li Uni Hub - SL Infinity")]
+    [InlineData("Lian Li GA II Trinity")]
+    [InlineData("Lian Li GA II Trinity Performance")]
+    public void Natively_driven_lian_li_detectors_stay_disabled_on_every_os(string detector)
+    {
+        Assert.Contains(detector, OpenRgbProcessManager.BuildDisabledDetectors(macOS: false));
+        Assert.Contains(detector, OpenRgbProcessManager.BuildDisabledDetectors(macOS: true));
+    }
+
     [Fact]
     public void User_exclusion_lands_as_disabled_plus_placeholder_only()
     {
