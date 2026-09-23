@@ -773,6 +773,7 @@ namespace Nexus.Service.Serialization;
 
 // Displays
 [JsonSerializable(typeof(Y70RotationParams))]
+[JsonSerializable(typeof(Y70CompatibilityRenderingParams))]
 [JsonSerializable(typeof(Y70BrightnessResponse))]
 [JsonSerializable(typeof(Y70BrightnessParams))]
 [JsonSerializable(typeof(Y70ToggleScreenResponse))]

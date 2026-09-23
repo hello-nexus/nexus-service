@@ -436,7 +436,11 @@ public static class PanelRoutes
                 // kiosk, but its toggle lives on the Y70 Settings tab and
                 // the Y70 is single-instance per host, so its device reset
                 // owns it. Broadcast so open dashboards see the flip.
-                store.Update(s => s.Panel.AutoLaunch = new PanelSettings().AutoLaunch);
+                store.Update(s =>
+                {
+                    s.Panel.AutoLaunch = new PanelSettings().AutoLaunch;
+                    s.Y70.CompatibilityRendering = defaults.CompatibilityRendering;
+                });
                 PanelTopics.BroadcastPrefs(hub);
                 var y70 = sp.GetRequiredService<Peripherals.Y70.IY70Provider>();
                 y70.SetOrientation(defaults.Orientation);

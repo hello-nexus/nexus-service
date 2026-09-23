@@ -163,6 +163,7 @@ public sealed class Y70Defaults
     public int Brightness { get; set; } = 80;
     public bool ScreenOff { get; set; }
     public bool ForceOrientation { get; set; } = true;
+    public bool CompatibilityRendering { get; set; }
 }
 
 public sealed class KeebDefaults

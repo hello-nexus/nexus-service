@@ -69,6 +69,18 @@ public static class DisplayRoutes
             y.SetToggle(body.Toggle);
             return new Y70BrightnessResponse { Brightness = 20 };
         }).AllowPanel();
+        // Stored only: the store change nudges nexus-overlay, which rebuilds
+        // the panel kiosk when /overlay/state reports a different value.
+        app.MapGet("/y70/compatibility-rendering", (IConfigStore store) => new Y70CompatibilityRenderingParams
+        {
+            Enabled = store.Load().Y70.CompatibilityRendering,
+            Supported = OperatingSystem.IsWindows(),
+        }).AllowPanel();
+        app.MapPost("/y70/compatibility-rendering", (Y70CompatibilityRenderingParams body, IConfigStore store) =>
+        {
+            store.Update(s => s.Y70.CompatibilityRendering = body.Enabled);
+            return ApiResponse.Ok();
+        }).AllowPanel();
 
         // Q-series (Q60/Q80) - 180 degree flip only, no landscape.
         app.MapGet("/qseries/rotation", (IConfigStore store) => new QSeriesRotationParams
