@@ -58,6 +58,17 @@ licenses. Their respective license texts ship alongside the bundled binaries.
   linking exception) and the bundled OpenRGB child process uses it to probe
   SMBus for RGB DRAM
 
+## Indirect display driver sample
+
+- **Project**: IddSampleDriver (Windows-driver-samples, `video/IndirectDisplay`)
+- **Upstream**: https://github.com/microsoft/Windows-driver-samples
+- **License**: Microsoft Public License (MS-PL)
+- **License text**: `Bundled/windows/nexus-vdd/LICENSE-MS-PL.txt`
+- **Usage**: the Nexus Virtual Display driver (`Bundled/windows/nexus-vdd`,
+  shipped as `vdd/NexusVirtualDisplay.dll`) is built on this sample. It runs in
+  its own UMDF host process and the service talks to it through a shared memory
+  section; the service does not link against it
+
 ## dfu-util
 
 - **Project**: dfu-util

@@ -141,6 +141,10 @@ dotnet publish -c Release -r linux-x64 -o publish-linux
   configuration, compiled by `scripts/build-ffmpeg-minimal.sh`. It is optional
   at build time: `bash scripts/fetch-ffmpeg.sh all` (or `mac | win | linux`)
   produces it once per RID.
+- The Windows virtual display driver behind secondary-monitor mode is optional
+  at build time: `Bundled/windows/nexus-vdd/build.ps1` builds it into
+  `Bundled/win-x64/vdd/` with the VS Build Tools (it downloads the WDK package
+  itself). Without it the setting is not offered.
 - Device firmware images are vendor files kept outside this repository. The
   csproj embeds them from `NEXUS_FIRMWARE_DIR` (or `-p:NexusFirmwareDir=`), a
   gitignored `data/firmware/`, or a sibling `firmware/` directory when one

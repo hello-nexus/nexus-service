@@ -4,12 +4,15 @@ using System.Diagnostics;
 using System.IO;
 using System.IO.MemoryMappedFiles;
 using System.Linq;
+using System.Security.Cryptography.X509Certificates;
 using System.Threading;
 using Microsoft.Win32;
 using Nexus.Service.Helper;
 using Nexus.Service.Models.Panel;
 using Nexus.Service.Panel.Streams;
 using Nexus.Service.Peripherals.BulkPanels;
+using Nexus.Service.Platform.Windows;
+using Nexus.Service.Update;
 
 namespace Nexus.Service.Platform.Displays;
 
@@ -26,6 +29,9 @@ public sealed class NexusVirtualMonitorHost : IVirtualMonitorHost
     /// <summary>EnumDisplayDevices DeviceString of the driver's adapter.</summary>
     internal const string AdapterName = "Nexus Virtual Display";
     private const string StopEventName = @"Global\NexusVirtualDisplayStop";
+    private const string SettingsKey = @"SOFTWARE\Nexus\VirtualDisplay";
+    // Thumbprints this service added to TrustedPublisher, so the uninstaller removes only those.
+    private const string TrustedPublishersValue = "TrustedPublishers";
     private const int StartTimeoutMs = 15_000;
 
     private readonly HelperRegistry? _helpers;
@@ -68,7 +74,7 @@ public sealed class NexusVirtualMonitorHost : IVirtualMonitorHost
         try
         {
             // The driver reads the size when the device starts.
-            using (var key = Registry.LocalMachine.CreateSubKey(@"SOFTWARE\Nexus\VirtualDisplay"))
+            using (var key = Registry.LocalMachine.CreateSubKey(SettingsKey))
             {
                 key.SetValue("Width", width, RegistryValueKind.DWord);
                 key.SetValue("Height", height, RegistryValueKind.DWord);
@@ -161,46 +167,161 @@ public sealed class NexusVirtualMonitorHost : IVirtualMonitorHost
 
     /// <summary>
     /// Adds the bundled package once per service run: pnputil installs it when it is new or newer
-    /// and leaves an identical one alone. It succeeds silently only once the signing publisher is
-    /// trusted on this PC.
+    /// and leaves an identical one alone.
     /// </summary>
     private bool EnsureDriver(string inf)
     {
         if (Interlocked.Exchange(ref _installAttempted, 1) == 0)
         {
-            try
-            {
-                var psi = new ProcessStartInfo("pnputil.exe")
-                {
-                    UseShellExecute = false,
-                    CreateNoWindow = true,
-                    RedirectStandardOutput = true,
-                };
-                psi.ArgumentList.Add("/add-driver");
-                psi.ArgumentList.Add(inf);
-                psi.ArgumentList.Add("/install");
-                using var pnputil = Process.Start(psi);
-                if (pnputil is not null)
-                {
-                    var output = pnputil.StandardOutput.ReadToEndAsync();
-                    if (!pnputil.WaitForExit(30_000))
-                    {
-                        pnputil.Kill();
-                        ServiceLog.Warn("[virtual-monitor] driver package add timed out");
-                    }
-                    else
-                    {
-                        var summary = (output.Wait(1000) ? output.Result : "").Split('\n').Select(l => l.Trim()).Where(l => l.Length > 0).LastOrDefault();
-                        ServiceLog.Info($"[virtual-monitor] driver package add exit={pnputil.ExitCode}: {summary}");
-                    }
-                }
-            }
-            catch (Exception ex)
-            {
-                ServiceLog.Warn($"[virtual-monitor] driver package add failed: {ex.Message}");
-            }
+            TrustPackageSigner(Path.Combine(_packageDir, "nexusvirtualdisplay.cat"));
+            var result = RunPnputil("/add-driver", inf, "/install");
+            ServiceLog.Info($"[virtual-monitor] driver package add: {result}");
         }
         return IsDriverStaged();
+    }
+
+    /// <summary>
+    /// pnputil installs a catalog Microsoft did not sign without a prompt only once its signer is
+    /// in LocalMachine\TrustedPublisher. Trusts the signer only when the catalog chains to a trusted
+    /// root and the certificate carries the Nexus signing identity.
+    /// </summary>
+    private static void TrustPackageSigner(string catalog)
+    {
+        try
+        {
+            UpdateIntegrity.VerifyTrustChain(catalog, revocation: false);
+            using var cert = AuthenticodeSigner.TryGetSignerCertificate(catalog);
+            if (cert is null || !UpdateIntegrity.HasDurableIdentityEku(cert))
+            {
+                ServiceLog.Warn("[virtual-monitor] driver catalog is not signed with the Nexus identity");
+                return;
+            }
+            using var store = new X509Store(StoreName.TrustedPublisher, StoreLocation.LocalMachine);
+            store.Open(OpenFlags.ReadWrite);
+            using var key = Registry.LocalMachine.CreateSubKey(SettingsKey);
+            var recorded = key.GetValue(TrustedPublishersValue) as string[] ?? [];
+            var previous = recorded.Where(t => t != cert.Thumbprint).ToArray();
+            if (store.Certificates.Find(X509FindType.FindByThumbprint, cert.Thumbprint, validOnly: false).Count > 0)
+            {
+                // Trusted by someone else: not ours to record or prune around.
+                if (!recorded.Contains(cert.Thumbprint))
+                {
+                    return;
+                }
+            }
+            else
+            {
+                // Recorded before the store changes, so the uninstaller knows every certificate this added.
+                key.SetValue(TrustedPublishersValue, previous.Append(cert.Thumbprint).ToArray(), RegistryValueKind.MultiString);
+                store.Add(cert);
+                ServiceLog.Info($"[virtual-monitor] trusted driver publisher {cert.Thumbprint}");
+            }
+            // Trust is checked when a package is installed, not when an installed driver loads, so
+            // the leaves trusted for earlier builds can go.
+            RemoveFromStore(store, previous);
+            key.SetValue(TrustedPublishersValue, new[] { cert.Thumbprint }, RegistryValueKind.MultiString);
+        }
+        catch (Exception ex)
+        {
+            ServiceLog.Warn($"[virtual-monitor] driver publisher trust failed: {ex.Message}");
+        }
+    }
+
+    /// <summary>
+    /// `Nexus.exe --uninstall`: removes every staged copy of the driver package, the publishers
+    /// this service trusted, and the settings key.
+    /// </summary>
+    internal static void RemoveDriver(Action<string> log)
+    {
+        var infDir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.Windows), "INF");
+        foreach (var inf in Directory.EnumerateFiles(infDir, "oem*.inf"))
+        {
+            string text;
+            try
+            {
+                text = File.ReadAllText(inf);
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+            {
+                continue;
+            }
+            // The published oemNN.inf is a copy of NexusVirtualDisplay.inf; its hardware id names it.
+            if (text.Contains("NexusVirtualDisplay", StringComparison.OrdinalIgnoreCase))
+            {
+                log($"removing driver package {Path.GetFileName(inf)}: {RunPnputil("/delete-driver", Path.GetFileName(inf), "/uninstall", "/force")}");
+            }
+        }
+
+        string[] trusted;
+        using (var key = Registry.LocalMachine.OpenSubKey(SettingsKey))
+        {
+            trusted = key?.GetValue(TrustedPublishersValue) as string[] ?? [];
+        }
+        if (trusted.Length > 0)
+        {
+            using var store = new X509Store(StoreName.TrustedPublisher, StoreLocation.LocalMachine);
+            store.Open(OpenFlags.ReadWrite);
+            log($"removed {RemoveFromStore(store, trusted)} trusted publisher certificate(s)");
+        }
+
+        Registry.LocalMachine.DeleteSubKeyTree(SettingsKey, throwOnMissingSubKey: false);
+        using (var parent = Registry.LocalMachine.OpenSubKey(@"SOFTWARE\Nexus"))
+        {
+            if (parent is null || parent.SubKeyCount > 0 || parent.ValueCount > 0)
+            {
+                return;
+            }
+        }
+        Registry.LocalMachine.DeleteSubKey(@"SOFTWARE\Nexus", throwOnMissingSubKey: false);
+    }
+
+    private static int RemoveFromStore(X509Store store, string[] thumbprints)
+    {
+        int removed = 0;
+        foreach (var thumbprint in thumbprints)
+        {
+            foreach (var cert in store.Certificates.Find(X509FindType.FindByThumbprint, thumbprint, validOnly: false))
+            {
+                store.Remove(cert);
+                removed++;
+            }
+        }
+        return removed;
+    }
+
+    /// <summary>Runs pnputil and returns its exit code with the last line of its output.</summary>
+    private static string RunPnputil(params string[] args)
+    {
+        try
+        {
+            var psi = new ProcessStartInfo("pnputil.exe")
+            {
+                UseShellExecute = false,
+                CreateNoWindow = true,
+                RedirectStandardOutput = true,
+            };
+            foreach (var arg in args)
+            {
+                psi.ArgumentList.Add(arg);
+            }
+            using var pnputil = Process.Start(psi);
+            if (pnputil is null)
+            {
+                return "not started";
+            }
+            var output = pnputil.StandardOutput.ReadToEndAsync();
+            if (!pnputil.WaitForExit(30_000))
+            {
+                pnputil.Kill();
+                return "timed out";
+            }
+            var summary = (output.Wait(1000) ? output.Result : "").Split('\n').Select(l => l.Trim()).Where(l => l.Length > 0).LastOrDefault();
+            return $"exit={pnputil.ExitCode}: {summary}";
+        }
+        catch (Exception ex)
+        {
+            return $"failed: {ex.Message}";
+        }
     }
 
     private static bool IsDriverStaged()
