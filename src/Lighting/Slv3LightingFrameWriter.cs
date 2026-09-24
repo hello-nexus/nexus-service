@@ -337,7 +337,8 @@ public sealed class Slv3LightingFrameWriter : IHostedService, IDisposable
         var sinceLastPushMs = _lastPushTicks.TryGetValue(macHex, out var lastPush)
             ? (nowTicks - lastPush) / TimeSpan.TicksPerMillisecond
             : long.MaxValue;
-        var confirmed = fan.EffectIndex;
+        // A stale chain's echo is frozen while the RX reports no list, not a lost upload.
+        var confirmed = fan.Stale ? "" : fan.EffectIndex;
         var lost = !string.IsNullOrEmpty(last.EffectIndexHex)
             && confirmed.Length > 0
             && sinceLastPushMs >= DriftConfirmWindowMs
@@ -444,7 +445,7 @@ public sealed class Slv3LightingFrameWriter : IHostedService, IDisposable
         {
             if (string.Equals(fans[i].Mac, macHex, StringComparison.OrdinalIgnoreCase))
             {
-                return fans[i].EffectIndex;
+                return fans[i].Stale ? "" : fans[i].EffectIndex;
             }
         }
         return "";

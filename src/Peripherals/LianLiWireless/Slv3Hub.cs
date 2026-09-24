@@ -389,6 +389,10 @@ public sealed class Slv3Hub : IDisposable
             {
                 return false;
             }
+            if (_tx is not { IsOpen: true })
+            {
+                return true;
+            }
             SyncPwmLocked();
             RefreshMasterMacLocked();
             SendClockHeartbeatLocked();
@@ -414,6 +418,12 @@ public sealed class Slv3Hub : IDisposable
         if (!RefreshDeviceListLocked())
         {
             return false;
+        }
+        // Pending binds, commands and saves keep their budgets while the TX is
+        // away instead of spending them on sends that cannot go out.
+        if (_tx is not { IsOpen: true })
+        {
+            return true;
         }
         ResolvePendingLocked();
         SyncControlLocked();
@@ -712,7 +722,14 @@ public sealed class Slv3Hub : IDisposable
         // Page estimate follows the larger of the reply's count and the tracked
         // set, so a partial report can't shrink the next read below the full list.
         _lastRecordCount = Math.Max(count, _knownChains.Count);
+        PublishFansLocked(nowMs);
+        return true;
+    }
 
+    // Surfaces the known chains, flagging any unseen for longer than
+    // ChainStaleMs, including while the RX reports no list.
+    private void PublishFansLocked(long nowMs)
+    {
         var records = new List<Slv3DeviceRecord>(_knownChains.Count);
         var fans = new List<Slv3FanInfo>(_knownChains.Count);
         foreach (var key in SortedChainKeysLocked())
@@ -723,7 +740,6 @@ public sealed class Slv3Hub : IDisposable
         }
         _lastFanRecords = records;
         State.Fans = fans.ToArray();
-        return true;
     }
 
     // MAC-ordered keys so the surfaced list is stable across polls regardless
@@ -738,18 +754,19 @@ public sealed class Slv3Hub : IDisposable
     // The RX answered but has no list: keep the last-known one.
     private bool HandleRxBusyLocked()
     {
-        _rxFailStreak = 0;
+        PublishFansLocked(_nowMs());
         if (++_rxBusyStreak < RxBusyPollsBeforeReset)
         {
             return true;
         }
-        _rxBusyStreak = 0;
         return ResetRxLocked($"{RxBusyPollsBeforeReset} consecutive busy GetDev replies");
     }
 
+    // Only a good reply clears the busy and failure streaks, so an RX that
+    // alternates between the two still escalates.
     private bool HandleGetDevFailureLocked()
     {
-        _rxBusyStreak = 0;
+        PublishFansLocked(_nowMs());
         _rxFailStreak++;
         if (_rxFailStreak < RxFailStreakForReset)
         {
@@ -763,12 +780,13 @@ public sealed class Slv3Hub : IDisposable
     {
         if (_rxResetCount >= MaxRxResetsPerConnection)
         {
-            // Out of resets. Streak stays past the threshold, so every further
-            // failure lands here and the worker's consecutive-failure path
-            // gets its disconnect/reopen.
+            // Out of resets. The streak stays past its threshold, so every
+            // further failed or busy poll lands here and the worker's
+            // consecutive-failure path gets its disconnect/reopen.
             return false;
         }
         _rxFailStreak = 0;
+        _rxBusyStreak = 0;
         _rxResetCount++;
         ServiceLog.Warn($"[lianli-wireless] {reason}, resetting RX MCU ({_rxResetCount}/{MaxRxResetsPerConnection})");
         if (_rx is not null && _rx.RfSend(Slv3Protocol.BuildResetAnother()))

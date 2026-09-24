@@ -168,14 +168,14 @@ public sealed class Slv3Transport : ISlv3Transport
             }
             // The RX reset (UsbResetAnother) re-enumerates the TX, after which
             // every write on the old TX handle fails; anything but a timeout
-            // marks the link down so the worker reconnects. RX failures keep
+            // closes this handle so the hub reopens the TX. RX failures keep
             // the hub's own reset escalation.
             var err = Marshal.GetLastWin32Error();
             if (Role == Slv3DongleRole.Tx && err != ErrorSemTimeout && !_dead)
             {
                 _dead = true;
                 Nexus.Service.Platform.ServiceLog.Warn(
-                    $"[lianli-wireless] TX write failed ({err}), marking the link down");
+                    $"[lianli-wireless] TX write failed ({err}), reopening it");
             }
             return false;
         }

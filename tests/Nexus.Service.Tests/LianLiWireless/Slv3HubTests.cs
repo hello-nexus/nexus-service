@@ -680,6 +680,57 @@ public class Slv3HubTests
     }
 
     [Fact]
+    public void A_busy_rx_past_its_reset_budget_keeps_failing_so_the_worker_reconnects()
+    {
+        var (hub, net, _, rx) = CreateConnectedHub();
+        net.Fans.Add(new SimulatedFan { Mac = FanMac });
+        Assert.True(hub.DriveTick());
+
+        rx.BusyReads = true;
+        var results = new List<bool>();
+        for (var i = 0; i < 4 * 60 + 2; i++)
+        {
+            results.Add(hub.PollTick());
+        }
+
+        Assert.Equal(3, rx.SentFrames.FindAll(f => f.Length >= 1 && f[0] == Slv3Protocol.UsbResetAnother).Count);
+        Assert.Equal(new[] { false, false, false }, results.GetRange(results.Count - 3, 3));
+    }
+
+    [Fact]
+    public void An_rx_alternating_between_no_reply_and_busy_still_gets_reset()
+    {
+        var (hub, net, _, rx) = CreateConnectedHub();
+        net.Fans.Add(new SimulatedFan { Mac = FanMac });
+        Assert.True(hub.DriveTick());
+
+        for (var i = 0; i < 10; i++)
+        {
+            rx.FailReads = i % 2 == 0;
+            rx.BusyReads = i % 2 == 1;
+            Assert.True(hub.PollTick());
+        }
+
+        Assert.Single(rx.SentFrames, f => f.Length >= 1 && f[0] == Slv3Protocol.UsbResetAnother);
+    }
+
+    [Fact]
+    public void A_chain_unseen_through_a_busy_spell_is_reported_stale()
+    {
+        var clock = new ManualClock();
+        var (hub, net, _, rx) = CreateConnectedHub(clock.NowMs);
+        net.Fans.Add(new SimulatedFan { Mac = FanMac });
+        Assert.True(hub.DriveTick());
+        Assert.False(hub.State.Fans[0].Stale);
+
+        rx.BusyReads = true;
+        clock.AdvanceMs(4_000);
+        Assert.True(hub.PollTick());
+
+        Assert.True(Assert.Single(hub.State.Fans).Stale);
+    }
+
+    [Fact]
     public void Getdev_send_failure_fails_the_tick_immediately_without_a_reset()
     {
         var (hub, net, _, rx) = CreateConnectedHub();
