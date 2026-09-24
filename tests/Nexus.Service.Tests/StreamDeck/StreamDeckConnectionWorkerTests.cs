@@ -136,10 +136,8 @@ public class StreamDeckConnectionWorkerTests
         var presence = new HardwarePresence(new FixedUsbEnumerator(usbEntries.ToArray()));
         var store = new InMemoryConfigStore();
         var gate = new DeviceControlGate(store);
-        // DeviceControlPolicy defaults "streamdeck" off (Elgato's own software
-        // is a mapped competitor - see DeviceControlPolicyTests); these tests
-        // exercise the worker's own connect/dispatch behavior, so opt in
-        // explicitly rather than depending on the brand default.
+        // These tests exercise the worker's own connect/dispatch behavior, so
+        // opt in explicitly rather than depending on the brand default.
         gate.SetEnabled("streamdeck", true);
         return new Fixtures(hid, presence, gate, store, new FakeDeckActionExecutor(), DeckTestHelpers.NewTestKeyRenderer(), new MultiplexHub(), new FakeSensorProvider());
     }

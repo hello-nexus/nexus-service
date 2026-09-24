@@ -8,8 +8,7 @@ namespace Nexus.Service.Devices;
 /// <summary>
 /// Per-handler Nexus Control on/off gate. Tri-state: a handler id in the disabled
 /// list is off, in the enabled list is on, and in neither uses the brand default
-/// (<see cref="DeviceControlPolicy.DefaultOn"/> - third-party USB hubs with a
-/// competing app off, everything else on). Connection workers consult this before claiming a
+/// (<see cref="DeviceControlPolicy.DefaultOn"/>). Connection workers consult this before claiming a
 /// port so a toggled-off device stays detectable (USB enumeration still sees it) but
 /// unclaimed.
 /// </summary>

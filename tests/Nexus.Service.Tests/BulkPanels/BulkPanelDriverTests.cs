@@ -328,7 +328,7 @@ public class BulkPanelDriverTests
     // ── policy ──
 
     [Fact]
-    public void Every_bulk_driver_defaults_to_nexus_control_off_and_reads_as_experimental()
+    public void Every_bulk_driver_but_zmatrices_defaults_to_nexus_control_off_and_reads_as_experimental()
     {
         IBulkPanelDriver[] drivers =
         {
@@ -338,8 +338,9 @@ public class BulkPanelDriverTests
 
         Assert.All(drivers, d =>
         {
-            Assert.False(DeviceControlPolicy.DefaultOn(d.HandlerId), $"{d.HandlerId} must default off");
-            Assert.True(DeviceControlPolicy.IsExperimental(d.HandlerId), $"{d.HandlerId} must be experimental");
+            var isZMatrices = d is ZMatricesPanelDriver;
+            Assert.Equal(isZMatrices, DeviceControlPolicy.DefaultOn(d.HandlerId));
+            Assert.Equal(!isZMatrices, DeviceControlPolicy.IsExperimental(d.HandlerId));
             Assert.NotEmpty(d.ProductIds);
             Assert.NotEqual(0, d.WritePipeId);
         });

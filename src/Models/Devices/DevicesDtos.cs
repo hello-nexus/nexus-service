@@ -17,7 +17,7 @@ public sealed class DeviceListItem
     public bool NexusControlEnabled { get; set; } = true;
     /// <summary>True only for first-party handlers whose gate does something: claiming the device through a gate-honoring connection worker, or starting/stopping the vendor driver process that drives it. False when the switch would gate nothing - a plugin handler managing its own hardware - and the UI hides it.</summary>
     public bool SupportsNexusControl { get; set; }
-    /// <summary>True for a Nexus Control device driving non-Hyte/iBUYPOWER hardware (experimental support). Drives the "Experimental" badge in the UI. Always false when SupportsNexusControl is false.</summary>
+    /// <summary>True for a Nexus Control device whose support is experimental (<see cref="Nexus.Service.Devices.DeviceControlPolicy.IsExperimental"/>). Drives the "Experimental" badge in the UI. Always false when SupportsNexusControl is false.</summary>
     public bool Experimental { get; set; }
     /// <summary>Short code for a partial-detection issue (e.g. "usb-disconnected"), or null when there is nothing to flag.</summary>
     public string? Warning { get; set; }
