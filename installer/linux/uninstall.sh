@@ -16,6 +16,8 @@ if [ -n "${SUDO_USER:-}" ]; then
   [ -n "$SUDO_HOME" ] && TARGET_HOME="$SUDO_HOME"
 fi
 rm -f "$TARGET_HOME/.local/share/applications/nexus.desktop"
+# Written by the service, not this installer (the nexus:// scheme handler).
+rm -f "$TARGET_HOME/.local/share/applications/nexus-url-handler.desktop"
 rm -f "$TARGET_HOME/.local/share/icons/hicolor/512x512/apps/nexus.png"
 
 echo "Nexus removed. Settings, profiles and media were left in /var/lib/nexus;"

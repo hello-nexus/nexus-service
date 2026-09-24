@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.IO;
 using System.Linq;
 using System.Threading;
@@ -37,6 +38,14 @@ public static partial class LinuxSession
 
     /// <summary>The session user's primary gid; pairs with <see cref="SessionUid"/>.</summary>
     public static uint? SessionGid { get; private set; }
+
+    /// <summary>The adopted session's X11 <c>DISPLAY</c>, null on Wayland. Kept out
+    /// of this process's environment (see <see cref="Apply"/>); browsers get it from
+    /// <see cref="ApplySessionDisplayEnv"/>.</summary>
+    public static string? SessionDisplay { get; private set; }
+
+    /// <summary>X11 authority file pairing with <see cref="SessionDisplay"/>.</summary>
+    public static string? SessionXauthority { get; private set; }
 
     /// <summary>
     /// True when this process is the root system daemon (running as root with no
@@ -139,15 +148,17 @@ public static partial class LinuxSession
             Environment.SetEnvironmentVariable("HOME", s.Home);
             Environment.SetEnvironmentVariable("XDG_CONFIG_HOME", Path.Combine(s.Home, ".config"));
         }
-        Environment.SetEnvironmentVariable("WAYLAND_DISPLAY", s.Wayland ?? "wayland-0");
-        // Deliberately do NOT export DISPLAY/XAUTHORITY. The GPU lighting shader
-        // context renders fully headless via EGL on the GPU device platform (see
-        // LinuxEglContext) - no display required. Exporting DISPLAY would only
-        // tempt a GLFW/GLX path that segfaults creating an nvidia GL context as
-        // root on the user's XWayland (uncatchable native fault); EGL needs none
-        // of it. Direct device control (identify, static) is unaffected either way.
+        // Presence of WAYLAND_DISPLAY selects Chromium's ozone platform and the
+        // clipboard backend, so an X11 session must leave it unset.
+        Environment.SetEnvironmentVariable("WAYLAND_DISPLAY", ResolveWaylandDisplay(s.Type, s.Wayland));
+        // DISPLAY/XAUTHORITY stay out of this process's environment: the lighting
+        // shader context renders headless via EGL (LinuxEglContext), and a visible
+        // DISPLAY tempts a GLFW/GLX path that segfaults creating an nvidia GL
+        // context as root on the user's XWayland. Browsers take them per-child.
+        SessionDisplay = s.Display;
+        SessionXauthority = s.Xauthority;
 
-        Console.Error.WriteLine($"[session] root daemon adopted session of uid {s.Uid} (home {s.Home}, wayland {s.Wayland})");
+        Console.Error.WriteLine($"[session] root daemon adopted {s.Type ?? "unknown"} session of uid {s.Uid} (home {s.Home}, wayland {s.Wayland ?? "none"}, display {s.Display ?? "none"})");
     }
 
     private static bool IsRoot()
@@ -162,7 +173,7 @@ public static partial class LinuxSession
         => !string.IsNullOrEmpty(Environment.GetEnvironmentVariable("DBUS_SESSION_BUS_ADDRESS"))
         || !string.IsNullOrEmpty(Environment.GetEnvironmentVariable("XDG_RUNTIME_DIR"));
 
-    private sealed record SessionInfo(uint Uid, uint Gid, string? Home, string? Display, string? Wayland);
+    private sealed record SessionInfo(uint Uid, uint Gid, string? Home, string? Type, string? Display, string? Xauthority, string? Wayland);
 
     private static SessionInfo? Detect()
     {
@@ -176,7 +187,7 @@ public static partial class LinuxSession
                 continue;
             sessions.Add((id, ParseProps(ShellExecutor.Run(
                 "loginctl", "show-session", id,
-                "-p", "State", "-p", "Type", "-p", "Class", "-p", "User", "-p", "Display"))));
+                "-p", "State", "-p", "Type", "-p", "Class", "-p", "User", "-p", "Display", "-p", "Leader"))));
         }
         var chosen = SelectSession(sessions);
         if (chosen is null)
@@ -186,8 +197,14 @@ public static partial class LinuxSession
         var (gid, home) = PasswdForUid(uid);
         if (string.IsNullOrEmpty(home))
             return null; // no passwd entry - can't safely adopt this session
-        var display = props.GetValueOrDefault("Display");
-        return new SessionInfo(uid, gid, home, string.IsNullOrEmpty(display) ? null : display, WaylandSocket(uid));
+        var type = Blank(props.GetValueOrDefault("Type"));
+        var (display, xauthority) = ResolveX11Env(
+            type,
+            LeaderEnviron(props.GetValueOrDefault("Leader")),
+            props.GetValueOrDefault("Display"),
+            home,
+            File.Exists);
+        return new SessionInfo(uid, gid, home, type, display, xauthority, WaylandSocket(uid));
     }
 
     /// <summary>
@@ -267,6 +284,82 @@ public static partial class LinuxSession
         };
         wrapped.AddRange(args);
         return ("setpriv", wrapped);
+    }
+
+    private static string? Blank(string? value) => string.IsNullOrEmpty(value) ? null : value;
+
+    /// <summary>WAYLAND_DISPLAY to export, or null to leave it unset. An x11 session
+    /// yields null even when another seat left a socket in the runtime dir.</summary>
+    internal static string? ResolveWaylandDisplay(string? sessionType, string? waylandSocket)
+    {
+        if (string.Equals(sessionType, "x11", StringComparison.Ordinal))
+            return null;
+        return waylandSocket ?? (string.Equals(sessionType, "wayland", StringComparison.Ordinal) ? "wayland-0" : null);
+    }
+
+    /// <summary>DISPLAY/XAUTHORITY for an x11 session, else (null, null): on Wayland
+    /// these name only the XWayland server and would steer a kiosk onto it.
+    /// <paramref name="fileExists"/> is a test seam.</summary>
+    internal static (string? Display, string? Xauthority) ResolveX11Env(
+        string? sessionType,
+        IReadOnlyDictionary<string, string> leaderEnv,
+        string? logindDisplay,
+        string? home,
+        Func<string, bool> fileExists)
+    {
+        if (!string.Equals(sessionType, "x11", StringComparison.Ordinal))
+            return (null, null);
+        var display = Blank(leaderEnv.GetValueOrDefault("DISPLAY")) ?? Blank(logindDisplay);
+        var xauthority = Blank(leaderEnv.GetValueOrDefault("XAUTHORITY"));
+        if (xauthority is null && !string.IsNullOrEmpty(home))
+        {
+            // Classic LightDM/startx layout, where the cookie sits in the home
+            // dir and nothing exports XAUTHORITY at all.
+            var fallback = Path.Combine(home, ".Xauthority");
+            if (fileExists(fallback))
+                xauthority = fallback;
+        }
+        return (display, xauthority);
+    }
+
+    /// <summary>The session leader's environment from <c>/proc/&lt;pid&gt;/environ</c>
+    /// (NUL-separated). logind never reports XAUTHORITY, and a display manager points
+    /// it at a runtime file rather than <c>~/.Xauthority</c>.</summary>
+    private static Dictionary<string, string> LeaderEnviron(string? leaderPid)
+    {
+        var env = new Dictionary<string, string>(StringComparer.Ordinal);
+        // Parsed, not interpolated: loginctl output is about to become a path.
+        if (!uint.TryParse(leaderPid, out var pid) || pid == 0)
+            return env;
+        try
+        {
+            foreach (var entry in File.ReadAllText($"/proc/{pid}/environ").Split('\0'))
+            {
+                var eq = entry.IndexOf('=');
+                if (eq > 0)
+                    env[entry[..eq]] = entry[(eq + 1)..];
+            }
+        }
+        catch { /* leader already gone, or /proc not readable */ }
+        return env;
+    }
+
+    /// <summary><c>--ozone-platform</c> for a spawned Chromium, or null to let it
+    /// auto-detect. Only wayland is ever forced: Chromium defaults to X11 and dies on
+    /// a pure-Wayland login, while an X11 session needs no flag and a fork built
+    /// without the x11 ozone backend would fail on one.</summary>
+    public static string? ChromiumOzonePlatform()
+        => string.IsNullOrEmpty(Environment.GetEnvironmentVariable("WAYLAND_DISPLAY")) ? null : "wayland";
+
+    /// <summary>Hand a spawned browser the session's X11 environment. Browser
+    /// launches only - a Nexus child would inherit the GLX hazard <see cref="Apply"/>
+    /// avoids. No-op on Wayland and on a non-root-daemon run.</summary>
+    public static void ApplySessionDisplayEnv(ProcessStartInfo psi)
+    {
+        if (SessionDisplay is { Length: > 0 } display)
+            psi.Environment["DISPLAY"] = display;
+        if (SessionXauthority is { Length: > 0 } xauthority)
+            psi.Environment["XAUTHORITY"] = xauthority;
     }
 
     private static string? WaylandSocket(uint uid)

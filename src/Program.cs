@@ -719,6 +719,12 @@ if (!testHost)
 
     // Register nexus:// protocol handler (idempotent - safe on every launch)
     Nexus.Service.Platform.ProtocolHandler.Register();
+#if LINUX
+    // A root daemon that booted before login registered into /root; re-run once
+    // the real home is adopted so the handler lands in the user's own data dir.
+    Nexus.Service.Platform.Linux.LinuxSession.SessionAdopted +=
+        Nexus.Service.Platform.ProtocolHandler.Register;
+#endif
     Nexus.Service.Lifecycle.BootTimer.Mark("after ProtocolHandler.Register");
 }
 

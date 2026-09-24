@@ -812,6 +812,17 @@ public sealed class OpenRgbProcessManager : IDisposable
                     continue;
                 }
 
+                // Terminal, not noise: the daemon dies before opening its port and
+                // the supervisor respawns into the same wall forever. Distros differ
+                // on which of hidapi/libusb ships by default, so name the package.
+                if (line.Contains("error while loading shared libraries", StringComparison.Ordinal))
+                {
+                    ServiceLog.Error($"[openrgb-proc] RGB engine cannot start: {line.Trim()}. " +
+                        "Install the missing library (Debian/Ubuntu/Mint: libhidapi-hidraw0 libusb-1.0-0; " +
+                        "Fedora/Bazzite: hidapi libusb1; Arch: hidapi libusb), then restart Nexus.");
+                    continue;
+                }
+
                 // Relay the child's own output: its stdout is informational, its
                 // stderr a warning. Neither is a Nexus failure.
                 if (label == "stderr")

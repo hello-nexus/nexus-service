@@ -134,6 +134,47 @@ sudo systemctl enable nexus.service
 # upgrade would keep serving the old binary until the next boot.
 sudo systemctl restart nexus.service
 
+# Preflight the two runtime dependencies Nexus cannot bundle. Both fail
+# silently at the far end otherwise - openrgb-headless exits before it opens
+# its port (RGB just never appears), and the panel kiosk has nothing to spawn -
+# so say it here, once, while the user is still looking at a terminal.
+echo
+MISSING_LIBS="$(ldd "$APP_DIR/openrgb/openrgb-headless" 2>/dev/null | awk '/not found/ {print $1}' | sort -u || true)"
+if [ -n "$MISSING_LIBS" ]; then
+  echo "WARNING: the RGB engine is missing shared libraries, so lighting will not come up:"
+  printf '  %s\n' $MISSING_LIBS
+  echo "  Debian/Ubuntu/Mint: sudo apt install libhidapi-hidraw0 libusb-1.0-0"
+  echo "  Fedora/Bazzite:     sudo dnf install hidapi libusb1"
+  echo "  Arch:               sudo pacman -S hidapi libusb"
+fi
+
+# Mirrors LinuxBrowsers.SearchDirs/BinaryNames: a narrower list here would warn
+# about a browser the service goes on to find.
+HAVE_BROWSER=0
+BROWSER_DIRS=(
+  "$TARGET_HOME/.local/share/flatpak/exports/bin" /var/lib/flatpak/exports/bin
+  /usr/bin /usr/local/bin /bin /opt/bin /snap/bin /var/lib/snapd/snap/bin
+  "$TARGET_HOME/.local/bin"
+)
+BROWSER_NAMES=(
+  org.chromium.Chromium com.google.Chrome com.brave.Browser com.microsoft.Edge
+  chromium chromium-browser chromium-freeworld ungoogled-chromium
+  google-chrome google-chrome-stable brave brave-browser
+  microsoft-edge microsoft-edge-stable vivaldi vivaldi-stable
+  thorium-browser helium
+)
+for dir in "${BROWSER_DIRS[@]}"; do
+  for name in "${BROWSER_NAMES[@]}"; do
+    [ -e "$dir/$name" ] && HAVE_BROWSER=1 && break 2
+  done
+done
+if [ "$HAVE_BROWSER" = 0 ]; then
+  echo "WARNING: no Chromium-family browser found. The Y70 panel and any promoted"
+  echo "  monitor run as a Chromium --app --kiosk window and cannot open without one."
+  echo "  Install chromium, chrome, brave, edge or vivaldi (package, flatpak or"
+  echo "  snap), then: sudo systemctl restart nexus"
+fi
+
 echo
 echo "Nexus installed as a root daemon. Dashboard: http://localhost:9400"
 echo "Data lives in $DATA_DIR. Hardware control starts at boot; the tray and"
