@@ -79,6 +79,13 @@ public sealed class Slv3Hub : IDisposable
     private int _rxFailStreak;
     private int _rxResetCount;
 
+    // A reply opening with 0 is the RX's "no device list this cycle". It does
+    // this on its own every ~17 s for a few seconds and recovers without help,
+    // while a reset restarts the TX and stretches the gap (Y70 USBPcap
+    // 2026-09-23), so only a busy spell this long is treated as a wedge.
+    private const int RxBusyPollsBeforeReset = 60;
+    private int _rxBusyStreak;
+
     // Polls a TX that went away (it re-enumerates about a second after an RX
     // reset) may take to come back before the link is torn down and rebuilt.
     private const int TxReopenPollBudget = 10;
@@ -242,6 +249,7 @@ public sealed class Slv3Hub : IDisposable
         _pendingCommands.Clear();
         _lastIssuedSeq.Clear();
         _rxFailStreak = 0;
+        _rxBusyStreak = 0;
         _rxResetCount = 0;
         _txMissingPolls = 0;
         _saveCfgBurstRemaining = 0;
@@ -653,11 +661,16 @@ public sealed class Slv3Hub : IDisposable
         // A missing/invalid GetDev echo with a healthy handle is a wedged RX
         // MCU (streak -> 0x15 reset); a valid reply listing zero devices is an
         // RF sampling gap and takes the normal merge path.
+        if (reply.Length > 0 && reply[0] == 0)
+        {
+            return HandleRxBusyLocked();
+        }
         if (reply.Length < Slv3Protocol.RecordHeaderLength || reply[0] != Slv3Protocol.UsbSendRf)
         {
             return HandleGetDevFailureLocked();
         }
         _rxFailStreak = 0;
+        _rxBusyStreak = 0;
         _rxResetCount = 0;
 
         State.MotherboardPwmPercent = Slv3Protocol.ParseGetDevMoboDuty(reply);
@@ -722,14 +735,32 @@ public sealed class Slv3Hub : IDisposable
         return keys;
     }
 
+    // The RX answered but has no list: keep the last-known one.
+    private bool HandleRxBusyLocked()
+    {
+        _rxFailStreak = 0;
+        if (++_rxBusyStreak < RxBusyPollsBeforeReset)
+        {
+            return true;
+        }
+        _rxBusyStreak = 0;
+        return ResetRxLocked($"{RxBusyPollsBeforeReset} consecutive busy GetDev replies");
+    }
+
     private bool HandleGetDevFailureLocked()
     {
+        _rxBusyStreak = 0;
         _rxFailStreak++;
         if (_rxFailStreak < RxFailStreakForReset)
         {
             // Transient: keep the last-known list and let the next tick retry.
             return true;
         }
+        return ResetRxLocked($"{RxFailStreakForReset} consecutive GetDev failures");
+    }
+
+    private bool ResetRxLocked(string reason)
+    {
         if (_rxResetCount >= MaxRxResetsPerConnection)
         {
             // Out of resets. Streak stays past the threshold, so every further
@@ -739,7 +770,7 @@ public sealed class Slv3Hub : IDisposable
         }
         _rxFailStreak = 0;
         _rxResetCount++;
-        ServiceLog.Warn($"[lianli-wireless] {RxFailStreakForReset} consecutive GetDev failures, resetting RX MCU ({_rxResetCount}/{MaxRxResetsPerConnection})");
+        ServiceLog.Warn($"[lianli-wireless] {reason}, resetting RX MCU ({_rxResetCount}/{MaxRxResetsPerConnection})");
         if (_rx is not null && _rx.RfSend(Slv3Protocol.BuildResetAnother()))
         {
             _rx.RfRead(Slv3Protocol.UsbPacketSize);

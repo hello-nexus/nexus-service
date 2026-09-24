@@ -63,7 +63,8 @@ public interface ISlv3Transport : IDisposable
     /// <summary>
     /// Reassembles a reply from 64-byte interrupt reads up to <paramref name="expectedLen"/>
     /// bytes (the decompiled RfRead/ReadAll loop): stops early on a zero-length or short
-    /// read, or a leading zero byte on the first frame (the firmware's no-data signal).
+    /// read. A first frame opening with 0 is the firmware's no-data signal and is returned
+    /// on its own, so a caller can tell "nothing to report" from no reply at all.
     /// Returns only the bytes actually received.
     /// </summary>
     byte[] RfRead(int expectedLen);
@@ -201,6 +202,9 @@ public sealed class Slv3Transport : ISlv3Transport
                 }
                 if (offset == 0 && chunk[0] == 0)
                 {
+                    var noData = Math.Min((int)read, expectedLen);
+                    Array.Copy(chunk, result, noData);
+                    offset = noData;
                     break;
                 }
                 var copyLen = Math.Min((int)read, expectedLen - offset);

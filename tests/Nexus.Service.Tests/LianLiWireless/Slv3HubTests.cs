@@ -647,6 +647,39 @@ public class Slv3HubTests
     }
 
     [Fact]
+    public void Busy_replies_keep_the_device_list_and_never_reset_a_responsive_rx()
+    {
+        var (hub, net, _, rx) = CreateConnectedHub();
+        net.Fans.Add(new SimulatedFan { Mac = FanMac });
+        Assert.True(hub.DriveTick());
+
+        rx.BusyReads = true;
+        for (var i = 0; i < 20; i++)
+        {
+            Assert.True(hub.DriveTick());
+        }
+
+        Assert.Single(hub.State.Fans);
+        Assert.DoesNotContain(rx.SentFrames, f => f.Length >= 1 && f[0] == Slv3Protocol.UsbResetAnother);
+    }
+
+    [Fact]
+    public void A_busy_spell_that_never_ends_is_treated_as_a_wedge()
+    {
+        var (hub, net, _, rx) = CreateConnectedHub();
+        net.Fans.Add(new SimulatedFan { Mac = FanMac });
+        Assert.True(hub.DriveTick());
+
+        rx.BusyReads = true;
+        for (var i = 0; i < 60; i++)
+        {
+            Assert.True(hub.PollTick());
+        }
+
+        Assert.Single(rx.SentFrames, f => f.Length >= 1 && f[0] == Slv3Protocol.UsbResetAnother);
+    }
+
+    [Fact]
     public void Getdev_send_failure_fails_the_tick_immediately_without_a_reset()
     {
         var (hub, net, _, rx) = CreateConnectedHub();
@@ -1232,11 +1265,21 @@ public class Slv3HubTests
             return true;
         }
 
+        // Simulates the RX answering "no device list this cycle": one frame
+        // opening with 0, which the transport hands back as-is.
+        public bool BusyReads { get; set; }
+
         public byte[] RfRead(int expectedLen)
         {
             if (FailReads)
             {
                 return Array.Empty<byte>();
+            }
+            if (BusyReads)
+            {
+                var busy = new byte[Slv3Protocol.UsbPacketSize];
+                busy[1] = 0x03;
+                return busy;
             }
             var buf = new byte[Slv3Protocol.RecordHeaderLength + _net.Fans.Count * Slv3Protocol.RecordLength];
             buf[0] = Slv3Protocol.UsbSendRf;
