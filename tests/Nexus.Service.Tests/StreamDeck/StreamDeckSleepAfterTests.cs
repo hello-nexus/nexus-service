@@ -44,8 +44,7 @@ public sealed class StreamDeckSleepAfterTests : IDisposable
         _simulated = new SimulatedStreamDeckSurface(Mini, "sim-0001");
         var presence = new HardwarePresence(new FixedUsbEnumerator());
         var gate = new DeviceControlGate(_store);
-        // See NewFixtures in StreamDeckConnectionWorkerTests.cs: "streamdeck"
-        // defaults off (mapped Elgato competitor), so opt in explicitly.
+        // Opt in explicitly rather than depending on the brand default.
         gate.SetEnabled("streamdeck", true);
         _worker = new StreamDeckConnectionWorker(
             new FakeWorkerHidEnumerator(), presence, gate, _store, _executor, NewTestKeyRenderer(), new MultiplexHub(), _sensors,

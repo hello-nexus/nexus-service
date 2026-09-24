@@ -31,6 +31,10 @@ public sealed class LinuxTrayService : IHostedService
     private readonly MultiplexHub _hub;
     private readonly ISystemAccentProvider _accent;
     private LinuxTrayHost? _host;
+    // 1 while a start attempt is in flight or has produced a live host. Guards
+    // the initial StartAsync against the session watcher firing mid-await, which
+    // would otherwise build a second LinuxTrayHost and leak the first.
+    private int _starting;
     private CancellationTokenSource? _accentCts;
     private string? _lastAccent;
     private string _url = "http://localhost:9400";
@@ -50,9 +54,24 @@ public sealed class LinuxTrayService : IHostedService
     {
         _url = ResolveUrl();
         _dbus.Reconnected += OnReconnected;
+        // A root daemon that booted before anyone logged in has no session bus
+        // yet, so this first attempt fails; the session watcher fires once the
+        // user logs in and the tray registers then, without a service restart.
+        LinuxSession.SessionAdopted += OnSessionAdopted;
         _pairing.PairRequestNeedsAttention += OnPairAttention;
         _transfer.TransferNeedsAttention += OnTransferAttention;
         _diagAlerts.AlertNeedsAttention += OnDiagnosticsAlert;
+        await TryStartHostAsync(isRetry: false);
+    }
+
+    // Session adopted after startup: the bus that was missing exists now.
+    private void OnSessionAdopted() => _ = TryStartHostAsync(isRetry: true);
+
+    private async Task TryStartHostAsync(bool isRetry)
+    {
+        var failureLabel = isRetry ? "attach after login failed" : "disabled";
+        if (Interlocked.CompareExchange(ref _starting, 1, 0) != 0)
+            return;
         try
         {
             await _dbus.StartAsync();
@@ -62,15 +81,21 @@ public sealed class LinuxTrayService : IHostedService
         }
         catch (Exception ex)
         {
-            Console.Error.WriteLine($"[tray] disabled: {ex.Message}");
+            Console.Error.WriteLine($"[tray] {failureLabel}: {ex.Message}");
             _host?.Dispose();
             _host = null;
+            Volatile.Write(ref _starting, 0);
+            // The one-shot SessionAdopted can fire while this attempt is
+            // unwinding, when its handler's CAS has already bounced off ours.
+            if (!isRetry && LinuxSession.SessionUid is not null)
+                await TryStartHostAsync(isRetry: true);
         }
     }
 
     public Task StopAsync(CancellationToken cancellationToken)
     {
         _dbus.Reconnected -= OnReconnected;
+        LinuxSession.SessionAdopted -= OnSessionAdopted;
         _pairing.PairRequestNeedsAttention -= OnPairAttention;
         _transfer.TransferNeedsAttention -= OnTransferAttention;
         _diagAlerts.AlertNeedsAttention -= OnDiagnosticsAlert;

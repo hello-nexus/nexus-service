@@ -895,6 +895,7 @@
     <Compile Remove="src/Platform/Linux/LinuxPerformanceProvider.cs" />
     <Compile Remove="src/Platform/Linux/LinuxResumeListener.cs" />
     <Compile Remove="src/Platform/Linux/LinuxSession.cs" />
+    <Compile Remove="src/Platform/Linux/LinuxX11Outputs.cs" />
     <Compile Remove="src/Platform/Linux/LinuxSysfs.cs" />
     <Compile Remove="src/Platform/Linux/LinuxSystemAccentProvider.cs" />
     <Compile Remove="src/Platform/Linux/LinuxTrayHost.cs" />

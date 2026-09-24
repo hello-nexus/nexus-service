@@ -15,6 +15,62 @@ namespace Nexus.Service.Platform.Linux;
 /// </summary>
 internal static class LinuxBrowsers
 {
+    // Distro repacks and third-party forks that are Chromium underneath and drive
+    // --app --kiosk the same way; resolved by name since their install prefix varies.
+    private static readonly string[] BinaryNames =
+    {
+        "chromium", "chromium-browser", "chromium-freeworld", "ungoogled-chromium",
+        "google-chrome", "google-chrome-stable", "brave", "brave-browser",
+        "microsoft-edge", "microsoft-edge-stable", "vivaldi", "vivaldi-stable",
+        "thorium-browser", "helium",
+    };
+
+    /// <summary>Where to look for those names. The daemon's PATH is systemd's minimal
+    /// one, so user-scope and package-manager prefixes are listed, not inherited.</summary>
+    internal static List<string> SearchDirs()
+    {
+        var home = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+        var dirs = new List<string>
+        {
+            "/usr/bin", "/usr/local/bin", "/bin", "/opt/bin",
+            SysFlatpakBin, "/snap/bin", "/var/lib/snapd/snap/bin",
+        };
+        if (!string.IsNullOrEmpty(home))
+        {
+            dirs.Add(Path.Combine(home, ".local", "share", "flatpak", "exports", "bin"));
+            dirs.Add(Path.Combine(home, ".local", "bin"));
+        }
+        foreach (var entry in (Environment.GetEnvironmentVariable("PATH") ?? "").Split(':'))
+        {
+            if (entry.Length > 0)
+                dirs.Add(entry);
+        }
+        return dirs;
+    }
+
+    /// <summary>Probe order: curated absolute paths first, then every name in every
+    /// directory; duplicates drop to the curated position. Pure - the caller tests
+    /// existence.</summary>
+    internal static string[] Candidates(
+        IReadOnlyList<string> curated, IReadOnlyList<string> dirs, IReadOnlyList<string> names)
+    {
+        var seen = new HashSet<string>(StringComparer.Ordinal);
+        var ordered = new List<string>();
+        void Add(string path)
+        {
+            if (seen.Add(path))
+                ordered.Add(path);
+        }
+        foreach (var path in curated)
+            Add(path);
+        foreach (var dir in dirs)
+        {
+            foreach (var name in names)
+                Add(Path.Combine(dir, name));
+        }
+        return ordered.ToArray();
+    }
+
     // Computed per call: HOME is adopted from the active session after the
     // root daemon starts, so a type-init snapshot could point at /root.
     public static string[] ChromiumFamily()
@@ -23,7 +79,7 @@ internal static class LinuxBrowsers
             Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
             ".local", "share", "flatpak", "exports", "bin");
         const string sysFlatpakBin = "/var/lib/flatpak/exports/bin";
-        return new[]
+        var curated = new[]
         {
             Path.Combine(userFlatpakBin, "org.chromium.Chromium"),
             sysFlatpakBin + "/org.chromium.Chromium",
@@ -41,6 +97,7 @@ internal static class LinuxBrowsers
             "/snap/bin/chromium",
             "/snap/bin/brave",
         };
+        return Candidates(curated, SearchDirs(), BinaryNames);
     }
 
     /// <summary>Application id for a flatpak export path (<c>…/flatpak/exports/bin/org.chromium.Chromium</c>), else null.</summary>
@@ -117,11 +174,10 @@ internal static class LinuxBrowsers
                 var args = new List<string>(l.PreArgs);
                 if (l.AppMode)
                 {
-                    // Force Wayland in a Wayland session: Chromium otherwise
-                    // defaults to X11/XWayland and fails on a pure-Wayland login
-                    // (missing/invalid XAUTHORITY -> "Missing X server or $DISPLAY").
-                    if (!string.IsNullOrEmpty(Environment.GetEnvironmentVariable("WAYLAND_DISPLAY")))
-                        args.Add("--ozone-platform=wayland");
+                    // Chromium defaults to X11/XWayland and fails on a pure-Wayland
+                    // login ("Missing X server or $DISPLAY"); name the platform.
+                    if (LinuxSession.ChromiumOzonePlatform() is { } ozone)
+                        args.Add($"--ozone-platform={ozone}");
                     args.Add($"--app={url}");
                 }
                 else
@@ -139,6 +195,8 @@ internal static class LinuxBrowsers
                     RedirectStandardOutput = true,
                     RedirectStandardError = true,
                 };
+                // A browser on an X11 login needs the session's DISPLAY/XAUTHORITY.
+                LinuxSession.ApplySessionDisplayEnv(psi);
                 foreach (var a in spawnArgs)
                     psi.ArgumentList.Add(a);
                 if (Process.Start(psi) is not null)

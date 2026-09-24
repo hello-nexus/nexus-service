@@ -46,6 +46,8 @@ public static class AppInstallPaths
 
     private static string ResolveAppData()
     {
+        if (Nexus.Service.Persistence.NexusDataPaths.SystemDaemonRoot is { } daemonRoot)
+            return daemonRoot;
         if (OperatingSystem.IsWindows())
         {
             // Machine-wide under %ProgramData%, next to logs/settings, so the

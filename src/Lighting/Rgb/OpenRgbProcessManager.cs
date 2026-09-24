@@ -152,6 +152,11 @@ public sealed class OpenRgbProcessManager : IDisposable
     /// </summary>
     public static string ResolveConfigDir()
     {
+        // Root system daemon: the machine root is root-owned and writable, and
+        // unlike a user home it exists before anyone logs in.
+        if (Nexus.Service.Persistence.NexusDataPaths.SystemDaemonRoot is { } daemonRoot)
+            return Path.Combine(daemonRoot, "openrgb-config");
+
         string baseDir;
         if (OperatingSystem.IsLinux())
         {
@@ -804,6 +809,17 @@ public sealed class OpenRgbProcessManager : IDisposable
 
                 if (IsKnownNoise(line))
                 {
+                    continue;
+                }
+
+                // Terminal, not noise: the daemon dies before opening its port and
+                // the supervisor respawns into the same wall forever. Distros differ
+                // on which of hidapi/libusb ships by default, so name the package.
+                if (line.Contains("error while loading shared libraries", StringComparison.Ordinal))
+                {
+                    ServiceLog.Error($"[openrgb-proc] RGB engine cannot start: {line.Trim()}. " +
+                        "Install the missing library (Debian/Ubuntu/Mint: libhidapi-hidraw0 libusb-1.0-0; " +
+                        "Fedora/Bazzite: hidapi libusb1; Arch: hidapi libusb), then restart Nexus.");
                     continue;
                 }
 

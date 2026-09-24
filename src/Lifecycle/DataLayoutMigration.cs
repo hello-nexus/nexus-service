@@ -160,6 +160,8 @@ internal static class DataLayoutMigration
     // device store that did); every other device store was already on DATA.
     private static string OldStreamDeckRoot()
     {
+        if (Nexus.Service.Persistence.NexusDataPaths.SystemDaemonRoot is { } daemonRoot)
+            return Path.Combine(daemonRoot, "streamdeck");
         if (OperatingSystem.IsMacOS() || OperatingSystem.IsWindows())
             return Path.Combine(MediaLibrary.NexusDataDir(), "streamdeck");
         var xdg = Environment.GetEnvironmentVariable("XDG_CONFIG_HOME");
@@ -173,6 +175,8 @@ internal static class DataLayoutMigration
     // The downloaded-driver cache: %ProgramData%\Nexus\tools on Windows, ~/.cache/Nexus/tools elsewhere.
     private static string OldDriverCacheRoot()
     {
+        if (Nexus.Service.Persistence.NexusDataPaths.SystemDaemonRoot is { } daemonRoot)
+            return Path.Combine(daemonRoot, "tools");
         if (OperatingSystem.IsWindows())
         {
             return Path.Combine(

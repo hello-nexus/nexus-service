@@ -543,6 +543,7 @@ public sealed class GpuContext : IDisposable
 
     /// <summary>The pre-WGL path, reachable by setting Lighting.RenderBackend to
     /// "glfw" if a card ever refuses the direct one.</summary>
+    [System.Diagnostics.CodeAnalysis.MemberNotNull(nameof(_gl))]
     private void InitViaGlfw(int major, int minor)
     {
         var guard = GlfwErrorGuard.Install();

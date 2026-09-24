@@ -447,6 +447,8 @@ public sealed class ExternalToolManager : IHostedService, IToolResolver
 
     private static string ResolveDefaultRoot()
     {
+        if (Nexus.Service.Persistence.NexusDataPaths.SystemDaemonRoot is { } daemonRoot)
+            return Path.Combine(daemonRoot, "drivers");
         if (RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
         {
             // Machine-scope so the LocalSystem service owns the cache, like the

@@ -806,10 +806,7 @@ public static class NexusServiceCollectionExtensions
             // App icons come from the user-session helper; keys painted before
             // it connects carry the generic fallback until this repaint.
             var helperRegistry = sp.GetService<Nexus.Service.Helper.HelperRegistry>();
-            if (helperRegistry is not null)
-            {
-                helperRegistry.Connected += _ => worker.OnHelperConnected();
-            }
+            helperRegistry?.Connected += _ => worker.OnHelperConnected();
 #endif
             return worker;
         });

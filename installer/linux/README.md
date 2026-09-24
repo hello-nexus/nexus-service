@@ -18,17 +18,36 @@ udev rules or group membership to juggle:
 
 - app in `/opt/nexus`, unit at `/etc/systemd/system/nexus.service`
   (enabled and started immediately)
+- data in `/var/lib/nexus` - settings, profiles, device media, apps, caches
+  and logs, one machine-scope root like `%ProgramData%` on Windows
 - an application menu entry that opens the dashboard
 - the motherboard Super-I/O sensor driver, loaded via `setup-sensors.sh`
+
+Upgrading from a build that stored data under your home (`~/.config/Nexus`,
+`~/.local/share/Nexus`, `~/.cache/Nexus`, `~/.local/state/nexus/logs`)?
+`install.sh` copies it into `/var/lib/nexus` the first time, and leaves the
+originals alone so you can delete them once the upgrade looks right.
 
 Needs `sudo`. Immutable-distro friendly (Bazzite/rpm-ostree): `/opt` and
 `/etc` are writable there.
 
+Two things Nexus cannot bundle, both checked by `install.sh`, which prints a
+warning naming the package if either is missing:
+
+- **hidapi + libusb**, for the RGB engine. Fedora/Bazzite and Arch ship them;
+  Debian/Ubuntu/Mint need `sudo apt install libhidapi-hidraw0 libusb-1.0-0`.
+- **A Chromium-family browser** for the Y70 panel and promoted-monitor
+  kiosks. `chromium`, `chrome`, `brave`, `edge`, `vivaldi` and the
+  ungoogled-chromium forks all work, installed by package, flatpak or snap;
+  Nexus searches the system, flatpak, snap and `~/.local/bin` prefixes.
+  Firefox cannot host a kiosk - it has no `--app` mode.
+
 Open the dashboard at <http://localhost:9400>.
 
-> The daemon adopts the active user's login session at startup so the tray,
-> MPRIS media, volume, and dashboard work. If you installed before logging
-> in, run `sudo systemctl restart nexus` once.
+> Hardware control - fans, pump, RGB - comes up at boot and never waits for a
+> login. The tray, MPRIS media, volume and dashboard need a graphical session,
+> so the daemon adopts yours as soon as one appears, whether that is at
+> startup or when you log in later.
 
 ## Manage
 
@@ -47,8 +66,9 @@ From the extracted tarball directory (`uninstall.sh` is not copied to
 ./uninstall.sh
 ```
 
-The sensors module config under `/etc/modules-load.d` + `/etc/modprobe.d`
-and any DKMS module are left in place.
+Your data in `/var/lib/nexus` is left in place - remove it by hand to wipe
+settings, profiles and media. The sensors module config under
+`/etc/modules-load.d` + `/etc/modprobe.d` and any DKMS module are left too.
 
 ## What works on Linux
 
@@ -61,18 +81,22 @@ motherboard fan control (hwmon PWM), keyboard macros (uinput), media (MPRIS), vo
 (PipeWire/PulseAudio), display brightness (backlight + DDC/CI), and
 screen-mirror lighting (xdg-desktop-portal ScreenCast).
 
-The Y70 panel and any promoted monitor run as a Chromium-family kiosk window,
-so they need `chromium`, `chrome`, `brave` or `edge` installed - by package or
-flatpak. Display layout is the compositor's, and Nexus renders to whatever
-geometry it gives the kiosk:
+The Y70 panel and any promoted monitor run as a Chromium-family kiosk window.
+Both X11 and Wayland sessions work: the daemon reads the session type from
+logind and hands the kiosk the matching `--ozone-platform`, plus
+`DISPLAY`/`XAUTHORITY` taken from the session leader on X11. Display layout is
+the compositor's, and Nexus renders to whatever geometry it gives the kiosk:
 
 - Rotate the Y70 to portrait and keep your main monitor primary in the
   desktop's display settings (KDE persists this in `kwinoutputconfig.json`).
+- On X11 the service reads the output layout from `xrandr` and positions each
+  kiosk on its own monitor, under any window manager.
 - Wayland gives clients no way to pick an output, and KWin puts a new
   fullscreen window on the primary screen. On KDE the service loads a small
   KWin script (`nexus-panel-y70`, alongside the `nexus-focus` one) that moves
-  the kiosk onto the portrait strip and keeps it fullscreen. Other
-  compositors need their own equivalent.
+  the kiosk onto the portrait strip and keeps it fullscreen. Other Wayland
+  compositors expose no equivalent, so there the kiosk opens on whichever
+  screen the compositor picks.
 
 Not available on Linux: the in-game FPS overlay and the floating
 desktop-widget overlay (no viable host).

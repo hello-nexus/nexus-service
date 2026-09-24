@@ -12,7 +12,7 @@ namespace Nexus.Service.Platform;
 /// Windows: HKCU\Software\Classes\nexus → shell\open\command → exe path
 /// macOS:   ~/Applications/Nexus.app bundle with Info.plist CFBundleURLTypes
 ///          (registered via lsregister)
-/// Linux:   ~/.local/share/applications/nexus.desktop + xdg-mime
+/// Linux:   ~/.local/share/applications/nexus-url-handler.desktop + xdg-mime
 /// </summary>
 public static class ProtocolHandler
 {
@@ -153,6 +153,11 @@ public static class ProtocolHandler
         Console.WriteLine("[protocol] registered nexus:// handler (macOS app bundle)");
     }
 
+    // install.sh owns nexus.desktop, the visible application-menu entry. Sharing
+    // that id overwrote it with this NoDisplay=true one and took Nexus out of the
+    // menu entirely.
+    private const string LinuxHandlerId = "nexus-url-handler.desktop";
+
     private static void RegisterLinux()
     {
         var exePath = Environment.ProcessPath ?? Path.Combine(AppContext.BaseDirectory, "nexus-service");
@@ -164,18 +169,18 @@ public static class ProtocolHandler
         Directory.CreateDirectory(appsDir);
 
         var desktop = $@"[Desktop Entry]
-Name=Nexus
+Name=Nexus URL Handler
 Exec=""{exePath}"" %u
 Type=Application
 NoDisplay=true
 MimeType=x-scheme-handler/nexus;
 ";
-        File.WriteAllText(Path.Combine(appsDir, "nexus.desktop"), desktop);
+        File.WriteAllText(Path.Combine(appsDir, LinuxHandlerId), desktop);
 
         // Register as default handler
         System.Diagnostics.Process.Start("xdg-mime",
-            "default nexus.desktop x-scheme-handler/nexus")?.WaitForExit(3000);
+            $"default {LinuxHandlerId} x-scheme-handler/nexus")?.WaitForExit(3000);
 
-        Console.WriteLine("[protocol] registered nexus:// handler (Linux .desktop)");
+        Console.WriteLine($"[protocol] registered nexus:// handler ({appsDir}/{LinuxHandlerId})");
     }
 }

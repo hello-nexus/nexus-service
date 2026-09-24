@@ -14,7 +14,8 @@ Firmware binaries are stored in a local cache directory.
   LocalSystem service can write it and every user on the box sees the
   same versions).
 - **Linux**: `$XDG_CACHE_HOME/Nexus/firmware/` (defaults to
-  `~/.cache/Nexus/firmware/`).
+  `~/.cache/Nexus/firmware/`, `/var/lib/nexus/firmware/` for the Linux root
+  daemon).
 
 ```
 firmware/

@@ -145,6 +145,11 @@ public static class ServiceLog
 
     private static string ResolveLogsDir()
     {
+        // Root system daemon: logs under the machine root, like %ProgramData%
+        // on Windows. The per-user path would follow HOME, which is root's
+        // before login and the user's after - two log trees for one daemon.
+        if (Persistence.NexusDataPaths.SystemDaemonRoot is { } daemonRoot)
+            return Path.Combine(daemonRoot, "logs");
         if (RuntimeInformation.IsOSPlatform(OSPlatform.OSX))
         {
             var home = Environment.GetEnvironmentVariable("HOME") ?? "/tmp";

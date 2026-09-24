@@ -5,13 +5,13 @@ using Nexus.Service.Devices.Handlers;
 namespace Nexus.Service.Devices;
 
 /// <summary>
-/// Brand policy for the Nexus Control gate. A third-party hub defaults off
-/// precisely when a competing vendor app also drives it, so Nexus does not fight
+/// Brand policy for the Nexus Control gate. A hub in ConflictAppByHandler
+/// defaults off because its vendor app also drives it, so Nexus does not fight
 /// that app until the user opts in after closing it (the device page surfaces
 /// which app to close). Hyte/iBUYPOWER hardware, streamed panels (which have no
 /// on/off row to re-enable), and shared buses (whose monitoring nothing else
-/// provides) default on, as does any handler with neither a mapped competitor
-/// nor unverified hardware. One source of truth for both facts.
+/// provides) default on, as does any handler in neither ConflictAppByHandler
+/// nor UnverifiedHandlers. One source of truth for both facts.
 /// </summary>
 public static class DeviceControlPolicy
 {
@@ -24,19 +24,20 @@ public static class DeviceControlPolicy
         ["lianli-hydroshift-lcd"] = "lian-li-l-connect",
         ["strimer"] = "lian-li-l-connect",
         ["corsair"] = "icue",
-        ["tryx"] = "tryx-kanali",
-        ["nzxt-kraken"] = "nzxt-cam",
-        ["zmatrices-lcd"] = "zmatrices",
-        ["streamdeck"] = StreamDeckHandler.ElgatoConflictAppId,
     };
 
     // Hyte + iBUYPOWER hardware: the brands Nexus is built for. Every other
-    // first-party handler drives third-party hardware whose support is
-    // experimental (surfaced with a badge in the UI).
+    // first-party handler outside StableThirdPartyHandlers drives third-party
+    // hardware whose support is experimental (surfaced with a badge in the UI).
     private static readonly HashSet<string> FirstPartyHandlers = new(StringComparer.OrdinalIgnoreCase)
     {
         "cnvs", "keeb", "np50", "smarthub", "y70", "qseries", "fan-hub", "aw5",
         "ibp-keyboard", "ibp-mouse",
+    };
+
+    private static readonly HashSet<string> StableThirdPartyHandlers = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "nzxt-kraken", "streamdeck", "tryx", "zmatrices-lcd",
     };
 
     /// <summary>
@@ -53,10 +54,14 @@ public static class DeviceControlPolicy
         "thermalright-lcd", "asus-ryujin-lcd", "lianli-screen88",
     };
 
-    /// <summary>Feeds <see cref="ConflictAppFor"/> alone: a shared bus names a competing app for the UI hint, but defaults on and never auto-adopts.</summary>
-    private static readonly Dictionary<string, string> BusConflictAppByHandler = new(StringComparer.OrdinalIgnoreCase)
+    /// <summary>Feeds <see cref="ConflictAppFor"/> alone: names a competing app for the UI hint, but the handler defaults on and never auto-adopts.</summary>
+    private static readonly Dictionary<string, string> HintOnlyConflictAppByHandler = new(StringComparer.OrdinalIgnoreCase)
     {
         [SmbusDramHandler.HandlerId] = "icue",
+        ["tryx"] = "tryx-kanali",
+        ["nzxt-kraken"] = "nzxt-cam",
+        ["zmatrices-lcd"] = "zmatrices",
+        ["streamdeck"] = StreamDeckHandler.ElgatoConflictAppId,
     };
 
     private static readonly Dictionary<string, string> BusByHandler = new(StringComparer.OrdinalIgnoreCase)
@@ -69,7 +74,7 @@ public static class DeviceControlPolicy
 
     public static string? ConflictAppFor(string handlerId)
         => ConflictAppByHandler.TryGetValue(handlerId, out var id) ? id
-            : BusConflictAppByHandler.TryGetValue(handlerId, out var busApp) ? busApp
+            : HintOnlyConflictAppByHandler.TryGetValue(handlerId, out var hintApp) ? hintApp
             : null;
 
     /// <summary>The competing app whose absence lets <see cref="DeviceAdoptionService"/> flip the handler on; null for handlers that never auto-adopt.</summary>
@@ -81,8 +86,9 @@ public static class DeviceControlPolicy
         => BusByHandler.TryGetValue(handlerId, out var bus) ? bus : "usb";
 
     /// <summary>
-    /// True for handlers driving non-Hyte/iBUYPOWER hardware, whose support is
+    /// True for handlers driving third-party hardware whose support is
     /// experimental. Drives the "Experimental" badge in the UI.
     /// </summary>
-    public static bool IsExperimental(string handlerId) => !FirstPartyHandlers.Contains(handlerId) && !BusByHandler.ContainsKey(handlerId);
+    public static bool IsExperimental(string handlerId) =>
+        !FirstPartyHandlers.Contains(handlerId) && !StableThirdPartyHandlers.Contains(handlerId) && !BusByHandler.ContainsKey(handlerId);
 }

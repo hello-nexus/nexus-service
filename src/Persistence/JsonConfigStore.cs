@@ -350,6 +350,9 @@ public sealed class JsonConfigStore : IConfigStore, IDisposable
     {
         var dir = Path.GetDirectoryName(SettingsPath)!;
         Directory.CreateDirectory(dir);
+        // Restrict the temp file BEFORE the token-bearing JSON goes into it; the
+        // rename then carries 0600 onto settings.json every write.
+        NexusDataPaths.CreateRestricted(AtomicJsonFile.TempPathFor(SettingsPath));
         AtomicJsonFile.Write(SettingsPath, json);
     }
 

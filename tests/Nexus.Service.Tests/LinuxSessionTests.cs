@@ -1,3 +1,4 @@
+using System;
 using System.Collections.Generic;
 using Nexus.Service.Platform.Linux;
 using Xunit;
@@ -65,5 +66,62 @@ public class LinuxSessionTests
         };
 
         Assert.Null(LinuxSession.SelectSession(sessions));
+    }
+
+    // An X11 login used to be handed WAYLAND_DISPLAY=wayland-0 unconditionally,
+    // so every spawned Chromium took --ozone-platform=wayland and exited with
+    // "Failed to connect to Wayland display" before drawing a frame.
+    [Fact]
+    public void ResolveWaylandDisplay_LeavesAnX11SessionUnset()
+    {
+        Assert.Null(LinuxSession.ResolveWaylandDisplay("x11", waylandSocket: null));
+        Assert.Null(LinuxSession.ResolveWaylandDisplay("x11", waylandSocket: "wayland-0"));
+    }
+
+    [Fact]
+    public void ResolveWaylandDisplay_NamesTheRealSocketAndFallsBackOnWayland()
+    {
+        Assert.Equal("wayland-1", LinuxSession.ResolveWaylandDisplay("wayland", "wayland-1"));
+        Assert.Equal("wayland-0", LinuxSession.ResolveWaylandDisplay("wayland", null));
+    }
+
+    [Fact]
+    public void ResolveX11Env_PrefersTheSessionLeadersOwnEnvironment()
+    {
+        var leader = new Dictionary<string, string>
+        {
+            ["DISPLAY"] = ":1",
+            ["XAUTHORITY"] = "/run/user/1000/gdm/Xauthority",
+        };
+        var (display, xauthority) = LinuxSession.ResolveX11Env(
+            "x11", leader, logindDisplay: ":0", home: "/home/u", fileExists: _ => true);
+        Assert.Equal(":1", display);
+        Assert.Equal("/run/user/1000/gdm/Xauthority", xauthority);
+    }
+
+    // LightDM/startx export no XAUTHORITY at all, and logind is the only source
+    // of DISPLAY there.
+    [Fact]
+    public void ResolveX11Env_FallsBackToLogindDisplayAndTheHomeCookie()
+    {
+        var (display, xauthority) = LinuxSession.ResolveX11Env(
+            "x11", new Dictionary<string, string>(), logindDisplay: ":0",
+            home: "/home/u", fileExists: p => p == "/home/u/.Xauthority");
+        Assert.Equal(":0", display);
+        Assert.Equal("/home/u/.Xauthority", xauthority);
+    }
+
+    [Fact]
+    public void ResolveX11Env_IsEmptyWithNoCookieOnDiskAndOnWayland()
+    {
+        Assert.Equal((null, null), LinuxSession.ResolveX11Env(
+            "wayland", new Dictionary<string, string> { ["DISPLAY"] = ":0" },
+            logindDisplay: ":0", home: "/home/u", fileExists: _ => true));
+
+        var (display, xauthority) = LinuxSession.ResolveX11Env(
+            "x11", new Dictionary<string, string>(), logindDisplay: ":0",
+            home: "/home/u", fileExists: _ => false);
+        Assert.Equal(":0", display);
+        Assert.Null(xauthority);
     }
 }

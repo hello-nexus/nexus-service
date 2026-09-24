@@ -99,11 +99,18 @@ internal static class FactoryReset
         }
         else
         {
+            // Both Linux layouts, unconditionally. The finalizer is a detached
+            // child that returns from CommandLineEntry.TryEarlyExit before
+            // AdoptActiveSessionEnv ever runs, so it cannot ask whether this
+            // install is the root daemon - branching here would wipe one layout
+            // and leave the live store, auth token and all, fully intact.
+            roots.Add(new Root(Persistence.NexusDataPaths.LinuxSystemRoot, Array.Empty<string>()));
             // Linux splits user data across the XDG base dirs.
             roots.Add(new Root(XdgRoot("XDG_CONFIG_HOME", ".config"), Array.Empty<string>()));    // settings, db/ (metrics/screentime/ai-history), cert, ffmpeg-pids
             roots.Add(new Root(XdgRoot("XDG_DATA_HOME", ".local", "share"), Array.Empty<string>())); // devices, media, widgets
             roots.Add(new Root(XdgRoot("XDG_CACHE_HOME", ".cache"), Array.Empty<string>()));      // firmware, drivers
-            // logs: ~/.local/state/nexus/logs (lowercase, no XDG override in ServiceLog).
+            // logs: ~/.local/state/nexus/logs (lowercase, no XDG override in
+            // ServiceLog). The daemon branch above covers its own logs/ dir.
             roots.Add(new Root(UserPath(".local", "state", "nexus"), Array.Empty<string>()));
         }
         return roots;

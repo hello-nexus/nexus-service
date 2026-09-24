@@ -54,6 +54,8 @@ public sealed class LinuxPanelKioskHost : IDisposable
     private readonly object _lock = new();
     private readonly Dictionary<string, Kiosk> _running = new(StringComparer.Ordinal);
     private readonly Dictionary<string, int> _rapidFailures = new(StringComparer.Ordinal);
+    // Reconcile ticks every few seconds; without this the cap logs every tick.
+    private readonly HashSet<string> _cappedLogged = new(StringComparer.Ordinal);
     private bool _disposed;
     private bool _noBrowserLogged;
 
@@ -288,9 +290,11 @@ public sealed class LinuxPanelKioskHost : IDisposable
     {
         if (_rapidFailures.GetValueOrDefault(displayId) > MaxRapidFailures)
         {
-            Console.Error.WriteLine($"[panel-kiosk] display={displayId} is capped after rapid failures; not spawning");
+            if (_cappedLogged.Add(displayId))
+                Console.Error.WriteLine($"[panel-kiosk] display={displayId} is capped after rapid failures; not spawning");
             return;
         }
+        _cappedLogged.Remove(displayId);
 
         var browser = LinuxBrowsers.FindChromium();
         if (browser is null)
@@ -313,11 +317,16 @@ public sealed class LinuxPanelKioskHost : IDisposable
 
         var url = KioskUrl(_servicePort, deviceId, _tokens.Token);
         var args = new List<string>();
-        // Same Wayland forcing as the dashboard launcher: Chromium otherwise
-        // tries X11 and dies on a pure-Wayland login.
-        if (!string.IsNullOrEmpty(Environment.GetEnvironmentVariable("WAYLAND_DISPLAY")))
-            args.Add("--ozone-platform=wayland");
+        // Follows the session: wayland forced on an X11 login kills the kiosk on
+        // its first frame ("Failed to connect to Wayland display").
+        if (LinuxSession.ChromiumOzonePlatform() is { } ozone)
+            args.Add($"--ozone-platform={ozone}");
         args.Add($"--app={url}");
+        // Place before --kiosk: the window manager fullscreens onto the monitor the
+        // window already occupies. Matters most for the Y70 slot, which self-registers
+        // its record from whatever viewport it lands on. On KDE-under-X11 the KWin
+        // script above also moves it, to the same output.
+        PlaceOnOutput(args, displayId);
         // Client-requested fullscreen: KWin keeps it across the placement
         // script's move, while a compositor-set fullscreen on a normal Chromium
         // window is not honoured.
@@ -343,6 +352,8 @@ public sealed class LinuxPanelKioskHost : IDisposable
             UseShellExecute = false,
             CreateNoWindow = true,
         };
+        // Without these an X11 kiosk dies with "Missing X server or $DISPLAY".
+        LinuxSession.ApplySessionDisplayEnv(psi);
         foreach (var a in wrapped)
             psi.ArgumentList.Add(a);
 
@@ -370,15 +381,36 @@ public sealed class LinuxPanelKioskHost : IDisposable
         }
     }
 
+    /// <summary>Add window-geometry flags for this kiosk's monitor when the session
+    /// is X11 and xrandr can name it. No-op otherwise, including on Wayland.</summary>
+    private void PlaceOnOutput(List<string> args, string displayId)
+    {
+        var isY70 = string.Equals(displayId, Y70Slot, StringComparison.Ordinal);
+        // Y70Slot is a reserved key, not a /displays id.
+        var connector = LinuxX11Outputs.ConnectorFromDisplayId(
+            isY70 ? _topology.Y70DisplayId() : displayId);
+        if (LinuxX11Outputs.Find(connector, allowPortraitFallback: isY70) is not { } output)
+            return;
+        args.Add($"--window-position={output.X},{output.Y}");
+        args.Add($"--window-size={output.Width},{output.Height}");
+        Console.Error.WriteLine(
+            $"[panel-kiosk] display={displayId} placed on X11 output {output.Name} " +
+            $"{output.Width}x{output.Height}+{output.X}+{output.Y}");
+    }
+
     private void OnKioskExited(string displayId)
     {
         bool respawn;
+        // Chromium's stderr is inherited, not piped, so the exit code is the only
+        // diagnosis a crash leaves: 0/1 a clean refusal, 139 a segfault.
+        int? exitCode = null;
         lock (_lock)
         {
             if (_disposed)
                 return;
             if (!_running.TryGetValue(displayId, out var kiosk) || !kiosk.Process.HasExited)
                 return;
+            try { exitCode = kiosk.Process.ExitCode; } catch { }
             _running.Remove(displayId);
             if (string.Equals(displayId, Y70Slot, StringComparison.Ordinal))
             {
@@ -393,7 +425,9 @@ public sealed class LinuxPanelKioskHost : IDisposable
                 _rapidFailures[displayId] = failures;
                 if (failures > MaxRapidFailures)
                 {
-                    Console.Error.WriteLine($"[panel-kiosk] giving up on display={displayId} after {failures} rapid failures (turn the panel off and on to retry)");
+                    Console.Error.WriteLine(
+                        $"[panel-kiosk] giving up on display={displayId} after {failures} rapid failures " +
+                        $"(last exit code={exitCode}); turn the panel off and on to retry");
                     return;
                 }
             }
@@ -411,7 +445,8 @@ public sealed class LinuxPanelKioskHost : IDisposable
             Console.Error.WriteLine($"[panel-kiosk] display={displayId} exited; no longer desired, not respawning");
             return;
         }
-        Console.Error.WriteLine($"[panel-kiosk] display={displayId} exited; respawning");
+        Console.Error.WriteLine(
+            $"[panel-kiosk] display={displayId} exited code={exitCode}; respawning");
         // 2s crash backoff, same as the overlay host launchers.
         _ = System.Threading.Tasks.Task.Run(async () =>
         {
