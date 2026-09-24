@@ -1,5 +1,6 @@
 #if WINDOWS
 using System;
+using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
 using System.Runtime.InteropServices;
@@ -33,13 +34,33 @@ internal static class UserHelperBootstrapper
     // otherwise read as a failed spawn.
     private static readonly TimeSpan ConnectWait = TimeSpan.FromSeconds(30);
 
+    // A drop is only acted on after this long, so a helper that reconnects or a service
+    // stop that is already underway settles first.
+    private static readonly TimeSpan RelaunchGrace = TimeSpan.FromSeconds(10);
+    // Bounds relaunches of a helper that dies at start: at most this many per window.
+    private const int MaxRelaunchesPerWindow = 5;
+    private static readonly TimeSpan RelaunchWindow = TimeSpan.FromHours(1);
+    private static readonly Queue<DateTime> s_relaunches = new();
+
     private static HelperRegistry? s_registry;
+    // Set by the SCM stop path, which does not cancel ApplicationStopping.
+    private static volatile bool s_serviceStopping;
     private static int s_launchInProgress;
     private static int s_rerunRequested;
 
-    public static void EnsureLaunched(HelperRegistry registry)
+    public static void EnsureLaunched(HelperRegistry registry, CancellationToken serviceStopping)
     {
         s_registry = registry;
+
+        // A helper that drops while the service runs (a crash, a kill from Task Manager) is
+        // replaced; every deliberate helper exit also stops the service.
+        registry.Disconnected += conn =>
+        {
+            if (conn.SessionId == (int)WTSGetActiveConsoleSessionId())
+            {
+                _ = Task.Run(() => RelaunchAfterDropAsync(serviceStopping));
+            }
+        };
 
         // A logon after the poll below has ended (a user who sits at the
         // sign-in screen past its window, or logs off and back on) used to
@@ -73,6 +94,37 @@ internal static class UserHelperBootstrapper
                 await Task.Delay(2000);
             }
         });
+    }
+
+    /// <summary>Called on the SCM stop path before the helper is told to exit.</summary>
+    public static void NoteServiceStopping() => s_serviceStopping = true;
+
+    private static async Task RelaunchAfterDropAsync(CancellationToken serviceStopping)
+    {
+        try
+        {
+            await Task.Delay(RelaunchGrace, serviceStopping);
+        }
+        catch (OperationCanceledException)
+        {
+            return;
+        }
+        if (s_serviceStopping || serviceStopping.IsCancellationRequested || HelperConnected()) return;
+        // A logoff also drops the helper; the logon hook launches the next one.
+        if (string.IsNullOrEmpty(ResolveActiveConsoleUsername())) return;
+        lock (s_relaunches)
+        {
+            var now = DateTime.UtcNow;
+            while (s_relaunches.Count > 0 && now - s_relaunches.Peek() > RelaunchWindow) s_relaunches.Dequeue();
+            if (s_relaunches.Count >= MaxRelaunchesPerWindow)
+            {
+                Console.Error.WriteLine($"[helper-bootstrap] helper dropped again; {MaxRelaunchesPerWindow} relaunches in the last hour, waiting for a logon");
+                return;
+            }
+            s_relaunches.Enqueue(now);
+        }
+        Console.WriteLine("[helper-bootstrap] helper disconnected while the service runs; relaunching");
+        await LaunchAndVerifyAsync("helper-drop");
     }
 
     /// <summary>

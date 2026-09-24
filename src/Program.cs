@@ -794,6 +794,7 @@ return 0;
 // dies with the process.
 static void FastServiceShutdown(WebApplication app)
 {
+    Nexus.Service.Lifecycle.UserHelperBootstrapper.NoteServiceStopping();
     var sp = app.Services;
     var sw = System.Diagnostics.Stopwatch.StartNew();
     var osShutdown = Nexus.Service.Lifecycle.HostShutdown.IsOsShutdown;

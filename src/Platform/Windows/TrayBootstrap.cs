@@ -401,7 +401,7 @@ internal static class TrayBootstrap
                 // from any pref - the helper hosts the tray icon, screen-time
                 // poller, media/brightness providers, etc.
                 Nexus.Service.Lifecycle.UserHelperBootstrapper.EnsureLaunched(
-                    app.Services.GetRequiredService<HelperRegistry>());
+                    app.Services.GetRequiredService<HelperRegistry>(), app.Lifetime.ApplicationStopping);
 #endif
             }
             else if (suppressStartupWindow)
