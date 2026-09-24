@@ -303,6 +303,7 @@ builder.WebHost.ConfigureKestrel(k =>
         }));
     }
 });
+builder.Services.AddSingleton<Microsoft.AspNetCore.Connections.IMemoryPoolFactory<byte>, Nexus.Service.Platform.LargeBlockMemoryPoolFactory>();
 builder.Services.Configure<Microsoft.AspNetCore.Http.Features.FormOptions>(o =>
 {
     o.MultipartBodyLengthLimit = System.Math.Max(Nexus.Service.Media.MediaImporter.MaxFileSize, Nexus.Service.Panel.PanelBgImporter.MaxFileSize);
