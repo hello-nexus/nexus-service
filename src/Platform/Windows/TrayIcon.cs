@@ -914,6 +914,8 @@ public static class TrayIcon
     private const string OverlayMarshalerClassName = "Nexus.Overlay.Marshaler";
     private const string OverlayDashboardClassName = "Nexus.Overlay.Dashboard";
     private const string ShowDashboardMessageName = "Nexus.Overlay.ShowDashboard";
+    // Mirrors nexus-overlay's Program.SingletonMutexName.
+    private const string OverlaySingletonMutexName = @"Local\Nexus.Overlay.Singleton";
     // Overlay-side handler for this message navigates directly to /settings.
     private const string ShowDashboardSettingsMessageName = "Nexus.Overlay.ShowDashboardSettings";
 
@@ -1058,11 +1060,19 @@ public static class TrayIcon
     {
         try
         {
-            // First check is cheap: if any nexus-overlay.exe is alive in
-            // the current user's session, just wait for its marshaler.
-            foreach (var p in System.Diagnostics.Process.GetProcessesByName("nexus-overlay"))
+            // An overlay alive in this session (its session-local singleton
+            // mutex exists) only needs its marshaler waited for.
+            try
             {
-                p.Dispose();
+                if (System.Threading.Mutex.TryOpenExisting(OverlaySingletonMutexName, out var running))
+                {
+                    running.Dispose();
+                    return true;
+                }
+            }
+            catch (UnauthorizedAccessException)
+            {
+                // Held by a higher-integrity overlay: it exists.
                 return true;
             }
 
