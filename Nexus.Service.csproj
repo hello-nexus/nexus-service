@@ -35,6 +35,12 @@
     <ApplicationManifest Condition="$([MSBuild]::IsOSPlatform('Windows')) OR $(RuntimeIdentifier.StartsWith('win'))">app.manifest</ApplicationManifest>
   </PropertyGroup>
 
+  <!-- The default gen0 budget scales with L3 size, so on large-cache CPUs the service and its helper
+       (same binary) hold tens of MB of garbage between GCs. Decimal only: a hex value is ignored. -->
+  <ItemGroup Condition="$(RuntimeIdentifier.StartsWith('win'))">
+    <RuntimeHostConfigurationOption Include="System.GC.Gen0MaxBudget" Value="6291456" />
+  </ItemGroup>
+
   <!-- AOT size-reduction feature switches. EventSourceSupport=false is safe:
        the FPS provider consumes OS ETW via TraceEventSession, not managed
        EventSource; it does disable dotnet-counters/dotnet-trace on this
