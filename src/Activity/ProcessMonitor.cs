@@ -42,6 +42,9 @@ public sealed class ProcessMonitor : BackgroundService
     private readonly object _wakeGate = new();
     private TaskCompletionSource<bool>? _pendingWake;
 
+    // Samples that refreshed _latest, so a caller can tell one taken after a given moment.
+    private long _sampleSeq;
+
     // Bounds growth over a long-running service: every distinct name ever
     // seen (installers, temp tools, updaters) would otherwise accumulate a
     // permanent entry with no eviction. _pathCacheOrder tracks insertion
@@ -117,7 +120,23 @@ public sealed class ProcessMonitor : BackgroundService
 
     /// <summary>Test-only seam: the sampling loop never runs synchronously
     /// under a unit test, so this stands in for a completed sample.</summary>
-    internal void SetProcessesForTest(IReadOnlyList<ProcessInfo> processes) => _latest = processes;
+    internal void SetProcessesForTest(IReadOnlyList<ProcessInfo> processes)
+    {
+        _latest = processes;
+        MarkSampled();
+    }
+
+    /// <summary>Number of samples that refreshed the process list so far.</summary>
+    internal long SampleSeq => Interlocked.Read(ref _sampleSeq);
+
+    /// <summary>Raised on the sampling thread after each sample that refreshed the process list.</summary>
+    internal event Action? Sampled;
+
+    private void MarkSampled()
+    {
+        Interlocked.Increment(ref _sampleSeq);
+        Sampled?.Invoke();
+    }
 
     public void SetInterval(int ms) => _intervalMs = Math.Max(200, ms);
 
@@ -677,6 +696,7 @@ public sealed class ProcessMonitor : BackgroundService
             return c != 0 ? c : b.MemoryMb.CompareTo(a.MemoryMb);
         });
         _latest = sorted;
+        MarkSampled();
     }
 #endif
 
@@ -905,6 +925,7 @@ public sealed class ProcessMonitor : BackgroundService
             return c != 0 ? c : b.MemoryMb.CompareTo(a.MemoryMb);
         });
         _latest = result;
+        MarkSampled();
     }
 
     // /proc/pid/io read_bytes/write_bytes are actual block IO (unlike

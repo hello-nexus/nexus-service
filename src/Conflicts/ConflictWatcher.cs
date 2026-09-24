@@ -176,7 +176,9 @@ public sealed class ConflictWatcher : BackgroundService, IConflictDetector
         // other: without this it would be handed whatever the cache last held.
         EnsureFresh();
         var bytes = _cachedEnvelope;
-        return bytes is null ? null : new ReadOnlyMemory<byte>(bytes);
+        // Not a ternary: null would convert through byte[] into an empty, non-null envelope.
+        if (bytes is null) return null;
+        return new ReadOnlyMemory<byte>(bytes);
     }
 
     public override void Dispose()
