@@ -79,6 +79,33 @@ public sealed class BulkPanelHub : IDisposable
         }
     }
 
+    /// <summary>Reads the panel's IN pipe without holding up frame pushes. -1 when nothing is attached.</summary>
+    public int ReadInput(Span<byte> buffer, int timeoutMs)
+    {
+        IBulkUsbPipe? pipe;
+        lock (_lock)
+        {
+            pipe = _attached ? _pipe : null;
+        }
+        return pipe?.Read(buffer, timeoutMs) ?? -1;
+    }
+
+    public bool Resend()
+    {
+        lock (_lock)
+        {
+            return _attached && _pipe is not null && _driver.Resend(_pipe, _hid);
+        }
+    }
+
+    public bool SetBrightness(int percent)
+    {
+        lock (_lock)
+        {
+            return _attached && _pipe is not null && _driver.SetBrightness(_pipe, _hid, percent);
+        }
+    }
+
     public void Detach()
     {
         lock (_lock)

@@ -82,12 +82,10 @@ public sealed class SmartHubLightingFrameWriter : IHostedService, IDisposable
         var devices = _engine.Devices;
         if (devices.Length == 0) return;
         var settings = _store.Load();
-        // Firmware animation drives the ports; streaming would overwrite it.
-        if (settings.Devices.SmartHubFirmwareControl) return;
         var disabled = settings.Devices.DisabledLightingDevices;
         var uncontrolled = settings.Devices.UncontrolledLightingDevices;
         var prefs = settings.Devices.LightingDevicePrefs;
-        var globalBrightness = Math.Clamp(settings.Lighting.GlobalBrightness, 0f, 1f);
+        var globalBrightness = MasterBrightness.Effective(settings.Lighting);
         var nowTicks = DateTime.UtcNow.Ticks;
 
         var hubId = _hub.DeviceId;
@@ -115,10 +113,13 @@ public sealed class SmartHubLightingFrameWriter : IHostedService, IDisposable
             }
         }
 
-        // Every port uncontrolled: leave the hub alone entirely so it drops back
-        // to its firmware animation. A chained port counts as uncontrolled only
-        // when every one of its products does.
-        if (uncontrolled.Count > 0 && AllPortsUncontrolled(uncontrolled))
+        // Any port uncontrolled: leave the hub alone so it drops back to its
+        // firmware animation. The animation is all-or-nothing, so a port that
+        // kept streaming would only paint the handed-over one black; the
+        // controlled route widens a toggle to every port, and this covers the
+        // lists other writers persist (preset activation, a chain removal). A
+        // chained port counts as uncontrolled only when every product does.
+        if (uncontrolled.Count > 0 && AnyPortUncontrolled(uncontrolled))
         {
             return;
         }
@@ -161,16 +162,16 @@ public sealed class SmartHubLightingFrameWriter : IHostedService, IDisposable
         return 0;
     }
 
-    private bool AllPortsUncontrolled(System.Collections.Generic.IReadOnlyList<string> uncontrolled)
+    private bool AnyPortUncontrolled(System.Collections.Generic.IReadOnlyList<string> uncontrolled)
     {
         foreach (var zones in _portZones)
         {
-            if (zones is null || !ZoneResolution.IsFullyUncontrolled(zones, uncontrolled))
+            if (zones is not null && ZoneResolution.IsFullyUncontrolled(zones, uncontrolled))
             {
-                return false;
+                return true;
             }
         }
-        return true;
+        return false;
     }
 
     /// <summary>

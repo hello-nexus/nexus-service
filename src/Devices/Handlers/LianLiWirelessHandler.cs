@@ -27,7 +27,7 @@ public sealed class LianLiWirelessHandler : IDeviceHandler
 
     public string Id => "lianli-wireless";
 
-    public string Name => "Lian Li Uni Fan Wireless";
+    public string Name => "Lian Li L-Wireless Controller";
 
     public string Category => "cooler";
 

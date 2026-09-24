@@ -68,6 +68,31 @@ is called out here:
   SDP offer (typically over the relay tunnel) and gets an SDP answer back,
   after which media/data can flow peer-to-peer instead of through the relay.
   No WebSocket topic.
+- `/deck/recent-apps*` - Deck Modes' Recent Apps ring: `GET` is AllowPanel,
+  `PUT .../excluded` and `DELETE` are LocalhostOnly, `POST .../activate` is
+  AllowPanel (switching to or launching an app is not a privileged deck
+  action). Ring changes ride the `deck` topic's `recents` kind, coalesced
+  100ms by `RecentAppsService`.
+- `/deck/presets/{id}/apps` - App Aware bindings, mirroring
+  `/devices/lighting-devices/layout-presets/{id}/apps`'s conflict semantics.
+  Rides the `deck` topic's `preset` kind.
+- `/deck/templates`, `POST /deck/presets {templateId}` - the bundled
+  `.nexus-deck` template catalog (`data/deck-presets/`, `DeckPresetCatalog`),
+  read once from embedded resources and cached for the process lifetime; no
+  network call. `GET /deck/templates` resolves each template's installed app
+  against `GET /shortcuts`' live list on every request (no caching).
+- `GET /deck/presets/{id}/export` - a regular download (`application/zip`,
+  `Content-Disposition: attachment`), not chunked or streamed; the whole
+  package is built in memory first.
+- `POST /deck/presets/import` - raw zip body (no multipart), capped at
+  `DeckPresetPackage.MaxPackageBytes` (20 MB) via a per-request
+  `IHttpMaxRequestBodySizeFeature` override, buffered fully before parsing.
+  Broadcasts the `deck` topic's `presets` kind on success like every other
+  create path. A malformed, oversized or missing-asset package is `400`;
+  a package containing privileged (file/hotkey/text/audio) actions without
+  `?allowPrivileged=1` is `403 deck_action_requires_desktop`, the same code
+  every other desktop-only deck gate uses, so the client can tell the two
+  failure kinds apart by status code.
 
 ## Transport Topology
 
@@ -217,6 +242,7 @@ Other slow / event-driven topics (e.g. `prefs`, `lighting`, `cooling`,
 | `network` | `MonitoringBroadcaster` | default `1000 ms` | no direct current React subscriber | Network frame, also included in `monitoring`. |
 | `extras` | `MonitoringBroadcaster` | default `1000 ms` | `useSensorExtras()` | Detailed-tab sensor extras not carried in the composite `monitoring` frame. |
 | `volume` | `MonitoringBroadcaster.BroadcastVolumeIfChangedAsync` | event-driven, evaluated each `1000 ms` tick, plus snapshot on subscribe | `useSystemVolume()` | System default-render audio volume + mute (see Cooling view traffic below for the HTTP fallback). |
+| `media` | `MediaTopicPublisher` | on change only: the Windows helper's GSMTC event publishes at once, and a `1000 ms` poll (only while subscribed) is the floor on macOS/Linux; a fresh snapshot on subscribe | `useMedia()` | Active media sessions, the same dictionary as `GET /api/media`, carried inline. A frame is skipped while the only difference is the position advancing where the widget's own ticker already predicts it. |
 | `cooling-realtime` | `CurveEngine` | default `1000 ms` when curves exist | Cooling view | Live fan channel speed/RPM. |
 | `cooling-curves` | `CurveEngine` | default `1000 ms` when curves exist | Cooling view | Curve calculations and applied outputs. |
 | `conflicts` | `ConflictWatcher` | poll every `5000 ms` server-side, broadcasts only on change, plus snapshot on subscribe | `useConflictApps()` | Competing RGB/control app detection (iCUE, NZXT CAM, etc) driving the device-page conflict gate. |
@@ -240,8 +266,11 @@ Other slow / event-driven topics (e.g. `prefs`, `lighting`, `cooling`,
 | `system/accent` | event-driven on OS accent color change, Linux only | `{hex: string}` | `SystemAccentSync` | Live OS accent colour sync (watches the XDG portal). |
 | `transfer` | event-driven when a phone-to-PC transfer lands | event payload rides the frame directly | `TransferToasts` | No canonical resource to refetch; the payload is the notification. |
 | `update` | event-driven when an update becomes available or finishes staging | `{revision: long}` | dashboard `sidebar` | Push-driven refetch of `GET /update/status` instead of waiting out the sidebar's 60s poll. |
+| `apps/changed` | event-driven on every app install and uninstall (`/apps-api/install`, `/apps-api/store/install`, `/apps-api/uninstall`, and the hardware auto-installer) | `{revision: long}` | kiosk `PanelApp`, `PanelDevicePage` | Subscribers reload the installed-app registry and only then refetch the panel record: a layout normalized against a registry predating the install resolves the new `app:<id>` placement to nothing and drops it. An uninstall also purges those placements server-side and broadcasts `panel/device` for each record it changed. |
 | `twitch/chat/{channel}` | `TwitchChatHub` | event-driven, batched at `250 ms`, plus the retained buffer as a snapshot on subscribe | Twitch widget | Live chat for one channel, pre-split into text and emote runs. Demand-driven: the first subscriber makes the service JOIN the channel and the last unsubscriber makes it PART, so no Twitch connection is held for an unwatched widget. Emote images are proxied through `GET /api/twitch/emote/{id}`. |
 | `streamdeckTiles` | `StreamDeckConnectionWorker` | event-driven per-tile on a wire-hash change, capped at 4 monitoring and 4 weather tiles per tick round-robin; no snapshot registry - a fresh subscriber clears every tracked hash so the following tick(s) re-broadcast every visible tile | `StreamDeckDevicePage` Customize tab | Live JPEG render of a visible monitoring/weather Stream Deck key, pixel-identical to what the physical key shows; broadcast only while subscribed. |
+| `deck` | `DeckRoutes` (preset/instance mutations), `RecentAppsService`, `DeckAppPresetSwitcher` | event-driven, `{revision, kind, ...}` per `DeckChangedFrame.Kind`: `preset` (a preset's config or apps changed), `presets` (create/delete/import), `active` (an instance's mode or activePresetId changed, including an automatic App Aware switch), `recents` (the Recent Apps ring or focused app changed, coalesced 100ms) | Deck widget + `StreamDeckDevicePage`'s shared instance/preset hooks | AllowPanel - host-wide deck preset/instance state, shared by every physical Stream Deck and the on-screen Deck widget; subscribers refetch `/deck/presets[/{id}]`, `/deck/instances/{id}`, or `/deck/recent-apps` per the frame's `kind`. |
+| `deck-edit` | none (subscription-only signal) | no payload ever broadcast | Deck widget edit sheet | AllowPanel - held open only while a Deck widget's editor sheet is showing; `DeckAppPresetSwitcher` reads its subscriber count (plus `streamdeckTiles`) to pause App Aware switching while an editor is open. |
 | `monitoring/history-tail` | `MonitoringHistoryTailBroadcaster`, fed by `MetricsSampler` | event-driven, once per 1 Hz sample, only while subscribed | Monitoring page's live history-tail hook | Same `MetricsHistoryResponse` shape as `GET /monitoring/history`'s tail poll, decimated to one point per series; additive push alongside the existing HTTP poll. |
 | `monitoring/events` | `BroadcastingMonitoringEventStore` | event-driven on every appended timeline event (USB attach/detach, app-open, UAC escalation, custom) | Monitoring page's live events hook | One `MonitoringEventDto`, same shape as `GET /monitoring/events`; additive push alongside the existing HTTP poll. |
 | `monitoring/privacy` | `BroadcastingPrivacySessionStore` | event-driven on every privacy-session open/close, Windows only | Monitoring page's live privacy hook | One `PrivacySessionWire`, same shape as an entry in `GET /monitoring/privacy`'s `sessions` array; additive push alongside the existing HTTP poll. |
@@ -349,7 +378,7 @@ Mounted Devices view traffic:
 | `GET /displays` | every `5000 ms` on Panels tab | `0.2 req/s` | Attached monitor inventory and brightness-control capability summary. |
 | `GET /panel/status` | every `5000 ms` on Panels tab | `0.2 req/s` | Panel host running state for directly managed panels. |
 | `GET /panel/phone/sessions` | every `5000 ms` on Panels tab | `0.2 req/s` | Paired phone/tablet panel presence metadata. |
-| `GET /y70/brightness`, `/y70/rotation`, `/y70/toggle` | one-shot when Y70 popup/widget mounts | event | Y70 controls hydration. |
+| `GET /y70/brightness`, `/y70/rotation`, `/y70/toggle`, `/y70/compatibility-rendering` | one-shot when Y70 popup/widget mounts | event | Y70 controls hydration. |
 
 The curated device list and raw USB list moved from 5s
 REST polling to a one-shot fetch plus the `devices` WS topic (see the
@@ -431,7 +460,7 @@ Panel widgets add traffic only when mounted in the current panel layout.
 | Monitoring widget network slots | no extra network | local store | Network In/Out/Total gauges read totals from the app-level `monitoring` store. |
 | Monitoring widget | WS topic `fps` via `useFpsSensors()` | default `1000 ms` only while an FPS slot is active | FPS gauge. This topic is not subscribed for non-FPS widget configs, so the service does not start ETW capture for ordinary monitoring widgets. |
 | Screen-time widget | no extra network | local store | Reads app-level `screentime` store. |
-| Media widget | `GET /api/media` | default `2000 ms` | Active media sessions. |
+| Media widget | WS topic `media` via `useMedia()` | on change only, plus snapshot on subscribe | Active media sessions; no HTTP poll. |
 | Media widget | `GET /api/media/{source}/album-art` | on active song/source change | Album art blob. |
 | Media widget | `POST /api/media/{source}/control` | user action | Play/pause/next/previous. |
 | Weather widget | `GET /api/weather` | every `15 min` | Weather snapshot. |
@@ -448,7 +477,7 @@ Panel widgets add traffic only when mounted in the current panel layout.
 | Steam widget | `GET /api/steam/status`, `/profile`, `/recent-games`, `/owned-games`, `/friends` | every `15000 ms` when ready | Steam status and lists. |
 | Steam widget | `GET /api/steam/achievements/{appId}` | on current game change | Current-game achievements. |
 | Steam widget | `POST /api/steam/launch` | user action | Launch Steam. |
-| Y70 Controls | `GET /y70/brightness`, `/y70/rotation`, `/y70/toggle` | once on mount | Hydrate controls. |
+| Y70 Controls | `GET /y70/brightness`, `/y70/rotation`, `/y70/toggle`, `/y70/compatibility-rendering` | once on mount | Hydrate controls. |
 | Y70 Controls | Y70 `POST` routes | user action | Brightness/orientation/screen toggle. |
 | Displays widget | `GET /displays` | on mount and every `5000 ms` | Enumerate monitors, current brightness, capabilities, and provider write policy. |
 | Displays widget | `POST /displays/{id}/brightness` | slider target changes | Sends brightness target values; service coalesces and paces hardware writes per display. |

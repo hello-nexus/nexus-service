@@ -26,5 +26,8 @@ public sealed class HelperProcessActionsProxy : IProcessActionsProvider
 
     public Task<bool> OpenLocationAsync(string exePath)
         => ProcessActionsCommands.OpenLocationAsync(_registry, exePath);
+
+    public Task<bool> ActivateWindowAsync(int pid)
+        => ProcessActionsCommands.ActivateWindowAsync(_registry, pid);
 }
 #endif

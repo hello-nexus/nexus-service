@@ -452,7 +452,7 @@ public sealed class CloudAccountServiceTests
     }
 
     [Fact]
-    public async Task StartRecoveryAsync_refused_by_the_cloud_reports_idle_not_an_expired_link()
+    public async Task StartRecoveryAsync_refused_by_the_cloud_leaves_the_status_idle()
     {
         var (svc, api, _) = Make();
         api.OnRecoveryStart = _ => CloudApiResult<CloudRecoveryStartResponse>.Fail(429, "too_many_requests", "Slow down.");
@@ -461,6 +461,36 @@ public sealed class CloudAccountServiceTests
 
         Assert.False(result.Success);
         Assert.Equal("idle", svc.GetRecoveryStatus().Status);
+    }
+
+    [Fact]
+    public async Task StartRecoveryAsync_refused_leaves_a_recovery_already_in_flight_running()
+    {
+        var (svc, api, _) = Make();
+        var accepted = 0;
+        api.OnRecoveryStart = _ =>
+        {
+            accepted++;
+            return accepted == 1
+                ? CloudApiResult<CloudRecoveryStartResponse>.Ok(new CloudRecoveryStartResponse { Code = "ABC-DEF" })
+                : CloudApiResult<CloudRecoveryStartResponse>.Fail(429, "recovery_too_soon", "Wait a minute.");
+        };
+        // The fake's default poll answer is "expired", and the poll loop's first
+        // request goes out as soon as the grant is accepted - under suite load
+        // it can land before the assertions below and flip the status.
+        api.OnRecoveryPoll = _ => CloudApiResult<CloudRecoveryPollResponse>.Ok(new CloudRecoveryPollResponse { Status = "pending" });
+
+        var first = await svc.StartRecoveryAsync("nicola@example.com", CancellationToken.None);
+        Assert.True(first.Success);
+        Assert.Equal("pending", svc.GetRecoveryStatus().Status);
+
+        // The refused resend must not cancel the poll watching the grant whose
+        // link is already in the user's inbox.
+        var second = await svc.StartRecoveryAsync("nicola@example.com", CancellationToken.None);
+
+        Assert.False(second.Success);
+        Assert.Equal("recovery_too_soon", second.ErrorCode);
+        Assert.Equal("pending", svc.GetRecoveryStatus().Status);
     }
 
     [Fact]

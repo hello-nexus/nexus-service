@@ -29,6 +29,7 @@ internal static class ShaderLibrary
     private static readonly Assembly Asm = typeof(ShaderLibrary).Assembly;
     private static readonly ConcurrentDictionary<string, string> Cache = new();
     private static readonly ConcurrentDictionary<string, IReadOnlyDictionary<string, ShaderParamSpec>> ParamsCache = new();
+    private static readonly ConcurrentDictionary<string, string> SourceTagCache = new();
     private static readonly string Prelude = LoadRaw(PreludeResource);
 
     /// <summary>Resolve an effect name ("plasma") to its concatenated GLSL source.</summary>
@@ -38,11 +39,29 @@ internal static class ShaderLibrary
         {
             // Every "simple*" colour key shares the one solid-fill shader; the
             // colour lives entirely in the per-key template tint, not the GLSL.
-            var file = key.StartsWith("simple", System.StringComparison.Ordinal) ? "simple" : key;
+            // Simple mode's breathing tile is its own key over breathing.frag,
+            // so running it never reads as the advanced effect's selection.
+            var file = key.StartsWith("simple", System.StringComparison.Ordinal) ? "simple"
+                : key == "sweepbreathing" ? "breathing"
+                : key;
             var body = LoadRaw(ResourcePrefix + file + ".frag");
             return Prelude + "\n" + body;
         });
     }
+
+    /// <summary>FNV-1a hash of the effect's composed source, cached like Get. Thumbnail
+    /// ETags carry it, so an edited shader never revalidates as its old image.</summary>
+    public static string SourceTag(string effectName) =>
+        SourceTagCache.GetOrAdd(effectName, key =>
+        {
+            uint h = 2166136261;
+            foreach (var c in Get(key))
+            {
+                h ^= c;
+                h *= 16777619;
+            }
+            return h.ToString("x8");
+        });
 
     /// <summary>hint_range specs parsed from the effect's composed source, cached like Get.</summary>
     public static IReadOnlyDictionary<string, ShaderParamSpec> Params(string effectName) =>
@@ -121,7 +140,7 @@ internal static class ShaderLibrary
         "ringtunnel", "vortextunnel", "helixtunnel", "boxtunnel",
         "meshgradient", "tide", "vapor", "satinflow",
         "ridgeline", "chevron", "terrace", "harlequin", "mosaic",
-        "sharplines",
+        "sharplines", "breathing",
         // Constellation mesh plus the Nexus 2 theme set.
         "constellation", "cybertunnel", "hyperspace",
         "synthwave", "retropetals", "contourbands",
@@ -130,7 +149,23 @@ internal static class ShaderLibrary
         "beatstrobe", "harmonicstar", "audiotunnel", "bassbloom",
         "beatbuilder", "spectrumaurora", "neonwaveform", "liquidbeat",
         "beatburst",
+        // Simple mode's sweep set; mirrors SweepEffectKeys below, keep in sync.
+        "sweeprainbow", "sweepbreathing", "sweepbars", "sweepcycle",
+        "sweepbrush", "sweepliquid", "sweepcomet",
     };
+
+    /// <summary>Simple mode's sweep set. Every one travels on +x only (breathing
+    /// and cycle do not travel; the whole frame is one colour): simple mode turns them
+    /// around with the speed sign, and a y-travelling shader added here would
+    /// collapse every linear strip to one colour under
+    /// <see cref="LightingEngine.FullFrameSampling"/>.</summary>
+    public static readonly HashSet<string> SweepEffectKeys = new(System.StringComparer.Ordinal)
+    {
+        "sweeprainbow", "sweepbreathing", "sweepbars", "sweepcycle",
+        "sweepbrush", "sweepliquid", "sweepcomet",
+    };
+
+    public static bool IsSweepEffect(string key) => SweepEffectKeys.Contains(key);
 
     /// <summary>
     /// Every key with its own .frag, animate plus the static catalog. The client

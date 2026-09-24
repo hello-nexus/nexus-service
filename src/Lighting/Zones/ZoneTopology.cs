@@ -39,6 +39,15 @@ public sealed class ZoneTopology
         _bridge = bridge;
     }
 
+    public IEnumerable<DeviceStructure> AllStructures()
+    {
+        foreach (var source in _sources)
+        {
+            foreach (var structure in source.GetStructures())
+                yield return structure;
+        }
+    }
+
     public DeviceStructure? FindStructure(string deviceId)
     {
         foreach (var source in _sources)

@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.IO;
 using System.Text.Json;
 using Nexus.Service.Migration;
+using Nexus.Service.Panel;
 using Xunit;
 
 namespace Nexus.Service.Tests.Migration;
@@ -200,8 +201,8 @@ public sealed class Nexus2Y70TranslatorTests
 
     private static bool Overlaps(Nexus.Service.Models.Panel.PanelWidgetDto a, Nexus.Service.Models.Panel.PanelWidgetDto b)
     {
-        var (aCols, aRows) = Nexus2LayoutPlacement.SpanForSize(a.Size);
-        var (bCols, bRows) = Nexus2LayoutPlacement.SpanForSize(b.Size);
+        var (aCols, aRows) = Y70LayoutPlacement.SpanForSize(a.Size);
+        var (bCols, bRows) = Y70LayoutPlacement.SpanForSize(b.Size);
         return a.Col < b.Col + bCols && b.Col < a.Col + aCols &&
             a.Row < b.Row + bRows && b.Row < a.Row + aRows;
     }

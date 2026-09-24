@@ -22,6 +22,25 @@ public class ProfileSharingTests
     }
 
     [Fact]
+    public void ApplyCategory_Dashboard_CarriesAndResetsTheDashboardGaugeGradient()
+    {
+        var source = new NexusSettings();
+        source.Panel.DashboardGaugeGradient = new List<Nexus.Service.Models.Panel.PanelGaugeGradientStop>
+        {
+            new() { At = 0.2, Color = "accent" },
+            new() { At = 0.9, Color = "#ef4444" },
+        };
+
+        var target = new NexusSettings();
+        ProfileSharing.ApplyCategory(target, source, ProfileSharing.Dashboard);
+        Assert.NotNull(target.Panel.DashboardGaugeGradient);
+        Assert.Equal("accent", target.Panel.DashboardGaugeGradient![0].Color);
+
+        ProfileSharing.ResetCategory(target, ProfileSharing.Dashboard);
+        Assert.Null(target.Panel.DashboardGaugeGradient);
+    }
+
+    [Fact]
     public void ApplyCategory_Device_ReplacesTargetStreamDeckWithSources()
     {
         var source = new NexusSettings();
@@ -35,6 +54,38 @@ public class ProfileSharingTests
         var deck = Assert.Single(target.StreamDeck.Decks);
         Assert.Equal("SN-SOURCE", deck.Key);
         Assert.Equal("Source Deck", deck.Value.Name);
+    }
+
+    /// <summary>The recent-apps ring names this machine's processes and exe paths, so a profile export or cloud sync never carries it.</summary>
+    [Fact]
+    public void ApplyCategory_Device_NeverCarriesTheRecentAppsRing()
+    {
+        var source = new NexusSettings();
+        source.StreamDeck.RecentApps.Add(new RecentApp { ProcessKey = "msedge", Name = "Microsoft Edge", ExePath = @"C:\edge.exe" });
+        source.StreamDeck.RecentAppsExcluded.Add("explorer");
+
+        var extract = ProfileSharing.ExtractShareable(source);
+
+        Assert.Empty(extract.StreamDeck.RecentApps);
+        Assert.Empty(extract.StreamDeck.RecentAppsExcluded);
+        // Extracting must not touch the live ring itself.
+        Assert.Single(source.StreamDeck.RecentApps);
+        Assert.Single(source.StreamDeck.RecentAppsExcluded);
+    }
+
+    /// <summary>Loading a profile (whose file carries no ring) keeps the live machine's ring.</summary>
+    [Fact]
+    public void ApplyCategory_Device_KeepsTheTargetsRecentAppsRing()
+    {
+        var live = new NexusSettings();
+        live.StreamDeck.RecentApps.Add(new RecentApp { ProcessKey = "msedge", Name = "Microsoft Edge" });
+        var fromFile = new NexusSettings();
+        fromFile.StreamDeck.Decks["SN-1"] = new PhysicalDeckSettings { Name = "Deck" };
+
+        ProfileSharing.ApplyCategory(live, fromFile, ProfileSharing.Device);
+
+        Assert.Single(live.StreamDeck.Decks);
+        Assert.Single(live.StreamDeck.RecentApps);
     }
 
     [Fact]

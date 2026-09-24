@@ -42,6 +42,10 @@ internal static class FactoryReset
     // A data tree to wipe, plus the names of any immediate children to skip.
     private sealed record Root(string Path, string[] Preserve);
 
+    /// Entries under %ProgramData%\Nexus a wipe leaves alone: the kernel driver,
+    /// and the remembered render GPU (see Roots).
+    internal static readonly string[] PreservedProgramDataEntries = { "PawnIO", "gpu-render-state" };
+
     private static string UserPath(params string[] parts)
     {
         var all = new string[parts.Length + 1];
@@ -66,8 +70,11 @@ internal static class FactoryReset
             // logs (nexus-service/overlay/tray/helper/volume/gpu/pawnio),
             // https cert, ffmpeg-pids, DesktopWebView2, openrgb-config. Whole-tree
             // wipe, so the grouped subdirs need no per-name upkeep here.
-            // Preserve PawnIO\ (kernel driver).
-            roots.Add(new Root(System.IO.Path.Combine(programData, "Nexus"), new[] { "PawnIO" }));
+            // Preserve PawnIO\ (kernel driver) and gpu-render-state (which card
+            // yields a working GL context - a hardware fact, not user data; a
+            // wrong one still self-corrects through the crash guard and the
+            // re-probe timer, while wiping it costs every reset a fresh probe).
+            roots.Add(new Root(System.IO.Path.Combine(programData, "Nexus"), PreservedProgramDataEntries));
             // Per-user data the daemon can't reach via GetFolderPath: it runs as
             // LocalSystem, so LocalApplicationData resolves to the SYSTEM profile.
             // dashboard-bounds.json (written by the user-session overlay) lands in
@@ -157,6 +164,12 @@ internal static class FactoryReset
             Console.Error.WriteLine("[factory-reset] finalizer already claimed; ignoring repeat request");
             return false;
         }
+#if WINDOWS
+        // We are about to stop a process that may be mid-GL-init, and the guard
+        // it left behind would read as "this card killed us" on the next boot,
+        // demoting a working card into a fresh probe.
+        Nexus.Service.Lighting.Engine.Gpu.GpuRenderSelect.ClearCrashGuardOnStop();
+#endif
         var selfExe = Environment.ProcessPath;
         if (string.IsNullOrEmpty(selfExe))
         {

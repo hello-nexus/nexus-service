@@ -18,10 +18,11 @@ public class LightingEngineSamplingTests
         public void Dispose() { }
     }
 
-    private static async Task<byte[]> RenderOnce(DeviceFrame device, Action<CanvasBuffer> paint, bool footprintSampling = true)
+    private static async Task<byte[]> RenderOnce(DeviceFrame device, Action<CanvasBuffer> paint, bool footprintSampling = true, bool fullFrame = false)
     {
         using var engine = new LightingEngine();
         engine.FootprintSamplingEnabled = footprintSampling;
+        engine.FullFrameSampling = fullFrame;
         engine.UpdateDevices(new[] { device });
         engine.FrameIntervalMs = 10;
         var tcs = new TaskCompletionSource<byte[]>(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -169,6 +170,106 @@ public class LightingEngineSamplingTests
             if (i == 8) continue;
             Assert.Equal(((byte)0, (byte)0, (byte)0), Led(leds, i));
         }
+    }
+
+    // Simple mode's sweep set: every device reads the whole canvas, so a small
+    // frame parked in one corner still shows the pattern end to end.
+    [Fact]
+    public async Task FullFrameSampling_StripReadsWholeCanvas()
+    {
+        // A small frame parked in the canvas's top-left corner, over a canvas
+        // painted red on the left half and blue on the right.
+        var device = new DeviceFrame(0, "strip", 10, x: 20, y: 20, w: 100, h: 20);
+        void Paint(CanvasBuffer c)
+        {
+            c.Clear();
+            for (int y = 0; y < 90; y++)
+            {
+                for (int x = 0; x < 160; x++) { c.SetPixel(x, y, x < 80 ? (byte)255 : (byte)0, 0, x < 80 ? (byte)0 : (byte)255); }
+            }
+        }
+        var full = await RenderOnce(device, Paint, fullFrame: true);
+        Assert.Equal(((byte)255, (byte)0, (byte)0), Led(full, 0));
+        Assert.Equal(((byte)0, (byte)0, (byte)255), Led(full, 9));
+
+        // Same frame without the flag reads its own rect, which sits entirely
+        // in the red half - the difference the flag makes, not the paint.
+        var placed = await RenderOnce(device, Paint);
+        Assert.Equal(((byte)255, (byte)0, (byte)0), Led(placed, 0));
+        Assert.Equal(((byte)255, (byte)0, (byte)0), Led(placed, 9));
+    }
+
+    [Fact]
+    public async Task FullFrameSampling_KeepsTheGapsBetweenBands()
+    {
+        // Ten LEDs over the whole canvas width sit a pitch apart that is wider
+        // than the unlit gap between these bands, so a cell always overlaps a
+        // band. SampleLedFootprint drops black pixels and weights the rest by
+        // max-channel squared, which would hand every LED a fully lit red; the
+        // plain cell mean keeps the ones sitting over mostly-gap dark.
+        var device = new DeviceFrame(0, "strip", 10, x: 20, y: 20, w: 100, h: 20);
+        void Bands(CanvasBuffer c)
+        {
+            c.Clear();
+            for (int y = 0; y < c.Height; y++)
+            {
+                for (int x = 0; x < c.Width; x++)
+                {
+                    if (x % 16 < 8) { c.SetPixel(x, y, 255, 0, 0); }
+                }
+            }
+        }
+        var full = await RenderOnce(device, Bands, fullFrame: true);
+        // The band period divides the canvas width a whole number of times, so
+        // each cell holds a fixed share of lit pixels and the reading is the
+        // same every frame. The two end LEDs clamp against the canvas edge onto
+        // a half cell - the first wholly over a band, the last wholly over a
+        // gap - which is what pins the mapping: read over the device's own
+        // 100-unit rect instead, or through SampleLedFootprint, and none of
+        // these numbers survive (the weighted read returns 255 throughout,
+        // because every cell touches a band).
+        var reds = new byte[10];
+        for (int i = 0; i < 10; i++)
+        {
+            var (r, g, b) = Led(full, i);
+            reds[i] = r;
+            Assert.Equal((byte)0, g);
+            Assert.Equal((byte)0, b);
+        }
+        Assert.Equal(new byte[] { 255, 120, 120, 120, 120, 135, 135, 135, 135, 0 }, reds);
+    }
+
+    [Fact]
+    public async Task FullFrameSampling_UvDeviceKeepsTheGapsToo()
+    {
+        // Same bands, but a device carrying per-LED UVs so the read goes down
+        // the UV branch. Its cell would otherwise come from the cols x rows
+        // density estimate, which under full frame spreads cols over the whole
+        // canvas and hands a strip-shaped device a cell an order of magnitude
+        // too wide - the box mean then washes the bands into one flat tone.
+        var device = new DeviceFrame(0, "uv", 10, x: 20, y: 20, w: 100, h: 20);
+        var u = new float[10];
+        var v = new float[10];
+        for (int i = 0; i < 10; i++) { u[i] = i / 9f; v[i] = 0.5f; }
+        device.LedU = u;
+        device.LedV = v;
+        var full = await RenderOnce(device, c =>
+        {
+            c.Clear();
+            for (int y = 0; y < c.Height; y++)
+            {
+                for (int x = 0; x < c.Width; x++)
+                {
+                    if (x % 16 < 8) { c.SetPixel(x, y, 255, 0, 0); }
+                }
+            }
+        }, fullFrame: true);
+        var reds = new byte[10];
+        for (int i = 0; i < 10; i++) { reds[i] = Led(full, i).r; }
+        // Both extremes have to survive; the grid-estimate cell returned a flat
+        // mid-red across all ten.
+        Assert.Contains(reds, r => r == 0);
+        Assert.Contains(reds, r => r == 255);
     }
 
     [Fact]

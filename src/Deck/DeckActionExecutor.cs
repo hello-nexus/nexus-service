@@ -596,7 +596,7 @@ public sealed class DeckActionExecutor : IDeckActionExecutor
     }
 
     /// <summary>Ports deckExecutor.ts's parseHotkey: "ctrl+shift+m" -> a modifier set + a canonical key code.</summary>
-    private static (string Key, bool Ctrl, bool Shift, bool Alt, bool Meta)? ParseHotkey(string keys)
+    internal static (string Key, bool Ctrl, bool Shift, bool Alt, bool Meta)? ParseHotkey(string keys)
     {
         var tokens = keys.Split('+');
         var key = "";
@@ -672,6 +672,16 @@ public sealed class DeckActionExecutor : IDeckActionExecutor
             "left" => "ArrowLeft",
             "right" => "ArrowRight",
             "." => "Period",
+            "," => "Comma",
+            "/" => "Slash",
+            ";" => "Semicolon",
+            "'" => "Quote",
+            "[" => "BracketLeft",
+            "]" => "BracketRight",
+            "\\" => "Backslash",
+            "-" => "Minus",
+            "=" => "Equal",
+            "`" => "Backquote",
             "printscreen" => "PrintScreen",
             _ => "",
         };

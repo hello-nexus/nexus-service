@@ -41,7 +41,6 @@ public static partial class DevicesRoutes
                 FirmwareVersion = hub.State.FirmwareVersion,
                 Serial = hub.State.Serial,
                 Fans = fans,
-                FirmwareControl = store.Load().Devices.SmartHubFirmwareControl,
             });
         });
 
@@ -86,15 +85,6 @@ public static partial class DevicesRoutes
                 Math.Clamp(body.FanPercent, 0, 100));
             if (!ok)
                 return Results.Problem("Failed to write firmware setting to SmartHub.");
-            return Results.Ok(ApiResponse.Ok());
-        });
-
-        // Stored preference - persisted whether or not the hub is connected.
-        // When enabled, the heartbeat turns firmware animation ON and the
-        // lighting writer stops streaming; when disabled, the inverse.
-        app.MapPut("/devices/smarthub/firmware-control", (SmartHubFirmwareControlRequest body, IConfigStore store) =>
-        {
-            store.Update(s => s.Devices.SmartHubFirmwareControl = body.Enabled);
             return Results.Ok(ApiResponse.Ok());
         });
 
@@ -178,7 +168,6 @@ public sealed class SmartHubStateResponse
     public string FirmwareVersion { get; set; } = "";
     public string Serial { get; set; } = "";
     public SmartHubFanResponse[] Fans { get; set; } = Array.Empty<SmartHubFanResponse>();
-    public bool FirmwareControl { get; set; }
 }
 
 /// <summary>One PWM-fan port in <see cref="SmartHubStateResponse"/>.</summary>
@@ -211,12 +200,6 @@ public sealed class SmartHubFwSettingRequest
     public int B { get; set; }
     public int Brightness { get; set; }
     public int FanPercent { get; set; }
-}
-
-/// <summary>Body shape for PUT /devices/smarthub/firmware-control.</summary>
-public sealed class SmartHubFirmwareControlRequest
-{
-    public bool Enabled { get; set; }
 }
 
 /// <summary>Shape returned by GET /devices/smarthub/composition.</summary>

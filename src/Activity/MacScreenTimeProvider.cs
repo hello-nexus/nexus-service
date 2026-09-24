@@ -7,10 +7,17 @@ using Nexus.Service.Activity.Storage;
 using Nexus.Service.Models.Activity;
 using Nexus.Service.Persistence;
 using Nexus.Service.Platform;
+using Nexus.Service.Platform.Mac;
 
 namespace Nexus.Service.Activity;
 
-public sealed class MacScreenTimeProvider : IScreenTimeProvider, IDisposable
+/// <summary>
+/// Two pid-gated feeds into ApplyFocus: the lsappinfo poll (idle accounting; the only feed
+/// without a run loop) and the NSWorkspace activation notification (instant).
+/// FocusDetails.ExePath is the .app bundle path: what "open" activates and what
+/// IShortcutsProvider/DeckKeyRenderer resolve an icon from.
+/// </summary>
+public sealed class MacScreenTimeProvider : IScreenTimeProvider, IFocusDetailsProvider, IDisposable
 {
     private const long IdleThresholdMs = 3 * 60 * 1000;
 
@@ -21,6 +28,8 @@ public sealed class MacScreenTimeProvider : IScreenTimeProvider, IDisposable
 
     private string _currentApp = "";
     private int _currentPid;
+    private string? _currentBundlePath;
+    private string? _currentExePath;
     private long _sessionStartUtcMs;
     private long _lastPollUtcMs;
 
@@ -42,7 +51,8 @@ public sealed class MacScreenTimeProvider : IScreenTimeProvider, IDisposable
                 return;
             }
 
-            var info = ShellOut("/usr/bin/lsappinfo", "info", "-only", "LSDisplayName", "-only", "pid", asn);
+            var info = ShellOut("/usr/bin/lsappinfo", "info",
+                "-only", "LSDisplayName", "-only", "pid", "-only", "bundlepath", "-only", "executablepath", "-only", "ApplicationType", asn);
             if (string.IsNullOrEmpty(info))
             {
                 return;
@@ -58,17 +68,38 @@ public sealed class MacScreenTimeProvider : IScreenTimeProvider, IDisposable
 
             var appName = nameMatch.Groups[1].Value;
             var pid = int.Parse(pidMatch.Groups[1].Value);
+            var bundleMatch = Regex.Match(info, "\"LSBundlePath\"=\"(.+?)\"");
+            var exeMatch = Regex.Match(info, "\"CFBundleExecutablePath\"=\"(.+?)\"");
+            var typeMatch = Regex.Match(info, "\"ApplicationType\"=\"(.+?)\"");
 
-            ApplyFocus(appName, pid);
+            ApplyFocus(appName, pid,
+                bundleMatch.Success ? bundleMatch.Groups[1].Value : null,
+                exeMatch.Success ? exeMatch.Groups[1].Value : null,
+                regular: !typeMatch.Success || typeMatch.Groups[1].Value == "Foreground");
         }
         catch { }
     }
 
     public event Action? FocusChanged;
 
-    private void ApplyFocus(string appName, int pid)
+    public event Action<FocusSessionEnded>? SessionEnded;
+
+    /// <summary>Subscribes the NSWorkspace activation notification. Main
+    /// thread only, before the AppKit run loop starts (MacAppBootstrap).</summary>
+    public void AttachWorkspaceObserver()
     {
+        MacWorkspaceFocusObserver.Start(app => ApplyFocus(app.Name, app.Pid, app.BundlePath, app.ExecutablePath, app.Regular));
+    }
+
+    /// <summary>A UI-element agent taking focus (Spotlight, the LocalAuthentication dialog, Control Center) is a transient overlay on the app underneath, not a focus change.</summary>
+    internal void ApplyFocus(string appName, int pid, string? bundlePath, string? exePath, bool regular)
+    {
+        if (!regular)
+        {
+            return;
+        }
         var changed = false;
+        FocusSessionEnded? ended = null;
         lock (_lock)
         {
             var now = NowUtcMs();
@@ -80,9 +111,12 @@ public sealed class MacScreenTimeProvider : IScreenTimeProvider, IDisposable
                 {
                     var endUtc = idleGap > IdleThresholdMs ? _lastPollUtcMs : now;
                     TryRecord(_currentApp, _sessionStartUtcMs, endUtc);
+                    ended = new FocusSessionEnded(_currentPid, _currentApp, _sessionStartUtcMs, endUtc);
                 }
                 _currentApp = appName;
                 _currentPid = pid;
+                _currentBundlePath = bundlePath;
+                _currentExePath = exePath;
                 _sessionStartUtcMs = now;
                 changed = true;
             }
@@ -97,7 +131,21 @@ public sealed class MacScreenTimeProvider : IScreenTimeProvider, IDisposable
 
         // Outside the lock: a subscriber activating a preset must not run
         // under the focus lock.
+        if (ended is not null) SessionEnded?.Invoke(ended);
         if (changed) FocusChanged?.Invoke();
+    }
+
+    public FocusDetails? GetCurrentFocusDetails()
+    {
+        lock (_lock)
+        {
+            if (string.IsNullOrEmpty(_currentApp))
+            {
+                return null;
+            }
+            return new FocusDetails(_currentPid, _currentApp, _sessionStartUtcMs,
+                _currentBundlePath ?? _currentExePath, 0, 0, null);
+        }
     }
 
     public FocusSession? GetCurrentSession()

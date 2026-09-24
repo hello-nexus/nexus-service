@@ -77,12 +77,14 @@ public sealed class Y70Handler : IDeviceHandler
     /// function IS enumerated but the hub can't connect (COM port held, driver
     /// failure), the warning stays - that is a real degraded state. The
     /// DDC-only panels (GW / Ina) expose no USB serial function at all, so a
-    /// missing serial connection is their normal state, not a fault.
+    /// missing serial connection is their normal state, not a fault. While the
+    /// display topology is unknown (Windows before the user-session helper
+    /// connects) neither warning can be asserted, so none is.
     /// </summary>
     public string? GetWarning(IReadOnlyList<UsbDeviceEntry> detectedDevices)
         => ComputeWarning(
             _hub.IsConnected,
-            _topology.HasY70Display(),
+            _topology.HasY70DisplayIfKnown(),
             touchOnlyUsb: HasTouchDigitizer(detectedDevices) && !HasSerialFunction(detectedDevices),
             ddcOnlyPanel: _topology.DdcOnlyY70Variant().Length > 0);
 
@@ -92,10 +94,11 @@ public sealed class Y70Handler : IDeviceHandler
     internal bool HasSerialFunction(IReadOnlyList<UsbDeviceEntry> detectedDevices)
         => detectedDevices.Any(d => Identifiers.Any(id => id.VendorId == d.VendorId && id.ProductId == d.ProductId));
 
-    internal static string? ComputeWarning(bool serialConnected, bool hasDisplay, bool touchOnlyUsb, bool ddcOnlyPanel)
+    internal static string? ComputeWarning(bool serialConnected, bool? hasDisplay, bool touchOnlyUsb, bool ddcOnlyPanel)
     {
-        if (serialConnected) return hasDisplay ? null : DisplayDisconnectedWarning;
-        if (!hasDisplay) return null;
+        if (hasDisplay is null) return null;
+        if (serialConnected) return hasDisplay.Value ? null : DisplayDisconnectedWarning;
+        if (!hasDisplay.Value) return null;
         if (ddcOnlyPanel) return null;
         return touchOnlyUsb ? null : UsbDisconnectedWarning;
     }

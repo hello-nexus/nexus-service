@@ -30,6 +30,7 @@ swiftc -O -target arm64-apple-macos13.0 \
     -framework AppKit \
     -framework WebKit \
     -framework Foundation \
+    -framework IOKit \
     -Xlinker -sectcreate \
     -Xlinker __TEXT \
     -Xlinker __info_plist \

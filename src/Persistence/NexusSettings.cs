@@ -19,9 +19,9 @@ public sealed class NexusSettings
     /// a migration in <c>JsonConfigStore.Load()</c>. Lives as a constant so
     /// tests and tooling can reference "current" without bit-rotting.
     /// </summary>
-    public const int CurrentSchemaVersion = 17;
+    public const int CurrentSchemaVersion = 18;
 
-    /// <summary>Persisted profile schema. v2 nests Theme/Panel/Overlay/Monitoring out of UiSettings into matching top-level POCOs that mirror install-defaults.json. v3 drops the <c>{s/n/b}</c> wrapper on per-widget config values; values are raw JSON (string/number/bool/object/array). v4 retires the type-scoped marketplace <c>Widgets</c> bag - every placement keeps its own config under <see cref="Nexus.Service.Models.Panel.PanelWidgetDto.Config"/>. v5 renames the <c>performance</c> cooling preset to <c>turbo</c>. v6 re-keys per-card LED map overrides/aspect ratios into the device-scoped segment-local <see cref="DevicesSettings.DeviceLedOverrides"/> / <see cref="DevicesSettings.DeviceAspectRatios"/> (zones model). v8 marks any pre-existing settings.json as already-onboarded (see <see cref="OnboardingCompleted"/>) so the first-run welcome screen only shows for installs with no settings.json at all. v9 prunes <see cref="AnimateSettings.Templates"/> to user deltas against the canonical defaults (see <see cref="Nexus.Service.Lighting.AnimateTemplateDefaults"/>). v10 prunes <see cref="AnimateSettings.States"/> entries equal to the effect's resolved selected-slot look. v11 rewrites the legacy <c>marketplace:</c> app-placement prefix to <c>app:</c> across all persisted widget types (see <see cref="Nexus.Service.Widgets.AppPrefixMigration"/>). v12 adds the <see cref="ProfileSharing.Device"/> sharing category (Stream Deck bindings), defaulted to Shared so an upgrading install keeps today's workstation-global behavior. v13 marks any pre-existing settings.json as already lighting-onboarded (see <see cref="LightingOnboardingCompleted"/>) so the lighting device-selection screen only shows for fresh installs. v14 seeded a per-page density mode that was later removed; it is now a plain version bump. v15 seeds <see cref="UiSettings.LightingDashboardMode"/> and <see cref="UiSettings.CoolingDashboardMode"/> to "advanced" for any pre-existing settings.json, so the reintroduced per-page density mode default ("simple") only applies to fresh installs. v16 marks any pre-existing settings.json as already features-onboarded (see <see cref="FeaturesOnboardingCompleted"/>) so the feature-pillars onboarding screen only shows for fresh installs; <see cref="Features"/> itself is additive (every flag already defaults true) and carries no migration arm. The v1-v4 load-time migrations were removed; records now load as-is and a malformed/older file falls back to defaults (see <see cref="JsonConfigStore"/>).</summary>
+    /// <summary>Persisted profile schema. v2 nests Theme/Panel/Overlay/Monitoring out of UiSettings into matching top-level POCOs that mirror install-defaults.json. v3 drops the <c>{s/n/b}</c> wrapper on per-widget config values; values are raw JSON (string/number/bool/object/array). v4 retires the type-scoped marketplace <c>Widgets</c> bag - every placement keeps its own config under <see cref="Nexus.Service.Models.Panel.PanelWidgetDto.Config"/>. v5 renames the <c>performance</c> cooling preset to <c>turbo</c>. v6 re-keys per-card LED map overrides/aspect ratios into the device-scoped segment-local <see cref="DevicesSettings.DeviceLedOverrides"/> / <see cref="DevicesSettings.DeviceAspectRatios"/> (zones model). v8 marks any pre-existing settings.json as already-onboarded (see <see cref="OnboardingCompleted"/>) so the first-run welcome screen only shows for installs with no settings.json at all. v9 prunes <see cref="AnimateSettings.Templates"/> to user deltas against the canonical defaults (see <see cref="Nexus.Service.Lighting.AnimateTemplateDefaults"/>). v10 prunes <see cref="AnimateSettings.States"/> entries equal to the effect's resolved selected-slot look. v11 rewrites the legacy <c>marketplace:</c> app-placement prefix to <c>app:</c> across all persisted widget types (see <see cref="Nexus.Service.Widgets.AppPrefixMigration"/>). v12 adds the <see cref="ProfileSharing.Device"/> sharing category (Stream Deck bindings), defaulted to Shared so an upgrading install keeps today's workstation-global behavior. v13 marks any pre-existing settings.json as already lighting-onboarded (see <see cref="LightingOnboardingCompleted"/>) so the lighting device-selection screen only shows for fresh installs. v14 seeded a per-page density mode that was later removed; it is now a plain version bump. v15 seeds <see cref="UiSettings.LightingDashboardMode"/> and <see cref="UiSettings.CoolingDashboardMode"/> to "advanced" for any pre-existing settings.json, so the reintroduced per-page density mode default ("simple") only applies to fresh installs. v16 marks any pre-existing settings.json as already features-onboarded (see <see cref="FeaturesOnboardingCompleted"/>) so the feature-pillars onboarding screen only shows for fresh installs; <see cref="Features"/> itself is additive (every flag already defaults true) and carries no migration arm. v18 hoists per-serial Stream Deck presets/config into the host-wide <see cref="StreamDeckSettings.Presets"/> list plus per-instance <see cref="StreamDeckSettings.Instances"/>, and lifts every deck widget's inline layout config the same way (see <see cref="Nexus.Service.Deck.DeckModesMigration"/>). The v1-v4 load-time migrations were removed; records now load as-is and a malformed/older file falls back to defaults (see <see cref="JsonConfigStore"/>).</summary>
     public int SchemaVersion { get; set; } = CurrentSchemaVersion;
 
     public ThemeSettings Theme { get; set; } = new();
@@ -58,6 +58,12 @@ public sealed class NexusSettings
 
     /// <summary>EDID model identities ("CRX:ED00") panel auto-promotion has already acted on (or first observed as user-managed). A listed model is never auto-promoted again, so deleting an auto-created panel record sticks across port changes. NOT profile-scoped.</summary>
     public List<string> AutoPromotedPanelModels { get; set; } = new();
+
+    /// <summary>App ids the hardware auto-installer has settled for this machine's hardware (see <see cref="Nexus.Service.Store.HardwareAppCatalog"/>), plus any the user installed by hand from that same set. Drives the "placed for you" flag the dashboard reads to arrange the app. NOT profile-scoped: it tracks hardware, not a profile.</summary>
+    public List<string> AutoInstalledApps { get; set; } = new();
+
+    /// <summary>Hardware-app ids the user uninstalled by hand. Suppresses the auto-installer for good, so an app the user removed does not come back on the next boot even though its hardware is still attached. NOT profile-scoped.</summary>
+    public List<string> UserRemovedApps { get; set; } = new();
 
     /// <summary>User-overridden display name for this host PC. Empty means "fall back to Environment.MachineName". Surfaced in the panel tray header and in the QR/claim payload paired phones see. NOT profile-scoped: a host has one name regardless of which profile is active.</summary>
     public string HostDisplayName { get; set; } = "";
@@ -121,6 +127,12 @@ public sealed class NexusSettings
     /// already-complete (see <see cref="JsonConfigStore"/>), so only a fresh
     /// install sees the screen.</summary>
     public bool FeaturesOnboardingCompleted { get; set; }
+
+    /// <summary>True once a touch panel's actions tray has been opened; the
+    /// panel shows a swipe-up hint until then. Same scoping as
+    /// <see cref="OnboardingCompleted"/>. No schema migration on purpose:
+    /// every install shows the hint until the tray is opened once.</summary>
+    public bool PanelSwipeOnboardingCompleted { get; set; }
 
     /// <summary>True once at least one Nexus 2 personalization category has been
     /// imported through the migration screen. Install-scoped like
@@ -420,6 +432,10 @@ public sealed class UiSettings
     /// falls back to its local copy, so a machine-wiped browser recovers the
     /// pin from here instead of losing it (OemAppSeeded blocks a reseed).</summary>
     public List<string>? PinnedSidebarApps { get; set; }
+    /// <summary>User-dragged order of the sidebar's unpinned apps (below the separator). Null until the user reorders; the web then sorts them by name.</summary>
+    public List<string>? SidebarAppOrder { get; set; }
+    /// <summary>True while the user has collapsed the dashboard sidebar by hand; false leaves it to the window-width auto-collapse.</summary>
+    public bool SidebarCollapsed { get; set; }
     /// <summary>Per-page density of the dashboard lighting/cooling pages, "simple" or "advanced"; migration seeds pre-existing installs to "advanced".</summary>
     public string LightingDashboardMode { get; set; } = "simple";
     public string CoolingDashboardMode { get; set; } = "simple";
@@ -452,6 +468,8 @@ public sealed class UiSettingsPatch
     public List<string>? ConflictAutoKillExclusions { get; set; }
     public bool? OemAppSeeded { get; set; }
     public List<string>? PinnedSidebarApps { get; set; }
+    public List<string>? SidebarAppOrder { get; set; }
+    public bool? SidebarCollapsed { get; set; }
     public string? LightingDashboardMode { get; set; }
     public string? CoolingDashboardMode { get; set; }
     public bool? ShowUncontrolledDevices { get; set; }
@@ -534,6 +552,12 @@ public sealed class LightingSettings
     /// a zone can never render brighter than the master level.
     /// Range 0..1; default 1.0 (no cap).</summary>
     public float GlobalBrightness { get; set; } = 1.0f;
+    /// <summary>Time-of-day cap on <see cref="GlobalBrightness"/>: while enabled
+    /// the effective master level is <c>min(GlobalBrightness, schedule(now))</c>,
+    /// see <see cref="Nexus.Service.Lighting.MasterBrightness"/>. A whole-day
+    /// preference rather than a look, so unlike the slider it is not captured
+    /// into presets.</summary>
+    public BrightnessSchedule BrightnessSchedule { get; set; } = new();
     public Dictionary<string, int> SpeedScale { get; set; } = new();
     public bool SpeedEnabled { get; set; } = InstallDefaults.Lighting.SpeedEnabled;
     public int FrameRate { get; set; } = InstallDefaults.Lighting.FrameRate;
@@ -587,6 +611,11 @@ public sealed class LightingSettings
     /// Windows writes the DirectX UserGpuPreferences key before the GL context
     /// inits; Linux matches it against the EGL device list. macOS ignores it.</summary>
     public string RenderGpu { get; set; } = "auto";
+    /// <summary>Which API creates the lighting GL context on Windows: "wgl"
+    /// (default, direct) or "glfw" (the pre-3.0.15 path, kept as an escape if a
+    /// driver refuses the direct one). Restart-to-apply. Ignored elsewhere:
+    /// macOS uses CGL and Linux EGL.</summary>
+    public string RenderBackend { get; set; } = "wgl";
     /// <summary>
     /// When true, Nexus blanks every lighting device it drives as the host
     /// suspends, and restores the running effect on resume. Devices that keep
@@ -607,6 +636,27 @@ public sealed class LightingSettings
     /// login screen comes up lit.
     /// </summary>
     public bool LockBlackout { get; set; } = InstallDefaults.Lighting.LockBlackout;
+}
+
+/// <summary>
+/// Master brightness over a 24-hour day as a piecewise-linear curve. Points sit
+/// on whole hours (0..23) and hold 0..100%; the engine interpolates between
+/// them by the minute and wraps midnight, so the level drifts rather than
+/// steps. Off by default. Routes replace <see cref="Points"/> as a whole
+/// (frame writers iterate the list reference they read, unlocked).
+/// </summary>
+public sealed class BrightnessSchedule
+{
+    public bool Enabled { get; set; }
+    public List<BrightnessSchedulePoint> Points { get; set; } = Nexus.Service.Lighting.MasterBrightness.DefaultSchedule();
+}
+
+public sealed class BrightnessSchedulePoint
+{
+    /// <summary>Whole hour of the day, 0..23.</summary>
+    public int Hour { get; set; }
+    /// <summary>0..100.</summary>
+    public int Brightness { get; set; }
 }
 
 /// <summary>
@@ -694,7 +744,19 @@ public sealed class DeviceLayout
     public int Rotation { get; set; }
 }
 
-public sealed class LayoutPreset
+/// <summary>
+/// A preset that can auto-activate when one of its bound apps takes focus -
+/// implemented by <see cref="LayoutPreset"/> (lighting) and
+/// <see cref="DeckPreset"/> (deck), so AppPresetFocusTracker.Decide runs one
+/// state machine for both instead of forking the logic per domain.
+/// </summary>
+public interface IAppBoundPreset
+{
+    string Id { get; }
+    IReadOnlyList<PresetAppBinding>? Apps { get; }
+}
+
+public sealed class LayoutPreset : IAppBoundPreset
 {
     public string Id { get; set; } = "";
     public string Name { get; set; } = "";
@@ -721,6 +783,8 @@ public sealed class LayoutPreset
     /// on a preset saved before per-app activation existed; an app appears
     /// under at most one preset (the route unbinds it elsewhere on assign).</summary>
     public List<PresetAppBinding>? Apps { get; set; }
+
+    IReadOnlyList<PresetAppBinding>? IAppBoundPreset.Apps => Apps;
 }
 
 /// <summary>One app bound to a <see cref="LayoutPreset"/>. <see cref="ProcessName"/>
@@ -1015,6 +1079,11 @@ public sealed class Y70Settings
     /// <summary>When true, the effective orientation applied to hardware is
     /// always PortraitFlipped regardless of <see cref="Orientation"/>.</summary>
     public bool ForceOrientation { get; set; } = InstallDefaults.Y70.ForceOrientation;
+    /// <summary>When true, nexus-overlay starts the panel kiosk's WebView2
+    /// with DirectComposition disabled, in its own user-data folder. Works
+    /// around an AMD driver fault that scrambles a full-screen DirectComposition
+    /// window on a rotated display once focus or input changes.</summary>
+    public bool CompatibilityRendering { get; set; } = InstallDefaults.Y70.CompatibilityRendering;
 }
 
 public sealed class QSeriesSettings
@@ -1069,6 +1138,12 @@ public sealed class TryxSettings
     /// <summary>Cloud material ids installed on the panel; drives the catalog's installed
     /// badge (the panel's media-list push reports only built-in presets, not downloads).</summary>
     public List<int> InstalledCloudIds { get; set; } = new();
+    /// <summary>Custom-upload slideshow (see
+    /// <see cref="Nexus.Service.Peripherals.Tryx.Panorama.TryxSlideshowConfig"/>).</summary>
+    public bool SlideshowEnabled { get; set; }
+    public int SlideshowIntervalSec { get; set; } = Nexus.Service.Peripherals.Tryx.Panorama.TryxSlideshowConfig.DefaultIntervalSec;
+    public bool SlideshowShuffle { get; set; }
+    public bool SlideshowFinishVideos { get; set; } = true;
 }
 
 /// <summary>One NZXT Kraken channel's firmware animation. <see cref="Colors"/> holds
@@ -1147,6 +1222,7 @@ public sealed class DevicesSettings
     public LianLiSettings LianLi { get; set; } = new();
     public LianLiWirelessSettings LianLiWireless { get; set; } = new();
     public LianLiLightingSettings LianLiLighting { get; set; } = new();
+    public TlLightingSettings TlLighting { get; set; } = new();
     public StrimerLightingSettings StrimerLighting { get; set; } = new();
     public Galahad2LightingSettings Galahad2Lighting { get; set; } = new();
     public CorsairSettings Corsair { get; set; } = new();
@@ -1176,8 +1252,6 @@ public sealed class DevicesSettings
     public List<string> MappingAutoApplyDeclined { get; set; } = new();
     /// <summary>Lighting-device ids ever seen on this install. A device not in this list is "new" and eligible for community-mapping auto-match.</summary>
     public List<string> MappingKnownDevices { get; set; } = new();
-    /// <summary>When true, the SmartHub's onboard firmware animation drives the ARGB ports and Nexus stops streaming to them.</summary>
-    public bool SmartHubFirmwareControl { get; set; }
     /// <summary>
     /// OpenRGB devices excluded from the bundled daemon's detection because the
     /// user turned Nexus Control off for every card they emit. Keyed by the
@@ -1361,15 +1435,58 @@ public sealed class LianLiWirelessSettings
 {
     /// <summary>Per-screen LCD content and display settings, keyed by the SL-LCD Wireless screen's 16-hex serial.</summary>
     public Dictionary<string, LianLiWirelessScreenSettings> Screens { get; set; } = new();
+
+    /// <summary>Lighting mode per bound wireless chain (Strimer cable or fan chain), keyed by its MAC hex (uppercase).</summary>
+    public Dictionary<string, LianLiWirelessChainLighting> Chains { get; set; } = new();
+}
+
+/// <summary>
+/// What a wireless chain shows: the lighting engine's live frames
+/// (<see cref="ModeCustom"/>), or an animation uploaded once and played by the
+/// chain on its own (an effect key, or <see cref="ModePerLane"/> on a Strimer).
+/// </summary>
+public sealed class LianLiWirelessChainLighting
+{
+    public const string ModeCustom = "custom";
+    public const string ModePerLane = "perLane";
+
+    public string Mode { get; set; } = ModeCustom;
+    /// <summary>Last mode other than the Lighting page one, restored when Lighting page control is turned off.</summary>
+    public string? EffectMode { get; set; }
+    /// <summary>0 slowest .. 4 fastest.</summary>
+    public int Speed { get; set; } = 2;
+    /// <summary>0 forward, 1 reverse.</summary>
+    public int Direction { get; set; }
+    /// <summary>0 off .. 4 full.</summary>
+    public int Brightness { get; set; } = 4;
+    /// <summary>"#RRGGBB" user colours; empty = the effect's default palette.</summary>
+    public List<string> Colors { get; set; } = new();
+    /// <summary>One entry per lane, used by <see cref="ModePerLane"/>.</summary>
+    public List<LianLiWirelessLane> Lanes { get; set; } = new();
+}
+
+public sealed class LianLiWirelessLane
+{
+    public string Mode { get; set; } = "rainbow";
+    public int Direction { get; set; }
+    public string Color { get; set; } = "#FF0000";
 }
 
 public sealed class StreamDeckSettings
 {
-    /// <summary>Per-deck bindings, keyed by device serial.</summary>
+    /// <summary>Per-deck HID prefs, keyed by device serial. Presets moved to <see cref="Presets"/> in schema v18.</summary>
     public Dictionary<string, PhysicalDeckSettings> Decks { get; set; } = new();
+    /// <summary>Host-wide preset list shared by every physical deck AND the on-screen Deck widget instances.</summary>
+    public List<DeckPreset> Presets { get; set; } = new();
+    /// <summary>Per-instance mode + active preset, keyed "streamdeck:&lt;serial&gt;" or "widget:&lt;panelWidgetId&gt;".</summary>
+    public Dictionary<string, DeckInstance> Instances { get; set; } = new();
+    /// <summary>Host-wide MRU app ring for Recent Apps mode instances, cap 64 (enforced by the ring writer, not here).</summary>
+    public List<RecentApp> RecentApps { get; set; } = new();
+    /// <summary>Process keys excluded from the Recent Apps ring, in addition to the built-in shell denylist.</summary>
+    public List<string> RecentAppsExcluded { get; set; } = new();
 }
 
-/// <summary>One physical Stream Deck's persisted name, brightness, key bindings, and uploaded-image references.</summary>
+/// <summary>One physical Stream Deck's persisted name, brightness and HID prefs. Layout lives on <see cref="StreamDeckSettings.Presets"/>/<see cref="StreamDeckSettings.Instances"/> since schema v18.</summary>
 public sealed class PhysicalDeckSettings
 {
     public const int DefaultBrightness = 60;
@@ -1377,7 +1494,7 @@ public sealed class PhysicalDeckSettings
     /// <summary>Empty falls back to the model name.</summary>
     public string Name { get; set; } = "";
     public int Brightness { get; set; } = DefaultBrightness;
-    /// <summary>User rotation composed on top of the model's wire Transform, in quarter-turn degree steps. Applied by both the web-rendered key bitmaps and the service's own monitoring tile renders.</summary>
+    /// <summary>User rotation composed on top of the model's wire Transform, in quarter-turn degree steps. Applied by both the service's rendered key bitmaps and its monitoring tile renders.</summary>
     public int Orientation { get; set; }
     /// <summary>Seconds of no key input before the deck blanks the display. A non-positive value disables sleep-after.</summary>
     public int SleepAfterSeconds { get; set; }
@@ -1385,22 +1502,61 @@ public sealed class PhysicalDeckSettings
     public bool SleepWhenLocked { get; set; } = true;
     /// <summary>Last-known StreamDeckModel.ProductId, so a disconnected deck can still report its layout via StreamDeckModels.ByProductId.</summary>
     public int ProductId { get; set; }
-    public DeckConfig Deck { get; set; } = new();
-    /// <summary>Keyed by "{slotPath}/{state}" (state "0" or "1" for a toggle); value is the cached image's content hash.</summary>
-    public Dictionary<string, string> ImageRefs { get; set; } = new();
-    // Named snapshots of Deck + ImageRefs. Capped by the route layer.
-    public List<DeckPreset> Presets { get; set; } = new();
-    // Preset the live Deck was last loaded from; null = none selected.
-    public string? ActivePresetId { get; set; }
+
+    /// <summary>Pre-v18 live config, wire name "deck" (the pre-rename property). Read once by DeckModesMigration, then nulled.</summary>
+    [System.Text.Json.Serialization.JsonPropertyName("deck")]
+    public DeckConfig? LegacyDeck { get; set; }
+    /// <summary>Pre-v18 keyed by "{slotPath}/{state}", wire name "imageRefs"; value is the StreamDeckImageCache content hash. Read once, then nulled.</summary>
+    [System.Text.Json.Serialization.JsonPropertyName("imageRefs")]
+    public Dictionary<string, string>? LegacyImageRefs { get; set; }
+    /// <summary>Pre-v18 per-serial preset list, wire name "presets". Read once, then nulled.</summary>
+    [System.Text.Json.Serialization.JsonPropertyName("presets")]
+    public List<DeckPreset>? LegacyPresets { get; set; }
+    /// <summary>Pre-v18 selected preset id, wire name "activePresetId". Read once, then nulled.</summary>
+    [System.Text.Json.Serialization.JsonPropertyName("activePresetId")]
+    public string? LegacyActivePresetId { get; set; }
 }
 
-/// <summary>One named snapshot of a deck's config and uploaded-image references, for POST/activate under /streamdeck/decks/{serial}/presets.</summary>
-public sealed class DeckPreset
+/// <summary>One host-wide deck preset: config-only and grid-independent, shared by any physical deck or widget instance that points at it via <see cref="DeckInstance.ActivePresetId"/>.</summary>
+public sealed class DeckPreset : IAppBoundPreset
 {
     public string Id { get; set; } = "";
     public string Name { get; set; } = "";
+    /// <summary>The grid this preset was authored in (seeded from the creating deck/widget); DeckConfigNavigation.FitToGrid chunks it onto whatever grid an instance actually has.</summary>
+    public int Cols { get; set; }
+    public int Rows { get; set; }
     public DeckConfig Deck { get; set; } = new();
-    public Dictionary<string, string> ImageRefs { get; set; } = new();
+    /// <summary>App Aware bindings. Null means unbound; an app appears under at most one preset (the apps route unbinds it elsewhere on assign).</summary>
+    public List<PresetAppBinding>? Apps { get; set; }
+    /// <summary>Set when this preset was created from a bundled/imported package (data/deck-presets/&lt;id&gt;.nexus-deck).</summary>
+    public string? TemplateId { get; set; }
+    public string? Author { get; set; }
+    public string? Version { get; set; }
+    public string? Description { get; set; }
+
+    IReadOnlyList<PresetAppBinding>? IAppBoundPreset.Apps => Apps;
+}
+
+/// <summary>One deck instance's mode + active preset. Keyed "streamdeck:&lt;serial&gt;" (never GC'd) or "widget:&lt;panelWidgetId&gt;" (GC'd when the widget id no longer appears in any layout).</summary>
+public sealed class DeckInstance
+{
+    /// <summary>"custom" | "recentApps" | "appAware". Unrecognized reads as "custom".</summary>
+    public string Mode { get; set; } = "custom";
+    /// <summary>The preset this instance shows in Custom/App Aware mode. Null only transiently, before the first preset is assigned.</summary>
+    public string? ActivePresetId { get; set; }
+}
+
+/// <summary>One entry of the host-wide Recent Apps MRU ring.</summary>
+public sealed class RecentApp
+{
+    /// <summary>AppPresetMatching.ProcessKey identity - the ring's dedup key.</summary>
+    public string ProcessKey { get; set; } = "";
+    public string Name { get; set; } = "";
+    public int? Pid { get; set; }
+    public string? ExePath { get; set; }
+    /// <summary>GET /shortcuts id, resolved once by process name against IShortcutsProvider.GetAll().</summary>
+    public string? ShortcutId { get; set; }
+    public long LastFocusedUtcMs { get; set; }
 }
 
 /// <summary>One SL-LCD Wireless fan screen's persisted content selection and display settings.</summary>
@@ -1434,15 +1590,32 @@ public sealed class LianLiWirelessScreenSettings
 public sealed class LianLiLightingSettings
 {
     public string Mode { get; set; } = "rainbowWave";
+    /// <summary>Last mode other than the Lighting page one, restored when Lighting page control is turned off.</summary>
+    public string? EffectMode { get; set; }
     public int Speed { get; set; } = 2;
     public int Direction { get; set; } = 0;
     public int Brightness { get; set; } = 4;
     public List<string> Colors { get; set; } = new();
 }
 
+public sealed class TlLightingSettings
+{
+    public string Mode { get; set; } = "rainbow";
+    public int Speed { get; set; } = 2;
+    public int Direction { get; set; } = 0;
+    public int Brightness { get; set; } = 4;
+
+    /// <summary>"all" drives each fan whole; "top"/"bottom" drive the halves through the declared groups.</summary>
+    public string Scope { get; set; } = "all";
+
+    public List<string> Colors { get; set; } = new();
+}
+
 public sealed class StrimerLightingSettings
 {
     public string Mode { get; set; } = "rainbow";
+    /// <summary>Last mode other than the Lighting page one, restored when Lighting page control is turned off.</summary>
+    public string? EffectMode { get; set; }
     public int Speed { get; set; } = 2;
     public int Direction { get; set; } = 0;
     public int Brightness { get; set; } = 4;
@@ -1452,6 +1625,8 @@ public sealed class StrimerLightingSettings
 public sealed class Galahad2LightingSettings
 {
     public string Mode { get; set; } = "canvas";
+    /// <summary>Last mode other than the Lighting page one, restored when Lighting page control is turned off.</summary>
+    public string? EffectMode { get; set; }
     public int Speed { get; set; } = 2;
     public int Direction { get; set; } = 0;
     public int Brightness { get; set; } = 4;

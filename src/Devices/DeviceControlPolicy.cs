@@ -26,6 +26,7 @@ public static class DeviceControlPolicy
         ["corsair"] = "icue",
         ["tryx"] = "tryx-kanali",
         ["nzxt-kraken"] = "nzxt-cam",
+        ["zmatrices-lcd"] = "zmatrices",
         ["streamdeck"] = StreamDeckHandler.ElgatoConflictAppId,
     };
 

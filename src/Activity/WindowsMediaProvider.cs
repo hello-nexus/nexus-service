@@ -17,13 +17,16 @@ namespace Nexus.Service.Activity;
 /// Service-side media provider. GSMTC enumeration runs in the user-session
 /// helper (Session 0 cannot see GlobalSystemMediaTransportControls). The
 /// helper pushes <c>media.snapshot</c> envelopes on session changes; we
-/// cache the latest and serve it to <see cref="GetSessions"/>. Control()
+/// cache the latest and serve it to <see cref="GetSessions"/>, raising
+/// <see cref="Changed"/> so the media topic publishes it at once. Control()
 /// and GetAlbumArt() flip back into the helper via
 /// <see cref="MediaCommands"/>.
 /// </summary>
 [SupportedOSPlatform("windows10.0.19041.0")]
-public sealed class WindowsMediaProvider : IMediaProvider, IDisposable
+public sealed class WindowsMediaProvider : IMediaProvider, IMediaChangeSource, IDisposable
 {
+    public event Action? Changed;
+
     private static readonly TimeSpan AlbumArtCacheTtl = TimeSpan.FromSeconds(30);
 
     private readonly HelperRegistry _helper;
@@ -46,6 +49,7 @@ public sealed class WindowsMediaProvider : IMediaProvider, IDisposable
     {
         lock (_lock) { _snapshot = new Dictionary<string, MediaSession>(StringComparer.OrdinalIgnoreCase); }
         _artCache.Clear();
+        Changed?.Invoke();
     }
 
     /// <summary>Test-only seam: drives the real OnDisconnected handler.</summary>
@@ -62,6 +66,7 @@ public sealed class WindowsMediaProvider : IMediaProvider, IDisposable
             lock (_lock) { _snapshot = fresh; _snapshotAt = Stopwatch.GetTimestamp(); }
             // Track changes invalidate album-art for the affected session.
             InvalidateStaleArt(fresh);
+            Changed?.Invoke();
         }
         catch (Exception ex)
         {

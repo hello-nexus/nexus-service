@@ -144,6 +144,16 @@ public sealed class MacInputter : IInputterProvider
         ["ArrowRight"] = 124,
         ["CapsLock"] = 57,
         ["Period"] = 47, // kVK_ANSI_Period
+        ["Comma"] = 43, // kVK_ANSI_Comma
+        ["Slash"] = 44, // kVK_ANSI_Slash
+        ["Semicolon"] = 41, // kVK_ANSI_Semicolon
+        ["Quote"] = 39, // kVK_ANSI_Quote
+        ["BracketLeft"] = 33, // kVK_ANSI_LeftBracket
+        ["BracketRight"] = 30, // kVK_ANSI_RightBracket
+        ["Backslash"] = 42, // kVK_ANSI_Backslash
+        ["Minus"] = 27, // kVK_ANSI_Minus
+        ["Equal"] = 24, // kVK_ANSI_Equal
+        ["Backquote"] = 50, // kVK_ANSI_Grave
         // No macOS CGKeyboardEvent mapping (skipped): Insert, NumLock,
         // ScrollLock, PrintScreen, Pause, ContextMenu, and the media keys.
     };

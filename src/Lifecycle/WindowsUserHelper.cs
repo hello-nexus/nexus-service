@@ -32,7 +32,7 @@ namespace Nexus.Service.Lifecycle;
 internal static class WindowsUserHelper
 {
     private const int DefaultPort = 9400;
-    private const string SessionMutexName = @"Local\NexusHelper";
+    internal const string SessionMutexName = @"Local\NexusHelper";
     private const uint WM_CLOSE = 0x0010;
     private const string UpdaterWindowTitle = "Nexus Updater";
 

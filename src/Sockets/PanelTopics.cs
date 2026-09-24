@@ -17,6 +17,12 @@ public static class PanelTopics
     public const string Cooling = "cooling";
     public const string Volume = "volume";
     /// <summary>
+    /// Active media sessions, the same dictionary GET /api/media returns,
+    /// carried inline. Published by MediaTopicPublisher only on change, with
+    /// a fresh snapshot on subscribe.
+    /// </summary>
+    public const string Media = "media";
+    /// <summary>
     /// Per-app mixer strips. Carries the strips inline rather than a refetch
     /// revision: while a mixer is open this fires at meter rate, and a revision
     /// frame would turn every peak sample into an HTTP GET.
@@ -140,6 +146,38 @@ public static class PanelTopics
         frame.Revision = Now();
         var env = WsEnvelope.Build(MappingApplied, frame, AppJsonContext.Default.MappingAutoAppliedFrame);
         _ = hub.BroadcastTopicAsync(MappingApplied, env);
+    }
+
+    /// <summary>
+    /// An app installed itself because its hardware is attached. Payload rides
+    /// the frame directly so the toast needs no refetch; the dashboard also
+    /// reloads its installed-app registry to pick the new app up.
+    /// </summary>
+    public const string AppAutoInstalled = "apps/auto-installed";
+
+    public static void BroadcastAppAutoInstalled(MultiplexHub hub, AppAutoInstalledFrame frame)
+    {
+        if (!hub.TopicHasSubscribers(AppAutoInstalled))
+            return;
+        frame.Revision = Now();
+        var env = WsEnvelope.Build(AppAutoInstalled, frame, AppJsonContext.Default.AppAutoInstalledFrame);
+        _ = hub.BroadcastTopicAsync(AppAutoInstalled, env);
+    }
+
+    /// <summary>
+    /// Every install and uninstall, including the user's own; subscribers
+    /// reload their app registry, then refetch. <see cref="AppAutoInstalled"/>
+    /// stays the toast-bearing announcement of an install nobody asked for.
+    /// </summary>
+    public const string AppsChanged = "apps/changed";
+
+    public static void BroadcastAppsChanged(MultiplexHub hub)
+    {
+        if (!hub.TopicHasSubscribers(AppsChanged))
+            return;
+        var frame = new AppsChangedFrame { Revision = Now() };
+        var env = WsEnvelope.Build(AppsChanged, frame, AppJsonContext.Default.AppsChangedFrame);
+        _ = hub.BroadcastTopicAsync(AppsChanged, env);
     }
 
     public static void BroadcastCooling(MultiplexHub hub)
@@ -332,6 +370,33 @@ public static class PanelTopics
         var env = WsEnvelope.Build(StreamDeckTiles, frame, AppJsonContext.Default.StreamDeckTileFrame);
         _ = hub.BroadcastTopicAsync(StreamDeckTiles, env);
     }
+
+    /// <summary>
+    /// Host-wide deck preset/instance changes, AllowPanel (the Deck widget's
+    /// panel session needs it too). Kind "preset" (config edited), "presets"
+    /// (create/delete/import) or "active" (an instance's mode or preset
+    /// changed, including the App Aware switcher) - see DeckChangedFrame.
+    /// </summary>
+    public const string Deck = "deck";
+
+    public static void BroadcastDeck(MultiplexHub hub, Nexus.Service.Models.Deck.DeckChangedFrame frame)
+    {
+        if (!hub.TopicHasSubscribers(Deck))
+        {
+            return;
+        }
+        frame.Revision = Now();
+        var env = WsEnvelope.Build(Deck, frame, AppJsonContext.Default.DeckChangedFrame);
+        _ = hub.BroadcastTopicAsync(Deck, env);
+    }
+
+    /// <summary>
+    /// Subscription-only signal, AllowPanel: a Deck widget's edit sheet holds
+    /// this open while showing, and DeckAppPresetSwitcher reads its
+    /// subscriber count (alongside streamdeckTiles) to pause App Aware
+    /// switching while an editor is open. No frame is ever broadcast on it.
+    /// </summary>
+    public const string DeckEdit = "deck-edit";
 
     /// <summary>
     /// Local AI assistant runtime/model progress (managed Ollama install,

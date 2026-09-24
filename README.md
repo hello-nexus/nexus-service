@@ -93,7 +93,7 @@ src/
   Activity/            # screen time, app detection, audio analysis
   Games/  Fps/         # installed-game catalog, FPS capture and per-game sessions
   FocusModes/  Audio/  # focus modes; per-app volume mixer and audio playback
-  Steam/ Discord/ Obs/ Twitch/ Integrations/   # third-party integrations (Integrations/ = Home Assistant)
+  Steam/ Discord/ Obs/ Twitch/ Klipy/ Integrations/   # third-party integrations (Klipy/ = GIF catalog, Integrations/ = Home Assistant)
   Diagnostics/         # event-log monitor, SMART/NVMe, GPU/cooling/memory checks, health model, support bundle
   Relay/  Rtc/         # off-LAN relay client and sealed channels; WebRTC direct transport
   Webcam/  Transfer/   # phone-as-webcam backends; phone-to-PC file transfer inbox
@@ -141,6 +141,10 @@ dotnet publish -c Release -r linux-x64 -o publish-linux
   configuration, compiled by `scripts/build-ffmpeg-minimal.sh`. It is optional
   at build time: `bash scripts/fetch-ffmpeg.sh all` (or `mac | win | linux`)
   produces it once per RID.
+- The Windows virtual display driver behind secondary-monitor mode is optional
+  at build time: `Bundled/windows/nexus-vdd/build.ps1` builds it into
+  `Bundled/win-x64/vdd/` with the VS Build Tools (it downloads the WDK package
+  itself). Without it the setting is not offered.
 - Device firmware images are vendor files kept outside this repository. The
   csproj embeds them from `NEXUS_FIRMWARE_DIR` (or `-p:NexusFirmwareDir=`), a
   gitignored `data/firmware/`, or a sibling `firmware/` directory when one
@@ -154,7 +158,8 @@ dotnet publish -c Release -r linux-x64 -o publish-linux
   fallback. Its presence defines `OFFICIAL_BUILD`, which wires up the cloud
   account, profile sync, relay, fleet telemetry and the OTA updater. A build
   without it, which is every public clone, is local-only and dials none of the
-  hosted services. `NEXUS_POSTHOG_KEY` is injected the same way.
+  hosted services. `NEXUS_POSTHOG_KEY` and `NEXUS_KLIPY_KEY` (the GIF picker's
+  api.klipy.com app key) are injected the same way.
 
 ### Route inventory
 

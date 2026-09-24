@@ -92,6 +92,8 @@ public sealed class ProcessDetailRouteTests : IDisposable
             LastOpenedPath = exePath;
             return Task.FromResult(OpenLocationResult);
         }
+
+        public Task<bool> ActivateWindowAsync(int pid) => Task.FromResult(false);
     }
 
     // ----- GET /monitoring/process-info -----

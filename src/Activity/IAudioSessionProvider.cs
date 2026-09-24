@@ -5,10 +5,11 @@ using Nexus.Service.Models.Activity;
 namespace Nexus.Service.Activity;
 
 /// <summary>
-/// Per-application audio levels: one strip per process rendering to the
-/// default output. Separate from <see cref="IVolumeProvider"/> (the endpoint's
-/// own master level) and <see cref="IAudioDeviceProvider"/> (which endpoint is
-/// default).
+/// Per-application audio levels: one strip per process, collapsing every
+/// session across every active render endpoint (see
+/// <see cref="AudioSessionDto.DeviceIds"/> and <see cref="AudioSessionDto.OnDefault"/>).
+/// Separate from <see cref="IVolumeProvider"/> (an endpoint's own master
+/// level) and <see cref="IAudioDeviceProvider"/> (which endpoint is default).
 /// </summary>
 public interface IAudioSessionProvider
 {

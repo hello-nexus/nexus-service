@@ -204,6 +204,37 @@ public class SetMutedBody
     public bool Muted { get; set; }
 }
 
+/// <summary>Resolved state for the media widget's volume-target modes
+/// (auto/app/output). "Kind" is always what actually got resolved: an app
+/// mode with no matching strip resolves to an output, not an unsupported app.</summary>
+public class VolumeTargetState
+{
+    public bool Supported { get; set; }
+    public double Volume { get; set; }
+    public bool Muted { get; set; }
+    /// <summary>"output" or "app".</summary>
+    public string Kind { get; set; } = "output";
+    public string Id { get; set; } = "";
+    public string Name { get; set; } = "";
+}
+
+public class SetVolumeTargetBody
+{
+    /// <summary>"output" or "app", as resolved by GET /system/volume/target.</summary>
+    public string Kind { get; set; } = "";
+    public string Id { get; set; } = "";
+    public double Volume { get; set; }
+    /// <summary>False is a mid-drag frame for an app target. Unset counts as true.</summary>
+    public bool? Commit { get; set; }
+}
+
+public class SetVolumeTargetMuteBody
+{
+    public string Kind { get; set; } = "";
+    public string Id { get; set; } = "";
+    public bool Muted { get; set; }
+}
+
 // ----- Network -----
 
 public class NetworkProcessInfo

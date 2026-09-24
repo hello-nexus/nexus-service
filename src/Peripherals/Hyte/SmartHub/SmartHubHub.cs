@@ -234,7 +234,39 @@ public sealed class SmartHubHub : IDisposable, IDfuFlashTarget
     public bool WriteMcuSetting(int animation, byte r, byte g, byte b, int brightness, int fanPercent)
         => SendOnly(SmartHubProtocol.BuildSetMcuSetting(animation, r, g, b, brightness, fanPercent));
 
-    /// <summary>Turn the hub's onboard LED animation on/off. Off ⇒ software streaming drives the ARGB ports.</summary>
+    /// <summary>
+    /// Read whether the hub's onboard LED animation is enabled. Returns false
+    /// on a transport hiccup or a malformed reply so the caller can retry.
+    /// </summary>
+    public bool ReadFirmwareAnimation(out bool on)
+    {
+        on = false;
+        if (!EnsureConnected()) return false;
+        var transport = _transport!;
+        try
+        {
+            lock (_exchangeLock)
+            {
+                if (!SendRequest(transport, "fw-animation", SmartHubProtocol.BuildGetFirmwareAnimation())) return false;
+                var buf = new byte[SmartHubProtocol.FirmwareAnimationResponseLength];
+                var n = transport.Read(buf, 300);
+                if (n < SmartHubProtocol.FirmwareAnimationResponseLength) return FailPoll("fw-animation", $"short read ({n} bytes)");
+                if (!SmartHubProtocol.TryParseFirmwareAnimation(buf.AsSpan(0, n), out on)) return false;
+                _pollFailures.Reset();
+                return true;
+            }
+        }
+        catch (ObjectDisposedException)
+        {
+            return false;
+        }
+        catch (Exception ex)
+        {
+            return FailPoll("fw-animation", $"{ex.GetType().Name}: {ex.Message}");
+        }
+    }
+
+    /// <summary>Turn the hub's onboard LED animation on/off. The hub saves the flag to flash. See <see cref="SmartHubProtocol.BuildSetFirmwareAnimation"/>.</summary>
     public bool SetFirmwareAnimation(bool on) => SendOnly(SmartHubProtocol.BuildSetFirmwareAnimation(on));
 
     /// <summary>Stream a rendered LED frame to one ARGB port (1..4).</summary>

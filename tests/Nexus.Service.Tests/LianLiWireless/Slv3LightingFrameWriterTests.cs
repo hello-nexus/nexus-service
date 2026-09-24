@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using Nexus.Service.Lighting;
 using Nexus.Service.Lighting.Engine;
 using Nexus.Service.Peripherals.LianLiWireless;
+using Nexus.Service.Persistence;
 using Xunit;
 
 namespace Nexus.Service.Tests.LianLiWireless;
@@ -110,6 +111,222 @@ public class Slv3LightingFrameWriterTests
             Assert.Equal((byte)((n * 255) >> 8), raw[n * 3]);
             Assert.Equal(0, raw[n * 3 + 1]);
         }
+    }
+
+    private static (Slv3Hub Hub, Slv3TestHub.FakeTxTransport Tx, InMemoryConfigStore Store, LightingEngine Engine, Slv3LightingFrameWriter Writer)
+        CreateStrimerSetup(Func<long> clock) => CreateStrimerSetup(clock, new Np50IdentifyTracker());
+
+    private static (Slv3Hub Hub, Slv3TestHub.FakeTxTransport Tx, InMemoryConfigStore Store, LightingEngine Engine, Slv3LightingFrameWriter Writer)
+        CreateStrimerSetup(Func<long> clock, Np50IdentifyTracker identify)
+    {
+        var (hub, net, tx) = Slv3TestHub.CreateConnected();
+        net.Fans.Add(new Slv3TestHub.SimulatedFan { Mac = FanMac, MasterMac = net.MasterMac, RxType = 1, DevType = 2, FanCount = 0 });
+        Assert.True(hub.DriveTick());
+        var store = new InMemoryConfigStore();
+        var provider = new Slv3LightingDeviceProvider(hub, store, identify);
+        var engine = new LightingEngine();
+        engine.UpdateDevices(provider.BuildFrames(0).ToArray());
+        var writer = new Slv3LightingFrameWriter(engine, hub, store, identify, provider, clock);
+        return (hub, tx, store, engine, writer);
+    }
+
+    private static void SetStrimer(InMemoryConfigStore store, Action<LianLiWirelessChainLighting> edit) => store.Update(s =>
+    {
+        var key = Convert.ToHexString(FanMac);
+        if (!s.Devices.LianLiWireless.Chains.TryGetValue(key, out var ls))
+        {
+            ls = new LianLiWirelessChainLighting();
+            s.Devices.LianLiWireless.Chains[key] = ls;
+        }
+        edit(ls);
+    });
+
+    // RF header of the latest RgbSync upload: [25..26] frame count, [27] LED count.
+    private static byte[] LastRgbHeader(Slv3TestHub.FakeTxTransport tx) =>
+        ReassembleRfPayloads(tx).FindLast(p => p[1] == Slv3Protocol.RfRgbSync && p[18] == 0)!;
+
+    [Fact]
+    public void Tick_uploads_a_strimer_preset_as_one_multi_frame_loop()
+    {
+        var now = 0L;
+        var (_, tx, store, _, writer) = CreateStrimerSetup(() => now);
+        SetStrimer(store, ls => ls.Mode = "rainbow");
+
+        writer.Tick();
+
+        var header = LastRgbHeader(tx);
+        Assert.True(((header[25] << 8) | header[26]) > 1);
+        Assert.Equal(6 * 22, header[27]);
+    }
+
+    [Fact]
+    public void Tick_does_not_reupload_an_unchanged_confirmed_preset()
+    {
+        var now = 0L;
+        var (hub, tx, store, _, writer) = CreateStrimerSetup(() => now);
+        SetStrimer(store, ls => ls.Mode = "rainbow");
+        writer.Tick();
+        Assert.True(hub.DriveTick());
+        var count = tx.SentFrames.Count;
+
+        now += 5_000 * TimeSpan.TicksPerMillisecond;
+        writer.Tick();
+
+        Assert.Equal(count, tx.SentFrames.Count);
+    }
+
+    [Fact]
+    public void Tick_reuploads_a_preset_when_its_settings_change()
+    {
+        var now = 0L;
+        var (hub, tx, store, _, writer) = CreateStrimerSetup(() => now);
+        SetStrimer(store, ls => ls.Mode = "rainbow");
+        writer.Tick();
+        Assert.True(hub.DriveTick());
+        var count = tx.SentFrames.Count;
+
+        SetStrimer(store, ls => ls.Speed = 4);
+        now += 1_000 * TimeSpan.TicksPerMillisecond;
+        writer.Tick();
+
+        Assert.True(tx.SentFrames.Count > count);
+    }
+
+    [Fact]
+    public void Tick_holds_back_a_preset_reupload_during_rapid_edits()
+    {
+        var now = 0L;
+        var (hub, tx, store, _, writer) = CreateStrimerSetup(() => now);
+        SetStrimer(store, ls => ls.Mode = "rainbow");
+        writer.Tick();
+        Assert.True(hub.DriveTick());
+        var count = tx.SentFrames.Count;
+
+        SetStrimer(store, ls => ls.Brightness = 2);
+        now += 100 * TimeSpan.TicksPerMillisecond;
+        writer.Tick();
+
+        Assert.Equal(count, tx.SentFrames.Count);
+    }
+
+    [Fact]
+    public void Tick_blacks_out_a_preset_as_one_black_frame()
+    {
+        var now = 0L;
+        var (_, tx, store, engine, writer) = CreateStrimerSetup(() => now);
+        SetStrimer(store, ls => ls.Mode = "rainbow");
+        engine.SetBlackout(true);
+
+        writer.Tick();
+
+        var header = LastRgbHeader(tx);
+        Assert.Equal(1, (header[25] << 8) | header[26]);
+        var compressedLen = (header[20] << 24) | (header[21] << 16) | (header[22] << 8) | header[23];
+        var compressed = new List<byte>();
+        foreach (var payload in ReassembleRfPayloads(tx))
+        {
+            if (payload[1] != Slv3Protocol.RfRgbSync || payload[18] == 0) continue;
+            compressed.AddRange(payload.AsSpan(Slv3RgbFrame.DataPacketOffset, Slv3RgbFrame.DataPacketChunk).ToArray());
+        }
+        var (_, raw) = TinyUz.Decompress(compressed.ToArray().AsSpan(0, compressedLen));
+        Assert.All(raw, b => Assert.Equal(0, b));
+    }
+
+    [Fact]
+    public void Tick_streams_a_preset_strimer_while_it_is_identifying()
+    {
+        var now = DateTime.UtcNow.Ticks;
+        var identify = new Np50IdentifyTracker();
+        var (hub, tx, store, _, writer) = CreateStrimerSetup(() => now, identify);
+        SetStrimer(store, ls => ls.Mode = "rainbow");
+        var zoneId = new Slv3LightingDeviceProvider(hub, store, identify).GetAll().Devices[0].Id;
+        identify.Schedule(zoneId, 5_000);
+
+        writer.Tick();
+
+        var header = LastRgbHeader(tx);
+        Assert.Equal(1, (header[25] << 8) | header[26]);
+    }
+
+    [Fact]
+    public void Tick_retries_a_failed_preset_upload_no_faster_than_the_preset_floor()
+    {
+        var now = 0L;
+        var (_, tx, store, _, writer) = CreateStrimerSetup(() => now);
+        SetStrimer(store, ls => ls.Mode = "rainbow");
+        tx.FailSends = true;
+
+        writer.Tick();
+        var afterFirstAttempt = RgbSyncFrames(tx).Count;
+        Assert.True(afterFirstAttempt > 0);
+
+        now += 100 * TimeSpan.TicksPerMillisecond;
+        writer.Tick();
+        Assert.Equal(afterFirstAttempt, RgbSyncFrames(tx).Count);
+
+        now += 500 * TimeSpan.TicksPerMillisecond;
+        writer.Tick();
+        Assert.True(RgbSyncFrames(tx).Count > afterFirstAttempt);
+    }
+
+    [Fact]
+    public void Tick_uploads_a_fan_chain_preset_sized_to_its_fans()
+    {
+        var now = 0L;
+        var (hub, net, tx) = Slv3TestHub.CreateConnected();
+        net.Fans.Add(new Slv3TestHub.SimulatedFan { Mac = FanMac, MasterMac = net.MasterMac, RxType = 1, FanCount = 3, FansType = 24 });
+        Assert.True(hub.DriveTick());
+        var store = new InMemoryConfigStore();
+        var identify = new Np50IdentifyTracker();
+        var provider = new Slv3LightingDeviceProvider(hub, store, identify);
+        var engine = new LightingEngine();
+        engine.UpdateDevices(provider.BuildFrames(0).ToArray());
+        var writer = new Slv3LightingFrameWriter(engine, hub, store, identify, provider, () => now);
+        SetStrimer(store, ls => ls.Mode = "rainbow");
+
+        writer.Tick();
+
+        var header = LastRgbHeader(tx);
+        Assert.True(((header[25] << 8) | header[26]) > 1);
+        Assert.Equal(3 * Slv3Protocol.LedsPerFanFor(Slv3FanFamily.Slv3Lcd), header[27]);
+    }
+
+    [Fact]
+    public void Tick_reuploads_a_fan_chain_preset_when_its_fan_count_changes()
+    {
+        var now = 0L;
+        var (hub, net, tx) = Slv3TestHub.CreateConnected();
+        net.Fans.Add(new Slv3TestHub.SimulatedFan { Mac = FanMac, MasterMac = net.MasterMac, RxType = 1, FanCount = 3, FansType = 24 });
+        Assert.True(hub.DriveTick());
+        var store = new InMemoryConfigStore();
+        var identify = new Np50IdentifyTracker();
+        var provider = new Slv3LightingDeviceProvider(hub, store, identify);
+        var engine = new LightingEngine();
+        engine.UpdateDevices(provider.BuildFrames(0).ToArray());
+        var writer = new Slv3LightingFrameWriter(engine, hub, store, identify, provider, () => now);
+        SetStrimer(store, ls => ls.Mode = "rainbow");
+        writer.Tick();
+        Assert.True(hub.DriveTick());
+
+        net.Fans[0].FanCount = 2;
+        Assert.True(hub.DriveTick());
+        now += 1_000 * TimeSpan.TicksPerMillisecond;
+        writer.Tick();
+
+        Assert.Equal(2 * Slv3Protocol.LedsPerFanFor(Slv3FanFamily.Slv3Lcd), LastRgbHeader(tx)[27]);
+    }
+
+    [Fact]
+    public void Tick_streams_engine_frames_to_a_strimer_in_custom_mode()
+    {
+        var now = 0L;
+        var (_, tx, store, _, writer) = CreateStrimerSetup(() => now);
+        SetStrimer(store, ls => ls.Mode = LianLiWirelessChainLighting.ModeCustom);
+
+        writer.Tick();
+
+        var header = LastRgbHeader(tx);
+        Assert.Equal(1, (header[25] << 8) | header[26]);
     }
 
     // Joins the 60-byte USB chunks (chunk seq at [1], RF bytes at [4..]) back

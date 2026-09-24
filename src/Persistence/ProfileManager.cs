@@ -831,7 +831,8 @@ public sealed partial class ProfileManager : IDisposable
             s.Cooling = data.Cooling ?? new CoolingSettings();
 
             // Theme + Dashboard categories now live in dedicated top-level
-            // blocks (Theme, Monitoring, Overlay, Panel.DashboardLayout) - no
+            // blocks (Theme, Monitoring, Overlay, Panel.DashboardLayout +
+            // Panel.DashboardGaugeGradient) - no
             // need to gate on `data.Ui` since that block is now reduced to
             // residual flags. Always copy both categories.
             ProfileSharing.ApplyCategory(s, data, ProfileSharing.Theme);
@@ -842,6 +843,13 @@ public sealed partial class ProfileManager : IDisposable
             // marketplace: prefix; rewrite after the category copies so the
             // applied layout keeps resolving (idempotent).
             Nexus.Service.Widgets.AppPrefixMigration.Apply(s);
+
+            // Profile files never pass through JsonConfigStore.Migrate either
+            // (see the LayoutRotationMigration call above): a pre-v18 profile's
+            // Device category carries per-serial LegacyDeck/LegacyPresets, and
+            // its Dashboard category can carry deck widgets with inline
+            // config.deck. Idempotent - a no-op on an already-migrated profile.
+            Nexus.Service.Deck.DeckModesMigration.Apply(s);
 
             // PanelDevices is hardware-scoped, not profile-scoped: do NOT
             // entries that the loaded profile JSON happens to carry into

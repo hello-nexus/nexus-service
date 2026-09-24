@@ -259,7 +259,8 @@ public sealed class PanelDeviceRegistry
             && a.Dpr == b.Dpr
             && a.Dpi == b.Dpi
             && string.Equals(a.Family, b.Family, StringComparison.Ordinal)
-            && a.SupportsBrightness == b.SupportsBrightness;
+            && a.SupportsBrightness == b.SupportsBrightness
+            && a.SupportsSecondaryMonitor == b.SupportsSecondaryMonitor;
     }
 
     public PanelDeviceRecord? FindByDisplayId(string displayId)
@@ -321,6 +322,122 @@ public sealed class PanelDeviceRegistry
         return newest?.Backdrop ?? "";
     }
 
+    /// <summary>
+    /// Puts one widget on the attached Y70 panel if it is not already there, so
+    /// an app that ships with that panel is on screen without the user placing
+    /// it. <see cref="Y70WidgetPlacement.NoPanel"/> means the panel has not
+    /// registered yet (it does so when the kiosk first connects), so the caller
+    /// should retry rather than treat the placement as done.
+    /// </summary>
+    /// <remarks>
+    /// A null Layout means the record still shows <see cref="PanelLayoutDefaults"/>,
+    /// so that default is materialized first; saving a layout holding only this
+    /// widget would wipe the starter set the user sees.
+    /// </remarks>
+    public Y70WidgetPlacement EnsureY70Widget(string widgetType, string size, out string deviceId)
+    {
+        deviceId = "";
+        if (string.IsNullOrWhiteSpace(widgetType)) return Y70WidgetPlacement.NoPanel;
+        // Probed before Update, which marks settings dirty and fans out to every
+        // subscriber even when the mutator changes nothing - this is called on a
+        // retry cadence for as long as no panel has registered.
+        if (FindNewestY70(_store.Load()) is null) return Y70WidgetPlacement.NoPanel;
+
+        var result = Y70WidgetPlacement.NoPanel;
+        var id = "";
+        _store.Update(s =>
+        {
+            var newest = FindNewestY70(s);
+            if (newest is null) return;
+            id = newest.Id;
+
+            var layout = newest.Layout ?? PanelLayoutDefaults.ForSurface(PanelSurfaces.Y70);
+            foreach (var page in layout.Pages)
+            {
+                foreach (var widget in page.Widgets)
+                {
+                    if (!string.Equals(widget.Type, widgetType, StringComparison.Ordinal)) continue;
+                    result = Y70WidgetPlacement.AlreadyPresent;
+                    return;
+                }
+            }
+
+            if (layout.Pages.Count == 0)
+                layout.Pages.Add(new PanelPageDto { Id = Guid.NewGuid().ToString() });
+            // First free rect, spilling to a new page when every page is full.
+            // Shared with the Nexus 2 import so both land a widget where the
+            // editor would have; appending at a fixed cell overlaps whatever
+            // already occupies it, and the client's repagination does not
+            // repair a page that cannot be repacked to fit.
+            var placing = new PanelWidgetDto
+            {
+                Id = Guid.NewGuid().ToString(),
+                Type = widgetType,
+                Size = size,
+            };
+            if (!Y70LayoutPlacement.Append(layout.Pages, placing, size))
+            {
+                result = Y70WidgetPlacement.NoRoom;
+                return;
+            }
+            newest.Layout = layout;
+            result = Y70WidgetPlacement.Placed;
+        });
+        deviceId = id;
+        return result;
+    }
+
+    /// <summary>
+    /// Drops every placement of one widget type from every panel record and
+    /// returns the ids that changed, so an uninstall reaches panels holding the
+    /// app rather than waiting on each client's own reconcile.
+    /// </summary>
+    public IReadOnlyList<string> RemoveWidgetType(string widgetType)
+    {
+        if (string.IsNullOrWhiteSpace(widgetType)) return Array.Empty<string>();
+        // Probed before Update, which marks settings dirty and fans out to every
+        // subscriber even when the mutator changes nothing.
+        if (!_store.Load().PanelDevices.Values.Any(r => HasWidgetType(r, widgetType)))
+            return Array.Empty<string>();
+
+        var changed = new List<string>();
+        _store.Update(s =>
+        {
+            changed.Clear();
+            foreach (var record in s.PanelDevices.Values)
+            {
+                if (record.Layout is null) continue;
+                var removed = 0;
+                foreach (var page in record.Layout.Pages)
+                    removed += page.Widgets.RemoveAll(w => string.Equals(w.Type, widgetType, StringComparison.Ordinal));
+                if (removed == 0) continue;
+                var mark = record.Layout.ImmersiveOnLoadWidgetId;
+                if (!string.IsNullOrEmpty(mark)
+                    && !record.Layout.Pages.Any(p => p.Widgets.Any(w => string.Equals(w.Id, mark, StringComparison.Ordinal))))
+                {
+                    record.Layout.ImmersiveOnLoadWidgetId = null;
+                }
+                changed.Add(record.Id);
+            }
+        });
+        return changed;
+    }
+
+    private static bool HasWidgetType(PanelDeviceRecord record, string widgetType)
+        => record.Layout is not null
+           && record.Layout.Pages.Any(p => p.Widgets.Any(w => string.Equals(w.Type, widgetType, StringComparison.Ordinal)));
+
+    private static PanelDeviceRecord? FindNewestY70(NexusSettings settings)
+    {
+        PanelDeviceRecord? newest = null;
+        foreach (var record in settings.PanelDevices.Values)
+        {
+            if (!string.Equals(record.Capabilities?.Surface, PanelSurfaces.Y70, StringComparison.Ordinal)) continue;
+            if (newest is null || record.LastSeenAt > newest.LastSeenAt) newest = record;
+        }
+        return newest;
+    }
+
     public IReadOnlyList<PanelDeviceRecord> List()
     {
         var devices = _store.Load().PanelDevices;
@@ -362,6 +479,7 @@ public sealed class PanelDeviceRegistry
             Dpi = patch.Dpi ?? existing?.Dpi,
             Family = patch.Family ?? existing?.Family,
             SupportsBrightness = patch.SupportsBrightness ?? existing?.SupportsBrightness,
+            SupportsSecondaryMonitor = patch.SupportsSecondaryMonitor ?? existing?.SupportsSecondaryMonitor,
         };
     }
 
@@ -445,6 +563,8 @@ public sealed class PanelDeviceRegistry
                 record.BackgroundMediaOrder = new List<string>(patch.BackgroundMediaOrder);
             if (patch.BackgroundFrostLevel.HasValue)
                 record.BackgroundFrostLevel = patch.BackgroundFrostLevel.Value;
+            if (patch.GaugeGradient is not null)
+                record.GaugeGradient = CloneGaugeGradient(patch.GaugeGradient);
             if (patch.WidgetOpacity.HasValue)
                 record.WidgetOpacity = patch.WidgetOpacity.Value;
             if (patch.WidgetLabels.HasValue)
@@ -473,6 +593,8 @@ public sealed class PanelDeviceRegistry
             // cannot dim never read it.
             if (patch.LcdBrightness.HasValue)
                 record.LcdBrightness = Math.Clamp(patch.LcdBrightness.Value, 0, 100);
+            if (patch.SecondaryMonitor.HasValue)
+                record.SecondaryMonitor = patch.SecondaryMonitor.Value;
             // Capabilities on display-bound records are owned by the topology
             // sync (rebuilt from OS facts); a client value would ping-pong
             // with the next sync pass.
@@ -539,6 +661,7 @@ public sealed class PanelDeviceRegistry
             record.BackgroundMediaFinishVideos = null;
             record.BackgroundMediaOrder = null;
             record.BackgroundFrostLevel = null;
+            record.GaugeGradient = null;
             record.WidgetOpacity = null;
             record.WidgetLabels = null;
             record.WidgetPadding = null;
@@ -576,6 +699,7 @@ public sealed class PanelDeviceRegistry
             record.Flip180 = null;
             record.Mirror = null;
             record.LcdBrightness = null;
+            record.SecondaryMonitor = null;
             record.XeneonEdgeSettings = null;
             record.LastSeenAt = now;
             snapshot = Clone(record);
@@ -621,6 +745,14 @@ public sealed class PanelDeviceRegistry
             .TrimEnd('=');
     }
 
+    private static List<PanelGaugeGradientStop> CloneGaugeGradient(List<PanelGaugeGradientStop> stops)
+    {
+        var copy = new List<PanelGaugeGradientStop>(stops.Count);
+        foreach (var stop in stops)
+            copy.Add(new PanelGaugeGradientStop { At = stop.At, Color = stop.Color });
+        return copy;
+    }
+
     private static PanelDeviceRecord Clone(PanelDeviceRecord r)
     {
         return new PanelDeviceRecord
@@ -649,6 +781,7 @@ public sealed class PanelDeviceRegistry
             BackgroundMediaFinishVideos = r.BackgroundMediaFinishVideos,
             BackgroundMediaOrder = r.BackgroundMediaOrder is null ? null : new List<string>(r.BackgroundMediaOrder),
             BackgroundFrostLevel = r.BackgroundFrostLevel,
+            GaugeGradient = r.GaugeGradient is null ? null : CloneGaugeGradient(r.GaugeGradient),
             WidgetOpacity = r.WidgetOpacity,
             WidgetLabels = r.WidgetLabels,
             WidgetPadding = r.WidgetPadding,
@@ -663,6 +796,7 @@ public sealed class PanelDeviceRegistry
             Flip180 = r.Flip180,
             Mirror = r.Mirror,
             LcdBrightness = r.LcdBrightness,
+            SecondaryMonitor = r.SecondaryMonitor,
             XeneonEdgeSettings = r.XeneonEdgeSettings is null
                 ? null
                 : new XeneonEdgeSettingsDto
@@ -677,4 +811,17 @@ public sealed class PanelDeviceRegistry
             Enabled = r.Enabled,
         };
     }
+}
+
+/// <summary>Outcome of <see cref="PanelDeviceRegistry.EnsureY70Widget"/>.</summary>
+public enum Y70WidgetPlacement
+{
+    /// <summary>No Y70 panel has registered yet; retry once the kiosk connects.</summary>
+    NoPanel,
+    /// <summary>The widget was already on the panel; nothing was written.</summary>
+    AlreadyPresent,
+    /// <summary>The widget was placed in the first free slot on the panel.</summary>
+    Placed,
+    /// <summary>Every page is full and the page cap is reached; nothing was written.</summary>
+    NoRoom,
 }

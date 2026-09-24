@@ -617,6 +617,217 @@ public class MonitoringBroadcastTests
     }
 
     [Fact]
+    public async Task FirstSubscriberToATickTopic_CutsTheTickWaitShort()
+    {
+        var hub = new MultiplexHub();
+        var broadcaster = BuildBroadcaster(hub);
+
+        var wait = broadcaster.WaitForNextTickAsync(10_000, CancellationToken.None);
+        using var sub = hub.AddTestSubscription("cpu");
+
+        Assert.Same(wait, await Task.WhenAny(wait, Task.Delay(2_000)));
+        Assert.True(await wait);
+    }
+
+    [Fact]
+    public async Task FirstSubscriberWhileNoWaitIsPending_StillCutsTheNextWaitShort()
+    {
+        var hub = new MultiplexHub();
+        var broadcaster = BuildBroadcaster(hub);
+
+        // Lands mid-tick: nothing is waiting yet.
+        using var sub = hub.AddTestSubscription("gpu");
+        var wait = broadcaster.WaitForNextTickAsync(10_000, CancellationToken.None);
+
+        Assert.Same(wait, await Task.WhenAny(wait, Task.Delay(2_000)));
+        Assert.True(await wait);
+    }
+
+    [Fact]
+    public async Task FirstSubscriberToAnUnrelatedTopic_DoesNotWakeTheTick()
+    {
+        var hub = new MultiplexHub();
+        var broadcaster = BuildBroadcaster(hub);
+
+        var wait = broadcaster.WaitForNextTickAsync(200, CancellationToken.None);
+        using var sub = hub.AddTestSubscription("lighting");
+
+        Assert.False(await wait);
+    }
+
+    [Fact]
+    public void SnapshotProviders_OfferNothingBeforeTheFirstBroadcast()
+    {
+        var hub = new MultiplexHub();
+        _ = BuildBroadcaster(hub);
+
+        Assert.False(hub.TryGetTopicSnapshot("screentime", out _));
+        Assert.False(hub.TryGetTopicSnapshot("volume", out _));
+        Assert.False(hub.TryGetTopicSnapshot("cpu", out _));
+    }
+
+    [Fact]
+    public async Task TargetedTick_SendsOnlyTheNamedTopics()
+    {
+        var hub = new MultiplexHub();
+        var broadcaster = BuildBroadcaster(hub);
+        var captured = new List<string>();
+        hub.OnBroadcastForTest += (topic, _) => captured.Add(topic);
+        using var cpu = hub.AddTestSubscription("cpu");
+        using var monitoring = hub.AddTestSubscription("monitoring");
+        using var gpu = hub.AddTestSubscription("gpu");
+
+        await broadcaster.Tick(CancellationToken.None, new HashSet<string> { "gpu" });
+
+        Assert.Equal(new[] { "gpu" }, captured);
+    }
+
+    [Fact]
+    public async Task TargetedTick_KeepsFpsDemandForExistingSubscribers()
+    {
+        var hub = new MultiplexHub();
+        var fps = new TrackingFpsProvider();
+        var broadcaster = BuildBroadcaster(hub, fps: fps);
+        using var fpsSub = hub.AddTestSubscription("fps");
+        await broadcaster.Tick(CancellationToken.None);
+        Assert.True(fps.Running);
+
+        using var cpu = hub.AddTestSubscription("cpu");
+        await broadcaster.Tick(CancellationToken.None, new HashSet<string> { "cpu" });
+
+        Assert.True(fps.Running);
+    }
+
+    [Fact]
+    public async Task Resubscribe_WithinAnInterval_GetsNoEarlySend()
+    {
+        var hub = new MultiplexHub();
+        var clock = new ManualTimeProvider(DateTimeOffset.UnixEpoch);
+        var broadcaster = BuildBroadcaster(hub, timeProvider: clock);
+
+        var first = hub.AddTestSubscription("cpu");
+        Assert.Contains("cpu", broadcaster.TakeFirstSubscribed(skipRecentlySent: true).Topics);
+        await broadcaster.Tick(CancellationToken.None, new HashSet<string> { "cpu" });
+        first.Dispose();
+
+        // Unsubscribe + resubscribe churn right after a send: the next regular tick serves it.
+        using (hub.AddTestSubscription("cpu"))
+            Assert.Empty(broadcaster.TakeFirstSubscribed(skipRecentlySent: true).Topics);
+
+        clock.Advance(TimeSpan.FromMilliseconds(broadcaster.GetInterval()));
+        using (hub.AddTestSubscription("cpu"))
+            Assert.Contains("cpu", broadcaster.TakeFirstSubscribed(skipRecentlySent: true).Topics);
+    }
+
+    [Fact]
+    public async Task EarlySend_HoldsTheProcessList_UntilTheSubscribeTriggeredSample()
+    {
+        var hub = new MultiplexHub();
+        var processes = new ProcessMonitor(hub);
+        var broadcaster = BuildBroadcaster(hub, processes: processes);
+        var captured = new List<string>();
+        hub.OnBroadcastForTest += (topic, _) => captured.Add(topic);
+        using var monitoring = hub.AddTestSubscription("monitoring");
+        using var cpu = hub.AddTestSubscription("cpu");
+        var (topics, processSeq) = broadcaster.TakeFirstSubscribed(skipRecentlySent: true);
+
+        var held = await broadcaster.SendEarlyAsync(topics, CancellationToken.None);
+        Assert.Equal(new[] { "cpu" }, captured);
+        Assert.Equal(new[] { "monitoring" }, held);
+        Assert.False(await broadcaster.TrySendHeldAsync(held, processSeq, CancellationToken.None));
+        Assert.Equal(new[] { "cpu" }, captured);
+
+        processes.SetProcessesForTest(Array.Empty<ProcessInfo>());
+        Assert.True(await broadcaster.TrySendHeldAsync(held, processSeq, CancellationToken.None));
+        Assert.Equal(new[] { "cpu", "monitoring" }, captured);
+    }
+
+    [Fact]
+    public async Task EarlyPass_SendsTheHeldProcessTopics_OnceSampled_AndWakesTheLoop()
+    {
+        var hub = new MultiplexHub();
+        var processes = new ProcessMonitor(hub);
+        var broadcaster = BuildBroadcaster(hub, processes: processes);
+        var captured = new List<string>();
+        hub.OnBroadcastForTest += (topic, _) => captured.Add(topic);
+        using var monitoring = hub.AddTestSubscription("monitoring");
+        using var cpu = hub.AddTestSubscription("cpu");
+        while (await broadcaster.WaitForNextTickAsync(0, CancellationToken.None)) { }
+
+        await broadcaster.EarlyPassAsync(1_000, CancellationToken.None);
+        Assert.Equal(new[] { "cpu" }, captured);
+        Assert.NotNull(broadcaster.HeldUntil);
+
+        processes.SetProcessesForTest(Array.Empty<ProcessInfo>());
+        Assert.True(await broadcaster.WaitForNextTickAsync(0, CancellationToken.None));
+        await broadcaster.EarlyPassAsync(1_010, CancellationToken.None);
+        Assert.Equal(new[] { "cpu", "monitoring" }, captured);
+        Assert.Null(broadcaster.HeldUntil);
+    }
+
+    [Fact]
+    public async Task EarlyPass_DropsAHeldSend_AtItsDeadline()
+    {
+        var hub = new MultiplexHub();
+        var broadcaster = BuildBroadcaster(hub);
+        var captured = new List<string>();
+        hub.OnBroadcastForTest += (topic, _) => captured.Add(topic);
+        using var monitoring = hub.AddTestSubscription("monitoring");
+
+        await broadcaster.EarlyPassAsync(1_000, CancellationToken.None);
+        var until = broadcaster.HeldUntil;
+        Assert.NotNull(until);
+
+        await broadcaster.EarlyPassAsync(until!.Value, CancellationToken.None);
+        Assert.Empty(captured);
+        Assert.Null(broadcaster.HeldUntil);
+    }
+
+    [Fact]
+    public async Task EarlyPass_MergesALaterProcessTopic_IntoTheHeldSend()
+    {
+        var hub = new MultiplexHub();
+        var processes = new ProcessMonitor(hub);
+        var broadcaster = BuildBroadcaster(hub, processes: processes);
+        var captured = new List<string>();
+        hub.OnBroadcastForTest += (topic, _) => captured.Add(topic);
+        using var monitoring = hub.AddTestSubscription("monitoring");
+        await broadcaster.EarlyPassAsync(1_000, CancellationToken.None);
+        using var processesSub = hub.AddTestSubscription("processes");
+        await broadcaster.EarlyPassAsync(1_010, CancellationToken.None);
+        Assert.Empty(captured);
+
+        processes.SetProcessesForTest(Array.Empty<ProcessInfo>());
+        await broadcaster.EarlyPassAsync(1_020, CancellationToken.None);
+
+        Assert.Equal(new[] { "monitoring", "processes" }, captured.OrderBy(t => t, StringComparer.Ordinal));
+    }
+
+    [Fact]
+    public void ProcessMonitor_RaisesSampled_WhenTheListRefreshes()
+    {
+        var processes = new ProcessMonitor(new MultiplexHub());
+        var raised = 0;
+        processes.Sampled += () => raised++;
+        var before = processes.SampleSeq;
+
+        processes.SetProcessesForTest(Array.Empty<ProcessInfo>());
+
+        Assert.Equal(1, raised);
+        Assert.Equal(before + 1, processes.SampleSeq);
+    }
+
+    [Fact]
+    public void GpuProcesses_IsNotSentEarly()
+    {
+        var hub = new MultiplexHub();
+        var broadcaster = BuildBroadcaster(hub);
+        using var sub = hub.AddTestSubscription("gpu-processes");
+
+        Assert.Empty(broadcaster.TakeFirstSubscribed(skipRecentlySent: true).Topics);
+    }
+
+    [Fact]
     public async Task Tick_SubscribeThenUnsubscribe_ReturnsToIdle()
     {
         var hub = new MultiplexHub();

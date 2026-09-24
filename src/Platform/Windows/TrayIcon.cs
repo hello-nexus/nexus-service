@@ -914,8 +914,13 @@ public static class TrayIcon
     private const string OverlayMarshalerClassName = "Nexus.Overlay.Marshaler";
     private const string OverlayDashboardClassName = "Nexus.Overlay.Dashboard";
     private const string ShowDashboardMessageName = "Nexus.Overlay.ShowDashboard";
+    // Mirrors nexus-overlay's Program.SingletonMutexName.
+    private const string OverlaySingletonMutexName = @"Local\Nexus.Overlay.Singleton";
     // Overlay-side handler for this message navigates directly to /settings.
     private const string ShowDashboardSettingsMessageName = "Nexus.Overlay.ShowDashboardSettings";
+
+    // A cold launch waits out this poll before the dashboard opens.
+    private const int MarshalerPollMs = 10;
 
     /// <summary>
     /// Tries to deliver a registered window message to the running nexus-overlay
@@ -942,7 +947,7 @@ public static class TrayIcon
                 marshaler = FindWindow(OverlayMarshalerClassName, null);
                 if (marshaler != IntPtr.Zero) break;
                 if (DateTime.UtcNow >= deadline) return false;
-                System.Threading.Thread.Sleep(150);
+                System.Threading.Thread.Sleep(MarshalerPollMs);
             }
             var msg = RegisterWindowMessage(messageName);
             if (msg == 0)
@@ -990,7 +995,7 @@ public static class TrayIcon
                 marshaler = FindWindow(OverlayMarshalerClassName, null);
                 if (marshaler != IntPtr.Zero) break;
                 if (DateTime.UtcNow >= deadline) return false;
-                System.Threading.Thread.Sleep(150);
+                System.Threading.Thread.Sleep(MarshalerPollMs);
             }
             var msg = RegisterWindowMessage(ShowDashboardMessageName);
             if (msg == 0) return false;
@@ -1055,11 +1060,19 @@ public static class TrayIcon
     {
         try
         {
-            // First check is cheap: if any nexus-overlay.exe is alive in
-            // the current user's session, just wait for its marshaler.
-            foreach (var p in System.Diagnostics.Process.GetProcessesByName("nexus-overlay"))
+            // An overlay alive in this session (its session-local singleton
+            // mutex exists) only needs its marshaler waited for.
+            try
             {
-                p.Dispose();
+                if (System.Threading.Mutex.TryOpenExisting(OverlaySingletonMutexName, out var running))
+                {
+                    running.Dispose();
+                    return true;
+                }
+            }
+            catch (UnauthorizedAccessException)
+            {
+                // Held by a higher-integrity overlay: it exists.
                 return true;
             }
 

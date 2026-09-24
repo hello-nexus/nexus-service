@@ -43,6 +43,7 @@ public class ShaderLibraryTests
     [InlineData("harlequin")]
     [InlineData("mosaic")]
     [InlineData("sharplines")]
+    [InlineData("breathing")]
     [InlineData("spectrumaurora")]
     [InlineData("neonwaveform")]
     [InlineData("liquidbeat")]
@@ -53,6 +54,13 @@ public class ShaderLibraryTests
     [InlineData("synthwave")]
     [InlineData("retropetals")]
     [InlineData("contourbands")]
+    [InlineData("sweeprainbow")]
+    [InlineData("sweepbreathing")]
+    [InlineData("sweepbars")]
+    [InlineData("sweepbrush")]
+    [InlineData("sweepcomet")]
+    [InlineData("sweepliquid")]
+    [InlineData("sweepcycle")]
     public void NewShaders_Are_Registered(string key)
     {
         Assert.Contains(key, ShaderLibrary.AllEffectKeys);
@@ -73,5 +81,28 @@ public class ShaderLibraryTests
         // animates its idle form while music plays.
         Assert.True(ShaderLibrary.IsAudioEffect(key));
         Assert.Contains("u_audio", ShaderLibrary.Get(key));
+    }
+
+    [Fact]
+    public void SourceTag_FollowsTheShaderSource()
+    {
+        // The tag is part of the thumbnail ETag: stable for one source, distinct
+        // across sources, and shared by keys that alias one .frag.
+        Assert.Equal(ShaderLibrary.SourceTag("sweepbars"), ShaderLibrary.SourceTag("sweepbars"));
+        Assert.NotEqual(ShaderLibrary.SourceTag("sweepbars"), ShaderLibrary.SourceTag("sweepbrush"));
+        Assert.Equal(ShaderLibrary.SourceTag("breathing"), ShaderLibrary.SourceTag("sweepbreathing"));
+    }
+
+    [Fact]
+    public void SweepKeys_MatchTheRegisteredSet()
+    {
+        // The sweep list is duplicated into AllEffectKeys (the shader-fetch and
+        // thumbnail gate); a key in one and not the other renders nowhere.
+        foreach (var key in ShaderLibrary.SweepEffectKeys)
+        {
+            Assert.Contains(key, ShaderLibrary.AllEffectKeys);
+            Assert.True(ShaderLibrary.IsSweepEffect(key));
+        }
+        Assert.False(ShaderLibrary.IsSweepEffect("rainbow"));
     }
 }

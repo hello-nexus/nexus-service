@@ -307,6 +307,25 @@ public sealed class DeckActionExecutorTests : IDisposable
         Assert.True(_inputter.Last.Strokes[0].Meta);
     }
 
+    [Theory]
+    [InlineData(",", "Comma")]
+    [InlineData("/", "Slash")]
+    [InlineData(";", "Semicolon")]
+    [InlineData("'", "Quote")]
+    [InlineData("[", "BracketLeft")]
+    [InlineData("]", "BracketRight")]
+    [InlineData("\\", "Backslash")]
+    [InlineData("-", "Minus")]
+    [InlineData("=", "Equal")]
+    [InlineData("`", "Backquote")]
+    public async Task Hotkey_PunctuationToken_ParsesToItsCanonicalKeyName(string token, string canonical)
+    {
+        await Run(new DeckAction { Type = "hotkey", Keys = "ctrl+" + token });
+        Assert.NotNull(_inputter.Last);
+        Assert.Equal(canonical, _inputter.Last!.Strokes[0].Key);
+        Assert.True(_inputter.Last.Strokes[0].Ctrl);
+    }
+
     [Fact]
     public async Task Text_SetsClipboardAndPastes()
     {

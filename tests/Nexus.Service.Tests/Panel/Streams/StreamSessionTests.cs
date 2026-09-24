@@ -162,4 +162,118 @@ public sealed class StreamSessionTests
         Assert.Equal(1, sent[0].Payload[0]);
         Assert.Equal(2, sent[1].Payload[0]);
     }
+
+    /// <summary>
+    /// Pooled payloads are returned by hand, so every path that takes ownership of a frame
+    /// has to release it exactly once. A leak only shows up as lost throughput and a double
+    /// release hands one array to two frames at once, so neither surfaces as a test failure
+    /// anywhere else - these assert the contract directly.
+    /// </summary>
+    private sealed class CountingPool : System.Buffers.ArrayPool<byte>
+    {
+        private readonly System.Buffers.ArrayPool<byte> _inner = System.Buffers.ArrayPool<byte>.Create(1024, 4);
+        public int Rented;
+        public int Returned;
+        public override byte[] Rent(int minimumLength) { Rented++; return _inner.Rent(minimumLength); }
+        public override void Return(byte[] array, bool clearArray = false) { Returned++; _inner.Return(array, clearArray); }
+    }
+
+    private static StreamFrame Pooled(CountingPool pool, bool idr)
+    {
+        var buf = pool.Rent(8);
+        return new StreamFrame
+        {
+            Flags = idr ? StreamFraming.FlagIdr : (byte)0,
+            Payload = buf,
+            Length = 8,
+            Pooled = true,
+            ReturnTo = pool,
+        };
+    }
+
+    [Fact]
+    public void Close_releases_every_queued_payload()
+    {
+        var pool = new CountingPool();
+        var session = NewSession();
+        session.Enqueue(Pooled(pool, idr: true));
+        session.Enqueue(Pooled(pool, idr: false));
+
+        session.Close();
+
+        Assert.Equal(pool.Rented, pool.Returned);
+    }
+
+    [Fact]
+    public void ResetForNewIngest_releases_every_queued_payload()
+    {
+        var pool = new CountingPool();
+        var session = NewSession();
+        session.Enqueue(Pooled(pool, idr: true));
+        session.Enqueue(Pooled(pool, idr: false));
+
+        session.ResetForNewIngest();
+
+        Assert.Equal(pool.Rented, pool.Returned);
+    }
+
+    [Fact]
+    public void Enqueue_on_a_closed_session_releases_rather_than_leaks()
+    {
+        var pool = new CountingPool();
+        var session = NewSession();
+        session.Close();
+
+        session.Enqueue(Pooled(pool, idr: true));
+
+        Assert.Equal(1, pool.Rented);
+        Assert.Equal(1, pool.Returned);
+    }
+
+    [Fact]
+    public void Trim_releases_the_dropped_prefix_and_keeps_the_newest_gop()
+    {
+        var pool = new CountingPool();
+        var session = NewSession(fps: 1);
+        // _maxQueuedFrames is max(30, fps*2) for H.264; overshoot it so the trim fires.
+        for (var i = 0; i < 40; i++)
+        {
+            session.Enqueue(Pooled(pool, idr: i == 35));
+        }
+
+        // Whatever the trim kept is still owned by the queue; the rest must be back.
+        Assert.Equal(pool.Rented - session.QueueDepthForTest, pool.Returned);
+
+        session.Close();
+        Assert.Equal(pool.Rented, pool.Returned);
+    }
+
+    [Fact]
+    public void Dequeued_frames_are_not_released_by_the_session()
+    {
+        var pool = new CountingPool();
+        var session = NewSession();
+        session.Enqueue(Pooled(pool, idr: true));
+
+        var frames = session.DequeueForTick();
+
+        // The writer's finally owns them from here; releasing in DequeueForTick would hand
+        // the array back while the transport is still reading the span.
+        Assert.Equal(0, pool.Returned);
+        foreach (var frame in frames) frame.Release();
+        Assert.Equal(pool.Rented, pool.Returned);
+    }
+
+    [Fact]
+    public void Release_is_idempotent_across_owners()
+    {
+        var pool = new CountingPool();
+        var frame = Pooled(pool, idr: true);
+
+        frame.Release();
+        frame.Release();
+        frame.Release();
+
+        Assert.Equal(1, pool.Returned);
+    }
 }

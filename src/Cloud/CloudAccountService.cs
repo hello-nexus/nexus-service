@@ -514,10 +514,22 @@ public sealed class CloudAccountService
         var grantId = Guid.NewGuid().ToString("N");
         var deviceSecret = GenerateDeviceSecret();
 
+        // Nothing local moves until the cloud accepts. A refused start - the
+        // cap on how often reset mail goes to one address, or being offline -
+        // must leave a recovery already in flight running: its link is in the
+        // user's inbox and its code is on their screen, and cancelling the poll
+        // here would leave that link approving a grant nobody is watching.
+        var result = await _api.RecoveryStartAsync(
+            new CloudRecoveryStartRequest { Email = email, GrantId = grantId, DeviceSecret = deviceSecret }, ct).ConfigureAwait(false);
+        if (!result.Success)
+        {
+            return CloudActionResult<string?>.FromError(result);
+        }
+
         // pollToken is read from the CTS created for THIS call, inside the same
-        // lock, before any await - a concurrent second StartRecoveryAsync call
-        // (double-click resend) must not be able to swap _recoveryCts out from
-        // under this one between the await below and a later unguarded read.
+        // lock - a concurrent second StartRecoveryAsync call (double-click
+        // resend) must not be able to swap _recoveryCts out from under this one
+        // between here and the loop below reading it.
         CancellationTokenSource? previousCts;
         CancellationToken pollToken;
         lock (_recoveryLock)
@@ -530,17 +542,6 @@ public sealed class CloudAccountService
         }
         previousCts?.Cancel();
         previousCts?.Dispose();
-
-        var result = await _api.RecoveryStartAsync(
-            new CloudRecoveryStartRequest { Email = email, GrantId = grantId, DeviceSecret = deviceSecret }, ct).ConfigureAwait(false);
-        if (!result.Success)
-        {
-            // No link was sent (throttled, offline), so the flow is back where it
-            // started; reporting "expired" here is what put a "link expired" page
-            // in front of users who never got a link.
-            SetRecoveryStatus(grantId, "idle");
-            return CloudActionResult<string?>.FromError(result);
-        }
 
         _ = Task.Run(() => PollRecoveryLoopAsync(grantId, deviceSecret, pollToken), CancellationToken.None);
         return CloudActionResult<string?>.Ok(result.Value?.Code);

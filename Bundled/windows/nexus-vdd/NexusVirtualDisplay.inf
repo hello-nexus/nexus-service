@@ -1,0 +1,67 @@
+;
+; NexusVirtualDisplay.inf - Nexus Virtual Display (IddCx, UMDF 2)
+;
+
+[Version]
+PnpLockDown=1
+Signature="$Windows NT$"
+ClassGUID={4D36E968-E325-11CE-BFC1-08002BE10318}
+Class=Display
+ClassVer=2.0
+Provider=%ManufacturerName%
+CatalogFile=NexusVirtualDisplay.cat
+DriverVer= ; stamped by build.ps1
+
+[Manufacturer]
+%ManufacturerName%=Standard,NTamd64
+
+[Standard.NTamd64]
+%DeviceName%=NexusVdd_Install, NexusVirtualDisplay
+
+[SourceDisksFiles]
+NexusVirtualDisplay.dll=1
+
+[SourceDisksNames]
+1=%DiskName%
+
+[NexusVdd_Install.NT]
+Include=WUDFRD.inf
+Needs=WUDFRD.NT
+CopyFiles=UMDriverCopy
+
+[NexusVdd_Install.NT.hw]
+Include=WUDFRD.inf
+Needs=WUDFRD.NT.HW
+AddReg=NexusVdd_HardwareDeviceSettings
+
+[NexusVdd_HardwareDeviceSettings]
+HKR,,"UpperFilters",%REG_MULTI_SZ%,"IndirectKmd"
+HKR,"WUDF","DeviceGroupId",%REG_SZ%,"NexusVirtualDisplayGroup"
+
+[NexusVdd_Install.NT.Services]
+Include=WUDFRD.inf
+Needs=WUDFRD.NT.Services
+
+[NexusVdd_Install.NT.Wdf]
+UmdfService=NexusVirtualDisplay,NexusVdd_Service
+UmdfServiceOrder=NexusVirtualDisplay
+UmdfKernelModeClientPolicy=AllowKernelModeClients
+
+[NexusVdd_Service]
+UmdfLibraryVersion=2.25.0
+ServiceBinary=%12%\UMDF\NexusVirtualDisplay.dll
+UmdfExtensions=IddCx0102
+
+[DestinationDirs]
+UMDriverCopy=12,UMDF
+
+[UMDriverCopy]
+NexusVirtualDisplay.dll
+
+[Strings]
+ManufacturerName="Nexus"
+DiskName="Nexus Virtual Display Installation Disk"
+DeviceName="Nexus Virtual Display"
+
+REG_MULTI_SZ=0x00010000
+REG_SZ=0x00000000

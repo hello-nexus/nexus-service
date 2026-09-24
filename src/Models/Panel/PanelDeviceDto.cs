@@ -3,6 +3,15 @@ using Nexus.Service.Persistence;
 
 namespace Nexus.Service.Models.Panel;
 
+/// <summary>One colour stop of a panel's gauge gradient.</summary>
+public sealed class PanelGaugeGradientStop
+{
+    /// <summary>Position along the gauge scale, 0 (empty) to 1 (full).</summary>
+    public double At { get; set; }
+    /// <summary>#rrggbb, or the literal <c>accent</c> for a stop that follows the panel accent.</summary>
+    public string Color { get; set; } = "";
+}
+
 /// <summary>
 /// One registered panel device. Keyed by an opaque <c>Id</c> the service
 /// allocates on first connect; the device caches the id locally
@@ -63,6 +72,10 @@ public sealed class PanelDeviceRecord
     /// own default. Never rename this to "backgroundFrost": stored records hold
     /// a string under that key, which would not deserialize here.</summary>
     public double? BackgroundFrostLevel { get; set; }
+    /// <summary>Colour stops the value-coloured monitoring gauges paint with, positioned
+    /// 0-1 along a gauge's own scale, shared by every monitoring widget on this panel.
+    /// Null is unset; the client applies its own default.</summary>
+    public List<PanelGaugeGradientStop>? GaugeGradient { get; set; }
     public double? WidgetOpacity { get; set; }
     public bool? WidgetLabels { get; set; }
     /// <summary>Percent 0-100. Null is unset; the client applies its own default.</summary>
@@ -101,6 +114,9 @@ public sealed class PanelDeviceRecord
     /// <summary>Backlight percent 0-100 for a cooler LCD whose panel takes a brightness
     /// command. Null = the panel's default. Ignored by surfaces that cannot dim.</summary>
     public int? LcdBrightness { get; set; }
+    /// <summary>Windows drives this glass as a secondary monitor instead of Nexus content.
+    /// Pushed-frame panels whose capabilities carry SupportsSecondaryMonitor; null = off.</summary>
+    public bool? SecondaryMonitor { get; set; }
     /// <summary>
     /// Last known Corsair Xeneon Edge native display settings (vendor HID),
     /// applied/read through /displays/{id}/xeneon-settings. Display-bound
@@ -129,6 +145,12 @@ public sealed class PanelDeviceRecord
     /// Never persisted (null on stored records).
     /// </summary>
     public bool? Streamed { get; set; }
+    /// <summary>
+    /// Route-computed on GET /panel/devices while <see cref="SecondaryMonitor"/> is on and a
+    /// stream session owns the record: starting, active, driver-missing or failed. Never
+    /// persisted (null on stored records).
+    /// </summary>
+    public string? SecondaryMonitorState { get; set; }
 }
 
 /// <summary>
@@ -162,6 +184,8 @@ public sealed class PanelDeviceCapabilities
     /// <summary>The panel's backlight is host-settable, so the dashboard offers the
     /// brightness control. Null/false on every surface that cannot dim.</summary>
     public bool? SupportsBrightness { get; set; }
+    /// <summary>The service can turn this panel into a Windows secondary monitor.</summary>
+    public bool? SupportsSecondaryMonitor { get; set; }
 }
 
 /// <summary>
@@ -212,6 +236,8 @@ public sealed class PanelDevicePatch
     /// <summary>Full order list to replace this panel's; the client sends the whole list.</summary>
     public List<string>? BackgroundMediaOrder { get; set; }
     public double? BackgroundFrostLevel { get; set; }
+    /// <summary>Full stop list to replace this panel's; the client sends the whole list.</summary>
+    public List<PanelGaugeGradientStop>? GaugeGradient { get; set; }
     public double? WidgetOpacity { get; set; }
     public bool? WidgetLabels { get; set; }
     public double? WidgetPadding { get; set; }
@@ -230,6 +256,9 @@ public sealed class PanelDevicePatch
     /// <summary>Backlight percent 0-100 for a cooler LCD whose panel takes a brightness
     /// command. Null = the panel's default. Ignored by surfaces that cannot dim.</summary>
     public int? LcdBrightness { get; set; }
+    /// <summary>Windows drives this glass as a secondary monitor instead of Nexus content.
+    /// Pushed-frame panels whose capabilities carry SupportsSecondaryMonitor; null = off.</summary>
+    public bool? SecondaryMonitor { get; set; }
     public PanelDeviceCapabilities? Capabilities { get; set; }
 }
 
@@ -272,6 +301,29 @@ public sealed class MappingAutoAppliedFrame
     public string MappingId { get; set; } = "";
     public string MappingName { get; set; } = "";
     public int AdopterCount { get; set; }
+}
+
+/// <summary>
+/// An app the hardware auto-installer fetched because its hardware is attached.
+/// Carries the name inline so the toast needs no follow-up request.
+/// </summary>
+public sealed class AppAutoInstalledFrame
+{
+    public long Revision { get; set; }
+    public string AppId { get; set; } = "";
+    public string AppName { get; set; } = "";
+
+    /// <summary>True when the widget was also placed on the Y70 panel.</summary>
+    public bool Placed { get; set; }
+}
+
+/// <summary>
+/// The installed-app set changed. A subscriber reloads its app registry before
+/// re-reading a layout: a placement it cannot resolve renders as nothing.
+/// </summary>
+public sealed class AppsChangedFrame
+{
+    public long Revision { get; set; }
 }
 
 public sealed class CoolingChangedFrame

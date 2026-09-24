@@ -151,49 +151,30 @@ public sealed class ElgatoImportRoutesTests : IDisposable
         }
     }
 
+    /// <summary>
+    /// Presets are host-wide since schema v18 (deck-modes): the importer's
+    /// save path is now POST /deck/presets with a Deck field - there is no
+    /// per-serial "live deck" to snapshot instead, since a preset IS the
+    /// config (see DeckRoutes.cs).
+    /// </summary>
     [Fact]
-    public async Task CreatePreset_WithSuppliedConfig_UsesItInsteadOfTheLiveDeckSnapshot()
+    public async Task CreateDeckPreset_WithSuppliedDeckConfig_UsesIt()
     {
         var (factory, client) = Boot(FixtureStoreRoot);
         using (factory)
         {
-            await client.PutAsync(
-                "/streamdeck/decks/SERIAL-1/config",
-                Json("""{"config":{"pages":[{"slots":[{"label":"Live"}]}]}}"""));
-
             var importedConfig = """{"pages":[{"slots":[{"label":"Imported","action":{"type":"openUrl","url":"https://example.com"}}]}]}""";
             var res = await client.PostAsync(
-                "/streamdeck/decks/SERIAL-1/presets",
-                Json("{\"name\":\"Imported\",\"config\":" + importedConfig + "}"));
+                "/deck/presets",
+                Json("{\"name\":\"Imported\",\"cols\":5,\"rows\":3,\"deck\":" + importedConfig + "}"));
             Assert.Equal(HttpStatusCode.OK, res.StatusCode);
 
             using var doc = JsonDocument.Parse(await res.Content.ReadAsStringAsync());
             var id = doc.RootElement.GetProperty("preset").GetProperty("id").GetString();
 
             var store = factory.Services.GetRequiredService<IConfigStore>();
-            var deck = store.Load().StreamDeck.Decks["SERIAL-1"];
-            var preset = deck.Presets.Find(p => p.Id == id)!;
+            var preset = store.Load().StreamDeck.Presets.Find(p => p.Id == id)!;
             Assert.Equal("Imported", preset.Deck.Pages[0].Slots[0].Label);
-            Assert.Empty(preset.ImageRefs);
-        }
-    }
-
-    [Fact]
-    public async Task CreatePreset_WithoutConfig_StillSnapshotsTheLiveDeck()
-    {
-        var (factory, client) = Boot(FixtureStoreRoot);
-        using (factory)
-        {
-            await client.PutAsync(
-                "/streamdeck/decks/SERIAL-2/config",
-                Json("""{"config":{"pages":[{"slots":[{"label":"Live"}]}]}}"""));
-
-            var res = await client.PostAsync("/streamdeck/decks/SERIAL-2/presets", Json("""{"name":"Snapshot"}"""));
-            Assert.Equal(HttpStatusCode.OK, res.StatusCode);
-
-            var store = factory.Services.GetRequiredService<IConfigStore>();
-            var deck = store.Load().StreamDeck.Decks["SERIAL-2"];
-            Assert.Equal("Live", deck.Presets[0].Deck.Pages[0].Slots[0].Label);
         }
     }
 }

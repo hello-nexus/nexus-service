@@ -420,7 +420,8 @@ public sealed class SystemActions
 #if MACOS
         if (OperatingSystem.IsMacOS())
         {
-            Nexus.Service.Platform.Mac.MacAppWindow.OpenOrFocus(Nexus.Service.Platform.ServiceLaunchIntent.LocalDashboardUrl(0));
+            // Focus only: a reload would race the editRequest frame a blank-key hold broadcasts first.
+            Nexus.Service.Platform.Mac.MacAppWindow.OpenOrFocus(Nexus.Service.Platform.ServiceLaunchIntent.LocalDashboardUrl(0), navigateIfOpen: false);
         }
 #endif
 #if LINUX

@@ -14,9 +14,12 @@ namespace Nexus.Service.Peripherals.Hyte.SmartHub;
 /// Background poller for the SmartHub. Mirrors
 /// <see cref="Nexus.Service.Peripherals.Hyte.MiniHub.MiniHubHeartbeatWorker"/>.
 /// Jobs: (a) keep trying to open the port until the device shows up,
-/// (b) read the firmware version once on first connect, (c) turn the hub's
-/// onboard LED animation OFF after a (re)connect so our software LED frames
-/// take effect, (d) poll the per-channel tach + enabled state so the cooling
+/// (b) read the firmware version once on first connect, (c) make sure the
+/// hub's onboard LED animation is ENABLED after a (re)connect: the flag is
+/// flash-persisted (<c>FF CC 07</c> sets <c>Default_Off_FW_Animation</c> and
+/// saves it), and streaming suppresses the animation anyway - every LED
+/// frame resets the hub's 5 s <c>ARGB_NO_Activity</c> counter, and only when
+/// that expires does the animation resume. (d) poll the per-channel tach + enabled state so the cooling
 /// page shows live RPM and only surfaces populated ports, (e) assert fan
 /// duty on (re)connect and RE-ASSERT it every tick: the firmware runs a
 /// 5-second watchdog fed only by <c>FF CC 02</c> fan writes
@@ -40,7 +43,7 @@ public sealed class SmartHubHeartbeatWorker : BackgroundService
     private readonly IConfigStore _config;
     private readonly SmartHubCoolingProvider _cooling;
     private readonly DeviceControlGate _gate;
-    private bool? _animationStateAsserted; // null = not yet asserted (e.g. fresh connect)
+    private bool _animationEnabledAsserted;
     private bool _initialDutyAsserted;
     private int _tickCount;
     private const int TraceEveryNTicks = 15; // every ~30 s with the 2 s timer
@@ -81,8 +84,8 @@ public sealed class SmartHubHeartbeatWorker : BackgroundService
             return;
 
         var connectedBefore = _hub.IsConnected;
-        if (!_hub.EnsureConnected()) { _animationStateAsserted = null; _initialDutyAsserted = false; return; }
-        if (!connectedBefore) { _initialDutyAsserted = false; _animationStateAsserted = null; }
+        if (!_hub.EnsureConnected()) { _animationEnabledAsserted = false; _initialDutyAsserted = false; return; }
+        if (!connectedBefore) { _initialDutyAsserted = false; _animationEnabledAsserted = false; }
 
         // First connect ⇒ read FW version. Cheap; no-op once populated.
         if (!connectedBefore || string.IsNullOrEmpty(_hub.State.FirmwareVersion))
@@ -90,14 +93,20 @@ public sealed class SmartHubHeartbeatWorker : BackgroundService
             _hub.PollFirmwareVersion();
         }
 
-        // Assert firmware animation on/off to match the persisted preference.
-        // Re-asserted on reconnect (null tracker) or whenever the preference changes.
-        var desiredOn = _config.Load().Devices.SmartHubFirmwareControl;
-        if (_animationStateAsserted != desiredOn)
+        // Once per connect, and only written when the readback says OFF: the
+        // write is a flash erase + program on the hub whatever the byte, so a
+        // hub only ever takes it once. Older nexus builds left this OFF, which
+        // is why a hub that has seen one of them never falls back on its own.
+        if (!_animationEnabledAsserted && _hub.ReadFirmwareAnimation(out var animationOn))
         {
-            if (_hub.SetFirmwareAnimation(on: desiredOn))
+            if (animationOn)
             {
-                _animationStateAsserted = desiredOn;
+                _animationEnabledAsserted = true;
+            }
+            else if (_hub.SetFirmwareAnimation(on: true))
+            {
+                _animationEnabledAsserted = true;
+                ServiceLog.Info("[smarthub] firmware animation was disabled in flash; re-enabled");
             }
         }
 

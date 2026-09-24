@@ -75,7 +75,7 @@ public class StreamFrameReaderTests
         Assert.True(read);
         Assert.NotNull(frame);
         Assert.Equal(StreamFraming.FlagIdr, frame!.Flags);
-        Assert.Equal(payload, frame.Payload);
+        Assert.Equal(payload, frame!.Bytes.ToArray());
         Assert.Equal(0, buffer.Length);
     }
 
@@ -92,7 +92,7 @@ public class StreamFrameReaderTests
         var read = StreamFrameReader.TryReadFrame(ref buffer, out var frame);
 
         Assert.True(read);
-        Assert.Equal(payload, frame!.Payload);
+        Assert.Equal(payload, frame!.Bytes.ToArray());
         Assert.Equal(0, buffer.Length);
     }
 
@@ -111,7 +111,7 @@ public class StreamFrameReaderTests
         var read = StreamFrameReader.TryReadFrame(ref buffer, out var frame);
 
         Assert.True(read);
-        Assert.Equal(payload, frame!.Payload);
+        Assert.Equal(payload, frame!.Bytes.ToArray());
         Assert.Equal(0, buffer.Length);
     }
 
@@ -130,12 +130,12 @@ public class StreamFrameReaderTests
 
         var readFirst = StreamFrameReader.TryReadFrame(ref buffer, out var first);
         Assert.True(readFirst);
-        Assert.Equal(payloadA, first!.Payload);
+        Assert.Equal(payloadA, first!.Bytes.ToArray());
         Assert.Equal(frameB.Length, buffer.Length);
 
         var readSecond = StreamFrameReader.TryReadFrame(ref buffer, out var second);
         Assert.True(readSecond);
-        Assert.Equal(payloadB, second!.Payload);
+        Assert.Equal(payloadB, second!.Bytes.ToArray());
         Assert.Equal(0, buffer.Length);
     }
 
@@ -148,7 +148,7 @@ public class StreamFrameReaderTests
         var read = StreamFrameReader.TryReadFrame(ref buffer, out var frame);
 
         Assert.True(read);
-        Assert.Empty(frame!.Payload);
+        Assert.True(frame!.Bytes.IsEmpty);
         Assert.True(frame.IsControl);
         Assert.Equal(0, buffer.Length);
     }
@@ -235,5 +235,32 @@ public class StreamFrameReaderTests
 
         Assert.True(frame!.IsIdr);
         Assert.False(frame.IsControl);
+    }
+
+    [Fact]
+    public void Pooled_payload_is_returned_once_and_release_is_idempotent()
+    {
+        var payload = Payload(64);
+        var buffer = new ReadOnlySequence<byte>(BuildFrameBytes(StreamFraming.FlagIdr, payload));
+
+        Assert.True(StreamFrameReader.TryReadFrame(ref buffer, out var frame));
+        Assert.True(frame!.Pooled);
+        Assert.Equal(payload.Length, frame.Length);
+        Assert.True(frame.Payload.Length >= payload.Length);
+
+        // Double release would hand the same array to the pool twice, which later
+        // rents it out to two frames at once.
+        frame.Release();
+        frame.Release();
+    }
+
+    [Fact]
+    public void Zero_length_frame_is_not_pooled()
+    {
+        var buffer = new ReadOnlySequence<byte>(BuildFrameBytes(StreamFraming.FlagControl, Array.Empty<byte>()));
+
+        Assert.True(StreamFrameReader.TryReadFrame(ref buffer, out var frame));
+        Assert.False(frame!.Pooled);
+        Assert.True(frame.Bytes.IsEmpty);
     }
 }

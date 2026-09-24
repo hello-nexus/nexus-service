@@ -5,7 +5,6 @@ using Microsoft.AspNetCore.TestHost;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
 using Nexus.Service.Deck;
-using Nexus.Service.Peripherals.StreamDeck;
 using Nexus.Service.Tests.Integration;
 
 namespace Nexus.Service.Tests.StreamDeck;
@@ -26,12 +25,12 @@ internal sealed class SharedHost : IDisposable
 }
 
 /// <summary>Class-shared host for the main deck routes: the loopback filter,
-/// a temp image cache, and a spy action executor the tests assert against.</summary>
+/// a temp deck-image store, and a spy action executor the tests assert against.</summary>
 public sealed class StreamDeckRouteHostFactory : NexusAppFactory
 {
-    /// <summary>Temp cache dir the routes write into; tests assert on its contents.</summary>
-    public string ImageCacheDir { get; } =
-        Path.Combine(Path.GetTempPath(), "nexus-streamdeck-route-cache-" + Guid.NewGuid().ToString("N")[..8]);
+    /// <summary>Temp dir DeckImageStore writes uploaded icon originals into, isolated from the real user media library.</summary>
+    public string DeckImagesDir { get; } =
+        Path.Combine(Path.GetTempPath(), "nexus-streamdeck-route-images-" + Guid.NewGuid().ToString("N")[..8]);
 
     internal SpyDeckActionExecutor Executor { get; } = new();
 
@@ -41,22 +40,11 @@ public sealed class StreamDeckRouteHostFactory : NexusAppFactory
         builder.ConfigureTestServices(s =>
         {
             s.AddTransient<IStartupFilter, LoopbackConnectionFilter>();
-            s.RemoveAll<StreamDeckImageCache>();
-            s.AddSingleton(new StreamDeckImageCache(ImageCacheDir));
+            s.RemoveAll<DeckImageStore>();
+            s.AddSingleton(new DeckImageStore(DeckImagesDir));
             s.RemoveAll<IDeckActionExecutor>();
             s.AddSingleton<IDeckActionExecutor>(Executor);
         });
-    }
-
-
-    /// <summary>Empties the cache dir. Blobs are content-addressed, so one test's leftover would satisfy another's "still present" assertion.</summary>
-    public void ClearImageCache()
-    {
-        if (!Directory.Exists(ImageCacheDir)) return;
-        foreach (var f in Directory.EnumerateFiles(ImageCacheDir, "*", SearchOption.AllDirectories))
-        {
-            try { File.Delete(f); } catch { /* best effort */ }
-        }
     }
 
     protected override void Dispose(bool disposing)
@@ -64,18 +52,16 @@ public sealed class StreamDeckRouteHostFactory : NexusAppFactory
         base.Dispose(disposing);
         if (disposing)
         {
-            try { Directory.Delete(ImageCacheDir, recursive: true); } catch { /* best effort */ }
+            try { Directory.Delete(DeckImagesDir, recursive: true); } catch { /* best effort */ }
         }
     }
 }
 
-/// <summary>Class-shared host for the deck Presets routes: the loopback filter
-/// every /streamdeck/* route needs, plus a temp image cache.</summary>
-public sealed class StreamDeckPresetHostFactory : NexusAppFactory
+/// <summary>Class-shared host for the host-wide deck presets/instances routes (DeckRoutes.cs): the loopback filter every route needs, plus an isolated deck-image store.</summary>
+public sealed class DeckRoutesHostFactory : NexusAppFactory
 {
-    /// <summary>Temp cache dir the routes write into; tests assert on its contents.</summary>
-    public string ImageCacheDir { get; } =
-        Path.Combine(Path.GetTempPath(), "nexus-streamdeck-preset-cache-" + Guid.NewGuid().ToString("N")[..8]);
+    public string DeckImagesDir { get; } =
+        Path.Combine(Path.GetTempPath(), "nexus-deck-routes-images-" + Guid.NewGuid().ToString("N")[..8]);
 
     protected override void ConfigureWebHost(IWebHostBuilder builder)
     {
@@ -83,20 +69,9 @@ public sealed class StreamDeckPresetHostFactory : NexusAppFactory
         builder.ConfigureTestServices(s =>
         {
             s.AddTransient<IStartupFilter, LoopbackConnectionFilter>();
-            s.RemoveAll<StreamDeckImageCache>();
-            s.AddSingleton(new StreamDeckImageCache(ImageCacheDir));
+            s.RemoveAll<DeckImageStore>();
+            s.AddSingleton(new DeckImageStore(DeckImagesDir));
         });
-    }
-
-
-    /// <summary>Empties the cache dir. Blobs are content-addressed, so one test's leftover would satisfy another's "still present" assertion.</summary>
-    public void ClearImageCache()
-    {
-        if (!Directory.Exists(ImageCacheDir)) return;
-        foreach (var f in Directory.EnumerateFiles(ImageCacheDir, "*", SearchOption.AllDirectories))
-        {
-            try { File.Delete(f); } catch { /* best effort */ }
-        }
     }
 
     protected override void Dispose(bool disposing)
@@ -104,7 +79,7 @@ public sealed class StreamDeckPresetHostFactory : NexusAppFactory
         base.Dispose(disposing);
         if (disposing)
         {
-            try { Directory.Delete(ImageCacheDir, recursive: true); } catch { /* best effort */ }
+            try { Directory.Delete(DeckImagesDir, recursive: true); } catch { /* best effort */ }
         }
     }
 }

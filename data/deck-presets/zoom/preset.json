@@ -1,0 +1,307 @@
+{
+  "format": 1,
+  "id": "zoom",
+  "name": "Zoom",
+  "author": "Nexus",
+  "version": "1.0.0",
+  "description": "In-meeting controls for Zoom.",
+  "match": {
+    "processNames": [
+      "zoom"
+    ],
+    "displayNames": [
+      "Zoom",
+      "Zoom Workplace",
+      "zoom.us"
+    ]
+  },
+  "cols": 5,
+  "rows": 3,
+  "deck": {
+    "pages": [
+      {
+        "slots": [
+          {
+            "icon": {
+              "kind": "lucide",
+              "value": "MicOff"
+            },
+            "label": "Mute",
+            "title": {
+              "show": true,
+              "align": "bottom",
+              "size": 14,
+              "bold": true
+            },
+            "action": {
+              "type": "hotkey",
+              "keys": "alt+a",
+              "keysMac": "cmd+shift+a"
+            },
+            "color": "#c0392b"
+          },
+          {
+            "icon": {
+              "kind": "lucide",
+              "value": "Camera"
+            },
+            "label": "Video",
+            "title": {
+              "show": true,
+              "align": "bottom",
+              "size": 14,
+              "bold": true
+            },
+            "action": {
+              "type": "hotkey",
+              "keys": "alt+v",
+              "keysMac": "cmd+shift+v"
+            },
+            "color": "#2874a6"
+          },
+          {
+            "icon": {
+              "kind": "lucide",
+              "value": "Monitor"
+            },
+            "label": "Share",
+            "title": {
+              "show": true,
+              "align": "bottom",
+              "size": 14,
+              "bold": true
+            },
+            "action": {
+              "type": "hotkey",
+              "keys": "alt+s",
+              "keysMac": "cmd+shift+s"
+            }
+          },
+          {
+            "icon": {
+              "kind": "lucide",
+              "value": "Bell"
+            },
+            "label": "Raise Hand",
+            "title": {
+              "show": true,
+              "align": "bottom",
+              "size": 14,
+              "bold": true
+            },
+            "action": {
+              "type": "hotkey",
+              "keys": "alt+y"
+            }
+          },
+          {
+            "icon": {
+              "kind": "lucide",
+              "value": "LogOut"
+            },
+            "label": "Leave",
+            "title": {
+              "show": true,
+              "align": "bottom",
+              "size": 14,
+              "bold": true
+            },
+            "action": {
+              "type": "hotkey",
+              "keys": "alt+q",
+              "keysMac": "cmd+w"
+            },
+            "color": "#c0392b"
+          },
+          {
+            "icon": {
+              "kind": "lucide",
+              "value": "MessageSquare"
+            },
+            "label": "Chat",
+            "title": {
+              "show": true,
+              "align": "bottom",
+              "size": 14,
+              "bold": true
+            },
+            "action": {
+              "type": "hotkey",
+              "keys": "alt+h",
+              "keysMac": "cmd+shift+h"
+            }
+          },
+          {
+            "icon": {
+              "kind": "lucide",
+              "value": "AppWindow"
+            },
+            "label": "Participants",
+            "title": {
+              "show": true,
+              "align": "bottom",
+              "size": 14,
+              "bold": true
+            },
+            "action": {
+              "type": "hotkey",
+              "keys": "alt+u",
+              "keysMac": "cmd+u"
+            }
+          },
+          {
+            "icon": {
+              "kind": "lucide",
+              "value": "Plus"
+            },
+            "label": "Invite",
+            "title": {
+              "show": true,
+              "align": "bottom",
+              "size": 14,
+              "bold": true
+            },
+            "action": {
+              "type": "hotkey",
+              "keys": "alt+i",
+              "keysMac": "cmd+i"
+            }
+          },
+          {
+            "icon": {
+              "kind": "lucide",
+              "value": "Disc"
+            },
+            "label": "Record",
+            "title": {
+              "show": true,
+              "align": "bottom",
+              "size": 14,
+              "bold": true
+            },
+            "action": {
+              "type": "hotkey",
+              "keys": "alt+r",
+              "keysMac": "cmd+shift+r"
+            }
+          },
+          {
+            "icon": {
+              "kind": "lucide",
+              "value": "Pause"
+            },
+            "label": "Pause Share",
+            "title": {
+              "show": true,
+              "align": "bottom",
+              "size": 14,
+              "bold": true
+            },
+            "action": {
+              "type": "hotkey",
+              "keys": "alt+t",
+              "keysMac": "cmd+shift+t"
+            }
+          },
+          {
+            "icon": {
+              "kind": "lucide",
+              "value": "Tv"
+            },
+            "label": "Speaker View",
+            "title": {
+              "show": true,
+              "align": "bottom",
+              "size": 14,
+              "bold": true
+            },
+            "action": {
+              "type": "hotkey",
+              "keys": "alt+f1",
+              "keysMac": "cmd+shift+w"
+            }
+          },
+          {
+            "icon": {
+              "kind": "lucide",
+              "value": "Layers"
+            },
+            "label": "Gallery View",
+            "title": {
+              "show": true,
+              "align": "bottom",
+              "size": 14,
+              "bold": true
+            },
+            "action": {
+              "type": "hotkey",
+              "keys": "alt+f2",
+              "keysMac": "cmd+shift+w"
+            }
+          },
+          {
+            "icon": {
+              "kind": "lucide",
+              "value": "Monitor"
+            },
+            "label": "Fullscreen",
+            "title": {
+              "show": true,
+              "align": "bottom",
+              "size": 14,
+              "bold": true
+            },
+            "action": {
+              "type": "hotkey",
+              "keys": "alt+f",
+              "keysMac": "cmd+shift+f"
+            }
+          },
+          {
+            "icon": {
+              "kind": "lucide",
+              "value": "VolumeX"
+            },
+            "label": "Mute All",
+            "title": {
+              "show": true,
+              "align": "bottom",
+              "size": 14,
+              "bold": true
+            },
+            "action": {
+              "type": "hotkey",
+              "keys": "alt+m",
+              "keysMac": "cmd+ctrl+m"
+            },
+            "color": "#c0392b"
+          },
+          {
+            "icon": {
+              "kind": "lucide",
+              "value": "Camera"
+            },
+            "label": "Screenshot",
+            "title": {
+              "show": true,
+              "align": "bottom",
+              "size": 14,
+              "bold": true
+            },
+            "action": {
+              "type": "hotkey",
+              "keys": "alt+shift+t",
+              "keysMac": "cmd+t"
+            }
+          }
+        ]
+      }
+    ],
+    "defaultTitleStyle": {
+      "show": true,
+      "align": "bottom",
+      "size": 14,
+      "bold": true
+    }
+  }
+}

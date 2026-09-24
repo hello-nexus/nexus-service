@@ -94,7 +94,9 @@ public sealed class InstallDefaultsDocument
 
 public sealed class LightingDefaults
 {
-    public string Sync { get; set; } = "plasma";
+    // Simple mode's first Rainbow tile: fresh installs open the lighting page in
+    // simple mode, which can only mark a simple tile or a palette colour active.
+    public string Sync { get; set; } = "sweeprainbow";
     public bool BrightnessEnabled { get; set; }
     public bool SpeedEnabled { get; set; }
     public int FrameRate { get; set; } = 60;
@@ -120,7 +122,7 @@ public sealed class LightingStaticColor
 
 public sealed class LightingAnimateDefaults
 {
-    public string Effect { get; set; } = "plasma";
+    public string Effect { get; set; } = "sweeprainbow";
     public LightingAnimateState State { get; set; } = new();
 }
 
@@ -161,6 +163,7 @@ public sealed class Y70Defaults
     public int Brightness { get; set; } = 80;
     public bool ScreenOff { get; set; }
     public bool ForceOrientation { get; set; } = true;
+    public bool CompatibilityRendering { get; set; }
 }
 
 public sealed class KeebDefaults

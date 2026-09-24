@@ -92,13 +92,25 @@ public static class ProfileSharing
                 target.Cooling.PreferredGpuTempSensorId = source.Cooling.PreferredGpuTempSensorId;
                 target.Cooling.PreferredGpuId = source.Cooling.PreferredGpuId;
                 target.Panel.DashboardLayout = source.Panel.DashboardLayout;
+                target.Panel.DashboardGaugeGradient = source.Panel.DashboardGaugeGradient;
                 target.Overlay = source.Overlay;
                 target.Ui.ShowConflictAlerts = source.Ui.ShowConflictAlerts;
                 target.Ui.AutoKillConflictsAtStartup = source.Ui.AutoKillConflictsAtStartup;
                 target.Ui.ConflictAutoKillExclusions = source.Ui.ConflictAutoKillExclusions;
                 break;
             case Device:
-                target.StreamDeck = source.StreamDeck;
+                // The recent-apps ring names this machine's processes and exe
+                // paths, so it stays with the target: a profile export starts
+                // from a fresh target (empty ring), and a profile load keeps
+                // the live ring instead of taking the file's.
+                target.StreamDeck = new StreamDeckSettings
+                {
+                    Decks = source.StreamDeck.Decks,
+                    Presets = source.StreamDeck.Presets,
+                    Instances = source.StreamDeck.Instances,
+                    RecentApps = target.StreamDeck.RecentApps,
+                    RecentAppsExcluded = target.StreamDeck.RecentAppsExcluded,
+                };
                 target.Keeb = source.Keeb;
                 break;
         }
@@ -125,6 +137,7 @@ public static class ProfileSharing
                 target.Cooling.PreferredGpuTempSensorId = null;
                 target.Cooling.PreferredGpuId = null;
                 target.Panel.DashboardLayout = null;
+                target.Panel.DashboardGaugeGradient = null;
                 target.Overlay = new OverlaySettings();
                 target.Ui.ShowConflictAlerts = true;
                 target.Ui.AutoKillConflictsAtStartup = false;

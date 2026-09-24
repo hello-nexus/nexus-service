@@ -1,0 +1,294 @@
+{
+  "format": 1,
+  "id": "premiere-pro",
+  "name": "Adobe Premiere Pro",
+  "author": "Nexus",
+  "version": "1.0.0",
+  "description": "Timeline editing and playback for Premiere Pro.",
+  "match": {
+    "processNames": [
+      "adobe premiere pro"
+    ],
+    "displayNames": [
+      "Adobe Premiere Pro"
+    ]
+  },
+  "cols": 5,
+  "rows": 3,
+  "deck": {
+    "pages": [
+      {
+        "slots": [
+          {
+            "icon": {
+              "kind": "lucide",
+              "value": "Play"
+            },
+            "label": "Play / Pause",
+            "title": {
+              "show": true,
+              "align": "bottom",
+              "size": 14,
+              "bold": true
+            },
+            "action": {
+              "type": "hotkey",
+              "keys": "space"
+            },
+            "color": "#1e8449"
+          },
+          {
+            "icon": {
+              "kind": "lucide",
+              "value": "SkipBack"
+            },
+            "label": "Reverse",
+            "title": {
+              "show": true,
+              "align": "bottom",
+              "size": 14,
+              "bold": true
+            },
+            "action": {
+              "type": "hotkey",
+              "keys": "j"
+            }
+          },
+          {
+            "icon": {
+              "kind": "lucide",
+              "value": "Pause"
+            },
+            "label": "Stop",
+            "title": {
+              "show": true,
+              "align": "bottom",
+              "size": 14,
+              "bold": true
+            },
+            "action": {
+              "type": "hotkey",
+              "keys": "k"
+            }
+          },
+          {
+            "icon": {
+              "kind": "lucide",
+              "value": "SkipForward"
+            },
+            "label": "Forward",
+            "title": {
+              "show": true,
+              "align": "bottom",
+              "size": 14,
+              "bold": true
+            },
+            "action": {
+              "type": "hotkey",
+              "keys": "l"
+            }
+          },
+          {
+            "icon": {
+              "kind": "lucide",
+              "value": "Star"
+            },
+            "label": "Marker",
+            "title": {
+              "show": true,
+              "align": "bottom",
+              "size": 14,
+              "bold": true
+            },
+            "action": {
+              "type": "hotkey",
+              "keys": "m"
+            }
+          },
+          {
+            "icon": {
+              "kind": "lucide",
+              "value": "MousePointer"
+            },
+            "label": "Select",
+            "title": {
+              "show": true,
+              "align": "bottom",
+              "size": 14,
+              "bold": true
+            },
+            "action": {
+              "type": "hotkey",
+              "keys": "v"
+            }
+          },
+          {
+            "icon": {
+              "kind": "lucide",
+              "value": "Zap"
+            },
+            "label": "Razor",
+            "title": {
+              "show": true,
+              "align": "bottom",
+              "size": 14,
+              "bold": true
+            },
+            "action": {
+              "type": "hotkey",
+              "keys": "c"
+            }
+          },
+          {
+            "icon": {
+              "kind": "lucide",
+              "value": "ChevronLeft"
+            },
+            "label": "Set In",
+            "title": {
+              "show": true,
+              "align": "bottom",
+              "size": 14,
+              "bold": true
+            },
+            "action": {
+              "type": "hotkey",
+              "keys": "i"
+            }
+          },
+          {
+            "icon": {
+              "kind": "lucide",
+              "value": "ChevronRight"
+            },
+            "label": "Set Out",
+            "title": {
+              "show": true,
+              "align": "bottom",
+              "size": 14,
+              "bold": true
+            },
+            "action": {
+              "type": "hotkey",
+              "keys": "o"
+            }
+          },
+          {
+            "icon": {
+              "kind": "lucide",
+              "value": "Sliders"
+            },
+            "label": "Add Edit",
+            "title": {
+              "show": true,
+              "align": "bottom",
+              "size": 14,
+              "bold": true
+            },
+            "action": {
+              "type": "hotkey",
+              "keys": "ctrl+k",
+              "keysMac": "cmd+k"
+            }
+          },
+          {
+            "icon": {
+              "kind": "lucide",
+              "value": "Trash2"
+            },
+            "label": "Ripple Delete",
+            "title": {
+              "show": true,
+              "align": "bottom",
+              "size": 14,
+              "bold": true
+            },
+            "action": {
+              "type": "hotkey",
+              "keys": "shift+delete"
+            },
+            "color": "#c0392b"
+          },
+          {
+            "icon": {
+              "kind": "lucide",
+              "value": "Undo2"
+            },
+            "label": "Undo",
+            "title": {
+              "show": true,
+              "align": "bottom",
+              "size": 14,
+              "bold": true
+            },
+            "action": {
+              "type": "hotkey",
+              "keys": "ctrl+z",
+              "keysMac": "cmd+z"
+            }
+          },
+          {
+            "icon": {
+              "kind": "lucide",
+              "value": "RotateCcw"
+            },
+            "label": "Redo",
+            "title": {
+              "show": true,
+              "align": "bottom",
+              "size": 14,
+              "bold": true
+            },
+            "action": {
+              "type": "hotkey",
+              "keys": "ctrl+shift+z",
+              "keysMac": "cmd+shift+z"
+            }
+          },
+          {
+            "icon": {
+              "kind": "lucide",
+              "value": "Save"
+            },
+            "label": "Save",
+            "title": {
+              "show": true,
+              "align": "bottom",
+              "size": 14,
+              "bold": true
+            },
+            "action": {
+              "type": "hotkey",
+              "keys": "ctrl+s",
+              "keysMac": "cmd+s"
+            }
+          },
+          {
+            "icon": {
+              "kind": "lucide",
+              "value": "Upload"
+            },
+            "label": "Export",
+            "title": {
+              "show": true,
+              "align": "bottom",
+              "size": 14,
+              "bold": true
+            },
+            "action": {
+              "type": "hotkey",
+              "keys": "ctrl+m",
+              "keysMac": "cmd+m"
+            }
+          }
+        ]
+      }
+    ],
+    "defaultTitleStyle": {
+      "show": true,
+      "align": "bottom",
+      "size": 14,
+      "bold": true
+    }
+  }
+}

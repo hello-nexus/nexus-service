@@ -1,6 +1,5 @@
 using System;
 using System.Collections.Generic;
-using System.IO;
 using System.Threading.Tasks;
 using Nexus.Service.Deck;
 using Nexus.Service.Devices;
@@ -10,6 +9,7 @@ using Nexus.Service.Peripherals.StreamDeck;
 using Nexus.Service.Persistence;
 using Nexus.Service.Sockets;
 using Xunit;
+using static Nexus.Service.Tests.StreamDeck.DeckTestHelpers;
 
 namespace Nexus.Service.Tests.StreamDeck;
 
@@ -25,7 +25,6 @@ public sealed class StreamDeckSleepWhenLockedTests : IDisposable
     private static readonly StreamDeckModel Mini = StreamDeckModels.ByProductId(0x0063)!;
     private const string Serial = "sim-0001";
 
-    private readonly string _imageCacheDir = Path.Combine(Path.GetTempPath(), "nexus-streamdeck-lock-test-" + Guid.NewGuid().ToString("N")[..8]);
     private readonly InMemoryConfigStore _store = new();
     private readonly FakeDeckActionExecutor _executor = new();
     private readonly ManualTimeProvider _clock = new(DateTimeOffset.UtcNow);
@@ -40,7 +39,7 @@ public sealed class StreamDeckSleepWhenLockedTests : IDisposable
         var gate = new DeviceControlGate(_store);
         gate.SetEnabled("streamdeck", true);
         _worker = new StreamDeckConnectionWorker(
-            new FakeWorkerHidEnumerator(), presence, gate, _store, _executor, new StreamDeckImageCache(_imageCacheDir), new MultiplexHub(), new FakeSensorProvider(),
+            new FakeWorkerHidEnumerator(), presence, gate, _store, _executor, NewTestKeyRenderer(), new MultiplexHub(), new FakeSensorProvider(),
             _simulated, _clock);
         _worker.LockInputWatch = enabled => _armCalls.Add(enabled);
     }
@@ -48,7 +47,6 @@ public sealed class StreamDeckSleepWhenLockedTests : IDisposable
     public void Dispose()
     {
         _worker.Dispose();
-        try { Directory.Delete(_imageCacheDir, recursive: true); } catch { /* best effort */ }
     }
 
     private void ConnectAt(int brightness, bool sleepWhenLocked = true, int sleepAfterSeconds = 0)
@@ -308,8 +306,9 @@ public sealed class StreamDeckSleepWhenLockedTests : IDisposable
         _store.Update(s => s.StreamDeck.Decks[Serial] = new PhysicalDeckSettings
         {
             Brightness = 80,
-            Deck = new DeckConfig { Pages = { new DeckPage { Slots = { new DeckSlot { Action = action } } } } },
+            LegacyDeck = new DeckConfig { Pages = { new DeckPage { Slots = { new DeckSlot { Action = action } } } } },
         });
+        _store.Update(s => ActivateLegacyDeck(s, Serial));
         _worker.Tick();
         _worker.OnSessionLockChanged(true);
         DrainRamp(SleepBlackoutCoordinator.LockFadeDuration);

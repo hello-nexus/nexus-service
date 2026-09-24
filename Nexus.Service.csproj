@@ -35,6 +35,12 @@
     <ApplicationManifest Condition="$([MSBuild]::IsOSPlatform('Windows')) OR $(RuntimeIdentifier.StartsWith('win'))">app.manifest</ApplicationManifest>
   </PropertyGroup>
 
+  <!-- The default gen0 budget scales with L3 size, so on large-cache CPUs the service and its helper
+       (same binary) hold tens of MB of garbage between GCs. Decimal only: a hex value is ignored. -->
+  <ItemGroup Condition="$(RuntimeIdentifier.StartsWith('win'))">
+    <RuntimeHostConfigurationOption Include="System.GC.Gen0MaxBudget" Value="6291456" />
+  </ItemGroup>
+
   <!-- AOT size-reduction feature switches. EventSourceSupport=false is safe:
        the FPS provider consumes OS ETW via TraceEventSession, not managed
        EventSource; it does disable dotnet-counters/dotnet-trace on this
@@ -117,6 +123,12 @@
     <NexusPostHogKey Condition="'$(NexusPostHogKey)' == ''">$(NEXUS_POSTHOG_KEY)</NexusPostHogKey>
   </PropertyGroup>
 
+  <!-- The api.klipy.com app key for the GIF picker, injected the same way. The
+       service calls Klipy directly, so a release without it has no GIFs. -->
+  <PropertyGroup>
+    <NexusKlipyKey Condition="'$(NexusKlipyKey)' == ''">$(NEXUS_KLIPY_KEY)</NexusKlipyKey>
+  </PropertyGroup>
+
   <!-- DEV_TOOLS: internal/test builds only. Publish with -p:DevTools=true to
        include firmware downgrade / cross-branch flashing (status DevImages +
        the TryStart allowance). Off by default so release publishes don't carry
@@ -145,10 +157,10 @@
   </ItemGroup>
 
   <!-- Cross-platform OpenGL for GPU-rendered lighting effects. Silk.NET binds to
-       the native GL driver via P/Invoke (AOT-safe); the Windows path drives GLFW
-       directly (Silk.NET.GLFW) rather than through its windowing layer, whose
-       window creation does not null-check glfwCreateWindow. OpenTK.redist.glfw
-       ships the GLFW native blob - referenced with GeneratePathProperty so the
+       the native GL driver via P/Invoke (AOT-safe). Windows creates its context
+       against WGL directly (WinWglContext); GLFW stays for the RenderBackend
+       escape, and is what the pre-3.0.15 path used. OpenTK.redist.glfw ships the
+       GLFW native blob - referenced with GeneratePathProperty so the
        CopyGlfwNative target below finds the per-RID dll/dylib without
        hard-coding a version in the path. -->
   <ItemGroup>
@@ -291,6 +303,21 @@
     <EmbeddedResource Include="src\Rendering\WeatherIcons\*.png">
       <LogicalName>weather-icon-%(Filename).png</LogicalName>
     </EmbeddedResource>
+    <!-- Lucide deck-key glyphs (white on transparent, 128px), rasterized from
+         nexus-web's DECK_ICONS by nexus-web/scripts/export-deck-icons.mjs and
+         committed here so DeckKeyRenderer works with no network access. Empty
+         glob is a no-op until that script has run. -->
+    <EmbeddedResource Include="data\deck-icons\*.png">
+      <LogicalName>deck-icon-%(Filename).png</LogicalName>
+    </EmbeddedResource>
+    <!-- Bundled .nexus-deck preset templates, one source dir per app under
+         data/deck-presets/<id>/ (preset.json + optional assets/<sha256>.<ext>).
+         %(RecursiveDir) keeps the <id>/... shape; DeckPresetCatalog normalizes
+         the separator the same way BundledFirmwareCatalog does, since it
+         differs by build host. -->
+    <EmbeddedResource Include="data\deck-presets\**\*">
+      <LogicalName>deck-presets/%(RecursiveDir)%(Filename)%(Extension)</LogicalName>
+    </EmbeddedResource>
   </ItemGroup>
 
   <!-- GLSL fragment shaders: one file per animate effect under
@@ -429,6 +456,38 @@
     </Content>
   </ItemGroup>
 
+  <!-- libjpeg-turbo (TurboJPEG 3 API, BSD/IJG), provenance in Bundled/turbojpeg-NOTES.md.
+       Gated on the RID alone, never the host OS: a Windows box cross-publishing
+       -r osx-arm64 would otherwise drop turbojpeg.dll into a macOS publish. -->
+  <ItemGroup Condition="'$(RuntimeIdentifier)' == 'win-x64'">
+    <Content Include="Bundled\win-x64\turbojpeg\turbojpeg.dll">
+      <Link>turbojpeg.dll</Link>
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+      <CopyToPublishDirectory>PreserveNewest</CopyToPublishDirectory>
+    </Content>
+  </ItemGroup>
+  <ItemGroup Condition="'$(RuntimeIdentifier)' == 'osx-arm64'">
+    <Content Include="Bundled/osx-arm64/turbojpeg/libturbojpeg.dylib">
+      <Link>libturbojpeg.dylib</Link>
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+      <CopyToPublishDirectory>PreserveNewest</CopyToPublishDirectory>
+    </Content>
+  </ItemGroup>
+  <!-- The test project builds without a RID, so the encoder tests would silently only
+       ever exercise the ImageSharp fallback; give a RID-less build the host's copy. -->
+  <ItemGroup Condition="'$(RuntimeIdentifier)' == '' AND $([MSBuild]::IsOSPlatform('Windows'))">
+    <Content Include="Bundled\win-x64\turbojpeg\turbojpeg.dll">
+      <Link>turbojpeg.dll</Link>
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </Content>
+  </ItemGroup>
+  <ItemGroup Condition="'$(RuntimeIdentifier)' == '' AND $([MSBuild]::IsOSPlatform('OSX'))">
+    <Content Include="Bundled/osx-arm64/turbojpeg/libturbojpeg.dylib">
+      <Link>libturbojpeg.dylib</Link>
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </Content>
+  </ItemGroup>
+
   <!-- ArtInChip D213 streamed-panel device players: patched mpp_video_test
        builds pushed to the board's /tmp by AdbStreamTransport. DEV_TOOLS-only,
        matching the discovery registration. -->
@@ -499,6 +558,18 @@
   <ItemGroup Condition="'$(_NexusVCamDll)' != ''">
     <Content Include="$(_NexusVCamDll)">
       <Link>vcam\NexusVCam.dll</Link>
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+      <CopyToPublishDirectory>PreserveNewest</CopyToPublishDirectory>
+    </Content>
+  </ItemGroup>
+
+  <!-- Nexus Virtual Display: the IddCx driver package (driver DLL, INF, signed catalog) and its
+       native device host, built out-of-band from Bundled/windows/nexus-vdd (build.ps1 on the PC).
+       Ships to {output}/vdd/, where NexusVirtualMonitorHost installs it on first use. Absent on
+       hosts without the build; the secondary monitor then reports the driver as missing. -->
+  <ItemGroup Condition="($([MSBuild]::IsOSPlatform('Windows')) OR $(RuntimeIdentifier.StartsWith('win'))) AND Exists('Bundled\win-x64\vdd\NexusVirtualDisplay.inf')">
+    <Content Include="Bundled\win-x64\vdd\NexusVirtualDisplay.dll;Bundled\win-x64\vdd\NexusVirtualDisplay.inf;Bundled\win-x64\vdd\nexusvirtualdisplay.cat;Bundled\win-x64\vdd\NexusVirtualDisplayHost.exe">
+      <Link>vdd\%(Filename)%(Extension)</Link>
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
       <CopyToPublishDirectory>PreserveNewest</CopyToPublishDirectory>
     </Content>
@@ -683,13 +754,6 @@
     <Compile Remove="docs/**" />
     <Content Remove="docs/**" />
     <None Remove="docs/**" />
-    <!-- nexus-apps is a symlink to the submodule in the local layout, so
-         without this the Web SDK's default **/*.json glob sweeps its
-         package.json / tsconfig.json and a copy of every app manifest. The
-         payload itself is copied from dist/ by CopyAppsToOutput below. -->
-    <Compile Remove="nexus-apps/**" />
-    <Content Remove="nexus-apps/**" />
-    <None Remove="nexus-apps/**" />
     <!-- Xcode asset-catalog metadata, read by Bundled/macos/build-app.sh at
          bundle time, not by the app. -->
     <Content Remove="Bundled/**/*.json" />
@@ -783,6 +847,11 @@
     <Compile Remove="src/Platform/Mac/MacProcInfo.cs" />
     <Compile Remove="src/Platform/Mac/MacSmc.cs" />
     <Compile Remove="src/Platform/Mac/MacStatusBar.cs" />
+    <Compile Remove="src/Platform/Mac/MacWorkspaceFocusObserver.cs" />
+    <Compile Remove="src/Platform/Mac/MacLockInputWatch.cs" />
+    <Compile Remove="src/Peripherals/Hid/MacHidDevice.cs" />
+    <Compile Remove="src/Peripherals/Hid/MacHidEnumerator.cs" />
+    <Compile Remove="src/Peripherals/Hid/MacHidNative.cs" />
     <Compile Remove="src/Sensors/MacSensorProvider.cs" />
   </ItemGroup>
 
@@ -927,86 +996,6 @@
     <Delete Files="$(_OverlayPublishDir)nexus-overlay.pdb" />
   </Target>
 
-  <!-- Bundled SDK apps, from the separate private `nexus-apps` submodule
-       (../nexus-apps in this layout). apps/<id>/ is source; that repo's
-       `npm run build` assembles a complete, source-free ship tree, which we
-       copy wholesale - exactly as BuildWebForService copies nexus-web's dist
-       into wwwroot - so this file needs no per-file knowledge of a payload.
-       Building it here (rather than committing the bundle) keeps what ships in
-       step with the SDK runtime it is built against.
-
-       nexus-apps is OPTIONAL and private: a tree without it builds a complete
-       service that ships zero bundled apps, which AppRegistry already handles
-       (AppInstallPaths hands it a root that does not exist, and the scan
-       returns). Do not reinstate a hard error for the ABSENT case - it makes a
-       public clone of the umbrella unbuildable. The one error below is
-       narrower and fires only when the repo IS present but predates the ship
-       tree, which would otherwise ship an app-less build with no signal.
-
-       NOTE: NexusAppsRoot now names the repo ROOT, not its apps/ subdir - the
-       build script lives at the root. -->
-  <PropertyGroup>
-    <NexusAppsRoot Condition="'$(NexusAppsRoot)' == ''">$(MSBuildThisFileDirectory)..\nexus-apps</NexusAppsRoot>
-    <NexusAppsAvailable>false</NexusAppsAvailable>
-    <NexusAppsAvailable Condition="Exists('$(NexusAppsRoot)')">true</NexusAppsAvailable>
-    <!-- Absolute: the build Exec runs with WorkingDirectory=$(NexusAppsRoot),
-         so a relative out path would land in the payload repo, not here. Under
-         this project's obj/ because every worktree reaches nexus-apps through a
-         symlink to ONE shared checkout - a shared output tree would let
-         concurrent builds race and would dirty another checkout. -->
-    <NexusAppsDist Condition="'$(NexusAppsDist)' == ''">$(MSBuildThisFileDirectory)$(BaseIntermediateOutputPath)nexus-apps-dist</NexusAppsDist>
-  </PropertyGroup>
-  <Target Name="ReportNexusAppsSubmodule" BeforeTargets="BeforeBuild">
-    <Message Importance="high" Condition="'$(NexusAppsAvailable)' != 'true'"
-             Text="nexus-apps not present at $(NexusAppsRoot); building with no bundled apps. To include them: git submodule update --init nexus-apps" />
-  </Target>
-
-  <!-- Assemble the ship tree from source. The bundler resolves its deps from
-       nexus-web/sdk/node_modules (an isolated react@18 project - the host app
-       is react@19), which CI installs explicitly; a job with no node passes
-       -p:BuildApps=false, the same escape hatch BuildWeb offers. -->
-  <Target Name="BuildAppsForService" BeforeTargets="Build"
-          Condition="'$(BuildApps)' != 'false' AND '$(NexusAppsAvailable)' == 'true'">
-    <Error Condition="!Exists('$(NexusAppsRoot)\scripts\build.mjs')"
-           Text="nexus-apps at $(NexusAppsRoot) has no scripts/build.mjs - its pointer is behind this nexus-service. Bump both submodules together, or pass -p:BuildApps=false to build without bundled apps." />
-    <Message Text="Building nexus-apps payload..." Importance="high" />
-    <Exec Command="node scripts/build.mjs --out &quot;$(NexusAppsDist)&quot;" WorkingDirectory="$(NexusAppsRoot)" />
-    <Error Condition="!Exists('$(NexusAppsDist)')"
-           Text="nexus-apps build produced no payload at $(NexusAppsDist)." />
-  </Target>
-
-  <!-- Copied by target, not a Content glob: the ship tree is generated by the
-       target above, and a Content ItemGroup is evaluated before any target
-       runs, so a static glob would never see it. Both item groups live inside
-       their targets for the same reason. -->
-  <Target Name="CopyAppsToOutput" AfterTargets="BuildAppsForService" Condition="Exists('$(NexusAppsDist)')">
-    <RemoveDir Directories="$(OutputPath)apps" Condition="Exists('$(OutputPath)apps')" />
-    <ItemGroup>
-      <_NexusAppFile Include="$(NexusAppsDist)\**\*" />
-    </ItemGroup>
-    <Copy SourceFiles="@(_NexusAppFile)"
-          DestinationFiles="@(_NexusAppFile->'$(OutputPath)apps/%(RecursiveDir)%(Filename)%(Extension)')"
-          SkipUnchangedFiles="true" />
-  </Target>
-
-  <!-- Publish leg. PackageMacApp is declared earlier, so on macOS it runs first
-       and its .app never sees these files. macOS ships no bundled apps today
-       for a second, independent reason: build-app.sh copies the pre-rename
-       $STAGING/widgets path, while AppInstallPaths scans <BaseDirectory>/apps.
-       Fixing one of the two alone changes nothing. Windows and Linux package
-       $(PublishDir) after this target, so both carry the payload. -->
-  <Target Name="CopyAppsToPublish" AfterTargets="Publish" Condition="Exists('$(NexusAppsDist)')">
-    <PropertyGroup>
-      <_NexusPublishDir>$([MSBuild]::EnsureTrailingSlash('$(PublishDir)'))</_NexusPublishDir>
-    </PropertyGroup>
-    <ItemGroup>
-      <_NexusAppPublishFile Include="$(NexusAppsDist)\**\*" />
-    </ItemGroup>
-    <Copy SourceFiles="@(_NexusAppPublishFile)"
-          DestinationFiles="@(_NexusAppPublishFile->'$(_NexusPublishDir)apps/%(RecursiveDir)%(Filename)%(Extension)')"
-          SkipUnchangedFiles="true" />
-  </Target>
-
 
   <!-- GitHub Actions sets GITHUB_ACTIONS=true on every runner; nothing local
        (including a build-pc tar sync, which has no .git) sets it. build.yml
@@ -1066,7 +1055,7 @@
        the CI secret store and in obj/. Always written (empty when absent) so
        BuildInfo.ClientToken resolves in every configuration. -->
   <Target Name="SetClientCredential" BeforeTargets="CoreCompile">
-    <WriteLinesToFile File="$(IntermediateOutputPath)ClientCredential.g.cs" Lines="namespace Nexus.Service { internal static partial class BuildInfo { public const string ClientToken = &quot;$(NexusClientToken)&quot;%3B public const string PostHogKey = &quot;$(NexusPostHogKey)&quot;%3B } }" Overwrite="true" WriteOnlyWhenDifferent="true" />
+    <WriteLinesToFile File="$(IntermediateOutputPath)ClientCredential.g.cs" Lines="namespace Nexus.Service { internal static partial class BuildInfo { public const string ClientToken = &quot;$(NexusClientToken)&quot;%3B public const string PostHogKey = &quot;$(NexusPostHogKey)&quot;%3B public const string KlipyKey = &quot;$(NexusKlipyKey)&quot;%3B } }" Overwrite="true" WriteOnlyWhenDifferent="true" />
     <ItemGroup>
       <Compile Include="$(IntermediateOutputPath)ClientCredential.g.cs" />
     </ItemGroup>

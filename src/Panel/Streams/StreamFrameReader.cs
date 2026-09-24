@@ -53,14 +53,29 @@ public static class StreamFrameReader
 
         reader.Advance(StreamFraming.HeaderSize);
 
-        var payload = length == 0 ? Array.Empty<byte>() : new byte[length];
+        // Raw-BGRA panels ingest megabytes per frame; a fresh array each time is LOH churn
+        // and a gen2 collection every couple of seconds, so the payload comes from a pool
+        // and every consumer path returns it via StreamFrame.Release.
+        var payload = length == 0 ? Array.Empty<byte>() : StreamFrame.Pool.Rent((int)length);
         if (length > 0)
         {
-            reader.TryCopyTo(payload);
+            // Checked because the buffer is pooled: a short copy used to leave a zeroed
+            // fresh array, and now it would leave the previous renter's bytes.
+            if (!reader.TryCopyTo(payload.AsSpan(0, (int)length)))
+            {
+                StreamFrame.Pool.Return(payload);
+                return false;
+            }
             reader.Advance(length);
         }
 
-        frame = new StreamFrame { Flags = flags, Payload = payload };
+        frame = new StreamFrame
+        {
+            Flags = flags,
+            Payload = payload,
+            Length = (int)length,
+            Pooled = length > 0,
+        };
         buffer = buffer.Slice(reader.Position);
         return true;
     }

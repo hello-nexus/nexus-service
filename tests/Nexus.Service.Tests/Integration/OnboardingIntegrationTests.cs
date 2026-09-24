@@ -63,6 +63,50 @@ public sealed class OnboardingIntegrationTests : IClassFixture<NexusAppFactory>
     [Fact]
     public async Task LightingComplete_requires_a_token()
         => Assert.Equal(StatusCodes.Status401Unauthorized, await Send("POST", "/onboarding/lighting-complete", withToken: false));
+
+    [Fact]
+    public async Task PanelSwipe_status_is_reachable_and_defaults_incomplete()
+    {
+        var store = _factory.Services.GetRequiredService<IConfigStore>();
+        Assert.False(store.Load().PanelSwipeOnboardingCompleted);
+        Assert.Equal(StatusCodes.Status200OK, await Send("GET", "/onboarding/panel-swipe"));
+    }
+
+    [Fact]
+    public async Task PanelSwipe_status_requires_a_token()
+        => Assert.Equal(StatusCodes.Status401Unauthorized, await Send("GET", "/onboarding/panel-swipe", withToken: false));
+
+    [Fact]
+    public async Task PanelSwipeComplete_requires_a_token()
+        => Assert.Equal(StatusCodes.Status401Unauthorized, await Send("POST", "/onboarding/panel-swipe/complete", withToken: false));
+}
+
+public sealed class OnboardingPanelSwipeCompleteIntegrationTests : IClassFixture<NexusAppFactory>
+{
+    private readonly NexusAppFactory _factory;
+
+    public OnboardingPanelSwipeCompleteIntegrationTests(NexusAppFactory factory) => _factory = factory;
+
+    [Fact]
+    public async Task PanelSwipeComplete_sets_only_the_panel_swipe_flag()
+    {
+        var store = _factory.Services.GetRequiredService<IConfigStore>();
+        var token = _factory.Services.GetRequiredService<TokenService>().Token;
+
+        var ctx = await _factory.Server.SendAsync(c =>
+        {
+            c.Request.Method = "POST";
+            c.Request.Path = "/onboarding/panel-swipe/complete";
+            c.Connection.RemoteIpAddress = IPAddress.Loopback;
+            c.Request.Headers.Authorization = "Bearer " + token;
+        });
+
+        Assert.Equal(StatusCodes.Status200OK, ctx.Response.StatusCode);
+        Assert.True(store.Load().PanelSwipeOnboardingCompleted);
+        Assert.False(store.Load().OnboardingCompleted);
+        Assert.False(store.Load().FeaturesOnboardingCompleted);
+        Assert.False(store.Load().LightingOnboardingCompleted);
+    }
 }
 
 public sealed class OnboardingCompleteIntegrationTests : IClassFixture<NexusAppFactory>
@@ -160,6 +204,7 @@ public sealed class OnboardingResetIntegrationTests : IClassFixture<NexusAppFact
             s.OnboardingCompleted = true;
             s.FeaturesOnboardingCompleted = true;
             s.LightingOnboardingCompleted = true;
+            s.PanelSwipeOnboardingCompleted = true;
         });
 
         var ctx = await _factory.Server.SendAsync(c =>
@@ -174,5 +219,6 @@ public sealed class OnboardingResetIntegrationTests : IClassFixture<NexusAppFact
         Assert.False(store.Load().OnboardingCompleted);
         Assert.False(store.Load().FeaturesOnboardingCompleted);
         Assert.False(store.Load().LightingOnboardingCompleted);
+        Assert.False(store.Load().PanelSwipeOnboardingCompleted);
     }
 }

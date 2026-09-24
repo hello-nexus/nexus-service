@@ -188,6 +188,7 @@ public sealed class AuthMiddlewareIntegrationTests : IClassFixture<NexusAppFacto
         Assert.NotNull(frameSrc);
         Assert.Contains("https://www.youtube.com/embed/", frameSrc);
         Assert.Contains("https://www.youtube-nocookie.com/embed/", frameSrc);
+        Assert.Contains("https://build.hellonexus.com", frameSrc);
         Assert.DoesNotContain("frame-src *", csp);
     }
 

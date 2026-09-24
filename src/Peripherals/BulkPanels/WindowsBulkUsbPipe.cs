@@ -27,9 +27,13 @@ public sealed class WindowsBulkUsbPipe : IBulkUsbPipe
     private readonly SafeFileHandle _fileHandle;
     private readonly IntPtr _winUsbHandle;
     private readonly IntPtr _ioEvent;
+    private readonly IntPtr _readEvent;
     private readonly byte _writePipeId;
     private readonly byte _readPipeId;
     private readonly object _ioLock = new();
+    // Reads wait on their own event and lock, so a read parked on a quiet IN pipe never
+    // holds up frame writes; WinUSB takes overlapped transfers on different pipes at once.
+    private readonly object _readLock = new();
     private bool _disposed;
 
     public WindowsBulkUsbPipe(string devicePath, byte writePipeId, byte readPipeId)
@@ -68,6 +72,15 @@ public sealed class WindowsBulkUsbPipe : IBulkUsbPipe
             _fileHandle.Dispose();
             throw new IOException($"CreateEventW failed for {devicePath}: {err}");
         }
+        _readEvent = Slv3WinUsbInterop.CreateEventW(IntPtr.Zero, manualReset: true, initialState: false, IntPtr.Zero);
+        if (_readEvent == IntPtr.Zero)
+        {
+            var err = Marshal.GetLastWin32Error();
+            Slv3WinUsbInterop.CloseHandle(_ioEvent);
+            Slv3WinUsbInterop.WinUsb_Free(_winUsbHandle);
+            _fileHandle.Dispose();
+            throw new IOException($"CreateEventW failed for {devicePath}: {err}");
+        }
 
         var timeout = TransferTimeoutMs;
         Slv3WinUsbInterop.WinUsb_SetPipePolicy(
@@ -83,7 +96,9 @@ public sealed class WindowsBulkUsbPipe : IBulkUsbPipe
         }
     }
 
-    public bool Write(ReadOnlySpan<byte> data)
+    public bool Write(ReadOnlySpan<byte> data) => Write(_writePipeId, data);
+
+    public bool Write(byte pipeId, ReadOnlySpan<byte> data)
     {
         if (_disposed || data.Length == 0)
         {
@@ -94,7 +109,7 @@ public sealed class WindowsBulkUsbPipe : IBulkUsbPipe
         {
             // Re-checked inside the lock: writing through a handle Dispose already freed is
             // an access violation, not an exception.
-            return !_disposed && TransferLocked(_writePipeId, buffer, buffer.Length, TransferTimeoutMs, write: true) == buffer.Length;
+            return !_disposed && TransferLocked(pipeId, _ioEvent, buffer, buffer.Length, TransferTimeoutMs, write: true) == buffer.Length;
         }
     }
 
@@ -105,13 +120,13 @@ public sealed class WindowsBulkUsbPipe : IBulkUsbPipe
             return -1;
         }
         var scratch = new byte[buffer.Length];
-        lock (_ioLock)
+        lock (_readLock)
         {
             if (_disposed)
             {
                 return -1;
             }
-            var read = TransferLocked(_readPipeId, scratch, scratch.Length, (uint)Math.Max(1, timeoutMs), write: false);
+            var read = TransferLocked(_readPipeId, _readEvent, scratch, scratch.Length, (uint)Math.Max(1, timeoutMs), write: false);
             if (read > 0)
             {
                 scratch.AsSpan(0, read).CopyTo(buffer);
@@ -121,14 +136,14 @@ public sealed class WindowsBulkUsbPipe : IBulkUsbPipe
     }
 
     /// <summary>Bytes transferred, 0 on timeout, or -1 on failure.</summary>
-    private int TransferLocked(byte pipeId, byte[] buffer, int length, uint timeoutMs, bool write)
+    private int TransferLocked(byte pipeId, IntPtr ioEvent, byte[] buffer, int length, uint timeoutMs, bool write)
     {
         var pin = GCHandle.Alloc(buffer, GCHandleType.Pinned);
         var ovPtr = Marshal.AllocHGlobal(Marshal.SizeOf<NativeOverlapped>());
         try
         {
-            Marshal.StructureToPtr(new NativeOverlapped { EventHandle = _ioEvent }, ovPtr, false);
-            Slv3WinUsbInterop.ResetEvent(_ioEvent);
+            Marshal.StructureToPtr(new NativeOverlapped { EventHandle = ioEvent }, ovPtr, false);
+            Slv3WinUsbInterop.ResetEvent(ioEvent);
             var ok = write
                 ? Slv3WinUsbInterop.WinUsb_WritePipe(
                     _winUsbHandle, pipeId, pin.AddrOfPinnedObject(), (uint)length, out var transferred, ovPtr)
@@ -137,7 +152,7 @@ public sealed class WindowsBulkUsbPipe : IBulkUsbPipe
 
             if (!ok && Marshal.GetLastWin32Error() == (int)Slv3WinUsbInterop.ERROR_IO_PENDING)
             {
-                if (Slv3WinUsbInterop.WaitForSingleObject(_ioEvent, timeoutMs) != WaitObject0)
+                if (Slv3WinUsbInterop.WaitForSingleObject(ioEvent, timeoutMs) != WaitObject0)
                 {
                     Slv3WinUsbInterop.WinUsb_AbortPipe(_winUsbHandle, pipeId);
                     Slv3WinUsbInterop.WinUsb_GetOverlappedResult(_winUsbHandle, ovPtr, out _, wait: true);
@@ -158,6 +173,7 @@ public sealed class WindowsBulkUsbPipe : IBulkUsbPipe
     public void Dispose()
     {
         lock (_ioLock)
+        lock (_readLock)
         {
             if (_disposed)
             {
@@ -167,6 +183,10 @@ public sealed class WindowsBulkUsbPipe : IBulkUsbPipe
             if (_ioEvent != IntPtr.Zero)
             {
                 Slv3WinUsbInterop.CloseHandle(_ioEvent);
+            }
+            if (_readEvent != IntPtr.Zero)
+            {
+                Slv3WinUsbInterop.CloseHandle(_readEvent);
             }
             if (_winUsbHandle != IntPtr.Zero)
             {

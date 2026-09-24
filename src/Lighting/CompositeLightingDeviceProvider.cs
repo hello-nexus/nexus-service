@@ -146,8 +146,8 @@ public sealed class CompositeLightingDeviceProvider : ILightingDeviceProvider
             }
             if (_lianLi.IsConnected)
             {
-                // The "Lian Li Uni Hub - SL Infinity" detector is disabled in
-                // openrgb-headless; strip by name too so a stale OpenRGB entry
+                // Every HID Uni Hub detector is disabled in openrgb-headless;
+                // strip by name too so a stale OpenRGB entry
                 // (the "detected but not drivable" zombie) can't shadow our cards.
                 rgb.Devices.RemoveAll(d =>
                     d.Name.Contains("Lian Li Uni Hub", StringComparison.OrdinalIgnoreCase));

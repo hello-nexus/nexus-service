@@ -20,6 +20,14 @@ public sealed class AudioSessionDto
     /// <summary>False once every session in the group has gone Inactive: the app
     /// still holds the endpoint but is rendering nothing.</summary>
     public bool Active { get; set; }
+    /// <summary>Render endpoint ids this strip has a non-expired session on,
+    /// across every active output, not just the default one.</summary>
+    public List<string> DeviceIds { get; set; } = new();
+    /// <summary>True when one of those sessions is on the default eConsole
+    /// endpoint. Defaults true so a snapshot from an older helper build (no
+    /// such field) still shows every strip rather than hiding it from the
+    /// default-output-filtered mixer.</summary>
+    public bool OnDefault { get; set; } = true;
 }
 
 /// <summary>Well-known strip ids that are not process names.</summary>

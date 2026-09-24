@@ -88,7 +88,7 @@ public sealed class StreamDeckConnectionWorker : BackgroundService, IDeckSurface
     private readonly DeviceControlGate _gate;
     private readonly IConfigStore _store;
     private readonly IDeckActionExecutor _executor;
-    private readonly StreamDeckImageCache _imageCache;
+    private readonly Nexus.Service.Rendering.DeckKeyRenderer _keyRenderer;
     private readonly MultiplexHub _hub;
     private readonly ISensorProvider _sensors;
     private readonly IWeatherProvider? _weather;
@@ -152,7 +152,7 @@ public sealed class StreamDeckConnectionWorker : BackgroundService, IDeckSurface
     /// <summary>Lock-free hint so the animation loop skips taking _lock every frame while no ramp is running; the authoritative check is _brightnessRamps under _lock.</summary>
     private volatile bool _anyRampActive;
 
-    /// <summary>Arms and disarms the helper's lock-screen input poll (see SleepBlackoutCoordinator.LockInputWatch). Set by the Windows helper wiring; null elsewhere, which means no wake-on-input.</summary>
+    /// <summary>Arms and disarms the lock-screen input poll (see SleepBlackoutCoordinator.LockInputWatch): the Windows helper's via TrayBootstrap, MacLockInputWatch via MacAppBootstrap; null on Linux, which means no wake-on-input.</summary>
     public Action<bool>? LockInputWatch { get; set; }
 
     private sealed class BrightnessRamp
@@ -247,8 +247,15 @@ public sealed class StreamDeckConnectionWorker : BackgroundService, IDeckSurface
     /// </summary>
     private readonly Dictionary<string, uint> _tileBroadcastHash = new(StringComparer.Ordinal);
 
+    /// <summary>Per "{serial}:{keyIndex}" last-pushed Recent Apps key hash (0 reserved for a blank/cleared key), gating both the HID write and the tile broadcast - unlike monitoring, a Recent Apps key's content only changes when the ring does, so one hash serves both.</summary>
+    private readonly Dictionary<string, uint> _recentAppsLastHash = new(StringComparer.Ordinal);
+    /// <summary>Each deck's Recent Apps display order (process keys) and the focus it was laid out for, so a change only reorders when RecentAppsTracker.StableOrder says so. Guarded by _lock.</summary>
+    private readonly Dictionary<string, (List<string> Order, string? Focused)> _recentAppsOrderBySerial = new(StringComparer.Ordinal);
+
     private readonly TimeProvider _clock;
     private readonly SessionLockListener? _sessionLock;
+    private readonly Nexus.Service.Deck.RecentAppsState? _recentAppsState;
+    private readonly Nexus.Service.Deck.RecentAppsActivator? _recentAppsActivator;
 
     public StreamDeckConnectionWorker(
         IHidEnumerator hid,
@@ -256,7 +263,7 @@ public sealed class StreamDeckConnectionWorker : BackgroundService, IDeckSurface
         DeviceControlGate gate,
         IConfigStore store,
         IDeckActionExecutor executor,
-        StreamDeckImageCache imageCache,
+        Nexus.Service.Rendering.DeckKeyRenderer keyRenderer,
         MultiplexHub hub,
         ISensorProvider sensors,
         SimulatedStreamDeckSurface? simulated = null,
@@ -264,14 +271,16 @@ public sealed class StreamDeckConnectionWorker : BackgroundService, IDeckSurface
         IWeatherProvider? weather = null,
         IFpsProvider? fps = null,
         Nexus.Service.Cooling.IFanControlProvider? fans = null,
-        SessionLockListener? sessionLock = null)
+        SessionLockListener? sessionLock = null,
+        Nexus.Service.Deck.RecentAppsState? recentAppsState = null,
+        Nexus.Service.Deck.RecentAppsActivator? recentAppsActivator = null)
     {
         _hid = hid;
         _presence = presence;
         _gate = gate;
         _store = store;
         _executor = executor;
-        _imageCache = imageCache;
+        _keyRenderer = keyRenderer;
         _hub = hub;
         _sensors = sensors;
         _simulated = simulated;
@@ -280,8 +289,28 @@ public sealed class StreamDeckConnectionWorker : BackgroundService, IDeckSurface
         _fps = fps;
         _fans = fans;
         _sessionLock = sessionLock;
+        _recentAppsState = recentAppsState;
+        _recentAppsActivator = recentAppsActivator;
         _hub.OnTopicFirstSubscriber += OnStreamDeckTilesFirstSubscriber;
         _sessionLock?.LockChanged += OnSessionLockChanged;
+    }
+
+    /// <summary>
+    /// The LocalSystem service connects a deck and paints its keys at boot,
+    /// before the user-session helper that serves app icons exists; those
+    /// keys went out with the generic fallback (uncached, see
+    /// DeckKeyRenderer), so repaint every deck now that icons resolve. Wired
+    /// to the helper registry's Connected event by the Windows DI registration.
+    /// </summary>
+    public void OnHelperConnected()
+    {
+        lock (_lock)
+        {
+            foreach (var surface in _surfaces.Values.ToList())
+            {
+                PushCurrentView(surface, viewChanged: false);
+            }
+        }
     }
 
     /// <summary>
@@ -306,6 +335,12 @@ public sealed class StreamDeckConnectionWorker : BackgroundService, IDeckSurface
         lock (_lock)
         {
             _tileBroadcastHash.Clear();
+            // Static keys only broadcast from a view push, so the editor that
+            // just opened needs one; monitoring/weather catch up on their tick.
+            foreach (var surface in _surfaces.Values.ToList())
+            {
+                PushCurrentView(surface, viewChanged: false);
+            }
         }
     }
 
@@ -377,8 +412,7 @@ public sealed class StreamDeckConnectionWorker : BackgroundService, IDeckSurface
             {
                 return false;
             }
-            var config = LoadConfig(serial);
-            var pageCount = Math.Max(config.Pages.Count, 1);
+            var pageCount = IsRecentAppsMode(serial) ? RecentAppsPageCountLocked(serial) : Math.Max(LoadConfig(serial).Pages.Count, 1);
             _currentPageBySerial[serial] = Math.Clamp(page, 0, pageCount - 1);
             _folderPathsBySerial[serial] = new List<int>(folderPath);
             var surface = FindBySerialLocked(serial);
@@ -810,6 +844,30 @@ public sealed class StreamDeckConnectionWorker : BackgroundService, IDeckSurface
                 s.StreamDeck.Decks[surface.Serial] = persisted;
             }
             persisted.ProductId = surface.Model.ProductId;
+
+            // A deck seen for the first time since schema v18 has no
+            // instance row yet (the migration only hoists pre-v18 decks);
+            // join the first host-wide preset like CreateLazyWidgetInstance
+            // does, or seed a fresh one at this deck's own grid when none exist.
+            var instanceId = DeckInstanceResolver.PhysicalInstanceId(surface.Serial);
+            if (!s.StreamDeck.Instances.ContainsKey(instanceId))
+            {
+                var presetId = s.StreamDeck.Presets.Count > 0 ? s.StreamDeck.Presets[0].Id : null;
+                if (presetId is null)
+                {
+                    var preset = new DeckPreset
+                    {
+                        Id = DeckModesMigration.NewPresetId(),
+                        Name = DeckModesMigration.UniqueName(s.StreamDeck.Presets, "Deck", surface.Model.Name),
+                        Cols = surface.Model.Columns,
+                        Rows = surface.Model.Rows,
+                        Deck = DeckConfigNavigation.EmptyConfig(),
+                    };
+                    s.StreamDeck.Presets.Add(preset);
+                    presetId = preset.Id;
+                }
+                s.StreamDeck.Instances[instanceId] = new DeckInstance { Mode = "custom", ActivePresetId = presetId };
+            }
         });
 
         _lastInputAt[surface.Serial] = _clock.GetUtcNow();
@@ -1218,6 +1276,12 @@ public sealed class StreamDeckConnectionWorker : BackgroundService, IDeckSurface
     {
         WakeIfAsleep(surface);
 
+        if (IsRecentAppsMode(surface.Serial))
+        {
+            HandleRecentAppsKeyDown(surface, physicalIndex);
+            return;
+        }
+
         var serial = surface.Serial;
         var page = GetCurrentPageLocked(serial);
         if (!_folderPathsBySerial.TryGetValue(serial, out var folderPath))
@@ -1263,6 +1327,95 @@ public sealed class StreamDeckConnectionWorker : BackgroundService, IDeckSurface
     }
 
     /// <summary>
+    /// Recent Apps mode key press: nav keys page the tracked view (no folder
+    /// concept in this mode), a press on the focused app is a no-op, and any
+    /// other app key dispatches through RecentAppsActivator off this thread -
+    /// never through HandleSlotAction/_executor, since this mode's DeckSlot
+    /// shape is render-only. No hold-to-edit: a blank filler key is simply
+    /// inert.
+    /// </summary>
+    private void HandleRecentAppsKeyDown(IStreamDeckSurface surface, int physicalIndex)
+    {
+        var serial = surface.Serial;
+        var pages = RecentAppsPagesLocked(serial, surface.Model.Columns, surface.Model.Rows);
+        var pageCount = Math.Max(pages.Count, 1);
+        var page = Math.Clamp(GetCurrentPageLocked(serial), 0, pageCount - 1);
+        var keys = page < pages.Count ? pages[page] : new List<Nexus.Service.Deck.RecentKey>();
+        if (physicalIndex < 0 || physicalIndex >= keys.Count)
+        {
+            return;
+        }
+        var key = keys[physicalIndex];
+
+        if (key.Kind is "navNext" or "navPrev")
+        {
+            _currentPageBySerial[serial] = Math.Clamp(page + (key.Kind == "navNext" ? 1 : -1), 0, pageCount - 1);
+            PushRecentAppsView(surface, viewChanged: true);
+            BroadcastNav(serial, _currentPageBySerial[serial], new List<int>());
+            return;
+        }
+        if (key.Kind != "app" || key.ProcessKey is null)
+        {
+            return;
+        }
+
+        MarkKeyHeld(serial, physicalIndex);
+        PushRecentAppKeyPressedVariant(surface, physicalIndex, key);
+
+        if (key.Focused || _recentAppsActivator is null)
+        {
+            return;
+        }
+
+        var ring = _recentAppsState?.RingSnapshot() ?? new List<RecentApp>();
+        var entry = ring.Find(a => a.ProcessKey == key.ProcessKey) ?? new RecentApp
+        {
+            ProcessKey = key.ProcessKey,
+            Name = key.Name ?? key.ProcessKey,
+            ShortcutId = key.ShortcutId,
+            ExePath = key.ExePath,
+        };
+        var activator = _recentAppsActivator;
+        LastDispatchTask = Task.Run(async () =>
+        {
+            try
+            {
+                await activator.ActivateAsync(entry).ConfigureAwait(false);
+            }
+            catch (Exception ex)
+            {
+                ServiceLog.Error($"[streamdeck] recent-apps activation crashed serial={serial} key={physicalIndex}: {ex.Message}");
+            }
+        });
+    }
+
+    /// <summary>
+    /// Pressed-inset feedback for a Recent Apps key (parity with
+    /// HandlePressVisual's static-key path, missing since this mode's launch).
+    /// Re-renders from the key's own view state rather than a bytes cache -
+    /// this mode has no per-key wire-bytes cache like monitoring's
+    /// _monitoringLastPushedBytes - and folds Focused into the pressed-cache
+    /// key since ComputeContentHash does not, so a focused/unfocused render of
+    /// the same app never collide.
+    /// </summary>
+    private void PushRecentAppKeyPressedVariant(IStreamDeckSurface surface, int physicalIndex, Nexus.Service.Deck.RecentKey key)
+    {
+        var deck = _store.Load().StreamDeck.Decks.TryGetValue(surface.Serial, out var d) ? d : null;
+        var slot = RecentKeyToSlot(key);
+        var bytes = _keyRenderer.Render(slot, isToggleOn: false, surface.Model, deck?.Orientation ?? 0, selected: key.Focused);
+        if (bytes is null)
+        {
+            return;
+        }
+        var hash = Nexus.Service.Rendering.DeckKeyRenderer.ComputeContentHash(slot, isToggleOn: false);
+        var pressed = GetOrRenderPressedVariant($"{hash}|recent|{key.Focused}", bytes, surface.Model);
+        if (pressed is not null)
+        {
+            surface.SetKeyImage(physicalIndex, pressed);
+        }
+    }
+
+    /// <summary>
     /// Restores a physical key's un-pressed image on release, mirroring
     /// HandleKeyDown's resolution. Skipped for a key HandlePressVisual never
     /// marked held: the back key and a folder/page-nav key (their PushCurrentView
@@ -1273,6 +1426,20 @@ public sealed class StreamDeckConnectionWorker : BackgroundService, IDeckSurface
     private void HandleKeyUp(IStreamDeckSurface surface, int physicalIndex)
     {
         var serial = surface.Serial;
+        // Recent Apps mode has no config/folder view to resolve a slot from
+        // (ResolveView below is the custom/appAware config tree), so a held key
+        // there is restored by re-rendering the tracked view instead. Dropping
+        // only this key's hash and pushing unforced repaints just the
+        // released key, not every key on the page.
+        if (IsRecentAppsMode(serial))
+        {
+            if (UnmarkKeyHeld(serial, physicalIndex))
+            {
+                _recentAppsLastHash.Remove($"{serial}:{physicalIndex}");
+                PushRecentAppsView(surface, viewChanged: false);
+            }
+            return;
+        }
         // Released before the hold-to-edit fired: drop the fill ring and go
         // back to blank. A hold that already fired is no longer tracked here
         // (AnimateHolds cleared it and blanked the key), so it falls through.
@@ -1315,7 +1482,9 @@ public sealed class StreamDeckConnectionWorker : BackgroundService, IDeckSurface
         }
 
         var deck = _store.Load().StreamDeck.Decks.TryGetValue(serial, out var d) ? d : null;
-        var (bytes, _) = ResolveSlotImage(serial, page, folderPath, slotIndex, slot, deck);
+        var latchKey = BuildLatchKey(serial, folderPath, slotIndex);
+        var isToggleOn = slot.Action?.Type == "toggle" && _executor.IsToggleOn(slot.Action.State, latchKey);
+        var bytes = _keyRenderer.Render(slot, isToggleOn, surface.Model, deck?.Orientation ?? 0);
         if (bytes is not null)
         {
             surface.SetKeyImage(physicalIndex, bytes);
@@ -1358,11 +1527,14 @@ public sealed class StreamDeckConnectionWorker : BackgroundService, IDeckSurface
         }
 
         var deck = _store.Load().StreamDeck.Decks.TryGetValue(serial, out var d) ? d : null;
-        var (bytes, hash) = ResolveSlotImage(serial, page, folderPath, slotIndex, slot, deck);
-        if (bytes is null || hash is null)
+        var latchKey = BuildLatchKey(serial, folderPath, slotIndex);
+        var isToggleOn = slot.Action?.Type == "toggle" && _executor.IsToggleOn(slot.Action.State, latchKey);
+        var bytes = _keyRenderer.Render(slot, isToggleOn, surface.Model, deck?.Orientation ?? 0);
+        if (bytes is null)
         {
             return;
         }
+        var hash = Nexus.Service.Rendering.DeckKeyRenderer.ComputeContentHash(slot, isToggleOn);
 
         var pressed = GetOrRenderPressedVariant(hash, bytes, surface.Model);
         if (pressed is not null)
@@ -1425,25 +1597,6 @@ public sealed class StreamDeckConnectionWorker : BackgroundService, IDeckSurface
     /// <summary>An unassigned key: no action, no folder, and no explicit background color, so it renders off (blank black) rather than an uploaded fill. A color-only slot stays a decorative colored key.</summary>
     private static bool IsBlankOffSlot(DeckSlot slot) =>
         slot.Action is null && slot.Folder is null && string.IsNullOrEmpty(slot.Color);
-
-    /// <summary>
-    /// Resolves the wire bytes currently mapped to a leaf/toggle slot (state
-    /// "0" or "1", matching PushCurrentView's per-key resolution) plus the
-    /// content hash they were stored under, keyed by the page-qualified v2
-    /// ImageRefs path (DeckConfigNavigation.BuildImageRefSlotPath) - or
-    /// (null, null) when unmapped. A legacy pre-v2 key never matches here,
-    /// so it renders as unmapped until the next editor sync re-uploads it
-    /// under its v2 key.
-    /// </summary>
-    private (byte[]? Bytes, string? Hash) ResolveSlotImage(string serial, int page, List<int> folderPath, int slotIndex, DeckSlot slot, PhysicalDeckSettings? deck)
-    {
-        var latchKey = BuildLatchKey(serial, folderPath, slotIndex);
-        var state = slot.Action?.Type == "toggle" && _executor.IsToggleOn(slot.Action.State, latchKey) ? "1" : "0";
-        var slotPath = DeckConfigNavigation.BuildImageRefSlotPath(page, folderPath, slotIndex);
-        var hash = deck is not null && deck.ImageRefs.TryGetValue($"{slotPath}/{state}", out var h) ? h : null;
-        var bytes = hash is not null ? _imageCache.Load(serial, hash) : null;
-        return (bytes, hash);
-    }
 
     /// <summary>Covers a handful of distinct source images held in memory at once without unbounded growth; a cache miss just re-renders.</summary>
     private const int PressedImageCacheCapacity = 64;
@@ -1683,7 +1836,16 @@ public sealed class StreamDeckConnectionWorker : BackgroundService, IDeckSurface
             {
                 continue;
             }
-            var config = deck.Deck;
+            // Recent Apps has no preset/config axis of its own - the custom-mode
+            // resolution below would clamp _currentPageBySerial to whatever
+            // (usually empty) custom config this instance happens to carry,
+            // stomping the page a recentApps press just set.
+            if (IsRecentAppsMode(surface.Serial))
+            {
+                continue;
+            }
+            var config = DeckInstanceResolver.ResolveFittedConfig(
+                settings, DeckInstanceResolver.PhysicalInstanceId(surface.Serial), surface.Model.Columns, surface.Model.Rows, DeckTargetKind.Physical);
             var page = ClampCurrentPageLocked(surface.Serial, config);
             var folderPath = _folderPathsBySerial.TryGetValue(surface.Serial, out var fp) ? fp : new List<int>();
             var view = DeckConfigNavigation.ResolveView(config, page, folderPath);
@@ -1834,7 +1996,7 @@ public sealed class StreamDeckConnectionWorker : BackgroundService, IDeckSurface
         var rendered = WeatherTileRenderer.Render(input, model.KeyPixelSize);
         try
         {
-            return (rendered, DeckImageToWireBytes(rendered, model, orientation));
+            return (rendered, DeckWireImageEncoder.Encode(rendered, model, orientation));
         }
         catch
         {
@@ -1896,7 +2058,15 @@ public sealed class StreamDeckConnectionWorker : BackgroundService, IDeckSurface
             {
                 continue;
             }
-            var config = deck.Deck;
+            // See the matching guard in RefreshWeatherKeys: Recent Apps has no
+            // custom-mode page axis, so resolving one here would stomp the
+            // page a recentApps nav press just set.
+            if (IsRecentAppsMode(surface.Serial))
+            {
+                continue;
+            }
+            var config = DeckInstanceResolver.ResolveFittedConfig(
+                settings, DeckInstanceResolver.PhysicalInstanceId(surface.Serial), surface.Model.Columns, surface.Model.Rows, DeckTargetKind.Physical);
             var page = ClampCurrentPageLocked(surface.Serial, config);
             var folderPath = _folderPathsBySerial.TryGetValue(surface.Serial, out var fp) ? fp : new List<int>();
             var view = DeckConfigNavigation.ResolveView(config, page, folderPath);
@@ -2138,34 +2308,13 @@ public sealed class StreamDeckConnectionWorker : BackgroundService, IDeckSurface
         var rendered = MonitoringTileRenderer.Render(input, model.KeyPixelSize);
         try
         {
-            return (rendered, DeckImageToWireBytes(rendered, model, orientation));
+            return (rendered, DeckWireImageEncoder.Encode(rendered, model, orientation));
         }
         catch
         {
             rendered.Dispose();
             throw;
         }
-    }
-
-    /// <summary>Orients (user rotation), applies the model's fixed wire transform, and encodes a square rendered key image to this model's wire bytes, or null when the encode fails or the length does not fit the model.</summary>
-    private static byte[]? DeckImageToWireBytes(Image<Rgba32> rendered, StreamDeckModel model, int orientation)
-    {
-        var raw = new DeckRawImage(rendered.Width, rendered.Height, RenderKit.ToRgba32Bytes(rendered));
-        var oriented = DeckKeyTransformer.ApplyOrientation(raw, orientation);
-        var transformed = DeckKeyTransformer.ApplyKeyTransform(oriented, DeckKeyTransformer.ParseTransform(model.Transform));
-
-        byte[] wireBytes;
-        using (var transformedImage = RenderKit.FromRgba32Bytes(transformed.Data, transformed.Width, transformed.Height))
-        {
-            wireBytes = model.ImageFormat switch
-            {
-                StreamDeckImageFormat.Bmp => BmpEncoder.Encode(RenderKit.ToRgb24(transformedImage), transformed.Width, transformed.Height),
-                StreamDeckImageFormat.Jpeg => RenderKit.EncodeJpeg(transformedImage),
-                _ => Array.Empty<byte>(),
-            };
-        }
-
-        return wireBytes.Length == 0 || !model.IsValidWireImageLength(wireBytes.Length) ? null : wireBytes;
     }
 
     /// <summary>
@@ -2294,6 +2443,18 @@ public sealed class StreamDeckConnectionWorker : BackgroundService, IDeckSurface
         }
         InvalidateMonitoringHashesForSerial(serial);
         InvalidateTileBroadcastHashesForSerial(serial);
+        InvalidateRecentAppsHashesForSerial(serial);
+        _recentAppsOrderBySerial.Remove(serial);
+    }
+
+    /// <summary>Drops last-pushed Recent Apps key hashes for this serial, so a disconnect/mode re-entry (or a real view change) never skips a repaint on a coincidental hash match left over from a previous session.</summary>
+    private void InvalidateRecentAppsHashesForSerial(string serial)
+    {
+        var prefix = serial + ":";
+        foreach (var k in _recentAppsLastHash.Keys.Where(k => k.StartsWith(prefix, StringComparison.Ordinal)).ToList())
+        {
+            _recentAppsLastHash.Remove(k);
+        }
     }
 
     /// <summary>
@@ -2390,6 +2551,10 @@ public sealed class StreamDeckConnectionWorker : BackgroundService, IDeckSurface
         return slot?.Action?.Type == "monitoring";
     }
 
+    /// <summary>True when the physical instance for serial is in Recent Apps mode - the only place this worker checks instance mode, since every other mode (custom, appAware) renders through the normal preset/FitToGrid path.</summary>
+    private bool IsRecentAppsMode(string serial) =>
+        Nexus.Service.Deck.DeckInstanceResolver.ResolveMode(_store.Load().StreamDeck, Nexus.Service.Deck.DeckInstanceResolver.PhysicalInstanceId(serial)) == "recentApps";
+
     /// <summary>
     /// Repaints every key of a deck's current view. viewChanged is true for
     /// a real navigation (SetNav, folder/page nav, connect) and false for a
@@ -2415,6 +2580,12 @@ public sealed class StreamDeckConnectionWorker : BackgroundService, IDeckSurface
     /// </summary>
     private void PushCurrentView(IStreamDeckSurface surface, bool viewChanged)
     {
+        if (IsRecentAppsMode(surface.Serial))
+        {
+            PushRecentAppsView(surface, viewChanged);
+            return;
+        }
+
         var entryPage = GetCurrentPageLocked(surface.Serial);
         if (!_folderPathsBySerial.TryGetValue(surface.Serial, out var folderPath))
         {
@@ -2425,7 +2596,8 @@ public sealed class StreamDeckConnectionWorker : BackgroundService, IDeckSurface
         var tempUnit = snapshot.Units.MonitoringTempUnit;
         var numberFormat = snapshot.Units.NumberFormat;
         settings.Decks.TryGetValue(surface.Serial, out var deck);
-        var config = deck?.Deck ?? new DeckConfig();
+        var config = DeckInstanceResolver.ResolveFittedConfig(
+            settings, DeckInstanceResolver.PhysicalInstanceId(surface.Serial), surface.Model.Columns, surface.Model.Rows, DeckTargetKind.Physical);
         EvictOrphanedMonitoringEntriesForSerial(surface.Serial, config);
         var page = ClampCurrentPageLocked(surface.Serial, config);
 
@@ -2502,10 +2674,13 @@ public sealed class StreamDeckConnectionWorker : BackgroundService, IDeckSurface
                 continue;
             }
 
-            var (bytes, _) = ResolveSlotImage(surface.Serial, page, folderPath, slotIndex, slot, deck);
-            if (bytes is not null)
+            var latchKey = BuildLatchKey(surface.Serial, folderPath, slotIndex);
+            var isToggleOn = slot.Action?.Type == "toggle" && _executor.IsToggleOn(slot.Action.State, latchKey);
+            var render = _keyRenderer.RenderWithPreview(slot, isToggleOn, surface.Model, deck?.Orientation ?? 0);
+            if (render.Wire is not null)
             {
-                surface.SetKeyImage(key, bytes);
+                surface.SetKeyImage(key, render.Wire);
+                BroadcastPreviewTile(surface.Serial, page, DeckConfigNavigation.BuildSlotPath(folderPath, slotIndex), render.PreviewJpeg);
             }
             else
             {
@@ -2530,13 +2705,9 @@ public sealed class StreamDeckConnectionWorker : BackgroundService, IDeckSurface
         }
     }
 
-    /// <summary>Reserved image-ref key the web uploads once per deck via PUT .../images/back/0 (not a real DeckSlot).</summary>
-    private const string BackSlotPath = "back";
-
     private void PushBackKey(IStreamDeckSurface surface, PhysicalDeckSettings? deck)
     {
-        var hash = deck is not null && deck.ImageRefs.TryGetValue($"{BackSlotPath}/0", out var h) ? h : null;
-        var bytes = hash is not null ? _imageCache.Load(surface.Serial, hash) : null;
+        var bytes = _keyRenderer.RenderBackKey(surface.Model, deck?.Orientation ?? 0);
         if (bytes is not null)
         {
             surface.SetKeyImage(0, bytes);
@@ -2547,10 +2718,159 @@ public sealed class StreamDeckConnectionWorker : BackgroundService, IDeckSurface
         }
     }
 
+    /// <summary>
+    /// Renders and pushes the current Recent Apps page for a physical deck in
+    /// recentApps mode: the ring (persisted) plus the in-memory focused
+    /// process key laid out via RecentAppsPagesLocked, one key per
+    /// physical index, no folder concept. The tracked page (_currentPageBySerial,
+    /// shared with custom mode - a mode switch always resets nav to 0 first)
+    /// clamps to the view's own page count. Each key's own last-pushed-hash
+    /// gate means an ordinary focus-change refresh (viewChanged false) only
+    /// writes the keys that actually changed; a real view change (connect,
+    /// page nav, mode switch) forces every key to repaint since a stale hash
+    /// from a previous session could otherwise coincide. Every key broadcasts
+    /// a streamdeckTiles preview like a monitoring tile, since Recent Apps
+    /// content changes on focus rather than on a preset edit.
+    /// </summary>
+    private void PushRecentAppsView(IStreamDeckSurface surface, bool viewChanged = false)
+    {
+        var serial = surface.Serial;
+        if (viewChanged)
+        {
+            InvalidateRecentAppsHashesForSerial(serial);
+        }
+        _store.Load().StreamDeck.Decks.TryGetValue(serial, out var deck);
+        var pages = RecentAppsPagesLocked(serial, surface.Model.Columns, surface.Model.Rows);
+
+        var pageCount = Math.Max(pages.Count, 1);
+        var page = Math.Clamp(GetCurrentPageLocked(serial), 0, pageCount - 1);
+        _currentPageBySerial[serial] = page;
+        var keys = page < pages.Count ? pages[page] : new List<Nexus.Service.Deck.RecentKey>();
+
+        for (var i = 0; i < surface.Model.KeyCount; i++)
+        {
+            var hashKey = $"{serial}:{i}";
+            var key = i < keys.Count ? keys[i] : new Nexus.Service.Deck.RecentKey { Kind = "blank" };
+            if (key.Kind == "blank")
+            {
+                if (_recentAppsLastHash.TryGetValue(hashKey, out var lastBlank) && lastBlank == 0)
+                {
+                    continue;
+                }
+                _recentAppsLastHash[hashKey] = 0;
+                surface.ClearKey(i);
+                continue;
+            }
+            var slot = RecentKeyToSlot(key);
+            var render = _keyRenderer.RenderWithPreview(slot, isToggleOn: false, surface.Model, deck?.Orientation ?? 0, selected: key.Focused);
+            var bytes = render.Wire;
+            if (bytes is null)
+            {
+                _recentAppsLastHash[hashKey] = 0;
+                surface.ClearKey(i);
+                continue;
+            }
+            // The editor preview has its own hash (cleared on first
+            // subscribe), so a key the panel already shows still reaches a
+            // freshly opened editor.
+            BroadcastPreviewTile(serial, page, i.ToString(System.Globalization.CultureInfo.InvariantCulture), render.PreviewJpeg);
+            // 0 is reserved for "blank"; an all-zero content hash is
+            // astronomically unlikely for a real rendered key and would only
+            // cost one redundant repaint if it ever happened.
+            var hash = ComputeFnv1aHash(bytes);
+            if (_recentAppsLastHash.TryGetValue(hashKey, out var lastHash) && lastHash == hash)
+            {
+                continue;
+            }
+            _recentAppsLastHash[hashKey] = hash;
+            surface.SetKeyImage(i, bytes);
+        }
+    }
+
+    /// <summary>
+    /// Pushes a key's upright JPEG preview on streamdeckTiles when the editor
+    /// is listening and the face changed since the last broadcast
+    /// (_tileBroadcastHash, cleared on first subscribe and per push of the
+    /// same view). slotPath follows the monitoring/weather convention:
+    /// page-relative dot chain, or the plain key index in Recent Apps mode.
+    /// </summary>
+    private void BroadcastPreviewTile(string serial, int page, string slotPath, byte[]? previewJpeg)
+    {
+        if (previewJpeg is null || !_hub.TopicHasSubscribers(PanelTopics.StreamDeckTiles))
+        {
+            return;
+        }
+        var tileKey = $"{serial}:{page}:{slotPath}";
+        var hash = ComputeFnv1aHash(previewJpeg);
+        if (_tileBroadcastHash.TryGetValue(tileKey, out var last) && last == hash)
+        {
+            return;
+        }
+        _tileBroadcastHash[tileKey] = hash;
+        BroadcastTile(serial, page, slotPath, previewJpeg);
+    }
+
+    /// <summary>
+    /// Converts a Recent Apps view key into the DeckSlot shape DeckKeyRenderer
+    /// already knows how to paint. App keys carry an "openFile" action so the
+    /// renderer's existing icon fallback chain (shortcut icon, else process
+    /// icon by exe path) applies unchanged - this action is never dispatched,
+    /// since recentApps-mode presses are intercepted before HandleSlotAction
+    /// and routed through RecentAppsActivator instead.
+    /// </summary>
+    private static DeckSlot RecentKeyToSlot(Nexus.Service.Deck.RecentKey key) => key.Kind switch
+    {
+        "navNext" => new DeckSlot { Action = new DeckAction { Type = "page", Op = "next" }, Auto = true },
+        "navPrev" => new DeckSlot { Action = new DeckAction { Type = "page", Op = "prev" }, Auto = true },
+        "app" => new DeckSlot
+        {
+            Label = key.Name,
+            Icon = key.ShortcutId is not null ? new DeckIcon { Kind = "app", Value = key.ShortcutId } : null,
+            Action = new DeckAction { Type = "openFile", Path = key.ExePath },
+        },
+        _ => new DeckSlot(),
+    };
+
+    /// <summary>The fitted config for a serial's live grid (live surface's model, else the persisted ProductId's, else the resolver's default grid). Caller must hold _lock.</summary>
     private DeckConfig LoadConfig(string serial)
     {
         var settings = _store.Load().StreamDeck;
-        return settings.Decks.TryGetValue(serial, out var deck) ? deck.Deck : new DeckConfig();
+        var (cols, rows) = ResolveGridLocked(serial);
+        return DeckInstanceResolver.ResolveFittedConfig(settings, DeckInstanceResolver.PhysicalInstanceId(serial), cols, rows, DeckTargetKind.Physical);
+    }
+
+    /// <summary>Caller must hold _lock.</summary>
+    private (int Cols, int Rows) ResolveGridLocked(string serial)
+    {
+        var model = FindBySerialLocked(serial)?.Model;
+        if (model is null && _store.Load().StreamDeck.Decks.TryGetValue(serial, out var deck))
+        {
+            model = StreamDeckModels.ByProductId(deck.ProductId);
+        }
+        return model is null ? (5, 3) : (model.Columns, model.Rows);
+    }
+
+    /// <summary>The page count of the current Recent Apps view (RecentAppsPagesLocked), matching PushRecentAppsView's own layout so SetNav clamps against pages that actually exist instead of the custom preset's. Caller must hold _lock.</summary>
+    private int RecentAppsPageCountLocked(string serial)
+    {
+        var (cols, rows) = ResolveGridLocked(serial);
+        return Math.Max(RecentAppsPagesLocked(serial, cols, rows).Count, 1);
+    }
+
+    /// <summary>
+    /// The deck's Recent Apps pages from the live ring and focus, through its
+    /// own kept display order (RecentAppsTracker.StableOrder against the
+    /// tracked page), which this call advances. Caller must hold _lock.
+    /// </summary>
+    private List<List<Nexus.Service.Deck.RecentKey>> RecentAppsPagesLocked(string serial, int cols, int rows)
+    {
+        var ring = _recentAppsState?.RingSnapshot() ?? new List<RecentApp>();
+        var focused = _recentAppsState?.FocusedProcessKey;
+        var hasPrevious = _recentAppsOrderBySerial.TryGetValue(serial, out var previous);
+        var ordered = Nexus.Service.Deck.RecentAppsTracker.StableOrder(
+            ring, hasPrevious ? previous.Order : null, previous.Focused, focused, cols, rows, GetCurrentPageLocked(serial));
+        _recentAppsOrderBySerial[serial] = (ordered.ConvertAll(a => a.ProcessKey), focused);
+        return Nexus.Service.Deck.RecentAppsTracker.Paginate(ordered, focused, cols, rows);
     }
 
     /// <summary>
@@ -2727,7 +3047,7 @@ public sealed class StreamDeckConnectionWorker : BackgroundService, IDeckSurface
         try
         {
             using var rendered = DeckHoldPromptRenderer.Render(fraction, model.KeyPixelSize);
-            var bytes = DeckImageToWireBytes(rendered, model, orientation);
+            var bytes = DeckWireImageEncoder.Encode(rendered, model, orientation);
             if (bytes is not null)
             {
                 _holdFrameCache[cacheKey] = bytes;

@@ -234,32 +234,10 @@ public static class ProfileRoutes
                 Counts = counts,
             };
 
-            // Decks is a plain Dictionary mutated under the config-store lock on
-            // deck hotplug; this handler reads it lock-free, so a structural
-            // change during enumeration throws InvalidOperationException. Retry
-            // the rare mid-enumeration race instead of 500ing the sharing page.
-            // Enumerate the values directly rather than via ToArray: the
-            // enumerator throws InvalidOperationException on a concurrent
-            // add/remove, whereas ValueCollection.CopyTo (ToArray's fast path)
-            // throws ArgumentException / leaves null slots the catch would miss.
-            static int CountDeckPresets(StreamDeckSettings streamDeck)
-            {
-                for (var attempt = 0; ; attempt++)
-                {
-                    try
-                    {
-                        var total = 0;
-                        foreach (var deck in streamDeck.Decks.Values)
-                        {
-                            total += deck.Presets.Count;
-                        }
-                        return total;
-                    }
-                    catch (InvalidOperationException) when (attempt < 3)
-                    {
-                    }
-                }
-            }
+            // Presets are host-wide since schema v18 (StreamDeckSettings.Presets),
+            // a plain List no longer touched by the per-deck hotplug path that
+            // motivated the old per-Decks-dictionary retry loop here.
+            static int CountDeckPresets(StreamDeckSettings streamDeck) => streamDeck.Presets.Count;
         });
 
         app.MapPut("/profiles/sharing/primary", (SetPrimaryBody body, ProfileManager pm, MultiplexHub hub) =>
@@ -463,6 +441,7 @@ public static class ProfileRoutes
                     if (panel.WidgetOpacity.HasValue)            s.Panel.WidgetOpacity         = panel.WidgetOpacity.Value;
                     if (panel.WidgetLabels.HasValue)             s.Panel.WidgetLabels          = panel.WidgetLabels.Value;
                     if (panel.DashboardLayout is not null)       s.Panel.DashboardLayout       = panel.DashboardLayout;
+                    if (panel.DashboardGaugeGradient is not null) s.Panel.DashboardGaugeGradient = panel.DashboardGaugeGradient;
                 }
                 if (body.Overlay is { } overlay)
                 {
@@ -536,6 +515,8 @@ public static class ProfileRoutes
                     if (ui.ConflictAutoKillExclusions is not null) s.Ui.ConflictAutoKillExclusions = ui.ConflictAutoKillExclusions;
                     if (ui.OemAppSeeded.HasValue) s.Ui.OemAppSeeded = ui.OemAppSeeded.Value;
                     if (ui.PinnedSidebarApps is not null) s.Ui.PinnedSidebarApps = ui.PinnedSidebarApps;
+                    if (ui.SidebarAppOrder is not null) s.Ui.SidebarAppOrder = ui.SidebarAppOrder;
+                    if (ui.SidebarCollapsed.HasValue) s.Ui.SidebarCollapsed = ui.SidebarCollapsed.Value;
                     if (ui.ShowUncontrolledDevices.HasValue) s.Ui.ShowUncontrolledDevices = ui.ShowUncontrolledDevices.Value;
                     if (ui.ShowUncontrolledLightingDevices.HasValue) s.Ui.ShowUncontrolledLightingDevices = ui.ShowUncontrolledLightingDevices.Value;
                     if (ui.ShowUncontrolledCoolingDevices.HasValue) s.Ui.ShowUncontrolledCoolingDevices = ui.ShowUncontrolledCoolingDevices.Value;

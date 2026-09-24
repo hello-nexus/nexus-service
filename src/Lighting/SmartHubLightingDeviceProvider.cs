@@ -61,6 +61,18 @@ public sealed class SmartHubLightingDeviceProvider :
 
     internal static string MirrorId(string hubId) => $"{hubId}:mirror";
 
+    /// <summary>The hub a port or mirror structure belongs to (<c>smarthub:&lt;serial&gt;</c>); null for any other device.</summary>
+    internal static string? HubIdOf(string structureDeviceId)
+    {
+        if (!structureDeviceId.StartsWith("smarthub:", StringComparison.Ordinal)) return null;
+        var cut = structureDeviceId.LastIndexOf(':');
+        if (cut <= "smarthub:".Length) return null;
+        var suffix = structureDeviceId.AsSpan(cut + 1);
+        return suffix.SequenceEqual("mirror") || (suffix.StartsWith("port") && suffix.Length > 4)
+            ? structureDeviceId[..cut]
+            : null;
+    }
+
     private static int MirrorLedCount(SmartHubHub hub, IReadOnlyDictionary<string, int> counts)
     {
         if (counts.TryGetValue(MirrorId(hub.DeviceId), out var persisted))

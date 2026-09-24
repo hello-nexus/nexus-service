@@ -1,9 +1,11 @@
 using System.IO;
 using Nexus.Service.Auth;
 using Nexus.Service.Lifecycle;
+using Nexus.Service.Klipy;
 using Nexus.Service.Lighting;
 using Nexus.Service.Media;
 using Nexus.Service.Models;
+using Nexus.Service.Models.Klipy;
 using Nexus.Service.Models.Media;
 using Nexus.Service.Sockets;
 
@@ -99,7 +101,7 @@ public static class MediaLibraryRoutes
                     return Results.BadRequest(new MediaStageResponse { Error = true, Msg = result.Error ?? "Stage failed" });
                 }
 
-                return Results.Ok(new MediaStageResponse { StageId = result.StageId });
+                return Results.Ok(new MediaStageResponse { StageId = result.StageId, MediaKind = MediaKinds.FromPath(file.FileName) });
             }
             finally
             {
@@ -123,6 +125,24 @@ public static class MediaLibraryRoutes
             }
 
             return Results.File(previewPath, "image/jpeg");
+        }).AllowPanel();
+
+        // The staged source itself, so the cropper can play it; range requests let a <video> seek.
+        app.MapGet("/media/stage/{stageId}/raw", (string stageId, HttpContext ctx, MediaLibrary lib) =>
+        {
+            if (!MediaLibrary.IsValidId(stageId))
+            {
+                return Results.BadRequest("invalid stage id");
+            }
+
+            var rawPath = lib.FindStagedRaw(stageId);
+            if (rawPath is null || !File.Exists(rawPath))
+            {
+                return Results.NotFound();
+            }
+
+            ctx.Response.Headers.CacheControl = "no-store";
+            return Results.File(rawPath, MediaKinds.ContentTypeFor(rawPath), enableRangeProcessing: true);
         }).AllowPanel();
 
         app.MapPost("/media/commit", async (HttpContext ctx, MediaLibrary lib, MultiplexHub hub) =>
@@ -164,6 +184,51 @@ public static class MediaLibraryRoutes
 
             PanelTopics.BroadcastMediaLibrary(hub);
             return Results.Ok(new MediaImportResponse { Item = result.Item });
+        }).AllowPanel().DisableAntiforgery();
+
+        // A Klipy pick lands in staging like an upload, so the cropper runs on
+        // it and the ordinary /media/commit finishes the import.
+        app.MapPost("/media/klipy/stage", async (
+            KlipyImportRequest body, MediaLibrary lib, IKlipyCatalog catalog, HttpContext ctx) =>
+        {
+            if (!KlipyCatalog.IsValidSlug(body.Slug))
+            {
+                return Results.BadRequest(new MediaStageResponse { Error = true, Msg = "invalid slug" });
+            }
+
+            string? tempPath = null;
+            try
+            {
+                tempPath = await catalog.DownloadAsync(body.Slug, Path.GetTempPath(), ctx.RequestAborted);
+                if (tempPath is null)
+                {
+                    return Results.BadRequest(new MediaStageResponse { Error = true, Msg = "Download failed" });
+                }
+
+                var staged = await MediaImporter.StageAsync(lib, tempPath, body.Slug + Path.GetExtension(tempPath));
+                if (!staged.Ok)
+                {
+                    Console.Error.WriteLine($"[media-klipy] stage {body.Slug}: {staged.Error}");
+                    return Results.BadRequest(new MediaStageResponse { Error = true, Msg = staged.Error ?? "Stage failed" });
+                }
+
+                _ = catalog.TriggerShareAsync(body.Slug);
+                return Results.Ok(new MediaStageResponse { StageId = staged.StageId, MediaKind = MediaKinds.FromPath(tempPath) });
+            }
+            catch (Exception ex)
+            {
+                Console.Error.WriteLine($"[media-klipy] stage {body.Slug} failed: {ex}");
+                return Results.BadRequest(new MediaStageResponse { Error = true, Msg = "Stage failed" });
+            }
+            finally
+            {
+                // StageAsync moves the file into staging on success; a leftover means it did not.
+                if (tempPath is not null)
+                {
+                    try { File.Delete(tempPath); }
+                    catch { }
+                }
+            }
         }).AllowPanel().DisableAntiforgery();
 
         app.MapDelete("/media/stage/{stageId}", (string stageId, MediaLibrary lib) =>
