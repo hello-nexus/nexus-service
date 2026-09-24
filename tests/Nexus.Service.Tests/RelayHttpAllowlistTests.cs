@@ -29,6 +29,9 @@ public class RelayHttpAllowlistTests
     [InlineData("POST", "/system/power/restart")]
     [InlineData("POST", "/system/power/logout")]
     [InlineData("GET", "/system/audio/devices")]
+    [InlineData("GET", "/system/volume/target")]
+    [InlineData("POST", "/system/volume/target")]
+    [InlineData("POST", "/system/volume/target/mute")]
     [InlineData("GET", "/onboarding/panel-swipe")]
     [InlineData("POST", "/onboarding/panel-swipe/complete")]
     public void Allows_PanelAndControlSurface(string method, string path)

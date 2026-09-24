@@ -44,6 +44,9 @@ public class AuthRequestPolicyTests
         AssertPanelAllowedRoute(app, "GET", "/system/volume");
         AssertPanelAllowedRoute(app, "POST", "/system/volume");
         AssertPanelAllowedRoute(app, "POST", "/system/volume/mute");
+        AssertPanelAllowedRoute(app, "GET", "/system/volume/target");
+        AssertPanelAllowedRoute(app, "POST", "/system/volume/target");
+        AssertPanelAllowedRoute(app, "POST", "/system/volume/target/mute");
     }
 
     /// <summary>

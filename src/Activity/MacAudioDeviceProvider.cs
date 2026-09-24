@@ -102,7 +102,8 @@ public sealed class MacAudioDeviceProvider : IAudioDeviceProvider
         finally { CFRelease(cfStr); }
     }
 
-    private static uint TranslateUidToDevice(string uid)
+    /// <summary>Shared with <see cref="MacVolumeProvider"/>'s device-targeted overloads.</summary>
+    internal static uint TranslateUidToDevice(string uid)
     {
         var cf = CFStringCreateWithBytes(IntPtr.Zero, Encoding.UTF8.GetBytes(uid), Encoding.UTF8.GetByteCount(uid), kCFStringEncodingUTF8, false);
         if (cf == IntPtr.Zero) return 0;

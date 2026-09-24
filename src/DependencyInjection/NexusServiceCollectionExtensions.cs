@@ -761,6 +761,7 @@ public static class NexusServiceCollectionExtensions
             () => sp.GetRequiredService<Nexus.Service.Peripherals.StreamDeck.StreamDeckConnectionWorker>()));
         services.AddSingleton<Nexus.Service.Audio.AudioFilePlayer>();
         services.AddSingleton<Nexus.Service.Audio.AudioMixerService>();
+        services.AddSingleton<Nexus.Service.Activity.VolumeTargetResolver>();
         // Explicit factory, not convention: RgbBridge is registered on the
         // desktop platforms only, so the executor's layout-preset branch has to
         // resolve it optionally the way AppPresetSwitcher and the route do.
