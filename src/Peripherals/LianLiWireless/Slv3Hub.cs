@@ -70,14 +70,19 @@ public sealed class Slv3Hub : IDisposable
 
     // GetDev failure escalation (lian-li-linux controller.rs): 5 consecutive
     // USB-level failures -> UsbResetAnother to the RX MCU (a handle reopen does
-    // not reset a wedged radio), at most 3 resets per connection, then give the
-    // worker its disconnect/reconnect path.
+    // not reset a wedged radio). A good reply refills the reset budget, so only
+    // resets that fail back to back hand the worker its disconnect/reconnect.
     private const int RxFailStreakForReset = 5;
     private const int MaxRxResetsPerConnection = 3;
     // Post-reset settle per the reference's 500 ms sleep after USB_ResetAnother.
     private const int RxResetSettleMs = 500;
     private int _rxFailStreak;
     private int _rxResetCount;
+
+    // Polls a TX that went away (it re-enumerates about a second after an RX
+    // reset) may take to come back before the link is torn down and rebuilt.
+    private const int TxReopenPollBudget = 10;
+    private int _txMissingPolls;
 
     // SaveCfg after a confirmed bind: L-Connect broadcasts one on every loop
     // pass for a few seconds after Bind() (lastBindTime); here one per poll
@@ -127,7 +132,12 @@ public sealed class Slv3Hub : IDisposable
 
     public Slv3State State { get; } = new();
 
-    public bool IsConnected => _tx is { IsOpen: true } && _rx is { IsOpen: true };
+    /// <summary>
+    /// The link is up: connected, and the RX that reports the device list is
+    /// open. The TX can be briefly gone while it re-enumerates after an RX
+    /// reset; <see cref="PollTick"/> reopens it without dropping the list.
+    /// </summary>
+    public bool IsConnected => State.IsConnected && _rx is { IsOpen: true };
 
     /// <summary>Opens the TX + RX dongles and learns our master MAC. Both must open for the link to be usable.</summary>
     public bool EnsureConnected()
@@ -233,10 +243,52 @@ public sealed class Slv3Hub : IDisposable
         _lastIssuedSeq.Clear();
         _rxFailStreak = 0;
         _rxResetCount = 0;
+        _txMissingPolls = 0;
         _saveCfgBurstRemaining = 0;
         _saveCfgDueMs = 0;
         _videoModeActive = false;
         _videoModePreppedCount = 0;
+    }
+
+    // Reopens a TX whose handle died with its device, keeping the device list
+    // so nothing downstream sees the link drop. The new handle must answer
+    // GetMac: a dying instance can still be listed for a moment.
+    private bool TryReopenTxLocked()
+    {
+        try { _tx?.Dispose(); } catch { /* best effort */ }
+        _tx = null;
+        Slv3PortInfo? txPort = null;
+        foreach (var port in _discovery.Discover())
+        {
+            if (port.Role == Slv3DongleRole.Tx)
+            {
+                txPort = port;
+                break;
+            }
+        }
+        if (txPort is null)
+        {
+            return false;
+        }
+        try
+        {
+            _tx = _transportFactory(txPort);
+        }
+        catch (Exception)
+        {
+            return false;
+        }
+        if (!TryGetMacOnChannelLocked(_channel))
+        {
+            try { _tx.Dispose(); } catch { /* best effort */ }
+            _tx = null;
+            return false;
+        }
+        // The restarted TX lost the LCD video arming; the LCD loop re-arms it.
+        _videoModeActive = false;
+        _videoModePreppedCount = 0;
+        ServiceLog.Info("[lianli-wireless] TX reopened");
+        return true;
     }
 
     private bool MasterInitLocked()
@@ -340,6 +392,14 @@ public sealed class Slv3Hub : IDisposable
     private bool PollLocked()
     {
         if (!IsConnected)
+        {
+            return false;
+        }
+        if (_tx is { IsOpen: true } || TryReopenTxLocked())
+        {
+            _txMissingPolls = 0;
+        }
+        else if (++_txMissingPolls >= TxReopenPollBudget)
         {
             return false;
         }
@@ -598,6 +658,7 @@ public sealed class Slv3Hub : IDisposable
             return HandleGetDevFailureLocked();
         }
         _rxFailStreak = 0;
+        _rxResetCount = 0;
 
         State.MotherboardPwmPercent = Slv3Protocol.ParseGetDevMoboDuty(reply);
 
