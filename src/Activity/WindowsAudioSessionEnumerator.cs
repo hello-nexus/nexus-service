@@ -202,9 +202,14 @@ public sealed unsafe class WindowsAudioSessionEnumerator : IDisposable
                         // Expired = the app is gone and the session is a
                         // tombstone; it has no level worth showing.
                         if (GetState(ctl, out var state) == 0 && state == SessionStateExpired) continue;
-                        if (GetProcessId(ctl2, out var pid) != 0) continue;
+                        // Packaged apps span several processes and answer
+                        // AUDCLNT_S_NO_SINGLE_PROCESS (a success code) with the initial pid.
+                        var pidHr = GetProcessId(ctl2, out var pid);
+                        if (pidHr != 0 && pidHr != AudclntSNoSingleProcess) continue;
                         // S_OK true, S_FALSE false - a plain HR test would read both as success.
                         var isSystem = IsSystemSoundsSession(ctl2) == 0;
+                        // Only the system-sounds session may map to pid 0 (ResolveIdentity folds pid 0 into it).
+                        if (pid == 0 && !isSystem) continue;
                         visit(ctl, pid, isSystem, endpointId, isDefaultEndpoint);
                     }
                     finally
@@ -477,6 +482,7 @@ public sealed unsafe class WindowsAudioSessionEnumerator : IDisposable
     private const int ClsCtxInprocServer = 0x1;
     private const int SessionStateActive = 1;
     private const int SessionStateExpired = 2;
+    private const int AudclntSNoSingleProcess = 0x0889000D;
     private const int DeviceStateActive = 0x1;
 
     private enum EDataFlow { eRender = 0, eCapture = 1, eAll = 2 }

@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Runtime.Versioning;
 using System.Text.Json;
 using System.Threading;
+using System.Threading.Tasks;
 using Nexus.Service.Helper;
 using Nexus.Service.Helper.Domains;
 using Nexus.Service.Models.Activity;
@@ -68,11 +69,20 @@ public sealed class WindowsAudioSessionProvider : IAudioSessionProvider, IDispos
         _ = AudioMixerCommands.StreamAsync(_helper, false);
     }
 
-    // A helper that crashed mid-stream comes back at its idle rate, so the
-    // meters would freeze until the next subscribe. Re-assert on reconnect.
-    private void OnConnected(HelperConnection conn)
+    // Re-assert the rate on every connect: a helper that crashed mid-stream
+    // comes back at its idle rate, and the command also makes the helper push a
+    // fresh snapshot, which it otherwise sends only on change (a pass that ran
+    // before this pipe was up was dropped).
+    private void OnConnected(HelperConnection conn) => _ = ReassertStreamingAsync();
+
+    private async Task ReassertStreamingAsync()
     {
-        if (Volatile.Read(ref _streaming) == 1) _ = AudioMixerCommands.StreamAsync(_helper, true);
+        var sent = Volatile.Read(ref _streaming) == 1;
+        await AudioMixerCommands.StreamAsync(_helper, sent).ConfigureAwait(false);
+        // A subscribe or release that raced this send may have reached the pipe
+        // first; the last command the helper sees must carry the current rate.
+        var now = Volatile.Read(ref _streaming) == 1;
+        if (now != sent) await AudioMixerCommands.StreamAsync(_helper, now).ConfigureAwait(false);
     }
 
     // Without this the last strips keep answering after the helper dies, so the

@@ -48,10 +48,10 @@ public sealed class AudioSessionPusher : IDisposable
     {
         Interlocked.Exchange(ref _streaming, enabled ? 1 : 0);
         // Drop the diff baseline so the next pass pushes unconditionally. The
-        // helper outlives a service restart, and the service clears its snapshot
-        // on disconnect - without this the pusher sees no change and the mixer
-        // stays empty until a level happens to move.
-        if (enabled) _last = null;
+        // service sends this on every connect, and a pass that ran while no pipe
+        // was up (or across a service restart, which clears the service's copy)
+        // was dropped - without this the snapshot stays empty until a level moves.
+        _last = null;
         Wake();
     }
 
