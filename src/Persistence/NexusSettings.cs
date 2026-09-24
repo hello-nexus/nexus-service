@@ -323,6 +323,9 @@ public sealed class FocusModeSettings
     public bool HoldBackgroundTraffic { get; set; } = true;
     public bool TurnPanelDisplaysOff { get; set; }
 
+    /// <summary>Panels Nexus renders (the Y70, cooler LCDs) swap an animated background for the solid one while the mode is active.</summary>
+    public bool StaticPanelBackgrounds { get; set; }
+
     /// <summary>How long the mode stays active after its trigger clears.</summary>
     public int ExitGraceSeconds { get; set; } = 3;
 

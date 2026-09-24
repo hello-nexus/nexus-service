@@ -38,6 +38,19 @@ public class FocusModeStateTests
         store.Load().Focus.Modes.First(m => m.Id == id);
 
     [Fact]
+    public void StaticPanelBackgroundsIsOffByDefaultAndPersists()
+    {
+        Assert.All(FocusModeSettings.StockModes(), m => Assert.False(m.StaticPanelBackgrounds));
+
+        var settings = new NexusSettings();
+        settings.Focus.Modes.First(m => m.Id == FocusModeSettings.GameModeId).StaticPanelBackgrounds = true;
+        var json = System.Text.Json.JsonSerializer.Serialize(settings, Nexus.Service.Serialization.PersistenceJsonContext.Default.NexusSettings);
+        var back = System.Text.Json.JsonSerializer.Deserialize(json, Nexus.Service.Serialization.PersistenceJsonContext.Default.NexusSettings)!;
+
+        Assert.True(back.Focus.Modes.First(m => m.Id == FocusModeSettings.GameModeId).StaticPanelBackgrounds);
+    }
+
+    [Fact]
     public void NothingIsActiveWithNoTrigger()
     {
         var (state, _, _) = Build();

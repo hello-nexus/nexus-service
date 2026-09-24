@@ -39,6 +39,7 @@ public sealed class FocusModeDto
     public bool HoldNotifications { get; set; }
     public bool HoldBackgroundTraffic { get; set; }
     public bool TurnPanelDisplaysOff { get; set; }
+    public bool StaticPanelBackgrounds { get; set; }
     public int ExitGraceSeconds { get; set; }
 }
 
@@ -51,6 +52,7 @@ public sealed class UpdateFocusModeBody
     public bool? HoldNotifications { get; set; }
     public bool? HoldBackgroundTraffic { get; set; }
     public bool? TurnPanelDisplaysOff { get; set; }
+    public bool? StaticPanelBackgrounds { get; set; }
     public int? ExitGraceSeconds { get; set; }
 }
 
