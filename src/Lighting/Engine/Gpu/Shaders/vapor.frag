@@ -1,7 +1,6 @@
-uniform float u_speed;
-uniform float u_density; // extra: smoke density (0.3..2)
-uniform float u_scale;   // extra: wisp scale (0.5..3)
-uniform float u_drift;   // extra: rise rate (0.2..2)
+uniform float u_density; // hint_range(0.3, 2.0, 0.05) = 1.0  smoke density
+uniform float u_scale; // hint_range(0.5, 3.0, 0.05) = 1.5  wisp scale
+uniform float u_drift; // hint_range(0.2, 2.0, 0.05) = 1.0  rise rate
 
 // Drifting smoke/vapour wisps. A 3-octave fbm warped by an always-animated
 // billow (so motion is visible even at low drift), advected upward at a rate

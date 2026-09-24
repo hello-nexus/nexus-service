@@ -1,7 +1,6 @@
-uniform float u_speed;
-uniform float u_petals; // extra: segment count
-uniform float u_wave;   // extra: edge waviness
-uniform float u_spin;   // extra: rotation rate
+uniform float u_petals; // hint_range(3.0, 24.0, 1.0) = 8.0  segment count
+uniform float u_wave; // hint_range(0.0, 1.2, 0.05) = 0.8  edge waviness
+uniform float u_spin; // hint_range(-3.0, 3.0, 0.05) = 1.0  rotation rate
 
 // Flat poster petals radiating from the centre. The angular index is pushed
 // around by a radial sine so each seam ripples outward into an S instead of

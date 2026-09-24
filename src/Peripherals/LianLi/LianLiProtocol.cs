@@ -3,10 +3,11 @@ using System;
 namespace Nexus.Service.Peripherals.LianLi;
 
 /// <summary>
-/// Pure static byte-level builders and parsers for the Lian Li Uni Hub SL-Infinity
-/// HID protocol. No IO here; the hub owns the transport.
-/// All reports start with report id 0xE0 on HID interface MI_01
-/// (UsagePage 0xFF72, Usage 0xA1).
+/// Pure static byte-level builders and parsers for the Lian Li Uni Hub family
+/// (SL-Infinity and the SL v1) HID protocol. No IO here; the hub owns the
+/// transport. All reports start with report id 0xE0 on HID interface MI_01
+/// (UsagePage 0xFF72, Usage 0xA1). Per-family differences (quantity register,
+/// channel layout, colour transport) live in <see cref="LianLiFanProfile"/>.
 /// Color order on the wire is R, B, G (green and blue are swapped vs RGB).
 /// </summary>
 public static class LianLiProtocol
@@ -38,17 +39,19 @@ public static class LianLiProtocol
     public const int InnerLedsPerFan = 8;
     public const int OuterLedsPerFan = 12;
 
-    /// <summary>Per-fan LED count for a channel index (even = inner, odd = outer).</summary>
-    public static int LedsPerFanForChannel(int ch) => (ch & 1) == 0 ? InnerLedsPerFan : OuterLedsPerFan;
+    /// <summary>SL v1 (0xA100): one ring of 16 LEDs per fan on a single channel per port.</summary>
+    public const int SlLedsPerFan = 16;
 
-    /// <summary>Largest per-fan count, for scratch buffers that serve both rings.</summary>
-    public const int MaxLedsPerFanPerChannel = OuterLedsPerFan;
+    /// <summary>Largest per-fan count across every family, for shared scratch buffers.</summary>
+    public const int MaxLedsPerFanPerChannel = SlLedsPerFan;
 
     /// <summary>Scale down R+G+B if their sum exceeds this value.</summary>
     public const int EnergyCapSum = 460;
 
     /// <summary>Direct/static color mode (host-driven frame delivery). UNIHUB_SLINF_LED_MODE_STATIC_COLOR.</summary>
     public const byte EffectStatic = 0x01;
+
+    public const byte EffectBreathing = 0x02;
 
     /// <summary>
     /// Minimum gap between manual-mode and duty writes; firmware drops the duty
@@ -63,16 +66,27 @@ public static class LianLiProtocol
     public const byte BrightnessDefault = 0x00;
 
     /// <summary>
-    /// Set number of fans on a port group (g=0..3).
-    /// Command: E0 10 60 (g+1) (qty 0..4) 00 00
+    /// Set number of fans on a port group (g=0..3). Feature report.
+    /// SL-Infinity form: E0 10 &lt;quantityRegister&gt; (g+1) (qty 0..4) 00 00.
+    /// SL v1 form (PackedQuantity): E0 10 &lt;quantityRegister&gt; ((g shl 4) or qty) 00 00 00.
     /// </summary>
-    public static byte[] BuildSetQuantity(int group, int qty)
+    public static byte[] BuildSetQuantity(in LianLiFanProfile profile, int group, int qty)
     {
+        var q = (byte)Math.Clamp(qty, 0, MaxFansPerPort);
+        if (profile.PackedQuantity)
+        {
+            return new byte[]
+            {
+                ReportId, 0x10, profile.QuantityRegister,
+                (byte)((group << 4) | q),
+                0x00, 0x00, 0x00
+            };
+        }
         return new byte[]
         {
-            ReportId, 0x10, 0x60,
+            ReportId, 0x10, profile.QuantityRegister,
             (byte)(group + 1),
-            (byte)Math.Clamp(qty, 0, 4),
+            q,
             0x00, 0x00
         };
     }
@@ -137,6 +151,12 @@ public static class LianLiProtocol
             DutyByte(duty, flooredDuty),
             0x00, 0x00, 0x00
         };
+    }
+
+    /// <summary>SL v1 merge off: E0 10 34 00 00 00. Feature report.</summary>
+    public static byte[] BuildStopMerge()
+    {
+        return new byte[] { ReportId, 0x10, 0x34, 0x00, 0x00, 0x00, 0x00 };
     }
 
     /// <summary>

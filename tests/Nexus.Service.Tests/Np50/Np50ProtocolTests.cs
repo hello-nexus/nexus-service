@@ -161,9 +161,9 @@ public class Np50ProtocolTests
     [Fact]
     public void ParseFirmwareAnimation_decodes_anim_RGB_brightness()
     {
-        // 9-byte response per spec command #14 v2:
-        // [0..3] FF CC 0D 00 header, [4] anim, [5..7] RGB, [8] brightness.
-        var response = new byte[] { 0xFF, 0xCC, 0x0D, 0x00, 0x02, 0x10, 0x20, 0x30, 0x40 };
+        // 8-byte response as fw 2.0.5.1 sends it (Y70 box, 2026-09-13):
+        // [0..2] FF CC 0D echo, [3] anim, [4..6] RGB, [7] brightness.
+        var response = new byte[] { 0xFF, 0xCC, 0x0D, 0x02, 0x10, 0x20, 0x30, 0x40 };
         var parsed = Np50Protocol.ParseFirmwareAnimation(response);
         Assert.Equal(Np50Protocol.FwAnimationRainbow, parsed.Animation);
         Assert.Equal(0x10, parsed.R);
@@ -175,7 +175,7 @@ public class Np50ProtocolTests
     [Fact]
     public void ParseFirmwareAnimation_rejects_wrong_sub_opcode()
     {
-        var response = new byte[] { 0xFF, 0xCC, 0x0E, 0x00, 0x01, 0, 0, 0, 100 };
+        var response = new byte[] { 0xFF, 0xCC, 0x0E, 0x01, 0, 0, 0, 100 };
         Assert.Throws<InvalidOperationException>(() => Np50Protocol.ParseFirmwareAnimation(response));
     }
 

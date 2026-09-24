@@ -1,5 +1,6 @@
 #if WINDOWS
 using System;
+using System.Runtime.InteropServices;
 using System.Runtime.Versioning;
 using System.Text.Json;
 using System.Threading;
@@ -14,6 +15,8 @@ public sealed class ProcessKillRequest { public string Name { get; set; } = ""; 
 public sealed class ProcessKillResult { public int Killed { get; set; } public int Failed { get; set; } }
 public sealed class ProcessOpenLocationRequest { public string ExePath { get; set; } = ""; }
 public sealed class ProcessOpenLocationResult { public bool Ok { get; set; } }
+public sealed class ProcessActivateWindowRequest { public int Pid { get; set; } }
+public sealed class ProcessActivateWindowResult { public bool Ok { get; set; } }
 
 /// <summary>
 /// Service-side outbound facade for the monitoring sidebar's process kill and
@@ -79,6 +82,33 @@ public static class ProcessActionsCommands
             return false;
         }
     }
+
+    public static async Task<bool> ActivateWindowAsync(HelperRegistry r, int pid, CancellationToken ct = default)
+    {
+        var conn = r.GetAny();
+        if (conn is null)
+        {
+            return false;
+        }
+
+        var result = await conn.SendCommandAsync(
+            "process.activateWindow", new ProcessActivateWindowRequest { Pid = pid },
+            AppJsonContext.Default.ProcessActivateWindowRequest, timeoutMs: 4000, ct: ct).ConfigureAwait(false);
+        if (!result.Ok || result.Payload is null)
+        {
+            return false;
+        }
+
+        try
+        {
+            var parsed = JsonSerializer.Deserialize(result.Payload.Value, AppJsonContext.Default.ProcessActivateWindowResult);
+            return parsed?.Ok ?? false;
+        }
+        catch
+        {
+            return false;
+        }
+    }
 }
 
 [SupportedOSPlatform("windows")]
@@ -106,6 +136,40 @@ public sealed class ProcessActionsHandler
             }
             return Reply(env, new ProcessOpenLocationResult { Ok = ok }, AppJsonContext.Default.ProcessOpenLocationResult);
         });
+
+        registry.Register("process.activateWindow", (env, _) =>
+        {
+            var pid = ReadActivateWindowReq(env).Pid;
+            var ok = false;
+            if (pid > 0)
+            {
+                var hwnd = FindTopLevelWindowForPid(pid);
+                if (hwnd != IntPtr.Zero)
+                {
+                    ForegroundNudge.TryForeground(hwnd);
+                    ok = true;
+                }
+            }
+            return Reply(env, new ProcessActivateWindowResult { Ok = ok }, AppJsonContext.Default.ProcessActivateWindowResult);
+        });
+    }
+
+    /// <summary>First visible, unowned top-level window belonging to pid, or Zero. An on-demand scan (one Recent Apps press, not a poll loop) - unlike WindowSetPoller this skips the cloak/title classification since any window for the target process is worth foregrounding.</summary>
+    private static IntPtr FindTopLevelWindowForPid(int pid)
+    {
+        var found = IntPtr.Zero;
+        EnumWindowsProc proc = (hwnd, _) =>
+        {
+            GetWindowThreadProcessId(hwnd, out var windowPid);
+            if (windowPid != (uint)pid || !IsWindowVisible(hwnd) || GetWindow(hwnd, GwOwner) != IntPtr.Zero)
+            {
+                return true;
+            }
+            found = hwnd;
+            return false;
+        };
+        EnumWindows(proc, IntPtr.Zero);
+        return found;
     }
 
     private static ProcessKillRequest ReadKillReq(HelperEnvelope env)
@@ -118,6 +182,11 @@ public sealed class ProcessActionsHandler
             ? new ProcessOpenLocationRequest()
             : JsonSerializer.Deserialize(env.Payload.Value, AppJsonContext.Default.ProcessOpenLocationRequest) ?? new ProcessOpenLocationRequest();
 
+    private static ProcessActivateWindowRequest ReadActivateWindowReq(HelperEnvelope env)
+        => env.Payload is null
+            ? new ProcessActivateWindowRequest()
+            : JsonSerializer.Deserialize(env.Payload.Value, AppJsonContext.Default.ProcessActivateWindowRequest) ?? new ProcessActivateWindowRequest();
+
     private static Task<HelperResult> Reply<T>(HelperEnvelope env, T value, System.Text.Json.Serialization.Metadata.JsonTypeInfo<T> typeInfo)
         => Task.FromResult(new HelperResult
         {
@@ -125,5 +194,21 @@ public sealed class ProcessActionsHandler
             Ok = true,
             Payload = JsonSerializer.SerializeToElement(value, typeInfo),
         });
+
+    private const uint GwOwner = 4;
+
+    private delegate bool EnumWindowsProc(IntPtr hwnd, IntPtr lParam);
+
+    [DllImport("user32.dll")]
+    private static extern bool EnumWindows(EnumWindowsProc lpEnumFunc, IntPtr lParam);
+
+    [DllImport("user32.dll")]
+    private static extern bool IsWindowVisible(IntPtr hWnd);
+
+    [DllImport("user32.dll")]
+    private static extern IntPtr GetWindow(IntPtr hWnd, uint uCmd);
+
+    [DllImport("user32.dll")]
+    private static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint processId);
 }
 #endif

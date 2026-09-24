@@ -1,4 +1,5 @@
 using System;
+using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 using Nexus.Service.Activity;
@@ -118,11 +119,15 @@ public sealed class LightingProvider : ILightingProvider, IDisposable
     /// in which case the call is a no-op.
     /// </summary>
     // Every mode start routes through here, so clearing the Static ownership
-    // flag in one place means a new mode can never inherit per-device colours;
+    // flag in one place means a new mode can never inherit per-device colours
+    // (locked looks excepted - the tracker keeps honouring those);
     // StartStatic re-asserts it immediately after.
     private void EnsureRgbActive()
     {
         _engine.StaticEffects?.Enabled = false;
+        // Only simple mode's sweep set samples every device across the whole
+        // canvas; StartAnimate re-asserts it, so a mode start cannot inherit it.
+        _engine.FullFrameSampling = false;
         _rgb?.Activate();
     }
 
@@ -340,6 +345,9 @@ public sealed class LightingProvider : ILightingProvider, IDisposable
         var contrast = body.Contrast;
         var extras = ParamsToDict(body.Params);
         var effectSpeed = name == "pulse" ? speed * 0.5f : speed;
+        // A sweep is meant to read end to end on every device at once, so the
+        // engine stops treating the canvas as a shared scene for these.
+        _engine.FullFrameSampling = ShaderLibrary.IsSweepEffect(name);
 
         // Fast path: if the currently running effect is the same shader, just
         // update its uniforms in place. Creating a new ShaderEffect every
@@ -562,17 +570,19 @@ public sealed class LightingProvider : ILightingProvider, IDisposable
             return null;
         }
         var name = (key ?? "").ToLowerInvariant();
-        var defaults = DefaultParamsFor(name);
-        if (defaults is null)
+        if (!ShaderLibrary.AllEffectKeys.Contains(name))
         {
             return null;
         }
+        var defaults = ExtraParamDefaults(name);
         // Render the requested preset slot's effective look (user delta or
         // canonical default). Tag the cache by that look (not the client's ?v
         // token), so a surface that keeps requesting the same token still
-        // re-renders once the slot's saved look changes.
+        // re-renders once the slot's saved look changes. The shader's own hash
+        // rides along: the tag is the HTTP ETag, and without it a browser keeps
+        // revalidating to the image of a shader a deploy has since changed.
         var state = ResolveSlotLook(name, slot);
-        var tag = (state is null ? "sig" : HashSlot(state)) + (frozen ? ":f" : "");
+        var tag = ShaderLibrary.SourceTag(name) + ":" + (state is null ? "sig" : HashSlot(state)) + (frozen ? ":f" : "");
         var cacheKey = name + ":" + slot + (frozen ? ":f" : "");
         if (!skipCache && _thumbnailCache.TryGetValue(cacheKey, out var cached) && cached.Tag == tag)
         {
@@ -583,7 +593,14 @@ public sealed class LightingProvider : ILightingProvider, IDisposable
         var effect = BuildThumbnailEffect(name, defaults, state, frozen);
         try
         {
-            effect.RenderFrame(canvas, ThumbnailFrameTimeMs);
+            if (!frozen && TimeLapseWindowMs(name) is var (start, span))
+            {
+                RenderTimeLapse(effect, canvas, start, span);
+            }
+            else
+            {
+                effect.RenderFrame(canvas, ThumbnailFrameTimeMs);
+            }
         }
         finally
         {
@@ -594,6 +611,45 @@ public sealed class LightingProvider : ILightingProvider, IDisposable
         var bytes = BmpEncoder.Encode(canvas.Pixels, canvas.Width, canvas.Height);
         _thumbnailCache[cacheKey] = (tag, bytes);
         return (bytes, tag);
+    }
+
+    // Effects that paint the whole frame one colour and change only over time.
+    // One frame of them is a flat swatch, so their thumbnail lays a stretch of
+    // time out left to right instead, picked for its colour at 1x speed on the
+    // default look: one whole breath, the blue one, and the cycle's pass
+    // through green. The windows follow the shaders' tempos and default colours.
+    private static (double StartMs, double SpanMs)? TimeLapseWindowMs(string name) => name switch
+    {
+        "breathing" or "sweepbreathing" => (14000.0, 4000.0),
+        "sweepcycle" => (3170.0, 2000.0),
+        _ => null,
+    };
+
+    private static void RenderTimeLapse(IEffect effect, Engine.CanvasBuffer canvas, double startMs, double spanMs)
+    {
+        // The window is timed at 1x, so a fast or reversed preset renders the
+        // same stretch rather than several breaths or the wrong colour.
+        if (effect is ShaderEffect shader)
+        {
+            shader.Speed = 1f;
+        }
+        // One frame per pixel column: coarser slices alias a fast preset's
+        // breaths into grey bands.
+        var slices = canvas.Width;
+        var frame = new Engine.CanvasBuffer(canvas.Width, canvas.Height);
+        for (var i = 0; i < slices; i++)
+        {
+            effect.RenderFrame(frame, startMs + (i + 0.5) * spanMs / slices);
+            var x1 = (i + 1) * canvas.Width / slices;
+            for (var x = i * canvas.Width / slices; x < x1; x++)
+            {
+                for (var y = 0; y < canvas.Height; y++)
+                {
+                    var (r, g, b) = frame.GetPixel(x, y);
+                    canvas.SetPixel(x, y, r, g, b);
+                }
+            }
+        }
     }
 
     /// <summary>
@@ -617,7 +673,22 @@ public sealed class LightingProvider : ILightingProvider, IDisposable
     public void SaveAnimateTemplates(System.Collections.Generic.Dictionary<string, Nexus.Service.Persistence.AnimateEffectTemplates> templates)
     {
         var before = ActiveLookTag();
-        var pruned = AnimateTemplateDefaults.Prune(templates ?? new());
+        var incoming = templates ?? new();
+        foreach (var (effect, bundle) in incoming)
+        {
+            if (bundle?.Slots is null)
+            {
+                continue;
+            }
+            foreach (var slot in bundle.Slots)
+            {
+                if (slot is not null)
+                {
+                    ShaderParamSpec.Sanitize(effect, slot);
+                }
+            }
+        }
+        var pruned = AnimateTemplateDefaults.Prune(incoming);
         _store.Update(s =>
         {
             s.Lighting.Animate.Templates = pruned;
@@ -769,6 +840,7 @@ public sealed class LightingProvider : ILightingProvider, IDisposable
             => new(0.00f, 0.00f, 0f, 1.00f, 1.00f, 1f),
         "rainbow" => new(0.00f, 0.00f, 50f, 1.00f, 1.00f, 1f),
         "sharplines" => new(0.00f, 0.00f, 50f, 1.00f, 1.00f, 1f),
+        "breathing" => new(0.00f, 0.00f, 50f, 1.00f, 1.00f, 1f),
         "fire" => new(0.03f, 0.80f, 70f, 1.10f, 1.05f, 1f),
         "plasma" => new(0.85f, 0.30f, 60f, 1.00f, 1.00f, 1f),
         "spiral" => new(0.00f, 0.00f, 55f, 1.00f, 1.00f, 1f),
@@ -799,7 +871,7 @@ public sealed class LightingProvider : ILightingProvider, IDisposable
         "inkbloom" => new(0.72f, 0.50f, 50f, 1.00f, 1.00f, 1f),
         "cosmicdust" => new(0.75f, 0.35f, 35f, 1.00f, 1.00f, 1f),
         "chromaspiral" => new(0.00f, 0.00f, 60f, 1.00f, 1.00f, 1f),
-        "neongrid" => new(0.58f, 0.55f, 70f, 1.20f, 1.10f, 1f),
+        "neongrid" => new(0.70f, 0.85f, 70f, 1.50f, 1.10f, 1f),
         "oilslick" => new(0.00f, 0.00f, 40f, 1.25f, 1.05f, 1f),
         "caustics" => new(0.55f, 0.30f, 35f, 1.20f, 1.10f, 1f),
         "galaxy" => new(0.72f, 0.20f, 45f, 1.20f, 1.10f, 1f),
@@ -868,138 +940,22 @@ public sealed class LightingProvider : ILightingProvider, IDisposable
     };
 
     /// <summary>
-    /// Per-effect default uniform values, mirroring the EFFECTS schema on the
-    /// frontend. Used by the thumbnail capture path and as the reset target.
-    /// Returning null means the key isn't an animate effect.
+    /// Declared per-effect uniform defaults, from the shader's own hint_range
+    /// annotations, excluding the six base names ShaderEffect binds through
+    /// dedicated fields rather than ExtraParams. Drives the thumbnail render.
     /// </summary>
-    private static System.Collections.Generic.Dictionary<string, float>? DefaultParamsFor(string name) => name switch
+    private static System.Collections.Generic.Dictionary<string, float> ExtraParamDefaults(string name)
     {
-        // Simple solid-colour fills expose only a slight hue-shift nudge. This
-        // default must match SIMPLE_PARAMS in the frontend so the thumbnail
-        // shows the same look the picker does.
-        "simplewhite" or "simplesoftpink" or "simplepink" or "simplered" or "simpleorange"
-            or "simpleyellow" or "simplegreen" or "simpledarkgreen" or "simplecyan"
-            or "simpleblue" or "simpleviolet" => new() { ["u_hueShift"] = 0f, ["u_warmth"] = 0f },
-        // Static patterns: colours are HSV triples carried as ordinary float
-        // params, so they need no separate wire or storage shape. Mirrors the
-        // EFFECTS param defaults in nexus-web/src/types/lighting.ts.
-        "gradientlinear" => new() { ["u_aHue"] = 0.58f, ["u_aSat"] = 1f, ["u_aVal"] = 1f, ["u_bHue"] = 0.88f, ["u_bSat"] = 1f, ["u_bVal"] = 1f, ["u_angle"] = 0f, ["u_midpoint"] = 0.5f, ["u_softness"] = 1f },
-        "gradientradial" => new() { ["u_aHue"] = 0.12f, ["u_aSat"] = 1f, ["u_aVal"] = 1f, ["u_bHue"] = 0.75f, ["u_bSat"] = 1f, ["u_bVal"] = 1f, ["u_radius"] = 0.45f, ["u_softness"] = 0.8f },
-        "gradienttri" => new() { ["u_aHue"] = 0f, ["u_aSat"] = 1f, ["u_aVal"] = 1f, ["u_bHue"] = 0.33f, ["u_bSat"] = 1f, ["u_bVal"] = 1f, ["u_cHue"] = 0.62f, ["u_cSat"] = 1f, ["u_cVal"] = 1f, ["u_angle"] = 0f, ["u_midpoint"] = 0.5f },
-        "gradientconic" => new() { ["u_aHue"] = 0.55f, ["u_aSat"] = 1f, ["u_aVal"] = 1f, ["u_bHue"] = 0.92f, ["u_bSat"] = 1f, ["u_bVal"] = 1f, ["u_offset"] = 0f },
-        "splitsharp" => new() { ["u_aHue"] = 0f, ["u_aSat"] = 1f, ["u_aVal"] = 1f, ["u_bHue"] = 0.62f, ["u_bSat"] = 1f, ["u_bVal"] = 1f, ["u_angle"] = 0f, ["u_position"] = 0.5f },
-        "stripes" => new() { ["u_aHue"] = 0f, ["u_aSat"] = 1f, ["u_aVal"] = 1f, ["u_bHue"] = 0.58f, ["u_bSat"] = 1f, ["u_bVal"] = 1f, ["u_count"] = 3f, ["u_angle"] = 0f, ["u_softness"] = 0.02f, ["u_balance"] = 0.5f },
-        "checker" => new() { ["u_aHue"] = 0f, ["u_aSat"] = 0f, ["u_aVal"] = 1f, ["u_bHue"] = 0f, ["u_bSat"] = 1f, ["u_bVal"] = 1f, ["u_size"] = 4f },
-        "border" => new() { ["u_aHue"] = 0f, ["u_aSat"] = 0f, ["u_aVal"] = 1f, ["u_bHue"] = 0.55f, ["u_bSat"] = 1f, ["u_bVal"] = 1f, ["u_thickness"] = 0.18f, ["u_softness"] = 0.05f },
-        "corners" => new() { ["u_aHue"] = 0f, ["u_aSat"] = 1f, ["u_aVal"] = 1f, ["u_bHue"] = 0.15f, ["u_bSat"] = 1f, ["u_bVal"] = 1f, ["u_cHue"] = 0.55f, ["u_cSat"] = 1f, ["u_cVal"] = 1f, ["u_dHue"] = 0.8f, ["u_dSat"] = 1f, ["u_dVal"] = 1f },
-        "rings" => new() { ["u_aHue"] = 0.55f, ["u_aSat"] = 1f, ["u_aVal"] = 1f, ["u_bHue"] = 0.88f, ["u_bSat"] = 1f, ["u_bVal"] = 1f, ["u_count"] = 3f, ["u_softness"] = 0.05f },
-        "dots" => new() { ["u_aHue"] = 0.12f, ["u_aSat"] = 1f, ["u_aVal"] = 1f, ["u_bHue"] = 0.62f, ["u_bSat"] = 1f, ["u_bVal"] = 1f, ["u_spacing"] = 4f, ["u_size"] = 0.36f, ["u_softness"] = 0.1f },
-        "wedges" => new() { ["u_aHue"] = 0f, ["u_aSat"] = 1f, ["u_aVal"] = 1f, ["u_bHue"] = 0.5f, ["u_bSat"] = 1f, ["u_bVal"] = 1f, ["u_count"] = 4f, ["u_offset"] = 0f },
-        "mirror" => new() { ["u_aHue"] = 0.02f, ["u_aSat"] = 1f, ["u_aVal"] = 1f, ["u_bHue"] = 0.6f, ["u_bSat"] = 1f, ["u_bVal"] = 1f, ["u_angle"] = 0f, ["u_softness"] = 0.6f },
-        "spectrumramp" => new() { ["u_angle"] = 0f, ["u_density"] = 1f, ["u_aHue"] = 0f, ["u_aSat"] = 1f, ["u_aVal"] = 1f },
-        "spectrumbands" => new() { ["u_count"] = 5f, ["u_angle"] = 0f, ["u_aHue"] = 0f, ["u_aSat"] = 1f, ["u_aVal"] = 1f },
-        "huewheel" => new() { ["u_aHue"] = 0f, ["u_aSat"] = 1f, ["u_aVal"] = 1f },
-        "rainbow" => new() { ["u_density"] = 1f, ["u_rotation"] = 0f },
-        "sharplines" => new() { ["u_density"] = 5f, ["u_rotation"] = 0f, ["u_position"] = 0.5f },
-        "fire" => new() { ["u_turbulence"] = 1.6f },
-        "plasma" => new() { ["u_warp"] = 1f, ["u_zoom"] = 1f },
-        "spiral" => new() { ["u_arms"] = 5f, ["u_tightness"] = 8f },
-        "matrix" => new() { ["u_columns"] = 28f, ["u_fade"] = 4f },
-        "meteor" => new() { ["u_streaks"] = 6f, ["u_width"] = 0.13f },
-        "ripple" => new() { ["u_freq"] = 12f },
-        "wave" => new() { ["u_freq"] = 8f, ["u_amp"] = 0.18f },
-        "gradientwave" => new() { ["u_freq"] = 6f },
-        "ball" => new() { ["u_count"] = 8f, ["u_size"] = 0.08f },
-        "radar" => new() { ["u_ringRate"] = 0.25f },
-        "pulse" => new() { ["u_size"] = 1.2f },
-        "watercolor" => new() { ["u_blobs"] = 6f, ["u_softness"] = 0.5f },
-        "jellyfish" => new() { ["u_count"] = 3f, ["u_glow"] = 1f },
-        "aurora" => new() { ["u_curtains"] = 4f, ["u_height"] = 0.55f, ["u_shimmer"] = 0.5f },
-        "lavalamp" => new() { ["u_count"] = 5f, ["u_viscosity"] = 0.45f, ["u_size"] = 0.22f },
-        "starfield" => new() { ["u_density"] = 45f, ["u_layers"] = 5f, ["u_trail"] = 0.6f },
-        "voronoi" => new() { ["u_scale"] = 3f, ["u_edgeWidth"] = 0.05f, ["u_drift"] = 0.6f },
-        "neonrain" => new() { ["u_density"] = 28f, ["u_length"] = 0.30f, ["u_splash"] = 0.85f },
-        "nebula" => new() { ["u_density"] = 1f, ["u_stars"] = 0.6f, ["u_depth"] = 4f },
-        "bursts" => new() { ["u_rate"] = 1.8f, ["u_particles"] = 14f, ["u_size"] = 1.1f },
-        "lavafissure" => new() { ["u_flow"] = 1f, ["u_crackWidth"] = 0.35f, ["u_shimmer"] = 0.6f },
-        "kaleidoscope" => new() { ["u_sides"] = 8f, ["u_spin"] = 0.4f, ["u_inner"] = 1.2f },
-        "wormhole" => new() { ["u_depth"] = 1.2f, ["u_rings"] = 5f, ["u_twist"] = 0.6f },
-        "interference" => new() { ["u_wavelength"] = 0.22f, ["u_sources"] = 5f },
-        "sacredgeometry" => new() { ["u_layers"] = 5f, ["u_edge"] = 0.6f, ["u_pulse"] = 1f },
-        "tessellation" => new() { ["u_shape"] = 0f, ["u_morph"] = 0.6f, ["u_edge"] = 0.15f },
-        "domainwarp" => new() { ["u_turbulence"] = 0.8f, ["u_direction"] = 0f, ["u_bite"] = 1f },
-        "inkbloom" => new() { ["u_spread"] = 1f, ["u_curl"] = 0.6f, ["u_fade"] = 0.7f },
-        "cosmicdust" => new() { ["u_particles"] = 1.8f, ["u_twinkle"] = 1.5f, ["u_parallax"] = 0.6f },
-        "chromaspiral" => new() { ["u_tightness"] = 5f, ["u_spin"] = 1f, ["u_bands"] = 3f },
-        "neongrid" => new() { ["u_density"] = 12f, ["u_pulse"] = 1.2f, ["u_glow"] = 1.2f },
-        "oilslick" => new() { ["u_flow"] = 1.5f, ["u_iridescence"] = 2.5f, ["u_scale"] = 1.5f },
-        "caustics" => new() { ["u_density"] = 1.4f, ["u_brightness"] = 1.0f, ["u_flow"] = 1.0f },
-        "galaxy" => new() { ["u_arms"] = 4f, ["u_dust"] = 0.8f, ["u_rotation"] = 0.5f, ["u_stars"] = 1.2f },
-        "starpath" => new() { ["u_trail"] = 0.6f, ["u_axisShift"] = 0.3f, ["u_brightness"] = 1.0f },
-        "plasmaglobe" => new() { ["u_branches"] = 7f, ["u_jitter"] = 1.0f, ["u_power"] = 1.0f },
-        "lightning" => new() { ["u_boltRate"] = 0.8f, ["u_forks"] = 3f, ["u_glow"] = 1.0f },
-        "flowfield" => new() { ["u_streams"] = 1.5f, ["u_flow"] = 1.0f, ["u_colorSpread"] = 0.6f },
-        "ferrofluid" => new() { ["u_density"] = 8f, ["u_sharpness"] = 1.5f, ["u_motion"] = 1.0f },
-        "liquidchrome" => new() { ["u_flow"] = 1.0f, ["u_thickness"] = 1.0f, ["u_ripple"] = 1.0f },
-        "hextunnel" => new() { ["u_cellSize"] = 0.15f, ["u_zoomRate"] = 1.0f, ["u_neon"] = 1.0f },
-        "mandelbrot" => new() { ["u_depth"] = 4f, ["u_rotation"] = 0.5f, ["u_brightness"] = 1.0f },
-        "circuit" => new() { ["u_density"] = 9f, ["u_pulse"] = 1.0f, ["u_glow"] = 1.0f },
-        "bokeh" => new() { ["u_lights"] = 16f, ["u_size"] = 0.15f, ["u_drift"] = 1.0f },
-        "sandstorm" => new() { ["u_wind"] = 1.2f, ["u_density"] = 1.0f, ["u_gusts"] = 0.8f },
-        "dotmatrix" => new() { ["u_density"] = 18f, ["u_scrollRate"] = 1.0f, ["u_complexity"] = 0.5f },
-        // Additional frag shader defaults.
-        "bubbles" => new() { ["u_count"] = 12f, ["u_rise"] = 1.0f, ["u_irid"] = 0.8f },
-        "silkwave" => new() { ["u_folds"] = 6f, ["u_flow"] = 1.2f, ["u_sheen"] = 1.0f },
-        "prismwave" => new() { ["u_bands"] = 4f, ["u_sharpness"] = 7f, ["u_thickness"] = 0.6f, ["u_drift"] = 0.65f },
-        "crystaltunnel" => new() { ["u_facets"] = 8f, ["u_depth"] = 1.0f, ["u_refract"] = 1.0f },
-        "ribbonflow" => new() { ["u_ribbons"] = 7f, ["u_turbulence"] = 1.2f, ["u_glow"] = 1.0f },
-        // Audio-reactive defaults.
-        "spectrumbars" => new() { ["u_bars"] = 16f, ["u_gap"] = 0.12f, ["u_glow"] = 1.0f },
-        "spectrumradial" => new() { ["u_spokes"] = 32f, ["u_radius"] = 0.1f, ["u_glow"] = 1.0f },
-        "scope" => new() { ["u_thickness"] = 0.012f, ["u_harmonics"] = 3f, ["u_glow"] = 1.0f },
-        "basspulse" => new() { ["u_rings"] = 5f, ["u_ringSpeed"] = 1.0f, ["u_halo"] = 1.0f },
-        "beatstrobe" => new() { ["u_stripes"] = 7f, ["u_flash"] = 1.2f, ["u_chroma"] = 0.5f },
-        "harmonicstar" => new() { ["u_points"] = 12f, ["u_core"] = 0.1f, ["u_flare"] = 1.0f },
-        "audiotunnel" => new() { ["u_ringDensity"] = 6f, ["u_twist"] = 0.8f, ["u_neon"] = 1.0f },
-        "bassbloom" => new() { ["u_petals"] = 7f, ["u_shimmer"] = 1.0f, ["u_bloomSize"] = 0.4f },
-        "beatbuilder" => new()
+        var result = new System.Collections.Generic.Dictionary<string, float>();
+        foreach (var (paramName, spec) in ShaderLibrary.Params(name))
         {
-            ["u_centerStyle"] = 0f, ["u_barCount"] = 48f, ["u_barWidth"] = 0.85f,
-            ["u_centerGain"] = 1.2f, ["u_centerFloor"] = 0.04f, ["u_centerSize"] = 0.9f,
-            ["u_topMeters"] = 1f, ["u_topHeight"] = 0.085f, ["u_cornerFills"] = 1f,
-            ["u_bottomBars"] = 1f, ["u_bottomScale"] = 0.07f, ["u_colorMode"] = 1f,
-            ["u_beatColor"] = 0f, ["u_bgLevel"] = 0f, ["u_flash"] = 0f,
-            ["u_beatPulse"] = 0.3f,
-        },
-        // Fullscreen-first audio set.
-        "spectrumaurora" => new() { ["u_curtains"] = 5f, ["u_height"] = 0.75f, ["u_glow"] = 1.0f },
-        "neonwaveform" => new() { ["u_amplitude"] = 0.35f, ["u_thickness"] = 0.03f, ["u_glow"] = 1.0f },
-        "liquidbeat" => new() { ["u_blobs"] = 5f, ["u_viscosity"] = 1.0f, ["u_glow"] = 1.0f },
-        "beatburst" => new() { ["u_streaks"] = 40f, ["u_trail"] = 1.15f, ["u_spread"] = 0.45f },
-        // Tunnels + flowy + abstract backgrounds. Slot 0 must match the frontend
-        // EFFECTS defaults and PARAM_VARIATIONS slot 0.
-        "ringtunnel" => new() { ["u_rings"] = 2f, ["u_zoom"] = 1.0f, ["u_neon"] = 1.0f },
-        "vortextunnel" => new() { ["u_twist"] = 0.8f, ["u_churn"] = 1.0f, ["u_depth"] = 1.2f },
-        "helixtunnel" => new() { ["u_pitch"] = 3f, ["u_strands"] = 2f, ["u_glow"] = 1.0f },
-        "boxtunnel" => new() { ["u_depth"] = 1.2f, ["u_square"] = 1.0f, ["u_glow"] = 1.0f },
-        "meshgradient" => new() { ["u_blobs"] = 5f, ["u_spread"] = 0.8f, ["u_softness"] = 0.8f },
-        "tide" => new() { ["u_layers"] = 5f, ["u_amp"] = 0.08f, ["u_freq"] = 4f },
-        "vapor" => new() { ["u_density"] = 1.0f, ["u_scale"] = 1.5f, ["u_drift"] = 1.0f },
-        "satinflow" => new() { ["u_folds"] = 5f, ["u_flow"] = 1.0f, ["u_sheen"] = 1.0f },
-        "ridgeline" => new() { ["u_layers"] = 5f, ["u_jag"] = 4f, ["u_height"] = 0.18f },
-        "chevron" => new() { ["u_bands"] = 14f, ["u_angle"] = 1.0f, ["u_width"] = 0.18f },
-        "terrace" => new() { ["u_levels"] = 8f, ["u_scale"] = 1.4f, ["u_line"] = 0.5f },
-        "harlequin" => new() { ["u_cells"] = 8f, ["u_skew"] = 1.0f, ["u_shift"] = 1.0f },
-        "mosaic" => new() { ["u_cells"] = 9f, ["u_wave"] = 1.5f, ["u_pop"] = 0.7f },
-        // Constellation mesh plus the Nexus 2 theme set.
-        "constellation" => new() { ["u_points"] = 6f, ["u_reach"] = 1.4f, ["u_dots"] = 1.3f },
-        "cybertunnel" => new() { ["u_rings"] = 6f, ["u_spokes"] = 8f, ["u_glow"] = 1.2f },
-        "hyperspace" => new() { ["u_streaks"] = 40f, ["u_depth"] = 1.0f, ["u_core"] = 1.0f },
-        "synthwave" => new() { ["u_lines"] = 36f, ["u_amplitude"] = 0.18f, ["u_flow"] = 1.0f },
-        "retropetals" => new() { ["u_petals"] = 8f, ["u_wave"] = 0.8f, ["u_spin"] = 1.0f },
-        "contourbands" => new() { ["u_bands"] = 4f, ["u_scale"] = 2.2f, ["u_flow"] = 1.0f },
-        _ => null,
-    };
+            if (spec.Declared && !ShaderEffect.BaseParamNames.Contains(paramName))
+            {
+                result[paramName] = spec.Default;
+            }
+        }
+        return result;
+    }
 
     private IEffect BuildAnimateEffect(string name, float speed, float intensity, float hue, float colorize, float saturation, float contrast, System.Collections.Generic.Dictionary<string, float>? extras)
     {
@@ -1010,6 +966,13 @@ public sealed class LightingProvider : ILightingProvider, IDisposable
         // Simple solid-colour fills all share one cheap shader; the colour is
         // carried by the post-process tint, not the GLSL.
         if (name.StartsWith("simple", System.StringComparison.Ordinal))
+        {
+            return MakeShader(name, ShaderLibrary.Get(name), effectSpeed, intensity, hue, colorize, saturation, contrast, extras);
+        }
+        // Simple mode's sweep set loads its own .frag by name, same as the
+        // static patterns below - the switch has no arm for them and its
+        // rainbow default would render them all identically.
+        if (ShaderLibrary.IsSweepEffect(name))
         {
             return MakeShader(name, ShaderLibrary.Get(name), effectSpeed, intensity, hue, colorize, saturation, contrast, extras);
         }
@@ -1100,6 +1063,7 @@ public sealed class LightingProvider : ILightingProvider, IDisposable
             "harlequin" => ShaderLibrary.Get("harlequin"),
             "mosaic" => ShaderLibrary.Get("mosaic"),
             "sharplines" => ShaderLibrary.Get("sharplines"),
+            "breathing" => ShaderLibrary.Get("breathing"),
             "constellation" => ShaderLibrary.Get("constellation"),
             "cybertunnel" => ShaderLibrary.Get("cybertunnel"),
             "hyperspace" => ShaderLibrary.Get("hyperspace"),
@@ -1281,7 +1245,7 @@ public sealed class LightingProvider : ILightingProvider, IDisposable
                 ServiceLog.Warn("[chroma-shim] not elevated; shim install skipped");
                 break;
             case ChromaShimInstallResult.BundleMissing:
-                ServiceLog.Error("[chroma-shim] bundled shim DLLs not found");
+                ServiceLog.Info("[chroma-shim] bundled shim DLLs not found; Game Sync stays inactive");
                 break;
             case ChromaShimInstallResult.Failed:
                 ServiceLog.Error("[chroma-shim] shim install failed");

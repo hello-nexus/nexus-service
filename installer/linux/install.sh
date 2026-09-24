@@ -10,8 +10,20 @@ set -euo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
 APP_DIR=/opt/nexus
 UNIT=/etc/systemd/system/nexus.service
-APPS_DIR="$HOME/.local/share/applications"
-ICON_DIR="$HOME/.local/share/icons/hicolor/512x512/apps"
+# Under `sudo ./install.sh`, $HOME is root's - resolve the invoking user so the
+# menu entry and the data migration below both target the same real home.
+TARGET_HOME="$HOME"
+if [ -n "${SUDO_USER:-}" ]; then
+  SUDO_HOME="$(getent passwd "$SUDO_USER" | cut -d: -f6)"
+  [ -n "$SUDO_HOME" ] && TARGET_HOME="$SUDO_HOME"
+fi
+APPS_DIR="$TARGET_HOME/.local/share/applications"
+ICON_DIR="$TARGET_HOME/.local/share/icons/hicolor/512x512/apps"
+
+# Stop a running daemon first: copying onto the live /opt/nexus/Nexus is ETXTBSY
+# and would abort the upgrade under set -e, and the migration below must not
+# snapshot a store the old daemon is still writing.
+sudo systemctl stop nexus.service 2>/dev/null || true
 
 echo "==> Installing Nexus (root daemon) to $APP_DIR (sudo)"
 sudo mkdir -p "$APP_DIR"
@@ -55,6 +67,60 @@ Terminal=false
 Categories=Utility;System;
 EOF
 
+# The daemon keeps everything under one machine-scope root - settings.json, db/,
+# devices/, media/, apps/, firmware/, drivers/, logs/ - the way the Windows
+# service uses %ProgramData%. It has no home of its own, and the logged-in
+# user's home is unknowable before login, so deriving these from $HOME gave the
+# daemon one config when it started at boot and a different one after a
+# restart. World-readable so you can open logs/ in a file manager; the service
+# chmods settings.json and the HTTPS key to 0600 itself.
+DATA_DIR=/var/lib/nexus
+echo "==> Preparing $DATA_DIR (sudo)"
+# The unit's StateDirectory= creates this on every start; doing it here too lets
+# the migration below run before the first start.
+sudo install -d -m 0755 "$DATA_DIR"
+
+# One-shot upgrade from the pre-machine-root layout: move the installing user's
+# existing stores in. Only ever runs while $DATA_DIR is still empty, so a
+# re-install can't bury the live config under a stale copy.
+# TARGET_HOME (resolved at the top) matters here: migrating /root instead of the
+# user's home would hand them a blank config - the very failure this removes.
+if [ -z "$(sudo ls -A "$DATA_DIR" 2>/dev/null)" ]; then
+  MIGRATED=0
+  # <old dir>:<name under DATA_DIR>, empty name = merge at the root.
+  for spec in \
+    "$TARGET_HOME/.config/Nexus:" \
+    "$TARGET_HOME/.local/share/Nexus:" \
+    "$TARGET_HOME/.cache/Nexus:" \
+    "$TARGET_HOME/.local/state/nexus/logs:logs"; do
+    src="${spec%:*}"
+    dest="${spec##*:}"
+    [ -d "$src" ] || continue
+    if [ -n "$dest" ]; then
+      sudo cp -a "$src" "$DATA_DIR/$dest"
+    else
+      sudo cp -a "$src/." "$DATA_DIR/"
+    fi
+    echo "    migrated $src"
+    MIGRATED=1
+  done
+  if [ "$MIGRATED" = 1 ]; then
+    # cp -a preserves ownership, permissions AND the SELinux context, so the
+    # copies arrive owned by the user and labelled user_home_t - unusable to a
+    # confined system service. Re-stamp all three.
+    sudo chown -R root:root "$DATA_DIR"
+    sudo chmod -R go-w "$DATA_DIR"
+    sudo find "$DATA_DIR" -type d -exec chmod go+rx {} +
+    [ -d "$DATA_DIR/db" ] && sudo chmod -R go-rwx "$DATA_DIR/db"
+    # The glob matters: .tmp (stranded by a crash mid-write) and .corrupt carry
+    # the same auth and cloud tokens as settings.json itself.
+    sudo chmod go-rwx "$DATA_DIR"/settings.json* 2>/dev/null || true
+    [ -f "$DATA_DIR/nexus-local-https.pfx" ] && sudo chmod go-rwx "$DATA_DIR/nexus-local-https.pfx"
+    sudo restorecon -R "$DATA_DIR" 2>/dev/null || true
+    echo "    old copies left in place - delete them once you have confirmed the upgrade"
+  fi
+fi
+
 # Load the motherboard Super-I/O fan driver (it87 etc.). Root daemon reads/writes
 # hwmon directly; this only ensures the kernel module is present.
 sudo bash "$HERE/setup-sensors.sh" || echo "   (sensor driver setup skipped)"
@@ -63,9 +129,53 @@ echo "==> Installing + enabling the system service (sudo)"
 sudo cp "$HERE/nexus.service" "$UNIT"
 sudo restorecon "$UNIT" 2>/dev/null || true
 sudo systemctl daemon-reload
-sudo systemctl enable --now nexus.service
+sudo systemctl enable nexus.service
+# restart, not `enable --now`: --now leaves an already-running unit alone, so an
+# upgrade would keep serving the old binary until the next boot.
+sudo systemctl restart nexus.service
+
+# Preflight the two runtime dependencies Nexus cannot bundle. Both fail
+# silently at the far end otherwise - openrgb-headless exits before it opens
+# its port (RGB just never appears), and the panel kiosk has nothing to spawn -
+# so say it here, once, while the user is still looking at a terminal.
+echo
+MISSING_LIBS="$(ldd "$APP_DIR/openrgb/openrgb-headless" 2>/dev/null | awk '/not found/ {print $1}' | sort -u || true)"
+if [ -n "$MISSING_LIBS" ]; then
+  echo "WARNING: the RGB engine is missing shared libraries, so lighting will not come up:"
+  printf '  %s\n' $MISSING_LIBS
+  echo "  Debian/Ubuntu/Mint: sudo apt install libhidapi-hidraw0 libusb-1.0-0"
+  echo "  Fedora/Bazzite:     sudo dnf install hidapi libusb1"
+  echo "  Arch:               sudo pacman -S hidapi libusb"
+fi
+
+# Mirrors LinuxBrowsers.SearchDirs/BinaryNames: a narrower list here would warn
+# about a browser the service goes on to find.
+HAVE_BROWSER=0
+BROWSER_DIRS=(
+  "$TARGET_HOME/.local/share/flatpak/exports/bin" /var/lib/flatpak/exports/bin
+  /usr/bin /usr/local/bin /bin /opt/bin /snap/bin /var/lib/snapd/snap/bin
+  "$TARGET_HOME/.local/bin"
+)
+BROWSER_NAMES=(
+  org.chromium.Chromium com.google.Chrome com.brave.Browser com.microsoft.Edge
+  chromium chromium-browser chromium-freeworld ungoogled-chromium
+  google-chrome google-chrome-stable brave brave-browser
+  microsoft-edge microsoft-edge-stable vivaldi vivaldi-stable
+  thorium-browser helium
+)
+for dir in "${BROWSER_DIRS[@]}"; do
+  for name in "${BROWSER_NAMES[@]}"; do
+    [ -e "$dir/$name" ] && HAVE_BROWSER=1 && break 2
+  done
+done
+if [ "$HAVE_BROWSER" = 0 ]; then
+  echo "WARNING: no Chromium-family browser found. The Y70 panel and any promoted"
+  echo "  monitor run as a Chromium --app --kiosk window and cannot open without one."
+  echo "  Install chromium, chrome, brave, edge or vivaldi (package, flatpak or"
+  echo "  snap), then: sudo systemctl restart nexus"
+fi
 
 echo
 echo "Nexus installed as a root daemon. Dashboard: http://localhost:9400"
-echo "Tray + media attach to your login session at startup - if you installed"
-echo "before logging in, run:  sudo systemctl restart nexus"
+echo "Data lives in $DATA_DIR. Hardware control starts at boot; the tray and"
+echo "media controls attach to your login session as soon as you log in."

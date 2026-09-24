@@ -9,6 +9,7 @@ using Nexus.Service.Models.Peripherals.QSeries;
 using Nexus.Service.Models.Peripherals.Y70;
 using Nexus.Service.Panel;
 using Nexus.Service.Peripherals.Corsair.XeneonEdge;
+using Nexus.Service.Peripherals.Hyte.Y70Display;
 using Nexus.Service.Peripherals.QSeries;
 using Nexus.Service.Peripherals.Y70;
 using Nexus.Service.Persistence;
@@ -29,6 +30,19 @@ public static class DisplayRoutes
 
     public static void MapDisplayEndpoints(this WebApplication app)
     {
+#if DEV_TOOLS
+        app.MapGet("/displays/dev/panel-variant", () => Results.Json(
+            new DevPanelVariantDto { Variant = DevPanelVariantOverride.Variant, Options = Y70DisplayProtocol.DdcOnlyVariantKeys },
+            AppJsonContext.Default.DevPanelVariantDto)).LocalhostOnly();
+        app.MapPut("/displays/dev/panel-variant", (DevPanelVariantDto body) =>
+        {
+            var variant = body.Variant ?? "";
+            if (variant.Length > 0 && Array.IndexOf(Y70DisplayProtocol.DdcOnlyVariantKeys, variant) < 0)
+                return Results.Json(ApiResponse.Fail("unknown variant"), AppJsonContext.Default.ApiResponse, statusCode: 400);
+            DevPanelVariantOverride.Variant = variant;
+            return Results.Json(ApiResponse.Ok(), AppJsonContext.Default.ApiResponse);
+        }).LocalhostOnly();
+#endif
         // Y70
         app.MapGet("/y70/rotation", (IY70Provider y) => new Y70RotationParams
         {
@@ -54,6 +68,18 @@ public static class DisplayRoutes
         {
             y.SetToggle(body.Toggle);
             return new Y70BrightnessResponse { Brightness = 20 };
+        }).AllowPanel();
+        // Stored only: the store change nudges nexus-overlay, which rebuilds
+        // the panel kiosk when /overlay/state reports a different value.
+        app.MapGet("/y70/compatibility-rendering", (IConfigStore store) => new Y70CompatibilityRenderingParams
+        {
+            Enabled = store.Load().Y70.CompatibilityRendering,
+            Supported = OperatingSystem.IsWindows(),
+        }).AllowPanel();
+        app.MapPost("/y70/compatibility-rendering", (Y70CompatibilityRenderingParams body, IConfigStore store) =>
+        {
+            store.Update(s => s.Y70.CompatibilityRendering = body.Enabled);
+            return ApiResponse.Ok();
         }).AllowPanel();
 
         // Q-series (Q60/Q80) - 180 degree flip only, no landscape.
@@ -104,6 +130,31 @@ public static class DisplayRoutes
             });
             sp.GetService<Nexus.Service.QSeries.QSeriesPortWatcher>()?.AnnounceDisplayChange();
             return Results.Ok(ApiResponse.Ok());
+        }).AllowPanel();
+
+        // Panel link health: no panel on USB, on USB but its adbd is not
+        // answering, or recovery blocked until the host restarts.
+        app.MapGet("/qseries/link", (IServiceProvider sp) =>
+        {
+            var watcher = sp.GetService<Nexus.Service.QSeries.QSeriesPortWatcher>();
+            // A host with no watcher registered (macOS) is not the same as a host
+            // with no panel attached, and the UI must not read it as one.
+            return watcher?.GetLinkStatus()
+                ?? new QSeriesLinkStatus { Error = true, Msg = "q-series watcher unavailable" };
+        }).AllowPanel();
+
+        // Runs the USB reset now instead of on the recovery cadence. Fire and
+        // forget: the reset happens on the tick thread that owns the transport,
+        // so the caller polls GET /qseries/link for the outcome. Throttled
+        // because each accepted call is a host-level devnode reset and the route
+        // is reachable from any panel session.
+        app.MapPost("/qseries/link/repair", (IServiceProvider sp) =>
+        {
+            var watcher = sp.GetService<Nexus.Service.QSeries.QSeriesPortWatcher>();
+            if (watcher is null) return Results.Ok(ApiResponse.Fail("q-series watcher unavailable"));
+            return watcher.RequestLinkRepair()
+                ? Results.Ok(ApiResponse.Ok())
+                : Results.Ok(ApiResponse.Fail("a repair is already in flight"));
         }).AllowPanel();
 
         // System monitors (external DDC/CI + internal panels)
@@ -466,3 +517,12 @@ public static class DisplayRoutes
         });
     }
 }
+
+#if DEV_TOOLS
+/// <summary>Dev-tools panel-variant override: <c>Variant</c> is "" or one of <c>Options</c>.</summary>
+public sealed class DevPanelVariantDto
+{
+    public string? Variant { get; set; }
+    public string[] Options { get; set; } = [];
+}
+#endif

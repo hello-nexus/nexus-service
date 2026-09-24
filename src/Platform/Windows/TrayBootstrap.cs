@@ -313,15 +313,23 @@ internal static class TrayBootstrap
 
         // Lock-screen wake-on-input. The helper owns the poll because
         // GetLastInputInfo is session-scoped and this service runs in Session 0;
-        // the coordinator owns when it is worth polling at all.
+        // the two consumers (lighting blackout, Stream Deck lock sleep) each
+        // say when it is worth polling, and it runs while either wants it.
         var lockBlackout = app.Services.GetService<Nexus.Service.Lighting.SleepBlackoutCoordinator>();
-        if (lockBlackout is not null)
+        var deckWorker = app.Services.GetService<Nexus.Service.Peripherals.StreamDeck.StreamDeckConnectionWorker>();
+        if (lockBlackout is not null || deckWorker is not null)
         {
-            var lockInputArmed = false;
-            lockBlackout.LockInputWatch = enabled =>
+            var lightingArmed = false;
+            var deckArmed = false;
+            lockBlackout?.LockInputWatch = enabled =>
             {
-                lockInputArmed = enabled;
-                _ = Nexus.Service.Helper.Domains.LockLightingCommands.SetLockInputWatchAsync(helperRegistry, enabled);
+                lightingArmed = enabled;
+                _ = Nexus.Service.Helper.Domains.LockLightingCommands.SetLockInputWatchAsync(helperRegistry, lightingArmed || deckArmed);
+            };
+            deckWorker?.LockInputWatch = enabled =>
+            {
+                deckArmed = enabled;
+                _ = Nexus.Service.Helper.Domains.LockLightingCommands.SetLockInputWatchAsync(helperRegistry, lightingArmed || deckArmed);
             };
             // The push is dropped when no helper is connected, so a lock that
             // spans a helper reconnect would come back with the poll in the
@@ -330,12 +338,13 @@ internal static class TrayBootstrap
             // orientation state above.
             helperRegistry.Connected += conn =>
             {
-                _ = Nexus.Service.Helper.Domains.LockLightingCommands.SetLockInputWatchAsync(helperRegistry, lockInputArmed);
+                _ = Nexus.Service.Helper.Domains.LockLightingCommands.SetLockInputWatchAsync(helperRegistry, lightingArmed || deckArmed);
             };
             helperRegistry.InboundEnvelope += (_, env) =>
             {
                 if (env.Type != Nexus.Service.Helper.Domains.LockLightingCommands.InputSeenType) return;
-                lockBlackout.OnLockScreenInput();
+                lockBlackout?.OnLockScreenInput();
+                deckWorker?.OnLockScreenInput();
             };
         }
 
@@ -391,7 +400,8 @@ internal static class TrayBootstrap
                 // Always launch the user-session helper. Its lifetime is decoupled
                 // from any pref - the helper hosts the tray icon, screen-time
                 // poller, media/brightness providers, etc.
-                Nexus.Service.Lifecycle.UserHelperBootstrapper.EnsureLaunched();
+                Nexus.Service.Lifecycle.UserHelperBootstrapper.EnsureLaunched(
+                    app.Services.GetRequiredService<HelperRegistry>(), app.Lifetime.ApplicationStopping);
 #endif
             }
             else if (suppressStartupWindow)

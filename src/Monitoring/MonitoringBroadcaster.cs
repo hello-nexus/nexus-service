@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Linq;
 using System.Text.Json;
@@ -52,6 +53,34 @@ public sealed class MonitoringBroadcaster : BackgroundService
     // runtime; volatile gives publication ordering.
     private volatile byte[]? _screenTimeSnapshotBytes;
     private volatile byte[]? _volumeSnapshotBytes;
+
+    // A first subscriber to one of these gets it at once instead of at the next tick.
+    private static readonly HashSet<string> TickTopics = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "monitoring", "cpu", "gpu", "memory", "storage", "motherboard", "summary",
+        "processes", "network", "fps", "extras",
+    };
+    private static readonly string[] ProcessTopics = { "monitoring", "processes" };
+    // Bounds how long an early send is held for the process sample its subscribe triggered.
+    private const int ProcessSampleWaitMs = 250;
+    // Set while a process-bearing early send is held, so a finished sample wakes the loop.
+    private volatile bool _processSendHeld;
+    // Owned by the loop thread: process-bearing topics waiting for their sample.
+    private HeldProcessSend? _held;
+
+    private sealed class HeldProcessSend
+    {
+        public required HashSet<string> Topics { get; init; }
+        public required long ProcessSeq { get; init; }
+        public required long Until { get; init; }
+    }
+    // Counted, so a first subscriber that lands mid-tick still cuts the next wait short.
+    private readonly SemaphoreSlim _wake = new(0, int.MaxValue);
+    private readonly object _firstGate = new();
+    private readonly HashSet<string> _firstSubscribed = new(StringComparer.OrdinalIgnoreCase);
+    // ProcessMonitor.SampleSeq when a process-bearing topic got its first subscriber; -1 when none is pending.
+    private long _processSeqAtFirst = -1;
+    private readonly ConcurrentDictionary<string, long> _lastSentTicks = new(StringComparer.OrdinalIgnoreCase);
 
     private readonly Dictionary<string, (long bytesIn, long bytesOut)> _prevNet = new(StringComparer.OrdinalIgnoreCase);
     private DateTime _prevNetTime = DateTime.MinValue;
@@ -113,20 +142,121 @@ public sealed class MonitoringBroadcaster : BackgroundService
         _timeProvider = timeProvider;
         _hub.OnTopicFirstSubscriber += OnTopicFirstSubscriber;
         _hub.OnTopicLastUnsubscriber += OnTopicLastUnsubscriber;
+        _processes.Sampled += OnProcessSampled;
         _hub.RegisterSnapshotProvider("screentime", GetScreenTimeSnapshot);
         _hub.RegisterSnapshotProvider("volume", GetVolumeSnapshot);
+    }
+
+    private Task PublishTickTopicAsync(string topic, ReadOnlyMemory<byte> envelope)
+    {
+        _lastSentTicks[topic] = _timeProvider.GetUtcNow().UtcTicks;
+        return _hub.BroadcastTopicAsync(topic, envelope);
+    }
+
+    /// <summary>
+    /// Takes the topics that gained a first subscriber since the last call. With
+    /// <paramref name="skipRecentlySent"/>, drops any sent within the last interval:
+    /// a client that unsubscribes and resubscribes must not receive a duplicate sample.
+    /// </summary>
+    internal (HashSet<string> Topics, long ProcessSeq) TakeFirstSubscribed(bool skipRecentlySent)
+    {
+        var now = _timeProvider.GetUtcNow().UtcTicks;
+        var floor = TimeSpan.FromMilliseconds(_intervalMs).Ticks;
+        lock (_firstGate)
+        {
+            var taken = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            foreach (var topic in _firstSubscribed)
+            {
+                if (skipRecentlySent && _lastSentTicks.TryGetValue(topic, out var sent) && now - sent < floor)
+                    continue;
+                taken.Add(topic);
+            }
+            var processSeq = _processSeqAtFirst;
+            _firstSubscribed.Clear();
+            _processSeqAtFirst = -1;
+            return (taken, processSeq);
+        }
+    }
+
+    /// <summary>Sends newly subscribed topics ahead of the tick and returns the process-bearing ones to hold.</summary>
+    internal async Task<HashSet<string>> SendEarlyAsync(HashSet<string> topics, CancellationToken ct)
+    {
+        var hold = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var topic in ProcessTopics)
+        {
+            if (topics.Remove(topic))
+                hold.Add(topic);
+        }
+        if (topics.Count > 0)
+            await Tick(ct, topics);
+        return hold;
+    }
+
+    /// <summary>Sends held process-bearing topics once ProcessMonitor has sampled after <paramref name="processSeq"/>.</summary>
+    internal async Task<bool> TrySendHeldAsync(HashSet<string> held, long processSeq, CancellationToken ct)
+    {
+        // The subscribe woke ProcessMonitor; before its sample the frame would carry a stale list.
+        if (_processes.SampleSeq <= processSeq) return false;
+        await Tick(ct, held);
+        return true;
+    }
+
+    private void OnProcessSampled()
+    {
+        if (_processSendHeld) _wake.Release();
+    }
+
+    /// <summary>When the held process send lapses (Environment.TickCount64 ms), or null when none is held.</summary>
+    internal long? HeldUntil => _held?.Until;
+
+    /// <summary>
+    /// One early pass at <paramref name="now"/> (Environment.TickCount64 ms): sends or drops a held
+    /// process send, then sends topics that just gained their first subscriber.
+    /// </summary>
+    internal async Task EarlyPassAsync(long now, CancellationToken ct)
+    {
+        if (_held is { } held && (_processes.SampleSeq > held.ProcessSeq || now >= held.Until))
+        {
+            // Cleared before sending, so a send that throws is not retried in a loop.
+            DropHeld();
+            await TrySendHeldAsync(held.Topics, held.ProcessSeq, ct);
+        }
+        var (fresh, processSeq) = TakeFirstSubscribed(skipRecentlySent: true);
+        if (fresh.Count == 0) return;
+        var hold = await SendEarlyAsync(fresh, ct);
+        if (hold.Count == 0 || processSeq < 0) return;
+        if (_held is not null)
+        {
+            _held.Topics.UnionWith(hold);
+            return;
+        }
+        _held = new HeldProcessSend { Topics = hold, ProcessSeq = processSeq, Until = Math.Max(now, Environment.TickCount64) + ProcessSampleWaitMs };
+        _processSendHeld = true;
+        // The sample may have landed before the flag was set.
+        if (_processes.SampleSeq > processSeq) _wake.Release();
+    }
+
+    /// <summary>Forgets a held process send; the regular tick serves its topics.</summary>
+    internal void DropHeld()
+    {
+        _held = null;
+        _processSendHeld = false;
     }
 
     private ReadOnlyMemory<byte>? GetScreenTimeSnapshot()
     {
         var bytes = _screenTimeSnapshotBytes;
-        return bytes is null ? null : new ReadOnlyMemory<byte>(bytes);
+        // Not a ternary: null would convert through byte[] into an empty, non-null envelope.
+        if (bytes is null) return null;
+        return new ReadOnlyMemory<byte>(bytes);
     }
 
     private ReadOnlyMemory<byte>? GetVolumeSnapshot()
     {
         var bytes = _volumeSnapshotBytes;
-        return bytes is null ? null : new ReadOnlyMemory<byte>(bytes);
+        // Not a ternary: null would convert through byte[] into an empty, non-null envelope.
+        if (bytes is null) return null;
+        return new ReadOnlyMemory<byte>(bytes);
     }
 
     public int GetInterval() => _intervalMs;
@@ -142,6 +272,7 @@ public sealed class MonitoringBroadcaster : BackgroundService
     {
         _hub.OnTopicFirstSubscriber -= OnTopicFirstSubscriber;
         _hub.OnTopicLastUnsubscriber -= OnTopicLastUnsubscriber;
+        _processes.Sampled -= OnProcessSampled;
         _hub.UnregisterSnapshotProvider("screentime");
         _hub.UnregisterSnapshotProvider("volume");
         _fps.SetDemand("monitoring", false);
@@ -154,6 +285,8 @@ public sealed class MonitoringBroadcaster : BackgroundService
 
         while (!stoppingToken.IsCancellationRequested)
         {
+            // The full tick serves every topic subscribed so far.
+            TakeFirstSubscribed(skipRecentlySent: false);
             try
             {
                 await Tick(stoppingToken);
@@ -163,42 +296,70 @@ public sealed class MonitoringBroadcaster : BackgroundService
                 Console.Error.WriteLine($"[monitoring-broadcaster] cycle failed: {ex.Message}");
             }
 
+            // Early sends carry only topics nobody else receives, so existing
+            // subscribers keep exactly one frame per interval.
+            var dueAt = Environment.TickCount64 + _intervalMs;
             try
-            { await Task.Delay(_intervalMs, stoppingToken); }
-            catch (TaskCanceledException) { break; }
+            {
+                while (Environment.TickCount64 < dueAt)
+                {
+                    var until = Math.Min(dueAt, HeldUntil ?? dueAt);
+                    var left = until - Environment.TickCount64;
+                    if (left > 0 && await WaitForNextTickAsync((int)left, stoppingToken))
+                        while (_wake.Wait(0)) { }
+                    try
+                    {
+                        await EarlyPassAsync(Environment.TickCount64, stoppingToken);
+                    }
+                    catch (Exception ex) when (!stoppingToken.IsCancellationRequested)
+                    {
+                        Console.Error.WriteLine($"[monitoring-broadcaster] early send failed: {ex.Message}");
+                    }
+                }
+            }
+            catch (OperationCanceledException) { break; }
+            // Anything still held goes out with the regular tick.
+            DropHeld();
         }
     }
 
-    internal async Task Tick(CancellationToken ct)
+    /// <summary>True when a first subscriber cut the wait short.</summary>
+    internal Task<bool> WaitForNextTickAsync(int delayMs, CancellationToken stoppingToken) =>
+        _wake.WaitAsync(delayMs, stoppingToken);
+
+    /// <summary>One broadcast pass; <paramref name="only"/> limits it to those topics.</summary>
+    internal async Task Tick(CancellationToken ct, IReadOnlySet<string>? only = null)
     {
-        bool composite = _hub.TopicHasSubscribers("monitoring");
+        bool Send(string topic) => (only is null || only.Contains(topic)) && _hub.TopicHasSubscribers(topic);
+        bool composite = Send("monitoring");
         // Not folded with composite: the summary component is never embedded in
         // MonitoringFrame, so a composite-only tick must not pay for building it.
-        bool needSummary = _hub.TopicHasSubscribers("summary");
+        bool needSummary = Send("summary");
         // The summary set draws from the same cpu/gpu/memory sensors those components
         // read; folding needSummary in here means BuildSummaryComponent can reuse the
         // already-fetched lists below instead of triggering a second sensor read.
-        bool needCpu = composite || _hub.TopicHasSubscribers("cpu") || needSummary;
-        bool needGpu = composite || _hub.TopicHasSubscribers("gpu") || needSummary;
-        bool needMemory = composite || _hub.TopicHasSubscribers("memory") || needSummary;
-        bool needStorage = composite || _hub.TopicHasSubscribers("storage");
-        bool needMotherboard = composite || _hub.TopicHasSubscribers("motherboard");
+        bool needCpu = composite || Send("cpu") || needSummary;
+        bool needGpu = composite || Send("gpu") || needSummary;
+        bool needMemory = composite || Send("memory") || needSummary;
+        bool needStorage = composite || Send("storage");
+        bool needMotherboard = composite || Send("motherboard");
         bool needLhm = needCpu || needGpu || needMemory || needStorage || needMotherboard;
-        bool needProcesses = composite || _hub.TopicHasSubscribers("processes");
-        bool needGpuProcesses = _hub.TopicHasSubscribers("gpu-processes");
-        bool needNetwork = composite || _hub.TopicHasSubscribers("network");
-        bool needScreenTime = _hub.TopicHasSubscribers("screentime")
+        bool needProcesses = composite || Send("processes");
+        bool needGpuProcesses = Send("gpu-processes");
+        bool needNetwork = composite || Send("network");
+        bool needScreenTime = Send("screentime")
             && ShouldBroadcastScreenTime(_timeProvider.GetUtcNow().UtcTicks);
-        bool needVolume = _hub.TopicHasSubscribers("volume");
-        bool needFps = _hub.TopicHasSubscribers("fps");
-        bool needExtras = _hub.TopicHasSubscribers("extras");
+        bool needVolume = Send("volume");
+        bool fpsLive = _hub.TopicHasSubscribers("fps");
+        bool needFps = (only is null || only.Contains("fps")) && fpsLive;
+        bool needExtras = Send("extras");
 
         if (needVolume)
         {
             await BroadcastVolumeIfChangedAsync();
         }
 
-        _fps.SetDemand("monitoring", needFps);
+        _fps.SetDemand("monitoring", fpsLive);
 
         if (!needLhm && !needProcesses && !needGpuProcesses && !needNetwork && !needScreenTime && !needFps && !needExtras)
             return;
@@ -263,63 +424,63 @@ public sealed class MonitoringBroadcaster : BackgroundService
 
             var envelope = WsEnvelope.Build("monitoring", frame,
                 AppJsonContext.Default.MonitoringFrame);
-            await _hub.BroadcastTopicAsync("monitoring", envelope);
+            await PublishTickTopicAsync("monitoring", envelope);
         }
 
         // Per-domain sensor topics for clients subscribed beside the composite.
         if (needLhm)
         {
-            if (cpuComponent is not null && _hub.TopicHasSubscribers("cpu"))
+            if (cpuComponent is not null && Send("cpu"))
             {
                 var env = WsEnvelope.Build("cpu", cpuComponent, AppJsonContext.Default.HardwareComponent);
-                await _hub.BroadcastTopicAsync("cpu", env);
+                await PublishTickTopicAsync("cpu", env);
             }
-            if (gpuComponents is not null && _hub.TopicHasSubscribers("gpu"))
+            if (gpuComponents is not null && Send("gpu"))
             {
                 var env = WsEnvelope.Build("gpu", gpuComponents, AppJsonContext.Default.ListHardwareComponent);
-                await _hub.BroadcastTopicAsync("gpu", env);
+                await PublishTickTopicAsync("gpu", env);
             }
-            if (memoryComponent is not null && _hub.TopicHasSubscribers("memory"))
+            if (memoryComponent is not null && Send("memory"))
             {
                 var env = WsEnvelope.Build("memory", memoryComponent, AppJsonContext.Default.HardwareComponent);
-                await _hub.BroadcastTopicAsync("memory", env);
+                await PublishTickTopicAsync("memory", env);
             }
-            if (storageComponents is not null && _hub.TopicHasSubscribers("storage"))
+            if (storageComponents is not null && Send("storage"))
             {
                 var env = WsEnvelope.Build("storage", storageComponents,
                     AppJsonContext.Default.IReadOnlyDictionaryStringStorageComponent);
-                await _hub.BroadcastTopicAsync("storage", env);
+                await PublishTickTopicAsync("storage", env);
             }
-            if (motherboardComponent is not null && _hub.TopicHasSubscribers("motherboard"))
+            if (motherboardComponent is not null && Send("motherboard"))
             {
                 var env = WsEnvelope.Build("motherboard", motherboardComponent, AppJsonContext.Default.HardwareComponent);
-                await _hub.BroadcastTopicAsync("motherboard", env);
+                await PublishTickTopicAsync("motherboard", env);
             }
-            if (summaryComponent is not null && _hub.TopicHasSubscribers("summary"))
+            if (summaryComponent is not null && Send("summary"))
             {
                 var env = WsEnvelope.Build("summary", summaryComponent, AppJsonContext.Default.HardwareComponent);
-                await _hub.BroadcastTopicAsync("summary", env);
+                await PublishTickTopicAsync("summary", env);
             }
         }
 
-        if (needProcesses && processFrame != null && _hub.TopicHasSubscribers("processes"))
+        if (needProcesses && processFrame != null && Send("processes"))
         {
             var env = WsEnvelope.Build("processes", processFrame, AppJsonContext.Default.ProcessFrame);
-            await _hub.BroadcastTopicAsync("processes", env);
+            await PublishTickTopicAsync("processes", env);
         }
-        if (_hub.TopicHasSubscribers("gpu-processes"))
+        if (Send("gpu-processes"))
         {
             var gpuFrame = new GpuProcessFrame
             {
                 Processes = new List<GpuProcessEntry>(_gpuProcesses.GetSnapshot()),
             };
             var env = WsEnvelope.Build("gpu-processes", gpuFrame, AppJsonContext.Default.GpuProcessFrame);
-            await _hub.BroadcastTopicAsync("gpu-processes", env);
+            await PublishTickTopicAsync("gpu-processes", env);
         }
-        if (needNetwork && networkFrame != null && _hub.TopicHasSubscribers("network"))
+        if (needNetwork && networkFrame != null && Send("network"))
         {
             var env = WsEnvelope.Build("network", networkFrame, AppJsonContext.Default.NetworkFrame);
-            await _hub.BroadcastTopicAsync("network", env);
+            await PublishTickTopicAsync("network", env);
         }
         if (needScreenTime && screenTimeFrame != null)
         {
@@ -331,19 +492,31 @@ public sealed class MonitoringBroadcaster : BackgroundService
         if (needFps && fpsComponent != null)
         {
             var env = WsEnvelope.Build("fps", fpsComponent, AppJsonContext.Default.HardwareComponent);
-            await _hub.BroadcastTopicAsync("fps", env);
+            await PublishTickTopicAsync("fps", env);
         }
         // Detailed-tab extras: broadcast only when subscribed; the composite
         // frame omits them so other pages don't get data they don't render.
         if (needExtras && extras is not null)
         {
             var env = WsEnvelope.Build("extras", extras, AppJsonContext.Default.SensorExtras);
-            await _hub.BroadcastTopicAsync("extras", env);
+            await PublishTickTopicAsync("extras", env);
         }
     }
 
     private void OnTopicFirstSubscriber(string topic)
     {
+        if (TickTopics.Contains(topic))
+        {
+            lock (_firstGate)
+            {
+                _firstSubscribed.Add(topic);
+                if (_processSeqAtFirst < 0 && Array.Exists(ProcessTopics, t => string.Equals(t, topic, StringComparison.OrdinalIgnoreCase)))
+                {
+                    _processSeqAtFirst = _processes.SampleSeq;
+                }
+            }
+            _wake.Release();
+        }
         if (string.Equals(topic, "fps", StringComparison.OrdinalIgnoreCase))
         {
             _fps.SetDemand("monitoring", true);

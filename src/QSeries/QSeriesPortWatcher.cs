@@ -12,11 +12,14 @@ using AdvancedSharpAdbClient;
 using AdvancedSharpAdbClient.DeviceCommands;
 using AdvancedSharpAdbClient.Models;
 using AdvancedSharpAdbClient.Receivers;
+using Microsoft.AspNetCore.Http;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Nexus.Service.Common.ExternalTools;
 using Nexus.Service.Devices;
 using Nexus.Service.Devices.Detection;
 using Nexus.Service.Models.Panel;
+using Nexus.Service.Models.Peripherals.QSeries;
 using Nexus.Service.Panel;
 using Nexus.Service.Peripherals.Hyte.QSeriesCooler;
 using Nexus.Service.Persistence;
@@ -519,6 +522,8 @@ public sealed class QSeriesPortWatcher : BackgroundService
             // with a bulk transfer, which is what wedges USB-FFS.
             if (FlashActive || _deviceRegistry?.TryGet(QshellPackage)?.InstallInProgress == true) return;
             _sleptForSessionLock = locked;
+            Interlocked.Increment(ref _sessionLockEpoch);
+            ServiceLog.Info($"[qseries-port-watcher] session {(locked ? "locked" : "unlocked")}; panels sleep-for-lock={locked}");
             if (_knownQSeriesSerials.Count == 0) return;
             var keycode = SessionLockKeycode(locked, qseries.ScreenOff);
             // The record no longer matches the panel once this drives the
@@ -545,6 +550,38 @@ public sealed class QSeriesPortWatcher : BackgroundService
     /// display POST from the phone.
     /// </summary>
     private volatile bool _sleptForSessionLock;
+
+    /// <summary>The flag survives a lock whose transition was skipped (a flash or
+    /// a qshell install returns before the write below), which would hold the
+    /// panel dark for the rest of the run; the console session's real state
+    /// clears it. Unreadable leaves it alone, and a transition during the probe
+    /// wins over the probe's stale answer.</summary>
+    private bool SleepingForSessionLock()
+    {
+        if (!_sleptForSessionLock) return false;
+#if WINDOWS
+        var epoch = Interlocked.Read(ref _sessionLockEpoch);
+        if (Platform.ConsoleSessionLock.IsLocked() == false
+            && Interlocked.Read(ref _sessionLockEpoch) == epoch
+            && _sleptForSessionLock)
+        {
+            _sleptForSessionLock = false;
+            ServiceLog.Info(
+                "[qseries-port-watcher] session is unlocked but the panel was still held asleep for a lock; clearing");
+            return false;
+        }
+#endif
+        return true;
+    }
+
+    /// <summary>Bumped on every lock transition; a self-heal that spans one must
+    /// not act on what it read before it.</summary>
+    private long _sessionLockEpoch;
+
+    /// <summary>The screen state actually driven: the setting, or asleep
+    /// regardless while a session lock holds it there.</summary>
+    internal static bool EffectiveScreenOff(bool settingScreenOff, bool sleepingForSessionLock) =>
+        settingScreenOff || sleepingForSessionLock;
 
     /// Which keyevent a lock transition calls for. Unlock does NOT unconditionally
     /// wake: a user who turned the screen off by hand still wants it off when
@@ -629,7 +666,9 @@ public sealed class QSeriesPortWatcher : BackgroundService
             if (_knownQSeriesSerials.Count == 0) return;
             var qseries = _configStore.Load().QSeries;
             if (!qseries.SleepWithHost) return;
-            var keycode = qseries.ScreenOff ? KeyeventSleep : KeyeventWakeup;
+            // Resume normally lands on a locked session, so the raw setting alone
+            // would wake the panel behind the lock screen.
+            var keycode = SessionLockKeycode(SleepingForSessionLock(), qseries.ScreenOff);
             foreach (var serial in SnapshotKnownSerials())
             {
                 if (QSeriesTransport.IsTcpSerial(serial)) continue;
@@ -684,7 +723,7 @@ public sealed class QSeriesPortWatcher : BackgroundService
         // force every attached serial to re-apply this tick instead of waiting
         // for a re-attach. The retry deadline resets with the latch, or a serial
         // that already exhausted its window would re-latch after one retry.
-        if (Interlocked.Exchange(ref _displayDirty, 0) == 1)
+        if (_displayChange.Take())
         {
             _displayAppliedThisRun.Clear();
             _displayFirstFailureBySerial.Clear();
@@ -697,6 +736,7 @@ public sealed class QSeriesPortWatcher : BackgroundService
         if (!_gate.IsEnabled("qseries"))
         {
             ClearAdbInvisibleState();
+            PublishLinkStatus([], []);
             return;
         }
 
@@ -710,6 +750,7 @@ public sealed class QSeriesPortWatcher : BackgroundService
             && !_presence.UsbPresent(MediaTekAdbVendorId))
         {
             ClearAdbInvisibleState();
+            PublishLinkStatus([], []);
             return;
         }
 
@@ -755,9 +796,11 @@ public sealed class QSeriesPortWatcher : BackgroundService
 
         var deviceList = devices.ToList();
 
+        var repairForced = TakeLinkRepairRequest();
+
         // Recovery pass first so a successful USB-reset's re-enumeration is visible
         // to the reverse-port pass below.
-        await TryRecoverOfflineQSeriesDevicesAsync(deviceList, ct);
+        await TryRecoverOfflineQSeriesDevicesAsync(deviceList, repairForced, ct);
 
         // One-shot `adb connect` per persisted promotion not already in the device
         // list. Cheap, and self-heals a transient TCP drop without a USB attach.
@@ -808,9 +851,8 @@ public sealed class QSeriesPortWatcher : BackgroundService
 
             // Consumed after the flash guard above, so a reboot requested mid-flash
             // waits for the transport instead of aborting the flash.
-            if (TakeRebootRequest())
+            if (TakeRebootRequest() && await RebootOnRequestAsync(device, "reboot requested by user", ct))
             {
-                await RebootOnRequestAsync(device, ct);
                 continue; // rebooting; the reverse/qshell passes would race the shutdown
             }
 
@@ -842,10 +884,12 @@ public sealed class QSeriesPortWatcher : BackgroundService
             RegisterDeviceTarget(device.Serial);
             await SyncDeviceClockAsync(device, ct);
             await TryEscalateRebootAsync(device, ct);
+            await TryRebootStaleSessionAsync(device, ct);
         }
 
         LogAdbVisibility(deviceList, seenSerials);
-        TryRecoverInvisibleQSeries(seenSerials);
+        PublishLinkStatus(deviceList, seenSerials);
+        TryRecoverInvisibleQSeries(seenSerials, repairForced);
 
         // Per-serial state for serials that left the adb list. A re-attach re-logs
         // the applied reverse and force-refreshes it again.
@@ -968,7 +1012,7 @@ public sealed class QSeriesPortWatcher : BackgroundService
     /// offline path (<c>pnputil /restart-device</c>, which restarts adbd in firmware),
     /// keyed off the MediaTek PnP entry.
     /// </summary>
-    private void TryRecoverInvisibleQSeries(HashSet<string> onlineQSeries)
+    private void TryRecoverInvisibleQSeries(HashSet<string> onlineQSeries, bool force)
     {
         // Windows-only, matching the offline path: pnputil is the available USB-reset.
         if (!OperatingSystem.IsWindows()) return;
@@ -982,6 +1026,8 @@ public sealed class QSeriesPortWatcher : BackgroundService
             ClearAdbInvisibleState();
             return;
         }
+
+        if (HostRebootRecoverySuspended(force)) return;
 
         var panels = _presence.UsbEntriesFor(MediaTekAdbVendorId);
         if (panels.Count == 0)
@@ -997,7 +1043,7 @@ public sealed class QSeriesPortWatcher : BackgroundService
             return;
         }
         var invisibleFor = now - since;
-        if (invisibleFor < AdbInvisibleRecoveryThreshold) return;
+        if (!force && invisibleFor < AdbInvisibleRecoveryThreshold) return;
 
         // Two proofs a serial is a panel: seen ONLINE as Q-series this run, or a
         // devnode reporting a Q-series product name. The VID alone proves nothing
@@ -1026,7 +1072,8 @@ public sealed class QSeriesPortWatcher : BackgroundService
             // rather than every tick. Deliberately NOT the offline path's dictionary:
             // that one is cleared for every serial absent from the adb list, which is
             // this path's defining state, so sharing it meant no throttle at all.
-            if (_lastInvisibleLookupBySerial.TryGetValue(serial, out var lastLookup)
+            if (!force
+                && _lastInvisibleLookupBySerial.TryGetValue(serial, out var lastLookup)
                 && now - lastLookup < AdbInvisibleRecoveryThreshold)
             {
                 continue;
@@ -1035,7 +1082,9 @@ public sealed class QSeriesPortWatcher : BackgroundService
 
             var instanceId = TryFindUsbInstanceId(serial);
             if (instanceId is null || !IsMediaTekInstanceId(instanceId)) continue;
-            if (_lastRecoveryByInstanceId.TryGetValue(instanceId, out var last) && now - last < RecoveryCooldown)
+            if (!force
+                && _lastRecoveryByInstanceId.TryGetValue(instanceId, out var last)
+                && now - last < RecoveryCooldown)
             {
                 continue;
             }
@@ -1052,6 +1101,7 @@ public sealed class QSeriesPortWatcher : BackgroundService
             else
             {
                 ServiceLog.Info($"[qseries-port-watcher] {serial}: pnputil restart failed: {pnputilOut}");
+                NoteHostRebootPending(serial, instanceId, pnputilOut);
             }
         }
     }
@@ -1066,7 +1116,8 @@ public sealed class QSeriesPortWatcher : BackgroundService
     /// its USB instance sits on the MediaTek VID; other offline devices (a phone)
     /// are classified once and skipped.
     /// </summary>
-    private async Task TryRecoverOfflineQSeriesDevicesAsync(IReadOnlyCollection<DeviceData> deviceList, CancellationToken ct)
+    private async Task TryRecoverOfflineQSeriesDevicesAsync(
+        IReadOnlyCollection<DeviceData> deviceList, bool force, CancellationToken ct)
     {
         // Windows-only: pnputil is the available USB-reset path, and the wedge is the
         // one seen on the Y70 host. Other hosts would need usbreset(1) etc.
@@ -1101,14 +1152,19 @@ public sealed class QSeriesPortWatcher : BackgroundService
                 _offlineSince[device.Serial] = now;
                 continue;
             }
+            // A forced repair only bypasses the waits for a serial already proven to
+            // be a panel; an unrelated MediaTek phone keeps its own timers.
+            var forceThis = force && _knownQSeriesSerials.Contains(device.Serial);
+            if (HostRebootRecoverySuspended(forceThis)) continue;
             var offlineFor = now - since;
-            if (offlineFor < OfflineRecoveryThreshold) continue;
+            if (!forceThis && offlineFor < OfflineRecoveryThreshold) continue;
 
             // The lookup spawns powershell, so a serial it can't resolve (device
             // mid-re-enumeration, or a name mismatch) is retried on the threshold
             // cadence, not every tick - while _offlineSince stays truthful so the
             // logged duration accumulates.
-            if (_lastInstanceIdLookupBySerial.TryGetValue(device.Serial, out var lastLookup)
+            if (!forceThis
+                && _lastInstanceIdLookupBySerial.TryGetValue(device.Serial, out var lastLookup)
                 && now - lastLookup < OfflineRecoveryThreshold)
             {
                 continue;
@@ -1130,7 +1186,8 @@ public sealed class QSeriesPortWatcher : BackgroundService
                 continue;
             }
 
-            if (_lastRecoveryByInstanceId.TryGetValue(instanceId, out var last)
+            if (!forceThis
+                && _lastRecoveryByInstanceId.TryGetValue(instanceId, out var last)
                 && now - last < RecoveryCooldown)
             {
                 continue;
@@ -1150,6 +1207,7 @@ public sealed class QSeriesPortWatcher : BackgroundService
             {
                 ServiceLog.Info(
                     $"[qseries-port-watcher] {device.Serial}: pnputil restart failed: {pnputilOut}");
+                NoteHostRebootPending(device.Serial, instanceId, pnputilOut);
             }
 
             // Brief pause so the rest of the tick sees a partially-reconnected world.
@@ -1221,8 +1279,88 @@ public sealed class QSeriesPortWatcher : BackgroundService
     }
 
     /// <summary>
-    /// <c>pnputil /restart-device</c>. True on exit 0 or 3010. NexusService runs as
-    /// LocalSystem, so no UAC prompt.
+    /// Latches the "only a host restart clears this" state, so the escalation
+    /// stops and the UI can say so. Two signals because pnputil's text is
+    /// localized: the English wording, and the devnode's numeric problem code,
+    /// which is not.
+    /// </summary>
+    private void NoteHostRebootPending(string serial, string instanceId, string pnputilOutput)
+    {
+        if (_hostRebootPending) return;
+        if (!MentionsPendingReboot(pnputilOutput)
+            && TryReadDeviceProblemCode(instanceId) != CmProbNeedRestart)
+        {
+            return;
+        }
+        _hostRebootPending = true;
+        _hostRebootPendingSince = DateTimeOffset.UtcNow;
+        ServiceLog.Info(
+            $"[qseries-port-watcher] {serial}: the devnode is queued for a host restart; "
+            + "suspending USB-reset recovery until the host reboots");
+    }
+
+    /// <summary>
+    /// True while the reset is pointless: Windows has the devnode queued for a
+    /// restart. Re-armed on <see cref="HostRebootPendingRetest"/> so a wrong
+    /// latch costs one stalled window rather than the rest of the run, and
+    /// bypassed outright by a user-requested repair.
+    /// </summary>
+    private bool HostRebootRecoverySuspended(bool force)
+    {
+        if (force || !_hostRebootPending) return false;
+        if (_hostRebootPendingSince is { } since
+            && DateTimeOffset.UtcNow - since >= HostRebootPendingRetest)
+        {
+            _hostRebootPending = false;
+            return false;
+        }
+        return true;
+    }
+
+    /// <summary>
+    /// <c>DEVPKEY_Device_ProblemCode</c> for a devnode, or null when it cannot be
+    /// read. Numeric, so unlike pnputil's text it reads the same on a non-English
+    /// Windows.
+    /// </summary>
+    private static int? TryReadDeviceProblemCode(string instanceId)
+    {
+        if (!OperatingSystem.IsWindows()) return null;
+        // The id comes from TryFindUsbInstanceId, which enforces the serial
+        // charset; the quotes below still cannot be broken out of.
+        if (instanceId.Contains('\'') || instanceId.Contains('"')) return null;
+        var psScript =
+            "(Get-PnpDeviceProperty -InstanceId '" + instanceId
+            + "' -KeyName 'DEVPKEY_Device_ProblemCode' -ErrorAction Stop).Data";
+        try
+        {
+            using var p = Process.Start(new ProcessStartInfo
+            {
+                FileName = "powershell.exe",
+                Arguments = $"-NoProfile -NonInteractive -Command \"{psScript}\"",
+                CreateNoWindow = true,
+                UseShellExecute = false,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+            });
+            if (p is null) return null;
+            if (!p.WaitForExit(10_000))
+            {
+                try { p.Kill(true); } catch { }
+                return null;
+            }
+            var text = p.StandardOutput.ReadToEnd().Trim();
+            return int.TryParse(text, out var code) ? code : null;
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    /// <summary>
+    /// <c>pnputil /restart-device</c>. True on exit 0 or 3010, and false for a
+    /// restart Windows could only queue. NexusService runs as LocalSystem, so no
+    /// UAC prompt.
     /// </summary>
     private static bool RunPnputilRestartDevice(string instanceId, out string output)
     {
@@ -1249,6 +1387,11 @@ public sealed class QSeriesPortWatcher : BackgroundService
             var stdout = p.StandardOutput.ReadToEnd().Trim();
             var stderr = p.StandardError.ReadToEnd().Trim();
             output = string.IsNullOrEmpty(stderr) ? stdout : $"{stdout} | err: {stderr}";
+            // Windows queues the restart instead of running it when a handle on a
+            // composite child vetoes the removal (the service's own adb server
+            // does: Kernel-PnP event 225), and still exits 0. The node is flagged
+            // pending from then on, so every later restart and disable is refused.
+            if (MentionsPendingReboot(output)) return false;
             // 3010 = success + reboot-recommended (defensive; not emitted by /restart-device).
             return p.ExitCode == 0 || p.ExitCode == 3010;
         }
@@ -1616,14 +1759,146 @@ public sealed class QSeriesPortWatcher : BackgroundService
 
 
     /// <summary>
-    /// Set by <see cref="AnnounceDisplayChange"/> from a request thread; 1
-    /// means the next tick must clear <see cref="_displayAppliedThisRun"/>
-    /// before its device loop, so a live setting change takes effect without
-    /// waiting for a re-attach. Interlocked because the per-attach HashSets
-    /// above are tick-thread-only and must never be touched from a request
-    /// thread.
+    /// Raised by <see cref="AnnounceDisplayChange"/> from a request thread; a
+    /// tick that takes it clears <see cref="_displayAppliedThisRun"/> before
+    /// its device loop, so a live setting change takes effect without waiting
+    /// for a re-attach. Counting, so a change announced while a tick is already
+    /// mid-apply is taken by the next one instead of being swallowed.
     /// </summary>
-    private int _displayDirty;
+    private readonly TickChangeSignal _displayChange = new();
+
+    /// <summary>
+    /// Raised by POST /qseries/link/repair. A tick that takes it runs the USB
+    /// reset immediately, ignoring the offline threshold and the per-instance
+    /// cooldown.
+    /// </summary>
+    private readonly TickChangeSignal _linkRepair = new();
+
+    /// <summary>
+    /// Snapshot of the panel link for GET /qseries/link, written by the tick
+    /// thread and read by request threads. Replaced whole rather than mutated,
+    /// so a reader always sees one consistent tick's view.
+    /// </summary>
+    private volatile QSeriesLinkStatus _link = new();
+
+    /// <summary>
+    /// Set when pnputil reports the devnode is waiting on a host restart. Every
+    /// further USB reset is refused by Windows until then, so the escalation
+    /// stops rather than retrying a guaranteed failure every two minutes, and
+    /// the UI can say "restart the PC" instead of "connect the cable".
+    /// Cleared the moment a panel is online again.
+    /// </summary>
+    private bool _hostRebootPending;
+
+    /// <summary>When the panel was first seen enumerated on USB with no online
+    /// adb link; null while online or absent. Anchors the reported downtime.</summary>
+    private DateTimeOffset? _linkDownSince;
+
+    /// <summary>When <see cref="_hostRebootPending"/> latched.</summary>
+    private DateTimeOffset? _hostRebootPendingSince;
+
+    /// <summary>How long the latch holds before one reset is tried again.</summary>
+    private static readonly TimeSpan HostRebootPendingRetest = TimeSpan.FromMinutes(15);
+
+    /// <summary><c>CM_PROB_NEED_RESTART</c>: the devnode cannot work until the
+    /// host restarts. The locale-proof half of the latch.</summary>
+    private const int CmProbNeedRestart = 14;
+
+    /// <summary>
+    /// Called from POST /qseries/link/repair. False when one is already queued or
+    /// too recent: each accepted call costs a host-level devnode reset plus a 2s
+    /// in-tick delay, and the route is reachable from any panel session.
+    /// </summary>
+    internal bool RequestLinkRepair()
+    {
+        var now = DateTimeOffset.UtcNow;
+        lock (_linkRepairLock)
+        {
+            if (_lastLinkRepairAt is { } last && now - last < LinkRepairMinInterval) return false;
+            _lastLinkRepairAt = now;
+        }
+        _linkRepair.Announce();
+        try { _wake.Release(); }
+        catch (SemaphoreFullException) { }
+        return true;
+    }
+
+    /// <summary>Guards <see cref="_lastLinkRepairAt"/>, written from request
+    /// threads.</summary>
+    private readonly object _linkRepairLock = new();
+    private DateTimeOffset? _lastLinkRepairAt;
+    private static readonly TimeSpan LinkRepairMinInterval = TimeSpan.FromSeconds(30);
+
+    /// <summary>Current panel link state for GET /qseries/link.</summary>
+    internal QSeriesLinkStatus GetLinkStatus() => _link;
+
+    /// <summary>
+    /// pnputil exits 0 for a restart Windows could only queue. The wording is
+    /// the sole signal, on both the "succeeded" and the refusal paths.
+    /// </summary>
+    internal static bool MentionsPendingReboot(string? output) =>
+        output is not null
+        && output.Contains("reboot", StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>
+    /// Publishes what the UI needs to tell three states apart: no panel on USB
+    /// at all, a panel on USB whose adbd is not answering, and one whose
+    /// recovery is blocked until the host restarts.
+    /// </summary>
+    private void PublishLinkStatus(IReadOnlyCollection<DeviceData> deviceList, HashSet<string> onlineQSeries)
+    {
+        // The VID alone is MediaTek's whole vendor id, so a phone would otherwise
+        // read as "panel on USB, adbd not answering" and offer a repair button.
+        var usbPresent = _presence.UsbEntriesFor(MediaTekAdbVendorId).Any(IsQSeriesUsbEntry);
+        var online = onlineQSeries.Count > 0;
+        var now = DateTimeOffset.UtcNow;
+
+        if (online)
+        {
+            _hostRebootPending = false;
+            _linkDownSince = null;
+        }
+        else if (usbPresent)
+        {
+            _linkDownSince ??= now;
+        }
+        else
+        {
+            _linkDownSince = null;
+        }
+
+        // IsQSeries reads Model, which this file calls unreliable for a row that is
+        // not online - precisely the wedged case - so fall back to the run-scoped
+        // set of serials already proven to be panels.
+        var serial = onlineQSeries.FirstOrDefault()
+            ?? deviceList.Select(d => d.Serial)
+                .FirstOrDefault(x => !string.IsNullOrEmpty(x) && _knownQSeriesSerials.Contains(x));
+
+        _link = new QSeriesLinkStatus
+        {
+            UsbPresent = usbPresent,
+            AdbOnline = online,
+            OfflineSeconds = _linkDownSince is { } since ? (int)(now - since).TotalSeconds : 0,
+            HostRebootPending = _hostRebootPending,
+            SleepingForSessionLock = SleepingForSessionLock(),
+            Serial = serial,
+        };
+    }
+
+    /// <summary>
+    /// Takes a queued repair request. The wait timers are left alone - each
+    /// recovery pass takes this as a per-tick bypass instead, so the logged
+    /// "offline for Ns" stays truthful and an unrelated MediaTek phone keeps its
+    /// own cooldown.
+    /// </summary>
+    private bool TakeLinkRepairRequest()
+    {
+        if (!_linkRepair.Take()) return false;
+        ServiceLog.Info("[qseries-port-watcher] link repair requested; running USB reset now");
+        // The user is also asking us to re-test the claim that only a reboot helps.
+        _hostRebootPending = false;
+        return true;
+    }
 
     /// <summary>
     /// Set when a power hook drives the panel's screen from the SystemEvents
@@ -1645,9 +1920,9 @@ public sealed class QSeriesPortWatcher : BackgroundService
     /// physical attach.</summary>
     internal void AnnounceDisplayChange()
     {
-        Interlocked.Exchange(ref _displayDirty, 1);
-        // Full means a wake is already pending; the tick it triggers reads the
-        // flag set above, so dropping this release loses nothing.
+        _displayChange.Announce();
+        // Full means a wake is already pending; the tick it triggers takes the
+        // signal raised above, so dropping this release loses nothing.
         try { _wake.Release(); }
         catch (SemaphoreFullException) { }
     }
@@ -1678,6 +1953,109 @@ public sealed class QSeriesPortWatcher : BackgroundService
         catch (SemaphoreFullException) { }
     }
 
+    /// <summary>
+    /// Stale-session detection on the tunnel listener (the only client adb
+    /// reverse points there). qshell pairs and allocates once at boot and its
+    /// loaded page never re-checks, so after a reinstall that purged the store
+    /// it keeps talking to the service without ever authenticating, or, once
+    /// re-paired over HTTP, fetches a record that is gone. The remedy is the
+    /// same reboot as Restart panel; an <c>am force-stop</c> + start leaves
+    /// qshell 0.1.4 on its splash for good. The grace must exceed the SPA's
+    /// reconnect cap (nexus-web useMultiplexSocket RECONNECT_MAX_MS, 60 s):
+    /// a healthy page authenticates at its socket upgrade within that, a
+    /// bootstrapping qshell at its allocate call within seconds of contact.
+    /// </summary>
+    internal static readonly TimeSpan StaleSessionGrace = TimeSpan.FromSeconds(120);
+
+    internal static bool StaleSessionDetected(long tunnelLastInboundMs, long tunnelLastAuthorizedMs, int authenticatedSockets, long firstSeenAtMs, long nowMs) =>
+        authenticatedSockets == 0
+        && tunnelLastInboundMs >= firstSeenAtMs
+        && tunnelLastAuthorizedMs < firstSeenAtMs
+        && nowMs - firstSeenAtMs >= (long)StaleSessionGrace.TotalMilliseconds;
+
+    /// <summary>Last authenticated tunnel-port fetch of a record the store no longer has; read and written under <see cref="_rebootRequestLock"/>.</summary>
+    private (string Id, DateTimeOffset At)? _recordMissingSighting;
+
+    /// <summary>Time a panel keeps answering after <c>adb reboot</c> returns (measured 1-2 s on a Q60).</summary>
+    private static readonly TimeSpan RebootShutdownMargin = TimeSpan.FromSeconds(10);
+
+    public static void NotifyTunnelRecordMissing(HttpContext ctx, IServiceProvider sp, string id)
+    {
+        if (sp.GetService<Nexus.Service.Panel.PanelTunnelMonitor>()?.IsTunnelRequest(ctx) != true) return;
+        sp.GetService<QSeriesPortWatcher>()?.NoteRecordMissing(id);
+    }
+
+    private void NoteRecordMissing(string id)
+    {
+        lock (_rebootRequestLock)
+        {
+            var first = _recordMissingSighting is null;
+            _recordMissingSighting = (id, DateTimeOffset.UtcNow);
+            if (!first) return;
+        }
+        try { _wake.Release(); }
+        catch (SemaphoreFullException) { }
+    }
+
+    /// <summary>
+    /// Stale-session reboots per serial this run. Not cleared on detach: the
+    /// reboot itself detaches the panel, and a page that can never authenticate
+    /// must not reboot-loop it. No spacing beyond <see cref="QshellRebootCooldown"/>:
+    /// a reboot re-pairs deterministically.
+    /// </summary>
+    private readonly Dictionary<string, int> _staleSessionRebootCountBySerial = new(StringComparer.Ordinal);
+
+    /// <summary>Runs after the first-sighting anchor is set.</summary>
+    private async Task TryRebootStaleSessionAsync(DeviceData device, CancellationToken ct)
+    {
+        if (_tunnelMonitor?.IsActive != true) return;
+        if (!_firstSeenAtBySerial.TryGetValue(device.Serial, out var firstSeenAt)) return;
+        if (_qshellMissingBySerial.Contains(device.Serial)) return;
+        if (_configStore.Load().QSeries.ScreenOff) return;
+        var now = DateTimeOffset.UtcNow;
+
+        string? reason = null;
+        (string Id, DateTimeOffset At)? missing;
+        lock (_rebootRequestLock) missing = _recordMissingSighting;
+        // A sighting from the old page landing in the seconds a reboot takes
+        // to go down survives the clear; ignore that window.
+        if (missing is { } sighting && sighting.At >= firstSeenAt
+            && (!_lastQshellRebootBySerial.TryGetValue(device.Serial, out var rebootedAt) || sighting.At >= rebootedAt + RebootShutdownMargin))
+        {
+            reason = $"stale panel session: fetched record {sighting.Id}, which is gone";
+        }
+        else if (StaleSessionDetected(
+                     _tunnelMonitor.LastInboundActivityUnixMs,
+                     _tunnelMonitor.LastAuthorizedUnixMs,
+                     _tunnelMonitor.AuthenticatedSockets,
+                     firstSeenAt.ToUnixTimeMilliseconds(),
+                     now.ToUnixTimeMilliseconds()))
+        {
+            reason = $"stale panel session: unauthenticated {(now - firstSeenAt).TotalSeconds:F0}s after first sighting";
+        }
+        if (reason is null) return;
+
+        _staleSessionRebootCountBySerial.TryGetValue(device.Serial, out var rebootCount);
+        if (!EscalationRebootPermitted(
+                rebootCount,
+                _lastQshellRebootBySerial.TryGetValue(device.Serial, out var lastReboot) ? lastReboot : null,
+                lastEscalationReboot: null,
+                now))
+        {
+            return;
+        }
+        if (await RebootOnRequestAsync(device, $"{reason} (attempt {rebootCount + 1}/{MaxEscalationRebootsPerRun})", ct))
+        {
+            _staleSessionRebootCountBySerial[device.Serial] = rebootCount + 1;
+        }
+    }
+
+    /// <summary>Every reboot path calls this: a sighting surviving the reboot would bounce the fresh session.</summary>
+    private void ClearStaleSessionState()
+    {
+        lock (_rebootRequestLock) _recordMissingSighting = null;
+    }
+
     /// <summary>Takes a pending reboot request if one is still within its window.</summary>
     private bool TakeRebootRequest()
     {
@@ -1700,7 +2078,7 @@ public sealed class QSeriesPortWatcher : BackgroundService
     /// that follows; drops the confirmed display state because a reboot returns
     /// the panel to <c>user_rotation</c> 0 with the screen on.
     /// </summary>
-    private async Task<bool> RebootOnRequestAsync(DeviceData device, CancellationToken ct)
+    private async Task<bool> RebootOnRequestAsync(DeviceData device, string reason, CancellationToken ct)
     {
         var now = DateTimeOffset.UtcNow;
         _lastQshellRebootBySerial[device.Serial] = now;
@@ -1708,14 +2086,15 @@ public sealed class QSeriesPortWatcher : BackgroundService
         _displayAppliedThisRun.Remove(device.Serial);
         try
         {
-            ServiceLog.Info($"[qseries-port-watcher] {device.Serial}: reboot requested by user; rebooting panel");
+            ServiceLog.Info($"[qseries-port-watcher] {device.Serial}: {reason}; rebooting panel");
             await _client.RebootAsync(device, ct);
+            ClearStaleSessionState();
             return true;
         }
         catch (Exception ex) when (!ct.IsCancellationRequested)
         {
             ServiceLog.Info(
-                $"[qseries-port-watcher] {device.Serial}: user reboot failed: {ex.GetType().Name}: {ex.Message}");
+                $"[qseries-port-watcher] {device.Serial}: reboot failed ({reason}): {ex.GetType().Name}: {ex.Message}");
             return false;
         }
     }
@@ -2335,7 +2714,10 @@ public sealed class QSeriesPortWatcher : BackgroundService
         // A panel slept for the session lock stays asleep through a re-attach
         // or a reassert; without this the panel wakes mid-lock and nothing
         // turns it back off until the unlock.
-        var wantAwake = !qseries.ScreenOff && !_sleptForSessionLock;
+        // The keyevent drives this, so the record and the diff below speak it too;
+        // in the raw setting they disagree under a lock-forced sleep.
+        var wantScreenOff = EffectiveScreenOff(qseries.ScreenOff, SleepingForSessionLock());
+        var wantAwake = !wantScreenOff;
 
         // Without a record of what this panel already has, its state is unknown
         // (a reboot resets user_rotation) so everything is pushed. Afterwards
@@ -2345,7 +2727,7 @@ public sealed class QSeriesPortWatcher : BackgroundService
         var known = _lastAppliedBySerial.TryGetValue(device.Serial, out var last);
         var doOrientation = !known || last.Orientation != qseries.Orientation;
         var doBrightness = !known || last.Brightness != qseries.Brightness;
-        var doScreen = !known || last.ScreenOff != qseries.ScreenOff;
+        var doScreen = !known || last.ScreenOff != wantScreenOff;
         if (!doOrientation && !doBrightness && !doScreen) return;
 
         try
@@ -2412,7 +2794,7 @@ public sealed class QSeriesPortWatcher : BackgroundService
             {
                 _displayFirstFailureBySerial.Remove(device.Serial);
                 _lastAppliedBySerial[device.Serial] =
-                    new AppliedDisplayState(qseries.Orientation, qseries.Brightness, qseries.ScreenOff);
+                    new AppliedDisplayState(qseries.Orientation, qseries.Brightness, wantScreenOff);
                 var applied = string.Join(" ", new[]
                 {
                     doOrientation ? $"orientation={qseries.Orientation} (userRotation={userRotation}, {rotationOutput})" : null,
@@ -2553,6 +2935,7 @@ public sealed class QSeriesPortWatcher : BackgroundService
             ServiceLog.Info(
                 $"[qseries-port-watcher] {device.Serial}: transport id {lastTransportId} -> {transportId} (USB re-enumeration / reseat); rebooting device to reset USB-FFS");
             await _client.RebootAsync(device, ct);
+            ClearStaleSessionState();
             return true;
         }
         catch (Exception ex) when (!ct.IsCancellationRequested)
@@ -2789,6 +3172,7 @@ public sealed class QSeriesPortWatcher : BackgroundService
             ServiceLog.Info(
                 $"[qseries-port-watcher] {device.Serial}: panel never contacted the service {sinceFirstSeen.TotalSeconds:F0}s after first sighting; rebooting to clear a hard USB-FFS wedge or a stranded qshell (attempt {rebootCount + 1}/{MaxEscalationRebootsPerRun})");
             await _client.RebootAsync(device, ct);
+            ClearStaleSessionState();
             // Record the reboot only after it's issued; if RebootAsync throws (stale
             // transport id mid-re-enumeration) leave the flags unset so the next tick
             // retries instead of latching the attempt as spent.

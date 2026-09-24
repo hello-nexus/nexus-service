@@ -23,8 +23,9 @@ public static class ZoneResolution
         if (settings.Devices.ZonePartitions.TryGetValue(structure.DeviceId, out var defs)
             && defs is { Count: > 0 })
         {
-            var normalized = NormalizeDefs(structure, defs);
-            if (ZonePartitionValidator.Validate(structure.Segments, normalized).Ok)
+            var chained = ChainOwnedSegments(structure, settings);
+            var normalized = NormalizeDefs(structure, defs, chained);
+            if (ZonePartitionValidator.Validate(structure.Segments, normalized, chained).Ok)
             {
                 return BuildCustom(structure, normalized);
             }
@@ -32,14 +33,80 @@ public static class ZoneResolution
         return BuildDefaults(structure);
     }
 
+    /// <summary>Key for a port's chain record: the device plus the segment it is wired to.</summary>
+    public static string ChainKey(string deviceId, int segment) => $"{deviceId}:seg{segment}";
+
+    /// <summary>
+    /// Forget every chain wired to a device. A chain record only means
+    /// something alongside the partition it wrote, so any path that replaces
+    /// or clears that partition must drop it too - otherwise the port keeps
+    /// reporting products the zones no longer match, and rule 2 stays lifted
+    /// for a segment nothing owns. Returns true when anything was removed.
+    /// </summary>
+    public static bool DropChains(NexusSettings settings, DeviceStructure structure)
+    {
+        var dropped = false;
+        for (int i = 0; i < structure.Segments.Count; i++)
+        {
+            dropped |= settings.Devices.PortChains.Remove(ChainKey(structure.DeviceId, i));
+        }
+        return dropped;
+    }
+
+    /// <summary>
+    /// A hand-typed count replaces what the chain declared, so the chain record,
+    /// its partition and the per-slot state of its cards go together; a slot's
+    /// name, layout or control state left behind resurfaces on the next chain.
+    /// </summary>
+    public static void DropChainForCount(NexusSettings settings, string deviceId)
+    {
+        if (!settings.Devices.PortChains.Remove(ChainKey(deviceId, 0))) return;
+        if (!settings.Devices.ZonePartitions.Remove(deviceId, out var partition)) return;
+        var zoneIds = new List<string>(partition.Count);
+        for (int i = 0; i < partition.Count; i++)
+            zoneIds.Add(CustomZoneId(deviceId, i));
+        ZoneStateDrop.Drop(settings, zoneIds);
+        foreach (var zoneId in zoneIds)
+            settings.Lighting.DeviceNames.Remove(zoneId);
+    }
+
+    /// <summary>
+    /// Segments whose LED count is owned by a product chain, so a multi-zone
+    /// partition over them is legitimate. A segment is owned when its chain
+    /// key holds a non-empty product list.
+    /// </summary>
+    public static IReadOnlySet<int> ChainOwnedSegments(DeviceStructure structure, NexusSettings settings)
+    {
+        var owned = new HashSet<int>();
+        for (int i = 0; i < structure.Segments.Count; i++)
+        {
+            if (settings.Devices.PortChains.TryGetValue(ChainKey(structure.DeviceId, i), out var chain)
+                && chain is { Count: > 0 })
+            {
+                owned.Add(i);
+            }
+        }
+        return owned;
+    }
+
     /// <summary>
     /// Normalization applied before validation and persistence: names are
     /// trimmed, and a whole-segment slice over a resizable segment tracks the
     /// segment's LIVE count (the stored count goes stale whenever the user
-    /// resizes the header afterward; rule 2 already pins such slices to the
-    /// whole segment, so substituting the live count is always sound).
+    /// resizes the header afterward; rule 2 pins such slices to the whole
+    /// segment, so substituting the live count is sound).
+    ///
+    /// A segment a chain owns is the exception: its slices are deliberately
+    /// partial, and the first one starts at 0 like any other. Substituting the
+    /// whole count there would stretch the first product over the entire port
+    /// and overlap the rest, so the partition would fail validation and the
+    /// port would silently fall back to one zone.
     /// </summary>
     public static List<ZoneDef> NormalizeDefs(DeviceStructure structure, IReadOnlyList<ZoneDef> defs)
+        => NormalizeDefs(structure, defs, chainOwnedSegments: null);
+
+    public static List<ZoneDef> NormalizeDefs(DeviceStructure structure, IReadOnlyList<ZoneDef> defs,
+        IReadOnlySet<int>? chainOwnedSegments)
     {
         var result = new List<ZoneDef>(defs.Count);
         foreach (var def in defs)
@@ -53,7 +120,8 @@ public static class ZoneResolution
                     if (slice.Segment >= 0 && slice.Segment < structure.Segments.Count)
                     {
                         var seg = structure.Segments[slice.Segment];
-                        if (seg.Resizable && slice.Start == 0)
+                        var chained = chainOwnedSegments?.Contains(slice.Segment) == true;
+                        if (seg.Resizable && !chained && slice.Start == 0)
                         {
                             count = seg.LedCount;
                         }
@@ -246,10 +314,10 @@ public static class ZoneResolution
     {
         if (zone.Slices.Count == 0)
         {
-            return 0;
+            return structure.FrameBaseOffset;
         }
         var first = zone.Slices[0];
-        var offset = 0;
+        var offset = structure.FrameBaseOffset;
         for (int i = 0; i < first.Segment && i < structure.Segments.Count; i++)
         {
             offset += structure.Segments[i].FrameLedCount;
@@ -306,8 +374,20 @@ public static class ZoneResolution
         return touchesSegment;
     }
 
-    /// <summary>The segment a zone wholly covers when it is a single whole-resizable-segment zone (rule 2 shape); negative otherwise.</summary>
-    public static int WholeResizableSegment(DeviceStructure structure, ResolvedZone zone)
+    /// <summary>
+    /// The segment a zone wholly covers when it is a single whole-resizable-segment
+    /// zone (rule 2 shape); negative otherwise, which is what gates the LED-count
+    /// editor and the RESIZEZONE path.
+    ///
+    /// Two shapes must NOT qualify. A chain's first link also starts at 0, so
+    /// without the count check resizing it would resize the entire header to
+    /// one product's count. And a ONE-link chain does cover the whole segment,
+    /// so the settings are needed too: resizing it would restate a count the
+    /// chain owns, the partition would stop tiling, and the port would fall
+    /// back to a single zone leaving the chain record and the per-zone applied
+    /// mappings describing zones that no longer exist.
+    /// </summary>
+    public static int WholeResizableSegment(DeviceStructure structure, ResolvedZone zone, NexusSettings settings)
     {
         if (zone.Slices.Count != 1)
         {
@@ -318,8 +398,12 @@ public static class ZoneResolution
         {
             return -1;
         }
+        if (settings.Devices.PortChains.ContainsKey(ChainKey(structure.DeviceId, slice.Segment)))
+        {
+            return -1;
+        }
         var seg = structure.Segments[slice.Segment];
-        return seg.Resizable && slice.Start == 0 ? seg.Index : -1;
+        return seg.Resizable && slice.Start == 0 && slice.Count == seg.LedCount ? seg.Index : -1;
     }
 
     private static int SumCounts(IReadOnlyList<ZoneSlice> slices)

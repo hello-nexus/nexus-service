@@ -284,6 +284,12 @@ internal static class WindowsLauncher
         // deduplication, so a racing second spawn just exits silently.
         try
         {
+            // A spawn while a helper holds the mutex only starts a process that exits at once.
+            if (Mutex.TryOpenExisting(WindowsUserHelper.SessionMutexName, out var running))
+            {
+                running.Dispose();
+                return;
+            }
             var exe = Process.GetCurrentProcess().MainModule?.FileName;
             if (string.IsNullOrEmpty(exe)) return;
             var psi = new ProcessStartInfo(exe)

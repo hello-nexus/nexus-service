@@ -2,7 +2,9 @@
 
 Builds `Nexus-Setup.exe`, the single signed executable end users download
 to install Nexus. Wraps the AOT publish output in an Inno Setup 6 wizard
-that lays files into `C:\Program Files\Nexus\`, installs the PawnIO kernel
+that lays files into `C:\Program Files\Nexus\`, downloads and installs the
+Microsoft Edge WebView2 Runtime when the PC has none (an extra wizard page
+says so; silent installs do it without one), installs the PawnIO kernel
 driver, registers and starts the `NexusService` Windows service (LocalSystem,
 automatic start), drops a searchable Start Menu shortcut (and, if the
 directory-page checkbox is left ticked, a desktop shortcut), and opens the
@@ -130,8 +132,10 @@ The wizard always requires UAC: both the PawnIO kernel driver and the service
 registration are machine-wide.
 
 The service registers with **automatic** start, so it runs from boot for all
-users with no per-user autostart entry. The directory page is the only wizard
-page; it carries a "Create a desktop shortcut" checkbox (ticked by default).
+users with no per-user autostart entry. The directory page is normally the
+only wizard page; it carries a "Create a desktop shortcut" checkbox (ticked by
+default). A PC with no WebView2 Runtime gets one more page announcing the
+runtime download.
 
 ## Code signing
 

@@ -124,3 +124,67 @@ public class PanelScreenPowerTookTests
         Assert.False(QSeriesPortWatcher.PanelScreenPowerTook("", false));
     }
 }
+
+public class TickChangeSignalTests
+{
+    [Fact]
+    public void Nothing_to_take_without_an_announcement()
+    {
+        Assert.False(new TickChangeSignal().Take());
+    }
+
+    [Fact]
+    public void An_announcement_is_taken_once()
+    {
+        var signal = new TickChangeSignal();
+        signal.Announce();
+
+        Assert.True(signal.Take());
+        Assert.False(signal.Take());
+    }
+
+    [Fact]
+    public void An_announcement_made_mid_apply_is_taken_by_the_next_tick()
+    {
+        // The reported bug: screen off, then screen on tapped inside the ~1.7s
+        // the first apply spends in `input keyevent`. The tick has already
+        // taken the first signal, so the second must survive to the next one or
+        // the panel stays dark until a re-attach.
+        var signal = new TickChangeSignal();
+        signal.Announce();
+        Assert.True(signal.Take());
+
+        signal.Announce();
+
+        Assert.True(signal.Take());
+    }
+
+    [Fact]
+    public void Repeated_announcements_collapse_into_one_take()
+    {
+        var signal = new TickChangeSignal();
+        signal.Announce();
+        signal.Announce();
+        signal.Announce();
+
+        Assert.True(signal.Take());
+        Assert.False(signal.Take());
+    }
+}
+
+public class EffectiveScreenOffTests
+{
+    [Fact]
+    public void The_setting_drives_the_screen_when_no_lock_holds_it()
+    {
+        Assert.True(QSeriesPortWatcher.EffectiveScreenOff(settingScreenOff: true, sleepingForSessionLock: false));
+        Assert.False(QSeriesPortWatcher.EffectiveScreenOff(settingScreenOff: false, sleepingForSessionLock: false));
+    }
+
+    [Fact]
+    public void A_session_lock_holds_the_panel_asleep_whatever_the_setting_says()
+    {
+        Assert.True(QSeriesPortWatcher.EffectiveScreenOff(settingScreenOff: false, sleepingForSessionLock: true));
+        Assert.True(QSeriesPortWatcher.EffectiveScreenOff(settingScreenOff: true, sleepingForSessionLock: true));
+    }
+}

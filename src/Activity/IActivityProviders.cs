@@ -18,8 +18,9 @@ public interface IScreenTimeProvider
 /// <summary>Foreground window details beyond FocusSession's web-facing shape
 /// (app name, pid, elapsed durations): the exe path, client size, and owning
 /// monitor a game session needs to resolve catalog identity and a display
-/// snapshot. Windows-only (only WindowsScreenTimeProvider implements it);
-/// consumers resolve it optionally via DI.</summary>
+/// snapshot. Every platform's screen-time provider implements it; macOS and
+/// Linux report no window size or monitor, and macOS's ExePath is the .app
+/// bundle path. Consumers resolve it optionally via DI.</summary>
 public interface IFocusDetailsProvider
 {
     FocusDetails? GetCurrentFocusDetails();
@@ -57,11 +58,29 @@ public interface IMediaProvider
     byte[] GetAlbumArt(string source);
 }
 
+/// <summary>
+/// Implemented by media providers that learn of session changes from an
+/// event source (Windows: the helper's GSMTC pushes). The media topic
+/// publisher subscribes so a play/pause reaches the widget on the event
+/// instead of at its next poll.
+/// </summary>
+public interface IMediaChangeSource
+{
+    event Action? Changed;
+}
+
 public interface IVolumeProvider
 {
     VolumeState GetState();
     void SetVolume(double volume);
     void SetMuted(bool muted);
+
+    /// <summary>Empty <paramref name="deviceId"/> means the default output.
+    /// Platforms with no per-device API (Linux, the stub) fall back to the
+    /// default-device overload, ignoring the id.</summary>
+    VolumeState GetState(string deviceId) => GetState();
+    void SetVolume(string deviceId, double volume) => SetVolume(volume);
+    void SetMuted(string deviceId, bool muted) => SetMuted(muted);
 }
 
 public interface IShortcutsProvider
@@ -113,6 +132,14 @@ public interface IProcessActionsProvider
     /// <summary>Reveals exePath in the OS file manager with the file
     /// selected. False on failure, including IsAvailable being false.</summary>
     Task<bool> OpenLocationAsync(string exePath);
+
+    /// <summary>Brings a live process's top-level window to the foreground
+    /// (Recent Apps deck mode: switch to a running app instead of relaunching
+    /// it). Windows-only in practice - the helper finds the window and calls
+    /// ForegroundNudge.TryForeground; other platforms return false so callers
+    /// fall back to their own launch path, which already activates a running
+    /// instance (e.g. macOS "open -a").</summary>
+    Task<bool> ActivateWindowAsync(int pid);
 }
 
 public interface INetworkProvider

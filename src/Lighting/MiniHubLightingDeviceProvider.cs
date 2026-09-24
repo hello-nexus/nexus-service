@@ -62,18 +62,22 @@ public sealed class MiniHubLightingDeviceProvider :
         var counts = settings.Devices.ZoneLedCounts;
         var slot = 0;
 
-        // All four physical ports can carry LEDs. The MiniHub firmware
-        // doesn't enumerate them - the official HYTE tool keeps the per-
-        // port LED counts in a user-edited config (MiniHubLayoutConfig).
-        // We mirror that: emit all four LED zones unconditionally with
-        // sensible defaults (matching the spec table and the typical
-        // 1-fan + 3-fan layout), let the user resize via the settings
-        // modal (ZoneResizable=true), and persist the user's value into
-        // ZoneLedCounts which BuildZone honours below.
+        // Ports 1 and 2 are the Nexus-Link fan RGB rings - a known device
+        // type with no user-declared chain, so they stay one fixed zone
+        // each. The MiniHub firmware doesn't enumerate their LED counts
+        // either - the official HYTE tool keeps them in a user-edited
+        // config (MiniHubLayoutConfig) - so ZoneResizable stays true and
+        // ZoneLedCounts still wins over the sensible defaults below.
         AddZone($"{hubId}:port1", $"{MiniHubHub.ProductName} - Port 1 (1× RGB Fan)", _hub.State.Port1.LedCount);
         AddZone($"{hubId}:port2", $"{MiniHubHub.ProductName} - Port 2 (3× RGB Fans)", _hub.State.Port2.LedCount);
-        AddZone($"{hubId}:port3", $"{MiniHubHub.ProductName} - Port 3 (LED Strip)", _hub.State.Port3.LedCount);
-        AddZone($"{hubId}:port4", $"{MiniHubHub.ProductName} - Port 4 (LED Strip)", _hub.State.Port4.LedCount);
+
+        // Ports 3 and 4 are raw ARGB headers - the firmware cannot say what
+        // is daisy-chained to them, so the user declares the chain and each
+        // product becomes its own card, in chain order. An unchained port
+        // resolves to exactly one zone whose id is the port id, the legacy
+        // emission unchanged.
+        AddLedPortZones(3, _hub.State.Port3.LedCount);
+        AddLedPortZones(4, _hub.State.Port4.LedCount);
         return resp;
 
         void AddZone(string id, string name, int firmwareLedCount)
@@ -82,6 +86,15 @@ public sealed class MiniHubLightingDeviceProvider :
                 id: id, name: name, firmwareLedCount: firmwareLedCount,
                 zoneIndex: slot++, parentDeviceId: hubId,
                 disabled, prefs, layouts, counts));
+        }
+
+        void AddLedPortZones(int channel, int firmwareLedCount)
+        {
+            var structure = BuildLedPortStructure(settings, hubId, channel, firmwareLedCount);
+            foreach (var zone in ZoneResolution.Resolve(structure, settings))
+            {
+                resp.Devices.Add(BuildZoneCard(structure, zone, slot++, hubId, disabled, prefs, layouts, settings));
+            }
         }
     }
 
@@ -117,6 +130,52 @@ public sealed class MiniHubLightingDeviceProvider :
             CanvasRotation = ((((layout?.Rotation ?? 0) % 360) + 360) % 360),
             ParentDeviceId = parentDeviceId, ZoneIndex = zoneIndex,
             ZoneType = "linear", ZoneResizable = true,
+        };
+    }
+
+    /// <summary>Card for one resolved zone of a chainable ARGB port (port 3 or 4).</summary>
+    private static LightingDevice BuildZoneCard(
+        DeviceStructure structure, ResolvedZone zone, int slot, string parentDeviceId,
+        IReadOnlyList<string> disabled,
+        IReadOnlyDictionary<string, LightingDevicePreference> prefs,
+        IReadOnlyDictionary<string, DeviceLayout> layouts,
+        NexusSettings settings)
+    {
+        var id = zone.Id;
+        var isOn = true;
+        for (var i = 0; i < disabled.Count; i++) if (disabled[i] == id) { isOn = false; break; }
+        var brightness = 100;
+        var hue = 0f;
+        var saturation = 1f;
+        if (prefs.TryGetValue(id, out var pref))
+        {
+            brightness = pref.Brightness; hue = pref.Hue; saturation = pref.Saturation;
+        }
+        var (defX, defY, defW, defH) = DefaultMiniHubLayout(slot);
+        layouts.TryGetValue(id, out var layout);
+        return new LightingDevice
+        {
+            Id = id,
+            // The port's own name when it is whole; the product's name once a
+            // chain owns it.
+            Name = zone.Name,
+            Type = "ledstrip", IconType = "strip",
+            LedsOn = isOn, Brightness = brightness, Hue = hue, Saturation = saturation,
+            LedCount = zone.LedCount,
+            EnabledLedCount = ZoneResolution.CountEnabled(structure, zone, id, zone.LedCount, zoneHint: 0, settings),
+            CanvasX = layout?.X ?? defX, CanvasY = layout?.Y ?? defY,
+            CanvasW = layout?.W ?? defW, CanvasH = layout?.H ?? defH,
+            CanvasRotation = ((((layout?.Rotation ?? 0) % 360) + 360) % 360),
+            ParentDeviceId = parentDeviceId, ZoneIndex = zone.Ordinal,
+            ZoneType = "linear",
+            // Only a zone that owns the whole port may resize it; a chain
+            // link is sized by its product, and resizing one would silently
+            // restate the port's total and break the tiling.
+            ZoneResizable = ZoneResolution.WholeResizableSegment(structure, zone, settings) >= 0,
+            // The chain and zone editors address the PORT, which is the
+            // device the user actually wired something to.
+            DeviceId = structure.DeviceId,
+            ZoneCustomizable = true,
         };
     }
 
@@ -166,7 +225,11 @@ public sealed class MiniHubLightingDeviceProvider :
     public void SetZoneLedCount(string id, int count)
     {
         if (count < 0) return;
-        _store.Update(s => s.Devices.ZoneLedCounts[id] = count);
+        _store.Update(s =>
+        {
+            s.Devices.ZoneLedCounts[id] = count;
+            ZoneResolution.DropChainForCount(s, id);
+        });
     }
 
     public void Identify(string id, int durationMs) => _identify.Schedule(id, durationMs);
@@ -181,15 +244,63 @@ public sealed class MiniHubLightingDeviceProvider :
             return Array.Empty<DeviceStructure>();
         }
         var hubId = _hub.DeviceId;
-        var counts = _store.Load().Devices.ZoneLedCounts;
+        var settings = _store.Load();
+        var counts = settings.Devices.ZoneLedCounts;
         return new[]
         {
             BuildStructure($"{hubId}:port1", $"{MiniHubHub.ProductName} - Port 1 (1× RGB Fan)", "Port 1", _hub.State.Port1.LedCount, counts),
             BuildStructure($"{hubId}:port2", $"{MiniHubHub.ProductName} - Port 2 (3× RGB Fans)", "Port 2", _hub.State.Port2.LedCount, counts),
-            BuildStructure($"{hubId}:port3", $"{MiniHubHub.ProductName} - Port 3 (LED Strip)", "Port 3", _hub.State.Port3.LedCount, counts),
-            BuildStructure($"{hubId}:port4", $"{MiniHubHub.ProductName} - Port 4 (LED Strip)", "Port 4", _hub.State.Port4.LedCount, counts),
+            BuildLedPortStructure(settings, hubId, 3, _hub.State.Port3.LedCount),
+            BuildLedPortStructure(settings, hubId, 4, _hub.State.Port4.LedCount),
         };
     }
+
+    /// <summary>
+    /// One chainable ARGB port's structure (port 3 or 4). Shared with the
+    /// frame writer so the card list, the engine frames, and the bytes on
+    /// the wire all resolve the same chain - a port split three ways in one
+    /// of them and not the others would light the wrong LEDs rather than
+    /// fail visibly. Partitionable defaults true: unlike ports 1/2 this is a
+    /// user-declared port, not a fixed fan-ring device.
+    /// </summary>
+    internal static DeviceStructure BuildLedPortStructure(NexusSettings settings, string hubId, int channel, int firmwareLedCount)
+    {
+        var portId = $"{hubId}:port{channel}";
+        var effectiveLedCount = settings.Devices.ZoneLedCounts.TryGetValue(portId, out var persisted)
+            ? Math.Max(0, persisted)
+            : firmwareLedCount;
+        var name = $"{MiniHubHub.ProductName} - Port {channel} (LED Strip)";
+        var rawName = $"Port {channel}";
+        var structure = new DeviceStructure { DeviceId = portId, Name = name };
+        structure.Segments.Add(new StructureSegment
+        {
+            Index = 0,
+            Name = rawName,
+            LedCount = effectiveLedCount,
+            FrameLedCount = effectiveLedCount,
+            Resizable = true,
+            // Without the ceiling a chain past it saves and renders while
+            // BuildLightingStream drops the tail, so the extra LEDs are simply
+            // dark. Port 4 is the big output.
+            MaxLedCount = channel == 4
+                ? Nexus.Service.Peripherals.Hyte.MiniHub.MiniHubProtocol.Port4MaxLedCount
+                : Nexus.Service.Peripherals.Hyte.MiniHub.MiniHubProtocol.OtherPortMaxLedCount,
+            ZoneType = "linear",
+        });
+        structure.DefaultZones.Add(new DefaultZoneDef
+        {
+            Id = portId,
+            Name = name,
+            RawName = rawName,
+            LegacyZoneIndex = -1,
+            Slices = { new ZoneSlice { Segment = 0, Start = 0, Count = effectiveLedCount } },
+        });
+        return structure;
+    }
+
+    /// <summary>The zones one chainable port currently resolves to, in chain order.</summary>
+    internal static IReadOnlyList<ResolvedZone> ResolveLedPortZones(NexusSettings settings, string hubId, int channel, int firmwareLedCount)
+        => ZoneResolution.Resolve(BuildLedPortStructure(settings, hubId, channel, firmwareLedCount), settings);
 
     private static DeviceStructure BuildStructure(
         string id, string name, string rawName, int firmwareLedCount,
@@ -240,8 +351,16 @@ public sealed class MiniHubLightingDeviceProvider :
         // from falling back to firmware animation on un-addressed channels.
         frames.Add(BuildOrReuseFrame($"{hubId}:port1", _hub.State.Port1.LedCount, slot++, layouts, counts, ref idx));
         frames.Add(BuildOrReuseFrame($"{hubId}:port2", _hub.State.Port2.LedCount, slot++, layouts, counts, ref idx));
-        frames.Add(BuildOrReuseFrame($"{hubId}:port3", _hub.State.Port3.LedCount, slot++, layouts, counts, ref idx));
-        frames.Add(BuildOrReuseFrame($"{hubId}:port4", _hub.State.Port4.LedCount, slot++, layouts, counts, ref idx));
+
+        // Ports 3/4 are chainable: one frame per resolved zone, matching
+        // GetAll - a chained port has one per product and each needs its
+        // own frame to light. The port id override in ZoneLedCounts is
+        // already folded into zone.LedCount, so it is safe to pass through
+        // as the frame's "firmware" count.
+        foreach (var zone in ZoneResolution.Resolve(BuildLedPortStructure(settings, hubId, 3, _hub.State.Port3.LedCount), settings))
+            frames.Add(BuildOrReuseFrame(zone.Id, zone.LedCount, slot++, layouts, counts, ref idx));
+        foreach (var zone in ZoneResolution.Resolve(BuildLedPortStructure(settings, hubId, 4, _hub.State.Port4.LedCount), settings))
+            frames.Add(BuildOrReuseFrame(zone.Id, zone.LedCount, slot++, layouts, counts, ref idx));
 
         // Prune cache entries no longer in the live set (e.g. hub serial
         // changed). For MiniHub the live set is fixed at 4 ports so this
@@ -291,20 +410,20 @@ public sealed class MiniHubLightingDeviceProvider :
         return frame;
     }
 
-    /// <summary>Default canvas slots for MiniHub zones: y=463 with a 4-col,
-    /// 2-row wrap so all four ports fit on the 600-unit canvas. The second row
-    /// lands at y=528, within the canvas drag clamp (y + h ≤ CH - PAD = 588),
-    /// so the card doesn't snap upward on the first interaction.</summary>
+    /// <summary>Default canvas slots for MiniHub zones: a 4-col, 2-row grid
+    /// so up to eight ports (two hubs) fit before wrapping. The second row
+    /// lands within the canvas drag clamp (y + h ≤ CH - PAD = 588), so the
+    /// card doesn't snap upward on the first interaction.</summary>
     internal static (float x, float y, float w, float h) DefaultMiniHubLayout(int slot)
     {
-        const float Y = 463f;
-        const float W = 220f;
-        const float H = 60f;
-        const float Gap = 240f;
+        const float Y = 370f;
+        const float W = 120f;
+        const float H = 105f;
+        const float Gap = 140f;
         const float BaseX = 40f;
         const int Cols = 4;
         const int Rows = 2;
-        const float RowGap = 65f; // row 1 lands at y=528, last edge 588 == clamp
+        const float RowGap = 105f; // row 1 lands at y=475, last edge 580 ≤ clamp
         var s = ((slot % (Cols * Rows)) + Cols * Rows) % (Cols * Rows);
         var col = s % Cols;
         var row = s / Cols;

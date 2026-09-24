@@ -48,10 +48,15 @@ public sealed class OpenRgbLightingDeviceProvider : ILightingDeviceProvider, IDe
         if (devices.Count == 0)
             return Array.Empty<DeviceStructure>();
         var settings = _store.Load();
+        if (SplitMotherboardDeviceMigration.NeedsApply(settings, devices))
+        {
+            _store.Update(s => SplitMotherboardDeviceMigration.Apply(s, devices));
+            settings = _store.Load();
+        }
         var structures = new List<DeviceStructure>(devices.Count);
         foreach (var d in devices)
         {
-            structures.Add(OpenRgbZoneSupport.BuildStructure(d, settings));
+            structures.AddRange(OpenRgbZoneSupport.BuildStructures(d, settings));
         }
         return structures;
     }
@@ -125,22 +130,25 @@ public sealed class OpenRgbLightingDeviceProvider : ILightingDeviceProvider, IDe
 
         // Counts persist under the hardware segment key (the legacy zone-card
         // id) so the wiring choice survives any re-partition, and overrides
-        // beyond the new count are pruned in the segment-local store.
+        // beyond the new count are pruned in the segment-local store. That
+        // store is keyed on the PORT at segment 0 since each header became its
+        // own device; pruning the board's key matched nothing.
         var segmentKey = $"{deviceId}-{zoneIdx}";
         _store.Update(s =>
         {
             s.Devices.ZoneLedCounts[segmentKey] = count;
-            if (s.Devices.DeviceLedOverrides.TryGetValue(deviceId, out var list))
+            if (s.Devices.DeviceLedOverrides.TryGetValue(segmentKey, out var list))
             {
                 var pruned = new List<SegmentLedOverride>(list.Count);
                 foreach (var o in list)
                 {
-                    if (o.Segment != zoneIdx || o.LedIndex < count)
+                    if (o.LedIndex < count)
                         pruned.Add(o);
                 }
                 if (pruned.Count != list.Count)
-                    s.Devices.DeviceLedOverrides[deviceId] = pruned;
+                    s.Devices.DeviceLedOverrides[segmentKey] = pruned;
             }
+            ZoneResolution.DropChainForCount(s, segmentKey);
         });
 
         _bridge.RequestZoneResize(physIdx, zoneIdx, count);
@@ -152,21 +160,22 @@ public sealed class OpenRgbLightingDeviceProvider : ILightingDeviceProvider, IDe
     }
 
     /// <summary>
-    /// Default on-canvas rectangle for a full device card. Twice the v1 size +
-    /// arranged in a 3-column grid so multiple devices don't overlap. Canvas
-    /// coords are 1000x600 internal units; the UI rescales. Row count is capped
-    /// so no card lands off-canvas; once the grid is full the slot wraps to
-    /// position 0 (the top-left), stacking new cards on existing defaults that
-    /// the user can drag apart - better than silently hiding cards beyond row 5.
+    /// Default on-canvas rectangle for a full device card, arranged in a
+    /// 3-column grid so multiple devices don't overlap. Roughly square so a
+    /// grid or ring LED map doesn't render letterboxed. Canvas coords are
+    /// 1000x600 internal units; the UI rescales. Row count is capped so no
+    /// card lands off-canvas; once the grid is full the slot wraps to
+    /// position 0 (the top-left), stacking new cards on existing defaults
+    /// that the user can drag apart.
     /// </summary>
     internal static (float x, float y, float w, float h) DefaultCardLayout(int slot)
     {
-        const float W = 240f;
-        const float H = 60f;
+        const float W = 140f;
+        const float H = 120f;
         const int Cols = 3;
-        const int Rows = 6; // 40 + 5*90 + 60 = 550 ≤ canvas bottom (588 with PAD)
-        const float ColGap = 320f;
-        const float RowGap = 90f;
+        const int Rows = 4; // 40 + 3*140 + 120 = 580 ≤ canvas bottom (588 with PAD)
+        const float ColGap = 220f;
+        const float RowGap = 140f;
         var s = ((slot % (Cols * Rows)) + Cols * Rows) % (Cols * Rows);
         var col = s % Cols;
         var row = s / Cols;
@@ -174,23 +183,24 @@ public sealed class OpenRgbLightingDeviceProvider : ILightingDeviceProvider, IDe
     }
 
     /// <summary>
-    /// Default on-canvas rectangle for a motherboard ARGB strip zone. Twice the
-    /// v1 height + a 2-column grid anchored below the device-card area so
-    /// strips don't pile on top of each other or overlap the cards. Same wrap
-    /// rule as <see cref="DefaultCardLayout"/>: slots past the visible grid
-    /// loop back to the first column/row.
+    /// Default on-canvas rectangle for a motherboard ARGB strip zone, roughly
+    /// square like <see cref="DefaultCardLayout"/> so a grid or ring LED map
+    /// doesn't render letterboxed. A 2-column grid anchored below the
+    /// device-card area so strips don't pile on top of each other or
+    /// overlap the cards. Same wrap rule as <see cref="DefaultCardLayout"/>:
+    /// slots past the visible grid loop back to the first column/row.
     /// </summary>
     internal static (float x, float y, float w, float h) DefaultStripLayout(int slot)
     {
-        const float W = 360f;
-        const float H = 60f;
+        const float W = 140f;
+        const float H = 120f;
         const int Cols = 2;
-        const int Rows = 3; // 380 + 2*70 + 60 = 580 ≤ canvas bottom
-        const float ColGap = 480f;
-        const float RowGap = 70f;
-        // Strips are anchored in the lower third so device cards (which go
-        // top-down from y=40) never collide with strip row 0.
-        const float BaseY = 380f;
+        const int Rows = 3; // 190 + 2*130 + 120 = 570 ≤ canvas bottom
+        const float ColGap = 200f;
+        const float RowGap = 130f;
+        // Card row 0 bottom is 40 + 120 = 160; strips start below that so
+        // strips never collide with the first card row.
+        const float BaseY = 190f;
         var s = ((slot % (Cols * Rows)) + Cols * Rows) % (Cols * Rows);
         var col = s % Cols;
         var row = s / Cols;
@@ -235,18 +245,27 @@ public sealed class OpenRgbLightingDeviceProvider : ILightingDeviceProvider, IDe
         {
             if (!id.StartsWith(d.StableId, StringComparison.Ordinal))
                 continue;
-            var structure = OpenRgbZoneSupport.BuildStructure(d, settings);
-            foreach (var zone in ZoneResolution.Resolve(structure, settings))
+            foreach (var structure in OpenRgbZoneSupport.BuildStructures(d, settings))
             {
-                if (zone.Id != id)
-                    continue;
-                var segment = ZoneResolution.WholeResizableSegment(structure, zone);
-                if (segment < 0)
-                    return false;
-                physicalIndex = d.Index;
-                zoneIndex = segment;
-                deviceId = d.StableId;
-                return true;
+                foreach (var zone in ZoneResolution.Resolve(structure, settings))
+                {
+                    if (zone.Id != id)
+                        continue;
+                    if (ZoneResolution.WholeResizableSegment(structure, zone, settings) < 0)
+                        return false;
+                    // A port structure holds one segment, so its own index is
+                    // always 0; the OpenRGB zone to resize is the one the port
+                    // was split from, which its default zone still records.
+                    var physicalZone = structure.DefaultZones.Count > 0
+                        ? structure.DefaultZones[0].LegacyZoneIndex
+                        : -1;
+                    if (physicalZone < 0)
+                        return false;
+                    physicalIndex = d.Index;
+                    zoneIndex = physicalZone;
+                    deviceId = d.StableId;
+                    return true;
+                }
             }
         }
         return false;

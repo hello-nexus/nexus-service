@@ -35,6 +35,7 @@ public static partial class DevicesRoutes
         MapCorsairEndpoints(app);
         MapCorsairLcdEndpoints(app);
         MapStrimerEndpoints(app);
+        MapNollieEndpoints(app);
     }
 
     /// <summary>

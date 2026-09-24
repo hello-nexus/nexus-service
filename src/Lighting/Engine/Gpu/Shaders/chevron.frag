@@ -1,7 +1,6 @@
-uniform float u_speed;
-uniform float u_bands; // extra: stripe count (4..40)
-uniform float u_angle; // extra: chevron sharpness (0..2)
-uniform float u_width; // extra: groove width (0.05..0.5)
+uniform float u_bands; // hint_range(4.0, 40.0, 1.0) = 14.0  stripe count
+uniform float u_angle; // hint_range(0.0, 2.0, 0.05) = 1.0  chevron sharpness
+uniform float u_width; // hint_range(0.05, 0.5, 0.01) = 0.18  groove width
 
 // Scrolling chevron stripes: solid palette bands separated by a thin dark
 // groove for crisp edges. The V shape comes from offsetting x by |y-0.5|.

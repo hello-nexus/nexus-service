@@ -32,6 +32,8 @@ public sealed class DeckAction
     public DeckNexusAction? NexusAction { get; set; }
 
     public string? Keys { get; set; }
+    /// <summary>Package-only: the macOS combo for Keys (cmd where Windows uses ctrl); DeckPlatformKeys folds it into Keys when a template is instantiated or a package imported, so a stored preset carries one combo.</summary>
+    public string? KeysMac { get; set; }
     /// <summary>text: always pastes immediately (clipboard set + paste chord injection).</summary>
     public string? Text { get; set; }
 
@@ -134,7 +136,7 @@ public sealed class DeckNexusAction
     public string? Effect { get; set; }
     /// <summary>lightingPreset (layout preset id), coolingPreset (saved preset id).</summary>
     public string? PresetId { get; set; }
-    /// <summary>fanProfile: off | silent | balanced | turbo | custom.</summary>
+    /// <summary>fanProfile: off | silent | balanced | turbo | max | custom.</summary>
     public string? Profile { get; set; }
     /// <summary>lightingBrightness (0..1), y70Brightness (0..100).</summary>
     public double? Value { get; set; }
@@ -180,6 +182,8 @@ public sealed class DeckSlot
     /// <summary>A slot is an action, a folder, or empty - never both.</summary>
     public DeckAction? Action { get; set; }
     public DeckFolder? Folder { get; set; }
+    /// <summary>True on a page-next/prev key DeckConfigNavigation.FitToGrid synthesizes for overflow; never set on a persisted slot, so a fitted config only carries it transiently.</summary>
+    public bool? Auto { get; set; }
 }
 
 public sealed class DeckTitleStyle

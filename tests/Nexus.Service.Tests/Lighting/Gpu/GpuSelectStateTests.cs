@@ -150,4 +150,50 @@ public class GpuSelectStateTests
         Assert.Equal(forced, GpuSelectState.ReprobeDelay(3, forced));
         Assert.Equal(GpuSelectState.ReprobeDelay(3), GpuSelectState.ReprobeDelay(3, TimeSpan.Zero));
     }
+
+    [Fact]
+    public void LatchRoundTripsItsEnvironment()
+    {
+        var env = new GpuEnvironment("0badf00d1234abcd", "17");
+        var latched = GpuSelectState.Fresh.LatchedOff(Now, env: env);
+
+        var parsed = GpuSelectState.Parse(latched.Format());
+
+        Assert.Equal("off since=1788868800 streak=1 fp=0badf00d1234abcd boot=17", latched.Format());
+        Assert.Equal(env.Fingerprint, parsed.Fingerprint);
+        Assert.Equal(env.Boot, parsed.Boot);
+        Assert.False(parsed.LatchStale(env));
+        Assert.True(parsed.LatchStale(new GpuEnvironment("ffff", "17")));
+        Assert.True(parsed.LatchStale(new GpuEnvironment("0badf00d1234abcd", "18")));
+    }
+
+    [Fact]
+    public void LatchWithoutAnEnvironmentFormatsAsBefore()
+    {
+        var latched = GpuSelectState.Fresh.LatchedOff(Now);
+
+        Assert.Equal("off since=1788868800 streak=1", latched.Format());
+        // Nothing to compare against: not stale, and never stale to a caller
+        // that supplies no environment.
+        Assert.False(latched.LatchStale(null));
+        Assert.True(latched.LatchStale(new GpuEnvironment("ffff", "17")));
+    }
+
+    [Fact]
+    public void UndatedLatchIsNeverStale()
+    {
+        Assert.False(GpuSelectState.Parse("off").LatchStale(new GpuEnvironment("ffff", "17")));
+    }
+
+    [Fact]
+    public void RestampBindsTheEnvironment()
+    {
+        var env = new GpuEnvironment("cafe", "3");
+
+        var stamped = GpuSelectState.Parse("off").Restamped(Now, env);
+
+        Assert.Equal(env.Fingerprint, stamped.Fingerprint);
+        Assert.Equal(env.Boot, stamped.Boot);
+        Assert.Equal(1, stamped.OffStreak);
+    }
 }

@@ -73,7 +73,7 @@ public sealed class StreamSession
     {
         lock (_lock)
         {
-            if (_closed) return;
+            if (_closed) { frame.Release(); return; }
             _enqueued++;
             _queue.Enqueue(frame);
             if (_queue.Count > _maxQueuedFrames)
@@ -92,7 +92,7 @@ public sealed class StreamSession
             var decision = PacingPolicy.Decide(
                 _queue.Count, FramesUntilIdrLocked(), _waitingForIdr,
                 Info.Profile.EffectiveWriteBatchFrames);
-            for (var i = 0; i < decision.DropCount; i++) _queue.Dequeue();
+            for (var i = 0; i < decision.DropCount; i++) _queue.Dequeue().Release();
             _dropped += decision.DropCount;
             if (decision.ClearWaitingForIdr) _waitingForIdr = false;
             if (decision.SendCount == 0) return Array.Empty<StreamFrame>();
@@ -119,7 +119,7 @@ public sealed class StreamSession
         lock (_lock)
         {
             _dropped += _queue.Count;
-            _queue.Clear();
+            ClearLocked();
             _waitingForIdr = true;
             _ingestBound = true;
         }
@@ -140,8 +140,14 @@ public sealed class StreamSession
         lock (_lock)
         {
             _closed = true;
-            _queue.Clear();
+            ClearLocked();
         }
+    }
+
+    /// <summary>Empties the queue, returning every pooled payload as it goes.</summary>
+    private void ClearLocked()
+    {
+        while (_queue.Count > 0) _queue.Dequeue().Release();
     }
 
     internal int QueueDepthForTest
@@ -204,9 +210,11 @@ public sealed class StreamSession
         {
             _dropped += frames.Length;
             _waitingForIdr = true;
+            foreach (var frame in frames) frame.Release();
             return;
         }
         _dropped += newestIdr;
+        for (var i = 0; i < newestIdr; i++) frames[i].Release();
         for (var i = newestIdr; i < frames.Length; i++)
             _queue.Enqueue(frames[i]);
     }

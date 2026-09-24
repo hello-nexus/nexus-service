@@ -272,10 +272,13 @@ public static class PanelRoutes
             var streamed = streams.LivePanelDeviceIds();
             if (streamed.Count > 0)
             {
+                var monitors = streams.SecondaryMonitorStates();
                 foreach (var device in devices)
                 {
                     if (streamed.Contains(device.Id))
                         device.Streamed = true;
+                    if (monitors.TryGetValue(device.Id, out var monitorState))
+                        device.SecondaryMonitorState = monitorState;
                 }
             }
             // displayAttached is response-only state for display-bound records
@@ -303,11 +306,14 @@ public static class PanelRoutes
             return Results.Json(record, AppJsonContext.Default.PanelDeviceRecord);
         }).AllowPanel();
 
-        app.MapGet("/panel/devices/{id}", (string id, PanelDeviceRegistry registry) =>
+        app.MapGet("/panel/devices/{id}", (string id, HttpContext ctx, PanelDeviceRegistry registry, IServiceProvider sp) =>
         {
             var record = registry.Get(id);
             if (record is null)
+            {
+                Nexus.Service.QSeries.QSeriesPortWatcher.NotifyTunnelRecordMissing(ctx, sp, id);
                 return Results.NotFound(ApiResponse.Fail("device not found"));
+            }
             // Persisted layout if present, else the surface-specific
             // starter. The starter isn't written back; it only persists once
             // the client posts an edit. Falls back to the y70 seed when the
@@ -318,7 +324,7 @@ public static class PanelRoutes
             return Results.Json(record, AppJsonContext.Default.PanelDeviceRecord);
         }).AllowPanel();
 
-        app.MapPost("/panel/devices/{id}", (string id, PanelDevicePatch body, HttpContext ctx, PanelDeviceRegistry registry, MultiplexHub hub, TokenService tokens) =>
+        app.MapPost("/panel/devices/{id}", (string id, PanelDevicePatch body, HttpContext ctx, PanelDeviceRegistry registry, MultiplexHub hub, TokenService tokens, Nexus.Service.Panel.Streams.StreamedPanelCoordinator streams) =>
         {
             // A panel session may rearrange or remove the deck keys it has, but
             // authoring a key that opens a file, sends a key chord, types text or
@@ -338,6 +344,10 @@ public static class PanelRoutes
             // for the active-profile flush of OTHER fields; we don't need the
             // explicit dirty pulse here, and keeping it implied PanelDevices
             // was profile-scoped, which is the bug this change fixes.
+            if (body.LcdBrightness.HasValue)
+                streams.ApplyBrightness(updated.Id);
+            if (body.SecondaryMonitor.HasValue)
+                streams.ApplySecondaryMonitor(updated.Id);
             BroadcastDeviceChanged(hub, id);
             return Results.Json(updated, AppJsonContext.Default.PanelDeviceRecord);
         }).AllowPanel();
@@ -395,6 +405,7 @@ public static class PanelRoutes
             {
                 ResetPersonalization(registry, bgLibrary, id);
                 registry.ResetHardwareSettings(id);
+                sp.GetService<Nexus.Service.Panel.Streams.StreamedPanelCoordinator>()?.ApplySecondaryMonitor(id);
                 RestoreQSeriesDisplayDefaults(store, sp);
             }
             catch (Exception ex)
@@ -414,6 +425,7 @@ public static class PanelRoutes
             var record = registry.ResetHardwareSettings(id);
             if (record is null)
                 return Results.NotFound(ApiResponse.Fail("device not found"));
+            sp.GetService<Nexus.Service.Panel.Streams.StreamedPanelCoordinator>()?.ApplySecondaryMonitor(id);
 
             var surface = record.Capabilities?.Surface;
             var family = record.Capabilities?.Family;
@@ -424,7 +436,11 @@ public static class PanelRoutes
                 // kiosk, but its toggle lives on the Y70 Settings tab and
                 // the Y70 is single-instance per host, so its device reset
                 // owns it. Broadcast so open dashboards see the flip.
-                store.Update(s => s.Panel.AutoLaunch = new PanelSettings().AutoLaunch);
+                store.Update(s =>
+                {
+                    s.Panel.AutoLaunch = new PanelSettings().AutoLaunch;
+                    s.Y70.CompatibilityRendering = defaults.CompatibilityRendering;
+                });
                 PanelTopics.BroadcastPrefs(hub);
                 var y70 = sp.GetRequiredService<Peripherals.Y70.IY70Provider>();
                 y70.SetOrientation(defaults.Orientation);

@@ -1,0 +1,197 @@
+{
+  "description": "Shared BuildRecentAppsView test vectors for nexus-service (RecentAppsTracker.BuildView) and nexus-web (recentAppsView.ts). ring is already in MRU order (index 0 = most recently focused) and already excludes denylisted/user-excluded apps - BuildView never filters exclusions itself. Copied verbatim between both repos; do not hand-edit one copy without the other.",
+  "cases": [
+    {
+      "name": "empty_ring_all_blank",
+      "cols": 3,
+      "rows": 2,
+      "focusedProcessKey": null,
+      "ring": [],
+      "expected": [
+        [ { "kind": "blank" }, { "kind": "blank" }, { "kind": "blank" }, { "kind": "blank" }, { "kind": "blank" }, { "kind": "blank" } ]
+      ]
+    },
+    {
+      "name": "fewer_than_keys_pads_blank",
+      "cols": 3,
+      "rows": 2,
+      "focusedProcessKey": null,
+      "ring": [
+        { "processKey": "p1", "name": "App One" },
+        { "processKey": "p2", "name": "App Two" },
+        { "processKey": "p3", "name": "App Three" }
+      ],
+      "expected": [
+        [
+          { "kind": "app", "processKey": "p1", "name": "App One", "focused": false },
+          { "kind": "app", "processKey": "p2", "name": "App Two", "focused": false },
+          { "kind": "app", "processKey": "p3", "name": "App Three", "focused": false },
+          { "kind": "blank" }, { "kind": "blank" }, { "kind": "blank" }
+        ]
+      ]
+    },
+    {
+      "name": "exactly_keys_no_padding_no_nav",
+      "cols": 3,
+      "rows": 2,
+      "focusedProcessKey": null,
+      "ring": [
+        { "processKey": "p1", "name": "App One" },
+        { "processKey": "p2", "name": "App Two" },
+        { "processKey": "p3", "name": "App Three" },
+        { "processKey": "p4", "name": "App Four" },
+        { "processKey": "p5", "name": "App Five" },
+        { "processKey": "p6", "name": "App Six" }
+      ],
+      "expected": [
+        [
+          { "kind": "app", "processKey": "p1", "name": "App One", "focused": false },
+          { "kind": "app", "processKey": "p2", "name": "App Two", "focused": false },
+          { "kind": "app", "processKey": "p3", "name": "App Three", "focused": false },
+          { "kind": "app", "processKey": "p4", "name": "App Four", "focused": false },
+          { "kind": "app", "processKey": "p5", "name": "App Five", "focused": false },
+          { "kind": "app", "processKey": "p6", "name": "App Six", "focused": false }
+        ]
+      ]
+    },
+    {
+      "name": "focused_app_moves_to_front",
+      "cols": 3,
+      "rows": 2,
+      "focusedProcessKey": "p3",
+      "ring": [
+        { "processKey": "p1", "name": "App One" },
+        { "processKey": "p2", "name": "App Two" },
+        { "processKey": "p3", "name": "App Three" }
+      ],
+      "expected": [
+        [
+          { "kind": "app", "processKey": "p3", "name": "App Three", "focused": true },
+          { "kind": "app", "processKey": "p1", "name": "App One", "focused": false },
+          { "kind": "app", "processKey": "p2", "name": "App Two", "focused": false },
+          { "kind": "blank" }, { "kind": "blank" }, { "kind": "blank" }
+        ]
+      ]
+    },
+    {
+      "name": "focused_app_not_in_ring_ignored",
+      "cols": 3,
+      "rows": 2,
+      "focusedProcessKey": "p99",
+      "ring": [
+        { "processKey": "p1", "name": "App One" },
+        { "processKey": "p2", "name": "App Two" },
+        { "processKey": "p3", "name": "App Three" }
+      ],
+      "expected": [
+        [
+          { "kind": "app", "processKey": "p1", "name": "App One", "focused": false },
+          { "kind": "app", "processKey": "p2", "name": "App Two", "focused": false },
+          { "kind": "app", "processKey": "p3", "name": "App Three", "focused": false },
+          { "kind": "blank" }, { "kind": "blank" }, { "kind": "blank" }
+        ]
+      ]
+    },
+    {
+      "name": "excluded_app_never_enters_ring",
+      "cols": 3,
+      "rows": 2,
+      "focusedProcessKey": null,
+      "ring": [
+        { "processKey": "p1", "name": "App One" },
+        { "processKey": "p2", "name": "App Two" }
+      ],
+      "expected": [
+        [
+          { "kind": "app", "processKey": "p1", "name": "App One", "focused": false },
+          { "kind": "app", "processKey": "p2", "name": "App Two", "focused": false },
+          { "kind": "blank" }, { "kind": "blank" }, { "kind": "blank" }, { "kind": "blank" }
+        ]
+      ]
+    },
+    {
+      "name": "overflow_two_pages_with_nav_keys",
+      "cols": 3,
+      "rows": 2,
+      "focusedProcessKey": null,
+      "ring": [
+        { "processKey": "p1", "name": "App 1" }, { "processKey": "p2", "name": "App 2" },
+        { "processKey": "p3", "name": "App 3" }, { "processKey": "p4", "name": "App 4" },
+        { "processKey": "p5", "name": "App 5" }, { "processKey": "p6", "name": "App 6" },
+        { "processKey": "p7", "name": "App 7" }, { "processKey": "p8", "name": "App 8" }
+      ],
+      "expected": [
+        [
+          { "kind": "app", "processKey": "p1", "name": "App 1", "focused": false },
+          { "kind": "app", "processKey": "p2", "name": "App 2", "focused": false },
+          { "kind": "app", "processKey": "p3", "name": "App 3", "focused": false },
+          { "kind": "app", "processKey": "p4", "name": "App 4", "focused": false },
+          { "kind": "app", "processKey": "p5", "name": "App 5", "focused": false },
+          { "kind": "navNext" }
+        ],
+        [
+          { "kind": "navPrev" },
+          { "kind": "app", "processKey": "p6", "name": "App 6", "focused": false },
+          { "kind": "app", "processKey": "p7", "name": "App 7", "focused": false },
+          { "kind": "app", "processKey": "p8", "name": "App 8", "focused": false },
+          { "kind": "blank" }, { "kind": "blank" }
+        ]
+      ]
+    },
+    {
+      "name": "overflow_beyond_cap_drops_tail",
+      "cols": 3,
+      "rows": 2,
+      "focusedProcessKey": null,
+      "ring": [
+        { "processKey": "p01", "name": "App 01" }, { "processKey": "p02", "name": "App 02" },
+        { "processKey": "p03", "name": "App 03" }, { "processKey": "p04", "name": "App 04" },
+        { "processKey": "p05", "name": "App 05" }, { "processKey": "p06", "name": "App 06" },
+        { "processKey": "p07", "name": "App 07" }, { "processKey": "p08", "name": "App 08" },
+        { "processKey": "p09", "name": "App 09" }, { "processKey": "p10", "name": "App 10" },
+        { "processKey": "p11", "name": "App 11" }, { "processKey": "p12", "name": "App 12" },
+        { "processKey": "p13", "name": "App 13" }, { "processKey": "p14", "name": "App 14" },
+        { "processKey": "p15", "name": "App 15" }, { "processKey": "p16", "name": "App 16" },
+        { "processKey": "p17", "name": "App 17" }, { "processKey": "p18", "name": "App 18" },
+        { "processKey": "p19", "name": "App 19" }, { "processKey": "p20", "name": "App 20" },
+        { "processKey": "p21", "name": "App 21" }, { "processKey": "p22", "name": "App 22" },
+        { "processKey": "p23", "name": "App 23" }, { "processKey": "p24", "name": "App 24" },
+        { "processKey": "p25", "name": "App 25" }
+      ],
+      "expected": [
+        [
+          { "kind": "app", "processKey": "p01", "name": "App 01", "focused": false },
+          { "kind": "app", "processKey": "p02", "name": "App 02", "focused": false },
+          { "kind": "app", "processKey": "p03", "name": "App 03", "focused": false },
+          { "kind": "app", "processKey": "p04", "name": "App 04", "focused": false },
+          { "kind": "app", "processKey": "p05", "name": "App 05", "focused": false },
+          { "kind": "navNext" }
+        ],
+        [
+          { "kind": "navPrev" },
+          { "kind": "app", "processKey": "p06", "name": "App 06", "focused": false },
+          { "kind": "app", "processKey": "p07", "name": "App 07", "focused": false },
+          { "kind": "app", "processKey": "p08", "name": "App 08", "focused": false },
+          { "kind": "app", "processKey": "p09", "name": "App 09", "focused": false },
+          { "kind": "navNext" }
+        ],
+        [
+          { "kind": "navPrev" },
+          { "kind": "app", "processKey": "p10", "name": "App 10", "focused": false },
+          { "kind": "app", "processKey": "p11", "name": "App 11", "focused": false },
+          { "kind": "app", "processKey": "p12", "name": "App 12", "focused": false },
+          { "kind": "app", "processKey": "p13", "name": "App 13", "focused": false },
+          { "kind": "navNext" }
+        ],
+        [
+          { "kind": "navPrev" },
+          { "kind": "app", "processKey": "p14", "name": "App 14", "focused": false },
+          { "kind": "app", "processKey": "p15", "name": "App 15", "focused": false },
+          { "kind": "app", "processKey": "p16", "name": "App 16", "focused": false },
+          { "kind": "app", "processKey": "p17", "name": "App 17", "focused": false },
+          { "kind": "app", "processKey": "p18", "name": "App 18", "focused": false }
+        ]
+      ]
+    }
+  ]
+}

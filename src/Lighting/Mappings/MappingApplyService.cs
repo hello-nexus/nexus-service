@@ -58,6 +58,11 @@ public sealed class MappingApplyService
     /// <summary>Re-resolve and push the layout into the live engine frame so running effects pick the change up on the next tick.</summary>
     public void RefreshDevice(string id) => _topology.RefreshCardFrame(id);
 
+    /// <summary>Mapping sources. Only <see cref="SourceCommunity"/> talks to the registry.</summary>
+    public const string SourceCommunity = "community";
+    public const string SourceFile = "file";
+    public const string SourceBuiltIn = "builtin";
+
     public enum ApplyOutcome { Applied, NotFound, Invalid }
 
     /// <summary>Apply an artifact to a device. Validates first (registry, link, and file payloads all pass through here), persists with the artifact embedded, applies count side effects, refreshes, broadcasts, and adopts.</summary>
@@ -86,7 +91,11 @@ public sealed class MappingApplyService
         string? replacedMappingId = null;
         _store.Update(s =>
         {
+            // Only a registry mapping can be revoked in the registry. A
+            // built-in carries a product key in the same field, and sending
+            // that upstream would be a signal about a row that does not exist.
             if (s.Devices.AppliedMappings.TryGetValue(id, out var previous)
+                && previous.Source == SourceCommunity
                 && previous.MappingId is { } prevId && prevId != mappingId)
             {
                 replacedMappingId = prevId;
@@ -115,7 +124,9 @@ public sealed class MappingApplyService
 
         if (replacedMappingId is not null)
             FireAndForget(_cloud.RevokeAsync(replacedMappingId, "switched", CancellationToken.None));
-        if (mappingId is not null && card.DeviceKey.Length > 0)
+        // Adoption is a registry ranking signal. Built-in and file mappings are
+        // not registry rows and must stay entirely offline.
+        if (source == SourceCommunity && mappingId is not null && card.DeviceKey.Length > 0)
             FireAndForget(_cloud.AdoptAsync(mappingId, card.DeviceKey, auto, CancellationToken.None));
         return ApplyOutcome.Applied;
     }
@@ -130,7 +141,9 @@ public sealed class MappingApplyService
             if (s.Devices.AppliedMappings.TryGetValue(id, out var applied))
             {
                 existed = true;
-                mappingId = applied.MappingId;
+                // Same rule as Apply: never signal the registry about a key it
+                // never issued.
+                mappingId = applied.Source == SourceCommunity ? applied.MappingId : null;
                 s.Devices.AppliedMappings.Remove(id);
             }
             if (reason == "undo" && !s.Devices.MappingAutoApplyDeclined.Contains(id))

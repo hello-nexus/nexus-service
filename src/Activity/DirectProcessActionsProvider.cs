@@ -50,4 +50,8 @@ public sealed class DirectProcessActionsProvider : IProcessActionsProvider
             return Task.FromResult(false);
         }
     }
+
+    /// <summary>macOS/Linux never call this - RecentAppsActivator launches by
+    /// shortcut id instead, and "open -a" already activates a running app.</summary>
+    public Task<bool> ActivateWindowAsync(int pid) => Task.FromResult(false);
 }

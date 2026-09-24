@@ -1,12 +1,12 @@
-uniform float u_aHue;
-uniform float u_aSat;
-uniform float u_aVal;
-uniform float u_bHue;
-uniform float u_bSat;
-uniform float u_bVal;
-uniform float u_angle;      // sweep direction in degrees
-uniform float u_midpoint;   // where the blend sits along the sweep
-uniform float u_softness;   // 0 = hard edge, 1 = full-frame blend
+uniform float u_aHue; // hint_range(0.0, 1.0, 0.01) = 0.58
+uniform float u_aSat; // hint_range(0.0, 1.0, 0.01) = 1.0
+uniform float u_aVal; // hint_range(0.0, 1.0, 0.01) = 1.0
+uniform float u_bHue; // hint_range(0.0, 1.0, 0.01) = 0.88
+uniform float u_bSat; // hint_range(0.0, 1.0, 0.01) = 1.0
+uniform float u_bVal; // hint_range(0.0, 1.0, 0.01) = 1.0
+uniform float u_angle; // hint_range(0.0, 360.0, 5.0) = 0.0  sweep direction in degrees
+uniform float u_midpoint; // hint_range(0.0, 1.0, 0.01) = 0.5  where the blend sits along the sweep
+uniform float u_softness; // hint_range(0.0, 1.0, 0.01) = 1.0  0 = hard edge, 1 = full-frame blend
 
 // Two-colour linear blend. Softness collapses the transition toward a hard
 // edge, so this covers both a smooth gradient and a soft-edged split.

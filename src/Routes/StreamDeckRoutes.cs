@@ -76,11 +76,13 @@ public static class StreamDeckRoutes
                     Brightness = deck.Brightness,
                     Orientation = deck.Orientation,
                     SleepAfterSeconds = deck.SleepAfterSeconds,
+                    SleepWhenLocked = deck.SleepWhenLocked,
                     FirmwareVersion = "",
                     Warning = null,
                     ConflictAppId = null,
                     CurrentPage = worker.GetCurrentPage(serial),
                     FolderPath = worker.GetFolderPath(serial).ToList(),
+                    InstanceId = DeckInstanceResolver.PhysicalInstanceId(serial),
                 });
             }
             return response;
@@ -112,41 +114,20 @@ public static class StreamDeckRoutes
                 {
                     deck.SleepAfterSeconds = Math.Max(0, body.SleepAfterSeconds.Value);
                 }
+                if (body.SleepWhenLocked is not null)
+                {
+                    deck.SleepWhenLocked = body.SleepWhenLocked.Value;
+                }
             });
-            // Skipped while the deck is asleep (sleep-after already blanked
-            // it): the new value already persisted above and applies the
-            // moment the next key press wakes it.
-            if (body.Brightness is not null && !worker.IsAsleep(serial))
+            // Skipped while the deck is asleep (sleep-after or the session
+            // lock blanked it): the new value already persisted above and
+            // applies the moment the deck wakes.
+            if (body.Brightness is not null)
             {
-                worker.FindBySerial(serial)?.SetBrightness(Math.Clamp(body.Brightness.Value, 0, 100));
+                worker.SetBrightnessIfAwake(serial, Math.Clamp(body.Brightness.Value, 0, 100));
             }
             PanelTopics.BroadcastStreamDeck(hub, new StreamDeckChangedFrame { Kind = "decks", Serial = serial });
             return ApiResponse.Ok();
-        }).LocalhostOnly();
-
-        app.MapGet("/streamdeck/decks/{serial}/config", (string serial, IConfigStore store) =>
-        {
-            var settings = store.Load().StreamDeck;
-            var config = settings.Decks.TryGetValue(serial, out var deck) ? deck.Deck : new DeckConfig { Pages = { new DeckPage() } };
-            return new StreamDeckConfigEnvelope { Config = config };
-        }).LocalhostOnly();
-
-        app.MapPut("/streamdeck/decks/{serial}/config", (
-            string serial, StreamDeckConfigEnvelope body, StreamDeckConnectionWorker worker, IConfigStore store, MultiplexHub hub) =>
-        {
-            var config = body.Config;
-            store.Update(s =>
-            {
-                if (!s.StreamDeck.Decks.TryGetValue(serial, out var deck))
-                {
-                    deck = new PhysicalDeckSettings();
-                    s.StreamDeck.Decks[serial] = deck;
-                }
-                deck.Deck = config;
-            });
-            worker.RefreshView(serial);
-            PanelTopics.BroadcastStreamDeck(hub, new StreamDeckChangedFrame { Kind = "config", Serial = serial });
-            return new StreamDeckConfigEnvelope { Config = config };
         }).LocalhostOnly();
 
         // Mirror the desktop editor's navigation (page + folder) onto the deck.
@@ -180,77 +161,6 @@ public static class StreamDeckRoutes
             return Results.Json(response, AppJsonContext.Default.StreamDeckPendingEditResponse);
         }).LocalhostOnly();
 
-        app.MapPut("/streamdeck/decks/{serial}/images/{slotPath}/{state}", async (
-            string serial, string slotPath, string state, HttpRequest req,
-            StreamDeckImageCache cache, IConfigStore store, StreamDeckConnectionWorker worker, CancellationToken ct) =>
-        {
-            if (!StreamDeckImageCache.IsValidSerial(serial))
-            {
-                return Results.Json(ApiResponse.Fail("invalid serial"), AppJsonContext.Default.ApiResponse, statusCode: 400);
-            }
-            if (!IsValidImageSlotAndState(slotPath, state))
-            {
-                return Results.Json(ApiResponse.Fail("invalid slot path or state"), AppJsonContext.Default.ApiResponse, statusCode: 400);
-            }
-
-            var (bytes, tooLarge) = await ReadBoundedAsync(req.Body, MaxImageBytes, ct).ConfigureAwait(false);
-            if (tooLarge)
-            {
-                return Results.Json(ApiResponse.Fail("image too large"), AppJsonContext.Default.ApiResponse);
-            }
-            if (bytes is null || bytes.Length == 0)
-            {
-                return Results.Json(ApiResponse.Fail("empty upload"), AppJsonContext.Default.ApiResponse);
-            }
-
-            var model = worker.FindBySerial(serial)?.Model;
-            if (model is null && store.Load().StreamDeck.Decks.TryGetValue(serial, out var persistedDeck))
-            {
-                model = StreamDeckModels.ByProductId(persistedDeck.ProductId);
-            }
-            if (model is not null && !model.IsValidWireImageLength(bytes.Length))
-            {
-                return Results.Json(ApiResponse.Fail("image size does not match this deck's key format"), AppJsonContext.Default.ApiResponse);
-            }
-
-            var hash = StreamDeckImageCache.Hash(bytes);
-            try
-            {
-                cache.Store(serial, hash, bytes);
-            }
-            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
-            {
-                ServiceLog.Warn($"[streamdeck] image cache write failed for {serial}: {ex.Message}");
-                return Results.Json(ApiResponse.Fail("image cache write failed"), AppJsonContext.Default.ApiResponse);
-            }
-            string? evictHash = null;
-            var refKey = $"{slotPath}/{state}";
-            store.Update(s =>
-            {
-                if (!s.StreamDeck.Decks.TryGetValue(serial, out var deck))
-                {
-                    deck = new PhysicalDeckSettings();
-                    s.StreamDeck.Decks[serial] = deck;
-                }
-                if (deck.ImageRefs.TryGetValue(refKey, out var previousHash) &&
-                    previousHash != hash &&
-                    !IsHashReferenced(deck, previousHash, refKey))
-                {
-                    evictHash = previousHash;
-                }
-                deck.ImageRefs[refKey] = hash;
-            });
-            if (evictHash is not null)
-            {
-                cache.Evict(serial, evictHash);
-            }
-            if (IsUploadedKeyVisible(serial, slotPath, worker))
-            {
-                worker.RefreshView(serial);
-            }
-            return Results.Json(new StreamDeckImageUploadResponse { Hash = hash }, AppJsonContext.Default.StreamDeckImageUploadResponse);
-        }).LocalhostOnly();
-
         app.MapPost("/streamdeck/decks/{serial}/test-press/{slotPath}", (
             string serial, string slotPath, StreamDeckConnectionWorker worker, IConfigStore store) =>
         {
@@ -260,16 +170,21 @@ public static class StreamDeckRoutes
                 return ApiResponse.Fail("invalid slot path");
             }
             var settings = store.Load().StreamDeck;
-            if (!settings.Decks.TryGetValue(serial, out var deck))
+            var preset = DeckInstanceResolver.ResolveActivePreset(settings, DeckInstanceResolver.PhysicalInstanceId(serial));
+            if (preset is null)
             {
                 return ApiResponse.Fail("deck not found");
             }
+            // A disconnected deck with no resolvable model still test-presses
+            // against its own authored grid (FitToGrid is then an identity copy).
+            var grid = ResolvePhysicalGrid(serial, worker, store) ?? (preset.Cols, preset.Rows);
+            var config = DeckConfigNavigation.FitToGrid(preset.Cols, preset.Rows, preset.Deck, grid.Cols, grid.Rows, DeckTargetKind.Physical);
 
             // Routes through the same nav-or-dispatch decision a real key
             // press makes (HandleSlotAction), so testing a page or folder
             // slot navigates the tracked deck state exactly like pressing
             // the physical key would, not just the leaf-action executor.
-            return worker.SimulatePress(serial, indices, deck.Deck)
+            return worker.SimulatePress(serial, indices, config)
                 ? ApiResponse.Ok()
                 : ApiResponse.Fail("slot has no action");
         }).LocalhostOnly();
@@ -298,271 +213,10 @@ public static class StreamDeckRoutes
             return ApiResponse.Ok();
         }).LocalhostOnly();
 
-        app.MapGet("/streamdeck/decks/{serial}/presets", (
-            string serial, IConfigStore store) =>
-        {
-            var settings = store.Load().StreamDeck;
-            settings.Decks.TryGetValue(serial, out var deck);
-            return Results.Json(
-                new GetDeckPresetsResponse
-                {
-                    Presets = deck?.Presets.ConvertAll(ToPresetDto) ?? new List<DeckPresetDto>(),
-                    ActiveId = deck?.ActivePresetId,
-                },
-                AppJsonContext.Default.GetDeckPresetsResponse);
-        }).LocalhostOnly();
-
-        app.MapPost("/streamdeck/decks/{serial}/presets", (
-            string serial, CreateDeckPresetBody body, IConfigStore store) =>
-        {
-            bool capped = false;
-            bool nameTaken = false;
-            DeckPreset? created = null;
-            store.Update(s =>
-            {
-                if (!s.StreamDeck.Decks.TryGetValue(serial, out var deck))
-                {
-                    deck = new PhysicalDeckSettings();
-                    s.StreamDeck.Decks[serial] = deck;
-                }
-                if (deck.Presets.Count >= 10)
-                {
-                    capped = true;
-                    return;
-                }
-                var trimmedName = string.IsNullOrEmpty(body.Name) ? "" : body.Name.Trim();
-                if (trimmedName.Length > 0
-                    && deck.Presets.Any(p => string.Equals(p.Name, trimmedName, StringComparison.OrdinalIgnoreCase)))
-                {
-                    nameTaken = true;
-                    return;
-                }
-                var id = Guid.NewGuid().ToString("n");
-                created = body.Config is not null
-                    ? new DeckPreset
-                    {
-                        Id = id,
-                        Name = trimmedName,
-                        Deck = DeepCopyDeckConfig(body.Config),
-                        ImageRefs = new Dictionary<string, string>(),
-                    }
-                    : new DeckPreset
-                    {
-                        Id = id,
-                        Name = trimmedName,
-                        Deck = DeepCopyDeckConfig(deck.Deck),
-                        ImageRefs = new Dictionary<string, string>(deck.ImageRefs),
-                    };
-                deck.Presets.Add(created);
-                deck.ActivePresetId = id;
-            });
-            if (capped)
-            {
-                return Results.Json(
-                    ApiResponse.Fail("Deck preset cap of 10 reached"),
-                    AppJsonContext.Default.ApiResponse,
-                    statusCode: 400);
-            }
-            if (nameTaken)
-            {
-                return Results.Json(
-                    ApiResponse.Fail("preset_name_taken"),
-                    AppJsonContext.Default.ApiResponse,
-                    statusCode: 409);
-            }
-            return Results.Json(
-                new CreateDeckPresetResponse { Preset = ToPresetDto(created!), ActiveId = created!.Id },
-                AppJsonContext.Default.CreateDeckPresetResponse);
-        }).LocalhostOnly();
-
-        app.MapPut("/streamdeck/decks/{serial}/presets/active", (
-            string serial, SetActiveDeckPresetBody body, IConfigStore store) =>
-        {
-            store.Update(s =>
-            {
-                if (!s.StreamDeck.Decks.TryGetValue(serial, out var deck))
-                {
-                    deck = new PhysicalDeckSettings();
-                    s.StreamDeck.Decks[serial] = deck;
-                }
-                deck.ActivePresetId = body.Id;
-            });
-            return Results.Json(ApiResponse.Ok(), AppJsonContext.Default.ApiResponse);
-        }).LocalhostOnly();
-
-        app.MapPut("/streamdeck/decks/{serial}/presets/{id}", (
-            string serial, string id, UpdateDeckPresetBody body, IConfigStore store, StreamDeckImageCache cache) =>
-        {
-            var settings = store.Load().StreamDeck;
-            if (!settings.Decks.TryGetValue(serial, out var existingDeck) || existingDeck.Presets.Find(p => p.Id == id) is null)
-            {
-                return Results.Json(
-                    ApiResponse.Fail("Deck preset not found"),
-                    AppJsonContext.Default.ApiResponse,
-                    statusCode: 404);
-            }
-
-            bool nameTaken = false;
-            List<string>? evictHashes = null;
-            store.Update(s =>
-            {
-                if (!s.StreamDeck.Decks.TryGetValue(serial, out var deck))
-                {
-                    return;
-                }
-                var p = deck.Presets.Find(x => x.Id == id);
-                if (p is null)
-                {
-                    return;
-                }
-                if (!string.IsNullOrEmpty(body.Name))
-                {
-                    var trimmedName = body.Name.Trim();
-                    if (trimmedName.Length > 0
-                        && deck.Presets.Any(x => x.Id != id && string.Equals(x.Name, trimmedName, StringComparison.OrdinalIgnoreCase)))
-                    {
-                        nameTaken = true;
-                        return;
-                    }
-                    p.Name = trimmedName;
-                }
-                if (body.SaveCurrent)
-                {
-                    var previousHashes = p.ImageRefs.Values.Distinct().ToList();
-                    p.Deck = DeepCopyDeckConfig(deck.Deck);
-                    p.ImageRefs = new Dictionary<string, string>(deck.ImageRefs);
-                    evictHashes = previousHashes.Where(h => !IsHashReferenced(deck, h, null)).ToList();
-                }
-            });
-            if (nameTaken)
-            {
-                return Results.Json(
-                    ApiResponse.Fail("preset_name_taken"),
-                    AppJsonContext.Default.ApiResponse,
-                    statusCode: 409);
-            }
-            if (evictHashes is not null)
-            {
-                foreach (var h in evictHashes)
-                {
-                    cache.Evict(serial, h);
-                }
-            }
-            return Results.Json(ApiResponse.Ok(), AppJsonContext.Default.ApiResponse);
-        }).LocalhostOnly();
-
-        app.MapDelete("/streamdeck/decks/{serial}/presets/{id}", (
-            string serial, string id, IConfigStore store, StreamDeckConnectionWorker worker, MultiplexHub hub, StreamDeckImageCache cache) =>
-        {
-            string? activeId = null;
-            var promoted = false;
-            List<string>? evictHashes = null;
-            store.Update(s =>
-            {
-                if (!s.StreamDeck.Decks.TryGetValue(serial, out var deck))
-                {
-                    return;
-                }
-                var removed = deck.Presets.Find(p => p.Id == id);
-                deck.Presets.RemoveAll(p => p.Id == id);
-                if (deck.ActivePresetId == id)
-                {
-                    // Deleting the active preset promotes the first remaining one
-                    // and applies its layout to the live deck, rather than leaving
-                    // nothing selected. Falls to null only when none remain.
-                    var next = deck.Presets.Count > 0 ? deck.Presets[0] : null;
-                    if (next is not null)
-                    {
-                        deck.Deck = DeepCopyDeckConfig(next.Deck);
-                        deck.ImageRefs = new Dictionary<string, string>(next.ImageRefs);
-                        deck.ActivePresetId = next.Id;
-                        promoted = true;
-                    }
-                    else
-                    {
-                        deck.ActivePresetId = null;
-                    }
-                }
-                activeId = deck.ActivePresetId;
-                if (removed is not null)
-                {
-                    evictHashes = removed.ImageRefs.Values
-                        .Distinct()
-                        .Where(h => !IsHashReferenced(deck, h, null))
-                        .ToList();
-                }
-            });
-            if (evictHashes is not null)
-            {
-                foreach (var h in evictHashes)
-                {
-                    cache.Evict(serial, h);
-                }
-            }
-            if (promoted)
-            {
-                worker.SetNav(serial, 0, System.Array.Empty<int>());
-                PanelTopics.BroadcastStreamDeck(hub, new StreamDeckChangedFrame { Kind = "config", Serial = serial });
-            }
-            return Results.Json(
-                new DeleteDeckPresetResponse { ActiveId = activeId },
-                AppJsonContext.Default.DeleteDeckPresetResponse);
-        }).LocalhostOnly();
-
-        app.MapPost("/streamdeck/decks/{serial}/presets/{id}/activate", (
-            string serial, string id, IConfigStore store, StreamDeckConnectionWorker worker, MultiplexHub hub, StreamDeckImageCache cache) =>
-        {
-            var settings = store.Load().StreamDeck;
-            if (!settings.Decks.TryGetValue(serial, out var existingDeck))
-            {
-                return Results.Json(
-                    ApiResponse.Fail("Deck preset not found"),
-                    AppJsonContext.Default.ApiResponse,
-                    statusCode: 404);
-            }
-            var preset = existingDeck.Presets.Find(p => p.Id == id);
-            if (preset is null)
-            {
-                return Results.Json(
-                    ApiResponse.Fail("Deck preset not found"),
-                    AppJsonContext.Default.ApiResponse,
-                    statusCode: 404);
-            }
-
-            var config = DeepCopyDeckConfig(preset.Deck);
-            var imageRefs = new Dictionary<string, string>(preset.ImageRefs);
-            List<string>? evictHashes = null;
-            store.Update(s =>
-            {
-                if (!s.StreamDeck.Decks.TryGetValue(serial, out var deck))
-                {
-                    return;
-                }
-                var previousHashes = deck.ImageRefs.Values.Distinct().ToList();
-                deck.Deck = config;
-                deck.ImageRefs = imageRefs;
-                deck.ActivePresetId = id;
-                evictHashes = previousHashes.Where(h => !IsHashReferenced(deck, h, null)).ToList();
-            });
-            if (evictHashes is not null)
-            {
-                foreach (var h in evictHashes)
-                {
-                    cache.Evict(serial, h);
-                }
-            }
-            // Switching preset opens the new layout on page 1, not wherever the
-            // previous preset was left (a folder or a later page); SetNav resets
-            // page + folder path to the top and pushes the fresh view.
-            worker.SetNav(serial, 0, System.Array.Empty<int>());
-            PanelTopics.BroadcastStreamDeck(hub, new StreamDeckChangedFrame { Kind = "config", Serial = serial });
-            return Results.Json(ApiResponse.Ok(), AppJsonContext.Default.ApiResponse);
-        }).LocalhostOnly();
-
         // Elgato Stream Deck profile import: read-only against the local
         // Elgato software's own store. Never persists anything - the caller
         // decides whether to save the returned config as a preset via
-        // POST /streamdeck/decks/{serial}/presets with its Config field.
+        // POST /deck/presets with its Deck field.
         app.MapGet("/streamdeck/elgato/profiles", (ElgatoProfileLocator locator) =>
         {
             var (status, root) = locator.Resolve();
@@ -656,34 +310,23 @@ public static class StreamDeckRoutes
         }).LocalhostOnly();
 
         app.MapDelete("/streamdeck/dev/simulate", (
-            StreamDeckConnectionWorker worker, IConfigStore store, StreamDeckImageCache cache) =>
+            StreamDeckConnectionWorker worker, IConfigStore store) =>
         {
             worker.ClearSimulatedModel();
-            // A simulated deck is ephemeral, but interacting with it (config /
-            // image PUTs) persists a `sim-<pid>` record. Left behind, GET
-            // /streamdeck/decks re-lists it as an offline deck, so the sim
-            // never fully disconnects. Purge every sim- record and evict its
-            // images on disconnect.
-            var evict = new List<(string Serial, string Hash)>();
+            // A simulated deck is ephemeral, but interacting with it (nav,
+            // instance activation) persists a `sim-<pid>` deck record and
+            // instance row. Left behind, GET /streamdeck/decks re-lists it as
+            // an offline deck, so the sim never fully disconnects. Purge
+            // every sim- record on disconnect; the preset(s) it pointed at
+            // are host-wide and shared, so they are left alone.
             store.Update(s =>
             {
                 foreach (var serial in s.StreamDeck.Decks.Keys.Where(k => k.StartsWith("sim-", StringComparison.Ordinal)).ToList())
                 {
-                    var deck = s.StreamDeck.Decks[serial];
-                    var hashes = deck.ImageRefs.Values
-                        .Concat(deck.Presets.SelectMany(p => p.ImageRefs.Values))
-                        .Distinct();
-                    foreach (var hash in hashes)
-                    {
-                        evict.Add((serial, hash));
-                    }
                     s.StreamDeck.Decks.Remove(serial);
+                    s.StreamDeck.Instances.Remove(DeckInstanceResolver.PhysicalInstanceId(serial));
                 }
             });
-            foreach (var (serial, hash) in evict)
-            {
-                cache.Evict(serial, hash);
-            }
             return ApiResponse.Ok();
         }).LocalhostOnly();
     }
@@ -706,11 +349,13 @@ public static class StreamDeckRoutes
         Brightness = deck?.Brightness ?? PhysicalDeckSettings.DefaultBrightness,
         Orientation = deck?.Orientation ?? 0,
         SleepAfterSeconds = deck?.SleepAfterSeconds ?? 0,
+        SleepWhenLocked = deck?.SleepWhenLocked ?? true,
         FirmwareVersion = surface.FirmwareVersion,
         Warning = warning,
         ConflictAppId = conflictAppId,
         CurrentPage = worker.GetCurrentPage(surface.Serial),
         FolderPath = worker.GetFolderPath(surface.Serial).ToList(),
+        InstanceId = DeckInstanceResolver.PhysicalInstanceId(surface.Serial),
     };
 
     private static string FormatName(StreamDeckImageFormat format) => format switch
@@ -744,116 +389,15 @@ public static class StreamDeckRoutes
     internal static string? ResolveConflictAppId(string? warning) =>
         warning is not null ? StreamDeckHandler.ElgatoConflictAppId : null;
 
-    private static DeckPresetDto ToPresetDto(DeckPreset p) => new() { Id = p.Id, Name = p.Name };
-
-    /// <summary>
-    /// Deep-copies a DeckConfig by round-tripping it through DeckConfigConverter -
-    /// the tree nests DeckFolder/DeckSlot/DeckAction/DeckSequenceStep, so a
-    /// hand-rolled clone would have to mirror every branch of that converter.
-    /// </summary>
-    private static DeckConfig DeepCopyDeckConfig(DeckConfig source) =>
-        JsonSerializer.Deserialize(
-            JsonSerializer.SerializeToUtf8Bytes(source, AppJsonContext.Default.DeckConfig),
-            AppJsonContext.Default.DeckConfig)!;
-
-    /// <summary>
-    /// True if any live v2-or-back slot (other than excludeKey) or any saved
-    /// preset still references hash. A preset snapshots ImageRefs at save
-    /// time, so an image hash the live upload route would otherwise evict
-    /// can still be the only copy backing an older preset - evicting it
-    /// early leaves that preset's keys blank the next time it activates. A
-    /// live legacy pre-v2 key never counts, so a hash only a stale orphaned
-    /// v1 entry still points at is not pinned alive forever.
-    /// </summary>
-    private static bool IsHashReferenced(PhysicalDeckSettings deck, string hash, string? excludeKey)
+    /// <summary>The persisted or live grid dimensions for a serial, or null when neither a live surface nor a persisted ProductId resolves a model.</summary>
+    private static (int Cols, int Rows)? ResolvePhysicalGrid(string serial, StreamDeckConnectionWorker worker, IConfigStore store)
     {
-        if (deck.ImageRefs.Any(kv => kv.Key != excludeKey && kv.Value == hash && IsV2OrBackImageRefKey(kv.Key)))
+        var model = worker.FindBySerial(serial)?.Model;
+        if (model is null && store.Load().StreamDeck.Decks.TryGetValue(serial, out var deck))
         {
-            return true;
+            model = StreamDeckModels.ByProductId(deck.ProductId);
         }
-        foreach (var preset in deck.Presets)
-        {
-            if (preset.ImageRefs.Values.Any(v => v == hash))
-            {
-                return true;
-            }
-        }
-        return false;
-    }
-
-    /// <summary>
-    /// True for a v2 page-qualified ImageRefs key ("0.3/0") or the reserved
-    /// page-independent "back/0" key. False for a legacy pre-v2 key ("3/0"),
-    /// which no longer resolves to any slot (StreamDeckConnectionWorker.
-    /// ResolveSlotImage only builds v2 keys) and must not keep its hash's
-    /// blob alive.
-    /// </summary>
-    private static bool IsV2OrBackImageRefKey(string key)
-    {
-        var slashIndex = key.IndexOf('/');
-        if (slashIndex < 0)
-        {
-            return false;
-        }
-        var slotPath = key[..slashIndex];
-        return slotPath == "back" || DeckConfigNavigation.ParseImageRefSlotPath(slotPath) is not null;
-    }
-
-    /// <summary>
-    /// True if a just-uploaded key's slotPath is part of the deck's current
-    /// physical view, so the upload route should trigger a HID repaint. The
-    /// web editor now uploads the whole config tree (every page, every
-    /// folder) on each edit (image-refs v2), so most uploads target a
-    /// page/folder the deck is not currently showing and must not trigger a
-    /// full RefreshView - that repaint-per-key cascade was the original
-    /// page next/prev latency.
-    /// </summary>
-    private static bool IsUploadedKeyVisible(string serial, string slotPath, StreamDeckConnectionWorker worker)
-    {
-        if (slotPath == "back")
-        {
-            return worker.IsShowingAFolder(serial);
-        }
-        var parsed = DeckConfigNavigation.ParseImageRefSlotPath(slotPath);
-        return parsed is not null && worker.IsCurrentView(serial, parsed.Value.Page, parsed.Value.FolderPath);
-    }
-
-    /// <summary>
-    /// A valid ImageRefs key is either the reserved "back" folder-back-key
-    /// slot with state "0" (StreamDeckConnectionWorker.BackSlotPath, only
-    /// ever pushed with state 0), or a real slot path (DeckConfigNavigation's
-    /// dot-joined index chain) with state "0" or "1" (off/on for a toggle).
-    /// </summary>
-    private static bool IsValidImageSlotAndState(string slotPath, string state)
-    {
-        if (state != "0" && state != "1")
-        {
-            return false;
-        }
-        if (slotPath == "back")
-        {
-            return state == "0";
-        }
-        return DeckConfigNavigation.ParseSlotPath(slotPath) is not null;
-    }
-
-    /// <summary>Reads a request body up to maxBytes, checking the running total after every chunk so a chunked upload (no Content-Length) never buffers unbounded memory before the size check runs.</summary>
-    private static async Task<(byte[]? Bytes, bool TooLarge)> ReadBoundedAsync(Stream source, long maxBytes, CancellationToken ct)
-    {
-        using var ms = new MemoryStream();
-        var buffer = new byte[81920];
-        long total = 0;
-        int read;
-        while ((read = await source.ReadAsync(buffer, ct).ConfigureAwait(false)) > 0)
-        {
-            total += read;
-            if (total > maxBytes)
-            {
-                return (null, true);
-            }
-            await ms.WriteAsync(buffer.AsMemory(0, read), ct).ConfigureAwait(false);
-        }
-        return (ms.ToArray(), false);
+        return model is null ? null : (model.Columns, model.Rows);
     }
 
     // Fixed, visually distinct hues so each key is identifiable on the bench.

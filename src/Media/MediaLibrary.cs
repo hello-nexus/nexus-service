@@ -50,8 +50,11 @@ public sealed class MediaLibrary
         return Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData);
     }
 
-    /// <c>&lt;data-root&gt;/Nexus</c>: %ProgramData% (Windows), ~/Library/Application Support (macOS), $XDG_DATA_HOME (Linux).
-    internal static string NexusDataDir() => Path.Combine(ResolveDefaultRoot(), "Nexus");
+    /// <c>&lt;data-root&gt;/Nexus</c>: %ProgramData% (Windows), ~/Library/Application Support (macOS), $XDG_DATA_HOME (Linux),
+    /// the machine root itself for the Linux root system daemon (see <c>NexusDataPaths.SystemDaemonRoot</c>).
+    internal static string NexusDataDir() =>
+        Nexus.Service.Persistence.NexusDataPaths.SystemDaemonRoot
+        ?? Path.Combine(ResolveDefaultRoot(), "Nexus");
 
     /// Per-device store root <c>.../Nexus/devices/&lt;family&gt;</c>. Shared so every device store lands under one root instead of hand-rolling a per-OS path.
     internal static string DeviceStoreDir(string family) => Path.Combine(NexusDataDir(), "devices", family);

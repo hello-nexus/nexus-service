@@ -9,6 +9,7 @@ using Nexus.Service.Diagnostics.Memory;
 using Nexus.Service.Diagnostics.Storage;
 using Nexus.Service.Diagnostics.SystemInfo;
 using Nexus.Service.Diagnostics.Temperature;
+using Nexus.Service.Monitoring.History;
 using Nexus.Service.Persistence;
 using Xunit;
 
@@ -119,6 +120,110 @@ public class DiagnosticsHealthModelTests
         Assert.Equal(HealthStatuses.Ok, memory.Status);
         Assert.Empty(memory.Reasons);
 
+        Assert.Equal(HealthStatuses.Ok, result.Overall);
+    }
+
+    [Fact]
+    public void IgnoredComponent_IsDroppedFromComponentsAndOverall()
+    {
+        var smart = new SmartSnapshot
+        {
+            Supported = true,
+            Drives = new List<SmartDriveInfo>
+            {
+                new()
+                {
+                    Id = "storage:Z52AFCNF",
+                    Name = "ST2000VX008-2E3164",
+                    Status = "caution",
+                    DetailedReasons = new List<SmartReason>
+                    {
+                        new("smart.commandTimeout", ReasonSeverity.Watch, "1 command timeout", "SMART attribute 188 raw value is 1."),
+                    },
+                },
+                new() { Id = "storage:OTHER", Name = "Healthy", Status = "good" },
+            },
+        };
+        var cooling = new CoolingStallSnapshot(true, new List<CoolingStallDevice>
+        {
+            new("pump-1", "Pump", "pump", 0, 60, CoolingStallStatuses.Stalled, T0),
+        });
+        var settings = new DiagnosticsSettings
+        {
+            IgnoredComponents = new List<string> { "storage:Z52AFCNF", "cooling:pump-1" },
+        };
+
+        var result = Compute(smart: smart, cooling: cooling, diagnostics: settings);
+
+        Assert.DoesNotContain(result.Components, c => c.Id == "storage:Z52AFCNF");
+        Assert.DoesNotContain(result.Components, c => c.Id == "cooling:pump-1");
+        Assert.Contains(result.Components, c => c.Id == "storage:OTHER");
+        Assert.Equal(HealthStatuses.Ok, result.Overall);
+    }
+
+    [Fact]
+    public void IgnoredDrive_TemperatureEpisode_DoesNotReachTheCoolingAggregate()
+    {
+        var episodes = new List<TemperatureEpisode>
+        {
+            new("storage:Z52AFCNF", "ST2000VX008", T0.AddMinutes(-10), T0, PeakC: 74.5, ThresholdC: 70, Kind: "storage"),
+            new("storage:OTHER", "Healthy", T0.AddMinutes(-10), T0, PeakC: 72.0, ThresholdC: 70, Kind: "storage"),
+        };
+        var settings = new DiagnosticsSettings { IgnoredComponents = new List<string> { "storage:Z52AFCNF" } };
+
+        var result = Compute(tempEpisodes: episodes, diagnostics: settings);
+
+        var cooling = Assert.Single(result.Components, c => c.Id == "cooling");
+        var reason = Assert.Single(cooling.Reasons);
+        Assert.Contains("componentId=storage:OTHER", reason.Detail);
+        Assert.Equal(HealthStatuses.Watch, result.Overall);
+    }
+
+    [Fact]
+    public void BuildHealth_RecomputesWhenTheIgnoreListChanges_WithinTheCacheTtl()
+    {
+        var store = new InMemoryConfigStore();
+        var model = new DiagnosticsHealthModel(
+            new SmartHealthMonitor(), new CoolingStallDetector(), new GpuHealthMonitor(), new EventLogMonitor(),
+            new MemoryDiagnosticOrchestrator(), new PnpProblemScanner(), new Mcp.McpTestHarness.StubSensorProvider(),
+            new InMemoryMetricsHistoryStore(), store);
+
+        var first = model.BuildHealth();
+        Assert.Same(first, model.BuildHealth());
+
+        store.Update(s => s.Diagnostics.IgnoredComponents = new List<string> { "storage:Z52AFCNF" });
+        var afterIgnore = model.BuildHealth();
+        Assert.NotSame(first, afterIgnore);
+        Assert.Same(afterIgnore, model.BuildHealth());
+
+        store.Update(s => s.Diagnostics.IgnoredComponents = null!);
+        Assert.NotSame(afterIgnore, model.BuildHealth());
+    }
+
+    [Fact]
+    public void IgnoringEveryComponent_OffWindows_KeepsTheGridSupported()
+    {
+        var smart = new SmartSnapshot
+        {
+            Supported = true,
+            Drives = new List<SmartDriveInfo> { new() { Id = "storage:ONLY", Name = "Only", Status = "caution" } },
+        };
+        var settings = new DiagnosticsSettings { IgnoredComponents = new List<string> { "storage:ONLY" } };
+
+        var result = DiagnosticsHealthModel.Compute(
+            smart: smart,
+            cooling: EmptyCooling,
+            gpu: GpuHealthSnapshot.Unsupported,
+            counts30d: new Dictionary<string, int>(),
+            lastMemoryTest: null,
+            pnp: EmptyPnp,
+            knownGpuModels: Array.Empty<string>(),
+            windowsSupported: false,
+            generatedAtUtc: T0,
+            diagnostics: settings);
+
+        Assert.True(result.Supported);
+        Assert.Empty(result.Components);
         Assert.Equal(HealthStatuses.Ok, result.Overall);
     }
 

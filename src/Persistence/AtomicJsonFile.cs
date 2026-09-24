@@ -14,16 +14,21 @@ namespace Nexus.Service.Persistence;
 /// </summary>
 public static class AtomicJsonFile
 {
+    /// <summary>The scratch file <see cref="Write"/> stages into. Exposed so a
+    /// caller that must set permissions on the bytes BEFORE they are written
+    /// restricts the file this actually writes, not a guess at its name.</summary>
+    public static string TempPathFor(string path) => path + ".tmp";
+
     public static void Write(string path, string contents)
     {
-        var tmp = path + ".tmp";
+        var tmp = TempPathFor(path);
         File.WriteAllText(tmp, contents);
         ReplaceOrMove(tmp, path);
     }
 
     public static void Write(string path, byte[] contents)
     {
-        var tmp = path + ".tmp";
+        var tmp = TempPathFor(path);
         File.WriteAllBytes(tmp, contents);
         ReplaceOrMove(tmp, path);
     }

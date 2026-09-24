@@ -537,9 +537,14 @@ public sealed class QSeriesCoolerHub : IDisposable, IDfuFlashTarget
 
     /// <summary>
     /// Switch the hub control mode (Software / Motherboard / Firmware). Reads
-    /// Port-0 first to preserve turbo + fw-animation state.
+    /// Port-0 first to preserve turbo + fw-animation state, and skips the control
+    /// frame when the hub already reports <paramref name="mode"/>: re-asserting a
+    /// mode resets the pump, so a hand-back to the mode the cooler powered up in
+    /// must be silent. <paramref name="pin"/> records the mode as user-chosen so
+    /// the engine's duty writes are swallowed; <see cref="HandBackControlMode"/>
+    /// is the release path, which never pins.
     /// </summary>
-    public bool SetControlMode(byte mode)
+    public bool SetControlMode(byte mode, bool pin = true)
     {
         lock (_lock)
         {
@@ -550,12 +555,15 @@ public sealed class QSeriesCoolerHub : IDisposable, IDfuFlashTarget
             {
                 var port0 = new byte[QSeriesCoolerProtocol.Port0ResponseLength];
                 if (!ReadPort0(port0)) return false;
-                t.Write(QSeriesCoolerProtocol.BuildSetControl(
-                    mode, 0,
-                    QSeriesCoolerProtocol.TurboOnOf(port0) ? QSeriesCoolerProtocol.TurboOnByte : QSeriesCoolerProtocol.TurboOffByte,
-                    port0));
+                if (QSeriesCoolerProtocol.ControlModeOf(port0) != mode)
+                {
+                    t.Write(QSeriesCoolerProtocol.BuildSetControl(
+                        mode, 0,
+                        QSeriesCoolerProtocol.TurboOnOf(port0) ? QSeriesCoolerProtocol.TurboOnByte : QSeriesCoolerProtocol.TurboOffByte,
+                        port0));
+                }
                 State.ControlMode = mode;
-                _desiredControlMode = mode; // pin: a user-chosen mode the engine must not override
+                if (pin) _desiredControlMode = mode; // pin: a user-chosen mode the engine must not override
                 // The live control byte alone doesn't engage the onboard curve;
                 // firmware mode also needs the EEPROM default flipped to Temperature
                 // (and reset to Motherboard when handing back), preserving the
@@ -587,6 +595,29 @@ public sealed class QSeriesCoolerHub : IDisposable, IDfuFlashTarget
                 Disconnect();
                 return false;
             }
+        }
+    }
+
+    /// <summary>
+    /// Hand the hub to <paramref name="mode"/> once nothing drives it. The
+    /// <paramref name="nothingDriven"/> check runs under the hub lock, so an
+    /// engine claim lands wholly before it (the hand-back yields) or wholly after
+    /// (the claim's own duty write flips the hub back to software); no ordering
+    /// leaves the hub handed back while a channel still counts as driven. The
+    /// engine's Software latch is stale once nothing is driven and is dropped; a
+    /// user pin (Motherboard / Firmware) survives unless <paramref name="dropUserPin"/>,
+    /// since a bulk release ends the pick along with the channels it applied to.
+    /// </summary>
+    public bool HandBackControlMode(byte mode, Func<bool> nothingDriven, bool dropUserPin)
+    {
+        lock (_lock)
+        {
+            if (!nothingDriven()) return true;
+            if (dropUserPin || _desiredControlMode == QSeriesCoolerProtocol.ControlModeSoftware)
+            {
+                _desiredControlMode = null;
+            }
+            return SetControlMode(mode, pin: false);
         }
     }
 

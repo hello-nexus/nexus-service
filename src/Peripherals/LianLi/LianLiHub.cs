@@ -9,7 +9,7 @@ public sealed class LianLiHub : IDisposable
     private readonly object _lock = new();
     private readonly byte[] _colorReport = new byte[LianLiProtocol.OutputReportSize];
     private IHidDevice? _device;
-    private LianLiFanProfile _profile;
+    private LianLiFanProfile _profile = LianLiFanProfiles.Default;
     private volatile string _modelName = "";
     private bool _disposed;
 
@@ -21,6 +21,12 @@ public sealed class LianLiHub : IDisposable
 
     /// <summary>Short model name for the attached device, or empty when not connected.</summary>
     public string ModelName => _modelName;
+
+    /// <summary>Layout + register profile of the attached hub; the SL-Infinity row while detached.</summary>
+    public LianLiFanProfile Profile
+    {
+        get { lock (_lock) { return _profile; } }
+    }
 
     public void Attach(IHidDevice device, LianLiFanProfile profile)
     {
@@ -39,6 +45,7 @@ public sealed class LianLiHub : IDisposable
         {
             _device?.Dispose();
             _device = null;
+            _profile = LianLiFanProfiles.Default;
             _modelName = "";
             State.IsConnected = false;
         }
@@ -49,7 +56,7 @@ public sealed class LianLiHub : IDisposable
         lock (_lock)
         {
             if (_device == null) return false;
-            return _device.SetFeature(LianLiProtocol.BuildSetQuantity(port, qty));
+            return _device.SetFeature(LianLiProtocol.BuildSetQuantity(_profile, port, qty));
         }
     }
 
@@ -110,19 +117,17 @@ public sealed class LianLiHub : IDisposable
     private readonly byte[] _cmdReport = new byte[LianLiProtocol.OutputReportSize];
 
     /// <summary>
-    /// Per-frame "start" announcing the port + fan count before its color push.
-    /// E0 10 60 (port+1) (fans), sent as an OUTPUT report (matches OpenRGB
-    /// SendStartAction). The firmware applies the streamed colors per frame only
-    /// when each push is framed by this start; without it the panel re-renders on
-    /// its own slow internal cadence (~0.6 Hz) regardless of stream rate.
+    /// Per-frame "start" announcing the port + fan count before its color push:
+    /// the family's quantity command. The firmware applies the streamed colors
+    /// per frame only when each push is framed by this start; without it the
+    /// panel re-renders on its own slow internal cadence (~0.6 Hz).
     /// </summary>
     public bool SendStartAction(int port, int fans)
     {
         lock (_lock)
         {
             if (_device == null) return false;
-            return _device.SetFeature(
-                LianLiProtocol.BuildSetQuantity(port, Math.Clamp(fans, 0, LianLiProtocol.MaxFansPerPort)));
+            return _device.SetFeature(LianLiProtocol.BuildSetQuantity(_profile, port, fans));
         }
     }
 
@@ -132,12 +137,11 @@ public sealed class LianLiHub : IDisposable
         {
             if (_device == null) return false;
             LianLiProtocol.WriteColorData(_colorReport, ch, leds);
-            // Control-pipe SetOutputReport, matching L-Connect's SetColorSetting.
-            // The interrupt-OUT Write this used to do is accepted by the stack but
-            // never reaches the LEDs on fw 1.4 (camera-verified 2026-08-27); the
-            // slow-repaint that originally motivated Write is cured by the frame
-            // sync, not by the transport.
-            return _device.SetOutputReport(_colorReport);
+            // SL-Infinity colours stay on the control pipe its lighting was
+            // verified over; the SL v1 takes them on interrupt-OUT.
+            return _profile.ColorViaInterruptOut
+                ? _device.Write(_colorReport)
+                : _device.SetOutputReport(_colorReport);
         }
     }
 
@@ -169,6 +173,15 @@ public sealed class LianLiHub : IDisposable
     /// after applying every port, and speed/brightness changes do not take on
     /// the hardware without it.
     /// </summary>
+    public bool SendStopMerge()
+    {
+        lock (_lock)
+        {
+            if (_device == null) return false;
+            return _device.SetFeature(LianLiProtocol.BuildStopMerge());
+        }
+    }
+
     public bool SendFrameSync()
     {
         lock (_lock)

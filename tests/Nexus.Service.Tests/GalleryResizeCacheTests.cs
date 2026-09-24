@@ -37,6 +37,9 @@ public sealed class GalleryResizeCacheTests : IDisposable
     // below every bucket, for the no-upscale guard.
     private const string WideFixture = "wide.jpg";
     private const string SmallFixture = "small.jpg";
+    // Two-frame 96x72 H.264 clip; the poster path must read a video's first
+    // frame without tripping over the container.
+    private const string ClipFixture = "clip.mp4";
 
     private GalleryResizeCache NewCache() => new(_cacheDir);
 
@@ -67,6 +70,11 @@ public sealed class GalleryResizeCacheTests : IDisposable
     [InlineData("a.gif", false)]
     [InlineData("a.webp", false)]
     [InlineData("a.avif", false)]
+    // Videos derive a poster still, which the route hands out only on an
+    // explicit ?w= ask.
+    [InlineData("a.mp4", true)]
+    [InlineData("a.webm", true)]
+    [InlineData("a.mov", true)]
     public void CanDerive_only_accepts_formats_a_jpeg_can_replace(string name, bool expected)
     {
         Assert.Equal(expected, GalleryResizeCache.CanDerive(name));
@@ -117,6 +125,21 @@ public sealed class GalleryResizeCacheTests : IDisposable
         Assert.StartsWith(_cacheDir, derived);
         Assert.True(new FileInfo(derived!).Length < originalBytes.Length);
         Assert.Equal(originalBytes, await File.ReadAllBytesAsync(source));
+    }
+
+    [Fact]
+    public async Task GetAsync_writes_a_poster_jpeg_for_a_video()
+    {
+        if (FfmpegResolver.Path is null) return;
+        var source = CopyFixture(ClipFixture, "clip.mp4");
+
+        var derived = await NewCache().GetAsync(ItemId, source, 320, CancellationToken.None);
+
+        Assert.NotNull(derived);
+        Assert.EndsWith(".jpg", derived);
+        var bytes = await File.ReadAllBytesAsync(derived!);
+        // JPEG SOI marker: a real still, not a renamed chunk of the clip.
+        Assert.Equal(new byte[] { 0xFF, 0xD8 }, bytes.Take(2).ToArray());
     }
 
     [Fact]

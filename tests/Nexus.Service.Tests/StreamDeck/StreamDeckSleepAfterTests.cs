@@ -1,6 +1,5 @@
 using System;
 using System.Collections.Generic;
-using System.IO;
 using System.Threading.Tasks;
 using Nexus.Service.Deck;
 using Nexus.Service.Devices;
@@ -10,6 +9,7 @@ using Nexus.Service.Peripherals.StreamDeck;
 using Nexus.Service.Persistence;
 using Nexus.Service.Sockets;
 using Xunit;
+using static Nexus.Service.Tests.StreamDeck.DeckTestHelpers;
 
 namespace Nexus.Service.Tests.StreamDeck;
 
@@ -32,7 +32,6 @@ public sealed class StreamDeckSleepAfterTests : IDisposable
 {
     private static readonly StreamDeckModel Mini = StreamDeckModels.ByProductId(0x0063)!;
 
-    private readonly string _imageCacheDir = Path.Combine(Path.GetTempPath(), "nexus-streamdeck-sleep-test-" + Guid.NewGuid().ToString("N")[..8]);
     private readonly InMemoryConfigStore _store = new();
     private readonly FakeDeckActionExecutor _executor = new();
     private readonly FakeSensorProvider _sensors = new();
@@ -45,19 +44,16 @@ public sealed class StreamDeckSleepAfterTests : IDisposable
         _simulated = new SimulatedStreamDeckSurface(Mini, "sim-0001");
         var presence = new HardwarePresence(new FixedUsbEnumerator());
         var gate = new DeviceControlGate(_store);
-        // See NewFixtures in StreamDeckConnectionWorkerTests.cs: "streamdeck"
-        // defaults off (mapped Elgato competitor), so opt in explicitly.
+        // Opt in explicitly rather than depending on the brand default.
         gate.SetEnabled("streamdeck", true);
-        var imageCache = new StreamDeckImageCache(_imageCacheDir);
         _worker = new StreamDeckConnectionWorker(
-            new FakeWorkerHidEnumerator(), presence, gate, _store, _executor, imageCache, new MultiplexHub(), _sensors,
+            new FakeWorkerHidEnumerator(), presence, gate, _store, _executor, NewTestKeyRenderer(), new MultiplexHub(), _sensors,
             _simulated, _clock);
     }
 
     public void Dispose()
     {
         _worker.Dispose();
-        try { Directory.Delete(_imageCacheDir, recursive: true); } catch { /* best effort */ }
     }
 
     [Fact]
@@ -110,8 +106,9 @@ public sealed class StreamDeckSleepAfterTests : IDisposable
         {
             Brightness = 80,
             SleepAfterSeconds = 30,
-            Deck = new DeckConfig { Pages = { new DeckPage { Slots = { new DeckSlot { Action = action } } } } },
+            LegacyDeck = new DeckConfig { Pages = { new DeckPage { Slots = { new DeckSlot { Action = action } } } } },
         });
+        _store.Update(s => ActivateLegacyDeck(s, "sim-0001"));
         _worker.Tick();
         _clock.Advance(TimeSpan.FromSeconds(31));
         _worker.Tick();
@@ -142,8 +139,9 @@ public sealed class StreamDeckSleepAfterTests : IDisposable
         {
             Brightness = 80,
             SleepAfterSeconds = 30,
-            Deck = new DeckConfig { Pages = { new DeckPage { Slots = { new DeckSlot { Action = action } } } } },
+            LegacyDeck = new DeckConfig { Pages = { new DeckPage { Slots = { new DeckSlot { Action = action } } } } },
         });
+        _store.Update(s => ActivateLegacyDeck(s, "sim-0001"));
         _worker.Tick();
         _clock.Advance(TimeSpan.FromSeconds(31));
         _worker.Tick();
@@ -151,7 +149,7 @@ public sealed class StreamDeckSleepAfterTests : IDisposable
 
         // A test-press on a sleeping deck must wake it too, the same as a
         // real key press - not just dispatch the action into the dark.
-        var config = _store.Load().StreamDeck.Decks["sim-0001"].Deck;
+        var config = ActiveDeck(_store.Load(), "sim-0001");
         Assert.True(_worker.SimulatePress("sim-0001", new List<int> { 0 }, config));
         if (_worker.LastDispatchTask is not null)
         {
@@ -203,8 +201,9 @@ public sealed class StreamDeckSleepAfterTests : IDisposable
         {
             Brightness = 80,
             SleepAfterSeconds = 30,
-            Deck = new DeckConfig { Pages = { new DeckPage { Slots = { new DeckSlot { Action = action } } } } },
+            LegacyDeck = new DeckConfig { Pages = { new DeckPage { Slots = { new DeckSlot { Action = action } } } } },
         });
+        _store.Update(s => ActivateLegacyDeck(s, "sim-0001"));
 
         // Connect drives PushCurrentView's two-pass repaint for the one
         // monitoring slot: an empty placeholder, then the real tile.

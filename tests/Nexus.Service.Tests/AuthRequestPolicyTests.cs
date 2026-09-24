@@ -44,6 +44,9 @@ public class AuthRequestPolicyTests
         AssertPanelAllowedRoute(app, "GET", "/system/volume");
         AssertPanelAllowedRoute(app, "POST", "/system/volume");
         AssertPanelAllowedRoute(app, "POST", "/system/volume/mute");
+        AssertPanelAllowedRoute(app, "GET", "/system/volume/target");
+        AssertPanelAllowedRoute(app, "POST", "/system/volume/target");
+        AssertPanelAllowedRoute(app, "POST", "/system/volume/target/mute");
     }
 
     /// <summary>
@@ -83,6 +86,26 @@ public class AuthRequestPolicyTests
         AssertPanelDeniedRoute(app, "POST", "/system/pick-path");
     }
 
+    /// <summary>A paired phone is a touch panel, so the swipe-hint pair must be reachable off loopback.</summary>
+    [Fact]
+    public async Task OnboardingRoutes_MarksOnlyThePanelSwipePairAsPanelAllowed()
+    {
+        var builder = WebApplication.CreateSlimBuilder();
+        builder.Services.AddSingleton<Nexus.Service.Persistence.IConfigStore, InMemoryConfigStore>();
+        builder.Services.AddSingleton<Nexus.Service.Sockets.MultiplexHub>();
+        await using var app = builder.Build();
+        app.MapOnboardingEndpoints();
+
+        AssertPanelAllowedRoute(app, "GET", "/onboarding/panel-swipe");
+        AssertPanelAllowedRoute(app, "POST", "/onboarding/panel-swipe/complete");
+        Assert.Null(FindEndpoint(app, "GET", "/onboarding/panel-swipe")!.Metadata.GetMetadata<LocalhostOnlyAccess>());
+        Assert.Null(FindEndpoint(app, "POST", "/onboarding/panel-swipe/complete")!.Metadata.GetMetadata<LocalhostOnlyAccess>());
+        AssertPanelDeniedRoute(app, "GET", "/onboarding");
+        AssertPanelDeniedRoute(app, "POST", "/onboarding/complete");
+        AssertPanelDeniedRoute(app, "POST", "/onboarding/reset");
+        Assert.NotNull(FindEndpoint(app, "GET", "/onboarding")!.Metadata.GetMetadata<LocalhostOnlyAccess>());
+    }
+
     [Fact]
     public async Task PanelRoutes_MarksServiceInfoAsPanelAllowed()
     {
@@ -118,6 +141,7 @@ public class AuthRequestPolicyTests
         AssertPanelAllowedRoute(app, "POST", "/devices/lighting-devices/controlled");
         AssertPanelAllowedRoute(app, "POST", "/devices/lighting-devices/brightness");
         AssertPanelAllowedRoute(app, "POST", "/devices/lighting-devices/color");
+        AssertPanelAllowedRoute(app, "POST", "/devices/lighting-devices/static-lock");
         AssertPanelAllowedRoute(app, "POST", "/devices/lighting-devices/identify");
         // Read + activate only, for a Deck widget key bound to a lighting
         // preset. Creating, renaming and deleting presets stay desktop-only.

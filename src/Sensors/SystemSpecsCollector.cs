@@ -5,6 +5,7 @@ using System.Linq;
 using System.Text.Json.Nodes;
 using System.Threading;
 using System.Threading.Tasks;
+using Nexus.Service.Benchmarks;
 using Nexus.Service.Models.Sensors;
 using Nexus.Service.Platform;
 
@@ -73,6 +74,8 @@ public sealed class SystemSpecsCollector
             Motherboard = _sensors.GetMotherboardModel(),
             Memory = _sensors.GetMemoryTotalFormatted(),
             GraphicsCard = string.Join(" + ", _sensors.GetGpuModels()),
+            PrimaryGpu = BenchmarkRunner.SelectReportedGpus(_sensors.GetGpus()).FirstOrDefault()
+                ?? _sensors.GetGpuModels().FirstOrDefault() ?? "",
         };
 
         if (OperatingSystem.IsWindows())

@@ -44,6 +44,9 @@ public sealed class SessionLockListener : IHostedService, IDisposable
 {
     private readonly SleepBlackoutCoordinator _blackout;
 
+    /// <summary>Raised after the lighting coordinator has taken the transition, on the same hop. True = locked.</summary>
+    public event Action<bool>? LockChanged;
+
 #if WINDOWS
     private bool _subscribed;
 #endif
@@ -107,6 +110,11 @@ public sealed class SessionLockListener : IHostedService, IDisposable
             else
             {
                 _blackout.OnSessionUnlocked();
+            }
+            try { LockChanged?.Invoke(locked); }
+            catch (Exception ex)
+            {
+                ServiceLog.Info($"[session-lock] subscriber failed on {(locked ? "lock" : "unlock")}: {ex.GetType().Name}: {ex.Message}");
             }
         });
     }

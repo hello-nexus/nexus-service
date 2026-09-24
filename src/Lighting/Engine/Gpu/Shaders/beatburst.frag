@@ -1,12 +1,12 @@
-uniform float u_speed;
-uniform float u_streaks;  // extra: streak count around the circle (12..64)
-uniform float u_trail;    // extra: streak reach from the core (0.2..1.5)
-uniform float u_spread;   // extra: angular width of each streak (0.1..1)
+uniform float u_streaks; // hint_range(8.0, 64.0, 1.0) = 40.0  streak count around the circle
+uniform float u_trail; // hint_range(0.2, 1.8, 0.05) = 1.15  streak reach from the core
+uniform float u_spread; // hint_range(0.05, 1.2, 0.05) = 0.45  angular width of each streak
 
 // Hi-res spectrum, declared here only (see beatbuilder.frag): with 48+
 // streaks the 16-band uniform repeats every three spokes and the ring reads
 // as a coarse rosette.
 uniform float u_spectrum64[64];
+uniform float u_audioBoost; // hint_range(0.0, 2.0, 0.05) = 1.0
 
 // A burst of light streaks radiating from a hot core, one streak per band,
 // with a shockwave ring on every bass onset. Idle: the streaks counter-rotate

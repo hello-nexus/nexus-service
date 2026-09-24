@@ -20,7 +20,8 @@ public sealed class MacProcessIconProvider : IProcessIconProvider
     /// by the route); empty bytes when extraction ran and found no icon.</summary>
     public byte[]? GetIcon(string exePath)
     {
-        if (!OperatingSystem.IsMacOS() || string.IsNullOrEmpty(exePath) || !File.Exists(exePath))
+        // A .app directory is accepted as well: MacScreenTimeProvider reports the bundle path as the focused app's ExePath.
+        if (!OperatingSystem.IsMacOS() || string.IsNullOrEmpty(exePath) || !(File.Exists(exePath) || Directory.Exists(exePath)))
         {
             return Array.Empty<byte>();
         }

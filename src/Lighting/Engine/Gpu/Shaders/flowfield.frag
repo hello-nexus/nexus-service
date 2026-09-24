@@ -1,7 +1,6 @@
-uniform float u_speed;
-uniform float u_streams;    // extra: stream count multiplier (0.5..3)
-uniform float u_flow;       // extra: flow speed (0.2..3)
-uniform float u_colorSpread;// extra: color variance per stream (0..1.5)
+uniform float u_streams; // hint_range(0.5, 3.0, 0.05) = 1.5  stream count multiplier
+uniform float u_flow; // hint_range(0.2, 3.0, 0.05) = 1.0  flow speed
+uniform float u_colorSpread; // hint_range(0.0, 1.5, 0.05) = 0.6  color variance per stream
 
 // Curl-noise particle streams flowing across the entire frame, like
 // wind made visible. Stateless: each pixel evaluates the noise field

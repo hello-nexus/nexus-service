@@ -20,7 +20,7 @@ public sealed class CnvsHandler : IDeviceHandler
     }
 
     public string Id => "cnvs";
-    public string Name => "CNVS";
+    public string Name => "HYTE CNVS";
     public string Category => "controller";
 
     public IReadOnlyList<UsbId> Identifiers { get; } = new[]

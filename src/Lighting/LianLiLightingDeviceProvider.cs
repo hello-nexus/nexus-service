@@ -82,15 +82,15 @@ public sealed class LianLiLightingDeviceProvider :
     {
         var resp = new GetLightingDevicesResponse { IsInit = true };
         if (!_hub.IsConnected) return resp;
-        resp.Devices.AddRange(BuildCards(_hub.DeviceId, _store.Load()));
+        resp.Devices.AddRange(BuildCards(_hub.DeviceId, _hub.Profile, _store.Load()));
         return resp;
     }
 
     /// <summary>Pure card emission for the current composition + partition; static so tests cover it without a live hub.</summary>
-    internal static List<LightingDevice> BuildCards(string hubId, NexusSettings settings)
+    internal static List<LightingDevice> BuildCards(string hubId, in LianLiFanProfile profile, NexusSettings settings)
     {
         var comp = LianLiZoneSupport.ReadComposition(settings, hubId);
-        var composed = LianLiZoneSupport.Compose(hubId, comp, settings.Devices.LianLi);
+        var composed = LianLiZoneSupport.Compose(hubId, profile, comp, settings.Devices.LianLi);
         var cards = new List<LightingDevice>();
         var slot = 0;
         foreach (var device in composed)
@@ -230,7 +230,7 @@ public sealed class LianLiLightingDeviceProvider :
             HubId = hubId,
             HubKind = "lianli",
             PortCount = LianLiProtocol.PortCount,
-            HasRingsAxis = true,
+            HasRingsAxis = _hub.Profile.ChannelsPerPort == 2,
             HasPortToggle = false,
             HasMirror = false,
             Mirror = false,
@@ -249,7 +249,7 @@ public sealed class LianLiLightingDeviceProvider :
         }
         var settings = _store.Load();
         var comp = LianLiZoneSupport.ReadComposition(settings, _hub.DeviceId);
-        var composed = LianLiZoneSupport.Compose(_hub.DeviceId, comp, settings.Devices.LianLi);
+        var composed = LianLiZoneSupport.Compose(_hub.DeviceId, _hub.Profile, comp, settings.Devices.LianLi);
         var structures = new List<DeviceStructure>(composed.Count);
         foreach (var device in composed)
         {
@@ -267,7 +267,7 @@ public sealed class LianLiLightingDeviceProvider :
         var settings = _store.Load();
         var layouts = settings.Lighting.DeviceLayouts;
         var comp = LianLiZoneSupport.ReadComposition(settings, _hub.DeviceId);
-        var composed = LianLiZoneSupport.Compose(_hub.DeviceId, comp, settings.Devices.LianLi);
+        var composed = LianLiZoneSupport.Compose(_hub.DeviceId, _hub.Profile, comp, settings.Devices.LianLi);
 
         var frames = new List<DeviceFrame>();
         var idx = startingIndex;
@@ -335,16 +335,22 @@ public sealed class LianLiLightingDeviceProvider :
         return frame;
     }
 
+    /// <summary>4-col, 2-row grid, same shape as the MiniHub/NP50 defaults,
+    /// so extra zones wrap onto existing cards instead of drifting off
+    /// canvas.</summary>
     internal static (float x, float y, float w, float h) DefaultLayout(int slot)
     {
-        const float Y = 540f;
-        const float W = 200f;
-        const float H = 30f;
-        const float Gap = 220f;
+        const float Y = 370f;
+        const float W = 120f;
+        const float H = 105f;
+        const float Gap = 140f;
         const float BaseX = 40f;
         const int Cols = 4;
-        var col = slot % Cols;
-        var row = slot / Cols;
-        return (BaseX + col * Gap, Y + row * (H + 10f), W, H);
+        const int Rows = 2; // 370 + 105 + 105 = 580 ≤ canvas bottom
+        const float RowGap = 105f;
+        var s = ((slot % (Cols * Rows)) + Cols * Rows) % (Cols * Rows);
+        var col = s % Cols;
+        var row = s / Cols;
+        return (BaseX + col * Gap, Y + row * RowGap, W, H);
     }
 }

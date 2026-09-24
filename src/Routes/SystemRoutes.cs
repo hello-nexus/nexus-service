@@ -65,6 +65,38 @@ public static class SystemRoutes
             return ApiResponse.Ok();
         }).AllowPanel();
 
+        // Volume target: the media widget's per-widget auto/app/output slider mode.
+        app.MapGet("/system/volume/target", (string? mode, string? source, string? deviceId, VolumeTargetResolver resolver) =>
+            resolver.Resolve(mode ?? "", source ?? "", deviceId ?? "")).AllowPanel();
+
+        app.MapPost("/system/volume/target", (SetVolumeTargetBody body, IVolumeProvider v, Nexus.Service.Audio.AudioMixerService mixer, MultiplexHub hub) =>
+        {
+            if (string.Equals(body.Kind, "app", StringComparison.OrdinalIgnoreCase))
+            {
+                mixer.SetVolume(body.Id, body.Volume, body.Commit ?? true);
+            }
+            else
+            {
+                v.SetVolume(body.Id, body.Volume);
+                PanelTopics.BroadcastVolume(hub);
+            }
+            return ApiResponse.Ok();
+        }).AllowPanel();
+
+        app.MapPost("/system/volume/target/mute", (SetVolumeTargetMuteBody body, IVolumeProvider v, Nexus.Service.Audio.AudioMixerService mixer, MultiplexHub hub) =>
+        {
+            if (string.Equals(body.Kind, "app", StringComparison.OrdinalIgnoreCase))
+            {
+                mixer.SetMuted(body.Id, body.Muted);
+            }
+            else
+            {
+                v.SetMuted(body.Id, body.Muted);
+                PanelTopics.BroadcastVolume(hub);
+            }
+            return ApiResponse.Ok();
+        }).AllowPanel();
+
         // ── Keyboard / text injection (deck hotkey + type-text actions) ──
         // Desktop-token only: a free-form virtual keyboard into the console
         // session is code execution as the user. A paired panel triggers the
@@ -132,6 +164,16 @@ public static class SystemRoutes
             Nexus.Service.Actions.SystemActions actions, Nexus.Service.Audio.AudioMixerService mixer) =>
         {
             if (!actions.SetDefaultInput(body.DeviceId)) return ApiResponse.Fail("failed to set input device");
+            mixer.NotifyEndpointsChanged();
+            return ApiResponse.Ok();
+        }).AllowPanel();
+        // Spatial sound (Windows Sonic / Dolby Atmos / DTS:X) on one output; an
+        // empty formatId turns it off. The provider reads the switch back from
+        // audiosrv before reporting success.
+        app.MapPost("/system/audio/spatial", (SetAudioSpatialBody body,
+            IAudioDeviceProvider a, Nexus.Service.Audio.AudioMixerService mixer) =>
+        {
+            if (!a.SetSpatial(body.DeviceId ?? "", body.FormatId ?? "")) return ApiResponse.Fail("failed to set spatial sound");
             mixer.NotifyEndpointsChanged();
             return ApiResponse.Ok();
         }).AllowPanel();

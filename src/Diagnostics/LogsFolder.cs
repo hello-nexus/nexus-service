@@ -1,13 +1,13 @@
 using System;
 using System.Diagnostics;
 using System.IO;
-using Nexus.Service.Platform;
+using Nexus.Service.Persistence;
 
 namespace Nexus.Service.Diagnostics;
 
 /// <summary>
-/// Opens the Nexus logs folder (nexus-service.log, plus nexus-overlay.log and the
-/// other nexus-*.log files on Windows) in the OS file manager. Must run in a
+/// Opens the Nexus data folder (<see cref="NexusDataPaths.NexusRoot"/>: settings.json,
+/// logs/, updates/, db/ on Windows) in the OS file manager. Must run in a
 /// context that owns a desktop: on Windows
 /// the LocalSystem service is in Session 0 and cannot show a window, so it
 /// delegates here over the helper pipe (<c>diagnostics.openLogs</c>) and the
@@ -18,7 +18,7 @@ internal static class LogsFolder
 {
     public static void Open()
     {
-        var dir = ServiceLog.LogsDirectory;
+        var dir = NexusDataPaths.NexusRoot();
         Directory.CreateDirectory(dir);
         var psi = new ProcessStartInfo { UseShellExecute = true };
         if (OperatingSystem.IsWindows())

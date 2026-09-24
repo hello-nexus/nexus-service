@@ -31,6 +31,25 @@ public static class LiveEngineSync
         ApplyLighting(store, lighting);
     }
 
+    /// <summary>Hand every fan back to hardware control after a cooling reset.
+    /// The default preset ("off") is a hardware state no <see cref="Apply"/> arm
+    /// applies, and the reset already defaulted the settings, so no write
+    /// belongs here.</summary>
+    public static void ReleaseCoolingAfterReset(IFanControlProvider fans, FeatureGates gates)
+    {
+        // Same rule as ApplyCooling: no fan write at all while Cooling is off.
+        if (!gates.Cooling)
+        {
+            return;
+        }
+        try
+        { fans.ReleaseAll(); }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine($"[live-sync] cooling release failed: {ex.Message}");
+        }
+    }
+
     private static void ApplyCooling(IConfigStore store, IFanControlProvider fans, FeatureGates gates)
     {
         // Profile switch / reset must not drive fans while Cooling is off;
@@ -43,7 +62,7 @@ public static class LiveEngineSync
         try
         {
             var preset = (store.Load().Cooling.ActivePreset ?? "").ToLowerInvariant();
-            if (preset is "silent" or "balanced" or "turbo")
+            if (preset is "silent" or "balanced" or "turbo" or "max")
             {
                 FanProfiles.Apply(preset, fans, store);
             }

@@ -19,6 +19,29 @@ namespace Nexus.Service.Helper.Domains;
 public static class InputCommands
 {
     public const string SendKeysType = "input.sendKeys";
+    public const string InjectTouchType = "input.touch";
+
+    [System.Runtime.InteropServices.DllImport("kernel32.dll")]
+    private static extern uint WTSGetActiveConsoleSessionId();
+
+    /// <summary>
+    /// Blocks until the helper has injected, so contacts reach Windows in order. Goes to the
+    /// console session's helper: the monitor belongs to the desktop on the console.
+    /// </summary>
+    public static bool InjectTouch(HelperRegistry registry, Nexus.Service.Models.Panel.TouchInjectBody body)
+    {
+        var conn = registry.GetForSession((int)WTSGetActiveConsoleSessionId()) ?? registry.GetAny();
+        if (conn is null)
+        {
+            return false;
+        }
+        var result = conn.SendCommandAsync(
+            InjectTouchType,
+            body,
+            AppJsonContext.Default.TouchInjectBody,
+            timeoutMs: 1000).GetAwaiter().GetResult();
+        return result.Ok;
+    }
 
     public static async Task<bool> SendKeysAsync(HelperRegistry registry, InputterBody body, CancellationToken ct = default)
     {
@@ -59,6 +82,14 @@ public sealed class InputHandler
                 }
             }
             return Task.FromResult(ok ? env.Ok() : HelperResult.Fail(env.Id, "send keys failed"));
+        });
+        registry.Register(InputCommands.InjectTouchType, (env, _) =>
+        {
+            var body = env.Payload is null
+                ? null
+                : JsonSerializer.Deserialize(env.Payload.Value, AppJsonContext.Default.TouchInjectBody);
+            var ok = body is not null && TouchInjector.Inject(body);
+            return Task.FromResult(ok ? env.Ok() : HelperResult.Fail(env.Id, "touch injection failed"));
         });
     }
 }

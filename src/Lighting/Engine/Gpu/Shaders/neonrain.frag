@@ -1,7 +1,6 @@
-uniform float u_speed;
-uniform float u_density;  // extra: rain column density (15..80)
-uniform float u_length;   // extra: streak length (0.05..0.5)
-uniform float u_splash;   // extra: puddle reflection intensity (0..1)
+uniform float u_density; // hint_range(12.0, 80.0, 1.0) = 28.0  rain column density
+uniform float u_length; // hint_range(0.03, 0.5, 0.01) = 0.3  streak length
+uniform float u_splash; // hint_range(0.0, 1.0, 0.02) = 0.85  puddle reflection intensity
 
 void main() {
     vec2 uv = uv01();

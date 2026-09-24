@@ -5,6 +5,35 @@ using Nexus.Service.Devices.Handlers;
 namespace Nexus.Service.Conflicts;
 
 /// <summary>
+/// One verified way a conflicting app launches at boot, as the "Disable auto
+/// start" action acts on it. Only added for a mechanism confirmed on a real
+/// install and observed gone across a reboot - see <see cref="ConflictAutostart"/>.
+/// </summary>
+public sealed class ConflictAutostartTarget
+{
+    /// <summary>"runKeyMachine", "runKeyUser", "service" or "scheduledTask".</summary>
+    public string Kind { get; init; } = "";
+
+    /// <summary>Service name, for the "service" kind. Unused by the Run kinds, which match on the executable instead.</summary>
+    public string Name { get; init; } = "";
+
+    /// <summary>File names (with extension) a Run value must launch to count as this app's. Run kinds only.</summary>
+    public string[] ExeNames { get; init; } = Array.Empty<string>();
+
+    /// <summary>
+    /// Optional second gate: a path under the console user's Roaming AppData to
+    /// the vendor's own settings file. An entry only counts as live when the
+    /// vendor also says it will start, and an unreadable file counts as "will
+    /// not start" so nothing is offered on a guess.
+    /// </summary>
+    public string VendorConfigAppDataPath { get; init; } = "";
+
+    /// <summary>Name of the <c>&lt;value name="..."&gt;</c> element in that file whose text must be "true". Requires VendorConfigAppDataPath.</summary>
+    public string VendorConfigXmlValue { get; init; } = "";
+
+}
+
+/// <summary>
 /// Static catalog of third-party apps that compete with Nexus for hardware
 /// control (RGB lighting, fan speeds, peripheral firmware, GPU overlays).
 /// The ConflictWatcher scans running processes and surfaces any match in
@@ -37,6 +66,9 @@ public sealed class ConflictAppDefinition
 
     /// <summary>True for universal RGB apps that drive every OpenRGB device regardless of vendor.</summary>
     public bool ClaimsAllRgb { get; init; }
+
+    /// <summary>Verified boot-launch mechanisms. Empty - the default for most of the catalog - means the UI offers no "Disable auto start" action for this app at all.</summary>
+    public IReadOnlyList<ConflictAutostartTarget> Autostart { get; init; } = Array.Empty<ConflictAutostartTarget>();
 }
 
 public static class ConflictAppCatalog
@@ -57,6 +89,14 @@ public static class ConflictAppCatalog
             DisplayName = "HYTE Nexus 2",
             Category = "lighting",
             ProcessNames = new[] { "HYTE Nexus", "HYTE.Nexus.Service" },
+            // Nexus 2 arms itself with an at-logon scheduled task, not a Run
+            // value - which is why a Run-key sweep finds nothing while the app
+            // starts every logon. Same task the Nexus 2 migration path deletes
+            // (Nexus2Detector.DisableAutostart), so both surfaces agree.
+            Autostart = new ConflictAutostartTarget[]
+            {
+                new() { Kind = ConflictAutostart.KindScheduledTask, Name = "HYTE Nexus" },
+            },
             // HYTEIO is the HYTE kernel IO driver the service holds hardware
             // through; it survives an uninstall, so it must be stopped
             // alongside the two processes for the conflict to fully clear.
@@ -75,6 +115,16 @@ public static class ConflictAppCatalog
             // own; Windows' unrelated "camsvc" (svchost -k osprivacy) must never
             // appear here.
             WindowsServiceNames = new[] { "CAMService" },
+            // Two mechanisms. The Automatic CAMService is CAM's background half;
+            // the per-user Run value ("NZXT.CAM" -> NZXT CAM.exe --startup) is
+            // what brings the UI up, and CAM writes it for itself once run, so a
+            // box can gain it at any time. Listing only the service read a box
+            // carrying the Run value as "nothing armed".
+            Autostart = new ConflictAutostartTarget[]
+            {
+                new() { Kind = ConflictAutostart.KindService, Name = "CAMService" },
+                new() { Kind = ConflictAutostart.KindRunKeyUser, ExeNames = new[] { "NZXT CAM.exe" } },
+            },
         },
         new()
         {
@@ -94,6 +144,18 @@ public static class ConflictAppCatalog
             ProcessNames = new[] { "SignalRgb", "SignalRgbLauncher", "SignalRgbService", "SignalRgb.Service" },
             // Stopped alongside the processes on End task; it restarts them.
             WindowsServiceNames = new[] { "SignalRgb.Service" },
+            // Two mechanisms, and which one a box carries varies: the Y70 runs
+            // the Automatic service with no Run value anywhere, while T1 has the
+            // service Manual and a per-user Run value ("SignalRgb" ->
+            // SignalRgbLauncher.exe --silent) that the app re-registers for
+            // itself when launched. Listing only the service read T1 as "nothing
+            // armed" while SignalRGB started every boot, so both are listed and
+            // whichever is live gets reported.
+            Autostart = new ConflictAutostartTarget[]
+            {
+                new() { Kind = ConflictAutostart.KindService, Name = "SignalRgb.Service" },
+                new() { Kind = ConflictAutostart.KindRunKeyUser, ExeNames = new[] { "SignalRgbLauncher.exe", "SignalRgb.exe" } },
+            },
         },
         new()
         {
@@ -275,6 +337,22 @@ public static class ConflictAppCatalog
                 "CorsairDeviceControlService", "CueLLAccessService", "CorsairService",
             },
             WindowsServiceNames = new[] { "CorsairDeviceListerService" },
+            // The Run value alone is NOT evidence iCUE starts: "iCUE Launcher.exe
+            // --autorun" runs either way and then honours iCUE's own setting.
+            // Two boxes carrying an identical enabled Run value differed only in
+            // config.cuecfg's StartOnStartup, and only the true one came up after
+            // a reboot - hence the vendor flag as a second gate.
+            Autostart = new ConflictAutostartTarget[]
+            {
+                new()
+                {
+                    Kind = ConflictAutostart.KindRunKeyMachine,
+                    ExeNames = new[] { "iCUE Launcher.exe", "iCUE.exe" },
+                    VendorConfigAppDataPath = @"Corsair\CUE5\config.cuecfg",
+                    VendorConfigXmlValue = "StartOnStartup",
+                },
+                new() { Kind = ConflictAutostart.KindService, Name = "CorsairDeviceListerService" },
+            },
         },
         new()
         {
@@ -291,7 +369,17 @@ public static class ConflictAppCatalog
             Vendors = new[] { "Razer" },
             DisplayName = "Razer Synapse",
             Category = "peripherals",
-            ProcessNames = new[] { "Razer Synapse 3", "RzSynapse", "Razer Synapse Service", "RazerCentralService", "Razer Central" },
+            // RazerAppEngine is Synapse 4's only process - a 4.x install carries
+            // none of the Synapse 3 names, so without it Synapse 4 is invisible
+            // to the watcher.
+            ProcessNames = new[] { "RazerAppEngine", "Razer Synapse 3", "RzSynapse", "Razer Synapse Service", "RazerCentralService", "Razer Central" },
+            // Synapse 4 autostarts from a per-user Run value ("RazerAppEngine"
+            // -> RazerAppEngine.exe --autoStart=1), read out of the console
+            // user's hive from the LocalSystem service.
+            Autostart = new ConflictAutostartTarget[]
+            {
+                new() { Kind = ConflictAutostart.KindRunKeyUser, ExeNames = new[] { "RazerAppEngine.exe" } },
+            },
         },
         new()
         {
@@ -333,6 +421,17 @@ public static class ConflictAppCatalog
             DisplayName = "Tryx Kanali",
             Category = "cooling",
             ProcessNames = new[] { "Kanali" },
+        },
+
+        // ── ZMatrices ──────────────────────────────────────────────────────
+        new()
+        {
+            // Cooler LCD app (Electron, C:\Program Files\ZMatrices); its sender process
+            // holds the panel's WinUSB handle Nexus drives directly.
+            Id = "zmatrices",
+            DisplayName = "ZMatrices",
+            Category = "cooling",
+            ProcessNames = new[] { "ZMatrices", "zmUsbSendJpg" },
         },
 
         // ── Elgato ─────────────────────────────────────────────────────────

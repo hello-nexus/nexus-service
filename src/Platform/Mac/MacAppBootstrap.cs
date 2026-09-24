@@ -93,9 +93,26 @@ internal static class MacAppBootstrap
             catch { /* best-effort */ }
         };
 
+        // A closed window opens straight on the stored route: loading "/" and
+        // letting the SPA restore it flashes home first. An open window is only
+        // brought forward, never reloaded off the page it is on.
+        void OpenWindow()
+        {
+            var route = Nexus.Service.Routes.SessionRoutes.LastRoute;
+            // Any localhost caller can POST the route, and a URL NSURL rejects
+            // leaves a fresh window blank; "/" falls back to the SPA restore.
+            var usable = route.StartsWith("/system/", StringComparison.Ordinal)
+                && route.All(c => char.IsAsciiLetterOrDigit(c) || c is '/' or '-' or '_' or '.' or ':');
+            MacAppWindow.OpenOrFocus(
+                usable
+                    ? $"http://localhost:{servicePort}{route}"
+                    : ServiceLaunchIntent.LocalDashboardUrl(servicePort),
+                navigateIfOpen: false);
+        }
+
         MacStatusBar.Initialize(
             iconPath,
-            onOpenDashboard: () => MacAppWindow.OpenOrFocus(ServiceLaunchIntent.LocalDashboardUrl(servicePort)),
+            onOpenDashboard: OpenWindow,
             onOpenSettings: () => MacAppWindow.OpenOrFocus($"http://localhost:{servicePort}/system/settings"),
             onOpenDevices: () => MacAppWindow.OpenOrFocus($"http://localhost:{servicePort}/system/devices"),
             onQuit: () =>
@@ -106,15 +123,42 @@ internal static class MacAppBootstrap
             },
             // LaunchServices delivers kAEReopenApplication when the user
             // re-launches Nexus.app while it's already running, or clicks the
-            // Dock icon. Bring the existing window forward without reloading
-            // - if the user is mid-navigation, a Dock click must not refresh
-            // them back to the start. navigateIfOpen=false makes
-            // OpenOrFocus skip loadRequest: when the window already exists.
-            onReopen: () => MacAppWindow.OpenOrFocus(
-                ServiceLaunchIntent.LocalDashboardUrl(servicePort),
-                navigateIfOpen: false));
+            // Dock icon.
+            onReopen: OpenWindow);
 
         MacStatusBar.SetVisible(showIcon);
+
+        // Main thread, after AppKit is up: the focus notification is delivered on the run loop pumped below.
+        if (app.Services.GetService<Nexus.Service.Activity.IScreenTimeProvider>() is Nexus.Service.Activity.MacScreenTimeProvider screenTime)
+        {
+            screenTime.AttachWorkspaceObserver();
+        }
+
+        // Lock-screen wake-on-input, as TrayBootstrap wires the Windows helper's
+        // poll: one watch runs while either consumer wants it, and every input
+        // reaches both.
+        var lockBlackout = app.Services.GetService<Nexus.Service.Lighting.SleepBlackoutCoordinator>();
+        var deckWorker = app.Services.GetService<Nexus.Service.Peripherals.StreamDeck.StreamDeckConnectionWorker>();
+        if (lockBlackout is not null || deckWorker is not null)
+        {
+            var lightingArmed = false;
+            var deckArmed = false;
+            var watch = new MacLockInputWatch(() =>
+            {
+                lockBlackout?.OnLockScreenInput();
+                deckWorker?.OnLockScreenInput();
+            });
+            lockBlackout?.LockInputWatch = enabled =>
+            {
+                lightingArmed = enabled;
+                watch.Set(lightingArmed || deckArmed);
+            };
+            deckWorker?.LockInputWatch = enabled =>
+            {
+                deckArmed = enabled;
+                watch.Set(lightingArmed || deckArmed);
+            };
+        }
 
         store.OnChanged += () =>
         {

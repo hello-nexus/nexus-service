@@ -101,6 +101,24 @@ public class Slv3CoolingProviderTests
     }
 
     [Fact]
+    public void A_bound_strimer_gets_no_cooling_channels()
+    {
+        var (hub, _, _) = Slv3TestHub.CreateConnected();
+        hub.State.Fans = new[]
+        {
+            // The Y70 record: dev_type 2 (24-pin Strimer), no fans.
+            new Slv3FanInfo { Mac = Mac, BoundToUs = true, DevType = 2, FanCount = 0 },
+            new Slv3FanInfo { Mac = "AABBCCDDEEFF", BoundToUs = true, DevType = 0, FanType = 24, FanCount = 1 },
+        };
+        var provider = new Slv3CoolingProvider(hub);
+
+        var channel = Assert.Single(provider.GetFanChannels());
+        Assert.StartsWith("lianli-wireless:AABBCCDDEEFF:port", channel.Id);
+        var component = Assert.Single(provider.GetAll());
+        Assert.Equal("lianli-wireless:AABBCCDDEEFF", component.Id);
+    }
+
+    [Fact]
     public void GetAll_groups_ports_under_one_component_per_chain()
     {
         var (hub, _, _) = Slv3TestHub.CreateConnected();

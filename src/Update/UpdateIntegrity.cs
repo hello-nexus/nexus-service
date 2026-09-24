@@ -120,7 +120,7 @@ public static class UpdateIntegrity
         => Nexus.Service.Platform.Windows.AuthenticodeSigner.TryGetSignerCertificate(path);
 
     [System.Runtime.Versioning.SupportedOSPlatform("windows")]
-    private static bool HasDurableIdentityEku(System.Security.Cryptography.X509Certificates.X509Certificate2 cert)
+    internal static bool HasDurableIdentityEku(System.Security.Cryptography.X509Certificates.X509Certificate2 cert)
     {
         foreach (var ext in cert.Extensions)
         {
@@ -138,10 +138,12 @@ public static class UpdateIntegrity
         return false;
     }
 
+    /// <summary>WinVerifyTrust: signature hash + chain to a trusted root, plus
+    /// whole-chain revocation unless <paramref name="revocation"/> is false
+    /// (an offline box fails the revocation fetch, not the signature).</summary>
     [System.Runtime.Versioning.SupportedOSPlatform("windows")]
-    private static void VerifyTrustChain(string path)
+    internal static void VerifyTrustChain(string path, bool revocation = true)
     {
-        // WinVerifyTrust P/Invoke: verifies the full chain + revocation.
         var actionGuid = new Guid("00AAC56B-CD44-11d0-8CC2-00C04FC295EE"); // WINTRUST_ACTION_GENERIC_VERIFY_V2
         unsafe
         {
@@ -156,7 +158,7 @@ public static class UpdateIntegrity
                 var trustData = new WinTrustData();
                 trustData.cbStruct = (uint)sizeof(WinTrustData);
                 trustData.dwUIChoice = 2; // WTD_UI_NONE
-                trustData.fdwRevocationChecks = 1; // WTD_REVOKE_WHOLECHAIN
+                trustData.fdwRevocationChecks = revocation ? 1u : 0u; // WTD_REVOKE_WHOLECHAIN / WTD_REVOKE_NONE
                 trustData.dwUnionChoice = 1; // WTD_CHOICE_FILE
                 trustData.pFile = &fileInfo;
                 trustData.dwStateAction = 0; // WTD_STATEACTION_IGNORE

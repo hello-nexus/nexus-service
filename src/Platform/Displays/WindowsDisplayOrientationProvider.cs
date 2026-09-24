@@ -270,9 +270,8 @@ public sealed class WindowsDisplayOrientationProvider : IDisplayOrientationProvi
         var monitors = EnumerateMonitorAdapters();
         foreach (var adapterName in monitors)
         {
-            var dd = new DISPLAY_DEVICE { cb = Marshal.SizeOf<DISPLAY_DEVICE>() };
-            if (!EnumDisplayDevicesW(adapterName, 0, ref dd, 0)) continue;
-            var deviceId = dd.DeviceID ?? "";
+            var deviceId = WindowsDisplayIdentity.ReadMonitorDeviceId(adapterName);
+            if (deviceId.Length == 0) continue;
             foreach (var name in Y70DisplayProtocol.DdcPanelHardwareNames)
             {
                 if (deviceId.IndexOf(name, StringComparison.OrdinalIgnoreCase) >= 0)
@@ -525,9 +524,6 @@ public sealed class WindowsDisplayOrientationProvider : IDisplayOrientationProvi
     // -- Win32 ---------------------------------------------------------------
 
     private const int CCHDEVICENAME = 32;
-    private const int CCHDEVICESTRING = 128;
-    private const int CCHDEVICEID = 128;
-    private const int CCHDEVICEKEY = 128;
 
     private const uint ENUM_CURRENT_SETTINGS = unchecked((uint)-1);
 
@@ -594,17 +590,6 @@ public sealed class WindowsDisplayOrientationProvider : IDisplayOrientationProvi
     private struct RECT { public int Left, Top, Right, Bottom; }
 
     [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
-    private struct DISPLAY_DEVICE
-    {
-        public int cb;
-        [MarshalAs(UnmanagedType.ByValTStr, SizeConst = CCHDEVICENAME)] public string DeviceName;
-        [MarshalAs(UnmanagedType.ByValTStr, SizeConst = CCHDEVICESTRING)] public string DeviceString;
-        public uint StateFlags;
-        [MarshalAs(UnmanagedType.ByValTStr, SizeConst = CCHDEVICEID)] public string DeviceID;
-        [MarshalAs(UnmanagedType.ByValTStr, SizeConst = CCHDEVICEKEY)] public string DeviceKey;
-    }
-
-    [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
     private struct DEVMODE
     {
         [MarshalAs(UnmanagedType.ByValTStr, SizeConst = CCHDEVICENAME)] public string dmDeviceName;
@@ -662,9 +647,6 @@ public sealed class WindowsDisplayOrientationProvider : IDisplayOrientationProvi
 
     [DllImport("user32.dll", CharSet = CharSet.Unicode)]
     private static extern bool GetMonitorInfoW(IntPtr hMonitor, ref MONITORINFOEX lpmi);
-
-    [DllImport("user32.dll", CharSet = CharSet.Unicode)]
-    private static extern bool EnumDisplayDevicesW(string lpDevice, uint iDevNum, ref DISPLAY_DEVICE lpDisplayDevice, uint dwFlags);
 
     [DllImport("user32.dll", CharSet = CharSet.Unicode)]
     private static extern bool EnumDisplaySettingsW(string lpszDeviceName, uint iModeNum, ref DEVMODE lpDevMode);

@@ -124,6 +124,13 @@ public static class MiniHubProtocol
     /// of 0 means "no tach signal" → 0 RPM. Returns false if the header
     /// doesn't match the expected get-fan-speed reply (transport hiccup,
     /// wrong device on the port, etc.).
+    /// Firmware 1.0.1.1 only refreshes the period while LED frames are
+    /// streaming, and the capture is corrupted whenever the fan PWM line is
+    /// toggling: port 1 reads the true speed about half the time at any duty
+    /// below 100% (junk the rest), port 2's 3-fan chain is clean only at
+    /// 100%, and motherboard mode is junk on port 2 and mostly on port 1.
+    /// Never surface one poll;
+    /// <see cref="MiniHubTachConsensus"/> publishes only agreed readings.
     /// </summary>
     public static bool TryParseFanSpeeds(ReadOnlySpan<byte> response, out int port1Rpm, out int port2Rpm)
     {

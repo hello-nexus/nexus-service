@@ -138,7 +138,7 @@ internal sealed class FpsUploadWorker : BackgroundService
             Hardware = new FpsUploadHardware
             {
                 Cpu = specs.Processor,
-                Gpu = specs.GraphicsCard,
+                Gpu = specs.PrimaryGpu,
                 RamBytes = ramBytes,
                 Motherboard = specs.Motherboard,
             },

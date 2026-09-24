@@ -3,6 +3,7 @@ using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Threading;
 using System.Threading.Tasks;
+using Nexus.Service.Lifecycle;
 using Nexus.Service.Models.Cooling;
 using Nexus.Service.Peripherals.Hyte.QSeriesCooler;
 using Nexus.Service.Persistence;
@@ -20,7 +21,8 @@ namespace Nexus.Service.Cooling;
 /// its own duty. <see cref="QSeriesCoolerHub.DesiredControlMode"/> is the pinned
 /// mode the engine must not override: while it is a non-software mode, duty writes
 /// are swallowed so the engine doesn't flip a user-chosen BIOS/FW mode back to
-/// software. Mirrors <see cref="Np50CoolingProvider"/>. A Q80 second pump is
+/// software. A hand-back (<see cref="HandBackMode"/>) never pins, and clears the
+/// pin, so a released hub accepts its next assignment. Mirrors <see cref="Np50CoolingProvider"/>. A Q80 second pump is
 /// surfaced read-only. Channel ids: <c>qseries:&lt;serial&gt;:pump</c> / <c>:pump2</c>;
 /// a fan is <c>qseries:&lt;serial&gt;:p&lt;channel&gt;:&lt;slot&gt;</c> for a solo FT12 unit, with a
 /// trailing <c>:&lt;fanIdx&gt;</c> for a Duo/Trio slot's individual fans. Coolant sensor ids:
@@ -30,12 +32,17 @@ public sealed class QSeriesCoolerCoolingProvider : IFanControlProvider, ICooling
 {
     private const string IdPrefix = "qseries:";
     private const string PumpSuffix = ":pump";
+
+    /// <summary><see cref="CoolingSettings.HubControlModes"/> values.</summary>
+    public const string HandBackFirmware = "firmware";
+    public const string HandBackMotherboard = "motherboard";
     // Pre-per-fan-enumeration channel id. A curve/manual-speed binding to it is
     // migrated onto the discovered channel-2 fans the first time they enumerate.
     private const string LegacyFanId = "fans";
 
     private readonly QSeriesCoolerHub _hub;
     private readonly IConfigStore _store;
+    private readonly FeatureGates _gates;
 
     // Channels under active software control (Manual/Curve). The pump and every fan
     // share the hub's one mode, so the hub stays in software while any channel is
@@ -51,10 +58,11 @@ public sealed class QSeriesCoolerCoolingProvider : IFanControlProvider, ICooling
     // never race the underlying set's internals.
     private readonly ConcurrentDictionary<string, byte> _legacyMigratedSerials = new(StringComparer.Ordinal);
 
-    public QSeriesCoolerCoolingProvider(QSeriesCoolerHub hub, IConfigStore store)
+    public QSeriesCoolerCoolingProvider(QSeriesCoolerHub hub, IConfigStore store, FeatureGates? gates = null)
     {
         _hub = hub;
         _store = store;
+        _gates = gates ?? FeatureGates.AllEnabled;
     }
 
     public static bool IsQSeriesId(string id) =>
@@ -230,9 +238,12 @@ public sealed class QSeriesCoolerCoolingProvider : IFanControlProvider, ICooling
             _softwareControlled.Remove(channelId);
             empty = _softwareControlled.Count == 0;
         }
-        // Hub mode is shared: only hand back to the motherboard once every channel
-        // is released, so releasing one doesn't yank PWM from the rest.
-        if (empty) _hub.SetControlMode(QSeriesCoolerProtocol.ControlModeMotherboard);
+        // Hub mode is shared: only hand back once every channel is released, so
+        // releasing one doesn't yank PWM from the rest. A user pin stays: the
+        // cooling page's Hardware-control pick pins through the route and releases
+        // the fan as separate calls, and an engine tick between the two empties the
+        // set through the swallow path without ending the pick.
+        if (empty) HandBack(dropUserPin: false);
     }
 
     public void ReleaseAll()
@@ -243,7 +254,89 @@ public sealed class QSeriesCoolerCoolingProvider : IFanControlProvider, ICooling
             any = _softwareControlled.Count > 0;
             _softwareControlled.Clear();
         }
-        if (any) _hub.SetControlMode(QSeriesCoolerProtocol.ControlModeMotherboard);
+        // Cooling off forbids any fan write. The toggle-off release itself still
+        // hands back (it had channels to release); a later ReleaseAll with
+        // nothing driven, such as shutdown, must stay silent.
+        if (!any && !_gates.Cooling) return;
+        // A bulk release (profile switch, cooling reset, shutdown) ends whatever
+        // the user pinned: the incoming settings decide the mode now.
+        HandBack(dropUserPin: true);
+    }
+
+    /// <summary>
+    /// Each connect of the hub: hand it back so the cooler runs its stock mode.
+    /// Skipped while Cooling is off (no fan write), and when the settings assign
+    /// any channel the hub currently exposes: the engine claims the hub within a
+    /// tick, and a hand-back first would only add a mode transition.
+    /// </summary>
+    public void OnHubConnected()
+    {
+        if (!_gates.Cooling) return;
+        if (HasPersistedAssignments()) return;
+        HandBack(dropUserPin: false);
+    }
+
+    private bool HasPersistedAssignments()
+    {
+        var present = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var ch in GetFanChannels()) present.Add(ch.Id);
+        var cooling = _store.Load().Cooling;
+        foreach (var id in cooling.ManualSpeeds.Keys)
+        {
+            if (present.Contains(id)) return true;
+        }
+        foreach (var curve in cooling.Curves)
+        {
+            foreach (var o in curve.Outputs)
+            {
+                if (present.Contains(o.Id)) return true;
+            }
+        }
+        return false;
+    }
+
+    /// <summary>The mode a released hub runs: the persisted choice, else firmware where the cooler has a curve.</summary>
+    public byte HandBackMode()
+    {
+        var choice = _store.Load().Cooling.HubControlModes.GetValueOrDefault(_hub.DeviceId);
+        if (choice == HandBackMotherboard) return QSeriesCoolerProtocol.ControlModeMotherboard;
+        return _hub.SupportsFirmwareCurve
+            ? QSeriesCoolerProtocol.ControlModeFirmware
+            : QSeriesCoolerProtocol.ControlModeMotherboard;
+    }
+
+    // The "nothing driven" check runs under the hub lock (hub lock, then
+    // _ctrlLock; no path takes them the other way round), so an engine claim
+    // cannot slip between it and the control write.
+    private void HandBack(bool dropUserPin)
+    {
+        if (!_hub.IsConnected) return;
+        _hub.HandBackControlMode(HandBackMode(), NothingDriven, dropUserPin);
+    }
+
+    private bool NothingDriven()
+    {
+        lock (_ctrlLock) return _softwareControlled.Count == 0;
+    }
+
+    /// <summary>Remember a control-mode pick as the hub's hand-back: Motherboard or Firmware is stored, Software clears the entry (the next assignment implies it), Mix is a live mode only.</summary>
+    public static void RecordHandBackChoice(IConfigStore store, string deviceId, byte mode)
+    {
+        store.Update(s =>
+        {
+            switch (mode)
+            {
+                case QSeriesCoolerProtocol.ControlModeMotherboard:
+                    s.Cooling.HubControlModes[deviceId] = HandBackMotherboard;
+                    break;
+                case QSeriesCoolerProtocol.ControlModeFirmware:
+                    s.Cooling.HubControlModes[deviceId] = HandBackFirmware;
+                    break;
+                case QSeriesCoolerProtocol.ControlModeSoftware:
+                    s.Cooling.HubControlModes.Remove(deviceId);
+                    break;
+            }
+        });
     }
 
     public Task<IReadOnlyList<FanCalibration>> CalibrateAsync(

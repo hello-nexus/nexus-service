@@ -1,7 +1,6 @@
-uniform float u_speed;
-uniform float u_turbulence; // extra: warp intensity
-uniform float u_direction;  // extra: flow direction angle
-uniform float u_bite;       // extra: contrast curve (renamed to avoid u_contrast clash)
+uniform float u_turbulence; // hint_range(0.2, 2.0, 0.05) = 0.8  warp intensity
+uniform float u_direction; // hint_range(-3.14, 3.14, 0.05) = 0.0  flow direction angle
+uniform float u_bite; // hint_range(0.3, 2.5, 0.05) = 1.0  contrast curve (renamed to avoid u_contrast clash)
 
 // Inigo Quilez recursive domain warp. Two fbm passes displace the sample
 // coordinate before the final fbm read, producing the smoky, continent-like

@@ -159,4 +159,58 @@ public class DeckConfigNavigationTests
 
         Assert.Equal("P0F0S0", slot!.Label);
     }
+
+    [Theory]
+    [InlineData("4x4", 4, 4)]
+    [InlineData("4x2", 4, 2)]
+    [InlineData("2x4", 2, 4)]
+    [InlineData("2x2", 2, 2)]
+    [InlineData("unknown", 2, 2)]
+    public void InnerGridForSize_MatchesNexusWebsDeckLayoutTs(string size, int expectedCols, int expectedRows)
+    {
+        var (cols, rows) = DeckConfigNavigation.InnerGridForSize(size);
+        Assert.Equal(expectedCols, cols);
+        Assert.Equal(expectedRows, rows);
+    }
+
+    [Fact]
+    public void SlotHasContent_ColorAloneDoesNotCount()
+    {
+        Assert.False(DeckConfigNavigation.SlotHasContent(new DeckSlot { Color = "#ff0000" }));
+    }
+
+    [Theory]
+    [InlineData(null, null, null, false)]
+    [InlineData("openUrl", null, null, true)]
+    [InlineData(null, "lucide", "Globe", true)]
+    [InlineData(null, null, "Label", true)]
+    public void SlotHasContent_ActionIconOrLabelCounts(string? actionType, string? iconKind, string? label, bool expected)
+    {
+        var slot = new DeckSlot
+        {
+            Action = actionType is null ? null : new DeckAction { Type = actionType },
+            Icon = iconKind is null ? null : new DeckIcon { Kind = iconKind, Value = "x" },
+            Label = label,
+        };
+        Assert.Equal(expected, DeckConfigNavigation.SlotHasContent(slot));
+    }
+
+    [Fact]
+    public void HasContent_RecursesIntoFolders()
+    {
+        var nestedSlot = new DeckSlot { Label = "Nested" };
+        var folder = new DeckFolder { Slots = { nestedSlot } };
+        var rootSlot = new DeckSlot { Folder = folder };
+        var page = new DeckPage { Slots = { rootSlot } };
+        var config = new DeckConfig { Pages = { page } };
+
+        Assert.True(DeckConfigNavigation.HasContent(config));
+    }
+
+    [Fact]
+    public void HasContent_EveryPageEmpty_ReturnsFalse()
+    {
+        var config = new DeckConfig { Pages = { new DeckPage { Slots = { new DeckSlot(), new DeckSlot { Color = "#fff" } } } } };
+        Assert.False(DeckConfigNavigation.HasContent(config));
+    }
 }

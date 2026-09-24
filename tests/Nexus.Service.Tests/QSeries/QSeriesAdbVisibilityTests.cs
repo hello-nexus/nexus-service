@@ -187,3 +187,39 @@ public class HomeChooserAndTaskTests
         Assert.False(QSeriesPortWatcher.IsStaleStandardTask(tasks[0]));
     }
 }
+
+public class MentionsPendingRebootTests
+{
+    [Fact]
+    public void Deferred_restart_is_not_a_recovery()
+    {
+        // pnputil exits 0 for this, which is what made the watcher log
+        // "restart succeeded" and retry a refused command every 2 minutes.
+        Assert.True(QSeriesPortWatcher.MentionsPendingReboot(
+            "Microsoft PnP Utility\r\n\r\nRestarting device:         USB\\VID_0E8D&PID_201C\\0123456789ABCDEF\r\n"
+            + "System reboot is needed to complete configuration operations!"));
+    }
+
+    [Fact]
+    public void Refusal_after_the_flag_is_set_is_recognised()
+    {
+        Assert.True(QSeriesPortWatcher.MentionsPendingReboot(
+            "Failed to restart device:  USB\\VID_0E8D&PID_201C\\0123456789ABCDEF\r\n"
+            + "Device is pending system reboot to complete a previous operation."));
+    }
+
+    [Fact]
+    public void A_clean_restart_is_not_pending()
+    {
+        Assert.False(QSeriesPortWatcher.MentionsPendingReboot(
+            "Microsoft PnP Utility\r\n\r\nRestarting device:         USB\\VID_0E8D&PID_201C\\0123456789ABCDEF\r\n"
+            + "Device restarted."));
+    }
+
+    [Fact]
+    public void No_output_is_not_pending()
+    {
+        Assert.False(QSeriesPortWatcher.MentionsPendingReboot(null));
+        Assert.False(QSeriesPortWatcher.MentionsPendingReboot(""));
+    }
+}

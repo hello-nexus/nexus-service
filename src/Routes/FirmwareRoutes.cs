@@ -6,6 +6,7 @@ using Nexus.Service.Common.ExternalTools;
 using Nexus.Service.Devices;
 using Nexus.Service.Devices.Firmware;
 using Nexus.Service.Models.Devices;
+using Nexus.Service.Peripherals.Hyte.QSeriesCooler;
 using Nexus.Service.Serialization;
 
 namespace Nexus.Service.Routes;
@@ -67,10 +68,10 @@ public static partial class DevicesRoutes
             if (panelDevice is not null)
             {
                 var qhandler = dm.GetAll().FirstOrDefault(d => d.Id == "qseries");
-                var panelName = qhandler?.Name switch
+                var panelName = qhandler?.FirmwareType switch
                 {
-                    "Q60" => "Q60 Panel App",
-                    "Q80" => "Q80 Panel App",
+                    QSeriesCoolerProtocol.VariantQ60 => "Q60 Panel App",
+                    QSeriesCoolerProtocol.VariantQ80 => "Q80 Panel App",
                     _ => "Q-series Panel App",
                 };
                 try

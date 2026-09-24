@@ -419,7 +419,7 @@ internal static class MacStatusBar
 
         // Build menu
         _menu = MsgSend(MsgSend(_classNSMenu, _selAlloc), _selInit);
-        AddMenuItem(_menu, "Open Dashboard", "openDashboard:");
+        AddMenuItem(_menu, "Open", "openDashboard:");
         AddMenuItem(_menu, "Settings", "openSettings:");
         AddMenuItem(_menu, "Devices", "openDevices:");
         // Separator

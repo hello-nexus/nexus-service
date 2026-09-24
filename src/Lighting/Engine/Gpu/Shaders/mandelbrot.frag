@@ -1,7 +1,6 @@
-uniform float u_speed;
-uniform float u_depth;     // extra: iteration count scaling
-uniform float u_rotation;  // extra: zoom rate multiplier
-uniform float u_brightness;// extra: brightness
+uniform float u_depth; // hint_range(2.0, 6.0, 1.0) = 4.0  iteration count scaling
+uniform float u_rotation; // hint_range(0.05, 2.0, 0.05) = 0.5  zoom rate multiplier
+uniform float u_brightness; // hint_range(0.3, 2.0, 0.05) = 1.0  brightness
 
 // Real Mandelbrot zoom with a cosine-driven breathing depth so the loop
 // is smooth with no snap and no wrap. Interior points get their own

@@ -77,6 +77,30 @@ public class Slv3RgbFrameTests
     }
 
     [Fact]
+    public void BuildPackets_carries_a_fractional_interval_as_whole_ms_plus_hundredths()
+    {
+        var compressed = TinyUz.Compress(new byte[] { 1, 2, 3 });
+
+        var header = Slv3RgbFrame.BuildPackets(FanMac, MasterMac, EffectIndex, compressed, ledCount: 1, totalFrames: 30, intervalMs: 56.5)[0];
+
+        Assert.Equal(56, (header[32] << 8) | header[33]);
+        Assert.Equal(50, header[34]);
+    }
+
+    [Fact]
+    public void BuildFrameBuffer_over_raw_bytes_scales_every_frame_like_the_color_overload()
+    {
+        var leds = new[] { new RgbColor(200, 100, 50), new RgbColor(255, 255, 255) };
+        var raw = new byte[] { 200, 100, 50, 255, 255, 255, 200, 100, 50, 255, 255, 255 };
+
+        var expectedFrame = Slv3RgbFrame.BuildFrameBuffer(leds, 60);
+        var buf = Slv3RgbFrame.BuildFrameBuffer(raw.AsSpan(), 60);
+
+        Assert.Equal(expectedFrame, buf.AsSpan(0, 6).ToArray());
+        Assert.Equal(expectedFrame, buf.AsSpan(6, 6).ToArray());
+    }
+
+    [Fact]
     public void BuildPackets_reassembles_compressed_stream_across_data_parts()
     {
         var leds = new RgbColor[160]; // 4 fans * 40 LEDs

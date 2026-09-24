@@ -1,7 +1,6 @@
-uniform float u_speed;
-uniform float u_ribbons;    // extra: ribbon count (2..14)
-uniform float u_turbulence; // extra: ribbon wobble (0.2..3)
-uniform float u_glow;       // extra: bloom intensity (0.3..2.5)
+uniform float u_ribbons; // hint_range(2.0, 14.0, 1.0) = 7.0  ribbon count
+uniform float u_turbulence; // hint_range(0.1, 3.5, 0.05) = 1.2  ribbon wobble
+uniform float u_glow; // hint_range(0.2, 3.0, 0.05) = 1.0  bloom intensity
 
 // Lateral counterpart to the fire shader: ribbons stream horizontally,
 // each at its own scroll speed and wobble phase. Where fire is anisotropic

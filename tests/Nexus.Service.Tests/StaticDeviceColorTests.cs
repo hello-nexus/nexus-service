@@ -447,4 +447,128 @@ public class StaticDeviceEffectTests
         var leds8 = device.LedBytes.ToArray();
         Assert.All(leds8, b => Assert.Equal(0, b));
     }
+
+    // --- Locks: a look the device keeps in every mode until the user unlocks it ---
+
+    [Fact]
+    public async Task A_locked_assignment_paints_outside_static_mode()
+    {
+        var tracker = new StaticDeviceEffectTracker { Enabled = false };
+        tracker.Set("keeb:keys", Assign("red"));
+        Assert.True(tracker.SetLocked("keeb:keys", true));
+        var leds = await RenderOnce(MakeDevice(), tracker, _ => new FillEffect(255, 0, 0));
+        Assert.Equal(255, leds[0]);
+        Assert.Equal(0, leds[1]);   // not the shared canvas green
+    }
+
+    [Fact]
+    public async Task Unlocking_returns_the_device_to_the_running_mode()
+    {
+        var tracker = new StaticDeviceEffectTracker { Enabled = false };
+        tracker.Set("keeb:keys", Assign("red"));
+        tracker.SetLocked("keeb:keys", true);
+        tracker.SetLocked("keeb:keys", false);
+        var leds = await RenderOnce(MakeDevice(), tracker, _ => new FillEffect(255, 0, 0));
+        Assert.Equal(0, leds[0]);
+        Assert.Equal(255, leds[1]);
+    }
+
+    [Fact]
+    public void A_locked_device_refuses_a_new_pick_and_a_clear()
+    {
+        var tracker = new StaticDeviceEffectTracker { Enabled = true };
+        tracker.Set("keeb:keys", Assign("red"));
+        tracker.SetLocked("keeb:keys", true);
+        Assert.False(tracker.Set("keeb:keys", Assign("blue")));
+        Assert.False(tracker.Clear("keeb:keys"));
+        Assert.True(tracker.TryGet("keeb:keys", out var held));
+        Assert.Equal("red", held.Effect);
+        Assert.True(held.Locked);
+        // Unlocked, the same pick lands.
+        tracker.SetLocked("keeb:keys", false);
+        Assert.True(tracker.Set("keeb:keys", Assign("blue")));
+        Assert.True(tracker.TryGet("keeb:keys", out var now));
+        Assert.Equal("blue", now.Effect);
+    }
+
+    [Fact]
+    public void Locking_needs_a_look_to_hold()
+    {
+        var tracker = new StaticDeviceEffectTracker { Enabled = true };
+        Assert.False(tracker.SetLocked("keeb:keys", true));
+        Assert.False(tracker.IsLocked("keeb:keys"));
+    }
+
+    [Fact]
+    public void A_lock_survives_a_restart_and_a_lock_toggle_does_not_bump_the_version()
+    {
+        var store = new InMemoryConfigStore();
+        var first = new StaticDeviceEffectTracker(store) { Enabled = true };
+        first.Set("keeb:keys", Assign("simplered"));
+        var version = first.Version;
+        first.SetLocked("keeb:keys", true);
+        // The render is unchanged, so the engine's cache must not be dropped.
+        Assert.Equal(version, first.Version);
+
+        var reborn = new StaticDeviceEffectTracker(store) { Enabled = false };
+        Assert.True(reborn.IsLocked("keeb:keys"));
+        Assert.True(reborn.TryGet("keeb:keys", out var back));
+        Assert.True(back.Locked);
+    }
+
+    /// <summary>
+    /// A preset restore swaps the looks wholesale. The same colours with a
+    /// different lock still has to land, or a preset could never unlock.
+    /// </summary>
+    [Fact]
+    public void A_profile_switch_that_only_changes_the_lock_still_lands()
+    {
+        var store = new InMemoryConfigStore();
+        var tracker = new StaticDeviceEffectTracker(store) { Enabled = false };
+        tracker.Set("keeb:keys", Assign("simplered"));
+        tracker.SetLocked("keeb:keys", true);
+        store.Update(s =>
+        {
+            s.Lighting = new Nexus.Service.Persistence.LightingSettings();
+            s.Lighting.StaticDeviceLooks["keeb:keys"] = new Nexus.Service.Persistence.StaticDeviceLook { Effect = "simplered" };
+        });
+        Assert.False(tracker.IsLocked("keeb:keys"));
+        Assert.False(tracker.TryGet("keeb:keys", out _));
+    }
+
+    /// <summary>
+    /// Game Sync repaints archetype devices after the sample; a locked look has
+    /// to survive that pass the way it survives the canvas sample.
+    /// </summary>
+    [Fact]
+    public async Task A_locked_keyboard_keeps_its_look_under_game_sync()
+    {
+        const int cols = 4, rows = 4, leds = cols * rows;
+        var device = new DeviceFrame(0, "keeb:keys", leds, x: 100, y: 100, w: 250, h: 90)
+        {
+            Archetype = "keyboard",
+            LedU = Enumerable.Range(0, leds).Select(i => (i % cols) / (float)(cols - 1)).ToArray(),
+            LedV = Enumerable.Range(0, leds).Select(i => (i / cols) / (float)(rows - 1)).ToArray(),
+        };
+        var gs = new GameSyncEffect();
+        gs.IngestAuthoredFill(255, 255, 255, "test");
+        gs.IngestFrame("keyboard", "CHROMA_CUSTOM", rows, cols, new int[leds]);   // all black grid
+
+        var tracker = new StaticDeviceEffectTracker { Enabled = false };
+        tracker.Set("keeb:keys", new StaticDeviceAssignment { Effect = "flat", Color = "#ff0000" });
+        tracker.SetLocked("keeb:keys", true);
+
+        using var engine = new LightingEngine { StaticEffects = tracker };
+        engine.UpdateDevices(new[] { device });
+        engine.FrameIntervalMs = 5;
+        var painted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        engine.OnFrame += _ => painted.TrySetResult();
+        engine.SetEffect(gs);
+        Assert.Same(painted.Task, await Task.WhenAny(painted.Task, Task.Delay(2000)));
+
+        var bytes = device.LedBytes.ToArray();
+        Assert.Equal(255, bytes[0]);
+        Assert.Equal(0, bytes[1]);
+        Assert.Equal(0, bytes[2]);
+    }
 }

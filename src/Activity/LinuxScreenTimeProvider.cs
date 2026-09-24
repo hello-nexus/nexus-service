@@ -19,8 +19,10 @@ namespace Nexus.Service.Activity;
 /// polling CPU cost.
 ///
 /// Fails soft on non-KDE desktops (script never loads, provider returns empty).
+/// IFocusDetailsProvider carries the focused pid's /proc exe target as ExePath
+/// (Recent Apps launches it and keys its icon on the basename).
 /// </summary>
-public sealed class LinuxScreenTimeProvider : IScreenTimeProvider, IHostedService, IDisposable
+public sealed class LinuxScreenTimeProvider : IScreenTimeProvider, IFocusDetailsProvider, IHostedService, IDisposable
 {
     private const string ServiceName = "org.nexus.ScreenTime";
     private const string ObjectPath = "/ScreenTime";
@@ -35,11 +37,17 @@ public sealed class LinuxScreenTimeProvider : IScreenTimeProvider, IHostedServic
 
     public event Action? FocusChanged;
 
+    public event Action<FocusSessionEnded>? SessionEnded;
+
     private string _currentApp = "";
     private int _currentPid;
+    private string? _currentExePath;
     private long _sessionStartUtcMs;
     private long _lastEventUtcMs;
     private int _scriptId = -1;
+    // 1 while a start attempt is in flight or has registered on the bus; see
+    // LinuxTrayService for why a plain bool cannot gate this.
+    private int _starting;
 
     public LinuxScreenTimeProvider(DBusConnection dbus, IScreenTimeStore store, IConfigStore config)
     {
@@ -51,6 +59,18 @@ public sealed class LinuxScreenTimeProvider : IScreenTimeProvider, IHostedServic
 
     public async Task StartAsync(CancellationToken cancellationToken)
     {
+        // A root daemon that booted before login has no session bus yet; the
+        // session watcher re-runs this once the user logs in.
+        Platform.Linux.LinuxSession.SessionAdopted += OnSessionAdopted;
+        await StartOnSessionBusAsync(retry: false);
+    }
+
+    private void OnSessionAdopted() => _ = StartOnSessionBusAsync(retry: true);
+
+    private async Task StartOnSessionBusAsync(bool retry = false)
+    {
+        if (Interlocked.CompareExchange(ref _starting, 1, 0) != 0)
+            return;
         try
         {
             await _dbus.StartAsync();
@@ -58,7 +78,10 @@ public sealed class LinuxScreenTimeProvider : IScreenTimeProvider, IHostedServic
             var scriptPath = EnsureKWinScript();
             if (scriptPath is null)
             {
+                // The script dir hangs off the session user's home, so pre-login
+                // this is "not yet", not "never" - let a later adopt retry.
                 Console.Error.WriteLine("[screentime] KWin script dir unavailable; disabled");
+                Volatile.Write(ref _starting, 0);
                 return;
             }
 
@@ -114,11 +137,17 @@ public sealed class LinuxScreenTimeProvider : IScreenTimeProvider, IHostedServic
         catch (Exception ex)
         {
             Console.Error.WriteLine($"[screentime] startup failed: {ex.Message}");
+            Volatile.Write(ref _starting, 0);
+            // See LinuxTrayService: the one-shot event can fire while this
+            // attempt unwinds, its handler bouncing off our CAS.
+            if (!retry && Platform.Linux.LinuxSession.SessionUid is not null)
+                await StartOnSessionBusAsync(retry: true);
         }
     }
 
     public Task StopAsync(CancellationToken cancellationToken)
     {
+        Platform.Linux.LinuxSession.SessionAdopted -= OnSessionAdopted;
         _dbus.UnregisterHandler(ObjectPath);
         FlushCurrentSession();
         return Task.CompletedTask;
@@ -141,6 +170,18 @@ public sealed class LinuxScreenTimeProvider : IScreenTimeProvider, IHostedServic
                 Name = _currentApp,
                 Today = ToDuration(elapsed),
             };
+        }
+    }
+
+    public FocusDetails? GetCurrentFocusDetails()
+    {
+        lock (_lock)
+        {
+            if (string.IsNullOrEmpty(_currentApp))
+            {
+                return null;
+            }
+            return new FocusDetails(_currentPid, _currentApp, _sessionStartUtcMs, _currentExePath, 0, 0, null);
         }
     }
 
@@ -190,7 +231,15 @@ public sealed class LinuxScreenTimeProvider : IScreenTimeProvider, IHostedServic
                 var r = new DBusReader(msg.Body);
                 var pid = (int)r.ReadUInt32();
                 var name = r.ReadString();
-                OnFocusChanged(pid, name);
+                // The script's load marker is not a focused window.
+                if (pid == 0 && name == "__kwin_script_loaded__")
+                {
+                    Console.Error.WriteLine("[screentime] KWin focus script reported in");
+                }
+                else
+                {
+                    OnFocusChanged(pid, name);
+                }
             }
             catch (Exception ex)
             {
@@ -212,6 +261,7 @@ public sealed class LinuxScreenTimeProvider : IScreenTimeProvider, IHostedServic
         }
 
         var changed = false;
+        FocusSessionEnded? ended = null;
         lock (_lock)
         {
             var now = NowUtcMs();
@@ -221,12 +271,14 @@ public sealed class LinuxScreenTimeProvider : IScreenTimeProvider, IHostedServic
                 var elapsedSinceLastEvent = now - _lastEventUtcMs;
                 var endUtc = elapsedSinceLastEvent > IdleCapMs ? _lastEventUtcMs + IdleCapMs : now;
                 TryRecord(_currentApp, _sessionStartUtcMs, endUtc);
+                ended = new FocusSessionEnded(_currentPid, _currentApp, _sessionStartUtcMs, endUtc);
             }
 
             if (resolvedName != _currentApp || pid != _currentPid)
             {
                 _currentApp = resolvedName;
                 _currentPid = pid;
+                _currentExePath = ResolveExePathFromPid(pid);
                 _sessionStartUtcMs = now;
                 changed = true;
             }
@@ -235,6 +287,7 @@ public sealed class LinuxScreenTimeProvider : IScreenTimeProvider, IHostedServic
 
         // Outside the lock: a subscriber activating a preset must not run
         // under the focus lock.
+        if (ended is not null) SessionEnded?.Invoke(ended);
         if (changed) FocusChanged?.Invoke();
     }
 
@@ -264,6 +317,7 @@ public sealed class LinuxScreenTimeProvider : IScreenTimeProvider, IHostedServic
             TryRecord(_currentApp, _sessionStartUtcMs, endUtc);
             _currentApp = "";
             _currentPid = 0;
+            _currentExePath = null;
         }
     }
 
@@ -284,6 +338,18 @@ public sealed class LinuxScreenTimeProvider : IScreenTimeProvider, IHostedServic
     }
 
     private static long NowUtcMs() => DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+
+    private static string? ResolveExePathFromPid(int pid)
+    {
+        if (pid <= 0)
+            return null;
+        try
+        {
+            var target = File.ResolveLinkTarget($"/proc/{pid}/exe", returnFinalTarget: true)?.FullName;
+            return string.IsNullOrEmpty(target) || target.EndsWith(" (deleted)", StringComparison.Ordinal) ? null : target;
+        }
+        catch { return null; }
+    }
 
     private static string ResolveNameFromPid(int pid)
     {

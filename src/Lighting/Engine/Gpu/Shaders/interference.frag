@@ -1,6 +1,5 @@
-uniform float u_speed;
-uniform float u_wavelength; // extra: crest spacing (smaller = denser pattern)
-uniform float u_sources;    // extra: source count (2..8)
+uniform float u_wavelength; // hint_range(0.05, 1.0, 0.01) = 0.22  crest spacing (smaller = denser pattern)
+uniform float u_sources; // hint_range(2.0, 8.0, 1.0) = 5.0  source count
 
 // Physical wave interference: sum N circular cos() waves from drifting
 // source points. Map the wave intensity (|total|) to brightness so

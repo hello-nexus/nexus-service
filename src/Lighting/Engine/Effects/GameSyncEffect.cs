@@ -157,7 +157,9 @@ public sealed class GameSyncEffect : IEffect
     // Called by the engine after SampleDevicesFromCanvas. Overwrites LEDs on frames
     // with a known archetype: keyboards get per-LED grid sampling; semantic peripherals
     // get a solid dominant fill. Frames with null Archetype keep the canvas-sampled color.
-    public void WriteToDevices(DeviceFrame[] devices)
+    // `skip`, when given, marks devices an overlay already painted (a locked Static
+    // look, a highlight, a test pattern); those keep what the overlay gave them.
+    public void WriteToDevices(DeviceFrame[] devices, bool[]? skip = null)
     {
         byte[]? kbRgb;
         int kbRows, kbCols;
@@ -180,8 +182,10 @@ public sealed class GameSyncEffect : IEffect
             chromalinkRgb = _chromalinkRgb;
         }
 
-        foreach (var frame in devices)
+        for (var di = 0; di < devices.Length; di++)
         {
+            if (skip is not null && di < skip.Length && skip[di]) continue;
+            var frame = devices[di];
             switch (frame.Archetype)
             {
                 case "keyboard":

@@ -1,5 +1,4 @@
-uniform float u_speed;
-uniform float u_ringRate; // extra: expanding ring rate
+uniform float u_ringRate; // hint_range(0.05, 1.0, 0.02) = 0.25  expanding ring rate
 void main() {
     vec2 uv = uvCentered();
     float t = u_time * u_speed * 0.7;

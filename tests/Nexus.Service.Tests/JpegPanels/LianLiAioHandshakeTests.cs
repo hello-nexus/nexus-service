@@ -54,7 +54,29 @@ public class LianLiAioHandshakeTests
     }
 
     [Fact]
-    public void A_brightness_change_rides_application_mode_so_the_glass_stays_claimed()
+    public void Galahad_brightness_packet_uses_the_hardware_verified_settings_mode()
+    {
+        var handshake = new LianLiAioHandshake("lianli-galahad2-lcd", 24);
+        var device = new ScriptedHidDevice();
+
+        Assert.True(handshake.OnAttach(device, ReportLength));
+        device.Writes.Clear();
+        handshake.SetBrightness(35);
+        Assert.True(handshake.ApplyBrightness(device, ReportLength));
+
+        var control = Assert.Single(device.Writes);
+        Assert.Equal(
+            new byte[]
+            {
+                0x02, 0x0C, 0x00, 0x00, 0x00, 0x08, 0x00, 0x00, 0x00, 0x00, 0x08,
+                0x04, 35, 0x00, 0x00, 0x00, 0x00, 0x00, 24,
+            },
+            control[..19]);
+        Assert.All(control[19..], b => Assert.Equal(0, b));
+    }
+
+    [Fact]
+    public void A_brightness_change_uses_the_family_wide_settings_mode()
     {
         var handshake = new LianLiAioHandshake("lianli-hydroshift-lcd", 24);
         var device = new ScriptedHidDevice();
@@ -66,8 +88,10 @@ public class LianLiAioHandshakeTests
 
         var control = Assert.Single(device.Writes);
         Assert.Equal(0x0C, control[1]);
-        // Application, not the settings mode: the other documented mode hands the glass back.
-        Assert.Equal(new byte[] { 0x01, 35, 0x00, 0x00, 0x00, 0x00, 0x00, 24 }, control[11..19]);
+        // LcdSetting (0x04), the reference driver's brightness-only mode for the whole
+        // family - not application mode, which OnAttach uses to take the glass in the
+        // first place.
+        Assert.Equal(new byte[] { 0x04, 35, 0x00, 0x00, 0x00, 0x00, 0x00, 24 }, control[11..19]);
     }
 
     [Fact]

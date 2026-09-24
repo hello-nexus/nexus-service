@@ -89,11 +89,11 @@ src/
   Panel/               # panel pairing, kiosk launch, backgrounds; Streams/ = streamed-panel sessions + transports
   Deck/  Rendering/    # deck action model + headless executor; server-rendered tiles and key images
   Widgets/  Store/     # nexus.app/1 app host and installer; cloud app-store proxy, entitlements
-  Gallery/  Media/     # shared image sources; media import + library
+  Gallery/  Media/     # shared image/video sources; media import + library
   Activity/            # screen time, app detection, audio analysis
   Games/  Fps/         # installed-game catalog, FPS capture and per-game sessions
   FocusModes/  Audio/  # focus modes; per-app volume mixer and audio playback
-  Steam/ Discord/ Obs/ Twitch/ Integrations/   # third-party integrations (Integrations/ = Home Assistant)
+  Steam/ Discord/ Obs/ Twitch/ Klipy/ Integrations/   # third-party integrations (Klipy/ = GIF catalog, Integrations/ = Home Assistant)
   Diagnostics/         # event-log monitor, SMART/NVMe, GPU/cooling/memory checks, health model, support bundle
   Relay/  Rtc/         # off-LAN relay client and sealed channels; WebRTC direct transport
   Webcam/  Transfer/   # phone-as-webcam backends; phone-to-PC file transfer inbox
@@ -113,7 +113,8 @@ docs/
   network-transport.md # WebSocket topics, polling cadence, reconnect semantics
   ws-topic-rbac.md     # design note on per-topic WebSocket authorization
   shader-benchmark.md  # Q-series shader performance baseline
-data/                  # shipped defaults: install defaults, animate templates, OpenRGB device catalog
+data/                  # shipped defaults: install defaults, animate templates, OpenRGB device catalog,
+                       # built-in ARGB product LED mappings (embedded; the picker works offline)
 Bundled/               # per-RID third-party binaries (adb, dfu-util, pawnio, gamesync, bench CLIs), openrgb + ffmpeg added at publish; macos/ linux/ windows/ = first-party helpers, icons, macOS build scripts
 installer/             # Windows Inno Setup + web installer, MSIX, Linux tarball packager
 tests/
@@ -140,6 +141,10 @@ dotnet publish -c Release -r linux-x64 -o publish-linux
   configuration, compiled by `scripts/build-ffmpeg-minimal.sh`. It is optional
   at build time: `bash scripts/fetch-ffmpeg.sh all` (or `mac | win | linux`)
   produces it once per RID.
+- The Windows virtual display driver behind secondary-monitor mode is optional
+  at build time: `Bundled/windows/nexus-vdd/build.ps1` builds it into
+  `Bundled/win-x64/vdd/` with the VS Build Tools (it downloads the WDK package
+  itself). Without it the setting is not offered.
 - Device firmware images are vendor files kept outside this repository. The
   csproj embeds them from `NEXUS_FIRMWARE_DIR` (or `-p:NexusFirmwareDir=`), a
   gitignored `data/firmware/`, or a sibling `firmware/` directory when one
@@ -153,7 +158,8 @@ dotnet publish -c Release -r linux-x64 -o publish-linux
   fallback. Its presence defines `OFFICIAL_BUILD`, which wires up the cloud
   account, profile sync, relay, fleet telemetry and the OTA updater. A build
   without it, which is every public clone, is local-only and dials none of the
-  hosted services. `NEXUS_POSTHOG_KEY` is injected the same way.
+  hosted services. `NEXUS_POSTHOG_KEY` and `NEXUS_KLIPY_KEY` (the GIF picker's
+  api.klipy.com app key) are injected the same way.
 
 ### Route inventory
 
@@ -192,7 +198,8 @@ dotnet test
 
 The suite is AOT-safe. Hardware drivers sit behind provider interfaces with
 fake implementations; allocation-budget tests keep the per-frame hot paths
-zero-alloc. `tests/Nexus.Service.Benchmarks` is a BenchmarkDotNet project for
+zero-alloc. Every pull request runs this build and suite in CI
+(`.github/workflows/ci.yml`); see `CONTRIBUTING.md`. `tests/Nexus.Service.Benchmarks` is a BenchmarkDotNet project for
 those hot paths, outside the solution and the publish:
 
 ```sh

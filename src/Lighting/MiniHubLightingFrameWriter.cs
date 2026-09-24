@@ -4,6 +4,7 @@ using System.Threading.Tasks;
 using Microsoft.Extensions.Hosting;
 using Nexus.Service.Lifecycle;
 using Nexus.Service.Lighting.Engine;
+using Nexus.Service.Lighting.Zones;
 using Nexus.Service.Peripherals.Hyte.MiniHub;
 using Nexus.Service.Persistence;
 using MiniHubColor = Nexus.Service.Peripherals.Hyte.MiniHub.RgbColor;
@@ -32,6 +33,12 @@ public sealed class MiniHubLightingFrameWriter : IHostedService, IDisposable
     private readonly MiniHubColor[]?[] _portBuffers = new MiniHubColor[MiniHubProtocol.LedPortCount][];
 
     private readonly FeatureGates _gates;
+
+    // Last resolved zones per chainable port, keyed by port id. Resolve reads
+    // ZonePartitions/PortChains/ZoneLedCounts lock-free while routes mutate
+    // them in place, so a mid-enumeration InvalidOperationException falls
+    // back to last tick's zones rather than dropping the frame.
+    private readonly System.Collections.Generic.Dictionary<string, System.Collections.Generic.IReadOnlyList<ResolvedZone>> _zoneCache = new();
 
     public MiniHubLightingFrameWriter(LightingEngine engine, MiniHubHub hub, IConfigStore store, Np50IdentifyTracker identify, FeatureGates? gates = null)
     {
@@ -84,16 +91,22 @@ public sealed class MiniHubLightingFrameWriter : IHostedService, IDisposable
         var disabled = settings.Devices.DisabledLightingDevices;
         var uncontrolled = settings.Devices.UncontrolledLightingDevices;
         var prefs = settings.Devices.LightingDevicePrefs;
-        var globalBrightness = Math.Clamp(settings.Lighting.GlobalBrightness, 0f, 1f);
+        var globalBrightness = MasterBrightness.Effective(settings.Lighting);
         var nowTicks = DateTime.UtcNow.Ticks;
 
         var hubId = _hub.DeviceId;
+        var port3Zones = ResolveOrReuse($"{hubId}:port3",
+            () => MiniHubLightingDeviceProvider.ResolveLedPortZones(settings, hubId, 3, _hub.State.Port3.LedCount));
+        var port4Zones = ResolveOrReuse($"{hubId}:port4",
+            () => MiniHubLightingDeviceProvider.ResolveLedPortZones(settings, hubId, 4, _hub.State.Port4.LedCount));
 
         // Every port uncontrolled: leave the whole hub alone so it drops back to
-        // its firmware animation, same as never pushing at all.
+        // its firmware animation, same as never pushing at all. A chained port
+        // (3/4) counts as uncontrolled only when every one of its products does.
         if (uncontrolled.Count > 0
             && uncontrolled.Contains($"{hubId}:port1") && uncontrolled.Contains($"{hubId}:port2")
-            && uncontrolled.Contains($"{hubId}:port3") && uncontrolled.Contains($"{hubId}:port4"))
+            && ZoneResolution.IsFullyUncontrolled(port3Zones, uncontrolled)
+            && ZoneResolution.IsFullyUncontrolled(port4Zones, uncontrolled))
         {
             return;
         }
@@ -106,8 +119,23 @@ public sealed class MiniHubLightingFrameWriter : IHostedService, IDisposable
         // regardless of how many LEDs the user has wired.
         TryPushZone(devices, $"{hubId}:port1", channel: 1, disabled, uncontrolled, prefs, globalBrightness, nowTicks);
         TryPushZone(devices, $"{hubId}:port2", channel: 2, disabled, uncontrolled, prefs, globalBrightness, nowTicks);
-        TryPushZone(devices, $"{hubId}:port3", channel: 3, disabled, uncontrolled, prefs, globalBrightness, nowTicks);
-        TryPushZone(devices, $"{hubId}:port4", channel: 4, disabled, uncontrolled, prefs, globalBrightness, nowTicks);
+        PushPort(devices, port3Zones, channel: 3, disabled, uncontrolled, prefs, globalBrightness, nowTicks);
+        PushPort(devices, port4Zones, channel: 4, disabled, uncontrolled, prefs, globalBrightness, nowTicks);
+    }
+
+    private System.Collections.Generic.IReadOnlyList<ResolvedZone> ResolveOrReuse(
+        string cacheKey, Func<System.Collections.Generic.IReadOnlyList<ResolvedZone>> resolve)
+    {
+        try
+        {
+            var zones = resolve();
+            _zoneCache[cacheKey] = zones;
+            return zones;
+        }
+        catch (InvalidOperationException)
+        {
+            return _zoneCache.TryGetValue(cacheKey, out var last) ? last : Array.Empty<ResolvedZone>();
+        }
     }
 
     private void TryPushZone(DeviceFrame[] devices, string id, int channel,
@@ -138,6 +166,57 @@ public sealed class MiniHubLightingFrameWriter : IHostedService, IDisposable
             FillBufferSlice(dst, 0, frame.LedBytes, ledCount, brightnessMul, adjust, hasIdentify, startTicks, nowTicks);
         }
         _hub.WriteLighting(channel, new ReadOnlySpan<MiniHubColor>(dst, 0, ledCount));
+    }
+
+    /// <summary>
+    /// Fill a chainable port's buffer from its resolved zones, laid down back
+    /// to back in chain order, and push it. Power, brightness, colour trim and
+    /// identify are per-zone, so one product in a chain can be flashed or
+    /// switched off without touching the ones beside it on the same wire.
+    /// </summary>
+    private void PushPort(DeviceFrame[] devices,
+        System.Collections.Generic.IReadOnlyList<ResolvedZone> zones, int channel,
+        System.Collections.Generic.IReadOnlyList<string> disabled,
+        System.Collections.Generic.IReadOnlyList<string> uncontrolled,
+        System.Collections.Generic.IReadOnlyDictionary<string, LightingDevicePreference> prefs,
+        float globalBrightness, long nowTicks)
+    {
+        var total = 0;
+        for (var i = 0; i < zones.Count; i++) total += Math.Max(0, zones[i].LedCount);
+
+        var idx = channel - 1;
+        var buf = _portBuffers[idx];
+        if (buf is null || buf.Length < Math.Max(total, 1))
+            _portBuffers[idx] = new MiniHubColor[Math.Max(total, 64)];
+        var dst = _portBuffers[idx]!;
+
+        var offset = 0;
+        for (var i = 0; i < zones.Count; i++)
+        {
+            var zone = zones[i];
+            var ledCount = Math.Max(0, zone.LedCount);
+            if (ledCount == 0) continue;
+
+            DeviceFrame? frame = null;
+            for (var f = 0; f < devices.Length; f++)
+            { if (devices[f].Id == zone.Id) { frame = devices[f]; break; } }
+
+            var brightnessMul = ComputeBrightnessMul(zone.Id, disabled, uncontrolled, prefs, globalBrightness, out var adjust);
+            var hasIdentify = _identify.TryGetActive(zone.Id, nowTicks, out var startTicks);
+            if (frame is null)
+            {
+                // No frame yet (a refresh in flight): dark, never stale bytes
+                // from whatever occupied this slice last tick.
+                for (var k = 0; k < ledCount && offset + k < dst.Length; k++) dst[offset + k] = default;
+            }
+            else
+            {
+                FillBufferSlice(dst, offset, frame.LedBytes, Math.Min(ledCount, frame.LedCount),
+                    brightnessMul, adjust, hasIdentify, startTicks, nowTicks);
+            }
+            offset += ledCount;
+        }
+        _hub.WriteLighting(channel, new ReadOnlySpan<MiniHubColor>(dst, 0, total));
     }
 
     private static double ComputeBrightnessMul(string id,

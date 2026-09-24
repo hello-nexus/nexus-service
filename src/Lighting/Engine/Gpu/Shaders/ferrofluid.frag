@@ -1,7 +1,6 @@
-uniform float u_speed;
-uniform float u_density;   // extra: spike grid density (3..14)
-uniform float u_sharpness; // extra: spike sharpness (0.4..3)
-uniform float u_motion;    // extra: spike height variation (0..2)
+uniform float u_density; // hint_range(3.0, 14.0, 1.0) = 8.0  spike grid density
+uniform float u_sharpness; // hint_range(0.4, 3.0, 0.05) = 1.5  spike sharpness
+uniform float u_motion; // hint_range(0.0, 2.0, 0.05) = 1.0  spike height variation
 
 // Magnetic black-liquid spike sea: a hex-ish grid of spikes whose
 // heights pulse with time and noise. Each spike is rendered as a

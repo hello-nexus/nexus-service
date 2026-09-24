@@ -99,9 +99,9 @@ public sealed class MappingLedRange
 /// </summary>
 public sealed class AppliedMappingRef
 {
-    /// <summary>Registry id when the mapping came from the community; null for file imports.</summary>
+    /// <summary>Registry id for a community mapping, product key for a built-in; null for file imports.</summary>
     public string? MappingId { get; set; }
-    /// <summary>"community" | "file"</summary>
+    /// <summary>"community" | "file" | "builtin"</summary>
     public string Source { get; set; } = "community";
     public string ContentHash { get; set; } = "";
     public string Name { get; set; } = "";

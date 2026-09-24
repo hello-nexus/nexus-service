@@ -1,0 +1,298 @@
+{
+  "format": 1,
+  "id": "spotify",
+  "name": "Spotify",
+  "author": "Nexus",
+  "version": "1.0.0",
+  "description": "Playback, volume and library shortcuts for Spotify.",
+  "match": {
+    "processNames": [
+      "spotify"
+    ],
+    "displayNames": [
+      "Spotify"
+    ]
+  },
+  "cols": 5,
+  "rows": 3,
+  "deck": {
+    "pages": [
+      {
+        "slots": [
+          {
+            "icon": {
+              "kind": "lucide",
+              "value": "Play"
+            },
+            "label": "Play / Pause",
+            "title": {
+              "show": true,
+              "align": "bottom",
+              "size": 14,
+              "bold": true
+            },
+            "action": {
+              "type": "hotkey",
+              "keys": "space"
+            },
+            "color": "#1e8449"
+          },
+          {
+            "icon": {
+              "kind": "lucide",
+              "value": "SkipBack"
+            },
+            "label": "Previous",
+            "title": {
+              "show": true,
+              "align": "bottom",
+              "size": 14,
+              "bold": true
+            },
+            "action": {
+              "type": "hotkey",
+              "keys": "ctrl+left",
+              "keysMac": "cmd+left"
+            }
+          },
+          {
+            "icon": {
+              "kind": "lucide",
+              "value": "SkipForward"
+            },
+            "label": "Next",
+            "title": {
+              "show": true,
+              "align": "bottom",
+              "size": 14,
+              "bold": true
+            },
+            "action": {
+              "type": "hotkey",
+              "keys": "ctrl+right",
+              "keysMac": "cmd+right"
+            }
+          },
+          {
+            "icon": {
+              "kind": "lucide",
+              "value": "Volume1"
+            },
+            "label": "Vol Down",
+            "title": {
+              "show": true,
+              "align": "bottom",
+              "size": 14,
+              "bold": true
+            },
+            "action": {
+              "type": "hotkey",
+              "keys": "ctrl+down",
+              "keysMac": "cmd+down"
+            }
+          },
+          {
+            "icon": {
+              "kind": "lucide",
+              "value": "Volume2"
+            },
+            "label": "Vol Up",
+            "title": {
+              "show": true,
+              "align": "bottom",
+              "size": 14,
+              "bold": true
+            },
+            "action": {
+              "type": "hotkey",
+              "keys": "ctrl+up",
+              "keysMac": "cmd+up"
+            }
+          },
+          {
+            "icon": {
+              "kind": "lucide",
+              "value": "Sparkles"
+            },
+            "label": "Shuffle",
+            "title": {
+              "show": true,
+              "align": "bottom",
+              "size": 14,
+              "bold": true
+            },
+            "action": {
+              "type": "hotkey",
+              "keys": "ctrl+s",
+              "keysMac": "cmd+s"
+            }
+          },
+          {
+            "icon": {
+              "kind": "lucide",
+              "value": "RotateCcw"
+            },
+            "label": "Repeat",
+            "title": {
+              "show": true,
+              "align": "bottom",
+              "size": 14,
+              "bold": true
+            },
+            "action": {
+              "type": "hotkey",
+              "keys": "ctrl+r",
+              "keysMac": "cmd+r"
+            }
+          },
+          {
+            "icon": {
+              "kind": "lucide",
+              "value": "Heart"
+            },
+            "label": "Like",
+            "title": {
+              "show": true,
+              "align": "bottom",
+              "size": 14,
+              "bold": true
+            },
+            "action": {
+              "type": "hotkey",
+              "keys": "alt+shift+b"
+            }
+          },
+          {
+            "icon": {
+              "kind": "lucide",
+              "value": "ListOrdered"
+            },
+            "label": "Queue",
+            "title": {
+              "show": true,
+              "align": "bottom",
+              "size": 14,
+              "bold": true
+            },
+            "action": {
+              "type": "hotkey",
+              "keys": "alt+shift+q"
+            }
+          },
+          {
+            "icon": {
+              "kind": "lucide",
+              "value": "Disc"
+            },
+            "label": "Now Playing",
+            "title": {
+              "show": true,
+              "align": "bottom",
+              "size": 14,
+              "bold": true
+            },
+            "action": {
+              "type": "hotkey",
+              "keys": "alt+shift+j"
+            }
+          },
+          {
+            "icon": {
+              "kind": "lucide",
+              "value": "Home"
+            },
+            "label": "Home",
+            "title": {
+              "show": true,
+              "align": "bottom",
+              "size": 14,
+              "bold": true
+            },
+            "action": {
+              "type": "hotkey",
+              "keys": "alt+shift+h"
+            }
+          },
+          {
+            "icon": {
+              "kind": "lucide",
+              "value": "Search"
+            },
+            "label": "Search",
+            "title": {
+              "show": true,
+              "align": "bottom",
+              "size": 14,
+              "bold": true
+            },
+            "action": {
+              "type": "hotkey",
+              "keys": "ctrl+l",
+              "keysMac": "cmd+l"
+            }
+          },
+          {
+            "icon": {
+              "kind": "lucide",
+              "value": "Folder"
+            },
+            "label": "Library",
+            "title": {
+              "show": true,
+              "align": "bottom",
+              "size": 14,
+              "bold": true
+            },
+            "action": {
+              "type": "hotkey",
+              "keys": "alt+shift+0"
+            }
+          },
+          {
+            "icon": {
+              "kind": "lucide",
+              "value": "VolumeX"
+            },
+            "label": "Mute",
+            "title": {
+              "show": true,
+              "align": "bottom",
+              "size": 14,
+              "bold": true
+            },
+            "action": {
+              "type": "hotkey",
+              "keys": "ctrl+shift+down",
+              "keysMac": "cmd+shift+down"
+            },
+            "color": "#c0392b"
+          },
+          {
+            "icon": {
+              "kind": "lucide",
+              "value": "Settings"
+            },
+            "label": "Settings",
+            "title": {
+              "show": true,
+              "align": "bottom",
+              "size": 14,
+              "bold": true
+            },
+            "action": {
+              "type": "hotkey",
+              "keys": "ctrl+p",
+              "keysMac": "cmd+,"
+            }
+          }
+        ]
+      }
+    ],
+    "defaultTitleStyle": {
+      "show": true,
+      "align": "bottom",
+      "size": 14,
+      "bold": true
+    }
+  }
+}

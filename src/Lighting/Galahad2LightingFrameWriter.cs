@@ -96,7 +96,7 @@ public sealed class Galahad2LightingFrameWriter : IHostedService, IDisposable
 
         var settings         = _store.Load();
         var ls               = settings.Devices.Galahad2Lighting;
-        var globalBrightness = Math.Clamp(settings.Lighting.GlobalBrightness, 0f, 1f);
+        var globalBrightness = MasterBrightness.Effective(settings.Lighting);
         var brightnessRaw    = (byte)Math.Clamp((int)Math.Round(Math.Min((double)ls.Brightness, globalBrightness * 4.0)), 0, 4);
 
         // Both rings share one wire packet: only leave the AIO alone entirely

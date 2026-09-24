@@ -98,6 +98,7 @@ public sealed class CompositeFanControlProvider : IFanControlProvider, ICoolingP
             combined.AddRange(e.Provider.GetFanChannels());
         foreach (var ch in combined)
             InferPumpKind(ch);
+        MarkAioDevices(combined);
         return combined;
     }
 
@@ -112,6 +113,24 @@ public sealed class CompositeFanControlProvider : IFanControlProvider, ICoolingP
             && ch.Name.Contains("pump", StringComparison.OrdinalIgnoreCase))
         {
             ch.Kind = FanKinds.Pump;
+        }
+    }
+
+    // A device that exposes a pump head is an AIO, so every channel on it -
+    // the radiator fans included - belongs to the cooler and is left to the
+    // cooler's own curve. Runs after InferPumpKind so a name-inferred pump
+    // counts. Motherboard channels carry no DeviceId, which is what keeps a
+    // header called "pump" from dragging every case fan in with it.
+    internal static void MarkAioDevices(List<FanChannel> channels)
+    {
+        var aioDevices = channels
+            .Where(c => c.Kind == FanKinds.Pump && !string.IsNullOrEmpty(c.DeviceId))
+            .Select(c => c.DeviceId!)
+            .ToHashSet(StringComparer.Ordinal);
+        if (aioDevices.Count == 0) return;
+        foreach (var ch in channels)
+        {
+            if (ch.DeviceId is { } id && aioDevices.Contains(id)) ch.IsAio = true;
         }
     }
 

@@ -199,6 +199,47 @@ public static class LightingRoutes
             PanelTopics.BroadcastLighting(hub);
             return ApiResponse.Ok();
         }).AllowPanel();
+        // Time-of-day cap on master brightness. Read live by every frame writer
+        // through MasterBrightness.Effective, so a POST lands on the next push.
+        // AllowPanel like the slider: a paired phone toggles it from bed.
+        app.MapGet("/lighting/brightness-schedule", (Nexus.Service.Persistence.IConfigStore store) =>
+        {
+            var schedule = store.Load().Lighting.BrightnessSchedule ?? new();
+            return new Models.Lighting.BrightnessScheduleBody
+            {
+                Enabled = schedule.Enabled,
+                Points = schedule.Points ?? new(),
+                Defaults = Nexus.Service.Lighting.MasterBrightness.DefaultSchedule(),
+            };
+        }).AllowPanel();
+        app.MapPost("/lighting/brightness-schedule", (Models.Lighting.BrightnessScheduleBody body,
+            Nexus.Service.Persistence.IConfigStore store, MultiplexHub hub) =>
+        {
+            // Below the editor's floor there is no curve to interpolate. Values
+            // are clamped rather than refused so an out-of-range hand edit still
+            // saves. One point per hour, the last sent winning, so the writers
+            // and the web readout never disagree on a shared hour.
+            if (body.Points is null || body.Points.Count < 2)
+            {
+                return Results.BadRequest(ApiResponse.Fail("at least two points"));
+            }
+            var byHour = new SortedDictionary<int, Nexus.Service.Persistence.BrightnessSchedulePoint>();
+            foreach (var p in body.Points)
+            {
+                var hour = Math.Clamp(p.Hour, 0, 23);
+                byHour[hour] = new Nexus.Service.Persistence.BrightnessSchedulePoint
+                {
+                    Hour = hour,
+                    Brightness = Math.Clamp(p.Brightness, 0, 100),
+                };
+            }
+            var points = new List<Nexus.Service.Persistence.BrightnessSchedulePoint>(byHour.Values);
+            // Replace the object, never mutate the list: frame writers walk the
+            // reference they read, unlocked.
+            store.Update(s => s.Lighting.BrightnessSchedule = new() { Enabled = body.Enabled, Points = points });
+            PanelTopics.BroadcastLighting(hub);
+            return Results.Ok(ApiResponse.Ok());
+        }).AllowPanel();
         // Render-GPU selection (which card runs the lighting shaders). Host-only
         // (LocalhostOnly) -- a paired phone must not flip the host's GPU. The POST
         // persists + writes the OS preference; applying it needs a service restart
@@ -216,6 +257,21 @@ public static class LightingRoutes
             // re-probes (recovers from a persisted "off" where no card worked).
             GpuRenderSelect.ClearState();
 #endif
+            return ApiResponse.Ok();
+        }).LocalhostOnly();
+        // The GL backend Windows creates the lighting context with. No UI: it is
+        // the escape if a driver ever refuses the direct WGL path, and support
+        // needs to be able to flip it without hand-editing settings.json as
+        // SYSTEM. Restart-to-apply.
+        app.MapGet("/lighting/render-backend", (Nexus.Service.Persistence.IConfigStore store) =>
+            new Models.Lighting.RenderGpuBody { Value = store.Load().Lighting.RenderBackend }).LocalhostOnly();
+        app.MapPost("/lighting/render-backend", (Models.Lighting.RenderGpuBody body,
+            Nexus.Service.Persistence.IConfigStore store) =>
+        {
+            var value = string.Equals(body.Value?.Trim(), "glfw", StringComparison.OrdinalIgnoreCase)
+                ? "glfw"
+                : "wgl";
+            store.Update(s => s.Lighting.RenderBackend = value);
             return ApiResponse.Ok();
         }).LocalhostOnly();
         // Headless start endpoints

@@ -72,6 +72,15 @@ public sealed class RgbBridge : IDisposable
     /// eventually disappears.
     /// </summary>
     private static readonly TimeSpan RescanGracePeriod = TimeSpan.FromSeconds(15);
+    /// <summary>Consecutive connect/refresh failures (each one bounded socket timeout) against a warmed-up daemon before the watchdog restarts it.</summary>
+    private const int WatchdogFailureThreshold = 2;
+    /// <summary>A daemon younger than this is still binding its port; a refused connect is not a wedge.</summary>
+    private static readonly TimeSpan DaemonWarmup = TimeSpan.FromSeconds(20);
+    /// <summary>Minimum gap between watchdog bounces, so a daemon that re-wedges on every re-detect cannot flap lighting.</summary>
+    private static readonly TimeSpan WatchdogFloor = TimeSpan.FromSeconds(60);
+    /// <summary>Watchdog bounces per <see cref="WatchdogWindow"/> before it gives up until the next user rescan.</summary>
+    private const int WatchdogMaxBounces = 3;
+    private static readonly TimeSpan WatchdogWindow = TimeSpan.FromMinutes(10);
 
     // Covers the PawnIO install gate LhmComputer waits on plus the open itself.
     private static readonly TimeSpan LhmEnumerationWait = TimeSpan.FromSeconds(30);
@@ -116,6 +125,15 @@ public sealed class RgbBridge : IDisposable
     // stopped rather than left running unowned.
     private Task? _pendingStart;
     private long _lastConnectAttemptTicks; // DateTime.UtcNow.Ticks; updated via Interlocked
+    // Watchdog state: counted where failures happen, decided inline, no timer.
+    private int _daemonFailures;            // consecutive; Interlocked
+    private bool _connectFailureLogged;     // one log line per disconnected episode
+    private long _lastWatchdogBounceTicks;
+    private long _watchdogWindowStartTicks;
+    private int _watchdogBouncesInWindow;
+    private bool _watchdogGaveUp;
+    /// <summary>Daemon uptime source; tests substitute one since the process manager is sealed.</summary>
+    internal Func<TimeSpan>? DaemonUptimeProbe { get; set; }
     private long _lastBounceTicks;         // DateTime.UtcNow.Ticks; updated via Interlocked
     private long _rescanStartedTicks;      // 0 = no active rescan; else = UtcNow ticks at bounce start
     private int _rescanBaselineCount;      // device count snapshotted when rescan started
@@ -319,6 +337,7 @@ public sealed class RgbBridge : IDisposable
             _shutdownTask = null;
 
             _active = true;
+            ResetWatchdogLocked();
 
             newFrameHandler = OnFrame;
             _frameHandler = newFrameHandler;
@@ -463,10 +482,11 @@ public sealed class RgbBridge : IDisposable
                 { await pendingStart.ConfigureAwait(false); }
                 catch { }
             }
+            // Kill before disconnect: the kill is what frees a request parked on a silent daemon.
+            _proc.Stop();
             try
             { await _controller.DisconnectAsync().ConfigureAwait(false); }
             catch { }
-            _proc.Stop();
         });
 
         lock (_lock)
@@ -548,7 +568,12 @@ public sealed class RgbBridge : IDisposable
     /// Triggered by the OS power-resume event handler. Tears down and restarts
     /// the subprocess so devices re-init after the USB stack re-enumerates.
     /// </summary>
-    public void OnSystemResume() => BounceSubprocess("system-resume");
+    public void OnSystemResume()
+    {
+        lock (_lock)
+        { ResetWatchdogLocked(); }
+        BounceSubprocess("system-resume");
+    }
 
     /// <summary>
     /// User-initiated rescan. The OpenRGB SDK has no RESCAN opcode, so the only
@@ -556,7 +581,29 @@ public sealed class RgbBridge : IDisposable
     /// Use this when a device was plugged but OpenRGB never fired DEVICE_LIST_UPDATED
     /// (plugin that only scans at startup, etc.).
     /// </summary>
-    public void ForceRescan() => BounceSubprocess("user-rescan");
+    public void ForceRescan()
+    {
+        lock (_lock)
+        { ResetWatchdogLocked(); }
+        BounceSubprocess("user-rescan");
+    }
+
+    /// <summary>A competing RGB app exited: re-run detection for the controllers it held. Resets the watchdog, as the app may have been what the daemon was failing on.</summary>
+    public void RecoverAfterConflictExit()
+    {
+        lock (_lock)
+        { ResetWatchdogLocked(); }
+        BounceSubprocess("conflict-exit");
+    }
+
+    private void ResetWatchdogLocked()
+    {
+        _watchdogGaveUp = false;
+        _watchdogBouncesInWindow = 0;
+        _watchdogWindowStartTicks = 0;
+        _connectFailureLogged = false;
+        Interlocked.Exchange(ref _daemonFailures, 0);
+    }
 
     /// <summary>Restarts the daemon so it re-reads OpenRGB.json; manual device registrations are only picked up at launch.</summary>
     public void BounceForManualDevices() => BounceSubprocess("manual-devices");
@@ -629,10 +676,10 @@ public sealed class RgbBridge : IDisposable
             _rescanBaselineCount = _devices.Count;
             baseline = _rescanBaselineCount;
             // A bounce reconstructs every controller, so an identical list is still
-            // new information. Only these two reasons can settle unchanged; a
+            // new information. Only these reasons can settle unchanged; a
             // topology or exclusion bounce alters the list, so its signature re-logs
             // on its own and clearing here would re-print the block on every flap.
-            if (reason is "user-rescan" or "system-resume")
+            if (reason is "user-rescan" or "system-resume" or "watchdog" or "conflict-exit")
             {
                 _loggedDeviceSignatures.Clear();
             }
@@ -640,16 +687,67 @@ public sealed class RgbBridge : IDisposable
         }
         ServiceLog.Info($"[rgb-bridge] bouncing subprocess ({reason}), baseline {baseline} device(s)");
         Interlocked.Exchange(ref _rescanStartedTicks, DateTime.UtcNow.Ticks);
+        Interlocked.Exchange(ref _daemonFailures, 0);
         _ = Task.Run(async () =>
         {
+            _proc.Stop();
             try
             { await _controller.DisconnectAsync().ConfigureAwait(false); }
             catch { }
-            _proc.Stop();
             await Task.Delay(500).ConfigureAwait(false);
             _proc.Start();
+            ServiceLog.Info($"[rgb-bridge] bounce ({reason}): daemon restarted, reconnecting");
             await EnsureConnectedAsync().ConfigureAwait(false);
         });
+    }
+
+    /// <summary>One connect/refresh failure; past the threshold and outside the floor and per-window cap, bounces the daemon.</summary>
+    private void RecordDaemonFailure(string what, string detail)
+    {
+        var uptime = (DaemonUptimeProbe ?? (() => _proc.Uptime))();
+        if (uptime < DaemonWarmup)
+        {
+            return;
+        }
+        var now = DateTime.UtcNow.Ticks;
+        lock (_lock)
+        {
+            // A fresh window re-arms a watchdog that gave up in the previous one.
+            if (_watchdogWindowStartTicks == 0 || now - _watchdogWindowStartTicks > WatchdogWindow.Ticks)
+            {
+                _watchdogWindowStartTicks = now;
+                _watchdogBouncesInWindow = 0;
+                _watchdogGaveUp = false;
+            }
+            if (_watchdogGaveUp)
+            {
+                return;
+            }
+        }
+        var failures = Interlocked.Increment(ref _daemonFailures);
+        ServiceLog.Warn($"[rgb-bridge] daemon {what} failed ({failures}/{WatchdogFailureThreshold}, daemon up {uptime.TotalSeconds:F0}s): {detail}");
+        if (failures < WatchdogFailureThreshold)
+        {
+            return;
+        }
+        Interlocked.Exchange(ref _daemonFailures, 0);
+
+        lock (_lock)
+        {
+            if (_lastWatchdogBounceTicks != 0 && now - _lastWatchdogBounceTicks < WatchdogFloor.Ticks)
+            {
+                return;
+            }
+            if (_watchdogBouncesInWindow >= WatchdogMaxBounces)
+            {
+                _watchdogGaveUp = true;
+                ServiceLog.Warn($"[rgb-bridge] watchdog: {WatchdogMaxBounces} restarts in {WatchdogWindow.TotalMinutes:F0} min and the daemon keeps wedging; giving up until the next rescan");
+                return;
+            }
+            _watchdogBouncesInWindow++;
+            _lastWatchdogBounceTicks = now;
+        }
+        BounceSubprocess("watchdog");
     }
 
     /// <summary>
@@ -740,11 +838,25 @@ public sealed class RgbBridge : IDisposable
 
         if (!_controller.IsConnected)
         {
-            var connected = await _controller.TryConnectAsync().ConfigureAwait(false);
-            if (!connected)
+            bool connected;
+            try
+            { connected = await _controller.TryConnectAsync().ConfigureAwait(false); }
+            catch (Exception ex)
             {
+                RecordDaemonFailure("connect", $"{ex.GetType().Name}: {ex.Message}");
                 return;
             }
+            if (!connected)
+            {
+                if (!_connectFailureLogged)
+                {
+                    _connectFailureLogged = true;
+                    ServiceLog.Info($"[rgb-bridge] connect to daemon failed (running={_proc.IsRunning}); retrying on the refresh cadence");
+                }
+                RecordDaemonFailure("connect", "no SDK handshake");
+                return;
+            }
+            _connectFailureLogged = false;
 
             // Subprocess restarted (crash recovery or explicit bounce): every
             // controller in the new OpenRGB instance is in its cold-start mode.
@@ -788,9 +900,11 @@ public sealed class RgbBridge : IDisposable
             }
             catch (Exception ex)
             {
-                Console.Error.WriteLine($"[rgb-bridge] device refresh failed: {ex.Message}");
+                // The controller dropped the socket on the way out; the next tick reconnects.
+                RecordDaemonFailure("refresh", ex.Message);
                 return;
             }
+            Interlocked.Exchange(ref _daemonFailures, 0);
 
             // Apply any queued or persisted motherboard zone resizes BEFORE the
             // device list becomes the engine's source of truth. Re-fetch the
@@ -946,6 +1060,18 @@ public sealed class RgbBridge : IDisposable
                 _devices = finalList;
             }
 
+            // Move any legacy per-device state on a split motherboard onto its
+            // ARGB header ids before this refresh resolves partitions and
+            // builds frames below. OpenRgbLightingDeviceProvider.GetStructures
+            // runs the same migration, but only when some other caller asks
+            // for structures first - too late once BuildOrReuseFrame has
+            // already cached a frame for the unmigrated shape.
+            if (SplitMotherboardDeviceMigration.NeedsApply(settingsSnapshot, finalList))
+            {
+                _store.Update(s => SplitMotherboardDeviceMigration.Apply(s, finalList));
+                settingsSnapshot = _store.Load();
+            }
+
             // Settled commits reconcile detector exclusions: a device the user
             // fully un-controlled gets snapshotted + denylisted (and the
             // subprocess bounced once to release it); a re-controlled one gets
@@ -983,12 +1109,47 @@ public sealed class RgbBridge : IDisposable
                 // dummy) must not occupy an engine frame or a canvas slot.
                 if (settingsSnapshot.Devices.OpenRgbDetectorExclusions.ContainsKey(d.StableId)) continue;
                 var baseId = d.StableId;
-                var isSplitMotherboard = OpenRgbZoneSupport.IsSplitMotherboard(d);
+
+                // A split motherboard is one device per ARGB header, so each
+                // port resolves its OWN partition: a chain wired to one header
+                // emits a frame per product while the others keep their single
+                // frame. Resolving the board instead would find no partition
+                // (chains are stored under the port id) and every chained card
+                // would go frameless - visible as cards that never light.
+                if (OpenRgbZoneSupport.IsSplitMotherboard(d))
+                {
+                    foreach (var port in OpenRgbZoneSupport.BuildStructures(d, settingsSnapshot))
+                    {
+                        // A chain's slices are in the port's EFFECTIVE count,
+                        // which only equals the hardware count once the header
+                        // accepted the RESIZEZONE. On one that ignores it (the
+                        // 12V case) the later links would otherwise resolve
+                        // past this header and write the next one's LEDs, so
+                        // the port's own region is a hard wall.
+                        var portEnd = port.FrameBaseOffset + port.Segments[0].FrameLedCount;
+                        foreach (var portZone in Nexus.Service.Lighting.Zones.ZoneResolution.Resolve(port, settingsSnapshot))
+                        {
+                            var frameOffset = Nexus.Service.Lighting.Zones.ZoneResolution.FrameOffset(port, portZone);
+                            BuildOrReuseFrame(portZone.Id, d, physicalIndex: d.Index,
+                                zoneIndex: portZone.IsDefault
+                                    ? portZone.LegacyZoneIndex
+                                    : Nexus.Service.Lighting.Zones.ZoneResolution.WholeResizableSegment(port, portZone, settingsSnapshot),
+                                zoneOffset: Math.Min(frameOffset, portEnd),
+                                zoneLedCount: Math.Max(0, Math.Min(portZone.FrameLedCount, portEnd - frameOffset)),
+                                existingFrames, layouts, stripSlot, logicalOrdinal, framesList,
+                                isStrip: true, settingsSnapshot, port, portZone);
+                            stripSlot++;
+                            logicalOrdinal++;
+                        }
+                    }
+                    continue;
+                }
+
                 var structure = OpenRgbZoneSupport.BuildStructure(d, settingsSnapshot);
                 var zones = Nexus.Service.Lighting.Zones.ZoneResolution.Resolve(structure, settingsSnapshot);
                 var isDefault = zones.Count > 0 && zones[0].IsDefault;
 
-                if (isDefault && !isSplitMotherboard)
+                if (isDefault)
                 {
                     BuildOrReuseFrame(baseId, d, physicalIndex: d.Index, zoneIndex: -1, zoneOffset: 0, zoneLedCount: d.LedCount,
                         existingFrames, layouts, cardSlot, logicalOrdinal, framesList, isStrip: false, settingsSnapshot,
@@ -998,35 +1159,15 @@ public sealed class RgbBridge : IDisposable
                     continue;
                 }
 
-                if (isDefault)
-                {
-                    int zoneOffset = 0;
-                    for (int z = 0; z < d.Zones.Count; z++)
-                    {
-                        var zone = d.Zones[z];
-                        var zoneId = $"{baseId}-{z}";
-                        BuildOrReuseFrame(zoneId, d, physicalIndex: d.Index, zoneIndex: z, zoneOffset: zoneOffset, zoneLedCount: zone.LedCount,
-                            existingFrames, layouts, stripSlot, logicalOrdinal, framesList, isStrip: true, settingsSnapshot,
-                            structure, z < zones.Count ? zones[z] : null);
-                        zoneOffset += zone.LedCount;
-                        stripSlot++;
-                        logicalOrdinal++;
-                    }
-                    continue;
-                }
-
                 foreach (var zone in zones)
                 {
                     var frameOffset = Nexus.Service.Lighting.Zones.ZoneResolution.FrameOffset(structure, zone);
-                    var wholeSegment = Nexus.Service.Lighting.Zones.ZoneResolution.WholeResizableSegment(structure, zone);
+                    var wholeSegment = Nexus.Service.Lighting.Zones.ZoneResolution.WholeResizableSegment(structure, zone, settingsSnapshot);
                     BuildOrReuseFrame(zone.Id, d, physicalIndex: d.Index, zoneIndex: wholeSegment, zoneOffset: frameOffset,
                         zoneLedCount: zone.FrameLedCount, existingFrames, layouts,
-                        isSplitMotherboard ? stripSlot : cardSlot, logicalOrdinal, framesList,
-                        isStrip: isSplitMotherboard, settingsSnapshot, structure, zone);
-                    if (isSplitMotherboard)
-                        stripSlot++;
-                    else
-                        cardSlot++;
+                        cardSlot, logicalOrdinal, framesList,
+                        isStrip: false, settingsSnapshot, structure, zone);
+                    cardSlot++;
                     logicalOrdinal++;
                 }
             }
@@ -1126,8 +1267,6 @@ public sealed class RgbBridge : IDisposable
         layouts.TryGetValue(id, out var layout);
         var rot = existing?.Rotation ?? layout?.Rotation ?? 0;
         rot = ((rot % 360) + 360) % 360;
-        if (rot != 0 && rot != 90 && rot != 180 && rot != 270)
-        { rot = 0; }
         // Defaults come from the same helpers the HTTP DTO uses, so DeviceFrame
         // + LightingDevice agree on on-canvas size/position when nothing's been
         // persisted yet.
@@ -1673,6 +1812,8 @@ public sealed class RgbBridge : IDisposable
                 }
                 if (!_controller.IsConnected)
                 {
+                    // With no effect publishing frames this is the only reconnect path; it rate-limits itself.
+                    await EnsureConnectedAsync().ConfigureAwait(false);
                     continue;
                 }
                 await RefreshDevicesAsync().ConfigureAwait(false);
@@ -1787,7 +1928,7 @@ public sealed class RgbBridge : IDisposable
         var uncontrolled = settings.Devices.UncontrolledLightingDevices;
         var uncontrolledCount = uncontrolled.Count;
         var devicePrefs = settings.Devices.LightingDevicePrefs;
-        var globalBrightness = Math.Clamp(settings.Lighting.GlobalBrightness, 0f, 1f);
+        var globalBrightness = MasterBrightness.Effective(settings.Lighting);
         var nowTicks = DateTime.UtcNow.Ticks;
 
         _touchedPhysicals.Clear();

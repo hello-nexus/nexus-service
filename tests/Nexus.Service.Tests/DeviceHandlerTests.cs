@@ -25,7 +25,7 @@ public class DeviceHandlerTests
     {
         var h = TestHandlers.Cnvs();
         Assert.Equal("cnvs", h.Id);
-        Assert.Equal("CNVS", h.Name);
+        Assert.Equal("HYTE CNVS", h.Name);
         Assert.Equal("controller", h.Category);
         Assert.NotEmpty(h.Identifiers);
     }
@@ -195,28 +195,32 @@ public class DeviceHandlerTests
     [InlineData(false, false, false, false, null)]                      // neither
     [InlineData(false, false, true, false, null)]                       // digitizer alone (no Y70 EDID) warns nothing
     [InlineData(false, false, false, true, null)]                       // GW/Ina EDID gone (unplugged) warns nothing
-    public void Y70_warning_matrix(bool serialConnected, bool hasDisplay, bool touchOnlyUsb, bool ddcOnlyPanel, string? expected)
+    [InlineData(true, null, false, false, null)]                        // topology unknown (no helper yet): serial up is not "cable unplugged"
+    [InlineData(false, null, false, false, null)]                       // topology unknown, no serial
+    public void Y70_warning_matrix(bool serialConnected, bool? hasDisplay, bool touchOnlyUsb, bool ddcOnlyPanel, string? expected)
     {
         Assert.Equal(expected, Y70Handler.ComputeWarning(serialConnected, hasDisplay, touchOnlyUsb, ddcOnlyPanel));
     }
 
     [Theory]
-    [InlineData("RTK1234", "y70-gw")]
-    [InlineData("RTK2345", "y70-ina")]
-    public void Y70_ddc_only_monitor_has_no_warning_and_reports_its_variant(string edidFragment, string expectedVariant)
+    [InlineData("RTK1234", "y70-gw", "HYTE Y70 Touch GW")]
+    [InlineData("RTK2345", "y70-ina", "HYTE Y70 Ina Touch")]
+    public void Y70_ddc_only_monitor_has_no_warning_and_reports_its_variant(string edidFragment, string expectedVariant, string expectedName)
     {
         var h = TestHandlers.Y70(TopologyWithMonitor(edidFragment));
         Assert.True(h.IsConnected(new List<UsbDeviceEntry>()));
         Assert.Null(h.GetWarning(new List<UsbDeviceEntry>()));
         Assert.Equal(expectedVariant, h.FirmwareType);
+        Assert.Equal(expectedName, h.Name);
     }
 
     [Fact]
-    public void Y70_serial_variant_monitor_only_keeps_keyless_firmware_type()
+    public void Y70_serial_variant_monitor_only_keeps_keyless_firmware_type_and_family_name()
     {
         var h = TestHandlers.Y70(TopologyWithY70Monitor());
         Assert.Equal("usb-disconnected", h.GetWarning(new List<UsbDeviceEntry>()));
         Assert.Equal("y70", h.FirmwareType);
+        Assert.Equal("HYTE Y70 Touch", h.Name);
     }
 
     [Fact]

@@ -96,12 +96,17 @@ if (OperatingSystem.IsWindows() && !testHost)
     Nexus.Service.Lifecycle.PawnIoBootGate.Arm();
 
 // Root system daemon (full hardware access) adopts the active user's session
-// env - D-Bus, runtime dir, config home, display - so the tray, MPRIS media,
-// volume, and dashboard launcher keep working. No-op for a --user install.
-// Done FIRST so HOME/XDG_* are correct before anything (e.g. the service log)
-// resolves a path from them.
+// env - D-Bus, runtime dir, display, and HOME for the desktop files we read -
+// so the tray, MPRIS media, volume, and dashboard launcher keep working. No-op
+// for a --user install. Returns without waiting when nobody is logged in yet;
+// our own stores never ride on HOME here, so the rest of the boot is unaffected.
+// Still done first, so a session that already exists is adopted before any
+// desktop-derived path resolves.
+// Skipped under the test host: an integration fixture running as root would
+// adopt the machine data root and leave a polling thread behind per fixture.
 #if LINUX
-Nexus.Service.Platform.Linux.LinuxSession.AdoptActiveSessionEnv();
+if (!testHost)
+    Nexus.Service.Platform.Linux.LinuxSession.AdoptActiveSessionEnv();
 #endif
 
 // Capture stdout / stderr to a rotating nexus-service.log file before anything else
@@ -153,6 +158,12 @@ if (!testHost)
 {
     Nexus.Service.Lifecycle.DataLayoutMigration.Run();
     Nexus.Service.Lifecycle.BootTimer.Mark("after DataLayoutMigration");
+
+    // db/ holds screen time, app usage and AI history. Under the root daemon's
+    // shared store that has to be owner-only, and it has to be so before the
+    // first store creates it with the umask's mode. No-op everywhere else.
+    Nexus.Service.Persistence.NexusDataPaths.CreateRestrictedDirectory(
+        Nexus.Service.Persistence.NexusDataPaths.DatabaseDir());
 }
 
 // Cold-start self-elevation: when the user double-clicks the EXE while no
@@ -303,6 +314,7 @@ builder.WebHost.ConfigureKestrel(k =>
         }));
     }
 });
+builder.Services.AddSingleton<Microsoft.AspNetCore.Connections.IMemoryPoolFactory<byte>, Nexus.Service.Platform.LargeBlockMemoryPoolFactory>();
 builder.Services.Configure<Microsoft.AspNetCore.Http.Features.FormOptions>(o =>
 {
     o.MultipartBodyLengthLimit = System.Math.Max(Nexus.Service.Media.MediaImporter.MaxFileSize, Nexus.Service.Panel.PanelBgImporter.MaxFileSize);
@@ -530,8 +542,16 @@ app.UseStaticFiles(new StaticFileOptions
 {
     OnPrepareResponse = ctx =>
     {
-        if (ctx.Context.Request.Path.StartsWithSegments("/assets"))
-            ctx.Context.Response.Headers.CacheControl = "public, max-age=31536000, immutable";
+        var path = ctx.Context.Request.Path;
+        if (!path.StartsWithSegments("/assets")) return;
+        // Vite's bundles under /assets are content-hashed, so they can be
+        // immutable. The device and brand icons are copied there unhashed from
+        // nexus-web/public and must revalidate, or a redrawn icon never
+        // reaches an install that already cached it.
+        ctx.Context.Response.Headers.CacheControl =
+            path.StartsWithSegments("/assets/devices") || path.StartsWithSegments("/assets/brands")
+                ? "no-cache"
+                : "public, max-age=31536000, immutable";
     },
 });
 
@@ -581,6 +601,7 @@ app.MapGameSyncEndpoints();
 app.MapWebcamEndpoints();
 app.MapObsEndpoints();
 app.MapTwitchEndpoints();
+app.MapKlipyEndpoints();
 app.MapSteamEndpoints();
 app.MapDiscordEndpoints();
 app.MapDevicesEndpoints();
@@ -588,6 +609,7 @@ app.MapPeripheralEndpoints();
 app.MapKeebEndpoints();
 app.MapStreamDeckEndpoints();
 app.MapDeckImageEndpoints();
+app.MapDeckEndpoints();
 app.MapDisplayEndpoints();
 app.MapActivityEndpoints();
 app.MapLifecycleEndpoints();
@@ -698,6 +720,12 @@ if (!testHost)
 
     // Register nexus:// protocol handler (idempotent - safe on every launch)
     Nexus.Service.Platform.ProtocolHandler.Register();
+#if LINUX
+    // A root daemon that booted before login registered into /root; re-run once
+    // the real home is adopted so the handler lands in the user's own data dir.
+    Nexus.Service.Platform.Linux.LinuxSession.SessionAdopted +=
+        Nexus.Service.Platform.ProtocolHandler.Register;
+#endif
     Nexus.Service.Lifecycle.BootTimer.Mark("after ProtocolHandler.Register");
 }
 
@@ -783,6 +811,7 @@ return 0;
 // dies with the process.
 static void FastServiceShutdown(WebApplication app)
 {
+    Nexus.Service.Lifecycle.UserHelperBootstrapper.NoteServiceStopping();
     var sp = app.Services;
     var sw = System.Diagnostics.Stopwatch.StartNew();
     var osShutdown = Nexus.Service.Lifecycle.HostShutdown.IsOsShutdown;
@@ -826,6 +855,7 @@ static void FastServiceShutdown(WebApplication app)
             catch { }
         }),
         Task.Run(() => { try { sp.GetService<Nexus.Service.Peripherals.StreamDeck.StreamDeckConnectionWorker>()?.ResetConnectedSurfacesForShutdown(); } catch { } }),
+        Task.Run(() => { try { sp.GetService<Nexus.Service.Peripherals.Nollie.NollieConnectionWorker>()?.ReleaseAllForShutdown(); } catch { } }),
         Task.Run(() => { try { sp.GetService<Nexus.Service.Common.ExternalTools.ExternalToolManager>()?.TerminateAll(); } catch { } }),
 #if DEV_TOOLS
         Task.Run(() => { try { sp.GetService<Nexus.Service.Mcp.Assistant.OllamaRuntimeManager>()?.StopChildForShutdown(); } catch { } }),

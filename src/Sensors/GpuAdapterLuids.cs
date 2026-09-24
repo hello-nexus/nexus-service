@@ -20,7 +20,11 @@ namespace Nexus.Service.Sensors;
 /// </summary>
 internal static class GpuAdapterLuids
 {
-    public readonly record struct Adapter(string Luid, string Description, uint VendorId, long DedicatedVramMb);
+    /// <param name="UmdVersion">The user-mode driver version DXGI reports, 0
+    /// when the adapter has none; a driver update changes it.</param>
+    public readonly record struct Adapter(
+        string Luid, string Description, uint VendorId, long DedicatedVramMb,
+        uint DeviceId = 0, uint SubSysId = 0, uint Revision = 0, long UmdVersion = 0);
 
 #if WINDOWS
     // Microsoft's PCI vendor id, used by the Basic Render Driver (WARP) and
@@ -68,6 +72,9 @@ internal static class GpuAdapterLuids
     }
 
 #if WINDOWS
+    // IID_IDXGIDevice: the interface CheckInterfaceSupport reports the UMD version for.
+    private static readonly Guid DxgiDeviceIid = new("54ec77fa-1377-44e6-8c32-88fd5f44c84c");
+
     private static IReadOnlyList<Adapter> EnumerateUncached()
     {
         var list = new List<Adapter>();
@@ -84,11 +91,17 @@ internal static class GpuAdapterLuids
                     if ((d.Flags & AdapterFlags.Software) == 0)
                     {
                         long vramMb = (long)((ulong)d.DedicatedVideoMemory / (1024UL * 1024UL));
+                        // Fails on adapters with no D3D user-mode driver; 0 then.
+                        adapter.CheckInterfaceSupport(DxgiDeviceIid, out long umd);
                         list.Add(new Adapter(
                             $"{d.Luid.HighPart}:{d.Luid.LowPart}",
                             d.Description ?? "",
                             d.VendorId,
-                            vramMb));
+                            vramMb,
+                            d.DeviceId,
+                            d.SubsystemId,
+                            d.Revision,
+                            umd));
                     }
                 }
                 finally { adapter.Dispose(); }

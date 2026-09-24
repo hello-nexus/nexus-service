@@ -5,6 +5,7 @@ using System.Threading;
 using System.Threading.Tasks;
 using Nexus.Service.Models.Cooling;
 using Nexus.Service.Peripherals.Hyte.SmartHub;
+using Nexus.Service.Platform;
 
 namespace Nexus.Service.Cooling;
 
@@ -183,12 +184,12 @@ public sealed class SmartHubCoolingProvider : IFanControlProvider, ICoolingProvi
         if (!IsSmartHubId(channelId)) return;
         if (!_hub.IsConnected)
         {
-            Console.Error.WriteLine($"[smarthub-cooling] write to {channelId} dropped: hub not connected");
+            ServiceLog.Warn($"[smarthub-cooling] write to {channelId} dropped: hub not connected");
             return;
         }
         if (!TryParseChannel(channelId, out var index))
         {
-            Console.Error.WriteLine($"[smarthub-cooling] write to {channelId} dropped: unparseable channel id");
+            ServiceLog.Warn($"[smarthub-cooling] write to {channelId} dropped: unparseable channel id");
             return;
         }
 
@@ -196,8 +197,13 @@ public sealed class SmartHubCoolingProvider : IFanControlProvider, ICoolingProvi
         // GetFanChannels reports Mode="Manual" and the panel doesn't snap the
         // selection back to BIOS on the cooling-topic refresh.
         lock (_ctrlLock) _softwareControlled.Add(channelId);
+        // Silent on success, as in MiniHubCoolingProvider: commanded duty is
+        // already traceable via the heartbeat's periodic State.Fans[].Duty line.
         var ok = _hub.WriteFanSpeed(index, dutyPercent, enabled: true);
-        Console.Error.WriteLine($"[smarthub-cooling] {channelId} -> {dutyPercent}% (writeOk={ok})");
+        if (!ok)
+        {
+            ServiceLog.Warn($"[smarthub-cooling] write to {channelId} -> {dutyPercent}% failed");
+        }
     }
 
     private bool IsSoftwareControlled(string id)

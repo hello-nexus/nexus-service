@@ -147,8 +147,14 @@ public sealed class TransferInbox
 #endif
     }
 
-    private static string FallbackDir() => Path.Combine(
-        Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData), "Nexus", "inbox");
+    private static string FallbackDir() =>
+        // CommonApplicationData is /usr/share on Linux - root-owned, and
+        // read-only on an rpm-ostree box. The root daemon has a writable root
+        // of its own, and hits this branch whenever nobody is logged in yet.
+        Nexus.Service.Persistence.NexusDataPaths.SystemDaemonRoot is { } daemonRoot
+            ? Path.Combine(daemonRoot, "inbox")
+            : Path.Combine(
+                Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData), "Nexus", "inbox");
 
 #if WINDOWS
     private static Microsoft.Win32.SafeHandles.SafeAccessTokenHandle? TryOpenSessionToken(int sessionId)

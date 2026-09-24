@@ -1,7 +1,6 @@
-uniform float u_speed;
-uniform float u_depth;  // extra: frame spacing / fly rate (0.5..4)
-uniform float u_square; // extra: 0 = round rings, 1 = screen-fitted rectangle
-uniform float u_glow;   // extra: frame glow (0.3..2)
+uniform float u_depth; // hint_range(0.5, 4.0, 0.05) = 1.2  frame spacing / fly rate
+uniform float u_square; // hint_range(0.0, 1.0, 0.02) = 1.0  0 = round rings, 1 = screen-fitted rectangle
+uniform float u_glow; // hint_range(0.3, 2.0, 0.05) = 1.0  frame glow
 
 // Rectangular infinity-mirror tunnel. Uses NON aspect-corrected centred
 // coords (uv01*2-1), so the box metric max(|x|,|y|)=1 hugs the actual

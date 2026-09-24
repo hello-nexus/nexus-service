@@ -1,0 +1,309 @@
+{
+  "format": 1,
+  "id": "microsoft-teams",
+  "name": "Microsoft Teams",
+  "author": "Nexus",
+  "version": "1.0.0",
+  "description": "Meeting controls and app navigation for Microsoft Teams.",
+  "match": {
+    "processNames": [
+      "ms-teams",
+      "teams"
+    ],
+    "displayNames": [
+      "Microsoft Teams"
+    ]
+  },
+  "cols": 5,
+  "rows": 3,
+  "deck": {
+    "pages": [
+      {
+        "slots": [
+          {
+            "icon": {
+              "kind": "lucide",
+              "value": "MicOff"
+            },
+            "label": "Mute",
+            "title": {
+              "show": true,
+              "align": "bottom",
+              "size": 14,
+              "bold": true
+            },
+            "action": {
+              "type": "hotkey",
+              "keys": "ctrl+shift+m",
+              "keysMac": "cmd+shift+m"
+            },
+            "color": "#c0392b"
+          },
+          {
+            "icon": {
+              "kind": "lucide",
+              "value": "Camera"
+            },
+            "label": "Camera",
+            "title": {
+              "show": true,
+              "align": "bottom",
+              "size": 14,
+              "bold": true
+            },
+            "action": {
+              "type": "hotkey",
+              "keys": "ctrl+shift+o",
+              "keysMac": "cmd+shift+o"
+            },
+            "color": "#2874a6"
+          },
+          {
+            "icon": {
+              "kind": "lucide",
+              "value": "Bell"
+            },
+            "label": "Raise Hand",
+            "title": {
+              "show": true,
+              "align": "bottom",
+              "size": 14,
+              "bold": true
+            },
+            "action": {
+              "type": "hotkey",
+              "keys": "ctrl+shift+k",
+              "keysMac": "cmd+shift+k"
+            }
+          },
+          {
+            "icon": {
+              "kind": "lucide",
+              "value": "Monitor"
+            },
+            "label": "Share",
+            "title": {
+              "show": true,
+              "align": "bottom",
+              "size": 14,
+              "bold": true
+            },
+            "action": {
+              "type": "hotkey",
+              "keys": "ctrl+shift+e",
+              "keysMac": "cmd+shift+e"
+            }
+          },
+          {
+            "icon": {
+              "kind": "lucide",
+              "value": "LogOut"
+            },
+            "label": "Leave",
+            "title": {
+              "show": true,
+              "align": "bottom",
+              "size": 14,
+              "bold": true
+            },
+            "action": {
+              "type": "hotkey",
+              "keys": "ctrl+shift+h",
+              "keysMac": "cmd+shift+h"
+            },
+            "color": "#c0392b"
+          },
+          {
+            "icon": {
+              "kind": "lucide",
+              "value": "Image"
+            },
+            "label": "Blur",
+            "title": {
+              "show": true,
+              "align": "bottom",
+              "size": 14,
+              "bold": true
+            },
+            "action": {
+              "type": "hotkey",
+              "keys": "ctrl+shift+p",
+              "keysMac": "cmd+shift+p"
+            }
+          },
+          {
+            "icon": {
+              "kind": "lucide",
+              "value": "Headphones"
+            },
+            "label": "Accept Audio",
+            "title": {
+              "show": true,
+              "align": "bottom",
+              "size": 14,
+              "bold": true
+            },
+            "action": {
+              "type": "hotkey",
+              "keys": "ctrl+shift+s",
+              "keysMac": "cmd+shift+s"
+            },
+            "color": "#1e8449"
+          },
+          {
+            "icon": {
+              "kind": "lucide",
+              "value": "Camera"
+            },
+            "label": "Accept Video",
+            "title": {
+              "show": true,
+              "align": "bottom",
+              "size": 14,
+              "bold": true
+            },
+            "action": {
+              "type": "hotkey",
+              "keys": "ctrl+shift+a",
+              "keysMac": "cmd+shift+a"
+            },
+            "color": "#1e8449"
+          },
+          {
+            "icon": {
+              "kind": "lucide",
+              "value": "Power"
+            },
+            "label": "Decline",
+            "title": {
+              "show": true,
+              "align": "bottom",
+              "size": 14,
+              "bold": true
+            },
+            "action": {
+              "type": "hotkey",
+              "keys": "ctrl+shift+d",
+              "keysMac": "cmd+shift+d"
+            },
+            "color": "#c0392b"
+          },
+          {
+            "icon": {
+              "kind": "lucide",
+              "value": "MessageSquare"
+            },
+            "label": "Chat",
+            "title": {
+              "show": true,
+              "align": "bottom",
+              "size": 14,
+              "bold": true
+            },
+            "action": {
+              "type": "hotkey",
+              "keys": "ctrl+2",
+              "keysMac": "cmd+2"
+            }
+          },
+          {
+            "icon": {
+              "kind": "lucide",
+              "value": "Layers"
+            },
+            "label": "Teams",
+            "title": {
+              "show": true,
+              "align": "bottom",
+              "size": 14,
+              "bold": true
+            },
+            "action": {
+              "type": "hotkey",
+              "keys": "ctrl+3",
+              "keysMac": "cmd+3"
+            }
+          },
+          {
+            "icon": {
+              "kind": "lucide",
+              "value": "Calendar"
+            },
+            "label": "Calendar",
+            "title": {
+              "show": true,
+              "align": "bottom",
+              "size": 14,
+              "bold": true
+            },
+            "action": {
+              "type": "hotkey",
+              "keys": "ctrl+4",
+              "keysMac": "cmd+4"
+            }
+          },
+          {
+            "icon": {
+              "kind": "lucide",
+              "value": "Headphones"
+            },
+            "label": "Calls",
+            "title": {
+              "show": true,
+              "align": "bottom",
+              "size": 14,
+              "bold": true
+            },
+            "action": {
+              "type": "hotkey",
+              "keys": "ctrl+5",
+              "keysMac": "cmd+5"
+            }
+          },
+          {
+            "icon": {
+              "kind": "lucide",
+              "value": "Search"
+            },
+            "label": "Search",
+            "title": {
+              "show": true,
+              "align": "bottom",
+              "size": 14,
+              "bold": true
+            },
+            "action": {
+              "type": "hotkey",
+              "keys": "ctrl+e",
+              "keysMac": "cmd+e"
+            }
+          },
+          {
+            "icon": {
+              "kind": "lucide",
+              "value": "Settings"
+            },
+            "label": "Settings",
+            "title": {
+              "show": true,
+              "align": "bottom",
+              "size": 14,
+              "bold": true
+            },
+            "action": {
+              "type": "hotkey",
+              "keys": "ctrl+,",
+              "keysMac": "cmd+,"
+            }
+          }
+        ]
+      }
+    ],
+    "defaultTitleStyle": {
+      "show": true,
+      "align": "bottom",
+      "size": 14,
+      "bold": true
+    }
+  }
+}

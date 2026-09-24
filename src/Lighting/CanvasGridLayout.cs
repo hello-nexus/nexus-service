@@ -16,8 +16,8 @@ internal static class CanvasGridLayout
     private const float CanvasW = 1000f;
     private const float CanvasH = 600f;
     private const float Pad = 12f;
-    private const float MaxCardW = 240f;
-    private const float MaxCardH = 60f;
+    private const float MaxCardW = 140f;
+    private const float MaxCardH = 120f;
     /// <summary>
     /// Half the vertical offset between neighbouring columns, before the
     /// per-cell slack clamp in <see cref="Slot"/> bounds it. The UI draws a
@@ -45,6 +45,12 @@ internal static class CanvasGridLayout
         // ballooning to canvas-size.
         var cardW = Math.Min(MaxCardW, cellW * 0.92f);
         var cardH = Math.Min(MaxCardH, cellH * 0.7f);
+        // Held to the MaxCard aspect at every density: clamping each axis on its
+        // own turns the card wide and short in a wide cell, and a grid or ring
+        // LED map renders letterboxed in it.
+        var fit = Math.Min(cardW / MaxCardW, cardH / MaxCardH);
+        cardW = MaxCardW * fit;
+        cardH = MaxCardH * fit;
 
         var s = ((index % (cols * rows)) + cols * rows) % (cols * rows);
         var col = s % cols;
@@ -63,8 +69,12 @@ internal static class CanvasGridLayout
 
         // Defensive clamp - float residue at the cell edges, which a fully
         // clamped stagger lands a card flush against, can fall a hair outside.
-        if (x + cardW > CanvasW - Pad) x = CanvasW - Pad - cardW;
-        if (y + cardH > CanvasH - Pad) y = CanvasH - Pad - cardH;
+        // Compared against the far edge minus the card rather than against the
+        // card's own right/bottom: float addition and subtraction round the
+        // other way, so `x + cardW > limit` can read false while x still
+        // exceeds `limit - cardW` by an ulp.
+        if (x > CanvasW - Pad - cardW) x = CanvasW - Pad - cardW;
+        if (y > CanvasH - Pad - cardH) y = CanvasH - Pad - cardH;
         if (x < Pad) x = Pad;
         if (y < Pad) y = Pad;
 

@@ -43,6 +43,9 @@ public sealed class StreamedPanelProfile
     /// <summary>The panel takes a backlight command, so its record carries a brightness.</summary>
     public bool SupportsBrightness { get; init; }
 
+    /// <summary>The panel's transport can hand the glass to Windows as a secondary monitor.</summary>
+    public bool SupportsSecondaryMonitor { get; init; }
+
     public required int CssWidth { get; init; }
     public required int CssHeight { get; init; }
     public double Dpr { get; init; } = 1.0;
@@ -75,6 +78,7 @@ public sealed class StreamedPanelProfile
         Surface = Surface,
         Family = Family,
         SupportsBrightness = SupportsBrightness ? true : null,
+        SupportsSecondaryMonitor = SupportsSecondaryMonitor ? true : null,
         Touch = false,
         CssWidth = CssWidth,
         CssHeight = CssHeight,

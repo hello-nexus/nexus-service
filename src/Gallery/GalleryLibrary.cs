@@ -15,7 +15,7 @@ namespace Nexus.Service.Gallery;
 
 /// <summary>
 /// Per-system gallery source registry + item enumeration. Sources are
-/// referenced files/folders on local disk plus uploaded images; every panel
+/// referenced image and video files/folders on local disk; every panel
 /// surface of this PC draws from the same set. sources.json (plus the upload
 /// files themselves) is the only persisted state - folders are rescanned on
 /// each enumeration so external file changes show up without a watcher.
@@ -26,6 +26,12 @@ public sealed class GalleryLibrary
     public const int MaxItemsPerFolder = 500;
 
     private static readonly string[] ImageExtensions = { ".jpg", ".jpeg", ".png", ".webp", ".gif", ".bmp", ".avif" };
+    // Containers the panel WebViews (Chromium 83 on the Q-series, WebView2,
+    // WKWebView) open natively; nothing is transcoded, so any other container
+    // is refused up front. The codec inside is not checked - an HEVC clip in
+    // one of these passes here and is skipped by the widget when it fails to
+    // decode.
+    private static readonly string[] VideoExtensions = { ".mp4", ".m4v", ".webm", ".mov" };
 
     // Folder sources scan recursively; depth-bounded so a junction/symlink
     // cycle can't spin, inaccessible subtrees are skipped silently.
@@ -68,6 +74,14 @@ public sealed class GalleryLibrary
         var ext = Path.GetExtension(path).ToLowerInvariant();
         return Array.IndexOf(ImageExtensions, ext) >= 0;
     }
+
+    public static bool IsVideoFile(string path)
+    {
+        var ext = Path.GetExtension(path).ToLowerInvariant();
+        return Array.IndexOf(VideoExtensions, ext) >= 0;
+    }
+
+    public static bool IsMediaFile(string path) => IsImageFile(path) || IsVideoFile(path);
 
     /// <summary>
     /// Stable item id: first 16 hex chars of SHA-256 of the canonical path.
@@ -131,7 +145,7 @@ public sealed class GalleryLibrary
         if (kind == GallerySourceKinds.File)
         {
             if (!File.Exists(full)) return Fail("file not found");
-            if (!IsImageFile(full)) return Fail("unsupported image format");
+            if (!IsMediaFile(full)) return Fail("unsupported media format");
         }
         else if (!Directory.Exists(full))
         {
@@ -255,7 +269,7 @@ public sealed class GalleryLibrary
                 try
                 {
                     files = Directory.EnumerateFiles(source.Path, "*", FolderScanOptions)
-                        .Where(IsImageFile)
+                        .Where(IsMediaFile)
                         .Take(MaxItemsPerFolder)
                         .OrderBy(p => p, StringComparer.OrdinalIgnoreCase)
                         .ToList();
@@ -270,7 +284,7 @@ public sealed class GalleryLibrary
                     AddItem(file, source.Id, name: null, source.Excluded);
                 }
             }
-            else if (File.Exists(source.Path) && IsImageFile(source.Path))
+            else if (File.Exists(source.Path) && IsMediaFile(source.Path))
             {
                 AddItem(source.Path, source.Id, source.Name, excluded: null);
             }
@@ -308,6 +322,7 @@ public sealed class GalleryLibrary
                     Id = id,
                     Name = string.IsNullOrEmpty(name) ? Path.GetFileName(full) : name,
                     SourceId = sourceId,
+                    Kind = IsVideoFile(full) ? GalleryItemKinds.Video : GalleryItemKinds.Image,
                 });
             }
         }

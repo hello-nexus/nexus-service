@@ -87,6 +87,30 @@ public class SmartHubProtocolTests
         Assert.Equal(new byte[] { 0xFF, 0xCC, 0x07, 0x01 }, SmartHubProtocol.BuildSetFirmwareAnimation(on: false));
     }
 
+    [Fact]
+    public void BuildGetFirmwareAnimation_emits_FF_CC_08()
+    {
+        Assert.Equal(new byte[] { 0xFF, 0xCC, 0x08 }, SmartHubProtocol.BuildGetFirmwareAnimation());
+    }
+
+    [Theory]
+    [InlineData(0x00, true)]
+    [InlineData(0x01, false)]
+    public void TryParseFirmwareAnimation_reads_the_inverted_flag_from_byte_4(byte fwAnimOff, bool expectedOn)
+    {
+        // Y50 firmware main.c Get_Default_Animation: FF CC 08 <startAnimOff> <fwAnimOff> 00 00.
+        var response = new byte[] { 0xFF, 0xCC, 0x08, 0x00, fwAnimOff, 0x00, 0x00 };
+        Assert.True(SmartHubProtocol.TryParseFirmwareAnimation(response, out var on));
+        Assert.Equal(expectedOn, on);
+    }
+
+    [Fact]
+    public void TryParseFirmwareAnimation_rejects_short_or_wrong_header_responses()
+    {
+        Assert.False(SmartHubProtocol.TryParseFirmwareAnimation(new byte[] { 0xFF, 0xCC, 0x08, 0x00, 0x00 }, out _));
+        Assert.False(SmartHubProtocol.TryParseFirmwareAnimation(new byte[] { 0xFF, 0xCC, 0x0D, 0x00, 0x00, 0x00, 0x00 }, out _));
+    }
+
     // ── MCU setting (firmware FW_Animation, FF CC 0C / FF CC 0D) ──
 
     [Fact]

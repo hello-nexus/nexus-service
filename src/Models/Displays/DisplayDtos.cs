@@ -97,6 +97,8 @@ public static class DisplayBrightnessControlPaths
     public const string WindowsInternal = "windows-internal";
     public const string LinuxBacklight = "linux-backlight";
     public const string MacosInternal = "macos-internal";
+    /// <summary>The Y70 panel: driven by the Y70 provider (serial / RGB gains / VCP by variant), not the generic DDC path.</summary>
+    public const string Y70 = "y70";
 }
 
 public static class DisplayBrightnessWriteModes

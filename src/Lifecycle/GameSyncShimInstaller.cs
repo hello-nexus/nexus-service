@@ -164,7 +164,7 @@ public static class GameSyncShimInstaller
 
         if (!Directory.Exists(BundleX64Dir) || !Directory.Exists(BundleX86Dir))
         {
-            ServiceLog.Error("[chroma-shim] bundled shim directory missing");
+            ServiceLog.Info("[chroma-shim] bundled shim directory missing; Game Sync stays inactive");
             return ChromaShimInstallResult.BundleMissing;
         }
 

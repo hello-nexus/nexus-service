@@ -186,16 +186,16 @@ public sealed class Np50CoolingProvider : IFanControlProvider, ICoolingProvider
 
     public void ReleaseFan(string channelId)
     {
-        // NP50 cooling mode is hub-level; flip back to Motherboard only when
-        // every channel on the hub has been released, so a wire-DnD
-        // disconnect on one fan doesn't yank PWM out from under sibling
-        // fans that are still actively driven.
+        // NP50 cooling mode is hub-level; hand back only when every channel on
+        // the hub has been released, so a wire-DnD disconnect on one fan
+        // doesn't yank PWM out from under sibling fans that are still
+        // actively driven.
         if (!channelId.StartsWith("np50:", StringComparison.Ordinal)) return;
         _softwareControlled.Remove(channelId);
         if (!_hub.IsConnected) return;
         if (_softwareControlled.Count == 0)
         {
-            _hub.SetDesiredCoolingMode(Np50Protocol.ModeMotherboard);
+            HandBack();
         }
     }
 
@@ -203,6 +203,16 @@ public sealed class Np50CoolingProvider : IFanControlProvider, ICoolingProvider
     {
         _softwareControlled.Clear();
         if (!_hub.IsConnected) return;
+        HandBack();
+    }
+
+    // A released hub runs the firmware's standalone behaviour (Static at the
+    // device-page setpoint, or motherboard PWM, per its EEPROM default) - the
+    // same thing the cooling page's FW Control hands it to. Only when that
+    // EEPROM read fails does it fall back to plain motherboard PWM.
+    private void HandBack()
+    {
+        if (_hub.ApplyFirmwareStandaloneMode()) return;
         _hub.SetDesiredCoolingMode(Np50Protocol.ModeMotherboard);
     }
 

@@ -1,7 +1,7 @@
-uniform float u_speed;
-uniform float u_points;    // extra: spike count (6..16)
-uniform float u_core;      // extra: core radius (0.05..0.3)
-uniform float u_flare;     // extra: spike flare sharpness (0.2..2)
+uniform float u_points; // hint_range(6.0, 16.0, 1.0) = 12.0  spike count
+uniform float u_core; // hint_range(0.05, 0.3, 0.01) = 0.1  core radius
+uniform float u_flare; // hint_range(0.2, 2.0, 0.05) = 1.0  spike flare sharpness
+uniform float u_audioBoost; // hint_range(0.0, 2.0, 0.05) = 1.0
 
 // Radial star whose spike lengths reflect the spectrum. Idle: star rotates
 // slowly and breathes, so it's always visually alive. Audio: each of the

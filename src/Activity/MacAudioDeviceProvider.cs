@@ -44,6 +44,7 @@ public sealed class MacAudioDeviceProvider : IAudioDeviceProvider
 
     public bool SetDefaultOutput(string deviceId) => SetDefault(deviceId, DefaultOutputDevice);
     public bool SetDefaultInput(string deviceId) => SetDefault(deviceId, DefaultInputDevice);
+    public bool SetSpatial(string deviceId, string formatId) => false;
 
     private static bool SetDefault(string uid, uint selector)
     {
@@ -101,7 +102,8 @@ public sealed class MacAudioDeviceProvider : IAudioDeviceProvider
         finally { CFRelease(cfStr); }
     }
 
-    private static uint TranslateUidToDevice(string uid)
+    /// <summary>Shared with <see cref="MacVolumeProvider"/>'s device-targeted overloads.</summary>
+    internal static uint TranslateUidToDevice(string uid)
     {
         var cf = CFStringCreateWithBytes(IntPtr.Zero, Encoding.UTF8.GetBytes(uid), Encoding.UTF8.GetByteCount(uid), kCFStringEncodingUTF8, false);
         if (cf == IntPtr.Zero) return 0;

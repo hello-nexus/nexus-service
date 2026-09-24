@@ -145,6 +145,143 @@ public static class NollieProtocol
         return $"Channel {channel + 1}";
     }
 
+    // ── Ports ──
+    // The 32-channel board's two Lian Li Strimer connectors are six channels
+    // each, one per light strip of the cable, so the user wires ONE cable and
+    // gets one card: the lanes laid end to end. Lane sizes follow the vendor's
+    // own OpenRGB guidance for these channels, which are the strip lengths
+    // L-Connect drives (StrimerProtocol); a shorter harness leaves the tail
+    // channels at zero.
+
+    private const int StrimerAtxFirstChannel = 16;
+    private const int StrimerGpuFirstChannel = 22;
+    private const int StrimerLanes = 6;
+    private const int StrimerBoardChannels = 32;
+
+    /// <summary>Catalog products a fresh Strimer port is pre-wired with; the triple 8-pin is the six-lane harness.</summary>
+    public const string StrimerAtxProductKey = "product:lianli-lian-li-atx-24-pin-strimer";
+    public const string StrimerGpuProductKey = "product:lianli-lian-li-gpu-triple-8-pin-strimers";
+
+    /// <summary>Cards for a controller: one per channel, except the Strimer bundles on a 32-channel board.</summary>
+    internal static NolliePort[] BuildPorts(int channels, int maxLedsPerChannel)
+    {
+        var ports = new List<NolliePort>(channels);
+        for (var ch = 0; ch < channels; ch++)
+        {
+            if (channels == StrimerBoardChannels && ch == StrimerAtxFirstChannel)
+            {
+                ports.Add(new NolliePort("strimer-atx", "Strimer ATX", ch, StrimerLanes,
+                    Strimer.StrimerProtocol.AtxLedsPerZone, StrimerAtxProductKey));
+                ch += StrimerLanes - 1;
+                continue;
+            }
+            if (channels == StrimerBoardChannels && ch == StrimerGpuFirstChannel)
+            {
+                ports.Add(new NolliePort("strimer-gpu", "Strimer GPU", ch, StrimerLanes,
+                    Strimer.StrimerProtocol.GpuLedsPerZone, StrimerGpuProductKey));
+                ch += StrimerLanes - 1;
+                continue;
+            }
+            ports.Add(new NolliePort($"ch{ch}", ChannelName(ch), ch, 1, maxLedsPerChannel, null));
+        }
+        return ports.ToArray();
+    }
+
+    // ── Standalone lighting ──
+    // What the board runs on its own once the host lets go. The original
+    // 16/32-channel firmware takes one settings report (0x80) carrying a
+    // static colour or its built-in effect, plus the MOS bit that the vendor
+    // driver sets for a dual 8-pin GPU Strimer; a 0xFF report then hands the
+    // strips over. The legacy 1/8-channel firmware takes a static colour on
+    // its 0xFE command family and hands over on 0xFE 0x01. OS2 firmware has
+    // neither, so a board on that VID reports no standalone support.
+
+    /// <summary>Milliseconds between the settings report and the hand-off, per the vendor driver.</summary>
+    public const int ReleaseSettleMs = 50;
+    private const byte SettingsCommand = 0x80;
+    private const byte StandaloneStaticEffect = 0x03;
+    private const byte StandaloneBuiltInEffect = 0x01;
+    private const byte LegacyCommand = 0xFE;
+    private const byte LegacyStaticSubcommand = 0x02;
+    private const byte LegacyReleaseSubcommand = 0x01;
+
+    /// <summary>True when the firmware takes a standalone colour at all: the original 16/32 and the legacy 1/8 (the 28-series has no reference for it).</summary>
+    public static bool SupportsStandalone(NollieDevice device)
+        => device.VendorId == VendorIdHighChannel || TakesLegacyStandalone(device);
+
+    /// <summary>True when the firmware also offers its built-in effect as the standalone mode.</summary>
+    public static bool SupportsBuiltInEffect(NollieDevice device)
+        => device.VendorId == VendorIdHighChannel;
+
+    /// <summary>
+    /// True when the settings report may go out while frames are streaming.
+    /// The vendor driver re-sends it to the original firmware whenever the
+    /// Strimer cable choice changes; to the legacy firmware it sends the
+    /// colour only before the first frame and at the hand-off.
+    /// </summary>
+    public static bool TakesStandaloneMidStream(NollieDevice device)
+        => device.VendorId == VendorIdHighChannel;
+
+    private static bool TakesLegacyStandalone(NollieDevice device)
+        => device.VendorId == VendorIdLegacy && device.ProductId is 0x1F01 or 0x1F11;
+
+    /// <summary>
+    /// Fills the standalone settings report. False for a board whose firmware
+    /// takes none, in which case the report is left untouched.
+    /// </summary>
+    public static bool WriteStandalone(Span<byte> report, NollieDevice device, bool builtIn, bool mos, byte r, byte g, byte b)
+    {
+        if (device.VendorId == VendorIdHighChannel)
+        {
+            report.Clear();
+            report[1] = SettingsCommand;
+            report[2] = mos ? (byte)1 : (byte)0;
+            report[3] = builtIn ? StandaloneBuiltInEffect : StandaloneStaticEffect;
+            report[4] = r;
+            report[5] = g;
+            report[6] = b;
+            return true;
+        }
+        if (TakesLegacyStandalone(device))
+        {
+            // Trailing bytes as the vendor driver sends them; the firmware
+            // exposes no meaning for them.
+            report.Clear();
+            report[1] = LegacyCommand;
+            report[2] = LegacyStaticSubcommand;
+            report[3] = 0;
+            report[4] = r;
+            report[5] = g;
+            report[6] = b;
+            report[7] = 0x64;
+            report[8] = 0x0A;
+            report[9] = 0x00;
+            report[10] = 0x01;
+            return true;
+        }
+        return false;
+    }
+
+    /// <summary>Fills the report that hands the strips to the firmware. False for OS2 boards, which have no such command.</summary>
+    public static bool WriteRelease(Span<byte> report, NollieDevice device)
+    {
+        if (device.VendorId == VendorIdHighChannel)
+        {
+            report.Clear();
+            report[1] = 0xFF;
+            return true;
+        }
+        if (TakesLegacyStandalone(device))
+        {
+            report.Clear();
+            report[1] = LegacyCommand;
+            report[2] = LegacyReleaseSubcommand;
+            report[3] = 0;
+            return true;
+        }
+        return false;
+    }
+
     /// <summary>Out-of-band channels needing a marker byte and a settle delay; keyed on the hardware channel value, as the reference driver does, so a 16-channel board's hw channel 15 also qualifies.</summary>
     public static bool IsFlagChannel(NollieDevice device, int hardwareChannel)
         => device.Transport == NollieTransport.Wide
@@ -277,4 +414,35 @@ public sealed record NollieDevice(
     /// <summary>Hardware channel driven by card <paramref name="cardIndex"/>.</summary>
     public int HardwareChannel(int cardIndex)
         => cardIndex >= 0 && cardIndex < ChannelMap.Length ? ChannelMap[cardIndex] : cardIndex;
+
+    /// <summary>The cards this controller presents, in card order. See <see cref="NollieProtocol.BuildPorts"/>.</summary>
+    public IReadOnlyList<NolliePort> Ports { get; } = NollieProtocol.BuildPorts(Channels, MaxLedsPerChannel);
+}
+
+/// <summary>
+/// One card of a controller. A plain ARGB header is one lane; a Strimer
+/// connector is six, and its LED space is the lanes back to back, so lane k
+/// carries LEDs [k * LaneLedCount, (k + 1) * LaneLedCount) of the port and
+/// a shorter cable leaves the tail lanes empty.
+/// </summary>
+/// <param name="Slug">Id suffix under the controller id ("ch3", "strimer-atx").</param>
+/// <param name="Name">Card label without the controller name.</param>
+/// <param name="FirstChannel">Card index of lane 0; lane k is card FirstChannel + k.</param>
+/// <param name="Lanes">Hardware channels the port spans.</param>
+/// <param name="LaneLedCount">LEDs one lane carries at most.</param>
+/// <param name="DefaultProductKey">Catalog product a never-configured port is pre-wired with, or null to seed a bare count.</param>
+public sealed record NolliePort(
+    string Slug,
+    string Name,
+    int FirstChannel,
+    int Lanes,
+    int LaneLedCount,
+    string? DefaultProductKey)
+{
+    /// <summary>Ceiling on the port's declared count: every lane full.</summary>
+    public int MaxLedCount => Lanes * LaneLedCount;
+
+    /// <summary>LEDs lane <paramref name="lane"/> carries when the port holds <paramref name="total"/>.</summary>
+    public int LaneLeds(int total, int lane)
+        => Math.Clamp(total - lane * LaneLedCount, 0, LaneLedCount);
 }

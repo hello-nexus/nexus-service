@@ -845,6 +845,79 @@ public sealed class LayoutPresetRoutesTests : IClassFixture<StubDeviceHostFactor
     }
 
     [Fact]
+    public async Task Static_lock_route_locks_a_look_and_the_colour_route_then_refuses_it()
+    {
+        await _client.PostAsync(
+            "/devices/lighting-devices/color",
+            Json("""{"id":"dev-a","hue":0.5,"saturation":1,"effect":"flat","color":"#abcdef"}"""));
+
+        var lockRes = await _client.PostAsync(
+            "/devices/lighting-devices/static-lock",
+            Json("""{"id":"dev-a","locked":true}"""));
+        Assert.Equal(HttpStatusCode.OK, lockRes.StatusCode);
+        Assert.True(Store.Load().Lighting.StaticDeviceLooks["dev-a"].Locked);
+
+        var res = await _client.GetAsync("/devices/lighting-devices/static-looks");
+        using var doc = JsonDocument.Parse(await res.Content.ReadAsStringAsync());
+        Assert.True(doc.RootElement.GetProperty("looks").GetProperty("dev-a").GetProperty("locked").GetBoolean());
+
+        // Locked: a new pick is refused and the stored look is untouched.
+        var repick = await _client.PostAsync(
+            "/devices/lighting-devices/color",
+            Json("""{"id":"dev-a","hue":0.1,"saturation":1,"effect":"flat","color":"#000000"}"""));
+        Assert.Equal(HttpStatusCode.Conflict, repick.StatusCode);
+        Assert.Equal("#abcdef", Store.Load().Lighting.StaticDeviceLooks["dev-a"].Color);
+
+        // Unlocked: the same pick lands.
+        await _client.PostAsync(
+            "/devices/lighting-devices/static-lock",
+            Json("""{"id":"dev-a","locked":false}"""));
+        var again = await _client.PostAsync(
+            "/devices/lighting-devices/color",
+            Json("""{"id":"dev-a","hue":0.1,"saturation":1,"effect":"flat","color":"#000000"}"""));
+        Assert.Equal(HttpStatusCode.OK, again.StatusCode);
+        Assert.Equal("#000000", Store.Load().Lighting.StaticDeviceLooks["dev-a"].Color);
+    }
+
+    [Fact]
+    public async Task Static_lock_route_needs_a_look_to_lock()
+    {
+        var res = await _client.PostAsync(
+            "/devices/lighting-devices/static-lock",
+            Json("""{"id":"dev-none","locked":true}"""));
+        Assert.Equal(HttpStatusCode.NotFound, res.StatusCode);
+    }
+
+    [Fact]
+    public async Task A_preset_round_trips_the_lock()
+    {
+        await _client.PostAsync(
+            "/devices/lighting-devices/color",
+            Json("""{"id":"dev-a","hue":0.5,"saturation":1,"effect":"flat","color":"#abcdef"}"""));
+        await _client.PostAsync(
+            "/devices/lighting-devices/static-lock",
+            Json("""{"id":"dev-a","locked":true}"""));
+        var createRes = await _client.PostAsync(
+            "/devices/lighting-devices/layout-presets",
+            Json("""{"name":"Locked"}"""));
+        using var createDoc = JsonDocument.Parse(await createRes.Content.ReadAsStringAsync());
+        var id = createDoc.RootElement.GetProperty("preset").GetProperty("id").GetString()!;
+        Assert.True(Store.Load().Lighting.LayoutPresets.Find(p => p.Id == id)!.StaticDeviceLooks!["dev-a"].Locked);
+
+        // A second preset takes the live state, so unlocking there leaves the
+        // first one's lock alone; activating the first brings the lock back.
+        await _client.PostAsync(
+            "/devices/lighting-devices/layout-presets",
+            Json("""{"name":"Open"}"""));
+        await _client.PostAsync(
+            "/devices/lighting-devices/static-lock",
+            Json("""{"id":"dev-a","locked":false}"""));
+        Assert.False(Store.Load().Lighting.StaticDeviceLooks["dev-a"].Locked);
+        await _client.PostAsync($"/devices/lighting-devices/layout-presets/{id}/activate", Json("{}"));
+        Assert.True(Store.Load().Lighting.StaticDeviceLooks["dev-a"].Locked);
+    }
+
+    [Fact]
     public async Task Colour_post_mirrors_the_assignment_into_the_active_preset()
     {
         var createRes = await _client.PostAsync(

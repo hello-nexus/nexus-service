@@ -1,0 +1,303 @@
+{
+  "format": 1,
+  "id": "slack",
+  "name": "Slack",
+  "author": "Nexus",
+  "version": "1.0.0",
+  "description": "Navigation, unreads and huddle controls for Slack.",
+  "match": {
+    "processNames": [
+      "slack"
+    ],
+    "displayNames": [
+      "Slack"
+    ]
+  },
+  "cols": 5,
+  "rows": 3,
+  "deck": {
+    "pages": [
+      {
+        "slots": [
+          {
+            "icon": {
+              "kind": "lucide",
+              "value": "Search"
+            },
+            "label": "Quick Switch",
+            "title": {
+              "show": true,
+              "align": "bottom",
+              "size": 14,
+              "bold": true
+            },
+            "action": {
+              "type": "hotkey",
+              "keys": "ctrl+k",
+              "keysMac": "cmd+k"
+            }
+          },
+          {
+            "icon": {
+              "kind": "lucide",
+              "value": "Mail"
+            },
+            "label": "All Unreads",
+            "title": {
+              "show": true,
+              "align": "bottom",
+              "size": 14,
+              "bold": true
+            },
+            "action": {
+              "type": "hotkey",
+              "keys": "ctrl+shift+a",
+              "keysMac": "cmd+shift+a"
+            }
+          },
+          {
+            "icon": {
+              "kind": "lucide",
+              "value": "MessageSquare"
+            },
+            "label": "Threads",
+            "title": {
+              "show": true,
+              "align": "bottom",
+              "size": 14,
+              "bold": true
+            },
+            "action": {
+              "type": "hotkey",
+              "keys": "ctrl+shift+t",
+              "keysMac": "cmd+shift+t"
+            }
+          },
+          {
+            "icon": {
+              "kind": "lucide",
+              "value": "Bell"
+            },
+            "label": "Mentions",
+            "title": {
+              "show": true,
+              "align": "bottom",
+              "size": 14,
+              "bold": true
+            },
+            "action": {
+              "type": "hotkey",
+              "keys": "ctrl+shift+m",
+              "keysMac": "cmd+shift+m"
+            }
+          },
+          {
+            "icon": {
+              "kind": "lucide",
+              "value": "AppWindow"
+            },
+            "label": "DMs",
+            "title": {
+              "show": true,
+              "align": "bottom",
+              "size": 14,
+              "bold": true
+            },
+            "action": {
+              "type": "hotkey",
+              "keys": "ctrl+shift+k",
+              "keysMac": "cmd+shift+k"
+            }
+          },
+          {
+            "icon": {
+              "kind": "lucide",
+              "value": "ArrowUp"
+            },
+            "label": "Prev Channel",
+            "title": {
+              "show": true,
+              "align": "bottom",
+              "size": 14,
+              "bold": true
+            },
+            "action": {
+              "type": "hotkey",
+              "keys": "alt+up"
+            },
+            "color": "#4a5568"
+          },
+          {
+            "icon": {
+              "kind": "lucide",
+              "value": "ArrowDown"
+            },
+            "label": "Next Channel",
+            "title": {
+              "show": true,
+              "align": "bottom",
+              "size": 14,
+              "bold": true
+            },
+            "action": {
+              "type": "hotkey",
+              "keys": "alt+down"
+            },
+            "color": "#4a5568"
+          },
+          {
+            "icon": {
+              "kind": "lucide",
+              "value": "ChevronLeft"
+            },
+            "label": "Prev Unread",
+            "title": {
+              "show": true,
+              "align": "bottom",
+              "size": 14,
+              "bold": true
+            },
+            "action": {
+              "type": "hotkey",
+              "keys": "alt+shift+up"
+            },
+            "color": "#4a5568"
+          },
+          {
+            "icon": {
+              "kind": "lucide",
+              "value": "ChevronRight"
+            },
+            "label": "Next Unread",
+            "title": {
+              "show": true,
+              "align": "bottom",
+              "size": 14,
+              "bold": true
+            },
+            "action": {
+              "type": "hotkey",
+              "keys": "alt+shift+down"
+            },
+            "color": "#4a5568"
+          },
+          {
+            "icon": {
+              "kind": "lucide",
+              "value": "Eye"
+            },
+            "label": "Mark All Read",
+            "title": {
+              "show": true,
+              "align": "bottom",
+              "size": 14,
+              "bold": true
+            },
+            "action": {
+              "type": "hotkey",
+              "keys": "shift+escape"
+            }
+          },
+          {
+            "icon": {
+              "kind": "lucide",
+              "value": "Headphones"
+            },
+            "label": "Huddle",
+            "title": {
+              "show": true,
+              "align": "bottom",
+              "size": 14,
+              "bold": true
+            },
+            "action": {
+              "type": "hotkey",
+              "keys": "ctrl+shift+h",
+              "keysMac": "cmd+shift+h"
+            },
+            "color": "#1e8449"
+          },
+          {
+            "icon": {
+              "kind": "lucide",
+              "value": "MicOff"
+            },
+            "label": "Huddle Mute",
+            "title": {
+              "show": true,
+              "align": "bottom",
+              "size": 14,
+              "bold": true
+            },
+            "action": {
+              "type": "hotkey",
+              "keys": "ctrl+shift+space",
+              "keysMac": "cmd+shift+space"
+            },
+            "color": "#c0392b"
+          },
+          {
+            "icon": {
+              "kind": "lucide",
+              "value": "Sparkles"
+            },
+            "label": "Set Status",
+            "title": {
+              "show": true,
+              "align": "bottom",
+              "size": 14,
+              "bold": true
+            },
+            "action": {
+              "type": "hotkey",
+              "keys": "ctrl+shift+y",
+              "keysMac": "cmd+shift+y"
+            }
+          },
+          {
+            "icon": {
+              "kind": "lucide",
+              "value": "Upload"
+            },
+            "label": "Upload",
+            "title": {
+              "show": true,
+              "align": "bottom",
+              "size": 14,
+              "bold": true
+            },
+            "action": {
+              "type": "hotkey",
+              "keys": "ctrl+u",
+              "keysMac": "cmd+u"
+            }
+          },
+          {
+            "icon": {
+              "kind": "lucide",
+              "value": "Settings"
+            },
+            "label": "Preferences",
+            "title": {
+              "show": true,
+              "align": "bottom",
+              "size": 14,
+              "bold": true
+            },
+            "action": {
+              "type": "hotkey",
+              "keys": "ctrl+,",
+              "keysMac": "cmd+,"
+            }
+          }
+        ]
+      }
+    ],
+    "defaultTitleStyle": {
+      "show": true,
+      "align": "bottom",
+      "size": 14,
+      "bold": true
+    }
+  }
+}

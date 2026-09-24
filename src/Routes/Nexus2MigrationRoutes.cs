@@ -21,6 +21,7 @@ namespace Nexus.Service.Routes;
 ///   POST /migration/nexus2/dismiss            -> { dismissed: true }
 ///   POST /migration/nexus2/disable-autostart  -> ApiResponse
 ///   POST /migration/nexus2/close-app          -> ApiResponse
+///   POST /migration/nexus2/uninstall          -> ApiResponse
 ///   POST /migration/nexus2/preview            -> Nexus2PreviewResponse
 ///   POST /migration/nexus2/apply              -> Nexus2ApplyResponse
 /// </summary>
@@ -68,6 +69,14 @@ internal static class Nexus2MigrationRoutes
             var response = await detector.CloseAppAsync()
                 ? ApiResponse.Ok("Nexus 2 closed")
                 : ApiResponse.Fail("Could not close Nexus 2");
+            return Results.Json(response, AppJsonContext.Default.ApiResponse);
+        }).LocalhostOnly();
+
+        app.MapPost("/migration/nexus2/uninstall", async (INexus2Detector detector) =>
+        {
+            var response = await detector.UninstallAsync()
+                ? ApiResponse.Ok("Nexus 2 uninstalled")
+                : ApiResponse.Fail("Could not uninstall Nexus 2");
             return Results.Json(response, AppJsonContext.Default.ApiResponse);
         }).LocalhostOnly();
 

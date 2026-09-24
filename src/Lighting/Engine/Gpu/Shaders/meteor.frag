@@ -1,6 +1,5 @@
-uniform float u_speed;
-uniform float u_streaks; // extra: number of streaks (1..16)
-uniform float u_width;   // extra: head radius / trail thickness
+uniform float u_streaks; // hint_range(1.0, 16.0, 1.0) = 6.0  number of streaks
+uniform float u_width; // hint_range(0.03, 0.3, 0.005) = 0.13  head radius / trail thickness
 void main() {
     vec2 uv = uvCentered();
     float t = u_time * u_speed * 0.42;

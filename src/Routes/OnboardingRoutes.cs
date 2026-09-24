@@ -3,22 +3,23 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.AspNetCore.Http;
 using Nexus.Service.Auth;
 using Nexus.Service.Persistence;
+using Nexus.Service.Sockets;
 
 namespace Nexus.Service.Routes;
 
 /// <summary>
-/// First-run onboarding state (dashboard-only, loopback). The desktop
-/// dashboard shows a one-time welcome screen on first launch, then the
-/// feature-pillars screen, then a one-time lighting device-selection screen,
-/// and marks each complete so it never reappears, unless a factory reset
-/// wipes settings.json.
-/// Dashboard-only by design - a paired phone has no onboarding, so these
-/// are <see cref="LocalhostOnlyEndpointExtensions.LocalhostOnly"/> (no
-/// .AllowPanel()).
+/// One-time onboarding flags in settings.json; a factory reset wipes them.
+/// The desktop dashboard's first-run screens (welcome, feature pillars,
+/// lighting device selection) are
+/// <see cref="LocalhostOnlyEndpointExtensions.LocalhostOnly"/>:
 ///   GET  /onboarding                    -> { completed, featuresCompleted, lightingCompleted }
 ///   POST /onboarding/complete           -> set completed, return status
 ///   POST /onboarding/features-complete  -> set featuresCompleted, return status
 ///   POST /onboarding/lighting-complete  -> set lightingCompleted, return status
+/// The touch-panel swipe-up hint's flag is .AllowPanel() and not loopback-bound,
+/// since a paired phone is a touch panel too:
+///   GET  /onboarding/panel-swipe           -> { completed }
+///   POST /onboarding/panel-swipe/complete  -> set panel-swipe completed
 /// </summary>
 internal static class OnboardingRoutes
 {
@@ -67,23 +68,35 @@ internal static class OnboardingRoutes
             return Results.Ok(Status(store));
         }).LocalhostOnly();
 
+        app.MapGet("/onboarding/panel-swipe", (IConfigStore store) =>
+            Results.Ok(PanelSwipeStatus(store))).AllowPanel();
+
+        app.MapPost("/onboarding/panel-swipe/complete", (IConfigStore store) =>
+        {
+            store.Update(s => s.PanelSwipeOnboardingCompleted = true);
+            return Results.Ok(PanelSwipeStatus(store));
+        }).AllowPanel();
+
         // Replays the whole sequence. The two import latches are cleared as
         // well, or the import step is silently skipped - they are per-app flags
         // the migration routes own, not onboarding ones. An app that is no
         // longer installed still will not be offered: that gate also requires
         // live detection.
-        app.MapPost("/onboarding/reset", (IConfigStore store) =>
+        app.MapPost("/onboarding/reset", (IConfigStore store, MultiplexHub hub) =>
         {
             store.Update(s =>
             {
                 s.OnboardingCompleted = false;
                 s.FeaturesOnboardingCompleted = false;
                 s.LightingOnboardingCompleted = false;
+                s.PanelSwipeOnboardingCompleted = false;
                 s.Nexus2MigrationOffered = false;
                 s.FanControlImportOffered = false;
             });
             // Re-close, or notifications keep firing through the replay.
             Nexus.Service.Notifications.NotificationGate.Initialize(onboardingComplete: false);
+            // A live kiosk re-reads its swipe-hint flag on this topic.
+            PanelTopics.BroadcastPrefs(hub);
             return Results.Ok(Status(store));
         }).LocalhostOnly();
     }
@@ -98,6 +111,14 @@ internal static class OnboardingRoutes
             LightingCompleted = s.LightingOnboardingCompleted,
         };
     }
+
+    private static PanelSwipeOnboardingDto PanelSwipeStatus(IConfigStore store)
+        => new() { Completed = store.Load().PanelSwipeOnboardingCompleted };
+}
+
+public sealed class PanelSwipeOnboardingDto
+{
+    public bool Completed { get; set; }
 }
 
 public sealed class OnboardingStatusDto

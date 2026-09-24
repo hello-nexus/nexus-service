@@ -1,6 +1,7 @@
 using System.Collections.Concurrent;
 using Nexus.Service.Models.Displays;
 using Nexus.Service.Panel;
+using Nexus.Service.Peripherals.Y70;
 
 namespace Nexus.Service.Platform.Displays;
 
@@ -15,16 +16,22 @@ public sealed class DisplayBrightnessController
     private readonly IDisplayBrightnessProvider _provider;
     private readonly PanelDeviceRegistry? _panelDevices;
     private readonly Nexus.Service.Persistence.IConfigStore? _store;
+    private readonly DisplayTopologyService? _topology;
+    private readonly IY70Provider? _y70;
     private readonly ConcurrentDictionary<string, DisplayWriteState> _states = new();
 
     public DisplayBrightnessController(
         IDisplayBrightnessProvider provider,
         PanelDeviceRegistry? panelDevices = null,
-        Nexus.Service.Persistence.IConfigStore? store = null)
+        Nexus.Service.Persistence.IConfigStore? store = null,
+        DisplayTopologyService? topology = null,
+        IY70Provider? y70 = null)
     {
         _provider = provider;
         _panelDevices = panelDevices;
         _store = store;
+        _topology = topology;
+        _y70 = y70;
     }
 
     /// <summary>Displays the user turned brightness control off for. Passed
@@ -47,6 +54,7 @@ public sealed class DisplayBrightnessController
                 continue;
             }
             if (IsXeneonEdge(display.Id)) SuppressBrightnessControl(display);
+            else if (IsY70(display.Id)) RouteThroughY70(display);
         }
         return new DisplayListResponse
         {
@@ -56,7 +64,10 @@ public sealed class DisplayBrightnessController
     }
 
     public int? GetBrightness(string id)
-        => IsXeneonEdge(id) || DdcDisabled().Contains(id) ? null : _provider.GetBrightness(id);
+    {
+        if (IsXeneonEdge(id) || DdcDisabled().Contains(id)) return null;
+        return IsY70(id) ? _y70!.GetBrightness() : _provider.GetBrightness(id);
+    }
 
     /// <summary>
     /// Turn DDC/CI on or off for one display and persist it. Off means Nexus
@@ -107,8 +118,23 @@ public sealed class DisplayBrightnessController
             };
         }
 
-        var state = _states.GetOrAdd(id, _ => new DisplayWriteState());
         var requested = ClampPercent(percent);
+        if (IsY70(id))
+        {
+            // The provider picks the panel's transport (serial FF CC, RGB
+            // gains or VCP 0x10 by variant) and does its own coalescing.
+            _y70!.SetBrightness(requested);
+            return new DisplayBrightnessDto
+            {
+                Id = id,
+                RequestedBrightness = requested,
+                AppliedBrightness = requested,
+                Brightness = requested,
+                Status = DisplayBrightnessWriteStatuses.Applied,
+            };
+        }
+
+        var state = _states.GetOrAdd(id, _ => new DisplayWriteState());
         var waiter = new TaskCompletionSource<DisplayBrightnessDto>(TaskCreationOptions.RunContinuationsAsynchronously);
 
         lock (state.Gate)
@@ -213,6 +239,28 @@ public sealed class DisplayBrightnessController
         var record = _panelDevices.FindByDisplayId(displayId);
         return record is not null
             && string.Equals(record.Capabilities?.Family, KnownPanelDisplays.XeneonEdgeFamily, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// True when <paramref name="displayId"/> is the Y70 panel's monitor. A
+    /// raw DDC VCP 0x10 write is a no-op on the serial models (Infinite) and
+    /// undercuts the gain path on the original Touch, so the generic DDC
+    /// route never drives it; the Y70 provider owns the transport choice.
+    /// </summary>
+    private bool IsY70(string displayId)
+        => _y70 is not null && _topology is not null && displayId.Length > 0
+            && string.Equals(_topology.Y70DisplayId(), displayId, StringComparison.Ordinal);
+
+    private void RouteThroughY70(DisplayDto display)
+    {
+        display.Capabilities.Brightness = true;
+        display.BrightnessControl = new DisplayBrightnessControlDto
+        {
+            Supported = true,
+            Current = _y70!.GetBrightness(),
+            ControlPath = DisplayBrightnessControlPaths.Y70,
+            WriteMode = DisplayBrightnessWriteModes.Immediate,
+        };
     }
 
     private static void SuppressBrightnessControl(

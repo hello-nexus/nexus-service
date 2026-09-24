@@ -1,7 +1,7 @@
-uniform float u_speed;
-uniform float u_thickness; // extra: trace thickness (0.002..0.04)
-uniform float u_harmonics; // extra: number of harmonic layers (1..5)
-uniform float u_glow;      // extra: trace glow (0.3..2)
+uniform float u_thickness; // hint_range(0.002, 0.04, 0.001) = 0.012  trace thickness
+uniform float u_harmonics; // hint_range(1.0, 5.0, 1.0) = 3.0  number of harmonic layers
+uniform float u_glow; // hint_range(0.3, 2.0, 0.05) = 1.0  trace glow
+uniform float u_audioBoost; // hint_range(0.0, 2.0, 0.05) = 1.0
 
 // Full-frame oscilloscope. Idle: layered traveling sine waves at several
 // frequencies, tinted across the palette. Audio: each harmonic layer is

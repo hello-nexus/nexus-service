@@ -77,6 +77,36 @@ public sealed class GalleryLibraryTests : IDisposable
         Assert.True(result.Error);
     }
 
+    [Theory]
+    [InlineData("clip.mp4")]
+    [InlineData("clip.M4V")]
+    [InlineData("clip.webm")]
+    [InlineData("clip.mov")]
+    public void AddReference_AcceptsNativeVideoContainers(string name)
+    {
+        var path = WriteImage(name);
+
+        var result = NewLibrary().AddReference(path, GallerySourceKinds.File);
+
+        Assert.False(result.Error, result.Msg);
+    }
+
+    // No transcoder sits between the file and the panel's <video>, so a
+    // container Chromium cannot open is refused at add time rather than
+    // enumerated as an item that never plays. (Codecs are not inspected.)
+    [Theory]
+    [InlineData("clip.mkv")]
+    [InlineData("clip.avi")]
+    [InlineData("clip.wmv")]
+    public void AddReference_RejectsVideoContainersPanelsCannotPlay(string name)
+    {
+        var path = WriteImage(name);
+
+        var result = NewLibrary().AddReference(path, GallerySourceKinds.File);
+
+        Assert.True(result.Error);
+    }
+
     [Fact]
     public void AddReference_RejectsUnknownKind()
     {
@@ -154,6 +184,23 @@ public sealed class GalleryLibraryTests : IDisposable
         // Recursive (users point at a Pictures root whose images live in
         // subfolders), images only, path-sorted.
         Assert.Equal(new[] { "apple.jpg", "deep.png", "zebra.png" }, items.Select(i => i.Name).ToArray());
+    }
+
+    [Fact]
+    public void EnumerateItems_TagsVideosByKind_AndSkipsUnplayableContainers()
+    {
+        WriteImage("photo.jpg");
+        WriteImage("clip.mp4");
+        WriteImage("clip.mkv");
+
+        var lib = NewLibrary();
+        lib.AddReference(_photosDir, GallerySourceKinds.Folder);
+
+        var items = lib.EnumerateItems();
+
+        Assert.Equal(new[] { "clip.mp4", "photo.jpg" }, items.Select(i => i.Name).ToArray());
+        Assert.Equal(GalleryItemKinds.Video, items[0].Kind);
+        Assert.Equal(GalleryItemKinds.Image, items[1].Kind);
     }
 
     [Fact]

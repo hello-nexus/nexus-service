@@ -1,5 +1,4 @@
-uniform float u_speed;
-uniform float u_turbulence; // extra: flame turbulence (0.5..3)
+uniform float u_turbulence; // hint_range(1.0, 3.0, 0.05) = 1.6  flame turbulence
 
 // Anisotropic flame field: tall not square, scrolls upward over time,
 // sampled at a low-freq domain-warped coordinate so tongues lick

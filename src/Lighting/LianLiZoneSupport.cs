@@ -8,18 +8,20 @@ using Nexus.Service.Persistence;
 namespace Nexus.Service.Lighting;
 
 /// <summary>
-/// Channel composition for the Lian Li Uni Hub. The hub drives 4 ports, each a
-/// pair of physical channels (inner ring = 2p, outer ring = 2p+1), 16 LEDs per
-/// fan per channel. Composition turns those channels into a configurable set of
-/// partitionable devices:
+/// Channel composition for the Lian Li Uni Hub. The hub drives 4 ports; on the
+/// SL-Infinity each port is a pair of physical channels (inner ring = 2p, outer
+/// ring = 2p+1, 8 and 12 LEDs per fan), on the SL v1 a single channel (one
+/// 16-LED ring per fan). Composition turns those channels into a configurable
+/// set of partitionable devices:
 ///
 ///   - One device per active port (a port has fans &gt; 0); the device set and
 ///     LED counts follow the per-port fan counts set on the device page.
 ///   - Combine on: a device's inner+outer rings are one zone (1-card default).
 ///   - Combine off: inner and outer are two zones (the legacy 2-card default,
 ///                  keeping the `:inner` / `:outer` ids so prior edits survive).
+///   - Single-channel families always emit one ring segment and one zone.
 ///
-/// Each device is an ordinary 2-segment structure, so the user can re-partition
+/// Each device is an ordinary segment structure, so the user can re-partition
 /// it with the zone system independent of the composition choice.
 /// </summary>
 public static class LianLiZoneSupport
@@ -31,6 +33,9 @@ public static class LianLiZoneSupport
     // inside the outer ring per fan. u is divided by the fan count so each
     // fan keeps a round ring inside its 1/fans-wide column.
     private const float InnerRadius = 0.24f;
+
+    // A lone ring per fan (SL v1) fills its column; no outer strip to clear.
+    private const float SingleRingRadius = 0.4f;
 
     /// <summary>
     /// The hub's composition. Lian Li never mirrors, so Mirror is forced false
@@ -60,11 +65,11 @@ public static class LianLiZoneSupport
     }
 
     /// <summary>Every resolved zone id across the hub's current devices (composition + partitions applied).</summary>
-    public static List<string> ZoneIds(NexusSettings settings, string hubId)
+    public static List<string> ZoneIds(NexusSettings settings, string hubId, in LianLiFanProfile profile)
     {
         var comp = ReadComposition(settings, hubId);
         var ids = new List<string>();
-        foreach (var device in Compose(hubId, comp, settings.Devices.LianLi))
+        foreach (var device in Compose(hubId, profile, comp, settings.Devices.LianLi))
         {
             foreach (var zone in ZoneResolution.Resolve(device.Structure, settings))
             {
@@ -75,11 +80,11 @@ public static class LianLiZoneSupport
     }
 
     /// <summary>Every device (structure) id for the hub's current composition.</summary>
-    public static List<string> DeviceIds(NexusSettings settings, string hubId)
+    public static List<string> DeviceIds(NexusSettings settings, string hubId, in LianLiFanProfile profile)
     {
         var comp = ReadComposition(settings, hubId);
         var ids = new List<string>();
-        foreach (var device in Compose(hubId, comp, settings.Devices.LianLi))
+        foreach (var device in Compose(hubId, profile, comp, settings.Devices.LianLi))
         {
             ids.Add(device.Structure.DeviceId);
         }
@@ -87,7 +92,7 @@ public static class LianLiZoneSupport
     }
 
     /// <summary>The logical devices for the current composition, in display order.</summary>
-    public static List<ComposedDevice> Compose(string hubId, HubCompositionSettings comp, LianLiSettings fans)
+    public static List<ComposedDevice> Compose(string hubId, in LianLiFanProfile profile, HubCompositionSettings comp, LianLiSettings fans)
     {
         var active = ActivePorts(fans);
         var devices = new List<ComposedDevice>();
@@ -98,29 +103,70 @@ public static class LianLiZoneSupport
 
         foreach (var p in active)
         {
-            devices.Add(BuildDevice(
-                hubId, $"port{p}", $"Port {p}", ClampFans(fans.GetFans(p)), comp.CombineRings,
-                new[] { p * 2 }, new[] { p * 2 + 1 }));
+            var fanCount = ClampFans(fans.GetFans(p));
+            devices.Add(profile.ChannelsPerPort == 1
+                ? BuildSingleRingDevice(hubId, profile, $"port{p}", $"Port {p}", fanCount, new[] { p })
+                : BuildDevice(hubId, profile, $"port{p}", $"Port {p}", fanCount, comp.CombineRings,
+                    new[] { p * 2 }, new[] { p * 2 + 1 }));
         }
         return devices;
     }
 
-    private static ComposedDevice BuildDevice(
-        string hubId, string slug, string label, int fans, bool combine,
-        IReadOnlyList<int> innerChannels, IReadOnlyList<int> outerChannels)
+    // SL v1: one channel per port, one ring per fan. A single segment and a
+    // single default zone; there is no inner/outer axis to combine.
+    private static ComposedDevice BuildSingleRingDevice(
+        string hubId, in LianLiFanProfile profile, string slug, string label, int fans,
+        IReadOnlyList<int> channels)
     {
         var deviceId = $"{hubId}:{slug}";
-        // The two rings carry different per-fan LED counts (8 inner, 12 outer).
-        var innerLeds = fans * LianLiProtocol.InnerLedsPerFan;
-        var outerLeds = fans * LianLiProtocol.OuterLedsPerFan;
-        var (innerU, innerV) = BuildFanRingUV(fans, LianLiProtocol.InnerLedsPerFan, InnerRadius);
-        var (outerU, outerV) = BuildFanEdgeStripUV(fans, LianLiProtocol.OuterLedsPerFan);
+        var leds = fans * profile.InnerLedsPerFan;
+        var (u, v) = BuildFanRingUV(fans, profile.InnerLedsPerFan, SingleRingRadius);
 
         var structure = new DeviceStructure
         {
             DeviceId = deviceId,
             Name = $"Lian Li - {label}",
-            DeviceKey = DeviceKeyComputer.ForFirstParty(LianLiProtocol.VendorId, LianLiProtocol.ProductId, slug),
+            DeviceKey = DeviceKeyComputer.ForFirstParty(LianLiProtocol.VendorId, profile.ProductId, slug),
+        };
+        structure.Segments.Add(new StructureSegment
+        {
+            Index = InnerSegment,
+            Name = "Ring",
+            LedCount = leds,
+            FrameLedCount = leds,
+            Resizable = false,
+            ZoneType = "linear",
+            DefaultU = u,
+            DefaultV = v,
+        });
+        structure.DefaultZones.Add(new DefaultZoneDef
+        {
+            Id = deviceId,
+            Name = $"Lian Li - {label}",
+            RawName = "All",
+            DeviceKey = structure.DeviceKey,
+            LegacyZoneIndex = -1,
+            Slices = { new ZoneSlice { Segment = InnerSegment, Start = 0, Count = leds } },
+        });
+        return new ComposedDevice(structure, new IReadOnlyList<int>[] { channels });
+    }
+
+    private static ComposedDevice BuildDevice(
+        string hubId, in LianLiFanProfile profile, string slug, string label, int fans, bool combine,
+        IReadOnlyList<int> innerChannels, IReadOnlyList<int> outerChannels)
+    {
+        var deviceId = $"{hubId}:{slug}";
+        // The two rings carry different per-fan LED counts (8 inner, 12 outer).
+        var innerLeds = fans * profile.InnerLedsPerFan;
+        var outerLeds = fans * profile.OuterLedsPerFan;
+        var (innerU, innerV) = BuildFanRingUV(fans, profile.InnerLedsPerFan, InnerRadius);
+        var (outerU, outerV) = BuildFanEdgeStripUV(fans, profile.OuterLedsPerFan);
+
+        var structure = new DeviceStructure
+        {
+            DeviceId = deviceId,
+            Name = $"Lian Li - {label}",
+            DeviceKey = DeviceKeyComputer.ForFirstParty(LianLiProtocol.VendorId, profile.ProductId, slug),
         };
         structure.Segments.Add(new StructureSegment
         {
@@ -168,7 +214,7 @@ public static class LianLiZoneSupport
                 Id = $"{deviceId}:inner",
                 Name = $"Lian Li - {label} Inner Ring",
                 RawName = "Inner Ring",
-                DeviceKey = DeviceKeyComputer.ForFirstParty(LianLiProtocol.VendorId, LianLiProtocol.ProductId, $"{slug}inner"),
+                DeviceKey = DeviceKeyComputer.ForFirstParty(LianLiProtocol.VendorId, profile.ProductId, $"{slug}inner"),
                 LegacyZoneIndex = -1,
                 Slices = { new ZoneSlice { Segment = InnerSegment, Start = 0, Count = innerLeds } },
             });
@@ -177,7 +223,7 @@ public static class LianLiZoneSupport
                 Id = $"{deviceId}:outer",
                 Name = $"Lian Li - {label} Outer Ring",
                 RawName = "Outer Ring",
-                DeviceKey = DeviceKeyComputer.ForFirstParty(LianLiProtocol.VendorId, LianLiProtocol.ProductId, $"{slug}outer"),
+                DeviceKey = DeviceKeyComputer.ForFirstParty(LianLiProtocol.VendorId, profile.ProductId, $"{slug}outer"),
                 LegacyZoneIndex = -1,
                 Slices = { new ZoneSlice { Segment = OuterSegment, Start = 0, Count = outerLeds } },
             });

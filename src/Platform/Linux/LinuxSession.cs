@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.IO;
 using System.Linq;
 using System.Threading;
@@ -17,8 +18,10 @@ namespace Nexus.Service.Platform.Linux;
 /// StatusNotifierItem), MPRIS media, <c>wpctl</c>/<c>pactl</c> volume, and the
 /// dashboard launcher need. This detects the active seat's user via
 /// <c>loginctl</c> and adopts their session environment (bus, runtime dir,
-/// config home, display) so those features keep working, and so the daemon
-/// reads the user's existing settings/profiles instead of root's empty home.
+/// config home, display) so those features keep working. The daemon's OWN
+/// data does not ride on that: it lives at a machine-scope root that needs no
+/// session (see <c>NexusDataPaths</c>), so booting before login can never
+/// strand it in a second config.
 ///
 /// No-ops unless running as root with no session env already set - so a normal
 /// <c>systemd --user</c> install or a dev run is untouched. Single active
@@ -36,9 +39,40 @@ public static partial class LinuxSession
     /// <summary>The session user's primary gid; pairs with <see cref="SessionUid"/>.</summary>
     public static uint? SessionGid { get; private set; }
 
-    // Startup wait for the user session (see AdoptActiveSessionEnv).
-    private const int SessionWaitMs = 30_000;
-    private const int SessionPollMs = 2_000;
+    /// <summary>The adopted session's X11 <c>DISPLAY</c>, null on Wayland. Kept out
+    /// of this process's environment (see <see cref="Apply"/>); browsers get it from
+    /// <see cref="ApplySessionDisplayEnv"/>.</summary>
+    public static string? SessionDisplay { get; private set; }
+
+    /// <summary>X11 authority file pairing with <see cref="SessionDisplay"/>.</summary>
+    public static string? SessionXauthority { get; private set; }
+
+    /// <summary>
+    /// True when this process is the root system daemon (running as root with no
+    /// session env of its own), whether or not a graphical session was found.
+    /// Decided before any wait, so path resolution never depends on a login:
+    /// the daemon's data lives at a machine-scope root (see
+    /// <c>NexusDataPaths</c>), exactly like %ProgramData% on Windows. False for
+    /// a <c>systemd --user</c> install or a dev run, which keep the XDG layout.
+    /// </summary>
+    public static bool IsRootDaemon { get; private set; }
+
+    /// <summary>
+    /// Raised once the daemon adopts a graphical session that did not exist at
+    /// startup. Subsystems that need the session bus (tray, screen time) fail
+    /// at boot on a pre-login start and retry from here instead of forcing the
+    /// user to restart the service after logging in.
+    /// </summary>
+    public static event Action? SessionAdopted;
+
+    // Background poll for a user session that is not up yet (see AdoptActiveSessionEnv).
+    // Tight at first for an autologin landing seconds after boot, then slow, because
+    // a box can sit at the login screen for days and every tick is two loginctl
+    // processes. Never gives up: giving up is the restart-after-login step this
+    // whole path exists to remove.
+    private const int SessionPollFastMs = 2_000;
+    private const int SessionPollSlowMs = 30_000;
+    private const int SessionFastWindowMs = 2 * 60 * 1000;
 
     public static void AdoptActiveSessionEnv()
     {
@@ -48,25 +82,55 @@ public static partial class LinuxSession
         // daemon arrives here bare.
         if (!IsRoot() || HasSessionEnv())
             return;
+        IsRootDaemon = true;
 
         // Ordered after graphical.target, the daemon still routinely starts
-        // before the user's session exists (autologin lands seconds later). A
-        // bounded wait covers that; a machine parked at the login screen past
-        // it keeps the documented restart-after-login behaviour.
+        // before the user's session exists (autologin lands seconds later, a
+        // box parked at the login screen much later than that). Never block on
+        // it: hardware control - fans, pump, RGB - must come up at boot like
+        // the Windows service does, so a missing session only costs the
+        // session-bound extras, and a watcher attaches them when the user logs in.
         var s = Detect();
-        for (var waited = 0; s is null && waited < SessionWaitMs; waited += SessionPollMs)
-        {
-            if (waited == 0)
-                Console.Error.WriteLine("[session] root daemon: no graphical session yet; waiting for one");
-            Thread.Sleep(SessionPollMs);
-            s = Detect();
-        }
         if (s is null)
         {
-            Console.Error.WriteLine("[session] root daemon: no graphical session found; session features (tray/media/volume) disabled this run");
+            Console.Error.WriteLine("[session] root daemon: no graphical session yet; hardware control starts now, session features (tray/media/volume) attach at login");
+            StartSessionWatch();
             return;
         }
 
+        Apply(s);
+    }
+
+    // Poll for the session the daemon booted without, then adopt it and let the
+    // session-bound subsystems re-arm.
+    private static void StartSessionWatch()
+    {
+        var t = new Thread(() =>
+        {
+            var waited = 0;
+            while (true)
+            {
+                var nap = waited < SessionFastWindowMs ? SessionPollFastMs : SessionPollSlowMs;
+                Thread.Sleep(nap);
+                waited += nap;
+                SessionInfo? found;
+                try { found = Detect(); }
+                catch { continue; }
+                if (found is null)
+                    continue;
+                Apply(found);
+                try { SessionAdopted?.Invoke(); }
+                catch (Exception ex)
+                { Console.Error.WriteLine($"[session] adopt handler failed: {ex.Message}"); }
+                return;
+            }
+        })
+        { IsBackground = true, Name = "session-watch" };
+        t.Start();
+    }
+
+    private static void Apply(SessionInfo s)
+    {
         SessionUid = s.Uid;
         SessionGid = s.Gid;
         // Override unconditionally: this only runs as a root daemon with no
@@ -77,20 +141,24 @@ public static partial class LinuxSession
         Environment.SetEnvironmentVariable("DBUS_SESSION_BUS_ADDRESS", $"unix:path={run}/bus");
         if (!string.IsNullOrEmpty(s.Home))
         {
-            // Adopt the user's home so config (settings.json, openrgb-config,
-            // curves, profiles) and ~/.local browsers resolve to the user, not /root.
+            // Adopt the user's home so the DESKTOP files we read (dconf
+            // wallpaper, Plasma config, Steam library, .desktop shortcuts,
+            // ~/.local browsers) resolve to the user, not /root. Our own
+            // stores ignore HOME on this path - see NexusDataPaths.
             Environment.SetEnvironmentVariable("HOME", s.Home);
             Environment.SetEnvironmentVariable("XDG_CONFIG_HOME", Path.Combine(s.Home, ".config"));
         }
-        Environment.SetEnvironmentVariable("WAYLAND_DISPLAY", s.Wayland ?? "wayland-0");
-        // Deliberately do NOT export DISPLAY/XAUTHORITY. The GPU lighting shader
-        // context renders fully headless via EGL on the GPU device platform (see
-        // LinuxEglContext) - no display required. Exporting DISPLAY would only
-        // tempt a GLFW/GLX path that segfaults creating an nvidia GL context as
-        // root on the user's XWayland (uncatchable native fault); EGL needs none
-        // of it. Direct device control (identify, static) is unaffected either way.
+        // Presence of WAYLAND_DISPLAY selects Chromium's ozone platform and the
+        // clipboard backend, so an X11 session must leave it unset.
+        Environment.SetEnvironmentVariable("WAYLAND_DISPLAY", ResolveWaylandDisplay(s.Type, s.Wayland));
+        // DISPLAY/XAUTHORITY stay out of this process's environment: the lighting
+        // shader context renders headless via EGL (LinuxEglContext), and a visible
+        // DISPLAY tempts a GLFW/GLX path that segfaults creating an nvidia GL
+        // context as root on the user's XWayland. Browsers take them per-child.
+        SessionDisplay = s.Display;
+        SessionXauthority = s.Xauthority;
 
-        Console.Error.WriteLine($"[session] root daemon adopted session of uid {s.Uid} (home {s.Home}, wayland {s.Wayland})");
+        Console.Error.WriteLine($"[session] root daemon adopted {s.Type ?? "unknown"} session of uid {s.Uid} (home {s.Home}, wayland {s.Wayland ?? "none"}, display {s.Display ?? "none"})");
     }
 
     private static bool IsRoot()
@@ -105,7 +173,7 @@ public static partial class LinuxSession
         => !string.IsNullOrEmpty(Environment.GetEnvironmentVariable("DBUS_SESSION_BUS_ADDRESS"))
         || !string.IsNullOrEmpty(Environment.GetEnvironmentVariable("XDG_RUNTIME_DIR"));
 
-    private sealed record SessionInfo(uint Uid, uint Gid, string? Home, string? Display, string? Wayland);
+    private sealed record SessionInfo(uint Uid, uint Gid, string? Home, string? Type, string? Display, string? Xauthority, string? Wayland);
 
     private static SessionInfo? Detect()
     {
@@ -119,7 +187,7 @@ public static partial class LinuxSession
                 continue;
             sessions.Add((id, ParseProps(ShellExecutor.Run(
                 "loginctl", "show-session", id,
-                "-p", "State", "-p", "Type", "-p", "Class", "-p", "User", "-p", "Display"))));
+                "-p", "State", "-p", "Type", "-p", "Class", "-p", "User", "-p", "Display", "-p", "Leader"))));
         }
         var chosen = SelectSession(sessions);
         if (chosen is null)
@@ -129,8 +197,14 @@ public static partial class LinuxSession
         var (gid, home) = PasswdForUid(uid);
         if (string.IsNullOrEmpty(home))
             return null; // no passwd entry - can't safely adopt this session
-        var display = props.GetValueOrDefault("Display");
-        return new SessionInfo(uid, gid, home, string.IsNullOrEmpty(display) ? null : display, WaylandSocket(uid));
+        var type = Blank(props.GetValueOrDefault("Type"));
+        var (display, xauthority) = ResolveX11Env(
+            type,
+            LeaderEnviron(props.GetValueOrDefault("Leader")),
+            props.GetValueOrDefault("Display"),
+            home,
+            File.Exists);
+        return new SessionInfo(uid, gid, home, type, display, xauthority, WaylandSocket(uid));
     }
 
     /// <summary>
@@ -210,6 +284,82 @@ public static partial class LinuxSession
         };
         wrapped.AddRange(args);
         return ("setpriv", wrapped);
+    }
+
+    private static string? Blank(string? value) => string.IsNullOrEmpty(value) ? null : value;
+
+    /// <summary>WAYLAND_DISPLAY to export, or null to leave it unset. An x11 session
+    /// yields null even when another seat left a socket in the runtime dir.</summary>
+    internal static string? ResolveWaylandDisplay(string? sessionType, string? waylandSocket)
+    {
+        if (string.Equals(sessionType, "x11", StringComparison.Ordinal))
+            return null;
+        return waylandSocket ?? (string.Equals(sessionType, "wayland", StringComparison.Ordinal) ? "wayland-0" : null);
+    }
+
+    /// <summary>DISPLAY/XAUTHORITY for an x11 session, else (null, null): on Wayland
+    /// these name only the XWayland server and would steer a kiosk onto it.
+    /// <paramref name="fileExists"/> is a test seam.</summary>
+    internal static (string? Display, string? Xauthority) ResolveX11Env(
+        string? sessionType,
+        IReadOnlyDictionary<string, string> leaderEnv,
+        string? logindDisplay,
+        string? home,
+        Func<string, bool> fileExists)
+    {
+        if (!string.Equals(sessionType, "x11", StringComparison.Ordinal))
+            return (null, null);
+        var display = Blank(leaderEnv.GetValueOrDefault("DISPLAY")) ?? Blank(logindDisplay);
+        var xauthority = Blank(leaderEnv.GetValueOrDefault("XAUTHORITY"));
+        if (xauthority is null && !string.IsNullOrEmpty(home))
+        {
+            // Classic LightDM/startx layout, where the cookie sits in the home
+            // dir and nothing exports XAUTHORITY at all.
+            var fallback = Path.Combine(home, ".Xauthority");
+            if (fileExists(fallback))
+                xauthority = fallback;
+        }
+        return (display, xauthority);
+    }
+
+    /// <summary>The session leader's environment from <c>/proc/&lt;pid&gt;/environ</c>
+    /// (NUL-separated). logind never reports XAUTHORITY, and a display manager points
+    /// it at a runtime file rather than <c>~/.Xauthority</c>.</summary>
+    private static Dictionary<string, string> LeaderEnviron(string? leaderPid)
+    {
+        var env = new Dictionary<string, string>(StringComparer.Ordinal);
+        // Parsed, not interpolated: loginctl output is about to become a path.
+        if (!uint.TryParse(leaderPid, out var pid) || pid == 0)
+            return env;
+        try
+        {
+            foreach (var entry in File.ReadAllText($"/proc/{pid}/environ").Split('\0'))
+            {
+                var eq = entry.IndexOf('=');
+                if (eq > 0)
+                    env[entry[..eq]] = entry[(eq + 1)..];
+            }
+        }
+        catch { /* leader already gone, or /proc not readable */ }
+        return env;
+    }
+
+    /// <summary><c>--ozone-platform</c> for a spawned Chromium, or null to let it
+    /// auto-detect. Only wayland is ever forced: Chromium defaults to X11 and dies on
+    /// a pure-Wayland login, while an X11 session needs no flag and a fork built
+    /// without the x11 ozone backend would fail on one.</summary>
+    public static string? ChromiumOzonePlatform()
+        => string.IsNullOrEmpty(Environment.GetEnvironmentVariable("WAYLAND_DISPLAY")) ? null : "wayland";
+
+    /// <summary>Hand a spawned browser the session's X11 environment. Browser
+    /// launches only - a Nexus child would inherit the GLX hazard <see cref="Apply"/>
+    /// avoids. No-op on Wayland and on a non-root-daemon run.</summary>
+    public static void ApplySessionDisplayEnv(ProcessStartInfo psi)
+    {
+        if (SessionDisplay is { Length: > 0 } display)
+            psi.Environment["DISPLAY"] = display;
+        if (SessionXauthority is { Length: > 0 } xauthority)
+            psi.Environment["XAUTHORITY"] = xauthority;
     }
 
     private static string? WaylandSocket(uint uid)

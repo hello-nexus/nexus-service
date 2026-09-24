@@ -1,7 +1,6 @@
-uniform float u_speed;
-uniform float u_rings; // extra: ring frequency along the tunnel (0.5..4)
-uniform float u_zoom;  // extra: forward fly rate (0.3..3)
-uniform float u_neon;  // extra: ring glow (0.3..2)
+uniform float u_rings; // hint_range(0.5, 4.0, 0.1) = 2.0  ring frequency along the tunnel
+uniform float u_zoom; // hint_range(0.3, 3.0, 0.05) = 1.0  forward fly rate
+uniform float u_neon; // hint_range(0.3, 2.0, 0.05) = 1.0  ring glow
 
 // Concentric neon rings flying toward the viewer. Depth = 1/r; rings are
 // sharp bright bands in depth, coloured per ring index. Screen-space.

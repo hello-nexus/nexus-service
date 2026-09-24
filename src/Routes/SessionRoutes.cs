@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Threading;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
@@ -15,15 +16,31 @@ namespace Nexus.Service.Routes;
 ///
 ///   GET  /session/last-route  -> { path }
 ///   POST /session/last-route  -> { path }
+///
+/// The sidebar's "recently opened" rows share this lifetime, so they live
+/// here too.
+///
+///   GET  /session/recent-apps -> { keys }
+///   POST /session/recent-apps -> { keys }
 /// </summary>
 internal static class SessionRoutes
 {
     // The SPA posts on every route change, so writes are far more frequent
     // than reads and neither side may block the other.
     private static string _lastRoute = "";
+    private static string[] _recentApps = [];
 
     /// <summary>Longer than any route the SPA composes; a longer body is a caller bug, not a route.</summary>
     private const int MaxRouteLength = 256;
+
+    /// <summary>The SPA keeps a handful; anything past this is a caller bug, not a list.</summary>
+    private const int MaxRecentApps = 16;
+
+    /// <summary>Longer than any sidebar app key ("app:" + a reverse-DNS id).</summary>
+    private const int MaxRecentAppKeyLength = 128;
+
+    /// <summary>The stored route, "" when none; the SPA clears it when Remember last page is turned off.</summary>
+    internal static string LastRoute => Volatile.Read(ref _lastRoute);
 
     public static void MapSessionEndpoints(this WebApplication app)
     {
@@ -34,6 +51,15 @@ internal static class SessionRoutes
         {
             Volatile.Write(ref _lastRoute, Sanitize(body?.Path));
             return Results.Ok(new LastRouteDto { Path = Volatile.Read(ref _lastRoute) });
+        }).LocalhostOnly();
+
+        app.MapGet("/session/recent-apps", () =>
+            Results.Ok(new RecentAppsDto { Keys = Volatile.Read(ref _recentApps) })).LocalhostOnly();
+
+        app.MapPost("/session/recent-apps", (RecentAppsDto body) =>
+        {
+            Volatile.Write(ref _recentApps, SanitizeKeys(body?.Keys));
+            return Results.Ok(new RecentAppsDto { Keys = Volatile.Read(ref _recentApps) });
         }).LocalhostOnly();
     }
 
@@ -61,9 +87,58 @@ internal static class SessionRoutes
         }
         return value;
     }
+
+    /// <summary>
+    /// Keeps only plausible sidebar app keys, deduped in order, and the newest
+    /// (last) ones when over the bound - the SPA sends oldest first. The list
+    /// is replayed straight into the SPA's key lookup, which drops anything it
+    /// does not know, so this only bounds what a caller can park here.
+    /// </summary>
+    internal static string[] SanitizeKeys(string[]? keys)
+    {
+        if (keys is null || keys.Length == 0)
+        {
+            return [];
+        }
+        var seen = new HashSet<string>(StringComparer.Ordinal);
+        var kept = new List<string>(keys.Length);
+        foreach (var raw in keys)
+        {
+            if (string.IsNullOrWhiteSpace(raw))
+            {
+                continue;
+            }
+            var key = raw.Trim();
+            if (key.Length > MaxRecentAppKeyLength || !seen.Add(key))
+            {
+                continue;
+            }
+            var clean = true;
+            foreach (var c in key)
+            {
+                if (char.IsControl(c) || char.IsWhiteSpace(c))
+                {
+                    clean = false;
+                    break;
+                }
+            }
+            if (clean)
+            {
+                kept.Add(key);
+            }
+        }
+        return kept.Count > MaxRecentApps
+            ? kept.GetRange(kept.Count - MaxRecentApps, MaxRecentApps).ToArray()
+            : kept.ToArray();
+    }
 }
 
 public sealed class LastRouteDto
 {
     public string Path { get; set; } = "";
+}
+
+public sealed class RecentAppsDto
+{
+    public string[] Keys { get; set; } = [];
 }

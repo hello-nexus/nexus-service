@@ -127,6 +127,18 @@ public sealed class AudioMixerServiceTests
     }
 
     [Fact]
+    public void SavingAPresetSkipsAStripThatIsNotOnTheDefaultOutput()
+    {
+        var offDefault = Strip("recorder", 0.5, name: "Recorder");
+        offDefault.OnDefault = false;
+        var (mixer, _, _) = Build(Strip("game", 0.7, name: "Game"), offDefault);
+
+        var preset = mixer.SavePreset(new SaveAudioMixerPresetBody { Name = "Chatting" }).Preset!;
+
+        Assert.Equal("game", Assert.Single(preset.Apps).Id);
+    }
+
+    [Fact]
     public void APresetCanLeaveTheMasterAlone()
     {
         var (mixer, _, _) = Build(Strip("game", 0.7));
@@ -365,6 +377,38 @@ public sealed class AudioMixerServiceTests
         Assert.False(mixer.GetState().Supported);
     }
 
+    [Fact]
+    public void StateHidesAStripThatIsNotOnTheDefaultOutput()
+    {
+        var onDefault = Strip("game", 0.7);
+        var offDefault = Strip("recorder", 0.5);
+        offDefault.OnDefault = false;
+        var (mixer, _, _) = Build(onDefault, offDefault);
+
+        var state = mixer.GetState();
+
+        Assert.Equal("game", Assert.Single(state.Sessions).Id);
+    }
+
+    [Fact]
+    public void StickyLevelsIgnoreAStripThatIsNotOnTheDefaultOutput()
+    {
+        var (mixer, sessions, _) = Build(Strip("recorder", 1.0));
+        mixer.SetVolume("recorder", 0.25, commit: true);
+        mixer.SetSticky(true);
+        sessions.VolumeWrites.Clear();
+
+        // The recorder app relaunches rendering to a non-default output; the
+        // default-output-filtered presence tracking must never reapply its
+        // remembered level for a strip it never considered present.
+        var offDefault = Strip("recorder", 1.0);
+        offDefault.OnDefault = false;
+        sessions.Replace();
+        sessions.Replace(offDefault);
+
+        Assert.DoesNotContain(("recorder", 0.25), sessions.VolumeWrites);
+    }
+
     private static AudioSessionDto Strip(string id, double volume, string? name = null) => new()
     {
         Id = id,
@@ -432,6 +476,7 @@ public sealed class AudioMixerServiceTests
 
         public bool SetDefaultOutput(string deviceId) { DefaultOutput = deviceId; return true; }
         public bool SetDefaultInput(string deviceId) { DefaultInput = deviceId; return true; }
+        public bool SetSpatial(string deviceId, string formatId) => false;
     }
 
     private sealed class FakeVolume : IVolumeProvider

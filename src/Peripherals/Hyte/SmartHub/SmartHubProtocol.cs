@@ -60,6 +60,7 @@ public static class SmartHubProtocol
     private const byte SubGetInfo = 0x01;           // FF CC 01 00
     private const byte SubSetFanSpeed = 0x02;       // FF CC 02 <ch> <pct> <en>
     private const byte SubSetFwAnimation = 0x07;    // FF CC 07 <0 on | 1 off>
+    private const byte SubGetFwAnimation = 0x08;    // FF CC 08
     private const byte SubSetMcuSetting = 0x0C;     // FF CC 0C <anim> <r> <g> <b> <brt> <fan> 01
     private const byte SubGetMcuSetting = 0x0D;     // FF CC 0D
     private const byte SubStreaming = 0x01;          // FF EE 01 <port> ...
@@ -82,6 +83,9 @@ public static class SmartHubProtocol
 
     /// <summary>9-byte response to <see cref="BuildGetMcuSetting"/>.</summary>
     public const int McuSettingResponseLength = 9;
+
+    /// <summary>7-byte response to <see cref="BuildGetFirmwareAnimation"/>.</summary>
+    public const int FirmwareAnimationResponseLength = 7;
 
     /// <summary>Streamed frame = 7-byte header + MaxLedsPerPort×3 colour bytes.</summary>
     public const int LightingFrameLength = 7 + MaxLedsPerPort * 3; // 607
@@ -121,10 +125,13 @@ public static class SmartHubProtocol
 
     /// <summary>
     /// "Set Firmware Animation On/Off" request (4 bytes). The hub runs an
-    /// onboard LED animation by default; turning it <b>off</b> hands the ARGB
-    /// ports to software streaming (our <see cref="BuildLightingStream"/>
-    /// frames). Per <c>ControlHubCommand.SetFwAnimationOnOff</c> the on/off
-    /// byte is inverted: <c>0x00</c> = animation ON, <c>0x01</c> = animation OFF.
+    /// onboard LED animation whenever no <see cref="BuildLightingStream"/>
+    /// frame has arrived for 5 s; <b>off</b> disables that fallback for good
+    /// (the byte lands in <c>Default_Off_FW_Animation</c> and the firmware
+    /// saves it to flash), so the hub then stays dark whenever nothing
+    /// streams. Nexus only ever sends <b>on</b>. Per
+    /// <c>ControlHubCommand.SetFwAnimationOnOff</c> the on/off byte is
+    /// inverted: <c>0x00</c> = animation ON, <c>0x01</c> = animation OFF.
     /// </summary>
     public static byte[] BuildSetFirmwareAnimation(bool on)
         => new byte[] { Frame0, OpControl, SubSetFwAnimation, (byte)(on ? 0x00 : 0x01) };
@@ -150,6 +157,25 @@ public static class SmartHubProtocol
 
     /// <summary>"Get FW Setting" request (3 bytes). The 9-byte reply echoes the flash-persisted setting (see <see cref="TryParseMcuSetting"/>).</summary>
     public static byte[] BuildGetMcuSetting() => new byte[] { Frame0, OpControl, SubGetMcuSetting };
+
+    /// <summary>"Get Firmware Animation On/Off" request (3 bytes). See <see cref="TryParseFirmwareAnimation"/>.</summary>
+    public static byte[] BuildGetFirmwareAnimation() => new byte[] { Frame0, OpControl, SubGetFwAnimation };
+
+    /// <summary>
+    /// Decode the 7-byte reply to <see cref="BuildGetFirmwareAnimation"/>:
+    /// <c>FF CC 08 &lt;startAnimOff&gt; &lt;fwAnimOff&gt; 00 00</c> (Y50 firmware
+    /// <c>main.c</c> Get_Default_Animation transmit). Byte 4 carries the same
+    /// inverted flag <see cref="BuildSetFirmwareAnimation"/> writes, so
+    /// <paramref name="on"/> is true when it is <c>0x00</c>.
+    /// </summary>
+    public static bool TryParseFirmwareAnimation(ReadOnlySpan<byte> response, out bool on)
+    {
+        on = false;
+        if (response.Length < FirmwareAnimationResponseLength) return false;
+        if (response[0] != Frame0 || response[1] != OpControl || response[2] != SubGetFwAnimation) return false;
+        on = response[4] == 0x00;
+        return true;
+    }
 
     /// <summary>
     /// Build an LED streaming frame for one ARGB port (1..4). Always emits a

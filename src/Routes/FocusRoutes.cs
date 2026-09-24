@@ -89,6 +89,7 @@ public static class FocusRoutes
                 if (body.HoldNotifications is bool holdNotifications) mode.HoldNotifications = holdNotifications;
                 if (body.HoldBackgroundTraffic is bool holdTraffic) mode.HoldBackgroundTraffic = holdTraffic;
                 if (body.TurnPanelDisplaysOff is bool panelsOff) mode.TurnPanelDisplaysOff = panelsOff;
+                if (body.StaticPanelBackgrounds is bool staticBackgrounds) mode.StaticPanelBackgrounds = staticBackgrounds;
                 if (body.ExitGraceSeconds is int grace)
                     mode.ExitGraceSeconds = Math.Clamp(grace, MinExitGraceSeconds, MaxExitGraceSeconds);
             });
@@ -187,6 +188,7 @@ public static class FocusRoutes
                 HoldNotifications = m.HoldNotifications,
                 HoldBackgroundTraffic = m.HoldBackgroundTraffic,
                 TurnPanelDisplaysOff = m.TurnPanelDisplaysOff,
+                StaticPanelBackgrounds = m.StaticPanelBackgrounds,
                 ExitGraceSeconds = m.ExitGraceSeconds,
             }).ToList(),
             AvailableTriggers = new List<string> { FocusTriggers.Manual, FocusTriggers.Game, FocusTriggers.Obs },

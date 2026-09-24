@@ -110,6 +110,8 @@ public static class FfmpegTracker
 
     private static string GetConfigDir()
     {
+        if (Persistence.NexusDataPaths.SystemDaemonRoot is { } daemonRoot)
+            return daemonRoot;
         if (RuntimeInformation.IsOSPlatform(OSPlatform.OSX))
         {
             var home = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);

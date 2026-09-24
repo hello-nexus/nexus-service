@@ -50,13 +50,26 @@ public class DeckActionRoutesTests
     {
         public string? SetOutput;
         public string? SetInput;
+        public (string DeviceId, string FormatId)? SetSpatialCall;
         public AudioDeviceList ListDevices() => new()
         {
             Outputs = { new AudioDevice { Id = "spk", Name = "Speakers", Direction = "output", IsDefault = true } },
             Inputs = { new AudioDevice { Id = "mic", Name = "Microphone", Direction = "input" } },
+            Spatial = new AudioSpatialState
+            {
+                Supported = true,
+                DeviceId = "spk",
+                Formats = { new AudioSpatialFormat { Id = "sonic", Name = "Windows Sonic for Headphones" } },
+            },
         };
         public bool SetDefaultOutput(string deviceId) { SetOutput = deviceId; return true; }
         public bool SetDefaultInput(string deviceId) { SetInput = deviceId; return true; }
+        // Mirrors the Windows provider: only an offered format (or off) lands.
+        public bool SetSpatial(string deviceId, string formatId)
+        {
+            SetSpatialCall = (deviceId, formatId);
+            return formatId.Length == 0 || formatId == "sonic";
+        }
     }
 
     private readonly FakeInputter _inputter = new();
@@ -184,6 +197,31 @@ public class DeckActionRoutesTests
             var set = await client.PostAsync("/system/audio/default-output", Json("{\"deviceId\":\"spk\"}"));
             Assert.True(set.IsSuccessStatusCode);
             Assert.Equal("spk", _audio.SetOutput);
+        }
+    }
+
+    [Fact]
+    public async Task AudioSpatial_lists_formats_and_switches_them()
+    {
+        var (factory, client) = Boot();
+        using (factory)
+        {
+            var list = await client.GetAsync("/system/audio/devices");
+            var listText = await list.Content.ReadAsStringAsync();
+            Assert.Contains("\"spatial\":{\"supported\":true", listText);
+            Assert.Contains("Windows Sonic for Headphones", listText);
+
+            var on = await client.PostAsync("/system/audio/spatial", Json("{\"deviceId\":\"spk\",\"formatId\":\"sonic\"}"));
+            Assert.True(on.IsSuccessStatusCode);
+            Assert.DoesNotContain("\"error\":true", await on.Content.ReadAsStringAsync());
+            Assert.Equal(("spk", "sonic"), _audio.SetSpatialCall);
+
+            var off = await client.PostAsync("/system/audio/spatial", Json("{\"deviceId\":\"spk\",\"formatId\":\"\"}"));
+            Assert.True(off.IsSuccessStatusCode);
+            Assert.Equal(("spk", ""), _audio.SetSpatialCall);
+
+            var bad = await client.PostAsync("/system/audio/spatial", Json("{\"deviceId\":\"spk\",\"formatId\":\"nope\"}"));
+            Assert.Contains("\"error\":true", await bad.Content.ReadAsStringAsync());
         }
     }
 

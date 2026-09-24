@@ -1,5 +1,5 @@
 {
-  "count": 1964,
+  "count": 1962,
   "devices": [
     {
       "name": "Bloody B820R",
@@ -5119,104 +5119,6 @@
       "kind": "hid"
     },
     {
-      "name": "Gainward GeForce GTX 1080 Phoenix",
-      "vid": null,
-      "pid": null,
-      "controller": "GainwardGPUController",
-      "kind": "i2c"
-    },
-    {
-      "name": "Gainward GeForce GTX 1080 Ti Phoenix",
-      "vid": null,
-      "pid": null,
-      "controller": "GainwardGPUController",
-      "kind": "i2c"
-    },
-    {
-      "name": "Gainward GeForce GTX 1660 SUPER Ghost",
-      "vid": null,
-      "pid": null,
-      "controller": "GainwardGPUController",
-      "kind": "i2c"
-    },
-    {
-      "name": "Gainward GeForce RTX 2070 SUPER Phantom",
-      "vid": null,
-      "pid": null,
-      "controller": "GainwardGPUController",
-      "kind": "i2c"
-    },
-    {
-      "name": "Gainward GeForce RTX 2080 Phoenix GS",
-      "vid": null,
-      "pid": null,
-      "controller": "GainwardGPUController",
-      "kind": "i2c"
-    },
-    {
-      "name": "Gainward GeForce RTX 3060 Pegasus 12G",
-      "vid": null,
-      "pid": null,
-      "controller": "GainwardGPUController",
-      "kind": "i2c"
-    },
-    {
-      "name": "Gainward GeForce RTX 3070 Phantom",
-      "vid": null,
-      "pid": null,
-      "controller": "GainwardGPUController",
-      "kind": "i2c"
-    },
-    {
-      "name": "Gainward GeForce RTX 3070 Phoenix",
-      "vid": null,
-      "pid": null,
-      "controller": "GainwardGPUController",
-      "kind": "i2c"
-    },
-    {
-      "name": "Gainward GeForce RTX 3070 Ti Phoenix",
-      "vid": null,
-      "pid": null,
-      "controller": "GainwardGPUController",
-      "kind": "i2c"
-    },
-    {
-      "name": "Gainward GeForce RTX 3080 Phoenix",
-      "vid": null,
-      "pid": null,
-      "controller": "GainwardGPUController",
-      "kind": "i2c"
-    },
-    {
-      "name": "Gainward GeForce RTX 3080 Ti Phoenix",
-      "vid": null,
-      "pid": null,
-      "controller": "GainwardGPUController",
-      "kind": "i2c"
-    },
-    {
-      "name": "Gainward GeForce RTX 3090 Phoenix",
-      "vid": null,
-      "pid": null,
-      "controller": "GainwardGPUController",
-      "kind": "i2c"
-    },
-    {
-      "name": "Gainward GeForce RTX 3090 Ti Phantom",
-      "vid": null,
-      "pid": null,
-      "controller": "GainwardGPUController",
-      "kind": "i2c"
-    },
-    {
-      "name": "Gainward GeForce RTX 4080 Phantom GS",
-      "vid": null,
-      "pid": null,
-      "controller": "GainwardGPUController",
-      "kind": "i2c"
-    },
-    {
       "name": "GALAX GeForce RTX 2070 SUPER EX Gamer Black",
       "vid": null,
       "pid": null,
@@ -9368,6 +9270,13 @@
       "kind": "hid"
     },
     {
+      "name": "MSI Mystic Light MS_7E76",
+      "vid": "0x1462",
+      "pid": "0x7E76",
+      "controller": "MSIMotherboardController",
+      "kind": "hid"
+    },
+    {
       "name": "MSI Mystic Light MS_7E80",
       "vid": "0x1462",
       "pid": "0x7E80",
@@ -9378,6 +9287,13 @@
       "name": "MSI Mystic Light MS_7E81",
       "vid": "0x1462",
       "pid": "0x7E81",
+      "controller": "MSIMotherboardController",
+      "kind": "hid"
+    },
+    {
+      "name": "MSI Mystic Light MS_7E86",
+      "vid": "0x1462",
+      "pid": "0x7E86",
       "controller": "MSIMotherboardController",
       "kind": "hid"
     },
@@ -9837,314 +9753,6 @@
       "kind": "i2c"
     },
     {
-      "name": "NVIDIA GeForce RTX 2060 SUPER",
-      "vid": null,
-      "pid": null,
-      "controller": "PNYGPUController",
-      "kind": "i2c"
-    },
-    {
-      "name": "NVIDIA GeForce RTX 2080 SUPER",
-      "vid": null,
-      "pid": null,
-      "controller": "PNYGPUController",
-      "kind": "i2c"
-    },
-    {
-      "name": "PNY GeForce RTX 2060 XLR8 OC EDITION",
-      "vid": null,
-      "pid": null,
-      "controller": "PNYGPUController",
-      "kind": "i2c"
-    },
-    {
-      "name": "PNY GeForce RTX 3060 XLR8 Revel EPIC-X",
-      "vid": null,
-      "pid": null,
-      "controller": "PNYGPUController",
-      "kind": "i2c"
-    },
-    {
-      "name": "PNY GeForce RTX 3070 XLR8 Revel EPIC-X",
-      "vid": null,
-      "pid": null,
-      "controller": "PNYGPUController",
-      "kind": "i2c"
-    },
-    {
-      "name": "PNY GeForce RTX 3070 XLR8 Revel EPIC-X LHR",
-      "vid": null,
-      "pid": null,
-      "controller": "PNYGPUController",
-      "kind": "i2c"
-    },
-    {
-      "name": "PNY GeForce RTX 3080 Ti XLR8 Revel EPIC-X",
-      "vid": null,
-      "pid": null,
-      "controller": "PNYGPUController",
-      "kind": "i2c"
-    },
-    {
-      "name": "PNY GeForce RTX 3080 XLR8 Revel EPIC-X",
-      "vid": null,
-      "pid": null,
-      "controller": "PNYGPUController",
-      "kind": "i2c"
-    },
-    {
-      "name": "PNY GeForce RTX 3090 XLR8 Revel EPIC-X",
-      "vid": null,
-      "pid": null,
-      "controller": "PNYGPUController",
-      "kind": "i2c"
-    },
-    {
-      "name": "Palit GeForce RTX 2070 SUPER Jetstream",
-      "vid": null,
-      "pid": null,
-      "controller": "PNYGPUController",
-      "kind": "i2c"
-    },
-    {
-      "name": "Palit GeForce RTX 3060",
-      "vid": null,
-      "pid": null,
-      "controller": "PNYGPUController",
-      "kind": "i2c"
-    },
-    {
-      "name": "Palit GeForce RTX 3060 LHR",
-      "vid": null,
-      "pid": null,
-      "controller": "PNYGPUController",
-      "kind": "i2c"
-    },
-    {
-      "name": "Palit GeForce RTX 3060 Ti",
-      "vid": null,
-      "pid": null,
-      "controller": "PNYGPUController",
-      "kind": "i2c"
-    },
-    {
-      "name": "Palit GeForce RTX 3060 Ti Dual",
-      "vid": null,
-      "pid": null,
-      "controller": "PNYGPUController",
-      "kind": "i2c"
-    },
-    {
-      "name": "Palit GeForce RTX 3060 Ti LHR",
-      "vid": null,
-      "pid": null,
-      "controller": "PNYGPUController",
-      "kind": "i2c"
-    },
-    {
-      "name": "Palit GeForce RTX 3070",
-      "vid": null,
-      "pid": null,
-      "controller": "PNYGPUController",
-      "kind": "i2c"
-    },
-    {
-      "name": "Palit GeForce RTX 3070 Gamerock LHR",
-      "vid": null,
-      "pid": null,
-      "controller": "PNYGPUController",
-      "kind": "i2c"
-    },
-    {
-      "name": "Palit GeForce RTX 3070 LHR",
-      "vid": null,
-      "pid": null,
-      "controller": "PNYGPUController",
-      "kind": "i2c"
-    },
-    {
-      "name": "Palit GeForce RTX 3070 Ti",
-      "vid": null,
-      "pid": null,
-      "controller": "PNYGPUController",
-      "kind": "i2c"
-    },
-    {
-      "name": "Palit GeForce RTX 3070 Ti GamingPro",
-      "vid": null,
-      "pid": null,
-      "controller": "PNYGPUController",
-      "kind": "i2c"
-    },
-    {
-      "name": "Palit GeForce RTX 3080",
-      "vid": null,
-      "pid": null,
-      "controller": "PNYGPUController",
-      "kind": "i2c"
-    },
-    {
-      "name": "Palit GeForce RTX 3080 12GB GamingPro",
-      "vid": null,
-      "pid": null,
-      "controller": "PNYGPUController",
-      "kind": "i2c"
-    },
-    {
-      "name": "Palit GeForce RTX 3080 Gamerock",
-      "vid": null,
-      "pid": null,
-      "controller": "PNYGPUController",
-      "kind": "i2c"
-    },
-    {
-      "name": "Palit GeForce RTX 3080 Gamerock LHR",
-      "vid": null,
-      "pid": null,
-      "controller": "PNYGPUController",
-      "kind": "i2c"
-    },
-    {
-      "name": "Palit GeForce RTX 3080 LHR",
-      "vid": null,
-      "pid": null,
-      "controller": "PNYGPUController",
-      "kind": "i2c"
-    },
-    {
-      "name": "Palit GeForce RTX 3080 Ti",
-      "vid": null,
-      "pid": null,
-      "controller": "PNYGPUController",
-      "kind": "i2c"
-    },
-    {
-      "name": "Palit GeForce RTX 3080 Ti Gamerock",
-      "vid": null,
-      "pid": null,
-      "controller": "PNYGPUController",
-      "kind": "i2c"
-    },
-    {
-      "name": "Palit GeForce RTX 3090",
-      "vid": null,
-      "pid": null,
-      "controller": "PNYGPUController",
-      "kind": "i2c"
-    },
-    {
-      "name": "Palit GeForce RTX 3090 Gamerock",
-      "vid": null,
-      "pid": null,
-      "controller": "PNYGPUController",
-      "kind": "i2c"
-    },
-    {
-      "name": "Palit GeForce RTX 3090 Ti Gamerock",
-      "vid": null,
-      "pid": null,
-      "controller": "PNYGPUController",
-      "kind": "i2c"
-    },
-    {
-      "name": "Palit GeForce RTX 4070 Ti",
-      "vid": null,
-      "pid": null,
-      "controller": "PNYGPUController",
-      "kind": "i2c"
-    },
-    {
-      "name": "Palit GeForce RTX 4070 Ti Gamerock",
-      "vid": null,
-      "pid": null,
-      "controller": "PNYGPUController",
-      "kind": "i2c"
-    },
-    {
-      "name": "Palit GeForce RTX 4070 Ti SUPER GamingPro",
-      "vid": null,
-      "pid": null,
-      "controller": "PNYGPUController",
-      "kind": "i2c"
-    },
-    {
-      "name": "Palit GeForce RTX 4080 GamingPro",
-      "vid": null,
-      "pid": null,
-      "controller": "PNYGPUController",
-      "kind": "i2c"
-    },
-    {
-      "name": "Palit GeForce RTX 4080 SUPER GamingPro",
-      "vid": null,
-      "pid": null,
-      "controller": "PNYGPUController",
-      "kind": "i2c"
-    },
-    {
-      "name": "Palit GeForce RTX 4090 Gamerock",
-      "vid": null,
-      "pid": null,
-      "controller": "PNYGPUController",
-      "kind": "i2c"
-    },
-    {
-      "name": "Palit GeForce RTX 5060 Ti White OC 16GB",
-      "vid": null,
-      "pid": null,
-      "controller": "PNYGPUController",
-      "kind": "i2c"
-    },
-    {
-      "name": "Palit GeForce RTX 5070 GamingPro",
-      "vid": null,
-      "pid": null,
-      "controller": "PNYGPUController",
-      "kind": "i2c"
-    },
-    {
-      "name": "Palit GeForce RTX 5070 Ti GameRock",
-      "vid": null,
-      "pid": null,
-      "controller": "PNYGPUController",
-      "kind": "i2c"
-    },
-    {
-      "name": "Palit GeForce RTX 5070 Ti GamingPro",
-      "vid": null,
-      "pid": null,
-      "controller": "PNYGPUController",
-      "kind": "i2c"
-    },
-    {
-      "name": "Palit GeForce RTX 5070 Ti GamingPro-S",
-      "vid": null,
-      "pid": null,
-      "controller": "PNYGPUController",
-      "kind": "i2c"
-    },
-    {
-      "name": "Palit GeForce RTX 5080 GameRock",
-      "vid": null,
-      "pid": null,
-      "controller": "PNYGPUController",
-      "kind": "i2c"
-    },
-    {
-      "name": "Palit GeForce RTX 5080 GamingPro",
-      "vid": null,
-      "pid": null,
-      "controller": "PNYGPUController",
-      "kind": "i2c"
-    },
-    {
-      "name": "Palit GeForce RTX 5090 Gamerock",
-      "vid": null,
-      "pid": null,
-      "controller": "PNYGPUController",
-      "kind": "i2c"
-    },
-    {
       "name": "PNY GeForce RTX 4070 Ti Super XLR8 VERTO OC",
       "vid": null,
       "pid": null,
@@ -10229,6 +9837,181 @@
       "kind": "i2c"
     },
     {
+      "name": "Gainward GeForce GTX 1080 Phoenix",
+      "vid": null,
+      "pid": null,
+      "controller": "PalitGPUController",
+      "kind": "i2c"
+    },
+    {
+      "name": "Gainward GeForce GTX 1080 Ti Phoenix",
+      "vid": null,
+      "pid": null,
+      "controller": "PalitGPUController",
+      "kind": "i2c"
+    },
+    {
+      "name": "Gainward GeForce GTX 1660 SUPER Ghost",
+      "vid": null,
+      "pid": null,
+      "controller": "PalitGPUController",
+      "kind": "i2c"
+    },
+    {
+      "name": "Gainward GeForce RTX 2070 SUPER Phantom",
+      "vid": null,
+      "pid": null,
+      "controller": "PalitGPUController",
+      "kind": "i2c"
+    },
+    {
+      "name": "Gainward GeForce RTX 2080 Phoenix GS",
+      "vid": null,
+      "pid": null,
+      "controller": "PalitGPUController",
+      "kind": "i2c"
+    },
+    {
+      "name": "Gainward GeForce RTX 3060 Pegasus 12G",
+      "vid": null,
+      "pid": null,
+      "controller": "PalitGPUController",
+      "kind": "i2c"
+    },
+    {
+      "name": "Gainward GeForce RTX 3070 Phantom",
+      "vid": null,
+      "pid": null,
+      "controller": "PalitGPUController",
+      "kind": "i2c"
+    },
+    {
+      "name": "Gainward GeForce RTX 3070 Phoenix",
+      "vid": null,
+      "pid": null,
+      "controller": "PalitGPUController",
+      "kind": "i2c"
+    },
+    {
+      "name": "Gainward GeForce RTX 3070 Ti Phoenix",
+      "vid": null,
+      "pid": null,
+      "controller": "PalitGPUController",
+      "kind": "i2c"
+    },
+    {
+      "name": "Gainward GeForce RTX 3080 Phoenix",
+      "vid": null,
+      "pid": null,
+      "controller": "PalitGPUController",
+      "kind": "i2c"
+    },
+    {
+      "name": "Gainward GeForce RTX 3080 Ti Phoenix",
+      "vid": null,
+      "pid": null,
+      "controller": "PalitGPUController",
+      "kind": "i2c"
+    },
+    {
+      "name": "Gainward GeForce RTX 3090 Phoenix",
+      "vid": null,
+      "pid": null,
+      "controller": "PalitGPUController",
+      "kind": "i2c"
+    },
+    {
+      "name": "Gainward GeForce RTX 3090 Ti Phantom",
+      "vid": null,
+      "pid": null,
+      "controller": "PalitGPUController",
+      "kind": "i2c"
+    },
+    {
+      "name": "Gainward GeForce RTX 4080 Phantom GS",
+      "vid": null,
+      "pid": null,
+      "controller": "PalitGPUController",
+      "kind": "i2c"
+    },
+    {
+      "name": "Gainward GeForce RTX 4090 Phantom",
+      "vid": null,
+      "pid": null,
+      "controller": "PalitGPUController",
+      "kind": "i2c"
+    },
+    {
+      "name": "Gainward GeForce RTX 5080 Phoenix",
+      "vid": null,
+      "pid": null,
+      "controller": "PalitGPUController",
+      "kind": "i2c"
+    },
+    {
+      "name": "NVIDIA GeForce RTX 2060 SUPER",
+      "vid": null,
+      "pid": null,
+      "controller": "PalitGPUController",
+      "kind": "i2c"
+    },
+    {
+      "name": "NVIDIA GeForce RTX 2080 SUPER",
+      "vid": null,
+      "pid": null,
+      "controller": "PalitGPUController",
+      "kind": "i2c"
+    },
+    {
+      "name": "PNY GeForce RTX 2060 XLR8 OC EDITION",
+      "vid": null,
+      "pid": null,
+      "controller": "PalitGPUController",
+      "kind": "i2c"
+    },
+    {
+      "name": "PNY GeForce RTX 3060 XLR8 Revel EPIC-X",
+      "vid": null,
+      "pid": null,
+      "controller": "PalitGPUController",
+      "kind": "i2c"
+    },
+    {
+      "name": "PNY GeForce RTX 3070 XLR8 Revel EPIC-X",
+      "vid": null,
+      "pid": null,
+      "controller": "PalitGPUController",
+      "kind": "i2c"
+    },
+    {
+      "name": "PNY GeForce RTX 3070 XLR8 Revel EPIC-X LHR",
+      "vid": null,
+      "pid": null,
+      "controller": "PalitGPUController",
+      "kind": "i2c"
+    },
+    {
+      "name": "PNY GeForce RTX 3080 Ti XLR8 Revel EPIC-X",
+      "vid": null,
+      "pid": null,
+      "controller": "PalitGPUController",
+      "kind": "i2c"
+    },
+    {
+      "name": "PNY GeForce RTX 3080 XLR8 Revel EPIC-X",
+      "vid": null,
+      "pid": null,
+      "controller": "PalitGPUController",
+      "kind": "i2c"
+    },
+    {
+      "name": "PNY GeForce RTX 3090 XLR8 Revel EPIC-X",
+      "vid": null,
+      "pid": null,
+      "controller": "PalitGPUController",
+      "kind": "i2c"
+    },
+    {
       "name": "Palit GeForce GTX 1060",
       "vid": null,
       "pid": null,
@@ -10258,6 +10041,202 @@
     },
     {
       "name": "Palit GeForce GTX 1080 Ti",
+      "vid": null,
+      "pid": null,
+      "controller": "PalitGPUController",
+      "kind": "i2c"
+    },
+    {
+      "name": "Palit GeForce RTX 2070 SUPER Jetstream",
+      "vid": null,
+      "pid": null,
+      "controller": "PalitGPUController",
+      "kind": "i2c"
+    },
+    {
+      "name": "Palit GeForce RTX 3060",
+      "vid": null,
+      "pid": null,
+      "controller": "PalitGPUController",
+      "kind": "i2c"
+    },
+    {
+      "name": "Palit GeForce RTX 3060 LHR",
+      "vid": null,
+      "pid": null,
+      "controller": "PalitGPUController",
+      "kind": "i2c"
+    },
+    {
+      "name": "Palit GeForce RTX 3060 Ti",
+      "vid": null,
+      "pid": null,
+      "controller": "PalitGPUController",
+      "kind": "i2c"
+    },
+    {
+      "name": "Palit GeForce RTX 3060 Ti LHR",
+      "vid": null,
+      "pid": null,
+      "controller": "PalitGPUController",
+      "kind": "i2c"
+    },
+    {
+      "name": "Palit GeForce RTX 3070",
+      "vid": null,
+      "pid": null,
+      "controller": "PalitGPUController",
+      "kind": "i2c"
+    },
+    {
+      "name": "Palit GeForce RTX 3070 LHR",
+      "vid": null,
+      "pid": null,
+      "controller": "PalitGPUController",
+      "kind": "i2c"
+    },
+    {
+      "name": "Palit GeForce RTX 3070 Ti",
+      "vid": null,
+      "pid": null,
+      "controller": "PalitGPUController",
+      "kind": "i2c"
+    },
+    {
+      "name": "Palit GeForce RTX 3080",
+      "vid": null,
+      "pid": null,
+      "controller": "PalitGPUController",
+      "kind": "i2c"
+    },
+    {
+      "name": "Palit GeForce RTX 3080 LHR",
+      "vid": null,
+      "pid": null,
+      "controller": "PalitGPUController",
+      "kind": "i2c"
+    },
+    {
+      "name": "Palit GeForce RTX 3080 Ti",
+      "vid": null,
+      "pid": null,
+      "controller": "PalitGPUController",
+      "kind": "i2c"
+    },
+    {
+      "name": "Palit GeForce RTX 3090",
+      "vid": null,
+      "pid": null,
+      "controller": "PalitGPUController",
+      "kind": "i2c"
+    },
+    {
+      "name": "Palit GeForce RTX 3090 Gamerock",
+      "vid": null,
+      "pid": null,
+      "controller": "PalitGPUController",
+      "kind": "i2c"
+    },
+    {
+      "name": "Palit GeForce RTX 3090 Ti Gamerock",
+      "vid": null,
+      "pid": null,
+      "controller": "PalitGPUController",
+      "kind": "i2c"
+    },
+    {
+      "name": "Palit GeForce RTX 4070 Ti",
+      "vid": null,
+      "pid": null,
+      "controller": "PalitGPUController",
+      "kind": "i2c"
+    },
+    {
+      "name": "Palit GeForce RTX 4070 Ti Gamerock",
+      "vid": null,
+      "pid": null,
+      "controller": "PalitGPUController",
+      "kind": "i2c"
+    },
+    {
+      "name": "Palit GeForce RTX 4070 Ti SUPER GamingPro",
+      "vid": null,
+      "pid": null,
+      "controller": "PalitGPUController",
+      "kind": "i2c"
+    },
+    {
+      "name": "Palit GeForce RTX 4080 GamingPro",
+      "vid": null,
+      "pid": null,
+      "controller": "PalitGPUController",
+      "kind": "i2c"
+    },
+    {
+      "name": "Palit GeForce RTX 4080 SUPER GamingPro",
+      "vid": null,
+      "pid": null,
+      "controller": "PalitGPUController",
+      "kind": "i2c"
+    },
+    {
+      "name": "Palit GeForce RTX 4090 Gamerock",
+      "vid": null,
+      "pid": null,
+      "controller": "PalitGPUController",
+      "kind": "i2c"
+    },
+    {
+      "name": "Palit GeForce RTX 5060 Ti White OC 16GB",
+      "vid": null,
+      "pid": null,
+      "controller": "PalitGPUController",
+      "kind": "i2c"
+    },
+    {
+      "name": "Palit GeForce RTX 5070 GamingPro",
+      "vid": null,
+      "pid": null,
+      "controller": "PalitGPUController",
+      "kind": "i2c"
+    },
+    {
+      "name": "Palit GeForce RTX 5070 Ti GameRock",
+      "vid": null,
+      "pid": null,
+      "controller": "PalitGPUController",
+      "kind": "i2c"
+    },
+    {
+      "name": "Palit GeForce RTX 5070 Ti GamingPro",
+      "vid": null,
+      "pid": null,
+      "controller": "PalitGPUController",
+      "kind": "i2c"
+    },
+    {
+      "name": "Palit GeForce RTX 5070 Ti GamingPro-S",
+      "vid": null,
+      "pid": null,
+      "controller": "PalitGPUController",
+      "kind": "i2c"
+    },
+    {
+      "name": "Palit GeForce RTX 5080 GameRock",
+      "vid": null,
+      "pid": null,
+      "controller": "PalitGPUController",
+      "kind": "i2c"
+    },
+    {
+      "name": "Palit GeForce RTX 5080 GamingPro",
+      "vid": null,
+      "pid": null,
+      "controller": "PalitGPUController",
+      "kind": "i2c"
+    },
+    {
+      "name": "Palit GeForce RTX 5090 Gamerock",
       "vid": null,
       "pid": null,
       "controller": "PalitGPUController",
@@ -11266,6 +11245,13 @@
     },
     {
       "name": "Razer Huntsman V2 TKL",
+      "vid": null,
+      "pid": null,
+      "controller": "RazerController",
+      "kind": "hid"
+    },
+    {
+      "name": "Razer Huntsman V3 HE Magnetic Mini",
       "vid": null,
       "pid": null,
       "controller": "RazerController",

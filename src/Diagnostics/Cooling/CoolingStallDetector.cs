@@ -313,6 +313,10 @@ public sealed class CoolingStallFeeder : BackgroundService
 
         foreach (var ch in channels)
         {
+            // A port that cannot read its tach right now (MiniHub between
+            // agreed polls, SLV3 chains) carries Rpm = 0 with no fan stopped;
+            // leave it unobserved so it ages out instead of reading as a stall.
+            if (ch.RpmUnavailable) continue;
             var type = string.Equals(ch.Kind, FanKinds.Pump, StringComparison.Ordinal) ? "pump" : "fan";
             _detector.Observe(ch.Id, ch.Name, type, ch.Rpm, ch.DutyPercent, now);
         }

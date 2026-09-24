@@ -1,6 +1,7 @@
-uniform float u_hueShift;   // bipolar hue rotation within the colour family
-uniform float u_warmth;     // bipolar colour temperature: + warmer (amber), - cooler (blue)
-uniform float u_intensity;
+uniform float u_hueShift; // hint_range(-1.0, 1.0, 0.01) = 0.0  bipolar hue rotation within the colour family
+uniform float u_warmth; // hint_range(-1.0, 1.0, 0.01) = 0.0  bipolar colour temperature: + warmer (amber), - cooler (blue)
+uniform float u_intensity; // hint_range(0.0, 1.0, 0.01) = 1.0
+// u_saturation hint_range(0.0, 1.0, 0.01) = 1.0
 // Flat solid-colour fill: one HSV swatch, no motion, gradient, rotation, or
 // contrast. Base hue u_hue nudged by u_hueShift; u_saturation is the HSV
 // saturation (0 = white); u_warmth pushes the colour temperature warm/cool;

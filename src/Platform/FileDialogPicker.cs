@@ -15,12 +15,13 @@ namespace Nexus.Service.Platform;
 /// Which OS-native dialog <see cref="IFileDialogPicker.PickAsync"/> shows.
 /// <see cref="Folder"/> picks a single directory (gallery + deck Browse);
 /// <see cref="AnyFileSingle"/> picks one file with no type filter (deck
-/// Browse); <see cref="ImagesMultiSelect"/> picks one or more image files
-/// (gallery only).
+/// Browse); <see cref="MediaMultiSelect"/> picks one or more image or video
+/// files (gallery only). The member order is the helper wire format (the
+/// enum crosses as its integer), so only ever append.
 /// </summary>
 public enum FileDialogPickMode
 {
-    ImagesMultiSelect,
+    MediaMultiSelect,
     AnyFileSingle,
     Folder,
 }
@@ -51,7 +52,7 @@ public interface IFileDialogPicker
 /// Linux: the root daemon spawns zenity/kdialog inside the user's session
 /// via the setpriv wrapper (same trick as the screencast helper).
 ///
-/// Shared across the gallery (image multiselect / folder) and the deck
+/// Shared across the gallery (image+video multiselect / folder) and the deck
 /// action openFile/openFolder Browse buttons (any-file single-select /
 /// folder).
 /// </summary>
@@ -140,7 +141,7 @@ public sealed class FileDialogPicker : IFileDialogPicker
             _ =>
                 "tell me to activate\n"
                 + "set out to \"\"\n"
-                + "repeat with f in (choose file with prompt \"Add images to the Nexus gallery\" of type {\"public.image\"} with multiple selections allowed)\n"
+                + "repeat with f in (choose file with prompt \"Add images or videos to the Nexus gallery\" of type {\"public.image\", \"public.movie\"} with multiple selections allowed)\n"
                 + "set out to out & POSIX path of f & \"\\n\"\n"
                 + "end repeat\n"
                 + "return out",
@@ -164,7 +165,7 @@ public sealed class FileDialogPicker : IFileDialogPicker
                 _ => new List<string>
                 {
                     "--file-selection", "--multiple", "--separator=\n",
-                    "--file-filter=Images | *.jpg *.jpeg *.png *.webp *.gif *.bmp *.avif",
+                    "--file-filter=Images and videos | *.jpg *.jpeg *.png *.webp *.gif *.bmp *.avif *.mp4 *.m4v *.webm *.mov",
                 },
             };
         }
@@ -178,7 +179,7 @@ public sealed class FileDialogPicker : IFileDialogPicker
                 _ => new List<string>
                 {
                     "--getopenfilename", ".",
-                    "Image files (*.jpg *.jpeg *.png *.webp *.gif *.bmp *.avif)",
+                    "Images and videos (*.jpg *.jpeg *.png *.webp *.gif *.bmp *.avif *.mp4 *.m4v *.webm *.mov)",
                     "--multiple", "--separate-output",
                 },
             };

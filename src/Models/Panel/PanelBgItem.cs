@@ -47,6 +47,8 @@ public sealed class PanelBgResponse
 public sealed class PanelBgStageResponse
 {
     public string? StageId { get; set; }
+    /// <summary>video | gif | image: which element the cropper renders the source with.</summary>
+    public string? MediaKind { get; set; }
 
     /// <summary>The staged source carries real transparency, so the cropper has a "keep transparency" choice to offer.</summary>
     public bool Alpha { get; set; }

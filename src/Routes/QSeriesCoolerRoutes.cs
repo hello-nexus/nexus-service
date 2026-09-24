@@ -37,8 +37,9 @@ public static partial class DevicesRoutes
             }));
 
         // Switch the hub control mode: Software (host drives), Motherboard
-        // (mobo PWM), Firmware (onboard temperature curve).
-        app.MapPut("/devices/qseries/control-mode", (QSeriesControlModeRequest body, QSeriesCoolerHub hub) =>
+        // (mobo PWM), Firmware (onboard temperature curve). Motherboard and
+        // Firmware are remembered as the hub's hand-back mode.
+        app.MapPut("/devices/qseries/control-mode", (QSeriesControlModeRequest body, QSeriesCoolerHub hub, Nexus.Service.Persistence.IConfigStore store) =>
         {
             if (!hub.IsConnected)
                 return Results.Conflict(ApiResponse.Fail("Q-series cooler not connected"));
@@ -49,6 +50,7 @@ public static partial class DevicesRoutes
             }
             if (!hub.SetControlMode((byte)body.Mode))
                 return Results.Problem("Failed to set Q-series control mode.");
+            Nexus.Service.Cooling.QSeriesCoolerCoolingProvider.RecordHandBackChoice(store, hub.DeviceId, (byte)body.Mode);
             return Results.Ok(ApiResponse.Ok());
         });
 

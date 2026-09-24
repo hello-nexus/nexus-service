@@ -9,10 +9,14 @@ using Nexus.Service.Persistence;
 namespace Nexus.Service.Conflicts;
 
 /// <summary>
-/// Opt-in one-shot: at service start, terminate every conflicting app the
-/// watcher currently detects that the user has not excluded, so Nexus takes
-/// the hardware before a competing vendor tool grabs it. Gated on
-/// <c>Ui.AutoKillConflictsAtStartup</c>, which is off by default.
+/// One-shot: at service start, terminate every conflicting app the watcher
+/// currently detects that the user has not excluded, so Nexus takes the
+/// hardware before a competing vendor tool grabs it. Gated on
+/// <c>Ui.AutoKillConflictsAtStartup</c> and on onboarding having run (see
+/// <see cref="SweepAllowed"/>).
+///
+/// Windows' own Dynamic Lighting rides along under the same switch: it is the
+/// one conflict that cannot be ended, only turned off.
 ///
 /// Driven off the watcher's detected set rather than walking the whole
 /// catalog: the watcher already filters out our own bundled OpenRGB child by
@@ -43,10 +47,20 @@ public sealed class ConflictStartupShutdown : IHostedService
         _log = log;
     }
 
+    /// <summary>The switch, plus every onboarding flag: a fresh install's first
+    /// start comes before the onboarding conflict step, which is where the user
+    /// sees these apps and decides about them, so the sweep waits until the
+    /// sequence has finished (or been skipped) before it ever ends one.</summary>
+    internal static bool SweepAllowed(NexusSettings settings) =>
+        settings.Ui.AutoKillConflictsAtStartup
+        && settings.OnboardingCompleted
+        && settings.FeaturesOnboardingCompleted
+        && settings.LightingOnboardingCompleted;
+
     public Task StartAsync(CancellationToken cancellationToken)
     {
         var settings = _store.Load();
-        if (!settings.Ui.AutoKillConflictsAtStartup) return Task.CompletedTask;
+        if (!SweepAllowed(settings)) return Task.CompletedTask;
 
         var excluded = new HashSet<string>(
             settings.Ui.ConflictAutoKillExclusions,
@@ -67,6 +81,8 @@ public sealed class ConflictStartupShutdown : IHostedService
 
     private void RunSweepCore(HashSet<string> excluded)
     {
+        TurnOffWindowsDynamicLighting();
+
         // The "before" set is captured up front, for every target, and the
         // outcome is read from it afterwards. Per-app Killed flags undercount:
         // ProcessKiller tree-kills, and a vendor launcher can own another
@@ -114,6 +130,21 @@ public sealed class ConflictStartupShutdown : IHostedService
         _log.LogInformation("Startup conflict shutdown ended {Count} app(s).", killed.Count);
         try { AppsTerminated?.Invoke(killed); }
         catch (Exception ex) { _log.LogWarning(ex, "Startup conflict shutdown notification failed."); }
+    }
+
+    /// <summary>Unconditional: gating on a device being present would race HID enumeration at boot, and this sweep never runs twice.</summary>
+    private void TurnOffWindowsDynamicLighting()
+    {
+        if (!WindowsDynamicLighting.IsSupported()) return;
+        try
+        {
+            WindowsDynamicLighting.Write(enabled: false);
+            _log.LogInformation("Startup conflict shutdown: switched Windows Dynamic Lighting off.");
+        }
+        catch (Exception ex)
+        {
+            _log.LogWarning(ex, "Startup conflict shutdown could not switch Windows Dynamic Lighting off.");
+        }
     }
 
     public Task StopAsync(CancellationToken cancellationToken) => Task.CompletedTask;

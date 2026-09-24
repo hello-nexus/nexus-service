@@ -43,11 +43,11 @@ public sealed class LianLiConnectionWorker : BackgroundService
                     continue;
                 }
 
-                var device = FindAndOpen(out var profile);
+                var device = FindAndOpen(out var profile, out var info);
                 if (device != null)
                 {
                     _hub.Attach(device, profile);
-                    ServiceLog.Info("[lianli] connected");
+                    ServiceLog.Info($"[lianli] connected {profile.ModelName} pid={info!.ProductId:X4} rpt={info.InputReportByteLength}/{info.OutputReportByteLength}/{info.FeatureReportByteLength}");
                     _lighting.OnHubStateUpdated();
                     try
                     {
@@ -97,7 +97,7 @@ public sealed class LianLiConnectionWorker : BackgroundService
         }
     }
 
-    private IHidDevice? FindAndOpen(out LianLiFanProfile profile)
+    private IHidDevice? FindAndOpen(out LianLiFanProfile profile, out HidDeviceInfo? opened)
     {
         foreach (var pid in LianLiFanProfiles.AllProductIds)
         {
@@ -109,11 +109,16 @@ public sealed class LianLiConnectionWorker : BackgroundService
                 {
                     if (!LianLiFanProfiles.TryGet(pid, out profile)) continue;
                     var device = _hid.Open(info.Path);
-                    if (device != null) return device;
+                    if (device != null)
+                    {
+                        opened = info;
+                        return device;
+                    }
                 }
             }
         }
         profile = default;
+        opened = null;
         return null;
     }
 }

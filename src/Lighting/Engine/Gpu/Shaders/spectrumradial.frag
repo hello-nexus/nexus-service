@@ -1,7 +1,7 @@
-uniform float u_speed;
-uniform float u_spokes;   // extra: spoke count (16..64, default 32)
-uniform float u_radius;   // extra: inner radius (0.0..0.4)
-uniform float u_glow;     // extra: spoke glow (0.3..2)
+uniform float u_spokes; // hint_range(16.0, 64.0, 1.0) = 32.0  spoke count (16..64, default 32)
+uniform float u_radius; // hint_range(0.0, 0.4, 0.01) = 0.1  inner radius
+uniform float u_glow; // hint_range(0.3, 2.0, 0.05) = 1.0  spoke glow
+uniform float u_audioBoost; // hint_range(0.0, 2.0, 0.05) = 1.0
 
 // 32 radial spokes from the centre. Idle: a rotating sine wave across
 // spokes. Audio: each spoke's length = the matching spectrum band,

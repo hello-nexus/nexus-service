@@ -124,13 +124,32 @@ public static class ServiceLog
         // it from the stream and double-prefix. Before Initialize, fall back to the
         // current Console (no file yet).
         var console = isError ? _originalError ?? Console.Error : _originalOut ?? Console.Out;
-        console.WriteLine(message);
+        if (isError)
+        {
+            console.WriteLine(message);
+        }
+        else
+        {
+            // Unix ConsolePal locks Console.Out (the tee) around every console
+            // write, so the mirror must take it before the original writer or
+            // it deadlocks against a Console.Out.WriteLine in flight. The error
+            // path already orders its own writer before Console.Out.
+            lock (Console.Out)
+            {
+                console.WriteLine(message);
+            }
+        }
 
         WriteToFile($"{DateTime.UtcNow:yyyy-MM-ddTHH:mm:ss.fffZ} {level} {message}", newLine: true);
     }
 
     private static string ResolveLogsDir()
     {
+        // Root system daemon: logs under the machine root, like %ProgramData%
+        // on Windows. The per-user path would follow HOME, which is root's
+        // before login and the user's after - two log trees for one daemon.
+        if (Persistence.NexusDataPaths.SystemDaemonRoot is { } daemonRoot)
+            return Path.Combine(daemonRoot, "logs");
         if (RuntimeInformation.IsOSPlatform(OSPlatform.OSX))
         {
             var home = Environment.GetEnvironmentVariable("HOME") ?? "/tmp";

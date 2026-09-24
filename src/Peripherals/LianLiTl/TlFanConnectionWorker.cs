@@ -123,6 +123,7 @@ public sealed class TlFanConnectionWorker : BackgroundService
                 best = info;
             }
         }
+
         if (best == null)
         {
             return null;

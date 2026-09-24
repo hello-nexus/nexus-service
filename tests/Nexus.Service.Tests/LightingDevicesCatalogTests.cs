@@ -42,12 +42,17 @@ public class LightingDevicesCatalogTests
     [InlineData("Lian Li", "Uni Fan SL-Infinity", "0x0CF2", "0xA102")]
     [InlineData("Lian Li", "Galahad II Trinity", "0x0416", "0x7373")]
     [InlineData("Lian Li", "SL-LCD", "0x1CBE", "0x0005")]
+    [InlineData("Lian Li", "Strimer Wireless", "-", "-")]
     [InlineData("Tryx", "Panorama", "0x391A", "0x1011")]
+    [InlineData("Aftershock", "Glacier Matrix 360", "0x38C1", "0x0026")]
     [InlineData("Corsair", "iCUE LINK System Hub", "0x1B1C", "0x0C3F")]
     [InlineData("NZXT", "Kraken Z3", "0x1E71", "0x3008")]
     [InlineData("NZXT", "Kraken X3", "0x1E71", "0x2007")]
     [InlineData("NZXT", "Kraken Elite", "0x1E71", "0x300C")]
     [InlineData("HYTE", "Y70 Touch", "0x3402", "0x0C00")]
+    // DDC-only panels: EDID identity, no USB function, so no VID/PID.
+    [InlineData("HYTE", "Y70 Touch GW", "-", "-")]
+    [InlineData("HYTE", "Y70 Ina Touch", "-", "-")]
     [InlineData("iBUYPOWER", "MiniHub", "0x3402", "0x0900")]
     public void Catalog_ListsNativelyDrivenFirstPartyDevices(string vendor, string model, string vid, string pid)
     {
@@ -146,6 +151,25 @@ public class LightingDevicesCatalogTests
             Assert.Equal(model, row.Model);
             Assert.Equal("case", row.Category);
             Assert.Equal(new[] { "screen" }, row.Capabilities);
+        }
+    }
+
+    /// <summary>
+    /// Every CNVS PID the handler claims needs its own row: the Supported Devices dot
+    /// matches on exact VID:PID, so a revision missing from the catalog shows as
+    /// unsupported while the service is driving it (NEX-72, a 0B01 unit).
+    /// </summary>
+    [Fact]
+    public void Catalog_CoversEveryCnvsPidTheHandlerClaims()
+    {
+        foreach (var productId in Nexus.Service.Peripherals.Hyte.Cnvs.CnvsProtocol.ProductIds)
+        {
+            var pid = "0x" + productId.ToString("X4");
+            var row = LightingDevicesCatalog.All.Single(d => d.VendorId == "0x3402" && d.ProductId == pid);
+            Assert.Equal("nexus", row.Source);
+            Assert.Equal("HYTE", row.Vendor);
+            Assert.Equal("CNVS", row.Model);
+            Assert.Equal("mousemat", row.Category);
         }
     }
 

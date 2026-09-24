@@ -1,6 +1,7 @@
 #if WINDOWS
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using System.Runtime.Versioning;
 using System.Threading;
 using System.Threading.Tasks;
@@ -47,10 +48,10 @@ public sealed class AudioSessionPusher : IDisposable
     {
         Interlocked.Exchange(ref _streaming, enabled ? 1 : 0);
         // Drop the diff baseline so the next pass pushes unconditionally. The
-        // helper outlives a service restart, and the service clears its snapshot
-        // on disconnect - without this the pusher sees no change and the mixer
-        // stays empty until a level happens to move.
-        if (enabled) _last = null;
+        // service sends this on every connect, and a pass that ran while no pipe
+        // was up (or across a service restart, which clears the service's copy)
+        // was dropped - without this the snapshot stays empty until a level moves.
+        _last = null;
         Wake();
     }
 
@@ -132,6 +133,8 @@ public sealed class AudioSessionPusher : IDisposable
             if (!string.Equals(x.Id, y.Id, StringComparison.Ordinal)) return true;
             if (!string.Equals(x.Name, y.Name, StringComparison.Ordinal)) return true;
             if (x.Muted != y.Muted || x.Active != y.Active) return true;
+            if (x.OnDefault != y.OnDefault) return true;
+            if (!x.DeviceIds.SequenceEqual(y.DeviceIds)) return true;
             if (Pct(x.Volume) != Pct(y.Volume)) return true;
             if (Pct(x.Peak) != Pct(y.Peak)) return true;
         }

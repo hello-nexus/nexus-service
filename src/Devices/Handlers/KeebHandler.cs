@@ -14,7 +14,7 @@ public sealed class KeebHandler : IDeviceHandler
     private const int HyteVid = 0x3402;
 
     public string Id => "keeb";
-    public string Name => "Keeb";
+    public string Name => Peripherals.Hyte.Keeb.KeebHub.ProductName;
     public string Category => "keyboard";
 
     public IReadOnlyList<UsbId> Identifiers { get; } = new[]

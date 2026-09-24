@@ -1,7 +1,6 @@
-uniform float u_speed;
-uniform float u_twist; // extra: spiral twist (0..2)
-uniform float u_churn; // extra: wall flow turbulence (0.2..2)
-uniform float u_depth; // extra: recede rate (0.4..3)
+uniform float u_twist; // hint_range(0.0, 2.0, 0.05) = 0.8  spiral twist
+uniform float u_churn; // hint_range(0.2, 2.0, 0.05) = 1.0  wall flow turbulence
+uniform float u_depth; // hint_range(0.4, 3.0, 0.05) = 1.2  recede rate
 
 // Liquid tunnel: smooth flowing tube walls. Depth = 1/r. The wall is
 // driven by integer-harmonic angular sines (seamless around the tube, no

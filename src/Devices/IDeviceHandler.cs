@@ -12,7 +12,7 @@ public interface IDeviceHandler
     /// <summary>Unique identifier (e.g., "cnvs", "q60").</summary>
     string Id { get; }
 
-    /// <summary>Display name (e.g., "CNVS", "Q60").</summary>
+    /// <summary>Display name (e.g., "HYTE CNVS", "HYTE Q60").</summary>
     string Name { get; }
 
     /// <summary>Device category for grouping (e.g., "controller", "display", "hub", "keyboard").</summary>

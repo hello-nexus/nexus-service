@@ -14,7 +14,9 @@ public sealed class MacVolumeProvider : IVolumeProvider
 {
     private readonly object _gate = new();
 
-    public VolumeState GetState()
+    public VolumeState GetState() => GetState("");
+
+    public VolumeState GetState(string deviceId)
     {
         if (!RuntimeInformation.IsOSPlatform(OSPlatform.OSX))
             return UnsupportedState();
@@ -23,7 +25,7 @@ public sealed class MacVolumeProvider : IVolumeProvider
         {
             try
             {
-                if (!TryGetDefaultOutputDevice(out var device))
+                if (!TryResolveDevice(deviceId, out var device))
                     return UnsupportedState();
 
                 var targets = GetVolumeTargets(device);
@@ -49,7 +51,9 @@ public sealed class MacVolumeProvider : IVolumeProvider
         }
     }
 
-    public void SetVolume(double volume)
+    public void SetVolume(double volume) => SetVolume("", volume);
+
+    public void SetVolume(string deviceId, double volume)
     {
         if (!RuntimeInformation.IsOSPlatform(OSPlatform.OSX))
             return;
@@ -59,7 +63,7 @@ public sealed class MacVolumeProvider : IVolumeProvider
         {
             try
             {
-                if (!TryGetDefaultOutputDevice(out var device))
+                if (!TryResolveDevice(deviceId, out var device))
                     return;
 
                 foreach (var target in GetVolumeTargets(device))
@@ -74,7 +78,9 @@ public sealed class MacVolumeProvider : IVolumeProvider
         }
     }
 
-    public void SetMuted(bool muted)
+    public void SetMuted(bool muted) => SetMuted("", muted);
+
+    public void SetMuted(string deviceId, bool muted)
     {
         if (!RuntimeInformation.IsOSPlatform(OSPlatform.OSX))
             return;
@@ -83,7 +89,7 @@ public sealed class MacVolumeProvider : IVolumeProvider
         {
             try
             {
-                if (!TryGetDefaultOutputDevice(out var device))
+                if (!TryResolveDevice(deviceId, out var device))
                     return;
 
                 var value = muted ? 1u : 0u;
@@ -97,6 +103,17 @@ public sealed class MacVolumeProvider : IVolumeProvider
                 Console.Error.WriteLine($"[volume-mac] mute failed: {ex.Message}");
             }
         }
+    }
+
+    /// <summary>Empty <paramref name="deviceId"/> resolves the default output;
+    /// otherwise translates the CoreAudio UID to its AudioDeviceID.</summary>
+    private static bool TryResolveDevice(string deviceId, out uint device)
+    {
+        if (deviceId.Length == 0)
+            return TryGetDefaultOutputDevice(out device);
+
+        device = MacAudioDeviceProvider.TranslateUidToDevice(deviceId);
+        return device != 0;
     }
 
     private static VolumeState UnsupportedState() => new() { Supported = false, Volume = 0, Muted = false };

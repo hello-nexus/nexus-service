@@ -29,6 +29,7 @@
 import AppKit
 import WebKit
 import Foundation
+import IOKit.hid
 
 // MARK: - CLI parsing
 
@@ -540,13 +541,15 @@ struct KioskAssignment {
 final class KioskController {
     private let opts: Options
     private let webViewDelegate = OverlayWebViewDelegate()
-    private var kiosks: [String: (window: NSWindow, deviceId: String)] = [:]
+    private let touchRouter = TouchRouter()
+    private var kiosks: [String: (window: NSWindow, deviceId: String, touchViaPointer: Bool)] = [:]
     private var fetchInFlight = false
     private var fetchQueued = false
     private var retryScheduled = false
 
     init(_ opts: Options) {
         self.opts = opts
+        touchRouter.onTouchscreenPresenceChanged = { [weak self] in self?.refresh() }
     }
 
     func start() {
@@ -645,15 +648,44 @@ final class KioskController {
             }
         }
 
+        // Touch routing needs one unambiguous target; see TouchRouter for why
+        // macOS cannot resolve a digitizer's display on its own. Decided once
+        // here, from the CG online set, and shared by the kiosk URL flag and
+        // the router so the two can never disagree.
+        let cgDisplays = cgDisplaysByStableId()
+        let attached = assignments.compactMap { cgDisplays[$0.displayId] }
+        let routeTarget = attached.count == 1 ? attached[0] : nil
+        let senders = TouchRouter.scanTouchscreenSenders()
+        let routable = routeTarget != nil && !senders.isEmpty
+
+        // A kiosk whose touch semantics no longer match routability respawns
+        // so the SPA reads the right flag. A lock/unlock where the panel
+        // terminates and returns while the display stays therefore reloads
+        // the kiosk twice (mouse semantics, then touch again).
+        for (displayId, entry) in kiosks where entry.touchViaPointer != routable {
+            entry.window.orderOut(nil)
+            entry.window.close()
+            kiosks.removeValue(forKey: displayId)
+            FileHandle.standardError.write("[overlay-helper] kiosk closed display=\(displayId) (touch routing changed)\n".data(using: .utf8)!)
+        }
+
         for a in assignments where kiosks[a.displayId] == nil {
             guard let screen = screens[a.displayId] else {
                 FileHandle.standardError.write("[overlay-helper] kiosk display=\(a.displayId) not attached; skipping\n".data(using: .utf8)!)
                 continue
             }
-            let win = makeKioskWindow(for: screen, deviceId: a.panelDeviceId)
-            kiosks[a.displayId] = (win, a.panelDeviceId)
+            let win = makeKioskWindow(for: screen, deviceId: a.panelDeviceId, touchViaPointer: routable)
+            kiosks[a.displayId] = (win, a.panelDeviceId, routable)
             FileHandle.standardError.write("[overlay-helper] kiosk opened display=\(a.displayId) device=\(a.panelDeviceId)\n".data(using: .utf8)!)
         }
+
+        touchRouter.setTarget(routeTarget, senders: senders)
+    }
+
+    private func cgDisplaysByStableId() -> [String: CGDirectDisplayID] {
+        var result: [String: CGDirectDisplayID] = [:]
+        for (display, id) in stableIdsByCGDisplay() { result[id] = display }
+        return result
     }
 
     // MARK: stable display ids
@@ -702,7 +734,7 @@ final class KioskController {
 
     // MARK: window creation
 
-    private func makeKioskWindow(for screen: NSScreen, deviceId: String) -> NSWindow {
+    private func makeKioskWindow(for screen: NSScreen, deviceId: String, touchViaPointer: Bool) -> NSWindow {
         let frame = screen.frame
         // Non-activating panel for the same reason as the widget overlay:
         // the kiosk must take clicks without ever stealing key/main status
@@ -745,19 +777,24 @@ final class KioskController {
         win.setFrame(frame, display: true)
         win.orderFrontRegardless()
 
-        if let url = panelURL(deviceId: deviceId) {
+        if let url = panelURL(deviceId: deviceId, touchViaPointer: touchViaPointer) {
             webView.load(URLRequest(url: url))
         }
         return win
     }
 
-    private func panelURL(deviceId: String) -> URL? {
+    private func panelURL(deviceId: String, touchViaPointer: Bool) -> URL? {
         var c = URLComponents()
         c.scheme = "http"
         c.host = "localhost"
         c.port = opts.port
         c.path = "/panel/\(deviceId)"
         c.queryItems = [URLQueryItem(name: "token", value: opts.token)]
+        // Tells the panel its touch arrives as mouse pointer events (see
+        // TouchRouter), so the SPA gives a primary-button drag the touch
+        // gesture model. Only when routing can apply, so a plain mouse on a
+        // kiosk without a touchscreen keeps mouse semantics.
+        if touchViaPointer { c.queryItems?.append(URLQueryItem(name: "touchViaPointer", value: "1")) }
         return c.url
     }
 }
@@ -808,3 +845,430 @@ app.setActivationPolicy(.accessory)   // no Dock icon, no menu bar item
 let delegate = AppDelegate(opts)
 app.delegate = delegate
 app.run()
+
+// MARK: - Touchscreen routing (promoted-monitor panels)
+//
+// macOS has no association between a USB touchscreen and a display: it
+// normalizes the digitizer's contacts onto the MAIN display, and there is no
+// mapping to write (Windows fixes this service-side via TouchMappingGuard).
+// The pointer events themselves are usable: the normalization is a linear
+// map of the panel surface onto the main display's rect, so it inverts
+// exactly. This router installs a modifying CGEventTap, recognises events
+// that originate from a touchscreen, and rewrites their location into the
+// promoted panel's rect. The recognition key is the event field carrying
+// the originating IOHIDEventService's registry id - the only field that
+// differs between a touch and a real mouse. Reading the digitizer directly
+// is not an option: the DriverKit event driver owns it and user-space HID
+// readers get nothing, the private event-system client is entitlement-gated,
+// and WebKit reports every shape of synthesized event as a mouse.
+//
+// Routing is only unambiguous with exactly one promoted panel display
+// attached; with none or several the tap passes everything through.
+// Touchscreens are recognised by HID usage (Digitizer / Touch Screen), so
+// any USB touchscreen qualifies, and every event service of the same
+// physical unit counts, because the pointer events ride the panel's
+// mouse-emulation collection, not its digitizer collection.
+final class TouchRouter {
+    private var tap: CFMachPort?
+    private var target: CGDirectDisplayID?
+    private var touchSenders = Set<Int64>()
+    /// Fired when a touchscreen appears or disappears while a target is set,
+    /// so the kiosk owner can re-decide the kiosk's touch flag; the kiosk
+    /// URL is fixed at open, and a panel that returns after lock/unlock
+    /// would otherwise keep mouse semantics under routed touch.
+    var onTouchscreenPresenceChanged: (() -> Void)?
+    private var lastSenderScan = Date.distantPast
+    private var lastLogged: (display: CGDirectDisplayID, senders: Set<Int64>)?
+    private var refusalLogged = false
+    private var installRetryScheduled = false
+    private var upMonitor: Any?
+    private static let installRetryInterval: TimeInterval = 5
+    private var notifyPort: IONotificationPortRef?
+    private var matchedIterator: io_iterator_t = 0
+    private var terminatedIterator: io_iterator_t = 0
+    private var lastPoint: CGPoint?
+    private var lastContact: CGPoint?
+    private var returnPoint: CGPoint?
+    private var contactGeneration = 0
+    private var routed = 0
+
+    private var promptShown = false
+
+    static func scanTouchscreenSenders() -> Set<Int64> { touchscreenSenderIDs() }
+
+    /// Pass the display a single promoted panel occupies, or nil to stand
+    /// down, with the sender set the caller scanned for this reconcile: the
+    /// kiosk's touch flag and the router must read the same scan, or a
+    /// panel registering between two scans leaves the kiosk in mouse
+    /// semantics under routed touch with no edge to correct it.
+    func setTarget(_ display: CGDirectDisplayID?, senders: Set<Int64>) {
+        target = display
+        guard let display = display else {
+            if tap != nil { log("[overlay-helper] touch router: released") }
+            uninstall()
+            return
+        }
+        // Watch first: at wake the display reattaches and reconciles before
+        // the USB touchscreen has re-enumerated, so an empty scan here is
+        // the normal case and the arrival notification is what brings the
+        // router up.
+        watchServices()
+        touchSenders = senders
+        lastSenderScan = Date()
+        guard !touchSenders.isEmpty else {
+            releaseTap()
+            return
+        }
+        // A lock/unlock or session switch can leave the port invalid or the
+        // tap disabled without a callback; a reconcile is the cheap moment
+        // to notice and rebuild.
+        if let port = tap {
+            if !CFMachPortIsValid(port) { releaseTap() }
+            else if !CGEvent.tapIsEnabled(tap: port) { CGEvent.tapEnable(tap: port, enable: true) }
+        }
+        install()
+        if lastLogged?.display != display || lastLogged?.senders != touchSenders {
+            lastLogged = (display, touchSenders)
+            let ids = touchSenders.map { "0x" + String($0, radix: 16) }.sorted().joined(separator: ",")
+            log("[overlay-helper] touch router: display=\(display) senders=[\(ids)]")
+        }
+    }
+
+    deinit { uninstall() }
+
+    private func install() {
+        if tap != nil { return }
+        let mask: CGEventMask =
+            (1 << CGEventType.mouseMoved.rawValue) |
+            (1 << CGEventType.leftMouseDown.rawValue) |
+            (1 << CGEventType.leftMouseUp.rawValue) |
+            (1 << CGEventType.leftMouseDragged.rawValue)
+        let ctx = Unmanaged.passUnretained(self).toOpaque()
+        // Refused without Input Monitoring for this helper's own identity:
+        // touch then keeps landing on the main display, the pre-existing
+        // behaviour rather than a dead pointer. HID level first (before any
+        // session filtering); the session level is the fallback and still
+        // lets the location be rewritten.
+        var created: (CFMachPort, String)?
+        for (location, name) in [(CGEventTapLocation.cghidEventTap, "hid"), (.cgSessionEventTap, "session")] {
+            if let port = CGEvent.tapCreate(
+                tap: location,
+                place: .headInsertEventTap,
+                options: .defaultTap,
+                eventsOfInterest: mask,
+                callback: Self.tapCallback,
+                userInfo: ctx)
+            {
+                created = (port, name)
+                break
+            }
+        }
+        guard let (port, level) = created
+        else {
+            if !refusalLogged {
+                refusalLogged = true
+                let ax = AXIsProcessTrusted()
+                let listen = IOHIDCheckAccess(kIOHIDRequestTypeListenEvent).rawValue
+                let post = IOHIDCheckAccess(kIOHIDRequestTypePostEvent).rawValue
+                log("[overlay-helper] touch router: event tap refused - accessibility=\(ax) listenEvent=\(listen) postEvent=\(post) (0=granted 1=denied 2=unknown); touch stays on the main display until Input Monitoring is granted")
+            }
+            // The checks above answer for the responsible process (whoever
+            // launched the service) and can read granted when this helper is
+            // not, so the request is made regardless; it registers the helper
+            // under System Settings > Privacy & Security > Input Monitoring.
+            if !promptShown {
+                promptShown = true
+                _ = IOHIDRequestAccess(kIOHIDRequestTypeListenEvent)
+            }
+            // Retry until the grant lands, so it takes effect without a
+            // restart; one chain at a time, bounded by helper lifetime.
+            if !installRetryScheduled {
+                installRetryScheduled = true
+                DispatchQueue.main.asyncAfter(deadline: .now() + Self.installRetryInterval) { [weak self] in
+                    guard let self = self else { return }
+                    self.installRetryScheduled = false
+                    if self.target != nil, self.tap == nil, !self.touchSenders.isEmpty { self.install() }
+                }
+            }
+            return
+        }
+        let source = CFMachPortCreateRunLoopSource(kCFAllocatorDefault, port, 0)
+        CFRunLoopAddSource(CFRunLoopGetMain(), source, .commonModes)
+        CGEvent.tapEnable(tap: port, enable: true)
+        tap = port
+        log("[overlay-helper] touch router: modifying tap installed at \(level) level")
+    }
+
+    private func uninstall() {
+        unwatchServices()
+        releaseTap()
+    }
+
+    private func releaseTap() {
+        if let monitor = upMonitor { NSEvent.removeMonitor(monitor); upMonitor = nil }
+        lastPoint = nil
+        lastContact = nil
+        returnPoint = nil
+        guard let port = tap else { return }
+        CGEvent.tapEnable(tap: port, enable: false)
+        CFMachPortInvalidate(port)
+        tap = nil
+    }
+
+    // Sleep/wake and replug re-enumerate the panel, and every
+    // IOHIDEventService comes back under a new registry id - the ids the
+    // tap matches on would silently go stale and every touch would fall
+    // through to the main display. IOKit's matched/terminated notifications
+    // are the native edge for this; the tap itself stays up.
+    private func watchServices() {
+        if notifyPort != nil { return }
+        guard let port = IONotificationPortCreate(kIOMainPortDefault) else {
+            log("[overlay-helper] touch router: IOKit notification port unavailable; a replug will not be noticed until the next topology edge")
+            return
+        }
+        let ctx = Unmanaged.passUnretained(self).toOpaque()
+        let arm: (String, UnsafeMutablePointer<io_iterator_t>) -> Bool = { kind, iterator in
+            let matching = IOServiceMatching("IOHIDEventService")
+            let rc = IOServiceAddMatchingNotification(port, kind, matching, Self.serviceChangedCallback, ctx, iterator)
+            // Draining the iterator is what arms the notification.
+            if rc == KERN_SUCCESS { Self.drain(iterator.pointee) }
+            return rc == KERN_SUCCESS
+        }
+        guard arm(kIOFirstMatchNotification, &matchedIterator), arm(kIOTerminatedNotification, &terminatedIterator) else {
+            log("[overlay-helper] touch router: IOKit service notifications refused; a replug will not be noticed until the next topology edge")
+            if matchedIterator != 0 { IOObjectRelease(matchedIterator); matchedIterator = 0 }
+            if terminatedIterator != 0 { IOObjectRelease(terminatedIterator); terminatedIterator = 0 }
+            IONotificationPortDestroy(port)
+            return
+        }
+        CFRunLoopAddSource(CFRunLoopGetMain(), IONotificationPortGetRunLoopSource(port).takeUnretainedValue(), .commonModes)
+        notifyPort = port
+    }
+
+    private func unwatchServices() {
+        if matchedIterator != 0 { IOObjectRelease(matchedIterator); matchedIterator = 0 }
+        if terminatedIterator != 0 { IOObjectRelease(terminatedIterator); terminatedIterator = 0 }
+        if let port = notifyPort { IONotificationPortDestroy(port); notifyPort = nil }
+    }
+
+    private static func drain(_ iterator: io_iterator_t) {
+        while case let entry = IOIteratorNext(iterator), entry != 0 { IOObjectRelease(entry) }
+    }
+
+    private static let serviceChangedCallback: IOServiceMatchingCallback = { refcon, iterator in
+        guard let refcon = refcon else { return }
+        drain(iterator)
+        let router = Unmanaged<TouchRouter>.fromOpaque(refcon).takeUnretainedValue()
+        serviceChangedCallbackSettle(router)
+    }
+
+    private func refreshSenders() {
+        guard target != nil else { return }
+        lastSenderScan = Date()
+        let fresh = Self.touchscreenSenderIDs()
+        if fresh == touchSenders { return }
+        let presenceFlipped = fresh.isEmpty != touchSenders.isEmpty
+        touchSenders = fresh
+        let ids = fresh.map { "0x" + String($0, radix: 16) }.sorted().joined(separator: ",")
+        log("[overlay-helper] touch router: senders changed -> [\(ids)]")
+        // The panel came back after a reconcile that found nothing to route.
+        if tap == nil && !fresh.isEmpty { install() }
+        if presenceFlipped { onTouchscreenPresenceChanged?() }
+    }
+
+    private static let serviceChangedCallbackSettle: (TouchRouter) -> Void = { router in
+        router.refreshSenders()
+        DispatchQueue.main.asyncAfter(deadline: .now() + senderSettleDelay) { [weak router] in
+            router?.refreshSenders()
+        }
+    }
+
+    fileprivate func handle(_ type: CGEventType, _ event: CGEvent) -> CGEvent? {
+        if type == .tapDisabledByTimeout || type == .tapDisabledByUserInput {
+            if let port = tap { CGEvent.tapEnable(tap: port, enable: true) }
+            return event
+        }
+        guard let display = target else { return event }
+        if touchSenders.isEmpty && Date().timeIntervalSince(lastSenderScan) > Self.senderRescanInterval {
+            refreshSenders()
+        }
+        guard touchSenders.contains(event.getIntegerValueField(Self.senderField)) else { return event }
+
+        // Undo the system's normalization onto the main display, then apply
+        // the same normalization onto the panel's rect.
+        let main = CGDisplayBounds(CGMainDisplayID())
+        let dest = CGDisplayBounds(display)
+        guard main.width > 0, main.height > 0, dest.width > 0, dest.height > 0 else { return event }
+        let p = event.location
+
+        // Only the FIRST report of a contact is normalized onto the main
+        // display; once the cursor has been warped onto the panel,
+        // WindowServer positions the following reports relative to the
+        // cursor, so they already arrive in the panel's rect. Mapping those
+        // a second time flings them off-screen (negative x normalizes past
+        // the left edge, y halves). A lifted finger reports a zeroed
+        // coordinate, which lands on the main display's origin: that is not
+        // a position, pin it to the last real contact.
+        var isLiftArtifact = false
+        let mapped: CGPoint
+        if dest.contains(p) {
+            mapped = p
+        } else if p.x == main.origin.x && p.y == main.origin.y, let last = lastContact {
+            isLiftArtifact = true
+            mapped = last
+        } else if main.contains(p) {
+            let nx = (p.x - main.origin.x) / main.width
+            let ny = (p.y - main.origin.y) / main.height
+            mapped = CGPoint(
+                x: dest.origin.x + nx * dest.width,
+                y: dest.origin.y + ny * dest.height)
+        } else if let last = lastContact {
+            isLiftArtifact = true
+            mapped = last
+        } else {
+            return event
+        }
+
+        // A lift artifact that trails the up is not a contact: rewrite it
+        // and leave the contact state alone, or it would open a phantom
+        // contact and cancel the pending cursor return.
+        if isLiftArtifact && lastPoint == nil {
+            event.location = mapped
+            return event
+        }
+
+        // First event of a contact: remember where the user's real pointer
+        // was so it can go back there on release, the way a touch should
+        // not relocate the mouse. Read before the warp below moves it.
+        if lastPoint == nil, let cursor = CGEvent(source: nil)?.location,
+           !main.contains(cursor) || abs(cursor.x - p.x) + abs(cursor.y - p.y) > Self.cursorSettleTolerance {
+            returnPoint = cursor
+        }
+
+        event.location = mapped
+        // Rewriting the event alone routes the CLICK to the panel, but the
+        // on-screen pointer is positioned by WindowServer from the raw
+        // absolute stream and does not follow; warp it so the cursor and
+        // the event agree. Warping suppresses hardware mouse motion briefly
+        // unless the association is restored right away.
+        if !isLiftArtifact {
+            CGWarpMouseCursorPosition(mapped)
+            CGAssociateMouseAndMouseCursorPosition(1)
+            lastContact = mapped
+        }
+
+        // Drags carry deltas some views read instead of the location; keep
+        // them consistent with the rewritten path.
+        if let last = lastPoint {
+            event.setIntegerValueField(.mouseEventDeltaX, value: Int64(mapped.x - last.x))
+            event.setIntegerValueField(.mouseEventDeltaY, value: Int64(mapped.y - last.y))
+        }
+        if type == .leftMouseUp {
+            lastPoint = nil
+            if let back = returnPoint {
+                returnPoint = nil
+                scheduleCursorReturn(to: back)
+            }
+        } else {
+            if lastPoint == nil { contactGeneration += 1 }
+            lastPoint = mapped
+        }
+
+        // The first few routed contacts are logged so a mapping problem is
+        // visible in the service log without a debug build.
+        routed += 1
+        if routed <= 3 {
+            log("[overlay-helper] touch router: \(Int(p.x)),\(Int(p.y)) -> \(Int(mapped.x)),\(Int(mapped.y))")
+        }
+        return event
+    }
+
+    // A static, not a file-scope `let`: in main.swift top-level stored
+    // globals initialize in source order as script statements, and anything
+    // declared below `app.run()` never runs - the C function pointer stays
+    // NULL and CGEventTapCreate silently returns nil. A static initializes
+    // lazily on first use regardless of where it sits in the file.
+    private static let tapCallback: CGEventTapCallBack = { _, type, event, context in
+        guard let context = context else { return Unmanaged.passUnretained(event) }
+        let router = Unmanaged<TouchRouter>.fromOpaque(context).takeUnretainedValue()
+        guard let result = router.handle(type, event) else { return nil }
+        return Unmanaged.passUnretained(result)
+    }
+
+    /// Warp the pointer back once this process has dequeued the release:
+    /// the up travels WindowServer -> this process -> the kiosk WebView, and
+    /// a warp that lands first makes the release hit-test elsewhere and the
+    /// button never commits. A local monitor sees the up as it is dequeued;
+    /// a fallback delay covers an up delivered to another process. Skipped
+    /// if a new contact began meanwhile.
+    private func scheduleCursorReturn(to point: CGPoint) {
+        let generation = contactGeneration
+        let fire: () -> Void = { [weak self] in
+            guard let self = self, self.contactGeneration == generation else { return }
+            if let monitor = self.upMonitor { NSEvent.removeMonitor(monitor); self.upMonitor = nil }
+            guard self.lastPoint == nil else { return }
+            CGWarpMouseCursorPosition(point)
+            CGAssociateMouseAndMouseCursorPosition(1)
+        }
+        if let monitor = upMonitor { NSEvent.removeMonitor(monitor) }
+        upMonitor = NSEvent.addLocalMonitorForEvents(matching: .leftMouseUp) { event in
+            DispatchQueue.main.async(execute: fire)
+            return event
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + Self.cursorReturnFallback) { [weak self] in
+            if self?.upMonitor != nil { fire() }
+        }
+    }
+    private static let cursorReturnFallback: TimeInterval = 0.4
+
+    // Emitting IOHIDEventService registry id; undocumented, a renumbering
+    // silently reverts touch to the main display.
+    private static let senderField = CGEventField(rawValue: 87)!
+    // Cursor already sitting on the touch point counts as "this touch moved
+    // it", not as the mouse's resting position to return to.
+    private static let cursorSettleTolerance: CGFloat = 2
+    private static let senderRescanInterval: TimeInterval = 1
+    // Observed on wake: at the first-match notification the re-enumerated
+    // services had not yet published their usage properties, so the scan
+    // saw no touchscreen unit. A property-change interest subscription on
+    // the matched entry would be the exact signal; until then a re-scan
+    // after a settle delay, backed by the event-driven self-heal.
+    private static let senderSettleDelay: TimeInterval = 1.5
+
+    /// Registry ids of every IOHIDEventService belonging to a physical unit
+    /// that exposes a Digitizer / Touch Screen collection.
+    private static func touchscreenSenderIDs() -> Set<Int64> {
+        var iterator: io_iterator_t = 0
+        guard IOServiceGetMatchingServices(kIOMainPortDefault, IOServiceMatching("IOHIDEventService"), &iterator) == KERN_SUCCESS
+        else { return [] }
+        defer { IOObjectRelease(iterator) }
+
+        var units = Set<String>()
+        var services: [(id: Int64, unit: String)] = []
+        while case let entry = IOIteratorNext(iterator), entry != 0 {
+            defer { IOObjectRelease(entry) }
+            var registryID: UInt64 = 0
+            guard IORegistryEntryGetRegistryEntryID(entry, &registryID) == KERN_SUCCESS,
+                  let vendor = intProperty(entry, kIOHIDVendorIDKey),
+                  let product = intProperty(entry, kIOHIDProductIDKey),
+                  let location = intProperty(entry, kIOHIDLocationIDKey)
+            else { continue }
+            let unit = "\(vendor):\(product):\(location)"
+            if intProperty(entry, kIOHIDPrimaryUsagePageKey) == Int(kHIDPage_Digitizer),
+               intProperty(entry, kIOHIDPrimaryUsageKey) == Int(kHIDUsage_Dig_TouchScreen) {
+                units.insert(unit)
+            }
+            services.append((Int64(bitPattern: registryID), unit))
+        }
+        return Set(services.filter { units.contains($0.unit) }.map { $0.id })
+    }
+
+    private static func intProperty(_ entry: io_registry_entry_t, _ key: String) -> Int? {
+        (IORegistryEntryCreateCFProperty(entry, key as CFString, kCFAllocatorDefault, 0)?
+            .takeRetainedValue() as? NSNumber)?.intValue
+    }
+
+    private func log(_ line: String) {
+        FileHandle.standardError.write((line + "\n").data(using: .utf8)!)
+    }
+}

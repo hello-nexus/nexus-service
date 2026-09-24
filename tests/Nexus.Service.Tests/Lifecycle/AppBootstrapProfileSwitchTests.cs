@@ -127,6 +127,33 @@ public class AppBootstrapProfileSwitchTests
         Assert.Equal(1, fans.ReleaseAllCallCount);
     }
 
+    // A profile reset while inactive carries a blank CoolingSettings; the
+    // switch into it seeds the same four presets a clean install boots with.
+    [Fact]
+    public void UnseededProfile_GetsTheDefaultPresetCurvesOnSwitch()
+    {
+        var (sp, _, curveEngine, lightingEngine, lighting, store) = Build();
+
+        AppBootstrap.ReapplyAfterProfileSwitch(sp, curveEngine, lightingEngine, lighting, store);
+
+        Assert.Equal(
+            new[] { "preset-silent", "preset-balanced", "preset-turbo", "preset-max" },
+            store.Load().Cooling.Curves.Select(c => c.Id));
+        Assert.True(store.Load().Cooling.CurvesSeeded);
+    }
+
+    [Fact]
+    public void SeededProfile_KeepsItsCurvesOnSwitch()
+    {
+        var (sp, _, curveEngine, lightingEngine, lighting, store) = Build();
+        // Seeded once, then every curve deleted: the switch must not resurrect them.
+        store.Update(s => s.Cooling.CurvesSeeded = true);
+
+        AppBootstrap.ReapplyAfterProfileSwitch(sp, curveEngine, lightingEngine, lighting, store);
+
+        Assert.Empty(store.Load().Cooling.Curves);
+    }
+
     [Fact]
     public void CoolingDisabled_SkipsReleaseAll_ButStillReappliesKeeb()
     {

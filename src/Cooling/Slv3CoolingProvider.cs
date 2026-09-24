@@ -34,6 +34,11 @@ public sealed class Slv3CoolingProvider : IFanControlProvider, ICoolingProvider
     public static bool IsSlv3Id(string id) =>
         !string.IsNullOrEmpty(id) && id.StartsWith(IdPrefix, StringComparison.Ordinal);
 
+    // A bound Strimer Wireless cable is RGB-only: it has no fan ports, so it
+    // gets no cooling channels (the lighting provider owns it).
+    private static bool HasFanPorts(Slv3FanInfo fan) =>
+        fan.BoundToUs && !Slv3Protocol.IsStrimerDevType((byte)fan.DevType);
+
     // ── IFanControlProvider ──
 
     public IReadOnlyList<FanChannel> GetFanChannels()
@@ -42,10 +47,10 @@ public sealed class Slv3CoolingProvider : IFanControlProvider, ICoolingProvider
         var result = new List<FanChannel>();
         foreach (var fan in _hub.State.Fans)
         {
-            if (!fan.BoundToUs) continue;
+            if (!HasFanPorts(fan)) continue;
             var portCount = EffectivePortCount(fan);
             var rpmUnavailable = fan.FanCount <= 0;
-            var deviceName = $"Lian Li Wireless Fan ({portCount}x)";
+            var deviceName = "Lian Li Wireless Fan";
             var minDuty = Slv3Protocol.MinDutyPercentFor(Slv3Protocol.ClassifyFanFamily((byte)fan.FanType));
             for (var port = 0; port < portCount; port++)
             {
@@ -99,7 +104,7 @@ public sealed class Slv3CoolingProvider : IFanControlProvider, ICoolingProvider
         if (!_hub.IsConnected) return;
         foreach (var fan in _hub.State.Fans)
         {
-            if (!fan.BoundToUs) continue;
+            if (!HasFanPorts(fan)) continue;
             // EffectivePortCount, not FanCount, so a zero-count chain (whose
             // ports GetFanChannels exposes and the user can drive) is released
             // too; FanCount would iterate zero ports and leave it pinned.
@@ -129,7 +134,7 @@ public sealed class Slv3CoolingProvider : IFanControlProvider, ICoolingProvider
         var components = new List<CoolingComponent>();
         foreach (var fan in _hub.State.Fans)
         {
-            if (!fan.BoundToUs) continue;
+            if (!HasFanPorts(fan)) continue;
             var portCount = EffectivePortCount(fan);
             var rpmUnavailable = fan.FanCount <= 0;
             var devices = new List<CoolingDevice>(portCount);
@@ -147,7 +152,7 @@ public sealed class Slv3CoolingProvider : IFanControlProvider, ICoolingProvider
             components.Add(new CoolingComponent
             {
                 Id = DeviceId(fan.Mac),
-                Name = $"Lian Li Wireless Fan ({portCount}x)",
+                Name = "Lian Li Wireless Fan",
                 Type = "LianLiWireless",
                 Devices = devices,
             });

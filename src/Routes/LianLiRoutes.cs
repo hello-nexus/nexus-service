@@ -22,6 +22,7 @@ public static partial class DevicesRoutes
             var resp = new LianLiStateResponse
             {
                 IsConnected = hub.IsConnected,
+                ModelName = hub.ModelName,
                 Rpm = new[] { state.Rpm[0], state.Rpm[1], state.Rpm[2], state.Rpm[3] },
                 Duty = new[] { state.Duty[0], state.Duty[1], state.Duty[2], state.Duty[3] },
                 FansPerPort = new[]
@@ -100,7 +101,8 @@ public static partial class DevicesRoutes
             Nexus.Service.Sockets.MultiplexHub mux) =>
         {
             var hubId = hub.DeviceId;
-            var oldIds = LianLiZoneSupport.ZoneIds(store.Load(), hubId);
+            var profile = hub.Profile;
+            var oldIds = LianLiZoneSupport.ZoneIds(store.Load(), hubId, profile);
 
             store.Update(s =>
             {
@@ -123,7 +125,7 @@ public static partial class DevicesRoutes
                     }
                 }
 
-                var newIds = new HashSet<string>(LianLiZoneSupport.ZoneIds(s, hubId));
+                var newIds = new HashSet<string>(LianLiZoneSupport.ZoneIds(s, hubId, profile));
                 var orphaned = new List<string>();
                 foreach (var id in oldIds)
                 {
@@ -134,7 +136,7 @@ public static partial class DevicesRoutes
                 if (structural)
                 {
                     ZoneStateDrop.Drop(s, oldIds);
-                    foreach (var did in LianLiZoneSupport.DeviceIds(s, hubId))
+                    foreach (var did in LianLiZoneSupport.DeviceIds(s, hubId, profile))
                     {
                         s.Devices.ZonePartitions.Remove(did);
                     }
@@ -156,15 +158,17 @@ public static partial class DevicesRoutes
             return Results.Json(ApiResponse.Ok(), AppJsonContext.Default.ApiResponse);
         });
 
-        // GET /devices/lianli/lighting - current settings + mode catalog.
+        // GET /devices/lianli/lighting - current settings + the attached family's mode catalog.
         app.MapGet("/devices/lianli/lighting", (LianLiHub hub, IConfigStore store) =>
         {
             var s = store.Load();
             var ls = s.Devices.LianLiLighting;
-            var catalog = new LianLiModeInfoDto[LianLiLightingModes.Catalog.Length];
-            for (var i = 0; i < LianLiLightingModes.Catalog.Length; i++)
+            var family = hub.Profile.Family;
+            var modes = LianLiLightingModes.CatalogFor(family);
+            var catalog = new LianLiModeInfoDto[modes.Count];
+            for (var i = 0; i < modes.Count; i++)
             {
-                var m = LianLiLightingModes.Catalog[i];
+                var m = modes[i];
                 catalog[i] = new LianLiModeInfoDto
                 {
                     Key = m.Key,
@@ -176,9 +180,16 @@ public static partial class DevicesRoutes
                     ColorsMax = m.ColorsMax,
                 };
             }
+            // Report the mode the writer commits: a persisted key outside this
+            // family's catalog falls back to static there too.
+            var persisted = LianLiLightingModes.Find(ls.Mode);
+            var effectiveMode = persisted != null && !persisted.SupportedBy(family) ? "static" : ls.Mode;
+            var effect = LianLiLightingModes.Find(ls.Mode == "custom" ? ls.EffectMode ?? "rainbowWave" : ls.Mode);
+            var effectMode = effect != null && effect.Key != "custom" && effect.SupportedBy(family) ? effect.Key : "static";
             return Results.Json(new LianLiLightingResponse
             {
-                Mode = ls.Mode,
+                Mode = effectiveMode,
+                EffectMode = effectMode,
                 Speed = ls.Speed,
                 Direction = ls.Direction,
                 Brightness = ls.Brightness,
@@ -190,17 +201,26 @@ public static partial class DevicesRoutes
         // PUT /devices/lianli/lighting - patch mode/speed/direction/brightness/colors.
         app.MapPut("/devices/lianli/lighting", (
             LianLiLightingRequest body,
+            LianLiHub hub,
             IConfigStore store,
             Nexus.Service.Sockets.MultiplexHub mux) =>
         {
-            if (body.Mode != null && LianLiLightingModes.Find(body.Mode) == null)
+            if (body.Mode != null)
             {
-                return Results.BadRequest(ApiResponse.Fail("unknown mode key"));
+                var info = LianLiLightingModes.Find(body.Mode);
+                if (info == null || !info.SupportedBy(hub.Profile.Family))
+                {
+                    return Results.BadRequest(ApiResponse.Fail("unknown mode key"));
+                }
             }
             store.Update(s =>
             {
                 var ls = s.Devices.LianLiLighting;
-                if (body.Mode != null) ls.Mode = body.Mode;
+                if (body.Mode != null)
+                {
+                    ls.Mode = body.Mode;
+                    if (body.Mode != "custom") ls.EffectMode = body.Mode;
+                }
                 if (body.Speed.HasValue) ls.Speed = Math.Clamp(body.Speed.Value, 0, 4);
                 if (body.Direction.HasValue) ls.Direction = Math.Clamp(body.Direction.Value, 0, 1);
                 if (body.Brightness.HasValue) ls.Brightness = Math.Clamp(body.Brightness.Value, 0, 4);
@@ -227,6 +247,7 @@ public static partial class DevicesRoutes
 public sealed class LianLiStateResponse
 {
     public bool IsConnected { get; set; }
+    public string ModelName { get; set; } = "";
     public int[] Rpm { get; set; } = Array.Empty<int>();
     public int[] Duty { get; set; } = Array.Empty<int>();
     public int[] FansPerPort { get; set; } = Array.Empty<int>();
@@ -271,6 +292,8 @@ public sealed class LianLiModeInfoDto
 public sealed class LianLiLightingResponse
 {
     public string Mode { get; set; } = "";
+    /// <summary>The mode the device returns to when Lighting page control is turned off.</summary>
+    public string EffectMode { get; set; } = "";
     public int Speed { get; set; }
     public int Direction { get; set; }
     public int Brightness { get; set; }

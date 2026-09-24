@@ -21,6 +21,79 @@ public static class OpenRgbZoneSupport
 {
     public static bool IsSplitMotherboard(RgbDevice d) => d.Type == 0 && d.Zones.Count > 1;
 
+    /// <summary>
+    /// Structures this physical controller contributes. A split motherboard is
+    /// several DEVICES, one per ARGB header, not one device with several zones:
+    /// a header is what a user wires a fan chain to, and a chain re-partitions
+    /// only its own port. While all three headers shared a structure, any
+    /// partition had to tile every header at once (the full-cover rule), so a
+    /// chain on one silently constrained the others.
+    ///
+    /// The per-port device id is the id its card already had ("{stableId}-{z}"),
+    /// so every per-card setting - counts, applied mappings, prefs, uncontrolled
+    /// and disabled lists, canvas layout - keeps working untouched. Only the
+    /// device-scoped dictionaries that used to hang off the parent need moving,
+    /// which SplitMotherboardDeviceMigration does once.
+    /// </summary>
+    public static List<DeviceStructure> BuildStructures(RgbDevice d, NexusSettings settings)
+    {
+        var whole = BuildStructure(d, settings);
+        if (!IsSplitMotherboard(d))
+        {
+            return new List<DeviceStructure> { whole };
+        }
+
+        var perPort = new List<DeviceStructure>(whole.Segments.Count);
+        var baseOffset = 0;
+        for (int z = 0; z < whole.Segments.Count; z++)
+        {
+            var segment = whole.Segments[z];
+            var zone = whole.DefaultZones[z];
+            var port = new DeviceStructure
+            {
+                DeviceId = zone.Id,
+                Name = zone.Name,
+                DeviceKey = zone.DeviceKey,
+                // Frames, LED names and RESIZEZONE all address the board, not
+                // the port; without these two the port's slices would resolve
+                // against header 0 for every header.
+                PhysicalDeviceId = whole.DeviceId,
+                FrameBaseOffset = baseOffset,
+            };
+            baseOffset += segment.FrameLedCount;
+            // The port owns a single segment, so its slices are segment 0 and a
+            // chain partition never reaches past this header. Index stays
+            // POSITIONAL: the device-map routes use it as the segment key for
+            // ZoneOverrideContext.MapFromSegment and for the override list, so
+            // putting the board's zone number here silently unmaps every LED
+            // on headers past the first - and the save path then treats the
+            // empty result as "no overrides" and deletes the stored ones. The
+            // board zone number lives on the default zone's LegacyZoneIndex,
+            // which is where the resize path reads it.
+            port.Segments.Add(new StructureSegment
+            {
+                Index = 0,
+                Name = segment.Name,
+                LedCount = segment.LedCount,
+                FrameLedCount = segment.FrameLedCount,
+                Resizable = segment.Resizable,
+                MaxLedCount = segment.MaxLedCount,
+                ZoneType = segment.ZoneType,
+            });
+            port.DefaultZones.Add(new DefaultZoneDef
+            {
+                Id = zone.Id,
+                Name = zone.Name,
+                RawName = zone.RawName,
+                DeviceKey = zone.DeviceKey,
+                LegacyZoneIndex = zone.LegacyZoneIndex,
+                Slices = { new ZoneSlice { Segment = 0, Start = 0, Count = segment.LedCount } },
+            });
+            perPort.Add(port);
+        }
+        return perPort;
+    }
+
     public static DeviceStructure BuildStructure(RgbDevice d, NexusSettings settings)
     {
         var baseId = d.StableId;
@@ -33,6 +106,7 @@ public static class OpenRgbZoneSupport
             DeviceId = baseId,
             Name = d.Name,
             DeviceKey = baseKey,
+            PhysicalDeviceId = baseId,
         };
 
         if (d.Zones.Count == 0)
@@ -67,6 +141,7 @@ public static class OpenRgbZoneSupport
                     LedCount = effective,
                     FrameLedCount = raw,
                     Resizable = split && IsZoneResizable(zone.ZoneType),
+                    MaxLedCount = zone.LedsMax > int.MaxValue ? 0 : (int)zone.LedsMax,
                     ZoneType = ZoneTypeName(zone.ZoneType),
                 });
             }
@@ -133,11 +208,18 @@ public static class OpenRgbZoneSupport
             {
                 return false;
             }
-            for (var z = 0; z < d.Zones.Count; z++)
+            // Per PORT, not per board zone: a chained header emits one card per
+            // link ("{base}-{z}:zN"), so testing the board's own zone ids here
+            // never matched and the board stayed on direct mode with every card
+            // handed over.
+            foreach (var port in BuildStructures(d, settings))
             {
-                if (!uncontrolled.Contains($"{baseId}-{z}"))
+                foreach (var portZone in ZoneResolution.Resolve(port, settings))
                 {
-                    return false;
+                    if (!uncontrolled.Contains(portZone.Id))
+                    {
+                        return false;
+                    }
                 }
             }
             return true;
@@ -227,27 +309,44 @@ public static class OpenRgbZoneSupport
                 continue;
             }
 
-            if (isDefault)
+            if (isSplitMotherboard)
             {
-                // Split motherboard with the default partition - one card per
-                // header, identical to the legacy emission.
+                // Every header is its own device, so the BOARD's own partition
+                // means nothing here - only each port's does. Keyed on the
+                // split alone rather than on isDefault so this never diverges
+                // from the engine-frame path, which resolves ports the same
+                // way; the two disagreeing lights the wrong LEDs silently.
+                var portStructures = BuildStructures(d, settings);
                 for (int z = 0; z < d.Zones.Count; z++)
                 {
                     var zone = d.Zones[z];
-                    var zoneId = $"{baseId}-{z}";
+                    var portId = $"{baseId}-{z}";
+                    // A port resolves to one card normally and to one card per
+                    // product once a chain is wired to it. They all report the
+                    // port as their device, which is what makes the chain read
+                    // as a single split card rather than unrelated siblings.
+                    var portZones = z < portStructures.Count
+                        ? ZoneResolution.Resolve(portStructures[z], settings)
+                        : System.Array.Empty<ResolvedZone>();
+                    foreach (var portZone in portZones)
+                    {
+                    var zoneId = portZone.Id;
                     prefs.TryGetValue(zoneId, out var pref);
                     layouts.TryGetValue(zoneId, out var layout);
                     // Trust the user's persisted choice over OpenRGB's
                     // reported count (12V headers ignore ResizeZone).
-                    var effectiveLedCount = zoneLedCounts.TryGetValue(zoneId, out var persistedCount)
-                        ? persistedCount
-                        : zone.LedCount;
+                    var effectiveLedCount = portZone.IsDefault
+                        ? (zoneLedCounts.TryGetValue(zoneId, out var persistedCount) ? persistedCount : zone.LedCount)
+                        : portZone.LedCount;
+                    // Must be the hint the render path resolves this card with,
+                    // or the card's enabled count disagrees with what lights.
+                    var zoneHint = portZone.IsDefault ? portZone.LegacyZoneIndex : portZone.Ordinal;
                     var (sx, sy, sw, sh) = OpenRgbLightingDeviceProvider.DefaultStripLayout(stripSlot);
                     result.Add(new LightingDevice
                     {
                         Id = zoneId,
-                        DeviceKey = DeviceKeyComputer.ForZone(baseKey, z),
-                        Name = BuildZoneName(d.Name, zone.Name, z),
+                        DeviceKey = portZone.IsDefault ? DeviceKeyComputer.ForZone(baseKey, z) : portZone.DeviceKey,
+                        Name = portZone.IsDefault ? BuildZoneName(d.Name, zone.Name, z) : portZone.Name,
                         Type = OpenRgbTypeName(d.Type),
                         IconType = OpenRgbTypeName(d.Type),
                         LedsOn = !disabled.Contains(zoneId),
@@ -255,34 +354,45 @@ public static class OpenRgbZoneSupport
                         Hue = pref?.Hue ?? 0,
                         Saturation = pref?.Saturation ?? 1.0f,
                         LedCount = effectiveLedCount,
-                        EnabledLedCount = ZoneResolution.CountEnabled(structure, zones[z], zoneId, effectiveLedCount, zones[z].LegacyZoneIndex, settings),
+                        EnabledLedCount = ZoneResolution.CountEnabled(portStructures[z], portZone, zoneId, effectiveLedCount, zoneHint, settings),
                         CanvasX = layout?.X ?? sx,
                         CanvasY = layout?.Y ?? sy,
                         CanvasW = layout?.W ?? sw,
                         CanvasH = layout?.H ?? sh,
                         CanvasRotation = NormalizeRotation(layout?.Rotation ?? 0),
                         ParentDeviceId = baseId,
-                        ZoneIndex = z,
+                        // The hint, not the header: MappingApplyService reads
+                        // this to pick the artifact zone, and it has to pick
+                        // the one the render path resolved.
+                        ZoneIndex = zoneHint,
                         ZoneType = ZoneTypeName(zone.ZoneType),
-                        ZoneResizable = IsZoneResizable(zone.ZoneType),
-                        DeviceId = baseId,
+                        // Only a zone owning the whole header may resize it. A
+                        // chain link starts at 0 like a whole-port zone does,
+                        // so without the count check every link would offer an
+                        // LED-count editor that the resize path then refuses.
+                        ZoneResizable = ZoneResolution.WholeResizableSegment(portStructures[z], portZone, settings) >= 0,
+                        // Each header is its own device now, so the card points
+                        // at the port structure rather than the controller. The
+                        // rail still groups it under the board through
+                        // ParentDeviceId, and the LED map editor resolves the
+                        // port instead of a device that owns every header.
+                        DeviceId = portId,
                         ZoneCustomizable = true,
                         ConflictAppIds = new List<string>(conflictAppIds),
                     });
                     stripSlot++;
+                    }
                 }
                 continue;
             }
 
-            // Custom partition - one card per user zone.
+            // Custom partition on a whole device - one card per user zone.
             foreach (var zone in zones)
             {
                 prefs.TryGetValue(zone.Id, out var pref);
                 layouts.TryGetValue(zone.Id, out var layout);
-                var (zx, zy, zw, zh) = isSplitMotherboard
-                    ? OpenRgbLightingDeviceProvider.DefaultStripLayout(stripSlot)
-                    : OpenRgbLightingDeviceProvider.DefaultCardLayout(cardSlot);
-                var wholeResizable = ZoneResolution.WholeResizableSegment(structure, zone);
+                var (zx, zy, zw, zh) = OpenRgbLightingDeviceProvider.DefaultCardLayout(cardSlot);
+                var wholeResizable = ZoneResolution.WholeResizableSegment(structure, zone, settings);
                 result.Add(new LightingDevice
                 {
                     Id = zone.Id,
@@ -309,10 +419,7 @@ public static class OpenRgbZoneSupport
                     ZoneCustomizable = true,
                     ConflictAppIds = new List<string>(conflictAppIds),
                 });
-                if (isSplitMotherboard)
-                    stripSlot++;
-                else
-                    cardSlot++;
+                cardSlot++;
             }
         }
 
@@ -445,19 +552,6 @@ public static class OpenRgbZoneSupport
         _ => "unknown",
     };
 
-    /// <summary>
-    /// Clamp persisted rotation values to the four valid quarter-turns.
-    /// Older builds wrote a nonsense default (DTO bug); normalize on load.
-    /// </summary>
-    public static int NormalizeRotation(int rotation)
-    {
-        var r = ((rotation % 360) + 360) % 360;
-        return r switch
-        {
-            90 => 90,
-            180 => 180,
-            270 => 270,
-            _ => 0,
-        };
-    }
+    /// <summary>Persisted rotation folded into 0..359 degrees.</summary>
+    public static int NormalizeRotation(int rotation) => ((rotation % 360) + 360) % 360;
 }

@@ -139,4 +139,158 @@ public sealed class PanelDeckPolicyRouteTests : IDisposable
             new PanelDeckDispatchBody { DeviceId = id, WidgetId = "deck1", Slot = 0 });
         Assert.Equal(HttpStatusCode.Unauthorized, anonymous.StatusCode);
     }
+
+    // ───────────────────────── PUT /deck/instances/{id} and copyOfPresetId ─────────────────────────
+    // /panel/deck/dispatch trusts whatever a widget's resolved preset holds
+    // with no dispatch-time policy check of its own, so retargeting an
+    // instance at an existing preset - or cloning one via copyOfPresetId -
+    // is the only remaining gate against a panel session reaching a
+    // desktop-authored privileged key it never authored itself.
+
+    [Fact]
+    public async Task Panel_cannot_retarget_a_physical_streamdeck_instance()
+    {
+        var panel = PanelClient();
+
+        var res = await panel.PutAsJsonAsync("/deck/instances/streamdeck:SERIAL-1", new { mode = "custom" });
+
+        Assert.Equal(HttpStatusCode.Forbidden, res.StatusCode);
+        Assert.Contains("deck_action_requires_desktop", await res.Content.ReadAsStringAsync());
+    }
+
+    [Fact]
+    public async Task Desktop_can_retarget_a_physical_streamdeck_instance()
+    {
+        var desktop = DesktopClient();
+
+        var res = await desktop.PutAsJsonAsync("/deck/instances/streamdeck:SERIAL-1", new { mode = "custom" });
+
+        Assert.True(res.IsSuccessStatusCode);
+    }
+
+    private static async Task<string> CreatePresetAsync(HttpClient client, string name, string slotJson)
+    {
+        using var doc = JsonDocument.Parse($$"""{"pages":[{"slots":[{{slotJson}}]}]}""");
+        var body = new { name, cols = 3, rows = 2, deck = doc.RootElement };
+        var res = await client.PostAsJsonAsync("/deck/presets", body);
+        Assert.True(res.IsSuccessStatusCode, await res.Content.ReadAsStringAsync());
+        using var parsed = JsonDocument.Parse(await res.Content.ReadAsStringAsync());
+        return parsed.RootElement.GetProperty("preset").GetProperty("id").GetString()!;
+    }
+
+    [Fact]
+    public async Task Panel_cannot_point_its_widget_at_a_preset_with_privileged_keys()
+    {
+        var desktop = DesktopClient();
+        var panel = PanelClient();
+        var privilegedId = await CreatePresetAsync(desktop, "Privileged " + Guid.NewGuid().ToString("n")[..8], Hotkey);
+
+        var res = await panel.PutAsJsonAsync("/deck/instances/widget:w1", new { activePresetId = privilegedId });
+
+        Assert.Equal(HttpStatusCode.Forbidden, res.StatusCode);
+        Assert.Contains("deck_action_requires_desktop", await res.Content.ReadAsStringAsync());
+    }
+
+    [Fact]
+    public async Task Desktop_can_point_a_widget_at_a_preset_with_privileged_keys()
+    {
+        var desktop = DesktopClient();
+        var privilegedId = await CreatePresetAsync(desktop, "Privileged " + Guid.NewGuid().ToString("n")[..8], Hotkey);
+
+        var res = await desktop.PutAsJsonAsync("/deck/instances/widget:w1", new { activePresetId = privilegedId });
+
+        Assert.True(res.IsSuccessStatusCode);
+    }
+
+    [Fact]
+    public async Task Panel_can_point_its_widget_at_an_unprivileged_preset()
+    {
+        var desktop = DesktopClient();
+        var panel = PanelClient();
+        var plainId = await CreatePresetAsync(desktop, "Plain " + Guid.NewGuid().ToString("n")[..8], OpenUrl);
+
+        var res = await panel.PutAsJsonAsync("/deck/instances/widget:w1", new { activePresetId = plainId });
+
+        Assert.True(res.IsSuccessStatusCode);
+    }
+
+    [Fact]
+    public async Task Panel_cannot_copy_a_preset_with_privileged_keys()
+    {
+        var desktop = DesktopClient();
+        var panel = PanelClient();
+        var privilegedId = await CreatePresetAsync(desktop, "Source " + Guid.NewGuid().ToString("n")[..8], Hotkey);
+
+        var res = await panel.PostAsJsonAsync("/deck/presets", new
+        {
+            name = "Copy " + Guid.NewGuid().ToString("n")[..8],
+            cols = 3,
+            rows = 2,
+            copyOfPresetId = privilegedId,
+        });
+
+        Assert.Equal(HttpStatusCode.Forbidden, res.StatusCode);
+        Assert.Contains("deck_action_requires_desktop", await res.Content.ReadAsStringAsync());
+    }
+
+    [Fact]
+    public async Task Desktop_can_copy_a_preset_with_privileged_keys()
+    {
+        var desktop = DesktopClient();
+        var privilegedId = await CreatePresetAsync(desktop, "Source2 " + Guid.NewGuid().ToString("n")[..8], Hotkey);
+
+        var res = await desktop.PostAsJsonAsync("/deck/presets", new
+        {
+            name = "Copy2 " + Guid.NewGuid().ToString("n")[..8],
+            cols = 3,
+            rows = 2,
+            copyOfPresetId = privilegedId,
+        });
+
+        Assert.True(res.IsSuccessStatusCode, await res.Content.ReadAsStringAsync());
+    }
+
+    // ───────────────────────── POST /deck/presets {templateId} ─────────────────────────
+    // The bundled photoshop template is all hotkey actions - a panel session
+    // must not get a desktop-authored privileged preset just by naming a
+    // template id instead of supplying its own deck.
+
+    [Fact]
+    public async Task Panel_cannot_create_a_preset_from_a_privileged_template()
+    {
+        var panel = PanelClient();
+
+        var res = await panel.PostAsJsonAsync("/deck/presets", new { templateId = "photoshop" });
+
+        Assert.Equal(HttpStatusCode.Forbidden, res.StatusCode);
+        Assert.Contains("deck_action_requires_desktop", await res.Content.ReadAsStringAsync());
+    }
+
+    /// <summary>A panel's new widget joins only a preset the panel could activate itself; a hotkey preset at the head of the list is skipped.</summary>
+    [Fact]
+    public async Task Panel_widget_lazy_join_skips_a_privileged_preset()
+    {
+        var desktop = DesktopClient();
+        var privileged = await desktop.PostAsJsonAsync("/deck/presets", new { templateId = "photoshop" });
+        Assert.True(privileged.IsSuccessStatusCode, await privileged.Content.ReadAsStringAsync());
+        var plain = await desktop.PostAsJsonAsync("/deck/presets", new { name = "Plain" });
+        Assert.True(plain.IsSuccessStatusCode, await plain.Content.ReadAsStringAsync());
+        var plainId = (await plain.Content.ReadFromJsonAsync<JsonElement>()).GetProperty("preset").GetProperty("id").GetString();
+
+        var panel = PanelClient();
+        var res = await panel.GetAsync("/deck/instances/widget:lazy-panel-1");
+        Assert.True(res.IsSuccessStatusCode, await res.Content.ReadAsStringAsync());
+        var body = await res.Content.ReadFromJsonAsync<JsonElement>();
+        Assert.Equal(plainId, body.GetProperty("instance").GetProperty("activePresetId").GetString());
+    }
+
+    [Fact]
+    public async Task Desktop_can_create_a_preset_from_a_privileged_template()
+    {
+        var desktop = DesktopClient();
+
+        var res = await desktop.PostAsJsonAsync("/deck/presets", new { templateId = "photoshop" });
+
+        Assert.True(res.IsSuccessStatusCode, await res.Content.ReadAsStringAsync());
+    }
 }

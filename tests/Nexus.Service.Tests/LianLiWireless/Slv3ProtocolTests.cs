@@ -455,6 +455,51 @@ public class Slv3ProtocolTests
         Assert.Equal(expected, Slv3Protocol.LedsPerFanFor(family));
     }
 
+    // ── Strimer Wireless ──
+
+    [Theory]
+    [InlineData(0, false)]
+    [InlineData(1, true)]
+    [InlineData(2, true)]
+    [InlineData(9, true)]
+    [InlineData(10, false)]
+    [InlineData(20, false)]
+    [InlineData(0xFF, false)]
+    public void IsStrimerDevType_is_the_1_to_9_range(byte devType, bool expected)
+    {
+        Assert.Equal(expected, Slv3Protocol.IsStrimerDevType(devType));
+    }
+
+    [Theory]
+    [InlineData(1, 4, 29)]  // GPU 2x8 / 16-8
+    [InlineData(2, 6, 22)]  // 24-pin (the Y70 cable)
+    [InlineData(3, 6, 29)]  // GPU 3x8 / 16-12
+    [InlineData(4, 4, 22)]  // CPU 2x8
+    [InlineData(5, 0, 0)]   // in range, no known geometry
+    [InlineData(0, 0, 0)]
+    public void StrimerGeometryFor_matches_L_Connect_LedNum(byte devType, int lanes, int ledsPerLane)
+    {
+        Assert.Equal((lanes, ledsPerLane), Slv3Protocol.StrimerGeometryFor(devType));
+    }
+
+    [Fact]
+    public void TryParseRecord_flags_a_strimer_record_by_dev_type()
+    {
+        var reply = new byte[Slv3Protocol.RecordHeaderLength + Slv3Protocol.RecordLength];
+        var rec = reply.AsSpan(Slv3Protocol.RecordHeaderLength);
+        FanMac.CopyTo(rec.Slice(0));
+        MasterMac.CopyTo(rec.Slice(6));
+        rec[13] = 1;    // rxType
+        rec[18] = 2;    // dev_type: 24-pin Strimer (Y70 record 2026-09-15)
+        rec[19] = 0;    // fan_num: a Strimer carries no fans
+        rec[41] = 0x1C;
+        Assert.True(Slv3Protocol.TryParseRecord(reply, Slv3Protocol.RecordHeaderLength, out var record));
+        Assert.True(record.IsStrimer);
+        Assert.True(record.IsWirelessFan); // still a non-master device on the link
+        Assert.Equal(0, record.FanCount);
+        Assert.Equal(Slv3FanFamily.Unknown, record.Family);
+    }
+
     [Theory]
     [InlineData(Slv3FanFamily.Tlv2Lcd, 10)]
     [InlineData(Slv3FanFamily.Cl, 10)]

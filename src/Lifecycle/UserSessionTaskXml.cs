@@ -41,8 +41,11 @@ internal static class UserSessionTaskXml
     /// <summary>
     /// Task XML running <paramref name="command"/> as <paramref name="username"/>
     /// with an interactive token, the XML equivalent of `/RU user /IT`.
+    /// <paramref name="elevated"/> asks for the user's full token (`/RL HIGHEST`),
+    /// which Task Scheduler grants an administrator without a UAC prompt; a
+    /// standard user gets their limited token either way.
     /// </summary>
-    internal static string Build(string username, string command)
+    internal static string Build(string username, string command, bool elevated = false)
     {
         var (exe, args) = SplitCommand(command);
         var sb = new StringBuilder();
@@ -53,7 +56,7 @@ internal static class UserSessionTaskXml
         sb.Append("    <Principal id=\"Author\">\n");
         sb.Append("      <UserId>").Append(Escape(username)).Append("</UserId>\n");
         sb.Append("      <LogonType>InteractiveToken</LogonType>\n");
-        sb.Append("      <RunLevel>LeastPrivilege</RunLevel>\n");
+        sb.Append("      <RunLevel>").Append(elevated ? "HighestAvailable" : "LeastPrivilege").Append("</RunLevel>\n");
         sb.Append("    </Principal>\n");
         sb.Append("  </Principals>\n");
         sb.Append("  <Settings>\n");

@@ -50,8 +50,8 @@ public sealed class CorsairLinkPanelDiscovery : IStreamedPanelDiscovery
                     Kind = ProfileKind,
                     DisplayName = "iCUE LINK LCD",
                     Surface = PanelSurfaces.LcdRound,
-                    // Shares 'lcd-round' with the Galahad II and the XC7, so the sidebar
-                    // brands from this rather than the surface name.
+                    // Shares 'lcd-round' with the XC7, so the sidebar brands from this
+                    // rather than the surface name.
                     Family = ProfileKind,
                     CssWidth = CorsairLinkLcd.PanelWidth,
                     CssHeight = CorsairLinkLcd.PanelHeight,

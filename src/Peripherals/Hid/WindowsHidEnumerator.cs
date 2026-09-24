@@ -196,9 +196,10 @@ public sealed class WindowsHidEnumerator : IHidEnumerator
         }
 
         var serial = TryGetSerial(handle);
-        var (usagePage, usage, inLen, _, _) = TryGetCaps(handle);
+        var (usagePage, usage, inLen, outLen, featLen) = TryGetCaps(handle);
 
-        return new WindowsHidDevice(handle, path, attrs.VendorID, attrs.ProductID, serial, usagePage, usage, inLen, forInput);
+        return new WindowsHidDevice(handle, path, attrs.VendorID, attrs.ProductID, serial, usagePage, usage,
+            inLen, outLen, featLen, forInput);
     }
 
     private static string? TryGetSerial(IntPtr handle)

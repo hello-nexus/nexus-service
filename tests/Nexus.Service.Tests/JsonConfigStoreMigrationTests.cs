@@ -425,6 +425,64 @@ public class JsonConfigStoreMigrationTests : IDisposable
     }
 
     [Fact]
+    public void Load_V15_KeepsTheStartupShutdownOffForExistingInstall()
+    {
+        File.WriteAllText(_settingsPath, """
+        {
+          "schemaVersion": 15
+        }
+        """);
+
+        var store = new JsonConfigStore(_settingsPath);
+        var s = store.Load();
+        try
+        {
+            Assert.False(s.Ui.AutoKillConflictsAtStartup);
+        }
+        finally
+        {
+            store.Dispose();
+        }
+    }
+
+    [Fact]
+    public void Load_V16_KeepsAnExplicitStartupShutdownChoice()
+    {
+        File.WriteAllText(_settingsPath, """
+        {
+          "schemaVersion": 16,
+          "ui": { "autoKillConflictsAtStartup": true }
+        }
+        """);
+
+        var store = new JsonConfigStore(_settingsPath);
+        var s = store.Load();
+        try
+        {
+            Assert.True(s.Ui.AutoKillConflictsAtStartup);
+        }
+        finally
+        {
+            store.Dispose();
+        }
+    }
+
+    [Fact]
+    public void Load_NoSettingsFile_StartupShutdownDefaultsOn()
+    {
+        var store = new JsonConfigStore(_settingsPath);
+        var s = store.Load();
+        try
+        {
+            Assert.True(s.Ui.AutoKillConflictsAtStartup);
+        }
+        finally
+        {
+            store.Dispose();
+        }
+    }
+
+    [Fact]
     public void Load_NoSettingsFile_FeaturesOnboardingCompletedDefaultsFalse()
     {
         var store = new JsonConfigStore(_settingsPath);
@@ -503,6 +561,173 @@ public class JsonConfigStoreMigrationTests : IDisposable
         finally
         {
             store.Dispose();
+        }
+    }
+
+    /// <summary>
+    /// Regression test for a real-world data-loss bug: PhysicalDeckSettings'
+    /// pre-v18 fields (Deck/ImageRefs/Presets/ActivePresetId) were renamed to
+    /// LegacyDeck/etc. with no JsonPropertyName, so under CamelCase naming
+    /// they deserialized from "legacyDeck" instead of the actual on-disk
+    /// "deck" - every field bound to null, DeckModesMigration saw nothing to
+    /// hoist, and the schema version still advanced to 18, permanently
+    /// discarding the user's layout. This deserializes a literal pre-v18
+    /// settings.json through the real PersistenceJsonContext (not a C#
+    /// object graph built by hand) so a naming-attribute regression fails it
+    /// again.
+    /// </summary>
+    [Fact]
+    public void Load_V17_DeckModesMigration_HoistsLegacyDeckFromRawJson()
+    {
+        var json = """
+        {
+          "schemaVersion": 17,
+          "streamDeck": {
+            "decks": {
+              "SERIAL-1": {
+                "name": "My Deck",
+                "productId": 99,
+                "deck": { "pages": [ { "slots": [ { "label": "Hi" } ] } ] }
+              }
+            }
+          }
+        }
+        """;
+        File.WriteAllText(_settingsPath, json);
+
+        var store = new JsonConfigStore(_settingsPath);
+        var s = store.Load();
+        try
+        {
+            Assert.Equal(NexusSettings.CurrentSchemaVersion, s.SchemaVersion);
+            var instance = Assert.Contains("streamdeck:SERIAL-1", s.StreamDeck.Instances);
+            Assert.Equal("custom", instance.Mode);
+            var preset = s.StreamDeck.Presets.Find(p => p.Id == instance.ActivePresetId);
+            Assert.NotNull(preset);
+            Assert.Equal("My Deck", preset!.Name);
+            Assert.Equal("Hi", preset.Deck.Pages[0].Slots[0].Label);
+            Assert.Null(s.StreamDeck.Decks["SERIAL-1"].LegacyDeck);
+        }
+        finally
+        {
+            store.Dispose();
+        }
+    }
+
+    /// <summary>
+    /// A downgrade to a pre-deck-modes build (then a re-upgrade) leaves
+    /// SchemaVersion already at 18 - the downgraded build wrote fresh
+    /// Legacy* content with its own older model, which knows nothing of
+    /// Presets/Instances - so the schema-gated migration never runs again on
+    /// re-upgrade. JsonConfigStore.Load must recover independently of
+    /// SchemaVersion whenever it sees empty presets/instances alongside a
+    /// deck that still carries Legacy* content.
+    /// </summary>
+    [Fact]
+    public void Load_SchemaAlreadyAtCurrent_StillRecoversAStrandedLegacyDeck()
+    {
+        var json = $$"""
+        {
+          "schemaVersion": {{NexusSettings.CurrentSchemaVersion}},
+          "streamDeck": {
+            "decks": {
+              "SERIAL-1": {
+                "name": "My Deck",
+                "productId": 99,
+                "deck": { "pages": [ { "slots": [ { "label": "Hi" } ] } ] }
+              }
+            }
+          }
+        }
+        """;
+        File.WriteAllText(_settingsPath, json);
+
+        var store = new JsonConfigStore(_settingsPath);
+        var s = store.Load();
+        try
+        {
+            var instance = Assert.Contains("streamdeck:SERIAL-1", s.StreamDeck.Instances);
+            var preset = s.StreamDeck.Presets.Find(p => p.Id == instance.ActivePresetId);
+            Assert.NotNull(preset);
+            Assert.Equal("Hi", preset!.Deck.Pages[0].Slots[0].Label);
+            Assert.Null(s.StreamDeck.Decks["SERIAL-1"].LegacyDeck);
+        }
+        finally
+        {
+            store.Dispose();
+        }
+    }
+
+    /// <summary>The recovery path above must not re-run once a preset/instance already exists - it only fires on the specific "empty presets and instances, but a deck still has Legacy* content" shape.</summary>
+    [Fact]
+    public void Load_SchemaAlreadyAtCurrent_WithAnExistingPreset_DoesNotReRunRecovery()
+    {
+        var json = $$"""
+        {
+          "schemaVersion": {{NexusSettings.CurrentSchemaVersion}},
+          "streamDeck": {
+            "presets": [ { "id": "p1", "name": "Existing", "cols": 5, "rows": 3, "deck": { "pages": [] } } ],
+            "instances": { "streamdeck:SERIAL-1": { "mode": "fixed", "activePresetId": "p1" } },
+            "decks": { "SERIAL-1": { "name": "My Deck", "productId": 99 } }
+          }
+        }
+        """;
+        File.WriteAllText(_settingsPath, json);
+
+        var store = new JsonConfigStore(_settingsPath);
+        var s = store.Load();
+        try
+        {
+            Assert.Single(s.StreamDeck.Presets);
+            Assert.Equal("p1", s.StreamDeck.Instances["streamdeck:SERIAL-1"].ActivePresetId);
+            Assert.Equal("custom", s.StreamDeck.Instances["streamdeck:SERIAL-1"].Mode);
+        }
+        finally
+        {
+            store.Dispose();
+        }
+    }
+
+    /// <summary>"fixed" is the pre-rename instance mode name; JsonConfigStore.Load must normalize any already-persisted value to "custom" on every load, independently of SchemaVersion, since the rename is a value change rather than a structural migration.</summary>
+    [Fact]
+    public void Load_PersistedFixedMode_NormalizesToCustom()
+    {
+        var json = $$"""
+        {
+          "schemaVersion": {{NexusSettings.CurrentSchemaVersion}},
+          "streamDeck": {
+            "presets": [ { "id": "p1", "name": "Existing", "cols": 5, "rows": 3, "deck": { "pages": [] } } ],
+            "instances": {
+              "streamdeck:SERIAL-1": { "mode": "fixed", "activePresetId": "p1" },
+              "widget:w1": { "mode": "recentApps" }
+            }
+          }
+        }
+        """;
+        File.WriteAllText(_settingsPath, json);
+
+        var store = new JsonConfigStore(_settingsPath);
+        var s = store.Load();
+        try
+        {
+            Assert.Equal("custom", s.StreamDeck.Instances["streamdeck:SERIAL-1"].Mode);
+            Assert.Equal("recentApps", s.StreamDeck.Instances["widget:w1"].Mode);
+        }
+        finally
+        {
+            store.Dispose();
+        }
+
+        // The normalization must have persisted to disk, not just the in-memory
+        // cache, and re-loading an already-normalized document is a no-op.
+        var reloaded = new JsonConfigStore(_settingsPath);
+        try
+        {
+            Assert.Equal("custom", reloaded.Load().StreamDeck.Instances["streamdeck:SERIAL-1"].Mode);
+        }
+        finally
+        {
+            reloaded.Dispose();
         }
     }
 }

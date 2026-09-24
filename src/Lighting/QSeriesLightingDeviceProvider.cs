@@ -188,18 +188,22 @@ public sealed class QSeriesLightingDeviceProvider :
         };
     }
 
-    /// <summary>Visible-canvas default layout for the per-Nexus-Link-device zones, placed in a row to the right of the Panel + Logo card's default spot.</summary>
+    /// <summary>Visible-canvas default layout for the per-Nexus-Link-device
+    /// zones, in a 4-col, 2-row grid to the right of the Panel + Logo card's
+    /// column.</summary>
     private static (float x, float y, float w, float h) DefaultQSeriesLinkLayout(int slot)
     {
-        const float Y = 730f;
-        const float W = 160f;
-        const float H = 60f;
-        const float Gap = 180f;
+        const float Y = 370f;
+        const float W = 120f;
+        const float H = 105f;
+        const float Gap = 140f;
         const float BaseX = 260f;
         const int Cols = 4;
-        const float RowGap = 70f;
-        var col = slot % Cols;
-        var row = slot / Cols;
+        const int Rows = 2; // 370 + 105 + 105 = 580 ≤ canvas bottom
+        const float RowGap = 105f;
+        var s = ((slot % (Cols * Rows)) + Cols * Rows) % (Cols * Rows);
+        var col = s % Cols;
+        var row = s / Cols;
         return (BaseX + col * Gap, Y + row * RowGap, W, H);
     }
 

@@ -65,11 +65,24 @@ public sealed class GalleryExcludeBody
     public string ItemId { get; set; } = "";
 }
 
+/// <summary>Values for <see cref="GalleryItem.Kind"/>.</summary>
+public static class GalleryItemKinds
+{
+    public const string Image = "image";
+    public const string Video = "video";
+}
+
 public sealed class GalleryItem
 {
     public string Id { get; set; } = "";
     public string Name { get; set; } = "";
     public string SourceId { get; set; } = "";
+    /// <summary>
+    /// <see cref="GalleryItemKinds"/>. Decided by extension: a video plays in
+    /// the panel's own &lt;video&gt; from the untouched file, so only
+    /// browser-native containers are ever enumerated.
+    /// </summary>
+    public string Kind { get; set; } = GalleryItemKinds.Image;
 }
 
 public sealed class GalleryItemsResponse

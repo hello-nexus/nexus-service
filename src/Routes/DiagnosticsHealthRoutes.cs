@@ -3,9 +3,7 @@ using System.Collections.Generic;
 using System.Linq;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
-#if WINDOWS
 using Microsoft.Extensions.DependencyInjection;
-#endif
 using Nexus.Service.Activity.Storage;
 using Nexus.Service.Auth;
 using Nexus.Service.Diagnostics;
@@ -34,8 +32,8 @@ namespace Nexus.Service.Routes;
 /// the set the panel widget consumes; every other GET stays on the default
 /// token auth. The memory test POST/DELETE also stay on the default auth
 /// since scheduling a reboot diagnostic is a dashboard-only action;
-/// bundle/download is LocalhostOnly like the existing /diagnostics/open-logs
-/// route.
+/// support-bundle/download is LocalhostOnly like the existing
+/// /diagnostics/open-logs route.
 /// </summary>
 public static class DiagnosticsHealthRoutes
 {
@@ -134,7 +132,8 @@ public static class DiagnosticsHealthRoutes
         app.MapGet("/diagnostics/system", (string? refresh, PnpProblemScanner pnp, EventLogMonitor events) =>
             BuildSystemResponse(pnp, events, IsRefresh(refresh)));
 
-        app.MapGet("/diagnostics/bundle/download", async (
+        // Everything a bug report needs, as one download; loopback-only like open-logs.
+        app.MapGet("/diagnostics/support-bundle/download", (
             DiagnosticsHealthModel healthModel,
             EventLogMonitor events,
             SteamGameLibraryCache steamCache,
@@ -143,31 +142,47 @@ public static class DiagnosticsHealthRoutes
             GpuHealthMonitor gpu,
             CoolingStallDetector cooling,
             PnpProblemScanner pnp,
-            SystemSpecsCollector specs) =>
+            Nexus.Service.Persistence.IConfigStore store,
+            Nexus.Service.Conflicts.IConflictDetector conflicts,
+            IServiceProvider sp) =>
         {
-            var health = healthModel.BuildHealth();
-            // Bundle is the deep-analysis artifact: keep per-occurrence rows
-            // ungrouped so every timestamp survives, unlike the live route.
-            var incidents = BuildIncidentsResponse(events, steamCache, MaxIncidentDays, group: false);
-            var smartSnapshot = smart.Snapshot();
-            var memory = BuildMemoryResponse(memDiag);
-            var gpuResponse = BuildGpuResponse(gpu, events);
-            var coolingSnapshot = cooling.Snapshot();
-            var system = BuildSystemResponse(pnp, events);
-
-            byte[]? reportPdf = null;
-            try
+            var bridge = sp.GetService<Nexus.Service.Lighting.Rgb.RgbBridge>();
+            var daemon = sp.GetService<Nexus.Service.Lighting.Rgb.OpenRgbProcessManager>();
+            var info = new SupportInfo
             {
-                var reportSnapshot = await DiagnosticsReportBuilder.GatherAsync(health, specs, smartSnapshot, gpu, events, memDiag, pnp);
-                reportPdf = DiagnosticsReportBuilder.Build(reportSnapshot);
-            }
-            catch (Exception ex)
+                Version = BuildInfo.Version,
+#if DEV_TOOLS
+                DevTools = true,
+#endif
+                Os = System.Runtime.InteropServices.RuntimeInformation.OSDescription,
+                MachineName = Environment.MachineName,
+                ExportedAtUtc = DateTime.UtcNow.ToString("O"),
+                ServiceUptimeSeconds = (DateTime.Now - System.Diagnostics.Process.GetCurrentProcess().StartTime).TotalSeconds,
+                ConflictsRunning = conflicts.GetConflicts().Select(c => $"{c.Id} (pid {c.Pid})").ToList(),
+                ConflictScanReady = conflicts.DetectionReady,
+                LightingBridgeActive = bridge?.IsActive ?? false,
+                LightingRescanning = bridge?.IsRescanning ?? false,
+                LightingDevices = bridge?.Devices.Select(d => $"[{d.Index}] {d.Name} leds={d.LedCount}").ToList() ?? new(),
+                OpenRgbDaemonRunning = daemon?.IsRunning ?? false,
+                OpenRgbDaemonUptimeSeconds = daemon?.Uptime.TotalSeconds ?? 0,
+            };
+            var zipBytes = SupportBundleBuilder.Build(new SupportBundleBuilder.Sources
             {
-                ServiceLog.Warn($"[diagnostics-bundle] report pdf generation failed: {ex.Message}");
-            }
-
-            var zipBytes = DiagnosticsBundleBuilder.Build(health, incidents, smartSnapshot, memory, gpuResponse, coolingSnapshot, system, reportPdf);
-            var fileName = $"nexus-diagnostics-{Environment.MachineName}-{DateTime.Now:yyyyMMdd-HHmmss}.zip";
+                LogsDirectory = ServiceLog.LogsDirectory,
+                UpdatesDirectory = Nexus.Service.Update.UpdateDownloader.StagingDir,
+                OpenRgbConfigDirectory = Nexus.Service.Lighting.Rgb.OpenRgbProcessManager.ResolveConfigDir(),
+                Settings = store.Load(),
+                Info = info,
+                StartupSnapshot = SupportBundleBuilder.ReadStartupSnapshot(),
+                Health = healthModel.BuildHealth(),
+                Incidents = BuildIncidentsResponse(events, steamCache, MaxIncidentDays, group: false),
+                Smart = smart.Snapshot(),
+                Memory = BuildMemoryResponse(memDiag),
+                Gpu = BuildGpuResponse(gpu, events),
+                Cooling = cooling.Snapshot(),
+                System = BuildSystemResponse(pnp, events),
+            });
+            var fileName = $"nexus-support-{Environment.MachineName}-{DateTime.Now:yyyyMMdd-HHmmss}.zip";
             return Results.File(zipBytes, "application/zip", fileName);
         }).LocalhostOnly();
 
@@ -178,11 +193,13 @@ public static class DiagnosticsHealthRoutes
             GpuHealthMonitor gpu,
             EventLogMonitor events,
             MemoryDiagnosticOrchestrator memDiag,
-            PnpProblemScanner pnp) =>
+            PnpProblemScanner pnp,
+            Nexus.Service.Persistence.IConfigStore store) =>
         {
             var health = healthModel.BuildHealth();
             var smartSnapshot = smart.Snapshot();
-            var snapshot = await DiagnosticsReportBuilder.GatherAsync(health, specs, smartSnapshot, gpu, events, memDiag, pnp);
+            var ignored = store.Load().Diagnostics.IgnoredComponents ?? new List<string>();
+            var snapshot = await DiagnosticsReportBuilder.GatherAsync(health, specs, smartSnapshot, gpu, events, memDiag, pnp, ignored);
             var pdfBytes = DiagnosticsReportBuilder.Build(snapshot);
             var fileName = $"nexus-diagnostics-report-{Environment.MachineName}-{DateTime.Now:yyyyMMdd-HHmm}.pdf";
             return Results.File(pdfBytes, "application/pdf", fileName);

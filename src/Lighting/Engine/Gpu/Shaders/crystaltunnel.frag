@@ -1,7 +1,6 @@
-uniform float u_speed;
-uniform float u_facets;  // extra: angular facet count (3..14)
-uniform float u_depth;   // extra: section frequency along tunnel axis
-uniform float u_refract; // extra: chroma streak intensity (0..2)
+uniform float u_facets; // hint_range(3.0, 16.0, 1.0) = 8.0  angular facet count
+uniform float u_depth; // hint_range(0.4, 4.0, 0.05) = 1.0  section frequency along tunnel axis
+uniform float u_refract; // hint_range(0.0, 3.0, 0.05) = 1.0  chroma streak intensity
 
 // Forward-facing faceted tunnel. Polar map -> facet x section grid; each
 // cell picks a hashed palette slot, edges glow on facet+section borders,

@@ -32,7 +32,7 @@ namespace Nexus.Service.Lifecycle;
 internal static class WindowsUserHelper
 {
     private const int DefaultPort = 9400;
-    private const string SessionMutexName = @"Local\NexusHelper";
+    internal const string SessionMutexName = @"Local\NexusHelper";
     private const uint WM_CLOSE = 0x0010;
     private const string UpdaterWindowTitle = "Nexus Updater";
 
@@ -270,7 +270,7 @@ internal static class WindowsUserHelper
         // process, so a plain explorer spawn lands behind the app window.
         new DiagnosticsHandler(
             onOpenLogs: () => Platform.Windows.ForegroundNudge.OpenFolderOverApp(
-                Nexus.Service.Platform.ServiceLog.LogsDirectory),
+                Nexus.Service.Persistence.NexusDataPaths.NexusRoot()),
             onOpenEventViewer: () => Platform.Windows.ForegroundNudge.OpenFileOverApp("eventvwr.msc"),
             onOpenDeviceManager: () => Platform.Windows.ForegroundNudge.OpenFileOverApp("devmgmt.msc")
         ).Register(handlerRegistry);

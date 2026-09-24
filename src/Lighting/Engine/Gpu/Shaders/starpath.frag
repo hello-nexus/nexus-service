@@ -1,7 +1,6 @@
-uniform float u_speed;
-uniform float u_trail;     // extra: trail arc length (0.1..1.5)
-uniform float u_axisShift; // extra: polar axis offset (0..1)
-uniform float u_brightness;// extra: trail brightness (0.3..2)
+uniform float u_trail; // hint_range(0.1, 1.5, 0.05) = 0.6  trail arc length
+uniform float u_axisShift; // hint_range(0.0, 1.0, 0.05) = 0.3  polar axis offset
+uniform float u_brightness; // hint_range(0.3, 2.0, 0.05) = 1.0  trail brightness
 
 // Long-exposure star-trail look: every star sweeps a curved arc around
 // a polar axis as the camera (notional) rotates. Stars are placed on a

@@ -18,10 +18,10 @@
     "themeMode": "system",
     "accentSyncWithDesktop": true,
     "backgroundMode": "solid",
-    "backgroundEffect": "aurora",
+    "backgroundEffect": "plasma",
     "backgroundTemplate": 0,
-    "backgroundOpacity": 0.4,
-    "widgetOpacity": 0.5,
+    "backgroundOpacity": 1.0,
+    "widgetOpacity": 0.7,
     "widgetLabels": false,
     "layouts": {
       "desktop": {
@@ -165,7 +165,7 @@
   },
 
   "lighting": {
-    "sync": "plasma",
+    "sync": "sweeprainbow",
     "brightnessEnabled": false,
     "speedEnabled": false,
     "frameRate": 60,
@@ -174,7 +174,7 @@
     "sleepBlackout": true,
     "staticColor": { "r": 255, "g": 0, "b": 0 },
     "animate": {
-      "effect": "plasma",
+      "effect": "sweeprainbow",
       "state": {
         "speed": 50,
         "intensity": 1.0,
@@ -225,7 +225,8 @@
     "presets": {
       "silent":      { "responseTime": 3.0, "minTemp": 45, "maxTemp": 85, "minSpeed": 20, "maxSpeed": 70  },
       "balanced":    { "responseTime": 1.5, "minTemp": 35, "maxTemp": 75, "minSpeed": 30, "maxSpeed": 90  },
-      "turbo":       { "responseTime": 0.5, "minTemp": 30, "maxTemp": 65, "minSpeed": 50, "maxSpeed": 100 }
+      "turbo":       { "responseTime": 0.5, "minTemp": 30, "maxTemp": 65, "minSpeed": 50, "maxSpeed": 100 },
+      "max":         { "responseTime": 0.5, "minTemp": 20, "maxTemp": 100, "minSpeed": 100, "maxSpeed": 100 }
     },
     "deviceLayoutSize": { "w": 80, "h": 80 }
   },

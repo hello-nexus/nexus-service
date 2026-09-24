@@ -187,6 +187,37 @@ public class ProfileSwitchTests : IDisposable
         store2.Dispose();
     }
 
+    [Fact]
+    public void SwitchProfile_UnswapsAQuarterTurnedLayoutSavedBeforeFreeRotation_Once()
+    {
+        var entry = _profiles.CreateProfile("Legacy");
+        var other = _profiles.CreateProfile("Other");
+        // Legacy is inactive from here, so nothing writes its file back before
+        // the switch reads it.
+        _profiles.SwitchProfile(other.Id);
+        // Rewrite the profile file the way a build before free rotation did: a
+        // 90-degree frame stored as its turned 40x250 footprint, no flag.
+        var path = Path.Combine(_tempDir, $"profile-{entry.Id}.json");
+        Assert.True(File.Exists(path));
+        var doc = System.Text.Json.JsonSerializer.Deserialize(File.ReadAllText(path), Nexus.Service.Serialization.PersistenceJsonContext.Default.NexusSettings)!;
+        doc.Lighting.FreeRotationLayouts = false;
+        doc.Lighting.DeviceLayouts["strip"] = new DeviceLayout { X = 300, Y = 100, W = 40, H = 250, Rotation = 90 };
+        File.WriteAllText(path, System.Text.Json.JsonSerializer.Serialize(doc, Nexus.Service.Serialization.PersistenceJsonContext.Default.NexusSettings));
+
+        _profiles.SwitchProfile(entry.Id);
+
+        var live = _store.Load().Lighting;
+        Assert.True(live.FreeRotationLayouts);
+        var strip = live.DeviceLayouts["strip"];
+        Assert.Equal((195f, 205f, 250f, 40f), (strip.X, strip.Y, strip.W, strip.H));
+
+        // A second round trip through the file keeps the new convention.
+        _profiles.SaveActiveProfile();
+        _profiles.SwitchProfile(other.Id);
+        _profiles.SwitchProfile(entry.Id);
+        Assert.Equal(250f, _store.Load().Lighting.DeviceLayouts["strip"].W);
+    }
+
     [Theory]
     [InlineData("missing")]
     [InlineData("../settings")]

@@ -25,7 +25,9 @@ public sealed class CoolingRoutesIntegrationTests
         {
             new() { Id = "fan1", Name = "Fan 1" },
             new() { Id = "fan2", Name = "Fan 2" },
+            new() { Id = "gpufan", Name = "GPU Fan", IsGpu = true, DeviceId = "/gpu-nvidia/0", DeviceName = "RTX 3070" },
             new() { Id = "/np50/port-1", Name = "Port 1" },
+            new() { Id = "/np50/port-2", Name = "Port 2", DeviceId = "np50:1", DeviceName = "HYTE NP50" },
         };
 
         public IReadOnlyList<FanChannel> GetFanChannels() => Channels;
@@ -242,6 +244,56 @@ public sealed class CoolingRoutesIntegrationTests
                 .First(c => c.GetProperty("id").GetString() == "fan1");
             Assert.Equal("Top intake", fan1.GetProperty("name").GetString());
             Assert.Equal("Fan 1", fan1.GetProperty("originalName").GetString());
+        }
+    }
+
+    [Fact]
+    public async Task GetFans_CarriesTheBoardBlockRenameOntoItsOwnFansOnly()
+    {
+        var (factory, client) = Boot();
+        using (factory)
+        {
+            await client.PostAsJsonAsync("/cooling/fan/motherboard/name", new { name = "ROG STRIX Z790-E" });
+
+            using var doc = JsonDocument.Parse(await (await client.GetAsync("/cooling/fans")).Content.ReadAsStringAsync());
+            var channels = doc.RootElement.GetProperty("channels").EnumerateArray().ToList();
+            JsonElement ById(string id) => channels.First(c => c.GetProperty("id").GetString() == id);
+
+            Assert.Equal("ROG STRIX Z790-E", ById("fan1").GetProperty("deviceName").GetString());
+            // Anything on a device keeps its own product name, GPU included.
+            Assert.Equal("RTX 3070", ById("gpufan").GetProperty("deviceName").GetString());
+            Assert.Equal("HYTE NP50", ById("/np50/port-2").GetProperty("deviceName").GetString());
+            // Nothing to reset to - the synthetic block has no hardware name.
+            Assert.Null(ById("fan1").GetProperty("originalDeviceName").GetString());
+        }
+    }
+
+    [Fact]
+    public async Task GetFans_LeavesBoardFansUnnamedUntilTheBlockIsRenamed()
+    {
+        var (factory, client) = Boot();
+        using (factory)
+        {
+            using var doc = JsonDocument.Parse(await (await client.GetAsync("/cooling/fans")).Content.ReadAsStringAsync());
+            var fan1 = doc.RootElement.GetProperty("channels").EnumerateArray()
+                .First(c => c.GetProperty("id").GetString() == "fan1");
+            Assert.Null(fan1.GetProperty("deviceName").GetString());
+        }
+    }
+
+    [Fact]
+    public async Task GetFans_RenamesAGpuGroupUnderItsCardId()
+    {
+        var (factory, client) = Boot();
+        using (factory)
+        {
+            await client.PostAsJsonAsync("/cooling/fan/%2Fgpu-nvidia%2F0/name", new { name = "Main card" });
+
+            using var doc = JsonDocument.Parse(await (await client.GetAsync("/cooling/fans")).Content.ReadAsStringAsync());
+            var gpu = doc.RootElement.GetProperty("channels").EnumerateArray()
+                .First(c => c.GetProperty("id").GetString() == "gpufan");
+            Assert.Equal("Main card", gpu.GetProperty("deviceName").GetString());
+            Assert.Equal("RTX 3070", gpu.GetProperty("originalDeviceName").GetString());
         }
     }
 }

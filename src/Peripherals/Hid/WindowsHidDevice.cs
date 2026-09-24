@@ -26,6 +26,10 @@ public sealed class WindowsHidDevice : IHidDevice
     private readonly IntPtr _readEvent;  // manual-reset completion event; only set when overlapped
     private readonly IntPtr _writeEvent; // separate completion event for overlapped writes
     private readonly byte[] _readBuf;   // reused per read, sized to the input report length
+    // HIDP_CAPS report lengths; every control-path call pads to them (see HidReportPadding).
+    private readonly int _inputReportLen;
+    private readonly int _outputReportLen;
+    private readonly int _featureReportLen;
     public int VendorId { get; }
     public int ProductId { get; }
     public string Path { get; }
@@ -34,7 +38,7 @@ public sealed class WindowsHidDevice : IHidDevice
     public int Usage { get; }
 
     internal WindowsHidDevice(IntPtr handle, string path, int vid, int pid, string? serial,
-        int usagePage, int usage, int inputReportLen, bool overlapped)
+        int usagePage, int usage, int inputReportLen, int outputReportLen, int featureReportLen, bool overlapped)
     {
         _handle = handle;
         Path = path;
@@ -44,6 +48,9 @@ public sealed class WindowsHidDevice : IHidDevice
         UsagePage = usagePage;
         Usage = usage;
         _overlapped = overlapped;
+        _inputReportLen = inputReportLen;
+        _outputReportLen = outputReportLen;
+        _featureReportLen = featureReportLen;
         // ReadFile needs a buffer >= the device's input report length or it fails
         // immediately with ERROR_INVALID_USER_BUFFER (which is what turned the input
         // read loop into a 100%-core spin). Size once, reuse; 64-byte floor covers
@@ -59,19 +66,19 @@ public sealed class WindowsHidDevice : IHidDevice
     public bool SetFeature(ReadOnlySpan<byte> report)
     {
         if (_handle == IntPtr.Zero) return false;
-        var buf = report.ToArray();
+        var buf = HidReportPadding.Pad(report, _featureReportLen);
         return NativeApi.HidD_SetFeature(_handle, buf, (uint)buf.Length);
     }
 
     public bool GetFeature(Span<byte> buffer)
     {
         if (_handle == IntPtr.Zero) return false;
-        var buf = new byte[buffer.Length];
+        var buf = new byte[Math.Max(buffer.Length, _featureReportLen)];
         buf[0] = buffer[0]; // report id must be preset on input
         var ok = NativeApi.HidD_GetFeature(_handle, buf, (uint)buf.Length);
         if (ok)
         {
-            buf.AsSpan().CopyTo(buffer);
+            buf.AsSpan(0, buffer.Length).CopyTo(buffer);
         }
         return ok;
     }
@@ -79,12 +86,12 @@ public sealed class WindowsHidDevice : IHidDevice
     public bool GetInputReport(Span<byte> buffer)
     {
         if (_handle == IntPtr.Zero) return false;
-        var buf = new byte[buffer.Length];
+        var buf = new byte[Math.Max(buffer.Length, _inputReportLen)];
         buf[0] = buffer[0]; // report id must be preset on input
         var ok = NativeApi.HidD_GetInputReport(_handle, buf, (uint)buf.Length);
         if (ok)
         {
-            buf.AsSpan().CopyTo(buffer);
+            buf.AsSpan(0, buffer.Length).CopyTo(buffer);
         }
         return ok;
     }
@@ -92,7 +99,7 @@ public sealed class WindowsHidDevice : IHidDevice
     public bool Write(ReadOnlySpan<byte> report)
     {
         if (_handle == IntPtr.Zero) return false;
-        var buf = report.ToArray();
+        var buf = HidReportPadding.Pad(report, _outputReportLen);
         if (!_overlapped)
         {
             return NativeApi.WriteFile(_handle, buf, (uint)buf.Length, out _, IntPtr.Zero);
@@ -132,7 +139,7 @@ public sealed class WindowsHidDevice : IHidDevice
     public bool SetOutputReport(ReadOnlySpan<byte> report)
     {
         if (_handle == IntPtr.Zero) return false;
-        var buf = report.ToArray();
+        var buf = HidReportPadding.Pad(report, _outputReportLen);
         return NativeApi.HidD_SetOutputReport(_handle, buf, (uint)buf.Length);
     }
 

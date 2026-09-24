@@ -91,8 +91,8 @@ public sealed class MiniHubHeartbeatWorker : BackgroundService
             var s = _hub.State;
             ServiceLog.Info(
                 $"[minihub-cooling] poll#{_tickCount} ok={pollOk} serial={s.Serial} " +
-                $"port1Fans={s.Port1Fans} port1Rpm={s.Port1Rpm} port1Duty={s.Port1Duty} " +
-                $"port2Fans={s.Port2Fans} port2Rpm={s.Port2Rpm} port2Duty={s.Port2Duty}");
+                $"port1Fans={s.Port1Fans} port1Rpm={s.Port1Rpm} port1RpmValid={s.Port1RpmValid} port1Raw={s.Port1RawRpm} port1Duty={s.Port1Duty} " +
+                $"port2Fans={s.Port2Fans} port2Rpm={s.Port2Rpm} port2RpmValid={s.Port2RpmValid} port2Raw={s.Port2RawRpm} port2Duty={s.Port2Duty}");
         }
     }
 }

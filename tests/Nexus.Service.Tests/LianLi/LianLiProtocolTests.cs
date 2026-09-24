@@ -19,10 +19,17 @@ public class LianLiProtocolTests
         // land on fans 1/2/3, outer index 12 on fan 2.
         Assert.Equal(8, LianLiProtocol.InnerLedsPerFan);
         Assert.Equal(12, LianLiProtocol.OuterLedsPerFan);
-        Assert.Equal(8, LianLiProtocol.LedsPerFanForChannel(0));
-        Assert.Equal(12, LianLiProtocol.LedsPerFanForChannel(1));
-        Assert.Equal(8, LianLiProtocol.LedsPerFanForChannel(2));
-        Assert.Equal(12, LianLiProtocol.LedsPerFanForChannel(3));
+        LianLiFanProfiles.TryGet(0xA102, out var sli);
+        Assert.Equal(8, sli.LedsPerFanForChannel(0));
+        Assert.Equal(12, sli.LedsPerFanForChannel(1));
+        Assert.Equal(8, sli.LedsPerFanForChannel(2));
+        Assert.Equal(12, sli.LedsPerFanForChannel(3));
+        // SL v1: one channel per port, 16 LEDs per fan.
+        Assert.Equal(16, LianLiProtocol.SlLedsPerFan);
+        LianLiFanProfiles.TryGet(0xA100, out var sl);
+        Assert.Equal(16, sl.LedsPerFanForChannel(0));
+        Assert.Equal(16, sl.LedsPerFanForChannel(1));
+        Assert.Equal(16, LianLiProtocol.MaxLedsPerFanPerChannel);
         Assert.Equal(4, LianLiProtocol.MaxFansPerPort);
         Assert.Equal(353, LianLiProtocol.OutputReportSize);
         Assert.Equal(65, LianLiProtocol.InputReportSize);
@@ -31,20 +38,48 @@ public class LianLiProtocolTests
 
     // ── BuildSetQuantity ──
 
+    private static LianLiFanProfile Profile(int pid)
+    {
+        Assert.True(LianLiFanProfiles.TryGet(pid, out var p));
+        return p;
+    }
+
     [Theory]
     [InlineData(0, 3, new byte[] { 0xE0, 0x10, 0x60, 0x01, 0x03, 0x00, 0x00 })]
     [InlineData(1, 2, new byte[] { 0xE0, 0x10, 0x60, 0x02, 0x02, 0x00, 0x00 })]
     [InlineData(3, 0, new byte[] { 0xE0, 0x10, 0x60, 0x04, 0x00, 0x00, 0x00 })]
     public void BuildSetQuantity_emits_correct_bytes(int group, int qty, byte[] expected)
     {
-        Assert.Equal(expected, LianLiProtocol.BuildSetQuantity(group, qty));
+        Assert.Equal(expected, LianLiProtocol.BuildSetQuantity(Profile(0xA102), group, qty));
+    }
+
+    // SL v1: E0 10 32 ((g << 4) | qty).
+    [Theory]
+    [InlineData(0, 3, new byte[] { 0xE0, 0x10, 0x32, 0x03, 0x00, 0x00, 0x00 })]
+    [InlineData(1, 2, new byte[] { 0xE0, 0x10, 0x32, 0x12, 0x00, 0x00, 0x00 })]
+    [InlineData(3, 4, new byte[] { 0xE0, 0x10, 0x32, 0x34, 0x00, 0x00, 0x00 })]
+    [InlineData(2, 0, new byte[] { 0xE0, 0x10, 0x32, 0x20, 0x00, 0x00, 0x00 })]
+    public void BuildSetQuantity_sl_v1_packs_port_and_count(int group, int qty, byte[] expected)
+    {
+        Assert.Equal(expected, LianLiProtocol.BuildSetQuantity(Profile(0xA100), group, qty));
+        Assert.Equal(expected, LianLiProtocol.BuildSetQuantity(Profile(0xA106), group, qty));
+    }
+
+    // AL: E0 10 40 (g+1) qty.
+    [Fact]
+    public void BuildSetQuantity_al_uses_register_0x40()
+    {
+        Assert.Equal(new byte[] { 0xE0, 0x10, 0x40, 0x02, 0x03, 0x00, 0x00 },
+            LianLiProtocol.BuildSetQuantity(Profile(0xA101), 1, 3));
     }
 
     [Fact]
     public void BuildSetQuantity_clamps_qty_to_four()
     {
-        var report = LianLiProtocol.BuildSetQuantity(0, 99);
+        var report = LianLiProtocol.BuildSetQuantity(Profile(0xA102), 0, 99);
         Assert.Equal(4, report[4]);
+        var packed = LianLiProtocol.BuildSetQuantity(Profile(0xA100), 1, 99);
+        Assert.Equal(0x14, packed[3]);
     }
 
     // ── BuildEffectCommit ──
@@ -292,10 +327,48 @@ public class LianLiProtocolTests
         int pid, bool floored, int manualReg, int argbReg, int rpmOffset)
     {
         Assert.True(LianLiFanProfiles.TryGet(pid, out var profile));
+        Assert.Equal(pid, profile.ProductId);
         Assert.Equal(floored, profile.FlooredDuty);
         Assert.Equal((byte)manualReg, profile.ManualRegister);
         Assert.Equal((byte)argbReg, profile.ArgbRegister);
         Assert.Equal(rpmOffset, profile.RpmOffset);
+    }
+
+    // Lighting layout per family. SL v1 = one 16-LED ring per fan on one channel
+    // per port, colours over interrupt-OUT; the rest keep the SL-Infinity layout.
+    [Theory]
+    [InlineData(0xA100, 1, 16, 0,  true,  0x32, true)]
+    [InlineData(0xA106, 1, 16, 0,  true,  0x32, true)]
+    [InlineData(0xA101, 2, 8,  12, false, 0x40, false)]
+    [InlineData(0xA102, 2, 8,  12, false, 0x60, false)]
+    [InlineData(0xA103, 2, 8,  12, false, 0x60, false)]
+    public void LianLiFanProfiles_lighting_layout(
+        int pid, int channelsPerPort, int inner, int outer, bool packed, int quantityReg, bool slV1)
+    {
+        Assert.True(LianLiFanProfiles.TryGet(pid, out var profile));
+        Assert.Equal(channelsPerPort, profile.ChannelsPerPort);
+        Assert.Equal(inner, profile.InnerLedsPerFan);
+        Assert.Equal(outer, profile.OuterLedsPerFan);
+        Assert.Equal(packed, profile.PackedQuantity);
+        Assert.Equal((byte)quantityReg, profile.QuantityRegister);
+        // SL v1: interrupt-OUT colours, quantity once on attach, merge cleared, per-fan static palette.
+        Assert.Equal(slV1, profile.ColorViaInterruptOut);
+        Assert.Equal(!slV1, profile.StartActionPerFrame);
+        Assert.Equal(slV1, profile.ClearMergeOnAttach);
+        Assert.Equal(slV1, profile.PerFanStaticPalette);
+    }
+
+    [Fact]
+    public void BuildStopMerge_emits_sl_v1_merge_off()
+    {
+        Assert.Equal(new byte[] { 0xE0, 0x10, 0x34, 0x00, 0x00, 0x00, 0x00 }, LianLiProtocol.BuildStopMerge());
+    }
+
+    [Fact]
+    public void LianLiFanProfiles_Default_is_the_sl_infinity_row()
+    {
+        Assert.Equal(0xA102, LianLiFanProfiles.Default.ProductId);
+        Assert.Equal(2, LianLiFanProfiles.Default.ChannelsPerPort);
     }
 
     [Fact]

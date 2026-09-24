@@ -14,7 +14,9 @@ using Nexus.Service.Platform;
 namespace Nexus.Service.Gallery;
 
 /// <summary>
-/// Panel-sized JPEG derivatives of gallery images, cached on disk.
+/// Panel-sized JPEG derivatives of gallery items, cached on disk. For an
+/// image that is a downscaled copy; for a video it is a poster - the first
+/// frame at that width - which is all a still can stand in for.
 ///
 /// Panels fetch photos over a slow transport (the Q60 rides an adb reverse
 /// tunnel) and decode them in a Chromium 83 WebView, so a full-resolution
@@ -45,9 +47,11 @@ public sealed class GalleryResizeCache
     /// <summary>
     /// Sources a JPEG derivative can stand in for losslessly. Deliberately
     /// excludes png/webp/avif/gif: all four carry alpha and/or animation that
-    /// a flattened first-frame JPEG would silently destroy.
+    /// a flattened first-frame JPEG would silently destroy. Videos are listed
+    /// because their derivative is a poster, never a replacement - the route
+    /// only hands one out when the caller asked for a still.
     /// </summary>
-    private static readonly string[] DerivableExtensions = { ".jpg", ".jpeg", ".bmp" };
+    private static readonly string[] DerivableExtensions = { ".jpg", ".jpeg", ".bmp", ".mp4", ".m4v", ".webm", ".mov" };
 
     private const long MaxCacheBytes = 256L * 1024 * 1024;
     private const int MaxConcurrentEncodes = 2;
@@ -196,8 +200,9 @@ public sealed class GalleryResizeCache
                     "-vf", $"scale=min({width}\\,iw):-1",
                     // First frame only, and strip metadata: ffmpeg has already
                     // applied EXIF orientation to the pixels, so carrying the tag
-                    // forward would make the browser rotate a second time.
-                    "-frames:v", "1", "-map_metadata", "-1", "-q:v", "4",
+                    // forward would make the browser rotate a second time. -an
+                    // keeps a video's audio track out of the still.
+                    "-frames:v", "1", "-an", "-map_metadata", "-1", "-q:v", "4",
                     // Muxer and codec are pinned rather than inferred: the output
                     // is written to a temp name, and ffmpeg reads the FINAL
                     // extension to pick a format - ".tmp" matches nothing and it

@@ -54,15 +54,11 @@ public sealed class QSeriesHandler : IDeviceHandler
     public string Id => "qseries";
 
     // Variant-aware label: once the cooler controller reports which model is
-    // attached, show "Q60" / "Q80" (the frontend deliberately leaves qseries
-    // out of its short-name map so the service-reported name wins). Falls back
-    // to "Q-series" before the cooler hub has connected.
-    public string Name => _hub.Variant switch
-    {
-        QSeriesCoolerProtocol.VariantQ60 => "Q60",
-        QSeriesCoolerProtocol.VariantQ80 => "Q80",
-        _ => "Q-series",
-    };
+    // attached, show the hub's product name ("HYTE Q60" / "HYTE Q80"; the
+    // frontend deliberately leaves qseries out of its short-name map so the
+    // service-reported name wins). Falls back to "HYTE Q-series" before the
+    // cooler hub has connected.
+    public string Name => string.IsNullOrEmpty(_hub.Variant) ? "HYTE Q-series" : _hub.ProductName;
 
     public string Category => "display";
 

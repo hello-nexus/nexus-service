@@ -2,10 +2,19 @@
 out vec4 fragColor;
 uniform vec2  u_resolution;
 uniform float u_time;
-uniform float u_hue;
-uniform float u_colorize;
-uniform float u_saturation;
-uniform float u_contrast;
+
+// Every tunable uniform declares its range on its own line as
+//   hint_range(min, max, step) = default
+// (Godot's hint_range, in a comment so the GLSL stays valid). Both renderers
+// clamp to it and fill a missing value from the default; the UI derives its
+// slider from it. A shader narrows a prelude range with a comment-only line:
+//   // NAME hint_range(0.4, 1.0, 0.01) = 1.0
+// u_speed is wire speed / 50: 1.0 = 1x forward, negative runs in reverse.
+uniform float u_speed;      // hint_range(-2.0, 2.0, 0.02) = 1.0
+uniform float u_hue;        // hint_range(0.0, 1.0, 0.01) = 0.0
+uniform float u_colorize;   // hint_range(0.0, 1.0, 0.01) = 0.0
+uniform float u_saturation; // hint_range(0.0, 4.0, 0.01) = 1.0
+uniform float u_contrast;   // hint_range(0.0, 4.0, 0.01) = 1.0
 
 // Audio-reactivity uniforms
 // Populated by BeatsProvider when Music Reactive is enabled; all zero
@@ -26,11 +35,8 @@ uniform float u_audioHigh;
 uniform float u_audioBeat;
 uniform float u_spectrum[16];
 
-// Per-effect control: 0 = effect is fully idle (audio uniforms ignored),
-// 1 = full audio reactivity. Effects that don't use audio can leave it
-// at 0 and nothing changes. Every existing shader sees this at 0 unless
-// it's wired to sample it, so adding audio doesn't regress old visuals.
-uniform float u_audioBoost;
+// Audio-reactive effects declare their own u_audioBoost (0 = idle, 1 = full
+// reactivity); the rest never read it.
 
 // Presence: smooth switch that rises as soon as real audio arrives.
 // Spectrum shaders use this to fade between their idle animation and the

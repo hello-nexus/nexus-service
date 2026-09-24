@@ -50,6 +50,10 @@ public class SystemSpecsResponse
     public string Memory { get; set; } = "";
     public string Storage { get; set; } = "";
     public string GraphicsCard { get; set; } = "";
+    // The card that renders games: the first discrete adapter, else the first
+    // adapter. GraphicsCard lists every adapter " + "-joined, iGPU included,
+    // and on AMD-iGPU-first rigs the iGPU comes first.
+    public string PrimaryGpu { get; set; } = "";
     public string Monitor { get; set; } = "";
     public string SoundCard { get; set; } = "";
     public string NetworkCard { get; set; } = "";

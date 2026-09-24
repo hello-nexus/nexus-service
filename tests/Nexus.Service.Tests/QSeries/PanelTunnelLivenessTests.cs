@@ -1,6 +1,7 @@
 using System;
 using System.IO.Pipelines;
 using System.Threading.Tasks;
+using Microsoft.AspNetCore.Http;
 using Nexus.Service.Panel;
 using Nexus.Service.QSeries;
 using Xunit;
@@ -28,6 +29,53 @@ public class PanelTunnelMonitorTests
         var before = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
         monitor.MarkInboundActivity();
         Assert.InRange(monitor.LastInboundActivityUnixMs, before, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds());
+    }
+}
+
+public class PanelTunnelAuthTests
+{
+    private static DefaultHttpContext ContextOnPort(int port)
+    {
+        var ctx = new DefaultHttpContext();
+        ctx.Connection.LocalPort = port;
+        return ctx;
+    }
+
+    [Fact]
+    public void Only_tunnel_port_requests_mark_authorized()
+    {
+        var monitor = new PanelTunnelMonitor(9401);
+        Assert.False(monitor.IsTunnelRequest(ContextOnPort(9400)));
+        monitor.MarkAuthorized(ContextOnPort(9400));
+        Assert.Equal(0, monitor.LastAuthorizedUnixMs);
+
+        Assert.True(monitor.IsTunnelRequest(ContextOnPort(9401)));
+        var before = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+        monitor.MarkAuthorized(ContextOnPort(9401));
+        Assert.InRange(monitor.LastAuthorizedUnixMs, before, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds());
+    }
+
+    [Fact]
+    public void Unbound_monitor_never_matches()
+    {
+        var monitor = new PanelTunnelMonitor(null);
+        Assert.False(monitor.IsTunnelRequest(ContextOnPort(0)));
+    }
+
+    [Fact]
+    public void Socket_count_balances_and_close_restamps()
+    {
+        var monitor = new PanelTunnelMonitor(9401);
+        monitor.SocketOpened();
+        monitor.SocketOpened();
+        Assert.Equal(2, monitor.AuthenticatedSockets);
+        var opened = monitor.LastAuthorizedUnixMs;
+        Assert.NotEqual(0, opened);
+
+        monitor.SocketClosed();
+        monitor.SocketClosed();
+        Assert.Equal(0, monitor.AuthenticatedSockets);
+        Assert.True(monitor.LastAuthorizedUnixMs >= opened);
     }
 }
 
@@ -98,6 +146,48 @@ public class EscalationRebootPermittedTests
     {
         Assert.False(QSeriesPortWatcher.EscalationRebootPermitted(1, Now.AddMinutes(-29), Now.AddMinutes(-29), Now));
         Assert.True(QSeriesPortWatcher.EscalationRebootPermitted(1, Now.AddMinutes(-31), Now.AddMinutes(-31), Now));
+    }
+}
+
+public class StaleSessionDetectedTests
+{
+    private const long FirstSeen = 1_000_000;
+    private static readonly long Grace = (long)QSeriesPortWatcher.StaleSessionGrace.TotalMilliseconds;
+
+    [Fact]
+    public void Contacted_but_never_authenticated_past_the_grace_is_stale()
+    {
+        Assert.True(QSeriesPortWatcher.StaleSessionDetected(FirstSeen + 2_000, 0, 0, FirstSeen, FirstSeen + Grace));
+        Assert.True(QSeriesPortWatcher.StaleSessionDetected(FirstSeen + 2_000, FirstSeen - 1, 0, FirstSeen, FirstSeen + Grace + 1));
+    }
+
+    [Fact]
+    public void Silent_panel_is_the_escalation_reboot_s_case_not_this_one()
+    {
+        Assert.False(QSeriesPortWatcher.StaleSessionDetected(FirstSeen - 1, 0, 0, FirstSeen, FirstSeen + Grace));
+        Assert.False(QSeriesPortWatcher.StaleSessionDetected(0, 0, 0, FirstSeen, FirstSeen + Grace));
+    }
+
+    [Fact]
+    public void Bootstrap_allocate_or_socket_upgrade_counts_as_authenticated()
+    {
+        Assert.False(QSeriesPortWatcher.StaleSessionDetected(FirstSeen + 2_000, FirstSeen + 3_000, 0, FirstSeen, FirstSeen + Grace));
+        Assert.False(QSeriesPortWatcher.StaleSessionDetected(FirstSeen + 2_000, FirstSeen, 0, FirstSeen, FirstSeen + Grace));
+    }
+
+    [Fact]
+    public void Open_authenticated_socket_is_never_stale()
+    {
+        // A socket that survived a re-enumeration re-anchor authenticated before the new first sighting.
+        Assert.False(QSeriesPortWatcher.StaleSessionDetected(FirstSeen + 2_000, FirstSeen - 5_000, 1, FirstSeen, FirstSeen + Grace));
+    }
+
+    [Fact]
+    public void Grace_covers_a_reconnect_backoff()
+    {
+        Assert.False(QSeriesPortWatcher.StaleSessionDetected(FirstSeen + 2_000, 0, 0, FirstSeen, FirstSeen + Grace - 1));
+        // nexus-web useMultiplexSocket RECONNECT_MAX_MS: a healthy page's next upgrade is at most this far away.
+        Assert.True(QSeriesPortWatcher.StaleSessionGrace > TimeSpan.FromSeconds(60));
     }
 }
 

@@ -104,6 +104,89 @@ public class GpuSelectPlanTests
         Assert.Equal(GpuSelectAction.Probe, GpuSelectPlan.NextAction(stale.Format(), null, 2, Now).Action);
     }
 
+    private static readonly GpuEnvironment EnvA = new("aaaa", "41");
+    private static readonly GpuEnvironment EnvB = new("bbbb", "41");
+    private static readonly GpuEnvironment EnvARebooted = new("aaaa", "42");
+
+    private static string FreshLatch(GpuEnvironment env) =>
+        new GpuSelectState(GpuSelectState.Off, Now.AddMinutes(-5), 2, env.Fingerprint, env.Boot).Format();
+
+    [Theory]
+    [InlineData(1)]
+    [InlineData(2)]
+    public void FreshLatch_SameEnvironment_Holds(int adapters)
+    {
+        Assert.Equal(GpuSelectAction.DeclineNoProbe,
+            GpuSelectPlan.NextAction(FreshLatch(EnvA), null, adapters, Now, env: EnvA).Action);
+    }
+
+    [Theory]
+    [InlineData(1)]
+    [InlineData(2)]
+    public void FreshLatch_DriverOrCardChanged_ProbesWithAFreshStreak(int adapters)
+    {
+        var decision = GpuSelectPlan.NextAction(FreshLatch(EnvA), null, adapters, Now, env: EnvB);
+
+        Assert.Equal(GpuSelectAction.Probe, decision.Action);
+        Assert.True(decision.FreshStreak);
+        Assert.Contains("changed", decision.Reason, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void FreshLatch_Rebooted_Probes()
+    {
+        var decision = GpuSelectPlan.NextAction(FreshLatch(EnvA), null, 1, Now, env: EnvARebooted);
+
+        Assert.Equal(GpuSelectAction.Probe, decision.Action);
+        Assert.Contains("rebooted", decision.Reason, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void FreshLatch_FromABuildThatRecordedNoEnvironment_Probes()
+    {
+        var latched = new GpuSelectState(GpuSelectState.Off, Now.AddMinutes(-5), 1);
+
+        var decision = GpuSelectPlan.NextAction(latched.Format(), null, 1, Now, env: EnvA);
+
+        Assert.Equal(GpuSelectAction.Probe, decision.Action);
+        Assert.True(decision.FreshStreak);
+    }
+
+    [Theory]
+    [InlineData(1)]
+    [InlineData(2)]
+    public void FreshLatch_CrashGuardOutranksAStaleEnvironment(int adapters)
+    {
+        Assert.Equal(GpuSelectAction.DeclineAndLatch,
+            GpuSelectPlan.NextAction(FreshLatch(EnvA), "integrated", adapters, Now, env: EnvB).Action);
+    }
+
+    [Fact]
+    public void MultiGpu_RememberedCard_WarmsWhateverTheEnvironment()
+    {
+        Assert.Equal(GpuSelectAction.WarmRemembered,
+            GpuSelectPlan.NextAction("integrated", null, 2, Now, env: EnvB).Action);
+    }
+
+    [Theory]
+    [InlineData("unprobed", null)]
+    [InlineData("off", null)]
+    [InlineData("integrated", "integrated")]
+    public void NoAdapter_WaitsWithoutProbingOrLatching(string state, string? guard)
+    {
+        var decision = GpuSelectPlan.NextAction(state, guard, 0, Now, env: EnvA);
+
+        Assert.Equal(GpuSelectAction.WaitForAdapter, decision.Action);
+        Assert.False(decision.RestampLatch);
+    }
+
+    [Fact]
+    public void NoAdapter_FreshLatchStillWaitsRatherThanHolding()
+    {
+        Assert.Equal(GpuSelectAction.WaitForAdapter,
+            GpuSelectPlan.NextAction(FreshLatch(EnvA), null, 0, Now, env: EnvA).Action);
+    }
+
     [Theory]
     [InlineData(null)]
     [InlineData("")]

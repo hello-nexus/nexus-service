@@ -1,5 +1,4 @@
-uniform float u_speed;
-uniform float u_freq; // extra: ripple frequency (4..30)
+uniform float u_freq; // hint_range(3.0, 30.0, 0.5) = 12.0  ripple frequency
 void main() {
     vec2 uv = uvCentered();
     float r = length(uv);

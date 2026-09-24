@@ -19,8 +19,9 @@ namespace Nexus.Service.Platform.Windows;
 [SupportedOSPlatform("windows")]
 public static unsafe class NativeFileDialog
 {
-    private const string ImageFilterName = "Images";
-    private const string ImageFilterSpec = "*.jpg;*.jpeg;*.png;*.webp;*.gif;*.bmp;*.avif";
+    // Keep in lockstep with GalleryLibrary's image + video extension lists.
+    private const string MediaFilterName = "Images and videos";
+    private const string MediaFilterSpec = "*.jpg;*.jpeg;*.png;*.webp;*.gif;*.bmp;*.avif;*.mp4;*.m4v;*.webm;*.mov";
 
     // FILEOPENDIALOGOPTIONS
     private const uint FosForceFilesystem = 0x40;
@@ -88,7 +89,7 @@ public static unsafe class NativeFileDialog
                 opts |= mode switch
                 {
                     FileDialogPickMode.Folder => FosPickFolders,
-                    FileDialogPickMode.ImagesMultiSelect => FosAllowMultiselect,
+                    FileDialogPickMode.MediaMultiSelect => FosAllowMultiselect,
                     _ => 0u,
                 };
                 Marshal.ThrowExceptionForHR(SetOptions(dlg, opts));
@@ -96,11 +97,11 @@ public static unsafe class NativeFileDialog
                 IntPtr filterName = IntPtr.Zero, filterSpec = IntPtr.Zero, specArray = IntPtr.Zero;
                 try
                 {
-                    if (mode == FileDialogPickMode.ImagesMultiSelect)
+                    if (mode == FileDialogPickMode.MediaMultiSelect)
                     {
                         // One COMDLG_FILTERSPEC entry: { LPCWSTR name, LPCWSTR spec }.
-                        filterName = Marshal.StringToHGlobalUni(ImageFilterName);
-                        filterSpec = Marshal.StringToHGlobalUni(ImageFilterSpec);
+                        filterName = Marshal.StringToHGlobalUni(MediaFilterName);
+                        filterSpec = Marshal.StringToHGlobalUni(MediaFilterSpec);
                         specArray = Marshal.AllocHGlobal(IntPtr.Size * 2);
                         Marshal.WriteIntPtr(specArray, 0, filterName);
                         Marshal.WriteIntPtr(specArray, IntPtr.Size, filterSpec);

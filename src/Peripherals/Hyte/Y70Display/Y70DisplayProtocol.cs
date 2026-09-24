@@ -50,6 +50,8 @@ public static class Y70DisplayProtocol
     public static readonly (string Fragment, string Variant)[] DdcOnlyPanelVariants =
         { ("RTK1234", VariantGw), ("RTK2345", VariantIna) };
 
+    public static readonly string[] DdcOnlyVariantKeys = { VariantGw, VariantIna };
+
     /// <summary>Variant key of the DDC-only panel matching this monitor hardware id, or empty.</summary>
     public static string DdcOnlyVariantForHardwareId(string rawHardwareId)
     {

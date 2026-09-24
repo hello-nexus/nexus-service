@@ -89,7 +89,11 @@ public static class CloudRoutes
                 return Results.BadRequest(ApiResponse.Fail("email is required."));
             }
             var result = await accounts.StartRecoveryAsync(body.Email, ct).ConfigureAwait(false);
-            return CloudResult(result);
+            if (!result.Success)
+            {
+                return CloudApiFailure(result.StatusCode, result.ErrorCode, result.ErrorMessage, result.Offline);
+            }
+            return Results.Json(new CloudRecoveryStartLocalResponse { Code = result.Value }, AppJsonContext.Default.CloudRecoveryStartLocalResponse);
         });
 
         app.MapGet("/cloud/recovery/status", (CloudAccountService accounts) =>

@@ -55,7 +55,7 @@ public class Curve
     public TriggerCurve? Trigger { get; set; }
     public SyncCurve? Sync { get; set; }
     public AutoCurve? Auto { get; set; }
-    /// <summary>"silent" | "balanced" | "turbo" for the shared preset curves; null for user curves. Independent of Type.</summary>
+    /// <summary>"silent" | "balanced" | "turbo" | "max" for the shared preset curves; null for user curves. Independent of Type.</summary>
     public string? Preset { get; set; }
     /// <summary>For preset curves only: true when the curve's Type + Linear params match <see cref="Nexus.Service.Cooling.FanProfiles.PresetDefaults"/>. Null for user curves. Drives the Reset-to-defaults button's enabled state in the SPA, so the FE doesn't have to mirror PresetDefaults locally.</summary>
     public bool? IsDefault { get; set; }
@@ -149,19 +149,23 @@ public sealed class FanChannel
     public string Kind { get; set; } = FanKinds.Fan;
     /// <summary>Telemetry-only channel: the card shows the readout but no duty bar or mode control (Q-series pump today).</summary>
     public bool ReadOnly { get; set; }
-    /// <summary>Duty is controllable but RPM cannot be read (SLV3 wireless chain whose controller does not enumerate its fans); the card shows a "no RPM" indicator instead of a number.</summary>
+    /// <summary>Duty is controllable but RPM cannot be read (SLV3 wireless chain whose controller does not enumerate its fans; MiniHub, whose tach bytes never track the fans); the card shows a "no RPM" indicator instead of a number.</summary>
     public bool RpmUnavailable { get; set; }
     public int? MinRpm { get; set; }
     public int? MaxRpm { get; set; }
     public int? MinDuty { get; set; }
     public string? Classification { get; set; }
     public bool Calibrated => MinRpm is not null;
-    /// <summary>True when the channel is exempt from Silent/Balanced/Turbo/Off/Custom preset applies. Computed from settings; not read from hardware.</summary>
+    /// <summary>True when the channel is exempt from Silent/Balanced/Turbo/Max/Off/Custom preset applies. An explicit user lock wins; otherwise pumps and GPU fans default locked. Computed from settings plus <see cref="IsGpu"/>.</summary>
     public bool Locked { get; set; }
     /// <summary>False when the user marked this channel not controlled: Nexus drives no duty onto it and no preset reclaims it, so the motherboard or a vendor app owns it. Computed from settings; not read from hardware.</summary>
     public bool Controlled { get; set; } = true;
     /// <summary>Duty points added to whatever drives this channel, in [-100,100]. Computed from settings; 0 when the channel has none. Surfaced so an imported offset is never invisible on the card.</summary>
     public int Offset { get; set; }
+    /// <summary>True when this channel belongs to an all-in-one liquid cooler - derived from the device exposing a pump head, not from its name. Read from hardware, like <see cref="IsGpu"/>; drives the default in <see cref="Nexus.Service.Cooling.FanProfiles.IsLockedByDefault"/>.</summary>
+    public bool IsAio { get; set; }
+    /// <summary>True when this channel is a fan on the graphics card, decided by the hardware the provider enumerated it from (LibreHardwareMonitor GpuNvidia/GpuAmd/GpuIntel on Windows, NVML on Linux) - never by its name. Read from hardware, unlike <see cref="Role"/>; drives the default in <see cref="Nexus.Service.Cooling.FanProfiles.IsLockedByDefault"/>.</summary>
+    public bool IsGpu { get; set; }
     /// <summary>Display/monitoring-grouping role: one of <see cref="FanRoleKind.None"/> / <see cref="FanRoleKind.Cpu"/> / <see cref="FanRoleKind.Gpu"/>. Computed from settings; not read from hardware. Never affects fan control, locking, or preset logic.</summary>
     public string Role { get; set; } = FanRoleKind.None;
     /// <summary>The hardware name <see cref="Name"/> replaced, set only on a renamed channel. Null means <see cref="Name"/> IS the hardware name.</summary>
@@ -183,23 +187,26 @@ public sealed class FanChannel
     /// </summary>
     public string? RpmSensorId { get; set; }
 
-    // External-device metadata. All null for motherboard/GPU fans; populated
-    // only when the channel belongs to a USB hub like NP50. Drives
-    // device-grouped rendering on the cooling page.
+    // Owning-device metadata. Set for a channel on a USB hub like NP50 and for a
+    // GPU fan; null for a motherboard header, except the DeviceName a rail-block
+    // rename puts there. Drives device-grouped rendering.
 
-    /// <summary>Stable per-device id, e.g. "np50:1A2B3C". Null for motherboard.</summary>
+    /// <summary>Stable per-device id, e.g. "np50:1A2B3C" or a GPU's "/gpu-nvidia/0". Null for motherboard.</summary>
     public string? DeviceId { get; set; }
 
     /// <summary>
     /// User-facing product name of the owning device, e.g. "HYTE NP50" or
-    /// "HYTE MiniHub". Identical for every channel on the same device - the
+    /// "NVIDIA GeForce RTX 3070". Identical for every channel on the same device - the
     /// cooling page groups by <see cref="DeviceId"/> and labels the group
     /// from any group member's <see cref="DeviceName"/>, so the lighting and
     /// cooling pages always show the same name for the same physical device.
+    /// On a motherboard header this is null until the board's rail block is
+    /// renamed; that block falls back to system specs, never to
+    /// <see cref="OriginalDeviceName"/>.
     /// </summary>
     public string? DeviceName { get; set; }
 
-    /// <summary>Human-readable port label, e.g. "Port 1" or "Legacy 4-pin". Null for motherboard.</summary>
+    /// <summary>Human-readable port label, e.g. "Port 1" or "Legacy 4-pin". Null for motherboard and GPU fans.</summary>
     public string? PortLabel { get; set; }
 
     /// <summary>Connected fan model, e.g. "LS30" | "LS10" | "FP12". Null when unknown or motherboard.</summary>
@@ -360,7 +367,7 @@ public sealed class CoolingPresetDto
 {
     public string Id { get; set; } = "";
     public string Name { get; set; } = "";
-    /// <summary>Built-in mode the preset restores: off | silent | balanced | turbo | custom.</summary>
+    /// <summary>Built-in mode the preset restores: off | silent | balanced | turbo | max | custom.</summary>
     public string Mode { get; set; } = "custom";
 }
 

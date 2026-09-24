@@ -16,12 +16,13 @@ namespace Nexus.Service.Activity;
 /// <see cref="WindowsVolumeProvider"/>.
 ///
 /// NOTE: PolicyConfig is undocumented. Bench-probed on Windows 11 (26100):
-/// CPolicyConfigClient exposes NEITHER IPolicyConfig nor IPolicyConfigVista
-/// (E_NOINTERFACE), while CPolicyConfigVistaClient exposes IPolicyConfigVista,
-/// whose SetDefaultEndpoint is vtable slot 12 - IPolicyConfig carries an extra
-/// ResetDeviceFormat ahead of it and lands at 13. Verified live: slot 12 moves
-/// the default endpoint and the change reads back. SetDefault* returns false on
-/// any failure HR rather than throwing.
+/// CPolicyConfigClient refuses the classic IPolicyConfig / IPolicyConfigVista
+/// IIDs (E_NOINTERFACE) and answers only e8478600, the current 41-method
+/// IPolicyConfig (see the spatial section). CPolicyConfigVistaClient exposes
+/// IPolicyConfigVista, whose SetDefaultEndpoint is vtable slot 12 - IPolicyConfig
+/// carries an extra ResetDeviceFormat ahead of it and lands at 13. Verified
+/// live: slot 12 moves the default endpoint and the change reads back.
+/// SetDefault* returns false on any failure HR rather than throwing.
 /// </summary>
 [SupportedOSPlatform("windows")]
 public sealed unsafe class WindowsAudioDeviceProvider : IAudioDeviceProvider, IDisposable
@@ -55,7 +56,14 @@ public sealed unsafe class WindowsAudioDeviceProvider : IAudioDeviceProvider, ID
         _queue.Dispose();
     }
 
-    public AudioDeviceList ListDevices() => RunOnComThread(() =>
+    public AudioDeviceList ListDevices()
+    {
+        var list = ListEndpoints();
+        list.Spatial = ReadSpatialForDefault(list);
+        return list;
+    }
+
+    private AudioDeviceList ListEndpoints() => RunOnComThread(() =>
     {
         var list = new AudioDeviceList();
         var clsid = MMDeviceEnumeratorClsid;
@@ -70,6 +78,15 @@ public sealed unsafe class WindowsAudioDeviceProvider : IAudioDeviceProvider, ID
         finally { Release(enumPtr); }
         return list;
     }, fallback: new AudioDeviceList(), op: "list");
+
+    /// <summary>Spatial sound for the default output, read as its own work
+    /// item so a stalled or throwing audiosrv call cannot blank the list.</summary>
+    private AudioSpatialState ReadSpatialForDefault(AudioDeviceList list)
+    {
+        var id = list.Outputs.Find(d => d.IsDefault)?.Id ?? "";
+        if (id.Length == 0) return new AudioSpatialState();
+        return RunOnComThread(() => ReadSpatial(id), fallback: new AudioSpatialState { DeviceId = id }, op: "read-spatial");
+    }
 
     // The default audio endpoint is a per-user setting, so the switch has to run
     // as the console user. The helper is already there and answers with the real
@@ -145,6 +162,184 @@ public sealed unsafe class WindowsAudioDeviceProvider : IAudioDeviceProvider, ID
         }
         finally { Marshal.FreeHGlobal(idPtr); Release(pc); }
     }, fallback: false, op: "set-default");
+
+    // ── Spatial sound (Windows Sonic / Dolby Atmos / DTS:X) ──
+    // No documented API. Windows Settings uses the current IPolicyConfig
+    // (IID_IPolicyConfig) on CPolicyConfigClient; slot order and layouts were
+    // read from Microsoft's public AudioSes.pdb and are gated to Windows 11,
+    // the only line they were checked on.
+    //   Get: GetDeviceFormatAndSpatialSettings(LPCWSTR id, BOOL bDefault,
+    //          WAVEFORMATEX**, SpatialAudioSettings**, UINT* count,
+    //          SpatialAudioEncoderDescriptor**)         - CoTaskMem outputs
+    //   Set: SetDeviceSpatialSettings(LPCWSTR id, const SpatialAudioSettings*,
+    //          const WAVEFORMATEX*)
+    // Settings: audiosrv fills in every field but the three below on write.
+    // Descriptor: the licensed flag is 0 for a format Windows would only offer
+    // as a store link.
+    private const int SpatialSettingsSize = 72;
+    private const int SpatialDescriptorSize = 834;
+    private const int SpatialSettingsEnabledOffset = 0;
+    private const int SpatialSettingsSelectedOffset = 12;
+    private const int SpatialSettingsConfiguredOffset = 28;
+    private const int SpatialDescriptorNameChars = 256;
+    private const int SpatialDescriptorGuidOffset = 768;
+    private const int SpatialDescriptorLicensedOffset = 784;
+    private const int SpatialGetSlot = 34;
+    private const int SpatialSetSlot = 35;
+    private const int Windows11FirstBuild = 22000;
+    private bool _spatialUnavailable = Environment.OSVersion.Version.Build < Windows11FirstBuild;
+    private bool _spatialReadFailureLogged;
+
+    public bool SetSpatial(string deviceId, string formatId) => RunOnComThread(() =>
+    {
+        if (string.IsNullOrEmpty(deviceId)) return false;
+        var target = Guid.Empty;
+        if (formatId.Length > 0 && !Guid.TryParse(formatId, out target)) return false;
+        var pc = CreatePolicyConfig();
+        if (pc == IntPtr.Zero) return false;
+        try
+        {
+            if (!QuerySpatial(pc, deviceId, out var before, quiet: false)) return false;
+            using (before)
+            {
+                if (before.Format == IntPtr.Zero)
+                {
+                    Console.Error.WriteLine("[audio-win] set-spatial: endpoint reported no device format");
+                    return false;
+                }
+                // Only a format Windows itself offers for this endpoint; an
+                // unlicensed or foreign GUID is refused here rather than handed
+                // to audiosrv.
+                if (target != Guid.Empty && !before.Formats().Exists(f => f.Id == target.ToString("D")))
+                {
+                    Console.Error.WriteLine($"[audio-win] set-spatial: {target} is not offered on this endpoint");
+                    return false;
+                }
+                var settings = stackalloc byte[SpatialSettingsSize];
+                new Span<byte>(settings, SpatialSettingsSize).Clear();
+                if (target != Guid.Empty)
+                {
+                    *(int*)(settings + SpatialSettingsEnabledOffset) = 1;
+                    target.TryWriteBytes(new Span<byte>(settings + SpatialSettingsSelectedOffset, 16));
+                    target.TryWriteBytes(new Span<byte>(settings + SpatialSettingsConfiguredOffset, 16));
+                }
+                var fn = (delegate* unmanaged[Stdcall]<IntPtr, IntPtr, IntPtr, IntPtr, int>)GetVTableSlot(pc, SpatialSetSlot);
+                var idPtr = Marshal.StringToHGlobalUni(deviceId);
+                int hr;
+                try { hr = fn(pc, idPtr, (IntPtr)settings, before.Format); }
+                finally { Marshal.FreeHGlobal(idPtr); }
+                if (hr < 0)
+                {
+                    Console.Error.WriteLine($"[audio-win] SetDeviceSpatialSettings hr=0x{hr:X8}");
+                    return false;
+                }
+            }
+            // The switch is only real once audiosrv reports it back.
+            if (!QuerySpatial(pc, deviceId, out var after, quiet: false)) return false;
+            using (after)
+            {
+                var active = after.ActiveId();
+                if (active == (target == Guid.Empty ? "" : target.ToString("D"))) return true;
+                Console.Error.WriteLine($"[audio-win] set-spatial: audiosrv reports '{active}' after the switch");
+                return false;
+            }
+        }
+        finally { Release(pc); }
+    }, fallback: false, op: "set-spatial");
+
+    /// <summary>Must run on the COM thread.</summary>
+    private AudioSpatialState ReadSpatial(string deviceId)
+    {
+        var state = new AudioSpatialState { DeviceId = deviceId };
+        if (deviceId.Length == 0 || _spatialUnavailable) return state;
+        var pc = CreatePolicyConfig();
+        if (pc == IntPtr.Zero) return state;
+        try
+        {
+            // The mixer polls this; log the first failure only.
+            if (!QuerySpatial(pc, deviceId, out var q, quiet: _spatialReadFailureLogged))
+            {
+                _spatialReadFailureLogged = true;
+                return state;
+            }
+            using (q)
+            {
+                state.Formats = q.Formats();
+                state.ActiveId = q.ActiveId();
+                state.Supported = state.Formats.Count > 0;
+            }
+            return state;
+        }
+        finally { Release(pc); }
+    }
+
+    private IntPtr CreatePolicyConfig()
+    {
+        var clsid = PolicyConfigClsid;
+        var iid = IID_IPolicyConfig;
+        if (_spatialUnavailable) return IntPtr.Zero;
+        var hr = CoCreateInstance(ref clsid, IntPtr.Zero, ClsCtxInprocServer, ref iid, out var pc);
+        if (hr >= 0 && pc != IntPtr.Zero) return pc;
+        Console.Error.WriteLine($"[audio-win] IPolicyConfig unavailable hr=0x{hr:X8}; spatial sound off");
+        _spatialUnavailable = true;
+        return IntPtr.Zero;
+    }
+
+    private static bool QuerySpatial(IntPtr pc, string deviceId, out SpatialQuery query, bool quiet)
+    {
+        query = default;
+        var fn = (delegate* unmanaged[Stdcall]<IntPtr, IntPtr, int, out IntPtr, out IntPtr, out uint, out IntPtr, int>)GetVTableSlot(pc, SpatialGetSlot);
+        var idPtr = Marshal.StringToHGlobalUni(deviceId);
+        int hr;
+        try { hr = fn(pc, idPtr, 0, out query.Format, out query.Settings, out query.Count, out query.Descriptors); }
+        finally { Marshal.FreeHGlobal(idPtr); }
+        if (hr >= 0 && query.Settings != IntPtr.Zero) return true;
+        if (!quiet) Console.Error.WriteLine($"[audio-win] GetDeviceFormatAndSpatialSettings hr=0x{hr:X8}");
+        query.Dispose();
+        return false;
+    }
+
+    /// <summary>The three CoTaskMem outputs of slot 34, freed together.</summary>
+    private struct SpatialQuery : IDisposable
+    {
+        public IntPtr Format;
+        public IntPtr Settings;
+        public uint Count;
+        public IntPtr Descriptors;
+
+        public string ActiveId()
+        {
+            if (Settings == IntPtr.Zero || Marshal.ReadInt32(Settings, SpatialSettingsEnabledOffset) == 0) return "";
+            var id = new Guid(new ReadOnlySpan<byte>((byte*)Settings + SpatialSettingsSelectedOffset, 16));
+            return id == Guid.Empty ? "" : id.ToString("D");
+        }
+
+        public List<AudioSpatialFormat> Formats()
+        {
+            var list = new List<AudioSpatialFormat>();
+            if (Descriptors == IntPtr.Zero) return list;
+            for (var i = 0; i < Count; i++)
+            {
+                var d = (byte*)Descriptors + i * SpatialDescriptorSize;
+                if (Marshal.ReadInt32((IntPtr)d, SpatialDescriptorLicensedOffset) == 0) continue;
+                var id = new Guid(new ReadOnlySpan<byte>(d + SpatialDescriptorGuidOffset, 16));
+                if (id == Guid.Empty) continue;
+                var name = Marshal.PtrToStringUni((IntPtr)d, SpatialDescriptorNameChars) ?? "";
+                var nul = name.IndexOf('\0');
+                if (nul >= 0) name = name[..nul];
+                list.Add(new AudioSpatialFormat { Id = id.ToString("D"), Name = name.Length > 0 ? name : id.ToString("D") });
+            }
+            return list;
+        }
+
+        public void Dispose()
+        {
+            if (Format != IntPtr.Zero) CoTaskMemFree(Format);
+            if (Settings != IntPtr.Zero) CoTaskMemFree(Settings);
+            if (Descriptors != IntPtr.Zero) CoTaskMemFree(Descriptors);
+            Format = Settings = Descriptors = IntPtr.Zero;
+        }
+    }
 
     private static IEnumerable<AudioDevice> Enumerate(IntPtr enumPtr, EDataFlow flow, string direction)
     {
@@ -281,6 +476,8 @@ public sealed unsafe class WindowsAudioDeviceProvider : IAudioDeviceProvider, ID
     private static readonly Guid IID_IMMDeviceEnumerator = new("A95664D2-9614-4F35-A746-DE8DB63617E6");
     private static readonly Guid PolicyConfigVistaClsid = new("294935ce-f637-4e7c-a41b-ab255460b862");
     private static readonly Guid IID_IPolicyConfigVista = new("568b9108-44bf-40b4-9006-86afe5b5a620");
+    private static readonly Guid PolicyConfigClsid = new("870af99c-171d-4f9e-af0d-e63df40c2bc9");
+    private static readonly Guid IID_IPolicyConfig = new("e8478600-a74b-4b3a-a96b-1fc3e796fc46");
     private static readonly PROPERTYKEY PKEY_Device_FriendlyName = new()
     {
         fmtid = new Guid("a45c254e-df1c-4efd-8020-67d146a850e0"),

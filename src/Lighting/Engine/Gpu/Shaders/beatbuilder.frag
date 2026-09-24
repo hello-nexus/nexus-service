@@ -1,5 +1,4 @@
-uniform float u_speed;
-uniform float u_intensity;
+uniform float u_intensity; // hint_range(0.0, 1.0, 0.01) = 1.0
 
 // Beat Builder extends the shared audio uniforms with a hi-res spectrum, a
 // short per-band history, and decaying peak-holds. These are declared only
@@ -16,26 +15,27 @@ uniform float u_midPeak;
 uniform float u_highPeak;
 
 // ---- Center spectrum ----
-uniform float u_centerStyle;  // 0 Bars, 1 Smooth, 2 Dots, 3 Radial
-uniform float u_barCount;     // bar / cell density across the half-width
-uniform float u_barWidth;     // 0..1 fill ratio inside each bar/cell
-uniform float u_centerGain;   // spectrum amplitude
-uniform float u_centerFloor;  // noise gate
-uniform float u_centerSize;   // vertical half-height of the center region
+uniform float u_centerStyle; // hint_range(0.0, 3.0, 1.0) = 2.0  0 Bars, 1 Smooth, 2 Dots, 3 Radial
+uniform float u_barCount; // hint_range(8.0, 96.0, 1.0) = 48.0  bar / cell density across the half-width
+uniform float u_barWidth; // hint_range(0.1, 1.0, 0.02) = 0.7  0..1 fill ratio inside each bar/cell
+uniform float u_centerGain; // hint_range(0.3, 3.0, 0.05) = 1.2  spectrum amplitude
+uniform float u_centerFloor; // hint_range(0.0, 0.3, 0.01) = 0.04  noise gate
+uniform float u_centerSize; // hint_range(0.3, 1.1, 0.02) = 0.8  vertical half-height of the center region
 // ---- Top band meters ----
-uniform float u_topMeters;    // 0/1
-uniform float u_topHeight;    // top strip height fraction; also sizes the corner squares
+uniform float u_topMeters; // hint_range(0.0, 1.0, 1.0) = 1.0  0/1
+uniform float u_topHeight; // hint_range(0.04, 0.25, 0.005) = 0.085  top strip height fraction; also sizes the corner squares
 // ---- Fan corner fills (top-right) ----
-uniform float u_cornerFills;  // 0/1: square radial gauge + square level fill, anchored top-right
+uniform float u_cornerFills; // hint_range(0.0, 1.0, 1.0) = 1.0  0/1: square radial gauge + square level fill, anchored top-right
 // ---- Bottom bars (count + width track the center bars) ----
-uniform float u_bottomBars;   // 0/1
-uniform float u_bottomScale;  // strip height fraction
+uniform float u_bottomBars; // hint_range(0.0, 1.0, 1.0) = 1.0  0/1
+uniform float u_bottomScale; // hint_range(0.02, 0.2, 0.005) = 0.07  strip height fraction
 // ---- Color & style ----
-uniform float u_colorMode;    // 0 Solid, 1 Rainbow
-uniform float u_beatColor;    // hue jump on beat
-uniform float u_bgLevel;      // background brightness floor
-uniform float u_flash;        // full-frame beat strobe amount (0 = off)
-uniform float u_beatPulse;    // scale-on-beat amount
+uniform float u_colorMode; // hint_range(0.0, 1.0, 1.0) = 1.0  0 Solid, 1 Rainbow
+uniform float u_beatColor; // hint_range(0.0, 1.0, 0.02) = 0.0  hue jump on beat
+uniform float u_bgLevel; // hint_range(0.0, 0.2, 0.01) = 0.0  background brightness floor
+uniform float u_flash; // hint_range(0.0, 1.5, 0.05) = 0.0  full-frame beat strobe amount (0 = off)
+uniform float u_beatPulse; // hint_range(0.0, 1.0, 0.02) = 0.3  scale-on-beat amount
+uniform float u_audioBoost; // hint_range(0.0, 2.0, 0.05) = 1.0
 
 float boost() { return clamp(u_audioBoost, 0.0, 2.0); }
 float band64(int i) { return u_spectrum64[clamp(i, 0, 63)]; }

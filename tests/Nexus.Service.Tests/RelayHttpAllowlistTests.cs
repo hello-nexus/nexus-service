@@ -29,6 +29,11 @@ public class RelayHttpAllowlistTests
     [InlineData("POST", "/system/power/restart")]
     [InlineData("POST", "/system/power/logout")]
     [InlineData("GET", "/system/audio/devices")]
+    [InlineData("GET", "/system/volume/target")]
+    [InlineData("POST", "/system/volume/target")]
+    [InlineData("POST", "/system/volume/target/mute")]
+    [InlineData("GET", "/onboarding/panel-swipe")]
+    [InlineData("POST", "/onboarding/panel-swipe/complete")]
     public void Allows_PanelAndControlSurface(string method, string path)
         => Assert.True(RelayHttpAllowlist.IsAllowed(method, path));
 
@@ -54,6 +59,9 @@ public class RelayHttpAllowlistTests
     [InlineData("POST", "/system/pick-path/")]
     [InlineData("POST", "/devices\\firmware\\flash")]  // backslash separator must not slip the deny
     [InlineData("POST", "/devices/firmware/flash\\")]  // trailing backslash
+    [InlineData("GET", "/onboarding")]                // dashboard-only first-run flags
+    [InlineData("POST", "/onboarding/reset")]
+    [InlineData("GET", "/onboarding/panel-swipeX")]  // not a segment boundary
     public void Rejects_SocketHighBandwidthAndOffAllowlist(string method, string path)
         => Assert.False(RelayHttpAllowlist.IsAllowed(method, path));
 

@@ -30,14 +30,19 @@ public sealed class QSeriesCoolerHeartbeatWorker : BackgroundService
     private readonly HardwarePresence _presence;
     private readonly DeviceControlGate _gate;
     private readonly Nexus.Service.Lighting.QSeriesLightingDeviceProvider? _lighting;
+    private readonly Nexus.Service.Cooling.QSeriesCoolerCoolingProvider? _cooling;
     private bool _firstTick = true;
+    private bool _handBackPending;
 
-    public QSeriesCoolerHeartbeatWorker(QSeriesCoolerHub hub, HardwarePresence presence, DeviceControlGate gate, Nexus.Service.Lighting.QSeriesLightingDeviceProvider? lighting = null)
+    public QSeriesCoolerHeartbeatWorker(QSeriesCoolerHub hub, HardwarePresence presence, DeviceControlGate gate,
+        Nexus.Service.Lighting.QSeriesLightingDeviceProvider? lighting = null,
+        Nexus.Service.Cooling.QSeriesCoolerCoolingProvider? cooling = null)
     {
         _hub = hub;
         _presence = presence;
         _gate = gate;
         _lighting = lighting;
+        _cooling = cooling;
     }
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
@@ -78,12 +83,21 @@ public sealed class QSeriesCoolerHeartbeatWorker : BackgroundService
 
         var connectedBefore = _hub.IsConnected;
         if (!_hub.EnsureConnected()) return;
+        if (!connectedBefore) _handBackPending = true;
         if (!connectedBefore || string.IsNullOrEmpty(_hub.State.FirmwareVersion))
         {
             _hub.PollFirmwareVersion();
         }
         // Refresh pump RPM so the cooling page's fan card shows live telemetry.
         _hub.PollTelemetry();
+        // Once the version is known: the hand-back mode depends on whether this
+        // firmware has an onboard curve, and the poll is retried each tick. The
+        // flag clears after the call, so a throw here retries next tick.
+        if (_handBackPending && !string.IsNullOrEmpty(_hub.State.FirmwareVersion))
+        {
+            _cooling?.OnHubConnected();
+            _handBackPending = false;
+        }
         // Nudge the lighting provider so RgbBridge rebuilds its frame map on
         // (re)connect. Debounced inside the provider via a signature compare.
         _lighting?.OnHubStateUpdated();

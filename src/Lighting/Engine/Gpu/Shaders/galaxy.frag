@@ -1,8 +1,7 @@
-uniform float u_speed;
-uniform float u_arms;     // extra: spiral arm count (1..6)
-uniform float u_dust;     // extra: nebulosity amount (0..1.5)
-uniform float u_rotation; // extra: spin rate multiplier (0.05..2)
-uniform float u_stars;    // extra: star density (0..3)
+uniform float u_arms; // hint_range(1.0, 6.0, 1.0) = 4.0  spiral arm count
+uniform float u_dust; // hint_range(0.0, 1.5, 0.05) = 0.8  nebulosity amount
+uniform float u_rotation; // hint_range(0.05, 2.0, 0.05) = 0.5  spin rate multiplier
+uniform float u_stars; // hint_range(0.0, 2.5, 0.05) = 1.2  star density
 
 // Spiral galaxy: log-spiral arm density + dust nebulosity + individually
 // rendered star points with sub-cell jitter, soft gaussian cores, cross

@@ -6,6 +6,11 @@
 ;
 ; Behaviour:
 ;   - Single UAC prompt (PrivilegesRequired=admin)
+;   - If no Microsoft Edge WebView2 Runtime is registered (debloated images,
+;     a manual uninstall), shows a page saying so, then downloads Microsoft's
+;     Evergreen Standalone x64 installer and runs it silently before the
+;     payload lands (PrepareToInstall in [Code]). The dashboard, widgets and
+;     panel kiosk are WebView2 hosts, so without it they come up black.
 ;   - Extracts the AOT payload to %ProgramFiles%\Nexus\
 ;   - Calls Nexus.exe --install as one elevated step. That primitive
 ;     handles all the real work: stop+delete existing service, sc create
@@ -176,10 +181,91 @@ const
   // Suffix for a destination UnlockTarget could not delete and had to move
   // out of the way. Swept on the next install and on uninstall.
   StaleSuffix = '.nexus-stale';
+  // Edge Update's client id for the WebView2 Runtime; pv under it is the
+  // installed version (Microsoft's documented detection).
+  WebView2ClientKey = 'SOFTWARE\WOW6432Node\Microsoft\EdgeUpdate\Clients\{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}';
+  WebView2UserClientKey = 'SOFTWARE\Microsoft\EdgeUpdate\Clients\{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}';
+  // Microsoft's permalink for the Evergreen Standalone x64 installer. The
+  // bootstrapper would fetch the same payload itself, invisibly; the
+  // standalone one downloads through Inno's page, so the long part has a
+  // real progress bar.
+  WebView2InstallerUrl = 'https://go.microsoft.com/fwlink/?linkid=2124701';
+  WebView2InstallerName = 'MicrosoftEdgeWebView2RuntimeInstallerX64.exe';
 
 var
   DesktopShortcutCheck: TNewCheckBox;
   FrontAsserted: Boolean;
+  WebView2Missing: Boolean;
+  WebView2DownloadPage: TDownloadWizardPage;
+
+// A per-machine registration whose version folder is gone (a failed Edge
+// update) fails the WebView2 loader the same way as no runtime, and the
+// runtime installer repairs both, so the file is checked too.
+function WebView2Installed(): Boolean;
+var
+  Version: String;
+begin
+  Result := False;
+  if RegQueryStringValue(HKLM, WebView2ClientKey, 'pv', Version)
+     and (Version <> '') and (Version <> '0.0.0.0') then
+    Result := FileExists(ExpandConstant('{commonpf32}\Microsoft\EdgeWebView\Application\' + Version + '\msedgewebview2.exe'));
+  if not Result and RegQueryStringValue(HKCU, WebView2UserClientKey, 'pv', Version) then
+    Result := (Version <> '') and (Version <> '0.0.0.0');
+  Log('[nexus] WebView2 runtime installed=' + IntToStr(Integer(Result)) + ' pv=' + Version);
+end;
+
+// The download is trusted on TLS alone, so before it runs elevated require a
+// valid Authenticode chain with Microsoft as the signer.
+function WebView2InstallerTrusted(const Path: String): Boolean;
+var
+  ResultCode: Integer;
+begin
+  Result := Exec(ExpandConstant('{sys}\WindowsPowerShell\v1.0\powershell.exe'),
+    '-NoProfile -NonInteractive -ExecutionPolicy Bypass -Command "' +
+    '$s = Get-AuthenticodeSignature -LiteralPath ''' + Path + '''; ' +
+    'if ($s.Status -eq ''Valid'' -and $s.SignerCertificate.Subject -like ''*O=Microsoft Corporation*'') { exit 0 } else { exit 1 }"',
+    '', SW_HIDE, ewWaitUntilTerminated, ResultCode) and (ResultCode = 0);
+  Log('[nexus] WebView2 installer signature trusted=' + IntToStr(Integer(Result)));
+end;
+
+// Download + silent install of the runtime, ahead of the payload so the
+// dashboard --open-app launches into a working WebView2. A failure never
+// blocks the Nexus install: the overlay asks again on first launch.
+procedure InstallWebView2Runtime();
+var
+  SetupPath: String;
+  ResultCode: Integer;
+begin
+  WebView2DownloadPage.Clear;
+  WebView2DownloadPage.Add(WebView2InstallerUrl, WebView2InstallerName, '');
+  WebView2DownloadPage.Show;
+  try
+    try
+      WebView2DownloadPage.Download;
+    except
+      Log('[nexus] WebView2 installer download failed: ' + GetExceptionMessage);
+      SuppressibleMsgBox('The Microsoft Edge WebView2 Runtime could not be downloaded (' + GetExceptionMessage + ').'#13#10#13#10
+        + 'Nexus will be installed anyway and will ask to install the runtime when it first opens.',
+        mbInformation, MB_OK, IDOK);
+      exit;
+    end;
+    SetupPath := ExpandConstant('{tmp}\' + WebView2InstallerName);
+    WebView2DownloadPage.SetText('Installing the Microsoft Edge WebView2 Runtime...', '');
+    WebView2DownloadPage.ProgressBar.Style := npbstMarquee;
+    WebView2DownloadPage.AbortButton.Visible := False;
+    if not WebView2InstallerTrusted(SetupPath) then
+      ResultCode := -2
+    else if not Exec(SetupPath, '/silent /install', '', SW_HIDE, ewWaitUntilTerminated, ResultCode) then
+      ResultCode := -1;
+    Log('[nexus] WebView2 installer exit=' + IntToStr(ResultCode));
+    if not WebView2Installed() then
+      SuppressibleMsgBox('The Microsoft Edge WebView2 Runtime did not install (code ' + IntToStr(ResultCode) + ').'#13#10#13#10
+        + 'Nexus will be installed anyway and will ask to install the runtime when it first opens.',
+        mbInformation, MB_OK, IDOK);
+  finally
+    WebView2DownloadPage.Hide;
+  end;
+end;
 
 function DesktopIconChecked(): Boolean;
 begin
@@ -196,6 +282,19 @@ end;
 procedure InitializeWizard();
 begin
   BringWizardToFront();
+
+  WebView2Missing := not WebView2Installed();
+  if WebView2Missing then
+  begin
+    CreateOutputMsgPage(wpSelectDir,
+      'Microsoft Edge WebView2 Runtime',
+      'A Windows component Nexus needs is missing on this PC',
+      'Nexus displays its windows through the native Microsoft Edge WebView2 Runtime. '
+      + 'Windows normally includes it, but it was not found on this PC.'#13#10#13#10
+      + 'Setup will download it from Microsoft (about 200 MB) and install it before installing Nexus. '
+      + 'This needs an internet connection.');
+    WebView2DownloadPage := CreateDownloadPage(SetupMessage(msgWizardPreparing), SetupMessage(msgPreparingDesc), nil);
+  end;
 
   // Render the "Create a desktop shortcut" option on the directory page itself
   // (a [Tasks] entry would instead add a separate Select Additional Tasks page).
@@ -388,6 +487,7 @@ end;
 
 function PrepareToInstall(var NeedsRestart: Boolean): String;
 begin
+  if WebView2Missing then InstallWebView2Runtime();
   StopServiceIfRunning();
   // After the kills, so anything a previous install had to rename aside is now
   // unheld and deletes cleanly.

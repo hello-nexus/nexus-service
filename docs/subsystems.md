@@ -63,7 +63,10 @@ Q-series screens.
 - First-party drivers under `Peripherals/`: HYTE Keeb, CNVS, hubs, Y70,
   Q-series; iBUYPOWER keyboards and mice; the Lian Li Uni fan family, Galahad
   II AIO, Strimer, SL wireless; Corsair iCUE LINK and Xeneon Edge; NZXT Kraken;
-  iBUYPOWER AW5; Tryx; Nollie ARGB channel controllers. The curated
+  iBUYPOWER AW5; Tryx; Nollie ARGB channel controllers (the 32-channel
+  board's two Strimer connectors present as one port each, pre-wired with
+  the Lian Li cable; what a board runs once Nexus lets go is set through
+  `/devices/nollie`, `Routes/NollieRoutes.cs`). The curated
   supported-hardware catalogs sit behind `/peripherals/supported` and
   `/peripherals/all-supported`.
 - `Conflicts/` detects competing vendor software, tracks which app owns a
@@ -76,23 +79,37 @@ brightness, fan, sensor overlay) over CDC-ACM serial + ADB (`Peripherals/Tryx/`)
 exposed as a first-party device through `/tryx/*` (`Routes/TryxRoutes.cs`);
 media uploads via `POST /tryx/media`.
 
-### Elgato Stream Deck
+### Elgato Stream Deck and Deck Modes
 
 - Native gen1 (BMP) and gen2 (JPEG) HID transports across all 14 catalog
   models, from the button-only families to the screenless Pedal, over the
   shared HID stack (`Peripherals/StreamDeck/`). Bench-verified on the Mini;
   the rest transcribed from the MIT python-elgato-streamdeck and
   elgato-streamdeck references.
-- Exposed as a first-party device with the `/streamdeck/*` binding, config,
-  image and dispatch contract (`Routes/StreamDeckRoutes.cs`) plus
-  localhost-only bench/simulator routes (test pattern, `dev/*` sim-press,
-  simulate, models).
+- A physical deck (`streamdeck:<serial>`) and the panel's on-screen Deck
+  widget (`widget:<panelWidgetId>`) are both deck INSTANCES that point at a
+  host-wide, grid-independent preset (`Persistence/NexusSettings.cs`
+  `StreamDeckSettings.Presets`/`Instances`; `Routes/DeckRoutes.cs` serves
+  `/deck/presets[...]` and `/deck/instances[...]`). `DeckConfigNavigation.
+  FitToGrid` projects a preset onto whatever grid an instance actually has -
+  identity when the key count matches, otherwise trimmed/padded or chunked
+  across synthetic next/prev pages. `Routes/StreamDeckRoutes.cs` keeps only
+  the per-deck HID prefs (name/brightness/orientation/sleep), nav, and
+  bench/simulator routes (test pattern, `dev/*` sim-press, simulate, models).
+- `Rendering/DeckKeyRenderer.cs` renders every visible key's face
+  (background, icon, label) service-side and caches the encoded wire bytes;
+  `StreamDeckConnectionWorker` resolves each key through instance -> preset
+  -> `FitToGrid` -> the renderer and broadcasts it on `streamdeckTiles`,
+  matching the monitoring/weather tiles it already rendered.
 - Bindings share the `DeckAction` union with the panel's Deck widget (`Deck/`),
-  dispatched headlessly by `DeckActionExecutor`.
+  dispatched headlessly by `DeckActionExecutor`; `Routes/PanelDeckRoutes.cs`
+  resolves a widget press the same way, fitted to `innerGridForSize(widget.
+  size)`.
 - A read-only importer (`Peripherals/StreamDeck/ElgatoImport/`,
   `GET`/`POST /streamdeck/elgato/*`) translates a local Elgato Stream Deck
-  software profile (ProfilesV3 store) into a Nexus deck preset without
-  touching the Elgato install's own files.
+  software profile (ProfilesV3 store) into a `DeckConfig` the caller saves as
+  a preset via `POST /deck/presets`, without touching the Elgato install's
+  own files.
 - Key icons can be user-supplied images (`DeckIcon` kind `image`), stored
   content-addressed and served through `POST`/`GET /deck/images`
   (`Deck/DeckImageStore.cs`). A key bound to a URL shows that site's icon,
@@ -177,7 +194,11 @@ support-bundle ZIP export.
   process. Windows only: the Core Audio session walk runs in the user-session
   helper, since Session 0 sees none of the interactive session's audio.
   Levels are remembered by process name and re-applied when the app next
-  plays; named presets apply a whole set at once.
+  plays; named presets apply a whole set at once. The device list
+  (`/system/audio/devices`) also carries the default output's spatial sound
+  state (Windows Sonic, Dolby Atmos, DTS:X), switched via
+  `/system/audio/spatial` through the undocumented `IPolicyConfig` in
+  `Activity/WindowsAudioDeviceProvider.cs`; unsupported elsewhere.
 
 ## Remote access and pairing
 

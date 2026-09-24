@@ -28,6 +28,16 @@ public static class ZonePartitionValidator
     }
 
     public static Result Validate(IReadOnlyList<StructureSegment> segments, IReadOnlyList<ZoneDef> zones)
+        => Validate(segments, zones, chainOwnedSegments: null);
+
+    /// <param name="chainOwnedSegments">
+    /// Segments whose LED count is owned by a product chain. Rule 2 is lifted for
+    /// these: the chain writes the count and the partition together, so the
+    /// drift that rule 2 exists to prevent cannot happen. Everything else,
+    /// including the full-cover rule, still applies.
+    /// </param>
+    public static Result Validate(IReadOnlyList<StructureSegment> segments, IReadOnlyList<ZoneDef> zones,
+        IReadOnlySet<int>? chainOwnedSegments)
     {
         var result = new Result();
         if (zones is null || zones.Count == 0)
@@ -100,8 +110,11 @@ public static class ZonePartitionValidator
                 continue;
             }
 
-            // Rule 2: resizable walls.
-            if (touchesResizable)
+            // Rule 2: resizable walls, lifted for a segment a chain owns.
+            var chainOwned = chainOwnedSegments is not null
+                && zone.Slices.Count > 0
+                && chainOwnedSegments.Contains(zone.Slices[0].Segment);
+            if (touchesResizable && !chainOwned)
             {
                 var whole = zone.Slices.Count == 1
                     && zone.Slices[0].Start == 0

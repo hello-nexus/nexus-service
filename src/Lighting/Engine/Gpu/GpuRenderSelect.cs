@@ -3,6 +3,8 @@ using System;
 using System.Diagnostics;
 using System.IO;
 using System.Linq;
+using System.Security.Cryptography;
+using System.Text;
 using System.Threading;
 using Microsoft.Win32;
 
@@ -35,7 +37,10 @@ internal static class GpuRenderSelect
     // Parent's backstop wait for a probe child. Must outlast the budget the
     // child pins on itself (see GpuProbe) so a working-but-slow card finishes on
     // its own and the parent only kills a truly wedged child.
-    private static readonly TimeSpan ProbeWait = TimeSpan.FromSeconds(35);
+    private static TimeSpan ProbeWait =>
+        string.Equals(Backend, "glfw", StringComparison.OrdinalIgnoreCase)
+            ? TimeSpan.FromSeconds(45)
+            : TimeSpan.FromSeconds(15);
 
     // A card slower than every budget still has to be remembered, or later boots
     // re-pay the probe for a card that works.
@@ -44,11 +49,25 @@ internal static class GpuRenderSelect
     private const int ClassIntegrated = 0; // clear pref: Windows' default is the iGPU on a hybrid box
     private const int ClassDiscrete = 2;   // high-performance
 
+    // While the GPU is off, how often the adapter set is re-read for a card
+    // appearing or a driver changing. A cached DXGI enumeration, no context.
+    private static readonly TimeSpan AdapterWatchMin = TimeSpan.FromMinutes(1);
+    private static readonly TimeSpan AdapterWatchMax = TimeSpan.FromMinutes(5);
+
     // Rooted: a Timer nobody holds is collected before it fires.
     private static Timer? _retryTimer;
     private static Timer? _reprobeTimer;
+    private static Timer? _watchTimer;
     private static int _rearms;
+    // Set while a timer-driven re-select runs: Timer.Dispose does not stop a
+    // callback already dispatched, and RearmAfterLatch answers true to a
+    // second caller, so without it two probes and two inits could overlap.
+    private static int _reselecting;
     private static readonly object TimerGate = new();
+
+    /// <summary>Backend the engine will use, handed to probe children. Set by
+    /// the warmup before the first select.</summary>
+    public static string Backend { get; set; } = "";
 
     public static void SelectAndWarm(GpuContext gpu, Stopwatch sw)
     {
@@ -59,13 +78,14 @@ internal static class GpuRenderSelect
         }
 
         var crashed = ConsumeCrashGuard();
-        var usable = GpuTestSeam.AdapterCount
-            ?? Nexus.Service.Sensors.GpuAdapterLuids.Enumerate().Count(a => a.VendorId != 0x1414);
+        var adapters = UsableAdapters();
+        var usable = GpuTestSeam.AdapterCount ?? adapters.Count;
+        var env = CurrentEnvironment(adapters);
         var now = DateTimeOffset.UtcNow;
         var raw = LoadStateText();
         var state = GpuSelectState.Parse(raw);
-        var plan = GpuSelectPlan.NextAction(raw, crashed, usable, now, GpuTestSeam.ReprobeOverride);
-        GpuContext.Log($"[gpu] select: adapters={usable} state='{state.Format()}' "
+        var plan = GpuSelectPlan.NextAction(raw, crashed, usable, now, GpuTestSeam.ReprobeOverride, env);
+        GpuContext.Log($"[gpu] select: adapters={usable} env='{env.Fingerprint}@{env.Boot}' state='{state.Format()}' "
             + $"crashguard='{crashed ?? "none"}' -> {plan.Action} ({plan.Reason})");
 
         switch (plan.Action)
@@ -78,13 +98,60 @@ internal static class GpuRenderSelect
             case GpuSelectAction.DeclineNoProbe:
                 HoldLatch(gpu, state, now, plan.Reason, plan.RestampLatch);
                 return;
+            case GpuSelectAction.WaitForAdapter:
+                // The guard was consumed above; the verdict it carries is for
+                // the card that comes back, so it is put back for that select.
+                if (crashed is not null)
+                {
+                    WriteCrashGuard(crashed);
+                }
+                GpuContext.Log($"[gpu] select: {plan.Reason}; GPU off until a display adapter appears");
+                gpu.DeclineInit($"GPU rendering off: {plan.Reason}");
+                ScheduleAdapterWatch(gpu, AdapterWatchMin, null);
+                return;
             case GpuSelectAction.WarmRemembered:
                 WarmRemembered(gpu, sw, plan.Card, state);
                 return;
             default:
-                ProbeThenWarm(gpu, sw, usable, state);
+                ProbeThenWarm(gpu, sw, usable, plan.FreshStreak ? GpuSelectState.Fresh : state);
                 return;
         }
+    }
+
+    private static System.Collections.Generic.IReadOnlyList<Nexus.Service.Sensors.GpuAdapterLuids.Adapter> UsableAdapters() =>
+        Nexus.Service.Sensors.GpuAdapterLuids.Enumerate().Where(a => a.VendorId != 0x1414).ToList();
+
+    // Device ids plus driver version, order-free, hashed to one token; the boot
+    // id makes a reboot a new environment.
+    private static GpuEnvironment CurrentEnvironment(
+        System.Collections.Generic.IReadOnlyList<Nexus.Service.Sensors.GpuAdapterLuids.Adapter> adapters)
+    {
+        // Distinct: an indirect display enumerates as a clone of the physical
+        // card, and plugging one must not read as a new GPU.
+        var parts = adapters
+            .Select(a => $"{a.VendorId:x4}:{a.DeviceId:x4}:{a.SubSysId:x8}:{a.Revision:x2}:{a.UmdVersion}")
+            .Distinct(StringComparer.Ordinal)
+            .OrderBy(p => p, StringComparer.Ordinal);
+        var hash = SHA256.HashData(Encoding.UTF8.GetBytes(string.Join("|", parts)));
+        return new(Convert.ToHexString(hash.AsSpan(0, 8)).ToLowerInvariant(), BootStamp());
+    }
+
+    // The kernel's boot counter; a tick-derived boot minute when it cannot be
+    // read, which two reboots inside a minute would tell apart wrong.
+    private static string BootStamp()
+    {
+        try
+        {
+            if (Registry.GetValue(
+                    @"HKEY_LOCAL_MACHINE\SYSTEM\CurrentControlSet\Control\Session Manager\Memory Management\PrefetchParameters",
+                    "BootId", null) is int id)
+            {
+                return id.ToString(System.Globalization.CultureInfo.InvariantCulture);
+            }
+        }
+        catch (Exception) { }
+        var booted = DateTimeOffset.UtcNow - TimeSpan.FromMilliseconds(Environment.TickCount64);
+        return "t" + (booted.ToUnixTimeSeconds() / 60).ToString(System.Globalization.CultureInfo.InvariantCulture);
     }
 
     private static void ProbeThenWarm(GpuContext gpu, Stopwatch sw, int usable, GpuSelectState state)
@@ -279,18 +346,19 @@ internal static class GpuRenderSelect
         {
             return;
         }
-        var latched = state.LatchedOff(now, escalate);
+        var latched = state.LatchedOff(now, escalate, CurrentEnvironment(UsableAdapters()));
         SaveState(latched);
         var wait = GpuSelectState.ReprobeDelay(latched.OffStreak, GpuTestSeam.ReprobeOverride);
         GpuContext.Log($"[gpu] select: {reason}; GPU off; next re-probe in {wait.TotalMinutes:0}m");
         gpu.DeclineInit($"GPU rendering off: {reason}");
         ScheduleReprobe(gpu, wait);
+        ScheduleAdapterWatch(gpu, AdapterWatchMax, latched);
     }
 
     private static void HoldLatch(GpuContext gpu, GpuSelectState state, DateTimeOffset now,
         string reason, bool restamp)
     {
-        var held = restamp ? state.Restamped(now) : state;
+        var held = restamp ? state.Restamped(now, CurrentEnvironment(UsableAdapters())) : state;
         if (restamp)
         {
             SaveState(held);
@@ -300,6 +368,96 @@ internal static class GpuRenderSelect
             + "(picking a render GPU makes the next start re-probe)");
         gpu.DeclineInit($"GPU rendering off: {reason}");
         ScheduleReprobe(gpu, wait);
+        ScheduleAdapterWatch(gpu, AdapterWatchMax, held);
+    }
+
+    // While off, re-read the adapter set on a slow clock. With no card yet, any
+    // card ending the wait; under a latch, a changed environment ending it early.
+    // Neither touches the GPU: the re-select that follows still probes first.
+    private static void ScheduleAdapterWatch(GpuContext gpu, TimeSpan wait, GpuSelectState? latched)
+    {
+        if (gpu.IsDisposed || gpu.InitAbandoned)
+        {
+            return;
+        }
+        Swap(ref _watchTimer, new Timer(
+            _ => new Thread(() => RunAdapterWatch(gpu, wait, latched))
+            { IsBackground = true, Name = "nexus-gpu-adapter-watch" }.Start(),
+            null, wait, Timeout.InfiniteTimeSpan));
+    }
+
+    private static void RunAdapterWatch(GpuContext gpu, TimeSpan wait, GpuSelectState? latched)
+    {
+        if (gpu.IsDisposed || gpu.Available || gpu.InitAbandoned)
+        {
+            return;
+        }
+        var adapters = UsableAdapters();
+        var usable = GpuTestSeam.AdapterCount ?? adapters.Count;
+        var changed = latched is { } l
+            ? usable > 0 && l.LatchStale(CurrentEnvironment(adapters))
+            : usable > 0;
+        if (!changed)
+        {
+            var next = wait + AdapterWatchMin;
+            ScheduleAdapterWatch(gpu, next < AdapterWatchMax ? next : AdapterWatchMax, latched);
+            return;
+        }
+        if (Volatile.Read(ref _rearms) >= GpuInitRetry.MaxLatchRearms)
+        {
+            GpuContext.Log("[gpu] select: adapter set changed, but the re-probe budget for this session is spent; the next start re-probes");
+            return;
+        }
+        Reselect(gpu, latched is null
+            ? $"a display adapter appeared (adapters={usable})"
+            : "the GPU set or driver changed under the off latch", ref _reprobeTimer);
+    }
+
+    /// <summary>
+    /// A user logged in. The service starts at boot, before any session exists,
+    /// and a card that only answers once one does would otherwise stay dark
+    /// until the off latch expires - the adapter watch does not fire for a
+    /// logon, because neither the adapter set nor the driver changed.
+    /// </summary>
+    public static void OnSessionLogon(GpuContext gpu)
+    {
+        // Initializing: an attempt is already running and will answer on its
+        // own; rearming under it is refused anyway (GpuContext.RearmAfterLatch).
+        if (gpu.Available || gpu.InitAbandoned || gpu.Initializing)
+        {
+            return;
+        }
+        // Off the caller's thread on purpose: this arrives on the SCM control
+        // handler, which the SCM is waiting on, and a select can cost a probe
+        // child plus the init wait.
+        new Thread(() => Reselect(gpu, "a user session appeared", ref _reprobeTimer))
+        { IsBackground = true, Name = "nexus-gpu-logon-select" }.Start();
+    }
+
+    // The one path from a timer back into SelectAndWarm. Cancels the other
+    // timer so the outcome's own scheduling starts clean.
+    private static void Reselect(GpuContext gpu, string why, ref Timer? other)
+    {
+        if (Interlocked.CompareExchange(ref _reselecting, 1, 0) != 0)
+        {
+            return;
+        }
+        try
+        {
+            if (!gpu.RearmAfterLatch())
+            {
+                GpuContext.Log($"[gpu] select: {why}, but the context cannot be rearmed in this process");
+                return;
+            }
+            var round = Interlocked.Increment(ref _rearms);
+            Swap(ref other, null);
+            GpuContext.Log($"[gpu] select: {why}; re-selecting (session attempt {round})");
+            SelectAndWarm(gpu, Stopwatch.StartNew());
+        }
+        finally
+        {
+            Volatile.Write(ref _reselecting, 0);
+        }
     }
 
     // The latch expiry has to fire in-session. Before this fix the crash loop
@@ -329,20 +487,12 @@ internal static class GpuRenderSelect
         {
             return;
         }
-        if (!gpu.RearmAfterLatch())
-        {
-            GpuContext.Log("[gpu] select: re-probe declined; the context cannot be rearmed in this process");
-            return;
-        }
-        var round = Interlocked.Increment(ref _rearms);
-        GpuContext.Log($"[gpu] select: off latch expired; re-probing (session attempt {round})");
-        var usable = GpuTestSeam.AdapterCount
-            ?? Nexus.Service.Sensors.GpuAdapterLuids.Enumerate().Count(a => a.VendorId != 0x1414);
-        // Timed from here: the boot stopwatch would report hours in the warm log.
-        ProbeThenWarm(gpu, Stopwatch.StartNew(), usable, GpuSelectState.Parse(LoadStateText()));
+        // Through the plan, not straight to the probe: a driver that is absent
+        // by now must wait for a card, not fail a probe and latch again.
+        Reselect(gpu, "off latch expired", ref _watchTimer);
     }
 
-    private static void Swap(ref Timer? slot, Timer replacement)
+    private static void Swap(ref Timer? slot, Timer? replacement)
     {
         Timer? previous;
         lock (TimerGate)
@@ -376,6 +526,13 @@ internal static class GpuRenderSelect
             psi.ArgumentList.Add("--gpu-probe");
             psi.ArgumentList.Add("--set-pref");
             psi.ArgumentList.Add(cls.ToString());
+            // The child has no config store, so the engine's backend is handed
+            // to it; probing WGL for an engine pinned to GLFW answers nothing.
+            if (Backend.Length > 0)
+            {
+                psi.ArgumentList.Add("--backend");
+                psi.ArgumentList.Add(Backend);
+            }
             using var p = Process.Start(psi);
             if (p is null) return GpuProbeVerdict.Inconclusive;
             // Drain both pipes concurrently to avoid a buffer-full deadlock.

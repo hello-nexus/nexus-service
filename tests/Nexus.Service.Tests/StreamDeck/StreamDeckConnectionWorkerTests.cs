@@ -5,6 +5,7 @@ using System.Linq;
 using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
+using Nexus.Service.Activity;
 using Nexus.Service.Deck;
 using Nexus.Service.Devices;
 using Nexus.Service.Devices.Detection;
@@ -15,6 +16,7 @@ using Nexus.Service.Peripherals.StreamDeck;
 using Nexus.Service.Persistence;
 using Nexus.Service.Sensors;
 using Nexus.Service.Sockets;
+using static Nexus.Service.Tests.StreamDeck.DeckTestHelpers;
 
 namespace Nexus.Service.Tests.StreamDeck;
 
@@ -121,7 +123,7 @@ public class StreamDeckConnectionWorkerTests
         DeviceControlGate Gate,
         InMemoryConfigStore Store,
         FakeDeckActionExecutor Executor,
-        StreamDeckImageCache ImageCache,
+        Nexus.Service.Rendering.DeckKeyRenderer KeyRenderer,
         MultiplexHub Hub,
         FakeSensorProvider Sensors);
 
@@ -134,18 +136,15 @@ public class StreamDeckConnectionWorkerTests
         var presence = new HardwarePresence(new FixedUsbEnumerator(usbEntries.ToArray()));
         var store = new InMemoryConfigStore();
         var gate = new DeviceControlGate(store);
-        // DeviceControlPolicy defaults "streamdeck" off (Elgato's own software
-        // is a mapped competitor - see DeviceControlPolicyTests); these tests
-        // exercise the worker's own connect/dispatch behavior, so opt in
-        // explicitly rather than depending on the brand default.
+        // These tests exercise the worker's own connect/dispatch behavior, so
+        // opt in explicitly rather than depending on the brand default.
         gate.SetEnabled("streamdeck", true);
-        var imageCache = new StreamDeckImageCache(System.IO.Path.Combine(System.IO.Path.GetTempPath(), "nexus-streamdeck-test-" + Guid.NewGuid().ToString("N")));
-        return new Fixtures(hid, presence, gate, store, new FakeDeckActionExecutor(), imageCache, new MultiplexHub(), new FakeSensorProvider());
+        return new Fixtures(hid, presence, gate, store, new FakeDeckActionExecutor(), DeckTestHelpers.NewTestKeyRenderer(), new MultiplexHub(), new FakeSensorProvider());
     }
 
     private static StreamDeckConnectionWorker NewWorker(
         Fixtures f, SimulatedStreamDeckSurface? simulated = null, IFpsProvider? fps = null) =>
-        new(f.Hid, f.Presence, f.Gate, f.Store, f.Executor, f.ImageCache, f.Hub, f.Sensors, simulated, fps: fps);
+        new(f.Hid, f.Presence, f.Gate, f.Store, f.Executor, f.KeyRenderer, f.Hub, f.Sensors, simulated, fps: fps);
 
     private static void AddMiniDevice(FakeWorkerHidEnumerator hid, string path, string serial)
     {
@@ -168,6 +167,65 @@ public class StreamDeckConnectionWorkerTests
         Assert.Single(worker.Surfaces);
         Assert.NotNull(worker.FindBySerial("SERIAL-1"));
         Assert.True(worker.FindBySerial("SERIAL-1")!.IsConnected);
+    }
+
+    /// <summary>Keys painted before the user-session helper exists carry the generic app-icon fallback; the helper's connect must repaint every deck.</summary>
+    [Fact]
+    public void OnHelperConnected_RepaintsEveryConnectedDeck()
+    {
+        var f = NewFixtures(devicePresent: false);
+        var simulated = new SimulatedStreamDeckSurface(Mini, "sim-0001");
+        f.Store.Update(s => s.StreamDeck.Decks["sim-0001"] = new PhysicalDeckSettings
+        {
+            LegacyDeck = new DeckConfig
+            {
+                Pages = { new DeckPage { Slots = { new DeckSlot { Action = new DeckAction { Type = "launchApp", AppId = "app-1" } } } } },
+            },
+        });
+        f.Store.Update(s => ActivateLegacyDeck(s, "sim-0001"));
+        using var worker = NewWorker(f, simulated);
+        worker.Tick();
+        var before = simulated.SetKeyImageCallCount;
+
+        worker.OnHelperConnected();
+
+        Assert.True(simulated.SetKeyImageCallCount > before);
+    }
+
+    /// <summary>A deck seen for the first time since schema v18 has no migration to hoist an instance row for it; OnSurfaceConnected must seed one itself, joining the first host-wide preset like a widget's lazy GET does.</summary>
+    [Fact]
+    public void Tick_ConnectingANewDeck_JoinsTheFirstExistingPreset()
+    {
+        var f = NewFixtures(devicePresent: true);
+        AddMiniDevice(f.Hid, "path-1", "SERIAL-1");
+        f.Store.Update(s => s.StreamDeck.Presets.Add(new DeckPreset { Id = "p1", Name = "First", Cols = 5, Rows = 3 }));
+        using var worker = NewWorker(f);
+
+        worker.Tick();
+
+        var instanceId = DeckInstanceResolver.PhysicalInstanceId("SERIAL-1");
+        var instance = Assert.Single(f.Store.Load().StreamDeck.Instances, kv => kv.Key == instanceId).Value;
+        Assert.Equal("custom", instance.Mode);
+        Assert.Equal("p1", instance.ActivePresetId);
+    }
+
+    /// <summary>With no presets at all yet, connecting a new deck seeds a fresh empty one at the deck's own model grid instead of leaving the instance row missing.</summary>
+    [Fact]
+    public void Tick_ConnectingANewDeck_WithNoPresets_SeedsAFreshEmptyPresetAtItsGrid()
+    {
+        var f = NewFixtures(devicePresent: true);
+        AddMiniDevice(f.Hid, "path-1", "SERIAL-1");
+        using var worker = NewWorker(f);
+
+        worker.Tick();
+
+        var settings = f.Store.Load().StreamDeck;
+        var instanceId = DeckInstanceResolver.PhysicalInstanceId("SERIAL-1");
+        Assert.True(settings.Instances.TryGetValue(instanceId, out var instance));
+        var preset = settings.Presets.Find(p => p.Id == instance!.ActivePresetId);
+        Assert.NotNull(preset);
+        Assert.Equal((Mini.Columns, Mini.Rows), (preset!.Cols, preset.Rows));
+        Assert.Single(preset.Deck.Pages);
     }
 
     [Fact]
@@ -221,7 +279,7 @@ public class StreamDeckConnectionWorkerTests
         var usb = new MutableUsbEnumerator();
         usb.Devices.Add(new UsbDeviceEntry { VendorId = StreamDeckModels.VendorId, ProductId = Mini.ProductId });
         var presence = new HardwarePresence(usb);
-        using var worker = new StreamDeckConnectionWorker(f.Hid, presence, f.Gate, f.Store, f.Executor, f.ImageCache, f.Hub, f.Sensors);
+        using var worker = new StreamDeckConnectionWorker(f.Hid, presence, f.Gate, f.Store, f.Executor, f.KeyRenderer, f.Hub, f.Sensors);
 
         worker.Tick();
         var dev = (MockStreamDeckHidDevice)f.Hid.DevicesByPath["path-1"];
@@ -243,7 +301,7 @@ public class StreamDeckConnectionWorkerTests
         var usb = new MutableUsbEnumerator();
         usb.Devices.Add(new UsbDeviceEntry { VendorId = StreamDeckModels.VendorId, ProductId = Mini.ProductId });
         var presence = new HardwarePresence(usb);
-        using var worker = new StreamDeckConnectionWorker(f.Hid, presence, f.Gate, f.Store, f.Executor, f.ImageCache, f.Hub, f.Sensors);
+        using var worker = new StreamDeckConnectionWorker(f.Hid, presence, f.Gate, f.Store, f.Executor, f.KeyRenderer, f.Hub, f.Sensors);
 
         worker.Tick();
         Assert.Equal(Mini.ProductId, f.Store.Load().StreamDeck.Decks["SERIAL-1"].ProductId);
@@ -309,8 +367,9 @@ public class StreamDeckConnectionWorkerTests
         var action = new DeckAction { Type = "openUrl", Url = "https://example.com" };
         f.Store.Update(s => s.StreamDeck.Decks["sim-0001"] = new PhysicalDeckSettings
         {
-            Deck = new DeckConfig { Pages = { new DeckPage { Slots = { new DeckSlot { Action = action } } } } },
+            LegacyDeck = new DeckConfig { Pages = { new DeckPage { Slots = { new DeckSlot { Action = action } } } } },
         });
+        f.Store.Update(s => ActivateLegacyDeck(s, "sim-0001"));
         using var worker = NewWorker(f, simulated);
         worker.Tick();
 
@@ -335,8 +394,9 @@ public class StreamDeckConnectionWorkerTests
         var action = new DeckAction { Type = "openUrl", Url = "https://example.com" };
         f.Store.Update(s => s.StreamDeck.Decks["sim-0001"] = new PhysicalDeckSettings
         {
-            Deck = new DeckConfig { Pages = { new DeckPage { Slots = { new DeckSlot { Action = action } } } } },
+            LegacyDeck = new DeckConfig { Pages = { new DeckPage { Slots = { new DeckSlot { Action = action } } } } },
         });
+        f.Store.Update(s => ActivateLegacyDeck(s, "sim-0001"));
         using var worker = NewWorker(f, simulated);
         worker.Tick();
 
@@ -366,8 +426,9 @@ public class StreamDeckConnectionWorkerTests
         var actionB = new DeckAction { Type = "openUrl", Url = "https://b.example.com" };
         f.Store.Update(s => s.StreamDeck.Decks["SERIAL-1"] = new PhysicalDeckSettings
         {
-            Deck = new DeckConfig { Pages = { new DeckPage { Slots = { new DeckSlot { Action = actionA }, new DeckSlot { Action = actionB } } } } },
+            LegacyDeck = new DeckConfig { Pages = { new DeckPage { Slots = { new DeckSlot { Action = actionA }, new DeckSlot { Action = actionB } } } } },
         });
+        f.Store.Update(s => ActivateLegacyDeck(s, "SERIAL-1"));
         using var worker = NewWorker(f);
         worker.Tick(); // connects the surface and starts its dedicated StreamDeckInputReader
 
@@ -403,11 +464,12 @@ public class StreamDeckConnectionWorkerTests
         var innerAction = new DeckAction { Type = "openUrl", Url = "https://inner.example.com" };
         f.Store.Update(s => s.StreamDeck.Decks["SERIAL-1"] = new PhysicalDeckSettings
         {
-            Deck = new DeckConfig
+            LegacyDeck = new DeckConfig
             {
                 Pages = { new DeckPage { Slots = { new DeckSlot { Folder = new DeckFolder { Slots = { new DeckSlot { Action = innerAction } } } } } } },
             },
         });
+        f.Store.Update(s => ActivateLegacyDeck(s, "SERIAL-1"));
         using var worker = NewWorker(f);
         worker.Tick();
         var device = (MockStreamDeckHidDevice)f.Hid.DevicesByPath["path-1"];
@@ -451,7 +513,7 @@ public class StreamDeckConnectionWorkerTests
         var innerAction = new DeckAction { Type = "openUrl", Url = "https://inner.example.com" };
         f.Store.Update(s => s.StreamDeck.Decks["sim-0001"] = new PhysicalDeckSettings
         {
-            Deck = new DeckConfig
+            LegacyDeck = new DeckConfig
             {
                 Pages =
                 {
@@ -462,6 +524,7 @@ public class StreamDeckConnectionWorkerTests
                 },
             },
         });
+        f.Store.Update(s => ActivateLegacyDeck(s, "sim-0001"));
         using var worker = NewWorker(f, simulated);
         worker.Tick();
 
@@ -498,11 +561,12 @@ public class StreamDeckConnectionWorkerTests
         var simulated = new SimulatedStreamDeckSurface(Mini, "sim-0001");
         f.Store.Update(s => s.StreamDeck.Decks["sim-0001"] = new PhysicalDeckSettings
         {
-            Deck = new DeckConfig
+            LegacyDeck = new DeckConfig
             {
                 Pages = { new DeckPage { Slots = { new DeckSlot { Folder = new DeckFolder { Slots = { new DeckSlot() } } } } } },
             },
         });
+        f.Store.Update(s => ActivateLegacyDeck(s, "sim-0001"));
         using var worker = NewWorker(f, simulated);
         worker.Tick();
 
@@ -519,17 +583,18 @@ public class StreamDeckConnectionWorkerTests
     }
 
     [Fact]
-    public void FolderView_PushesTheCachedBackBitmapAtKeyZero_FallsBackToClearWhenUncached()
+    public void FolderView_PushesTheRenderedBackKeyBitmapAtKeyZero()
     {
         var f = NewFixtures(devicePresent: false);
         var simulated = new SimulatedStreamDeckSurface(Mini, "sim-0001");
         f.Store.Update(s => s.StreamDeck.Decks["sim-0001"] = new PhysicalDeckSettings
         {
-            Deck = new DeckConfig
+            LegacyDeck = new DeckConfig
             {
                 Pages = { new DeckPage { Slots = { new DeckSlot { Folder = new DeckFolder { Slots = { new DeckSlot() } } } } } },
             },
         });
+        f.Store.Update(s => ActivateLegacyDeck(s, "sim-0001"));
         using var worker = NewWorker(f, simulated);
         worker.Tick();
 
@@ -538,15 +603,10 @@ public class StreamDeckConnectionWorkerTests
         simulated.Poke(0, false);
         worker.Tick();
         Assert.Equal(new[] { 0 }, worker.GetFolderPath("sim-0001"));
-        Assert.Null(simulated.PeekKeyImage(0));
 
-        var bytes = new byte[] { 7, 7, 7 };
-        var hash = StreamDeckImageCache.Hash(bytes);
-        f.ImageCache.Store("sim-0001", hash, bytes);
-        f.Store.Update(s => s.StreamDeck.Decks["sim-0001"].ImageRefs["back/0"] = hash);
-        worker.RefreshView("sim-0001");
-
-        Assert.Equal(bytes, simulated.PeekKeyImage(0));
+        var bytes = simulated.PeekKeyImage(0);
+        Assert.NotNull(bytes);
+        Assert.NotEmpty(bytes!);
     }
 
     [Theory]
@@ -631,8 +691,9 @@ public class StreamDeckConnectionWorkerTests
         var action = new DeckAction { Type = "openUrl", Url = "https://example.com" };
         f.Store.Update(s => s.StreamDeck.Decks[serial] = new PhysicalDeckSettings
         {
-            Deck = new DeckConfig { Pages = { new DeckPage { Slots = { new DeckSlot { Action = action } } } } },
+            LegacyDeck = new DeckConfig { Pages = { new DeckPage { Slots = { new DeckSlot { Action = action } } } } },
         });
+        f.Store.Update(s => ActivateLegacyDeck(s, serial));
 
         var simulated = (SimulatedStreamDeckSurface)worker.Surfaces[StreamDeckConnectionWorker.SimulatedKey];
         simulated.Poke(0, true);
@@ -656,7 +717,7 @@ public class StreamDeckConnectionWorkerTests
     /// </summary>
     private static PhysicalDeckSettings TwoPageDeckSettings() => new()
     {
-        Deck = new DeckConfig
+        LegacyDeck = new DeckConfig
         {
             Pages =
             {
@@ -688,6 +749,7 @@ public class StreamDeckConnectionWorkerTests
         var f = NewFixtures(devicePresent: false);
         var simulated = new SimulatedStreamDeckSurface(Mini, "sim-0001");
         f.Store.Update(s => s.StreamDeck.Decks["sim-0001"] = TwoPageDeckSettings());
+        f.Store.Update(s => ActivateLegacyDeck(s, "sim-0001"));
         using var worker = NewWorker(f, simulated);
         worker.Tick();
 
@@ -716,6 +778,7 @@ public class StreamDeckConnectionWorkerTests
         var f = NewFixtures(devicePresent: false);
         var simulated = new SimulatedStreamDeckSurface(Mini, "sim-0001");
         f.Store.Update(s => s.StreamDeck.Decks["sim-0001"] = TwoPageDeckSettings());
+        f.Store.Update(s => ActivateLegacyDeck(s, "sim-0001"));
         using var worker = NewWorker(f, simulated);
         worker.Tick();
 
@@ -732,8 +795,9 @@ public class StreamDeckConnectionWorkerTests
         var simulated = new SimulatedStreamDeckSurface(Mini, "sim-0001");
         var settings = TwoPageDeckSettings();
         // Out-of-range goto target must clamp to the last real page (index 1).
-        settings.Deck.Pages[0].Slots[1].Action = new DeckAction { Type = "page", Op = "goto", Target = 99 };
+        settings.LegacyDeck!.Pages[0].Slots[1].Action = new DeckAction { Type = "page", Op = "goto", Target = 99 };
         f.Store.Update(s => s.StreamDeck.Decks["sim-0001"] = settings);
+        f.Store.Update(s => ActivateLegacyDeck(s, "sim-0001"));
         using var worker = NewWorker(f, simulated);
         worker.Tick();
 
@@ -756,8 +820,9 @@ public class StreamDeckConnectionWorkerTests
         var simulated = new SimulatedStreamDeckSurface(Mini, "sim-0001");
         f.Store.Update(s => s.StreamDeck.Decks["sim-0001"] = new PhysicalDeckSettings
         {
-            Deck = new DeckConfig { Pages = { new DeckPage { Slots = { new DeckSlot { Action = new DeckAction { Type = "pageIndicator" } } } } } },
+            LegacyDeck = new DeckConfig { Pages = { new DeckPage { Slots = { new DeckSlot { Action = new DeckAction { Type = "pageIndicator" } } } } } },
         });
+        f.Store.Update(s => ActivateLegacyDeck(s, "sim-0001"));
         using var worker = NewWorker(f, simulated);
         worker.Tick();
 
@@ -774,7 +839,7 @@ public class StreamDeckConnectionWorkerTests
         var simulated = new SimulatedStreamDeckSurface(Mini, "sim-0001");
         f.Store.Update(s => s.StreamDeck.Decks["sim-0001"] = new PhysicalDeckSettings
         {
-            Deck = new DeckConfig
+            LegacyDeck = new DeckConfig
             {
                 Pages =
                 {
@@ -795,6 +860,7 @@ public class StreamDeckConnectionWorkerTests
                 },
             },
         });
+        f.Store.Update(s => ActivateLegacyDeck(s, "sim-0001"));
         using var worker = NewWorker(f, simulated);
         worker.Tick();
 
@@ -825,25 +891,23 @@ public class StreamDeckConnectionWorkerTests
 
     /// <summary>
     /// Physical push-in feedback (Elgato-software parity): key-down pushes a
-    /// scaled-and-inset variant of the key's uploaded image immediately, and
-    /// key-up restores the exact original bytes.
+    /// scaled-and-inset variant of the key's rendered face immediately, and
+    /// key-up restores the exact un-pressed bytes.
     /// </summary>
     [Fact]
-    public void HandleKeyDown_LeafActionWithUploadedImage_PushesAPressedVariant_KeyUpRestoresTheOriginal()
+    public void HandleKeyDown_LeafAction_PushesAPressedVariant_KeyUpRestoresTheOriginal()
     {
         var f = NewFixtures(devicePresent: false);
         var simulated = new SimulatedStreamDeckSurface(Mini, "sim-0001");
-        var original = StreamDeckProtocol.BuildBlankBmp(Mini.KeyPixelSize);
-        var hash = StreamDeckImageCache.Hash(original);
-        f.ImageCache.Store("sim-0001", hash, original);
         f.Store.Update(s => s.StreamDeck.Decks["sim-0001"] = new PhysicalDeckSettings
         {
-            Deck = new DeckConfig { Pages = { new DeckPage { Slots = { new DeckSlot { Action = new DeckAction { Type = "openUrl", Url = "https://example.com" } } } } } },
-            ImageRefs = { ["0.0/0"] = hash },
+            LegacyDeck = new DeckConfig { Pages = { new DeckPage { Slots = { new DeckSlot { Action = new DeckAction { Type = "openUrl", Url = "https://example.com" } } } } } },
         });
+        f.Store.Update(s => ActivateLegacyDeck(s, "sim-0001"));
         using var worker = NewWorker(f, simulated);
         worker.Tick();
-        Assert.Equal(original, simulated.PeekKeyImage(0));
+        var original = simulated.PeekKeyImage(0);
+        Assert.NotNull(original);
 
         simulated.Poke(0, true);
         worker.Tick();
@@ -853,7 +917,7 @@ public class StreamDeckConnectionWorkerTests
         // Same wire dimensions (re-encoded at the source's own size), so the
         // difference is pixel content (the background inset), not a resize
         // that would desync from the model's fixed wire image length.
-        Assert.Equal(original.Length, pressed!.Length);
+        Assert.Equal(original!.Length, pressed!.Length);
 
         simulated.Poke(0, false);
         worker.Tick();
@@ -861,16 +925,13 @@ public class StreamDeckConnectionWorkerTests
     }
 
     [Fact]
-    public void HandleKeyDown_TwoSlotsSharingTheSameUploadedImage_ProduceByteIdenticalPressedVariants()
+    public void HandleKeyDown_TwoSlotsWithIdenticalContent_ProduceByteIdenticalPressedVariants()
     {
         var f = NewFixtures(devicePresent: false);
         var simulated = new SimulatedStreamDeckSurface(Mini, "sim-0001");
-        var original = StreamDeckProtocol.BuildBlankBmp(Mini.KeyPixelSize);
-        var hash = StreamDeckImageCache.Hash(original);
-        f.ImageCache.Store("sim-0001", hash, original);
         f.Store.Update(s => s.StreamDeck.Decks["sim-0001"] = new PhysicalDeckSettings
         {
-            Deck = new DeckConfig
+            LegacyDeck = new DeckConfig
             {
                 Pages =
                 {
@@ -878,14 +939,14 @@ public class StreamDeckConnectionWorkerTests
                     {
                         Slots =
                         {
-                            new DeckSlot { Action = new DeckAction { Type = "openUrl", Url = "https://a.example.com" } },
-                            new DeckSlot { Action = new DeckAction { Type = "openUrl", Url = "https://b.example.com" } },
+                            new DeckSlot { Color = "#223344", Action = new DeckAction { Type = "openUrl", Url = "https://a.example.com" } },
+                            new DeckSlot { Color = "#223344", Action = new DeckAction { Type = "openUrl", Url = "https://a.example.com" } },
                         },
                     },
                 },
             },
-            ImageRefs = { ["0.0/0"] = hash, ["0.1/0"] = hash },
         });
+        f.Store.Update(s => ActivateLegacyDeck(s, "sim-0001"));
         using var worker = NewWorker(f, simulated);
         worker.Tick();
 
@@ -924,8 +985,9 @@ public class StreamDeckConnectionWorkerTests
         var simulated = new SimulatedStreamDeckSurface(Mini, "sim-0001");
         f.Store.Update(s => s.StreamDeck.Decks["sim-0001"] = new PhysicalDeckSettings
         {
-            Deck = new DeckConfig { Pages = { new DeckPage { Slots = { new DeckSlot { Action = action } } } } },
+            LegacyDeck = new DeckConfig { Pages = { new DeckPage { Slots = { new DeckSlot { Action = action } } } } },
         });
+        f.Store.Update(s => ActivateLegacyDeck(s, "sim-0001"));
         using var worker = NewWorker(f, simulated);
         worker.Tick();
         var original = simulated.PeekKeyImage(0);
@@ -965,8 +1027,9 @@ public class StreamDeckConnectionWorkerTests
         var simulated = new SimulatedStreamDeckSurface(Mini, "sim-0001");
         f.Store.Update(s => s.StreamDeck.Decks["sim-0001"] = new PhysicalDeckSettings
         {
-            Deck = new DeckConfig { Pages = { new DeckPage { Slots = { new DeckSlot { Action = action } } } } },
+            LegacyDeck = new DeckConfig { Pages = { new DeckPage { Slots = { new DeckSlot { Action = action } } } } },
         });
+        f.Store.Update(s => ActivateLegacyDeck(s, "sim-0001"));
         using var worker = NewWorker(f, simulated);
         worker.Tick();
         var original = simulated.PeekKeyImage(0);
@@ -1004,11 +1067,12 @@ public class StreamDeckConnectionWorkerTests
 
         f.Store.Update(s => s.StreamDeck.Decks["sim-0001"] = new PhysicalDeckSettings
         {
-            Deck = new DeckConfig
+            LegacyDeck = new DeckConfig
             {
                 Pages = { new DeckPage { Slots = { new DeckSlot { Action = new DeckAction { Type = "monitoring", Category = "cpu", Sensor = "cpu/core0", Style = "number" } } } } },
             },
         });
+        f.Store.Update(s => ActivateLegacyDeck(s, "sim-0001"));
 
         var exception = Record.Exception(() =>
         {
@@ -1022,65 +1086,37 @@ public class StreamDeckConnectionWorkerTests
     }
 
     /// <summary>
-    /// Image-refs v2: the key is page-qualified, so two pages that each use
-    /// slot 0 at their own root resolve their own distinct uploaded image
-    /// instead of one page's upload overwriting the other's.
+    /// Two pages that each use slot 0 at their own root render their own
+    /// page's slot content when navigated to - proving PushCurrentView
+    /// resolves the newly-navigated page's view, not a stale render.
     /// </summary>
     [Fact]
-    public void Tick_TwoPagesReuseTheSameSlotIndex_EachPageResolvesItsOwnUploadedImage()
+    public void Tick_TwoPagesReuseTheSameSlotIndex_EachPageRendersItsOwnSlotContent()
     {
         var f = NewFixtures(devicePresent: false);
         var simulated = new SimulatedStreamDeckSurface(Mini, "sim-0001");
-        var page0Bytes = new byte[] { 1, 1, 1 };
-        var page1Bytes = new byte[] { 2, 2, 2 };
-        var page0Hash = StreamDeckImageCache.Hash(page0Bytes);
-        var page1Hash = StreamDeckImageCache.Hash(page1Bytes);
-        f.ImageCache.Store("sim-0001", page0Hash, page0Bytes);
-        f.ImageCache.Store("sim-0001", page1Hash, page1Bytes);
         f.Store.Update(s => s.StreamDeck.Decks["sim-0001"] = new PhysicalDeckSettings
         {
-            Deck = new DeckConfig
+            LegacyDeck = new DeckConfig
             {
                 Pages =
                 {
-                    new DeckPage { Slots = { new DeckSlot { Action = new DeckAction { Type = "openUrl", Url = "https://page0.example.com" } } } },
-                    new DeckPage { Slots = { new DeckSlot { Action = new DeckAction { Type = "openUrl", Url = "https://page1.example.com" } } } },
+                    new DeckPage { Slots = { new DeckSlot { Color = "#111111", Action = new DeckAction { Type = "openUrl", Url = "https://page0.example.com" } } } },
+                    new DeckPage { Slots = { new DeckSlot { Color = "#eeeeee", Action = new DeckAction { Type = "openUrl", Url = "https://page1.example.com" } } } },
                 },
             },
-            ImageRefs = { ["0.0/0"] = page0Hash, ["1.0/0"] = page1Hash },
         });
+        f.Store.Update(s => ActivateLegacyDeck(s, "sim-0001"));
         using var worker = NewWorker(f, simulated);
         worker.Tick();
-        Assert.Equal(page0Bytes, simulated.PeekKeyImage(0));
+        var page0Bytes = simulated.PeekKeyImage(0);
+        Assert.NotNull(page0Bytes);
 
         Assert.True(worker.SetNav("sim-0001", 1, Array.Empty<int>()));
 
-        Assert.Equal(page1Bytes, simulated.PeekKeyImage(0));
-    }
-
-    /// <summary>
-    /// A legacy pre-v2 key ("0/0", no leading page segment) is an orphan
-    /// under image-refs v2 - ResolveSlotImage only builds page-qualified
-    /// keys, so it never resolves; no migration re-keys it.
-    /// </summary>
-    [Fact]
-    public void Tick_LegacyUnqualifiedImageRefKey_NeverResolves()
-    {
-        var f = NewFixtures(devicePresent: false);
-        var simulated = new SimulatedStreamDeckSurface(Mini, "sim-0001");
-        var bytes = StreamDeckProtocol.BuildBlankBmp(Mini.KeyPixelSize);
-        var hash = StreamDeckImageCache.Hash(bytes);
-        f.ImageCache.Store("sim-0001", hash, bytes);
-        f.Store.Update(s => s.StreamDeck.Decks["sim-0001"] = new PhysicalDeckSettings
-        {
-            Deck = new DeckConfig { Pages = { new DeckPage { Slots = { new DeckSlot { Action = new DeckAction { Type = "openUrl", Url = "https://example.com" } } } } } },
-            ImageRefs = { ["0/0"] = hash },
-        });
-        using var worker = NewWorker(f, simulated);
-
-        worker.Tick();
-
-        Assert.Null(simulated.PeekKeyImage(0));
+        var page1Bytes = simulated.PeekKeyImage(0);
+        Assert.NotNull(page1Bytes);
+        Assert.NotEqual(page0Bytes, page1Bytes);
     }
 
     [Fact]
@@ -1089,6 +1125,7 @@ public class StreamDeckConnectionWorkerTests
         var f = NewFixtures(devicePresent: false);
         var simulated = new SimulatedStreamDeckSurface(Mini, "sim-0001");
         f.Store.Update(s => s.StreamDeck.Decks["sim-0001"] = TwoPageDeckSettings());
+        f.Store.Update(s => ActivateLegacyDeck(s, "sim-0001"));
         using var worker = NewWorker(f, simulated);
         worker.Tick();
 
@@ -1117,11 +1154,12 @@ public class StreamDeckConnectionWorkerTests
         var simulated = new SimulatedStreamDeckSurface(Mini, "sim-0001");
         f.Store.Update(s => s.StreamDeck.Decks["sim-0001"] = new PhysicalDeckSettings
         {
-            Deck = new DeckConfig
+            LegacyDeck = new DeckConfig
             {
                 Pages = { new DeckPage { Slots = { new DeckSlot { Folder = new DeckFolder { Slots = { new DeckSlot() } } } } } },
             },
         });
+        f.Store.Update(s => ActivateLegacyDeck(s, "sim-0001"));
         using var worker = NewWorker(f, simulated);
         worker.Tick();
 
@@ -1163,7 +1201,7 @@ public class StreamDeckConnectionWorkerTests
     }
 
     [Fact]
-    public void Tick_MonitoringSlot_RendersAndPushesAValidWireImage_WithoutTouchingImageRefsOrTheCache()
+    public void Tick_MonitoringSlot_RendersAndPushesAValidWireImage()
     {
         var f = NewFixtures(devicePresent: false);
         f.Sensors.CpuSensors = new[]
@@ -1174,8 +1212,9 @@ public class StreamDeckConnectionWorkerTests
         var simulated = new SimulatedStreamDeckSurface(Mini, "sim-0001");
         f.Store.Update(s => s.StreamDeck.Decks["sim-0001"] = new PhysicalDeckSettings
         {
-            Deck = new DeckConfig { Pages = { new DeckPage { Slots = { new DeckSlot { Action = action } } } } },
+            LegacyDeck = new DeckConfig { Pages = { new DeckPage { Slots = { new DeckSlot { Action = action } } } } },
         });
+        f.Store.Update(s => ActivateLegacyDeck(s, "sim-0001"));
         using var worker = NewWorker(f, simulated);
 
         worker.Tick();
@@ -1183,7 +1222,6 @@ public class StreamDeckConnectionWorkerTests
         var bytes = simulated.PeekKeyImage(0);
         Assert.NotNull(bytes);
         Assert.True(Mini.IsValidWireImageLength(bytes!.Length));
-        Assert.Empty(f.Store.Load().StreamDeck.Decks["sim-0001"].ImageRefs);
     }
 
     [Fact]
@@ -1198,8 +1236,9 @@ public class StreamDeckConnectionWorkerTests
         var simulated = new SimulatedStreamDeckSurface(Mini, "sim-0001");
         f.Store.Update(s => s.StreamDeck.Decks["sim-0001"] = new PhysicalDeckSettings
         {
-            Deck = new DeckConfig { Pages = { new DeckPage { Slots = { new DeckSlot { Action = action } } } } },
+            LegacyDeck = new DeckConfig { Pages = { new DeckPage { Slots = { new DeckSlot { Action = action } } } } },
         });
+        f.Store.Update(s => ActivateLegacyDeck(s, "sim-0001"));
         using var worker = NewWorker(f, simulated);
 
         // Connect drives PushCurrentView's two-pass repaint for the one
@@ -1233,8 +1272,9 @@ public class StreamDeckConnectionWorkerTests
         var celsiusSurface = new SimulatedStreamDeckSurface(Mini, "sim-0001");
         celsiusFixtures.Store.Update(s => s.StreamDeck.Decks["sim-0001"] = new PhysicalDeckSettings
         {
-            Deck = new DeckConfig { Pages = { new DeckPage { Slots = { new DeckSlot { Action = action } } } } },
+            LegacyDeck = new DeckConfig { Pages = { new DeckPage { Slots = { new DeckSlot { Action = action } } } } },
         });
+        celsiusFixtures.Store.Update(s => ActivateLegacyDeck(s, "sim-0001"));
         // Both workers stay alive (using var, not a nested block) until the
         // bytes are captured: worker Dispose() resets the surface, which
         // clears its key images, so reading PeekKeyImage after disposal would
@@ -1253,9 +1293,10 @@ public class StreamDeckConnectionWorkerTests
         {
             s.StreamDeck.Decks["sim-0001"] = new PhysicalDeckSettings
             {
-                Deck = new DeckConfig { Pages = { new DeckPage { Slots = { new DeckSlot { Action = action } } } } },
+                LegacyDeck = new DeckConfig { Pages = { new DeckPage { Slots = { new DeckSlot { Action = action } } } } },
             };
             s.Units.MonitoringTempUnit = "f";
+            ActivateLegacyDeck(s, "sim-0001");
         });
         using var fahrenheitWorker = NewWorker(fahrenheitFixtures, fahrenheitSurface);
         fahrenheitWorker.Tick();
@@ -1285,8 +1326,9 @@ public class StreamDeckConnectionWorkerTests
         var simulated = new SimulatedStreamDeckSurface(Mini, "sim-0001");
         f.Store.Update(s => s.StreamDeck.Decks["sim-0001"] = new PhysicalDeckSettings
         {
-            Deck = new DeckConfig { Pages = { new DeckPage { Slots = { new DeckSlot { Action = action } } } } },
+            LegacyDeck = new DeckConfig { Pages = { new DeckPage { Slots = { new DeckSlot { Action = action } } } } },
         });
+        f.Store.Update(s => ActivateLegacyDeck(s, "sim-0001"));
         using var worker = NewWorker(f, simulated);
 
         worker.Tick();
@@ -1308,8 +1350,9 @@ public class StreamDeckConnectionWorkerTests
         var simulated = new SimulatedStreamDeckSurface(Mini, "sim-0001");
         f.Store.Update(s => s.StreamDeck.Decks["sim-0001"] = new PhysicalDeckSettings
         {
-            Deck = new DeckConfig { Pages = { new DeckPage { Slots = { new DeckSlot { Action = action } } } } },
+            LegacyDeck = new DeckConfig { Pages = { new DeckPage { Slots = { new DeckSlot { Action = action } } } } },
         });
+        f.Store.Update(s => ActivateLegacyDeck(s, "sim-0001"));
         using var worker = NewWorker(f, simulated);
 
         worker.Tick();
@@ -1327,8 +1370,9 @@ public class StreamDeckConnectionWorkerTests
         var simulated = new SimulatedStreamDeckSurface(Mini, "sim-0001");
         f.Store.Update(s => s.StreamDeck.Decks["sim-0001"] = new PhysicalDeckSettings
         {
-            Deck = new DeckConfig { Pages = { new DeckPage { Slots = { new DeckSlot { Action = action } } } } },
+            LegacyDeck = new DeckConfig { Pages = { new DeckPage { Slots = { new DeckSlot { Action = action } } } } },
         });
+        f.Store.Update(s => ActivateLegacyDeck(s, "sim-0001"));
         using var worker = NewWorker(f, simulated);
 
         // Connect drives PushCurrentView's two-pass repaint: pass 1's empty
@@ -1357,8 +1401,9 @@ public class StreamDeckConnectionWorkerTests
         var legacySurface = new SimulatedStreamDeckSurface(Mini, "sim-legacy");
         legacy.Store.Update(s => s.StreamDeck.Decks["sim-legacy"] = new PhysicalDeckSettings
         {
-            Deck = new DeckConfig { Pages = { new DeckPage { Slots = { new DeckSlot { Action = legacyAction } } } } },
+            LegacyDeck = new DeckConfig { Pages = { new DeckPage { Slots = { new DeckSlot { Action = legacyAction } } } } },
         });
+        legacy.Store.Update(s => ActivateLegacyDeck(s, "sim-legacy"));
         using var legacyWorker = NewWorker(legacy, legacySurface);
         legacyWorker.Tick();
         var legacyBytes = legacySurface.PeekKeyImage(0);
@@ -1379,8 +1424,9 @@ public class StreamDeckConnectionWorkerTests
         var v3Surface = new SimulatedStreamDeckSurface(Mini, "sim-v3");
         v3.Store.Update(s => s.StreamDeck.Decks["sim-v3"] = new PhysicalDeckSettings
         {
-            Deck = new DeckConfig { Pages = { new DeckPage { Slots = { new DeckSlot { Action = v3Action } } } } },
+            LegacyDeck = new DeckConfig { Pages = { new DeckPage { Slots = { new DeckSlot { Action = v3Action } } } } },
         });
+        v3.Store.Update(s => ActivateLegacyDeck(s, "sim-v3"));
         using var v3Worker = NewWorker(v3, v3Surface);
         v3Worker.Tick();
         var v3Bytes = v3Surface.PeekKeyImage(0);
@@ -1402,8 +1448,9 @@ public class StreamDeckConnectionWorkerTests
         var simulated = new SimulatedStreamDeckSurface(Mini, "sim-0001");
         f.Store.Update(s => s.StreamDeck.Decks["sim-0001"] = new PhysicalDeckSettings
         {
-            Deck = new DeckConfig { Pages = { new DeckPage { Slots = { new DeckSlot { Action = action } } } } },
+            LegacyDeck = new DeckConfig { Pages = { new DeckPage { Slots = { new DeckSlot { Action = action } } } } },
         });
+        f.Store.Update(s => ActivateLegacyDeck(s, "sim-0001"));
         using var worker = NewWorker(f, simulated);
         worker.Tick();
         Assert.NotNull(simulated.PeekKeyImage(0));
@@ -1430,12 +1477,9 @@ public class StreamDeckConnectionWorkerTests
             new HardwareSensor { Id = "cpu/core0", Name = "Core 0", Type = "Load", Value = 42f, Formatted = "42%", Parent = new SensorParent() },
         };
         var simulated = new SimulatedStreamDeckSurface(Mini, "sim-0001");
-        var original = StreamDeckProtocol.BuildBlankBmp(Mini.KeyPixelSize);
-        var hash = StreamDeckImageCache.Hash(original);
-        f.ImageCache.Store("sim-0001", hash, original);
         f.Store.Update(s => s.StreamDeck.Decks["sim-0001"] = new PhysicalDeckSettings
         {
-            Deck = new DeckConfig
+            LegacyDeck = new DeckConfig
             {
                 Pages =
                 {
@@ -1451,8 +1495,8 @@ public class StreamDeckConnectionWorkerTests
                     },
                 },
             },
-            ImageRefs = { ["0.1/0"] = hash },
         });
+        f.Store.Update(s => ActivateLegacyDeck(s, "sim-0001"));
         using var worker = NewWorker(f, simulated);
         using var sub = f.Hub.AddTestSubscription(PanelTopics.StreamDeckTiles);
 
@@ -1464,7 +1508,7 @@ public class StreamDeckConnectionWorkerTests
 
         // The unrelated static key's own edit (e.g. a color drag), as the PUT
         // config route would apply, with the monitoring reading unchanged.
-        f.Store.Update(s => s.StreamDeck.Decks["sim-0001"].Deck.Pages[0].Slots[1].Color = "#ff0000");
+        f.Store.Update(s => ActiveDeck(s, "sim-0001").Pages[0].Slots[1].Color = "#ff0000");
         worker.RefreshView("sim-0001");
 
         // Only the static key's own unconditional pass-1 re-blit writes to
@@ -1473,10 +1517,65 @@ public class StreamDeckConnectionWorkerTests
         Assert.Equal(beforeMonitoringBytes, simulated.PeekKeyImage(0));
 
         // The broadcast hash was cleared regardless (the editor's own frame
-        // cache can be stale after undo/redo), so the tile still re-sends
-        // once - never a blank placeholder followed by the real content.
+        // cache can be stale after undo/redo), so the monitoring tile still
+        // re-sends once - never a blank placeholder followed by the real
+        // content - and the edited static key sends its new face.
         var tiles = captured.Where(c => c.Topic == PanelTopics.StreamDeckTiles).ToList();
-        Assert.Single(tiles);
+        Assert.Equal(2, tiles.Count);
+    }
+
+    /// <summary>
+    /// Static keys are service-rendered now, so the editor only ever sees
+    /// them through streamdeckTiles: a view push broadcasts every static
+    /// key's upright preview, and the first subscriber gets a full repaint
+    /// without waiting for a config edit.
+    /// </summary>
+    [Fact]
+    public void StaticKeys_BroadcastUprightPreviewTiles_OnPushAndOnFirstSubscriber()
+    {
+        var f = NewFixtures(devicePresent: false);
+        var simulated = new SimulatedStreamDeckSurface(Mini, "sim-0001");
+        f.Store.Update(s => s.StreamDeck.Decks["sim-0001"] = new PhysicalDeckSettings
+        {
+            LegacyDeck = new DeckConfig
+            {
+                Pages =
+                {
+                    new DeckPage
+                    {
+                        Slots =
+                        {
+                            new DeckSlot { Action = new DeckAction { Type = "openUrl", Url = "https://example.com" }, Label = "Web" },
+                            new DeckSlot { Action = new DeckAction { Type = "hotkey", Keys = "ctrl+c" }, Label = "Copy" },
+                        },
+                    },
+                },
+            },
+        });
+        f.Store.Update(s => ActivateLegacyDeck(s, "sim-0001"));
+        using var worker = NewWorker(f, simulated);
+        worker.Tick(); // connect with no editor listening - nothing to broadcast
+
+        var captured = CaptureBroadcasts(f.Hub);
+        using var sub = f.Hub.AddTestSubscription(PanelTopics.StreamDeckTiles);
+
+        var tiles = captured.Where(c => c.Topic == PanelTopics.StreamDeckTiles).Select(TileFramePayload).ToList();
+        Assert.Equal(new[] { "0", "1" }, tiles.Select(t => t.GetProperty("slotPath").GetString()).OrderBy(x => x).ToArray());
+        Assert.All(tiles, t =>
+        {
+            Assert.Equal("sim-0001", t.GetProperty("serial").GetString());
+            Assert.Equal(0, t.GetProperty("page").GetInt32());
+            // JPEG magic - an upright encode of the face, not the Mini's transformed BMP wire bytes.
+            var bytes = Convert.FromBase64String(t.GetProperty("data").GetString()!);
+            Assert.Equal(0xFF, bytes[0]);
+            Assert.Equal(0xD8, bytes[1]);
+        });
+
+        // A same-view refresh with nothing changed re-sends (the hash is
+        // cleared per push so an editor whose cache went stale recovers).
+        captured.Clear();
+        worker.RefreshView("sim-0001");
+        Assert.Equal(2, captured.Count(c => c.Topic == PanelTopics.StreamDeckTiles));
     }
 
     /// <summary>
@@ -1496,8 +1595,9 @@ public class StreamDeckConnectionWorkerTests
         var simulated = new SimulatedStreamDeckSurface(Mini, "sim-0001");
         f.Store.Update(s => s.StreamDeck.Decks["sim-0001"] = new PhysicalDeckSettings
         {
-            Deck = new DeckConfig { Pages = { new DeckPage { Slots = { new DeckSlot { Action = new DeckAction { Type = "monitoring", Category = "cpu", Sensor = "cpu/core0", Style = "number" } } } } } },
+            LegacyDeck = new DeckConfig { Pages = { new DeckPage { Slots = { new DeckSlot { Action = new DeckAction { Type = "monitoring", Category = "cpu", Sensor = "cpu/core0", Style = "number" } } } } } },
         });
+        f.Store.Update(s => ActivateLegacyDeck(s, "sim-0001"));
         using var worker = NewWorker(f, simulated);
         using var sub = f.Hub.AddTestSubscription(PanelTopics.StreamDeckTiles);
 
@@ -1507,7 +1607,7 @@ public class StreamDeckConnectionWorkerTests
         var callsBefore = simulated.SetKeyImageCallCount;
         var captured = CaptureBroadcasts(f.Hub);
 
-        f.Store.Update(s => s.StreamDeck.Decks["sim-0001"].Deck.Pages[0].Slots[0].Color = "#00ff00");
+        f.Store.Update(s => ActiveDeck(s, "sim-0001").Pages[0].Slots[0].Color = "#00ff00");
         worker.RefreshView("sim-0001");
 
         Assert.Equal(callsBefore + 1, simulated.SetKeyImageCallCount);
@@ -1529,19 +1629,22 @@ public class StreamDeckConnectionWorkerTests
         var simulated = new SimulatedStreamDeckSurface(Mini, "sim-0001");
         f.Store.Update(s => s.StreamDeck.Decks["sim-0001"] = new PhysicalDeckSettings
         {
-            Deck = new DeckConfig { Pages = { new DeckPage { Slots = { new DeckSlot { Action = new DeckAction { Type = "openUrl", Url = "https://example.com" } } } } } },
+            LegacyDeck = new DeckConfig { Pages = { new DeckPage { Slots = { new DeckSlot { Action = new DeckAction { Type = "openUrl", Url = "https://example.com" } } } } } },
         });
+        f.Store.Update(s => ActivateLegacyDeck(s, "sim-0001"));
         using var worker = NewWorker(f, simulated);
         worker.Tick();
-        Assert.Null(simulated.PeekKeyImage(0)); // no uploaded image for the leaf slot
+        var beforeBytes = simulated.PeekKeyImage(0);
+        Assert.NotNull(beforeBytes); // the leaf slot renders its own key face
 
         f.Store.Update(s =>
-            s.StreamDeck.Decks["sim-0001"].Deck.Pages[0].Slots[0] =
+            ActiveDeck(s, "sim-0001").Pages[0].Slots[0] =
                 new DeckSlot { Action = new DeckAction { Type = "monitoring", Category = "cpu", Sensor = "cpu/core0", Style = "number" } });
         worker.RefreshView("sim-0001");
 
         var bytes = simulated.PeekKeyImage(0);
         Assert.NotNull(bytes);
+        Assert.NotEqual(beforeBytes, bytes);
         Assert.True(Mini.IsValidWireImageLength(bytes!.Length));
     }
 
@@ -1557,18 +1660,23 @@ public class StreamDeckConnectionWorkerTests
         var simulated = new SimulatedStreamDeckSurface(Mini, "sim-0001");
         f.Store.Update(s => s.StreamDeck.Decks["sim-0001"] = new PhysicalDeckSettings
         {
-            Deck = new DeckConfig { Pages = { new DeckPage { Slots = { new DeckSlot { Action = new DeckAction { Type = "monitoring", Category = "cpu", Sensor = "cpu/core0", Style = "number" } } } } } },
+            LegacyDeck = new DeckConfig { Pages = { new DeckPage { Slots = { new DeckSlot { Action = new DeckAction { Type = "monitoring", Category = "cpu", Sensor = "cpu/core0", Style = "number" } } } } } },
         });
+        f.Store.Update(s => ActivateLegacyDeck(s, "sim-0001"));
         using var worker = NewWorker(f, simulated);
         worker.Tick();
-        Assert.NotNull(simulated.PeekKeyImage(0));
+        var monitoringBytes = simulated.PeekKeyImage(0);
+        Assert.NotNull(monitoringBytes);
 
         f.Store.Update(s =>
-            s.StreamDeck.Decks["sim-0001"].Deck.Pages[0].Slots[0] =
-                new DeckSlot { Action = new DeckAction { Type = "openUrl", Url = "https://example.com" } }); // no ImageRef uploaded
+            ActiveDeck(s, "sim-0001").Pages[0].Slots[0] =
+                new DeckSlot { Action = new DeckAction { Type = "openUrl", Url = "https://example.com" } });
         worker.RefreshView("sim-0001");
 
-        Assert.Null(simulated.PeekKeyImage(0));
+        // The key now renders the leaf slot's own face, not the departed monitoring tile's stale pixels.
+        var bytes = simulated.PeekKeyImage(0);
+        Assert.NotNull(bytes);
+        Assert.NotEqual(monitoringBytes, bytes);
     }
 
     /// <summary>
@@ -1585,11 +1693,12 @@ public class StreamDeckConnectionWorkerTests
         var simulated = new SimulatedStreamDeckSurface(Mini, "sim-0001");
         f.Store.Update(s => s.StreamDeck.Decks["sim-0001"] = new PhysicalDeckSettings
         {
-            Deck = new DeckConfig
+            LegacyDeck = new DeckConfig
             {
                 Pages = { new DeckPage { Slots = { new DeckSlot { Action = new DeckAction { Type = "weather" } } } } },
             },
         });
+        f.Store.Update(s => ActivateLegacyDeck(s, "sim-0001"));
         using var worker = NewWorker(f, simulated); // no IWeatherProvider wired - RefreshWeatherKeys never repaints on Tick()
         worker.Tick();
         Assert.Null(simulated.PeekKeyImage(0));
@@ -1616,7 +1725,7 @@ public class StreamDeckConnectionWorkerTests
         var simulated = new SimulatedStreamDeckSurface(Mini, "sim-0001");
         f.Store.Update(s => s.StreamDeck.Decks["sim-0001"] = new PhysicalDeckSettings
         {
-            Deck = new DeckConfig
+            LegacyDeck = new DeckConfig
             {
                 Pages =
                 {
@@ -1639,18 +1748,19 @@ public class StreamDeckConnectionWorkerTests
                 },
             },
         });
+        f.Store.Update(s => ActivateLegacyDeck(s, "sim-0001"));
         using var worker = NewWorker(f, simulated);
 
         worker.Tick();
         Assert.NotNull(simulated.PeekKeyImage(0));
 
-        // Page 1's key 0 has no ImageRef, so navigating there clears the
-        // physical key the monitoring slot used to own.
+        // Page 1's key 0 is a leaf openUrl slot, so navigating there repaints
+        // the physical key the monitoring slot used to own with its own face.
         simulated.Poke(1, true);
         worker.Tick();
         simulated.Poke(1, false);
         worker.Tick();
-        Assert.Null(simulated.PeekKeyImage(0));
+        Assert.NotNull(simulated.PeekKeyImage(0));
 
         // Navigate back with the sensor reading unchanged from the first
         // push. A quantized-unchanged reading must not suppress the repaint
@@ -1689,8 +1799,9 @@ public class StreamDeckConnectionWorkerTests
         var simulated = new SimulatedStreamDeckSurface(Mini, "sim-0001");
         f.Store.Update(s => s.StreamDeck.Decks["sim-0001"] = new PhysicalDeckSettings
         {
-            Deck = new DeckConfig { Pages = { new DeckPage { Slots = slots } } },
+            LegacyDeck = new DeckConfig { Pages = { new DeckPage { Slots = slots } } },
         });
+        f.Store.Update(s => ActivateLegacyDeck(s, "sim-0001"));
         using var worker = NewWorker(f, simulated);
 
         worker.Tick();
@@ -1748,8 +1859,9 @@ public class StreamDeckConnectionWorkerTests
         var simulated = new SimulatedStreamDeckSurface(Mini, "sim-0001");
         f.Store.Update(s => s.StreamDeck.Decks["sim-0001"] = new PhysicalDeckSettings
         {
-            Deck = new DeckConfig { Pages = { new DeckPage { Slots = { new DeckSlot { Action = action } } } } },
+            LegacyDeck = new DeckConfig { Pages = { new DeckPage { Slots = { new DeckSlot { Action = action } } } } },
         });
+        f.Store.Update(s => ActivateLegacyDeck(s, "sim-0001"));
         using var worker = NewWorker(f, simulated);
 
         worker.Tick();
@@ -1795,7 +1907,7 @@ public class StreamDeckConnectionWorkerTests
         var simulated = new SimulatedStreamDeckSurface(Mini, "sim-0001");
         f.Store.Update(s => s.StreamDeck.Decks["sim-0001"] = new PhysicalDeckSettings
         {
-            Deck = new DeckConfig
+            LegacyDeck = new DeckConfig
             {
                 Pages =
                 {
@@ -1818,6 +1930,7 @@ public class StreamDeckConnectionWorkerTests
                 },
             },
         });
+        f.Store.Update(s => ActivateLegacyDeck(s, "sim-0001"));
         using var worker = NewWorker(f, simulated);
 
         worker.Tick();
@@ -1840,7 +1953,7 @@ public class StreamDeckConnectionWorkerTests
         var simulated = new SimulatedStreamDeckSurface(Mini, "sim-0001");
         f.Store.Update(s => s.StreamDeck.Decks["sim-0001"] = new PhysicalDeckSettings
         {
-            Deck = new DeckConfig
+            LegacyDeck = new DeckConfig
             {
                 Pages =
                 {
@@ -1863,15 +1976,18 @@ public class StreamDeckConnectionWorkerTests
                 },
             },
         });
+        f.Store.Update(s => ActivateLegacyDeck(s, "sim-0001"));
         using var worker = NewWorker(f, simulated);
         worker.Tick();
-        Assert.Null(simulated.PeekKeyImage(0)); // page 0's slot has no ImageRef
+        var pageZeroImage = simulated.PeekKeyImage(0);
+        Assert.NotNull(pageZeroImage);
 
         simulated.Poke(1, true);
         worker.Tick();
 
         var bytes = simulated.PeekKeyImage(0);
         Assert.NotNull(bytes);
+        Assert.NotEqual(pageZeroImage, bytes);
         Assert.True(Mini.IsValidWireImageLength(bytes!.Length));
     }
 
@@ -1900,8 +2016,9 @@ public class StreamDeckConnectionWorkerTests
         var simulated = new SimulatedStreamDeckSurface(Mini, "sim-0001");
         f.Store.Update(s => s.StreamDeck.Decks["sim-0001"] = new PhysicalDeckSettings
         {
-            Deck = new DeckConfig { Pages = { new DeckPage { Slots = slots } } },
+            LegacyDeck = new DeckConfig { Pages = { new DeckPage { Slots = slots } } },
         });
+        f.Store.Update(s => ActivateLegacyDeck(s, "sim-0001"));
         using var worker = NewWorker(f, simulated);
 
         worker.Tick(); // connect drives one PushCurrentView call
@@ -1922,9 +2039,10 @@ public class StreamDeckConnectionWorkerTests
     /// <summary>
     /// The nav's own PushCurrentView pushes twice for the monitoring key (an
     /// empty placeholder, then the real tile - see PushCurrentView's two-pass
-    /// repaint), and that same tick's own RefreshMonitoringKeys pass must not
-    /// push a third time for the nav, nor push again on the next tick while
-    /// the reading is unchanged.
+    /// repaint) plus once for the landing view's other (leaf) key, and that
+    /// same tick's own RefreshMonitoringKeys pass must not push a fourth time
+    /// for the nav, nor push again on the next tick while the reading is
+    /// unchanged.
     /// </summary>
     [Fact]
     public void Tick_NavigatingToAMonitoringSlot_TheFollowingTickDoesNotRepushAnUnchangedTile()
@@ -1937,7 +2055,7 @@ public class StreamDeckConnectionWorkerTests
         var simulated = new SimulatedStreamDeckSurface(Mini, "sim-0001");
         f.Store.Update(s => s.StreamDeck.Decks["sim-0001"] = new PhysicalDeckSettings
         {
-            Deck = new DeckConfig
+            LegacyDeck = new DeckConfig
             {
                 Pages =
                 {
@@ -1960,6 +2078,7 @@ public class StreamDeckConnectionWorkerTests
                 },
             },
         });
+        f.Store.Update(s => ActivateLegacyDeck(s, "sim-0001"));
         using var worker = NewWorker(f, simulated);
         worker.Tick();
         var callsBeforeNav = simulated.SetKeyImageCallCount;
@@ -1969,7 +2088,7 @@ public class StreamDeckConnectionWorkerTests
         simulated.Poke(1, false);
         worker.Tick();
         var callsAfterNav = simulated.SetKeyImageCallCount;
-        Assert.Equal(callsBeforeNav + 2, callsAfterNav);
+        Assert.Equal(callsBeforeNav + 3, callsAfterNav);
 
         worker.Tick();
         Assert.Equal(callsAfterNav, simulated.SetKeyImageCallCount);
@@ -1987,8 +2106,9 @@ public class StreamDeckConnectionWorkerTests
         var simulated = new SimulatedStreamDeckSurface(Mini, "sim-0001");
         f.Store.Update(s => s.StreamDeck.Decks["sim-0001"] = new PhysicalDeckSettings
         {
-            Deck = new DeckConfig { Pages = { new DeckPage { Slots = { new DeckSlot { Action = action } } } } },
+            LegacyDeck = new DeckConfig { Pages = { new DeckPage { Slots = { new DeckSlot { Action = action } } } } },
         });
+        f.Store.Update(s => ActivateLegacyDeck(s, "sim-0001"));
         using var worker = NewWorker(f, simulated);
 
         worker.Tick();
@@ -2034,8 +2154,9 @@ public class StreamDeckConnectionWorkerTests
         var simulated = new SimulatedStreamDeckSurface(Mini, "sim-0001");
         f.Store.Update(s => s.StreamDeck.Decks["sim-0001"] = new PhysicalDeckSettings
         {
-            Deck = new DeckConfig { Pages = { new DeckPage { Slots = { new DeckSlot { Action = action } } } } },
+            LegacyDeck = new DeckConfig { Pages = { new DeckPage { Slots = { new DeckSlot { Action = action } } } } },
         });
+        f.Store.Update(s => ActivateLegacyDeck(s, "sim-0001"));
         using var worker = NewWorker(f, simulated);
 
         for (var i = 0; i < 5; i++)
@@ -2062,7 +2183,7 @@ public class StreamDeckConnectionWorkerTests
         var simulated = new SimulatedStreamDeckSurface(Mini, "sim-0001");
         f.Store.Update(s => s.StreamDeck.Decks["sim-0001"] = new PhysicalDeckSettings
         {
-            Deck = new DeckConfig
+            LegacyDeck = new DeckConfig
             {
                 Pages =
                 {
@@ -2077,6 +2198,7 @@ public class StreamDeckConnectionWorkerTests
                 },
             },
         });
+        f.Store.Update(s => ActivateLegacyDeck(s, "sim-0001"));
         using var worker = NewWorker(f, simulated);
 
         worker.Tick();
@@ -2092,7 +2214,7 @@ public class StreamDeckConnectionWorkerTests
         // PUT route's persisted change would.
         f.Store.Update(s =>
         {
-            s.StreamDeck.Decks["sim-0001"].Deck.Pages[0].Slots[1] =
+            ActiveDeck(s, "sim-0001").Pages[0].Slots[1] =
                 new DeckSlot { Action = new DeckAction { Type = "openUrl", Url = "https://example.com" } };
         });
         worker.RefreshView("sim-0001");
@@ -2125,7 +2247,7 @@ public class StreamDeckConnectionWorkerTests
         var simulated = new SimulatedStreamDeckSurface(Mini, "sim-0001");
         f.Store.Update(s => s.StreamDeck.Decks["sim-0001"] = new PhysicalDeckSettings
         {
-            Deck = new DeckConfig
+            LegacyDeck = new DeckConfig
             {
                 Pages =
                 {
@@ -2134,6 +2256,7 @@ public class StreamDeckConnectionWorkerTests
                 },
             },
         });
+        f.Store.Update(s => ActivateLegacyDeck(s, "sim-0001"));
         using var worker = NewWorker(f, simulated);
         worker.Tick();
 
@@ -2146,7 +2269,7 @@ public class StreamDeckConnectionWorkerTests
         // 1 at this point) will clamp back to 0 once PushCurrentView runs.
         f.Store.Update(s =>
         {
-            s.StreamDeck.Decks["sim-0001"].Deck.Pages.RemoveAt(1);
+            ActiveDeck(s, "sim-0001").Pages.RemoveAt(1);
         });
         worker.RefreshView("sim-0001");
 
@@ -2173,7 +2296,7 @@ public class StreamDeckConnectionWorkerTests
         var simulated = new SimulatedStreamDeckSurface(Mini, "sim-0001");
         f.Store.Update(s => s.StreamDeck.Decks["sim-0001"] = new PhysicalDeckSettings
         {
-            Deck = new DeckConfig
+            LegacyDeck = new DeckConfig
             {
                 Pages =
                 {
@@ -2189,6 +2312,7 @@ public class StreamDeckConnectionWorkerTests
                 },
             },
         });
+        f.Store.Update(s => ActivateLegacyDeck(s, "sim-0001"));
         using var worker = NewWorker(f, simulated);
         worker.Tick(); // connect at page 0
 
@@ -2202,7 +2326,7 @@ public class StreamDeckConnectionWorkerTests
         // Deletes page 1, the currently displayed page, then a same-view
         // refresh (viewChanged=false at the call site) - as the deck-config
         // PUT route applies an edit.
-        f.Store.Update(s => s.StreamDeck.Decks["sim-0001"].Deck.Pages.RemoveAt(1));
+        f.Store.Update(s => ActiveDeck(s, "sim-0001").Pages.RemoveAt(1));
         worker.RefreshView("sim-0001");
 
         Assert.Equal(0, worker.GetCurrentPage("sim-0001")); // clamped back onto page 0
@@ -2230,7 +2354,7 @@ public class StreamDeckConnectionWorkerTests
         var simulated = new SimulatedStreamDeckSurface(Mini, "sim-0001");
         f.Store.Update(s => s.StreamDeck.Decks["sim-0001"] = new PhysicalDeckSettings
         {
-            Deck = new DeckConfig
+            LegacyDeck = new DeckConfig
             {
                 Pages =
                 {
@@ -2245,6 +2369,7 @@ public class StreamDeckConnectionWorkerTests
                 },
             },
         });
+        f.Store.Update(s => ActivateLegacyDeck(s, "sim-0001"));
         using var worker = NewWorker(f, simulated);
         worker.Tick(); // connect at root
 
@@ -2257,7 +2382,7 @@ public class StreamDeckConnectionWorkerTests
         // Retypes slot 0 away from a folder - the config edit removes the
         // folder the deck is currently showing - then a same-view refresh.
         f.Store.Update(s =>
-            s.StreamDeck.Decks["sim-0001"].Deck.Pages[0].Slots[0] =
+            ActiveDeck(s, "sim-0001").Pages[0].Slots[0] =
                 new DeckSlot { Action = new DeckAction { Type = "openUrl", Url = "https://example.com" } });
         worker.RefreshView("sim-0001");
 
@@ -2369,7 +2494,7 @@ public class StreamDeckConnectionWorkerTests
         var usb = new MutableUsbEnumerator();
         usb.Devices.Add(new UsbDeviceEntry { VendorId = StreamDeckModels.VendorId, ProductId = Mini.ProductId });
         var presence = new HardwarePresence(usb);
-        using var worker = new StreamDeckConnectionWorker(f.Hid, presence, f.Gate, f.Store, f.Executor, f.ImageCache, f.Hub, f.Sensors);
+        using var worker = new StreamDeckConnectionWorker(f.Hid, presence, f.Gate, f.Store, f.Executor, f.KeyRenderer, f.Hub, f.Sensors);
 
         worker.Tick();
         var dev = (MockStreamDeckHidDevice)f.Hid.DevicesByPath["path-1"];
@@ -2412,8 +2537,9 @@ public class StreamDeckConnectionWorkerTests
         var simulated = new SimulatedStreamDeckSurface(Mini, "sim-0001");
         f.Store.Update(s => s.StreamDeck.Decks["sim-0001"] = new PhysicalDeckSettings
         {
-            Deck = new DeckConfig { Pages = { new DeckPage { Slots = slots } } },
+            LegacyDeck = new DeckConfig { Pages = { new DeckPage { Slots = slots } } },
         });
+        f.Store.Update(s => ActivateLegacyDeck(s, "sim-0001"));
         using var worker = NewWorker(f, simulated);
         using var sub = f.Hub.AddTestSubscription(PanelTopics.StreamDeckTiles);
 
@@ -2461,8 +2587,9 @@ public class StreamDeckConnectionWorkerTests
         var simulated = new SimulatedStreamDeckSurface(Mini, "sim-0001");
         f.Store.Update(s => s.StreamDeck.Decks["sim-0001"] = new PhysicalDeckSettings
         {
-            Deck = new DeckConfig { Pages = { new DeckPage { Slots = rootSlots } } },
+            LegacyDeck = new DeckConfig { Pages = { new DeckPage { Slots = rootSlots } } },
         });
+        f.Store.Update(s => ActivateLegacyDeck(s, "sim-0001"));
         using var worker = NewWorker(f, simulated);
         using var sub = f.Hub.AddTestSubscription(PanelTopics.StreamDeckTiles);
 
@@ -2495,8 +2622,9 @@ public class StreamDeckConnectionWorkerTests
         var simulated = new SimulatedStreamDeckSurface(Mini, "sim-0001");
         f.Store.Update(s => s.StreamDeck.Decks["sim-0001"] = new PhysicalDeckSettings
         {
-            Deck = new DeckConfig { Pages = { new DeckPage { Slots = slots } } },
+            LegacyDeck = new DeckConfig { Pages = { new DeckPage { Slots = slots } } },
         });
+        f.Store.Update(s => ActivateLegacyDeck(s, "sim-0001"));
         using var worker = NewWorker(f, simulated);
         using var sub = f.Hub.AddTestSubscription(PanelTopics.StreamDeckTiles);
 
@@ -2521,8 +2649,9 @@ public class StreamDeckConnectionWorkerTests
         var simulated = new SimulatedStreamDeckSurface(Mini, "sim-0001");
         f.Store.Update(s => s.StreamDeck.Decks["sim-0001"] = new PhysicalDeckSettings
         {
-            Deck = new DeckConfig { Pages = { new DeckPage { Slots = slots } } },
+            LegacyDeck = new DeckConfig { Pages = { new DeckPage { Slots = slots } } },
         });
+        f.Store.Update(s => ActivateLegacyDeck(s, "sim-0001"));
         using var worker = NewWorker(f, simulated);
         var captured = CaptureBroadcasts(f.Hub);
 
@@ -2553,8 +2682,9 @@ public class StreamDeckConnectionWorkerTests
         var simulated = new SimulatedStreamDeckSurface(Mini, "sim-0001");
         f.Store.Update(s => s.StreamDeck.Decks["sim-0001"] = new PhysicalDeckSettings
         {
-            Deck = new DeckConfig { Pages = { new DeckPage { Slots = slots } } },
+            LegacyDeck = new DeckConfig { Pages = { new DeckPage { Slots = slots } } },
         });
+        f.Store.Update(s => ActivateLegacyDeck(s, "sim-0001"));
         using var worker = NewWorker(f, simulated);
 
         worker.Tick(); // connect, no subscriber yet - nothing broadcasts
@@ -2588,8 +2718,9 @@ public class StreamDeckConnectionWorkerTests
         var simulated = new SimulatedStreamDeckSurface(Mini, "sim-0001");
         f.Store.Update(s => s.StreamDeck.Decks["sim-0001"] = new PhysicalDeckSettings
         {
-            Deck = new DeckConfig { Pages = { new DeckPage { Slots = slots } } },
+            LegacyDeck = new DeckConfig { Pages = { new DeckPage { Slots = slots } } },
         });
+        f.Store.Update(s => ActivateLegacyDeck(s, "sim-0001"));
         using var worker = NewWorker(f, simulated);
 
         worker.Tick(); // connect, no subscriber yet
@@ -2626,7 +2757,7 @@ public class StreamDeckConnectionWorkerTests
         var simulated = new SimulatedStreamDeckSurface(Mini, "sim-0001");
         f.Store.Update(s => s.StreamDeck.Decks["sim-0001"] = new PhysicalDeckSettings
         {
-            Deck = new DeckConfig
+            LegacyDeck = new DeckConfig
             {
                 Pages =
                 {
@@ -2635,6 +2766,7 @@ public class StreamDeckConnectionWorkerTests
                 },
             },
         });
+        f.Store.Update(s => ActivateLegacyDeck(s, "sim-0001"));
         using var worker = NewWorker(f, simulated);
         using var sub = f.Hub.AddTestSubscription(PanelTopics.StreamDeckTiles);
 
@@ -2672,8 +2804,9 @@ public class StreamDeckConnectionWorkerTests
         var simulated = new SimulatedStreamDeckSurface(Mini, "sim-0001");
         f.Store.Update(s => s.StreamDeck.Decks["sim-0001"] = new PhysicalDeckSettings
         {
-            Deck = new DeckConfig { Pages = { new DeckPage { Slots = rootSlots } } },
+            LegacyDeck = new DeckConfig { Pages = { new DeckPage { Slots = rootSlots } } },
         });
+        f.Store.Update(s => ActivateLegacyDeck(s, "sim-0001"));
         using var worker = NewWorker(f, simulated);
         using var sub = f.Hub.AddTestSubscription(PanelTopics.StreamDeckTiles);
         var captured = CaptureBroadcasts(f.Hub);
@@ -2703,8 +2836,9 @@ public class StreamDeckConnectionWorkerTests
         }
         f.Store.Update(s => s.StreamDeck.Decks[serial] = new PhysicalDeckSettings
         {
-            Deck = new DeckConfig { Pages = { page } },
+            LegacyDeck = new DeckConfig { Pages = { page } },
         });
+        f.Store.Update(s => ActivateLegacyDeck(s, serial));
     }
 
     private static HardwareComponent ExtrasComponent(string id, params HardwareSensor[] sensors) =>

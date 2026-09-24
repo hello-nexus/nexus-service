@@ -1,12 +1,12 @@
-uniform float u_speed;
-uniform float u_curtains;  // extra: curtain count (2..8)
-uniform float u_height;    // extra: curtain reach, fraction of the frame (0.2..1.4)
-uniform float u_glow;      // extra: bloom spread around each curtain (0.3..2)
+uniform float u_curtains; // hint_range(2.0, 8.0, 1.0) = 5.0  curtain count
+uniform float u_height; // hint_range(0.2, 1.4, 0.05) = 0.75  curtain reach, fraction of the frame
+uniform float u_glow; // hint_range(0.3, 2.0, 0.05) = 1.0  bloom spread around each curtain
 
 // Hi-res spectrum, declared here only (see beatbuilder.frag): the 16-band
 // u_spectrum is too coarse for a fullscreen curtain, which reads as eight
 // visible steps rather than a continuous edge.
 uniform float u_spectrum64[64];
+uniform float u_audioBoost; // hint_range(0.0, 2.0, 0.05) = 1.0
 
 // Aurora curtains over a night sky: each curtain hangs from a wandering upper
 // edge, brightest along its lower rim, striated by vertical rays. The spectrum

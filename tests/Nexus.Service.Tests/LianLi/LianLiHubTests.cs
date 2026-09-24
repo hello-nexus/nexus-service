@@ -18,6 +18,14 @@ internal sealed class HubTransportSpy : IHidDevice
     }
     public List<Call> Calls { get; } = new();
 
+    /// <summary>When true every write is rejected, as a hub that enumerated but is not answering does.</summary>
+    public bool RejectWrites { get; set; }
+
+    /// <summary>Accept this many writes, then reject the rest; negative disables staging. Reaches guards past the first.</summary>
+    public int RejectAfter { get; set; } = -1;
+
+    private bool Accept() => !RejectWrites && (RejectAfter < 0 || Calls.Count <= RejectAfter);
+
     public int VendorId => LianLiProtocol.VendorId;
     public int ProductId => LianLiProtocol.ProductId;
     public string Path => "spy";
@@ -25,11 +33,11 @@ internal sealed class HubTransportSpy : IHidDevice
     public int UsagePage => LianLiProtocol.VendorUsagePage;
     public int Usage => LianLiProtocol.VendorUsage;
 
-    public bool SetFeature(ReadOnlySpan<byte> report) { Calls.Add(new Call(CallKind.Feature, report.ToArray())); return true; }
-    public bool Write(ReadOnlySpan<byte> report) { Calls.Add(new Call(CallKind.Write, report.ToArray())); return true; }
+    public bool SetFeature(ReadOnlySpan<byte> report) { Calls.Add(new Call(CallKind.Feature, report.ToArray())); return Accept(); }
+    public bool Write(ReadOnlySpan<byte> report) { Calls.Add(new Call(CallKind.Write, report.ToArray())); return Accept(); }
     public bool GetFeature(Span<byte> buffer) => false;
     public bool GetInputReport(Span<byte> buffer) => false;
-    public bool SetOutputReport(ReadOnlySpan<byte> report) { Calls.Add(new Call(CallKind.OutputReport, report.ToArray())); return true; }
+    public bool SetOutputReport(ReadOnlySpan<byte> report) { Calls.Add(new Call(CallKind.OutputReport, report.ToArray())); return Accept(); }
     public int Read(Span<byte> buffer, int timeoutMs) => 0;
     public void Dispose() { }
 }
@@ -134,6 +142,48 @@ public class LianLiHubTests
         // Interrupt-OUT is accepted by the stack but never reaches the LEDs on
         // fw 1.4 (camera-verified 2026-08-27); L-Connect uses the control pipe.
         Assert.Equal(HubTransportSpy.CallKind.OutputReport, spy.Calls[0].Kind);
+    }
+
+    [Fact]
+    public void SendColorData_sl_v1_sends_via_interrupt_out()
+    {
+        var spy = new HubTransportSpy();
+        var hub = new LianLiHub();
+        hub.Attach(spy, SlProfile());
+
+        hub.SendColorData(2, new byte[] { 10, 20, 30 });
+
+        var call = Assert.Single(spy.Calls);
+        Assert.Equal(HubTransportSpy.CallKind.Write, call.Kind);
+        Assert.Equal(LianLiProtocol.OutputReportSize, call.Bytes.Length);
+        Assert.Equal(0xE0, call.Bytes[0]);
+        Assert.Equal(0x32, call.Bytes[1]); // 0x30 | channel
+        Assert.Equal(new byte[] { 10, 30, 20 }, call.Bytes[2..5]); // R, B, G on the wire
+    }
+
+    [Fact]
+    public void SendStartAction_sl_v1_sends_packed_quantity_feature_report()
+    {
+        var spy = new HubTransportSpy();
+        var hub = new LianLiHub();
+        hub.Attach(spy, SlProfile());
+
+        hub.SendStartAction(2, 3);
+
+        var call = Assert.Single(spy.Calls);
+        Assert.Equal(HubTransportSpy.CallKind.Feature, call.Kind);
+        Assert.Equal(new byte[] { 0xE0, 0x10, 0x32, 0x23, 0x00, 0x00, 0x00 }, call.Bytes);
+    }
+
+    [Fact]
+    public void Profile_is_sl_infinity_while_detached_and_the_attached_row_after()
+    {
+        var hub = new LianLiHub();
+        Assert.Equal(0xA102, hub.Profile.ProductId);
+        hub.Attach(new HubTransportSpy(), SlProfile());
+        Assert.Equal(0xA100, hub.Profile.ProductId);
+        hub.Detach();
+        Assert.Equal(0xA102, hub.Profile.ProductId);
     }
 
     [Fact]

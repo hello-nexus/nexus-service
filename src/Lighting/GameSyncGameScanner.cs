@@ -1,13 +1,35 @@
 using System.Text;
+using System.Text.Json;
 using Microsoft.Extensions.Logging;
 using Nexus.Service.Games;
 using Nexus.Service.Models.Lighting;
+using Nexus.Service.Persistence;
+using Nexus.Service.Serialization;
 
 namespace Nexus.Service.Lighting;
 
 public sealed class GameSyncGameScanner
 {
-    private const long MaxScanFileSizeBytes = 150L * 1024 * 1024;
+    // Per-file caps for the byte scan. The read is streamed (StreamReadBufferSize),
+    // so these bound IO time, not memory. Executables and DLLs get the larger cap
+    // because a game may reference the SDK from nowhere else: Battlefield 6
+    // bundles no Chroma DLL and its bf6.exe is 180 MB. Archives keep the smaller
+    // one so a few root-level .pak/.dat files cannot eat MaxScanBytesPerGame
+    // before the walk reaches the executable.
+    private const long MaxScanBinarySizeBytes = 512L * 1024 * 1024;
+    private const long MaxScanArchiveSizeBytes = 150L * 1024 * 1024;
+
+    // Directory depth for the file-name pass: one level of headroom above the
+    // deepest known layout. Unreal games keep the Razer plugin DLL under
+    // <Project>/Plugins/ChromaSDKPlugin/Binaries/Win64/ (Hogwarts Legacy) or,
+    // as an engine plugin, under Engine/Plugins/Experimental/RazerChromaDevices/
+    // Binaries/ThirdParty/Win64/ (Fortnite).
+    private const int NameScanDepth = 8;
+
+    // The byte-scan pass stays shallower: it is budgeted (MaxScanFilesPerGame),
+    // and a deeper walk would spend that budget on engine ThirdParty DLLs before
+    // reaching the game's own binaries.
+    private const int ByteScanDepth = 4;
 
     // Per-game scan budget. A Steam library with many large games can easily reach
     // tens of GB if every .pak is read; cap both axes so a single scan stays bounded.
@@ -24,9 +46,57 @@ public sealed class GameSyncGameScanner
     private IReadOnlyList<DetectedGame> _games = Array.Empty<DetectedGame>();
     private int _scanRunning;
 
-    public GameSyncGameScanner(ILogger<GameSyncGameScanner> logger)
+    private readonly string? _cachePath;
+
+    /// <param name="cachePath">Overrides the machine cache file; tests pass a temp path so a run never touches the real one.</param>
+    public GameSyncGameScanner(ILogger<GameSyncGameScanner> logger, string? cachePath = null)
     {
         _logger = logger;
+        _cachePath = cachePath;
+        LoadCache();
+    }
+
+    // A scan lives only in memory, so every restart used to leave the Game Sync
+    // tab empty for the length of a fresh one. The last result is mirrored here
+    // instead: machine-local under the data root's cache/, never settings.json,
+    // so it is not part of the profile that syncs to the cloud.
+    private string CachePath()
+        => _cachePath ?? Path.Combine(NexusDataPaths.NexusRoot(), "cache", "game-sync-games.json");
+
+    private void LoadCache()
+    {
+        try
+        {
+            var path = CachePath();
+            if (!File.Exists(path)) return;
+            var cached = JsonSerializer.Deserialize(File.ReadAllText(path), AppJsonContext.Default.GameSyncScanCache);
+            if (cached?.Games is null || cached.ScannedAt <= 0) return;
+            lock (_lock)
+            {
+                _games = cached.Games.AsReadOnly();
+                _scannedAtEpoch = cached.ScannedAt;
+            }
+            _logger.LogInformation("[game-sync-scanner] restored {GameCount} game(s) from the last scan", cached.Games.Count);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "[game-sync-scanner] cannot read the cached scan");
+        }
+    }
+
+    private void SaveCache(List<DetectedGame> games, long scannedAt)
+    {
+        try
+        {
+            var path = CachePath();
+            Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+            var payload = new GameSyncScanCache { ScannedAt = scannedAt, Games = games };
+            File.WriteAllText(path, JsonSerializer.Serialize(payload, AppJsonContext.Default.GameSyncScanCache));
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "[game-sync-scanner] cannot write the cached scan");
+        }
     }
 
     // Called on the scan thread after results are published. Used to trigger
@@ -91,11 +161,13 @@ public sealed class GameSyncGameScanner
                 });
             }
 
+            var scannedAt = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
             lock (_lock)
             {
                 _games = results.AsReadOnly();
-                _scannedAtEpoch = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
+                _scannedAtEpoch = scannedAt;
             }
+            SaveCache(results, scannedAt);
 
             var emitterCount = results.Count(g => g.EmitsChroma);
             _logger.LogInformation("[game-sync-scanner] scan complete: {GameCount} games, {EmitterCount} emitters",
@@ -122,7 +194,7 @@ public sealed class GameSyncGameScanner
         }
 
         // Step 1: bundled DLL/file name check - no byte reading needed.
-        foreach (var file in EnumerateFilesDepthCapped(installDir, "*", 4, logger))
+        foreach (var file in EnumerateFilesDepthCapped(installDir, "*", NameScanDepth, logger))
         {
             var fileName = Path.GetFileName(file);
             if (IsBundledChromaFile(fileName))
@@ -140,7 +212,7 @@ public sealed class GameSyncGameScanner
 
         long totalBytesRead = 0;
 
-        foreach (var file in EnumerateFilesDepthCapped(installDir, "*", 4, logger))
+        foreach (var file in EnumerateFilesDepthCapped(installDir, "*", ByteScanDepth, logger))
         {
             if (scannedFiles + skippedFiles >= MaxScanFilesPerGame)
             {
@@ -171,7 +243,8 @@ public sealed class GameSyncGameScanner
                 continue;
             }
 
-            if (size > MaxScanFileSizeBytes)
+            var maxSize = IsBinaryExtension(ext) ? MaxScanBinarySizeBytes : MaxScanArchiveSizeBytes;
+            if (size > maxSize)
             {
                 logger.LogDebug("[game-sync-scanner] skipping large file {File} ({Size} bytes)", file, size);
                 skippedFiles++;
@@ -284,6 +357,10 @@ public sealed class GameSyncGameScanner
 
         return total;
     }
+
+    private static bool IsBinaryExtension(string ext)
+        => ext.Equals(".exe", StringComparison.OrdinalIgnoreCase)
+        || ext.Equals(".dll", StringComparison.OrdinalIgnoreCase);
 
     private static bool IsBundledChromaFile(string fileName)
     {

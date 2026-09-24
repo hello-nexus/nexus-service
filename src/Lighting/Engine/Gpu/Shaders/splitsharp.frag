@@ -1,11 +1,11 @@
-uniform float u_aHue;
-uniform float u_aSat;
-uniform float u_aVal;
-uniform float u_bHue;
-uniform float u_bSat;
-uniform float u_bVal;
-uniform float u_angle;      // split direction in degrees
-uniform float u_position;   // where the edge sits along the sweep
+uniform float u_aHue; // hint_range(0.0, 1.0, 0.01) = 0.0
+uniform float u_aSat; // hint_range(0.0, 1.0, 0.01) = 1.0
+uniform float u_aVal; // hint_range(0.0, 1.0, 0.01) = 1.0
+uniform float u_bHue; // hint_range(0.0, 1.0, 0.01) = 0.62
+uniform float u_bSat; // hint_range(0.0, 1.0, 0.01) = 1.0
+uniform float u_bVal; // hint_range(0.0, 1.0, 0.01) = 1.0
+uniform float u_angle; // hint_range(0.0, 360.0, 5.0) = 0.0  split direction in degrees
+uniform float u_position; // hint_range(0.0, 1.0, 0.01) = 0.5  where the edge sits along the sweep
 
 // Hard two-tone split, no blend at all.
 void main() {

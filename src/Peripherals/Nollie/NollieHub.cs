@@ -13,6 +13,7 @@ public sealed class NollieController : IDisposable
     private IHidDevice? _device;
     private int _consecutiveWriteFailures;
     private bool _disposed;
+    private bool _released;
 
     public NollieController(IHidDevice device, NollieDevice spec)
     {
@@ -57,6 +58,12 @@ public sealed class NollieController : IDisposable
         return new string(buf);
     }
 
+    /// <summary>True once <see cref="Release"/> handed the strips to the firmware; colour writes stop so a late frame cannot take them back.</summary>
+    public bool IsReleased
+    {
+        get { lock (_lock) { return _released; } }
+    }
+
     /// <summary>Pushes one card's packed RGB triples; the protocol layer reorders per transport.</summary>
     public bool SendChannel(int cardIndex, ReadOnlySpan<byte> rgb)
     {
@@ -78,7 +85,7 @@ public sealed class NollieController : IDisposable
     {
         lock (_lock)
         {
-            if (_device is null) return false;
+            if (_device is null || _released) return false;
 
             if (Spec.Transport == NollieTransport.Wide)
             {
@@ -106,9 +113,47 @@ public sealed class NollieController : IDisposable
     {
         lock (_lock)
         {
-            if (_device is null || Spec.Transport == NollieTransport.Wide) return false;
+            if (_device is null || _released || Spec.Transport == NollieTransport.Wide) return false;
             NollieProtocol.WriteLatch(_report);
             return Write();
+        }
+    }
+
+    /// <summary>
+    /// Tells the firmware what to run on its own: a colour to hold, or its
+    /// built-in effect. False when this firmware takes none.
+    /// </summary>
+    public bool SendStandalone(bool builtIn, bool mos, byte r, byte g, byte b)
+    {
+        lock (_lock)
+        {
+            if (_device is null) return false;
+            if (!NollieProtocol.WriteStandalone(_report, Spec, builtIn, mos, r, g, b)) return false;
+            return Write();
+        }
+    }
+
+    /// <summary>
+    /// Hands the strips to the firmware for good: the standalone settings go
+    /// out once more so the hand-off carries them, then the release command.
+    /// Colour writes are refused from here on. False when this firmware has
+    /// no hand-off, in which case nothing is sent and frames keep flowing.
+    /// </summary>
+    public bool Release(bool builtIn, bool mos, byte r, byte g, byte b)
+    {
+        lock (_lock)
+        {
+            if (_device is null || _released) return false;
+            if (!NollieProtocol.WriteStandalone(_report, Spec, builtIn, mos, r, g, b)) return false;
+            Write();
+            // Settle between the two, per the vendor driver. Held under the
+            // lock on purpose: no colour frame may land between the settings
+            // and the hand-off.
+            Thread.Sleep(NollieProtocol.ReleaseSettleMs);
+            NollieProtocol.WriteRelease(_report, Spec);
+            var ok = Write();
+            _released = true;
+            return ok;
         }
     }
 

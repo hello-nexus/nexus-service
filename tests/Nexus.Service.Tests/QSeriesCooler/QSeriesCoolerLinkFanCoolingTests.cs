@@ -152,8 +152,219 @@ public class QSeriesCoolerLinkFanCoolingTests
         Assert.Contains(t.Writes, IsMotherboardControlFrame);
     }
 
-    private static bool IsMotherboardControlFrame(byte[] w) =>
-        w.Length >= 5 && w[1] == 0xCC && w[2] == 0x02 && w[3] == 0x00 && w[4] == QSeriesCoolerProtocol.ControlModeMotherboard;
+    private static bool IsMotherboardControlFrame(byte[] w) => IsControlFrame(w, QSeriesCoolerProtocol.ControlModeMotherboard);
+    private static bool IsFirmwareControlFrame(byte[] w) => IsControlFrame(w, QSeriesCoolerProtocol.ControlModeFirmware);
+    private static bool IsControlFrame(byte[] w, byte mode) =>
+        w.Length >= 5 && w[1] == 0xCC && w[2] == 0x02 && w[3] == 0x00 && w[4] == mode;
+
+    // Q60 firmware at or past 2.0.0.1 carries the onboard temperature curve.
+    private const string CurveCapableFirmware = "2.0.9.1";
+
+    [Fact]
+    public void ReleaseFan_hands_a_curve_capable_hub_to_the_firmware_curve_without_pinning()
+    {
+        var hub = NewConnectedHub(out var t);
+        hub.State.FirmwareVersion = CurveCapableFirmware;
+        var provider = new QSeriesCoolerCoolingProvider(hub, new InMemoryConfigStore());
+        provider.SetFanSpeed("qseries:QTEST123:p2:1", 60);
+
+        provider.ReleaseFan("qseries:QTEST123:p2:1");
+
+        Assert.Contains(t.Writes, IsFirmwareControlFrame);
+        Assert.DoesNotContain(t.Writes, IsMotherboardControlFrame);
+        // A hand-back is not a user pick: the next assignment must drive again.
+        Assert.NotEqual(QSeriesCoolerProtocol.ControlModeFirmware, hub.DesiredControlMode);
+        t.Writes.Clear();
+        provider.SetFanSpeed("qseries:QTEST123:p2:1", 80);
+        Assert.Contains(t.Writes, w => w.Length >= 4 && w[1] == 0xCC && w[2] == 0x02 && w[3] == QSeriesCoolerProtocol.FanChannel);
+    }
+
+    [Fact]
+    public void ReleaseFan_honours_a_persisted_hardware_control_pick_over_the_firmware_default()
+    {
+        var hub = NewConnectedHub(out var t);
+        hub.State.FirmwareVersion = CurveCapableFirmware;
+        var store = new InMemoryConfigStore();
+        store.Update(s => s.Cooling.HubControlModes["qseries:QTEST123"] = QSeriesCoolerCoolingProvider.HandBackMotherboard);
+        var provider = new QSeriesCoolerCoolingProvider(hub, store);
+        provider.SetFanSpeed("qseries:QTEST123:p2:1", 60);
+
+        provider.ReleaseFan("qseries:QTEST123:p2:1");
+
+        Assert.Contains(t.Writes, IsMotherboardControlFrame);
+        Assert.DoesNotContain(t.Writes, IsFirmwareControlFrame);
+    }
+
+    [Fact]
+    public void OnHubConnected_hands_a_stock_hub_to_the_firmware_curve()
+    {
+        var hub = NewConnectedHub(out var t);
+        // Power-on state of a factory Q60.
+        t.Port0ControlMode = QSeriesCoolerProtocol.ControlModeMotherboard;
+        hub.State.FirmwareVersion = CurveCapableFirmware;
+        var provider = new QSeriesCoolerCoolingProvider(hub, new InMemoryConfigStore());
+
+        provider.OnHubConnected();
+
+        Assert.Contains(t.Writes, IsFirmwareControlFrame);
+        Assert.Null(hub.DesiredControlMode);
+    }
+
+    [Fact]
+    public void OnHubConnected_hands_older_firmware_to_the_motherboard()
+    {
+        var hub = NewConnectedHub(out var t);
+        hub.State.FirmwareVersion = "1.0.9.1";
+        var provider = new QSeriesCoolerCoolingProvider(hub, new InMemoryConfigStore());
+
+        provider.OnHubConnected();
+
+        Assert.Contains(t.Writes, IsMotherboardControlFrame);
+        Assert.DoesNotContain(t.Writes, IsFirmwareControlFrame);
+    }
+
+    [Fact]
+    public void OnHubConnected_leaves_a_hub_alone_once_a_channel_is_driven()
+    {
+        var hub = NewConnectedHub(out var t);
+        hub.State.FirmwareVersion = CurveCapableFirmware;
+        var provider = new QSeriesCoolerCoolingProvider(hub, new InMemoryConfigStore());
+        // The manual-duty replay can land between the port open and the connect
+        // hook; its Software latch is what the hub write yields to.
+        provider.SetFanSpeed("qseries:QTEST123:p2:1", 60);
+
+        provider.OnHubConnected();
+
+        Assert.DoesNotContain(t.Writes, IsFirmwareControlFrame);
+        Assert.DoesNotContain(t.Writes, IsMotherboardControlFrame);
+    }
+
+    [Fact]
+    public void OnHubConnected_skips_the_hand_back_when_the_settings_assign_one_of_its_channels()
+    {
+        var hub = NewConnectedHub(out var t);
+        t.Port0ControlMode = QSeriesCoolerProtocol.ControlModeMotherboard;
+        hub.State.FirmwareVersion = CurveCapableFirmware;
+        var store = new InMemoryConfigStore();
+        store.Update(s => s.Cooling.Curves.Add(new CurveDocument
+        {
+            Id = "curve1",
+            Outputs = { new CurveOutputDocument { Id = "qseries:QTEST123:pump", Type = "fan" } },
+        }));
+        var provider = new QSeriesCoolerCoolingProvider(hub, store);
+
+        provider.OnHubConnected();
+
+        Assert.DoesNotContain(t.Writes, w => w.Length >= 3 && w[1] == 0xCC && w[2] == 0x02);
+    }
+
+    [Fact]
+    public void OnHubConnected_ignores_an_assignment_for_a_slot_the_hub_no_longer_exposes()
+    {
+        var hub = NewConnectedHub(out var t);
+        t.Port0ControlMode = QSeriesCoolerProtocol.ControlModeMotherboard;
+        hub.State.FirmwareVersion = CurveCapableFirmware;
+        var store = new InMemoryConfigStore();
+        store.Update(s => s.Cooling.ManualSpeeds["qseries:QTEST123:p2:9"] = 40);
+        var provider = new QSeriesCoolerCoolingProvider(hub, store);
+
+        provider.OnHubConnected();
+
+        Assert.Contains(t.Writes, IsFirmwareControlFrame);
+    }
+
+    [Fact]
+    public void ReleaseFan_on_the_last_channel_keeps_a_user_pin_and_only_drops_the_engine_latch()
+    {
+        var hub = NewConnectedHub(out var t);
+        hub.State.FirmwareVersion = CurveCapableFirmware;
+        var provider = new QSeriesCoolerCoolingProvider(hub, new InMemoryConfigStore());
+        provider.SetFanSpeed("qseries:QTEST123:p2:1", 60);
+        // The cooling page pins through the route first, then releases the fan.
+        hub.MarkDesiredControlMode(QSeriesCoolerProtocol.ControlModeMotherboard);
+
+        provider.ReleaseFan("qseries:QTEST123:p2:1");
+
+        Assert.Equal(QSeriesCoolerProtocol.ControlModeMotherboard, hub.DesiredControlMode);
+        t.Writes.Clear();
+        provider.SetFanSpeed("qseries:QTEST123:p2:2", 50);
+        Assert.DoesNotContain(t.Writes, w => w.Length >= 4 && w[1] == 0xCC && w[2] == 0x02 && w[3] == QSeriesCoolerProtocol.FanChannel);
+    }
+
+    [Fact]
+    public void RecordHandBackChoice_stores_motherboard_and_firmware_and_clears_on_software()
+    {
+        var store = new InMemoryConfigStore();
+        const string id = "qseries:QTEST123";
+
+        QSeriesCoolerCoolingProvider.RecordHandBackChoice(store, id, QSeriesCoolerProtocol.ControlModeMotherboard);
+        Assert.Equal(QSeriesCoolerCoolingProvider.HandBackMotherboard, store.Load().Cooling.HubControlModes[id]);
+
+        QSeriesCoolerCoolingProvider.RecordHandBackChoice(store, id, QSeriesCoolerProtocol.ControlModeFirmware);
+        Assert.Equal(QSeriesCoolerCoolingProvider.HandBackFirmware, store.Load().Cooling.HubControlModes[id]);
+
+        QSeriesCoolerCoolingProvider.RecordHandBackChoice(store, id, QSeriesCoolerProtocol.ControlModeMix);
+        Assert.Equal(QSeriesCoolerCoolingProvider.HandBackFirmware, store.Load().Cooling.HubControlModes[id]);
+
+        QSeriesCoolerCoolingProvider.RecordHandBackChoice(store, id, QSeriesCoolerProtocol.ControlModeSoftware);
+        Assert.False(store.Load().Cooling.HubControlModes.ContainsKey(id));
+    }
+
+    [Fact]
+    public void ReleaseAll_with_nothing_driven_writes_nothing_while_the_cooling_pillar_is_off()
+    {
+        var hub = NewConnectedHub(out var t);
+        hub.State.FirmwareVersion = CurveCapableFirmware;
+        var store = new InMemoryConfigStore();
+        store.Update(s => s.Features.Cooling = false);
+        var provider = new QSeriesCoolerCoolingProvider(hub, store, new Nexus.Service.Lifecycle.FeatureGates(store));
+
+        provider.ReleaseAll();
+
+        Assert.DoesNotContain(t.Writes, w => w.Length >= 3 && w[1] == 0xCC && w[2] == 0x02);
+    }
+
+    [Fact]
+    public void OnHubConnected_writes_nothing_while_the_cooling_pillar_is_off()
+    {
+        var hub = NewConnectedHub(out var t);
+        hub.State.FirmwareVersion = CurveCapableFirmware;
+        var store = new InMemoryConfigStore();
+        store.Update(s => s.Features.Cooling = false);
+        var provider = new QSeriesCoolerCoolingProvider(hub, store, new Nexus.Service.Lifecycle.FeatureGates(store));
+
+        provider.OnHubConnected();
+
+        Assert.DoesNotContain(t.Writes, w => w.Length >= 3 && w[1] == 0xCC && w[2] == 0x02);
+    }
+
+    [Fact]
+    public void ReleaseAll_hands_back_and_clears_a_session_pin_so_the_next_assignment_drives()
+    {
+        var hub = NewConnectedHub(out var t);
+        hub.State.FirmwareVersion = CurveCapableFirmware;
+        var provider = new QSeriesCoolerCoolingProvider(hub, new InMemoryConfigStore());
+        hub.MarkDesiredControlMode(QSeriesCoolerProtocol.ControlModeMotherboard);
+
+        provider.ReleaseAll();
+        Assert.Contains(t.Writes, IsFirmwareControlFrame);
+        Assert.Null(hub.DesiredControlMode);
+
+        provider.SetFanSpeed("qseries:QTEST123:p2:1", 80);
+        Assert.Contains(t.Writes, w => w.Length >= 4 && w[1] == 0xCC && w[2] == 0x02 && w[3] == QSeriesCoolerProtocol.FanChannel);
+    }
+
+    [Fact]
+    public void SetControlMode_skips_the_control_frame_when_the_hub_already_reports_that_mode()
+    {
+        var hub = NewConnectedHub(out var t);
+        t.Port0ControlMode = QSeriesCoolerProtocol.ControlModeFirmware;
+
+        Assert.True(hub.SetControlMode(QSeriesCoolerProtocol.ControlModeFirmware, pin: false));
+
+        Assert.DoesNotContain(t.Writes, IsFirmwareControlFrame);
+        Assert.Equal(QSeriesCoolerProtocol.ControlModeFirmware, hub.State.ControlMode);
+    }
 
     [Fact]
     public void Legacy_fans_assignment_migrates_across_every_binding_and_removes_the_old_key()
@@ -238,11 +449,13 @@ public class QSeriesCoolerLinkFanCoolingTests
         public IReadOnlyList<QSeriesCoolerPort> Discover() => _ports;
     }
 
-    // Answers Port-0 queries as already in software mode with turbo on, so a set-fan
-    // write never needs to prepend a mode-switch frame the test would have to skip past.
+    // Answers Port-0 queries as already in software mode (unless a test sets
+    // Port0ControlMode) with turbo on, so a set-fan write never needs to prepend a
+    // mode-switch frame the test would have to skip past.
     private sealed class ScriptedTransport : INp50Transport
     {
         public readonly List<byte[]> Writes = new();
+        public byte Port0ControlMode = QSeriesCoolerProtocol.ControlModeSoftware;
         private byte[]? _pending;
         public bool IsOpen => true;
         public string Serial => "QTEST123";
@@ -266,12 +479,12 @@ public class QSeriesCoolerLinkFanCoolingTests
         public void DiscardInput() { }
         public void Dispose() { }
 
-        private static byte[] BuildPort0()
+        private byte[] BuildPort0()
         {
             var p = new byte[QSeriesCoolerProtocol.Port0ResponseLength];
             p[0] = 0xFF; p[1] = 0xCC;
             p[9] = 1; p[10] = 0; // non-zero pump tach so TryParsePort0PumpRpm succeeds
-            p[12] = QSeriesCoolerProtocol.ControlModeSoftware;
+            p[12] = Port0ControlMode;
             p[14] = QSeriesCoolerProtocol.TurboOnByte;
             return p;
         }

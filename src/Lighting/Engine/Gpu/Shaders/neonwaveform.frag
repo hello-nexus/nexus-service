@@ -1,11 +1,11 @@
-uniform float u_speed;
-uniform float u_amplitude; // extra: ribbon reach from the centre line (0.1..0.9)
-uniform float u_thickness; // extra: edge line weight (0.01..0.2)
-uniform float u_glow;      // extra: bloom spread around the edges (0.3..2)
+uniform float u_amplitude; // hint_range(0.1, 0.9, 0.05) = 0.35  ribbon reach from the centre line
+uniform float u_thickness; // hint_range(0.01, 0.2, 0.005) = 0.03  edge line weight
+uniform float u_glow; // hint_range(0.3, 2.0, 0.05) = 1.0  bloom spread around the edges
 
 // Hi-res spectrum, declared here only (see beatbuilder.frag): a 16-band read
 // gives eight visible steps per side across a fullscreen ribbon.
 uniform float u_spectrum64[64];
+uniform float u_audioBoost; // hint_range(0.0, 2.0, 0.05) = 1.0
 
 // A mirrored waveform around the centre line: two bright neon edges with a
 // translucent fill between them. Bass sits at the centre and treble runs out

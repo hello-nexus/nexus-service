@@ -16,6 +16,64 @@ public sealed class DetectedConflict
     public int Pid { get; set; }
 }
 
+/// <summary>One enabled autostart entry of a conflicting app, as the UI names it back on disable.</summary>
+public sealed class ConflictAutostartEntry
+{
+    /// <summary>"runKeyMachine", "runKeyUser", "service" or "scheduledTask".</summary>
+    public string Kind { get; set; } = "";
+
+    /// <summary>Run value name, or service name.</summary>
+    public string EntryName { get; set; } = "";
+}
+
+/// <summary>
+/// Autostart state of one detected conflict. Only apps carrying a verified
+/// recipe appear at all; an empty <see cref="Entries"/> for a listed app means
+/// nothing is currently starting it at boot.
+/// </summary>
+public sealed class ConflictAutostartStatus
+{
+    public string Id { get; set; } = "";
+    public List<ConflictAutostartEntry> Entries { get; set; } = new();
+}
+
+public sealed class GetConflictAutostartResponse
+{
+    public List<ConflictAutostartStatus> Apps { get; set; } = new();
+}
+
+/// <summary>Body for POST /conflicts/autostart/disable.</summary>
+public sealed class DisableConflictAutostartBody
+{
+    public string Id { get; set; } = "";
+}
+
+public sealed class DisableConflictAutostartResponse
+{
+    public bool Error { get; set; }
+    public string Msg { get; set; } = "Ok";
+    /// <summary>How many entries were disabled and verified disabled by a re-read.</summary>
+    public int Disabled { get; set; }
+}
+
+/// <summary>Available is false when the console user's Lighting key could not be read, in which case every other field is meaningless.</summary>
+public sealed class WindowsDynamicLightingState
+{
+    public bool Available { get; set; }
+
+    /// <summary>Settings > Personalization > Dynamic Lighting, "Use Dynamic Lighting on my devices".</summary>
+    public bool Enabled { get; set; }
+
+    /// <summary>Dynamic Lighting devices connected right now; with none there is nothing to contend for.</summary>
+    public int DeviceCount { get; set; }
+}
+
+/// <summary>Body for POST /conflicts/dynamic-lighting. A null leaves the setting untouched.</summary>
+public sealed class SetWindowsDynamicLightingBody
+{
+    public bool? Enabled { get; set; }
+}
+
 public sealed class GetConflictsResponse
 {
     public List<DetectedConflict> Conflicts { get; set; } = new();

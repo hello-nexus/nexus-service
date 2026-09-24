@@ -240,7 +240,7 @@ public sealed class ScreenMirrorEffect : IEffect
         _captureH = h;
         if (_frameSource is not null)
         {
-            try { _frameSource.Start(_monitorId, w, h); Console.Error.WriteLine("[screen-mirror] using helper frame source"); }
+            try { _frameSource.Start(_monitorId, w, h); ServiceLog.Info("[screen-mirror] using helper frame source"); }
             catch (Exception ex) { Console.Error.WriteLine($"[screen-mirror] helper frame source start failed: {ex.Message}"); }
             return;
         }

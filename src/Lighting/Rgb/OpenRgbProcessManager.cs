@@ -82,10 +82,19 @@ public sealed class OpenRgbProcessManager : IDisposable
                 try
                 {
                     proc.Kill(entireProcessTree: true);
-                    proc.WaitForExit(1000);
-                    ServiceLog.Info($"[openrgb-proc] killed orphan PID {proc.Id}");
+                    if (proc.WaitForExit(1000))
+                    {
+                        ServiceLog.Info($"[openrgb-proc] killed orphan PID {proc.Id}");
+                    }
+                    else
+                    {
+                        ServiceLog.Warn($"[openrgb-proc] orphan PID {proc.Id} still alive 1s after kill");
+                    }
                 }
-                catch { }
+                catch (Exception ex)
+                {
+                    ServiceLog.Warn($"[openrgb-proc] orphan PID {proc.Id} kill failed: {ex.GetType().Name}: {ex.Message}");
+                }
                 finally { proc.Dispose(); }
             }
         }
@@ -99,6 +108,18 @@ public sealed class OpenRgbProcessManager : IDisposable
             lock (_lock)
             {
                 return _proc is { HasExited: false };
+            }
+        }
+    }
+
+    /// <summary>Uptime of the current daemon, zero when none; the bridge watchdog separates "not listening yet" from "stopped answering".</summary>
+    public TimeSpan Uptime
+    {
+        get
+        {
+            lock (_lock)
+            {
+                return _proc is { HasExited: false } ? DateTime.UtcNow - _startedUtc : TimeSpan.Zero;
             }
         }
     }
@@ -131,6 +152,11 @@ public sealed class OpenRgbProcessManager : IDisposable
     /// </summary>
     public static string ResolveConfigDir()
     {
+        // Root system daemon: the machine root is root-owned and writable, and
+        // unlike a user home it exists before anyone logs in.
+        if (Nexus.Service.Persistence.NexusDataPaths.SystemDaemonRoot is { } daemonRoot)
+            return Path.Combine(daemonRoot, "openrgb-config");
+
         string baseDir;
         if (OperatingSystem.IsLinux())
         {
@@ -184,7 +210,13 @@ public sealed class OpenRgbProcessManager : IDisposable
     /// the detector MUST be disabled here. Names match the
     /// <c>REGISTER_*_DETECTOR</c> strings in nexus-rgb/openrgb-headless verbatim
     /// (HYTEKeyboardControllerDetect.cpp -> "HYTE Keeb TKL";
-    /// LianLiControllerDetect.cpp -> "Lian Li Uni Hub - SL Infinity";
+    /// LianLiControllerDetect.cpp -> every HID Uni Hub, Strimer L Connect and
+    /// GA II Trinity detector: LianLiHub, StrimerHub and Galahad2Hub drive all of
+    /// them. A Lian Li detector left enabled hands the device to OpenRGB the
+    /// moment its Nexus Control is turned off, so Nexus keeps overriding
+    /// L-Connect. The original "Lian Li Uni Hub" (0x7750) stays enabled: it takes
+    /// libusb control transfers with a custom wIndex, which the native HID worker
+    /// cannot send, so OpenRGB is its only working driver;
     /// CorsairICueLinkControllerDetect.cpp -> "Corsair iCUE Link System Hub";
     /// NZXTHue2ControllerDetect.cpp -> "NZXT Kraken 2024 ELITE Series RGB").
     /// The Kraken is the same raw-HID case as the keeb: OpenRGB's Hue 2 controller
@@ -211,7 +243,10 @@ public sealed class OpenRgbProcessManager : IDisposable
     /// has to happen here.
     /// </summary>
     private static readonly string[] AlwaysDisabledDetectors = {
-        "HYTE Keeb TKL", "Lian Li Uni Hub - SL Infinity", "Corsair iCUE Link System Hub",
+        "HYTE Keeb TKL", "Corsair iCUE Link System Hub",
+        "Lian Li Uni Hub - SL", "Lian Li Uni Hub - AL", "Lian Li Uni Hub - SL V2",
+        "Lian Li Uni Hub - AL V2", "Lian Li Uni Hub - SL V2 v0.5", "Lian Li Uni Hub - SL Infinity",
+        "Lian Li Strimer L Connect", "Lian Li GA II Trinity", "Lian Li GA II Trinity Performance",
         "NZXT Kraken 2024 ELITE Series RGB", "HID LampArray Device",
         // Nollie controllers are driven natively; names match the
         // REGISTER_HID_DETECTOR strings in openrgb-headless.
@@ -623,6 +658,7 @@ public sealed class OpenRgbProcessManager : IDisposable
 
                 _proc = proc;
                 _startedUtc = DateTime.UtcNow;
+                ServiceLog.Info($"[openrgb-proc] spawned pid={proc.Id}");
 
 #if WINDOWS
                 // Tie the headless server's lifetime to ours: an abrupt Nexus.exe
@@ -681,11 +717,23 @@ public sealed class OpenRgbProcessManager : IDisposable
         {
             if (_proc is { HasExited: false })
             {
+                var pid = _proc.Id;
                 _proc.Kill(entireProcessTree: true);
-                _proc.WaitForExit(500);
+                if (_proc.WaitForExit(500))
+                {
+                    ServiceLog.Info($"[openrgb-proc] killed pid={pid}");
+                }
+                else
+                {
+                    // Start() sweeps it again via CleanupOrphans.
+                    ServiceLog.Warn($"[openrgb-proc] pid={pid} still alive 500ms after kill");
+                }
             }
         }
-        catch { /* swallow - best effort */ }
+        catch (Exception ex)
+        {
+            ServiceLog.Warn($"[openrgb-proc] kill failed: {ex.GetType().Name}: {ex.Message}");
+        }
         try
         { _proc?.Dispose(); }
         catch { }
@@ -761,6 +809,17 @@ public sealed class OpenRgbProcessManager : IDisposable
 
                 if (IsKnownNoise(line))
                 {
+                    continue;
+                }
+
+                // Terminal, not noise: the daemon dies before opening its port and
+                // the supervisor respawns into the same wall forever. Distros differ
+                // on which of hidapi/libusb ships by default, so name the package.
+                if (line.Contains("error while loading shared libraries", StringComparison.Ordinal))
+                {
+                    ServiceLog.Error($"[openrgb-proc] RGB engine cannot start: {line.Trim()}. " +
+                        "Install the missing library (Debian/Ubuntu/Mint: libhidapi-hidraw0 libusb-1.0-0; " +
+                        "Fedora/Bazzite: hidapi libusb1; Arch: hidapi libusb), then restart Nexus.");
                     continue;
                 }
 

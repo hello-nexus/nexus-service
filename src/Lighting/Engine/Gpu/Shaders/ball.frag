@@ -1,6 +1,5 @@
-uniform float u_speed;
-uniform float u_size;  // extra: ball radius (0.03..0.25)
-uniform float u_count; // extra: ball count (1..24)
+uniform float u_size; // hint_range(0.03, 0.25, 0.005) = 0.08  ball radius
+uniform float u_count; // hint_range(1.0, 24.0, 1.0) = 8.0  ball count
 void main() {
     vec2 uv = uvCentered();
     float t = u_time * u_speed;

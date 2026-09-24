@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Text.Json;
 using Nexus.Service.Models.Panel;
+using Nexus.Service.Panel;
 
 namespace Nexus.Service.Migration;
 
@@ -66,7 +67,7 @@ internal static class Nexus2Y70Translator
                 Size = size,
                 Config = config,
             };
-            if (Nexus2LayoutPlacement.Append(pages, placed, size))
+            if (Y70LayoutPlacement.Append(pages, placed, size))
             {
                 result.MappedWidgets++;
             }

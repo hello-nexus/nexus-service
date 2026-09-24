@@ -1,7 +1,7 @@
-uniform float u_speed;
-uniform float u_stripes;   // extra: diagonal stripe count (3..16)
-uniform float u_flash;     // extra: beat flash intensity (0.3..2.5)
-uniform float u_chroma;    // extra: chroma shift amount (0..1)
+uniform float u_stripes; // hint_range(3.0, 16.0, 1.0) = 7.0  diagonal stripe count
+uniform float u_flash; // hint_range(0.3, 2.5, 0.05) = 1.2  beat flash intensity
+uniform float u_chroma; // hint_range(0.0, 1.0, 0.05) = 0.5  chroma shift amount
+uniform float u_audioBoost; // hint_range(0.0, 2.0, 0.05) = 1.0
 
 // Full-frame colour strobe. Idle: diagonal stripes of shifting hue slide
 // across the frame. Audio: bass beats snap a new hue and blow out the

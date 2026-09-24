@@ -42,7 +42,9 @@ public sealed class DisplayTopologyService
     private readonly Nexus.Service.Persistence.IConfigStore? _store;
     private readonly object _cacheLock = new();
     private HashSet<string>? _attachedIds;
-    private bool _hasY70Display;
+    // Display id of the attached Y70 panel monitor ("" when none); the
+    // brightness controller routes that id through the Y70 provider.
+    private string _y70DisplayId = "";
     private string _ddcOnlyY70Variant = "";
     private long _attachedIdsAtMs;
     private bool _attachedIdsValid;
@@ -139,11 +141,38 @@ public sealed class DisplayTopologyService
     /// <see cref="GetAttachedIds"/> so device-list polling never issues a
     /// helper RPC per call.
     /// </summary>
-    public bool HasY70Display()
+    public bool HasY70Display() => Y70DisplayId().Length > 0;
+
+    /// <summary>
+    /// <see cref="HasY70Display"/>, or null while the topology is unknown
+    /// (Windows before the user-session helper connects). Callers that would
+    /// otherwise read "unknown" as "absent" use this form.
+    /// </summary>
+    public bool? HasY70DisplayIfKnown()
     {
-        if (TryGetCached(out _, out var hasY70, out _)) return hasY70;
+        if (!TryGetCached(out var ids, out var y70Id, out _))
+        {
+            CacheAttachedIds(_provider.Enumerate());
+            // Both fields under one lock: a concurrent re-enumeration between
+            // the two reads would pair a known id set with an unknown id.
+            lock (_cacheLock)
+            {
+                ids = _attachedIds;
+                y70Id = _y70DisplayId;
+            }
+        }
+        return ids is null ? null : y70Id.Length > 0;
+    }
+
+    /// <summary>
+    /// Id of the attached Y70 panel monitor in the /displays id space, or
+    /// empty. Same cache as <see cref="HasY70Display"/>.
+    /// </summary>
+    public string Y70DisplayId()
+    {
+        if (TryGetCached(out _, out var y70Id, out _)) return y70Id;
         CacheAttachedIds(_provider.Enumerate());
-        lock (_cacheLock) return _hasY70Display;
+        lock (_cacheLock) return _y70DisplayId;
     }
 
     /// <summary>
@@ -159,7 +188,7 @@ public sealed class DisplayTopologyService
         lock (_cacheLock) return _ddcOnlyY70Variant;
     }
 
-    private bool TryGetCached(out HashSet<string>? ids, out bool hasY70, out string ddcOnlyVariant)
+    private bool TryGetCached(out HashSet<string>? ids, out string y70DisplayId, out string ddcOnlyVariant)
     {
         lock (_cacheLock)
         {
@@ -167,13 +196,13 @@ public sealed class DisplayTopologyService
             if (_attachedIdsValid && now - _attachedIdsAtMs <= AttachedIdsMaxAgeMs)
             {
                 ids = _attachedIds;
-                hasY70 = _hasY70Display;
+                y70DisplayId = _y70DisplayId;
                 ddcOnlyVariant = _ddcOnlyY70Variant;
                 return true;
             }
         }
         ids = null;
-        hasY70 = false;
+        y70DisplayId = "";
         ddcOnlyVariant = "";
         return false;
     }
@@ -181,7 +210,7 @@ public sealed class DisplayTopologyService
     private HashSet<string>? CacheAttachedIds(IReadOnlyList<RawDisplayInfo>? raw)
     {
         HashSet<string>? ids = null;
-        var hasY70 = false;
+        var y70DisplayId = "";
         var ddcOnlyVariant = "";
         if (raw is not null)
         {
@@ -189,7 +218,7 @@ public sealed class DisplayTopologyService
             foreach (var info in raw)
             {
                 ids.Add(info.Id);
-                if (!hasY70 && IsY70Display(info.RawHardwareId)) hasY70 = true;
+                if (y70DisplayId.Length == 0 && IsY70Display(info.RawHardwareId)) y70DisplayId = info.Id;
                 if (ddcOnlyVariant.Length == 0)
                     ddcOnlyVariant = Y70DisplayProtocol.DdcOnlyVariantForHardwareId(info.RawHardwareId);
             }
@@ -197,7 +226,7 @@ public sealed class DisplayTopologyService
         lock (_cacheLock)
         {
             _attachedIds = ids;
-            _hasY70Display = hasY70;
+            _y70DisplayId = y70DisplayId;
             _ddcOnlyY70Variant = ddcOnlyVariant;
             _attachedIdsAtMs = Environment.TickCount64;
             _attachedIdsValid = true;
@@ -210,9 +239,9 @@ public sealed class DisplayTopologyService
     /// Fires with the record ids whose capabilities were refreshed by
     /// <see cref="SyncPromotedPanelCapabilities"/>, so a hub-owning listener
     /// can broadcast panel/device (this service has no hub reference). The
-    /// only subscriber is the Windows DisplayTopologyWatcher; on macOS/Linux
-    /// records still refresh but clients pick the change up on their next
-    /// fetch instead of a push.
+    /// Windows and macOS topology watchers subscribe; on Linux records still
+    /// refresh but clients pick the change up on their next fetch instead of
+    /// a push.
     /// </summary>
     public event Action<IReadOnlyList<string>>? PromotedPanelCapabilitiesChanged;
 

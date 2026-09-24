@@ -787,7 +787,7 @@ public sealed class CloudProfileSyncService : BackgroundService
     /// and the Dashboard-relevant fields per ProfileSharing.All - the same
     /// set LoadProfileIntoSettings round-trips on switch/pull) matches one of
     /// the two legitimately pristine states of a bootstrap Default profile:
-    /// a blank NexusSettings, or one with the Silent/Balanced/Turbo curves
+    /// a blank NexusSettings, or one with the Silent/Balanced/Turbo/Max curves
     /// seeded by the same FanProfiles.SeedDefaultPresetCurves call
     /// AutoRestoreOnStart makes ~4s after boot - login can race that delay.
     /// Hardware-bound fields (Keeb, Y70, Devices, PanelDevices) are excluded

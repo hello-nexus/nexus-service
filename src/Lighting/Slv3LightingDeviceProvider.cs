@@ -7,6 +7,7 @@ using Nexus.Service.Lighting.Zones;
 using Nexus.Service.Models.Devices;
 using Nexus.Service.Peripherals.LianLiWireless;
 using Nexus.Service.Persistence;
+using Nexus.Service.Platform;
 
 namespace Nexus.Service.Lighting;
 
@@ -25,6 +26,12 @@ namespace Nexus.Service.Lighting;
 /// indices, "Outer Ring" = the last half - a documented v1 approximation
 /// pending a hardware camera check of the true ring boundary (SLV3's physical
 /// sub-rings are 12+8+12+8).
+///
+/// A bound Strimer Wireless cable is a device of its own on the same link:
+/// one fixed segment holding the whole cable (Slv3Protocol.StrimerGeometryFor),
+/// pre-wired on first sight with its catalog product the way the Nollie 32
+/// pre-wires its Strimer ports, so the card carries the cable's LED map. It
+/// reports no fans, so it never goes through the fan path.
 /// </summary>
 public sealed class Slv3LightingDeviceProvider : ILightingDeviceProvider, ILightingFrameContributor, IDeviceStructureSource
 {
@@ -66,7 +73,49 @@ public sealed class Slv3LightingDeviceProvider : ILightingDeviceProvider, ILight
         var sig = BuildSignature();
         if (sig == _lastSignature) return;
         _lastSignature = sig;
+        WireNewStrimers();
         try { DevicesChanged?.Invoke(); } catch { /* swallow subscriber failures */ }
+    }
+
+    // First sight of a bound Strimer wires its catalog product to the cable:
+    // one zone, the product's LED map applied. ZoneLedCounts is the seeded
+    // marker here as on the Nollie, written even when the product cannot be
+    // wired so the seed runs once; a cable the user has since reset or
+    // re-partitioned is left alone.
+    private void WireNewStrimers()
+    {
+        List<(string DeviceId, string Key, int LedCount)>? cables = null;
+        foreach (var fan in _hub.State.Fans)
+        {
+            if (!fan.BoundToUs || !Slv3Protocol.IsStrimerDevType((byte)fan.DevType)) continue;
+            var ledCount = StrimerLedCountFor((byte)fan.DevType);
+            if (ledCount <= 0) continue;
+            (cables ??= new()).Add((DeviceIdFor(fan.Mac), StrimerProductKeyFor((byte)fan.DevType), ledCount));
+        }
+        if (cables is null) return;
+        var seeded = _store.Load().Devices.ZoneLedCounts;
+        var pending = false;
+        foreach (var cable in cables)
+        {
+            if (!seeded.ContainsKey(cable.DeviceId)) { pending = true; break; }
+        }
+        if (!pending) return;
+        _store.Update(s =>
+        {
+            foreach (var (deviceId, key, ledCount) in cables)
+            {
+                if (s.Devices.ZoneLedCounts.ContainsKey(deviceId)) continue;
+                if (PortChainWriter.WireProduct(s, deviceId, key, ledCount))
+                {
+                    ServiceLog.Info($"[lianli-wireless] pre-wired {deviceId} as {key}");
+                }
+                else
+                {
+                    s.Devices.ZoneLedCounts[deviceId] = ledCount;
+                    ServiceLog.Warn($"[lianli-wireless] {deviceId}: catalog product {key} not wired, cable left as one zone");
+                }
+            }
+        });
     }
 
     private string BuildSignature()
@@ -78,8 +127,9 @@ public sealed class Slv3LightingDeviceProvider : ILightingDeviceProvider, ILight
             if (!fan.BoundToUs) continue;
             // FanType is part of the signature because the family sets the LED
             // count: a chain first seen with a starved beacon (fans_type all 0,
-            // Unknown family) rebuilds once the real subtype arrives.
-            sb.Append('|').Append(fan.Mac).Append(':').Append(fan.FanCount).Append(':').Append(fan.FanType);
+            // Unknown family) rebuilds once the real subtype arrives. DevType
+            // tells a Strimer (and its lane geometry) from a fan chain.
+            sb.Append('|').Append(fan.Mac).Append(':').Append(fan.FanCount).Append(':').Append(fan.FanType).Append(':').Append(fan.DevType);
         }
         return sb.ToString();
     }
@@ -94,15 +144,16 @@ public sealed class Slv3LightingDeviceProvider : ILightingDeviceProvider, ILight
         var slot = 0;
         foreach (var structure in BuildStructures())
         {
+            var iconType = IsStrimerStructure(structure) ? "ledstrip" : "fan";
             foreach (var zone in ZoneResolution.Resolve(structure, settings))
             {
-                resp.Devices.Add(BuildCard(structure, zone, slot++, settings));
+                resp.Devices.Add(BuildCard(structure, zone, slot++, settings, iconType));
             }
         }
         return resp;
     }
 
-    private static LightingDevice BuildCard(DeviceStructure structure, ResolvedZone zone, int slot, NexusSettings settings)
+    private static LightingDevice BuildCard(DeviceStructure structure, ResolvedZone zone, int slot, NexusSettings settings, string iconType)
     {
         var disabled = settings.Devices.DisabledLightingDevices;
         var prefs = settings.Devices.LightingDevicePrefs;
@@ -122,7 +173,7 @@ public sealed class Slv3LightingDeviceProvider : ILightingDeviceProvider, ILight
             DeviceKey = zone.DeviceKey,
             Name = zone.Name,
             Type = "ledstrip",
-            IconType = "fan",
+            IconType = iconType,
             LedsOn = isOn,
             Brightness = pref?.Brightness ?? 100,
             Hue = pref?.Hue ?? 0f,
@@ -298,16 +349,112 @@ public sealed class Slv3LightingDeviceProvider : ILightingDeviceProvider, ILight
         return deviceId.StartsWith(prefix, StringComparison.Ordinal) ? deviceId[prefix.Length..] : "";
     }
 
-    /// <summary>Every currently-bound fan chain as a partitionable structure. Skips a chain reporting 0 fans (no LEDs to build).</summary>
+    /// <summary>Every currently-bound chain as a partitionable structure. Skips a chain with no LEDs to build.</summary>
     internal List<DeviceStructure> BuildStructures()
     {
         var structures = new List<DeviceStructure>();
         foreach (var fan in _hub.State.Fans)
         {
-            if (!fan.BoundToUs || fan.FanCount <= 0) continue;
+            if (!fan.BoundToUs) continue;
+            if (Slv3Protocol.IsStrimerDevType((byte)fan.DevType))
+            {
+                var ledCount = StrimerLedCountFor((byte)fan.DevType);
+                if (ledCount > 0) structures.Add(BuildStrimerStructure(fan, ledCount));
+                continue;
+            }
+            if (fan.FanCount <= 0) continue;
             structures.Add(BuildStructure(fan));
         }
         return structures;
+    }
+
+    // Community mappings pool and auto-apply by card DeviceKey, which the
+    // default zone's card carries (a pre-wired custom zone has none), so each
+    // cable model gets its own key; the shared prefix is what marks a Strimer.
+    private static readonly string StrimerDeviceKeyPrefix =
+        DeviceKeyComputer.ForFirstParty(Slv3Protocol.TxVendorId, Slv3Protocol.TxProductId, "wireless-strimer");
+
+    private static string StrimerDeviceKeyFor(byte devType) => $"{StrimerDeviceKeyPrefix}-{devType}";
+
+    /// <summary>Whole-cable LED count for a Strimer dev_type; 0 when the geometry is unknown.</summary>
+    internal static int StrimerLedCountFor(byte devType)
+    {
+        var (lanes, ledsPerLane) = Slv3Protocol.StrimerGeometryFor(devType);
+        return lanes * ledsPerLane;
+    }
+
+    /// <summary>
+    /// Built-in catalog product pre-wired to a Strimer dev_type. dev_type 1 and
+    /// 3 each cover two cables with the same LED count, so one product carries both.
+    /// </summary>
+    internal static string StrimerProductKeyFor(byte devType) => devType switch
+    {
+        1 => "product:lianli-lian-li-strimer-wireless-gpu-2x8",
+        2 => "product:lianli-lian-li-strimer-wireless-24-pin",
+        3 => "product:lianli-lian-li-strimer-wireless-gpu-3x8",
+        4 => "product:lianli-lian-li-strimer-wireless-cpu-2x8",
+        _ => "",
+    };
+
+    /// <summary>
+    /// True for a structure built by <see cref="BuildStrimerStructure"/>; its
+    /// one segment is the whole cable, not fan rings. Keyed on the structure's
+    /// DeviceKey prefix, so every Strimer model must keep
+    /// <see cref="StrimerDeviceKeyPrefix"/>: a key without it would send the
+    /// frame writer down the fan branch.
+    /// </summary>
+    internal static bool IsStrimerStructure(DeviceStructure structure) =>
+        structure.DeviceKey.StartsWith(StrimerDeviceKeyPrefix, StringComparison.Ordinal);
+
+    /// <summary>
+    /// Model per Strimer dev_type (lian-li.com Strimer Wireless line), the
+    /// unwired default zone's name under the Lian Li Wireless parent.
+    /// </summary>
+    internal static string StrimerModelNameFor(byte devType) => devType switch
+    {
+        1 => "Strimer GPU 2x8 / 16-8",
+        2 => "Strimer 24-Pin",
+        3 => "Strimer GPU 3x8 / 16-12",
+        4 => "Strimer CPU 2x8",
+        _ => "Strimer",
+    };
+
+    // The whole cable as one fixed segment: the firmware sets the LED count,
+    // so there is nothing to resize or chain, and the pre-wired product's
+    // partition (one zone over segment 0) tiles it exactly. The structure is
+    // named for the parent only, so the custom zone reads
+    // "Lian Li Wireless - <product>" and the web groups it with the fans.
+    private static DeviceStructure BuildStrimerStructure(Slv3FanInfo fan, int ledCount)
+    {
+        var deviceId = DeviceIdFor(fan.Mac);
+        var model = StrimerModelNameFor((byte)fan.DevType);
+        var deviceKey = StrimerDeviceKeyFor((byte)fan.DevType);
+        var structure = new DeviceStructure
+        {
+            DeviceId = deviceId,
+            Name = "Lian Li Wireless",
+            DeviceKey = deviceKey,
+        };
+        structure.Segments.Add(new StructureSegment
+        {
+            Index = 0,
+            Name = model,
+            LedCount = ledCount,
+            FrameLedCount = ledCount,
+            Resizable = false,
+            MaxLedCount = ledCount,
+            ZoneType = "linear",
+        });
+        structure.DefaultZones.Add(new DefaultZoneDef
+        {
+            Id = $"{deviceId}:strimer",
+            Name = $"Lian Li Wireless - {model}",
+            RawName = model,
+            DeviceKey = deviceKey,
+            LegacyZoneIndex = -1,
+            Slices = { new ZoneSlice { Segment = 0, Start = 0, Count = ledCount } },
+        });
+        return structure;
     }
 
     /// <summary>Half the family's wire LED count: the two ring zones split each fan's LEDs evenly (v1 approximation).</summary>
@@ -326,7 +473,7 @@ public sealed class Slv3LightingDeviceProvider : ILightingDeviceProvider, ILight
         var structure = new DeviceStructure
         {
             DeviceId = deviceId,
-            Name = $"Lian Li Wireless Fan ({fan.FanCount}x)",
+            Name = "Lian Li Wireless Fan",
             DeviceKey = deviceKey,
         };
         structure.Segments.Add(new StructureSegment
@@ -393,16 +540,22 @@ public sealed class Slv3LightingDeviceProvider : ILightingDeviceProvider, ILight
         return (u, v);
     }
 
+    /// <summary>4-col, 2-row grid, same shape as the MiniHub/NP50 defaults,
+    /// so zone cards stay on canvas instead of wrapping past the bottom
+    /// edge.</summary>
     internal static (float x, float y, float w, float h) DefaultLayout(int slot)
     {
         const float BaseX = 40f;
-        const float Y = 900f;
-        const float W = 200f;
-        const float H = 30f;
-        const float Gap = 220f;
+        const float Y = 370f;
+        const float W = 120f;
+        const float H = 105f;
+        const float Gap = 140f;
         const int Cols = 4;
-        var col = slot % Cols;
-        var row = slot / Cols;
-        return (BaseX + col * Gap, Y + row * (H + 10f), W, H);
+        const int Rows = 2; // 370 + 105 + 105 = 580 ≤ canvas bottom
+        const float RowGap = 105f;
+        var s = ((slot % (Cols * Rows)) + Cols * Rows) % (Cols * Rows);
+        var col = s % Cols;
+        var row = s / Cols;
+        return (BaseX + col * Gap, Y + row * RowGap, W, H);
     }
 }

@@ -79,6 +79,36 @@ public static partial class DevicesRoutes
 
     // Mirror the live per-device power + ignore state into the active preset so
     // a toggle from any surface lands in the preset the user is sitting on.
+    /// <summary>
+    /// Card ids whose Nexus Control state moves together with this one: every
+    /// port of a SmartHub, every link of a chained port, otherwise the card.
+    /// </summary>
+    private static List<string> ControlGroup(string cardId,
+        Nexus.Service.Lighting.Zones.ZoneTopology topology,
+        Nexus.Service.Persistence.NexusSettings settings)
+    {
+        var found = topology.FindZone(cardId, settings);
+        if (found is null) return [cardId];
+        var (structure, _) = found.Value;
+        var group = new List<string>();
+        // The SmartHub's firmware animation is all-or-nothing, so one controlled
+        // port keeps the hub streaming and a port beside it can only go black.
+        var hubId = Nexus.Service.Lighting.SmartHubLightingDeviceProvider.HubIdOf(structure.DeviceId);
+        if (hubId is not null)
+        {
+            foreach (var s in topology.AllStructures())
+            {
+                if (Nexus.Service.Lighting.SmartHubLightingDeviceProvider.HubIdOf(s.DeviceId) != hubId) continue;
+                foreach (var zone in topology.ZonesFor(s, settings)) group.Add(zone.Id);
+            }
+            return group.Count > 0 ? group : [cardId];
+        }
+        if (Nexus.Service.Lighting.Zones.ZoneResolution.ChainOwnedSegments(structure, settings).Count == 0)
+            return [cardId];
+        foreach (var zone in topology.ZonesFor(structure, settings)) group.Add(zone.Id);
+        return group.Count > 0 ? group : [cardId];
+    }
+
     private static void CaptureDeviceStateIntoActive(Nexus.Service.Persistence.IConfigStore store)
     {
         store.Update(s =>
@@ -203,6 +233,7 @@ public static partial class DevicesRoutes
                     ? new Dictionary<string, float>()
                     : new Dictionary<string, float>(kv.Value.Params),
                 Slot = kv.Value.Slot,
+                Locked = kv.Value.Locked,
             };
         }
         return copy;
@@ -279,6 +310,9 @@ public static partial class DevicesRoutes
             var lighting = store.Load().Lighting;
             Nexus.Service.Lighting.LightingDeviceNames.Apply(all.Devices, lighting.DeviceNames);
             all.Groups = lighting.DeviceGroups;
+            // Sanitized on the way out too, so a layout word another build
+            // stored reads as the default rather than reaching the page.
+            all.Stacks = Nexus.Service.Common.DeviceGroupList.SanitizeStacks(lighting.DeviceStacks);
             return all;
         }).AllowPanel();
 
@@ -293,6 +327,19 @@ public static partial class DevicesRoutes
             store.Update(s => s.Lighting.DeviceGroups = groups);
             Nexus.Service.Sockets.PanelTopics.BroadcastLighting(hub);
             return Results.Ok(new SetDeviceGroupsBody { Groups = groups });
+        });
+
+        app.MapPut("/devices/lighting-devices/stacks", (
+            SetDeviceStacksBody body,
+            Nexus.Service.Persistence.IConfigStore store,
+            Nexus.Service.Sockets.MultiplexHub hub,
+            Nexus.Service.Lighting.Engine.LightingEngine engine) =>
+        {
+            var stacks = Nexus.Service.Common.DeviceGroupList.SanitizeStacks(body.Stacks);
+            store.Update(s => s.Lighting.DeviceStacks = stacks);
+            engine.SetStackSlots(stacks);
+            Nexus.Service.Sockets.PanelTopics.BroadcastLighting(hub);
+            return Results.Ok(new SetDeviceStacksBody { Stacks = stacks });
         });
 
         // No existence check: the id is whatever card the list handed the UI, and
@@ -398,6 +445,7 @@ public static partial class DevicesRoutes
                     Saturation = look.Saturation,
                     Contrast = look.Contrast,
                     Slot = look.Slot,
+                    Locked = look.Locked,
                     Params = look.Params is null
                         ? new Dictionary<string, float>()
                         : new Dictionary<string, float>(look.Params),
@@ -678,6 +726,7 @@ public static partial class DevicesRoutes
         app.MapPost("/devices/lighting-devices/controlled", (
             SetLightingDeviceControlledBody body,
             Nexus.Service.Persistence.IConfigStore store,
+            Nexus.Service.Lighting.Zones.ZoneTopology topology,
             Nexus.Service.Lighting.Rgb.RgbBridge? bridge,
             Nexus.Service.Lighting.Smart.SmartLightProvider smart,
             FeatureGates gates) =>
@@ -686,13 +735,19 @@ public static partial class DevicesRoutes
             {
                 return Results.Conflict(new FeatureDisabledResponse { Feature = FeatureNames.Lighting });
             }
-            Nexus.Service.Lighting.LightingControlledState.SetControlled(body.Id, body.Controlled, store);
+            // A chained port is controlled as a whole: the links share one
+            // wire, so handing the port to a vendor app while Nexus still
+            // drives one link means neither owns it.
+            foreach (var id in ControlGroup(body.Id, topology, store.Load()))
+            {
+                Nexus.Service.Lighting.LightingControlledState.SetControlled(id, body.Controlled, store);
+                if (body.Controlled)
+                {
+                    smart.RestoreStatic(id);
+                }
+            }
             CaptureDeviceStateIntoActive(store);
             bridge?.RequestTopologyRefresh();
-            if (body.Controlled)
-            {
-                smart.RestoreStatic(body.Id);
-            }
             return Results.Ok(ApiResponse.Ok());
         }).AllowPanel();
         app.MapPost("/devices/lighting-devices/brightness", (SetLightingDeviceBrightness body, ILightingDeviceProvider ld, FeatureGates gates) =>
@@ -829,6 +884,13 @@ public static partial class DevicesRoutes
             {
                 return Results.Conflict(new FeatureDisabledResponse { Feature = FeatureNames.Lighting });
             }
+            // A locked device keeps its look until the user unlocks it; the
+            // hue/sat prefs stay untouched too, so a later unlock restores
+            // exactly what was locked.
+            if (staticEffects.IsLocked(body.Id))
+            {
+                return Results.Conflict(ApiResponse.Fail("device look is locked"));
+            }
             ld.SetHue(body.Id, body.Hue);
             ld.SetSaturation(body.Id, body.Saturation);
             // The prefs above are device metadata the UI reads back. The
@@ -855,6 +917,31 @@ public static partial class DevicesRoutes
                 });
             }
             CaptureDeviceStateIntoActive(store);
+            return Results.Ok(ApiResponse.Ok());
+        }).AllowPanel();
+
+        // Locks a device onto its Static look: the engine paints it in every
+        // mode and no pick can replace it until it is unlocked. Locking needs a
+        // look to hold, so a device without one answers 404.
+        app.MapPost("/devices/lighting-devices/static-lock", (
+            SetStaticLockBody body,
+            Nexus.Service.Persistence.IConfigStore store,
+            [Microsoft.AspNetCore.Mvc.FromServices] Nexus.Service.Lighting.StaticDeviceEffectTracker staticEffects,
+            FeatureGates gates,
+            Nexus.Service.Sockets.MultiplexHub hub) =>
+        {
+            if (!gates.Lighting)
+            {
+                return Results.Conflict(new FeatureDisabledResponse { Feature = FeatureNames.Lighting });
+            }
+            if (!staticEffects.SetLocked(body.Id, body.Locked))
+            {
+                return Results.NotFound(ApiResponse.Fail("device has no static look to lock"));
+            }
+            CaptureDeviceStateIntoActive(store);
+            // Unlike a pick, a lock changes what OTHER clients may write, so
+            // they re-read the lock flags off this frame.
+            Nexus.Service.Sockets.PanelTopics.BroadcastLighting(hub);
             return Results.Ok(ApiResponse.Ok());
         }).AllowPanel();
 
@@ -907,13 +994,15 @@ public static partial class DevicesRoutes
         {
             var settings = store.Load();
             // defaults=true previews the factory layout: keep persisted LED
-            // counts and the partition (they describe the hardware as wired
-            // and the card shape) but drop mapping + override + group layers.
+            // counts, the partition, and port chains (they describe the
+            // hardware as wired and the card shape) but drop mapping +
+            // override + group layers.
             var effective = defaults == true
                 ? new Nexus.Service.Persistence.NexusSettings
                 {
                     Devices = new Nexus.Service.Persistence.DevicesSettings
                     {
+                        PortChains = settings.Devices.PortChains,
                         ZoneLedCounts = settings.Devices.ZoneLedCounts,
                         ZonePartitions = settings.Devices.ZonePartitions,
                         DeviceAspectRatios = settings.Devices.DeviceAspectRatios,

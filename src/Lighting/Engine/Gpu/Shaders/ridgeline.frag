@@ -1,7 +1,6 @@
-uniform float u_speed;
-uniform float u_layers; // extra: ridge layer count (2..7)
-uniform float u_jag;    // extra: peak frequency / sharpness (1..8)
-uniform float u_height; // extra: ridge height (0.05..0.4)
+uniform float u_layers; // hint_range(2.0, 7.0, 1.0) = 5.0  ridge layer count
+uniform float u_jag; // hint_range(1.0, 8.0, 0.1) = 4.0  peak frequency / sharpness
+uniform float u_height; // hint_range(0.05, 0.4, 0.01) = 0.18  ridge height
 
 // Layered angular mountain ridges with parallax. Opaque crisp silhouettes
 // (hard fill edge + bright ridgeline), built from triangle waves so peaks

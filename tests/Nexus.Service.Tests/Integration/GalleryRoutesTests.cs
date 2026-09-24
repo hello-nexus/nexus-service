@@ -121,6 +121,15 @@ public sealed class GalleryRoutesTests : IDisposable
         return path;
     }
 
+    private string CopyClip(string name)
+    {
+        var fixture = Path.Combine(AppContext.BaseDirectory, "Fixtures", "Gallery", "clip.mp4");
+        Assert.True(File.Exists(fixture), $"missing test fixture {fixture}");
+        var path = Path.Combine(_photosDir, name);
+        File.Copy(fixture, path, overwrite: true);
+        return path;
+    }
+
     private static async Task<T?> ReadAs<T>(HttpResponseMessage res, System.Text.Json.Serialization.Metadata.JsonTypeInfo<T> info)
         => JsonSerializer.Deserialize(await res.Content.ReadAsStringAsync(), info);
 
@@ -162,6 +171,59 @@ public sealed class GalleryRoutesTests : IDisposable
     }
 
     [Fact]
+    public async Task Video_IsEnumeratedAsVideo_AndServedWithRanges()
+    {
+        var client = DesktopClient();
+        var clipBytes = await File.ReadAllBytesAsync(CopyClip("clip.mp4"));
+        WriteImage("a.png");
+        await client.PostAsJsonAsync("/gallery/sources",
+            new AddGallerySourceBody { Path = _photosDir, Kind = GallerySourceKinds.Folder });
+
+        var items = await ReadAs(await client.GetAsync("/gallery/items"), AppJsonContext.Default.GalleryItemsResponse);
+        var clip = Assert.Single(items!.Items, i => i.Name == "clip.mp4");
+        Assert.Equal(GalleryItemKinds.Video, clip.Kind);
+        Assert.Equal(GalleryItemKinds.Image, Assert.Single(items.Items, i => i.Name == "a.png").Kind);
+
+        // The clip itself: untouched bytes, video content type, and the panel's
+        // <video> can seek/loop with byte ranges.
+        var full = await client.GetAsync($"/gallery/items/{clip.Id}/file");
+        Assert.Equal(HttpStatusCode.OK, full.StatusCode);
+        Assert.Equal("video/mp4", full.Content.Headers.ContentType!.MediaType);
+        Assert.Equal("bytes", full.Headers.AcceptRanges.Single());
+        Assert.Equal(clipBytes, await full.Content.ReadAsByteArrayAsync());
+
+        using var rangeReq = new HttpRequestMessage(HttpMethod.Get, $"/gallery/items/{clip.Id}/file");
+        rangeReq.Headers.Range = new RangeHeaderValue(0, 15);
+        var partial = await client.SendAsync(rangeReq);
+        Assert.Equal(HttpStatusCode.PartialContent, partial.StatusCode);
+        Assert.Equal(clipBytes.Take(16).ToArray(), await partial.Content.ReadAsByteArrayAsync());
+    }
+
+    [Fact]
+    public async Task Video_Still_IsAPosterJpeg_OrNotFound_NeverTheClip()
+    {
+        var client = DesktopClient();
+        CopyClip("clip.mp4");
+        await client.PostAsJsonAsync("/gallery/sources",
+            new AddGallerySourceBody { Path = _photosDir, Kind = GallerySourceKinds.Folder });
+        var items = await ReadAs(await client.GetAsync("/gallery/items"), AppJsonContext.Default.GalleryItemsResponse);
+
+        var still = await client.GetAsync($"/gallery/items/{items!.Items[0].Id}/file?w=320");
+
+        // With ffmpeg the first frame comes back as a JPEG; without it the
+        // route must 404 rather than hand the whole clip to an <img>.
+        if (FfmpegResolver.Path is null)
+        {
+            Assert.Equal(HttpStatusCode.NotFound, still.StatusCode);
+        }
+        else
+        {
+            Assert.Equal(HttpStatusCode.OK, still.StatusCode);
+            Assert.Equal("image/jpeg", still.Content.Headers.ContentType!.MediaType);
+        }
+    }
+
+    [Fact]
     public async Task AddSource_RelativePath_IsRejected()
     {
         var res = await DesktopClient().PostAsJsonAsync("/gallery/sources",
@@ -189,8 +251,8 @@ public sealed class GalleryRoutesTests : IDisposable
         Assert.False(parsed!.Error);
         Assert.Equal(StubPicker.StubPaths, parsed.Paths);
         // Unchanged gallery behavior: files (Folder=false) still request the
-        // image-filter multiselect mode, not the deck Browse any-file mode.
-        Assert.Equal(FileDialogPickMode.ImagesMultiSelect, _picker.LastMode);
+        // media-filter multiselect mode, not the deck Browse any-file mode.
+        Assert.Equal(FileDialogPickMode.MediaMultiSelect, _picker.LastMode);
     }
 
     [Fact]

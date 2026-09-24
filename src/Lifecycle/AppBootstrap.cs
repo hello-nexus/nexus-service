@@ -44,8 +44,16 @@ internal static class AppBootstrap
                         ?.Load().Lighting.RenderGpu ?? "auto";
                     if (string.Equals(choice, "auto", StringComparison.OrdinalIgnoreCase))
                     {
+                        Nexus.Service.Lighting.Engine.Gpu.GpuRenderSelect.Backend =
+                            app.Services.GetService<Nexus.Service.Persistence.IConfigStore>()
+                                ?.Load().Lighting.RenderBackend ?? "";
                         app.Lifetime.ApplicationStopping.Register(
                             Nexus.Service.Lighting.Engine.Gpu.GpuRenderSelect.ClearCrashGuardOnStop);
+                        // Pre-login boots have no session; a card that needs one
+                        // gets its retry when a user arrives rather than waiting
+                        // out the off latch.
+                        WindowsServiceHost.SessionLogon += () =>
+                            Nexus.Service.Lighting.Engine.Gpu.GpuRenderSelect.OnSessionLogon(gpu);
                         Nexus.Service.Lighting.Engine.Gpu.GpuRenderSelect.SelectAndWarm(gpu, sw);
                         WatchForLateContext(app, gpu, sw);
                         return;
@@ -182,11 +190,19 @@ internal static class AppBootstrap
             }
             curveEngine.ResetSmoothing();
             lightingEngine.Stop();
+            // A profile reset while it was inactive holds no curves yet (the
+            // boot seed only ran against the profile active at the time);
+            // seed here so it opens on the same four presets a clean install
+            // gets. No-op once the profile has been seeded.
+            FanProfiles.SeedDefaultPresetCurves(fans, configStore);
             // Re-engage engines with the incoming profile's settings so
             // a profile that has "silent" cooling + a plasma effect
             // resumes after the switch instead of leaving the engines
             // idle until the user clicks something.
             LiveEngineSync.Apply(configStore, fans, lightingProvider, gates);
+            // Stacks are lighting-profile state the engine only re-reads on a
+            // stack save, so the incoming profile's slots are pushed here.
+            lightingEngine.SetStackSlots(configStore.Load().Lighting.DeviceStacks);
 
             // Keeb is profile-scoped via the Device sharing category;
             // push the incoming profile's game mode/firmware lighting/

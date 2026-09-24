@@ -1,10 +1,10 @@
-uniform float u_aHue;
-uniform float u_aSat;
-uniform float u_aVal;
-uniform float u_bHue;
-uniform float u_bSat;
-uniform float u_bVal;
-uniform float u_offset;     // rotation of the sweep start, 0..1
+uniform float u_aHue; // hint_range(0.0, 1.0, 0.01) = 0.55
+uniform float u_aSat; // hint_range(0.0, 1.0, 0.01) = 1.0
+uniform float u_aVal; // hint_range(0.0, 1.0, 0.01) = 1.0
+uniform float u_bHue; // hint_range(0.0, 1.0, 0.01) = 0.92
+uniform float u_bSat; // hint_range(0.0, 1.0, 0.01) = 1.0
+uniform float u_bVal; // hint_range(0.0, 1.0, 0.01) = 1.0
+uniform float u_offset; // hint_range(0.0, 1.0, 0.01) = 0.0  rotation of the sweep start, 0..1
 
 // Two colours swept around the centre and blended back at the seam, so the
 // wrap is smooth rather than a hard join.

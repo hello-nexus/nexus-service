@@ -17,7 +17,7 @@ public sealed class ApplyCoolingPresetTool : IMcpTool
 {
     // Matches the day-one contract enum. FanProfiles.GetBuiltInProfiles also
     // lists "custom", which is a derived state, not something this tool applies.
-    private static readonly string[] ValidPresets = { "off", "silent", "balanced", "turbo" };
+    private static readonly string[] ValidPresets = { "off", "silent", "balanced", "turbo", "max" };
 
     private readonly IFanControlProvider _fans;
     private readonly IConfigStore _store;
@@ -36,8 +36,8 @@ public sealed class ApplyCoolingPresetTool : IMcpTool
     public string Title => "Apply Cooling Preset";
 
     public string Description =>
-        "Applies a built-in cooling preset (off, silent, balanced, turbo) to every unlocked fan " +
-        "channel. Use when the user asks to make the PC quiet, cool it down, release fans to BIOS " +
+        "Applies a built-in cooling preset (off, silent, balanced, turbo, max) to every unlocked fan " +
+        "channel. Use when the user asks to make the PC quiet, cool it down, release fans to hardware " +
         "control, or switch to a named cooling mode. Locked fans and fans on their own custom curve " +
         "are left alone.";
 
@@ -46,7 +46,7 @@ public sealed class ApplyCoolingPresetTool : IMcpTool
 
     public string InputSchemaJson =>
         "{\"type\":\"object\",\"properties\":{" +
-        "\"preset\":{\"type\":\"string\",\"enum\":[\"off\",\"silent\",\"balanced\",\"turbo\"]}" +
+        "\"preset\":{\"type\":\"string\",\"enum\":[\"off\",\"silent\",\"balanced\",\"turbo\",\"max\"]}" +
         "},\"required\":[\"preset\"],\"additionalProperties\":false}";
 
     public Task<McpToolExecutionResult> ExecuteAsync(JsonElement? args, CancellationToken ct)

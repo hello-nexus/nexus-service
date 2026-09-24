@@ -45,6 +45,16 @@ public class UserSessionTaskXmlTests
     }
 
     [Fact]
+    public void ElevatedAsksForTheHighestAvailableToken()
+    {
+        var xml = UserSessionTaskXml.Build("Bruno", "taskmgr.exe", elevated: true);
+
+        Assert.Contains("<RunLevel>HighestAvailable</RunLevel>", xml);
+        Assert.Contains("<LogonType>InteractiveToken</LogonType>", xml);
+        Assert.Contains("<Triggers />", xml);
+    }
+
+    [Fact]
     public void SplitsQuotedExePathIntoCommandAndArguments()
     {
         var xml = UserSessionTaskXml.Build("Bruno", "\"C:\\Program Files\\Nexus\\Nexus.exe\" --helper");

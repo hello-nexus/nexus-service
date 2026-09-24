@@ -13,6 +13,10 @@ namespace Nexus.Service.Routes;
 
 public static class CoolingRoutes
 {
+    // Rail block id the cooling page renames the board's own fan headers under;
+    // kept in step with nexus-web's page/deviceGroupName.ts.
+    private const string MotherboardBlockId = "motherboard";
+
     public static void MapCoolingEndpoints(this WebApplication app)
     {
         // Curves
@@ -80,10 +84,22 @@ public static class CoolingRoutes
                     ch.OriginalDeviceName = ch.DeviceName;
                     ch.DeviceName = deviceCustom;
                 }
+                // The board's headers carry no device, so the page groups them under
+                // a synthetic block it names from system specs; a rename of that
+                // block is stored under the block id and has nothing to fall back to.
+                else if (ch.DeviceId is null && names.TryGetValue(MotherboardBlockId, out var blockCustom))
+                {
+                    ch.DeviceName = blockCustom;
+                }
                 ch.Locked = FanProfiles.IsLocked(ch, cooling.FanLockOverrides);
                 ch.Controlled = cooling.UncontrolledFanChannels.Count == 0
                     || !cooling.UncontrolledFanChannels.Contains(ch.Id);
-                ch.Role = cooling.FanRoles.TryGetValue(ch.Id, out var role) ? role : FanRoleKind.None;
+                // An explicit user assignment wins; otherwise a GPU fan reports its
+                // role from the hardware. Derived per read, never persisted, so
+                // re-detection on new hardware just re-derives it.
+                ch.Role = cooling.FanRoles.TryGetValue(ch.Id, out var role) ? role
+                    : ch.IsGpu ? FanRoleKind.Gpu
+                    : FanRoleKind.None;
                 ch.Offset = cooling.FanOffsets.TryGetValue(ch.Id, out var offset) ? offset : 0;
                 ch.SeriesId = Nexus.Service.Monitoring.History.MetricsHistory.SanitizeId(ch.Id);
             }
@@ -304,7 +320,7 @@ public static class CoolingRoutes
             return Results.Ok(new ApplyProfileResponse { Applied = applied });
         }).AllowPanel();
 
-        // Reset a Silent / Balanced / Performance preset curve to its default
+        // Reset a Silent / Balanced / Turbo / Max preset curve to its default
         // type + Linear parameters. Fan attachments stay intact so the active
         // preset doesn't flip to "custom" as a side effect of the reset.
         app.MapPost("/cooling/profile/{name}/reset", (string name, IFanControlProvider f, IConfigStore store, MultiplexHub hub, FeatureGates gates) =>
@@ -314,7 +330,7 @@ public static class CoolingRoutes
                 return Results.Conflict(new FeatureDisabledResponse { Feature = FeatureNames.Cooling });
             }
             var canonical = (name ?? "").ToLowerInvariant();
-            if (canonical != "silent" && canonical != "balanced" && canonical != "turbo")
+            if (canonical is not ("silent" or "balanced" or "turbo" or "max"))
             {
                 return Results.BadRequest(new ApiResponse { Error = true, Msg = $"Cannot reset preset: {name}" });
             }

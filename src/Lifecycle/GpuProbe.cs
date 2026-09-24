@@ -23,12 +23,17 @@ internal static class GpuProbe
     public static int Run(string[] args)
     {
         int? setPref = null;
+        var backend = "";
         for (var i = 0; i < args.Length - 1; i++)
         {
             if (string.Equals(args[i], "--set-pref", StringComparison.OrdinalIgnoreCase)
                 && int.TryParse(args[i + 1], out var p))
             {
                 setPref = p;
+            }
+            else if (string.Equals(args[i], "--backend", StringComparison.OrdinalIgnoreCase))
+            {
+                backend = args[i + 1];
             }
         }
 
@@ -74,10 +79,20 @@ internal static class GpuProbe
         try
         {
             // Shorter than the service's own budget: this child only answers
-            // "does this card hang?". GpuRenderSelect.ProbeWait outlasts it.
+            // "does this card hang?", and an inconclusive verdict condemns
+            // nothing (GpuProbeExit.Verdict). GpuRenderSelect.ProbeWait outlasts
+            // it. A healthy context takes tens of milliseconds.
+            // Sized to the backend under test: WGL lands in tens of
+            // milliseconds, while GLFW's own init is the slow thing the WGL
+            // path exists to avoid, and a budget below it would time out every
+            // probe and answer nothing.
+            var budget = string.Equals(backend, "glfw", StringComparison.OrdinalIgnoreCase)
+                ? TimeSpan.FromSeconds(35)
+                : TimeSpan.FromSeconds(6);
             var gpu = new Nexus.Service.Lighting.Engine.Gpu.GpuContext(160, 90)
             {
-                InitTimeout = TimeSpan.FromSeconds(30),
+                InitTimeout = budget,
+                BackendOverride = backend,
             };
             lock (gpu.Lock)
             {

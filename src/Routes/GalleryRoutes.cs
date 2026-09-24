@@ -14,8 +14,8 @@ using Nexus.Service.Sockets;
 namespace Nexus.Service.Routes;
 
 /// <summary>
-/// Gallery widget backend: per-system shared image sources (referenced
-/// files/folders + uploads). Item reads are panel-accessible; source
+/// Gallery widget backend: per-system shared image and video sources
+/// (referenced files/folders). Item reads are panel-accessible; source
 /// management and the native file-picker dialog are desktop-tier only and
 /// must never be reachable from a paired panel session.
 /// </summary>
@@ -72,7 +72,9 @@ public static class GalleryRoutes
             // client ever has to handle a resize error. Every failure inside
             // the cache - unsupported format, no ffmpeg, an encode that timed
             // out or was too busy - comes back null and falls through here too.
-            if (int.TryParse(ctx.Request.Query["w"], out var requested) && requested > 0)
+            var wantsStill = int.TryParse(ctx.Request.Query["w"], out var requested) && requested > 0;
+            var isVideo = GalleryLibrary.IsVideoFile(path);
+            if (wantsStill)
             {
                 var derived = await resize.GetAsync(id, path, requested, ctx.RequestAborted);
                 if (derived is not null)
@@ -100,9 +102,21 @@ public static class GalleryRoutes
                         // Swept out from under us; the original still works.
                     }
                 }
+
+                // A video has no still to fall back on: 404 rather than land
+                // the whole clip in an <img>. The un-suffixed URL still plays it.
+                if (isVideo)
+                {
+                    return Results.NotFound();
+                }
             }
 
-            return Results.File(path, ContentTypeFor(path));
+            // Without ranges the Chromium <video> on the panel has to land the
+            // whole clip in one uninterrupted response and cannot seek or loop
+            // without refetching it.
+            return isVideo
+                ? Results.File(path, ContentTypeFor(path), enableRangeProcessing: true)
+                : Results.File(path, ContentTypeFor(path));
         }).AllowPanel();
 
         // Hide a folder item / clear a source's exclusion list. References
@@ -135,10 +149,10 @@ public static class GalleryRoutes
         // RequestAborted flows in so closing the page abandons the wait (and
         // kills the dialog child process on macOS/Linux). IFileDialogPicker
         // is shared with /system/pick-path (SystemRoutes.cs); this route
-        // always requests the image-filter multiselect mode.
+        // always requests the media-filter multiselect mode.
         app.MapPost("/gallery/pick", async (GalleryPickBody body, IFileDialogPicker picker, HttpContext ctx) =>
         {
-            var mode = body.Folder ? FileDialogPickMode.Folder : FileDialogPickMode.ImagesMultiSelect;
+            var mode = body.Folder ? FileDialogPickMode.Folder : FileDialogPickMode.MediaMultiSelect;
             var result = await picker.PickAsync(mode, ctx.RequestAborted);
             return new GalleryPickResponse
             {
@@ -177,6 +191,9 @@ public static class GalleryRoutes
             ".gif" => "image/gif",
             ".bmp" => "image/bmp",
             ".avif" => "image/avif",
+            ".mp4" or ".m4v" => "video/mp4",
+            ".webm" => "video/webm",
+            ".mov" => "video/quicktime",
             _ => "application/octet-stream",
         };
 }

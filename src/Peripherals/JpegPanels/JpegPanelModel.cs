@@ -48,8 +48,8 @@ public sealed record JpegPanelModel(
     public bool QuarterTurnCcw { get; init; }
 
     /// <summary>
-    /// The Galahad II's round glass. Shares its protocol - and so its handshake - with the
-    /// HydroShift LCD; the pump head is the only thing that differs between them.
+    /// Square glass: PID 0x7395 is the Galahad II Vision, which this row names "LCD".
+    /// Shares its protocol - and so its handshake - with the HydroShift LCD.
     /// </summary>
     public static readonly JpegPanelModel GalahadIiLcd = new(
         HandlerId: "lianli-galahad2-lcd",
@@ -58,11 +58,11 @@ public sealed record JpegPanelModel(
         ProductIds: new[] { 0x7395 },
         Width: 480,
         Height: 480,
-        Circular: true,
+        Circular: false,
         ReportLength: 1024,
         HeaderStyle: JpegPanelHeaderStyle.LianLiSequenced,
         Selector: 0x0E,
-        Surface: Models.Panel.PanelSurfaces.LcdRound)
+        Surface: Models.Panel.PanelSurfaces.LcdSquare)
     { Fps = GalahadFps, Handshake = new LianLiAioHandshake("lianli-galahad2-lcd", GalahadFps) };
 
     /// <summary>Documented rate for the Galahad II glass.</summary>

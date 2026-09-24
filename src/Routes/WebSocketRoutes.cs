@@ -30,7 +30,18 @@ public static class WebSocketRoutes
             var phoneSessionId = ctx.Items.TryGetValue("PhoneSessionId", out var raw) ? raw as string : null;
             using WebSocket socket = await ctx.WebSockets.AcceptWebSocketAsync();
             var hub = ctx.RequestServices.GetRequiredService<MultiplexHub>();
-            await hub.HandleClientAsync(socket, phoneSessionId, ctx.RequestAborted);
+            // The Q-series watcher reads the open-socket count as the panel's liveness.
+            var tunnel = ctx.RequestServices.GetService<Nexus.Service.Panel.PanelTunnelMonitor>();
+            var onTunnel = tunnel?.IsTunnelRequest(ctx) == true;
+            if (onTunnel) tunnel!.SocketOpened();
+            try
+            {
+                await hub.HandleClientAsync(socket, phoneSessionId, ctx.RequestAborted);
+            }
+            finally
+            {
+                if (onTunnel) tunnel!.SocketClosed();
+            }
         });
 
         // Lighting output - binary 60fps frames (not multiplexed)

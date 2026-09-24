@@ -1,7 +1,7 @@
-uniform float u_speed;
-uniform float u_blobs;      // extra: metaball count (2..9)
-uniform float u_viscosity;  // extra: surface tension - low melts, high beads (0.2..2.5)
-uniform float u_glow;       // extra: inner bloom through the surface (0.3..2)
+uniform float u_blobs; // hint_range(2.0, 9.0, 1.0) = 5.0  metaball count
+uniform float u_viscosity; // hint_range(0.2, 2.5, 0.05) = 1.0  surface tension - low melts, high beads
+uniform float u_glow; // hint_range(0.3, 2.0, 0.05) = 1.0  inner bloom through the surface
+uniform float u_audioBoost; // hint_range(0.0, 2.0, 0.05) = 1.0
 
 // A metaball fluid: overlapping blobs that merge and split like a lava lamp
 // under glass. Each blob is bound to a frequency band, so a busy mix pulls the

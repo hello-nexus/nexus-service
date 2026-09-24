@@ -35,6 +35,35 @@ public class PanelLayoutDtoSerializationTests
     }
 
     [Fact]
+    public void ImmersiveOnLoadWidgetId_round_trips_through_source_gen_context()
+    {
+        var layout = new PanelLayoutDto
+        {
+            Surface = "y70",
+            ImmersiveOnLoadWidgetId = "w-media",
+        };
+
+        var json = JsonSerializer.Serialize(layout, AppJsonContext.Default.PanelLayoutDto);
+        Assert.Contains("immersiveOnLoadWidgetId", json);
+
+        var roundTripped = JsonSerializer.Deserialize(json, AppJsonContext.Default.PanelLayoutDto);
+
+        Assert.NotNull(roundTripped);
+        Assert.Equal("w-media", roundTripped.ImmersiveOnLoadWidgetId);
+    }
+
+    [Fact]
+    public void ImmersiveOnLoadWidgetId_is_null_when_absent_from_legacy_json()
+    {
+        const string json = """{ "surface": "y70", "pages": [] }""";
+
+        var layout = JsonSerializer.Deserialize(json, AppJsonContext.Default.PanelLayoutDto);
+
+        Assert.NotNull(layout);
+        Assert.Null(layout.ImmersiveOnLoadWidgetId);
+    }
+
+    [Fact]
     public void SingleWidgetConfigs_is_null_when_absent_from_legacy_json()
     {
         const string json = """{ "surface": "y70", "pages": [] }""";

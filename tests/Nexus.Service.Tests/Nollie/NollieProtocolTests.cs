@@ -91,6 +91,77 @@ public class NollieProtocolTests
         Assert.Equal("Channel EXT 1", NollieProtocol.ChannelName(28));
     }
 
+    /// <summary>
+    /// The 32-channel board's Strimer connectors are six channels each behind
+    /// one physical plug, so they present as one port apiece between the
+    /// headers and the EXT channels, sized per the vendor's own OpenRGB guidance.
+    /// </summary>
+    [Theory]
+    [InlineData(0x3061, 0x4714)]
+    [InlineData(0x16D5, 0x4714)]
+    [InlineData(0x16D5, 0x2A32)]
+    public void Thirty_two_channel_boards_bundle_the_strimer_channels_into_two_ports(int vid, int pid)
+    {
+        var ports = NollieProtocol.Lookup(vid, pid)!.Ports;
+        Assert.Equal(22, ports.Count);
+
+        var atx = ports[16];
+        Assert.Equal("strimer-atx", atx.Slug);
+        Assert.Equal("Strimer ATX", atx.Name);
+        Assert.Equal(16, atx.FirstChannel);
+        Assert.Equal(6, atx.Lanes);
+        Assert.Equal(20, atx.LaneLedCount);
+        Assert.Equal(120, atx.MaxLedCount);
+        Assert.Equal(NollieProtocol.StrimerAtxProductKey, atx.DefaultProductKey);
+
+        var gpu = ports[17];
+        Assert.Equal("strimer-gpu", gpu.Slug);
+        Assert.Equal("Strimer GPU", gpu.Name);
+        Assert.Equal(22, gpu.FirstChannel);
+        Assert.Equal(6, gpu.Lanes);
+        Assert.Equal(27, gpu.LaneLedCount);
+        Assert.Equal(162, gpu.MaxLedCount);
+        Assert.Equal(NollieProtocol.StrimerGpuProductKey, gpu.DefaultProductKey);
+
+        Assert.Equal("ch15", ports[15].Slug);
+        Assert.Equal("ch28", ports[18].Slug);
+        Assert.Equal("Channel EXT 1", ports[18].Name);
+        Assert.Equal("Channel EXT 4", ports[21].Name);
+        Assert.All(ports.Where(p => p.Lanes == 1), p =>
+        {
+            Assert.Equal(256, p.MaxLedCount);
+            Assert.Null(p.DefaultProductKey);
+        });
+    }
+
+    [Theory]
+    [InlineData(0x16D5, 0x2A16, 16)]
+    [InlineData(0x16D5, 0x2A08, 8)]
+    [InlineData(0x16D5, 0x2A01, 1)]
+    [InlineData(0x16D2, 0x1617, 8)]
+    public void Other_boards_present_one_port_per_channel(int vid, int pid, int channels)
+    {
+        var ports = NollieProtocol.Lookup(vid, pid)!.Ports;
+        Assert.Equal(channels, ports.Count);
+        for (var i = 0; i < ports.Count; i++)
+        {
+            Assert.Equal($"ch{i}", ports[i].Slug);
+            Assert.Equal(i, ports[i].FirstChannel);
+            Assert.Equal(1, ports[i].Lanes);
+        }
+    }
+
+    /// <summary>A dual 8-pin harness is four full lanes; the vendor's guide leaves GPU 5 and 6 at 0.</summary>
+    [Fact]
+    public void Lane_counts_fill_lanes_in_order_and_leave_the_tail_empty()
+    {
+        var gpu = NollieProtocol.Lookup(0x16D5, 0x2A32)!.Ports[17];
+        Assert.Equal(new[] { 27, 27, 27, 27, 0, 0 }, Enumerable.Range(0, 6).Select(l => gpu.LaneLeds(108, l)).ToArray());
+        Assert.Equal(new[] { 27, 27, 27, 27, 27, 27 }, Enumerable.Range(0, 6).Select(l => gpu.LaneLeds(162, l)).ToArray());
+        Assert.Equal(new[] { 27, 3, 0, 0, 0, 0 }, Enumerable.Range(0, 6).Select(l => gpu.LaneLeds(30, l)).ToArray());
+        Assert.Equal(new[] { 0, 0, 0, 0, 0, 0 }, Enumerable.Range(0, 6).Select(l => gpu.LaneLeds(0, l)).ToArray());
+    }
+
     /// <summary>Regression: nollie16_os2 (0x16D5/0x4716) uses the n16 map, not the legacy 16CH map (NollieDevices.cpp:97-104).</summary>
     [Fact]
     public void Nollie16_os2_uses_the_same_map_as_the_os2_1_variant()

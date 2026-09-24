@@ -72,6 +72,9 @@ public static class LocalHttpsCertificate
 
         using var cert = req.CreateSelfSigned(DateTimeOffset.UtcNow.AddDays(-1), DateTimeOffset.UtcNow.AddYears(3));
         var pfx = cert.Export(X509ContentType.Pfx);
+        // The PKCS#12 has no password, so its private key must never be readable
+        // by anyone else - restrict before the bytes land, not after.
+        Persistence.NexusDataPaths.CreateRestricted(path);
         File.WriteAllBytes(path, pfx);
         return X509CertificateLoader.LoadPkcs12(pfx, password: null, GetStorageFlags());
     }
@@ -93,6 +96,10 @@ public static class LocalHttpsCertificate
 
     private static string ResolveCertificatePath()
     {
+        // Root system daemon: one machine-scope cert, no session needed.
+        if (Persistence.NexusDataPaths.SystemDaemonRoot is { } daemonRoot)
+            return Path.Combine(daemonRoot, "nexus-local-https.pfx");
+
         string root;
         if (RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
         {

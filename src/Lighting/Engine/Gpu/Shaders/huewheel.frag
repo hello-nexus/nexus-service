@@ -1,6 +1,6 @@
-uniform float u_aHue;       // rotation of the wheel, 0..1
-uniform float u_aSat;       // colour saturation
-uniform float u_aVal;       // brightness
+uniform float u_aHue; // hint_range(0.0, 1.0, 0.01) = 0.0  rotation of the wheel, 0..1
+uniform float u_aSat; // hint_range(0.0, 1.0, 0.01) = 1.0  colour saturation
+uniform float u_aVal; // hint_range(0.0, 1.0, 0.01) = 1.0  brightness
 
 // Hue wheel swept around the centre.
 void main() {

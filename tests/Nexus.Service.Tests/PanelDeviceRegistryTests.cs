@@ -201,6 +201,67 @@ public sealed class PanelDeviceRegistryTests : IDisposable
     }
 
     [Fact]
+    public void Patch_GaugeGradient_RoundTripsCopiesAndResets()
+    {
+        var record = _registry.Allocate(null, Caps(PanelSurfaces.Phone));
+        Assert.Null(record.GaugeGradient);
+
+        var stops = new List<PanelGaugeGradientStop>
+        {
+            new() { At = 0, Color = "#2563eb" },
+            new() { At = 0.7, Color = "#f59e0b" },
+            new() { At = 1, Color = "#ef4444" },
+        };
+        var patched = _registry.Patch(record.Id, new PanelDevicePatch { GaugeGradient = stops });
+        Assert.Equal(3, patched!.GaugeGradient!.Count);
+        Assert.Equal(0.7, patched.GaugeGradient[1].At);
+        Assert.Equal("#f59e0b", patched.GaugeGradient[1].Color);
+
+        // The record holds its own copy: mutating the caller's list changes nothing.
+        stops[1].Color = "#000000";
+        Assert.Equal("#f59e0b", _registry.Get(record.Id)!.GaugeGradient![1].Color);
+
+        var renamed = _registry.Patch(record.Id, new PanelDevicePatch { DisplayName = "Renamed" });
+        Assert.Equal(3, renamed!.GaugeGradient!.Count);
+
+        var reset = _registry.ResetToDefaults(record.Id);
+        Assert.Null(reset!.GaugeGradient);
+    }
+
+    [Fact]
+    public void Patch_BackgroundMediaSlideshow_RoundTripsAndSurvivesUnrelatedPatch()
+    {
+        var record = _registry.Allocate(null, Caps(PanelSurfaces.Phone));
+        Assert.Null(record.BackgroundMediaSlideshow);
+        Assert.Null(record.BackgroundMediaInterval);
+
+        var patched = _registry.Patch(record.Id, new PanelDevicePatch
+        {
+            BackgroundMediaSlideshow = true,
+            BackgroundMediaInterval = 60,
+            BackgroundMediaShuffle = true,
+            BackgroundMediaFinishVideos = false,
+        });
+        Assert.True(patched!.BackgroundMediaSlideshow);
+        Assert.Equal(60, patched.BackgroundMediaInterval);
+        Assert.True(patched.BackgroundMediaShuffle);
+        Assert.False(patched.BackgroundMediaFinishVideos);
+
+        var renamed = _registry.Patch(record.Id, new PanelDevicePatch { DisplayName = "Renamed" });
+        Assert.True(renamed!.BackgroundMediaSlideshow);
+        Assert.Equal(60, renamed.BackgroundMediaInterval);
+
+        // false is a real value (slideshow off), not "no change".
+        var off = _registry.Patch(record.Id, new PanelDevicePatch { BackgroundMediaSlideshow = false });
+        Assert.False(off!.BackgroundMediaSlideshow);
+        Assert.Equal(60, off.BackgroundMediaInterval);
+
+        var ordered = _registry.Patch(record.Id, new PanelDevicePatch { BackgroundMediaOrder = new List<string> { "b", "a" } });
+        Assert.Equal(new[] { "b", "a" }, ordered!.BackgroundMediaOrder);
+        Assert.Equal(new[] { "b", "a" }, _registry.Patch(record.Id, new PanelDevicePatch { DisplayName = "Again" })!.BackgroundMediaOrder);
+    }
+
+    [Fact]
     public void ResetToDefaults_ClearsCustomizations_KeepsIdentity()
     {
         var record = _registry.Allocate("My Panel", Caps(PanelSurfaces.Phone));
@@ -219,6 +280,11 @@ public sealed class PanelDeviceRegistryTests : IDisposable
             Backdrop = "desktop",
             BackgroundMediaId = "asset-1",
             BackgroundMediaType = "static",
+            BackgroundMediaSlideshow = true,
+            BackgroundMediaInterval = 300,
+            BackgroundMediaShuffle = true,
+            BackgroundMediaFinishVideos = false,
+            BackgroundMediaOrder = new List<string> { "asset-2", "asset-1" },
             BackgroundFrostLevel = 100,
             WidgetOpacity = 0.7,
             WidgetLabels = true,
@@ -247,6 +313,11 @@ public sealed class PanelDeviceRegistryTests : IDisposable
         Assert.Null(reset.Backdrop);
         Assert.Null(reset.BackgroundMediaId);
         Assert.Null(reset.BackgroundMediaType);
+        Assert.Null(reset.BackgroundMediaSlideshow);
+        Assert.Null(reset.BackgroundMediaInterval);
+        Assert.Null(reset.BackgroundMediaShuffle);
+        Assert.Null(reset.BackgroundMediaFinishVideos);
+        Assert.Null(reset.BackgroundMediaOrder);
         Assert.Null(reset.BackgroundFrostLevel);
         Assert.Null(reset.WidgetOpacity);
         Assert.Null(reset.WidgetLabels);

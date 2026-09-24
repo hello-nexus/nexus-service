@@ -128,7 +128,7 @@ internal static class Nexus2WidgetMapping
     }
 
     /// <summary>N2 named Y70 backgrounds -> the closest Nexus 3 shader effect key.
-    /// Unmapped names fall to "aurora", the documented default.</summary>
+    /// Unmapped names fall to the panel background default.</summary>
     public static string MapBackgroundEffect(string? bgName) => bgName switch
     {
         "hue" => "huewheel",
@@ -138,7 +138,7 @@ internal static class Nexus2WidgetMapping
         "oil" => "watercolor",
         "earth" => "nebula",
         "particles" => "starfield",
-        _ => "aurora",
+        _ => "plasma",
     };
 
     private static readonly (string N2, int Ms)[] GalleryIntervalMs =

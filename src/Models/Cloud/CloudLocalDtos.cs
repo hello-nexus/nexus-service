@@ -58,6 +58,12 @@ public sealed class CloudRecoveryStartBody
     public string Email { get; set; } = "";
 }
 
+public sealed class CloudRecoveryStartLocalResponse : ApiResponse
+{
+    /// <summary>Shown on this device and typed into the page the emailed link opens; never carried in the mail.</summary>
+    public string? Code { get; set; }
+}
+
 public sealed class CloudRecoveryStatusResponse : ApiResponse
 {
     /// <summary>"idle" | "pending" | "approved" | "expired"</summary>

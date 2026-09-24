@@ -29,10 +29,17 @@ public sealed class Nexus2MigrationRoutesTests
         public Nexus2DetectionResult Result = Nexus2DetectionResult.None;
         public bool DisableAutostartResult;
         public bool CloseAppResult;
+        public bool UninstallResult;
+        public int UninstallCalls;
 
         public Nexus2DetectionResult Detect() => Result;
         public bool DisableAutostart() => DisableAutostartResult;
         public System.Threading.Tasks.Task<bool> CloseAppAsync() => System.Threading.Tasks.Task.FromResult(CloseAppResult);
+        public System.Threading.Tasks.Task<bool> UninstallAsync()
+        {
+            UninstallCalls++;
+            return System.Threading.Tasks.Task.FromResult(UninstallResult);
+        }
     }
 
     private readonly FakeNexus2Detector _detector = new();
@@ -124,6 +131,47 @@ public sealed class Nexus2MigrationRoutesTests
             _detector.CloseAppResult = false;
 
             var res = await client.PostAsync("/migration/nexus2/close-app", null);
+            using var doc = JsonDocument.Parse(await res.Content.ReadAsStringAsync());
+            Assert.True(doc.RootElement.GetProperty("error").GetBoolean());
+        }
+    }
+
+    [Fact]
+    public async Task Uninstall_requires_auth()
+    {
+        var (factory, _) = Boot();
+        using (factory)
+        {
+            var res = await factory.CreateClient().PostAsync("/migration/nexus2/uninstall", null);
+            Assert.Equal(HttpStatusCode.Unauthorized, res.StatusCode);
+            Assert.Equal(0, _detector.UninstallCalls);
+        }
+    }
+
+    [Fact]
+    public async Task Uninstall_success_reflects_the_detector()
+    {
+        var (factory, client) = Boot();
+        using (factory)
+        {
+            _detector.UninstallResult = true;
+
+            var res = await client.PostAsync("/migration/nexus2/uninstall", null);
+            using var doc = JsonDocument.Parse(await res.Content.ReadAsStringAsync());
+            Assert.False(doc.RootElement.GetProperty("error").GetBoolean());
+            Assert.Equal(1, _detector.UninstallCalls);
+        }
+    }
+
+    [Fact]
+    public async Task Uninstall_failure_reflects_the_detector()
+    {
+        var (factory, client) = Boot();
+        using (factory)
+        {
+            _detector.UninstallResult = false;
+
+            var res = await client.PostAsync("/migration/nexus2/uninstall", null);
             using var doc = JsonDocument.Parse(await res.Content.ReadAsStringAsync());
             Assert.True(doc.RootElement.GetProperty("error").GetBoolean());
         }

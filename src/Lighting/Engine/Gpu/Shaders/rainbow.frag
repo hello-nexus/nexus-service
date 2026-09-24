@@ -1,6 +1,5 @@
-uniform float u_speed;
-uniform float u_density;  // extra: how many band repeats across the frame
-uniform float u_rotation; // extra: band direction in degrees (0..360)
+uniform float u_density; // hint_range(0.2, 3.0, 0.05) = 1.0  how many band repeats across the frame
+uniform float u_rotation; // hint_range(0.0, 360.0, 5.0) = 0.0  band direction in degrees
 
 // Painted-strip spectrum: parallel hue bands sliding across the frame.
 // The rotation slider rotates the band direction; 0 = vertical bands

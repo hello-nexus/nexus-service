@@ -48,4 +48,21 @@ public interface IBulkPanelDriver
 
     /// <summary>Best effort; the device is often already gone.</summary>
     void Disconnect(IBulkUsbPipe pipe, IHidDevice? hid);
+
+    /// <summary>
+    /// Idle time after which the stream re-sends the last frame, for a panel that drops back
+    /// to its own screen when frames stop. 0 means the panel holds a frame on its own.
+    /// </summary>
+    int KeepaliveMs => 0;
+
+    /// <summary>Re-sends the last frame <see cref="SendFrame"/> pushed. False means the link is gone.</summary>
+    bool Resend(IBulkUsbPipe pipe, IHidDevice? hid) => true;
+
+    bool SupportsBrightness => false;
+
+    /// <summary>Sets the backlight, 0-100.</summary>
+    bool SetBrightness(IBulkUsbPipe pipe, IHidDevice? hid, int percent) => false;
+
+    /// <summary>The glass can show a Windows virtual monitor, with touch read off <see cref="ReadPipeId"/>.</summary>
+    bool SupportsSecondaryMonitor => false;
 }

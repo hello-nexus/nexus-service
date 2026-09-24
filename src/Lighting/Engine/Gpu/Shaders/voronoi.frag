@@ -1,7 +1,6 @@
-uniform float u_speed;
-uniform float u_scale;     // extra: cell density (1..6)
-uniform float u_edgeWidth; // extra: glowing border thickness (0.01..0.15)
-uniform float u_drift;     // extra: how much cell centers drift (0..1)
+uniform float u_scale; // hint_range(1.0, 6.0, 0.1) = 3.0  cell density
+uniform float u_edgeWidth; // hint_range(0.01, 0.15, 0.005) = 0.05  glowing border thickness
+uniform float u_drift; // hint_range(0.0, 1.0, 0.02) = 0.6  how much cell centers drift
 
 // Animated Voronoi returning (cell distance, second-closest distance, cell id hash).
 vec3 voronoi2(vec2 p, float t, float drift) {

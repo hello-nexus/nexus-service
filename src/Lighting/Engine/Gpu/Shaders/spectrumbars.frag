@@ -1,7 +1,7 @@
-uniform float u_speed;
-uniform float u_bars;      // extra: bar count (8..16, defaults to 16)
-uniform float u_gap;       // extra: gap between bars (0..0.3)
-uniform float u_glow;      // extra: bar glow spread (0.3..2)
+uniform float u_bars; // hint_range(8.0, 16.0, 1.0) = 16.0  bar count (8..16, defaults to 16)
+uniform float u_gap; // hint_range(0.0, 0.3, 0.01) = 0.12  gap between bars
+uniform float u_glow; // hint_range(0.3, 2.0, 0.05) = 1.0  bar glow spread
+uniform float u_audioBoost; // hint_range(0.0, 2.0, 0.05) = 1.0
 
 // 16 vertical bars filling the frame. Idle: each bar is a sine-wave
 // breathing height, phase-offset so a travelling wave runs across the

@@ -24,7 +24,8 @@ public class StreamDeckPersistenceTests
             Brightness = 42,
             Orientation = 180,
             SleepAfterSeconds = 90,
-            Deck = new DeckConfig
+            SleepWhenLocked = false,
+            LegacyDeck = new DeckConfig
             {
                 Pages = new List<DeckPage>
                 {
@@ -77,8 +78,24 @@ public class StreamDeckPersistenceTests
                     },
                 },
             },
-            ImageRefs = { ["0/0"] = "abc123" },
+            LegacyImageRefs = new Dictionary<string, string> { ["0/0"] = "abc123" },
         };
+        settings.StreamDeck.Presets.Add(new DeckPreset
+        {
+            Id = "p-1",
+            Name = "Discord",
+            Cols = 5,
+            Rows = 3,
+            Apps = new List<PresetAppBinding> { new() { Id = "proc:discord", Name = "Discord", ProcessName = "discord" } },
+            TemplateId = "discord",
+            Author = "Nexus",
+            Version = "1.0.0",
+            Description = "Chat controls",
+        });
+        settings.StreamDeck.Instances["streamdeck:SERIAL-1"] = new DeckInstance { Mode = "custom", ActivePresetId = "p-1" };
+        settings.StreamDeck.Instances["widget:w1"] = new DeckInstance { Mode = "recentApps" };
+        settings.StreamDeck.RecentApps.Add(new RecentApp { ProcessKey = "discord", Name = "Discord", LastFocusedUtcMs = 123 });
+        settings.StreamDeck.RecentAppsExcluded.Add("explorer");
 
         var json = JsonSerializer.Serialize(settings, PersistenceJsonContext.Default.NexusSettings);
         var roundTripped = JsonSerializer.Deserialize(json, PersistenceJsonContext.Default.NexusSettings);
@@ -89,9 +106,10 @@ public class StreamDeckPersistenceTests
         Assert.Equal(42, deck.Brightness);
         Assert.Equal(180, deck.Orientation);
         Assert.Equal(90, deck.SleepAfterSeconds);
-        Assert.Equal("abc123", deck.ImageRefs["0/0"]);
-        Assert.Single(deck.Deck.Pages);
-        var slots = deck.Deck.Pages[0].Slots;
+        Assert.False(deck.SleepWhenLocked);
+        Assert.Equal("abc123", deck.LegacyImageRefs!["0/0"]);
+        Assert.Single(deck.LegacyDeck!.Pages);
+        var slots = deck.LegacyDeck.Pages[0].Slots;
         Assert.Equal(3, slots.Count);
         Assert.Equal("lock", slots[0].Action!.PowerAction);
         Assert.Equal("mute", slots[1].Folder!.Slots[0].Action!.State!.Kind);
@@ -99,6 +117,22 @@ public class StreamDeckPersistenceTests
         Assert.Single(slots[2].Action!.Steps!);
         Assert.Equal(80, slots[2].Action!.Steps![0].Action.NexusAction!.Value);
         Assert.Equal(10, slots[2].Action!.Steps![0].PressMs);
+
+        var preset = roundTripped.StreamDeck.Presets.Find(p => p.Id == "p-1")!;
+        Assert.Equal("Discord", preset.Name);
+        Assert.Equal(5, preset.Cols);
+        Assert.Equal(3, preset.Rows);
+        Assert.Equal("discord", preset.Apps![0].ProcessName);
+        Assert.Equal("discord", preset.TemplateId);
+        Assert.Equal("Nexus", preset.Author);
+        Assert.Equal("1.0.0", preset.Version);
+        Assert.Equal("Chat controls", preset.Description);
+
+        Assert.Equal("p-1", roundTripped.StreamDeck.Instances["streamdeck:SERIAL-1"].ActivePresetId);
+        Assert.Equal("recentApps", roundTripped.StreamDeck.Instances["widget:w1"].Mode);
+        Assert.Equal("discord", roundTripped.StreamDeck.RecentApps[0].ProcessKey);
+        Assert.Equal(123, roundTripped.StreamDeck.RecentApps[0].LastFocusedUtcMs);
+        Assert.Equal("explorer", roundTripped.StreamDeck.RecentAppsExcluded[0]);
     }
 
     [Fact]
@@ -114,6 +148,12 @@ public class StreamDeckPersistenceTests
         var deck = new PhysicalDeckSettings();
         Assert.Equal(0, deck.Orientation);
         Assert.Equal(0, deck.SleepAfterSeconds);
+    }
+
+    [Fact]
+    public void PhysicalDeckSettings_SleepWhenLocked_DefaultsOn()
+    {
+        Assert.True(new PhysicalDeckSettings().SleepWhenLocked);
     }
 }
 
@@ -353,11 +393,22 @@ public sealed class DeckActionSettingsLoadSurvivalTests : IDisposable
     {
         // Also exercises the legacy pre-pagination "deck":{"slots":[...]}
         // shape (no "pages" key) - DeckConfigConverter must normalize it into
-        // one page for this document to load at all.
+        // one page for this document to load at all. "deck" is
+        // PhysicalDeckSettings.LegacyDeck's real pre-v18 wire name (its
+        // JsonPropertyName), not the C# property's own name.
+        // schemaVersion is set to CurrentSchemaVersion, and a preset/instance
+        // already exists, so neither the schema-gated deck-modes migration
+        // nor JsonConfigStore's downgrade-recovery path (empty presets +
+        // instances alongside a Legacy* deck) hoists legacyDeck away before
+        // the assertions below read it.
         var json = "{"
-            + "\"schemaVersion\":11,"
+            + $"\"schemaVersion\":{NexusSettings.CurrentSchemaVersion},"
             + "\"lighting\":{\"globalBrightness\":0.42},"
-            + "\"streamDeck\":{\"decks\":{\"SERIAL-1\":{\"deck\":{\"slots\":[{\"action\":\"not an object\"}]}}}}"
+            + "\"streamDeck\":{"
+            + "\"presets\":[{\"id\":\"p1\",\"name\":\"Existing\",\"cols\":5,\"rows\":3,\"deck\":{\"pages\":[]}}],"
+            + "\"instances\":{\"streamdeck:OTHER\":{\"mode\":\"fixed\",\"activePresetId\":\"p1\"}},"
+            + "\"decks\":{\"SERIAL-1\":{\"deck\":{\"slots\":[{\"action\":\"not an object\"}]}}}"
+            + "}"
             + "}";
         File.WriteAllText(_path, json);
 
@@ -369,7 +420,7 @@ public sealed class DeckActionSettingsLoadSurvivalTests : IDisposable
         Assert.Equal(0.42f, settings.Lighting.GlobalBrightness);
         Assert.False(File.Exists(_path + ".corrupt"));
 
-        var pages = settings.StreamDeck.Decks["SERIAL-1"].Deck.Pages;
+        var pages = settings.StreamDeck.Decks["SERIAL-1"].LegacyDeck!.Pages;
         Assert.Single(pages);
         var slot = pages[0].Slots[0];
         Assert.NotNull(slot.Action);

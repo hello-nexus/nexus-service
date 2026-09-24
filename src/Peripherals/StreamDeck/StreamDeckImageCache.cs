@@ -134,6 +134,32 @@ public sealed class StreamDeckImageCache
         }
     }
 
+    /// <summary>Deletes the entire per-serial cache directory and its in-memory entries. Used by DeckModesMigration once a deck's legacy uploaded key images are hoisted into presets that no longer carry them.</summary>
+    public void DeleteAll(string serial)
+    {
+        if (!IsValidSerial(serial))
+        {
+            return;
+        }
+        try
+        {
+            var dir = Path.Combine(_root, serial);
+            if (Directory.Exists(dir))
+            {
+                Directory.Delete(dir, recursive: true);
+            }
+        }
+        catch
+        {
+            /* best effort */
+        }
+        lock (_memoryLock)
+        {
+            _memoryBySerial.Remove(serial);
+            _memoryLruBySerial.Remove(serial);
+        }
+    }
+
     private void CacheInMemory(string serial, string hash, byte[] bytes)
     {
         lock (_memoryLock)

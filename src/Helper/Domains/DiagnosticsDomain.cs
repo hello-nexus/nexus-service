@@ -11,7 +11,7 @@ namespace Nexus.Service.Helper.Domains;
 /// Payload for <c>diagnostics.openLogs</c>. Service-to-helper, one-way. The
 /// service handler runs as LocalSystem in Session 0, where an explorer.exe it
 /// spawns lands in the non-interactive session and never appears. The helper
-/// runs in the user session, so it opens the logs folder on the user's
+/// runs in the user session, so it opens the Nexus data folder on the user's
 /// desktop. No fields - the envelope's existence is the signal.
 /// </summary>
 public sealed class OpenLogsPayload { }

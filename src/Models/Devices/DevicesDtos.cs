@@ -17,7 +17,7 @@ public sealed class DeviceListItem
     public bool NexusControlEnabled { get; set; } = true;
     /// <summary>True only for first-party handlers whose gate does something: claiming the device through a gate-honoring connection worker, or starting/stopping the vendor driver process that drives it. False when the switch would gate nothing - a plugin handler managing its own hardware - and the UI hides it.</summary>
     public bool SupportsNexusControl { get; set; }
-    /// <summary>True for a Nexus Control device driving non-Hyte/iBUYPOWER hardware (experimental support). Drives the "Experimental" badge in the UI. Always false when SupportsNexusControl is false.</summary>
+    /// <summary>True for a Nexus Control device whose support is experimental (<see cref="Nexus.Service.Devices.DeviceControlPolicy.IsExperimental"/>). Drives the "Experimental" badge in the UI. Always false when SupportsNexusControl is false.</summary>
     public bool Experimental { get; set; }
     /// <summary>Short code for a partial-detection issue (e.g. "usb-disconnected"), or null when there is nothing to flag.</summary>
     public string? Warning { get; set; }
@@ -214,6 +214,8 @@ public class LightingDevice
     public string? OriginalName { get; set; }
     /// <summary>Custom name for the group this card sits under, set only when <see cref="ParentDeviceId"/> itself has been renamed. The group header is otherwise derived from the members' hardware names.</summary>
     public string? ParentName { get; set; }
+    /// <summary>Custom name for the DEVICE this card is a zone of, set only when <see cref="DeviceId"/> itself has been renamed. Carries a split card's header name, which belongs to no single card.</summary>
+    public string? DeviceName { get; set; }
     public string Type { get; set; } = "";
     public string IconType { get; set; } = "";
     public bool LedsOn { get; set; }
@@ -242,7 +244,7 @@ public class LightingDevice
     public string DeviceKey { get; set; } = "";
     /// <summary>Owning device for the device-level settings modal (zone editor routing target). Equals <see cref="Id"/> for single-zone standalone devices and non-partitionable cards.</summary>
     public string DeviceId { get; set; } = "";
-    /// <summary>True when the owning device supports user zone partitions. False for hub ports, smart lights, and 1-LED devices so the UI hides zone management.</summary>
+    /// <summary>True when the owning device supports user zone partitions, including an ARGB port whose zones are the chain the user declared. False for smart lights, 1-LED devices, and any card whose provider builds a fixed list rather than resolving zones, so the UI hides zone management there.</summary>
     public bool ZoneCustomizable { get; set; }
     /// <summary>ConflictAppCatalog ids of the third-party apps that compete with Nexus for this card's hardware (see <see cref="Nexus.Service.Conflicts.ConflictDeviceOwnership"/>). Empty when none maps, and always empty on a card that carries <see cref="ControlHandlerId"/>.</summary>
     public List<string> ConflictAppIds { get; set; } = new();
@@ -256,12 +258,20 @@ public class GetLightingDevicesResponse
     public List<LightingDevice> Devices { get; set; } = new();
     /// <summary>User-made card groups, in display order. Rides the device list so the page needs no second fetch and the lighting topic already refreshes it.</summary>
     public List<Nexus.Service.Persistence.DeviceGroup> Groups { get; set; } = new();
+    /// <summary>Cards stacked on one canvas frame and one selection, riding the list the same way.</summary>
+    public List<Nexus.Service.Persistence.DeviceGroup> Stacks { get; set; } = new();
 }
 
 /// <summary>Whole-list replace for the user-made groups; the client owns order and membership.</summary>
 public class SetDeviceGroupsBody
 {
     public List<Nexus.Service.Persistence.DeviceGroup> Groups { get; set; } = new();
+}
+
+/// <summary>Whole-list replace for the device stacks; the client owns membership.</summary>
+public class SetDeviceStacksBody
+{
+    public List<Nexus.Service.Persistence.DeviceGroup> Stacks { get; set; } = new();
 }
 
 public class SetDisabledLedsBody { public List<string> Devices { get; set; } = new(); }
@@ -353,7 +363,10 @@ public class StaticDeviceLookDto
     /// <summary>Shader params. Without these a client that rebuilds a pick from
     /// this route and re-posts it flattens a pattern to a bare colour.</summary>
     public Dictionary<string, float> Params { get; set; } = new();
+    /// <summary>Held in every mode; picks are refused until unlocked.</summary>
+    public bool Locked { get; set; }
 }
+public class SetStaticLockBody { public string Id { get; set; } = ""; public bool Locked { get; set; } }
 public class SetZoneLedCountBody { public string Id { get; set; } = ""; public int Count { get; set; } }
 public class IdentifyLightingDeviceBody { public string Id { get; set; } = ""; public int DurationMs { get; set; } = 2000; }
 

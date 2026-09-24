@@ -37,6 +37,47 @@ public class ServiceLogTests
         }
     }
 
+    // Records whether the writing thread already holds Console.Out's monitor
+    // when a line reaches the original console writer.
+    private sealed class LockOrderProbe : StringWriter
+    {
+        public bool? HeldConsoleOutOnEntry;
+
+        public override void WriteLine(string? value)
+        {
+            HeldConsoleOutOnEntry = Monitor.IsEntered(Console.Out);
+            base.WriteLine(value);
+        }
+    }
+
+    // Unix ConsolePal locks Console.Out inside every console write. A
+    // Console.Out.WriteLine holds that lock before it reaches the original
+    // writer; the ServiceLog mirror must too, or the two paths take the same
+    // two locks in opposite orders and deadlock on the first interleaving.
+    [NonWindowsFact]
+    public void ServiceLog_mirror_holds_ConsoleOut_before_the_original_writer()
+    {
+        var realOut = Console.Out;
+        var probe = new LockOrderProbe();
+        try
+        {
+            Console.SetOut(probe);
+            ServiceLog.Initialize();
+
+            Console.Out.WriteLine("via console");
+            Assert.True(probe.HeldConsoleOutOnEntry);
+
+            probe.HeldConsoleOutOnEntry = null;
+            ServiceLog.Info("via service-log");
+            Assert.True(probe.HeldConsoleOutOnEntry);
+        }
+        finally
+        {
+            ServiceLog.ResetForTests();
+            Console.SetOut(realOut);
+        }
+    }
+
     [NonWindowsFact]
     public void Initialize_is_idempotent()
     {

@@ -142,12 +142,16 @@ public static class Np50Protocol
         => new byte[] { Frame0, OpControl, 0x0C, animation, r, g, b, brightness, 0x01 };
 
     /// <summary>
-    /// Build the "Get NP50 Firmware Animation" request (3 bytes). Returns 9
-    /// bytes containing the current firmware-driven animation state - opcode
-    /// 0xCC 0x0D per HYTE's <c>ControlHubCommand.GetFwAnimation</c>.
+    /// Build the "Get NP50 Firmware Animation" request (3 bytes). Returns
+    /// <see cref="FirmwareAnimationResponseLength"/> bytes with the current
+    /// firmware-driven animation state - opcode 0xCC 0x0D per HYTE's
+    /// <c>ControlHubCommand.GetFwAnimation</c>.
     /// </summary>
     public static byte[] BuildGetFirmwareAnimation()
         => new byte[] { Frame0, OpControl, 0x0D };
+
+    /// <summary>Bytes the NP50 sends back to <see cref="BuildGetFirmwareAnimation"/> (bench: fw 2.0.5.1).</summary>
+    public const int FirmwareAnimationResponseLength = 8;
 
     /// <summary>
     /// Build the "Get NP50 Firmware Default Mode" request (4 bytes).
@@ -355,24 +359,25 @@ public static class Np50Protocol
         byte Brightness);
 
     /// <summary>
-    /// Parse the 9-byte response to <see cref="BuildGetFirmwareAnimation"/>.
-    /// Layout per spec command #14 v2: 4-byte FF CC 0D 00 header echo, then
-    /// <c>[4]=Animation</c>, <c>[5]=R</c>, <c>[6]=G</c>, <c>[7]=B</c>,
-    /// <c>[8]=FwBrightness</c>.
+    /// Parse the 8-byte response to <see cref="BuildGetFirmwareAnimation"/>:
+    /// the 3-byte FF CC 0D echo, then <c>[3]=Animation</c>, <c>[4]=R</c>,
+    /// <c>[5]=G</c>, <c>[6]=B</c>, <c>[7]=FwBrightness</c>. Same offsets as
+    /// the SmartHub's 0x0D reply and HYTE's ControlHubInfo; fw 2.0.5.1 sends
+    /// exactly 8 bytes (the SmartHub appends a fan byte, the NP50 does not).
     /// </summary>
     public static Np50FwAnimation ParseFirmwareAnimation(ReadOnlySpan<byte> response)
     {
-        if (response.Length < 9)
+        if (response.Length < FirmwareAnimationResponseLength)
             throw new ArgumentException($"Firmware-animation response too short: {response.Length} bytes", nameof(response));
         ExpectHeader(response, OpControl, "GetFirmwareAnimation");
         if (response[2] != 0x0D)
             throw new InvalidOperationException($"Unexpected fw-animation sub-opcode 0x{response[2]:X2}");
         return new Np50FwAnimation(
-            Animation: response[4],
-            R: response[5],
-            G: response[6],
-            B: response[7],
-            Brightness: response[8]);
+            Animation: response[3],
+            R: response[4],
+            G: response[5],
+            B: response[6],
+            Brightness: response[7]);
     }
 
     /// <summary>

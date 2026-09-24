@@ -33,8 +33,10 @@ public static class StagedInstallMarkerStore
     public const string StatePending = "pending";
     public const string StateAttempted = "attempted";
 
+    public const string MarkerFileName = "pending-install.json";
+
     public static string MarkerPath =>
-        Path.Combine(UpdateDownloader.StagingDir, "pending-install.json");
+        Path.Combine(UpdateDownloader.StagingDir, MarkerFileName);
 
     public static StagedInstallMarker? Read()
     {

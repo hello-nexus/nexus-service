@@ -1,6 +1,7 @@
 using System;
 using System.IO;
 using System.IO.Compression;
+using System.Linq;
 using System.Net;
 using System.Net.Http;
 using System.Security.Cryptography;
@@ -86,6 +87,32 @@ public class StoreInstallerTests : IDisposable
         Assert.True(File.Exists(Path.Combine(dir, "manifest.json")));
         Assert.True(File.Exists(Path.Combine(dir, "widget.mjs")));
         Assert.EndsWith("/apps/com.hellonexus.aquarium/1.0.0.nexus-app", handler.LastUrl);
+    }
+
+    [Fact]
+    public async Task an_update_replaces_the_installed_version_and_leaves_nothing_aside()
+    {
+        var v1 = Artifact("com.hellonexus.aquarium", "1.0.0");
+        Assert.True((await New(v1, out _).InstallAsync(Req("com.hellonexus.aquarium", "1.0.0", Sha256(v1)), default)).Ok);
+        var v2 = Artifact("com.hellonexus.aquarium", "1.1.0");
+
+        var res = await New(v2, out _).UpdateAsync(Req("com.hellonexus.aquarium", "1.1.0", Sha256(v2)), default);
+
+        Assert.True(res.Ok);
+        Assert.Contains("\"1.1.0\"", File.ReadAllText(Path.Combine(_root, "com.hellonexus.aquarium", "manifest.json")));
+        Assert.Equal(new[] { "com.hellonexus.aquarium" }, Directory.GetDirectories(_root).Select(Path.GetFileName));
+    }
+
+    [Fact]
+    public async Task an_update_of_an_app_that_is_no_longer_installed_is_refused()
+    {
+        var bytes = Artifact("com.hellonexus.aquarium", "1.1.0");
+
+        var res = await New(bytes, out _).UpdateAsync(Req("com.hellonexus.aquarium", "1.1.0", Sha256(bytes)), default);
+
+        Assert.False(res.Ok);
+        Assert.Equal("not_installed", res.Reason);
+        Assert.Empty(Directory.GetDirectories(_root));
     }
 
     [Fact]

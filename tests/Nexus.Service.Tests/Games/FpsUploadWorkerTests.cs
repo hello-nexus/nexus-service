@@ -37,6 +37,7 @@ public class FpsUploadWorkerTests : IDisposable
     {
         public string Cpu { get; init; } = "Test CPU";
         public IReadOnlyList<string> GpuModels { get; init; } = new[] { "Test GPU" };
+        public IReadOnlyList<GpuReadout> Gpus { get; init; } = Array.Empty<GpuReadout>();
         public string MemoryFormatted { get; init; } = "32 GB";
         public string Motherboard { get; init; } = "Test Board";
 
@@ -45,7 +46,7 @@ public class FpsUploadWorkerTests : IDisposable
         public (bool Healthy, float DistanceToTJMax) GetCpuHealth() => (true, 0f);
         public IReadOnlyList<string> GetGpuModels() => GpuModels;
         public IReadOnlyList<HardwareSensor> GetGpuSensors() => Array.Empty<HardwareSensor>();
-        public IReadOnlyList<GpuReadout> GetGpus() => Array.Empty<GpuReadout>();
+        public IReadOnlyList<GpuReadout> GetGpus() => Gpus;
         public IReadOnlyList<HardwareSensor> GetMemorySensors() => Array.Empty<HardwareSensor>();
         public string GetMemoryTotalFormatted() => MemoryFormatted;
         public string GetRamBrandModel() => "";
@@ -177,6 +178,30 @@ public class FpsUploadWorkerTests : IDisposable
         Assert.Equal("Test GPU", sent.Hardware.Gpu);
         Assert.Equal("Test Board", sent.Hardware.Motherboard);
         Assert.Equal(32L * 1024 * 1024 * 1024, sent.Hardware.RamBytes);
+    }
+
+    [Fact]
+    public async Task RunPendingUploadsAsync_IgpuFirstRig_UploadsTheDiscreteCard()
+    {
+        using var store = new BinaryFpsSessionStore(_dir);
+        store.Append(Session());
+        var config = OptedInStore();
+        var transport = new FakeFpsUploadTransport();
+        var sensors = new StubSensors
+        {
+            GpuModels = new[] { "AMD Radeon Graphics", "AMD Radeon RX 7700 XT" },
+            Gpus = new[]
+            {
+                new GpuReadout { Id = "gpu/0", Name = "AMD Radeon Graphics", Vendor = "AMD", Integrated = true },
+                new GpuReadout { Id = "gpu/1", Name = "AMD Radeon RX 7700 XT", Vendor = "AMD", Integrated = false },
+            },
+        };
+        var worker = MakeWorker(config, store, transport, sensors);
+
+        await worker.RunPendingUploadsAsync(CancellationToken.None);
+
+        var sent = Assert.Single(transport.Sent);
+        Assert.Equal("AMD Radeon RX 7700 XT", sent.Hardware.Gpu);
     }
 
     [Fact]

@@ -6,8 +6,8 @@ namespace Nexus.Service.Persistence;
 
 // Shared POCOs used by both install-defaults (the seed table) and the live
 // NexusSettings document. install-defaults populates the cosmetic + seed fields
-// and leaves runtime-only fields (DashboardLayout, OverlayLayout,
-// DetailedCollapsed) null; the live profile populates runtime-only fields and
+// and leaves runtime-only fields (DashboardLayout, DashboardGaugeGradient,
+// OverlayLayout, DetailedCollapsed) null; the live profile populates runtime-only fields and
 // usually leaves Layouts null because the install-defaults table remains the
 // source of truth for seeding new device records.
 
@@ -74,20 +74,22 @@ public sealed class PanelSettings
     public string? BackgroundColor { get; set; }
     public string? BackgroundColorLight { get; set; }
     public string BackgroundMode { get; set; } = "solid";
-    public string BackgroundEffect { get; set; } = "aurora";
+    public string BackgroundEffect { get; set; } = "plasma";
     public int BackgroundTemplate { get; set; }
-    public double BackgroundOpacity { get; set; } = 0.4;
+    public double BackgroundOpacity { get; set; } = 1.0;
     /// <summary>Opacity of the entire panel surface itself (0 = fully transparent,
     /// desktop wallpaper visible through the kiosk; 1 = fully opaque). Distinct
     /// from BackgroundOpacity which is the dim of the background effect over the
     /// panel's widgets. Surfaced as "Panel Opacity" on monitor-style panels only.</summary>
     public double PanelOpacity { get; set; } = 1.0;
-    public double WidgetOpacity { get; set; } = 1.0;
+    public double WidgetOpacity { get; set; } = 0.7;
     public bool WidgetLabels { get; set; } = false;
     /// <summary>Layout seeds for new device records + first-time desktop dashboard. Populated in install-defaults; null in the live profile (the embedded install-defaults table remains the source of truth for seeding new device records).</summary>
     public PanelLayoutsDefaults? Layouts { get; set; }
     /// <summary>Active desktop dashboard layout (profile-scoped). Null in install-defaults; null in the live profile means "seed from Layouts.Desktop on first load".</summary>
     public PanelLayoutDto? DashboardLayout { get; set; }
+    /// <summary>The desktop dashboard's gauge colour stops (profile-scoped); null = the client default. Device panels keep theirs on the device record.</summary>
+    public List<PanelGaugeGradientStop>? DashboardGaugeGradient { get; set; }
 }
 
 public sealed class OverlaySettings
@@ -240,6 +242,12 @@ public sealed class DiagnosticsSettings
     public int WarningLingerMinutes { get; set; }
     public DiagnosticsNotifications Notifications { get; set; } = new();
     public DiagnosticsComponents Components { get; set; } = new();
+    /// <summary>Health component ids (the HealthComponent.Id values, e.g.
+    /// "storage:&lt;serial&gt;", "cooling:&lt;deviceId&gt;", "gpu:0") the user
+    /// chose to ignore. An ignored component is dropped from GET
+    /// /diagnostics/health, so it never colours the overall status, the panel
+    /// widget or a notification; its own tab still lists the device.</summary>
+    public List<string> IgnoredComponents { get; set; } = new();
 }
 
 public sealed class DiagnosticsSettingsPatch
@@ -248,6 +256,8 @@ public sealed class DiagnosticsSettingsPatch
     public int? WarningLingerMinutes { get; set; }
     public DiagnosticsNotificationsPatch? Notifications { get; set; }
     public DiagnosticsComponentsPatch? Components { get; set; }
+    /// <summary>Replaces the whole list when present.</summary>
+    public List<string>? IgnoredComponents { get; set; }
 }
 
 // PATCH wrappers. POST /preferences accepts PreferencesPatch with optional
@@ -307,6 +317,7 @@ public sealed class PanelSettingsPatch
     public double? WidgetOpacity { get; set; }
     public bool? WidgetLabels { get; set; }
     public PanelLayoutDto? DashboardLayout { get; set; }
+    public List<PanelGaugeGradientStop>? DashboardGaugeGradient { get; set; }
 }
 
 public sealed class OverlaySettingsPatch

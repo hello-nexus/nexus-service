@@ -189,6 +189,6 @@ public class ZoneResolutionTests
         Assert.False(zones[0].IsDefault);
         Assert.Equal(60, zones[0].LedCount);
         Assert.Equal(1, zones[0].FrameLedCount);
-        Assert.Equal(0, ZoneResolution.WholeResizableSegment(structure, zones[0]));
+        Assert.Equal(0, ZoneResolution.WholeResizableSegment(structure, zones[0], settings));
     }
 }

@@ -118,6 +118,28 @@ public static class Slv3Protocol
         _ => Slv3FanFamily.Unknown,
     };
 
+    /// <summary>
+    /// A record in this dev_type range is a Strimer Wireless cable, not a fan
+    /// chain (L-Connect RfDevice: RecType = Strimer). It reports fan_num 0 and
+    /// all-zero fans_type, and takes RGB only.
+    /// </summary>
+    public static bool IsStrimerDevType(byte devType) => devType >= 1 && devType <= 9;
+
+    /// <summary>
+    /// Strimer Wireless lane geometry by dev_type, lanes back to back in the
+    /// RGB buffer (L-Connect RfDevice.LedNum and the RgbEffect.StrimerMode lane
+    /// loops; totals match lian-li.com). A Strimer dev_type without a table
+    /// row is (0, 0).
+    /// </summary>
+    public static (int Lanes, int LedsPerLane) StrimerGeometryFor(byte devType) => devType switch
+    {
+        1 => (4, 29),
+        2 => (6, 22),
+        3 => (6, 29),
+        4 => (4, 22),
+        _ => (0, 0),
+    };
+
     /// <summary>Wire LED count per physical fan (lian-li-linux leds_per_fan). Unknown keeps the bench-verified SLV3 value.</summary>
     public static int LedsPerFanFor(Slv3FanFamily family) => family switch
     {
@@ -573,6 +595,9 @@ public readonly record struct Slv3DeviceRecord(
 
     /// <summary>A record with dev_type 0xFF is another master on the link, not a fan.</summary>
     public bool IsMaster => DevType == 0xFF;
+
+    /// <summary>A Strimer Wireless cable: no fan ports, RGB only.</summary>
+    public bool IsStrimer => Slv3Protocol.IsStrimerDevType(DevType);
 
     /// <summary>
     /// First non-zero per-port fan subtype (0x18=24 SLV3-LCD, 20-23 SLV3-LED,

@@ -1,7 +1,6 @@
-uniform float u_speed;
-uniform float u_tightness; // extra: spiral winding
-uniform float u_spin;      // extra: rotation rate
-uniform float u_bands;     // extra: rainbow band count
+uniform float u_tightness; // hint_range(1.0, 12.0, 0.1) = 5.0  spiral winding
+uniform float u_spin; // hint_range(-3.0, 3.0, 0.05) = 1.0  rotation rate
+uniform float u_bands; // hint_range(1.0, 12.0, 1.0) = 3.0  rainbow band count
 
 // Log-polar rainbow spiral. Bands of the palette repeat along a spiral
 // axis (angle + log(radius)) so the hue sweeps from the outside in. Very

@@ -144,6 +144,108 @@ public class GameSyncGameScannerTests
         }
     }
 
+    // Hogwarts Legacy's layout: the Razer plugin DLL sits five directories
+    // below the install root, deeper than the byte-scan walk goes.
+    [Fact]
+    public void EmitsChroma_UnrealPluginDll_FiveDeep_ReturnsTrue()
+    {
+        var dir = Path.Combine(Path.GetTempPath(), Path.GetRandomFileName());
+        var pluginDir = Path.Combine(dir, "Phoenix", "Plugins", "ChromaSDKPlugin", "Binaries", "Win64");
+        Directory.CreateDirectory(pluginDir);
+        try
+        {
+            File.WriteAllBytes(Path.Combine(pluginDir, "CChromaEditorLibrary64.dll"), Array.Empty<byte>());
+
+            var result = GameSyncGameScanner.EmitsChroma(dir, NullLogger.Instance, out _, out _);
+
+            Assert.True(result);
+        }
+        finally
+        {
+            Directory.Delete(dir, true);
+        }
+    }
+
+    // Fortnite's layout: the Razer plugin ships as an engine plugin, seven
+    // directories below the install root.
+    [Fact]
+    public void EmitsChroma_UnrealEnginePluginDll_SevenDeep_ReturnsTrue()
+    {
+        var dir = Path.Combine(Path.GetTempPath(), Path.GetRandomFileName());
+        var pluginDir = Path.Combine(dir, "Engine", "Plugins", "Experimental", "RazerChromaDevices", "Binaries", "ThirdParty", "Win64");
+        Directory.CreateDirectory(pluginDir);
+        try
+        {
+            File.WriteAllBytes(Path.Combine(pluginDir, "CChromaEditorLibrary64.dll"), Array.Empty<byte>());
+
+            var result = GameSyncGameScanner.EmitsChroma(dir, NullLogger.Instance, out _, out _);
+
+            Assert.True(result);
+        }
+        finally
+        {
+            Directory.Delete(dir, true);
+        }
+    }
+
+    // Battlefield 6's shape: no bundled Chroma DLL, the only SDK reference is
+    // inside a 180 MB executable. The marker sits at the tail so the streamed
+    // read has to cover the whole length. SetLength is sparse on APFS/ext4; NTFS
+    // zero-fills up to the write, which costs a Windows run a second or two.
+    [Fact]
+    public void EmitsChroma_ChromaStringAtTailOfLargeExe_ReturnsTrue()
+    {
+        var dir = Path.Combine(Path.GetTempPath(), Path.GetRandomFileName());
+        Directory.CreateDirectory(dir);
+        try
+        {
+            var exe = Path.Combine(dir, "bf6.exe");
+            WriteFileWithTailMarker(exe, 180L * 1024 * 1024);
+
+            var result = GameSyncGameScanner.EmitsChroma(dir, NullLogger.Instance, out var scanned, out var skipped);
+
+            Assert.True(result);
+            Assert.Equal(1, scanned);
+            Assert.Equal(0, skipped);
+        }
+        finally
+        {
+            Directory.Delete(dir, true);
+        }
+    }
+
+    // Only executables and DLLs get the larger cap: an archive the same size is
+    // still skipped, so big root-level paks cannot eat the per-game byte budget.
+    [Fact]
+    public void EmitsChroma_ChromaStringAtTailOfLargePak_IsSkipped()
+    {
+        var dir = Path.Combine(Path.GetTempPath(), Path.GetRandomFileName());
+        Directory.CreateDirectory(dir);
+        try
+        {
+            var pak = Path.Combine(dir, "assets.pak");
+            WriteFileWithTailMarker(pak, 180L * 1024 * 1024);
+
+            var result = GameSyncGameScanner.EmitsChroma(dir, NullLogger.Instance, out var scanned, out var skipped);
+
+            Assert.False(result);
+            Assert.Equal(0, scanned);
+            Assert.Equal(1, skipped);
+        }
+        finally
+        {
+            Directory.Delete(dir, true);
+        }
+    }
+
+    private static void WriteFileWithTailMarker(string path, long length)
+    {
+        using var fs = new FileStream(path, FileMode.CreateNew, FileAccess.Write);
+        fs.SetLength(length);
+        fs.Seek(-64, SeekOrigin.End);
+        fs.Write(Encoding.ASCII.GetBytes("RzChromatic64.dll"));
+    }
+
     [Fact]
     public void DedupeByInstallDir_SameDir_CollapsesToOne()
     {
@@ -232,7 +334,7 @@ public class GameSyncGameScannerTests
     [Fact]
     public async Task OnScanComplete_FiredAfterScan_WithResults()
     {
-        var scanner = new GameSyncGameScanner(NullLogger<GameSyncGameScanner>.Instance);
+        var scanner = new GameSyncGameScanner(NullLogger<GameSyncGameScanner>.Instance, TempCachePath());
         IReadOnlyList<DetectedGame>? received = null;
         var tcs = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
 
@@ -250,10 +352,56 @@ public class GameSyncGameScannerTests
         Assert.Same(scanner.Games, received);
     }
 
+    // A scanner with no override writes to the real machine cache and the next
+    // one reads it back, so every test here gets its own throwaway path.
+    private static string TempCachePath()
+        => Path.Combine(Path.GetTempPath(), $"nexus-gs-scan-{Guid.NewGuid():N}.json");
+
+    [Fact]
+    public async Task ACompletedScan_SurvivesARestart()
+    {
+        var cache = TempCachePath();
+        try
+        {
+            var first = new GameSyncGameScanner(NullLogger<GameSyncGameScanner>.Instance, cache);
+            var done = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+            first.OnScanComplete = _ => done.TrySetResult(true);
+            first.RequestScan();
+            await done.Task.WaitAsync(TimeSpan.FromSeconds(30));
+
+            // A second instance is the next service start: it must come up with
+            // the last result already in hand, not an empty list.
+            var restarted = new GameSyncGameScanner(NullLogger<GameSyncGameScanner>.Instance, cache);
+            Assert.Equal(first.ScannedAt, restarted.ScannedAt);
+            Assert.Equal(first.Games.Count, restarted.Games.Count);
+        }
+        finally
+        {
+            if (File.Exists(cache)) File.Delete(cache);
+        }
+    }
+
+    [Fact]
+    public void AnUnreadableCache_LeavesTheScannerEmptyRatherThanThrowing()
+    {
+        var cache = TempCachePath();
+        File.WriteAllText(cache, "{ not json");
+        try
+        {
+            var scanner = new GameSyncGameScanner(NullLogger<GameSyncGameScanner>.Instance, cache);
+            Assert.Null(scanner.ScannedAt);
+            Assert.Empty(scanner.Games);
+        }
+        finally
+        {
+            if (File.Exists(cache)) File.Delete(cache);
+        }
+    }
+
     [Fact]
     public async Task RequestScanIfStale_WhenNeverScanned_TriggersScan()
     {
-        var scanner = new GameSyncGameScanner(NullLogger<GameSyncGameScanner>.Instance);
+        var scanner = new GameSyncGameScanner(NullLogger<GameSyncGameScanner>.Instance, TempCachePath());
         var tcs = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
         scanner.OnScanComplete = _ => tcs.TrySetResult(true);
 
@@ -267,7 +415,7 @@ public class GameSyncGameScannerTests
     [Fact]
     public async Task RequestScanIfStale_WhenFresh_DoesNotRescan()
     {
-        var scanner = new GameSyncGameScanner(NullLogger<GameSyncGameScanner>.Instance);
+        var scanner = new GameSyncGameScanner(NullLogger<GameSyncGameScanner>.Instance, TempCachePath());
         var count = 0;
         var firstDone = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
         scanner.OnScanComplete = _ =>

@@ -191,8 +191,9 @@ public static class LightingDevicesCatalog
     /// Devices Nexus drives natively, curated so they carry the correct model,
     /// category, and VID/PID independent of how the OpenRGB fork happens to register
     /// them. VID/PIDs come from the protocol constants under src/Peripherals/*. One
-    /// row per marketed model; a native lighting/cooling driver adds its row here so
-    /// the device shows in the Supported Devices UI.
+    /// row per USB PID a native driver claims (the connected dot matches exact
+    /// VID:PID); a native lighting/cooling driver adds its rows here so the device
+    /// shows in the Supported Devices UI.
     /// </summary>
     private static readonly IReadOnlyList<SupportedDeviceDto> FirstPartyDevices = new List<SupportedDeviceDto>
     {
@@ -200,13 +201,22 @@ public static class LightingDevicesCatalog
         Native("HYTE",    "THICC Q60",              "aio",      "0x3402", "0x0400", screen: true),
         Native("HYTE",    "THICC Q80",              "aio",      "0x3402", "0x0403", screen: true),
         Native("HYTE",    "Nexus Portal NP50",      "light",    "0x3402", "0x0901"),
+        // CNVS: one row per CnvsProtocol.ProductIds entry - the web connected dot matches exact VID:PID.
+        Native("HYTE",    "CNVS",                   "mousemat", "0x3402", "0x0BFF"),
         Native("HYTE",    "CNVS",                   "mousemat", "0x3402", "0x0B00"),
+        Native("HYTE",    "CNVS",                   "mousemat", "0x3402", "0x0B01"),
+        Native("HYTE",    "CNVS",                   "mousemat", "0x3402", "0x0B02"),
         Native("HYTE",    "Keeb TKL",               "keyboard", "0x3402", "0x0300"),
         Native("HYTE",    "Smart Hub",              "light",    "0x3402", "0x0904"),
-        // Y70 cases are screen-only; DDC-only GW/Ina panels enumerate no USB.
+        // Y70 cases are screen-only. The GW / Ina panels enumerate no USB
+        // function at all (identified by monitor EDID, Y70DisplayProtocol.
+        // DdcOnlyPanelVariants), so their rows carry the keyless "-" the
+        // OpenRGB rows use.
         Native("HYTE",    "Y70 Touch",              "case",     "0x3402", "0x0C00", screen: true, rgb: false),
         Native("HYTE",    "Y70 Touch Infinite",     "case",     "0x3402", "0x0C01", screen: true, rgb: false),
         Native("HYTE",    "Y70 Touch Infinite",     "case",     "0x3402", "0x0C02", screen: true, rgb: false),
+        Native("HYTE",    "Y70 Touch GW",           "case",     "-",      "-",      screen: true, rgb: false),
+        Native("HYTE",    "Y70 Ina Touch",          "case",     "-",      "-",      screen: true, rgb: false),
 
         // iBUYPOWER - MiniHub PID from src/Peripherals/Hyte/MiniHub/MiniHubProtocol.cs;
         // keyboard / mouse PIDs from src/Peripherals/Ibp/IbpPeripheralProtocol.cs
@@ -224,6 +234,7 @@ public static class LightingDevicesCatalog
         // LianLiWireless. SL/TL-LCD are the fan-mounted LCD screens.
         Native("Lian Li", "Uni Hub",                "fan",      "0x0CF2", "0x7750"),
         Native("Lian Li", "Uni Fan SL",             "fan",      "0x0CF2", "0xA100"),
+        Native("Lian Li", "Uni Fan SL (Redragon)",  "fan",      "0x0CF2", "0xA106"),
         Native("Lian Li", "Uni Fan AL",             "fan",      "0x0CF2", "0xA101"),
         Native("Lian Li", "Uni Fan SL-Infinity",    "fan",      "0x0CF2", "0xA102"),
         Native("Lian Li", "Uni Fan SL v2",          "fan",      "0x0CF2", "0xA103"),
@@ -233,6 +244,9 @@ public static class LightingDevicesCatalog
         Native("Lian Li", "Galahad II Trinity",     "aio",      "0x0416", "0x7373"),
         Native("Lian Li", "Galahad II Performance", "aio",      "0x0416", "0x7371"),
         Native("Lian Li", "L-Wireless Kit",         "fan",      "0x0416", "0x8040"),
+        // RF-only behind the kit's dongle: no USB identity of its own, so keyless
+        // like the DDC panels (a VID:PID row would merge into the kit's).
+        Native("Lian Li", "Strimer Wireless",       "light",    "-",      "-"),
         Native("Lian Li", "SL-LCD",                 "light",    "0x1CBE", "0x0005", screen: true),
         Native("Lian Li", "TL-LCD",                 "light",    "0x1CBE", "0x0006", screen: true),
 
@@ -276,6 +290,9 @@ public static class LightingDevicesCatalog
         Native("NZXT",    "Kraken Z3",              "aio",      "0x1E71", "0x3008", screen: true),
         Native("NZXT",    "Kraken X3",              "aio",      "0x1E71", "0x2007"),
         Native("NZXT",    "Kraken X3 RGB",          "aio",      "0x1E71", "0x2014"),
+
+        // ZMatrices LCD AIOs - PID from src/Peripherals/BulkPanels/ZMatricesPanelDriver.cs.
+        Native("Aftershock", "Glacier Matrix 360",  "aio",      "0x38C1", "0x0026", screen: true, rgb: false),
 
         // JPEG-over-HID cooler LCDs - PIDs from src/Peripherals/JpegPanels/JpegPanelModel.cs.
         // Screen only: Nexus drives the glass on these, not their RGB. Only the HydroShift

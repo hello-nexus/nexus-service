@@ -14,7 +14,8 @@ public sealed record PnpProblemSnapshot(bool Supported, IReadOnlyList<PnpProblem
 
 /// <summary>
 /// Scans Win32_PnPEntity for devices reporting a Device Manager problem code
-/// (ConfigManagerErrorCode != 0) via the existing powershell.exe shell-out
+/// (ConfigManagerErrorCode != 0, excluding the user-chosen CM_PROB_DISABLED)
+/// via the existing powershell.exe shell-out
 /// pattern (see LibreHardwareSensorProvider.GetStorageBrandModel). Windows-only;
 /// self-gates on <see cref="OperatingSystem.IsWindows"/>. Result is cached for
 /// 5 minutes - this is a diagnostics-page read, not a live poll.
@@ -27,6 +28,7 @@ public sealed class PnpProblemScanner
     // a stuck client retry loop cannot make this spawn powershell.exe continuously.
     private static readonly TimeSpan ForceRefreshFloor = TimeSpan.FromSeconds(5);
     private const int ShellTimeoutMs = 15_000;
+    private const int CmProbDisabled = 22;
 
     private readonly object _gate = new();
     private PnpProblemSnapshot _cached = PnpProblemSnapshot.Unsupported;
@@ -107,7 +109,8 @@ public sealed class PnpProblemScanner
             if (c.ValueKind == JsonValueKind.Number) c.TryGetInt32(out code);
             else if (c.ValueKind == JsonValueKind.String) int.TryParse(c.GetString(), out code);
         }
-        if (code == 0) return;
+        // A disabled device is a state the user chose, not a problem to report.
+        if (code == 0 || code == CmProbDisabled) return;
 
         result.Add(new PnpProblemDevice(name, deviceId, code, ProblemCodeName(code)));
     }

@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
@@ -10,8 +11,11 @@ namespace Nexus.Service.Activity;
 
 /// <summary>
 /// Real macOS shortcuts provider.
-/// - GetAll() enumerates /Applications, /System/Applications, and
-///   ~/Applications for .app bundles
+/// - GetAll() enumerates /Applications, /System/Applications (+ Utilities),
+///   and ~/Applications for .app bundles
+/// - GetById() also accepts a fully-qualified .app path as its own id, so an
+///   app outside those folders (Recent Apps reports the focused app's bundle
+///   path) still launches, resolves an icon, and matches by display name
 /// - GetIcon() renders the bundle icon through the shared MacAppIconExtractor
 ///   (NSWorkspace, so Assets.car-only bundles resolve too)
 /// - Launch() shells out to `open -a`
@@ -26,6 +30,8 @@ public sealed class MacShortcutsProvider : IShortcutsProvider
     private List<Shortcut>? _appCache;
     private DateTime _appCacheExpiry;
     private readonly object _appLock = new();
+    // Bundle-path ids synthesized by GetById; cleared with each app-list rebuild so an in-place app update is picked up.
+    private readonly ConcurrentDictionary<string, Shortcut> _bundleCache = new(StringComparer.Ordinal);
 
     private const int ShortcutIconSizePts = 128;
     private static readonly TimeSpan IconCacheTtl = TimeSpan.FromHours(1);
@@ -58,6 +64,7 @@ public sealed class MacShortcutsProvider : IShortcutsProvider
         {
             "/Applications",
             "/System/Applications",
+            "/System/Applications/Utilities",
             Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), "Applications"),
         };
 
@@ -92,15 +99,46 @@ public sealed class MacShortcutsProvider : IShortcutsProvider
             _appCache = ordered;
             _appCacheExpiry = DateTime.UtcNow + AppListCacheTtl;
         }
+        _bundleCache.Clear();
         return ordered;
     }
 
     public Shortcut? GetById(string targetId)
     {
-        return GetAll().FirstOrDefault(s =>
+        var known = GetAll().FirstOrDefault(s =>
             string.Equals(s.Id, targetId, StringComparison.OrdinalIgnoreCase) ||
             string.Equals(s.Name, targetId, StringComparison.OrdinalIgnoreCase));
+        if (known is not null)
+        {
+            return known;
+        }
+        if (_bundleCache.TryGetValue(targetId, out var cached))
+        {
+            return cached;
+        }
+        // Nothing else accepts a caller path, so it must be a fully-qualified
+        // .app that exists.
+        if (!IsBundlePath(targetId))
+        {
+            return null;
+        }
+        var name = Path.GetFileNameWithoutExtension(targetId);
+        var info = ReadInfoPlist(targetId);
+        var synthesized = new Shortcut
+        {
+            Id = targetId,
+            Name = name,
+            Path = targetId,
+            ProcessName = info.DisplayName ?? name,
+        };
+        _bundleCache[targetId] = synthesized;
+        return synthesized;
     }
+
+    private static bool IsBundlePath(string path) =>
+        Path.GetExtension(path).Equals(".app", StringComparison.OrdinalIgnoreCase)
+        && Path.IsPathFullyQualified(path)
+        && Directory.Exists(path);
 
     public byte[] GetIcon(string targetId)
     {
@@ -112,20 +150,16 @@ public sealed class MacShortcutsProvider : IShortcutsProvider
             }
         }
 
-        // A targetId that is not a known shortcut may still be a bundle path a
-        // deck key was bound to directly; nothing else accepts a caller path,
-        // so it must be a fully-qualified .app that exists.
-        var shortcut = GetById(targetId);
-        var path = shortcut?.Path;
+        var path = GetById(targetId)?.Path;
         if (path is null)
         {
-            var isBundle = Path.GetExtension(targetId).Equals(".app", StringComparison.OrdinalIgnoreCase);
-            if (!isBundle || !Path.IsPathFullyQualified(targetId) || !Directory.Exists(targetId))
-            {
-                return Array.Empty<byte>();
-            }
-            path = targetId;
+            return Array.Empty<byte>();
         }
+
+        // NSWorkspace badges a symlinked bundle as a Finder alias (Safari lives in the cryptex), so extract from the resolved target.
+        try { path = new DirectoryInfo(path).ResolveLinkTarget(returnFinalTarget: true)?.FullName ?? path; }
+        catch (IOException) { }
+        catch (UnauthorizedAccessException) { }
 
         // A null (extractor timeout) is not cached, so a transient stall does
         // not pin an empty icon for the whole TTL. The smaller proposed size

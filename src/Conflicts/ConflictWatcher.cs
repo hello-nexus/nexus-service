@@ -49,7 +49,7 @@ public sealed class ConflictWatcher : BackgroundService, IConflictDetector
     private readonly MultiplexHub _hub;
     private readonly OpenRgbProcessManager? _openRgb;
 
-    private static readonly TimeSpan PollInterval = TimeSpan.FromSeconds(5);
+    internal static readonly TimeSpan PollInterval = TimeSpan.FromSeconds(5);
 
     /// <summary>
     /// A gap longer than this between scans means scanning had stopped, so the
@@ -176,7 +176,9 @@ public sealed class ConflictWatcher : BackgroundService, IConflictDetector
         // other: without this it would be handed whatever the cache last held.
         EnsureFresh();
         var bytes = _cachedEnvelope;
-        return bytes is null ? null : new ReadOnlyMemory<byte>(bytes);
+        // Not a ternary: null would convert through byte[] into an empty, non-null envelope.
+        if (bytes is null) return null;
+        return new ReadOnlyMemory<byte>(bytes);
     }
 
     public override void Dispose()

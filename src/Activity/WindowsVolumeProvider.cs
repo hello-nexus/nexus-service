@@ -46,11 +46,14 @@ public sealed unsafe class WindowsVolumeProvider : IVolumeProvider, IDisposable
         _queue.Dispose();
     }
 
-    public VolumeState GetState()
+    public VolumeState GetState() => GetState("");
+
+    public VolumeState GetState(string deviceId)
     {
         return RunOnComThread(() =>
         {
-            var ep = OpenEndpoint();
+            var ep = OpenEndpoint(deviceId);
+            if (ep == IntPtr.Zero) return new VolumeState { Supported = false, Volume = 0, Muted = false };
             try
             {
                 var hrV = GetMasterVolumeLevelScalar(ep, out var v);
@@ -60,15 +63,18 @@ public sealed unsafe class WindowsVolumeProvider : IVolumeProvider, IDisposable
                 return new VolumeState { Supported = true, Volume = Math.Clamp((double)v, 0, 1), Muted = m };
             }
             finally { Release(ep); }
-        }, fallback: new VolumeState { Supported = true, Volume = 0, Muted = false }, op: "read");
+        }, fallback: new VolumeState { Supported = deviceId.Length == 0, Volume = 0, Muted = false }, op: "read");
     }
 
-    public void SetVolume(double volume)
+    public void SetVolume(double volume) => SetVolume("", volume);
+
+    public void SetVolume(string deviceId, double volume)
     {
         var clamped = (float)Math.Clamp(volume, 0, 1);
         RunOnComThread(() =>
         {
-            var ep = OpenEndpoint();
+            var ep = OpenEndpoint(deviceId);
+            if (ep == IntPtr.Zero) return 0;
             try
             {
                 var hrBefore = GetMasterVolumeLevelScalar(ep, out var before);
@@ -98,11 +104,14 @@ public sealed unsafe class WindowsVolumeProvider : IVolumeProvider, IDisposable
         catch { /* logging is best-effort */ }
     }
 
-    public void SetMuted(bool muted)
+    public void SetMuted(bool muted) => SetMuted("", muted);
+
+    public void SetMuted(string deviceId, bool muted)
     {
         RunOnComThread(() =>
         {
-            var ep = OpenEndpoint();
+            var ep = OpenEndpoint(deviceId);
+            if (ep == IntPtr.Zero) return 0;
             try { Marshal.ThrowExceptionForHR(SetMute(ep, muted, IntPtr.Zero)); return 0; }
             finally { Release(ep); }
         }, fallback: 0, op: "mute");
@@ -163,15 +172,30 @@ public sealed unsafe class WindowsVolumeProvider : IVolumeProvider, IDisposable
         return result;
     }
 
-    private static IntPtr OpenEndpoint()
+    /// <summary>Empty <paramref name="deviceId"/> opens the default render
+    /// endpoint; otherwise the named endpoint. Returns IntPtr.Zero (not a
+    /// throw) when a named device id no longer exists, so a device unplugged
+    /// mid-session degrades to unsupported rather than an exception.</summary>
+    private static IntPtr OpenEndpoint(string deviceId = "")
     {
         var clsid = MMDeviceEnumeratorClsid;
         var enumIid = IID_IMMDeviceEnumerator;
         Marshal.ThrowExceptionForHR(CoCreateInstance(ref clsid, IntPtr.Zero, ClsCtxInprocServer, ref enumIid, out var enumPtr));
         try
         {
-            // IMMDeviceEnumerator::GetDefaultAudioEndpoint - vtable slot 4 (after QI/AddRef/Release/EnumAudioEndpoints)
-            Marshal.ThrowExceptionForHR(GetDefaultAudioEndpoint(enumPtr, EDataFlow.eRender, ERole.eConsole, out var devicePtr));
+            int hrDevice;
+            IntPtr devicePtr;
+            if (deviceId.Length == 0)
+            {
+                // IMMDeviceEnumerator::GetDefaultAudioEndpoint - vtable slot 4 (after QI/AddRef/Release/EnumAudioEndpoints)
+                hrDevice = GetDefaultAudioEndpoint(enumPtr, EDataFlow.eRender, ERole.eConsole, out devicePtr);
+            }
+            else
+            {
+                // IMMDeviceEnumerator::GetDevice - vtable slot 5
+                hrDevice = GetDevice(enumPtr, deviceId, out devicePtr);
+            }
+            if (hrDevice < 0 || devicePtr == IntPtr.Zero) return IntPtr.Zero;
             try
             {
                 var iid = IID_IAudioEndpointVolume;
@@ -189,6 +213,15 @@ public sealed unsafe class WindowsVolumeProvider : IVolumeProvider, IDisposable
         // vtable[4] = GetDefaultAudioEndpoint(this, dataFlow, role, &device)
         var fn = (delegate* unmanaged[Stdcall]<IntPtr, EDataFlow, ERole, out IntPtr, int>)GetVTableSlot(enumeratorPtr, 4);
         return fn(enumeratorPtr, dataFlow, role, out device);
+    }
+
+    private static int GetDevice(IntPtr enumeratorPtr, string deviceId, out IntPtr device)
+    {
+        // vtable[5] = GetDevice(this, pwstrId, &device)
+        var fn = (delegate* unmanaged[Stdcall]<IntPtr, IntPtr, out IntPtr, int>)GetVTableSlot(enumeratorPtr, 5);
+        var idPtr = Marshal.StringToHGlobalUni(deviceId);
+        try { return fn(enumeratorPtr, idPtr, out device); }
+        finally { Marshal.FreeHGlobal(idPtr); }
     }
 
     private static int Activate(IntPtr devicePtr, ref Guid iid, int clsCtx, IntPtr activationParams, out IntPtr endpoint)

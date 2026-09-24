@@ -13,4 +13,7 @@ public interface IAudioDeviceProvider
     AudioDeviceList ListDevices();
     bool SetDefaultOutput(string deviceId);
     bool SetDefaultInput(string deviceId);
+    /// <summary>Switches the endpoint's spatial sound format; empty turns it
+    /// off. Only ids from <see cref="AudioDeviceList.Spatial"/> are accepted.</summary>
+    bool SetSpatial(string deviceId, string formatId);
 }

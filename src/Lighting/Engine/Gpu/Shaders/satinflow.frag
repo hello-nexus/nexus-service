@@ -1,7 +1,6 @@
-uniform float u_speed;
-uniform float u_folds; // extra: ribbon count (2..8)
-uniform float u_flow;  // extra: flow rate (0.2..2)
-uniform float u_sheen; // extra: highlight intensity (0.2..2)
+uniform float u_folds; // hint_range(2.0, 8.0, 1.0) = 5.0  ribbon count
+uniform float u_flow; // hint_range(0.2, 2.0, 0.05) = 1.0  flow rate
+uniform float u_sheen; // hint_range(0.2, 2.0, 0.05) = 1.0  highlight intensity
 
 // Flowing satin: overlapping low-frequency ribbons advected across the
 // frame, with a specular sheen band that sweeps over the fabric.

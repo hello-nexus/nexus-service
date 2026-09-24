@@ -13,12 +13,12 @@ using RgbColor = Nexus.Service.Peripherals.Hyte.Np50.RgbColor;
 namespace Nexus.Service.Lighting;
 
 /// <summary>
-/// Streams engine frames to every bound SLV3 wireless fan chain as a
-/// single-frame RF_RgbSync animation - an "OpenRGB-style / live direct
-/// mode". There is no
+/// Streams engine frames to every bound SLV3 wireless fan chain (and Strimer
+/// Wireless cable) as a single-frame RF_RgbSync animation - an "OpenRGB-style
+/// / live direct mode". There is no
 /// firmware ROM-effect catalog exposed for wireless fans: every tick composes
 /// each chain's resolved zone frames into a fan-major buffer (the family's
-/// wire LED count per fan) and pushes it through
+/// wire LED count per fan; a Strimer's whole cable) and pushes it through
 /// <see cref="Slv3Hub.SendRgbFrame"/> only when the buffer content changed,
 /// or when the chain's RX-reported effect_index has had time to echo the last
 /// push and still disagrees (the push was lost, or the chain reset). L-Connect
@@ -43,6 +43,12 @@ public sealed class Slv3LightingFrameWriter : IHostedService, IDisposable
     // Static single-frame animation: the interval only matters if the
     // firmware were looping multiple frames, which direct mode never sends.
     private const int IntervalMs = 100;
+
+    // Floor between two upload attempts of a Strimer's pre-rendered animation:
+    // a max-size upload is dozens of RF payloads, so a brightness drag sends
+    // its settled value instead of every step, and a failing upload retries at
+    // this pace instead of every tick.
+    private const int PresetMinPushIntervalMs = 500;
 
     // SegmentFrameComposer already applies the zone's LightingDevicePrefs
     // brightness and the global brightness to the composed colors, so this
@@ -142,7 +148,7 @@ public sealed class Slv3LightingFrameWriter : IHostedService, IDisposable
         if (devices.Length == 0) return;
 
         var settings = _store.Load();
-        var globalBrightness = Math.Clamp(settings.Lighting.GlobalBrightness, 0f, 1f);
+        var globalBrightness = MasterBrightness.Effective(settings.Lighting);
         var disabled = settings.Devices.DisabledLightingDevices;
         var uncontrolled = settings.Devices.UncontrolledLightingDevices;
         var prefs = settings.Devices.LightingDevicePrefs;
@@ -152,18 +158,6 @@ public sealed class Slv3LightingFrameWriter : IHostedService, IDisposable
         var liveMacs = new HashSet<string>(structures.Count);
 
         var minPushIntervalMs = MinPushIntervalMs * Math.Max(1, structures.Count);
-
-        Slv3FanInfo? FindFanInfo(string macHex)
-        {
-            foreach (var fan in _hub.State.Fans)
-            {
-                if (string.Equals(fan.Mac, macHex, StringComparison.OrdinalIgnoreCase))
-                {
-                    return fan;
-                }
-            }
-            return null;
-        }
 
         foreach (var structure in structures)
         {
@@ -178,31 +172,50 @@ public sealed class Slv3LightingFrameWriter : IHostedService, IDisposable
                 // so its reactive/onboard mode can take over.
                 continue;
             }
+            if (settings.Devices.LianLiWireless.Chains.TryGetValue(macHex, out var chainLighting)
+                && chainLighting.Mode != LianLiWirelessChainLighting.ModeCustom
+                && TickPreset(macHex, structure, zones, disabled, chainLighting, globalBrightness, nowTicks))
+            {
+                continue;
+            }
+
             SegmentFrameComposer.EnsureBuffers(structure, ref _segmentBuffers);
             SegmentFrameComposer.Compose(
                 structure, zones, devices, disabled, uncontrolled, prefs, globalBrightness, 1.0, nowTicks, _identify, _segmentBuffers);
 
-            // Ring length is family-dependent; it must match the provider's
-            // structure for this chain or the fan-major interleave below
-            // misaligns.
-            var fanInfo = FindFanInfo(macHex);
-            if (fanInfo is null) continue;
-            var ringLen = Slv3LightingDeviceProvider.RingLedsFor(fanInfo);
-            var ledsPerFan = ringLen * 2;
-            var fanCount = structure.Segments[Slv3LightingDeviceProvider.InnerSegment].LedCount / ringLen;
-            if (fanCount <= 0) continue;
-            var totalLeds = fanCount * ledsPerFan;
-            EnsureWireBuffer(totalLeds);
-
-            var inner = _segmentBuffers[Slv3LightingDeviceProvider.InnerSegment];
-            var outer = _segmentBuffers[Slv3LightingDeviceProvider.OuterSegment];
-            for (var f = 0; f < fanCount; f++)
+            int totalLeds;
+            if (Slv3LightingDeviceProvider.IsStrimerStructure(structure))
             {
-                var baseIdx = f * ledsPerFan;
-                for (var i = 0; i < ringLen; i++)
+                // The cable's one segment is the wire buffer, in wire order.
+                var cable = _segmentBuffers[0];
+                totalLeds = cable.Length;
+                EnsureWireBuffer(totalLeds);
+                cable.CopyTo(_wireBuffer, 0);
+            }
+            else
+            {
+                // Ring length is family-dependent; it must match the provider's
+                // structure for this chain or the fan-major interleave below
+                // misaligns.
+                var fanInfo = FindFanInfo(macHex);
+                if (fanInfo is null) continue;
+                var ringLen = Slv3LightingDeviceProvider.RingLedsFor(fanInfo);
+                var ledsPerFan = ringLen * 2;
+                var fanCount = structure.Segments[Slv3LightingDeviceProvider.InnerSegment].LedCount / ringLen;
+                if (fanCount <= 0) continue;
+                totalLeds = fanCount * ledsPerFan;
+                EnsureWireBuffer(totalLeds);
+
+                var inner = _segmentBuffers[Slv3LightingDeviceProvider.InnerSegment];
+                var outer = _segmentBuffers[Slv3LightingDeviceProvider.OuterSegment];
+                for (var f = 0; f < fanCount; f++)
                 {
-                    _wireBuffer[baseIdx + i] = inner[f * ringLen + i];
-                    _wireBuffer[baseIdx + ringLen + i] = outer[f * ringLen + i];
+                    var baseIdx = f * ledsPerFan;
+                    for (var i = 0; i < ringLen; i++)
+                    {
+                        _wireBuffer[baseIdx + i] = inner[f * ringLen + i];
+                        _wireBuffer[baseIdx + ringLen + i] = outer[f * ringLen + i];
+                    }
                 }
             }
 
@@ -251,6 +264,172 @@ public sealed class Slv3LightingFrameWriter : IHostedService, IDisposable
         }
     }
 
+    private Slv3FanInfo? FindFanInfo(string macHex)
+    {
+        foreach (var fan in _hub.State.Fans)
+        {
+            if (string.Equals(fan.Mac, macHex, StringComparison.OrdinalIgnoreCase))
+            {
+                return fan;
+            }
+        }
+        return null;
+    }
+
+    /// <summary>
+    /// Uploads a chain's pre-rendered animation when its settings, brightness
+    /// or power changed, or when the echo shows the last upload was lost; the
+    /// chain plays it on its own in between. False when the mode cannot be
+    /// rendered, so the caller streams the engine frames instead.
+    /// </summary>
+    private bool TickPreset(
+        string macHex, DeviceStructure structure, IReadOnlyList<ResolvedZone> zones, List<string> disabled,
+        LianLiWirelessChainLighting lighting, float globalBrightness, long nowTicks)
+    {
+        var fan = FindFanInfo(macHex);
+        if (fan is null)
+        {
+            return true;
+        }
+        // An identify flash is composed into the engine frames, so it streams.
+        foreach (var zone in zones)
+        {
+            if (_identify.TryGetActive(zone.Id, nowTicks, out _))
+            {
+                return false;
+            }
+        }
+        var isStrimer = Slv3LightingDeviceProvider.IsStrimerStructure(structure);
+        var (lanes, ledsPerLane) = Slv3Protocol.StrimerGeometryFor((byte)fan.DevType);
+        var family = Slv3Protocol.ClassifyFanFamily((byte)fan.FanType);
+        var fanCount = isStrimer
+            ? 0
+            : structure.Segments[Slv3LightingDeviceProvider.InnerSegment].LedCount / Slv3LightingDeviceProvider.RingLedsFor(fan);
+        // A beacon with every port empty classifies the chain Unknown for one
+        // poll; the uploaded loop keeps playing rather than being overwritten.
+        if (!isStrimer && family == Slv3FanFamily.Unknown)
+        {
+            return true;
+        }
+        // CL fans pair a center with an outer ring of a different length,
+        // which the uniform two-ring chain layout does not describe.
+        var ledCount = isStrimer ? lanes * ledsPerLane : fanCount * Slv3Protocol.LedsPerFanFor(family);
+        if (ledCount <= 0 || (!isStrimer && (family == Slv3FanFamily.Cl || fanCount > Slv3FanEffects.MaxFans)))
+        {
+            return false;
+        }
+
+        var poweredOff = zones.Count > 0;
+        foreach (var zone in zones)
+        {
+            if (!disabled.Contains(zone.Id))
+            {
+                poweredOff = false;
+                break;
+            }
+        }
+        var brightnessPercent = poweredOff || _engine.Blackout
+            ? 0
+            : (int)Math.Round(Math.Clamp(lighting.Brightness, 0, 4) * 25 * globalBrightness);
+
+        var sig = PresetSignature(lighting, brightnessPercent, ledCount);
+        _lastSent.TryGetValue(macHex, out var last);
+        var sinceLastPushMs = _lastPushTicks.TryGetValue(macHex, out var lastPush)
+            ? (nowTicks - lastPush) / TimeSpan.TicksPerMillisecond
+            : long.MaxValue;
+        // A stale chain's echo is frozen while the RX reports no list, not a lost upload.
+        var confirmed = fan.Stale ? "" : fan.EffectIndex;
+        var lost = !string.IsNullOrEmpty(last.EffectIndexHex)
+            && confirmed.Length > 0
+            && sinceLastPushMs >= DriftConfirmWindowMs
+            && !string.Equals(confirmed, last.EffectIndexHex, StringComparison.OrdinalIgnoreCase);
+        if ((last.Hash == sig && !lost) || sinceLastPushMs < PresetMinPushIntervalMs)
+        {
+            return true;
+        }
+
+        Slv3StrimerAnimation animation;
+        if (brightnessPercent == 0)
+        {
+            animation = new Slv3StrimerAnimation { Frames = new byte[ledCount * 3], FrameCount = 1, IntervalMs = IntervalMs };
+        }
+        else
+        {
+            try
+            {
+                animation = isStrimer
+                    ? RenderStrimerPreset(lighting, lanes, ledsPerLane)
+                    : Slv3FanEffects.Render(family, lighting.Mode, fanCount, lighting.Speed, lighting.Direction, ParseColors(lighting.Colors));
+            }
+            catch (ArgumentException)
+            {
+                return false;
+            }
+        }
+
+        _lastPushTicks[macHex] = nowTicks;
+        if (_hub.SendRgbAnimation(
+                macHex, animation.Frames, ledCount, animation.FrameCount, animation.IntervalMs, brightnessPercent, out var sentEffectIndexHex))
+        {
+            _lastSent[macHex] = (sig, sentEffectIndexHex);
+        }
+        return true;
+    }
+
+    private static Slv3StrimerAnimation RenderStrimerPreset(LianLiWirelessChainLighting lighting, int lanes, int ledsPerLane)
+    {
+        if (lighting.Mode == LianLiWirelessChainLighting.ModePerLane)
+        {
+            var laneSettings = new List<(string Key, int Direction, RgbColor Color)>(lanes);
+            for (var i = 0; i < lanes; i++)
+            {
+                var lane = i < lighting.Lanes.Count ? lighting.Lanes[i] : new LianLiWirelessLane();
+                laneSettings.Add((lane.Mode, lane.Direction, ParseColor(lane.Color)));
+            }
+            return Slv3StrimerEffects.RenderPerLane(lanes, ledsPerLane, lighting.Speed, laneSettings);
+        }
+        return Slv3StrimerEffects.Render(lighting.Mode, lanes, ledsPerLane, lighting.Speed, lighting.Direction, ParseColors(lighting.Colors));
+    }
+
+    private static List<RgbColor> ParseColors(List<string> hexes)
+    {
+        var colors = new List<RgbColor>(hexes.Count);
+        foreach (var hex in hexes)
+        {
+            colors.Add(ParseColor(hex));
+        }
+        return colors;
+    }
+
+    private static RgbColor ParseColor(string hex)
+    {
+        var s = hex.StartsWith('#') ? hex[1..] : hex;
+        return s.Length == 6 && int.TryParse(s, System.Globalization.NumberStyles.HexNumber, null, out var v)
+            ? new RgbColor((byte)(v >> 16), (byte)(v >> 8), (byte)v)
+            : new RgbColor(0, 0, 0);
+    }
+
+    private static int PresetSignature(LianLiWirelessChainLighting lighting, int brightnessPercent, int ledCount)
+    {
+        var hc = new HashCode();
+        hc.Add(lighting.Mode);
+        hc.Add(lighting.Speed);
+        hc.Add(lighting.Direction);
+        hc.Add(brightnessPercent);
+        hc.Add(ledCount);
+        foreach (var c in lighting.Colors)
+        {
+            hc.Add(c);
+        }
+        foreach (var lane in lighting.Lanes)
+        {
+            hc.Add(lane.Mode);
+            hc.Add(lane.Direction);
+            hc.Add(lane.Color);
+        }
+        return hc.ToHashCode();
+    }
+
     private void EnsureWireBuffer(int totalLeds)
     {
         if (_wireBuffer.Length < totalLeds)
@@ -266,7 +445,7 @@ public sealed class Slv3LightingFrameWriter : IHostedService, IDisposable
         {
             if (string.Equals(fans[i].Mac, macHex, StringComparison.OrdinalIgnoreCase))
             {
-                return fans[i].EffectIndex;
+                return fans[i].Stale ? "" : fans[i].EffectIndex;
             }
         }
         return "";

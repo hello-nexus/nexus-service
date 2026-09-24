@@ -48,6 +48,7 @@ public sealed class StreamedPanelCoordinator : BackgroundService
     private readonly PanelDeviceRegistry _registry;
     private readonly DeviceControlGate _gate;
     private readonly Action? _notifyOverlay;
+    private readonly Action<string>? _notifyPanelChanged;
     private readonly Func<long> _nowMs;
 
     public StreamedPanelCoordinator(
@@ -56,13 +57,15 @@ public sealed class StreamedPanelCoordinator : BackgroundService
         PanelDeviceRegistry registry,
         DeviceControlGate gate,
         Action? notifyOverlay = null,
-        Func<long>? nowMs = null)
+        Func<long>? nowMs = null,
+        Action<string>? notifyPanelChanged = null)
     {
         _discoveries = discoveries.ToList();
         _store = store;
         _registry = registry;
         _gate = gate;
         _notifyOverlay = notifyOverlay;
+        _notifyPanelChanged = notifyPanelChanged;
         _nowMs = nowMs ?? (() => DateTimeOffset.UtcNow.ToUnixTimeMilliseconds());
     }
 
@@ -194,6 +197,66 @@ public sealed class StreamedPanelCoordinator : BackgroundService
         return ids;
     }
 
+    /// <summary>Applies a persisted panel backlight change without waiting for a frame.</summary>
+    public void ApplyBrightness(string panelDeviceId)
+    {
+        lock (_lock)
+        {
+            foreach (var ds in _bySerial.Values)
+            {
+                if (ds.Session.Closed || !string.Equals(ds.Session.PanelDeviceId, panelDeviceId, StringComparison.Ordinal))
+                    continue;
+                (ds.Transport as IBrightnessPanelTransport)?.ApplyBrightness();
+                return;
+            }
+        }
+    }
+
+    /// <summary>
+    /// Starts or stops the Windows monitor after a settings edit, then re-publishes the
+    /// assignments: a panel showing the desktop gets no render host. Stopping joins the feed's
+    /// threads, so it runs off the caller's thread.
+    /// </summary>
+    public void ApplySecondaryMonitor(string panelDeviceId)
+    {
+        ISecondaryMonitorTransport? transport = null;
+        lock (_lock)
+        {
+            foreach (var ds in _bySerial.Values)
+            {
+                if (!ds.Session.Closed && string.Equals(ds.Session.PanelDeviceId, panelDeviceId, StringComparison.Ordinal))
+                {
+                    transport = ds.Transport as ISecondaryMonitorTransport;
+                    break;
+                }
+            }
+        }
+        _notifyOverlay?.Invoke();
+        if (transport is not null)
+        {
+            _ = Task.Run(transport.ApplySecondaryMonitor);
+        }
+    }
+
+    /// <summary>Monitor state per panel record id, for the records whose monitor is on.</summary>
+    public Dictionary<string, string> SecondaryMonitorStates()
+    {
+        var states = new Dictionary<string, string>(StringComparer.Ordinal);
+        lock (_lock)
+        {
+            foreach (var ds in _bySerial.Values)
+            {
+                if (!ds.Session.Closed && ds.Transport is ISecondaryMonitorTransport { SecondaryMonitorState: { } state })
+                    states[ds.Session.PanelDeviceId] = state;
+            }
+        }
+        return states;
+    }
+
+    private bool ShowsSecondaryMonitor(DeviceSession ds) =>
+        ds.Info.Profile.SupportsSecondaryMonitor
+        && _registry.Get(ds.Session.PanelDeviceId)?.SecondaryMonitor == true;
+
     /// <summary>Suppresses assignments while a focus mode asks for rendering to stop; the overlay closes its render hosts on the empty list and rebuilds them when it returns.</summary>
     public void SetRenderingPaused(bool paused)
     {
@@ -216,7 +279,7 @@ public sealed class StreamedPanelCoordinator : BackgroundService
 
             foreach (var ds in _bySerial.Values)
             {
-                if (ds.Session.Closed) continue;
+                if (ds.Session.Closed || ShowsSecondaryMonitor(ds)) continue;
                 var p = ds.Info.Profile;
                 response.Assignments.Add(new StreamAssignmentDto
                 {
@@ -378,6 +441,11 @@ public sealed class StreamedPanelCoordinator : BackgroundService
             if (transport is IBrightnessPanelTransport dimmable)
             {
                 dimmable.BindBrightness(() => _registry.Get(panelId)?.LcdBrightness);
+            }
+            if (transport is ISecondaryMonitorTransport monitorable)
+            {
+                monitorable.BindSecondaryMonitor(() => _registry.Get(panelId)?.SecondaryMonitor == true);
+                monitorable.SecondaryMonitorStateChanged += () => _notifyPanelChanged?.Invoke(panelId);
             }
             transport.Open();
             transport.StartPlayer();

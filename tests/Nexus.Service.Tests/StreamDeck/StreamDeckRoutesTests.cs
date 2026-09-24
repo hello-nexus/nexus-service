@@ -23,6 +23,7 @@ using Nexus.Service.Persistence;
 using Nexus.Service.Routes;
 using Nexus.Service.Tests.Integration;
 using Xunit;
+using static Nexus.Service.Tests.StreamDeck.DeckTestHelpers;
 
 namespace Nexus.Service.Tests.StreamDeck;
 
@@ -83,12 +84,9 @@ public sealed class StreamDeckRoutesTests : IClassFixture<StreamDeckRouteHostFac
         var worker = _host.Services.GetRequiredService<StreamDeckConnectionWorker>();
         worker.ClearSimulatedModel();
         worker.ResetPerDeckStateForTests();
-        _host.ClearImageCache();
     }
 
     private SpyDeckActionExecutor Executor => _host.Executor;
-
-    private string ImageCacheDir => _host.ImageCacheDir;
 
     private (SharedHost factory, HttpClient client) Boot()
     {
@@ -129,6 +127,7 @@ public sealed class StreamDeckRoutesTests : IClassFixture<StreamDeckRouteHostFac
             Assert.Equal(mini.Transform, entry.GetProperty("transform").GetString());
             Assert.Equal(0, entry.GetProperty("orientation").GetInt32());
             Assert.Equal(0, entry.GetProperty("sleepAfterSeconds").GetInt32());
+            Assert.True(entry.GetProperty("sleepWhenLocked").GetBoolean());
             Assert.True(!entry.TryGetProperty("warning", out var warningEl) || warningEl.ValueKind == JsonValueKind.Null);
             Assert.True(!entry.TryGetProperty("conflictAppId", out var conflictEl) || conflictEl.ValueKind == JsonValueKind.Null);
         }
@@ -302,7 +301,7 @@ public sealed class StreamDeckRoutesTests : IClassFixture<StreamDeckRouteHostFac
             store.Update(s => s.StreamDeck.Decks[serial] = new PhysicalDeckSettings
             {
                 ProductId = mini.ProductId,
-                Deck = new DeckConfig
+                LegacyDeck = new DeckConfig
                 {
                     Pages =
                     {
@@ -311,6 +310,7 @@ public sealed class StreamDeckRoutesTests : IClassFixture<StreamDeckRouteHostFac
                     },
                 },
             });
+            store.Update(s => ActivateLegacyDeck(s, serial));
             Assert.True(worker.SetNav(serial, 1, new[] { 0 }));
 
             var res = await client.GetAsync("/streamdeck/decks");
@@ -346,497 +346,6 @@ public sealed class StreamDeckRoutesTests : IClassFixture<StreamDeckRouteHostFac
     }
 
     [Fact]
-    public async Task GetConfig_WithNoPersistedDeck_ReturnsAnEmptyConfig()
-    {
-        var (factory, client) = Boot();
-        using (factory)
-        {
-            var res = await client.GetAsync("/streamdeck/decks/UNKNOWN-SERIAL/config");
-            Assert.True(res.IsSuccessStatusCode);
-            using var doc = JsonDocument.Parse(await res.Content.ReadAsStringAsync());
-            var pages = doc.RootElement.GetProperty("config").GetProperty("pages");
-            Assert.Equal(1, pages.GetArrayLength());
-            Assert.Empty(pages[0].GetProperty("slots").EnumerateArray());
-        }
-    }
-
-    [Fact]
-    public async Task PutConfig_ThenGetConfig_RoundTripsTheSlotTree()
-    {
-        var (factory, client) = Boot();
-        using (factory)
-        {
-            var putBody = "{\"config\":{\"pages\":[{\"slots\":[{\"label\":\"Lock\",\"action\":{\"type\":\"power\",\"action\":\"lock\"}}]}]}}";
-            var put = await client.PutAsync("/streamdeck/decks/SERIAL-1/config", Json(putBody));
-            Assert.True(put.IsSuccessStatusCode);
-
-            var get = await client.GetAsync("/streamdeck/decks/SERIAL-1/config");
-            using var doc = JsonDocument.Parse(await get.Content.ReadAsStringAsync());
-            var slots = doc.RootElement.GetProperty("config").GetProperty("pages")[0].GetProperty("slots");
-            Assert.Equal(1, slots.GetArrayLength());
-            Assert.Equal("Lock", slots[0].GetProperty("label").GetString());
-            Assert.Equal("lock", slots[0].GetProperty("action").GetProperty("action").GetString());
-
-            var store = factory.Services.GetRequiredService<IConfigStore>();
-            Assert.Equal("Lock", store.Load().StreamDeck.Decks["SERIAL-1"].Deck.Pages[0].Slots[0].Label);
-        }
-    }
-
-    [Fact]
-    public async Task PutConfig_ThenGetConfig_RoundTripsTheTitleStyle()
-    {
-        var (factory, client) = Boot();
-        using (factory)
-        {
-            var putBody = "{\"config\":{\"pages\":[{\"slots\":[{\"label\":\"Lock\",\"title\":{"
-                + "\"show\":true,\"align\":\"top\",\"font\":\"mono\",\"size\":18,"
-                + "\"bold\":true,\"italic\":false,\"underline\":true,\"color\":\"#ff0000\"},"
-                + "\"action\":{\"type\":\"power\",\"action\":\"lock\"}}]}]}}";
-            var put = await client.PutAsync("/streamdeck/decks/SERIAL-1/config", Json(putBody));
-            Assert.True(put.IsSuccessStatusCode);
-
-            var get = await client.GetAsync("/streamdeck/decks/SERIAL-1/config");
-            using var doc = JsonDocument.Parse(await get.Content.ReadAsStringAsync());
-            var slot = doc.RootElement.GetProperty("config").GetProperty("pages")[0].GetProperty("slots")[0];
-            var title = slot.GetProperty("title");
-            Assert.True(title.GetProperty("show").GetBoolean());
-            Assert.Equal("top", title.GetProperty("align").GetString());
-            Assert.Equal("mono", title.GetProperty("font").GetString());
-            Assert.Equal(18, title.GetProperty("size").GetInt32());
-            Assert.True(title.GetProperty("bold").GetBoolean());
-            Assert.False(title.GetProperty("italic").GetBoolean());
-            Assert.True(title.GetProperty("underline").GetBoolean());
-            Assert.Equal("#ff0000", title.GetProperty("color").GetString());
-
-            var store = factory.Services.GetRequiredService<IConfigStore>();
-            var persisted = store.Load().StreamDeck.Decks["SERIAL-1"].Deck.Pages[0].Slots[0].Title;
-            Assert.NotNull(persisted);
-            Assert.Equal("top", persisted!.Align);
-            Assert.Equal("#ff0000", persisted.Color);
-        }
-    }
-
-    [Fact]
-    public async Task PutConfig_SlotWithNoTitle_GetConfigOmitsTheTitleKey()
-    {
-        var (factory, client) = Boot();
-        using (factory)
-        {
-            var putBody = "{\"config\":{\"pages\":[{\"slots\":[{\"label\":\"Lock\"}]}]}}";
-            var put = await client.PutAsync("/streamdeck/decks/SERIAL-1/config", Json(putBody));
-            Assert.True(put.IsSuccessStatusCode);
-
-            var get = await client.GetAsync("/streamdeck/decks/SERIAL-1/config");
-            using var doc = JsonDocument.Parse(await get.Content.ReadAsStringAsync());
-            var slot = doc.RootElement.GetProperty("config").GetProperty("pages")[0].GetProperty("slots")[0];
-            // The HTTP pipeline's merged JsonSerializerOptions write every
-            // nullable DeckSlot field explicitly (icon/color/action/folder
-            // included) rather than omitting it, so "title" is either absent
-            // or JSON null here - never an empty title object, which would
-            // read on the web side as an explicitly-customized style.
-            Assert.True(!slot.TryGetProperty("title", out var titleEl) || titleEl.ValueKind == JsonValueKind.Null);
-
-            var store = factory.Services.GetRequiredService<IConfigStore>();
-            Assert.Null(store.Load().StreamDeck.Decks["SERIAL-1"].Deck.Pages[0].Slots[0].Title);
-        }
-    }
-
-    [Fact]
-    public async Task PutConfig_LegacySlotsShape_NormalizesToOnePage()
-    {
-        var (factory, client) = Boot();
-        using (factory)
-        {
-            var putBody = "{\"config\":{\"slots\":[{\"label\":\"Lock\",\"action\":{\"type\":\"power\",\"action\":\"lock\"}}]}}";
-            var put = await client.PutAsync("/streamdeck/decks/SERIAL-1/config", Json(putBody));
-            Assert.True(put.IsSuccessStatusCode);
-
-            var store = factory.Services.GetRequiredService<IConfigStore>();
-            var pages = store.Load().StreamDeck.Decks["SERIAL-1"].Deck.Pages;
-            Assert.Single(pages);
-            Assert.Equal("Lock", pages[0].Slots[0].Label);
-        }
-    }
-
-    [Fact]
-    public async Task UpdateDeck_PersistsNameAndBrightness()
-    {
-        var (factory, client) = Boot();
-        using (factory)
-        {
-            var res = await client.PostAsync("/streamdeck/decks/SERIAL-1", Json("{\"name\":\"Desk Deck\",\"brightness\":77}"));
-            Assert.True(res.IsSuccessStatusCode);
-
-            var store = factory.Services.GetRequiredService<IConfigStore>();
-            var deck = store.Load().StreamDeck.Decks["SERIAL-1"];
-            Assert.Equal("Desk Deck", deck.Name);
-            Assert.Equal(77, deck.Brightness);
-        }
-    }
-
-    [Fact]
-    public async Task UpdateDeck_PersistsOrientationAndSleepAfterSeconds()
-    {
-        var (factory, client) = Boot();
-        using (factory)
-        {
-            var res = await client.PostAsync("/streamdeck/decks/SERIAL-1", Json("{\"orientation\":180,\"sleepAfterSeconds\":120}"));
-            Assert.True(res.IsSuccessStatusCode);
-
-            var store = factory.Services.GetRequiredService<IConfigStore>();
-            var deck = store.Load().StreamDeck.Decks["SERIAL-1"];
-            Assert.Equal(180, deck.Orientation);
-            Assert.Equal(120, deck.SleepAfterSeconds);
-        }
-    }
-
-    [Theory]
-    [InlineData(100, 90)]
-    [InlineData(-90, 270)]
-    [InlineData(400, 0)]
-    [InlineData(359, 0)]
-    [InlineData(45, 90)]
-    [InlineData(135, 180)]
-    [InlineData(225, 270)]
-    [InlineData(315, 0)]
-    public async Task UpdateDeck_ClampsOrientationToNearestCanonicalValue(int input, int expected)
-    {
-        var (factory, client) = Boot();
-        using (factory)
-        {
-            var res = await client.PostAsync("/streamdeck/decks/SERIAL-1", Json($"{{\"orientation\":{input}}}"));
-            Assert.True(res.IsSuccessStatusCode);
-
-            var store = factory.Services.GetRequiredService<IConfigStore>();
-            Assert.Equal(expected, store.Load().StreamDeck.Decks["SERIAL-1"].Orientation);
-        }
-    }
-
-    [Fact]
-    public async Task UpdateDeck_ClampsSleepAfterSecondsToNonNegative()
-    {
-        var (factory, client) = Boot();
-        using (factory)
-        {
-            var res = await client.PostAsync("/streamdeck/decks/SERIAL-1", Json("{\"sleepAfterSeconds\":-5}"));
-            Assert.True(res.IsSuccessStatusCode);
-
-            var store = factory.Services.GetRequiredService<IConfigStore>();
-            Assert.Equal(0, store.Load().StreamDeck.Decks["SERIAL-1"].SleepAfterSeconds);
-        }
-    }
-
-    [Fact]
-    public async Task UploadImage_CachesToDiskAndReturnsTheHash()
-    {
-        var (factory, client) = Boot();
-        using (factory)
-        {
-            var bytes = new byte[] { 0x42, 0x4d, 1, 2, 3, 4, 5 };
-            var content = new ByteArrayContent(bytes);
-            content.Headers.ContentType = new MediaTypeHeaderValue("application/octet-stream");
-
-            var res = await client.PutAsync("/streamdeck/decks/SERIAL-1/images/0/0", content);
-            Assert.True(res.IsSuccessStatusCode);
-            using var doc = JsonDocument.Parse(await res.Content.ReadAsStringAsync());
-            var hash = doc.RootElement.GetProperty("hash").GetString();
-            Assert.False(string.IsNullOrEmpty(hash));
-            Assert.Equal(StreamDeckImageCache.Hash(bytes), hash);
-
-            var onDisk = Path.Combine(ImageCacheDir, "SERIAL-1", hash + ".bin");
-            Assert.True(File.Exists(onDisk));
-            Assert.Equal(bytes, await File.ReadAllBytesAsync(onDisk));
-
-            var store = factory.Services.GetRequiredService<IConfigStore>();
-            Assert.Equal(hash, store.Load().StreamDeck.Decks["SERIAL-1"].ImageRefs["0/0"]);
-        }
-    }
-
-    [Fact]
-    public async Task UploadImage_BackSlotPath_CachesUnderTheReservedKey()
-    {
-        var (factory, client) = Boot();
-        using (factory)
-        {
-            var bytes = new byte[] { 0x42, 0x4d, 9, 9, 9 };
-            var content = new ByteArrayContent(bytes);
-            content.Headers.ContentType = new MediaTypeHeaderValue("application/octet-stream");
-
-            var res = await client.PutAsync("/streamdeck/decks/SERIAL-1/images/back/0", content);
-            Assert.True(res.IsSuccessStatusCode);
-            using var doc = JsonDocument.Parse(await res.Content.ReadAsStringAsync());
-            var hash = doc.RootElement.GetProperty("hash").GetString();
-            Assert.False(string.IsNullOrEmpty(hash));
-
-            var store = factory.Services.GetRequiredService<IConfigStore>();
-            Assert.Equal(hash, store.Load().StreamDeck.Decks["SERIAL-1"].ImageRefs["back/0"]);
-        }
-    }
-
-    [Fact]
-    public async Task UploadImage_InvalidSerialCharset_Returns400()
-    {
-        var (factory, client) = Boot();
-        using (factory)
-        {
-            var bytes = new byte[] { 0x42, 0x4d, 1, 2, 3 };
-            var content = new ByteArrayContent(bytes);
-            content.Headers.ContentType = new MediaTypeHeaderValue("application/octet-stream");
-
-            var path = $"/streamdeck/decks/{Uri.EscapeDataString("bad serial")}/images/0/0";
-            var res = await client.PutAsync(path, content);
-
-            Assert.Equal(HttpStatusCode.BadRequest, res.StatusCode);
-            var onDisk = Path.Combine(ImageCacheDir, "bad serial");
-            Assert.False(Directory.Exists(onDisk));
-        }
-    }
-
-    [Theory]
-    [InlineData("abc", "0")]
-    [InlineData("0", "2")]
-    [InlineData("back", "1")]
-    public async Task UploadImage_InvalidSlotPathOrState_Returns400(string slotPath, string state)
-    {
-        var (factory, client) = Boot();
-        using (factory)
-        {
-            var bytes = new byte[] { 0x42, 0x4d, 1, 2, 3 };
-            var content = new ByteArrayContent(bytes);
-            content.Headers.ContentType = new MediaTypeHeaderValue("application/octet-stream");
-
-            var res = await client.PutAsync($"/streamdeck/decks/SERIAL-1/images/{slotPath}/{state}", content);
-
-            Assert.Equal(HttpStatusCode.BadRequest, res.StatusCode);
-        }
-    }
-
-    [Fact]
-    public async Task UploadImage_ReplacingASlot_EvictsTheOrphanedHash()
-    {
-        var (factory, client) = Boot();
-        using (factory)
-        {
-            var first = new byte[] { 0x42, 0x4d, 1, 1, 1 };
-            var firstContent = new ByteArrayContent(first);
-            firstContent.Headers.ContentType = new MediaTypeHeaderValue("application/octet-stream");
-            var firstRes = await client.PutAsync("/streamdeck/decks/SERIAL-1/images/0/0", firstContent);
-            using var firstDoc = JsonDocument.Parse(await firstRes.Content.ReadAsStringAsync());
-            var firstHash = firstDoc.RootElement.GetProperty("hash").GetString()!;
-            var firstPath = Path.Combine(ImageCacheDir, "SERIAL-1", firstHash + ".bin");
-            Assert.True(File.Exists(firstPath));
-
-            var second = new byte[] { 0x42, 0x4d, 2, 2, 2 };
-            var secondContent = new ByteArrayContent(second);
-            secondContent.Headers.ContentType = new MediaTypeHeaderValue("application/octet-stream");
-            var secondRes = await client.PutAsync("/streamdeck/decks/SERIAL-1/images/0/0", secondContent);
-            using var secondDoc = JsonDocument.Parse(await secondRes.Content.ReadAsStringAsync());
-            var secondHash = secondDoc.RootElement.GetProperty("hash").GetString()!;
-
-            Assert.NotEqual(firstHash, secondHash);
-            Assert.False(File.Exists(firstPath));
-            Assert.True(File.Exists(Path.Combine(ImageCacheDir, "SERIAL-1", secondHash + ".bin")));
-        }
-    }
-
-    [Fact]
-    public async Task UploadImage_ReplacingASlot_KeepsTheHashIfStillReferencedByAnotherSlot()
-    {
-        var (factory, client) = Boot();
-        using (factory)
-        {
-            var shared = new byte[] { 0x42, 0x4d, 3, 3, 3 };
-            var sharedHash = StreamDeckImageCache.Hash(shared);
-
-            foreach (var refKey in new[] { "0.0/0", "0.1/0" })
-            {
-                var content = new ByteArrayContent(shared);
-                content.Headers.ContentType = new MediaTypeHeaderValue("application/octet-stream");
-                await client.PutAsync($"/streamdeck/decks/SERIAL-1/images/{refKey}", content);
-            }
-
-            var replacement = new byte[] { 0x42, 0x4d, 4, 4, 4 };
-            var replacementContent = new ByteArrayContent(replacement);
-            replacementContent.Headers.ContentType = new MediaTypeHeaderValue("application/octet-stream");
-            await client.PutAsync("/streamdeck/decks/SERIAL-1/images/0.0/0", replacementContent);
-
-            // slot 0.1/0 still references sharedHash, so it must survive.
-            Assert.True(File.Exists(Path.Combine(ImageCacheDir, "SERIAL-1", sharedHash + ".bin")));
-        }
-    }
-
-    [Fact]
-    public async Task UploadImage_WrongSizeForAKnownModel_Fails()
-    {
-        var (factory, client) = Boot();
-        using (factory)
-        {
-            var mini = StreamDeckModels.ByProductId(0x0063)!;
-            var store = factory.Services.GetRequiredService<IConfigStore>();
-            store.Update(s => s.StreamDeck.Decks["SERIAL-1"] = new PhysicalDeckSettings { ProductId = mini.ProductId });
-
-            var wrongSize = new byte[] { 0x42, 0x4d, 1, 2, 3 };
-            var content = new ByteArrayContent(wrongSize);
-            content.Headers.ContentType = new MediaTypeHeaderValue("application/octet-stream");
-
-            var res = await client.PutAsync("/streamdeck/decks/SERIAL-1/images/0/0", content);
-
-            var text = await res.Content.ReadAsStringAsync();
-            Assert.Contains("\"error\":true", text);
-        }
-    }
-
-    [Fact]
-    public async Task UploadImage_ExactModelSizeForAKnownModel_Succeeds()
-    {
-        var (factory, client) = Boot();
-        using (factory)
-        {
-            var mini = StreamDeckModels.ByProductId(0x0063)!;
-            var store = factory.Services.GetRequiredService<IConfigStore>();
-            store.Update(s => s.StreamDeck.Decks["SERIAL-1"] = new PhysicalDeckSettings { ProductId = mini.ProductId });
-
-            var exactSize = new byte[54 + mini.KeyPixelSize * mini.KeyPixelSize * 3];
-            var content = new ByteArrayContent(exactSize);
-            content.Headers.ContentType = new MediaTypeHeaderValue("application/octet-stream");
-
-            var res = await client.PutAsync("/streamdeck/decks/SERIAL-1/images/0/0", content);
-
-            Assert.True(res.IsSuccessStatusCode);
-            var text = await res.Content.ReadAsStringAsync();
-            Assert.DoesNotContain("\"error\":true", text);
-        }
-    }
-
-    /// <summary>Two-page config, each page's root slot 0 an action, so a v2 image upload can target either page's key 0 independently.</summary>
-    private static string TwoPageActionConfigBody() =>
-        "{\"config\":{\"pages\":["
-        + "{\"slots\":[{\"action\":{\"type\":\"power\",\"action\":\"lock\"}}]},"
-        + "{\"slots\":[{\"action\":{\"type\":\"power\",\"action\":\"lock\"}}]}]}}";
-
-    [Fact]
-    public async Task UploadImage_TargetingTheCurrentlyVisiblePage_RepaintsTheLiveKey()
-    {
-        var (factory, client) = Boot();
-        using (factory)
-        {
-            var worker = factory.Services.GetRequiredService<StreamDeckConnectionWorker>();
-            var mini = StreamDeckModels.ByProductId(0x0063)!;
-            Assert.True(worker.SetSimulatedModel(mini.ProductId));
-            var serial = worker.Surfaces[StreamDeckConnectionWorker.SimulatedKey].Serial;
-            var simulated = (SimulatedStreamDeckSurface)worker.Surfaces[StreamDeckConnectionWorker.SimulatedKey];
-            await client.PutAsync($"/streamdeck/decks/{serial}/config", Json(TwoPageActionConfigBody()));
-
-            var exactSize = new byte[54 + mini.KeyPixelSize * mini.KeyPixelSize * 3];
-            var content = new ByteArrayContent(exactSize);
-            content.Headers.ContentType = new MediaTypeHeaderValue("application/octet-stream");
-
-            var res = await client.PutAsync($"/streamdeck/decks/{serial}/images/0.0/0", content);
-            Assert.True(res.IsSuccessStatusCode);
-
-            Assert.Equal(exactSize, simulated.PeekKeyImage(0));
-        }
-    }
-
-    [Fact]
-    public async Task UploadImage_TargetingANonVisiblePage_SkipsTheRepaint()
-    {
-        var (factory, client) = Boot();
-        using (factory)
-        {
-            var worker = factory.Services.GetRequiredService<StreamDeckConnectionWorker>();
-            var mini = StreamDeckModels.ByProductId(0x0063)!;
-            Assert.True(worker.SetSimulatedModel(mini.ProductId));
-            var serial = worker.Surfaces[StreamDeckConnectionWorker.SimulatedKey].Serial;
-            var simulated = (SimulatedStreamDeckSurface)worker.Surfaces[StreamDeckConnectionWorker.SimulatedKey];
-            await client.PutAsync($"/streamdeck/decks/{serial}/config", Json(TwoPageActionConfigBody()));
-
-            var pageZeroImage = new byte[54 + mini.KeyPixelSize * mini.KeyPixelSize * 3];
-            pageZeroImage[54] = 1;
-            var pageZeroContent = new ByteArrayContent(pageZeroImage);
-            pageZeroContent.Headers.ContentType = new MediaTypeHeaderValue("application/octet-stream");
-            await client.PutAsync($"/streamdeck/decks/{serial}/images/0.0/0", pageZeroContent);
-            var callsAfterVisibleUpload = simulated.SetKeyImageCallCount;
-
-            // The deck is still showing page 0 - a v2 upload targeting page
-            // 1's own key 0 must not trigger a repaint of the live view.
-            var pageOneImage = new byte[54 + mini.KeyPixelSize * mini.KeyPixelSize * 3];
-            pageOneImage[54] = 2;
-            var pageOneContent = new ByteArrayContent(pageOneImage);
-            pageOneContent.Headers.ContentType = new MediaTypeHeaderValue("application/octet-stream");
-            var res = await client.PutAsync($"/streamdeck/decks/{serial}/images/1.0/0", pageOneContent);
-            Assert.True(res.IsSuccessStatusCode);
-
-            Assert.Equal(callsAfterVisibleUpload, simulated.SetKeyImageCallCount);
-            Assert.Equal(pageZeroImage, simulated.PeekKeyImage(0));
-        }
-    }
-
-    [Fact]
-    public async Task UploadImage_BackSlotPath_RepaintsOnlyWhileTheDeckIsInAFolder()
-    {
-        var (factory, client) = Boot();
-        using (factory)
-        {
-            var worker = factory.Services.GetRequiredService<StreamDeckConnectionWorker>();
-            var mini = StreamDeckModels.ByProductId(0x0063)!;
-            Assert.True(worker.SetSimulatedModel(mini.ProductId));
-            var serial = worker.Surfaces[StreamDeckConnectionWorker.SimulatedKey].Serial;
-            var simulated = (SimulatedStreamDeckSurface)worker.Surfaces[StreamDeckConnectionWorker.SimulatedKey];
-            var folderConfig = "{\"config\":{\"pages\":[{\"slots\":[{\"folder\":{\"slots\":[{}]}}]}]}}";
-            await client.PutAsync($"/streamdeck/decks/{serial}/config", Json(folderConfig));
-
-            var backImage = new byte[54 + mini.KeyPixelSize * mini.KeyPixelSize * 3];
-            var atRootContent = new ByteArrayContent(backImage);
-            atRootContent.Headers.ContentType = new MediaTypeHeaderValue("application/octet-stream");
-            var atRoot = await client.PutAsync($"/streamdeck/decks/{serial}/images/back/0", atRootContent);
-            Assert.True(atRoot.IsSuccessStatusCode);
-            Assert.Null(simulated.PeekKeyImage(0));
-
-            var navRes = await client.PostAsync($"/streamdeck/decks/{serial}/nav", Json("{\"page\":0,\"folderPath\":[0]}"));
-            Assert.True(navRes.IsSuccessStatusCode);
-
-            var inFolderContent = new ByteArrayContent(backImage);
-            inFolderContent.Headers.ContentType = new MediaTypeHeaderValue("application/octet-stream");
-            var inFolder = await client.PutAsync($"/streamdeck/decks/{serial}/images/back/0", inFolderContent);
-            Assert.True(inFolder.IsSuccessStatusCode);
-
-            Assert.Equal(backImage, simulated.PeekKeyImage(0));
-        }
-    }
-
-    [Fact]
-    public async Task UploadImage_ReplacingASlot_EvictsAHashEvenIfOnlyALegacyV1KeyStillPointsAtIt()
-    {
-        var (factory, client) = Boot();
-        using (factory)
-        {
-            var shared = new byte[] { 9, 8, 7 };
-            var sharedHash = StreamDeckImageCache.Hash(shared);
-            var store = factory.Services.GetRequiredService<IConfigStore>();
-            var cache = factory.Services.GetRequiredService<StreamDeckImageCache>();
-            cache.Store("SERIAL-1", sharedHash, shared);
-            // Seeds a legacy pre-v2 "0/0" entry alongside the v2 "0.0/0"
-            // entry this test is about to replace - both point at sharedHash.
-            store.Update(s => s.StreamDeck.Decks["SERIAL-1"] = new PhysicalDeckSettings
-            {
-                ImageRefs = { ["0/0"] = sharedHash, ["0.0/0"] = sharedHash },
-            });
-            var blobPath = Path.Combine(ImageCacheDir, "SERIAL-1", sharedHash + ".bin");
-
-            var replacement = new byte[] { 1, 2, 3 };
-            var content = new ByteArrayContent(replacement);
-            content.Headers.ContentType = new MediaTypeHeaderValue("application/octet-stream");
-            await client.PutAsync("/streamdeck/decks/SERIAL-1/images/0.0/0", content);
-
-            // The legacy "0/0" key still nominally points at sharedHash, but
-            // it is not counted as a reference, so the blob is evicted even
-            // though that stale dict entry was never cleaned up (no migration).
-            Assert.False(File.Exists(blobPath));
-        }
-    }
-
-    [Fact]
     public async Task TestPress_DispatchesTheResolvedSlotActionToTheExecutor()
     {
         var (factory, client) = Boot();
@@ -845,8 +354,9 @@ public sealed class StreamDeckRoutesTests : IClassFixture<StreamDeckRouteHostFac
             var store = factory.Services.GetRequiredService<IConfigStore>();
             store.Update(s => s.StreamDeck.Decks["SERIAL-1"] = new PhysicalDeckSettings
             {
-                Deck = new DeckConfig { Pages = { new DeckPage { Slots = { new DeckSlot { Action = new DeckAction { Type = "power", PowerAction = "lock" } } } } } },
+                LegacyDeck = new DeckConfig { Pages = { new DeckPage { Slots = { new DeckSlot { Action = new DeckAction { Type = "power", PowerAction = "lock" } } } } } },
             });
+            store.Update(s => ActivateLegacyDeck(s, "SERIAL-1"));
 
             var res = await client.PostAsync("/streamdeck/decks/SERIAL-1/test-press/0", Json("{}"));
             Assert.True(res.IsSuccessStatusCode);
@@ -887,7 +397,7 @@ public sealed class StreamDeckRoutesTests : IClassFixture<StreamDeckRouteHostFac
             var store = factory.Services.GetRequiredService<IConfigStore>();
             store.Update(s => s.StreamDeck.Decks["SERIAL-1"] = new PhysicalDeckSettings
             {
-                Deck = new DeckConfig
+                LegacyDeck = new DeckConfig
                 {
                     Pages =
                     {
@@ -896,6 +406,7 @@ public sealed class StreamDeckRoutesTests : IClassFixture<StreamDeckRouteHostFac
                     },
                 },
             });
+            store.Update(s => ActivateLegacyDeck(s, "SERIAL-1"));
             var worker = factory.Services.GetRequiredService<StreamDeckConnectionWorker>();
             Assert.Equal(0, worker.GetCurrentPage("SERIAL-1"));
 
@@ -918,11 +429,12 @@ public sealed class StreamDeckRoutesTests : IClassFixture<StreamDeckRouteHostFac
             var store = factory.Services.GetRequiredService<IConfigStore>();
             store.Update(s => s.StreamDeck.Decks["SERIAL-1"] = new PhysicalDeckSettings
             {
-                Deck = new DeckConfig
+                LegacyDeck = new DeckConfig
                 {
                     Pages = { new DeckPage { Slots = { new DeckSlot { Folder = new DeckFolder { Slots = { new DeckSlot() } } } } } },
                 },
             });
+            store.Update(s => ActivateLegacyDeck(s, "SERIAL-1"));
             var worker = factory.Services.GetRequiredService<StreamDeckConnectionWorker>();
 
             var res = await client.PostAsync("/streamdeck/decks/SERIAL-1/test-press/0", Json("{}"));

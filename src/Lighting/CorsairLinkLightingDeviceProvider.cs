@@ -325,14 +325,14 @@ public sealed class CorsairLinkLightingDeviceProvider :
 
     internal static (float x, float y, float w, float h) DefaultLayout(int slot)
     {
-        const float Y = 478f;
-        const float W = 200f;
-        const float H = 60f;
-        const float Gap = 220f;
+        const float Y = 370f;
+        const float W = 120f;
+        const float H = 105f;
+        const float Gap = 140f;
         const float BaseX = 40f;
         const int Cols = 4;
-        const int Rows = 2;
-        const float RowGap = 50f;
+        const int Rows = 2; // row 1 lands at y=475, last edge 580 ≤ canvas bottom
+        const float RowGap = 105f;
         var s = ((slot % (Cols * Rows)) + Cols * Rows) % (Cols * Rows);
         var col = s % Cols;
         var row = s / Cols;

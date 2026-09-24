@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Threading;
 using Nexus.Service.Peripherals.Hid;
 using Nexus.Service.Peripherals.LianLiCp;
 
@@ -11,6 +12,12 @@ public sealed class TlFanHub : IDisposable
     private const int DiscoverReadTimeoutMs = 1000;
     // Poll Read timeout is short so the lock is not held long during steady-state RPM reads.
     private const int PollReadTimeoutMs = 200;
+    // A light command's reply is not needed to proceed, so it waits far less than a poll.
+    private const int LightReadTimeoutMs = 50;
+    // Reads left over from earlier commands are cleared with a non-blocking read.
+    private const int FlushReadTimeoutMs = 1;
+    private const int MaxFlushReads = 8;
+    private int _connectGeneration;
 
     private readonly object _lock = new();
     private IHidDevice? _device;
@@ -22,6 +29,9 @@ public sealed class TlFanHub : IDisposable
     private volatile TlHubSnapshot _snapshot = TlHubSnapshot.Empty;
 
     public bool IsConnected => _isConnected;
+
+    /// <summary>Bumped on every successful discovery; a change means the controller lost its committed state.</summary>
+    public int ConnectGeneration => Volatile.Read(ref _connectGeneration);
 
     // Callers must read this reference exactly once per operation and index all
     // arrays from that single snapshot to avoid cross-array length races.
@@ -51,6 +61,7 @@ public sealed class TlFanHub : IDisposable
             }
 
             var request = TlFanProtocol.EncodeHandshakeRequest();
+            FlushInputLocked();
             if (!_device.Write(request))
             {
                 return false;
@@ -90,9 +101,13 @@ public sealed class TlFanHub : IDisposable
             for (int i = 0; i < count; i++)
             {
                 var syncOff = TlFanProtocol.EncodeMotherboardSync(ports[i], fans[i], sync: false);
+                FlushInputLocked();
                 _device.Write(syncOff);
             }
 
+            DeclareGroupsLocked(_snapshot);
+
+            Interlocked.Increment(ref _connectGeneration);
             _isConnected = true;
             return true;
         }
@@ -113,6 +128,7 @@ public sealed class TlFanHub : IDisposable
                 return false;
             }
             var cmd = TlFanProtocol.EncodeSetFanSpeed(snap.Port[channelIndex], snap.FanIndex[channelIndex], duty);
+            FlushInputLocked();
             bool ok = _device.Write(cmd);
             if (ok)
             {
@@ -120,6 +136,113 @@ public sealed class TlFanHub : IDisposable
             }
             return ok;
         }
+    }
+
+    /// <summary>
+    /// Drives one fan's lighting. The controller animates the mode on-chip from this
+    /// single write, so callers commit on change rather than streaming.
+    /// </summary>
+    public bool SetFanLight(
+        int port, int fanIndex, byte mode, int brightness, int speed, int direction,
+        ReadOnlySpan<byte> colorBytes, int colorCount, bool disabled)
+    {
+        lock (_lock)
+        {
+            if (_device == null)
+            {
+                return false;
+            }
+            var cmd = TlFanProtocol.EncodeSetFanLight(
+                port, fanIndex, mode, brightness, speed, direction,
+                colorBytes, colorCount, disabled, motherboardSync: false);
+            FlushInputLocked();
+            bool ok = _device.Write(cmd);
+            DiscardReplyLocked(LightReadTimeoutMs);
+            return ok;
+        }
+    }
+
+    /// <summary>Drives one declared group - a port's top or bottom halves.</summary>
+    public bool SetGroupLight(
+        int group, byte mode, int brightness, int speed, int direction,
+        ReadOnlySpan<byte> colorBytes, int colorCount, bool disabled)
+    {
+        lock (_lock)
+        {
+            if (_device == null)
+            {
+                return false;
+            }
+            var cmd = TlFanProtocol.EncodeSetFanGroupLight(
+                group, mode, brightness, speed, direction, colorBytes, colorCount, disabled);
+            FlushInputLocked();
+            bool ok = _device.Write(cmd);
+            DiscardReplyLocked(LightReadTimeoutMs);
+            return ok;
+        }
+    }
+
+    /// <summary>
+    /// Declares the two groups each populated port needs before a group light command
+    /// can address it. Re-run on every connect: the controller loses the declaration
+    /// across a re-enumeration.
+    /// </summary>
+    private void DeclareGroupsLocked(TlHubSnapshot snap)
+    {
+        if (_device == null)
+        {
+            return;
+        }
+        for (int port = 0; port < snap.PortFanCounts.Length; port++)
+        {
+            int fanCount = snap.PortFanCounts[port];
+            if (fanCount <= 0)
+            {
+                continue;
+            }
+            var top = TlFanProtocol.EncodeSetFanGroup(TlFanProtocol.TopGroup(port), port, fanCount, topHalf: true);
+            FlushInputLocked();
+            bool topOk = _device.Write(top);
+            DiscardReplyLocked(LightReadTimeoutMs);
+            var bottom = TlFanProtocol.EncodeSetFanGroup(TlFanProtocol.BottomGroup(port), port, fanCount, topHalf: false);
+            FlushInputLocked();
+            bool bottomOk = _device.Write(bottom);
+            DiscardReplyLocked(LightReadTimeoutMs);
+        }
+    }
+
+    // Every command is request-response: the controller replies to each write, so a
+    // reply left unread would be returned to the next Read and misparsed as its
+    // result. Discarded, and a timeout is not an error.
+    // The controller answers every command, so a reply left unread would be returned
+    // to the next command's read. Clearing the queue before each write keeps a command
+    // matched to its own reply no matter what earlier writes left behind.
+    private void FlushInputLocked()
+    {
+        if (_device == null)
+        {
+            return;
+        }
+        Span<byte> buf = stackalloc byte[CommandPacket.Length];
+        for (int i = 0; i < MaxFlushReads; i++)
+        {
+            if (_device.Read(buf, FlushReadTimeoutMs) <= 0)
+            {
+                return;
+            }
+        }
+    }
+
+    // Consumes the reply the controller sends for the command just written, so the
+    // queue stays shallow between commands.
+    private void DiscardReplyLocked(int timeoutMs)
+    {
+        if (_device == null)
+        {
+            return;
+        }
+        Span<byte> buf = stackalloc byte[CommandPacket.Length];
+        _device.Read(buf, timeoutMs);
     }
 
     // Sends the handshake and matches the reply's RPM records to channels. Both the
@@ -136,6 +259,7 @@ public sealed class TlFanHub : IDisposable
             var snap = _snapshot;
 
             var request = TlFanProtocol.EncodeHandshakeRequest();
+            FlushInputLocked();
             if (!_device.Write(request))
             {
                 return false;

@@ -87,6 +87,8 @@ public sealed class LinuxNvidiaFanProvider : IFanControlProvider, ICoolingProvid
                         : (manual ? FanModes.Manual : FanModes.Auto),
                     DeviceId = deviceId,
                     DeviceName = g.Name,
+                    // Every channel this provider owns comes from NVML.
+                    IsGpu = true,
                 });
             }
         }

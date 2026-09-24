@@ -74,19 +74,28 @@ public sealed class KrakenLightingDeviceProvider :
         var channels = _hub.Snapshot.Channels;
         for (int i = 0; i < channels.Count; i++)
         {
-            var c = channels[i];
-            // Named from the accessory, not the slot: the pump ring is channel 0 on the
-            // Elite V2 but channel 1 on an X3, so an index-based label lies on half the line.
-            string raw = KrakenProtocol.IsPumpRingAccessory(c.AccessoryId) ? "Pump Ring" : "Fans";
-            defs.Add(new ZoneDef(
-                KrakenHub.ZoneIdForChannelIndex(i),
-                $"{_hub.ModelName} - {c.AccessoryName}",
-                raw,
-                c.LedCount,
-                c.ChannelId,
-                c.Rings));
+            defs.Add(BuildZoneDef(_hub.ModelName, channels[i], i));
         }
         return defs;
+    }
+
+    /// <summary>
+    /// One channel's zone definition. Static and hub-model-parameterised so
+    /// the frame writer can rebuild the identical definition from the
+    /// channel data it already reads, without needing the provider instance.
+    /// </summary>
+    private static ZoneDef BuildZoneDef(string modelName, KrakenLightingChannel c, int index)
+    {
+        // Named from the accessory, not the slot: the pump ring is channel 0 on the
+        // Elite V2 but channel 1 on an X3, so an index-based label lies on half the line.
+        string raw = KrakenProtocol.IsPumpRingAccessory(c.AccessoryId) ? "Pump Ring" : "Fans";
+        return new ZoneDef(
+            KrakenHub.ZoneIdForChannelIndex(index),
+            $"{modelName} - {c.AccessoryName}",
+            raw,
+            c.LedCount,
+            c.ChannelId,
+            c.Rings);
     }
 
     /// <summary>
@@ -153,58 +162,78 @@ public sealed class KrakenLightingDeviceProvider :
         var counts = settings.Devices.ZoneLedCounts;
 
         var defs = BuildZoneDefs();
-        for (int i = 0; i < defs.Count; i++)
+        var slot = 0;
+        foreach (var def in defs)
         {
-            resp.Devices.Add(BuildZone(defs[i], i, disabled, prefs, layouts, counts));
+            var structure = BuildStructure(def, counts, _hub.MaxDirectColors);
+            foreach (var zone in ZoneResolution.Resolve(structure, settings))
+            {
+                var circles = zone.IsDefault ? CirclesFor(def, zone.LedCount) : 1;
+                resp.Devices.Add(BuildZoneCard(structure, zone, slot++, circles, disabled, prefs, layouts, settings));
+            }
         }
         return resp;
     }
 
-    private static LightingDevice BuildZone(
-        ZoneDef def, int zoneIndex,
+    /// <summary>Card for one resolved zone of a channel - the whole channel when unchained (or the pump ring, which is never chainable), one per product once a fan chain owns it.</summary>
+    private static LightingDevice BuildZoneCard(
+        DeviceStructure structure, ResolvedZone zone, int slot, int circles,
         IReadOnlyList<string> disabled,
         IReadOnlyDictionary<string, LightingDevicePreference> prefs,
         IReadOnlyDictionary<string, DeviceLayout> layouts,
-        IReadOnlyDictionary<string, int> counts)
+        NexusSettings settings)
     {
+        var id = zone.Id;
         var isOn = true;
         for (var i = 0; i < disabled.Count; i++)
         {
-            if (disabled[i] == def.Id) { isOn = false; break; }
+            if (disabled[i] == id) { isOn = false; break; }
         }
         var brightness = 100;
         var hue = 0f;
         var saturation = 1f;
-        if (prefs.TryGetValue(def.Id, out var pref))
+        if (prefs.TryGetValue(id, out var pref))
         {
             brightness = pref.Brightness;
             hue = pref.Hue;
             saturation = pref.Saturation;
         }
-        var effectiveLedCount = EffectiveLedCount(def, counts);
-        var (defX, defY, defW, defH) = DefaultKrakenLayout(zoneIndex, CirclesFor(def, effectiveLedCount));
-        layouts.TryGetValue(def.Id, out var layout);
-        return new LightingDevice
+        var (defX, defY, defW, defH) = DefaultKrakenLayout(slot, circles);
+        layouts.TryGetValue(id, out var layout);
+        var card = new LightingDevice
         {
-            Id = def.Id,
-            Name = def.Name,
+            Id = id,
+            Name = zone.Name,
             Type = "ledstrip",
             IconType = "cooler",
             LedsOn = isOn,
             Brightness = brightness,
             Hue = hue,
             Saturation = saturation,
-            LedCount = effectiveLedCount,
+            LedCount = zone.LedCount,
             CanvasX = layout?.X ?? defX,
             CanvasY = layout?.Y ?? defY,
             CanvasW = layout?.W ?? defW,
             CanvasH = layout?.H ?? defH,
             CanvasRotation = ((((layout?.Rotation ?? 0) % 360) + 360) % 360),
             ParentDeviceId = KrakenHub.DeviceId,
-            ZoneIndex = zoneIndex,
+            ZoneIndex = zone.Ordinal,
             ZoneType = "linear",
-            ZoneResizable = IsCountUnknown(def),
+            // Only a zone that owns the whole channel may resize it; a chain
+            // link is sized by its product.
+            ZoneResizable = ZoneResolution.WholeResizableSegment(structure, zone, settings) >= 0,
         };
+        if (structure.Partitionable)
+        {
+            // The pump ring's structure is not partitionable, so its card
+            // leaves DeviceId/EnabledLedCount for CompositeLightingDeviceProvider
+            // to fill through the identity context, same as before this channel
+            // could chain.
+            card.DeviceId = structure.DeviceId;
+            card.ZoneCustomizable = true;
+            card.EnabledLedCount = ZoneResolution.CountEnabled(structure, zone, id, zone.LedCount, zoneHint: 0, settings);
+        }
+        return card;
     }
 
     /// <summary>
@@ -277,7 +306,11 @@ public sealed class KrakenLightingDeviceProvider :
         {
             return;
         }
-        _store.Update(s => s.Devices.ZoneLedCounts[id] = count);
+        _store.Update(s =>
+        {
+            s.Devices.ZoneLedCounts[id] = count;
+            ZoneResolution.DropChainForCount(s, id);
+        });
     }
 
     public void Identify(string id, int durationMs) => _identify.Schedule(id, durationMs);
@@ -295,32 +328,60 @@ public sealed class KrakenLightingDeviceProvider :
         var result = new List<DeviceStructure>(defs.Count);
         foreach (var def in defs)
         {
-            var ledCount = EffectiveLedCount(def, counts);
-            var (u, v) = BuildRingUv(ledCount, def.Rings, StartAngleFor(def.Rings));
-            var structure = new DeviceStructure { DeviceId = def.Id, Name = def.Name, Partitionable = false };
-            structure.Segments.Add(new StructureSegment
-            {
-                Index = 0,
-                Name = def.RawName,
-                LedCount = ledCount,
-                FrameLedCount = ledCount,
-                Resizable = IsCountUnknown(def),
-                ZoneType = "linear",
-                DefaultU = u,
-                DefaultV = v,
-            });
-            structure.DefaultZones.Add(new DefaultZoneDef
-            {
-                Id = def.Id,
-                Name = def.Name,
-                RawName = def.RawName,
-                LegacyZoneIndex = -1,
-                Slices = { new ZoneSlice { Segment = 0, Start = 0, Count = ledCount } },
-            });
-            result.Add(structure);
+            result.Add(BuildStructure(def, counts, _hub.MaxDirectColors));
         }
         return result;
     }
+
+    /// <summary>
+    /// One channel's structure. Only a channel whose count the accessory
+    /// table cannot report (<see cref="IsCountUnknown"/> - the attached fan
+    /// chain) is partitionable: the firmware cannot say what is daisy-chained
+    /// to it, so the user declares the chain like any other ARGB port. The
+    /// pump ring's count is always known, so it stays a single fixed,
+    /// non-partitionable zone. maxLedCount carries the fan channel's addressing
+    /// ceiling (<see cref="KrakenHub.MaxDirectColors"/>) so a chain POST cannot
+    /// declare more LEDs than the writer will ever push.
+    /// </summary>
+    private static DeviceStructure BuildStructure(ZoneDef def, IReadOnlyDictionary<string, int> counts, int maxLedCount)
+    {
+        var ledCount = EffectiveLedCount(def, counts);
+        var (u, v) = BuildRingUv(ledCount, def.Rings, StartAngleFor(def.Rings));
+        var structure = new DeviceStructure { DeviceId = def.Id, Name = def.Name };
+        if (!IsCountUnknown(def))
+        {
+            structure.Partitionable = false;
+        }
+        structure.Segments.Add(new StructureSegment
+        {
+            Index = 0,
+            Name = def.RawName,
+            LedCount = ledCount,
+            FrameLedCount = ledCount,
+            Resizable = IsCountUnknown(def),
+            MaxLedCount = IsCountUnknown(def) ? maxLedCount : 0,
+            ZoneType = "linear",
+            DefaultU = u,
+            DefaultV = v,
+        });
+        structure.DefaultZones.Add(new DefaultZoneDef
+        {
+            Id = def.Id,
+            Name = def.Name,
+            RawName = def.RawName,
+            LegacyZoneIndex = -1,
+            Slices = { new ZoneSlice { Segment = 0, Start = 0, Count = ledCount } },
+        });
+        return structure;
+    }
+
+    /// <summary>One channel's structure, built from public data so the frame writer (and tests) can resolve it without a provider instance.</summary>
+    internal static DeviceStructure BuildChannelStructure(NexusSettings settings, string modelName, KrakenLightingChannel channel, int index, int maxLedCount)
+        => BuildStructure(BuildZoneDef(modelName, channel, index), settings.Devices.ZoneLedCounts, maxLedCount);
+
+    /// <summary>The zones one channel currently resolves to, in chain order.</summary>
+    internal static IReadOnlyList<ResolvedZone> ResolveChannelZones(NexusSettings settings, string modelName, KrakenLightingChannel channel, int index, int maxLedCount)
+        => ZoneResolution.Resolve(BuildChannelStructure(settings, modelName, channel, index, maxLedCount), settings);
 
     // Reused across the bridge refresh so the writer never sees a fresh zero-filled frame
     // for one tick and blanks the cooler.
@@ -338,10 +399,16 @@ public sealed class KrakenLightingDeviceProvider :
         var defs = BuildZoneDefs();
         var frames = new List<DeviceFrame>(defs.Count);
         var idx = startingIndex;
+        var slot = 0;
 
-        for (int i = 0; i < defs.Count; i++)
+        foreach (var def in defs)
         {
-            frames.Add(BuildOrReuseFrame(defs[i], i, layouts, counts, ref idx));
+            var structure = BuildStructure(def, counts, _hub.MaxDirectColors);
+            foreach (var zone in ZoneResolution.Resolve(structure, settings))
+            {
+                var circles = zone.IsDefault ? CirclesFor(def, zone.LedCount) : 1;
+                frames.Add(BuildOrReuseFrame(zone.Id, zone.LedCount, slot++, circles, layouts, ref idx));
+            }
         }
 
         if (_frameCache.Count > frames.Count)
@@ -356,18 +423,16 @@ public sealed class KrakenLightingDeviceProvider :
     }
 
     private DeviceFrame BuildOrReuseFrame(
-        ZoneDef def, int zoneIndex,
+        string id, int effectiveLedCount, int slot, int circles,
         IReadOnlyDictionary<string, DeviceLayout> layouts,
-        IReadOnlyDictionary<string, int> counts,
         ref int idx)
     {
-        var effectiveLedCount = EffectiveLedCount(def, counts);
-        var (defX, defY, defW, defH) = DefaultKrakenLayout(zoneIndex, CirclesFor(def, effectiveLedCount));
-        layouts.TryGetValue(def.Id, out var layout);
+        var (defX, defY, defW, defH) = DefaultKrakenLayout(slot, circles);
+        layouts.TryGetValue(id, out var layout);
         var rot = ((((layout?.Rotation ?? 0) % 360) + 360) % 360);
         var thisIdx = idx++;
 
-        if (_frameCache.TryGetValue(def.Id, out var existing)
+        if (_frameCache.TryGetValue(id, out var existing)
             && existing.Index == thisIdx
             && existing.LedCount == effectiveLedCount)
         {
@@ -380,10 +445,10 @@ public sealed class KrakenLightingDeviceProvider :
         }
 
         var frame = new DeviceFrame(
-            index: thisIdx, id: def.Id, ledCount: effectiveLedCount,
+            index: thisIdx, id: id, ledCount: effectiveLedCount,
             x: layout?.X ?? defX, y: layout?.Y ?? defY,
             w: layout?.W ?? defW, h: layout?.H ?? defH, rotation: rot);
-        _frameCache[def.Id] = frame;
+        _frameCache[id] = frame;
         return frame;
     }
 

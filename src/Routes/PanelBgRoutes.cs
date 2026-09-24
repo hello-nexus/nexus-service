@@ -1,6 +1,8 @@
 using System.IO;
 using Nexus.Service.Auth;
+using Nexus.Service.Klipy;
 using Nexus.Service.Media;
+using Nexus.Service.Models.Klipy;
 using Nexus.Service.Models.Panel;
 using Nexus.Service.Panel;
 
@@ -82,7 +84,12 @@ public static class PanelBgRoutes
                         return Results.BadRequest(new PanelBgStageResponse { Error = true, Msg = result.Error ?? "Stage failed" });
                     }
 
-                    return Results.Ok(new PanelBgStageResponse { StageId = result.StageId, Alpha = result.Alpha });
+                    return Results.Ok(new PanelBgStageResponse
+                    {
+                        StageId = result.StageId,
+                        Alpha = result.Alpha,
+                        MediaKind = MediaKinds.FromPath(file.FileName),
+                    });
                 }
                 finally
                 {
@@ -111,6 +118,24 @@ public static class PanelBgRoutes
             }).AllowPanel();
 
         // --- Commit phase: bake from staged raw using crop/dimensions ---
+
+        app.MapGet("/panel/devices/{deviceId}/background-media/stage/{stageId}/raw",
+            (string deviceId, string stageId, HttpContext ctx, PanelBgLibrary lib) =>
+            {
+                if (!PanelBgLibrary.IsValidId(deviceId) || !PanelBgLibrary.IsValidId(stageId))
+                {
+                    return Results.BadRequest("invalid id");
+                }
+
+                var rawPath = lib.FindStagedRaw(deviceId, stageId);
+                if (rawPath is null || !File.Exists(rawPath))
+                {
+                    return Results.NotFound();
+                }
+
+                ctx.Response.Headers.CacheControl = "no-store";
+                return Results.File(rawPath, MediaKinds.ContentTypeFor(rawPath), enableRangeProcessing: true);
+            }).AllowPanel();
 
         app.MapPost("/panel/devices/{deviceId}/background-media/commit",
             async (string deviceId, HttpContext ctx, PanelBgLibrary lib) =>
@@ -156,15 +181,73 @@ public static class PanelBgRoutes
 
                 // Absent means keep: a client too old to send the field gets the default.
                 var keepTransparency = form["keepTransparency"].ToString() is not "0" and not "false";
+                // Absent means fill, which is what every client sent before the switch existed.
+                var fitWhole = form["fit"].ToString() is "1" or "true";
 
                 var result = await PanelBgImporter.CommitAsync(
-                    lib, deviceId, stageId, cropRect, targetW, targetH, keepTransparency);
+                    lib, deviceId, stageId, cropRect, targetW, targetH, keepTransparency, fitWhole);
                 if (!result.Ok)
                 {
                     return Results.BadRequest(new PanelBgImportResponse { Error = true, Msg = result.Error ?? "Commit failed" });
                 }
 
                 return Results.Ok(new PanelBgImportResponse { Item = result.Item });
+            }).AllowPanel().DisableAntiforgery();
+
+        // A Klipy pick lands in staging like an upload would, so the cropper
+        // runs on it and the ordinary /commit finishes the import.
+        app.MapPost("/panel/devices/{deviceId}/background-media/klipy/stage",
+            async (string deviceId, KlipyPanelBgStageRequest body, PanelBgLibrary lib,
+                   IKlipyCatalog catalog, HttpContext ctx) =>
+            {
+                if (!PanelBgLibrary.IsValidId(deviceId))
+                {
+                    return Results.BadRequest(new PanelBgStageResponse { Error = true, Msg = "invalid deviceId" });
+                }
+
+                if (!KlipyCatalog.IsValidSlug(body.Slug))
+                {
+                    return Results.BadRequest(new PanelBgStageResponse { Error = true, Msg = "invalid slug" });
+                }
+
+                string? tempPath = null;
+                try
+                {
+                    tempPath = await catalog.DownloadAsync(body.Slug, Path.GetTempPath(), ctx.RequestAborted);
+                    if (tempPath is null)
+                    {
+                        return Results.BadRequest(new PanelBgStageResponse { Error = true, Msg = "Download failed" });
+                    }
+
+                    var staged = await PanelBgImporter.StageAsync(lib, deviceId, tempPath, body.Slug + Path.GetExtension(tempPath));
+                    if (!staged.Ok)
+                    {
+                        Console.Error.WriteLine($"[panel-bg-klipy] stage {body.Slug}: {staged.Error}");
+                        return Results.BadRequest(new PanelBgStageResponse { Error = true, Msg = staged.Error ?? "Stage failed" });
+                    }
+
+                    _ = catalog.TriggerShareAsync(body.Slug);
+                    return Results.Ok(new PanelBgStageResponse
+                    {
+                        StageId = staged.StageId,
+                        Alpha = staged.Alpha,
+                        MediaKind = MediaKinds.FromPath(tempPath),
+                    });
+                }
+                catch (System.Exception ex)
+                {
+                    Console.Error.WriteLine($"[panel-bg-klipy] stage {body.Slug} failed: {ex}");
+                    return Results.BadRequest(new PanelBgStageResponse { Error = true, Msg = "Stage failed" });
+                }
+                finally
+                {
+                    // StageAsync moves the file into staging on success; a leftover means it did not.
+                    if (tempPath is not null)
+                    {
+                        try { File.Delete(tempPath); }
+                        catch { }
+                    }
+                }
             }).AllowPanel().DisableAntiforgery();
 
         // --- Cancel stage ---

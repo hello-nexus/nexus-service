@@ -1,7 +1,6 @@
-uniform float u_speed;
-uniform float u_particles; // extra: density multiplier
-uniform float u_twinkle;   // extra: flicker rate
-uniform float u_parallax;  // extra: depth drift strength
+uniform float u_particles; // hint_range(0.3, 3.0, 0.05) = 1.8  density multiplier
+uniform float u_twinkle; // hint_range(0.2, 4.0, 0.05) = 1.5  flicker rate
+uniform float u_parallax; // hint_range(0.0, 1.2, 0.02) = 0.6  depth drift strength
 
 // Sparse particle field with three depth layers drifting at different
 // rates (parallax). Each grid cell has a small chance of hosting a star,

@@ -54,6 +54,7 @@ public static partial class DevicesRoutes
                 new Galahad2LightingResponse
                 {
                     Mode       = ls.Mode,
+                    EffectMode = ls.Mode != "canvas" ? ls.Mode : ls.EffectMode ?? "rainbow",
                     Speed      = ls.Speed,
                     Direction  = ls.Direction,
                     Brightness = ls.Brightness,
@@ -80,7 +81,11 @@ public static partial class DevicesRoutes
             store.Update(s =>
             {
                 var ls = s.Devices.Galahad2Lighting;
-                if (body.Mode != null)        { ls.Mode      = body.Mode; }
+                if (body.Mode != null)
+                {
+                    ls.Mode = body.Mode;
+                    if (body.Mode != "canvas") ls.EffectMode = body.Mode;
+                }
                 if (body.Speed.HasValue)       { ls.Speed     = Math.Clamp(body.Speed.Value, 0, 4); }
                 if (body.Direction.HasValue)   { ls.Direction = Math.Clamp(body.Direction.Value, 0, 1); }
                 if (body.Brightness.HasValue)  { ls.Brightness= Math.Clamp(body.Brightness.Value, 0, 4); }
@@ -127,6 +132,8 @@ public sealed class Galahad2ModeInfoDto
 public sealed class Galahad2LightingResponse
 {
     public string              Mode       { get; set; } = "";
+    /// <summary>The mode the device returns to when Lighting page control is turned off.</summary>
+    public string              EffectMode { get; set; } = "";
     public int                 Speed      { get; set; }
     public int                 Direction  { get; set; }
     public int                 Brightness { get; set; }

@@ -33,6 +33,7 @@ public sealed class LinuxAudioDeviceProvider : IAudioDeviceProvider
 
     public bool SetDefaultOutput(string deviceId) => Set("set-default-sink", deviceId);
     public bool SetDefaultInput(string deviceId) => Set("set-default-source", deviceId);
+    public bool SetSpatial(string deviceId, string formatId) => false;
 
     private static bool Set(string verb, string id)
         => OperatingSystem.IsLinux() && !string.IsNullOrEmpty(id) && ShellExecutor.RunExit("pactl", 3000, verb, id) == 0;
@@ -76,4 +77,5 @@ public sealed class StubAudioDeviceProvider : IAudioDeviceProvider
     public AudioDeviceList ListDevices() => new();
     public bool SetDefaultOutput(string deviceId) => false;
     public bool SetDefaultInput(string deviceId) => false;
+    public bool SetSpatial(string deviceId, string formatId) => false;
 }

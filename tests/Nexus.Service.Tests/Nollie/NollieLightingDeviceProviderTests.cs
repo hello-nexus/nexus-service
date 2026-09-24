@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 using Nexus.Service.Lighting;
+using Nexus.Service.Lighting.Zones;
 using Nexus.Service.Peripherals.Hid;
 using Nexus.Service.Peripherals.Nollie;
 using Nexus.Service.Persistence;
@@ -24,6 +25,9 @@ public class NollieLightingDeviceProviderTests
     {
         _provider = new NollieLightingDeviceProvider(_hub, _store, new Np50IdentifyTracker());
     }
+
+    /// <summary>Id of a single-channel port by card index, as the card list shows it.</summary>
+    private static string PortId(string deviceId, int cardIndex) => $"{deviceId}:ch{cardIndex}";
 
     private NollieController Attach(int vid, int pid, string serial)
     {
@@ -63,6 +67,55 @@ public class NollieLightingDeviceProviderTests
         Assert.Contains("nollie-s-BBB:ch0", ids);
     }
 
+    /// <summary>A 32-channel board's 12 Strimer channels are two cards, one per connector, between the headers and the EXT channels.</summary>
+    [Fact]
+    public void A_thirty_two_channel_board_emits_two_strimer_cards()
+    {
+        var c = Attach(0x16D5, 0x2A32, "THIRTYTWO");
+        var devices = _provider.GetAll().Devices;
+        Assert.Equal(22, devices.Count);
+        Assert.Equal("Nollie 32_OS2_1 - Channel 16", devices[15].Name);
+        Assert.Equal("Nollie 32_OS2_1 - Strimer ATX", devices[16].Name);
+        Assert.Equal($"{c.DeviceId}:strimer-atx", devices[16].Id);
+        Assert.Equal("Nollie 32_OS2_1 - Strimer GPU", devices[17].Name);
+        Assert.Equal($"{c.DeviceId}:strimer-gpu", devices[17].Id);
+        Assert.Equal("Nollie 32_OS2_1 - Channel EXT 1", devices[18].Name);
+        Assert.DoesNotContain(devices, d => d.Name.Contains("Channel ATX") || d.Name.Contains("Channel GPU"));
+    }
+
+    /// <summary>The port's ceiling is every lane full, not the per-channel driver limit.</summary>
+    [Fact]
+    public void Strimer_ports_clamp_to_their_lane_total()
+    {
+        var c = Attach(0x16D5, 0x2A32, "THIRTYTWO");
+        var atx = $"{c.DeviceId}:strimer-atx";
+        var gpu = $"{c.DeviceId}:strimer-gpu";
+        _provider.SetZoneLedCount(atx, 999);
+        _provider.SetZoneLedCount(gpu, 999);
+        Assert.Equal(120, _store.Load().Devices.ZoneLedCounts[atx]);
+        Assert.Equal(162, _store.Load().Devices.ZoneLedCounts[gpu]);
+
+        var structures = _provider.GetStructures();
+        Assert.Equal(120, structures.Single(s => s.DeviceId == atx).Segments[0].MaxLedCount);
+        Assert.Equal(162, structures.Single(s => s.DeviceId == gpu).Segments[0].MaxLedCount);
+        Assert.Equal(256, structures.Single(s => s.DeviceId == $"{c.DeviceId}:ch0").Segments[0].MaxLedCount);
+    }
+
+    /// <summary>The bundled channels have no card of their own, so their old ids resolve to nothing.</summary>
+    [Fact]
+    public void TryResolve_finds_ports_by_slug_and_not_bundled_channels()
+    {
+        var c = Attach(0x16D5, 0x2A32, "THIRTYTWO");
+        Assert.True(_provider.TryResolve($"{c.DeviceId}:strimer-gpu", out var controller, out var port));
+        Assert.Same(c, controller);
+        Assert.Equal(22, port.FirstChannel);
+        Assert.True(_provider.TryResolve($"{c.DeviceId}:ch28", out _, out port));
+        Assert.Equal(28, port.FirstChannel);
+        Assert.False(_provider.TryResolve($"{c.DeviceId}:ch16", out _, out _));
+        Assert.False(_provider.TryResolve($"{c.DeviceId}:", out _, out _));
+        Assert.False(_provider.TryResolve(c.DeviceId, out _, out _));
+    }
+
     [Fact]
     public void Every_channel_is_resizable()
     {
@@ -81,9 +134,12 @@ public class NollieLightingDeviceProviderTests
     public void SetZoneLedCount_persists_and_surfaces_on_the_card()
     {
         var c = Attach(0x16D5, 0x2A16, "SIXTEEN");
-        _provider.SetZoneLedCount(NollieLightingDeviceProvider.ChannelId(c.DeviceId, 2), 42);
+        _provider.SetZoneLedCount(PortId(c.DeviceId, 2), 42);
 
-        var card = _provider.GetAll().Devices.Single(d => d.ZoneIndex == 2);
+        // By id, not by ZoneIndex: that is the zone's ordinal within its own
+        // channel now, so every unchained channel reports 0.
+        var card = _provider.GetAll().Devices
+            .Single(d => d.Id == PortId(c.DeviceId, 2));
         Assert.Equal(42, card.LedCount);
         Assert.Equal(42, _store.Load().Devices.ZoneLedCounts[card.Id]);
     }
@@ -92,7 +148,7 @@ public class NollieLightingDeviceProviderTests
     public void SetZoneLedCount_clamps_to_the_controller_ceiling()
     {
         var c = Attach(0x16D5, 0x2A16, "SIXTEEN");
-        var id = NollieLightingDeviceProvider.ChannelId(c.DeviceId, 0);
+        var id = PortId(c.DeviceId, 0);
         _provider.SetZoneLedCount(id, 99_999);
         Assert.Equal(256, _store.Load().Devices.ZoneLedCounts[id]);
     }
@@ -101,10 +157,63 @@ public class NollieLightingDeviceProviderTests
     public void SetZoneLedCount_ignores_a_negative_count_and_an_unknown_id()
     {
         var c = Attach(0x16D5, 0x2A16, "SIXTEEN");
-        _provider.SetZoneLedCount(NollieLightingDeviceProvider.ChannelId(c.DeviceId, 0), -5);
+        _provider.SetZoneLedCount(PortId(c.DeviceId, 0), -5);
         _provider.SetZoneLedCount("nollie-s-GHOST:ch0", 30);
         _provider.SetZoneLedCount($"{c.DeviceId}:ch99", 30);
         Assert.Empty(_store.Load().Devices.ZoneLedCounts);
+    }
+
+    [Fact]
+    public void SetZoneLedCount_on_a_chained_channel_drops_the_chain_and_partition()
+    {
+        var c = Attach(0x16D5, 0x2A16, "SIXTEEN");
+        var id = PortId(c.DeviceId, 0);
+        _store.Update(s =>
+        {
+            s.Devices.ZoneLedCounts[id] = 76;
+            s.Devices.ZonePartitions[id] = new()
+            {
+                new ZoneDef { Name = "FR12 Trio", Slices = { new ZoneSlice { Segment = 0, Start = 0, Count = 68 } } },
+                new ZoneDef { Name = "Y50 Solo Fan", Slices = { new ZoneSlice { Segment = 0, Start = 68, Count = 8 } } },
+            };
+            s.Devices.PortChains[ZoneResolution.ChainKey(id, 0)] = new()
+            {
+                new ChainEntry { Key = "product:hyte-fr12-trio", LedCount = 68 },
+                new ChainEntry { Key = "product:hyte-y50-solo", LedCount = 8 },
+            };
+        });
+
+        _provider.SetZoneLedCount(id, 40);
+
+        var settings = _store.Load();
+        Assert.Equal(40, settings.Devices.ZoneLedCounts[id]);
+        Assert.False(settings.Devices.PortChains.ContainsKey(ZoneResolution.ChainKey(id, 0)));
+        Assert.False(settings.Devices.ZonePartitions.ContainsKey(id));
+    }
+
+    /// <summary>
+    /// The chain POST writes ZoneLedCounts directly rather than through
+    /// SetZoneLedCount, so the legacy 1CH controller needs this as a separate
+    /// path to the same handshake or its firmware keeps the old count.
+    /// </summary>
+    [Fact]
+    public void PushLedCountHandshakeFor_resends_a_count_written_outside_SetZoneLedCount()
+    {
+        var device = new FakeHidDevice(0x16D2, 0x1F11, "path-LEGACY", "LEGACY");
+        var controller = new NollieController(device, NollieProtocol.Lookup(0x16D2, 0x1F11)!);
+        _hub.Attach(controller);
+        var id = PortId(controller.DeviceId, 0);
+        _store.Update(s => s.Devices.ZoneLedCounts[id] = 76);
+
+        _provider.PushLedCountHandshakeFor(id);
+
+        // The handshake alone: this firmware takes its standalone colour only
+        // before the first frame and at the hand-off, never mid-stream.
+        var report = Assert.Single(device.Writes);
+        Assert.Equal(0xFE, report[1]);
+        Assert.Equal(0x03, report[2]);
+        Assert.Equal(76, report[3]);
+        Assert.Equal(0, report[4]);
     }
 
     /// <summary>A count persisted above the ceiling (older build, edited file) is clamped on read, never trusted raw.</summary>
@@ -112,7 +221,7 @@ public class NollieLightingDeviceProviderTests
     public void Oversized_persisted_count_is_clamped_when_read()
     {
         var c = Attach(0x16D5, 0x2A16, "SIXTEEN");
-        var id = NollieLightingDeviceProvider.ChannelId(c.DeviceId, 0);
+        var id = PortId(c.DeviceId, 0);
         _store.Update(s => s.Devices.ZoneLedCounts[id] = 5000);
         Assert.Equal(256, _provider.GetAll().Devices.Single(d => d.Id == id).LedCount);
     }
@@ -121,7 +230,7 @@ public class NollieLightingDeviceProviderTests
     public void Structures_expose_one_resizable_segment_per_channel()
     {
         var c = Attach(0x16D5, 0x2A01, "ONE");
-        _provider.SetZoneLedCount(NollieLightingDeviceProvider.ChannelId(c.DeviceId, 0), 12);
+        _provider.SetZoneLedCount(PortId(c.DeviceId, 0), 12);
 
         var structures = _provider.GetStructures();
         var s = Assert.Single(structures);
@@ -136,8 +245,8 @@ public class NollieLightingDeviceProviderTests
     public void Frames_match_the_declared_counts_and_get_contiguous_indices()
     {
         var c = Attach(0x16D5, 0x2A16, "SIXTEEN");
-        _provider.SetZoneLedCount(NollieLightingDeviceProvider.ChannelId(c.DeviceId, 0), 10);
-        _provider.SetZoneLedCount(NollieLightingDeviceProvider.ChannelId(c.DeviceId, 1), 20);
+        _provider.SetZoneLedCount(PortId(c.DeviceId, 0), 10);
+        _provider.SetZoneLedCount(PortId(c.DeviceId, 1), 20);
 
         var frames = _provider.BuildFrames(startingIndex: 5);
         Assert.Equal(16, frames.Count);
@@ -152,7 +261,7 @@ public class NollieLightingDeviceProviderTests
     public void Frames_are_reused_when_shape_is_unchanged()
     {
         var c = Attach(0x16D5, 0x2A01, "ONE");
-        _provider.SetZoneLedCount(NollieLightingDeviceProvider.ChannelId(c.DeviceId, 0), 8);
+        _provider.SetZoneLedCount(PortId(c.DeviceId, 0), 8);
         var first = _provider.BuildFrames(0)[0];
         var second = _provider.BuildFrames(0)[0];
         Assert.Same(first, second);
@@ -185,11 +294,11 @@ public class NollieLightingDeviceProviderTests
 
         var fired = 0;
         _provider.DevicesChanged += () => fired++;
-        _provider.SetZoneLedCount(NollieLightingDeviceProvider.ChannelId(c.DeviceId, 0), 30);
+        _provider.SetZoneLedCount(PortId(c.DeviceId, 0), 30);
         Assert.Equal(1, fired);
 
         // Same value again is not a change.
-        _provider.SetZoneLedCount(NollieLightingDeviceProvider.ChannelId(c.DeviceId, 0), 30);
+        _provider.SetZoneLedCount(PortId(c.DeviceId, 0), 30);
         Assert.Equal(1, fired);
     }
 
@@ -201,25 +310,32 @@ public class NollieLightingDeviceProviderTests
     /// per device and blanking the LED map.
     /// </summary>
     [Fact]
-    public void Cards_leave_DeviceId_for_the_composite_to_fill()
+    public void Every_card_names_the_channel_it_belongs_to()
     {
-        Attach(0x16D5, 0x2A16, "SIXTEEN");
-        Assert.All(_provider.GetAll().Devices, d => Assert.Equal("", d.DeviceId));
+        var c = Attach(0x16D5, 0x2A16, "SIXTEEN");
+        // The chain and zone editors address the channel, which is the thing
+        // the user actually wired something to.
+        Assert.All(_provider.GetAll().Devices,
+            d => Assert.StartsWith(c.DeviceId + ":ch", d.DeviceId));
     }
 
-    /// <summary>Zone management stays hidden: cards come from a fixed per-channel list, not a resolvable partition.</summary>
+    /// <summary>
+    /// The protocol has no read command, so every channel's contents are the
+    /// user's declaration: the zones are a chain they compose, not a fixed
+    /// firmware list.
+    /// </summary>
     [Fact]
-    public void Cards_are_not_zone_customizable()
+    public void Cards_are_zone_customizable()
     {
         Attach(0x16D5, 0x2A16, "SIXTEEN");
-        Assert.All(_provider.GetAll().Devices, d => Assert.False(d.ZoneCustomizable));
+        Assert.All(_provider.GetAll().Devices, d => Assert.True(d.ZoneCustomizable));
     }
 
     [Fact]
-    public void Structures_are_not_partitionable()
+    public void Structures_are_partitionable()
     {
         Attach(0x16D5, 0x2A16, "SIXTEEN");
-        Assert.All(_provider.GetStructures(), s => Assert.False(s.Partitionable));
+        Assert.All(_provider.GetStructures(), s => Assert.True(s.Partitionable));
     }
 
     /// <summary>A declared count must reach the card, or the LED map has nothing to draw.</summary>
@@ -229,7 +345,7 @@ public class NollieLightingDeviceProviderTests
         var c = Attach(0x16D5, 0x2A16, "SIXTEEN");
         for (var ch = 0; ch < 16; ch++)
         {
-            _provider.SetZoneLedCount(NollieLightingDeviceProvider.ChannelId(c.DeviceId, ch), 60);
+            _provider.SetZoneLedCount(PortId(c.DeviceId, ch), 60);
         }
         var cards = _provider.GetAll().Devices;
         Assert.Equal(16, cards.Count);

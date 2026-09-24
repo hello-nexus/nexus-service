@@ -1,5 +1,6 @@
 using System;
 using System.Threading;
+using Microsoft.AspNetCore.Http;
 
 namespace Nexus.Service.Panel;
 
@@ -36,4 +37,34 @@ public sealed class PanelTunnelMonitor
 
     public void MarkInboundActivity() =>
         Interlocked.Exchange(ref _lastInboundActivityUnixMs, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds());
+
+    private long _lastAuthorizedUnixMs;
+    private int _authenticatedSockets;
+
+    /// <summary>Unix ms of the last tunnel request that passed token or session validation; 0 when none since service start.</summary>
+    public long LastAuthorizedUnixMs => Interlocked.Read(ref _lastAuthorizedUnixMs);
+
+    /// <summary>Multiplex sockets currently open on the tunnel listener; every one of them passed validation at its upgrade.</summary>
+    public int AuthenticatedSockets => Volatile.Read(ref _authenticatedSockets);
+
+    public bool IsTunnelRequest(HttpContext ctx) => Port is int port && ctx.Connection.LocalPort == port;
+
+    public void MarkAuthorized(HttpContext ctx)
+    {
+        if (IsTunnelRequest(ctx))
+            Interlocked.Exchange(ref _lastAuthorizedUnixMs, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds());
+    }
+
+    public void SocketOpened()
+    {
+        Interlocked.Increment(ref _authenticatedSockets);
+        Interlocked.Exchange(ref _lastAuthorizedUnixMs, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds());
+    }
+
+    /// <summary>Also re-stamps the authenticated moment: a socket that upgraded before the watcher's first-sighting anchor would otherwise read as never-authenticated the moment it drops.</summary>
+    public void SocketClosed()
+    {
+        Interlocked.Decrement(ref _authenticatedSockets);
+        Interlocked.Exchange(ref _lastAuthorizedUnixMs, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds());
+    }
 }

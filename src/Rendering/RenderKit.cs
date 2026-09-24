@@ -176,6 +176,20 @@ internal static class RenderKit
 
     public static byte[] EncodeJpeg(Image<Rgba32> image)
     {
+        // libjpeg-turbo where it loaded, ImageSharp otherwise. Rgba32 is R,G,B,A in
+        // memory, hence TJPF_RGBX. The availability check gates the pixel copy: without
+        // it a build with no library would pay a discarded full-frame copy per encode.
+        if (TurboJpegOneShot.IsAvailable)
+        {
+            var pixels = new byte[image.Width * image.Height * 4];
+            image.CopyPixelDataTo(pixels);
+            var native = TurboJpegOneShot.TryCompress(
+                pixels, image.Width, image.Height, TurboJpeg.PixelFormatRgbx, JpegQuality);
+            if (native is not null)
+            {
+                return native;
+            }
+        }
         using var ms = new MemoryStream();
         image.SaveAsJpeg(ms, new JpegEncoder { Quality = JpegQuality });
         return ms.ToArray();

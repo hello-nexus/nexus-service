@@ -29,6 +29,7 @@ public sealed class StreamDeckSummaryDto
     public int Orientation { get; set; }
     /// <summary>Seconds of no key input before the deck blanks; a non-positive value disables sleep-after.</summary>
     public int SleepAfterSeconds { get; set; }
+    public bool SleepWhenLocked { get; set; }
     public string FirmwareVersion { get; set; } = "";
     /// <summary>"elgato-software-running" when Elgato's own app is contending for the deck; null otherwise.</summary>
     public string? Warning { get; set; }
@@ -38,6 +39,8 @@ public sealed class StreamDeckSummaryDto
     public int CurrentPage { get; set; }
     /// <summary>Current folder path, same semantics as StreamDeckChangedFrame.FolderPath; empty (root) when the deck has no tracked live state (disconnected).</summary>
     public List<int> FolderPath { get; set; } = new();
+    /// <summary>This deck's deck-instance id ("streamdeck:&lt;serial&gt;"), for GET/PUT /deck/instances/{id}.</summary>
+    public string InstanceId { get; set; } = "";
 }
 
 public sealed class GetStreamDecksResponse
@@ -45,7 +48,7 @@ public sealed class GetStreamDecksResponse
     public List<StreamDeckSummaryDto> Decks { get; set; } = new();
 }
 
-/// <summary>POST /streamdeck/decks/{serial} - rename and/or set brightness/orientation/sleep-after. Any field may be omitted.</summary>
+/// <summary>POST /streamdeck/decks/{serial} - rename and/or set brightness/orientation/sleep-after/sleep-when-locked. Any field may be omitted.</summary>
 public sealed class UpdateStreamDeckBody
 {
     public string? Name { get; set; }
@@ -54,18 +57,7 @@ public sealed class UpdateStreamDeckBody
     public int? Orientation { get; set; }
     /// <summary>Seconds of no key input before the deck blanks; clamped to a non-negative value.</summary>
     public int? SleepAfterSeconds { get; set; }
-}
-
-/// <summary>Shared envelope for GET/PUT /streamdeck/decks/{serial}/config.</summary>
-public sealed class StreamDeckConfigEnvelope
-{
-    public DeckConfig Config { get; set; } = new();
-}
-
-/// <summary>PUT /streamdeck/decks/{serial}/images/{slotPath}/{state} response.</summary>
-public sealed class StreamDeckImageUploadResponse
-{
-    public string Hash { get; set; } = "";
+    public bool? SleepWhenLocked { get; set; }
 }
 
 /// <summary>Multiplex frame for the "streamdeck" topic.</summary>
@@ -159,52 +151,4 @@ public sealed class StreamDeckDevModelDto
 public sealed class StreamDeckDevModelsResponse
 {
     public List<StreamDeckDevModelDto> Models { get; set; } = new();
-}
-
-// ----- /streamdeck/decks/{serial}/presets -----
-
-/// <summary>One deck preset's identity - GET .../presets never sends the config/imageRefs.</summary>
-public sealed class DeckPresetDto
-{
-    public string Id { get; set; } = "";
-    public string Name { get; set; } = "";
-}
-
-public sealed class GetDeckPresetsResponse
-{
-    public List<DeckPresetDto> Presets { get; set; } = new();
-    // Always serialize; null = no preset selected. WhenWritingNull would omit it.
-    [JsonIgnore(Condition = JsonIgnoreCondition.Never)]
-    public string? ActiveId { get; set; }
-}
-
-public sealed class CreateDeckPresetBody
-{
-    public string Name { get; set; } = "";
-    /// <summary>When present, the preset is created from this config (deep-copied) instead of a snapshot of the deck's live config - the Elgato importer's path.</summary>
-    public DeckConfig? Config { get; set; }
-}
-
-public sealed class CreateDeckPresetResponse
-{
-    public DeckPresetDto? Preset { get; set; }
-    public string? ActiveId { get; set; }
-}
-
-public sealed class UpdateDeckPresetBody
-{
-    public string? Name { get; set; }
-    public bool SaveCurrent { get; set; }
-}
-
-public sealed class SetActiveDeckPresetBody
-{
-    public string? Id { get; set; }
-}
-
-public sealed class DeleteDeckPresetResponse
-{
-    // Always serialize; null = no preset selected. WhenWritingNull would omit it.
-    [JsonIgnore(Condition = JsonIgnoreCondition.Never)]
-    public string? ActiveId { get; set; }
 }

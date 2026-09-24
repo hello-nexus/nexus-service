@@ -33,16 +33,18 @@ public sealed record ReportSnapshot
     public PnpProblemSnapshot Pnp { get; init; } = PnpProblemSnapshot.Unsupported;
     public IReadOnlyDictionary<string, int> Counts30d { get; init; } = new Dictionary<string, int>();
     public MemoryTestResult? LastMemoryTest { get; init; }
+    /// <summary>User-ignored health component ids (preferences.diagnostics).
+    /// Health already excludes them; the raw drive table marks them so the
+    /// two never contradict each other on the page.</summary>
+    public IReadOnlySet<string> IgnoredComponents { get; init; } = new HashSet<string>();
 }
 
 /// <summary>
 /// Builds the single-page PDF diagnostics report. <see cref="GatherAsync"/> is
 /// the DI-facing side that reads every live diagnostics module; it takes the
 /// health response and SMART snapshot as already-computed values (not the
-/// monitors that produce them) so a caller that also needs those values for
-/// its own response - the GET /diagnostics/bundle/download route - reads each
-/// exactly once and both outputs describe the same instant. <see cref="Build"/>
-/// is the pure layout function, safe to unit test with a hand-built snapshot.
+/// monitors that produce them). <see cref="Build"/> is the pure layout
+/// function, safe to unit test with a hand-built snapshot.
 ///
 /// Layout is a fixed budget: every section occupies the same page area and
 /// the same number of row slots no matter how much data exists (drive count,
@@ -76,6 +78,7 @@ public static class DiagnosticsReportBuilder
         EventLogMonitor events,
         MemoryDiagnosticOrchestrator memDiag,
         PnpProblemScanner pnp,
+        IEnumerable<string> ignoredComponents,
         CancellationToken ct = default)
     {
         SystemSpecsResponse specs;
@@ -115,6 +118,7 @@ public static class DiagnosticsReportBuilder
             Pnp = pnp.Snapshot(),
             Counts30d = events.CountsSince(TimeSpan.FromDays(30)),
             LastMemoryTest = memDiag.LastResult(),
+            IgnoredComponents = new HashSet<string>(ignoredComponents, StringComparer.Ordinal),
         };
     }
 
@@ -414,7 +418,7 @@ public static class DiagnosticsReportBuilder
 
             for (var i = 0; i < shownCount; i++)
             {
-                DrawDriveRow(c, columns, y, drives[i]);
+                DrawDriveRow(c, columns, y, drives[i], s.IgnoredComponents.Contains(drives[i].Id));
                 y -= 14;
             }
 
@@ -440,7 +444,7 @@ public static class DiagnosticsReportBuilder
         y -= 20;
     }
 
-    private static void DrawDriveRow(PdfContentBuilder c, (string Header, double X, double Width)[] columns, double y, SmartDriveInfo drive)
+    private static void DrawDriveRow(PdfContentBuilder c, (string Header, double X, double Width)[] columns, double y, SmartDriveInfo drive, bool ignored)
     {
         c.FillGray(BlackGray);
         var model = PdfFonts.Sanitize(NonEmpty(drive.Name));
@@ -449,7 +453,7 @@ public static class DiagnosticsReportBuilder
         c.Text(columns[2].X, y, 8, false, PdfFonts.Sanitize(FormatBytesGb(drive.SizeBytes)));
         c.Text(columns[3].X, y, 8, false, PdfFonts.Sanitize(FormatTemperature(drive.TemperatureC)));
         c.Text(columns[4].X, y, 8, false, PdfFonts.Sanitize(FormatHealthPercent(drive.HealthPercent)));
-        c.Text(columns[5].X, y, 8, true, PdfFonts.Sanitize(StatusWord(MapDriveStatus(drive.Status))));
+        c.Text(columns[5].X, y, 8, true, PdfFonts.Sanitize(ignored ? "IGNORED" : StatusWord(MapDriveStatus(drive.Status))));
     }
 
     private static void DrawBlankDriveRow(PdfContentBuilder c, (string Header, double X, double Width)[] columns, double y)

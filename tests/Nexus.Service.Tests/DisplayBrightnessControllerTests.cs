@@ -3,6 +3,7 @@ using Nexus.Service.Models.Panel;
 using Nexus.Service.Panel;
 using Nexus.Service.Persistence;
 using Nexus.Service.Platform.Displays;
+using Nexus.Service.Tests.StreamDeck;
 
 namespace Nexus.Service.Tests;
 
@@ -139,6 +140,59 @@ public class DisplayBrightnessControllerTests
 
         Assert.Equal(DisplayBrightnessWriteStatuses.Applied, result.Status);
         Assert.Equal(new[] { 80 }, provider.Writes);
+    }
+
+    // The Y70's monitor shows up in /displays like any other, but its
+    // brightness must go through the Y70 provider (serial / RGB gains / VCP by
+    // variant): a raw DDC VCP 0x10 write does nothing on an Infinite.
+    private static DisplayTopologyService TopologyWithY70(string displayId)
+        => TestHandlers.FakeTopology(new List<RawDisplayInfo>
+        {
+            new() { Id = displayId, RawHardwareId = @"MONITOR\RTK0004\{4d36e96e}\0001" },
+        });
+
+    [Fact]
+    public void ListDisplays_Y70Monitor_ReportsTheY70ControlPathAndItsStoredBrightness()
+    {
+        var y70 = new FakeY70Provider();
+        var controller = new DisplayBrightnessController(new FakeDisplayBrightnessProvider(), null, null, TopologyWithY70("display1"), y70);
+
+        var display = Assert.Single(controller.ListDisplays().Displays);
+
+        Assert.True(display.Capabilities.Brightness);
+        Assert.True(display.BrightnessControl.Supported);
+        Assert.Equal(DisplayBrightnessControlPaths.Y70, display.BrightnessControl.ControlPath);
+        Assert.Equal(50, display.BrightnessControl.Current);
+    }
+
+    [Fact]
+    public async Task SetBrightnessAsync_Y70Monitor_DrivesTheY70ProviderNotDdc()
+    {
+        var provider = new FakeDisplayBrightnessProvider();
+        var y70 = new FakeY70Provider();
+        var controller = new DisplayBrightnessController(provider, null, null, TopologyWithY70("display1"), y70);
+
+        var result = await controller.SetBrightnessAsync("display1", 30);
+
+        Assert.Equal(DisplayBrightnessWriteStatuses.Applied, result.Status);
+        Assert.Equal(30, result.Brightness);
+        Assert.Equal(30, y70.LastBrightness);
+        Assert.Empty(provider.Writes);
+        Assert.Equal(50, controller.GetBrightness("display1"));
+    }
+
+    [Fact]
+    public async Task SetBrightnessAsync_OtherMonitorNextToAY70_StillWritesDdc()
+    {
+        var provider = new FakeDisplayBrightnessProvider();
+        var y70 = new FakeY70Provider();
+        var controller = new DisplayBrightnessController(provider, null, null, TopologyWithY70("y70-monitor"), y70);
+
+        var result = await controller.SetBrightnessAsync("display1", 30);
+
+        Assert.Equal(DisplayBrightnessWriteStatuses.Applied, result.Status);
+        Assert.Null(y70.LastBrightness);
+        Assert.Equal(new[] { 30 }, provider.Writes);
     }
 
     private sealed class InMemoryConfigStore : IConfigStore

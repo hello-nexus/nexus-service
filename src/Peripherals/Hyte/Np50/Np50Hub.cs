@@ -365,8 +365,8 @@ public sealed class Np50Hub : IDisposable, IDfuFlashTarget
     }
 
     /// <summary>
-    /// Read raw 9-byte firmware-animation state (opcode 0xCC 0x0D). Payload
-    /// layout after the 4-byte header: anim, R, G, B, brightness. Pair with
+    /// Read raw firmware-animation state (opcode 0xCC 0x0D). Payload layout
+    /// after the 3-byte header echo: anim, R, G, B, brightness. Pair with
     /// <see cref="WriteFirmwareAnimationToMcu"/> to verify SAVE-byte writes
     /// actually persisted.
     /// </summary>
@@ -376,15 +376,17 @@ public sealed class Np50Hub : IDisposable, IDfuFlashTarget
         var ok = Exchange(
             "fw-animation",
             Np50Protocol.BuildGetFirmwareAnimation(),
-            expectedLength: 9,
+            expectedLength: Np50Protocol.FirmwareAnimationResponseLength,
             timeoutMs: 300,
             response => result = response.ToArray());
         return ok ? result : null;
     }
 
     /// <summary>
-    /// Typed read of the firmware-animation state. Returns null when the hub
-    /// is unreachable or the response is malformed.
+    /// Typed read of the firmware-animation state via 0xCC 0x0D. Returns
+    /// null when the hub is unreachable or the response is malformed. The
+    /// info poll's bytes 15..19 are not a substitute: on fw 2.0.5.1 they stay
+    /// zero while 0x0D reports the animation just written.
     /// </summary>
     public Np50Protocol.Np50FwAnimation? GetFirmwareAnimation()
     {

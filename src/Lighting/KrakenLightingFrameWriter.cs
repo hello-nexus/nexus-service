@@ -5,6 +5,7 @@ using System.Threading.Tasks;
 using Microsoft.Extensions.Hosting;
 using Nexus.Service.Lifecycle;
 using Nexus.Service.Lighting.Engine;
+using Nexus.Service.Lighting.Zones;
 using Nexus.Service.Peripherals.Nzxt;
 using Nexus.Service.Persistence;
 using Nexus.Service.Platform;
@@ -44,6 +45,12 @@ public sealed class KrakenLightingFrameWriter : IHostedService, IDisposable
     private readonly Dictionary<string, byte[]> _lastPushed = new();
     private readonly Dictionary<string, long> _lastPushedAtMs = new();
     private readonly HashSet<string> _missingFrame = new();
+
+    // Last resolved zones per channel, keyed by channel id. Resolve reads
+    // ZonePartitions/PortChains/ZoneLedCounts lock-free while routes mutate
+    // them in place, so a mid-enumeration InvalidOperationException falls
+    // back to last tick's zones rather than dropping the frame.
+    private readonly Dictionary<string, IReadOnlyList<ResolvedZone>> _zoneCache = new();
 
     public KrakenLightingFrameWriter(
         LightingEngine engine, KrakenHub hub, IConfigStore store, Np50IdentifyTracker identify, FeatureGates? gates = null)
@@ -110,118 +117,104 @@ public sealed class KrakenLightingFrameWriter : IHostedService, IDisposable
         var disabled = settings.Devices.DisabledLightingDevices;
         var uncontrolled = settings.Devices.UncontrolledLightingDevices;
         var prefs = settings.Devices.LightingDevicePrefs;
-        var globalBrightness = Math.Clamp(settings.Lighting.GlobalBrightness, 0f, 1f);
+        var globalBrightness = MasterBrightness.Effective(settings.Lighting);
         var nowTicks = DateTime.UtcNow.Ticks;
 
         var channels = _hub.Snapshot.Channels;
         for (int i = 0; i < channels.Count; i++)
         {
-            var zoneId = KrakenHub.ZoneIdForChannelIndex(i);
+            var channelId = KrakenHub.ZoneIdForChannelIndex(i);
+            var zones = ResolveOrReuse(channelId,
+                () => KrakenLightingDeviceProvider.ResolveChannelZones(settings, _hub.ModelName, channels[i], i, _hub.MaxDirectColors));
 
             // Left uncontrolled means "hands off": stop pushing so the cooler keeps running
-            // whatever firmware animation it was set to.
-            bool isUncontrolled = false;
-            for (var u = 0; u < uncontrolled.Count; u++)
+            // whatever firmware animation it was set to. A chained channel counts as
+            // uncontrolled only when every one of its products does.
+            if (uncontrolled.Count > 0 && ZoneResolution.IsFullyUncontrolled(zones, uncontrolled))
             {
-                if (uncontrolled[u] == zoneId) { isUncontrolled = true; break; }
-            }
-            if (isUncontrolled)
-            {
-                _lastPushed.Remove(zoneId);
+                _lastPushed.Remove(channelId);
                 continue;
             }
 
-            PushZone(devices, zoneId, channels[i], disabled, prefs, globalBrightness, nowTicks);
+            PushChannel(devices, channelId, zones, channels[i], disabled, uncontrolled, prefs, globalBrightness, nowTicks);
         }
     }
 
-    private void PushZone(
-        DeviceFrame[] devices, string zoneId, KrakenLightingChannel channel,
+    private IReadOnlyList<ResolvedZone> ResolveOrReuse(string cacheKey, Func<IReadOnlyList<ResolvedZone>> resolve)
+    {
+        try
+        {
+            var zones = resolve();
+            _zoneCache[cacheKey] = zones;
+            return zones;
+        }
+        catch (InvalidOperationException)
+        {
+            return _zoneCache.TryGetValue(cacheKey, out var last) ? last : Array.Empty<ResolvedZone>();
+        }
+    }
+
+    /// <summary>
+    /// Fill one channel's payload from its resolved zones, laid down back to
+    /// back in chain order, and push it in one HID write. Power, brightness,
+    /// colour trim and identify stay per-zone so one product in a fan chain
+    /// can be flashed or switched off without touching the ones beside it on
+    /// the wire.
+    /// </summary>
+    private void PushChannel(
+        DeviceFrame[] devices, string channelId, IReadOnlyList<ResolvedZone> zones, KrakenLightingChannel channel,
         IReadOnlyList<string> disabled,
+        IReadOnlyList<string> uncontrolled,
         IReadOnlyDictionary<string, LightingDevicePreference> prefs,
         float globalBrightness, long nowTicks)
     {
-        DeviceFrame? frame = null;
-        for (var i = 0; i < devices.Length; i++)
-        {
-            if (devices[i].Id == zoneId) { frame = devices[i]; break; }
-        }
-        if (frame is null)
-        {
-            // Without an engine frame this zone is unreachable - no canvas colour and no
-            // identify flash. Logged on the transition only; it means the bridge has not
-            // picked up this contributor.
-            if (_missingFrame.Add(zoneId))
-            {
-                ServiceLog.Warn($"[nzxt-kraken-lighting-writer] no engine frame for {zoneId}");
-            }
-            return;
-        }
-        _missingFrame.Remove(zoneId);
-
-        var ledCount = Math.Min(frame.LedCount, _hub.MaxDirectColors);
+        var total = 0;
+        for (var i = 0; i < zones.Count; i++) total += Math.Max(0, zones[i].LedCount);
+        var ledCount = Math.Min(total, _hub.MaxDirectColors);
         if (ledCount <= 0)
         {
             return;
         }
 
-        var brightnessMul = ComputeBrightnessMul(zoneId, disabled, prefs, globalBrightness, out var adjust);
-        var hasIdentify = _identify.TryGetActive(zoneId, nowTicks, out var startTicks);
-
         var payload = new byte[ledCount * 3];
-        if (hasIdentify)
+        var offset = 0;
+        foreach (var zone in zones)
         {
-            var elapsedMs = (nowTicks - startTicks) / TimeSpan.TicksPerMillisecond;
-            byte v = (elapsedMs / IdentifyFlashHalfPeriodMs) % 2 == 0 ? (byte)255 : (byte)0;
-            payload.AsSpan().Fill(v);
-        }
-        else if (brightnessMul > 0.0)
-        {
-            var src = frame.LedBytes;
-            // Branch once, not once per LED: an untuned zone runs the original
-            // loop with no colour-tuning work in it at all.
-            if (!adjust.IsIdentity)
+            var zoneLeds = Math.Max(0, zone.LedCount);
+            var take = Math.Min(zoneLeds, Math.Max(0, ledCount - offset));
+            if (take > 0)
             {
-                for (var i = 0; i < ledCount; i++)
+                DeviceFrame? frame = null;
+                for (var f = 0; f < devices.Length; f++)
                 {
-                    var off = i * 3;
-                    if (off + 2 >= src.Length) break;
-                    adjust.Apply(src[off], src[off + 1], src[off + 2], brightnessMul,
-                        out var ar, out var ag, out var ab);
-                    payload[off] = ar;
-                    payload[off + 1] = ag;
-                    payload[off + 2] = ab;
+                    if (devices[f].Id == zone.Id) { frame = devices[f]; break; }
+                }
+                if (frame is null)
+                {
+                    // No engine frame yet (a refresh in flight): dark, never stale
+                    // bytes from whatever occupied this slice last tick. Logged
+                    // on the transition only.
+                    if (_missingFrame.Add(zone.Id))
+                    {
+                        ServiceLog.Warn($"[nzxt-kraken-lighting-writer] no engine frame for {zone.Id}");
+                    }
+                }
+                else
+                {
+                    _missingFrame.Remove(zone.Id);
+                    var brightnessMul = ComputeBrightnessMul(zone.Id, disabled, uncontrolled, prefs, globalBrightness, out var adjust);
+                    var hasIdentify = _identify.TryGetActive(zone.Id, nowTicks, out var startTicks);
+                    FillSlice(payload, offset, take, frame, brightnessMul, adjust, hasIdentify, startTicks, nowTicks);
                 }
             }
-            else if (brightnessMul >= 0.999)
-            {
-                for (var i = 0; i < ledCount; i++)
-                {
-                    var off = i * 3;
-                    if (off + 2 >= src.Length) break;
-                    payload[off] = src[off];
-                    payload[off + 1] = src[off + 1];
-                    payload[off + 2] = src[off + 2];
-                }
-            }
-            else
-            {
-                for (var i = 0; i < ledCount; i++)
-                {
-                    var off = i * 3;
-                    if (off + 2 >= src.Length) break;
-                    payload[off] = (byte)(src[off] * brightnessMul);
-                    payload[off + 1] = (byte)(src[off + 1] * brightnessMul);
-                    payload[off + 2] = (byte)(src[off + 2] * brightnessMul);
-                }
-            }
+            offset += zoneLeds;
         }
 
         var nowMs = nowTicks / TimeSpan.TicksPerMillisecond;
-        if (_lastPushed.TryGetValue(zoneId, out var previous)
+        if (_lastPushed.TryGetValue(channelId, out var previous)
             && previous.Length == payload.Length
             && previous.AsSpan().SequenceEqual(payload)
-            && _lastPushedAtMs.TryGetValue(zoneId, out var sentAt)
+            && _lastPushedAtMs.TryGetValue(channelId, out var sentAt)
             && nowMs - sentAt < ReassertPeriodMs)
         {
             return;
@@ -229,19 +222,74 @@ public sealed class KrakenLightingFrameWriter : IHostedService, IDisposable
 
         if (_hub.SetDirectColors(channel.ChannelId, payload))
         {
-            _lastPushed[zoneId] = payload;
-            _lastPushedAtMs[zoneId] = nowMs;
+            _lastPushed[channelId] = payload;
+            _lastPushedAtMs[channelId] = nowMs;
         }
         else
         {
             // Force a re-push next tick rather than leaving a stale "already sent" entry.
-            _lastPushed.Remove(zoneId);
+            _lastPushed.Remove(channelId);
+        }
+    }
+
+    private static void FillSlice(byte[] dst, int dstStart, int ledCount, DeviceFrame frame,
+        double brightnessMul, DeviceColorAdjust adjust, bool hasIdentify, long identifyStartTicks, long nowTicks)
+    {
+        var baseOff = dstStart * 3;
+        if (hasIdentify)
+        {
+            var elapsedMs = (nowTicks - identifyStartTicks) / TimeSpan.TicksPerMillisecond;
+            byte v = (elapsedMs / IdentifyFlashHalfPeriodMs) % 2 == 0 ? (byte)255 : (byte)0;
+            for (var i = 0; i < ledCount * 3 && baseOff + i < dst.Length; i++) dst[baseOff + i] = v;
+            return;
+        }
+        if (brightnessMul <= 0.0)
+        {
+            return;
+        }
+        var src = frame.LedBytes;
+        // Branch once, not once per LED: an untuned zone runs the original
+        // loop with no colour-tuning work in it at all.
+        if (!adjust.IsIdentity)
+        {
+            for (var i = 0; i < ledCount; i++)
+            {
+                var off = i * 3;
+                if (off + 2 >= src.Length || baseOff + off + 2 >= dst.Length) break;
+                adjust.Apply(src[off], src[off + 1], src[off + 2], brightnessMul,
+                    out var ar, out var ag, out var ab);
+                dst[baseOff + off] = ar;
+                dst[baseOff + off + 1] = ag;
+                dst[baseOff + off + 2] = ab;
+            }
+            return;
+        }
+        if (brightnessMul >= 0.999)
+        {
+            for (var i = 0; i < ledCount; i++)
+            {
+                var off = i * 3;
+                if (off + 2 >= src.Length || baseOff + off + 2 >= dst.Length) break;
+                dst[baseOff + off] = src[off];
+                dst[baseOff + off + 1] = src[off + 1];
+                dst[baseOff + off + 2] = src[off + 2];
+            }
+            return;
+        }
+        for (var i = 0; i < ledCount; i++)
+        {
+            var off = i * 3;
+            if (off + 2 >= src.Length || baseOff + off + 2 >= dst.Length) break;
+            dst[baseOff + off] = (byte)(src[off] * brightnessMul);
+            dst[baseOff + off + 1] = (byte)(src[off + 1] * brightnessMul);
+            dst[baseOff + off + 2] = (byte)(src[off + 2] * brightnessMul);
         }
     }
 
     private static double ComputeBrightnessMul(
         string id,
         IReadOnlyList<string> disabled,
+        IReadOnlyList<string> uncontrolled,
         IReadOnlyDictionary<string, LightingDevicePreference> prefs,
         float globalBrightness,
         out DeviceColorAdjust adjust)
@@ -250,6 +298,10 @@ public sealed class KrakenLightingFrameWriter : IHostedService, IDisposable
         for (var i = 0; i < disabled.Count; i++)
         {
             if (disabled[i] == id) return 0.0;
+        }
+        for (var i = 0; i < uncontrolled.Count; i++)
+        {
+            if (uncontrolled[i] == id) return 0.0;
         }
         // One lookup feeds both the brightness and the colour trim.
         int devBrightness;

@@ -70,14 +70,26 @@ public sealed class Slv3Hub : IDisposable
 
     // GetDev failure escalation (lian-li-linux controller.rs): 5 consecutive
     // USB-level failures -> UsbResetAnother to the RX MCU (a handle reopen does
-    // not reset a wedged radio), at most 3 resets per connection, then give the
-    // worker its disconnect/reconnect path.
+    // not reset a wedged radio). A good reply refills the reset budget, so only
+    // resets that fail back to back hand the worker its disconnect/reconnect.
     private const int RxFailStreakForReset = 5;
     private const int MaxRxResetsPerConnection = 3;
     // Post-reset settle per the reference's 500 ms sleep after USB_ResetAnother.
     private const int RxResetSettleMs = 500;
     private int _rxFailStreak;
     private int _rxResetCount;
+
+    // A reply opening with 0 is the RX's "no device list this cycle". It does
+    // this on its own every ~17 s for a few seconds and recovers without help,
+    // while a reset restarts the TX and stretches the gap (Y70 USBPcap
+    // 2026-09-23), so only a busy spell this long is treated as a wedge.
+    private const int RxBusyPollsBeforeReset = 60;
+    private int _rxBusyStreak;
+
+    // Polls a TX that went away (it re-enumerates about a second after an RX
+    // reset) may take to come back before the link is torn down and rebuilt.
+    private const int TxReopenPollBudget = 10;
+    private int _txMissingPolls;
 
     // SaveCfg after a confirmed bind: L-Connect broadcasts one on every loop
     // pass for a few seconds after Bind() (lastBindTime); here one per poll
@@ -127,7 +139,12 @@ public sealed class Slv3Hub : IDisposable
 
     public Slv3State State { get; } = new();
 
-    public bool IsConnected => _tx is { IsOpen: true } && _rx is { IsOpen: true };
+    /// <summary>
+    /// The link is up: connected, and the RX that reports the device list is
+    /// open. The TX can be briefly gone while it re-enumerates after an RX
+    /// reset; <see cref="PollTick"/> reopens it without dropping the list.
+    /// </summary>
+    public bool IsConnected => State.IsConnected && _rx is { IsOpen: true };
 
     /// <summary>Opens the TX + RX dongles and learns our master MAC. Both must open for the link to be usable.</summary>
     public bool EnsureConnected()
@@ -232,11 +249,54 @@ public sealed class Slv3Hub : IDisposable
         _pendingCommands.Clear();
         _lastIssuedSeq.Clear();
         _rxFailStreak = 0;
+        _rxBusyStreak = 0;
         _rxResetCount = 0;
+        _txMissingPolls = 0;
         _saveCfgBurstRemaining = 0;
         _saveCfgDueMs = 0;
         _videoModeActive = false;
         _videoModePreppedCount = 0;
+    }
+
+    // Reopens a TX whose handle died with its device, keeping the device list
+    // so nothing downstream sees the link drop. The new handle must answer
+    // GetMac: a dying instance can still be listed for a moment.
+    private bool TryReopenTxLocked()
+    {
+        try { _tx?.Dispose(); } catch { /* best effort */ }
+        _tx = null;
+        Slv3PortInfo? txPort = null;
+        foreach (var port in _discovery.Discover())
+        {
+            if (port.Role == Slv3DongleRole.Tx)
+            {
+                txPort = port;
+                break;
+            }
+        }
+        if (txPort is null)
+        {
+            return false;
+        }
+        try
+        {
+            _tx = _transportFactory(txPort);
+        }
+        catch (Exception)
+        {
+            return false;
+        }
+        if (!TryGetMacOnChannelLocked(_channel))
+        {
+            try { _tx.Dispose(); } catch { /* best effort */ }
+            _tx = null;
+            return false;
+        }
+        // The restarted TX lost the LCD video arming; the LCD loop re-arms it.
+        _videoModeActive = false;
+        _videoModePreppedCount = 0;
+        ServiceLog.Info("[lianli-wireless] TX reopened");
+        return true;
     }
 
     private bool MasterInitLocked()
@@ -329,6 +389,10 @@ public sealed class Slv3Hub : IDisposable
             {
                 return false;
             }
+            if (_tx is not { IsOpen: true })
+            {
+                return true;
+            }
             SyncPwmLocked();
             RefreshMasterMacLocked();
             SendClockHeartbeatLocked();
@@ -343,9 +407,23 @@ public sealed class Slv3Hub : IDisposable
         {
             return false;
         }
+        if (_tx is { IsOpen: true } || TryReopenTxLocked())
+        {
+            _txMissingPolls = 0;
+        }
+        else if (++_txMissingPolls >= TxReopenPollBudget)
+        {
+            return false;
+        }
         if (!RefreshDeviceListLocked())
         {
             return false;
+        }
+        // Pending binds, commands and saves keep their budgets while the TX is
+        // away instead of spending them on sends that cannot go out.
+        if (_tx is not { IsOpen: true })
+        {
+            return true;
         }
         ResolvePendingLocked();
         SyncControlLocked();
@@ -413,11 +491,12 @@ public sealed class Slv3Hub : IDisposable
     // control pass. L-Connect skips a chain that enumerates no fans; here such
     // a chain is still driven once the user sets a port duty on it (the cooling
     // provider exposes its ports), and left alone on the mobo-sync default.
+    // A Strimer has no fan ports at all and is never re-bound from here.
     private void SyncPwmLocked()
     {
         foreach (var record in _lastFanRecords)
         {
-            if (!IsBoundToUsLocked(record))
+            if (!IsBoundToUsLocked(record) || record.IsStrimer)
             {
                 continue;
             }
@@ -592,11 +671,17 @@ public sealed class Slv3Hub : IDisposable
         // A missing/invalid GetDev echo with a healthy handle is a wedged RX
         // MCU (streak -> 0x15 reset); a valid reply listing zero devices is an
         // RF sampling gap and takes the normal merge path.
+        if (reply.Length > 0 && reply[0] == 0)
+        {
+            return HandleRxBusyLocked();
+        }
         if (reply.Length < Slv3Protocol.RecordHeaderLength || reply[0] != Slv3Protocol.UsbSendRf)
         {
             return HandleGetDevFailureLocked();
         }
         _rxFailStreak = 0;
+        _rxBusyStreak = 0;
+        _rxResetCount = 0;
 
         State.MotherboardPwmPercent = Slv3Protocol.ParseGetDevMoboDuty(reply);
 
@@ -610,7 +695,8 @@ public sealed class Slv3Hub : IDisposable
                 var key = Convert.ToHexString(record.Mac);
                 if (!_knownChains.ContainsKey(key))
                 {
-                    ServiceLog.Info($"[lianli-wireless] chain {key} appeared ({record.FanCount} fan(s), {record.Family})");
+                    var what = record.IsStrimer ? $"Strimer dev_type {record.DevType}" : $"{record.FanCount} fan(s), {record.Family}";
+                    ServiceLog.Info($"[lianli-wireless] chain {key} appeared ({what})");
                 }
                 _knownChains[key] = new Slv3KnownChain(record, nowMs);
             }
@@ -636,7 +722,14 @@ public sealed class Slv3Hub : IDisposable
         // Page estimate follows the larger of the reply's count and the tracked
         // set, so a partial report can't shrink the next read below the full list.
         _lastRecordCount = Math.Max(count, _knownChains.Count);
+        PublishFansLocked(nowMs);
+        return true;
+    }
 
+    // Surfaces the known chains, flagging any unseen for longer than
+    // ChainStaleMs, including while the RX reports no list.
+    private void PublishFansLocked(long nowMs)
+    {
         var records = new List<Slv3DeviceRecord>(_knownChains.Count);
         var fans = new List<Slv3FanInfo>(_knownChains.Count);
         foreach (var key in SortedChainKeysLocked())
@@ -647,7 +740,6 @@ public sealed class Slv3Hub : IDisposable
         }
         _lastFanRecords = records;
         State.Fans = fans.ToArray();
-        return true;
     }
 
     // MAC-ordered keys so the surfaced list is stable across polls regardless
@@ -659,24 +751,44 @@ public sealed class Slv3Hub : IDisposable
         return keys;
     }
 
+    // The RX answered but has no list: keep the last-known one.
+    private bool HandleRxBusyLocked()
+    {
+        PublishFansLocked(_nowMs());
+        if (++_rxBusyStreak < RxBusyPollsBeforeReset)
+        {
+            return true;
+        }
+        return ResetRxLocked($"{RxBusyPollsBeforeReset} consecutive busy GetDev replies");
+    }
+
+    // Only a good reply clears the busy and failure streaks, so an RX that
+    // alternates between the two still escalates.
     private bool HandleGetDevFailureLocked()
     {
+        PublishFansLocked(_nowMs());
         _rxFailStreak++;
         if (_rxFailStreak < RxFailStreakForReset)
         {
             // Transient: keep the last-known list and let the next tick retry.
             return true;
         }
+        return ResetRxLocked($"{RxFailStreakForReset} consecutive GetDev failures");
+    }
+
+    private bool ResetRxLocked(string reason)
+    {
         if (_rxResetCount >= MaxRxResetsPerConnection)
         {
-            // Out of resets. Streak stays past the threshold, so every further
-            // failure lands here and the worker's consecutive-failure path
-            // gets its disconnect/reopen.
+            // Out of resets. The streak stays past its threshold, so every
+            // further failed or busy poll lands here and the worker's
+            // consecutive-failure path gets its disconnect/reopen.
             return false;
         }
         _rxFailStreak = 0;
+        _rxBusyStreak = 0;
         _rxResetCount++;
-        ServiceLog.Warn($"[lianli-wireless] {RxFailStreakForReset} consecutive GetDev failures, resetting RX MCU ({_rxResetCount}/{MaxRxResetsPerConnection})");
+        ServiceLog.Warn($"[lianli-wireless] {reason}, resetting RX MCU ({_rxResetCount}/{MaxRxResetsPerConnection})");
         if (_rx is not null && _rx.RfSend(Slv3Protocol.BuildResetAnother()))
         {
             _rx.RfRead(Slv3Protocol.UsbPacketSize);
@@ -970,7 +1082,21 @@ public sealed class Slv3Hub : IDisposable
     /// device-list echo to detect a dropped push.
     /// </summary>
     public bool SendRgbFrame(
-        string macHex, ReadOnlySpan<RgbColor> leds, int brightnessPercent, int intervalMs, out string effectIndexHex)
+        string macHex, ReadOnlySpan<RgbColor> leds, int brightnessPercent, int intervalMs, out string effectIndexHex) =>
+        SendRgbData(macHex, Slv3RgbFrame.BuildFrameBuffer(leds, brightnessPercent), leds.Length, 1, intervalMs, out effectIndexHex);
+
+    /// <summary>
+    /// <see cref="SendRgbFrame"/> for a looping animation of
+    /// <paramref name="frameCount"/> frames (R,G,B per LED, frame-major) that
+    /// the chain plays on its own at <paramref name="intervalMs"/> per frame.
+    /// </summary>
+    public bool SendRgbAnimation(
+        string macHex, ReadOnlySpan<byte> frames, int ledCount, int frameCount, double intervalMs,
+        int brightnessPercent, out string effectIndexHex) =>
+        SendRgbData(macHex, Slv3RgbFrame.BuildFrameBuffer(frames, brightnessPercent), ledCount, frameCount, intervalMs, out effectIndexHex);
+
+    private bool SendRgbData(
+        string macHex, byte[] raw, int ledCount, int frameCount, double intervalMs, out string effectIndexHex)
     {
         effectIndexHex = "";
         if (!TryParseMac(macHex, out var mac))
@@ -987,7 +1113,6 @@ public sealed class Slv3Hub : IDisposable
                 return false;
             }
 
-            var raw = Slv3RgbFrame.BuildFrameBuffer(leds, brightnessPercent);
             byte[] compressed;
             try
             {
@@ -1000,7 +1125,7 @@ public sealed class Slv3Hub : IDisposable
 
             effectIndex = Slv3RgbFrame.BuildEffectIndex(DateTimeOffset.UtcNow.ToUnixTimeMilliseconds());
             packets = Slv3RgbFrame.BuildPackets(
-                record.Mac, _masterMac, effectIndex, compressed, leds.Length, totalFrames: 1, intervalMs);
+                record.Mac, _masterMac, effectIndex, compressed, ledCount, frameCount, intervalMs);
             channel = record.Channel;
             rxType = record.RxType;
         }

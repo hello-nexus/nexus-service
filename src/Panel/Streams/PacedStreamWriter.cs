@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Diagnostics;
 using System.Runtime.InteropServices;
 using System.Threading;
@@ -114,45 +115,59 @@ public sealed class PacedStreamWriter : IDisposable
 
                 var frames = _session.DequeueForTick();
                 if (frames.Count == 0) continue;
-                if (_batchFrames > 1 && frames.Count > 1)
+                try
                 {
-                    // The batch shares one write so the transport pays one
-                    // round trip for all of it.
-                    var total = 0;
-                    var anyIdr = false;
-                    foreach (var frame in frames)
-                    {
-                        total += frame.Payload.Length;
-                        anyIdr |= frame.IsIdr;
-                    }
-                    var buffer = System.Buffers.ArrayPool<byte>.Shared.Rent(total);
-                    try
-                    {
-                        var offset = 0;
-                        foreach (var frame in frames)
-                        {
-                            frame.Payload.CopyTo(buffer.AsSpan(offset));
-                            offset += frame.Payload.Length;
-                        }
-                        if (!TryWrite(transport, buffer.AsSpan(0, total), anyIdr)) continue;
-                    }
-                    finally
-                    {
-                        System.Buffers.ArrayPool<byte>.Shared.Return(buffer);
-                    }
+                    SendTick(transport, frames);
                 }
-                else
+                finally
                 {
-                    foreach (var frame in frames)
-                    {
-                        if (!TryWrite(transport, frame.Payload, frame.IsIdr)) break;
-                    }
+                    // This tick owns the dequeued frames whether or not the write
+                    // took them, so the pooled payloads go back here and nowhere else.
+                    foreach (var frame in frames) frame.Release();
                 }
             }
         }
         finally
         {
             if (OperatingSystem.IsWindows()) TimeEndPeriod(1);
+        }
+    }
+
+    private void SendTick(IStreamedPanelTransport transport, IReadOnlyList<StreamFrame> frames)
+    {
+        if (_batchFrames > 1 && frames.Count > 1)
+        {
+            // The batch shares one write so the transport pays one
+            // round trip for all of it.
+            var total = 0;
+            var anyIdr = false;
+            foreach (var frame in frames)
+            {
+                total += frame.Bytes.Length;
+                anyIdr |= frame.IsIdr;
+            }
+            var buffer = System.Buffers.ArrayPool<byte>.Shared.Rent(total);
+            try
+            {
+                var offset = 0;
+                foreach (var frame in frames)
+                {
+                    frame.Bytes.CopyTo(buffer.AsSpan(offset));
+                    offset += frame.Bytes.Length;
+                }
+                TryWrite(transport, buffer.AsSpan(0, total), anyIdr);
+            }
+            finally
+            {
+                System.Buffers.ArrayPool<byte>.Shared.Return(buffer);
+            }
+        }
+        else
+        {
+            foreach (var frame in frames)
+            {
+                if (!TryWrite(transport, frame.Bytes, frame.IsIdr)) break;
+            }
         }
     }
 

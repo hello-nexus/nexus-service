@@ -42,6 +42,9 @@ public sealed class StoreEntitlements
         _registry = registry;
     }
 
+    /// <summary>Whether an account is linked at all. A refused or expired token also reads as sign_in_required, so a caller that waives the gate has to tell the two apart.</summary>
+    public bool HasLinkedAccount => !string.IsNullOrEmpty(_accounts.ActiveAccountId);
+
     /// <summary>
     /// Asks the cloud for a download grant, which both authorizes the install
     /// and records the purchase. The grant's hash is authoritative - the local

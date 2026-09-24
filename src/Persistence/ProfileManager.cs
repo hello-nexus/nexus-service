@@ -616,12 +616,62 @@ public sealed partial class ProfileManager : IDisposable
         var wrapper = JsonSerializer.Deserialize(migrated, PersistenceJsonContext.Default.ProfileExport);
         if (wrapper?.Settings is not null)
         {
+            SanitizeShaderParams(wrapper.Settings);
             return ImportProfile(wrapper.Name ?? "Imported", wrapper.Settings, replaceExisting);
         }
 
         var data = JsonSerializer.Deserialize(migrated, PersistenceJsonContext.Default.NexusSettings)
                    ?? throw new InvalidOperationException("Invalid profile data.");
+        SanitizeShaderParams(data);
         return ImportProfile("Imported", data, replaceExisting);
+    }
+
+    /// <summary>
+    /// Clamp every stored animate/static state's shader params against the
+    /// effect's authored spec, so a hand-edited profile export can't carry a
+    /// value that renders outside the range the shader was built for.
+    /// </summary>
+    private static void SanitizeShaderParams(NexusSettings data)
+    {
+        var lighting = data.Lighting;
+        if (lighting is null)
+        {
+            return;
+        }
+        if (lighting.Animate is { } animate)
+        {
+            foreach (var (effect, state) in animate.States)
+            {
+                if (state is not null)
+                {
+                    Nexus.Service.Lighting.Engine.Gpu.ShaderParamSpec.Sanitize(effect, state);
+                }
+            }
+            foreach (var (effect, bundle) in animate.Templates)
+            {
+                if (bundle?.Slots is null)
+                {
+                    continue;
+                }
+                foreach (var slot in bundle.Slots)
+                {
+                    if (slot is not null)
+                    {
+                        Nexus.Service.Lighting.Engine.Gpu.ShaderParamSpec.Sanitize(effect, slot);
+                    }
+                }
+            }
+        }
+        if (lighting.Static is { } staticSettings)
+        {
+            foreach (var (effect, state) in staticSettings.States)
+            {
+                if (state is not null)
+                {
+                    Nexus.Service.Lighting.Engine.Gpu.ShaderParamSpec.Sanitize(effect, state);
+                }
+            }
+        }
     }
 
     public void Dispose()
@@ -764,7 +814,7 @@ public sealed partial class ProfileManager : IDisposable
 
         _store.Update(s =>
         {
-            s.Lighting = data.Lighting ?? new LightingSettings();
+            s.Lighting = data.Lighting ?? new LightingSettings { FreeRotationLayouts = true };
             // Pre-v10 profile files (local, imported, or cloud-synced) carry
             // fully materialized template dicts and dense activation states;
             // re-prune both on apply so they don't re-inflate settings.json
@@ -774,10 +824,15 @@ public sealed partial class ProfileManager : IDisposable
                 animate.Templates = Nexus.Service.Lighting.AnimateTemplateDefaults.Prune(animate.Templates);
                 Nexus.Service.Lighting.AnimateTemplateDefaults.PruneStates(animate);
             }
+            // Profile files never pass through JsonConfigStore.Migrate, so a
+            // profile saved before free rotation unswaps its quarter-turned
+            // layouts here, under the store lock (idempotent).
+            Nexus.Service.Lighting.LayoutRotationMigration.Apply(s.Lighting);
             s.Cooling = data.Cooling ?? new CoolingSettings();
 
             // Theme + Dashboard categories now live in dedicated top-level
-            // blocks (Theme, Monitoring, Overlay, Panel.DashboardLayout) - no
+            // blocks (Theme, Monitoring, Overlay, Panel.DashboardLayout +
+            // Panel.DashboardGaugeGradient) - no
             // need to gate on `data.Ui` since that block is now reduced to
             // residual flags. Always copy both categories.
             ProfileSharing.ApplyCategory(s, data, ProfileSharing.Theme);
@@ -788,6 +843,13 @@ public sealed partial class ProfileManager : IDisposable
             // marketplace: prefix; rewrite after the category copies so the
             // applied layout keeps resolving (idempotent).
             Nexus.Service.Widgets.AppPrefixMigration.Apply(s);
+
+            // Profile files never pass through JsonConfigStore.Migrate either
+            // (see the LayoutRotationMigration call above): a pre-v18 profile's
+            // Device category carries per-serial LegacyDeck/LegacyPresets, and
+            // its Dashboard category can carry deck widgets with inline
+            // config.deck. Idempotent - a no-op on an already-migrated profile.
+            Nexus.Service.Deck.DeckModesMigration.Apply(s);
 
             // PanelDevices is hardware-scoped, not profile-scoped: do NOT
             // entries that the loaded profile JSON happens to carry into

@@ -317,6 +317,15 @@ internal sealed class SimulatedNexus2Detector : INexus2Detector
         Interlocked.Exchange(ref _running, 0);
         return Task.FromResult(true);
     }
+
+    // Stays detected: the simulation exists to exercise the import, and an
+    // uninstall that removed it would take the fixture with it.
+    public Task<bool> UninstallAsync()
+    {
+        Interlocked.Exchange(ref _running, 0);
+        Interlocked.Exchange(ref _autostartPresent, 0);
+        return Task.FromResult(true);
+    }
 }
 
 /// <summary>Re-parses per call like the real reader, so callers that dispose

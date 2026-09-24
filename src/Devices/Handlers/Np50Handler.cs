@@ -19,7 +19,7 @@ public sealed class Np50Handler : IDeviceHandler
     }
 
     public string Id => "np50";
-    public string Name => "NP50";
+    public string Name => Np50Hub.ProductName;
     public string Category => "hub";
 
     public IReadOnlyList<UsbId> Identifiers { get; } = new[]

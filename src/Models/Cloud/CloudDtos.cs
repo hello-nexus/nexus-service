@@ -63,6 +63,11 @@ public sealed class CloudRecoveryStartRequest
     public string DeviceSecret { get; set; } = "";
 }
 
+public sealed class CloudRecoveryStartResponse
+{
+    public string? Code { get; set; }
+}
+
 public sealed class CloudRecoveryPollRequest
 {
     public string GrantId { get; set; } = "";

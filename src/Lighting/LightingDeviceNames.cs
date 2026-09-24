@@ -18,7 +18,11 @@ public static class LightingDeviceNames
     /// <see cref="LightingDevice.OriginalName"/> so the UI can still show it.
     /// A group header carries no card of its own, so its rename is stored under
     /// the parent device id and handed to every member as
-    /// <see cref="LightingDevice.ParentName"/>.
+    /// <see cref="LightingDevice.ParentName"/>. A split card's header is the
+    /// same case one level down - several cards, one device, no card of its own
+    /// - so a rename stored under the DEVICE id reaches every zone as
+    /// <see cref="LightingDevice.DeviceName"/>. Without it an ARGB port could
+    /// not be renamed at all: its device id is neither a card id nor a parent.
     /// </summary>
     public static void Apply(List<LightingDevice> devices, IReadOnlyDictionary<string, string> names)
     {
@@ -29,6 +33,12 @@ public static class LightingDeviceNames
             {
                 dev.OriginalName = dev.Name;
                 dev.Name = custom;
+            }
+            if (dev.DeviceId is { } deviceId
+                && names.TryGetValue(deviceId, out var deviceCustom)
+                && !string.IsNullOrWhiteSpace(deviceCustom))
+            {
+                dev.DeviceName = deviceCustom;
             }
             if (dev.ParentDeviceId is { } parentId
                 && names.TryGetValue(parentId, out var parentCustom)

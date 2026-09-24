@@ -8,9 +8,12 @@ using Nexus.Service.Persistence;
 namespace Nexus.Service.Cooling;
 
 /// <summary>
-/// Built-in fan presets: Off, Silent, Balanced, Turbo, Custom.
+/// Built-in fan presets: Off, Silent, Balanced, Turbo, Max, Custom.
 ///
-/// Applying Silent / Balanced / Turbo ensures a single shared "preset
+/// Max is a fixed duty (a Flat curve), not a temperature-driven one; the
+/// other three ride a multi-point Graph.
+///
+/// Applying Silent / Balanced / Turbo / Max ensures a single shared "preset
 /// curve" exists with id `preset-{name}`, attaches every non-locked fan to
 /// it, and detaches those fans from any user curve. User curves are NOT
 /// deleted. Locked channels (pumps by default, or any channel the user
@@ -32,12 +35,29 @@ namespace Nexus.Service.Cooling;
 public static class FanProfiles
 {
     /// <summary>
-    /// True when a channel is exempt from Silent/Balanced/Turbo/Off/Custom
+    /// True when a channel is exempt from Silent/Balanced/Turbo/Max/Off/Custom
     /// preset applies. An explicit entry in <paramref name="overrides"/> wins;
-    /// absent from the dict defaults to locked for pumps, unlocked otherwise.
+    /// absent from the dict falls back to <see cref="IsLockedByDefault"/>.
     /// </summary>
     public static bool IsLocked(FanChannel ch, IReadOnlyDictionary<string, bool> overrides) =>
-        overrides.TryGetValue(ch.Id, out var v) ? v : ch.Kind == FanKinds.Pump;
+        overrides.TryGetValue(ch.Id, out var v) ? v : IsLockedByDefault(ch);
+
+    /// <summary>
+    /// Channels a preset must not retarget unless the user says otherwise,
+    /// all of them decided by the hardware rather than by a name:
+    /// <list type="bullet">
+    /// <item>Pump heads, whose duty is not a cooling preference.</item>
+    /// <item>GPU fans, because a preset curve reads a CPU temperature sensor
+    /// (<see cref="PreferredInput"/>), so pointing it at the graphics card's
+    /// fans tracks the wrong die.</item>
+    /// <item>Every channel on an AIO, radiator fans included - the cooler ships
+    /// its own curve and owns the loop.</item>
+    /// </list>
+    /// Each of these keeps whatever already drives it; the user can still lock
+    /// or unlock any of them from the fan card.
+    /// </summary>
+    public static bool IsLockedByDefault(FanChannel ch) =>
+        ch.Kind == FanKinds.Pump || ch.IsGpu || ch.IsAio;
 
     /// <summary>
     /// Write ch's lock override, collapsing to "no entry" when the requested
@@ -46,7 +66,7 @@ public static class FanProfiles
     /// </summary>
     public static void SetLockOverride(FanChannel ch, bool locked, IConfigStore store)
     {
-        var def = ch.Kind == FanKinds.Pump;
+        var def = IsLockedByDefault(ch);
         store.Update(s =>
         {
             if (locked == def)
@@ -89,10 +109,11 @@ public static class FanProfiles
 
     public static List<FanProfile> GetBuiltInProfiles() => new()
     {
-        new FanProfile { Name = "off", Description = "All fans released to BIOS Control" },
+        new FanProfile { Name = "off", Description = "All fans released to hardware control" },
         new FanProfile { Name = "silent", Description = "Quiet operation - fans stay low until temperatures demand it" },
         new FanProfile { Name = "balanced", Description = "Moderate cooling - responsive but not aggressive" },
         new FanProfile { Name = "turbo", Description = "Maximum cooling - fans run fast to keep temperatures low" },
+        new FanProfile { Name = "max", Description = "Every fan pinned at 100% regardless of temperature" },
         new FanProfile { Name = "custom", Description = "User-defined per-fan curve assignments" },
     };
 
@@ -116,7 +137,7 @@ public static class FanProfiles
         var inputSensor = PreferredInput(temps);
         var fanIds = channels.Select(c => c.Id).ToHashSet();
         // Locked channels (pumps by default, or any channel the user locked) are
-        // excluded from the Silent/Balanced/Turbo and Custom presets, which must
+        // excluded from the Silent/Balanced/Turbo/Max and Custom presets, which must
         // not retarget what drives them. Off still releases every channel to
         // BIOS, locked or not.
         var lockOverrides = store.Load().Cooling.FanLockOverrides;
@@ -140,6 +161,7 @@ public static class FanProfiles
                 case "silent":
                 case "balanced":
                 case "turbo":
+                case "max":
                     {
                         var presetCurve = EnsurePresetCurve(s.Cooling.Curves, canonical, inputSensor);
                         // Detach fans (not locked channels) from non-preset curves so the
@@ -371,7 +393,7 @@ public static class FanProfiles
         // All fans on the same preset curve, with no manual overrides.
         if (manualUnattached.Count == 0)
         {
-            foreach (var presetName in new[] { "silent", "balanced", "turbo" })
+            foreach (var presetName in new[] { "silent", "balanced", "turbo", "max" })
             {
                 var presetId = $"preset-{presetName}";
                 if (fanIds.All(id => attachment.TryGetValue(id, out var cid) && cid == presetId))
@@ -404,9 +426,11 @@ public static class FanProfiles
     }
 
     /// <summary>
-    /// Seed the Silent / Balanced / Turbo preset curves on first run so all
-    /// three exist the first time the cooling page is opened on a fresh install.
-    /// Runs at most once per profile (tracked by
+    /// Seed the Silent / Balanced / Turbo / Max preset curves so all four exist
+    /// the first time the cooling page is opened on a fresh install, after a
+    /// cooling reset (which hands the profile a blank <see cref="CoolingSettings"/>),
+    /// and on the first switch into a profile reset while inactive. Runs at
+    /// most once per seeded state (tracked by
     /// <see cref="CoolingSettings.CurvesSeeded"/>) and only adds curves when the
     /// profile is empty, so neither an existing install nor a user who later
     /// deletes every curve gets the presets resurrected. Fan outputs are
@@ -425,7 +449,7 @@ public static class FanProfiles
             // that already has curves must not be re-checked on later boots.
             s.Cooling.CurvesSeeded = true;
             if (s.Cooling.Curves.Count > 0) return;
-            foreach (var name in new[] { "silent", "balanced", "turbo" })
+            foreach (var name in new[] { "silent", "balanced", "turbo", "max" })
             {
                 s.Cooling.Curves.Add(BuildPresetCurve(name, inputSensor));
             }
@@ -435,17 +459,23 @@ public static class FanProfiles
     }
 
     /// <summary>
-    /// True when a preset curve's Type + Graph points still match
-    /// <see cref="PresetDefaults"/>. Used by /cooling/curves so the SPA can
-    /// gate the Reset-to-defaults button without having to mirror the default
-    /// values locally. Returns false for non-Graph preset curves or curves
-    /// without a Preset flag.
+    /// True when a preset curve's template still matches
+    /// <see cref="PresetDefaults"/> - a Flat duty for Max, Type + Graph points
+    /// for the rest. Used by /cooling/curves so the SPA can gate the
+    /// Reset-to-defaults button without having to mirror the default values
+    /// locally. Returns false for a curve without a Preset flag, or one whose
+    /// type no longer matches its preset's template.
     /// </summary>
     public static bool IsPresetCurveAtDefaults(CurveDocument c)
     {
         if (c.Preset is null) return false;
-        if (c.Type != "Graph" || c.Graph is null) return false;
         var d = PresetDefaults.For(c.Preset);
+        if (IsFlatPreset(c.Preset))
+        {
+            // A different duty, or a switch to a temperature-driven type, is an edit.
+            return c.Type == "Flat" && c.Flat is not null && c.Flat.Speed == FlatPresetSpeed(d);
+        }
+        if (c.Type != "Graph" || c.Graph is null) return false;
         // Float `==` is sound here: the default points are whole numbers and
         // the drag / JSON round-trip preserves the same canonical values.
         if (c.Graph.ResponseTime != d.ResponseTime) return false;
@@ -463,7 +493,7 @@ public static class FanProfiles
     }
 
     /// <summary>
-    /// Restore a Silent / Balanced / Turbo preset curve to its default
+    /// Restore a Silent / Balanced / Turbo / Max preset curve to its default
     /// Linear template. Fan attachments + list position are preserved so the
     /// active preset stays in effect; only the template resets. If the curve
     /// was previously deleted, recreate it at defaults via EnsurePresetCurve.
@@ -471,7 +501,7 @@ public static class FanProfiles
     public static void ResetPresetCurve(string presetName, IFanControlProvider fans, IConfigStore store)
     {
         var canonical = (presetName ?? "").ToLowerInvariant();
-        if (canonical != "silent" && canonical != "balanced" && canonical != "turbo") return;
+        if (canonical is not ("silent" or "balanced" or "turbo" or "max")) return;
         var inputSensor = PreferredInput(fans.GetTemperatureSources());
         var defaults = PresetDefaults.For(canonical);
 
@@ -483,9 +513,6 @@ public static class FanProfiles
             // write on the just-created path is harmless.
             var curve = EnsurePresetCurve(s.Cooling.Curves, canonical, inputSensor);
             curve.Name = DisplayName(canonical);
-            // Preset defaults are multi-point (Graph) curves; the Linear params
-            // stay populated as a fallback if the user switches the type.
-            curve.Type = "Graph";
             // Only overwrite the input binding when we actually have a sensor
             // to bind to - a transient LHM read during reset shouldn't strip
             // a perfectly valid existing input.
@@ -499,13 +526,26 @@ public static class FanProfiles
                 MinTemp = defaults.MinTemp, MaxTemp = defaults.MaxTemp,
                 MinSpeed = defaults.MinSpeed, MaxSpeed = defaults.MaxSpeed,
             };
-            curve.Graph = new GraphCurveData
+            // Max resets to a fixed duty; the rest to their multi-point Graph. The
+            // Linear params above stay populated either way as a fallback if the
+            // user switches the type.
+            if (IsFlatPreset(canonical))
             {
-                ResponseTime = defaults.ResponseTime,
-                SpeedModifier = 1.0,
-                Points = DefaultPresetPoints(defaults),
-            };
-            curve.Flat = null;
+                curve.Type = "Flat";
+                curve.Flat = new FlatCurveData { Speed = FlatPresetSpeed(defaults) };
+                curve.Graph = null;
+            }
+            else
+            {
+                curve.Type = "Graph";
+                curve.Graph = new GraphCurveData
+                {
+                    ResponseTime = defaults.ResponseTime,
+                    SpeedModifier = 1.0,
+                    Points = DefaultPresetPoints(defaults),
+                };
+                curve.Flat = null;
+            }
             curve.Mixed = null;
         });
     }
@@ -532,7 +572,7 @@ public static class FanProfiles
         return map;
     }
 
-    /// <summary>Live fan-to-curve mapping, in <see cref="CoolingSettings.CustomFanCurveAssignments"/> format. Preset curves are excluded, so a machine sitting on Silent/Balanced/Turbo captures an empty map.</summary>
+    /// <summary>Live fan-to-curve mapping, in <see cref="CoolingSettings.CustomFanCurveAssignments"/> format. Preset curves are excluded, so a machine sitting on Silent/Balanced/Turbo/Max captures an empty map.</summary>
     public static Dictionary<string, string> CaptureFanCurveMapping(IConfigStore store, IFanControlProvider fans)
     {
         var fanIds = fans.GetFanChannels().Select(c => c.Id).ToHashSet();
@@ -557,16 +597,17 @@ public static class FanProfiles
     /// <summary>
     /// A fresh preset curve at its <see cref="PresetDefaults"/> template, with
     /// no fan outputs attached. Used both to create a preset lazily on first
-    /// activation and to seed all three on a blank install.
+    /// activation and to seed all four on a blank install.
     /// </summary>
     private static CurveDocument BuildPresetCurve(string presetName, TemperatureSource? inputSensor)
     {
         var defaults = PresetDefaults.For(presetName);
+        var flat = IsFlatPreset(presetName);
         return new CurveDocument
         {
             Id = $"preset-{presetName}",
             Name = DisplayName(presetName),
-            Type = "Graph",
+            Type = flat ? "Flat" : "Graph",
             Preset = presetName,
             Input = inputSensor is null
                 ? new CurveInputDocument()
@@ -580,7 +621,8 @@ public static class FanProfiles
                 MinSpeed = defaults.MinSpeed,
                 MaxSpeed = defaults.MaxSpeed,
             },
-            Graph = new GraphCurveData
+            Flat = flat ? new FlatCurveData { Speed = FlatPresetSpeed(defaults) } : null,
+            Graph = flat ? null : new GraphCurveData
             {
                 ResponseTime = defaults.ResponseTime,
                 SpeedModifier = 1.0,
@@ -604,16 +646,28 @@ public static class FanProfiles
             "silent" => "silent",
             "balanced" => "balanced",
             "turbo" => "turbo",
+            "max" => "max",
             "custom" => "custom",
             _ => "custom",
         };
     }
+
+    /// <summary>
+    /// True for the preset whose default template is a Flat curve rather than a
+    /// temperature-driven Graph. Max holds one duty at every temperature, so a
+    /// curve shape would only invite it to be something other than maximum.
+    /// </summary>
+    private static bool IsFlatPreset(string presetName) => presetName == "max";
+
+    /// <summary>The fixed duty a Flat preset holds: the preset's own MaxSpeed.</summary>
+    private static int FlatPresetSpeed(PresetCurveDefaults d) => (int)d.MaxSpeed;
 
     private static string DisplayName(string presetName) => presetName switch
     {
         "silent" => "Silent",
         "balanced" => "Balanced",
         "turbo" => "Turbo",
+        "max" => "Max",
         _ => presetName,
     };
 

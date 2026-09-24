@@ -29,6 +29,9 @@ public sealed class StaticDeviceAssignment
     /// UI can rebuild the pick; Key() ignores it - two devices on the same look
     /// still share one render whatever slot each came from.</summary>
     public int Slot { get; init; }
+    /// <summary>Held across every mode and refused to Set/Clear until unlocked.
+    /// Not part of Key(): the render is the same either way.</summary>
+    public bool Locked { get; init; }
 
     /// <summary>
     /// Identity of the rendered look. Two devices sharing this share one render,
@@ -62,8 +65,9 @@ public sealed class StaticDeviceAssignment
 /// Same shape as the identify trackers: a shared singleton, so no DI cycle
 /// forms between the routes and the engine.
 ///
-/// Assignments only apply while Static is running - every other mode drives all
-/// devices from one source, so <see cref="Enabled"/> gates them off.
+/// Assignments apply while Static is running - every other mode drives all
+/// devices from one source, so <see cref="Enabled"/> gates them off - except a
+/// locked one, which the device wears in every mode until the user unlocks it.
 /// </summary>
 public sealed class StaticDeviceEffectTracker
 {
@@ -112,6 +116,7 @@ public sealed class StaticDeviceEffectTracker
                 Contrast = look.Contrast,
                 Params = look.Params is { Count: > 0 } ? new Dictionary<string, float>(look.Params) : null,
                 Slot = look.Slot,
+                Locked = look.Locked,
             };
         }
         lock (_lock)
@@ -131,41 +136,46 @@ public sealed class StaticDeviceEffectTracker
         {
             if (!_assignments.TryGetValue(id, out var mine)) return false;
             if (!string.Equals(mine.Key(), a.Key(), StringComparison.Ordinal)) return false;
+            // Same look, different lock is still a change: a preset that
+            // restores a lock must land it even when the colours match.
+            if (mine.Locked != a.Locked) return false;
         }
         return true;
     }
 
-    /// <summary>True while Static owns the output; false in every other mode.</summary>
+    /// <summary>True while Static owns the output; false in every other mode.
+    /// A locked assignment ignores this.</summary>
     public bool Enabled { get; set; }
 
     /// <summary>Bumped on every change, so the engine can drop stale renders.</summary>
     public int Version { get; private set; }
 
-    public void Set(string id, StaticDeviceAssignment assignment)
+    /// <summary>Assigns a look. False when the device is locked: the lock is
+    /// the user's, so a pick cannot replace it, only an unlock can.</summary>
+    public bool Set(string id, StaticDeviceAssignment assignment)
     {
-        if (string.IsNullOrEmpty(id) || string.IsNullOrEmpty(assignment.Effect)) return;
-        lock (_lock) { _assignments[id] = assignment; Version++; }
-        _store?.Update(s => s.Lighting.StaticDeviceLooks[id] = new StaticDeviceLook
+        if (string.IsNullOrEmpty(id) || string.IsNullOrEmpty(assignment.Effect)) return false;
+        lock (_lock)
         {
-            Effect = assignment.Effect,
-            Color = assignment.Color,
-            Intensity = assignment.Intensity,
-            Hue = assignment.Hue,
-            Colorize = assignment.Colorize,
-            Saturation = assignment.Saturation,
-            Contrast = assignment.Contrast,
-            Params = assignment.Params is null
-                ? new Dictionary<string, float>()
-                : new Dictionary<string, float>(assignment.Params),
-            Slot = assignment.Slot,
-        });
+            if (IsLockedUnderLock(id)) return false;
+            _assignments[id] = assignment;
+            Version++;
+        }
+        _store?.Update(s => s.Lighting.StaticDeviceLooks[id] = ToLook(assignment));
+        return true;
     }
 
-    public void Clear(string id)
+    /// <summary>Returns the device to the shared canvas. False when locked.</summary>
+    public bool Clear(string id)
     {
-        if (string.IsNullOrEmpty(id)) return;
-        lock (_lock) { if (_assignments.Remove(id)) Version++; }
+        if (string.IsNullOrEmpty(id)) return false;
+        lock (_lock)
+        {
+            if (IsLockedUnderLock(id)) return false;
+            if (_assignments.Remove(id)) Version++;
+        }
         _store?.Update(s => s.Lighting.StaticDeviceLooks.Remove(id));
+        return true;
     }
 
     public void ClearAll()
@@ -174,10 +184,79 @@ public sealed class StaticDeviceEffectTracker
         _store?.Update(s => s.Lighting.StaticDeviceLooks.Clear());
     }
 
+    /// <summary>
+    /// Locks or unlocks the device's current assignment. False when there is
+    /// nothing assigned: a lock holds a look, so it needs one to hold.
+    /// </summary>
+    public bool SetLocked(string id, bool locked)
+    {
+        if (string.IsNullOrEmpty(id)) return false;
+        StaticDeviceAssignment next;
+        lock (_lock)
+        {
+            if (!_assignments.TryGetValue(id, out var current)) return false;
+            if (current.Locked == locked) return true;
+            next = new StaticDeviceAssignment
+            {
+                Effect = current.Effect,
+                Color = current.Color,
+                Intensity = current.Intensity,
+                Hue = current.Hue,
+                Colorize = current.Colorize,
+                Saturation = current.Saturation,
+                Contrast = current.Contrast,
+                Params = current.Params,
+                Slot = current.Slot,
+                Locked = locked,
+            };
+            // No Version bump: the render is unchanged, and the engine reads
+            // the lock through TryGet on every tick anyway.
+            _assignments[id] = next;
+        }
+        _store?.Update(s =>
+        {
+            if (s.Lighting.StaticDeviceLooks.TryGetValue(id, out var look) && look is not null) look.Locked = locked;
+        });
+        return true;
+    }
+
+    public bool IsLocked(string id)
+    {
+        if (string.IsNullOrEmpty(id)) return false;
+        lock (_lock) return IsLockedUnderLock(id);
+    }
+
+    private bool IsLockedUnderLock(string id) =>
+        _assignments.TryGetValue(id, out var a) && a.Locked;
+
+    private static StaticDeviceLook ToLook(StaticDeviceAssignment assignment) => new()
+    {
+        Effect = assignment.Effect,
+        Color = assignment.Color,
+        Intensity = assignment.Intensity,
+        Hue = assignment.Hue,
+        Colorize = assignment.Colorize,
+        Saturation = assignment.Saturation,
+        Contrast = assignment.Contrast,
+        Params = assignment.Params is null
+            ? new Dictionary<string, float>()
+            : new Dictionary<string, float>(assignment.Params),
+        Slot = assignment.Slot,
+        Locked = assignment.Locked,
+    };
+
+    /// <summary>The assignment the engine should paint: any while Static owns
+    /// the output, only locked ones otherwise.</summary>
     public bool TryGet(string id, out StaticDeviceAssignment assignment)
     {
-        if (!Enabled || string.IsNullOrEmpty(id)) { assignment = null!; return false; }
-        lock (_lock) return _assignments.TryGetValue(id, out assignment!);
+        if (string.IsNullOrEmpty(id)) { assignment = null!; return false; }
+        lock (_lock)
+        {
+            if (!_assignments.TryGetValue(id, out assignment!)) return false;
+            if (Enabled || assignment.Locked) return true;
+            assignment = null!;
+            return false;
+        }
     }
 
     public bool Any

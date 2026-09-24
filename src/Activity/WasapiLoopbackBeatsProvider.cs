@@ -117,6 +117,7 @@ public sealed class WasapiLoopbackBeatsProvider : IBeatsProvider
             long totalAnalyses = 0;
             long lastLogTick = Environment.TickCount64;
             long lastPacketTick = Environment.TickCount64;
+            var stalled = false;
             // WASAPI loopback stops emitting packets entirely when the endpoint
             // is silent. After this timeout we synthesise silence windows so
             // smoothed AudioState decays to zero and shaders fall back to idle.
@@ -129,8 +130,16 @@ public sealed class WasapiLoopbackBeatsProvider : IBeatsProvider
                 long now = Environment.TickCount64;
                 if (now - lastLogTick > 5000)
                 {
-                    Nexus.Service.Lighting.Engine.Gpu.GpuContext.Log(
-                        $"[wasapi] heartbeat: {totalFrames} frames, {totalAnalyses} analyses in last {(now - lastLogTick) / 1000}s");
+                    // Only transitions are worth a line; an unconditional beat
+                    // every 5s wrote 11190 lines of one 17-hour log.
+                    var nowStalled = totalAnalyses == 0;
+                    if (nowStalled != stalled)
+                    {
+                        Nexus.Service.Lighting.Engine.Gpu.GpuContext.Log(nowStalled
+                            ? $"[wasapi] no analyses in last {(now - lastLogTick) / 1000}s ({totalFrames} frames)"
+                            : $"[wasapi] capture resumed: {totalFrames} frames, {totalAnalyses} analyses in last {(now - lastLogTick) / 1000}s");
+                        stalled = nowStalled;
+                    }
                     totalFrames = 0;
                     totalAnalyses = 0;
                     lastLogTick = now;

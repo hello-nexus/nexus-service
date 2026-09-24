@@ -1,3 +1,4 @@
+using System.Reflection;
 using Nexus.Service.Lighting;
 using Nexus.Service.Lighting.Rgb;
 
@@ -19,8 +20,8 @@ public class CanvasDefaultLayoutTests
 
     [Theory]
     [InlineData(0)]
-    [InlineData(17)]   // last slot before wrap (Cols=3 × Rows=6 = 18)
-    [InlineData(18)]   // wraps back to slot 0
+    [InlineData(11)]   // last slot before wrap (Cols=3 × Rows=4 = 12)
+    [InlineData(12)]   // wraps back to slot 0
     [InlineData(35)]
     [InlineData(99)]
     public void DefaultCardLayout_stays_inside_drag_clamp(int slot)
@@ -70,6 +71,86 @@ public class CanvasDefaultLayoutTests
         Assert.InRange(x, Pad, CanvasW - Pad - w);
         Assert.InRange(y, Pad, CanvasH - Pad - h);
     }
+
+    // Every builtin-mapping helper below lays its slots out on a fixed grid
+    // (cols/rows, column/row gaps) that wraps modulo cols*rows. Walking one
+    // full cycle of that grid is enough to catch both an off-canvas slot and
+    // a gap smaller than the slot it is meant to separate.
+    [Fact]
+    public void DefaultCardLayout_grid_slots_do_not_overlap()
+        => AssertGridNoOverlap(OpenRgbLightingDeviceProvider.DefaultCardLayout, 3 * 4);
+
+    [Fact]
+    public void DefaultStripLayout_grid_slots_do_not_overlap()
+        => AssertGridNoOverlap(OpenRgbLightingDeviceProvider.DefaultStripLayout, 2 * 3);
+
+    [Fact]
+    public void DefaultSmartHubLayout_grid_slots_do_not_overlap()
+        => AssertGridNoOverlap(SmartHubLightingDeviceProvider.DefaultSmartHubLayout, 4);
+
+    [Fact]
+    public void DefaultMiniHubLayout_grid_slots_do_not_overlap()
+        => AssertGridNoOverlap(MiniHubLightingDeviceProvider.DefaultMiniHubLayout, 4 * 2);
+
+    [Fact]
+    public void DefaultNp50Layout_grid_slots_do_not_overlap()
+        => AssertGridNoOverlap(Np50LightingDeviceProvider.DefaultNp50Layout, 4 * 2);
+
+    [Fact]
+    public void CorsairLinkDefaultLayout_grid_slots_do_not_overlap()
+        => AssertGridNoOverlap(CorsairLinkLightingDeviceProvider.DefaultLayout, 4 * 2);
+
+    [Fact]
+    public void LianLiDefaultLayout_grid_slots_do_not_overlap()
+        => AssertGridNoOverlap(LianLiLightingDeviceProvider.DefaultLayout, 4 * 2);
+
+    [Fact]
+    public void Slv3DefaultLayout_grid_slots_do_not_overlap()
+        => AssertGridNoOverlap(Slv3LightingDeviceProvider.DefaultLayout, 4 * 2);
+
+    [Fact]
+    public void DefaultQSeriesLinkLayout_grid_slots_do_not_overlap()
+    {
+        var method = typeof(QSeriesLightingDeviceProvider).GetMethod(
+            "DefaultQSeriesLinkLayout", BindingFlags.NonPublic | BindingFlags.Static)!;
+        (float x, float y, float w, float h) Layout(int slot) =>
+            ((float x, float y, float w, float h))method.Invoke(null, new object[] { slot })!;
+        AssertGridNoOverlap(Layout, 4 * 2);
+    }
+
+    // Nollie has no row cap by design: a many-channel board keeps descending
+    // and the canvas scrolls, so only the x-axis and pairwise separation are
+    // checked here, not the y <= 588 clamp the other helpers guarantee.
+    [Fact]
+    public void DefaultNollieLayout_slots_do_not_overlap_within_x_bound()
+    {
+        const int count = 40;
+        var rects = new (float x, float y, float w, float h)[count];
+        for (var i = 0; i < count; i++)
+        {
+            rects[i] = NollieLightingDeviceProvider.DefaultNollieLayout(i);
+            Assert.InRange(rects[i].x, 0f, CanvasW - rects[i].w);
+        }
+        for (var i = 0; i < count; i++)
+        for (var j = i + 1; j < count; j++)
+            Assert.False(Overlaps(rects[i], rects[j]), $"slot {i} {rects[i]} overlaps slot {j} {rects[j]}");
+    }
+
+    private static void AssertGridNoOverlap(Func<int, (float x, float y, float w, float h)> layout, int slotCount)
+    {
+        var rects = new (float x, float y, float w, float h)[slotCount];
+        for (var i = 0; i < slotCount; i++)
+        {
+            rects[i] = layout(i);
+            AssertInsideCanvas(rects[i].x, rects[i].y, rects[i].w, rects[i].h);
+        }
+        for (var i = 0; i < slotCount; i++)
+        for (var j = i + 1; j < slotCount; j++)
+            Assert.False(Overlaps(rects[i], rects[j]), $"slot {i} {rects[i]} overlaps slot {j} {rects[j]}");
+    }
+
+    private static bool Overlaps((float x, float y, float w, float h) a, (float x, float y, float w, float h) b)
+        => !(a.x + a.w <= b.x || b.x + b.w <= a.x || a.y + a.h <= b.y || b.y + b.h <= a.y);
 
     // Unified-grid invariants: every slot of every reasonable totalCount must (a) stay
     // inside the drag-legal canvas and (b) not overlap any other slot's rect for the

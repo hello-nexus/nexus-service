@@ -48,7 +48,7 @@ public sealed class AudioMixerService : IDisposable
         return new AudioMixerState
         {
             Supported = _sessions.Supported,
-            Sessions = new List<AudioSessionDto>(_sessions.GetSessions()),
+            Sessions = DefaultOutputSessions(_sessions.GetSessions()),
             StickyLevels = settings.StickyLevels,
             Presets = new List<AudioMixerPresetDto>(settings.Presets),
         };
@@ -207,9 +207,6 @@ public sealed class AudioMixerService : IDisposable
         }
         if (preset is null) return false;
 
-        // Endpoints first: the strips are enumerated on whatever output is
-        // default, so switching after setting levels would write them to the
-        // endpoint the user just left.
         if (preset.OutputDeviceId.Length > 0) _devices.SetDefaultOutput(preset.OutputDeviceId);
         if (preset.InputDeviceId.Length > 0) _devices.SetDefaultInput(preset.InputDeviceId);
 
@@ -262,7 +259,7 @@ public sealed class AudioMixerService : IDisposable
     private List<AudioMixerPresetEntryDto> CaptureRunningApps()
     {
         var apps = new List<AudioMixerPresetEntryDto>();
-        foreach (var s in _sessions.GetSessions())
+        foreach (var s in DefaultOutputSessions(_sessions.GetSessions()))
         {
             apps.Add(new AudioMixerPresetEntryDto
             {
@@ -335,7 +332,7 @@ public sealed class AudioMixerService : IDisposable
 
     private void ApplyStickyToNewSessions()
     {
-        var sessions = _sessions.GetSessions();
+        var sessions = DefaultOutputSessions(_sessions.GetSessions());
 
         // Every read of and write to AudioMixer.Levels goes through _lock: this
         // runs on the helper-push thread at up to 10Hz while route threads
@@ -379,10 +376,22 @@ public sealed class AudioMixerService : IDisposable
         var frame = new AudioMixerFrame
         {
             Supported = _sessions.Supported,
-            Sessions = new List<AudioSessionDto>(_sessions.GetSessions()),
+            Sessions = DefaultOutputSessions(_sessions.GetSessions()),
             ConfigRevision = Interlocked.Read(ref _configRevision),
         };
         var env = WsEnvelope.Build(PanelTopics.AudioMixer, frame, AppJsonContext.Default.AudioMixerFrame);
         _ = _hub.BroadcastTopicAsync(PanelTopics.AudioMixer, env);
+    }
+
+    /// <summary>The mixer widget only lists apps rendering to the default
+    /// output; the volume-target resolver reads every strip unfiltered.</summary>
+    private static List<AudioSessionDto> DefaultOutputSessions(IReadOnlyList<AudioSessionDto> sessions)
+    {
+        var result = new List<AudioSessionDto>();
+        foreach (var s in sessions)
+        {
+            if (s.OnDefault) result.Add(s);
+        }
+        return result;
     }
 }

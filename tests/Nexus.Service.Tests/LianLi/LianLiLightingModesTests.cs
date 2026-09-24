@@ -1,11 +1,45 @@
 using System;
 using System.Linq;
 using Nexus.Service.Lighting;
+using Nexus.Service.Peripherals.LianLi;
 
 namespace Nexus.Service.Tests.LianLi;
 
 public class LianLiLightingModesTests
 {
+    // ── Per-family support ──
+
+    // The SL v1 firmware has no voice/groove/render/tunnel (0x26..0x29).
+    [Fact]
+    public void Sl_v1_catalog_drops_the_sl_infinity_only_effects()
+    {
+        var sl = LianLiLightingModes.CatalogFor(LianLiFanFamily.Sl).Select(m => m.Key).ToArray();
+        var sli = LianLiLightingModes.CatalogFor(LianLiFanFamily.SlInfinity).Select(m => m.Key).ToArray();
+
+        Assert.Equal(LianLiLightingModes.Catalog.Length, sli.Length);
+        Assert.Equal(sli.Length - 4, sl.Length);
+        foreach (var key in new[] { "voice", "groove", "render", "tunnel" })
+        {
+            Assert.Contains(key, sli);
+            Assert.DoesNotContain(key, sl);
+        }
+        foreach (var key in new[] { "custom", "static", "breathing", "spectrumCycle", "rainbowWave", "staggered",
+                     "tide", "runway", "mixing", "stack", "neon", "colorCycle", "meteor", "stackMultiColor" })
+        {
+            Assert.Contains(key, sl);
+        }
+    }
+
+    [Fact]
+    public void SupportedBy_gates_only_the_sl_family()
+    {
+        var voice = LianLiLightingModes.Find("voice")!;
+        Assert.False(voice.SupportedBy(LianLiFanFamily.Sl));
+        Assert.True(voice.SupportedBy(LianLiFanFamily.SlInfinity));
+        Assert.True(voice.SupportedBy(LianLiFanFamily.SlV2));
+        Assert.True(LianLiLightingModes.Find("static")!.SupportedBy(LianLiFanFamily.Sl));
+    }
+
     // ── Catalog completeness ──
 
     [Fact]

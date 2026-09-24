@@ -12,6 +12,8 @@ public sealed class StructureSegmentDto
     public int LedCount { get; set; }
     /// <summary>Resizable segments are walls: a zone touching one must be exactly that whole segment.</summary>
     public bool Resizable { get; set; }
+    /// <summary>Most LEDs this port can drive, 0 when the hardware declares no ceiling. The editor stops the chain growing past it, since the firmware would take the count and light only the head of it.</summary>
+    public int MaxLedCount { get; set; }
     public string ZoneType { get; set; } = "";
 }
 
@@ -33,6 +35,15 @@ public sealed class DeviceStructureResponse : ApiResponse
     public bool IsDefaultPartition { get; set; }
     /// <summary>Present when the device belongs to a composable hub (mirror / combine rings); drives the LED-map editor's composition panel.</summary>
     public HubCompositionDto? HubComposition { get; set; }
+    /// <summary>
+    /// True when this device is a single addressable port, so its zones are a
+    /// chain the user composes: products can be picked per zone, zones added and
+    /// removed, and a custom zone's LED count typed. False for firmware-fixed
+    /// zones (a keeb), where the editor lists the same rows read-only.
+    /// </summary>
+    public bool Chainable { get; set; }
+    /// <summary>The port's chain in wire order, one entry per zone. Empty when nothing is chained.</summary>
+    public List<ChainEntryDto> Chain { get; set; } = new();
 }
 
 /// <summary>Composition capability + state for a composable hub, embedded in the structure response.</summary>

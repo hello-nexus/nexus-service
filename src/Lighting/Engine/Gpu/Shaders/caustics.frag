@@ -1,7 +1,6 @@
-uniform float u_speed;
-uniform float u_density;    // extra: vein density (0.5..3)
-uniform float u_brightness; // extra: highlight intensity (0.3..2)
-uniform float u_flow;       // extra: flow rate multiplier (0.2..3)
+uniform float u_density; // hint_range(0.5, 3.0, 0.05) = 1.4  vein density
+uniform float u_brightness; // hint_range(0.3, 2.0, 0.05) = 1.0  highlight intensity
+uniform float u_flow; // hint_range(0.2, 3.0, 0.05) = 1.0  flow rate multiplier
 
 // Underwater-style caustic light: nested fbm sampled at two scales,
 // thresholded into thin bright veins on a darker base. Movement comes
