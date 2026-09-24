@@ -19,7 +19,7 @@ namespace Nexus.Service.Peripherals.BulkPanels;
 /// generic USB device interface class and matches VID/PID out of the device path, then
 /// lets <c>WinUsb_Initialize</c> decide: it succeeds only where WinUSB is actually bound.
 /// </summary>
-public sealed class WindowsBulkUsbPipe : IBulkUsbPipe
+public sealed unsafe class WindowsBulkUsbPipe : IBulkUsbPipe
 {
     private const uint TransferTimeoutMs = 5000;
     private const uint WaitObject0 = 0;
@@ -104,12 +104,14 @@ public sealed class WindowsBulkUsbPipe : IBulkUsbPipe
         {
             return false;
         }
-        var buffer = data.ToArray();
         lock (_ioLock)
         {
             // Re-checked inside the lock: writing through a handle Dispose already freed is
             // an access violation, not an exception.
-            return !_disposed && TransferLocked(pipeId, _ioEvent, buffer, buffer.Length, TransferTimeoutMs, write: true) == buffer.Length;
+            fixed (byte* p = data)
+            {
+                return !_disposed && TransferLocked(pipeId, _ioEvent, (IntPtr)p, data.Length, TransferTimeoutMs, write: true) == data.Length;
+            }
         }
     }
 
@@ -119,26 +121,23 @@ public sealed class WindowsBulkUsbPipe : IBulkUsbPipe
         {
             return -1;
         }
-        var scratch = new byte[buffer.Length];
         lock (_readLock)
         {
             if (_disposed)
             {
                 return -1;
             }
-            var read = TransferLocked(_readPipeId, _readEvent, scratch, scratch.Length, (uint)Math.Max(1, timeoutMs), write: false);
-            if (read > 0)
+            fixed (byte* p = buffer)
             {
-                scratch.AsSpan(0, read).CopyTo(buffer);
+                return TransferLocked(_readPipeId, _readEvent, (IntPtr)p, buffer.Length, (uint)Math.Max(1, timeoutMs), write: false);
             }
-            return read;
         }
     }
 
-    /// <summary>Bytes transferred, 0 on timeout, or -1 on failure.</summary>
-    private int TransferLocked(byte pipeId, IntPtr ioEvent, byte[] buffer, int length, uint timeoutMs, bool write)
+    /// <summary>Bytes transferred, 0 on timeout, or -1 on failure. <paramref name="buffer"/>
+    /// must stay pinned until this returns; every path waits out the transfer first.</summary>
+    private int TransferLocked(byte pipeId, IntPtr ioEvent, IntPtr buffer, int length, uint timeoutMs, bool write)
     {
-        var pin = GCHandle.Alloc(buffer, GCHandleType.Pinned);
         var ovPtr = Marshal.AllocHGlobal(Marshal.SizeOf<NativeOverlapped>());
         try
         {
@@ -146,9 +145,9 @@ public sealed class WindowsBulkUsbPipe : IBulkUsbPipe
             Slv3WinUsbInterop.ResetEvent(ioEvent);
             var ok = write
                 ? Slv3WinUsbInterop.WinUsb_WritePipe(
-                    _winUsbHandle, pipeId, pin.AddrOfPinnedObject(), (uint)length, out var transferred, ovPtr)
+                    _winUsbHandle, pipeId, buffer, (uint)length, out var transferred, ovPtr)
                 : Slv3WinUsbInterop.WinUsb_ReadPipe(
-                    _winUsbHandle, pipeId, pin.AddrOfPinnedObject(), (uint)length, out transferred, ovPtr);
+                    _winUsbHandle, pipeId, buffer, (uint)length, out transferred, ovPtr);
 
             if (!ok && Marshal.GetLastWin32Error() == (int)Slv3WinUsbInterop.ERROR_IO_PENDING)
             {
@@ -166,7 +165,6 @@ public sealed class WindowsBulkUsbPipe : IBulkUsbPipe
         finally
         {
             Marshal.FreeHGlobal(ovPtr);
-            pin.Free();
         }
     }
 

@@ -250,6 +250,16 @@ public sealed class BulkPanelStreamTransport : IStreamedPanelTransport, IOrienta
         }
         while (!payload.IsEmpty)
         {
+            // Raw payloads arrive one whole frame each; those go out without the copy into _frame.
+            if (_filled == 0 && payload.Length >= _frame.Length)
+            {
+                if (Volatile.Read(ref _monitor) is null)
+                {
+                    PushFrame(payload[.._frame.Length]);
+                }
+                payload = payload[_frame.Length..];
+                continue;
+            }
             int take = Math.Min(_frame.Length - _filled, payload.Length);
             payload[..take].CopyTo(_frame.AsSpan(_filled));
             _filled += take;
@@ -269,7 +279,9 @@ public sealed class BulkPanelStreamTransport : IStreamedPanelTransport, IOrienta
         }
     }
 
-    private bool PushFrame(byte[] frame)
+    private bool PushFrame(byte[] frame) => PushFrame((ReadOnlySpan<byte>)frame);
+
+    private bool PushFrame(ReadOnlySpan<byte> frame)
     {
         lock (_pushLock)
         {
