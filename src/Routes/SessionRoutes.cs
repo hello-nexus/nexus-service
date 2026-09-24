@@ -39,6 +39,9 @@ internal static class SessionRoutes
     /// <summary>Longer than any sidebar app key ("app:" + a reverse-DNS id).</summary>
     private const int MaxRecentAppKeyLength = 128;
 
+    /// <summary>The stored route, "" when none; the SPA clears it when Remember last page is turned off.</summary>
+    internal static string LastRoute => Volatile.Read(ref _lastRoute);
+
     public static void MapSessionEndpoints(this WebApplication app)
     {
         app.MapGet("/session/last-route", () =>
