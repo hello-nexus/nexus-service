@@ -917,6 +917,9 @@ public static class TrayIcon
     // Overlay-side handler for this message navigates directly to /settings.
     private const string ShowDashboardSettingsMessageName = "Nexus.Overlay.ShowDashboardSettings";
 
+    // A cold launch waits out this poll before the dashboard opens.
+    private const int MarshalerPollMs = 10;
+
     /// <summary>
     /// Tries to deliver a registered window message to the running nexus-overlay
     /// process's marshaler window. Returns false if no marshaler is found
@@ -942,7 +945,7 @@ public static class TrayIcon
                 marshaler = FindWindow(OverlayMarshalerClassName, null);
                 if (marshaler != IntPtr.Zero) break;
                 if (DateTime.UtcNow >= deadline) return false;
-                System.Threading.Thread.Sleep(150);
+                System.Threading.Thread.Sleep(MarshalerPollMs);
             }
             var msg = RegisterWindowMessage(messageName);
             if (msg == 0)
@@ -990,7 +993,7 @@ public static class TrayIcon
                 marshaler = FindWindow(OverlayMarshalerClassName, null);
                 if (marshaler != IntPtr.Zero) break;
                 if (DateTime.UtcNow >= deadline) return false;
-                System.Threading.Thread.Sleep(150);
+                System.Threading.Thread.Sleep(MarshalerPollMs);
             }
             var msg = RegisterWindowMessage(ShowDashboardMessageName);
             if (msg == 0) return false;
