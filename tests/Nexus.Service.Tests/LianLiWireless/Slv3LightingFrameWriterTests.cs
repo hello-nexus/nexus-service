@@ -292,6 +292,31 @@ public class Slv3LightingFrameWriterTests
     }
 
     [Fact]
+    public void Tick_reuploads_a_fan_chain_preset_when_its_fan_count_changes()
+    {
+        var now = 0L;
+        var (hub, net, tx) = Slv3TestHub.CreateConnected();
+        net.Fans.Add(new Slv3TestHub.SimulatedFan { Mac = FanMac, MasterMac = net.MasterMac, RxType = 1, FanCount = 3, FansType = 24 });
+        Assert.True(hub.DriveTick());
+        var store = new InMemoryConfigStore();
+        var identify = new Np50IdentifyTracker();
+        var provider = new Slv3LightingDeviceProvider(hub, store, identify);
+        var engine = new LightingEngine();
+        engine.UpdateDevices(provider.BuildFrames(0).ToArray());
+        var writer = new Slv3LightingFrameWriter(engine, hub, store, identify, provider, () => now);
+        SetStrimer(store, ls => ls.Mode = "rainbow");
+        writer.Tick();
+        Assert.True(hub.DriveTick());
+
+        net.Fans[0].FanCount = 2;
+        Assert.True(hub.DriveTick());
+        now += 1_000 * TimeSpan.TicksPerMillisecond;
+        writer.Tick();
+
+        Assert.Equal(2 * Slv3Protocol.LedsPerFanFor(Slv3FanFamily.Slv3Lcd), LastRgbHeader(tx)[27]);
+    }
+
+    [Fact]
     public void Tick_streams_engine_frames_to_a_strimer_in_custom_mode()
     {
         var now = 0L;

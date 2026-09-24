@@ -219,8 +219,8 @@ public static partial class Slv3Routes
                 ? new LightingChain(fan, Slv3StrimerEffects.Catalog, PerLane: true)
                 : null;
         }
-        // A CL fan is an 8-LED center plus a 16-LED outer ring, which the
-        // uniform two-ring chain layout does not describe yet.
+        // CL fans pair a center with an outer ring of a different length,
+        // which the uniform two-ring chain layout does not describe.
         var family = Slv3Protocol.ClassifyFanFamily((byte)fan.FanType);
         var modes = family == Slv3FanFamily.Cl ? Array.Empty<Slv3StrimerEffectInfo>() : Slv3FanEffects.CatalogFor(family);
         return fan.FanCount > 0 && modes.Count > 0 ? new LightingChain(fan, modes, PerLane: false) : null;

@@ -305,8 +305,16 @@ public sealed class Slv3LightingFrameWriter : IHostedService, IDisposable
         var fanCount = isStrimer
             ? 0
             : structure.Segments[Slv3LightingDeviceProvider.InnerSegment].LedCount / Slv3LightingDeviceProvider.RingLedsFor(fan);
+        // A beacon with every port empty classifies the chain Unknown for one
+        // poll; the uploaded loop keeps playing rather than being overwritten.
+        if (!isStrimer && family == Slv3FanFamily.Unknown)
+        {
+            return true;
+        }
+        // CL fans pair a center with an outer ring of a different length,
+        // which the uniform two-ring chain layout does not describe.
         var ledCount = isStrimer ? lanes * ledsPerLane : fanCount * Slv3Protocol.LedsPerFanFor(family);
-        if (ledCount <= 0 || (!isStrimer && (family == Slv3FanFamily.Unknown || fanCount > Slv3FanEffects.MaxFans)))
+        if (ledCount <= 0 || (!isStrimer && (family == Slv3FanFamily.Cl || fanCount > Slv3FanEffects.MaxFans)))
         {
             return false;
         }
@@ -324,7 +332,7 @@ public sealed class Slv3LightingFrameWriter : IHostedService, IDisposable
             ? 0
             : (int)Math.Round(Math.Clamp(lighting.Brightness, 0, 4) * 25 * globalBrightness);
 
-        var sig = PresetSignature(lighting, brightnessPercent);
+        var sig = PresetSignature(lighting, brightnessPercent, ledCount);
         _lastSent.TryGetValue(macHex, out var last);
         var sinceLastPushMs = _lastPushTicks.TryGetValue(macHex, out var lastPush)
             ? (nowTicks - lastPush) / TimeSpan.TicksPerMillisecond
@@ -400,13 +408,14 @@ public sealed class Slv3LightingFrameWriter : IHostedService, IDisposable
             : new RgbColor(0, 0, 0);
     }
 
-    private static int PresetSignature(LianLiWirelessChainLighting lighting, int brightnessPercent)
+    private static int PresetSignature(LianLiWirelessChainLighting lighting, int brightnessPercent, int ledCount)
     {
         var hc = new HashCode();
         hc.Add(lighting.Mode);
         hc.Add(lighting.Speed);
         hc.Add(lighting.Direction);
         hc.Add(brightnessPercent);
+        hc.Add(ledCount);
         foreach (var c in lighting.Colors)
         {
             hc.Add(c);

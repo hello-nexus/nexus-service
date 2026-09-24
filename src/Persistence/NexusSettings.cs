@@ -1436,14 +1436,14 @@ public sealed class LianLiWirelessSettings
     /// <summary>Per-screen LCD content and display settings, keyed by the SL-LCD Wireless screen's 16-hex serial.</summary>
     public Dictionary<string, LianLiWirelessScreenSettings> Screens { get; set; } = new();
 
-    /// <summary>Per-cable lighting mode for Strimer Wireless cables, keyed by the cable's MAC hex (uppercase).</summary>
+    /// <summary>Lighting mode per bound wireless chain (Strimer cable or fan chain), keyed by its MAC hex (uppercase).</summary>
     public Dictionary<string, LianLiWirelessChainLighting> Chains { get; set; } = new();
 }
 
 /// <summary>
-/// What a Strimer Wireless cable shows: the lighting engine's live frames
+/// What a wireless chain shows: the lighting engine's live frames
 /// (<see cref="ModeCustom"/>), or an animation uploaded once and played by the
-/// cable on its own (an effect key, or <see cref="ModePerLane"/>).
+/// chain on its own (an effect key, or <see cref="ModePerLane"/> on a Strimer).
 /// </summary>
 public sealed class LianLiWirelessChainLighting
 {

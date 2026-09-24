@@ -5,8 +5,8 @@ using RgbColor = Nexus.Service.Peripherals.Hyte.Np50.RgbColor;
 namespace Nexus.Service.Peripherals.LianLiWireless;
 
 /// <summary>
-/// Renders looping cable animations for a wireless fan chain (1..4 fans behind
-/// one RF record), the same way <see cref="Slv3StrimerEffects"/> does for a
+/// Renders looping animations for a wireless fan chain (up to <see cref="MaxFans"/> fans
+/// behind one RF record), the same way <see cref="Slv3StrimerEffects"/> does for a
 /// Strimer cable: the firmware only plays back an uploaded frame set, so every
 /// mode's motion, colour cycling and timing is baked into the buffer up front.
 /// Only the whole-fan render scope is implemented; a fan's ring positions all
