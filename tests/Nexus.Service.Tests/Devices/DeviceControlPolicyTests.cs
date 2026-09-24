@@ -12,12 +12,26 @@ public class DeviceControlPolicyTests
         Assert.Equal(StreamDeckHandler.ElgatoConflictAppId, DeviceControlPolicy.ConflictAppFor("streamdeck"));
     }
 
-    [Fact]
-    public void DefaultOn_StreamDeck_IsFalse()
+    [Theory]
+    [InlineData("lianli")]
+    [InlineData("lianli-hydroshift-lcd")]
+    [InlineData("strimer")]
+    [InlineData("corsair")]
+    public void DefaultOn_CompetingAppHub_IsFalseAndAdopts(string handlerId)
     {
-        // Nexus Link defaults off while a competing vendor app (Elgato's own
-        // Stream Deck software) may also be driving the same device.
-        Assert.False(DeviceControlPolicy.DefaultOn("streamdeck"));
+        Assert.False(DeviceControlPolicy.DefaultOn(handlerId));
+        Assert.NotNull(DeviceControlPolicy.AdoptionConflictAppFor(handlerId));
+    }
+
+    [Theory]
+    [InlineData("streamdeck")]
+    [InlineData("nzxt-kraken")]
+    [InlineData("tryx")]
+    [InlineData("zmatrices-lcd")]
+    public void DefaultOn_HintOnlyConflictHandler_IsTrueAndNeverAdopts(string handlerId)
+    {
+        Assert.True(DeviceControlPolicy.DefaultOn(handlerId));
+        Assert.Null(DeviceControlPolicy.AdoptionConflictAppFor(handlerId));
     }
 
     [Theory]
@@ -29,6 +43,8 @@ public class DeviceControlPolicyTests
     [InlineData("corsair")]
     [InlineData("tryx")]
     [InlineData("streamdeck")]
+    [InlineData("nzxt-kraken")]
+    [InlineData("zmatrices-lcd")]
     public void ConflictAppFor_KnownHandlers_ReturnsANonEmptyId(string handlerId)
     {
         Assert.False(string.IsNullOrEmpty(DeviceControlPolicy.ConflictAppFor(handlerId)));

@@ -137,25 +137,24 @@ public class DeviceControlGateTests
         var store = new InMemoryConfigStore();
         var gate = new DeviceControlGate(store);
 
-        Assert.True(gate.TryAdopt("tryx"));
-        Assert.True(gate.IsEnabled("tryx"));
-        Assert.Contains("tryx", store.Load().Devices.NexusControlEnabled);
+        Assert.True(gate.TryAdopt("lianli-wireless"));
+        Assert.True(gate.IsEnabled("lianli-wireless"));
+        Assert.Contains("lianli-wireless", store.Load().Devices.NexusControlEnabled);
     }
 
-    // The Tryx "control re-enables itself" report: an explicit off must survive
-    // every adoption pass, forever.
+    // An explicit off must survive every adoption pass, forever.
     [Fact]
     public void TryAdopt_ExplicitlyDisabledHandler_LeavesItDisabled()
     {
         var store = new InMemoryConfigStore();
         var gate = new DeviceControlGate(store);
-        gate.SetEnabled("tryx", true);
-        gate.SetEnabled("tryx", false);
+        gate.SetEnabled("lianli-wireless", true);
+        gate.SetEnabled("lianli-wireless", false);
 
-        Assert.False(gate.TryAdopt("tryx"));
-        Assert.False(gate.IsEnabled("tryx"));
-        Assert.DoesNotContain("tryx", store.Load().Devices.NexusControlEnabled);
-        Assert.Contains("tryx", store.Load().Devices.NexusControlDisabled);
+        Assert.False(gate.TryAdopt("lianli-wireless"));
+        Assert.False(gate.IsEnabled("lianli-wireless"));
+        Assert.DoesNotContain("lianli-wireless", store.Load().Devices.NexusControlEnabled);
+        Assert.Contains("lianli-wireless", store.Load().Devices.NexusControlDisabled);
     }
 
     [Fact]
@@ -163,9 +162,9 @@ public class DeviceControlGateTests
     {
         var store = new InMemoryConfigStore();
         var gate = new DeviceControlGate(store);
-        gate.SetEnabled("tryx", true);
+        gate.SetEnabled("lianli-wireless", true);
 
-        Assert.False(gate.TryAdopt("tryx"));
+        Assert.False(gate.TryAdopt("lianli-wireless"));
         Assert.Single(store.Load().Devices.NexusControlEnabled);
     }
 }

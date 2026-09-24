@@ -1166,7 +1166,7 @@ public sealed class DevicesSettings
     public List<string> UncontrolledLightingDevices { get; set; } = new();
     /// <summary>Handler ids the user explicitly opted out of (Nexus Control off). Overrides the brand default; a Hyte/iBUYPOWER handler absent here stays on.</summary>
     public List<string> NexusControlDisabled { get; set; } = new();
-    /// <summary>Handler ids the user explicitly opted into (Nexus Control on). Overrides the brand default; a third-party handler absent here stays off.</summary>
+    /// <summary>Handler ids the user explicitly opted into (Nexus Control on). Overrides the brand default; a handler that defaults off stays off while absent here.</summary>
     public List<string> NexusControlEnabled { get; set; } = new();
     public Dictionary<string, LightingDevicePreference> LightingDevicePrefs { get; set; } = new();
     /// <summary>
