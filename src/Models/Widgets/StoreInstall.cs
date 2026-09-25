@@ -46,6 +46,9 @@ public sealed class StoreCatalogApp
 {
     /// <summary>Newest version this client can run, or null when none can.</summary>
     [JsonPropertyName("latest")] public StoreCatalogVersion? Latest { get; set; }
+
+    /// <summary>Launch day; null for an app that never set one.</summary>
+    [JsonPropertyName("releaseDate")] public DateTimeOffset? ReleaseDate { get; set; }
 }
 
 /// <summary>One catalog version. The hash is the trust pin the installer verifies against.</summary>

@@ -20,6 +20,9 @@ internal static class StoreRelease
         catch (JsonException)
         { return null; }
 
+        // Launch-day gate for every caller; the account-free hardware install never reaches the cloud's own refusal.
+        if (listing?.ReleaseDate is { } launch && launch > DateTimeOffset.UtcNow) return null;
+
         var latest = listing?.Latest;
         if (latest is null) return null;
         if (string.IsNullOrWhiteSpace(latest.Sha256) || !StoreInstaller.IsValidVersion(latest.Version)) return null;

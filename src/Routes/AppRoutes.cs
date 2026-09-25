@@ -167,6 +167,7 @@ public static class AppRoutes
             async (StoreInstallRequest body, Nexus.Service.Store.StoreEntitlements entitlements,
                    Nexus.Service.Store.StoreInstaller installer,
                    Nexus.Service.Store.HardwareAppCatalog hardware,
+                   Nexus.Service.Store.StoreCatalogProxy catalog,
                    IConfigStore store, MultiplexHub hub, HttpContext http, CancellationToken ct) =>
         {
             var appId = body.AppId ?? "";
@@ -180,10 +181,13 @@ public static class AppRoutes
                 // refused token reads sign_in_required too, and the grant is
                 // what records the purchase. Without it the caller's hash
                 // stands, which still pins the bytes and cannot redirect the
-                // download - StoreInstaller composes the URL itself.
+                // download - StoreInstaller composes the URL itself. The catalog
+                // read is the automatic path's launch-day gate.
                 var waived = auth.Reason == "sign_in_required"
                     && !entitlements.HasLinkedAccount
-                    && hardware.IsMatched(appId);
+                    && hardware.IsMatched(appId)
+                    && await Nexus.Service.Store.StoreRelease.LatestAsync(
+                        catalog, appId, http.Request.Query["nexusVersion"].ToString(), ct) is not null;
                 if (!waived)
                 {
                     return Results.Json(new StoreInstallResponse
