@@ -21,7 +21,14 @@ udev rules or group membership to juggle:
 - data in `/var/lib/nexus` - settings, profiles, device media, apps, caches
   and logs, one machine-scope root like `%ProgramData%` on Windows
 - an application menu entry that opens the dashboard
-- the motherboard Super-I/O sensor driver, loaded via `setup-sensors.sh`
+- the chipset SMBus (`i2c-dev` plus the host driver) and the motherboard
+  Super-I/O sensor driver, both via `setup-sensors.sh`
+
+Some boards' firmware claims the SMBus region in ACPI, which stops the kernel
+driver binding and hides RGB RAM and SMBus board controllers. Where that is the
+cause, `install.sh` sets `acpi_enforce_resources=lax` and asks you to reboot;
+`./install.sh --no-smbus` leaves the boot config alone and prints the command
+instead.
 
 Upgrading from a build that stored data under your home (`~/.config/Nexus`,
 `~/.local/share/Nexus`, `~/.cache/Nexus`, `~/.local/state/nexus/logs`)?
