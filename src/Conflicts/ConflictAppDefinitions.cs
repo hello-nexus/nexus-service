@@ -256,14 +256,6 @@ public static class ConflictAppCatalog
         },
         new()
         {
-            Id = "msi-gaming-center",
-            Vendors = new[] { "MSI" },
-            DisplayName = "MSI Gaming Center",
-            Category = "lighting",
-            ProcessNames = new[] { "GCC" },
-        },
-        new()
-        {
             Id = "msi-control-center",
             DisplayName = "MSI Control Center",
             Category = "monitoring",
@@ -307,6 +299,15 @@ public static class ConflictAppCatalog
             DisplayName = "Gigabyte RGB Fusion",
             Category = "lighting",
             ProcessNames = new[] { "RGBFusion", "RGBFusion2.0", "RGB Fusion" },
+        },
+        new()
+        {
+            // Id keeps its old MSI name: Ui.ConflictAutoKillExclusions persists it.
+            Id = "msi-gaming-center",
+            Vendors = new[] { "Gigabyte" },
+            DisplayName = "GIGABYTE Control Center",
+            Category = "lighting",
+            ProcessNames = new[] { "GCC" },
         },
         new()
         {

@@ -17,9 +17,16 @@ public class ConflictDeviceOwnershipTests
     [InlineData("ASUS", "aura-sync")]
     [InlineData("MSI", "msi-mystic-light")]
     [InlineData("NZXT", "nzxt-cam")]
+    [InlineData("Gigabyte", "msi-gaming-center")]
     public void Vendor_resolves_to_its_apps(string vendor, string expectedId)
     {
         Assert.Contains(expectedId, ConflictDeviceOwnership.AppIdsForVendor(vendor));
+    }
+
+    [Fact]
+    public void Gigabyte_control_center_does_not_claim_msi_devices()
+    {
+        Assert.DoesNotContain("msi-gaming-center", ConflictDeviceOwnership.AppIdsForVendor("MSI"));
     }
 
     [Fact]
