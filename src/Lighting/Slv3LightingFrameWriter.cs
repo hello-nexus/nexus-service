@@ -359,7 +359,7 @@ public sealed class Slv3LightingFrameWriter : IHostedService, IDisposable
             {
                 animation = isStrimer
                     ? RenderStrimerPreset(lighting, lanes, ledsPerLane)
-                    : Slv3FanEffects.Render(family, lighting.Mode, fanCount, lighting.Speed, lighting.Direction, ParseColors(lighting.Colors));
+                    : Slv3FanEffects.Render(family, lighting.Mode, fanCount, lighting.Speed, lighting.Direction, ParseColors(lighting.Colors), lighting.Merge);
             }
             catch (ArgumentException)
             {
@@ -415,6 +415,7 @@ public sealed class Slv3LightingFrameWriter : IHostedService, IDisposable
         hc.Add(lighting.Mode);
         hc.Add(lighting.Speed);
         hc.Add(lighting.Direction);
+        hc.Add(lighting.Merge);
         hc.Add(brightnessPercent);
         hc.Add(ledCount);
         foreach (var c in lighting.Colors)

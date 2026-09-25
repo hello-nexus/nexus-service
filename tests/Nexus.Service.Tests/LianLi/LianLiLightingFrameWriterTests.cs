@@ -154,6 +154,113 @@ public class LianLiLightingFrameWriterTests
         Assert.Equal(0x60, calls[2].Bytes[1]);
     }
 
+    // ── Merge (one animation across every port) ──
+
+    private void AttachMerged(int pid, string mode)
+    {
+        _hub.Attach(_spy, Profile(pid));
+        _store.Update(s =>
+        {
+            s.Devices.LianLi.SetFans(0, 3);
+            s.Devices.LianLi.SetFans(1, 3);
+            s.Devices.LianLi.SetFans(2, 2);
+            s.Devices.LianLi.SetFans(3, 0);
+            s.Devices.LianLiLighting.Mode = mode;
+            s.Devices.LianLiLighting.Merge = true;
+            s.Devices.LianLiLighting.Colors = new List<string> { "#FF0000", "#0000FF" };
+        });
+        _engine.UpdateDevices(new[] { new DeviceFrame(0, "lianli:port0", 16, 0, 0, 1, 1, 0) });
+    }
+
+    [Fact]
+    public void Sl_infinity_merged_runway_parks_channels_7_to_1_then_runs_the_merge_on_channel_0()
+    {
+        AttachMerged(0xA102, "runway");
+
+        _writer.Tick();
+
+        Assert.Equal(14, Calls.Count);
+        Assert.Equal(new byte[] { 0xE0, 0x10, 0x63, 0x00, 0x01, 0x02, 0x03, 0x08 }, Calls[0].Bytes);
+        Assert.Equal(new byte[] { 0xE0, 0x10, 0x60, 0x01, 0x03, 0x00, 0x00 }, Calls[1].Bytes);
+        Assert.Equal(new byte[] { 0xE0, 0x10, 0x60, 0x02, 0x03, 0x00, 0x00 }, Calls[2].Bytes);
+        Assert.Equal(new byte[] { 0xE0, 0x10, 0x60, 0x03, 0x02, 0x00, 0x00 }, Calls[3].Bytes);
+        Assert.Equal(new byte[] { 0xE0, 0x10, 0x60, 0x04, 0x00, 0x00, 0x00 }, Calls[4].Bytes);
+        for (var i = 0; i < 7; i++)
+        {
+            // idle effect at brightness off, channel 7 first
+            Assert.Equal(new byte[] { 0xE0, (byte)(0x17 - i), 0x32, 0x00, 0x00, 0x08, 0x00 }, Calls[5 + i].Bytes);
+        }
+        var colour = Calls[12];
+        Assert.Equal(HubTransportSpy.CallKind.OutputReport, colour.Kind);
+        Assert.Equal(0x30, colour.Bytes[1]);
+        // wire R,B,G: fan 0 slot 0 red, slot 1 blue, slots 2-3 black; fan 1 repeats
+        Assert.Equal(new byte[] { 0xFF, 0x00, 0x00, 0x00, 0xFF, 0x00, 0, 0, 0, 0, 0, 0 }, colour.Bytes[2..14]);
+        Assert.Equal(new byte[] { 0xFF, 0x00, 0x00 }, colour.Bytes[14..17]);
+        Assert.Equal(new byte[] { 0xE0, 0x10, 0x46, 0x00, 0x00, 0x00, 0x00 }, Calls[13].Bytes);
+        Assert.DoesNotContain(Calls, c => c.Bytes[1] == 0x60);
+    }
+
+    [Fact]
+    public void Merge_on_a_mode_without_a_merged_variant_commits_per_port()
+    {
+        AttachMerged(0xA102, "rainbowWave");
+
+        _writer.Tick();
+
+        Assert.DoesNotContain(Calls, c => c.Bytes[2] == 0x63);
+        Assert.Contains(Calls, c => c.Bytes[1] == 0x60); // frame sync of the per-port path
+    }
+
+    [Fact]
+    public void Sl_v1_ignores_merge_and_commits_the_per_port_runway()
+    {
+        AttachMerged(0xA100, "runway");
+
+        _writer.Tick();
+
+        Assert.DoesNotContain(Calls, c => c.Bytes[2] is 0x63 or 0x46);
+        Assert.Contains(Calls, c => (c.Bytes[1] & 0xF0) == 0x10 && c.Bytes[2] == 0x1C);
+    }
+
+    [Fact]
+    public void Turning_merge_off_recommits_every_port()
+    {
+        AttachMerged(0xA102, "runway");
+        _writer.Tick();
+        _spy.Calls.Clear();
+
+        _store.Update(s => s.Devices.LianLiLighting.Merge = false);
+        _writer.Tick();
+
+        Assert.Contains(Calls, c => (c.Bytes[1] & 0xF0) == 0x10 && c.Bytes[2] == 0x1C);
+        Assert.Equal(0x60, Calls[^1].Bytes[1]);
+    }
+
+    [Fact]
+    public void Merge_is_reported_blocked_only_while_a_port_is_disabled()
+    {
+        AttachMerged(0xA102, "runway");
+        var s = _store.Load();
+        var composed = LianLiZoneSupport.Compose(_hub.DeviceId, _hub.Profile, LianLiZoneSupport.ReadComposition(s, _hub.DeviceId), s.Devices.LianLi);
+        Assert.False(LianLiLightingFrameWriter.AnyDeviceExcluded(composed, s));
+
+        _store.Update(x => x.Devices.DisabledLightingDevices.Add("lianli:port1"));
+
+        Assert.True(LianLiLightingFrameWriter.AnyDeviceExcluded(composed, _store.Load()));
+    }
+
+    [Fact]
+    public void A_disabled_port_keeps_the_per_port_commit()
+    {
+        AttachMerged(0xA102, "runway");
+        _store.Update(s => s.Devices.DisabledLightingDevices.Add("lianli:port1"));
+
+        _writer.Tick();
+
+        Assert.DoesNotContain(Calls, c => c.Bytes[2] == 0x63);
+        Assert.Contains(Calls, c => c.Bytes[1] == 0x60);
+    }
+
     // ── Rejected-write retry (a commit the hub drops must not latch) ──
 
     /// <summary>Drives the writer's backoff clock without sleeping.</summary>

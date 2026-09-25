@@ -1464,6 +1464,8 @@ public sealed class LianLiWirelessChainLighting
     public int Brightness { get; set; } = 4;
     /// <summary>"#RRGGBB" user colours; empty = the effect's default palette.</summary>
     public List<string> Colors { get; set; } = new();
+    /// <summary>A mergeable effect runs as one animation across the chain's fans instead of one per fan.</summary>
+    public bool Merge { get; set; }
     /// <summary>One entry per lane, used by <see cref="ModePerLane"/>.</summary>
     public List<LianLiWirelessLane> Lanes { get; set; } = new();
 }
@@ -1599,6 +1601,9 @@ public sealed class LianLiLightingSettings
     public int Direction { get; set; } = 0;
     public int Brightness { get; set; } = 4;
     public List<string> Colors { get; set; } = new();
+
+    /// <summary>Run a mergeable mode as one animation across every port instead of one per port.</summary>
+    public bool Merge { get; set; }
 }
 
 public sealed class TlLightingSettings

@@ -242,7 +242,13 @@ public sealed class LianLiLightingFrameWriter : IHostedService, IDisposable
             return;
         }
 
-        if (CommitFirmwareMode(ls, mode, globalBrightness, composed, profile, settings.Devices.DisabledLightingDevices, uncontrolled, _firmwareZonesByDevice))
+        // One merged animation cannot honour per-port control, so any excluded port keeps the per-port commit.
+        var merged = ls.Merge && mode.MergesOn(profile)
+            && !AnyDeviceExcluded(composed, settings);
+        var committed = merged
+            ? CommitMergedMode(ls, mode, globalBrightness, composed, profile, settings.Devices.DisabledLightingDevices, settings.Devices.LianLi)
+            : CommitFirmwareMode(ls, mode, globalBrightness, composed, profile, settings.Devices.DisabledLightingDevices, uncontrolled, _firmwareZonesByDevice);
+        if (committed)
         {
             NoteSuccess(_commitRetry, "firmware commit");
             _lastFirmwareSig = sig;
@@ -439,6 +445,85 @@ public sealed class LianLiLightingFrameWriter : IHostedService, IDisposable
         return true;
     }
 
+    /// <summary>
+    /// One animation across every port. Firmware sequence: port order, each
+    /// port's fan count, every channel but 0 parked dark, then the palette and
+    /// merged effect on channel 0, with no frame sync after. Returns false on
+    /// the first rejected write.
+    /// </summary>
+    private bool CommitMergedMode(
+        LianLiLightingSettings ls,
+        LianLiModeInfo mode,
+        float globalBrightness,
+        List<ComposedDevice> composed,
+        in LianLiFanProfile profile,
+        IReadOnlyList<string> disabled,
+        LianLiSettings fans)
+    {
+        if (composed.Count == 0) return true;
+        var anchor = composed[0];
+        foreach (var device in composed)
+        {
+            if (CarriesChannel(device, 0))
+            {
+                anchor = device;
+                break;
+            }
+        }
+
+        var speedByte = LianLiLightingModes.SpeedCodes[Math.Clamp(ls.Speed, 0, 4)];
+        var dirByte = LianLiLightingModes.DirectionByte(ls.Direction);
+        var brightnessByte = DeviceBrightnessByte(anchor, ls, globalBrightness, disabled);
+
+        if (!_hub.SendMergeOrder()) return false;
+        Thread.Sleep(InterWriteSettleMs);
+        for (var p = 0; p < LianLiProtocol.PortCount; p++)
+        {
+            if (!_hub.SetQuantity(p, LianLiZoneSupport.ClampFans(fans.GetFans(p)))) return false;
+            Thread.Sleep(InterWriteSettleMs);
+        }
+        for (var ch = LianLiProtocol.PortCount * profile.ChannelsPerPort - 1; ch >= 1; ch--)
+        {
+            var off = LianLiLightingModes.BrightnessCodes[0];
+            if (!_hub.SendModeCommit(ch, LianLiProtocol.EffectMergeIdle, LianLiProtocol.SpeedDefault, LianLiProtocol.DirectionDefault, off)) return false;
+            Thread.Sleep(InterWriteSettleMs);
+        }
+        FillPaletteBuffer(_channelBuf, mode, ls.Colors, LianLiProtocol.MaxFansPerPort, profile.LedsPerFanForChannel(0), perFan: false);
+        if (!_hub.SendColorData(0, _channelBuf.AsSpan(0, LianLiProtocol.MergedPaletteBytes))) return false;
+        Thread.Sleep(InterWriteSettleMs);
+        if (!_hub.SendModeCommit(0, mode.MergedEffectByte, speedByte, dirByte, brightnessByte)) return false;
+        Thread.Sleep(InterWriteSettleMs);
+        return true;
+    }
+
+    /// <summary>True when a fan group is disabled or fully uncontrolled; the lighting route hides Merge on the same test.</summary>
+    internal static bool AnyDeviceExcluded(List<ComposedDevice> composed, NexusSettings settings)
+    {
+        var disabled = settings.Devices.DisabledLightingDevices;
+        var uncontrolled = settings.Devices.UncontrolledLightingDevices;
+        foreach (var device in composed)
+        {
+            if (IsDeviceDisabled(device, disabled)
+                || ZoneResolution.IsFullyUncontrolled(ZoneResolution.Resolve(device.Structure, settings), uncontrolled))
+            {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private static bool CarriesChannel(ComposedDevice device, int channel)
+    {
+        foreach (var channels in device.SegmentChannels)
+        {
+            foreach (var ch in channels)
+            {
+                if (ch == channel) return true;
+            }
+        }
+        return false;
+    }
+
     private static int NumFansForDevice(ComposedDevice device, in LianLiFanProfile profile)
     {
         if (device.Structure.Segments.Count == 0 || profile.InnerLedsPerFan <= 0)
@@ -590,6 +675,7 @@ public sealed class LianLiLightingFrameWriter : IHostedService, IDisposable
         hc.Add(ls.Mode);
         hc.Add(ls.Speed);
         hc.Add(ls.Direction);
+        hc.Add(ls.Merge);
         foreach (var c in ls.Colors)
         {
             hc.Add(c);

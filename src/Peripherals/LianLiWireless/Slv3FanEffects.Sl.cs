@@ -13,11 +13,11 @@ public static partial class Slv3FanEffects
         new Slv3StrimerEffectInfo { Key = "rainbowMorph", HasSpeed = true, HasDirection = false, ColorsMin = 0, ColorsMax = 0 },
         new Slv3StrimerEffectInfo { Key = "static", HasSpeed = false, HasDirection = false, ColorsMin = 0, ColorsMax = 1 },
         new Slv3StrimerEffectInfo { Key = "breathing", HasSpeed = true, HasDirection = false, ColorsMin = 0, ColorsMax = 1 },
-        new Slv3StrimerEffectInfo { Key = "runway", HasSpeed = true, HasDirection = false, ColorsMin = 0, ColorsMax = 1 },
+        new Slv3StrimerEffectInfo { Key = "runway", HasSpeed = true, HasDirection = false, ColorsMin = 0, ColorsMax = 1, Mergeable = true },
         new Slv3StrimerEffectInfo { Key = "meteor", HasSpeed = true, HasDirection = true, ColorsMin = 0, ColorsMax = 1 },
         new Slv3StrimerEffectInfo { Key = "colorCycle", HasSpeed = true, HasDirection = true, ColorsMin = 0, ColorsMax = 3 },
         new Slv3StrimerEffectInfo { Key = "staggered", HasSpeed = true, HasDirection = false, ColorsMin = 0, ColorsMax = 2 },
-        new Slv3StrimerEffectInfo { Key = "tide", HasSpeed = true, HasDirection = false, ColorsMin = 0, ColorsMax = 2 },
+        new Slv3StrimerEffectInfo { Key = "tide", HasSpeed = true, HasDirection = false, ColorsMin = 0, ColorsMax = 2, Mergeable = true },
         new Slv3StrimerEffectInfo { Key = "mixing", HasSpeed = true, HasDirection = false, ColorsMin = 0, ColorsMax = 2 },
         new Slv3StrimerEffectInfo { Key = "render", HasSpeed = true, HasDirection = true, ColorsMin = 0, ColorsMax = 1 },
         new Slv3StrimerEffectInfo { Key = "pingPong", HasSpeed = true, HasDirection = false, ColorsMin = 0, ColorsMax = 2 },
@@ -178,6 +178,27 @@ public static partial class Slv3FanEffects
         });
     }
 
+    /// <summary>One runway marker travelling fan to fan along the chain, each fan taking the time one per-fan sweep takes.</summary>
+    private static RawAnimation SlMergedRunway(FanEffectContext ctx)
+    {
+        const int framesPerFan = 40;
+        var frameCount = framesPerFan * ctx.FanCount;
+        var lineLen = ctx.FanCount * ctx.RingLen;
+        return RingLoop(frameCount, ctx, Slv3StrimerEffects.ScaledInterval(ctx.Speed, 12.0), (buf, f) =>
+        {
+            var dim = Slv3WirelessEffectMath.Scale(ctx.Colors[0], 0.12);
+            var center = (double)f / frameCount * (lineLen - 1);
+            for (var fan = 0; fan < ctx.FanCount; fan++)
+            {
+                for (var ringPos = 0; ringPos < ctx.RingLen; ringPos++)
+                {
+                    SetRing(buf, f, ctx, fan, ringPos, dim);
+                }
+                PaintRingMarker(buf, f, ctx, fan, center - fan * ctx.RingLen, 1.0, ctx.Colors[0], 0);
+            }
+        });
+    }
+
     private static RawAnimation SlMeteor(FanEffectContext ctx)
     {
         const int frameCount = 30;
@@ -253,6 +274,26 @@ public static partial class Slv3FanEffects
                 for (var ringPos = 0; ringPos < ctx.RingLen; ringPos++)
                 {
                     var color = ringPos < wash ? ctx.Colors[0] : Slv3WirelessEffectMath.Scale(ctx.Colors[1], 0.1);
+                    SetRing(buf, f, ctx, fan, ringPos, color);
+                }
+            }
+        });
+    }
+
+    /// <summary>One wash filling the chain fan by fan and draining back, each fan taking one per-fan tide's time.</summary>
+    private static RawAnimation SlMergedTide(FanEffectContext ctx)
+    {
+        const int framesPerFan = 48;
+        var frameCount = framesPerFan * ctx.FanCount;
+        var lineLen = ctx.FanCount * ctx.RingLen;
+        return RingLoop(frameCount, ctx, Slv3StrimerEffects.ScaledInterval(ctx.Speed, 14.0), (buf, f) =>
+        {
+            var wash = Slv3WirelessEffectMath.Breath((double)f / frameCount) * lineLen;
+            for (var fan = 0; fan < ctx.FanCount; fan++)
+            {
+                for (var ringPos = 0; ringPos < ctx.RingLen; ringPos++)
+                {
+                    var color = fan * ctx.RingLen + ringPos < wash ? ctx.Colors[0] : Slv3WirelessEffectMath.Scale(ctx.Colors[1], 0.1);
                     SetRing(buf, f, ctx, fan, ringPos, color);
                 }
             }

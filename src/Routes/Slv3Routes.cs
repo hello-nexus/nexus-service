@@ -22,6 +22,7 @@ public sealed class Slv3LightingModeDto
     public bool HasDirection { get; set; }
     public int ColorsMin { get; set; }
     public int ColorsMax { get; set; }
+    public bool Mergeable { get; set; }
 }
 
 public sealed class Slv3LaneDto
@@ -53,6 +54,7 @@ public sealed class Slv3ChainLightingDto
     public int Direction { get; set; }
     public int Brightness { get; set; }
     public string[] Colors { get; set; } = Array.Empty<string>();
+    public bool Merge { get; set; }
     public Slv3LaneDto[] LaneSettings { get; set; } = Array.Empty<Slv3LaneDto>();
 }
 
@@ -70,6 +72,7 @@ public sealed class Slv3ChainLightingRequest
     public int? Direction { get; set; }
     public int? Brightness { get; set; }
     public string[]? Colors { get; set; }
+    public bool? Merge { get; set; }
     public Slv3LaneDto[]? LaneSettings { get; set; }
 }
 
@@ -183,6 +186,7 @@ public static partial class Slv3Routes
                         Direction = body.Direction.HasValue ? Math.Clamp(body.Direction.Value, 0, 1) : old.Direction,
                         Brightness = body.Brightness.HasValue ? Math.Clamp(body.Brightness.Value, 0, 4) : old.Brightness,
                         Colors = body.Colors is not null ? new List<string>(body.Colors) : old.Colors,
+                        Merge = body.Merge ?? old.Merge,
                         Lanes = lanes,
                     },
                 };
@@ -303,6 +307,7 @@ public static partial class Slv3Routes
                     HasDirection = m.HasDirection,
                     ColorsMin = m.ColorsMin,
                     ColorsMax = m.ColorsMax,
+                    Mergeable = m.Mergeable,
                 };
             }
             var laneDtos = new Slv3LaneDto[ls.Lanes.Count];
@@ -328,6 +333,7 @@ public static partial class Slv3Routes
                 Direction = ls.Direction,
                 Brightness = ls.Brightness,
                 Colors = ls.Colors.ToArray(),
+                Merge = ls.Merge,
                 LaneSettings = laneDtos,
             });
         }

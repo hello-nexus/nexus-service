@@ -481,4 +481,78 @@ public class Slv3FanEffectsTests
         Assert.Equal(a.IntervalMs, b.IntervalMs);
         Assert.Equal(a.Frames, b.Frames);
     }
+
+    private static readonly RgbColor[] Red = { new(255, 0, 0) };
+
+    // The runway marker is at least half the colour; the rest of the ring sits dim.
+    private static bool MarkerOn(Slv3StrimerAnimation anim, int frame, int fan, int fanCount)
+    {
+        var ledsPerFan = Slv3Protocol.LedsPerFanFor(Slv3FanFamily.Slv3Lcd);
+        var offset = frame * fanCount * ledsPerFan * 3 + fan * ledsPerFan * 3;
+        for (var led = 0; led < ledsPerFan; led++)
+        {
+            if (anim.Frames[offset + led * 3] > 100) return true;
+        }
+        return false;
+    }
+
+    [Fact]
+    public void Merged_runway_carries_one_marker_from_fan_to_fan()
+    {
+        var anim = Slv3FanEffects.Render(Slv3FanFamily.Slv3Lcd, "runway", 3, 2, 0, Red, merge: true);
+
+        Assert.True(MarkerOn(anim, 0, 0, 3));
+        Assert.False(MarkerOn(anim, 0, 1, 3));
+        Assert.True(MarkerOn(anim, anim.FrameCount / 2, 1, 3));
+        Assert.False(MarkerOn(anim, anim.FrameCount / 2, 0, 3));
+        Assert.True(MarkerOn(anim, anim.FrameCount - 1, 2, 3));
+        for (var f = 0; f < anim.FrameCount; f++)
+        {
+            var lit = Enumerable.Range(0, 3).Count(fan => MarkerOn(anim, f, fan, 3));
+            Assert.InRange(lit, 1, 2); // two only while the marker crosses a fan boundary
+        }
+    }
+
+    private static int LitLeds(Slv3StrimerAnimation anim, int frame, int fan, int fanCount)
+    {
+        var ledsPerFan = Slv3Protocol.LedsPerFanFor(Slv3FanFamily.Slv3Lcd);
+        var offset = frame * fanCount * ledsPerFan * 3 + fan * ledsPerFan * 3;
+        var lit = 0;
+        for (var led = 0; led < ledsPerFan; led++)
+        {
+            if (anim.Frames[offset + led * 3] > 100) lit++;
+        }
+        return lit;
+    }
+
+    [Fact]
+    public void Merged_tide_fills_the_chain_fan_by_fan()
+    {
+        var anim = Slv3FanEffects.Render(Slv3FanFamily.Slv3Lcd, "tide", 3, 2, 0, Red, merge: true);
+        var ledsPerFan = Slv3Protocol.LedsPerFanFor(Slv3FanFamily.Slv3Lcd);
+
+        Assert.All(Enumerable.Range(0, 3), fan => Assert.Equal(0, LitLeds(anim, 0, fan, 3)));
+        Assert.All(Enumerable.Range(0, 3), fan => Assert.Equal(ledsPerFan, LitLeds(anim, anim.FrameCount / 2, fan, 3)));
+        // A quarter into the loop the wash is half the chain: fan 0 full, fan 2 still dark.
+        var quarter = anim.FrameCount / 4;
+        Assert.Equal(ledsPerFan, LitLeds(anim, quarter, 0, 3));
+        Assert.Equal(0, LitLeds(anim, quarter, 2, 3));
+    }
+
+    [Fact]
+    public void Runway_without_merge_sweeps_every_fan_at_once()
+    {
+        var anim = Slv3FanEffects.Render(Slv3FanFamily.Slv3Lcd, "runway", 3, 2, 0, Red);
+
+        Assert.All(Enumerable.Range(0, 3), fan => Assert.True(MarkerOn(anim, 0, fan, 3)));
+    }
+
+    [Fact]
+    public void Merge_is_ignored_for_an_effect_without_a_merged_variant()
+    {
+        var merged = Slv3FanEffects.Render(Slv3FanFamily.Slv3Lcd, "meteor", 3, 2, 0, Red, merge: true);
+        var plain = Slv3FanEffects.Render(Slv3FanFamily.Slv3Lcd, "meteor", 3, 2, 0, Red);
+
+        Assert.Equal(plain.Frames, merged.Frames);
+    }
 }

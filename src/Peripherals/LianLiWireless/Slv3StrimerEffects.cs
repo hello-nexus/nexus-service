@@ -12,6 +12,8 @@ public sealed class Slv3StrimerEffectInfo
     public bool HasDirection { get; init; }
     public int ColorsMin { get; init; }
     public int ColorsMax { get; init; }
+    /// <summary>Has a variant that runs across every fan of the chain; see <see cref="Slv3FanEffects.Render"/>.</summary>
+    public bool Mergeable { get; init; }
 }
 
 /// <summary>A rendered, looping Strimer animation ready for the RF upload pipeline.</summary>

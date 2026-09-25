@@ -182,6 +182,15 @@ public sealed class LianLiHub : IDisposable
         }
     }
 
+    public bool SendMergeOrder()
+    {
+        lock (_lock)
+        {
+            if (_device == null) return false;
+            return _device.SetFeature(LianLiProtocol.BuildMergeOrder());
+        }
+    }
+
     public bool SendFrameSync()
     {
         lock (_lock)

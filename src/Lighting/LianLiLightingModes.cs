@@ -18,7 +18,12 @@ public sealed class LianLiModeInfo
     /// <summary>True for effects 0x26..0x29, which the SL v1 firmware does not implement.</summary>
     public bool SlInfinityOnly { get; init; }
 
+    /// <summary>Effect byte of the across-every-port variant; 0 when the mode has none.</summary>
+    public byte MergedEffectByte { get; init; }
+
     public bool SupportedBy(LianLiFanFamily family) => !SlInfinityOnly || family != LianLiFanFamily.Sl;
+
+    public bool MergesOn(in LianLiFanProfile profile) => MergedEffectByte != 0 && profile.SupportsMerge;
 }
 
 public static class LianLiLightingModes
@@ -40,10 +45,10 @@ public static class LianLiLightingModes
         new() { Key = "spectrumCycle", Label = "Spectrum Cycle",           EffectByte = 0x04, HasSpeed = true,  HasDirection = false, HasBrightness = true,  ColorsMin = 0, ColorsMax = 0 },
         new() { Key = "rainbowWave",   Label = "Rainbow Wave",             EffectByte = 0x05, HasSpeed = true,  HasDirection = true,  HasBrightness = true,  ColorsMin = 0, ColorsMax = 0 },
         new() { Key = "staggered",     Label = "Staggered",                EffectByte = 0x18, HasSpeed = true,  HasDirection = false, HasBrightness = true,  ColorsMin = 0, ColorsMax = 2 },
-        new() { Key = "tide",          Label = "Tide",                     EffectByte = 0x1A, HasSpeed = true,  HasDirection = false, HasBrightness = true,  ColorsMin = 0, ColorsMax = 2 },
-        new() { Key = "runway",        Label = "Runway",                   EffectByte = 0x1C, HasSpeed = true,  HasDirection = false, HasBrightness = true,  ColorsMin = 0, ColorsMax = 2 },
-        new() { Key = "mixing",        Label = "Mixing",                   EffectByte = 0x1E, HasSpeed = true,  HasDirection = false, HasBrightness = true,  ColorsMin = 0, ColorsMax = 2 },
-        new() { Key = "stack",         Label = "Stack",                    EffectByte = 0x20, HasSpeed = true,  HasDirection = true,  HasBrightness = true,  ColorsMin = 0, ColorsMax = 1 },
+        new() { Key = "tide",          Label = "Tide",                     EffectByte = 0x1A, HasSpeed = true,  HasDirection = false, HasBrightness = true,  ColorsMin = 0, ColorsMax = 2, MergedEffectByte = 0x4A },
+        new() { Key = "runway",        Label = "Runway",                   EffectByte = 0x1C, HasSpeed = true,  HasDirection = false, HasBrightness = true,  ColorsMin = 0, ColorsMax = 2, MergedEffectByte = 0x46 },
+        new() { Key = "mixing",        Label = "Mixing",                   EffectByte = 0x1E, HasSpeed = true,  HasDirection = false, HasBrightness = true,  ColorsMin = 0, ColorsMax = 2, MergedEffectByte = 0x48 },
+        new() { Key = "stack",         Label = "Stack",                    EffectByte = 0x20, HasSpeed = true,  HasDirection = true,  HasBrightness = true,  ColorsMin = 0, ColorsMax = 1, MergedEffectByte = 0x49 },
         new() { Key = "neon",          Label = "Neon",                     EffectByte = 0x22, HasSpeed = true,  HasDirection = false, HasBrightness = true,  ColorsMin = 0, ColorsMax = 0 },
         new() { Key = "colorCycle",    Label = "Color Cycle",              EffectByte = 0x23, HasSpeed = true,  HasDirection = true,  HasBrightness = true,  ColorsMin = 0, ColorsMax = 3 },
         new() { Key = "meteor",        Label = "Meteor",                   EffectByte = 0x24, HasSpeed = true,  HasDirection = false, HasBrightness = true,  ColorsMin = 0, ColorsMax = 2 },

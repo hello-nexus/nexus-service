@@ -163,7 +163,10 @@ public static partial class DevicesRoutes
         {
             var s = store.Load();
             var ls = s.Devices.LianLiLighting;
-            var family = hub.Profile.Family;
+            var profile = hub.Profile;
+            var family = profile.Family;
+            var composed = LianLiZoneSupport.Compose(hub.DeviceId, profile, LianLiZoneSupport.ReadComposition(s, hub.DeviceId), s.Devices.LianLi);
+            var mergeBlocked = LianLiLightingFrameWriter.AnyDeviceExcluded(composed, s);
             var modes = LianLiLightingModes.CatalogFor(family);
             var catalog = new LianLiModeInfoDto[modes.Count];
             for (var i = 0; i < modes.Count; i++)
@@ -178,6 +181,7 @@ public static partial class DevicesRoutes
                     HasBrightness = m.HasBrightness,
                     ColorsMin = m.ColorsMin,
                     ColorsMax = m.ColorsMax,
+                    Mergeable = m.MergesOn(profile) && !mergeBlocked,
                 };
             }
             // Report the mode the writer commits: a persisted key outside this
@@ -194,6 +198,7 @@ public static partial class DevicesRoutes
                 Direction = ls.Direction,
                 Brightness = ls.Brightness,
                 Colors = ls.Colors.ToArray(),
+                Merge = ls.Merge,
                 Modes = catalog,
             }, AppJsonContext.Default.LianLiLightingResponse);
         });
@@ -224,6 +229,7 @@ public static partial class DevicesRoutes
                 if (body.Speed.HasValue) ls.Speed = Math.Clamp(body.Speed.Value, 0, 4);
                 if (body.Direction.HasValue) ls.Direction = Math.Clamp(body.Direction.Value, 0, 1);
                 if (body.Brightness.HasValue) ls.Brightness = Math.Clamp(body.Brightness.Value, 0, 4);
+                if (body.Merge.HasValue) ls.Merge = body.Merge.Value;
                 if (body.Colors != null)
                 {
                     var modeKey = ls.Mode;
@@ -287,6 +293,7 @@ public sealed class LianLiModeInfoDto
     public bool HasBrightness { get; set; }
     public int ColorsMin { get; set; }
     public int ColorsMax { get; set; }
+    public bool Mergeable { get; set; }
 }
 
 public sealed class LianLiLightingResponse
@@ -298,6 +305,7 @@ public sealed class LianLiLightingResponse
     public int Direction { get; set; }
     public int Brightness { get; set; }
     public string[] Colors { get; set; } = Array.Empty<string>();
+    public bool Merge { get; set; }
     public LianLiModeInfoDto[] Modes { get; set; } = Array.Empty<LianLiModeInfoDto>();
 }
 
@@ -308,5 +316,6 @@ public sealed class LianLiLightingRequest
     public int? Direction { get; set; }
     public int? Brightness { get; set; }
     public string[]? Colors { get; set; }
+    public bool? Merge { get; set; }
 }
 

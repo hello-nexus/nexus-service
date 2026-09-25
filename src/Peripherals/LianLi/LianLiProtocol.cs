@@ -53,6 +53,12 @@ public static class LianLiProtocol
 
     public const byte EffectBreathing = 0x02;
 
+    /// <summary>Parked on every channel but 0 while a merged effect runs, committed at brightness off.</summary>
+    public const byte EffectMergeIdle = 0x32;
+
+    /// <summary>Palette bytes for a merged effect on channel 0: every fan's colour slots.</summary>
+    public const int MergedPaletteBytes = MaxFansPerPort * 4 * 3;
+
     /// <summary>
     /// Minimum gap between manual-mode and duty writes; firmware drops the duty
     /// byte if it arrives before the mode-transition settles.
@@ -157,6 +163,16 @@ public static class LianLiProtocol
     public static byte[] BuildStopMerge()
     {
         return new byte[] { ReportId, 0x10, 0x34, 0x00, 0x00, 0x00, 0x00 };
+    }
+
+    /// <summary>
+    /// Order a merged effect travels through the ports: E0 10 63 p0 p1 p2 p3 08,
+    /// here the identity order 0,1,2,3. Feature report longer than the
+    /// SL-Infinity feature length; it goes out untruncated.
+    /// </summary>
+    public static byte[] BuildMergeOrder()
+    {
+        return new byte[] { ReportId, 0x10, 0x63, 0x00, 0x01, 0x02, 0x03, 0x08 };
     }
 
     /// <summary>

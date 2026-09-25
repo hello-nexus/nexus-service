@@ -72,6 +72,9 @@ public readonly struct LianLiFanProfile
     /// <summary>Static and breathing take one colour per fan replicated over its ring, not the 4-slot palette.</summary>
     public bool PerFanStaticPalette { get; init; }
 
+    /// <summary>Firmware has merged effects: channel 0 carries one animation across every port in merge-order sequence.</summary>
+    public bool SupportsMerge { get; init; }
+
     public string? ModelName { get; init; }
 
     /// <summary>Per-fan LED count for a hub channel index (even = inner/only, odd = outer).</summary>
@@ -93,7 +96,7 @@ public static class LianLiFanProfiles
         (0x7750, SlInfinityLayout(new LianLiFanProfile { Family = LianLiFanFamily.Sl,         ProductId = 0x7750, FlooredDuty = false, ManualRegister = 0x31, ArgbRegister = 0x30, QuantityRegister = 0x60, RpmOffset = 1, ModelName = "Uni Hub" })),
         (0xA100, SlLayout(        new LianLiFanProfile { Family = LianLiFanFamily.Sl,         ProductId = 0xA100, FlooredDuty = false, ManualRegister = 0x31, ArgbRegister = 0x30, QuantityRegister = 0x32, RpmOffset = 1, ModelName = "Uni SL" })),
         (0xA101, SlInfinityLayout(new LianLiFanProfile { Family = LianLiFanFamily.Al,         ProductId = 0xA101, FlooredDuty = false, ManualRegister = 0x42, ArgbRegister = 0x41, QuantityRegister = 0x40, RpmOffset = 1, ModelName = "Uni AL" })),
-        (0xA102, SlInfinityLayout(new LianLiFanProfile { Family = LianLiFanFamily.SlInfinity, ProductId = 0xA102, FlooredDuty = true,  ManualRegister = 0x62, ArgbRegister = 0x61, QuantityRegister = 0x60, RpmOffset = 1, ModelName = "SL-Infinity" })),
+        (0xA102, SlInfinityLayout(new LianLiFanProfile { Family = LianLiFanFamily.SlInfinity, ProductId = 0xA102, FlooredDuty = true,  ManualRegister = 0x62, ArgbRegister = 0x61, QuantityRegister = 0x60, RpmOffset = 1, ModelName = "SL-Infinity" }) with { SupportsMerge = true }),
         (0xA103, SlInfinityLayout(new LianLiFanProfile { Family = LianLiFanFamily.SlV2,       ProductId = 0xA103, FlooredDuty = true,  ManualRegister = 0x62, ArgbRegister = 0x61, QuantityRegister = 0x60, RpmOffset = 2, ModelName = "Uni SL v2" })),
         (0xA104, SlInfinityLayout(new LianLiFanProfile { Family = LianLiFanFamily.AlV2,       ProductId = 0xA104, FlooredDuty = true,  ManualRegister = 0x62, ArgbRegister = 0x61, QuantityRegister = 0x60, RpmOffset = 2, ModelName = "Uni AL v2" })),
         (0xA105, SlInfinityLayout(new LianLiFanProfile { Family = LianLiFanFamily.SlV2,       ProductId = 0xA105, FlooredDuty = true,  ManualRegister = 0x62, ArgbRegister = 0x61, QuantityRegister = 0x60, RpmOffset = 2, ModelName = "Uni SL v2" })),

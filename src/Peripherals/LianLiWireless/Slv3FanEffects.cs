@@ -20,14 +20,23 @@ public static partial class Slv3FanEffects
     private static readonly IReadOnlyDictionary<Slv3FanFamily, Dictionary<string, Slv3StrimerEffectInfo>> CatalogIndexes = BuildCatalogIndexes();
     private static readonly IReadOnlyDictionary<Slv3FanFamily, IReadOnlyDictionary<string, Func<FanEffectContext, RawAnimation>>> Renderers = BuildRenderers();
 
+    // Keyed like the catalogs; every entry marked Mergeable must have one.
+    private static readonly IReadOnlyDictionary<string, Func<FanEffectContext, RawAnimation>> MergedRenderers =
+        new Dictionary<string, Func<FanEffectContext, RawAnimation>>(StringComparer.Ordinal)
+        {
+            ["runway"] = SlMergedRunway,
+            ["tide"] = SlMergedTide,
+        };
+
     public static IReadOnlyList<Slv3StrimerEffectInfo> CatalogFor(Slv3FanFamily family) =>
         Catalogs.TryGetValue(family, out var list) ? list : Array.Empty<Slv3StrimerEffectInfo>();
 
     public static Slv3StrimerEffectInfo? Find(Slv3FanFamily family, string key) =>
         CatalogIndexes.TryGetValue(family, out var index) && index.TryGetValue(key, out var info) ? info : null;
 
+    /// <summary>Renders <paramref name="key"/>; with <paramref name="merge"/> a mergeable effect spans the whole chain.</summary>
     public static Slv3StrimerAnimation Render(
-        Slv3FanFamily family, string key, int fanCount, int speed, int direction, IReadOnlyList<RgbColor> colors)
+        Slv3FanFamily family, string key, int fanCount, int speed, int direction, IReadOnlyList<RgbColor> colors, bool merge = false)
     {
         if (family == Slv3FanFamily.Unknown)
         {
@@ -38,7 +47,7 @@ public static partial class Slv3FanEffects
             throw new ArgumentException($"Fan count must be 1..{MaxFans}", nameof(fanCount));
         }
         var info = Find(family, key) ?? throw new ArgumentException($"Unknown fan effect key '{key}' for {family}", nameof(key));
-        var renderer = Renderers[family][key];
+        var renderer = merge && info.Mergeable ? MergedRenderers[key] : Renderers[family][key];
 
         var ledsPerFan = Slv3Protocol.LedsPerFanFor(family);
         var ringLen = ledsPerFan / 2;
