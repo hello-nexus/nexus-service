@@ -175,9 +175,9 @@ public static class CloudRoutes
         app.MapGet("/cloud/sync/status", (CloudProfileSyncService sync) =>
             Results.Json(sync.GetStatus(), AppJsonContext.Default.CloudSyncStatusResponse));
 
-        app.MapPost("/cloud/sync/now", (CloudProfileSyncService sync) =>
+        app.MapPost("/cloud/sync/now", async (CloudSyncNowBody? body, CloudProfileSyncService sync) =>
         {
-            sync.TriggerNow();
+            await sync.TriggerNowAsync(string.IsNullOrWhiteSpace(body?.ProfileId) ? null : body.ProfileId).ConfigureAwait(false);
             return Results.Ok(ApiResponse.Ok());
         });
 

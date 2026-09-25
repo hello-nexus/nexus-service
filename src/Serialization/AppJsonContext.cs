@@ -459,6 +459,7 @@ namespace Nexus.Service.Serialization;
 [JsonSerializable(typeof(Nexus.Service.Models.Cloud.CloudSyncProfileDto))]
 [JsonSerializable(typeof(List<Nexus.Service.Models.Cloud.CloudSyncProfileDto>))]
 [JsonSerializable(typeof(Nexus.Service.Models.Cloud.CloudSyncStatusResponse))]
+[JsonSerializable(typeof(Nexus.Service.Models.Cloud.CloudSyncNowBody))]
 [JsonSerializable(typeof(Nexus.Service.Models.Cloud.CloudSyncResolveBody))]
 
 // Media library

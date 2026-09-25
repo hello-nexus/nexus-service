@@ -129,6 +129,12 @@ public sealed class CloudSyncStatusResponse : ApiResponse
     public List<CloudSyncProfileDto> Profiles { get; set; } = new();
 }
 
+public sealed class CloudSyncNowBody
+{
+    /// <summary>Null backs up every profile on this machine.</summary>
+    public string? ProfileId { get; set; }
+}
+
 public sealed class CloudSyncResolveBody
 {
     public string ProfileId { get; set; } = "";

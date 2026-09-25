@@ -254,6 +254,29 @@ public sealed class CloudProfileSyncServiceTests : IDisposable
         Assert.Equal(2, _store.Load().Auth!.CloudAccounts[0].ProfileSync[onlyId].Revision);
     }
 
+    [Fact]
+    public async Task TriggerNow_with_a_profile_id_backs_up_only_that_profile()
+    {
+        SeedAccount("acct-1", "refresh-1");
+        var defaultId = _profiles.GetActiveEntry()!.Id;
+        var secondId = _profiles.CreateProfile("Second").Id;
+
+        _api.OnListProfiles = _ => CloudApiResult<List<CloudProfileSummaryDto>>.Ok(new List<CloudProfileSummaryDto>());
+        var pushed = new List<string>();
+        _api.OnPutProfile = (_, _, profileId, _) =>
+        {
+            pushed.Add(profileId);
+            return CloudApiResult<CloudPutProfileResult>.Ok(new CloudPutProfileResult { Revision = 1 });
+        };
+
+        await _sync.TriggerNowAsync(secondId);
+
+        Assert.Equal(new[] { secondId }, pushed);
+        var syncMap = _store.Load().Auth!.CloudAccounts[0].ProfileSync;
+        Assert.Contains(secondId, syncMap.Keys);
+        Assert.DoesNotContain(defaultId, syncMap.Keys);
+    }
+
     // ── sync status profiles ─────────────────────────────────────────────
 
     [Fact]

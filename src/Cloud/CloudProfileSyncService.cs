@@ -101,15 +101,11 @@ public sealed class CloudProfileSyncService : BackgroundService
         return result;
     }
 
-    /// <summary>Manual "sync now" trigger for POST /cloud/sync/now. No-op when logged out.</summary>
-    /// <summary>The user pressed "Back up now": push straight away rather than waiting out the debounce, which exists only to batch background passes that no longer run.</summary>
-    public void TriggerNow()
-    {
-        if (_accounts.ActiveAccountId is { } accountId)
-        {
-            _ = RunGuardedAsync(() => RunSyncPassAsync(accountId, CancellationToken.None, manual: true), CancellationToken.None);
-        }
-    }
+    /// <summary>The user pressed "Back up now": push straight away, skipping the debounce. Completes when the pass does; <paramref name="profileId"/> null backs up every profile.</summary>
+    public Task TriggerNowAsync(string? profileId) =>
+        _accounts.ActiveAccountId is { } accountId
+            ? RunGuardedAsync(() => RunSyncPassAsync(accountId, CancellationToken.None, manual: true, profileId), CancellationToken.None)
+            : Task.CompletedTask;
 
     public async Task<CloudActionResult> ResolveConflictAsync(string profileId, string choice, CancellationToken ct)
     {
@@ -219,7 +215,7 @@ public sealed class CloudProfileSyncService : BackgroundService
         _accounts.OnAccountLoggedOut += ClearLocalState;
 
         // No periodic pass and no pass at boot: profiles reach the cloud only
-        // when the user asks (TriggerNow), so nothing is uploaded behind their
+        // when the user asks (TriggerNowAsync), so nothing is uploaded behind their
         // back. The timer still turns so the service has a cancellation-aware
         // idle loop for the hosted-service lifetime.
         using var timer = new PeriodicTimer(TickInterval, _clock);
@@ -331,7 +327,7 @@ public sealed class CloudProfileSyncService : BackgroundService
 
     // ── regular sync pass ────────────────────────────────────────────────
 
-    internal async Task RunSyncPassAsync(string accountId, CancellationToken ct, bool manual = false)
+    internal async Task RunSyncPassAsync(string accountId, CancellationToken ct, bool manual = false, string? onlyProfileId = null)
     {
         if (accountId != _accounts.ActiveAccountId)
         {
@@ -404,6 +400,10 @@ public sealed class CloudProfileSyncService : BackgroundService
 
         var ids = new HashSet<string>(localProfiles.Select(p => p.Id), StringComparer.Ordinal);
         ids.UnionWith(cloudRows.Select(r => r.ProfileId));
+        if (onlyProfileId is not null)
+        {
+            ids.RemoveWhere(id => id != onlyProfileId);
+        }
 
         var now = _clock.GetUtcNow();
         var anyPending = false;
