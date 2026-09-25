@@ -1,5 +1,5 @@
 {
-  "count": 1962,
+  "count": 1972,
   "devices": [
     {
       "name": "Bloody B820R",
@@ -115,6 +115,13 @@
     },
     {
       "name": "ASRock Radeon RX 9070 XT Steel Legend",
+      "vid": null,
+      "pid": null,
+      "controller": "ASRockSMBusController",
+      "kind": "i2c"
+    },
+    {
+      "name": "ASRock Radeon RX 9070 XT Steel Legend Dark",
       "vid": null,
       "pid": null,
       "controller": "ASRockSMBusController",
@@ -1927,6 +1934,13 @@
       "kind": "hid"
     },
     {
+      "name": "Cooler Master GM34-CWQ ARGB Monitor",
+      "vid": "0x2516",
+      "pid": "0x01BF",
+      "controller": "CoolerMasterController",
+      "kind": "hid"
+    },
+    {
       "name": "Cooler Master MK730",
       "vid": "0x2516",
       "pid": null,
@@ -2515,6 +2529,13 @@
       "kind": "hid"
     },
     {
+      "name": "Corsair Sabre RGB Optical",
+      "vid": "0x1B1C",
+      "pid": "0x1B32",
+      "controller": "CorsairPeripheralController",
+      "kind": "hid"
+    },
+    {
       "name": "Corsair Scimitar Elite RGB",
       "vid": "0x1B1C",
       "pid": "0x1B8B",
@@ -2635,6 +2656,13 @@
     },
     {
       "name": "Corsair K60 RGB PRO Low Profile",
+      "vid": "0x1B1C",
+      "pid": null,
+      "controller": "CorsairPeripheralV2Controller",
+      "kind": "hid"
+    },
+    {
+      "name": "Corsair K60 RGB PRO SE",
       "vid": "0x1B1C",
       "pid": null,
       "controller": "CorsairPeripheralV2Controller",
@@ -5182,6 +5210,13 @@
       "kind": "i2c"
     },
     {
+      "name": "KFA2 GeForce RTX 4080 SG 1-Click OC",
+      "vid": null,
+      "pid": null,
+      "controller": "GalaxGPUController",
+      "kind": "i2c"
+    },
+    {
       "name": "GameSir Nova 2 Lite",
       "vid": "0x3537",
       "pid": "0x100F",
@@ -5386,6 +5421,13 @@
     },
     {
       "name": "Gigabyte GeForce RTX 5090 XTREME WATERFORCE",
+      "vid": null,
+      "pid": null,
+      "controller": "GigabyteRGBFusion2BlackwellGPUController",
+      "kind": "i2c"
+    },
+    {
+      "name": "Gigabyte GeForce RTX 5090 XTREME WATERFORCE WB",
       "vid": null,
       "pid": null,
       "controller": "GigabyteRGBFusion2BlackwellGPUController",
@@ -5743,6 +5785,13 @@
     },
     {
       "name": "Gigabyte GeForce RTX 4070 SUPER Eagle OC",
+      "vid": null,
+      "pid": null,
+      "controller": "GigabyteRGBFusion2GPUController",
+      "kind": "i2c"
+    },
+    {
+      "name": "Gigabyte GeForce RTX 4070 SUPER Eagle OC ICE",
       "vid": null,
       "pid": null,
       "controller": "GigabyteRGBFusion2GPUController",
@@ -9263,6 +9312,13 @@
       "kind": "hid"
     },
     {
+      "name": "MSI Mystic Light MS_7E66",
+      "vid": "0x1462",
+      "pid": "0x7E66",
+      "controller": "MSIMotherboardController",
+      "kind": "hid"
+    },
+    {
       "name": "MSI Mystic Light MS_7E70",
       "vid": "0x1462",
       "pid": "0x7E70",
@@ -11581,6 +11637,20 @@
     },
     {
       "name": "Razer Naga Pro V2 (Wireless)",
+      "vid": null,
+      "pid": null,
+      "controller": "RazerController",
+      "kind": "hid"
+    },
+    {
+      "name": "Razer Naga Pro V3 (Wired)",
+      "vid": null,
+      "pid": null,
+      "controller": "RazerController",
+      "kind": "hid"
+    },
+    {
+      "name": "Razer Naga Pro V3 (Wireless)",
       "vid": null,
       "pid": null,
       "controller": "RazerController",
