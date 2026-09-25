@@ -183,9 +183,10 @@ public static class AppRoutes
                 // stands, which still pins the bytes and cannot redirect the
                 // download - StoreInstaller composes the URL itself. The catalog
                 // read is the automatic path's launch-day gate.
-                var waived = auth.Reason == "sign_in_required"
+                var hardwareWaiver = auth.Reason == "sign_in_required"
                     && !entitlements.HasLinkedAccount
-                    && hardware.IsMatched(appId)
+                    && hardware.IsMatched(appId);
+                var waived = hardwareWaiver
                     && await Nexus.Service.Store.StoreRelease.LatestAsync(
                         catalog, appId, http.Request.Query["nexusVersion"].ToString(), ct) is not null;
                 if (!waived)
@@ -195,7 +196,8 @@ public static class AppRoutes
                         AppId = appId,
                         Version = body.Version ?? "",
                         Ok = false,
-                        Reason = auth.Reason ?? "store_unavailable",
+                        // Signing in cannot fix a waiver the catalog refused.
+                        Reason = hardwareWaiver ? "store_unavailable" : auth.Reason ?? "store_unavailable",
                     }, AppJsonContext.Default.StoreInstallResponse);
                 }
             }
