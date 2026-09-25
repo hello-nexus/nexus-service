@@ -7,6 +7,18 @@
 # Immutable-distro friendly (Bazzite/rpm-ostree): /opt and /etc are writable.
 set -euo pipefail
 
+# setup-sensors.sh sets the ACPI kernel parameter that unblocks the chipset
+# SMBus (RGB RAM, SMBus board controllers) when it finds the firmware blocking
+# it. --no-smbus leaves the boot config alone and prints the command instead.
+NEXUS_ENABLE_SMBUS=1
+for arg in "$@"; do
+  case "$arg" in
+    --no-smbus) NEXUS_ENABLE_SMBUS=0 ;;
+    -h|--help) echo "usage: install.sh [--no-smbus]"; exit 0 ;;
+  esac
+done
+export NEXUS_ENABLE_SMBUS
+
 HERE="$(cd "$(dirname "$0")" && pwd)"
 APP_DIR=/opt/nexus
 UNIT=/etc/systemd/system/nexus.service
@@ -123,11 +135,30 @@ fi
 
 # Load the motherboard Super-I/O fan driver (it87 etc.). Root daemon reads/writes
 # hwmon directly; this only ensures the kernel module is present.
-sudo bash "$HERE/setup-sensors.sh" || echo "   (sensor driver setup skipped)"
+# sudo's env_reset drops exported variables, so the opt-out is passed explicitly.
+sudo NEXUS_ENABLE_SMBUS="$NEXUS_ENABLE_SMBUS" bash "$HERE/setup-sensors.sh" \
+  || echo "   (sensor driver setup skipped)"
 
 echo "==> Installing + enabling the system service (sudo)"
 sudo cp "$HERE/nexus.service" "$UNIT"
 sudo restorecon "$UNIT" 2>/dev/null || true
+# An older unit was WantedBy=multi-user.target. `systemctl enable` only manages
+# the symlinks the CURRENT [Install] names, so that one survives every upgrade
+# and forms an ordering cycle (graphical.target is after multi-user.target),
+# which systemd breaks by deleting this unit's start job: Nexus then never
+# starts at boot and has to be started by hand after every reboot.
+# Only where graphical.target is the default - on a headless box it never
+# activates, so that symlink is the only thing that starts the service.
+STALE_WANTS=/etc/systemd/system/multi-user.target.wants/nexus.service
+if [ -e "$STALE_WANTS" ]; then
+  if [ "$(systemctl get-default 2>/dev/null)" = "graphical.target" ]; then
+    sudo rm -f "$STALE_WANTS"
+    echo "   removed a stale multi-user.target link that stopped Nexus starting at boot"
+  else
+    echo "   this system boots to $(systemctl get-default 2>/dev/null); keeping the"
+    echo "   multi-user.target link so Nexus still starts without a graphical session"
+  fi
+fi
 sudo systemctl daemon-reload
 sudo systemctl enable nexus.service
 # restart, not `enable --now`: --now leaves an already-running unit alone, so an
