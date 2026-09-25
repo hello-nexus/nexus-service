@@ -97,15 +97,16 @@ public sealed class TryxPanoramaHub : IDisposable
     public TryxSlideshowConfig Slideshow => _slideshow.Config;
 
     /// <summary>The custom-upload library the media list shows and the slideshow cycles on
-    /// RK firmware: the panel's reported /userdata/user/ files (device truth, so a Kanali
-    /// upload with no local thumbnail still counts) plus the local thumbnail record (a
-    /// just-uploaded file the panel's once-per-connection list has not caught yet), minus
-    /// cloud downloads, which Nexus's own install also lands in /userdata/user/. The legacy
-    /// adb firmware's /sdcard/pcMedia listing is not part of it.</summary>
+    /// RK firmware: the panel's reported /userdata/user/ files once it has answered this
+    /// connection (so Kanali uploads and deletes show as-is), else the local thumbnail record;
+    /// minus cloud downloads, which Nexus's own install also lands in /userdata/user/. The
+    /// legacy adb firmware's /sdcard/pcMedia listing is not part of it.</summary>
     public List<string> ListCustomMedia()
-        => AvailableCustomMediaFilenames.Concat(TryxThumbnailCache.ListCustomMedia())
+        => (MediaListReceived ? AvailableCustomMediaFilenames : TryxThumbnailCache.ListCustomMedia())
             .Where(n => !IsCloudDownload(n))
             .Distinct(StringComparer.Ordinal).ToList();
+
+    private bool MediaListReceived => _transport is { MediaListVersion: > 0 };
 
     // Cloud themes are named download_<materialId> by both Kanali's and Nexus's install paths.
     public static bool IsCloudDownload(string name)
@@ -162,8 +163,7 @@ public sealed class TryxPanoramaHub : IDisposable
 
     /// <summary>Bytes stored on the panel's /userdata: this session's own per-file map,
     /// re-synced from the transport's media-list push on each version bump and adjusted
-    /// locally for uploads/deletes made since (the panel only re-pushes its list on
-    /// reconnect, so a session mutation would otherwise go untracked until then).</summary>
+    /// locally for uploads/deletes made since, until the next list reply replaces them.</summary>
     public long MediaUsedBytes
     {
         get
@@ -249,6 +249,167 @@ public sealed class TryxPanoramaHub : IDisposable
             SendReliable(TryxRkProtocol.BuildGetFileList(sn));
         }
         return ok;
+    }
+
+    // A file_list reply measured ~25 ms on the bench unit; this bounds the wait when the panel
+    // is busy or silent.
+    private const int MediaListRefreshTimeoutMs = 1000;
+
+    /// <summary>Re-reads the panel's file list and waits for the reply, so media added or removed
+    /// by another app (Kanali) shows on the next read. Skipped while a transfer holds the send
+    /// gate or before the panel serial is known.</summary>
+    public void RefreshMediaList() => RefreshMediaList(waitForGate: false);
+
+    private void RefreshMediaList(bool waitForGate)
+    {
+        var transport = _transport;
+        var sn = PanelSerial;
+        if (transport is not { IsOpen: true } || string.IsNullOrEmpty(sn) || _importInProgress) return;
+        if (waitForGate) Monitor.Enter(_txGate);
+        else if (!Monitor.TryEnter(_txGate)) return;
+        var before = transport.MediaListVersion;
+        bool sent;
+        try { sent = SendOnly(TryxRkProtocol.BuildGetFileList(sn)); }
+        finally { Monitor.Exit(_txGate); }
+        // A panel that has not answered a list on this transport is not waited on, so firmware
+        // without get_file_list never stalls the caller.
+        if (sent && before > 0) SpinWait.SpinUntil(() => transport.MediaListVersion != before, MediaListRefreshTimeoutMs);
+    }
+
+    // A 2240x1080 IDR measured 30-105 KB on the bench unit; past this head size a file is
+    // treated as having no decodable first frame.
+    private const int MaxThumbnailHeadBytes = 2 * 1024 * 1024;
+    // A 64 KiB pull chunk measured ~40 ms on the bench unit.
+    private const int FilePullTimeoutMs = 1000;
+
+    // Link failures a file may hit before it is left without a thumbnail until restart.
+    private const int MaxThumbnailTransientFailures = 3;
+
+    private readonly object _thumbLock = new();
+    private readonly Queue<(string Name, string Key)> _thumbQueue = new();
+    // name|size of files already tried, so one that yields no frame is not re-pulled on every
+    // media poll; a transient pull failure removes its key so a later poll retries.
+    private readonly HashSet<string> _thumbAttempted = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, int> _thumbTransientFailures = new(StringComparer.Ordinal);
+    private bool _thumbWorkerRunning;
+
+    /// <summary>Queues a thumbnail for a panel-stored file that has none, decoded from its first
+    /// frame pulled off the panel. Runs in the background; the next media read returns it.</summary>
+    public void QueueThumbnail(string deviceFileName)
+    {
+        if (!TryxThumbnailCache.IsSafeDeviceName(deviceFileName) || FfmpegResolver.Path is null) return;
+        lock (_thumbLock)
+        {
+            var key = ThumbKey(deviceFileName);
+            if (!_thumbAttempted.Add(key)) return;
+            _thumbQueue.Enqueue((deviceFileName, key));
+            if (_thumbWorkerRunning) return;
+            _thumbWorkerRunning = true;
+        }
+        _ = Task.Run(DrainThumbnailQueue);
+    }
+
+    private string ThumbKey(string deviceFileName)
+        => _transport?.MediaFileSizes.TryGetValue(deviceFileName, out var size) == true
+            ? $"{deviceFileName}|{size}"
+            : deviceFileName;
+
+    private void DrainThumbnailQueue()
+    {
+        while (true)
+        {
+            (string Name, string Key) item;
+            lock (_thumbLock)
+            {
+                if (!_thumbQueue.TryDequeue(out item))
+                {
+                    _thumbWorkerRunning = false;
+                    return;
+                }
+            }
+            try { GeneratePanelThumbnail(item.Name, item.Key); }
+            catch (Exception ex) { ServiceLog.Warn($"[tryx] thumbnail for {item.Name} failed: {ex.GetType().Name}: {ex.Message}"); }
+        }
+    }
+
+    private void GeneratePanelThumbnail(string deviceFileName, string key)
+    {
+        var ffmpeg = FfmpegResolver.Path;
+        if (ffmpeg is null || _disposed) return;
+        var head = PullMediaHead(deviceFileName, out var transient);
+        if (head is null)
+        {
+            if (transient)
+            {
+                lock (_thumbLock)
+                {
+                    _thumbTransientFailures.TryGetValue(key, out var failures);
+                    _thumbTransientFailures[key] = ++failures;
+                    if (failures < MaxThumbnailTransientFailures) _thumbAttempted.Remove(key);
+                }
+                return;
+            }
+            ServiceLog.Info($"[tryx] no thumbnail for {deviceFileName}: first frame not readable from the panel");
+            return;
+        }
+        var mkv = System.IO.Path.Combine(System.IO.Path.GetTempPath(), $"nexus-tryx-thumb-{Guid.NewGuid():N}.mkv");
+        try
+        {
+            File.WriteAllBytes(mkv, TryxMediaHead.BuildMatroska(head.Keyframe, head.Width, head.Height));
+            TryxThumbnailCache.Write(ffmpeg, mkv, deviceFileName);
+            if (head.DurationSec > 0 && TryxThumbnailCache.ReadDuration(deviceFileName) <= 0)
+            {
+                TryxThumbnailCache.WriteDuration(deviceFileName, head.DurationSec);
+            }
+        }
+        finally
+        {
+            try { File.Delete(mkv); } catch { /* best effort */ }
+        }
+    }
+
+    /// <summary>Pulls <paramref name="deviceFileName"/> off the panel chunk by chunk until its first
+    /// keyframe is complete; null if the panel refuses the pull or no keyframe fits the head cap.
+    /// <paramref name="transient"/> is true when the link, not the file, failed. Takes the send
+    /// gate per chunk so the heartbeat keeps running between chunks.</summary>
+    internal TryxMediaHead.Head? PullMediaHead(string deviceFileName, out bool transient)
+    {
+        transient = true;
+        var head = new MemoryStream();
+        while (head.Length < MaxThumbnailHeadBytes)
+        {
+            var chunk = PullChunk(deviceFileName, head.Length);
+            // One retry: a late error reply to an unrelated frame also ends a pending pull.
+            if (chunk is not { Ok: true }) chunk = PullChunk(deviceFileName, head.Length);
+            if (chunk is null) return null;
+            transient = false;
+            var c = chunk.Value;
+            if (!c.Ok || c.Data.Length == 0 || c.Offset != head.Length) return null;
+            TryxRkProtocol.UnmaskPulledData(c.Data, c.Offset);
+            head.Write(c.Data);
+            var parsed = TryxMediaHead.Parse(head.GetBuffer().AsSpan(0, (int)head.Length));
+            if (parsed is not null) return parsed;
+            if (head.Length >= c.FileSize) return null;
+            transient = true;
+        }
+        transient = false;
+        return null;
+    }
+
+    private TryxMediaList.FilePullChunk? PullChunk(string deviceFileName, long offset)
+    {
+        lock (_txGate)
+        {
+            var transport = _transport;
+            if (_disposed || transport is not { IsOpen: true }) return null;
+            try { return transport.PullFileChunk(deviceFileName, offset, FilePullTimeoutMs); }
+            catch (Exception ex)
+            {
+                ServiceLog.Warn($"[tryx] pull {deviceFileName} failed: {ex.GetType().Name}: {ex.Message}");
+                Disconnect();
+                return null;
+            }
+        }
     }
 
     public bool EnsureConnected()
@@ -574,6 +735,9 @@ public sealed class TryxPanoramaHub : IDisposable
                 return (false, "");
             }
             RecordMediaUpload(deviceFileName, container.Length);
+            // The library lists the panel's own file list once received; re-read it so the new
+            // file joins it (and the slideshow) without waiting for a media poll.
+            RefreshMediaList(waitForGate: true);
             // Same f200 config that selects a built-in preset; wallpaper = the pushed file.
             if (!SendReliable(TryxRkProtocol.BuildPreset(deviceFileName, State.ScreenEnabled, State.Brightness)))
             {

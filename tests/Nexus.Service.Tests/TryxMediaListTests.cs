@@ -156,6 +156,51 @@ public class TryxMediaListTests
 
     // Encodes the panel's frame: top-level f1{f1:1}, empty f2, then f503 { repeated f2 {
     // f1:path, f2:ext, f3:sizeBytes, f4:1 } } - the shape ParseMediaUsedBytes walks.
+    [Fact]
+    public void ParseFilePullResponse_reads_status_session_offset_size_and_data()
+    {
+        var body = new List<byte>();
+        WriteTag(body, 2, 2); WriteVarint(body, 5); body.AddRange(Encoding.UTF8.GetBytes("a.mp4"));
+        WriteTag(body, 3, 0); WriteVarint(body, 7);
+        WriteTag(body, 4, 0); WriteVarint(body, 65536);
+        WriteTag(body, 5, 0); WriteVarint(body, 715466);
+        WriteTag(body, 6, 2); WriteVarint(body, 3); body.AddRange(new byte[] { 1, 2, 3 });
+        var payload = new List<byte> { 0x0a, 0x02, 0x08, 0x01, 0x12, 0x00 };
+        WriteTag(payload, 805, 2); WriteVarint(payload, (ulong)body.Count); payload.AddRange(body);
+
+        var chunk = TryxMediaList.ParseFilePullResponse(payload.ToArray());
+
+        Assert.NotNull(chunk);
+        var c = chunk.Value;
+        Assert.Equal((true, 7UL, 65536L, 715466L), (c.Ok, c.SessionId, c.Offset, c.FileSize));
+        Assert.Equal(new byte[] { 1, 2, 3 }, c.Data);
+    }
+
+    [Fact]
+    public void ParseFilePullResponse_reports_a_file_error()
+    {
+        var payload = new List<byte>();
+        WriteTag(payload, 805, 2); WriteVarint(payload, 4);
+        WriteTag(payload, 1, 0); WriteVarint(payload, 1);
+        WriteTag(payload, 3, 0); WriteVarint(payload, 99);
+
+        var chunk = TryxMediaList.ParseFilePullResponse(payload.ToArray());
+
+        Assert.False(chunk!.Value.Ok);
+        Assert.Empty(chunk.Value.Data);
+    }
+
+    [Fact]
+    public void ParseErrorCode_reads_body_case_not_supported_and_ignores_success()
+    {
+        // Payloads as captured from the panel: an unsupported command, and a heartbeat reply.
+        var unsupported = Convert.FromHexString("0a020801121808021214426f6479436173654e6f74537570706f72746564");
+        var success = Convert.FromHexString("0a0208011200");
+
+        Assert.Equal(2, TryxMediaList.ParseErrorCode(unsupported));
+        Assert.Null(TryxMediaList.ParseErrorCode(success));
+    }
+
     private static byte[] BuildMediaListBlob(params (string path, long size)[] files)
     {
         var entries = new List<byte>();

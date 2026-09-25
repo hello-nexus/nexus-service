@@ -314,6 +314,7 @@ public static class TryxRoutes
 
         app.MapGet("/tryx/media", (TryxPanoramaHub hub) =>
         {
+            hub.RefreshMediaList();
             var names = ListMediaFiles(hub);
             var resp = new TryxMediaListResponse();
             foreach (var name in names)
@@ -321,11 +322,17 @@ public static class TryxRoutes
                 var thumb = TryxThumbnailCache.ReadDataUrl(name);
                 string? label = null;
                 // Media the panel holds but Nexus never uploaded (Kanali cloud themes /
-                // prior uploads) has no cached frame; source the cover + name from Kanali.
+                // prior uploads) has no cached frame; source the cover + name from Kanali,
+                // else decode the first frame off the panel for a later read.
                 if (thumb is null)
                 {
                     var kanali = TryxKanaliData.Lookup(name);
                     if (kanali is { } k) { thumb = k.Thumb; label = k.DisplayName; }
+                    if (thumb is null) hub.QueueThumbnail(name);
+                }
+                else
+                {
+                    label = TryxKanaliData.DisplayName(name);
                 }
                 resp.Media.Add(new TryxMediaItem
                 {

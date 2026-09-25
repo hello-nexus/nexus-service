@@ -196,6 +196,42 @@ public class TryxRkProtocolTests
     // BuildOverlay tests below assert structural properties of the hand-rolled
     // protobuf; they are not camera-verified reference frames like the tests above.
 
+
+    [Fact]
+    public void BuildFilePullRequest_matches_the_bench_verified_frame()
+    {
+        // Sent to the Y70 panel (firmware v2.0.6.20260713); it answered with the file's first 64 KiB.
+        var expected = System.Convert.FromHexString(
+            "54525958350000000a00b219300a2a323032362d30372d30355f31302d31372d30342d3538362e6d70342e" +
+            "683236345f32323430783130383010021800");
+
+        var actual = TryxRkProtocol.BuildFilePullRequest("2026-07-05_10-17-04-586.mp4.h264_2240x1080", 2, 0);
+
+        Assert.Equal(expected, actual);
+    }
+
+    [Fact]
+    public void UnmaskPulledData_restores_the_container_header_from_captured_bytes()
+    {
+        // First bytes of a pulled upload as the panel sent them, and the Tryx container they encode.
+        byte[] data = [0x43, 0x01, 0x02, 0x03, 0x0c, 0xc1, 0x96, 0xe6, 0xe2, 0x0d, 0x18, 0x27, 0x58, 0x7f, 0x77, 0x77];
+
+        TryxRkProtocol.UnmaskPulledData(data, fileOffset: 0);
+
+        Assert.Equal(new byte[] { 0x43, 0, 0, 0, 0x08 }, data[..5]);
+        Assert.Equal("Tryx", Encoding.ASCII.GetString(data, 12, 4));
+    }
+
+    [Fact]
+    public void UnmaskPulledData_keys_on_the_absolute_file_offset()
+    {
+        byte[] data = [0x00, 0x00];
+
+        TryxRkProtocol.UnmaskPulledData(data, fileOffset: 65536 + 255);
+
+        Assert.Equal(new byte[] { 0xFF, 0x00 }, data);
+    }
+
     private static readonly (double X, double Y)[] NoPositions = Array.Empty<(double, double)>();
 
     [Fact]

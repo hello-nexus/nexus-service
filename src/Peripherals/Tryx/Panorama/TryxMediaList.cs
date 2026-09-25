@@ -125,6 +125,65 @@ public static class TryxMediaList
         return Encoding.UTF8.GetString(serial);
     }
 
+    /// <summary>One file_pull_response chunk; <paramref name="Data"/> is still masked.</summary>
+    public readonly record struct FilePullChunk(bool Ok, ulong SessionId, long Offset, long FileSize, byte[] Data);
+
+    /// <summary>A file_pull_response (RspPackagePb field 805) { status = 1 (0 OK, 1 FileError),
+    /// file_name = 2, session_id = 3, file_offset = 4, file_size = 5, file_data = 6 }; null for
+    /// any other reply. The panel answers FileError for a missing file or an offset at EOF.</summary>
+    public static FilePullChunk? ParseFilePullResponse(ReadOnlySpan<byte> payload)
+    {
+        if (!TryGetLenField(payload, fieldNumber: 805, out var body)) return null;
+        ulong status = 0, session = 0, offset = 0, size = 0;
+        var data = Array.Empty<byte>();
+        var pos = 0;
+        while (pos < body.Length)
+        {
+            if (!TryReadVarint(body, ref pos, out var tag)) return null;
+            var fn = (int)(tag >> 3);
+            var wt = (int)(tag & 7);
+            if (wt == WireVarint)
+            {
+                if (!TryReadVarint(body, ref pos, out var v)) return null;
+                switch (fn)
+                {
+                    case 1: status = v; break;
+                    case 3: session = v; break;
+                    case 4: offset = v; break;
+                    case 5: size = v; break;
+                }
+                continue;
+            }
+            if (fn == 6 && wt == WireLen)
+            {
+                if (!TryReadVarint(body, ref pos, out var len) || len > (ulong)(body.Length - pos)) return null;
+                data = body.Slice(pos, (int)len).ToArray();
+                pos += (int)len;
+                continue;
+            }
+            if (!TrySkipField(body, ref pos, wt)) return null;
+        }
+        return new FilePullChunk(status == 0, session, (long)offset, (long)size, data);
+    }
+
+    /// <summary>Non-zero ErrorPb code of a reply (RspPackagePb field 2 { code = 1, why = 2 }), e.g.
+    /// 2 = BodyCaseNotSupported for a command this firmware lacks; null when the reply succeeded.</summary>
+    public static int? ParseErrorCode(ReadOnlySpan<byte> payload)
+    {
+        if (!TryGetLenField(payload, fieldNumber: 2, out var error)) return null;
+        var pos = 0;
+        while (pos < error.Length)
+        {
+            if (!TryReadVarint(error, ref pos, out var tag)) return null;
+            if (tag == (1 << 3 | WireVarint))
+            {
+                return TryReadVarint(error, ref pos, out var code) && code != 0 ? (int)code : null;
+            }
+            if (!TrySkipField(error, ref pos, (int)(tag & 7))) return null;
+        }
+        return null;
+    }
+
     private static bool TryParseEntry(ReadOnlySpan<byte> entry, out MediaEntry result)
     {
         result = default;

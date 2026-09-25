@@ -49,5 +49,9 @@ public interface ITryxPanoramaTransport : IDisposable
     /// not the USB chip id.</summary>
     string PanelSerial => "";
 
+    /// <summary>Sends a file_pull_request and waits for its response chunk (data still masked);
+    /// not Ok on a panel error reply, null on timeout or when the transport cannot pull.</summary>
+    TryxMediaList.FilePullChunk? PullFileChunk(string deviceFileName, long offset, int timeoutMs) => null;
+
     private static readonly IReadOnlyDictionary<string, long> EmptyMediaFileSizes = new Dictionary<string, long>();
 }

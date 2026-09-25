@@ -30,7 +30,40 @@ public class TryxPanoramaHubTests
         public IReadOnlyList<string> AvailableCustomMediaFilenames { get; set; } = Array.Empty<string>();
         public IReadOnlyDictionary<string, long> MediaFileSizes { get; set; } = new Dictionary<string, long>();
         public int MediaListVersion { get; set; }
-        public void Write(ReadOnlySpan<byte> data) => Writes.Add(data.ToArray());
+        public string PanelSerial { get; set; } = "";
+        // Applied when a get_file_list frame is written, standing in for the panel's reply.
+        public IReadOnlyList<string>? NextFileList { get; set; }
+        // Serves file pulls from these (unmasked) files in PullChunkSize pieces, masked like the panel.
+        public Dictionary<string, byte[]> PanelFiles { get; } = new();
+        public int PullChunkSize { get; set; } = 65536;
+        public int Pulls { get; private set; }
+        // Answers this many pulls with an error reply first, like a stray reply to another frame.
+        public int FailNextPulls { get; set; }
+        public TryxMediaList.FilePullChunk? PullFileChunk(string deviceFileName, long offset, int timeoutMs)
+        {
+            Pulls++;
+            if (FailNextPulls > 0)
+            {
+                FailNextPulls--;
+                return new TryxMediaList.FilePullChunk(false, 0, 0, 0, []);
+            }
+            if (!PanelFiles.TryGetValue(deviceFileName, out var file) || offset >= file.Length)
+            {
+                return new TryxMediaList.FilePullChunk(false, 0, offset, 0, []);
+            }
+            var data = file.AsSpan((int)offset, (int)Math.Min(PullChunkSize, file.Length - offset)).ToArray();
+            TryxRkProtocol.UnmaskPulledData(data, offset);
+            return new TryxMediaList.FilePullChunk(true, 0, offset, file.Length, data);
+        }
+        public void Write(ReadOnlySpan<byte> data)
+        {
+            Writes.Add(data.ToArray());
+            if (NextFileList is { } list && data.SequenceEqual(TryxRkProtocol.BuildGetFileList(PanelSerial)))
+            {
+                AvailableCustomMediaFilenames = list;
+                MediaListVersion++;
+            }
+        }
         public void Dispose() { }
     }
 
@@ -746,7 +779,7 @@ public class TryxPanoramaHubTests
     public void SendHeartbeatTick_starts_the_slideshow_on_the_first_custom_clip_when_enabled_over_a_preset()
     {
         var store = new InMemoryConfigStore();
-        var recording = new RecordingTransport { AvailableCustomMediaFilenames = ["a.mp4", "b.mp4"] };
+        var recording = new RecordingTransport { MediaListVersion = 1, AvailableCustomMediaFilenames = ["a.mp4", "b.mp4"] };
         var hub = BuildHub(discovery: new StubDiscovery(), transportFactory: _ => recording, configStore: store);
         hub.EnsureConnected();
         hub.SetPreset(TryxRkProtocol.PresetMediaFile(1));
@@ -764,7 +797,7 @@ public class TryxPanoramaHubTests
     [Fact]
     public void SendHeartbeatTick_holds_a_custom_clip_for_the_interval_before_advancing()
     {
-        var recording = new RecordingTransport { AvailableCustomMediaFilenames = ["a.mp4", "b.mp4"] };
+        var recording = new RecordingTransport { MediaListVersion = 1, AvailableCustomMediaFilenames = ["a.mp4", "b.mp4"] };
         var hub = BuildHub(discovery: new StubDiscovery(), transportFactory: _ => recording);
         hub.EnsureConnected();
         hub.SelectCustomMedia("a.mp4");
@@ -780,7 +813,7 @@ public class TryxPanoramaHubTests
     [Fact]
     public void SendHeartbeatTick_does_not_advance_the_slideshow_while_the_screen_is_off()
     {
-        var recording = new RecordingTransport { AvailableCustomMediaFilenames = ["a.mp4", "b.mp4"] };
+        var recording = new RecordingTransport { MediaListVersion = 1, AvailableCustomMediaFilenames = ["a.mp4", "b.mp4"] };
         var hub = BuildHub(discovery: new StubDiscovery(), transportFactory: _ => recording);
         hub.EnsureConnected();
         hub.SetPreset(TryxRkProtocol.PresetMediaFile(1));
@@ -798,7 +831,7 @@ public class TryxPanoramaHubTests
     [Fact]
     public async Task A_cloud_install_holds_the_installed_theme_for_a_full_interval()
     {
-        var recording = new RecordingTransport { AvailableCustomMediaFilenames = ["a.mp4", "b.mp4"] };
+        var recording = new RecordingTransport { MediaListVersion = 1, AvailableCustomMediaFilenames = ["a.mp4", "b.mp4"] };
         var hub = BuildHub(discovery: new StubDiscovery(), transportFactory: _ => recording);
         hub.EnsureConnected();
         // Nothing in the library is on screen, so enabling leaves the slideshow due at once.
@@ -824,7 +857,7 @@ public class TryxPanoramaHubTests
     [Fact]
     public void SendHeartbeatTick_leaves_the_panel_alone_while_the_slideshow_is_off()
     {
-        var recording = new RecordingTransport { AvailableCustomMediaFilenames = ["a.mp4", "b.mp4"] };
+        var recording = new RecordingTransport { MediaListVersion = 1, AvailableCustomMediaFilenames = ["a.mp4", "b.mp4"] };
         var hub = BuildHub(discovery: new StubDiscovery(), transportFactory: _ => recording);
         hub.EnsureConnected();
         hub.SetPreset(TryxRkProtocol.PresetMediaFile(1));
@@ -1067,6 +1100,88 @@ public class TryxPanoramaHubTests
         var json = hub.BuildLiveSensorJsonForTest();
         var doc = JsonDocument.Parse(json);
         Assert.Equal(0, doc.RootElement.GetProperty("memory").GetProperty("speed").GetInt32());
+    }
+
+    // ── Panel file list + thumbnails ──
+
+    [Fact]
+    public void ListCustomMedia_is_the_panel_list_once_it_has_answered()
+    {
+        var recording = new RecordingTransport
+        {
+            MediaListVersion = 1,
+            AvailableCustomMediaFilenames = ["2026-07-05_08-46-40-161.mp4.h264_2240x1080", "download_44.mp4.h264_2240x1080"],
+        };
+        var hub = BuildHub(discovery: new StubDiscovery(), transportFactory: _ => recording);
+        hub.EnsureConnected();
+
+        Assert.Equal(["2026-07-05_08-46-40-161.mp4.h264_2240x1080"], hub.ListCustomMedia());
+    }
+
+    [Fact]
+    public void RefreshMediaList_picks_up_a_file_another_app_added_while_connected()
+    {
+        var recording = new RecordingTransport
+        {
+            PanelSerial = "BYZL24112900109364",
+            MediaListVersion = 1,
+            AvailableCustomMediaFilenames = ["a.mp4.h264_2240x1080"],
+            NextFileList = ["a.mp4.h264_2240x1080", "2026-09-25_11-00-00-000.mp4.h264_2240x1080"],
+        };
+        var hub = BuildHub(discovery: new StubDiscovery(), transportFactory: _ => recording);
+        hub.EnsureConnected();
+
+        hub.RefreshMediaList();
+
+        Assert.Equal(["a.mp4.h264_2240x1080", "2026-09-25_11-00-00-000.mp4.h264_2240x1080"], hub.ListCustomMedia());
+    }
+
+    [Fact]
+    public void PullMediaHead_reads_chunks_until_the_first_keyframe_is_complete()
+    {
+        byte[] es =
+        [
+            0, 0, 0, 1, 0x67, 0x4D, 0x40, 0x32, 0xAA,
+            0, 0, 0, 1, 0x68, 0xEB, 0xCC,
+            0, 0, 0, 1, 0x65, 0x88, .. new byte[40],  0x11,
+            0, 0, 0, 1, 0x41, 0x9A, 0x44,
+            .. new byte[200],
+        ];
+        var file = TryxRkProtocol.WrapMediaContainer(es, fps: 30, width: 2240, height: 1080, frameCount: 300, id: 1);
+        var recording = new RecordingTransport { PullChunkSize = 16 };
+        recording.PanelFiles["clip.mp4.h264_2240x1080"] = file;
+        var hub = BuildHub(discovery: new StubDiscovery(), transportFactory: _ => recording);
+        hub.EnsureConnected();
+
+        var head = hub.PullMediaHead("clip.mp4.h264_2240x1080", out _);
+
+        Assert.NotNull(head);
+        Assert.Equal(10, head.DurationSec);
+        Assert.Equal(43, head.Keyframe.Slices[0].Length);
+        Assert.True(recording.Pulls * 16 < file.Length, "stops pulling once the keyframe is complete");
+    }
+
+    [Fact]
+    public void PullMediaHead_returns_null_when_the_panel_refuses_the_pull()
+    {
+        var recording = new RecordingTransport();
+        var hub = BuildHub(discovery: new StubDiscovery(), transportFactory: _ => recording);
+        hub.EnsureConnected();
+
+        Assert.Null(hub.PullMediaHead("missing.mp4.h264_2240x1080", out var transient));
+        Assert.False(transient);
+    }
+
+    [Fact]
+    public void PullMediaHead_retries_a_chunk_once_after_an_error_reply()
+    {
+        byte[] es = [0, 0, 0, 1, 0x67, 0x4D, 0x40, 0x32, 0, 0, 0, 1, 0x68, 0xEB, 0, 0, 0, 1, 0x65, 0x88, 0x11, 0, 0, 0, 1, 0x41, 0x9A];
+        var recording = new RecordingTransport { FailNextPulls = 1 };
+        recording.PanelFiles["clip.mp4.h264_2240x1080"] = es;
+        var hub = BuildHub(discovery: new StubDiscovery(), transportFactory: _ => recording);
+        hub.EnsureConnected();
+
+        Assert.NotNull(hub.PullMediaHead("clip.mp4.h264_2240x1080", out _));
     }
 
     // ── Session-accurate used-bytes + capacity ──

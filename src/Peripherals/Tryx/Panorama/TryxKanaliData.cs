@@ -41,6 +41,20 @@ public static class TryxKanaliData
     // data URL, then cap the encoded result the same as the upload thumbnail cache.
     private const int MaxThumbBytes = 512 * 1024;
 
+    /// <summary>Kanali's display name for a panel-reported device filename, or null when
+    /// Kanali has no record of it.</summary>
+    public static string? DisplayName(string deviceFileName)
+    {
+        lock (Lock)
+        {
+            EnsureFresh();
+            return _index.TryGetValue(deviceFileName, out var entry)
+                || _stemIndex.TryGetValue(StemKey(deviceFileName), out entry)
+                ? entry.DisplayName
+                : null;
+        }
+    }
+
     /// <summary>Returns the display name + cover-derived thumbnail data URL for a
     /// panel-reported device filename, or null when Kanali has no record of it.</summary>
     public static (string? DisplayName, string? Thumb)? Lookup(string deviceFileName)

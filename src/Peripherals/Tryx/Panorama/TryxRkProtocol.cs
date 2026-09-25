@@ -367,6 +367,33 @@ public static class TryxRkProtocol
         return WrapFrame(payload);
     }
 
+    /// <summary>Requests one chunk of a stored file: file_pull_request (ReqPackagePb field 406)
+    /// { file_name = 1, session_id = 2, file_offset = 3 }. The panel answers with a
+    /// file_pull_response (field 805) of up to 64 KiB, masked (see <see cref="UnmaskPulledData"/>).
+    /// A basename or the full /userdata path both resolve.</summary>
+    public static byte[] BuildFilePullRequest(string deviceFileName, ulong sessionId, long offset)
+    {
+        var pull = new List<byte>();
+        WriteLengthDelimited(pull, fieldNumber: 1, Encoding.UTF8.GetBytes(deviceFileName));
+        WriteVarintField(pull, fieldNumber: 2, sessionId);
+        WriteVarintField(pull, fieldNumber: 3, (ulong)offset);
+
+        var payload = new List<byte>();
+        WriteLengthDelimited(payload, fieldNumber: 1, Array.Empty<byte>());
+        WriteLengthDelimited(payload, fieldNumber: 406, pull.ToArray());
+        return WrapFrame(payload);
+    }
+
+    /// <summary>Restores pulled file bytes in place: the panel XORs each byte with the low byte
+    /// of its file offset (bench-verified on uploads, presets and cloud themes).</summary>
+    public static void UnmaskPulledData(Span<byte> data, long fileOffset)
+    {
+        for (var i = 0; i < data.Length; i++)
+        {
+            data[i] ^= (byte)(fileOffset + i);
+        }
+    }
+
     private static List<byte> SessionEnvelope(uint sessionId)
     {
         var f1 = new List<byte>();

@@ -2,6 +2,7 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
+using System.Linq;
 using System.Runtime.InteropServices;
 using System.Threading;
 using System.Threading.Tasks;
@@ -18,8 +19,8 @@ namespace Nexus.Service.Peripherals.Tryx.Panorama;
 /// endpoint the pipe backs up and the usbprint stack resets the interface, killing
 /// the write handle every few tens of seconds (observed: a write-only loop dies at
 /// 20-70s, a loop that also drains the reads survives indefinitely). So the handle
-/// is opened overlapped and a background loop continuously reads and discards the IN
-/// endpoint to keep the pipe alive. Those bytes carry nothing the caller needs.
+/// is opened overlapped and a background loop continuously reads the IN endpoint, which
+/// also carries the replies (file list, device info, file pull chunks).
 /// The handle is a <see cref="SafeFileHandle"/> owned by the <see cref="FileStream"/>
 /// so an in-flight write can't race a concurrent Dispose onto a recycled handle.
 /// </summary>
@@ -36,6 +37,9 @@ public sealed class WindowsTryxRkTransport : ITryxPanoramaTransport
     private volatile IReadOnlyDictionary<string, long> _mediaFileSizes = EmptyMediaFileSizes;
     private int _mediaListVersion;
     private volatile string _panelSerial = "";
+    private readonly TryxRkFrameReader _frames = new();
+    private long _pullSession;
+    private volatile PendingPull? _pendingPull;
     private static readonly IReadOnlyDictionary<string, long> EmptyMediaFileSizes = new Dictionary<string, long>();
 
     public WindowsTryxRkTransport(string devicePath, string serial)
@@ -136,17 +140,37 @@ public sealed class WindowsTryxRkTransport : ITryxPanoramaTransport
         }
     }
 
-    // Continuously drain the panel's IN endpoint so its pipe never backs up. The
-    // payload is discarded; the read completing is the only thing that matters. A
-    // read error means the interface reset or the handle closed - stop, and the next
+    private sealed class PendingPull(ulong session)
+    {
+        public ulong Session { get; } = session;
+        public TaskCompletionSource<TryxMediaList.FilePullChunk?> Result { get; } =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+    }
+
+    // One pull in flight at a time: the hub issues pulls under its send gate.
+    public TryxMediaList.FilePullChunk? PullFileChunk(string deviceFileName, long offset, int timeoutMs)
+    {
+        var pending = new PendingPull((ulong)Interlocked.Increment(ref _pullSession));
+        _pendingPull = pending;
+        try
+        {
+            Write(TryxRkProtocol.BuildFilePullRequest(deviceFileName, pending.Session, offset));
+            return pending.Result.Task.Wait(timeoutMs) ? pending.Result.Task.Result : null;
+        }
+        finally
+        {
+            _pendingPull = null;
+        }
+    }
+
+    // Continuously drain the panel's IN endpoint so its pipe never backs up. A read
+    // error means the interface reset or the handle closed - stop, and the next
     // write failing lets the hub rebuild the transport (with a fresh drain loop).
     private void DrainReads(CancellationToken ct)
     {
-        // Sized so the whole file_list (f503) push lands in one read: ~70 bytes/entry, so 16 KiB
-        // holds ~200 files. A list that overflows one read parses as null (used-bytes/space-check
-        // fall back to 0 until it fits) - see the media-list caveat below; a streaming reassembler
-        // is the proper fix if panels routinely exceed this.
-        var buffer = new byte[16384];
+        // Holds a whole file_pull_response (64 KiB + envelope) in one read; the frame reader
+        // reassembles anything larger.
+        var buffer = new byte[128 * 1024];
         while (!ct.IsCancellationRequested)
         {
             try
@@ -159,41 +183,9 @@ public sealed class WindowsTryxRkTransport : ITryxPanoramaTransport
                     Thread.Sleep(50);
                     continue;
                 }
-                // The panel pushes its stored-media list unprompted on this endpoint; other reads
-                // (heartbeat acks, device_info) don't parse as one, so a stale non-empty list is
-                // never overwritten. Assumes the list lands in a single read (see the buffer size).
-                var span = buffer.AsSpan(0, read);
-                // file_list (f503) push - device truth. ParseMediaEntries is the authoritative
-                // source (all files under /userdata/*, with sizes); the basename is what the rest
-                // of the code keys on. A non-list read (heartbeat ack, device_info) returns null,
-                // so a stale list is never wiped by an unrelated read.
-                var entries = TryxMediaList.ParseMediaEntries(span);
-                if (entries is not null)
+                foreach (var payload in _frames.Append(buffer.AsSpan(0, read)))
                 {
-                    var names = new List<string>(entries.Count);
-                    var customNames = new List<string>();
-                    var sizes = new Dictionary<string, long>(entries.Count, StringComparer.Ordinal);
-                    var usedBytes = 0L;
-                    foreach (var e in entries)
-                    {
-                        names.Add(e.Name);
-                        if (e.IsCustom) customNames.Add(e.Name);
-                        sizes[e.Name] = e.SizeBytes;
-                        usedBytes += e.SizeBytes;
-                    }
-                    _availableMediaIds = TryxMediaList.ParsePresetIds(span);
-                    _availableMediaFilenames = names;
-                    _availableCustomMediaFilenames = customNames;
-                    _mediaFileSizes = sizes;
-                    Interlocked.Increment(ref _mediaListVersion);
-                    ServiceLog.Info($"[tryx] panel media list ({names.Count}, {usedBytes} bytes): {string.Join(", ", names)}");
-                }
-                // device_info (f500) reply carries the panel serial the list/file commands require.
-                var serial = TryxMediaList.ParseSerialNumber(span);
-                if (!string.IsNullOrEmpty(serial))
-                {
-                    _panelSerial = serial;
-                    ServiceLog.Info($"[tryx] panel serial {serial}");
+                    HandlePayload(payload);
                 }
             }
             catch (Exception ex)
@@ -209,6 +201,59 @@ public sealed class WindowsTryxRkTransport : ITryxPanoramaTransport
                 }
                 return;
             }
+        }
+    }
+
+    private void HandlePayload(ReadOnlySpan<byte> span)
+    {
+        var pending = _pendingPull;
+        if (pending is not null)
+        {
+            var chunk = TryxMediaList.ParseFilePullResponse(span);
+            if (chunk is { } c)
+            {
+                if (c.SessionId == pending.Session) pending.Result.TrySetResult(c);
+                return;
+            }
+            // A firmware without file_pull answers BodyCaseNotSupported.
+            if (TryxMediaList.ParseErrorCode(span) is not null)
+            {
+                pending.Result.TrySetResult(new TryxMediaList.FilePullChunk(false, pending.Session, 0, 0, []));
+                return;
+            }
+        }
+        // file_list (f503) push - device truth. ParseMediaEntries is the authoritative
+        // source (all files under /userdata/*, with sizes); the basename is what the rest
+        // of the code keys on. A non-list read (heartbeat ack, device_info) returns null,
+        // so a stale list is never wiped by an unrelated read.
+        var entries = TryxMediaList.ParseMediaEntries(span);
+        if (entries is not null)
+        {
+            var names = new List<string>(entries.Count);
+            var customNames = new List<string>();
+            var sizes = new Dictionary<string, long>(entries.Count, StringComparer.Ordinal);
+            var usedBytes = 0L;
+            foreach (var e in entries)
+            {
+                names.Add(e.Name);
+                if (e.IsCustom) customNames.Add(e.Name);
+                sizes[e.Name] = e.SizeBytes;
+                usedBytes += e.SizeBytes;
+            }
+            var changed = !names.SequenceEqual(_availableMediaFilenames);
+            _availableMediaIds = TryxMediaList.ParsePresetIds(span);
+            _availableMediaFilenames = names;
+            _availableCustomMediaFilenames = customNames;
+            _mediaFileSizes = sizes;
+            Interlocked.Increment(ref _mediaListVersion);
+            if (changed) ServiceLog.Info($"[tryx] panel media list ({names.Count}, {usedBytes} bytes): {string.Join(", ", names)}");
+        }
+        // device_info (f500) reply carries the panel serial the list/file commands require.
+        var serial = TryxMediaList.ParseSerialNumber(span);
+        if (!string.IsNullOrEmpty(serial))
+        {
+            _panelSerial = serial;
+            ServiceLog.Info($"[tryx] panel serial {serial}");
         }
     }
 
