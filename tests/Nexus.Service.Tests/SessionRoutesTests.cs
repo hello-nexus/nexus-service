@@ -45,6 +45,22 @@ public class SessionRoutesTests
     }
 
     [Fact]
+    public void ToStored_KeepsFullscreenWithItsRoute()
+    {
+        var stored = SessionRoutes.ToStored(new LastRouteDto { Path = " /system/monitoring ", Fullscreen = true });
+        Assert.Equal("/system/monitoring", stored.Path);
+        Assert.True(stored.Fullscreen);
+    }
+
+    [Fact]
+    public void ToStored_DropsFullscreenWhenTheRouteIsDropped()
+    {
+        Assert.False(SessionRoutes.ToStored(new LastRouteDto { Path = "//evil.example.com/x", Fullscreen = true }).Fullscreen);
+        Assert.False(SessionRoutes.ToStored(new LastRouteDto { Path = "", Fullscreen = true }).Fullscreen);
+        Assert.Equal("", SessionRoutes.ToStored(null).Path);
+    }
+
+    [Fact]
     public void SanitizeKeys_KeepsOrderAndDropsDuplicatesBlanksAndUnprintables()
     {
         var keys = new[] { "monitoring", " app:com.test.app ", "monitoring", "", "  ", "bad\nkey", "two words", "lighting" };

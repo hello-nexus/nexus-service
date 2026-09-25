@@ -14,8 +14,8 @@ namespace Nexus.Service.Routes;
 /// the window) are both the wrong side of that boundary. A cold start - system
 /// boot or a proper service shutdown - therefore lands on home.
 ///
-///   GET  /session/last-route  -> { path }
-///   POST /session/last-route  -> { path }
+///   GET  /session/last-route  -> { path, fullscreen }
+///   POST /session/last-route  -> { path, fullscreen }
 ///
 /// The sidebar's "recently opened" rows share this lifetime, so they live
 /// here too.
@@ -26,8 +26,9 @@ namespace Nexus.Service.Routes;
 internal static class SessionRoutes
 {
     // The SPA posts on every route change, so writes are far more frequent
-    // than reads and neither side may block the other.
-    private static string _lastRoute = "";
+    // than reads and neither side may block the other. Replaced whole, never
+    // mutated, so a read never pairs one write's path with another's flag.
+    private static LastRouteDto _lastRoute = new();
     private static string[] _recentApps = [];
 
     /// <summary>Longer than any route the SPA composes; a longer body is a caller bug, not a route.</summary>
@@ -40,17 +41,18 @@ internal static class SessionRoutes
     private const int MaxRecentAppKeyLength = 128;
 
     /// <summary>The stored route, "" when none; the SPA clears it when Remember last page is turned off.</summary>
-    internal static string LastRoute => Volatile.Read(ref _lastRoute);
+    internal static string LastRoute => Volatile.Read(ref _lastRoute).Path;
 
     public static void MapSessionEndpoints(this WebApplication app)
     {
         app.MapGet("/session/last-route", () =>
-            Results.Ok(new LastRouteDto { Path = Volatile.Read(ref _lastRoute) })).LocalhostOnly();
+            Results.Ok(Volatile.Read(ref _lastRoute))).LocalhostOnly();
 
         app.MapPost("/session/last-route", (LastRouteDto body) =>
         {
-            Volatile.Write(ref _lastRoute, Sanitize(body?.Path));
-            return Results.Ok(new LastRouteDto { Path = Volatile.Read(ref _lastRoute) });
+            var stored = ToStored(body);
+            Volatile.Write(ref _lastRoute, stored);
+            return Results.Ok(stored);
         }).LocalhostOnly();
 
         app.MapGet("/session/recent-apps", () =>
@@ -61,6 +63,13 @@ internal static class SessionRoutes
             Volatile.Write(ref _recentApps, SanitizeKeys(body?.Keys));
             return Results.Ok(new RecentAppsDto { Keys = Volatile.Read(ref _recentApps) });
         }).LocalhostOnly();
+    }
+
+    /// <summary>The value to store for a posted route; fullscreen means nothing without a page to be fullscreen on.</summary>
+    internal static LastRouteDto ToStored(LastRouteDto? body)
+    {
+        var path = Sanitize(body?.Path);
+        return new LastRouteDto { Path = path, Fullscreen = path.Length > 0 && body!.Fullscreen };
     }
 
     /// <summary>Keeps only an absolute same-origin path, so a stored value can never redirect a reopened window off-origin.</summary>
@@ -135,7 +144,10 @@ internal static class SessionRoutes
 
 public sealed class LastRouteDto
 {
-    public string Path { get; set; } = "";
+    public string Path { get; init; } = "";
+
+    /// <summary>The page was in the dashboard's fullscreen (focus) mode.</summary>
+    public bool Fullscreen { get; init; }
 }
 
 public sealed class RecentAppsDto

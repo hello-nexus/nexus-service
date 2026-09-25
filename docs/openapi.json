@@ -18293,6 +18293,9 @@
         "properties": {
           "path": {
             "type": "string"
+          },
+          "fullscreen": {
+            "type": "boolean"
           }
         }
       },
