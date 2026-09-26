@@ -60,6 +60,7 @@ public static class PawnIoInstaller
     private static readonly Guid SoftwareDeviceClassGuid = new("62f9c741-b25a-46ce-b54c-9bccce08b6f2");
 
     private const int ErrorSuccessRebootRequired = 3010;
+    private const int ErrorNoMoreItems = 259;
     private const string ImagePathValueName = "ImagePath";
 
     // Two boot-time readings taken minutes apart on the same boot can differ
@@ -472,10 +473,14 @@ public static class PawnIoInstaller
 
         // pnputil added the driver package to the driver store, but PawnIO is a
         // root-enumerated PnP device - there's no physical device for PnP to
-        // auto-enumerate. We have to create the root device node ourselves via
-        // SetupAPI, then call UpdateDriverForPlugAndPlayDevices to bind the
-        // driver to it.
-        var bindResult = CreateRootDeviceAndBindDriver(infPath);
+        // auto-enumerate. A Root\PawnIO node can outlive its service key, so
+        // rebind that node first (the forced bind re-registers the service);
+        // otherwise create the node ourselves via SetupAPI and bind to it.
+        var bindResult = BindDriverToExistingDevice(infPath);
+        if (bindResult is DriverBindResult.NoDevice or DriverBindResult.Failed)
+        {
+            bindResult = CreateRootDeviceAndBindDriver(infPath);
+        }
         if (bindResult == DriverBindResult.Failed)
         {
             LogError("failed to create root device");
@@ -651,6 +656,11 @@ public static class PawnIoInstaller
         }
     }
 
+    // 259 (package already up to date) still needs the bind that follows: a
+    // device node that outlived its service key reports up to date but cannot load.
+    internal static bool IsPnputilAddSuccess(int exitCode) =>
+        exitCode is 0 or ErrorNoMoreItems or ErrorSuccessRebootRequired;
+
     [SupportedOSPlatform("windows")]
     private static bool RunPnputilAddDriver(string infPath)
     {
@@ -700,12 +710,7 @@ public static class PawnIoInstaller
 
             Log($"pnputil exit code: {proc.ExitCode}");
 
-            // pnputil exit codes:
-            //   0 = success
-            //   259 (ERROR_NO_MORE_ITEMS) = nothing to install
-            //   3010 (ERROR_SUCCESS_REBOOT_REQUIRED) = installed but reboot needed
-            // We accept 0 and 3010 as success.
-            if (proc.ExitCode != 0 && proc.ExitCode != ErrorSuccessRebootRequired)
+            if (!IsPnputilAddSuccess(proc.ExitCode))
             {
                 LogError($"pnputil failed with exit code {proc.ExitCode}");
                 return false;
@@ -814,9 +819,8 @@ public static class PawnIoInstaller
         }
     }
 
-    // Rebinds the driver to the device node an earlier install already
-    // created. Used by the upgrade and repair paths, which must not create a
-    // second device node for the same hardware ID.
+    // Rebinds the driver to an existing Root\PawnIO node; every install path
+    // tries it first so it never creates a second node for the same hardware ID.
     [SupportedOSPlatform("windows")]
     private static DriverBindResult BindDriverToExistingDevice(string infPath)
     {
