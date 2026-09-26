@@ -1,5 +1,6 @@
 #if WINDOWS
 using System;
+using System.Collections.Generic;
 using System.Runtime.InteropServices;
 using System.Runtime.Versioning;
 using Windows.Data.Xml.Dom;
@@ -49,9 +50,11 @@ public static class ToastNotifications
     private static bool _idSet;
 
     private static readonly object Gate = new();
-    // Only one conflict toast is ever in flight, so a single slot is enough.
-    private static ToastNotification? _liveToast;
-    private static ToastNotifier? _liveNotifier;
+    // A startup notice and launch notices can be up at once, so each keeps its
+    // own entry. Capped, oldest dropped: a toast ignored in Action Center never
+    // resolves, so nothing else would ever release it.
+    private const int MaxLive = 8;
+    private static readonly List<(ToastNotification Toast, ToastNotifier Notifier)> Live = new();
 
     /// <summary>Stamps the process with the toast identity. Safe to call more than once.</summary>
     public static void EnsureAppUserModelId()
@@ -156,29 +159,9 @@ public static class ToastNotifications
                   "</actions>" +
                 "</toast>");
 
-            var toast = new ToastNotification(xml);
             // Both the button and the toast body land here; either one means
             // "take me to the setting", so the arguments are not inspected.
-            toast.Activated += (_, _) =>
-            {
-                try { TrayIcon.OpenLocalWindow(path: windowPath); }
-                catch (Exception ex) { HelperLog.Write($"[toast] activation failed: {ex.Message}"); }
-                finally { Release(); }
-            };
-            toast.Dismissed += (_, _) => Release();
-            toast.Failed += (_, _) => Release();
-
-            var notifier = ToastNotificationManager.CreateToastNotifier(AppUserModelId);
-            // Rooted until the toast resolves. Nothing else references either
-            // object after Show returns, and the projected wrapper is what keeps
-            // the Activated delegate alive - collect it and the button silently
-            // does nothing, with no exception to fall back on.
-            lock (Gate)
-            {
-                _liveToast = toast;
-                _liveNotifier = notifier;
-            }
-            notifier.Show(toast);
+            Show(xml, _ => TrayIcon.OpenLocalWindow(path: windowPath));
             return true;
         }
         catch (Exception ex)
@@ -188,13 +171,78 @@ public static class ToastNotifications
         }
     }
 
-    private static void Release()
+    /// <summary>
+    /// Raises a conflict-launch toast: its button runs <paramref name="onEnd"/>,
+    /// the body opens <paramref name="windowPath"/>. False when Windows would
+    /// not take it, so the caller can fall back to the balloon.
+    /// </summary>
+    public static bool TryShowConflictLaunchToast(string title, string text, string endLabel, string windowPath, Action onEnd)
     {
+        try
+        {
+            EnsureAppUserModelId();
+
+            var xml = new XmlDocument();
+            xml.LoadXml(
+                "<toast activationType='foreground' launch='open'>" +
+                  "<visual><binding template='ToastGeneric'>" +
+                    $"<text>{Escape(title)}</text>" +
+                    $"<text>{Escape(text)}</text>" +
+                  "</binding></visual>" +
+                  "<actions>" +
+                    $"<action content='{Escape(endLabel)}' arguments='end' activationType='foreground'/>" +
+                  "</actions>" +
+                "</toast>");
+
+            Show(xml, arguments =>
+            {
+                if (arguments == "end") onEnd();
+                else TrayIcon.OpenLocalWindow(path: windowPath);
+            });
+            return true;
+        }
+        catch (Exception ex)
+        {
+            HelperLog.Write($"[toast] conflict launch toast failed, falling back to balloon: {ex.Message}");
+            return false;
+        }
+    }
+
+    /// <summary>Shows <paramref name="xml"/>; <paramref name="onActivated"/> gets the activation arguments (the action's, or the toast's launch value for a body click).</summary>
+    private static void Show(XmlDocument xml, Action<string> onActivated)
+    {
+        var toast = new ToastNotification(xml);
+        toast.Activated += (_, args) =>
+        {
+            try { onActivated((args as ToastActivatedEventArgs)?.Arguments ?? ""); }
+            catch (Exception ex) { HelperLog.Write($"[toast] activation failed: {ex.Message}"); }
+            finally { Release(toast); }
+        };
+        // A timed-out toast moves to Action Center with its button still live, so it stays rooted.
+        toast.Dismissed += (_, e) => { if (e.Reason != ToastDismissalReason.TimedOut) Release(toast); };
+        toast.Failed += (_, _) => Release(toast);
+
+        var notifier = ToastNotificationManager.CreateToastNotifier(AppUserModelId);
+        // Rooted until the toast resolves. Nothing else references either
+        // object after Show returns, and the projected wrapper is what keeps
+        // the Activated delegate alive - collect it and the button silently
+        // does nothing, with no exception to fall back on.
         lock (Gate)
         {
-            _liveToast = null;
-            _liveNotifier = null;
+            if (Live.Count >= MaxLive) Live.RemoveAt(0);
+            Live.Add((toast, notifier));
         }
+        try { notifier.Show(toast); }
+        catch
+        {
+            Release(toast);
+            throw;
+        }
+    }
+
+    private static void Release(ToastNotification toast)
+    {
+        lock (Gate) Live.RemoveAll(e => ReferenceEquals(e.Toast, toast));
     }
 
     private static string Escape(string s) => s

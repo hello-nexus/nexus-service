@@ -204,6 +204,7 @@ internal static class WindowsUserHelper
             () => Platform.Windows.TrayIcon.OpenLocalWindow(),
             ShowUpdaterWindow,
             CloseUpdaterWindow).Register(handlerRegistry);
+        new ConflictNoticeHandler(p => ShowConflictLaunchNotice(p, outbound)).Register(handlerRegistry);
         // Runs in the user session, so this set lands on the clipboard the
         // user actually pastes from (the service's Session-0 one is invisible).
         new ClipboardHandler(new Platform.Clipboard.WindowsClipboardProvider().SetText).Register(handlerRegistry);
@@ -393,6 +394,24 @@ internal static class WindowsUserHelper
             return;
         }
         Platform.Windows.TrayIcon.ShowNoticeBalloon(title, text, folderPath, windowPath);
+    }
+
+    /// <summary>
+    /// End task goes back to the service rather than ending the app here: the
+    /// helper runs as the user and cannot end an elevated vendor app. The
+    /// balloon fallback has no button; a click opens the conflict settings.
+    /// </summary>
+    [SupportedOSPlatform("windows10.0.19041.0")]
+    private static void ShowConflictLaunchNotice(ConflictLaunchNoticePayload p, HelperOutbound outbound)
+    {
+        var appId = p.AppId;
+        var shown = Platform.Windows.ToastNotifications.TryShowConflictLaunchToast(
+            p.Title, p.Text, p.EndLabel, p.WindowPath,
+            onEnd: () => _ = outbound.SendAsync(
+                type: ConflictNoticeCommands.EndType,
+                payload: new ConflictEndPayload { AppId = appId },
+                payloadType: AppJsonContext.Default.ConflictEndPayload));
+        if (!shown) Platform.Windows.TrayIcon.ShowNoticeBalloon(p.Title, p.Text, null, p.WindowPath);
     }
 
     // HTA caption is a known constant so the helper can close it by title.

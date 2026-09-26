@@ -513,6 +513,7 @@ public static class ProfileRoutes
                     if (ui.ShowConflictAlerts.HasValue) s.Ui.ShowConflictAlerts = ui.ShowConflictAlerts.Value;
                     if (ui.AutoKillConflictsAtStartup.HasValue) s.Ui.AutoKillConflictsAtStartup = ui.AutoKillConflictsAtStartup.Value;
                     if (ui.ConflictAutoKillExclusions is not null) s.Ui.ConflictAutoKillExclusions = ui.ConflictAutoKillExclusions;
+                    if (ui.NotifyConflictLaunches.HasValue) s.Ui.NotifyConflictLaunches = ui.NotifyConflictLaunches.Value;
                     if (ui.OemAppSeeded.HasValue) s.Ui.OemAppSeeded = ui.OemAppSeeded.Value;
                     if (ui.PinnedSidebarApps is not null) s.Ui.PinnedSidebarApps = ui.PinnedSidebarApps;
                     if (ui.SidebarAppOrder is not null) s.Ui.SidebarAppOrder = ui.SidebarAppOrder;

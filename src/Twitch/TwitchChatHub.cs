@@ -43,7 +43,8 @@ public sealed class TwitchChatHub : BackgroundService
 
     private readonly object _lock = new();
     private readonly Dictionary<string, ChannelState> _channels = new(StringComparer.Ordinal);
-    private long _seq;
+    /// <summary>Clock-seeded so seq keeps rising across service restarts, which a clear's watermark relies on.</summary>
+    private long _seq = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() * 1000;
     private bool _socketConnected;
 
     /// <summary>Channels a JOIN has been written for on the current socket - guarded by <see cref="_lock"/>.</summary>
@@ -413,6 +414,29 @@ public sealed class TwitchChatHub : BackgroundService
         Broadcast(channel, frame);
     }
 
+    /// <summary>Empties the replay buffer for every viewer; a widget-only clear would return with the next subscribe snapshot.</summary>
+    public void Clear(string channel)
+    {
+        TwitchChatFrame frame;
+        lock (_lock)
+        {
+            if (!_channels.TryGetValue(channel, out var state))
+            {
+                return;
+            }
+            state.Buffer.Clear();
+            state.Pending.Clear();
+            frame = new TwitchChatFrame
+            {
+                Channel = channel,
+                Connected = _socketConnected && state.Joined,
+                Exists = state.Exists,
+                ClearedThrough = _seq,
+            };
+        }
+        Broadcast(channel, frame);
+    }
+
     private void MarkDisconnected()
     {
         List<string> channels;
@@ -597,7 +621,7 @@ public sealed class TwitchChatHub : BackgroundService
         }
     }
 
-    private void Append(TwitchIrcLine line)
+    internal void Append(TwitchIrcLine line)
     {
         if (line.Channel.Length == 0)
         {

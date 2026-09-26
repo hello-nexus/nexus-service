@@ -44,6 +44,8 @@ public sealed class TwitchChatFrame
     /// offline channel answers identically.
     /// </summary>
     public bool? Exists { get; set; }
+    /// <summary>On the frame a clear sends, the last seq it removed; clients drop every message at or below it, whatever order frames arrive in. 0 otherwise.</summary>
+    public long ClearedThrough { get; set; }
     /// <summary>Empty when the frame only reports a connection-state change.</summary>
     public List<TwitchChatMessage> Messages { get; set; } = new();
 }
