@@ -126,7 +126,7 @@ public sealed class Slv3Hub : IDisposable
     public static volatile int LatePasses;
     public static volatile int LateGapMs = 60;
     public static volatile bool SafeEffectIndex;
-    private byte _effectCounter;
+    private byte _effectCounter = (byte)Environment.TickCount64;
     public static volatile int ResendGapMs = 50;
     public static volatile int RgbHeaderGapMs = 20;
 
@@ -1105,6 +1105,24 @@ public sealed class Slv3Hub : IDisposable
         int brightnessPercent, out string effectIndexHex) =>
         SendRgbData(macHex, Slv3RgbFrame.BuildFrameBuffer(frames, brightnessPercent), ledCount, frameCount, intervalMs, out effectIndexHex);
 
+    // Prototype: effect index whose first three bytes are the chain's own rx/channel/ordinal, so a
+    // misparse re-binds it in place, and which never equals the index the chain reports (a repeat is ignored).
+    private byte[] NextSafeEffectIndexLocked(Slv3DeviceRecord record)
+    {
+        byte[] idx;
+        do
+        {
+            _effectCounter = (byte)(_effectCounter + 1);
+            if (_effectCounter == 0)
+            {
+                _effectCounter = 1;
+            }
+            idx = new byte[] { record.RxType, record.Channel, BindOrdinalLocked(record.Mac), _effectCounter };
+        }
+        while (record.EffectIndex is { Length: 4 } && idx.AsSpan().SequenceEqual(record.EffectIndex));
+        return idx;
+    }
+
     private bool SendRgbData(
         string macHex, byte[] raw, int ledCount, int frameCount, double intervalMs, out string effectIndexHex)
     {
@@ -1134,7 +1152,7 @@ public sealed class Slv3Hub : IDisposable
             }
 
             effectIndex = SafeEffectIndex
-                ? new byte[] { record.RxType, record.Channel, BindOrdinalLocked(record.Mac), (byte)(++_effectCounter == 0 ? ++_effectCounter : _effectCounter) }
+                ? NextSafeEffectIndexLocked(record)
                 : Slv3RgbFrame.BuildEffectIndex(DateTimeOffset.UtcNow.ToUnixTimeMilliseconds());
             packets = Slv3RgbFrame.BuildPackets(
                 record.Mac, _masterMac, effectIndex, compressed, ledCount, frameCount, intervalMs);
