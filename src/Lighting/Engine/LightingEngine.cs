@@ -570,6 +570,7 @@ public sealed class LightingEngine : IDisposable
             while (!ct.IsCancellationRequested)
             {
                 var effect = _currentEffect;
+                DeviceFrame[]? aheadDevices = null;
                 if (effect is null)
                 {
                     break;
@@ -635,7 +636,7 @@ public sealed class LightingEngine : IDisposable
                         {
                             CompleteReleaseIfDone();
                         }
-                        ServiceAheadRequests(effect, devices);
+                        aheadDevices = devices;
                     }
                     else if (wakeMs > 0)
                     {
@@ -648,6 +649,11 @@ public sealed class LightingEngine : IDisposable
                     }
                     SerializeAndBroadcast();
                     FramePublished?.Invoke();
+                    // After the publish, so look-ahead renders never delay this tick's frame.
+                    if (aheadDevices is not null)
+                    {
+                        ServiceAheadRequests(effect, aheadDevices);
+                    }
                 }
                 catch (Exception ex) { Console.Error.WriteLine($"[lighting-engine] {effect.Name} threw: {ex.Message}"); }
 
