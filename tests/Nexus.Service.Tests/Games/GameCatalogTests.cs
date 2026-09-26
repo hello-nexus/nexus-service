@@ -13,6 +13,15 @@ public class GameCatalogTests
         Assert.Equal(expected, GameCatalog.BuildGameKey(store, appId, name));
     }
 
+    [Theory]
+    [InlineData("steam", "431960", true)]
+    [InlineData("steam", "1091500", false)]
+    [InlineData("epic", "431960", false)]
+    public void IsNonGame_SkipsWallpaperEngineOnly(string store, string appId, bool expected)
+    {
+        Assert.Equal(expected, GameCatalog.IsNonGame(store, appId));
+    }
+
     [Fact]
     public void Slugify_LowercasesAndStripsNonAlnum()
     {

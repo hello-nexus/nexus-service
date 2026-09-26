@@ -1,5 +1,6 @@
 using Microsoft.Net.Http.Headers;
 using Nexus.Service.Auth;
+using Nexus.Service.Models;
 using Nexus.Service.Twitch;
 
 namespace Nexus.Service.Routes;
@@ -21,6 +22,16 @@ public static class TwitchRoutes
             }
             // Emote bytes are immutable for a given id.
             return Results.File(bytes, "image/png", entityTag: new EntityTagHeaderValue($"\"{emoteId}\""));
+        }).AllowPanel();
+
+        app.MapPost("/api/twitch/chat/{channel}/clear", (string channel, TwitchChatHub hub) =>
+        {
+            if (!TwitchChatHub.IsValidChannel(channel))
+            {
+                return Results.BadRequest(ApiResponse.Fail("Invalid channel"));
+            }
+            hub.Clear(channel.ToLowerInvariant());
+            return Results.Ok(ApiResponse.Ok());
         }).AllowPanel();
     }
 }

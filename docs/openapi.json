@@ -2944,6 +2944,28 @@
         }
       }
     },
+    "/api/twitch/chat/{channel}/clear": {
+      "post": {
+        "tags": [
+          "Nexus"
+        ],
+        "parameters": [
+          {
+            "name": "channel",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        }
+      }
+    },
     "/api/klipy/search": {
       "get": {
         "tags": [

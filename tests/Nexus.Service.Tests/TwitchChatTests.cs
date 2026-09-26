@@ -1,4 +1,8 @@
+using System.Collections.Generic;
 using System.Linq;
+using System.Text;
+using Microsoft.Extensions.Logging.Abstractions;
+using Nexus.Service.Sockets;
 using Nexus.Service.Twitch;
 using Xunit;
 
@@ -225,4 +229,52 @@ public class TwitchChannelValidationTests
 
     [Fact]
     public void TopicIsLowercased() => Assert.Equal("twitch/chat/novastreams", TwitchChatHub.TopicFor("NovaStreams"));
+}
+
+public class TwitchChatHubClearTests
+{
+    private const string Topic = "twitch/chat/chan";
+
+    private static TwitchIrcLine Privmsg(string body) =>
+        TwitchIrcParser.Parse($"@display-name=Viewer :viewer!viewer@viewer.tmi.twitch.tv PRIVMSG #chan :{body}")!;
+
+    private static string Snapshot(MultiplexHub hub)
+    {
+        Assert.True(hub.TryGetTopicSnapshot(Topic, out var envelope));
+        return Encoding.UTF8.GetString(envelope.ToArray());
+    }
+
+    [Fact]
+    public void ClearEmptiesTheReplayedBufferAndTellsViewers()
+    {
+        var hub = new MultiplexHub();
+        var frames = new List<string>();
+        hub.OnBroadcastForTest += (topic, payload) =>
+        {
+            if (topic == Topic) frames.Add(Encoding.UTF8.GetString(payload.ToArray()));
+        };
+        using var chat = new TwitchChatHub(hub, NullLogger<TwitchChatHub>.Instance);
+        using var sub = hub.AddTestSubscription(Topic);
+        chat.Append(Privmsg("days-old message"));
+        Assert.Contains("days-old message", Snapshot(hub));
+
+        chat.Clear("chan");
+
+        Assert.DoesNotContain("days-old message", Snapshot(hub));
+        var frame = Assert.Single(frames);
+        Assert.Matches("\"clearedThrough\":[1-9]", frame);
+    }
+
+    [Fact]
+    public void ClearOfAnUnwatchedChannelIsANoOp()
+    {
+        var hub = new MultiplexHub();
+        var broadcasts = 0;
+        hub.OnBroadcastForTest += (_, _) => broadcasts++;
+        using var chat = new TwitchChatHub(hub, NullLogger<TwitchChatHub>.Instance);
+
+        chat.Clear("chan");
+
+        Assert.Equal(0, broadcasts);
+    }
 }
