@@ -8,7 +8,9 @@ namespace Nexus.Service.Lighting.Engine;
 
 public sealed class LightingEngine : IDisposable
 {
-    private readonly CanvasBuffer _canvas;
+    private CanvasBuffer _canvas;
+    private readonly CanvasBuffer _aheadCanvas = new(160, 90);
+    private readonly System.Collections.Concurrent.ConcurrentQueue<AheadRequest> _aheadRequests = new();
     private readonly object _lock = new();
     private CancellationTokenSource? _cts;
     private Task? _loopTask;
@@ -621,6 +623,7 @@ public sealed class LightingEngine : IDisposable
                         {
                             CompleteReleaseIfDone();
                         }
+                        ServiceAheadRequests(effect, devices);
                     }
                     else if (wakeMs > 0)
                     {
@@ -657,6 +660,69 @@ public sealed class LightingEngine : IDisposable
             foreach (var dev in _devices)
             {
                 dev.Clear();
+            }
+        }
+    }
+
+    /// <summary>
+    /// Asks the engine loop to render the current effect at future wall-clock
+    /// times for <paramref name="deviceIds"/>, for hardware that plays an
+    /// uploaded frame loop on its own clock. Serviced after the next live
+    /// publish; <see cref="AheadRequest.Frames"/> stays null when the effect is
+    /// not a pure function of time (game sync, screen, media).
+    /// </summary>
+    public AheadRequest RequestAhead(string[] deviceIds, long[] tickMs)
+    {
+        var req = new AheadRequest(deviceIds, tickMs);
+        _aheadRequests.Enqueue(req);
+        return req;
+    }
+
+    private void ServiceAheadRequests(IEffect effect, DeviceFrame[] devices)
+    {
+        while (_aheadRequests.TryDequeue(out var req))
+        {
+            if (effect is not Gpu.ShaderEffect || _frozen)
+            {
+                req.Done.Set();
+                continue;
+            }
+            var sw = System.Diagnostics.Stopwatch.StartNew();
+            var sources = new List<DeviceFrame>();
+            foreach (var d in devices)
+            {
+                if (Array.IndexOf(req.DeviceIds, d.Id) >= 0) sources.Add(d);
+            }
+            var frames = new DeviceFrame[req.TickMs.Length][];
+            var live = _canvas;
+            try
+            {
+                for (var t = 0; t < req.TickMs.Length; t++)
+                {
+                    effect.RenderFrame(_aheadCanvas, req.TickMs[t]);
+                    var shadow = new DeviceFrame[sources.Count];
+                    for (var i = 0; i < sources.Count; i++)
+                    {
+                        var s = sources[i];
+                        shadow[i] = new DeviceFrame(s.Index, s.Id, s.LedCount, s.X, s.Y, s.W, s.H, s.Rotation, s.PhysicalIndex, s.ZoneIndex, s.ZoneOffset)
+                        {
+                            LedU = s.LedU, LedV = s.LedV, LedDisabled = s.LedDisabled, Archetype = s.Archetype,
+                            PreviewLedCount = s.PreviewLedCount, PreviewLayout = s.PreviewLayout,
+                        };
+                    }
+                    _canvas = _aheadCanvas;
+                    SampleDevicesFromCanvas(shadow);
+                    _canvas = live;
+                    foreach (var d in shadow) d.Publish();
+                    frames[t] = shadow;
+                }
+                req.Frames = frames;
+            }
+            finally
+            {
+                _canvas = live;
+                req.RenderMs = sw.Elapsed.TotalMilliseconds;
+                req.Done.Set();
             }
         }
     }
@@ -1205,4 +1271,20 @@ public sealed class LightingEngine : IDisposable
         _cts = null;
         _blackoutApplied.Dispose();
     }
+}
+
+/// <summary>One look-ahead render job; see <see cref="LightingEngine.RequestAhead"/>.</summary>
+public sealed class AheadRequest
+{
+    public AheadRequest(string[] deviceIds, long[] tickMs)
+    {
+        DeviceIds = deviceIds;
+        TickMs = tickMs;
+    }
+
+    public string[] DeviceIds { get; }
+    public long[] TickMs { get; }
+    public DeviceFrame[][]? Frames { get; set; }
+    public double RenderMs { get; set; }
+    public ManualResetEventSlim Done { get; } = new(false);
 }

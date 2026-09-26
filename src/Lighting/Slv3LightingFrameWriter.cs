@@ -179,6 +179,11 @@ public sealed class Slv3LightingFrameWriter : IHostedService, IDisposable
                 continue;
             }
 
+            if (Slv3Rolling.Enabled && TickRolling(macHex, structure, zones, disabled, uncontrolled, prefs, globalBrightness, nowTicks))
+            {
+                continue;
+            }
+
             SegmentFrameComposer.EnsureBuffers(structure, ref _segmentBuffers);
             SegmentFrameComposer.Compose(
                 structure, zones, devices, disabled, uncontrolled, prefs, globalBrightness, 1.0, nowTicks, _identify, _segmentBuffers);
@@ -262,6 +267,180 @@ public sealed class Slv3LightingFrameWriter : IHostedService, IDisposable
                 _lastPushTicks.Remove(mac);
             }
         }
+    }
+
+    private sealed class RollingState
+    {
+        public AheadRequest? Pending;
+        public long FirstFrame;
+        public double RequestedAtMs;
+        public double NextRequestMs;
+        public int Uploads;
+        public double RenderMsSum;
+        public double UploadMsSum;
+        public double MaxLagMs;
+    }
+
+    private readonly Dictionary<string, RollingState> _rolling = new();
+    private readonly List<(double Utc, double Rf)> _clock = new();
+    private double _nextClockSampleMs;
+
+    private static double UtcNowMs() => (DateTime.UtcNow.Ticks - DateTime.UnixEpoch.Ticks) / (double)TimeSpan.TicksPerMillisecond;
+
+    // rf = A + B * utcMs over the last few GetMac samples.
+    private bool TryClockFit(out double a, out double b)
+    {
+        a = 0;
+        b = 0;
+        if (_clock.Count < 4) return false;
+        double mx = 0, my = 0;
+        foreach (var (u, r) in _clock) { mx += u; my += r; }
+        mx /= _clock.Count;
+        my /= _clock.Count;
+        double sxy = 0, sxx = 0;
+        foreach (var (u, r) in _clock) { sxy += (u - mx) * (r - my); sxx += (u - mx) * (u - mx); }
+        if (sxx <= 0) return false;
+        b = sxy / sxx;
+        a = my - b * mx;
+        return b > 1.5 && b < 1.7;
+    }
+
+    private void SampleClock(double nowMs)
+    {
+        if (nowMs < _nextClockSampleMs) return;
+        _nextClockSampleMs = nowMs + 250;
+        if (_hub.TryReadRfClock(out var rf, out var utc))
+        {
+            if (_clock.Count > 0 && rf < _clock[^1].Rf) _clock.Clear();
+            _clock.Add((utc, rf));
+            if (_clock.Count > 24) _clock.RemoveAt(0);
+        }
+    }
+
+    /// <summary>
+    /// Plays the engine's effect on a chain as rolling uploaded windows: the
+    /// chain shows frame floor(rfClock / interval) mod N, so every window slot
+    /// holds the effect rendered at the wall-clock time that slot will be on
+    /// screen. False when the effect cannot be rendered ahead (live stream).
+    /// </summary>
+    private bool TickRolling(
+        string macHex, DeviceStructure structure, IReadOnlyList<ResolvedZone> zones,
+        List<string> disabled, List<string> uncontrolled, Dictionary<string, LightingDevicePreference> prefs,
+        float globalBrightness, long nowTicks)
+    {
+        var now = UtcNowMs();
+        SampleClock(now);
+        if (!_rolling.TryGetValue(macHex, out var st))
+        {
+            st = new RollingState();
+            _rolling[macHex] = st;
+        }
+        var interval = Slv3Rolling.IntervalTicks;
+        var n = Slv3Rolling.Frames;
+        if (st.Pending is null)
+        {
+            if (now < st.NextRequestMs) return true;
+            if (!TryClockFit(out var a, out var b)) return false;
+            var ids = new List<string>();
+            foreach (var z in zones) if (!ids.Contains(z.Id)) ids.Add(z.Id);
+            st.FirstFrame = (long)Math.Floor((a + b * now) / interval);
+            var ticks = new long[n];
+            for (var k = 0; k < n; k++)
+            {
+                ticks[k] = (long)Math.Round(((st.FirstFrame + k + 0.5) * interval - a) / b + Slv3Rolling.OffsetMs);
+            }
+            st.RequestedAtMs = now;
+            st.NextRequestMs = now + Slv3Rolling.PeriodMs;
+            st.Pending = _engine.RequestAhead(ids.ToArray(), ticks);
+            return true;
+        }
+        if (!st.Pending.Done.IsSet) return true;
+        var req = st.Pending;
+        st.Pending = null;
+        if (req.Frames is null) return false;
+
+        byte[]? window = null;
+        var ledCount = 0;
+        for (var k = 0; k < n; k++)
+        {
+            SegmentFrameComposer.EnsureBuffers(structure, ref _segmentBuffers);
+            SegmentFrameComposer.Compose(
+                structure, zones, req.Frames[k], disabled, uncontrolled, prefs, globalBrightness, 1.0, nowTicks, _identify, _segmentBuffers);
+            var total = FillWireBuffer(macHex, structure);
+            if (total <= 0) return false;
+            ledCount = total;
+            window ??= new byte[n * total * 3];
+            var slot = (int)((st.FirstFrame + k) % n);
+            for (var i = 0; i < total; i++)
+            {
+                var o = (slot * total + i) * 3;
+                window[o] = _wireBuffer[i].R;
+                window[o + 1] = _wireBuffer[i].G;
+                window[o + 2] = _wireBuffer[i].B;
+            }
+        }
+        var t0 = UtcNowMs();
+        var ok = _hub.SendRgbAnimation(macHex, window!, ledCount, n, interval, PassThroughBrightnessPercent, out var effHex);
+        var t1 = UtcNowMs();
+        if (Slv3Rolling.Verbose)
+        {
+            var stride = ledCount * 3;
+            var distinct = 1;
+            for (var k = 1; k < n; k++)
+            {
+                if (!window.AsSpan(k * stride, stride).SequenceEqual(window.AsSpan((k - 1) * stride, stride))) distinct++;
+            }
+            TryClockFit(out var fa, out var fb);
+            double maxRes = 0;
+            foreach (var (u, r) in _clock) maxRes = Math.Max(maxRes, Math.Abs(r - (fa + fb * u)));
+            Console.WriteLine(
+                $"[lianli-wireless-rolling] up end={DateTime.UnixEpoch.AddMilliseconds(t1):HH:mm:ss.fff} req={DateTime.UnixEpoch.AddMilliseconds(st.RequestedAtMs):HH:mm:ss.fff} f0={st.FirstFrame} slot0={st.FirstFrame % n} distinct={distinct}/{n} render={req.RenderMs:F1} send={t1 - t0:F0} ok={ok} eff={effHex} rate={fb:F5} res={maxRes:F1} ticks0={req.TickMs[0] % 100000}");
+        }
+        st.Uploads++;
+        st.RenderMsSum += req.RenderMs;
+        st.UploadMsSum += t1 - t0;
+        st.MaxLagMs = Math.Max(st.MaxLagMs, t1 - st.RequestedAtMs);
+        if (!ok || st.Uploads % 20 == 0)
+        {
+            var windowMs = n * interval * 0.625;
+            Console.WriteLine(
+                $"[lianli-wireless-rolling] {macHex} uploads={st.Uploads} ok={ok} render={st.RenderMsSum / st.Uploads:F1}ms/{n}f upload={st.UploadMsSum / st.Uploads:F0}ms maxLag={st.MaxLagMs:F0}ms window={windowMs:F0}ms");
+            st.MaxLagMs = 0;
+        }
+        return true;
+    }
+
+    // Fan-major wire layout of the composed segment buffers; 0 when the chain's
+    // geometry is not known yet.
+    private int FillWireBuffer(string macHex, DeviceStructure structure)
+    {
+        if (Slv3LightingDeviceProvider.IsStrimerStructure(structure))
+        {
+            var cable = _segmentBuffers[0];
+            EnsureWireBuffer(cable.Length);
+            cable.CopyTo(_wireBuffer, 0);
+            return cable.Length;
+        }
+        var fanInfo = FindFanInfo(macHex);
+        if (fanInfo is null) return 0;
+        var ringLen = Slv3LightingDeviceProvider.RingLedsFor(fanInfo);
+        var ledsPerFan = ringLen * 2;
+        var fanCount = structure.Segments[Slv3LightingDeviceProvider.InnerSegment].LedCount / ringLen;
+        if (fanCount <= 0) return 0;
+        var totalLeds = fanCount * ledsPerFan;
+        EnsureWireBuffer(totalLeds);
+        var inner = _segmentBuffers[Slv3LightingDeviceProvider.InnerSegment];
+        var outer = _segmentBuffers[Slv3LightingDeviceProvider.OuterSegment];
+        for (var f = 0; f < fanCount; f++)
+        {
+            var baseIdx = f * ledsPerFan;
+            for (var i = 0; i < ringLen; i++)
+            {
+                _wireBuffer[baseIdx + i] = inner[f * ringLen + i];
+                _wireBuffer[baseIdx + ringLen + i] = outer[f * ringLen + i];
+            }
+        }
+        return totalLeds;
     }
 
     private Slv3FanInfo? FindFanInfo(string macHex)
@@ -463,4 +642,15 @@ public sealed class Slv3LightingFrameWriter : IHostedService, IDisposable
         }
         return hc.ToHashCode();
     }
+}
+
+/// <summary>Prototype switches for rolling-window playback (dev route only).</summary>
+public static class Slv3Rolling
+{
+    public static volatile bool Enabled;
+    public static volatile int IntervalTicks = 53;
+    public static volatile int Frames = 30;
+    public static volatile int PeriodMs = 500;
+    public static volatile int OffsetMs;
+    public static volatile bool Verbose;
 }

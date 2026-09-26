@@ -117,8 +117,18 @@ public sealed class Slv3Hub : IDisposable
     // Header packet repeats for an RGB upload, the only profile L-Connect uses
     // (no CRC on this link; a lost header sticks until the effect_index echo
     // shows it).
-    private const int RgbHeaderRepeats = 4;
-    private const int RgbHeaderGapMs = 20;
+    public static volatile int RgbHeaderRepeats = 4;
+
+    // Prototype: send every RGB data part twice.
+    public static volatile bool DuplicateDataParts;
+    public static volatile bool AtomicUpload;
+    public static volatile int Resends = 1;
+    public static volatile int LatePasses;
+    public static volatile int LateGapMs = 60;
+    public static volatile bool SafeEffectIndex;
+    private byte _effectCounter;
+    public static volatile int ResendGapMs = 50;
+    public static volatile int RgbHeaderGapMs = 20;
 
     // Device-list records span more than one page once enough chains are bound
     // (up to MaxSlot, plus non-fan devices), so the poll requests
@@ -1123,11 +1133,75 @@ public sealed class Slv3Hub : IDisposable
                 return false;
             }
 
-            effectIndex = Slv3RgbFrame.BuildEffectIndex(DateTimeOffset.UtcNow.ToUnixTimeMilliseconds());
+            effectIndex = SafeEffectIndex
+                ? new byte[] { record.RxType, record.Channel, BindOrdinalLocked(record.Mac), (byte)(++_effectCounter == 0 ? ++_effectCounter : _effectCounter) }
+                : Slv3RgbFrame.BuildEffectIndex(DateTimeOffset.UtcNow.ToUnixTimeMilliseconds());
             packets = Slv3RgbFrame.BuildPackets(
                 record.Mac, _masterMac, effectIndex, compressed, ledCount, frameCount, intervalMs);
             channel = record.Channel;
             rxType = record.RxType;
+        }
+
+        if (AtomicUpload)
+        {
+            for (var rs = 0; rs < Resends; rs++)
+            {
+                if (rs > 0)
+                {
+                    Thread.Sleep(ResendGapMs);
+                }
+                if (!SendUploadOnceLocked(channel, rxType, packets))
+                {
+                    return false;
+                }
+            }
+            for (var lp = 0; lp < LatePasses; lp++)
+            {
+                Thread.Sleep(LateGapMs);
+                for (var p = 1; p < packets.Length; p++)
+                {
+                    if (!SendRfPayload(channel, rxType, packets[p]))
+                    {
+                        return false;
+                    }
+                }
+            }
+            effectIndexHex = Convert.ToHexString(effectIndex);
+            return true;
+        }
+        if (AtomicUpload)
+        {
+            lock (_lock)
+            {
+                if (_tx is null)
+                {
+                    return false;
+                }
+                for (var i = 0; i < RgbHeaderRepeats; i++)
+                {
+                    if (i > 0 && RgbHeaderGapMs > 0)
+                    {
+                        Thread.Sleep(RgbHeaderGapMs);
+                    }
+                    if (!SendRfPayloadLocked(channel, rxType, packets[0]))
+                    {
+                        return false;
+                    }
+                }
+                for (var pass = 0; pass < (DuplicateDataParts ? 2 : 1); pass++)
+                {
+                    for (var p = 1; p < packets.Length; p++)
+                    {
+                        if (!SendRfPayloadLocked(channel, rxType, packets[p]))
+                        {
+                            return false;
+                        }
+                    }
+                }
+                NoteConfigChangedLocked();
+            }
+            effectIndexHex = Convert.ToHexString(effectIndex);
+            return true;
         }
 
         // The header gaps run with _lock RELEASED so the device-list poll keeps
@@ -1153,11 +1227,14 @@ public sealed class Slv3Hub : IDisposable
             {
                 return false;
             }
-            for (var p = 1; p < packets.Length; p++)
+            for (var pass = 0; pass < (DuplicateDataParts ? 2 : 1); pass++)
             {
-                if (!SendRfPayloadLocked(channel, rxType, packets[p]))
+                for (var p = 1; p < packets.Length; p++)
                 {
-                    return false;
+                    if (!SendRfPayloadLocked(channel, rxType, packets[p]))
+                    {
+                        return false;
+                    }
                 }
             }
             NoteConfigChangedLocked();
@@ -1165,6 +1242,41 @@ public sealed class Slv3Hub : IDisposable
 
         effectIndexHex = Convert.ToHexString(effectIndex);
         return true;
+    }
+
+    // Prototype: one complete upload (header repeats + data passes) under one lock hold.
+    private bool SendUploadOnceLocked(byte channel, byte rxType, byte[][] packets)
+    {
+        lock (_lock)
+        {
+            if (_tx is null)
+            {
+                return false;
+            }
+            for (var i = 0; i < RgbHeaderRepeats; i++)
+            {
+                if (i > 0 && RgbHeaderGapMs > 0)
+                {
+                    Thread.Sleep(RgbHeaderGapMs);
+                }
+                if (!SendRfPayloadLocked(channel, rxType, packets[0]))
+                {
+                    return false;
+                }
+            }
+            for (var pass = 0; pass < (DuplicateDataParts ? 2 : 1); pass++)
+            {
+                for (var p = 1; p < packets.Length; p++)
+                {
+                    if (!SendRfPayloadLocked(channel, rxType, packets[p]))
+                    {
+                        return false;
+                    }
+                }
+            }
+            NoteConfigChangedLocked();
+            return true;
+        }
     }
 
     // Same as SendRfPayloadLocked but takes _lock itself, for callers that pace
@@ -1192,6 +1304,37 @@ public sealed class Slv3Hub : IDisposable
             }
         }
         return true;
+    }
+
+    /// <summary>
+    /// Reads the RX master clock (0.625 ms ticks, GetMac [7..10]) with the
+    /// wall-clock ms at the midpoint of the round trip. A chain plays frame
+    /// floor(clock / interval) mod frameCount of its uploaded loop.
+    /// </summary>
+    public bool TryReadRfClock(out uint rfTimer, out double utcMs)
+    {
+        rfTimer = 0;
+        utcMs = 0;
+        lock (_lock)
+        {
+            if (_tx is null)
+            {
+                return false;
+            }
+            var before = DateTime.UtcNow.Ticks;
+            if (!_tx.RfSend(Slv3Protocol.BuildGetMac(_channel)))
+            {
+                return false;
+            }
+            var reply = _tx.RfRead(Slv3Protocol.UsbPacketSize);
+            var after = DateTime.UtcNow.Ticks;
+            if (!Slv3Protocol.TryParseGetMac(reply, out _, out rfTimer, out _))
+            {
+                return false;
+            }
+            utcMs = ((before + after) / 2.0 - DateTime.UnixEpoch.Ticks) / TimeSpan.TicksPerMillisecond;
+            return true;
+        }
     }
 
     /// <summary>
