@@ -925,6 +925,9 @@ namespace Nexus.Service.Serialization;
 [JsonSerializable(typeof(Nexus.Service.Helper.Domains.TrayOpenDashboardPayload))]
 [JsonSerializable(typeof(Nexus.Service.Helper.Domains.TrayShowUpdaterWindowPayload))]
 [JsonSerializable(typeof(Nexus.Service.Helper.Domains.TrayCloseUpdaterWindowPayload))]
+// Conflict launch notice + End task
+[JsonSerializable(typeof(Nexus.Service.Helper.Domains.ConflictLaunchNoticePayload))]
+[JsonSerializable(typeof(Nexus.Service.Helper.Domains.ConflictEndPayload))]
 // Clipboard
 [JsonSerializable(typeof(Nexus.Service.Helper.Domains.ClipboardSetTextPayload))]
 // Screen-time

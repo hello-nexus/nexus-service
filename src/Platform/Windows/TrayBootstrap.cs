@@ -31,6 +31,18 @@ internal static class TrayBootstrap
     private const string ConflictNoticeTitle = "Conflicting apps closed";
     private const string ConflictNoticeButton = "Open Settings";
 
+    private const string ConflictLaunchEndButton = "End task";
+
+    private static string ConflictLaunchTitle(Nexus.Service.Models.Conflicts.DetectedConflict app) => $"{app.DisplayName} opened";
+
+    private static string ConflictLaunchText(Nexus.Service.Models.Conflicts.DetectedConflict app) => app.Category switch
+    {
+        "lighting" => "It can fight Nexus for control of your lighting.",
+        "cooling" => "It can fight Nexus for control of your fans.",
+        "peripherals" => "It can fight Nexus for control of your peripherals.",
+        _ => "It can fight Nexus for control of your hardware.",
+    };
+
     private static string FormatConflictNotice(IReadOnlyList<string> names) => names.Count == 1
         ? $"Closed {names[0]} so Nexus can control your hardware."
         : $"Closed {names.Count} conflicting apps so Nexus can control your hardware: {string.Join(", ", names)}.";
@@ -73,6 +85,14 @@ internal static class TrayBootstrap
         {
             try { TrayIcon.ShowNoticeBalloon(ConflictNoticeTitle, FormatConflictNotice(names), null, ConflictSettingsPath); }
             catch (Exception ex) { Console.Error.WriteLine($"[conflict-notify] interactive show failed: {ex.Message}"); }
+        };
+        // The in-process tray has no toast path, so the launch notice is a
+        // balloon here; its click opens the conflict settings.
+        var interactiveLaunches = app.Services.GetService<Nexus.Service.Conflicts.ConflictLaunchNotifier>();
+        interactiveLaunches?.AppLaunched += launched =>
+        {
+            try { TrayIcon.ShowNoticeBalloon(ConflictLaunchTitle(launched), ConflictLaunchText(launched), null, ConflictSettingsPath); }
+            catch (Exception ex) { Console.Error.WriteLine($"[conflict-notify] interactive launch notice failed: {ex.Message}"); }
         };
 
         var hub = app.Services.GetRequiredService<MultiplexHub>();
@@ -260,6 +280,84 @@ internal static class TrayBootstrap
             // Flush a startup-shutdown notice raised before any helper existed.
             DrainConflictNotice();
         };
+
+        // Conflict app launched mid-session. A vendor app autostarting at
+        // logon can beat the helper's connect, so launches are held and
+        // flushed on connect, same as the startup notice; one that has
+        // exited by then is dropped.
+        var launchNotifier = app.Services.GetService<Nexus.Service.Conflicts.ConflictLaunchNotifier>();
+        if (launchNotifier is not null)
+        {
+            var detector = app.Services.GetRequiredService<Nexus.Service.Conflicts.IConflictDetector>();
+            var launchGate = new object();
+            // Keyed by app id: relaunches while no helper is connected collapse to one notice.
+            var pendingLaunches = new Dictionary<string, Nexus.Service.Models.Conflicts.DetectedConflict>(StringComparer.OrdinalIgnoreCase);
+
+            void DrainLaunchNotices()
+            {
+                List<Nexus.Service.Models.Conflicts.DetectedConflict> due;
+                lock (launchGate)
+                {
+                    if (!helperRegistry.IsAnyConnected || pendingLaunches.Count == 0) return;
+                    due = new List<Nexus.Service.Models.Conflicts.DetectedConflict>(pendingLaunches.Values);
+                    pendingLaunches.Clear();
+                }
+                foreach (var launched in due)
+                {
+                    if (!detector.IsAppRunning(launched.Id)) continue;
+                    try
+                    {
+                        _ = ConflictNoticeCommands.LaunchNoticeAsync(helperRegistry, new ConflictLaunchNoticePayload
+                        {
+                            AppId = launched.Id,
+                            Title = ConflictLaunchTitle(launched),
+                            Text = ConflictLaunchText(launched),
+                            EndLabel = ConflictLaunchEndButton,
+                            WindowPath = ConflictSettingsPath,
+                        });
+                    }
+                    catch (Exception ex) { Console.Error.WriteLine($"[conflict-notify] launch notice failed: {ex.Message}"); }
+                }
+            }
+
+            launchNotifier.AppLaunched += launched =>
+            {
+                lock (launchGate) { pendingLaunches[launched.Id] = launched; }
+                DrainLaunchNotices();
+            };
+            helperRegistry.Connected += _ => DrainLaunchNotices();
+        }
+
+        // End task on a launch notice. Ended here, not in the helper: the
+        // service runs as LocalSystem and can end an elevated vendor app.
+        helperRegistry.InboundEnvelope += (_, env) => EndConflictFromNotice(env);
+
+        static void EndConflictFromNotice(HelperEnvelope env)
+        {
+            if (env.Type != ConflictNoticeCommands.EndType || env.Payload is null) return;
+            Nexus.Service.Conflicts.ConflictAppDefinition? def;
+            try
+            {
+                var p = System.Text.Json.JsonSerializer.Deserialize(env.Payload.Value, AppJsonContext.Default.ConflictEndPayload);
+                def = p is null ? null : Nexus.Service.Conflicts.ConflictWatcher.FindById(p.AppId);
+            }
+            catch (Exception ex)
+            {
+                ServiceLog.Warn($"[conflicts] end task from notice: bad payload: {ex.Message}");
+                return;
+            }
+            if (def is null) return;
+            // Off the pipe's read loop: the kill waits for the process to exit.
+            _ = Task.Run(() =>
+            {
+                try
+                {
+                    var outcome = Nexus.Service.Conflicts.ConflictKiller.Kill(def);
+                    ServiceLog.Info($"[conflicts] end task from notice: {def.DisplayName} runningBefore={outcome.RunningBefore} runningAfter={outcome.RunningAfter}");
+                }
+                catch (Exception ex) { ServiceLog.Warn($"[conflicts] end task from notice failed: {ex.Message}"); }
+            });
+        }
 
         // Re-assert the Y70 panel's display orientation on every fresh helper
         // connect. Windows defaults a freshly attached portrait panel to

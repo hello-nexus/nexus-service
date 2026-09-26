@@ -530,6 +530,8 @@ public static class NexusServiceCollectionExtensions
                 services.AddHostedService(sp => new Nexus.Service.Conflicts.ConflictExitRecovery(
                     sp.GetRequiredService<Nexus.Service.Conflicts.IConflictDetector>(),
                     sp.GetRequiredService<Nexus.Service.Lighting.Rgb.RgbBridge>()));
+                services.AddSingleton<Nexus.Service.Conflicts.ConflictLaunchNotifier>();
+                services.AddHostedService(sp => sp.GetRequiredService<Nexus.Service.Conflicts.ConflictLaunchNotifier>());
             }
         }
         else
