@@ -12,6 +12,42 @@ public class Slv3LightingDeviceProviderTests
     private static readonly byte[] FanMac = Convert.FromHexString("112233445566");
 
     [Fact]
+    public void Sl_fan_chain_lays_out_top_and_bottom_edge_bars_left_to_right()
+    {
+        var (hub, net, _) = Slv3TestHub.CreateConnected();
+        net.Fans.Add(new Slv3TestHub.SimulatedFan { Mac = FanMac, MasterMac = net.MasterMac, RxType = 1, FanCount = 3, FansType = 24 });
+        Assert.True(hub.DriveTick());
+
+        var provider = new Slv3LightingDeviceProvider(hub, new InMemoryConfigStore(), new Np50IdentifyTracker());
+        var structure = Assert.Single(provider.GetStructures());
+        var top = structure.Segments[Slv3LightingDeviceProvider.InnerSegment];
+        var bottom = structure.Segments[Slv3LightingDeviceProvider.OuterSegment];
+
+        Assert.Equal("Top", top.Name);
+        Assert.Equal("Bottom", bottom.Name);
+        for (var f = 0; f < 3; f++)
+        {
+            // Bar (12) then edge line (8) per fan, each strictly left to right inside the fan's third.
+            for (var k = 1; k < 12; k++)
+            {
+                Assert.True(top.DefaultU![f * 20 + k] > top.DefaultU[f * 20 + k - 1]);
+            }
+            for (var k = 13; k < 20; k++)
+            {
+                Assert.True(top.DefaultU![f * 20 + k] > top.DefaultU[f * 20 + k - 1]);
+            }
+            Assert.InRange(top.DefaultU![f * 20], f / 3f, (f + 1) / 3f);
+            Assert.InRange(top.DefaultU[f * 20 + 19], f / 3f, (f + 1) / 3f);
+        }
+        for (var i = 0; i < 60; i++)
+        {
+            // The bottom half mirrors the top: same column, opposite edge.
+            Assert.Equal(top.DefaultU![i], bottom.DefaultU![i], 5);
+            Assert.True(top.DefaultV![i] < 0.5f && bottom.DefaultV![i] > 0.5f);
+        }
+    }
+
+    [Fact]
     public void GetStructures_returns_empty_when_disconnected()
     {
         var hub = new Slv3Hub(new Slv3TestHub.FakeDiscovery(), _ => throw new InvalidOperationException());
