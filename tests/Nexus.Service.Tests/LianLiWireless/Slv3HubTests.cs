@@ -433,6 +433,53 @@ public class Slv3HubTests
     }
 
     [Fact]
+    public async Task SendRgbWindowAsync_sends_back_to_back_headers_and_every_data_part_four_times()
+    {
+        var (hub, net, tx, _) = CreateConnectedHub();
+        net.Fans.Add(new SimulatedFan { Mac = FanMac, MasterMac = net.MasterMac, RxType = 3 });
+        Assert.True(hub.DriveTick());
+        tx.SentFrames.Clear();
+
+        var frames = new byte[30 * 40 * 3];
+        new Random(7).NextBytes(frames);
+        Assert.True(await hub.SendRgbWindowAsync(Convert.ToHexString(FanMac), frames, 40, 30, 53, 100));
+
+        // Chunk 0 of each RF payload carries the packet index at [22] and the count at [23].
+        var parts = tx.SentFrames.FindAll(f => f.Length >= 24 && f[1] == 0 && f[4] == Slv3Protocol.RfFrameType && f[5] == Slv3Protocol.RfRgbSync);
+        Assert.Equal(8, parts.Count(f => f[22] == 0));
+        var total = parts[0][23];
+        Assert.True(total >= 2);
+        for (var p = 1; p < total; p++)
+        {
+            Assert.Equal(4, parts.Count(f => f[22] == p));
+        }
+        Assert.All(parts, f => Assert.True(f.AsSpan(18, 4).SequenceEqual(parts[0].AsSpan(18, 4))));
+        Assert.Equal(3, parts[0][18]);
+    }
+
+    [Fact]
+    public async Task SendRgbWindowAsync_never_repeats_the_previous_effect_index()
+    {
+        var (hub, net, tx, _) = CreateConnectedHub();
+        net.Fans.Add(new SimulatedFan { Mac = FanMac, MasterMac = net.MasterMac, RxType = 3 });
+        Assert.True(hub.DriveTick());
+        var frames = new byte[30 * 40 * 3];
+
+        tx.SentFrames.Clear();
+        Assert.True(await hub.SendRgbWindowAsync(Convert.ToHexString(FanMac), frames, 40, 30, 53, 100));
+        var first = HeaderIndex(tx);
+        tx.SentFrames.Clear();
+        Assert.True(await hub.SendRgbWindowAsync(Convert.ToHexString(FanMac), frames, 40, 30, 53, 100));
+        var second = HeaderIndex(tx);
+
+        Assert.NotEqual(first, second);
+        Assert.Equal(first[..6], second[..6]);
+
+        static string HeaderIndex(FakeTxTransport tx) => Convert.ToHexString(tx.SentFrames.Find(
+            f => f.Length >= 24 && f[1] == 0 && f[5] == Slv3Protocol.RfRgbSync && f[22] == 0)!.AsSpan(18, 4));
+    }
+
+    [Fact]
     public void SendRgbFrame_fails_for_unbound_fan()
     {
         var (hub, net, _, _) = CreateConnectedHub();

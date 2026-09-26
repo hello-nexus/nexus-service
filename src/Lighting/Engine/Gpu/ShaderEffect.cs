@@ -80,6 +80,11 @@ public sealed class ShaderEffect : IEffect
     public float Colorize { get; set; } = 0f;
     public float Saturation { get; set; } = 1f;
     public float Contrast { get; set; } = 1f;
+    /// <summary>True once the compiled program reads a live audio uniform, so a frame depends on more than time.</summary>
+    public bool ReadsAudio =>
+        _uAudioLevel >= 0 || _uAudioBass >= 0 || _uAudioMid >= 0 || _uAudioHigh >= 0 || _uAudioBeat >= 0
+        || _uSpectrum >= 0 || _uSpectrum64 >= 0 || _uSpecHist >= 0 || _uBassPeak >= 0 || _uMidPeak >= 0 || _uHighPeak >= 0;
+
     /// <summary>0 = ignore audio, 1 = full reactive. Bound every frame to u_audioBoost.</summary>
     public float AudioBoost { get; set; } = 0f;
     /// <summary>Per-effect uniforms keyed by GLSL name (e.g. "u_zoom", "u_freq").</summary>

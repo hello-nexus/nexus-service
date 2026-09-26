@@ -110,30 +110,6 @@ public static partial class Slv3Routes
             return Results.Json(ApiResponse.Ok(), AppJsonContext.Default.ApiResponse);
         });
 
-        // Prototype: rolling-window playback switches.
-        app.MapPost("/devices/lianli-wireless/rolling", (HttpRequest req) =>
-        {
-            int Q(string k, int d) => int.TryParse(req.Query[k], out var v) ? v : d;
-            Nexus.Service.Lighting.Slv3Rolling.Enabled = Q("enabled", Nexus.Service.Lighting.Slv3Rolling.Enabled ? 1 : 0) == 1;
-            Nexus.Service.Lighting.Slv3Rolling.IntervalTicks = Q("interval", Nexus.Service.Lighting.Slv3Rolling.IntervalTicks);
-            Nexus.Service.Lighting.Slv3Rolling.Frames = Q("frames", Nexus.Service.Lighting.Slv3Rolling.Frames);
-            Nexus.Service.Lighting.Slv3Rolling.PeriodMs = Q("period", Nexus.Service.Lighting.Slv3Rolling.PeriodMs);
-            Nexus.Service.Lighting.Slv3Rolling.OffsetMs = Q("offset", Nexus.Service.Lighting.Slv3Rolling.OffsetMs);
-            Nexus.Service.Peripherals.LianLiWireless.Slv3Hub.DuplicateDataParts = Q("dup", Nexus.Service.Peripherals.LianLiWireless.Slv3Hub.DuplicateDataParts ? 1 : 0) == 1;
-            Nexus.Service.Lighting.Slv3Rolling.Verbose = Q("verbose", Nexus.Service.Lighting.Slv3Rolling.Verbose ? 1 : 0) == 1;
-            Nexus.Service.Peripherals.LianLiWireless.Slv3Hub.RgbHeaderRepeats = Q("hdr", Nexus.Service.Peripherals.LianLiWireless.Slv3Hub.RgbHeaderRepeats);
-            Nexus.Service.Peripherals.LianLiWireless.Slv3Hub.RgbHeaderGapMs = Q("gap", Nexus.Service.Peripherals.LianLiWireless.Slv3Hub.RgbHeaderGapMs);
-            Nexus.Service.Peripherals.LianLiWireless.Slv3Hub.AtomicUpload = Q("atomic", Nexus.Service.Peripherals.LianLiWireless.Slv3Hub.AtomicUpload ? 1 : 0) == 1;
-            Nexus.Service.Peripherals.LianLiWireless.Slv3Hub.Resends = Q("resends", Nexus.Service.Peripherals.LianLiWireless.Slv3Hub.Resends);
-            Nexus.Service.Peripherals.LianLiWireless.Slv3Hub.ResendGapMs = Q("rgap", Nexus.Service.Peripherals.LianLiWireless.Slv3Hub.ResendGapMs);
-            Nexus.Service.Peripherals.LianLiWireless.Slv3Hub.LatePasses = Q("late", Nexus.Service.Peripherals.LianLiWireless.Slv3Hub.LatePasses);
-            Nexus.Service.Peripherals.LianLiWireless.Slv3Hub.LateGapMs = Q("lgap", Nexus.Service.Peripherals.LianLiWireless.Slv3Hub.LateGapMs);
-            Nexus.Service.Peripherals.LianLiWireless.Slv3Hub.SafeEffectIndex = Q("safeeff", Nexus.Service.Peripherals.LianLiWireless.Slv3Hub.SafeEffectIndex ? 1 : 0) == 1;
-            return Results.Json(ApiResponse.Ok(
-                $"enabled={Nexus.Service.Lighting.Slv3Rolling.Enabled} interval={Nexus.Service.Lighting.Slv3Rolling.IntervalTicks} frames={Nexus.Service.Lighting.Slv3Rolling.Frames} period={Nexus.Service.Lighting.Slv3Rolling.PeriodMs} offset={Nexus.Service.Lighting.Slv3Rolling.OffsetMs} dup={Nexus.Service.Peripherals.LianLiWireless.Slv3Hub.DuplicateDataParts} hdr={Nexus.Service.Peripherals.LianLiWireless.Slv3Hub.RgbHeaderRepeats} gap={Nexus.Service.Peripherals.LianLiWireless.Slv3Hub.RgbHeaderGapMs} atomic={Nexus.Service.Peripherals.LianLiWireless.Slv3Hub.AtomicUpload} resends={Nexus.Service.Peripherals.LianLiWireless.Slv3Hub.Resends} rgap={Nexus.Service.Peripherals.LianLiWireless.Slv3Hub.ResendGapMs} late={Nexus.Service.Peripherals.LianLiWireless.Slv3Hub.LatePasses} lgap={Nexus.Service.Peripherals.LianLiWireless.Slv3Hub.LateGapMs} safeeff={Nexus.Service.Peripherals.LianLiWireless.Slv3Hub.SafeEffectIndex}"),
-                AppJsonContext.Default.ApiResponse);
-        });
-
         // POST /devices/lianli-wireless/identify - one-shot RF_Select flash.
         app.MapPost("/devices/lianli-wireless/identify", (Slv3MacRequest body, Slv3Hub hub) =>
         {

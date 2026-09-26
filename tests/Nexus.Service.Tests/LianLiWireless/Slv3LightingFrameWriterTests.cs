@@ -10,6 +10,43 @@ namespace Nexus.Service.Tests.LianLiWireless;
 
 public class Slv3LightingFrameWriterTests
 {
+    [Fact]
+    public void TryFitClock_recovers_the_rf_clock_line_and_rejects_implausible_slopes()
+    {
+        var samples = new List<(double Utc, double Rf)>();
+        for (var i = 0; i < 8; i++)
+        {
+            var utc = 1_000_000.0 + i * 250;
+            samples.Add((utc, 5_000 + 1.6002 * utc));
+        }
+
+        Assert.True(Slv3LightingFrameWriter.TryFitClock(samples, out var a, out var b));
+        Assert.Equal(1.6002, b, 6);
+        Assert.Equal(5_000, a, 3);
+
+        Assert.False(Slv3LightingFrameWriter.TryFitClock(samples.GetRange(0, 3), out _, out _));
+        var fast = samples.ConvertAll(x => (x.Utc, x.Rf * 2));
+        Assert.False(Slv3LightingFrameWriter.TryFitClock(fast, out _, out _));
+    }
+
+    [Fact]
+    public void WindowTickTimes_render_each_slot_at_the_middle_of_the_frame_it_plays()
+    {
+        const double A = 12_345, B = 1.6003;
+        const long FirstFrame = 987_654;
+        var ticks = Slv3LightingFrameWriter.WindowTickTimes(A, B, FirstFrame);
+
+        Assert.Equal(Slv3LightingFrameWriter.WindowFrames, ticks.Length);
+        var slots = new HashSet<int>();
+        for (var k = 0; k < ticks.Length; k++)
+        {
+            var frame = (long)Math.Floor((A + B * ticks[k]) / Slv3LightingFrameWriter.WindowIntervalTicks);
+            Assert.Equal(FirstFrame + k, frame);
+            slots.Add(Slv3LightingFrameWriter.WindowSlot(frame));
+        }
+        Assert.Equal(Slv3LightingFrameWriter.WindowFrames, slots.Count);
+    }
+
     private static readonly byte[] FanMac = Convert.FromHexString("112233445566");
 
     private static (Slv3Hub Hub, Slv3TestHub.FakeSlv3Network Net, Slv3TestHub.FakeTxTransport Tx,

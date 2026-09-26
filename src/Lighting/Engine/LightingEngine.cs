@@ -8,9 +8,23 @@ namespace Nexus.Service.Lighting.Engine;
 
 public sealed class LightingEngine : IDisposable
 {
-    private CanvasBuffer _canvas;
-    private readonly CanvasBuffer _aheadCanvas = new(160, 90);
+    private readonly CanvasBuffer _canvas;
+    private readonly CanvasBuffer _aheadCanvas;
+    // The canvas the device sampler reads: the live one, or the look-ahead one
+    // while a future frame is sampled. Engine thread only.
+    private CanvasBuffer _sampleCanvas;
     private readonly System.Collections.Concurrent.ConcurrentQueue<AheadRequest> _aheadRequests = new();
+    private AheadRequest? _aheadActive;
+
+    // Look-ahead render time per tick: a whole window at once pushed the next
+    // live tick past its deadline for every device.
+    private const double AheadBudgetMs = 12;
+
+    // Look-ahead waits this long after a live shader param change (a slider
+    // drag), so a window never mixes old and new params and drags stream live.
+    private const int AheadParamSettleMs = 300;
+    private int _aheadParamsSig;
+    private long _aheadParamsChangedMs;
     private readonly object _lock = new();
     private CancellationTokenSource? _cts;
     private Task? _loopTask;
@@ -50,7 +64,12 @@ public sealed class LightingEngine : IDisposable
     private int _frozenRenderedEpoch = -1;
     private byte[] _frameBuffer = Array.Empty<byte>();
 
-    public LightingEngine() { _canvas = new CanvasBuffer(160, 90); }
+    public LightingEngine()
+    {
+        _canvas = new CanvasBuffer(160, 90);
+        _aheadCanvas = new CanvasBuffer(_canvas.Width, _canvas.Height);
+        _sampleCanvas = _canvas;
+    }
 
     public int FrameIntervalMs { get; set; } = 33;
 
@@ -600,6 +619,7 @@ public sealed class LightingEngine : IDisposable
                         if (!_frozen || Volatile.Read(ref _frozenRenderedEpoch) != epoch)
                         {
                             effect.RenderFrame(_canvas, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds());
+                            TrackAheadParams(effect);
                             Volatile.Write(ref _frozenRenderedEpoch, epoch);
                         }
                         // One snapshot for the sample, the game pass and the
@@ -692,11 +712,51 @@ public sealed class LightingEngine : IDisposable
     }
 
     /// <summary>
+    /// True when the current effect is a pure function of time for
+    /// <paramref name="deviceIds"/>: an unfrozen shader that reads no audio and
+    /// whose params have settled, with no pause, blackout, wake ramp or LED
+    /// editor overlay in play.
+    /// </summary>
+    public bool CanRenderAhead(IReadOnlyList<string> deviceIds)
+    {
+        if (_currentEffect is not Gpu.ShaderEffect shader || shader.ReadsAudio)
+        {
+            return false;
+        }
+        if (_paused || _frozen || _blackout || _wakeDurationMs > 0
+            || Environment.TickCount64 - Volatile.Read(ref _aheadParamsChangedMs) < AheadParamSettleMs)
+        {
+            return false;
+        }
+        foreach (var d in _devices)
+        {
+            var editing = d.HighlightLeds is { Count: > 0 } || d.TestPattern is not null
+                || d.PreviewLayout is not null || d.PreviewLedCount is not null;
+            if (editing && deviceIds.Contains(d.Id))
+            {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    private void TrackAheadParams(IEffect effect)
+    {
+        if (effect is not Gpu.ShaderEffect shader) return;
+        var sig = HashCode.Combine(
+            HashCode.Combine(shader.Speed, shader.Intensity, shader.Hue, shader.Colorize, shader.Saturation, shader.Contrast, shader.AudioBoost),
+            shader.ExtraParams, FullFrameSampling, shader);
+        if (sig == _aheadParamsSig) return;
+        _aheadParamsSig = sig;
+        Volatile.Write(ref _aheadParamsChangedMs, Environment.TickCount64);
+    }
+
+    /// <summary>
     /// Asks the engine loop to render the current effect at future wall-clock
     /// times for <paramref name="deviceIds"/>, for hardware that plays an
-    /// uploaded frame loop on its own clock. Serviced after the next live
-    /// publish; <see cref="AheadRequest.Frames"/> stays null when the effect is
-    /// not a pure function of time (game sync, screen, media).
+    /// uploaded frame loop on its own clock. Rendered a few frames per tick after
+    /// each live publish; <see cref="AheadRequest.Frames"/> stays null when the
+    /// effect changes or stops being a shader before the window completes.
     /// </summary>
     public AheadRequest RequestAhead(string[] deviceIds, long[] tickMs)
     {
@@ -707,48 +767,54 @@ public sealed class LightingEngine : IDisposable
 
     private void ServiceAheadRequests(IEffect effect, DeviceFrame[] devices)
     {
-        while (_aheadRequests.TryDequeue(out var req))
+        var sw = System.Diagnostics.Stopwatch.StartNew();
+        var rendered = 0;
+        while (rendered == 0 || sw.Elapsed.TotalMilliseconds < AheadBudgetMs)
         {
-            if (effect is not Gpu.ShaderEffect || _frozen)
+            var req = _aheadActive;
+            if (req is null)
             {
+                if (!_aheadRequests.TryDequeue(out req))
+                {
+                    return;
+                }
+                req.Begin(effect, _aheadParamsSig, devices);
+                _aheadActive = req;
+            }
+            if (req.Abandoned || !ReferenceEquals(req.Effect, effect) || req.ParamsSig != _aheadParamsSig
+                || effect is not Gpu.ShaderEffect { ReadsAudio: false })
+            {
+                _aheadActive = null;
                 req.Done.Set();
                 continue;
             }
-            var sw = System.Diagnostics.Stopwatch.StartNew();
-            var sources = new List<DeviceFrame>();
-            foreach (var d in devices)
-            {
-                if (Array.IndexOf(req.DeviceIds, d.Id) >= 0) sources.Add(d);
-            }
-            var frames = new DeviceFrame[req.TickMs.Length][];
-            var live = _canvas;
             try
             {
-                for (var t = 0; t < req.TickMs.Length; t++)
+                var shadow = req.NewShadowFrames();
+                effect.RenderFrame(_aheadCanvas, req.TickMs[req.NextFrame]);
+                _sampleCanvas = _aheadCanvas;
+                SampleDevicesFromCanvas(shadow);
+                foreach (var d in shadow)
                 {
-                    effect.RenderFrame(_aheadCanvas, req.TickMs[t]);
-                    var shadow = new DeviceFrame[sources.Count];
-                    for (var i = 0; i < sources.Count; i++)
-                    {
-                        var s = sources[i];
-                        shadow[i] = new DeviceFrame(s.Index, s.Id, s.LedCount, s.X, s.Y, s.W, s.H, s.Rotation, s.PhysicalIndex, s.ZoneIndex, s.ZoneOffset)
-                        {
-                            LedU = s.LedU, LedV = s.LedV, LedDisabled = s.LedDisabled, Archetype = s.Archetype,
-                            PreviewLedCount = s.PreviewLedCount, PreviewLayout = s.PreviewLayout,
-                        };
-                    }
-                    _canvas = _aheadCanvas;
-                    SampleDevicesFromCanvas(shadow);
-                    _canvas = live;
-                    foreach (var d in shadow) d.Publish();
-                    frames[t] = shadow;
+                    d.Publish();
                 }
-                req.Frames = frames;
+                req.Rendered[req.NextFrame++] = shadow;
+                rendered++;
+            }
+            catch
+            {
+                _aheadActive = null;
+                req.Done.Set();
+                throw;
             }
             finally
             {
-                _canvas = live;
-                req.RenderMs = sw.Elapsed.TotalMilliseconds;
+                _sampleCanvas = _canvas;
+            }
+            if (req.NextFrame == req.TickMs.Length)
+            {
+                req.Frames = req.Rendered;
+                _aheadActive = null;
                 req.Done.Set();
             }
         }
@@ -756,8 +822,8 @@ public sealed class LightingEngine : IDisposable
 
     private void SampleDevicesFromCanvas(DeviceFrame[] devices)
     {
-        var cw = _canvas.Width;
-        var ch = _canvas.Height;
+        var cw = _sampleCanvas.Width;
+        var ch = _sampleCanvas.Height;
         const float CW = 1000f, CH = 600f;
         // Overlays first, so an LED they own never gets a canvas colour it is
         // about to lose. Correctness no longer rests on this - DeviceFrame
@@ -917,7 +983,7 @@ public sealed class LightingEngine : IDisposable
                         ? SampleLedFootprint(sx - uvHalfW, sy - uvHalfH, sx + uvHalfW, sy + uvHalfH)
                         : fullFrame
                             ? SampleLedBox(sx - uvHalfW, sy - uvHalfH, sx + uvHalfW, sy + uvHalfH)
-                            : _canvas.GetPixel((int)sx, (int)sy);
+                            : _sampleCanvas.GetPixel((int)sx, (int)sy);
                     dev.SetLed(i, r, g, b);
                 }
                 continue;
@@ -954,7 +1020,7 @@ public sealed class LightingEngine : IDisposable
                     ? SampleLedFootprint(sx - linHalfW, sy - linHalfH, sx + linHalfW, sy + linHalfH)
                     : fullFrame
                         ? SampleLedBox(sx - linHalfW, sy - linHalfH, sx + linHalfW, sy + linHalfH)
-                        : _canvas.GetPixel((int)sx, (int)sy);
+                        : _sampleCanvas.GetPixel((int)sx, (int)sy);
                 dev.SetLed(i, r, g, b);
             }
         }
@@ -973,16 +1039,16 @@ public sealed class LightingEngine : IDisposable
     /// </summary>
     private (byte r, byte g, byte b) SampleLedFootprint(float x0, float y0, float x1, float y1)
     {
-        var ix0 = Math.Clamp((int)MathF.Floor(x0), 0, _canvas.Width - 1);
-        var iy0 = Math.Clamp((int)MathF.Floor(y0), 0, _canvas.Height - 1);
-        var ix1 = Math.Clamp((int)MathF.Ceiling(x1) - 1, ix0, _canvas.Width - 1);
-        var iy1 = Math.Clamp((int)MathF.Ceiling(y1) - 1, iy0, _canvas.Height - 1);
+        var ix0 = Math.Clamp((int)MathF.Floor(x0), 0, _sampleCanvas.Width - 1);
+        var iy0 = Math.Clamp((int)MathF.Floor(y0), 0, _sampleCanvas.Height - 1);
+        var ix1 = Math.Clamp((int)MathF.Ceiling(x1) - 1, ix0, _sampleCanvas.Width - 1);
+        var iy1 = Math.Clamp((int)MathF.Ceiling(y1) - 1, iy0, _sampleCanvas.Height - 1);
         long wSum = 0, rSum = 0, gSum = 0, bSum = 0;
         for (int py = iy0; py <= iy1; py++)
         {
             for (int px = ix0; px <= ix1; px++)
             {
-                var (r, g, b) = _canvas.GetPixel(px, py);
+                var (r, g, b) = _sampleCanvas.GetPixel(px, py);
                 int m = Math.Max(r, Math.Max(g, b));
                 if (m == 0)
                 {
@@ -1015,16 +1081,16 @@ public sealed class LightingEngine : IDisposable
     /// </summary>
     private (byte r, byte g, byte b) SampleLedBox(float x0, float y0, float x1, float y1)
     {
-        var ix0 = Math.Clamp((int)MathF.Floor(x0), 0, _canvas.Width - 1);
-        var iy0 = Math.Clamp((int)MathF.Floor(y0), 0, _canvas.Height - 1);
-        var ix1 = Math.Clamp((int)MathF.Ceiling(x1) - 1, ix0, _canvas.Width - 1);
-        var iy1 = Math.Clamp((int)MathF.Ceiling(y1) - 1, iy0, _canvas.Height - 1);
+        var ix0 = Math.Clamp((int)MathF.Floor(x0), 0, _sampleCanvas.Width - 1);
+        var iy0 = Math.Clamp((int)MathF.Floor(y0), 0, _sampleCanvas.Height - 1);
+        var ix1 = Math.Clamp((int)MathF.Ceiling(x1) - 1, ix0, _sampleCanvas.Width - 1);
+        var iy1 = Math.Clamp((int)MathF.Ceiling(y1) - 1, iy0, _sampleCanvas.Height - 1);
         long n = 0, rSum = 0, gSum = 0, bSum = 0;
         for (int py = iy0; py <= iy1; py++)
         {
             for (int px = ix0; px <= ix1; px++)
             {
-                var (r, g, b) = _canvas.GetPixel(px, py);
+                var (r, g, b) = _sampleCanvas.GetPixel(px, py);
                 rSum += r;
                 gSum += g;
                 bSum += b;
@@ -1303,15 +1369,57 @@ public sealed class LightingEngine : IDisposable
 /// <summary>One look-ahead render job; see <see cref="LightingEngine.RequestAhead"/>.</summary>
 public sealed class AheadRequest
 {
+    private DeviceFrame[] _sources = Array.Empty<DeviceFrame>();
+
     public AheadRequest(string[] deviceIds, long[] tickMs)
     {
         DeviceIds = deviceIds;
         TickMs = tickMs;
+        Rendered = new DeviceFrame[tickMs.Length][];
     }
 
     public string[] DeviceIds { get; }
     public long[] TickMs { get; }
     public DeviceFrame[][]? Frames { get; set; }
-    public double RenderMs { get; set; }
     public ManualResetEventSlim Done { get; } = new(false);
+
+    private volatile bool _abandoned;
+
+    /// <summary>True once the requester stopped waiting; the engine drops the job.</summary>
+    public bool Abandoned => _abandoned;
+
+    public void Abandon() => _abandoned = true;
+
+    internal IEffect? Effect { get; private set; }
+    internal int ParamsSig { get; private set; }
+    internal int NextFrame { get; set; }
+    internal DeviceFrame[][] Rendered { get; }
+
+    internal void Begin(IEffect effect, int paramsSig, DeviceFrame[] devices)
+    {
+        Effect = effect;
+        ParamsSig = paramsSig;
+        var sources = new List<DeviceFrame>();
+        foreach (var d in devices)
+        {
+            if (Array.IndexOf(DeviceIds, d.Id) >= 0) sources.Add(d);
+        }
+        _sources = sources.ToArray();
+    }
+
+    // Layout-only copies of the live frames, so sampling never writes the published ones.
+    internal DeviceFrame[] NewShadowFrames()
+    {
+        var shadow = new DeviceFrame[_sources.Length];
+        for (var i = 0; i < _sources.Length; i++)
+        {
+            var s = _sources[i];
+            shadow[i] = new DeviceFrame(s.Index, s.Id, s.LedCount, s.X, s.Y, s.W, s.H, s.Rotation, s.PhysicalIndex, s.ZoneIndex, s.ZoneOffset)
+            {
+                LedU = s.LedU, LedV = s.LedV, LedDisabled = s.LedDisabled, Archetype = s.Archetype,
+                PreviewLedCount = s.PreviewLedCount, PreviewLayout = s.PreviewLayout,
+            };
+        }
+        return shadow;
+    }
 }

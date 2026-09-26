@@ -22,6 +22,30 @@ public class LightingEngineTests
     }
 
     [Fact]
+    public void CanRenderAhead_is_false_without_a_shader_effect()
+    {
+        using var engine = new LightingEngine();
+        engine.UpdateDevices(MakeDevices());
+        Assert.False(engine.CanRenderAhead(new[] { "test-0" }));
+        engine.SetEffect(new TestEffect("not-a-shader"));
+        Assert.False(engine.CanRenderAhead(new[] { "test-0" }));
+    }
+
+    [Fact]
+    public void RequestAhead_completes_without_frames_when_the_effect_is_not_a_shader()
+    {
+        using var engine = new LightingEngine();
+        engine.UpdateDevices(MakeDevices());
+        engine.FrameIntervalMs = 10;
+        engine.SetEffect(new TestEffect("not-a-shader"));
+
+        var req = engine.RequestAhead(new[] { "test-0" }, new long[] { 1, 2, 3 });
+
+        Assert.True(req.Done.Wait(TimeSpan.FromSeconds(5)));
+        Assert.Null(req.Frames);
+    }
+
+    [Fact]
     public void SetEffect_DisposesOldEffect()
     {
         using var engine = new LightingEngine();
