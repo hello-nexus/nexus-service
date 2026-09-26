@@ -22,10 +22,12 @@ namespace Nexus.Service.Lighting;
 /// not implement IComposableHubSource.
 ///
 /// The family's wire LED count per fan (Slv3Protocol.LedsPerFanFor) is split
-/// as two equal ring zones - "Inner Ring" = the first half of the wire
-/// indices, "Outer Ring" = the last half - a documented v1 approximation
-/// pending a hardware camera check of the true ring boundary (SLV3's physical
-/// sub-rings are 12+8+12+8).
+/// into two equal zones: the first half of each fan's wire indices, then the
+/// last half. SL fans light edge bars, not rings: per fan the wire runs the
+/// top V-shaped bar, the top edge line, the bottom bar and the bottom edge
+/// line, each left to right, so the halves are the "Top" and "Bottom" zones.
+/// Camera-mapped on SL V3 LCD; the LED-only SL V3 is assumed to share it.
+/// Other families keep the concentric ring approximation.
 ///
 /// A bound Strimer Wireless cable is a device of its own on the same link:
 /// one fixed segment holding the whole cable (Slv3Protocol.StrimerGeometryFor),
@@ -467,8 +469,12 @@ public sealed class Slv3LightingDeviceProvider : ILightingDeviceProvider, ILight
         var deviceKey = DeviceKeyComputer.ForFirstParty(Slv3Protocol.TxVendorId, Slv3Protocol.TxProductId, "wireless-fan");
         var ledsPerRing = RingLedsFor(fan);
         var ringLeds = fan.FanCount * ledsPerRing;
-        var (innerU, innerV) = BuildFanRingUV(fan.FanCount, InnerRadius, ledsPerRing);
-        var (outerU, outerV) = BuildFanRingUV(fan.FanCount, OuterRadius, ledsPerRing);
+        var family = Slv3Protocol.ClassifyFanFamily((byte)fan.FanType);
+        var edgeBars = family is Slv3FanFamily.Slv3Led or Slv3FanFamily.Slv3Lcd && ledsPerRing == EdgeBarLeds + EdgeLineLeds;
+        var (innerU, innerV) = edgeBars ? BuildEdgeBarUV(fan.FanCount, top: true) : BuildFanRingUV(fan.FanCount, InnerRadius, ledsPerRing);
+        var (outerU, outerV) = edgeBars ? BuildEdgeBarUV(fan.FanCount, top: false) : BuildFanRingUV(fan.FanCount, OuterRadius, ledsPerRing);
+        var innerName = edgeBars ? "Top" : "Inner Ring";
+        var outerName = edgeBars ? "Bottom" : "Outer Ring";
 
         var structure = new DeviceStructure
         {
@@ -479,7 +485,7 @@ public sealed class Slv3LightingDeviceProvider : ILightingDeviceProvider, ILight
         structure.Segments.Add(new StructureSegment
         {
             Index = InnerSegment,
-            Name = "Inner Ring",
+            Name = innerName,
             LedCount = ringLeds,
             FrameLedCount = ringLeds,
             Resizable = false,
@@ -490,7 +496,7 @@ public sealed class Slv3LightingDeviceProvider : ILightingDeviceProvider, ILight
         structure.Segments.Add(new StructureSegment
         {
             Index = OuterSegment,
-            Name = "Outer Ring",
+            Name = outerName,
             LedCount = ringLeds,
             FrameLedCount = ringLeds,
             Resizable = false,
@@ -501,8 +507,8 @@ public sealed class Slv3LightingDeviceProvider : ILightingDeviceProvider, ILight
         structure.DefaultZones.Add(new DefaultZoneDef
         {
             Id = $"{deviceId}:inner",
-            Name = "Lian Li Wireless - Inner Ring",
-            RawName = "Inner Ring",
+            Name = $"Lian Li Wireless - {innerName}",
+            RawName = innerName,
             DeviceKey = DeviceKeyComputer.ForFirstParty(Slv3Protocol.TxVendorId, Slv3Protocol.TxProductId, "wireless-fan-inner"),
             LegacyZoneIndex = -1,
             Slices = { new ZoneSlice { Segment = InnerSegment, Start = 0, Count = ringLeds } },
@@ -510,13 +516,68 @@ public sealed class Slv3LightingDeviceProvider : ILightingDeviceProvider, ILight
         structure.DefaultZones.Add(new DefaultZoneDef
         {
             Id = $"{deviceId}:outer",
-            Name = "Lian Li Wireless - Outer Ring",
-            RawName = "Outer Ring",
+            Name = $"Lian Li Wireless - {outerName}",
+            RawName = outerName,
             DeviceKey = DeviceKeyComputer.ForFirstParty(Slv3Protocol.TxVendorId, Slv3Protocol.TxProductId, "wireless-fan-outer"),
             LegacyZoneIndex = -1,
             Slices = { new ZoneSlice { Segment = OuterSegment, Start = 0, Count = ringLeds } },
         });
         return structure;
+    }
+
+    // SL edge-bar geometry per fan, in fan-square units: the bar dips into a V
+    // at each side (where neighbouring fans meet) and runs flat in between.
+    private const int EdgeBarLeds = 12;
+    private const int EdgeLineLeds = 8;
+    private const double BarSlopeWidth = 0.24;
+    private const double BarDipDepth = 0.25;
+    private const double BarInset = 0.04;
+
+    /// <summary>
+    /// U/V for one half of an SL fan chain: per fan the V-shaped bar then the
+    /// straight edge line, both left to right, at the top or mirrored at the
+    /// bottom. The bar's LEDs sit at even steps along its polyline.
+    /// </summary>
+    internal static (float[] u, float[] v) BuildEdgeBarUV(int fans, bool top)
+    {
+        var perFan = EdgeBarLeds + EdgeLineLeds;
+        var u = new float[fans * perFan];
+        var v = new float[fans * perFan];
+        (double X, double Y)[] path =
+        {
+            (0, BarDipDepth), (BarSlopeWidth, BarInset), (1 - BarSlopeWidth, BarInset), (1, BarDipDepth),
+        };
+        var segLen = new double[path.Length - 1];
+        var total = 0.0;
+        for (var i = 0; i < segLen.Length; i++)
+        {
+            segLen[i] = Math.Sqrt(Math.Pow(path[i + 1].X - path[i].X, 2) + Math.Pow(path[i + 1].Y - path[i].Y, 2));
+            total += segLen[i];
+        }
+        for (var f = 0; f < fans; f++)
+        {
+            for (var k = 0; k < EdgeBarLeds; k++)
+            {
+                var d = (k + 0.5) / EdgeBarLeds * total;
+                var seg = 0;
+                while (seg < segLen.Length - 1 && d > segLen[seg])
+                {
+                    d -= segLen[seg];
+                    seg++;
+                }
+                var t = d / segLen[seg];
+                var x = path[seg].X + (path[seg + 1].X - path[seg].X) * t;
+                var y = path[seg].Y + (path[seg + 1].Y - path[seg].Y) * t;
+                u[f * perFan + k] = (float)((f + x) / fans);
+                v[f * perFan + k] = (float)(top ? y : 1 - y);
+            }
+            for (var k = 0; k < EdgeLineLeds; k++)
+            {
+                u[f * perFan + EdgeBarLeds + k] = (float)((f + (k + 0.5) / EdgeLineLeds) / fans);
+                v[f * perFan + EdgeBarLeds + k] = top ? 0f : 1f;
+            }
+        }
+        return (u, v);
     }
 
     // One ring of ledsPerRing LEDs per fan, fans laid side by side along
