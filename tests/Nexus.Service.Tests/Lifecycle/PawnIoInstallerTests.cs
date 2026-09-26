@@ -45,6 +45,19 @@ public class PawnIoInstallerTests
         Assert.Equal(expected, PawnIoInstaller.ShouldUpgrade(installed, bundled));
     }
 
+    // --- IsPnputilAddSuccess ---
+
+    [Theory]
+    [InlineData(0, true)]
+    [InlineData(259, true)]   // package already in the store and up to date on the device
+    [InlineData(3010, true)]
+    [InlineData(1, false)]
+    [InlineData(5, false)]
+    public void IsPnputilAddSuccess_accepts_only_codes_that_leave_the_package_staged(int exitCode, bool expected)
+    {
+        Assert.Equal(expected, PawnIoInstaller.IsPnputilAddSuccess(exitCode));
+    }
+
     // --- ResolveImagePath ---
 
     [Fact]

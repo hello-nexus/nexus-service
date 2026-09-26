@@ -265,13 +265,32 @@ internal static class FactoryReset
         // before the wipe so nothing holds the profile dirs open, and so the
         // next boot's UserHelperBootstrapper.EnsureLaunched spawn is not
         // blocked by the still-running helper's Local\NexusHelper mutex.
-        // Excludes this finalizer's own pid - it also runs as Nexus.exe.
+        // Excludes this finalizer's own pid - it also runs as Nexus.exe - and
+        // another product's Nexus.exe, so the kill goes by pid, not image name.
         if (wipe)
         {
             ShellExecutor.RunExit("taskkill.exe", ShellExecutor.DefaultTimeoutMs,
                 "/F", "/T", "/IM", "nexus-overlay.exe");
-            ShellExecutor.RunExit("taskkill.exe", ShellExecutor.DefaultTimeoutMs,
-                "/F", "/FI", $"PID ne {Environment.ProcessId}", "/IM", "Nexus.exe");
+            // Never let the sweep abort Finalize: a throw here would skip the
+            // wipe and the service restart below.
+            try
+            {
+                var taskkillArgs = new List<string> { "/F" };
+                foreach (var sibling in OwnNexusExe.Siblings(OwnNexusExe.Known()))
+                {
+                    taskkillArgs.Add("/PID");
+                    taskkillArgs.Add(sibling.Id.ToString());
+                    sibling.Dispose();
+                }
+                if (taskkillArgs.Count > 1)
+                {
+                    ShellExecutor.RunExit("taskkill.exe", ShellExecutor.DefaultTimeoutMs, taskkillArgs.ToArray());
+                }
+            }
+            catch (Exception ex)
+            {
+                Console.Error.WriteLine($"[factory-reset] Nexus.exe sweep failed: {ex.Message}");
+            }
         }
 #endif
 

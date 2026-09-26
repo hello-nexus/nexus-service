@@ -166,6 +166,7 @@ public sealed class JsonConfigStore : IConfigStore, IDisposable
     /// v18: per-serial Stream Deck presets/live config hoist into the
     /// host-wide StreamDeckSettings.Presets/Instances, and every deck
     /// widget's inline layout config does the same (DeckModesMigration).
+    /// v19: ConflictWhitelistMigration.
     /// </summary>
     private static void Migrate(NexusSettings doc)
     {
@@ -244,6 +245,10 @@ public sealed class JsonConfigStore : IConfigStore, IDisposable
         if (doc.SchemaVersion < 18)
         {
             Nexus.Service.Deck.DeckModesMigration.Apply(doc);
+        }
+        if (doc.SchemaVersion < 19)
+        {
+            Nexus.Service.Conflicts.ConflictWhitelistMigration.Apply(doc);
         }
         doc.SchemaVersion = NexusSettings.CurrentSchemaVersion;
     }

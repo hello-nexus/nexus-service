@@ -53,11 +53,8 @@ public class ConflictStartupShutdownSettingsTests
     }
 
     [Fact]
-    public void NoAppIsExcludedByDefault()
+    public void OnlyTheCatalogDefaultsAreExcludedByDefault()
     {
-        // Empty, never null: the client merges an absent field as "keep the
-        // value the last profile had", so a profile that never excluded
-        // anything must still send an empty list rather than nothing.
-        Assert.Empty(new UiSettings().ConflictAutoKillExclusions);
+        Assert.Equal(ConflictAppCatalog.DefaultWhitelistedIds(), new UiSettings().ConflictAutoKillExclusions);
     }
 }

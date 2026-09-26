@@ -37,9 +37,10 @@ public sealed class DeviceControlGate
     // BOTH lists, never in neither. Disabled wins that transient, so a
     // just-enabled third-party device reads off for a cycle (fail-closed) and an
     // explicit choice is never readable as unset.
-    public bool IsEnabled(string handlerId)
+    public bool IsEnabled(string handlerId) => IsEnabled(_store.Load().Devices, handlerId);
+
+    private static bool IsEnabled(DevicesSettings devices, string handlerId)
     {
-        var devices = _store.Load().Devices;
         if (devices.NexusControlDisabled.Contains(handlerId, StringComparer.OrdinalIgnoreCase))
         {
             return false;
@@ -59,6 +60,7 @@ public sealed class DeviceControlGate
             && !devices.NexusControlEnabled.Contains(handlerId, StringComparer.OrdinalIgnoreCase);
     }
 
+    /// <summary>Persists the choice and, in the same mutation, takes the device's competing app off the conflict whitelist (on) or puts it on once none of that app's devices is still Nexus-controlled (off).</summary>
     public void SetEnabled(string handlerId, bool enabled)
     {
         _store.Update(s =>
@@ -74,6 +76,19 @@ public sealed class DeviceControlGate
                 devices.NexusControlDisabled = WithId(devices.NexusControlDisabled, handlerId);
                 devices.NexusControlEnabled = WithoutId(devices.NexusControlEnabled, handlerId);
             }
+
+            if (DeviceControlPolicy.ConflictAppFor(handlerId) is not { } appId)
+            {
+                return;
+            }
+            if (enabled)
+            {
+                s.Ui.ConflictAutoKillExclusions = WithoutId(s.Ui.ConflictAutoKillExclusions, appId);
+            }
+            else if (!DeviceControlPolicy.HandlersFor(appId).Any(h => IsEnabled(devices, h)))
+            {
+                s.Ui.ConflictAutoKillExclusions = WithId(s.Ui.ConflictAutoKillExclusions, appId);
+            }
         });
         // The choice is persisted; a throwing subscriber must not fail the request.
         try
@@ -85,6 +100,11 @@ public sealed class DeviceControlGate
             Console.Error.WriteLine($"[device-control] '{handlerId}' change handler failed: {ex.Message}");
         }
     }
+
+    /// <summary>True when the device's auto-adopting competing app is on the conflict whitelist: the user keeps that app, so adoption must not take its device.</summary>
+    public bool IsAdoptionAppWhitelisted(string handlerId) =>
+        DeviceControlPolicy.AdoptionConflictAppFor(handlerId) is { } appId
+        && _store.Load().Ui.ConflictAutoKillExclusions.Contains(appId, StringComparer.OrdinalIgnoreCase);
 
     /// <summary>
     /// Puts a never-set handler on the enabled list, for

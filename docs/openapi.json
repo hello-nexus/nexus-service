@@ -25111,6 +25111,9 @@
           },
           "numberFormat": {
             "type": "string"
+          },
+          "dateFormat": {
+            "type": "string"
           }
         }
       },
@@ -25130,6 +25133,12 @@
             ]
           },
           "numberFormat": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "dateFormat": {
             "type": [
               "null",
               "string"

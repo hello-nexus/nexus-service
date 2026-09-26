@@ -15,12 +15,13 @@ using RgbColor = Nexus.Service.Peripherals.Hyte.Np50.RgbColor;
 namespace Nexus.Service.Lighting;
 
 /// <summary>
-/// Pushes per-frame engine output to the Lian Li Uni Hub at 30 Hz (custom mode)
-/// or commits firmware animations once on settings change (all other modes).
+/// Writes each engine frame to the Lian Li Uni Hub as it is published (custom
+/// mode) or commits firmware animations once on settings change (all other modes).
 /// </summary>
 public sealed class LianLiLightingFrameWriter : IHostedService, IDisposable
 {
-    private const int TickPeriodMs = 33;
+    // Tick cadence while the engine is stopped and publishes nothing.
+    private const int IdleTickMs = 100;
 
     // Settle between HID writes. At 5 ms the six writes of a custom-mode frame
     // cost 30 ms of pure sleep against a 33 ms tick, capping the stream well
@@ -46,6 +47,7 @@ public sealed class LianLiLightingFrameWriter : IHostedService, IDisposable
     private readonly Np50IdentifyTracker _identify;
     private CancellationTokenSource? _cts;
     private Task? _loop;
+    private readonly AutoResetEvent _framePublished = new(false);
 
     private RgbColor[][] _segmentBuffers = Array.Empty<RgbColor[]>();
 
@@ -90,12 +92,15 @@ public sealed class LianLiLightingFrameWriter : IHostedService, IDisposable
     public Task StartAsync(CancellationToken cancellationToken)
     {
         _cts = new CancellationTokenSource();
-        _loop = Task.Run(() => RunAsync(_cts.Token));
+        var ct = _cts.Token;
+        _engine.FramePublished += OnFramePublished;
+        _loop = Task.Factory.StartNew(() => Run(ct), ct, TaskCreationOptions.LongRunning, TaskScheduler.Default);
         return Task.CompletedTask;
     }
 
     public async Task StopAsync(CancellationToken cancellationToken)
     {
+        _engine.FramePublished -= OnFramePublished;
         _cts?.Cancel();
         if (_loop is not null)
         {
@@ -112,11 +117,25 @@ public sealed class LianLiLightingFrameWriter : IHostedService, IDisposable
         }
     }
 
-    public void Dispose() => StopAsync(default).GetAwaiter().GetResult();
-
-    private async Task RunAsync(CancellationToken ct)
+    public void Dispose()
     {
-        using var timer = new PeriodicTimer(TimeSpan.FromMilliseconds(TickPeriodMs));
+        StopAsync(default).GetAwaiter().GetResult();
+        _framePublished.Dispose();
+    }
+
+    private void OnFramePublished()
+    {
+        // The engine may still invoke a handler list it read before StopAsync unsubscribed.
+        try { _framePublished.Set(); }
+        catch (ObjectDisposedException) { }
+    }
+
+    // Paced by the engine rather than a timer of its own: two free-running
+    // clocks of the same period drift into phase, and there each tick re-sends
+    // the previous frame and then skips one.
+    private void Run(CancellationToken ct)
+    {
+        var wake = new[] { _framePublished, ct.WaitHandle };
         while (!ct.IsCancellationRequested)
         {
             try { Tick(); }
@@ -124,14 +143,8 @@ public sealed class LianLiLightingFrameWriter : IHostedService, IDisposable
             {
                 Console.Error.WriteLine($"[lianli-lighting-writer] tick exception: {ex.GetType().Name}: {ex.Message}");
             }
-            try
-            {
-                if (!await timer.WaitForNextTickAsync(ct).ConfigureAwait(false))
-                {
-                    break;
-                }
-            }
-            catch (OperationCanceledException) { break; }
+            try { WaitHandle.WaitAny(wake, IdleTickMs); }
+            catch (ObjectDisposedException) { break; }
         }
     }
 

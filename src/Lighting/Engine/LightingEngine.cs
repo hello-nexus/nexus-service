@@ -82,6 +82,9 @@ public sealed class LightingEngine : IDisposable
 
     public event Action<ReadOnlyMemory<byte>>? OnFrame;
     public event Action? OnEffectChanged;
+
+    /// <summary>Raised on the engine thread once per tick, after every device frame is published; handlers must not block.</summary>
+    public event Action? FramePublished;
     public string CurrentEffectName => _currentEffect?.Name ?? "none";
     public IEffect? CurrentEffect => _currentEffect;
     public DeviceFrame[] Devices => _devices;
@@ -512,7 +515,14 @@ public sealed class LightingEngine : IDisposable
             { old?.Dispose(); }
             catch { }
             if (_loopTask is null || _loopTask.IsCompleted)
-            { _cts = new CancellationTokenSource(); _loopTask = Task.Run(() => RunLoopAsync(_cts.Token)); }
+            {
+                _cts?.Dispose();
+                _cts = new CancellationTokenSource();
+                var token = _cts.Token;
+                // Dedicated thread: on Windows the loop blocks on its high-resolution timer instead of awaiting.
+                _loopTask = Task.Factory.StartNew(
+                    () => RunLoopAsync(token), CancellationToken.None, TaskCreationOptions.LongRunning, TaskScheduler.Default).Unwrap();
+            }
         }
         // Handler may start/stop an audio-capture subprocess; must not run under the engine lock.
         OnEffectChanged?.Invoke();
@@ -548,11 +558,13 @@ public sealed class LightingEngine : IDisposable
 
     private async Task RunLoopAsync(CancellationToken ct)
     {
-        // PeriodicTimer allocates once per loop vs Task.Delay allocating a
-        // fresh Task every frame. Period is reloaded each tick so live
-        // FrameIntervalMs changes propagate without restarting the loop.
+        // Windows paces on the high-resolution ticker; elsewhere PeriodicTimer
+        // allocates once per loop vs Task.Delay allocating a fresh Task every
+        // frame. Period is reloaded each tick so live FrameIntervalMs changes
+        // propagate without restarting the loop.
         var periodMs = Math.Max(1, FrameIntervalMs);
-        using var timer = new PeriodicTimer(TimeSpan.FromMilliseconds(periodMs));
+        using var hiRes = OperatingSystem.IsWindows() ? HighResolutionTicker.TryCreate(ct) : null;
+        using var timer = hiRes is null ? new PeriodicTimer(TimeSpan.FromMilliseconds(periodMs)) : null;
         try
         {
             while (!ct.IsCancellationRequested)
@@ -635,6 +647,7 @@ public sealed class LightingEngine : IDisposable
                         SetBlackout(false);
                     }
                     SerializeAndBroadcast();
+                    FramePublished?.Invoke();
                 }
                 catch (Exception ex) { Console.Error.WriteLine($"[lighting-engine] {effect.Name} threw: {ex.Message}"); }
 
@@ -642,11 +655,19 @@ public sealed class LightingEngine : IDisposable
                 if (nextPeriodMs != periodMs)
                 {
                     periodMs = nextPeriodMs;
-                    timer.Period = TimeSpan.FromMilliseconds(periodMs);
+                    timer?.Period = TimeSpan.FromMilliseconds(periodMs);
+                }
+                if (hiRes is not null)
+                {
+                    if (!hiRes.WaitForNextTick(periodMs))
+                    {
+                        break;
+                    }
+                    continue;
                 }
                 try
                 {
-                    if (!await timer.WaitForNextTickAsync(ct).ConfigureAwait(false))
+                    if (!await timer!.WaitForNextTickAsync(ct).ConfigureAwait(false))
                     {
                         break;
                     }

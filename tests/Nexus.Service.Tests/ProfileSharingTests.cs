@@ -41,6 +41,21 @@ public class ProfileSharingTests
     }
 
     [Fact]
+    public void Dashboard_LeavesTheWorkstationConflictWhitelistAlone()
+    {
+        var source = new NexusSettings();
+        source.Ui.ConflictAutoKillExclusions = new List<string>();
+        var target = new NexusSettings();
+        target.Ui.ConflictAutoKillExclusions = new List<string> { "gcc" };
+
+        ProfileSharing.ApplyCategory(target, source, ProfileSharing.Dashboard);
+        Assert.Equal(new[] { "gcc" }, target.Ui.ConflictAutoKillExclusions);
+
+        ProfileSharing.ResetCategory(target, ProfileSharing.Dashboard);
+        Assert.Equal(new[] { "gcc" }, target.Ui.ConflictAutoKillExclusions);
+    }
+
+    [Fact]
     public void ApplyCategory_Device_ReplacesTargetStreamDeckWithSources()
     {
         var source = new NexusSettings();

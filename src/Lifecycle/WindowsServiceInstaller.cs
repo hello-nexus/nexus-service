@@ -1,5 +1,6 @@
 #if WINDOWS
 using System;
+using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
 using System.Runtime.InteropServices;
@@ -225,7 +226,7 @@ internal static class WindowsServiceInstaller
             try { CreateStartMenuShortcut(installedExe); }
             catch (Exception ex) { Log($"WARN Start Menu shortcut failed: {ex.Message}"); }
 
-            // Tray autostart (HKCU\Run\Nexus) is synced by the user-session
+            // Tray autostart (HKCU\Run\HelloNexus) is synced by the user-session
             // helper on each run, not here. An OTA reinstall runs the installer
             // as SYSTEM, so an install-time Registry.CurrentUser write lands in
             // SYSTEM's hive (S-1-5-18), never the user's. The helper writes it
@@ -270,6 +271,10 @@ internal static class WindowsServiceInstaller
             return SelfElevateAndReinvoke("--uninstall");
         }
         var purge = Array.Exists(args, a => string.Equals(a, "--purge", StringComparison.OrdinalIgnoreCase));
+        // Read before sc delete removes the registration. This runs from a
+        // {tmp} copy, so its own path says nothing about the install.
+        var serviceExe = OwnNexusExe.RegisteredServiceExe();
+        var ownExes = OwnNexusExe.Known(serviceExe);
 
         Log("stopping NexusService");
         RunSc("stop", ServiceName);
@@ -279,7 +284,7 @@ internal static class WindowsServiceInstaller
         // synchronously instead of being deferred until handles release.
         // Without this the service "comes back" on the next boot.
         Log("killing tray / sidecar processes");
-        KillSiblingProcesses("Nexus.exe");
+        KillSiblingProcesses("Nexus.exe", ownExes);
         KillSiblingProcesses("OpenRGB-headless.exe");
         KillSiblingProcesses("nexus-overlay.exe");
 
@@ -289,8 +294,8 @@ internal static class WindowsServiceInstaller
         // Clear the per-user tray autostart. Same HKCU-vs-elevated-token
         // caveat as the install path - acceptable for the consent UAC flow.
         Log("removing tray autostart");
-        try { new WindowsStartupProvider().SetEnabled(false, string.Empty, string.Empty); }
-        catch (Exception ex) { Log($"WARN HKCU\\Run\\Nexus delete failed: {ex.Message}"); }
+        try { new WindowsStartupProvider().SetEnabled(false, serviceExe ?? string.Empty, string.Empty); }
+        catch (Exception ex) { Log($"WARN HKCU\\Run\\HelloNexus delete failed: {ex.Message}"); }
 
         Log("removing firewall rule");
         RunNetsh("advfirewall", "firewall", "delete", "rule",
@@ -394,7 +399,7 @@ internal static class WindowsServiceInstaller
             // Kill any lingering Nexus.exe (other than this --install process)
             // so the service handle releases and sc delete completes instead of
             // being deferred. Mirrors the uninstall path.
-            KillSiblingProcesses(BinaryName);
+            KillSiblingProcesses(BinaryName, OwnNexusExe.Known());
             RunSc("delete", ServiceName);
             WaitForServiceDeleted(TimeSpan.FromSeconds(15));
         }
@@ -811,12 +816,11 @@ internal static class WindowsServiceInstaller
         return false;
     }
 
-    private static bool KillSiblingProcesses(string imageName)
+    private static bool KillSiblingProcesses(string imageName, IReadOnlyCollection<string?>? ownExes = null)
     {
-        // Kill all running processes that match imageName, except the
-        // current process. Done in-process rather than via taskkill /T to
-        // avoid the documented quirk that /T also descends into the
-        // matched process's tree (which could include us transitively).
+        // In-process rather than taskkill /T: /T also descends into the
+        // matched process's tree, which could include us transitively.
+        // ownExes spares another product's exe of the same name.
         var self = Process.GetCurrentProcess().Id;
         var nameNoExt = imageName.EndsWith(".exe", StringComparison.OrdinalIgnoreCase)
             ? imageName[..^4]
@@ -829,6 +833,11 @@ internal static class WindowsServiceInstaller
                 try
                 {
                     if (p.Id == self) continue;
+                    if (ownExes is not null && OwnNexusExe.IsForeignProcess(p.Id, ownExes))
+                    {
+                        Log($"leaving pid {p.Id} running: {OwnNexusExe.ImagePath(p.Id)} is not this install");
+                        continue;
+                    }
                     p.Kill(entireProcessTree: true);
                     killedAny = true;
                 }

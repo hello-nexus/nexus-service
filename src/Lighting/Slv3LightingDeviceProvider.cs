@@ -23,11 +23,11 @@ namespace Nexus.Service.Lighting;
 ///
 /// The family's wire LED count per fan (Slv3Protocol.LedsPerFanFor) is split
 /// into two equal zones: the first half of each fan's wire indices, then the
-/// last half. SL fans light edge bars, not rings (camera-mapped on SL V3 LCD):
-/// per fan the wire runs the top V-shaped bar (12 LEDs), the top edge line (8),
-/// the bottom bar (12) and the bottom edge line (8), each left to right, so the
-/// halves are the "Top" and "Bottom" zones. Other families keep the concentric
-/// ring approximation.
+/// last half. SL fans light edge bars, not rings: per fan the wire runs the
+/// top V-shaped bar, the top edge line, the bottom bar and the bottom edge
+/// line, each left to right, so the halves are the "Top" and "Bottom" zones.
+/// Camera-mapped on SL V3 LCD; the LED-only SL V3 is assumed to share it.
+/// Other families keep the concentric ring approximation.
 ///
 /// A bound Strimer Wireless cable is a device of its own on the same link:
 /// one fixed segment holding the whole cable (Slv3Protocol.StrimerGeometryFor),
@@ -525,9 +525,6 @@ public sealed class Slv3LightingDeviceProvider : ILightingDeviceProvider, ILight
         return structure;
     }
 
-    // One ring of ledsPerRing LEDs per fan, fans laid side by side along
-    // u; radius/fans in u keeps each ring round inside its column. Mirrors
-    // LianLiZoneSupport.BuildFanRingUV.
     // SL edge-bar geometry per fan, in fan-square units: the bar dips into a V
     // at each side (where neighbouring fans meet) and runs flat in between.
     private const int EdgeBarLeds = 12;
@@ -583,6 +580,8 @@ public sealed class Slv3LightingDeviceProvider : ILightingDeviceProvider, ILight
         return (u, v);
     }
 
+    // One ring of ledsPerRing LEDs per fan, fans laid side by side along
+    // u; radius/fans in u keeps each ring round inside its column.
     private static (float[] u, float[] v) BuildFanRingUV(int fans, float radius, int ledsPerRing)
     {
         var ledCount = fans * ledsPerRing;

@@ -27,7 +27,7 @@ public class Slv3LightingDeviceProviderTests
         Assert.Equal("Bottom", bottom.Name);
         for (var f = 0; f < 3; f++)
         {
-            // Bar (12) then edge line (8) per fan, each strictly left to right inside the fan's third.
+            // The bar then the edge line per fan, each strictly left to right inside the fan's third.
             for (var k = 1; k < 12; k++)
             {
                 Assert.True(top.DefaultU![f * 20 + k] > top.DefaultU[f * 20 + k - 1]);

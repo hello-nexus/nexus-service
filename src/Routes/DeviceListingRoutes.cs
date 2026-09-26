@@ -19,10 +19,13 @@ public static partial class DevicesRoutes
             DeviceControlRequest body,
             DeviceControlGate gate,
             DeviceManager dm,
-            Nexus.Service.Devices.DeviceBroadcaster broadcaster) =>
+            Nexus.Service.Devices.DeviceBroadcaster broadcaster,
+            Nexus.Service.Sockets.MultiplexHub hub) =>
         {
             gate.SetEnabled(body.Id, body.Enabled);
             broadcaster.BroadcastNow();
+            // The flip can move the device's competing app on or off the conflict whitelist.
+            Nexus.Service.Sockets.PanelTopics.BroadcastPrefs(hub);
             return dm.GetAll();
         });
     }

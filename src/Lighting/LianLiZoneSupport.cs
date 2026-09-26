@@ -120,7 +120,7 @@ public static class LianLiZoneSupport
     {
         var deviceId = $"{hubId}:{slug}";
         var leds = fans * profile.InnerLedsPerFan;
-        var (u, v) = BuildFanRingUV(fans, profile.InnerLedsPerFan, SingleRingRadius);
+        var (u, v) = BuildFanRingUV(fans, profile.InnerLedsPerFan, SingleRingRadius, indexRunsDown: false);
 
         var structure = new DeviceStructure
         {
@@ -159,7 +159,7 @@ public static class LianLiZoneSupport
         // The two rings carry different per-fan LED counts (8 inner, 12 outer).
         var innerLeds = fans * profile.InnerLedsPerFan;
         var outerLeds = fans * profile.OuterLedsPerFan;
-        var (innerU, innerV) = BuildFanRingUV(fans, profile.InnerLedsPerFan, InnerRadius);
+        var (innerU, innerV) = BuildFanRingUV(fans, profile.InnerLedsPerFan, InnerRadius, indexRunsDown: true);
         var (outerU, outerV) = BuildFanEdgeStripUV(fans, profile.OuterLedsPerFan);
 
         var structure = new DeviceStructure
@@ -260,7 +260,9 @@ public static class LianLiZoneSupport
 
     // One ring of ledsPerFan LEDs per fan, fans laid side by side along u;
     // radius/fans in u keeps each ring round inside its column.
-    private static (float[] u, float[] v) BuildFanRingUV(int fans, int ledsPerFan, float radius)
+    // indexRunsDown: from 9 o'clock the index goes down through 6 first. True
+    // for the SL-Infinity inner ring; the SL v1 ring order is unverified.
+    private static (float[] u, float[] v) BuildFanRingUV(int fans, int ledsPerFan, float radius, bool indexRunsDown)
     {
         var ledCount = fans * ledsPerFan;
         var u = new float[ledCount];
@@ -270,15 +272,11 @@ public static class LianLiZoneSupport
             var centerU = (f + 0.5f) / fans;
             for (var i = 0; i < ledsPerFan; i++)
             {
-                // Inner ring only - the outer is two bars, see above. Start at
-                // pi, not 0: each fan's LED 0 sits at 9 o'clock, so angle 0 would
-                // put index 0 at the rightmost u and mirror every horizontal
-                // sweep. Confirmed on hardware 2026-08-27 - with angle 0 a
-                // left-to-right fade filled each fan right-to-left; with pi it
-                // fills correctly.
+                // Seen from the front, LED 0 sits at 9 o'clock; v grows downward.
                 var angle = Math.PI + (i / (double)ledsPerFan) * 2.0 * Math.PI;
+                var dv = radius * (float)Math.Sin(angle);
                 u[f * ledsPerFan + i] = centerU + (radius / fans) * (float)Math.Cos(angle);
-                v[f * ledsPerFan + i] = 0.5f + radius * (float)Math.Sin(angle);
+                v[f * ledsPerFan + i] = indexRunsDown ? 0.5f - dv : 0.5f + dv;
             }
         }
         return (u, v);
