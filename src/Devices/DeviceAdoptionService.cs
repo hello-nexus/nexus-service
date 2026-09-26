@@ -71,7 +71,8 @@ public sealed class DeviceAdoptionService : BackgroundService
         {
             if (device.Connected
                 && DeviceControlPolicy.AdoptionConflictAppFor(device.Id) is not null
-                && _gate.IsUnset(device.Id))
+                && _gate.IsUnset(device.Id)
+                && !_gate.IsAdoptionAppWhitelisted(device.Id))
             {
                 anyCandidate = true;
                 break;
@@ -108,9 +109,9 @@ public sealed class DeviceAdoptionService : BackgroundService
 
     /// <summary>
     /// True when <paramref name="deviceId"/> should be adopted onto the
-    /// Enabled list this pass: connected, mapped to a competing app, never
-    /// explicitly set (on, off, or previously adopted), and that app is not
-    /// currently running.
+    /// Enabled list this pass: connected, mapped to a competing app the user
+    /// has not whitelisted, never explicitly set (on, off, or previously
+    /// adopted), and that app is not currently running.
     /// </summary>
     internal static bool ShouldAdopt(string deviceId, bool connected, DeviceControlGate gate, IConflictDetector detector)
     {
@@ -127,7 +128,7 @@ public sealed class DeviceAdoptionService : BackgroundService
         {
             return false;
         }
-        if (!gate.IsUnset(deviceId))
+        if (!gate.IsUnset(deviceId) || gate.IsAdoptionAppWhitelisted(deviceId))
         {
             return false;
         }

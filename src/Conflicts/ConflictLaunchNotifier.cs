@@ -17,12 +17,14 @@ public sealed class ConflictLaunchNotifier : BackgroundService
 
     private readonly IConflictDetector _detector;
     private readonly IConfigStore _store;
+    private readonly ConflictStartupShutdown? _startupShutdown;
     private readonly ConflictLaunchTracker _tracker = new();
 
-    public ConflictLaunchNotifier(IConflictDetector detector, IConfigStore store)
+    public ConflictLaunchNotifier(IConflictDetector detector, IConfigStore store, ConflictStartupShutdown? startupShutdown = null)
     {
         _detector = detector;
         _store = store;
+        _startupShutdown = startupShutdown;
     }
 
     /// <summary>Raised on the poll thread, once per launch that clears the per-app cooldown.</summary>
@@ -53,9 +55,13 @@ public sealed class ConflictLaunchNotifier : BackgroundService
             return;
         }
 
-        foreach (var app in _tracker.Observe(_detector.GetConflicts(), nowMs))
+        // Inside the kill window the startup shutdown ends the app and says so in its own notice.
+        var killWindow = _startupShutdown?.InLaunchKillWindow == true;
+        bool Silent(DetectedConflict app) =>
+            killWindow || ui.ConflictAutoKillExclusions.Exists(id => string.Equals(id, app.Id, StringComparison.OrdinalIgnoreCase));
+
+        foreach (var app in _tracker.Observe(_detector.GetConflicts(), nowMs, Silent))
         {
-            if (ui.ConflictAutoKillExclusions.Exists(id => string.Equals(id, app.Id, StringComparison.OrdinalIgnoreCase))) continue;
             ServiceLog.Info($"[conflicts] {app.DisplayName} opened while Nexus is running; notifying");
             try { AppLaunched?.Invoke(app); }
             catch (Exception ex) { ServiceLog.Warn($"[conflicts] launch notice failed for {app.DisplayName}: {ex.Message}"); }
@@ -75,7 +81,8 @@ internal sealed class ConflictLaunchTracker
     /// <summary>Drops the baseline; the next scan re-seeds it without reporting launches.</summary>
     public void Reset() => _present = null;
 
-    public List<DetectedConflict> Observe(IReadOnlyList<DetectedConflict> running, long nowMs)
+    /// <summary>A <paramref name="silent"/> launch is tracked as present but neither returned nor counted against the cooldown, so the app's next launch is still announced.</summary>
+    public List<DetectedConflict> Observe(IReadOnlyList<DetectedConflict> running, long nowMs, Func<DetectedConflict, bool>? silent = null)
     {
         var launched = new List<DetectedConflict>();
         var present = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
@@ -83,6 +90,7 @@ internal sealed class ConflictLaunchTracker
         {
             if (!present.Add(app.Id)) continue;
             if (_present is null || _present.Contains(app.Id)) continue;
+            if (silent?.Invoke(app) == true) continue;
             if (_lastNotified.TryGetValue(app.Id, out var at) && nowMs - at < (long)Cooldown.TotalMilliseconds) continue;
             _lastNotified[app.Id] = nowMs;
             launched.Add(app);
