@@ -14,7 +14,7 @@ namespace Nexus.Service.Lifecycle;
 /// doesn't need a startup hook. This provider only controls whether the
 /// helper companion (Nexus.exe --helper) auto-launches at sign-in.
 ///
-/// Backed by <c>HKCU\Software\Microsoft\Windows\CurrentVersion\Run\Nexus</c>.
+/// Backed by <c>HKCU\Software\Microsoft\Windows\CurrentVersion\Run\HelloNexus</c>.
 /// HKCU is per-user and writable without elevation, so the dashboard can
 /// flip the toggle on/off without UAC.
 /// </summary>
@@ -22,7 +22,11 @@ public sealed class WindowsStartupProvider : IStartupProvider
 {
 #if WINDOWS
     private const string HkcuRunKey = @"Software\Microsoft\Windows\CurrentVersion\Run";
-    private const string ValueName = "Nexus";
+    private const string ApprovedRunKey = @"Software\Microsoft\Windows\CurrentVersion\Explorer\StartupApproved\Run";
+    private const string ValueName = "HelloNexus";
+    // Other products register a "Nexus" value too, so this name is only
+    // touched when it launches our exe.
+    private const string LegacyValueName = "Nexus";
 #endif
 
     public bool IsEnabled()
@@ -49,6 +53,7 @@ public sealed class WindowsStartupProvider : IStartupProvider
         {
             using var key = Registry.CurrentUser.CreateSubKey(HkcuRunKey, writable: true);
             if (key is null) return false;
+            RemoveOwnLegacyValue(key, path, enabled);
 
             if (enabled)
             {
@@ -71,6 +76,29 @@ public sealed class WindowsStartupProvider : IStartupProvider
     }
 
 #if WINDOWS
+    /// <summary>Deletes the legacy value when it launches our exe; when enabling, Task Manager's enabled/disabled record moves to the new name. Never fails the caller's write.</summary>
+    [SupportedOSPlatform("windows")]
+    private static void RemoveOwnLegacyValue(RegistryKey run, string path, bool enabled)
+    {
+        try
+        {
+            if (run.GetValue(LegacyValueName) is not string command) return;
+            if (!OwnNexusExe.IsOwnCommand(command, OwnNexusExe.Known(path))
+                && !OwnNexusExe.HasOurPayload(Nexus.Service.Conflicts.ConflictAutostart.ExecutablePath(command)))
+            {
+                return;
+            }
+            run.DeleteValue(LegacyValueName, throwOnMissingValue: false);
+            using var approved = Registry.CurrentUser.OpenSubKey(ApprovedRunKey, writable: true);
+            if (approved?.GetValue(LegacyValueName) is byte[] record)
+            {
+                if (enabled) approved.SetValue(ValueName, record, RegistryValueKind.Binary);
+                approved.DeleteValue(LegacyValueName, throwOnMissingValue: false);
+            }
+        }
+        catch { }
+    }
+
     private const string ServiceStartKey = @"SYSTEM\CurrentControlSet\Services\NexusService";
 
     /// <summary>
@@ -116,6 +144,7 @@ public sealed class WindowsStartupProvider : IStartupProvider
             if (!id.IsSystem) return;
             using var key = Registry.CurrentUser.OpenSubKey(HkcuRunKey, writable: true);
             key?.DeleteValue(ValueName, throwOnMissingValue: false);
+            key?.DeleteValue(LegacyValueName, throwOnMissingValue: false);
         }
         catch { }
     }

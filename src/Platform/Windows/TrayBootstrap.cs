@@ -228,10 +228,10 @@ internal static class TrayBootstrap
             catch (Exception ex) { Console.Error.WriteLine($"[diagnostics-notify] show failed: {ex.Message}"); }
         };
 
-        // Startup conflict shutdown - one native notification listing what it
-        // ended. The sweep runs during service start, usually before the
-        // user-session helper has connected, so a notice raised with no helper
-        // present is held and flushed on the next connect instead of dropped.
+        // Startup conflict shutdown - a native notification listing what it
+        // ended. The sweep and the logon window run before the user-session
+        // helper has connected, so a notice raised with no helper present is
+        // held and flushed on the next connect instead of dropped.
         var startupShutdown = app.Services.GetRequiredService<Nexus.Service.Conflicts.ConflictStartupShutdown>();
 
         // Store-then-drain, both sides under one lock. Checking IsAnyConnected
@@ -239,18 +239,18 @@ internal static class TrayBootstrap
         // connects in between: the Connected handler drains an empty slot, and
         // nothing raises it again until the helper next restarts.
         var conflictNoticeGate = new object();
-        string? pendingConflictNotice = null;
+        // Accumulates: the logon window can end apps in several batches before the helper connects.
+        var pendingConflictNames = new List<string>();
 
         void DrainConflictNotice()
         {
-            string? text;
+            string text;
             lock (conflictNoticeGate)
             {
-                if (!helperRegistry.IsAnyConnected) return;
-                text = pendingConflictNotice;
-                pendingConflictNotice = null;
+                if (!helperRegistry.IsAnyConnected || pendingConflictNames.Count == 0) return;
+                text = FormatConflictNotice(pendingConflictNames.Distinct().ToArray());
+                pendingConflictNames.Clear();
             }
-            if (text is null) return;
             try
             {
                 _ = TrayCommands.NoticeAsync(
@@ -262,7 +262,7 @@ internal static class TrayBootstrap
 
         startupShutdown.AppsTerminated += names =>
         {
-            lock (conflictNoticeGate) { pendingConflictNotice = FormatConflictNotice(names); }
+            lock (conflictNoticeGate) { pendingConflictNames.AddRange(names); }
             DrainConflictNotice();
         };
 

@@ -1068,6 +1068,8 @@ namespace Nexus.Service.Serialization;
 [JsonSerializable(typeof(Nexus.Service.Models.Conflicts.GetConflictsResponse))]
 [JsonSerializable(typeof(Nexus.Service.Models.Conflicts.KillConflictBody))]
 [JsonSerializable(typeof(Nexus.Service.Models.Conflicts.KillConflictResponse))]
+[JsonSerializable(typeof(Nexus.Service.Models.Conflicts.SetConflictWhitelistedBody))]
+[JsonSerializable(typeof(Nexus.Service.Models.Conflicts.SetConflictWhitelistedResponse))]
 [JsonSerializable(typeof(Nexus.Service.Models.Conflicts.ConflictsFrame))]
 [JsonSerializable(typeof(Nexus.Service.Models.Conflicts.ConflictCatalogApp))]
 [JsonSerializable(typeof(List<Nexus.Service.Models.Conflicts.ConflictCatalogApp>))]

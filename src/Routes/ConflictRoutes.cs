@@ -1,7 +1,10 @@
 using System;
+using System.Linq;
 using Nexus.Service.Auth;
 using Nexus.Service.Conflicts;
 using Nexus.Service.Models.Conflicts;
+using Nexus.Service.Persistence;
+using Nexus.Service.Sockets;
 
 namespace Nexus.Service.Routes;
 
@@ -120,6 +123,28 @@ public static class ConflictRoutes
             if (body?.Enabled is null) return Results.Ok(WindowsDynamicLighting.Read());
             return Results.Ok(WindowsDynamicLighting.Write(body.Enabled.Value));
         }).LocalhostOnly();
+
+        // Adds or removes one app on the conflict whitelist in a single store
+        // mutation, so it cannot clobber a concurrent server-side sync the way a
+        // client-computed whole-list write would.
+        app.MapPost("/conflicts/whitelist", (SetConflictWhitelistedBody body, IConfigStore store, MultiplexHub hub) =>
+        {
+            var def = ConflictWatcher.FindById(body?.Id ?? "");
+            if (def is null)
+            {
+                return Results.BadRequest(new SetConflictWhitelistedResponse { Error = true, Msg = "unknown conflict id" });
+            }
+            store.Update(s =>
+            {
+                var others = s.Ui.ConflictAutoKillExclusions
+                    .Where(id => !string.Equals(id, def.Id, StringComparison.OrdinalIgnoreCase))
+                    .ToList();
+                if (body!.Whitelisted) others.Add(def.Id);
+                s.Ui.ConflictAutoKillExclusions = others;
+            });
+            PanelTopics.BroadcastPrefs(hub);
+            return Results.Ok(new SetConflictWhitelistedResponse());
+        });
 
         // Terminate every running process matching the catalog entry for
         // <c>body.Id</c>, then stop any Windows services it lists (for apps

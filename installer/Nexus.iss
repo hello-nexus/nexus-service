@@ -322,11 +322,45 @@ begin
   end;
 end;
 
+// PowerShell array literal of our Nexus.exe paths: {app} plus the exe
+// NexusService is registered to run, which differs when an upgrade picks a new
+// folder. Apostrophes are doubled for the single-quoted literals.
+function OwnNexusExes(): String;
+var
+  Exe, ImagePath: String;
+  Q: Integer;
+begin
+  Exe := ExpandConstant('{app}\{#MyAppExeName}');
+  StringChangeEx(Exe, '''', '''''', True);
+  Result := '''' + Exe + '''';
+  if RegQueryStringValue(HKLM, 'SYSTEM\CurrentControlSet\Services\NexusService', 'ImagePath', ImagePath) then
+  begin
+    ImagePath := Trim(ImagePath);
+    if Copy(ImagePath, 1, 1) = '"' then
+    begin
+      Delete(ImagePath, 1, 1);
+      Q := Pos('"', ImagePath);
+      if Q > 0 then ImagePath := Copy(ImagePath, 1, Q - 1);
+    end
+    else
+    begin
+      Q := Pos('.exe', Lowercase(ImagePath));
+      if Q > 0 then ImagePath := Copy(ImagePath, 1, Q + 3);
+    end;
+    if ImagePath <> '' then
+    begin
+      StringChangeEx(ImagePath, '''', '''''', True);
+      Result := Result + ',''' + ImagePath + '''';
+    end;
+  end;
+end;
+
 procedure StopServiceIfRunning();
 var
   ResultCode: Integer;
   AdbExe: String;
   TaskKill: String;
+  OwnNexus: String;
 begin
   // Every process holding a payload file open must be gone before [Files], or
   // Inno reboot-renames the locked file and that pending entry then blocks every
@@ -335,8 +369,12 @@ begin
   //      service shuts down in ~1s and reports a clean stop, so no failure-action
   //      restart races us, and its job-owned OpenRGB / overlay are already gone.
   //   2. Nexus.exe: the user-session helper shares this image and keeps
-  //      Nexus.exe locked even after the service stops. No /T (it descends into
-  //      the matched tree, which could catch Inno's own helper).
+  //      Nexus.exe locked even after the service stops. Selected by path
+  //      (OwnNexusExes, or a folder holding our overlay, which covers a
+  //      junction/subst/8.3 spelling; an unreadable path counts as ours)
+  //      because other products ship a Nexus.exe too, then killed by pid. No
+  //      /T (it descends into the matched tree, which could catch Inno's own
+  //      helper).
   //   3. Sidecar taskkills are a belt in case a kill-job hadn't reaped them yet.
   //   4. adb.exe: the phone/Q-series watchers spawn `adb start-server`, which
   //      DETACHES its own daemon - net stop does not reap it. That daemon (and
@@ -355,13 +393,20 @@ begin
   //      {app} is user-chosen, so any apostrophe in it is doubled first, else it
   //      would close the single-quoted PowerShell literal and skip the kill.
   Exec(ExpandConstant('{sys}\net.exe'), 'stop NexusService', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
-  Exec(ExpandConstant('{sys}\taskkill.exe'), '/IM Nexus.exe /F', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+  TaskKill := ExpandConstant('{sys}\taskkill.exe');
+  StringChangeEx(TaskKill, '''', '''''', True);
+  OwnNexus := '$own = @(' + OwnNexusExes() + '); ' +
+    '$mine = Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | ' +
+    'Where-Object { $_.Name -ieq ''Nexus.exe'' -and (-not $_.ExecutablePath -or $own -icontains $_.ExecutablePath -or ' +
+    '(Test-Path -LiteralPath (Join-Path (Split-Path -Parent $_.ExecutablePath) ''overlay\nexus-overlay.exe''))) }; ';
+  Exec(ExpandConstant('{sys}\WindowsPowerShell\v1.0\powershell.exe'),
+    '-NoProfile -NonInteractive -Command "' + OwnNexus +
+    'foreach ($m in $mine) { & ''' + TaskKill + ''' /F /PID $m.ProcessId }"',
+    '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
   Exec(ExpandConstant('{sys}\taskkill.exe'), '/IM OpenRGB-headless.exe /F /T', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
   Exec(ExpandConstant('{sys}\taskkill.exe'), '/IM nexus-overlay.exe /F /T', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
   AdbExe := ExpandConstant('{app}\tools\adb\adb.exe');
-  TaskKill := ExpandConstant('{sys}\taskkill.exe');
   StringChangeEx(AdbExe, '''', '''''', True);
-  StringChangeEx(TaskKill, '''', '''''', True);
   //   5. msedgewebview2.exe: the dashboard/overlay/kiosk WebView2 children
   //      outlive their host and keep {app}\wwwroot files open, which used to
   //      be Restart Manager's job to clear (CloseApplications=no now). Match
@@ -374,13 +419,13 @@ begin
   //      termination is REQUESTED, not once the process is gone, so [Files]
   //      could otherwise start while a dying process still held a payload file.
   //      One budget shared across the names, not one per process. Only the
-  //      three killed by image name above: steps 4 and 5 select adb and
-  //      msedgewebview2 by path/command line and deliberately spare foreign
-  //      ones, which never exit, so waiting on those by name would hand the
-  //      whole budget to a process nobody killed. Purely an optimisation - a
-  //      clean delete beats a rename-aside - since UnlockTarget handles whatever
-  //      is still locked; correctness never rests on the wait being long enough,
-  //      which is why it can be this short.
+  //      three killed above, Nexus.exe by the same path selection: steps 4 and
+  //      5 select adb and msedgewebview2 by path/command line and deliberately
+  //      spare foreign ones, which never exit, so waiting on those by name
+  //      would hand the whole budget to a process nobody killed. Purely an
+  //      optimisation - a clean delete beats a rename-aside - since
+  //      UnlockTarget handles whatever is still locked; correctness never rests
+  //      on the wait being long enough, which is why it can be this short.
   Exec(ExpandConstant('{sys}\WindowsPowerShell\v1.0\powershell.exe'),
     '-NoProfile -NonInteractive -Command "Get-Process -Name adb -ErrorAction SilentlyContinue | ' +
     'Where-Object { $_.Path -ieq ''' + AdbExe + ''' } | ' +
@@ -389,8 +434,11 @@ begin
     'Where-Object { $_.Name -ieq ''msedgewebview2.exe'' -and ' +
     '$_.CommandLine -like ''*\Nexus\DesktopWebView2*'' } | ' +
     'ForEach-Object { & ''' + TaskKill + ''' /F /PID $_.ProcessId }; ' +
+    OwnNexus +
+    '$waits = @(Get-Process -Name OpenRGB-headless,nexus-overlay -ErrorAction SilentlyContinue); ' +
+    'foreach ($m in $mine) { $waits += Get-Process -Id $m.ProcessId -ErrorAction SilentlyContinue }; ' +
     '$d = [DateTime]::UtcNow.AddMilliseconds(2000); ' +
-    'foreach ($p in Get-Process -Name Nexus,OpenRGB-headless,nexus-overlay -ErrorAction SilentlyContinue) { ' +
+    'foreach ($p in $waits) { ' +
     '$ms = [int]($d - [DateTime]::UtcNow).TotalMilliseconds; ' +
     'if ($ms -gt 0) { try { [void]$p.WaitForExit($ms) } catch { } } }"',
     '', SW_HIDE, ewWaitUntilTerminated, ResultCode);

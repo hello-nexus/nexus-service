@@ -89,6 +89,18 @@ public sealed class KillConflictBody
     public string Id { get; set; } = "";
 }
 
+public sealed class SetConflictWhitelistedBody
+{
+    public string Id { get; set; } = "";
+    public bool Whitelisted { get; set; }
+}
+
+public sealed class SetConflictWhitelistedResponse
+{
+    public bool Error { get; set; }
+    public string Msg { get; set; } = "Ok";
+}
+
 public sealed class KillConflictResponse
 {
     public bool Error { get; set; }
