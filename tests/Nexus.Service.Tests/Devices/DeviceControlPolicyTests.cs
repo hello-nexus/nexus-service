@@ -24,9 +24,7 @@ public class DeviceControlPolicyTests
     }
 
     [Theory]
-    [InlineData("streamdeck")]
     [InlineData("nzxt-kraken")]
-    [InlineData("tryx")]
     [InlineData("zmatrices-lcd")]
     public void DefaultOn_HintOnlyConflictHandler_IsTrueAndNeverAdopts(string handlerId)
     {

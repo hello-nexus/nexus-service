@@ -69,6 +69,9 @@ public sealed class ConflictAppDefinition
 
     /// <summary>Verified boot-launch mechanisms. Empty - the default for most of the catalog - means the UI offers no "Disable auto start" action for this app at all.</summary>
     public IReadOnlyList<ConflictAutostartTarget> Autostart { get; init; } = Array.Empty<ConflictAutostartTarget>();
+
+    /// <summary>Starts on the whitelist (<c>Ui.ConflictAutoKillExclusions</c>): an app that drives neither lighting nor cooling, or a device app whose device starts with Nexus Control off. Everything else is ended by default.</summary>
+    public bool DefaultWhitelisted { get; init; }
 }
 
 public static class ConflictAppCatalog
@@ -272,6 +275,7 @@ public static class ConflictAppCatalog
         new()
         {
             Id = "msi-companion",
+            DefaultWhitelisted = true,
             DisplayName = "MSI Companion",
             Category = "monitoring",
             ProcessNames = new[] { "MSI_Companion_Service" },
@@ -279,6 +283,7 @@ public static class ConflictAppCatalog
         new()
         {
             Id = "msi-game-bar-tool",
+            DefaultWhitelisted = true,
             DisplayName = "MSI Game Bar Tool",
             Category = "monitoring",
             ProcessNames = new[] { "MSI_GamebarTool" },
@@ -286,6 +291,7 @@ public static class ConflictAppCatalog
         new()
         {
             Id = "msi-super-charger",
+            DefaultWhitelisted = true,
             DisplayName = "MSI Super Charger",
             Category = "monitoring",
             ProcessNames = new[] { "MSI_Super_Charger_Service" },
@@ -419,6 +425,7 @@ public static class ConflictAppCatalog
             // Tryx Panorama control app (Electron, C:\Program Files\KANALI);
             // claims the panel's USB handle Nexus drives directly.
             Id = "tryx-kanali",
+            DefaultWhitelisted = true,
             DisplayName = "Tryx Kanali",
             Category = "cooling",
             ProcessNames = new[] { "Kanali" },
@@ -445,6 +452,7 @@ public static class ConflictAppCatalog
             // StreamDeckRoutes surfaces as conflictAppId, so the two never
             // drift apart.
             Id = StreamDeckHandler.ElgatoConflictAppId,
+            DefaultWhitelisted = true,
             Vendors = new[] { "Elgato" },
             DisplayName = "Elgato Stream Deck",
             Category = "peripherals",
@@ -520,6 +528,7 @@ public static class ConflictAppCatalog
         new()
         {
             Id = "evga-precision-x-server",
+            DefaultWhitelisted = true,
             DisplayName = "EVGA Precision X Server",
             Category = "monitoring",
             ProcessNames = new[] { "EVGAPrecisionXServer" },
@@ -613,4 +622,15 @@ public static class ConflictAppCatalog
             ProcessNames = new[] { "ArgbFanMaster" },
         },
     };
+
+    /// <summary>Ids of every <see cref="ConflictAppDefinition.DefaultWhitelisted"/> app: the whitelist a fresh install starts with.</summary>
+    public static List<string> DefaultWhitelistedIds()
+    {
+        var ids = new List<string>();
+        foreach (var def in All)
+        {
+            if (def.DefaultWhitelisted) ids.Add(def.Id);
+        }
+        return ids;
+    }
 }

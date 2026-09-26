@@ -96,7 +96,6 @@ public static class ProfileSharing
                 target.Overlay = source.Overlay;
                 target.Ui.ShowConflictAlerts = source.Ui.ShowConflictAlerts;
                 target.Ui.AutoKillConflictsAtStartup = source.Ui.AutoKillConflictsAtStartup;
-                target.Ui.ConflictAutoKillExclusions = source.Ui.ConflictAutoKillExclusions;
                 target.Ui.NotifyConflictLaunches = source.Ui.NotifyConflictLaunches;
                 break;
             case Device:
@@ -142,7 +141,6 @@ public static class ProfileSharing
                 target.Overlay = new OverlaySettings();
                 target.Ui.ShowConflictAlerts = true;
                 target.Ui.AutoKillConflictsAtStartup = false;
-                target.Ui.ConflictAutoKillExclusions = new();
                 target.Ui.NotifyConflictLaunches = true;
                 break;
             case Device:
