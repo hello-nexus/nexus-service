@@ -299,6 +299,13 @@ public sealed class GameCatalog : IGameInstallLocator
 {
     private const long RefreshRateLimitSeconds = 600;
 
+    // Steam apps that run on the desktop rather than as games. Wallpaper
+    // Engine's always-running process otherwise holds the focus Game trigger on.
+    private static readonly HashSet<string> NonGameSteamAppIds = new(StringComparer.Ordinal)
+    {
+        "431960", // Wallpaper Engine
+    };
+
     private readonly ILogger<GameCatalog> _logger;
     private readonly object _lock = new();
     private long _lastRefreshEpoch;
@@ -340,6 +347,7 @@ public sealed class GameCatalog : IGameInstallLocator
         var index = new List<(string, GameIdentity)>(candidates.Count);
         foreach (var c in candidates)
         {
+            if (IsNonGame(c.Store, c.AppId)) continue;
             var identity = new GameIdentity(BuildGameKey(c.Store, c.AppId, c.Name), c.Name, c.Store, c.AppId);
             index.Add((InstalledGameCollectors.CanonicalDirKey(c.InstallDir), identity));
         }
@@ -422,6 +430,9 @@ public sealed class GameCatalog : IGameInstallLocator
         identity = best;
         return true;
     }
+
+    internal static bool IsNonGame(string store, string appId) =>
+        store == "steam" && NonGameSteamAppIds.Contains(appId);
 
     internal static string BuildGameKey(string store, string appId, string name) => store switch
     {
