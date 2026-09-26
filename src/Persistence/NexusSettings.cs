@@ -493,6 +493,8 @@ public sealed class UnitsSettings
     public string TimeFormat { get; set; } = "system";
     /// <summary>"system" | "dot" | "comma".</summary>
     public string NumberFormat { get; set; } = "system";
+    /// <summary>"system" or a date pattern key such as "yyyy-mm-dd".</summary>
+    public string DateFormat { get; set; } = "system";
 }
 
 /// <summary>Partial update DTO for the units block of POST /preferences.</summary>
@@ -501,6 +503,7 @@ public sealed class UnitsSettingsPatch
     public string? MonitoringTempUnit { get; set; }
     public string? TimeFormat { get; set; }
     public string? NumberFormat { get; set; }
+    public string? DateFormat { get; set; }
 }
 
 /// <summary>One device's Static look: the effect plus the exact tint it was

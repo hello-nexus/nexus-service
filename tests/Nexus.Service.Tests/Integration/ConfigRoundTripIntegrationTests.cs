@@ -131,7 +131,7 @@ public sealed class ConfigRoundTripIntegrationTests : IClassFixture<NexusAppFact
         var client = AuthedClient();
 
         var post = await client.PostAsync("/preferences",
-            Json("{\"units\":{\"monitoringTempUnit\":\"f\",\"timeFormat\":\"12h\",\"numberFormat\":\"comma\"}}"));
+            Json("{\"units\":{\"monitoringTempUnit\":\"f\",\"timeFormat\":\"12h\",\"numberFormat\":\"comma\",\"dateFormat\":\"yyyy-mm-dd\"}}"));
         Assert.Equal(HttpStatusCode.OK, post.StatusCode);
 
         using var doc = JsonDocument.Parse(await (await client.GetAsync("/preferences")).Content.ReadAsStringAsync());
@@ -139,6 +139,7 @@ public sealed class ConfigRoundTripIntegrationTests : IClassFixture<NexusAppFact
         Assert.Equal("f", units.GetProperty("monitoringTempUnit").GetString());
         Assert.Equal("12h", units.GetProperty("timeFormat").GetString());
         Assert.Equal("comma", units.GetProperty("numberFormat").GetString());
+        Assert.Equal("yyyy-mm-dd", units.GetProperty("dateFormat").GetString());
     }
 
     [Fact]

@@ -538,6 +538,7 @@ public static class ProfileRoutes
                     if (units.MonitoringTempUnit is { } v1) s.Units.MonitoringTempUnit = v1;
                     if (units.TimeFormat is { } v2) s.Units.TimeFormat = v2;
                     if (units.NumberFormat is { } v3) s.Units.NumberFormat = v3;
+                    if (units.DateFormat is { } v4) s.Units.DateFormat = v4;
                 }
                 if (body.Update is { } update)
                 {
