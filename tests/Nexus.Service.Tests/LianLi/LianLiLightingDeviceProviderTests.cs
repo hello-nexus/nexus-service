@@ -232,6 +232,21 @@ public class LianLiLightingDeviceProviderTests
         Assert.True(Spread(st.Segments[0].DefaultV!) > 0f);
     }
 
+    [Fact]
+    public void Inner_ring_runs_from_nine_oclock_down_through_six()
+    {
+        Connect();
+        OnlyPort0(1);
+        var st = Assert.Single(_provider.GetStructures());
+        var u = st.Segments[0].DefaultU!;
+        var v = st.Segments[0].DefaultV!;
+        var quarter = LianLiProtocol.InnerLedsPerFan / 4;
+        Assert.Equal(u.Min(), u[0]);
+        Assert.Equal(v.Max(), v[quarter]);
+        Assert.Equal(u.Max(), u[2 * quarter]);
+        Assert.Equal(v.Min(), v[3 * quarter]);
+    }
+
     [Theory]
     [InlineData(1)]
     [InlineData(4)]

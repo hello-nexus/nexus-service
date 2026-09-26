@@ -520,8 +520,7 @@ public sealed class Slv3LightingDeviceProvider : ILightingDeviceProvider, ILight
     }
 
     // One ring of ledsPerRing LEDs per fan, fans laid side by side along
-    // u; radius/fans in u keeps each ring round inside its column. Mirrors
-    // LianLiZoneSupport.BuildFanRingUV.
+    // u; radius/fans in u keeps each ring round inside its column.
     private static (float[] u, float[] v) BuildFanRingUV(int fans, float radius, int ledsPerRing)
     {
         var ledCount = fans * ledsPerRing;
