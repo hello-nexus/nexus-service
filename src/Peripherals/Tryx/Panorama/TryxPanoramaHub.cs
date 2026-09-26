@@ -748,8 +748,8 @@ public sealed class TryxPanoramaHub : IDisposable
             State.ScreenEnabled = true;
             _configStore.Update(s => { s.Tryx.CurrentMedia = deviceFileName; s.Tryx.CurrentMediaIsCustom = true; });
 
-            // Thumbnail/duration from the source so the media list can render the entry.
-            try { TryxThumbnailCache.Write(ffmpegPath, localPath, deviceFileName); } catch { }
+            // Thumbnail from the cropped transcode, so it matches what the panel plays.
+            try { TryxThumbnailCache.Write(ffmpegPath, mp4Path, deviceFileName); } catch { }
             try { TryxThumbnailCache.WriteDuration(deviceFileName, TryxThumbnailCache.ProbeDuration(ffmpegPath, localPath)); } catch { }
             // After the duration sidecar exists, so a "finish videos" hold is computed from it.
             _slideshow.Rearm(deviceFileName, NowMs());
