@@ -167,8 +167,6 @@ public sealed class JsonConfigStore : IConfigStore, IDisposable
     /// host-wide StreamDeckSettings.Presets/Instances, and every deck
     /// widget's inline layout config does the same (DeckModesMigration).
     /// v19: ConflictWhitelistMigration.
-    /// v20: an upgrade starts with dashboard auto-arrange off, whatever the
-    /// fresh-install default.
     /// </summary>
     private static void Migrate(NexusSettings doc)
     {
@@ -251,11 +249,6 @@ public sealed class JsonConfigStore : IConfigStore, IDisposable
         if (doc.SchemaVersion < 19)
         {
             Nexus.Service.Conflicts.ConflictWhitelistMigration.Apply(doc);
-        }
-        if (doc.SchemaVersion < 20)
-        {
-            doc.Ui ??= new UiSettings();
-            doc.Ui.DashboardAutoArrange = false;
         }
         doc.SchemaVersion = NexusSettings.CurrentSchemaVersion;
     }
