@@ -11,10 +11,15 @@ set -euo pipefail
 # SMBus (RGB RAM, SMBus board controllers) when it finds the firmware blocking
 # it. --no-smbus leaves the boot config alone and prints the command instead.
 NEXUS_ENABLE_SMBUS=1
+# --update (the in-app updater): the sensor driver and menu entry are already in
+# place, and setup-sensors.sh re-probing the buses would keep Nexus stopped for
+# minutes with fan control back on the BIOS.
+NEXUS_UPDATE=0
 for arg in "$@"; do
   case "$arg" in
     --no-smbus) NEXUS_ENABLE_SMBUS=0 ;;
-    -h|--help) echo "usage: install.sh [--no-smbus]"; exit 0 ;;
+    --update) NEXUS_UPDATE=1 ;;
+    -h|--help) echo "usage: install.sh [--no-smbus] [--update]"; exit 0 ;;
   esac
 done
 export NEXUS_ENABLE_SMBUS
@@ -66,6 +71,7 @@ fi
 
 # Desktop menu entry just opens the dashboard - the binary is the service now,
 # not a user-launched app. (The tray's "Open Dashboard" gives the --app window.)
+if [ "$NEXUS_UPDATE" = 0 ]; then
 mkdir -p "$APPS_DIR" "$ICON_DIR"
 [ -f "$APP_DIR/nexus.png" ] && cp "$APP_DIR/nexus.png" "$ICON_DIR/nexus.png" 2>/dev/null || true
 cat > "$APPS_DIR/nexus.desktop" <<EOF
@@ -78,6 +84,7 @@ Icon=nexus
 Terminal=false
 Categories=Utility;System;
 EOF
+fi
 
 # The daemon keeps everything under one machine-scope root - settings.json, db/,
 # devices/, media/, apps/, firmware/, drivers/, logs/ - the way the Windows
@@ -136,8 +143,10 @@ fi
 # Load the motherboard Super-I/O fan driver (it87 etc.). Root daemon reads/writes
 # hwmon directly; this only ensures the kernel module is present.
 # sudo's env_reset drops exported variables, so the opt-out is passed explicitly.
-sudo NEXUS_ENABLE_SMBUS="$NEXUS_ENABLE_SMBUS" bash "$HERE/setup-sensors.sh" \
-  || echo "   (sensor driver setup skipped)"
+if [ "$NEXUS_UPDATE" = 0 ]; then
+  sudo NEXUS_ENABLE_SMBUS="$NEXUS_ENABLE_SMBUS" bash "$HERE/setup-sensors.sh" \
+    || echo "   (sensor driver setup skipped)"
+fi
 
 echo "==> Installing + enabling the system service (sudo)"
 sudo cp "$HERE/nexus.service" "$UNIT"

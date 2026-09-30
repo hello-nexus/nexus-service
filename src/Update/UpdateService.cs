@@ -284,13 +284,16 @@ public sealed class UpdateService : BackgroundService
 
     /// <summary>
     /// Whether a background auto-stage (download+verify, mode "download" or
-    /// "always") should start. RunInstallAsync / RunLaunchStagedAsync only
-    /// implement the install handoff on Windows (PlatformNotSupportedException
-    /// everywhere else), so macOS and Linux never background-download; they
-    /// only ever offer the manual DownloadUrl.
+    /// "always") should start. An install that cannot apply updates (see
+    /// <see cref="CanApplyUpdates"/>) never background-downloads; it only
+    /// offers the manual DownloadUrl.
     /// </summary>
-    internal static bool ShouldAutoStage(bool offerUpdate, string mode, bool alreadyStaged, bool isWindows) =>
-        offerUpdate && (mode is "download" or "always") && !alreadyStaged && isWindows;
+    internal static bool ShouldAutoStage(bool offerUpdate, string mode, bool alreadyStaged, bool canApply) =>
+        offerUpdate && (mode is "download" or "always") && !alreadyStaged && canApply;
+
+    /// <summary>Whether this install hands updates to an installer itself (Windows
+    /// Inno Setup, Linux install.sh, macOS bundle swap) rather than linking the download.</summary>
+    private static bool CanApplyUpdates => OperatingSystem.IsWindows() || UnixUpdateApplier.CanAutoInstall;
 
     /// <summary>
     /// Pure channel-derivation logic: given the persisted last-run version, the
@@ -342,6 +345,7 @@ public sealed class UpdateService : BackgroundService
             Volatile.Write(ref _justUpdatedToSetAtTicks, DateTime.UtcNow.Ticks);
             Volatile.Write(ref _justUpdatedTo, BuildInfo.Version);
             StagedInstallMarkerStore.Delete();
+            UnixUpdateApplier.DeleteExtractedPayload();
             return;
         }
 
@@ -374,13 +378,19 @@ public sealed class UpdateService : BackgroundService
             LastCheckError = $"Install of {marker.Version} did not complete.",
             State = "failed",
             UpdateReady = false,
-            CanAutoInstall = OperatingSystem.IsWindows(),
+            CanAutoInstall = CanApplyUpdates,
         };
     }
 
     private void ApplyPendingInstall(StagedInstallMarker marker, NexusSettings s, CancellationToken ct)
     {
-#if WINDOWS
+        if (!CanApplyUpdates)
+        {
+            Console.Error.WriteLine($"[update] pending install of {marker.Version} skipped: this install cannot apply updates");
+            StagedInstallMarkerStore.Delete();
+            return;
+        }
+
         try
         {
             var channel = string.IsNullOrEmpty(s.Update.UpdateChannel) ? "production" : s.Update.UpdateChannel;
@@ -409,10 +419,12 @@ public sealed class UpdateService : BackgroundService
                 ReopenDashboard = reopenDashboard,
             });
 
+#if WINDOWS
             if (reopenDashboard)
             {
                 DashboardReopenFlag.Write();
             }
+#endif
 
             _status = new UpdateStatusResponse
             {
@@ -429,11 +441,15 @@ public sealed class UpdateService : BackgroundService
                 CanAutoInstall = true,
             };
 
+#if WINDOWS
             var launched = UpdateInstaller.LaunchViaSchtasks(marker.InstallerPath, marker.Version);
             if (!launched)
             {
                 throw new InvalidOperationException("schtasks /Run did not succeed.");
             }
+#else
+            UnixUpdateApplier.Apply(marker.InstallerPath, marker.Version);
+#endif
 
             // Don't self-stop: the installer's `net stop` owns the stop. If the
             // installer can't proceed, the service keeps running the old version
@@ -460,10 +476,6 @@ public sealed class UpdateService : BackgroundService
                 CanAutoInstall = true,
             };
         }
-#else
-        Console.Error.WriteLine($"[update] pending install of {marker.Version} skipped on non-Windows");
-        StagedInstallMarkerStore.Delete();
-#endif
     }
 
     private static async Task<bool> WaitAsync(PeriodicTimer timer, CancellationToken ct)
@@ -603,7 +615,7 @@ public sealed class UpdateService : BackgroundService
                 UpdateReady = _updateReady,
                 PublishedAtUnix = manifest?.PublishedAt?.ToUnixTimeSeconds() ?? 0,
                 DownloadUrl = manifest?.AssetUrl ?? "",
-                CanAutoInstall = OperatingSystem.IsWindows(),
+                CanAutoInstall = CanApplyUpdates,
             };
 
             // "download" stages a download+verify but does not install.
@@ -617,7 +629,7 @@ public sealed class UpdateService : BackgroundService
             // it, so the staged installer + marker must follow the new version.
             var alreadyStaged = _updateReady
                 && string.Equals(_stagedVersion, manifest?.Version, StringComparison.OrdinalIgnoreCase);
-            if (ShouldAutoStage(offerUpdate, mode, alreadyStaged, OperatingSystem.IsWindows()) && manifest is not null)
+            if (ShouldAutoStage(offerUpdate, mode, alreadyStaged, CanApplyUpdates) && manifest is not null)
             {
                 if (Interlocked.CompareExchange(ref _installing, 1, 0) == 0)
                 {
@@ -667,7 +679,7 @@ public sealed class UpdateService : BackgroundService
                 UpdateReady = _updateReady,
                 PublishedAtUnix = _latestManifest?.PublishedAt?.ToUnixTimeSeconds() ?? 0,
                 DownloadUrl = _latestManifest?.AssetUrl ?? "",
-                CanAutoInstall = OperatingSystem.IsWindows(),
+                CanAutoInstall = CanApplyUpdates,
             };
             Console.Error.WriteLine($"[update] check failed: {ex.GetType().Name}: {ex.Message}");
         }
@@ -690,7 +702,7 @@ public sealed class UpdateService : BackgroundService
             UpdateReady = _updateReady,
             PublishedAtUnix = _latestManifest?.PublishedAt?.ToUnixTimeSeconds() ?? 0,
             DownloadUrl = _latestManifest?.AssetUrl ?? "",
-            CanAutoInstall = OperatingSystem.IsWindows(),
+            CanAutoInstall = CanApplyUpdates,
         };
     }
 
@@ -767,7 +779,7 @@ public sealed class UpdateService : BackgroundService
             UpdateStatusState("installing");
             SetProgress("installing", 100, "Installing...", manifest.Version);
 #else
-            throw new PlatformNotSupportedException("OTA install is Windows-only.");
+            LaunchUnixInstall(manifest, installerPath);
 #endif
         }
         catch (OperationCanceledException)
@@ -911,8 +923,7 @@ public sealed class UpdateService : BackgroundService
             UpdateStatusState("installing");
             SetProgress("installing", 100, "Installing...", manifest.Version);
 #else
-            // Non-Windows: update not supported; surface a clear error.
-            throw new PlatformNotSupportedException("OTA install is Windows-only.");
+            LaunchUnixInstall(manifest, installerPath);
 #endif
         }
         catch (OperationCanceledException)
@@ -940,6 +951,32 @@ public sealed class UpdateService : BackgroundService
             _installCts = null;
         }
     }
+
+#if !WINDOWS
+    private void LaunchUnixInstall(UpdateManifest manifest, string installerPath)
+    {
+        StagedInstallMarkerStore.Write(new StagedInstallMarker
+        {
+            Version = manifest.Version,
+            InstallerPath = installerPath,
+            Sha256 = manifest.Sha256 ?? "",
+            State = StagedInstallMarkerStore.StateAttempted,
+        });
+        try
+        {
+            UnixUpdateApplier.Apply(installerPath, manifest.Version);
+        }
+        catch
+        {
+            // Nothing was launched, so the next boot has no install to judge.
+            StagedInstallMarkerStore.Delete();
+            throw;
+        }
+        SetProgress("launching", 100, "Launching installer...", manifest.Version);
+        UpdateStatusState("installing");
+        SetProgress("installing", 100, "Installing...", manifest.Version);
+    }
+#endif
 
     private static void TryDeleteStagedFile(string path)
     {

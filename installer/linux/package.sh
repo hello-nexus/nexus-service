@@ -71,5 +71,7 @@ verify_wwwroot_clean() {
 verify_wwwroot_clean "$APP/wwwroot"
 
 mkdir -p "$OUT_DIR"
-tar -czf "$OUT_DIR/Nexus-Linux-x64.tar.gz" -C "$STAGE" nexus
+# root-owned entries: the in-app updater extracts this as root, and cp -a in
+# install.sh would carry the build user's uid onto the root daemon's binary.
+tar -czf "$OUT_DIR/Nexus-Linux-x64.tar.gz" --owner=0 --group=0 --numeric-owner -C "$STAGE" nexus
 echo "Wrote $OUT_DIR/Nexus-Linux-x64.tar.gz"
