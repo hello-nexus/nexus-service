@@ -216,6 +216,40 @@ public class JsonConfigStoreMigrationTests : IDisposable
     }
 
     [Fact]
+    public void Load_V19_TurnsDashboardAutoArrangeOffForExistingInstall()
+    {
+        File.WriteAllText(_settingsPath, """{ "schemaVersion": 19, "ui": { "sidebarCollapsed": true } }""");
+
+        var store = new JsonConfigStore(_settingsPath);
+        var s = store.Load();
+        try
+        {
+            Assert.Equal(NexusSettings.CurrentSchemaVersion, s.SchemaVersion);
+            Assert.False(s.Ui.DashboardAutoArrange);
+            Assert.True(s.Ui.SidebarCollapsed);
+        }
+        finally
+        {
+            store.Dispose();
+        }
+    }
+
+    [Fact]
+    public void Load_NoSettingsFile_DashboardAutoArrangeOff()
+    {
+        var store = new JsonConfigStore(_settingsPath);
+        var s = store.Load();
+        try
+        {
+            Assert.False(s.Ui.DashboardAutoArrange);
+        }
+        finally
+        {
+            store.Dispose();
+        }
+    }
+
+    [Fact]
     public void Load_NoSettingsFile_DashboardModesDefaultSimple()
     {
         var store = new JsonConfigStore(_settingsPath);
