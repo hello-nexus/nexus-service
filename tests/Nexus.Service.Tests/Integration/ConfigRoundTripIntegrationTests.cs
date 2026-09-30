@@ -62,6 +62,20 @@ public sealed class ConfigRoundTripIntegrationTests : IClassFixture<NexusAppFact
     }
 
     [Fact]
+    public async Task Audio_output_pick_persists_across_post_then_get()
+    {
+        var client = AuthedClient();
+
+        var post = await client.PostAsync("/lighting/audio-output",
+            Json("{\"deviceId\":\"{0.0.0.00000000}.{abc}\",\"deviceName\":\"Speakers\"}"));
+        Assert.Equal(HttpStatusCode.OK, post.StatusCode);
+
+        using var doc = JsonDocument.Parse(await (await client.GetAsync("/lighting/audio-output")).Content.ReadAsStringAsync());
+        Assert.Equal("{0.0.0.00000000}.{abc}", doc.RootElement.GetProperty("deviceId").GetString());
+        Assert.Equal("Speakers", doc.RootElement.GetProperty("deviceName").GetString());
+    }
+
+    [Fact]
     public async Task Theme_background_and_accent_source_persist_across_post_then_get()
     {
         var client = AuthedClient();

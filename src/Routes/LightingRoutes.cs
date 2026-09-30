@@ -101,6 +101,23 @@ public static class LightingRoutes
         }).AllowPanel();
         app.MapGet("/lighting/music-reactive", (Nexus.Service.Persistence.IConfigStore store) =>
             new Models.Lighting.MusicReactiveBody { Enabled = store.Load().Lighting.MusicReactive }).AllowPanel();
+        // Which output audio-reactive capture listens to. The Windows capture
+        // loop re-reads it periodically, so no restart is needed here.
+        app.MapGet("/lighting/audio-output", (Nexus.Service.Persistence.IConfigStore store) =>
+        {
+            var l = store.Load().Lighting;
+            return new Models.Lighting.AudioOutputBody { DeviceId = l.AudioOutputDeviceId, DeviceName = l.AudioOutputDeviceName };
+        }).AllowPanel();
+        app.MapPost("/lighting/audio-output", (Models.Lighting.AudioOutputBody body,
+            Nexus.Service.Persistence.IConfigStore store) =>
+        {
+            store.Update(s =>
+            {
+                s.Lighting.AudioOutputDeviceId = body.DeviceId ?? "";
+                s.Lighting.AudioOutputDeviceName = body.DeviceName ?? "";
+            });
+            return ApiResponse.Ok();
+        }).AllowPanel();
         // Blank lighting while the host sleeps. Host-only: this is a property of
         // the machine going to sleep, not something a paired phone should flip.
         app.MapGet("/lighting/sleep-blackout", (Nexus.Service.Persistence.IConfigStore store) =>
