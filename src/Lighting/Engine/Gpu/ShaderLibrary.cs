@@ -148,7 +148,7 @@ internal static class ShaderLibrary
         "spectrumbars", "spectrumradial", "scope", "basspulse",
         "beatstrobe", "harmonicstar", "audiotunnel", "bassbloom",
         "beatbuilder", "spectrumaurora", "neonwaveform", "liquidbeat",
-        "beatburst",
+        "beatburst", "lavaribbons", "lavahaze",
         // Simple mode's sweep set; mirrors SweepEffectKeys below, keep in sync.
         "sweeprainbow", "sweepbreathing", "sweepbars", "sweepcycle",
         "sweepbrush", "sweepliquid", "sweepcomet",
@@ -182,7 +182,7 @@ internal static class ShaderLibrary
         "spectrumbars", "spectrumradial", "scope", "basspulse",
         "beatstrobe", "harmonicstar", "audiotunnel", "bassbloom",
         "beatbuilder", "spectrumaurora", "neonwaveform", "liquidbeat",
-        "beatburst",
+        "beatburst", "lavaribbons", "lavahaze",
     };
 
     public static bool IsAudioEffect(string key) => AudioEffectKeys.Contains(key);
