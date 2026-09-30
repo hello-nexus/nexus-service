@@ -354,6 +354,113 @@ public static class PanelRoutes
             return Results.Json(updated, AppJsonContext.Default.PanelDeviceRecord);
         }).AllowPanel();
 
+        // Named personalization snapshots per panel. Dashboard-only, like the
+        // lighting preset routes; PanelPresetSwitcher loads them on app focus.
+        app.MapGet("/panel/devices/{id}/presets", (string id, PanelDeviceRegistry registry) =>
+        {
+            var presets = registry.ListPresets(id);
+            if (presets is null)
+                return Results.NotFound(ApiResponse.Fail("device not found"));
+            return Results.Json(presets, AppJsonContext.Default.PanelPresetsResponse);
+        });
+
+        app.MapPost("/panel/devices/{id}/presets", (string id, PanelPresetNameBody body, PanelDeviceRegistry registry) =>
+        {
+            var name = (body.Name ?? "").Trim();
+            if (name.Length == 0)
+                return Results.BadRequest(ApiResponse.Fail("preset name required"));
+            var presets = registry.CreatePreset(id, name, out var capped);
+            if (capped)
+                return Results.BadRequest(ApiResponse.Fail($"Preset cap of {PanelPresets.Cap} reached"));
+            if (presets is null)
+                return Results.NotFound(ApiResponse.Fail("device not found"));
+            return Results.Json(presets, AppJsonContext.Default.PanelPresetsResponse);
+        });
+
+        app.MapPut("/panel/devices/{id}/presets/{presetId}", (string id, string presetId, PanelPresetNameBody body, PanelDeviceRegistry registry) =>
+        {
+            var name = (body.Name ?? "").Trim();
+            if (name.Length == 0)
+                return Results.BadRequest(ApiResponse.Fail("preset name required"));
+            var presets = registry.RenamePreset(id, presetId, name);
+            if (presets is null)
+                return Results.NotFound(ApiResponse.Fail("preset not found"));
+            return Results.Json(presets, AppJsonContext.Default.PanelPresetsResponse);
+        });
+
+        app.MapDelete("/panel/devices/{id}/presets/{presetId}", (string id, string presetId, PanelDeviceRegistry registry) =>
+        {
+            var presets = registry.DeletePreset(id, presetId);
+            if (presets is null)
+                return Results.NotFound(ApiResponse.Fail("device not found"));
+            return Results.Json(presets, AppJsonContext.Default.PanelPresetsResponse);
+        });
+
+        app.MapPost("/panel/devices/{id}/presets/{presetId}/activate", (string id, string presetId, PanelDeviceRegistry registry, MultiplexHub hub) =>
+        {
+            var presets = registry.ActivatePreset(id, presetId);
+            if (presets is null)
+                return Results.NotFound(ApiResponse.Fail("preset not found"));
+            BroadcastDeviceChanged(hub, id);
+            return Results.Json(presets, AppJsonContext.Default.PanelPresetsResponse);
+        });
+
+        // Mirrors PUT /devices/lighting-devices/layout-presets/{id}/apps, scoped
+        // to one panel: the same app may also drive a lighting preset, a deck
+        // preset, or another panel's preset.
+        app.MapPut("/panel/devices/{id}/presets/{presetId}/apps", (
+            string id,
+            string presetId,
+            Nexus.Service.Models.Devices.SetPresetAppsBody body,
+            PanelDeviceRegistry registry,
+            Nexus.Service.Activity.IShortcutsProvider shortcuts) =>
+        {
+            var current = registry.ListPresets(id);
+            if (current is null)
+                return Results.NotFound(ApiResponse.Fail("device not found"));
+            // Resolution can fail transiently, so a re-save keeps a name it
+            // resolved before rather than downgrading it to empty.
+            var known = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+            foreach (var preset in current.Presets)
+            {
+                foreach (var b in preset.Apps)
+                {
+                    if (b.ProcessName.Length > 0) known[b.Id] = b.ProcessName;
+                }
+            }
+            var resolved = new List<PresetAppBinding>();
+            foreach (var a in body.Apps)
+            {
+                if (string.IsNullOrWhiteSpace(a.Id)
+                    || resolved.Exists(r => string.Equals(r.Id, a.Id, StringComparison.OrdinalIgnoreCase)))
+                {
+                    continue;
+                }
+                var processName = DevicesRoutes.ResolveBindingProcessName(a.Id, shortcuts);
+                if (processName.Length == 0 && known.TryGetValue(a.Id, out var previous))
+                    processName = previous;
+                resolved.Add(new PresetAppBinding { Id = a.Id, Name = a.Name, ProcessName = processName });
+            }
+
+            var presets = registry.SetPresetApps(id, presetId, resolved, out var conflict);
+            if (conflict is { } c)
+            {
+                return Results.Json(
+                    new Nexus.Service.Models.Devices.PresetAppConflictResponse
+                    {
+                        Error = true,
+                        Msg = "app_already_bound",
+                        AppName = c.AppName,
+                        PresetName = c.PresetName,
+                    },
+                    AppJsonContext.Default.PresetAppConflictResponse,
+                    statusCode: 409);
+            }
+            if (presets is null)
+                return Results.NotFound(ApiResponse.Fail("preset not found"));
+            return Results.Json(presets, AppJsonContext.Default.PanelPresetsResponse);
+        });
+
         // Personalization reset: the record's layout/theme/background/widget
         // fields return to their just-allocated state (defaults reseed on the
         // next read) and every uploaded media asset is deleted. Identity,

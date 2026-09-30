@@ -838,6 +838,12 @@ public static class NexusServiceCollectionExtensions
             sp.GetRequiredService<Nexus.Service.Activity.IScreenTimeProvider>(),
             sp.GetRequiredService<Nexus.Service.Sockets.MultiplexHub>(),
             sp.GetRequiredService<Nexus.Service.Deck.DeckPresetActivator>()));
+        // Panel presets: loads a panel's preset when an app bound to it takes focus.
+        services.AddHostedService(sp => new Nexus.Service.Panel.PanelPresetSwitcher(
+            sp.GetRequiredService<Nexus.Service.Persistence.IConfigStore>(),
+            sp.GetRequiredService<Nexus.Service.Activity.IScreenTimeProvider>(),
+            sp.GetRequiredService<Nexus.Service.Panel.PanelDeviceRegistry>(),
+            sp.GetRequiredService<Nexus.Service.Sockets.MultiplexHub>()));
 
         // Elgato Stream Deck profile import: read-only against the local
         // Elgato software's own store, never touching a physical deck.

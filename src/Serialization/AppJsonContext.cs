@@ -253,6 +253,8 @@ namespace Nexus.Service.Serialization;
 [JsonSerializable(typeof(Nexus.Service.Models.Panel.PanelDevicePatch))]
 [JsonSerializable(typeof(Nexus.Service.Models.Panel.PanelDeviceCreateBody))]
 [JsonSerializable(typeof(Nexus.Service.Models.Panel.PanelDeviceListResponse))]
+[JsonSerializable(typeof(Nexus.Service.Models.Panel.PanelPresetsResponse))]
+[JsonSerializable(typeof(Nexus.Service.Models.Panel.PanelPresetNameBody))]
 [JsonSerializable(typeof(List<Nexus.Service.Models.Panel.PanelDeviceRecord>))]
 [JsonSerializable(typeof(Dictionary<string, Nexus.Service.Models.Panel.PanelDeviceRecord>))]
 [JsonSerializable(typeof(Nexus.Service.Models.Panel.PrefsChangedFrame))]

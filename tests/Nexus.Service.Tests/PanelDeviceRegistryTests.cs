@@ -476,4 +476,102 @@ public sealed class PanelDeviceRegistryTests : IDisposable
 
         Assert.Equal(PanelSurfaces.Desktop, patched!.Capabilities?.Surface);
     }
+
+    private static PanelLayoutDto Layout(string widgetType) => new()
+    {
+        Pages = { new PanelPageDto { Id = "p1", Widgets = { new PanelWidgetDto { Id = "w1", Type = widgetType } } } },
+    };
+
+    [Fact]
+    public void ActivatePreset_AppliesTheSnapshot_AndCapturesThePresetBeingLeft()
+    {
+        var record = _registry.Allocate(null, Caps(PanelSurfaces.Q60));
+        _registry.Patch(record.Id, new PanelDevicePatch { Layout = Layout("clock"), ThemeMode = "light" });
+        var desk = _registry.CreatePreset(record.Id, "Desk", out _)!.ActiveId!;
+        var game = _registry.CreatePreset(record.Id, "Game", out _)!.ActiveId!;
+        // Edits while Game is loaded belong to Game.
+        _registry.Patch(record.Id, new PanelDevicePatch { Layout = Layout("gallery"), AccentColor = "#ff0000", ThemeMode = "dark" });
+
+        var afterDesk = _registry.ActivatePreset(record.Id, desk);
+
+        Assert.Equal(desk, afterDesk!.ActiveId);
+        var live = _registry.Get(record.Id)!;
+        Assert.Equal("clock", live.Layout!.Pages[0].Widgets[0].Type);
+        Assert.Equal("light", live.ThemeMode);
+        // Null in the snapshot resets the field rather than leaving Game's accent.
+        Assert.Null(live.AccentColor);
+
+        _registry.ActivatePreset(record.Id, game);
+        live = _registry.Get(record.Id)!;
+        Assert.Equal("gallery", live.Layout!.Pages[0].Widgets[0].Type);
+        Assert.Equal("#ff0000", live.AccentColor);
+        Assert.Equal("dark", live.ThemeMode);
+    }
+
+    [Fact]
+    public void Preset_DoesNotShareTheLiveLayout()
+    {
+        var record = _registry.Allocate(null, Caps(PanelSurfaces.Q60));
+        _registry.Patch(record.Id, new PanelDevicePatch { Layout = Layout("clock") });
+        var desk = _registry.CreatePreset(record.Id, "Desk", out _)!.ActiveId!;
+        _registry.CreatePreset(record.Id, "Other", out _);
+
+        // Widget settings mutate the stored layout in place.
+        _store.Update(s => s.PanelDevices[record.Id].Layout!.Pages[0].Widgets[0].Type = "weather");
+        _registry.ActivatePreset(record.Id, desk);
+
+        Assert.Equal("clock", _registry.Get(record.Id)!.Layout!.Pages[0].Widgets[0].Type);
+    }
+
+    [Fact]
+    public void Presets_NeverRideTheRecordSnapshot()
+    {
+        var record = _registry.Allocate(null, Caps(PanelSurfaces.Q60));
+        _registry.CreatePreset(record.Id, "Desk", out _);
+
+        Assert.Null(_registry.Get(record.Id)!.Presets);
+        Assert.Single(_registry.ListPresets(record.Id)!.Presets);
+    }
+
+    [Fact]
+    public void CreatePreset_RefusesPastTheCap()
+    {
+        var record = _registry.Allocate(null, Caps(PanelSurfaces.Q60));
+        for (var i = 0; i < PanelPresets.Cap; i++)
+            _registry.CreatePreset(record.Id, "P" + i, out _);
+
+        var result = _registry.CreatePreset(record.Id, "one too many", out var capped);
+
+        Assert.True(capped);
+        Assert.Null(result);
+        Assert.Equal(PanelPresets.Cap, _registry.ListPresets(record.Id)!.Presets.Count);
+    }
+
+    [Fact]
+    public void SetPresetApps_RefusesAnAppAnotherPresetOfThePanelHolds()
+    {
+        var record = _registry.Allocate(null, Caps(PanelSurfaces.Q60));
+        var desk = _registry.CreatePreset(record.Id, "Desk", out _)!.ActiveId!;
+        var game = _registry.CreatePreset(record.Id, "Game", out _)!.ActiveId!;
+        _registry.SetPresetApps(record.Id, game, new() { new PresetAppBinding { Id = "proc:eldenring", Name = "Elden Ring", ProcessName = "eldenring" } }, out _);
+
+        var result = _registry.SetPresetApps(
+            record.Id, desk, new() { new PresetAppBinding { Id = "shortcut:1", Name = "Elden Ring", ProcessName = "eldenring" } }, out var conflict);
+
+        Assert.Null(result);
+        Assert.Equal(("Elden Ring", "Game"), conflict);
+    }
+
+    [Fact]
+    public void ResetToDefaults_ClearsPresets()
+    {
+        var record = _registry.Allocate(null, Caps(PanelSurfaces.Q60));
+        _registry.CreatePreset(record.Id, "Desk", out _);
+
+        _registry.ResetToDefaults(record.Id);
+
+        var presets = _registry.ListPresets(record.Id)!;
+        Assert.Empty(presets.Presets);
+        Assert.Null(presets.ActiveId);
+    }
 }

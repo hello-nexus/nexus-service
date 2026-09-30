@@ -667,6 +667,10 @@ public sealed class PanelDeviceRegistry
             record.WidgetPadding = null;
             record.ThemeSyncWithDesktop = null;
             record.AccentSyncWithDesktop = null;
+            // Presets are personalization too, and they reference the media
+            // the caller deletes.
+            record.Presets = null;
+            record.ActivePresetId = null;
             record.LastSeenAt = now;
             snapshot = Clone(record);
         });
@@ -706,6 +710,143 @@ public sealed class PanelDeviceRegistry
         });
         if (snapshot is not null) _store.FlushNow();
         return snapshot;
+    }
+
+    /// <summary>The panel's presets and which one is loaded. Null when the id is unknown.</summary>
+    public PanelPresetsResponse? ListPresets(string id)
+    {
+        var record = _store.Load().PanelDevices.GetValueOrDefault(id);
+        return record is null ? null : PanelPresets.ToResponse(record);
+    }
+
+    /// <summary>
+    /// Saves the live personalization as a new preset and loads it. Null when
+    /// the id is unknown, or when the panel already holds
+    /// <see cref="PanelPresets.Cap"/> presets (<paramref name="capped"/>).
+    /// </summary>
+    public PanelPresetsResponse? CreatePreset(string id, string name, out bool capped)
+    {
+        PanelPresetsResponse? result = null;
+        var hitCap = false;
+        _store.Update(s =>
+        {
+            if (!s.PanelDevices.TryGetValue(id, out var record))
+                return;
+            record.Presets ??= new List<PanelPreset>();
+            if (record.Presets.Count >= PanelPresets.Cap)
+            {
+                hitCap = true;
+                return;
+            }
+            PanelPresets.CaptureActive(record);
+            var preset = new PanelPreset { Id = Guid.NewGuid().ToString("n"), Name = name };
+            PanelPresets.Copy(record, preset);
+            record.Presets.Add(preset);
+            record.ActivePresetId = preset.Id;
+            result = PanelPresets.ToResponse(record);
+        });
+        capped = hitCap;
+        return result;
+    }
+
+    /// <summary>Null when either id is unknown.</summary>
+    public PanelPresetsResponse? RenamePreset(string id, string presetId, string name)
+    {
+        PanelPresetsResponse? result = null;
+        _store.Update(s =>
+        {
+            if (!s.PanelDevices.TryGetValue(id, out var record))
+                return;
+            var preset = record.Presets?.Find(p => p.Id == presetId);
+            if (preset is null)
+                return;
+            preset.Name = name;
+            result = PanelPresets.ToResponse(record);
+        });
+        return result;
+    }
+
+    /// <summary>Deleting the loaded preset leaves the live personalization as
+    /// it is, with no preset loaded. Null when the panel id is unknown.</summary>
+    public PanelPresetsResponse? DeletePreset(string id, string presetId)
+    {
+        PanelPresetsResponse? result = null;
+        _store.Update(s =>
+        {
+            if (!s.PanelDevices.TryGetValue(id, out var record))
+                return;
+            record.Presets?.RemoveAll(p => p.Id == presetId);
+            if (record.ActivePresetId == presetId)
+                record.ActivePresetId = null;
+            result = PanelPresets.ToResponse(record);
+        });
+        return result;
+    }
+
+    /// <summary>
+    /// Loads a preset into the live record, first capturing the live fields
+    /// into the preset being left. Null when either id is unknown. The caller
+    /// broadcasts the device change.
+    /// </summary>
+    public PanelPresetsResponse? ActivatePreset(string id, string presetId)
+    {
+        PanelPresetsResponse? result = null;
+        _store.Update(s =>
+        {
+            if (!s.PanelDevices.TryGetValue(id, out var record))
+                return;
+            var target = record.Presets?.Find(p => p.Id == presetId);
+            if (target is null)
+                return;
+            PanelPresets.CaptureActive(record);
+            PanelPresets.Copy(target, record);
+            record.ActivePresetId = target.Id;
+            result = PanelPresets.ToResponse(record);
+        });
+        return result;
+    }
+
+    /// <summary>
+    /// Replaces a preset's app bindings. An app triggers one preset per panel,
+    /// so a binding another of this panel's presets holds is refused
+    /// (<paramref name="conflict"/>) rather than moved. Null when either id is
+    /// unknown or on conflict.
+    /// </summary>
+    public PanelPresetsResponse? SetPresetApps(
+        string id, string presetId, List<PresetAppBinding> apps, out (string AppName, string PresetName)? conflict)
+    {
+        PanelPresetsResponse? result = null;
+        (string, string)? clash = null;
+        _store.Update(s =>
+        {
+            if (!s.PanelDevices.TryGetValue(id, out var record))
+                return;
+            var preset = record.Presets?.Find(p => p.Id == presetId);
+            if (preset is null)
+                return;
+            // Matched on the resolved process name as well as the id: the same
+            // app can be picked off the running list or the installed list.
+            foreach (var other in record.Presets!)
+            {
+                if (other.Id == presetId || other.Apps is null)
+                    continue;
+                foreach (var taken in other.Apps)
+                {
+                    var hit = apps.Find(a =>
+                        string.Equals(a.Id, taken.Id, StringComparison.OrdinalIgnoreCase)
+                        || (a.ProcessName.Length > 0 && string.Equals(a.ProcessName, taken.ProcessName, StringComparison.Ordinal)));
+                    if (hit is not null)
+                    {
+                        clash = (hit.Name, other.Name);
+                        return;
+                    }
+                }
+            }
+            preset.Apps = apps;
+            result = PanelPresets.ToResponse(record);
+        });
+        conflict = clash;
+        return result;
     }
 
     private static string DefaultName(long now)
