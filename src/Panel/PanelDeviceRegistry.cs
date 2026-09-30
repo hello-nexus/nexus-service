@@ -571,6 +571,10 @@ public sealed class PanelDeviceRegistry
                 record.WidgetLabels = patch.WidgetLabels.Value;
             if (patch.WidgetPadding.HasValue)
                 record.WidgetPadding = patch.WidgetPadding.Value;
+            if (patch.TextColorMode is not null)
+                record.TextColorMode = patch.TextColorMode;
+            if (patch.TextColor is not null)
+                record.TextColor = patch.TextColor;
             if (patch.ThemeSyncWithDesktop.HasValue)
                 record.ThemeSyncWithDesktop = patch.ThemeSyncWithDesktop.Value;
             if (patch.AccentSyncWithDesktop.HasValue)
@@ -665,6 +669,8 @@ public sealed class PanelDeviceRegistry
             record.WidgetOpacity = null;
             record.WidgetLabels = null;
             record.WidgetPadding = null;
+            record.TextColorMode = null;
+            record.TextColor = null;
             record.ThemeSyncWithDesktop = null;
             record.AccentSyncWithDesktop = null;
             record.LastSeenAt = now;
@@ -785,6 +791,8 @@ public sealed class PanelDeviceRegistry
             WidgetOpacity = r.WidgetOpacity,
             WidgetLabels = r.WidgetLabels,
             WidgetPadding = r.WidgetPadding,
+            TextColorMode = r.TextColorMode,
+            TextColor = r.TextColor,
             ThemeSyncWithDesktop = r.ThemeSyncWithDesktop,
             AccentSyncWithDesktop = r.AccentSyncWithDesktop,
             FirstSeenAt = r.FirstSeenAt,

@@ -106,6 +106,20 @@ public sealed class PanelDeviceRegistryTests : IDisposable
         Assert.Equal("Renamed", patched.DisplayName);
     }
 
+    [Fact]
+    public void Patch_TextColor_RoundTripsAndSurvivesOmission()
+    {
+        var record = _registry.Allocate(null, Caps(PanelSurfaces.Phone));
+        Assert.Null(record.TextColorMode);
+        Assert.Null(record.TextColor);
+
+        _registry.Patch(record.Id, new PanelDevicePatch { TextColorMode = "custom", TextColor = "#ff8800" });
+        var patched = _registry.Patch(record.Id, new PanelDevicePatch { DisplayName = "Renamed" });
+
+        Assert.Equal("custom", patched!.TextColorMode);
+        Assert.Equal("#ff8800", _registry.Get(record.Id)!.TextColor);
+    }
+
     /// <summary>
     /// The service stores null until explicitly patched, same as WidgetOpacity/
     /// WidgetLabels; the default percent is applied client-side.

@@ -80,6 +80,10 @@ public sealed class PanelDeviceRecord
     public bool? WidgetLabels { get; set; }
     /// <summary>Percent 0-100. Null is unset; the client applies its own default.</summary>
     public double? WidgetPadding { get; set; }
+    /// <summary>Widget text colour: "adaptive" (light or dark per widget from its backdrop), "theme", or "custom". Null is unset; the client applies its own default.</summary>
+    public string? TextColorMode { get; set; }
+    /// <summary>Hex colour for every widget text in "custom" mode, accent-coloured text included.</summary>
+    public string? TextColor { get; set; }
     public bool? ThemeSyncWithDesktop { get; set; }
     public bool? AccentSyncWithDesktop { get; set; }
     public long FirstSeenAt { get; set; }
@@ -248,6 +252,8 @@ public sealed class PanelDevicePatch
     public double? WidgetOpacity { get; set; }
     public bool? WidgetLabels { get; set; }
     public double? WidgetPadding { get; set; }
+    public string? TextColorMode { get; set; }
+    public string? TextColor { get; set; }
     public bool? ThemeSyncWithDesktop { get; set; }
     public bool? AccentSyncWithDesktop { get; set; }
     /// <summary>Display-bound records only; ignored for other panels.</summary>
