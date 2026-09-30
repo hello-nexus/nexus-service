@@ -32,6 +32,18 @@ public sealed class KeebHub : IDisposable
     private readonly IHidEnumerator _hid;
     private readonly object _io = new();
     private IHidDevice? _device;
+
+    /// <summary>
+    /// Held across every request/response exchange, multi-report command and onboard
+    /// layer/macro transaction. Every handle on the vendor collection receives every
+    /// input report, so the knob poll's own-handle request must not land mid-exchange;
+    /// it skips its tick while this is held. Taken before <c>_io</c>, never after.
+    /// </summary>
+    public object OnboardLock { get; } = new();
+
+    // Bounds the drain against a device that never goes idle; above every
+    // handle's configured input queue depth.
+    private const int MaxDrainReports = 512;
     private bool _disposed;
 
     // Reusable wire buffers (avoid per-frame allocation at 30 Hz). Guarded by _io.
@@ -190,6 +202,7 @@ public sealed class KeebHub : IDisposable
     /// </summary>
     public bool WriteSettings(ReadOnlySpan<byte> page)
     {
+        lock (OnboardLock)
         lock (_io)
         {
             if (!EnsureConnectedLocked()) return false;
@@ -227,12 +240,14 @@ public sealed class KeebHub : IDisposable
     /// </summary>
     public byte[]? ReadSettings()
     {
+        lock (OnboardLock)
         lock (_io)
         {
             if (!EnsureConnectedLocked()) return null;
             var dev = _device!;
             try
             {
+                DrainStaleInput(dev);
                 if (!dev.SetFeature(KeebProtocol.SettingsReadFeature))
                 {
                     RecordWriteFailureLocked("settings-read-feature");
@@ -273,6 +288,7 @@ public sealed class KeebHub : IDisposable
     /// </summary>
     public byte[]? ReadLayerRaw(int profile, int layer)
     {
+        lock (OnboardLock)
         lock (_io)
         {
             return ReadPagesLocked(
@@ -287,6 +303,7 @@ public sealed class KeebHub : IDisposable
     /// </summary>
     public byte[]? ReadMacroRaw(int slot)
     {
+        lock (OnboardLock)
         lock (_io)
         {
             return ReadPagesLocked(
@@ -305,6 +322,8 @@ public sealed class KeebHub : IDisposable
         var dev = _device!;
         try
         {
+            var stale = DrainStaleInput(dev);
+            if (stale > 0) ServiceLog.Info($"[keeb] {what} read: discarded {stale} stale input report(s)");
             if (!dev.SetFeature(feature))
             {
                 RecordWriteFailureLocked($"{what}-read-feature");
@@ -339,9 +358,24 @@ public sealed class KeebHub : IDisposable
         }
     }
 
+    /// <summary>
+    /// Discard input reports queued on <paramref name="dev"/>, including replies to
+    /// requests sent on other handles to the same collection, before sending a request.
+    /// </summary>
+    internal static int DrainStaleInput(IHidDevice dev)
+    {
+        var buf = new byte[KeebLayout.PageSize];
+        var n = 0;
+        // Zero wait: a queued report completes the read at once, and a timed wait
+        // costs a full scheduler tick per call on Windows even when the queue is empty.
+        while (n < MaxDrainReports && dev.Read(buf, 0) > 0) n++;
+        return n;
+    }
+
     /// <summary>Write a macro's 4 pages (0xF3) for global firmware <paramref name="slot"/> (profile*16 + index, 0..31).</summary>
     public bool WriteMacro(int slot, byte[] pages)
     {
+        lock (OnboardLock)
         lock (_io)
         {
             if (!EnsureConnectedLocked()) return false;
@@ -354,6 +388,7 @@ public sealed class KeebHub : IDisposable
     /// <summary>Write a layer's 8 key-assignment pages (0xF2) for (profile, layer).</summary>
     public bool WriteLayer(int profile, int layer, byte[] pages)
     {
+        lock (OnboardLock)
         lock (_io)
         {
             if (!EnsureConnectedLocked()) return false;
@@ -393,12 +428,14 @@ public sealed class KeebHub : IDisposable
     /// </summary>
     public bool ReadDeviceInfo()
     {
+        lock (OnboardLock)
         lock (_io)
         {
             if (!EnsureConnectedLocked()) return false;
             var dev = _device!;
             try
             {
+                DrainStaleInput(dev);
                 if (!dev.SetFeature(KeebProtocol.DeviceInfoRequest))
                 {
                     RecordWriteFailureLocked("device-info-feature");

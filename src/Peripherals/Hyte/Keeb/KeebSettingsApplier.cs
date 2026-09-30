@@ -77,28 +77,36 @@ public sealed class KeebSettingsApplier
     private byte[]? ReadSettingsOffStream()
     {
         if (_hid is null) return null;
-        lock (_knobIo)
+        // Skip this tick rather than wait: an onboard layer/macro transaction
+        // is in flight, and a settings request now would land inside it.
+        if (!System.Threading.Monitor.TryEnter(_hub.OnboardLock)) return null;
+        try
         {
-            try
+            lock (_knobIo)
             {
-                if (_knobReader is null)
+                try
                 {
-                    HidDeviceInfo? info = null;
-                    foreach (var i in _hid.Find(KeebProtocol.VendorId, KeebProtocol.ProductId))
-                        if (i.UsagePage == KeebProtocol.VendorUsagePage && i.Usage == KeebProtocol.VendorUsage) { info = i; break; }
-                    if (info is null) return null;
-                    _knobReader = _hid.Open(info.Path, forInput: true);
-                    if (_knobReader is null) return null;
-                    ServiceLog.Info("[keeb] knob reader opened on its own handle");
+                    if (_knobReader is null)
+                    {
+                        HidDeviceInfo? info = null;
+                        foreach (var i in _hid.Find(KeebProtocol.VendorId, KeebProtocol.ProductId))
+                            if (i.UsagePage == KeebProtocol.VendorUsagePage && i.Usage == KeebProtocol.VendorUsage) { info = i; break; }
+                        if (info is null) return null;
+                        _knobReader = _hid.Open(info.Path, forInput: true);
+                        if (_knobReader is null) return null;
+                        ServiceLog.Info("[keeb] knob reader opened on its own handle");
+                    }
+                    KeebHub.DrainStaleInput(_knobReader);
+                    if (!_knobReader.SetFeature(KeebProtocol.SettingsReadFeature)) { DropKnobReader(); return null; }
+                    var buf = new byte[KeebLayout.PageSize];
+                    var n = _knobReader.Read(buf, 250);
+                    if (n <= 0) { DropKnobReader(); return null; }
+                    return buf.AsSpan(0, n).ToArray();
                 }
-                if (!_knobReader.SetFeature(KeebProtocol.SettingsReadFeature)) { DropKnobReader(); return null; }
-                var buf = new byte[KeebLayout.PageSize];
-                var n = _knobReader.Read(buf, 250);
-                if (n <= 0) { DropKnobReader(); return null; }
-                return buf.AsSpan(0, n).ToArray();
+                catch { DropKnobReader(); return null; }
             }
-            catch { DropKnobReader(); return null; }
         }
+        finally { System.Threading.Monitor.Exit(_hub.OnboardLock); }
     }
 
     private void DropKnobReader()

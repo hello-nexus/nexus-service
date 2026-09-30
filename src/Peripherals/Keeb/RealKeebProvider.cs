@@ -33,13 +33,15 @@ public sealed class RealKeebProvider : IKeebProvider
     private readonly KeebSettingsApplier _applier;
     private readonly LightingEngine _engine;
     // Serializes layer/macro store+device transactions so two concurrent saves
-    // can't leave the device holding one write and the store another.
-    private readonly object _writeLock = new();
+    // can't leave the device holding one write and the store another. It is the
+    // hub's onboard lock, so the knob poll also stays out of a write + verify.
+    private readonly object _writeLock;
 
     public RealKeebProvider(IConfigStore store, KeebHub hub, KeebSettingsApplier applier, LightingEngine engine)
     {
         _store = store;
         _hub = hub;
+        _writeLock = hub.OnboardLock;
         _applier = applier;
         _engine = engine;
     }
@@ -90,6 +92,7 @@ public sealed class RealKeebProvider : IKeebProvider
 
         lock (_writeLock)
         {
+            MigrateLegacyPristine();
             var profile = _hub.State.Profile;
             if (!TryGetPristine(layout, profile, layer, out var pristine, out var why))
                 return LayerFail(why);
@@ -138,6 +141,7 @@ public sealed class RealKeebProvider : IKeebProvider
         var layout = CurrentLayout();
         lock (_writeLock)
         {
+            MigrateLegacyPristine();
             var profile = _hub.State.Profile;
             var s = _store.Load().Keeb;
             var hasOverrides = s.KeyOverrides.Any(o => o.Profile == profile && o.Layer == layer);
@@ -174,6 +178,7 @@ public sealed class RealKeebProvider : IKeebProvider
         var layout = CurrentLayout();
         lock (_writeLock)
         {
+            MigrateLegacyPristine();
             var s = _store.Load().Keeb;
             foreach (var group in s.KeyOverrides.GroupBy(o => (o.Profile, o.Layer)))
             {
@@ -229,7 +234,36 @@ public sealed class RealKeebProvider : IKeebProvider
         return true;
     }
 
-    private static string PristineKey(string layout, int profile, int layer) => $"{layout}|{profile}|{layer}";
+    // Only tables under this prefix were captured by a draining, double read.
+    private const string PristineKeyPrefix = "v2|";
+
+    private static string PristineKey(string layout, int profile, int layer) => $"{PristineKeyPrefix}{layout}|{profile}|{layer}";
+
+    // An unprefixed table may hold queued settings replies instead of the
+    // layer. One whose layer has persisted overrides passed a byte-exact write
+    // verify, so it is adopted; the rest are dropped and recaptured, since the
+    // device holds no Nexus remap for those layers. Caller holds _writeLock.
+    private void MigrateLegacyPristine()
+    {
+        if (_store.Load().Keeb.PristineLayers.Keys.All(k => k.StartsWith(PristineKeyPrefix, StringComparison.Ordinal)))
+            return;
+        _store.Update(s =>
+        {
+            foreach (var key in s.Keeb.PristineLayers.Keys.Where(k => !k.StartsWith(PristineKeyPrefix, StringComparison.Ordinal)).ToList())
+            {
+                var hex = s.Keeb.PristineLayers[key];
+                s.Keeb.PristineLayers.Remove(key);
+                var parts = key.Split('|');
+                if (parts.Length == 3
+                    && int.TryParse(parts[1], out var profile)
+                    && int.TryParse(parts[2], out var layer)
+                    && s.Keeb.KeyOverrides.Any(o => o.Profile == profile && o.Layer == layer))
+                {
+                    s.Keeb.PristineLayers.TryAdd(PristineKeyPrefix + key, hex);
+                }
+            }
+        });
+    }
 
     // Load the captured factory table for (layout, profile, layer), capturing
     // it from the device on first use. Caller holds _writeLock.
@@ -258,8 +292,12 @@ public sealed class RealKeebProvider : IKeebProvider
             error = "keyboard must be connected for its first key assignment";
             return false;
         }
+        // Every later write composes from this table, so require two reads to agree
+        // byte-exact: one stale page kept here is written to the device for good.
         var raw = _hub.ReadLayerRaw(profile, layer);
-        if (raw is null || raw.Length != KeebLayerCodec.PagesBytes)
+        var again = raw is null ? null : _hub.ReadLayerRaw(profile, layer);
+        if (raw is null || again is null || raw.Length != KeebLayerCodec.PagesBytes
+            || !KeebLayerCodec.DataEquals(raw, again, KeebLayerCodec.PageCount))
         {
             error = "could not read the keyboard's current layout";
             return false;
