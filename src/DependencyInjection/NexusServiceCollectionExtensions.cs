@@ -1181,6 +1181,8 @@ public static class NexusServiceCollectionExtensions
         // Shared one-at-a-time flash gate: owns the mutex, IsFlashing flag, and Status
         // object that both FirmwareFlasher and ApkFlasher write to.
         services.AddSingleton<Nexus.Service.Devices.Firmware.FlashGate>();
+        services.AddSingleton<Nexus.Service.Devices.Firmware.DfuRecoveryMonitor>();
+        services.AddHostedService(sp => sp.GetRequiredService<Nexus.Service.Devices.Firmware.DfuRecoveryMonitor>());
         services.AddSingleton<Nexus.Service.Devices.Firmware.FirmwareFlasher>();
         services.AddSingleton<Nexus.Service.Devices.Firmware.ApkFlasher>();
 

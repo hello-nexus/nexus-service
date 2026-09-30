@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
+using System.Linq;
 using System.Runtime.InteropServices;
 using System.Text;
 using System.Text.RegularExpressions;
@@ -78,6 +79,14 @@ public sealed class DfuUtil
     {
         if (string.IsNullOrEmpty(listOutput)) return 0;
         return Regex.Matches(listOutput, @"\[3402:0a00\]", RegexOptions.IgnoreCase).Count;
+    }
+
+    /// <summary>The last <paramref name="count"/> non-empty lines of dfu-util output, joined for a log line.</summary>
+    public static string TailLines(string output, int count)
+    {
+        if (string.IsNullOrEmpty(output)) return "";
+        var lines = output.Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        return string.Join(" | ", lines.Skip(Math.Max(0, lines.Length - count)));
     }
 
     // ── Execution ──

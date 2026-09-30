@@ -25,10 +25,6 @@ public sealed class Np50Handler : IDeviceHandler
     public IReadOnlyList<UsbId> Identifiers { get; } = new[]
     {
         new UsbId(Np50Protocol.VendorId, Np50Protocol.ProductId),
-        // DFU mode (post-firmware-jump). Surfaced so the UI can show "device
-        // is in bootloader mode" rather than "device missing" when a flash
-        // is in progress. Phase 2 wires the actual flasher.
-        new UsbId(Np50Protocol.VendorId, Np50Protocol.DfuProductId),
     };
 
     public bool IsConnected(IReadOnlyList<UsbDeviceEntry> detectedDevices)
