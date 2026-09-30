@@ -966,7 +966,8 @@ public static class NexusServiceCollectionExtensions
                 new Nexus.Service.Peripherals.JpegPanels.JpegPanelConnectionWorker(
                     sp.GetRequiredService<Nexus.Service.Peripherals.Hid.IHidEnumerator>(),
                     jpegPanelHub,
-                    sp.GetRequiredService<Nexus.Service.Devices.DeviceControlGate>()));
+                    sp.GetRequiredService<Nexus.Service.Devices.DeviceControlGate>(),
+                    sp.GetRequiredService<Nexus.Service.Devices.Detection.HardwarePresence>()));
             services.AddSingleton<Nexus.Service.Panel.Streams.IStreamedPanelDiscovery>(
                 _ => new Nexus.Service.Panel.Streams.JpegPanelDiscovery(jpegPanelHub));
             services.AddSingleton<IDeviceHandler>(
@@ -1007,7 +1008,8 @@ public static class NexusServiceCollectionExtensions
                     sp.GetRequiredService<Nexus.Service.Peripherals.Hid.IHidEnumerator>(),
                     sp.GetRequiredService<Nexus.Service.Peripherals.BulkPanels.IBulkUsbPipeFactory>(),
                     bulkPanelHub,
-                    sp.GetRequiredService<Nexus.Service.Devices.DeviceControlGate>()));
+                    sp.GetRequiredService<Nexus.Service.Devices.DeviceControlGate>(),
+                    sp.GetRequiredService<Nexus.Service.Devices.Detection.HardwarePresence>()));
             services.AddSingleton<Nexus.Service.Panel.Streams.IStreamedPanelDiscovery>(sp =>
                 new Nexus.Service.Panel.Streams.BulkPanelDiscovery(
                     bulkPanelHub, sp.GetService<Nexus.Service.Panel.Streams.IVirtualMonitorHost>()));

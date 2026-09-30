@@ -4,6 +4,7 @@ using System.Threading.Tasks;
 using Microsoft.Extensions.Hosting;
 using Nexus.Service.Cooling;
 using Nexus.Service.Devices;
+using Nexus.Service.Devices.Detection;
 using Nexus.Service.Lighting;
 using Nexus.Service.Peripherals.Hid;
 using Nexus.Service.Platform;
@@ -21,19 +22,22 @@ public sealed class KrakenConnectionWorker : BackgroundService
     private readonly KrakenLightingDeviceProvider _lighting;
     private readonly KrakenCoolingProvider _cooling;
     private readonly DeviceControlGate _gate;
+    private readonly HardwarePresence _presence;
 
     public KrakenConnectionWorker(
         IHidEnumerator hid,
         KrakenHub hub,
         KrakenLightingDeviceProvider lighting,
         KrakenCoolingProvider cooling,
-        DeviceControlGate gate)
+        DeviceControlGate gate,
+        HardwarePresence presence)
     {
         _hid = hid;
         _hub = hub;
         _lighting = lighting;
         _cooling = cooling;
         _gate = gate;
+        _presence = presence;
     }
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
@@ -43,6 +47,12 @@ public sealed class KrakenConnectionWorker : BackgroundService
             try
             {
                 if (!_gate.IsEnabled(KrakenHub.DeviceId))
+                {
+                    await Task.Delay(ConnectPollMs, stoppingToken).ConfigureAwait(false);
+                    continue;
+                }
+
+                if (!_presence.UsbPresent(KrakenProtocol.VendorId, KrakenProtocol.ProductIds))
                 {
                     await Task.Delay(ConnectPollMs, stoppingToken).ConfigureAwait(false);
                     continue;

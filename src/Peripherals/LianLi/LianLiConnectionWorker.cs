@@ -4,6 +4,7 @@ using System.Threading.Tasks;
 using Microsoft.Extensions.Hosting;
 using Nexus.Service.Cooling;
 using Nexus.Service.Devices;
+using Nexus.Service.Devices.Detection;
 using Nexus.Service.Lighting;
 using Nexus.Service.Peripherals.Hid;
 using Nexus.Service.Platform;
@@ -21,14 +22,16 @@ public sealed class LianLiConnectionWorker : BackgroundService
     private readonly LianLiLightingDeviceProvider _lighting;
     private readonly LianLiCoolingProvider _cooling;
     private readonly DeviceControlGate _gate;
+    private readonly HardwarePresence _presence;
 
-    public LianLiConnectionWorker(IHidEnumerator hid, LianLiHub hub, LianLiLightingDeviceProvider lighting, LianLiCoolingProvider cooling, DeviceControlGate gate)
+    public LianLiConnectionWorker(IHidEnumerator hid, LianLiHub hub, LianLiLightingDeviceProvider lighting, LianLiCoolingProvider cooling, DeviceControlGate gate, HardwarePresence presence)
     {
         _hid = hid;
         _hub = hub;
         _lighting = lighting;
         _cooling = cooling;
         _gate = gate;
+        _presence = presence;
     }
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
@@ -38,6 +41,12 @@ public sealed class LianLiConnectionWorker : BackgroundService
             try
             {
                 if (!_gate.IsEnabled("lianli"))
+                {
+                    await Task.Delay(ConnectPollMs, stoppingToken).ConfigureAwait(false);
+                    continue;
+                }
+
+                if (!_presence.UsbPresent(LianLiProtocol.VendorId, LianLiFanProfiles.AllProductIds))
                 {
                     await Task.Delay(ConnectPollMs, stoppingToken).ConfigureAwait(false);
                     continue;

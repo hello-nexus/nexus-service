@@ -12,10 +12,17 @@ using Nexus.Service.Platform;
 
 namespace Nexus.Service.Peripherals.Nollie;
 
-/// <summary>Rescans every poll and attaches/drops controllers individually, since several commonly share a machine.</summary>
+/// <summary>Rescans when the Nollie devnodes on the bus change (and on a periodic recheck) and attaches/drops controllers individually, since several commonly share a machine.</summary>
 public sealed class NollieConnectionWorker : BackgroundService
 {
     private const int PollMs = 5000;
+
+    /// <summary>
+    /// Windows presence folds identical units into one entry (vid:pid:name), so
+    /// a second board of an attached model changes no bus signature; only this
+    /// Nollie-only recheck finds it.
+    /// </summary>
+    internal const int RecheckMs = 60_000;
     private const int MaxConsecutiveFailures = 3;
 
     /// <summary>Nexus Control gate id; <see cref="Devices.Handlers.NollieHandler"/> lists the device under it.</summary>
@@ -30,9 +37,14 @@ public sealed class NollieConnectionWorker : BackgroundService
     private readonly DeviceControlGate _gate;
     private readonly IConfigStore _store;
     private readonly HardwarePresence _presence;
+    private readonly Func<long> _clock;
     private readonly HashSet<(int, int)> _warnedUnmatched = new();
+    private long? _lastReconcileAt;
 
-    public NollieConnectionWorker(IHidEnumerator hid, NollieHub hub, NollieLightingDeviceProvider lighting, DeviceControlGate gate, IConfigStore store, HardwarePresence presence)
+    /// <summary>The Nollie devnodes present at the last reconcile that left every board attached; null forces the next poll to reconcile.</summary>
+    private string? _settledBus;
+
+    public NollieConnectionWorker(IHidEnumerator hid, NollieHub hub, NollieLightingDeviceProvider lighting, DeviceControlGate gate, IConfigStore store, HardwarePresence presence, Func<long>? clock = null)
     {
         _hid = hid;
         _hub = hub;
@@ -40,13 +52,14 @@ public sealed class NollieConnectionWorker : BackgroundService
         _gate = gate;
         _store = store;
         _presence = presence;
+        _clock = clock ?? (static () => Environment.TickCount64);
     }
 
-    private bool AnyRealBoardAttached()
+    private bool AnyBoardFailing()
     {
         foreach (var controller in _hub.Controllers)
         {
-            if (!IsSimulated(controller)) return true;
+            if (!IsSimulated(controller) && controller.ConsecutiveWriteFailures >= MaxConsecutiveFailures) return true;
         }
         return false;
     }
@@ -54,17 +67,26 @@ public sealed class NollieConnectionWorker : BackgroundService
     private static bool IsSimulated(NollieController controller)
         => controller.Path.StartsWith(SimulatedNollieDevice.PathPrefix, StringComparison.Ordinal);
 
-    /// <summary>
-    /// True when any Nollie vendor is on the USB bus. Reconcile() calls FindAll(),
-    /// which opens every HID interface on the host and serial-queries each one.
-    /// </summary>
-    private bool AnyNolliePresent()
+    /// <summary>The Nollie-table devnodes on the USB bus, from the PnP-invalidated presence cache (no device I/O).</summary>
+    private List<UsbDeviceEntry> PresentNollies()
     {
+        var present = new List<UsbDeviceEntry>();
         foreach (var vid in NollieProtocol.VendorIds)
         {
-            if (_presence.UsbPresent(vid)) return true;
+            foreach (var entry in _presence.UsbEntriesFor(vid))
+            {
+                if (NollieProtocol.Lookup(entry.VendorId, entry.ProductId) is not null) present.Add(entry);
+            }
         }
-        return false;
+        return present;
+    }
+
+    private static string BusSignature(List<UsbDeviceEntry> present)
+    {
+        var keys = new List<string>(present.Count);
+        foreach (var e in present) keys.Add($"{e.VendorId:X4}:{e.ProductId:X4}:{e.Serial}:{e.Location}");
+        keys.Sort(StringComparer.Ordinal);
+        return string.Join('|', keys);
     }
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
@@ -73,25 +95,7 @@ public sealed class NollieConnectionWorker : BackgroundService
         {
             try
             {
-                if (!_gate.IsEnabled(HandlerId))
-                {
-                    if (_hub.IsConnected)
-                    {
-                        ReleaseAll();
-                        ServiceLog.Info("[nollie] released (Nexus Control off)");
-                        _lighting.OnHubStateUpdated();
-                    }
-                }
-                // A real board first, so a removal is still noticed even if the
-                // bus check misses a device that is already attached. A simulated
-                // board alone does not earn the HID walk.
-                else if (AnyRealBoardAttached() || AnyNolliePresent())
-                {
-                    if (Reconcile())
-                    {
-                        _lighting.OnHubStateUpdated();
-                    }
-                }
+                Tick();
             }
             catch (OperationCanceledException)
             {
@@ -107,6 +111,38 @@ public sealed class NollieConnectionWorker : BackgroundService
         }
 
         ReleaseAll();
+    }
+
+    /// <summary>One poll: release on Nexus Control off, else reconcile when the Nollie devnodes changed, a board is failing writes, the last reconcile left one unattached, or the recheck is due.</summary>
+    internal void Tick()
+    {
+        if (!_gate.IsEnabled(HandlerId))
+        {
+            _settledBus = null;
+            if (_hub.IsConnected)
+            {
+                ReleaseAll();
+                ServiceLog.Info("[nollie] released (Nexus Control off)");
+                _lighting.OnHubStateUpdated();
+            }
+            return;
+        }
+
+        // An unplug that the presence cache has not seen yet surfaces as write
+        // failures, which force the reconcile on their own.
+        var present = PresentNollies();
+        var bus = BusSignature(present);
+        var now = _clock();
+        var recheckDue = _lastReconcileAt is not { } last || now - last >= RecheckMs;
+        if (bus == _settledBus && !AnyBoardFailing() && !recheckDue) return;
+
+        _lastReconcileAt = now;
+        var changed = Reconcile(present, out var settled);
+        _settledBus = settled ? bus : null;
+        if (changed)
+        {
+            _lighting.OnHubStateUpdated();
+        }
     }
 
     /// <summary>
@@ -135,29 +171,52 @@ public sealed class NollieConnectionWorker : BackgroundService
         _hub.DetachAll();
     }
 
-    /// <summary>Attaches newly present controllers and drops gone or wedged ones. Returns true when the set changed.</summary>
-    internal bool Reconcile()
+    internal bool Reconcile() => Reconcile(PresentNollies(), out _);
+
+    /// <summary>
+    /// Attaches newly present controllers and drops gone or wedged ones. Returns
+    /// true when the set changed; <paramref name="settled"/> is false while a
+    /// present board is unattached, so the next poll retries.
+    /// </summary>
+    internal bool Reconcile(List<UsbDeviceEntry> present, out bool settled)
     {
         var changed = false;
+        settled = true;
         var livePaths = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-        // One enumeration per poll, matched against the table; a Find() per
-        // table row would walk every HID interface on the box 16 times.
         var seenVidPid = new HashSet<(int, int)>();
-
-        foreach (var info in _hid.FindAll())
+        var ids = new HashSet<(int, int)>();
+        foreach (var entry in present) ids.Add((entry.VendorId, entry.ProductId));
+        // Attached boards stay in the lookup: an enumerator that failed reads as
+        // an empty bus, which must not detach them.
+        foreach (var controller in _hub.Controllers)
         {
-            var spec = NollieProtocol.Lookup(info.VendorId, info.ProductId);
-            if (spec is null) continue;
-            seenVidPid.Add((info.VendorId, info.ProductId));
-            if (!IsRgbInterface(info, spec)) continue;
-            livePaths.Add(info.Path);
-            if (_hub.HasPath(info.Path)) continue;
+            if (!IsSimulated(controller)) ids.Add((controller.Spec.VendorId, controller.Spec.ProductId));
+        }
 
-            var device = _hid.Open(info.Path);
-            if (device is null) continue;
+        foreach (var (vid, pid) in ids)
+        {
+            var spec = NollieProtocol.Lookup(vid, pid)!;
+            // The USB devnode can land before its HID interface does.
+            var matched = false;
+            foreach (var info in _hid.Find(vid, pid))
+            {
+                seenVidPid.Add((vid, pid));
+                if (!IsRgbInterface(info, spec)) continue;
+                matched = true;
+                livePaths.Add(info.Path);
+                if (_hub.HasPath(info.Path)) continue;
 
-            Attach(new NollieController(device, spec));
-            changed = true;
+                var device = _hid.Open(info.Path);
+                if (device is null)
+                {
+                    settled = false;
+                    continue;
+                }
+
+                Attach(new NollieController(device, spec));
+                changed = true;
+            }
+            if (!matched) settled = false;
         }
 
         // A present controller none of whose interfaces matched is invisible to
@@ -189,6 +248,7 @@ public sealed class NollieConnectionWorker : BackgroundService
             {
                 _hub.Detach(controller.DeviceId);
                 changed = true;
+                settled = false;
                 ServiceLog.Warn($"[nollie] detached {controller.Spec.Name} id={controller.DeviceId} after {controller.ConsecutiveWriteFailures} failed writes; will reattach on the next poll");
             }
         }

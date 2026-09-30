@@ -14,12 +14,19 @@ namespace Nexus.Service.Peripherals.Hid;
 /// </summary>
 public sealed class WindowsHidEnumerator : IHidEnumerator
 {
+    // The path check runs before CreateFile, so a lookup never opens another
+    // vendor's device or sends it a string request.
     public IReadOnlyList<HidDeviceInfo> Find(int vendorId, int productId) =>
-        EnumerateDevices(attrs => attrs.VendorID == (ushort)vendorId && attrs.ProductID == (ushort)productId);
+        EnumerateDevices(
+            path => HidPathIds.MayMatch(path, vendorId, productId),
+            attrs => attrs.VendorID == (ushort)vendorId && attrs.ProductID == (ushort)productId);
 
-    public IReadOnlyList<HidDeviceInfo> FindAll() => EnumerateDevices(null);
+    public IReadOnlyList<HidDeviceInfo> FindAll() => EnumerateDevices(null, null);
 
-    private static List<HidDeviceInfo> EnumerateDevices(Func<Native.HIDD_ATTRIBUTES, bool>? attrsFilter)
+    /// <summary><see cref="FindAll"/> without the per-device serial read, for callers that only need usages.</summary>
+    public IReadOnlyList<HidDeviceInfo> FindAllWithoutSerials() => EnumerateDevices(null, null, readSerial: false);
+
+    private static List<HidDeviceInfo> EnumerateDevices(Func<string, bool>? pathFilter, Func<Native.HIDD_ATTRIBUTES, bool>? attrsFilter, bool readSerial = true)
     {
         var result = new List<HidDeviceInfo>();
         Native.HidD_GetHidGuid(out var hidGuid);
@@ -59,12 +66,12 @@ public sealed class WindowsHidEnumerator : IHidEnumerator
                     }
 
                     var devicePath = Marshal.PtrToStringUni(detail + 4) ?? "";
-                    if (string.IsNullOrEmpty(devicePath))
+                    if (string.IsNullOrEmpty(devicePath) || (pathFilter is not null && !pathFilter(devicePath)))
                     {
                         continue;
                     }
 
-                    var info = TryReadDeviceInfo(devicePath, attrsFilter);
+                    var info = TryReadDeviceInfo(devicePath, attrsFilter, readSerial);
                     if (info is not null)
                     {
                         result.Add(info);
@@ -88,7 +95,7 @@ public sealed class WindowsHidEnumerator : IHidEnumerator
     /// Opens the path query-only to read attributes, then the caller's filter, then
     /// preparsed data for report sizes (skipped when the filter rejects the device).
     /// </summary>
-    private static HidDeviceInfo? TryReadDeviceInfo(string devicePath, Func<Native.HIDD_ATTRIBUTES, bool>? attrsFilter)
+    private static HidDeviceInfo? TryReadDeviceInfo(string devicePath, Func<Native.HIDD_ATTRIBUTES, bool>? attrsFilter, bool readSerial)
     {
         var handle = Native.CreateFile(devicePath,
             0, // query only
@@ -115,7 +122,7 @@ public sealed class WindowsHidEnumerator : IHidEnumerator
                 return null;
             }
 
-            var serial = TryGetSerial(handle);
+            var serial = readSerial ? TryGetSerial(handle) : null;
             var (usagePage, usage, inLen, outLen, featLen) = TryGetCaps(handle);
 
             return new HidDeviceInfo

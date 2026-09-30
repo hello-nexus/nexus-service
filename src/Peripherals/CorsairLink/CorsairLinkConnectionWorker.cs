@@ -4,6 +4,7 @@ using System.Threading.Tasks;
 using Microsoft.Extensions.Hosting;
 using Nexus.Service.Cooling;
 using Nexus.Service.Devices;
+using Nexus.Service.Devices.Detection;
 using Nexus.Service.Lighting;
 using Nexus.Service.Peripherals.Hid;
 using Nexus.Service.Platform;
@@ -26,6 +27,7 @@ public sealed class CorsairLinkConnectionWorker : BackgroundService
     private readonly CorsairLinkCoolingProvider _cooling;
     private readonly CorsairLinkLcd _lcd;
     private readonly DeviceControlGate _gate;
+    private readonly HardwarePresence _presence;
 
     public CorsairLinkConnectionWorker(
         IHidEnumerator hid,
@@ -33,7 +35,8 @@ public sealed class CorsairLinkConnectionWorker : BackgroundService
         CorsairLinkLightingDeviceProvider lighting,
         CorsairLinkCoolingProvider cooling,
         CorsairLinkLcd lcd,
-        DeviceControlGate gate)
+        DeviceControlGate gate,
+        HardwarePresence presence)
     {
         _hid = hid;
         _hub = hub;
@@ -41,6 +44,7 @@ public sealed class CorsairLinkConnectionWorker : BackgroundService
         _cooling = cooling;
         _lcd = lcd;
         _gate = gate;
+        _presence = presence;
     }
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
@@ -50,6 +54,12 @@ public sealed class CorsairLinkConnectionWorker : BackgroundService
             try
             {
                 if (!_gate.IsEnabled("corsair"))
+                {
+                    await Task.Delay(ConnectPollMs, stoppingToken).ConfigureAwait(false);
+                    continue;
+                }
+
+                if (!_presence.UsbPresent(CorsairLinkProtocol.VendorId, CorsairLinkProtocol.ProductId))
                 {
                     await Task.Delay(ConnectPollMs, stoppingToken).ConfigureAwait(false);
                     continue;

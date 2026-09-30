@@ -36,22 +36,24 @@ public sealed class HardwarePresence
     /// enumerated. When <paramref name="productIds"/> is non-empty the product id
     /// must also be one of them; an empty set matches any product under the vendor.
     /// </summary>
-    public bool UsbPresent(int vendorId, params int[] productIds)
+    public bool UsbPresent(int vendorId, params int[] productIds) => UsbPresent(vendorId, (IReadOnlyList<int>)productIds);
+
+    /// <inheritdoc cref="UsbPresent(int, int[])"/>
+    public bool UsbPresent(int vendorId, IReadOnlyList<int> productIds)
     {
         foreach (var d in _usb.Enumerate())
         {
             if (d.VendorId != vendorId)
                 continue;
-            if (productIds.Length == 0 || Contains(productIds, d.ProductId))
+            if (productIds.Count == 0 || Contains(productIds, d.ProductId))
                 return true;
         }
         return false;
     }
 
     /// <summary>
-    /// Currently enumerated devices under <paramref name="vendorId"/>, for
-    /// diagnostic reads of devnode identity (class, driver INF) - not a
-    /// presence gate.
+    /// Currently enumerated devices under <paramref name="vendorId"/>. On
+    /// Windows entries are unique per vid:pid:name, so identical units share one.
     /// </summary>
     public List<UsbDeviceEntry> UsbEntriesFor(int vendorId)
     {

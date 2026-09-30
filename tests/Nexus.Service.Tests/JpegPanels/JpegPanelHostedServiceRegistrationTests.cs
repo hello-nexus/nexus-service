@@ -2,6 +2,7 @@ using System.Linq;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Nexus.Service.Devices;
+using Nexus.Service.Devices.Detection;
 using Nexus.Service.Peripherals.Hid;
 using Nexus.Service.Peripherals.JpegPanels;
 using Xunit;
@@ -21,11 +22,12 @@ public class JpegPanelHostedServiceRegistrationTests
         var services = new ServiceCollection();
         var gate = new DeviceControlGate(new InMemoryConfigStore());
         IHidEnumerator hid = new StubHidEnumerator();
+        var presence = new HardwarePresence(new StubUsbEnumerator());
 
         foreach (var model in JpegPanelModel.All)
         {
             var hub = new JpegPanelHub(model);
-            services.AddSingleton<IHostedService>(_ => new JpegPanelConnectionWorker(hid, hub, gate));
+            services.AddSingleton<IHostedService>(_ => new JpegPanelConnectionWorker(hid, hub, gate, presence));
         }
 
         using var provider = services.BuildServiceProvider();
@@ -40,11 +42,12 @@ public class JpegPanelHostedServiceRegistrationTests
         var services = new ServiceCollection();
         var gate = new DeviceControlGate(new InMemoryConfigStore());
         IHidEnumerator hid = new StubHidEnumerator();
+        var presence = new HardwarePresence(new StubUsbEnumerator());
 
         foreach (var model in JpegPanelModel.All)
         {
             var hub = new JpegPanelHub(model);
-            services.AddHostedService(_ => new JpegPanelConnectionWorker(hid, hub, gate));
+            services.AddHostedService(_ => new JpegPanelConnectionWorker(hid, hub, gate, presence));
         }
 
         using var provider = services.BuildServiceProvider();
