@@ -337,4 +337,37 @@ Triad:          54321.0     0.009055     0.009055     0.009055";
         Assert.DoesNotContain("currentRaw", json);
         Assert.DoesNotContain("currentUnit", json);
     }
+
+    [Theory]
+    [InlineData("64 GB DDR5-6000 (2 × 32 GB Corsair CMP64GX5M2B6000C30)", 64L * 1024 * 1024 * 1024)]
+    [InlineData("1.5 TB DDR5-4800", 1536L * 1024 * 1024 * 1024)]
+    [InlineData("32.0 GB", 32L * 1024 * 1024 * 1024)]
+    [InlineData("", 0L)]
+    [InlineData("DDR5 64 GB", 0L)]
+    public void InstalledRamBytes_ReadsLeadingCapacity(string memory, long expected)
+    {
+        Assert.Equal(expected, BenchmarkRunner.InstalledRamBytes(memory));
+    }
+
+    [Fact]
+    public void PeakClockMhz_DropsASingleSpike()
+    {
+        Assert.Equal(4913, BenchmarkRunner.PeakClockMhz(new() { 4713f, 4913f, 36000f, 4813f, 4912.6f }));
+    }
+
+    [Fact]
+    public void PeakClockMhz_NeedsTwoSamples()
+    {
+        Assert.Equal(0, BenchmarkRunner.PeakClockMhz(new() { 5225f }));
+        Assert.Equal(0, BenchmarkRunner.PeakClockMhz(new()));
+    }
+
+    [Fact]
+    public void HardwareIdentity_Serializes_CpuMaxClockMhz()
+    {
+        var hw = new HardwareIdentity { CpuMaxClockMhz = 5225 };
+        var json = System.Text.Json.JsonSerializer.Serialize(
+            hw, Nexus.Service.Serialization.AppJsonContext.Default.HardwareIdentity);
+        Assert.Contains("\"cpuMaxClockMhz\":5225", json);
+    }
 }

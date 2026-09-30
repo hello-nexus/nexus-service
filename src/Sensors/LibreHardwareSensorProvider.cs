@@ -328,21 +328,13 @@ public sealed class LibreHardwareSensorProvider : ISensorProvider
     public string GetStorageBrandModel()
     {
         if (_storageBrandModel is not null) return _storageBrandModel;
-        // Get-PhysicalDisk surfaces the actual brand + model for both NVMe and
-        // SATA drives ("Samsung SSD 980 PRO 1TB"). First non-removable disk is
-        // the system drive in the overwhelming majority of desktop configs.
+        // The disk holding the OS partition: the benchmark's DiskSpd file lands
+        // in the service temp dir under %SystemRoot%. Get-Disk covers an OS
+        // volume with no Get-PhysicalDisk row (Storage Spaces, RAID).
         var csv = ShellOut("powershell.exe", 5000,
             "-NoProfile", "-Command",
-            "Get-PhysicalDisk | Where-Object { $_.BusType -ne 'USB' -and $_.MediaType -ne 'Removable' } | Select-Object -First 1 Manufacturer,Model | ConvertTo-Csv -NoTypeInformation");
+            "$n = (Get-Partition -DriveLetter $env:SystemDrive[0]).DiskNumber; $d = Get-PhysicalDisk | Where-Object DeviceId -eq $n; if (-not $d) { $d = Get-Disk -Number $n }; $d | Select-Object -First 1 Manufacturer,Model | ConvertTo-Csv -NoTypeInformation");
         _storageBrandModel = ParseCsvBrandModel(csv);
-        if (string.IsNullOrEmpty(_storageBrandModel))
-        {
-            // Fallback for older PowerShell variants: Win32_DiskDrive.
-            var fallback = ShellOut("powershell.exe", 5000,
-                "-NoProfile", "-Command",
-                "Get-CimInstance -ClassName Win32_DiskDrive | Where-Object { $_.MediaType -eq 'Fixed hard disk media' } | Select-Object -First 1 Manufacturer,Model | ConvertTo-Csv -NoTypeInformation");
-            _storageBrandModel = ParseCsvBrandModel(fallback);
-        }
         return _storageBrandModel;
     }
 
