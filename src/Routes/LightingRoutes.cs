@@ -109,13 +109,16 @@ public static class LightingRoutes
             return new Models.Lighting.AudioOutputBody { DeviceId = l.AudioOutputDeviceId, DeviceName = l.AudioOutputDeviceName };
         }).AllowPanel();
         app.MapPost("/lighting/audio-output", (Models.Lighting.AudioOutputBody body,
-            Nexus.Service.Persistence.IConfigStore store) =>
+            Nexus.Service.Persistence.IConfigStore store,
+            MultiplexHub hub) =>
         {
             store.Update(s =>
             {
                 s.Lighting.AudioOutputDeviceId = body.DeviceId ?? "";
                 s.Lighting.AudioOutputDeviceName = body.DeviceName ?? "";
             });
+            // Settings and the lighting canvas each show the pick; the bump makes the other re-read it.
+            PanelTopics.BroadcastLighting(hub);
             return ApiResponse.Ok();
         }).AllowPanel();
         // Blank lighting while the host sleeps. Host-only: this is a property of
