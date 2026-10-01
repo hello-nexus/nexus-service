@@ -10912,13 +10912,6 @@
             "schema": {
               "type": "string"
             }
-          },
-          {
-            "name": "format",
-            "in": "query",
-            "schema": {
-              "type": "string"
-            }
           }
         ],
         "responses": {
@@ -10948,6 +10941,18 @@
               "type": "string"
             }
           }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        }
+      }
+    },
+    "/profiles/import/inspect": {
+      "post": {
+        "tags": [
+          "Nexus"
         ],
         "responses": {
           "200": {
@@ -14370,6 +14375,12 @@
             ],
             "format": "int32"
           },
+          "profileId": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
           "data": {
             "$ref": "#/components/schemas/JsonElement"
           }
@@ -14962,6 +14973,9 @@
             "type": "string"
           },
           "replaceExisting": {
+            "type": "boolean"
+          },
+          "includeAppData": {
             "type": "boolean"
           }
         }
