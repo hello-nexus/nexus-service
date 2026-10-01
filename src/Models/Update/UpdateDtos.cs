@@ -30,6 +30,8 @@ public sealed class UpdateStatusResponse
     public string DownloadUrl { get; set; } = "";
     /// <summary>True when the service can stage and apply the update itself; false means the dashboard offers DownloadUrl instead.</summary>
     public bool CanAutoInstall { get; set; }
+    /// <summary>True when the latest release's hash is in SHA256SUMS, so the service can download it in the background ahead of the install.</summary>
+    public bool CanStage { get; set; }
 }
 
 /// <summary>GET /update/progress response.</summary>

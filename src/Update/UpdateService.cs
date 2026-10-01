@@ -153,6 +153,7 @@ public sealed class UpdateService : BackgroundService
             PublishedAtUnix = snap.PublishedAtUnix,
             DownloadUrl = snap.DownloadUrl,
             CanAutoInstall = snap.CanAutoInstall,
+            CanStage = snap.CanStage,
         };
     }
 
@@ -381,6 +382,8 @@ public sealed class UpdateService : BackgroundService
             State = "failed",
             UpdateReady = false,
             CanAutoInstall = CanApplyUpdates,
+            // Keeps the badge gated on a staged install until the next poll.
+            CanStage = true,
         };
     }
 
@@ -441,6 +444,7 @@ public sealed class UpdateService : BackgroundService
                 State = "installing",
                 UpdateReady = false,
                 CanAutoInstall = true,
+                CanStage = true,
             };
 
 #if WINDOWS
@@ -476,6 +480,7 @@ public sealed class UpdateService : BackgroundService
                 State = "failed",
                 UpdateReady = false,
                 CanAutoInstall = true,
+                CanStage = true,
             };
         }
     }
@@ -618,6 +623,7 @@ public sealed class UpdateService : BackgroundService
                 PublishedAtUnix = manifest?.PublishedAt?.ToUnixTimeSeconds() ?? 0,
                 DownloadUrl = manifest?.AssetUrl ?? "",
                 CanAutoInstall = CanApplyUpdates,
+                CanStage = manifest?.Sha256IsFromSumsFile == true,
             };
 
             // "download" stages a download+verify but does not install.
@@ -695,6 +701,7 @@ public sealed class UpdateService : BackgroundService
                 PublishedAtUnix = _latestManifest?.PublishedAt?.ToUnixTimeSeconds() ?? 0,
                 DownloadUrl = _latestManifest?.AssetUrl ?? "",
                 CanAutoInstall = CanApplyUpdates,
+                CanStage = _latestManifest?.Sha256IsFromSumsFile == true,
             };
             Console.Error.WriteLine($"[update] check failed: {ex.GetType().Name}: {ex.Message}");
         }
@@ -718,6 +725,7 @@ public sealed class UpdateService : BackgroundService
             PublishedAtUnix = _latestManifest?.PublishedAt?.ToUnixTimeSeconds() ?? 0,
             DownloadUrl = _latestManifest?.AssetUrl ?? "",
             CanAutoInstall = CanApplyUpdates,
+            CanStage = _latestManifest?.Sha256IsFromSumsFile == true,
         };
     }
 
@@ -1046,6 +1054,7 @@ public sealed class UpdateService : BackgroundService
             PublishedAtUnix = _status.PublishedAtUnix,
             DownloadUrl = _status.DownloadUrl,
             CanAutoInstall = _status.CanAutoInstall,
+            CanStage = _status.CanStage,
         };
     }
 
@@ -1088,6 +1097,7 @@ public sealed class UpdateService : BackgroundService
             PublishedAtUnix = _status.PublishedAtUnix,
             DownloadUrl = _status.DownloadUrl,
             CanAutoInstall = _status.CanAutoInstall,
+            CanStage = _status.CanStage,
         };
     }
 }
