@@ -44,8 +44,9 @@ public sealed class PanelDeviceRecord : IPanelPersonalization
     /// <summary>What renders behind the widgets: "theme" (the panel's own
     /// background layer), "wallpaper" (the desktop wallpaper redrawn in-page),
     /// or "desktop" (the kiosk window itself is transparent, so the live
-    /// desktop shows through). Null = the client's per-surface default.
-    /// Only kiosk-hosted panels offer wallpaper/desktop.</summary>
+    /// desktop shows through). Null = unchosen: reads back as "desktop" where
+    /// PanelDeviceRegistry.EffectiveBackdrop applies, else the client's
+    /// per-surface default. Only kiosk-hosted panels offer wallpaper/desktop.</summary>
     public string? Backdrop { get; set; }
     /// <summary>Selected background-media asset id (PanelBgLibrary) for THIS
     /// panel; null = none. Only set for local panels (y70 / q-series).</summary>
@@ -80,6 +81,10 @@ public sealed class PanelDeviceRecord : IPanelPersonalization
     public bool? WidgetLabels { get; set; }
     /// <summary>Percent 0-100. Null is unset; the client applies its own default.</summary>
     public double? WidgetPadding { get; set; }
+    /// <summary>Widget text colour: "adaptive" (light or dark per widget from its backdrop), "theme", or "custom". Null is unset; the client applies its own default.</summary>
+    public string? TextColorMode { get; set; }
+    /// <summary>Hex colour for every widget text in "custom" mode, accent-coloured text included.</summary>
+    public string? TextColor { get; set; }
     public bool? ThemeSyncWithDesktop { get; set; }
     public bool? AccentSyncWithDesktop { get; set; }
     public long FirstSeenAt { get; set; }
@@ -361,6 +366,8 @@ public sealed class PanelDevicePatch
     public double? WidgetOpacity { get; set; }
     public bool? WidgetLabels { get; set; }
     public double? WidgetPadding { get; set; }
+    public string? TextColorMode { get; set; }
+    public string? TextColor { get; set; }
     public bool? ThemeSyncWithDesktop { get; set; }
     public bool? AccentSyncWithDesktop { get; set; }
     /// <summary>Display-bound records only; ignored for other panels.</summary>
