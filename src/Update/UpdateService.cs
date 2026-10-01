@@ -287,10 +287,11 @@ public sealed class UpdateService : BackgroundService
     /// Whether a background auto-stage (download+verify, mode "download" or
     /// "always") should start. An install that cannot apply updates (see
     /// <see cref="CanApplyUpdates"/>) never background-downloads; it only
-    /// offers the manual DownloadUrl.
+    /// offers the manual DownloadUrl. Staging also needs the asset's hash from
+    /// SHA256SUMS, so a release without one is not downloaded only to be discarded.
     /// </summary>
-    internal static bool ShouldAutoStage(bool offerUpdate, string mode, bool alreadyStaged, bool canApply) =>
-        offerUpdate && (mode is "download" or "always") && !alreadyStaged && canApply;
+    internal static bool ShouldAutoStage(bool offerUpdate, string mode, bool alreadyStaged, bool canApply, bool hashPublished) =>
+        offerUpdate && (mode is "download" or "always") && !alreadyStaged && canApply && hashPublished;
 
     /// <summary>Whether this install hands updates to an installer itself (Windows
     /// Inno Setup, Linux install.sh, macOS bundle swap) rather than linking the download.</summary>
@@ -630,26 +631,39 @@ public sealed class UpdateService : BackgroundService
             // it, so the staged installer + marker must follow the new version.
             var alreadyStaged = _updateReady
                 && string.Equals(_stagedVersion, manifest?.Version, StringComparison.OrdinalIgnoreCase);
-            if (ShouldAutoStage(offerUpdate, mode, alreadyStaged, CanApplyUpdates) && manifest is not null)
+            var autoStage = manifest is not null
+                && ShouldAutoStage(offerUpdate, mode, alreadyStaged, CanApplyUpdates, manifest.Sha256IsFromSumsFile);
+            // A newer release supersedes the staged one even when it cannot be
+            // staged itself: "Update now" would check the old file against its hash.
+            var superseded = _updateReady && !alreadyStaged && offerUpdate;
+            if ((autoStage || superseded) && Interlocked.CompareExchange(ref _installing, 1, 0) == 0)
             {
-                if (Interlocked.CompareExchange(ref _installing, 1, 0) == 0)
+                if (_updateReady)
                 {
-                    if (_updateReady)
+                    // A previous version is staged but superseded: drop the ready
+                    // state + its marker now (a download below prunes its file;
+                    // without one, delete it here). Status reverts to "available"
+                    // until the new version finishes staging - never "ready" with no file.
+                    if (!autoStage && _stagedInstallerPath is { } stale)
                     {
-                        // A previous version is staged but superseded; the download
-                        // below prunes its installer, so drop the ready state + its
-                        // marker now. Status reverts to "available" until the new
-                        // version finishes staging - never "ready" with no file.
-                        _updateReady = false;
-                        _stagedInstallerPath = null;
-                        _stagedVersion = null;
-                        StagedInstallMarkerStore.Delete();
-                        UpdateStatusUpdateReady(false);
+                        TryDeleteStagedFile(stale);
                     }
+                    _updateReady = false;
+                    _stagedInstallerPath = null;
+                    _stagedVersion = null;
+                    StagedInstallMarkerStore.Delete();
+                    UpdateStatusUpdateReady(false);
+                }
+                if (autoStage && manifest is not null)
+                {
                     var cts = new CancellationTokenSource();
                     _installCts = cts;
                     _ = Task.Run(() => RunInstallAsync(manifest, launchAfterVerify: false, reopenAfter: false, cts.Token));
                     Console.Error.WriteLine($"[update] auto-staging download for {manifest.Version} (mode={mode})");
+                }
+                else
+                {
+                    Interlocked.Exchange(ref _installing, 0);
                 }
             }
 
@@ -845,6 +859,9 @@ public sealed class UpdateService : BackgroundService
                     // author-published hash; the asset digest is corruption-only, not authenticity.
                     Console.Error.WriteLine($"[update] skipping auto-stage of {manifest.Version}: SHA256SUMS not available");
                     TryDeleteStagedFile(installerPath);
+                    // A stale active "verifying" would open the update modal on a
+                    // progress bar that never moves.
+                    _progress = new UpdateProgressResponse { Version = manifest.Version };
                     return;
                 }
 
