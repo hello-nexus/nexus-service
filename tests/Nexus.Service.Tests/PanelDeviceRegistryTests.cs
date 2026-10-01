@@ -197,71 +197,100 @@ public sealed class PanelDeviceRegistryTests : IDisposable
     }
 
     [Fact]
-    public void UnsetBackdrop_ReadsAsDesktopOnSeeThroughHost_WithoutPersisting()
+    public void UnsetBackdrop_StaysUnsetUntilLatched()
     {
         var registry = new PanelDeviceRegistry(_store) { SeeThroughHost = true };
-        Assert.Equal("desktop", registry.GetY70Backdrop());
-
         var (monitor, _) = registry.AllocateForDisplay("DISP-1", null, Caps(PanelSurfaces.Monitor));
         var y70 = registry.Allocate(null, Caps(PanelSurfaces.Y70));
 
-        Assert.Equal("desktop", monitor.Backdrop);
-        Assert.Equal("desktop", registry.Get(y70.Id)!.Backdrop);
-        Assert.Equal("desktop", registry.GetY70Backdrop());
-        Assert.Equal("desktop", Assert.Single(registry.ListAssignments()).Backdrop);
-        Assert.Null(_store.Load().PanelDevices[monitor.Id].Backdrop);
-        Assert.Null(_store.Load().PanelDevices[y70.Id].Backdrop);
+        Assert.Null(monitor.Backdrop);
+        Assert.Null(registry.Get(y70.Id)!.Backdrop);
+        Assert.Equal("", registry.GetY70Backdrop());
+        Assert.Equal("", Assert.Single(registry.ListAssignments()).Backdrop);
+        Assert.True(registry.HasUnsetDesktopBackdrop());
     }
 
     [Fact]
-    public void UnsetBackdrop_DesktopDefault_ExplicitChoiceAndResetWin()
+    public void LatchDesktopBackdrop_StoresDesktopOnce()
     {
         var registry = new PanelDeviceRegistry(_store) { SeeThroughHost = true };
         var (monitor, _) = registry.AllocateForDisplay("DISP-1", null, Caps(PanelSurfaces.Monitor));
+        var y70 = registry.Allocate(null, Caps(PanelSurfaces.Y70));
 
-        registry.Patch(monitor.Id, new PanelDevicePatch { Backdrop = "wallpaper" });
-        Assert.Equal("wallpaper", registry.Get(monitor.Id)!.Backdrop);
-        Assert.Equal("wallpaper", Assert.Single(registry.ListAssignments()).Backdrop);
+        Assert.Equal(new[] { monitor.Id, y70.Id }.OrderBy(x => x), registry.LatchDesktopBackdrop().OrderBy(x => x));
 
-        Assert.Equal("desktop", registry.ResetToDefaults(monitor.Id)!.Backdrop);
+        Assert.Equal("desktop", _store.Load().PanelDevices[monitor.Id].Backdrop);
+        Assert.Equal("desktop", _store.Load().PanelDevices[y70.Id].Backdrop);
+        Assert.Equal("desktop", registry.GetY70Backdrop());
+        Assert.Equal("desktop", Assert.Single(registry.ListAssignments()).Backdrop);
+        Assert.False(registry.HasUnsetDesktopBackdrop());
+        Assert.Empty(registry.LatchDesktopBackdrop());
     }
 
     [Fact]
-    public void UnsetBackdrop_Y70InCompatibilityMode_KeepsClientDefault()
+    public void LatchDesktopBackdrop_CoversPresetsSavedWhileUnset()
+    {
+        var registry = new PanelDeviceRegistry(_store) { SeeThroughHost = true };
+        var (monitor, _) = registry.AllocateForDisplay("DISP-1", null, Caps(PanelSurfaces.Monitor));
+        var saved = registry.CreatePreset(monitor.Id, "Desk", out _)!.Presets.Single();
+        registry.CreatePreset(monitor.Id, "Game", out _);
+
+        registry.LatchDesktopBackdrop();
+        registry.ActivatePreset(monitor.Id, saved.Id);
+
+        Assert.Equal("desktop", registry.Get(monitor.Id)!.Backdrop);
+    }
+
+    [Fact]
+    public void LatchDesktopBackdrop_ExplicitChoiceWins_ResetUnsets()
+    {
+        var registry = new PanelDeviceRegistry(_store) { SeeThroughHost = true };
+        var (monitor, _) = registry.AllocateForDisplay("DISP-1", null, Caps(PanelSurfaces.Monitor));
+        registry.Patch(monitor.Id, new PanelDevicePatch { Backdrop = "wallpaper" });
+
+        Assert.Empty(registry.LatchDesktopBackdrop());
+        Assert.Equal("wallpaper", registry.Get(monitor.Id)!.Backdrop);
+
+        Assert.Null(registry.ResetToDefaults(monitor.Id)!.Backdrop);
+        Assert.True(registry.HasUnsetDesktopBackdrop());
+    }
+
+    [Fact]
+    public void LatchDesktopBackdrop_SkipsY70InCompatibilityMode()
     {
         _store.Update(s => s.Y70.CompatibilityRendering = true);
         var registry = new PanelDeviceRegistry(_store) { SeeThroughHost = true };
-        Assert.Equal("", registry.GetY70Backdrop());
-
         var y70 = registry.Allocate(null, Caps(PanelSurfaces.Y70));
         var (monitor, _) = registry.AllocateForDisplay("DISP-1", null, Caps(PanelSurfaces.Monitor));
 
-        Assert.Null(y70.Backdrop);
+        Assert.Equal(new[] { monitor.Id }, registry.LatchDesktopBackdrop());
+        Assert.Null(registry.Get(y70.Id)!.Backdrop);
         Assert.Equal("", registry.GetY70Backdrop());
-        Assert.Equal("desktop", monitor.Backdrop);
     }
 
     [Theory]
     [InlineData(PanelSurfaces.Phone)]
     [InlineData(PanelSurfaces.Q60)]
     [InlineData(PanelSurfaces.Monitor)]
-    public void UnsetBackdrop_StaysNullOnSurfacesWithoutADesktopBehind(string surface)
+    public void LatchDesktopBackdrop_SkipsSurfacesWithoutADesktopBehind(string surface)
     {
         var registry = new PanelDeviceRegistry(_store) { SeeThroughHost = true };
+        var record = registry.Allocate(null, Caps(surface));
 
-        Assert.Null(registry.Allocate(null, Caps(surface)).Backdrop);
+        Assert.False(registry.HasUnsetDesktopBackdrop());
+        Assert.Empty(registry.LatchDesktopBackdrop());
+        Assert.Null(registry.Get(record.Id)!.Backdrop);
     }
 
     [Fact]
-    public void UnsetBackdrop_StaysUnsetOnOpaqueKioskHost()
+    public void LatchDesktopBackdrop_DoesNothingOnOpaqueKioskHost()
     {
         var (monitor, _) = _registry.AllocateForDisplay("DISP-1", null, Caps(PanelSurfaces.Monitor));
-        var y70 = _registry.Allocate(null, Caps(PanelSurfaces.Y70));
+        _registry.Allocate(null, Caps(PanelSurfaces.Y70));
 
-        Assert.Null(monitor.Backdrop);
-        Assert.Null(_registry.Get(y70.Id)!.Backdrop);
-        Assert.Equal("", _registry.GetY70Backdrop());
-        Assert.Equal("", Assert.Single(_registry.ListAssignments()).Backdrop);
+        Assert.False(_registry.HasUnsetDesktopBackdrop());
+        Assert.Empty(_registry.LatchDesktopBackdrop());
+        Assert.Null(_registry.Get(monitor.Id)!.Backdrop);
     }
 
     [Fact]

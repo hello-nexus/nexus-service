@@ -44,9 +44,9 @@ public sealed class PanelDeviceRecord : IPanelPersonalization
     /// <summary>What renders behind the widgets: "theme" (the panel's own
     /// background layer), "wallpaper" (the desktop wallpaper redrawn in-page),
     /// or "desktop" (the kiosk window itself is transparent, so the live
-    /// desktop shows through). Null = unchosen: reads back as "desktop" where
-    /// PanelDeviceRegistry.EffectiveBackdrop applies, else the client's
-    /// per-surface default. Only kiosk-hosted panels offer wallpaper/desktop.</summary>
+    /// desktop shows through). Null = the client's per-surface default, until
+    /// WallpaperEngineBackdropLatch stores "desktop". Only kiosk-hosted panels
+    /// offer wallpaper/desktop.</summary>
     public string? Backdrop { get; set; }
     /// <summary>Selected background-media asset id (PanelBgLibrary) for THIS
     /// panel; null = none. Only set for local panels (y70 / q-series).</summary>

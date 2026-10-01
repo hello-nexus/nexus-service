@@ -301,15 +301,15 @@ public sealed class PanelDeviceRegistry
         foreach (var record in _store.Load().PanelDevices.Values)
         {
             if (!string.IsNullOrEmpty(record.DisplayId) && record.Enabled != false)
-                assignments.Add((record.DisplayId, record.Id, record.ReserveMonitor ?? true, EffectiveBackdrop(record) ?? ""));
+                assignments.Add((record.DisplayId, record.Id, record.ReserveMonitor ?? true, record.Backdrop ?? ""));
         }
         return assignments;
     }
 
     /// <summary>
-    /// Backdrop of the Y70's own record, or its default when it has never
-    /// registered. The Y70 kiosk is opened from hardware detection rather than
-    /// a display assignment, so the host has no device id to read it from.
+    /// Backdrop of the Y70's own record, or "" when it has never registered.
+    /// The Y70 kiosk is opened from hardware detection rather than a display
+    /// assignment, so the host has no device id to read it from.
     /// </summary>
     public string GetY70Backdrop()
     {
@@ -319,8 +319,7 @@ public sealed class PanelDeviceRegistry
             if (!string.Equals(record.Capabilities?.Surface, PanelSurfaces.Y70, StringComparison.Ordinal)) continue;
             if (newest is null || record.LastSeenAt > newest.LastSeenAt) newest = record;
         }
-        if (newest is null) return Y70SeeThroughDefault() ? "desktop" : "";
-        return EffectiveBackdrop(newest) ?? "";
+        return newest?.Backdrop ?? "";
     }
 
     /// <summary>
@@ -885,17 +884,40 @@ public sealed class PanelDeviceRegistry
         _ => null,
     };
 
-    /// <summary>An unset backdrop reads as "desktop" on the surfaces the web's
-    /// supportsDesktopWallpaper admits (Y70, promoted monitors) when this host
-    /// can go see-through. Resolved on read so storage keeps null until the
-    /// user picks one.</summary>
-    private string? EffectiveBackdrop(PanelDeviceRecord r)
+    /// <summary>True while a desktop-capable panel has no backdrop chosen.</summary>
+    public bool HasUnsetDesktopBackdrop() =>
+        SeeThroughHost && _store.Load().PanelDevices.Values.Any(CanLatchDesktop);
+
+    /// <summary>Stores "desktop" on those panels and returns their ids; stored, not resolved on read, so it outlives its trigger.</summary>
+    public IReadOnlyList<string> LatchDesktopBackdrop()
     {
-        if (r.Backdrop is not null || !SeeThroughHost) return r.Backdrop;
+        var latched = new List<string>();
+        if (!HasUnsetDesktopBackdrop()) return latched;
+        _store.Update(s =>
+        {
+            foreach (var record in s.PanelDevices.Values)
+            {
+                if (!CanLatchDesktop(record)) continue;
+                record.Backdrop = "desktop";
+                // A preset saved while unset would otherwise restore null on activation.
+                if (record.Presets is { } presets)
+                {
+                    foreach (var preset in presets) preset.Backdrop ??= "desktop";
+                }
+                latched.Add(record.Id);
+            }
+        });
+        if (latched.Count > 0) _store.FlushNow();
+        return latched;
+    }
+
+    // The surfaces the web's supportsDesktopWallpaper admits, on a see-through host.
+    private bool CanLatchDesktop(PanelDeviceRecord r)
+    {
+        if (r.Backdrop is not null || !SeeThroughHost) return false;
         var surface = r.Capabilities?.Surface;
-        var capable = (surface == PanelSurfaces.Y70 && Y70SeeThroughDefault())
+        return (surface == PanelSurfaces.Y70 && Y70SeeThroughDefault())
             || (surface == PanelSurfaces.Monitor && !string.IsNullOrEmpty(r.DisplayId));
-        return capable ? "desktop" : null;
     }
 
     // Compatibility mode's --disable-direct-composition kiosk is unverified with
@@ -920,7 +942,7 @@ public sealed class PanelDeviceRegistry
         return copy;
     }
 
-    private PanelDeviceRecord Clone(PanelDeviceRecord r)
+    private static PanelDeviceRecord Clone(PanelDeviceRecord r)
     {
         return new PanelDeviceRecord
         {
@@ -938,7 +960,7 @@ public sealed class PanelDeviceRegistry
                 ? null
                 : new Dictionary<string, int>(r.BackgroundTemplates),
             BackgroundOpacity = r.BackgroundOpacity,
-            Backdrop = EffectiveBackdrop(r),
+            Backdrop = r.Backdrop,
             BackgroundMediaId = r.BackgroundMediaId,
             BackgroundMediaType = r.BackgroundMediaType,
             BackgroundMediaAlpha = r.BackgroundMediaAlpha,
