@@ -153,6 +153,15 @@ internal static class AppBootstrap
         }
         BootTimer.Mark("InitializeProfiles: ProfileManager.Initialize done");
 
+        try
+        {
+            app.Services.GetRequiredService<Nexus.Service.Widgets.AppDataStore>().MigrateLegacyLayout();
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine($"[app-data] layout migration failed: {ex.Message}");
+        }
+
         var curveEngine = app.Services.GetRequiredService<CurveEngine>();
         BootTimer.Mark("InitializeProfiles: CurveEngine resolved");
         var lightingEngine = app.Services.GetRequiredService<LightingEngine>();

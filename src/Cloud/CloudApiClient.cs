@@ -77,12 +77,6 @@ public interface ICloudApiClient
     Task<CloudApiResult<CloudPutProfileResult>> PutProfileAsync(string accessToken, string installId, string profileId, CloudPutProfileRequest body, CancellationToken ct);
     Task<CloudApiResult<CloudVoid>> DeleteProfileAsync(string accessToken, string installId, string profileId, CancellationToken ct);
 
-    /// <summary>Account-wide app-data listing (every app/key this account has ever synced, from any install), no payloads.</summary>
-    Task<CloudApiResult<System.Collections.Generic.List<CloudAppDataSummaryDto>>> ListAppDataAsync(string accessToken, CancellationToken ct);
-    Task<CloudApiResult<CloudAppDataDto>> GetAppDataAsync(string accessToken, string appId, string key, CancellationToken ct);
-    Task<CloudApiResult<CloudPutAppDataResult>> PutAppDataAsync(string accessToken, string appId, string key, CloudPutAppDataRequest body, CancellationToken ct);
-    Task<CloudApiResult<CloudVoid>> DeleteAppDataAsync(string accessToken, string appId, string key, CancellationToken ct);
-
     /// <summary>
     /// Forwards a raw JSON request body to <paramref name="path"/> and returns
     /// the upstream response body/content-type verbatim, with no DTO on either
@@ -280,71 +274,6 @@ public sealed class CloudApiClient : ICloudApiClient
         {
             using var client = CreateClient(accessToken);
             using var res = await client.DeleteAsync(_baseUrl + "/account/profiles/" + Uri.EscapeDataString(installId) + "/" + Uri.EscapeDataString(profileId), ct).ConfigureAwait(false);
-            return await ToVoidResultAsync(res, ct).ConfigureAwait(false);
-        }
-        catch (Exception ex) when (ex is not OperationCanceledException || !ct.IsCancellationRequested)
-        {
-            return CloudApiResult<CloudVoid>.NetworkError(ex.Message);
-        }
-    }
-
-    public async Task<CloudApiResult<System.Collections.Generic.List<CloudAppDataSummaryDto>>> ListAppDataAsync(string accessToken, CancellationToken ct)
-    {
-        try
-        {
-            using var client = CreateClient(accessToken);
-            using var res = await client.GetAsync(_baseUrl + "/account/app-data", ct).ConfigureAwait(false);
-            return await ToResultAsync(res, AppJsonContext.Default.ListCloudAppDataSummaryDto, ct).ConfigureAwait(false);
-        }
-        catch (Exception ex) when (ex is not OperationCanceledException || !ct.IsCancellationRequested)
-        {
-            return CloudApiResult<System.Collections.Generic.List<CloudAppDataSummaryDto>>.NetworkError(ex.Message);
-        }
-    }
-
-    public async Task<CloudApiResult<CloudAppDataDto>> GetAppDataAsync(string accessToken, string appId, string key, CancellationToken ct)
-    {
-        try
-        {
-            using var client = CreateClient(accessToken);
-            using var res = await client.GetAsync(_baseUrl + "/account/app-data/" + Uri.EscapeDataString(appId) + "/" + Uri.EscapeDataString(key), ct).ConfigureAwait(false);
-            return await ToResultAsync(res, AppJsonContext.Default.CloudAppDataDto, ct).ConfigureAwait(false);
-        }
-        catch (Exception ex) when (ex is not OperationCanceledException || !ct.IsCancellationRequested)
-        {
-            return CloudApiResult<CloudAppDataDto>.NetworkError(ex.Message);
-        }
-    }
-
-    public async Task<CloudApiResult<CloudPutAppDataResult>> PutAppDataAsync(string accessToken, string appId, string key, CloudPutAppDataRequest body, CancellationToken ct)
-    {
-        try
-        {
-            using var client = CreateClient(accessToken);
-            using var content = JsonContent.Create(body, AppJsonContext.Default.CloudPutAppDataRequest);
-            using var res = await client.PutAsync(_baseUrl + "/account/app-data/" + Uri.EscapeDataString(appId) + "/" + Uri.EscapeDataString(key), content, ct).ConfigureAwait(false);
-            // 409 carries a meaningful conflict body (current revision/updatedAt/updatedByInstallId), not just an error.
-            if (res.StatusCode == System.Net.HttpStatusCode.Conflict)
-            {
-                var conflict = await ReadJsonAsync(res, AppJsonContext.Default.CloudPutAppDataResult, ct).ConfigureAwait(false);
-                return conflict is not null
-                    ? CloudApiResult<CloudPutAppDataResult>.Ok(conflict, (int)res.StatusCode)
-                    : CloudApiResult<CloudPutAppDataResult>.Fail((int)res.StatusCode, "conflict", "App-data revision conflict.");
-            }
-            return await ToResultAsync(res, AppJsonContext.Default.CloudPutAppDataResult, ct).ConfigureAwait(false);
-        }
-        catch (Exception ex) when (ex is not OperationCanceledException || !ct.IsCancellationRequested)
-        {
-            return CloudApiResult<CloudPutAppDataResult>.NetworkError(ex.Message);
-        }
-    }
-
-    public async Task<CloudApiResult<CloudVoid>> DeleteAppDataAsync(string accessToken, string appId, string key, CancellationToken ct)
-    {
-        try
-        {
-            using var client = CreateClient(accessToken);
-            using var res = await client.DeleteAsync(_baseUrl + "/account/app-data/" + Uri.EscapeDataString(appId) + "/" + Uri.EscapeDataString(key), ct).ConfigureAwait(false);
             return await ToVoidResultAsync(res, ct).ConfigureAwait(false);
         }
         catch (Exception ex) when (ex is not OperationCanceledException || !ct.IsCancellationRequested)

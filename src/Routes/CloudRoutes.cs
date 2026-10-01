@@ -199,8 +199,8 @@ public static class CloudRoutes
 
         app.MapPost("/cloud/sync/now", async (CloudSyncNowBody? body, CloudProfileSyncService sync) =>
         {
-            await sync.TriggerNowAsync(string.IsNullOrWhiteSpace(body?.ProfileId) ? null : body.ProfileId).ConfigureAwait(false);
-            return Results.Ok(ApiResponse.Ok());
+            var result = await sync.TriggerNowAsync(string.IsNullOrWhiteSpace(body?.ProfileId) ? null : body.ProfileId).ConfigureAwait(false);
+            return CloudResult(result);
         });
 
         app.MapPost("/cloud/sync/resolve", async (CloudSyncResolveBody body, CloudProfileSyncService sync, CancellationToken ct) =>

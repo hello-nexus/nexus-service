@@ -1779,21 +1779,9 @@ public static class NexusServiceCollectionExtensions
             return registry;
         });
         services.AddSingleton<Nexus.Service.Widgets.AppDispatchRateLimiter>();
-        // DocumentChanged is wired here, not per call site, so every write
-        // path (PUT, cloud sync push/pull, archive import, account-scope
-        // archive) broadcasts the same way without each one remembering to.
-        services.AddSingleton(sp =>
-        {
-            var store = new Nexus.Service.Widgets.AppDataStore();
-            var hub = sp.GetRequiredService<Nexus.Service.Sockets.MultiplexHub>();
-            store.DocumentChanged += (appId, key) =>
-            {
-                var (revision, updatedAt, data) = store.Get(appId, key);
-                Nexus.Service.Sockets.AppDataTopics.Broadcast(hub, appId, key,
-                    new Nexus.Service.Models.Widgets.AppDataDocumentDto { Revision = revision, UpdatedAt = updatedAt, Data = data });
-            };
-            return store;
-        });
+        services.AddSingleton(sp => Nexus.Service.Widgets.AppDataStoreWiring.Create(
+            sp.GetRequiredService<ProfileManager>(),
+            sp.GetRequiredService<Nexus.Service.Sockets.MultiplexHub>()));
         services.AddSingleton<Nexus.Service.Widgets.AppDataWriteRateLimiter>();
 
         // Generic external-tool manager (NEX-13): fetches + installs a device's

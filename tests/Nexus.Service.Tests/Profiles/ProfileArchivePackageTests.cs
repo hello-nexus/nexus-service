@@ -8,7 +8,7 @@ using Xunit;
 
 namespace Nexus.Service.Tests.Profiles;
 
-/// <summary>src/Profiles/ProfileArchivePackage.cs: the .nexusprofile zip round trip, and every entry it silently drops rather than failing the whole import.</summary>
+/// <summary>src/Profiles/ProfileArchivePackage.cs: the legacy .nexusprofile zip reader, and every entry it silently drops rather than failing the whole import.</summary>
 public sealed class ProfileArchivePackageTests
 {
     private static JsonElement Json(string raw) => JsonDocument.Parse(raw).RootElement.Clone();
@@ -17,13 +17,30 @@ public sealed class ProfileArchivePackageTests
         new Nexus.Service.Models.Profiles.ProfileExport { Name = "Default", Settings = new NexusSettings() },
         PersistenceJsonContext.Default.ProfileExport);
 
+    /// <summary>Builds a legacy .nexusprofile zip: profile.json plus one app-data entry per document, in the shape older builds wrote.</summary>
+    internal static byte[] BuildLegacyZip(string profileJson, params (string AppId, string Key, string DocJson)[] docs)
+    {
+        using var ms = new MemoryStream();
+        using (var zip = new System.IO.Compression.ZipArchive(ms, System.IO.Compression.ZipArchiveMode.Create, leaveOpen: true))
+        {
+            using (var s = zip.CreateEntry("profile.json").Open())
+            {
+                s.Write(System.Text.Encoding.UTF8.GetBytes(profileJson));
+            }
+            foreach (var (appId, key, docJson) in docs)
+            {
+                using var s = zip.CreateEntry($"app-data/{appId}/{key}.json").Open();
+                s.Write(System.Text.Encoding.UTF8.GetBytes(docJson));
+            }
+        }
+        return ms.ToArray();
+    }
+
     [Fact]
-    public void WriteThenRead_round_trips_profile_json_and_app_data_entries_unchanged()
+    public void Read_returns_profile_json_and_app_data_entries_unchanged()
     {
         var profileJson = SampleProfileJson();
-        var doc = new AppDataFile { Revision = 3, UpdatedAt = "2026-01-01T00:00:00Z", Data = Json("""{"fish":7}""") };
-
-        var bytes = ProfileArchivePackage.Write(profileJson, new[] { ("com.hellonexus.aquarium", "save", doc) });
+        var bytes = BuildLegacyZip(profileJson, ("com.hellonexus.aquarium", "save", """{"revision":3,"updatedAt":"t","data":{"fish":7},"cloud":{"revision":1}}"""));
 
         using var ms = new MemoryStream(bytes);
         var result = ProfileArchivePackage.Read(ms);
@@ -34,28 +51,6 @@ public sealed class ProfileArchivePackageTests
         Assert.Equal("com.hellonexus.aquarium", entry.AppId);
         Assert.Equal("save", entry.Key);
         Assert.Equal(7, entry.Data.GetProperty("fish").GetInt32());
-    }
-
-    [Fact]
-    public void Read_strips_cloud_sync_metadata_from_each_entry()
-    {
-        var doc = new AppDataFile
-        {
-            Revision = 1,
-            UpdatedAt = "t",
-            Data = Json("1"),
-            Cloud = new AppDataCloudState { Revision = 1, Hash = "abc", SyncedAt = "t" },
-        };
-        var bytes = ProfileArchivePackage.Write(SampleProfileJson(), new[] { ("com.test.app", "save", doc) });
-
-        using var ms = new MemoryStream(bytes);
-        var result = ProfileArchivePackage.Read(ms);
-
-        // The wire DTO the archive round-trips through (AppDataDocumentDto)
-        // has no Cloud field at all - there is nothing for a reader to recover
-        // even if it wanted to.
-        var entry = Assert.Single(result.AppData);
-        Assert.Equal(1, entry.Data.GetInt32());
     }
 
     [Fact]

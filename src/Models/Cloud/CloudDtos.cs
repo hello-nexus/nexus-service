@@ -145,6 +145,9 @@ public sealed class CloudProfileSummaryDto
     public long SizeBytes { get; set; }
     public string UpdatedAt { get; set; } = "";
     public string UpdatedByInstallId { get; set; } = "";
+
+    /// <summary>Apps that have backed-up data under this profile, sorted. Absent from an older api.</summary>
+    public List<string> AppIds { get; set; } = new();
 }
 
 public sealed class CloudProfileDto
@@ -157,6 +160,9 @@ public sealed class CloudProfileDto
     public string UpdatedAt { get; set; } = "";
     public string UpdatedByInstallId { get; set; } = "";
     public ProfileExport? Payload { get; set; }
+
+    /// <summary>The profile's backed-up app data, <c>{ appId: { key: data } }</c>; empty when none.</summary>
+    public Dictionary<string, Dictionary<string, JsonElement>>? AppData { get; set; }
 }
 
 public sealed class CloudPutProfileRequest
@@ -164,6 +170,9 @@ public sealed class CloudPutProfileRequest
     public string Name { get; set; } = "";
     public int BaseRevision { get; set; }
     public ProfileExport? Payload { get; set; }
+
+    /// <summary>Always sent by this client; present replaces the profile's cloud app data (even empty), absent leaves it untouched.</summary>
+    public Dictionary<string, Dictionary<string, JsonElement>>? AppData { get; set; }
 }
 
 /// <summary>200 -> Revision set; 409 -> the CurrentRevision/UpdatedAt/UpdatedByInstallId/Name conflict fields are set instead. Both live on one type since AOT source-gen deserialization can't pick a shape dynamically.</summary>
@@ -181,40 +190,6 @@ public sealed class CloudAvatarUploadResponse
 {
     public string Large { get; set; } = "";
     public string Small { get; set; } = "";
-}
-
-/// <summary>One row of GET /account/app-data - no payload, so the sync pass can size up the account's whole app-data set without pulling every document.</summary>
-public sealed class CloudAppDataSummaryDto
-{
-    public string AppId { get; set; } = "";
-    public string Key { get; set; } = "";
-    public int Revision { get; set; }
-    public string? UpdatedAt { get; set; }
-    public long SizeBytes { get; set; }
-    public string? UpdatedByInstallId { get; set; }
-}
-
-/// <summary>GET /account/app-data/:appId/:key. Absent document reads as Revision 0, UpdatedAt/Payload null.</summary>
-public sealed class CloudAppDataDto
-{
-    public int Revision { get; set; }
-    public string? UpdatedAt { get; set; }
-    public JsonElement? Payload { get; set; }
-}
-
-public sealed class CloudPutAppDataRequest
-{
-    public int BaseRevision { get; set; }
-    public JsonElement Payload { get; set; }
-    public string InstallId { get; set; } = "";
-}
-
-/// <summary>200 -> Revision/UpdatedAt set, UpdatedByInstallId null; 409 -> all three set (no payload echoed - the caller GETs it if it needs the conflicting content). Both live on one type since AOT source-gen deserialization can't pick a shape dynamically.</summary>
-public sealed class CloudPutAppDataResult
-{
-    public int? Revision { get; set; }
-    public string? UpdatedAt { get; set; }
-    public string? UpdatedByInstallId { get; set; }
 }
 
 /// <summary>Error body shape assumed for non-2xx cloud responses: a stable machine code (e.g. "email_unverified", "invalid_credentials") plus a human message. RetryAt (ISO timestamp) is set for cooldown errors like username_cooldown.</summary>

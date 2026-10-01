@@ -49,14 +49,6 @@ internal sealed class OfflineCloudApiClient : ICloudApiClient
 
     public Task<CloudApiResult<CloudVoid>> DeleteProfileAsync(string accessToken, string installId, string profileId, CancellationToken ct) => Offline<CloudVoid>();
 
-    public Task<CloudApiResult<List<CloudAppDataSummaryDto>>> ListAppDataAsync(string accessToken, CancellationToken ct) => Offline<List<CloudAppDataSummaryDto>>();
-
-    public Task<CloudApiResult<CloudAppDataDto>> GetAppDataAsync(string accessToken, string appId, string key, CancellationToken ct) => Offline<CloudAppDataDto>();
-
-    public Task<CloudApiResult<CloudPutAppDataResult>> PutAppDataAsync(string accessToken, string appId, string key, CloudPutAppDataRequest body, CancellationToken ct) => Offline<CloudPutAppDataResult>();
-
-    public Task<CloudApiResult<CloudVoid>> DeleteAppDataAsync(string accessToken, string appId, string key, CancellationToken ct) => Offline<CloudVoid>();
-
     public Task<CloudApiResult<CloudRawResponse>> PostRawAsync(string path, string rawJsonBody, string? accessToken, CancellationToken ct) => Offline<CloudRawResponse>();
 
     public Task<CloudApiResult<CloudRawResponse>> SendRawAsync(HttpMethod method, string path, string? rawJsonBody, string? accessToken, CancellationToken ct) => Offline<CloudRawResponse>();

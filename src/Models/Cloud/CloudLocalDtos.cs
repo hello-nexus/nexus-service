@@ -156,6 +156,9 @@ public sealed class CloudLibraryProfileDto
     public int Revision { get; set; }
     public long SizeBytes { get; set; }
     public string UpdatedAt { get; set; } = "";
+
+    /// <summary>Apps with backed-up data under this profile, sorted; empty when none.</summary>
+    public List<string> AppIds { get; set; } = new();
 }
 
 /// <summary>A machine on the account, named by its reported hostname rather than its installId.</summary>
@@ -187,6 +190,9 @@ public sealed class CloudImportRequest
     public string ProfileId { get; set; } = "";
     /// <summary>Set after the user answers the name-conflict prompt; overwrites the local profile of the same name in place.</summary>
     public bool ReplaceExisting { get; set; }
+
+    /// <summary>Restore the backed-up app data along with the settings. Defaults on.</summary>
+    public bool IncludeAppData { get; set; } = true;
 }
 
 /// <summary>Revision frame for the "cloud/accounts" multiplex topic; subscribers refetch GET /cloud/accounts.</summary>

@@ -7,6 +7,8 @@ using System.Threading.Tasks;
 using Nexus.Service.Models.Cloud;
 using Nexus.Service.Models.Profiles;
 using Nexus.Service.Persistence;
+using Nexus.Service.Profiles;
+using Nexus.Service.Widgets;
 using Nexus.Service.Serialization;
 
 namespace Nexus.Service.Cloud;
@@ -28,13 +30,15 @@ public sealed class CloudProfileLibraryService
     private readonly CloudAccountService _accounts;
     private readonly ProfileManager _profiles;
     private readonly IConfigStore _store;
+    private readonly AppDataStore _appData;
 
-    public CloudProfileLibraryService(ICloudApiClient api, CloudAccountService accounts, ProfileManager profiles, IConfigStore store)
+    public CloudProfileLibraryService(ICloudApiClient api, CloudAccountService accounts, ProfileManager profiles, IConfigStore store, AppDataStore appData)
     {
         _api = api;
         _accounts = accounts;
         _profiles = profiles;
         _store = store;
+        _appData = appData;
     }
 
     /// <summary>Every machine on the account with the profiles it has backed up. A machine with no profiles is still listed, so a user can see it was seen.</summary>
@@ -104,6 +108,7 @@ public sealed class CloudProfileLibraryService
                 Revision = r.Revision,
                 SizeBytes = r.SizeBytes,
                 UpdatedAt = r.UpdatedAt,
+                AppIds = r.AppIds ?? new List<string>(),
             })
             .ToList();
 
@@ -133,6 +138,7 @@ public sealed class CloudProfileLibraryService
         }
 
         var sourceName = string.IsNullOrWhiteSpace(fetched.Value.Name) ? "Imported" : fetched.Value.Name;
+        var appData = request.IncludeAppData ? ProfileBundle.Sanitize(fetched.Value.AppData) : null;
         LastImportReplacedActive = false;
 
         // Restoring this machine's own backup keeps the original profileId and
@@ -143,6 +149,7 @@ public sealed class CloudProfileLibraryService
             try
             {
                 var restored = _profiles.ImportProfileWithId(request.ProfileId, sourceName, settings);
+                _appData.ReplaceApps(restored.Id, appData);
                 LastImportReplacedActive = restored.Id == _profiles.ActiveProfileId;
                 return CloudActionResult.Ok();
             }
@@ -158,6 +165,7 @@ public sealed class CloudProfileLibraryService
         try
         {
             var entry = _profiles.ImportProfile(name, settings, request.ReplaceExisting);
+            _appData.ReplaceApps(entry.Id, appData);
             LastImportReplacedActive = entry.Id == _profiles.ActiveProfileId;
             return CloudActionResult.Ok();
         }

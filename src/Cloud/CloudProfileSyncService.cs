@@ -14,6 +14,7 @@ using Nexus.Service.Models.Cloud;
 using Nexus.Service.Models.Profiles;
 using Nexus.Service.Models.Widgets;
 using Nexus.Service.Persistence;
+using Nexus.Service.Profiles;
 using Nexus.Service.Serialization;
 using Nexus.Service.Widgets;
 
@@ -37,7 +38,6 @@ public sealed class CloudProfileSyncService : BackgroundService
 {
     private static readonly TimeSpan TickInterval = TimeSpan.FromSeconds(15);
     private static readonly TimeSpan PushDebounce = TimeSpan.FromSeconds(60);
-    private static readonly TimeSpan ShutdownFlushBudget = TimeSpan.FromSeconds(5);
 
     private readonly ICloudApiClient _api;
     private readonly CloudAccountService _accounts;
@@ -107,10 +107,24 @@ public sealed class CloudProfileSyncService : BackgroundService
     }
 
     /// <summary>The user pressed "Back up now": push straight away, skipping the debounce. Completes when the pass does; <paramref name="profileId"/> null backs up every profile.</summary>
-    public Task TriggerNowAsync(string? profileId) =>
-        _accounts.ActiveAccountId is { } accountId
-            ? RunGuardedAsync(() => RunSyncPassAsync(accountId, CancellationToken.None, manual: true, profileId), CancellationToken.None)
-            : Task.CompletedTask;
+    public async Task<CloudActionResult> TriggerNowAsync(string? profileId)
+    {
+        if (_accounts.ActiveAccountId is not { } accountId)
+        {
+            return CloudActionResult.Ok();
+        }
+        await RunGuardedAsync(() =>
+        {
+            _pushFailure = null;
+            return RunSyncPassAsync(accountId, CancellationToken.None, manual: true, profileId);
+        }, CancellationToken.None).ConfigureAwait(false);
+        return _pushFailure is { } failure
+            ? CloudActionResult.Fail(failure, "This profile's app data is too large to back up.", 413)
+            : CloudActionResult.Ok();
+    }
+
+    /// <summary>Error code of a push in the current manual pass that failed in a way the user must be told about; null otherwise.</summary>
+    private volatile string? _pushFailure;
 
     public async Task<CloudActionResult> ResolveConflictAsync(string profileId, string choice, CancellationToken ct)
     {
@@ -167,12 +181,18 @@ public sealed class CloudProfileSyncService : BackgroundService
         {
             return CloudActionResult.Fail("not_found", "Local profile not found.", 404);
         }
-        var hash = HashPayload(localExport);
+        var appData = _appData.ReadProfile(profileId);
+        if (AppDataTooLarge(appData))
+        {
+            return CloudActionResult.Fail("app_data_too_large", "This profile's app data is too large to back up.", 413);
+        }
+        var hash = HashPayload(localExport, appData);
         var request = new CloudPutProfileRequest
         {
             Name = conflict.Name,
             BaseRevision = conflict.CloudRevision,
             Payload = localExport,
+            AppData = appData,
         };
         var result = await _accounts.WithAuthAsync(accountId, token => _api.PutProfileAsync(token, OwnInstallId(), profileId, request, ct), ct).ConfigureAwait(false);
 
@@ -226,45 +246,6 @@ public sealed class CloudProfileSyncService : BackgroundService
         using var timer = new PeriodicTimer(TickInterval, _clock);
         while (await WaitAsync(timer, stoppingToken).ConfigureAwait(false))
         {
-        }
-    }
-
-    public override async Task StopAsync(CancellationToken cancellationToken)
-    {
-        if (_accounts.ActiveAccountId is { } accountId)
-        {
-            using var cts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-            cts.CancelAfter(ShutdownFlushBudget);
-            try
-            {
-                await FlushAccountAsync(accountId, cts.Token).ConfigureAwait(false);
-            }
-            catch (Exception ex) when (ex is not OperationCanceledException || !cancellationToken.IsCancellationRequested)
-            {
-                Console.Error.WriteLine($"[cloud-sync] exit flush failed: {ex.Message}");
-            }
-        }
-        await base.StopAsync(cancellationToken).ConfigureAwait(false);
-    }
-
-    /// <summary>Blocking best-effort flush for the Windows service fast-shutdown path (Program.cs FastServiceShutdown), which has no hosted-service StopAsync lifecycle. Bounded by <paramref name="budget"/>; skips the sync gate since the process is exiting either way.</summary>
-    public void FlushPendingSyncBlocking(TimeSpan budget)
-    {
-        if (_accounts.ActiveAccountId is not { } accountId)
-        {
-            return;
-        }
-        using var cts = new CancellationTokenSource(budget);
-        try
-        {
-            FlushAccountAsync(accountId, cts.Token).GetAwaiter().GetResult();
-        }
-        catch (Exception ex)
-        {
-            // cts has no external caller token - any OperationCanceledException
-            // here is always the internal budget timeout, never an outside
-            // cancellation, so it is always caught, never rethrown.
-            Console.Error.WriteLine($"[cloud-sync] shutdown flush failed: {ex.Message}");
         }
     }
 
@@ -421,10 +402,12 @@ public sealed class CloudProfileSyncService : BackgroundService
 
             string? localHash = null;
             ProfileExport? localExport = null;
+            Dictionary<string, Dictionary<string, JsonElement>>? localAppData = null;
             if (localEntry is not null)
             {
                 localExport = _profiles.ExportProfileForSync(id);
-                localHash = localExport is null ? null : HashPayload(localExport);
+                localAppData = _appData.ReadProfile(id);
+                localHash = localExport is null ? null : HashPayload(localExport, localAppData);
             }
 
             var action = CloudSyncDecision.Decide(
@@ -449,7 +432,7 @@ public sealed class CloudProfileSyncService : BackgroundService
                         anyPending = true;
                         break;
                     }
-                    var pushed = await PushAsync(accountId, id, localEntry!.Name, localExport!, localHash!, syncRecord?.Revision ?? 0, ct).ConfigureAwait(false);
+                    var pushed = await PushAsync(accountId, id, localEntry!.Name, localExport!, localAppData!, localHash!, syncRecord?.Revision ?? 0, ct).ConfigureAwait(false);
                     if (pushed)
                     {
                         _dirtySince.TryRemove(id, out _);
@@ -478,18 +461,10 @@ public sealed class CloudProfileSyncService : BackgroundService
                     break;
 
                 case CloudSyncAction.DeleteLocal:
-                    await DeleteLocalOrRepushAsync(accountId, id, localEntry!.Name, localExport!, localHash!, syncRecord!.Revision, ct).ConfigureAwait(false);
+                    await DeleteLocalOrRepushAsync(accountId, id, localEntry!.Name, localExport!, localAppData!, localHash!, syncRecord!.Revision, ct).ConfigureAwait(false);
                     _dirtySince.TryRemove(id, out _);
                     break;
             }
-        }
-
-        // App data is account-wide (not per-profile), so it runs once per pass
-        // rather than per profile id - skip it on a single-profile manual
-        // trigger (onlyProfileId set), which asks for exactly one profile.
-        if (onlyProfileId is null)
-        {
-            await SyncAppDataAsync(accountId, ct).ConfigureAwait(false);
         }
 
         _lastSyncAt = now.ToString("o");
@@ -504,13 +479,19 @@ public sealed class CloudProfileSyncService : BackgroundService
     }
 
     /// <returns>True only when the push actually landed a new revision. False on a conflict or an offline/server error - callers must not clear their own dirty-tracking state in that case, or a failed push stops being retried until the profile changes again.</returns>
-    private async Task<bool> PushAsync(string accountId, string profileId, string name, ProfileExport payload, string localHash, int baseRevision, CancellationToken ct)
+    private async Task<bool> PushAsync(string accountId, string profileId, string name, ProfileExport payload, Dictionary<string, Dictionary<string, JsonElement>> appData, string localHash, int baseRevision, CancellationToken ct)
     {
+        if (AppDataTooLarge(appData))
+        {
+            _pushFailure = "app_data_too_large";
+            return false;
+        }
         var request = new CloudPutProfileRequest
         {
             Name = name,
             BaseRevision = baseRevision,
             Payload = payload,
+            AppData = appData,
         };
         var result = await _accounts.WithAuthAsync(accountId, token => _api.PutProfileAsync(token, OwnInstallId(), profileId, request, ct), ct).ConfigureAwait(false);
 
@@ -526,7 +507,10 @@ public sealed class CloudProfileSyncService : BackgroundService
         }
         if (!result.Success || result.Value?.Revision is not { } revision)
         {
-            // Offline/server error: leave dirtySince alone so the next tick retries.
+            if (result.ErrorCode == "app_data_too_large")
+            {
+                _pushFailure = "app_data_too_large";
+            }
             return false;
         }
 
@@ -543,11 +527,13 @@ public sealed class CloudProfileSyncService : BackgroundService
         }
 
         var dto = result.Value;
-        var hash = HashPayload(dto.Payload!);
+        var cloudAppData = ProfileBundle.Sanitize(dto.AppData);
+        var hash = HashPayload(dto.Payload!, cloudAppData);
         var name = string.IsNullOrEmpty(dto.Name) ? (dto.Payload!.Name ?? "Imported") : dto.Name;
         try
         {
             _profiles.ImportProfileWithId(profileId, name, dto.Payload!.Settings!);
+            _appData.ReplaceApps(profileId, cloudAppData);
         }
         catch (InvalidOperationException ex)
         {
@@ -574,7 +560,7 @@ public sealed class CloudProfileSyncService : BackgroundService
     }
 
     /// <summary>The cloud row was deleted (another machine) after having synced. Deletes the local profile via ProfileManager's own last-profile/Primary guards; when those guards refuse (only profile, or Primary-locked), re-pushes the local content instead of losing it.</summary>
-    private async Task DeleteLocalOrRepushAsync(string accountId, string profileId, string name, ProfileExport localExport, string localHash, int baseRevision, CancellationToken ct)
+    private async Task DeleteLocalOrRepushAsync(string accountId, string profileId, string name, ProfileExport localExport, Dictionary<string, Dictionary<string, JsonElement>> localAppData, string localHash, int baseRevision, CancellationToken ct)
     {
         try
         {
@@ -582,7 +568,7 @@ public sealed class CloudProfileSyncService : BackgroundService
         }
         catch (InvalidOperationException)
         {
-            await PushAsync(accountId, profileId, name, localExport, localHash, baseRevision, ct).ConfigureAwait(false);
+            await PushAsync(accountId, profileId, name, localExport, localAppData, localHash, baseRevision, ct).ConfigureAwait(false);
             return;
         }
         catch (KeyNotFoundException)
@@ -633,347 +619,6 @@ public sealed class CloudProfileSyncService : BackgroundService
                 LastSyncedHash = hash,
             };
         });
-    }
-
-    // ── app-data sync (generic per-(app,key) persistent JSON documents) ────
-    //
-    // No user-facing conflict resolution: the user chose "back up to the
-    // account, newest document wins" for app data (unlike profiles, which
-    // keep an explicit picker). A doc's Cloud.AccountId gates whether its
-    // bookkeeping applies - synced under a different (or no) account, it
-    // reads as never synced, so a doc never silently mixes progress across
-    // accounts: see the account-scoping branch below.
-
-    private readonly HashSet<string> _appDataLimitWarned = new(StringComparer.Ordinal);
-
-    /// <summary>
-    /// Per doc: local-missing pulls unconditionally (restore after
-    /// reinstall); a doc not synced under THIS account never pushes - the
-    /// cloud wins outright when it has a copy (after archiving whatever was
-    /// live locally), or the local copy is adopted when the account has none
-    /// yet; only a genuine same-account two-device divergence compares edit
-    /// times. See AppIds/AppDataKeys.IsValid pre-filtering below - a row from
-    /// the account-wide list is untrusted input.
-    /// </summary>
-    private async Task SyncAppDataAsync(string accountId, CancellationToken ct)
-    {
-        var listResult = await _accounts.WithAuthAsync(accountId, token => _api.ListAppDataAsync(token, ct), ct).ConfigureAwait(false);
-        if (!listResult.Success)
-        {
-            return;
-        }
-        var cloudRows = (listResult.Value ?? new List<CloudAppDataSummaryDto>())
-            .Where(r => AppIds.IsValid(r.AppId) && AppDataKeys.IsValid(r.Key))
-            .ToList();
-
-        var ids = new HashSet<(string AppId, string Key)>(_appData.EnumerateAll());
-        foreach (var row in cloudRows)
-        {
-            ids.Add((row.AppId, row.Key));
-        }
-
-        foreach (var (appId, key) in ids)
-        {
-            ct.ThrowIfCancellationRequested();
-            var local = _appData.TryRead(appId, key);
-            var cloudRow = cloudRows.FirstOrDefault(r => r.AppId == appId && r.Key == key);
-            var syncedForThisAccount = local?.Cloud is { } cloud && cloud.AccountId == accountId ? cloud : null;
-
-            if (local is null && cloudRow is null)
-            {
-                continue;
-            }
-            if (local is null)
-            {
-                await PullAppDataAsync(accountId, appId, key, expectedLocalRevision: 0, ct).ConfigureAwait(false);
-                continue;
-            }
-
-            var localRevisionAtDecision = local.Revision;
-            var localHash = HashAppData(local.Data);
-            var localEditedAt = EffectiveEditedAt(local, localHash);
-
-            if (syncedForThisAccount is null)
-            {
-                // Belongs to another account, or was never synced anywhere.
-                // Either way this account's own cloud copy - when it has one
-                // - is the only source of truth; the local doc is archived
-                // (never silently overwritten or mixed in) before pulling.
-                if (cloudRow is not null)
-                {
-                    var archiveNamespace = local.Cloud is { AccountId.Length: > 0 } foreign ? foreign.AccountId : "local";
-                    _appData.ArchiveAndRemove(appId, key, archiveNamespace);
-                    await PullAppDataAsync(accountId, appId, key, expectedLocalRevision: 0, ct).ConfigureAwait(false);
-                }
-                else if (local.Cloud is null)
-                {
-                    // Genuinely local-only and this account has nothing yet - adopt it.
-                    await PushAppDataAsync(accountId, appId, key, local.Data, localEditedAt, localHash, baseRevision: 0, localRevisionAtDecision, ct).ConfigureAwait(false);
-                }
-                else
-                {
-                    // Belongs to another account, which currently has no
-                    // cloud row for it either - archive and stop; it is not
-                    // this account's data to push.
-                    _appData.ArchiveAndRemove(appId, key, local.Cloud.AccountId);
-                }
-                continue;
-            }
-
-            if (cloudRow is null)
-            {
-                // This account's cloud row disappeared (another machine, or
-                // the account holder, deleted it there).
-                if (string.Equals(localHash, syncedForThisAccount.Hash, StringComparison.Ordinal))
-                {
-                    _appData.Delete(appId, key);
-                }
-                else
-                {
-                    await PushAppDataAsync(accountId, appId, key, local.Data, localEditedAt, localHash, baseRevision: 0, localRevisionAtDecision, ct).ConfigureAwait(false);
-                }
-                continue;
-            }
-
-            var localClean = string.Equals(localHash, syncedForThisAccount.Hash, StringComparison.Ordinal);
-            var cloudMoved = cloudRow.Revision > syncedForThisAccount.Revision;
-            if (localClean && !cloudMoved)
-            {
-                continue;
-            }
-            if (localClean)
-            {
-                await PullAppDataAsync(accountId, appId, key, localRevisionAtDecision, ct).ConfigureAwait(false);
-                continue;
-            }
-            if (!cloudMoved)
-            {
-                await PushAppDataAsync(accountId, appId, key, local.Data, localEditedAt, localHash, syncedForThisAccount.Revision, localRevisionAtDecision, ct).ConfigureAwait(false);
-                continue;
-            }
-
-            // Both sides moved past the same synced base under the SAME
-            // account - a genuine two-device divergence. The list endpoint's
-            // updatedAt is upload time, not edit time, so the comparison
-            // needs the cloud row's unwrapped envelope, fetched here rather
-            // than trusted from the list.
-            var current = await GetAndUnwrapAsync(accountId, appId, key, ct).ConfigureAwait(false);
-            if (current is null)
-            {
-                continue;
-            }
-            if (string.Equals(HashAppData(current.Value.Data), localHash, StringComparison.Ordinal))
-            {
-                // Both sides ended up at the same content - nothing to push
-                // or pull, just adopt the cloud's bookkeeping so this stops
-                // looking dirty.
-                _appData.SetCloudState(appId, key, new AppDataCloudState
-                {
-                    AccountId = accountId,
-                    Revision = current.Value.Revision,
-                    Hash = localHash,
-                    EditedAt = current.Value.EditedAt,
-                    SyncedAt = DateTimeOffset.UtcNow.ToString("o"),
-                });
-                continue;
-            }
-            if (CompareEditedAt(localEditedAt, current.Value.EditedAt) >= 0)
-            {
-                await PushAppDataAsync(accountId, appId, key, local.Data, localEditedAt, localHash, current.Value.Revision, localRevisionAtDecision, ct).ConfigureAwait(false);
-            }
-            else
-            {
-                ApplyPulledDoc(accountId, appId, key, current.Value.Revision, current.Value.EditedAt, current.Value.Data, localRevisionAtDecision);
-            }
-        }
-    }
-
-    /// <summary>
-    /// A doc's edit time for newest-wins purposes. The local file's own
-    /// UpdatedAt is write time, which for an untouched pulled/imported copy is
-    /// only the download time, not when the content was actually edited -
-    /// using it directly would let a machine that merely downloaded a doc
-    /// outrank the machine that actually edited it. Falls back to UpdatedAt
-    /// only when the content has moved since the last synced Hash, which
-    /// means UpdatedAt now IS a genuine edit's write time.
-    /// </summary>
-    private static string EffectiveEditedAt(AppDataFile local, string localHash) =>
-        local.Cloud is { EditedAt.Length: > 0 } cloud && string.Equals(cloud.Hash, localHash, StringComparison.Ordinal)
-            ? cloud.EditedAt
-            : local.UpdatedAt;
-
-    /// <summary>Ties (including two unparsable timestamps) return >= 0 (local wins), matching the "ties keep local" rule. Parses with InvariantCulture - these are always machine-written ISO 8601 strings, never locale text.</summary>
-    private static int CompareEditedAt(string? local, string? cloud)
-    {
-        var localOk = DateTimeOffset.TryParse(local, CultureInfo.InvariantCulture, DateTimeStyles.RoundtripKind, out var localTime);
-        var cloudOk = DateTimeOffset.TryParse(cloud, CultureInfo.InvariantCulture, DateTimeStyles.RoundtripKind, out var cloudTime);
-        if (!localOk && !cloudOk) return 0;
-        if (!localOk) return -1;
-        if (!cloudOk) return 1;
-        return localTime.CompareTo(cloudTime);
-    }
-
-    /// <summary>The service's own cloud payload envelope (see AppDataCloudEnvelope) carries the document's true edit time separately from nexus-api's row-level updatedAt (upload time). A payload without the marker predates the envelope or came from elsewhere - read as raw data with editedAt falling back to the row's updatedAt.</summary>
-    private static (JsonElement Data, string EditedAt) UnwrapCloudPayload(JsonElement payload, string? rowUpdatedAt)
-    {
-        if (payload.ValueKind == JsonValueKind.Object
-            && payload.TryGetProperty("nexusAppData", out var marker)
-            && marker.ValueKind == JsonValueKind.Number
-            && marker.TryGetInt32(out var version) && version == 1
-            && payload.TryGetProperty("data", out var data))
-        {
-            var editedAt = payload.TryGetProperty("editedAt", out var e) && e.ValueKind == JsonValueKind.String
-                ? e.GetString() ?? rowUpdatedAt ?? ""
-                : rowUpdatedAt ?? "";
-            return (data.Clone(), editedAt);
-        }
-        return (payload, rowUpdatedAt ?? "");
-    }
-
-    private static JsonElement WrapCloudPayload(JsonElement data, string editedAt) =>
-        JsonSerializer.SerializeToElement(
-            new AppDataCloudEnvelope { NexusAppData = 1, EditedAt = editedAt, Data = data },
-            AppJsonContext.Default.AppDataCloudEnvelope);
-
-    /// <summary>Fetches and unwraps the cloud document, or null on any failure (offline, 4xx/5xx, or a row with no payload) - the caller leaves the doc dirty and retries next pass.</summary>
-    private async Task<(JsonElement Data, string EditedAt, int Revision)?> GetAndUnwrapAsync(string accountId, string appId, string key, CancellationToken ct)
-    {
-        var result = await _accounts.WithAuthAsync(accountId, token => _api.GetAppDataAsync(token, appId, key, ct), ct).ConfigureAwait(false);
-        if (!result.Success || result.Value?.Payload is not { } payload)
-        {
-            return null;
-        }
-        var (data, editedAt) = UnwrapCloudPayload(payload, result.Value.UpdatedAt);
-        return (data, editedAt, result.Value.Revision);
-    }
-
-    /// <summary>
-    /// Pushes at <paramref name="baseRevision"/>. A 409 is never treated as
-    /// success: it re-fetches the cloud document and RE-RUNS the newest-wins
-    /// decision against its fresh edit time rather than blind-retrying the
-    /// push - the doc that raced ahead of us might be the newer edit. Only
-    /// retries the push once, at the fresh revision, when the decision still
-    /// favours local; a second conflict (or any other failure - rate limit,
-    /// account-wide doc cap, server error, offline) leaves the doc dirty with
-    /// no SetCloudState, so the next pass reconsiders it from scratch.
-    /// </summary>
-    private async Task PushAppDataAsync(string accountId, string appId, string key, JsonElement data, string editedAt, string hash, int baseRevision, int localRevisionAtDecision, CancellationToken ct)
-    {
-        var envelope = WrapCloudPayload(data, editedAt);
-        var result = await PutAppDataOnceAsync(accountId, appId, key, envelope, baseRevision, ct).ConfigureAwait(false);
-
-        if (result.StatusCode == 409)
-        {
-            var current = await GetAndUnwrapAsync(accountId, appId, key, ct).ConfigureAwait(false);
-            if (current is null)
-            {
-                return;
-            }
-            if (CompareEditedAt(editedAt, current.Value.EditedAt) < 0)
-            {
-                ApplyPulledDoc(accountId, appId, key, current.Value.Revision, current.Value.EditedAt, current.Value.Data, localRevisionAtDecision);
-                return;
-            }
-            result = await PutAppDataOnceAsync(accountId, appId, key, envelope, current.Value.Revision, ct).ConfigureAwait(false);
-            if (result.StatusCode == 409)
-            {
-                return;
-            }
-        }
-
-        if (result.StatusCode == 400 && result.ErrorCode == "app_data_limit_reached")
-        {
-            if (_appDataLimitWarned.Add(appId + "/" + key))
-            {
-                Console.Error.WriteLine($"[cloud-sync] app-data {appId}/{key} exceeds the account's document cap - will not sync until the account has room.");
-            }
-            return;
-        }
-        if (!result.Success || result.Value?.Revision is not { } revision)
-        {
-            // 429 / 5xx / offline - leave dirty, the next pass retries.
-            return;
-        }
-
-        _appData.SetCloudState(appId, key, new AppDataCloudState
-        {
-            AccountId = accountId,
-            Revision = revision,
-            Hash = hash,
-            EditedAt = editedAt,
-            SyncedAt = result.Value.UpdatedAt ?? DateTimeOffset.UtcNow.ToString("o"),
-        });
-        Console.WriteLine($"[cloud-sync] app-data push {appId}/{key} -> revision {revision} ({Encoding.UTF8.GetByteCount(JsonSerializer.Serialize(data, PersistenceJsonContext.Default.JsonElement))} bytes)");
-    }
-
-    private Task<CloudApiResult<CloudPutAppDataResult>> PutAppDataOnceAsync(string accountId, string appId, string key, JsonElement envelope, int baseRevision, CancellationToken ct)
-    {
-        var request = new CloudPutAppDataRequest { BaseRevision = baseRevision, Payload = envelope, InstallId = OwnInstallId() };
-        return _accounts.WithAuthAsync(accountId, token => _api.PutAppDataAsync(token, appId, key, request, ct), ct);
-    }
-
-    private async Task PullAppDataAsync(string accountId, string appId, string key, int expectedLocalRevision, CancellationToken ct)
-    {
-        var current = await GetAndUnwrapAsync(accountId, appId, key, ct).ConfigureAwait(false);
-        if (current is null)
-        {
-            return;
-        }
-        ApplyPulledDoc(accountId, appId, key, current.Value.Revision, current.Value.EditedAt, current.Value.Data, expectedLocalRevision);
-    }
-
-    /// <summary>CAS on <paramref name="expectedLocalRevision"/> - the local revision the sync decision was based on. A no-op when the local doc moved since (a concurrent app write raced this pass); the next pass re-decides against the doc's new state.</summary>
-    private void ApplyPulledDoc(string accountId, string appId, string key, int revision, string editedAt, JsonElement data, int expectedLocalRevision)
-    {
-        var hash = HashAppData(data);
-        var written = _appData.Import(appId, key, data, new AppDataCloudState
-        {
-            AccountId = accountId,
-            Revision = revision,
-            Hash = hash,
-            EditedAt = editedAt,
-            SyncedAt = DateTimeOffset.UtcNow.ToString("o"),
-        }, expectedRevision: expectedLocalRevision);
-        if (written is null)
-        {
-            return;
-        }
-        Console.WriteLine($"[cloud-sync] app-data pull {appId}/{key} -> revision {revision} ({Encoding.UTF8.GetByteCount(JsonSerializer.Serialize(data, PersistenceJsonContext.Default.JsonElement))} bytes)");
-    }
-
-    internal static string HashAppData(JsonElement data)
-    {
-        var json = JsonSerializer.Serialize(data, PersistenceJsonContext.Default.JsonElement);
-        var bytes = SHA256.HashData(Encoding.UTF8.GetBytes(json));
-        return Convert.ToHexString(bytes);
-    }
-
-    /// <summary>Pushes every profile whose export payload no longer matches its last-synced hash, ignoring the debounce window. Used for the outgoing side of an account switch and for shutdown flush.</summary>
-    private async Task FlushAccountAsync(string accountId, CancellationToken ct)
-    {
-        var localProfiles = _profiles.GetManifest().Profiles;
-        var syncMap = _store.Load().Auth?.CloudAccounts.FirstOrDefault(a => a.AccountId == accountId)?.ProfileSync
-            ?? new Dictionary<string, CloudProfileSyncRecord>();
-
-        foreach (var entry in localProfiles)
-        {
-            ct.ThrowIfCancellationRequested();
-            var localExport = _profiles.ExportProfileForSync(entry.Id);
-            if (localExport is null)
-            {
-                continue;
-            }
-            var hash = HashPayload(localExport);
-            syncMap.TryGetValue(entry.Id, out var syncRecord);
-            if (syncRecord is not null && string.Equals(syncRecord.LastSyncedHash, hash, StringComparison.Ordinal))
-            {
-                continue;
-            }
-
-            await PushAsync(accountId, entry.Id, entry.Name, localExport, hash, syncRecord?.Revision ?? 0, ct).ConfigureAwait(false);
-        }
-
-        await SyncAppDataAsync(accountId, ct).ConfigureAwait(false);
     }
 
     // ── account switch (archive + wholesale replace) ────────────────────
@@ -1035,8 +680,8 @@ public sealed class CloudProfileSyncService : BackgroundService
             }
 
             // The incoming library is fully and successfully retrieved - safe
-            // to touch local state now.
-            await FlushAccountAsync(fromAccountId, ct).ConfigureAwait(false);
+            // to touch local state now. The outgoing library is archived
+            // locally, never uploaded.
             ReplaceLocalLibrary(toAccountId, cloudRows, pulled);
 
             _pendingSwitch = null;
@@ -1050,10 +695,10 @@ public sealed class CloudProfileSyncService : BackgroundService
     }
 
     /// <summary>Fetches every payload for the given cloud rows. Returns null (and sets _state to "offline"/"error") on any single failure - a partial pull must never be applied, so callers only touch the local library after a non-null result.</summary>
-    private async Task<List<(string Id, string Name, NexusSettings Data, string Hash)>?> PullCloudProfilesAsync(
+    private async Task<List<(string Id, string Name, NexusSettings Data, Dictionary<string, Dictionary<string, JsonElement>> AppData, string Hash)>?> PullCloudProfilesAsync(
         string accountId, List<CloudProfileSummaryDto> cloudRows, CancellationToken ct)
     {
-        var pulled = new List<(string Id, string Name, NexusSettings Data, string Hash)>();
+        var pulled = new List<(string Id, string Name, NexusSettings Data, Dictionary<string, Dictionary<string, JsonElement>> AppData, string Hash)>();
         foreach (var row in cloudRows.Take(ProfileManager.MaxProfiles))
         {
             ct.ThrowIfCancellationRequested();
@@ -1067,18 +712,23 @@ public sealed class CloudProfileSyncService : BackgroundService
             // Auth/PrimaryProfileId/SharedCategories in place - the cloud
             // payload should already arrive stripped, but hashing first
             // avoids relying on that mutation ordering for correctness.
-            var hash = HashPayload(profileResult.Value.Payload);
-            pulled.Add((row.ProfileId, row.Name, profileResult.Value.Payload.Settings!, hash));
+            var cloudAppData = ProfileBundle.Sanitize(profileResult.Value.AppData);
+            var hash = HashPayload(profileResult.Value.Payload, cloudAppData);
+            pulled.Add((row.ProfileId, row.Name, profileResult.Value.Payload.Settings!, cloudAppData, hash));
         }
         return pulled;
     }
 
     /// <summary>Archives the current local library then replaces it wholesale with the already-pulled cloud rows, updates per-profile sync bookkeeping, and resets in-flight dirty/conflict tracking. Shared by the account-switch handler and the first-login pristine-bootstrap-Default fast path.</summary>
     private void ReplaceLocalLibrary(
-        string accountId, List<CloudProfileSummaryDto> cloudRows, List<(string Id, string Name, NexusSettings Data, string Hash)> pulled)
+        string accountId, List<CloudProfileSummaryDto> cloudRows, List<(string Id, string Name, NexusSettings Data, Dictionary<string, Dictionary<string, JsonElement>> AppData, string Hash)> pulled)
     {
         _profiles.ArchiveLibrary();
         _profiles.ReplaceLibrary(pulled.Select(p => (p.Id, p.Name, p.Data)).ToList());
+        foreach (var match in pulled)
+        {
+            _appData.ReplaceApps(match.Id, match.AppData);
+        }
 
         var now = _clock.GetUtcNow();
         _store.Update(s =>
@@ -1167,10 +817,19 @@ public sealed class CloudProfileSyncService : BackgroundService
 
     // ── shared helpers ───────────────────────────────────────────────────
 
-    internal static string HashPayload(ProfileExport payload)
+    /// <summary>Covers settings and app data; a profile without app data hashes exactly as it did before app data was backed up.</summary>
+    internal static string HashPayload(ProfileExport payload, Dictionary<string, Dictionary<string, JsonElement>>? appData = null)
     {
         var json = JsonSerializer.Serialize(payload, PersistenceJsonContext.Default.ProfileExport);
+        if (appData is { Count: > 0 })
+        {
+            json += "\n" + JsonSerializer.Serialize(appData, PersistenceJsonContext.Default.DictionaryStringDictionaryStringJsonElement);
+        }
         var bytes = SHA256.HashData(Encoding.UTF8.GetBytes(json));
         return Convert.ToHexString(bytes);
     }
+
+    internal static bool AppDataTooLarge(Dictionary<string, Dictionary<string, JsonElement>> appData) =>
+        appData.Count > 0
+        && Encoding.UTF8.GetByteCount(JsonSerializer.Serialize(appData, PersistenceJsonContext.Default.DictionaryStringDictionaryStringJsonElement)) > AppDataStore.MaxBundleBytes;
 }

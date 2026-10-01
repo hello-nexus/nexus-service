@@ -443,11 +443,6 @@ namespace Nexus.Service.Serialization;
 [JsonSerializable(typeof(Nexus.Service.Models.Cloud.CloudPutProfileRequest))]
 [JsonSerializable(typeof(Nexus.Service.Models.Cloud.CloudPutProfileResult))]
 [JsonSerializable(typeof(Nexus.Service.Models.Cloud.CloudAvatarUploadResponse))]
-[JsonSerializable(typeof(Nexus.Service.Models.Cloud.CloudAppDataSummaryDto))]
-[JsonSerializable(typeof(List<Nexus.Service.Models.Cloud.CloudAppDataSummaryDto>))]
-[JsonSerializable(typeof(Nexus.Service.Models.Cloud.CloudAppDataDto))]
-[JsonSerializable(typeof(Nexus.Service.Models.Cloud.CloudPutAppDataRequest))]
-[JsonSerializable(typeof(Nexus.Service.Models.Cloud.CloudPutAppDataResult))]
 [JsonSerializable(typeof(Nexus.Service.Models.Cloud.CloudErrorBody))]
 [JsonSerializable(typeof(Nexus.Service.Models.Cloud.CloudAccountSummaryDto))]
 [JsonSerializable(typeof(List<Nexus.Service.Models.Cloud.CloudAccountSummaryDto>))]
@@ -1071,7 +1066,9 @@ namespace Nexus.Service.Serialization;
 [JsonSerializable(typeof(AppDataPutRequest))]
 [JsonSerializable(typeof(AppDataDocumentDto))]
 [JsonSerializable(typeof(AppDataPutResultDto))]
-[JsonSerializable(typeof(AppDataCloudEnvelope))]
+[JsonSerializable(typeof(AppDataProfileSwitchedResponse))]
+[JsonSerializable(typeof(AppDataResetFrame))]
+[JsonSerializable(typeof(Nexus.Service.Models.Profiles.ProfileInspectResponse))]
 
 // OTA self-update routes + GitHub provider DTOs
 [JsonSerializable(typeof(UpdateStatusResponse))]

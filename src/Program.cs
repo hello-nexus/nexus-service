@@ -837,7 +837,6 @@ static void FastServiceShutdown(WebApplication app)
         {
             try { sp.GetService<IConfigStore>()?.FlushNow(); } catch { }
             try { sp.GetService<ProfileManager>()?.SaveActiveProfile(); } catch { }
-            try { sp.GetService<Nexus.Service.Cloud.CloudProfileSyncService>()?.FlushPendingSyncBlocking(TimeSpan.FromMilliseconds(1000)); } catch { }
         }),
         Task.Run(() => { try { sp.GetService<IFanControlProvider>()?.ReleaseAll(); } catch { } }),
         // Only when the OS is going down. A stop that is not that (tray quit,

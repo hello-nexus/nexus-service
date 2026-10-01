@@ -8,6 +8,7 @@ using Nexus.Service.Models;
 using Nexus.Service.Models.Profiles;
 using Nexus.Service.Persistence;
 using Nexus.Service.Profiles;
+using Nexus.Service.Serialization;
 using Nexus.Service.Sensors;
 using Nexus.Service.Sockets;
 using Nexus.Service.Widgets;
@@ -142,65 +143,42 @@ public static class ProfileRoutes
             }
         });
 
-        app.MapGet("/profiles/{id}/export", (string id, string? format, ProfileManager pm, AppDataStore appDataStore) =>
+        app.MapGet("/profiles/{id}/export", (string id, ProfileManager pm, AppDataStore appDataStore) =>
         {
-            var json = pm.ExportProfileJson(id);
-            if (json == null)
+            var json = pm.ExportProfileJson(id, appDataStore.ReadProfile(id));
+            return json == null
+                ? Results.NotFound(ApiResponse.Fail("Profile not found."))
+                : Results.Text(json, "application/json");
+        });
+
+        app.MapPost("/profiles/import/inspect", async (HttpRequest req) =>
+        {
+            var parsed = ProfileBundle.Parse(await ReadBodyAsync(req));
+            if (!parsed.Ok)
             {
-                return Results.NotFound(ApiResponse.Fail("Profile not found."));
+                return Results.BadRequest(ApiResponse.Fail(parsed.Error!));
             }
-            if (!string.Equals(format, "archive", StringComparison.OrdinalIgnoreCase))
-            {
-                return Results.Text(json, "application/json");
-            }
-            var docs = appDataStore.EnumerateAll()
-                .Select(t => (t.AppId, t.Key, Doc: appDataStore.TryRead(t.AppId, t.Key)))
-                .Where(t => t.Doc is not null)
-                .Select(t => (t.AppId, t.Key, Doc: t.Doc!));
-            var zipBytes = ProfileArchivePackage.Write(json, docs);
-            return Results.File(zipBytes, "application/zip", $"{id}.nexusprofile");
+            return Results.Json(
+                new ProfileInspectResponse { Name = parsed.Name, AppIds = ProfileBundle.AppIdsOf(parsed.AppData), Format = parsed.Format },
+                AppJsonContext.Default.ProfileInspectResponse);
         });
 
         app.MapPost("/profiles/import", async (HttpRequest req, ProfileManager pm, MultiplexHub hub,
             AppDataStore appDataStore, bool? replace, string? appData) =>
         {
-            using var buffer = new MemoryStream();
-            await req.Body.CopyToAsync(buffer);
-            var bytes = buffer.ToArray();
-            var isZip = bytes.Length >= 4 && bytes[0] == 0x50 && bytes[1] == 0x4B && bytes[2] == 0x03 && bytes[3] == 0x04;
+            var parsed = ProfileBundle.Parse(await ReadBodyAsync(req));
+            if (!parsed.Ok)
+            {
+                return Results.BadRequest(ApiResponse.Fail(parsed.Error!));
+            }
             var skipAppData = string.Equals(appData, "skip", StringComparison.OrdinalIgnoreCase);
 
             try
             {
-                ProfileEntry entry;
-                List<ProfileArchivePackage.Entry> appDataEntries = new();
-
-                if (isZip)
-                {
-                    buffer.Position = 0;
-                    var archive = ProfileArchivePackage.Read(buffer);
-                    if (!archive.Ok)
-                    {
-                        return Results.BadRequest(ApiResponse.Fail(archive.Error!));
-                    }
-                    entry = pm.ImportProfileJson(archive.ProfileJson!, replace == true);
-                    appDataEntries = (List<ProfileArchivePackage.Entry>)archive.AppData;
-                }
-                else
-                {
-                    var json = Encoding.UTF8.GetString(bytes);
-                    entry = pm.ImportProfileJson(json, replace == true);
-                }
-
+                var entry = pm.ImportProfileJson(parsed.ProfileJson, replace == true);
                 if (!skipAppData)
                 {
-                    foreach (var doc in appDataEntries)
-                    {
-                        // A new revision strictly above whatever is currently
-                        // stored, so a running instance's stale-revision guard
-                        // still lets the restored push through.
-                        appDataStore.Import(doc.AppId, doc.Key, doc.Data);
-                    }
+                    appDataStore.ReplaceApps(entry.Id, parsed.AppData);
                 }
 
                 if (replace == true)
@@ -669,5 +647,12 @@ public static class ProfileRoutes
             PanelTopics.BroadcastPrefs(hub);
             return ApiResponse.Ok();
         }).AllowPanel();
+    }
+
+    private static async Task<byte[]> ReadBodyAsync(HttpRequest req)
+    {
+        using var buffer = new MemoryStream();
+        await req.Body.CopyToAsync(buffer);
+        return buffer.ToArray();
     }
 }

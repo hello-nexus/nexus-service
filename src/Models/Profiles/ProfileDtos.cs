@@ -40,6 +40,19 @@ public sealed class ProfileExport
 {
     public string? Name { get; set; }
     public NexusSettings? Settings { get; set; }
+
+    /// <summary>The profile's app data as <c>{ appId: { key: data } }</c>. Absent in a legacy export and in the settings payload of a cloud backup.</summary>
+    public Dictionary<string, Dictionary<string, System.Text.Json.JsonElement>>? AppData { get; set; }
+}
+
+/// <summary>Response of <c>POST /profiles/import/inspect</c>; nothing is written.</summary>
+public sealed class ProfileInspectResponse : ApiResponse
+{
+    public string Name { get; set; } = "";
+    public List<string> AppIds { get; set; } = new();
+
+    /// <summary>"json" for a bundle or a legacy bare JSON file, "archive" for a legacy zip.</summary>
+    public string Format { get; set; } = "json";
 }
 
 public class SharingResponse : ApiResponse

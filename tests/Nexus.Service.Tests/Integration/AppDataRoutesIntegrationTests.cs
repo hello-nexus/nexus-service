@@ -27,6 +27,9 @@ public sealed class AppDataRoutesFactory : NexusAppFactory
     private readonly string _fixtureRoot;
     public readonly string DataRoot;
 
+    /// <summary>The profile the isolated store reports as active; tests flip it to simulate a profile switch.</summary>
+    public volatile string ActiveProfile = "p1";
+
     public AppDataRoutesFactory()
     {
         _fixtureRoot = Path.Combine(Path.GetTempPath(), "nexus-appdata-fixture-" + Guid.NewGuid().ToString("N"));
@@ -70,13 +73,13 @@ public sealed class AppDataRoutesFactory : NexusAppFactory
             var dataRoot = DataRoot;
             services.AddSingleton(sp =>
             {
-                var store = new AppDataStore(() => dataRoot);
+                var store = new AppDataStore(() => dataRoot, () => ActiveProfile);
                 var hub = sp.GetRequiredService<Nexus.Service.Sockets.MultiplexHub>();
-                store.DocumentChanged += (appId, key) =>
+                store.DocumentChanged += (profileId, appId, key) =>
                 {
-                    var (revision, updatedAt, data) = store.Get(appId, key);
+                    var (revision, updatedAt, data) = store.Get(profileId, appId, key);
                     Nexus.Service.Sockets.AppDataTopics.Broadcast(hub, appId, key,
-                        new Nexus.Service.Models.Widgets.AppDataDocumentDto { Revision = revision, UpdatedAt = updatedAt, Data = data });
+                        new Nexus.Service.Models.Widgets.AppDataDocumentDto { ProfileId = profileId, Revision = revision, UpdatedAt = updatedAt, Data = data });
                 };
                 return store;
             });
@@ -220,5 +223,56 @@ public sealed class AppDataRoutesIntegrationTests : IClassFixture<AppDataRoutesF
         {
             hub.OnBroadcastForTest -= OnBroadcast;
         }
+    }
+
+    [Fact]
+    public async Task Get_reports_the_active_profile_and_each_profile_has_its_own_document()
+    {
+        var client = AuthedClient();
+        var url = $"/apps-api/data/{AppDataRoutesFactory.AppId}/per-profile";
+        try
+        {
+            _factory.ActiveProfile = "pa";
+            await client.PutAsJsonAsync(url, new { baseRevision = 0, data = "a" });
+            var a = await (await client.GetAsync(url)).Content.ReadFromJsonAsync<JsonElement>();
+            Assert.Equal("pa", a.GetProperty("profileId").GetString());
+            Assert.Equal("a", a.GetProperty("data").GetString());
+
+            _factory.ActiveProfile = "pb";
+            var b = await (await client.GetAsync(url)).Content.ReadFromJsonAsync<JsonElement>();
+            Assert.Equal("pb", b.GetProperty("profileId").GetString());
+            Assert.Equal(0, b.GetProperty("revision").GetInt32());
+        }
+        finally
+        {
+            _factory.ActiveProfile = "p1";
+        }
+    }
+
+    [Fact]
+    public async Task Put_with_the_active_profileId_succeeds()
+    {
+        var client = AuthedClient();
+        var res = await client.PutAsJsonAsync($"/apps-api/data/{AppDataRoutesFactory.AppId}/with-profile",
+            new { baseRevision = 0, profileId = "p1", data = 1 });
+
+        Assert.Equal(HttpStatusCode.OK, res.StatusCode);
+    }
+
+    [Fact]
+    public async Task Put_with_a_profileId_that_is_no_longer_active_returns_409_profile_switched_and_writes_nothing()
+    {
+        var client = AuthedClient();
+        var url = $"/apps-api/data/{AppDataRoutesFactory.AppId}/stale-profile";
+
+        var res = await client.PutAsJsonAsync(url, new { baseRevision = 0, profileId = "old-profile", data = 1 });
+
+        Assert.Equal(HttpStatusCode.Conflict, res.StatusCode);
+        var body = await res.Content.ReadFromJsonAsync<JsonElement>();
+        Assert.Equal("profile_switched", body.GetProperty("code").GetString());
+        Assert.Equal("p1", body.GetProperty("profileId").GetString());
+
+        var get = await (await client.GetAsync(url)).Content.ReadFromJsonAsync<JsonElement>();
+        Assert.Equal(0, get.GetProperty("revision").GetInt32());
     }
 }
