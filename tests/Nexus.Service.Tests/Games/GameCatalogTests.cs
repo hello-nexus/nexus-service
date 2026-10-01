@@ -15,6 +15,8 @@ public class GameCatalogTests
     }
 
     [Theory]
+    [InlineData("\"C:\\ProgramData\\Battle.net\\Agent\\Blizzard Uninstaller.exe\" --lang=enUS --uid=hs_beta --displayname=\"Hearthstone\"", "hs_beta")]
+    [InlineData("\"C:\\ProgramData\\Battle.net\\Agent\\Blizzard Uninstaller.exe\" --lang=enUS --uid=battle.net --displayname=\"Battle.net\"", "battle.net")]
     [InlineData("\"C:\\ProgramData\\Battle.net\\Agent\\Blizzard Uninstaller.exe\" --lang=enUS --uid=wow_enus --displayname=\"World of Warcraft\"", "wow_enus")]
     [InlineData("\"C:\\ProgramData\\Battle.net\\Agent\\Blizzard Uninstaller.exe\" --lang=enUS --uid=prometheus", "prometheus")]
     [InlineData("\"C:\\ProgramData\\Battle.net\\Agent\\Blizzard Uninstaller.exe\" --uid=\"fenris\" --lang=enUS", "fenris")]

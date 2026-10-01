@@ -259,9 +259,8 @@ internal static class InstalledGameCollectors
                         var dir = entry?.GetValue("InstallLocation") as string ?? "";
                         var uid = ReadBattleNetUid(entry?.GetValue("UninstallString") as string ?? "");
                         // The launcher's own entry would otherwise make Battle.net.exe a game.
-                        if (uid.Length > 0 && name.Length > 0
-                            && !name.Equals("Battle.net", StringComparison.OrdinalIgnoreCase)
-                            && dir.Length > 0 && Directory.Exists(dir))
+                        if (uid.Length > 0 && !uid.Equals("battle.net", StringComparison.OrdinalIgnoreCase)
+                            && name.Length > 0 && dir.Length > 0 && Directory.Exists(dir))
                         {
                             found.Add((name, dir, "battlenet", ""));
                         }
