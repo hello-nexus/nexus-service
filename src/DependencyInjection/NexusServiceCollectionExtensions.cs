@@ -1359,11 +1359,6 @@ public static class NexusServiceCollectionExtensions
         services.AddSingleton<DeviceManager>();
         services.AddSingleton<Nexus.Service.Devices.DeviceBroadcaster>();
         services.AddHostedService(sp => sp.GetRequiredService<Nexus.Service.Devices.DeviceBroadcaster>());
-        // Flips a never-manually-set third-party hub to Nexus Control ON the
-        // first time it is connected while its competing brand app is not
-        // running. Once adopted, the device stays on the Enabled list even if
-        // the app later launches (DeviceControlGate stickiness carries it).
-        services.AddHostedService<Nexus.Service.Devices.DeviceAdoptionService>();
         return services;
     }
 

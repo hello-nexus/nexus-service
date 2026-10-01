@@ -63,12 +63,16 @@ public class DeviceControlGateTests
         Assert.Single(store.Load().Devices.NexusControlDisabled);
     }
 
-    [Fact]
-    public void IsEnabled_ThirdPartyHandler_DefaultsToFalse()
+    // Nothing turns these on but the user's own toggle, running app or not.
+    [Theory]
+    [InlineData("lianli-wireless")]
+    [InlineData("lianli")]
+    [InlineData("corsair")]
+    public void IsEnabled_ThirdPartyHandler_DefaultsToFalse(string handlerId)
     {
         var gate = new DeviceControlGate(new InMemoryConfigStore());
 
-        Assert.False(gate.IsEnabled("lianli-wireless"));
+        Assert.False(gate.IsEnabled(handlerId));
     }
 
     [Fact]
@@ -129,42 +133,5 @@ public class DeviceControlGateTests
         var gate = new DeviceControlGate(new InMemoryConfigStore());
 
         Assert.True(gate.IsEnabled("artinchip-d213"));
-    }
-
-    [Fact]
-    public void TryAdopt_UnsetHandler_EnablesAndReturnsTrue()
-    {
-        var store = new InMemoryConfigStore();
-        var gate = new DeviceControlGate(store);
-
-        Assert.True(gate.TryAdopt("lianli-wireless"));
-        Assert.True(gate.IsEnabled("lianli-wireless"));
-        Assert.Contains("lianli-wireless", store.Load().Devices.NexusControlEnabled);
-    }
-
-    // An explicit off must survive every adoption pass, forever.
-    [Fact]
-    public void TryAdopt_ExplicitlyDisabledHandler_LeavesItDisabled()
-    {
-        var store = new InMemoryConfigStore();
-        var gate = new DeviceControlGate(store);
-        gate.SetEnabled("lianli-wireless", true);
-        gate.SetEnabled("lianli-wireless", false);
-
-        Assert.False(gate.TryAdopt("lianli-wireless"));
-        Assert.False(gate.IsEnabled("lianli-wireless"));
-        Assert.DoesNotContain("lianli-wireless", store.Load().Devices.NexusControlEnabled);
-        Assert.Contains("lianli-wireless", store.Load().Devices.NexusControlDisabled);
-    }
-
-    [Fact]
-    public void TryAdopt_AlreadyEnabledHandler_ReturnsFalseAndDoesNotDuplicate()
-    {
-        var store = new InMemoryConfigStore();
-        var gate = new DeviceControlGate(store);
-        gate.SetEnabled("lianli-wireless", true);
-
-        Assert.False(gate.TryAdopt("lianli-wireless"));
-        Assert.Single(store.Load().Devices.NexusControlEnabled);
     }
 }
