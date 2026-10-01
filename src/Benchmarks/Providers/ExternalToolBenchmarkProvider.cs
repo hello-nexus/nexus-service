@@ -56,6 +56,7 @@ public sealed class ExternalToolBenchmarkProvider : IBenchmarkProvider
         var stderrSb = new StringBuilder();
 
         proc.Start();
+        ChildProcessJob.Assign(proc);
         try
         {
             proc.PriorityClass = ProcessPriorityClass.High;
@@ -122,6 +123,7 @@ public sealed class ExternalToolBenchmarkProvider : IBenchmarkProvider
             {
                 return "";
             }
+            ChildProcessJob.Assign(proc);
 
             string stdout = proc.StandardOutput.ReadToEnd();
             string stderr = proc.StandardError.ReadToEnd();

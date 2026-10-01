@@ -327,6 +327,11 @@ public static class CloudRoutes
             await ForwardGetAsync(api, "/benchmarks/versions", ct).ConfigureAwait(false))
             .AllowPanel();
 
+        // Scales the run modal's columns; pinned to this machine's scoring version so a Mac gets portable-scoring ranges.
+        app.MapGet("/cloud/benchmarks/ranges", async (Nexus.Service.Benchmarks.IBenchmarkProvider provider, ICloudApiClient api, CancellationToken ct) =>
+            await ForwardGetAsync(api, "/benchmarks/ranges?scoringVersion=" + Uri.EscapeDataString(provider.ScoringVersion), ct).ConfigureAwait(false))
+            .AllowPanel();
+
         app.MapGet("/cloud/games/scores", async (HttpRequest req, ICloudApiClient api, CancellationToken ct) =>
             await ForwardGetAsync(api, "/games/scores" + req.QueryString.Value, ct).ConfigureAwait(false))
             .AllowPanel();
