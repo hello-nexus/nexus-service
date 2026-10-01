@@ -219,8 +219,8 @@ internal static partial class UnixUpdateApplier
         {
             throw new InvalidDataException("The update's code signature is invalid.");
         }
-        var inc = ShellExecutor.RunCombined("/usr/bin/codesign", 30_000, "-dv", incoming);
-        var cur = ShellExecutor.RunCombined("/usr/bin/codesign", 30_000, "-dv", current);
+        var inc = CodesignDisplay(incoming);
+        var cur = CodesignDisplay(current);
         var team = CodesignField(cur, "TeamIdentifier");
         if (team is null || team == "not set"
             || team != CodesignField(inc, "TeamIdentifier")
@@ -228,6 +228,13 @@ internal static partial class UnixUpdateApplier
         {
             throw new InvalidDataException("The update is not signed by the same developer as this app.");
         }
+    }
+
+    // codesign -dv prints on stderr; read it to the end.
+    private static string CodesignDisplay(string app)
+    {
+        ShellExecutor.RunWithStdinExit("/usr/bin/codesign", "", 30_000, out var stderr, "-dv", app);
+        return stderr;
     }
 
     // The launchd agent (start at login) runs this bundle with KeepAlive, so it
