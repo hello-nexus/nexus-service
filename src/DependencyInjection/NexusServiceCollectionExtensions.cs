@@ -74,6 +74,7 @@ public static class NexusServiceCollectionExtensions
         // AppsTerminated event.
         services.AddSingleton<Nexus.Service.Conflicts.ConflictStartupShutdown>();
         services.AddHostedService(sp => sp.GetRequiredService<Nexus.Service.Conflicts.ConflictStartupShutdown>());
+        services.AddHostedService<Nexus.Service.Devices.VendorAppControlPause>();
         return services;
     }
 
@@ -844,6 +845,17 @@ public static class NexusServiceCollectionExtensions
             sp.GetRequiredService<Nexus.Service.Activity.IScreenTimeProvider>(),
             sp.GetRequiredService<Nexus.Service.Panel.PanelDeviceRegistry>(),
             sp.GetRequiredService<Nexus.Service.Sockets.MultiplexHub>()));
+        // Only the Windows kiosk can be see-through.
+        if (OperatingSystem.IsWindows())
+        {
+            services.AddHostedService(sp =>
+            {
+                var sockets = sp.GetRequiredService<Nexus.Service.Sockets.MultiplexHub>();
+                return new Nexus.Service.Panel.WallpaperEngineBackdropLatch(
+                    sp.GetRequiredService<Nexus.Service.Panel.PanelDeviceRegistry>(),
+                    id => Nexus.Service.Sockets.PanelTopics.BroadcastPanelDevice(sockets, id));
+            });
+        }
 
         // Elgato Stream Deck profile import: read-only against the local
         // Elgato software's own store, never touching a physical deck.

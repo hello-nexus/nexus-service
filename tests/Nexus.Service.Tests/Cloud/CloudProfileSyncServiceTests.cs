@@ -1,3 +1,4 @@
+using System.Globalization;
 using Nexus.Service.Cloud;
 using Nexus.Service.Cooling;
 using Nexus.Service.Models.Cloud;
@@ -277,6 +278,32 @@ public sealed class CloudProfileSyncServiceTests : IDisposable
         var syncMap = _store.Load().Auth!.CloudAccounts[0].ProfileSync;
         Assert.Contains(secondId, syncMap.Keys);
         Assert.DoesNotContain(defaultId, syncMap.Keys);
+    }
+
+    [Fact]
+    public async Task TriggerNow_on_an_unchanged_profile_marks_it_backed_up_now_without_a_push()
+    {
+        SeedAccount("acct-1", "refresh-1");
+        var profileId = _profiles.GetActiveEntry()!.Id;
+        var hash = CloudProfileSyncService.HashPayload(_profiles.ExportProfileForSync(profileId)!, _appData.ReadProfile(profileId));
+        _store.Update(s => s.Auth!.CloudAccounts[0].ProfileSync[profileId] = new CloudProfileSyncRecord
+        { Revision = 2, LastSyncedHash = hash, LastSyncedAt = "2026-01-01T00:00:00Z" });
+        _api.OnListProfiles = _ => CloudApiResult<List<CloudProfileSummaryDto>>.Ok(new List<CloudProfileSummaryDto>
+        {
+            new() { InstallId = OwnId, ProfileId = profileId, Name = "Default", Revision = 2, UpdatedAt = "2026-01-01T00:00:00Z", UpdatedByInstallId = OwnId },
+        });
+
+        // The background pass leaves an unchanged profile's time alone.
+        await _sync.RunSyncPassAsync("acct-1", CancellationToken.None);
+        Assert.Equal("2026-01-01T00:00:00Z", _store.Load().Auth!.CloudAccounts[0].ProfileSync[profileId].LastSyncedAt);
+
+        await _sync.TriggerNowAsync(profileId);
+
+        var record = _store.Load().Auth!.CloudAccounts[0].ProfileSync[profileId];
+        Assert.Equal(0, _api.PutProfileCalls);
+        Assert.Equal(2, record.Revision);
+        Assert.Equal(hash, record.LastSyncedHash);
+        Assert.Equal(_clock.GetUtcNow(), DateTimeOffset.Parse(record.LastSyncedAt, CultureInfo.InvariantCulture));
     }
 
     // ── sync status profiles ─────────────────────────────────────────────

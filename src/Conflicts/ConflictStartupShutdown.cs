@@ -26,7 +26,9 @@ namespace Nexus.Service.Conflicts;
 /// logon, it also ends every non-whitelisted app that launches: the service
 /// starts in session 0, before the vendor apps that launch at logon, so the
 /// one-shot sweep alone misses them. Outside the window a launch only raises
-/// the <see cref="ConflictLaunchNotifier"/> notice.
+/// the <see cref="ConflictLaunchNotifier"/> notice. An
+/// <see cref="ConflictAppDefinition.AlwaysEnded"/> app (Nexus 2) is ended at
+/// the same points with no switch, whitelist or onboarding gate.
 /// </summary>
 public sealed class ConflictStartupShutdown : IHostedService
 {
@@ -52,6 +54,8 @@ public sealed class ConflictStartupShutdown : IHostedService
     // stick is not retried every tick while a relaunch under a new pid is.
     private readonly HashSet<string> _attempted = new(StringComparer.OrdinalIgnoreCase);
     private long _windowEndsMs = long.MinValue;
+    // The full sweep was allowed when the current window opened; otherwise the window ends AlwaysEnded apps only.
+    private volatile bool _sweepWindow;
     private int _watching;
 
     public ConflictStartupShutdown(IConfigStore store, IConflictDetector watcher, ILogger<ConflictStartupShutdown> log)
@@ -74,8 +78,10 @@ public sealed class ConflictStartupShutdown : IHostedService
     }
 
     /// <summary>True while a launching non-whitelisted app is ended here; the launch notifier stays quiet for that stretch.</summary>
-    public bool InLaunchKillWindow =>
-        Environment.TickCount64 < Volatile.Read(ref _windowEndsMs) && SweepAllowed(_store.Load());
+    public bool InLaunchKillWindow => LaunchWindowOpen && _sweepWindow && SweepAllowed(_store.Load());
+
+    /// <summary>True while a launching <see cref="ConflictAppDefinition.AlwaysEnded"/> app is ended here.</summary>
+    public bool LaunchWindowOpen => Environment.TickCount64 < Volatile.Read(ref _windowEndsMs);
 
     /// <summary>The switch, plus every onboarding flag: a fresh install's first
     /// start comes before the onboarding conflict step, which is where the user
@@ -92,8 +98,6 @@ public sealed class ConflictStartupShutdown : IHostedService
 #if WINDOWS
         Nexus.Service.Lifecycle.WindowsServiceHost.SessionLogon += OnSessionLogon;
 #endif
-        if (!SweepAllowed(_store.Load())) return Task.CompletedTask;
-
         OpenLaunchKillWindow();
         // Off the startup path: the scan plus each kill's exit wait would
         // otherwise stall every hosted service queued behind this one.
@@ -102,8 +106,9 @@ public sealed class ConflictStartupShutdown : IHostedService
             // Nothing awaits the sweep, so an escape here would be a silent no-op.
             try
             {
-                TurnOffWindowsDynamicLighting();
-                EndRunningApps();
+                var sweep = _sweepWindow && SweepAllowed(_store.Load());
+                if (sweep) TurnOffWindowsDynamicLighting();
+                EndRunningApps(sweep);
             }
             catch (Exception ex) { _log.LogWarning(ex, "Startup conflict shutdown swept nothing; enumeration failed."); }
             await WatchLaunchKillWindowAsync().ConfigureAwait(false);
@@ -113,13 +118,15 @@ public sealed class ConflictStartupShutdown : IHostedService
 
     private void OnSessionLogon()
     {
-        if (!SweepAllowed(_store.Load())) return;
         OpenLaunchKillWindow();
         _ = WatchLaunchKillWindowAsync();
     }
 
-    private void OpenLaunchKillWindow() =>
+    private void OpenLaunchKillWindow()
+    {
+        _sweepWindow = SweepAllowed(_store.Load());
         Volatile.Write(ref _windowEndsMs, Environment.TickCount64 + (long)LaunchKillWindow.TotalMilliseconds);
+    }
 
     private async Task WatchLaunchKillWindowAsync()
     {
@@ -132,7 +139,7 @@ public sealed class ConflictStartupShutdown : IHostedService
             {
                 try
                 {
-                    if (SweepAllowed(_store.Load())) EndRunningApps();
+                    EndRunningApps(_sweepWindow && SweepAllowed(_store.Load()));
                 }
                 catch (Exception ex) { _log.LogWarning(ex, "Conflict launch window tick failed."); }
             }
@@ -150,14 +157,14 @@ public sealed class ConflictStartupShutdown : IHostedService
         }
     }
 
-    /// <summary>Ends every detected app not on the whitelist and not already tried under its current pid, then raises <see cref="AppsTerminated"/> for the ones confirmed gone.</summary>
-    internal void EndRunningApps()
+    /// <summary>Ends every detected app not on the whitelist (only <see cref="ConflictAppDefinition.AlwaysEnded"/> ones without <paramref name="sweep"/>) and not already tried under its current pid, then raises <see cref="AppsTerminated"/> for the ones confirmed gone.</summary>
+    internal void EndRunningApps(bool sweep = true)
     {
         // The boot sweep and a logon-started window loop can overlap.
-        lock (_attempted) EndRunningAppsLocked();
+        lock (_attempted) EndRunningAppsLocked(sweep);
     }
 
-    private void EndRunningAppsLocked()
+    private void EndRunningAppsLocked(bool sweep)
     {
         var excluded = new HashSet<string>(_store.Load().Ui.ConflictAutoKillExclusions, StringComparer.OrdinalIgnoreCase);
 
@@ -171,10 +178,11 @@ public sealed class ConflictStartupShutdown : IHostedService
         var targets = new List<ConflictAppDefinition>();
         foreach (var detected in _watcher.GetConflicts())
         {
-            if (excluded.Contains(detected.Id)) continue;
-            if (!_attempted.Add($"{detected.Id}:{detected.Pid}")) continue;
             var def = ConflictWatcher.FindById(detected.Id);
-            if (def is not null) targets.Add(def);
+            if (def is null) continue;
+            if (!def.AlwaysEnded && (!sweep || excluded.Contains(detected.Id))) continue;
+            if (!_attempted.Add($"{detected.Id}:{detected.Pid}")) continue;
+            targets.Add(def);
         }
         if (targets.Count == 0) return;
 

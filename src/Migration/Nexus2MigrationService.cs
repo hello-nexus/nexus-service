@@ -265,7 +265,7 @@ public sealed class Nexus2MigrationService
             }
             else
             {
-                // The Y70 defaults to see-through, which hides the panel's own background layer.
+                // The wallpaper and desktop backdrops both hide the panel's own background layer.
                 patch.Backdrop = "theme";
                 patch.BackgroundMode = "media";
                 patch.BackgroundMediaId = item.Id;

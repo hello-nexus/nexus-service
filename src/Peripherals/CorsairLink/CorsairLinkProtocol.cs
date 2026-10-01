@@ -51,12 +51,17 @@ public static class CorsairLinkProtocol
 
     // Commands (placed at write-buffer offset 3). ReadOnlySpan<byte> over a
     // constant array compiles to a static RVA blob (no per-call allocation).
+    // The byte after 0D (open) / 05 01 (close) / 06 / 07 / 08 is a handle: data
+    // endpoints use handle 1, colour handle 0. Measured on fw 4.1.656: opening a
+    // busy handle answers status 03 and keeps its old resource, and a rejected
+    // write leaves the handle answering 03 until it is closed and reopened.
     public static ReadOnlySpan<byte> CmdGetFirmware => new byte[] { 0x02, 0x13 };
     public static ReadOnlySpan<byte> CmdSoftwareMode => new byte[] { 0x01, 0x03, 0x00, 0x02 };
     public static ReadOnlySpan<byte> CmdHardwareMode => new byte[] { 0x01, 0x03, 0x00, 0x01 };
     public static ReadOnlySpan<byte> CmdOpenEndpoint => new byte[] { 0x0D, 0x01 };
     public static ReadOnlySpan<byte> CmdOpenColorEndpoint => new byte[] { 0x0D, 0x00 };
     public static ReadOnlySpan<byte> CmdCloseEndpoint => new byte[] { 0x05, 0x01, 0x01 };
+    public static ReadOnlySpan<byte> CmdCloseColorEndpoint => new byte[] { 0x05, 0x01, 0x00 };
     public static ReadOnlySpan<byte> CmdWrite => new byte[] { 0x06, 0x01 };
     public static ReadOnlySpan<byte> CmdWriteColor => new byte[] { 0x06, 0x00 };
     public static ReadOnlySpan<byte> CmdWriteSubColor => new byte[] { 0x07, 0x00 };
@@ -80,6 +85,10 @@ public static class CorsairLinkProtocol
     public static ReadOnlySpan<byte> DataGetSpeeds => new byte[] { 0x25, 0x00 };
     public static ReadOnlySpan<byte> DataSetSpeed => new byte[] { 0x07, 0x00 };
     public static ReadOnlySpan<byte> DataSetColor => new byte[] { 0x12, 0x00 };
+
+    /// <summary>Response byte echoing the command; the next byte is its status (0 = accepted).</summary>
+    public const int ResponseCommandOffset = 2;
+    public const int ResponseStatusOffset = 3;
 
     /// <summary>Re-reads to drain stale queued responses until the data-type matches.</summary>
     public const int ReadResyncTries = 5;

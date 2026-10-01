@@ -368,6 +368,7 @@ public sealed class CloudProfileSyncService : BackgroundService
 
         var now = _clock.GetUtcNow();
         var anyPending = false;
+        var confirmed = new List<string>();
 
         foreach (var id in ids)
         {
@@ -399,6 +400,11 @@ public sealed class CloudProfileSyncService : BackgroundService
                 case CloudSyncAction.None:
                     _dirtySince.TryRemove(id, out _);
                     _conflicts.TryRemove(id, out _);
+                    // "Back up now" on a profile the cloud already holds as is: it is backed up as of now.
+                    if (manual && localEntry is not null && cloudRow is not null && syncRecord is not null)
+                    {
+                        confirmed.Add(id);
+                    }
                     break;
 
                 case CloudSyncAction.Push:
@@ -442,6 +448,10 @@ public sealed class CloudProfileSyncService : BackgroundService
             }
         }
 
+        if (confirmed.Count > 0)
+        {
+            TouchSyncRecords(accountId, confirmed, now);
+        }
         _lastSyncAt = now.ToString("o");
         _accounts.MarkSynced(accountId, now);
         _state = !_conflicts.IsEmpty || anyPending ? "dirty" : "idle";
@@ -576,6 +586,26 @@ public sealed class CloudProfileSyncService : BackgroundService
                 : "",
             UpdatedByInstallId = updatedByInstallId,
         };
+    }
+
+    /// <summary>Moves these profiles' last backup time to <paramref name="at"/> in one store change, leaving their revisions and hashes as synced.</summary>
+    private void TouchSyncRecords(string accountId, List<string> profileIds, DateTimeOffset at)
+    {
+        _store.Update(s =>
+        {
+            var rec = s.Auth?.CloudAccounts.FirstOrDefault(a => a.AccountId == accountId);
+            if (rec is null)
+            {
+                return;
+            }
+            foreach (var profileId in profileIds)
+            {
+                if (rec.ProfileSync.TryGetValue(profileId, out var sync))
+                {
+                    sync.LastSyncedAt = at.ToString("o");
+                }
+            }
+        });
     }
 
     private void SetSyncRecord(string accountId, string profileId, int revision, string hash)

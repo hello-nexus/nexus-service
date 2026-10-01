@@ -29,9 +29,9 @@ public class DeviceControlPolicyTests
     [Theory]
     [InlineData("nzxt-kraken")]
     [InlineData("zmatrices-lcd")]
-    public void DefaultOn_HintOnlyConflictHandler_IsTrue(string handlerId)
+    public void DefaultOn_HintOnlyConflictHandler_WhoseAppStartsWhitelisted_IsFalse(string handlerId)
     {
-        Assert.True(DeviceControlPolicy.DefaultOn(handlerId));
+        Assert.False(DeviceControlPolicy.DefaultOn(handlerId));
     }
 
     [Theory]
