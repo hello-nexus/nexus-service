@@ -79,10 +79,16 @@ public sealed class Nexus2MigrationService
         {
             return cat;
         }
-        var appearance = Nexus2Y70Translator.TranslateAppearance(y);
+        var appearance = Nexus2Y70Translator.TranslateAppearance(y, File.Exists);
         cat.Available = appearance.Available;
         cat.AccentColor = appearance.AccentHex;
-        cat.Background = appearance.BackgroundMode == "solid" ? "solid" : appearance.BackgroundEffect;
+        cat.Background = appearance.Background switch
+        {
+            Nexus2Y70BackgroundSource.File => Path.GetFileName(appearance.BackgroundPath),
+            Nexus2Y70BackgroundSource.BundledParticles => "particles",
+            Nexus2Y70BackgroundSource.Gradient => "gradient",
+            _ => null,
+        };
         return cat;
     }
 
@@ -180,7 +186,7 @@ public sealed class Nexus2MigrationService
         {
             var result = id switch
             {
-                "appearance" => ApplyAppearance(y70, y70Record),
+                "appearance" => await ApplyAppearanceAsync(y70, read.ConfigDir, y70Record),
                 "y70Layout" => ApplyY70Layout(y70, y70Record, replaceCustomizedLayout),
                 "q60Face" => ApplyQ60Face(q60Software, q60Record, replaceCustomizedLayout),
                 "wallpapers" => await ApplyWallpaperAsync(q60Software, read.ConfigDir, q60Record),
@@ -213,11 +219,19 @@ public sealed class Nexus2MigrationService
             PanelTopics.BroadcastPrefs(_hub);
             PanelTopics.BroadcastLighting(_hub);
             PanelTopics.BroadcastCooling(_hub);
+            // Registry patches do not notify; an open panel page refetches its record on this topic.
+            foreach (var record in new[] { y70Record, q60Record })
+            {
+                if (record is not null)
+                {
+                    PanelTopics.BroadcastPanelDevice(_hub, record.Id);
+                }
+            }
         }
         return response;
     }
 
-    private Nexus2ApplyResultDto ApplyAppearance(JsonElement? y70, PanelDeviceRecord? y70Record)
+    private async Task<Nexus2ApplyResultDto> ApplyAppearanceAsync(JsonElement? y70, string configDir, PanelDeviceRecord? y70Record)
     {
         const string id = "appearance";
         if (y70 is not { } y)
@@ -228,26 +242,225 @@ public sealed class Nexus2MigrationService
         {
             return Skip(id, "no-y70-record");
         }
-        var appearance = Nexus2Y70Translator.TranslateAppearance(y);
+        var appearance = Nexus2Y70Translator.TranslateAppearance(y, File.Exists);
         if (!appearance.Available)
         {
             return Skip(id, "no-theme-data");
         }
 
-        var patch = new PanelDevicePatch { BackgroundMode = appearance.BackgroundMode };
-        if (appearance.AccentHex is not null)
+        // A panel left on "sync with desktop" (the unset default) ignores its own accent.
+        var patch = new PanelDevicePatch
         {
-            patch.AccentColor = appearance.AccentHex;
-        }
-        if (appearance.BackgroundEffect is not null)
+            AccentColor = appearance.AccentHex,
+            AccentSyncWithDesktop = appearance.AccentHex is null ? null : false,
+            WidgetOpacity = appearance.WidgetOpacity,
+        };
+        string? detail = null;
+        if (appearance.Background != Nexus2Y70BackgroundSource.None)
         {
-            patch.BackgroundEffect = appearance.BackgroundEffect;
+            var item = await ImportY70BackgroundAsync(appearance, configDir, y70Record);
+            if (item is null)
+            {
+                detail = "background-not-imported";
+            }
+            else
+            {
+                // The Y70 defaults to see-through, which hides the panel's own background layer.
+                patch.Backdrop = "theme";
+                patch.BackgroundMode = "media";
+                patch.BackgroundMediaId = item.Id;
+                patch.BackgroundMediaType = item.Type;
+                patch.BackgroundMediaAlpha = item.Alpha;
+                patch.BackgroundMediaSlideshow = false;
+                patch.BackgroundOpacity = 1;
+            }
         }
-        if (appearance.BackgroundOpacity is not null)
+        if (appearance.Transparent)
         {
-            patch.BackgroundOpacity = appearance.BackgroundOpacity;
+            patch.Backdrop = "desktop";
         }
-        return _panels.Patch(y70Record.Id, patch) is not null ? Applied(id) : Fail(id, "patch-failed");
+        if (patch.AccentColor is null && patch.WidgetOpacity is null && patch.BackgroundMediaId is null && patch.Backdrop is null)
+        {
+            return Skip(id, detail ?? "nothing-to-apply");
+        }
+        return _panels.Patch(y70Record.Id, patch) is not null
+            ? new Nexus2ApplyResultDto { Id = id, Status = "applied", Detail = detail }
+            : Fail(id, "patch-failed");
+    }
+
+    /// <summary>A library item holding exactly what Nexus 2 shows on the Y70, reusing one an earlier import copied.</summary>
+    private async Task<PanelBgItem?> ImportY70BackgroundAsync(Nexus2AppearanceResult appearance, string configDir, PanelDeviceRecord record)
+    {
+        var deviceId = record.Id;
+        if (FfmpegResolver.Path is null)
+        {
+            return null;
+        }
+
+        var still = appearance.BackgroundStill;
+        string? tempPath = null;
+        try
+        {
+            string name;
+            if (appearance.Background == Nexus2Y70BackgroundSource.Gradient)
+            {
+                var gradient = appearance.BackgroundGradient!;
+                var w = record.Capabilities?.CssWidth is > 0 and var cw ? cw : Y70CssWidth;
+                var h = record.Capabilities?.CssHeight is > 0 and var ch ? ch : Y70CssHeight;
+                name = $"nexus2-gradient-{GradientKey(gradient, w, h)}.jpg";
+                if (FindImported(deviceId, name, still: true, sourceLength: 0) is { } existingGradient)
+                {
+                    return existingGradient;
+                }
+                tempPath = Path.Combine(Path.GetTempPath(), $"nexus2-bg-{Guid.NewGuid():N}.bmp");
+                gradient.WriteBmp(tempPath, w, h);
+                return (await PanelBgImporter.ImportStillAsync(_bgLibrary, deviceId, tempPath, name)).Item;
+            }
+            if (appearance.Background == Nexus2Y70BackgroundSource.File)
+            {
+                var source = appearance.BackgroundPath!;
+                name = Path.GetFileName(source);
+                if (FindImported(deviceId, name, still, new FileInfo(source).Length) is { } existing)
+                {
+                    return existing;
+                }
+                tempPath = Path.Combine(Path.GetTempPath(), $"nexus2-bg-{Guid.NewGuid():N}{Path.GetExtension(name)}");
+                Nexus2ReadOnlyIo.CopyTo(source, tempPath);
+            }
+            else
+            {
+                var installRoot = _services.GetService<INexus2Detector>()?.Detect().InstallRoot;
+                if (FindParticlesEntries(configDir, installRoot) is not { } found)
+                {
+                    return null;
+                }
+                foreach (var entry in found.Entries)
+                {
+                    if (FindImported(deviceId, Path.GetFileName(entry.Path), still, entry.Size) is { } existing)
+                    {
+                        return existing;
+                    }
+                }
+                if (await ExtractPortraitAsync(found.Asar, found.Entries) is not { } particles)
+                {
+                    return null;
+                }
+                (tempPath, name) = particles;
+            }
+
+            var result = still
+                ? await PanelBgImporter.ImportStillAsync(_bgLibrary, deviceId, tempPath, name)
+                : await PanelBgImporter.ImportAsIsAsync(_bgLibrary, deviceId, tempPath, name);
+            return result.Item;
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine($"[nexus2] Y70 background import failed: {ex.Message}");
+            return null;
+        }
+        finally
+        {
+            TryDelete(tempPath);
+        }
+    }
+
+    // The Y70 kiosk's CSS box, used when the record has not reported its own yet.
+    private const int Y70CssWidth = 734;
+    private const int Y70CssHeight = 2560;
+
+    /// <summary>Stable across runs (unlike string.GetHashCode), so a re-import finds the drawn image.</summary>
+    private static string GradientKey(Nexus2Gradient gradient, int w, int h)
+    {
+        var text = new System.Text.StringBuilder(FormattableString.Invariant($"{gradient.AngleDeg}|{w}x{h}"));
+        foreach (var stop in gradient.Stops)
+        {
+            text.Append(FormattableString.Invariant($"|{stop.R},{stop.G},{stop.B}@{stop.At}"));
+        }
+        var hash = System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(text.ToString()));
+        return Convert.ToHexString(hash, 0, 6).ToLowerInvariant();
+    }
+
+    /// <summary>An item an earlier import made from the same file; an unconverted copy must also match its byte size.</summary>
+    private PanelBgItem? FindImported(string deviceId, string name, bool still, long sourceLength) =>
+        _bgLibrary.ListItems(deviceId).Find(i => i.Name == name && (still
+            ? i.Type == "static" && i.MediaExt is null
+            : i.MediaExt is { } ext && FileLength(_bgLibrary.GetMediaPath(deviceId, i.Id, ext)) == sourceLength));
+
+    private static long FileLength(string path)
+    {
+        try { return new FileInfo(path).Length; } catch { return -1; }
+    }
+
+    private static (string Asar, List<Nexus2AsarEntry> Entries)? FindParticlesEntries(string configDir, string? installRoot)
+    {
+        foreach (var asar in AsarCandidates(configDir, installRoot))
+        {
+            if (!File.Exists(asar))
+            {
+                continue;
+            }
+            var entries = Nexus2AsarReader.Find(asar,
+                n => n.StartsWith("particles-", StringComparison.Ordinal) && n.EndsWith(".mp4", StringComparison.OrdinalIgnoreCase));
+            if (entries.Count > 0)
+            {
+                return (asar, entries);
+            }
+        }
+        return null;
+    }
+
+    /// <summary>Extracts the Y70 particles video to a temp file: of the particles-*.mp4 entries it is
+    /// the portrait one (the other is the desktop-app background).</summary>
+    private static async Task<(string Path, string Name)?> ExtractPortraitAsync(string asar, List<Nexus2AsarEntry> entries)
+    {
+        foreach (var entry in entries)
+        {
+            var temp = Path.Combine(Path.GetTempPath(), $"nexus2-bg-{Guid.NewGuid():N}.mp4");
+            try
+            {
+                Nexus2AsarReader.Extract(asar, entry, temp);
+                var probe = await PanelBgImporter.ProbeAsync(temp);
+                if (probe.Height > probe.Width)
+                {
+                    return (temp, Path.GetFileName(entry.Path));
+                }
+            }
+            catch (Exception ex)
+            {
+                Console.Error.WriteLine($"[nexus2] particles extract failed: {ex.Message}");
+            }
+            TryDelete(temp);
+        }
+        return null;
+    }
+
+    /// <summary>The uninstaller's folder first (wherever the user installed), then the per-user default
+    /// beside &lt;profile&gt;\AppData\Roaming\HYTE Nexus (configDir), then the all-users default.</summary>
+    internal static IEnumerable<string> AsarCandidates(string configDir, string? installRoot)
+    {
+        if (!string.IsNullOrEmpty(installRoot))
+        {
+            yield return Path.Combine(installRoot, "resources", "app.asar");
+        }
+        var appData = Path.GetDirectoryName(Path.GetDirectoryName(configDir));
+        if (!string.IsNullOrEmpty(appData))
+        {
+            yield return Path.Combine(appData, "Local", "Programs", Nexus2UninstallRules.InstallDirName, "resources", "app.asar");
+        }
+        var programFiles = Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles);
+        if (!string.IsNullOrEmpty(programFiles))
+        {
+            yield return Path.Combine(programFiles, Nexus2UninstallRules.InstallDirName, "resources", "app.asar");
+        }
+    }
+
+    private static void TryDelete(string? path)
+    {
+        if (path is null)
+        {
+            return;
+        }
+        try { File.Delete(path); } catch { /* temp file */ }
     }
 
     private Nexus2ApplyResultDto ApplyY70Layout(JsonElement? y70, PanelDeviceRecord? y70Record, bool replaceCustomizedLayout)
@@ -337,6 +550,7 @@ public sealed class Nexus2MigrationService
         if (face.AccentHex is not null)
         {
             patch.AccentColor = face.AccentHex;
+            patch.AccentSyncWithDesktop = false;
         }
         return _panels.Patch(q60Record.Id, patch) is not null ? Applied(id) : Fail(id, "patch-failed");
     }

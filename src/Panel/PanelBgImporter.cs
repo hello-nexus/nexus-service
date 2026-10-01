@@ -243,7 +243,7 @@ public static class PanelBgImporter
             double durationSec = 0;
             if (isAnimated)
             {
-                durationSec = await ProbeDurationSec(library.GetMediaPath(deviceId, assetId, alpha ? ".gif" : ".mp4"));
+                durationSec = (await ProbeAsync(library.GetMediaPath(deviceId, assetId, alpha ? ".gif" : ".mp4"))).DurationSec;
             }
 
             var item = new PanelBgItem
@@ -269,6 +269,105 @@ public static class PanelBgImporter
             library.DeleteItem(deviceId, assetId);
             return CommitResult.Failure(ex.Message);
         }
+    }
+
+    /// <summary>Adds a file to the library byte-for-byte (no crop, scale or transcode), stored under its own extension.</summary>
+    public static async Task<CommitResult> ImportAsIsAsync(PanelBgLibrary library, string deviceId, string sourcePath, string name)
+    {
+        var ext = Path.GetExtension(name).ToLowerInvariant();
+        var contentType = MediaKinds.ContentTypeFor(name);
+        var isAnimated = contentType.StartsWith("video/", StringComparison.Ordinal) || ext == ".gif";
+        if (!isAnimated && !contentType.StartsWith("image/", StringComparison.Ordinal))
+        {
+            return CommitResult.Failure("Unsupported file format");
+        }
+        if (FfmpegResolver.Path is null)
+        {
+            return CommitResult.Failure("Media conversion requires ffmpeg, which is missing. Reinstall nexus-service.");
+        }
+
+        var assetId = NewAssetId(name);
+        try
+        {
+            Directory.CreateDirectory(library.GetItemDir(deviceId, assetId));
+            var mediaPath = library.GetMediaPath(deviceId, assetId, ext);
+            File.Copy(sourcePath, mediaPath);
+            // A gif renders in an img only when flagged alpha; any other video goes to a video element.
+            return await SaveImportedAsync(library, deviceId, assetId, name, mediaPath, ext, isAnimated, alpha: ext == ".gif");
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine($"[panel-bg-import] as-is failed: {ex.Message}");
+            library.DeleteItem(deviceId, assetId);
+            return CommitResult.Failure(ex.Message);
+        }
+    }
+
+    /// <summary>Adds a video's first frame as a static background at the source's own size.</summary>
+    public static async Task<CommitResult> ImportStillAsync(PanelBgLibrary library, string deviceId, string sourcePath, string name)
+    {
+        if (FfmpegResolver.Path is null)
+        {
+            return CommitResult.Failure("Media conversion requires ffmpeg, which is missing. Reinstall nexus-service.");
+        }
+
+        var assetId = NewAssetId(name);
+        try
+        {
+            Directory.CreateDirectory(library.GetItemDir(deviceId, assetId));
+            var mediaPath = library.GetMediaPath(deviceId, assetId, ".jpg");
+            await MediaImporter.RunFfmpeg("-y", "-i", sourcePath, "-frames:v", "1", "-q:v", "3", mediaPath);
+            if (!File.Exists(mediaPath))
+            {
+                library.DeleteItem(deviceId, assetId);
+                return CommitResult.Failure("ffmpeg produced no media file");
+            }
+            return await SaveImportedAsync(library, deviceId, assetId, name, mediaPath, mediaExt: null, animated: false, alpha: false);
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine($"[panel-bg-import] still failed: {ex.Message}");
+            library.DeleteItem(deviceId, assetId);
+            return CommitResult.Failure(ex.Message);
+        }
+    }
+
+    private static string NewAssetId(string name) =>
+        MediaImporter.SanitizeId($"{DateTimeOffset.UtcNow.ToUnixTimeMilliseconds():x}-{Path.GetFileNameWithoutExtension(name)}");
+
+    private static async Task<CommitResult> SaveImportedAsync(
+        PanelBgLibrary library, string deviceId, string assetId, string name, string mediaPath, string? mediaExt, bool animated, bool alpha)
+    {
+        var probe = await ProbeAsync(mediaPath);
+        var (thumbW, thumbH) = ThumbSize(probe.Width, probe.Height);
+        var thumbPath = library.GetThumbPath(deviceId, assetId, alpha);
+        var thumbArgs = new List<string> { "-y", "-i", mediaPath, "-vf", $"scale={thumbW}:{thumbH}", "-frames:v", "1" };
+        if (!alpha)
+        {
+            thumbArgs.AddRange(new[] { "-q:v", "5" });
+        }
+        thumbArgs.Add(thumbPath);
+        await MediaImporter.RunFfmpeg(thumbArgs.ToArray());
+        if (!File.Exists(thumbPath))
+        {
+            library.DeleteItem(deviceId, assetId);
+            return CommitResult.Failure("ffmpeg produced no thumbnail");
+        }
+
+        var item = new PanelBgItem
+        {
+            Id = assetId,
+            Name = name,
+            Type = animated ? "animated" : "static",
+            Width = probe.Width,
+            Height = probe.Height,
+            ImportedAtUnixMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+            DurationSec = animated ? probe.DurationSec : 0,
+            Alpha = alpha,
+            MediaExt = mediaExt,
+        };
+        library.SaveMeta(deviceId, item);
+        return CommitResult.Success(item);
     }
 
     /// <summary>True when the source carries transparency; any failure answers false, keeping an unreadable probe on the opaque pipeline.</summary>
@@ -383,14 +482,17 @@ public static class PanelBgImporter
     private static string[] CropScaleArgs(CropRect crop, int w, int h, bool matte, bool animated, bool fitWhole, bool alpha = false) =>
         matte ? MatteArgs(crop, w, h, animated, fitWhole) : ScaleArgs(crop, w, h, fitWhole, alpha);
 
+    /// <summary>Duration and first video stream size read from ffmpeg's banner; zeros when unknown.</summary>
+    internal readonly record struct MediaProbe(double DurationSec, int Width, int Height);
+
     // ffmpeg exits non-zero when invoked with only -i (no output), so stderr
     // must be captured with the exit code ignored.
-    private static async Task<double> ProbeDurationSec(string path)
+    internal static async Task<MediaProbe> ProbeAsync(string path)
     {
         var ffmpegPath = FfmpegResolver.Path;
         if (ffmpegPath is null)
         {
-            return 0;
+            return default;
         }
 
         var psi = new ProcessStartInfo
@@ -407,7 +509,7 @@ public static class PanelBgImporter
         using var proc = Process.Start(psi);
         if (proc is null)
         {
-            return 0;
+            return default;
         }
 
         using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
@@ -419,20 +521,29 @@ public static class PanelBgImporter
         catch (OperationCanceledException)
         {
             try { proc.Kill(entireProcessTree: true); } catch { }
-            return 0;
+            return default;
         }
 
-        var stderr = await stderrTask;
-        var m = Regex.Match(stderr, @"Duration:\s*(\d+):(\d+):(\d+(?:\.\d+)?)");
-        if (!m.Success)
+        return ParseProbe(await stderrTask);
+    }
+
+    internal static MediaProbe ParseProbe(string stderr)
+    {
+        double durationSec = 0;
+        var d = Regex.Match(stderr, @"Duration:\s*(\d+):(\d+):(\d+(?:\.\d+)?)");
+        if (d.Success)
         {
-            return 0;
+            var hours = double.Parse(d.Groups[1].Value, CultureInfo.InvariantCulture);
+            var minutes = double.Parse(d.Groups[2].Value, CultureInfo.InvariantCulture);
+            var seconds = double.Parse(d.Groups[3].Value, CultureInfo.InvariantCulture);
+            durationSec = hours * 3600 + minutes * 60 + seconds;
         }
 
-        var hours = double.Parse(m.Groups[1].Value, CultureInfo.InvariantCulture);
-        var minutes = double.Parse(m.Groups[2].Value, CultureInfo.InvariantCulture);
-        var seconds = double.Parse(m.Groups[3].Value, CultureInfo.InvariantCulture);
-        return hours * 3600 + minutes * 60 + seconds;
+        // The first WxH on the video stream line; two digits minimum keeps the codec tag's "0x..." out.
+        var v = Regex.Match(stderr, @"Video:[^\n]*?\b(\d{2,5})x(\d{2,5})\b");
+        return v.Success
+            ? new MediaProbe(durationSec, int.Parse(v.Groups[1].Value, CultureInfo.InvariantCulture), int.Parse(v.Groups[2].Value, CultureInfo.InvariantCulture))
+            : new MediaProbe(durationSec, 0, 0);
     }
 
     public readonly record struct StageResult(string? StageId, string? Error, bool Alpha = false)

@@ -108,4 +108,20 @@ public sealed class PanelBgFileRouteTests : IDisposable
         Assert.Equal(HttpStatusCode.PartialContent, res.StatusCode);
         Assert.Equal(MediaBytes[60..], await res.Content.ReadAsByteArrayAsync());
     }
+
+    [Fact]
+    public async Task An_unconverted_copy_is_served_under_its_own_extension_and_type()
+    {
+        var library = _factory.Services.GetRequiredService<PanelBgLibrary>();
+        const string webmId = "webm-asset";
+        Directory.CreateDirectory(library.GetItemDir(DeviceId, webmId));
+        File.WriteAllBytes(library.GetMediaPath(DeviceId, webmId, ".webm"), MediaBytes);
+        library.SaveMeta(DeviceId, new PanelBgItem { Id = webmId, Name = "custom.webm", Type = "animated", MediaExt = ".webm" });
+
+        var res = await _client.GetAsync($"/panel/devices/{DeviceId}/background-media/{webmId}/file");
+
+        Assert.Equal(HttpStatusCode.OK, res.StatusCode);
+        Assert.Equal("video/webm", res.Content.Headers.ContentType?.MediaType);
+        Assert.Equal(MediaBytes, await res.Content.ReadAsByteArrayAsync());
+    }
 }

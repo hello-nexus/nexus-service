@@ -14,14 +14,33 @@ internal sealed class Nexus2Y70LayoutResult
     public List<string> DroppedTypes { get; } = new();
 }
 
+/// <summary>Where the Y70 background Nexus 2 is showing comes from.</summary>
+internal enum Nexus2Y70BackgroundSource
+{
+    /// <summary>A CSS background other than a linear gradient; nothing to bring over.</summary>
+    None,
+    /// <summary>A CSS linear gradient (the gradient presets), drawn into a still image.</summary>
+    Gradient,
+    /// <summary>An image or video file on disk: a custom upload or a downloaded preset.</summary>
+    File,
+    /// <summary>The particles video packed in Nexus 2's app.asar, its default and its fallback for a missing file.</summary>
+    BundledParticles,
+}
+
 /// <summary>Translated Y70 theme -> panel appearance (accent + background).</summary>
 internal sealed class Nexus2AppearanceResult
 {
     public bool Available { get; set; }
     public string? AccentHex { get; set; }
-    public string BackgroundMode { get; set; } = "solid";
-    public string? BackgroundEffect { get; set; }
-    public double? BackgroundOpacity { get; set; }
+    public Nexus2Y70BackgroundSource Background { get; set; }
+    public string? BackgroundPath { get; set; }
+    public Nexus2Gradient? BackgroundGradient { get; set; }
+    /// <summary>Nexus 2 shows a video's first frame instead of playing it.</summary>
+    public bool BackgroundStill { get; set; }
+    /// <summary>Nexus 2's "Transparent Background": the Y70 window shows the desktop through it.</summary>
+    public bool Transparent { get; set; }
+    /// <summary>Widget tile opacity, 0-1 on both sides.</summary>
+    public double? WidgetOpacity { get; set; }
 }
 
 /// <summary>Translated Q60 face: the active page's widget plus every other

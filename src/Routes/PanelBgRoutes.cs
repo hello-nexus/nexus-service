@@ -11,17 +11,9 @@ namespace Nexus.Service.Routes;
 public static class PanelBgRoutes
 {
     /// <summary>The file an asset was baked to.</summary>
-    private static string MediaExtFor(PanelBgItem item) => item.Type == "animated"
+    private static string MediaExtFor(PanelBgItem item) => item.MediaExt ?? (item.Type == "animated"
         ? (item.Alpha ? ".gif" : ".mp4")
-        : (item.Alpha ? ".png" : ".jpg");
-
-    private static string ContentTypeFor(string path) => Path.GetExtension(path).ToLowerInvariant() switch
-    {
-        ".png" => "image/png",
-        ".gif" => "image/gif",
-        ".mp4" => "video/mp4",
-        _ => "image/jpeg",
-    };
+        : (item.Alpha ? ".png" : ".jpg"));
 
     public static void MapPanelBgEndpoints(this WebApplication app)
     {
@@ -114,7 +106,7 @@ public static class PanelBgRoutes
                 }
 
                 ctx.Response.Headers.CacheControl = "no-store";
-                return Results.File(previewPath, ContentTypeFor(previewPath));
+                return Results.File(previewPath, MediaKinds.ContentTypeFor(previewPath));
             }).AllowPanel();
 
         // --- Commit phase: bake from staged raw using crop/dimensions ---
@@ -296,7 +288,7 @@ public static class PanelBgRoutes
                 }
 
                 var path = lib.GetThumbPath(deviceId, id, lib.GetItem(deviceId, id)?.Alpha ?? false);
-                return File.Exists(path) ? Results.File(path, ContentTypeFor(path)) : Results.NotFound();
+                return File.Exists(path) ? Results.File(path, MediaKinds.ContentTypeFor(path)) : Results.NotFound();
             }).AllowPanel();
 
         app.MapGet("/panel/devices/{deviceId}/background-media/{id}/file",
@@ -327,7 +319,7 @@ public static class PanelBgRoutes
                 ctx.Response.Headers.CacheControl = "public, max-age=31536000, immutable";
                 // Without ranges the Chromium <video> on the panel has to land a
                 // multi-MB body in one uninterrupted response and cannot resume.
-                return Results.File(mediaPath, ContentTypeFor(mediaPath), enableRangeProcessing: true);
+                return Results.File(mediaPath, MediaKinds.ContentTypeFor(mediaPath), enableRangeProcessing: true);
             }).AllowPanel();
 
         app.MapPost("/panel/devices/{deviceId}/background-media/library/open",

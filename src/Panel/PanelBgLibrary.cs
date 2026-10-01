@@ -12,10 +12,10 @@ namespace Nexus.Service.Panel;
 
 /// <summary>
 /// Folder-based store for panel-background assets, scoped per device:
-/// panel-backgrounds/&lt;deviceId&gt;/&lt;assetId&gt;/. Each asset contains only
+/// panel-backgrounds/&lt;deviceId&gt;/&lt;assetId&gt;/. Each asset contains
 /// the converted media (media.jpg/.mp4, or media.png/.gif when it kept its
-/// transparency), a matching thumb.jpg/.png, and meta.json. The original
-/// source is not retained.
+/// transparency) or an unconverted copy under its own extension
+/// (PanelBgItem.MediaExt), a matching thumb.jpg/.png, and meta.json.
 /// Transient uploads live in panel-backgrounds/&lt;deviceId&gt;/.staging/ and are
 /// deleted on commit or cancel.
 /// </summary>
@@ -24,8 +24,6 @@ public sealed class PanelBgLibrary
     private const string MetaFileName = "meta.json";
     private const string StagingDirName = ".staging";
 
-    /// <summary>Media file names an asset dir may hold, opaque pair first.</summary>
-    private static readonly string[] MediaFileNames = { "media.jpg", "media.mp4", "media.png", "media.gif" };
     private static readonly string[] ThumbFileNames = { "thumb.jpg", "thumb.png" };
 
     private readonly string _rootDir;
@@ -64,7 +62,7 @@ public sealed class PanelBgLibrary
 
             if (!File.Exists(Path.Combine(dir, MetaFileName)) ||
                 !Array.Exists(ThumbFileNames, n => File.Exists(Path.Combine(dir, n))) ||
-                !Array.Exists(MediaFileNames, n => File.Exists(Path.Combine(dir, n))))
+                !Directory.EnumerateFiles(dir, "media.*").Any())
             {
                 continue;
             }
@@ -113,7 +111,7 @@ public sealed class PanelBgLibrary
     public string GetThumbPath(string deviceId, string id, bool alpha = false) =>
         Path.Combine(_rootDir, deviceId, RequireValidId(id), alpha ? "thumb.png" : "thumb.jpg");
 
-    /// <summary>Returns the path for the converted media file (media.jpg/.mp4/.png/.gif).</summary>
+    /// <summary>Path of the asset's media file for the given extension.</summary>
     public string GetMediaPath(string deviceId, string id, string ext) => Path.Combine(_rootDir, deviceId, RequireValidId(id), "media" + ext);
 
     public string GetDeviceDir(string deviceId) => Path.Combine(_rootDir, deviceId);
