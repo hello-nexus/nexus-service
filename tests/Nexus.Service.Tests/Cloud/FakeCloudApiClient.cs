@@ -26,6 +26,7 @@ public sealed class FakeCloudApiClient : ICloudApiClient
     public int DeleteAccountCalls;
     public int UploadAvatarCalls;
     public int PutDeviceCalls;
+    public int SetDeviceCaseCalls;
     public int ListDevicesCalls;
     public int ListProfilesCalls;
     public int GetProfileCalls;
@@ -54,6 +55,7 @@ public sealed class FakeCloudApiClient : ICloudApiClient
     public Func<string, string?, CloudApiResult<CloudVoid>> OnDeleteAccount = (_, _) => CloudApiResult<CloudVoid>.NetworkError("not wired");
     public Func<string, byte[], string, CloudApiResult<CloudAvatarUploadResponse>> OnUploadAvatar = (_, _, _) => CloudApiResult<CloudAvatarUploadResponse>.NetworkError("not wired");
     public Func<string, string, CloudDevicePutRequest, CloudApiResult<CloudVoid>> OnPutDevice = (_, _, _) => CloudApiResult<CloudVoid>.Ok(CloudVoid.Instance);
+    public Func<string, string, string?, CloudApiResult<CloudVoid>> OnSetDeviceCase = (_, _, _) => CloudApiResult<CloudVoid>.Ok(CloudVoid.Instance);
     public Func<string, CloudApiResult<List<CloudDeviceDto>>> OnListDevices = _ => CloudApiResult<List<CloudDeviceDto>>.Ok(new List<CloudDeviceDto>());
     public Func<string, CloudApiResult<List<CloudProfileSummaryDto>>> OnListProfiles = _ => CloudApiResult<List<CloudProfileSummaryDto>>.Ok(new List<CloudProfileSummaryDto>());
     // installId is a parameter on every per-profile call so a test can assert
@@ -104,6 +106,9 @@ public sealed class FakeCloudApiClient : ICloudApiClient
 
     public Task<CloudApiResult<CloudVoid>> PutDeviceAsync(string accessToken, string installId, CloudDevicePutRequest body, CancellationToken ct)
     { PutDeviceCalls++; return Task.FromResult(OnPutDevice(accessToken, installId, body)); }
+
+    public Task<CloudApiResult<CloudVoid>> SetDeviceCaseAsync(string accessToken, string installId, string? caseId, CancellationToken ct)
+    { SetDeviceCaseCalls++; return Task.FromResult(OnSetDeviceCase(accessToken, installId, caseId)); }
 
     public Task<CloudApiResult<List<CloudDeviceDto>>> ListDevicesAsync(string accessToken, CancellationToken ct)
     { ListDevicesCalls++; return Task.FromResult(OnListDevices(accessToken)); }

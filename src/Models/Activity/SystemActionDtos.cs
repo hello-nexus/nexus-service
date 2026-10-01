@@ -56,3 +56,15 @@ public sealed class SystemBootResponse
 {
     public string BootId { get; set; } = "";
 }
+
+/// <summary>This machine's PC case as a catalog part id; null when none is picked, which is written explicitly.</summary>
+public sealed class SystemCaseResponse
+{
+    [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.Never)]
+    public string? CaseId { get; set; }
+}
+
+public sealed class SetSystemCaseBody
+{
+    public string? CaseId { get; set; }
+}

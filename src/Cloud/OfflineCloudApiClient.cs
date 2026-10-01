@@ -39,6 +39,8 @@ internal sealed class OfflineCloudApiClient : ICloudApiClient
 
     public Task<CloudApiResult<CloudVoid>> PutDeviceAsync(string accessToken, string installId, CloudDevicePutRequest body, CancellationToken ct) => Offline<CloudVoid>();
 
+    public Task<CloudApiResult<CloudVoid>> SetDeviceCaseAsync(string accessToken, string installId, string? caseId, CancellationToken ct) => Offline<CloudVoid>();
+
     public Task<CloudApiResult<List<CloudDeviceDto>>> ListDevicesAsync(string accessToken, CancellationToken ct) => Offline<List<CloudDeviceDto>>();
 
     public Task<CloudApiResult<List<CloudProfileSummaryDto>>> ListProfilesAsync(string accessToken, CancellationToken ct) => Offline<List<CloudProfileSummaryDto>>();

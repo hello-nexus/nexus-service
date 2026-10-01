@@ -1,5 +1,6 @@
 using Nexus.Service.Activity;
 using Nexus.Service.Auth;
+using Nexus.Service.Cloud;
 using Nexus.Service.Fps;
 using Nexus.Service.Lifecycle;
 using Nexus.Service.Models;
@@ -31,6 +32,21 @@ public static class SystemRoutes
         // names. Subsequent calls hit the cache and return in microseconds.
         app.MapGet("/system/specs", (SystemSpecsCollector collector, HttpContext ctx) =>
             collector.GetAsync(ctx.RequestAborted)).AllowPanel();
+
+        // This machine's PC case (catalog part id), picked in the Build page's
+        // My Systems frame. Desktop-token only: the pick is machine config.
+        app.MapGet("/system/case", async (SystemCaseService cases, CancellationToken ct) =>
+            new SystemCaseResponse { CaseId = await cases.GetAsync(ct).ConfigureAwait(false) });
+
+        app.MapPut("/system/case", async (SetSystemCaseBody body, SystemCaseService cases, CancellationToken ct) =>
+        {
+            if (!SystemCaseService.IsValidCaseId(body.CaseId))
+            {
+                return Results.BadRequest(ApiResponse.Fail("caseId must be null or 1-64 characters of letters, digits, '.', '_', ':' or '-'."));
+            }
+            var saved = await cases.SetAsync(body.CaseId, ct).ConfigureAwait(false);
+            return Results.Ok(new SystemCaseResponse { CaseId = saved });
+        });
 
         // OS accent for the web's "system" accent source. Windows/macOS push it
         // from their native shell; Linux has no shell (the dashboard is a

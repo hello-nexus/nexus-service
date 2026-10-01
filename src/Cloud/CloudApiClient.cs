@@ -71,6 +71,7 @@ public interface ICloudApiClient
     Task<CloudApiResult<CloudVoid>> DeleteAccountAsync(string accessToken, string? currentPassword, CancellationToken ct);
     Task<CloudApiResult<CloudAvatarUploadResponse>> UploadAvatarAsync(string accessToken, byte[] bytes, string contentType, CancellationToken ct);
     Task<CloudApiResult<CloudVoid>> PutDeviceAsync(string accessToken, string installId, CloudDevicePutRequest body, CancellationToken ct);
+    Task<CloudApiResult<CloudVoid>> SetDeviceCaseAsync(string accessToken, string installId, string? caseId, CancellationToken ct);
     Task<CloudApiResult<System.Collections.Generic.List<CloudDeviceDto>>> ListDevicesAsync(string accessToken, CancellationToken ct);
     Task<CloudApiResult<System.Collections.Generic.List<CloudProfileSummaryDto>>> ListProfilesAsync(string accessToken, CancellationToken ct);
     Task<CloudApiResult<CloudProfileDto>> GetProfileAsync(string accessToken, string installId, string profileId, CancellationToken ct);
@@ -202,6 +203,9 @@ public sealed class CloudApiClient : ICloudApiClient
 
     public Task<CloudApiResult<CloudVoid>> PutDeviceAsync(string accessToken, string installId, CloudDevicePutRequest body, CancellationToken ct) =>
         PutVoidAsync($"/account/devices/{Uri.EscapeDataString(installId)}", body, AppJsonContext.Default.CloudDevicePutRequest, ct, accessToken);
+
+    public Task<CloudApiResult<CloudVoid>> SetDeviceCaseAsync(string accessToken, string installId, string? caseId, CancellationToken ct) =>
+        PutVoidAsync($"/account/devices/{Uri.EscapeDataString(installId)}/case", new CloudDeviceCasePutRequest { CaseId = caseId }, AppJsonContext.Default.CloudDeviceCasePutRequest, ct, accessToken);
 
     public async Task<CloudApiResult<System.Collections.Generic.List<CloudDeviceDto>>> ListDevicesAsync(string accessToken, CancellationToken ct)
     {

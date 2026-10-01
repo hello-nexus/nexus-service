@@ -133,6 +133,16 @@ public sealed class CloudDeviceDto
     public string? Os { get; set; }
     public bool Manual { get; set; }
     public string LastSeenAt { get; set; } = "";
+
+    /// <summary>Catalog part id of this machine's case, or null when none is picked. Absent from an older api.</summary>
+    public string? CaseId { get; set; }
+}
+
+/// <summary>Body of PUT /account/devices/{installId}/case. A null id clears the pick, so it is always written.</summary>
+public sealed class CloudDeviceCasePutRequest
+{
+    [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.Never)]
+    public string? CaseId { get; set; }
 }
 
 public sealed class CloudProfileSummaryDto

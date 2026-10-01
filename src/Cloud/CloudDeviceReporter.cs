@@ -31,22 +31,24 @@ public sealed class CloudDeviceReporter : BackgroundService
     private readonly SystemSpecsCollector _specs;
     private readonly IConfigStore _store;
     private readonly TimeProvider _clock;
+    private readonly SystemCaseService? _caseSync;
 
     private volatile string? _lastReportedHash;
     private volatile string? _lastReportedAccountId;
 
-    public CloudDeviceReporter(ICloudApiClient api, CloudAccountService accounts, SystemSpecsCollector specs, IConfigStore store)
-        : this(api, accounts, specs, store, TimeProvider.System)
+    public CloudDeviceReporter(ICloudApiClient api, CloudAccountService accounts, SystemSpecsCollector specs, IConfigStore store, SystemCaseService caseSync)
+        : this(api, accounts, specs, store, TimeProvider.System, caseSync)
     {
     }
 
-    internal CloudDeviceReporter(ICloudApiClient api, CloudAccountService accounts, SystemSpecsCollector specs, IConfigStore store, TimeProvider clock)
+    internal CloudDeviceReporter(ICloudApiClient api, CloudAccountService accounts, SystemSpecsCollector specs, IConfigStore store, TimeProvider clock, SystemCaseService? caseSync = null)
     {
         _api = api;
         _accounts = accounts;
         _specs = specs;
         _store = store;
         _clock = clock;
+        _caseSync = caseSync;
     }
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
@@ -121,6 +123,7 @@ public sealed class CloudDeviceReporter : BackgroundService
         var hash = HashSpecs(specsMap);
         if (hash == _lastReportedHash && accountId == _lastReportedAccountId)
         {
+            await FlushCaseAsync(accountId, ct).ConfigureAwait(false);
             return true;
         }
 
@@ -138,8 +141,19 @@ public sealed class CloudDeviceReporter : BackgroundService
         {
             _lastReportedHash = hash;
             _lastReportedAccountId = accountId;
+            await FlushCaseAsync(accountId, ct).ConfigureAwait(false);
         }
         return true;
+    }
+
+    // The device row now exists on the account, so a case pick that 404'd
+    // before it (or failed offline) can go up.
+    private async Task FlushCaseAsync(string accountId, CancellationToken ct)
+    {
+        if (_caseSync is not null)
+        {
+            await _caseSync.FlushPendingAsync(accountId, ct).ConfigureAwait(false);
+        }
     }
 
     internal static Dictionary<string, string> ToSpecsMap(Nexus.Service.Models.Sensors.SystemSpecsResponse specs) => new()
