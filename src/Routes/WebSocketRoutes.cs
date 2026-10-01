@@ -36,7 +36,7 @@ public static class WebSocketRoutes
             if (onTunnel) tunnel!.SocketOpened();
             try
             {
-                await hub.HandleClientAsync(socket, phoneSessionId, ctx.RequestAborted);
+                await RunUntilShutdownAsync(ctx, ct => hub.HandleClientAsync(socket, phoneSessionId, ct));
             }
             finally
             {
@@ -56,7 +56,7 @@ public static class WebSocketRoutes
             }
             using WebSocket socket = await ctx.WebSockets.AcceptWebSocketAsync();
             var hub = ctx.RequestServices.GetRequiredService<LightingOutputHub>();
-            await hub.HandleClientAsync(socket, cancellationToken: ctx.RequestAborted);
+            await RunUntilShutdownAsync(ctx, ct => hub.HandleClientAsync(socket, cancellationToken: ct));
         });
 
         // Webcam stream - binary phone -> service video frames, one frame per
@@ -78,7 +78,7 @@ public static class WebSocketRoutes
             }
             using WebSocket socket = await ctx.WebSockets.AcceptWebSocketAsync();
             var manager = ctx.RequestServices.GetRequiredService<Nexus.Service.Webcam.WebcamSessionManager>();
-            await manager.HandleStreamSocketAsync(socket, ctx.RequestAborted);
+            await RunUntilShutdownAsync(ctx, ct => manager.HandleStreamSocketAsync(socket, ct));
         }).AllowPanel();
 
         // Sealed LAN tunnel - the panel's E2E-encrypted transport over plain
@@ -96,7 +96,22 @@ public static class WebSocketRoutes
             }
             using WebSocket socket = await ctx.WebSockets.AcceptWebSocketAsync();
             var relay = ctx.RequestServices.GetRequiredService<Nexus.Service.Relay.RelayConnectionService>();
-            await relay.HandleInboundSealedTunnelAsync(socket, ctx.RequestAborted);
+            await RunUntilShutdownAsync(ctx, ct => relay.HandleInboundSealedTunnelAsync(socket, ct));
         });
+    }
+
+    // A socket loop on RequestAborted alone outlives the host stop: Kestrel's
+    // graceful drain then waits the whole shutdown timeout for every open client.
+    private static async Task RunUntilShutdownAsync(HttpContext ctx, Func<CancellationToken, Task> handler)
+    {
+        var stopping = ctx.RequestServices.GetRequiredService<IHostApplicationLifetime>().ApplicationStopping;
+        using var cts = CancellationTokenSource.CreateLinkedTokenSource(ctx.RequestAborted, stopping);
+        try
+        {
+            await handler(cts.Token);
+        }
+        catch (OperationCanceledException) when (stopping.IsCancellationRequested)
+        {
+        }
     }
 }

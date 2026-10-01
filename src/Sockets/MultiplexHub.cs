@@ -190,8 +190,10 @@ public sealed class MultiplexHub
 
             try
             {
+                // CloseOutputAsync: CloseAsync waits for the peer's reply with no
+                // deadline, and a phone gone to sleep would hold the host stop.
                 if (socket.State == WebSocketState.Open || socket.State == WebSocketState.CloseReceived)
-                    await socket.CloseAsync(WebSocketCloseStatus.NormalClosure, "bye", CancellationToken.None);
+                    await socket.CloseOutputAsync(WebSocketCloseStatus.NormalClosure, "bye", CancellationToken.None);
             }
             catch { }
 
