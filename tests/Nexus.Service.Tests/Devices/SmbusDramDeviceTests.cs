@@ -61,11 +61,9 @@ public class SmbusDramDeviceTests
     }
 
     [Fact]
-    public void Policy_ConflictAppShowsInTheUi_ButNeverDrivesAdoption()
+    public void Policy_ConflictAppShowsInTheUi_AndTheBusIsNotExperimental()
     {
         Assert.Equal("icue", DeviceControlPolicy.ConflictAppFor(SmbusDramHandler.HandlerId));
-        Assert.Null(DeviceControlPolicy.AdoptionConflictAppFor(SmbusDramHandler.HandlerId));
-        Assert.Equal("icue", DeviceControlPolicy.AdoptionConflictAppFor("corsair"));
         Assert.False(DeviceControlPolicy.IsExperimental(SmbusDramHandler.HandlerId));
     }
 

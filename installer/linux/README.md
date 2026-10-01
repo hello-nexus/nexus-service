@@ -64,6 +64,11 @@ sudo systemctl restart nexus      # restart
 journalctl -u nexus -f            # logs
 ```
 
+Installing an update from the dashboard downloads the new tarball and re-runs
+its `install.sh --update` (no sensor setup, no menu entry) in a transient
+`nexus-ota-install` systemd unit, logging to
+`/var/lib/nexus/updates/ota-install-<version>.log`.
+
 ## Uninstall
 
 From the extracted tarball directory (`uninstall.sh` is not copied to
