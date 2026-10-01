@@ -57,8 +57,11 @@ public sealed class ConflictLaunchNotifier : BackgroundService
 
         // Inside the kill window the startup shutdown ends the app and says so in its own notice.
         var killWindow = _startupShutdown?.InLaunchKillWindow == true;
+        var windowOpen = _startupShutdown?.LaunchWindowOpen == true;
         bool Silent(DetectedConflict app) =>
-            killWindow || ui.ConflictAutoKillExclusions.Exists(id => string.Equals(id, app.Id, StringComparison.OrdinalIgnoreCase));
+            killWindow
+            || (windowOpen && ConflictWatcher.FindById(app.Id)?.AlwaysEnded == true)
+            || ui.ConflictAutoKillExclusions.Exists(id => string.Equals(id, app.Id, StringComparison.OrdinalIgnoreCase));
 
         foreach (var app in _tracker.Observe(_detector.GetConflicts(), nowMs, Silent))
         {

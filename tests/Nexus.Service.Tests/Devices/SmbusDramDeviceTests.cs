@@ -40,7 +40,7 @@ public class SmbusDramDeviceTests
         Assert.True(memory.SupportsNexusControl);
         Assert.False(memory.Experimental);
         Assert.False(memory.HasPage);
-        Assert.Equal("icue", memory.ConflictAppId);
+        Assert.Null(memory.ConflictAppId);
         Assert.Equal("usb", items.Single(i => i.Id == "cnvs").Bus);
     }
 
@@ -53,7 +53,7 @@ public class SmbusDramDeviceTests
     }
 
     [Fact]
-    public void Policy_SharedBusDefaultsOn_EvenThoughItNamesACompetingApp()
+    public void Policy_SharedBusDefaultsOn()
     {
         Assert.True(DeviceControlPolicy.DefaultOn(SmbusDramHandler.HandlerId));
         Assert.False(DeviceControlPolicy.DefaultOn("corsair"));
@@ -63,7 +63,7 @@ public class SmbusDramDeviceTests
     [Fact]
     public void Policy_ConflictAppShowsInTheUi_AndTheBusIsNotExperimental()
     {
-        Assert.Equal("icue", DeviceControlPolicy.ConflictAppFor(SmbusDramHandler.HandlerId));
+        Assert.Null(DeviceControlPolicy.ConflictAppFor(SmbusDramHandler.HandlerId));
         Assert.False(DeviceControlPolicy.IsExperimental(SmbusDramHandler.HandlerId));
     }
 
