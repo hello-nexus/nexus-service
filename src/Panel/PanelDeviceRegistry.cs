@@ -22,6 +22,9 @@ public sealed class PanelDeviceRegistry
 {
     private readonly IConfigStore _store;
 
+    /// <summary>Only the Windows overlay can host a see-through kiosk; the macOS and Linux kiosks are opaque.</summary>
+    internal bool SeeThroughHost { get; init; } = OperatingSystem.IsWindows();
+
     public PanelDeviceRegistry(IConfigStore store)
     {
         _store = store;
@@ -126,18 +129,15 @@ public sealed class PanelDeviceRegistry
                 return;
             }
             s.PanelDevices[record.Id] = record;
+            result = Clone(record);
+            activated = true;
         });
 
         // Panel on/off is rare and must survive an immediate service exit -
         // a write lost to the flush debounce would silently undo the toggle.
         _store.FlushNow();
-        if (result is not null)
-        {
-            if (activated) DisplayRecordReady?.Invoke(result);
-            return (result, activated);
-        }
-        DisplayRecordReady?.Invoke(record);
-        return (record, true);
+        if (activated) DisplayRecordReady?.Invoke(result!);
+        return (result!, activated);
     }
 
     /// <summary>
@@ -301,15 +301,15 @@ public sealed class PanelDeviceRegistry
         foreach (var record in _store.Load().PanelDevices.Values)
         {
             if (!string.IsNullOrEmpty(record.DisplayId) && record.Enabled != false)
-                assignments.Add((record.DisplayId, record.Id, record.ReserveMonitor ?? true, record.Backdrop ?? ""));
+                assignments.Add((record.DisplayId, record.Id, record.ReserveMonitor ?? true, EffectiveBackdrop(record) ?? ""));
         }
         return assignments;
     }
 
     /// <summary>
-    /// Backdrop of the Y70's own record, or "" when it has never registered.
-    /// The Y70 kiosk is opened from hardware detection rather than a display
-    /// assignment, so the host has no device id to read it from.
+    /// Backdrop of the Y70's own record, or its default when it has never
+    /// registered. The Y70 kiosk is opened from hardware detection rather than
+    /// a display assignment, so the host has no device id to read it from.
     /// </summary>
     public string GetY70Backdrop()
     {
@@ -319,7 +319,8 @@ public sealed class PanelDeviceRegistry
             if (!string.Equals(record.Capabilities?.Surface, PanelSurfaces.Y70, StringComparison.Ordinal)) continue;
             if (newest is null || record.LastSeenAt > newest.LastSeenAt) newest = record;
         }
-        return newest?.Backdrop ?? "";
+        if (newest is null) return Y70SeeThroughDefault() ? "desktop" : "";
+        return EffectiveBackdrop(newest) ?? "";
     }
 
     /// <summary>
@@ -743,6 +744,25 @@ public sealed class PanelDeviceRegistry
         _ => null,
     };
 
+    /// <summary>An unset backdrop reads as "desktop" on the surfaces the web's
+    /// supportsDesktopWallpaper admits (Y70, promoted monitors) when this host
+    /// can go see-through. Resolved on read so storage keeps null until the
+    /// user picks one.</summary>
+    private string? EffectiveBackdrop(PanelDeviceRecord r)
+    {
+        if (r.Backdrop is not null || !SeeThroughHost) return r.Backdrop;
+        var surface = r.Capabilities?.Surface;
+        var capable = (surface == PanelSurfaces.Y70 && Y70SeeThroughDefault())
+            || (surface == PanelSurfaces.Monitor && !string.IsNullOrEmpty(r.DisplayId));
+        return capable ? "desktop" : null;
+    }
+
+    // Compatibility mode's --disable-direct-composition kiosk is unverified with
+    // an alpha-0 see-through window, so those Y70s keep the client default.
+    // Load re-enters the store's Monitor lock, so this is safe inside Update.
+    private bool Y70SeeThroughDefault() =>
+        SeeThroughHost && !_store.Load().Y70.CompatibilityRendering;
+
     private static string NewId()
     {
         return Convert.ToBase64String(RandomNumberGenerator.GetBytes(9))
@@ -759,7 +779,7 @@ public sealed class PanelDeviceRegistry
         return copy;
     }
 
-    private static PanelDeviceRecord Clone(PanelDeviceRecord r)
+    private PanelDeviceRecord Clone(PanelDeviceRecord r)
     {
         return new PanelDeviceRecord
         {
@@ -777,7 +797,7 @@ public sealed class PanelDeviceRegistry
                 ? null
                 : new Dictionary<string, int>(r.BackgroundTemplates),
             BackgroundOpacity = r.BackgroundOpacity,
-            Backdrop = r.Backdrop,
+            Backdrop = EffectiveBackdrop(r),
             BackgroundMediaId = r.BackgroundMediaId,
             BackgroundMediaType = r.BackgroundMediaType,
             BackgroundMediaAlpha = r.BackgroundMediaAlpha,
