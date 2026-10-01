@@ -1,6 +1,5 @@
 using System;
 using System.Collections.Concurrent;
-using System.Linq;
 using System.IO;
 using System.IO.Compression;
 using System.Net.Http;
@@ -162,21 +161,6 @@ public sealed class StoreInstaller
 
             if (!ManifestAgrees(staging, appId, version)) return fail("manifest_mismatch");
 
-            var manifest = ReadManifest(staging);
-            if (manifest is null) return fail("manifest_mismatch");
-            if (!req.ConsentExempt)
-            {
-                var requested = AppCapabilityGrants.From(manifest.Capabilities);
-                if (AppCapabilityGrants.Missing(requested, req.ApprovedCapabilities).Count > 0)
-                {
-                    return new StoreInstallResponse
-                    {
-                        AppId = appId, Version = version, Ok = false,
-                        Reason = "consent_required", RequestedCapabilities = requested.ToList(),
-                    };
-                }
-            }
-
             var dest = Path.Combine(userRoot, appId);
             if (replaceOnly && !Directory.Exists(dest)) return fail("not_installed");
             // Moved aside, not deleted: a file the service is streaming from the app
@@ -213,19 +197,6 @@ public sealed class StoreInstaller
 
         _registry.Refresh();
         return new StoreInstallResponse { AppId = appId, Version = version, Ok = true };
-    }
-
-    private static AppManifest? ReadManifest(string dir)
-    {
-        try
-        {
-            using var stream = File.OpenRead(Path.Combine(dir, "manifest.json"));
-            return JsonSerializer.Deserialize(stream, Nexus.Service.Serialization.AppJsonContext.Default.AppManifest);
-        }
-        catch (Exception ex) when (ex is JsonException or IOException)
-        {
-            return null;
-        }
     }
 
     /// <summary>The artifact has to describe the app that was asked for.</summary>

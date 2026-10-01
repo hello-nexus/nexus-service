@@ -58,6 +58,7 @@ public static class TrayIcon
     private const int DefaultServicePort = 9400;
     private const uint WM_CLOSE = 0x0010;
     private const uint WM_DISPLAYCHANGE = 0x007E;
+    private const uint WM_SETTINGCHANGE = 0x001A;
     private const uint WM_TIMER = 0x0113;
     private const int WM_MOUSEMOVE = 0x0200;
     private const int WM_NCMOUSEMOVE = 0x00A0;
@@ -85,6 +86,12 @@ public static class TrayIcon
     /// Fired on the message-pump thread - subscribers must not block.
     /// </summary>
     public static event Action? DisplayChanged;
+
+    /// <summary>
+    /// Raised on WM_SETTINGCHANGE "ImmersiveColorSet" (Windows light/dark or
+    /// accent change), same broadcast source and threading as DisplayChanged.
+    /// </summary>
+    public static event Action? SystemThemeChanged;
 
     private static int _port;
     private static Action? _onExit;
@@ -561,6 +568,11 @@ public static class TrayIcon
             else if (msg == WM_DISPLAYCHANGE)
             {
                 DisplayChanged?.Invoke();
+            }
+            else if (msg == WM_SETTINGCHANGE && lParam != IntPtr.Zero
+                && Marshal.PtrToStringUni(lParam) == "ImmersiveColorSet")
+            {
+                SystemThemeChanged?.Invoke();
             }
             else if (msg == WM_COMMAND)
             {
@@ -1233,7 +1245,7 @@ public static class TrayIcon
         catch { /* theming is non-critical */ }
     }
 
-    private static bool IsSystemDarkMode()
+    internal static bool IsSystemDarkMode()
     {
         try
         {

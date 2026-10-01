@@ -83,8 +83,8 @@ public sealed class IbpPeripheralHub : IDisposable
     /// <summary>
     /// Close every open unit whose model is not in <paramref name="allowed"/>
     /// (LEDs returned to firmware first) and open every enumerated unit of an
-    /// allowed model that is not open yet. One HID enumeration per call, taken
-    /// off the IO lock. Returns true when the attached set changed.
+    /// allowed model that is not open yet. One HID lookup per allowed model,
+    /// taken off the IO lock. Returns true when the attached set changed.
     /// </summary>
     public bool Reconcile(IReadOnlySet<IbpPeripheralModel> allowed)
     {
@@ -95,10 +95,12 @@ public sealed class IbpPeripheralHub : IDisposable
             changed = CloseDisallowedLocked(allowed);
         }
 
-        // FindAll walks every HID interface on the box (SetupDi + CreateFile +
-        // caps per interface): off _io.
-        IReadOnlyList<HidDeviceInfo> infos;
-        try { infos = _hid.FindAll(); }
+        // Enumeration opens each matching interface for caps and serial: off _io.
+        var infos = new List<HidDeviceInfo>();
+        try
+        {
+            foreach (var model in allowed) infos.AddRange(_hid.Find(IbpPeripheralProtocol.VendorId, model.ProductId));
+        }
         catch (Exception ex)
         {
             ServiceLog.Error($"[ibp] HID enumeration failed: {ex.GetType().Name}: {ex.Message}");

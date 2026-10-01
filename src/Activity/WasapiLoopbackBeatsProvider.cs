@@ -3,12 +3,14 @@ using System.Runtime.InteropServices;
 using System.Threading;
 using System.Threading.Tasks;
 using Nexus.Service.Lighting.Engine;
+using Nexus.Service.Persistence;
 
 namespace Nexus.Service.Activity;
 
 /// <summary>
-/// Windows-only audio-loopback provider that captures the default render
-/// endpoint (i.e. whatever's playing through the speakers) via WASAPI.
+/// Windows-only audio-loopback provider that captures a render endpoint
+/// (i.e. whatever's playing through it) via WASAPI: the output picked in
+/// Lighting settings while it is plugged in, otherwise the system default.
 ///
 /// Windows path; <see cref="BeatsProvider"/> is the Linux ffmpeg fallback.
 /// WASAPI loopback is built into Windows (Vista+), needs no extra binary,
@@ -23,11 +25,18 @@ namespace Nexus.Service.Activity;
 /// </summary>
 public sealed class WasapiLoopbackBeatsProvider : IBeatsProvider
 {
+    // Loopback stays bound to the endpoint it opened, so the loop re-resolves
+    // the target this often to follow a new pick, a default switch or an unplug.
+    private const int TargetCheckMs = 1000;
+
     private readonly AudioAnalyser _analyser = new();
+    private readonly IConfigStore _store;
     private readonly object _lock = new();
     private CancellationTokenSource? _cts;
     private Thread? _captureThread;
     private bool _running;
+
+    public WasapiLoopbackBeatsProvider(IConfigStore store) => _store = store;
 
     public event Action? OnBeat;
 
@@ -93,15 +102,31 @@ public sealed class WasapiLoopbackBeatsProvider : IBeatsProvider
     private void CaptureLoop(CancellationToken ct)
     {
         WasapiCapturer? cap = null;
+        var initial = PreferredDeviceId();
         try
         {
-            cap = WasapiCapturer.Open();
+            cap = WasapiCapturer.Open(initial);
             Nexus.Service.Lighting.Engine.Gpu.GpuContext.Log($"[wasapi] opened: {cap.SampleRate} Hz, {cap.Channels} ch");
         }
         catch (Exception ex)
         {
             Nexus.Service.Lighting.Engine.Gpu.GpuContext.Log($"[wasapi] open failed: {ex}");
-            return;
+            if (initial.Length == 0)
+            {
+                return;
+            }
+            // A plugged-in pick can still refuse the loopback stream; capture the
+            // default meanwhile and let the target check retry the pick.
+            try
+            {
+                cap = WasapiCapturer.Open("");
+                Nexus.Service.Lighting.Engine.Gpu.GpuContext.Log($"[wasapi] opened default instead: {cap.SampleRate} Hz, {cap.Channels} ch");
+            }
+            catch (Exception fallbackEx)
+            {
+                Nexus.Service.Lighting.Engine.Gpu.GpuContext.Log($"[wasapi] default open failed: {fallbackEx}");
+                return;
+            }
         }
 
         try
@@ -109,10 +134,11 @@ public sealed class WasapiLoopbackBeatsProvider : IBeatsProvider
             var window = new float[AudioAnalyser.WindowSize];
             int written = 0;
             int channels = cap.Channels;
-            int srcRate = cap.SampleRate;
             int targetRate = AudioAnalyser.SampleRate;
             double decimAcc = 0;
-            double decimStep = (double)srcRate / targetRate;
+            double decimStep = (double)cap.SampleRate / targetRate;
+            long lastTargetTick = Environment.TickCount64;
+            var failedTarget = "";
             long totalFrames = 0;
             long totalAnalyses = 0;
             long lastLogTick = Environment.TickCount64;
@@ -126,6 +152,39 @@ public sealed class WasapiLoopbackBeatsProvider : IBeatsProvider
 
             while (!ct.IsCancellationRequested)
             {
+                if (Environment.TickCount64 - lastTargetTick >= TargetCheckMs)
+                {
+                    lastTargetTick = Environment.TickCount64;
+                    var preferred = PreferredDeviceId();
+                    var target = cap.TargetId(preferred);
+                    // Invalidated covers a replug of the same endpoint (same id)
+                    // and a format change in Sound settings.
+                    if (target.Length > 0 && (target != cap.DeviceId || cap.Invalidated))
+                    {
+                        try
+                        {
+                            var next = WasapiCapturer.Open(preferred);
+                            cap.Dispose();
+                            cap = next;
+                            channels = cap.Channels;
+                            decimStep = (double)cap.SampleRate / targetRate;
+                            decimAcc = 0;
+                            written = 0;
+                            failedTarget = "";
+                            Nexus.Service.Lighting.Engine.Gpu.GpuContext.Log($"[wasapi] switched endpoint: {cap.SampleRate} Hz, {cap.Channels} ch");
+                        }
+                        catch (Exception ex)
+                        {
+                            // Retried every check, logged once per target.
+                            if (target != failedTarget)
+                            {
+                                Nexus.Service.Lighting.Engine.Gpu.GpuContext.Log($"[wasapi] switch failed: {ex.Message}");
+                            }
+                            failedTarget = target;
+                        }
+                    }
+                }
+
                 int frames = cap.Read(out var src);
                 long now = Environment.TickCount64;
                 if (now - lastLogTick > 5000)
@@ -203,6 +262,8 @@ public sealed class WasapiLoopbackBeatsProvider : IBeatsProvider
             cap?.Dispose();
         }
     }
+
+    private string PreferredDeviceId() => _store.Load().Lighting.AudioOutputDeviceId ?? "";
 }
 
 /// <summary>
@@ -215,6 +276,10 @@ internal sealed unsafe class WasapiCapturer : IDisposable
 {
     public int SampleRate { get; private set; }
     public int Channels { get; private set; }
+    /// <summary>IMMDevice id of the endpoint this capturer is bound to.</summary>
+    public string DeviceId { get; private set; } = "";
+    /// <summary>The stream died under us (endpoint removed or reformatted); only a reopen recovers it.</summary>
+    public bool Invalidated { get; private set; }
 
     private IntPtr _enumerator;
     private IntPtr _device;
@@ -237,6 +302,8 @@ internal sealed unsafe class WasapiCapturer : IDisposable
     private const int COINIT_MULTITHREADED = 0;
     private const int eRender = 0;
     private const int eConsole = 0;
+    private const uint DEVICE_STATE_ACTIVE = 0x1;
+    private const int AUDCLNT_E_DEVICE_INVALIDATED = unchecked((int)0x88890004);
     private const long ReftimesPerMs = 10000L;
     private const uint AUDCLNT_BUFFERFLAGS_SILENT = 0x2;
 
@@ -249,7 +316,8 @@ internal sealed unsafe class WasapiCapturer : IDisposable
     [DllImport("ole32", ExactSpelling = true)]
     private static extern void CoTaskMemFree(IntPtr ptr);
 
-    public static WasapiCapturer Open()
+    /// <summary>Opens <paramref name="preferredId"/> when it is plugged in, else the default output.</summary>
+    public static WasapiCapturer Open(string preferredId)
     {
         // COINIT_MULTITHREADED is safe to call repeatedly; COM tolerates it
         // returning RPC_E_CHANGED_MODE if something else already initialised
@@ -263,12 +331,8 @@ internal sealed unsafe class WasapiCapturer : IDisposable
                 IID_IMMDeviceEnumerator, out cap._enumerator);
             ThrowOnHr(hr, "CoCreateInstance(MMDeviceEnumerator)");
 
-            // IMMDeviceEnumerator.GetDefaultAudioEndpoint (vtable slot 4 after
-            // 3 IUnknown entries).
-            var enumVtbl = *(IntPtr**)cap._enumerator;
-            var getDefault = (delegate* unmanaged[Stdcall]<IntPtr, int, int, out IntPtr, int>)enumVtbl[4];
-            hr = getDefault(cap._enumerator, eRender, eConsole, out cap._device);
-            ThrowOnHr(hr, "GetDefaultAudioEndpoint");
+            cap._device = cap.ResolveDevice(preferredId);
+            cap.DeviceId = GetId(cap._device);
 
             // IMMDevice.Activate (slot 3 after IUnknown).
             var devVtbl = *(IntPtr**)cap._device;
@@ -343,6 +407,71 @@ internal sealed unsafe class WasapiCapturer : IDisposable
         }
     }
 
+    /// <summary>Id of the endpoint <see cref="Open"/> would bind right now; empty when none resolves.</summary>
+    public string TargetId(string preferredId)
+    {
+        try
+        {
+            var dev = ResolveDevice(preferredId);
+            try
+            { return GetId(dev); }
+            finally
+            { ReleaseCom(ref dev); }
+        }
+        catch
+        {
+            return "";
+        }
+    }
+
+    private IntPtr ResolveDevice(string preferredId)
+    {
+        var enumVtbl = *(IntPtr**)_enumerator;
+        if (preferredId.Length > 0)
+        {
+            // IMMDeviceEnumerator.GetDevice (slot 5) also resolves an unplugged
+            // endpoint, so the pick wins only while IMMDevice.GetState (slot 6)
+            // reports it active.
+            var getDevice = (delegate* unmanaged[Stdcall]<IntPtr, char*, out IntPtr, int>)enumVtbl[5];
+            int ghr;
+            IntPtr picked;
+            fixed (char* id = preferredId)
+            {
+                ghr = getDevice(_enumerator, id, out picked);
+            }
+            if (ghr >= 0 && picked != IntPtr.Zero)
+            {
+                var getState = (delegate* unmanaged[Stdcall]<IntPtr, out uint, int>)(*(IntPtr**)picked)[6];
+                if (getState(picked, out var state) >= 0 && state == DEVICE_STATE_ACTIVE)
+                {
+                    return picked;
+                }
+                ReleaseCom(ref picked);
+            }
+        }
+
+        // IMMDeviceEnumerator.GetDefaultAudioEndpoint (vtable slot 4 after
+        // 3 IUnknown entries).
+        var getDefault = (delegate* unmanaged[Stdcall]<IntPtr, int, int, out IntPtr, int>)enumVtbl[4];
+        int hr = getDefault(_enumerator, eRender, eConsole, out var device);
+        ThrowOnHr(hr, "GetDefaultAudioEndpoint");
+        return device;
+    }
+
+    private static string GetId(IntPtr device)
+    {
+        // IMMDevice.GetId (slot 5); the string is CoTaskMem-owned.
+        var getId = (delegate* unmanaged[Stdcall]<IntPtr, out IntPtr, int>)(*(IntPtr**)device)[5];
+        if (getId(device, out var str) < 0 || str == IntPtr.Zero)
+        {
+            return "";
+        }
+        try
+        { return Marshal.PtrToStringUni(str) ?? ""; }
+        finally
+        { CoTaskMemFree(str); }
+    }
+
     public int Read(out float[] samples)
     {
         // IAudioCaptureClient.GetNextPacketSize (slot 5), GetBuffer (slot 3),
@@ -351,6 +480,10 @@ internal sealed unsafe class WasapiCapturer : IDisposable
         var ccVtbl = *(IntPtr**)_captureClient;
         var getNextPacketSize = (delegate* unmanaged[Stdcall]<IntPtr, out uint, int>)ccVtbl[5];
         int hr = getNextPacketSize(_captureClient, out uint packetFrames);
+        if (hr == AUDCLNT_E_DEVICE_INVALIDATED)
+        {
+            Invalidated = true;
+        }
         if (hr != 0 || packetFrames == 0)
         {
             samples = Array.Empty<float>();
@@ -359,6 +492,10 @@ internal sealed unsafe class WasapiCapturer : IDisposable
 
         var getBuffer = (delegate* unmanaged[Stdcall]<IntPtr, out IntPtr, out uint, out uint, out long, out long, int>)ccVtbl[3];
         hr = getBuffer(_captureClient, out IntPtr pData, out uint framesRead, out uint flags, out _, out _);
+        if (hr == AUDCLNT_E_DEVICE_INVALIDATED)
+        {
+            Invalidated = true;
+        }
         if (hr != 0 || framesRead == 0)
         {
             samples = Array.Empty<float>();
@@ -393,7 +530,7 @@ internal sealed unsafe class WasapiCapturer : IDisposable
     }
 
     /// <summary>
-    /// Returns the calibrated post-volume peak [0,1] of the default render
+    /// Returns the calibrated post-volume peak [0,1] of the captured render
     /// endpoint, or null if IAudioMeterInformation is unavailable. Same value
     /// the Windows volume mixer indicator uses; works even when WASAPI
     /// loopback emits no packets (silence).

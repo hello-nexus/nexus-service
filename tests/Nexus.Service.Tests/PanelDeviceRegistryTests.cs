@@ -24,7 +24,7 @@ public sealed class PanelDeviceRegistryTests : IDisposable
     public PanelDeviceRegistryTests()
     {
         _store = new JsonConfigStore(_path);
-        _registry = new PanelDeviceRegistry(_store);
+        _registry = new PanelDeviceRegistry(_store) { SeeThroughHost = false };
     }
 
     public void Dispose()
@@ -106,6 +106,20 @@ public sealed class PanelDeviceRegistryTests : IDisposable
         Assert.Equal("Renamed", patched.DisplayName);
     }
 
+    [Fact]
+    public void Patch_TextColor_RoundTripsAndSurvivesOmission()
+    {
+        var record = _registry.Allocate(null, Caps(PanelSurfaces.Phone));
+        Assert.Null(record.TextColorMode);
+        Assert.Null(record.TextColor);
+
+        _registry.Patch(record.Id, new PanelDevicePatch { TextColorMode = "custom", TextColor = "#ff8800" });
+        var patched = _registry.Patch(record.Id, new PanelDevicePatch { DisplayName = "Renamed" });
+
+        Assert.Equal("custom", patched!.TextColorMode);
+        Assert.Equal("#ff8800", _registry.Get(record.Id)!.TextColor);
+    }
+
     /// <summary>
     /// The service stores null until explicitly patched, same as WidgetOpacity/
     /// WidgetLabels; the default percent is applied client-side.
@@ -180,6 +194,74 @@ public sealed class PanelDeviceRegistryTests : IDisposable
         _registry.Patch(y70.Id, new PanelDevicePatch { Backdrop = "desktop" });
 
         Assert.Equal("desktop", _registry.GetY70Backdrop());
+    }
+
+    [Fact]
+    public void UnsetBackdrop_ReadsAsDesktopOnSeeThroughHost_WithoutPersisting()
+    {
+        var registry = new PanelDeviceRegistry(_store) { SeeThroughHost = true };
+        Assert.Equal("desktop", registry.GetY70Backdrop());
+
+        var (monitor, _) = registry.AllocateForDisplay("DISP-1", null, Caps(PanelSurfaces.Monitor));
+        var y70 = registry.Allocate(null, Caps(PanelSurfaces.Y70));
+
+        Assert.Equal("desktop", monitor.Backdrop);
+        Assert.Equal("desktop", registry.Get(y70.Id)!.Backdrop);
+        Assert.Equal("desktop", registry.GetY70Backdrop());
+        Assert.Equal("desktop", Assert.Single(registry.ListAssignments()).Backdrop);
+        Assert.Null(_store.Load().PanelDevices[monitor.Id].Backdrop);
+        Assert.Null(_store.Load().PanelDevices[y70.Id].Backdrop);
+    }
+
+    [Fact]
+    public void UnsetBackdrop_DesktopDefault_ExplicitChoiceAndResetWin()
+    {
+        var registry = new PanelDeviceRegistry(_store) { SeeThroughHost = true };
+        var (monitor, _) = registry.AllocateForDisplay("DISP-1", null, Caps(PanelSurfaces.Monitor));
+
+        registry.Patch(monitor.Id, new PanelDevicePatch { Backdrop = "wallpaper" });
+        Assert.Equal("wallpaper", registry.Get(monitor.Id)!.Backdrop);
+        Assert.Equal("wallpaper", Assert.Single(registry.ListAssignments()).Backdrop);
+
+        Assert.Equal("desktop", registry.ResetToDefaults(monitor.Id)!.Backdrop);
+    }
+
+    [Fact]
+    public void UnsetBackdrop_Y70InCompatibilityMode_KeepsClientDefault()
+    {
+        _store.Update(s => s.Y70.CompatibilityRendering = true);
+        var registry = new PanelDeviceRegistry(_store) { SeeThroughHost = true };
+        Assert.Equal("", registry.GetY70Backdrop());
+
+        var y70 = registry.Allocate(null, Caps(PanelSurfaces.Y70));
+        var (monitor, _) = registry.AllocateForDisplay("DISP-1", null, Caps(PanelSurfaces.Monitor));
+
+        Assert.Null(y70.Backdrop);
+        Assert.Equal("", registry.GetY70Backdrop());
+        Assert.Equal("desktop", monitor.Backdrop);
+    }
+
+    [Theory]
+    [InlineData(PanelSurfaces.Phone)]
+    [InlineData(PanelSurfaces.Q60)]
+    [InlineData(PanelSurfaces.Monitor)]
+    public void UnsetBackdrop_StaysNullOnSurfacesWithoutADesktopBehind(string surface)
+    {
+        var registry = new PanelDeviceRegistry(_store) { SeeThroughHost = true };
+
+        Assert.Null(registry.Allocate(null, Caps(surface)).Backdrop);
+    }
+
+    [Fact]
+    public void UnsetBackdrop_StaysUnsetOnOpaqueKioskHost()
+    {
+        var (monitor, _) = _registry.AllocateForDisplay("DISP-1", null, Caps(PanelSurfaces.Monitor));
+        var y70 = _registry.Allocate(null, Caps(PanelSurfaces.Y70));
+
+        Assert.Null(monitor.Backdrop);
+        Assert.Null(_registry.Get(y70.Id)!.Backdrop);
+        Assert.Equal("", _registry.GetY70Backdrop());
+        Assert.Equal("", Assert.Single(_registry.ListAssignments()).Backdrop);
     }
 
     [Fact]
@@ -475,5 +557,105 @@ public sealed class PanelDeviceRegistryTests : IDisposable
         });
 
         Assert.Equal(PanelSurfaces.Desktop, patched!.Capabilities?.Surface);
+    }
+
+    private static PanelLayoutDto Layout(string widgetType) => new()
+    {
+        Pages = { new PanelPageDto { Id = "p1", Widgets = { new PanelWidgetDto { Id = "w1", Type = widgetType } } } },
+    };
+
+    [Fact]
+    public void ActivatePreset_AppliesTheSnapshot_AndCapturesThePresetBeingLeft()
+    {
+        var record = _registry.Allocate(null, Caps(PanelSurfaces.Q60));
+        _registry.Patch(record.Id, new PanelDevicePatch { Layout = Layout("clock"), ThemeMode = "light" });
+        var desk = _registry.CreatePreset(record.Id, "Desk", out _)!.ActiveId!;
+        var game = _registry.CreatePreset(record.Id, "Game", out _)!.ActiveId!;
+        // Edits while Game is loaded belong to Game.
+        _registry.Patch(record.Id, new PanelDevicePatch { Layout = Layout("gallery"), AccentColor = "#ff0000", ThemeMode = "dark", TextColorMode = "custom", TextColor = "#00ff00" });
+
+        var afterDesk = _registry.ActivatePreset(record.Id, desk);
+
+        Assert.Equal(desk, afterDesk!.ActiveId);
+        var live = _registry.Get(record.Id)!;
+        Assert.Equal("clock", live.Layout!.Pages[0].Widgets[0].Type);
+        Assert.Equal("light", live.ThemeMode);
+        // Null in the snapshot resets the field rather than leaving Game's accent.
+        Assert.Null(live.AccentColor);
+        Assert.Null(live.TextColor);
+
+        _registry.ActivatePreset(record.Id, game);
+        live = _registry.Get(record.Id)!;
+        Assert.Equal("gallery", live.Layout!.Pages[0].Widgets[0].Type);
+        Assert.Equal("#ff0000", live.AccentColor);
+        Assert.Equal("dark", live.ThemeMode);
+        Assert.Equal("#00ff00", live.TextColor);
+    }
+
+    [Fact]
+    public void Preset_DoesNotShareTheLiveLayout()
+    {
+        var record = _registry.Allocate(null, Caps(PanelSurfaces.Q60));
+        _registry.Patch(record.Id, new PanelDevicePatch { Layout = Layout("clock") });
+        var desk = _registry.CreatePreset(record.Id, "Desk", out _)!.ActiveId!;
+        _registry.CreatePreset(record.Id, "Other", out _);
+
+        // Widget settings mutate the stored layout in place.
+        _store.Update(s => s.PanelDevices[record.Id].Layout!.Pages[0].Widgets[0].Type = "weather");
+        _registry.ActivatePreset(record.Id, desk);
+
+        Assert.Equal("clock", _registry.Get(record.Id)!.Layout!.Pages[0].Widgets[0].Type);
+    }
+
+    [Fact]
+    public void Presets_NeverRideTheRecordSnapshot()
+    {
+        var record = _registry.Allocate(null, Caps(PanelSurfaces.Q60));
+        _registry.CreatePreset(record.Id, "Desk", out _);
+
+        Assert.Null(_registry.Get(record.Id)!.Presets);
+        Assert.Single(_registry.ListPresets(record.Id)!.Presets);
+    }
+
+    [Fact]
+    public void CreatePreset_RefusesPastTheCap()
+    {
+        var record = _registry.Allocate(null, Caps(PanelSurfaces.Q60));
+        for (var i = 0; i < PanelPresets.Cap; i++)
+            _registry.CreatePreset(record.Id, "P" + i, out _);
+
+        var result = _registry.CreatePreset(record.Id, "one too many", out var capped);
+
+        Assert.True(capped);
+        Assert.Null(result);
+        Assert.Equal(PanelPresets.Cap, _registry.ListPresets(record.Id)!.Presets.Count);
+    }
+
+    [Fact]
+    public void SetPresetApps_RefusesAnAppAnotherPresetOfThePanelHolds()
+    {
+        var record = _registry.Allocate(null, Caps(PanelSurfaces.Q60));
+        var desk = _registry.CreatePreset(record.Id, "Desk", out _)!.ActiveId!;
+        var game = _registry.CreatePreset(record.Id, "Game", out _)!.ActiveId!;
+        _registry.SetPresetApps(record.Id, game, new() { new PresetAppBinding { Id = "proc:eldenring", Name = "Elden Ring", ProcessName = "eldenring" } }, out _);
+
+        var result = _registry.SetPresetApps(
+            record.Id, desk, new() { new PresetAppBinding { Id = "shortcut:1", Name = "Elden Ring", ProcessName = "eldenring" } }, out var conflict);
+
+        Assert.Null(result);
+        Assert.Equal(("Elden Ring", "Game"), conflict);
+    }
+
+    [Fact]
+    public void ResetToDefaults_ClearsPresets()
+    {
+        var record = _registry.Allocate(null, Caps(PanelSurfaces.Q60));
+        _registry.CreatePreset(record.Id, "Desk", out _);
+
+        _registry.ResetToDefaults(record.Id);
+
+        var presets = _registry.ListPresets(record.Id)!;
+        Assert.Empty(presets.Presets);
+        Assert.Null(presets.ActiveId);
     }
 }

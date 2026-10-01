@@ -679,9 +679,10 @@ Nexus.Service.Lifecycle.BootTimer.Mark("after pairing wire (resolves PanelPhoneP
 // the constraint, so a genuinely missing asset still 404s instead of being
 // answered with the shell.
 app.MapFallbackToFile("store/{**appId}", "index.html");
-// The store lived under /system/store before it moved to its own path; a link
-// from then still has to reach the shell, which redirects it.
-app.MapFallbackToFile("system/store/{**appId}", "index.html");
+// The default :nonfile fallback drops any /system path whose last segment has a
+// dot (SDK app:<id> pages, device/<key>); real /system/* endpoints are Order-0
+// routes matched before this catch-all at Order int.MaxValue.
+app.MapFallbackToFile("system/{**rest}", "index.html");
 app.MapFallbackToFile("index.html");
 Nexus.Service.Lifecycle.BootTimer.Mark("after MapFallbackToFile");
 

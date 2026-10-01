@@ -913,6 +913,8 @@ public sealed class LightingProvider : ILightingProvider, IDisposable
         "neonwaveform" => new(0.62f, 0.15f, 55f, 1.25f, 1.10f, 1f),
         "liquidbeat" => new(0.78f, 0.20f, 40f, 1.25f, 1.10f, 1f),
         "beatburst" => new(0.00f, 0.00f, 60f, 1.25f, 1.10f, 1f),
+        "lavaribbons" => new(0.85f, 0.00f, 45f, 1.20f, 1.10f, 1f),
+        "lavahaze" => new(0.75f, 0.00f, 40f, 1.20f, 1.05f, 1f),
         // Tunnels + flowy + abstract backgrounds. Mirror SIGNATURES in lightingTemplates.ts.
         "ringtunnel" => new(0.50f, 0.40f, 65f, 1.20f, 1.10f, 1f),
         "vortextunnel" => new(0.72f, 0.30f, 55f, 1.15f, 1.10f, 1f),
@@ -1044,6 +1046,8 @@ public sealed class LightingProvider : ILightingProvider, IDisposable
             "neonwaveform" => ShaderLibrary.Get("neonwaveform"),
             "liquidbeat" => ShaderLibrary.Get("liquidbeat"),
             "beatburst" => ShaderLibrary.Get("beatburst"),
+            "lavaribbons" => ShaderLibrary.Get("lavaribbons"),
+            "lavahaze" => ShaderLibrary.Get("lavahaze"),
             "bubbles" => ShaderLibrary.Bubbles,
             "silkwave" => ShaderLibrary.SilkWave,
             "prismwave" => ShaderLibrary.PrismWave,

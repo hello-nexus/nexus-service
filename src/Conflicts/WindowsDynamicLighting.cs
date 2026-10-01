@@ -100,7 +100,7 @@ public static class WindowsDynamicLighting
     {
         try
         {
-            return CountLampArrays(new WindowsHidEnumerator().FindAll());
+            return CountLampArrays(new WindowsHidEnumerator().FindAllWithoutSerials());
         }
         catch (Exception ex)
         {

@@ -10,6 +10,9 @@ public sealed class HardwareIdentity
     public long RamBytes { get; set; }
     public string StorageModel { get; set; } = "";
     public int LogicalCores { get; set; }
+
+    /// <summary>Peak per-core clock seen during the CPU phase, in MHz; 0 when the platform reports no core clocks.</summary>
+    public int CpuMaxClockMhz { get; set; }
     public string Os { get; set; } = "";
     public string Architecture { get; set; } = "";
 }

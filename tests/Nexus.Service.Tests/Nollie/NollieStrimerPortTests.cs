@@ -43,7 +43,7 @@ public class NollieStrimerPortTests
     }
 
     private NollieConnectionWorker NewWorker(IHidEnumerator hid)
-        => new(hid, _hub, _provider, new DeviceControlGate(_store), _store, new HardwarePresence(new NoUsb()));
+        => new(hid, _hub, _provider, new DeviceControlGate(_store), _store, new HardwarePresence(new OnBus(Vid, Pid)));
 
     // ── Seeding at attach ──
 
@@ -244,9 +244,12 @@ public class NollieStrimerPortTests
         Assert.Equal(reports.Select(r => r.Hw).OrderBy(h => h).ToArray(), reports.Select(r => r.Hw).ToArray());
     }
 
-    private sealed class NoUsb : IUsbEnumerator
+    private sealed class OnBus : IUsbEnumerator
     {
-        public List<UsbDeviceEntry> Enumerate() => new();
+        private readonly int _vid;
+        private readonly int _pid;
+        public OnBus(int vid, int pid) { _vid = vid; _pid = pid; }
+        public List<UsbDeviceEntry> Enumerate() => new() { new UsbDeviceEntry { VendorId = _vid, ProductId = _pid } };
     }
 
     private sealed class NoDevices : IHidEnumerator

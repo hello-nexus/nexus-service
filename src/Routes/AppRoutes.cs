@@ -168,7 +168,6 @@ public static class AppRoutes
                    Nexus.Service.Store.StoreInstaller installer,
                    Nexus.Service.Store.HardwareAppCatalog hardware,
                    Nexus.Service.Store.StoreCatalogProxy catalog,
-                   Nexus.Service.Store.StorePendingUpdates pending,
                    IConfigStore store, MultiplexHub hub, HttpContext http, CancellationToken ct) =>
         {
             var appId = body.AppId ?? "";
@@ -215,9 +214,7 @@ public static class AppRoutes
                 body.Signature = auth.Grant.Signature;
                 if (auth.Grant.Size > 0) body.Size = auth.Grant.Size;
             }
-            body.ConsentExempt = hardware.IsMatched(appId);
             var result = await installer.InstallAsync(body, ct);
-            if (result.Ok) pending.Remove(appId);
             if (result.Ok && Nexus.Service.Store.HardwareAppCatalog.IsHardwareApp(appId))
             {
                 store.Update(s =>
@@ -233,12 +230,6 @@ public static class AppRoutes
             if (result.Ok) PanelTopics.BroadcastAppsChanged(hub);
             return Results.Json(result, AppJsonContext.Default.StoreInstallResponse);
         }).AllowPanel();
-
-        // Store updates held for the user's approval of new capabilities. Approving
-        // is a POST /apps-api/store/install carrying the requested set.
-        app.MapGet("/apps-api/store/pending-updates", (Nexus.Service.Store.StorePendingUpdates pending) =>
-            Results.Json(new StorePendingUpdatesResponse { Updates = pending.All() },
-                AppJsonContext.Default.StorePendingUpdatesResponse)).AllowPanel();
 
         // Manage purchases: cloud entitlements joined with what is on disk here.
         app.MapGet("/apps-api/store/library",

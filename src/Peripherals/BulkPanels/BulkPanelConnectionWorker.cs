@@ -3,6 +3,7 @@ using System.Threading;
 using System.Threading.Tasks;
 using Microsoft.Extensions.Hosting;
 using Nexus.Service.Devices;
+using Nexus.Service.Devices.Detection;
 using Nexus.Service.Peripherals.Hid;
 using Nexus.Service.Platform;
 
@@ -25,14 +26,16 @@ public sealed class BulkPanelConnectionWorker : BackgroundService
     private readonly IBulkUsbPipeFactory _pipes;
     private readonly BulkPanelHub _hub;
     private readonly DeviceControlGate _gate;
+    private readonly HardwarePresence _presence;
 
     public BulkPanelConnectionWorker(
-        IHidEnumerator hid, IBulkUsbPipeFactory pipes, BulkPanelHub hub, DeviceControlGate gate)
+        IHidEnumerator hid, IBulkUsbPipeFactory pipes, BulkPanelHub hub, DeviceControlGate gate, HardwarePresence presence)
     {
         _hid = hid;
         _pipes = pipes;
         _hub = hub;
         _gate = gate;
+        _presence = presence;
     }
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
@@ -43,6 +46,12 @@ public sealed class BulkPanelConnectionWorker : BackgroundService
             try
             {
                 if (!_gate.IsEnabled(driver.HandlerId))
+                {
+                    await Task.Delay(ConnectPollMs, stoppingToken).ConfigureAwait(false);
+                    continue;
+                }
+
+                if (!_presence.UsbPresent(driver.VendorId, driver.ProductIds))
                 {
                     await Task.Delay(ConnectPollMs, stoppingToken).ConfigureAwait(false);
                     continue;

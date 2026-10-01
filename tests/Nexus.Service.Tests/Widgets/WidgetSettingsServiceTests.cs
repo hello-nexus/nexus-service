@@ -104,6 +104,44 @@ public class WidgetSettingsServiceTests : IDisposable
     }
 
     [Fact]
+    public void Playlist_stand_in_reads_and_writes_the_devices_remembered_config()
+    {
+        var svc = SetupWidget(("color", "\"#ff8800\""), ("scale", "1"));
+        using var remembered = JsonDocument.Parse("\"#123456\"");
+        _store.Update(s =>
+        {
+            s.PanelDevices["q60dev"] = new PanelDeviceRecord
+            {
+                Id = "q60dev",
+                Layout = new PanelLayoutDto
+                {
+                    Surface = "q60",
+                    SingleWidgetConfigs = new Dictionary<string, Dictionary<string, JsonElement>>
+                    {
+                        [MarketplaceType] = new() { ["color"] = remembered.RootElement.Clone() },
+                    },
+                },
+            };
+        });
+        var standIn = $"playlist:q60dev:{MarketplaceType}";
+
+        var doc = svc.Get(standIn);
+        Assert.Equal("#123456", doc.Values["color"].GetString());
+        Assert.Equal(1, doc.Values["scale"].GetInt32());
+
+        using var scale = JsonDocument.Parse("5");
+        svc.Apply(standIn, new WidgetSettingsPatch
+        {
+            Set = new Dictionary<string, JsonElement> { ["scale"] = scale.RootElement.Clone() },
+        });
+        var stored = _store.Load().PanelDevices["q60dev"].Layout!.SingleWidgetConfigs![MarketplaceType];
+        Assert.Equal("#123456", stored["color"].GetString());
+        Assert.Equal(5, stored["scale"].GetInt32());
+
+        Assert.Empty(svc.Get($"playlist:missing:{MarketplaceType}").Values);
+    }
+
+    [Fact]
     public void Get_returns_manifest_defaults_when_no_overrides()
     {
         var svc = SetupWidget(("color", "\"#ff8800\""), ("scale", "1"));

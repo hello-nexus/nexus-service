@@ -98,6 +98,34 @@ public sealed class UpdateServiceDownloadTierTests
         }
     }
 
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task Status_CanStage_FollowsWhetherSha256SumsListsTheAsset(bool fromSums)
+    {
+        var store = new InMemoryConfigStore();
+        store.Update(s => s.Update.UpdateMode = "notify");
+        var source = new FakeUpdateSource(new UpdateManifest
+        {
+            Version = NewerVersion,
+            Notes = "test release",
+            AssetUrl = AssetUrl,
+            Sha256 = new string('a', 64),
+            Sha256IsFromSumsFile = fromSums,
+        });
+        var svc = BuildService(source, store);
+
+        var status = await svc.CheckNowAsync(CancellationToken.None);
+
+        // An unofficial build never polls, so no release reaches the status.
+        if (!Nexus.Service.Common.ClientCredential.IsOfficial)
+        {
+            Assert.False(status.CanStage);
+            return;
+        }
+        Assert.Equal(fromSums, status.CanStage);
+    }
+
     private sealed class FakeUpdateSource : IUpdateSource
     {
         private readonly UpdateManifest? _manifest;

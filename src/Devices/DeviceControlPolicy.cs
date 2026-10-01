@@ -6,15 +6,15 @@ namespace Nexus.Service.Devices;
 
 /// <summary>
 /// Brand policy for the Nexus Control gate. A hub in ConflictAppByHandler
-/// defaults off because its vendor app also drives it, so Nexus does not fight
-/// that app until the user opts in after closing it (the device page surfaces
-/// which app to close). A device whose competing app starts whitelisted
+/// defaults off because its vendor app also drives it, and stays off whether or
+/// not that app runs until the user turns Nexus Control on. A device whose
+/// competing app starts whitelisted
 /// (<see cref="Conflicts.ConflictAppDefinition.DefaultWhitelisted"/>) defaults
-/// off and never auto-adopts: that app keeps the device until the user turns
-/// Nexus Control on. Hyte/iBUYPOWER hardware, streamed panels (which have no
-/// on/off row to re-enable), and shared buses (whose monitoring nothing else
-/// provides) default on, as does any handler in neither ConflictAppByHandler
-/// nor UnverifiedHandlers. One source of truth for both facts.
+/// off: that app keeps the device until the user turns Nexus Control on.
+/// Hyte/iBUYPOWER hardware, streamed panels (which have no on/off row to
+/// re-enable), and shared buses (whose monitoring nothing else provides)
+/// default on, as does any handler in neither ConflictAppByHandler nor
+/// UnverifiedHandlers. One source of truth for both facts.
 /// </summary>
 public static class DeviceControlPolicy
 {
@@ -57,7 +57,7 @@ public static class DeviceControlPolicy
         "thermalright-lcd", "asus-ryujin-lcd", "lianli-screen88",
     };
 
-    /// <summary>Feeds <see cref="ConflictAppFor"/> alone: names a competing app for the UI hint; the handler never auto-adopts and defaults on unless that app starts whitelisted.</summary>
+    /// <summary>Feeds <see cref="ConflictAppFor"/> alone: names a competing app for the UI hint; the handler defaults on unless that app starts whitelisted.</summary>
     private static readonly Dictionary<string, string> HintOnlyConflictAppByHandler = new(StringComparer.OrdinalIgnoreCase)
     {
         [SmbusDramHandler.HandlerId] = "icue",
@@ -97,10 +97,6 @@ public static class DeviceControlPolicy
         }
         return handlers;
     }
-
-    /// <summary>The competing app whose absence lets <see cref="DeviceAdoptionService"/> flip the handler on; null for handlers that never auto-adopt.</summary>
-    public static string? AdoptionConflictAppFor(string handlerId)
-        => ConflictAppByHandler.TryGetValue(handlerId, out var id) ? id : null;
 
     /// <summary>"usb" for every USB handler, "smbus" for the chipset-bus pseudo-device.</summary>
     public static string BusFor(string handlerId)

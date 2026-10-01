@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
+using Nexus.Service.Devices.Detection;
 using Nexus.Service.Peripherals.Hid;
 using Nexus.Service.Platform;
 
@@ -22,11 +23,13 @@ public sealed record Aw5PanelTarget(Aw5Variant Variant, string Path, string? Ser
 public sealed class Aw5Hub : IDisposable
 {
     private readonly IHidEnumerator _hid;
+    private readonly HardwarePresence? _presence;
     private readonly Dictionary<string, IHidDevice> _open = new(StringComparer.OrdinalIgnoreCase);
 
-    public Aw5Hub(IHidEnumerator hid)
+    public Aw5Hub(IHidEnumerator hid, HardwarePresence? presence = null)
     {
         _hid = hid;
+        _presence = presence;
     }
 
     /// <summary>
@@ -38,6 +41,7 @@ public sealed class Aw5Hub : IDisposable
     public IReadOnlyList<Aw5PanelTarget> Discover()
     {
         var found = new List<Aw5PanelTarget>();
+        if (_presence is not null && !_presence.UsbPresent(Aw5Protocol.IbpVid, Aw5Protocol.LevelplayPid, Aw5Protocol.CoolerMasterPid)) return found;
         try
         {
             foreach (var i in _hid.Find(Aw5Protocol.IbpVid, Aw5Protocol.LevelplayPid))

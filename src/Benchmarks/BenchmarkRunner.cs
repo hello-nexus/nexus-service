@@ -125,7 +125,18 @@ public sealed class BenchmarkRunner
         {
             // CPU
             BroadcastPhaseStart(runId, "cpu", subs);
-            var cpu = await _provider.RunCpuAsync(progressReporter, ct);
+            using var clockCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+            var peakClock = Task.Run(() => SamplePeakCpuClockMhzAsync(clockCts.Token));
+            BenchmarkSubScore cpu;
+            try
+            {
+                cpu = await _provider.RunCpuAsync(progressReporter, ct);
+            }
+            finally
+            {
+                clockCts.Cancel();
+            }
+            hardware.CpuMaxClockMhz = await peakClock;
             subs.Add(cpu);
 
             // RAM
@@ -223,11 +234,13 @@ public sealed class BenchmarkRunner
         // specs collector's WMI Caption ("Windows 11 Pro (10.0.22631)") instead,
         // matching what /system/specs and the panel widget already show.
         string os = RuntimeInformation.OSDescription;
+        string memory = "";
         try
         {
             var specs = await _specs.GetAsync(ct).ConfigureAwait(false);
             if (!string.IsNullOrWhiteSpace(specs.OsBuild))
                 os = specs.OsBuild;
+            memory = specs.Memory;
         }
         catch { /* fall back to OSDescription */ }
 
@@ -239,7 +252,11 @@ public sealed class BenchmarkRunner
             // Capacity lives in RamBytes / /system/memory.
             var ramBrand = _sensors.GetRamBrandModel() ?? "";
             var storageBrand = _sensors.GetStorageBrandModel() ?? "";
-            var ramBytes = ParseRamBytes(_sensors.GetMemoryTotalFormatted());
+            // Specs Memory leads with the installed DIMM total ("64 GB DDR5-6000 (...)");
+            // the sensor total is OS-visible memory, short by the hardware reservation.
+            var ramBytes = InstalledRamBytes(memory);
+            if (ramBytes <= 0)
+                ramBytes = ParseRamBytes(_sensors.GetMemoryTotalFormatted());
             var gpus = _sensors.GetGpus();
             var hardware = new HardwareIdentity
             {
@@ -311,6 +328,44 @@ public sealed class BenchmarkRunner
         }
         return null;
     }
+
+    /// <summary>Samples the "Core Max" CPU clock aggregate until <paramref name="ct"/> cancels; see <see cref="PeakClockMhz"/>.</summary>
+    private async Task<int> SamplePeakCpuClockMhzAsync(CancellationToken ct)
+    {
+        var samples = new System.Collections.Generic.List<float>();
+        using var timer = new PeriodicTimer(TimeSpan.FromSeconds(1));
+        try
+        {
+            do
+            {
+                foreach (var s in _sensors.GetCpuSensors())
+                {
+                    if (s.Type == "Clock" && s.Name == "Core Max" && s.Value > 0)
+                        samples.Add(s.Value);
+                }
+            }
+            while (await timer.WaitForNextTickAsync(ct).ConfigureAwait(false));
+        }
+        catch (OperationCanceledException) { }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine($"[benchmark] cpu clock sampling failed: {ex.Message}");
+        }
+        return PeakClockMhz(samples);
+    }
+
+    /// <summary>Second-highest sample in whole MHz, so one spurious sensor reading cannot become the peak; 0 with fewer than two samples.</summary>
+    internal static int PeakClockMhz(System.Collections.Generic.List<float> samples)
+    {
+        if (samples.Count < 2)
+            return 0;
+        samples.Sort();
+        return (int)Math.Round(samples[^2]);
+    }
+
+    /// <summary>Leading capacity of a specs Memory string ("64 GB DDR5-6000 (...)") in bytes; 0 when it has none.</summary>
+    internal static long InstalledRamBytes(string specsMemory)
+        => ParseRamBytes(System.Text.RegularExpressions.Regex.Match(specsMemory, @"^\S+ [KMGT]B\b").Value);
 
     /// <summary>
     /// GetMemoryTotalFormatted returns e.g. "16.0 GB" / "32.5 GB" / "1.5 TB".

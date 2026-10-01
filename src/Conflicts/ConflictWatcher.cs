@@ -120,9 +120,9 @@ public sealed class ConflictWatcher : BackgroundService, IConflictDetector
     /// <summary>
     /// Scans if the cache is older than the poll interval. The background loop
     /// only scans while something is subscribed, so on an idle box (no
-    /// dashboard, no adoption candidates) the process enumeration stops
-    /// happening at all - but every reader still sees data no staler than it
-    /// did when the loop ran unconditionally.
+    /// dashboard) the process enumeration stops happening at all - but every
+    /// reader still sees data no staler than it did when the loop ran
+    /// unconditionally.
     /// </summary>
     private void EnsureFresh()
     {

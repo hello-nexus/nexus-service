@@ -48,6 +48,8 @@ public class ShaderLibraryTests
     [InlineData("neonwaveform")]
     [InlineData("liquidbeat")]
     [InlineData("beatburst")]
+    [InlineData("lavaribbons")]
+    [InlineData("lavahaze")]
     [InlineData("constellation")]
     [InlineData("cybertunnel")]
     [InlineData("hyperspace")]
@@ -75,6 +77,8 @@ public class ShaderLibraryTests
     [InlineData("neonwaveform")]
     [InlineData("liquidbeat")]
     [InlineData("beatburst")]
+    [InlineData("lavaribbons")]
+    [InlineData("lavahaze")]
     public void FullscreenAudioShaders_Are_AudioEffects(string key)
     {
         // A key missing here renders fine but never gets capture started, so it

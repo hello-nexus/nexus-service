@@ -3,6 +3,7 @@ using System.Threading;
 using System.Threading.Tasks;
 using Microsoft.Extensions.Hosting;
 using Nexus.Service.Devices;
+using Nexus.Service.Devices.Detection;
 using Nexus.Service.Lighting;
 using Nexus.Service.Peripherals.Hid;
 using Nexus.Service.Platform;
@@ -18,14 +19,16 @@ public sealed class StrimerConnectionWorker : BackgroundService
     private readonly StrimerHub _hub;
     private readonly StrimerLightingDeviceProvider _lighting;
     private readonly DeviceControlGate _gate;
+    private readonly HardwarePresence _presence;
     private bool _firstAttach;
 
-    public StrimerConnectionWorker(IHidEnumerator hid, StrimerHub hub, StrimerLightingDeviceProvider lighting, DeviceControlGate gate)
+    public StrimerConnectionWorker(IHidEnumerator hid, StrimerHub hub, StrimerLightingDeviceProvider lighting, DeviceControlGate gate, HardwarePresence presence)
     {
         _hid = hid;
         _hub = hub;
         _lighting = lighting;
         _gate = gate;
+        _presence = presence;
     }
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
@@ -35,6 +38,12 @@ public sealed class StrimerConnectionWorker : BackgroundService
             try
             {
                 if (!_gate.IsEnabled("strimer"))
+                {
+                    await Task.Delay(ConnectPollMs, stoppingToken).ConfigureAwait(false);
+                    continue;
+                }
+
+                if (!_presence.UsbPresent(StrimerProtocol.VendorId, StrimerProtocol.ProductId))
                 {
                     await Task.Delay(ConnectPollMs, stoppingToken).ConfigureAwait(false);
                     continue;

@@ -235,7 +235,7 @@ public class NollieStandaloneTests
     // ── Worker paths ──
 
     private NollieConnectionWorker NewWorker(NollieLightingDeviceProviderTests.FakeHidDevice device, int reportSize)
-        => new(new OneDevice(device, reportSize), _hub, _provider, new DeviceControlGate(_store), _store, new HardwarePresence(new NoUsb()));
+        => new(new OneDevice(device, reportSize), _hub, _provider, new DeviceControlGate(_store), _store, new HardwarePresence(new OnBus(device.VendorId, device.ProductId)));
 
     [Fact]
     public void Attach_applies_the_standalone_settings_after_seeding()
@@ -310,9 +310,12 @@ public class NollieStandaloneTests
         Assert.Equal(120, d.Devices.ZoneLedCounts[$"{controller.DeviceId}:strimer-atx"]);
     }
 
-    private sealed class NoUsb : IUsbEnumerator
+    private sealed class OnBus : IUsbEnumerator
     {
-        public List<UsbDeviceEntry> Enumerate() => new();
+        private readonly int _vid;
+        private readonly int _pid;
+        public OnBus(int vid, int pid) { _vid = vid; _pid = pid; }
+        public List<UsbDeviceEntry> Enumerate() => new() { new UsbDeviceEntry { VendorId = _vid, ProductId = _pid } };
     }
 
     private sealed class OneDevice : IHidEnumerator

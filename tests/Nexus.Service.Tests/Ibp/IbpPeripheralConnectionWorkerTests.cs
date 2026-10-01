@@ -31,9 +31,9 @@ public class IbpPeripheralConnectionWorkerTests
         public List<HidDeviceInfo> Infos { get; } = new();
         public HashSet<string> RefuseOpen { get; } = new();
         public HashSet<string> RefuseWrites { get; } = new();
-        public int FindAllCalls { get; private set; }
+        public int Lookups { get; private set; }
         public IReadOnlyList<HidDeviceInfo> Find(int vendorId, int productId) => FindAll();
-        public IReadOnlyList<HidDeviceInfo> FindAll() { FindAllCalls++; return Infos.ToList(); }
+        public IReadOnlyList<HidDeviceInfo> FindAll() { Lookups++; return Infos.ToList(); }
         public IHidDevice? Open(string path, bool forInput = false) =>
             RefuseOpen.Contains(path) ? null : new NullDevice(Infos.First(i => i.Path == path), RefuseWrites.Contains(path));
         public void Add(IbpPeripheralModel model, string serial) => Infos.Add(new HidDeviceInfo
@@ -93,7 +93,7 @@ public class IbpPeripheralConnectionWorkerTests
     {
         var rig = new Rig();
         rig.Worker.Tick();
-        Assert.Equal(0, rig.Hid.FindAllCalls); // nothing on the bus: no HID walk
+        Assert.Equal(0, rig.Hid.Lookups); // nothing on the bus: no HID walk
         Assert.Equal(0, rig.Changes);
 
         rig.Usb.Plug(0x0301);
@@ -103,7 +103,7 @@ public class IbpPeripheralConnectionWorkerTests
         Assert.Equal(1, rig.Changes);
         rig.Worker.Tick();
         rig.Worker.Tick();
-        Assert.Equal(1, rig.Hid.FindAllCalls); // steady state: no re-enumeration
+        Assert.Equal(1, rig.Hid.Lookups); // steady state: no re-enumeration
         Assert.Equal(1, rig.Changes);
 
         rig.Usb.Unplug(0x0301);
@@ -144,18 +144,18 @@ public class IbpPeripheralConnectionWorkerTests
         rig.Hid.RefuseOpen.Add("mk9-keyboard-MK1");
 
         rig.Worker.Tick();
-        Assert.Equal(1, rig.Hid.FindAllCalls);
+        Assert.Equal(1, rig.Hid.Lookups);
         Assert.Empty(rig.Hub.Attached);
         for (var i = 0; i < 5; i++)
         {
             rig.Now += 1000;
             rig.Worker.Tick();
         }
-        Assert.Equal(1, rig.Hid.FindAllCalls);
+        Assert.Equal(1, rig.Hid.Lookups);
 
         rig.Now += IbpPeripheralConnectionWorker.OpenRetryMs;
         rig.Worker.Tick();
-        Assert.Equal(2, rig.Hid.FindAllCalls);
+        Assert.Equal(2, rig.Hid.Lookups);
         Assert.Empty(rig.Hub.Attached);
 
         // Re-plug resets the backoff: the next tick retries at once.
@@ -164,7 +164,7 @@ public class IbpPeripheralConnectionWorkerTests
         rig.Usb.Plug(0x0303);
         rig.Hid.RefuseOpen.Clear();
         rig.Worker.Tick();
-        Assert.Equal(3, rig.Hid.FindAllCalls);
+        Assert.Equal(3, rig.Hid.Lookups);
         Assert.Single(rig.Hub.Attached);
         Assert.Equal(1, rig.Changes);
     }
@@ -188,13 +188,13 @@ public class IbpPeripheralConnectionWorkerTests
             rig.Now += 1000;
             rig.Worker.Tick();
         }
-        Assert.Equal(1, rig.Hid.FindAllCalls);
+        Assert.Equal(1, rig.Hid.Lookups);
         Assert.Empty(rig.Hub.Attached);
         Assert.Equal(2, rig.Changes); // the drop was reported once
 
         rig.Now += IbpPeripheralConnectionWorker.OpenRetryMs;
         rig.Worker.Tick();
-        Assert.Equal(2, rig.Hid.FindAllCalls);
+        Assert.Equal(2, rig.Hid.Lookups);
         Assert.Single(rig.Hub.Attached);
         Assert.Equal(3, rig.Changes);
     }
@@ -213,7 +213,7 @@ public class IbpPeripheralConnectionWorkerTests
         rig.Hid.Add(IbpPeripheralProtocol.Km7Mouse, "MS1");
         rig.Now += 1000;
         rig.Worker.Tick(); // mouse is new and allowed: enumerates despite the keyboard's backoff
-        Assert.Equal(2, rig.Hid.FindAllCalls);
+        Assert.Equal(3, rig.Hid.Lookups); // one lookup per allowed model
         var only = Assert.Single(rig.Hub.Attached);
         Assert.Equal(IbpPeripheralKind.Mouse, only.Model.Kind);
     }

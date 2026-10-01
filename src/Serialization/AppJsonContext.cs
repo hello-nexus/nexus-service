@@ -195,6 +195,7 @@ namespace Nexus.Service.Serialization;
 [JsonSerializable(typeof(LightingStatusResponse))]
 [JsonSerializable(typeof(List<float>))]
 [JsonSerializable(typeof(Nexus.Service.Models.Lighting.MusicReactiveBody))]
+[JsonSerializable(typeof(Nexus.Service.Models.Lighting.AudioOutputBody))]
 [JsonSerializable(typeof(Nexus.Service.Models.Lighting.SleepBlackoutBody))]
 [JsonSerializable(typeof(Nexus.Service.Models.Lighting.LockBlackoutBody))]
 [JsonSerializable(typeof(CalibrationStartResponse))]
@@ -252,6 +253,8 @@ namespace Nexus.Service.Serialization;
 [JsonSerializable(typeof(Nexus.Service.Models.Panel.PanelDevicePatch))]
 [JsonSerializable(typeof(Nexus.Service.Models.Panel.PanelDeviceCreateBody))]
 [JsonSerializable(typeof(Nexus.Service.Models.Panel.PanelDeviceListResponse))]
+[JsonSerializable(typeof(Nexus.Service.Models.Panel.PanelPresetsResponse))]
+[JsonSerializable(typeof(Nexus.Service.Models.Panel.PanelPresetNameBody))]
 [JsonSerializable(typeof(List<Nexus.Service.Models.Panel.PanelDeviceRecord>))]
 [JsonSerializable(typeof(Dictionary<string, Nexus.Service.Models.Panel.PanelDeviceRecord>))]
 [JsonSerializable(typeof(Nexus.Service.Models.Panel.PrefsChangedFrame))]
@@ -1003,6 +1006,7 @@ namespace Nexus.Service.Serialization;
 // System launch (open-settings, open-url, open-file - user-session helper handles foreground)
 [JsonSerializable(typeof(Nexus.Service.Helper.Domains.OpenSettingsPayload))]
 [JsonSerializable(typeof(Nexus.Service.Helper.Domains.OpenUrlPayload))]
+[JsonSerializable(typeof(Nexus.Service.Helper.Domains.SystemThemePayload))]
 [JsonSerializable(typeof(Nexus.Service.Helper.Domains.OpenFilePayload))]
 // Per-app audio mixer (Core Audio session walk runs in the user-session helper)
 [JsonSerializable(typeof(Nexus.Service.Helper.Domains.AudioMixerSnapshotPayload))]
@@ -1042,7 +1046,6 @@ namespace Nexus.Service.Serialization;
 [JsonSerializable(typeof(AppInstallResponse))]
 [JsonSerializable(typeof(StoreInstallRequest))]
 [JsonSerializable(typeof(StoreInstallResponse))]
-[JsonSerializable(typeof(StorePendingUpdatesResponse))]
 [JsonSerializable(typeof(StoreRevokedResponse))]
 [JsonSerializable(typeof(StoreDownloadGrant))]
 [JsonSerializable(typeof(StoreCatalogApp))]

@@ -54,15 +54,14 @@ public sealed class StoreReleaseTests
     }
 
     [Fact]
-    public async Task The_signature_and_capabilities_come_through()
+    public async Task The_signature_comes_through()
     {
         var body = "{\"latest\":{\"version\":\"1.0.0\",\"sha256\":\"" + new string('a', 64)
-            + "\",\"size\":10,\"signature\":\"c2ln\",\"capabilities\":{\"dispatch\":[\"system.specs\"]}}}";
+            + "\",\"size\":10,\"signature\":\"c2ln\"}}";
         var latest = await StoreRelease.LatestAsync(
             new StoreCatalogProxy(new HttpClient(new JsonHandler(body))), "com.x.app", "3.0.0", CancellationToken.None);
 
         Assert.Equal("c2ln", latest!.Signature);
-        Assert.Equal(new[] { "system.specs" }, latest.Capabilities!.Dispatch);
     }
 
     [Fact]

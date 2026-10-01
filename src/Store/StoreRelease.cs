@@ -45,7 +45,6 @@ internal static class StoreRelease
             Sha256 = version.Sha256,
             Size = version.Size,
             Signature = version.Signature,
-            ConsentExempt = waiveAccount,
         };
 
         var auth = await entitlements.AuthorizeAsync(appId, version.Version, nexusVersion, ct).ConfigureAwait(false);

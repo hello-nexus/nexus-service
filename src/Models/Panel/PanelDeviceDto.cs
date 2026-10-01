@@ -19,7 +19,7 @@ public sealed class PanelGaugeGradientStop
 /// across reconnects. If the device clears its storage, it shows up as a
 /// new record.
 /// </summary>
-public sealed class PanelDeviceRecord
+public sealed class PanelDeviceRecord : IPanelPersonalization
 {
     public string Id { get; set; } = "";
     public string DisplayName { get; set; } = "";
@@ -44,8 +44,9 @@ public sealed class PanelDeviceRecord
     /// <summary>What renders behind the widgets: "theme" (the panel's own
     /// background layer), "wallpaper" (the desktop wallpaper redrawn in-page),
     /// or "desktop" (the kiosk window itself is transparent, so the live
-    /// desktop shows through). Null = the client's per-surface default.
-    /// Only kiosk-hosted panels offer wallpaper/desktop.</summary>
+    /// desktop shows through). Null = unchosen: reads back as "desktop" where
+    /// PanelDeviceRegistry.EffectiveBackdrop applies, else the client's
+    /// per-surface default. Only kiosk-hosted panels offer wallpaper/desktop.</summary>
     public string? Backdrop { get; set; }
     /// <summary>Selected background-media asset id (PanelBgLibrary) for THIS
     /// panel; null = none. Only set for local panels (y70 / q-series).</summary>
@@ -80,6 +81,10 @@ public sealed class PanelDeviceRecord
     public bool? WidgetLabels { get; set; }
     /// <summary>Percent 0-100. Null is unset; the client applies its own default.</summary>
     public double? WidgetPadding { get; set; }
+    /// <summary>Widget text colour: "adaptive" (light or dark per widget from its backdrop), "theme", or "custom". Null is unset; the client applies its own default.</summary>
+    public string? TextColorMode { get; set; }
+    /// <summary>Hex colour for every widget text in "custom" mode, accent-coloured text included.</summary>
+    public string? TextColor { get; set; }
     public bool? ThemeSyncWithDesktop { get; set; }
     public bool? AccentSyncWithDesktop { get; set; }
     public long FirstSeenAt { get; set; }
@@ -158,6 +163,123 @@ public sealed class PanelDeviceRecord
     /// persisted (null on stored records).
     /// </summary>
     public string? SecondaryMonitorState { get; set; }
+    /// <summary>
+    /// Saved personalization snapshots for this panel, at most
+    /// <see cref="Nexus.Service.Panel.PanelPresets.Cap"/>. Persisted only:
+    /// registry snapshots leave it null, so it never rides a record response
+    /// (GET /panel/devices/{id}/presets lists it). A layout migration must walk
+    /// these layouts as well as <see cref="Layout"/>.
+    /// </summary>
+    public List<PanelPreset>? Presets { get; set; }
+    /// <summary>
+    /// The preset the live personalization belongs to: switching to another
+    /// preset captures the live fields back into this one first. Null when
+    /// none is loaded. Persisted only, like <see cref="Presets"/>.
+    /// </summary>
+    public string? ActivePresetId { get; set; }
+}
+
+/// <summary>
+/// The personalization fields of a panel: what a panel preset captures and
+/// applies, and what the personalization reset clears
+/// (<see cref="Nexus.Service.Panel.PanelDeviceRegistry.ResetToDefaults"/>).
+/// Identity, display binding, capabilities and hardware settings (mount
+/// orientation, LCD brightness, monitor behaviour) are deliberately absent.
+/// </summary>
+public interface IPanelPersonalization
+{
+    PanelLayoutDto? Layout { get; set; }
+    string? ThemeMode { get; set; }
+    string? AccentColor { get; set; }
+    string? BackgroundColor { get; set; }
+    string? BackgroundColorLight { get; set; }
+    string? BackgroundMode { get; set; }
+    string? BackgroundEffect { get; set; }
+    int? BackgroundTemplate { get; set; }
+    Dictionary<string, int>? BackgroundTemplates { get; set; }
+    double? BackgroundOpacity { get; set; }
+    string? Backdrop { get; set; }
+    string? BackgroundMediaId { get; set; }
+    string? BackgroundMediaType { get; set; }
+    bool? BackgroundMediaAlpha { get; set; }
+    bool? BackgroundMediaSlideshow { get; set; }
+    int? BackgroundMediaInterval { get; set; }
+    bool? BackgroundMediaShuffle { get; set; }
+    bool? BackgroundMediaFinishVideos { get; set; }
+    List<string>? BackgroundMediaOrder { get; set; }
+    double? BackgroundFrostLevel { get; set; }
+    List<PanelGaugeGradientStop>? GaugeGradient { get; set; }
+    double? WidgetOpacity { get; set; }
+    bool? WidgetLabels { get; set; }
+    double? WidgetPadding { get; set; }
+    string? TextColorMode { get; set; }
+    string? TextColor { get; set; }
+    bool? ThemeSyncWithDesktop { get; set; }
+    bool? AccentSyncWithDesktop { get; set; }
+}
+
+/// <summary>
+/// A named snapshot of one panel's personalization. Loaded from the panel's
+/// device page, or by <see cref="Nexus.Service.Panel.PanelPresetSwitcher"/>
+/// when a bound app takes focus.
+/// </summary>
+public sealed class PanelPreset : IAppBoundPreset, IPanelPersonalization
+{
+    public string Id { get; set; } = "";
+    public string Name { get; set; } = "";
+    /// <summary>Apps that load this preset while they hold focus. An app
+    /// appears under at most one of the panel's presets.</summary>
+    public List<PresetAppBinding>? Apps { get; set; }
+    public PanelLayoutDto? Layout { get; set; }
+    public string? ThemeMode { get; set; }
+    public string? AccentColor { get; set; }
+    public string? BackgroundColor { get; set; }
+    public string? BackgroundColorLight { get; set; }
+    public string? BackgroundMode { get; set; }
+    public string? BackgroundEffect { get; set; }
+    public int? BackgroundTemplate { get; set; }
+    public Dictionary<string, int>? BackgroundTemplates { get; set; }
+    public double? BackgroundOpacity { get; set; }
+    public string? Backdrop { get; set; }
+    public string? BackgroundMediaId { get; set; }
+    public string? BackgroundMediaType { get; set; }
+    public bool? BackgroundMediaAlpha { get; set; }
+    public bool? BackgroundMediaSlideshow { get; set; }
+    public int? BackgroundMediaInterval { get; set; }
+    public bool? BackgroundMediaShuffle { get; set; }
+    public bool? BackgroundMediaFinishVideos { get; set; }
+    public List<string>? BackgroundMediaOrder { get; set; }
+    public double? BackgroundFrostLevel { get; set; }
+    public List<PanelGaugeGradientStop>? GaugeGradient { get; set; }
+    public double? WidgetOpacity { get; set; }
+    public bool? WidgetLabels { get; set; }
+    public double? WidgetPadding { get; set; }
+    public string? TextColorMode { get; set; }
+    public string? TextColor { get; set; }
+    public bool? ThemeSyncWithDesktop { get; set; }
+    public bool? AccentSyncWithDesktop { get; set; }
+
+    IReadOnlyList<PresetAppBinding>? IAppBoundPreset.Apps => Apps;
+}
+
+public sealed class PanelPresetDto
+{
+    public string Id { get; set; } = "";
+    public string Name { get; set; } = "";
+    public List<Nexus.Service.Models.Devices.PresetAppDto> Apps { get; set; } = new();
+}
+
+public sealed class PanelPresetsResponse
+{
+    public List<PanelPresetDto> Presets { get; set; } = new();
+    // Always serialize; null = no preset loaded. WhenWritingNull would omit it.
+    [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.Never)]
+    public string? ActiveId { get; set; }
+}
+
+public sealed class PanelPresetNameBody
+{
+    public string Name { get; set; } = "";
 }
 
 /// <summary>
@@ -248,6 +370,8 @@ public sealed class PanelDevicePatch
     public double? WidgetOpacity { get; set; }
     public bool? WidgetLabels { get; set; }
     public double? WidgetPadding { get; set; }
+    public string? TextColorMode { get; set; }
+    public string? TextColor { get; set; }
     public bool? ThemeSyncWithDesktop { get; set; }
     public bool? AccentSyncWithDesktop { get; set; }
     /// <summary>Display-bound records only; ignored for other panels.</summary>

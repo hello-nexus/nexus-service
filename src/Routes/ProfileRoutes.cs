@@ -566,6 +566,7 @@ public static class ProfileRoutes
                     if (ui.PinnedSidebarApps is not null) s.Ui.PinnedSidebarApps = ui.PinnedSidebarApps;
                     if (ui.SidebarAppOrder is not null) s.Ui.SidebarAppOrder = ui.SidebarAppOrder;
                     if (ui.SidebarCollapsed.HasValue) s.Ui.SidebarCollapsed = ui.SidebarCollapsed.Value;
+                    if (ui.DashboardAutoArrange.HasValue) s.Ui.DashboardAutoArrange = ui.DashboardAutoArrange.Value;
                     if (ui.ShowUncontrolledDevices.HasValue) s.Ui.ShowUncontrolledDevices = ui.ShowUncontrolledDevices.Value;
                     if (ui.ShowUncontrolledLightingDevices.HasValue) s.Ui.ShowUncontrolledLightingDevices = ui.ShowUncontrolledLightingDevices.Value;
                     if (ui.ShowUncontrolledCoolingDevices.HasValue) s.Ui.ShowUncontrolledCoolingDevices = ui.ShowUncontrolledCoolingDevices.Value;

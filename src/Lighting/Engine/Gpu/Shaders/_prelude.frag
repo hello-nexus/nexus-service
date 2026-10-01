@@ -72,9 +72,25 @@ vec3 palette(float t, vec3 a, vec3 b, vec3 c, vec3 d) {
 vec3 rainbowPalette(float t) {
     return palette(t, vec3(0.5), vec3(0.5), vec3(1.0), vec3(0.0, 0.33, 0.67));
 }
-// All effects sample through this so the Hue slider shifts them uniformly.
+// Album-art colours from the web media renderers, darkest first. The service
+// never sets u_palette, and an all-zero palette keeps the rainbow even when a
+// saved preset carries u_paletteMix.
+uniform vec3 u_palette[4];
+uniform float u_paletteMix;
+
+// Cyclic blend through the four palette stops, so t wraps like the rainbow.
+vec3 artPalette(float t) {
+    float x = fract(t) * 4.0;
+    int i = int(floor(x));
+    return mix(u_palette[i], u_palette[(i + 1) % 4], smoothstep(0.0, 1.0, fract(x)));
+}
+
+// All effects sample through this. The Hue slider shifts the rainbow
+// uniformly; album-art stops, when on, replace it and ignore Hue.
 vec3 tintedPalette(float t) {
-    return rainbowPalette(t + u_hue);
+    vec3 stops = u_palette[0] + u_palette[1] + u_palette[2] + u_palette[3];
+    bool art = u_paletteMix > 0.5 && dot(stops, vec3(1.0)) > 0.0;
+    return art ? artPalette(t) : rainbowPalette(t + u_hue);
 }
 
 // 0..1 sweep across the frame along an axis rotated `deg` degrees, covering the

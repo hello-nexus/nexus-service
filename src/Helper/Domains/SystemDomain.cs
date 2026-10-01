@@ -21,12 +21,19 @@ public sealed class OpenFilePayload
     public string Path { get; set; } = "";
 }
 
+/// <summary>Helper-to-service push: the Windows apps light/dark setting.</summary>
+public sealed class SystemThemePayload
+{
+    public bool Dark { get; set; }
+}
+
 [SupportedOSPlatform("windows")]
 public static class SystemCommands
 {
     public const string OpenSettingsType = "system.openSettings";
     public const string OpenUrlType = "system.openUrl";
     public const string OpenFileType = "system.openFile";
+    public const string ThemeChangedType = "system.themeChanged";
 
     public static Task OpenSettingsAsync(HelperRegistry registry, CancellationToken ct = default)
     {

@@ -16,9 +16,7 @@ public class StoreAppUpdaterTests
     private readonly List<StoreInstallRequest> _installs = new();
     private bool _entitled = true;
     private bool _installOk = true;
-    private List<string>? _consentRequired;
     private int _announced;
-    private readonly StorePendingUpdates _pending = new();
 
     private StoreAppUpdater Updater() => new(
         () => _installed,
@@ -29,76 +27,15 @@ public class StoreAppUpdaterTests
         (req, _) =>
         {
             _installs.Add(req);
-            if (_consentRequired is not null)
-                return Task.FromResult(new StoreInstallResponse { AppId = req.AppId ?? "", Version = req.Version ?? "", Ok = false, Reason = "consent_required", RequestedCapabilities = _consentRequired });
             return Task.FromResult(new StoreInstallResponse { AppId = req.AppId ?? "", Version = req.Version ?? "", Ok = _installOk, Reason = _installOk ? null : "hash_mismatch" });
         },
-        () => _announced++,
-        _pending);
+        () => _announced++);
 
-    private void Installed(string id, string version, AppInstallPaths.Source source = AppInstallPaths.Source.User, List<string>? dispatch = null) =>
-        _installed.Add(new AppEntry
-        {
-            Id = id, RootPath = "/apps/" + id, Source = source,
-            Manifest = new AppManifest { Id = id, Version = version, Capabilities = new AppManifestCapabilities { Dispatch = dispatch ?? new() } },
-        });
+    private void Installed(string id, string version, AppInstallPaths.Source source = AppInstallPaths.Source.User) =>
+        _installed.Add(new AppEntry { Id = id, RootPath = "/apps/" + id, Source = source, Manifest = new AppManifest { Id = id, Version = version } });
 
-    private void Catalog(string id, string version, List<string>? dispatch = null) =>
-        _catalog[id] = new StoreCatalogVersion
-        {
-            Version = version, Sha256 = new string('a', 64), Size = 10,
-            Capabilities = dispatch is null ? null : new AppManifestCapabilities { Dispatch = dispatch },
-        };
-
-    [Fact]
-    public async Task SendsTheInstalledVersionsGrantsAsTheApproval()
-    {
-        Installed("com.x.one", "1.0.0", dispatch: new() { "system.specs" });
-        Catalog("com.x.one", "1.1.0");
-
-        await Updater().TickAsync(CancellationToken.None);
-
-        Assert.Equal(new[] { "dispatch:system.specs" }, _installs.Single().ApprovedCapabilities);
-    }
-
-    [Fact]
-    public async Task HoldsAnUpdateWhoseCatalogCapabilitiesAddAGrantWithoutDownloading()
-    {
-        Installed("com.x.one", "1.0.0", dispatch: new() { "system.specs" });
-        Catalog("com.x.one", "1.1.0", dispatch: new() { "system.specs", "lighting.setMode" });
-
-        Assert.Empty(await Updater().TickAsync(CancellationToken.None));
-
-        Assert.Empty(_installs);
-        var held = Assert.Single(_pending.All());
-        Assert.Equal(("com.x.one", "1.0.0", "1.1.0"), (held.AppId, held.FromVersion, held.Version));
-        Assert.Equal(new[] { "dispatch:lighting.setMode" }, held.NewCapabilities);
-        Assert.Equal(1, _announced);
-    }
-
-    [Fact]
-    public async Task HoldsAnUpdateTheInstallerRefusesForConsent()
-    {
-        Installed("com.x.one", "1.0.0");
-        Catalog("com.x.one", "1.1.0");
-        _consentRequired = new() { "net.fetch:evil.example" };
-
-        Assert.Empty(await Updater().TickAsync(CancellationToken.None));
-
-        Assert.Equal(new[] { "net.fetch:evil.example" }, Assert.Single(_pending.All()).NewCapabilities);
-    }
-
-    [Fact]
-    public async Task ASuccessfulUpdateClearsItsPendingEntry()
-    {
-        Installed("com.x.one", "1.0.0");
-        Catalog("com.x.one", "1.1.0");
-        _pending.Set(new StorePendingUpdate { AppId = "com.x.one", Version = "1.1.0" });
-
-        await Updater().TickAsync(CancellationToken.None);
-
-        Assert.Empty(_pending.All());
-    }
+    private void Catalog(string id, string version) =>
+        _catalog[id] = new StoreCatalogVersion { Version = version, Sha256 = new string('a', 64), Size = 10 };
 
     [Fact]
     public async Task InstallsTheCatalogVersionWhenItIsNewerAndAnnouncesOnce()

@@ -33,7 +33,6 @@ public sealed class StoreRevocationWatcher : BackgroundService
         AppRegistry registry,
         AppInstaller installer,
         StoreInstaller storeInstaller,
-        StorePendingUpdates pending,
         PanelDeviceRegistry panels,
         MultiplexHub hub)
         : this(
@@ -42,7 +41,6 @@ public sealed class StoreRevocationWatcher : BackgroundService
             (id, ct) => storeInstaller.WithAppGateAsync(id, () =>
             {
                 if (installer.Uninstall(id).Error is not null) return false;
-                pending.Remove(id);
                 // Same as the uninstall route: placements die only when no bundled copy remains.
                 if (!registry.TryGet(id, out _))
                 {

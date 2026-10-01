@@ -28,15 +28,18 @@ public sealed class HelperClientLoop
     private readonly HelperHandlerRegistry _registry;
     private readonly HelperOutbound _outbound;
     private readonly Action? _onDisconnected;
+    private readonly Action? _onConnected;
 
     // onDisconnected fires each time an established pipe drops (service stop,
     // crash, transient close). The tray uses it to hide the icon while the
     // service is down; the service re-pushes visibility on the next connect.
-    public HelperClientLoop(HelperHandlerRegistry registry, HelperOutbound outbound, Action? onDisconnected = null)
+    // onConnected fires once the pipe accepts outbound sends.
+    public HelperClientLoop(HelperHandlerRegistry registry, HelperOutbound outbound, Action? onDisconnected = null, Action? onConnected = null)
     {
         _registry = registry;
         _outbound = outbound;
         _onDisconnected = onDisconnected;
+        _onConnected = onConnected;
     }
 
     public async Task RunAsync(CancellationToken exit)
@@ -58,6 +61,7 @@ public sealed class HelperClientLoop
                 backoff = TimeSpan.FromSeconds(1);
 
                 _outbound.SetActivePipe(pipe);
+                try { _onConnected?.Invoke(); } catch { /* best-effort */ }
                 try
                 {
                     await ReadLoopAsync(pipe, exit).ConfigureAwait(false);

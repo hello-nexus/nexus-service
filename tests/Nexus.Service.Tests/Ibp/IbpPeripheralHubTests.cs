@@ -112,7 +112,8 @@ public class IbpPeripheralHubTests
         // Steady state: nothing new, no change reported, handles kept.
         Assert.False(hub.Reconcile(AllowAll));
         Assert.Equal(2, hub.Attached.Count);
-        Assert.Equal(2, hid.FindAllCalls);
+        // Lookups are per allowed model; a whole-bus walk would touch unrelated devices.
+        Assert.Equal(0, hid.FindAllCalls);
     }
 
     [Fact]

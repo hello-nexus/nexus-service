@@ -257,6 +257,14 @@ internal static class WindowsUserHelper
                 payload: new DisplaysChangedPayload(),
                 payloadType: Serialization.AppJsonContext.Default.DisplaysChangedPayload);
         };
+        // Windows light/dark for panels synced to the desktop. The dashboard
+        // page reports it only while its window is open; resent on every
+        // connect so a switch while the pipe was down is not lost.
+        void PushSystemTheme() => _ = outbound.SendAsync(
+            type: SystemCommands.ThemeChangedType,
+            payload: new SystemThemePayload { Dark = Platform.Windows.TrayIcon.IsSystemDarkMode() },
+            payloadType: AppJsonContext.Default.SystemThemePayload);
+        Platform.Windows.TrayIcon.SystemThemeChanged += PushSystemTheme;
         new OrientationHandler(new Platform.Displays.WindowsDisplayOrientationProvider()).Register(handlerRegistry);
         new ScreenMirrorHandler(screenCapture.Start, screenCapture.Stop).Register(handlerRegistry);
         new WindowSetHandler(windowSet.SetWanted).Register(handlerRegistry);
@@ -314,7 +322,8 @@ internal static class WindowsUserHelper
         var client = new HelperClientLoop(
             handlerRegistry,
             outbound,
-            onDisconnected: () => Platform.Windows.TrayIcon.SetVisible(false));
+            onDisconnected: () => Platform.Windows.TrayIcon.SetVisible(false),
+            onConnected: PushSystemTheme);
         var pipeTask = Task.Run(() => client.RunAsync(s_exit.Token));
 
         try { s_exit.Token.WaitHandle.WaitOne(); }

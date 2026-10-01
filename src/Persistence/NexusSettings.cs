@@ -447,6 +447,8 @@ public sealed class UiSettings
     /// <summary>Per-page density of the dashboard lighting/cooling pages, "simple" or "advanced"; migration seeds pre-existing installs to "advanced".</summary>
     public string LightingDashboardMode { get; set; } = "simple";
     public string CoolingDashboardMode { get; set; } = "simple";
+    /// <summary>True packs the desktop home dashboard's widgets to the window width; false leaves them where the user dragged them. Off by default.</summary>
+    public bool DashboardAutoArrange { get; set; }
     /// <summary>
     /// Superseded by the two per-page flags below. Kept, and still written by
     /// the client, so a build that predates the split keeps working and so the
@@ -481,6 +483,7 @@ public sealed class UiSettingsPatch
     public bool? SidebarCollapsed { get; set; }
     public string? LightingDashboardMode { get; set; }
     public string? CoolingDashboardMode { get; set; }
+    public bool? DashboardAutoArrange { get; set; }
     public bool? ShowUncontrolledDevices { get; set; }
     public bool? ShowUncontrolledLightingDevices { get; set; }
     public bool? ShowUncontrolledCoolingDevices { get; set; }
@@ -613,6 +616,11 @@ public sealed class LightingSettings
     /// <summary>When true, BeatsProvider runs audio capture + spectrum analysis and
     /// publishes to AudioState so shaders react via the u_audio* uniforms.</summary>
     public bool MusicReactive { get; set; } = InstallDefaults.Lighting.MusicReactive;
+    /// <summary>Render endpoint the Windows loopback captures; empty follows the
+    /// system default. An unplugged pick falls back to the default until it returns.</summary>
+    public string AudioOutputDeviceId { get; set; } = "";
+    /// <summary>Name captured with the pick, shown while the device is unplugged.</summary>
+    public string AudioOutputDeviceName { get; set; } = "";
     /// <summary>Post-process applied to the Screen Mirror frame stream (hue / colorize / saturation / contrast). Persists across sessions so the user's tweak survives a service restart.</summary>
     public PostProcessSettings ScreenEffect { get; set; } = new();
     /// <summary>Post-process applied to Media Library playback frames. Same shape as ScreenEffect but tracked independently - users typically tune media differently from screen capture.</summary>

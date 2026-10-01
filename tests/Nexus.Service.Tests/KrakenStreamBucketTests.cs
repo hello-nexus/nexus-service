@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using Nexus.Service.Panel.Streams;
 using Nexus.Service.Peripherals.Hid;
 using Nexus.Service.Peripherals.Nzxt;
 using Xunit;
@@ -54,6 +55,20 @@ public class KrakenStreamBucketTests
             Assert.NotEqual(activations[k - 2], starts[k]);
         }
         Assert.Equal(7, lcd.Frames);
+    }
+
+    [Fact]
+    public void Discovered_panel_carries_the_cooler_device_id_as_family()
+    {
+        // The web merges a streamed panel into the curated device row its family names.
+        var hub = new KrakenHub(new FixedLcdFactory(new RecordingLcdTransport()));
+        hub.Attach(new AckingHidDevice(), EliteNoRgb, KrakenProtocol.ReportLength);
+        Assert.True(hub.Connect());
+
+        var info = Assert.Single(new KrakenPanelDiscovery(hub).Discover());
+
+        Assert.Equal(KrakenHub.DeviceId, info.Profile.Family);
+        Assert.Equal(KrakenHub.DeviceId, info.Profile.BuildCapabilities().Family);
     }
 
     /// <summary>Answers every command with its ack report: id+1, same sub-command, [14]=1.</summary>

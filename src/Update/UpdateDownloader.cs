@@ -5,6 +5,7 @@ using System.Net.Http;
 using System.Security.Cryptography;
 using System.Threading;
 using System.Threading.Tasks;
+using Nexus.Service.Persistence;
 using Nexus.Service.Platform;
 
 namespace Nexus.Service.Update;
@@ -21,12 +22,19 @@ public sealed class UpdateDownloader
 {
     private const int CopyBufferSize = 81920;
 
-    /// <summary>Machine-wide staging dir: %ProgramData%\Nexus\updates\</summary>
-    public static string StagingDir =>
-        Path.Combine(
+    /// <summary>%ProgramData%\Nexus\updates\ on Windows; elsewhere under the data
+    /// root, since CommonApplicationData is the read-only /usr/share there.</summary>
+    public static string StagingDir => OperatingSystem.IsWindows()
+        ? Path.Combine(
             Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData),
             "Nexus",
-            "updates");
+            "updates")
+        : Path.Combine(NexusDataPaths.NexusRoot(), "updates");
+
+    /// <summary>Staged file name; keeps the <c>Nexus-Setup-</c> prefix the prune keys on.</summary>
+    internal static string PayloadFileName(string version) =>
+        $"Nexus-Setup-{version}"
+        + (OperatingSystem.IsMacOS() ? ".dmg" : OperatingSystem.IsLinux() ? ".tar.gz" : ".exe");
 
     /// <summary>
     /// Creates the staging dir and, on the LocalSystem service, locks it to
@@ -70,7 +78,7 @@ public sealed class UpdateDownloader
 
         EnsureSecureStagingDir();
 
-        var fileName = $"Nexus-Setup-{manifest.Version}.exe";
+        var fileName = PayloadFileName(manifest.Version);
         var finalPath = Path.Combine(StagingDir, fileName);
         var tmpPath = finalPath + ".tmp";
 

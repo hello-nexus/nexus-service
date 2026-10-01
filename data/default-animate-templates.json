@@ -6005,6 +6005,128 @@
    }
   ]
  },
+ "lavaribbons": {
+  "selected": 0,
+  "slots": [
+   {
+    "speed": 45,
+    "intensity": 1,
+    "hue": 0.85,
+    "colorize": 0,
+    "saturation": 1.2,
+    "contrast": 1.1,
+    "params": {
+     "u_bands": 5,
+     "u_flow": 1.5,
+     "u_glow": 1,
+     "u_audioBoost": 1
+    }
+   },
+   {
+    "speed": 55,
+    "intensity": 1,
+    "hue": 0.22,
+    "colorize": 0,
+    "saturation": 1.3,
+    "contrast": 1.1,
+    "params": {
+     "u_bands": 6,
+     "u_flow": 1.8,
+     "u_glow": 1.2,
+     "u_audioBoost": 1
+    }
+   },
+   {
+    "speed": 35,
+    "intensity": 1,
+    "hue": 0.92,
+    "colorize": 0,
+    "saturation": 1.25,
+    "contrast": 1.15,
+    "params": {
+     "u_bands": 7,
+     "u_flow": 2.2,
+     "u_glow": 1.3,
+     "u_audioBoost": 1
+    }
+   },
+   {
+    "speed": 40,
+    "intensity": 1,
+    "hue": 0.42,
+    "colorize": 0.3,
+    "saturation": 1,
+    "contrast": 1.1,
+    "params": {
+     "u_bands": 4,
+     "u_flow": 1,
+     "u_glow": 0.8,
+     "u_audioBoost": 1
+    }
+   }
+  ]
+ },
+ "lavahaze": {
+  "selected": 0,
+  "slots": [
+   {
+    "speed": 40,
+    "intensity": 1,
+    "hue": 0.75,
+    "colorize": 0,
+    "saturation": 1.2,
+    "contrast": 1.05,
+    "params": {
+     "u_scale": 1.2,
+     "u_melt": 1.2,
+     "u_glow": 1,
+     "u_audioBoost": 1
+    }
+   },
+   {
+    "speed": 35,
+    "intensity": 1,
+    "hue": 0.3,
+    "colorize": 0,
+    "saturation": 1.15,
+    "contrast": 1.05,
+    "params": {
+     "u_scale": 1.5,
+     "u_melt": 1.6,
+     "u_glow": 0.9,
+     "u_audioBoost": 1
+    }
+   },
+   {
+    "speed": 45,
+    "intensity": 1,
+    "hue": 0,
+    "colorize": 0,
+    "saturation": 1.3,
+    "contrast": 1.1,
+    "params": {
+     "u_scale": 1,
+     "u_melt": 2,
+     "u_glow": 1.3,
+     "u_audioBoost": 1
+    }
+   },
+   {
+    "speed": 30,
+    "intensity": 1,
+    "hue": 0.11,
+    "colorize": 0.85,
+    "saturation": 1,
+    "contrast": 1.1,
+    "params": {
+     "u_scale": 1.8,
+     "u_melt": 0.8,
+     "u_glow": 1,
+     "u_audioBoost": 1
+    }
+   }
+  ]
+ },
  "constellation": {
   "selected": 0,
   "slots": [

@@ -22,6 +22,10 @@ public sealed class WidgetSettingsService
     // component.
     public const string AppTypePrefix = "app:";
 
+    // Single-widget playlist stand-in: "playlist:<deviceId>:<type>". It sits on no
+    // page; its config is the device layout's SingleWidgetConfigs[type].
+    private const string PlaylistStandInPrefix = "playlist:";
+
     private readonly IConfigStore _store;
     private readonly AppRegistry _registry;
 
@@ -86,6 +90,7 @@ public sealed class WidgetSettingsService
                 }
             }
             if (widget.Config.Count == 0) widget.Config = null;
+            StoreStandInConfig(s, instanceId, widget.Config);
         });
         return Get(instanceId);
     }
@@ -110,6 +115,19 @@ public sealed class WidgetSettingsService
 
     private static PanelWidgetDto? FindWidget(NexusSettings s, string instanceId)
     {
+        if (TryParseStandIn(instanceId, out var standInDevice, out var standInType))
+        {
+            if (!s.PanelDevices.TryGetValue(standInDevice, out var device) || device.Layout is null) return null;
+            var remembered = device.Layout.SingleWidgetConfigs;
+            return new PanelWidgetDto
+            {
+                Id = instanceId,
+                Type = standInType,
+                Config = remembered is not null && remembered.TryGetValue(standInType, out var config)
+                    ? new Dictionary<string, JsonElement>(config)
+                    : null,
+            };
+        }
         var dash = s.Panel.DashboardLayout;
         if (dash is not null)
         {
@@ -135,6 +153,27 @@ public sealed class WidgetSettingsService
             }
         }
         return null;
+    }
+
+    private static bool TryParseStandIn(string instanceId, out string deviceId, out string type)
+    {
+        deviceId = "";
+        type = "";
+        if (!instanceId.StartsWith(PlaylistStandInPrefix, System.StringComparison.Ordinal)) return false;
+        var rest = instanceId.Substring(PlaylistStandInPrefix.Length);
+        var split = rest.IndexOf(':');
+        if (split <= 0 || split == rest.Length - 1) return false;
+        deviceId = rest.Substring(0, split);
+        type = rest.Substring(split + 1);
+        return true;
+    }
+
+    private static void StoreStandInConfig(NexusSettings s, string instanceId, Dictionary<string, JsonElement>? config)
+    {
+        if (!TryParseStandIn(instanceId, out var deviceId, out var type)) return;
+        if (!s.PanelDevices.TryGetValue(deviceId, out var device) || device.Layout is null) return;
+        device.Layout.SingleWidgetConfigs ??= new Dictionary<string, Dictionary<string, JsonElement>>();
+        device.Layout.SingleWidgetConfigs[type] = config ?? new Dictionary<string, JsonElement>();
     }
 
     public static string? MarketplaceIdFromType(string type)

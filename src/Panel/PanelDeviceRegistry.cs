@@ -22,6 +22,9 @@ public sealed class PanelDeviceRegistry
 {
     private readonly IConfigStore _store;
 
+    /// <summary>Only the Windows overlay can host a see-through kiosk; the macOS and Linux kiosks are opaque.</summary>
+    internal bool SeeThroughHost { get; init; } = OperatingSystem.IsWindows();
+
     public PanelDeviceRegistry(IConfigStore store)
     {
         _store = store;
@@ -126,18 +129,15 @@ public sealed class PanelDeviceRegistry
                 return;
             }
             s.PanelDevices[record.Id] = record;
+            result = Clone(record);
+            activated = true;
         });
 
         // Panel on/off is rare and must survive an immediate service exit -
         // a write lost to the flush debounce would silently undo the toggle.
         _store.FlushNow();
-        if (result is not null)
-        {
-            if (activated) DisplayRecordReady?.Invoke(result);
-            return (result, activated);
-        }
-        DisplayRecordReady?.Invoke(record);
-        return (record, true);
+        if (activated) DisplayRecordReady?.Invoke(result!);
+        return (result!, activated);
     }
 
     /// <summary>
@@ -301,15 +301,15 @@ public sealed class PanelDeviceRegistry
         foreach (var record in _store.Load().PanelDevices.Values)
         {
             if (!string.IsNullOrEmpty(record.DisplayId) && record.Enabled != false)
-                assignments.Add((record.DisplayId, record.Id, record.ReserveMonitor ?? true, record.Backdrop ?? ""));
+                assignments.Add((record.DisplayId, record.Id, record.ReserveMonitor ?? true, EffectiveBackdrop(record) ?? ""));
         }
         return assignments;
     }
 
     /// <summary>
-    /// Backdrop of the Y70's own record, or "" when it has never registered.
-    /// The Y70 kiosk is opened from hardware detection rather than a display
-    /// assignment, so the host has no device id to read it from.
+    /// Backdrop of the Y70's own record, or its default when it has never
+    /// registered. The Y70 kiosk is opened from hardware detection rather than
+    /// a display assignment, so the host has no device id to read it from.
     /// </summary>
     public string GetY70Backdrop()
     {
@@ -319,7 +319,8 @@ public sealed class PanelDeviceRegistry
             if (!string.Equals(record.Capabilities?.Surface, PanelSurfaces.Y70, StringComparison.Ordinal)) continue;
             if (newest is null || record.LastSeenAt > newest.LastSeenAt) newest = record;
         }
-        return newest?.Backdrop ?? "";
+        if (newest is null) return Y70SeeThroughDefault() ? "desktop" : "";
+        return EffectiveBackdrop(newest) ?? "";
     }
 
     /// <summary>
@@ -571,6 +572,10 @@ public sealed class PanelDeviceRegistry
                 record.WidgetLabels = patch.WidgetLabels.Value;
             if (patch.WidgetPadding.HasValue)
                 record.WidgetPadding = patch.WidgetPadding.Value;
+            if (patch.TextColorMode is not null)
+                record.TextColorMode = patch.TextColorMode;
+            if (patch.TextColor is not null)
+                record.TextColor = patch.TextColor;
             if (patch.ThemeSyncWithDesktop.HasValue)
                 record.ThemeSyncWithDesktop = patch.ThemeSyncWithDesktop.Value;
             if (patch.AccentSyncWithDesktop.HasValue)
@@ -665,8 +670,14 @@ public sealed class PanelDeviceRegistry
             record.WidgetOpacity = null;
             record.WidgetLabels = null;
             record.WidgetPadding = null;
+            record.TextColorMode = null;
+            record.TextColor = null;
             record.ThemeSyncWithDesktop = null;
             record.AccentSyncWithDesktop = null;
+            // Presets are personalization too, and they reference the media
+            // the caller deletes.
+            record.Presets = null;
+            record.ActivePresetId = null;
             record.LastSeenAt = now;
             snapshot = Clone(record);
         });
@@ -708,6 +719,143 @@ public sealed class PanelDeviceRegistry
         return snapshot;
     }
 
+    /// <summary>The panel's presets and which one is loaded. Null when the id is unknown.</summary>
+    public PanelPresetsResponse? ListPresets(string id)
+    {
+        var record = _store.Load().PanelDevices.GetValueOrDefault(id);
+        return record is null ? null : PanelPresets.ToResponse(record);
+    }
+
+    /// <summary>
+    /// Saves the live personalization as a new preset and loads it. Null when
+    /// the id is unknown, or when the panel already holds
+    /// <see cref="PanelPresets.Cap"/> presets (<paramref name="capped"/>).
+    /// </summary>
+    public PanelPresetsResponse? CreatePreset(string id, string name, out bool capped)
+    {
+        PanelPresetsResponse? result = null;
+        var hitCap = false;
+        _store.Update(s =>
+        {
+            if (!s.PanelDevices.TryGetValue(id, out var record))
+                return;
+            record.Presets ??= new List<PanelPreset>();
+            if (record.Presets.Count >= PanelPresets.Cap)
+            {
+                hitCap = true;
+                return;
+            }
+            PanelPresets.CaptureActive(record);
+            var preset = new PanelPreset { Id = Guid.NewGuid().ToString("n"), Name = name };
+            PanelPresets.Copy(record, preset);
+            record.Presets.Add(preset);
+            record.ActivePresetId = preset.Id;
+            result = PanelPresets.ToResponse(record);
+        });
+        capped = hitCap;
+        return result;
+    }
+
+    /// <summary>Null when either id is unknown.</summary>
+    public PanelPresetsResponse? RenamePreset(string id, string presetId, string name)
+    {
+        PanelPresetsResponse? result = null;
+        _store.Update(s =>
+        {
+            if (!s.PanelDevices.TryGetValue(id, out var record))
+                return;
+            var preset = record.Presets?.Find(p => p.Id == presetId);
+            if (preset is null)
+                return;
+            preset.Name = name;
+            result = PanelPresets.ToResponse(record);
+        });
+        return result;
+    }
+
+    /// <summary>Deleting the loaded preset leaves the live personalization as
+    /// it is, with no preset loaded. Null when the panel id is unknown.</summary>
+    public PanelPresetsResponse? DeletePreset(string id, string presetId)
+    {
+        PanelPresetsResponse? result = null;
+        _store.Update(s =>
+        {
+            if (!s.PanelDevices.TryGetValue(id, out var record))
+                return;
+            record.Presets?.RemoveAll(p => p.Id == presetId);
+            if (record.ActivePresetId == presetId)
+                record.ActivePresetId = null;
+            result = PanelPresets.ToResponse(record);
+        });
+        return result;
+    }
+
+    /// <summary>
+    /// Loads a preset into the live record, first capturing the live fields
+    /// into the preset being left. Null when either id is unknown. The caller
+    /// broadcasts the device change.
+    /// </summary>
+    public PanelPresetsResponse? ActivatePreset(string id, string presetId)
+    {
+        PanelPresetsResponse? result = null;
+        _store.Update(s =>
+        {
+            if (!s.PanelDevices.TryGetValue(id, out var record))
+                return;
+            var target = record.Presets?.Find(p => p.Id == presetId);
+            if (target is null)
+                return;
+            PanelPresets.CaptureActive(record);
+            PanelPresets.Copy(target, record);
+            record.ActivePresetId = target.Id;
+            result = PanelPresets.ToResponse(record);
+        });
+        return result;
+    }
+
+    /// <summary>
+    /// Replaces a preset's app bindings. An app triggers one preset per panel,
+    /// so a binding another of this panel's presets holds is refused
+    /// (<paramref name="conflict"/>) rather than moved. Null when either id is
+    /// unknown or on conflict.
+    /// </summary>
+    public PanelPresetsResponse? SetPresetApps(
+        string id, string presetId, List<PresetAppBinding> apps, out (string AppName, string PresetName)? conflict)
+    {
+        PanelPresetsResponse? result = null;
+        (string, string)? clash = null;
+        _store.Update(s =>
+        {
+            if (!s.PanelDevices.TryGetValue(id, out var record))
+                return;
+            var preset = record.Presets?.Find(p => p.Id == presetId);
+            if (preset is null)
+                return;
+            // Matched on the resolved process name as well as the id: the same
+            // app can be picked off the running list or the installed list.
+            foreach (var other in record.Presets!)
+            {
+                if (other.Id == presetId || other.Apps is null)
+                    continue;
+                foreach (var taken in other.Apps)
+                {
+                    var hit = apps.Find(a =>
+                        string.Equals(a.Id, taken.Id, StringComparison.OrdinalIgnoreCase)
+                        || (a.ProcessName.Length > 0 && string.Equals(a.ProcessName, taken.ProcessName, StringComparison.Ordinal)));
+                    if (hit is not null)
+                    {
+                        clash = (hit.Name, other.Name);
+                        return;
+                    }
+                }
+            }
+            preset.Apps = apps;
+            result = PanelPresets.ToResponse(record);
+        });
+        conflict = clash;
+        return result;
+    }
+
     private static string DefaultName(long now)
     {
         var when = DateTimeOffset.FromUnixTimeMilliseconds(now).LocalDateTime;
@@ -737,6 +885,25 @@ public sealed class PanelDeviceRegistry
         _ => null,
     };
 
+    /// <summary>An unset backdrop reads as "desktop" on the surfaces the web's
+    /// supportsDesktopWallpaper admits (Y70, promoted monitors) when this host
+    /// can go see-through. Resolved on read so storage keeps null until the
+    /// user picks one.</summary>
+    private string? EffectiveBackdrop(PanelDeviceRecord r)
+    {
+        if (r.Backdrop is not null || !SeeThroughHost) return r.Backdrop;
+        var surface = r.Capabilities?.Surface;
+        var capable = (surface == PanelSurfaces.Y70 && Y70SeeThroughDefault())
+            || (surface == PanelSurfaces.Monitor && !string.IsNullOrEmpty(r.DisplayId));
+        return capable ? "desktop" : null;
+    }
+
+    // Compatibility mode's --disable-direct-composition kiosk is unverified with
+    // an alpha-0 see-through window, so those Y70s keep the client default.
+    // Load re-enters the store's Monitor lock, so this is safe inside Update.
+    private bool Y70SeeThroughDefault() =>
+        SeeThroughHost && !_store.Load().Y70.CompatibilityRendering;
+
     private static string NewId()
     {
         return Convert.ToBase64String(RandomNumberGenerator.GetBytes(9))
@@ -753,7 +920,7 @@ public sealed class PanelDeviceRegistry
         return copy;
     }
 
-    private static PanelDeviceRecord Clone(PanelDeviceRecord r)
+    private PanelDeviceRecord Clone(PanelDeviceRecord r)
     {
         return new PanelDeviceRecord
         {
@@ -771,7 +938,7 @@ public sealed class PanelDeviceRegistry
                 ? null
                 : new Dictionary<string, int>(r.BackgroundTemplates),
             BackgroundOpacity = r.BackgroundOpacity,
-            Backdrop = r.Backdrop,
+            Backdrop = EffectiveBackdrop(r),
             BackgroundMediaId = r.BackgroundMediaId,
             BackgroundMediaType = r.BackgroundMediaType,
             BackgroundMediaAlpha = r.BackgroundMediaAlpha,
@@ -785,6 +952,8 @@ public sealed class PanelDeviceRegistry
             WidgetOpacity = r.WidgetOpacity,
             WidgetLabels = r.WidgetLabels,
             WidgetPadding = r.WidgetPadding,
+            TextColorMode = r.TextColorMode,
+            TextColor = r.TextColor,
             ThemeSyncWithDesktop = r.ThemeSyncWithDesktop,
             AccentSyncWithDesktop = r.AccentSyncWithDesktop,
             FirstSeenAt = r.FirstSeenAt,

@@ -90,9 +90,11 @@ public class WebSocketHub
             entry.Dispose();
             try
             {
+                // CloseOutputAsync: CloseAsync waits for the peer's reply with no
+                // deadline, and a dead peer would hold the host stop.
                 if (socket.State == WebSocketState.Open || socket.State == WebSocketState.CloseReceived)
                 {
-                    await socket.CloseAsync(WebSocketCloseStatus.NormalClosure, "bye", CancellationToken.None);
+                    await socket.CloseOutputAsync(WebSocketCloseStatus.NormalClosure, "bye", CancellationToken.None);
                 }
             }
             catch { /* swallow */ }

@@ -4,6 +4,7 @@ using System.Threading.Tasks;
 using Microsoft.Extensions.Hosting;
 using Nexus.Service.Cooling;
 using Nexus.Service.Devices;
+using Nexus.Service.Devices.Detection;
 using Nexus.Service.Peripherals.Hid;
 using Nexus.Service.Peripherals.LianLiCp;
 using Nexus.Service.Platform;
@@ -20,13 +21,15 @@ public sealed class TlFanConnectionWorker : BackgroundService
     private readonly TlFanHub _hub;
     private readonly LianLiTlCoolingProvider _cooling;
     private readonly DeviceControlGate _gate;
+    private readonly HardwarePresence _presence;
 
-    public TlFanConnectionWorker(IHidEnumerator hid, TlFanHub hub, LianLiTlCoolingProvider cooling, DeviceControlGate gate)
+    public TlFanConnectionWorker(IHidEnumerator hid, TlFanHub hub, LianLiTlCoolingProvider cooling, DeviceControlGate gate, HardwarePresence presence)
     {
         _hid = hid;
         _hub = hub;
         _cooling = cooling;
         _gate = gate;
+        _presence = presence;
     }
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
@@ -36,6 +39,12 @@ public sealed class TlFanConnectionWorker : BackgroundService
             try
             {
                 if (!_gate.IsEnabled("lianli-tl"))
+                {
+                    await Task.Delay(ConnectPollMs, stoppingToken).ConfigureAwait(false);
+                    continue;
+                }
+
+                if (!_presence.UsbPresent(TlFanProtocol.VendorId, TlFanProtocol.ProductId))
                 {
                     await Task.Delay(ConnectPollMs, stoppingToken).ConfigureAwait(false);
                     continue;

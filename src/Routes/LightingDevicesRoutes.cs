@@ -177,7 +177,7 @@ public static partial class DevicesRoutes
 
     // A pick off the running-apps list already carries the process name; a
     // Start-menu pick carries a display name the focus signal never reports.
-    private static string ResolveBindingProcessName(string appId, Nexus.Service.Activity.IShortcutsProvider shortcuts)
+    internal static string ResolveBindingProcessName(string appId, Nexus.Service.Activity.IShortcutsProvider shortcuts)
     {
         const string RunningPrefix = "proc:";
         if (appId.StartsWith(RunningPrefix, StringComparison.Ordinal))

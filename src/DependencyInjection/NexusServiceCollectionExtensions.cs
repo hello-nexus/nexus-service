@@ -838,6 +838,12 @@ public static class NexusServiceCollectionExtensions
             sp.GetRequiredService<Nexus.Service.Activity.IScreenTimeProvider>(),
             sp.GetRequiredService<Nexus.Service.Sockets.MultiplexHub>(),
             sp.GetRequiredService<Nexus.Service.Deck.DeckPresetActivator>()));
+        // Panel presets: loads a panel's preset when an app bound to it takes focus.
+        services.AddHostedService(sp => new Nexus.Service.Panel.PanelPresetSwitcher(
+            sp.GetRequiredService<Nexus.Service.Persistence.IConfigStore>(),
+            sp.GetRequiredService<Nexus.Service.Activity.IScreenTimeProvider>(),
+            sp.GetRequiredService<Nexus.Service.Panel.PanelDeviceRegistry>(),
+            sp.GetRequiredService<Nexus.Service.Sockets.MultiplexHub>()));
 
         // Elgato Stream Deck profile import: read-only against the local
         // Elgato software's own store, never touching a physical deck.
@@ -966,7 +972,8 @@ public static class NexusServiceCollectionExtensions
                 new Nexus.Service.Peripherals.JpegPanels.JpegPanelConnectionWorker(
                     sp.GetRequiredService<Nexus.Service.Peripherals.Hid.IHidEnumerator>(),
                     jpegPanelHub,
-                    sp.GetRequiredService<Nexus.Service.Devices.DeviceControlGate>()));
+                    sp.GetRequiredService<Nexus.Service.Devices.DeviceControlGate>(),
+                    sp.GetRequiredService<Nexus.Service.Devices.Detection.HardwarePresence>()));
             services.AddSingleton<Nexus.Service.Panel.Streams.IStreamedPanelDiscovery>(
                 _ => new Nexus.Service.Panel.Streams.JpegPanelDiscovery(jpegPanelHub));
             services.AddSingleton<IDeviceHandler>(
@@ -1007,7 +1014,8 @@ public static class NexusServiceCollectionExtensions
                     sp.GetRequiredService<Nexus.Service.Peripherals.Hid.IHidEnumerator>(),
                     sp.GetRequiredService<Nexus.Service.Peripherals.BulkPanels.IBulkUsbPipeFactory>(),
                     bulkPanelHub,
-                    sp.GetRequiredService<Nexus.Service.Devices.DeviceControlGate>()));
+                    sp.GetRequiredService<Nexus.Service.Devices.DeviceControlGate>(),
+                    sp.GetRequiredService<Nexus.Service.Devices.Detection.HardwarePresence>()));
             services.AddSingleton<Nexus.Service.Panel.Streams.IStreamedPanelDiscovery>(sp =>
                 new Nexus.Service.Panel.Streams.BulkPanelDiscovery(
                     bulkPanelHub, sp.GetService<Nexus.Service.Panel.Streams.IVirtualMonitorHost>()));
@@ -1357,11 +1365,6 @@ public static class NexusServiceCollectionExtensions
         services.AddSingleton<DeviceManager>();
         services.AddSingleton<Nexus.Service.Devices.DeviceBroadcaster>();
         services.AddHostedService(sp => sp.GetRequiredService<Nexus.Service.Devices.DeviceBroadcaster>());
-        // Flips a never-manually-set third-party hub to Nexus Control ON the
-        // first time it is connected while its competing brand app is not
-        // running. Once adopted, the device stays on the Enabled list even if
-        // the app later launches (DeviceControlGate stickiness carries it).
-        services.AddHostedService<Nexus.Service.Devices.DeviceAdoptionService>();
         return services;
     }
 
@@ -1755,7 +1758,6 @@ public static class NexusServiceCollectionExtensions
         services.AddSingleton<Nexus.Service.Store.StoreEntitlements>();
         services.AddSingleton<Nexus.Service.Store.HardwareAppCatalog>();
         services.AddHostedService<Nexus.Service.Store.HardwareAppInstaller>();
-        services.AddSingleton<Nexus.Service.Store.StorePendingUpdates>();
         services.AddHostedService<Nexus.Service.Store.StoreAppUpdater>();
         services.AddHostedService<Nexus.Service.Store.StoreRevocationWatcher>();
         services.AddSingleton<Nexus.Service.Widgets.AppCodeSessionService>();

@@ -274,6 +274,24 @@ public sealed class ProfileRoutesIntegrationTests : IDisposable
     }
 
     [Fact]
+    public async Task Preferences_dashboard_auto_arrange_persists_and_round_trips_through_GET()
+    {
+        var client = AuthedClient();
+
+        var before = await (await client.GetAsync("/preferences")).Content.ReadFromJsonAsync<JsonElement>();
+        Assert.False(before.GetProperty("ui").GetProperty("dashboardAutoArrange").GetBoolean());
+
+        var postRes = await client.PostAsJsonAsync("/preferences", new { ui = new { dashboardAutoArrange = true } });
+        Assert.Equal(HttpStatusCode.OK, postRes.StatusCode);
+        var body = await (await client.GetAsync("/preferences")).Content.ReadFromJsonAsync<JsonElement>();
+        Assert.True(body.GetProperty("ui").GetProperty("dashboardAutoArrange").GetBoolean());
+
+        await client.PostAsJsonAsync("/preferences", new { ui = new { showConflictAlerts = false } });
+        body = await (await client.GetAsync("/preferences")).Content.ReadFromJsonAsync<JsonElement>();
+        Assert.True(body.GetProperty("ui").GetProperty("dashboardAutoArrange").GetBoolean());
+    }
+
+    [Fact]
     public async Task Preferences_diagnostics_patch_persists_and_round_trips_through_GET()
     {
         var client = AuthedClient();

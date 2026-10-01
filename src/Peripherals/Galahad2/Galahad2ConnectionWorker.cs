@@ -4,6 +4,7 @@ using System.Threading.Tasks;
 using Microsoft.Extensions.Hosting;
 using Nexus.Service.Cooling;
 using Nexus.Service.Devices;
+using Nexus.Service.Devices.Detection;
 using Nexus.Service.Lighting;
 using Nexus.Service.Peripherals.Hid;
 using Nexus.Service.Peripherals.LianLiCp;
@@ -22,14 +23,16 @@ public sealed class Galahad2ConnectionWorker : BackgroundService
     private readonly Galahad2LightingDeviceProvider _lighting;
     private readonly Galahad2CoolingProvider _cooling;
     private readonly DeviceControlGate _gate;
+    private readonly HardwarePresence _presence;
 
-    public Galahad2ConnectionWorker(IHidEnumerator hid, Galahad2Hub hub, Galahad2LightingDeviceProvider lighting, Galahad2CoolingProvider cooling, DeviceControlGate gate)
+    public Galahad2ConnectionWorker(IHidEnumerator hid, Galahad2Hub hub, Galahad2LightingDeviceProvider lighting, Galahad2CoolingProvider cooling, DeviceControlGate gate, HardwarePresence presence)
     {
         _hid = hid;
         _hub = hub;
         _lighting = lighting;
         _cooling = cooling;
         _gate = gate;
+        _presence = presence;
     }
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
@@ -39,6 +42,12 @@ public sealed class Galahad2ConnectionWorker : BackgroundService
             try
             {
                 if (!_gate.IsEnabled("lianli-aio"))
+                {
+                    await Task.Delay(ConnectPollMs, stoppingToken).ConfigureAwait(false);
+                    continue;
+                }
+
+                if (!_presence.UsbPresent(Galahad2Protocol.VendorId, Galahad2Protocol.ProductIdPerformance, Galahad2Protocol.ProductIdRegular))
                 {
                     await Task.Delay(ConnectPollMs, stoppingToken).ConfigureAwait(false);
                     continue;

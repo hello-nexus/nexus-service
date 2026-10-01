@@ -3,6 +3,7 @@ using System.Threading;
 using System.Threading.Tasks;
 using Microsoft.Extensions.Hosting;
 using Nexus.Service.Devices;
+using Nexus.Service.Devices.Detection;
 using Nexus.Service.Peripherals.Hid;
 using Nexus.Service.Platform;
 
@@ -24,15 +25,17 @@ public sealed class JpegPanelConnectionWorker : BackgroundService
     private readonly IHidEnumerator _hid;
     private readonly JpegPanelHub _hub;
     private readonly DeviceControlGate _gate;
+    private readonly HardwarePresence _presence;
 
     /// <summary>Latched so a retry every few seconds does not repeat the miss.</summary>
     private bool _missLogged;
 
-    public JpegPanelConnectionWorker(IHidEnumerator hid, JpegPanelHub hub, DeviceControlGate gate)
+    public JpegPanelConnectionWorker(IHidEnumerator hid, JpegPanelHub hub, DeviceControlGate gate, HardwarePresence presence)
     {
         _hid = hid;
         _hub = hub;
         _gate = gate;
+        _presence = presence;
     }
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
@@ -43,6 +46,12 @@ public sealed class JpegPanelConnectionWorker : BackgroundService
             try
             {
                 if (!_gate.IsEnabled(model.HandlerId))
+                {
+                    await Task.Delay(ConnectPollMs, stoppingToken).ConfigureAwait(false);
+                    continue;
+                }
+
+                if (!OnBus())
                 {
                     await Task.Delay(ConnectPollMs, stoppingToken).ConfigureAwait(false);
                     continue;
@@ -119,15 +128,17 @@ public sealed class JpegPanelConnectionWorker : BackgroundService
                 : $"[{model.HandlerId}] no interface carries a {model.ReportLength}-byte report; saw {seen}");
     }
 
+    private bool OnBus() => _presence.UsbPresent(_hub.Model.VendorId, _hub.Model.ProductIds);
+
+    // An enumerator that failed reads as an empty bus, so an absence is
+    // confirmed against the panel's own HID interfaces before it detaches.
     private bool StillPresent()
     {
+        if (OnBus()) return true;
         var model = _hub.Model;
         for (int i = 0; i < model.ProductIds.Count; i++)
         {
-            if (_hid.Find(model.VendorId, model.ProductIds[i]).Count > 0)
-            {
-                return true;
-            }
+            if (_hid.Find(model.VendorId, model.ProductIds[i]).Count > 0) return true;
         }
         return false;
     }

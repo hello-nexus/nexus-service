@@ -332,6 +332,35 @@ internal static class TrayBootstrap
         // service runs as LocalSystem and can end an elevated vendor app.
         helperRegistry.InboundEnvelope += (_, env) => EndConflictFromNotice(env);
 
+        // Synced panels follow Theme.ResolvedThemeMode; with the app theme on
+        // "system" the helper's Windows light/dark keeps it current while the
+        // dashboard window (the other writer) is closed.
+        helperRegistry.InboundEnvelope += (_, env) =>
+        {
+            if (env.Type != SystemCommands.ThemeChangedType || env.Payload is null) return;
+            try
+            {
+                var p = System.Text.Json.JsonSerializer.Deserialize(env.Payload.Value, AppJsonContext.Default.SystemThemePayload);
+                if (p is null) return;
+                var resolved = p.Dark ? "dark" : "light";
+                bool Applies(NexusSettings s) => s.Theme.ThemeMode == "system" && s.Theme.ResolvedThemeMode != resolved;
+                // Pre-check skips the no-op write; the mutator re-checks under
+                // the store lock so a concurrent POST /preferences mode switch wins.
+                if (!Applies(trayStore.Load())) return;
+                var changed = false;
+                trayStore.Update(s =>
+                {
+                    if (!Applies(s)) return;
+                    s.Theme.ResolvedThemeMode = resolved;
+                    changed = true;
+                });
+                if (!changed) return;
+                PanelTopics.BroadcastPrefs(hub);
+                Console.WriteLine($"[theme-sync] resolvedThemeMode -> {resolved} (Windows theme change)");
+            }
+            catch (Exception ex) { Console.Error.WriteLine($"[theme-sync] apply failed: {ex.Message}"); }
+        };
+
         static void EndConflictFromNotice(HelperEnvelope env)
         {
             if (env.Type != ConflictNoticeCommands.EndType || env.Payload is null) return;

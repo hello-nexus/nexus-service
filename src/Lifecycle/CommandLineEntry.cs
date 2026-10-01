@@ -62,6 +62,10 @@ internal static class CommandLineEntry
         if (args.Length > 0 && (args[0] == FactoryReset.FinalizeFlag || args[0] == FactoryReset.RestartFlag))
             return FactoryReset.Finalize(args);
 
+        // Detached OTA finalizer (macOS): swaps the staged Nexus.app in and relaunches.
+        if (args.Length > 0 && args[0] == Nexus.Service.Update.UnixUpdateApplier.MacSwapFlag)
+            return Nexus.Service.Update.UnixUpdateApplier.FinalizeMacSwap(args);
+
 #if WINDOWS
         if (args.Length > 0 && WindowsHandlers.TryGetValue(args[0], out var handler))
             return handler(args);

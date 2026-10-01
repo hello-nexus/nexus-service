@@ -109,38 +109,14 @@ public class StoreInstallerTests : IDisposable
     }
 
     [Fact]
-    public async Task an_artifact_asking_for_unapproved_capabilities_needs_consent_and_installs_nothing()
+    public async Task an_artifact_requesting_capabilities_installs_without_an_approval()
     {
-        var bytes = Artifact("com.hellonexus.aquarium", "1.0.0", capabilities: "{\"dispatch\":[\"lighting.setMode\"],\"appData\":true}");
-        var req = Req("com.hellonexus.aquarium", "1.0.0", Sha256(bytes));
-        req.ApprovedCapabilities = new() { "appData" };
+        var bytes = Artifact("com.hellonexus.aquarium", "1.0.0", capabilities: "{\"dispatch\":[\"lighting.setMode\"],\"net.fetch\":[\"api.example.com\"],\"appData\":true}");
 
-        var res = await New(bytes, out _).InstallAsync(req, default);
+        var res = await New(bytes, out _).InstallAsync(Req("com.hellonexus.aquarium", "1.0.0", Sha256(bytes)), default);
 
-        Assert.False(res.Ok);
-        Assert.Equal("consent_required", res.Reason);
-        Assert.Equal(new[] { "appData", "dispatch:lighting.setMode" }, res.RequestedCapabilities);
-        Assert.False(Directory.Exists(Path.Combine(_root, "com.hellonexus.aquarium")));
-    }
-
-    [Fact]
-    public async Task approved_capabilities_install()
-    {
-        var bytes = Artifact("com.hellonexus.aquarium", "1.0.0", capabilities: "{\"dispatch\":[\"lighting.setMode\"]}");
-        var req = Req("com.hellonexus.aquarium", "1.0.0", Sha256(bytes));
-        req.ApprovedCapabilities = new() { "dispatch:lighting.setMode" };
-
-        Assert.True((await New(bytes, out _).InstallAsync(req, default)).Ok);
-    }
-
-    [Fact]
-    public async Task a_consent_exempt_install_skips_the_check()
-    {
-        var bytes = Artifact("com.hellonexus.aquarium", "1.0.0", capabilities: "{\"dispatch\":[\"system.specs\"]}");
-        var req = Req("com.hellonexus.aquarium", "1.0.0", Sha256(bytes));
-        req.ConsentExempt = true;
-
-        Assert.True((await New(bytes, out _).InstallAsync(req, default)).Ok);
+        Assert.True(res.Ok);
+        Assert.True(File.Exists(Path.Combine(_root, "com.hellonexus.aquarium", "manifest.json")));
     }
 
     [Fact]

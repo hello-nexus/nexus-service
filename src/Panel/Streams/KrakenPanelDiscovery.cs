@@ -45,6 +45,7 @@ public sealed class KrakenPanelDiscovery : IStreamedPanelDiscovery
                     Kind = ProfileKind,
                     DisplayName = $"{_hub.ModelName} LCD",
                     Surface = PanelSurfaces.Kraken,
+                    Family = KrakenHub.DeviceId,
                     CssWidth = _hub.LcdWidth,
                     CssHeight = _hub.LcdHeight,
                     Dpr = 1.0,

@@ -328,9 +328,12 @@ public sealed class Slv3LightingFrameWriter : IHostedService, IDisposable
 
     // Last-frame margin: a chain goes live this many frames before its window would wrap.
     private const int WindowWrapMarginFrames = 2;
-    // A window starts this many frames after the request, no later than the
-    // quickest render-plus-upload lands, so no slot plays before it is sent.
+    // Render starts a few frames ahead of the request. An upload must wait
+    // until this first frame is already playing: before that, the fan's loop
+    // index points at the window's last (future) frames.
     private const int WindowLeadFrames = 3;
+    // Allow for clock-fit error at the boundary before replacing the old loop.
+    private const int WindowStartSafetyFrames = 2;
     // A clock sample off the fit counts as an outlier; this many in a row mean the clock itself moved.
     private const int ClockOutliersToReset = 3;
 
@@ -575,7 +578,9 @@ public sealed class Slv3LightingFrameWriter : IHostedService, IDisposable
 
         // A chain joining late skips a window that is mostly played already.
         if (_windowFrames is not null && st.UploadedWindowId != _windowId && CoversChain(ids)
-            && TryCurrentFrame(nowMs, out var playing) && playing < _windowFirstFrame + WindowFrames / 2)
+            && TryCurrentFrame(nowMs, out var playing)
+            && playing >= _windowFirstFrame + WindowStartSafetyFrames
+            && playing < _windowFirstFrame + WindowFrames / 2)
         {
             st.UploadedWindowId = _windowId;
             if (ComposeWindow(macHex, structure, zones, disabled, uncontrolled, prefs, globalBrightness, nowTicks, out var payload, out var ledCount))
@@ -590,6 +595,7 @@ public sealed class Slv3LightingFrameWriter : IHostedService, IDisposable
         }
         return st.WindowFirstFrame != long.MinValue
             && TryCurrentFrame(nowMs, out var current)
+            && current >= st.WindowFirstFrame
             && current < st.WindowFirstFrame + WindowFrames - WindowWrapMarginFrames;
     }
 

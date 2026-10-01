@@ -90,6 +90,14 @@ public sealed class MusicReactiveBody
     public bool Enabled { get; set; }
 }
 
+/// <summary>GET/POST body for /lighting/audio-output: the render endpoint
+/// audio-reactive capture listens to. Empty id follows the system default.</summary>
+public sealed class AudioOutputBody
+{
+    public string DeviceId { get; set; } = "";
+    public string DeviceName { get; set; } = "";
+}
+
 /// <summary>GET/POST body for /lighting/sleep-blackout: blank lighting while
 /// the host sleeps.</summary>
 public sealed class SleepBlackoutBody
