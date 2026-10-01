@@ -358,9 +358,9 @@ public static class AppRoutes
             var gate = CheckAppDataAccess(appId, key, registry);
             if (gate is not null) return gate;
 
-            if (body.Data.ValueKind == System.Text.Json.JsonValueKind.Undefined)
+            if (!AppDataStore.IsStorable(body.Data))
             {
-                return Results.Json(ApiResponse.Fail("data is required"), AppJsonContext.Default.ApiResponse, statusCode: 400);
+                return Results.Json(ApiResponse.Fail("data is required and must not be null"), AppJsonContext.Default.ApiResponse, statusCode: 400);
             }
 
             if (!limiter.TryAcquire(appId))

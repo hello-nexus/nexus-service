@@ -414,4 +414,24 @@ public sealed class ProfileAppDataRoutesIntegrationTests : IDisposable
         var res = await AuthedClient().PostAsync("/profiles/import/inspect", Json("{ nope"));
         Assert.Equal(HttpStatusCode.BadRequest, res.StatusCode);
     }
+
+    [Fact]
+    public async Task Export_with_an_id_that_is_not_a_valid_profile_id_is_404()
+    {
+        var res = await AuthedClient().GetAsync("/profiles/a.b/export");
+        Assert.Equal(HttpStatusCode.NotFound, res.StatusCode);
+    }
+
+    [Fact]
+    public async Task Import_drops_null_documents_from_a_file()
+    {
+        var client = AuthedClient();
+        var settingsJson = JsonDocument.Parse(await ExportAsync(client, _profiles.ActiveProfileId)).RootElement.GetProperty("settings").GetRawText();
+        var body = "{\"name\":\"Nulls\",\"settings\":" + settingsJson + ",\"appData\":{\"com.test.app\":{\"n\":null,\"ok\":1}}}";
+
+        var res = await client.PostAsync("/profiles/import", Json(body));
+
+        var newId = (await res.Content.ReadFromJsonAsync<JsonElement>()).GetProperty("profile").GetProperty("id").GetString()!;
+        Assert.Equal(new[] { "ok" }, _appData.ReadProfile(newId)[App].Keys);
+    }
 }

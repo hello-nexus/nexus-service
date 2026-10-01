@@ -14,8 +14,7 @@ namespace Nexus.Service.Profiles;
 
 /// <summary>
 /// Reader for the legacy .nexusprofile zip: <c>profile.json</c> plus one
-/// <c>app-data/&lt;appId&gt;/&lt;key&gt;.json</c> entry per document. Read-only;
-/// exports are a single JSON bundle now.
+/// <c>app-data/&lt;appId&gt;/&lt;key&gt;.json</c> entry per document. Read-only.
 /// </summary>
 public static class ProfileArchivePackage
 {

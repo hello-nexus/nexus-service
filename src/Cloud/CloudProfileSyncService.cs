@@ -21,18 +21,10 @@ using Nexus.Service.Widgets;
 namespace Nexus.Service.Cloud;
 
 /// <summary>
-/// Drives profile sync for the active cloud account: periodic push/pull
-/// against the per-profile revision matrix (<see cref="CloudSyncDecision"/>),
-/// account-switch archive+replace, and shutdown flush. Reacts to
-/// <see cref="CloudAccountService"/> events rather than being called
-/// directly - login/activate/logout routes return immediately and this
-/// service does the (potentially slow) network work in the background.
-///
-/// <see cref="_syncGate"/> serializes a regular sync pass against an
-/// account-switch replace: both can be triggered back-to-back (a switch
-/// fires OnAccountSwitching then OnAccountActivated), and running them
-/// concurrently could push the outgoing library under the incoming
-/// account's name mid-swap.
+/// Backs up profiles (settings plus app data) only on an explicit
+/// <see cref="TriggerNowAsync"/>, and archives then replaces the local library
+/// on a cloud account switch. <see cref="_syncGate"/> serializes a manual pass
+/// against a switch so neither runs mid-swap.
 /// </summary>
 public sealed class CloudProfileSyncService : BackgroundService
 {
@@ -119,12 +111,14 @@ public sealed class CloudProfileSyncService : BackgroundService
             return RunSyncPassAsync(accountId, CancellationToken.None, manual: true, profileId);
         }, CancellationToken.None).ConfigureAwait(false);
         return _pushFailure is { } failure
-            ? CloudActionResult.Fail(failure, "This profile's app data is too large to back up.", 413)
+            ? CloudActionResult.Fail(failure.Code, failure.Message, failure.Status)
             : CloudActionResult.Ok();
     }
 
+    private sealed record PushFailure(string Code, int Status, string Message);
+
     /// <summary>Error code of a push in the current manual pass that failed in a way the user must be told about; null otherwise.</summary>
-    private volatile string? _pushFailure;
+    private volatile PushFailure? _pushFailure;
 
     public async Task<CloudActionResult> ResolveConflictAsync(string profileId, string choice, CancellationToken ct)
     {
@@ -215,25 +209,14 @@ public sealed class CloudProfileSyncService : BackgroundService
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
-        // Task.Run hands the event off to the thread pool immediately - the
-        // firing HTTP route (login/activate) must never run any part of the
-        // sync pass synchronously on its own thread, even the in-memory part
-        // before the first real network await.
-        // Signing in no longer uploads anything; it only clears state from the
-        // previous account. Backing up is an explicit action.
+        // Signing in uploads nothing; a switch only archives and replaces the
+        // local library. Task.Run keeps the switch off the firing HTTP route's thread.
         _accounts.OnAccountSwitching += (from, to) =>
         {
-            // AnnounceSwitch runs BEFORE the Task.Run dispatch below,
-            // synchronously, on the same call stack that fires
-            // OnAccountSwitching. OnAccountActivated fires immediately after
-            // this handler returns and dispatches its own
-            // RunGuardedAsync(RunSyncPassAsync) for the same (now-active)
-            // account - if that task wins the _syncGate race before
-            // HandleSwitchAsync's task even starts, RunSyncPassAsync's
-            // pending-switch check at its top must already see the announced
-            // switch, or it runs an incremental pass against the still-
-            // outgoing local library and pushes it under the incoming
-            // account's identity.
+            // Announced synchronously, before the Task.Run dispatch: a manual
+            // RunSyncPassAsync reaching the gate first must already see the
+            // pending switch, or it would push the outgoing library under the
+            // incoming account's identity.
             AnnounceSwitch(from, to);
             _ = Task.Run(() => RunGuardedAsync(() => HandleSwitchAsync(from, to, CancellationToken.None), CancellationToken.None));
         };
@@ -372,14 +355,6 @@ public sealed class CloudProfileSyncService : BackgroundService
         var syncMap = _store.Load().Auth?.CloudAccounts.FirstOrDefault(a => a.AccountId == accountId)?.ProfileSync
             ?? new Dictionary<string, CloudProfileSyncRecord>();
 
-        // First login on a fresh install: nothing has ever synced for this
-        // account on this machine (syncMap empty), the account already has a
-        // cloud library, and the only local profile is the untouched
-        // bootstrap Default ProfileManager.Initialize created before login.
-        // The regular per-profile loop below would read "local exists, cloud
-        // missing, no record" for that id and Push it as a brand new profile,
-        // duplicating "Default" on the account. Adopt the cloud library
-        // wholesale instead, exactly like an account switch.
         // No first-login bootstrap: pressing "Back up now" on a fresh machine
         // must not replace the local library with the cloud's. Pulling another
         // library in is the explicit import flow.
@@ -483,7 +458,7 @@ public sealed class CloudProfileSyncService : BackgroundService
     {
         if (AppDataTooLarge(appData))
         {
-            _pushFailure = "app_data_too_large";
+            _pushFailure = new PushFailure("app_data_too_large", 413, "This profile's app data is too large to back up.");
             return false;
         }
         var request = new CloudPutProfileRequest
@@ -507,9 +482,9 @@ public sealed class CloudProfileSyncService : BackgroundService
         }
         if (!result.Success || result.Value?.Revision is not { } revision)
         {
-            if (result.ErrorCode == "app_data_too_large")
+            if (result.StatusCode is >= 400 and < 500 && !string.IsNullOrEmpty(result.ErrorCode))
             {
-                _pushFailure = "app_data_too_large";
+                _pushFailure = new PushFailure(result.ErrorCode, result.StatusCode, result.ErrorMessage ?? result.ErrorCode);
             }
             return false;
         }
@@ -533,7 +508,7 @@ public sealed class CloudProfileSyncService : BackgroundService
         try
         {
             _profiles.ImportProfileWithId(profileId, name, dto.Payload!.Settings!);
-            _appData.ReplaceApps(profileId, cloudAppData);
+            _appData.ReplaceProfile(profileId, cloudAppData);
         }
         catch (InvalidOperationException ex)
         {
@@ -645,11 +620,8 @@ public sealed class CloudProfileSyncService : BackgroundService
 
     internal async Task HandleSwitchAsync(string fromAccountId, string toAccountId, CancellationToken ct)
     {
-        // Only the announced, still-pending switch may run. A queued duplicate
-        // (the OnAccountActivated sync pass won the gate first and completed
-        // the switch via its redirect) or a switch superseded by a logout or a
-        // newer switch would otherwise flush the INCOMING library to the
-        // OUTGOING account's cloud.
+        // Only the announced, still-pending switch may run: a duplicate, or one
+        // superseded by a logout or a newer switch, must not replace the library again.
         if (_pendingSwitch is not { } current || current.From != fromAccountId || current.To != toAccountId)
         {
             return;
@@ -727,7 +699,7 @@ public sealed class CloudProfileSyncService : BackgroundService
         _profiles.ReplaceLibrary(pulled.Select(p => (p.Id, p.Name, p.Data)).ToList());
         foreach (var match in pulled)
         {
-            _appData.ReplaceApps(match.Id, match.AppData);
+            _appData.ReplaceProfile(match.Id, match.AppData);
         }
 
         var now = _clock.GetUtcNow();
@@ -817,19 +789,41 @@ public sealed class CloudProfileSyncService : BackgroundService
 
     // ── shared helpers ───────────────────────────────────────────────────
 
-    /// <summary>Covers settings and app data; a profile without app data hashes exactly as it did before app data was backed up.</summary>
+    /// <summary>Covers settings and app data; a profile without app data hashes exactly as it did before app data was backed up. App data is canonicalized (sorted, compact) so row order never changes the hash.</summary>
     internal static string HashPayload(ProfileExport payload, Dictionary<string, Dictionary<string, JsonElement>>? appData = null)
     {
         var json = JsonSerializer.Serialize(payload, PersistenceJsonContext.Default.ProfileExport);
         if (appData is { Count: > 0 })
         {
-            json += "\n" + JsonSerializer.Serialize(appData, PersistenceJsonContext.Default.DictionaryStringDictionaryStringJsonElement);
+            json += "\n" + Encoding.UTF8.GetString(CanonicalAppDataJson(appData));
         }
         var bytes = SHA256.HashData(Encoding.UTF8.GetBytes(json));
         return Convert.ToHexString(bytes);
     }
 
+    /// <summary>Compact, key-sorted, unescaped UTF-8 JSON: the same measure the api applies to the appData body.</summary>
+    internal static byte[] CanonicalAppDataJson(Dictionary<string, Dictionary<string, JsonElement>> appData)
+    {
+        using var ms = new System.IO.MemoryStream();
+        using (var w = new Utf8JsonWriter(ms, new JsonWriterOptions { Encoder = System.Text.Encodings.Web.JavaScriptEncoder.UnsafeRelaxedJsonEscaping }))
+        {
+            w.WriteStartObject();
+            foreach (var (appId, docs) in appData.OrderBy(a => a.Key, StringComparer.Ordinal))
+            {
+                w.WritePropertyName(appId);
+                w.WriteStartObject();
+                foreach (var (key, data) in docs.OrderBy(d => d.Key, StringComparer.Ordinal))
+                {
+                    w.WritePropertyName(key);
+                    data.WriteTo(w);
+                }
+                w.WriteEndObject();
+            }
+            w.WriteEndObject();
+        }
+        return ms.ToArray();
+    }
+
     internal static bool AppDataTooLarge(Dictionary<string, Dictionary<string, JsonElement>> appData) =>
-        appData.Count > 0
-        && Encoding.UTF8.GetByteCount(JsonSerializer.Serialize(appData, PersistenceJsonContext.Default.DictionaryStringDictionaryStringJsonElement)) > AppDataStore.MaxBundleBytes;
+        appData.Count > 0 && CanonicalAppDataJson(appData).Length > AppDataStore.MaxBundleBytes;
 }

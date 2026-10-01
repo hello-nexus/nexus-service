@@ -1019,4 +1019,65 @@ public sealed class CloudProfileSyncServiceTests : IDisposable
         Assert.Single(Directory.GetFiles(Path.Combine(_tempDir, "app-data", ".archive"), "save.json", SearchOption.AllDirectories));
         Assert.Equal(0, _api.PutProfileCalls);
     }
+
+    [Fact]
+    public async Task Any_api_4xx_with_a_code_fails_the_backup_with_that_code_and_status()
+    {
+        SeedAccount("acct-1", "refresh-1");
+        _api.OnListProfiles = _ => CloudApiResult<List<CloudProfileSummaryDto>>.Ok(new List<CloudProfileSummaryDto>());
+        _api.OnPutProfile = (_, _, _, _) => CloudApiResult<CloudPutProfileResult>.Fail(400, "invalid_app_data", "bad");
+
+        var result = await _sync.TriggerNowAsync(null);
+
+        Assert.False(result.Success);
+        Assert.Equal("invalid_app_data", result.ErrorCode);
+        Assert.Equal(400, result.StatusCode);
+    }
+
+    [Fact]
+    public async Task A_cloud_pull_removes_local_apps_the_cloud_copy_does_not_have()
+    {
+        SeedAccount("acct-1", "refresh-1");
+        var id = _profiles.GetActiveEntry()!.Id;
+        _appData.Put(id, "com.local.app", "save", 0, J("1"));
+        _api.OnListProfiles = _ => CloudApiResult<List<CloudProfileSummaryDto>>.Ok(new List<CloudProfileSummaryDto>
+        {
+            new() { InstallId = OwnId, ProfileId = id, Name = "Default", Revision = 3 },
+        });
+        _api.OnGetProfile = (_, _, _) => CloudApiResult<CloudProfileDto>.Ok(new CloudProfileDto
+        {
+            ProfileId = id, Name = "Default", Revision = 3,
+            Payload = new ProfileExport { Name = "Default", Settings = new NexusSettings() },
+            AppData = new() { ["com.test.app"] = new() { ["save"] = J("1") } },
+        });
+        _store.Update(s => s.Auth!.CloudAccounts[0].ProfileSync[id] = new CloudProfileSyncRecord { Revision = 1, LastSyncedHash = CloudProfileSyncService.HashPayload(_profiles.ExportProfileForSync(id)!, _appData.ReadProfile(id)) });
+
+        await _sync.RunSyncPassAsync("acct-1", CancellationToken.None, manual: true);
+
+        Assert.Equal(new[] { "com.test.app" }, _appData.ReadProfile(id).Keys);
+    }
+
+    [Fact]
+    public void The_hash_does_not_depend_on_app_or_key_order()
+    {
+        var export = _profiles.ExportProfileForSync(_profiles.GetActiveEntry()!.Id)!;
+        var a = new Dictionary<string, Dictionary<string, System.Text.Json.JsonElement>> { ["com.a.app"] = new() { ["x"] = J("1"), ["y"] = J("2") }, ["com.b.app"] = new() { ["z"] = J("3") } };
+        var b = new Dictionary<string, Dictionary<string, System.Text.Json.JsonElement>> { ["com.b.app"] = new() { ["z"] = J("3") }, ["com.a.app"] = new() { ["y"] = J("2"), ["x"] = J("1") } };
+
+        Assert.Equal(CloudProfileSyncService.HashPayload(export, a), CloudProfileSyncService.HashPayload(export, b));
+    }
+
+    [Fact]
+    public void The_size_cap_measures_compact_unescaped_utf8()
+    {
+        var docs = new Dictionary<string, System.Text.Json.JsonElement>();
+        for (var k = 0; k < 4; k++)
+        {
+            docs[$"k{k}"] = J("\"" + new string('\u00e9', 40_000) + "\"");
+        }
+        var bundle = new Dictionary<string, Dictionary<string, System.Text.Json.JsonElement>> { ["com.test.app"] = docs };
+
+        Assert.False(CloudProfileSyncService.AppDataTooLarge(bundle));
+        Assert.InRange(CloudProfileSyncService.CanonicalAppDataJson(bundle).Length, 320_000, 330_000);
+    }
 }

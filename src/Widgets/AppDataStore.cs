@@ -11,26 +11,15 @@ using Nexus.Service.Serialization;
 namespace Nexus.Service.Widgets;
 
 /// <summary>
-/// Generic per-(profile,app,key) persistent JSON document store backing
-/// <c>/apps-api/data/{appId}/{key}</c>. One file per document at
-/// <c>&lt;NexusRoot&gt;/app-data/profiles/&lt;profileId&gt;/&lt;appId&gt;/&lt;key&gt;.json</c>,
-/// separate from the app's install directory (install/update/uninstall wipes
-/// that; this tree survives all three) and from the profile file itself.
-/// Every document belongs to exactly one profile; the route layer acts on the
-/// active one. Writes are compare-and-swap on <see cref="AppDataFile.Revision"/>.
-/// Every public method validates its profileId/appId/key regardless of whether
-/// the caller already did - callers that read an id straight off a file or the
-/// cloud must never be able to walk this store's paths, and this is the one
-/// place that can guarantee it. A single lock per (profile,app) covers every
-/// mutation to that app's documents, so the per-app key-count cap can never be
-/// raced past by two concurrent writes to two different new keys.
+/// Per-(profile,app,key) JSON document store behind <c>/apps-api/data</c>, one file per document under <c>app-data/profiles/&lt;profileId&gt;/&lt;appId&gt;/</c>.
+/// Every public method validates its ids itself, so an id read from a file or the cloud cannot walk paths; one lock per (profile,app) serialises mutations.
 /// </summary>
 public sealed class AppDataStore
 {
     public const int MaxDataBytes = 256 * 1024;
     public const int MaxKeysPerApp = 16;
 
-    /// <summary>Per-profile cap on the serialized appData bundle a cloud backup carries; the api enforces the same number.</summary>
+    /// <summary>Cap on the compact UTF-8 JSON size of a profile's appData bundle in a cloud backup; the api measures the same way.</summary>
     public const int MaxBundleBytes = 384 * 1024;
 
     private const string ProfilesFolder = "profiles";
@@ -228,7 +217,21 @@ public sealed class AppDataStore
         {
             return;
         }
-        try { Directory.Delete(dir, recursive: true); } catch { /* best effort */ }
+        try
+        {
+            foreach (var appDir in Directory.EnumerateDirectories(dir).ToList())
+            {
+                lock (AppLock(profileId, Path.GetFileName(appDir)))
+                {
+                    try { Directory.Delete(appDir, recursive: true); } catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { }
+                }
+            }
+            Directory.Delete(dir, recursive: true);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            Console.Error.WriteLine($"[app-data] could not delete profile {profileId}: {ex.Message}");
+        }
     }
 
     /// <summary>
@@ -258,9 +261,9 @@ public sealed class AppDataStore
                 Directory.CreateDirectory(Path.GetDirectoryName(target)!);
                 Directory.Move(dir, target);
             }
-            catch (IOException)
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
             {
-                // Left in place; an orphan folder is harmless.
+                Console.Error.WriteLine($"[app-data] could not archive profile {id}: {ex.Message}");
             }
         }
     }
@@ -306,7 +309,7 @@ public sealed class AppDataStore
             foreach (var key in keys)
             {
                 var doc = TryReadUnlocked(FilePath(profileId, appId, key!));
-                if (doc is not null)
+                if (doc is not null && IsStorable(doc.Data))
                 {
                     docs[key!] = doc.Data;
                 }
@@ -317,6 +320,47 @@ public sealed class AppDataStore
             }
         }
         return result;
+    }
+
+    /// <summary>JSON null and absent values never reach disk or the cloud; the api rejects them.</summary>
+    public static bool IsStorable(JsonElement data) => data.ValueKind is not (JsonValueKind.Undefined or JsonValueKind.Null);
+
+    /// <summary>
+    /// Replaces the WHOLE profile: apps not in <paramref name="bundle"/> are removed, then each bundled app is replaced as in <see cref="ReplaceApps"/>.
+    /// For cloud-wins paths, where leftovers from another account must not survive.
+    /// </summary>
+    public void ReplaceProfile(string profileId, IReadOnlyDictionary<string, Dictionary<string, JsonElement>>? bundle)
+    {
+        EnsureValidProfile(profileId);
+        var keep = new HashSet<string>(bundle?.Keys ?? Enumerable.Empty<string>(), StringComparer.Ordinal);
+        var removed = false;
+        foreach (var appId in AppIdsFor(profileId))
+        {
+            if (keep.Contains(appId))
+            {
+                continue;
+            }
+            lock (AppLock(profileId, appId))
+            {
+                var appDir = AppDir(profileId, appId);
+                foreach (var file in Directory.EnumerateFiles(appDir, "*.json").ToList())
+                {
+                    var key = Path.GetFileNameWithoutExtension(file);
+                    try { File.Delete(file); } catch { /* best effort */ }
+                    if (AppDataKeys.IsValid(key))
+                    {
+                        DocumentChanged?.Invoke(profileId, appId, key);
+                    }
+                }
+                try { Directory.Delete(appDir, recursive: true); } catch { /* best effort */ }
+            }
+            removed = true;
+        }
+        var touched = ReplaceApps(profileId, bundle);
+        if (removed && !touched && string.Equals(profileId, ActiveProfileId, StringComparison.Ordinal))
+        {
+            ResetRequested?.Invoke(profileId);
+        }
     }
 
     /// <summary>
@@ -350,7 +394,7 @@ public sealed class AppDataStore
                 {
                     break;
                 }
-                if (!AppDataKeys.IsValid(key) || data.ValueKind == JsonValueKind.Undefined)
+                if (!AppDataKeys.IsValid(key) || !IsStorable(data))
                 {
                     continue;
                 }
@@ -369,7 +413,7 @@ public sealed class AppDataStore
                     foreach (var file in Directory.EnumerateFiles(appDir, "*.json").ToList())
                     {
                         var key = Path.GetFileNameWithoutExtension(file);
-                        if (accepted.ContainsKey(key))
+                        if (!AppDataKeys.IsValid(key) || accepted.ContainsKey(key))
                         {
                             continue;
                         }

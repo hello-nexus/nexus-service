@@ -145,7 +145,7 @@ public static class ProfileRoutes
 
         app.MapGet("/profiles/{id}/export", (string id, ProfileManager pm, AppDataStore appDataStore) =>
         {
-            var json = pm.ExportProfileJson(id, appDataStore.ReadProfile(id));
+            var json = AppDataStore.IsValidProfileId(id) ? pm.ExportProfileJson(id, appDataStore.ReadProfile(id)) : null;
             return json == null
                 ? Results.NotFound(ApiResponse.Fail("Profile not found."))
                 : Results.Text(json, "application/json");

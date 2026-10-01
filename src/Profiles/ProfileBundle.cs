@@ -111,7 +111,7 @@ public static class ProfileBundle
                 {
                     break;
                 }
-                if (!AppDataKeys.IsValid(key) || data.ValueKind == JsonValueKind.Undefined)
+                if (!AppDataKeys.IsValid(key) || !AppDataStore.IsStorable(data))
                 {
                     continue;
                 }

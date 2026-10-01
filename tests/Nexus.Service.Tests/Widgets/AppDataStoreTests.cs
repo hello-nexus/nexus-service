@@ -486,4 +486,56 @@ public sealed class AppDataStoreTests : IDisposable
         Assert.Equal(AppDataStore.MaxKeysPerApp, okCount);
         Assert.Equal(AppDataStore.MaxKeysPerApp, _store.ReadProfile(P)["com.test.app"].Count);
     }
+
+    [Fact]
+    public void Null_documents_never_reach_disk_or_the_bundle()
+    {
+        _store.ReplaceApps(P, Bundle(("com.test.app", "n", "null"), ("com.test.app", "ok", "1")));
+
+        Assert.Equal(new[] { "ok" }, _store.ReadProfile(P)["com.test.app"].Keys);
+        Assert.False(AppDataStore.IsStorable(Json("null")));
+        File.WriteAllText(Path.Combine(_root, "profiles", P, "com.test.app", "legacy-null.json"), """{"revision":1,"updatedAt":"t","data":null}""");
+        Assert.DoesNotContain("legacy-null", _store.ReadProfile(P)["com.test.app"].Keys);
+    }
+
+    [Fact]
+    public void ReplaceApps_ignores_stray_files_with_invalid_key_names()
+    {
+        _store.Put(P, "com.test.app", "ok", 0, Json("1"));
+        File.WriteAllText(Path.Combine(_root, "profiles", P, "com.test.app", "Bad Key.json"), "{}");
+        var fired = new List<string>();
+        _store.DocumentChanged += (_, _, key) => fired.Add(key);
+
+        _store.ReplaceApps(P, Bundle(("com.test.app", "new", "1")));
+
+        Assert.Equal(new[] { "ok", "new" }, fired);
+        Assert.True(File.Exists(Path.Combine(_root, "profiles", P, "com.test.app", "Bad Key.json")));
+    }
+
+    [Fact]
+    public void ReplaceProfile_removes_apps_that_are_not_in_the_bundle_and_requests_a_reset()
+    {
+        _store.Put(P, "com.gone.app", "save", 0, Json("1"));
+        _store.Put(P, "com.test.app", "old", 0, Json("1"));
+        var resets = new List<string>();
+        _store.ResetRequested += resets.Add;
+
+        _store.ReplaceProfile(P, Bundle(("com.test.app", "new", "1")));
+
+        var now = _store.ReadProfile(P);
+        Assert.Equal(new[] { "com.test.app" }, now.Keys);
+        Assert.Equal(new[] { "new" }, now["com.test.app"].Keys);
+        Assert.Single(resets);
+
+        _store.ReplaceProfile(P, new Dictionary<string, Dictionary<string, JsonElement>>());
+        Assert.Empty(_store.ReadProfile(P));
+        Assert.Equal(2, resets.Count);
+    }
+
+    [Fact]
+    public void ArchiveProfilesExcept_and_DeleteProfile_do_not_throw_on_a_missing_tree()
+    {
+        _store.ArchiveProfilesExcept(new[] { P });
+        _store.DeleteProfile("nothing-here");
+    }
 }

@@ -275,4 +275,14 @@ public sealed class AppDataRoutesIntegrationTests : IClassFixture<AppDataRoutesF
         var get = await (await client.GetAsync(url)).Content.ReadFromJsonAsync<JsonElement>();
         Assert.Equal(0, get.GetProperty("revision").GetInt32());
     }
+
+    [Fact]
+    public async Task Put_with_null_data_is_rejected_with_400()
+    {
+        var client = AuthedClient();
+        var res = await client.PutAsync($"/apps-api/data/{AppDataRoutesFactory.AppId}/null-doc",
+            new StringContent("""{"baseRevision":0,"data":null}""", Encoding.UTF8, "application/json"));
+
+        Assert.Equal(HttpStatusCode.BadRequest, res.StatusCode);
+    }
 }

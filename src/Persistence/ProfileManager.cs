@@ -251,7 +251,8 @@ public sealed partial class ProfileManager : IDisposable
             activeAfter = _manifest.ActiveProfileId;
         }
 
-        ProfileDeleted?.Invoke(profileId);
+        try { ProfileDeleted?.Invoke(profileId); }
+        catch (Exception ex) { Console.Error.WriteLine($"[profiles] delete handler failed: {ex.Message}"); }
 
         // Fire OUTSIDE the lock; the handler does hardware I/O (fan
         // enumeration, lighting engine reapply via LiveEngineSync) that
@@ -551,7 +552,8 @@ public sealed partial class ProfileManager : IDisposable
             activeAfter = _manifest.ActiveProfileId;
         }
 
-        LibraryReplaced?.Invoke();
+        try { LibraryReplaced?.Invoke(); }
+        catch (Exception ex) { Console.Error.WriteLine($"[profiles] library handler failed: {ex.Message}"); }
         ActiveProfileChanged?.Invoke(activeAfter);
         OnProfileSwitched?.Invoke();
     }
