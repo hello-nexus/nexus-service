@@ -212,6 +212,8 @@ public interface IPanelPersonalization
     double? WidgetOpacity { get; set; }
     bool? WidgetLabels { get; set; }
     double? WidgetPadding { get; set; }
+    string? TextColorMode { get; set; }
+    string? TextColor { get; set; }
     bool? ThemeSyncWithDesktop { get; set; }
     bool? AccentSyncWithDesktop { get; set; }
 }
@@ -252,6 +254,8 @@ public sealed class PanelPreset : IAppBoundPreset, IPanelPersonalization
     public double? WidgetOpacity { get; set; }
     public bool? WidgetLabels { get; set; }
     public double? WidgetPadding { get; set; }
+    public string? TextColorMode { get; set; }
+    public string? TextColor { get; set; }
     public bool? ThemeSyncWithDesktop { get; set; }
     public bool? AccentSyncWithDesktop { get; set; }
 

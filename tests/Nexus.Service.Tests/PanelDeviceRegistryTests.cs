@@ -572,7 +572,7 @@ public sealed class PanelDeviceRegistryTests : IDisposable
         var desk = _registry.CreatePreset(record.Id, "Desk", out _)!.ActiveId!;
         var game = _registry.CreatePreset(record.Id, "Game", out _)!.ActiveId!;
         // Edits while Game is loaded belong to Game.
-        _registry.Patch(record.Id, new PanelDevicePatch { Layout = Layout("gallery"), AccentColor = "#ff0000", ThemeMode = "dark" });
+        _registry.Patch(record.Id, new PanelDevicePatch { Layout = Layout("gallery"), AccentColor = "#ff0000", ThemeMode = "dark", TextColorMode = "custom", TextColor = "#00ff00" });
 
         var afterDesk = _registry.ActivatePreset(record.Id, desk);
 
@@ -582,12 +582,14 @@ public sealed class PanelDeviceRegistryTests : IDisposable
         Assert.Equal("light", live.ThemeMode);
         // Null in the snapshot resets the field rather than leaving Game's accent.
         Assert.Null(live.AccentColor);
+        Assert.Null(live.TextColor);
 
         _registry.ActivatePreset(record.Id, game);
         live = _registry.Get(record.Id)!;
         Assert.Equal("gallery", live.Layout!.Pages[0].Widgets[0].Type);
         Assert.Equal("#ff0000", live.AccentColor);
         Assert.Equal("dark", live.ThemeMode);
+        Assert.Equal("#00ff00", live.TextColor);
     }
 
     [Fact]
