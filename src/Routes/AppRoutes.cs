@@ -345,8 +345,9 @@ public static class AppRoutes
             var gate = CheckAppDataAccess(appId, key, registry);
             if (gate is not null) return gate;
 
-            var (revision, updatedAt, data) = appDataStore.Get(appId, key);
-            return Results.Json(new AppDataDocumentDto { Revision = revision, UpdatedAt = updatedAt, Data = data },
+            var profileId = appDataStore.ActiveProfileId;
+            var (revision, updatedAt, data) = appDataStore.Get(profileId, appId, key);
+            return Results.Json(new AppDataDocumentDto { ProfileId = profileId, Revision = revision, UpdatedAt = updatedAt, Data = data },
                 AppJsonContext.Default.AppDataDocumentDto);
         }).AllowPanel();
 
@@ -357,9 +358,9 @@ public static class AppRoutes
             var gate = CheckAppDataAccess(appId, key, registry);
             if (gate is not null) return gate;
 
-            if (body.Data.ValueKind == System.Text.Json.JsonValueKind.Undefined)
+            if (!AppDataStore.IsStorable(body.Data))
             {
-                return Results.Json(ApiResponse.Fail("data is required"), AppJsonContext.Default.ApiResponse, statusCode: 400);
+                return Results.Json(ApiResponse.Fail("data is required and must not be null"), AppJsonContext.Default.ApiResponse, statusCode: 400);
             }
 
             if (!limiter.TryAcquire(appId))
@@ -368,7 +369,14 @@ public static class AppRoutes
                     AppJsonContext.Default.ApiResponse, statusCode: 429);
             }
 
-            var result = appDataStore.Put(appId, key, body.BaseRevision, body.Data);
+            var profileId = appDataStore.ActiveProfileId;
+            if (body.ProfileId is not null && !string.Equals(body.ProfileId, profileId, StringComparison.Ordinal))
+            {
+                return Results.Json(new AppDataProfileSwitchedResponse { Error = true, Msg = "profile_switched", ProfileId = profileId },
+                    AppJsonContext.Default.AppDataProfileSwitchedResponse, statusCode: 409);
+            }
+
+            var result = appDataStore.Put(profileId, appId, key, body.BaseRevision, body.Data);
             switch (result.Outcome)
             {
                 case AppDataStore.PutOutcome.TooLarge:
@@ -379,7 +387,7 @@ public static class AppRoutes
                         AppJsonContext.Default.ApiResponse, statusCode: 422);
                 case AppDataStore.PutOutcome.Conflict:
                     return Results.Json(
-                        new AppDataDocumentDto { Revision = result.Revision, UpdatedAt = result.UpdatedAt, Data = result.Data },
+                        new AppDataDocumentDto { ProfileId = profileId, Revision = result.Revision, UpdatedAt = result.UpdatedAt, Data = result.Data },
                         AppJsonContext.Default.AppDataDocumentDto, statusCode: 409);
                 default:
                     // Broadcast rides AppDataStore.DocumentChanged (wired once

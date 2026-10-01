@@ -5,9 +5,8 @@ namespace Nexus.Service.Tests.Update;
 /// <summary>
 /// Tests for UpdateService.CanOfferUpdate (the download-tier offer decision,
 /// which every platform gets once an asset resolves for it) and
-/// UpdateService.ShouldAutoStage (the background download+install gate, which
-/// stays Windows-only since RunInstallAsync only implements the install
-/// handoff there).
+/// UpdateService.ShouldAutoStage (the background download+install gate, closed
+/// for an install that cannot apply updates itself).
 /// </summary>
 public class UpdateAvailabilityGateTests
 {
@@ -26,34 +25,42 @@ public class UpdateAvailabilityGateTests
     [Theory]
     [InlineData("always")]
     [InlineData("download")]
-    public void ShouldAutoStage_True_OnWindows_WhenOfferedAndNotStaged(string mode)
+    public void ShouldAutoStage_True_WhenApplicableAndOfferedAndNotStaged(string mode)
     {
-        Assert.True(UpdateService.ShouldAutoStage(offerUpdate: true, mode, alreadyStaged: false, isWindows: true));
+        Assert.True(UpdateService.ShouldAutoStage(offerUpdate: true, mode, alreadyStaged: false, canApply: true, hashPublished: true));
     }
 
     [Theory]
     [InlineData("always")]
     [InlineData("download")]
-    public void ShouldAutoStage_False_OffWindows_EvenWhenOfferedAndNotStaged(string mode)
+    public void ShouldAutoStage_False_WhenInstallCannotApply(string mode)
     {
-        Assert.False(UpdateService.ShouldAutoStage(offerUpdate: true, mode, alreadyStaged: false, isWindows: false));
+        Assert.False(UpdateService.ShouldAutoStage(offerUpdate: true, mode, alreadyStaged: false, canApply: false, hashPublished: true));
+    }
+
+    [Theory]
+    [InlineData("always")]
+    [InlineData("download")]
+    public void ShouldAutoStage_False_WhenSha256SumsLacksTheAsset(string mode)
+    {
+        Assert.False(UpdateService.ShouldAutoStage(offerUpdate: true, mode, alreadyStaged: false, canApply: true, hashPublished: false));
     }
 
     [Fact]
-    public void ShouldAutoStage_False_InNotifyMode_EvenOnWindows()
+    public void ShouldAutoStage_False_InNotifyMode()
     {
-        Assert.False(UpdateService.ShouldAutoStage(offerUpdate: true, mode: "notify", alreadyStaged: false, isWindows: true));
+        Assert.False(UpdateService.ShouldAutoStage(offerUpdate: true, mode: "notify", alreadyStaged: false, canApply: true, hashPublished: true));
     }
 
     [Fact]
     public void ShouldAutoStage_False_WhenAlreadyStaged()
     {
-        Assert.False(UpdateService.ShouldAutoStage(offerUpdate: true, mode: "always", alreadyStaged: true, isWindows: true));
+        Assert.False(UpdateService.ShouldAutoStage(offerUpdate: true, mode: "always", alreadyStaged: true, canApply: true, hashPublished: true));
     }
 
     [Fact]
     public void ShouldAutoStage_False_WhenNotOffered()
     {
-        Assert.False(UpdateService.ShouldAutoStage(offerUpdate: false, mode: "always", alreadyStaged: false, isWindows: true));
+        Assert.False(UpdateService.ShouldAutoStage(offerUpdate: false, mode: "always", alreadyStaged: false, canApply: true, hashPublished: true));
     }
 }

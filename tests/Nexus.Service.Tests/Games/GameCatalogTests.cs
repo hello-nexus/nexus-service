@@ -8,9 +8,24 @@ public class GameCatalogTests
     [InlineData("steam", "1091500", "Cyberpunk 2077", "steam:1091500")]
     [InlineData("epic", "", "Fortnite", "epic:fortnite")]
     [InlineData("ubisoft", "", "Assassin's Creed Valhalla", "ubisoft:assassinscreedvalhalla")]
+    [InlineData("battlenet", "", "World of Warcraft", "battlenet:worldofwarcraft")]
     public void BuildGameKey_MatchesTheDecidedFormat(string store, string appId, string name, string expected)
     {
         Assert.Equal(expected, GameCatalog.BuildGameKey(store, appId, name));
+    }
+
+    [Theory]
+    [InlineData("\"C:\\ProgramData\\Battle.net\\Agent\\Blizzard Uninstaller.exe\" --lang=enUS --uid=hs_beta --displayname=\"Hearthstone\"", "hs_beta")]
+    [InlineData("\"C:\\ProgramData\\Battle.net\\Agent\\Blizzard Uninstaller.exe\" --lang=enUS --uid=battle.net --displayname=\"Battle.net\"", "battle.net")]
+    [InlineData("\"C:\\ProgramData\\Battle.net\\Agent\\Blizzard Uninstaller.exe\" --lang=enUS --uid=wow_enus --displayname=\"World of Warcraft\"", "wow_enus")]
+    [InlineData("\"C:\\ProgramData\\Battle.net\\Agent\\Blizzard Uninstaller.exe\" --lang=enUS --uid=prometheus", "prometheus")]
+    [InlineData("\"C:\\ProgramData\\Battle.net\\Agent\\Blizzard Uninstaller.exe\" --uid=\"fenris\" --lang=enUS", "fenris")]
+    [InlineData("\"C:\\Program Files (x86)\\Battle.net\\Battle.net Uninstaller.exe\"", "")]
+    [InlineData("\"C:\\Program Files\\Other\\uninstall.exe\" --uid=wow_enus", "")]
+    [InlineData("", "")]
+    public void ReadBattleNetUid_ReadsOnlyABattleNetUninstallUid(string uninstallString, string expected)
+    {
+        Assert.Equal(expected, InstalledGameCollectors.ReadBattleNetUid(uninstallString));
     }
 
     [Theory]

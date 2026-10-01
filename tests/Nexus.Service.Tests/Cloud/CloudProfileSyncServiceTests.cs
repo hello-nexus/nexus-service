@@ -32,7 +32,7 @@ public sealed class CloudProfileSyncServiceTests : IDisposable
         _fans = new StubCoolingProvider(_store);
         _clock = new ManualTimeProvider(DateTimeOffset.UtcNow);
         _accounts = new CloudAccountService(_api, _store, _clock);
-        _appData = new Nexus.Service.Widgets.AppDataStore(() => Path.Combine(_tempDir, "app-data"));
+        _appData = new Nexus.Service.Widgets.AppDataStore(() => Path.Combine(_tempDir, "app-data"), () => _profiles.ActiveProfileId);
         _sync = new CloudProfileSyncService(_api, _accounts, _profiles, _store, _fans, _appData, _clock);
     }
 
@@ -320,7 +320,7 @@ public sealed class CloudProfileSyncServiceTests : IDisposable
     // ── account switch (archive + wholesale replace) ────────────────────
 
     [Fact]
-    public async Task HandleSwitch_pushes_outgoing_pending_changes_archives_then_replaces_with_the_incoming_library()
+    public async Task HandleSwitch_never_uploads_the_outgoing_library_archives_it_then_replaces_with_the_incoming_library()
     {
         SeedAccount("from-acct", "refresh-from");
         var oldDefaultId = _profiles.GetActiveEntry()!.Id;
@@ -340,7 +340,6 @@ public sealed class CloudProfileSyncServiceTests : IDisposable
         var pushedProfileIds = new List<string>();
         _api.OnPutProfile = (token, _, profileId, _) =>
         {
-            Assert.Equal("access-for-from-acct", token); // the outgoing flush must authenticate as the OUTGOING account.
             pushedProfileIds.Add(profileId);
             return CloudApiResult<CloudPutProfileResult>.Ok(new CloudPutProfileResult { Revision = 1 });
         };
@@ -371,8 +370,9 @@ public sealed class CloudProfileSyncServiceTests : IDisposable
         _sync.AnnounceSwitch("from-acct", "to-acct");
         await _sync.HandleSwitchAsync("from-acct", "to-acct", CancellationToken.None);
 
-        // Outgoing account: both local-only profiles were pushed before the swap.
-        Assert.Equal(2, pushedProfileIds.Count);
+        // A switch never uploads the outgoing library.
+        Assert.Empty(pushedProfileIds);
+        Assert.Equal(0, _api.PutProfileCalls);
 
         // Archive exists and holds the outgoing library.
         var archiveRoot = Path.Combine(_tempDir, "profiles-archive");
@@ -392,10 +392,9 @@ public sealed class CloudProfileSyncServiceTests : IDisposable
         Assert.Equal(5, toRecord.ProfileSync["cloud-profile-1"].Revision);
 
         // A queued duplicate (the OnAccountActivated pass completed the switch
-        // first via its redirect) must be a no-op: re-running would flush the
-        // INCOMING library to the OUTGOING account's cloud.
+        // first via its redirect) must be a no-op.
         await _sync.HandleSwitchAsync("from-acct", "to-acct", CancellationToken.None);
-        Assert.Equal(2, pushedProfileIds.Count);
+        Assert.Empty(pushedProfileIds);
         Assert.Single(Directory.GetDirectories(archiveRoot));
     }
 
@@ -723,13 +722,11 @@ public sealed class CloudProfileSyncServiceTests : IDisposable
 
         await _sync.RunSyncPassAsync("to-acct", CancellationToken.None);
 
-        // Redirected into the wholesale switch (which pushes from-acct's
-        // pending local profile as its outgoing flush) instead of an
-        // incremental pass, which would read "no sync record for to-acct" and
-        // upload the still-outgoing local library as new profiles under
-        // to-acct's identity - the cross-account leakage this fix prevents.
-        Assert.NotEmpty(pushTokens);
-        Assert.All(pushTokens, t => Assert.Equal("tok-refresh-from", t));
+        // Redirected into the wholesale switch instead of an incremental pass,
+        // which would read "no sync record for to-acct" and upload the
+        // still-outgoing local library under to-acct's identity. Nothing is
+        // uploaded either way: a switch only archives and replaces.
+        Assert.Empty(pushTokens);
         // The switch actually completed (not just redirected-and-stuck).
         Assert.Equal((null, null), _sync.PendingSwitch);
     }
@@ -796,5 +793,291 @@ public sealed class CloudProfileSyncServiceTests : IDisposable
 
         await _sync.RunSyncPassAsync("acct-1", CancellationToken.None, manual: true);
         Assert.True(pushes > 0);
+    }
+
+    // ── app data rides the explicit backup ───────────────────────────────
+
+    private static System.Text.Json.JsonElement J(string raw) => System.Text.Json.JsonDocument.Parse(raw).RootElement.Clone();
+
+    [Fact]
+    public async Task A_manual_backup_sends_that_profiles_app_data_and_only_that_profiles()
+    {
+        SeedAccount("acct-1", "refresh-1");
+        var firstId = _profiles.GetActiveEntry()!.Id;
+        var secondId = _profiles.CreateProfile("Second").Id;
+        _appData.Put(firstId, "com.test.app", "save", 0, J("""{"fish":1}"""));
+        _appData.Put(secondId, "com.test.app", "save", 0, J("""{"fish":2}"""));
+        _api.OnListProfiles = _ => CloudApiResult<List<CloudProfileSummaryDto>>.Ok(new List<CloudProfileSummaryDto>());
+        CloudPutProfileRequest? sent = null;
+        _api.OnPutProfile = (_, _, _, body) =>
+        {
+            sent = body;
+            return CloudApiResult<CloudPutProfileResult>.Ok(new CloudPutProfileResult { Revision = 1 });
+        };
+
+        await _sync.TriggerNowAsync(secondId);
+
+        Assert.NotNull(sent?.AppData);
+        Assert.Equal(2, sent!.AppData!["com.test.app"]["save"].GetProperty("fish").GetInt32());
+        Assert.Null(sent.Payload!.AppData);
+    }
+
+    [Fact]
+    public async Task A_profile_without_app_data_still_sends_an_empty_appData_object()
+    {
+        SeedAccount("acct-1", "refresh-1");
+        _api.OnListProfiles = _ => CloudApiResult<List<CloudProfileSummaryDto>>.Ok(new List<CloudProfileSummaryDto>());
+        CloudPutProfileRequest? sent = null;
+        _api.OnPutProfile = (_, _, _, body) =>
+        {
+            sent = body;
+            return CloudApiResult<CloudPutProfileResult>.Ok(new CloudPutProfileResult { Revision = 1 });
+        };
+
+        await _sync.TriggerNowAsync(null);
+
+        Assert.NotNull(sent?.AppData);
+        Assert.Empty(sent!.AppData!);
+        var json = System.Text.Json.JsonSerializer.Serialize(sent, Nexus.Service.Serialization.AppJsonContext.Default.CloudPutProfileRequest);
+        Assert.Contains("\"appData\":{}", json);
+    }
+
+    [Fact]
+    public async Task Changing_only_app_data_makes_the_profile_dirty_again()
+    {
+        SeedAccount("acct-1", "refresh-1");
+        var id = _profiles.GetActiveEntry()!.Id;
+        _api.OnListProfiles = _ => CloudApiResult<List<CloudProfileSummaryDto>>.Ok(new List<CloudProfileSummaryDto>
+        {
+            new() { InstallId = OwnId, ProfileId = id, Name = "Default", Revision = 1 },
+        });
+        var pushes = 0;
+        _api.OnPutProfile = (_, _, _, _) =>
+        {
+            pushes++;
+            return CloudApiResult<CloudPutProfileResult>.Ok(new CloudPutProfileResult { Revision = 1 });
+        };
+        _store.Update(s => s.Auth!.CloudAccounts[0].ProfileSync[id] = new CloudProfileSyncRecord
+        {
+            Revision = 1,
+            LastSyncedHash = CloudProfileSyncService.HashPayload(_profiles.ExportProfileForSync(id)!, _appData.ReadProfile(id)),
+        });
+
+        await _sync.RunSyncPassAsync("acct-1", CancellationToken.None, manual: true);
+        Assert.Equal(0, pushes);
+
+        _appData.Put(id, "com.test.app", "save", 0, J("1"));
+        await _sync.RunSyncPassAsync("acct-1", CancellationToken.None, manual: true);
+        Assert.Equal(1, pushes);
+    }
+
+    [Fact]
+    public void A_profile_with_no_app_data_hashes_as_it_did_before_app_data_was_backed_up()
+    {
+        var export = _profiles.ExportProfileForSync(_profiles.GetActiveEntry()!.Id)!;
+
+        Assert.Equal(CloudProfileSyncService.HashPayload(export), CloudProfileSyncService.HashPayload(export, new()));
+    }
+
+    [Fact]
+    public async Task A_backup_whose_app_data_exceeds_the_cap_fails_with_app_data_too_large_without_calling_the_api()
+    {
+        SeedAccount("acct-1", "refresh-1");
+        var id = _profiles.GetActiveEntry()!.Id;
+        // 2 apps x 2 documents near the per-document cap; together far above the bundle cap.
+        for (var app = 0; app < 2; app++)
+        {
+            for (var k = 0; k < 2; k++)
+            {
+                _appData.Put(id, $"com.test.app{app}", $"k{k}", 0, J("\"" + new string('x', 200 * 1024) + "\""));
+            }
+        }
+        _api.OnListProfiles = _ => CloudApiResult<List<CloudProfileSummaryDto>>.Ok(new List<CloudProfileSummaryDto>());
+
+        var result = await _sync.TriggerNowAsync(id);
+
+        Assert.False(result.Success);
+        Assert.Equal("app_data_too_large", result.ErrorCode);
+        Assert.Equal(413, result.StatusCode);
+        Assert.Equal(0, _api.PutProfileCalls);
+    }
+
+    [Fact]
+    public async Task An_api_413_app_data_too_large_is_surfaced_to_the_backup_caller()
+    {
+        SeedAccount("acct-1", "refresh-1");
+        _api.OnListProfiles = _ => CloudApiResult<List<CloudProfileSummaryDto>>.Ok(new List<CloudProfileSummaryDto>());
+        _api.OnPutProfile = (_, _, _, _) => CloudApiResult<CloudPutProfileResult>.Fail(413, "app_data_too_large", "too big");
+
+        var result = await _sync.TriggerNowAsync(null);
+
+        Assert.Equal("app_data_too_large", result.ErrorCode);
+    }
+
+    [Fact]
+    public async Task A_following_successful_backup_clears_the_failure()
+    {
+        SeedAccount("acct-1", "refresh-1");
+        _api.OnListProfiles = _ => CloudApiResult<List<CloudProfileSummaryDto>>.Ok(new List<CloudProfileSummaryDto>());
+        _api.OnPutProfile = (_, _, _, _) => CloudApiResult<CloudPutProfileResult>.Fail(413, "app_data_too_large", "too big");
+        await _sync.TriggerNowAsync(null);
+
+        _api.OnPutProfile = (_, _, _, _) => CloudApiResult<CloudPutProfileResult>.Ok(new CloudPutProfileResult { Revision = 1 });
+        var result = await _sync.TriggerNowAsync(null);
+
+        Assert.True(result.Success);
+    }
+
+    [Fact]
+    public async Task Nothing_uploads_until_the_user_triggers_a_backup()
+    {
+        SeedAccount("acct-1", "refresh-1");
+        _appData.Put(_profiles.GetActiveEntry()!.Id, "com.test.app", "save", 0, J("1"));
+        _api.OnListProfiles = _ => CloudApiResult<List<CloudProfileSummaryDto>>.Ok(new List<CloudProfileSummaryDto>());
+        _api.OnPutProfile = (_, _, _, _) => CloudApiResult<CloudPutProfileResult>.Ok(new CloudPutProfileResult { Revision = 1 });
+
+        // Edits, a profile switch, a background-style (non-manual) pass and a hosted-service stop are all upload-free.
+        _appData.Put(_profiles.GetActiveEntry()!.Id, "com.test.app", "save", 1, J("2"));
+        var other = _profiles.CreateProfile("Other").Id;
+        _profiles.SwitchProfile(other);
+        await _sync.RunSyncPassAsync("acct-1", CancellationToken.None);
+        await _sync.StopAsync(CancellationToken.None);
+
+        Assert.Equal(0, _api.PutProfileCalls);
+
+        await _sync.TriggerNowAsync(null);
+        Assert.True(_api.PutProfileCalls > 0);
+    }
+
+    [Fact]
+    public void The_sync_service_has_no_shutdown_flush_hook()
+    {
+        var methods = typeof(CloudProfileSyncService).GetMethods(System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.DeclaredOnly);
+        Assert.DoesNotContain(methods, m => m.Name is "FlushPendingSyncBlocking" or "FlushAccountAsync" or "StopAsync");
+    }
+
+    [Fact]
+    public async Task A_cloud_pull_applies_the_backed_up_app_data_to_the_local_profile()
+    {
+        SeedAccount("acct-1", "refresh-1");
+        var id = _profiles.GetActiveEntry()!.Id;
+        _api.OnListProfiles = _ => CloudApiResult<List<CloudProfileSummaryDto>>.Ok(new List<CloudProfileSummaryDto>
+        {
+            new() { InstallId = OwnId, ProfileId = id, Name = "Default", Revision = 3 },
+        });
+        _api.OnGetProfile = (_, _, _) => CloudApiResult<CloudProfileDto>.Ok(new CloudProfileDto
+        {
+            ProfileId = id,
+            Name = "Default",
+            Revision = 3,
+            Payload = new ProfileExport { Name = "Default", Settings = new NexusSettings() },
+            AppData = new() { ["com.test.app"] = new() { ["save"] = J("""{"fish":9}"""), ["BadKey"] = J("1") } },
+        });
+        _store.Update(s => s.Auth!.CloudAccounts[0].ProfileSync[id] = new CloudProfileSyncRecord { Revision = 1, LastSyncedHash = CloudProfileSyncService.HashPayload(_profiles.ExportProfileForSync(id)!, _appData.ReadProfile(id)) });
+
+        await _sync.RunSyncPassAsync("acct-1", CancellationToken.None, manual: true);
+
+        var restored = _appData.ReadProfile(id);
+        Assert.Equal(new[] { "save" }, restored["com.test.app"].Keys);
+        Assert.Equal(9, restored["com.test.app"]["save"].GetProperty("fish").GetInt32());
+    }
+
+    [Fact]
+    public async Task HandleSwitch_applies_each_incoming_profiles_app_data_and_archives_the_outgoing_profiles_app_data()
+    {
+        SeedAccount("from-acct", "refresh-from");
+        var outgoing = _profiles.GetActiveEntry()!.Id;
+        _appData.Put(outgoing, "com.test.app", "save", 0, J("""{"mine":true}"""));
+        _store.Update(s => s.Auth!.CloudAccounts.Add(new CloudAccountRecord { AccountId = "to-acct", RefreshToken = "refresh-to" }));
+        var map = new Dictionary<string, string> { ["refresh-from"] = "from-acct", ["refresh-to"] = "to-acct" };
+        _api.OnRefresh = rt => CloudApiResult<CloudAuthSession>.Ok(new CloudAuthSession
+        {
+            AccessToken = "access-for-" + map[rt],
+            RefreshToken = rt,
+            Account = new CloudAccountDto { Id = map[rt], Email = "x@example.com", Username = "x", EmailVerified = true },
+        });
+        _api.OnListProfiles = _ => CloudApiResult<List<CloudProfileSummaryDto>>.Ok(new List<CloudProfileSummaryDto>
+        {
+            new() { InstallId = OwnId, ProfileId = "cloud-profile-1", Name = "Incoming", Revision = 5 },
+        });
+        _api.OnGetProfile = (_, _, profileId) => CloudApiResult<CloudProfileDto>.Ok(new CloudProfileDto
+        {
+            ProfileId = profileId,
+            Name = "Incoming",
+            Revision = 5,
+            Payload = new ProfileExport { Name = "Incoming", Settings = new NexusSettings() },
+            AppData = new() { ["com.test.app"] = new() { ["save"] = J("""{"theirs":true}""") } },
+        });
+        // The wiring DI does for a library replace.
+        _profiles.LibraryReplaced += () => _appData.ArchiveProfilesExcept(_profiles.GetManifest().Profiles.Select(p => p.Id).ToList());
+
+        _sync.AnnounceSwitch("from-acct", "to-acct");
+        await _sync.HandleSwitchAsync("from-acct", "to-acct", CancellationToken.None);
+
+        Assert.True(_appData.ReadProfile("cloud-profile-1")["com.test.app"]["save"].GetProperty("theirs").GetBoolean());
+        Assert.Empty(_appData.ReadProfile(outgoing));
+        Assert.Single(Directory.GetFiles(Path.Combine(_tempDir, "app-data", ".archive"), "save.json", SearchOption.AllDirectories));
+        Assert.Equal(0, _api.PutProfileCalls);
+    }
+
+    [Fact]
+    public async Task Any_api_4xx_with_a_code_fails_the_backup_with_that_code_and_status()
+    {
+        SeedAccount("acct-1", "refresh-1");
+        _api.OnListProfiles = _ => CloudApiResult<List<CloudProfileSummaryDto>>.Ok(new List<CloudProfileSummaryDto>());
+        _api.OnPutProfile = (_, _, _, _) => CloudApiResult<CloudPutProfileResult>.Fail(400, "invalid_app_data", "bad");
+
+        var result = await _sync.TriggerNowAsync(null);
+
+        Assert.False(result.Success);
+        Assert.Equal("invalid_app_data", result.ErrorCode);
+        Assert.Equal(400, result.StatusCode);
+    }
+
+    [Fact]
+    public async Task A_cloud_pull_removes_local_apps_the_cloud_copy_does_not_have()
+    {
+        SeedAccount("acct-1", "refresh-1");
+        var id = _profiles.GetActiveEntry()!.Id;
+        _appData.Put(id, "com.local.app", "save", 0, J("1"));
+        _api.OnListProfiles = _ => CloudApiResult<List<CloudProfileSummaryDto>>.Ok(new List<CloudProfileSummaryDto>
+        {
+            new() { InstallId = OwnId, ProfileId = id, Name = "Default", Revision = 3 },
+        });
+        _api.OnGetProfile = (_, _, _) => CloudApiResult<CloudProfileDto>.Ok(new CloudProfileDto
+        {
+            ProfileId = id, Name = "Default", Revision = 3,
+            Payload = new ProfileExport { Name = "Default", Settings = new NexusSettings() },
+            AppData = new() { ["com.test.app"] = new() { ["save"] = J("1") } },
+        });
+        _store.Update(s => s.Auth!.CloudAccounts[0].ProfileSync[id] = new CloudProfileSyncRecord { Revision = 1, LastSyncedHash = CloudProfileSyncService.HashPayload(_profiles.ExportProfileForSync(id)!, _appData.ReadProfile(id)) });
+
+        await _sync.RunSyncPassAsync("acct-1", CancellationToken.None, manual: true);
+
+        Assert.Equal(new[] { "com.test.app" }, _appData.ReadProfile(id).Keys);
+    }
+
+    [Fact]
+    public void The_hash_does_not_depend_on_app_or_key_order()
+    {
+        var export = _profiles.ExportProfileForSync(_profiles.GetActiveEntry()!.Id)!;
+        var a = new Dictionary<string, Dictionary<string, System.Text.Json.JsonElement>> { ["com.a.app"] = new() { ["x"] = J("1"), ["y"] = J("2") }, ["com.b.app"] = new() { ["z"] = J("3") } };
+        var b = new Dictionary<string, Dictionary<string, System.Text.Json.JsonElement>> { ["com.b.app"] = new() { ["z"] = J("3") }, ["com.a.app"] = new() { ["y"] = J("2"), ["x"] = J("1") } };
+
+        Assert.Equal(CloudProfileSyncService.HashPayload(export, a), CloudProfileSyncService.HashPayload(export, b));
+    }
+
+    [Fact]
+    public void The_size_cap_measures_compact_unescaped_utf8()
+    {
+        var docs = new Dictionary<string, System.Text.Json.JsonElement>();
+        for (var k = 0; k < 4; k++)
+        {
+            docs[$"k{k}"] = J("\"" + new string('\u00e9', 40_000) + "\"");
+        }
+        var bundle = new Dictionary<string, Dictionary<string, System.Text.Json.JsonElement>> { ["com.test.app"] = docs };
+
+        Assert.False(CloudProfileSyncService.AppDataTooLarge(bundle));
+        Assert.InRange(CloudProfileSyncService.CanonicalAppDataJson(bundle).Length, 320_000, 330_000);
     }
 }

@@ -19,6 +19,7 @@ internal static class InstalledGameCollectors
         CollectSteamGames(candidates, logger);
         CollectUbisoftGames(candidates, logger);
         CollectEpicGames(candidates, logger);
+        CollectBattleNetGames(candidates, logger);
         return DedupeByInstallDir(candidates).Select(c => new Candidate(c.Name, c.InstallDir, c.Store, c.AppId)).ToList();
     }
 
@@ -46,7 +47,7 @@ internal static class InstalledGameCollectors
     }
 
     // Collapse candidates sharing the same normalized installDir to one entry,
-    // keeping the one from the highest-precedence store (steam > epic > ubisoft).
+    // keeping the one from the highest-precedence store (steam > epic > the rest).
     internal static List<(string Name, string InstallDir, string Store, string AppId)> DedupeByInstallDir(
         List<(string Name, string InstallDir, string Store, string AppId)> candidates)
     {
@@ -229,6 +230,83 @@ internal static class InstalledGameCollectors
 #endif
     }
 
+    // Battle.net games come from their machine-wide uninstall entries, whose
+    // UninstallString runs a Battle.net component with --uid=<product>.
+    private static void CollectBattleNetGames(List<(string, string, string, string)> candidates, ILogger logger)
+    {
+#if WINDOWS
+        try
+        {
+            var found = new List<(string, string, string, string)>();
+            foreach (var path in new[]
+            {
+                @"SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall",
+                @"SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall",
+            })
+            {
+                using var uninstall = Registry.LocalMachine.OpenSubKey(path);
+                if (uninstall is null)
+                {
+                    continue;
+                }
+
+                foreach (var id in uninstall.GetSubKeyNames())
+                {
+                    try
+                    {
+                        using var entry = uninstall.OpenSubKey(id);
+                        var name = (entry?.GetValue("DisplayName") as string ?? "").Trim();
+                        var dir = entry?.GetValue("InstallLocation") as string ?? "";
+                        var uid = ReadBattleNetUid(entry?.GetValue("UninstallString") as string ?? "");
+                        // The launcher's own entry would otherwise make Battle.net.exe a game.
+                        if (uid.Length > 0 && !uid.Equals("battle.net", StringComparison.OrdinalIgnoreCase)
+                            && name.Length > 0 && dir.Length > 0 && Directory.Exists(dir))
+                        {
+                            found.Add((name, dir, "battlenet", ""));
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        logger.LogDebug(ex, "[game-catalog] cannot read uninstall entry {Id}", id);
+                    }
+                }
+            }
+
+            // Dedupe keeps the first entry per install dir; shortest name first
+            // makes a base title win over a "Beta"/"Public Test" sharing its dir.
+            candidates.AddRange(found.OrderBy(c => c.Item1.Length));
+        }
+        catch (Exception ex)
+        {
+            logger.LogWarning(ex, "[game-catalog] Battle.net store unavailable");
+        }
+#endif
+    }
+
+    /// <summary>The --uid value of a Battle.net uninstall command, or "" when the command is not Battle.net's.</summary>
+    internal static string ReadBattleNetUid(string uninstallString)
+    {
+        var battleNet = uninstallString.IndexOf("Battle.net", StringComparison.OrdinalIgnoreCase);
+        if (battleNet < 0)
+        {
+            return "";
+        }
+
+        var flag = uninstallString.IndexOf("--uid=", battleNet, StringComparison.OrdinalIgnoreCase);
+        if (flag < 0)
+        {
+            return "";
+        }
+
+        var start = flag + "--uid=".Length;
+        var end = start;
+        while (end < uninstallString.Length && !char.IsWhiteSpace(uninstallString[end]))
+        {
+            end++;
+        }
+        return uninstallString[start..end].Trim('"');
+    }
+
     // A real JSON read, not a substring scan: Epic writes these manifests
     // pretty-printed, so the value does not follow the key's colon directly,
     // and its paths arrive backslash-escaped.
@@ -278,7 +356,7 @@ internal static class InstalledGameCollectors
 
 /// <summary>One catalog game, keyed by a store-qualified identity. gameKey is
 /// the cross-repo identity ("steam:&lt;appId&gt;" | "epic:&lt;slug&gt;" |
-/// "ubisoft:&lt;slug&gt;"), slug being the lowercase alnum of Name.</summary>
+/// "ubisoft:&lt;slug&gt;" | "battlenet:&lt;slug&gt;"), slug being the lowercase alnum of Name.</summary>
 public sealed record GameIdentity(string GameKey, string Name, string Store, string AppId);
 
 /// <summary>Where a game key lives on disk, for callers that need the game itself rather than its identity.</summary>
@@ -288,7 +366,7 @@ public interface IGameInstallLocator
 }
 
 /// <summary>
-/// Installed-game identity resolver: enumerates the same Steam/Epic/Ubisoft
+/// Installed-game identity resolver: enumerates the same Steam/Epic/Ubisoft/Battle.net
 /// sources GameSyncGameScanner does (via InstalledGameCollectors, so both
 /// share one implementation) and matches a foreground exe path to a game by
 /// longest install-dir prefix. Refreshed at boot and rate-limited to once

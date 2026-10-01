@@ -20,6 +20,7 @@ public sealed class CloudProfileLibraryServiceTests : IDisposable
     private readonly FakeCloudApiClient _api;
     private readonly CloudAccountService _accounts;
     private readonly CloudProfileLibraryService _library;
+    private readonly Nexus.Service.Widgets.AppDataStore _appData;
 
     public CloudProfileLibraryServiceTests()
     {
@@ -31,7 +32,8 @@ public sealed class CloudProfileLibraryServiceTests : IDisposable
 
         _api = new FakeCloudApiClient();
         _accounts = new CloudAccountService(_api, _store, TimeProvider.System);
-        _library = new CloudProfileLibraryService(_api, _accounts, _profiles, _store);
+        _appData = new Nexus.Service.Widgets.AppDataStore(() => Path.Combine(_tempDir, "app-data"), () => _profiles.ActiveProfileId);
+        _library = new CloudProfileLibraryService(_api, _accounts, _profiles, _store, _appData);
 
         _store.Update(s =>
         {
@@ -56,7 +58,7 @@ public sealed class CloudProfileLibraryServiceTests : IDisposable
 
     private string OwnId => _accounts.ResolveStableInstallId();
 
-    private void SeedRemote(string installId, string hostname, string profileId, NexusSettings payload)
+    private void SeedRemote(string installId, string hostname, string profileId, NexusSettings payload, Dictionary<string, Dictionary<string, System.Text.Json.JsonElement>>? appData = null)
     {
         _api.OnListDevices = _ => CloudApiResult<List<CloudDeviceDto>>.Ok(new List<CloudDeviceDto>
         {
@@ -65,7 +67,7 @@ public sealed class CloudProfileLibraryServiceTests : IDisposable
         });
         _api.OnListProfiles = _ => CloudApiResult<List<CloudProfileSummaryDto>>.Ok(new List<CloudProfileSummaryDto>
         {
-            new() { InstallId = installId, ProfileId = profileId, Name = "Their Default", Revision = 4, SizeBytes = 10, UpdatedAt = "t1" },
+            new() { InstallId = installId, ProfileId = profileId, Name = "Their Default", Revision = 4, SizeBytes = 10, UpdatedAt = "t1", AppIds = appData?.Keys.OrderBy(k => k).ToList() ?? new List<string>() },
         });
         _api.OnGetProfile = (_, requestedInstall, requestedProfile) =>
             requestedInstall == installId && requestedProfile == profileId
@@ -77,6 +79,7 @@ public sealed class CloudProfileLibraryServiceTests : IDisposable
                     Revision = 4,
                     UpdatedAt = "t1",
                     Payload = new ProfileExport { Name = "Their Default", Settings = payload },
+                    AppData = appData,
                 })
                 : CloudApiResult<CloudProfileDto>.Fail(404, "not_found", "no such profile");
     }
@@ -319,5 +322,119 @@ public sealed class CloudProfileLibraryServiceTests : IDisposable
 
         Assert.False(result.Success);
         Assert.Equal(401, result.StatusCode);
+    }
+
+    // ── app data ────────────────────────────────────────────────────────
+
+    private static System.Text.Json.JsonElement J(string raw) => System.Text.Json.JsonDocument.Parse(raw).RootElement.Clone();
+
+    private static Dictionary<string, Dictionary<string, System.Text.Json.JsonElement>> RemoteAppData() => new()
+    {
+        ["com.test.app"] = new() { ["save"] = J("""{"fish":5}""") },
+    };
+
+    [Fact]
+    public async Task Library_profile_entries_carry_the_appIds_from_the_api_list()
+    {
+        SeedRemote("install-y70", "HYTEY70", "p-remote", new NexusSettings(), RemoteAppData());
+
+        var result = await _library.GetLibraryAsync(CancellationToken.None);
+
+        var theirs = Assert.Single(result.Value!.Machines, m => !m.IsThisMachine);
+        Assert.Equal(new[] { "com.test.app" }, Assert.Single(theirs.Profiles).AppIds);
+    }
+
+    [Fact]
+    public void An_import_request_includes_app_data_by_default()
+    {
+        Assert.True(new CloudImportRequest().IncludeAppData);
+        var parsed = System.Text.Json.JsonSerializer.Deserialize("""{"installId":"i","profileId":"p"}""", Nexus.Service.Serialization.AppJsonContext.Default.CloudImportRequest)!;
+        Assert.True(parsed.IncludeAppData);
+    }
+
+    [Fact]
+    public async Task Import_with_includeAppData_writes_the_app_data_into_the_new_profile()
+    {
+        SeedRemote("install-y70", "HYTEY70", "p-remote", new NexusSettings(), RemoteAppData());
+        var activeBefore = _profiles.ActiveProfileId;
+
+        var result = await _library.ImportAsync(new CloudImportRequest { InstallId = "install-y70", ProfileId = "p-remote", IncludeAppData = true }, CancellationToken.None);
+
+        Assert.True(result.Success);
+        var created = Assert.Single(_profiles.GetManifest().Profiles, p => p.Name == "Their Default (HYTEY70)");
+        Assert.Equal(5, _appData.ReadProfile(created.Id)["com.test.app"]["save"].GetProperty("fish").GetInt32());
+        Assert.Empty(_appData.ReadProfile(activeBefore));
+    }
+
+    [Fact]
+    public async Task Import_with_includeAppData_false_writes_no_app_data()
+    {
+        SeedRemote("install-y70", "HYTEY70", "p-remote", new NexusSettings(), RemoteAppData());
+
+        var result = await _library.ImportAsync(new CloudImportRequest { InstallId = "install-y70", ProfileId = "p-remote", IncludeAppData = false }, CancellationToken.None);
+
+        Assert.True(result.Success);
+        var created = Assert.Single(_profiles.GetManifest().Profiles, p => p.Name == "Their Default (HYTEY70)");
+        Assert.Empty(_appData.ReadProfile(created.Id));
+    }
+
+    [Fact]
+    public async Task Replacing_on_conflict_replaces_only_the_apps_in_the_bundle()
+    {
+        SeedRemote("install-y70", "HYTEY70", "p-remote", new NexusSettings(), RemoteAppData());
+        await _library.ImportAsync(new CloudImportRequest { InstallId = "install-y70", ProfileId = "p-remote" }, CancellationToken.None);
+        var entry = Assert.Single(_profiles.GetManifest().Profiles, p => p.Name == "Their Default (HYTEY70)");
+        _appData.Put(entry.Id, "com.test.app", "stale", 0, J("1"));
+        _appData.Put(entry.Id, "com.other.app", "keep", 0, J("1"));
+
+        var result = await _library.ImportAsync(new CloudImportRequest { InstallId = "install-y70", ProfileId = "p-remote", ReplaceExisting = true }, CancellationToken.None);
+
+        Assert.True(result.Success);
+        var after = _appData.ReadProfile(entry.Id);
+        Assert.Equal(new[] { "save" }, after["com.test.app"].Keys);
+        Assert.True(after.ContainsKey("com.other.app"));
+    }
+
+    [Fact]
+    public async Task Restoring_this_machines_own_backup_applies_app_data_and_resets_when_it_is_the_active_profile()
+    {
+        var own = OwnId;
+        var activeId = _profiles.ActiveProfileId;
+        _api.OnListDevices = _ => CloudApiResult<List<CloudDeviceDto>>.Ok(new List<CloudDeviceDto>());
+        _api.OnGetProfile = (_, _, _) => CloudApiResult<CloudProfileDto>.Ok(new CloudProfileDto
+        {
+            InstallId = own,
+            ProfileId = activeId,
+            Name = "Default",
+            Revision = 3,
+            Payload = new ProfileExport { Name = "Default", Settings = new NexusSettings() },
+            AppData = RemoteAppData(),
+        });
+        var resets = new List<string>();
+        _appData.ResetRequested += resets.Add;
+
+        var result = await _library.ImportAsync(new CloudImportRequest { InstallId = own, ProfileId = activeId }, CancellationToken.None);
+
+        Assert.True(result.Success);
+        Assert.Equal(5, _appData.ReadProfile(activeId)["com.test.app"]["save"].GetProperty("fish").GetInt32());
+        Assert.Equal(new[] { activeId }, resets);
+    }
+
+    [Fact]
+    public async Task Restore_never_trusts_ids_from_the_cloud()
+    {
+        var bundle = new Dictionary<string, Dictionary<string, System.Text.Json.JsonElement>>
+        {
+            ["../evil"] = new() { ["save"] = J("1") },
+            ["com.test.app"] = new() { ["../escape"] = J("1"), ["ok"] = J("1") },
+        };
+        SeedRemote("install-y70", "HYTEY70", "p-remote", new NexusSettings(), bundle);
+
+        await _library.ImportAsync(new CloudImportRequest { InstallId = "install-y70", ProfileId = "p-remote" }, CancellationToken.None);
+
+        var created = Assert.Single(_profiles.GetManifest().Profiles, p => p.Name == "Their Default (HYTEY70)");
+        var written = _appData.ReadProfile(created.Id);
+        Assert.Equal(new[] { "com.test.app" }, written.Keys);
+        Assert.Equal(new[] { "ok" }, written["com.test.app"].Keys);
     }
 }

@@ -43,7 +43,8 @@ public sealed class UpdateService : BackgroundService
 #endif
 
     // Status DTO - read by routes, written only by this service.
-    private volatile UpdateStatusResponse _status = new() { CurrentVersion = BuildInfo.Version };
+    // CanAutoInstall is known before the first check, which can be late or held off.
+    private volatile UpdateStatusResponse _status = new() { CurrentVersion = BuildInfo.Version, CanAutoInstall = CanApplyUpdates };
     // Progress DTO - read by routes during an active install.
     private volatile UpdateProgressResponse _progress = new();
 
@@ -152,6 +153,7 @@ public sealed class UpdateService : BackgroundService
             PublishedAtUnix = snap.PublishedAtUnix,
             DownloadUrl = snap.DownloadUrl,
             CanAutoInstall = snap.CanAutoInstall,
+            CanStage = snap.CanStage,
         };
     }
 
@@ -284,13 +286,17 @@ public sealed class UpdateService : BackgroundService
 
     /// <summary>
     /// Whether a background auto-stage (download+verify, mode "download" or
-    /// "always") should start. RunInstallAsync / RunLaunchStagedAsync only
-    /// implement the install handoff on Windows (PlatformNotSupportedException
-    /// everywhere else), so macOS and Linux never background-download; they
-    /// only ever offer the manual DownloadUrl.
+    /// "always") should start. An install that cannot apply updates (see
+    /// <see cref="CanApplyUpdates"/>) never background-downloads; it only
+    /// offers the manual DownloadUrl. Staging also needs the asset's hash from
+    /// SHA256SUMS, so a release without one is not downloaded only to be discarded.
     /// </summary>
-    internal static bool ShouldAutoStage(bool offerUpdate, string mode, bool alreadyStaged, bool isWindows) =>
-        offerUpdate && (mode is "download" or "always") && !alreadyStaged && isWindows;
+    internal static bool ShouldAutoStage(bool offerUpdate, string mode, bool alreadyStaged, bool canApply, bool hashPublished) =>
+        offerUpdate && (mode is "download" or "always") && !alreadyStaged && canApply && hashPublished;
+
+    /// <summary>Whether this install hands updates to an installer itself (Windows
+    /// Inno Setup, Linux install.sh, macOS bundle swap) rather than linking the download.</summary>
+    private static bool CanApplyUpdates => OperatingSystem.IsWindows() || UnixUpdateApplier.CanAutoInstall;
 
     /// <summary>
     /// Pure channel-derivation logic: given the persisted last-run version, the
@@ -342,6 +348,7 @@ public sealed class UpdateService : BackgroundService
             Volatile.Write(ref _justUpdatedToSetAtTicks, DateTime.UtcNow.Ticks);
             Volatile.Write(ref _justUpdatedTo, BuildInfo.Version);
             StagedInstallMarkerStore.Delete();
+            UnixUpdateApplier.DeleteExtractedPayload();
             return;
         }
 
@@ -374,13 +381,21 @@ public sealed class UpdateService : BackgroundService
             LastCheckError = $"Install of {marker.Version} did not complete.",
             State = "failed",
             UpdateReady = false,
-            CanAutoInstall = OperatingSystem.IsWindows(),
+            CanAutoInstall = CanApplyUpdates,
+            // Keeps the badge gated on a staged install until the next poll.
+            CanStage = true,
         };
     }
 
     private void ApplyPendingInstall(StagedInstallMarker marker, NexusSettings s, CancellationToken ct)
     {
-#if WINDOWS
+        if (!CanApplyUpdates)
+        {
+            Console.Error.WriteLine($"[update] pending install of {marker.Version} skipped: this install cannot apply updates");
+            StagedInstallMarkerStore.Delete();
+            return;
+        }
+
         try
         {
             var channel = string.IsNullOrEmpty(s.Update.UpdateChannel) ? "production" : s.Update.UpdateChannel;
@@ -409,10 +424,12 @@ public sealed class UpdateService : BackgroundService
                 ReopenDashboard = reopenDashboard,
             });
 
+#if WINDOWS
             if (reopenDashboard)
             {
                 DashboardReopenFlag.Write();
             }
+#endif
 
             _status = new UpdateStatusResponse
             {
@@ -427,13 +444,18 @@ public sealed class UpdateService : BackgroundService
                 State = "installing",
                 UpdateReady = false,
                 CanAutoInstall = true,
+                CanStage = true,
             };
 
+#if WINDOWS
             var launched = UpdateInstaller.LaunchViaSchtasks(marker.InstallerPath, marker.Version);
             if (!launched)
             {
                 throw new InvalidOperationException("schtasks /Run did not succeed.");
             }
+#else
+            UnixUpdateApplier.Apply(marker.InstallerPath, marker.Version);
+#endif
 
             // Don't self-stop: the installer's `net stop` owns the stop. If the
             // installer can't proceed, the service keeps running the old version
@@ -458,12 +480,9 @@ public sealed class UpdateService : BackgroundService
                 State = "failed",
                 UpdateReady = false,
                 CanAutoInstall = true,
+                CanStage = true,
             };
         }
-#else
-        Console.Error.WriteLine($"[update] pending install of {marker.Version} skipped on non-Windows");
-        StagedInstallMarkerStore.Delete();
-#endif
     }
 
     private static async Task<bool> WaitAsync(PeriodicTimer timer, CancellationToken ct)
@@ -603,7 +622,8 @@ public sealed class UpdateService : BackgroundService
                 UpdateReady = _updateReady,
                 PublishedAtUnix = manifest?.PublishedAt?.ToUnixTimeSeconds() ?? 0,
                 DownloadUrl = manifest?.AssetUrl ?? "",
-                CanAutoInstall = OperatingSystem.IsWindows(),
+                CanAutoInstall = CanApplyUpdates,
+                CanStage = manifest?.Sha256IsFromSumsFile == true,
             };
 
             // "download" stages a download+verify but does not install.
@@ -617,26 +637,39 @@ public sealed class UpdateService : BackgroundService
             // it, so the staged installer + marker must follow the new version.
             var alreadyStaged = _updateReady
                 && string.Equals(_stagedVersion, manifest?.Version, StringComparison.OrdinalIgnoreCase);
-            if (ShouldAutoStage(offerUpdate, mode, alreadyStaged, OperatingSystem.IsWindows()) && manifest is not null)
+            var autoStage = manifest is not null
+                && ShouldAutoStage(offerUpdate, mode, alreadyStaged, CanApplyUpdates, manifest.Sha256IsFromSumsFile);
+            // A newer release supersedes the staged one even when it cannot be
+            // staged itself: "Update now" would check the old file against its hash.
+            var superseded = _updateReady && !alreadyStaged && offerUpdate;
+            if ((autoStage || superseded) && Interlocked.CompareExchange(ref _installing, 1, 0) == 0)
             {
-                if (Interlocked.CompareExchange(ref _installing, 1, 0) == 0)
+                if (_updateReady)
                 {
-                    if (_updateReady)
+                    // A previous version is staged but superseded: drop the ready
+                    // state + its marker now (a download below prunes its file;
+                    // without one, delete it here). Status reverts to "available"
+                    // until the new version finishes staging - never "ready" with no file.
+                    if (!autoStage && _stagedInstallerPath is { } stale)
                     {
-                        // A previous version is staged but superseded; the download
-                        // below prunes its installer, so drop the ready state + its
-                        // marker now. Status reverts to "available" until the new
-                        // version finishes staging - never "ready" with no file.
-                        _updateReady = false;
-                        _stagedInstallerPath = null;
-                        _stagedVersion = null;
-                        StagedInstallMarkerStore.Delete();
-                        UpdateStatusUpdateReady(false);
+                        TryDeleteStagedFile(stale);
                     }
+                    _updateReady = false;
+                    _stagedInstallerPath = null;
+                    _stagedVersion = null;
+                    StagedInstallMarkerStore.Delete();
+                    UpdateStatusUpdateReady(false);
+                }
+                if (autoStage && manifest is not null)
+                {
                     var cts = new CancellationTokenSource();
                     _installCts = cts;
                     _ = Task.Run(() => RunInstallAsync(manifest, launchAfterVerify: false, reopenAfter: false, cts.Token));
                     Console.Error.WriteLine($"[update] auto-staging download for {manifest.Version} (mode={mode})");
+                }
+                else
+                {
+                    Interlocked.Exchange(ref _installing, 0);
                 }
             }
 
@@ -667,7 +700,8 @@ public sealed class UpdateService : BackgroundService
                 UpdateReady = _updateReady,
                 PublishedAtUnix = _latestManifest?.PublishedAt?.ToUnixTimeSeconds() ?? 0,
                 DownloadUrl = _latestManifest?.AssetUrl ?? "",
-                CanAutoInstall = OperatingSystem.IsWindows(),
+                CanAutoInstall = CanApplyUpdates,
+                CanStage = _latestManifest?.Sha256IsFromSumsFile == true,
             };
             Console.Error.WriteLine($"[update] check failed: {ex.GetType().Name}: {ex.Message}");
         }
@@ -690,7 +724,8 @@ public sealed class UpdateService : BackgroundService
             UpdateReady = _updateReady,
             PublishedAtUnix = _latestManifest?.PublishedAt?.ToUnixTimeSeconds() ?? 0,
             DownloadUrl = _latestManifest?.AssetUrl ?? "",
-            CanAutoInstall = OperatingSystem.IsWindows(),
+            CanAutoInstall = CanApplyUpdates,
+            CanStage = _latestManifest?.Sha256IsFromSumsFile == true,
         };
     }
 
@@ -767,7 +802,7 @@ public sealed class UpdateService : BackgroundService
             UpdateStatusState("installing");
             SetProgress("installing", 100, "Installing...", manifest.Version);
 #else
-            throw new PlatformNotSupportedException("OTA install is Windows-only.");
+            LaunchUnixInstall(manifest, installerPath);
 #endif
         }
         catch (OperationCanceledException)
@@ -832,6 +867,9 @@ public sealed class UpdateService : BackgroundService
                     // author-published hash; the asset digest is corruption-only, not authenticity.
                     Console.Error.WriteLine($"[update] skipping auto-stage of {manifest.Version}: SHA256SUMS not available");
                     TryDeleteStagedFile(installerPath);
+                    // A stale active "verifying" would open the update modal on a
+                    // progress bar that never moves.
+                    _progress = new UpdateProgressResponse { Version = manifest.Version };
                     return;
                 }
 
@@ -911,8 +949,7 @@ public sealed class UpdateService : BackgroundService
             UpdateStatusState("installing");
             SetProgress("installing", 100, "Installing...", manifest.Version);
 #else
-            // Non-Windows: update not supported; surface a clear error.
-            throw new PlatformNotSupportedException("OTA install is Windows-only.");
+            LaunchUnixInstall(manifest, installerPath);
 #endif
         }
         catch (OperationCanceledException)
@@ -940,6 +977,32 @@ public sealed class UpdateService : BackgroundService
             _installCts = null;
         }
     }
+
+#if !WINDOWS
+    private void LaunchUnixInstall(UpdateManifest manifest, string installerPath)
+    {
+        StagedInstallMarkerStore.Write(new StagedInstallMarker
+        {
+            Version = manifest.Version,
+            InstallerPath = installerPath,
+            Sha256 = manifest.Sha256 ?? "",
+            State = StagedInstallMarkerStore.StateAttempted,
+        });
+        try
+        {
+            UnixUpdateApplier.Apply(installerPath, manifest.Version);
+        }
+        catch
+        {
+            // Nothing was launched, so the next boot has no install to judge.
+            StagedInstallMarkerStore.Delete();
+            throw;
+        }
+        SetProgress("launching", 100, "Launching installer...", manifest.Version);
+        UpdateStatusState("installing");
+        SetProgress("installing", 100, "Installing...", manifest.Version);
+    }
+#endif
 
     private static void TryDeleteStagedFile(string path)
     {
@@ -991,6 +1054,7 @@ public sealed class UpdateService : BackgroundService
             PublishedAtUnix = _status.PublishedAtUnix,
             DownloadUrl = _status.DownloadUrl,
             CanAutoInstall = _status.CanAutoInstall,
+            CanStage = _status.CanStage,
         };
     }
 
@@ -1033,6 +1097,7 @@ public sealed class UpdateService : BackgroundService
             PublishedAtUnix = _status.PublishedAtUnix,
             DownloadUrl = _status.DownloadUrl,
             CanAutoInstall = _status.CanAutoInstall,
+            CanStage = _status.CanStage,
         };
     }
 }

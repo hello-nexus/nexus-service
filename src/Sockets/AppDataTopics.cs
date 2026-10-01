@@ -11,6 +11,8 @@ namespace Nexus.Service.Sockets;
 /// </summary>
 public static class AppDataTopics
 {
+    public const string ResetTopic = "app-data-reset";
+
     public static string TopicFor(string appId, string key) => $"app-data/{appId}/{key}";
 
     public static void Broadcast(MultiplexHub hub, string appId, string key, AppDataDocumentDto doc)
@@ -22,5 +24,15 @@ public static class AppDataTopics
         }
         var env = WsEnvelope.Build(topic, doc, AppJsonContext.Default.AppDataDocumentDto);
         _ = hub.BroadcastTopicAsync(topic, env);
+    }
+
+    public static void BroadcastReset(MultiplexHub hub, string profileId)
+    {
+        if (!hub.TopicHasSubscribers(ResetTopic))
+        {
+            return;
+        }
+        var env = WsEnvelope.Build(ResetTopic, new AppDataResetFrame { ProfileId = profileId, ResetId = Guid.NewGuid().ToString("N") }, AppJsonContext.Default.AppDataResetFrame);
+        _ = hub.BroadcastTopicAsync(ResetTopic, env);
     }
 }

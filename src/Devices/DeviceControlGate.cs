@@ -26,8 +26,7 @@ public sealed class DeviceControlGate
     /// holding hardware open. Fired outside the mutation on the caller's thread,
     /// so concurrent writers can notify in the opposite order to the one they
     /// persisted in; a subscriber that must not act on a stale value re-reads
-    /// <see cref="IsEnabled"/>. <see cref="TryAdopt"/> does not raise it, and no
-    /// shared-bus handler is adoptable.
+    /// <see cref="IsEnabled"/>.
     /// </summary>
     public event Action<string, bool>? Changed;
 
@@ -50,14 +49,6 @@ public sealed class DeviceControlGate
             return true;
         }
         return DeviceControlPolicy.DefaultOn(handlerId);
-    }
-
-    /// <summary>True when the user has made no explicit on/off choice for this handler (in neither list).</summary>
-    public bool IsUnset(string handlerId)
-    {
-        var devices = _store.Load().Devices;
-        return !devices.NexusControlDisabled.Contains(handlerId, StringComparer.OrdinalIgnoreCase)
-            && !devices.NexusControlEnabled.Contains(handlerId, StringComparer.OrdinalIgnoreCase);
     }
 
     /// <summary>Persists the choice and, in the same mutation, takes the device's competing app off the conflict whitelist (on) or puts it on once none of that app's devices is still Nexus-controlled (off).</summary>
@@ -99,35 +90,6 @@ public sealed class DeviceControlGate
         {
             Console.Error.WriteLine($"[device-control] '{handlerId}' change handler failed: {ex.Message}");
         }
-    }
-
-    /// <summary>True when the device's auto-adopting competing app is on the conflict whitelist: the user keeps that app, so adoption must not take its device.</summary>
-    public bool IsAdoptionAppWhitelisted(string handlerId) =>
-        DeviceControlPolicy.AdoptionConflictAppFor(handlerId) is { } appId
-        && _store.Load().Ui.ConflictAutoKillExclusions.Contains(appId, StringComparer.OrdinalIgnoreCase);
-
-    /// <summary>
-    /// Puts a never-set handler on the enabled list, for
-    /// <see cref="DeviceAdoptionService"/>. The set-check and the write are one
-    /// store mutation, so a concurrent <see cref="SetEnabled"/> cannot be read as
-    /// unset and then overwritten - an explicit off stays off. Returns false when
-    /// the user has already chosen on or off.
-    /// </summary>
-    public bool TryAdopt(string handlerId)
-    {
-        var adopted = false;
-        _store.Update(s =>
-        {
-            var devices = s.Devices;
-            if (devices.NexusControlDisabled.Contains(handlerId, StringComparer.OrdinalIgnoreCase)
-                || devices.NexusControlEnabled.Contains(handlerId, StringComparer.OrdinalIgnoreCase))
-            {
-                return;
-            }
-            devices.NexusControlEnabled = WithId(devices.NexusControlEnabled, handlerId);
-            adopted = true;
-        });
-        return adopted;
     }
 
     private static List<string> WithId(List<string> ids, string handlerId) =>

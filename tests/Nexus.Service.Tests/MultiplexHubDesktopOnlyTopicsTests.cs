@@ -33,6 +33,24 @@ public sealed class MultiplexHubDesktopOnlyTopicsTests
     }
 
     [Fact]
+    public async Task Phone_session_socket_can_subscribe_to_the_app_data_topics_including_reset()
+    {
+        var hub = new MultiplexHub();
+        using var cts = new CancellationTokenSource();
+        var phone = new ScriptedWebSocket("{\"sub\":[\"" + AppDataTopics.ResetTopic + "\",\"" + AppDataTopics.TopicFor("com.test.app", "save") + "\"]}");
+
+        var loop = hub.HandleClientAsync(phone, "sess-phone", MultiplexHub.ClientTransport.Lan, cts.Token);
+        await WaitUntilAsync(() => hub.TopicHasSubscribers(AppDataTopics.ResetTopic), TimeSpan.FromSeconds(5),
+            "the reset subscription never registered");
+
+        Assert.True(hub.TopicHasSubscribers(AppDataTopics.TopicFor("com.test.app", "save")));
+
+        cts.Cancel();
+        phone.Unblock();
+        await loop;
+    }
+
+    [Fact]
     public async Task Desktop_socket_can_subscribe_to_the_pair_request_topic()
     {
         var hub = new MultiplexHub();

@@ -14,22 +14,24 @@ public class DeviceControlPolicyTests
 
     [Theory]
     [InlineData("lianli")]
+    [InlineData("lianli-tl")]
+    [InlineData("lianli-wireless")]
+    [InlineData("lianli-aio")]
     [InlineData("lianli-hydroshift-lcd")]
     [InlineData("strimer")]
     [InlineData("corsair")]
-    public void DefaultOn_CompetingAppHub_IsFalseAndAdopts(string handlerId)
+    public void DefaultOn_CompetingAppHub_IsFalseAndExperimental(string handlerId)
     {
         Assert.False(DeviceControlPolicy.DefaultOn(handlerId));
-        Assert.NotNull(DeviceControlPolicy.AdoptionConflictAppFor(handlerId));
+        Assert.True(DeviceControlPolicy.IsExperimental(handlerId));
     }
 
     [Theory]
     [InlineData("nzxt-kraken")]
     [InlineData("zmatrices-lcd")]
-    public void DefaultOn_HintOnlyConflictHandler_IsTrueAndNeverAdopts(string handlerId)
+    public void DefaultOn_HintOnlyConflictHandler_IsTrue(string handlerId)
     {
         Assert.True(DeviceControlPolicy.DefaultOn(handlerId));
-        Assert.Null(DeviceControlPolicy.AdoptionConflictAppFor(handlerId));
     }
 
     [Theory]

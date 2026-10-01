@@ -13,11 +13,8 @@ using Nexus.Service.Widgets;
 namespace Nexus.Service.Profiles;
 
 /// <summary>
-/// Reader/writer for the .nexusprofile archive format: <c>profile.json</c>
-/// (today's ProfileExport, unchanged) plus one
-/// <c>app-data/&lt;appId&gt;/&lt;key&gt;.json</c> entry per app-data document,
-/// stripped of its cloud sync metadata. Same ZipArchive shape as
-/// <see cref="Nexus.Service.Deck.DeckPresetPackage"/>.
+/// Reader for the legacy .nexusprofile zip: <c>profile.json</c> plus one
+/// <c>app-data/&lt;appId&gt;/&lt;key&gt;.json</c> entry per document. Read-only.
 /// </summary>
 public static class ProfileArchivePackage
 {
@@ -49,27 +46,6 @@ public static class ProfileArchivePackage
         public IReadOnlyList<Entry> AppData { get; init; } = new List<Entry>();
 
         public static ReadResult Fail(string error) => new() { Error = error };
-    }
-
-    public static byte[] Write(string profileJson, IEnumerable<(string AppId, string Key, AppDataFile Doc)> appData)
-    {
-        using var ms = new MemoryStream();
-        using (var zip = new ZipArchive(ms, ZipArchiveMode.Create, leaveOpen: true))
-        {
-            using (var profileStream = zip.CreateEntry(ProfileJsonName).Open())
-            {
-                var bytes = Encoding.UTF8.GetBytes(profileJson);
-                profileStream.Write(bytes);
-            }
-
-            foreach (var (appId, key, doc) in appData)
-            {
-                var dto = new AppDataDocumentDto { Revision = doc.Revision, UpdatedAt = doc.UpdatedAt, Data = doc.Data };
-                using var entryStream = zip.CreateEntry($"{AppDataPrefix}{appId}/{key}.json").Open();
-                JsonSerializer.Serialize(entryStream, dto, AppJsonContext.Default.AppDataDocumentDto);
-            }
-        }
-        return ms.ToArray();
     }
 
     public static ReadResult Read(Stream zipStream)

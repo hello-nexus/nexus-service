@@ -65,14 +65,6 @@ public sealed class FakeCloudApiClient : ICloudApiClient
         (_, body, _) => CloudApiResult<CloudRawResponse>.Ok(new CloudRawResponse { Body = body });
     public Func<HttpMethod, string, string?, string?, CloudApiResult<CloudRawResponse>> OnSendRaw =
         (_, _, body, _) => CloudApiResult<CloudRawResponse>.Ok(new CloudRawResponse { Body = body ?? "" });
-    public Func<string, CloudApiResult<List<CloudAppDataSummaryDto>>> OnListAppData =
-        _ => CloudApiResult<List<CloudAppDataSummaryDto>>.Ok(new List<CloudAppDataSummaryDto>());
-    public Func<string, string, string, CloudApiResult<CloudAppDataDto>> OnGetAppData =
-        (_, _, _) => CloudApiResult<CloudAppDataDto>.NetworkError("not wired");
-    public Func<string, string, string, CloudPutAppDataRequest, CloudApiResult<CloudPutAppDataResult>> OnPutAppData =
-        (_, _, _, _) => CloudApiResult<CloudPutAppDataResult>.NetworkError("not wired");
-    public Func<string, string, string, CloudApiResult<CloudVoid>> OnDeleteAppData =
-        (_, _, _) => CloudApiResult<CloudVoid>.Ok(CloudVoid.Instance);
 
     public Task<CloudApiResult<CloudVoid>> RegisterAsync(CloudRegisterRequest body, CancellationToken ct)
     { RegisterCalls++; return Task.FromResult(OnRegister(body)); }
@@ -133,18 +125,6 @@ public sealed class FakeCloudApiClient : ICloudApiClient
 
     public Task<CloudApiResult<CloudRawResponse>> SendRawAsync(HttpMethod method, string path, string? rawJsonBody, string? accessToken, CancellationToken ct)
     { SendRawCalls++; return Task.FromResult(OnSendRaw(method, path, rawJsonBody, accessToken)); }
-
-    public Task<CloudApiResult<List<CloudAppDataSummaryDto>>> ListAppDataAsync(string accessToken, CancellationToken ct)
-    { ListAppDataCalls++; return Task.FromResult(OnListAppData(accessToken)); }
-
-    public Task<CloudApiResult<CloudAppDataDto>> GetAppDataAsync(string accessToken, string appId, string key, CancellationToken ct)
-    { GetAppDataCalls++; return Task.FromResult(OnGetAppData(accessToken, appId, key)); }
-
-    public Task<CloudApiResult<CloudPutAppDataResult>> PutAppDataAsync(string accessToken, string appId, string key, CloudPutAppDataRequest body, CancellationToken ct)
-    { PutAppDataCalls++; return Task.FromResult(OnPutAppData(accessToken, appId, key, body)); }
-
-    public Task<CloudApiResult<CloudVoid>> DeleteAppDataAsync(string accessToken, string appId, string key, CancellationToken ct)
-    { DeleteAppDataCalls++; return Task.FromResult(OnDeleteAppData(accessToken, appId, key)); }
 }
 
 internal sealed class InMemoryConfigStore : Nexus.Service.Persistence.IConfigStore

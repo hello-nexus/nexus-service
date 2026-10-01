@@ -10,6 +10,9 @@ namespace Nexus.Service.Models.Widgets;
 public sealed class AppDataPutRequest
 {
     public int BaseRevision { get; set; }
+
+    /// <summary>The profile id the caller last read this document under (GET response or broadcast). When it is not the active profile the write is refused with 409 <c>profile_switched</c>.</summary>
+    public string? ProfileId { get; set; }
     public JsonElement Data { get; set; }
 }
 
@@ -21,6 +24,8 @@ public sealed class AppDataPutRequest
 /// </summary>
 public sealed class AppDataDocumentDto
 {
+    /// <summary>The profile this document belongs to (the active one at read time).</summary>
+    public string ProfileId { get; set; } = "";
     public int Revision { get; set; }
     public string UpdatedAt { get; set; } = "";
     public JsonElement? Data { get; set; }
@@ -33,20 +38,18 @@ public sealed class AppDataPutResultDto
     public string UpdatedAt { get; set; } = "";
 }
 
-/// <summary>
-/// Shape the service (not nexus-api) sends as the cloud row's <c>payload</c>
-/// for account-wide app-data sync. nexus-api's <c>updatedAt</c> on that row is
-/// upload time, not edit time - two machines racing to sync would otherwise
-/// let whichever one uploads LAST win regardless of which one actually edited
-/// last. Wrapping the true edit time here lets CloudProfileSyncService compare
-/// edit times instead of upload times. A payload without <see cref="NexusAppData"/>
-/// set to 1 is a document from before this envelope existed, or a payload sent
-/// some other way; it is read as raw data with editedAt falling back to the
-/// row's own updatedAt.
-/// </summary>
-public sealed class AppDataCloudEnvelope
+/// <summary>409 body of a PUT whose <c>profileId</c> is no longer the active profile. Nothing was written.</summary>
+public sealed class AppDataProfileSwitchedResponse : Nexus.Service.Models.ApiResponse
 {
-    public int NexusAppData { get; set; } = 1;
-    public string EditedAt { get; set; } = "";
-    public JsonElement Data { get; set; }
+    public string Code { get; set; } = "profile_switched";
+    public string ProfileId { get; set; } = "";
+}
+
+/// <summary>Payload of the <c>app-data-reset</c> topic: every running app instance reloads its data.</summary>
+public sealed class AppDataResetFrame
+{
+    public string ProfileId { get; set; } = "";
+
+    /// <summary>Unique per broadcast, so a restore into the already-active profile still changes the frame.</summary>
+    public string ResetId { get; set; } = "";
 }

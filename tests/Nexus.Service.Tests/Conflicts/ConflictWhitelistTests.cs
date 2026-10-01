@@ -46,7 +46,6 @@ public class ConflictWhitelistTests
     public void ADeviceWhoseAppStartsWhitelistedDefaultsOff(string handlerId)
     {
         Assert.False(DeviceControlPolicy.DefaultOn(handlerId));
-        Assert.Null(DeviceControlPolicy.AdoptionConflictAppFor(handlerId));
     }
 
     [Fact]
@@ -97,16 +96,6 @@ public class ConflictWhitelistTests
 
         gate.SetEnabled("lianli-wireless", false);
         Assert.Contains(LConnect, store.Load().Ui.ConflictAutoKillExclusions);
-    }
-
-    [Fact]
-    public void AdoptionLeavesTheDeviceOfAWhitelistedAppAlone()
-    {
-        var store = new InMemoryConfigStore();
-        store.Update(s => s.Ui.ConflictAutoKillExclusions = new List<string> { LConnect });
-        var gate = new DeviceControlGate(store);
-
-        Assert.False(DeviceAdoptionService.ShouldAdopt("lianli-wireless", connected: true, gate, new FakeDetector()));
     }
 
     [Fact]

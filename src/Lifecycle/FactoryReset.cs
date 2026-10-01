@@ -324,7 +324,7 @@ internal static class FactoryReset
         return 0;
     }
 
-    private static void WaitForProcessExit(int pid, TimeSpan timeout)
+    internal static void WaitForProcessExit(int pid, TimeSpan timeout)
     {
         if (pid <= 0) return;
         try
@@ -370,7 +370,7 @@ internal static class FactoryReset
     /// SIGKILL (no flush, no teardown) every other live process running this
     /// exact binary. Same-path match only, so a differently-located dev build
     /// is left alone.
-    private static void KillOtherInstancesOfThisBinary()
+    internal static void KillOtherInstancesOfThisBinary()
     {
         // Never let the sweep abort Finalize: after BootoutMacAgent a throw
         // here would strand the agent booted out with no RestartService.
@@ -400,7 +400,7 @@ internal static class FactoryReset
         }
     }
 
-    private static void BootoutMacAgent()
+    internal static void BootoutMacAgent()
     {
         var uid = ShellExecutor.Run("/usr/bin/id", "-u").Trim();
         if (uid.Length == 0)

@@ -33,6 +33,15 @@ public sealed partial class ProfileManager : IDisposable
 
     public event Action? OnProfileSwitched;
 
+    /// <summary>Fires (profileId) after a profile is deleted, outside the lock.</summary>
+    public event Action<string>? ProfileDeleted;
+
+    /// <summary>Fires (newActiveProfileId) when the active profile id changed: a switch, deleting the active profile, or a library replace.</summary>
+    public event Action<string>? ActiveProfileChanged;
+
+    /// <summary>Fires after a library replace (cloud account switch), outside the lock; the surviving ids are in the manifest.</summary>
+    public event Action? LibraryReplaced;
+
     public ProfileManager(IConfigStore store)
     {
         _store = store;
@@ -144,6 +153,7 @@ public sealed partial class ProfileManager : IDisposable
 
     public ProfileEntry CreateProfile(string name)
     {
+        ProfileEntry entry;
         lock (_lock)
         {
             if (_manifest.Profiles.Count >= MaxProfiles)
@@ -162,7 +172,7 @@ public sealed partial class ProfileManager : IDisposable
 
             var id = Guid.NewGuid().ToString("N")[..8];
             var now = DateTimeOffset.UtcNow.ToString("o");
-            var entry = new ProfileEntry { Id = id, Name = trimmed, CreatedAt = now, UpdatedAt = now };
+            entry = new ProfileEntry { Id = id, Name = trimmed, CreatedAt = now, UpdatedAt = now };
 
             SaveProfileFile(id);
 
@@ -170,9 +180,10 @@ public sealed partial class ProfileManager : IDisposable
             _manifest.ActiveProfileId = id;
             SaveManifest();
             _dirty = false;
-
-            return entry;
         }
+
+        ActiveProfileChanged?.Invoke(entry.Id);
+        return entry;
     }
 
     public void RenameProfile(string profileId, string newName)
@@ -200,6 +211,7 @@ public sealed partial class ProfileManager : IDisposable
     public void DeleteProfile(string profileId)
     {
         bool switched;
+        string activeAfter;
         lock (_lock)
         {
             if (_manifest.Profiles.Count <= 1)
@@ -236,7 +248,11 @@ public sealed partial class ProfileManager : IDisposable
                 LoadProfileIntoSettings(_manifest.ActiveProfileId);
             }
             SaveManifest();
+            activeAfter = _manifest.ActiveProfileId;
         }
+
+        try { ProfileDeleted?.Invoke(profileId); }
+        catch (Exception ex) { Console.Error.WriteLine($"[profiles] delete handler failed: {ex.Message}"); }
 
         // Fire OUTSIDE the lock; the handler does hardware I/O (fan
         // enumeration, lighting engine reapply via LiveEngineSync) that
@@ -244,6 +260,7 @@ public sealed partial class ProfileManager : IDisposable
         // potentially seconds. Matches SwitchProfile's pattern.
         if (switched)
         {
+            ActiveProfileChanged?.Invoke(activeAfter);
             OnProfileSwitched?.Invoke();
         }
     }
@@ -269,6 +286,7 @@ public sealed partial class ProfileManager : IDisposable
             _dirty = false;
         }
 
+        ActiveProfileChanged?.Invoke(profileId);
         OnProfileSwitched?.Invoke();
     }
 
@@ -314,7 +332,7 @@ public sealed partial class ProfileManager : IDisposable
         }
     }
 
-    public string? ExportProfileJson(string profileId)
+    public string? ExportProfileJson(string profileId, Dictionary<string, Dictionary<string, JsonElement>>? appData = null)
     {
         var data = ExportProfile(profileId);
         if (data is null)
@@ -328,7 +346,7 @@ public sealed partial class ProfileManager : IDisposable
             name = _manifest.Profiles.FirstOrDefault(p => p.Id == profileId)?.Name ?? "Default";
         }
 
-        var wrapper = new ProfileExport { Name = name, Settings = data };
+        var wrapper = new ProfileExport { Name = name, Settings = data, AppData = appData };
         return JsonSerializer.Serialize(wrapper, PersistenceJsonContext.Default.ProfileExport);
     }
 
@@ -462,6 +480,7 @@ public sealed partial class ProfileManager : IDisposable
     /// </summary>
     internal void ReplaceLibrary(IReadOnlyList<(string Id, string Name, NexusSettings Data)> profiles)
     {
+        string activeAfter;
         lock (_lock)
         {
             foreach (var entry in _manifest.Profiles)
@@ -530,8 +549,12 @@ public sealed partial class ProfileManager : IDisposable
                 s.SharedCategories = new List<string>();
             });
             _dirty = false;
+            activeAfter = _manifest.ActiveProfileId;
         }
 
+        try { LibraryReplaced?.Invoke(); }
+        catch (Exception ex) { Console.Error.WriteLine($"[profiles] library handler failed: {ex.Message}"); }
+        ActiveProfileChanged?.Invoke(activeAfter);
         OnProfileSwitched?.Invoke();
     }
 

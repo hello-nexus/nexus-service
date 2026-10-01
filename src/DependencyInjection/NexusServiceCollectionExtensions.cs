@@ -838,6 +838,12 @@ public static class NexusServiceCollectionExtensions
             sp.GetRequiredService<Nexus.Service.Activity.IScreenTimeProvider>(),
             sp.GetRequiredService<Nexus.Service.Sockets.MultiplexHub>(),
             sp.GetRequiredService<Nexus.Service.Deck.DeckPresetActivator>()));
+        // Panel presets: loads a panel's preset when an app bound to it takes focus.
+        services.AddHostedService(sp => new Nexus.Service.Panel.PanelPresetSwitcher(
+            sp.GetRequiredService<Nexus.Service.Persistence.IConfigStore>(),
+            sp.GetRequiredService<Nexus.Service.Activity.IScreenTimeProvider>(),
+            sp.GetRequiredService<Nexus.Service.Panel.PanelDeviceRegistry>(),
+            sp.GetRequiredService<Nexus.Service.Sockets.MultiplexHub>()));
 
         // Elgato Stream Deck profile import: read-only against the local
         // Elgato software's own store, never touching a physical deck.
@@ -1361,11 +1367,6 @@ public static class NexusServiceCollectionExtensions
         services.AddSingleton<DeviceManager>();
         services.AddSingleton<Nexus.Service.Devices.DeviceBroadcaster>();
         services.AddHostedService(sp => sp.GetRequiredService<Nexus.Service.Devices.DeviceBroadcaster>());
-        // Flips a never-manually-set third-party hub to Nexus Control ON the
-        // first time it is connected while its competing brand app is not
-        // running. Once adopted, the device stays on the Enabled list even if
-        // the app later launches (DeviceControlGate stickiness carries it).
-        services.AddHostedService<Nexus.Service.Devices.DeviceAdoptionService>();
         return services;
     }
 
@@ -1780,21 +1781,9 @@ public static class NexusServiceCollectionExtensions
             return registry;
         });
         services.AddSingleton<Nexus.Service.Widgets.AppDispatchRateLimiter>();
-        // DocumentChanged is wired here, not per call site, so every write
-        // path (PUT, cloud sync push/pull, archive import, account-scope
-        // archive) broadcasts the same way without each one remembering to.
-        services.AddSingleton(sp =>
-        {
-            var store = new Nexus.Service.Widgets.AppDataStore();
-            var hub = sp.GetRequiredService<Nexus.Service.Sockets.MultiplexHub>();
-            store.DocumentChanged += (appId, key) =>
-            {
-                var (revision, updatedAt, data) = store.Get(appId, key);
-                Nexus.Service.Sockets.AppDataTopics.Broadcast(hub, appId, key,
-                    new Nexus.Service.Models.Widgets.AppDataDocumentDto { Revision = revision, UpdatedAt = updatedAt, Data = data });
-            };
-            return store;
-        });
+        services.AddSingleton(sp => Nexus.Service.Widgets.AppDataStoreWiring.Create(
+            sp.GetRequiredService<ProfileManager>(),
+            sp.GetRequiredService<Nexus.Service.Sockets.MultiplexHub>()));
         services.AddSingleton<Nexus.Service.Widgets.AppDataWriteRateLimiter>();
 
         // Generic external-tool manager (NEX-13): fetches + installs a device's

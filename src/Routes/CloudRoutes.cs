@@ -199,8 +199,8 @@ public static class CloudRoutes
 
         app.MapPost("/cloud/sync/now", async (CloudSyncNowBody? body, CloudProfileSyncService sync) =>
         {
-            await sync.TriggerNowAsync(string.IsNullOrWhiteSpace(body?.ProfileId) ? null : body.ProfileId).ConfigureAwait(false);
-            return Results.Ok(ApiResponse.Ok());
+            var result = await sync.TriggerNowAsync(string.IsNullOrWhiteSpace(body?.ProfileId) ? null : body.ProfileId).ConfigureAwait(false);
+            return CloudResult(result);
         });
 
         app.MapPost("/cloud/sync/resolve", async (CloudSyncResolveBody body, CloudProfileSyncService sync, CancellationToken ct) =>
@@ -325,6 +325,11 @@ public static class CloudRoutes
 
         app.MapGet("/cloud/benchmarks/versions", async (ICloudApiClient api, CancellationToken ct) =>
             await ForwardGetAsync(api, "/benchmarks/versions", ct).ConfigureAwait(false))
+            .AllowPanel();
+
+        // Scales the run modal's columns; pinned to this machine's scoring version so a Mac gets portable-scoring ranges.
+        app.MapGet("/cloud/benchmarks/ranges", async (Nexus.Service.Benchmarks.IBenchmarkProvider provider, ICloudApiClient api, CancellationToken ct) =>
+            await ForwardGetAsync(api, "/benchmarks/ranges?scoringVersion=" + Uri.EscapeDataString(provider.ScoringVersion), ct).ConfigureAwait(false))
             .AllowPanel();
 
         app.MapGet("/cloud/games/scores", async (HttpRequest req, ICloudApiClient api, CancellationToken ct) =>
