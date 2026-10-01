@@ -31,6 +31,7 @@ public static partial class DevicesRoutes
             FirmwareFlasher flasher,
             ApkFlasher apkFlasher,
             IAdbDeviceRegistry adbRegistry,
+            DfuRecoveryMonitor recovery,
             CancellationToken ct) =>
         {
             var result = new List<FirmwareStatusItem>();
@@ -62,6 +63,8 @@ public static partial class DevicesRoutes
 #endif
                 });
             }
+
+            if (RecoveryItem(recovery, catalog) is { } stranded) result.Add(stranded);
 
             // Panel app entry: qshell APK on the connected Q-series display.
             var panelDevice = adbRegistry.TryGet("com.hellonexus.qshell");
@@ -136,9 +139,55 @@ public static partial class DevicesRoutes
                 AppJsonContext.Default.FlashStartResponse, statusCode: StatusCodes.Status409Conflict);
         });
 
+        // The stranded-device row alone (0 or 1 items), cheap enough for banners to poll.
+        app.MapGet("/devices/firmware/recovery", (DfuRecoveryMonitor recovery, BundledFirmwareCatalog catalog) =>
+            RecoveryItem(recovery, catalog) is { } item ? new List<FirmwareStatusItem> { item } : new List<FirmwareStatusItem>());
+
+        // Re-flash a device stuck in its bootloader. Body: { deviceType: <row FirmwareType>, version }.
+        app.MapPost("/devices/firmware/recover", (FlashRequest body, FirmwareFlasher flasher) =>
+        {
+            if (flasher.TryStartRecovery(body.DeviceType, body.Version, out var error))
+            {
+                return Results.Json(new FlashStartResponse { Started = true }, AppJsonContext.Default.FlashStartResponse);
+            }
+            return Results.Json(new FlashStartResponse { Error = true, Msg = error, Started = false },
+                AppJsonContext.Default.FlashStartResponse, statusCode: StatusCodes.Status409Conflict);
+        });
+
         // Poll flash progress. Global server-side state, so it survives the UI
         // navigating between tabs. Both FirmwareFlasher and ApkFlasher write
         // to the same FlashGate.Status object, so this endpoint covers both.
         app.MapGet("/devices/firmware/flash/status", (FirmwareFlasher flasher) => flasher.Status);
+    }
+
+    private static FirmwareStatusItem? RecoveryItem(DfuRecoveryMonitor recovery, BundledFirmwareCatalog catalog)
+    {
+        var stranded = recovery.Current;
+        if (stranded is null) return null;
+        var id = stranded.Identity;
+        var available = id is null ? "" : catalog.GetLatestVersion(id.FirmwareType) ?? "";
+        return new FirmwareStatusItem
+        {
+            DeviceType = id?.HandlerId ?? "dfu-recovery",
+            FirmwareType = id?.FirmwareType ?? "",
+            Name = id?.Name ?? "HYTE device",
+            Category = id?.Category ?? "hub",
+            AvailableVersion = available,
+            AvailableVersions = id is null ? new() : catalog.GetAvailableVersions(id.FirmwareType).ToList(),
+            NeedsRecovery = true,
+            RecoveryState = stranded.State switch
+            {
+                StrandedDfuState.Identifying => "identifying",
+                StrandedDfuState.Ready => "ready",
+                _ => "unsupported",
+            },
+#if DEV_TOOLS
+            // Any bundled image, so a device the key cannot identify can still be
+            // forced from the dev picker.
+            DevImages = catalog.DeviceIds
+                .SelectMany(k => catalog.GetAvailableVersions(k).Select(v => new FlashableImage { FirmwareType = k, Version = v }))
+                .ToList(),
+#endif
+        };
     }
 }

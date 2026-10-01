@@ -21,9 +21,6 @@ public static class Np50Protocol
     public const int VendorId = 0x3402;
     public const int ProductId = 0x0901;
 
-    /// <summary>Bootloader (DFU) PID.</summary>
-    public const int DfuProductId = 0x0A00;
-
     /// <summary>Hub goes back to motherboard/firmware control if no Get-Info call within this window.</summary>
     public const int HeartbeatRevertMs = 5000;
 

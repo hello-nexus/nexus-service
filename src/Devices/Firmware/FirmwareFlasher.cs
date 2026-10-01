@@ -5,6 +5,7 @@ using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 using Nexus.Service.Models.Devices;
+using Nexus.Service.Platform;
 using Nexus.Service.Plugins;
 
 namespace Nexus.Service.Devices.Firmware;
@@ -26,6 +27,7 @@ public sealed class FirmwareFlasher
     private readonly DfuUtil _dfu;
     private readonly PluginProviderRegistry _registry;
     private readonly FlashGate _flashGate;
+    private readonly DfuRecoveryMonitor _recovery;
 
     public FirmwareFlasher(
         BundledFirmwareCatalog catalog,
@@ -33,7 +35,8 @@ public sealed class FirmwareFlasher
         WinUsbDriverInstaller winusb,
         DfuUtil dfu,
         PluginProviderRegistry registry,
-        FlashGate flashGate)
+        FlashGate flashGate,
+        DfuRecoveryMonitor recovery)
     {
         _catalog = catalog;
         _targets = targets.ToList();
@@ -41,6 +44,7 @@ public sealed class FirmwareFlasher
         _dfu = dfu;
         _registry = registry;
         _flashGate = flashGate;
+        _recovery = recovery;
     }
 
     // First-party DFU targets (static DI) + any plugin targets (registry snapshot,
@@ -115,11 +119,76 @@ public sealed class FirmwareFlasher
         }
 #endif
 
+        // A second device in DFU makes the bus ambiguous: this one would enter DFU
+        // and then be refused, stranding it too.
+        if (_recovery.AnyInDfu())
+        {
+            error = "A device is already in update mode. Recover it first.";
+            return false;
+        }
+
         if (!_flashGate.TryAcquire(out error))
         {
             return false;
         }
 
+        Begin(deviceType, version);
+        _ = Task.Run(() => RunAsync(deviceType, version, target, expectedProductId: null));
+        return true;
+    }
+
+    /// <summary>
+    /// Re-flash the device <see cref="DfuRecoveryMonitor"/> found stranded in its
+    /// bootloader. Same sequence as <see cref="TryStart"/> minus the in-app DFU entry,
+    /// plus a re-read of the product key once the bus is confirmed to hold one device.
+    /// Release builds only take the key-identified variant's latest image.
+    /// </summary>
+    public bool TryStartRecovery(string deviceType, string version, out string error)
+    {
+        if (string.IsNullOrWhiteSpace(deviceType) || string.IsNullOrWhiteSpace(version))
+        {
+            error = "deviceType and version are required.";
+            return false;
+        }
+        if (!_catalog.GetAvailableVersions(deviceType).Contains(version))
+        {
+            error = $"No bundled firmware for {deviceType} {version}.";
+            return false;
+        }
+        var stranded = _recovery.Current;
+        if (stranded is null || stranded.State == StrandedDfuState.Identifying)
+        {
+            error = "No identified device is waiting for recovery.";
+            return false;
+        }
+
+#if !DEV_TOOLS
+        if (stranded.State != StrandedDfuState.Ready || stranded.Identity?.FirmwareType != deviceType)
+        {
+            error = "This device cannot be recovered automatically.";
+            return false;
+        }
+        if (version != _catalog.GetLatestVersion(deviceType))
+        {
+            error = "Only the latest firmware version can be installed.";
+            return false;
+        }
+#endif
+
+        if (!_flashGate.TryAcquire(out error))
+        {
+            return false;
+        }
+
+        ServiceLog.Info($"[firmware] recovery requested for {stranded.Serial} " +
+                        $"(key {(stranded.ProductId is int p ? $"0x{p:X4}" : "none")}) -> {deviceType} {version}");
+        Begin(deviceType, version);
+        _ = Task.Run(() => RunAsync(deviceType, version, target: null, expectedProductId: stranded.ProductId));
+        return true;
+    }
+
+    private void Begin(string deviceType, string version)
+    {
         Status.DeviceType = deviceType;
         Status.Version = version;
         Status.Phase = "preparing";
@@ -127,15 +196,16 @@ public sealed class FirmwareFlasher
         Status.Message = "Preparing…";
         Status.Success = false;
         Status.Error = "";
-        _ = Task.Run(() => RunAsync(deviceType, version, target));
-        return true;
     }
 
-    private async Task RunAsync(string deviceType, string version, IDfuFlashTarget target)
+    // target null = recovery: the device is already in DFU. expectedProductId is the
+    // key it was identified by; the key is re-read so a swapped board is never flashed.
+    private async Task RunAsync(string deviceType, string version, IDfuFlashTarget? target, int? expectedProductId)
     {
         string? binPath = null;
         string? flagPath = null;
         string? readbackPath = null;
+        await _recovery.AcquireBusAsync();
         try
         {
             // 1. Resolve + convert the bundled image to a flat bin.
@@ -154,11 +224,15 @@ public sealed class FirmwareFlasher
             await _winusb.EnsureInstalledAsync(CancellationToken.None);
 
             // 3. In-app DFU entry (hub writes key+magic, releases its COM port).
-            Set("entering-dfu", 15, "Switching device to update mode…");
-            if (!target.EnterDfuMode())
+            //    Recovery skips it: the device is already in the bootloader.
+            if (target is not null)
             {
-                Fail("Could not switch the device into update mode.");
-                return;
+                Set("entering-dfu", 15, "Switching device to update mode…");
+                if (!target.EnterDfuMode())
+                {
+                    Fail("Could not switch the device into update mode.");
+                    return;
+                }
             }
 
             // 4. Wait for the bootloader to enumerate as 3402:0a00.
@@ -170,16 +244,30 @@ public sealed class FirmwareFlasher
                 return;
             }
 
+            if (target is null && expectedProductId is int expected)
+            {
+                Set("waiting-dfu", 30, "Checking device…");
+                var slot = await _recovery.ReadKeySlotAsync(CancellationToken.None);
+                var pid = slot is null ? null : DfuProductKey.ParseProductId(slot);
+                if (pid != expected)
+                {
+                    // Re-identify on the next tick rather than retrying against this stale key.
+                    _recovery.Clear();
+                    Fail(slot is null ? "Could not read the device in update mode. Try again." : "The device in update mode changed. Try again.");
+                    return;
+                }
+            }
+
             // 5. Download the app image at 0x0800C000 (no leave yet).
             Set("downloading", 40, "Writing firmware…");
             var dl = await _dfu.DownloadAsync(binPath, DfuUtil.AppBaseAddress, leave: false, CancellationToken.None);
-            if (!dl.Success) { Fail($"Flash failed: {Tail(dl.Output)}"); return; }
+            if (!dl.Success) { Fail($"Flash failed: {Tail(dl.Output)}", dl.Output); return; }
 
             // 6. Read back + verify byte-for-byte.
             Set("verifying", 70, "Verifying…");
             readbackPath = Path.Combine(Path.GetTempPath(), $"nexus-fw-{deviceType}-readback.bin");
             var up = await _dfu.UploadAsync(readbackPath, DfuUtil.AppBaseAddress, bin.Length, CancellationToken.None);
-            if (!up.Success) { Fail($"Verify read-back failed: {Tail(up.Output)}"); return; }
+            if (!up.Success) { Fail($"Verify read-back failed: {Tail(up.Output)}", up.Output); return; }
             var readback = await File.ReadAllBytesAsync(readbackPath);
             if (!readback.AsSpan().SequenceEqual(bin))
             {
@@ -187,14 +275,32 @@ public sealed class FirmwareFlasher
                 return;
             }
 
-            // 7. Erase the boot flag (0xFF @ 0x0801FFF0) + leave -> boot the app.
+            // 7. Erase the boot flag (0xFF @ 0x0801FFF0) and read it back: a flag
+            //    left at 0xDD keeps the device in the bootloader on every boot.
             Set("finalizing", 90, "Finalizing…");
             flagPath = Path.Combine(Path.GetTempPath(), "nexus-fw-flag.bin");
-            await File.WriteAllBytesAsync(flagPath, Enumerable.Repeat((byte)0xFF, 16).ToArray());
-            // dfu-util reports a get_status error on :leave (device detaches before
-            // the final status read) - that's expected, so don't treat it as failure.
+            await File.WriteAllBytesAsync(flagPath, Enumerable.Repeat((byte)0xFF, DfuProductKey.SlotLength).ToArray());
+            var fl = await _dfu.DownloadAsync(flagPath, DfuUtil.BootFlagAddress, leave: false, CancellationToken.None);
+            if (!fl.Success) { Fail($"Clearing the update flag failed: {Tail(fl.Output)}", fl.Output); return; }
+            // An unreadable slot is not proof of failure (older flows never read it),
+            // so only a read that shows a surviving key stops the flash here.
+            var flag = await _recovery.ReadKeySlotAsync(CancellationToken.None);
+            if (flag is null)
+            {
+                ServiceLog.Warn($"[firmware] {deviceType}: update flag not read back; leaving anyway");
+            }
+            else if (flag.Take(DfuProductKey.SlotLength).Any(b => b != 0xFF))
+            {
+                Fail($"The update flag did not clear ({Convert.ToHexString(flag)}).");
+                return;
+            }
+
+            // 8. Leave -> the bootloader resets into the app. dfu-util reports a
+            //    get_status error on :leave (the device detaches before the final
+            //    status read), so its exit code is not a failure signal.
             await _dfu.DownloadAsync(flagPath, DfuUtil.BootFlagAddress, leave: true, CancellationToken.None);
 
+            if (target is null) _recovery.Clear();
             Status.Success = true;
             Set("done", 100, $"Updated to {version}.");
         }
@@ -205,6 +311,7 @@ public sealed class FirmwareFlasher
         finally
         {
             TryDelete(binPath); TryDelete(flagPath); TryDelete(readbackPath);
+            _recovery.ReleaseBus();
             _flashGate.Release();
         }
     }
@@ -235,14 +342,17 @@ public sealed class FirmwareFlasher
         Status.Phase = phase;
         Status.Percent = percent;
         Status.Message = message;
+        ServiceLog.Info($"[firmware] {Status.DeviceType} {Status.Version}: {phase} {percent}% {message}");
     }
 
-    private void Fail(string error)
+    private void Fail(string error, string? dfuOutput = null)
     {
         Status.Phase = "failed";
         Status.Success = false;
         Status.Error = error;
         Status.Message = error;
+        ServiceLog.Error($"[firmware] {Status.DeviceType} {Status.Version}: failed: {error}" +
+                         (dfuOutput is null ? "" : $" (dfu-util: {DfuUtil.TailLines(dfuOutput, 6)})"));
     }
 
     private static string Tail(string s)
