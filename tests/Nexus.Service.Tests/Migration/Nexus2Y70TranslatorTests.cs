@@ -32,11 +32,11 @@ public sealed class Nexus2Y70TranslatorTests
         var y70 = LoadFixtureY70();
         var result = TranslateLayout(y70);
 
-        // dock(clock) + page1(clock,performance,gallery,media,snakeGame,weather,aquarium) + page2(whiteboard,discord) = 10
-        // discord is unportable: Nexus 3 has no Discord widget, only the
-        // Rich Presence setting, which carries none of the widget's config.
-        Assert.Equal(10, result.Widgets);
-        Assert.Equal(7, result.MappedWidgets);
+        // page1(clock,performance,gallery,media,snakeGame,weather,aquarium) + page2(whiteboard,discord) = 9;
+        // the dock's 1x1 clock is left out. discord is unportable: Nexus 3 has no
+        // Discord widget, only the Rich Presence setting, which carries none of the widget's config.
+        Assert.Equal(9, result.Widgets);
+        Assert.Equal(6, result.MappedWidgets);
         // DroppedTypes is first-seen fixture order, not sorted.
         Assert.Equal(new List<string> { "aquarium", "whiteboard", "discord" }, result.DroppedTypes);
         Assert.Equal(2, result.Pages);
@@ -67,16 +67,27 @@ public sealed class Nexus2Y70TranslatorTests
     }
 
     [Fact]
-    public void TranslateLayout_DockWidgetLandsOnTheFirstPage()
+    public void TranslateLayout_LeavesOut1x1WidgetsWithoutReportingThem()
     {
-        var y70 = LoadFixtureY70();
-        var result = TranslateLayout(y70);
-        var firstPage = result.Layout!.Pages[0];
-        Assert.Contains(firstPage.Widgets, w => w.Type == "clock" && w.Size == "1x1");
+        using var doc = JsonDocument.Parse("""
+        {
+          "dock": [
+            { "id": "d1", "type": "macros", "size": "1x1" },
+            { "id": "d2", "type": "blocks", "size": "1x1" }
+          ],
+          "pages": [{ "id": "p1", "type": "page", "widgets": [
+            { "id": "w1", "type": "clock", "size": "4x2", "position": 0 }
+          ]}]
+        }
+        """);
+        var result = TranslateLayout(doc.RootElement);
+        Assert.Equal(1, result.Widgets);
+        Assert.Empty(result.DroppedTypes);
+        var widget = Assert.Single(result.Layout!.Pages[0].Widgets);
+        Assert.Equal("clock", widget.Type);
     }
 
     [Theory]
-    [InlineData("1x1", "1x1")]
     [InlineData("2x2", "2x2")]
     [InlineData("4x2", "4x2")]
     [InlineData("4x4", "4x4")]

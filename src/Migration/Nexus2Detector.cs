@@ -17,7 +17,7 @@ namespace Nexus.Service.Migration;
 /// install root, scoping the close-app OpenRGB kill to Nexus 2's own copy.</summary>
 public sealed record Nexus2DetectionResult(
     bool Detected, bool ImportAvailable, string? Version, bool AutostartTaskPresent,
-    bool Running = false, string? InstallLocation = null)
+    bool Running = false, string? InstallLocation = null, string? InstallRoot = null)
 {
     public static readonly Nexus2DetectionResult None = new(false, false, null, false);
 }
@@ -32,8 +32,8 @@ internal static class Nexus2DetectionRules
     /// task survive an uninstall, so neither implies presence.</summary>
     public static Nexus2DetectionResult Compose(
         bool installed, bool running, bool importAvailable, bool autostartTaskPresent,
-        string? version, string? installLocation) =>
-        new(installed || running, importAvailable, version, autostartTaskPresent, running, installLocation);
+        string? version, string? installLocation, string? installRoot = null) =>
+        new(installed || running, importAvailable, version, autostartTaskPresent, running, installLocation, installRoot);
 
     /// <summary>An uninstall entry counts only while the install directory it
     /// records is still on disk; a partial uninstall can leave the entry
@@ -94,6 +94,20 @@ internal static class Nexus2UninstallRules
             return false;
         }
         catch { return false; }
+    }
+
+    /// <summary>The uninstaller's folder, which is the install root even where ARP's InstallLocation is
+    /// empty (field builds) and wherever the user chose to install. For reads only: unlike
+    /// <see cref="Compose"/> it does not check the path.</summary>
+    public static string? InstallRoot(string? quietUninstallString, string? uninstallString)
+    {
+        var command = !string.IsNullOrWhiteSpace(quietUninstallString) ? quietUninstallString : uninstallString;
+        if (string.IsNullOrWhiteSpace(command))
+        {
+            return null;
+        }
+        try { return Path.GetDirectoryName(Path.GetFullPath(Lifecycle.UserSessionTaskXml.SplitCommand(command).Exe)); }
+        catch { return null; }
     }
 
     /// <summary>Exact match on the signer's common name.</summary>
@@ -198,7 +212,8 @@ public sealed class Nexus2Detector : INexus2Detector
             importAvailable: ResolveExistingProfileFile(ConfigJsonRelativePath) is not null,
             autostartTaskPresent: ScheduledTaskFileExists(),
             version: arp.Version,
-            installLocation: arp.InstallLocation);
+            installLocation: arp.InstallLocation,
+            installRoot: Nexus2UninstallRules.InstallRoot(arp.QuietUninstallString, arp.UninstallString));
 
         LogSignalsWhenChanged(result, arp.Found);
         return result;

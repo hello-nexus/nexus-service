@@ -22,6 +22,9 @@ public sealed class PanelBgItem
 
     /// <summary>Media is png (static) or gif (animated) and the thumbnail png. False for assets imported before transparency support.</summary>
     public bool Alpha { get; set; }
+
+    /// <summary>Extension of a media file copied in unconverted (".webm", ".mov"...); null for a baked asset.</summary>
+    public string? MediaExt { get; set; }
 }
 
 public sealed class PanelBgListResponse

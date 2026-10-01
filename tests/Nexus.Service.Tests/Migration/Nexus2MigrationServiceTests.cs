@@ -95,11 +95,12 @@ public sealed class Nexus2MigrationServiceTests : IDisposable
         Assert.Equal(7, byId.Count);
 
         Assert.True(byId["appearance"].GetProperty("available").GetBoolean());
-        Assert.Equal("matrix", byId["appearance"].GetProperty("background").GetString());
+        Assert.Equal("#242324", byId["appearance"].GetProperty("accentColor").GetString());
+        Assert.Equal("particles", byId["appearance"].GetProperty("background").GetString());
 
         Assert.True(byId["y70Layout"].GetProperty("available").GetBoolean());
-        Assert.Equal(10, byId["y70Layout"].GetProperty("widgets").GetInt32());
-        Assert.Equal(7, byId["y70Layout"].GetProperty("mappedWidgets").GetInt32());
+        Assert.Equal(9, byId["y70Layout"].GetProperty("widgets").GetInt32());
+        Assert.Equal(6, byId["y70Layout"].GetProperty("mappedWidgets").GetInt32());
 
         Assert.True(byId["q60Face"].GetProperty("available").GetBoolean());
         Assert.Equal("clock", byId["q60Face"].GetProperty("face").GetString());
@@ -161,6 +162,7 @@ public sealed class Nexus2MigrationServiceTests : IDisposable
         Assert.NotNull(updated.Layout.SingleWidgetConfigs);
         Assert.True(updated.Layout.SingleWidgetConfigs!.ContainsKey("monitoring"));
         Assert.Equal("#1236ff", updated.AccentColor);
+        Assert.False(updated.AccentSyncWithDesktop);
     }
 
     [Fact]
@@ -282,5 +284,153 @@ public sealed class Nexus2MigrationServiceTests : IDisposable
         var updated = Panels.Get(q60.Id)!;
         Assert.Equal("animated", updated.BackgroundMediaType);
         Assert.True(updated.BackgroundMediaAlpha);
+    }
+
+    private PanelBgLibrary BgLibrary => _factory.Services.GetRequiredService<PanelBgLibrary>();
+
+    /// <summary>Points the reader at a throwaway AppData tree (Roaming\HYTE Nexus beside
+    /// Local\Programs\HYTE Nexus, as on a real install) with the Y70 bg set; returns the AppData dir.</summary>
+    private string UseNexus2Tree(string bg)
+    {
+        var appData = Path.Combine(_tempDir, "profile", "AppData");
+        var configDir = Path.Combine(appData, "Roaming", "HYTE Nexus");
+        Directory.CreateDirectory(configDir);
+        var reader = (Nexus.Service.Tests.Migration.FakeNexus2ConfigReader)
+            _factory.Services.GetRequiredService<INexus2ConfigReader>();
+        reader.ConfigText = reader.ConfigText!.Replace("\"bg\": \"\"", $"\"bg\": {JsonSerializer.Serialize(bg)}");
+        reader.ConfigDir = configDir;
+        return appData;
+    }
+
+    private async Task<JsonElement> ApplyAppearance()
+    {
+        var res = await PostApply(new[] { "appearance" }, false);
+        using var doc = JsonDocument.Parse(await res.Content.ReadAsStringAsync());
+        return doc.RootElement.GetProperty("results")[0].Clone();
+    }
+
+    [Nexus.Service.Tests.FfmpegFact]
+    public async Task Apply_Appearance_CopiesTheCustomVideoUnconvertedAndShowsItOnThePanel()
+    {
+        var source = Path.Combine(_tempDir, "custom-Y70-bg-1.mp4");
+        Directory.CreateDirectory(_tempDir);
+        File.Copy(Path.Combine(FixtureDir, "clip-landscape.mp4"), source);
+        UseNexus2Tree(source);
+        var y70 = Panels.Allocate(null, new PanelDeviceCapabilities { Surface = PanelSurfaces.Y70 });
+
+        Assert.Equal("applied", (await ApplyAppearance()).GetProperty("status").GetString());
+
+        var updated = Panels.Get(y70.Id)!;
+        Assert.Equal("#242324", updated.AccentColor);
+        Assert.False(updated.AccentSyncWithDesktop);
+        Assert.Equal("theme", updated.Backdrop);
+        Assert.Equal("media", updated.BackgroundMode);
+        Assert.Equal("animated", updated.BackgroundMediaType);
+        var item = BgLibrary.GetItem(y70.Id, updated.BackgroundMediaId!)!;
+        Assert.Equal(".mp4", item.MediaExt);
+        Assert.Equal(File.ReadAllBytes(source), File.ReadAllBytes(BgLibrary.GetMediaPath(y70.Id, item.Id, ".mp4")));
+        Assert.True(File.Exists(source));
+    }
+
+    [Nexus.Service.Tests.FfmpegFact]
+    public async Task Apply_Appearance_ExtractsThePortraitParticlesVideoFromAppAsar()
+    {
+        var appData = UseNexus2Tree("");
+        var portrait = File.ReadAllBytes(Path.Combine(FixtureDir, "clip-portrait.mp4"));
+        Nexus.Service.Tests.Migration.AsarTestWriter.Write(
+            Path.Combine(appData, "Local", "Programs", "HYTE Nexus", "resources", "app.asar"), "assets",
+            new[] { ("particles-desktop.mp4", File.ReadAllBytes(Path.Combine(FixtureDir, "clip-landscape.mp4"))), ("particles-y70.mp4", portrait) });
+        var y70 = Panels.Allocate(null, new PanelDeviceCapabilities { Surface = PanelSurfaces.Y70 });
+
+        Assert.Equal("applied", (await ApplyAppearance()).GetProperty("status").GetString());
+
+        var updated = Panels.Get(y70.Id)!;
+        var item = BgLibrary.GetItem(y70.Id, updated.BackgroundMediaId!)!;
+        Assert.Equal("particles-y70.mp4", item.Name);
+        Assert.Equal(portrait, File.ReadAllBytes(BgLibrary.GetMediaPath(y70.Id, item.Id, ".mp4")));
+    }
+
+    [Nexus.Service.Tests.FfmpegFact]
+    public async Task Apply_Appearance_RunTwiceReusesTheImportedBackground()
+    {
+        var source = Path.Combine(_tempDir, "custom-Y70-bg-1.mp4");
+        Directory.CreateDirectory(_tempDir);
+        File.Copy(Path.Combine(FixtureDir, "clip-landscape.mp4"), source);
+        UseNexus2Tree(source);
+        var y70 = Panels.Allocate(null, new PanelDeviceCapabilities { Surface = PanelSurfaces.Y70 });
+
+        await ApplyAppearance();
+        var firstId = Panels.Get(y70.Id)!.BackgroundMediaId;
+        await ApplyAppearance();
+
+        Assert.Single(BgLibrary.ListItems(y70.Id));
+        Assert.Equal(firstId, Panels.Get(y70.Id)!.BackgroundMediaId);
+    }
+
+    [Nexus.Service.Tests.FfmpegFact]
+    public async Task Apply_Appearance_AReplacedFileWithTheSameNameImportsAgain()
+    {
+        var source = Path.Combine(_tempDir, "custom-Y70-bg-1.mp4");
+        Directory.CreateDirectory(_tempDir);
+        File.Copy(Path.Combine(FixtureDir, "clip-landscape.mp4"), source);
+        UseNexus2Tree(source);
+        var y70 = Panels.Allocate(null, new PanelDeviceCapabilities { Surface = PanelSurfaces.Y70 });
+
+        await ApplyAppearance();
+        var firstId = Panels.Get(y70.Id)!.BackgroundMediaId;
+        File.Copy(Path.Combine(FixtureDir, "clip-portrait.mp4"), source, overwrite: true);
+        File.AppendAllText(source, "x");
+        await ApplyAppearance();
+
+        Assert.Equal(2, BgLibrary.ListItems(y70.Id).Count);
+        Assert.NotEqual(firstId, Panels.Get(y70.Id)!.BackgroundMediaId);
+    }
+
+    [Nexus.Service.Tests.FfmpegFact]
+    public async Task Apply_Appearance_DrawsAGradientIntoAStillAndReusesIt()
+    {
+        UseNexus2Tree("linear-gradient(181deg, rgba(255, 255, 0, 1) 0%, rgba(0, 188, 212, 1) 50%, rgba(238, 130, 238, 1) 100%)");
+        var y70 = Panels.Allocate(null, new PanelDeviceCapabilities { Surface = PanelSurfaces.Y70, CssWidth = 40, CssHeight = 140 });
+
+        Assert.Equal("applied", (await ApplyAppearance()).GetProperty("status").GetString());
+        var updated = Panels.Get(y70.Id)!;
+        Assert.Equal("theme", updated.Backdrop);
+        Assert.Equal("media", updated.BackgroundMode);
+        Assert.Equal("static", updated.BackgroundMediaType);
+        var item = BgLibrary.GetItem(y70.Id, updated.BackgroundMediaId!)!;
+        Assert.StartsWith("nexus2-gradient-", item.Name, StringComparison.Ordinal);
+        Assert.Equal((40, 140), (item.Width, item.Height));
+
+        await ApplyAppearance();
+        Assert.Single(BgLibrary.ListItems(y70.Id));
+    }
+
+    [Fact]
+    public async Task Apply_Appearance_TransparentBackgroundMakesTheY70SeeThrough()
+    {
+        var reader = (Nexus.Service.Tests.Migration.FakeNexus2ConfigReader)
+            _factory.Services.GetRequiredService<INexus2ConfigReader>();
+        reader.ConfigText = reader.ConfigText!.Replace("\"transparent\": false", "\"transparent\": true");
+        var y70 = Panels.Allocate(null, new PanelDeviceCapabilities { Surface = PanelSurfaces.Y70 });
+
+        Assert.Equal("applied", (await ApplyAppearance()).GetProperty("status").GetString());
+        Assert.Equal("desktop", Panels.Get(y70.Id)!.Backdrop);
+    }
+
+    [Fact]
+    public async Task Apply_Appearance_WithoutTheParticlesVideoStillAppliesTheAccent()
+    {
+        var y70 = Panels.Allocate(null, new PanelDeviceCapabilities { Surface = PanelSurfaces.Y70 });
+
+        var result = await ApplyAppearance();
+        Assert.Equal("applied", result.GetProperty("status").GetString());
+        Assert.Equal("background-not-imported", result.GetProperty("detail").GetString());
+
+        var updated = Panels.Get(y70.Id)!;
+        Assert.Equal("#242324", updated.AccentColor);
+        Assert.False(updated.AccentSyncWithDesktop);
+        Assert.Equal(0.7, updated.WidgetOpacity);
+        Assert.Null(updated.Backdrop);
+        Assert.Null(updated.BackgroundMediaId);
     }
 }

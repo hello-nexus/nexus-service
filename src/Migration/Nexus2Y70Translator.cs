@@ -41,7 +41,8 @@ internal static class Nexus2Y70Translator
         foreach (var widget in EnumerateWidgets(y70))
         {
             var n2Type = Nexus2Json.GetString(widget, "type");
-            if (n2Type is null)
+            // Nexus 3 panels do not support 1x1 widgets: left out, not reported as dropped.
+            if (n2Type is null || Nexus2Json.GetString(widget, "size") == "1x1")
             {
                 continue;
             }
@@ -85,7 +86,13 @@ internal static class Nexus2Y70Translator
         return result;
     }
 
-    public static Nexus2AppearanceResult TranslateAppearance(JsonElement y70)
+    // Nexus 2's isValidVideo / isValidImage: a bg with one of these is a file, anything else is CSS.
+    private static readonly string[] VideoExtensions = { ".mp4", ".m4v", ".mov", ".webm", ".avi", ".mkv", ".flv" };
+    private static readonly string[] ImageExtensions = { ".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp" };
+    // Chromium's <video> cannot open avi/mkv/flv, so Nexus 2 showed its particles fallback for them.
+    private static readonly string[] UnplayableVideoExtensions = { ".avi", ".mkv", ".flv" };
+
+    public static Nexus2AppearanceResult TranslateAppearance(JsonElement y70, Func<string, bool> fileExists)
     {
         var theme = Nexus2Json.GetObject(y70, "theme");
         var result = new Nexus2AppearanceResult { Available = theme is not null };
@@ -94,29 +101,56 @@ internal static class Nexus2Y70Translator
             return result;
         }
 
-        var accent = Nexus2Json.GetObject(t, "accent");
-        if (accent is { } a)
+        result.Transparent = Nexus2Json.GetBool(t, "transparent", false);
+        if (Nexus2Json.GetDouble(t, "opacity") is { } opacity)
         {
-            result.AccentHex = Nexus2WidgetMapping.RgbTripletToHex(Nexus2Json.GetString(a, "main"));
+            result.WidgetOpacity = Math.Clamp(opacity, 0, 1);
         }
 
-        var opacity = Nexus2Json.GetDouble(t, "opacity");
-        if (opacity is not null)
+        // Nexus 2's "Primary color" (the one its picker sets from a custom
+        // background's dominant colour) becomes the Nexus 3 accent.
+        var primary = Nexus2Json.GetObject(t, "primary");
+        if (primary is { } p)
         {
-            result.BackgroundOpacity = Math.Clamp(opacity.Value, 0, 1);
+            result.AccentHex = Nexus2WidgetMapping.RgbTripletToHex(Nexus2Json.GetString(p, "main"));
         }
 
-        if (Nexus2Json.GetBool(y70, "bgDisabled", false))
+        // Mirrors Y70Background.tsx: empty bg renders the bundled particles, a
+        // media path renders the file and falls back to particles when it
+        // fails to load, any other string is a CSS background.
+        var bg = (Nexus2Json.GetString(y70, "bg") ?? "").Split('?')[0];
+        var isVideo = HasExtension(bg, VideoExtensions);
+        if (bg.Length == 0)
         {
-            result.BackgroundMode = "solid";
+            result.Background = Nexus2Y70BackgroundSource.BundledParticles;
         }
-        else
+        else if (isVideo || HasExtension(bg, ImageExtensions))
         {
-            result.BackgroundMode = "shader";
-            result.BackgroundEffect = Nexus2WidgetMapping.MapBackgroundEffect(Nexus2Json.GetString(y70, "bgName"));
+            if (!HasExtension(bg, UnplayableVideoExtensions) && fileExists(bg))
+            {
+                result.Background = Nexus2Y70BackgroundSource.File;
+                result.BackgroundPath = bg;
+            }
+            else
+            {
+                result.Background = Nexus2Y70BackgroundSource.BundledParticles;
+            }
         }
+        else if (Nexus2Gradient.Parse(bg) is { } gradient)
+        {
+            result.Background = Nexus2Y70BackgroundSource.Gradient;
+            result.BackgroundGradient = gradient;
+        }
+
+        // bgDisabled freezes a video on its first frame (FirstFrameVideo); an image is unaffected.
+        var playsVideo = result.Background == Nexus2Y70BackgroundSource.BundledParticles
+            || (result.Background == Nexus2Y70BackgroundSource.File && isVideo);
+        result.BackgroundStill = playsVideo && Nexus2Json.GetBool(y70, "bgDisabled", false);
         return result;
     }
+
+    private static bool HasExtension(string path, string[] extensions) =>
+        Array.Exists(extensions, e => path.EndsWith(e, StringComparison.OrdinalIgnoreCase));
 
     public static Nexus2GallerySourcesResult TranslateGallerySources(JsonElement y70, Func<string, bool> fileExists)
     {
@@ -189,7 +223,6 @@ internal static class Nexus2Y70Translator
 
     private static string MapSize(string? n2Size) => n2Size switch
     {
-        "1x1" => "1x1",
         "2x2" => "2x2",
         "4x2" => "4x2",
         "4x4" => "4x4",
