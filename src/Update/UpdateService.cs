@@ -43,7 +43,8 @@ public sealed class UpdateService : BackgroundService
 #endif
 
     // Status DTO - read by routes, written only by this service.
-    private volatile UpdateStatusResponse _status = new() { CurrentVersion = BuildInfo.Version };
+    // CanAutoInstall is known before the first check, which can be late or held off.
+    private volatile UpdateStatusResponse _status = new() { CurrentVersion = BuildInfo.Version, CanAutoInstall = CanApplyUpdates };
     // Progress DTO - read by routes during an active install.
     private volatile UpdateProgressResponse _progress = new();
 
