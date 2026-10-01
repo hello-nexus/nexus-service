@@ -74,6 +74,7 @@ public static class NexusServiceCollectionExtensions
         // AppsTerminated event.
         services.AddSingleton<Nexus.Service.Conflicts.ConflictStartupShutdown>();
         services.AddHostedService(sp => sp.GetRequiredService<Nexus.Service.Conflicts.ConflictStartupShutdown>());
+        services.AddHostedService<Nexus.Service.Devices.VendorAppControlPause>();
         return services;
     }
 

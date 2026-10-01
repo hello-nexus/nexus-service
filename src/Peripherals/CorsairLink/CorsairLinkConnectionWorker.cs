@@ -2,6 +2,7 @@ using System;
 using System.Threading;
 using System.Threading.Tasks;
 using Microsoft.Extensions.Hosting;
+using Nexus.Service.Conflicts;
 using Nexus.Service.Cooling;
 using Nexus.Service.Devices;
 using Nexus.Service.Devices.Detection;
@@ -20,6 +21,8 @@ public sealed class CorsairLinkConnectionWorker : BackgroundService
     private const int ConnectPollMs = 5000;
     private const int PollMs = 2000;
     private const int MaxConsecutiveFailures = 3;
+    // Each failed init flips the hub to software mode and back; repeated failures back off to this.
+    private const int MaxInitRetryMs = 60_000;
 
     private readonly IHidEnumerator _hid;
     private readonly CorsairLinkHub _hub;
@@ -28,6 +31,7 @@ public sealed class CorsairLinkConnectionWorker : BackgroundService
     private readonly CorsairLinkLcd _lcd;
     private readonly DeviceControlGate _gate;
     private readonly HardwarePresence _presence;
+    private readonly IConflictDetector? _conflicts;
 
     public CorsairLinkConnectionWorker(
         IHidEnumerator hid,
@@ -36,7 +40,8 @@ public sealed class CorsairLinkConnectionWorker : BackgroundService
         CorsairLinkCoolingProvider cooling,
         CorsairLinkLcd lcd,
         DeviceControlGate gate,
-        HardwarePresence presence)
+        HardwarePresence presence,
+        IConflictDetector? conflicts = null)
     {
         _hid = hid;
         _hub = hub;
@@ -45,10 +50,18 @@ public sealed class CorsairLinkConnectionWorker : BackgroundService
         _lcd = lcd;
         _gate = gate;
         _presence = presence;
+        _conflicts = conflicts;
     }
+
+    // A vendor app that grabbed the hub owns it now (even before the pause poll
+    // sees it); switching the hub to hardware mode would cut that app off.
+    private bool HandBack() =>
+        _gate.PausedByApp("corsair") is null
+        && !(DeviceControlPolicy.ConflictAppFor("corsair") is { } app && _conflicts?.IsAppRunning(app) == true);
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
+        var initRetryMs = ConnectPollMs;
         while (!stoppingToken.IsCancellationRequested)
         {
             try
@@ -80,11 +93,13 @@ public sealed class CorsairLinkConnectionWorker : BackgroundService
                     // firmware read itself never landed a full reply - the hub went
                     // silent (or answered short) before the device-list read.
                     var fw = _hub.State.Firmware;
-                    ServiceLog.Warn($"[corsair] initialize failed, retrying (fw={(string.IsNullOrEmpty(fw) ? "none" : fw)})");
-                    _hub.Detach();
-                    await Task.Delay(ConnectPollMs, stoppingToken).ConfigureAwait(false);
+                    ServiceLog.Warn($"[corsair] initialize failed, retrying in {initRetryMs / 1000}s (fw={(string.IsNullOrEmpty(fw) ? "none" : fw)})");
+                    _hub.Detach(handBack: HandBack());
+                    await Task.Delay(initRetryMs, stoppingToken).ConfigureAwait(false);
+                    initRetryMs = Math.Min(initRetryMs * 2, MaxInitRetryMs);
                     continue;
                 }
+                initRetryMs = ConnectPollMs;
 
                 ServiceLog.Info($"[corsair] connected fw={_hub.State.Firmware} devices={_hub.State.Devices.Count}");
                 if (_hub.State.HasLcd)
@@ -115,7 +130,7 @@ public sealed class CorsairLinkConnectionWorker : BackgroundService
                 finally
                 {
                     _lcd.Detach();
-                    _hub.Detach();
+                    _hub.Detach(handBack: HandBack());
                     ServiceLog.Info("[corsair] disconnected");
                     _lighting.OnHubStateUpdated();
                 }

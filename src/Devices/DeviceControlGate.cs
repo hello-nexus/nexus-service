@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Threading;
 using Nexus.Service.Persistence;
 
 namespace Nexus.Service.Devices;
@@ -22,11 +23,11 @@ public sealed class DeviceControlGate
     }
 
     /// <summary>
-    /// Raised after <see cref="SetEnabled"/> persists a choice, for consumers
-    /// holding hardware open. Fired outside the mutation on the caller's thread,
-    /// so concurrent writers can notify in the opposite order to the one they
-    /// persisted in; a subscriber that must not act on a stale value re-reads
-    /// <see cref="IsEnabled"/>.
+    /// Raised after <see cref="SetEnabled"/> persists a choice and when a running
+    /// competing app holds a device off or releases it (<see cref="SetPausedByApp"/>).
+    /// Fired outside any lock on the caller's thread, so notifications can arrive in
+    /// a different order than the state changed; a subscriber that must not act on a
+    /// stale value re-reads <see cref="IsEnabled"/>.
     /// </summary>
     public event Action<string, bool>? Changed;
 
@@ -36,7 +37,46 @@ public sealed class DeviceControlGate
     // BOTH lists, never in neither. Disabled wins that transient, so a
     // just-enabled third-party device reads off for a cycle (fail-closed) and an
     // explicit choice is never readable as unset.
-    public bool IsEnabled(string handlerId) => IsEnabled(_store.Load().Devices, handlerId);
+    /// <summary>The user's choice, and off while the device's competing app runs.</summary>
+    public bool IsEnabled(string handlerId) =>
+        IsEnabled(_store.Load().Devices, handlerId) && !Volatile.Read(ref _pausedByApp).ContainsKey(handlerId);
+
+    // Handler id -> running competing app id; replaced whole, never mutated, so lock-free reads see one set or the other.
+    private Dictionary<string, string> _pausedByApp = new(StringComparer.OrdinalIgnoreCase);
+    private readonly object _pauseLock = new();
+
+    /// <summary>The user's choice alone, ignoring a running competing app.</summary>
+    public bool IsChosenOn(string handlerId) => IsEnabled(_store.Load().Devices, handlerId);
+
+    /// <summary>The competing app holding this handler off right now, or null.</summary>
+    public string? PausedByApp(string handlerId) =>
+        Volatile.Read(ref _pausedByApp).TryGetValue(handlerId, out var appId) ? appId : null;
+
+    /// <summary>Replaces the handlers held off by a running competing app and raises <see cref="Changed"/> for each one the user has on that flipped.</summary>
+    public void SetPausedByApp(IReadOnlyDictionary<string, string> paused)
+    {
+        List<(string Handler, bool Enabled)> flipped = new();
+        lock (_pauseLock)
+        {
+            var before = _pausedByApp;
+            var after = new Dictionary<string, string>(paused, StringComparer.OrdinalIgnoreCase);
+            foreach (var handler in before.Keys.Union(after.Keys, StringComparer.OrdinalIgnoreCase))
+            {
+                var wasPaused = before.ContainsKey(handler);
+                var isPaused = after.ContainsKey(handler);
+                if (wasPaused == isPaused || !IsChosenOn(handler)) continue;
+                flipped.Add((handler, !isPaused));
+                Console.WriteLine(isPaused
+                    ? $"[device-control] '{handler}' waiting: {after[handler]} is running"
+                    : $"[device-control] '{handler}' taken: {before[handler]} exited");
+            }
+            Volatile.Write(ref _pausedByApp, after);
+        }
+        foreach (var (handler, enabled) in flipped)
+        {
+            RaiseChanged(handler, enabled);
+        }
+    }
 
     private static bool IsEnabled(DevicesSettings devices, string handlerId)
     {
@@ -81,7 +121,12 @@ public sealed class DeviceControlGate
                 s.Ui.ConflictAutoKillExclusions = WithId(s.Ui.ConflictAutoKillExclusions, appId);
             }
         });
-        // The choice is persisted; a throwing subscriber must not fail the request.
+        RaiseChanged(handlerId, enabled && PausedByApp(handlerId) is null);
+    }
+
+    // The choice is persisted; a throwing subscriber must not fail the request.
+    private void RaiseChanged(string handlerId, bool enabled)
+    {
         try
         {
             Changed?.Invoke(handlerId, enabled);

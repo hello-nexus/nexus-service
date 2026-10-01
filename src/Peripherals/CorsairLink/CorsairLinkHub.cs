@@ -38,9 +38,13 @@ public sealed class CorsairLinkHub : IDisposable
     // Firmware major byte from getFirmware; gates the LED port-power split
     // (channel >=13 on fw >=2, >=7 on fw <2, lsh.go:3982).
     private int _firmwareMajor;
-    // Streaming is primed (Initialize ran, hub connected). Not a live "endpoint is
-    // open" mirror: SendColors re-opens the color endpoint each frame.
+    // Streaming is primed (Initialize ran, hub connected).
     private bool _colorPrimed;
+    // The hub refused a colour write; the handle answers 03 until reopened.
+    private bool _colorReopenDue;
+    private long _colorReopenAfterMs;
+    internal const int ColorReopenBackoffMs = 1000;
+    internal Func<long> NowMs { get; set; } = () => Environment.TickCount64;
     private bool _disposed;
 
     public string DeviceId => "corsair";
@@ -57,14 +61,16 @@ public sealed class CorsairLinkHub : IDisposable
             _softwareMode = false;
             _firmwareMajor = 0;
             _colorPrimed = false;
+            _colorReopenDue = false;
         }
     }
 
-    public void Detach()
+    /// <param name="handBack">False when a vendor app now owns the hub: switching it to hardware mode would cut that app off.</param>
+    public void Detach(bool handBack = true)
     {
         lock (_lock)
         {
-            if (_device != null && _softwareMode)
+            if (_device != null && _softwareMode && handBack)
             {
                 // Hand the chain back to firmware so the fans keep running on the
                 // hub's own curve once Nexus lets go.
@@ -106,17 +112,19 @@ public sealed class CorsairLinkHub : IDisposable
 
             if (!RefreshLocked()) return false;
 
-            // Prime the color endpoint and mark streaming live. SendColors re-opens
-            // it per frame, because Poll/SetDuties close+open the data endpoints
-            // (0x36/0x17/0x21/0x18) under the same lock and the hub has one shared
-            // endpoint slot, so it cannot stay open across a telemetry cycle.
-            Span<byte> mode = stackalloc byte[] { CorsairLinkProtocol.ModeSetColor };
-            Transfer(CorsairLinkProtocol.CmdCloseEndpoint, mode);
-            Transfer(CorsairLinkProtocol.CmdOpenColorEndpoint, mode);
+            // Another host (iCUE, a crashed session) can leave handle 0 holding a
+            // different resource, and an open on a busy handle is refused, so free
+            // it first. It then stays open for the whole session.
+            if (!OpenColorHandleLocked())
+            {
+                ServiceLog.Warn("[corsair] colour handle open refused");
+                return false;
+            }
             // Mixed QX+RX chains drop QX lighting without a 40 ms settle after the
             // first color endpoint open (OpenLinkHub lsh.go:4454).
             Thread.Sleep(40);
             _colorPrimed = true;
+            _colorReopenDue = false;
 
             State.IsConnected = true;
             return true;
@@ -159,8 +167,7 @@ public sealed class CorsairLinkHub : IDisposable
 
     /// <summary>
     /// Stream one frame of per-LED color. <paramref name="rgb"/> is every RGB
-    /// device's LEDs concatenated in channel order, 3 bytes (R,G,B) each. Re-opens
-    /// the color endpoint per call (the telemetry path closes the shared slot).
+    /// device's LEDs concatenated in channel order, 3 bytes (R,G,B) each.
     /// </summary>
     public bool SendColors(ReadOnlySpan<byte> rgb)
     {
@@ -168,14 +175,16 @@ public sealed class CorsairLinkHub : IDisposable
         {
             if (_device == null || !_colorPrimed) return false;
 
-            // Poll/SetDuties close+open the data endpoints under this same lock,
-            // which closes the single shared endpoint slot. Re-open the color
-            // endpoint per frame (OpenLinkHub's writeColor pattern) so streaming
-            // survives the telemetry/cooling cycling instead of writing into a
-            // closed endpoint (which freezes the LEDs at their firmware default).
-            Span<byte> mode = stackalloc byte[] { CorsairLinkProtocol.ModeSetColor };
-            Transfer(CorsairLinkProtocol.CmdCloseEndpoint, mode);
-            Transfer(CorsairLinkProtocol.CmdOpenColorEndpoint, mode);
+            if (_colorReopenDue)
+            {
+                if (NowMs() < _colorReopenAfterMs) return false;
+                if (!OpenColorHandleLocked())
+                {
+                    _colorReopenAfterMs = NowMs() + ColorReopenBackoffMs;
+                    return false;
+                }
+                _colorReopenDue = false;
+            }
 
             var len = 6 + rgb.Length;
             if (len > _colorInner.Length) return false;
@@ -204,12 +213,33 @@ public sealed class CorsairLinkHub : IDisposable
                 var chunk = Math.Min(CorsairLinkProtocol.MaxColorChunk, len - offset);
                 var cmd = first ? CorsairLinkProtocol.CmdWriteColor : CorsairLinkProtocol.CmdWriteSubColor;
                 if (Transfer(cmd, _colorInner.AsSpan(offset, chunk)) <= 0) return false;
+                if (Refused(cmd))
+                {
+                    _colorReopenDue = true;
+                    _colorReopenAfterMs = NowMs() + ColorReopenBackoffMs;
+                    return false;
+                }
                 offset += chunk;
                 first = false;
             }
             return true;
         }
     }
+
+    // Close then open handle 0 on the colour resource; true when the open is accepted.
+    private bool OpenColorHandleLocked()
+    {
+        Span<byte> mode = stackalloc byte[] { CorsairLinkProtocol.ModeSetColor };
+        Transfer(CorsairLinkProtocol.CmdCloseColorEndpoint);
+        var n = Transfer(CorsairLinkProtocol.CmdOpenColorEndpoint, mode);
+        return n > CorsairLinkProtocol.ResponseStatusOffset && !Refused(CorsairLinkProtocol.CmdOpenColorEndpoint);
+    }
+
+    // The last response answers this command with a non-zero status. A response
+    // for another command (a stale queued report) is not read as a refusal.
+    private bool Refused(ReadOnlySpan<byte> cmd) =>
+        _read[CorsairLinkProtocol.ResponseCommandOffset] == cmd[0]
+        && _read[CorsairLinkProtocol.ResponseStatusOffset] != 0;
 
     // ── internals (caller holds _lock) ──
 

@@ -72,6 +72,9 @@ public sealed class ConflictAppDefinition
 
     /// <summary>Starts on the whitelist (<c>Ui.ConflictAutoKillExclusions</c>): an app that drives neither lighting nor cooling, or a device app whose device starts with Nexus Control off. Everything else is ended by default.</summary>
     public bool DefaultWhitelisted { get; init; }
+
+    /// <summary>Ended at every service start and launch window whatever the whitelist, the startup switch or onboarding say: Nexus 3 never runs alongside it.</summary>
+    public bool AlwaysEnded { get; init; }
 }
 
 public static class ConflictAppCatalog
@@ -88,6 +91,7 @@ public static class ConflictAppCatalog
         new()
         {
             Id = "hyte-nexus-2",
+            AlwaysEnded = true,
             ClaimsAllRgb = true,
             DisplayName = "HYTE Nexus 2",
             Category = "lighting",
@@ -110,6 +114,7 @@ public static class ConflictAppCatalog
         new()
         {
             Id = "nzxt-cam",
+            DefaultWhitelisted = true,
             Vendors = new[] { "NZXT" },
             DisplayName = "NZXT CAM",
             Category = "lighting",
@@ -334,6 +339,7 @@ public static class ConflictAppCatalog
         new()
         {
             Id = "icue",
+            DefaultWhitelisted = true,
             Vendors = new[] { "Corsair" },
             DisplayName = "Corsair iCUE",
             Category = "lighting",
@@ -411,6 +417,7 @@ public static class ConflictAppCatalog
         new()
         {
             Id = "lian-li-l-connect",
+            DefaultWhitelisted = true,
             Vendors = new[] { "Lian Li" },
             DisplayName = "Lian Li L-Connect",
             Category = "lighting",
@@ -437,6 +444,7 @@ public static class ConflictAppCatalog
             // Cooler LCD app (Electron, C:\Program Files\ZMatrices); its sender process
             // holds the panel's WinUSB handle Nexus drives directly.
             Id = "zmatrices",
+            DefaultWhitelisted = true,
             DisplayName = "ZMatrices",
             Category = "cooling",
             ProcessNames = new[] { "ZMatrices", "zmUsbSendJpg" },

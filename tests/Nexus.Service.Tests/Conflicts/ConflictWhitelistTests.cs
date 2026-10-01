@@ -17,6 +17,9 @@ public class ConflictWhitelistTests
     private const string Elgato = "elgato-stream-deck";
     private const string Kanali = "tryx-kanali";
     private const string LConnect = "lian-li-l-connect";
+    private const string ICue = "icue";
+    private const string SignalRgb = "signalrgb";
+    private const string Nexus2 = "hyte-nexus-2";
 
     private sealed class FakeDetector : IConflictDetector
     {
@@ -43,6 +46,8 @@ public class ConflictWhitelistTests
     [Theory]
     [InlineData("streamdeck")]
     [InlineData("tryx")]
+    [InlineData("nzxt-kraken")]
+    [InlineData("zmatrices-lcd")]
     public void ADeviceWhoseAppStartsWhitelistedDefaultsOff(string handlerId)
     {
         Assert.False(DeviceControlPolicy.DefaultOn(handlerId));
@@ -56,8 +61,86 @@ public class ConflictWhitelistTests
         Assert.Contains(Elgato, whitelist);
         Assert.Contains(Kanali, whitelist);
         Assert.Contains("msi-super-charger", whitelist);
-        Assert.DoesNotContain(LConnect, whitelist);
+        Assert.Contains(LConnect, whitelist);
+        Assert.Contains(ICue, whitelist);
+        Assert.Contains("nzxt-cam", whitelist);
+        Assert.Contains("zmatrices", whitelist);
         Assert.DoesNotContain("signalrgb", whitelist);
+    }
+
+    [Theory]
+    [InlineData("corsair-link-lcd", ICue)]
+    [InlineData("lianli-screen88", LConnect)]
+    [InlineData("lianli-galahad2-lcd", LConnect)]
+    public void EveryThirdPartyDeviceNamesItsVendorApp(string handlerId, string appId)
+    {
+        Assert.Equal(appId, DeviceControlPolicy.ConflictAppFor(handlerId));
+        Assert.False(DeviceControlPolicy.DefaultOn(handlerId));
+    }
+
+    [Fact]
+    public void UpgradeKeepsAKrakenThatNeverChoseOn()
+    {
+        var doc = new NexusSettings();
+
+        ConflictWhitelistMigration.KeepThirdPartyDevicesOn(doc);
+
+        Assert.Contains("nzxt-kraken", doc.Devices.NexusControlEnabled);
+        Assert.Contains("zmatrices-lcd", doc.Devices.NexusControlEnabled);
+    }
+
+    [Fact]
+    public void AnInstallOlderThanV19KeepsEndingTheAppsWhitelistedSince()
+    {
+        var doc = new NexusSettings();
+        doc.Ui.ConflictAutoKillExclusions = new List<string>();
+
+        ConflictWhitelistMigration.Apply(doc);
+        ConflictWhitelistMigration.KeepThirdPartyDevicesOn(doc);
+
+        Assert.Contains("nzxt-kraken", doc.Devices.NexusControlEnabled);
+        Assert.DoesNotContain("nzxt-cam", doc.Ui.ConflictAutoKillExclusions);
+        Assert.DoesNotContain("zmatrices", doc.Ui.ConflictAutoKillExclusions);
+        Assert.DoesNotContain(ICue, doc.Ui.ConflictAutoKillExclusions);
+        Assert.DoesNotContain(LConnect, doc.Ui.ConflictAutoKillExclusions);
+        Assert.Contains("msi-super-charger", doc.Ui.ConflictAutoKillExclusions);
+    }
+
+    [Fact]
+    public async Task AWindowOpenedBeforeOnboardingNeverRunsTheFullSweep()
+    {
+        var store = new InMemoryConfigStore();
+        var shutdown = new ConflictStartupShutdown(store, new FakeDetector(), NullLogger<ConflictStartupShutdown>.Instance,
+            _ => { }, _ => false);
+
+        await shutdown.StartAsync(CancellationToken.None);
+        try
+        {
+            store.Update(s =>
+            {
+                s.OnboardingCompleted = true;
+                s.FeaturesOnboardingCompleted = true;
+                s.LightingOnboardingCompleted = true;
+            });
+
+            Assert.True(shutdown.LaunchWindowOpen);
+            Assert.False(shutdown.InLaunchKillWindow);
+        }
+        finally
+        {
+            await shutdown.StopAsync(CancellationToken.None);
+        }
+    }
+
+    [Fact]
+    public void UpgradeLeavesAKrakenTheUserTurnedOffOff()
+    {
+        var doc = new NexusSettings();
+        doc.Devices.NexusControlDisabled = new List<string> { "nzxt-kraken" };
+
+        ConflictWhitelistMigration.KeepThirdPartyDevicesOn(doc);
+
+        Assert.DoesNotContain("nzxt-kraken", doc.Devices.NexusControlEnabled);
     }
 
     [Fact]
@@ -149,10 +232,51 @@ public class ConflictWhitelistTests
     }
 
     [Fact]
+    public void Nexus2IsEndedWithTheSweepOffAndOnTheWhitelist()
+    {
+        var store = new InMemoryConfigStore();
+        store.Update(s =>
+        {
+            s.Ui.AutoKillConflictsAtStartup = false;
+            s.Ui.ConflictAutoKillExclusions = new List<string> { Nexus2 };
+        });
+        var detector = new FakeDetector { Conflicts = new[] { App(Nexus2), App(SignalRgb) } };
+        var killed = new List<string>();
+        var shutdown = new ConflictStartupShutdown(store, detector, NullLogger<ConflictStartupShutdown>.Instance,
+            def => killed.Add(def.Id), _ => false);
+
+        shutdown.EndRunningApps(ConflictStartupShutdown.SweepAllowed(store.Load()));
+
+        Assert.Equal(new[] { Nexus2 }, killed);
+    }
+
+    [Fact]
+    public async Task Nexus2IsEndedAtServiceStartBeforeOnboarding()
+    {
+        var store = new InMemoryConfigStore();
+        var detector = new FakeDetector { Conflicts = new[] { App(Nexus2), App(SignalRgb) } };
+        var killed = new TaskCompletionSource<string>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var shutdown = new ConflictStartupShutdown(store, detector, NullLogger<ConflictStartupShutdown>.Instance,
+            def => killed.TrySetResult(def.Id), _ => false);
+
+        await shutdown.StartAsync(CancellationToken.None);
+        try
+        {
+            Assert.Equal(Nexus2, await killed.Task.WaitAsync(TimeSpan.FromSeconds(5)));
+            Assert.True(shutdown.LaunchWindowOpen);
+            Assert.False(shutdown.InLaunchKillWindow);
+        }
+        finally
+        {
+            await shutdown.StopAsync(CancellationToken.None);
+        }
+    }
+
+    [Fact]
     public void TheShutdownRetriesAnAppOnlyWhenItComesBackUnderANewPid()
     {
         var store = new InMemoryConfigStore();
-        var detector = new FakeDetector { Conflicts = new[] { App(LConnect, pid: 100) } };
+        var detector = new FakeDetector { Conflicts = new[] { App(SignalRgb, pid: 100) } };
         var killed = 0;
         var shutdown = new ConflictStartupShutdown(store, detector, NullLogger<ConflictStartupShutdown>.Instance,
             _ => killed++, _ => true);
@@ -161,7 +285,7 @@ public class ConflictWhitelistTests
         shutdown.EndRunningApps();
         Assert.Equal(1, killed);
 
-        detector.Conflicts = new[] { App(LConnect, pid: 200) };
+        detector.Conflicts = new[] { App(SignalRgb, pid: 200) };
         shutdown.EndRunningApps();
         Assert.Equal(2, killed);
     }
@@ -182,7 +306,7 @@ public class ConflictWhitelistTests
         {
             Assert.True(shutdown.InLaunchKillWindow);
             notifier.Tick(0);
-            detector.Conflicts = new[] { App(LConnect) };
+            detector.Conflicts = new[] { App(SignalRgb) };
             notifier.Tick(6_000);
 
             Assert.Empty(launched);

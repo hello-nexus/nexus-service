@@ -167,6 +167,7 @@ public sealed class JsonConfigStore : IConfigStore, IDisposable
     /// host-wide StreamDeckSettings.Presets/Instances, and every deck
     /// widget's inline layout config does the same (DeckModesMigration).
     /// v19: ConflictWhitelistMigration.
+    /// v20: ConflictWhitelistMigration.KeepThirdPartyDevicesOn.
     /// </summary>
     private static void Migrate(NexusSettings doc)
     {
@@ -249,6 +250,10 @@ public sealed class JsonConfigStore : IConfigStore, IDisposable
         if (doc.SchemaVersion < 19)
         {
             Nexus.Service.Conflicts.ConflictWhitelistMigration.Apply(doc);
+        }
+        if (doc.SchemaVersion < 20)
+        {
+            Nexus.Service.Conflicts.ConflictWhitelistMigration.KeepThirdPartyDevicesOn(doc);
         }
         doc.SchemaVersion = NexusSettings.CurrentSchemaVersion;
     }

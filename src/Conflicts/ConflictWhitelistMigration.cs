@@ -9,6 +9,13 @@ namespace Nexus.Service.Conflicts;
 /// <summary>Schema v19, for an upgrading install only (a fresh one starts from the new defaults).</summary>
 public static class ConflictWhitelistMigration
 {
+    // The catalog's DefaultWhitelisted set when v19 shipped; later additions reach fresh installs only.
+    private static readonly string[] V19Whitelist =
+    {
+        "msi-companion", "msi-game-bar-tool", "msi-super-charger", "tryx-kanali",
+        Devices.Handlers.StreamDeckHandler.ElgatoConflictAppId, "evga-precision-x-server",
+    };
+
     public static void Apply(NexusSettings doc)
     {
         doc.Devices ??= new DevicesSettings();
@@ -22,12 +29,20 @@ public static class ConflictWhitelistMigration
         KeepOn(doc.Devices, "tryx");
 
         // A whitelisted app must not share a device with Nexus.
-        foreach (var def in ConflictAppCatalog.All)
+        foreach (var appId in V19Whitelist)
         {
-            if (!def.DefaultWhitelisted || Contains(doc.Ui.ConflictAutoKillExclusions, def.Id)) continue;
-            if (DeviceControlPolicy.HandlersFor(def.Id).Any(h => Contains(doc.Devices.NexusControlEnabled, h))) continue;
-            doc.Ui.ConflictAutoKillExclusions = doc.Ui.ConflictAutoKillExclusions.Append(def.Id).ToList();
+            if (Contains(doc.Ui.ConflictAutoKillExclusions, appId)) continue;
+            if (DeviceControlPolicy.HandlersFor(appId).Any(h => Contains(doc.Devices.NexusControlEnabled, h))) continue;
+            doc.Ui.ConflictAutoKillExclusions = doc.Ui.ConflictAutoKillExclusions.Append(appId).ToList();
         }
+    }
+
+    /// <summary>Schema v20: the Kraken and ZMatrices LCD defaults turned off with their apps whitelisted, so an upgrading install that never chose keeps driving them.</summary>
+    public static void KeepThirdPartyDevicesOn(NexusSettings doc)
+    {
+        doc.Devices ??= new DevicesSettings();
+        KeepOn(doc.Devices, "nzxt-kraken");
+        KeepOn(doc.Devices, "zmatrices-lcd");
     }
 
     private static void KeepOn(DevicesSettings devices, string handlerId)

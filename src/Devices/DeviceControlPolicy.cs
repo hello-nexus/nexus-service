@@ -14,7 +14,8 @@ namespace Nexus.Service.Devices;
 /// Hyte/iBUYPOWER hardware, streamed panels (which have no on/off row to
 /// re-enable), and shared buses (whose monitoring nothing else provides)
 /// default on, as does any handler in neither ConflictAppByHandler nor
-/// UnverifiedHandlers. One source of truth for both facts.
+/// UnverifiedHandlers. One source of truth for both facts. Whatever the
+/// choice, Nexus waits while a device's app runs (<see cref="VendorAppControlPause"/>).
 /// </summary>
 public static class DeviceControlPolicy
 {
@@ -26,7 +27,10 @@ public static class DeviceControlPolicy
         ["lianli-aio"] = "lian-li-l-connect",
         ["lianli-hydroshift-lcd"] = "lian-li-l-connect",
         ["strimer"] = "lian-li-l-connect",
+        ["lianli-screen88"] = "lian-li-l-connect",
+        ["lianli-galahad2-lcd"] = "lian-li-l-connect",
         ["corsair"] = "icue",
+        ["corsair-link-lcd"] = "icue",
     };
 
     // Hyte + iBUYPOWER hardware: the brands Nexus is built for. Every other
@@ -60,7 +64,6 @@ public static class DeviceControlPolicy
     /// <summary>Feeds <see cref="ConflictAppFor"/> alone: names a competing app for the UI hint; the handler defaults on unless that app starts whitelisted.</summary>
     private static readonly Dictionary<string, string> HintOnlyConflictAppByHandler = new(StringComparer.OrdinalIgnoreCase)
     {
-        [SmbusDramHandler.HandlerId] = "icue",
         ["tryx"] = "tryx-kanali",
         ["nzxt-kraken"] = "nzxt-cam",
         ["zmatrices-lcd"] = "zmatrices",
@@ -77,6 +80,13 @@ public static class DeviceControlPolicy
         && !UnverifiedHandlers.Contains(handlerId)
         && !(HintOnlyConflictAppByHandler.TryGetValue(handlerId, out var app)
             && Conflicts.ConflictWatcher.FindById(app)?.DefaultWhitelisted == true);
+
+    /// <summary>Every handler with a competing app, from both maps.</summary>
+    public static IEnumerable<string> HandlersWithConflictApp()
+    {
+        foreach (var handler in ConflictAppByHandler.Keys) yield return handler;
+        foreach (var handler in HintOnlyConflictAppByHandler.Keys) yield return handler;
+    }
 
     public static string? ConflictAppFor(string handlerId)
         => ConflictAppByHandler.TryGetValue(handlerId, out var id) ? id
