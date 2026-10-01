@@ -70,6 +70,13 @@ public sealed class FirmwareStatusItem
     /// Install path never uses these.
     /// </summary>
     public List<FlashableImage> DevImages { get; set; } = new();
+    /// <summary>True on the row for a device stuck in its bootloader after an interrupted update.</summary>
+    public bool NeedsRecovery { get; set; }
+    /// <summary>
+    /// "identifying" (reading the device), "ready" (FirmwareType identified, image bundled;
+    /// recover via POST /devices/firmware/recover) or "unsupported"; empty on normal rows.
+    /// </summary>
+    public string RecoveryState { get; set; } = "";
 }
 
 public sealed class FlashableImage

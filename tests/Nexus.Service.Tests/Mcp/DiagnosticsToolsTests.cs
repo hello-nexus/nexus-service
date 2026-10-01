@@ -71,13 +71,7 @@ public sealed class DiagnosticsToolsTests : IDisposable
         new NullUpdateSource(),
         new UpdateDownloader(new NullHttpClientFactory()),
         store,
-        new FirmwareFlasher(
-            new BundledFirmwareCatalog(),
-            Array.Empty<IDfuFlashTarget>(),
-            new WinUsbDriverInstaller(),
-            new DfuUtil("dfu-util"),
-            new PluginProviderRegistry(),
-            new FlashGate()),
+        TestFirmwareFlasher.Create(),
         new MultiplexHub());
 
     private static DeviceManager BuildEmptyDeviceManager(IConfigStore store) => new(

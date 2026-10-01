@@ -28,13 +28,7 @@ public sealed class UpdateServiceDownloadTierTests
             source,
             new UpdateDownloader(new ThrowingHttpClientFactory()),
             store,
-            new FirmwareFlasher(
-                new BundledFirmwareCatalog(),
-                Array.Empty<IDfuFlashTarget>(),
-                new WinUsbDriverInstaller(),
-                new DfuUtil("dfu-util"),
-                new PluginProviderRegistry(),
-                new FlashGate()),
+            TestFirmwareFlasher.Create(),
             new MultiplexHub());
 
     [Fact]

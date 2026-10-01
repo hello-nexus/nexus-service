@@ -25,7 +25,7 @@ public sealed class FanHubHandler : IDeviceHandler
 
     public IReadOnlyList<UsbId> Identifiers { get; } = new[]
     {
-        new UsbId(HyteVid, 0x0A00), // IBP Mini Hub
+        new UsbId(HyteVid, MiniHubProtocol.ProductId), // IBP Mini Hub
         new UsbId(HyteVid, 0x0A04), // PWM Fan + ARGB Hub
     };
 
