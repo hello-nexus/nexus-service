@@ -1012,8 +1012,14 @@ public sealed class RgbBridge : IDisposable
                 _directModeApplied = new();
             }
             // A new daemon may number its controllers differently, so nothing
-            // is pushed until a refresh commits this daemon's own list.
+            // is pushed until a refresh commits this daemon's own list. A
+            // restarted daemon reuses ids from 0, so the committed id list is
+            // reset too or the poll would read the new list as unchanged.
             _physBuffers.Clear();
+            lock (_lock)
+            {
+                _committedAddresses = Array.Empty<int>();
+            }
         }
 
         await RefreshDevicesAsync().ConfigureAwait(false);

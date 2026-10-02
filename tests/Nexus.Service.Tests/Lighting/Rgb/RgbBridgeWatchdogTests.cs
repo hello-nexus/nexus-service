@@ -194,6 +194,23 @@ public class RgbBridgeWatchdogTests : IDisposable
     }
 
     [Fact]
+    public async Task A_restarted_daemon_reusing_the_same_ids_still_gets_its_push_buffers_back()
+    {
+        await ActivateAndSettleAsync();
+        Assert.Equal(1, _bridge.PhysicalBufferCount);
+
+        _controller.Fail = true;
+        Assert.True(await WaitUntilAsync(() => _controller.Count("disconnect") == 1, TimeSpan.FromSeconds(15)),
+            "watchdog did not bounce");
+        _controller.Fail = false;
+
+        // The new daemon lists the same controller id and this test never sends
+        // DETECTION_COMPLETE (a client that connects late misses it).
+        Assert.True(await WaitUntilAsync(() => _controller.Count("connect") >= 2 && _bridge.PhysicalBufferCount == 1, TimeSpan.FromSeconds(20)),
+            "push buffers never came back after the reconnect");
+    }
+
+    [Fact]
     public async Task Watchdog_ignores_failures_while_the_daemon_is_still_warming_up()
     {
         _bridge.DaemonUptimeProbe = () => TimeSpan.FromSeconds(5);
