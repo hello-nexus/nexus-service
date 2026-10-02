@@ -80,13 +80,21 @@ public static class TryxThumbnailCache
     /// at the timeout so a stalled encode can't block the caller (this runs on the request thread
     /// for the media list). Best-effort: false on any failure.</summary>
     public static bool ExtractFrameTo(string ffmpegPath, string source, string destJpg)
+        => RunFrameExtract(ffmpegPath,
+            $"-nostdin -hide_banner -loglevel error -y -i \"{source}\" -frames:v 1 -vf scale=320:-2 -q:v 4 \"{destJpg}\"",
+            destJpg);
+
+    /// <summary>Writes the frame at <paramref name="atSeconds"/> of <paramref name="source"/> at its
+    /// native size to <paramref name="dest"/> (format from the extension).</summary>
+    public static bool ExtractFullFrameTo(string ffmpegPath, string source, double atSeconds, string dest)
+        => RunFrameExtract(ffmpegPath,
+            $"-nostdin -hide_banner -loglevel error -y -ss {atSeconds.ToString("0.###", CultureInfo.InvariantCulture)} -i \"{source}\" -frames:v 1 \"{dest}\"",
+            dest);
+
+    private static bool RunFrameExtract(string ffmpegPath, string args, string dest)
     {
         try
         {
-            var args = $"-nostdin -hide_banner -loglevel error -y " +
-                       $"-i \"{source}\" " +
-                       $"-frames:v 1 -vf scale=320:-2 -q:v 4 " +
-                       $"\"{destJpg}\"";
             using var p = Process.Start(new ProcessStartInfo
             {
                 FileName = ffmpegPath,
@@ -106,7 +114,7 @@ public static class TryxThumbnailCache
             }
             outTask.GetAwaiter().GetResult();
             errTask.GetAwaiter().GetResult();
-            return File.Exists(destJpg);
+            return File.Exists(dest);
         }
         catch { return false; }
     }

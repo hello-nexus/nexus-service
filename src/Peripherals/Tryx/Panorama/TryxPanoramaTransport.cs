@@ -53,5 +53,10 @@ public interface ITryxPanoramaTransport : IDisposable
     /// not Ok on a panel error reply, null on timeout or when the transport cannot pull.</summary>
     TryxMediaList.FilePullChunk? PullFileChunk(string deviceFileName, long offset, int timeoutMs) => null;
 
+    /// <summary>Writes <paramref name="frame"/> and returns the first reply payload carrying top-level
+    /// field <paramref name="replyField"/>; null on timeout or when the transport has no reply channel.
+    /// Matching is by field only, so a late reply to an earlier timed-out request can answer this one.</summary>
+    byte[]? Request(ReadOnlySpan<byte> frame, int replyField, int timeoutMs) => null;
+
     private static readonly IReadOnlyDictionary<string, long> EmptyMediaFileSizes = new Dictionary<string, long>();
 }

@@ -21,6 +21,14 @@ public static class TryxMediaStore
         return File.Exists(Path(deviceFileName));
     }
 
+    /// <summary>Removes the stored copy of <paramref name="deviceFileName"/>, if any. Best-effort.</summary>
+    public static void Delete(string deviceFileName)
+    {
+        if (!TryxThumbnailCache.IsSafeDeviceName(deviceFileName)) return;
+        try { File.Delete(Path(deviceFileName)); }
+        catch { /* best effort */ }
+    }
+
     /// <summary>Copies <paramref name="sourcePath"/> into the store under <paramref name="deviceFileName"/>;
     /// overwrites any prior copy. No-op for unsafe names. Best-effort.</summary>
     public static void SaveCopy(string sourcePath, string deviceFileName)

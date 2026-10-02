@@ -21,7 +21,6 @@ public sealed class TryxCloudMaterial
     public int Id { get; init; }
     public string Name { get; init; } = "";
     public string CoverUrl { get; init; } = "";
-    public string InstallFileName { get; init; } = "";
 }
 
 /// <summary>
@@ -110,7 +109,6 @@ public sealed class TryxCloudCatalog
             Id = r.Id,
             Name = r.Name,
             CoverUrl = r.CoverFileUrl,
-            InstallFileName = InstallFileName(r.Id),
         }).ToList();
     }
 
@@ -143,48 +141,62 @@ public sealed class TryxCloudCatalog
         return url ?? throw new InvalidOperationException("Tryx cloud API returned no download URL.");
     }
 
-    public async Task<byte[]> GetPlainSm4KeyAsync(CancellationToken ct)
+    /// <summary>The material's SM4 key RSA-wrapped for the panel (base64), as the panel's decrypt
+    /// job takes it. This endpoint answers in the clear, not SM2-wrapped like the others.</summary>
+    public async Task<string> GetPanelWrappedSm4KeyAsync(CancellationToken ct)
     {
-        var hex = await SendAsync("/app-sm/get-sm4-key", "{}", TryxCloudJsonContext.Default.TryxCloudEnvelopeString, ct)
-            .ConfigureAwait(false);
-        return Convert.FromHexString(hex ?? throw new InvalidOperationException("Tryx cloud API returned no SM4 key."));
+        var body = (await PostAsync("/app-sm/rsa/get-sm4-key", "{}", ct).ConfigureAwait(false)).Trim();
+        if (body.StartsWith('{'))
+        {
+            using var doc = JsonDocument.Parse(body);
+            body = doc.RootElement.TryGetProperty("data", out var data) && data.ValueKind == JsonValueKind.String
+                ? data.GetString() ?? ""
+                : "";
+        }
+        else if (body.StartsWith('"'))
+        {
+            body = JsonSerializer.Deserialize(body, TryxCloudJsonContext.Default.String) ?? "";
+        }
+        if (body.Length == 0) throw new InvalidOperationException("Tryx cloud API returned no wrapped SM4 key.");
+        return body;
     }
 
-    /// <summary>Downloads the SM4-encrypted asset and decrypts it to <paramref name="destPath"/>
-    /// as a raw H.264 Annex-B stream. Returns the install file name the panel protocol expects.
-    /// Wire format (decoded live): the asset is a 16-byte IV followed by SM4-CBC ciphertext of
-    /// the H.264, keyed by /app-sm/get-sm4-key; PKCS7-padded.</summary>
-    public async Task<string> DownloadAndDecryptAsync(int id, string destPath, CancellationToken ct)
+    /// <summary>Downloads the material still encrypted ([16-byte IV] + SM4-CBC) to
+    /// <paramref name="destPath"/> and returns its panel file name, which Kanali derives from the
+    /// download URL's extension.</summary>
+    public async Task<string> DownloadEncryptedAsync(int id, string destPath, CancellationToken ct)
     {
         var url = await GetDownloadUrlAsync(id, ct).ConfigureAwait(false);
-        var key = await GetPlainSm4KeyAsync(ct).ConfigureAwait(false);
-
-        using var resp = await Http.GetAsync(url, ct).ConfigureAwait(false);
+        using var resp = await Http.GetAsync(url, HttpCompletionOption.ResponseHeadersRead, ct).ConfigureAwait(false);
         resp.EnsureSuccessStatusCode();
-        var encrypted = await resp.Content.ReadAsByteArrayAsync(ct).ConfigureAwait(false);
-        if (encrypted.Length <= 16)
+        await using (var src = await resp.Content.ReadAsStreamAsync(ct).ConfigureAwait(false))
+        await using (var dst = File.Create(destPath))
         {
-            throw new InvalidOperationException("Tryx cloud asset too small to contain an IV.");
+            await src.CopyToAsync(dst, ct).ConfigureAwait(false);
         }
-
-        var iv = encrypted[..16];
-        var body = encrypted[16..];
-        var plain = Sm4.DecryptCbc(key, iv, body);
-        await File.WriteAllBytesAsync(destPath, plain, ct).ConfigureAwait(false);
-
-        return InstallFileName(id);
+        return DownloadFileName(id, url);
     }
 
-    private static string InstallFileName(int id) => $"download_{id}.mp4.h264_2240x1080";
+    /// <summary>Kanali's name for a downloaded material: download_&lt;id&gt;.&lt;type&gt;.h264_&lt;W&gt;x&lt;H&gt;,
+    /// type from the URL path's extension (.mp4/.avi -> mp4, .gif, .png, .jpg/.jpeg -> jpg, else mp4).</summary>
+    internal static string DownloadFileName(int id, string url)
+    {
+        var path = url.Split('?')[0];
+        var type = Path.GetExtension(path).ToLowerInvariant() switch
+        {
+            ".gif" => "gif",
+            ".png" => "png",
+            ".jpg" or ".jpeg" => "jpg",
+            _ => "mp4",
+        };
+        return $"download_{id}.{type}.h264_2240x1080";
+    }
 
     // ── SM2-wrapped request/response envelope ───────────────────────────────
 
-    private static async Task<TOut?> SendAsync<TOut>(
-        string path, string plaintextJson, JsonTypeInfo<TryxCloudEnvelope<TOut>> envelopeInfo, CancellationToken ct)
+    // POSTs the SM2-encrypted request and returns the raw response body.
+    private static async Task<string> PostAsync(string path, string plaintextJson, CancellationToken ct)
     {
-        // The server's SM2 gateway wants the ciphertext hex as the RAW request body, not a
-        // JSON-quoted string (Kanali's bundled axios sends the string as-is; a quoted body is
-        // rejected with a 500). The 200 response is likewise raw hex, not a JSON scalar.
         var cipherHex = "04" + Sm2.Encrypt(plaintextJson, RequestPublicKeyHex);
 
         using var content = new StringContent(cipherHex, Encoding.UTF8, "application/json");
@@ -196,6 +208,16 @@ public sealed class TryxCloudCatalog
             Platform.ServiceLog.Warn($"[tryx] cloud {path} -> {(int)resp.StatusCode}; body={bodyHead}");
             resp.EnsureSuccessStatusCode();
         }
+        return responseBody;
+    }
+
+    private static async Task<TOut?> SendAsync<TOut>(
+        string path, string plaintextJson, JsonTypeInfo<TryxCloudEnvelope<TOut>> envelopeInfo, CancellationToken ct)
+    {
+        // The server's SM2 gateway wants the ciphertext hex as the RAW request body, not a
+        // JSON-quoted string (Kanali's bundled axios sends the string as-is; a quoted body is
+        // rejected with a 500). The 200 response is likewise raw hex, not a JSON scalar.
+        var responseBody = await PostAsync(path, plaintextJson, ct).ConfigureAwait(false);
         // Tolerate a quoted or unquoted hex response.
         var responseHex = responseBody.Trim().Trim('"');
         if (string.IsNullOrEmpty(responseHex))

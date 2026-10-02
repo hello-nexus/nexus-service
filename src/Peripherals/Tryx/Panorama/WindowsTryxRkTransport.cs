@@ -40,6 +40,7 @@ public sealed class WindowsTryxRkTransport : ITryxPanoramaTransport
     private readonly TryxRkFrameReader _frames = new();
     private long _pullSession;
     private volatile PendingPull? _pendingPull;
+    private volatile PendingReply? _pendingReply;
     private static readonly IReadOnlyDictionary<string, long> EmptyMediaFileSizes = new Dictionary<string, long>();
 
     public WindowsTryxRkTransport(string devicePath, string serial)
@@ -163,6 +164,28 @@ public sealed class WindowsTryxRkTransport : ITryxPanoramaTransport
         }
     }
 
+    private sealed class PendingReply(int field)
+    {
+        public int Field { get; } = field;
+        public TaskCompletionSource<byte[]> Result { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+    }
+
+    // One request in flight at a time: the hub issues requests under its send gate.
+    public byte[]? Request(ReadOnlySpan<byte> frame, int replyField, int timeoutMs)
+    {
+        var pending = new PendingReply(replyField);
+        _pendingReply = pending;
+        try
+        {
+            Write(frame);
+            return pending.Result.Task.Wait(timeoutMs) ? pending.Result.Task.Result : null;
+        }
+        finally
+        {
+            _pendingReply = null;
+        }
+    }
+
     // Continuously drain the panel's IN endpoint so its pipe never backs up. A read
     // error means the interface reset or the handle closed - stop, and the next
     // write failing lets the hub rebuild the transport (with a fresh drain loop).
@@ -206,6 +229,12 @@ public sealed class WindowsTryxRkTransport : ITryxPanoramaTransport
 
     private void HandlePayload(ReadOnlySpan<byte> span)
     {
+        var reply = _pendingReply;
+        if (reply is not null && TryxMediaList.HasLenField(span, reply.Field))
+        {
+            reply.Result.TrySetResult(span.ToArray());
+            return;
+        }
         var pending = _pendingPull;
         if (pending is not null)
         {

@@ -55,6 +55,26 @@ public class TryxPanoramaHubTests
             TryxRkProtocol.UnmaskPulledData(data, offset);
             return new TryxMediaList.FilePullChunk(true, 0, offset, file.Length, data);
         }
+        // Stands in for the panel's decrypt job: accepts it as session 1, then reports this status.
+        public (int Job, int Decrypt) DecryptResult { get; set; } = (0, 0);
+        // Simulates the panel re-enumerating right after it accepts the decrypt job.
+        public bool DropAfterDecryptStart { get; set; }
+        public byte[]? Request(ReadOnlySpan<byte> frame, int replyField, int timeoutMs)
+        {
+            Writes.Add(frame.ToArray());
+            if (replyField == 803 && DropAfterDecryptStart) IsOpen = false;
+            return replyField switch
+            {
+                803 => Reply(803, [0x10, 0x01]),
+                804 => Reply(804, [0x08, (byte)DecryptResult.Job, 0x10, 0x64, 0x18, (byte)DecryptResult.Decrypt]),
+                _ => null,
+            };
+        }
+        private static byte[] Reply(int field, byte[] body)
+        {
+            var tag = (field << 3) | 2;
+            return [(byte)((tag & 0x7F) | 0x80), (byte)(tag >> 7), (byte)body.Length, .. body];
+        }
         public void Write(ReadOnlySpan<byte> data)
         {
             Writes.Add(data.ToArray());
@@ -211,7 +231,10 @@ public class TryxPanoramaHubTests
             transportFactory ?? (_ => new RecordingTransport()),
             sensors ?? new StubSensors(),
             fps ?? new FakeFpsProvider(),
-            configStore ?? new InMemoryConfigStore());
+            configStore ?? new InMemoryConfigStore())
+        {
+            DecryptPollInterval = TimeSpan.Zero,
+        };
     }
 
     // ── Task 1: Persistence ──
@@ -840,7 +863,7 @@ public class TryxPanoramaHubTests
         var path = WriteTempFile(100);
         try
         {
-            Assert.True(await hub.InstallLocalMediaAsync(path, "download_7", CancellationToken.None));
+            Assert.True(await hub.InstallEncryptedPresetAsync(path, "download_7", "key", CancellationToken.None));
             recording.Writes.Clear();
 
             hub.SendHeartbeatTick();
@@ -1147,7 +1170,7 @@ public class TryxPanoramaHubTests
             0, 0, 0, 1, 0x41, 0x9A, 0x44,
             .. new byte[200],
         ];
-        var file = TryxRkProtocol.WrapMediaContainer(es, fps: 30, width: 2240, height: 1080, frameCount: 300, id: 1);
+        var file = TryxRkProtocol.WrapMediaContainer(es, fps: 30, width: 2240, height: 1080, frameCount: 300, magic: 1);
         var recording = new RecordingTransport { PullChunkSize = 16 };
         recording.PanelFiles["clip.mp4.h264_2240x1080"] = file;
         var hub = BuildHub(discovery: new StubDiscovery(), transportFactory: _ => recording);
@@ -1231,7 +1254,7 @@ public class TryxPanoramaHubTests
         var path = WriteTempFile(500);
         try
         {
-            var ok = await hub.InstallLocalMediaAsync(path, "custom.mp4.h264_2240x1080", CancellationToken.None);
+            var ok = await hub.InstallEncryptedPresetAsync(path, "custom.mp4.h264_2240x1080", "key", CancellationToken.None);
 
             Assert.True(ok);
             Assert.Equal(500, hub.MediaUsedBytes);
@@ -1260,7 +1283,7 @@ public class TryxPanoramaHubTests
     }
 
     [Fact]
-    public async Task InstallLocalMediaAsync_rejects_a_transfer_that_would_exceed_capacity_with_padding()
+    public async Task InstallEncryptedPresetAsync_rejects_a_transfer_that_would_exceed_capacity_with_padding()
     {
         var baseline = TryxPanoramaHub.MediaCapacityBytes - TryxPanoramaHub.MediaCapacityPaddingBytes - 100;
         var recording = new RecordingTransport
@@ -1274,7 +1297,7 @@ public class TryxPanoramaHubTests
         var path = WriteTempFile(200);
         try
         {
-            var ok = await hub.InstallLocalMediaAsync(path, "new.mp4.h264_2240x1080", CancellationToken.None);
+            var ok = await hub.InstallEncryptedPresetAsync(path, "new.mp4.h264_2240x1080", "key", CancellationToken.None);
 
             Assert.False(ok);
             Assert.Equal(baseline, hub.MediaUsedBytes);
@@ -1286,7 +1309,7 @@ public class TryxPanoramaHubTests
     }
 
     [Fact]
-    public async Task InstallLocalMediaAsync_accepts_a_transfer_that_fits_within_capacity_with_padding()
+    public async Task InstallEncryptedPresetAsync_accepts_a_transfer_that_fits_within_capacity_with_padding()
     {
         var baseline = TryxPanoramaHub.MediaCapacityBytes - TryxPanoramaHub.MediaCapacityPaddingBytes - 100;
         var recording = new RecordingTransport
@@ -1300,10 +1323,73 @@ public class TryxPanoramaHubTests
         var path = WriteTempFile(50);
         try
         {
-            var ok = await hub.InstallLocalMediaAsync(path, "new.mp4.h264_2240x1080", CancellationToken.None);
+            var ok = await hub.InstallEncryptedPresetAsync(path, "new.mp4.h264_2240x1080", "key", CancellationToken.None);
 
             Assert.True(ok);
             Assert.Equal(baseline + 50, hub.MediaUsedBytes);
+        }
+        finally
+        {
+            File.Delete(path);
+        }
+    }
+
+    [Fact]
+    public async Task InstallEncryptedPresetAsync_sends_a_tmp_file_then_runs_the_panels_decrypt_job()
+    {
+        var recording = new RecordingTransport();
+        var hub = BuildHub(discovery: new StubDiscovery(), transportFactory: _ => recording);
+        hub.EnsureConnected();
+
+        var path = WriteTempFile(100);
+        try
+        {
+            Assert.True(await hub.InstallEncryptedPresetAsync(path, "download_86.mp4.h264_2240x1080", "S0VZ", CancellationToken.None));
+
+            var commit = recording.Writes.FindIndex(w => TryxMediaList.HasLenField(w.AsSpan(8), 402) && Encoding.ASCII.GetString(w).EndsWith("tmp"));
+            var start = recording.Writes.FindIndex(w => TryxMediaList.HasLenField(w.AsSpan(8), 404));
+            var query = recording.Writes.FindIndex(w => TryxMediaList.HasLenField(w.AsSpan(8), 405));
+            Assert.True(commit >= 0 && commit < start && start < query);
+            Assert.Equal("download_86.mp4.h264_2240x1080", hub.State.CurrentMedia);
+            Assert.False(hub.State.CurrentMediaIsCustom);
+        }
+        finally
+        {
+            File.Delete(path);
+        }
+    }
+
+    [Fact]
+    public async Task InstallEncryptedPresetAsync_fails_when_the_panel_cannot_decrypt()
+    {
+        var recording = new RecordingTransport { DecryptResult = (0, 3) };
+        var hub = BuildHub(discovery: new StubDiscovery(), transportFactory: _ => recording);
+        hub.EnsureConnected();
+
+        var path = WriteTempFile(100);
+        try
+        {
+            Assert.False(await hub.InstallEncryptedPresetAsync(path, "download_86.mp4.h264_2240x1080", "S0VZ", CancellationToken.None));
+            Assert.NotEqual("download_86.mp4.h264_2240x1080", hub.State.CurrentMedia);
+        }
+        finally
+        {
+            File.Delete(path);
+        }
+    }
+
+    [Fact]
+    public async Task InstallEncryptedPresetAsync_fails_when_the_panel_drops_mid_job()
+    {
+        var recording = new RecordingTransport { DropAfterDecryptStart = true };
+        var hub = BuildHub(discovery: new StubDiscovery(), transportFactory: _ => recording);
+        hub.EnsureConnected();
+
+        var path = WriteTempFile(100);
+        try
+        {
+            Assert.False(await hub.InstallEncryptedPresetAsync(path, "download_86.mp4.h264_2240x1080", "S0VZ", CancellationToken.None));
+            Assert.DoesNotContain(recording.Writes, w => TryxMediaList.HasLenField(w.AsSpan(8), 405));
         }
         finally
         {

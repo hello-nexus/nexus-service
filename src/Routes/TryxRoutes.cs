@@ -394,6 +394,12 @@ public static class TryxRoutes
                 return Results.File(TryxMediaStore.Path(name), "video/mp4", enableRangeProcessing: true);
             }
 
+            // RK firmware media Nexus did not upload: Kanali's own copy of the clip.
+            if (TryxKanaliData.VideoPath(name) is { } kanaliClip)
+            {
+                return Results.File(kanaliClip, "video/mp4", enableRangeProcessing: true);
+            }
+
             if (!hub.IsConnected || string.IsNullOrEmpty(hub.State.AdbSerial))
             {
                 return Results.NotFound();
@@ -450,7 +456,7 @@ public static class TryxRoutes
                 {
                     await file.CopyToAsync(s);
                 }
-                var (ok, msg) = await hub.ImportAndPlayVideoAsync(tempInput, file.FileName, crop, targetW, targetH, ctx.RequestAborted);
+                var (ok, msg) = await hub.ImportAndPlayVideoAsync(tempInput, crop, targetW, targetH, ctx.RequestAborted);
                 if (!ok)
                 {
                     return Results.Json(
@@ -657,7 +663,11 @@ public static class TryxRoutes
             // file_remove command. RemoveDeviceMedia updates the used-bytes accounting on
             // success; drop the local thumbnail/duration record only if the panel accepted it.
             var removed = hub.RemoveDeviceMedia(name);
-            if (removed) TryxThumbnailCache.Delete(name);
+            if (removed)
+            {
+                TryxThumbnailCache.Delete(name);
+                TryxMediaStore.Delete(name);
+            }
             return new TryxAckResponse { Ok = removed, Msg = removed ? null : "panel remove failed" };
         }
         var adbPath = AdbLocator.ResolveAdbPath();
@@ -685,6 +695,7 @@ public static class TryxRoutes
             if (p.ExitCode == 0)
             {
                 TryxThumbnailCache.Delete(name);
+                TryxMediaStore.Delete(name);
                 hub.RecordMediaDeleted(name);
             }
             return new TryxAckResponse { Ok = p.ExitCode == 0 };

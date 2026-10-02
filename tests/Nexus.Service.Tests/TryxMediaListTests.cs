@@ -201,6 +201,38 @@ public class TryxMediaListTests
         Assert.Null(TryxMediaList.ParseErrorCode(success));
     }
 
+    [Fact]
+    public void ParseDecryptJobStartStatus_reads_an_accepted_job_whose_status_is_omitted()
+    {
+        // file_decrypt_job_start_status (803) { session_id = 1 }; Accepted = 0 is not on the wire.
+        var reply = Convert.FromHexString("0a020801" + "9a32021001");
+
+        Assert.Equal(new TryxMediaList.DecryptJobStart(0, 1), TryxMediaList.ParseDecryptJobStartStatus(reply));
+    }
+
+    [Fact]
+    public void ParseDecryptJobStatus_reads_a_finished_job_as_all_defaults_but_progress()
+    {
+        // file_decrypt_job_status (804) { progress = 100 }: Finished and DecryptSuccess are 0.
+        var reply = Convert.FromHexString("0a020801" + "a232021064");
+
+        Assert.Equal(new TryxMediaList.DecryptJobStatus(0, 100, 0), TryxMediaList.ParseDecryptJobStatus(reply));
+    }
+
+    [Fact]
+    public void ParseDecryptJobStatus_reads_a_failed_decrypt()
+    {
+        var reply = Convert.FromHexString("a232040802" + "1803");
+
+        Assert.Equal(new TryxMediaList.DecryptJobStatus(2, 0, 3), TryxMediaList.ParseDecryptJobStatus(reply));
+    }
+
+    [Fact]
+    public void ParseDecryptJobStatus_ignores_other_replies()
+    {
+        Assert.Null(TryxMediaList.ParseDecryptJobStatus(Convert.FromHexString("0a020801")));
+    }
+
     private static byte[] BuildMediaListBlob(params (string path, long size)[] files)
     {
         var entries = new List<byte>();
