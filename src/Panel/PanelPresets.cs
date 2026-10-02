@@ -49,6 +49,7 @@ public static class PanelPresets
         to.BackgroundMediaFinishVideos = from.BackgroundMediaFinishVideos;
         to.BackgroundMediaOrder = from.BackgroundMediaOrder is null ? null : new List<string>(from.BackgroundMediaOrder);
         to.BackgroundFrostLevel = from.BackgroundFrostLevel;
+        to.ImmersiveBackdrop = from.ImmersiveBackdrop;
         to.GaugeGradient = from.GaugeGradient?.Select(s => new PanelGaugeGradientStop { At = s.At, Color = s.Color }).ToList();
         to.WidgetOpacity = from.WidgetOpacity;
         to.WidgetLabels = from.WidgetLabels;

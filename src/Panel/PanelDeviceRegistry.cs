@@ -563,6 +563,8 @@ public sealed class PanelDeviceRegistry
                 record.BackgroundMediaOrder = new List<string>(patch.BackgroundMediaOrder);
             if (patch.BackgroundFrostLevel.HasValue)
                 record.BackgroundFrostLevel = patch.BackgroundFrostLevel.Value;
+            if (patch.ImmersiveBackdrop.HasValue)
+                record.ImmersiveBackdrop = patch.ImmersiveBackdrop.Value;
             if (patch.GaugeGradient is not null)
                 record.GaugeGradient = CloneGaugeGradient(patch.GaugeGradient);
             if (patch.WidgetOpacity.HasValue)
@@ -665,6 +667,7 @@ public sealed class PanelDeviceRegistry
             record.BackgroundMediaFinishVideos = null;
             record.BackgroundMediaOrder = null;
             record.BackgroundFrostLevel = null;
+            record.ImmersiveBackdrop = null;
             record.GaugeGradient = null;
             record.WidgetOpacity = null;
             record.WidgetLabels = null;
@@ -970,6 +973,7 @@ public sealed class PanelDeviceRegistry
             BackgroundMediaFinishVideos = r.BackgroundMediaFinishVideos,
             BackgroundMediaOrder = r.BackgroundMediaOrder is null ? null : new List<string>(r.BackgroundMediaOrder),
             BackgroundFrostLevel = r.BackgroundFrostLevel,
+            ImmersiveBackdrop = r.ImmersiveBackdrop,
             GaugeGradient = r.GaugeGradient is null ? null : CloneGaugeGradient(r.GaugeGradient),
             WidgetOpacity = r.WidgetOpacity,
             WidgetLabels = r.WidgetLabels,

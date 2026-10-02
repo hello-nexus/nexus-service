@@ -21333,6 +21333,12 @@
             ],
             "format": "double"
           },
+          "immersiveBackdrop": {
+            "type": [
+              "null",
+              "boolean"
+            ]
+          },
           "gaugeGradient": {
             "type": [
               "null",
