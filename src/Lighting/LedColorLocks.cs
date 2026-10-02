@@ -28,19 +28,21 @@ public sealed class LedColorLockTracker
         store.OnChanged += Hydrate;
     }
 
+    // Reads under _lock so it cannot interleave with Set's persist. Lock order
+    // is always _lock then the store's; the store raises OnChanged after
+    // releasing its own.
     private void Hydrate()
     {
         var store = _store;
         if (store is null) return;
-        var stored = store.Load().Lighting.LedColorLocks;
-        var rebuilt = new Dictionary<string, LockedLed[]>(StringComparer.Ordinal);
-        foreach (var (id, leds) in stored)
-        {
-            var list = Build(leds);
-            if (list.Length > 0) rebuilt[id] = list;
-        }
         lock (_lock)
         {
+            var rebuilt = new Dictionary<string, LockedLed[]>(StringComparer.Ordinal);
+            foreach (var (id, leds) in store.Load().Lighting.LedColorLocks)
+            {
+                var list = Build(leds);
+                if (list.Length > 0) rebuilt[id] = list;
+            }
             if (SameAs(rebuilt)) return;
             Volatile.Write(ref _locks, rebuilt);
         }
@@ -110,13 +112,13 @@ public sealed class LedColorLockTracker
             if (built.Length > 0) next[id] = built;
             else next.Remove(id);
             Volatile.Write(ref _locks, next);
+            // Under the lock, so concurrent Sets persist in the order they swapped.
+            _store?.Update(s =>
+            {
+                if (leds.Count > 0) s.Lighting.LedColorLocks[id] = leds;
+                else s.Lighting.LedColorLocks.Remove(id);
+            });
         }
-        // Outside the lock: the store raises OnChanged, which re-enters Hydrate.
-        _store?.Update(s =>
-        {
-            if (leds.Count > 0) s.Lighting.LedColorLocks[id] = leds;
-            else s.Lighting.LedColorLocks.Remove(id);
-        });
         return true;
     }
 
@@ -130,8 +132,8 @@ public sealed class LedColorLockTracker
             var next = new Dictionary<string, LockedLed[]>(_locks, StringComparer.Ordinal);
             next.Remove(id);
             Volatile.Write(ref _locks, next);
+            _store?.Update(s => s.Lighting.LedColorLocks.Remove(id));
         }
-        _store?.Update(s => s.Lighting.LedColorLocks.Remove(id));
     }
 
     private static string Normalize(string color) => color[0] == '#' ? color.ToLowerInvariant() : "#" + color.ToLowerInvariant();

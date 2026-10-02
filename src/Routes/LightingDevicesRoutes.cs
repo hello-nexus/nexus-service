@@ -1149,7 +1149,7 @@ public static partial class DevicesRoutes
         app.MapPost("/devices/lighting-devices/{id}/led-colors", (string id, SetLedColorsBody body,
             [Microsoft.AspNetCore.Mvc.FromServices] Nexus.Service.Lighting.LedColorLockTracker locks) =>
         {
-            if (!locks.Set(id, body.Indices, body.Color))
+            if (!locks.Set(id, body.Indices ?? [], body.Color))
             {
                 return Results.BadRequest(ApiResponse.Fail("color must be #rrggbb or empty"));
             }

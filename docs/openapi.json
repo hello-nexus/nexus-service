@@ -23441,7 +23441,10 @@
         "type": "object",
         "properties": {
           "indices": {
-            "type": "array",
+            "type": [
+              "null",
+              "array"
+            ],
             "items": {
               "pattern": "^-?(?:0|[1-9]\\d*)$",
               "type": [

@@ -80,6 +80,20 @@ public class LedColorLockTests
     }
 
     [Fact]
+    public async Task Under_an_editor_highlight_only_highlighted_leds_show_their_lock()
+    {
+        var locks = new LedColorLockTracker();
+        locks.Set(Id, new[] { 0, 1 }, "#ff0000");
+        var device = MakeDevice();
+        device.HighlightLeds = new HashSet<int> { 0 };
+
+        var leds = await RenderOnce(device, locks);
+
+        Assert.Equal(new byte[] { 255, 0, 0 }, leds[0..3]);
+        Assert.Equal(new byte[] { 0, 0, 0 }, leds[3..6]);
+    }
+
+    [Fact]
     public void An_empty_color_unlocks_and_a_bad_one_is_refused()
     {
         var locks = new LedColorLockTracker();

@@ -1113,8 +1113,8 @@ public sealed class LightingEngine : IDisposable
 
     /// <summary>
     /// Paints locked LEDs over whatever the frame already holds. Skips a device
-    /// under a test pattern, which exists to show the raw mapping, and LEDs the
-    /// map marks disabled.
+    /// under a test pattern and LEDs the map marks disabled; under an editor
+    /// highlight only the highlighted LEDs show their lock.
     /// </summary>
     private void ApplyLedColorLocks(DeviceFrame[] devices)
     {
@@ -1124,11 +1124,13 @@ public sealed class LightingEngine : IDisposable
         {
             if (dev.TestPattern is not null || !tracker.TryGet(dev.Id, out var leds)) continue;
             var disabled = dev.LedDisabled;
+            var highlights = dev.HighlightLeds is { Count: > 0 } h ? h : null;
             var count = dev.PreviewLedCount is { } pc ? Math.Min(pc, dev.LedCount) : dev.LedCount;
             foreach (var led in leds)
             {
                 if (led.Index >= count) break;
                 if (disabled is not null && led.Index < disabled.Length && disabled[led.Index]) continue;
+                if (highlights is not null && !highlights.Contains(led.Index)) continue;
                 dev.SetLed(led.Index, led.R, led.G, led.B);
             }
         }
