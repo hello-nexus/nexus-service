@@ -134,6 +134,55 @@ public class JpegPanelHubTests
         Assert.False(JpegPanelModel.CorsairXc7.SupportsBrightness);
     }
 
+    [Fact]
+    public void Galahad_pump_zone_effect_is_padded_to_the_control_report_size()
+    {
+        using var hub = new JpegPanelHub(Dimmable());
+        var device = new RecordingHidDevice();
+        hub.Attach(device);
+        device.Writes.Clear();
+
+        Assert.True(hub.SendLighting(2, 0x03, 4, 2, 0, new byte[] { 0xFF, 0x00, 0x00 }));
+
+        var report = Assert.Single(device.Writes);
+        Assert.Equal(1024, report.Length);
+        Assert.Equal(0x01, report[0]);
+        Assert.Equal(0x83, report[1]);
+        Assert.Equal(19, report[5]);
+        Assert.Equal(2, report[6]);
+        Assert.Equal(0xFF, report[10]);
+    }
+
+    [Fact]
+    public void Galahad_pump_per_led_report_is_sent_as_a_padded_1024_byte_write()
+    {
+        using var hub = new JpegPanelHub(Dimmable());
+        var device = new RecordingHidDevice();
+        hub.Attach(device);
+        device.Writes.Clear();
+
+        Assert.True(hub.SendPumpPerLed(new byte[36]));
+
+        var report = Assert.Single(device.Writes);
+        Assert.Equal(1024, report.Length);
+        Assert.Equal(0x02, report[0]);
+        Assert.Equal(0x14, report[1]);
+        Assert.Equal(new byte[] { 0x00, 0x00, 0x00, 0x3D }, report[2..6]);
+        Assert.Equal(0x00, report[11]);
+    }
+
+    [Fact]
+    public void Non_galahad_panel_hub_does_not_send_pump_reports()
+    {
+        using var hub = new JpegPanelHub(JpegPanelModel.CorsairXc7);
+        var device = new RecordingHidDevice();
+        hub.Attach(device);
+
+        Assert.False(hub.SendLighting(2, 0x03, 4, 2, 0, new byte[] { 0xFF, 0x00, 0x00 }));
+        Assert.False(hub.SendPumpPerLed(new byte[36]));
+        Assert.Empty(device.Writes);
+    }
+
     // The model table's handshakes are process-wide singletons, so a test that sets a
     // backlight takes its own instance rather than leaving one dimmed for the whole suite.
     private static JpegPanelModel Dimmable() =>

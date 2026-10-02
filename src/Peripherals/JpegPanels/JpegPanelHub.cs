@@ -1,5 +1,6 @@
 using System;
 using Nexus.Service.Peripherals.Hid;
+using Nexus.Service.Peripherals.Galahad2;
 using Nexus.Service.Platform;
 
 namespace Nexus.Service.Peripherals.JpegPanels;
@@ -13,7 +14,7 @@ namespace Nexus.Service.Peripherals.JpegPanels;
 /// acknowledgement to wait for on any of these devices, so a failed write is the only
 /// error signal - which is why every write result is checked.
 /// </summary>
-public sealed class JpegPanelHub : IDisposable
+public sealed class JpegPanelHub : IDisposable, Nexus.Service.Peripherals.Galahad2.IGalahad2PumpTransport
 {
     private readonly object _lock = new();
     private readonly JpegPanelModel _model;
@@ -25,6 +26,8 @@ public sealed class JpegPanelHub : IDisposable
     private IHidDevice? _device;
     private volatile bool _attached;
     private bool _disposed;
+
+    public event Action? StateChanged;
 
     public JpegPanelHub(JpegPanelModel model)
     {
@@ -48,6 +51,7 @@ public sealed class JpegPanelHub : IDisposable
     /// </summary>
     public bool Attach(IHidDevice device)
     {
+        bool attached;
         lock (_lock)
         {
             _device?.Dispose();
@@ -76,8 +80,10 @@ public sealed class JpegPanelHub : IDisposable
             }
 
             _attached = true;
-            return true;
+            attached = true;
         }
+        NotifyStateChanged();
+        return attached;
     }
 
     public void Detach()
@@ -100,6 +106,7 @@ public sealed class JpegPanelHub : IDisposable
             _device?.Dispose();
             _device = null;
         }
+        NotifyStateChanged();
     }
 
     /// <summary>
@@ -172,6 +179,48 @@ public sealed class JpegPanelHub : IDisposable
         }
     }
 
+    /// <summary>
+    /// Sends the Galahad II LCD pump's zone/effect command through the same handle as the
+    /// panel stream (IGalahad2PumpTransport). Keeping this on the panel hub prevents a
+    /// second owner from interleaving control and frame reports on the shared HID interface.
+    /// </summary>
+    public bool SendLighting(byte ring, byte mode, byte brightness, byte speed, byte direction, ReadOnlySpan<byte> colors)
+    {
+        if (!IsGalahad2Lcd)
+        {
+            return false;
+        }
+        var packet = Galahad2Protocol.EncodeLighting(ring, mode, brightness, speed, direction, colors);
+        lock (_lock)
+        {
+            if (_device == null || !_attached)
+            {
+                return false;
+            }
+            _report.AsSpan().Clear();
+            packet.AsSpan().CopyTo(_report);
+            return _device.Write(_report);
+        }
+    }
+
+    /// <summary>Sends the Galahad II LCD pump's 12-LED-ring report (SignalRGB plugin sourced; see Galahad2Protocol.EncodePumpPerLed).</summary>
+    public bool SendPumpPerLed(ReadOnlySpan<byte> colors)
+    {
+        if (!IsGalahad2Lcd)
+        {
+            return false;
+        }
+        lock (_lock)
+        {
+            if (_device == null || !_attached)
+            {
+                return false;
+            }
+            Galahad2Protocol.EncodePumpPerLed(colors, _report);
+            return _device.Write(_report);
+        }
+    }
+
     private bool WriteRawLocked(ReadOnlySpan<byte> payload)
     {
         if (_device == null)
@@ -183,6 +232,14 @@ public sealed class JpegPanelHub : IDisposable
         _report.AsSpan().Clear();
         payload.CopyTo(_report);
         return _device.Write(_report);
+    }
+
+    private bool IsGalahad2Lcd =>
+        string.Equals(_model.HandlerId, JpegPanelModel.GalahadIiLcd.HandlerId, StringComparison.Ordinal);
+
+    private void NotifyStateChanged()
+    {
+        try { StateChanged?.Invoke(); } catch { }
     }
 
     public void Dispose()
@@ -198,5 +255,6 @@ public sealed class JpegPanelHub : IDisposable
             _device?.Dispose();
             _device = null;
         }
+        NotifyStateChanged();
     }
 }

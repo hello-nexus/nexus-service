@@ -9,6 +9,12 @@ internal static class Galahad2Protocol
     public const int VendorId = 0x0416;
     public const int ProductIdPerformance = 0x7371;
     public const int ProductIdRegular = 0x7373;
+    public const int ProductIdLcd = 0x7395;
+
+    // The LCD variant's pump is one 12-LED ring (not the wired Trinity's separate
+    // inner/outer rings) - confirmed against SignalRGB's Lian_Li_Galahad_II_LCD.js.
+    public const int PumpLedCount = 12;
+    public const int PerLedReportLength = 1024;
 
     // Pump duty floored to keep coolant circulating; never command below this.
     public const int PumpDutyFloor = 50;
@@ -56,6 +62,45 @@ internal static class Galahad2Protocol
         }
         payload[16] = direction;
         return CommandPacket.Build(CmdRgbControl, payload);
+    }
+
+    private const byte CmdPerLed = 0x14;
+
+    // Layout from SignalRGB's Lian_Li_Galahad_II_LCD.js (WhirlwindFX plugin): sendLargePacket
+    // header (report 0x02, command, BE32 total length, 24-bit sequence, BE16 packet length),
+    // then setPumpPerLED's payload - a zone byte, a 24-byte zero prefix (the first 8 of the
+    // array's 12 RGB slots are never written), then the 12 LEDs in reverse (vPumpLeds =
+    // [11..0]) order, R,G,B each.
+    public static void EncodePumpPerLed(ReadOnlySpan<byte> colors, Span<byte> destination)
+    {
+        destination[..PerLedReportLength].Clear();
+        destination[0] = 0x02;
+        destination[1] = CmdPerLed;
+        const int packetLength = 1 + 24 + PumpLedCount * 3; // zone byte + 24-byte prefix + 12 LEDs
+        destination[2] = (byte)((packetLength >> 24) & 0xFF);
+        destination[3] = (byte)((packetLength >> 16) & 0xFF);
+        destination[4] = (byte)((packetLength >> 8) & 0xFF);
+        destination[5] = (byte)(packetLength & 0xFF);
+        // bytes 6..8 are the 24-bit sequence; a single packet is always sequence 0.
+        destination[9] = (byte)((packetLength >> 8) & 0xFF);
+        destination[10] = (byte)(packetLength & 0xFF);
+
+        // data[0] is the zone byte (0 = pump). data[1..24] is the unwritten prefix.
+        destination[11] = 0x00;
+        var colorBytes = Math.Min(colors.Length, PumpLedCount * 3);
+        for (var position = 0; position < PumpLedCount; position++)
+        {
+            var source = position * 3;
+            var wireLed = PumpLedCount - 1 - position;
+            var target = 11 + 1 + 24 + wireLed * 3;
+            if (source + 2 >= colorBytes)
+            {
+                continue;
+            }
+            destination[target] = colors[source];
+            destination[target + 1] = colors[source + 1];
+            destination[target + 2] = colors[source + 2];
+        }
     }
 
     // Reply payload (4 bytes): [fanRpm_hi, fanRpm_lo, pumpRpm_hi, pumpRpm_lo] (BE16 each).

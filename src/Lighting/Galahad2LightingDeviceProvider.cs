@@ -18,18 +18,32 @@ public sealed class Galahad2LightingDeviceProvider :
     internal const int OuterSegment = 1;
 
     private readonly Galahad2Hub _hub;
+    private readonly IGalahad2PumpTransport? _lcdTransport;
     private readonly IConfigStore _store;
     private string _lastSignature = "";
 
     private readonly Dictionary<string, DeviceFrame> _frameCache = new();
 
-    public Galahad2LightingDeviceProvider(Galahad2Hub hub, IConfigStore store)
+    // Wired Trinity and the LCD variant share this exact pump command - the reference
+    // driver's has_pump_rgb covers both with the same set_pump_light - so one provider
+    // drives whichever is actually connected instead of a hub per hardware variant.
+    public Galahad2LightingDeviceProvider(Galahad2Hub hub, IConfigStore store, IGalahad2PumpTransport? lcdTransport = null)
     {
         _hub   = hub;
+        _lcdTransport = lcdTransport;
         _store = store;
+        // The wired hub's connection worker calls OnHubStateUpdated() directly; the LCD's
+        // JpegPanelHub instead exposes this event, so subscribe when it's the transport.
+        if (lcdTransport is Nexus.Service.Peripherals.JpegPanels.JpegPanelHub jpegPanelHub)
+        {
+            jpegPanelHub.StateChanged += OnHubStateUpdated;
+        }
     }
 
-    public bool IsConnected => _hub.IsConnected;
+    internal IGalahad2PumpTransport? ActiveTransport =>
+        _hub.IsConnected ? _hub : (_lcdTransport?.IsConnected == true ? _lcdTransport : null);
+
+    public bool IsConnected => ActiveTransport != null;
 
     // OpenRGB names this device "Lian Li GAII Trinity" (RGBController_LianLiGAIITrinity.cpp).
     public bool OwnsOpenRgbDevice(RgbDevice device) =>
@@ -39,7 +53,7 @@ public sealed class Galahad2LightingDeviceProvider :
 
     public void OnHubStateUpdated()
     {
-        var sig = _hub.IsConnected ? "connected" : "disconnected";
+        var sig = IsConnected ? "connected" : "disconnected";
         if (sig == _lastSignature)
         {
             return;
@@ -53,7 +67,7 @@ public sealed class Galahad2LightingDeviceProvider :
     public GetLightingDevicesResponse GetAll()
     {
         var resp = new GetLightingDevicesResponse { IsInit = true };
-        if (!_hub.IsConnected)
+        if (!IsConnected)
         {
             return resp;
         }
@@ -102,7 +116,7 @@ public sealed class Galahad2LightingDeviceProvider :
             CanvasRotation   = ((((layout?.Rotation ?? 0) % 360) + 360) % 360),
             ParentDeviceId   = "lianli-aio",
             ZoneIndex        = zone.Ordinal,
-            ZoneType         = "point",
+            ZoneType         = zone.LedCount > 1 ? "linear" : "point",
             ZoneResizable    = false,
             DeviceId         = structure.DeviceId,
             ZoneCustomizable = false,
@@ -175,7 +189,7 @@ public sealed class Galahad2LightingDeviceProvider :
 
     public IReadOnlyList<DeviceStructure> GetStructures()
     {
-        if (!_hub.IsConnected)
+        if (!IsConnected)
         {
             return Array.Empty<DeviceStructure>();
         }
@@ -186,7 +200,7 @@ public sealed class Galahad2LightingDeviceProvider :
 
     public IReadOnlyList<DeviceFrame> BuildFrames(int startingIndex)
     {
-        if (!_hub.IsConnected)
+        if (!IsConnected)
         {
             return Array.Empty<DeviceFrame>();
         }
@@ -238,11 +252,14 @@ public sealed class Galahad2LightingDeviceProvider :
         return frame;
     }
 
+    internal bool IsLcdActive => ActiveTransport == _lcdTransport && _lcdTransport is not null;
+
     internal DeviceStructure BuildStructure()
     {
-        var pid = _hub.ConnectedProductId > 0
-            ? _hub.ConnectedProductId
-            : Galahad2Protocol.ProductIdPerformance;
+        var isLcd = IsLcdActive;
+        var pid = isLcd
+            ? Galahad2Protocol.ProductIdLcd
+            : _hub.ConnectedProductId > 0 ? _hub.ConnectedProductId : Galahad2Protocol.ProductIdPerformance;
         var key = DeviceKeyComputer.ForFirstParty(Galahad2Protocol.VendorId, pid, "aio");
 
         var structure = new DeviceStructure
@@ -251,6 +268,32 @@ public sealed class Galahad2LightingDeviceProvider :
             Name      = "Galahad II AIO",
             DeviceKey = key,
         };
+
+        // The LCD variant's pump is one 12-LED ring, not the wired Trinity's separate
+        // inner/outer rings (SignalRGB's Lian_Li_Galahad_II_LCD.js: one "Pump" subdevice,
+        // 12 LEDs, no inner/outer split) - so the two hardware shapes get different structures.
+        if (isLcd)
+        {
+            structure.Segments.Add(new StructureSegment
+            {
+                Index         = 0,
+                Name          = "Pump",
+                LedCount      = Galahad2Protocol.PumpLedCount,
+                FrameLedCount = Galahad2Protocol.PumpLedCount,
+                Resizable     = false,
+                ZoneType      = "linear",
+            });
+            structure.DefaultZones.Add(new DefaultZoneDef
+            {
+                Id              = "lianli-aio:pump",
+                Name            = "Galahad II Pump",
+                RawName         = "Pump",
+                DeviceKey       = key,
+                LegacyZoneIndex = -1,
+                Slices          = new List<ZoneSlice> { new() { Segment = 0, Start = 0, Count = Galahad2Protocol.PumpLedCount } },
+            });
+            return structure;
+        }
 
         structure.Segments.Add(new StructureSegment
         {

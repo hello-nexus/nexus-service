@@ -4,7 +4,7 @@ using Nexus.Service.Peripherals.LianLiCp;
 
 namespace Nexus.Service.Peripherals.Galahad2;
 
-public sealed class Galahad2Hub : IDisposable
+public sealed class Galahad2Hub : IDisposable, IGalahad2PumpTransport
 {
     // Longer timeout for the connect-time handshake.
     private const int ConnectReadTimeoutMs = 1000;
