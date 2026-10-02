@@ -19055,6 +19055,22 @@
           }
         }
       },
+      "LedColorEntry": {
+        "type": "object",
+        "properties": {
+          "index": {
+            "pattern": "^-?(?:0|[1-9]\\d*)$",
+            "type": [
+              "integer",
+              "string"
+            ],
+            "format": "int32"
+          },
+          "color": {
+            "type": "string"
+          }
+        }
+      },
       "LedHighlightBody": {
         "type": "object",
         "properties": {
@@ -19502,6 +19518,24 @@
               "string"
             ],
             "format": "int32"
+          },
+          "ledColors": {
+            "type": [
+              "null",
+              "array"
+            ],
+            "items": {
+              "$ref": "#/components/schemas/LedColorEntry"
+            }
+          },
+          "ledColorStrip": {
+            "type": [
+              "null",
+              "array"
+            ],
+            "items": {
+              "type": "string"
+            }
           },
           "canvasX": {
             "pattern": "^-?(?:0|[1-9]\\d*)(?:\\.\\d+)?(?:[eE][+-]?\\d+)?$",
