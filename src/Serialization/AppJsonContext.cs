@@ -312,6 +312,9 @@ namespace Nexus.Service.Serialization;
 
 // Displays (system monitors: brightness + DDC/CI VCP)
 [JsonSerializable(typeof(Nexus.Service.Models.Displays.DisplayDto))]
+[JsonSerializable(typeof(Nexus.Service.Models.Displays.Aw3225QfCrosshairConfig))]
+[JsonSerializable(typeof(Nexus.Service.Models.Displays.Aw3225QfCrosshairRequest))]
+[JsonSerializable(typeof(Nexus.Service.Models.Displays.Aw3225QfCrosshairStatus))]
 [JsonSerializable(typeof(List<Nexus.Service.Models.Displays.DisplayDto>))]
 [JsonSerializable(typeof(Nexus.Service.Models.Displays.DisplayCapabilitiesDto))]
 [JsonSerializable(typeof(Nexus.Service.Models.Displays.DisplayBrightnessControlDto))]

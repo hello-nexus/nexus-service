@@ -1189,6 +1189,11 @@ public sealed class KrakenFirmwareLighting
 
 public sealed class DevicesSettings
 {
+    /// <summary>Last AW3225QF crosshair selection; VCP 0xED cannot be read back.</summary>
+    public Dictionary<string, Nexus.Service.Models.Displays.Aw3225QfCrosshairConfig> Aw3225QfCrosshairs { get; set; } = new();
+    /// <summary>Initial development selection, migrated on the next successful write.</summary>
+    [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
+    public Nexus.Service.Models.Displays.Aw3225QfCrosshairConfig? Aw3225QfCrosshair { get; set; }
     public List<string> DisabledLightingDevices { get; set; } = new();
     /// <summary>Stable display ids the user turned brightness control off for. Nexus issues no DDC/CI transaction to a listed display - not even the capability probe - which is the escape hatch for a monitor whose firmware hangs on DDC. NOT profile-scoped: a panel's tolerance for DDC is a property of the hardware, not of a lighting/cooling persona.</summary>
     public List<string> DdcDisabledDisplays { get; set; } = new();
