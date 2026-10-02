@@ -81,6 +81,31 @@ public static class OpenRgbDetectorExclusions
         s.Devices.UncontrolledLightingDevices = next;
     }
 
+    /// <summary>The excluded device a card id belongs to (its base id, a zone card, or a chain link on a header "{base}-{n}:z{m}"), or null.</summary>
+    public static string? ExcludedBaseOf(string id, NexusSettings settings)
+    {
+        var colon = id.IndexOf(':');
+        var head = colon > 0 ? id[..colon] : id;
+        foreach (var key in settings.Devices.OpenRgbDetectorExclusions.Keys)
+        {
+            if (head == key || IsZoneIdOf(head, key) || IsZoneIdOf(id, key))
+            {
+                return key;
+            }
+        }
+        return null;
+    }
+
+    private static List<OpenRgbExcludedZone> SnapshotZones(RgbDevice d)
+    {
+        var zones = new List<OpenRgbExcludedZone>(d.Zones.Count);
+        foreach (var z in d.Zones)
+        {
+            zones.Add(new OpenRgbExcludedZone { Name = z.Name, ZoneType = z.ZoneType, LedCount = z.LedCount, LedsMin = z.LedsMin, LedsMax = z.LedsMax });
+        }
+        return zones;
+    }
+
     /// <summary>
     /// True when id is a zone card of baseId: "{base}-{n}" (split default) or
     /// "{base}:z{n}" (custom partition, ZoneResolution.CustomZoneId). The
@@ -201,6 +226,7 @@ public static class OpenRgbDetectorExclusions
                     Location = d.Location,
                     LedCount = d.LedCount,
                     Type = d.Type,
+                    Zones = OpenRgbZoneSupport.IsSplitMotherboard(d) ? SnapshotZones(d) : null,
                 }));
                 if (!uncontrolled.Contains(baseId))
                 {

@@ -130,4 +130,29 @@ public class OpenRgbExcludedCardsTests
         Assert.Equal("openrgb-s-MS01", resp.Devices[0].Id);
         Assert.Equal("openrgb-s-K70A", resp.Devices[1].Id);
     }
+    [Fact]
+    public void Excluded_split_board_keeps_one_card_per_header()
+    {
+        var settings = new NexusSettings();
+        settings.Devices.UncontrolledLightingDevices.AddRange(new[] { "openrgb-s-MB01-0", "openrgb-s-MB01-1", "openrgb-s-MB01" });
+        settings.Devices.OpenRgbDetectorExclusions["openrgb-s-MB01"] = new OpenRgbDetectorExclusion
+        {
+            DetectorName = "Gigabyte RGB Fusion 2 USB",
+            DeviceName = "B850I AORUS PRO",
+            Serial = "MB01",
+            Type = 0,
+            LedCount = 120,
+            Zones = new()
+            {
+                new OpenRgbExcludedZone { Name = "ARGB_V2_1", ZoneType = 1, LedCount = 60 },
+                new OpenRgbExcludedZone { Name = "ARGB_V2_2", ZoneType = 1, LedCount = 60 },
+            },
+        };
+
+        var resp = OpenRgbZoneSupport.BuildCards(System.Array.Empty<RgbDevice>(), settings, isInit: true);
+
+        Assert.Equal(new[] { "openrgb-s-MB01-0", "openrgb-s-MB01-1" }, resp.Devices.ConvertAll(d => d.Id));
+        Assert.All(resp.Devices, d => Assert.Equal("openrgb-s-MB01", d.ParentDeviceId));
+        Assert.All(resp.Devices, d => Assert.Equal(60, d.LedCount));
+    }
 }

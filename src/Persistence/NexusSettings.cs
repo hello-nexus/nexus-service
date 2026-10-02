@@ -1343,6 +1343,18 @@ public sealed class OpenRgbDetectorExclusion
     public int LedCount { get; set; }
     /// <summary>OpenRGB device type; drives the synthesized card's icon.</summary>
     public uint Type { get; set; }
+    /// <summary>Zones at exclusion time, so a split motherboard keeps one card per header while undetected. Null on snapshots taken without them, which render as one card.</summary>
+    public List<OpenRgbExcludedZone>? Zones { get; set; }
+}
+
+/// <summary>One zone of a detector-excluded device's snapshot.</summary>
+public sealed class OpenRgbExcludedZone
+{
+    public string Name { get; set; } = "";
+    public uint ZoneType { get; set; }
+    public int LedCount { get; set; }
+    public uint LedsMin { get; set; }
+    public uint LedsMax { get; set; }
 }
 
 /// <summary>One user-defined zone of a device partition: an ordered run of segment-local slices. One zone = one lighting card = one engine frame.</summary>

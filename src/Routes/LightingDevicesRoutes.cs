@@ -756,7 +756,14 @@ public static partial class DevicesRoutes
             // A chained port is controlled as a whole: the links share one
             // wire, so handing the port to a vendor app while Nexus still
             // drives one link means neither owns it.
-            foreach (var id in ControlGroup(body.Id, topology, store.Load()))
+            var group = ControlGroup(body.Id, topology, store.Load());
+            // An excluded device is undetected as a whole, so re-enabling any of
+            // its cards lifts the exclusion, which keys on the base id.
+            if (body.Controlled && Nexus.Service.Lighting.Rgb.OpenRgbDetectorExclusions.ExcludedBaseOf(body.Id, store.Load()) is { } excludedBase)
+            {
+                group.Add(excludedBase);
+            }
+            foreach (var id in group)
             {
                 Nexus.Service.Lighting.LightingControlledState.SetControlled(id, body.Controlled, store);
                 if (body.Controlled)

@@ -253,14 +253,19 @@ public static class OpenRgbZoneSupport
         // strips get their own non-overlapping default grids on the canvas.
         int cardSlot = 0;
         int stripSlot = 0;
-        for (int i = 0; i < devices.Count; i++)
+        // An excluded split board runs through the live per-header emission, so
+        // its cards keep the ids, names and grouping they had while detected.
+        var snapshotBoards = SnapshotSplitBoards(exclusions);
+        var total = devices.Count + snapshotBoards.Count;
+        for (int i = 0; i < total; i++)
         {
-            var d = devices[i];
+            var fromSnapshot = i >= devices.Count;
+            var d = fromSnapshot ? snapshotBoards[i - devices.Count] : devices[i];
             var baseId = d.StableId;
             // Detector-excluded devices render from their persisted snapshot
-            // below; the live entry (pre-bounce real device or the fork's
+            // instead; the live entry (pre-bounce real device or the fork's
             // zero-LED placeholder dummy) would duplicate or shadow that card.
-            if (exclusions.Count > 0 && exclusions.ContainsKey(baseId))
+            if (!fromSnapshot && exclusions.Count > 0 && exclusions.ContainsKey(baseId))
                 continue;
             var baseKey = DeviceKeyComputer.ForOpenRgbDevice(d);
             var conflictAppIds = Conflicts.ConflictDeviceOwnership.AppIdsForVendor(d.Vendor);
@@ -437,6 +442,8 @@ public static class OpenRgbZoneSupport
             foreach (var key in keys)
             {
                 var snap = exclusions[key];
+                if (SnapshotSplitBoard(key, snap) is not null)
+                    continue;
                 // Pre-map snapshots kept the device name in DetectorName.
                 var snapName = string.IsNullOrEmpty(snap.DeviceName) ? snap.DetectorName : snap.DeviceName;
                 var snapDevice = new RgbDevice
@@ -482,6 +489,42 @@ public static class OpenRgbZoneSupport
             IsInit = isInit,
             Devices = result,
         };
+    }
+
+    private static List<RgbDevice> SnapshotSplitBoards(Dictionary<string, OpenRgbDetectorExclusion> exclusions)
+    {
+        var boards = new List<RgbDevice>();
+        if (exclusions.Count == 0)
+            return boards;
+        var keys = new List<string>(exclusions.Keys);
+        keys.Sort(StringComparer.Ordinal);
+        foreach (var key in keys)
+        {
+            if (SnapshotSplitBoard(key, exclusions[key]) is { } board)
+                boards.Add(board);
+        }
+        return boards;
+    }
+
+    /// <summary>The snapshot rebuilt as a split motherboard, or null when it is not one (or predates zone snapshots) and renders as a single card.</summary>
+    private static RgbDevice? SnapshotSplitBoard(string key, OpenRgbDetectorExclusion snap)
+    {
+        if (snap.Zones is null)
+            return null;
+        var board = new RgbDevice
+        {
+            Name = string.IsNullOrEmpty(snap.DeviceName) ? snap.DetectorName : snap.DeviceName,
+            Vendor = snap.Vendor,
+            Serial = snap.Serial,
+            Location = snap.Location,
+            Type = snap.Type,
+            LedCount = snap.LedCount,
+        };
+        foreach (var z in snap.Zones)
+        {
+            board.Zones.Add(new RgbZone { Name = z.Name, ZoneType = z.ZoneType, LedCount = z.LedCount, LedsMin = z.LedsMin, LedsMax = z.LedsMax });
+        }
+        return IsSplitMotherboard(board) && board.StableId == key ? board : null;
     }
 
     /// <summary>Card zone type for a custom zone: the shared segment type when uniform, else "linear".</summary>

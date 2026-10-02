@@ -41,6 +41,8 @@ namespace Nexus.Service.Serialization;
 [JsonSerializable(typeof(List<LedPositionOverride>))]
 [JsonSerializable(typeof(Dictionary<string, List<LedPositionOverride>>))]
 [JsonSerializable(typeof(OpenRgbDetectorExclusion))]
+[JsonSerializable(typeof(OpenRgbExcludedZone))]
+[JsonSerializable(typeof(List<OpenRgbExcludedZone>))]
 [JsonSerializable(typeof(OpenRgbManualDevices))]
 [JsonSerializable(typeof(QmkOpenRgbDeviceEntry))]
 [JsonSerializable(typeof(E131DeviceEntry))]

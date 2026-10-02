@@ -136,7 +136,7 @@ public sealed class RgbBridge : IDisposable
     internal Func<TimeSpan>? DaemonUptimeProbe { get; set; }
     private long _lastBounceTicks;         // DateTime.UtcNow.Ticks; updated via Interlocked
     private long _rescanStartedTicks;      // 0 = no active rescan; else = UtcNow ticks at bounce start
-    private int _rescanBaselineCount;      // device count snapshotted when rescan started
+    private int _rescanBaselineCount;      // drivable device count the bounce expects back (see CountDrivable)
     private int _refreshPending;           // 0 = idle, 1 = refresh scheduled/running
     private readonly SemaphoreSlim _refreshSemaphore = new(1, 1);
     private Dictionary<string, int>? _lastUsbKeys; // key -> unit count; null = not yet observed, no bounce on first read
@@ -646,7 +646,8 @@ public sealed class RgbBridge : IDisposable
         _identifyOverrides[id] = (now, expiration);
     }
 
-    private void BounceSubprocess(string reason)
+    /// <param name="expectedLoss">Drivable devices this bounce removes on purpose (newly excluded detectors), so the hold does not wait for them to come back.</param>
+    private void BounceSubprocess(string reason, int expectedLoss = 0)
     {
         if (!IsActive)
         {
@@ -669,11 +670,11 @@ public sealed class RgbBridge : IDisposable
         Interlocked.Exchange(ref _lastConnectAttemptTicks, 0);
         // Snapshot the current device count so RefreshDevicesAsync can hold the
         // visible list steady until OpenRGB's detection plugins report at least
-        // that many devices again (or the grace period expires).
+        // that many drivable devices again (or the grace period expires).
         int baseline;
         lock (_lock)
         {
-            _rescanBaselineCount = _devices.Count;
+            _rescanBaselineCount = Math.Max(0, CountDrivable(_devices) - expectedLoss);
             baseline = _rescanBaselineCount;
             // A bounce reconstructs every controller, so an identical list is still
             // new information. Only these reasons can settle unchanged; a
@@ -752,8 +753,8 @@ public sealed class RgbBridge : IDisposable
 
     /// <summary>
     /// True while a subprocess bounce is in progress and the OpenRGB daemon has
-    /// not yet reported a device list at least as large as the snapshot taken
-    /// when the bounce started. Exposed via /lighting/status so the UI can show
+    /// not yet reported the drivable device count snapshotted when the bounce
+    /// started. Exposed via /lighting/status so the UI can show
     /// a spinner on the rescan button without clearing the visible device list.
     /// </summary>
     public bool IsRescanning
@@ -869,6 +870,9 @@ public sealed class RgbBridge : IDisposable
             {
                 _directModeApplied = new();
             }
+            // A new daemon may number its controllers differently, so nothing
+            // is pushed until a refresh commits this daemon's own list.
+            _physBuffers.Clear();
         }
 
         await RefreshDevicesAsync().ConfigureAwait(false);
@@ -950,8 +954,8 @@ public sealed class RgbBridge : IDisposable
             }
 
             // Rescan state machine. Bounce path (baseline > 0) keeps the visible
-            // list steady until the daemon reports at least as many devices as
-            // before (wholesale replace when count recovers). Initial-boot path
+            // list steady until the daemon reports at least the baseline's
+            // drivable devices (wholesale replace when count recovers). Initial-boot path
             // (baseline == 0) streams devices into the visible list as each
             // detection plugin finishes; the list only grows during the hold and
             // reconciles on the first post-hold refresh.
@@ -967,7 +971,7 @@ public sealed class RgbBridge : IDisposable
                     {
                         inInitialHold = true;
                     }
-                    else if (_rescanBaselineCount > 0 && devices.Count < _rescanBaselineCount)
+                    else if (_rescanBaselineCount > 0 && CountDrivable(devices) < _rescanBaselineCount)
                     {
                         return;
                     }
@@ -1496,7 +1500,7 @@ public sealed class RgbBridge : IDisposable
         _store.Update(s => OpenRgbDetectorExclusions.Apply(s, delta));
         ServiceLog.Info($"[rgb-bridge] detector exclusions changed (+{delta.Add.Count}/-{delta.Remove.Count}), applying");
         Interlocked.Exchange(ref _lastBounceTicks, DateTime.UtcNow.Ticks);
-        BounceSubprocess("detector-exclusions");
+        BounceSubprocess("detector-exclusions", expectedLoss: delta.Add.Count);
     }
 
     /// <summary>True when this device's bytes differ from the last push, or the
@@ -1529,33 +1533,45 @@ public sealed class RgbBridge : IDisposable
         // Indices are being re-derived, so every dedup baseline is suspect.
         _lastPushed.Clear();
         _lastPushTicks.Clear();
+        SizePhysicalBuffers(_physBuffers, devices);
+    }
 
-        // Drop buffers for devices that no longer exist.
-        var toRemove = new List<int>();
-        foreach (var kv in _physBuffers)
-        {
-            var stillPresent = false;
-            foreach (var d in devices)
-            {
-                if (d.Index == kv.Key)
-                { stillPresent = true; break; }
-            }
-            if (!stillPresent)
-                toRemove.Add(kv.Key);
-        }
-        foreach (var k in toRemove)
-            _physBuffers.TryRemove(k, out _);
-
-        // Allocate or resize buffers for current devices.
+    /// <summary>
+    /// One buffer per drivable index, sized to exactly its LED count: the daemon
+    /// rejects an UpdateLEDs carrying more colours than the controller has, so a
+    /// buffer left by a larger device that held the index before a reshuffle
+    /// would silence the device now there.
+    /// </summary>
+    internal static void SizePhysicalBuffers(ConcurrentDictionary<int, RgbColor[]> buffers, IReadOnlyList<RgbDevice> devices)
+    {
+        var drivable = new HashSet<int>();
         foreach (var d in devices)
         {
             if (d.LedCount <= 0)
                 continue;
-            if (!_physBuffers.TryGetValue(d.Index, out var buf) || buf.Length < d.LedCount)
+            drivable.Add(d.Index);
+            if (!buffers.TryGetValue(d.Index, out var buf) || buf.Length != d.LedCount)
             {
-                _physBuffers[d.Index] = new RgbColor[d.LedCount];
+                buffers[d.Index] = new RgbColor[d.LedCount];
             }
         }
+        foreach (var k in buffers.Keys)
+        {
+            if (!drivable.Contains(k))
+                buffers.TryRemove(k, out _);
+        }
+    }
+
+    /// <summary>Devices with LEDs; the fork's zero-LED placeholders for excluded detectors come and go with exclusions, so a bounce hold must not count them.</summary>
+    internal static int CountDrivable(IReadOnlyList<RgbDevice> devices)
+    {
+        var n = 0;
+        foreach (var d in devices)
+        {
+            if (d.LedCount > 0)
+                n++;
+        }
+        return n;
     }
 
     /// <summary>

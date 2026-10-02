@@ -137,6 +137,46 @@ public class OpenRgbDetectorExclusionsTests
     }
 
     [Fact]
+    public void Split_board_snapshot_keeps_its_headers()
+    {
+        var settings = new NexusSettings();
+        settings.Devices.UncontrolledLightingDevices.Add("openrgb-s-MB01-0");
+        settings.Devices.UncontrolledLightingDevices.Add("openrgb-s-MB01-1");
+
+        var add = Assert.Single(OpenRgbDetectorExclusions.Compute(new[] { Motherboard() }, settings).Add);
+
+        Assert.NotNull(add.Value.Zones);
+        Assert.Equal(new[] { "D_LED1", "D_LED2" }, add.Value.Zones!.ConvertAll(z => z.Name));
+        Assert.Equal(new[] { 1, 2 }, add.Value.Zones.ConvertAll(z => z.LedCount));
+    }
+
+    [Fact]
+    public void Whole_device_snapshot_records_no_zones()
+    {
+        var settings = new NexusSettings();
+        settings.Devices.UncontrolledLightingDevices.Add("openrgb-s-K70A");
+
+        var add = Assert.Single(OpenRgbDetectorExclusions.Compute(new[] { Keyboard() }, settings).Add);
+
+        Assert.Null(add.Value.Zones);
+    }
+
+    [Theory]
+    [InlineData("openrgb-s-MB01", "openrgb-s-MB01")]
+    [InlineData("openrgb-s-MB01-1", "openrgb-s-MB01")]
+    [InlineData("openrgb-s-MB01-0:z2", "openrgb-s-MB01")]
+    [InlineData("openrgb-s-MB01:z1", "openrgb-s-MB01")]
+    [InlineData("openrgb-s-MB01-EXT", null)]
+    [InlineData("openrgb-s-K70A", null)]
+    public void Excluded_base_resolves_every_card_of_the_excluded_device(string id, string? expected)
+    {
+        var settings = new NexusSettings();
+        settings.Devices.OpenRgbDetectorExclusions["openrgb-s-MB01"] = new OpenRgbDetectorExclusion { DetectorName = "B850I AORUS PRO", Serial = "MB01" };
+
+        Assert.Equal(expected, OpenRgbDetectorExclusions.ExcludedBaseOf(id, settings));
+    }
+
+    [Fact]
     public void Unignoring_a_zone_carded_device_purges_zone_ids_and_never_reexcludes()
     {
         // Full round trip: ignore per zone -> exclusion applied -> user toggles
