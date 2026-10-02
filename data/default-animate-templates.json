@@ -3492,14 +3492,14 @@
     "saturation": 1,
     "contrast": 1,
     "params": {
-     "u_aHue": 0.6,
-     "u_aSpan": 0,
+     "u_aHue": 0.33,
+     "u_aSpan": 0.17,
      "u_aSat": 1,
      "u_aVal": 1,
-     "u_bHue": 0,
+     "u_bHue": 0.5,
      "u_bSpan": 0,
      "u_bSat": 1,
-     "u_bVal": 0,
+     "u_bVal": 0.15,
      "u_sharpness": 0
     }
    },
@@ -3511,15 +3511,15 @@
     "saturation": 1,
     "contrast": 1,
     "params": {
-     "u_aHue": 0.92,
-     "u_aSpan": 0.17,
+     "u_aHue": 0.78,
+     "u_aSpan": 0.34,
      "u_aSat": 1,
      "u_aVal": 1,
      "u_bHue": 0,
      "u_bSpan": 0,
-     "u_bSat": 1,
-     "u_bVal": 0,
-     "u_sharpness": 0
+     "u_bSat": 0,
+     "u_bVal": 1,
+     "u_sharpness": 0.3
     }
    }
   ]
