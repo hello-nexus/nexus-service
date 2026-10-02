@@ -66,8 +66,8 @@ public sealed class RgbBridge : IDisposable
     /// <summary>
     /// The visible list holds still while the daemon detects (a rescan empties its
     /// list and refills it), for as long as detection keeps reporting progress
-    /// within this window. Each detector is bounded at 5 s by the fork, so a gap
-    /// longer than this means detection ended without a COMPLETE we saw.
+    /// within this window. It outlasts the fork's per-detector timeout, so a gap
+    /// this long means detection ended without a COMPLETE we saw.
     /// </summary>
     private static readonly TimeSpan DetectionQuietWindow = TimeSpan.FromSeconds(8);
     /// <summary>A requested in-place rescan with no COMPLETE by now is a wedged detection pass: the next re-detect restarts the daemon instead.</summary>
@@ -141,8 +141,8 @@ public sealed class RgbBridge : IDisposable
     // A re-detect asked for while a pass was running, which a rescan would skip; replayed on COMPLETE. Guarded by _lock.
     private string? _deferredRedetectReason;
     private bool _deferredDetectorsChanged;
-    // Bumped on every DEVICE_LIST_UPDATED, so a USB arrival can tell whether the daemon's hotplug already registered it.
-    private int _deviceListVersion;
+    // Completed and replaced on every DEVICE_LIST_UPDATED, so a USB arrival can wait for the daemon's hotplug to register it.
+    private TaskCompletionSource _deviceListChanged = new(TaskCreationOptions.RunContinuationsAsynchronously);
     private int _refreshPending;           // 0 = idle, 1 = refresh scheduled/running
     private readonly SemaphoreSlim _refreshSemaphore = new(1, 1);
     private Dictionary<string, int>? _lastUsbKeys; // key -> unit count; null = not yet observed, no bounce on first read
@@ -792,7 +792,8 @@ public sealed class RgbBridge : IDisposable
     /// <summary>A refused write means our map of the daemon is wrong (sizes or ids): re-read it.</summary>
     private void OnWriteRejected(int address, uint packetId, uint status)
     {
-        if (!IsActive)
+        // During a rescan every push targets ids that no longer exist; COMPLETE re-reads.
+        if (!IsActive || DetectionInProgress())
         {
             return;
         }
@@ -855,6 +856,12 @@ public sealed class RgbBridge : IDisposable
             catch { }
             await Task.Delay(500).ConfigureAwait(false);
             _proc.Start();
+            // The relaunch rewrote the overrides and detects from scratch.
+            lock (_lock)
+            {
+                _deferredRedetectReason = null;
+                _deferredDetectorsChanged = false;
+            }
             ServiceLog.Info($"[rgb-bridge] bounce ({reason}): daemon restarted, reconnecting");
             await EnsureConnectedAsync().ConfigureAwait(false);
         });
@@ -919,7 +926,7 @@ public sealed class RgbBridge : IDisposable
     /// </summary>
     private void OnDeviceListChanged()
     {
-        Interlocked.Increment(ref _deviceListVersion);
+        Interlocked.Exchange(ref _deviceListChanged, new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously)).TrySetResult();
         ScheduleRefresh();
     }
 
@@ -980,6 +987,15 @@ public sealed class RgbBridge : IDisposable
 
         if (!_controller.IsConnected)
         {
+            // A new daemon may number its controllers differently, so nothing is
+            // pushed until a refresh commits this daemon's own list. A restarted
+            // daemon reuses ids from 0, so the committed id list is reset too or
+            // the poll would read the new list as unchanged.
+            _physBuffers.Clear();
+            lock (_lock)
+            {
+                _committedAddresses = Array.Empty<int>();
+            }
             bool connected;
             try
             { connected = await _controller.TryConnectAsync().ConfigureAwait(false); }
@@ -1011,15 +1027,6 @@ public sealed class RgbBridge : IDisposable
             {
                 _directModeApplied = new();
             }
-            // A new daemon may number its controllers differently, so nothing
-            // is pushed until a refresh commits this daemon's own list. A
-            // restarted daemon reuses ids from 0, so the committed id list is
-            // reset too or the poll would read the new list as unchanged.
-            _physBuffers.Clear();
-            lock (_lock)
-            {
-                _committedAddresses = Array.Empty<int>();
-            }
         }
 
         await RefreshDevicesAsync().ConfigureAwait(false);
@@ -1042,6 +1049,22 @@ public sealed class RgbBridge : IDisposable
             if (!IsActive || !_controller.IsConnected)
             {
                 return;
+            }
+
+            // A rescan empties the daemon's list and refills it, so a shown list
+            // holds still while detection runs; the COMPLETE handler refreshes.
+            // An empty shown list (first start) takes devices as they arrive.
+            // Frames meanwhile carry the old ids, which no longer exist after a
+            // rescan, and a restarted daemon starts with no push buffers at all.
+            if (DetectionInProgress())
+            {
+                lock (_lock)
+                {
+                    if (_devices.Count > 0)
+                    {
+                        return;
+                    }
+                }
             }
 
             IReadOnlyList<RgbDevice> devices;
@@ -1080,22 +1103,6 @@ public sealed class RgbBridge : IDisposable
                 if (refetched && devices.Count > 0)
                 {
                     LogZoneResizeOutcomes(resizeAttempts, devices);
-                }
-            }
-
-            // A rescan empties the daemon's list and refills it, so a shown list
-            // holds still while detection runs; the COMPLETE handler refreshes.
-            // An empty shown list (first start) takes devices as they arrive.
-            // Frames meanwhile carry the old ids, which no longer exist after a
-            // rescan, and a restarted daemon starts with no push buffers at all.
-            if (DetectionInProgress())
-            {
-                lock (_lock)
-                {
-                    if (_devices.Count > 0)
-                    {
-                        return;
-                    }
                 }
             }
 
@@ -1179,9 +1186,9 @@ public sealed class RgbBridge : IDisposable
             }
 
             // Settled commits reconcile detector exclusions: a device the user
-            // fully un-controlled gets snapshotted + denylisted (and the
-            // subprocess bounced once to release it); a re-controlled one gets
-            // its exclusion lifted the same way.
+            // fully un-controlled gets snapshotted + denylisted (and re-detected
+            // to release it); a re-controlled one gets its exclusion lifted the
+            // same way.
             if (!inDetection)
             {
                 LogSettledDevices(finalList);
@@ -1553,8 +1560,7 @@ public sealed class RgbBridge : IDisposable
 
     /// <summary>
     /// Persist the exclusion delta computed from a settled device list, then
-    /// bounce the subprocess once so the relaunched daemon reads the rewritten
-    /// OpenRGB.json denylist (the config is only read at process start).
+    /// re-detect with the rewritten denylist.
     /// </summary>
     private void ReconcileDetectorExclusions(IReadOnlyList<RgbDevice> settledList, NexusSettings settingsSnapshot)
     {
@@ -1947,6 +1953,27 @@ public sealed class RgbBridge : IDisposable
         {
             return;
         }
+        // A COMPLETE can be missed (session dropped mid-pass, or connected after it).
+        string? deferred;
+        bool deferredDetectors;
+        lock (_lock)
+        {
+            deferred = _deferredRedetectReason;
+            deferredDetectors = _deferredDetectorsChanged;
+            _deferredRedetectReason = null;
+            _deferredDetectorsChanged = false;
+        }
+        if (deferred is not null)
+        {
+            Redetect(deferred, deferredDetectors);
+            return;
+        }
+        // A full fetch holds the socket for one request per controller; waiting
+        // behind it would read as a daemon failure and restart a healthy daemon.
+        if (_refreshSemaphore.CurrentCount == 0)
+        {
+            return;
+        }
         IReadOnlyList<int> addresses;
         try
         {
@@ -2019,15 +2046,15 @@ public sealed class RgbBridge : IDisposable
             ServiceLog.Info($"[rgb-bridge] usb topology changed (+{added}/-{removed}), no known RGB device arrived, no re-detect");
             return;
         }
-        var listVersion = Volatile.Read(ref _deviceListVersion);
+        var listChanged = Volatile.Read(ref _deviceListChanged).Task;
         _ = Task.Run(async () =>
         {
-            await Task.Delay(HotplugGrace).ConfigureAwait(false);
+            var registered = await Task.WhenAny(listChanged, Task.Delay(HotplugGrace)).ConfigureAwait(false) == listChanged;
             if (!IsActive)
             {
                 return;
             }
-            if (Volatile.Read(ref _deviceListVersion) != listVersion)
+            if (registered)
             {
                 ServiceLog.Info($"[rgb-bridge] usb arrival {arrivals[0]} registered by the daemon's hotplug, no re-detect");
                 return;

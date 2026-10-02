@@ -60,6 +60,8 @@ public sealed class OpenRgbController : IRgbController
         public readonly CancellationTokenSource ReaderCts = new();
         public volatile Pending? Pending;
         public volatile bool Closed;
+        // Set once the version is negotiated: the daemon reads a packet sent earlier at protocol 0, where the address is a list index.
+        public volatile bool Ready;
         public bool LocalClient;
     }
 
@@ -158,6 +160,7 @@ public sealed class OpenRgbController : IRgbController
                     OpenRgbProtocol.BuildClientFlagsBody(ClientFlags), OpenRgbProtocol.PacketId.SetServerFlags, replyOnly: false, ct).ConfigureAwait(false);
                 session.LocalClient = flagsBody is { Length: >= 4 }
                     && (BinaryPrimitives.ReadUInt32LittleEndian(flagsBody) & OpenRgbProtocol.ServerFlagLocalClient) != 0;
+                session.Ready = true;
             }
             catch
             {
@@ -444,7 +447,7 @@ public sealed class OpenRgbController : IRgbController
     private async Task SendAsync(uint address, OpenRgbProtocol.PacketId packetId, byte[]? body, CancellationToken ct)
     {
         var session = Volatile.Read(ref _session);
-        if (session is null || session.Closed)
+        if (session is null || session.Closed || !session.Ready)
         {
             return;
         }
@@ -589,6 +592,7 @@ public sealed class OpenRgbController : IRgbController
                 Raise(() => DeviceListChanged?.Invoke());
                 return;
             case OpenRgbProtocol.PacketId.DetectionStarted:
+            case OpenRgbProtocol.PacketId.DetectionProgressChanged:
                 Raise(() => DetectionStateChanged?.Invoke(true));
                 return;
             case OpenRgbProtocol.PacketId.DetectionComplete:

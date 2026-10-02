@@ -184,13 +184,16 @@ public class OpenRgbControllerV6Tests
     }
 
     [Fact]
-    public async Task Detection_messages_raise_DetectionStateChanged()
+    public async Task Detection_messages_raise_DetectionStateChanged_in_order()
     {
         await using var daemon = new ScriptedDaemon(async (stream, id, dev) =>
         {
             if (id == OpenRgbProtocol.PacketId.RequestRescanDevices)
             {
                 await ScriptedDaemon.SendAsync(stream, 0, OpenRgbProtocol.PacketId.DetectionStarted, Array.Empty<byte>());
+                // u32 size, u32 percent, bstring detector name.
+                await ScriptedDaemon.SendAsync(stream, 0, OpenRgbProtocol.PacketId.DetectionProgressChanged,
+                    Convert.FromHexString("0F000000320000000300" + "414200"));
                 await ScriptedDaemon.SendAsync(stream, 0, OpenRgbProtocol.PacketId.DetectionComplete, Array.Empty<byte>());
             }
         });
@@ -207,6 +210,6 @@ public class OpenRgbControllerV6Tests
         Assert.True(await controller.RescanAsync());
 
         await completed.Task.WaitAsync(TimeSpan.FromSeconds(2));
-        lock (states) { Assert.Equal(new[] { true, false }, states); }
+        lock (states) { Assert.Equal(new[] { true, true, false }, states); }
     }
 }

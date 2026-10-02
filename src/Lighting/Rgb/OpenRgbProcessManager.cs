@@ -347,8 +347,8 @@ public sealed class OpenRgbProcessManager : IDisposable
     /// <c>Detectors.detectors</c> map, preserving anything OpenRGB itself wrote.
     /// Each detection pass reads it and skips disabled detectors. User exclusions
     /// are also recorded in the <c>Detectors.placeholder_only</c> array, which
-    /// only the service reads (the key name predates that): names dropped from it
-    /// since the last write get their detector re-enabled. Best-effort: a failure here just
+    /// only the service reads: names dropped from it since the last write get
+    /// their detector re-enabled. Best-effort: a failure here just
     /// means OpenRGB might surface a zombie entry, which
     /// CompositeLightingDeviceProvider also strips.
     /// </summary>
