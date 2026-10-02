@@ -299,13 +299,25 @@ public static partial class DevicesRoutes
         return copy;
     }
 
+    // A frame with no positions is sampled along a line in index order.
+    private static bool IndexOrderRunsLeftToRight(float[]? u)
+    {
+        if (u is null) return true;
+        for (var i = 1; i < u.Length; i++)
+        {
+            if (u[i] < u[i - 1]) return false;
+        }
+        return true;
+    }
+
     private static void MapLightingDevicesEndpoints(WebApplication app)
     {
         // Renames are layered on here, not inside the provider, so only what the
         // SPA renders picks them up - mapping publishes and telemetry keep the
         // hardware name. Same split the cooling page's fan renames use.
         app.MapGet("/devices/lighting-devices/all", (ILightingDeviceProvider ld, Nexus.Service.Persistence.IConfigStore store,
-            [Microsoft.AspNetCore.Mvc.FromServices] Nexus.Service.Lighting.LedColorLockTracker locks) =>
+            [Microsoft.AspNetCore.Mvc.FromServices] Nexus.Service.Lighting.LedColorLockTracker locks,
+            Nexus.Service.Lighting.Engine.LightingEngine engine) =>
         {
             var all = ld.GetAll();
             var lighting = store.Load().Lighting;
@@ -313,10 +325,17 @@ public static partial class DevicesRoutes
             foreach (var device in all.Devices)
             {
                 device.LedColors = null;
+                device.LedOrderLeftToRight = false;
                 if (!locks.TryGet(device.Id, out var leds)) continue;
                 device.LedColors = new List<LedColorEntry>(leds.Length);
                 foreach (var led in leds)
                     device.LedColors.Add(new LedColorEntry { Index = led.Index, Color = $"#{led.R:x2}{led.G:x2}{led.B:x2}" });
+                foreach (var frame in engine.Devices)
+                {
+                    if (frame.Id != device.Id) continue;
+                    device.LedOrderLeftToRight = IndexOrderRunsLeftToRight(frame.LedU);
+                    break;
+                }
             }
             all.Groups = lighting.DeviceGroups;
             // Sanitized on the way out too, so a layout word another build

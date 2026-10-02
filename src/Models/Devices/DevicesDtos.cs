@@ -236,6 +236,8 @@ public class LightingDevice
     public int EnabledLedCount { get; set; }
     /// <summary>Card-local LEDs held on a colour (see LedColorLockTracker). Null when none is.</summary>
     public List<LedColorEntry>? LedColors { get; set; }
+    /// <summary>LED index order runs left to right across the card's frame (U never decreases). Set only alongside <see cref="LedColors"/>.</summary>
+    public bool LedOrderLeftToRight { get; set; }
     public float CanvasX { get; set; }
     public float CanvasY { get; set; }
     public float CanvasW { get; set; } = 80;
