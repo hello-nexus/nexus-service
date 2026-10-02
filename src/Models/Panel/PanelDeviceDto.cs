@@ -73,6 +73,9 @@ public sealed class PanelDeviceRecord : IPanelPersonalization
     /// own default. Never rename this to "backgroundFrost": stored records hold
     /// a string under that key, which would not deserialize here.</summary>
     public double? BackgroundFrostLevel { get; set; }
+    /// <summary>Immersive views paint the theme's solid backdrop. False shows the
+    /// panel's background behind them instead. Null is unset (on).</summary>
+    public bool? ImmersiveBackdrop { get; set; }
     /// <summary>Colour stops the value-coloured monitoring gauges paint with, positioned
     /// 0-1 along a gauge's own scale, shared by every monitoring widget on this panel.
     /// Null is unset; the client applies its own default.</summary>
@@ -208,6 +211,7 @@ public interface IPanelPersonalization
     bool? BackgroundMediaFinishVideos { get; set; }
     List<string>? BackgroundMediaOrder { get; set; }
     double? BackgroundFrostLevel { get; set; }
+    bool? ImmersiveBackdrop { get; set; }
     List<PanelGaugeGradientStop>? GaugeGradient { get; set; }
     double? WidgetOpacity { get; set; }
     bool? WidgetLabels { get; set; }
@@ -250,6 +254,7 @@ public sealed class PanelPreset : IAppBoundPreset, IPanelPersonalization
     public bool? BackgroundMediaFinishVideos { get; set; }
     public List<string>? BackgroundMediaOrder { get; set; }
     public double? BackgroundFrostLevel { get; set; }
+    public bool? ImmersiveBackdrop { get; set; }
     public List<PanelGaugeGradientStop>? GaugeGradient { get; set; }
     public double? WidgetOpacity { get; set; }
     public bool? WidgetLabels { get; set; }
@@ -365,6 +370,7 @@ public sealed class PanelDevicePatch
     /// <summary>Full order list to replace this panel's; the client sends the whole list.</summary>
     public List<string>? BackgroundMediaOrder { get; set; }
     public double? BackgroundFrostLevel { get; set; }
+    public bool? ImmersiveBackdrop { get; set; }
     /// <summary>Full stop list to replace this panel's; the client sends the whole list.</summary>
     public List<PanelGaugeGradientStop>? GaugeGradient { get; set; }
     public double? WidgetOpacity { get; set; }

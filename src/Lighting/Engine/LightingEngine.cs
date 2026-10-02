@@ -146,6 +146,9 @@ public sealed class LightingEngine : IDisposable
     /// </summary>
     public Nexus.Service.Lighting.StaticDeviceEffectTracker? StaticEffects { get; set; }
 
+    /// <summary>Per-LED colour locks, painted after every other pass. Null in tests.</summary>
+    public Nexus.Service.Lighting.LedColorLockTracker? LedColorLocks { get; set; }
+
     /// <summary>
     /// Builds the IEffect for an assignment. Supplied by the provider, which
     /// owns shader construction - the engine only renders what it is handed.
@@ -627,12 +630,15 @@ public sealed class LightingEngine : IDisposable
                         // and the skip mask below is indexed against it.
                         var devices = _devices;
                         SampleDevicesFromCanvas(devices);
+                        ApplyLedColorLocks(devices);
                         if (effect is GameSyncEffect gs)
                         {
                             // A locked look (or a highlight / test pattern)
                             // already owns its device; the game frame must
                             // not paint over it.
                             gs.WriteToDevices(devices, _overlaid);
+                            // The game frame paints whole devices, locked LEDs too.
+                            ApplyLedColorLocks(devices);
                         }
                         // Dim as part of publishing, so the ramp is in the one
                         // frame readers see rather than a second write on top of
@@ -794,6 +800,7 @@ public sealed class LightingEngine : IDisposable
                 effect.RenderFrame(_aheadCanvas, req.TickMs[req.NextFrame]);
                 _sampleCanvas = _aheadCanvas;
                 SampleDevicesFromCanvas(shadow);
+                ApplyLedColorLocks(shadow);
                 foreach (var d in shadow)
                 {
                     d.Publish();
@@ -1102,6 +1109,31 @@ public sealed class LightingEngine : IDisposable
             return (0, 0, 0);
         }
         return ((byte)(rSum / n), (byte)(gSum / n), (byte)(bSum / n));
+    }
+
+    /// <summary>
+    /// Paints locked LEDs over whatever the frame already holds. Skips a device
+    /// under a test pattern and LEDs the map marks disabled; under an editor
+    /// highlight only the highlighted LEDs show their lock.
+    /// </summary>
+    private void ApplyLedColorLocks(DeviceFrame[] devices)
+    {
+        var tracker = LedColorLocks;
+        if (tracker is null) return;
+        foreach (var dev in devices)
+        {
+            if (dev.TestPattern is not null || !tracker.TryGet(dev.Id, out var leds)) continue;
+            var disabled = dev.LedDisabled;
+            var highlights = dev.HighlightLeds is { Count: > 0 } h ? h : null;
+            var count = dev.PreviewLedCount is { } pc ? Math.Min(pc, dev.LedCount) : dev.LedCount;
+            foreach (var led in leds)
+            {
+                if (led.Index >= count) break;
+                if (disabled is not null && led.Index < disabled.Length && disabled[led.Index]) continue;
+                if (highlights is not null && !highlights.Contains(led.Index)) continue;
+                dev.SetLed(led.Index, led.R, led.G, led.B);
+            }
+        }
     }
 
     /// <summary>

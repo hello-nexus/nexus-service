@@ -470,12 +470,14 @@ public static class NexusServiceCollectionExtensions
     public static IServiceCollection AddNexusLighting(this IServiceCollection services)
     {
         services.AddSingleton<Nexus.Service.Lighting.StaticDeviceEffectTracker>();
+        services.AddSingleton<Nexus.Service.Lighting.LedColorLockTracker>();
         services.AddSingleton<LightingEngine>(sp =>
         {
             // Property, not ctor: the engine is constructed directly in tests
             // and by hosts that assign no per-device colours.
             var engine = new LightingEngine();
             engine.StaticEffects = sp.GetRequiredService<Nexus.Service.Lighting.StaticDeviceEffectTracker>();
+            engine.LedColorLocks = sp.GetRequiredService<Nexus.Service.Lighting.LedColorLockTracker>();
             engine.SetStackSlots(sp.GetRequiredService<Nexus.Service.Persistence.IConfigStore>().Load().Lighting.DeviceStacks);
             return engine;
         });

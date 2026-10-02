@@ -607,6 +607,8 @@ public sealed class LightingSettings
     /// hardware is meant to show, not a UI preference.
     /// </summary>
     public Dictionary<string, StaticDeviceLook> StaticDeviceLooks { get; set; } = new();
+    /// <summary>Per-LED colour locks, "#rrggbb" by lighting-device id then LED index; held in every mode.</summary>
+    public Dictionary<string, Dictionary<int, string>> LedColorLocks { get; set; } = new();
     // Named snapshots of DeviceLayouts. Capped by the route layer.
     public List<LayoutPreset> LayoutPresets { get; set; } = new();
     // Preset the live DeviceLayouts was last loaded from; null = none selected.

@@ -312,6 +312,23 @@ public sealed class PanelDeviceRegistryTests : IDisposable
     }
 
     [Fact]
+    public void Patch_ImmersiveBackdrop_RoundTripsAndSurvivesUnrelatedPatch()
+    {
+        var record = _registry.Allocate(null, Caps(PanelSurfaces.Phone));
+        Assert.Null(record.ImmersiveBackdrop);
+
+        var off = _registry.Patch(record.Id, new PanelDevicePatch { ImmersiveBackdrop = false });
+        Assert.False(off!.ImmersiveBackdrop);
+        Assert.False(_registry.Get(record.Id)!.ImmersiveBackdrop);
+
+        var renamed = _registry.Patch(record.Id, new PanelDevicePatch { DisplayName = "Renamed" });
+        Assert.False(renamed!.ImmersiveBackdrop);
+
+        var on = _registry.Patch(record.Id, new PanelDevicePatch { ImmersiveBackdrop = true });
+        Assert.True(on!.ImmersiveBackdrop);
+    }
+
+    [Fact]
     public void Patch_GaugeGradient_RoundTripsCopiesAndResets()
     {
         var record = _registry.Allocate(null, Caps(PanelSurfaces.Phone));
@@ -397,6 +414,7 @@ public sealed class PanelDeviceRegistryTests : IDisposable
             BackgroundMediaFinishVideos = false,
             BackgroundMediaOrder = new List<string> { "asset-2", "asset-1" },
             BackgroundFrostLevel = 100,
+            ImmersiveBackdrop = false,
             WidgetOpacity = 0.7,
             WidgetLabels = true,
             WidgetPadding = 25,
@@ -430,6 +448,7 @@ public sealed class PanelDeviceRegistryTests : IDisposable
         Assert.Null(reset.BackgroundMediaFinishVideos);
         Assert.Null(reset.BackgroundMediaOrder);
         Assert.Null(reset.BackgroundFrostLevel);
+        Assert.Null(reset.ImmersiveBackdrop);
         Assert.Null(reset.WidgetOpacity);
         Assert.Null(reset.WidgetLabels);
         Assert.Null(reset.WidgetPadding);

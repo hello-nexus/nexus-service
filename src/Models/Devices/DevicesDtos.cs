@@ -234,6 +234,10 @@ public class LightingDevice
     public int LedCount { get; set; }
     /// <summary>Number of the card's LEDs not disabled in the resolved layout (applied mapping's disabled set layered under user overrides, which win in both directions). Equals <see cref="LedCount"/> when no disable data exists.</summary>
     public int EnabledLedCount { get; set; }
+    /// <summary>Card-local LEDs held on a colour (see LedColorLockTracker). Null when none is.</summary>
+    public List<LedColorEntry>? LedColors { get; set; }
+    /// <summary>The locks as the card strip shows them, one "#rrggbb" or "" per column (see LedColorStrip). Null when no column shows one.</summary>
+    public List<string>? LedColorStrip { get; set; }
     public float CanvasX { get; set; }
     public float CanvasY { get; set; }
     public float CanvasW { get; set; } = 80;
@@ -508,6 +512,24 @@ public sealed class SaveLedMapBody
 public sealed class LedHighlightBody
 {
     public List<int> Indices { get; set; } = new();
+}
+
+/// <summary>Locks <see cref="Indices"/> to <see cref="Color"/> ("#rrggbb"); an empty colour unlocks them.</summary>
+public sealed class SetLedColorsBody
+{
+    public List<int>? Indices { get; set; }
+    public string? Color { get; set; }
+}
+
+public sealed class LedColorEntry
+{
+    public int Index { get; set; }
+    public string Color { get; set; } = "";
+}
+
+public sealed class LedColorsResponse
+{
+    public List<LedColorEntry> Leds { get; set; } = new();
 }
 
 public sealed class LedTestPatternBody
