@@ -144,16 +144,18 @@ public sealed class LedColorLockTracker
 /// <summary>
 /// Locks as the card's one-row strip shows them: the frame split into columns
 /// by LED x position, each wearing the lock colour most of its LEDs hold when
-/// at least half of them are locked, else "" so the look shows through.
+/// at least half of them are locked, else "" so the look shows through. A
+/// column no LED falls in takes its nearest occupied neighbour's value.
 /// </summary>
 public static class LedColorStrip
 {
     public const int Columns = 24;
 
-    /// <summary><paramref name="u"/> is each LED's x position (0-1); null means index order along a line.</summary>
-    public static List<string>? Build(LockedLed[] locks, int ledCount, float[]? u, bool[]? disabled)
+    /// <summary>Positions are used under the engine's own rule: both axes, one per LED; otherwise LEDs sit along a line in index order.</summary>
+    public static List<string>? Build(LockedLed[] locks, int ledCount, float[]? u, float[]? v, bool[]? disabled)
     {
         if (locks.Length == 0 || ledCount <= 0) return null;
+        var positioned = u is not null && v is not null && u.Length == ledCount && v.Length == ledCount;
         var colorOf = new Dictionary<int, uint>(locks.Length);
         foreach (var led in locks) colorOf[led.Index] = (uint)(led.R << 16 | led.G << 8 | led.B);
         var total = new int[Columns];
@@ -161,16 +163,19 @@ public static class LedColorStrip
         for (var i = 0; i < ledCount; i++)
         {
             if (disabled is not null && i < disabled.Length && disabled[i]) continue;
-            var x = u is not null && i < u.Length ? u[i] : ledCount > 1 ? i / (ledCount - 1f) : 0.5f;
+            var x = positioned ? u![i] : ledCount > 1 ? i / (ledCount - 1f) : 0.5f;
             var col = Math.Clamp((int)(x * Columns), 0, Columns - 1);
             total[col]++;
             if (!colorOf.TryGetValue(i, out var rgb)) continue;
             var bin = counts[col] ??= new Dictionary<uint, int>();
             bin[rgb] = bin.GetValueOrDefault(rgb) + 1;
         }
-        List<string>? strip = null;
+
+        var own = new string?[Columns];
         for (var col = 0; col < Columns; col++)
         {
+            if (total[col] == 0) continue;
+            own[col] = "";
             var bin = counts[col];
             if (bin is null) continue;
             var locked = 0;
@@ -181,11 +186,22 @@ public static class LedColorStrip
                 locked += n;
                 if (n > topCount) { top = rgb; topCount = n; }
             }
-            if (locked * 2 < total[col]) continue;
-            strip ??= new List<string>(new string[Columns].Select(_ => ""));
-            strip[col] = $"#{top:x6}";
+            if (locked * 2 >= total[col]) own[col] = $"#{top:x6}";
         }
-        return strip;
+
+        var strip = new List<string>(Columns);
+        var any = false;
+        for (var col = 0; col < Columns; col++)
+        {
+            var value = own[col];
+            for (var d = 1; value is null && d < Columns; d++)
+            {
+                if (col - d >= 0 && own[col - d] is { } left) value = left;
+                else if (col + d < Columns && own[col + d] is { } right) value = right;
+            }
+            strip.Add(value ?? "");
+            any |= !string.IsNullOrEmpty(value);
+        }
+        return any ? strip : null;
     }
 }
-

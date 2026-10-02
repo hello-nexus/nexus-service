@@ -325,7 +325,7 @@ public static partial class DevicesRoutes
                     if (f.Id == device.Id) { frame = f; break; }
                 }
                 device.LedColorStrip = Nexus.Service.Lighting.LedColorStrip.Build(
-                    leds, frame?.LedCount ?? device.LedCount, frame?.LedU, frame?.LedDisabled);
+                    leds, frame?.LedCount ?? device.LedCount, frame?.LedU, frame?.LedV, frame?.LedDisabled);
             }
             all.Groups = lighting.DeviceGroups;
             // Sanitized on the way out too, so a layout word another build
