@@ -1132,6 +1132,37 @@ public static partial class DevicesRoutes
             return ApiResponse.Ok();
         });
 
+        // LED map editor: per-LED colour locks. A locked LED wears its colour
+        // in every mode, over the effect and any Static look, until cleared.
+        app.MapGet("/devices/lighting-devices/{id}/led-colors", (string id,
+            [Microsoft.AspNetCore.Mvc.FromServices] Nexus.Service.Lighting.LedColorLockTracker locks) =>
+        {
+            var response = new LedColorsResponse();
+            if (locks.TryGet(id, out var leds))
+            {
+                foreach (var led in leds)
+                    response.Leds.Add(new LedColorEntry { Index = led.Index, Color = $"#{led.R:x2}{led.G:x2}{led.B:x2}" });
+            }
+            return Results.Json(response, Nexus.Service.Serialization.AppJsonContext.Default.LedColorsResponse);
+        });
+
+        app.MapPost("/devices/lighting-devices/{id}/led-colors", (string id, SetLedColorsBody body,
+            [Microsoft.AspNetCore.Mvc.FromServices] Nexus.Service.Lighting.LedColorLockTracker locks) =>
+        {
+            if (!locks.Set(id, body.Indices, body.Color))
+            {
+                return Results.BadRequest(ApiResponse.Fail("color must be #rrggbb or empty"));
+            }
+            return Results.Ok(ApiResponse.Ok());
+        });
+
+        app.MapDelete("/devices/lighting-devices/{id}/led-colors", (string id,
+            [Microsoft.AspNetCore.Mvc.FromServices] Nexus.Service.Lighting.LedColorLockTracker locks) =>
+        {
+            locks.ClearDevice(id);
+            return Results.Ok(ApiResponse.Ok());
+        });
+
         // LED map editor: directional test pattern
         app.MapPost("/devices/lighting-devices/{id}/led-test-pattern", (string id, LedTestPatternBody body,
             Nexus.Service.Lighting.Engine.LightingEngine engine) =>

@@ -510,6 +510,24 @@ public sealed class LedHighlightBody
     public List<int> Indices { get; set; } = new();
 }
 
+/// <summary>Locks <see cref="Indices"/> to <see cref="Color"/> ("#rrggbb"); an empty colour unlocks them.</summary>
+public sealed class SetLedColorsBody
+{
+    public List<int> Indices { get; set; } = new();
+    public string? Color { get; set; }
+}
+
+public sealed class LedColorEntry
+{
+    public int Index { get; set; }
+    public string Color { get; set; } = "";
+}
+
+public sealed class LedColorsResponse
+{
+    public List<LedColorEntry> Leds { get; set; } = new();
+}
+
 public sealed class LedTestPatternBody
 {
     public string Pattern { get; set; } = "horizontal";

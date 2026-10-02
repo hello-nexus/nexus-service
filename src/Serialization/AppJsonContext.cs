@@ -694,6 +694,8 @@ namespace Nexus.Service.Serialization;
 [JsonSerializable(typeof(Nexus.Service.Persistence.LedPositionOverride))]
 [JsonSerializable(typeof(List<Nexus.Service.Persistence.LedPositionOverride>))]
 [JsonSerializable(typeof(LedHighlightBody))]
+[JsonSerializable(typeof(SetLedColorsBody))]
+[JsonSerializable(typeof(LedColorsResponse))]
 [JsonSerializable(typeof(LedTestPatternBody))]
 [JsonSerializable(typeof(LedPreviewLayoutBody))]
 [JsonSerializable(typeof(LedPreviewPosition))]
