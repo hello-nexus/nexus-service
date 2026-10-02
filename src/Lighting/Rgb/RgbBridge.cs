@@ -725,6 +725,31 @@ public sealed class RgbBridge : IDisposable
         });
     }
 
+    /// <summary>
+    /// A device with neither serial nor location (an RTX Founders Edition) would
+    /// take its id from its list position, which moves whenever a device ahead of
+    /// it comes or goes and drags every per-device setting with it. Each keeps the
+    /// id it first had, pinned by name and same-name ordinal. Runs before
+    /// anything reads <see cref="RgbDevice.StableId"/>, which is cached.
+    /// </summary>
+    private void PinFallbackIds(IReadOnlyList<RgbDevice> devices)
+    {
+        var added = OpenRgbPinnedIds.Assign(devices, _store.Load().Devices.OpenRgbPinnedIds);
+        if (added.Count == 0)
+        {
+            return;
+        }
+        _store.Update(s =>
+        {
+            var next = new Dictionary<string, string>(s.Devices.OpenRgbPinnedIds, StringComparer.Ordinal);
+            foreach (var kv in added)
+            {
+                next[kv.Key] = kv.Value;
+            }
+            s.Devices.OpenRgbPinnedIds = next;
+        });
+    }
+
     private void MarkDetectionActivity() => Interlocked.Exchange(ref _detectionActivityTicks, DateTime.UtcNow.Ticks);
 
     /// <summary>True while detection is visibly running, so a commit would show a half-detected list.</summary>
@@ -1017,6 +1042,7 @@ public sealed class RgbBridge : IDisposable
             try
             {
                 devices = await _controller.GetDevicesAsync().ConfigureAwait(false);
+                PinFallbackIds(devices);
             }
             catch (Exception ex)
             {
@@ -1036,6 +1062,7 @@ public sealed class RgbBridge : IDisposable
                 try
                 {
                     devices = await _controller.GetDevicesAsync().ConfigureAwait(false);
+                    PinFallbackIds(devices);
                     refetched = true;
                 }
                 catch (Exception ex)

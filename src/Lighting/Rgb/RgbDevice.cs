@@ -61,13 +61,16 @@ public sealed class RgbDevice
     /// </summary>
     public bool HasStableHardwareId => !string.IsNullOrEmpty(Serial) || !string.IsNullOrEmpty(Location);
 
+    /// <summary>Id for a device without serial or location, assigned by <see cref="OpenRgbPinnedIds"/> before <see cref="StableId"/> is first read.</summary>
+    public string? PinnedId { get; set; }
+
     private string BuildStableId()
     {
         if (!string.IsNullOrEmpty(Serial))
             return $"openrgb-s-{Sanitize(Serial)}";
         if (!string.IsNullOrEmpty(Location))
             return $"openrgb-l-{Sanitize(Location)}";
-        return $"openrgb-{Index}";
+        return PinnedId ?? $"openrgb-{Index}";
     }
 
     private static string Sanitize(string s)
