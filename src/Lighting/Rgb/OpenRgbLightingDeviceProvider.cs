@@ -232,7 +232,7 @@ public sealed class OpenRgbLightingDeviceProvider : ILightingDeviceProvider, IDe
                 && int.TryParse(id.AsSpan(stableId.Length + 1), out zoneIndex)
                 && zoneIndex >= 0)
             {
-                physicalIndex = devices[i].Index;
+                physicalIndex = devices[i].Address;
                 deviceId = stableId;
                 return true;
             }
@@ -261,7 +261,7 @@ public sealed class OpenRgbLightingDeviceProvider : ILightingDeviceProvider, IDe
                         : -1;
                     if (physicalZone < 0)
                         return false;
-                    physicalIndex = d.Index;
+                    physicalIndex = d.Address;
                     zoneIndex = physicalZone;
                     deviceId = d.StableId;
                     return true;

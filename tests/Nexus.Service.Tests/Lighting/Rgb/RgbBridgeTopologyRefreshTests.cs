@@ -20,6 +20,12 @@ public class RgbBridgeTopologyRefreshTests : IDisposable
 
         public bool IsConnected => Connected;
         public event Action? DeviceListChanged { add { } remove { } }
+        public event Action<bool>? DetectionStateChanged { add { } remove { } }
+        public event Action<int, uint, uint>? WriteRejected { add { } remove { } }
+        public async Task<IReadOnlyList<int>> GetControllerAddressesAsync(CancellationToken ct = default) =>
+            (await GetDevicesAsync(ct)).Select(d => d.Address).ToList();
+        public Task<bool> RescanAsync(CancellationToken ct = default) => Task.FromResult(true);
+        public Task<bool> SetSettingsAsync(string key, string valueJson, CancellationToken ct = default) => Task.FromResult(true);
 
         public Task<bool> TryConnectAsync(CancellationToken ct = default)
         {
@@ -36,10 +42,10 @@ public class RgbBridgeTopologyRefreshTests : IDisposable
         }
 
         public Task SetDirectModeAsync(RgbDevice device, CancellationToken ct = default) => Task.CompletedTask;
-        public Task PushFrameAsync(int deviceIndex, ReadOnlyMemory<RgbColor> colors, CancellationToken ct = default) => Task.CompletedTask;
-        public Task SetOffAsync(int deviceIndex, int ledCount, CancellationToken ct = default) => Task.CompletedTask;
-        public Task PushZoneFrameAsync(int deviceIndex, int zoneIndex, ReadOnlyMemory<RgbColor> colors, CancellationToken ct = default) => Task.CompletedTask;
-        public Task ResizeZoneAsync(int deviceIndex, int zoneIndex, int newSize, CancellationToken ct = default) => Task.CompletedTask;
+        public Task PushFrameAsync(int address, ReadOnlyMemory<RgbColor> colors, CancellationToken ct = default) => Task.CompletedTask;
+        public Task SetOffAsync(int address, int ledCount, CancellationToken ct = default) => Task.CompletedTask;
+        public Task PushZoneFrameAsync(int address, int zoneIndex, ReadOnlyMemory<RgbColor> colors, CancellationToken ct = default) => Task.CompletedTask;
+        public Task ResizeZoneAsync(int address, int zoneIndex, int newSize, CancellationToken ct = default) => Task.CompletedTask;
         public ValueTask DisposeAsync() => ValueTask.CompletedTask;
     }
 

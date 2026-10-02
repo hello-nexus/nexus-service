@@ -53,6 +53,41 @@ public static class UsbTopologyFilter
         return (added, removed, relevant);
     }
 
+    /// <summary>
+    /// Keys newly present whose vid:pid is an exact catalog device OpenRGB
+    /// detects (<see cref="Nexus.Service.Peripherals.LightingDevicesCatalog.OpenRgbUsbIds"/>).
+    /// Only an arrival can need a re-detect, and only of a known device: the
+    /// daemon unregisters removed HID devices itself, and a webcam or headset
+    /// from an RGB vendor has nothing to detect.
+    /// </summary>
+    public static List<string> KnownRgbArrivals(IReadOnlyDictionary<string, int> previous, IReadOnlyDictionary<string, int> current, IReadOnlySet<int> rgbUsbIds)
+    {
+        var arrivals = new List<string>();
+        foreach (var kv in current)
+        {
+            previous.TryGetValue(kv.Key, out var before);
+            if (kv.Value > before && TryVidPid(kv.Key, out var id) && rgbUsbIds.Contains(id))
+            {
+                arrivals.Add(kv.Key);
+            }
+        }
+        return arrivals;
+    }
+
+    /// <summary>"VVVV:PPPP:..." -> (vid &lt;&lt; 16) | pid, the shape of <see cref="Nexus.Service.Peripherals.LightingDevicesCatalog.OpenRgbUsbIds"/>.</summary>
+    private static bool TryVidPid(string key, out int id)
+    {
+        id = 0;
+        if (key.Length < 9 || key[4] != ':'
+            || !int.TryParse(key.AsSpan(0, 4), NumberStyles.HexNumber, CultureInfo.InvariantCulture, out var vid)
+            || !int.TryParse(key.AsSpan(5, 4), NumberStyles.HexNumber, CultureInfo.InvariantCulture, out var pid))
+        {
+            return false;
+        }
+        id = (vid << 16) | pid;
+        return true;
+    }
+
     private static bool IsRelevant(string key, IReadOnlySet<int> rgbVendorIds)
     {
         if (rgbVendorIds.Count == 0)

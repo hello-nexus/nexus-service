@@ -24,6 +24,12 @@ public class RgbBridgeFirstPartyExclusionTests : IDisposable
 
         public bool IsConnected => true;
         public event Action? DeviceListChanged { add { } remove { } }
+        public event Action<bool>? DetectionStateChanged { add { } remove { } }
+        public event Action<int, uint, uint>? WriteRejected { add { } remove { } }
+        public async Task<IReadOnlyList<int>> GetControllerAddressesAsync(CancellationToken ct = default) =>
+            (await GetDevicesAsync(ct)).Select(d => d.Address).ToList();
+        public Task<bool> RescanAsync(CancellationToken ct = default) => Task.FromResult(true);
+        public Task<bool> SetSettingsAsync(string key, string valueJson, CancellationToken ct = default) => Task.FromResult(true);
 
         public Task<bool> TryConnectAsync(CancellationToken ct = default) => Task.FromResult(true);
         public Task DisconnectAsync() => Task.CompletedTask;
@@ -33,18 +39,18 @@ public class RgbBridgeFirstPartyExclusionTests : IDisposable
             _devicesFetched.Release();
             return Task.FromResult<IReadOnlyList<RgbDevice>>(new List<RgbDevice>
             {
-                new RgbDevice { Index = 0, Name = "Lian Li Uni Hub SL-Infinity", LedCount = 16, Location = "COM4" },
-                new RgbDevice { Index = 1, Name = "Generic ARGB Strip", LedCount = 8, Location = "COM5" },
+                new RgbDevice { Index = 0, Address = 0, Name = "Lian Li Uni Hub SL-Infinity", LedCount = 16, Location = "COM4" },
+                new RgbDevice { Index = 1, Address = 1, Name = "Generic ARGB Strip", LedCount = 8, Location = "COM5" },
             });
         }
 
         public Task<bool> WaitForFetchAsync(TimeSpan timeout) => _devicesFetched.WaitAsync(timeout);
 
         public Task SetDirectModeAsync(RgbDevice device, CancellationToken ct = default) => Task.CompletedTask;
-        public Task PushFrameAsync(int deviceIndex, ReadOnlyMemory<RgbColor> colors, CancellationToken ct = default) => Task.CompletedTask;
-        public Task SetOffAsync(int deviceIndex, int ledCount, CancellationToken ct = default) => Task.CompletedTask;
-        public Task PushZoneFrameAsync(int deviceIndex, int zoneIndex, ReadOnlyMemory<RgbColor> colors, CancellationToken ct = default) => Task.CompletedTask;
-        public Task ResizeZoneAsync(int deviceIndex, int zoneIndex, int newSize, CancellationToken ct = default) => Task.CompletedTask;
+        public Task PushFrameAsync(int address, ReadOnlyMemory<RgbColor> colors, CancellationToken ct = default) => Task.CompletedTask;
+        public Task SetOffAsync(int address, int ledCount, CancellationToken ct = default) => Task.CompletedTask;
+        public Task PushZoneFrameAsync(int address, int zoneIndex, ReadOnlyMemory<RgbColor> colors, CancellationToken ct = default) => Task.CompletedTask;
+        public Task ResizeZoneAsync(int address, int zoneIndex, int newSize, CancellationToken ct = default) => Task.CompletedTask;
         public ValueTask DisposeAsync() => ValueTask.CompletedTask;
     }
 

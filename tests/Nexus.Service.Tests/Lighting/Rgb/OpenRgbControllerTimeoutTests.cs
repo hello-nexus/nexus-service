@@ -57,15 +57,20 @@ public class OpenRgbControllerTimeoutTests
             try
             {
                 var stream = client.GetStream();
-                // SET_CLIENT_NAME then REQUEST_PROTOCOL_VERSION.
-                await ReadPacketAsync(stream);
-                await ReadPacketAsync(stream);
+                // Protocol 6 handshake: version, client name, client flags; every packet ACKed.
+                var (first, _) = await ReadPacketAsync(stream);
                 if (!_answerHandshake)
                 {
                     await Task.Delay(Timeout.Infinite, _cts.Token);
                     return;
                 }
                 await WriteReplyAsync(stream, OpenRgbProtocol.PacketId.RequestProtocolVersion, Body(OpenRgbProtocol.CurrentProtocolVersion));
+                await AckAsync(stream, first);
+                var (name, _) = await ReadPacketAsync(stream);
+                await AckAsync(stream, name);
+                var (flags, _) = await ReadPacketAsync(stream);
+                await WriteReplyAsync(stream, OpenRgbProtocol.PacketId.SetServerFlags, Body(OpenRgbProtocol.ServerFlagLocalClient));
+                await AckAsync(stream, flags);
 
                 while (!_cts.IsCancellationRequested)
                 {
@@ -86,6 +91,7 @@ public class OpenRgbControllerTimeoutTests
                     {
                         await WriteReplyAsync(stream, id, Body(0));
                     }
+                    await AckAsync(stream, id);
                 }
             }
             catch { }
@@ -109,6 +115,13 @@ public class OpenRgbControllerTimeoutTests
                 await stream.ReadExactlyAsync(body);
             }
             return (id, body);
+        }
+
+        private static Task AckAsync(NetworkStream stream, OpenRgbProtocol.PacketId acked)
+        {
+            var body = new byte[8];
+            BinaryPrimitives.WriteUInt32LittleEndian(body, (uint)acked);
+            return WriteReplyAsync(stream, OpenRgbProtocol.PacketId.Ack, body);
         }
 
         private static async Task WriteReplyAsync(NetworkStream stream, OpenRgbProtocol.PacketId id, byte[] body)

@@ -8,7 +8,10 @@ namespace Nexus.Service.Lighting.Rgb;
 /// </summary>
 public sealed class RgbDevice
 {
+    /// <summary>Position in the daemon's list; the index-fallback StableId uses it.</summary>
     public int Index { get; set; }
+    /// <summary>What per-controller packets carry: the controller id from protocol 6 (never reused within one daemon run), the index below it.</summary>
+    public int Address { get; set; }
     public string Name { get; set; } = "";
     public uint Type { get; set; }
     public int LedCount { get; set; }
@@ -91,6 +94,8 @@ public sealed class RgbZone
     public uint LedsMax { get; set; }
     /// <summary>True when the controller advertises no room to resize this zone.</summary>
     public bool IsFixedSize => LedsMax > 0 && LedsMin == LedsMax;
+    /// <summary>ZONE_FLAG_* bits, protocol 5+; 0 below it.</summary>
+    public uint Flags { get; set; }
     /// <summary>Matrix width in columns, or 0 when the zone is a linear strip.</summary>
     public int MatrixWidth { get; set; }
     /// <summary>Matrix height in rows, or 0 when the zone is a linear strip.</summary>

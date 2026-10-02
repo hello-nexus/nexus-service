@@ -21,10 +21,27 @@ public class RgbBridgeWatchdogTests : IDisposable
 
         public bool IsConnected => _connected;
         public event Action? DeviceListChanged { add { } remove { } }
+        public event Action<bool>? DetectionStateChanged;
+        public void CompleteDetection() => DetectionStateChanged?.Invoke(false);
+        public event Action<int, uint, uint>? WriteRejected { add { } remove { } }
+        public async Task<IReadOnlyList<int>> GetControllerAddressesAsync(CancellationToken ct = default) =>
+            (await GetDevicesAsync(ct)).Select(d => d.Address).ToList();
+        // A wedged daemon: the real request lock wait times out the same way, shortened here.
+        public async Task<bool> RescanAsync(CancellationToken ct = default)
+        {
+            Record("rescan");
+            if (Park || Fail)
+            {
+                await Task.Delay(200, ct);
+                throw new IOException("OpenRGB socket busy for 5s");
+            }
+            return true;
+        }
+        public Task<bool> SetSettingsAsync(string key, string valueJson, CancellationToken ct = default) => Task.FromResult(true);
 
         public IReadOnlyList<RgbDevice> Devices { get; } = new[]
         {
-            new RgbDevice { Index = 0, Name = "DRAM", LedCount = 4, Serial = "A1" },
+            new RgbDevice { Index = 0, Address = 0, Name = "DRAM", LedCount = 4, Serial = "A1" },
         };
 
         public int Count(string kind)
@@ -68,10 +85,10 @@ public class RgbBridgeWatchdogTests : IDisposable
         }
 
         public Task SetDirectModeAsync(RgbDevice device, CancellationToken ct = default) => Task.CompletedTask;
-        public Task PushFrameAsync(int deviceIndex, ReadOnlyMemory<RgbColor> colors, CancellationToken ct = default) => Task.CompletedTask;
-        public Task SetOffAsync(int deviceIndex, int ledCount, CancellationToken ct = default) => Task.CompletedTask;
-        public Task PushZoneFrameAsync(int deviceIndex, int zoneIndex, ReadOnlyMemory<RgbColor> colors, CancellationToken ct = default) => Task.CompletedTask;
-        public Task ResizeZoneAsync(int deviceIndex, int zoneIndex, int newSize, CancellationToken ct = default) => Task.CompletedTask;
+        public Task PushFrameAsync(int address, ReadOnlyMemory<RgbColor> colors, CancellationToken ct = default) => Task.CompletedTask;
+        public Task SetOffAsync(int address, int ledCount, CancellationToken ct = default) => Task.CompletedTask;
+        public Task PushZoneFrameAsync(int address, int zoneIndex, ReadOnlyMemory<RgbColor> colors, CancellationToken ct = default) => Task.CompletedTask;
+        public Task ResizeZoneAsync(int address, int zoneIndex, int newSize, CancellationToken ct = default) => Task.CompletedTask;
         public ValueTask DisposeAsync() => ValueTask.CompletedTask;
     }
 
@@ -111,6 +128,7 @@ public class RgbBridgeWatchdogTests : IDisposable
             await Task.Delay(20);
         }
         Assert.NotEmpty(_bridge.Devices);
+        _controller.CompleteDetection();
     }
 
     private static async Task<bool> WaitUntilAsync(Func<bool> cond, TimeSpan timeout)

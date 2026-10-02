@@ -37,6 +37,35 @@ public static class LightingDevicesCatalog
     }
 
     private static IReadOnlySet<int>? _usbVendorIds;
+    private static IReadOnlySet<int>? _openRgbUsbIds;
+
+    /// <summary>(vid &lt;&lt; 16) | pid of every catalog device OpenRGB detects by exact USB id (natively driven hardware excluded).</summary>
+    public static IReadOnlySet<int> OpenRgbUsbIds
+    {
+        get
+        {
+            if (_openRgbUsbIds is not null)
+            {
+                return _openRgbUsbIds;
+            }
+            lock (_gate)
+            {
+                if (_openRgbUsbIds is null)
+                {
+                    var ids = new HashSet<int>();
+                    foreach (var d in All)
+                    {
+                        if (d.Source == "openrgb" && TryParseHexId(d.VendorId, out var vid) && TryParseHexId(d.ProductId, out var pid))
+                        {
+                            ids.Add((vid << 16) | pid);
+                        }
+                    }
+                    _openRgbUsbIds = ids;
+                }
+                return _openRgbUsbIds;
+            }
+        }
+    }
 
     /// <summary>
     /// Distinct USB vendor ids across every OpenRGB detector row plus the

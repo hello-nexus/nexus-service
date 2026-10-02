@@ -21,16 +21,37 @@ namespace Nexus.Service.Lighting.Rgb;
 public static class OpenRgbProtocol
 {
     public const int HeaderSize = 16;
-    public const int CurrentProtocolVersion = 4;
+    public const int CurrentProtocolVersion = 6;
+
+    // SET_CLIENT_FLAGS bits (NetworkProtocol.h). The local-client grant gates the settings packets.
+    public const uint ClientFlagSupportsRgbController = 1u << 0;
+    public const uint ClientFlagSupportsSettingsManager = 1u << 4;
+    public const uint ClientFlagRequestLocalClient = 1u << 16;
+    public const uint ServerFlagLocalClient = 1u << 16;
+
+    /// <summary>ACK status codes (NetPacketStatus).</summary>
+    public const uint StatusOk = 0;
+    public const uint StatusInvalidId = 4;
+    public const uint StatusInvalidData = 5;
     public static readonly byte[] MagicBytes = new byte[] { 0x4F, 0x52, 0x47, 0x42 }; // "ORGB"
 
     public enum PacketId : uint
     {
         RequestControllerCount = 0,
         RequestControllerData = 1,
+        Ack = 10,
         RequestProtocolVersion = 40,
         SetClientName = 50,
+        SetServerName = 51,
+        SetClientFlags = 52,
+        SetServerFlags = 53,
         DeviceListUpdated = 100,
+        DetectionStarted = 101,
+        DetectionProgressChanged = 102,
+        DetectionComplete = 103,
+        RequestRescanDevices = 140,
+        SettingsManagerSetSettings = 253,
+        RgbControllerSignalUpdate = 1150,
         SetCustomMode = 1100,
         RgbControllerUpdateMode = 1101,
         RgbControllerUpdateLeds = 1050,
@@ -106,6 +127,47 @@ public static class OpenRgbProtocol
     /// the controller serialized for.
     /// </summary>
     public static byte[] BuildRequestControllerDataBody(uint version) => BuildProtocolVersionBody(version);
+
+    /// <summary>SET_CLIENT_FLAGS body: a single uint32 of client flag bits.</summary>
+    public static byte[] BuildClientFlagsBody(uint flags) => BuildProtocolVersionBody(flags);
+
+    /// <summary>
+    /// REQUEST_CONTROLLER_COUNT reply: uint32 count, then from protocol 6 one
+    /// uint32 controller id per controller. Ids address every per-controller
+    /// packet at v6 and are never reused within one daemon run; below v6 the
+    /// address is the list index.
+    /// </summary>
+    public static int[] ParseControllerAddresses(ReadOnlySpan<byte> body, uint protocolVersion)
+    {
+        EnsureBytes(body, 0, 4, "controller count");
+        var count = (int)BinaryPrimitives.ReadUInt32LittleEndian(body);
+        if (count <= 0)
+        {
+            return Array.Empty<int>();
+        }
+        var addresses = new int[count];
+        if (protocolVersion < 6)
+        {
+            for (var i = 0; i < count; i++)
+            {
+                addresses[i] = i;
+            }
+            return addresses;
+        }
+        EnsureBytes(body, 4, 4 * count, "controller ids");
+        for (var i = 0; i < count; i++)
+        {
+            addresses[i] = (int)BinaryPrimitives.ReadUInt32LittleEndian(body.Slice(4 + 4 * i, 4));
+        }
+        return addresses;
+    }
+
+    /// <summary>ACK body: uint32 acknowledged packet id, uint32 status.</summary>
+    public static (PacketId acked, uint status) ParseAck(ReadOnlySpan<byte> body)
+    {
+        EnsureBytes(body, 0, 8, "ack");
+        return ((PacketId)BinaryPrimitives.ReadUInt32LittleEndian(body), BinaryPrimitives.ReadUInt32LittleEndian(body.Slice(4, 4)));
+    }
 
     /// <summary>
     /// RGBCONTROLLER_UPDATELEDS body for device with the given LED colors.
@@ -266,33 +328,11 @@ public static class OpenRgbProtocol
         for (int i = 0; i < modeCount; i++)
         {
             var modeStart = pos;
-            var modeName = ReadBString(body, ref pos);
-            // Per-mode fixed-size block: value(4) + flags(4) + speed_min(4) + speed_max(4)
-            //   [+ brightness_min(4) + brightness_max(4) on v3+]
-            //   + colors_min(4) + colors_max(4) + speed(4) [+ brightness(4) on v3+]
-            //   + direction(4) + color_mode(4)
-            var modeFixed = 4 + 4 + 4 + 4 + 4 + 4 + 4 + 4 + 4;
-            if (protocolVersion >= 3)
-            {
-                modeFixed += 4 + 4 + 4; // brightness min/max + brightness
-            }
-
-            EnsureBytes(body, pos, modeFixed, $"mode[{i}] fixed block");
-            // color_mode is the LAST uint32 in the fixed block - capture it so we
-            // can pick the right mode to apply for per-LED control without parsing
-            // every field in between.
-            var colorMode = BinaryPrimitives.ReadUInt32LittleEndian(body.Slice(pos + modeFixed - 4, 4));
-            pos += modeFixed;
-            EnsureBytes(body, pos, 2, $"mode[{i}] num_colors");
-            var modeColorCount = BinaryPrimitives.ReadUInt16LittleEndian(body.Slice(pos, 2));
-            pos += 2;
-            var colorsBytes = 4 * modeColorCount;
-            EnsureBytes(body, pos, colorsBytes, $"mode[{i}] colors[]");
-            pos += colorsBytes;
+            var (modeName, colorMode) = ReadMode(body, ref pos, protocolVersion, $"mode[{i}]");
             var modeBytes = body.Slice(modeStart, pos - modeStart).ToArray();
             if (protocolVersion >= 3)
             {
-                ForceModeBrightnessMax(modeBytes);
+                ForceModeBrightnessMax(modeBytes, protocolVersion);
             }
             modes.Add(new RgbMode
             {
@@ -358,12 +398,34 @@ public static class OpenRgbProtocol
                     ReadBString(body, ref pos); // segment name
                     EnsureBytes(body, pos, 12, $"zone[{i}] segment[{s}] fixed block");
                     pos += 12; // type + start_idx + leds_count
+                    if (protocolVersion >= 6)
+                    {
+                        EnsureBytes(body, pos, 2, $"zone[{i}] segment[{s}] matrix_len");
+                        var segMatrixLen = BinaryPrimitives.ReadUInt16LittleEndian(body.Slice(pos, 2));
+                        pos += 2;
+                        EnsureBytes(body, pos, segMatrixLen + 4, $"zone[{i}] segment[{s}] matrix + flags");
+                        pos += segMatrixLen + 4;
+                    }
                 }
             }
+            uint zoneFlags = 0;
             if (protocolVersion >= 5)
             {
                 EnsureBytes(body, pos, 4, $"zone[{i}] zone_flags");
+                zoneFlags = BinaryPrimitives.ReadUInt32LittleEndian(body.Slice(pos, 4));
                 pos += 4;
+            }
+            if (protocolVersion >= 6)
+            {
+                // active_mode, then the zone's own modes, then its display name.
+                EnsureBytes(body, pos, 6, $"zone[{i}] active_mode + num_modes");
+                var zoneModeCount = BinaryPrimitives.ReadUInt16LittleEndian(body.Slice(pos + 4, 2));
+                pos += 6;
+                for (int m = 0; m < zoneModeCount; m++)
+                {
+                    ReadMode(body, ref pos, protocolVersion, $"zone[{i}] mode[{m}]");
+                }
+                ReadBString(body, ref pos);
             }
             zones.Add(new RgbZone
             {
@@ -375,6 +437,7 @@ public static class OpenRgbProtocol
                 MatrixWidth = matrixWidth,
                 MatrixHeight = matrixHeight,
                 MatrixMap = matrixMap,
+                Flags = zoneFlags,
             });
         }
 
@@ -386,8 +449,11 @@ public static class OpenRgbProtocol
         for (int i = 0; i < ledCount; i++)
         {
             var ledName = ReadBString(body, ref pos);
-            EnsureBytes(body, pos, 4, $"led[{i}] value");
-            pos += 4; // led value
+            if (protocolVersion < 6)
+            {
+                EnsureBytes(body, pos, 4, $"led[{i}] value");
+                pos += 4; // led value, dropped at v6
+            }
             ledNames.Add(ledName);
         }
 
@@ -407,6 +473,30 @@ public static class OpenRgbProtocol
     }
 
     /// <summary>
+    /// Advance past one mode entry and return its name and color_mode. Fixed
+    /// block: [value, dropped at v6] flags speed_min speed_max [v3+ brightness
+    /// min/max] colors_min colors_max speed [v3+ brightness] direction
+    /// color_mode, then uint16 num_colors and the colors.
+    /// </summary>
+    private static (string name, uint colorMode) ReadMode(ReadOnlySpan<byte> body, ref int pos, uint protocolVersion, string field)
+    {
+        var name = ReadBString(body, ref pos);
+        var modeFixed = (protocolVersion >= 6 ? 0 : 4) + 8 * 4;
+        if (protocolVersion >= 3)
+        {
+            modeFixed += 3 * 4;
+        }
+        EnsureBytes(body, pos, modeFixed + 2, $"{field} fixed block");
+        var colorMode = BinaryPrimitives.ReadUInt32LittleEndian(body.Slice(pos + modeFixed - 4, 4));
+        pos += modeFixed;
+        var colorCount = BinaryPrimitives.ReadUInt16LittleEndian(body.Slice(pos, 2));
+        pos += 2;
+        EnsureBytes(body, pos, 4 * colorCount, $"{field} colors[]");
+        pos += 4 * colorCount;
+        return (name, colorMode);
+    }
+
+    /// <summary>
     /// Force a mode's brightness field up to its brightness_max, in place. OpenRGB
     /// brightness is per-mode; when we assert a mode via UPDATE_MODE we replay the
     /// device-reported bytes, and a mode whose reported brightness is below its max
@@ -414,9 +504,9 @@ public static class OpenRgbProtocol
     /// drives it dark. Nexus dims in software (RgbBridge.OnFrame), so the hardware
     /// mode must run full. Only valid for protocol v3+ mode bytes: after the leading
     /// mode-name bstring, the fixed block carries brightness_max at +20 and the live
-    /// brightness at +36.
+    /// brightness at +36, each 4 bytes earlier from v6, which drops the leading value.
     /// </summary>
-    internal static void ForceModeBrightnessMax(byte[] modeBytes)
+    internal static void ForceModeBrightnessMax(byte[] modeBytes, uint protocolVersion)
     {
         // modeBytes = [name bstring (uint16 len + bytes)][fixed block][colors].
         if (modeBytes.Length < 2)
@@ -424,7 +514,7 @@ public static class OpenRgbProtocol
             return;
         }
         var nameLen = BinaryPrimitives.ReadUInt16LittleEndian(modeBytes.AsSpan(0, 2));
-        var fixedStart = 2 + nameLen;
+        var fixedStart = 2 + nameLen - (protocolVersion >= 6 ? 4 : 0);
         if (fixedStart + 40 > modeBytes.Length)
         {
             return;

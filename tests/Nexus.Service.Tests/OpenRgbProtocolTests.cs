@@ -20,9 +20,26 @@ public class OpenRgbProtocolTests
         BinaryPrimitives.WriteUInt32LittleEndian(mode.AsSpan(fixedStart + 20, 4), 200); // brightness_max
         BinaryPrimitives.WriteUInt32LittleEndian(mode.AsSpan(fixedStart + 36, 4), 5);   // brightness
 
-        OpenRgbProtocol.ForceModeBrightnessMax(mode);
+        OpenRgbProtocol.ForceModeBrightnessMax(mode, protocolVersion: 5);
 
         Assert.Equal(200u, BinaryPrimitives.ReadUInt32LittleEndian(mode.AsSpan(fixedStart + 36, 4)));
+    }
+
+    [Fact]
+    public void ForceModeBrightnessMax_UsesTheV6OffsetsWithoutModeValue()
+    {
+        // v6 drops the leading mode value, so every field sits 4 bytes earlier.
+        var nameBytes = Encoding.ASCII.GetBytes("Direct");
+        var mode = new byte[2 + nameBytes.Length + 1 + 44 + 2];
+        BinaryPrimitives.WriteUInt16LittleEndian(mode.AsSpan(0, 2), (ushort)(nameBytes.Length + 1));
+        nameBytes.CopyTo(mode.AsSpan(2));
+        var fixedStart = 2 + nameBytes.Length + 1;
+        BinaryPrimitives.WriteUInt32LittleEndian(mode.AsSpan(fixedStart + 16, 4), 100); // brightness_max
+        BinaryPrimitives.WriteUInt32LittleEndian(mode.AsSpan(fixedStart + 32, 4), 0);   // brightness
+
+        OpenRgbProtocol.ForceModeBrightnessMax(mode, protocolVersion: 6);
+
+        Assert.Equal(100u, BinaryPrimitives.ReadUInt32LittleEndian(mode.AsSpan(fixedStart + 32, 4)));
     }
 
     [Fact]
@@ -31,7 +48,7 @@ public class OpenRgbProtocolTests
         // A short buffer (malformed mode) must be left untouched, not throw.
         var mode = new byte[] { 0x02, 0x00, 0x41 };
         var before = (byte[])mode.Clone();
-        OpenRgbProtocol.ForceModeBrightnessMax(mode);
+        OpenRgbProtocol.ForceModeBrightnessMax(mode, protocolVersion: 6);
         Assert.Equal(before, mode);
     }
 

@@ -83,14 +83,14 @@ public class RgbBridgePhysicalBufferWriteTests
         var buffers = new ConcurrentDictionary<int, RgbColor[]>();
         RgbBridge.SizePhysicalBuffers(buffers, new List<RgbDevice>
         {
-            new() { Index = 0, Name = "Corsair M65 PRO", LedCount = 15 },
-            new() { Index = 1, Name = "B850I AORUS PRO", LedCount = 121 },
+            new() { Index = 0, Address = 0, Name = "Corsair M65 PRO", LedCount = 15 },
+            new() { Index = 1, Address = 1, Name = "B850I AORUS PRO", LedCount = 121 },
         });
 
         RgbBridge.SizePhysicalBuffers(buffers, new List<RgbDevice>
         {
-            new() { Index = 0, Name = "Gigabyte RGB Fusion 2 USB", LedCount = 0 },
-            new() { Index = 1, Name = "Corsair M65 PRO", LedCount = 15 },
+            new() { Index = 0, Address = 0, Name = "Gigabyte RGB Fusion 2 USB", LedCount = 0 },
+            new() { Index = 1, Address = 1, Name = "Corsair M65 PRO", LedCount = 15 },
         });
 
         Assert.Equal(15, buffers[1].Length);
@@ -108,19 +108,5 @@ public class RgbBridgePhysicalBufferWriteTests
         RgbBridge.SizePhysicalBuffers(buffers, devices);
 
         Assert.Same(first, buffers[0]);
-    }
-
-    [Fact]
-    public void Drivable_count_ignores_zero_led_placeholders()
-    {
-        var devices = new List<RgbDevice>
-        {
-            new() { Index = 0, Name = "Gigabyte RGB Fusion 2 USB", LedCount = 0 },
-            new() { Index = 1, Name = "Corsair M65 PRO", LedCount = 15 },
-            new() { Index = 2, Name = "Gigabyte RGB Fusion 2 USB", LedCount = 0 },
-            new() { Index = 3, Name = "NVIDIA GeForce RTX 5080 FE", LedCount = 3 },
-        };
-
-        Assert.Equal(2, RgbBridge.CountDrivable(devices));
     }
 }

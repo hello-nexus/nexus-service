@@ -6,69 +6,44 @@ using System.Threading.Tasks;
 namespace Nexus.Service.Lighting.Rgb;
 
 /// <summary>
-/// Minimum-surface RGB device controller. Talks to an OpenRGB SDK server (or
-/// any compatible implementation) over TCP. AOT-safe and reflection-free.
-///
-/// Lifecycle is decoupled from individual operations: <see cref="TryConnectAsync"/>
-/// is the only place that opens a socket. After that, all calls reuse the same
-/// connection. <see cref="DeviceListChanged"/> fires whenever a fresh DEVICE_LIST_UPDATED
-/// notification arrives from the server.
+/// The OpenRGB SDK connection. Per-controller operations take the controller's
+/// <see cref="RgbDevice.Address"/>.
 /// </summary>
 public interface IRgbController : IAsyncDisposable
 {
-    /// <summary>True iff a TCP session is currently open and the protocol handshake completed.</summary>
     bool IsConnected { get; }
 
-    /// <summary>Raised when the SDK server sends a DEVICE_LIST_UPDATED notification or after a successful (re)connect.</summary>
+    /// <summary>The daemon's device list changed, or a new connection came up.</summary>
     event Action? DeviceListChanged;
 
-    /// <summary>
-    /// Try to establish a TCP session with the SDK server. Returns true on success, false
-    /// on connection refused / handshake failure / timeout. Safe to call repeatedly.
-    /// </summary>
+    /// <summary>True when the daemon starts a detection pass, false when it completes one.</summary>
+    event Action<bool>? DetectionStateChanged;
+
+    /// <summary>The daemon refused a write: controller address, packet id, ACK status.</summary>
+    event Action<int, uint, uint>? WriteRejected;
+
     Task<bool> TryConnectAsync(CancellationToken ct = default);
 
-    /// <summary>Close the session. Idempotent.</summary>
     Task DisconnectAsync();
 
-    /// <summary>
-    /// Fetch the current device list. Returns an empty list when not connected.
-    /// </summary>
+    /// <summary>Controller addresses in list order; touches no controller, so a controller stuck on its bus cannot stall it.</summary>
+    Task<IReadOnlyList<int>> GetControllerAddressesAsync(CancellationToken ct = default);
+
     Task<IReadOnlyList<RgbDevice>> GetDevicesAsync(CancellationToken ct = default);
 
-    /// <summary>
-    /// Switch <paramref name="device"/> into direct-control mode by sending
-    /// UPDATE_MODE (1101) with the device's "Direct" (or Custom/Static) per-LED
-    /// mode descriptor. This causes the OpenRGB server to call the controller's
-    /// <c>DeviceUpdateMode()</c>, which for ENE-style DRAM controllers actually
-    /// flips the hardware mode register over SMBus. The lighter SET_CUSTOM_MODE
-    /// packet (1100) only updates the server's in-memory active_mode and never
-    /// reaches the hardware, which is why per-LED writes silently fail on RGB
-    /// RAM until UPDATE_MODE is used. Required before any UPDATE_LEDS push will
-    /// be honored on devices that have a non-direct mode active.
-    /// </summary>
     Task SetDirectModeAsync(RgbDevice device, CancellationToken ct = default);
 
-    /// <summary>
-    /// Push a frame of colors to the device. The colors array length must equal
-    /// the device's <see cref="RgbDevice.LedCount"/>.
-    /// </summary>
-    Task PushFrameAsync(int deviceIndex, ReadOnlyMemory<RgbColor> colors, CancellationToken ct = default);
+    Task PushFrameAsync(int address, ReadOnlyMemory<RgbColor> colors, CancellationToken ct = default);
 
-    /// <summary>Convenience: push an all-black frame.</summary>
-    Task SetOffAsync(int deviceIndex, int ledCount, CancellationToken ct = default);
+    Task SetOffAsync(int address, int ledCount, CancellationToken ct = default);
 
-    /// <summary>
-    /// Push a frame of colors to a single zone within the device (OpenRGB opcode
-    /// UPDATEZONELEDS). Lets us update one motherboard ARGB header without
-    /// racing against the others on the same controller.
-    /// </summary>
-    Task PushZoneFrameAsync(int deviceIndex, int zoneIndex, ReadOnlyMemory<RgbColor> colors, CancellationToken ct = default);
+    Task PushZoneFrameAsync(int address, int zoneIndex, ReadOnlyMemory<RgbColor> colors, CancellationToken ct = default);
 
-    /// <summary>
-    /// Ask the OpenRGB server to reconfigure an ARGB zone's LED count (opcode
-    /// RESIZEZONE). ARGB is one-way so the count must be user-configured; this
-    /// lets us apply the user's choice live.
-    /// </summary>
-    Task ResizeZoneAsync(int deviceIndex, int zoneIndex, int newSize, CancellationToken ct = default);
+    Task ResizeZoneAsync(int address, int zoneIndex, int newSize, CancellationToken ct = default);
+
+    /// <summary>Re-run detection inside the running daemon. False when the daemon did not accept it.</summary>
+    Task<bool> RescanAsync(CancellationToken ct = default);
+
+    /// <summary>Replace one top-level key of the daemon's live settings (memory only; the next detection reads it). False when not accepted.</summary>
+    Task<bool> SetSettingsAsync(string key, string valueJson, CancellationToken ct = default);
 }

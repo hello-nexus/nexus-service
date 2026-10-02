@@ -322,6 +322,27 @@ public sealed class OpenRgbProcessManager : IDisposable
     }
 
     /// <summary>
+    /// Re-asserts the detector overrides on disk and returns the resulting
+    /// "Detectors" object, for pushing into a running daemon before a rescan.
+    /// Null when the config cannot be read back.
+    /// </summary>
+    internal string? RefreshDetectorOverrides()
+    {
+        var configDir = ResolveConfigDir();
+        EnsureDetectorOverrides(configDir, ResolvePlaceholderDetectors(), ResolveBusDisabledDetectors());
+        try
+        {
+            var root = System.Text.Json.Nodes.JsonNode.Parse(File.ReadAllText(Path.Combine(configDir, "OpenRGB.json")));
+            return root?["Detectors"]?.ToJsonString();
+        }
+        catch (Exception ex)
+        {
+            ServiceLog.Warn($"[openrgb-proc] reading back detector overrides failed: {ex.Message}");
+            return null;
+        }
+    }
+
+    /// <summary>
     /// Merge our detector denylist into the OpenRGB config's
     /// <c>Detectors.detectors</c> map, preserving anything OpenRGB itself wrote.
     /// OpenRGB reads this on startup (ResourceManager.cpp) and skips disabled

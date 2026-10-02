@@ -25,6 +25,12 @@ public class RgbBridgeStopBlackoutTests : IDisposable
 
         public bool IsConnected => true;
         public event Action? DeviceListChanged { add { } remove { } }
+        public event Action<bool>? DetectionStateChanged { add { } remove { } }
+        public event Action<int, uint, uint>? WriteRejected { add { } remove { } }
+        public async Task<IReadOnlyList<int>> GetControllerAddressesAsync(CancellationToken ct = default) =>
+            (await GetDevicesAsync(ct)).Select(d => d.Address).ToList();
+        public Task<bool> RescanAsync(CancellationToken ct = default) => Task.FromResult(true);
+        public Task<bool> SetSettingsAsync(string key, string valueJson, CancellationToken ct = default) => Task.FromResult(true);
 
         public IReadOnlyList<RgbDevice> Devices { get; set; } = Array.Empty<RgbDevice>();
 
@@ -54,15 +60,15 @@ public class RgbBridgeStopBlackoutTests : IDisposable
 
         public Task SetDirectModeAsync(RgbDevice device, CancellationToken ct = default) => Task.CompletedTask;
 
-        public Task PushFrameAsync(int deviceIndex, ReadOnlyMemory<RgbColor> colors, CancellationToken ct = default)
+        public Task PushFrameAsync(int address, ReadOnlyMemory<RgbColor> colors, CancellationToken ct = default)
         {
             Record("push", colors.ToArray());
             return Task.CompletedTask;
         }
 
-        public Task SetOffAsync(int deviceIndex, int ledCount, CancellationToken ct = default) => Task.CompletedTask;
-        public Task PushZoneFrameAsync(int deviceIndex, int zoneIndex, ReadOnlyMemory<RgbColor> colors, CancellationToken ct = default) => Task.CompletedTask;
-        public Task ResizeZoneAsync(int deviceIndex, int zoneIndex, int newSize, CancellationToken ct = default) => Task.CompletedTask;
+        public Task SetOffAsync(int address, int ledCount, CancellationToken ct = default) => Task.CompletedTask;
+        public Task PushZoneFrameAsync(int address, int zoneIndex, ReadOnlyMemory<RgbColor> colors, CancellationToken ct = default) => Task.CompletedTask;
+        public Task ResizeZoneAsync(int address, int zoneIndex, int newSize, CancellationToken ct = default) => Task.CompletedTask;
         public ValueTask DisposeAsync() => ValueTask.CompletedTask;
     }
 
@@ -77,7 +83,7 @@ public class RgbBridgeStopBlackoutTests : IDisposable
         Directory.CreateDirectory(_tempDir);
         _controller.Devices = new[]
         {
-            new RgbDevice { Index = 0, Name = "DRAM", LedCount = 4 },
+            new RgbDevice { Index = 0, Address = 0, Name = "DRAM", LedCount = 4 },
         };
         // Nonexistent binary: Start() is a no-op and the bridge still activates.
         _bridge = new RgbBridge(
