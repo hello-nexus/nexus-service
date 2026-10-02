@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Net.Http;
 using System.Security.Cryptography;
 using System.Text;
 using System.Threading;
@@ -35,6 +36,8 @@ public sealed class CloudDeviceReporter : BackgroundService
 
     private volatile string? _lastReportedHash;
     private volatile string? _lastReportedAccountId;
+    // One report or removal at a time, so a report in flight cannot re-add the machine just removed.
+    private readonly SemaphoreSlim _gate = new(1, 1);
 
     public CloudDeviceReporter(ICloudApiClient api, CloudAccountService accounts, SystemSpecsCollector specs, IConfigStore store, SystemCaseService caseSync)
         : this(api, accounts, specs, store, TimeProvider.System, caseSync)
@@ -91,8 +94,9 @@ public sealed class CloudDeviceReporter : BackgroundService
         }
     }
 
-    private async Task<bool> ReportSafeAsync(string accountId, CancellationToken ct)
+    internal async Task<bool> ReportSafeAsync(string accountId, CancellationToken ct)
     {
+        await _gate.WaitAsync(ct).ConfigureAwait(false);
         try
         {
             return await ReportAsync(accountId, ct).ConfigureAwait(false);
@@ -102,12 +106,59 @@ public sealed class CloudDeviceReporter : BackgroundService
             Console.Error.WriteLine($"[cloud-device] report failed: {ex.GetType().Name}: {ex.Message}");
             return false;
         }
+        finally
+        {
+            _gate.Release();
+        }
+    }
+
+    /// <summary>Turns this machine's reporting on (reports now) or off (removes it from the signed-in account).</summary>
+    /// <returns>False when the account could not drop the machine; the setting then stays on.</returns>
+    /// <remarks>Runs to completion whatever the caller does: a setting saved without its removal would leave the machine listed.</remarks>
+    public async Task<bool> SetReportingAsync(bool report)
+    {
+        await _gate.WaitAsync().ConfigureAwait(false);
+        try
+        {
+            _store.Update(s => s.ReportSystem = report);
+            _lastReportedHash = null;
+            if (_accounts.ActiveAccountId is not { } accountId)
+            {
+                return true;
+            }
+            if (report)
+            {
+                try
+                {
+                    await ReportAsync(accountId, CancellationToken.None).ConfigureAwait(false);
+                }
+                catch (Exception ex)
+                {
+                    // The loop retries the report; the setting is what the caller changed.
+                    Console.Error.WriteLine($"[cloud-device] report failed: {ex.GetType().Name}: {ex.Message}");
+                }
+                return true;
+            }
+            var path = "/account/devices/" + Uri.EscapeDataString(_accounts.ResolveStableInstallId());
+            var result = await _accounts.WithAuthAsync(accountId, token => _api.SendRawAsync(HttpMethod.Delete, path, null, token, CancellationToken.None), CancellationToken.None).ConfigureAwait(false);
+            // SendRawAsync succeeds on any HTTP answer; only a 2xx, or a 404 for a row already gone, removed it.
+            if (result.Success && (result.StatusCode is >= 200 and < 300 || result.StatusCode == 404))
+            {
+                return true;
+            }
+            _store.Update(s => s.ReportSystem = true);
+            return false;
+        }
+        finally
+        {
+            _gate.Release();
+        }
     }
 
     /// <returns>True once a ready snapshot was sent or skipped as unchanged; false to retry sooner (specs collector still warming up).</returns>
     private async Task<bool> ReportAsync(string accountId, CancellationToken ct)
     {
-        if (accountId != _accounts.ActiveAccountId)
+        if (accountId != _accounts.ActiveAccountId || !_store.Load().ReportSystem)
         {
             return true;
         }

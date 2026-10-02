@@ -2030,7 +2030,8 @@ public static class NexusServiceCollectionExtensions
         services.AddSingleton<Nexus.Service.Cloud.CloudProfileSyncService>();
         services.AddSingleton<Nexus.Service.Cloud.CloudProfileLibraryService>();
         services.AddHostedService(sp => sp.GetRequiredService<Nexus.Service.Cloud.CloudProfileSyncService>());
-        services.AddHostedService<Nexus.Service.Cloud.CloudDeviceReporter>();
+        services.AddSingleton<Nexus.Service.Cloud.CloudDeviceReporter>();
+        services.AddHostedService(sp => sp.GetRequiredService<Nexus.Service.Cloud.CloudDeviceReporter>());
         return services;
     }
 

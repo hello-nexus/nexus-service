@@ -68,6 +68,9 @@ public sealed class NexusSettings
     /// <summary>User-overridden display name for this host PC. Empty means "fall back to Environment.MachineName". Surfaced in the panel tray header and in the QR/claim payload paired phones see. NOT profile-scoped: a host has one name regardless of which profile is active.</summary>
     public string HostDisplayName { get; set; } = "";
 
+    /// <summary>Whether this machine reports its specs to the signed-in account, which then lists it among the account's Systems. NOT profile-scoped.</summary>
+    public bool ReportSystem { get; set; } = true;
+
     /// <summary>Folder where phone→PC transfers land. Empty means auto-resolve (interactive user's Downloads/Nexus, falling back to CommonApplicationData/Nexus/inbox - see <see cref="Nexus.Service.Transfer.TransferInbox"/>). NOT profile-scoped.</summary>
     public string TransferInboxPath { get; set; } = "";
 

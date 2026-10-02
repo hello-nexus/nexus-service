@@ -8,6 +8,8 @@ using Nexus.Service.Models.Activity;
 using Nexus.Service.Models.Panel;
 using Nexus.Service.Models.Sensors;
 using Nexus.Service.Monitoring;
+using Nexus.Service.Persistence;
+using Nexus.Service.Serialization;
 using Nexus.Service.Platform;
 using Nexus.Service.Sensors;
 using Nexus.Service.Sockets;
@@ -46,6 +48,19 @@ public static class SystemRoutes
             }
             var saved = await cases.SetAsync(body.CaseId, ct).ConfigureAwait(false);
             return Results.Ok(new SystemCaseResponse { CaseId = saved });
+        });
+
+        // Whether this machine is listed among the account's Systems. Turning it off removes it from the account.
+        app.MapGet("/system/report", (CloudAccountService accounts, IConfigStore store) =>
+            new SystemReportResponse { InstallId = accounts.ResolveStableInstallId(), Report = store.Load().ReportSystem });
+
+        app.MapPut("/system/report", async (SetSystemReportBody body, CloudDeviceReporter reporter, CloudAccountService accounts, IConfigStore store) =>
+        {
+            if (!await reporter.SetReportingAsync(body.Report).ConfigureAwait(false))
+            {
+                return Results.Json(ApiResponse.Fail("The account could not be updated."), AppJsonContext.Default.ApiResponse, statusCode: StatusCodes.Status502BadGateway);
+            }
+            return Results.Ok(new SystemReportResponse { InstallId = accounts.ResolveStableInstallId(), Report = store.Load().ReportSystem });
         });
 
         // OS accent for the web's "system" accent source. Windows/macOS push it

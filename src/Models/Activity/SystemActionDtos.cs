@@ -68,3 +68,15 @@ public sealed class SetSystemCaseBody
 {
     public string? CaseId { get; set; }
 }
+
+/// <summary>This machine's place among the account's Systems: the install id it reports under, and whether it reports.</summary>
+public sealed class SystemReportResponse
+{
+    public string InstallId { get; set; } = "";
+    public bool Report { get; set; }
+}
+
+public sealed class SetSystemReportBody
+{
+    public bool Report { get; set; }
+}
