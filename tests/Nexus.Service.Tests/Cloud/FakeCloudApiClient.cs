@@ -42,6 +42,9 @@ public sealed class FakeCloudApiClient : ICloudApiClient
     public Func<CloudRegisterRequest, CloudApiResult<CloudVoid>> OnRegister = _ => CloudApiResult<CloudVoid>.NetworkError("not wired");
     public Func<CloudLoginRequest, CloudApiResult<CloudAuthSession>> OnLogin = _ => CloudApiResult<CloudAuthSession>.NetworkError("not wired");
     public Func<string, CloudApiResult<CloudAuthSession>> OnRefresh = _ => CloudApiResult<CloudAuthSession>.NetworkError("not wired");
+    /// <summary>When set, replaces <see cref="OnRefresh"/> so a test can hold a refresh in flight.</summary>
+    public Func<string, Task<CloudApiResult<CloudAuthSession>>>? OnRefreshAsync;
+    public CancellationToken LastRefreshCt;
     public Func<string, CloudApiResult<CloudVoid>> OnLogout = _ => CloudApiResult<CloudVoid>.Ok(CloudVoid.Instance);
     public Func<CloudRecoveryStartRequest, CloudApiResult<CloudRecoveryStartResponse>> OnRecoveryStart =
         _ => CloudApiResult<CloudRecoveryStartResponse>.Ok(new CloudRecoveryStartResponse());
@@ -75,7 +78,11 @@ public sealed class FakeCloudApiClient : ICloudApiClient
     { LoginCalls++; return Task.FromResult(OnLogin(body)); }
 
     public Task<CloudApiResult<CloudAuthSession>> RefreshAsync(string refreshToken, CancellationToken ct)
-    { RefreshCalls++; return Task.FromResult(OnRefresh(refreshToken)); }
+    {
+        RefreshCalls++;
+        LastRefreshCt = ct;
+        return OnRefreshAsync is { } onAsync ? onAsync(refreshToken) : Task.FromResult(OnRefresh(refreshToken));
+    }
 
     public Task<CloudApiResult<CloudVoid>> LogoutAsync(string refreshToken, CancellationToken ct)
     { LogoutCalls++; return Task.FromResult(OnLogout(refreshToken)); }
@@ -146,7 +153,10 @@ internal sealed class InMemoryConfigStore : Nexus.Service.Persistence.IConfigSto
     }
 
     public void Reload() { _settings = new(); }
-    public void FlushNow() { }
+
+    /// <summary>The first account's refresh token at each FlushNow, i.e. what that flush put on disk.</summary>
+    public List<string?> FlushedRefreshTokens { get; } = new();
+    public void FlushNow() => FlushedRefreshTokens.Add(_settings.Auth?.CloudAccounts.FirstOrDefault()?.RefreshToken);
     public event Action? OnChanged;
 }
 

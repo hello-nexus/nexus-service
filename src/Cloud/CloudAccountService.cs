@@ -92,6 +92,12 @@ public sealed class CloudAccountService
     private readonly ConcurrentDictionary<string, (string Token, DateTimeOffset ExpiresAt)> _accessTokens = new();
     private readonly ConcurrentDictionary<string, SemaphoreSlim> _refreshGates = new();
 
+    // Outlasts the refresh request's own timeout, so an in-flight rotation always settles first.
+    private static readonly TimeSpan ShutdownRefreshWait = CloudApiClient.DefaultRequestTimeout + TimeSpan.FromSeconds(2);
+    private int _stopping;
+    private readonly object _quiesceLock = new();
+    private bool _quiesced;
+
     private readonly object _recoveryLock = new();
     private string? _recoveryGrantId;
     private string? _recoveryDeviceSecret;
@@ -193,6 +199,7 @@ public sealed class CloudAccountService
             rec.RefreshToken = SecretProtector.Protect(session.RefreshToken);
             s.Auth.ActiveCloudAccountId = account.Id;
         });
+        _store.FlushNow();
 
         _accessTokens[account.Id] = (session.AccessToken, _clock.GetUtcNow().AddMinutes(AccessTokenLifetimeMinutes));
         FireActivation(previousActiveId, account.Id);
@@ -333,6 +340,10 @@ public sealed class CloudAccountService
     /// </summary>
     internal Task<string?> RefreshAsync(string accountId, CancellationToken ct)
     {
+        if (Volatile.Read(ref _stopping) != 0)
+        {
+            return Task.FromResult<string?>(null);
+        }
         var gate = _refreshGates.GetOrAdd(accountId, _ => new SemaphoreSlim(1, 1));
         return RefreshGatedAsync(accountId, gate, ct);
     }
@@ -342,7 +353,13 @@ public sealed class CloudAccountService
         await gate.WaitAsync(ct).ConfigureAwait(false);
         try
         {
-            return await RefreshCoreAsync(accountId, ct).ConfigureAwait(false);
+            // Re-checked under the gate: a caller that added its gate after
+            // QuiesceForShutdown enumerated them must not start a rotation.
+            if (Volatile.Read(ref _stopping) != 0)
+            {
+                return null;
+            }
+            return await RefreshCoreAsync(accountId).ConfigureAwait(false);
         }
         finally
         {
@@ -350,7 +367,7 @@ public sealed class CloudAccountService
         }
     }
 
-    private async Task<string?> RefreshCoreAsync(string accountId, CancellationToken ct)
+    private async Task<string?> RefreshCoreAsync(string accountId)
     {
         var storedRefreshToken = _store.Load().Auth?.CloudAccounts.FirstOrDefault(a => a.AccountId == accountId)?.RefreshToken;
         var refreshToken = SecretProtector.Unprotect(storedRefreshToken);
@@ -359,7 +376,10 @@ public sealed class CloudAccountService
             return null;
         }
 
-        var result = await _api.RefreshAsync(refreshToken, ct).ConfigureAwait(false);
+        // Never cancelled by the caller, only by the client's own timeout: an
+        // abort after the server rotated would lose the new token, and the next
+        // refresh would present the old one and trip reuse detection.
+        var result = await _api.RefreshAsync(refreshToken, CancellationToken.None).ConfigureAwait(false);
         if (!result.Success || result.Value is null || string.IsNullOrEmpty(result.Value.AccessToken))
         {
             // A definitive 401/403 means the server rejected this refresh token
@@ -371,6 +391,7 @@ public sealed class CloudAccountService
             // back in on a server blip.
             if (!result.Offline && (result.StatusCode == 401 || result.StatusCode == 403))
             {
+                Console.Error.WriteLine($"[cloud] refresh rejected ({result.StatusCode} {result.ErrorCode}: {result.ErrorMessage}); signing out {accountId}");
                 RemoveAccountLocally(accountId);
             }
             return null;
@@ -390,10 +411,42 @@ public sealed class CloudAccountService
                 ApplyAccountFields(rec, session.Account);
             }
         });
+        // The server has already retired the old token, so the new one goes to disk now, not after the debounce.
+        _store.FlushNow();
 
         var expiresAt = _clock.GetUtcNow().AddMinutes(AccessTokenLifetimeMinutes);
         _accessTokens[accountId] = (session.AccessToken, expiresAt);
         return session.AccessToken;
+    }
+
+    /// <summary>Stops new refreshes and waits for in-flight ones, so a token the server already rotated is on disk before the process exits. Idempotent; a second caller blocks until the first finishes.</summary>
+    public void QuiesceForShutdown()
+    {
+        lock (_quiesceLock)
+        {
+            if (_quiesced)
+            {
+                return;
+            }
+            Interlocked.Exchange(ref _stopping, 1);
+            var sw = System.Diagnostics.Stopwatch.StartNew();
+            foreach (var (accountId, gate) in _refreshGates)
+            {
+                var remaining = ShutdownRefreshWait - sw.Elapsed;
+                var busy = gate.CurrentCount == 0;
+                // Acquired and never released: callers already queued on the gate stay out.
+                if (!gate.Wait(remaining > TimeSpan.Zero ? remaining : TimeSpan.Zero))
+                {
+                    Console.Error.WriteLine($"[cloud] shutdown: refresh for {accountId} still in flight after {sw.ElapsedMilliseconds}ms");
+                }
+                else if (busy)
+                {
+                    Console.Error.WriteLine($"[cloud] shutdown: waited {sw.ElapsedMilliseconds}ms for {accountId}'s in-flight token refresh");
+                }
+            }
+            _store.FlushNow();
+            _quiesced = true;
+        }
     }
 
     /// <summary>Runs an authenticated call, refreshing and retrying exactly once on a 401. Shared by every /account/... proxy so the "expired token -> refresh -> retry" behavior lives in one place.</summary>

@@ -12,7 +12,7 @@ namespace Nexus.Service.Persistence;
 /// <see cref="NexusDataPaths.NexusRoot"/>/settings.json, which resolves the
 /// per-OS default or the NEXUS_DATA_ROOT override.
 ///
-/// Concurrency: a single global lock around load/save. Updates mutate the in-memory
+/// Concurrency: one lock guards the in-memory doc, a second serializes disk writes. Updates mutate the in-memory
 /// doc synchronously, but the disk write is coalesced to a short debounce window so
 /// lighting slider drags (10-20 Hz) don't serialize and fsync the whole settings
 /// JSON on every frame. Dispose() flushes any pending write.
@@ -25,6 +25,7 @@ public sealed class JsonConfigStore : IConfigStore, IDisposable
     private const int FlushDebounceMs = 300;
 
     private readonly object _lock = new();
+    private readonly object _writeLock = new();
     private NexusSettings? _cached;
     private Timer? _flushTimer;
     private bool _dirty;
@@ -69,9 +70,10 @@ public sealed class JsonConfigStore : IConfigStore, IDisposable
                 return _cached;
             }
 
+            string? json = null;
             try
             {
-                var json = File.ReadAllText(SettingsPath);
+                json = File.ReadAllText(SettingsPath);
                 _cached = JsonSerializer.Deserialize(json, PersistenceJsonContext.Default.NexusSettings);
                 // Valid JSON (e.g. a literal "null") but no data: the file
                 // still existed, so this is not a fresh install for the v8
@@ -125,10 +127,34 @@ public sealed class JsonConfigStore : IConfigStore, IDisposable
                 // Migrate() the same as any other pre-v8 document.
                 _cached = new NexusSettings { SchemaVersion = 0 };
                 Migrate(_cached);
+                // Sign-ins and paired devices survive a reset of the rest of the file.
+                if (TryReadAuth(json) is { } auth)
+                {
+                    _cached.Auth = auth;
+                }
                 Persist(_cached);
             }
 
             return _cached;
+        }
+    }
+
+    private static AuthSettings? TryReadAuth(string? json)
+    {
+        if (json is null)
+        {
+            return null;
+        }
+        try
+        {
+            using var doc = JsonDocument.Parse(json);
+            return doc.RootElement.TryGetProperty("auth", out var auth)
+                ? auth.Deserialize(PersistenceJsonContext.Default.AuthSettings)
+                : null;
+        }
+        catch
+        {
+            return null;
         }
     }
 
@@ -313,7 +339,7 @@ public sealed class JsonConfigStore : IConfigStore, IDisposable
         { _cached = null; _dirty = false; }
     }
 
-    /// <summary>Force any pending debounced write to run now. Safe to call from any thread.</summary>
+    /// <summary>Force any pending debounced write to run now. Safe from any thread, but never from inside an Update mutator: it takes the write lock before the doc lock.</summary>
     public void FlushNow() => FlushPending();
 
     private void ScheduleFlushLocked()
@@ -328,23 +354,33 @@ public sealed class JsonConfigStore : IConfigStore, IDisposable
 
     private void FlushPending()
     {
-        // Serialize under the lock (produces a string - fast) so no other Update
-        // can mutate the doc mid-serialization. Do the disk write outside the
-        // lock so sliders aren't blocked on fsync.
-        string? json;
-        lock (_lock)
+        // _writeLock admits one flusher at a time (they share settings.json.tmp)
+        // and is taken BEFORE serializing, so a slower writer never lands an
+        // older snapshot over a newer one. Updates take only _lock, so sliders
+        // aren't blocked on fsync.
+        lock (_writeLock)
         {
-            if (!_dirty || _cached is null)
+            string? json;
+            lock (_lock)
             {
-                return;
+                if (!_dirty || _cached is null)
+                {
+                    return;
+                }
+                json = JsonSerializer.Serialize(_cached, PersistenceJsonContext.Default.NexusSettings);
+                _dirty = false;
             }
-            json = JsonSerializer.Serialize(_cached, PersistenceJsonContext.Default.NexusSettings);
-            _dirty = false;
-        }
 
-        try
-        { WriteAtomic(json); }
-        catch (Exception ex) { Console.Error.WriteLine($"[config-store] flush failed: {ex.Message}"); }
+            try
+            { WriteAtomic(json); }
+            catch (Exception ex)
+            {
+                Console.Error.WriteLine($"[config-store] flush failed: {ex.Message}");
+                // The next Update, FlushNow or Dispose retries the write.
+                lock (_lock)
+                { _dirty = true; }
+            }
+        }
     }
 
     private void Persist(NexusSettings doc)

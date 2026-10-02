@@ -164,6 +164,83 @@ public sealed class CloudAccountServiceTests
         Assert.Equal("access-after-restart", token);
     }
 
+    private static void SeedAccount(InMemoryConfigStore store, string refreshToken)
+    {
+        store.Update(s =>
+        {
+            s.Auth ??= new AuthSettings();
+            s.Auth.CloudAccounts.Add(new CloudAccountRecord { AccountId = "acct-1", RefreshToken = refreshToken });
+            s.Auth.ActiveCloudAccountId = "acct-1";
+        });
+    }
+
+    private static CloudApiResult<CloudAuthSession> Rotated(string refreshToken) =>
+        CloudApiResult<CloudAuthSession>.Ok(new CloudAuthSession
+        {
+            AccessToken = "access-" + refreshToken,
+            RefreshToken = refreshToken,
+            Account = Account("acct-1"),
+        });
+
+    [Fact]
+    public async Task RefreshAsync_flushes_the_rotated_token_to_disk_before_returning()
+    {
+        var (svc, api, store) = Make();
+        SeedAccount(store, "old-refresh");
+        api.OnRefresh = _ => Rotated("new-refresh");
+
+        await svc.RefreshAsync("acct-1", CancellationToken.None);
+
+        Assert.Contains("new-refresh", store.FlushedRefreshTokens);
+    }
+
+    [Fact]
+    public async Task LoginAsync_flushes_the_new_session_to_disk()
+    {
+        var (svc, api, store) = Make();
+        api.OnLogin = _ => Rotated("login-refresh");
+
+        await svc.LoginAsync("nicola@example.com", "password1", CancellationToken.None);
+
+        Assert.Contains("login-refresh", store.FlushedRefreshTokens);
+    }
+
+    [Fact]
+    public async Task RefreshAsync_never_hands_the_callers_cancellation_to_the_request()
+    {
+        var (svc, api, store) = Make();
+        SeedAccount(store, "old-refresh");
+        api.OnRefresh = _ => Rotated("new-refresh");
+        using var cts = new CancellationTokenSource();
+
+        await svc.RefreshAsync("acct-1", cts.Token);
+
+        Assert.False(api.LastRefreshCt.CanBeCanceled);
+    }
+
+    [Fact]
+    public async Task QuiesceForShutdown_waits_for_the_in_flight_refresh_then_refuses_new_ones()
+    {
+        var (svc, api, store) = Make();
+        SeedAccount(store, "old-refresh");
+        var response = new TaskCompletionSource<CloudApiResult<CloudAuthSession>>(TaskCreationOptions.RunContinuationsAsynchronously);
+        api.OnRefreshAsync = _ => response.Task;
+
+        var inFlight = svc.RefreshAsync("acct-1", CancellationToken.None);
+        var quiesce = Task.Run(svc.QuiesceForShutdown);
+        Assert.NotSame(quiesce, await Task.WhenAny(quiesce, Task.Delay(200)));
+
+        response.SetResult(Rotated("new-refresh"));
+        await quiesce.WaitAsync(TimeSpan.FromSeconds(5));
+        Assert.Equal("access-new-refresh", await inFlight);
+        Assert.Equal("new-refresh", store.FlushedRefreshTokens[^1]);
+
+        var callsBefore = api.RefreshCalls;
+        Assert.Null(await svc.RefreshAsync("acct-1", CancellationToken.None));
+        Assert.Equal(callsBefore, api.RefreshCalls);
+        Assert.Single(store.Load().Auth!.CloudAccounts);
+    }
+
     [Fact]
     public async Task RefreshAsync_dead_refresh_token_drops_the_local_session()
     {
