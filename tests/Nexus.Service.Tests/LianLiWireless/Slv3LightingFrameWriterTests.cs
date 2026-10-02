@@ -150,6 +150,30 @@ public class Slv3LightingFrameWriterTests
         }
     }
 
+    [Fact]
+    public void Tick_streams_a_bound_hydroshift_pump_ring_as_one_24_led_frame()
+    {
+        var (hub, net, tx) = Slv3TestHub.CreateConnected();
+        net.Fans.Add(new Slv3TestHub.SimulatedFan { Mac = FanMac, MasterMac = net.MasterMac, RxType = 1, DevType = 11, FanCount = 0, CoolantTempC = 29 });
+        Assert.True(hub.DriveTick());
+
+        var store = new InMemoryConfigStore();
+        var identify = new Np50IdentifyTracker();
+        var provider = new Slv3LightingDeviceProvider(hub, store, identify);
+        var frame = Assert.Single(provider.BuildFrames(0));
+        Assert.Equal(24, frame.LedCount);
+        var engine = new LightingEngine();
+        engine.UpdateDevices(new[] { frame });
+        var writer = new Slv3LightingFrameWriter(engine, hub, store, identify, provider, () => 200 * TimeSpan.TicksPerMillisecond);
+        FillAll(new[] { frame }, 10, 20, 30);
+
+        writer.Tick();
+
+        var header = RgbSyncFrames(tx).Find(f => f[22] == 0);
+        Assert.NotNull(header);
+        Assert.Equal(24, header![31]);
+    }
+
     private static (Slv3Hub Hub, Slv3TestHub.FakeTxTransport Tx, InMemoryConfigStore Store, LightingEngine Engine, Slv3LightingFrameWriter Writer)
         CreateStrimerSetup(Func<long> clock) => CreateStrimerSetup(clock, new Np50IdentifyTracker());
 

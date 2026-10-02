@@ -74,4 +74,6 @@ public sealed class Slv3FanInfo
     public string EffectIndex { get; set; } = "";
     /// <summary>True when the chain has missed recent device-list polls (beacon unheard); telemetry is last-known, not live.</summary>
     public bool Stale { get; set; }
+    /// <summary>HydroShift II coolant temperature in °C; null for other devices or when not reported.</summary>
+    public int? CoolantTempC { get; set; }
 }

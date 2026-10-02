@@ -237,6 +237,22 @@ public class Slv3LightingDeviceProviderTests
     }
 
     [Fact]
+    public void Hydroshift_is_one_24_led_pump_ring_with_the_cooler_icon()
+    {
+        var (hub, net, _) = Slv3TestHub.CreateConnected();
+        net.Fans.Add(new Slv3TestHub.SimulatedFan { Mac = FanMac, MasterMac = net.MasterMac, RxType = 1, DevType = 10, FanCount = 0, CoolantTempC = 30 });
+        Assert.True(hub.DriveTick());
+
+        var provider = new Slv3LightingDeviceProvider(hub, new InMemoryConfigStore(), new Np50IdentifyTracker());
+        var structure = Assert.Single(provider.GetStructures());
+        Assert.True(Slv3LightingDeviceProvider.IsSingleSegmentStructure(structure));
+        Assert.Equal(24, Assert.Single(structure.Segments).LedCount);
+        var card = Assert.Single(provider.GetAll().Devices);
+        Assert.EndsWith(":pump", card.Id, StringComparison.Ordinal);
+        Assert.Equal("cooler", card.IconType);
+    }
+
+    [Fact]
     public void Strimer_dev_type_without_a_known_geometry_is_not_a_device()
     {
         var (hub, net, _) = Slv3TestHub.CreateConnected();

@@ -45,6 +45,14 @@ public sealed class Slv3Hub : IDisposable
     // by the PWM sync, written by SetPortDuty; both hold _lock.
     private readonly Dictionary<string, int?[]> _dutyTargets = new(StringComparer.Ordinal);
 
+    // HydroShift II pumps Nexus drives, keyed by AIO MAC hex. An AIO without an
+    // entry is sent no params.
+    private readonly Dictionary<string, Slv3AioControl> _aioControl = new(StringComparer.Ordinal);
+    private volatile bool _anyAioControlled;
+
+    /// <summary>Host readings for a driven HydroShift II's LCD; read once per <see cref="DriveTick"/>, outside the hub lock.</summary>
+    public Func<Slv3AioSensors>? AioSensors { get; set; }
+
     private ISlv3Transport? _tx;
     private ISlv3Transport? _rx;
     private byte[] _masterMac = new byte[Slv3Protocol.MacLength];
@@ -261,6 +269,11 @@ public sealed class Slv3Hub : IDisposable
         _pending.Clear();
         _pendingCommands.Clear();
         _lastIssuedSeq.Clear();
+        foreach (var control in _aioControl.Values)
+        {
+            control.Switched = false;
+            control.SwitchSeq = 0;
+        }
         _rxFailStreak = 0;
         _rxBusyStreak = 0;
         _rxResetCount = 0;
@@ -396,6 +409,7 @@ public sealed class Slv3Hub : IDisposable
     /// </summary>
     public bool DriveTick()
     {
+        var aioSensors = _anyAioControlled ? ReadAioSensors() : default;
         lock (_lock)
         {
             if (!PollLocked())
@@ -407,6 +421,7 @@ public sealed class Slv3Hub : IDisposable
                 return true;
             }
             SyncPwmLocked();
+            SyncAioLocked(aioSensors);
             RefreshMasterMacLocked();
             SendClockHeartbeatLocked();
             RunSaveCfgScheduleLocked();
@@ -504,12 +519,13 @@ public sealed class Slv3Hub : IDisposable
     // control pass. L-Connect skips a chain that enumerates no fans; here such
     // a chain is still driven once the user sets a port duty on it (the cooling
     // provider exposes its ports), and left alone on the mobo-sync default.
-    // A Strimer has no fan ports at all and is never re-bound from here.
+    // A Strimer has no fan ports at all and is never re-bound from here, nor is
+    // a HydroShift II, whose fourth PWM slot drives its pump.
     private void SyncPwmLocked()
     {
         foreach (var record in _lastFanRecords)
         {
-            if (!IsBoundToUsLocked(record) || record.IsStrimer)
+            if (!IsBoundToUsLocked(record) || record.IsStrimer || record.IsHydroShift)
             {
                 continue;
             }
@@ -528,6 +544,58 @@ public sealed class Slv3Hub : IDisposable
             {
                 SendBindFrameLocked(record, record.RxType, unbind: false);
             }
+        }
+    }
+
+    // lian-li-linux control_wireless: while Nexus drives an AIO's pump, the
+    // switch to RF params is re-sent until the AIO echoes its cmdSeq, and the
+    // param block (pump timer plus LCD readings) goes out every DriveTick.
+    private void SyncAioLocked(Slv3AioSensors sensors)
+    {
+        if (_aioControl.Count == 0)
+        {
+            return;
+        }
+        foreach (var record in _lastFanRecords)
+        {
+            if (!record.IsHydroShift || !IsBoundToUsLocked(record))
+            {
+                continue;
+            }
+            var key = Convert.ToHexString(record.Mac);
+            if (!_aioControl.TryGetValue(key, out var control))
+            {
+                continue;
+            }
+            if (!control.Switched)
+            {
+                if (control.SwitchSeq != 0 && record.CmdSeq == control.SwitchSeq)
+                {
+                    control.Switched = true;
+                    ServiceLog.Info($"[lianli-wireless] HydroShift II {key} acknowledged RF control (seq {control.SwitchSeq})");
+                }
+                else if (!_pendingCommands.ContainsKey(key))
+                {
+                    control.SwitchSeq = QueueSequencedCommandLocked(record, Slv3Protocol.RfAioSwitchWireless) ?? 0;
+                }
+            }
+            var rpm = Slv3Protocol.HydroShiftPumpRpm(control.Percent, record.DevType);
+            var block = Slv3Protocol.BuildAioParamBlock(sensors, Slv3Protocol.HydroShiftPumpTimer(rpm, record.DevType));
+            var payload = Slv3Protocol.BuildAioParams(record.Mac, _masterMac, record.RxType, record.Channel, BindOrdinalLocked(record.Mac), block);
+            SendRfPayloadLocked(record.Channel, record.RxType, payload);
+        }
+    }
+
+    private Slv3AioSensors ReadAioSensors()
+    {
+        try
+        {
+            return AioSensors?.Invoke() ?? default;
+        }
+        catch (Exception ex)
+        {
+            ServiceLog.Warn($"[lianli-wireless] AIO sensor read failed: {ex.Message}");
+            return default;
         }
     }
 
@@ -708,7 +776,9 @@ public sealed class Slv3Hub : IDisposable
                 var key = Convert.ToHexString(record.Mac);
                 if (!_knownChains.ContainsKey(key))
                 {
-                    var what = record.IsStrimer ? $"Strimer dev_type {record.DevType}" : $"{record.FanCount} fan(s), {record.Family}";
+                    var what = record.IsStrimer ? $"Strimer dev_type {record.DevType}"
+                        : record.IsHydroShift ? $"HydroShift II dev_type {record.DevType}, {record.FanCount} fan(s)"
+                        : $"{record.FanCount} fan(s), {record.Family}";
                     ServiceLog.Info($"[lianli-wireless] chain {key} appeared ({what})");
                 }
                 _knownChains[key] = new Slv3KnownChain(record, nowMs);
@@ -729,6 +799,11 @@ public sealed class Slv3Hub : IDisposable
             {
                 ServiceLog.Info($"[lianli-wireless] chain {key} dropped ({ChainExpiryMs / 1000}s unseen)");
                 _knownChains.Remove(key);
+                if (_aioControl.TryGetValue(key, out var control))
+                {
+                    control.Switched = false;
+                    control.SwitchSeq = 0;
+                }
             }
         }
 
@@ -832,6 +907,7 @@ public sealed class Slv3Hub : IDisposable
         Pwm = (int[])record.Pwm.Clone(),
         EffectIndex = Convert.ToHexString(record.EffectIndex),
         Stale = stale,
+        CoolantTempC = record.CoolantTempC,
     };
 
     private bool TryFindRecordLocked(byte[] mac, out Slv3DeviceRecord record)
@@ -883,7 +959,9 @@ public sealed class Slv3Hub : IDisposable
         {
             return false;
         }
-        var pwm = Slv3Protocol.BuildPwmTuple(DutyTargetsLocked(record.Mac), record.FanCount, record.Family);
+        // A duty set on a HydroShift II through the cooling route would land in its pump slot.
+        var targets = record.IsHydroShift ? DefaultDutyTargets : DutyTargetsLocked(record.Mac);
+        var pwm = Slv3Protocol.BuildPwmTuple(targets, record.FanCount, record.Family);
         var payload = unbind
             ? Slv3Protocol.BuildUnbind(record.Mac, _channel, pwm)
             : Slv3Protocol.BuildBind(record.Mac, _masterMac, targetRx: targetSlot, targetChannel: _channel, slot: BindOrdinalLocked(record.Mac), pwm);
@@ -903,7 +981,9 @@ public sealed class Slv3Hub : IDisposable
         {
             return false;
         }
-        var payload = Slv3Protocol.BuildSequencedCommand(rfCmd, record.Mac, _masterMac, record.RxType, record.Channel, cmdSeq);
+        // lian-li-linux switch_to_wireless_theme carries the AIO's bind ordinal at [16].
+        var slot = rfCmd == Slv3Protocol.RfAioSwitchWireless ? BindOrdinalLocked(record.Mac) : (byte)0;
+        var payload = Slv3Protocol.BuildSequencedCommand(rfCmd, record.Mac, _masterMac, record.RxType, record.Channel, cmdSeq, slot);
         return SendRfPayloadLocked(record.Channel, record.RxType, payload);
     }
 
@@ -1070,17 +1150,80 @@ public sealed class Slv3Hub : IDisposable
             {
                 return false;
             }
-            var key = Convert.ToHexString(mac);
-            _lastIssuedSeq.TryGetValue(key, out var lastIssued);
-            var seq = Slv3Protocol.NextCmdSeq((byte)Math.Max(lastIssued, record.CmdSeq));
-            if (!SendSequencedCommandLocked(record, rfCmd, seq))
+            if (QueueSequencedCommandLocked(record, rfCmd) is not { } seq)
             {
                 return false;
             }
-            _lastIssuedSeq[key] = seq;
-            _pendingCommands[key] = new Slv3PendingCommand(mac, rfCmd, seq, SequencedCommandBudget - 1);
             ServiceLog.Info($"[lianli-wireless] {label} sent to {macHex} (seq {seq})");
             return true;
+        }
+    }
+
+    // Sends the first frame now and leaves the rest to SyncControlLocked; null when the send failed.
+    private byte? QueueSequencedCommandLocked(Slv3DeviceRecord record, byte rfCmd)
+    {
+        var key = Convert.ToHexString(record.Mac);
+        _lastIssuedSeq.TryGetValue(key, out var lastIssued);
+        var seq = Slv3Protocol.NextCmdSeq((byte)Math.Max(lastIssued, record.CmdSeq));
+        if (!SendSequencedCommandLocked(record, rfCmd, seq))
+        {
+            return null;
+        }
+        _lastIssuedSeq[key] = seq;
+        _pendingCommands[key] = new Slv3PendingCommand(record.Mac, rfCmd, seq, SequencedCommandBudget - 1);
+        return seq;
+    }
+
+    /// <summary>
+    /// Sets the duty a HydroShift II pump is driven at; 0% still runs it at the
+    /// head's minimum RPM. Null stops sending it params; nothing switches the
+    /// AIO back from RF control. False for a MAC that is not a known HydroShift II.
+    /// </summary>
+    public bool SetPumpDuty(string macHex, int? percent)
+    {
+        if (!TryParseMac(macHex, out var mac))
+        {
+            return false;
+        }
+        var key = Convert.ToHexString(mac);
+        lock (_lock)
+        {
+            if (percent is null)
+            {
+                if (_aioControl.Remove(key))
+                {
+                    ServiceLog.Info($"[lianli-wireless] HydroShift II {key} pump released");
+                }
+            }
+            else
+            {
+                if (!TryFindRecordLocked(mac, out var record) || !record.IsHydroShift)
+                {
+                    return false;
+                }
+                if (!_aioControl.TryGetValue(key, out var control))
+                {
+                    control = new Slv3AioControl();
+                    _aioControl[key] = control;
+                    ServiceLog.Info($"[lianli-wireless] HydroShift II {key} pump driven by Nexus");
+                }
+                control.Percent = Math.Clamp(percent.Value, 0, 100);
+            }
+            _anyAioControlled = _aioControl.Count > 0;
+            return true;
+        }
+    }
+
+    /// <summary>The duty Nexus drives a HydroShift II pump at, or null when it is left alone.</summary>
+    public int? GetPumpDuty(string macHex)
+    {
+        if (!TryParseMac(macHex, out var mac))
+        {
+            return null;
+        }
+        lock (_lock)
+        {
+            return _aioControl.TryGetValue(Convert.ToHexString(mac), out var control) ? control.Percent : null;
         }
     }
 
@@ -1462,4 +1605,12 @@ public sealed class Slv3Hub : IDisposable
     private readonly record struct Slv3PendingCommand(byte[] Mac, byte RfCmd, byte TargetSeq, int SendsRemaining);
 
     private readonly record struct Slv3KnownChain(Slv3DeviceRecord Record, long LastSeenMs);
+
+    // SwitchSeq is the cmdSeq of the last RF_AioSwitchWireless sent; 0 = none in flight.
+    private sealed class Slv3AioControl
+    {
+        public int Percent;
+        public byte SwitchSeq;
+        public bool Switched;
+    }
 }

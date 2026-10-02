@@ -146,7 +146,7 @@ public sealed class Slv3LightingDeviceProvider : ILightingDeviceProvider, ILight
         var slot = 0;
         foreach (var structure in BuildStructures())
         {
-            var iconType = IsStrimerStructure(structure) ? "ledstrip" : "fan";
+            var iconType = IsStrimerStructure(structure) ? "ledstrip" : IsHydroShiftStructure(structure) ? "cooler" : "fan";
             foreach (var zone in ZoneResolution.Resolve(structure, settings))
             {
                 resp.Devices.Add(BuildCard(structure, zone, slot++, settings, iconType));
@@ -364,6 +364,11 @@ public sealed class Slv3LightingDeviceProvider : ILightingDeviceProvider, ILight
                 if (ledCount > 0) structures.Add(BuildStrimerStructure(fan, ledCount));
                 continue;
             }
+            if (Slv3Protocol.IsHydroShiftDevType((byte)fan.DevType))
+            {
+                structures.Add(BuildHydroShiftStructure(fan));
+                continue;
+            }
             if (fan.FanCount <= 0) continue;
             structures.Add(BuildStructure(fan));
         }
@@ -407,6 +412,60 @@ public sealed class Slv3LightingDeviceProvider : ILightingDeviceProvider, ILight
     /// </summary>
     internal static bool IsStrimerStructure(DeviceStructure structure) =>
         structure.DeviceKey.StartsWith(StrimerDeviceKeyPrefix, StringComparison.Ordinal);
+
+    private static readonly string HydroShiftDeviceKey =
+        DeviceKeyComputer.ForFirstParty(Slv3Protocol.TxVendorId, Slv3Protocol.TxProductId, "wireless-hydroshift-ii");
+
+    internal static bool IsHydroShiftStructure(DeviceStructure structure) =>
+        string.Equals(structure.DeviceKey, HydroShiftDeviceKey, StringComparison.Ordinal);
+
+    /// <summary>True when the structure's one segment is the chain's wire buffer as-is: a Strimer cable or a HydroShift II.</summary>
+    internal static bool IsSingleSegmentStructure(DeviceStructure structure) =>
+        IsStrimerStructure(structure) || IsHydroShiftStructure(structure);
+
+    // The AIO's RGB frame is the pump head, then each fan wired to the AIO,
+    // HydroShiftPumpLeds apiece (lian-li-linux rgb_zone_led_counts): one fixed
+    // segment with a default zone per ring.
+    private static DeviceStructure BuildHydroShiftStructure(Slv3FanInfo fan)
+    {
+        var deviceId = DeviceIdFor(fan.Mac);
+        const int ringLeds = Slv3Protocol.HydroShiftPumpLeds;
+        var rings = 1 + Math.Clamp(fan.FanCount, 0, Slv3Protocol.PortsPerRecord);
+        var ledCount = rings * ringLeds;
+        var (u, v) = BuildFanRingUV(rings, OuterRadius, ringLeds);
+        var structure = new DeviceStructure
+        {
+            DeviceId = deviceId,
+            Name = "Lian Li Wireless",
+            DeviceKey = HydroShiftDeviceKey,
+        };
+        structure.Segments.Add(new StructureSegment
+        {
+            Index = 0,
+            Name = "HydroShift II",
+            LedCount = ledCount,
+            FrameLedCount = ledCount,
+            Resizable = false,
+            MaxLedCount = ledCount,
+            ZoneType = "linear",
+            DefaultU = u,
+            DefaultV = v,
+        });
+        for (var ring = 0; ring < rings; ring++)
+        {
+            var name = ring == 0 ? "HydroShift II Pump" : $"HydroShift II Fan {ring}";
+            structure.DefaultZones.Add(new DefaultZoneDef
+            {
+                Id = ring == 0 ? $"{deviceId}:pump" : $"{deviceId}:fan{ring}",
+                Name = $"Lian Li Wireless - {name}",
+                RawName = name,
+                DeviceKey = HydroShiftDeviceKey,
+                LegacyZoneIndex = -1,
+                Slices = { new ZoneSlice { Segment = 0, Start = ring * ringLeds, Count = ringLeds } },
+            });
+        }
+        return structure;
+    }
 
     /// <summary>
     /// Model per Strimer dev_type (lian-li.com Strimer Wireless line), the

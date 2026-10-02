@@ -354,6 +354,110 @@ public class Slv3HubTests
     }
 
     [Fact]
+    public void HydroShift_never_gets_a_pwm_sync_frame_even_with_a_port_duty_set()
+    {
+        var (hub, net, tx, _) = CreateConnectedHub();
+        net.Fans.Add(new SimulatedFan { Mac = FanMac, MasterMac = net.MasterMac, RxType = 1, DevType = 11, FanCount = 0 });
+        Assert.True(hub.DriveTick());
+        Assert.True(hub.DriveTick());
+        Assert.Equal(0, CountBindFrames(tx));
+
+        Assert.True(hub.SetPortDuty(Convert.ToHexString(FanMac), 3, 50));
+        Assert.True(hub.DriveTick());
+        Assert.Equal(0, CountBindFrames(tx));
+    }
+
+    [Fact]
+    public void HydroShift_unbind_frame_never_carries_a_port_duty()
+    {
+        var (hub, net, tx, _) = CreateConnectedHub();
+        net.Fans.Add(new SimulatedFan { Mac = FanMac, MasterMac = net.MasterMac, RxType = 1, DevType = 10, FanCount = 0 });
+        Assert.True(hub.DriveTick());
+        Assert.True(hub.SetPortDuty(Convert.ToHexString(FanMac), 3, 50));
+
+        Assert.True(hub.Unbind(Convert.ToHexString(FanMac)));
+
+        var frame = LastBindFrame(tx, FanMac);
+        Assert.All(frame.AsSpan(21, 4).ToArray(), b => Assert.Equal(Slv3Protocol.PwmFollowMotherboard, b));
+    }
+
+    [Fact]
+    public void Driven_hydroshift_pump_gets_the_switch_until_echoed_and_params_every_drive_tick()
+    {
+        var (hub, net, tx, _) = CreateConnectedHub();
+        net.Fans.Add(new SimulatedFan { Mac = FanMac, MasterMac = net.MasterMac, RxType = 1, DevType = 10, FanCount = 0 });
+        hub.AioSensors = () => new Slv3AioSensors(55f, 12f, null, null);
+        Assert.True(hub.DriveTick());
+        Assert.Empty(RfFrames(tx, Slv3Protocol.RfAioParams));
+
+        Assert.True(hub.SetPumpDuty(Convert.ToHexString(FanMac), 50));
+        Assert.True(hub.DriveTick());
+
+        var switchFrame = Assert.Single(RfFrames(tx, Slv3Protocol.RfAioSwitchWireless));
+        Assert.Equal(1, switchFrame[20]); // [16] slot: the only bound chain
+        var paramsFrame = Assert.Single(RfFrames(tx, Slv3Protocol.RfAioParams));
+        // 50% of the LCD-C's 1600..2500 rpm span is 2050 rpm, timer 740.
+        Assert.Equal(740, (paramsFrame[50] << 8) | paramsFrame[51]);
+        Assert.Equal(new byte[] { 55, 12, 0, 0 }, paramsFrame[22..26]);
+        Assert.Equal(new byte[] { 1, 1, 0, 0 }, paramsFrame[30..34]);
+
+        Assert.True(hub.DriveTick());
+        Assert.Single(RfFrames(tx, Slv3Protocol.RfAioSwitchWireless));
+        Assert.Equal(2, RfFrames(tx, Slv3Protocol.RfAioParams).Count);
+        Assert.Equal(0, CountBindFrames(tx));
+    }
+
+    [Fact]
+    public void Hydroshift_switch_keeps_being_sent_while_the_aio_never_echoes()
+    {
+        var (hub, net, tx, _) = CreateConnectedHub();
+        net.Fans.Add(new SimulatedFan { Mac = FanMac, MasterMac = net.MasterMac, RxType = 1, DevType = 11, FanCount = 0 });
+        net.EchoCmdSeq = false;
+        Assert.True(hub.DriveTick());
+        Assert.True(hub.SetPumpDuty(Convert.ToHexString(FanMac), 100));
+
+        for (var i = 0; i < 2 * Slv3Hub.SequencedCommandBudget; i++)
+        {
+            Assert.True(hub.DriveTick());
+        }
+
+        Assert.True(RfFrames(tx, Slv3Protocol.RfAioSwitchWireless).Count > Slv3Hub.SequencedCommandBudget);
+        // 100% of the LCD-S span is 3200 rpm, timer 0.
+        Assert.All(RfFrames(tx, Slv3Protocol.RfAioParams), f => Assert.Equal(0, (f[50] << 8) | f[51]));
+    }
+
+    [Fact]
+    public void Released_hydroshift_pump_gets_no_more_params()
+    {
+        var (hub, net, tx, _) = CreateConnectedHub();
+        net.Fans.Add(new SimulatedFan { Mac = FanMac, MasterMac = net.MasterMac, RxType = 1, DevType = 10, FanCount = 0 });
+        Assert.True(hub.DriveTick());
+        Assert.True(hub.SetPumpDuty(Convert.ToHexString(FanMac), 30));
+        Assert.True(hub.DriveTick());
+        Assert.Equal(30, hub.GetPumpDuty(Convert.ToHexString(FanMac)));
+
+        Assert.True(hub.SetPumpDuty(Convert.ToHexString(FanMac), null));
+        tx.SentFrames.Clear();
+        Assert.True(hub.DriveTick());
+
+        Assert.Null(hub.GetPumpDuty(Convert.ToHexString(FanMac)));
+        Assert.Empty(RfFrames(tx, Slv3Protocol.RfAioParams));
+    }
+
+    [Fact]
+    public void Pump_duty_is_refused_for_a_fan_chain()
+    {
+        var (hub, net, tx, _) = CreateConnectedHub();
+        net.Fans.Add(new SimulatedFan { Mac = FanMac, MasterMac = net.MasterMac, RxType = 1, FanCount = 3 });
+        Assert.True(hub.DriveTick());
+
+        Assert.False(hub.SetPumpDuty(Convert.ToHexString(FanMac), 50));
+        Assert.True(hub.DriveTick());
+        Assert.Empty(RfFrames(tx, Slv3Protocol.RfAioParams));
+        Assert.Empty(RfFrames(tx, Slv3Protocol.RfAioSwitchWireless));
+    }
+
+    [Fact]
     public void Zero_fan_chain_is_left_on_mobo_sync_until_a_port_duty_is_set()
     {
         var (hub, net, tx, _) = CreateConnectedHub();
@@ -1149,6 +1253,11 @@ public class Slv3HubTests
     }
 
     // Bind/PWM frames on the wire: a chunkSeq-0 USB frame carrying RF_Bind.
+    // First USB chunk of every RF payload with this command; payload byte k sits at frame [4 + k].
+    private static List<byte[]> RfFrames(FakeTxTransport tx, byte rfCmd) =>
+        tx.SentFrames.FindAll(f => f.Length >= 6 && f[0] == Slv3Protocol.UsbSendRf && f[1] == 0
+            && f[4] == Slv3Protocol.RfFrameType && f[5] == rfCmd);
+
     private static int CountBindFrames(FakeTxTransport tx)
     {
         var count = 0;
@@ -1299,7 +1408,8 @@ public class Slv3HubTests
                 }
             }
             if (copy.Length >= 22 && copy[0] == Slv3Protocol.UsbSendRf && copy[1] == 0
-                && (copy[5] == Slv3Protocol.RfSelect || copy[5] == Slv3Protocol.RfRebootChain) && _net.EchoCmdSeq)
+                && (copy[5] == Slv3Protocol.RfSelect || copy[5] == Slv3Protocol.RfRebootChain || copy[5] == Slv3Protocol.RfAioSwitchWireless)
+                && _net.EchoCmdSeq)
             {
                 var fanMac = copy.AsSpan(6, 6).ToArray();
                 foreach (var fan in _net.Fans)

@@ -44,6 +44,10 @@ internal static class Slv3TestHub
         /// <summary>fans_type byte reported for every port; 0 = unclassified.</summary>
         public byte FansType { get; set; }
         public byte[] EffectIndex { get; set; } = new byte[4];
+        /// <summary>Record byte 27, written after fans_type: a HydroShift II's coolant temperature.</summary>
+        public byte CoolantTempC { get; set; }
+        /// <summary>RPM reported in slot 3, a HydroShift II's pump.</summary>
+        public int PumpRpm { get; set; }
     }
 
     public sealed class FakeSlv3Network
@@ -143,6 +147,9 @@ internal static class Slv3TestHub
                 rec[18] = fan.DevType;
                 rec[19] = fan.FanCount;
                 for (var p = 0; p < Slv3Protocol.PortsPerRecord; p++) rec[24 + p] = fan.FansType;
+                if (fan.CoolantTempC != 0) rec[27] = fan.CoolantTempC;
+                rec[34] = (byte)(fan.PumpRpm >> 8);
+                rec[35] = (byte)fan.PumpRpm;
                 fan.EffectIndex.CopyTo(rec.Slice(20, 4));
                 rec[41] = Slv3Protocol.RecordValidator;
             }

@@ -471,6 +471,139 @@ public class Slv3ProtocolTests
     }
 
     [Theory]
+    [InlineData(0, false)]
+    [InlineData(9, false)]
+    [InlineData(10, true)]
+    [InlineData(11, true)]
+    [InlineData(12, false)]
+    [InlineData(0xFF, false)]
+    public void IsHydroShiftDevType_is_10_and_11(byte devType, bool expected)
+    {
+        Assert.Equal(expected, Slv3Protocol.IsHydroShiftDevType(devType));
+    }
+
+    // Vectors from lian-li-linux wireless/aio.rs circle/square curve tests.
+    [Theory]
+    [InlineData(10, 1600, 1500)]
+    [InlineData(10, 1700, 1333)]
+    [InlineData(10, 1800, 1140)]
+    [InlineData(10, 1900, 963)]
+    [InlineData(10, 2100, 640)]
+    [InlineData(10, 2350, 150)]
+    [InlineData(10, 2450, 35)]
+    [InlineData(10, 2500, 10)]
+    [InlineData(10, 1000, 1500)]
+    [InlineData(10, 5000, 10)]
+    [InlineData(11, 1600, 1590)]
+    [InlineData(11, 1700, 1495)]
+    [InlineData(11, 1900, 1300)]
+    [InlineData(11, 2100, 1100)]
+    [InlineData(11, 2300, 900)]
+    [InlineData(11, 2500, 700)]
+    [InlineData(11, 2700, 469)]
+    [InlineData(11, 2900, 210)]
+    [InlineData(11, 3100, 45)]
+    [InlineData(11, 3200, 0)]
+    [InlineData(11, 100, 1590)]
+    [InlineData(11, 9999, 0)]
+    public void HydroShiftPumpTimer_matches_the_reference_curves(byte devType, int rpm, int timer)
+    {
+        Assert.Equal(timer, Slv3Protocol.HydroShiftPumpTimer(rpm, devType));
+    }
+
+    [Theory]
+    [InlineData(10, 0, 1600)]
+    [InlineData(10, 50, 2050)]
+    [InlineData(10, 100, 2500)]
+    [InlineData(11, 100, 3200)]
+    [InlineData(11, -20, 1600)]
+    [InlineData(11, 150, 3200)]
+    public void HydroShiftPumpRpm_maps_duty_linearly_over_the_head_span(byte devType, int percent, int rpm)
+    {
+        Assert.Equal(rpm, Slv3Protocol.HydroShiftPumpRpm(percent, devType));
+    }
+
+    [Fact]
+    public void BuildAioParamBlock_lays_out_lcd_readings_defaults_and_pump_timer()
+    {
+        var p = Slv3Protocol.BuildAioParamBlock(new Slv3AioSensors(55.7f, 120f, null, float.NaN), pumpTimer: 963);
+
+        Assert.Equal(Slv3Protocol.AioParamLength, p.Length);
+        Assert.Equal(new byte[] { 55, 99, 0, 0 }, p[0..4]);
+        Assert.Equal(new byte[] { 1, 1, 0, 0 }, p[8..12]);
+        Assert.Equal(3, p[6]);
+        Assert.Equal(1, p[7]);
+        Assert.All(p[13..25], b => Assert.Equal(0xFF, b));
+        Assert.Equal(80, p[25]);
+        Assert.Equal(1, p[26]);
+        Assert.Equal(0, p[27]);
+        Assert.Equal(963, (p[28] << 8) | p[29]);
+        Assert.Equal(0, p[30]);
+    }
+
+    [Fact]
+    public void Aio_switch_frame_matches_the_reference_packet()
+    {
+        var payload = Slv3Protocol.BuildSequencedCommand(
+            Slv3Protocol.RfAioSwitchWireless, FanMac, MasterMac, targetRx: 2, targetChannel: 8, cmdSeq: 7, slot: 3);
+
+        Assert.Equal(Slv3Protocol.RfPayloadSize, payload.Length);
+        Assert.Equal(new byte[] { 0x12, 0x19 }, payload[0..2]);
+        Assert.Equal(FanMac, payload[2..8]);
+        Assert.Equal(MasterMac, payload[8..14]);
+        Assert.Equal(new byte[] { 2, 8, 3, 7 }, payload[14..18]);
+        Assert.All(payload[18..], b => Assert.Equal(0, b));
+    }
+
+    [Fact]
+    public void Aio_params_frame_carries_the_block_after_the_header()
+    {
+        var block = Slv3Protocol.BuildAioParamBlock(default, pumpTimer: 740);
+        var payload = Slv3Protocol.BuildAioParams(FanMac, MasterMac, targetRx: 1, targetChannel: 8, slot: 1, block);
+
+        Assert.Equal(new byte[] { 0x12, 0x21 }, payload[0..2]);
+        Assert.Equal(new byte[] { 1, 8, 1, 0 }, payload[14..18]);
+        Assert.Equal(block, payload[18..50]);
+        Assert.All(payload[50..], b => Assert.Equal(0, b));
+    }
+
+    [Fact]
+    public void HydroShift_record_reads_coolant_and_keeps_it_out_of_the_fan_type()
+    {
+        var reply = new byte[Slv3Protocol.RecordHeaderLength + Slv3Protocol.RecordLength];
+        var rec = reply.AsSpan(Slv3Protocol.RecordHeaderLength);
+        FanMac.CopyTo(rec.Slice(0));
+        MasterMac.CopyTo(rec.Slice(6));
+        rec[13] = 1;
+        rec[18] = 10;
+        rec[27] = 31;   // coolant °C
+        rec[34] = 0x08; // pump slot RPM 2100, big-endian
+        rec[35] = 0x34;
+        rec[41] = 0x1C;
+
+        Assert.True(Slv3Protocol.TryParseRecord(reply, Slv3Protocol.RecordHeaderLength, out var record));
+        Assert.Equal(31, record.CoolantTempC);
+        Assert.Equal(0, record.EffectiveFanType);
+        Assert.Equal(Slv3FanFamily.Unknown, record.Family);
+        Assert.Equal(2100, record.Rpm[Slv3Protocol.HydroShiftPumpPort]);
+    }
+
+    [Fact]
+    public void Fan_chain_keeps_its_fourth_fan_type_byte_and_reports_no_coolant()
+    {
+        var reply = new byte[Slv3Protocol.RecordHeaderLength + Slv3Protocol.RecordLength];
+        var rec = reply.AsSpan(Slv3Protocol.RecordHeaderLength);
+        FanMac.CopyTo(rec.Slice(0));
+        rec[19] = 4;
+        rec[27] = 28;
+        rec[41] = 0x1C;
+
+        Assert.True(Slv3Protocol.TryParseRecord(reply, Slv3Protocol.RecordHeaderLength, out var record));
+        Assert.Null(record.CoolantTempC);
+        Assert.Equal(28, record.EffectiveFanType);
+    }
+
+    [Theory]
     [InlineData(1, 4, 29)]  // GPU 2x8 / 16-8
     [InlineData(2, 6, 22)]  // 24-pin (the Y70 cable)
     [InlineData(3, 6, 29)]  // GPU 3x8 / 16-12

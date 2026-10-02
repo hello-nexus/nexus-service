@@ -19,10 +19,17 @@ namespace Nexus.Service.Cooling;
 /// motherboard-sync sentinel,
 /// so unlike the wired hub - which has no PWM readback - no separate
 /// software-controlled bookkeeping is needed to know Auto vs Manual.
+/// A bound HydroShift II AIO is one pump channel "lianli-wireless:{mac}:pump"
+/// whose duty is the one Nexus drives (<see cref="Slv3Hub.GetPumpDuty"/>),
+/// plus its coolant temperature as a "Cooler" sensor.
 /// </summary>
 public sealed class Slv3CoolingProvider : IFanControlProvider, ICoolingProvider
 {
     private const string IdPrefix = "lianli-wireless:";
+    private const string PumpSuffix = ":pump";
+    private const string CoolantSuffix = ":coolant";
+    private const string AioName = "Lian Li HydroShift II";
+    private const string PumpName = "HydroShift II Pump";
 
     private readonly Slv3Hub _hub;
 
@@ -35,9 +42,15 @@ public sealed class Slv3CoolingProvider : IFanControlProvider, ICoolingProvider
         !string.IsNullOrEmpty(id) && id.StartsWith(IdPrefix, StringComparison.Ordinal);
 
     // A bound Strimer Wireless cable is RGB-only: it has no fan ports, so it
-    // gets no cooling channels (the lighting provider owns it).
+    // gets no cooling channels (the lighting provider owns it). A HydroShift II
+    // AIO reports no fans, and its fourth PWM slot is the pump.
     private static bool HasFanPorts(Slv3FanInfo fan) =>
-        fan.BoundToUs && !Slv3Protocol.IsStrimerDevType((byte)fan.DevType);
+        fan.BoundToUs
+        && !Slv3Protocol.IsStrimerDevType((byte)fan.DevType)
+        && !Slv3Protocol.IsHydroShiftDevType((byte)fan.DevType);
+
+    private static bool IsBoundHydroShift(Slv3FanInfo fan) =>
+        fan.BoundToUs && Slv3Protocol.IsHydroShiftDevType((byte)fan.DevType);
 
     // ── IFanControlProvider ──
 
@@ -47,6 +60,23 @@ public sealed class Slv3CoolingProvider : IFanControlProvider, ICoolingProvider
         var result = new List<FanChannel>();
         foreach (var fan in _hub.State.Fans)
         {
+            if (IsBoundHydroShift(fan))
+            {
+                var duty = _hub.GetPumpDuty(fan.Mac);
+                result.Add(new FanChannel
+                {
+                    Id = PumpId(fan.Mac),
+                    Name = PumpName,
+                    DutyPercent = duty ?? 0,
+                    Rpm = PumpRpm(fan),
+                    Mode = duty is null ? FanModes.Auto : FanModes.Manual,
+                    Kind = FanKinds.Pump,
+                    DeviceId = DeviceId(fan.Mac),
+                    DeviceName = AioName,
+                    PortLabel = "Pump",
+                });
+                continue;
+            }
             if (!HasFanPorts(fan)) continue;
             var portCount = EffectivePortCount(fan);
             var rpmUnavailable = fan.FanCount <= 0;
@@ -79,9 +109,38 @@ public sealed class Slv3CoolingProvider : IFanControlProvider, ICoolingProvider
     private static int EffectivePortCount(Slv3FanInfo fan) =>
         fan.FanCount > 0 ? fan.FanCount : Slv3Protocol.PortsPerRecord;
 
-    public IReadOnlyList<TemperatureSource> GetTemperatureSources() => Array.Empty<TemperatureSource>();
+    public IReadOnlyList<TemperatureSource> GetTemperatureSources()
+    {
+        if (!_hub.IsConnected) return Array.Empty<TemperatureSource>();
+        List<TemperatureSource>? sources = null;
+        foreach (var fan in _hub.State.Fans)
+        {
+            if (!IsBoundHydroShift(fan) || fan.CoolantTempC is not { } coolant) continue;
+            (sources ??= new List<TemperatureSource>()).Add(new TemperatureSource
+            {
+                Id = $"{IdPrefix}{fan.Mac}{CoolantSuffix}",
+                Name = "Liquid",
+                Category = "Cooler",
+                Value = coolant,
+                DeviceId = DeviceId(fan.Mac),
+                DeviceName = AioName,
+            });
+        }
+        return sources is null ? Array.Empty<TemperatureSource>() : sources;
+    }
 
-    public float? ReadTemperature(string sensorId) => null;
+    public float? ReadTemperature(string sensorId)
+    {
+        if (!TryParseSuffixed(sensorId, CoolantSuffix, out var mac) || !_hub.IsConnected) return null;
+        foreach (var fan in _hub.State.Fans)
+        {
+            if (IsBoundHydroShift(fan) && string.Equals(fan.Mac, mac, StringComparison.OrdinalIgnoreCase))
+            {
+                return fan.CoolantTempC;
+            }
+        }
+        return null;
+    }
 
     public int SetFanSpeed(string channelId, int dutyPercent)
     {
@@ -95,6 +154,11 @@ public sealed class Slv3CoolingProvider : IFanControlProvider, ICoolingProvider
 
     public void ReleaseFan(string channelId)
     {
+        if (TryParseSuffixed(channelId, PumpSuffix, out var aioMac))
+        {
+            _hub.SetPumpDuty(aioMac, null);
+            return;
+        }
         if (!TryParsePort(channelId, out var mac, out var port)) return;
         _hub.SetPortDuty(mac, port, null);
     }
@@ -104,6 +168,11 @@ public sealed class Slv3CoolingProvider : IFanControlProvider, ICoolingProvider
         if (!_hub.IsConnected) return;
         foreach (var fan in _hub.State.Fans)
         {
+            if (Slv3Protocol.IsHydroShiftDevType((byte)fan.DevType))
+            {
+                _hub.SetPumpDuty(fan.Mac, null);
+                continue;
+            }
             if (!HasFanPorts(fan)) continue;
             // EffectivePortCount, not FanCount, so a zero-count chain (whose
             // ports GetFanChannels exposes and the user can drive) is released
@@ -134,6 +203,27 @@ public sealed class Slv3CoolingProvider : IFanControlProvider, ICoolingProvider
         var components = new List<CoolingComponent>();
         foreach (var fan in _hub.State.Fans)
         {
+            if (IsBoundHydroShift(fan))
+            {
+                components.Add(new CoolingComponent
+                {
+                    Id = DeviceId(fan.Mac),
+                    Name = AioName,
+                    Type = "LianLiWireless",
+                    Devices = new List<CoolingDevice>
+                    {
+                        new CoolingDevice
+                        {
+                            Id = PumpId(fan.Mac),
+                            Name = PumpName,
+                            Type = "Pump",
+                            Rpm = PumpRpm(fan),
+                            Pwm = _hub.GetPumpDuty(fan.Mac) ?? 0,
+                        },
+                    },
+                });
+                continue;
+            }
             if (!HasFanPorts(fan)) continue;
             var portCount = EffectivePortCount(fan);
             var rpmUnavailable = fan.FanCount <= 0;
@@ -168,6 +258,14 @@ public sealed class Slv3CoolingProvider : IFanControlProvider, ICoolingProvider
 
     private void ApplyWrite(string channelId, int dutyPercent)
     {
+        if (TryParseSuffixed(channelId, PumpSuffix, out var aioMac))
+        {
+            if (!_hub.SetPumpDuty(aioMac, dutyPercent))
+            {
+                ServiceLog.Warn($"[lianli-wireless-cooling] SetPumpDuty {channelId} duty {dutyPercent} returned false");
+            }
+            return;
+        }
         if (!TryParsePort(channelId, out var mac, out var port))
         {
             return;
@@ -195,6 +293,18 @@ public sealed class Slv3CoolingProvider : IFanControlProvider, ICoolingProvider
     {
         var rpm = port < fan.Rpm.Length ? fan.Rpm[port] : 0;
         return rpm >= 0 ? rpm : 0;
+    }
+
+    private static int PumpRpm(Slv3FanInfo fan) => PortRpm(fan, Slv3Protocol.HydroShiftPumpPort);
+
+    private static string PumpId(string macHex) => $"{IdPrefix}{macHex}{PumpSuffix}";
+
+    private static bool TryParseSuffixed(string id, string suffix, out string macHex)
+    {
+        macHex = "";
+        if (!IsSlv3Id(id) || !id.EndsWith(suffix, StringComparison.Ordinal)) return false;
+        macHex = id.Substring(IdPrefix.Length, id.Length - IdPrefix.Length - suffix.Length);
+        return macHex.Length == Slv3Protocol.MacLength * 2;
     }
 
     private static string DeviceId(string macHex) => $"{IdPrefix}{macHex}";
