@@ -117,6 +117,11 @@ public sealed class OpenRgbController : IRgbController
         }
         try
         {
+            // A concurrent caller may have connected while this one waited for the lock.
+            if (IsConnected)
+            {
+                return true;
+            }
             CloseSession();
 
             var tcp = new TcpClient { NoDelay = true };

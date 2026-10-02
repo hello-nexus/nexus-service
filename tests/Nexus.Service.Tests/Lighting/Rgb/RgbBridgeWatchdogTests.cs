@@ -17,6 +17,8 @@ public class RgbBridgeWatchdogTests : IDisposable
 
         public volatile bool Park;
         public volatile bool Fail;
+        // A daemon whose SDK server is not accepting yet refuses this many connects.
+        public int RefuseConnects;
         private volatile bool _connected;
 
         public bool IsConnected => _connected;
@@ -60,6 +62,10 @@ public class RgbBridgeWatchdogTests : IDisposable
         public Task<bool> TryConnectAsync(CancellationToken ct = default)
         {
             Record("connect");
+            if (Interlocked.Decrement(ref RefuseConnects) >= 0)
+            {
+                return Task.FromResult(false);
+            }
             _connected = true;
             return Task.FromResult(true);
         }
@@ -242,5 +248,17 @@ public class RgbBridgeWatchdogTests : IDisposable
             "refresh loop did not keep ticking");
 
         Assert.Equal(0, _controller.Count("disconnect"));
+    }
+
+    [Fact]
+    public async Task A_just_started_daemon_that_is_not_listening_yet_is_connected_before_the_reconnect_cooldown()
+    {
+        _bridge.DaemonUptimeProbe = () => TimeSpan.FromSeconds(1);
+        _controller.RefuseConnects = 2;
+
+        _bridge.Activate();
+
+        // The reconnect cooldown alone would put the first retry past this bound.
+        Assert.True(await WaitUntilAsync(() => _bridge.Devices.Count > 0, TimeSpan.FromSeconds(4)), "still waiting out the reconnect cooldown");
     }
 }

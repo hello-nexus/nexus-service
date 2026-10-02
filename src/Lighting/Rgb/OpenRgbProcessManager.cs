@@ -39,6 +39,7 @@ public sealed class OpenRgbProcessManager : IDisposable
     private readonly Nexus.Service.Devices.DeviceControlGate? _gate;
     private Process? _proc;
     private DateTime _startedUtc;
+    private long _startedTicks; // _startedUtc.Ticks, readable without _lock
     private TimeSpan _backoff = InitialBackoff;
     private CancellationTokenSource? _supervisorCts;
     private bool _disposed;
@@ -109,6 +110,16 @@ public sealed class OpenRgbProcessManager : IDisposable
             {
                 return _proc is { HasExited: false };
             }
+        }
+    }
+
+    /// <summary>Time since the last spawn, zero before the first; lock-free for callers on the frame path.</summary>
+    public TimeSpan SinceLastSpawn
+    {
+        get
+        {
+            var t = Volatile.Read(ref _startedTicks);
+            return t == 0 ? TimeSpan.Zero : TimeSpan.FromTicks(DateTime.UtcNow.Ticks - t);
         }
     }
 
@@ -678,6 +689,7 @@ public sealed class OpenRgbProcessManager : IDisposable
 
                 _proc = proc;
                 _startedUtc = DateTime.UtcNow;
+                Volatile.Write(ref _startedTicks, _startedUtc.Ticks);
                 ServiceLog.Info($"[openrgb-proc] spawned pid={proc.Id}");
 
 #if WINDOWS

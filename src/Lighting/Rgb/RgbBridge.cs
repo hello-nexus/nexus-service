@@ -42,6 +42,8 @@ namespace Nexus.Service.Lighting.Rgb;
 public sealed class RgbBridge : IDisposable
 {
     private static readonly TimeSpan ReconnectCooldown = TimeSpan.FromSeconds(5);
+    /// <summary>Connect retry period while a daemon inside <see cref="DaemonWarmup"/> is not accepting yet.</summary>
+    private static readonly TimeSpan ListenRetry = TimeSpan.FromMilliseconds(250);
     /// <summary>
     /// Poll cadence. OpenRGB pushes DEVICE_LIST_UPDATED on hardware change, but
     /// our writer-only PushFrameAsync path never drains unsolicited packets from
@@ -127,7 +129,7 @@ public sealed class RgbBridge : IDisposable
     private long _watchdogWindowStartTicks;
     private int _watchdogBouncesInWindow;
     private bool _watchdogGaveUp;
-    /// <summary>Daemon uptime source; tests substitute one since the process manager is sealed.</summary>
+    /// <summary>Test stand-in for both the watchdog's uptime and the reconnect's time since spawn (the process manager is sealed).</summary>
     internal Func<TimeSpan>? DaemonUptimeProbe { get; set; }
     private long _lastBounceTicks;         // DateTime.UtcNow.Ticks; updated via Interlocked
     // Last detection activity (our re-detect request, DETECTION_STARTED/PROGRESS); 0 once COMPLETE arrives. UtcNow ticks, Interlocked.
@@ -985,7 +987,9 @@ public sealed class RgbBridge : IDisposable
         // Atomic cooldown: only the thread that swaps the timestamp gets to attempt.
         var now = DateTime.UtcNow.Ticks;
         var prev = Interlocked.Read(ref _lastConnectAttemptTicks);
-        if (!_controller.IsConnected && (now - prev) < ReconnectCooldown.Ticks)
+        var sinceSpawn = (DaemonUptimeProbe ?? (() => _proc.SinceLastSpawn))();
+        var starting = sinceSpawn > TimeSpan.Zero && sinceSpawn < DaemonWarmup;
+        if (!_controller.IsConnected && (now - prev) < (starting ? ListenRetry : ReconnectCooldown).Ticks)
         {
             return;
         }
@@ -1019,9 +1023,18 @@ public sealed class RgbBridge : IDisposable
                 if (!_connectFailureLogged)
                 {
                     _connectFailureLogged = true;
-                    ServiceLog.Info($"[rgb-bridge] connect to daemon failed (running={_proc.IsRunning}); retrying on the refresh cadence");
+                    ServiceLog.Info($"[rgb-bridge] connect to daemon failed (running={_proc.IsRunning}, spawned {sinceSpawn.TotalSeconds:F1}s ago); retrying");
                 }
                 RecordDaemonFailure("connect", "no SDK handshake");
+                if (starting)
+                {
+                    // A refused connect inside warm-up raced the daemon's bind; poll until it accepts.
+                    _ = Task.Run(async () =>
+                    {
+                        await Task.Delay(ListenRetry).ConfigureAwait(false);
+                        await EnsureConnectedAsync().ConfigureAwait(false);
+                    });
+                }
                 return;
             }
             _connectFailureLogged = false;
