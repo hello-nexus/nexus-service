@@ -284,6 +284,8 @@ internal static class AppBootstrap
         var cloudAccounts = app.Services.GetRequiredService<Nexus.Service.Cloud.CloudAccountService>();
         cloudAccounts.OnAccountActivated += _ => PanelTopics.BroadcastCloudAccounts(muxHub);
         cloudAccounts.OnAccountLoggedOut += _ => PanelTopics.BroadcastCloudAccounts(muxHub);
+        // Graceful stops; an SCM stop skips ApplicationStopping, so FastServiceShutdown calls it directly.
+        app.Lifetime.ApplicationStopping.Register(cloudAccounts.QuiesceForShutdown);
 
         // Probe smart-light reachability only while a lighting view is open. A
         // smart light gives no event when it drops off the LAN (Govee frames are

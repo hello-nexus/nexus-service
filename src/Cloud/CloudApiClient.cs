@@ -98,7 +98,7 @@ public interface ICloudApiClient
 
 public sealed class CloudApiClient : ICloudApiClient
 {
-    private static readonly TimeSpan DefaultRequestTimeout = TimeSpan.FromSeconds(10);
+    internal static readonly TimeSpan DefaultRequestTimeout = TimeSpan.FromSeconds(10);
 
     private readonly IHttpClientFactory _http;
     private readonly string _baseUrl;

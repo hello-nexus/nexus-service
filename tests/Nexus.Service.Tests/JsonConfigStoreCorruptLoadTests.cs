@@ -79,4 +79,55 @@ public sealed class JsonConfigStoreCorruptLoadTests : IDisposable
         using var reopened = new JsonConfigStore(_path);
         Assert.Equal(0.5f, reopened.Load().Lighting.GlobalBrightness);
     }
+
+    [Fact]
+    public void Unreadable_field_elsewhere_resets_the_file_but_keeps_sign_ins()
+    {
+        File.WriteAllText(_path, """
+            {
+              "lighting": { "globalBrightness": "not a number" },
+              "auth": {
+                "cloudAccounts": [ { "accountId": "acct-1", "username": "nicola", "refreshToken": "refresh-1" } ],
+                "activeCloudAccountId": "acct-1"
+              }
+            }
+            """);
+
+        using var store = new JsonConfigStore(_path);
+        var auth = store.Load().Auth!;
+
+        var account = Assert.Single(auth.CloudAccounts);
+        Assert.Equal("refresh-1", account.RefreshToken);
+        Assert.Equal("acct-1", auth.ActiveCloudAccountId);
+        Assert.True(File.Exists(_path + ".corrupt"));
+        using var reopened = new JsonConfigStore(_path);
+        Assert.Equal("refresh-1", Assert.Single(reopened.Load().Auth!.CloudAccounts).RefreshToken);
+    }
+
+    [Fact]
+    public void Failed_flush_is_retried_by_the_next_one()
+    {
+        if (OperatingSystem.IsWindows())
+        {
+            return;
+        }
+        using var store = new JsonConfigStore(_path);
+        store.Load();
+        store.Update(s => s.Lighting.GlobalBrightness = 0.25f);
+
+        var mode = File.GetUnixFileMode(_dir);
+        File.SetUnixFileMode(_dir, UnixFileMode.UserRead | UnixFileMode.UserExecute);
+        try
+        {
+            store.FlushNow();
+        }
+        finally
+        {
+            File.SetUnixFileMode(_dir, mode);
+        }
+        store.FlushNow();
+
+        using var reopened = new JsonConfigStore(_path);
+        Assert.Equal(0.25f, reopened.Load().Lighting.GlobalBrightness);
+    }
 }

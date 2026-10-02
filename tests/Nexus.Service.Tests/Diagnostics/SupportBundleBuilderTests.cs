@@ -1,6 +1,7 @@
 using System.IO.Compression;
 using System.Text.Json;
 using Nexus.Service.Diagnostics;
+using Nexus.Service.Models.Cooling;
 using Nexus.Service.Persistence;
 using Nexus.Service.Serialization;
 
@@ -63,6 +64,7 @@ public class SupportBundleBuilderTests : IDisposable
             OpenRgbConfigDirectory = orgb,
             Info = new SupportInfo { Version = "v1", MachineName = "box" },
             StartupSnapshot = "snap",
+            Fans = new List<FanChannel> { new() { Id = "lianli-wireless:0C15CC881970:port0", DutyPercent = 74, Mode = FanModes.Manual } },
         }));
 
         Assert.Contains("logs/nexus-service.log", entries.Keys);
@@ -85,6 +87,10 @@ public class SupportBundleBuilderTests : IDisposable
 
         var info = JsonSerializer.Deserialize(entries["support-info.json"], AppJsonContext.Default.SupportInfo)!;
         Assert.Equal("box", info.MachineName);
+
+        var fan = Assert.Single(JsonSerializer.Deserialize(entries["diagnostics/fans.json"], AppJsonContext.Default.ListFanChannel)!);
+        Assert.Equal(74, fan.DutyPercent);
+        Assert.Equal(FanModes.Manual, fan.Mode);
     }
 
     [Fact]

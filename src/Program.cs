@@ -816,6 +816,12 @@ static void FastServiceShutdown(WebApplication app)
     var sp = app.Services;
     var sw = System.Diagnostics.Stopwatch.StartNew();
     var osShutdown = Nexus.Service.Lifecycle.HostShutdown.IsOsShutdown;
+    // Awaited past the cap below (it bounds itself): a refresh token the server
+    // already rotated must reach disk, or the next start is signed out.
+    var cloudQuiesce = Task.Run(() =>
+    {
+        try { sp.GetService<Nexus.Service.Cloud.CloudAccountService>()?.QuiesceForShutdown(); } catch { }
+    });
     var done = Task.WaitAll(new[]
     {
         // The longest single item in the set: the panel-side `input keyevent`
@@ -865,6 +871,7 @@ static void FastServiceShutdown(WebApplication app)
         ? Nexus.Service.Lifecycle.HostShutdown.OsShutdownTeardownBudget
         : Nexus.Service.Lifecycle.HostShutdown.FastTeardownBudget).TotalMilliseconds);
     Console.Error.WriteLine($"[shutdown] fast teardown {(done ? "complete" : "TIMED OUT")} in {sw.ElapsedMilliseconds}ms");
+    cloudQuiesce.Wait();
 }
 
 // The overlay host and tray helper run in the user session (spawned cross-session
