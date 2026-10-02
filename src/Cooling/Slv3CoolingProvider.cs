@@ -35,9 +35,12 @@ public sealed class Slv3CoolingProvider : IFanControlProvider, ICoolingProvider
         !string.IsNullOrEmpty(id) && id.StartsWith(IdPrefix, StringComparison.Ordinal);
 
     // A bound Strimer Wireless cable is RGB-only: it has no fan ports, so it
-    // gets no cooling channels (the lighting provider owns it).
+    // gets no cooling channels (the lighting provider owns it). A HydroShift II
+    // AIO reports no fans, and its fourth PWM slot is the pump.
     private static bool HasFanPorts(Slv3FanInfo fan) =>
-        fan.BoundToUs && !Slv3Protocol.IsStrimerDevType((byte)fan.DevType);
+        fan.BoundToUs
+        && !Slv3Protocol.IsStrimerDevType((byte)fan.DevType)
+        && !Slv3Protocol.IsHydroShiftDevType((byte)fan.DevType);
 
     // ── IFanControlProvider ──
 

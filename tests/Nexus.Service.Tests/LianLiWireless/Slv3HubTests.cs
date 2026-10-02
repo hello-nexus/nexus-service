@@ -354,6 +354,34 @@ public class Slv3HubTests
     }
 
     [Fact]
+    public void HydroShift_never_gets_a_pwm_sync_frame_even_with_a_port_duty_set()
+    {
+        var (hub, net, tx, _) = CreateConnectedHub();
+        net.Fans.Add(new SimulatedFan { Mac = FanMac, MasterMac = net.MasterMac, RxType = 1, DevType = 11, FanCount = 0 });
+        Assert.True(hub.DriveTick());
+        Assert.True(hub.DriveTick());
+        Assert.Equal(0, CountBindFrames(tx));
+
+        Assert.True(hub.SetPortDuty(Convert.ToHexString(FanMac), 3, 50));
+        Assert.True(hub.DriveTick());
+        Assert.Equal(0, CountBindFrames(tx));
+    }
+
+    [Fact]
+    public void HydroShift_unbind_frame_never_carries_a_port_duty()
+    {
+        var (hub, net, tx, _) = CreateConnectedHub();
+        net.Fans.Add(new SimulatedFan { Mac = FanMac, MasterMac = net.MasterMac, RxType = 1, DevType = 10, FanCount = 0 });
+        Assert.True(hub.DriveTick());
+        Assert.True(hub.SetPortDuty(Convert.ToHexString(FanMac), 3, 50));
+
+        Assert.True(hub.Unbind(Convert.ToHexString(FanMac)));
+
+        var frame = LastBindFrame(tx, FanMac);
+        Assert.All(frame.AsSpan(21, 4).ToArray(), b => Assert.Equal(Slv3Protocol.PwmFollowMotherboard, b));
+    }
+
+    [Fact]
     public void Zero_fan_chain_is_left_on_mobo_sync_until_a_port_duty_is_set()
     {
         var (hub, net, tx, _) = CreateConnectedHub();

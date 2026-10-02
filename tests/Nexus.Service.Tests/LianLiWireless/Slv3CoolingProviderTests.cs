@@ -118,6 +118,26 @@ public class Slv3CoolingProviderTests
         Assert.Equal("lianli-wireless:AABBCCDDEEFF", component.Id);
     }
 
+    [Theory]
+    [InlineData(10)]
+    [InlineData(11)]
+    public void A_bound_hydroshift_gets_no_cooling_channels(int devType)
+    {
+        var (hub, _, _) = Slv3TestHub.CreateConnected();
+        hub.State.Fans = new[]
+        {
+            // A HydroShift II reports no fans.
+            new Slv3FanInfo { Mac = Mac, BoundToUs = true, DevType = devType, FanType = 31, FanCount = 0 },
+            new Slv3FanInfo { Mac = "AABBCCDDEEFF", BoundToUs = true, DevType = 0, FanType = 28, FanCount = 1 },
+        };
+        var provider = new Slv3CoolingProvider(hub);
+
+        var channel = Assert.Single(provider.GetFanChannels());
+        Assert.StartsWith("lianli-wireless:AABBCCDDEEFF:port", channel.Id);
+        var component = Assert.Single(provider.GetAll());
+        Assert.Equal("lianli-wireless:AABBCCDDEEFF", component.Id);
+    }
+
     [Fact]
     public void GetAll_groups_ports_under_one_component_per_chain()
     {

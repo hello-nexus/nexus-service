@@ -471,6 +471,18 @@ public class Slv3ProtocolTests
     }
 
     [Theory]
+    [InlineData(0, false)]
+    [InlineData(9, false)]
+    [InlineData(10, true)]
+    [InlineData(11, true)]
+    [InlineData(12, false)]
+    [InlineData(0xFF, false)]
+    public void IsHydroShiftDevType_is_10_and_11(byte devType, bool expected)
+    {
+        Assert.Equal(expected, Slv3Protocol.IsHydroShiftDevType(devType));
+    }
+
+    [Theory]
     [InlineData(1, 4, 29)]  // GPU 2x8 / 16-8
     [InlineData(2, 6, 22)]  // 24-pin (the Y70 cable)
     [InlineData(3, 6, 29)]  // GPU 3x8 / 16-12

@@ -504,12 +504,13 @@ public sealed class Slv3Hub : IDisposable
     // control pass. L-Connect skips a chain that enumerates no fans; here such
     // a chain is still driven once the user sets a port duty on it (the cooling
     // provider exposes its ports), and left alone on the mobo-sync default.
-    // A Strimer has no fan ports at all and is never re-bound from here.
+    // A Strimer has no fan ports at all and is never re-bound from here, nor is
+    // a HydroShift II, whose fourth PWM slot drives its pump.
     private void SyncPwmLocked()
     {
         foreach (var record in _lastFanRecords)
         {
-            if (!IsBoundToUsLocked(record) || record.IsStrimer)
+            if (!IsBoundToUsLocked(record) || record.IsStrimer || record.IsHydroShift)
             {
                 continue;
             }
@@ -708,7 +709,9 @@ public sealed class Slv3Hub : IDisposable
                 var key = Convert.ToHexString(record.Mac);
                 if (!_knownChains.ContainsKey(key))
                 {
-                    var what = record.IsStrimer ? $"Strimer dev_type {record.DevType}" : $"{record.FanCount} fan(s), {record.Family}";
+                    var what = record.IsStrimer ? $"Strimer dev_type {record.DevType}"
+                        : record.IsHydroShift ? $"HydroShift II dev_type {record.DevType}, {record.FanCount} fan(s)"
+                        : $"{record.FanCount} fan(s), {record.Family}";
                     ServiceLog.Info($"[lianli-wireless] chain {key} appeared ({what})");
                 }
                 _knownChains[key] = new Slv3KnownChain(record, nowMs);
@@ -883,7 +886,9 @@ public sealed class Slv3Hub : IDisposable
         {
             return false;
         }
-        var pwm = Slv3Protocol.BuildPwmTuple(DutyTargetsLocked(record.Mac), record.FanCount, record.Family);
+        // A duty set on a HydroShift II through the cooling route would land in its pump slot.
+        var targets = record.IsHydroShift ? DefaultDutyTargets : DutyTargetsLocked(record.Mac);
+        var pwm = Slv3Protocol.BuildPwmTuple(targets, record.FanCount, record.Family);
         var payload = unbind
             ? Slv3Protocol.BuildUnbind(record.Mac, _channel, pwm)
             : Slv3Protocol.BuildBind(record.Mac, _masterMac, targetRx: targetSlot, targetChannel: _channel, slot: BindOrdinalLocked(record.Mac), pwm);

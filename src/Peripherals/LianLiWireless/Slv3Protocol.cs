@@ -126,6 +126,13 @@ public static class Slv3Protocol
     public static bool IsStrimerDevType(byte devType) => devType >= 1 && devType <= 9;
 
     /// <summary>
+    /// A HydroShift II wireless AIO (10 = LCD-C, 11 = LCD-S; lian-li-linux
+    /// fan_type.rs). PWM slot 3 is its pump, and record byte 27 is coolant
+    /// temperature rather than a fan subtype, so it takes no fan PWM.
+    /// </summary>
+    public static bool IsHydroShiftDevType(byte devType) => devType is 10 or 11;
+
+    /// <summary>
     /// Strimer Wireless lane geometry by dev_type, lanes back to back in the
     /// RGB buffer (L-Connect RfDevice.LedNum and the RgbEffect.StrimerMode lane
     /// loops; totals match lian-li.com). A Strimer dev_type without a table
@@ -598,6 +605,9 @@ public readonly record struct Slv3DeviceRecord(
 
     /// <summary>A Strimer Wireless cable: no fan ports, RGB only.</summary>
     public bool IsStrimer => Slv3Protocol.IsStrimerDevType(DevType);
+
+    /// <summary>A HydroShift II wireless AIO: its pump shares the PWM tuple, so it is never driven as a fan chain.</summary>
+    public bool IsHydroShift => Slv3Protocol.IsHydroShiftDevType(DevType);
 
     /// <summary>
     /// First non-zero per-port fan subtype (0x18=24 SLV3-LCD, 20-23 SLV3-LED,
