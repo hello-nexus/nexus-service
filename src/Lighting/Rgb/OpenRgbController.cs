@@ -543,9 +543,11 @@ public sealed class OpenRgbController : IRgbController
         }
         catch (Exception ex)
         {
+            // Info: a stop or restart kills the daemon under the reader, and a
+            // crash is already reported by the process manager.
             if (!session.Closed)
             {
-                ServiceLog.Warn($"[openrgb] connection lost: {ex.Message}");
+                ServiceLog.Info($"[openrgb] connection lost: {ex.Message}");
             }
         }
         finally
