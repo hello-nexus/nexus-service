@@ -142,3 +142,47 @@ public class LedColorLockTests
         Assert.Equal(new LockedLed(3, 0, 0, 255), Assert.Single(leds));
     }
 }
+
+public class LedColorStripTests
+{
+    private static LockedLed[] Locks(params int[] indices) =>
+        indices.Select(i => new LockedLed(i, 0xff, 0x80, 0x00)).ToArray();
+
+    [Fact]
+    public void A_linear_strip_places_locks_by_index_position()
+    {
+        var strip = LedColorStrip.Build(Locks(0, 1, 2, 3), 96, u: null, disabled: null);
+        Assert.NotNull(strip);
+        Assert.Equal("#ff8000", strip![0]);
+        Assert.All(strip.Skip(1), c => Assert.Equal("", c));
+    }
+
+    [Fact]
+    public void A_matrix_places_locks_by_x_position_and_needs_half_a_column()
+    {
+        // Two rows of 24 keys: row-major index, u by column.
+        var u = Enumerable.Range(0, 48).Select(i => (i % 24 + 0.5f) / 24f).ToArray();
+        // Whole right-hand column (both rows) locked; left column only half.
+        var strip = LedColorStrip.Build(Locks(23, 47, 0), 48, u, disabled: null);
+        Assert.Equal("#ff8000", strip![23]);
+        Assert.Equal("#ff8000", strip[0]);
+        Assert.Equal("", strip[12]);
+
+        // One key of a three-row column is a minority: the look shows.
+        var u3 = Enumerable.Range(0, 72).Select(i => (i % 24 + 0.5f) / 24f).ToArray();
+        Assert.Null(LedColorStrip.Build(Locks(5), 72, u3, disabled: null));
+    }
+
+    [Fact]
+    public void Disabled_leds_do_not_count_toward_a_column()
+    {
+        var u = Enumerable.Range(0, 48).Select(i => (i % 24 + 0.5f) / 24f).ToArray();
+        var disabled = new bool[48];
+        disabled[24] = true;
+        disabled[25] = true;
+        // Column 0: LED 0 locked, LED 24 disabled, so the lock is the whole column.
+        var strip = LedColorStrip.Build(Locks(0, 1), 48, u, disabled);
+        Assert.Equal("#ff8000", strip![0]);
+        Assert.Equal("#ff8000", strip[1]);
+    }
+}

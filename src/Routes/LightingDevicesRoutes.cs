@@ -299,17 +299,6 @@ public static partial class DevicesRoutes
         return copy;
     }
 
-    // A frame with no positions is sampled along a line in index order.
-    private static bool IndexOrderRunsLeftToRight(float[]? u)
-    {
-        if (u is null) return true;
-        for (var i = 1; i < u.Length; i++)
-        {
-            if (u[i] < u[i - 1]) return false;
-        }
-        return true;
-    }
-
     private static void MapLightingDevicesEndpoints(WebApplication app)
     {
         // Renames are layered on here, not inside the provider, so only what the
@@ -325,17 +314,18 @@ public static partial class DevicesRoutes
             foreach (var device in all.Devices)
             {
                 device.LedColors = null;
-                device.LedOrderLeftToRight = false;
+                device.LedColorStrip = null;
                 if (!locks.TryGet(device.Id, out var leds)) continue;
                 device.LedColors = new List<LedColorEntry>(leds.Length);
                 foreach (var led in leds)
                     device.LedColors.Add(new LedColorEntry { Index = led.Index, Color = $"#{led.R:x2}{led.G:x2}{led.B:x2}" });
-                foreach (var frame in engine.Devices)
+                Nexus.Service.Lighting.Engine.DeviceFrame? frame = null;
+                foreach (var f in engine.Devices)
                 {
-                    if (frame.Id != device.Id) continue;
-                    device.LedOrderLeftToRight = IndexOrderRunsLeftToRight(frame.LedU);
-                    break;
+                    if (f.Id == device.Id) { frame = f; break; }
                 }
+                device.LedColorStrip = Nexus.Service.Lighting.LedColorStrip.Build(
+                    leds, frame?.LedCount ?? device.LedCount, frame?.LedU, frame?.LedDisabled);
             }
             all.Groups = lighting.DeviceGroups;
             // Sanitized on the way out too, so a layout word another build
