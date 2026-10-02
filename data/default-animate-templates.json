@@ -3454,47 +3454,71 @@
     "saturation": 1,
     "contrast": 1,
     "params": {
-     "u_colors": 6,
-     "u_depth": 1,
+     "u_aHue": 0,
+     "u_aSpan": 1,
+     "u_aSat": 1,
+     "u_aVal": 1,
+     "u_bHue": 0,
+     "u_bSpan": 0,
+     "u_bSat": 1,
+     "u_bVal": 0,
      "u_spread": 0
     }
    },
    {
-    "speed": 100,
+    "speed": 50,
     "intensity": 1,
     "hue": 0,
     "colorize": 0,
     "saturation": 1,
     "contrast": 1,
     "params": {
-     "u_colors": 12,
-     "u_depth": 0.9,
+     "u_aHue": 0,
+     "u_aSpan": 0,
+     "u_aSat": 1,
+     "u_aVal": 1,
+     "u_bHue": 0.67,
+     "u_bSpan": 0,
+     "u_bSat": 1,
+     "u_bVal": 1,
      "u_spread": 0
     }
    },
    {
     "speed": 30,
     "intensity": 1,
-    "hue": 0.6,
+    "hue": 0,
     "colorize": 0,
     "saturation": 1,
     "contrast": 1,
     "params": {
-     "u_colors": 1,
-     "u_depth": 1,
+     "u_aHue": 0.6,
+     "u_aSpan": 0,
+     "u_aSat": 1,
+     "u_aVal": 1,
+     "u_bHue": 0,
+     "u_bSpan": 0,
+     "u_bSat": 1,
+     "u_bVal": 0,
      "u_spread": 0
     }
    },
    {
     "speed": 40,
     "intensity": 1,
-    "hue": 0.92,
+    "hue": 0,
     "colorize": 0,
     "saturation": 1,
     "contrast": 1,
     "params": {
-     "u_colors": 2,
-     "u_depth": 0.85,
+     "u_aHue": 0.92,
+     "u_aSpan": 0.17,
+     "u_aSat": 1,
+     "u_aVal": 1,
+     "u_bHue": 0,
+     "u_bSpan": 0,
+     "u_bSat": 1,
+     "u_bVal": 0,
      "u_spread": 0.35
     }
    }
