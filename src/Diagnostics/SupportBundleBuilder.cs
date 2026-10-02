@@ -6,6 +6,7 @@ using System.Linq;
 using System.Text.Json;
 using Nexus.Service.Diagnostics.Cooling;
 using Nexus.Service.Diagnostics.Storage;
+using Nexus.Service.Models.Cooling;
 using Nexus.Service.Persistence;
 using Nexus.Service.Platform;
 using Nexus.Service.Routes;
@@ -37,6 +38,10 @@ public static class SupportBundleBuilder
         public MemoryHealthResponse? Memory { get; init; }
         public GpuHealthResponse? Gpu { get; init; }
         public CoolingStallSnapshot? Cooling { get; init; }
+        /// <summary>Every provider's live fan channels: duty, mode and RPM as each provider reports them (the chain's echoed duty for
+        /// Lian Li wireless), which cooling.json (target duty only) does not carry. Settings-derived fields (Locked, Controlled,
+        /// Role, Offset, renames) stay at their defaults here; settings.json holds them.</summary>
+        public List<FanChannel>? Fans { get; init; }
         public SystemDiagnosticsResponse? System { get; init; }
     }
 
@@ -63,6 +68,7 @@ public static class SupportBundleBuilder
             if (src.Memory is not null) WriteJson(zip, "diagnostics/memory.json", src.Memory, AppJsonContext.Default.MemoryHealthResponse);
             if (src.Gpu is not null) WriteJson(zip, "diagnostics/gpu.json", src.Gpu, AppJsonContext.Default.GpuHealthResponse);
             if (src.Cooling is not null) WriteJson(zip, "diagnostics/cooling.json", src.Cooling, AppJsonContext.Default.CoolingStallSnapshot);
+            if (src.Fans is not null) WriteJson(zip, "diagnostics/fans.json", src.Fans, AppJsonContext.Default.ListFanChannel);
             if (src.System is not null) WriteJson(zip, "diagnostics/system.json", src.System, AppJsonContext.Default.SystemDiagnosticsResponse);
         }
         return ms.ToArray();

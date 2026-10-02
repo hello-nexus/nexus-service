@@ -141,6 +141,7 @@ public static class DiagnosticsHealthRoutes
             MemoryDiagnosticOrchestrator memDiag,
             GpuHealthMonitor gpu,
             CoolingStallDetector cooling,
+            Nexus.Service.Cooling.IFanControlProvider fans,
             PnpProblemScanner pnp,
             Nexus.Service.Persistence.IConfigStore store,
             Nexus.Service.Conflicts.IConflictDetector conflicts,
@@ -166,6 +167,16 @@ public static class DiagnosticsHealthRoutes
                 OpenRgbDaemonRunning = daemon?.IsRunning ?? false,
                 OpenRgbDaemonUptimeSeconds = daemon?.Uptime.TotalSeconds ?? 0,
             };
+            // A failing fan provider must not cost the user the rest of the bundle.
+            List<Nexus.Service.Models.Cooling.FanChannel>? fanChannels = null;
+            try
+            {
+                fanChannels = new List<Nexus.Service.Models.Cooling.FanChannel>(fans.GetFanChannels());
+            }
+            catch (Exception ex)
+            {
+                ServiceLog.Warn($"[support-bundle] fan channels unavailable: {ex.Message}");
+            }
             var zipBytes = SupportBundleBuilder.Build(new SupportBundleBuilder.Sources
             {
                 LogsDirectory = ServiceLog.LogsDirectory,
@@ -180,6 +191,7 @@ public static class DiagnosticsHealthRoutes
                 Memory = BuildMemoryResponse(memDiag),
                 Gpu = BuildGpuResponse(gpu, events),
                 Cooling = cooling.Snapshot(),
+                Fans = fanChannels,
                 System = BuildSystemResponse(pnp, events),
             });
             var fileName = $"nexus-support-{Environment.MachineName}-{DateTime.Now:yyyyMMdd-HHmmss}.zip";
