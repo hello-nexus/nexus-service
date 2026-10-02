@@ -20,8 +20,11 @@ public class RgbBridgeWatchdogTests : IDisposable
         private volatile bool _connected;
 
         public bool IsConnected => _connected;
-        public event Action? DeviceListChanged { add { } remove { } }
+        public event Action? DeviceListChanged;
+        public void RaiseListChanged() => DeviceListChanged?.Invoke();
         public event Action<bool>? DetectionStateChanged;
+        public event Action? DetectionProgress;
+        public void RaiseProgress() => DetectionProgress?.Invoke();
         public void CompleteDetection() => DetectionStateChanged?.Invoke(false);
         public event Action<int, uint, uint>? WriteRejected { add { } remove { } }
         public async Task<IReadOnlyList<int>> GetControllerAddressesAsync(CancellationToken ct = default) =>
@@ -39,7 +42,7 @@ public class RgbBridgeWatchdogTests : IDisposable
         }
         public Task<bool> SetSettingsAsync(string key, string valueJson, CancellationToken ct = default) => Task.FromResult(true);
 
-        public IReadOnlyList<RgbDevice> Devices { get; } = new[]
+        public IReadOnlyList<RgbDevice> Devices { get; set; } = new[]
         {
             new RgbDevice { Index = 0, Address = 0, Name = "DRAM", LedCount = 4, Serial = "A1" },
         };
@@ -208,6 +211,24 @@ public class RgbBridgeWatchdogTests : IDisposable
         // DETECTION_COMPLETE (a client that connects late misses it).
         Assert.True(await WaitUntilAsync(() => _controller.Count("connect") >= 2 && _bridge.PhysicalBufferCount == 1, TimeSpan.FromSeconds(20)),
             "push buffers never came back after the reconnect");
+    }
+
+    [Fact]
+    public async Task A_hotplugged_device_is_committed_without_waiting_out_the_detection_hold()
+    {
+        await ActivateAndSettleAsync();
+        _controller.Devices = new[]
+        {
+            new RgbDevice { Index = 0, Address = 0, Name = "DRAM", LedCount = 4, Serial = "A1" },
+            new RgbDevice { Index = 1, Address = 1, Name = "Mouse", LedCount = 15, Serial = "M1" },
+        };
+
+        // Hotplug runs the device's detector (a PROGRESS with no STARTED) then announces the list.
+        _controller.RaiseProgress();
+        _controller.RaiseListChanged();
+
+        Assert.True(await WaitUntilAsync(() => _bridge.Devices.Count == 2, TimeSpan.FromSeconds(3)),
+            "the hotplugged device waited for the detection hold");
     }
 
     [Fact]

@@ -15,6 +15,7 @@ public sealed class NoOpRgbController : IRgbController
     public bool IsConnected => false;
     public event Action? DeviceListChanged { add { } remove { } }
     public event Action<bool>? DetectionStateChanged { add { } remove { } }
+    public event Action? DetectionProgress { add { } remove { } }
     public event Action<int, uint, uint>? WriteRejected { add { } remove { } }
 
     public Task<bool> TryConnectAsync(CancellationToken ct = default) => Task.FromResult(false);

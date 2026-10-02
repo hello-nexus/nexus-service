@@ -141,8 +141,8 @@ public sealed class RgbBridge : IDisposable
     // A re-detect asked for while a pass was running, which a rescan would skip; replayed on COMPLETE. Guarded by _lock.
     private string? _deferredRedetectReason;
     private bool _deferredDetectorsChanged;
-    // Completed and replaced on every DEVICE_LIST_UPDATED, so a USB arrival can wait for the daemon's hotplug to register it.
-    private TaskCompletionSource _deviceListChanged = new(TaskCreationOptions.RunContinuationsAsynchronously);
+    // Completed and replaced on every committed list, so a USB arrival can wait for the device to show up.
+    private TaskCompletionSource _listCommitted = new(TaskCreationOptions.RunContinuationsAsynchronously);
     private int _refreshPending;           // 0 = idle, 1 = refresh scheduled/running
     private readonly SemaphoreSlim _refreshSemaphore = new(1, 1);
     private Dictionary<string, int>? _lastUsbKeys; // key -> unit count; null = not yet observed, no bounce on first read
@@ -246,6 +246,7 @@ public sealed class RgbBridge : IDisposable
             c.DevicesChanged += OnContributorDevicesChanged;
         }
         _controller.DetectionStateChanged += OnDetectionStateChanged;
+        _controller.DetectionProgress += OnDetectionProgress;
         _controller.WriteRejected += OnWriteRejected;
         // Last: the handler runs on the caller's thread and reads this instance.
         if (controlGate is { } gate)
@@ -759,6 +760,19 @@ public sealed class RgbBridge : IDisposable
         return last != 0 && DateTime.UtcNow.Ticks - last < DetectionQuietWindow.Ticks;
     }
 
+    /// <summary>
+    /// Progress only extends a pass already under way. Hotplug runs a detector
+    /// for the arriving device with no STARTED around it, and holding the list
+    /// for that would keep the new device undriven for the whole window.
+    /// </summary>
+    private void OnDetectionProgress()
+    {
+        if (DetectionInProgress())
+        {
+            MarkDetectionActivity();
+        }
+    }
+
     private void OnDetectionStateChanged(bool detecting)
     {
         if (detecting)
@@ -924,11 +938,7 @@ public sealed class RgbBridge : IDisposable
     /// fire several in quick succession (one per detected plugin result); we
     /// only want to query the device list once per burst.
     /// </summary>
-    private void OnDeviceListChanged()
-    {
-        Interlocked.Exchange(ref _deviceListChanged, new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously)).TrySetResult();
-        ScheduleRefresh();
-    }
+    private void OnDeviceListChanged() => ScheduleRefresh();
 
     /// <summary>
     /// Schedule a debounced device refresh. Coalesces using a 0/1 flag: the
@@ -1172,6 +1182,7 @@ public sealed class RgbBridge : IDisposable
                 // Ids are never reused within a daemon run, so ones gone from the list are dead.
                 _directModeApplied.IntersectWith(addresses);
             }
+            Interlocked.Exchange(ref _listCommitted, new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously)).TrySetResult();
 
             // Move any legacy per-device state on a split motherboard onto its
             // ARGB header ids before this refresh resolves partitions and
@@ -2012,6 +2023,36 @@ public sealed class RgbBridge : IDisposable
         return true;
     }
 
+    /// <summary>True when every arrived "VVVV:PPPP:..." key has a committed device whose HID path names that vid/pid.</summary>
+    private bool IsListed(List<string> arrivals)
+    {
+        lock (_lock)
+        {
+            foreach (var key in arrivals)
+            {
+                if (key.Length < 9)
+                {
+                    return false;
+                }
+                var token = $"VID_{key.Substring(0, 4)}&PID_{key.Substring(5, 4)}";
+                var found = false;
+                foreach (var d in _devices)
+                {
+                    if (d.Location.Contains(token, StringComparison.OrdinalIgnoreCase))
+                    {
+                        found = true;
+                        break;
+                    }
+                }
+                if (!found)
+                {
+                    return false;
+                }
+            }
+            return true;
+        }
+    }
+
     private void CheckUsbTopology()
     {
         Dictionary<string, int> current;
@@ -2046,10 +2087,23 @@ public sealed class RgbBridge : IDisposable
             ServiceLog.Info($"[rgb-bridge] usb topology changed (+{added}/-{removed}), no known RGB device arrived, no re-detect");
             return;
         }
-        var listChanged = Volatile.Read(ref _deviceListChanged).Task;
         _ = Task.Run(async () =>
         {
-            var registered = await Task.WhenAny(listChanged, Task.Delay(HotplugGrace)).ConfigureAwait(false) == listChanged;
+            // The daemon's hotplug often registers the device before this poll
+            // even sees it arrive, so the test is presence, not a fresh event.
+            var deadline = DateTime.UtcNow + HotplugGrace;
+            var registered = IsListed(arrivals);
+            while (!registered && IsActive)
+            {
+                var remaining = deadline - DateTime.UtcNow;
+                if (remaining <= TimeSpan.Zero)
+                {
+                    break;
+                }
+                var committed = Volatile.Read(ref _listCommitted).Task;
+                await Task.WhenAny(committed, Task.Delay(remaining)).ConfigureAwait(false);
+                registered = IsListed(arrivals);
+            }
             if (!IsActive)
             {
                 return;
@@ -2321,6 +2375,7 @@ public sealed class RgbBridge : IDisposable
             gate.Changed -= OnControlGateChanged;
         }
         _controller.DetectionStateChanged -= OnDetectionStateChanged;
+        _controller.DetectionProgress -= OnDetectionProgress;
         _controller.WriteRejected -= OnWriteRejected;
         lock (_lock)
         {

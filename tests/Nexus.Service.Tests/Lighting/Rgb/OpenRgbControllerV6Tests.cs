@@ -198,18 +198,19 @@ public class OpenRgbControllerV6Tests
             }
         });
         await using var controller = new OpenRgbController(port: daemon.Port);
-        var states = new List<bool>();
+        var states = new List<string>();
         var completed = new TaskCompletionSource();
         controller.DetectionStateChanged += s =>
         {
-            lock (states) { states.Add(s); }
+            lock (states) { states.Add(s ? "started" : "complete"); }
             if (!s) completed.TrySetResult();
         };
+        controller.DetectionProgress += () => { lock (states) { states.Add("progress"); } };
         Assert.True(await controller.TryConnectAsync());
 
         Assert.True(await controller.RescanAsync());
 
         await completed.Task.WaitAsync(TimeSpan.FromSeconds(2));
-        lock (states) { Assert.Equal(new[] { true, true, false }, states); }
+        lock (states) { Assert.Equal(new[] { "started", "progress", "complete" }, states); }
     }
 }

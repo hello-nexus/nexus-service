@@ -98,6 +98,7 @@ public sealed class OpenRgbController : IRgbController
 
     public event Action? DeviceListChanged;
     public event Action<bool>? DetectionStateChanged;
+    public event Action? DetectionProgress;
     public event Action<int, uint, uint>? WriteRejected;
 
     public async Task<bool> TryConnectAsync(CancellationToken ct = default)
@@ -592,8 +593,10 @@ public sealed class OpenRgbController : IRgbController
                 Raise(() => DeviceListChanged?.Invoke());
                 return;
             case OpenRgbProtocol.PacketId.DetectionStarted:
-            case OpenRgbProtocol.PacketId.DetectionProgressChanged:
                 Raise(() => DetectionStateChanged?.Invoke(true));
+                return;
+            case OpenRgbProtocol.PacketId.DetectionProgressChanged:
+                Raise(() => DetectionProgress?.Invoke());
                 return;
             case OpenRgbProtocol.PacketId.DetectionComplete:
                 Raise(() => DetectionStateChanged?.Invoke(false));

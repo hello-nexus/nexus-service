@@ -19,6 +19,9 @@ public interface IRgbController : IAsyncDisposable
     /// <summary>True when the daemon starts a detection pass, false when it completes one.</summary>
     event Action<bool>? DetectionStateChanged;
 
+    /// <summary>A detector ran: inside a pass, or alone when hotplug registers a device (no STARTED/COMPLETE around it).</summary>
+    event Action? DetectionProgress;
+
     /// <summary>The daemon refused a write: controller address, packet id, ACK status.</summary>
     event Action<int, uint, uint>? WriteRejected;
 

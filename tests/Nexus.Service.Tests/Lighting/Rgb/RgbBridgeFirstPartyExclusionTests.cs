@@ -25,6 +25,7 @@ public class RgbBridgeFirstPartyExclusionTests : IDisposable
         public bool IsConnected => true;
         public event Action? DeviceListChanged { add { } remove { } }
         public event Action<bool>? DetectionStateChanged { add { } remove { } }
+        public event Action? DetectionProgress { add { } remove { } }
         public event Action<int, uint, uint>? WriteRejected { add { } remove { } }
         public async Task<IReadOnlyList<int>> GetControllerAddressesAsync(CancellationToken ct = default) =>
             (await GetDevicesAsync(ct)).Select(d => d.Address).ToList();
