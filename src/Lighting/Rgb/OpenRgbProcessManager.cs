@@ -286,8 +286,8 @@ public sealed class OpenRgbProcessManager : IDisposable
 
     /// <summary>
     /// Detector names the user excluded by turning Nexus Control off for every
-    /// card of the device. Written as disabled + <c>placeholder_only</c> so the
-    /// fork reports a zero-LED presence dummy instead of claiming the hardware.
+    /// card of the device: disabled in the denylist, and recorded in
+    /// <c>placeholder_only</c> so a lifted exclusion knows what to re-enable.
     /// Null when settings could not be read - the caller then leaves the
     /// on-disk placeholder state untouched rather than re-enabling detectors
     /// whose exclusions still exist.
@@ -345,15 +345,14 @@ public sealed class OpenRgbProcessManager : IDisposable
     /// <summary>
     /// Merge our detector denylist into the OpenRGB config's
     /// <c>Detectors.detectors</c> map, preserving anything OpenRGB itself wrote.
-    /// OpenRGB reads this on startup (ResourceManager.cpp) and skips disabled
-    /// detectors. User exclusions additionally land in the service-owned
-    /// <c>Detectors.placeholder_only</c> array (the fork registers a zero-LED
-    /// presence dummy for those); names dropped from that array since the last
-    /// launch get their detector re-enabled. Best-effort: a failure here just
+    /// Each detection pass reads it and skips disabled detectors. User exclusions
+    /// are also recorded in the <c>Detectors.placeholder_only</c> array, which
+    /// only the service reads (the key name predates that): names dropped from it
+    /// since the last write get their detector re-enabled. Best-effort: a failure here just
     /// means OpenRGB might surface a zombie entry, which
     /// CompositeLightingDeviceProvider also strips.
     /// </summary>
-    /// <param name="busDisabledDetectors">Detectors held off because their shared bus is toggled off (<see cref="SmbusDramDetectors"/>). Tracked in the service-owned <c>Detectors.bus_disabled</c> array with the same drop-to-re-enable rule as placeholders, and without a placeholder dummy: the device's row lives on the Devices page, not in Lighting.</param>
+    /// <param name="busDisabledDetectors">Detectors held off because their shared bus is toggled off (<see cref="SmbusDramDetectors"/>). Tracked in the service-owned <c>Detectors.bus_disabled</c> array with the same drop-to-re-enable rule as user exclusions.</param>
     internal static void EnsureDetectorOverrides(string configDir, System.Collections.Generic.IReadOnlyCollection<string>? placeholderOnlyDetectors,
         System.Collections.Generic.IReadOnlyCollection<string>? busDisabledDetectors = null)
     {

@@ -6,6 +6,7 @@ using System.IO;
 using System.Net.Sockets;
 using System.Text;
 using System.Threading;
+using System.Threading.Channels;
 using System.Threading.Tasks;
 using Nexus.Service.Platform;
 
@@ -42,6 +43,9 @@ public sealed class OpenRgbController : IRgbController
     private readonly int _port;
     private readonly SemaphoreSlim _requestLock = new(1, 1);
     private readonly SemaphoreSlim _sendLock = new(1, 1);
+    // Handlers run off the reader, so a slow subscriber can never stop the socket
+    // draining, and in arrival order, so a STARTED is never handled after its COMPLETE.
+    private readonly Channel<Action> _events = Channel.CreateUnbounded<Action>(new UnboundedChannelOptions { SingleReader = true });
 
     private Session? _session;
     private bool _disposed;
@@ -75,6 +79,17 @@ public sealed class OpenRgbController : IRgbController
     {
         _host = host;
         _port = port;
+        _ = Task.Run(DispatchEventsAsync);
+    }
+
+    private async Task DispatchEventsAsync()
+    {
+        await foreach (var raise in _events.Reader.ReadAllAsync().ConfigureAwait(false))
+        {
+            try
+            { raise(); }
+            catch (Exception ex) { ServiceLog.Warn($"[openrgb] event handler threw: {ex.Message}"); }
+        }
     }
 
     public bool IsConnected => Volatile.Read(ref _session) is { Closed: false, Tcp.Connected: true };
@@ -162,9 +177,7 @@ public sealed class OpenRgbController : IRgbController
             _requestLock.Release();
         }
 
-        try
-        { DeviceListChanged?.Invoke(); }
-        catch { }
+        Raise(() => DeviceListChanged?.Invoke());
         return true;
     }
 
@@ -591,13 +604,7 @@ public sealed class OpenRgbController : IRgbController
         or OpenRgbProtocol.PacketId.SetCustomMode
         or OpenRgbProtocol.PacketId.RgbControllerResizeZone;
 
-    /// <summary>Handlers run off the reader so a slow subscriber can never stop the socket draining.</summary>
-    private static void Raise(Action raise) => _ = Task.Run(() =>
-    {
-        try
-        { raise(); }
-        catch (Exception ex) { ServiceLog.Warn($"[openrgb] event handler threw: {ex.Message}"); }
-    });
+    private void Raise(Action raise) => _events.Writer.TryWrite(raise);
 
     private static async Task ReadExactAsync(Session session, byte[] buffer, int count)
     {
@@ -643,6 +650,7 @@ public sealed class OpenRgbController : IRgbController
     {
         _disposed = true;
         CloseSession();
+        _events.Writer.TryComplete();
         return default;
     }
 }

@@ -263,8 +263,8 @@ public static class OpenRgbZoneSupport
             var d = fromSnapshot ? snapshotBoards[i - devices.Count] : devices[i];
             var baseId = d.StableId;
             // Detector-excluded devices render from their persisted snapshot
-            // instead; the live entry (pre-bounce real device or the fork's
-            // zero-LED placeholder dummy) would duplicate or shadow that card.
+            // instead; a live entry fetched before the exclusion's re-detect
+            // would duplicate or shadow that card.
             if (!fromSnapshot && exclusions.Count > 0 && exclusions.ContainsKey(baseId))
                 continue;
             var baseKey = DeviceKeyComputer.ForOpenRgbDevice(d);

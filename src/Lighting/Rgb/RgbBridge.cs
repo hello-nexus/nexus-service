@@ -137,6 +137,10 @@ public sealed class RgbBridge : IDisposable
     // Addresses of the committed list, compared against the cheap poll. Guarded by _lock.
     private int[] _committedAddresses = Array.Empty<int>();
     private long _lastRejectLogTicks;
+    private long _lastRejectRefreshTicks;
+    // A re-detect asked for while a pass was running, which a rescan would skip; replayed on COMPLETE. Guarded by _lock.
+    private string? _deferredRedetectReason;
+    private bool _deferredDetectorsChanged;
     // Bumped on every DEVICE_LIST_UPDATED, so a USB arrival can tell whether the daemon's hotplug already registered it.
     private int _deviceListVersion;
     private int _refreshPending;           // 0 = idle, 1 = refresh scheduled/running
@@ -669,6 +673,18 @@ public sealed class RgbBridge : IDisposable
             BounceSubprocess(reason);
             return;
         }
+        if (DetectionInProgress())
+        {
+            // The daemon skips a rescan while a pass runs, and that pass may have
+            // read the detector settings before this change.
+            lock (_lock)
+            {
+                _deferredRedetectReason = reason;
+                _deferredDetectorsChanged |= detectorsChanged;
+            }
+            ServiceLog.Info($"[rgb-bridge] re-detect ({reason}) deferred until the running detection completes");
+            return;
+        }
 
         lock (_lock)
         {
@@ -727,10 +743,25 @@ public sealed class RgbBridge : IDisposable
         }
         Interlocked.Exchange(ref _detectionActivityTicks, 0);
         Interlocked.Exchange(ref _redetectRequestedTicks, 0);
-        if (IsActive)
+        string? deferred;
+        bool deferredDetectors;
+        lock (_lock)
         {
-            ScheduleRefresh();
+            deferred = _deferredRedetectReason;
+            deferredDetectors = _deferredDetectorsChanged;
+            _deferredRedetectReason = null;
+            _deferredDetectorsChanged = false;
         }
+        if (!IsActive)
+        {
+            return;
+        }
+        if (deferred is not null)
+        {
+            Redetect(deferred, deferredDetectors);
+            return;
+        }
+        ScheduleRefresh();
     }
 
     /// <summary>A refused write means our map of the daemon is wrong (sizes or ids): re-read it.</summary>
@@ -746,7 +777,12 @@ public sealed class RgbBridge : IDisposable
         {
             ServiceLog.Warn($"[rgb-bridge] daemon refused packet {packetId} for controller {address} (status {status}); re-reading the device list");
         }
-        ScheduleRefresh();
+        // Bounded, so a refusal that survives a re-read cannot turn into a fetch per frame.
+        var lastRefresh = Interlocked.Read(ref _lastRejectRefreshTicks);
+        if (now - lastRefresh > TimeSpan.FromSeconds(2).Ticks && Interlocked.CompareExchange(ref _lastRejectRefreshTicks, now, lastRefresh) == lastRefresh)
+        {
+            ScheduleRefresh();
+        }
     }
 
     private void BounceSubprocess(string reason)
@@ -1093,6 +1129,8 @@ public sealed class RgbBridge : IDisposable
                     addresses[i] = finalList[i].Address;
                 }
                 _committedAddresses = addresses;
+                // Ids are never reused within a daemon run, so ones gone from the list are dead.
+                _directModeApplied.IntersectWith(addresses);
             }
 
             // Move any legacy per-device state on a split motherboard onto its
@@ -1139,9 +1177,9 @@ public sealed class RgbBridge : IDisposable
             {
                 var d = devices[i];
                 if (IsOwnedByFirstParty(d)) continue;
-                // Excluded devices render from their persisted snapshot; the
-                // live entry (pre-bounce real device or the fork's placeholder
-                // dummy) must not occupy an engine frame or a canvas slot.
+                // Excluded devices render from their persisted snapshot; a live
+                // entry fetched before the exclusion's re-detect must not occupy
+                // an engine frame or a canvas slot.
                 if (settingsSnapshot.Devices.OpenRgbDetectorExclusions.ContainsKey(d.StableId)) continue;
                 var baseId = d.StableId;
 
