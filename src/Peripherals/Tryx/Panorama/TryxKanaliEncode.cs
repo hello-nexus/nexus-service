@@ -1,6 +1,7 @@
 using System;
 using System.Diagnostics;
 using System.Globalization;
+using System.IO;
 using System.Text.RegularExpressions;
 
 namespace Nexus.Service.Peripherals.Tryx.Panorama;
@@ -13,12 +14,22 @@ public static partial class TryxKanaliEncode
     public const string X264Params =
         "repeat-headers=1:annexb=1:aud=1:b-pyramid=0:weightp=0:ref=3:range=pc:colorprim=bt709:transfer=bt709:colormatrix=bt709";
 
-    /// <summary>ffmpeg output options for a <paramref name="fps"/> stream at <paramref name="kbps"/>.</summary>
-    public static string X264Options(int fps, int kbps)
-        => $"-preset fast -profile:v main -level 4.1 -bf 0 -g {fps} -b:v {kbps}k -x264-params {X264Params}";
+    // MediaX encodes GIF and still-image sources at a fixed quality instead of a bitrate.
+    private const int ImageSourceCrf = 18;
 
-    /// <summary>The source's video stream as MediaX probes it; zero for anything unknown.</summary>
-    public readonly record struct SourceInfo(int Width, int Height, double Fps, int Kbps);
+    /// <summary>ffmpeg output options for <paramref name="src"/> encoded at <paramref name="outWidth"/> x
+    /// <paramref name="outHeight"/>, <paramref name="fps"/>.</summary>
+    public static string X264Options(SourceInfo src, int outWidth, int outHeight, int fps)
+    {
+        var rate = src.IsImage
+            ? $"-crf {ImageSourceCrf}"
+            : $"-b:v {BitrateKbps(src, outWidth, outHeight, fps)}k";
+        return $"-preset fast -profile:v main -level 4.1 -bf 0 -g {fps} {rate} -x264-params {X264Params}";
+    }
+
+    /// <summary>The source's video stream as MediaX probes it; zero for anything unknown. IsImage marks
+    /// a GIF, PNG or JPEG source, by codec or by file extension as MediaX checks it.</summary>
+    public readonly record struct SourceInfo(int Width, int Height, double Fps, int Kbps, bool IsImage = false);
 
     // MediaX.dll's bitrate constants.
     private const int UnknownSourceKbps = 4000;
@@ -49,10 +60,12 @@ public static partial class TryxKanaliEncode
     {
         int width = 0, height = 0, kbps = 0;
         double fps = 0;
+        var isImage = false;
         var video = VideoStreamRegex().Match(ffmpegStderr);
         if (video.Success)
         {
             var rest = video.Groups["rest"].Value;
+            isImage = ImageCodecRegex().IsMatch(rest);
             var size = SizeRegex().Match(rest);
             if (size.Success)
             {
@@ -69,7 +82,7 @@ public static partial class TryxKanaliEncode
             var container = ContainerKbpsRegex().Match(ffmpegStderr);
             if (container.Success) kbps = int.Parse(container.Groups[1].Value, CultureInfo.InvariantCulture);
         }
-        return new SourceInfo(width, height, fps, kbps);
+        return new SourceInfo(width, height, fps, kbps, isImage);
     }
 
     /// <summary>Runs `ffmpeg -i` on <paramref name="path"/> and parses its stream info.</summary>
@@ -95,13 +108,18 @@ public static partial class TryxKanaliEncode
                 return default;
             }
             outTask.GetAwaiter().GetResult();
-            return ParseSourceInfo(errTask.GetAwaiter().GetResult());
+            var info = ParseSourceInfo(errTask.GetAwaiter().GetResult());
+            var ext = Path.GetExtension(path).ToLowerInvariant();
+            return ext is ".gif" or ".png" or ".jpg" or ".jpeg" ? info with { IsImage = true } : info;
         }
         catch { return default; }
     }
 
     [GeneratedRegex(@"Stream #\d+:\d+[^\n]*?: Video: (?<rest>[^\n]*)")]
     private static partial Regex VideoStreamRegex();
+
+    [GeneratedRegex(@"^(gif|png|mjpeg)\b")]
+    private static partial Regex ImageCodecRegex();
 
     [GeneratedRegex(@"\b(\d{2,5})x(\d{2,5})\b")]
     private static partial Regex SizeRegex();

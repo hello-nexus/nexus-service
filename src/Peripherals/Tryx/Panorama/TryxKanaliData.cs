@@ -52,6 +52,16 @@ public static class TryxKanaliData
         }
     }
 
+    /// <summary>The clip Kanali keeps under its media dir for a panel file, or null.</summary>
+    public static string? VideoPath(string deviceFileName)
+    {
+        lock (Lock)
+        {
+            EnsureFresh();
+            return _mediaVideos.TryGetValue(StemKey(deviceFileName), out var path) && File.Exists(path) ? path : null;
+        }
+    }
+
     /// <summary>Kanali's display name for a panel-reported device filename, or null when
     /// Kanali has no record of it.</summary>
     public static string? DisplayName(string deviceFileName)

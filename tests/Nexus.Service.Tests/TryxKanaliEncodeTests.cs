@@ -43,4 +43,25 @@ public class TryxKanaliEncodeTests
 
         Assert.Equal(new TryxKanaliEncode.SourceInfo(1280, 720, 29.97, 812), TryxKanaliEncode.ParseSourceInfo(stderr));
     }
+
+    [Fact]
+    public void ParseSourceInfo_marks_a_gif_source_as_an_image()
+    {
+        const string stderr =
+            "  Duration: 00:00:03.00, start: 0.000000, bitrate: 5120 kb/s\n" +
+            "  Stream #0:0: Video: gif, bgra, 498x280, 15 fps, 15 tbr, 100 tbn\n";
+
+        Assert.True(TryxKanaliEncode.ParseSourceInfo(stderr).IsImage);
+    }
+
+    [Fact]
+    public void X264Options_uses_crf_18_for_an_image_source_and_abr_otherwise()
+    {
+        var gif = new TryxKanaliEncode.SourceInfo(498, 280, 15, 5120, IsImage: true);
+        var video = new TryxKanaliEncode.SourceInfo(2240, 1080, 30, 2629);
+
+        Assert.Contains("-crf 18", TryxKanaliEncode.X264Options(gif, 2240, 1080, 60));
+        Assert.DoesNotContain("-b:v", TryxKanaliEncode.X264Options(gif, 2240, 1080, 60));
+        Assert.Contains("-b:v 6047k", TryxKanaliEncode.X264Options(video, 2240, 1080, 60));
+    }
 }

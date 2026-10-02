@@ -733,6 +733,8 @@ public sealed class TryxPanoramaHub : IDisposable
                 return (false, "");
             }
             RecordMediaUpload(deviceFileName, container.Length);
+            // Stored before the panel switch is published, so the preview never asks for a missing clip.
+            TryxMediaStore.SaveCopy(mp4Path, deviceFileName);
             // The library lists the panel's own file list once received; re-read it so the new
             // file joins it (and the slideshow) without waiting for a media poll.
             RefreshMediaList(waitForGate: true);
@@ -973,12 +975,12 @@ public sealed class TryxPanoramaHub : IDisposable
     {
         // MediaX's filter graph: lanczos scale to full range, yuv420p, fps.
         var scale = $"scale={PanelWidth}:{PanelHeight}:flags=lanczos+accurate_rnd+full_chroma_inp:out_range=pc,format=yuv420p,fps={PanelFps}";
-        var kbps = TryxKanaliEncode.BitrateKbps(TryxKanaliEncode.ProbeSource(ffmpegPath, input), PanelWidth, PanelHeight, PanelFps);
+        var source = TryxKanaliEncode.ProbeSource(ffmpegPath, input);
         var vf = crop is { } c
             ? $"{CropRect.OrientationFilter(c.Rotate, c.Mirror)}crop=in_w*{F(c.W)}:in_h*{F(c.H)}:in_w*{F(c.X)}:in_h*{F(c.Y)},{scale}"
             : scale;
         var args = $"-nostdin -hide_banner -loglevel error -y -i \"{input}\" -an " +
-                   $"-vf \"{vf}\" -c:v libx264 {TryxKanaliEncode.X264Options(PanelFps, kbps)} " +
+                   $"-vf \"{vf}\" -c:v libx264 {TryxKanaliEncode.X264Options(source, PanelWidth, PanelHeight, PanelFps)} " +
                    $"-movflags +faststart \"{outputMp4}\"";
         using var p = Process.Start(new ProcessStartInfo
         {
