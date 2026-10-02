@@ -60,7 +60,7 @@ public class TryxMediaHeadTests
     public void Parse_skips_the_container_header_and_derives_the_duration()
     {
         var es = AnnexB(Sps, Pps, IdrFirst, PFrame);
-        var container = TryxRkProtocol.WrapMediaContainer(es, fps: 60, width: 1280, height: 640, frameCount: 870, id: 5);
+        var container = TryxRkProtocol.WrapMediaContainer(es, fps: 60, width: 1280, height: 640, frameCount: 870, magic: 5);
 
         var head = TryxMediaHead.Parse(container);
 

@@ -304,6 +304,34 @@ public static class TryxRkProtocol
         return WrapFrame(payload);
     }
 
+    /// <summary>file_decrypt_job_start (404) { enc_file_name = 1, dec_file_name = 2, file_type = 3,
+    /// encrypted_sm4_key = 4 }: the panel RSA-unwraps the key and SM4-decrypts a committed "tmp"
+    /// file into <paramref name="fileType"/> storage. Header track_id = the transfer's.</summary>
+    public static byte[] BuildFileDecryptJobStart(
+        uint trackId, string encFileName, string decFileName, string fileType, string encryptedSm4Key)
+    {
+        var job = new List<byte>();
+        WriteLengthDelimited(job, fieldNumber: 1, Encoding.UTF8.GetBytes(encFileName));
+        WriteLengthDelimited(job, fieldNumber: 2, Encoding.UTF8.GetBytes(decFileName));
+        WriteLengthDelimited(job, fieldNumber: 3, Encoding.ASCII.GetBytes(fileType));
+        WriteLengthDelimited(job, fieldNumber: 4, Encoding.ASCII.GetBytes(encryptedSm4Key));
+
+        var payload = SessionEnvelope(trackId);
+        WriteLengthDelimited(payload, fieldNumber: 404, job.ToArray());
+        return WrapFrame(payload);
+    }
+
+    /// <summary>file_decrypt_job_query (405) { session_id = 1 }; answered by file_decrypt_job_status (804).</summary>
+    public static byte[] BuildFileDecryptJobQuery(uint trackId, ulong sessionId)
+    {
+        var query = new List<byte>();
+        WriteVarintField(query, fieldNumber: 1, sessionId);
+
+        var payload = SessionEnvelope(trackId);
+        WriteLengthDelimited(payload, fieldNumber: 405, query.ToArray());
+        return WrapFrame(payload);
+    }
+
     /// <summary>Deletes a stored file on the panel: top-level file_remove command (field 403,
     /// sibling of the transfer's file_transmit_begin/data/end at 400-402), carrying the
     /// FileRemove message { file_name = 1, file_type = 2 }. Kanali sends fileType "media" for
@@ -403,15 +431,18 @@ public static class TryxRkProtocol
         return payload;
     }
 
+    /// <summary>MediaHeaderPb.magic in every MediaX-written container ("MXHD").</summary>
+    public const uint MediaHeaderMagic = 0x4D584844;
+
     /// <summary>Wraps a raw H.264 Annex-B elementary stream in the "Tryx media" container the
-    /// panel expects: a little-endian uint32 header length, a protobuf header (f1=id,
-    /// f2=magic-string, f3=4, f4=1, f5=fps, f6=width, f7=height, f8=frameCount), then the
-    /// stream. Layout decoded from a Kanali capture (MediaX.dll MX_ConvertToH264Raw output).</summary>
+    /// panel expects: a little-endian uint32 header length, a MediaHeaderPb (magic = 1,
+    /// description = 2, original_media_type = 3 (4 MP4), payload_format = 4 (1 H264Raw), fps = 5,
+    /// width = 6, height = 7, total_frame_count = 8), then the stream.</summary>
     public static byte[] WrapMediaContainer(
-        ReadOnlySpan<byte> h264AnnexB, int fps, int width, int height, int frameCount, uint id)
+        ReadOnlySpan<byte> h264AnnexB, int fps, int width, int height, int frameCount, uint magic)
     {
         var hdr = new List<byte>();
-        WriteVarintField(hdr, fieldNumber: 1, id);
+        WriteVarintField(hdr, fieldNumber: 1, magic);
         WriteLengthDelimited(hdr, fieldNumber: 2,
             Encoding.ASCII.GetBytes($"Tryx media header v1, fps={fps}, size={width}x{height}"));
         WriteVarintField(hdr, fieldNumber: 3, 4);

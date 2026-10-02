@@ -8,8 +8,8 @@ namespace Nexus.Service.Peripherals.Tryx.Panorama;
 /// Extracts the H.264 elementary stream from an MP4 as Annex-B (start-code framed, SPS/PPS
 /// in-band). The bundled ffmpeg is stripped to the mp4 muxer only (no raw h264 muxer, no
 /// h264_mp4toannexb bitstream filter), and the Tryx panel's media container wraps a raw
-/// Annex-B stream, so the conversion is done here. SPS/PPS live in the avcC box (out of band
-/// in MP4) and are re-emitted before every IDR so each GOP is independently decodable.
+/// Annex-B stream, so the conversion is done here. A stream already carrying SPS/PPS in-band
+/// (x264 repeat-headers) is copied as is; otherwise the avcC SPS/PPS are emitted before every IDR.
 /// </summary>
 public static class Mp4AnnexB
 {
@@ -29,6 +29,11 @@ public static class Mp4AnnexB
         }
 
         var outp = new List<byte>(mdat.Length + 256);
+        if (HasInBandSps(mdat, nalLenSize))
+        {
+            CopyInBand(outp, mdat, nalLenSize);
+            return outp.ToArray();
+        }
         EmitParameterSets(outp, spsList, ppsList);
 
         var i = 0;
@@ -51,6 +56,44 @@ public static class Mp4AnnexB
             for (var k = 0; k < nal.Length; k++) outp.Add(nal[k]);
         }
         return outp.ToArray();
+    }
+
+    private static bool HasInBandSps(ReadOnlySpan<byte> mdat, int nalLenSize)
+    {
+        var i = 0;
+        while (i + nalLenSize <= mdat.Length)
+        {
+            var nalLen = (int)ReadBigEndian(mdat.Slice(i, nalLenSize));
+            i += nalLenSize;
+            if (nalLen == 0 || i + nalLen > mdat.Length) return false;
+            var nalType = mdat[i] & 0x1f;
+            if (nalType == 7) return true;
+            // x264 with repeat-headers puts SPS in the first access unit, ahead of its first slice.
+            if (nalType is 1 or 5) return false;
+            i += nalLen;
+        }
+        return false;
+    }
+
+    // Copies the stream verbatim (x264 repeat-headers + aud), minus the extradata SEI ffmpeg
+    // prepends to the first sample, so the stream opens the way x264 writes it raw.
+    private static void CopyInBand(List<byte> outp, ReadOnlySpan<byte> mdat, int nalLenSize)
+    {
+        var leading = true;
+        var i = 0;
+        while (i + nalLenSize <= mdat.Length)
+        {
+            var nalLen = (int)ReadBigEndian(mdat.Slice(i, nalLenSize));
+            i += nalLenSize;
+            if (nalLen == 0 || i + nalLen > mdat.Length) break;
+            var nal = mdat.Slice(i, nalLen);
+            i += nalLen;
+            var nalType = nal[0] & 0x1f;
+            if (leading && nalType == 6) continue;
+            leading = false;
+            outp.AddRange(StartCode);
+            for (var k = 0; k < nal.Length; k++) outp.Add(nal[k]);
+        }
     }
 
     private static void EmitParameterSets(List<byte> outp, List<byte[]> sps, List<byte[]> pps)

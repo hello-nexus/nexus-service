@@ -41,6 +41,17 @@ public static class TryxKanaliData
     // data URL, then cap the encoded result the same as the upload thumbnail cache.
     private const int MaxThumbBytes = 512 * 1024;
 
+    /// <summary>Kanali's data dir (the profile whose store.json was written most recently), or
+    /// null when Kanali has never run on this machine.</summary>
+    public static string? DataDir()
+    {
+        lock (Lock)
+        {
+            EnsureFresh();
+            return _dataDir;
+        }
+    }
+
     /// <summary>Kanali's display name for a panel-reported device filename, or null when
     /// Kanali has no record of it.</summary>
     public static string? DisplayName(string deviceFileName)

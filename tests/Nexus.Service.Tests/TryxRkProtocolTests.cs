@@ -1,3 +1,4 @@
+using System;
 using System.Buffers.Binary;
 using System.Collections.Generic;
 using System.Linq;
@@ -184,7 +185,7 @@ public class TryxRkProtocolTests
     {
         var h264 = new byte[] { 0x00, 0x00, 0x00, 0x01, 0x67, 0x11, 0x22 };
 
-        var c = TryxRkProtocol.WrapMediaContainer(h264, fps: 60, width: 2240, height: 1080, frameCount: 172, id: 1297631300);
+        var c = TryxRkProtocol.WrapMediaContainer(h264, fps: 60, width: 2240, height: 1080, frameCount: 172, magic: 1297631300);
 
         var headerLen = System.Buffers.Binary.BinaryPrimitives.ReadUInt32LittleEndian(c);
         var header = System.Text.Encoding.ASCII.GetString(c, 4, (int)headerLen);
@@ -600,5 +601,26 @@ public class TryxRkProtocolTests
             shift += 7;
         }
         return (value, i - offset);
+    }
+
+    [Fact]
+    public void BuildFileDecryptJobStart_carries_the_track_id_and_job_fields()
+    {
+        var frame = TryxRkProtocol.BuildFileDecryptJobStart(7, "download_86.mp4.h264_2240x1080", "download_86.mp4.h264_2240x1080", "preset", "S0VZ");
+
+        var payload = frame.AsSpan(8).ToArray();
+        // header { track_id = 7 }, then file_decrypt_job_start (404) { 1, 2, 3, 4 }.
+        Assert.Equal(Convert.FromHexString("0a021007a219"), payload[..6]);
+        var body = payload[7..];
+        Assert.Equal("download_86.mp4.h264_2240x1080", Encoding.UTF8.GetString(body, 2, body[1]));
+        Assert.EndsWith("1a06707265736574" + "22045330565a", Convert.ToHexString(body).ToLowerInvariant());
+    }
+
+    [Fact]
+    public void BuildFileDecryptJobQuery_carries_the_session_id()
+    {
+        var frame = TryxRkProtocol.BuildFileDecryptJobQuery(7, 1);
+
+        Assert.Equal(Convert.FromHexString("0a021007aa19020801"), frame.AsSpan(8).ToArray());
     }
 }

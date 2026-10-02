@@ -166,6 +166,60 @@ public static class TryxMediaList
         return new FilePullChunk(status == 0, session, (long)offset, (long)size, data);
     }
 
+    /// <summary>file_decrypt_job_start_status (RspPackagePb 803) { start_status = 1 (0 Accepted,
+    /// 1 Busy, 2 CreateFailed, 3 InvalidParams), session_id = 2 }; zero fields are absent.</summary>
+    public readonly record struct DecryptJobStart(int Status, ulong SessionId);
+
+    public static DecryptJobStart? ParseDecryptJobStartStatus(ReadOnlySpan<byte> payload)
+    {
+        if (!TryGetLenField(payload, fieldNumber: 803, out var body)) return null;
+        ulong status = 0, session = 0;
+        var pos = 0;
+        while (pos < body.Length)
+        {
+            if (!TryReadVarint(body, ref pos, out var tag)) return null;
+            var fn = (int)(tag >> 3);
+            var wt = (int)(tag & 7);
+            if (wt == WireVarint)
+            {
+                if (!TryReadVarint(body, ref pos, out var v)) return null;
+                if (fn == 1) status = v;
+                else if (fn == 2) session = v;
+                continue;
+            }
+            if (!TrySkipField(body, ref pos, wt)) return null;
+        }
+        return new DecryptJobStart((int)status, session);
+    }
+
+    /// <summary>file_decrypt_job_status (RspPackagePb 804) { job_status = 1 (0 Finished,
+    /// 1 NotFound, 2 Running), progress = 2, decrypt_status = 3 (0 DecryptSuccess, else a failure) };
+    /// zero fields are absent, so a finished successful job carries only its progress.</summary>
+    public readonly record struct DecryptJobStatus(int JobStatus, int Progress, int DecryptStatus);
+
+    public static DecryptJobStatus? ParseDecryptJobStatus(ReadOnlySpan<byte> payload)
+    {
+        if (!TryGetLenField(payload, fieldNumber: 804, out var body)) return null;
+        ulong job = 0, progress = 0, decrypt = 0;
+        var pos = 0;
+        while (pos < body.Length)
+        {
+            if (!TryReadVarint(body, ref pos, out var tag)) return null;
+            var fn = (int)(tag >> 3);
+            var wt = (int)(tag & 7);
+            if (wt == WireVarint)
+            {
+                if (!TryReadVarint(body, ref pos, out var v)) return null;
+                if (fn == 1) job = v;
+                else if (fn == 2) progress = v;
+                else if (fn == 3) decrypt = v;
+                continue;
+            }
+            if (!TrySkipField(body, ref pos, wt)) return null;
+        }
+        return new DecryptJobStatus((int)job, (int)progress, (int)decrypt);
+    }
+
     /// <summary>Non-zero ErrorPb code of a reply (RspPackagePb field 2 { code = 1, why = 2 }), e.g.
     /// 2 = BodyCaseNotSupported for a command this firmware lacks; null when the reply succeeded.</summary>
     public static int? ParseErrorCode(ReadOnlySpan<byte> payload)
@@ -268,6 +322,10 @@ public static class TryxMediaList
             default: return false;
         }
     }
+
+    /// <summary>True when <paramref name="payload"/> carries top-level length-delimited field <paramref name="fieldNumber"/>.</summary>
+    public static bool HasLenField(ReadOnlySpan<byte> payload, int fieldNumber)
+        => TryGetLenField(payload, fieldNumber, out _);
 
     /// <summary>Content of the first length-delimited field matching <paramref name="fieldNumber"/>.</summary>
     private static bool TryGetLenField(ReadOnlySpan<byte> b, int fieldNumber, out ReadOnlySpan<byte> content)

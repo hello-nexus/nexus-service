@@ -450,7 +450,7 @@ public static class TryxRoutes
                 {
                     await file.CopyToAsync(s);
                 }
-                var (ok, msg) = await hub.ImportAndPlayVideoAsync(tempInput, file.FileName, crop, targetW, targetH, ctx.RequestAborted);
+                var (ok, msg) = await hub.ImportAndPlayVideoAsync(tempInput, crop, targetW, targetH, ctx.RequestAborted);
                 if (!ok)
                 {
                     return Results.Json(

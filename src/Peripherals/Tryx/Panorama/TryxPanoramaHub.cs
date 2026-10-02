@@ -244,6 +244,7 @@ public sealed class TryxPanoramaHub : IDisposable
         if (ok)
         {
             RecordMediaDeleted(deviceFileName);
+            if (TryxKanaliData.DataDir() is { } kanaliDir) TryxKanaliStore.Unregister(kanaliDir, deviceFileName);
             // Re-fetch so the panel's list (and the per-file sizes) drop the removed file
             // authoritatively, not just via the local delta.
             SendReliable(TryxRkProtocol.BuildGetFileList(sn));
@@ -668,9 +669,7 @@ public sealed class TryxPanoramaHub : IDisposable
         return saved;
     }
 
-    // Panel surface is a fixed 2240x1080 2:1 display; every custom clip is transcoded to
-    // it. Main profile + no B-frames matches Kanali's MediaX output (the format the
-    // firmware decoder is known to accept).
+    // Panel surface is a fixed-size 2:1 display; every custom clip is transcoded to it.
     private const int PanelWidth = 2240;
     private const int PanelHeight = 1080;
     private const int PanelFps = 60;
@@ -692,7 +691,7 @@ public sealed class TryxPanoramaHub : IDisposable
     /// carries the stable <see cref="InsufficientSpaceMsg"/> marker when the capacity check
     /// rejects the transfer.</summary>
     public async Task<(bool Ok, string Msg)> ImportAndPlayVideoAsync(
-        string localPath, string sourceName, TryxVideoCrop? crop, int targetWidth, int targetHeight, CancellationToken ct)
+        string localPath, TryxVideoCrop? crop, int targetWidth, int targetHeight, CancellationToken ct)
     {
         var ffmpegPath = FfmpegResolver.Path;
         if (ffmpegPath is null)
@@ -702,7 +701,9 @@ public sealed class TryxPanoramaHub : IDisposable
         }
         if (!EnsureConnected()) return (false, "");
 
-        var deviceFileName = CustomMediaFileName(sourceName);
+        // Kanali's naming: <local timestamp>.mp4 for the clip, + .h264_WxH on the panel.
+        var stamp = TryxKanaliStore.Timestamp(DateTime.Now);
+        var deviceFileName = $"{stamp}.mp4.h264_{PanelWidth}x{PanelHeight}";
         var mp4Path = System.IO.Path.Combine(System.IO.Path.GetTempPath(), $"nexus-tryx-{Guid.NewGuid():N}.mp4");
         await _importGate.WaitAsync(ct).ConfigureAwait(false);
         try
@@ -721,16 +722,13 @@ public sealed class TryxPanoramaHub : IDisposable
                 return (false, "");
             }
             var frames = CountH264Frames(h264);
-            // Stable per-name id (GetHashCode is per-process randomized, which would give
-            // the same file a different container id across restarts).
-            var id = StableMediaId(deviceFileName);
-            var container = TryxRkProtocol.WrapMediaContainer(h264, PanelFps, PanelWidth, PanelHeight, frames, id);
+            var container = TryxRkProtocol.WrapMediaContainer(h264, PanelFps, PanelWidth, PanelHeight, frames, TryxRkProtocol.MediaHeaderMagic);
 
             if (!HasSpaceFor(container.Length))
             {
                 return (false, InsufficientSpaceMsg);
             }
-            if (!SendFileTransfer(deviceFileName, container, fileType: "media", ct))
+            if (!SendFileTransfer(deviceFileName, container, fileType: "media", ct, out _))
             {
                 return (false, "");
             }
@@ -750,7 +748,13 @@ public sealed class TryxPanoramaHub : IDisposable
 
             // Thumbnail from the cropped transcode, so it matches what the panel plays.
             try { TryxThumbnailCache.Write(ffmpegPath, mp4Path, deviceFileName); } catch { }
-            try { TryxThumbnailCache.WriteDuration(deviceFileName, TryxThumbnailCache.ProbeDuration(ffmpegPath, localPath)); } catch { }
+            var durationSec = 0.0;
+            try { durationSec = TryxThumbnailCache.ProbeDuration(ffmpegPath, localPath); } catch { }
+            try { TryxThumbnailCache.WriteDuration(deviceFileName, durationSec); } catch { }
+            if (TryxKanaliData.DataDir() is { } kanaliDir)
+            {
+                RegisterWithKanali(kanaliDir, ffmpegPath, localPath, mp4Path, durationSec, stamp, deviceFileName);
+            }
             // After the duration sidecar exists, so a "finish videos" hold is computed from it.
             _slideshow.Rearm(deviceFileName, NowMs());
             return (true, "");
@@ -762,9 +766,33 @@ public sealed class TryxPanoramaHub : IDisposable
         }
     }
 
-    /// <summary>Downloads a cloud wallpaper, decrypts it, and installs it. The decrypted asset
-    /// is the plain Tryx media container (validated by its magic before pushing, since the SM4
-    /// mode is inferred). Returns (ok, message).</summary>
+    // Kanali's upload bookkeeping: clip in kanali\media, a full-size PNG of the source's middle
+    // frame in media\thumb, then the store.json entry that stops Kanali deleting the panel file.
+    private void RegisterWithKanali(
+        string kanaliDir, string ffmpegPath, string sourcePath, string clipMp4, double durationSec,
+        string stamp, string deviceFileName)
+    {
+        try
+        {
+            var mediaPath = System.IO.Path.Combine(TryxKanaliStore.MediaDir(kanaliDir), stamp + ".mp4");
+            Directory.CreateDirectory(TryxKanaliStore.MediaDir(kanaliDir));
+            File.Copy(clipMp4, mediaPath, overwrite: true);
+            var thumbDir = TryxKanaliStore.ThumbDir(kanaliDir);
+            Directory.CreateDirectory(thumbDir);
+            string? thumbPath = System.IO.Path.Combine(thumbDir, TryxKanaliStore.Timestamp(DateTime.Now) + ".png");
+            if (!TryxThumbnailCache.ExtractFullFrameTo(ffmpegPath, sourcePath, durationSec / 2, thumbPath)) thumbPath = null;
+            TryxKanaliStore.Register(kanaliDir, new TryxKanaliStore.Upload(
+                mediaPath, thumbPath, new FileInfo(mediaPath).Length, deviceFileName, PanelSerial));
+        }
+        catch (Exception ex)
+        {
+            ServiceLog.Warn($"[tryx] Kanali library copy of {deviceFileName} failed: {ex.GetType().Name}: {ex.Message}");
+        }
+    }
+
+    /// <summary>Installs a cloud wallpaper the way Kanali does: the still-encrypted download is sent as
+    /// a "tmp" file and the panel decrypts it into its preset storage (/userdata/default/), which
+    /// Kanali never prunes. Returns (ok, message).</summary>
     public async Task<(bool Ok, string Msg)> InstallCloudMaterialAsync(int id, CancellationToken ct)
     {
         if (!EnsureConnected()) return (false, "Tryx Panorama not connected");
@@ -773,30 +801,22 @@ public sealed class TryxPanoramaHub : IDisposable
         try
         {
             string installName;
-            try { installName = await _cloud.DownloadAndDecryptAsync(id, tmp, ct); }
+            string wrappedKey;
+            try
+            {
+                installName = await _cloud.DownloadEncryptedAsync(id, tmp, ct);
+                wrappedKey = await _cloud.GetPanelWrappedSm4KeyAsync(ct);
+            }
             catch (Exception ex)
             {
-                ServiceLog.Error($"[tryx] cloud download/decrypt failed for {id}: {ex.GetType().Name}: {ex.Message}");
+                ServiceLog.Error($"[tryx] cloud download failed for {id}: {ex.GetType().Name}: {ex.Message}");
                 return (false, "download failed");
-            }
-            // A correct SM4-CBC decrypt yields a raw H.264 Annex-B stream (start code
-            // 00 00 00 01 then an SPS); a wrong key/mode gives garbage, so gate the push on it.
-            var head = new byte[16];
-            int n;
-            await using (var fs = File.OpenRead(tmp))
-            {
-                n = await fs.ReadAsync(head, ct);
-            }
-            if (n < 5 || head[0] != 0x00 || head[1] != 0x00 || head[2] != 0x00 || head[3] != 0x01)
-            {
-                ServiceLog.Error($"[tryx] cloud {id} decrypt not H.264 (head={Convert.ToHexString(head[..Math.Min(n, 16)])})");
-                return (false, "decrypt format error");
             }
             if (!HasSpaceFor(new FileInfo(tmp).Length))
             {
                 return (false, InsufficientSpaceMsg);
             }
-            if (!await InstallLocalMediaAsync(tmp, installName, ct)) return (false, "install failed");
+            if (!await InstallEncryptedPresetAsync(tmp, installName, wrappedKey, ct)) return (false, "install failed");
             _configStore.Update(s =>
             {
                 if (!s.Tryx.InstalledCloudIds.Contains(id)) s.Tryx.InstalledCloudIds.Add(id);
@@ -829,21 +849,64 @@ public sealed class TryxPanoramaHub : IDisposable
     public Task<System.IO.Stream?> OpenCloudCoverAsync(int id, CancellationToken ct)
         => _cloud.OpenCoverAsync(id, ct);
 
-    /// <summary>Installs an already-local, panel-ready file by streaming it over the file-transfer
-    /// protocol and selecting it. The file must already be the plain Tryx media container;
-    /// <paramref name="deviceFileName"/> is the on-panel name. Caller holds the import gate.</summary>
-    public async Task<bool> InstallLocalMediaAsync(string localContainerPath, string deviceFileName, CancellationToken ct)
+    // Kanali's interval between decrypt-job status queries.
+    internal TimeSpan DecryptPollInterval { get; set; } = TimeSpan.FromSeconds(3);
+    // Kanali polls without a bound; this caps a job the panel never finishes.
+    private static readonly TimeSpan DecryptJobTimeout = TimeSpan.FromMinutes(5);
+    private const int DecryptReplyTimeoutMs = 2000;
+
+    /// <summary>Sends <paramref name="encryptedPath"/> (IV + SM4-CBC, as downloaded) as a "tmp" file,
+    /// runs the panel's decrypt job into preset storage under <paramref name="deviceFileName"/>,
+    /// then selects it. Caller holds the import gate.</summary>
+    internal async Task<bool> InstallEncryptedPresetAsync(
+        string encryptedPath, string deviceFileName, string wrappedSm4Key, CancellationToken ct)
     {
         if (!TryxThumbnailCache.IsSafeDeviceName(deviceFileName)) return false;
         if (!EnsureConnected()) return false;
-        var bytes = await File.ReadAllBytesAsync(localContainerPath, ct);
+        var bytes = await File.ReadAllBytesAsync(encryptedPath, ct);
         if (!HasSpaceFor(bytes.Length))
         {
             ServiceLog.Warn($"[tryx] install of {deviceFileName} rejected, insufficient panel space");
             return false;
         }
-        if (!SendFileTransfer(deviceFileName, bytes, fileType: "media", ct)) return false;
+        if (!SendFileTransfer(deviceFileName, bytes, fileType: "tmp", ct, out var trackId)) return false;
+
+        // The panel forgets a running job when it re-enumerates, so the job is tied to this transport.
+        var jobTransport = _transport;
+        var start = Request(
+            TryxRkProtocol.BuildFileDecryptJobStart(trackId, deviceFileName, deviceFileName, "preset", wrappedSm4Key),
+            replyField: 803, r => TryxMediaList.ParseDecryptJobStartStatus(r));
+        if (start is not { Status: 0 } accepted)
+        {
+            ServiceLog.Error($"[tryx] decrypt job for {deviceFileName} not accepted (status {start?.Status.ToString(CultureInfo.InvariantCulture) ?? "no reply"})");
+            return false;
+        }
+        var deadline = Environment.TickCount64 + (long)DecryptJobTimeout.TotalMilliseconds;
+        while (true)
+        {
+            await Task.Delay(DecryptPollInterval, ct).ConfigureAwait(false);
+            if (!ReferenceEquals(_transport, jobTransport) || jobTransport is not { IsOpen: true })
+            {
+                ServiceLog.Error($"[tryx] decrypt job for {deviceFileName} lost: the panel disconnected");
+                return false;
+            }
+            var status = Request(
+                TryxRkProtocol.BuildFileDecryptJobQuery(trackId, accepted.SessionId),
+                replyField: 804, r => TryxMediaList.ParseDecryptJobStatus(r));
+            if (status is { DecryptStatus: not 0 } failed)
+            {
+                ServiceLog.Error($"[tryx] decrypt of {deviceFileName} failed (decrypt status {failed.DecryptStatus})");
+                return false;
+            }
+            if (status is { JobStatus: 0 }) break;
+            if (status is { JobStatus: 1 } || Environment.TickCount64 > deadline)
+            {
+                ServiceLog.Error($"[tryx] decrypt job for {deviceFileName} lost (job status {status?.JobStatus.ToString(CultureInfo.InvariantCulture) ?? "no reply"})");
+                return false;
+            }
+        }
         RecordMediaUpload(deviceFileName, bytes.Length);
+        RefreshMediaList(waitForGate: true);
         lock (_txGate)
         {
             if (!SendReliable(TryxRkProtocol.BuildPreset(deviceFileName, State.ScreenEnabled, State.Brightness))) return false;
@@ -855,28 +918,23 @@ public sealed class TryxPanoramaHub : IDisposable
         return true;
     }
 
-    // FNV-1a over the name: a process-stable 32-bit id for the media container header.
-    private static uint StableMediaId(string name)
+    // One request/reply exchange under the send gate; null when the panel does not answer.
+    private T? Request<T>(byte[] frame, int replyField, Func<byte[], T?> parse) where T : struct
     {
-        uint h = 2166136261;
-        foreach (var c in name) { h = (h ^ c) * 16777619; }
-        return h | 1u;
-    }
-
-    // Device filename for a custom upload: sanitized stem + the panel's media suffix, matching
-    // the built-in default_NN.mp4.h264_2240x1080 naming so the f200 select targets it.
-    private static string CustomMediaFileName(string sourceName)
-    {
-        var stem = System.IO.Path.GetFileNameWithoutExtension(sourceName);
-        var sb = new StringBuilder(stem.Length);
-        foreach (var c in stem)
+        var transport = _transport;
+        if (transport is not { IsOpen: true }) return null;
+        byte[]? reply;
+        lock (_txGate)
         {
-            sb.Append((c is >= 'a' and <= 'z' or >= 'A' and <= 'Z' or >= '0' and <= '9' or '_' or '-') ? c : '_');
+            try { reply = transport.Request(frame, replyField, DecryptReplyTimeoutMs); }
+            catch (Exception ex)
+            {
+                ServiceLog.Warn($"[tryx] request {replyField} failed: {ex.GetType().Name}: {ex.Message}");
+                Disconnect();
+                return null;
+            }
         }
-        var clean = sb.ToString();
-        if (clean.Length > 32) clean = clean.Substring(0, 32);
-        if (clean.Length == 0) clean = "custom";
-        return $"{clean}.mp4.h264_{PanelWidth}x{PanelHeight}";
+        return reply is null ? null : parse(reply);
     }
 
     // Streams a full file: BEGIN (f400 name+size) -> DATA (f401 chunks) -> COMMIT (f402 type).
@@ -885,9 +943,9 @@ public sealed class TryxPanoramaHub : IDisposable
     // the transport, because a partial transfer leaves the panel awaiting more chunks - a
     // re-enumeration resyncs it, and a stray control frame into a half-open session is worse
     // than a reconnect.
-    private bool SendFileTransfer(string deviceFileName, byte[] payload, string fileType, CancellationToken ct)
+    private bool SendFileTransfer(string deviceFileName, byte[] payload, string fileType, CancellationToken ct, out uint session)
     {
-        var session = unchecked((uint)Interlocked.Increment(ref _transferSession));
+        session = unchecked((uint)Interlocked.Increment(ref _transferSession));
         lock (_txGate)
         {
             var completed = false;
@@ -913,12 +971,15 @@ public sealed class TryxPanoramaHub : IDisposable
     private async Task<bool> TranscodeToPanelMp4Async(
         string ffmpegPath, string input, TryxVideoCrop? crop, string outputMp4, CancellationToken ct)
     {
+        // MediaX's filter graph: lanczos scale to full range, yuv420p, fps.
+        var scale = $"scale={PanelWidth}:{PanelHeight}:flags=lanczos+accurate_rnd+full_chroma_inp:out_range=pc,format=yuv420p,fps={PanelFps}";
+        var kbps = TryxKanaliEncode.BitrateKbps(TryxKanaliEncode.ProbeSource(ffmpegPath, input), PanelWidth, PanelHeight, PanelFps);
         var vf = crop is { } c
-            ? $"{CropRect.OrientationFilter(c.Rotate, c.Mirror)}crop=in_w*{F(c.W)}:in_h*{F(c.H)}:in_w*{F(c.X)}:in_h*{F(c.Y)},scale={PanelWidth}:{PanelHeight}"
-            : $"scale={PanelWidth}:{PanelHeight}";
+            ? $"{CropRect.OrientationFilter(c.Rotate, c.Mirror)}crop=in_w*{F(c.W)}:in_h*{F(c.H)}:in_w*{F(c.X)}:in_h*{F(c.Y)},{scale}"
+            : scale;
         var args = $"-nostdin -hide_banner -loglevel error -y -i \"{input}\" -an " +
-                   $"-vf \"{vf}\" -c:v libx264 -profile:v main -pix_fmt yuv420p " +
-                   $"-r {PanelFps} -bf 0 -g {PanelFps} -movflags +faststart \"{outputMp4}\"";
+                   $"-vf \"{vf}\" -c:v libx264 {TryxKanaliEncode.X264Options(PanelFps, kbps)} " +
+                   $"-movflags +faststart \"{outputMp4}\"";
         using var p = Process.Start(new ProcessStartInfo
         {
             FileName = ffmpegPath,
