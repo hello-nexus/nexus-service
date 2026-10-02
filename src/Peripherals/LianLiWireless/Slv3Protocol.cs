@@ -51,6 +51,8 @@ public static class Slv3Protocol
     public const byte RfClockSync = 0x14;          // master-clock heartbeat (broadcast)
     public const byte RfSaveCfg = 0x15;            // persist to fan flash
     public const byte RfRebootChain = 0x16;        // RebootLcd: soft-reboot the chain controller
+    public const byte RfAioSwitchWireless = 0x19;  // HydroShift II: run LCD and pump from RF params (cmdSeq-acked)
+    public const byte RfAioParams = 0x21;          // HydroShift II: 32-byte state block at payload [18..49]
     public const byte RfRgbSync = 0x20;            // streamed RGB frame animation
     public const byte RfMbSyncSwitch = 0x24;
     public const byte RfLightSyncSwitch = 0x26;
@@ -131,6 +133,102 @@ public static class Slv3Protocol
     /// temperature rather than a fan subtype, so it takes no fan PWM.
     /// </summary>
     public static bool IsHydroShiftDevType(byte devType) => devType is 10 or 11;
+
+    /// <summary>The HydroShift II pump's slot in the record's RPM and PWM tuples.</summary>
+    public const int HydroShiftPumpPort = 3;
+
+    /// <summary>LEDs on the HydroShift II pump head, the first zone of its RGB frame.</summary>
+    public const int HydroShiftPumpLeds = 24;
+
+    public const int AioParamLength = 32;
+
+    // lian-li-linux AioConfig defaults for the LCD fields of the param block.
+    private const byte AioLcdLoopInterval = 3;
+    private const byte AioLcdBrightness = 80;
+
+    /// <summary>Pump RPM span per head (lian-li-linux pump_rpm_range): 10 = LCD-C, 11 = LCD-S.</summary>
+    public static (int Min, int Max) HydroShiftPumpRpmRange(byte devType) => devType == 11 ? (1600, 3200) : (1600, 2500);
+
+    /// <summary>Pump RPM for a duty percent, linear over the head's span, so 0% still runs the pump at its minimum.</summary>
+    public static int HydroShiftPumpRpm(int percent, byte devType)
+    {
+        var (min, max) = HydroShiftPumpRpmRange(devType);
+        return (int)MathF.Round(min + Math.Clamp(percent, 0, 100) / 100f * (max - min), MidpointRounding.AwayFromZero);
+    }
+
+    /// <summary>Firmware pump timer for a target RPM (lian-li-linux circle/square_pump_timer); a lower timer spins faster.</summary>
+    public static ushort HydroShiftPumpTimer(int rpm, byte devType) =>
+        devType == 11 ? SquarePumpTimer(rpm) : CirclePumpTimer(rpm);
+
+    private static ushort CirclePumpTimer(int rpm)
+    {
+        float r = Math.Clamp(rpm, 1600, 2500);
+        var t = r <= 1720f ? 1500f - (r - 1600f) * 1.667f
+            : r <= 1870f ? 1300f - (r - 1720f) * 2.0f
+            : r <= 2000f ? 1000f - (r - 1870f) * 1.23f
+            : r <= 2300f ? 840f - (r - 2000f) * 2.0f
+            : r <= 2400f ? 240f - (r - 2300f) * 1.8f
+            : 60f - (r - 2400f) * 0.5f;
+        return (ushort)Math.Clamp(t, 0f, ushort.MaxValue);
+    }
+
+    private static ushort SquarePumpTimer(int rpm)
+    {
+        float r = Math.Clamp(rpm, 1600, 3200);
+        var t = r <= 1800f ? 1590f - (r - 1600f) * 0.95f
+            : r <= 2000f ? 1400f - (r - 1800f)
+            : r <= 2200f ? 1200f - (r - 2000f)
+            : r <= 2400f ? 1000f - (r - 2200f)
+            : r <= 2600f ? 800f - (r - 2400f)
+            : r <= 2800f ? 580f - (r - 2600f) * 1.11f
+            : r <= 3000f ? 330f - (r - 2800f) * 1.2f
+            : 90f - (r - 3000f) * 0.45f;
+        return (ushort)Math.Clamp(t, 0f, ushort.MaxValue);
+    }
+
+    /// <summary>
+    /// The 32-byte RF_AioParams block (lian-li-linux build_aio_param): [0..3]
+    /// CPU temp, CPU load, GPU temp, GPU load (0..99) for the LCD, [8..11]
+    /// which of those are valid, [6] LCD loop interval, [7] and [26] = 1,
+    /// [13..24] label/value/unit colours as ARGB, [25] LCD brightness, [27]
+    /// theme, [28..29] pump timer big-endian, [30] rotation.
+    /// </summary>
+    public static byte[] BuildAioParamBlock(Slv3AioSensors sensors, ushort pumpTimer)
+    {
+        var p = new byte[AioParamLength];
+        WriteAioSensor(p, 0, sensors.CpuTemp);
+        WriteAioSensor(p, 1, sensors.CpuLoad);
+        WriteAioSensor(p, 2, sensors.GpuTemp);
+        WriteAioSensor(p, 3, sensors.GpuLoad);
+        p[6] = AioLcdLoopInterval;
+        p[7] = 1;
+        p.AsSpan(13, 12).Fill(0xFF);
+        p[25] = AioLcdBrightness;
+        p[26] = 1;
+        p[28] = (byte)(pumpTimer >> 8);
+        p[29] = (byte)pumpTimer;
+        return p;
+    }
+
+    private static void WriteAioSensor(byte[] p, int index, float? reading)
+    {
+        if (reading is not { } value || !float.IsFinite(value))
+        {
+            return;
+        }
+        p[index] = (byte)Math.Clamp(value, 0f, 99f);
+        p[index + 8] = 1;
+    }
+
+    /// <summary>RF_AioParams frame: header with cmdSeq 0, [16] = the AIO's bind ordinal, the param block at [18].</summary>
+    public static byte[] BuildAioParams(
+        ReadOnlySpan<byte> aioMac, ReadOnlySpan<byte> masterMac, byte targetRx, byte targetChannel, byte slot, ReadOnlySpan<byte> block)
+    {
+        var payload = new byte[RfPayloadSize];
+        WriteRfHeader(payload, RfAioParams, aioMac, masterMac, targetRx, targetChannel, slot, cmdSeq: 0);
+        block.CopyTo(payload.AsSpan(18));
+        return payload;
+    }
 
     /// <summary>
     /// Strimer Wireless lane geometry by dev_type, lanes back to back in the
@@ -459,16 +557,17 @@ public static class Slv3Protocol
         BuildBind(fanMac, ZeroMac, targetRx: 0, targetChannel, slot: 0, pwm4);
 
     /// <summary>
-    /// Sequenced control frame (RF_Select 0x12 identify, RF_RebootLcd 0x16):
-    /// [14]=target rx, [15]=channel, [16]=0, [17]=cmdSeq. The chain echoes the
-    /// last cmdSeq it processed in its record's byte [40]; the sender repeats the
-    /// frame until that echo matches (L-Connect SyncControlInfo).
+    /// Sequenced control frame (RF_Select 0x12 identify, RF_RebootLcd 0x16,
+    /// RF_AioSwitchWireless 0x19): [14]=target rx, [15]=channel, [16]=slot,
+    /// [17]=cmdSeq. The chain echoes the last cmdSeq it processed in its
+    /// record's byte [40]; the sender repeats the frame until that echo matches
+    /// (L-Connect SyncControlInfo).
     /// </summary>
     public static byte[] BuildSequencedCommand(
-        byte rfCmd, ReadOnlySpan<byte> fanMac, ReadOnlySpan<byte> masterMac, byte targetRx, byte targetChannel, byte cmdSeq)
+        byte rfCmd, ReadOnlySpan<byte> fanMac, ReadOnlySpan<byte> masterMac, byte targetRx, byte targetChannel, byte cmdSeq, byte slot = 0)
     {
         var payload = new byte[RfPayloadSize];
-        WriteRfHeader(payload, rfCmd, fanMac, masterMac, targetRx, targetChannel, slot: 0, cmdSeq);
+        WriteRfHeader(payload, rfCmd, fanMac, masterMac, targetRx, targetChannel, slot, cmdSeq);
         return payload;
     }
 
@@ -609,20 +708,25 @@ public readonly record struct Slv3DeviceRecord(
     /// <summary>A HydroShift II wireless AIO: its pump shares the PWM tuple, so it is never driven as a fan chain.</summary>
     public bool IsHydroShift => Slv3Protocol.IsHydroShiftDevType(DevType);
 
+    /// <summary>HydroShift II coolant temperature in °C from record byte 27 (fans_type[3]); null when not reported.</summary>
+    public int? CoolantTempC => IsHydroShift && FansType[3] > 0 ? FansType[3] : null;
+
     /// <summary>
     /// First non-zero per-port fan subtype (0x18=24 SLV3-LCD, 20-23 SLV3-LED,
     /// 36-39 SL-Infinity); 0 when every port reads empty (starving beacon).
     /// Port 0 alone is not authoritative - it can be empty on a populated chain.
+    /// A HydroShift II's fourth byte is coolant temperature, not a subtype.
     /// </summary>
     public byte EffectiveFanType
     {
         get
         {
-            foreach (var b in FansType)
+            var ports = IsHydroShift ? Slv3Protocol.HydroShiftPumpPort : FansType.Length;
+            for (var i = 0; i < ports; i++)
             {
-                if (b != 0)
+                if (FansType[i] != 0)
                 {
-                    return b;
+                    return FansType[i];
                 }
             }
             return 0;
@@ -632,6 +736,9 @@ public readonly record struct Slv3DeviceRecord(
     /// <summary>Family from <see cref="EffectiveFanType"/>; all-zero fans_type classifies Unknown.</summary>
     public Slv3FanFamily Family => Slv3Protocol.ClassifyFanFamily(EffectiveFanType);
 }
+
+/// <summary>Host readings a HydroShift II shows on its LCD; null when the sensor is unavailable.</summary>
+public readonly record struct Slv3AioSensors(float? CpuTemp, float? CpuLoad, float? GpuTemp, float? GpuLoad);
 
 /// <summary>Wireless fan family, classified from a record's fans_type bytes.</summary>
 public enum Slv3FanFamily

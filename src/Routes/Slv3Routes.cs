@@ -210,10 +210,11 @@ public static partial class Slv3Routes
     private readonly record struct LightingChain(Slv3FanInfo Fan, IReadOnlyList<Slv3StrimerEffectInfo> Modes, bool PerLane);
 
     // A bound chain that can take an uploaded animation: a Strimer with a
-    // known geometry, or a fan chain of a known family.
+    // known geometry, or a fan chain of a known family. A HydroShift II's
+    // pump ring does not fit the fan-family preset geometry.
     private static LightingChain? LightingChainOf(Slv3FanInfo fan)
     {
-        if (!fan.BoundToUs)
+        if (!fan.BoundToUs || Slv3Protocol.IsHydroShiftDevType((byte)fan.DevType))
         {
             return null;
         }

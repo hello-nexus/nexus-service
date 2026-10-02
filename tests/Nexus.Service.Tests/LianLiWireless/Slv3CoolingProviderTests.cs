@@ -121,21 +121,50 @@ public class Slv3CoolingProviderTests
     [Theory]
     [InlineData(10)]
     [InlineData(11)]
-    public void A_bound_hydroshift_gets_no_cooling_channels(int devType)
+    public void A_bound_hydroshift_gets_a_pump_channel_and_no_fan_ports(int devType)
     {
         var (hub, _, _) = Slv3TestHub.CreateConnected();
         hub.State.Fans = new[]
         {
-            // A HydroShift II reports no fans.
-            new Slv3FanInfo { Mac = Mac, BoundToUs = true, DevType = devType, FanType = 31, FanCount = 0 },
+            new Slv3FanInfo { Mac = Mac, BoundToUs = true, DevType = devType, FanCount = 0 },
             new Slv3FanInfo { Mac = "AABBCCDDEEFF", BoundToUs = true, DevType = 0, FanType = 28, FanCount = 1 },
         };
         var provider = new Slv3CoolingProvider(hub);
 
-        var channel = Assert.Single(provider.GetFanChannels());
-        Assert.StartsWith("lianli-wireless:AABBCCDDEEFF:port", channel.Id);
-        var component = Assert.Single(provider.GetAll());
-        Assert.Equal("lianli-wireless:AABBCCDDEEFF", component.Id);
+        var channels = provider.GetFanChannels();
+        Assert.Equal(2, channels.Count);
+        Assert.Contains(channels, c => c.Id == $"lianli-wireless:{Mac}:pump" && c.Kind == FanKinds.Pump);
+        Assert.DoesNotContain(channels, c => c.Id.StartsWith($"lianli-wireless:{Mac}:port", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void A_driven_hydroshift_pump_reports_rpm_liquid_temperature_and_its_duty()
+    {
+        var (hub, net, _) = Slv3TestHub.CreateConnected();
+        net.Fans.Add(new Slv3TestHub.SimulatedFan
+        {
+            Mac = Convert.FromHexString(Mac), MasterMac = net.MasterMac, RxType = 1, DevType = 10, FanCount = 0, CoolantTempC = 31, PumpRpm = 2100,
+        });
+        Assert.True(hub.DriveTick());
+        var provider = new Slv3CoolingProvider(hub);
+
+        var pump = Assert.Single(provider.GetFanChannels());
+        Assert.Equal(2100, pump.Rpm);
+        Assert.Equal(FanModes.Auto, pump.Mode);
+        Assert.True(FanProfiles.IsLockedByDefault(pump));
+        var liquid = Assert.Single(provider.GetTemperatureSources());
+        Assert.Equal("Cooler", liquid.Category);
+        Assert.Equal(31f, liquid.Value);
+        Assert.Equal(31f, provider.ReadTemperature(liquid.Id));
+
+        Assert.Equal(60, provider.SetFanSpeed(pump.Id, 60));
+        var driven = Assert.Single(provider.GetFanChannels());
+        Assert.Equal(FanModes.Manual, driven.Mode);
+        Assert.Equal(60, driven.DutyPercent);
+
+        provider.ReleaseFan(pump.Id);
+        Assert.Equal(FanModes.Auto, Assert.Single(provider.GetFanChannels()).Mode);
+        Assert.Null(hub.GetPumpDuty(Mac));
     }
 
     [Fact]

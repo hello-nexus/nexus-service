@@ -189,7 +189,9 @@ public sealed class Slv3LightingFrameWriter : IHostedService, IDisposable
                 foreach (var z in zones) _rollingIds.Add(z.Id);
                 continue;
             }
-            if (settings.Devices.LianLiWireless.Chains.TryGetValue(macHex, out var chainLighting)
+            // A HydroShift II streams live even under a preset stored before presets excluded it.
+            if (!Slv3LightingDeviceProvider.IsHydroShiftStructure(structure)
+                && settings.Devices.LianLiWireless.Chains.TryGetValue(macHex, out var chainLighting)
                 && chainLighting.Mode != LianLiWirelessChainLighting.ModeCustom
                 && TickPreset(macHex, structure, zones, disabled, chainLighting, globalBrightness, nowTicks))
             {
@@ -206,9 +208,9 @@ public sealed class Slv3LightingFrameWriter : IHostedService, IDisposable
                 structure, zones, devices, disabled, uncontrolled, prefs, globalBrightness, 1.0, nowTicks, _identify, _segmentBuffers);
 
             int totalLeds;
-            if (Slv3LightingDeviceProvider.IsStrimerStructure(structure))
+            if (Slv3LightingDeviceProvider.IsSingleSegmentStructure(structure))
             {
-                // The cable's one segment is the wire buffer, in wire order.
+                // The one segment is the wire buffer, in wire order.
                 var cable = _segmentBuffers[0];
                 totalLeds = cable.Length;
                 EnsureWireBuffer(totalLeds);
@@ -684,7 +686,7 @@ public sealed class Slv3LightingFrameWriter : IHostedService, IDisposable
     // geometry is not known yet.
     private int FillWireBuffer(string macHex, DeviceStructure structure)
     {
-        if (Slv3LightingDeviceProvider.IsStrimerStructure(structure))
+        if (Slv3LightingDeviceProvider.IsSingleSegmentStructure(structure))
         {
             var cable = _segmentBuffers[0];
             EnsureWireBuffer(cable.Length);

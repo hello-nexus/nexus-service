@@ -899,7 +899,21 @@ public static class NexusServiceCollectionExtensions
 #else
                 port => new Nexus.Service.Peripherals.LianLiWireless.Slv3Transport(port.PortName, port.Role)));
 #endif
-        services.AddSingleton<Nexus.Service.Cooling.Slv3CoolingProvider>();
+        services.AddSingleton<Nexus.Service.Cooling.Slv3CoolingProvider>(sp =>
+        {
+            var hub = sp.GetRequiredService<Nexus.Service.Peripherals.LianLiWireless.Slv3Hub>();
+            // Resolved per read, not here: the sensor provider can depend on cooling.
+            hub.AioSensors = () =>
+            {
+                var sensors = sp.GetRequiredService<Nexus.Service.Sensors.ISensorProvider>();
+                return new Nexus.Service.Peripherals.LianLiWireless.Slv3AioSensors(
+                    Nexus.Service.Sensors.SummarySensors.Value(sensors, Nexus.Service.Sensors.SummarySensorKind.CpuTemp),
+                    Nexus.Service.Sensors.SummarySensors.Value(sensors, Nexus.Service.Sensors.SummarySensorKind.CpuUsage),
+                    Nexus.Service.Sensors.SummarySensors.Value(sensors, Nexus.Service.Sensors.SummarySensorKind.GpuTemp),
+                    Nexus.Service.Sensors.SummarySensors.Value(sensors, Nexus.Service.Sensors.SummarySensorKind.GpuUsage));
+            };
+            return new Nexus.Service.Cooling.Slv3CoolingProvider(hub);
+        });
         services.AddHostedService<Nexus.Service.Peripherals.LianLiWireless.Slv3ConnectionWorker>();
 
         // SL-LCD Wireless fan screens: independent wired USB devices (not the

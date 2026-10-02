@@ -110,4 +110,17 @@ public class Slv3LightingRoutesTests
         var strimer = Assert.Single(chains, c => c.Kind == "strimer");
         Assert.True(strimer.SupportsPerLane);
     }
+
+    [Fact]
+    public void Lighting_offers_no_presets_for_a_hydroshift_even_with_a_fan_wired_to_it()
+    {
+        var (hub, net, _) = Slv3TestHub.CreateConnected();
+        net.Fans.Add(new Slv3TestHub.SimulatedFan
+        {
+            Mac = Convert.FromHexString(FanMac), MasterMac = net.MasterMac, RxType = 1, DevType = 10, FanCount = 1, FansType = 24,
+        });
+        Assert.True(hub.DriveTick());
+
+        Assert.Empty(Slv3Routes.BuildLightingResponse(hub, new NexusSettings()).Chains);
+    }
 }
