@@ -3462,7 +3462,7 @@
      "u_bSpan": 0,
      "u_bSat": 1,
      "u_bVal": 0,
-     "u_spread": 0
+     "u_sharpness": 0
     }
    },
    {
@@ -3481,7 +3481,7 @@
      "u_bSpan": 0,
      "u_bSat": 1,
      "u_bVal": 1,
-     "u_spread": 0
+     "u_sharpness": 0
     }
    },
    {
@@ -3500,7 +3500,7 @@
      "u_bSpan": 0,
      "u_bSat": 1,
      "u_bVal": 0,
-     "u_spread": 0
+     "u_sharpness": 0
     }
    },
    {
@@ -3519,7 +3519,7 @@
      "u_bSpan": 0,
      "u_bSat": 1,
      "u_bVal": 0,
-     "u_spread": 0.35
+     "u_sharpness": 0
     }
    }
   ]

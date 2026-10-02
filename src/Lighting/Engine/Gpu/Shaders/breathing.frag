@@ -6,7 +6,7 @@ uniform float u_bHue;   // hint_range(0.0, 1.0, 0.01) = 0.0
 uniform float u_bSpan;  // hint_range(0.0, 1.0, 0.01) = 0.0  share of the wheel the second colour steps through
 uniform float u_bSat;   // hint_range(0.0, 1.0, 0.01) = 1.0
 uniform float u_bVal;   // hint_range(0.0, 1.0, 0.01) = 0.0
-uniform float u_spread; // hint_range(0.0, 1.0, 0.01) = 0.0  hue spread across the frame
+uniform float u_sharpness; // hint_range(0.0, 1.0, 0.01) = 0.0  0 = smooth crossfade, 1 = quick switch between long holds
 
 // Hue of a colour's nth turn: even steps through its range, both ends
 // included, wrapping back to the start. The full wheel steps on from the hue.
@@ -31,15 +31,19 @@ void main() {
     float n = floor(t);
     float f = fract(t);
     float edge = f < 0.5 ? n : n + 1.0;
-    float shift = uv01().x * u_spread;
-    vec3 a = hsv2rgb(vec3(turnHue(u_aHue, u_aSpan, n) + shift, u_aSat, u_aVal));
-    vec3 b = hsv2rgb(vec3(turnHue(u_bHue, u_bSpan, edge) + shift, u_bSat, u_bVal));
+    vec3 a = hsv2rgb(vec3(turnHue(u_aHue, u_aSpan, n), u_aSat, u_aVal));
+    vec3 b = hsv2rgb(vec3(turnHue(u_bHue, u_bSpan, edge), u_bSat, u_bVal));
     // exp(-cos) holds longer at the dark end, the curve hardware breathing modes
     // use; it applies as far as the second colour is darker than the first, and
     // two equally bright colours get an even cosine crossfade.
     float hold = (exp(-cos(f * 6.28318)) - 0.36788) / 2.35040;
     float even = 0.5 - 0.5 * cos(f * 6.28318);
-    float w = mix(even, hold, clamp(u_aVal - u_bVal, 0.0, 1.0));
+    // Clamped: hold dips a hair below 0 at the edges, and pow() is undefined there.
+    float w = clamp(mix(even, hold, clamp(u_aVal - u_bVal, 0.0, 1.0)), 0.0, 1.0);
+    // Sharpness steepens the crossfade around its midpoint, lengthening both holds.
+    float k = exp2(3.0 * clamp(u_sharpness, 0.0, 1.0));
+    float wk = pow(w, k);
+    w = wk / (wk + pow(1.0 - w, k));
     // tonemap, not finalize: the slots own the colour, so the global tint is off.
     fragColor = vec4(tonemap(mix(b, a, w)), 1.0);
 }
