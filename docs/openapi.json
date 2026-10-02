@@ -1145,6 +1145,18 @@
         }
       }
     },
+    "/onboarding/panel-swipe/immersive/complete": {
+      "post": {
+        "tags": [
+          "Nexus"
+        ],
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        }
+      }
+    },
     "/onboarding/reset": {
       "post": {
         "tags": [

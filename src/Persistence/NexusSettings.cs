@@ -137,6 +137,11 @@ public sealed class NexusSettings
     /// every install shows the hint until the tray is opened once.</summary>
     public bool PanelSwipeOnboardingCompleted { get; set; }
 
+    /// <summary>True once a touch panel's fullscreen (immersive) view has been
+    /// closed; the view shows a swipe-down hint until then. Same scoping and
+    /// no-migration rule as <see cref="PanelSwipeOnboardingCompleted"/>.</summary>
+    public bool ImmersiveSwipeOnboardingCompleted { get; set; }
+
     /// <summary>Key of the home-dashboard banner the user last closed or opened; a banner shows only while its key differs.</summary>
     public string DashboardBannerDismissed { get; set; } = "";
 

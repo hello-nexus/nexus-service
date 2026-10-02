@@ -34,6 +34,7 @@ public class RelayHttpAllowlistTests
     [InlineData("POST", "/system/volume/target/mute")]
     [InlineData("GET", "/onboarding/panel-swipe")]
     [InlineData("POST", "/onboarding/panel-swipe/complete")]
+    [InlineData("POST", "/onboarding/panel-swipe/immersive/complete")]
     public void Allows_PanelAndControlSurface(string method, string path)
         => Assert.True(RelayHttpAllowlist.IsAllowed(method, path));
 

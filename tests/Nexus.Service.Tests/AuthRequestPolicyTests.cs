@@ -98,8 +98,10 @@ public class AuthRequestPolicyTests
 
         AssertPanelAllowedRoute(app, "GET", "/onboarding/panel-swipe");
         AssertPanelAllowedRoute(app, "POST", "/onboarding/panel-swipe/complete");
+        AssertPanelAllowedRoute(app, "POST", "/onboarding/panel-swipe/immersive/complete");
         Assert.Null(FindEndpoint(app, "GET", "/onboarding/panel-swipe")!.Metadata.GetMetadata<LocalhostOnlyAccess>());
         Assert.Null(FindEndpoint(app, "POST", "/onboarding/panel-swipe/complete")!.Metadata.GetMetadata<LocalhostOnlyAccess>());
+        Assert.Null(FindEndpoint(app, "POST", "/onboarding/panel-swipe/immersive/complete")!.Metadata.GetMetadata<LocalhostOnlyAccess>());
         AssertPanelDeniedRoute(app, "GET", "/onboarding");
         AssertPanelDeniedRoute(app, "POST", "/onboarding/complete");
         AssertPanelDeniedRoute(app, "POST", "/onboarding/reset");

@@ -79,6 +79,10 @@ public sealed class OnboardingIntegrationTests : IClassFixture<NexusAppFactory>
     [Fact]
     public async Task PanelSwipeComplete_requires_a_token()
         => Assert.Equal(StatusCodes.Status401Unauthorized, await Send("POST", "/onboarding/panel-swipe/complete", withToken: false));
+
+    [Fact]
+    public async Task ImmersiveSwipeComplete_requires_a_token()
+        => Assert.Equal(StatusCodes.Status401Unauthorized, await Send("POST", "/onboarding/panel-swipe/immersive/complete", withToken: false));
 }
 
 public sealed class OnboardingPanelSwipeCompleteIntegrationTests : IClassFixture<NexusAppFactory>
@@ -103,9 +107,39 @@ public sealed class OnboardingPanelSwipeCompleteIntegrationTests : IClassFixture
 
         Assert.Equal(StatusCodes.Status200OK, ctx.Response.StatusCode);
         Assert.True(store.Load().PanelSwipeOnboardingCompleted);
+        Assert.False(store.Load().ImmersiveSwipeOnboardingCompleted);
         Assert.False(store.Load().OnboardingCompleted);
         Assert.False(store.Load().FeaturesOnboardingCompleted);
         Assert.False(store.Load().LightingOnboardingCompleted);
+    }
+}
+
+public sealed class OnboardingImmersiveSwipeCompleteIntegrationTests : IClassFixture<NexusAppFactory>
+{
+    private readonly NexusAppFactory _factory;
+
+    public OnboardingImmersiveSwipeCompleteIntegrationTests(NexusAppFactory factory) => _factory = factory;
+
+    [Fact]
+    public async Task ImmersiveSwipeComplete_sets_only_the_immersive_flag_and_reports_it()
+    {
+        var store = _factory.Services.GetRequiredService<IConfigStore>();
+        var token = _factory.Services.GetRequiredService<TokenService>().Token;
+
+        var ctx = await _factory.Server.SendAsync(c =>
+        {
+            c.Request.Method = "POST";
+            c.Request.Path = "/onboarding/panel-swipe/immersive/complete";
+            c.Connection.RemoteIpAddress = IPAddress.Loopback;
+            c.Request.Headers.Authorization = "Bearer " + token;
+        });
+
+        Assert.Equal(StatusCodes.Status200OK, ctx.Response.StatusCode);
+        Assert.True(store.Load().ImmersiveSwipeOnboardingCompleted);
+        Assert.False(store.Load().PanelSwipeOnboardingCompleted);
+        using var body = await System.Text.Json.JsonDocument.ParseAsync(ctx.Response.Body);
+        Assert.True(body.RootElement.GetProperty("immersiveCompleted").GetBoolean());
+        Assert.False(body.RootElement.GetProperty("completed").GetBoolean());
     }
 }
 
@@ -205,6 +239,7 @@ public sealed class OnboardingResetIntegrationTests : IClassFixture<NexusAppFact
             s.FeaturesOnboardingCompleted = true;
             s.LightingOnboardingCompleted = true;
             s.PanelSwipeOnboardingCompleted = true;
+            s.ImmersiveSwipeOnboardingCompleted = true;
         });
 
         var ctx = await _factory.Server.SendAsync(c =>
@@ -220,6 +255,7 @@ public sealed class OnboardingResetIntegrationTests : IClassFixture<NexusAppFact
         Assert.False(store.Load().FeaturesOnboardingCompleted);
         Assert.False(store.Load().LightingOnboardingCompleted);
         Assert.False(store.Load().PanelSwipeOnboardingCompleted);
+        Assert.False(store.Load().ImmersiveSwipeOnboardingCompleted);
     }
 }
 

@@ -18,8 +18,9 @@ namespace Nexus.Service.Routes;
 ///   POST /onboarding/lighting-complete  -> set lightingCompleted, return status
 /// The touch-panel swipe-up hint's flag is .AllowPanel() and not loopback-bound,
 /// since a paired phone is a touch panel too:
-///   GET  /onboarding/panel-swipe           -> { completed }
+///   GET  /onboarding/panel-swipe           -> { completed, immersiveCompleted }
 ///   POST /onboarding/panel-swipe/complete  -> set panel-swipe completed
+///   POST /onboarding/panel-swipe/immersive/complete -> set the immersive swipe-down hint completed
 /// The home-dashboard banner remembers the key it was dismissed under, LocalhostOnly:
 ///   GET  /onboarding/banner                -> { dismissedKey }
 ///   POST /onboarding/banner/dismiss/{key}  -> store key
@@ -80,6 +81,13 @@ internal static class OnboardingRoutes
             return Results.Ok(PanelSwipeStatus(store));
         }).AllowPanel();
 
+        // Under the panel-swipe prefix so the relay allowlist already admits it.
+        app.MapPost("/onboarding/panel-swipe/immersive/complete", (IConfigStore store) =>
+        {
+            store.Update(s => s.ImmersiveSwipeOnboardingCompleted = true);
+            return Results.Ok(PanelSwipeStatus(store));
+        }).AllowPanel();
+
         app.MapGet("/onboarding/banner", (IConfigStore store) =>
             Results.Ok(new DashboardBannerDto { DismissedKey = store.Load().DashboardBannerDismissed })).LocalhostOnly();
 
@@ -104,6 +112,7 @@ internal static class OnboardingRoutes
                 s.FeaturesOnboardingCompleted = false;
                 s.LightingOnboardingCompleted = false;
                 s.PanelSwipeOnboardingCompleted = false;
+                s.ImmersiveSwipeOnboardingCompleted = false;
                 s.Nexus2MigrationOffered = false;
                 s.FanControlImportOffered = false;
             });
@@ -127,12 +136,16 @@ internal static class OnboardingRoutes
     }
 
     private static PanelSwipeOnboardingDto PanelSwipeStatus(IConfigStore store)
-        => new() { Completed = store.Load().PanelSwipeOnboardingCompleted };
+    {
+        var s = store.Load();
+        return new() { Completed = s.PanelSwipeOnboardingCompleted, ImmersiveCompleted = s.ImmersiveSwipeOnboardingCompleted };
+    }
 }
 
 public sealed class PanelSwipeOnboardingDto
 {
     public bool Completed { get; set; }
+    public bool ImmersiveCompleted { get; set; }
 }
 
 public sealed class DashboardBannerDto
