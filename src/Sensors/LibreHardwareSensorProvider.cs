@@ -242,8 +242,8 @@ public sealed class LibreHardwareSensorProvider : ISensorProvider
                 Format = di.DriveFormat,
                 Sensors = new List<HardwareSensor>
                 {
-                    MakeSensor($"storage/{label}/used", "Used", "Data", (float)usedGb, "GB", label),
-                    MakeSensor($"storage/{label}/free", "Free", "Data", (float)freeGb, "GB", label),
+                    MakeSensor($"storage/{label}/used", "Used", "Data", (float)usedGb, "GB", label, theoreticalMax: (float)totalGb),
+                    MakeSensor($"storage/{label}/free", "Free", "Data", (float)freeGb, "GB", label, theoreticalMax: (float)totalGb),
                     MakeSensor($"storage/{label}/usage", "Usage", "Level", (float)usePct, "%", label),
                 },
             };
@@ -607,7 +607,7 @@ public sealed class LibreHardwareSensorProvider : ISensorProvider
 
     private static string FormatGb(double gb) => gb >= 1000 ? $"{gb / 1024.0:F2} TB" : $"{gb:F2} GB";
 
-    private static HardwareSensor MakeSensor(string id, string name, string type, float value, string units, string parentName)
+    private static HardwareSensor MakeSensor(string id, string name, string type, float value, string units, string parentName, float theoreticalMax = 0f)
     {
         var formatted = type switch
         {
@@ -619,6 +619,7 @@ public sealed class LibreHardwareSensorProvider : ISensorProvider
         {
             Id = id, Name = name, Type = type, Value = value, Units = units,
             Formatted = formatted,
+            TheoreticalMaximum = theoreticalMax,
             Parent = new SensorParent { Id = id.Split('/')[0], Name = parentName },
         };
     }
