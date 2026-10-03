@@ -113,8 +113,12 @@ public static class LocalStoreListing
     /// <summary>Appends a card for each installed app with a store/ dir that the cloud list lacks.</summary>
     public static string AppendLocal(string cloudListJson, IEnumerable<AppEntry> installed, string? locale)
     {
-        if (JsonNode.Parse(cloudListJson) is not JsonObject root || root["apps"] is not JsonArray apps) return cloudListJson;
-        var known = apps.Select(a => a?["id"]?.GetValue<string>()).ToHashSet(StringComparer.Ordinal);
+        JsonNode? parsed;
+        try { parsed = JsonNode.Parse(cloudListJson); }
+        catch (JsonException) { return cloudListJson; }
+        if (parsed is not JsonObject root || root["apps"] is not JsonArray apps) return cloudListJson;
+        var known = apps.Select(a => (a as JsonObject)?["id"] is JsonValue v && v.TryGetValue<string>(out var id) ? id : null)
+            .ToHashSet(StringComparer.Ordinal);
         foreach (var entry in installed.Where(HasStoreDir).Where(e => !known.Contains(e.Id)))
         {
             if (Item(entry, locale) is { } item) apps.Add((JsonNode?)item);
@@ -134,11 +138,17 @@ public static class LocalStoreListing
         if (!full.StartsWith(storeDir + Path.DirectorySeparatorChar, StringComparison.Ordinal)) return null;
 
         var info = new FileInfo(full);
-        if (!info.Exists || info.LinkTarget is not null || info.Length > StoreCatalogProxy.MaxMediaBytes) return null;
+        if (!info.Exists || info.Length > StoreCatalogProxy.MaxMediaBytes) return null;
+        for (FileSystemInfo? node = info; node is not null; node = (node as FileInfo)?.Directory ?? (node as DirectoryInfo)?.Parent)
+        {
+            if (node.LinkTarget is not null) return null;
+            if (string.Equals(node.FullName.TrimEnd(Path.DirectorySeparatorChar), storeDir.TrimEnd(Path.DirectorySeparatorChar), StringComparison.Ordinal)) break;
+        }
         return (File.ReadAllBytes(full), type);
     }
 
-    private static string MediaUrl(string appId, string relative) => MediaRoute + appId + "/" + relative;
+    private static string MediaUrl(string appId, string relative) =>
+        MediaRoute + appId + "/" + string.Join('/', relative.Split('/').Select(Uri.EscapeDataString));
 
     private static JsonObject? ReadManifest(AppEntry entry)
     {

@@ -19,6 +19,8 @@ public sealed class AppTelemetryRoutesFactory : NexusAppFactory
     public const string OffApp = "com.test.tele-off";
     public const string BurstApp = "com.test.tele-burst";
 
+    public DateTimeOffset Now = DateTimeOffset.FromUnixTimeSeconds(6000);
+
     private readonly string _fixtureRoot = Path.Combine(Path.GetTempPath(), "nexus-tele-fixture-" + Guid.NewGuid().ToString("N"));
 
     public AppTelemetryRoutesFactory()
@@ -62,6 +64,8 @@ public sealed class AppTelemetryRoutesFactory : NexusAppFactory
             {
                 new(_fixtureRoot, AppInstallPaths.Source.User),
             }));
+            services.RemoveAll<Nexus.Service.Telemetry.AppTelemetryRateLimiter>();
+            services.AddSingleton(new Nexus.Service.Telemetry.AppTelemetryRateLimiter(60, () => Now));
             services.RemoveAll<StoreCatalogProxy>();
             services.AddSingleton(new StoreCatalogProxy(new HttpClient(new NotFoundHandler())));
         });

@@ -23,7 +23,7 @@ public sealed class AppPageClosedRequest
     [JsonPropertyName("durationMs")] public double DurationMs { get; set; }
 }
 
-/// <summary>Only enum-like tokens pass, so an app cannot send free text, emails or URLs.</summary>
+/// <summary>Values must be short lowercase tokens: spaces, uppercase, emails and slashes are refused. Hostnames, serial-like digits and other opaque identifiers still fit the shape.</summary>
 public static partial class AppTelemetryValidator
 {
     public const int MaxProperties = 10;
@@ -81,7 +81,7 @@ public static partial class AppTelemetryValidator
         return result.ToArray();
     }
 
-        public static (string Key, object? Value)[] Compose(
+    public static (string Key, object? Value)[] Compose(
         string appId, string appVersion, AppTelemetryRequest body, (string Key, object? Value)[] appProps)
     {
         var all = new List<(string Key, object? Value)>
@@ -101,32 +101,6 @@ public static partial class AppTelemetryValidator
         {
             ("app_id", appId), ("app_version", appVersion), ("duration_s", seconds),
         };
-    }
-}
-
-/// <summary>Fixed-window per-app limit on app-sent events.</summary>
-public sealed class AppTelemetryRateLimiter
-{
-    public const int MaxPerMinute = 60;
-
-    private readonly Dictionary<string, (long Window, int Count)> _buckets = new(StringComparer.Ordinal);
-    private readonly Func<DateTimeOffset> _clock;
-
-    public AppTelemetryRateLimiter() : this(() => DateTimeOffset.UtcNow) { }
-
-    public AppTelemetryRateLimiter(Func<DateTimeOffset> clock) => _clock = clock;
-
-    public bool TryAcquire(string appId)
-    {
-        var window = _clock().ToUnixTimeSeconds() / 60;
-        lock (_buckets)
-        {
-            _buckets.TryGetValue(appId, out var bucket);
-            if (bucket.Window != window) bucket = (window, 0);
-            if (bucket.Count >= MaxPerMinute) return false;
-            _buckets[appId] = (window, bucket.Count + 1);
-            return true;
-        }
     }
 }
 

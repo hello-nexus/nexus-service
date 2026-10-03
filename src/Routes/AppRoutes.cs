@@ -389,8 +389,7 @@ public static class AppRoutes
             {
                 return Results.Json(ApiResponse.Fail("app not installed"), AppJsonContext.Default.ApiResponse, statusCode: 404);
             }
-            telemetry.Capture(Nexus.Service.Telemetry.TelemetryEvents.AppPageOpened,
-                ("app_id", appId), ("app_version", entry.Manifest.Version));
+            Nexus.Service.Telemetry.AppPageTelemetry.CaptureOpened(telemetry, appId, entry.Manifest.Version);
             return Results.Json(ApiResponse.Ok(), AppJsonContext.Default.ApiResponse);
         }).AllowPanel();
 

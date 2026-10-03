@@ -87,20 +87,6 @@ public class AppEventTelemetryTests
         Assert.Equal("1.0.0", props["app_version"]);
     }
 
-    [Fact]
-    public void Rate_limit_is_60_per_minute_per_app_and_resets_next_minute()
-    {
-        var now = DateTimeOffset.FromUnixTimeSeconds(6000);
-        var limiter = new AppTelemetryRateLimiter(() => now);
-
-        for (var i = 0; i < 60; i++) Assert.True(limiter.TryAcquire("a.b.c"));
-        Assert.False(limiter.TryAcquire("a.b.c"));
-        Assert.True(limiter.TryAcquire("x.y.z"));
-
-        now = now.AddSeconds(60);
-        Assert.True(limiter.TryAcquire("a.b.c"));
-    }
-
     private sealed class FakeTelemetry : ITelemetry
     {
         public List<string> Sent { get; } = new();

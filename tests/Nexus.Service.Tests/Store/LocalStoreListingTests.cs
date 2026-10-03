@@ -154,5 +154,34 @@ public sealed class LocalStoreListingTests : IDisposable
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or PlatformNotSupportedException) { return; }
         Assert.Null(LocalStoreListing.ReadMedia(Entry(), "link.png"));
     }
+
+    [Fact]
+    public void Media_refuses_a_symlinked_directory_out_of_the_store_dir()
+    {
+        var outside = Path.Combine(_root, "outside");
+        Directory.CreateDirectory(outside);
+        File.WriteAllBytes(Path.Combine(outside, "leak.png"), new byte[] { 7 });
+        try { Directory.CreateSymbolicLink(Path.Combine(_dir, "store", "screenshots", "linked"), outside); }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or PlatformNotSupportedException) { return; }
+        Assert.Null(LocalStoreListing.ReadMedia(Entry(), "screenshots/linked/leak.png"));
+    }
+
+    [Fact]
+    public void Media_urls_escape_each_path_segment()
+    {
+        File.WriteAllBytes(Path.Combine(_dir, "store", "screenshots", "a b#1.png"), new byte[] { 1 });
+        var urls = LocalStoreListing.Detail(Entry(), null)!["screenshots"]!.AsArray().Select(n => n!.GetValue<string>());
+        Assert.Contains($"/apps-api/store/local-media/{Id}/screenshots/a%20b%231.png", urls);
+    }
+
+    [Theory]
+    [InlineData("not json")]
+    [InlineData("{\"apps\":[1,\"x\",{\"id\":5},null]}")]
+    public void List_append_survives_a_malformed_cloud_body(string body)
+    {
+        var result = LocalStoreListing.AppendLocal(body, new[] { Entry() }, null);
+        if (body == "not json") Assert.Equal(body, result);
+        else Assert.Contains(Id, result);
+    }
 }
 #endif

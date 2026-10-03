@@ -128,7 +128,7 @@ public static class NexusServiceCollectionExtensions
                 : sp.GetRequiredService<Nexus.Service.Telemetry.PostHogOptions>().ProjectApiKey.Length == 0 ? "off" : "on"));
         services.AddSingleton<Nexus.Service.Telemetry.ITelemetry>(
             sp => sp.GetRequiredService<Nexus.Service.Telemetry.AppEventRecorder>());
-        services.AddSingleton<Nexus.Service.Telemetry.AppTelemetryRateLimiter>();
+        services.AddSingleton(new Nexus.Service.Telemetry.AppTelemetryRateLimiter(60));
 #else
         services.AddSingleton<Nexus.Service.Telemetry.ITelemetry>(
             sp => sp.GetRequiredService<Nexus.Service.Telemetry.TelemetryClient>());
