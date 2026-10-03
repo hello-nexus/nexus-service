@@ -106,10 +106,16 @@ public static partial class AppTelemetryValidator
 
 public sealed record RecordedAppEvent(DateTimeOffset At, string Event, IReadOnlyList<(string Key, object? Value)> Properties);
 
-/// <summary>Buffers app_* events before the real client decides whether to send them, so they are visible without a PostHog key.</summary>
+/// <summary>Buffers SDK-app events before the real client decides whether to send them, so they are visible without a PostHog key.</summary>
 public sealed class AppEventRecorder : ITelemetry
 {
     public const int Capacity = 200;
+
+    // app_started is a service launch event, not an app's, so a prefix match is not enough.
+    private static readonly HashSet<string> Recorded = new(StringComparer.Ordinal)
+    {
+        TelemetryEvents.AppEvent, TelemetryEvents.AppPageOpened, TelemetryEvents.AppPageClosed, TelemetryEvents.AppLinkOpened,
+    };
 
     private readonly ITelemetry _inner;
     private readonly Func<string> _status;
@@ -125,7 +131,7 @@ public sealed class AppEventRecorder : ITelemetry
 
     public void Capture(string @event, params (string Key, object? Value)[] properties)
     {
-        if (@event is not null && @event.StartsWith("app_", StringComparison.Ordinal))
+        if (@event is not null && Recorded.Contains(@event))
         {
             lock (_events)
             {

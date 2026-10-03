@@ -101,13 +101,14 @@ public class AppEventTelemetryTests
         var recorder = new AppEventRecorder(inner, () => "off");
 
         recorder.Capture(TelemetryEvents.FanSpeedSet, ("x", 1));
+        recorder.Capture(TelemetryEvents.AppStarted);
         for (var i = 0; i < 205; i++) recorder.Capture(TelemetryEvents.AppEvent, ("n", i));
 
         var recent = recorder.Recent();
         Assert.Equal(AppEventRecorder.Capacity, recent.Count);
         Assert.Equal(204, recent[0].Properties[0].Value);
         Assert.Equal(5, recent[^1].Properties[0].Value);
-        Assert.Equal(206, inner.Sent.Count);
+        Assert.Equal(207, inner.Sent.Count);
     }
 
     [Theory]
