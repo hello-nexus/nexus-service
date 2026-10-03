@@ -5,6 +5,9 @@ using System.Threading;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Routing;
+#if DEV_TOOLS
+using Microsoft.Extensions.DependencyInjection;
+#endif
 using Nexus.Service.Auth;
 using Nexus.Service.Models;
 using Nexus.Service.Models.Widgets;
@@ -61,6 +64,9 @@ public static class AppRoutes
 
     public static void MapAppEndpoints(this WebApplication app)
     {
+#if DEV_TOOLS
+        app.MapAppTelemetryEndpoints();
+#endif
         app.MapGet("/apps-api/installed", (AppRegistry registry, OemInfo oemInfo, IConfigStore store) =>
         {
             var response = new AppInstalledListingResponse();
@@ -122,6 +128,13 @@ public static class AppRoutes
         {
             var body = await proxy.ListAsync(
                 http.Request.Query["nexusVersion"], ParseTouch(http), http.Request.Query["locale"], ct);
+#if DEV_TOOLS
+            if (body is not null)
+            {
+                var installed = http.RequestServices.GetRequiredService<AppRegistry>().All();
+                body = Nexus.Service.Store.LocalStoreListing.AppendLocal(body, installed, LocaleOf(http));
+            }
+#endif
             return body is null
                 ? Results.Json(ApiResponse.Fail("catalog unavailable"), AppJsonContext.Default.ApiResponse, statusCode: 503)
                 : Results.Content(body, "application/json");
@@ -131,6 +144,15 @@ public static class AppRoutes
             async (string appId, Nexus.Service.Store.StoreCatalogProxy proxy, HttpContext http, CancellationToken ct) =>
         {
             var body = await proxy.DetailAsync(appId, http.Request.Query["nexusVersion"], ParseTouch(http), http.Request.Query["locale"], ct);
+#if DEV_TOOLS
+            if (body is null
+                && AppIds.IsValid(appId)
+                && http.RequestServices.GetRequiredService<AppRegistry>().TryGet(appId, out var local)
+                && Nexus.Service.Store.LocalStoreListing.Detail(local, LocaleOf(http)) is { } preview)
+            {
+                body = preview.ToJsonString();
+            }
+#endif
             return body is null
                 ? Results.Json(ApiResponse.Fail("not found"), AppJsonContext.Default.ApiResponse, statusCode: 404)
                 : Results.Content(body, "application/json");
@@ -153,6 +175,29 @@ public static class AppRoutes
             }
             return Results.Bytes(media.Value.bytes, media.Value.contentType);
         }).AllowPanel();
+
+#if DEV_TOOLS
+        // Serves store/ files of an installed app for the local listing preview.
+        app.MapGet("/apps-api/store/local-media/{appId}/{**path}",
+            (string appId, string? path, HttpContext http, AppRegistry registry) =>
+        {
+            if (!AppIds.IsValid(appId) || !registry.TryGet(appId, out var entry))
+            {
+                return Results.NotFound();
+            }
+            var media = Nexus.Service.Store.LocalStoreListing.ReadMedia(entry, path);
+            if (media is null)
+            {
+                return Results.NotFound();
+            }
+            http.Response.Headers.XContentTypeOptions = "nosniff";
+            if (media.Value.ContentType == "image/svg+xml")
+            {
+                ApplySvgDocumentGuards(http.Response);
+            }
+            return Results.Bytes(media.Value.Bytes, media.Value.ContentType);
+        }).AllowPanel();
+#endif
 
         // Install one version from the asset CDN. Distinct path from the
         // sideload route above: that one activates a bundled app, this one
@@ -340,11 +385,12 @@ public static class AppRoutes
         // The host posts this when an installed app's page surface opens.
         app.MapPost("/apps-api/page-opened/{appId}", (string appId, AppRegistry registry, Nexus.Service.Telemetry.ITelemetry telemetry) =>
         {
-            if (!AppIds.IsValid(appId) || !registry.TryGet(appId, out _))
+            if (!AppIds.IsValid(appId) || !registry.TryGet(appId, out var entry))
             {
                 return Results.Json(ApiResponse.Fail("app not installed"), AppJsonContext.Default.ApiResponse, statusCode: 404);
             }
-            telemetry.Capture(Nexus.Service.Telemetry.TelemetryEvents.AppPageOpened, ("app_id", appId));
+            telemetry.Capture(Nexus.Service.Telemetry.TelemetryEvents.AppPageOpened,
+                ("app_id", appId), ("app_version", entry.Manifest.Version));
             return Results.Json(ApiResponse.Ok(), AppJsonContext.Default.ApiResponse);
         }).AllowPanel();
 
@@ -658,6 +704,12 @@ public static class AppRoutes
             ImmersiveDoubleSwipe = entry.Manifest.ImmersiveDoubleSwipe,
             SingleInstance = entry.Manifest.SingleInstance,
         };
+    }
+
+    private static string? LocaleOf(HttpContext http)
+    {
+        var locale = http.Request.Query["locale"].ToString();
+        return Nexus.Service.Store.StoreCatalogProxy.IsLocaleTag(locale) ? locale : null;
     }
 
     /// <summary>Only an explicit false narrows the catalog; absent means unknown.</summary>

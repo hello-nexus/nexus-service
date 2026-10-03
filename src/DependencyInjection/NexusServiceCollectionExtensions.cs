@@ -119,8 +119,20 @@ public static class NexusServiceCollectionExtensions
         // id as the heartbeat. Inject ITelemetry and call Capture(...). The flush
         // worker stays dormant until a PostHog key is configured (PostHogOptions).
         services.AddSingleton<Nexus.Service.Telemetry.TelemetryClient>();
+#if DEV_TOOLS
+        // Dev-tools builds keep the last app_* events for GET /apps-api/telemetry/recent.
+        services.AddSingleton<Nexus.Service.Telemetry.AppEventRecorder>(sp => new Nexus.Service.Telemetry.AppEventRecorder(
+            sp.GetRequiredService<Nexus.Service.Telemetry.TelemetryClient>(),
+            () => !sp.GetRequiredService<Nexus.Service.Persistence.IConfigStore>().Load().Telemetry.CollectAnonymousData
+                ? "opted_out"
+                : sp.GetRequiredService<Nexus.Service.Telemetry.PostHogOptions>().ProjectApiKey.Length == 0 ? "off" : "on"));
+        services.AddSingleton<Nexus.Service.Telemetry.ITelemetry>(
+            sp => sp.GetRequiredService<Nexus.Service.Telemetry.AppEventRecorder>());
+        services.AddSingleton<Nexus.Service.Telemetry.AppTelemetryRateLimiter>();
+#else
         services.AddSingleton<Nexus.Service.Telemetry.ITelemetry>(
             sp => sp.GetRequiredService<Nexus.Service.Telemetry.TelemetryClient>());
+#endif
         services.AddSingleton<Nexus.Service.Telemetry.PostHogOptions>();
         services.AddSingleton<Nexus.Service.Telemetry.ITelemetrySink, Nexus.Service.Telemetry.PostHogSink>();
         services.AddHostedService<Nexus.Service.Telemetry.TelemetryFlushService>();

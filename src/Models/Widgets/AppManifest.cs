@@ -269,6 +269,10 @@ public sealed class AppManifestCapabilities
     [JsonPropertyName("appData")]
     public bool AppData { get; set; }
 
+    /// <summary>Opt-in to <c>POST /apps-api/telemetry/{appId}</c> (dev-tools builds only); the service only carries it into the listing.</summary>
+    [JsonPropertyName("telemetry")]
+    public bool Telemetry { get; set; }
+
     /// <summary>Opt-in to the web client's useAudio sampler; the service only carries it into the listing.</summary>
     [JsonPropertyName("audio")]
     public bool Audio { get; set; }

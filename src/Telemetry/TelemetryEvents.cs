@@ -38,6 +38,12 @@ public static class TelemetryEvents
     /// <summary>An installed SDK app's page was opened.</summary>
     public const string AppPageOpened = "app_page_opened";
 
+    /// <summary>An installed SDK app's page was closed (dev-tools builds only).</summary>
+    public const string AppPageClosed = "app_page_closed";
+
+    /// <summary>A custom event from an app that declares capabilities.telemetry (dev-tools builds only).</summary>
+    public const string AppEvent = "app_event";
+
     // Fleet events (dual-sink: PostHog + nexus-api /telemetry/events). The
     // string doubles as the wire "type" field nexus-api expects.
     public const string Install = "install";

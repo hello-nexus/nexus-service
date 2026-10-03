@@ -16,17 +16,17 @@ public static class AppLinkTelemetry
 
     public static void Capture(ITelemetry telemetry, AppRegistry apps, string? appId, string? url)
     {
-        if (!AppIds.IsValid(appId) || !apps.TryGet(appId!, out _)) return;
-        var props = Properties(appId!, url);
+        if (!AppIds.IsValid(appId) || !apps.TryGet(appId!, out var entry)) return;
+        var props = Properties(appId!, entry.Manifest.Version, url);
         if (props is not null) telemetry.Capture(TelemetryEvents.AppLinkOpened, props);
     }
 
-    internal static (string Key, object? Value)[]? Properties(string appId, string? url)
+    internal static (string Key, object? Value)[]? Properties(string appId, string appVersion, string? url)
     {
         if (!Uri.TryCreate(url?.Trim(), UriKind.Absolute, out var uri)) return null;
         if (uri.Scheme != Uri.UriSchemeHttps && uri.Scheme != Uri.UriSchemeHttp) return null;
 
-        var props = new List<(string Key, object? Value)> { ("app_id", appId), ("host", uri.Host) };
+        var props = new List<(string Key, object? Value)> { ("app_id", appId), ("app_version", appVersion), ("host", uri.Host) };
         foreach (var pair in uri.Query.TrimStart('?').Split('&', StringSplitOptions.RemoveEmptyEntries))
         {
             var eq = pair.IndexOf('=');
