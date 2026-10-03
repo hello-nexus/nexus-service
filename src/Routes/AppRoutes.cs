@@ -337,6 +337,17 @@ public static class AppRoutes
             return Results.Json(result, AppJsonContext.Default.AppProxyResponse);
         }).AllowPanel();
 
+        // The host posts this when an installed app's page surface opens.
+        app.MapPost("/apps-api/page-opened/{appId}", (string appId, AppRegistry registry, Nexus.Service.Telemetry.ITelemetry telemetry) =>
+        {
+            if (!AppIds.IsValid(appId) || !registry.TryGet(appId, out _))
+            {
+                return Results.Json(ApiResponse.Fail("app not installed"), AppJsonContext.Default.ApiResponse, statusCode: 404);
+            }
+            telemetry.Capture(Nexus.Service.Telemetry.TelemetryEvents.AppPageOpened, ("app_id", appId));
+            return Results.Json(ApiResponse.Ok(), AppJsonContext.Default.ApiResponse);
+        }).AllowPanel();
+
         // Generic per-(app,key) persistent JSON document store. Gated by the
         // manifest's capabilities.appData flag, same shape check as dispatch's
         // capabilities.dispatch allowlist.

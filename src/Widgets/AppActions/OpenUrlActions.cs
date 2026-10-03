@@ -57,6 +57,7 @@ public static partial class OpenUrlActions
                 return AppActionHelpers.Ack(false, "rate limit exceeded");
             }
 
+            Nexus.Service.Telemetry.AppLinkTelemetry.Capture(services.GetRequiredService<Nexus.Service.Telemetry.ITelemetry>(), apps, appId, target);
             var opened = await services.GetRequiredService<SystemActions>()
                 .LaunchUrlAsync(target).ConfigureAwait(false);
             return opened.Error

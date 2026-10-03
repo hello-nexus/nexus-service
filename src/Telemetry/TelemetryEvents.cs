@@ -32,6 +32,12 @@ public static class TelemetryEvents
 
     public const string OnboardingCompleted = "onboarding_completed";
 
+    /// <summary>An installed SDK app opened a link in the user's browser.</summary>
+    public const string AppLinkOpened = "app_link_opened";
+
+    /// <summary>An installed SDK app's page was opened.</summary>
+    public const string AppPageOpened = "app_page_opened";
+
     // Fleet events (dual-sink: PostHog + nexus-api /telemetry/events). The
     // string doubles as the wire "type" field nexus-api expects.
     public const string Install = "install";

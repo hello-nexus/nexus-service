@@ -145,8 +145,14 @@ public static class SystemRoutes
         app.MapPost("/system/open-settings", (Nexus.Service.Actions.SystemActions actions) =>
             actions.OpenSettingsAsync()).AllowPanel();
 
-        app.MapPost("/system/open-url", (OpenUrlRequest body, Nexus.Service.Actions.SystemActions actions) =>
-            actions.OpenUrlAsync(body.Url ?? "")).AllowPanel();
+        app.MapPost("/system/open-url", async (OpenUrlRequest body, Nexus.Service.Actions.SystemActions actions,
+            Nexus.Service.Widgets.AppRegistry apps, Nexus.Service.Telemetry.ITelemetry telemetry) =>
+        {
+            var result = await actions.OpenUrlAsync(body.Url ?? "");
+            // A failed open still counts: the host falls back to window.open.
+            if (!string.IsNullOrEmpty(body.AppId)) Nexus.Service.Telemetry.AppLinkTelemetry.Capture(telemetry, apps, body.AppId, body.Url);
+            return result;
+        }).AllowPanel();
 
         // open-path opens any existing local file with its default handler in
         // the user's session, so it is desktop-token only (and relay-denied in
