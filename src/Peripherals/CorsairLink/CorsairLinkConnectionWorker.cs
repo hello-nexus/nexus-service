@@ -53,8 +53,8 @@ public sealed class CorsairLinkConnectionWorker : BackgroundService
         _conflicts = conflicts;
     }
 
-    // A vendor app that grabbed the hub owns it now (even before the pause poll
-    // sees it); switching the hub to hardware mode would cut that app off.
+    // A running vendor app takes the hub once Nexus lets go, paused or not;
+    // switching the hub to hardware mode would cut that app off.
     private bool HandBack() =>
         _gate.PausedByApp("corsair") is null
         && !(DeviceControlPolicy.ConflictAppFor("corsair") is { } app && _conflicts?.IsAppRunning(app) == true);

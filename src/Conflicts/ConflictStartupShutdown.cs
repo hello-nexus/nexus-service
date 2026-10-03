@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 using Microsoft.Extensions.Hosting;
@@ -26,15 +27,16 @@ namespace Nexus.Service.Conflicts;
 /// logon, it also ends every non-whitelisted app that launches: the service
 /// starts in session 0, before the vendor apps that launch at logon, so the
 /// one-shot sweep alone misses them. Outside the window a launch only raises
-/// the <see cref="ConflictLaunchNotifier"/> notice. An
+/// the <see cref="ConflictLaunchNotifier"/> notice, unless
+/// <c>Ui.EndConflictsOnLaunch</c> ends it at any time. An
 /// <see cref="ConflictAppDefinition.AlwaysEnded"/> app (Nexus 2) is ended at
 /// the same points with no switch, whitelist or onboarding gate.
 /// </summary>
 public sealed class ConflictStartupShutdown : IHostedService
 {
     /// <summary>
-    /// Raised after each pass that ended something (the sweep, then each launch
-    /// in the window), with the display names of the apps actually ended. The
+    /// Raised after each pass that ended something (the sweep, each launch in
+    /// the window, or the end-on-launch switch), with the display names of the apps actually ended. The
     /// Windows tray bootstrap turns this into a native notification; the
     /// service runs in session 0 and cannot draw UI itself.
     /// </summary>
@@ -50,9 +52,11 @@ public sealed class ConflictStartupShutdown : IHostedService
     private readonly Func<ConflictAppDefinition, bool> _stillRunning;
     private readonly CancellationTokenSource _stopping = new();
 
-    // id:pid pairs already ended (or tried) this run, so a kill that did not
-    // stick is not retried every tick while a relaunch under a new pid is.
+    // id:pid pairs already ended (or tried) and still detected, so a kill that
+    // did not stick is not retried every tick while a relaunch under a new pid is.
     private readonly HashSet<string> _attempted = new(StringComparer.OrdinalIgnoreCase);
+    // App id -> when the end-on-launch path last reported ending it.
+    private readonly Dictionary<string, long> _lastNoticeMs = new(StringComparer.OrdinalIgnoreCase);
     private long _windowEndsMs = long.MinValue;
     // The full sweep was allowed when the current window opened; otherwise the window ends AlwaysEnded apps only.
     private volatile bool _sweepWindow;
@@ -78,7 +82,14 @@ public sealed class ConflictStartupShutdown : IHostedService
     }
 
     /// <summary>True while a launching non-whitelisted app is ended here; the launch notifier stays quiet for that stretch.</summary>
-    public bool InLaunchKillWindow => LaunchWindowOpen && _sweepWindow && SweepAllowed(_store.Load());
+    public bool InLaunchKillWindow
+    {
+        get
+        {
+            var settings = _store.Load();
+            return (LaunchWindowOpen && _sweepWindow && SweepAllowed(settings)) || EndOnLaunchAllowed(settings);
+        }
+    }
 
     /// <summary>True while a launching <see cref="ConflictAppDefinition.AlwaysEnded"/> app is ended here.</summary>
     public bool LaunchWindowOpen => Environment.TickCount64 < Volatile.Read(ref _windowEndsMs);
@@ -88,8 +99,14 @@ public sealed class ConflictStartupShutdown : IHostedService
     /// sees these apps and decides about them, so the sweep waits until the
     /// sequence has finished (or been skipped) before it ever ends one.</summary>
     internal static bool SweepAllowed(NexusSettings settings) =>
-        settings.Ui.AutoKillConflictsAtStartup
-        && settings.OnboardingCompleted
+        settings.Ui.AutoKillConflictsAtStartup && OnboardingDone(settings);
+
+    /// <summary>The end-on-launch switch, behind the same onboarding gate as the sweep.</summary>
+    internal static bool EndOnLaunchAllowed(NexusSettings settings) =>
+        settings.Ui.EndConflictsOnLaunch && OnboardingDone(settings);
+
+    private static bool OnboardingDone(NexusSettings settings) =>
+        settings.OnboardingCompleted
         && settings.FeaturesOnboardingCompleted
         && settings.LightingOnboardingCompleted;
 
@@ -113,7 +130,28 @@ public sealed class ConflictStartupShutdown : IHostedService
             catch (Exception ex) { _log.LogWarning(ex, "Startup conflict shutdown swept nothing; enumeration failed."); }
             await WatchLaunchKillWindowAsync().ConfigureAwait(false);
         }, CancellationToken.None);
+        _ = EndOnLaunchAsync();
         return Task.CompletedTask;
+    }
+
+    /// <summary>Reads the watcher's shared scan, so it adds no process enumeration of its own; with the switch off a tick only reads the cached settings.</summary>
+    private async Task EndOnLaunchAsync()
+    {
+        try
+        {
+            using var timer = new PeriodicTimer(ConflictWatcher.PollInterval);
+            while (await timer.WaitForNextTickAsync(_stopping.Token).ConfigureAwait(false))
+            {
+                try { EndOnLaunchTick(); }
+                catch (Exception ex) { _log.LogWarning(ex, "Conflict end-on-launch tick failed."); }
+            }
+        }
+        catch (OperationCanceledException) { }
+    }
+
+    internal void EndOnLaunchTick()
+    {
+        if (EndOnLaunchAllowed(_store.Load())) EndRunningApps(throttleNotice: true);
     }
 
     private void OnSessionLogon()
@@ -158,13 +196,13 @@ public sealed class ConflictStartupShutdown : IHostedService
     }
 
     /// <summary>Ends every detected app not on the whitelist (only <see cref="ConflictAppDefinition.AlwaysEnded"/> ones without <paramref name="sweep"/>) and not already tried under its current pid, then raises <see cref="AppsTerminated"/> for the ones confirmed gone.</summary>
-    internal void EndRunningApps(bool sweep = true)
+    internal void EndRunningApps(bool sweep = true, bool throttleNotice = false)
     {
         // The boot sweep and a logon-started window loop can overlap.
-        lock (_attempted) EndRunningAppsLocked(sweep);
+        lock (_attempted) EndRunningAppsLocked(sweep, throttleNotice);
     }
 
-    private void EndRunningAppsLocked(bool sweep)
+    private void EndRunningAppsLocked(bool sweep, bool throttleNotice)
     {
         var excluded = new HashSet<string>(_store.Load().Ui.ConflictAutoKillExclusions, StringComparer.OrdinalIgnoreCase);
 
@@ -175,8 +213,11 @@ public sealed class ConflictStartupShutdown : IHostedService
         // take a later one down with it. That one is already gone when its own
         // turn comes, reports "not running before me", and drops out of the
         // notification the user sees.
+        var detectedNow = _watcher.GetConflicts();
+        // Forget pids that are gone, so a self-restarting app cannot grow the set without bound.
+        _attempted.IntersectWith(detectedNow.Select(d => $"{d.Id}:{d.Pid}"));
         var targets = new List<ConflictAppDefinition>();
-        foreach (var detected in _watcher.GetConflicts())
+        foreach (var detected in detectedNow)
         {
             var def = ConflictWatcher.FindById(detected.Id);
             if (def is null) continue;
@@ -205,8 +246,9 @@ public sealed class ConflictStartupShutdown : IHostedService
                     _log.LogInformation("Conflict shutdown: {App} is still running.", def.DisplayName);
                     continue;
                 }
-                killed.Add(def.DisplayName);
                 _log.LogInformation("Conflict shutdown: ended {App}.", def.DisplayName);
+                if (throttleNotice && !NoticeDue(def.Id)) continue;
+                killed.Add(def.DisplayName);
             }
             catch (Exception ex)
             {
@@ -218,6 +260,15 @@ public sealed class ConflictStartupShutdown : IHostedService
         _log.LogInformation("Conflict shutdown ended {Count} app(s).", killed.Count);
         try { AppsTerminated?.Invoke(killed); }
         catch (Exception ex) { _log.LogWarning(ex, "Conflict shutdown notification failed."); }
+    }
+
+    /// <summary>One notice per app per <see cref="ConflictLaunchTracker.Cooldown"/>: a vendor service that restarts itself is ended every poll.</summary>
+    private bool NoticeDue(string appId)
+    {
+        var now = Environment.TickCount64;
+        if (_lastNoticeMs.TryGetValue(appId, out var last) && now - last < (long)ConflictLaunchTracker.Cooldown.TotalMilliseconds) return false;
+        _lastNoticeMs[appId] = now;
+        return true;
     }
 
     /// <summary>Unconditional: gating on a device being present would race HID enumeration at boot, and this sweep never runs twice.</summary>

@@ -1,39 +1,45 @@
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 using Microsoft.Extensions.Hosting;
 using Nexus.Service.Conflicts;
+using Nexus.Service.Persistence;
 
 namespace Nexus.Service.Devices;
 
-/// <summary>Holds a device the user has on off while its competing app runs, and hands it to Nexus once the app exits (ended by the user, Resolve all, or the startup shutdown); two drivers on one hub interleave commands on its shared handles.</summary>
+/// <summary>Holds a device the user has on off while its whitelisted competing app runs, and hands it to Nexus once the app exits. A non-whitelisted app does not pause the device: the user chose Nexus over it, and the launch notice offers to end it.</summary>
 public sealed class VendorAppControlPause : BackgroundService
 {
     internal static readonly TimeSpan PollInterval = TimeSpan.FromSeconds(2);
 
     private readonly DeviceControlGate _gate;
     private readonly IConflictDetector _detector;
+    private readonly IConfigStore _store;
 
-    public VendorAppControlPause(DeviceControlGate gate, IConflictDetector detector)
+    public VendorAppControlPause(DeviceControlGate gate, IConflictDetector detector, IConfigStore store)
     {
         _gate = gate;
         _detector = detector;
+        _store = store;
         // Every hosted service is constructed before any starts, so this lands
         // before a connection worker can claim a device.
         TryRefresh();
-        // Turning a device on while its app runs must not hand it over until the app exits.
+        // A device choice re-checks at once rather than on the next poll.
         _gate.Changed += (_, _) => TryRefresh();
     }
 
-    /// <summary>Scans only while the user has a device with a competing app on.</summary>
+    /// <summary>Scans only while the user has a device on whose competing app is whitelisted.</summary>
     internal void Refresh()
     {
+        var whitelist = _store.Load().Ui.ConflictAutoKillExclusions;
         var paused = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
         foreach (var handler in DeviceControlPolicy.HandlersWithConflictApp())
         {
             if (!_gate.IsChosenOn(handler)) continue;
             var appId = DeviceControlPolicy.ConflictAppFor(handler)!;
+            if (!whitelist.Contains(appId, StringComparer.OrdinalIgnoreCase)) continue;
             if (_detector.IsAppRunning(appId)) paused[handler] = appId;
         }
         _gate.SetPausedByApp(paused);

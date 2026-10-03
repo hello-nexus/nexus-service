@@ -97,6 +97,7 @@ public static class ProfileSharing
                 target.Ui.ShowConflictAlerts = source.Ui.ShowConflictAlerts;
                 target.Ui.AutoKillConflictsAtStartup = source.Ui.AutoKillConflictsAtStartup;
                 target.Ui.NotifyConflictLaunches = source.Ui.NotifyConflictLaunches;
+                target.Ui.EndConflictsOnLaunch = source.Ui.EndConflictsOnLaunch;
                 break;
             case Device:
                 // The recent-apps ring names this machine's processes and exe
@@ -142,6 +143,7 @@ public static class ProfileSharing
                 target.Ui.ShowConflictAlerts = true;
                 target.Ui.AutoKillConflictsAtStartup = false;
                 target.Ui.NotifyConflictLaunches = true;
+                target.Ui.EndConflictsOnLaunch = false;
                 break;
             case Device:
                 target.StreamDeck = new StreamDeckSettings();

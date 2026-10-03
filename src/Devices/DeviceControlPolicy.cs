@@ -14,8 +14,9 @@ namespace Nexus.Service.Devices;
 /// Hyte/iBUYPOWER hardware, streamed panels (which have no on/off row to
 /// re-enable), and shared buses (whose monitoring nothing else provides)
 /// default on, as does any handler in neither ConflictAppByHandler nor
-/// UnverifiedHandlers. One source of truth for both facts. Whatever the
-/// choice, Nexus waits while a device's app runs (<see cref="VendorAppControlPause"/>).
+/// UnverifiedHandlers. One source of truth for both facts. A device the user
+/// has on waits while its app runs only when that app is whitelisted
+/// (<see cref="VendorAppControlPause"/>).
 /// </summary>
 public static class DeviceControlPolicy
 {

@@ -441,6 +441,8 @@ public sealed class UiSettings
     public List<string> ConflictAutoKillExclusions { get; set; } = Nexus.Service.Conflicts.ConflictAppCatalog.DefaultWhitelistedIds();
     /// <summary>Raise a Windows notification, with an End task button, when a catalog conflict app starts while the service runs (see <see cref="Nexus.Service.Conflicts.ConflictLaunchNotifier"/>).</summary>
     public bool NotifyConflictLaunches { get; set; } = true;
+    /// <summary>End every non-whitelisted catalog conflict app whenever the watcher sees it running, at any time rather than only just after service start or a logon; turning it on ends the ones already open. Off by default (see <see cref="Nexus.Service.Conflicts.ConflictStartupShutdown.EndOnLaunchAllowed"/>).</summary>
+    public bool EndConflictsOnLaunch { get; set; }
     /// <summary>True once the web has auto-placed the OEM app onto the dashboard.</summary>
     public bool OemAppSeeded { get; set; }
     /// <summary>Sidebar pinned-app tail (app keys / app:&lt;id&gt; placement types),
@@ -485,6 +487,7 @@ public sealed class UiSettingsPatch
     public bool? AutoKillConflictsAtStartup { get; set; }
     public List<string>? ConflictAutoKillExclusions { get; set; }
     public bool? NotifyConflictLaunches { get; set; }
+    public bool? EndConflictsOnLaunch { get; set; }
     public bool? OemAppSeeded { get; set; }
     public List<string>? PinnedSidebarApps { get; set; }
     public List<string>? SidebarAppOrder { get; set; }
