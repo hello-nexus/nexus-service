@@ -320,19 +320,19 @@ public static class TryxRoutes
             foreach (var name in names)
             {
                 var thumb = TryxThumbnailCache.ReadDataUrl(name);
-                string? label = null;
+                string? label = TryxThumbnailCache.ReadLabel(name);
                 // Media the panel holds but Nexus never uploaded (Kanali cloud themes /
                 // prior uploads) has no cached frame; source the cover + name from Kanali,
                 // else decode the first frame off the panel for a later read.
                 if (thumb is null)
                 {
                     var kanali = TryxKanaliData.Lookup(name);
-                    if (kanali is { } k) { thumb = k.Thumb; label = k.DisplayName; }
+                    if (kanali is { } k) { thumb = k.Thumb; label ??= k.DisplayName; }
                     if (thumb is null) hub.QueueThumbnail(name);
                 }
                 else
                 {
-                    label = TryxKanaliData.DisplayName(name);
+                    label ??= TryxKanaliData.DisplayName(name);
                 }
                 resp.Media.Add(new TryxMediaItem
                 {
@@ -456,7 +456,8 @@ public static class TryxRoutes
                 {
                     await file.CopyToAsync(s);
                 }
-                var (ok, msg) = await hub.ImportAndPlayVideoAsync(tempInput, crop, targetW, targetH, ctx.RequestAborted);
+                var (ok, msg) = await hub.ImportAndPlayVideoAsync(
+                    tempInput, Path.GetFileNameWithoutExtension(file.FileName), crop, targetW, targetH, ctx.RequestAborted);
                 if (!ok)
                 {
                     return Results.Json(

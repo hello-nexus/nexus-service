@@ -689,9 +689,9 @@ public sealed class TryxPanoramaHub : IDisposable
     /// it. RK custom media is a directly playable "media" file (no encryption). Returns
     /// (ok, message); message is empty on success or on a pre-existing failure mode, and
     /// carries the stable <see cref="InsufficientSpaceMsg"/> marker when the capacity check
-    /// rejects the transfer.</summary>
+    /// rejects the transfer. <paramref name="label"/> is the name the library shows for it.</summary>
     public async Task<(bool Ok, string Msg)> ImportAndPlayVideoAsync(
-        string localPath, TryxVideoCrop? crop, int targetWidth, int targetHeight, CancellationToken ct)
+        string localPath, string label, TryxVideoCrop? crop, int targetWidth, int targetHeight, CancellationToken ct)
     {
         var ffmpegPath = FfmpegResolver.Path;
         if (ffmpegPath is null)
@@ -735,6 +735,7 @@ public sealed class TryxPanoramaHub : IDisposable
             RecordMediaUpload(deviceFileName, container.Length);
             // Stored before the panel switch is published, so the preview never asks for a missing clip.
             TryxMediaStore.SaveCopy(mp4Path, deviceFileName);
+            TryxThumbnailCache.WriteLabel(deviceFileName, label);
             // The library lists the panel's own file list once received; re-read it so the new
             // file joins it (and the slideshow) without waiting for a media poll.
             RefreshMediaList(waitForGate: true);

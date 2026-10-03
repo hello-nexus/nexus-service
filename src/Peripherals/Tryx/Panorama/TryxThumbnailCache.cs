@@ -20,6 +20,9 @@ public static class TryxThumbnailCache
     private static string DurPath(string deviceFileName)
         => Path.Combine(CacheDir, deviceFileName + ".dur");
 
+    private static string LabelPath(string deviceFileName)
+        => Path.Combine(CacheDir, deviceFileName + ".label");
+
     /// <summary>Derives the on-device filename from a user source name.
     /// Stem chars outside [A-Za-z0-9_.-] become '_'; stem capped at 56 so the
     /// full name (stem + ".mp4") stays at most 60 chars.</summary>
@@ -164,12 +167,39 @@ public static class TryxThumbnailCache
         catch { return 0; }
     }
 
+    /// <summary>Stores the name the user's file had, since the panel file is named by upload time.</summary>
+    public static void WriteLabel(string deviceFileName, string label)
+    {
+        if (!IsSafeDeviceName(deviceFileName) || string.IsNullOrWhiteSpace(label)) return;
+        try
+        {
+            Directory.CreateDirectory(CacheDir);
+            File.WriteAllText(LabelPath(deviceFileName), label.Trim());
+        }
+        catch { /* best effort */ }
+    }
+
+    public static string? ReadLabel(string deviceFileName)
+    {
+        if (!IsSafeDeviceName(deviceFileName)) return null;
+        try
+        {
+            var path = LabelPath(deviceFileName);
+            if (!File.Exists(path)) return null;
+            var text = File.ReadAllText(path).Trim();
+            return text.Length > 0 ? text : null;
+        }
+        catch { return null; }
+    }
+
     public static void Delete(string deviceFileName)
     {
         if (!IsSafeDeviceName(deviceFileName)) return;
         try { File.Delete(ThumbPath(deviceFileName)); }
         catch { /* best effort */ }
         try { File.Delete(DurPath(deviceFileName)); }
+        catch { /* best effort */ }
+        try { File.Delete(LabelPath(deviceFileName)); }
         catch { /* best effort */ }
     }
 
