@@ -181,7 +181,10 @@ support-bundle ZIP export.
   `Fps/`, Windows).
 - Steam, Discord (Rich Presence), OBS, Twitch (anonymous IRC-over-WS chat
   reader + emote CDN proxy, fanned out on `twitch/chat/{channel}`), and Home
-  Assistant (`Integrations/HomeAssistant/`, `GET`/`POST /home-assistant/*`).
+  Assistant (`Integrations/HomeAssistant/`, `GET`/`POST /home-assistant/*`):
+  light/switch entities plus any entity a fetched Lovelace dashboard references
+  (`GET /home-assistant/dashboards`, `/dashboard?id=`, served over a short-lived
+  second WebSocket), with state broadcasts coalesced on the `homeAssistant` topic.
 - Focus modes (`FocusModes/`, `/api/focus*`, live on the `focus` topic): a
   named mode activates on a trigger (a catalog game's process, OBS
   streaming/recording, or by hand), holds native notifications for release

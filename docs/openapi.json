@@ -117,6 +117,84 @@
         }
       }
     },
+    "/system/case": {
+      "get": {
+        "tags": [
+          "Nexus"
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SystemCaseResponse"
+                }
+              }
+            }
+          }
+        }
+      },
+      "put": {
+        "tags": [
+          "Nexus"
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SetSystemCaseBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        }
+      }
+    },
+    "/system/report": {
+      "get": {
+        "tags": [
+          "Nexus"
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SystemReportResponse"
+                }
+              }
+            }
+          }
+        }
+      },
+      "put": {
+        "tags": [
+          "Nexus"
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SetSystemReportBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        }
+      }
+    },
     "/system/accent": {
       "get": {
         "tags": [
@@ -1149,6 +1227,40 @@
       "post": {
         "tags": [
           "Nexus"
+        ],
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        }
+      }
+    },
+    "/onboarding/banner": {
+      "get": {
+        "tags": [
+          "Nexus"
+        ],
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        }
+      }
+    },
+    "/onboarding/banner/dismiss/{key}": {
+      "post": {
+        "tags": [
+          "Nexus"
+        ],
+        "parameters": [
+          {
+            "name": "key",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
         ],
         "responses": {
           "200": {
@@ -2228,6 +2340,52 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/MusicReactiveBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/lighting/audio-output": {
+      "get": {
+        "tags": [
+          "Nexus"
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AudioOutputBody"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "Nexus"
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AudioOutputBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiResponse"
                 }
               }
             }
@@ -5562,6 +5720,53 @@
         }
       }
     },
+    "/home-assistant/dashboards": {
+      "get": {
+        "tags": [
+          "Nexus"
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HaDashboardsResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/home-assistant/dashboard": {
+      "get": {
+        "tags": [
+          "Nexus"
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HaDashboardResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/home-assistant/entity/set": {
       "post": {
         "tags": [
@@ -5969,6 +6174,50 @@
       }
     },
     "/devices/firmware/flash": {
+      "post": {
+        "tags": [
+          "Nexus"
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/FlashRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        }
+      }
+    },
+    "/devices/firmware/recovery": {
+      "get": {
+        "tags": [
+          "Nexus"
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/FirmwareStatusItem"
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/devices/firmware/recover": {
       "post": {
         "tags": [
           "Nexus"
@@ -11005,6 +11254,18 @@
         }
       }
     },
+    "/profiles/import/inspect": {
+      "post": {
+        "tags": [
+          "Nexus"
+        ],
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        }
+      }
+    },
     "/profiles/import": {
       "post": {
         "tags": [
@@ -11025,18 +11286,6 @@
               "type": "string"
             }
           }
-        ],
-        "responses": {
-          "200": {
-            "description": "OK"
-          }
-        }
-      }
-    },
-    "/profiles/import/inspect": {
-      "post": {
-        "tags": [
-          "Nexus"
         ],
         "responses": {
           "200": {
@@ -11719,6 +11968,196 @@
             }
           }
         ],
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        }
+      }
+    },
+    "/panel/devices/{id}/presets": {
+      "get": {
+        "tags": [
+          "Nexus"
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "Nexus"
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PanelPresetNameBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        }
+      }
+    },
+    "/panel/devices/{id}/presets/{presetId}": {
+      "put": {
+        "tags": [
+          "Nexus"
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "presetId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PanelPresetNameBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "Nexus"
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "presetId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        }
+      }
+    },
+    "/panel/devices/{id}/presets/{presetId}/activate": {
+      "post": {
+        "tags": [
+          "Nexus"
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "presetId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        }
+      }
+    },
+    "/panel/devices/{id}/presets/{presetId}/apps": {
+      "put": {
+        "tags": [
+          "Nexus"
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "presetId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SetPresetAppsBody"
+              }
+            }
+          },
+          "required": true
+        },
         "responses": {
           "200": {
             "description": "OK"
@@ -12440,6 +12879,28 @@
           },
           "required": true
         },
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        }
+      }
+    },
+    "/apps-api/page-opened/{appId}": {
+      "post": {
+        "tags": [
+          "Nexus"
+        ],
+        "parameters": [
+          {
+            "name": "appId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
         "responses": {
           "200": {
             "description": "OK"
@@ -13870,6 +14331,18 @@
         }
       }
     },
+    "/cloud/benchmarks/ranges": {
+      "get": {
+        "tags": [
+          "Nexus"
+        ],
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        }
+      }
+    },
     "/cloud/fps/signature": {
       "get": {
         "tags": [
@@ -14697,6 +15170,17 @@
         "properties": {
           "enabled": {
             "type": "boolean"
+          }
+        }
+      },
+      "AudioOutputBody": {
+        "type": "object",
+        "properties": {
+          "deviceId": {
+            "type": "string"
+          },
+          "deviceName": {
+            "type": "string"
           }
         }
       },
@@ -17338,6 +17822,12 @@
             "items": {
               "$ref": "#/components/schemas/FlashableImage"
             }
+          },
+          "needsRecovery": {
+            "type": "boolean"
+          },
+          "recoveryState": {
+            "type": "string"
           }
         }
       },
@@ -18521,6 +19011,63 @@
           }
         }
       },
+      "HaDashboardDto": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "title": {
+            "type": "string"
+          }
+        }
+      },
+      "HaDashboardResponse": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "config": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/JsonElement"
+              }
+            ]
+          },
+          "revision": {
+            "pattern": "^-?(?:0|[1-9]\\d*)$",
+            "type": [
+              "integer",
+              "string"
+            ],
+            "format": "int64"
+          }
+        }
+      },
+      "HaDashboardsResponse": {
+        "type": "object",
+        "properties": {
+          "connected": {
+            "type": "boolean"
+          },
+          "error": {
+            "type": "string"
+          },
+          "dashboards": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/HaDashboardDto"
+            }
+          }
+        }
+      },
       "HaEntitiesResponse": {
         "type": "object",
         "properties": {
@@ -18603,6 +19150,26 @@
           },
           "area": {
             "type": "string"
+          },
+          "unit": {
+            "type": "string"
+          },
+          "deviceClass": {
+            "type": "string"
+          },
+          "positionPct": {
+            "pattern": "^-?(?:0|[1-9]\\d*)$",
+            "type": [
+              "integer",
+              "string"
+            ],
+            "format": "int32"
+          },
+          "codeRequired": {
+            "type": "boolean"
+          },
+          "hidden": {
+            "type": "boolean"
           }
         }
       },
@@ -18649,6 +19216,12 @@
               "string"
             ],
             "format": "int32"
+          },
+          "action": {
+            "type": [
+              "null",
+              "string"
+            ]
           }
         }
       },
@@ -20832,6 +21405,12 @@
         "properties": {
           "url": {
             "type": "string"
+          },
+          "appId": {
+            "type": [
+              "null",
+              "string"
+            ]
           }
         }
       },
@@ -21490,6 +22069,18 @@
             ],
             "format": "double"
           },
+          "textColorMode": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "textColor": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
           "themeSyncWithDesktop": {
             "type": [
               "null",
@@ -21633,6 +22224,16 @@
             "additionalProperties": {
               "type": "object"
             }
+          },
+          "widgetPlaylist": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/PanelWidgetPlaylistDto"
+              }
+            ]
           },
           "immersiveOnLoadWidgetId": {
             "type": [
@@ -21798,6 +22399,14 @@
         }
       },
       "PanelPhoneSessionNameBody": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string"
+          }
+        }
+      },
+      "PanelPresetNameBody": {
         "type": "object",
         "properties": {
           "name": {
@@ -22123,6 +22732,63 @@
             "type": [
               "null",
               "object"
+            ]
+          }
+        }
+      },
+      "PanelWidgetPlaylistCursorDto": {
+        "type": "object",
+        "properties": {
+          "type": {
+            "type": "string"
+          },
+          "at": {
+            "pattern": "^-?(?:0|[1-9]\\d*)$",
+            "type": [
+              "integer",
+              "string"
+            ],
+            "format": "int64"
+          }
+        }
+      },
+      "PanelWidgetPlaylistDto": {
+        "type": "object",
+        "properties": {
+          "enabled": {
+            "type": "boolean"
+          },
+          "interval": {
+            "pattern": "^-?(?:0|[1-9]\\d*)$",
+            "type": [
+              "integer",
+              "string"
+            ],
+            "format": "int32"
+          },
+          "shuffle": {
+            "type": "boolean"
+          },
+          "types": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "order": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "cursor": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/PanelWidgetPlaylistCursorDto"
+              }
             ]
           }
         }
@@ -23822,6 +24488,25 @@
           }
         }
       },
+      "SetSystemCaseBody": {
+        "type": "object",
+        "properties": {
+          "caseId": {
+            "type": [
+              "null",
+              "string"
+            ]
+          }
+        }
+      },
+      "SetSystemReportBody": {
+        "type": "object",
+        "properties": {
+          "report": {
+            "type": "boolean"
+          }
+        }
+      },
       "SetTrackingBody": {
         "type": "object",
         "properties": {
@@ -25482,6 +26167,17 @@
           }
         }
       },
+      "SystemCaseResponse": {
+        "type": "object",
+        "properties": {
+          "caseId": {
+            "type": [
+              "null",
+              "string"
+            ]
+          }
+        }
+      },
       "SystemDiagnosticsCounts": {
         "type": "object",
         "properties": {
@@ -25549,6 +26245,17 @@
           },
           "counts30d": {
             "$ref": "#/components/schemas/SystemDiagnosticsCounts"
+          }
+        }
+      },
+      "SystemReportResponse": {
+        "type": "object",
+        "properties": {
+          "installId": {
+            "type": "string"
+          },
+          "report": {
+            "type": "boolean"
           }
         }
       },
@@ -25939,6 +26646,9 @@
           "notifyConflictLaunches": {
             "type": "boolean"
           },
+          "endConflictsOnLaunch": {
+            "type": "boolean"
+          },
           "oemAppSeeded": {
             "type": "boolean"
           },
@@ -25968,6 +26678,9 @@
           },
           "coolingDashboardMode": {
             "type": "string"
+          },
+          "dashboardAutoArrange": {
+            "type": "boolean"
           },
           "showUncontrolledDevices": {
             "type": "boolean"
@@ -26016,6 +26729,12 @@
               "boolean"
             ]
           },
+          "endConflictsOnLaunch": {
+            "type": [
+              "null",
+              "boolean"
+            ]
+          },
           "oemAppSeeded": {
             "type": [
               "null",
@@ -26056,6 +26775,12 @@
             "type": [
               "null",
               "string"
+            ]
+          },
+          "dashboardAutoArrange": {
+            "type": [
+              "null",
+              "boolean"
             ]
           },
           "showUncontrolledDevices": {

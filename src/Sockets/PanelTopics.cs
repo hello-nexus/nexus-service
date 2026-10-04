@@ -318,17 +318,19 @@ public static class PanelTopics
 
     /// <summary>
     /// Home Assistant entity cache changed. Subscribers refetch
-    /// GET /home-assistant/entities.
+    /// GET /home-assistant/entities (a RoomsChanged=false frame only touched watched
+    /// dashboard entities, so room-only views may skip it); a changed DashboardsRevision also means
+    /// GET /home-assistant/dashboard must be refetched.
     /// </summary>
     public const string HomeAssistant = "homeAssistant";
 
-    public static void BroadcastHomeAssistant(MultiplexHub hub)
+    public static void BroadcastHomeAssistant(MultiplexHub hub, long dashboardsRevision, bool roomsChanged)
     {
         if (!hub.TopicHasSubscribers(HomeAssistant))
         {
             return;
         }
-        var frame = new HomeAssistantChangedFrame { Revision = Now() };
+        var frame = new HomeAssistantChangedFrame { Revision = Now(), DashboardsRevision = dashboardsRevision, RoomsChanged = roomsChanged };
         var env = WsEnvelope.Build(HomeAssistant, frame, AppJsonContext.Default.HomeAssistantChangedFrame);
         _ = hub.BroadcastTopicAsync(HomeAssistant, env);
     }

@@ -1146,6 +1146,10 @@ namespace Nexus.Service.Serialization;
 [JsonSerializable(typeof(HaEntitiesResponse))]
 [JsonSerializable(typeof(HaSetEntityBody))]
 [JsonSerializable(typeof(HomeAssistantChangedFrame))]
+[JsonSerializable(typeof(HaDashboardDto))]
+[JsonSerializable(typeof(List<HaDashboardDto>))]
+[JsonSerializable(typeof(HaDashboardsResponse))]
+[JsonSerializable(typeof(HaDashboardResponse))]
 
 // Lian Li Uni Hub SL-Infinity.
 [JsonSerializable(typeof(Nexus.Service.Routes.LianLiStateResponse))]

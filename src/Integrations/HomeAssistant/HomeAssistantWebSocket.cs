@@ -13,6 +13,9 @@ namespace Nexus.Service.Integrations.HomeAssistant;
 internal readonly struct HaWsMessage
 {
     internal bool IsRegistryUpdate { get; init; }
+    internal bool IsDashboardUpdate { get; init; }
+    // lovelace_updated url_path; "lovelace" for the default dashboard.
+    internal string DashboardId { get; init; }
     internal string EntityId { get; init; }
     internal JsonElement NewState { get; init; }
 }
@@ -28,6 +31,10 @@ internal sealed class HaRegistryMaps
     internal Dictionary<string, string> EntityDeviceById { get; } = new(StringComparer.OrdinalIgnoreCase);
     // device_id -> area_id
     internal Dictionary<string, string> DeviceAreaById { get; } = new(StringComparer.OrdinalIgnoreCase);
+    // entity ids the registry hides (hidden_by or entity_category set)
+    internal HashSet<string> HiddenIds { get; } = new(StringComparer.OrdinalIgnoreCase);
+
+    internal bool IsHidden(string entityId) => HiddenIds.Contains(entityId);
 
     internal string Resolve(string entityId)
     {
@@ -43,6 +50,17 @@ internal sealed class HaRegistryMaps
         return areaId != null && areaId.Length > 0 && AreaById.TryGetValue(areaId, out var name)
             ? name
             : "";
+    }
+}
+
+// A failed WS command; Code is HA's error.code (empty when absent).
+internal sealed class HaCommandException : InvalidOperationException
+{
+    internal string Code { get; }
+
+    internal HaCommandException(string message, string code) : base(message)
+    {
+        Code = code;
     }
 }
 
@@ -65,6 +83,13 @@ internal sealed class HomeAssistantWebSocket : IAsyncDisposable
     private readonly Queue<JsonElement> _bufferedEvents = new();
 
     public async Task ConnectAsync(string wsUrl, string token, CancellationToken ct)
+    {
+        await AuthenticateAsync(wsUrl, token, ct);
+        await SubscribeAsync(ct);
+    }
+
+    /// <summary>Connects and completes the auth handshake without subscribing to anything.</summary>
+    public async Task AuthenticateAsync(string wsUrl, string token, CancellationToken ct)
     {
         // Dead-peer detection: ping every 30 s; abort if pong not received within 10 s.
         _ws.Options.KeepAliveInterval = TimeSpan.FromSeconds(30);
@@ -95,7 +120,11 @@ internal sealed class HomeAssistantWebSocket : IAsyncDisposable
                 throw new InvalidOperationException($"Unexpected auth response: {type}");
             }
         }
+    }
 
+    /// <summary>Subscribes to state_changed plus the registry and dashboard update events.</summary>
+    public async Task SubscribeAsync(CancellationToken ct)
+    {
         // Subscribe to state_changed.
         int subId = _nextId++;
         await SendRawAsync(BuildSubscribeMessage(subId, "state_changed"), ct);
@@ -113,10 +142,11 @@ internal sealed class HomeAssistantWebSocket : IAsyncDisposable
             }
         }
 
-        // Subscribe to registry update events so room reassignments reflect without a restart.
+        // Subscribe to registry update events so room reassignments reflect without a restart,
+        // and lovelace_updated so dashboard edits invalidate the cached config.
         // Failure of an individual subscription degrades live-refresh for that event type; it
         // does not affect state_changed or the initial registry fetch.
-        foreach (var evType in new[] { "area_registry_updated", "device_registry_updated", "entity_registry_updated" })
+        foreach (var evType in new[] { "area_registry_updated", "device_registry_updated", "entity_registry_updated", "lovelace_updated" })
         {
             int regId = _nextId++;
             await SendRawAsync(BuildSubscribeMessage(regId, evType), ct);
@@ -160,6 +190,40 @@ internal sealed class HomeAssistantWebSocket : IAsyncDisposable
         }
 
         return BuildMaps(await areaTcs.Task, await deviceTcs.Task, await entityTcs.Task);
+    }
+
+    /// <summary>
+    /// Sends one command and pumps until its result arrives. For short-lived sockets
+    /// that never subscribed; not for the long-lived event socket. A failed result
+    /// throws HaCommandException carrying HA's error code.
+    /// </summary>
+    public async Task<JsonElement> RunCommandAsync(string commandType, string? urlPath, CancellationToken ct)
+    {
+        int id = _nextId++;
+        var tcs = new TaskCompletionSource<JsonElement>(TaskCreationOptions.RunContinuationsAsynchronously);
+        _pending[id] = tcs;
+
+        using (var ms = new MemoryStream())
+        {
+            using (var w = new Utf8JsonWriter(ms))
+            {
+                w.WriteStartObject();
+                w.WriteNumber("id", id);
+                w.WriteString("type", commandType);
+                if (urlPath is not null)
+                {
+                    w.WriteString("url_path", urlPath);
+                }
+                w.WriteEndObject();
+            }
+            await SendRawAsync(Encoding.UTF8.GetString(ms.ToArray()), ct);
+        }
+
+        while (!tcs.Task.IsCompleted)
+        {
+            await PumpOneMessageAsync(ct);
+        }
+        return await tcs.Task;
     }
 
     /// <summary>
@@ -224,7 +288,10 @@ internal sealed class HomeAssistantWebSocket : IAsyncDisposable
                 }
                 else
                 {
-                    tcs.TrySetException(new InvalidOperationException($"Registry command {id} failed"));
+                    var code = root.TryGetProperty("error", out var errEl) && errEl.ValueKind == JsonValueKind.Object
+                        ? GetStringProp(errEl, "code")
+                        : "";
+                    tcs.TrySetException(new HaCommandException($"Command {id} failed", code));
                 }
             }
             return;
@@ -249,6 +316,20 @@ internal sealed class HomeAssistantWebSocket : IAsyncDisposable
             eventType == "entity_registry_updated")
         {
             return new HaWsMessage { IsRegistryUpdate = true };
+        }
+
+        if (eventType == "lovelace_updated")
+        {
+            var path = "lovelace";
+            if (eventEl.TryGetProperty("data", out var lovData) &&
+                lovData.ValueKind == JsonValueKind.Object &&
+                lovData.TryGetProperty("url_path", out var pathEl) &&
+                pathEl.ValueKind == JsonValueKind.String &&
+                !string.IsNullOrEmpty(pathEl.GetString()))
+            {
+                path = pathEl.GetString()!;
+            }
+            return new HaWsMessage { IsDashboardUpdate = true, DashboardId = path };
         }
 
         if (eventType != "state_changed")
@@ -276,7 +357,7 @@ internal sealed class HomeAssistantWebSocket : IAsyncDisposable
         return new HaWsMessage { EntityId = entityId, NewState = newStateEl.Clone() };
     }
 
-    private static HaRegistryMaps BuildMaps(JsonElement areas, JsonElement devices, JsonElement entities)
+    internal static HaRegistryMaps BuildMaps(JsonElement areas, JsonElement devices, JsonElement entities)
     {
         var maps = new HaRegistryMaps();
 
@@ -315,6 +396,10 @@ internal sealed class HomeAssistantWebSocket : IAsyncDisposable
                 var areaId = GetStringProp(ent, "area_id");
                 if (id.Length > 0)
                 {
+                    if (IsNonNull(ent, "hidden_by") || IsNonNull(ent, "entity_category"))
+                    {
+                        maps.HiddenIds.Add(id);
+                    }
                     if (areaId.Length > 0)
                     {
                         maps.EntityAreaById[id] = areaId;
@@ -389,6 +474,13 @@ internal sealed class HomeAssistantWebSocket : IAsyncDisposable
         w.WriteEndObject();
         w.Flush();
         return Encoding.UTF8.GetString(ms.ToArray());
+    }
+
+    private static bool IsNonNull(JsonElement el, string property)
+    {
+        return el.TryGetProperty(property, out var v) &&
+               v.ValueKind != JsonValueKind.Null &&
+               v.ValueKind != JsonValueKind.Undefined;
     }
 
     private static string GetString(JsonElement el, string property)
