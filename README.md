@@ -82,7 +82,7 @@ src/
   Monitoring/          # 1 Hz history store, timeline events, broadcaster
   Cooling/             # curve engine, calibration, safety, per-hub cooling providers
   QSeries/             # persisted adb transport to Q-series screens
-  Lighting/            # Engine/ effects + canvas, Rgb/ OpenRGB bridge, Zones/, Mappings/, Capture/, Smart/, GameSync/
+  Lighting/            # Engine/ effects + canvas, Rgb/ OpenRGB bridge, Zones/, Mappings/, Capture/, Smart/, GameSync/, Scene/ 3D placement
   Devices/             # device manager, USB detection, per-device handlers, firmware
   Peripherals/         # protocol drivers per vendor (Hyte, LianLi*, Corsair*, Nzxt, Ibp, Tryx, StreamDeck, Keeb, Y70, ...)
   Conflicts/           # competing vendor-software detection, device ownership, opt-in shutdown

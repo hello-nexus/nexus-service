@@ -44,6 +44,11 @@ Q-series screens.
 - Effects engine (`Lighting/Engine/`), zones and hub composition
   (`Lighting/Zones/`), LED mappings (`Lighting/Mappings/`), screen sync
   (`Lighting/Capture/`), audio sync, anime mode.
+- 3D placement (`Lighting/Scene/`, `/lighting/scene*`): devices placed on
+  surfaces of a desk scene (the PC case the Build portal exports, plus desk
+  items) sample the effect canvas where a camera sees them. The scene lives in
+  its own machine-local files; the view (on/off + camera) lives in settings and
+  layout presets. Unplaced devices keep their 2D frame.
 - LAN smart lights (`Lighting/Smart/`): Hue, Nanoleaf, Govee drivers.
 - Game sync (`Lighting/GameSync/`): drive your own hardware from a game's
   lighting. Razer Chroma, Alienware LightFX, and Logitech capture via the
