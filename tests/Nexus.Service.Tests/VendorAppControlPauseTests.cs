@@ -25,18 +25,36 @@ public class VendorAppControlPauseTests
         public bool DetectionReady => true;
     }
 
-    private static (DeviceControlGate Gate, FakeDetector Detector, VendorAppControlPause Pause) Setup(params string[] on)
+    private static (DeviceControlGate Gate, FakeDetector Detector, VendorAppControlPause Pause) Setup(params string[] on) =>
+        Setup(on, whitelisted: Array.Empty<string>());
+
+    // Turning a device on takes its app off the whitelist, so the whitelist is written after.
+    private static (DeviceControlGate Gate, FakeDetector Detector, VendorAppControlPause Pause) Setup(string[] on, string[] whitelisted)
     {
-        var gate = new DeviceControlGate(new InMemoryConfigStore());
+        var store = new InMemoryConfigStore();
+        var gate = new DeviceControlGate(store);
         foreach (var handler in on) gate.SetEnabled(handler, true);
+        store.Update(s => s.Ui.ConflictAutoKillExclusions = whitelisted.ToList());
         var detector = new FakeDetector();
-        return (gate, detector, new VendorAppControlPause(gate, detector));
+        return (gate, detector, new VendorAppControlPause(gate, detector, store));
     }
 
     [Fact]
-    public void ADeviceTheUserTurnedOnWaitsForItsAppToExit()
+    public void ADeviceTheUserTurnedOnKeepsDrivingWhileANonWhitelistedAppRuns()
     {
         var (gate, detector, pause) = Setup("corsair");
+
+        detector.Running.Add("icue");
+        pause.Refresh();
+
+        Assert.True(gate.IsEnabled("corsair"));
+        Assert.Null(gate.PausedByApp("corsair"));
+    }
+
+    [Fact]
+    public void ADeviceTheUserTurnedOnWaitsForItsWhitelistedAppToExit()
+    {
+        var (gate, detector, pause) = Setup(new[] { "corsair" }, whitelisted: new[] { "icue" });
 
         detector.Running.Add("icue");
         pause.Refresh();
@@ -51,15 +69,14 @@ public class VendorAppControlPauseTests
     }
 
     [Fact]
-    public void TurningADeviceOnWhileItsAppRunsDoesNotTakeItYet()
+    public void TurningADeviceOnWhileItsAppRunsTakesIt()
     {
-        var (gate, detector, _) = Setup();
+        var (gate, detector, _) = Setup(Array.Empty<string>(), whitelisted: new[] { "icue" });
         detector.Running.Add("icue");
 
         gate.SetEnabled("corsair", true);
 
-        Assert.False(gate.IsEnabled("corsair"));
-        Assert.True(gate.IsChosenOn("corsair"));
+        Assert.True(gate.IsEnabled("corsair"));
     }
 
     [Theory]
@@ -69,9 +86,9 @@ public class VendorAppControlPauseTests
     [InlineData("lianli-aio")]
     [InlineData("strimer")]
     [InlineData("lianli-screen88")]
-    public void EveryLianLiDeviceWaitsForLConnect(string handler)
+    public void EveryLianLiDeviceWaitsForAWhitelistedLConnect(string handler)
     {
-        var (gate, detector, pause) = Setup(handler);
+        var (gate, detector, pause) = Setup(new[] { handler }, whitelisted: new[] { "lian-li-l-connect" });
 
         detector.Running.Add("lian-li-l-connect");
         pause.Refresh();
@@ -82,7 +99,7 @@ public class VendorAppControlPauseTests
     [Fact]
     public void AnUnrelatedAppLeavesTheDeviceOn()
     {
-        var (gate, detector, pause) = Setup("corsair");
+        var (gate, detector, pause) = Setup(new[] { "corsair" }, whitelisted: new[] { "icue", "lian-li-l-connect" });
 
         detector.Running.Add("lian-li-l-connect");
         pause.Refresh();
@@ -115,7 +132,7 @@ public class VendorAppControlPauseTests
     [Fact]
     public void WaitingAndTakingRaiseChanged()
     {
-        var (gate, detector, pause) = Setup("corsair");
+        var (gate, detector, pause) = Setup(new[] { "corsair" }, whitelisted: new[] { "icue" });
         var changes = new List<(string, bool)>();
         gate.Changed += (h, on) => changes.Add((h, on));
 

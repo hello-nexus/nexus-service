@@ -232,6 +232,70 @@ public class ConflictWhitelistTests
     }
 
     [Fact]
+    public void EndOnLaunchIsOffByDefault()
+    {
+        Assert.False(new UiSettings().EndConflictsOnLaunch);
+    }
+
+    [Fact]
+    public void EndOnLaunchEndsOnlyAppsOffTheWhitelist()
+    {
+        var store = OnboardedStore();
+        store.Update(s =>
+        {
+            s.Ui.EndConflictsOnLaunch = true;
+            s.Ui.ConflictAutoKillExclusions = new List<string> { Elgato };
+        });
+        var detector = new FakeDetector { Conflicts = new[] { App(Elgato), App(ICue) } };
+        var killed = new List<string>();
+        var shutdown = new ConflictStartupShutdown(store, detector, NullLogger<ConflictStartupShutdown>.Instance,
+            def => killed.Add(def.Id), _ => false);
+
+        shutdown.EndOnLaunchTick();
+
+        Assert.Equal(new[] { ICue }, killed);
+        Assert.True(shutdown.InLaunchKillWindow);
+    }
+
+    [Fact]
+    public void EndOnLaunchEndsARelaunchAgainButReportsItOnce()
+    {
+        var store = OnboardedStore();
+        store.Update(s => s.Ui.EndConflictsOnLaunch = true);
+        var detector = new FakeDetector { Conflicts = new[] { App(SignalRgb, pid: 1) } };
+        var killed = new List<string>();
+        var shutdown = new ConflictStartupShutdown(store, detector, NullLogger<ConflictStartupShutdown>.Instance,
+            def => killed.Add(def.Id), _ => false);
+        var notices = 0;
+        shutdown.AppsTerminated += _ => notices++;
+
+        shutdown.EndOnLaunchTick();
+        detector.Conflicts = new[] { App(SignalRgb, pid: 2) };
+        shutdown.EndOnLaunchTick();
+
+        Assert.Equal(new[] { SignalRgb, SignalRgb }, killed);
+        Assert.Equal(1, notices);
+    }
+
+    [Theory]
+    [InlineData(false, true)]
+    [InlineData(true, false)]
+    public void EndOnLaunchNeedsTheSwitchAndOnboarding(bool switchOn, bool onboarded)
+    {
+        var store = onboarded ? OnboardedStore() : new InMemoryConfigStore();
+        store.Update(s => s.Ui.EndConflictsOnLaunch = switchOn);
+        var detector = new FakeDetector { Conflicts = new[] { App(SignalRgb) } };
+        var killed = new List<string>();
+        var shutdown = new ConflictStartupShutdown(store, detector, NullLogger<ConflictStartupShutdown>.Instance,
+            def => killed.Add(def.Id), _ => false);
+
+        shutdown.EndOnLaunchTick();
+
+        Assert.Empty(killed);
+        Assert.False(shutdown.InLaunchKillWindow);
+    }
+
+    [Fact]
     public void Nexus2IsEndedWithTheSweepOffAndOnTheWhitelist()
     {
         var store = new InMemoryConfigStore();

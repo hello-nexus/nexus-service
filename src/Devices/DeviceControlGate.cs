@@ -37,7 +37,7 @@ public sealed class DeviceControlGate
     // BOTH lists, never in neither. Disabled wins that transient, so a
     // just-enabled third-party device reads off for a cycle (fail-closed) and an
     // explicit choice is never readable as unset.
-    /// <summary>The user's choice, and off while the device's competing app runs.</summary>
+    /// <summary>The user's choice, and off while the device's whitelisted competing app runs.</summary>
     public bool IsEnabled(string handlerId) =>
         IsEnabled(_store.Load().Devices, handlerId) && !Volatile.Read(ref _pausedByApp).ContainsKey(handlerId);
 
