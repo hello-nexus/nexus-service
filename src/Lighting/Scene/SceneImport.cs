@@ -6,22 +6,14 @@ namespace Nexus.Service.Lighting.Scene;
 public static class SceneImport
 {
     /// <summary>
-    /// Swaps the build-sourced objects for a fresh export. An object the user
-    /// already moved keeps its place on the desk, and binding targets that
-    /// pointed at an anchor the new export lacks are dropped (a binding left
-    /// with none is removed). <paramref name="shapeIds"/> names the objects the
-    /// imported model draws.
+    /// Swaps the build-sourced objects for a fresh export, positions included:
+    /// Build reads the scene's positions before it edits them, so its export is
+    /// the newest. Binding targets that pointed at an anchor the new export lacks
+    /// are dropped (a binding left with none is removed). <paramref name="shapeIds"/>
+    /// names the objects the imported model draws.
     /// </summary>
     public static LightingSceneDoc Merge(LightingSceneDoc doc, List<SceneObject> imported, IReadOnlySet<string> shapeIds)
     {
-        var previous = new Dictionary<string, SceneObject>(StringComparer.Ordinal);
-        foreach (var o in doc.Objects)
-        {
-            if (o.Source == "build")
-            {
-                previous[o.Id] = o;
-            }
-        }
         var objects = doc.Objects.FindAll(o => o.Source != "build");
         foreach (var o in imported)
         {
@@ -31,11 +23,6 @@ public static class SceneImport
             }
             o.Source = "build";
             o.HasModel = shapeIds.Contains(o.Id);
-            if (previous.TryGetValue(o.Id, out var before))
-            {
-                o.Position = before.Position;
-                o.Yaw = before.Yaw;
-            }
             objects.Add(o);
         }
 

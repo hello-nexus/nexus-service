@@ -18,7 +18,7 @@ public class SceneImportTests
         new() { DeviceId = device, Targets = { new SceneTarget { ObjectId = obj, AnchorId = anchor } } };
 
     [Fact]
-    public void Reimport_keeps_a_moved_object_in_place_and_drops_placements_on_vanished_spots()
+    public void Reimport_takes_the_exported_positions_and_drops_placements_on_vanished_spots()
     {
         var doc = new LightingSceneDoc
         {
@@ -32,8 +32,8 @@ public class SceneImportTests
         var merged = SceneImport.Merge(doc, [imported], new HashSet<string> { "case" });
 
         var pc = merged.Objects.Single();
-        Assert.Equal(620f, pc.Position[0]);
-        Assert.Equal(30f, pc.Yaw);
+        Assert.Equal(0f, pc.Position[0]);
+        Assert.Equal(0f, pc.Yaw);
         Assert.Equal("fan-1", merged.Bindings.Single().DeviceId);
     }
 

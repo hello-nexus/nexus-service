@@ -232,7 +232,7 @@ public sealed class LightingSceneRoutesTests : IClassFixture<LightingSceneAppFac
     }
 
     [Fact]
-    public async Task Import_stores_the_model_keeps_hand_placed_objects_and_the_moved_case()
+    public async Task Import_stores_the_model_keeps_hand_placed_objects_and_takes_the_exported_position()
     {
         var client = Desktop();
         var first = await client.PutAsync("/lighting/scene/import", Json($$"""{"caseId":"case-123","objects":[{{CaseObject()}}],"model":{{CaseModel}}}"""));
@@ -251,7 +251,7 @@ public sealed class LightingSceneRoutesTests : IClassFixture<LightingSceneAppFac
         var second = await client.PutAsync("/lighting/scene/import", Json($$"""{"caseId":"case-123","objects":[{{CaseObject("fan:front:120:0")}}],"model":{{CaseModel}}}"""));
         Assert.Equal(HttpStatusCode.OK, second.StatusCode);
         var after = Scene.Load();
-        Assert.Equal(-500f, after.Objects.Single(o => o.Id == "case").Position[0]);
+        Assert.Equal(0f, after.Objects.Single(o => o.Id == "case").Position[0]);
         Assert.Contains(after.Objects, o => o.Id == "kb");
         Assert.Contains(after.Bindings, b => b.DeviceId == "kbd-1");
         Assert.DoesNotContain(after.Bindings, b => b.DeviceId == "fan-1");
