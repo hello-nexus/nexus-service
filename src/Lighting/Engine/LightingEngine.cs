@@ -842,7 +842,9 @@ public sealed class LightingEngine : IDisposable
         // about to lose. Correctness no longer rests on this - DeviceFrame
         // publishes once per tick - but painting an LED twice is wasted work.
         var overlaid = ApplyTestOverlays(devices);
-        var scene = FullFrameSampling ? null : _scene;
+        // Placed devices follow the scene camera under every sampling mode: a
+        // sweep in 3D crosses the whole scene instead of each device end to end.
+        var scene = _scene;
         for (var di = 0; di < devices.Length; di++)
         {
             var dev = devices[di];
@@ -948,7 +950,7 @@ public sealed class LightingEngine : IDisposable
 
             if (scene is not null && scene.Placements.TryGetValue(dev.Id, out var quads))
             {
-                SampleSceneDevice(dev, ledCount, devLedU, devLedV, devLedDisabled, quads, scene.Camera, footprint, kx, ky);
+                SampleSceneDevice(dev, ledCount, devLedU, devLedV, devLedDisabled, quads, scene.Camera, FootprintSamplingEnabled, kx, ky);
                 continue;
             }
 

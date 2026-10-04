@@ -139,12 +139,22 @@ public class SceneSamplingTests
     }
 
     [Fact]
-    public async Task Full_frame_sampling_ignores_the_scene()
+    public async Task Placed_devices_follow_the_scene_even_under_full_frame_sampling()
     {
-        var frame = new DeviceFrame(0, "s", 5, x: 100, y: 100, w: 200, h: 40);
-        var withScene = await RenderOnce(frame, Placed("s", Strip(300)), fullFrame: true);
-        var without = await RenderOnce(new DeviceFrame(0, "s", 5, x: 100, y: 100, w: 200, h: 40), null, fullFrame: true);
-        Assert.Equal(without, withScene);
+        // Sweep effects turn full-frame sampling on; a placed device still reads where the camera sees it.
+        var cam = FrontCamera();
+        var quad = Strip(300);
+        var placed = await RenderOnce(new DeviceFrame(0, "s", 5, x: 100, y: 100, w: 200, h: 40), Placed("s", quad), fullFrame: true);
+        for (var i = 0; i < 5; i++)
+        {
+            Assert.True(cam.Project(quad.At(i / 4f, 0.5f), out var cx, out _));
+            Assert.Equal((byte)((int)(cx * 160 / 1000f) * 255 / 159), Red(placed, i));
+        }
+
+        // An unplaced device keeps full-frame sampling.
+        var unplaced = await RenderOnce(new DeviceFrame(0, "u", 5, x: 100, y: 100, w: 200, h: 40), Placed("s", quad), fullFrame: true);
+        var baseline = await RenderOnce(new DeviceFrame(0, "u", 5, x: 100, y: 100, w: 200, h: 40), null, fullFrame: true);
+        Assert.Equal(baseline, unplaced);
     }
 
     [Fact]
