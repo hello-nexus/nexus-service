@@ -899,6 +899,8 @@ public sealed class LightingEngine : IDisposable
             // no orientation to honour either: the pattern reads along its LED
             // order whichever way its card is turned.
             var rad = fullFrame ? 0f : (((dev.Rotation % 360) + 360) % 360) * (MathF.PI / 180f);
+            // Flip reflects each point across the whole frame's vertical centreline, before the turn.
+            var mirror = !fullFrame && dev.Flip ? -1f : 1f;
             var cos = MathF.Cos(rad);
             var sin = MathF.Sin(rad);
             var absCos = MathF.Abs(cos);
@@ -1001,7 +1003,7 @@ public sealed class LightingEngine : IDisposable
                         dev.SetLed(i, 0, 0, 0);
                         continue;
                     }
-                    var lx = rectX + devLedU[i] * rectW - frameCx;
+                    var lx = mirror * (rectX + devLedU[i] * rectW - frameCx);
                     var ly = rectY + devLedV[i] * rectH - frameCy;
                     var sx = (frameCx + lx * cos - ly * sin) * kx;
                     var sy = (frameCy + lx * sin + ly * cos) * ky;
@@ -1039,7 +1041,7 @@ public sealed class LightingEngine : IDisposable
                     continue;
                 }
                 var t = ledCount > 1 ? i * denom - 0.5f : 0f;
-                var lx = rectX + rectW * 0.5f + t * rectW - frameCx;
+                var lx = mirror * (rectX + rectW * 0.5f + t * rectW - frameCx);
                 var sx = (frameCx + lx * cos - midY * sin) * kx;
                 var sy = (frameCy + lx * sin + midY * cos) * ky;
                 var (r, g, b) = footprint
@@ -1565,6 +1567,7 @@ public sealed class AheadRequest
             var s = _sources[i];
             shadow[i] = new DeviceFrame(s.Index, s.Id, s.LedCount, s.X, s.Y, s.W, s.H, s.Rotation, s.PhysicalIndex, s.ZoneIndex, s.ZoneOffset)
             {
+                Flip = s.Flip,
                 LedU = s.LedU, LedV = s.LedV, LedDisabled = s.LedDisabled, Archetype = s.Archetype,
                 PreviewLedCount = s.PreviewLedCount, PreviewLayout = s.PreviewLayout,
             };

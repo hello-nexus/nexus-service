@@ -776,6 +776,8 @@ public sealed class DeviceLayout
     public float W { get; set; } = InstallDefaults.Cooling.DeviceLayoutSize.W;
     public float H { get; set; } = InstallDefaults.Cooling.DeviceLayoutSize.H;
     public int Rotation { get; set; }
+    /// <summary>Mirrors the frame left to right before <see cref="Rotation"/> turns it.</summary>
+    public bool Flip { get; set; }
 }
 
 /// <summary>The 3D lighting view: when on, devices placed in the scene sample the canvas where this camera sees them.</summary>

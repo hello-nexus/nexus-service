@@ -50,6 +50,8 @@ public sealed class DeviceFrame
     public float W { get; set; }
     public float H { get; set; }
     public int Rotation { get; set; }
+    /// <summary>Mirrors the frame left to right about its centre before <see cref="Rotation"/> turns it.</summary>
+    public bool Flip { get; set; }
     /// <summary>OpenRGB physical device index. For non-split devices equals <see cref="Index"/>. For motherboard zones, multiple DeviceFrames share the same physical index.</summary>
     public int PhysicalIndex { get; }
     /// <summary>Zone index within the physical OpenRGB device. -1 when the frame represents a whole non-zoned device.</summary>

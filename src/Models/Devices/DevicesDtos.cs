@@ -243,6 +243,8 @@ public class LightingDevice
     public float CanvasW { get; set; } = 80;
     public float CanvasH { get; set; }
     public int CanvasRotation { get; set; }
+    /// <summary>The stored layout's <see cref="Nexus.Service.Persistence.DeviceLayout.Flip"/>; false when none is stored.</summary>
+    public bool CanvasFlip { get; set; }
     /// <summary>Set only for motherboard zone cards. Points at the parent OpenRGB device id (e.g. "openrgb-0") so the UI can group zones under a motherboard header.</summary>
     public string? ParentDeviceId { get; set; }
     /// <summary>Set only for motherboard zone cards. Zone index within the parent OpenRGB device (0..N-1).</summary>
@@ -389,6 +391,8 @@ public class SaveDeviceLayoutBody
     public float W { get; set; }
     public float H { get; set; }
     public int Rotation { get; set; }
+    /// <summary>Null keeps the stored mirror, so a move from a client that predates it does not clear it.</summary>
+    public bool? Flip { get; set; }
 }
 
 // ----- /devices/lighting-devices/layout-presets -----
@@ -470,7 +474,18 @@ public sealed class DeletePresetResponse
 // Batch-apply a full layouts map (used by undo/redo and preset load on the client).
 public sealed class BatchApplyLayoutsBody
 {
-    public Dictionary<string, Nexus.Service.Persistence.DeviceLayout> Layouts { get; set; } = new();
+    public Dictionary<string, BatchLayoutEntry> Layouts { get; set; } = new();
+}
+
+/// <summary>A <see cref="Nexus.Service.Persistence.DeviceLayout"/> on the wire; a null Flip keeps the stored mirror, so an undo from a client that predates it does not clear it.</summary>
+public sealed class BatchLayoutEntry
+{
+    public float X { get; set; }
+    public float Y { get; set; }
+    public float W { get; set; } = Nexus.Service.Defaults.InstallDefaults.Cooling.DeviceLayoutSize.W;
+    public float H { get; set; } = Nexus.Service.Defaults.InstallDefaults.Cooling.DeviceLayoutSize.H;
+    public int Rotation { get; set; }
+    public bool? Flip { get; set; }
 }
 
 // ----- /devices/lighting-devices/{id}/led-map -----

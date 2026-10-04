@@ -118,6 +118,71 @@ public class LightingEngineSamplingTests
     }
 
     [Fact]
+    public async Task LinearStrip_FlipReversesTheLedOrderAlongTheTurnedStrip()
+    {
+        // The turned RAM strip runs top to bottom; a canvas-space flip would leave a vertical strip unchanged.
+        static void TopCell(CanvasBuffer c)
+        {
+            c.Clear();
+            c.SetPixel(51, 15, 255, 0, 0);
+        }
+        var plain = await RenderOnce(MakeRam(), TopCell);
+        var flipped = MakeRam();
+        flipped.Flip = true;
+        var mirrored = await RenderOnce(flipped, TopCell);
+
+        Assert.Equal(((byte)255, (byte)0, (byte)0), Led(plain, 0));
+        Assert.Equal(((byte)0, (byte)0, (byte)0), Led(plain, 9));
+        Assert.Equal(((byte)0, (byte)0, (byte)0), Led(mirrored, 0));
+        Assert.Equal(((byte)255, (byte)0, (byte)0), Led(mirrored, 9));
+    }
+
+    [Fact]
+    public async Task UvLayout_FlipMirrorsInTheFrameBeforeItTurns()
+    {
+        // The painted pixel is where LED 0 lands only when u is mirrored before the turn, not when turned
+        // alone or mirrored after the turn; unflipped, the pixel belongs to LED 1 instead.
+        static DeviceFrame Make(bool flip) => new(0, "uv", 2, x: 400, y: 200, w: 200, h: 200, rotation: 90)
+        {
+            LedU = new[] { 0.12f, 0.88f },
+            LedV = new[] { 0.2f, 0.2f },
+            Flip = flip,
+        };
+        static void Paint(CanvasBuffer c)
+        {
+            c.Clear();
+            c.SetPixel(89, 56, 0, 255, 0);
+        }
+
+        var plain = await RenderOnce(Make(false), Paint, footprintSampling: false);
+        var mirrored = await RenderOnce(Make(true), Paint, footprintSampling: false);
+
+        Assert.Equal(((byte)0, (byte)0, (byte)0), Led(plain, 0));
+        Assert.Equal(((byte)0, (byte)255, (byte)0), Led(plain, 1));
+        Assert.Equal(((byte)0, (byte)255, (byte)0), Led(mirrored, 0));
+        Assert.Equal(((byte)0, (byte)0, (byte)0), Led(mirrored, 1));
+    }
+
+    [Fact]
+    public async Task FullFrameSampling_IgnoresFlip()
+    {
+        static void Ramp(CanvasBuffer c)
+        {
+            for (int x = 0; x < c.Width; x++)
+            {
+                for (int y = 0; y < c.Height; y++) { c.SetPixel(x, y, (byte)(x * 255 / (c.Width - 1)), 0, 0); }
+            }
+        }
+        var flipped = new DeviceFrame(0, "ff", 10, x: 20, y: 20, w: 100, h: 20) { Flip = true };
+
+        var plain = await RenderOnce(new DeviceFrame(0, "ff", 10, x: 20, y: 20, w: 100, h: 20), Ramp, fullFrame: true);
+        var mirrored = await RenderOnce(flipped, Ramp, fullFrame: true);
+
+        Assert.Equal(plain, mirrored);
+        Assert.True(Led(mirrored, 0).r < Led(mirrored, 9).r);
+    }
+
+    [Fact]
     public async Task AllDarkCanvas_AllLedsBlack()
     {
         var leds = await RenderOnce(MakeRam(), c => c.Clear());

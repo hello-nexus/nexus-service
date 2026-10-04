@@ -1360,7 +1360,12 @@ public sealed class RgbBridge : IDisposable
 
             var frames = framesList.ToArray();
             var liveIds = new List<string>(frames.Length);
-            foreach (var f in frames) liveIds.Add(f.Id);
+            foreach (var f in frames)
+            {
+                liveIds.Add(f.Id);
+                // Set here for every provider's frames; providers only fill the rect and rotation.
+                f.Flip = layouts.TryGetValue(f.Id, out var flipLayout) && flipLayout.Flip;
+            }
             _contributorLayouts.Prune(liveIds);
             _engine.UpdateDevices(frames);
 

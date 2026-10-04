@@ -153,6 +153,32 @@ public sealed class LayoutPresetSerializationTests
     }
 
     [Fact]
+    public void Layout_flip_round_trips_and_reads_false_where_the_json_has_none()
+    {
+        const string json = """
+        {
+          "schemaVersion": 7,
+          "lighting": {
+            "deviceLayouts": { "old": { "x": 5, "y": 10, "w": 80, "h": 40, "rotation": 90 } },
+            "layoutPresets": [
+              { "id": "p1", "name": "Old Preset", "layouts": { "old": { "x": 1, "y": 2, "w": 3, "h": 4, "rotation": 0 } } }
+            ]
+          }
+        }
+        """;
+
+        var loaded = JsonSerializer.Deserialize(json, PersistenceJsonContext.Default.NexusSettings)!;
+        Assert.False(loaded.Lighting.DeviceLayouts["old"].Flip);
+        Assert.False(loaded.Lighting.LayoutPresets[0].Layouts["old"].Flip);
+
+        loaded.Lighting.LayoutPresets[0].Layouts["old"].Flip = true;
+        var again = JsonSerializer.Deserialize(
+            JsonSerializer.Serialize(loaded, PersistenceJsonContext.Default.NexusSettings),
+            PersistenceJsonContext.Default.NexusSettings)!;
+        Assert.True(again.Lighting.LayoutPresets[0].Layouts["old"].Flip);
+    }
+
+    [Fact]
     public void DisabledDevices_defaults_to_null_when_field_absent_in_json()
     {
         const string json = """

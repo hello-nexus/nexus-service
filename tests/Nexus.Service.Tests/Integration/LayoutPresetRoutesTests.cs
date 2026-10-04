@@ -780,6 +780,29 @@ public sealed class LayoutPresetRoutesTests : IClassFixture<StubDeviceHostFactor
     }
 
     [Fact]
+    public async Task A_preset_round_trips_the_flip()
+    {
+        Store.Update(s => s.Lighting.DeviceLayouts["dev-a"] = new DeviceLayout { X = 1, Y = 2, W = 50, H = 30, Rotation = 90, Flip = true });
+        var createRes = await _client.PostAsync(
+            "/devices/lighting-devices/layout-presets",
+            Json("""{"name":"Mirrored"}"""));
+        using var createDoc = JsonDocument.Parse(await createRes.Content.ReadAsStringAsync());
+        var preset = createDoc.RootElement.GetProperty("preset");
+        var id = preset.GetProperty("id").GetString()!;
+        Assert.True(preset.GetProperty("layouts").GetProperty("dev-a").GetProperty("flip").GetBoolean());
+
+        Store.Update(s => s.Lighting.DeviceLayouts["dev-a"].Flip = false);
+        Assert.True(Store.Load().Lighting.LayoutPresets.Find(p => p.Id == id)!.Layouts["dev-a"].Flip);
+
+        var res = await _client.PostAsync($"/devices/lighting-devices/layout-presets/{id}/activate", Json("{}"));
+
+        Assert.Equal(HttpStatusCode.OK, res.StatusCode);
+        var live = Store.Load().Lighting.DeviceLayouts["dev-a"];
+        Assert.True(live.Flip);
+        Assert.Equal(90, live.Rotation);
+    }
+
+    [Fact]
     public async Task Activate_restores_static_device_looks_over_the_live_ones()
     {
         Store.Update(s => s.Lighting.StaticDeviceLooks["dev-a"] = Look("flat", "#00ff00"));
