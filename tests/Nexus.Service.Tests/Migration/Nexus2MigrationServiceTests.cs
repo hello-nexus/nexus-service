@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
+using System.Linq;
 using System.Net.Http;
 using System.Net.Http.Headers;
 using System.Net.Http.Json;
@@ -384,6 +385,38 @@ public sealed class Nexus2MigrationServiceTests : IDisposable
 
         Assert.Equal(2, BgLibrary.ListItems(y70.Id).Count);
         Assert.NotEqual(firstId, Panels.Get(y70.Id)!.BackgroundMediaId);
+    }
+
+    [Nexus.Service.Tests.FfmpegFact]
+    public async Task Apply_Appearance_ImportsEveryY70UploadAndKeepsTheShownOneActive()
+    {
+        var appData = UseNexus2Tree("");
+        var uploads = Path.Combine(appData, "Roaming", "HYTE Nexus", "user-media");
+        var videos = Path.Combine(uploads, "media", "custom-Y70-bg");
+        var images = Path.Combine(uploads, "images", "custom-Y70-bg");
+        Directory.CreateDirectory(videos);
+        Directory.CreateDirectory(images);
+        var shown = Path.Combine(videos, "custom-Y70-bg-1.mp4");
+        File.Copy(Path.Combine(FixtureDir, "clip-landscape.mp4"), shown);
+        File.Copy(Path.Combine(FixtureDir, "clip-portrait.mp4"), Path.Combine(videos, "custom-Y70-bg-2.mp4"));
+        File.WriteAllBytes(Path.Combine(videos, "custom-Y70-bg-2.static.webp"), new byte[] { 1 });
+        File.WriteAllBytes(Path.Combine(videos, "custom-Y70-bg-3.mkv"), new byte[] { 1 });
+        File.WriteAllBytes(Path.Combine(images, "custom-Y70-bg-4.gif"), Convert.FromBase64String(TransparentGifBase64));
+        UseNexus2Tree(shown);
+        var y70 = Panels.Allocate(null, new PanelDeviceCapabilities { Surface = PanelSurfaces.Y70 });
+
+        var result = await ApplyAppearance();
+        Assert.Equal("applied", result.GetProperty("status").GetString());
+        Assert.False(result.TryGetProperty("detail", out _));
+
+        // Nexus 2's picker order: name-descending.
+        Assert.Equal(
+            new[] { "custom-Y70-bg-4.gif", "custom-Y70-bg-2.mp4", "custom-Y70-bg-1.mp4" },
+            BgLibrary.ListItems(y70.Id).Select(i => i.Name));
+        Assert.Equal("custom-Y70-bg-1.mp4", BgLibrary.GetItem(y70.Id, Panels.Get(y70.Id)!.BackgroundMediaId!)!.Name);
+
+        await ApplyAppearance();
+        Assert.Equal(3, BgLibrary.ListItems(y70.Id).Count);
     }
 
     [Nexus.Service.Tests.FfmpegFact]

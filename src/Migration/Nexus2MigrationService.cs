@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
+using System.Linq;
 using System.Text.Json;
 using System.Threading.Tasks;
 using Microsoft.Extensions.DependencyInjection;
@@ -256,6 +257,12 @@ public sealed class Nexus2MigrationService
             WidgetOpacity = appearance.WidgetOpacity,
         };
         string? detail = null;
+        // Uploads first, so the shown one lands at its name position in the library and is then reused.
+        var (uploadsImported, uploadsComplete) = await ImportY70UploadsAsync(configDir, y70Record.Id);
+        if (!uploadsComplete)
+        {
+            detail = "background-not-imported";
+        }
         if (appearance.Background != Nexus2Y70BackgroundSource.None)
         {
             var item = await ImportY70BackgroundAsync(appearance, configDir, y70Record);
@@ -279,7 +286,7 @@ public sealed class Nexus2MigrationService
         {
             patch.Backdrop = "desktop";
         }
-        if (patch.AccentColor is null && patch.WidgetOpacity is null && patch.BackgroundMediaId is null && patch.Backdrop is null)
+        if (patch.AccentColor is null && patch.WidgetOpacity is null && patch.BackgroundMediaId is null && patch.Backdrop is null && uploadsImported == 0)
         {
             return Skip(id, detail ?? "nothing-to-apply");
         }
@@ -362,6 +369,78 @@ public sealed class Nexus2MigrationService
         {
             TryDelete(tempPath);
         }
+    }
+
+    /// <summary>Adds every upload Nexus 2's Y70 background picker lists, not only the shown one.</summary>
+    private async Task<(int Imported, bool Complete)> ImportY70UploadsAsync(string configDir, string deviceId)
+    {
+        var uploads = Y70Uploads(configDir);
+        if (uploads.Count == 0)
+        {
+            return (0, true);
+        }
+        if (FfmpegResolver.Path is null)
+        {
+            return (0, false);
+        }
+        var imported = 0;
+        var complete = true;
+        foreach (var source in uploads)
+        {
+            var name = Path.GetFileName(source);
+            if (FindImported(deviceId, name, still: false, FileLength(source)) is not null)
+            {
+                continue;
+            }
+            var tempPath = Path.Combine(Path.GetTempPath(), $"nexus2-bg-{Guid.NewGuid():N}{Path.GetExtension(name)}");
+            try
+            {
+                Nexus2ReadOnlyIo.CopyTo(source, tempPath);
+                if ((await PanelBgImporter.ImportAsIsAsync(_bgLibrary, deviceId, tempPath, name)).Item is not null)
+                {
+                    imported++;
+                }
+                else
+                {
+                    complete = false;
+                }
+            }
+            catch (Exception ex)
+            {
+                Console.Error.WriteLine($"[nexus2] Y70 upload import failed: {ex.Message}");
+                complete = false;
+            }
+            finally
+            {
+                TryDelete(tempPath);
+            }
+        }
+        return (imported, complete);
+    }
+
+    /// <summary>The folders Nexus 2's Y70 background picker reads, minus the *.static.webp stills it keeps beside videos.</summary>
+    private static List<string> Y70Uploads(string configDir)
+    {
+        var files = new List<string>();
+        foreach (var kind in new[] { "media", "images" })
+        {
+            var dir = Path.Combine(configDir, "user-media", kind, "custom-Y70-bg");
+            try
+            {
+                if (Directory.Exists(dir))
+                {
+                    files.AddRange(Directory.EnumerateFiles(dir)
+                        .Where(f => !f.EndsWith(".static.webp", StringComparison.OrdinalIgnoreCase) && Nexus2Y70Translator.IsShowableFile(f)));
+                }
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+            {
+                Console.Error.WriteLine($"[nexus2] Y70 uploads unreadable: {ex.Message}");
+            }
+        }
+        // Ascending by name: the library lists newest first, which is the picker's name-descending order.
+        files.Sort((a, b) => StringComparer.OrdinalIgnoreCase.Compare(Path.GetFileName(a), Path.GetFileName(b)));
+        return files;
     }
 
     // The Y70 kiosk's CSS box, used when the record has not reported its own yet.

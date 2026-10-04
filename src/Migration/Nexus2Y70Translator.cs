@@ -149,6 +149,10 @@ internal static class Nexus2Y70Translator
         return result;
     }
 
+    /// <summary>A file Nexus 2 can show as the Y70 background.</summary>
+    public static bool IsShowableFile(string path) =>
+        (HasExtension(path, VideoExtensions) || HasExtension(path, ImageExtensions)) && !HasExtension(path, UnplayableVideoExtensions);
+
     private static bool HasExtension(string path, string[] extensions) =>
         Array.Exists(extensions, e => path.EndsWith(e, StringComparison.OrdinalIgnoreCase));
 
