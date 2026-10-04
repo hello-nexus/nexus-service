@@ -4,8 +4,8 @@ using Nexus.Service.Lighting.Scene;
 
 namespace Nexus.Service.Tests.Lighting.Scene;
 
-// Canvas is the engine's 160x90 over the 1000x600 logical space; the paint is a
-// left-to-right red ramp, so an LED's red channel reads back where it sampled.
+// The paint is a left-to-right red ramp and a top-to-bottom green ramp, so an
+// LED's colour reads back where on the canvas it sampled.
 public class SceneSamplingTests
 {
     private sealed class PaintEffect : IEffect
@@ -47,11 +47,11 @@ public class SceneSamplingTests
     private static byte Red(byte[] leds, int i) => leds[i * 3];
     private static byte Green(byte[] leds, int i) => leds[i * 3 + 1];
 
-    // Looking straight down -Z at the origin from a metre away.
+    // Looking straight down -Z at the origin.
     private static SceneCameraBasis FrontCamera() =>
         new(new Vector3(0, 0, 1000), Vector3.Zero, 40, 1000, 600);
 
-    // A 400 mm wide strip facing the camera, u running to +X.
+    // A strip facing the camera, u running to +X.
     private static SceneQuad Strip(float centerX = 0) =>
         new(new Vector3(centerX, 0, 0), new Vector3(400, 0, 0), new Vector3(0, -40, 0));
 
@@ -103,7 +103,7 @@ public class SceneSamplingTests
     [Fact]
     public async Task Several_targets_split_the_leds_into_runs_per_surface()
     {
-        // 8 LEDs over two strips well apart: the first run lands on the left one.
+        // Two strips well apart: the first run of LEDs lands on the left one.
         var leds = await RenderOnce(new DeviceFrame(0, "chain", 8), Placed("chain", Strip(-250), Strip(250)));
         var leftMax = Enumerable.Range(0, 4).Max(i => Red(leds, i));
         var rightMin = Enumerable.Range(4, 4).Min(i => Red(leds, i));
@@ -155,6 +155,25 @@ public class SceneSamplingTests
         var unplaced = await RenderOnce(new DeviceFrame(0, "u", 5, x: 100, y: 100, w: 200, h: 40), Placed("s", quad), fullFrame: true);
         var baseline = await RenderOnce(new DeviceFrame(0, "u", 5, x: 100, y: 100, w: 200, h: 40), null, fullFrame: true);
         Assert.Equal(baseline, unplaced);
+    }
+
+    [Fact]
+    public async Task Disabled_leds_do_not_stretch_a_split_run()
+    {
+        // The stray disabled LED sits far off at u = 0; the run must still span its two live LEDs.
+        var frame = new DeviceFrame(0, "pair", 6)
+        {
+            LedU = [0.5f, 0.7f, 0f, 0.1f, 0.3f, 1f],
+            LedV = [0.5f, 0.5f, 0.5f, 0.5f, 0.5f, 0.5f],
+            LedDisabled = [false, false, true, false, false, false],
+        };
+        var cam = FrontCamera();
+        var left = Strip(-250);
+        var leds = await RenderOnce(frame, Placed("pair", left, Strip(250)));
+
+        Assert.True(cam.Project(left.At(0, 0.5f), out var l0, out _));
+        Assert.Equal((byte)((int)(l0 * 160 / 1000f) * 255 / 159), Red(leds, 0));
+        Assert.Equal(0, Red(leds, 2));
     }
 
     [Fact]

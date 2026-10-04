@@ -64,6 +64,10 @@ public sealed class LightingEngine : IDisposable
     private int _frozenRenderedEpoch = -1;
     private byte[] _frameBuffer = Array.Empty<byte>();
 
+    /// <summary>Logical canvas size that device frames and the 3D scene camera are laid out in.</summary>
+    public const float CanvasUnitsW = 1000f;
+    public const float CanvasUnitsH = 600f;
+
     public LightingEngine()
     {
         _canvas = new CanvasBuffer(160, 90);
@@ -837,7 +841,7 @@ public sealed class LightingEngine : IDisposable
     {
         var cw = _sampleCanvas.Width;
         var ch = _sampleCanvas.Height;
-        const float CW = 1000f, CH = 600f;
+        const float CW = CanvasUnitsW, CH = CanvasUnitsH;
         // Overlays first, so an LED they own never gets a canvas colour it is
         // about to lose. Correctness no longer rests on this - DeviceFrame
         // publishes once per tick - but painting an LED twice is wasted work.
@@ -1049,17 +1053,6 @@ public sealed class LightingEngine : IDisposable
     }
 
     /// <summary>
-    /// LED FOOTPRINT SAMPLING (gated by <see cref="FootprintSamplingEnabled"/>):
-    /// samples the LED's cell of the canvas instead of a single point, so sparse
-    /// content (music-reactive bars, isolated lit pixels) registers wherever it
-    /// lands inside the frame. Samples are weighted by max-channel luminance
-    /// squared: lit pixels dominate dark filler, an all-dark cell stays black,
-    /// and hue is preserved (a per-channel max would mix channels from different
-    /// pixels). Reads every canvas pixel in the cell; cells tile the frame
-    /// (linear) or partition it by LED density (UV), so per-device cost is
-    /// bounded by the frame's canvas-pixel area per rendered frame.
-    /// </summary>
-    /// <summary>
     /// Samples a device placed in the 3D scene: each LED's map point is laid on
     /// its surface, projected through the scene camera, and read there. A device
     /// with several surfaces splits its LEDs into equal runs, each run's map
@@ -1090,6 +1083,10 @@ public sealed class LightingEngine : IDisposable
                 v0 = float.MaxValue;
                 for (var i = lo; i < hi; i++)
                 {
+                    if (disabled is not null && i < disabled.Length && disabled[i])
+                    {
+                        continue;
+                    }
                     u0 = MathF.Min(u0, ledU![i]);
                     u1 = MathF.Max(u1, ledU[i]);
                     v0 = MathF.Min(v0, ledV![i]);
@@ -1112,8 +1109,9 @@ public sealed class LightingEngine : IDisposable
                     maxY = MathF.Max(maxY, py);
                 }
             }
-            var boxW = maxX > minX ? maxX - minX : 1f / kx;
-            var boxH = maxY > minY ? maxY - minY : 1f / ky;
+            // A surface just past the near plane can project far wider than the canvas; the cell never needs more.
+            var boxW = maxX > minX ? MathF.Min(maxX - minX, CanvasUnitsW) : 1f / kx;
+            var boxH = maxY > minY ? MathF.Min(maxY - minY, CanvasUnitsH) : 1f / ky;
             var cols = Math.Max(1, (int)MathF.Round(MathF.Sqrt(count * boxW / boxH)));
             var rows = Math.Max(1, (count + cols - 1) / cols);
             var halfW = Math.Max(1f / kx, boxW / cols) * 0.5f * kx;
@@ -1152,6 +1150,17 @@ public sealed class LightingEngine : IDisposable
         }
     }
 
+    /// <summary>
+    /// LED FOOTPRINT SAMPLING (gated by <see cref="FootprintSamplingEnabled"/>):
+    /// samples the LED's cell of the canvas instead of a single point, so sparse
+    /// content (music-reactive bars, isolated lit pixels) registers wherever it
+    /// lands inside the frame. Samples are weighted by max-channel luminance
+    /// squared: lit pixels dominate dark filler, an all-dark cell stays black,
+    /// and hue is preserved (a per-channel max would mix channels from different
+    /// pixels). Reads every canvas pixel in the cell; cells tile the frame
+    /// (linear) or partition it by LED density (UV), so per-device cost is
+    /// bounded by the frame's canvas-pixel area per rendered frame.
+    /// </summary>
     private (byte r, byte g, byte b) SampleLedFootprint(float x0, float y0, float x1, float y1)
     {
         var ix0 = Math.Clamp((int)MathF.Floor(x0), 0, _sampleCanvas.Width - 1);

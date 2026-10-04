@@ -1,7 +1,10 @@
 using System;
 using System.Collections.Generic;
+using System.Text.Json;
+using System.Threading.Tasks;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
+using Microsoft.AspNetCore.Http.Features;
 using Nexus.Service.Lighting.Scene;
 using Nexus.Service.Models;
 using Nexus.Service.Models.Lighting;
@@ -13,6 +16,12 @@ namespace Nexus.Service.Routes;
 /// <summary>The 3D lighting scene. Desktop-token only: it is machine config, edited from the dashboard.</summary>
 public static class LightingSceneRoutes
 {
+    // An import body is the base64 model plus its objects; anything past this is refused while it streams in.
+    private const long MaxImportBodyBytes = SceneValidation.MaxModelBytes / 3 * 4 + 4 * 1024 * 1024;
+
+    // Every read-modify-write of the scene (an editor save racing a Build import) runs under this.
+    private static readonly object SceneWriteLock = new();
+
     public static void MapLightingSceneEndpoints(this WebApplication app)
     {
         app.MapGet("/lighting/scene", (LightingSceneStore store, IConfigStore config) =>
@@ -24,20 +33,42 @@ public static class LightingSceneRoutes
             {
                 return Fail(error);
             }
-            var doc = store.Load();
-            doc.Objects = body.Objects;
-            doc.Bindings = body.Bindings;
-            // The model belongs to the imported case; an editor save cannot claim it for another object.
-            foreach (var o in doc.Objects)
+            LightingSceneDoc doc;
+            lock (SceneWriteLock)
             {
-                o.HasModel = doc.ModelRev is not null && o.Source == "build" && o.Kind == "case";
+                doc = store.Load();
+                doc.Objects = body.Objects;
+                doc.Bindings = body.Bindings;
+                // The model belongs to the imported case; an editor save cannot claim it for another object.
+                foreach (var o in doc.Objects)
+                {
+                    o.HasModel = doc.ModelRev is not null && o.Source == "build" && o.Kind == "case";
+                }
+                store.Save(doc);
             }
-            store.Save(doc);
             return Results.Json(ToResponse(doc, config.Load().Lighting.SceneView), AppJsonContext.Default.LightingSceneResponse);
         });
 
-        app.MapPut("/lighting/scene/import", (ImportLightingSceneBody body, LightingSceneStore store, IConfigStore config) =>
+        app.MapPut("/lighting/scene/import", async (HttpContext ctx, LightingSceneStore store, IConfigStore config) =>
         {
+            var bodySize = ctx.Features.Get<IHttpMaxRequestBodySizeFeature>();
+            if (bodySize is { IsReadOnly: false })
+            {
+                bodySize.MaxRequestBodySize = MaxImportBodyBytes;
+            }
+            ImportLightingSceneBody? body;
+            try
+            {
+                body = await JsonSerializer.DeserializeAsync(ctx.Request.Body, AppJsonContext.Default.ImportLightingSceneBody, ctx.RequestAborted);
+            }
+            catch (Exception e) when (e is JsonException or BadHttpRequestException)
+            {
+                return Fail("import body is malformed or over the size cap");
+            }
+            if (body is null)
+            {
+                return Fail("import body is required");
+            }
             if (body.CaseId is not null && !SceneValidation.IsValidId(body.CaseId))
             {
                 return Fail("caseId must be a catalog part id");
@@ -45,10 +76,6 @@ public static class LightingSceneRoutes
             byte[]? model = null;
             if (body.ModelBase64 is { } b64)
             {
-                if (b64.Length > SceneValidation.MaxModelBytes / 3 * 4 + 4)
-                {
-                    return Fail("model is over the size cap");
-                }
                 try
                 {
                     model = Convert.FromBase64String(b64);
@@ -63,24 +90,31 @@ public static class LightingSceneRoutes
                 }
             }
 
-            var doc = store.Load();
-            var merged = SceneImport.Merge(doc, body.Objects ?? new List<SceneObject>(), model is not null);
-            if (SceneValidation.Validate(merged.Objects, merged.Bindings) is { } error)
+            LightingSceneDoc merged;
+            lock (SceneWriteLock)
             {
-                return Fail(error);
+                merged = SceneImport.Merge(store.Load(), body.Objects ?? new List<SceneObject>(), model is not null);
+                if (SceneValidation.Validate(merged.Objects, merged.Bindings) is { } error)
+                {
+                    return Fail(error);
+                }
+                merged.CaseId = body.CaseId;
+                merged.ModelRev = store.SaveModel(model);
+                store.Save(merged);
             }
-            merged.CaseId = body.CaseId;
-            merged.ModelRev = store.SaveModel(model);
-            store.Save(merged);
             return Results.Json(ToResponse(merged, config.Load().Lighting.SceneView), AppJsonContext.Default.LightingSceneResponse);
         });
 
         app.MapDelete("/lighting/scene/import", (LightingSceneStore store, IConfigStore config) =>
         {
-            var doc = SceneImport.Merge(store.Load(), new List<SceneObject>(), hasModel: false);
-            doc.CaseId = null;
-            doc.ModelRev = store.SaveModel(null);
-            store.Save(doc);
+            LightingSceneDoc doc;
+            lock (SceneWriteLock)
+            {
+                doc = SceneImport.Merge(store.Load(), new List<SceneObject>(), hasModel: false);
+                doc.CaseId = null;
+                doc.ModelRev = store.SaveModel(null);
+                store.Save(doc);
+            }
             return Results.Json(ToResponse(doc, config.Load().Lighting.SceneView), AppJsonContext.Default.LightingSceneResponse);
         });
 
@@ -104,12 +138,12 @@ public static class LightingSceneRoutes
                 {
                     return Fail("a draft needs a camera");
                 }
-                scene.SetDraftCamera(body.Camera);
-                return Results.Json(ApiResponse.Ok(), AppJsonContext.Default.ApiResponse);
+                scene.SetDraftCamera(body.Camera, body.Seq);
+                return Results.Json(config.Load().Lighting.SceneView ?? new SceneView(), AppJsonContext.Default.SceneView);
             }
             config.Update(s =>
             {
-                var current = s.Lighting.SceneView;
+                var current = s.Lighting.SceneView ?? new SceneView();
                 s.Lighting.SceneView = new SceneView
                 {
                     Enabled = body.Enabled ?? current.Enabled,
@@ -117,16 +151,16 @@ public static class LightingSceneRoutes
                 };
             });
             // A commit that changes nothing still ends the drag that drafted it.
-            scene.ClearDraft();
+            scene.ClearDraft(body.Seq);
             return Results.Json(config.Load().Lighting.SceneView, AppJsonContext.Default.SceneView);
         });
     }
 
-    private static LightingSceneResponse ToResponse(LightingSceneDoc doc, SceneView view) => new()
+    private static LightingSceneResponse ToResponse(LightingSceneDoc doc, SceneView? view) => new()
     {
         Objects = doc.Objects,
         Bindings = doc.Bindings,
-        View = view,
+        View = view ?? new SceneView(),
         ModelRev = doc.ModelRev,
         CaseId = doc.CaseId,
     };

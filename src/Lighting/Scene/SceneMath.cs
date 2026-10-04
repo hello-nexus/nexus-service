@@ -39,15 +39,15 @@ public readonly struct SceneCameraBasis
         Aspect = canvasW / canvasH;
         Focal = 1f / MathF.Tan(Math.Clamp(fovDegrees, 1f, 170f) * (MathF.PI / 360f));
         var forward = target - position;
-        if (forward.LengthSquared() < 1e-12f)
+        if (forward.LengthSquared() == 0f)
         {
             forward = -Vector3.UnitZ;
         }
         forward = Vector3.Normalize(forward);
         var right = Vector3.Cross(forward, Vector3.UnitY);
-        if (right.LengthSquared() < 1e-12f)
+        if (right.LengthSquared() == 0f)
         {
-            // Straight up or down: three.js nudges the view axis off +Y the same way.
+            // Exactly straight up or down: three.js nudges the view axis off +Y the same way, at the same threshold.
             var z = -forward;
             z.Z += 0.0001f;
             forward = -Vector3.Normalize(z);

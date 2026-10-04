@@ -44,6 +44,20 @@ public class SceneImportTests
     }
 
     [Fact]
+    public void A_generic_case_added_next_to_a_build_case_survives_the_next_import()
+    {
+        var doc = new LightingSceneDoc
+        {
+            Objects = { Case("case", "build", "fan:front:120:0"), Case("generic-case", "user", "fan:front:120:0") },
+            Bindings = { Bind("fan-1", "generic-case", "fan:front:120:0") },
+        };
+        var merged = SceneImport.Merge(doc, [Case("case", "build", "fan:front:120:0")], hasModel: true);
+
+        Assert.Contains(merged.Objects, o => o.Id == "generic-case");
+        Assert.Equal("generic-case", merged.Bindings.Single().Targets[0].ObjectId);
+    }
+
+    [Fact]
     public void Import_without_a_case_leaves_a_generic_case_alone()
     {
         var doc = new LightingSceneDoc { Objects = { Case("generic-case", "user", "fan:front:120:0") }, Bindings = { Bind("fan-1", "generic-case", "fan:front:120:0") } };

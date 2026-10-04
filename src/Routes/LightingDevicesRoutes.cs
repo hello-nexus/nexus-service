@@ -281,11 +281,12 @@ public static partial class DevicesRoutes
         return copy;
     }
 
-    internal static Nexus.Service.Persistence.SceneView CopySceneView(Nexus.Service.Persistence.SceneView view) => new()
+    // Null-safe: a shared or hand-edited profile can carry a null view or camera arrays.
+    internal static Nexus.Service.Persistence.SceneView CopySceneView(Nexus.Service.Persistence.SceneView? view) => new()
     {
-        Enabled = view.Enabled,
-        Camera = view.Camera is { } c
-            ? new Nexus.Service.Persistence.SceneCamera { Position = (float[])c.Position.Clone(), Target = (float[])c.Target.Clone(), Fov = c.Fov }
+        Enabled = view?.Enabled ?? false,
+        Camera = view?.Camera is { } c
+            ? new Nexus.Service.Persistence.SceneCamera { Position = (float[]?)c.Position?.Clone() ?? [0f, 0f, 0f], Target = (float[]?)c.Target?.Clone() ?? [0f, 0f, 0f], Fov = c.Fov }
             : null,
     };
 

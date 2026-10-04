@@ -99,13 +99,29 @@ public sealed class LightingSceneStore
             {
                 return new LightingSceneDoc();
             }
-            return JsonSerializer.Deserialize(json, PersistenceJsonContext.Default.LightingSceneDoc) ?? new LightingSceneDoc();
+            return Normalize(JsonSerializer.Deserialize(json, PersistenceJsonContext.Default.LightingSceneDoc) ?? new LightingSceneDoc());
         }
         catch (Exception ex)
         {
             Console.Error.WriteLine($"[lighting-scene] load failed: {ex.GetType().Name}: {ex.Message}");
             return new LightingSceneDoc();
         }
+    }
+
+    // A hand-edited or truncated file can carry nulls where the model expects lists.
+    private static LightingSceneDoc Normalize(LightingSceneDoc doc)
+    {
+        doc.Objects = (doc.Objects ?? new()).FindAll(o => o is not null);
+        foreach (var o in doc.Objects)
+        {
+            o.Anchors = (o.Anchors ?? new()).FindAll(a => a is not null);
+        }
+        doc.Bindings = (doc.Bindings ?? new()).FindAll(b => b is not null);
+        foreach (var b in doc.Bindings)
+        {
+            b.Targets = (b.Targets ?? new()).FindAll(t => t is not null);
+        }
+        return doc;
     }
 
     private void WriteUnlocked(LightingSceneDoc doc)

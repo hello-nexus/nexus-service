@@ -15,14 +15,14 @@ namespace Nexus.Service.Lighting.Scene;
 /// </summary>
 public sealed class LightingSceneService : IHostedService
 {
-    public const float CanvasW = 1000f;
-    public const float CanvasH = 600f;
-
     private readonly IConfigStore _config;
     private readonly LightingSceneStore _store;
     private readonly LightingEngine _engine;
     private readonly object _lock = new();
     private SceneCamera? _draft;
+    // Drafts and commits from one editor stream over separate requests; a draft
+    // numbered at or below the last commit arrived late and is dropped.
+    private long _lastCommitSeq = long.MinValue;
     private string _appliedViewSig = "";
 
     public LightingSceneService(IConfigStore config, LightingSceneStore store, LightingEngine engine)
@@ -47,21 +47,31 @@ public sealed class LightingSceneService : IHostedService
         return Task.CompletedTask;
     }
 
-    /// <summary>Points the engine at a camera without persisting it; the next committed view clears it.</summary>
-    public void SetDraftCamera(SceneCamera camera)
+    /// <summary>Points the engine at a camera without persisting it; false when the draft came in after a newer commit.</summary>
+    public bool SetDraftCamera(SceneCamera camera, long? seq = null)
     {
         lock (_lock)
         {
+            if (seq is { } s && s <= _lastCommitSeq)
+            {
+                return false;
+            }
             _draft = camera;
         }
         Apply();
+        return true;
     }
 
-    public void ClearDraft()
+    /// <summary>Ends any draft; a numbered commit also refuses drafts numbered at or below it.</summary>
+    public void ClearDraft(long? seq = null)
     {
         lock (_lock)
         {
             _draft = null;
+            if (seq is { } s && s > _lastCommitSeq)
+            {
+                _lastCommitSeq = s;
+            }
         }
         Apply();
     }
@@ -71,30 +81,39 @@ public sealed class LightingSceneService : IHostedService
     {
         lock (_lock)
         {
-            var saved = _config.Load().Lighting.SceneView;
-            _appliedViewSig = Signature(saved);
-            var view = _draft is null || !saved.Enabled
-                ? saved
-                : new SceneView { Enabled = true, Camera = _draft };
-            var camera = SceneMath.Camera(view, CanvasW, CanvasH);
-            if (camera is null)
+            try
             {
-                _engine.SetScene(null);
-                return;
+                var saved = _config.Load().Lighting.SceneView ?? new SceneView();
+                _appliedViewSig = Signature(saved);
+                var view = _draft is null || !saved.Enabled
+                    ? saved
+                    : new SceneView { Enabled = true, Camera = _draft };
+                // A view read from a shared or hand-edited profile is not trusted to be well formed.
+                var camera = SceneValidation.ValidateCamera(view.Camera) is null
+                    ? SceneMath.Camera(view, LightingEngine.CanvasUnitsW, LightingEngine.CanvasUnitsH)
+                    : null;
+                if (camera is null)
+                {
+                    _engine.SetScene(null);
+                    return;
+                }
+                var placements = SceneMath.Placements(_store.Load());
+                _engine.SetScene(placements.Count == 0 ? null : new SceneProjection(camera.Value, placements));
             }
-            var placements = SceneMath.Placements(_store.Load());
-            _engine.SetScene(placements.Count == 0 ? null : new SceneProjection(camera.Value, placements));
+            catch (Exception ex)
+            {
+                Console.Error.WriteLine($"[lighting-scene] apply failed: {ex.GetType().Name}: {ex.Message}");
+                _engine.SetScene(null);
+            }
         }
     }
 
     // Every settings write lands here; only a change to the view needs a rebuild.
     private void OnConfigChanged()
     {
-        string sig;
         lock (_lock)
         {
-            sig = Signature(_config.Load().Lighting.SceneView);
-            if (sig == _appliedViewSig)
+            if (Signature(_config.Load().Lighting.SceneView) == _appliedViewSig)
             {
                 return;
             }
@@ -103,13 +122,13 @@ public sealed class LightingSceneService : IHostedService
         Apply();
     }
 
-    private static string Signature(SceneView v)
+    private static string Signature(SceneView? v)
     {
-        if (v.Camera is not { } c)
+        if (v?.Camera is not { } c)
         {
-            return v.Enabled ? "on" : "off";
+            return v?.Enabled == true ? "on" : "off";
         }
         return FormattableString.Invariant(
-            $"{v.Enabled}|{string.Join(',', c.Position)}|{string.Join(',', c.Target)}|{c.Fov}");
+            $"{v.Enabled}|{string.Join(',', c.Position ?? [])}|{string.Join(',', c.Target ?? [])}|{c.Fov}");
     }
 }

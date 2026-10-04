@@ -200,6 +200,35 @@ public sealed class LightingSceneRoutesTests : IClassFixture<LightingSceneAppFac
         Assert.Equal(0f, Engine.Scene!.Camera.Position.X);
     }
 
+    [Fact]
+    public async Task A_draft_that_lands_after_its_commit_is_dropped()
+    {
+        var client = Desktop();
+        await client.PutAsync("/lighting/scene", Json(SceneBody(Keyboard, KeyboardBinding)));
+        await client.PutAsync("/lighting/scene/view", Json($$"""{"enabled":true,"camera":{{FrontCamera}},"seq":10}"""));
+
+        await client.PutAsync("/lighting/scene/view", Json("""{"draft":true,"seq":9,"camera":{"position":[900,300,0],"target":[0,0,0],"fov":30}}"""));
+        Assert.Equal(0f, Engine.Scene!.Camera.Position.X);
+
+        await client.PutAsync("/lighting/scene/view", Json("""{"draft":true,"seq":11,"camera":{"position":[900,300,0],"target":[0,0,0],"fov":30}}"""));
+        Assert.Equal(900f, Engine.Scene!.Camera.Position.X);
+    }
+
+    [Fact]
+    public async Task A_malformed_view_or_scene_file_never_breaks_the_service()
+    {
+        // A shared profile can carry a null view; a hand-edited scene file can carry null lists.
+        Config.Update(s => s.Lighting.SceneView = null!);
+        File.WriteAllText(Path.Combine(_factory.SceneDir, "lighting-scene.json"), """{"objects":[{"id":"kb","kind":"keyboard","anchors":null}],"bindings":[{"deviceId":"d","targets":null}]}""");
+        Scene.Save(Scene.Load());
+
+        var res = await Desktop().GetAsync("/lighting/scene");
+        Assert.Equal(HttpStatusCode.OK, res.StatusCode);
+        Assert.Null(Engine.Scene);
+        var preset = await Desktop().PostAsync("/devices/lighting-devices/layout-presets", Json("""{"name":"P"}"""));
+        Assert.Equal(HttpStatusCode.OK, preset.StatusCode);
+    }
+
     [Theory]
     [InlineData("""{"draft":true}""")]
     [InlineData("""{"camera":{"position":[0,0,0],"target":[0,0,0],"fov":200}}""")]
