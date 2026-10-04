@@ -13,6 +13,7 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
 using Nexus.Service.Auth;
 using Nexus.Service.Gallery;
+using Nexus.Service.Media;
 using Nexus.Service.Migration;
 using Nexus.Service.Models.Displays;
 using Nexus.Service.Models.Panel;
@@ -285,6 +286,72 @@ public sealed class Nexus2MigrationServiceTests : IDisposable
         var updated = Panels.Get(q60.Id)!;
         Assert.Equal("animated", updated.BackgroundMediaType);
         Assert.True(updated.BackgroundMediaAlpha);
+    }
+
+    /// <summary>Points the reader at a Q-Series user-media folder holding the fixture's shown sunset.jpg plus two more uploads.</summary>
+    private void UseQ60Uploads(bool playlist)
+    {
+        var configDir = Path.Combine(_tempDir, "nexus2-q60");
+        var userMedia = Path.Combine(configDir, "q60", "web", "user-media");
+        Directory.CreateDirectory(userMedia);
+        File.Copy(Path.Combine(FixtureDir, "q60", "web", "user-media", "sunset.jpg"), Path.Combine(userMedia, "sunset.jpg"));
+        File.Copy(Path.Combine(FixtureDir, "clip-portrait.mp4"), Path.Combine(userMedia, "a-clip.mp4"));
+        File.WriteAllBytes(Path.Combine(userMedia, "b-alpha.gif"), Convert.FromBase64String(TransparentGifBase64));
+        var reader = (Nexus.Service.Tests.Migration.FakeNexus2ConfigReader)
+            _factory.Services.GetRequiredService<INexus2ConfigReader>();
+        if (playlist)
+        {
+            reader.ConfigText = reader.ConfigText!.Replace("\"playlistMode\": false", "\"playlistMode\": true");
+        }
+        reader.ConfigDir = configDir;
+    }
+
+    [Nexus.Service.Tests.FfmpegFact]
+    public async Task Apply_Wallpaper_ImportsEveryQSeriesUploadAndKeepsTheShownOneActive()
+    {
+        UseQ60Uploads(playlist: false);
+        var q60 = Panels.Allocate(null, new PanelDeviceCapabilities { Surface = PanelSurfaces.Q60 });
+        // An earlier import committed the shown wallpaper under its staged name.
+        var legacySource = Path.Combine(_tempDir, "sunset.jpg");
+        File.Copy(Path.Combine(FixtureDir, "q60", "web", "user-media", "sunset.jpg"), legacySource);
+        var legacyStage = await PanelBgImporter.StageAsync(BgLibrary, q60.Id, legacySource, "sunset.jpg");
+        var legacy = (await PanelBgImporter.CommitAsync(BgLibrary, q60.Id, legacyStage.StageId!, new CropRect(0, 0, 1, 1), 720, 1280)).Item!;
+        Assert.NotEqual("sunset.jpg", legacy.Name);
+        using (var preview = JsonDocument.Parse(await (await _client.PostAsync("/migration/nexus2/preview", null)).Content.ReadAsStringAsync()))
+        {
+            var wallpapers = preview.RootElement.GetProperty("categories").EnumerateArray().First(c => c.GetProperty("id").GetString() == "wallpapers");
+            Assert.Equal(3, wallpapers.GetProperty("count").GetInt32());
+        }
+
+        var res = await PostApply(new[] { "wallpapers" }, false);
+        using var doc = JsonDocument.Parse(await res.Content.ReadAsStringAsync());
+        Assert.Equal("applied", doc.RootElement.GetProperty("results")[0].GetProperty("status").GetString());
+
+        Assert.Equal(new[] { "a-clip.mp4", "b-alpha.gif", legacy.Name }.Order(StringComparer.Ordinal), BgLibrary.ListItems(q60.Id).Select(i => i.Name).Order(StringComparer.Ordinal));
+        var updated = Panels.Get(q60.Id)!;
+        Assert.Equal(legacy.Id, updated.BackgroundMediaId);
+        Assert.False(updated.BackgroundMediaSlideshow);
+
+        await PostApply(new[] { "wallpapers" }, false);
+        Assert.Equal(3, BgLibrary.ListItems(q60.Id).Count);
+    }
+
+    [Nexus.Service.Tests.FfmpegFact]
+    public async Task Apply_Wallpaper_PlaylistModeBecomesASlideshowOpeningOnTheFirstUpload()
+    {
+        UseQ60Uploads(playlist: true);
+        var q60 = Panels.Allocate(null, new PanelDeviceCapabilities { Surface = PanelSurfaces.Q60 });
+        Panels.Patch(q60.Id, new PanelDevicePatch { BackgroundMediaShuffle = true, BackgroundMediaOrder = new List<string> { "kept-from-before" } });
+
+        await PostApply(new[] { "wallpapers" }, false);
+
+        var updated = Panels.Get(q60.Id)!;
+        Assert.True(updated.BackgroundMediaSlideshow);
+        Assert.Equal(5, updated.BackgroundMediaInterval);
+        Assert.False(updated.BackgroundMediaShuffle);
+        Assert.Equal(new[] { "a-clip.mp4", "b-alpha.gif", "sunset.jpg" },
+            updated.BackgroundMediaOrder!.Select(id => BgLibrary.GetItem(q60.Id, id)!.Name));
+        Assert.Equal("a-clip.mp4", BgLibrary.GetItem(q60.Id, updated.BackgroundMediaId!)!.Name);
     }
 
     private PanelBgLibrary BgLibrary => _factory.Services.GetRequiredService<PanelBgLibrary>();

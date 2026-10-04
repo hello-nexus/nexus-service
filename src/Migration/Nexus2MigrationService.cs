@@ -131,8 +131,9 @@ public sealed class Nexus2MigrationService
             return cat;
         }
         var wallpaper = Nexus2Q60Translator.TranslateWallpaper(qs, configDir, File.Exists);
-        cat.Available = wallpaper.Available;
-        cat.Count = wallpaper.Available ? 1 : 0;
+        var uploads = Q60Uploads(configDir);
+        cat.Count = uploads.Count + (wallpaper.Available && !uploads.Contains(wallpaper.AbsolutePath!, StringComparer.OrdinalIgnoreCase) ? 1 : 0);
+        cat.Available = cat.Count > 0;
         return cat;
     }
 
@@ -646,7 +647,8 @@ public sealed class Nexus2MigrationService
             return Skip(id, "no-q60-record");
         }
         var wallpaper = Nexus2Q60Translator.TranslateWallpaper(qs, configDir, File.Exists);
-        if (!wallpaper.Available || wallpaper.AbsolutePath is null || wallpaper.FileName is null)
+        var uploads = Q60Uploads(configDir);
+        if (!wallpaper.Available && uploads.Count == 0)
         {
             return Skip(id, "no-wallpaper");
         }
@@ -655,41 +657,121 @@ public sealed class Nexus2MigrationService
             return Fail(id, "ffmpeg-missing");
         }
 
-        var tempPath = Path.Combine(Path.GetTempPath(), $"nexus2-wallpaper-{Guid.NewGuid():N}{Path.GetExtension(wallpaper.FileName)}");
-        try
+        // Nexus 2's Q-Series picker and playlist both list every upload, not only the shown one.
+        string? firstError = null;
+        var uploaded = new List<PanelBgItem>();
+        foreach (var path in uploads)
         {
-            // The source file lives under Nexus 2's own directory and must
-            // never be moved/deleted; copy before StageAsync, which moves
-            // whatever path it is given into its own staging area.
-            File.Copy(wallpaper.AbsolutePath, tempPath, overwrite: true);
-            var stage = await PanelBgImporter.StageAsync(_bgLibrary, q60Record.Id, tempPath, wallpaper.FileName);
-            if (!stage.Ok || stage.StageId is null)
+            var (item, error) = await ImportQ60WallpaperAsync(path, q60Record.Id);
+            if (item is not null)
             {
-                return Fail(id, "stage-failed");
+                uploaded.Add(item);
             }
+            firstError ??= error;
+        }
+        // A shown stock preset is not one of the files Nexus 2's playlist cycles.
+        var slideshow = wallpaper.Playlist && uploaded.Count > 0;
+        PanelBgItem? shown = null;
+        if (wallpaper.Available && !slideshow)
+        {
+            var (item, error) = await ImportQ60WallpaperAsync(wallpaper.AbsolutePath!, q60Record.Id);
+            shown = item;
+            firstError ??= error;
+        }
 
-            var commit = await PanelBgImporter.CommitAsync(_bgLibrary, q60Record.Id, stage.StageId, new CropRect(0, 0, 1, 1), 720, 1280);
-            if (!commit.Ok || commit.Item is null)
-            {
-                return Fail(id, "commit-failed");
-            }
-
+        var active = slideshow ? uploaded[0] : shown;
+        if (active is null && uploaded.Count == 0)
+        {
+            return Fail(id, firstError ?? "commit-failed");
+        }
+        if (active is not null)
+        {
             _panels.Patch(q60Record.Id, new PanelDevicePatch
             {
                 BackgroundMode = "media",
-                BackgroundMediaId = commit.Item.Id,
-                BackgroundMediaType = commit.Item.Type,
-                BackgroundMediaAlpha = commit.Item.Alpha,
+                BackgroundMediaId = active.Id,
+                BackgroundMediaType = active.Type,
+                BackgroundMediaAlpha = active.Alpha,
+                BackgroundMediaSlideshow = slideshow,
+                BackgroundMediaInterval = slideshow ? wallpaper.PlaylistIntervalSec : null,
+                // Plays in Nexus 2's folder order over any shuffle or saved order on the panel.
+                BackgroundMediaShuffle = slideshow ? false : null,
+                BackgroundMediaOrder = slideshow ? uploaded.Select(i => i.Id).ToList() : null,
             });
-            return Applied(id);
+        }
+        var detail = firstError is null ? null : "background-not-imported";
+        return new Nexus2ApplyResultDto { Id = id, Status = "applied", Detail = detail };
+    }
+
+    /// <summary>Stages and commits one Q-Series wallpaper at the panel's size, reusing one an earlier import committed.</summary>
+    private async Task<(PanelBgItem? Item, string? Error)> ImportQ60WallpaperAsync(string sourcePath, string deviceId)
+    {
+        var name = Path.GetFileName(sourcePath);
+        if (_bgLibrary.ListItems(deviceId).Find(i => i.Name == name || IsStagedNameOf(i.Name, name)) is { } existing)
+        {
+            return (existing, null);
+        }
+        var tempPath = Path.Combine(Path.GetTempPath(), $"nexus2-wallpaper-{Guid.NewGuid():N}{Path.GetExtension(name)}");
+        try
+        {
+            // StageAsync moves whatever path it is given into its staging area.
+            Nexus2ReadOnlyIo.CopyTo(sourcePath, tempPath);
+            var stage = await PanelBgImporter.StageAsync(_bgLibrary, deviceId, tempPath, name);
+            if (!stage.Ok || stage.StageId is null)
+            {
+                return (null, "stage-failed");
+            }
+
+            var commit = await PanelBgImporter.CommitAsync(_bgLibrary, deviceId, stage.StageId, new CropRect(0, 0, 1, 1), 720, 1280);
+            if (!commit.Ok || commit.Item is null)
+            {
+                return (null, "commit-failed");
+            }
+            // A commit names the item after its staged file; the source name is what a re-import looks up.
+            commit.Item.Name = name;
+            _bgLibrary.SaveMeta(deviceId, commit.Item);
+            return (commit.Item, null);
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
         {
-            return Fail(id, "copy-failed");
+            return (null, "copy-failed");
         }
         finally
         {
-            try { File.Delete(tempPath); } catch { /* already moved by StageAsync on success */ }
+            TryDelete(tempPath);
+        }
+    }
+
+    /// <summary>An unrenamed commit's name, SanitizeId("&lt;ms hex&gt;-&lt;base&gt;") plus the lowercased extension, which earlier imports left on the Q-Series.</summary>
+    private static bool IsStagedNameOf(string itemName, string sourceName)
+    {
+        var ext = Path.GetExtension(sourceName).ToLowerInvariant();
+        var dash = itemName.IndexOf('-');
+        if (dash <= 0 || !itemName.EndsWith(ext, StringComparison.Ordinal) || !itemName[..dash].All(Uri.IsHexDigit))
+        {
+            return false;
+        }
+        return itemName[..^ext.Length] == MediaImporter.SanitizeId(itemName[..(dash + 1)] + Path.GetFileNameWithoutExtension(sourceName));
+    }
+
+    /// <summary>Every file the Q-Series picker lists from q60\web\user-media, in name order.</summary>
+    private static List<string> Q60Uploads(string configDir)
+    {
+        var dir = Path.Combine(configDir, Path.Combine(Nexus2Q60Translator.Q60UserMediaRelative));
+        try
+        {
+            if (!Directory.Exists(dir))
+            {
+                return new List<string>();
+            }
+            var files = Directory.EnumerateFiles(dir).Where(Nexus2Y70Translator.IsShowableFile).ToList();
+            files.Sort((a, b) => StringComparer.OrdinalIgnoreCase.Compare(Path.GetFileName(a), Path.GetFileName(b)));
+            return files;
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            Console.Error.WriteLine($"[nexus2] Q-Series uploads unreadable: {ex.Message}");
+            return new List<string>();
         }
     }
 

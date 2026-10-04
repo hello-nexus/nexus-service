@@ -11,7 +11,8 @@ namespace Nexus.Service.Migration;
 /// background resolves against q60\web\user-media.</summary>
 internal static class Nexus2Q60Translator
 {
-    private static readonly string[] Q60UserMediaRelative = { "q60", "web", "user-media" };
+    internal static readonly string[] Q60UserMediaRelative = { "q60", "web", "user-media" };
+    private static readonly string[] Q60StockRelative = { "q60", "web", "bgs" };
 
     public static Nexus2Q60FaceResult TranslateFace(JsonElement q60Software)
     {
@@ -117,17 +118,33 @@ internal static class Nexus2Q60Translator
     {
         var result = new Nexus2WallpaperResult();
         var background = Nexus2Json.GetObject(q60Software, "background");
-        var gallerySource = background is { } bg ? Nexus2Json.GetString(bg, "gallerySource") : null;
+        if (background is not { } bg)
+        {
+            return result;
+        }
+        result.Playlist = Nexus2Json.GetBool(bg, "playlistMode", false);
+        if (Nexus2Json.GetDouble(bg, "playlistInterval") is { } intervalMs && intervalMs > 0)
+        {
+            result.PlaylistIntervalSec = Math.Max(1, (int)Math.Round(intervalMs / 1000));
+        }
+        var gallerySource = Nexus2Json.GetString(bg, "gallerySource");
         if (string.IsNullOrEmpty(gallerySource))
         {
             return result;
         }
 
-        var userMediaDir = Path.Combine(configDir, Path.Combine(Q60UserMediaRelative));
-        var fullPath = Path.Combine(userMediaDir, gallerySource);
+        // The Q-Series frontend plays a stock name (particles, cyber, ...) from bgs\<name>.webm.
+        var fullPath = Path.Combine(configDir, Path.Combine(Q60UserMediaRelative), gallerySource);
+        var stockPath = Path.Combine(configDir, Path.Combine(Q60StockRelative), gallerySource + ".webm");
         if (!fileExists(fullPath))
         {
-            return result;
+            var isMediaBackground = Nexus2Json.GetString(bg, "type") == "media-background";
+            if (!isMediaBackground || Path.HasExtension(gallerySource) || !fileExists(stockPath))
+            {
+                return result;
+            }
+            fullPath = stockPath;
+            gallerySource = Path.GetFileName(stockPath);
         }
 
         result.Available = true;

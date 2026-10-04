@@ -86,6 +86,40 @@ public sealed class Nexus2Q60TranslatorTests
         Assert.False(wallpaper.Available);
     }
 
+    [Fact]
+    public void TranslateWallpaper_ReadsThePlaylistModeAndItsIntervalInSeconds()
+    {
+        using var doc = JsonDocument.Parse("""
+        { "background": { "gallerySource": "", "playlistMode": true, "playlistInterval": 5000 } }
+        """);
+        var wallpaper = Nexus2Q60Translator.TranslateWallpaper(doc.RootElement, FixtureDir, File.Exists);
+        Assert.True(wallpaper.Playlist);
+        Assert.Equal(5, wallpaper.PlaylistIntervalSec);
+    }
+
+    [Fact]
+    public void TranslateWallpaper_AStockPresetPlaysFromBgs()
+    {
+        using var doc = JsonDocument.Parse("""
+        { "background": { "type": "media-background", "gallerySource": "cyber" } }
+        """);
+        var stock = Path.Combine(FixtureDir, "q60", "web", "bgs", "cyber.webm");
+        var wallpaper = Nexus2Q60Translator.TranslateWallpaper(doc.RootElement, FixtureDir, p => p == stock);
+        Assert.True(wallpaper.Available);
+        Assert.Equal(stock, wallpaper.AbsolutePath);
+        Assert.Equal("cyber.webm", wallpaper.FileName);
+    }
+
+    [Fact]
+    public void TranslateWallpaper_AStockNameUnderALightingBackgroundIsUnavailable()
+    {
+        using var doc = JsonDocument.Parse("""
+        { "background": { "type": "lighting-background", "gallerySource": "cyber" } }
+        """);
+        var onlyStockExists = (string p) => p.EndsWith(".webm", StringComparison.Ordinal);
+        Assert.False(Nexus2Q60Translator.TranslateWallpaper(doc.RootElement, FixtureDir, onlyStockExists).Available);
+    }
+
     [Theory]
     [InlineData("analog", "analog")]
     [InlineData("default", "digital")]
