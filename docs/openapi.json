@@ -15420,8 +15420,59 @@
           "layouts": {
             "type": "object",
             "additionalProperties": {
-              "$ref": "#/components/schemas/DeviceLayout"
+              "$ref": "#/components/schemas/BatchLayoutEntry"
             }
+          }
+        }
+      },
+      "BatchLayoutEntry": {
+        "type": "object",
+        "properties": {
+          "x": {
+            "pattern": "^-?(?:0|[1-9]\\d*)(?:\\.\\d+)?(?:[eE][+-]?\\d+)?$",
+            "type": [
+              "number",
+              "string"
+            ],
+            "format": "float"
+          },
+          "y": {
+            "pattern": "^-?(?:0|[1-9]\\d*)(?:\\.\\d+)?(?:[eE][+-]?\\d+)?$",
+            "type": [
+              "number",
+              "string"
+            ],
+            "format": "float"
+          },
+          "w": {
+            "pattern": "^-?(?:0|[1-9]\\d*)(?:\\.\\d+)?(?:[eE][+-]?\\d+)?$",
+            "type": [
+              "number",
+              "string"
+            ],
+            "format": "float"
+          },
+          "h": {
+            "pattern": "^-?(?:0|[1-9]\\d*)(?:\\.\\d+)?(?:[eE][+-]?\\d+)?$",
+            "type": [
+              "number",
+              "string"
+            ],
+            "format": "float"
+          },
+          "rotation": {
+            "pattern": "^-?(?:0|[1-9]\\d*)$",
+            "type": [
+              "integer",
+              "string"
+            ],
+            "format": "int32"
+          },
+          "flip": {
+            "type": [
+              "null",
+              "boolean"
+            ]
           }
         }
       },
@@ -16348,51 +16399,6 @@
               "null",
               "string"
             ]
-          }
-        }
-      },
-      "DeviceLayout": {
-        "type": "object",
-        "properties": {
-          "x": {
-            "pattern": "^-?(?:0|[1-9]\\d*)(?:\\.\\d+)?(?:[eE][+-]?\\d+)?$",
-            "type": [
-              "number",
-              "string"
-            ],
-            "format": "float"
-          },
-          "y": {
-            "pattern": "^-?(?:0|[1-9]\\d*)(?:\\.\\d+)?(?:[eE][+-]?\\d+)?$",
-            "type": [
-              "number",
-              "string"
-            ],
-            "format": "float"
-          },
-          "w": {
-            "pattern": "^-?(?:0|[1-9]\\d*)(?:\\.\\d+)?(?:[eE][+-]?\\d+)?$",
-            "type": [
-              "number",
-              "string"
-            ],
-            "format": "float"
-          },
-          "h": {
-            "pattern": "^-?(?:0|[1-9]\\d*)(?:\\.\\d+)?(?:[eE][+-]?\\d+)?$",
-            "type": [
-              "number",
-              "string"
-            ],
-            "format": "float"
-          },
-          "rotation": {
-            "pattern": "^-?(?:0|[1-9]\\d*)$",
-            "type": [
-              "integer",
-              "string"
-            ],
-            "format": "int32"
           }
         }
       },
@@ -20250,6 +20256,9 @@
             ],
             "format": "int32"
           },
+          "canvasFlip": {
+            "type": "boolean"
+          },
           "parentDeviceId": {
             "type": [
               "null",
@@ -23756,6 +23765,12 @@
               "string"
             ],
             "format": "int32"
+          },
+          "flip": {
+            "type": [
+              "null",
+              "boolean"
+            ]
           }
         }
       },

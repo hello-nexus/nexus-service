@@ -27,6 +27,7 @@ public static partial class DevicesRoutes
                 frame.W = layout.W;
                 frame.H = layout.H;
                 frame.Rotation = layout.Rotation;
+                frame.Flip = layout.Flip;
             }
             else
             {
@@ -39,6 +40,7 @@ public static partial class DevicesRoutes
                         frame.W = freshDev.CanvasW;
                         frame.H = freshDev.CanvasH;
                         frame.Rotation = freshDev.CanvasRotation;
+                        frame.Flip = false;
                         break;
                     }
                 }
@@ -304,6 +306,7 @@ public static partial class DevicesRoutes
                 W = kv.Value.W,
                 H = kv.Value.H,
                 Rotation = kv.Value.Rotation,
+                Flip = kv.Value.Flip,
             };
         }
         return copy;
@@ -323,6 +326,7 @@ public static partial class DevicesRoutes
             Nexus.Service.Lighting.LightingDeviceNames.Apply(all.Devices, lighting.DeviceNames);
             foreach (var device in all.Devices)
             {
+                device.CanvasFlip = lighting.DeviceLayouts.TryGetValue(device.Id, out var layout) && layout.Flip;
                 device.LedColors = null;
                 device.LedColorStrip = null;
                 if (!locks.TryGet(device.Id, out var leds)) continue;
@@ -396,15 +400,17 @@ public static partial class DevicesRoutes
 
         app.MapPost("/devices/lighting-devices/layout", (SaveDeviceLayoutBody body, Nexus.Service.Persistence.IConfigStore store, Nexus.Service.Lighting.Engine.LightingEngine engine) =>
         {
+            var flip = false;
             store.Update(s =>
             {
+                flip = body.Flip ?? (s.Lighting.DeviceLayouts.TryGetValue(body.Id, out var stored) && stored.Flip);
                 s.Lighting.DeviceLayouts[body.Id] = new Nexus.Service.Persistence.DeviceLayout
-                { X = body.X, Y = body.Y, W = body.W, H = body.H, Rotation = body.Rotation };
+                { X = body.X, Y = body.Y, W = body.W, H = body.H, Rotation = body.Rotation, Flip = flip };
             });
             foreach (var dev in engine.Devices)
             {
                 if (dev.Id == body.Id)
-                { dev.X = body.X; dev.Y = body.Y; dev.W = body.W; dev.H = body.H; dev.Rotation = body.Rotation; break; }
+                { dev.X = body.X; dev.Y = body.Y; dev.W = body.W; dev.H = body.H; dev.Rotation = body.Rotation; dev.Flip = flip; break; }
             }
             return ApiResponse.Ok();
         });
@@ -435,15 +441,24 @@ public static partial class DevicesRoutes
             ILightingDeviceProvider lightingProvider,
             Nexus.Service.Lighting.Engine.LightingEngine engine) =>
         {
+            var layouts = new Dictionary<string, Nexus.Service.Persistence.DeviceLayout>(body.Layouts.Count);
             store.Update(s =>
             {
+                foreach (var (id, e) in body.Layouts)
+                {
+                    layouts[id] = new Nexus.Service.Persistence.DeviceLayout
+                    {
+                        X = e.X, Y = e.Y, W = e.W, H = e.H, Rotation = e.Rotation,
+                        Flip = e.Flip ?? (s.Lighting.DeviceLayouts.TryGetValue(id, out var stored) && stored.Flip),
+                    };
+                }
                 s.Lighting.DeviceLayouts.Clear();
-                foreach (var kv in body.Layouts)
+                foreach (var kv in layouts)
                 {
                     s.Lighting.DeviceLayouts[kv.Key] = kv.Value;
                 }
             });
-            MirrorLayoutsToEngine(body.Layouts, lightingProvider, engine);
+            MirrorLayoutsToEngine(layouts, lightingProvider, engine);
             Nexus.Service.Sockets.PanelTopics.BroadcastLighting(hub);
             return ApiResponse.Ok();
         });
