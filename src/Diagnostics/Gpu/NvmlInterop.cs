@@ -71,6 +71,7 @@ internal static unsafe class NvmlInterop
     private static IntPtr _pSystemGetDriverVersion;
     private static IntPtr _pDeviceGetTemperature;
     private static IntPtr _pDeviceGetPowerUsage;
+    private static IntPtr _pDeviceGetEnforcedPowerLimit;
     private static IntPtr _pDeviceGetClocksReasons;
     private static IntPtr _pDeviceGetViolationStatus;
 
@@ -111,6 +112,7 @@ internal static unsafe class NvmlInterop
                 _pSystemGetDriverVersion = Export("nvmlSystemGetDriverVersion");
                 _pDeviceGetTemperature = Export("nvmlDeviceGetTemperature");
                 _pDeviceGetPowerUsage = Export("nvmlDeviceGetPowerUsage");
+                _pDeviceGetEnforcedPowerLimit = Export("nvmlDeviceGetEnforcedPowerLimit");
                 _pDeviceGetViolationStatus = Export("nvmlDeviceGetViolationStatus");
 
                 // Newer drivers renamed ThrottleReasons -> EventReasons (same
@@ -204,6 +206,13 @@ internal static unsafe class NvmlInterop
         milliwatts = 0;
         if (_pDeviceGetPowerUsage == IntPtr.Zero) return NotSupported;
         return ((delegate* unmanaged[Stdcall]<IntPtr, out uint, int>)_pDeviceGetPowerUsage)(device, out milliwatts);
+    }
+
+    public static int GetEnforcedPowerLimitMilliwatts(IntPtr device, out uint milliwatts)
+    {
+        milliwatts = 0;
+        if (_pDeviceGetEnforcedPowerLimit == IntPtr.Zero) return NotSupported;
+        return ((delegate* unmanaged[Stdcall]<IntPtr, out uint, int>)_pDeviceGetEnforcedPowerLimit)(device, out milliwatts);
     }
 
     public static int GetClocksReasons(IntPtr device, out ulong reasons)

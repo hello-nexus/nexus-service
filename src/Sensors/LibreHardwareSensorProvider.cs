@@ -26,6 +26,7 @@ public sealed class LibreHardwareSensorProvider : ISensorProvider
 {
     private readonly LhmComputer _lhm;
     private readonly AstralGpuSupplement _astral = new(new AstralNvApiClient());
+    private readonly NvmlPowerLimits _nvmlPowerLimits = new();
     private string? _ramBrandModel;
     private string? _storageBrandModel;
 
@@ -102,6 +103,14 @@ public sealed class LibreHardwareSensorProvider : ISensorProvider
                 var hwIdentifier = hw.Identifier.ToString();
                 _astral.AppendSensors(hwIdentifier, hwIdentifier, hw.Name, mapped);
                 displayName = _astral.EnrichName(hwIdentifier, hw.Name);
+                var powerLimit = _nvmlPowerLimits.WattsFor(hw.Name);
+                if (powerLimit > 0)
+                {
+                    foreach (var sensor in mapped)
+                    {
+                        if (sensor.Type == "Power" && sensor.Name == "GPU Package") sensor.TheoreticalMaximum = powerLimit;
+                    }
+                }
             }
             // VRAM total comes from the GPU's "GPU Memory Total" sensor; reuse it
             // as the ceiling for "GPU Memory Used" / "Free" so the client can
