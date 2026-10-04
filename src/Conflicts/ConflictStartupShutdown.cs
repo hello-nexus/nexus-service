@@ -5,6 +5,7 @@ using System.Threading;
 using System.Threading.Tasks;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
+using Nexus.Service.Models.Conflicts;
 using Nexus.Service.Persistence;
 
 namespace Nexus.Service.Conflicts;
@@ -42,6 +43,12 @@ public sealed class ConflictStartupShutdown : IHostedService
     /// </summary>
     public event Action<IReadOnlyList<string>>? AppsTerminated;
 
+    /// <summary>Raised once per process the end-on-launch path tried to end that is still running <see cref="SurvivorGrace"/> later, so the user can retry from a notice.</summary>
+    public event Action<DetectedConflict>? AppSurvived;
+
+    /// <summary>An ended iCUE stayed in the scan for a couple of polls on T1; a shorter wait would report apps already on their way out.</summary>
+    internal static readonly TimeSpan SurvivorGrace = TimeSpan.FromSeconds(20);
+
     /// <summary>Unmeasured: long enough for most Run-key and at-logon-task apps to come up.</summary>
     internal static readonly TimeSpan LaunchKillWindow = TimeSpan.FromSeconds(30);
 
@@ -50,6 +57,7 @@ public sealed class ConflictStartupShutdown : IHostedService
     private readonly ILogger<ConflictStartupShutdown> _log;
     private readonly Action<ConflictAppDefinition> _kill;
     private readonly Func<ConflictAppDefinition, bool> _stillRunning;
+    private readonly Func<long> _clockMs;
     private readonly CancellationTokenSource _stopping = new();
 
     // id:pid pairs already ended (or tried) and still detected, so a kill that
@@ -57,6 +65,8 @@ public sealed class ConflictStartupShutdown : IHostedService
     private readonly HashSet<string> _attempted = new(StringComparer.OrdinalIgnoreCase);
     // App id -> when the end-on-launch path last reported ending it.
     private readonly Dictionary<string, long> _lastNoticeMs = new(StringComparer.OrdinalIgnoreCase);
+    // id:pid -> when the end-on-launch path first tried it; long.MaxValue once reported as surviving.
+    private readonly Dictionary<string, long> _endTriedAtMs = new(StringComparer.OrdinalIgnoreCase);
     private long _windowEndsMs = long.MinValue;
     // The full sweep was allowed when the current window opened; otherwise the window ends AlwaysEnded apps only.
     private volatile bool _sweepWindow;
@@ -72,13 +82,15 @@ public sealed class ConflictStartupShutdown : IHostedService
         IConflictDetector watcher,
         ILogger<ConflictStartupShutdown> log,
         Action<ConflictAppDefinition> kill,
-        Func<ConflictAppDefinition, bool> stillRunning)
+        Func<ConflictAppDefinition, bool> stillRunning,
+        Func<long>? clockMs = null)
     {
         _store = store;
         _watcher = watcher;
         _log = log;
         _kill = kill;
         _stillRunning = stillRunning;
+        _clockMs = clockMs ?? (() => Environment.TickCount64);
     }
 
     /// <summary>True while a launching non-whitelisted app is ended here; the launch notifier stays quiet for that stretch.</summary>
@@ -214,16 +226,32 @@ public sealed class ConflictStartupShutdown : IHostedService
         // turn comes, reports "not running before me", and drops out of the
         // notification the user sees.
         var detectedNow = _watcher.GetConflicts();
-        // Forget pids that are gone, so a self-restarting app cannot grow the set without bound.
-        _attempted.IntersectWith(detectedNow.Select(d => $"{d.Id}:{d.Pid}"));
+        var current = new HashSet<string>(detectedNow.Select(d => $"{d.Id}:{d.Pid}"), StringComparer.OrdinalIgnoreCase);
+        // Forget pids that are gone, so a self-restarting app cannot grow the sets without bound.
+        _attempted.IntersectWith(current);
+        foreach (var gone in _endTriedAtMs.Keys.Where(k => !current.Contains(k)).ToList()) _endTriedAtMs.Remove(gone);
+        var now = _clockMs();
         var targets = new List<ConflictAppDefinition>();
+        var survivors = new List<DetectedConflict>();
         foreach (var detected in detectedNow)
         {
             var def = ConflictWatcher.FindById(detected.Id);
             if (def is null) continue;
             if (!def.AlwaysEnded && (!sweep || excluded.Contains(detected.Id))) continue;
-            if (!_attempted.Add($"{detected.Id}:{detected.Pid}")) continue;
+            var key = $"{detected.Id}:{detected.Pid}";
+            if (throttleNotice) _endTriedAtMs.TryAdd(key, now);
+            if (!_attempted.Add(key))
+            {
+                if (throttleNotice && SurvivedEnd(key, now)) survivors.Add(detected);
+                continue;
+            }
             targets.Add(def);
+        }
+        foreach (var app in survivors)
+        {
+            _log.LogInformation("Conflict shutdown: {App} is still running after being ended; notifying.", app.DisplayName);
+            try { AppSurvived?.Invoke(app); }
+            catch (Exception ex) { _log.LogWarning(ex, "Conflict survivor notification failed."); }
         }
         if (targets.Count == 0) return;
 
@@ -262,10 +290,18 @@ public sealed class ConflictStartupShutdown : IHostedService
         catch (Exception ex) { _log.LogWarning(ex, "Conflict shutdown notification failed."); }
     }
 
+    private bool SurvivedEnd(string key, long now)
+    {
+        var since = _endTriedAtMs[key];
+        if (since == long.MaxValue || now - since < (long)SurvivorGrace.TotalMilliseconds) return false;
+        _endTriedAtMs[key] = long.MaxValue;
+        return true;
+    }
+
     /// <summary>One notice per app per <see cref="ConflictLaunchTracker.Cooldown"/>: a vendor service that restarts itself is ended every poll.</summary>
     private bool NoticeDue(string appId)
     {
-        var now = Environment.TickCount64;
+        var now = _clockMs();
         if (_lastNoticeMs.TryGetValue(appId, out var last) && now - last < (long)ConflictLaunchTracker.Cooldown.TotalMilliseconds) return false;
         _lastNoticeMs[appId] = now;
         return true;
