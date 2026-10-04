@@ -1,4 +1,5 @@
 using System.Collections.Generic;
+using System.Text.Json;
 using Nexus.Service.Lighting.Scene;
 using Nexus.Service.Persistence;
 
@@ -10,7 +11,7 @@ public sealed class LightingSceneResponse
     public List<SceneBinding> Bindings { get; set; } = new();
     public SceneView View { get; set; } = new();
 
-    /// <summary>Content hash of the imported case model; null when none is imported.</summary>
+    /// <summary>Content hash of the imported scene model; null when none is imported.</summary>
     public string? ModelRev { get; set; }
     public string? CaseId { get; set; }
 }
@@ -28,8 +29,8 @@ public sealed class ImportLightingSceneBody
     public string? CaseId { get; set; }
     public List<SceneObject> Objects { get; set; } = new();
 
-    /// <summary>Binary glTF of the case, base64; null keeps no model.</summary>
-    public string? ModelBase64 { get; set; }
+    /// <summary>The objects' shapes for the dashboard to draw (version 1, shapes by object id); null keeps no model.</summary>
+    public JsonElement? Model { get; set; }
 }
 
 public sealed class PutSceneViewBody

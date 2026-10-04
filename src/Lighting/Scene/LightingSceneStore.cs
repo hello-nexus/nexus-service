@@ -25,7 +25,7 @@ public sealed class LightingSceneStore
     public LightingSceneStore(string dir)
     {
         _docPath = Path.Combine(dir, "lighting-scene.json");
-        _modelPath = Path.Combine(dir, "lighting-scene.glb");
+        _modelPath = Path.Combine(dir, "lighting-scene-model.json");
     }
 
     /// <summary>Raised after every successful write, outside the store lock.</summary>

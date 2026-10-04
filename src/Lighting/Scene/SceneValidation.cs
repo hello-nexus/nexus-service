@@ -117,47 +117,41 @@ public static partial class SceneValidation
     }
 
     /// <summary>
-    /// Null when the bytes are a self-contained binary glTF 2.0: the editor
-    /// loads it with no network access, so a buffer or image naming an external
-    /// URI is refused rather than fetched.
+    /// Null when the bytes are a scene model: a JSON object with version 1 and a
+    /// <c>shapes</c> object keyed by object id. Fills <paramref name="shapeIds"/>
+    /// with those ids; the shapes themselves are drawn by the dashboard only.
     /// </summary>
-    public static string? ValidateModel(byte[] glb)
+    public static string? ValidateModel(byte[] json, HashSet<string> shapeIds)
     {
-        if (glb.Length < 20 || glb.Length > MaxModelBytes)
+        if (json.Length == 0 || json.Length > MaxModelBytes)
         {
-            return "model must be a binary glTF under the size cap";
-        }
-        if (BitConverter.ToUInt32(glb, 0) != 0x46546C67 || BitConverter.ToUInt32(glb, 4) != 2
-            || BitConverter.ToUInt32(glb, 8) != (uint)glb.Length)
-        {
-            return "model is not a glTF 2.0 binary";
-        }
-        var jsonLength = BitConverter.ToUInt32(glb, 12);
-        if (BitConverter.ToUInt32(glb, 16) != 0x4E4F534A || jsonLength > (uint)(glb.Length - 20))
-        {
-            return "model has no JSON chunk";
+            return "model must be JSON under the size cap";
         }
         try
         {
-            using var doc = JsonDocument.Parse(glb.AsMemory(20, (int)jsonLength));
-            foreach (var list in new[] { "buffers", "images" })
+            using var doc = JsonDocument.Parse(json);
+            var root = doc.RootElement;
+            if (root.ValueKind != JsonValueKind.Object
+                || !root.TryGetProperty("version", out var version) || version.ValueKind != JsonValueKind.Number || version.GetDouble() != 1
+                || !root.TryGetProperty("shapes", out var shapes) || shapes.ValueKind != JsonValueKind.Object)
             {
-                if (!doc.RootElement.TryGetProperty(list, out var items) || items.ValueKind != JsonValueKind.Array)
+                return "model needs version 1 and a shapes object";
+            }
+            foreach (var shape in shapes.EnumerateObject())
+            {
+                if (!IsValidId(shape.Name) || shape.Value.ValueKind != JsonValueKind.Object)
                 {
-                    continue;
+                    return "model shapes must be objects keyed by object id";
                 }
-                foreach (var item in items.EnumerateArray())
+                if (!shapeIds.Add(shape.Name) || shapeIds.Count > MaxObjects)
                 {
-                    if (item.ValueKind == JsonValueKind.Object && item.TryGetProperty("uri", out _))
-                    {
-                        return "model must embed its buffers and images";
-                    }
+                    return $"model has at most {MaxObjects} distinct shapes";
                 }
             }
         }
         catch (JsonException)
         {
-            return "model JSON chunk is malformed";
+            return "model is not valid JSON";
         }
         return null;
     }

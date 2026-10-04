@@ -83,19 +83,7 @@ public sealed class LightingSceneRoutesTests : IClassFixture<LightingSceneAppFac
 
     private const string FrontCamera = """{"position":[0,600,1200],"target":[0,0,0],"fov":40}""";
 
-    private static byte[] Glb(string json)
-    {
-        while (Encoding.UTF8.GetByteCount(json) % 4 != 0) json += " ";
-        var chunk = Encoding.UTF8.GetBytes(json);
-        var bytes = new byte[20 + chunk.Length];
-        BitConverter.GetBytes(0x46546C67u).CopyTo(bytes, 0);
-        BitConverter.GetBytes(2u).CopyTo(bytes, 4);
-        BitConverter.GetBytes((uint)bytes.Length).CopyTo(bytes, 8);
-        BitConverter.GetBytes((uint)chunk.Length).CopyTo(bytes, 12);
-        BitConverter.GetBytes(0x4E4F534Au).CopyTo(bytes, 16);
-        chunk.CopyTo(bytes, 20);
-        return bytes;
-    }
+    private const string CaseModel = """{"version":1,"shapes":{"case":{"size":[470,320,487],"boxes":[],"lines":[]}}}""";
 
     private static string CaseObject(string anchorId = "fan:front:140:0") => $$"""
         {"id":"case","kind":"case","position":[0,0,0],"yaw":0,"size":[230,480,460],
@@ -247,8 +235,7 @@ public sealed class LightingSceneRoutesTests : IClassFixture<LightingSceneAppFac
     public async Task Import_stores_the_model_keeps_hand_placed_objects_and_the_moved_case()
     {
         var client = Desktop();
-        var model = Glb("""{"asset":{"version":"2.0"}}""");
-        var first = await client.PutAsync("/lighting/scene/import", Json($$"""{"caseId":"case-123","objects":[{{CaseObject()}}],"modelBase64":"{{Convert.ToBase64String(model)}}"}"""));
+        var first = await client.PutAsync("/lighting/scene/import", Json($$"""{"caseId":"case-123","objects":[{{CaseObject()}}],"model":{{CaseModel}}}"""));
         Assert.Equal(HttpStatusCode.OK, first.StatusCode);
 
         // The user moves the case on the desk and adds a keyboard bound to its surface.
@@ -261,7 +248,7 @@ public sealed class LightingSceneRoutesTests : IClassFixture<LightingSceneAppFac
         Assert.Equal(HttpStatusCode.OK, (await client.PutAsync("/lighting/scene", Json(SceneBody(objects, KeyboardBinding + "," + fanBinding)))).StatusCode);
 
         // A re-export whose front fan slot moved to another key.
-        var second = await client.PutAsync("/lighting/scene/import", Json($$"""{"caseId":"case-123","objects":[{{CaseObject("fan:front:120:0")}}],"modelBase64":"{{Convert.ToBase64String(model)}}"}"""));
+        var second = await client.PutAsync("/lighting/scene/import", Json($$"""{"caseId":"case-123","objects":[{{CaseObject("fan:front:120:0")}}],"model":{{CaseModel}}}"""));
         Assert.Equal(HttpStatusCode.OK, second.StatusCode);
         var after = Scene.Load();
         Assert.Equal(-500f, after.Objects.Single(o => o.Id == "case").Position[0]);
@@ -271,32 +258,29 @@ public sealed class LightingSceneRoutesTests : IClassFixture<LightingSceneAppFac
 
         var get = await client.GetAsync("/lighting/scene/model");
         Assert.Equal(HttpStatusCode.OK, get.StatusCode);
-        Assert.Equal("model/gltf-binary", get.Content.Headers.ContentType!.MediaType);
-        Assert.Equal(model, await get.Content.ReadAsByteArrayAsync());
+        Assert.Equal("application/json", get.Content.Headers.ContentType!.MediaType);
+        using var stored = JsonDocument.Parse(await get.Content.ReadAsStringAsync());
+        Assert.Equal(470, stored.RootElement.GetProperty("shapes").GetProperty("case").GetProperty("size")[0].GetInt32());
     }
 
     [Theory]
-    [InlineData("""{"asset":{"version":"2.0"},"buffers":[{"byteLength":4,"uri":"https://example.com/x.bin"}]}""")]
-    [InlineData("""{"asset":{"version":"2.0"},"images":[{"uri":"data:image/png;base64,AAAA"}]}""")]
-    public async Task Import_refuses_a_model_that_points_outside_itself(string json)
+    [InlineData("""[1,2]""")]
+    [InlineData("""{"version":2,"shapes":{}}""")]
+    [InlineData("""{"version":1,"shapes":[]}""")]
+    [InlineData("""{"version":1,"shapes":{"bad id!":{}}}""")]
+    [InlineData("""{"version":1,"shapes":{"case":"box"}}""")]
+    public async Task Import_refuses_a_model_that_is_not_a_scene_model(string model)
     {
-        var res = await Desktop().PutAsync("/lighting/scene/import", Json($$"""{"objects":[],"modelBase64":"{{Convert.ToBase64String(Glb(json))}}"}"""));
+        var res = await Desktop().PutAsync("/lighting/scene/import", Json($$"""{"objects":[],"model":{{model}}}"""));
         Assert.Equal(HttpStatusCode.BadRequest, res.StatusCode);
         Assert.Null(Scene.LoadModel());
-    }
-
-    [Fact]
-    public async Task Import_refuses_bytes_that_are_not_a_gltf_binary()
-    {
-        var res = await Desktop().PutAsync("/lighting/scene/import", Json($$"""{"objects":[],"modelBase64":"{{Convert.ToBase64String(Encoding.UTF8.GetBytes("definitely not a model file"))}}"}"""));
-        Assert.Equal(HttpStatusCode.BadRequest, res.StatusCode);
     }
 
     [Fact]
     public async Task Delete_import_removes_the_case_and_its_model_and_keeps_desk_objects()
     {
         var client = Desktop();
-        await client.PutAsync("/lighting/scene/import", Json($$"""{"objects":[{{CaseObject()}}],"modelBase64":"{{Convert.ToBase64String(Glb("""{"asset":{"version":"2.0"}}"""))}}"}"""));
+        await client.PutAsync("/lighting/scene/import", Json($$"""{"objects":[{{CaseObject()}}],"model":{{CaseModel}}}"""));
         var doc = Scene.Load();
         doc.Objects.Add(JsonSerializer.Deserialize(Keyboard, Nexus.Service.Serialization.PersistenceJsonContext.Default.SceneObject)!);
         Scene.Save(doc);

@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Text;
 using System.Text.Json;
 using System.Threading.Tasks;
 using Microsoft.AspNetCore.Builder;
@@ -16,8 +17,8 @@ namespace Nexus.Service.Routes;
 /// <summary>The 3D lighting scene. Desktop-token only: it is machine config, edited from the dashboard.</summary>
 public static class LightingSceneRoutes
 {
-    // An import body is the base64 model plus its objects; anything past this is refused while it streams in.
-    private const long MaxImportBodyBytes = SceneValidation.MaxModelBytes / 3 * 4 + 4 * 1024 * 1024;
+    // An import body is the model plus its objects; anything past this is refused while it streams in.
+    private const long MaxImportBodyBytes = SceneValidation.MaxModelBytes + 4 * 1024 * 1024;
 
     // Every read-modify-write of the scene (an editor save racing a Build import) runs under this.
     private static readonly object SceneWriteLock = new();
@@ -37,12 +38,20 @@ public static class LightingSceneRoutes
             lock (SceneWriteLock)
             {
                 doc = store.Load();
-                doc.Objects = body.Objects;
-                doc.Bindings = body.Bindings;
-                // The model belongs to the imported case; an editor save cannot claim it for another object.
+                // Which objects the model draws is the import's to say; an editor save keeps it as stored.
+                var drawn = new HashSet<string>(StringComparer.Ordinal);
                 foreach (var o in doc.Objects)
                 {
-                    o.HasModel = doc.ModelRev is not null && o.Source == "build" && o.Kind == "case";
+                    if (o.Source == "build" && o.HasModel)
+                    {
+                        drawn.Add(o.Id);
+                    }
+                }
+                doc.Objects = body.Objects;
+                doc.Bindings = body.Bindings;
+                foreach (var o in doc.Objects)
+                {
+                    o.HasModel = o.Source == "build" && drawn.Contains(o.Id);
                 }
                 store.Save(doc);
             }
@@ -74,17 +83,11 @@ public static class LightingSceneRoutes
                 return Fail("caseId must be a catalog part id");
             }
             byte[]? model = null;
-            if (body.ModelBase64 is { } b64)
+            var shapeIds = new HashSet<string>(StringComparer.Ordinal);
+            if (body.Model is { ValueKind: not JsonValueKind.Null } json)
             {
-                try
-                {
-                    model = Convert.FromBase64String(b64);
-                }
-                catch (FormatException)
-                {
-                    return Fail("modelBase64 is not base64");
-                }
-                if (SceneValidation.ValidateModel(model) is { } modelError)
+                model = Encoding.UTF8.GetBytes(json.GetRawText());
+                if (SceneValidation.ValidateModel(model, shapeIds) is { } modelError)
                 {
                     return Fail(modelError);
                 }
@@ -93,7 +96,7 @@ public static class LightingSceneRoutes
             LightingSceneDoc merged;
             lock (SceneWriteLock)
             {
-                merged = SceneImport.Merge(store.Load(), body.Objects ?? new List<SceneObject>(), model is not null);
+                merged = SceneImport.Merge(store.Load(), body.Objects ?? new List<SceneObject>(), shapeIds);
                 if (SceneValidation.Validate(merged.Objects, merged.Bindings) is { } error)
                 {
                     return Fail(error);
@@ -110,7 +113,7 @@ public static class LightingSceneRoutes
             LightingSceneDoc doc;
             lock (SceneWriteLock)
             {
-                doc = SceneImport.Merge(store.Load(), new List<SceneObject>(), hasModel: false);
+                doc = SceneImport.Merge(store.Load(), new List<SceneObject>(), new HashSet<string>());
                 doc.CaseId = null;
                 doc.ModelRev = store.SaveModel(null);
                 store.Save(doc);
@@ -123,7 +126,7 @@ public static class LightingSceneRoutes
             var bytes = store.LoadModel();
             return bytes is null
                 ? Results.NotFound()
-                : Results.Bytes(bytes, "model/gltf-binary");
+                : Results.Bytes(bytes, "application/json");
         });
 
         app.MapPut("/lighting/scene/view", (PutSceneViewBody body, IConfigStore config, LightingSceneService scene) =>

@@ -18,51 +18,42 @@ public class SceneImportTests
         new() { DeviceId = device, Targets = { new SceneTarget { ObjectId = obj, AnchorId = anchor } } };
 
     [Fact]
-    public void Imported_case_takes_over_a_generic_case_and_its_shared_slot_placements()
+    public void Reimport_keeps_a_moved_object_in_place_and_drops_placements_on_vanished_spots()
     {
         var doc = new LightingSceneDoc
         {
-            Objects = { Case("generic-case", "user", "fan:front:120:0", "fan:top:120:0"), new SceneObject { Id = "kb", Kind = "keyboard" } },
-            Bindings = { Bind("fan-1", "generic-case", "fan:front:120:0"), Bind("fan-2", "generic-case", "fan:top:120:0"), Bind("kbd", "kb", "top") },
+            Objects = { Case("case", "build", "fan:front:120:0", "fan:top:120:0") },
+            Bindings = { Bind("fan-1", "case", "fan:front:120:0"), Bind("fan-2", "case", "fan:top:120:0") },
         };
-        doc.Objects[1].Anchors.Add(new SceneAnchor { Id = "top" });
         var imported = Case("case", "build", "fan:front:120:0");
         imported.Position = [0, 0, 0];
         imported.Yaw = 0;
 
-        var merged = SceneImport.Merge(doc, [imported], hasModel: true);
+        var merged = SceneImport.Merge(doc, [imported], new HashSet<string> { "case" });
 
-        Assert.Equal(["kb", "case"], merged.Objects.Select(o => o.Id));
-        var pc = merged.Objects.Single(o => o.Id == "case");
+        var pc = merged.Objects.Single();
         Assert.Equal(620f, pc.Position[0]);
         Assert.Equal(30f, pc.Yaw);
-        Assert.True(pc.HasModel);
-        Assert.Equal("case", merged.Bindings.Single(b => b.DeviceId == "fan-1").Targets[0].ObjectId);
-        // The top slot is not in the import, so its placement goes.
-        Assert.DoesNotContain(merged.Bindings, b => b.DeviceId == "fan-2");
-        Assert.Contains(merged.Bindings, b => b.DeviceId == "kbd");
+        Assert.Equal("fan-1", merged.Bindings.Single().DeviceId);
     }
 
     [Fact]
-    public void A_generic_case_added_next_to_a_build_case_survives_the_next_import()
+    public void Each_object_draws_from_the_model_only_when_it_has_a_shape_there()
     {
-        var doc = new LightingSceneDoc
-        {
-            Objects = { Case("case", "build", "fan:front:120:0"), Case("generic-case", "user", "fan:front:120:0") },
-            Bindings = { Bind("fan-1", "generic-case", "fan:front:120:0") },
-        };
-        var merged = SceneImport.Merge(doc, [Case("case", "build", "fan:front:120:0")], hasModel: true);
+        var keyboard = new SceneObject { Id = "keyboard", Kind = "keyboard" };
+        var merged = SceneImport.Merge(new LightingSceneDoc(), [Case("case", "build"), keyboard], new HashSet<string> { "keyboard" });
 
-        Assert.Contains(merged.Objects, o => o.Id == "generic-case");
-        Assert.Equal("generic-case", merged.Bindings.Single().Targets[0].ObjectId);
+        Assert.False(merged.Objects.Single(o => o.Id == "case").HasModel);
+        Assert.True(merged.Objects.Single(o => o.Id == "keyboard").HasModel);
+        Assert.All(merged.Objects, o => Assert.Equal("build", o.Source));
     }
 
     [Fact]
-    public void Import_without_a_case_leaves_a_generic_case_alone()
+    public void Objects_placed_by_hand_survive_an_import()
     {
-        var doc = new LightingSceneDoc { Objects = { Case("generic-case", "user", "fan:front:120:0") }, Bindings = { Bind("fan-1", "generic-case", "fan:front:120:0") } };
-        var merged = SceneImport.Merge(doc, [new SceneObject { Id = "desk-strip", Kind = "strip" }], hasModel: false);
-        Assert.Contains(merged.Objects, o => o.Id == "generic-case");
+        var doc = new LightingSceneDoc { Objects = { Case("old-case", "user", "fan:front:120:0") }, Bindings = { Bind("fan-1", "old-case", "fan:front:120:0") } };
+        var merged = SceneImport.Merge(doc, [Case("case", "build")], new HashSet<string>());
+        Assert.Contains(merged.Objects, o => o.Id == "old-case");
         Assert.Single(merged.Bindings);
     }
 }
