@@ -277,6 +277,69 @@ public class ConflictWhitelistTests
         Assert.Equal(1, notices);
     }
 
+    [Fact]
+    public void EndOnLaunchReportsAnAppStillRunningAfterTheGraceOnce()
+    {
+        var store = OnboardedStore();
+        store.Update(s => s.Ui.EndConflictsOnLaunch = true);
+        var detector = new FakeDetector { Conflicts = new[] { App(SignalRgb, pid: 7) } };
+        long now = 1000;
+        var shutdown = new ConflictStartupShutdown(store, detector, NullLogger<ConflictStartupShutdown>.Instance,
+            _ => { }, _ => true, () => now);
+        var survived = new List<string>();
+        shutdown.AppSurvived += app => survived.Add(app.Id);
+
+        shutdown.EndOnLaunchTick();
+        now += (long)ConflictStartupShutdown.SurvivorGrace.TotalMilliseconds - 1;
+        shutdown.EndOnLaunchTick();
+        Assert.Empty(survived);
+
+        now += 1;
+        shutdown.EndOnLaunchTick();
+        shutdown.EndOnLaunchTick();
+        Assert.Equal(new[] { SignalRgb }, survived);
+    }
+
+    [Fact]
+    public void EndOnLaunchDoesNotReportAnAppThatExitsWithinTheGrace()
+    {
+        var store = OnboardedStore();
+        store.Update(s => s.Ui.EndConflictsOnLaunch = true);
+        var detector = new FakeDetector { Conflicts = new[] { App(SignalRgb, pid: 7) } };
+        long now = 1000;
+        var shutdown = new ConflictStartupShutdown(store, detector, NullLogger<ConflictStartupShutdown>.Instance,
+            _ => { }, _ => true, () => now);
+        var survived = new List<string>();
+        shutdown.AppSurvived += app => survived.Add(app.Id);
+
+        shutdown.EndOnLaunchTick();
+        detector.Conflicts = Array.Empty<DetectedConflict>();
+        now += (long)ConflictStartupShutdown.SurvivorGrace.TotalMilliseconds;
+        shutdown.EndOnLaunchTick();
+        detector.Conflicts = new[] { App(SignalRgb, pid: 8) };
+        shutdown.EndOnLaunchTick();
+
+        Assert.Empty(survived);
+    }
+
+    [Fact]
+    public void TheBootSweepNeverReportsSurvivors()
+    {
+        var store = OnboardedStore();
+        var detector = new FakeDetector { Conflicts = new[] { App(SignalRgb, pid: 7) } };
+        long now = 1000;
+        var shutdown = new ConflictStartupShutdown(store, detector, NullLogger<ConflictStartupShutdown>.Instance,
+            _ => { }, _ => true, () => now);
+        var survived = new List<string>();
+        shutdown.AppSurvived += app => survived.Add(app.Id);
+
+        shutdown.EndRunningApps();
+        now += (long)ConflictStartupShutdown.SurvivorGrace.TotalMilliseconds;
+        shutdown.EndRunningApps();
+
+        Assert.Empty(survived);
+    }
+
     [Theory]
     [InlineData(false, true)]
     [InlineData(true, false)]

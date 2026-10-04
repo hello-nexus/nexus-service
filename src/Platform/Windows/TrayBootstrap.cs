@@ -35,6 +35,8 @@ internal static class TrayBootstrap
 
     private static string ConflictLaunchTitle(Nexus.Service.Models.Conflicts.DetectedConflict app) => $"{app.DisplayName} opened";
 
+    private static string ConflictSurvivorTitle(Nexus.Service.Models.Conflicts.DetectedConflict app) => $"Nexus couldn't close {app.DisplayName}";
+
     private static string ConflictLaunchText(Nexus.Service.Models.Conflicts.DetectedConflict app) => app.Category switch
     {
         "lighting" => "It can fight Nexus for control of your lighting.",
@@ -93,6 +95,11 @@ internal static class TrayBootstrap
         {
             try { TrayIcon.ShowNoticeBalloon(ConflictLaunchTitle(launched), ConflictLaunchText(launched), null, ConflictSettingsPath); }
             catch (Exception ex) { Console.Error.WriteLine($"[conflict-notify] interactive launch notice failed: {ex.Message}"); }
+        };
+        interactiveShutdown.AppSurvived += survivor =>
+        {
+            try { TrayIcon.ShowNoticeBalloon(ConflictSurvivorTitle(survivor), ConflictLaunchText(survivor), null, ConflictSettingsPath); }
+            catch (Exception ex) { Console.Error.WriteLine($"[conflict-notify] interactive survivor notice failed: {ex.Message}"); }
         };
 
         var hub = app.Services.GetRequiredService<MultiplexHub>();
@@ -291,18 +298,19 @@ internal static class TrayBootstrap
             var detector = app.Services.GetRequiredService<Nexus.Service.Conflicts.IConflictDetector>();
             var launchGate = new object();
             // Keyed by app id: relaunches while no helper is connected collapse to one notice.
-            var pendingLaunches = new Dictionary<string, Nexus.Service.Models.Conflicts.DetectedConflict>(StringComparer.OrdinalIgnoreCase);
+            // Survived marks an app the end-on-launch switch could not end; same End task notice, its own title.
+            var pendingLaunches = new Dictionary<string, (Nexus.Service.Models.Conflicts.DetectedConflict App, bool Survived)>(StringComparer.OrdinalIgnoreCase);
 
             void DrainLaunchNotices()
             {
-                List<Nexus.Service.Models.Conflicts.DetectedConflict> due;
+                List<(Nexus.Service.Models.Conflicts.DetectedConflict App, bool Survived)> due;
                 lock (launchGate)
                 {
                     if (!helperRegistry.IsAnyConnected || pendingLaunches.Count == 0) return;
-                    due = new List<Nexus.Service.Models.Conflicts.DetectedConflict>(pendingLaunches.Values);
+                    due = new List<(Nexus.Service.Models.Conflicts.DetectedConflict App, bool Survived)>(pendingLaunches.Values);
                     pendingLaunches.Clear();
                 }
-                foreach (var launched in due)
+                foreach (var (launched, survived) in due)
                 {
                     if (!detector.IsAppRunning(launched.Id)) continue;
                     try
@@ -310,7 +318,7 @@ internal static class TrayBootstrap
                         _ = ConflictNoticeCommands.LaunchNoticeAsync(helperRegistry, new ConflictLaunchNoticePayload
                         {
                             AppId = launched.Id,
-                            Title = ConflictLaunchTitle(launched),
+                            Title = survived ? ConflictSurvivorTitle(launched) : ConflictLaunchTitle(launched),
                             Text = ConflictLaunchText(launched),
                             EndLabel = ConflictLaunchEndButton,
                             WindowPath = ConflictSettingsPath,
@@ -322,7 +330,12 @@ internal static class TrayBootstrap
 
             launchNotifier.AppLaunched += launched =>
             {
-                lock (launchGate) { pendingLaunches[launched.Id] = launched; }
+                lock (launchGate) { pendingLaunches[launched.Id] = (launched, false); }
+                DrainLaunchNotices();
+            };
+            startupShutdown.AppSurvived += survivor =>
+            {
+                lock (launchGate) { pendingLaunches[survivor.Id] = (survivor, true); }
                 DrainLaunchNotices();
             };
             helperRegistry.Connected += _ => DrainLaunchNotices();

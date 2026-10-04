@@ -68,7 +68,7 @@ public sealed class DeviceControlGate
                 flipped.Add((handler, !isPaused));
                 Console.WriteLine(isPaused
                     ? $"[device-control] '{handler}' waiting: {after[handler]} is running"
-                    : $"[device-control] '{handler}' taken: {before[handler]} exited");
+                    : $"[device-control] '{handler}' taken: {before[handler]} exited or left the whitelist");
             }
             Volatile.Write(ref _pausedByApp, after);
         }
