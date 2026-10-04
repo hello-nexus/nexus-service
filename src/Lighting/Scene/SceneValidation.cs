@@ -25,7 +25,7 @@ public static partial class SceneValidation
 
     public static bool IsValidId(string? id) => id is not null && IdPattern().IsMatch(id);
 
-    /// <summary>Null when valid, else the first problem. Normalises rotations to quarter turns in place.</summary>
+    /// <summary>Null when valid, else the first problem. Normalises rotations to quarter turns and trims labels in place.</summary>
     public static string? Validate(List<SceneObject>? objects, List<SceneBinding>? bindings)
     {
         if (objects is null || bindings is null)
@@ -47,10 +47,8 @@ public static partial class SceneValidation
             {
                 return $"object {o.Id}: bad kind or source";
             }
-            if (o.Label is { Length: > MaxLabel })
-            {
-                return $"object {o.Id}: label too long";
-            }
+            // Labels are display text (a catalog title can run long), so they are trimmed rather than refused.
+            o.Label = Trim(o.Label);
             if (!Point(o.Position) || !Finite(o.Yaw) || !Extent(o.Size))
             {
                 return $"object {o.Id}: bad position, yaw or size";
@@ -66,11 +64,11 @@ public static partial class SceneValidation
                 {
                     return $"object {o.Id}: each anchor needs a unique id";
                 }
-                if (!KindPattern().IsMatch(a.Kind ?? "") || (a.Shape != "ring" && a.Shape != "rect")
-                    || a.Label is { Length: > MaxLabel })
+                if (!KindPattern().IsMatch(a.Kind ?? "") || (a.Shape != "ring" && a.Shape != "rect"))
                 {
-                    return $"anchor {a.Id}: bad kind, shape or label";
+                    return $"anchor {a.Id}: bad kind or shape";
                 }
+                a.Label = Trim(a.Label);
                 if (!Point(a.Center) || !Direction(a.Right) || !Direction(a.Up)
                     || !Positive(a.Width) || !Positive(a.Height))
                 {
@@ -163,6 +161,8 @@ public static partial class SceneValidation
         }
         return null;
     }
+
+    private static string? Trim(string? label) => label is { Length: > MaxLabel } ? label[..MaxLabel] : label;
 
     private static bool Finite(float v) => float.IsFinite(v);
 

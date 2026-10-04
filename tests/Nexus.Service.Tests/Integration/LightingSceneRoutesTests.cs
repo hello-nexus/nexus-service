@@ -148,6 +148,17 @@ public sealed class LightingSceneRoutesTests : IClassFixture<LightingSceneAppFac
     }
 
     [Fact]
+    public async Task Import_trims_a_long_catalog_title_instead_of_refusing_it()
+    {
+        var title = new string('Y', 200);
+        var obj = CaseObject().Replace("\"kind\":\"case\",", $"\"kind\":\"case\",\"label\":\"{title}\",");
+        var res = await Desktop().PutAsync("/lighting/scene/import", Json($$"""{"objects":[{{obj}}]}"""));
+
+        Assert.Equal(HttpStatusCode.OK, res.StatusCode);
+        Assert.Equal(80, Scene.Load().Objects.Single().Label!.Length);
+    }
+
+    [Fact]
     public async Task Put_rejects_two_bindings_for_one_device()
     {
         var res = await Desktop().PutAsync("/lighting/scene", Json(SceneBody(Keyboard, KeyboardBinding + "," + KeyboardBinding)));
