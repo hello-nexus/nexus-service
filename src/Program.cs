@@ -597,6 +597,7 @@ app.MapFanControlMigrationEndpoints();
 app.MapCoolingEndpoints();
 app.MapBenchmarkEndpoints();
 app.MapLightingEndpoints();
+app.MapLightingSceneEndpoints();
 app.MapGameSyncEndpoints();
 app.MapWebcamEndpoints();
 app.MapObsEndpoints();

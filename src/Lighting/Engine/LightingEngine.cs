@@ -132,6 +132,12 @@ public sealed class LightingEngine : IDisposable
     }
     public void UpdateDevices(DeviceFrame[] devices) { _devices = devices; }
 
+    // Devices placed in the 3D scene and the camera that sees them; null means
+    // every device samples its 2D frame. Replaced wholesale, never mutated.
+    private volatile Nexus.Service.Lighting.Scene.SceneProjection? _scene;
+    public Nexus.Service.Lighting.Scene.SceneProjection? Scene => _scene;
+    public void SetScene(Nexus.Service.Lighting.Scene.SceneProjection? scene) => _scene = scene;
+
     // Which part of its frame each stacked device samples; null or a miss
     // means the whole frame. Replaced wholesale on every stack save.
     private volatile Dictionary<string, Nexus.Service.Lighting.StackSlots.Slot>? _stackSlots;
@@ -836,6 +842,7 @@ public sealed class LightingEngine : IDisposable
         // about to lose. Correctness no longer rests on this - DeviceFrame
         // publishes once per tick - but painting an LED twice is wasted work.
         var overlaid = ApplyTestOverlays(devices);
+        var scene = FullFrameSampling ? null : _scene;
         for (var di = 0; di < devices.Length; di++)
         {
             var dev = devices[di];
@@ -937,6 +944,12 @@ public sealed class LightingEngine : IDisposable
                 devLedU = dev.LedU;
                 devLedV = dev.LedV;
                 devLedDisabled = dev.LedDisabled;
+            }
+
+            if (scene is not null && scene.Placements.TryGetValue(dev.Id, out var quads))
+            {
+                SampleSceneDevice(dev, ledCount, devLedU, devLedV, devLedDisabled, quads, scene.Camera, footprint, kx, ky);
+                continue;
             }
 
             if (devLedU is not null && devLedV is not null
@@ -1044,6 +1057,99 @@ public sealed class LightingEngine : IDisposable
     /// (linear) or partition it by LED density (UV), so per-device cost is
     /// bounded by the frame's canvas-pixel area per rendered frame.
     /// </summary>
+    /// <summary>
+    /// Samples a device placed in the 3D scene: each LED's map point is laid on
+    /// its surface, projected through the scene camera, and read there. A device
+    /// with several surfaces splits its LEDs into equal runs, each run's map
+    /// stretched to fill its own surface.
+    /// </summary>
+    private void SampleSceneDevice(
+        DeviceFrame dev, int ledCount, float[]? ledU, float[]? ledV, bool[]? disabled,
+        Nexus.Service.Lighting.Scene.SceneQuad[] quads, in Nexus.Service.Lighting.Scene.SceneCameraBasis cam,
+        bool footprint, float kx, float ky)
+    {
+        var hasUv = ledU is not null && ledV is not null && ledU.Length == ledCount && ledV.Length == ledCount;
+        var runs = quads.Length;
+        for (var k = 0; k < runs; k++)
+        {
+            var lo = k * ledCount / runs;
+            var hi = (k + 1) * ledCount / runs;
+            var count = hi - lo;
+            if (count <= 0)
+            {
+                continue;
+            }
+            var quad = quads[k];
+            float u0 = 0f, uSpan = 1f, v0 = 0f, vSpan = 1f;
+            if (hasUv && runs > 1)
+            {
+                float u1 = float.MinValue, v1 = float.MinValue;
+                u0 = float.MaxValue;
+                v0 = float.MaxValue;
+                for (var i = lo; i < hi; i++)
+                {
+                    u0 = MathF.Min(u0, ledU![i]);
+                    u1 = MathF.Max(u1, ledU[i]);
+                    v0 = MathF.Min(v0, ledV![i]);
+                    v1 = MathF.Max(v1, ledV[i]);
+                }
+                uSpan = u1 - u0;
+                vSpan = v1 - v0;
+            }
+
+            // Cell size as the UV path picks it, from the surface's on-canvas
+            // bounding box split into a grid matched to its aspect.
+            float minX = float.MaxValue, minY = float.MaxValue, maxX = float.MinValue, maxY = float.MinValue;
+            for (var c = 0; c < 4; c++)
+            {
+                if (cam.Project(quad.At(c & 1, c >> 1), out var px, out var py))
+                {
+                    minX = MathF.Min(minX, px);
+                    maxX = MathF.Max(maxX, px);
+                    minY = MathF.Min(minY, py);
+                    maxY = MathF.Max(maxY, py);
+                }
+            }
+            var boxW = maxX > minX ? maxX - minX : 1f / kx;
+            var boxH = maxY > minY ? maxY - minY : 1f / ky;
+            var cols = Math.Max(1, (int)MathF.Round(MathF.Sqrt(count * boxW / boxH)));
+            var rows = Math.Max(1, (count + cols - 1) / cols);
+            var halfW = Math.Max(1f / kx, boxW / cols) * 0.5f * kx;
+            var halfH = Math.Max(1f / ky, boxH / rows) * 0.5f * ky;
+
+            for (var i = lo; i < hi; i++)
+            {
+                if (disabled is not null && i < disabled.Length && disabled[i])
+                {
+                    dev.SetLed(i, 0, 0, 0);
+                    continue;
+                }
+                float u, v;
+                if (hasUv)
+                {
+                    u = uSpan > 1e-6f ? (ledU![i] - u0) / uSpan : 0.5f;
+                    v = vSpan > 1e-6f ? (ledV![i] - v0) / vSpan : 0.5f;
+                }
+                else
+                {
+                    u = count > 1 ? (float)(i - lo) / (count - 1) : 0.5f;
+                    v = 0.5f;
+                }
+                if (!cam.Project(quad.At(u, v), out var cx, out var cy))
+                {
+                    dev.SetLed(i, 0, 0, 0);
+                    continue;
+                }
+                var sx = cx * kx;
+                var sy = cy * ky;
+                var (r, g, b) = footprint
+                    ? SampleLedFootprint(sx - halfW, sy - halfH, sx + halfW, sy + halfH)
+                    : _sampleCanvas.GetPixel((int)sx, (int)sy);
+                dev.SetLed(i, r, g, b);
+            }
+        }
+    }
+
     private (byte r, byte g, byte b) SampleLedFootprint(float x0, float y0, float x1, float y1)
     {
         var ix0 = Math.Clamp((int)MathF.Floor(x0), 0, _sampleCanvas.Width - 1);

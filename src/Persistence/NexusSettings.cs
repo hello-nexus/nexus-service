@@ -589,6 +589,7 @@ public sealed class LightingSettings
     public int FrameRate { get; set; } = InstallDefaults.Lighting.FrameRate;
     public double ScaleRatio { get; set; } = InstallDefaults.Lighting.ScaleRatio;
     public Dictionary<string, DeviceLayout> DeviceLayouts { get; set; } = new();
+    public SceneView SceneView { get; set; } = new();
     /// <summary>True once the layouts store the unturned frame (any rotation, turned about the centre); false marks a document whose 90/270 layouts still hold the turned footprint, which <see cref="Nexus.Service.Lighting.LayoutRotationMigration"/> unswaps.</summary>
     public bool FreeRotationLayouts { get; set; }
     /// <summary>
@@ -777,6 +778,21 @@ public sealed class DeviceLayout
     public int Rotation { get; set; }
 }
 
+/// <summary>The 3D lighting view: when on, devices placed in the scene sample the canvas where this camera sees them.</summary>
+public sealed class SceneView
+{
+    public bool Enabled { get; set; }
+    public SceneCamera? Camera { get; set; }
+}
+
+/// <summary>Perspective camera in scene millimetres; Fov is vertical, in degrees.</summary>
+public sealed class SceneCamera
+{
+    public float[] Position { get; set; } = [0f, 0f, 0f];
+    public float[] Target { get; set; } = [0f, 0f, 0f];
+    public float Fov { get; set; } = 40f;
+}
+
 /// <summary>
 /// A preset that can auto-activate when one of its bound apps takes focus -
 /// implemented by <see cref="LayoutPreset"/> (lighting) and
@@ -816,6 +832,8 @@ public sealed class LayoutPreset : IAppBoundPreset
     /// on a preset saved before per-app activation existed; an app appears
     /// under at most one preset (the route unbinds it elsewhere on assign).</summary>
     public List<PresetAppBinding>? Apps { get; set; }
+    /// <summary>3D view captured at save time; null on a preset saved before it existed, which activate leaves untouched.</summary>
+    public SceneView? SceneView { get; set; }
 
     IReadOnlyList<PresetAppBinding>? IAppBoundPreset.Apps => Apps;
 }

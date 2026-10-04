@@ -281,6 +281,14 @@ public static partial class DevicesRoutes
         return copy;
     }
 
+    internal static Nexus.Service.Persistence.SceneView CopySceneView(Nexus.Service.Persistence.SceneView view) => new()
+    {
+        Enabled = view.Enabled,
+        Camera = view.Camera is { } c
+            ? new Nexus.Service.Persistence.SceneCamera { Position = (float[])c.Position.Clone(), Target = (float[])c.Target.Clone(), Fov = c.Fov }
+            : null,
+    };
+
     private static Dictionary<string, Nexus.Service.Persistence.DeviceLayout> DeepCopyLayouts(
         Dictionary<string, Nexus.Service.Persistence.DeviceLayout> source)
     {
@@ -507,6 +515,7 @@ public static partial class DevicesRoutes
                     Name = body.Name,
                     Layouts = DeepCopyLayouts(s.Lighting.DeviceLayouts),
                     Look = Nexus.Service.Lighting.LightingPresetLooks.Capture(s.Lighting),
+                    SceneView = CopySceneView(s.Lighting.SceneView),
                 };
                 CaptureDeviceSlices(s, created);
                 s.Lighting.LayoutPresets.Add(created);
@@ -565,6 +574,7 @@ public static partial class DevicesRoutes
                 {
                     p.Layouts = DeepCopyLayouts(settings.Lighting.DeviceLayouts);
                     p.Look = Nexus.Service.Lighting.LightingPresetLooks.Capture(settings.Lighting);
+                    p.SceneView = CopySceneView(settings.Lighting.SceneView);
                     CaptureDeviceSlices(settings, p, body.SaveDeviceLooks);
                 }
             });

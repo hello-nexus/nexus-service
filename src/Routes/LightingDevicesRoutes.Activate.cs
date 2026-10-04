@@ -33,6 +33,7 @@ public static partial class DevicesRoutes
         var look = preset.Look;
         var staticLooks = preset.StaticDeviceLooks is null ? null : DeepCopyStaticLooks(preset.StaticDeviceLooks);
         var devicePrefs = preset.DevicePrefs is null ? null : DeepCopyDevicePrefs(preset.DevicePrefs);
+        var sceneView = preset.SceneView is null ? null : CopySceneView(preset.SceneView);
         // Ids the preset re-enables. Smart lights re-push their static colour
         // on re-enable, mirroring POST /devices/lighting-devices/controlled.
         var reControlled = uncontrolled is null
@@ -70,6 +71,11 @@ public static partial class DevicesRoutes
             if (devicePrefs is not null)
             {
                 settings.Devices.LightingDevicePrefs = devicePrefs;
+            }
+            if (sceneView is not null)
+            {
+                // LightingSceneService rebuilds the engine projection off the store change.
+                settings.Lighting.SceneView = sceneView;
             }
         });
         if (uncontrolled is not null)

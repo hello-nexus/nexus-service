@@ -87,6 +87,7 @@ namespace Nexus.Service.Serialization;
 [JsonSerializable(typeof(System.Text.Json.JsonElement))]
 // MachineCaseStore: this machine's PC case pick and its pending-sync flag.
 [JsonSerializable(typeof(MachineCaseFile))]
+[JsonSerializable(typeof(Nexus.Service.Lighting.Scene.LightingSceneDoc))]
 // QSeriesTransportStore: (USB-serial → TCP transport record). Lets the
 // service remember which Q-series devices have been promoted to
 // adb-over-WiFi so panel transport survives USB-FFS adb wedges across

@@ -621,6 +621,12 @@ namespace Nexus.Service.Serialization;
 
 // Devices
 [JsonSerializable(typeof(Nexus.Service.Persistence.DeviceLayout))]
+// 3D lighting scene (LightingSceneRoutes).
+[JsonSerializable(typeof(Nexus.Service.Models.Lighting.LightingSceneResponse))]
+[JsonSerializable(typeof(Nexus.Service.Models.Lighting.PutLightingSceneBody))]
+[JsonSerializable(typeof(Nexus.Service.Models.Lighting.ImportLightingSceneBody))]
+[JsonSerializable(typeof(Nexus.Service.Models.Lighting.PutSceneViewBody))]
+[JsonSerializable(typeof(Nexus.Service.Persistence.SceneView))]
 [JsonSerializable(typeof(Dictionary<string, Nexus.Service.Persistence.DeviceLayout>))]
 [JsonSerializable(typeof(SaveDeviceLayoutBody))]
 [JsonSerializable(typeof(PresetAppDto))]

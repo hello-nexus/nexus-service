@@ -493,6 +493,9 @@ public static class NexusServiceCollectionExtensions
             engine.SetStackSlots(sp.GetRequiredService<Nexus.Service.Persistence.IConfigStore>().Load().Lighting.DeviceStacks);
             return engine;
         });
+        services.AddSingleton<Nexus.Service.Lighting.Scene.LightingSceneStore>();
+        services.AddSingleton<Nexus.Service.Lighting.Scene.LightingSceneService>();
+        services.AddHostedService(sp => sp.GetRequiredService<Nexus.Service.Lighting.Scene.LightingSceneService>());
         // Community LED mappings: resolver state for contributor frames, the
         // registry client (disk-cached, offline-tolerant), the apply
         // orchestrator shared by routes + auto-apply, and the first-seen
