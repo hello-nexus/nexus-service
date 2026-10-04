@@ -205,13 +205,17 @@ public sealed class LightingSceneRoutesTests : IClassFixture<LightingSceneAppFac
     {
         var client = Desktop();
         await client.PutAsync("/lighting/scene", Json(SceneBody(Keyboard, KeyboardBinding)));
-        await client.PutAsync("/lighting/scene/view", Json($$"""{"enabled":true,"camera":{{FrontCamera}},"seq":10}"""));
+        await client.PutAsync("/lighting/scene/view", Json($$"""{"enabled":true,"camera":{{FrontCamera}},"session":"a","seq":10}"""));
 
-        await client.PutAsync("/lighting/scene/view", Json("""{"draft":true,"seq":9,"camera":{"position":[900,300,0],"target":[0,0,0],"fov":30}}"""));
+        await client.PutAsync("/lighting/scene/view", Json("""{"draft":true,"session":"a","seq":9,"camera":{"position":[900,300,0],"target":[0,0,0],"fov":30}}"""));
         Assert.Equal(0f, Engine.Scene!.Camera.Position.X);
 
-        await client.PutAsync("/lighting/scene/view", Json("""{"draft":true,"seq":11,"camera":{"position":[900,300,0],"target":[0,0,0],"fov":30}}"""));
+        await client.PutAsync("/lighting/scene/view", Json("""{"draft":true,"session":"a","seq":11,"camera":{"position":[900,300,0],"target":[0,0,0],"fov":30}}"""));
         Assert.Equal(900f, Engine.Scene!.Camera.Position.X);
+
+        // Another editor's numbers are never compared with this one's.
+        await client.PutAsync("/lighting/scene/view", Json("""{"draft":true,"session":"b","seq":1,"camera":{"position":[700,300,0],"target":[0,0,0],"fov":30}}"""));
+        Assert.Equal(700f, Engine.Scene!.Camera.Position.X);
     }
 
     [Fact]

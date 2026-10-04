@@ -40,6 +40,9 @@ public sealed class PutSceneViewBody
     /// <summary>Drives the engine without saving; an editor streams these while the camera moves.</summary>
     public bool Draft { get; set; }
 
-    /// <summary>Increases with every view request from one editor, so a draft that lands after its commit is dropped.</summary>
+    /// <summary>Identifies one editor (one open page); its <see cref="Seq"/> numbers are compared only with each other.</summary>
+    public string? Session { get; set; }
+
+    /// <summary>Increases with every view request from one editor session, so a draft that lands after its commit is dropped.</summary>
     public long? Seq { get; set; }
 }

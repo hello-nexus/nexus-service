@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Threading;
 using System.Threading.Tasks;
 using Microsoft.Extensions.Hosting;
@@ -21,8 +22,10 @@ public sealed class LightingSceneService : IHostedService
     private readonly object _lock = new();
     private SceneCamera? _draft;
     // Drafts and commits from one editor stream over separate requests; a draft
-    // numbered at or below the last commit arrived late and is dropped.
-    private long _lastCommitSeq = long.MinValue;
+    // numbered at or below that editor's last commit arrived late and is
+    // dropped. Numbers are per editor session, so clocks never get compared.
+    private readonly Dictionary<string, long> _lastCommitBySession = new(StringComparer.Ordinal);
+    private const int MaxTrackedSessions = 32;
     private string _appliedViewSig = "";
 
     public LightingSceneService(IConfigStore config, LightingSceneStore store, LightingEngine engine)
@@ -47,12 +50,13 @@ public sealed class LightingSceneService : IHostedService
         return Task.CompletedTask;
     }
 
-    /// <summary>Points the engine at a camera without persisting it; false when the draft came in after a newer commit.</summary>
-    public bool SetDraftCamera(SceneCamera camera, long? seq = null)
+    /// <summary>Points the engine at a camera without persisting it; false when the draft came in after its editor's newer commit.</summary>
+    public bool SetDraftCamera(SceneCamera camera, string? session = null, long? seq = null)
     {
         lock (_lock)
         {
-            if (seq is { } s && s <= _lastCommitSeq)
+            if (session is not null && seq is { } s
+                && _lastCommitBySession.TryGetValue(session, out var committed) && s <= committed)
             {
                 return false;
             }
@@ -62,15 +66,19 @@ public sealed class LightingSceneService : IHostedService
         return true;
     }
 
-    /// <summary>Ends any draft; a numbered commit also refuses drafts numbered at or below it.</summary>
-    public void ClearDraft(long? seq = null)
+    /// <summary>Ends any draft; a numbered commit also refuses its editor's drafts numbered at or below it.</summary>
+    public void ClearDraft(string? session = null, long? seq = null)
     {
         lock (_lock)
         {
             _draft = null;
-            if (seq is { } s && s > _lastCommitSeq)
+            if (session is not null && seq is { } s)
             {
-                _lastCommitSeq = s;
+                if (_lastCommitBySession.Count >= MaxTrackedSessions && !_lastCommitBySession.ContainsKey(session))
+                {
+                    _lastCommitBySession.Clear();
+                }
+                _lastCommitBySession[session] = Math.Max(s, _lastCommitBySession.GetValueOrDefault(session, long.MinValue));
             }
         }
         Apply();

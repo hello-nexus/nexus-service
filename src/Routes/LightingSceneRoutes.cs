@@ -132,13 +132,17 @@ public static class LightingSceneRoutes
             {
                 return Fail(error);
             }
+            if (body.Session is { Length: > 64 })
+            {
+                return Fail("session must be at most 64 characters");
+            }
             if (body.Draft)
             {
                 if (body.Camera is null)
                 {
                     return Fail("a draft needs a camera");
                 }
-                scene.SetDraftCamera(body.Camera, body.Seq);
+                scene.SetDraftCamera(body.Camera, body.Session, body.Seq);
                 return Results.Json(config.Load().Lighting.SceneView ?? new SceneView(), AppJsonContext.Default.SceneView);
             }
             config.Update(s =>
@@ -151,7 +155,7 @@ public static class LightingSceneRoutes
                 };
             });
             // A commit that changes nothing still ends the drag that drafted it.
-            scene.ClearDraft(body.Seq);
+            scene.ClearDraft(body.Session, body.Seq);
             return Results.Json(config.Load().Lighting.SceneView, AppJsonContext.Default.SceneView);
         });
     }

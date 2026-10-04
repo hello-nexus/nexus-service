@@ -285,8 +285,9 @@ public static partial class DevicesRoutes
     internal static Nexus.Service.Persistence.SceneView CopySceneView(Nexus.Service.Persistence.SceneView? view) => new()
     {
         Enabled = view?.Enabled ?? false,
-        Camera = view?.Camera is { } c
-            ? new Nexus.Service.Persistence.SceneCamera { Position = (float[]?)c.Position?.Clone() ?? [0f, 0f, 0f], Target = (float[]?)c.Target?.Clone() ?? [0f, 0f, 0f], Fov = c.Fov }
+        // A camera missing either point is dropped rather than guessed at.
+        Camera = view?.Camera is { Position: not null, Target: not null } c
+            ? new Nexus.Service.Persistence.SceneCamera { Position = (float[])c.Position.Clone(), Target = (float[])c.Target.Clone(), Fov = c.Fov }
             : null,
     };
 
