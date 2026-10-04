@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Net;
 using System.Net.Http;
 using System.Net.Http.Json;
 using System.Text.Json.Serialization;
@@ -75,7 +76,10 @@ public sealed class GitHubReleaseProvider : IUpdateSource
     {
         var url = $"https://api.github.com/repos/{_ownerRepo}/releases/latest";
         using var resp = await client.GetAsync(url, ct);
-        if (!resp.IsSuccessStatusCode) return null;
+        // 404: the repo has no stable release yet.
+        if (resp.StatusCode == HttpStatusCode.NotFound) return null;
+        // Any other refusal (a rate limit, an outage) is a failed check, never "nothing newer".
+        resp.EnsureSuccessStatusCode();
         return await resp.Content.ReadFromJsonAsync(AppJsonContext.Default.GitHubRelease, ct);
     }
 
@@ -83,7 +87,7 @@ public sealed class GitHubReleaseProvider : IUpdateSource
     {
         var url = $"https://api.github.com/repos/{_ownerRepo}/releases";
         using var resp = await client.GetAsync(url, ct);
-        if (!resp.IsSuccessStatusCode) return null;
+        resp.EnsureSuccessStatusCode();
         var releases = await resp.Content.ReadFromJsonAsync(AppJsonContext.Default.ListGitHubRelease, ct);
         // Newest by published date regardless of prerelease flag.
         return releases?.OrderByDescending(r => r.PublishedAt).FirstOrDefault();
