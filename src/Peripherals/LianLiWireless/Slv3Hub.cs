@@ -89,10 +89,14 @@ public sealed class Slv3Hub : IDisposable
 
     // A reply opening with 0 is the RX's "no device list this cycle". It does
     // this on its own every ~17 s for a few seconds and recovers without help,
-    // while a reset restarts the TX and stretches the gap (Y70 USBPcap
-    // 2026-09-23), so only a busy spell this long is treated as a wedge.
+    // so only a busy spell this long is treated as a wedge. A wedge gets a fresh
+    // RX handle, not UsbResetAnother: the reset re-enumerates the TX, and the RX
+    // reopen is the step a full reconnect adds over it.
     private const int RxBusyPollsBeforeReset = 60;
+    private const int MaxRxReopens = 3;
     private int _rxBusyStreak;
+    private int _rxReopenCount;
+    private byte[]? _firstBusyReply;
 
     // Polls a TX that went away (it re-enumerates about a second after an RX
     // reset) may take to come back before the link is torn down and rebuilt.
@@ -285,6 +289,7 @@ public sealed class Slv3Hub : IDisposable
         _rxFailStreak = 0;
         _rxBusyStreak = 0;
         _rxResetCount = 0;
+        _rxReopenCount = 0;
         _txMissingPolls = 0;
         _saveCfgBurstRemaining = 0;
         _saveCfgDueMs = 0;
@@ -762,7 +767,7 @@ public sealed class Slv3Hub : IDisposable
         // RF sampling gap and takes the normal merge path.
         if (reply.Length > 0 && reply[0] == 0)
         {
-            return HandleRxBusyLocked();
+            return HandleRxBusyLocked(reply);
         }
         if (reply.Length < Slv3Protocol.RecordHeaderLength || reply[0] != Slv3Protocol.UsbSendRf)
         {
@@ -771,6 +776,7 @@ public sealed class Slv3Hub : IDisposable
         _rxFailStreak = 0;
         _rxBusyStreak = 0;
         _rxResetCount = 0;
+        _rxReopenCount = 0;
 
         State.MotherboardPwmPercent = Slv3Protocol.ParseGetDevMoboDuty(reply);
 
@@ -848,14 +854,60 @@ public sealed class Slv3Hub : IDisposable
     }
 
     // The RX answered but has no list: keep the last-known one.
-    private bool HandleRxBusyLocked()
+    private bool HandleRxBusyLocked(byte[] reply)
     {
         PublishFansLocked(_nowMs());
-        if (++_rxBusyStreak < RxBusyPollsBeforeReset)
+        if (++_rxBusyStreak == 1)
+        {
+            _firstBusyReply = reply;
+        }
+        if (_rxBusyStreak < RxBusyPollsBeforeReset)
         {
             return true;
         }
-        return ResetRxLocked($"{RxBusyPollsBeforeReset} consecutive busy GetDev replies");
+        if (_rxReopenCount >= MaxRxReopens)
+        {
+            // Out of reopens: the streak stays past its threshold, so every
+            // further busy poll fails and the worker reconnects.
+            return false;
+        }
+        _rxBusyStreak = 0;
+        _rxReopenCount++;
+        var first = _firstBusyReply is { } b ? Convert.ToHexString(b, 0, Math.Min(b.Length, Slv3Protocol.UsbPacketSize)) : "";
+        ServiceLog.Warn($"[lianli-wireless] {RxBusyPollsBeforeReset} consecutive busy GetDev replies (first {first}), reopening RX ({_rxReopenCount}/{MaxRxReopens})");
+        return TryReopenRxLocked();
+    }
+
+    // Reopens the RX handle, keeping the device list.
+    private bool TryReopenRxLocked()
+    {
+        try { _rx?.Dispose(); } catch { /* best effort */ }
+        _rx = null;
+        Slv3PortInfo? rxPort = null;
+        foreach (var port in _discovery.Discover())
+        {
+            if (port.Role == Slv3DongleRole.Rx)
+            {
+                rxPort = port;
+                break;
+            }
+        }
+        if (rxPort is null)
+        {
+            ServiceLog.Warn("[lianli-wireless] RX reopen failed: RX not enumerated");
+            return false;
+        }
+        try
+        {
+            _rx = _transportFactory(rxPort);
+        }
+        catch (Exception ex)
+        {
+            ServiceLog.Warn($"[lianli-wireless] RX reopen failed: {ex.GetType().Name}: {ex.Message}");
+            return false;
+        }
+        ServiceLog.Info("[lianli-wireless] RX reopened");
+        return true;
     }
 
     // Only a good reply clears the busy and failure streaks, so an RX that
