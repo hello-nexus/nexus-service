@@ -1252,6 +1252,58 @@ public class Slv3HubTests
         Assert.True(CountBindFrames(tx) > settled);
     }
 
+    [Fact]
+    public void BindingChanged_tracks_master_slot_and_channel_only()
+    {
+        var master = Convert.FromHexString("AABBCCDDEEFF");
+        var bound = Record(master, rxType: 3, channel: 8);
+
+        Assert.False(Slv3Hub.BindingChanged(bound, Record(master, rxType: 3, channel: 8, fanCount: 1)));
+        Assert.True(Slv3Hub.BindingChanged(bound, Record(master, rxType: 1, channel: 8)));
+        Assert.True(Slv3Hub.BindingChanged(bound, Record(master, rxType: 3, channel: 0)));
+        Assert.True(Slv3Hub.BindingChanged(bound, Record(new byte[6], rxType: 3, channel: 8)));
+    }
+
+    [Fact]
+    public void DescribeBinding_reports_bound_only_for_our_master_on_a_valid_slot()
+    {
+        var master = Convert.FromHexString("AABBCCDDEEFF");
+
+        Assert.Equal("master AABBCCDDEEFF slot 3 ch 8 bound",
+            Slv3Hub.DescribeBinding(Record(master, rxType: 3, channel: 8), master));
+        Assert.Equal("master AABBCCDDEEFF slot 20 ch 8 unbound",
+            Slv3Hub.DescribeBinding(Record(master, rxType: 20, channel: 8), master));
+        Assert.Equal("master 000000000000 slot 0 ch 8 unbound",
+            Slv3Hub.DescribeBinding(Record(new byte[6], rxType: 0, channel: 8), master));
+    }
+
+    [Fact]
+    public void TraceBinding_rate_limits_a_flapping_chain_and_reports_its_current_state()
+    {
+        var (hub, _, _, _) = CreateConnectedHub();
+        var master = Convert.FromHexString("AABBCCDDEEFF");
+        var slot3 = Record(master, rxType: 3, channel: 8);
+        var slot1 = Record(master, rxType: 1, channel: 8);
+        var raw = new byte[Slv3Protocol.RecordLength];
+        const long Interval = Slv3Hub.BindingLogIntervalMs;
+
+        Assert.Null(hub.TraceBindingLocked("K", slot3, slot3, raw, 0, nowMs: 0));
+        Assert.Contains("slot 3 ch 8", hub.TraceBindingLocked("K", slot3, slot1, raw, 0, nowMs: 0));
+        Assert.Null(hub.TraceBindingLocked("K", slot1, slot3, raw, 0, nowMs: 500));
+        Assert.Null(hub.TraceBindingLocked("K", slot3, slot1, raw, 0, nowMs: 1000));
+        Assert.Null(hub.TraceBindingLocked("K", slot1, slot1, raw, 0, nowMs: Interval - 1));
+
+        var settled = hub.TraceBindingLocked("K", slot1, slot1, raw, 0, nowMs: Interval);
+        Assert.Contains("now at master AABBCCDDEEFF slot 1 ch 8", settled);
+        Assert.Contains("after 2 unlogged change(s)", settled);
+        Assert.Null(hub.TraceBindingLocked("K", slot1, slot1, raw, 0, nowMs: 2 * Interval));
+        Assert.NotNull(hub.TraceBindingLocked("K", slot1, slot3, raw, 0, nowMs: 2 * Interval));
+    }
+
+    private static Slv3DeviceRecord Record(byte[] masterMac, byte rxType, byte channel, int fanCount = 3) =>
+        new(FanMac, masterMac, channel, rxType, DevType: 0, fanCount, RightAttach: false,
+            new byte[4], new byte[4], new int[4], new int[4], CmdSeq: 0);
+
     // Bind/PWM frames on the wire: a chunkSeq-0 USB frame carrying RF_Bind.
     // First USB chunk of every RF payload with this command; payload byte k sits at frame [4 + k].
     private static List<byte[]> RfFrames(FakeTxTransport tx, byte rfCmd) =>

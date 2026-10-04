@@ -39,6 +39,8 @@ public sealed class Slv3Hub : IDisposable
     // Wholesale replacement per poll is what made chains flap in and out of
     // cooling/lighting (Y70 log: "device list: 2 -> 1 -> 2" continuously).
     private readonly Dictionary<string, Slv3KnownChain> _knownChains = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, Slv3BindingLog> _bindingLogs = new(StringComparer.Ordinal);
+    internal const long BindingLogIntervalMs = 60_000;
 
     // Per-chain PWM port targets keyed by fan MAC hex; a missing key or a
     // null element means that port follows the motherboard PWM header. Read
@@ -266,6 +268,7 @@ public sealed class Slv3Hub : IDisposable
         State.MotherboardPwmPercent = null;
         _lastFanRecords = new List<Slv3DeviceRecord>();
         _knownChains.Clear();
+        _bindingLogs.Clear();
         _pending.Clear();
         _pendingCommands.Clear();
         _lastIssuedSeq.Clear();
@@ -379,6 +382,10 @@ public sealed class Slv3Hub : IDisposable
             || Slv3Protocol.MacIsZero(mac))
         {
             return false;
+        }
+        if (!Slv3Protocol.MacIsZero(_masterMac) && !Slv3Protocol.MacEquals(_masterMac, mac))
+        {
+            ServiceLog.Warn($"[lianli-wireless] dongle master MAC {Convert.ToHexString(_masterMac)} -> {Convert.ToHexString(mac)} on channel {channel}");
         }
         _masterMac = mac;
         State.MasterMac = Convert.ToHexString(mac);
@@ -634,6 +641,7 @@ public sealed class Slv3Hub : IDisposable
                     : IsBoundToUsLocked(record);
                 if (done)
                 {
+                    ServiceLog.Info($"[lianli-wireless] {(op.Unbind ? "unbind" : "bind")} for {key} confirmed ({DescribeBinding(record, _masterMac)})");
                     (resolved ??= new List<string>()).Add(key);
                     bindConfirmed |= !op.Unbind;
                     continue;
@@ -774,12 +782,16 @@ public sealed class Slv3Hub : IDisposable
             if (Slv3Protocol.TryParseRecord(reply, offset, out var record) && record.IsWirelessFan)
             {
                 var key = Convert.ToHexString(record.Mac);
-                if (!_knownChains.ContainsKey(key))
+                if (!_knownChains.TryGetValue(key, out var known))
                 {
                     var what = record.IsStrimer ? $"Strimer dev_type {record.DevType}"
                         : record.IsHydroShift ? $"HydroShift II dev_type {record.DevType}, {record.FanCount} fan(s)"
                         : $"{record.FanCount} fan(s), {record.Family}";
-                    ServiceLog.Info($"[lianli-wireless] chain {key} appeared ({what})");
+                    ServiceLog.Info($"[lianli-wireless] chain {key} appeared ({what}, {DescribeBinding(record, _masterMac)})");
+                }
+                else if (TraceBindingLocked(key, known.Record, record, reply, offset, nowMs) is { } line)
+                {
+                    ServiceLog.Info(line);
                 }
                 _knownChains[key] = new Slv3KnownChain(record, nowMs);
             }
@@ -799,6 +811,7 @@ public sealed class Slv3Hub : IDisposable
             {
                 ServiceLog.Info($"[lianli-wireless] chain {key} dropped ({ChainExpiryMs / 1000}s unseen)");
                 _knownChains.Remove(key);
+                _bindingLogs.Remove(key);
                 if (_aioControl.TryGetValue(key, out var control))
                 {
                     control.Switched = false;
@@ -888,10 +901,50 @@ public sealed class Slv3Hub : IDisposable
 
     // Bound to us = our master MAC and a valid slot. A release clears both in
     // the chain's record; a stale master with slot 0 is unbound.
-    private bool IsBoundToUsLocked(Slv3DeviceRecord record) =>
-        Slv3Protocol.MacEquals(record.MasterMac, _masterMac)
+    private bool IsBoundToUsLocked(Slv3DeviceRecord record) => IsBoundTo(record, _masterMac);
+
+    private static bool IsBoundTo(Slv3DeviceRecord record, byte[] masterMac) =>
+        Slv3Protocol.MacEquals(record.MasterMac, masterMac)
         && record.RxType >= Slv3Protocol.MinSlot
         && record.RxType <= Slv3Protocol.MaxSlot;
+
+    // A flapping record logs at most once per BindingLogIntervalMs per chain, so
+    // it cannot push older lines out of the support bundle's log tail.
+    internal string? TraceBindingLocked(string key, Slv3DeviceRecord before, Slv3DeviceRecord after, byte[] reply, int offset, long nowMs)
+    {
+        var changed = BindingChanged(before, after);
+        var found = _bindingLogs.TryGetValue(key, out var log);
+        var quiet = found && nowMs - log.LastMs < BindingLogIntervalMs;
+        if (changed && quiet)
+        {
+            _bindingLogs[key] = log with { Unlogged = log.Unlogged + 1 };
+            return null;
+        }
+        var unlogged = log.Unlogged > 0 ? $" after {log.Unlogged} unlogged change(s)" : "";
+        string line;
+        if (changed)
+        {
+            line = $"[lianli-wireless] chain {key} binding {DescribeBinding(before, _masterMac)} -> {DescribeBinding(after, _masterMac)}{unlogged}, record {Convert.ToHexString(reply, offset, Slv3Protocol.RecordLength)}";
+        }
+        else if (log.Unlogged > 0 && !quiet)
+        {
+            line = $"[lianli-wireless] chain {key} binding now at {DescribeBinding(after, _masterMac)}{unlogged}";
+        }
+        else
+        {
+            return null;
+        }
+        _bindingLogs[key] = new Slv3BindingLog(nowMs, 0);
+        return line;
+    }
+
+    internal static bool BindingChanged(Slv3DeviceRecord before, Slv3DeviceRecord after) =>
+        !Slv3Protocol.MacEquals(before.MasterMac, after.MasterMac)
+        || before.RxType != after.RxType
+        || before.Channel != after.Channel;
+
+    internal static string DescribeBinding(Slv3DeviceRecord record, byte[] masterMac) =>
+        $"master {Convert.ToHexString(record.MasterMac)} slot {record.RxType} ch {record.Channel} {(IsBoundTo(record, masterMac) ? "bound" : "unbound")}";
 
     private Slv3FanInfo ToFanInfo(Slv3DeviceRecord record, bool stale) => new()
     {
@@ -1037,6 +1090,7 @@ public sealed class Slv3Hub : IDisposable
             {
                 return false;
             }
+            ServiceLog.Info($"[lianli-wireless] bind requested for {key} on slot {slot}");
             _pending[key] = new Slv3PendingOp(mac, (byte)slot, Unbind: false, PendingOpTickBudget);
             // First frame goes out now; the poll re-sends until the device list
             // confirms, so a request does not wait up to a full tick to start.
@@ -1068,6 +1122,7 @@ public sealed class Slv3Hub : IDisposable
                 _pending.Remove(key);
                 return true;
             }
+            ServiceLog.Info($"[lianli-wireless] unbind requested for {key}");
             _pending[key] = new Slv3PendingOp(mac, 0, Unbind: true, PendingOpTickBudget);
             SendBindFrameLocked(existing, 0, unbind: true);
         }
@@ -1605,6 +1660,8 @@ public sealed class Slv3Hub : IDisposable
     private readonly record struct Slv3PendingCommand(byte[] Mac, byte RfCmd, byte TargetSeq, int SendsRemaining);
 
     private readonly record struct Slv3KnownChain(Slv3DeviceRecord Record, long LastSeenMs);
+
+    private readonly record struct Slv3BindingLog(long LastMs, int Unlogged);
 
     // SwitchSeq is the cmdSeq of the last RF_AioSwitchWireless sent; 0 = none in flight.
     private sealed class Slv3AioControl
