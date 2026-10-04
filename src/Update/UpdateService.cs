@@ -72,8 +72,8 @@ public sealed class UpdateService : BackgroundService
     private volatile UpdateManifest? _latestManifest;
     private volatile bool _updateReady;
 
-    // Set once a check reaches the source (network/DNS up). Gates the cold-boot
-    // short-retry so a transient boot-time DNS failure isn't stranded until the
+    // Set once a check succeeds. Gates the cold-boot short-retry so a transient
+    // boot-time failure (DNS not up, a refused request) isn't stranded until the
     // next PollInterval.
     private volatile bool _hadSuccessfulCheck;
     private volatile string? _stagedInstallerPath;
@@ -213,10 +213,10 @@ public sealed class UpdateService : BackgroundService
     }
 
     /// <summary>
-    /// The startup check can fire before the network/DNS stack is up on a cold
-    /// boot, failing to resolve api.github.com. Retry on a short capped backoff
-    /// until a check reaches the source, so a transient boot failure isn't
-    /// stranded until the next PollInterval. Returns false if cancelled.
+    /// The startup check can fail on a cold boot (DNS not up yet) or be refused
+    /// (rate limit, outage). Retry on a short capped backoff until a check
+    /// succeeds, so a transient failure isn't stranded until the next
+    /// PollInterval. Returns false if cancelled.
     /// </summary>
     private async Task<bool> RetryUntilFirstCheckAsync(CancellationToken ct)
     {

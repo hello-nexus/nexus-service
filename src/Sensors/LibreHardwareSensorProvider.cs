@@ -26,6 +26,7 @@ public sealed class LibreHardwareSensorProvider : ISensorProvider
 {
     private readonly LhmComputer _lhm;
     private readonly AstralGpuSupplement _astral = new(new AstralNvApiClient());
+    private readonly NvmlPowerLimits _nvmlPowerLimits = new();
     private string? _ramBrandModel;
     private string? _storageBrandModel;
 
@@ -102,6 +103,14 @@ public sealed class LibreHardwareSensorProvider : ISensorProvider
                 var hwIdentifier = hw.Identifier.ToString();
                 _astral.AppendSensors(hwIdentifier, hwIdentifier, hw.Name, mapped);
                 displayName = _astral.EnrichName(hwIdentifier, hw.Name);
+                var powerLimit = _nvmlPowerLimits.WattsFor(hw.Name);
+                if (powerLimit > 0)
+                {
+                    foreach (var sensor in mapped)
+                    {
+                        if (sensor.Type == "Power" && sensor.Name == "GPU Package") sensor.TheoreticalMaximum = powerLimit;
+                    }
+                }
             }
             // VRAM total comes from the GPU's "GPU Memory Total" sensor; reuse it
             // as the ceiling for "GPU Memory Used" / "Free" so the client can
@@ -242,8 +251,8 @@ public sealed class LibreHardwareSensorProvider : ISensorProvider
                 Format = di.DriveFormat,
                 Sensors = new List<HardwareSensor>
                 {
-                    MakeSensor($"storage/{label}/used", "Used", "Data", (float)usedGb, "GB", label),
-                    MakeSensor($"storage/{label}/free", "Free", "Data", (float)freeGb, "GB", label),
+                    MakeSensor($"storage/{label}/used", "Used", "Data", (float)usedGb, "GB", label, theoreticalMax: (float)totalGb),
+                    MakeSensor($"storage/{label}/free", "Free", "Data", (float)freeGb, "GB", label, theoreticalMax: (float)totalGb),
                     MakeSensor($"storage/{label}/usage", "Usage", "Level", (float)usePct, "%", label),
                 },
             };
@@ -607,7 +616,7 @@ public sealed class LibreHardwareSensorProvider : ISensorProvider
 
     private static string FormatGb(double gb) => gb >= 1000 ? $"{gb / 1024.0:F2} TB" : $"{gb:F2} GB";
 
-    private static HardwareSensor MakeSensor(string id, string name, string type, float value, string units, string parentName)
+    private static HardwareSensor MakeSensor(string id, string name, string type, float value, string units, string parentName, float theoreticalMax = 0f)
     {
         var formatted = type switch
         {
@@ -619,6 +628,7 @@ public sealed class LibreHardwareSensorProvider : ISensorProvider
         {
             Id = id, Name = name, Type = type, Value = value, Units = units,
             Formatted = formatted,
+            TheoreticalMaximum = theoreticalMax,
             Parent = new SensorParent { Id = id.Split('/')[0], Name = parentName },
         };
     }

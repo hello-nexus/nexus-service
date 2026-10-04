@@ -435,8 +435,8 @@ public sealed class MacSensorProvider : ISensorProvider, IDisposable
 
             var sensors = new List<HardwareSensor>
             {
-                MakeSensor($"storage/{label}/used", "Used", "Data", (float)usedGb, "GB", label),
-                MakeSensor($"storage/{label}/free", "Free", "Data", (float)freeGb, "GB", label),
+                MakeSensor($"storage/{label}/used", "Used", "Data", (float)usedGb, "GB", label, theoreticalMax: (float)totalGb),
+                MakeSensor($"storage/{label}/free", "Free", "Data", (float)freeGb, "GB", label, theoreticalMax: (float)totalGb),
                 MakeSensor($"storage/{label}/usage", "Usage", "Level", (float)usePct, "%", label),
             };
 
