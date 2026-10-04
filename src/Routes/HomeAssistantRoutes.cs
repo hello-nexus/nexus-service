@@ -18,6 +18,12 @@ public static partial class DevicesRoutes
         app.MapGet("/home-assistant/entities", (HomeAssistantHub hub) =>
             hub.GetEntitiesResponse());
 
+        app.MapGet("/home-assistant/dashboards", async (HomeAssistantHub hub, CancellationToken ct) =>
+            await hub.GetDashboardsAsync(ct));
+
+        app.MapGet("/home-assistant/dashboard", async (string? id, HomeAssistantHub hub, CancellationToken ct) =>
+            await hub.GetDashboardAsync(id ?? "", ct));
+
         // Returns HaEntityDto on success or ApiResponse on failure; both branches
         // use the source-gen TypeInfo overload as required for AOT.
         app.MapPost("/home-assistant/entity/set", async (HaSetEntityBody body, HomeAssistantHub hub, CancellationToken ct) =>

@@ -1,3 +1,5 @@
+using System.Net;
+using System.Net.Http;
 using Nexus.Service.Update;
 using Xunit;
 
@@ -184,5 +186,36 @@ public sealed class GitHubReleaseProviderTests
     public void SelectInstallerAsset_linux_null_when_no_installer()
     {
         Assert.Null(GitHubReleaseProvider.SelectInstallerAsset(System.Array.Empty<GitHubReleaseAsset>(), RuntimePlatform.Linux));
+    }
+
+    // Release fetch status handling
+
+    [Theory]
+    [InlineData("beta", HttpStatusCode.Forbidden)]
+    [InlineData("beta", HttpStatusCode.ServiceUnavailable)]
+    [InlineData("production", HttpStatusCode.Forbidden)]
+    [InlineData("production", HttpStatusCode.InternalServerError)]
+    public async Task GetLatestAsync_refused_request_throws_instead_of_reporting_no_release(string channel, HttpStatusCode status)
+    {
+        var provider = new GitHubReleaseProvider(new StubHttpClientFactory(status));
+        await Assert.ThrowsAsync<HttpRequestException>(() => provider.GetLatestAsync(channel, CancellationToken.None));
+    }
+
+    [Fact]
+    public async Task GetLatestAsync_production_without_a_stable_release_returns_null()
+    {
+        var provider = new GitHubReleaseProvider(new StubHttpClientFactory(HttpStatusCode.NotFound));
+        Assert.Null(await provider.GetLatestAsync("production", CancellationToken.None));
+    }
+
+    private sealed class StubHttpClientFactory(HttpStatusCode status) : IHttpClientFactory
+    {
+        public HttpClient CreateClient(string name) => new(new StubHandler(status));
+    }
+
+    private sealed class StubHandler(HttpStatusCode status) : HttpMessageHandler
+    {
+        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken) =>
+            Task.FromResult(new HttpResponseMessage(status) { RequestMessage = request });
     }
 }

@@ -19,6 +19,23 @@ public sealed class HomeAssistantHub : BackgroundService
     private static readonly TimeSpan BackoffMin = TimeSpan.FromSeconds(5);
     private static readonly TimeSpan BackoffMax = TimeSpan.FromSeconds(30);
 
+    // Trailing throttle window for state_changed-driven broadcasts.
+    private static readonly TimeSpan BroadcastWindow = TimeSpan.FromMilliseconds(300);
+    // Bound for the short-lived dashboard sockets.
+    private static readonly TimeSpan CommandTimeout = TimeSpan.FromSeconds(10);
+    private const int MaxDashboardIdLength = 128;
+
+    private static readonly HashSet<string> SupportedDomains = new(StringComparer.Ordinal)
+    {
+        "light", "switch", "input_boolean", "fan", "automation", "scene", "script",
+        "button", "input_button", "cover", "lock", "sensor", "binary_sensor",
+    };
+
+    private static readonly HashSet<string> ToggleDomains = new(StringComparer.Ordinal)
+    {
+        "light", "switch", "input_boolean", "fan", "automation", "binary_sensor",
+    };
+
     private readonly IConfigStore _store;
     private readonly HomeAssistantClient _client;
     private readonly MultiplexHub _hub;
@@ -29,6 +46,25 @@ public sealed class HomeAssistantHub : BackgroundService
     private HaRegistryMaps _maps = new(); // guarded by _lock
     private bool _connected;
     private string _error = "";
+
+    // Entities referenced by fetched dashboards; cached beyond the light/switch set.
+    private readonly HashSet<string> _watched = new(StringComparer.OrdinalIgnoreCase); // guarded by _lock
+    // Raw Lovelace configs by dashboard id; guarded by _lock.
+    private readonly Dictionary<string, JsonElement> _dashCache = new(StringComparer.Ordinal);
+    // Bumped whenever cached dashboards are invalidated, so an in-flight fetch does not store stale data.
+    private long _cacheEpoch; // guarded by _lock
+    // Bumped when the URL/token change, so a fetch begun under the old config adds nothing.
+    private long _configGen; // guarded by _lock
+    // Shared in-flight dashboard fetches by id, so concurrent misses open one HA socket.
+    // Tagged with the cache epoch they started under: a fetch begun before an
+    // invalidation is never joined, since its result may predate the edit.
+    private readonly Dictionary<string, (long Epoch, Task<JsonElement> Task)> _inflight = new(StringComparer.Ordinal); // guarded by _lock
+    private long _dashboardsRevision; // Interlocked
+
+    private readonly object _bcLock = new();
+    private readonly Timer _bcTimer;
+    private bool _bcArmed; // guarded by _bcLock
+    private bool _bcRoomsPending; // guarded by _bcLock
 
     // Replaced atomically in SignalReconfigure; old CTS is cancelled to wake any
     // Task.Delay or RunConnectionAsync linked to it via iterCts.
@@ -44,7 +80,71 @@ public sealed class HomeAssistantHub : BackgroundService
         _client = client;
         _hub = hub;
         _logger = logger;
+        _bcTimer = new Timer(_ => FlushBroadcast(), null, Timeout.Infinite, Timeout.Infinite);
     }
+
+    public override void Dispose()
+    {
+        _bcTimer.Dispose();
+        base.Dispose();
+    }
+
+    // roomsChanged: the room-view entity set (or its registry data) changed. Any pending
+    // coalesced room change rides along, since subscribers refetch everything anyway.
+    private void Broadcast(bool roomsChanged)
+    {
+        lock (_bcLock)
+        {
+            roomsChanged |= _bcRoomsPending;
+            _bcRoomsPending = false;
+        }
+        PanelTopics.BroadcastHomeAssistant(_hub, Interlocked.Read(ref _dashboardsRevision), roomsChanged);
+    }
+
+    // Trailing throttle: the first call arms the window, later calls inside it are absorbed,
+    // and the window's end emits one broadcast covering the burst.
+    private void ScheduleBroadcast(bool roomsChanged)
+    {
+        lock (_bcLock)
+        {
+            _bcRoomsPending |= roomsChanged;
+            if (_bcArmed)
+            {
+                return;
+            }
+            _bcArmed = true;
+            try
+            {
+                _bcTimer.Change(BroadcastWindow, Timeout.InfiniteTimeSpan);
+            }
+            catch (ObjectDisposedException)
+            {
+                _bcArmed = false;
+            }
+        }
+    }
+
+    private void FlushBroadcast()
+    {
+        // Runs on a timer thread, where an escaped exception would end the process.
+        try
+        {
+            bool rooms;
+            lock (_bcLock)
+            {
+                _bcArmed = false;
+                rooms = _bcRoomsPending;
+                _bcRoomsPending = false;
+            }
+            PanelTopics.BroadcastHomeAssistant(_hub, Interlocked.Read(ref _dashboardsRevision), rooms);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning("Home Assistant broadcast flush failed: {Msg}", ex.Message);
+        }
+    }
+
+    private static bool IsRoomDomain(string domain) => domain == "light" || domain == "switch";
 
     public HaConfigResponse GetConfigResponse()
     {
@@ -88,6 +188,14 @@ public sealed class HomeAssistantHub : BackgroundService
             s.HomeAssistant.Token = SecretProtector.Protect(token);
             s.HomeAssistant.Enabled = true;
         });
+
+        lock (_lock)
+        {
+            _watched.Clear();
+            _dashCache.Clear();
+            _cacheEpoch++;
+            _configGen++;
+        }
 
         // Wake the background loop immediately regardless of whether it is in
         // the unconfigured poll or an error backoff.
@@ -162,28 +270,14 @@ public sealed class HomeAssistantHub : BackgroundService
             : null;
 
         var domain = entity.Domain;
-        string service;
-        string bodyJson;
-
-        if (domain == "switch")
+        var (service, ok) = ResolveService(domain, body, entity.CodeRequired);
+        if (!ok)
         {
-            service = body.On == false ? "turn_off" : "turn_on";
-            bodyJson = BuildServiceBody(entityId, null, null, null);
+            return null;
         }
-        else
-        {
-            // light
-            if (body.On == false)
-            {
-                service = "turn_off";
-                bodyJson = BuildServiceBody(entityId, null, null, null);
-            }
-            else
-            {
-                service = "turn_on";
-                bodyJson = BuildServiceBody(entityId, brightnessPct, rgb, colorTempK);
-            }
-        }
+        var bodyJson = domain == "light" && service == "turn_on"
+            ? BuildServiceBody(entityId, brightnessPct, rgb, colorTempK)
+            : BuildServiceBody(entityId, null, null, null);
 
         try
         {
@@ -203,10 +297,10 @@ public sealed class HomeAssistantHub : BackgroundService
 
             lock (_lock)
             {
-                updated.Area = _maps.Resolve(entityId);
+                ApplyRegistry(updated);
                 _cache[entityId] = updated;
             }
-            PanelTopics.BroadcastHomeAssistant(_hub);
+            Broadcast(IsRoomDomain(domain));
             return updated;
         }
         catch (OperationCanceledException)
@@ -309,19 +403,21 @@ public sealed class HomeAssistantHub : BackgroundService
         {
             _maps = maps;
             _cache.Clear();
+            _dashCache.Clear();
+            _cacheEpoch++;
             foreach (var el in states)
             {
                 var dto = NormalizeEntity(el);
-                if (dto is not null)
+                if (dto is not null && IsTracked(dto.Domain, dto.Id))
                 {
-                    dto.Area = _maps.Resolve(dto.Id);
+                    ApplyRegistry(dto);
                     _cache[dto.Id] = dto;
                 }
             }
             _connected = true;
             _error = "";
         }
-        PanelTopics.BroadcastHomeAssistant(_hub);
+        Broadcast(true);
 
         while (!ct.IsCancellationRequested)
         {
@@ -335,7 +431,19 @@ public sealed class HomeAssistantHub : BackgroundService
             {
                 var newMaps = await ws.FetchRegistriesAsync(ct);
                 UpdateMapsAndRebuildAreas(newMaps);
-                PanelTopics.BroadcastHomeAssistant(_hub);
+                Broadcast(true);
+                continue;
+            }
+
+            if (msg.Value.IsDashboardUpdate)
+            {
+                lock (_lock)
+                {
+                    _dashCache.Remove(msg.Value.DashboardId);
+                    _cacheEpoch++;
+                }
+                Interlocked.Increment(ref _dashboardsRevision);
+                ScheduleBroadcast(false);
                 continue;
             }
 
@@ -346,8 +454,23 @@ public sealed class HomeAssistantHub : BackgroundService
                 continue;
             }
             var domain = entityId.Substring(0, dot);
-            if (domain != "light" && domain != "switch")
+            if (!IsTracked(domain, entityId))
             {
+                continue;
+            }
+
+            if (msg.Value.NewState.ValueKind != JsonValueKind.Object)
+            {
+                // Entity removed from HA.
+                bool removed;
+                lock (_lock)
+                {
+                    removed = _cache.Remove(entityId);
+                }
+                if (removed)
+                {
+                    ScheduleBroadcast(IsRoomDomain(domain));
+                }
                 continue;
             }
 
@@ -359,10 +482,10 @@ public sealed class HomeAssistantHub : BackgroundService
 
             lock (_lock)
             {
-                updated.Area = _maps.Resolve(entityId);
+                ApplyRegistry(updated);
                 _cache[entityId] = updated;
             }
-            PanelTopics.BroadcastHomeAssistant(_hub);
+            ScheduleBroadcast(IsRoomDomain(domain));
         }
 
         SetState(connected: false, error: "");
@@ -375,8 +498,425 @@ public sealed class HomeAssistantHub : BackgroundService
             _maps = maps;
             foreach (var dto in _cache.Values)
             {
-                dto.Area = _maps.Resolve(dto.Id);
+                ApplyRegistry(dto);
             }
+        }
+    }
+
+    // Caller holds _lock.
+    private void ApplyRegistry(HaEntityDto dto)
+    {
+        dto.Area = _maps.Resolve(dto.Id);
+        dto.Hidden = _maps.IsHidden(dto.Id);
+    }
+
+    // Room-view domains are always tracked; the rest only when a fetched dashboard references them.
+    private bool IsTracked(string domain, string entityId)
+    {
+        if (domain == "light" || domain == "switch")
+        {
+            return true;
+        }
+        if (!SupportedDomains.Contains(domain))
+        {
+            return false;
+        }
+        lock (_lock)
+        {
+            return _watched.Contains(entityId);
+        }
+    }
+
+    public async Task<HaDashboardsResponse> GetDashboardsAsync(CancellationToken ct)
+    {
+        var cfg = ResolveRuntimeConfig();
+        bool connected;
+        lock (_lock)
+        {
+            connected = _connected;
+        }
+        if (!cfg.IsConfigured || !connected)
+        {
+            return new HaDashboardsResponse { Connected = false };
+        }
+
+        var result = new HaDashboardsResponse { Connected = true };
+        result.Dashboards.Add(new HaDashboardDto { Id = "lovelace", Title = "" });
+        try
+        {
+            var list = await RunEphemeralCommandAsync(cfg, "lovelace/dashboards/list", null, ct);
+            var extra = new List<HaDashboardDto>();
+            if (list.ValueKind == JsonValueKind.Array)
+            {
+                foreach (var item in list.EnumerateArray())
+                {
+                    if (item.ValueKind != JsonValueKind.Object ||
+                        !item.TryGetProperty("url_path", out var pathEl) ||
+                        pathEl.ValueKind != JsonValueKind.String)
+                    {
+                        continue;
+                    }
+                    var path = pathEl.GetString() ?? "";
+                    if (path.Length == 0)
+                    {
+                        continue;
+                    }
+                    var title = item.TryGetProperty("title", out var tEl) && tEl.ValueKind == JsonValueKind.String
+                        ? tEl.GetString() ?? ""
+                        : "";
+                    extra.Add(new HaDashboardDto { Id = path, Title = title });
+                }
+            }
+            extra.Sort((x, y) => string.Compare(x.Title, y.Title, StringComparison.OrdinalIgnoreCase));
+            result.Dashboards.AddRange(extra);
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning("Home Assistant dashboard list failed: {Msg}", ex.Message);
+            result.Error = ex.Message;
+        }
+        return result;
+    }
+
+    public async Task<HaDashboardResponse> GetDashboardAsync(string id, CancellationToken ct)
+    {
+        // Captured before any lookup, so an update landing mid-fetch still reads as newer to the caller.
+        var revision = Interlocked.Read(ref _dashboardsRevision);
+
+        if (!IsValidDashboardId(id))
+        {
+            return new HaDashboardResponse { Id = id, Error = "not_found", Revision = revision };
+        }
+
+        var cfg = ResolveRuntimeConfig();
+        bool connected;
+        JsonElement cached = default;
+        bool hit;
+        long gen;
+        Task<JsonElement>? fetch = null;
+        lock (_lock)
+        {
+            connected = _connected;
+            gen = _configGen;
+            hit = _dashCache.TryGetValue(id, out cached);
+            if (connected && cfg.IsConfigured && !hit)
+            {
+                if (_inflight.TryGetValue(id, out var running) && running.Epoch == _cacheEpoch)
+                {
+                    fetch = running.Task;
+                }
+                else
+                {
+                    fetch = StartDashboardFetch(cfg, id);
+                    _inflight[id] = (_cacheEpoch, fetch);
+                }
+            }
+        }
+        if (!cfg.IsConfigured || !connected)
+        {
+            return new HaDashboardResponse { Id = id, Error = "not_connected", Revision = revision };
+        }
+
+        JsonElement config;
+        if (hit)
+        {
+            config = cached;
+        }
+        else
+        {
+            try
+            {
+                // The caller's cancellation abandons the wait only; the shared fetch keeps running.
+                config = await fetch!.WaitAsync(ct);
+            }
+            catch (OperationCanceledException) when (ct.IsCancellationRequested)
+            {
+                throw;
+            }
+            catch (HaCommandException ex) when (ex.Code == "config_not_found")
+            {
+                return new HaDashboardResponse { Id = id, Error = "not_found", Revision = revision };
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning("Home Assistant dashboard {Id} fetch failed: {Msg}", id, ex.Message);
+                return new HaDashboardResponse { Id = id, Error = "failed", Revision = revision };
+            }
+        }
+
+        try
+        {
+            await WatchReferencedEntitiesAsync(cfg, config, gen, ct);
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning("Home Assistant dashboard {Id} entity load failed: {Msg}", id, ex.Message);
+            return new HaDashboardResponse { Id = id, Error = "failed", Revision = revision };
+        }
+
+        return new HaDashboardResponse { Id = id, Config = config, Revision = revision };
+    }
+
+    // Caller holds _lock. Runs on its own timeout-bounded token, detached from any one request.
+    private Task<JsonElement> StartDashboardFetch(RuntimeConfig cfg, string id)
+    {
+        var epoch = _cacheEpoch;
+        return Task.Run(async () =>
+        {
+            try
+            {
+                using var cts = new CancellationTokenSource(CommandTimeout);
+                var config = await RunEphemeralCommandAsync(
+                    cfg, "lovelace/config", id == "lovelace" ? null : id, cts.Token);
+                lock (_lock)
+                {
+                    if (_cacheEpoch == epoch)
+                    {
+                        _dashCache[id] = config;
+                    }
+                }
+                return config;
+            }
+            finally
+            {
+                lock (_lock)
+                {
+                    // A newer fetch for the same id may have replaced this entry.
+                    if (_inflight.TryGetValue(id, out var entry) && entry.Epoch == epoch)
+                    {
+                        _inflight.Remove(id);
+                    }
+                }
+            }
+        });
+    }
+
+    // Adds the config's entities to the watched set and loads their states before returning,
+    // so the next entities fetch already contains them. A changed config generation means the
+    // fetch began under settings that no longer apply, so nothing is added.
+    private async Task WatchReferencedEntitiesAsync(
+        RuntimeConfig cfg, JsonElement config, long gen, CancellationToken ct)
+    {
+        var ids = ExtractEntityIds(config);
+        var added = new List<string>();
+        lock (_lock)
+        {
+            if (_configGen != gen)
+            {
+                return;
+            }
+            foreach (var entityId in ids)
+            {
+                if (_watched.Add(entityId))
+                {
+                    added.Add(entityId);
+                }
+            }
+        }
+        if (added.Count == 0)
+        {
+            return;
+        }
+
+        try
+        {
+            JsonElement[] states;
+            using (var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct))
+            {
+                timeout.CancelAfter(CommandTimeout);
+                states = await _client.GetStatesAsync(cfg.Url, cfg.Token, timeout.Token);
+            }
+            var wanted = new HashSet<string>(added, StringComparer.OrdinalIgnoreCase);
+            lock (_lock)
+            {
+                if (_configGen != gen)
+                {
+                    return;
+                }
+                foreach (var el in states)
+                {
+                    var dto = NormalizeEntity(el);
+                    // An event may have cached a fresher state since the watch was added.
+                    if (dto is not null && wanted.Contains(dto.Id) && !_cache.ContainsKey(dto.Id))
+                    {
+                        ApplyRegistry(dto);
+                        _cache[dto.Id] = dto;
+                    }
+                }
+            }
+        }
+        catch
+        {
+            // Unwatch so the next fetch of this dashboard retries the load, and drop any
+            // non-room entity cached meanwhile, since nothing keeps it fresh once unwatched.
+            lock (_lock)
+            {
+                foreach (var entityId in added)
+                {
+                    _watched.Remove(entityId);
+                    var dot = entityId.IndexOf('.');
+                    if (dot > 0 && !IsRoomDomain(entityId.Substring(0, dot)))
+                    {
+                        _cache.Remove(entityId);
+                    }
+                }
+            }
+            throw;
+        }
+        Broadcast(false);
+    }
+
+    private static async Task<JsonElement> RunEphemeralCommandAsync(
+        RuntimeConfig cfg, string commandType, string? urlPath, CancellationToken ct)
+    {
+        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        timeout.CancelAfter(CommandTimeout);
+        await using var ws = new HomeAssistantWebSocket();
+        await ws.AuthenticateAsync(DeriveWsUrl(cfg.Url), cfg.Token, timeout.Token);
+        return await ws.RunCommandAsync(commandType, urlPath, timeout.Token);
+    }
+
+    private static bool IsValidDashboardId(string id)
+    {
+        if (string.IsNullOrEmpty(id) || id.Length > MaxDashboardIdLength)
+        {
+            return false;
+        }
+        foreach (var c in id)
+        {
+            if (char.IsWhiteSpace(c) || c == '/' || c == '\\')
+            {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    /// <summary>
+    /// Collects supported-domain entity ids from a raw Lovelace config: every string
+    /// "entity" property and every string or {entity} item of an "entities" or "badges" array.
+    /// </summary>
+    internal static HashSet<string> ExtractEntityIds(JsonElement config)
+    {
+        var found = new HashSet<string>(StringComparer.Ordinal);
+        CollectEntityIds(config, found);
+        return found;
+    }
+
+    private static void CollectEntityIds(JsonElement el, HashSet<string> found)
+    {
+        if (el.ValueKind == JsonValueKind.Object)
+        {
+            foreach (var prop in el.EnumerateObject())
+            {
+                if (prop.Name == "entity" && prop.Value.ValueKind == JsonValueKind.String)
+                {
+                    AddIfEntityId(prop.Value.GetString(), found);
+                }
+                else if ((prop.Name == "entities" || prop.Name == "badges") &&
+                         prop.Value.ValueKind == JsonValueKind.Array)
+                {
+                    foreach (var item in prop.Value.EnumerateArray())
+                    {
+                        if (item.ValueKind == JsonValueKind.String)
+                        {
+                            AddIfEntityId(item.GetString(), found);
+                        }
+                    }
+                }
+                // Condition and visibility-rule entities are never rendered, so they are not worth tracking.
+                if (prop.Name != "conditions" && prop.Name != "visibility")
+                {
+                    CollectEntityIds(prop.Value, found);
+                }
+            }
+        }
+        else if (el.ValueKind == JsonValueKind.Array)
+        {
+            foreach (var item in el.EnumerateArray())
+            {
+                CollectEntityIds(item, found);
+            }
+        }
+    }
+
+    private static void AddIfEntityId(string? candidate, HashSet<string> found)
+    {
+        if (candidate is null)
+        {
+            return;
+        }
+        var dot = candidate.IndexOf('.');
+        if (dot <= 0 || dot == candidate.Length - 1)
+        {
+            return;
+        }
+        if (!SupportedDomains.Contains(candidate.Substring(0, dot)))
+        {
+            return;
+        }
+        for (int i = dot + 1; i < candidate.Length; i++)
+        {
+            var c = candidate[i];
+            if (!((c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '_'))
+            {
+                return;
+            }
+        }
+        found.Add(candidate);
+    }
+
+    /// <summary>
+    /// Maps a command to the HA service for the entity's domain. Ok is false for any
+    /// domain/action pair Nexus does not allow.
+    /// </summary>
+    internal static (string Service, bool Ok) ResolveService(string domain, HaSetEntityBody body, bool codeRequired)
+    {
+        const string refused = "";
+        switch (domain)
+        {
+            case "light":
+            case "switch":
+                return (body.On == false ? "turn_off" : "turn_on", true);
+            case "input_boolean":
+            case "fan":
+            case "automation":
+                return body.On.HasValue ? (body.On.Value ? "turn_on" : "turn_off", true) : (refused, false);
+            case "scene":
+            case "script":
+                return body.Action == "run" ? ("turn_on", true) : (refused, false);
+            case "button":
+            case "input_button":
+                return body.Action == "run" ? ("press", true) : (refused, false);
+            case "cover":
+                return body.Action switch
+                {
+                    "open" => ("open_cover", true),
+                    "close" => ("close_cover", true),
+                    "stop" => ("stop_cover", true),
+                    _ => (refused, false),
+                };
+            case "lock":
+                if (codeRequired)
+                {
+                    return (refused, false);
+                }
+                return body.Action switch
+                {
+                    "lock" => ("lock", true),
+                    "unlock" => ("unlock", true),
+                    _ => (refused, false),
+                };
+            default:
+                return (refused, false);
         }
     }
 
@@ -419,7 +959,7 @@ public sealed class HomeAssistantHub : BackgroundService
         return $"{scheme}://{uri.Authority}/api/websocket";
     }
 
-    private static HaEntityDto? NormalizeEntity(JsonElement stateEl)
+    internal static HaEntityDto? NormalizeEntity(JsonElement stateEl)
     {
         if (!stateEl.TryGetProperty("entity_id", out var idEl))
         {
@@ -432,7 +972,7 @@ public sealed class HomeAssistantHub : BackgroundService
             return null;
         }
         var domain = entityId.Substring(0, dot);
-        if (domain != "light" && domain != "switch")
+        if (!SupportedDomains.Contains(domain))
         {
             return null;
         }
@@ -443,6 +983,9 @@ public sealed class HomeAssistantHub : BackgroundService
         bool supportsBrightness = false, supportsColor = false, supportsColorTemp = false;
         int[]? rgb = null;
         int colorTempK = 0;
+        string unit = "", deviceClass = "";
+        int positionPct = -1;
+        bool codeRequired = false;
 
         if (stateEl.TryGetProperty("attributes", out var attrs))
         {
@@ -450,6 +993,29 @@ public sealed class HomeAssistantHub : BackgroundService
                 fnEl.ValueKind == JsonValueKind.String)
             {
                 name = fnEl.GetString() ?? entityId;
+            }
+
+            if (attrs.TryGetProperty("unit_of_measurement", out var unitEl) &&
+                unitEl.ValueKind == JsonValueKind.String)
+            {
+                unit = unitEl.GetString() ?? "";
+            }
+            if (attrs.TryGetProperty("device_class", out var dcEl) &&
+                dcEl.ValueKind == JsonValueKind.String)
+            {
+                deviceClass = dcEl.GetString() ?? "";
+            }
+            if (domain == "cover" &&
+                attrs.TryGetProperty("current_position", out var posEl) &&
+                posEl.ValueKind == JsonValueKind.Number)
+            {
+                positionPct = (int)Math.Round(posEl.GetDouble());
+            }
+            if (domain == "lock" &&
+                attrs.TryGetProperty("code_format", out var codeEl) &&
+                codeEl.ValueKind != JsonValueKind.Null)
+            {
+                codeRequired = true;
             }
 
             if (domain == "light")
@@ -518,7 +1084,7 @@ public sealed class HomeAssistantHub : BackgroundService
             Name = name,
             Domain = domain,
             State = state,
-            On = state == "on",
+            On = ToggleDomains.Contains(domain) && state == "on",
             Reachable = state != "unavailable",
             BrightnessPct = brightnessPct,
             SupportsBrightness = supportsBrightness,
@@ -527,6 +1093,10 @@ public sealed class HomeAssistantHub : BackgroundService
             Rgb = rgb,
             ColorTempK = colorTempK,
             Area = "",
+            Unit = unit,
+            DeviceClass = deviceClass,
+            PositionPct = positionPct,
+            CodeRequired = codeRequired,
         };
     }
 
