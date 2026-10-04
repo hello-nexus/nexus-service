@@ -63,7 +63,7 @@ public sealed class Nexus2MigrationService
             ProfileName = profile is { } p3 ? Nexus2Json.GetString(p3, "name") : null,
         };
 
-        response.Categories.Add(BuildAppearanceCategory(y70));
+        response.Categories.Add(BuildAppearanceCategory(y70, read.ConfigDir));
         response.Categories.Add(BuildY70LayoutCategory(y70));
         response.Categories.Add(BuildQ60FaceCategory(q60Software));
         response.Categories.Add(BuildWallpapersCategory(q60Software, read.ConfigDir));
@@ -73,7 +73,7 @@ public sealed class Nexus2MigrationService
         return response;
     }
 
-    private static Nexus2PreviewCategoryDto BuildAppearanceCategory(JsonElement? y70)
+    private Nexus2PreviewCategoryDto BuildAppearanceCategory(JsonElement? y70, string configDir)
     {
         var cat = new Nexus2PreviewCategoryDto { Id = "appearance" };
         if (y70 is not { } y)
@@ -90,6 +90,13 @@ public sealed class Nexus2MigrationService
             Nexus2Y70BackgroundSource.Gradient => "gradient",
             _ => null,
         };
+        // Matched by file name, as the apply's library lookup does.
+        var uploadNames = Y70Uploads(configDir).Select(Path.GetFileName).ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var shownIsUpload = appearance.BackgroundPath is { } shownPath && uploadNames.Contains(Path.GetFileName(shownPath));
+        var shownImports = cat.Background is not null && !shownIsUpload
+            && (appearance.Background != Nexus2Y70BackgroundSource.BundledParticles
+                || AsarCandidates(configDir, _services.GetService<INexus2Detector>()?.Detect().InstallRoot).Any(File.Exists));
+        cat.Count = uploadNames.Count + (shownImports ? 1 : 0);
         return cat;
     }
 
@@ -132,8 +139,12 @@ public sealed class Nexus2MigrationService
         }
         var wallpaper = Nexus2Q60Translator.TranslateWallpaper(qs, configDir, File.Exists);
         var uploads = Q60Uploads(configDir);
-        cat.Count = uploads.Count + (wallpaper.Available && !uploads.Contains(wallpaper.AbsolutePath!, StringComparer.OrdinalIgnoreCase) ? 1 : 0);
+        var slideshow = wallpaper.Playlist && uploads.Count > 0;
+        // A playlist leaves the shown wallpaper out, and an upload of the same name is reused, as the apply does.
+        var shownIsUpload = wallpaper.Available && uploads.Exists(u => string.Equals(Path.GetFileName(u), wallpaper.FileName, StringComparison.OrdinalIgnoreCase));
+        cat.Count = uploads.Count + (wallpaper.Available && !slideshow && !shownIsUpload ? 1 : 0);
         cat.Available = cat.Count > 0;
+        cat.SlideshowIntervalSec = slideshow ? wallpaper.PlaylistIntervalSec : null;
         return cat;
     }
 
@@ -439,8 +450,8 @@ public sealed class Nexus2MigrationService
                 Console.Error.WriteLine($"[nexus2] Y70 uploads unreadable: {ex.Message}");
             }
         }
-        // Ascending by name: the library lists newest first, which is the picker's name-descending order.
-        files.Sort((a, b) => StringComparer.OrdinalIgnoreCase.Compare(Path.GetFileName(a), Path.GetFileName(b)));
+        // Name-descending, as Nexus 2's picker sorts them (its names end in a Date.now() stamp, so newest first): the grid shows import order.
+        files.Sort((a, b) => StringComparer.OrdinalIgnoreCase.Compare(Path.GetFileName(b), Path.GetFileName(a)));
         return files;
     }
 
@@ -669,6 +680,8 @@ public sealed class Nexus2MigrationService
             }
             firstError ??= error;
         }
+        // The playlist cycles the folder oldest first, the reverse of the picker's order.
+        uploaded.Reverse();
         // A shown stock preset is not one of the files Nexus 2's playlist cycles.
         var slideshow = wallpaper.Playlist && uploaded.Count > 0;
         PanelBgItem? shown = null;
@@ -697,6 +710,8 @@ public sealed class Nexus2MigrationService
                 // Plays in Nexus 2's folder order over any shuffle or saved order on the panel.
                 BackgroundMediaShuffle = slideshow ? false : null,
                 BackgroundMediaOrder = slideshow ? uploaded.Select(i => i.Id).ToList() : null,
+                // Nexus 2 switches slides on the interval, cutting a longer video.
+                BackgroundMediaFinishVideos = slideshow ? false : null,
             });
         }
         var detail = firstError is null ? null : "background-not-imported";
@@ -754,7 +769,7 @@ public sealed class Nexus2MigrationService
         return itemName[..^ext.Length] == MediaImporter.SanitizeId(itemName[..(dash + 1)] + Path.GetFileNameWithoutExtension(sourceName));
     }
 
-    /// <summary>Every file the Q-Series picker lists from q60\web\user-media, in name order.</summary>
+    /// <summary>Every file the Q-Series picker lists from q60\web\user-media, name-descending: newest first for Nexus 2's Date.now()-stamped upload names.</summary>
     private static List<string> Q60Uploads(string configDir)
     {
         var dir = Path.Combine(configDir, Path.Combine(Nexus2Q60Translator.Q60UserMediaRelative));
@@ -765,7 +780,7 @@ public sealed class Nexus2MigrationService
                 return new List<string>();
             }
             var files = Directory.EnumerateFiles(dir).Where(Nexus2Y70Translator.IsShowableFile).ToList();
-            files.Sort((a, b) => StringComparer.OrdinalIgnoreCase.Compare(Path.GetFileName(a), Path.GetFileName(b)));
+            files.Sort((a, b) => StringComparer.OrdinalIgnoreCase.Compare(Path.GetFileName(b), Path.GetFileName(a)));
             return files;
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)

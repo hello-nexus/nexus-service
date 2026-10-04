@@ -99,6 +99,8 @@ public sealed class Nexus2MigrationServiceTests : IDisposable
         Assert.True(byId["appearance"].GetProperty("available").GetBoolean());
         Assert.Equal("#242324", byId["appearance"].GetProperty("accentColor").GetString());
         Assert.Equal("particles", byId["appearance"].GetProperty("background").GetString());
+        // The fixture has no app.asar, so the bundled particles cannot come over.
+        Assert.Equal(0, byId["appearance"].GetProperty("count").GetInt32());
 
         Assert.True(byId["y70Layout"].GetProperty("available").GetBoolean());
         Assert.Equal(9, byId["y70Layout"].GetProperty("widgets").GetInt32());
@@ -317,11 +319,9 @@ public sealed class Nexus2MigrationServiceTests : IDisposable
         var legacyStage = await PanelBgImporter.StageAsync(BgLibrary, q60.Id, legacySource, "sunset.jpg");
         var legacy = (await PanelBgImporter.CommitAsync(BgLibrary, q60.Id, legacyStage.StageId!, new CropRect(0, 0, 1, 1), 720, 1280)).Item!;
         Assert.NotEqual("sunset.jpg", legacy.Name);
-        using (var preview = JsonDocument.Parse(await (await _client.PostAsync("/migration/nexus2/preview", null)).Content.ReadAsStringAsync()))
-        {
-            var wallpapers = preview.RootElement.GetProperty("categories").EnumerateArray().First(c => c.GetProperty("id").GetString() == "wallpapers");
-            Assert.Equal(3, wallpapers.GetProperty("count").GetInt32());
-        }
+        var wallpapers = await PreviewCategory("wallpapers");
+        Assert.Equal(3, wallpapers.GetProperty("count").GetInt32());
+        Assert.False(wallpapers.TryGetProperty("slideshowIntervalSec", out _));
 
         var res = await PostApply(new[] { "wallpapers" }, false);
         using var doc = JsonDocument.Parse(await res.Content.ReadAsStringAsync());
@@ -342,6 +342,7 @@ public sealed class Nexus2MigrationServiceTests : IDisposable
         UseQ60Uploads(playlist: true);
         var q60 = Panels.Allocate(null, new PanelDeviceCapabilities { Surface = PanelSurfaces.Q60 });
         Panels.Patch(q60.Id, new PanelDevicePatch { BackgroundMediaShuffle = true, BackgroundMediaOrder = new List<string> { "kept-from-before" } });
+        Assert.Equal(5, (await PreviewCategory("wallpapers")).GetProperty("slideshowIntervalSec").GetInt32());
 
         await PostApply(new[] { "wallpapers" }, false);
 
@@ -349,9 +350,16 @@ public sealed class Nexus2MigrationServiceTests : IDisposable
         Assert.True(updated.BackgroundMediaSlideshow);
         Assert.Equal(5, updated.BackgroundMediaInterval);
         Assert.False(updated.BackgroundMediaShuffle);
+        Assert.False(updated.BackgroundMediaFinishVideos);
         Assert.Equal(new[] { "a-clip.mp4", "b-alpha.gif", "sunset.jpg" },
             updated.BackgroundMediaOrder!.Select(id => BgLibrary.GetItem(q60.Id, id)!.Name));
         Assert.Equal("a-clip.mp4", BgLibrary.GetItem(q60.Id, updated.BackgroundMediaId!)!.Name);
+    }
+
+    private async Task<JsonElement> PreviewCategory(string id)
+    {
+        using var doc = JsonDocument.Parse(await (await _client.PostAsync("/migration/nexus2/preview", null)).Content.ReadAsStringAsync());
+        return doc.RootElement.GetProperty("categories").EnumerateArray().First(c => c.GetProperty("id").GetString() == id).Clone();
     }
 
     private PanelBgLibrary BgLibrary => _factory.Services.GetRequiredService<PanelBgLibrary>();
@@ -471,15 +479,16 @@ public sealed class Nexus2MigrationServiceTests : IDisposable
         File.WriteAllBytes(Path.Combine(images, "custom-Y70-bg-4.gif"), Convert.FromBase64String(TransparentGifBase64));
         UseNexus2Tree(shown);
         var y70 = Panels.Allocate(null, new PanelDeviceCapabilities { Surface = PanelSurfaces.Y70 });
+        Assert.Equal(3, (await PreviewCategory("appearance")).GetProperty("count").GetInt32());
 
         var result = await ApplyAppearance();
         Assert.Equal("applied", result.GetProperty("status").GetString());
         Assert.False(result.TryGetProperty("detail", out _));
 
-        // Nexus 2's picker order: name-descending.
+        // The grid shows import order; Nexus 2's picker lists name-descending.
         Assert.Equal(
             new[] { "custom-Y70-bg-4.gif", "custom-Y70-bg-2.mp4", "custom-Y70-bg-1.mp4" },
-            BgLibrary.ListItems(y70.Id).Select(i => i.Name));
+            BgLibrary.ListItems(y70.Id).OrderBy(i => i.ImportedAtUnixMs).Select(i => i.Name));
         Assert.Equal("custom-Y70-bg-1.mp4", BgLibrary.GetItem(y70.Id, Panels.Get(y70.Id)!.BackgroundMediaId!)!.Name);
 
         await ApplyAppearance();
