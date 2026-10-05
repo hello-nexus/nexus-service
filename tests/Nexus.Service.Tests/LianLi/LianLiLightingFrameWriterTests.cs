@@ -440,7 +440,6 @@ public class LianLiLightingFrameWriterTests
         Attach(0xA102, port: 1, fans: 3);
         SetMode("custom");
 
-        // One populated port is two channel commits per frame.
         _writer.Tick();
         Assert.Contains(Calls, c => c.Bytes[1] == 0x32);
         _spy.Calls.Clear();
@@ -450,6 +449,37 @@ public class LianLiLightingFrameWriterTests
         Advance(40);
         _writer.Tick();
         Assert.Contains(Calls, c => c.Bytes[1] == 0x32);
+    }
+
+    [Fact]
+    public void Sl_infinity_custom_mode_gives_two_ports_a_longer_frame_interval_than_one()
+    {
+        UseFakeClock();
+        _hub.Attach(_spy, Profile(0xA102));
+        _store.Update(s =>
+        {
+            s.Devices.LianLi.SetFans(0, 1);
+            s.Devices.LianLi.SetFans(1, 2);
+            s.Devices.LianLi.SetFans(2, 0);
+            s.Devices.LianLi.SetFans(3, 0);
+        });
+        _engine.UpdateDevices(new[]
+        {
+            new DeviceFrame(0, "lianli:port0", 16, 0, 0, 1, 1, 0),
+            new DeviceFrame(1, "lianli:port1", 32, 0, 0, 1, 1, 0),
+        });
+        SetMode("custom");
+
+        _writer.Tick();
+        Assert.Contains(Calls, c => c.Bytes[1] == 0x30);
+        Assert.Contains(Calls, c => c.Bytes[1] == 0x32);
+        _spy.Calls.Clear();
+        Advance(90);
+        _writer.Tick();
+        Assert.DoesNotContain(Calls, c => c.Bytes[1] == 0x30);
+        Advance(10);
+        _writer.Tick();
+        Assert.Contains(Calls, c => c.Bytes[1] == 0x30);
     }
 
     [Fact]

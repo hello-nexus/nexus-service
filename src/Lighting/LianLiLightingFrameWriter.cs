@@ -25,14 +25,21 @@ public sealed class LianLiLightingFrameWriter : IHostedService, IDisposable
     private const int IdleTickMs = 100;
 
     // Settle between writes; SL-Infinity custom streaming is paced per frame
-    // instead (SlInfinityCommitsPerSecond).
+    // instead (SlInfinityFrameIntervalMs).
     private const int InterWriteSettleMs = 1;
 
     // SL-Infinity fw 1.4 shows a streamed frame only through each channel's
-    // commit, and past its commit rate it falls back to ~2 visible updates/s
-    // (Y70 camera fan chase, 2026-10-04: 12 fps on one port all shown, 20-30
-    // fps collapsed, four ports collapsed at 10 fps).
-    private const int SlInfinityCommitsPerSecond = 24;
+    // commit; past its rate it falls back to ~2 visible updates/s. Frame
+    // interval by streamed port count, from the Y70 camera fan chase
+    // (2026-10-04): one port shows every frame to 12 fps and collapses at 20;
+    // two ports show ~7 of 10 without collapsing; four ports show 5 and
+    // collapse at 10.
+    private static int SlInfinityFrameIntervalMs(int ports) => ports switch
+    {
+        <= 1 => 83,
+        2 => 100,
+        _ => 200,
+    };
 
     // Engine frames land a few ms either side of their period; without slack a
     // frame due on a frame boundary slips a whole frame and the cadence wobbles.
@@ -380,19 +387,18 @@ public sealed class LianLiLightingFrameWriter : IHostedService, IDisposable
         var nowTicks = DateTime.UtcNow.Ticks;
 
         _customZones.Clear();
-        var commits = 0;
+        var ports = 0;
         foreach (var device in composed)
         {
             var zones = ZoneResolution.Resolve(device.Structure, settings);
             _customZones.Add(zones);
-            if (ZoneResolution.IsFullyUncontrolled(zones, uncontrolled)) continue;
-            foreach (var channels in device.SegmentChannels) commits += channels.Count;
+            if (!ZoneResolution.IsFullyUncontrolled(zones, uncontrolled)) ports++;
         }
         var paced = profile.Family == LianLiFanFamily.SlInfinity;
         if (paced)
         {
             var nowMs = NowMs();
-            if (nowMs - _lastCustomFrameMs < commits * 1000L / SlInfinityCommitsPerSecond - PacingSlackMs) return;
+            if (nowMs - _lastCustomFrameMs < SlInfinityFrameIntervalMs(ports) - PacingSlackMs) return;
             _lastCustomFrameMs = nowMs;
         }
 
