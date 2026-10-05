@@ -176,6 +176,16 @@ public static class LianLiProtocol
     }
 
     /// <summary>
+    /// Feature report switching the hub to play its motherboard ARGB input (on)
+    /// or the host's commands (off): E0 10 [ArgbRegister] on 00 00 00. Source:
+    /// L-Connect 3 SLInfinityDevice.SetLightingMotherboardSync.
+    /// </summary>
+    public static byte[] BuildArgbSync(in LianLiFanProfile profile, bool on)
+    {
+        return new byte[] { ReportId, 0x10, profile.ArgbRegister, on ? (byte)1 : (byte)0, 0x00, 0x00, 0x00 };
+    }
+
+    /// <summary>
     /// Frame sync, sent once after every lighting apply. Without it the firmware
     /// keeps rendering the previous effect settings - a mode change lands on the
     /// per-channel commit, but speed and brightness do not take until this

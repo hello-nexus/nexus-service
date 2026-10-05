@@ -432,4 +432,15 @@ public class LianLiProtocolTests
         Assert.Equal(3, s.Port2Fans);
         Assert.Equal(4, s.Port3Fans);
     }
+
+    [Theory]
+    [InlineData(0xA102, 0x61)]
+    [InlineData(0xA103, 0x61)]
+    [InlineData(0xA100, 0x30)]
+    [InlineData(0xA101, 0x41)]
+    public void BuildArgbSync_uses_the_family_register_and_the_on_flag(int pid, int register)
+    {
+        Assert.Equal(new byte[] { 0xE0, 0x10, (byte)register, 0x01, 0x00, 0x00, 0x00 }, LianLiProtocol.BuildArgbSync(Profile(pid), on: true));
+        Assert.Equal(new byte[] { 0xE0, 0x10, (byte)register, 0x00, 0x00, 0x00, 0x00 }, LianLiProtocol.BuildArgbSync(Profile(pid), on: false));
+    }
 }

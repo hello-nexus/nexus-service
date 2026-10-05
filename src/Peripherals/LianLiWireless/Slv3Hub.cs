@@ -138,6 +138,14 @@ public sealed class Slv3Hub : IDisposable
     private const int WindowLatePasses = 2;
     private const int WindowLateGapMs = 60;
 
+    // RF payloads per second the late passes may bring the TX up to. The TX
+    // accepts writes far faster than the air carries them and drops the excess:
+    // two chains sustaining 258/s lost every window, 193/s landed (Y70 USBPcap,
+    // 2026-10-04).
+    private const int LatePassAirBudgetPerSecond = 180;
+    private const int AirRateWindowMs = 1000;
+    private readonly Queue<long> _airSendsMs = new();
+
     // Seeded so a restart does not replay the index a chain last reported.
     private byte _effectCounter = (byte)Environment.TickCount64;
 
@@ -1290,15 +1298,34 @@ public sealed class Slv3Hub : IDisposable
             }
             NoteConfigChangedLocked();
         }
+        // The late passes' cost is booked at decision time so a concurrent
+        // upload's check already sees it; the passes themselves are not re-counted.
+        var lateCost = WindowLatePasses * (packets.Length - 1);
+        var latePasses = 0;
+        lock (_lock)
+        {
+            if (RecentAirSendsLocked() + lateCost <= LatePassAirBudgetPerSecond)
+            {
+                latePasses = WindowLatePasses;
+                var now = _nowMs();
+                for (var i = 0; i < lateCost; i++)
+                {
+                    _airSendsMs.Enqueue(now);
+                }
+            }
+        }
         // Late passes release the lock between packets so the device-list poll keeps running.
-        for (var pass = 0; pass < WindowLatePasses; pass++)
+        for (var pass = 0; pass < latePasses; pass++)
         {
             await Task.Delay(WindowLateGapMs).ConfigureAwait(false);
             for (var p = 1; p < packets.Length; p++)
             {
-                if (!SendRfPayload(channel, rxType, packets[p]))
+                lock (_lock)
                 {
-                    return false;
+                    if (_tx is null || !WriteRfPayloadLocked(channel, rxType, packets[p]))
+                    {
+                        return false;
+                    }
                 }
             }
         }
@@ -1433,6 +1460,13 @@ public sealed class Slv3Hub : IDisposable
     // Caller holds _lock.
     private bool SendRfPayloadLocked(byte channel, byte rxType, byte[] payload)
     {
+        RecentAirSendsLocked();
+        _airSendsMs.Enqueue(_nowMs());
+        return WriteRfPayloadLocked(channel, rxType, payload);
+    }
+
+    private bool WriteRfPayloadLocked(byte channel, byte rxType, byte[] payload)
+    {
         foreach (var frame in Slv3Protocol.BuildUsbSendRf(channel, rxType, payload))
         {
             if (!_tx!.RfSend(frame))
@@ -1441,6 +1475,17 @@ public sealed class Slv3Hub : IDisposable
             }
         }
         return true;
+    }
+
+    /// <summary>RF payloads handed to the TX over the last <see cref="AirRateWindowMs"/>; drops older entries.</summary>
+    private int RecentAirSendsLocked()
+    {
+        var cutoff = _nowMs() - AirRateWindowMs;
+        while (_airSendsMs.Count > 0 && _airSendsMs.Peek() < cutoff)
+        {
+            _airSendsMs.Dequeue();
+        }
+        return _airSendsMs.Count;
     }
 
     /// <summary>

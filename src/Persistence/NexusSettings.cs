@@ -1669,6 +1669,14 @@ public sealed class LianLiLightingSettings
 
     /// <summary>Run a mergeable mode as one animation across every port instead of one per port.</summary>
     public bool Merge { get; set; }
+
+    /// <summary>
+    /// The hub plays its motherboard ARGB input instead of Nexus streaming to
+    /// it; every port shows that input from its first LED, fan by fan in chain
+    /// order. <see cref="ArgbSyncSource"/> is the lighting card driving the header.
+    /// </summary>
+    public bool ArgbSync { get; set; }
+    public string? ArgbSyncSource { get; set; }
 }
 
 public sealed class TlLightingSettings
