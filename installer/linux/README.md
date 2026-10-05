@@ -43,11 +43,11 @@ warning naming the package if either is missing:
 
 - **hidapi + libusb**, for the RGB engine. Fedora/Bazzite and Arch ship them;
   Debian/Ubuntu/Mint need `sudo apt install libhidapi-hidraw0 libusb-1.0-0`.
-- **A Chromium-family browser** for the Y70 panel and promoted-monitor
-  kiosks. `chromium`, `chrome`, `brave`, `edge`, `vivaldi` and the
-  ungoogled-chromium forks all work, installed by package, flatpak or snap;
-  Nexus searches the system, flatpak, snap and `~/.local/bin` prefixes.
-  Firefox cannot host a kiosk - it has no `--app` mode.
+- **A browser** for the Y70 panel and promoted-monitor kiosks. A
+  Chromium-family browser is used when one is installed (`chromium`, `chrome`,
+  `brave`, `edge`, `vivaldi` and the ungoogled-chromium forks), otherwise
+  Firefox in `--kiosk` mode; any of them installed by package, flatpak or
+  snap. Nexus searches the system, flatpak, snap and `~/.local/bin` prefixes.
 
 Open the dashboard at <http://localhost:9400>.
 
@@ -93,20 +93,22 @@ motherboard fan control (hwmon PWM), keyboard macros (uinput), media (MPRIS), vo
 (PipeWire/PulseAudio), display brightness (backlight + DDC/CI), and
 screen-mirror lighting (xdg-desktop-portal ScreenCast).
 
-The Y70 panel and any promoted monitor run as a Chromium-family kiosk window.
-Both X11 and Wayland sessions work: the daemon reads the session type from
-logind and hands the kiosk the matching `--ozone-platform`, plus
+The Y70 panel and any promoted monitor run as a browser kiosk window
+(Chromium-family, else Firefox). Both X11 and Wayland sessions work: the daemon
+reads the session type from logind and hands a Chromium kiosk the matching
+`--ozone-platform`, plus
 `DISPLAY`/`XAUTHORITY` taken from the session leader on X11. Display layout is
 the compositor's, and Nexus renders to whatever geometry it gives the kiosk:
 
 - Rotate the Y70 to portrait and keep your main monitor primary in the
   desktop's display settings (KDE persists this in `kwinoutputconfig.json`).
 - On X11 the service reads the output layout from `xrandr` and positions each
-  kiosk on its own monitor, under any window manager.
+  Chromium kiosk on its own monitor, under any window manager. Firefox has no
+  window-position flag, so outside KDE it opens where the window manager puts it.
 - Wayland gives clients no way to pick an output, and KWin puts a new
   fullscreen window on the primary screen. On KDE the service loads a small
   KWin script (`nexus-panel-y70`, alongside the `nexus-focus` one) that moves
-  the kiosk onto the portrait strip and keeps it fullscreen. Other Wayland
+  the kiosk onto the Y70's output and keeps it fullscreen. Other Wayland
   compositors expose no equivalent, so there the kiosk opens on whichever
   screen the compositor picks.
 

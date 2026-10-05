@@ -9,9 +9,8 @@ namespace Nexus.Service.Platform.Linux;
 /// Chromium-family binary probe order and the dashboard-URL opener, shared by
 /// the tray (<see cref="LinuxTrayHost"/>), the panel kiosk host, and any
 /// caller that needs to open the dashboard outside those two (open-app route,
-/// deck OpenDashboard action). --app / --kiosk windows require a Chromium
-/// engine; Firefox and the portal openers are dashboard-only fallbacks and
-/// stay in <see cref="OpenUrl"/>'s list.
+/// deck OpenDashboard action). --app windows require a Chromium engine; the
+/// panel kiosk falls back to Firefox's --kiosk (<see cref="FirefoxFamily"/>).
 /// </summary>
 internal static class LinuxBrowsers
 {
@@ -109,9 +108,31 @@ internal static class LinuxBrowsers
             : null;
     }
 
-    public static string? FindChromium()
+    public static string? FindChromium() => FirstExisting(ChromiumFamily());
+
+    private static readonly string[] FirefoxNames = { "firefox", "firefox-esr" };
+
+    /// <summary>Kiosk fallback when no Chromium-family browser exists; most distros ship Firefox by default.</summary>
+    public static string[] FirefoxFamily()
     {
-        foreach (var path in ChromiumFamily())
+        var userFlatpakBin = Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
+            ".local", "share", "flatpak", "exports", "bin");
+        var curated = new[]
+        {
+            Path.Combine(userFlatpakBin, "org.mozilla.firefox"),
+            SysFlatpakBin + "/org.mozilla.firefox",
+            "/usr/bin/firefox",
+            "/snap/bin/firefox",
+        };
+        return Candidates(curated, SearchDirs(), FirefoxNames);
+    }
+
+    public static string? FindFirefox() => FirstExisting(FirefoxFamily());
+
+    private static string? FirstExisting(string[] candidates)
+    {
+        foreach (var path in candidates)
         {
             if (File.Exists(path))
                 return path;

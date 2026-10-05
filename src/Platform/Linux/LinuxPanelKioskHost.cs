@@ -12,7 +12,8 @@ namespace Nexus.Service.Platform.Linux;
 
 /// <summary>
 /// Hosts promoted-monitor panel kiosks on Linux: one Chromium-family
-/// <c>--app --kiosk</c> window per active display assignment, spawned into
+/// <c>--app --kiosk</c> window (Firefox <c>--kiosk</c> when no Chromium is
+/// installed) per active display assignment, spawned into
 /// the user's graphical session (the setpriv root-daemon pattern shared
 /// with the dashboard launcher and screencast helper). Counterpart of
 /// nexus-overlay's MonitorKioskManager (Windows) and the overlay-helper
@@ -31,9 +32,9 @@ namespace Nexus.Service.Platform.Linux;
 /// topology also carries no positions, so there is nothing to translate a
 /// displayId into screen coordinates with from the daemon side.
 ///
-/// Each kiosk gets its own --user-data-dir (see ProfileDir) so the spawned
-/// pid IS the browser process (no delegation to a running instance) and
-/// Kill(tree) closes exactly that window.
+/// Each kiosk gets its own profile (see ProfileDir, FirefoxProfileDir) so the
+/// spawned pid IS the browser process (no delegation to a running instance)
+/// and Kill(tree) closes exactly that window.
 /// </summary>
 public sealed class LinuxPanelKioskHost : IDisposable
 {
@@ -297,12 +298,18 @@ public sealed class LinuxPanelKioskHost : IDisposable
         _cappedLogged.Remove(displayId);
 
         var browser = LinuxBrowsers.FindChromium();
+        var isFirefox = false;
+        if (browser is null && LinuxBrowsers.FindFirefox() is { } firefox)
+        {
+            browser = firefox;
+            isFirefox = true;
+        }
         if (browser is null)
         {
             if (!_noBrowserLogged)
             {
                 _noBrowserLogged = true;
-                Console.Error.WriteLine("[panel-kiosk] no Chromium-family browser found; monitor panels need chromium/chrome/brave/edge installed");
+                Console.Error.WriteLine("[panel-kiosk] no supported browser found; monitor panels need a Chromium-family browser or Firefox installed");
             }
             return;
         }
@@ -312,35 +319,15 @@ public sealed class LinuxPanelKioskHost : IDisposable
         // bootstrap token), not solved here.
         // KDE places the window on the primary screen; the script moves it to
         // the Y70. Loaded before the spawn so windowAdded catches this window.
-        if (string.Equals(displayId, Y70Slot, StringComparison.Ordinal))
-            _ = LinuxKWinPanelPlacement.EnsureLoadedAsync(_dbus);
+        var isY70 = string.Equals(displayId, Y70Slot, StringComparison.Ordinal);
+        if (isY70)
+            _ = LinuxKWinPanelPlacement.EnsureLoadedAsync(_dbus, LinuxX11Outputs.ConnectorFromDisplayId(_topology.Y70DisplayId()));
 
         var url = KioskUrl(_servicePort, deviceId, _tokens.Token);
-        var args = new List<string>();
-        // Follows the session: wayland forced on an X11 login kills the kiosk on
-        // its first frame ("Failed to connect to Wayland display").
-        if (LinuxSession.ChromiumOzonePlatform() is { } ozone)
-            args.Add($"--ozone-platform={ozone}");
-        args.Add($"--app={url}");
-        // Place before --kiosk: the window manager fullscreens onto the monitor the
-        // window already occupies. Matters most for the Y70 slot, which self-registers
-        // its record from whatever viewport it lands on. On KDE-under-X11 the KWin
-        // script above also moves it, to the same output.
-        PlaceOnOutput(args, displayId);
-        // Client-requested fullscreen: KWin keeps it across the placement
-        // script's move, while a compositor-set fullscreen on a normal Chromium
-        // window is not honoured.
-        args.Add("--kiosk");
-        // Chromium initialises OS crypt from the desktop keyring before the
-        // first navigation; on KDE a locked KWallet (autologin, or a session
-        // unlocked without PAM) leaves it waiting on a wallet prompt and every
-        // document load aborts, so the kiosk sits on Chromium's blank grey. A
-        // kiosk stores no credentials: opt out of the keyring entirely.
-        args.Add("--password-store=basic");
-        args.Add($"--user-data-dir={ProfileDir(deviceId)}");
-        args.Add("--no-first-run");
-        args.Add("--noerrdialogs");
-        args.Add("--disable-session-crashed-bubble");
+        var flatpakApp = LinuxBrowsers.FlatpakAppId(browser);
+        var args = isFirefox
+            ? FirefoxKioskArgs(url, PrepareFirefoxProfile(FirefoxProfileDir(deviceId, flatpakApp)), isY70)
+            : ChromiumKioskArgs(url, deviceId, displayId);
 
         var (file, wrapped) = LinuxSession.WrapSpawnAsSessionUser(browser, args);
         // No stream redirection: Chromium logs to stderr for its whole
@@ -367,8 +354,8 @@ public sealed class LinuxPanelKioskHost : IDisposable
             }
             proc.EnableRaisingEvents = true;
             proc.Exited += (_, _) => OnKioskExited(displayId);
-            _running[displayId] = new Kiosk(proc, deviceId, DateTime.UtcNow, LinuxBrowsers.FlatpakAppId(browser));
-            if (string.Equals(displayId, Y70Slot, StringComparison.Ordinal))
+            _running[displayId] = new Kiosk(proc, deviceId, DateTime.UtcNow, flatpakApp);
+            if (isY70)
             {
                 _y70Running = true;
                 _ = LinuxScreenInhibit.AcquireAsync(_dbus);
@@ -379,6 +366,85 @@ public sealed class LinuxPanelKioskHost : IDisposable
         {
             Console.Error.WriteLine($"[panel-kiosk] spawn failed display={displayId}: {ex.Message}");
         }
+    }
+
+    private List<string> ChromiumKioskArgs(string url, string deviceId, string displayId)
+    {
+        var args = new List<string>();
+        // Follows the session: wayland forced on an X11 login kills the kiosk on
+        // its first frame ("Failed to connect to Wayland display").
+        if (LinuxSession.ChromiumOzonePlatform() is { } ozone)
+            args.Add($"--ozone-platform={ozone}");
+        args.Add($"--app={url}");
+        // Place before --kiosk: the window manager fullscreens onto the monitor the
+        // window already occupies. Matters most for the Y70 slot, which self-registers
+        // its record from whatever viewport it lands on. On KDE-under-X11 the KWin
+        // script also moves it, to the same output.
+        PlaceOnOutput(args, displayId);
+        // Client-requested fullscreen: KWin keeps it across the placement
+        // script's move, while a compositor-set fullscreen on a normal Chromium
+        // window is not honoured.
+        args.Add("--kiosk");
+        // Chromium initialises OS crypt from the desktop keyring before the
+        // first navigation; on KDE a locked KWallet (autologin, or a session
+        // unlocked without PAM) leaves it waiting on a wallet prompt and every
+        // document load aborts, so the kiosk sits on Chromium's blank grey. A
+        // kiosk stores no credentials: opt out of the keyring entirely.
+        args.Add("--password-store=basic");
+        args.Add($"--user-data-dir={ProfileDir(deviceId)}");
+        args.Add("--no-first-run");
+        args.Add("--noerrdialogs");
+        args.Add("--disable-session-crashed-bubble");
+        return args;
+    }
+
+    /// <summary>Firefox has no --window-position, so placement is the KWin script's alone (KDE only).</summary>
+    internal static List<string> FirefoxKioskArgs(string url, string profileDir, bool isY70)
+    {
+        // --new-instance: a running Firefox would otherwise take the URL and the spawned pid would
+        // exit at once. Remoting is keyed by profile path, so no other invocation reaches the kiosk.
+        var args = new List<string> { "--new-instance", "--profile", profileDir };
+        if (isY70)
+        {
+            // --name sets the Wayland app_id, --class the X11 WM_CLASS the script matches.
+            args.Add($"--name={LinuxKWinPanelPlacement.FirefoxClass}");
+            args.Add($"--class={LinuxKWinPanelPlacement.FirefoxClass}");
+        }
+        args.Add("--kiosk");
+        args.Add(url);
+        return args;
+    }
+
+    // Prefs that would otherwise open a welcome, privacy-notice, default-browser,
+    // restore-session or safe-mode page over the panel. user.js re-applies them every start.
+    internal const string FirefoxUserJs = """
+user_pref("browser.shell.checkDefaultBrowser", false);
+user_pref("browser.aboutwelcome.enabled", false);
+user_pref("browser.startup.homepage_override.mstone", "ignore");
+user_pref("datareporting.policy.firstRunURL", "");
+user_pref("datareporting.policy.dataSubmissionPolicyBypassNotification", true);
+user_pref("toolkit.telemetry.reportingpolicy.firstRun", false);
+user_pref("browser.sessionstore.resume_from_crash", false);
+user_pref("toolkit.startup.max_resumed_crashes", -1);
+user_pref("browser.tabs.warnOnClose", false);
+
+""";
+
+    /// <summary>
+    /// Runs as the session user: the profile is user-owned, and a root write or
+    /// chown there would follow a symlink planted in it. A killed (or sandboxed,
+    /// other-pid-namespace) Firefox leaves its lock behind and the next start waits
+    /// on an "already running" dialog, so the lock goes unless a live process still
+    /// has this profile on its command line (two instances on one profile).
+    /// </summary>
+    internal static string PrepareFirefoxProfile(string dir)
+    {
+        const string script =
+            "mkdir -p \"$1\" && { pgrep -f -- \"--profile $1\" >/dev/null || rm -f \"$1/lock\" \"$1/.parentlock\"; } " +
+            "&& printf '%s' \"$2\" > \"$1/user.js\" || echo profile-setup-failed";
+        if (RunAsSessionUser("sh", "-c", script, "sh", dir, FirefoxUserJs).Contains("profile-setup-failed", StringComparison.Ordinal))
+            Console.Error.WriteLine($"[panel-kiosk] firefox profile setup failed at {dir}");
+        return dir;
     }
 
     /// <summary>Add window-geometry flags for this kiosk's monitor when the session
@@ -461,17 +527,22 @@ public sealed class LinuxPanelKioskHost : IDisposable
     // HOME is read per call: the root daemon adopts the session user's after
     // start, so a cached value would point at /root. Not pre-created - the
     // browser makes it as the session user, and a root-owned dir is unwritable.
-    internal static string ProfileDir(string deviceId)
+    internal static string ProfileDir(string deviceId) => Path.Combine(KioskHome(), "nexus-kiosk", deviceId);
+
+    /// <summary>A flatpak Firefox has no home access (no --filesystem=home), only its own ~/.var/app/&lt;id&gt;.</summary>
+    internal static string FirefoxProfileDir(string deviceId, string? flatpakApp) => flatpakApp is null
+        ? Path.Combine(KioskHome(), "nexus-kiosk", "firefox", deviceId)
+        : Path.Combine(KioskHome(), ".var", "app", flatpakApp, "nexus-kiosk", deviceId);
+
+    private static string KioskHome()
     {
         var home = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
-        if (string.IsNullOrEmpty(home))
-        {
-            // GetFolderPath yields "" for an unresolvable home, which would make
-            // --user-data-dir relative to the browser's CWD.
-            var runtimeDir = Environment.GetEnvironmentVariable("XDG_RUNTIME_DIR");
-            home = string.IsNullOrEmpty(runtimeDir) ? Path.GetTempPath() : runtimeDir;
-        }
-        return Path.Combine(home, "nexus-kiosk", deviceId);
+        if (!string.IsNullOrEmpty(home))
+            return home;
+        // GetFolderPath yields "" for an unresolvable home, which would make
+        // the profile path relative to the browser's CWD.
+        var runtimeDir = Environment.GetEnvironmentVariable("XDG_RUNTIME_DIR");
+        return string.IsNullOrEmpty(runtimeDir) ? Path.GetTempPath() : runtimeDir;
     }
 
     public void Dispose()

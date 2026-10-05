@@ -162,6 +162,118 @@ public class LinuxPanelKioskHostTests
         Assert.Empty(toOpen);
     }
 
+    // Same snap constraint as ProfileDir: Ubuntu's Firefox is a snap.
+    [Fact]
+    public void FirefoxProfileDir_PackageOrSnapStaysUnderHomeAndNoneHidden()
+    {
+        var home = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+        var dir = LinuxPanelKioskHost.FirefoxProfileDir("dev1", flatpakApp: null);
+
+        Assert.StartsWith(home + Path.DirectorySeparatorChar, dir);
+        Assert.DoesNotContain(dir[(home.Length + 1)..].Split(Path.DirectorySeparatorChar), s => s.StartsWith('.'));
+        Assert.NotEqual(LinuxPanelKioskHost.ProfileDir("dev1"), dir);
+    }
+
+    // Flathub's Firefox gets no --filesystem=home; only its own ~/.var/app dir is visible inside the sandbox.
+    [Fact]
+    public void FirefoxProfileDir_FlatpakLivesInTheAppsOwnDataDir()
+    {
+        var home = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+        var appDir = Path.Combine(home, ".var", "app", "org.mozilla.firefox");
+
+        Assert.StartsWith(appDir + Path.DirectorySeparatorChar,
+            LinuxPanelKioskHost.FirefoxProfileDir("y70", "org.mozilla.firefox"));
+    }
+
+    [Fact]
+    public void FirefoxKioskArgs_Y70GetsTheClassTheKWinScriptMatches()
+    {
+        var args = LinuxPanelKioskHost.FirefoxKioskArgs("http://localhost:9400/panel?token=t", "/p", isY70: true);
+
+        Assert.Equal(new[] { "--new-instance", "--profile", "/p" }, args.GetRange(0, 3));
+        Assert.Contains($"--name={LinuxKWinPanelPlacement.FirefoxClass}", args);
+        Assert.Contains($"--class={LinuxKWinPanelPlacement.FirefoxClass}", args);
+        Assert.Equal("--kiosk", args[^2]);
+        Assert.Equal("http://localhost:9400/panel?token=t", args[^1]);
+    }
+
+    // A promoted monitor's kiosk must not carry the Y70 class, or the script would move it onto the Y70.
+    [Fact]
+    public void FirefoxKioskArgs_MonitorKioskCarriesNoY70Class()
+    {
+        var args = LinuxPanelKioskHost.FirefoxKioskArgs("u", "/p", isY70: false);
+
+        Assert.DoesNotContain(args, a => a.Contains(LinuxKWinPanelPlacement.FirefoxClass, StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void PrepareFirefoxProfile_WritesUserJsVerbatimAndClearsTheStaleLock()
+    {
+        if (OperatingSystem.IsWindows()) return;
+        var root = Directory.CreateTempSubdirectory("ff-profile").FullName;
+        try
+        {
+            var dir = Path.Combine(root, "nexus-kiosk", "firefox", "y70");
+            Directory.CreateDirectory(dir);
+            File.WriteAllText(Path.Combine(dir, ".parentlock"), "");
+            File.CreateSymbolicLink(Path.Combine(dir, "lock"), "127.0.0.1:+4242");
+
+            Assert.Equal(dir, LinuxPanelKioskHost.PrepareFirefoxProfile(dir));
+
+            Assert.Equal(LinuxPanelKioskHost.FirefoxUserJs, File.ReadAllText(Path.Combine(dir, "user.js")));
+            Assert.False(File.Exists(Path.Combine(dir, ".parentlock")));
+            Assert.Null(new FileInfo(Path.Combine(dir, "lock")).LinkTarget);
+        }
+        finally
+        {
+            try { Directory.Delete(root, recursive: true); } catch { }
+        }
+    }
+
+    // An orphaned kiosk still holds the profile: clearing its lock would start a second instance on it.
+    [Fact]
+    public void PrepareFirefoxProfile_KeepsTheLockWhileAProcessStillUsesTheProfile()
+    {
+        if (OperatingSystem.IsWindows()) return;
+        var dir = Directory.CreateTempSubdirectory("ff-live").FullName;
+        // "; :" stops sh exec-ing sleep in place, which would drop --profile from the argv.
+        using var holder = System.Diagnostics.Process.Start("sh", new[] { "-c", "sleep 30; :", "sh", "--profile", dir })!;
+        try
+        {
+            File.WriteAllText(Path.Combine(dir, ".parentlock"), "");
+
+            LinuxPanelKioskHost.PrepareFirefoxProfile(dir);
+
+            Assert.True(File.Exists(Path.Combine(dir, ".parentlock")));
+            Assert.True(File.Exists(Path.Combine(dir, "user.js")));
+        }
+        finally
+        {
+            try { holder.Kill(); } catch { }
+            try { Directory.Delete(dir, recursive: true); } catch { }
+        }
+    }
+
+    [Fact]
+    public void KWinScript_TargetsTheConnectorAndMatchesBothEngines()
+    {
+        var script = LinuxKWinPanelPlacement.Script("DP-1");
+
+        Assert.Contains("const TARGET_OUTPUT = \"DP-1\";", script);
+        Assert.Contains($"const FIREFOX_CLASS = \"{LinuxKWinPanelPlacement.FirefoxClass}\";", script);
+        Assert.Contains("const CHROMIUM_SUFFIX = \"-localhost__panel-Default\";", script);
+        Assert.DoesNotContain("__", script.Replace("localhost__panel", "", StringComparison.Ordinal));
+    }
+
+    // The connector lands inside a JS string literal.
+    [Fact]
+    public void KWinScript_StripsCharactersThatCouldEscapeTheLiteral()
+    {
+        Assert.Contains("const TARGET_OUTPUT = \"HDMI-A-1alert1\";",
+            LinuxKWinPanelPlacement.Script("HDMI-A-1\";alert(1)//"));
+        Assert.Contains("const TARGET_OUTPUT = \"\";", LinuxKWinPanelPlacement.Script(""));
+    }
+
     [Fact]
     public void FlatpakAppId_RecognisesExportPathsOnly()
     {
