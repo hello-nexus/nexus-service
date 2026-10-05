@@ -280,4 +280,59 @@ public class LedLayoutResolverTests
         var exported = MappingArtifactFactory.FromResolved(card, resolved, "exported", null);
         Assert.Null(exported.Zones[0].LedCount);
     }
+
+    // ── built-ins follow the shipped catalog ─────────────────────────────
+
+    private static void ApplyStaleBuiltIn(NexusSettings settings, string key, int ledCount)
+    {
+        var stale = Artifact(ledCount);
+        settings.Devices.AppliedMappings[Id] = new AppliedMappingRef
+        {
+            MappingId = key,
+            Name = stale.Name,
+            Artifact = stale,
+            ContentHash = MappingHash.ContentHash(stale),
+            Source = MappingApplyService.SourceBuiltIn,
+        };
+    }
+
+    [Fact]
+    public void A_built_in_wired_before_a_catalog_fix_draws_the_catalog_geometry()
+    {
+        var settings = Settings();
+        ApplyStaleBuiltIn(settings, LianLiChainArtifacts.SlInfinityKey, 20);
+
+        var layout = LedLayoutResolver.ResolveSeeded(Id, 20, null, null, settings);
+
+        var current = BuiltInMappingsCatalog.Find(LianLiChainArtifacts.SlInfinityKey)!.Zones[0].Leds;
+        Assert.Equal(current.Select(l => l.U), layout.U);
+        Assert.Equal(current.Select(l => l.V), layout.V);
+        Assert.Null(layout.Disabled);
+    }
+
+    [Fact]
+    public void A_built_in_whose_count_changed_keeps_its_embedded_copy()
+    {
+        var settings = Settings();
+        ApplyStaleBuiltIn(settings, LianLiChainArtifacts.SlInfinityKey, 4);
+
+        var layout = LedLayoutResolver.ResolveSeeded(Id, 4, null, null, settings);
+
+        Assert.Equal(0.1f, layout.U[0], 4);
+        Assert.Equal(0.9f, layout.V[0], 4);
+    }
+
+    [Fact]
+    public void A_community_mapping_keeps_its_embedded_copy_even_under_a_catalog_key()
+    {
+        var settings = Settings();
+        var artifact = Artifact(20);
+        ApplyMapping(settings, artifact);
+        settings.Devices.AppliedMappings[Id].MappingId = LianLiChainArtifacts.SlInfinityKey;
+
+        var layout = LedLayoutResolver.ResolveSeeded(Id, 20, null, null, settings);
+
+        Assert.Equal(0.1f, layout.U[0], 4);
+        Assert.Equal(0.9f, layout.V[0], 4);
+    }
 }

@@ -35,11 +35,40 @@ public static class BuiltInMappingsCatalog
         }
     }
 
+    /// <summary>
+    /// The artifact an applied mapping draws with. A built-in follows the
+    /// catalog this build ships, so a corrected product reaches zones wired
+    /// before the fix; user edits live in their own override layer and still
+    /// win. Any other source, or a product whose LED count changed, keeps the
+    /// copy embedded when it was applied.
+    /// </summary>
+    public static MappingArtifact Current(AppliedMappingRef applied)
+    {
+        if (applied.Source != MappingApplyService.SourceBuiltIn || string.IsNullOrEmpty(applied.MappingId))
+            return applied.Artifact;
+        // Resolves run per card on every provider poll; the catalog is fixed for the process.
+        var live = _current.GetOrAdd(applied.MappingId, Find);
+        return live is not null && SameZoneCounts(live, applied.Artifact) ? live : applied.Artifact;
+    }
+
+    private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, MappingArtifact?> _current = new();
+
+    private static bool SameZoneCounts(MappingArtifact a, MappingArtifact b)
+    {
+        if (a.Zones.Count != b.Zones.Count)
+            return false;
+        for (var i = 0; i < a.Zones.Count; i++)
+        {
+            if (a.Zones[i].ZoneIndex != b.Zones[i].ZoneIndex || a.Zones[i].LedCount != b.Zones[i].LedCount)
+                return false;
+        }
+        return true;
+    }
+
     /// <summary>The artifact for a product key, or null when the key is not in the catalog.</summary>
     public static MappingArtifact? Find(string key)
     {
-        // First-party products are authored in code, not in the generated
-        // file, so they are checked before it.
+        // Products authored in code win over the generated file.
         if (HyteChainArtifacts.Build(key) is { } hyte)
             return hyte;
         EnsureLoaded();
@@ -216,7 +245,10 @@ public static class BuiltInMappingsCatalog
             var entries = Load();
             var byKey = new Dictionary<string, BuiltInMappingEntry>(entries.Count, StringComparer.Ordinal);
             foreach (var entry in entries)
+            {
+                LianLiChainArtifacts.Apply(entry.Key, entry.Artifact);
                 byKey[entry.Key] = entry;
+            }
             _byKey = byKey;
             _entries = entries;
         }

@@ -233,6 +233,18 @@ public static class LianLiZoneSupport
         return new ComposedDevice(structure, channels);
     }
 
+    /// <summary>
+    /// One SL-Infinity fan on its hub's motherboard ARGB input: the inner ring,
+    /// then the edge, drawn as a port draws them. The ring's direction is the
+    /// port's; that the sync input keeps it is unverified on hardware.
+    /// </summary>
+    internal static (float[] u, float[] v) SlInfinityFanUV()
+    {
+        var (innerU, innerV) = BuildFanRingUV(1, LianLiProtocol.InnerLedsPerFan, InnerRadius, indexRunsDown: true);
+        var (edgeU, edgeV) = BuildFanEdgeStripUV(1, LianLiProtocol.OuterLedsPerFan);
+        return ([.. innerU, .. edgeU], [.. innerV, .. edgeV]);
+    }
+
     // The outer "ring" is NOT a ring and not two stacked bars either: laid out
     // as a plain left-to-right strip it pans perfectly (confirmed on hardware
     // 2026-08-27 by selecting the rim's LEDs in the LED map editor and using

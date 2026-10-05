@@ -184,7 +184,7 @@ public static class LedLayoutResolver
         if (settings.Devices.AppliedMappings.TryGetValue(layout.Id, out var applied))
         {
             layout.Applied = applied;
-            var zone = SelectZone(applied.Artifact, layout.ZoneHint);
+            var zone = SelectZone(BuiltInMappingsCatalog.Current(applied), layout.ZoneHint);
             if (zone is not null)
             {
                 foreach (var led in zone.Leds)

@@ -253,7 +253,7 @@ public static class ZoneResolution
         // render path's.
         if (settings.Devices.AppliedMappings.TryGetValue(cardId, out var applied))
         {
-            var mappingZone = LedLayoutResolver.SelectZone(applied.Artifact, zoneHint);
+            var mappingZone = LedLayoutResolver.SelectZone(BuiltInMappingsCatalog.Current(applied), zoneHint);
             if (mappingZone is not null)
             {
                 foreach (var di in mappingZone.Disabled)
