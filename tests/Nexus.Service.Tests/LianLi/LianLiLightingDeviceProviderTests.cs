@@ -118,6 +118,7 @@ public class LianLiLightingDeviceProviderTests
         Assert.Equal(4, devices.Count);
         Assert.DoesNotContain(devices, d => d.Structure.DeviceId == "lianli:mirror");
         Assert.Equal("lianli:port0", devices[0].Structure.DeviceId);
+        Assert.Equal("Lian Li - Port 1", devices[0].Structure.Name);
     }
 
     [Fact]
@@ -308,5 +309,27 @@ public class LianLiLightingDeviceProviderTests
             if (x > mx) mx = x;
         }
         return mx - mn;
+    }
+
+    [Fact]
+    public void Argb_sync_leaves_the_ports_no_cards_structures_or_frames()
+    {
+        Connect();
+        _store.Update(s => s.Devices.LianLiLighting.ArgbSync = true);
+
+        Assert.Empty(_provider.GetAll().Devices);
+        Assert.Empty(_provider.GetStructures());
+        Assert.Empty(_provider.BuildFrames(0));
+    }
+
+    [Fact]
+    public void Argb_sync_left_on_from_a_verified_hub_does_not_hide_another_familys_cards()
+    {
+        ConnectSl();
+        OnlyPort0(2);
+        _store.Update(s => s.Devices.LianLiLighting.ArgbSync = true);
+
+        Assert.NotEmpty(_provider.GetAll().Devices);
+        Assert.NotEmpty(_provider.GetStructures());
     }
 }

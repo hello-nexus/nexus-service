@@ -434,6 +434,55 @@ public class LianLiLightingFrameWriterTests
     }
 
     [Fact]
+    public void Sl_infinity_custom_mode_paces_frames_to_the_hub_commit_rate()
+    {
+        UseFakeClock();
+        Attach(0xA102, port: 1, fans: 3);
+        SetMode("custom");
+
+        _writer.Tick();
+        Assert.Contains(Calls, c => c.Bytes[1] == 0x32);
+        _spy.Calls.Clear();
+        Advance(50);
+        _writer.Tick();
+        Assert.DoesNotContain(Calls, c => c.Bytes[1] == 0x32);
+        Advance(40);
+        _writer.Tick();
+        Assert.Contains(Calls, c => c.Bytes[1] == 0x32);
+    }
+
+    [Fact]
+    public void Sl_infinity_custom_mode_gives_two_ports_a_longer_frame_interval_than_one()
+    {
+        UseFakeClock();
+        _hub.Attach(_spy, Profile(0xA102));
+        _store.Update(s =>
+        {
+            s.Devices.LianLi.SetFans(0, 1);
+            s.Devices.LianLi.SetFans(1, 2);
+            s.Devices.LianLi.SetFans(2, 0);
+            s.Devices.LianLi.SetFans(3, 0);
+        });
+        _engine.UpdateDevices(new[]
+        {
+            new DeviceFrame(0, "lianli:port0", 16, 0, 0, 1, 1, 0),
+            new DeviceFrame(1, "lianli:port1", 32, 0, 0, 1, 1, 0),
+        });
+        SetMode("custom");
+
+        _writer.Tick();
+        Assert.Contains(Calls, c => c.Bytes[1] == 0x30);
+        Assert.Contains(Calls, c => c.Bytes[1] == 0x32);
+        _spy.Calls.Clear();
+        Advance(90);
+        _writer.Tick();
+        Assert.DoesNotContain(Calls, c => c.Bytes[1] == 0x30);
+        Advance(10);
+        _writer.Tick();
+        Assert.Contains(Calls, c => c.Bytes[1] == 0x30);
+    }
+
+    [Fact]
     public void A_rejected_hub_init_does_not_freeze_custom_mode_streaming()
     {
         UseFakeClock();
@@ -448,10 +497,74 @@ public class LianLiLightingFrameWriterTests
         _writer.Tick();
         Assert.Contains(Calls, c => c.Kind == HubTransportSpy.CallKind.Write);
 
-        // And the tick after, while the init backoff is still running.
+        // And the next frame, while the init backoff is still running.
         _spy.Calls.Clear();
         _spy.RejectWrites = false;
+        Advance(100);
         _writer.Tick();
+        Assert.Contains(Calls, c => c.Kind == HubTransportSpy.CallKind.Write);
+    }
+
+    private static bool IsArgbSync(HubTransportSpy.Call c, byte on) =>
+        c.IsSetFeature && c.Bytes.Length >= 4 && c.Bytes[1] == 0x10 && c.Bytes[2] == 0x61 && c.Bytes[3] == on;
+
+    [Fact]
+    public void Argb_sync_switches_the_hub_once_and_stops_streaming()
+    {
+        UseFakeClock();
+        Attach(0xA102, port: 1, fans: 3);
+        SetMode("custom");
+        _store.Update(s => s.Devices.LianLiLighting.ArgbSync = true);
+
+        _writer.Tick();
+        Assert.Single(Calls, c => IsArgbSync(c, 1));
+        Assert.DoesNotContain(Calls, c => c.Bytes.Length > 1 && (c.Bytes[1] & 0xF0) == 0x30);
+
+        _spy.Calls.Clear();
+        Advance(1000);
+        _writer.Tick();
+        Assert.Empty(Calls);
+    }
+
+    [Fact]
+    public void Leaving_argb_sync_switches_the_hub_back_and_recommits_the_firmware_mode()
+    {
+        UseFakeClock();
+        Attach(0xA102, port: 1, fans: 3);
+        SetMode("static");
+        _store.Update(s => s.Devices.LianLiLighting.ArgbSync = true);
+        _writer.Tick();
+
+        _spy.Calls.Clear();
+        _store.Update(s => s.Devices.LianLiLighting.ArgbSync = false);
+        Advance(100);
+        _writer.Tick();
+
+        Assert.Single(Calls, c => IsArgbSync(c, 0));
+        Assert.Contains(Calls, c => c.Bytes.Length > 2 && c.Bytes[1] == 0x12);
+    }
+
+    [Fact]
+    public void A_hub_never_put_on_argb_sync_gets_no_sync_write()
+    {
+        Attach(0xA102, port: 1, fans: 3);
+        SetMode("static");
+
+        _writer.Tick();
+
+        Assert.DoesNotContain(Calls, c => c.IsSetFeature && c.Bytes.Length >= 3 && c.Bytes[1] == 0x10 && c.Bytes[2] == 0x61);
+    }
+
+    [Fact]
+    public void Argb_sync_left_on_does_not_switch_an_unverified_family()
+    {
+        Attach(0xA100, port: 2, fans: 3);
+        SetMode("custom");
+        _store.Update(s => s.Devices.LianLiLighting.ArgbSync = true);
+
+        _writer.Tick();
+
+        Assert.DoesNotContain(Calls, c => c.IsSetFeature && c.Bytes.Length >= 3 && c.Bytes[1] == 0x10 && c.Bytes[2] == 0x30);
         Assert.Contains(Calls, c => c.Kind == HubTransportSpy.CallKind.Write);
     }
 }

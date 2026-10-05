@@ -68,6 +68,7 @@ public sealed class LianLiLightingDeviceProvider :
         var settings = _store.Load();
         var comp = LianLiZoneSupport.ReadComposition(settings, _hub.DeviceId);
         var sb = new System.Text.StringBuilder("connected");
+        sb.Append("|a=").Append(_hub.Profile.PlaysArgbInput(settings.Devices.LianLiLighting.ArgbSync) ? '1' : '0');
         sb.Append("|m=").Append(comp.Mirror ? '1' : '0');
         sb.Append("|c=").Append(comp.CombineRings ? '1' : '0');
         var lianLi = settings.Devices.LianLi;
@@ -82,7 +83,10 @@ public sealed class LianLiLightingDeviceProvider :
     {
         var resp = new GetLightingDevicesResponse { IsInit = true };
         if (!_hub.IsConnected) return resp;
-        resp.Devices.AddRange(BuildCards(_hub.DeviceId, _hub.Profile, _store.Load()));
+        var settings = _store.Load();
+        // Under ARGB sync the fans play the source header's card, so the ports have none of their own.
+        if (_hub.Profile.PlaysArgbInput(settings.Devices.LianLiLighting.ArgbSync)) return resp;
+        resp.Devices.AddRange(BuildCards(_hub.DeviceId, _hub.Profile, settings));
         return resp;
     }
 
@@ -248,6 +252,7 @@ public sealed class LianLiLightingDeviceProvider :
             return Array.Empty<DeviceStructure>();
         }
         var settings = _store.Load();
+        if (_hub.Profile.PlaysArgbInput(settings.Devices.LianLiLighting.ArgbSync)) return Array.Empty<DeviceStructure>();
         var comp = LianLiZoneSupport.ReadComposition(settings, _hub.DeviceId);
         var composed = LianLiZoneSupport.Compose(_hub.DeviceId, _hub.Profile, comp, settings.Devices.LianLi);
         var structures = new List<DeviceStructure>(composed.Count);
@@ -265,6 +270,7 @@ public sealed class LianLiLightingDeviceProvider :
         if (!_hub.IsConnected) return Array.Empty<DeviceFrame>();
 
         var settings = _store.Load();
+        if (_hub.Profile.PlaysArgbInput(settings.Devices.LianLiLighting.ArgbSync)) return Array.Empty<DeviceFrame>();
         var layouts = settings.Lighting.DeviceLayouts;
         var comp = LianLiZoneSupport.ReadComposition(settings, _hub.DeviceId);
         var composed = LianLiZoneSupport.Compose(_hub.DeviceId, _hub.Profile, comp, settings.Devices.LianLi);

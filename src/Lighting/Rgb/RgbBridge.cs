@@ -1739,13 +1739,15 @@ public sealed class RgbBridge : IDisposable
         // Apply user-configured counts.
         foreach (var d in devices)
         {
-            if (d.Type != 0 || d.Zones.Count < 2)
+            if (!OpenRgbZoneSupport.IsSplitMotherboard(d))
                 continue;
             for (int z = 0; z < d.Zones.Count; z++)
             {
                 var zoneId = $"{d.StableId}-{z}";
                 if (!persisted.TryGetValue(zoneId, out var desired))
                     continue;
+                // Covers counts persisted before the cap or edited by hand.
+                desired = OpenRgbZoneSupport.ClampPortLedCount(d, z, desired);
                 if (desired == d.Zones[z].LedCount)
                     continue;
                 // Resizing a zone the controller pins never holds, and this pass
@@ -1769,8 +1771,9 @@ public sealed class RgbBridge : IDisposable
         // OpenRGB reports "nothing configured" state (<= 1 LED), which on most
         // boards is a placeholder LED on an unconfigured digital header (AORUS
         // B850I etc.). A header genuinely fixed at one LED reports leds_min ==
-        // leds_max and is excluded; the user can override the seeded 60 via the
-        // LED-count editor.
+        // leds_max and is excluded; the user can override the seeded count via
+        // the LED-count editor. Port controllers are never seeded: a hardware-counted
+        // one (NZXT Hue+) reporting 0 would have the guess saved over its own count.
         var toDefault = new List<(int physIdx, int zoneIdx, string id)>();
         foreach (var d in devices)
         {

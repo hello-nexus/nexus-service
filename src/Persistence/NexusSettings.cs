@@ -1379,6 +1379,8 @@ public sealed class OpenRgbExcludedZone
     public int LedCount { get; set; }
     public uint LedsMin { get; set; }
     public uint LedsMax { get; set; }
+    /// <summary>ZONE_FLAG_* bits, so an excluded port controller still rebuilds as split.</summary>
+    public uint Flags { get; set; }
 }
 
 /// <summary>One user-defined zone of a device partition: an ordered run of segment-local slices. One zone = one lighting card = one engine frame.</summary>
@@ -1667,6 +1669,14 @@ public sealed class LianLiLightingSettings
 
     /// <summary>Run a mergeable mode as one animation across every port instead of one per port.</summary>
     public bool Merge { get; set; }
+
+    /// <summary>
+    /// The hub plays its motherboard ARGB input instead of Nexus streaming to
+    /// it; every port shows that input from its first LED, fan by fan in chain
+    /// order. <see cref="ArgbSyncSource"/> is the lighting card driving the header.
+    /// </summary>
+    public bool ArgbSync { get; set; }
+    public string? ArgbSyncSource { get; set; }
 }
 
 public sealed class TlLightingSettings

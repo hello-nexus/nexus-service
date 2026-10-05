@@ -1164,6 +1164,7 @@ namespace Nexus.Service.Serialization;
 [JsonSerializable(typeof(Nexus.Service.Routes.LianLiCompositionRequest))]
 [JsonSerializable(typeof(Nexus.Service.Routes.LianLiLightingResponse))]
 [JsonSerializable(typeof(Nexus.Service.Routes.LianLiLightingRequest))]
+[JsonSerializable(typeof(Nexus.Service.Routes.LianLiArgbSourceDto))]
 [JsonSerializable(typeof(Nexus.Service.Routes.LianLiModeInfoDto))]
 [JsonSerializable(typeof(Nexus.Service.Routes.LianLiModeInfoDto[]))]
 // Lian Li L-Wireless (SLV3) dongle: discovery + bind/unbind/identify.
