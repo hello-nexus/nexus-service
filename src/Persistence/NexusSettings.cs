@@ -613,6 +613,8 @@ public sealed class LightingSettings
     public Dictionary<string, StaticDeviceLook> StaticDeviceLooks { get; set; } = new();
     /// <summary>Per-LED colour locks, "#rrggbb" by lighting-device id then LED index; held in every mode.</summary>
     public Dictionary<string, Dictionary<int, string>> LedColorLocks { get; set; } = new();
+    /// <summary>Per-keyboard key reactions by lighting-device id; rendered by <see cref="Nexus.Service.Lighting.KeyReactive.KeyReactiveOverlay"/>.</summary>
+    public Dictionary<string, KeyReaction> KeyReactions { get; set; } = new();
     // Named snapshots of DeviceLayouts. Capped by the route layer.
     public List<LayoutPreset> LayoutPresets { get; set; } = new();
     // Preset the live DeviceLayouts was last loaded from; null = none selected.
@@ -712,6 +714,22 @@ public sealed class PostProcessSettings
     public bool Reactive { get; set; }
     public float Reactivity { get; set; } = InstallDefaults.Lighting.PostProcess.Reactivity;
     public float Intensity { get; set; } = InstallDefaults.Lighting.PostProcess.Intensity;
+}
+
+/// <summary>One keyboard's key-reaction look. Ids and bounds live in <see cref="Nexus.Service.Lighting.KeyReactive.KeyReactionCatalog"/>.</summary>
+public sealed class KeyReaction
+{
+    public bool Enabled { get; set; }
+    public string Effect { get; set; } = Nexus.Service.Lighting.KeyReactive.KeyReactionCatalog.Ripple;
+    /// <summary>"custom" paints <see cref="Color"/>; "rainbow" steps the hue per press; "random" picks one per press.</summary>
+    public string ColorMode { get; set; } = Nexus.Service.Lighting.KeyReactive.KeyReactionCatalog.ColorCustom;
+    public string Color { get; set; } = Nexus.Service.Lighting.KeyReactive.KeyReactionCatalog.DefaultColor;
+    /// <summary>Time multiplier on every effect clock.</summary>
+    public float Speed { get; set; } = 1f;
+    /// <summary>Spatial multiplier on every effect's reach.</summary>
+    public float Size { get; set; } = 1f;
+    /// <summary>What the rest of the board shows: "effect", "dim", "dark", or "reveal" (the effect shows only where a reaction is).</summary>
+    public string Background { get; set; } = Nexus.Service.Lighting.KeyReactive.KeyReactionCatalog.BackgroundEffect;
 }
 
 public sealed class StaticColorSettings

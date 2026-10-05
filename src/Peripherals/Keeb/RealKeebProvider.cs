@@ -328,23 +328,15 @@ public sealed class RealKeebProvider : IKeebProvider
             Speed = NormalizeSpeed(k.FirmwareLighting.Speed),
             Direction = NormalizeDirection(k.FirmwareLighting.Direction),
             Brightness = k.FirmwareLighting.Brightness,
-            KeyReactive = k.FirmwareLighting.KeyReactive,
-            KeyReactiveMask = k.FirmwareLighting.KeyReactiveMask,
-            KeyReactiveMode = NormalizeReactiveMode(k.FirmwareLighting.KeyReactiveMode),
-            KeyReactiveColor = ToRgba(k.FirmwareLighting.KeyReactiveColor),
         };
     }
 
     // The panel dropdowns only list canonical values; map legacy persisted ones
     // so the control isn't blank. "Medium" is the old synonym for "Standard"
-    // (same speed byte); "Off" was a non-mode default (on/off is KeyReactive);
-    // "Forward"/"Reverse" are the pre-panel direction names (same bytes as
+    // (same speed byte); "Forward"/"Reverse" are the pre-panel direction names (same bytes as
     // LeftToRight/RightToLeft).
     private static string NormalizeSpeed(string s) =>
         string.Equals(s, "Medium", StringComparison.OrdinalIgnoreCase) ? "Standard" : s;
-
-    private static string NormalizeReactiveMode(string m) =>
-        string.Equals(m, "Off", StringComparison.OrdinalIgnoreCase) ? "SingleKey" : m;
 
     private static string NormalizeDirection(string d) => d.ToLowerInvariant() switch
     {
@@ -388,25 +380,6 @@ public sealed class RealKeebProvider : IKeebProvider
             // the device; that poll stalled LED frames and is gone.
             if (streaming) s.Lighting.GlobalBrightness = brightness / 100f;
         }, writeDevice: !streaming);
-    }
-
-    public void SetPassiveLighting(SetPassiveLightingBody body)
-    {
-        // Key-reactive is a software overlay driven by input callbacks; persist
-        // it here and render it in the input-callback phase. No firmware bytes.
-        _store.Update(s =>
-        {
-            s.Keeb.FirmwareLighting.KeyReactive = body.KeyReactive;
-            s.Keeb.FirmwareLighting.KeyReactiveMask = body.KeyReactiveMask;
-            s.Keeb.FirmwareLighting.KeyReactiveMode = body.KeyReactiveMode;
-            s.Keeb.FirmwareLighting.KeyReactiveColor = new RgbaColor
-            {
-                R = body.KeyReactiveColor.R,
-                G = body.KeyReactiveColor.G,
-                B = body.KeyReactiveColor.B,
-                A = body.KeyReactiveColor.A,
-            };
-        });
     }
 
     public void SetGameMode(SetGameModeBody body)
@@ -488,8 +461,6 @@ public sealed class RealKeebProvider : IKeebProvider
         DroppedKeys = built.DroppedKeys.ToArray(),
         WroteDevice = false,
     };
-
-    private static RGBA ToRgba(RgbaColor c) => new() { R = c.R, G = c.G, B = c.B, A = c.A };
 
     private static KeebMacro ToDto(KeebMacroDocument doc, int index)
     {

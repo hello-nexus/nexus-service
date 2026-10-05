@@ -2980,6 +2980,120 @@
         }
       }
     },
+    "/lighting/key-reactive": {
+      "get": {
+        "tags": [
+          "Nexus"
+        ],
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        }
+      }
+    },
+    "/lighting/key-reactive/{id}": {
+      "put": {
+        "tags": [
+          "Nexus"
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/KeyReaction"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        }
+      }
+    },
+    "/lighting/key-reactive/{id}/press": {
+      "post": {
+        "tags": [
+          "Nexus"
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "oneOf": [
+                  {
+                    "type": "null"
+                  },
+                  {
+                    "$ref": "#/components/schemas/KeyReactivePressBody"
+                  }
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        }
+      }
+    },
+    "/lighting/key-reactive/{id}/preview": {
+      "post": {
+        "tags": [
+          "Nexus"
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/KeyReaction"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        }
+      }
+    },
     "/lighting/game-sync/start": {
       "post": {
         "tags": [
@@ -7068,35 +7182,6 @@
             "application/json": {
               "schema": {
                 "$ref": "#/components/schemas/SetFirmwareLightingBody"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "200": {
-            "description": "OK",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ApiResponse"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
-    "/keeb/passive-lighting": {
-      "post": {
-        "tags": [
-          "Nexus"
-        ],
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/SetPassiveLightingBody"
               }
             }
           },
@@ -18746,18 +18831,6 @@
             ],
             "format": "int32"
           },
-          "keyReactive": {
-            "type": "boolean"
-          },
-          "keyReactiveMask": {
-            "type": "boolean"
-          },
-          "keyReactiveMode": {
-            "type": "string"
-          },
-          "keyReactiveColor": {
-            "$ref": "#/components/schemas/RGBA"
-          },
           "error": {
             "type": "boolean"
           },
@@ -19505,6 +19578,62 @@
             "type": "string"
           },
           "input": {
+            "pattern": "^-?(?:0|[1-9]\\d*)$",
+            "type": [
+              "null",
+              "integer",
+              "string"
+            ],
+            "format": "int32"
+          }
+        }
+      },
+      "KeyReaction": {
+        "type": "object",
+        "properties": {
+          "enabled": {
+            "type": "boolean"
+          },
+          "effect": {
+            "type": "string"
+          },
+          "colorMode": {
+            "type": "string"
+          },
+          "color": {
+            "type": "string"
+          },
+          "speed": {
+            "pattern": "^-?(?:0|[1-9]\\d*)(?:\\.\\d+)?(?:[eE][+-]?\\d+)?$",
+            "type": [
+              "number",
+              "string"
+            ],
+            "format": "float"
+          },
+          "size": {
+            "pattern": "^-?(?:0|[1-9]\\d*)(?:\\.\\d+)?(?:[eE][+-]?\\d+)?$",
+            "type": [
+              "number",
+              "string"
+            ],
+            "format": "float"
+          },
+          "background": {
+            "type": "string"
+          }
+        }
+      },
+      "KeyReactivePressBody": {
+        "type": "object",
+        "properties": {
+          "key": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "led": {
             "pattern": "^-?(?:0|[1-9]\\d*)$",
             "type": [
               "null",
@@ -24726,23 +24855,6 @@
         "properties": {
           "muted": {
             "type": "boolean"
-          }
-        }
-      },
-      "SetPassiveLightingBody": {
-        "type": "object",
-        "properties": {
-          "keyReactive": {
-            "type": "boolean"
-          },
-          "keyReactiveMask": {
-            "type": "boolean"
-          },
-          "keyReactiveMode": {
-            "type": "string"
-          },
-          "keyReactiveColor": {
-            "$ref": "#/components/schemas/RGBA"
           }
         }
       },

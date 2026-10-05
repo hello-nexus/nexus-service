@@ -49,6 +49,15 @@ Q-series screens.
   items) sample the effect canvas where a camera sees them. The scene lives in
   its own machine-local files; the view (on/off + camera) lives in settings and
   layout presets. Unplaced devices keep their 2D frame.
+- Key reactions (`Lighting/KeyReactive/`, `/lighting/key-reactive*`): per-key
+  keyboards light up as keys are pressed (ripple, sweeps, heatmap, sparks,
+  lightning and more), painted by the engine over any effect. One config per
+  physical device in `Lighting.KeyReactions`. On Windows the user-session
+  helper reports key-downs through Raw Input while a board without its own key
+  source has reactions on; the keeb reports its own presses (key-matrix
+  callbacks) and is driven by those, also on macOS, and with no engine effect
+  its writer has the overlay paint over black. Presses map to LEDs by the
+  board's LED names (OpenRGB `Key: A`, the keeb's slot table) or by position.
 - LAN smart lights (`Lighting/Smart/`): Hue, Nanoleaf, Govee drivers.
 - Game sync (`Lighting/GameSync/`): drive your own hardware from a game's
   lighting. Razer Chroma, Alienware LightFX, and Logitech capture via the

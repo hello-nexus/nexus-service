@@ -44,18 +44,6 @@ public class GetKeebSettingsResponse : ApiResponse
     public string Speed { get; set; } = "Medium";
     public string Direction { get; set; } = "Forward";
     public int Brightness { get; set; } = 80;
-    public bool KeyReactive { get; set; }
-    public bool KeyReactiveMask { get; set; }
-    public string KeyReactiveMode { get; set; } = "Off";
-    public RGBA KeyReactiveColor { get; set; }
-}
-
-public class SetPassiveLightingBody
-{
-    public bool KeyReactive { get; set; }
-    public bool KeyReactiveMask { get; set; }
-    public string KeyReactiveMode { get; set; } = "Off";
-    public RGBA KeyReactiveColor { get; set; }
 }
 
 public class SetFirmwareLightingBody

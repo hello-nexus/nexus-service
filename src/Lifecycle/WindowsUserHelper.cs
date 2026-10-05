@@ -184,6 +184,8 @@ internal static class WindowsUserHelper
         // Idle until the service arms it, which it does only while a lock
         // blackout is engaged.
         using var lockInput = new Helper.LockInputPoller(outbound);
+        // Idle until the service arms it, which it does only while a keyboard has key reactions on.
+        using var keyPresses = new Helper.KeyPressWatcher(outbound);
         var brightness = new Platform.Displays.WindowsDisplayBrightnessProvider();
 
         // Each domain registers its own envelope handler against this
@@ -209,6 +211,7 @@ internal static class WindowsUserHelper
         // user actually pastes from (the service's Session-0 one is invisible).
         new ClipboardHandler(new Platform.Clipboard.WindowsClipboardProvider().SetText).Register(handlerRegistry);
         new LockLightingHandler(lockInput.SetArmed).Register(handlerRegistry);
+        new KeyReactiveHandler(keyPresses.SetArmed).Register(handlerRegistry);
         new LifecycleHandler(
             onShutdown: () =>
             {

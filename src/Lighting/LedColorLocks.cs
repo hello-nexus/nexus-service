@@ -122,6 +122,26 @@ public sealed class LedColorLockTracker
         return true;
     }
 
+    /// <summary>
+    /// Paints <paramref name="dev"/>'s locked LEDs into its paint buffer below
+    /// <paramref name="ledCount"/>, skipping LEDs the map disables; with
+    /// <paramref name="only"/>, just those LEDs. Shared by the engine and by
+    /// writers that paint a frame outside it.
+    /// </summary>
+    public void PaintLocks(Nexus.Service.Lighting.Engine.DeviceFrame dev, int? ledCount = null, HashSet<int>? only = null)
+    {
+        if (!TryGet(dev.Id, out var leds)) return;
+        var count = ledCount ?? dev.LedCount;
+        var disabled = dev.LedDisabled;
+        foreach (var led in leds)
+        {
+            if (led.Index >= count) break;
+            if (disabled is not null && led.Index < disabled.Length && disabled[led.Index]) continue;
+            if (only is not null && !only.Contains(led.Index)) continue;
+            dev.SetLed(led.Index, led.R, led.G, led.B);
+        }
+    }
+
     /// <summary>Unlocks every LED on the device.</summary>
     public void ClearDevice(string id)
     {

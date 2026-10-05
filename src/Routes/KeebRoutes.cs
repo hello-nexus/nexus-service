@@ -35,11 +35,6 @@ public static class KeebRoutes
             k.SetFirmwareLighting(body);
             return ApiResponse.Ok();
         });
-        app.MapPost("/keeb/passive-lighting", (SetPassiveLightingBody body, IKeebProvider k) =>
-        {
-            k.SetPassiveLighting(body);
-            return ApiResponse.Ok();
-        });
         app.MapPost("/keeb/game-mode", (SetGameModeBody body, IKeebProvider k) =>
         {
             k.SetGameMode(body);

@@ -13,7 +13,7 @@ dashboard, the on-device panels, the phone companions, and
 | --- | --- |
 | **Monitoring** | CPU, GPU, RAM, disk, network, fan, temperature, FPS and battery sensors (LibreHardwareMonitor on Windows, IOKit on macOS, sysfs on Linux), 1 Hz history, a timeline of system events, per-drive SMART health. |
 | **Cooling** | Fan curves, pump and AIO control across the first-party and vendor hubs the service drives, with calibration and safety limits. |
-| **Lighting** | RGB for the whole OpenRGB catalog through a bundled headless child process, plus first-party protocols. Effects engine, screen and audio sync, LAN smart lights (Hue, Nanoleaf, Govee), game sync (Razer Chroma, LightFX and Logitech capture shims, CS2 Game State Integration). |
+| **Lighting** | RGB for the whole OpenRGB catalog through a bundled headless child process, plus first-party protocols. Effects engine, screen and audio sync, key-press reactions on per-key keyboards, LAN smart lights (Hue, Nanoleaf, Govee), game sync (Razer Chroma, LightFX and Logitech capture shims, CS2 Game State Integration). |
 | **Devices** | Native USB drivers: HYTE (Y70, Q-series, Keeb, CNVS, hubs), Lian Li (Uni Fan, Galahad II, HydroShift LCD, Strimer, wireless), Corsair iCUE LINK and Xeneon Edge, NZXT Kraken, iBUYPOWER (AW5, keyboards, mice), Tryx Panorama, Elgato Stream Deck, Nollie. Firmware updates, and detection of competing vendor software. |
 | **Panels** | Pairs and serves the React panel UIs for the Y70 touch panel, Q-series screens and the phone companion, and streams off-screen rendered panels as H.264 to USB display devices. |
 | **Apps** | Host for `nexus.app/1` SDK apps (sandboxed Web Worker runtime, sensor bindings) and the cloud app store. |
@@ -82,7 +82,7 @@ src/
   Monitoring/          # 1 Hz history store, timeline events, broadcaster
   Cooling/             # curve engine, calibration, safety, per-hub cooling providers
   QSeries/             # persisted adb transport to Q-series screens
-  Lighting/            # Engine/ effects + canvas, Rgb/ OpenRGB bridge, Zones/, Mappings/, Capture/, Smart/, GameSync/, Scene/ 3D placement
+  Lighting/            # Engine/ effects + canvas, Rgb/ OpenRGB bridge, Zones/, Mappings/, Capture/, Smart/, GameSync/, Scene/ 3D placement, KeyReactive/ key-press reactions
   Devices/             # device manager, USB detection, per-device handlers, firmware
   Peripherals/         # protocol drivers per vendor (Hyte, LianLi*, Corsair*, Nzxt, Ibp, Tryx, StreamDeck, Keeb, Y70, ...)
   Conflicts/           # competing vendor-software detection, device ownership, opt-in shutdown

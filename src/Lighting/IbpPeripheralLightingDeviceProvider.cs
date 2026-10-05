@@ -251,7 +251,9 @@ public sealed class IbpPeripheralLightingDeviceProvider : ILightingDeviceProvide
             var zones = ZoneResolution.Resolve(structure, settings);
             foreach (var zone in zones)
             {
-                frames.Add(BuildOrReuseFrame(zone.Id, zone.FrameLedCount, unit.Model.Kind, zone.Ordinal, layouts, ref idx));
+                var frame = BuildOrReuseFrame(zone.Id, zone.FrameLedCount, unit.Model.Kind, zone.Ordinal, layouts, ref idx);
+                frame.DeviceId = structure.DeviceId;
+                frames.Add(frame);
             }
         }
         if (_frameCache.Count > frames.Count)

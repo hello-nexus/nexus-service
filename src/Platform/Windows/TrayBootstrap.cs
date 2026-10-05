@@ -488,6 +488,32 @@ internal static class TrayBootstrap
             };
         }
 
+        // Key reactions: the helper's Raw Input watcher runs only while some
+        // keyboard has reactions on. Re-asserted on connect, like the lock watch.
+        var keyReactive = app.Services.GetService<Nexus.Service.Lighting.KeyReactive.KeyReactiveOverlay>();
+        if (keyReactive is not null)
+        {
+            keyReactive.InputAvailable = () => helperRegistry.IsAnyConnected;
+            // Sends the current state rather than the event's, so a late
+            // delivery can never leave the helper in a superseded one.
+            keyReactive.ArmedChanged += armed =>
+            {
+                _ = Nexus.Service.Helper.Domains.KeyReactiveCommands.SetKeyWatchAsync(helperRegistry, keyReactive.Armed);
+            };
+            helperRegistry.Connected += conn =>
+            {
+                _ = Nexus.Service.Helper.Domains.KeyReactiveCommands.SetKeyWatchAsync(helperRegistry, keyReactive.Armed);
+            };
+            helperRegistry.InboundEnvelope += (_, env) =>
+            {
+                if (env.Type != Nexus.Service.Helper.Domains.KeyReactiveCommands.KeyPressedType) return;
+                foreach (var key in Nexus.Service.Helper.Domains.KeyReactiveCommands.ParsePressed(env))
+                {
+                    keyReactive.PressKey(key);
+                }
+            };
+        }
+
         helperRegistry.InboundEnvelope += (_, env) =>
         {
             if (env.Type != "profiles.switch") return;

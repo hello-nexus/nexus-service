@@ -170,3 +170,41 @@ public class KeebZoneCardsTests
         Assert.Equal("Underglow", structure.DefaultZones[1].RawName);
     }
 }
+
+public class KeebZoneKeyNamesTests
+{
+    [Fact]
+    public void A_merged_keys_and_underglow_zone_names_its_keys_and_leaves_underglow_blank()
+    {
+        var keys = KeebKeyMap.Ansi;
+        var zone = new ResolvedZone
+        {
+            Id = "keeb:SER123:z0",
+            FrameLedCount = keys.LedCount + KeebLayout.SurroundLedCount,
+            Slices = new[]
+            {
+                new ZoneSlice { Segment = KeebZoneSupport.UnderglowSegment, Start = 0, Count = KeebLayout.SurroundLedCount },
+                new ZoneSlice { Segment = KeebZoneSupport.KeysSegment, Start = 0, Count = keys.LedCount },
+            },
+        };
+
+        Assert.True(KeebLightingDeviceProvider.TouchesKeys(zone));
+        var names = KeebLightingDeviceProvider.ZoneKeyNames(zone, keys, null)!;
+        Assert.All(names[..KeebLayout.SurroundLedCount], Assert.Null);
+        Assert.Equal(KeebKeyNames.For(keys), names[KeebLayout.SurroundLedCount..]);
+        // Unchanged names keep the frame's existing array.
+        Assert.Same(names, KeebLightingDeviceProvider.ZoneKeyNames(zone, keys, names));
+    }
+
+    [Fact]
+    public void An_underglow_only_zone_is_not_a_keyboard()
+    {
+        var zone = new ResolvedZone
+        {
+            FrameLedCount = KeebLayout.SurroundLedCount,
+            Slices = new[] { new ZoneSlice { Segment = KeebZoneSupport.UnderglowSegment, Start = 0, Count = KeebLayout.SurroundLedCount } },
+        };
+        Assert.False(KeebLightingDeviceProvider.TouchesKeys(zone));
+        Assert.Null(KeebLightingDeviceProvider.ZoneKeyNames(zone, KeebKeyMap.Ansi, null));
+    }
+}
