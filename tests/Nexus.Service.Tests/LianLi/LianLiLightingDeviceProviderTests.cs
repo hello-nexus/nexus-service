@@ -118,6 +118,7 @@ public class LianLiLightingDeviceProviderTests
         Assert.Equal(4, devices.Count);
         Assert.DoesNotContain(devices, d => d.Structure.DeviceId == "lianli:mirror");
         Assert.Equal("lianli:port0", devices[0].Structure.DeviceId);
+        Assert.Equal("Lian Li - Port 1", devices[0].Structure.Name);
     }
 
     [Fact]
