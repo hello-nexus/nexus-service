@@ -54,12 +54,15 @@ internal sealed class Nexus2Q60FaceResult
     public Dictionary<string, Dictionary<string, JsonElement>> StashedConfigs { get; } = new();
 }
 
-/// <summary>Q60 custom wallpaper resolved against q60\web\user-media.</summary>
+/// <summary>Q60 wallpaper resolved against q60\web\user-media, or a stock preset in q60\web\bgs.</summary>
 internal sealed class Nexus2WallpaperResult
 {
     public bool Available { get; set; }
     public string? AbsolutePath { get; set; }
     public string? FileName { get; set; }
+    /// <summary>Nexus 2 cycles every q60\web\user-media file instead of showing the wallpaper.</summary>
+    public bool Playlist { get; set; }
+    public int? PlaylistIntervalSec { get; set; }
 }
 
 /// <summary>Y70 gallery widgets' referenced files, deduplicated by path.</summary>

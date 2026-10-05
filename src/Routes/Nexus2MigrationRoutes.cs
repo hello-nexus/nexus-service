@@ -127,7 +127,7 @@ public sealed class Nexus2PreviewCategoryDto
 {
     public string Id { get; set; } = "";
     public bool Available { get; set; }
-    // appearance
+    // appearance (Count: backgrounds the Y70 library gains)
     public string? AccentColor { get; set; }
     public string? Background { get; set; }
     // y70Layout
@@ -141,6 +141,8 @@ public sealed class Nexus2PreviewCategoryDto
     // wallpapers / gallerySources
     public int? Count { get; set; }
     public int? Missing { get; set; }
+    /// <summary>wallpapers: seconds per slide when Nexus 2's playlist becomes a slideshow; null otherwise.</summary>
+    public int? SlideshowIntervalSec { get; set; }
     // rotation / language
     public string? Value { get; set; }
 }

@@ -155,4 +155,29 @@ public class OpenRgbExcludedCardsTests
         Assert.All(resp.Devices, d => Assert.Equal("openrgb-s-MB01", d.ParentDeviceId));
         Assert.All(resp.Devices, d => Assert.Equal(60, d.LedCount));
     }
+
+    [Fact]
+    public void Excluded_port_controller_keeps_one_card_per_port()
+    {
+        const uint resized = RgbZone.FlagConfigurableSize | RgbZone.FlagConfiguredSize;
+        var settings = new NexusSettings();
+        settings.Devices.UncontrolledLightingDevices.AddRange(new[] { "openrgb-s-TT01-0", "openrgb-s-TT01-1", "openrgb-s-TT01" });
+        settings.Devices.OpenRgbDetectorExclusions["openrgb-s-TT01"] = new OpenRgbDetectorExclusion
+        {
+            DetectorName = "Thermaltake Riing (PID 0x1FB4)",
+            DeviceName = "Thermaltake Riing",
+            Serial = "TT01",
+            Type = 3,
+            LedCount = 32,
+            Zones = new()
+            {
+                new OpenRgbExcludedZone { Name = "Thermaltake Fan Header 1", ZoneType = 1, LedCount = 20, LedsMax = 20, Flags = resized },
+                new OpenRgbExcludedZone { Name = "Thermaltake Fan Header 2", ZoneType = 1, LedCount = 12, LedsMax = 20, Flags = resized },
+            },
+        };
+
+        var resp = OpenRgbZoneSupport.BuildCards(System.Array.Empty<RgbDevice>(), settings, isInit: true);
+
+        Assert.Equal(new[] { "openrgb-s-TT01-0", "openrgb-s-TT01-1" }, resp.Devices.ConvertAll(d => d.Id));
+    }
 }

@@ -343,6 +343,69 @@ public class OpenRgbZoneCardsTests
         Assert.Equal(12, structure.Segments[0].LedCount);
         Assert.False(structure.Segments[0].Resizable);
     }
+
+    private static RgbDevice RiingController(int ledCount = 0, uint extraFlags = 0)
+    {
+        var d = new RgbDevice { Index = 5, Name = "Thermaltake Riing", Type = 3, Serial = "TT01" };
+        for (int z = 0; z < 5; z++)
+        {
+            d.Zones.Add(new RgbZone
+            {
+                Name = $"Thermaltake Fan Header {z + 1}",
+                ZoneType = 1,
+                LedCount = ledCount,
+                LedsMax = 20,
+                Flags = RgbZone.FlagConfigurableSize | extraFlags,
+            });
+        }
+        d.LedCount = ledCount * 5;
+        return d;
+    }
+
+    [Fact]
+    public void Port_controller_emits_one_resizable_card_per_port()
+    {
+        var settings = new NexusSettings();
+        settings.Devices.ZoneLedCounts["openrgb-s-TT01-1"] = 12;
+
+        var resp = OpenRgbZoneSupport.BuildCards(new[] { RiingController() }, settings, isInit: true);
+
+        Assert.Equal(5, resp.Devices.Count);
+        Assert.All(resp.Devices, c => Assert.True(c.ZoneResizable));
+        Assert.Equal("openrgb-s-TT01-0", resp.Devices[0].Id);
+        Assert.Equal("Thermaltake Riing - Thermaltake Fan Header 1", resp.Devices[0].Name);
+        Assert.Equal("openrgb-s-TT01", resp.Devices[0].ParentDeviceId);
+        Assert.Equal(0, resp.Devices[0].LedCount);
+        Assert.Equal(12, resp.Devices[1].LedCount);
+    }
+
+    [Fact]
+    public void Port_controller_stays_split_once_its_ports_are_resized()
+    {
+        Assert.True(OpenRgbZoneSupport.IsSplitMotherboard(RiingController(12, RgbZone.FlagConfiguredSize)));
+    }
+
+    [Fact]
+    public void Hardware_counted_configurable_device_keeps_its_whole_device_card()
+    {
+        var hue = RiingController(10);
+        Assert.False(OpenRgbZoneSupport.IsSplitMotherboard(hue));
+
+        var resp = OpenRgbZoneSupport.BuildCards(new[] { hue }, new NexusSettings(), isInit: true);
+        Assert.Single(resp.Devices);
+        Assert.Equal("openrgb-s-TT01", resp.Devices[0].Id);
+    }
+
+    [Fact]
+    public void Port_count_is_capped_at_leds_max_but_motherboard_headers_are_not()
+    {
+        Assert.Equal(20, OpenRgbZoneSupport.ClampPortLedCount(RiingController(), 0, 60));
+        Assert.Equal(12, OpenRgbZoneSupport.ClampPortLedCount(RiingController(), 0, 12));
+
+        var board = Motherboard();
+        board.Zones[0].LedsMax = 20;
+        Assert.Equal(60, OpenRgbZoneSupport.ClampPortLedCount(board, 0, 60));
+    }
 }
 
 /// <summary>

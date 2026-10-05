@@ -99,6 +99,12 @@ public sealed class RgbZone
     public bool IsFixedSize => LedsMax > 0 && LedsMin == LedsMax;
     /// <summary>ZONE_FLAG_* bits, protocol 5+; 0 below it.</summary>
     public uint Flags { get; set; }
+    /// <summary>ZONE_FLAG_MANUALLY_CONFIGURABLE_SIZE.</summary>
+    public const uint FlagConfigurableSize = 1u << 1;
+    /// <summary>ZONE_FLAG_MANUALLY_CONFIGURED_SIZE: set by a resize.</summary>
+    public const uint FlagConfiguredSize = 1u << 12;
+    /// <summary>True when the count is the user's to set and is still unset or came from a resize, never from the hardware (NZXT Hue+ reads its own).</summary>
+    public bool IsUserSized => (Flags & FlagConfigurableSize) != 0 && (LedCount == 0 || (Flags & FlagConfiguredSize) != 0);
     /// <summary>Matrix width in columns, or 0 when the zone is a linear strip.</summary>
     public int MatrixWidth { get; set; }
     /// <summary>Matrix height in rows, or 0 when the zone is a linear strip.</summary>

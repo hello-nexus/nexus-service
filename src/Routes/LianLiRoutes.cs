@@ -159,7 +159,7 @@ public static partial class DevicesRoutes
         });
 
         // GET /devices/lianli/lighting - current settings + the attached family's mode catalog.
-        app.MapGet("/devices/lianli/lighting", (LianLiHub hub, IConfigStore store) =>
+        app.MapGet("/devices/lianli/lighting", (LianLiHub hub, IConfigStore store, Nexus.Service.Lighting.Zones.ZoneTopology topology) =>
         {
             var s = store.Load();
             var ls = s.Devices.LianLiLighting;
@@ -200,6 +200,10 @@ public static partial class DevicesRoutes
                 Colors = ls.Colors.ToArray(),
                 Merge = ls.Merge,
                 Modes = catalog,
+                ArgbSync = ls.ArgbSync,
+                ArgbSyncSource = ls.ArgbSyncSource,
+                ArgbSyncSupported = profile.ArgbSyncVerified,
+                ArgbSyncSources = ArgbSyncSources(topology, hub.DeviceId, profile, s.Devices.LianLi),
             }, AppJsonContext.Default.LianLiLightingResponse);
         });
 
@@ -208,8 +212,22 @@ public static partial class DevicesRoutes
             LianLiLightingRequest body,
             LianLiHub hub,
             IConfigStore store,
+            Nexus.Service.Lighting.Zones.ZoneTopology topology,
+            LianLiLightingDeviceProvider lighting,
             Nexus.Service.Sockets.MultiplexHub mux) =>
         {
+            if (body.ArgbSync == true && !hub.Profile.ArgbSyncVerified)
+            {
+                return Results.BadRequest(ApiResponse.Fail("ARGB sync is not supported on this hub"));
+            }
+            // Only a source being switched to must still be listed: turning sync
+            // off has to work after the stored source dropped out of the list.
+            var stored = store.Load().Devices.LianLiLighting.ArgbSyncSource;
+            if (!string.IsNullOrEmpty(body.ArgbSyncSource) && body.ArgbSyncSource != stored && body.ArgbSync != false
+                && Array.FindIndex(ArgbSyncSources(topology, hub.DeviceId, hub.Profile, store.Load().Devices.LianLi), x => x.Id == body.ArgbSyncSource) < 0)
+            {
+                return Results.BadRequest(ApiResponse.Fail("ARGB sync source is not an addressable port"));
+            }
             if (body.Mode != null)
             {
                 var info = LianLiLightingModes.Find(body.Mode);
@@ -230,6 +248,8 @@ public static partial class DevicesRoutes
                 if (body.Direction.HasValue) ls.Direction = Math.Clamp(body.Direction.Value, 0, 1);
                 if (body.Brightness.HasValue) ls.Brightness = Math.Clamp(body.Brightness.Value, 0, 4);
                 if (body.Merge.HasValue) ls.Merge = body.Merge.Value;
+                if (body.ArgbSyncSource != null) ls.ArgbSyncSource = body.ArgbSyncSource.Length > 0 ? body.ArgbSyncSource : null;
+                if (body.ArgbSync.HasValue) ls.ArgbSync = body.ArgbSync.Value;
                 if (body.Colors != null)
                 {
                     var modeKey = ls.Mode;
@@ -243,10 +263,32 @@ public static partial class DevicesRoutes
                     }
                 }
             });
+            if (body.ArgbSync.HasValue) lighting.OnHubStateUpdated();
             Nexus.Service.Sockets.PanelTopics.BroadcastLighting(mux);
             return Results.Json(ApiResponse.Ok(), AppJsonContext.Default.ApiResponse);
         });
 
+    }
+
+    // Cards that can drive the hub's ARGB input: one addressable port each (the
+    // chain route's own test) long enough for the hub's longest fan chain,
+    // since every port plays the input from its first LED.
+    private static LianLiArgbSourceDto[] ArgbSyncSources(Nexus.Service.Lighting.Zones.ZoneTopology topology, string hubId, in LianLiFanProfile profile, LianLiSettings fans)
+    {
+        if (!profile.ArgbSyncVerified) return Array.Empty<LianLiArgbSourceDto>();
+        var ledsPerFan = profile.InnerLedsPerFan + profile.OuterLedsPerFan;
+        var longest = 1;
+        for (var p = 0; p < LianLiProtocol.PortCount; p++) longest = Math.Max(longest, fans.GetFans(p));
+        var sources = new List<LianLiArgbSourceDto>();
+        foreach (var structure in topology.AllStructures())
+        {
+            if (!structure.Partitionable || structure.Segments.Count != 1 || !structure.Segments[0].Resizable) continue;
+            var max = structure.Segments[0].MaxLedCount;
+            if (max > 0 && max < longest * ledsPerFan) continue;
+            if (structure.DeviceId == hubId || structure.DeviceId.StartsWith(hubId + ":", StringComparison.Ordinal)) continue;
+            sources.Add(new LianLiArgbSourceDto { Id = structure.DeviceId, Name = structure.Name });
+        }
+        return sources.ToArray();
     }
 }
 
@@ -307,6 +349,16 @@ public sealed class LianLiLightingResponse
     public string[] Colors { get; set; } = Array.Empty<string>();
     public bool Merge { get; set; }
     public LianLiModeInfoDto[] Modes { get; set; } = Array.Empty<LianLiModeInfoDto>();
+    public bool ArgbSync { get; set; }
+    public bool ArgbSyncSupported { get; set; }
+    public string? ArgbSyncSource { get; set; }
+    public LianLiArgbSourceDto[] ArgbSyncSources { get; set; } = Array.Empty<LianLiArgbSourceDto>();
+}
+
+public sealed class LianLiArgbSourceDto
+{
+    public string Id { get; set; } = "";
+    public string Name { get; set; } = "";
 }
 
 public sealed class LianLiLightingRequest
@@ -317,5 +369,8 @@ public sealed class LianLiLightingRequest
     public int? Brightness { get; set; }
     public string[]? Colors { get; set; }
     public bool? Merge { get; set; }
+    public bool? ArgbSync { get; set; }
+    /// <summary>Lighting card driving the hub's ARGB input; empty clears it.</summary>
+    public string? ArgbSyncSource { get; set; }
 }
 

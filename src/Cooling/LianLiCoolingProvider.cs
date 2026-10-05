@@ -57,13 +57,13 @@ public sealed class LianLiCoolingProvider : IFanControlProvider, ICoolingProvide
             result.Add(new FanChannel
             {
                 Id = id,
-                Name = $"{modelLabel} Port {p}",
+                Name = $"{modelLabel} Port {p + 1}",
                 DutyPercent = duty,
                 Rpm = rpm >= 0 ? rpm : 0,
                 Mode = sw ? FanModes.Manual : FanModes.Auto,
                 DeviceId = deviceId,
                 DeviceName = deviceLabel,
-                PortLabel = $"Port {p}",
+                PortLabel = $"Port {p + 1}",
                 FanModel = null,
                 Orientation = null,
             });
@@ -146,7 +146,7 @@ public sealed class LianLiCoolingProvider : IFanControlProvider, ICoolingProvide
             devices.Add(new CoolingDevice
             {
                 Id = $"lianli:port{p}",
-                Name = $"{modelLabel} Port {p}",
+                Name = $"{modelLabel} Port {p + 1}",
                 Type = "Fan",
                 Rpm = rpm >= 0 ? rpm : 0,
                 Pwm = duty,

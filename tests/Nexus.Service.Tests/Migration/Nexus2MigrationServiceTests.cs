@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
+using System.Linq;
 using System.Net.Http;
 using System.Net.Http.Headers;
 using System.Net.Http.Json;
@@ -12,6 +13,7 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
 using Nexus.Service.Auth;
 using Nexus.Service.Gallery;
+using Nexus.Service.Media;
 using Nexus.Service.Migration;
 using Nexus.Service.Models.Displays;
 using Nexus.Service.Models.Panel;
@@ -97,6 +99,8 @@ public sealed class Nexus2MigrationServiceTests : IDisposable
         Assert.True(byId["appearance"].GetProperty("available").GetBoolean());
         Assert.Equal("#242324", byId["appearance"].GetProperty("accentColor").GetString());
         Assert.Equal("particles", byId["appearance"].GetProperty("background").GetString());
+        // The fixture has no app.asar, so the bundled particles cannot come over.
+        Assert.Equal(0, byId["appearance"].GetProperty("count").GetInt32());
 
         Assert.True(byId["y70Layout"].GetProperty("available").GetBoolean());
         Assert.Equal(9, byId["y70Layout"].GetProperty("widgets").GetInt32());
@@ -286,6 +290,78 @@ public sealed class Nexus2MigrationServiceTests : IDisposable
         Assert.True(updated.BackgroundMediaAlpha);
     }
 
+    /// <summary>Points the reader at a Q-Series user-media folder holding the fixture's shown sunset.jpg plus two more uploads.</summary>
+    private void UseQ60Uploads(bool playlist)
+    {
+        var configDir = Path.Combine(_tempDir, "nexus2-q60");
+        var userMedia = Path.Combine(configDir, "q60", "web", "user-media");
+        Directory.CreateDirectory(userMedia);
+        File.Copy(Path.Combine(FixtureDir, "q60", "web", "user-media", "sunset.jpg"), Path.Combine(userMedia, "sunset.jpg"));
+        File.Copy(Path.Combine(FixtureDir, "clip-portrait.mp4"), Path.Combine(userMedia, "a-clip.mp4"));
+        File.WriteAllBytes(Path.Combine(userMedia, "b-alpha.gif"), Convert.FromBase64String(TransparentGifBase64));
+        var reader = (Nexus.Service.Tests.Migration.FakeNexus2ConfigReader)
+            _factory.Services.GetRequiredService<INexus2ConfigReader>();
+        if (playlist)
+        {
+            reader.ConfigText = reader.ConfigText!.Replace("\"playlistMode\": false", "\"playlistMode\": true");
+        }
+        reader.ConfigDir = configDir;
+    }
+
+    [Nexus.Service.Tests.FfmpegFact]
+    public async Task Apply_Wallpaper_ImportsEveryQSeriesUploadAndKeepsTheShownOneActive()
+    {
+        UseQ60Uploads(playlist: false);
+        var q60 = Panels.Allocate(null, new PanelDeviceCapabilities { Surface = PanelSurfaces.Q60 });
+        // An earlier import committed the shown wallpaper under its staged name.
+        var legacySource = Path.Combine(_tempDir, "sunset.jpg");
+        File.Copy(Path.Combine(FixtureDir, "q60", "web", "user-media", "sunset.jpg"), legacySource);
+        var legacyStage = await PanelBgImporter.StageAsync(BgLibrary, q60.Id, legacySource, "sunset.jpg");
+        var legacy = (await PanelBgImporter.CommitAsync(BgLibrary, q60.Id, legacyStage.StageId!, new CropRect(0, 0, 1, 1), 720, 1280)).Item!;
+        Assert.NotEqual("sunset.jpg", legacy.Name);
+        var wallpapers = await PreviewCategory("wallpapers");
+        Assert.Equal(3, wallpapers.GetProperty("count").GetInt32());
+        Assert.False(wallpapers.TryGetProperty("slideshowIntervalSec", out _));
+
+        var res = await PostApply(new[] { "wallpapers" }, false);
+        using var doc = JsonDocument.Parse(await res.Content.ReadAsStringAsync());
+        Assert.Equal("applied", doc.RootElement.GetProperty("results")[0].GetProperty("status").GetString());
+
+        Assert.Equal(new[] { "a-clip.mp4", "b-alpha.gif", legacy.Name }.Order(StringComparer.Ordinal), BgLibrary.ListItems(q60.Id).Select(i => i.Name).Order(StringComparer.Ordinal));
+        var updated = Panels.Get(q60.Id)!;
+        Assert.Equal(legacy.Id, updated.BackgroundMediaId);
+        Assert.False(updated.BackgroundMediaSlideshow);
+
+        await PostApply(new[] { "wallpapers" }, false);
+        Assert.Equal(3, BgLibrary.ListItems(q60.Id).Count);
+    }
+
+    [Nexus.Service.Tests.FfmpegFact]
+    public async Task Apply_Wallpaper_PlaylistModeBecomesASlideshowOpeningOnTheFirstUpload()
+    {
+        UseQ60Uploads(playlist: true);
+        var q60 = Panels.Allocate(null, new PanelDeviceCapabilities { Surface = PanelSurfaces.Q60 });
+        Panels.Patch(q60.Id, new PanelDevicePatch { BackgroundMediaShuffle = true, BackgroundMediaOrder = new List<string> { "kept-from-before" } });
+        Assert.Equal(5, (await PreviewCategory("wallpapers")).GetProperty("slideshowIntervalSec").GetInt32());
+
+        await PostApply(new[] { "wallpapers" }, false);
+
+        var updated = Panels.Get(q60.Id)!;
+        Assert.True(updated.BackgroundMediaSlideshow);
+        Assert.Equal(5, updated.BackgroundMediaInterval);
+        Assert.False(updated.BackgroundMediaShuffle);
+        Assert.False(updated.BackgroundMediaFinishVideos);
+        Assert.Equal(new[] { "a-clip.mp4", "b-alpha.gif", "sunset.jpg" },
+            updated.BackgroundMediaOrder!.Select(id => BgLibrary.GetItem(q60.Id, id)!.Name));
+        Assert.Equal("a-clip.mp4", BgLibrary.GetItem(q60.Id, updated.BackgroundMediaId!)!.Name);
+    }
+
+    private async Task<JsonElement> PreviewCategory(string id)
+    {
+        using var doc = JsonDocument.Parse(await (await _client.PostAsync("/migration/nexus2/preview", null)).Content.ReadAsStringAsync());
+        return doc.RootElement.GetProperty("categories").EnumerateArray().First(c => c.GetProperty("id").GetString() == id).Clone();
+    }
+
     private PanelBgLibrary BgLibrary => _factory.Services.GetRequiredService<PanelBgLibrary>();
 
     /// <summary>Points the reader at a throwaway AppData tree (Roaming\HYTE Nexus beside
@@ -384,6 +460,39 @@ public sealed class Nexus2MigrationServiceTests : IDisposable
 
         Assert.Equal(2, BgLibrary.ListItems(y70.Id).Count);
         Assert.NotEqual(firstId, Panels.Get(y70.Id)!.BackgroundMediaId);
+    }
+
+    [Nexus.Service.Tests.FfmpegFact]
+    public async Task Apply_Appearance_ImportsEveryY70UploadAndKeepsTheShownOneActive()
+    {
+        var appData = UseNexus2Tree("");
+        var uploads = Path.Combine(appData, "Roaming", "HYTE Nexus", "user-media");
+        var videos = Path.Combine(uploads, "media", "custom-Y70-bg");
+        var images = Path.Combine(uploads, "images", "custom-Y70-bg");
+        Directory.CreateDirectory(videos);
+        Directory.CreateDirectory(images);
+        var shown = Path.Combine(videos, "custom-Y70-bg-1.mp4");
+        File.Copy(Path.Combine(FixtureDir, "clip-landscape.mp4"), shown);
+        File.Copy(Path.Combine(FixtureDir, "clip-portrait.mp4"), Path.Combine(videos, "custom-Y70-bg-2.mp4"));
+        File.WriteAllBytes(Path.Combine(videos, "custom-Y70-bg-2.static.webp"), new byte[] { 1 });
+        File.WriteAllBytes(Path.Combine(videos, "custom-Y70-bg-3.mkv"), new byte[] { 1 });
+        File.WriteAllBytes(Path.Combine(images, "custom-Y70-bg-4.gif"), Convert.FromBase64String(TransparentGifBase64));
+        UseNexus2Tree(shown);
+        var y70 = Panels.Allocate(null, new PanelDeviceCapabilities { Surface = PanelSurfaces.Y70 });
+        Assert.Equal(3, (await PreviewCategory("appearance")).GetProperty("count").GetInt32());
+
+        var result = await ApplyAppearance();
+        Assert.Equal("applied", result.GetProperty("status").GetString());
+        Assert.False(result.TryGetProperty("detail", out _));
+
+        // The grid shows import order; Nexus 2's picker lists name-descending.
+        Assert.Equal(
+            new[] { "custom-Y70-bg-4.gif", "custom-Y70-bg-2.mp4", "custom-Y70-bg-1.mp4" },
+            BgLibrary.ListItems(y70.Id).OrderBy(i => i.ImportedAtUnixMs).Select(i => i.Name));
+        Assert.Equal("custom-Y70-bg-1.mp4", BgLibrary.GetItem(y70.Id, Panels.Get(y70.Id)!.BackgroundMediaId!)!.Name);
+
+        await ApplyAppearance();
+        Assert.Equal(3, BgLibrary.ListItems(y70.Id).Count);
     }
 
     [Nexus.Service.Tests.FfmpegFact]

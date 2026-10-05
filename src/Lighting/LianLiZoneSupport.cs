@@ -105,8 +105,8 @@ public static class LianLiZoneSupport
         {
             var fanCount = ClampFans(fans.GetFans(p));
             devices.Add(profile.ChannelsPerPort == 1
-                ? BuildSingleRingDevice(hubId, profile, $"port{p}", $"Port {p}", fanCount, new[] { p })
-                : BuildDevice(hubId, profile, $"port{p}", $"Port {p}", fanCount, comp.CombineRings,
+                ? BuildSingleRingDevice(hubId, profile, $"port{p}", $"Port {p + 1}", fanCount, new[] { p })
+                : BuildDevice(hubId, profile, $"port{p}", $"Port {p + 1}", fanCount, comp.CombineRings,
                     new[] { p * 2 }, new[] { p * 2 + 1 }));
         }
         return devices;

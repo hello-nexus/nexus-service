@@ -565,6 +565,29 @@ public class Slv3HubTests
     }
 
     [Fact]
+    public async Task SendRgbWindowAsync_skips_late_passes_that_would_exceed_the_air_budget()
+    {
+        var clock = new ManualClock();
+        var (hub, net, tx, _) = CreateConnectedHub(clock.NowMs);
+        net.Fans.Add(new SimulatedFan { Mac = FanMac, MasterMac = net.MasterMac, RxType = 3 });
+        Assert.True(hub.DriveTick());
+        tx.SentFrames.Clear();
+
+        // Incompressible 120-LED window: ~50 data parts, so two late passes would add ~100 payloads to the second.
+        var frames = new byte[30 * 120 * 3];
+        new Random(7).NextBytes(frames);
+        Assert.True(await hub.SendRgbWindowAsync(Convert.ToHexString(FanMac), frames, 120, 30, 53, 100));
+
+        var parts = tx.SentFrames.FindAll(f => f.Length >= 24 && f[1] == 0 && f[4] == Slv3Protocol.RfFrameType && f[5] == Slv3Protocol.RfRgbSync);
+        var total = parts[0][23];
+        Assert.True(total > 40);
+        for (var p = 1; p < total; p++)
+        {
+            Assert.Equal(2, parts.Count(f => f[22] == p));
+        }
+    }
+
+    [Fact]
     public async Task SendRgbWindowAsync_never_repeats_the_previous_effect_index()
     {
         var (hub, net, tx, _) = CreateConnectedHub();
@@ -818,9 +841,9 @@ public class Slv3HubTests
     }
 
     [Fact]
-    public void A_busy_spell_that_never_ends_is_treated_as_a_wedge()
+    public void A_busy_spell_that_never_ends_reopens_the_rx_in_place_without_resetting_the_tx()
     {
-        var (hub, net, _, rx) = CreateConnectedHub();
+        var (hub, net, _, rx, rxOpens) = CreateConnectedHubCountingRxOpens();
         net.Fans.Add(new SimulatedFan { Mac = FanMac });
         Assert.True(hub.DriveTick());
 
@@ -830,13 +853,20 @@ public class Slv3HubTests
             Assert.True(hub.PollTick());
         }
 
-        Assert.Single(rx.SentFrames, f => f.Length >= 1 && f[0] == Slv3Protocol.UsbResetAnother);
+        Assert.Equal(2, rxOpens());
+        Assert.DoesNotContain(rx.SentFrames, f => f.Length >= 1 && f[0] == Slv3Protocol.UsbResetAnother);
+        Assert.Single(hub.State.Fans);
+        Assert.True(hub.IsConnected);
+
+        rx.BusyReads = false;
+        Assert.True(hub.PollTick());
+        Assert.False(Assert.Single(hub.State.Fans).Stale);
     }
 
     [Fact]
-    public void A_busy_rx_past_its_reset_budget_keeps_failing_so_the_worker_reconnects()
+    public void A_busy_rx_past_its_reopen_budget_keeps_failing_so_the_worker_reconnects()
     {
-        var (hub, net, _, rx) = CreateConnectedHub();
+        var (hub, net, _, rx, rxOpens) = CreateConnectedHubCountingRxOpens();
         net.Fans.Add(new SimulatedFan { Mac = FanMac });
         Assert.True(hub.DriveTick());
 
@@ -847,8 +877,49 @@ public class Slv3HubTests
             results.Add(hub.PollTick());
         }
 
-        Assert.Equal(3, rx.SentFrames.FindAll(f => f.Length >= 1 && f[0] == Slv3Protocol.UsbResetAnother).Count);
+        Assert.Equal(1 + 3, rxOpens());
+        Assert.DoesNotContain(rx.SentFrames, f => f.Length >= 1 && f[0] == Slv3Protocol.UsbResetAnother);
         Assert.Equal(new[] { false, false, false }, results.GetRange(results.Count - 3, 3));
+    }
+
+    [Fact]
+    public void A_good_reply_between_busy_spells_refills_the_reopen_budget()
+    {
+        var (hub, net, _, rx, rxOpens) = CreateConnectedHubCountingRxOpens();
+        net.Fans.Add(new SimulatedFan { Mac = FanMac });
+        Assert.True(hub.DriveTick());
+
+        for (var spell = 0; spell < 4; spell++)
+        {
+            rx.BusyReads = true;
+            for (var i = 0; i < 60; i++)
+            {
+                Assert.True(hub.PollTick());
+            }
+            rx.BusyReads = false;
+            Assert.True(hub.PollTick());
+        }
+
+        Assert.Equal(1 + 4, rxOpens());
+    }
+
+    private static (Slv3Hub Hub, FakeSlv3Network Net, FakeTxTransport Tx, FakeRxTransport Rx, Func<int> RxOpens) CreateConnectedHubCountingRxOpens()
+    {
+        var net = new FakeSlv3Network();
+        var tx = new FakeTxTransport(net);
+        var rx = new FakeRxTransport(net);
+        var rxOpens = 0;
+        var hub = new Slv3Hub(new FakeDiscovery(), port =>
+        {
+            if (port.Role == Slv3DongleRole.Tx)
+            {
+                return tx;
+            }
+            rxOpens++;
+            return rx;
+        });
+        Assert.True(hub.EnsureConnected());
+        return (hub, net, tx, rx, () => rxOpens);
     }
 
     [Fact]

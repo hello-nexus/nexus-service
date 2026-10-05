@@ -1,5 +1,6 @@
 using System;
 using System.IO;
+using System.Linq;
 using System.Threading.Tasks;
 using Nexus.Service.Persistence;
 using Nexus.Service.Platform.Linux.DBus;
@@ -13,24 +14,33 @@ namespace Nexus.Service.Platform.Linux;
 /// kiosk lands on the desktop monitor and self-registers with that monitor's
 /// viewport. Same install path as LinuxScreenTimeProvider's nexus-focus script:
 /// written under the session user's kwin scripts dir and loaded over D-Bus on
-/// every start. Non-KDE compositors: the calls fail and are logged once.
+/// every start. Non-KDE compositors: the calls fail and are logged.
 /// </summary>
 internal static class LinuxKWinPanelPlacement
 {
     private const string PluginName = "nexus-panel-y70";
-    private static bool _attempted;
 
-    public static Task EnsureLoadedAsync(DBusConnection dbus)
+    /// <summary>X11 WM_CLASS and Wayland app_id the Firefox Y70 kiosk is launched with.</summary>
+    internal const string FirefoxClass = "nexus-panel-y70";
+
+    private static string? _loadedFor;
+
+    /// <summary>Reloads the script whenever the Y70's connector changes, and after a failed load; "" leaves only the portrait fallback.</summary>
+    public static Task EnsureLoadedAsync(DBusConnection dbus, string connector)
     {
-        if (_attempted) return Task.CompletedTask;
-        _attempted = true;
-        return LoadAsync(dbus);
+        if (_loadedFor == connector) return Task.CompletedTask;
+        _loadedFor = connector;
+        return LoadAsync(dbus, connector);
     }
 
-    private static async Task LoadAsync(DBusConnection dbus)
+    private static async Task LoadAsync(DBusConnection dbus, string connector)
     {
-        var scriptPath = WriteScript();
-        if (scriptPath is null) return;
+        var scriptPath = WriteScript(connector);
+        if (scriptPath is null)
+        {
+            _loadedFor = null;
+            return;
+        }
         try
         {
             try { await dbus.StartAsync(); } catch { }
@@ -52,11 +62,12 @@ internal static class LinuxKWinPanelPlacement
         }
         catch (Exception ex)
         {
+            _loadedFor = null;
             Console.Error.WriteLine($"[panel-kiosk] KWin placement script not loaded: {ex.Message}");
         }
     }
 
-    private static string? WriteScript()
+    private static string? WriteScript(string connector)
     {
         try
         {
@@ -67,7 +78,7 @@ internal static class LinuxKWinPanelPlacement
             Directory.CreateDirectory(codeDir);
             AtomicJsonFile.Write(Path.Combine(baseDir, "metadata.json"), MetadataJson);
             var main = Path.Combine(codeDir, "main.js");
-            AtomicJsonFile.Write(main, Script);
+            AtomicJsonFile.Write(main, Script(connector));
             // Written by the root daemon into the user's home: hand it to the
             // user so their own KDE tooling can manage the package.
             if (LinuxSession.SessionUid is { } uid && LinuxSession.SessionGid is { } gid)
@@ -90,7 +101,7 @@ internal static class LinuxKWinPanelPlacement
   "KPlugin": {
     "Id": "nexus-panel-y70",
     "Name": "Nexus panel on the Y70",
-    "Description": "Pins the Nexus panel kiosk window to the portrait Y70 strip and keeps it fullscreen.",
+    "Description": "Pins the Nexus panel kiosk window to the Y70 and keeps it fullscreen.",
     "Version": "1.0",
     "Authors": [{ "Name": "Nexus" }]
   },
@@ -99,24 +110,41 @@ internal static class LinuxKWinPanelPlacement
 }
 """;
 
-    // Chromium under Ozone/Wayland ignores --class; its app_id is derived from
-    // the --app URL and profile, so the kiosk is matched by that class. The Y70
-    // is the portrait strip: the only output that is taller than wide by 3x
-    // (a 32:9 desktop monitor is that wide, never that tall).
-    private const string Script = """
-const PANEL_CLASS = "chrome-localhost__panel-Default";
+    internal static string Script(string connector)
+    {
+        var safe = new string(connector.Where(c => char.IsAsciiLetterOrDigit(c) || c is '-' or '_' or '.').ToArray());
+        return ScriptTemplate
+            .Replace("__TARGET_OUTPUT__", safe, StringComparison.Ordinal)
+            .Replace("__FIREFOX_CLASS__", FirefoxClass, StringComparison.Ordinal);
+    }
+
+    // Chromium ignores --class on Wayland and prefixes its app_id with the
+    // executable name (chrome-, brave-, msedge-), so only the suffix is stable.
+    private const string ScriptTemplate = """
+const TARGET_OUTPUT = "__TARGET_OUTPUT__";
+const CHROMIUM_SUFFIX = "-localhost__panel-Default";
+const FIREFOX_CLASS = "__FIREFOX_CLASS__";
 const MIN_ASPECT = 3;
 
+function isPanel(w) {
+  const c = String(w.resourceClass || "");
+  return c === FIREFOX_CLASS || c.endsWith(CHROMIUM_SUFFIX);
+}
+
 function targetOutput() {
-  for (let i = 0; i < workspace.screens.length; i++) {
-    const s = workspace.screens[i];
+  const screens = workspace.screens;
+  for (let i = 0; i < screens.length; i++) {
+    if (TARGET_OUTPUT && screens[i].name === TARGET_OUTPUT) return screens[i];
+  }
+  for (let i = 0; i < screens.length; i++) {
+    const s = screens[i];
     if (s.geometry.height > s.geometry.width && s.geometry.height / s.geometry.width >= MIN_ASPECT) return s;
   }
   return null;
 }
 
 function place(w) {
-  if (!w || w.resourceClass !== PANEL_CLASS) return;
+  if (!w || !isPanel(w)) return;
   const target = targetOutput();
   if (!target) return;
   if (!w.output || w.output.name !== target.name) workspace.sendClientToScreen(w, target);

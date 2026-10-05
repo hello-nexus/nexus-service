@@ -64,4 +64,16 @@ public class LinuxBrowsersTests
         Assert.Contains("/usr/bin/brave-browser", family);
         Assert.Contains("/var/lib/flatpak/exports/bin/com.microsoft.Edge", family);
     }
+
+    // Bazzite ships Firefox as a system flatpak, Ubuntu as a snap, Debian as firefox-esr.
+    [Fact]
+    public void FirefoxFamily_ProbesFlatpakPackageAndSnap()
+    {
+        var family = LinuxBrowsers.FirefoxFamily();
+        Assert.Contains("/var/lib/flatpak/exports/bin/org.mozilla.firefox", family);
+        Assert.Contains("/usr/bin/firefox", family);
+        Assert.Contains("/usr/bin/firefox-esr", family);
+        Assert.Contains("/snap/bin/firefox", family);
+        Assert.DoesNotContain(family, p => LinuxBrowsers.ChromiumFamily().Contains(p));
+    }
 }
