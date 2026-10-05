@@ -542,17 +542,74 @@ public class LianLiLightingFrameWriterTests
 
         Assert.Single(Calls, c => IsArgbSync(c, 0));
         Assert.Contains(Calls, c => c.Bytes.Length > 2 && c.Bytes[1] == 0x12);
+        AssertReleasedAfterOff();
+    }
+
+    // The off alone leaves the hub on its ARGB input: every channel must take
+    // a colour report and a commit, then the frame latch.
+    private void AssertReleasedAfterOff()
+    {
+        var calls = Calls.ToList();
+        var off = calls.FindIndex(c => IsArgbSync(c, 0));
+        Assert.True(off >= 0);
+        var after = calls.Skip(off + 1).ToList();
+        for (var ch = 0; ch < 8; ch++)
+        {
+            Assert.Contains(after, c => !c.IsSetFeature && c.Bytes.Length > 2 && c.Bytes[1] == (0x30 | ch));
+            Assert.Contains(after, c => c.IsSetFeature && c.Bytes.Length > 2 && c.Bytes[1] == (0x10 | ch) && c.Bytes[2] == 0x01);
+        }
+        Assert.Contains(after, c => c.IsSetFeature && c.Bytes.Length > 3 && c.Bytes[1] == 0x60 && c.Bytes[2] == 0x00 && c.Bytes[3] == 0x01);
     }
 
     [Fact]
-    public void A_hub_never_put_on_argb_sync_gets_no_sync_write()
+    public void A_hub_never_put_on_argb_sync_gets_no_sync_write_even_with_a_source_saved()
     {
         Attach(0xA102, port: 1, fans: 3);
         SetMode("static");
+        _store.Update(s => s.Devices.LianLiLighting.ArgbSyncSource = "openrgb-s-1-1");
 
         _writer.Tick();
 
         Assert.DoesNotContain(Calls, c => c.IsSetFeature && c.Bytes.Length >= 3 && c.Bytes[1] == 0x10 && c.Bytes[2] == 0x61);
+    }
+
+    [Fact]
+    public void Leaving_sync_holds_output_then_recommits_the_mode_three_times()
+    {
+        UseFakeClock();
+        Attach(0xA102, port: 1, fans: 3);
+        SetMode("static");
+        _store.Update(s => s.Devices.LianLiLighting.ArgbSync = true);
+        _writer.Tick();
+
+        _store.Update(s => s.Devices.LianLiLighting.ArgbSync = false);
+        _writer.Tick();
+        _spy.Calls.Clear();
+        Advance(300);
+        _writer.Tick();
+        Assert.Empty(Calls);
+
+        var commits = 0;
+        foreach (var step in new[] { 400, 1000, 1600 })
+        {
+            Advance(step);
+            _spy.Calls.Clear();
+            _writer.Tick();
+            if (Calls.Any(c => c.IsSetFeature && c.Bytes.Length > 2 && c.Bytes[1] == 0x12)) commits++;
+        }
+        Assert.Equal(3, commits);
+    }
+
+    [Fact]
+    public void An_unverified_family_is_never_sent_the_sync_register()
+    {
+        Attach(0xA100, port: 2, fans: 3);
+        SetMode("static");
+        _store.Update(s => { s.Devices.LianLiLighting.ArgbSync = true; s.Devices.LianLiLighting.ArgbSyncSource = "openrgb-s-1-1"; });
+
+        _writer.Tick();
+
+        Assert.DoesNotContain(Calls, c => c.IsSetFeature && c.Bytes.Length >= 3 && c.Bytes[1] == 0x10 && c.Bytes[2] == 0x30);
     }
 
     [Fact]

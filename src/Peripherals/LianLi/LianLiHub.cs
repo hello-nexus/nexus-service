@@ -191,12 +191,28 @@ public sealed class LianLiHub : IDisposable
         }
     }
 
+    /// <summary>
+    /// Motherboard ARGB sync on or off. Off alone does not hand the ports back:
+    /// the hub keeps playing its ARGB input until every channel takes a commit
+    /// and the frame latches, the sequence L-Connect sends after it (seen on
+    /// camera, SL-Infinity fw 1.4).
+    /// </summary>
     public bool SendArgbSync(bool on)
     {
         lock (_lock)
         {
             if (_device == null) return false;
-            return _device.SetFeature(LianLiProtocol.BuildArgbSync(_profile, on));
+            if (!_device.SetFeature(LianLiProtocol.BuildArgbSync(_profile, on))) return false;
+            if (on) return true;
+            var ok = true;
+            for (var ch = LianLiProtocol.PortCount * _profile.ChannelsPerPort - 1; ch >= 0; ch--)
+            {
+                LianLiProtocol.WriteColorData(_colorReport, ch, ReadOnlySpan<byte>.Empty);
+                ok &= _profile.ColorViaInterruptOut ? _device.Write(_colorReport) : _device.SetOutputReport(_colorReport);
+                ok &= WriteCommand(LianLiProtocol.BuildEffectCommit(ch, LianLiProtocol.EffectStatic,
+                    LianLiProtocol.SpeedDefault, LianLiProtocol.DirectionDefault, LianLiProtocol.BrightnessDefault));
+            }
+            return ok && _device.SetFeature(LianLiProtocol.BuildFrameSync());
         }
     }
 

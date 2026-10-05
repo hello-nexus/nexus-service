@@ -95,6 +95,11 @@ public sealed class LianLiLightingFrameWriter : IHostedService, IDisposable
     // ARGB-sync state last accepted by the hub; false after attach, so a hub
     // never put on ARGB sync sees no extra write.
     private bool _argbSyncSent;
+    // The hub drops commits for a moment after the sync-off release, so output
+    // holds, then the mode is re-committed at each mark.
+    private static readonly long[] ArgbReleaseRecommitMs = { 600, 1500, 3000 };
+    private long _argbReleasedAtMs;
+    private int _argbRecommitsDone = ArgbReleaseRecommitMs.Length;
 
     private bool _customMergeCleared;
     private long _lastCustomFrameMs = long.MinValue / 2;
@@ -199,6 +204,7 @@ public sealed class LianLiLightingFrameWriter : IHostedService, IDisposable
             _pendingFirmwareSig = null;
             _hubInitialised = false;
             _argbSyncSent = false;
+            _argbRecommitsDone = ArgbReleaseRecommitMs.Length;
             _argbSyncRetry.Reset();
             _customMergeCleared = false;
             _initRetry.Reset();
@@ -215,13 +221,29 @@ public sealed class LianLiLightingFrameWriter : IHostedService, IDisposable
             {
                 NoteSuccess(_argbSyncRetry, "ARGB sync");
                 _argbSyncSent = argbSync;
-                // Leaving ARGB sync, the hub shows whatever it held before: re-commit.
+                // Leaving ARGB sync, the release left every channel black: re-commit.
                 _lastFirmwareSig = null;
                 _customMergeCleared = false;
+                if (!argbSync)
+                {
+                    _argbReleasedAtMs = NowMs();
+                    _argbRecommitsDone = 0;
+                }
             }
             else
             {
                 NoteFailure(_argbSyncRetry, "ARGB sync");
+            }
+        }
+        if (!argbSync && _argbRecommitsDone < ArgbReleaseRecommitMs.Length)
+        {
+            var sinceRelease = NowMs() - _argbReleasedAtMs;
+            if (sinceRelease < ArgbReleaseRecommitMs[0]) return;
+            if (sinceRelease >= ArgbReleaseRecommitMs[_argbRecommitsDone])
+            {
+                _argbRecommitsDone++;
+                _lastFirmwareSig = null;
+                _customMergeCleared = false;
             }
         }
         if (argbSync)
