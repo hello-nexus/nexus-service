@@ -188,8 +188,8 @@ if [ -n "$MISSING_LIBS" ]; then
   echo "  Arch:               sudo pacman -S hidapi libusb"
 fi
 
-# Mirrors LinuxBrowsers.SearchDirs/BinaryNames: a narrower list here would warn
-# about a browser the service goes on to find.
+# Mirrors LinuxBrowsers.SearchDirs/BinaryNames/FirefoxNames: a narrower list
+# here would warn about a browser the service goes on to find.
 HAVE_BROWSER=0
 BROWSER_DIRS=(
   "$TARGET_HOME/.local/share/flatpak/exports/bin" /var/lib/flatpak/exports/bin
@@ -202,6 +202,7 @@ BROWSER_NAMES=(
   google-chrome google-chrome-stable brave brave-browser
   microsoft-edge microsoft-edge-stable vivaldi vivaldi-stable
   thorium-browser helium
+  org.mozilla.firefox firefox firefox-esr
 )
 for dir in "${BROWSER_DIRS[@]}"; do
   for name in "${BROWSER_NAMES[@]}"; do
@@ -209,10 +210,10 @@ for dir in "${BROWSER_DIRS[@]}"; do
   done
 done
 if [ "$HAVE_BROWSER" = 0 ]; then
-  echo "WARNING: no Chromium-family browser found. The Y70 panel and any promoted"
-  echo "  monitor run as a Chromium --app --kiosk window and cannot open without one."
-  echo "  Install chromium, chrome, brave, edge or vivaldi (package, flatpak or"
-  echo "  snap), then: sudo systemctl restart nexus"
+  echo "WARNING: no supported browser found. The Y70 panel and any promoted"
+  echo "  monitor run as a browser kiosk window and cannot open without one."
+  echo "  Install firefox, chromium, chrome, brave, edge or vivaldi (package,"
+  echo "  flatpak or snap), then: sudo systemctl restart nexus"
 fi
 
 echo
