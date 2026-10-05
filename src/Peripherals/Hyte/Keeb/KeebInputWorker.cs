@@ -24,16 +24,17 @@ public sealed class KeebInputWorker : BackgroundService
     private readonly IHidEnumerator _hid;
     private readonly KeebHub _hub;
     private readonly KeebSettingsApplier _applier;
-    private readonly KeebReactiveRenderer _renderer;
+    private readonly Nexus.Service.Lighting.KeyReactive.KeyReactiveOverlay _keyReactive;
     private readonly Nexus.Service.Lighting.Engine.LightingEngine _engine;
     private IHidDevice? _reader;
+    private string? _sourceId;
 
-    public KeebInputWorker(IHidEnumerator hid, KeebHub hub, KeebSettingsApplier applier, KeebReactiveRenderer renderer, Nexus.Service.Lighting.Engine.LightingEngine engine)
+    public KeebInputWorker(IHidEnumerator hid, KeebHub hub, KeebSettingsApplier applier, Nexus.Service.Lighting.KeyReactive.KeyReactiveOverlay keyReactive, Nexus.Service.Lighting.Engine.LightingEngine engine)
     {
         _hid = hid;
         _hub = hub;
         _applier = applier;
-        _renderer = renderer;
+        _keyReactive = keyReactive;
         _engine = engine;
     }
 
@@ -94,7 +95,10 @@ public sealed class KeebInputWorker : BackgroundService
         switch (ev.Kind)
         {
             case KeebProtocol.KeebInputKind.KeyMatrix:
-                _renderer.IngestKeyPress(ev.Row, ev.Column);
+                if (KeebKeyNames.FromMatrix(ev.Row, ev.Column) is { } key && _sourceId is { } source)
+                {
+                    _keyReactive.PressFromDevice(source, key);
+                }
                 break;
             case KeebProtocol.KeebInputKind.ScrollUp:
             case KeebProtocol.KeebInputKind.ScrollDown:
@@ -138,6 +142,10 @@ public sealed class KeebInputWorker : BackgroundService
         if (info is null) return false;
         _reader = _hid.Open(info.Path, forInput: true);
         if (_reader is null) return false;
+        // The keeb's own presses drive its key reactions while this reader is
+        // open; OS presses take over for it whenever the reader is down.
+        _sourceId = _hub.DeviceId;
+        if (!string.IsNullOrEmpty(_sourceId)) _keyReactive.SetHardwareKeySource(_sourceId, true);
         ServiceLog.Info($"[keeb-input] reader opened on {info.Path} (usage={info.UsagePage:X4}/{info.Usage:X2} in={info.InputReportByteLength})");
         return true;
     }
@@ -146,5 +154,7 @@ public sealed class KeebInputWorker : BackgroundService
     {
         try { _reader?.Dispose(); } catch { }
         _reader = null;
+        if (!string.IsNullOrEmpty(_sourceId)) _keyReactive.SetHardwareKeySource(_sourceId, false);
+        _sourceId = null;
     }
 }

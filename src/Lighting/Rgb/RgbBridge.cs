@@ -1397,6 +1397,7 @@ public sealed class RgbBridge : IDisposable
             && existing.ZoneOffset == zoneOffset && existing.Index == logicalOrdinal)
         {
             existing.Archetype = ArchetypeForDevice(physicalDevice);
+            existing.DeviceId = structure?.DeviceId ?? id;
             framesList.Add(existing);
             return;
         }
@@ -1442,7 +1443,41 @@ public sealed class RgbBridge : IDisposable
         }
         Nexus.Service.Lighting.Mappings.LedLayoutResolver.ApplyToFrame(frame, resolved);
         frame.Archetype = ArchetypeForDevice(physicalDevice);
+        frame.DeviceId = structure?.DeviceId ?? id;
+        if (frame.Archetype == "keyboard")
+        {
+            frame.LedKeys = zone is null || zone.IsDefault
+                ? LedNameSlice(physicalDevice, resolved.GlobalOffset, zoneLedCount)
+                : LedNamesForSlices(physicalDevice, zone.Slices, zoneLedCount);
+        }
         framesList.Add(frame);
+    }
+
+    private static string?[]? LedNameSlice(RgbDevice d, int offset, int count)
+    {
+        if (offset < 0 || count <= 0 || d.LedNames.Count < offset + count) return null;
+        var names = new string?[count];
+        for (var i = 0; i < count; i++) names[i] = d.LedNames[offset + i];
+        return names;
+    }
+
+    /// <summary>Names for a custom partition: each slice is a run inside one OpenRGB zone, whose LEDs start after every earlier zone's.</summary>
+    private static string?[] LedNamesForSlices(RgbDevice d, IReadOnlyList<ZoneSlice> slices, int count)
+    {
+        var names = new string?[Math.Max(0, count)];
+        var pos = 0;
+        foreach (var slice in slices)
+        {
+            var zoneStart = 0;
+            for (var z = 0; z < slice.Segment && z < d.Zones.Count; z++) zoneStart += d.Zones[z].LedCount;
+            for (var i = 0; i < slice.Count && pos + i < names.Length; i++)
+            {
+                var led = zoneStart + slice.Start + i;
+                if (led >= 0 && led < d.LedNames.Count) names[pos + i] = d.LedNames[led];
+            }
+            pos += slice.Count;
+        }
+        return names;
     }
 
     private bool IsOwnedByFirstParty(RgbDevice d)

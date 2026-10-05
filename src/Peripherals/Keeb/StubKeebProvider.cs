@@ -43,16 +43,6 @@ public sealed class StubKeebProvider : IKeebProvider, IInputterProvider
             Speed = k.FirmwareLighting.Speed,
             Direction = k.FirmwareLighting.Direction,
             Brightness = k.FirmwareLighting.Brightness,
-            KeyReactive = k.FirmwareLighting.KeyReactive,
-            KeyReactiveMask = k.FirmwareLighting.KeyReactiveMask,
-            KeyReactiveMode = k.FirmwareLighting.KeyReactiveMode,
-            KeyReactiveColor = new RGBA
-            {
-                R = k.FirmwareLighting.KeyReactiveColor.R,
-                G = k.FirmwareLighting.KeyReactiveColor.G,
-                B = k.FirmwareLighting.KeyReactiveColor.B,
-                A = k.FirmwareLighting.KeyReactiveColor.A,
-            },
         };
     }
 
@@ -70,20 +60,6 @@ public sealed class StubKeebProvider : IKeebProvider, IInputterProvider
         s.Keeb.FirmwareLighting.Speed = body.Speed;
         s.Keeb.FirmwareLighting.Direction = body.Direction;
         s.Keeb.FirmwareLighting.Brightness = body.Brightness;
-    });
-
-    public void SetPassiveLighting(SetPassiveLightingBody body) => _store.Update(s =>
-    {
-        s.Keeb.FirmwareLighting.KeyReactive = body.KeyReactive;
-        s.Keeb.FirmwareLighting.KeyReactiveMask = body.KeyReactiveMask;
-        s.Keeb.FirmwareLighting.KeyReactiveMode = body.KeyReactiveMode;
-        s.Keeb.FirmwareLighting.KeyReactiveColor = new RgbaColor
-        {
-            R = body.KeyReactiveColor.R,
-            G = body.KeyReactiveColor.G,
-            B = body.KeyReactiveColor.B,
-            A = body.KeyReactiveColor.A,
-        };
     });
 
     public void SetGameMode(SetGameModeBody body) => _store.Update(s =>

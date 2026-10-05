@@ -158,6 +158,8 @@ public sealed class LightingEngine : IDisposable
 
     /// <summary>Per-LED colour locks, painted after every other pass. Null in tests.</summary>
     public Nexus.Service.Lighting.LedColorLockTracker? LedColorLocks { get; set; }
+    /// <summary>Lights keyboards as keys are pressed; painted after the canvas sample, under the colour locks.</summary>
+    public Nexus.Service.Lighting.KeyReactive.KeyReactiveOverlay? KeyReactive { get; set; }
 
     /// <summary>
     /// Builds the IEffect for an assignment. Supplied by the provider, which
@@ -650,6 +652,11 @@ public sealed class LightingEngine : IDisposable
                             // The game frame paints whole devices, locked LEDs too.
                             ApplyLedColorLocks(devices);
                         }
+                        // After the game frame so a press shows over game lighting too.
+                        if (KeyReactive?.Apply(devices, _overlaid, Environment.TickCount64) == true)
+                        {
+                            ApplyLedColorLocks(devices);
+                        }
                         // Dim as part of publishing, so the ramp is in the one
                         // frame readers see rather than a second write on top of
                         // a published one.
@@ -749,6 +756,11 @@ public sealed class LightingEngine : IDisposable
             var editing = d.HighlightLeds is { Count: > 0 } || d.TestPattern is not null
                 || d.PreviewLayout is not null || d.PreviewLedCount is not null;
             if (editing && deviceIds.Contains(d.Id))
+            {
+                return false;
+            }
+            // Reactions follow live key presses, which a pre-rendered loop cannot know.
+            if (KeyReactive?.IsEnabled(Nexus.Service.Lighting.KeyReactive.KeyReactiveOverlay.ConfigKey(d)) == true && deviceIds.Contains(d.Id))
             {
                 return false;
             }
@@ -1239,17 +1251,10 @@ public sealed class LightingEngine : IDisposable
         if (tracker is null) return;
         foreach (var dev in devices)
         {
-            if (dev.TestPattern is not null || !tracker.TryGet(dev.Id, out var leds)) continue;
-            var disabled = dev.LedDisabled;
+            if (dev.TestPattern is not null) continue;
             var highlights = dev.HighlightLeds is { Count: > 0 } h ? h : null;
             var count = dev.PreviewLedCount is { } pc ? Math.Min(pc, dev.LedCount) : dev.LedCount;
-            foreach (var led in leds)
-            {
-                if (led.Index >= count) break;
-                if (disabled is not null && led.Index < disabled.Length && disabled[led.Index]) continue;
-                if (highlights is not null && !highlights.Contains(led.Index)) continue;
-                dev.SetLed(led.Index, led.R, led.G, led.B);
-            }
+            tracker.PaintLocks(dev, count, highlights);
         }
     }
 

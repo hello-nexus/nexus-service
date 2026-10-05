@@ -19,6 +19,8 @@ namespace Nexus.Service.Lighting;
 /// </summary>
 public sealed class KeebLightingDeviceProvider : ILightingDeviceProvider, ILightingFrameContributor, Nexus.Service.Lighting.Zones.IDeviceStructureSource
 {
+    private static readonly System.Collections.Concurrent.ConcurrentDictionary<Nexus.Service.Peripherals.Hyte.Keeb.KeebKeyMap, string?[]> KeyNamesCache = new();
+
     /// <summary>Zone id suffixes (also the engine frame ids).</summary>
     public const string KeysSuffix = ":keys";
     public const string UnderglowSuffix = ":underglow";
@@ -258,7 +260,10 @@ public sealed class KeebLightingDeviceProvider : ILightingDeviceProvider, ILight
         var frames = new List<DeviceFrame>(zones.Count);
         foreach (var zone in zones)
         {
-            frames.Add(BuildOrReuseFrame(zone.Id, zone.FrameLedCount, zone.Ordinal, layouts, ref idx));
+            var frame = BuildOrReuseFrame(zone.Id, zone.FrameLedCount, zone.Ordinal, TouchesKeys(zone), layouts, ref idx);
+            frame.LedKeys = ZoneKeyNames(zone, _hub.KeyMap, frame.LedKeys);
+            frame.DeviceId = hubId;
+            frames.Add(frame);
         }
         if (_frameCache.Count > frames.Count)
         {
@@ -271,15 +276,42 @@ public sealed class KeebLightingDeviceProvider : ILightingDeviceProvider, ILight
         return frames;
     }
 
+    internal static bool TouchesKeys(Nexus.Service.Lighting.Zones.ResolvedZone zone)
+    {
+        foreach (var slice in zone.Slices)
+        {
+            if (slice.Segment == KeebZoneSupport.KeysSegment) return true;
+        }
+        return false;
+    }
+
+    /// <summary>Key name per LED of <paramref name="zone"/>, null on underglow LEDs; reuses <paramref name="current"/> when unchanged so key reactions keep their state across refreshes.</summary>
+    internal static string?[]? ZoneKeyNames(Nexus.Service.Lighting.Zones.ResolvedZone zone, Nexus.Service.Peripherals.Hyte.Keeb.KeebKeyMap keys, string?[]? current)
+    {
+        if (!TouchesKeys(zone)) return null;
+        var all = KeyNamesCache.GetOrAdd(keys, Nexus.Service.Peripherals.Hyte.Keeb.KeebKeyNames.For);
+        var names = new string?[zone.FrameLedCount];
+        var pos = 0;
+        foreach (var slice in zone.Slices)
+        {
+            for (var i = 0; i < slice.Count && pos + i < names.Length; i++)
+            {
+                var led = slice.Start + i;
+                if (slice.Segment == KeebZoneSupport.KeysSegment && led >= 0 && led < all.Length) names[pos + i] = all[led];
+            }
+            pos += slice.Count;
+        }
+        return current is not null && current.AsSpan().SequenceEqual(names) ? current : names;
+    }
+
     private DeviceFrame BuildOrReuseFrame(
-        string id, int ledCount, int slot,
+        string id, int ledCount, int slot, bool touchesKeys,
         IReadOnlyDictionary<string, Persistence.DeviceLayout> layouts, ref int idx)
     {
         var (defX, defY, defW, defH) = DefaultKeebLayout(slot);
         layouts.TryGetValue(id, out var layout);
         var rot = ((((layout?.Rotation ?? 0) % 360) + 360) % 360);
         var thisIdx = idx++;
-        var isKeysZone = id.EndsWith(KeysSuffix, StringComparison.Ordinal);
         if (_frameCache.TryGetValue(id, out var existing)
             && existing.Index == thisIdx && existing.LedCount == ledCount)
         {
@@ -288,12 +320,12 @@ public sealed class KeebLightingDeviceProvider : ILightingDeviceProvider, ILight
             existing.W = layout?.W ?? defW;
             existing.H = layout?.H ?? defH;
             existing.Rotation = rot;
-            existing.Archetype = isKeysZone ? "keyboard" : null;
+            existing.Archetype = touchesKeys ? "keyboard" : null;
             return existing;
         }
         var frame = new DeviceFrame(thisIdx, id, ledCount,
             layout?.X ?? defX, layout?.Y ?? defY, layout?.W ?? defW, layout?.H ?? defH, rot);
-        frame.Archetype = isKeysZone ? "keyboard" : null;
+        frame.Archetype = touchesKeys ? "keyboard" : null;
         _frameCache[id] = frame;
         return frame;
     }

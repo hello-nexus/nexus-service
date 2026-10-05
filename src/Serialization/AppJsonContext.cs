@@ -623,6 +623,10 @@ namespace Nexus.Service.Serialization;
 [JsonSerializable(typeof(Nexus.Service.Persistence.DeviceLayout))]
 // 3D lighting scene (LightingSceneRoutes).
 [JsonSerializable(typeof(Nexus.Service.Models.Lighting.LightingSceneResponse))]
+[JsonSerializable(typeof(Nexus.Service.Models.Lighting.KeyReactiveStateResponse))]
+[JsonSerializable(typeof(Nexus.Service.Models.Lighting.KeyReactivePressBody))]
+[JsonSerializable(typeof(Nexus.Service.Models.Lighting.KeyReactivePreviewResponse))]
+[JsonSerializable(typeof(Nexus.Service.Persistence.KeyReaction))]
 [JsonSerializable(typeof(Nexus.Service.Models.Lighting.PutLightingSceneBody))]
 [JsonSerializable(typeof(Nexus.Service.Models.Lighting.ImportLightingSceneBody))]
 [JsonSerializable(typeof(Nexus.Service.Models.Lighting.PutSceneViewBody))]
@@ -789,7 +793,6 @@ namespace Nexus.Service.Serialization;
 [JsonSerializable(typeof(GetRotaryFunctionsResponse))]
 [JsonSerializable(typeof(SetRotaryWheelsBody))]
 [JsonSerializable(typeof(SetFirmwareLightingBody))]
-[JsonSerializable(typeof(SetPassiveLightingBody))]
 [JsonSerializable(typeof(SetGameModeBody))]
 [JsonSerializable(typeof(GetMacroResponse))]
 [JsonSerializable(typeof(SetMacroBody))]
@@ -940,6 +943,8 @@ namespace Nexus.Service.Serialization;
 [JsonSerializable(typeof(Nexus.Service.Helper.Domains.ServiceRequestStopPayload))]
 [JsonSerializable(typeof(Nexus.Service.Helper.Domains.LockInputWatchPayload))]
 [JsonSerializable(typeof(Nexus.Service.Helper.Domains.LockInputSeenPayload))]
+[JsonSerializable(typeof(Nexus.Service.Helper.Domains.KeyWatchPayload))]
+[JsonSerializable(typeof(Nexus.Service.Helper.Domains.KeyPressedPayload))]
 // Diagnostics
 [JsonSerializable(typeof(Nexus.Service.Helper.Domains.OpenLogsPayload))]
 [JsonSerializable(typeof(Nexus.Service.Helper.Domains.OpenEventViewerPayload))]

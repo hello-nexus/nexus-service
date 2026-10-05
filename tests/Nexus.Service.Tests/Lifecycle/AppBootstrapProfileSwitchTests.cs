@@ -55,7 +55,6 @@ public class AppBootstrapProfileSwitchTests
         public string[] GetRotaryFunctions() => Array.Empty<string>();
         public void SetRotary(SetRotaryWheelsBody body) { }
         public void SetFirmwareLighting(SetFirmwareLightingBody body) { }
-        public void SetPassiveLighting(SetPassiveLightingBody body) { }
         public void SetGameMode(SetGameModeBody body) { }
         public KeebMacro GetMacro(int index) => new();
         public SetMacroResponse SetMacro(int index, SetMacroBody body) => new();

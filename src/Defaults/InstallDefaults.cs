@@ -176,9 +176,10 @@ public sealed class KeebDefaults
 public sealed class KeebFirmwareLightingDefaults
 {
     public string AnimationMode { get; set; } = "Static";
-    // Speed/KeyReactiveMode must be values the panel dropdowns list, or the
-    // control renders blank. "Standard" (not the synonym "Medium") and a real
-    // reactive mode (not "Off" - on/off is the separate KeyReactive flag).
+    // Speed must be a value the panel dropdown lists, or the control renders
+    // blank: "Standard", not the synonym "Medium". The KeyReactive* fields back
+    // legacy settings only; KeebLegacyReactiveMigration moves them to
+    // Lighting.KeyReactions and resets them to these values.
     public string Speed { get; set; } = "Standard";
     public string Direction { get; set; } = "Forward";
     public int Brightness { get; set; } = 80;

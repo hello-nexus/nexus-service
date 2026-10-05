@@ -9,7 +9,6 @@ public interface IKeebProvider
     string[] GetRotaryFunctions();
     void SetRotary(SetRotaryWheelsBody body);
     void SetFirmwareLighting(SetFirmwareLightingBody body);
-    void SetPassiveLighting(SetPassiveLightingBody body);
     void SetGameMode(SetGameModeBody body);
     KeebMacro GetMacro(int index);
     SetMacroResponse SetMacro(int index, SetMacroBody body);

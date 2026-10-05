@@ -483,6 +483,7 @@ public static class NexusServiceCollectionExtensions
     {
         services.AddSingleton<Nexus.Service.Lighting.StaticDeviceEffectTracker>();
         services.AddSingleton<Nexus.Service.Lighting.LedColorLockTracker>();
+        services.AddSingleton<Nexus.Service.Lighting.KeyReactive.KeyReactiveOverlay>();
         services.AddSingleton<LightingEngine>(sp =>
         {
             // Property, not ctor: the engine is constructed directly in tests
@@ -490,6 +491,7 @@ public static class NexusServiceCollectionExtensions
             var engine = new LightingEngine();
             engine.StaticEffects = sp.GetRequiredService<Nexus.Service.Lighting.StaticDeviceEffectTracker>();
             engine.LedColorLocks = sp.GetRequiredService<Nexus.Service.Lighting.LedColorLockTracker>();
+            engine.KeyReactive = sp.GetRequiredService<Nexus.Service.Lighting.KeyReactive.KeyReactiveOverlay>();
             engine.SetStackSlots(sp.GetRequiredService<Nexus.Service.Persistence.IConfigStore>().Load().Lighting.DeviceStacks);
             return engine;
         });
@@ -727,7 +729,6 @@ public static class NexusServiceCollectionExtensions
         // shared identify-flash state.
         services.AddSingleton<Nexus.Service.Peripherals.Hyte.Keeb.KeebHub>();
         services.AddSingleton<Nexus.Service.Peripherals.Hyte.Keeb.KeebSettingsApplier>();
-        services.AddSingleton<Nexus.Service.Peripherals.Hyte.Keeb.KeebReactiveRenderer>();
         services.AddSingleton<Nexus.Service.Lighting.KeebLightingDeviceProvider>();
         services.AddSingleton<Nexus.Service.Lighting.ILightingFrameContributor>(
             sp => sp.GetRequiredService<Nexus.Service.Lighting.KeebLightingDeviceProvider>());

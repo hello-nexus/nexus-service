@@ -48,7 +48,6 @@ public class KeebRoutesContractTests
                 ("GET", "/keeb/macro/0", null),
                 ("POST", "/keeb/rotary", "{\"left\":\"VolumeAdjustment\",\"right\":\"ScrollY\"}"),
                 ("POST", "/keeb/firmware/lighting", "{\"animationMode\":\"Static\",\"speed\":\"Standard\",\"direction\":\"LeftToRight\",\"brightness\":50}"),
-                ("POST", "/keeb/passive-lighting", "{\"keyReactive\":false,\"keyReactiveMask\":false,\"keyReactiveMode\":\"SingleKey\",\"keyReactiveColor\":{\"r\":0,\"g\":0,\"b\":0,\"a\":255}}"),
                 ("POST", "/keeb/game-mode", "{\"altF4\":false,\"altTab\":false,\"shiftTab\":false,\"windowsKey\":false}"),
                 ("POST", "/keeb/macro/0", "{\"keys\":[]}"),
                 ("POST", "/keeb/layer/0/key", "{\"x\":2,\"y\":0,\"func\":\"A\",\"mode\":\"StandardKey\",\"input\":null}"),

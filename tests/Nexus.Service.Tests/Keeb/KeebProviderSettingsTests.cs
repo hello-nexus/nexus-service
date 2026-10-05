@@ -12,29 +12,18 @@ namespace Nexus.Service.Tests.Keeb;
 public class KeebProviderSettingsTests
 {
     [Fact]
-    public void StubProvider_GetSettings_RoundTripsRotaryAndPassiveLighting()
+    public void StubProvider_GetSettings_RoundTripsRotaryAndGameMode()
     {
         var store = new InMemoryConfigStore();
         var provider = new StubKeebProvider(store);
 
         provider.SetRotary(new SetRotaryWheelsBody { Left = "ScrollY", Right = "Scale" });
-        provider.SetPassiveLighting(new SetPassiveLightingBody
-        {
-            KeyReactive = true,
-            KeyReactiveMask = true,
-            KeyReactiveMode = "Ripple",
-            KeyReactiveColor = new() { R = 1, G = 2, B = 3, A = 4 },
-        });
         provider.SetGameMode(new SetGameModeBody { AltF4 = true, WindowsKey = true });
 
         var s = provider.GetSettings();
 
         Assert.Equal("ScrollY", s.RotaryLeft);
         Assert.Equal("Scale", s.RotaryRight);
-        Assert.True(s.KeyReactive);
-        Assert.True(s.KeyReactiveMask);
-        Assert.Equal("Ripple", s.KeyReactiveMode);
-        Assert.Equal(3, s.KeyReactiveColor.B);
         Assert.True(s.AltF4Disabled);
         Assert.True(s.WindowsKeyDisabled);
         Assert.False(s.AltTabDisabled);

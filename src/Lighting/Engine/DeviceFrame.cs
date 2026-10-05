@@ -74,6 +74,10 @@ public sealed class DeviceFrame
     public PreviewLedPosition[]? PreviewLayout { get; set; }
     /// <summary>Semantic device class for effect routing. Null = no archetype, falls back to canvas sampling. Values: "keyboard", "mouse", "mousepad", "headset", "keypad", "chromalink".</summary>
     public string? Archetype { get; set; }
+    /// <summary>Physical device that owns this card (the LightingDevice DTO's DeviceId); per-device settings such as key reactions key on it. Null = the card is its own device.</summary>
+    public string? DeviceId { get; set; }
+    /// <summary>Hardware LED name per LED ("Key: A" on OpenRGB keyboards), null where the board names none. Key reactions resolve presses through it.</summary>
+    public string?[]? LedKeys { get; set; }
 
     public void SetLed(int i, byte r, byte g, byte b)
     {
@@ -143,6 +147,9 @@ public sealed class DeviceFrame
         Volatile.Write(ref _front, painted);
         Array.Copy(painted, _back, painted.Length);
     }
+
+    /// <summary>The frame being painted this tick. Engine thread only.</summary>
+    public Span<byte> PaintBuffer => _back;
 
     /// <summary>The last published frame. Safe to read from any thread.</summary>
     public ReadOnlySpan<byte> LedBytes => Volatile.Read(ref _front);
