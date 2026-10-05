@@ -127,6 +127,14 @@ public sealed class OpenRgbLightingDeviceProvider : ILightingDeviceProvider, IDe
             return;
         if (!TryResolveResizableZone(id, out var physIdx, out var zoneIdx, out var deviceId))
             return;
+        foreach (var d in _bridge.Devices)
+        {
+            if (d.StableId == deviceId)
+            {
+                count = OpenRgbZoneSupport.ClampPortLedCount(d, zoneIdx, count);
+                break;
+            }
+        }
 
         // Counts persist under the hardware segment key (the legacy zone-card
         // id) so the wiring choice survives any re-partition, and overrides

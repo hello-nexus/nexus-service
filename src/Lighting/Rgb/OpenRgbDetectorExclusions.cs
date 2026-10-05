@@ -101,7 +101,7 @@ public static class OpenRgbDetectorExclusions
         var zones = new List<OpenRgbExcludedZone>(d.Zones.Count);
         foreach (var z in d.Zones)
         {
-            zones.Add(new OpenRgbExcludedZone { Name = z.Name, ZoneType = z.ZoneType, LedCount = z.LedCount, LedsMin = z.LedsMin, LedsMax = z.LedsMax });
+            zones.Add(new OpenRgbExcludedZone { Name = z.Name, ZoneType = z.ZoneType, LedCount = z.LedCount, LedsMin = z.LedsMin, LedsMax = z.LedsMax, Flags = z.Flags });
         }
         return zones;
     }

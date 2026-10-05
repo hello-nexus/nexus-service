@@ -1379,6 +1379,8 @@ public sealed class OpenRgbExcludedZone
     public int LedCount { get; set; }
     public uint LedsMin { get; set; }
     public uint LedsMax { get; set; }
+    /// <summary>ZONE_FLAG_* bits, so an excluded port controller still rebuilds as split.</summary>
+    public uint Flags { get; set; }
 }
 
 /// <summary>One user-defined zone of a device partition: an ordered run of segment-local slices. One zone = one lighting card = one engine frame.</summary>

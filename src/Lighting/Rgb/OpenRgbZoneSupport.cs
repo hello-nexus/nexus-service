@@ -19,7 +19,34 @@ namespace Nexus.Service.Lighting.Rgb;
 /// </summary>
 public static class OpenRgbZoneSupport
 {
-    public static bool IsSplitMotherboard(RgbDevice d) => d.Type == 0 && d.Zones.Count > 1;
+    /// <summary>A multi-header motherboard, or a <see cref="IsPortController"/> device, which needs the same one-device-per-header model.</summary>
+    public static bool IsSplitMotherboard(RgbDevice d)
+        => d.Type == 0 ? d.Zones.Count > 1 : IsPortController(d);
+
+    /// <summary>
+    /// A non-motherboard controller whose every zone is user-sized (Thermaltake Riing,
+    /// Corsair Lighting Node): each port reports 0 LEDs until it is resized.
+    /// </summary>
+    public static bool IsPortController(RgbDevice d)
+    {
+        if (d.Zones.Count == 0)
+            return false;
+        foreach (var zone in d.Zones)
+        {
+            if (!zone.IsUserSized || !IsZoneResizable(zone.ZoneType))
+                return false;
+        }
+        return true;
+    }
+
+    /// <summary>Caps a port controller's count at leds_max, which its driver never checks: the Riing packs every LED into one fixed-size HID report and overruns it.</summary>
+    public static int ClampPortLedCount(RgbDevice d, int zoneIndex, int count)
+    {
+        if (d.Type == 0 || zoneIndex < 0 || zoneIndex >= d.Zones.Count)
+            return count;
+        var max = d.Zones[zoneIndex].LedsMax;
+        return max > 0 && count > max ? (int)max : count;
+    }
 
     /// <summary>
     /// Structures this physical controller contributes. A split motherboard is
@@ -522,7 +549,7 @@ public static class OpenRgbZoneSupport
         };
         foreach (var z in snap.Zones)
         {
-            board.Zones.Add(new RgbZone { Name = z.Name, ZoneType = z.ZoneType, LedCount = z.LedCount, LedsMin = z.LedsMin, LedsMax = z.LedsMax });
+            board.Zones.Add(new RgbZone { Name = z.Name, ZoneType = z.ZoneType, LedCount = z.LedCount, LedsMin = z.LedsMin, LedsMax = z.LedsMax, Flags = z.Flags });
         }
         return IsSplitMotherboard(board) && board.StableId == key ? board : null;
     }
