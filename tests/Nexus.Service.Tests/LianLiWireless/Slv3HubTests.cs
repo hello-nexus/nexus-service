@@ -565,6 +565,29 @@ public class Slv3HubTests
     }
 
     [Fact]
+    public async Task SendRgbWindowAsync_skips_late_passes_that_would_exceed_the_air_budget()
+    {
+        var clock = new ManualClock();
+        var (hub, net, tx, _) = CreateConnectedHub(clock.NowMs);
+        net.Fans.Add(new SimulatedFan { Mac = FanMac, MasterMac = net.MasterMac, RxType = 3 });
+        Assert.True(hub.DriveTick());
+        tx.SentFrames.Clear();
+
+        // Incompressible 120-LED window: ~50 data parts, so two late passes would add ~100 payloads to the second.
+        var frames = new byte[30 * 120 * 3];
+        new Random(7).NextBytes(frames);
+        Assert.True(await hub.SendRgbWindowAsync(Convert.ToHexString(FanMac), frames, 120, 30, 53, 100));
+
+        var parts = tx.SentFrames.FindAll(f => f.Length >= 24 && f[1] == 0 && f[4] == Slv3Protocol.RfFrameType && f[5] == Slv3Protocol.RfRgbSync);
+        var total = parts[0][23];
+        Assert.True(total > 40);
+        for (var p = 1; p < total; p++)
+        {
+            Assert.Equal(2, parts.Count(f => f[22] == p));
+        }
+    }
+
+    [Fact]
     public async Task SendRgbWindowAsync_never_repeats_the_previous_effect_index()
     {
         var (hub, net, tx, _) = CreateConnectedHub();

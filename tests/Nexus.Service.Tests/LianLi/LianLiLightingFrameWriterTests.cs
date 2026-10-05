@@ -434,6 +434,25 @@ public class LianLiLightingFrameWriterTests
     }
 
     [Fact]
+    public void Sl_infinity_custom_mode_paces_frames_to_the_hub_commit_rate()
+    {
+        UseFakeClock();
+        Attach(0xA102, port: 1, fans: 3);
+        SetMode("custom");
+
+        // One populated port is two channel commits per frame.
+        _writer.Tick();
+        Assert.Contains(Calls, c => c.Bytes[1] == 0x32);
+        _spy.Calls.Clear();
+        Advance(50);
+        _writer.Tick();
+        Assert.DoesNotContain(Calls, c => c.Bytes[1] == 0x32);
+        Advance(40);
+        _writer.Tick();
+        Assert.Contains(Calls, c => c.Bytes[1] == 0x32);
+    }
+
+    [Fact]
     public void A_rejected_hub_init_does_not_freeze_custom_mode_streaming()
     {
         UseFakeClock();
@@ -448,9 +467,10 @@ public class LianLiLightingFrameWriterTests
         _writer.Tick();
         Assert.Contains(Calls, c => c.Kind == HubTransportSpy.CallKind.Write);
 
-        // And the tick after, while the init backoff is still running.
+        // And the next frame, while the init backoff is still running.
         _spy.Calls.Clear();
         _spy.RejectWrites = false;
+        Advance(100);
         _writer.Tick();
         Assert.Contains(Calls, c => c.Kind == HubTransportSpy.CallKind.Write);
     }

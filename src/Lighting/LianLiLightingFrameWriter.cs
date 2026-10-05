@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.Globalization;
 using System.Runtime.InteropServices;
 using System.Threading;
@@ -23,14 +24,19 @@ public sealed class LianLiLightingFrameWriter : IHostedService, IDisposable
     // Tick cadence while the engine is stopped and publishes nothing.
     private const int IdleTickMs = 100;
 
-    // Settle between HID writes. At 5 ms the six writes of a custom-mode frame
-    // cost 30 ms of pure sleep against a 33 ms tick, capping the stream well
-    // under 30 Hz. Measured on fw 1.4 (2026-08-27): 60 back-to-back frames of
-    // the full cycle over the control pipe took 312 ms total (5.2 ms/frame) with
-    // zero failed writes and no pacing at all, so the old 5 ms was sized for the
-    // interrupt-OUT path this no longer uses. 1 ms keeps a yield between writes
-    // while leaving headroom for a real 30 Hz.
+    // Settle between writes; SL-Infinity custom streaming is paced per frame
+    // instead (SlInfinityCommitsPerSecond).
     private const int InterWriteSettleMs = 1;
+
+    // SL-Infinity fw 1.4 shows a streamed frame only through each channel's
+    // commit, and past its commit rate it falls back to ~2 visible updates/s
+    // (Y70 camera fan chase, 2026-10-04: 12 fps on one port all shown, 20-30
+    // fps collapsed, four ports collapsed at 10 fps).
+    private const int SlInfinityCommitsPerSecond = 24;
+
+    // Engine frames land a few ms either side of their period; without slack a
+    // frame due on a frame boundary slips a whole frame and the cadence wobbles.
+    private const int PacingSlackMs = 5;
 
     // SL-Infinity fw 1.4 ignores a commit sent under ~5 ms after merge-off (Y70 camera sweep: 0 ms stuck, 5 ms+ exits).
     private const int MergeOffSettleMs = 20;
@@ -80,10 +86,12 @@ public sealed class LianLiLightingFrameWriter : IHostedService, IDisposable
     private bool _hubInitialised;
 
     private bool _customMergeCleared;
+    private long _lastCustomFrameMs = long.MinValue / 2;
 
     // Per-device resolved zones for the firmware-mode sig/commit pair, reused
     // each tick so they resolve once instead of once per call site.
     private readonly List<IReadOnlyList<ResolvedZone>> _firmwareZonesByDevice = new();
+    private readonly List<IReadOnlyList<ResolvedZone>> _customZones = new();
 
     // Raw RGB scratch for one channel, sized for the largest per-fan ring across families.
     private readonly byte[] _channelBuf =
@@ -211,9 +219,9 @@ public sealed class LianLiLightingFrameWriter : IHostedService, IDisposable
 
         if (ls.Mode == "custom")
         {
-            // Raise OS timer resolution so the 5 ms inter-write settles are ~5 ms,
-            // not the default ~15 ms. Held only while streaming; lowered on mode
-            // switch or hub detach.
+            // Raise OS timer resolution so the inter-write settles of the families
+            // that keep them are ~1 ms, not the default ~15 ms. Held only while
+            // streaming; lowered on mode switch or hub detach.
             if (!_highResTimer && OperatingSystem.IsWindows())
             {
                 timeBeginPeriod(1);
@@ -295,7 +303,7 @@ public sealed class LianLiLightingFrameWriter : IHostedService, IDisposable
     }
 
     /// <summary>Test seam: tests advance the backoff clock instead of sleeping out the cap.</summary>
-    internal Func<long> NowMs { get; set; } = static () => Environment.TickCount64;
+    internal Func<long> NowMs { get; set; } = static () => (long)(Stopwatch.GetTimestamp() * 1000.0 / Stopwatch.Frequency);
 
     /// <summary>Widening retry window in milliseconds: RetryBaseMs doubling per failure, capped at RetryMaxMs.</summary>
     private sealed class RetryWindow
@@ -371,10 +379,28 @@ public sealed class LianLiLightingFrameWriter : IHostedService, IDisposable
         var prefs = settings.Devices.LightingDevicePrefs;
         var nowTicks = DateTime.UtcNow.Ticks;
 
+        _customZones.Clear();
+        var commits = 0;
         foreach (var device in composed)
         {
+            var zones = ZoneResolution.Resolve(device.Structure, settings);
+            _customZones.Add(zones);
+            if (ZoneResolution.IsFullyUncontrolled(zones, uncontrolled)) continue;
+            foreach (var channels in device.SegmentChannels) commits += channels.Count;
+        }
+        var paced = profile.Family == LianLiFanFamily.SlInfinity;
+        if (paced)
+        {
+            var nowMs = NowMs();
+            if (nowMs - _lastCustomFrameMs < commits * 1000L / SlInfinityCommitsPerSecond - PacingSlackMs) return;
+            _lastCustomFrameMs = nowMs;
+        }
+
+        for (var d = 0; d < composed.Count; d++)
+        {
+            var device = composed[d];
             var structure = device.Structure;
-            var zones = ZoneResolution.Resolve(structure, settings);
+            var zones = _customZones[d];
             if (ZoneResolution.IsFullyUncontrolled(zones, uncontrolled))
             {
                 // Every zone of this fan group is uncontrolled: leave its two
@@ -402,12 +428,12 @@ public sealed class LianLiLightingFrameWriter : IHostedService, IDisposable
                     if (profile.StartActionPerFrame)
                     {
                         _hub.SendStartAction(ch / profile.ChannelsPerPort, LianLiProtocol.MaxFansPerPort);
-                        Settle();
+                        if (!paced) Settle();
                     }
                     _hub.SendColorData(ch, _channelBuf.AsSpan(0, byteCount));
-                    Settle();
+                    if (!paced) Settle();
                     _hub.SendEffectCommit(ch);
-                    Settle();
+                    if (!paced) Settle();
                 }
             }
 
@@ -418,7 +444,7 @@ public sealed class LianLiLightingFrameWriter : IHostedService, IDisposable
             // firmware's ~0.6 Hz internal repaint - the whole rig then reads as
             // roughly 1 Hz once a fan is moved to a second port.
             _hub.SendFrameSync();
-            Settle();
+            if (!paced) Settle();
         }
     }
 
