@@ -256,6 +256,11 @@
     <None Include="icon.ico" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="Never" />
   </ItemGroup>
 
+  <!-- License notices for the installed app. -->
+  <ItemGroup>
+    <Content Include="LICENSE;THIRD-PARTY.md" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
+  </ItemGroup>
+
   <!-- Expose internal test-only helpers (e.g. USB enumerator parsers) to the xUnit project -->
   <ItemGroup>
     <InternalsVisibleTo Include="Nexus.Service.Tests" />
