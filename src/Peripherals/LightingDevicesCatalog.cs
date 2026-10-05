@@ -383,11 +383,27 @@ public static class LightingDevicesCatalog
         return caps;
     }
 
-    private static (string vendor, string model) SplitVendorModel(string name)
+    /// <summary>OpenRGB brands whose names contain a space; every other name splits at its first space.</summary>
+    // The site's export-devices.mjs regex-parses this `= { "..." }` initializer; keep that shape.
+    private static readonly string[] MultiWordVendors =
+    {
+        "Cooler Master", "Lian Li", "Turtle Beach", "Das Keyboard", "Red Square",
+        "Dark Project", "Attack Shark", "Dream Cheeky", "Raspberry Pi", "FL ESPORTS",
+    };
+
+    internal static (string vendor, string model) SplitVendorModel(string name)
     {
         if (string.IsNullOrWhiteSpace(name))
         {
             return ("", "");
+        }
+        foreach (var vendor in MultiWordVendors)
+        {
+            if (name.Length > vendor.Length && name[vendor.Length] == ' ' &&
+                name.StartsWith(vendor, System.StringComparison.Ordinal))
+            {
+                return (vendor, name.Substring(vendor.Length + 1));
+            }
         }
         var sp = name.IndexOf(' ');
         if (sp <= 0)
