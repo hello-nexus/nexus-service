@@ -86,11 +86,15 @@ public sealed class LianLiLightingFrameWriter : IHostedService, IDisposable
     // custom-mode streaming, which does not depend on them landing.
     private readonly RetryWindow _initRetry = new();
     private readonly RetryWindow _commitRetry = new();
+    private readonly RetryWindow _argbSyncRetry = new();
 
     // False until the attach-time commands (merge off, per-port quantity) have
     // gone out for the current connection; families with a per-frame start
     // carry the quantity in every frame instead.
     private bool _hubInitialised;
+    // ARGB-sync state last accepted by the hub; false after attach, so a hub
+    // never put on ARGB sync sees no extra write.
+    private bool _argbSyncSent;
 
     private bool _customMergeCleared;
     private long _lastCustomFrameMs = long.MinValue / 2;
@@ -194,19 +198,47 @@ public sealed class LianLiLightingFrameWriter : IHostedService, IDisposable
             _lastFirmwareSig = null;
             _pendingFirmwareSig = null;
             _hubInitialised = false;
+            _argbSyncSent = false;
+            _argbSyncRetry.Reset();
             _customMergeCleared = false;
             _initRetry.Reset();
             _commitRetry.Reset();
             return;
         }
+        var settings = _store.Load();
+        var ls = settings.Devices.LianLiLighting;
+        var profile = _hub.Profile;
+        var argbSync = profile.PlaysArgbInput(ls.ArgbSync);
+        if (_argbSyncSent != argbSync && !_argbSyncRetry.BackingOff(NowMs()))
+        {
+            if (_hub.SendArgbSync(argbSync))
+            {
+                NoteSuccess(_argbSyncRetry, "ARGB sync");
+                _argbSyncSent = argbSync;
+                // Leaving ARGB sync, the hub shows whatever it held before: re-commit.
+                _lastFirmwareSig = null;
+                _customMergeCleared = false;
+            }
+            else
+            {
+                NoteFailure(_argbSyncRetry, "ARGB sync");
+            }
+        }
+        if (argbSync)
+        {
+            if (_highResTimer && OperatingSystem.IsWindows())
+            {
+                timeEndPeriod(1);
+                _highResTimer = false;
+            }
+            return;
+        }
+
         var devices = _engine.Devices;
         if (devices.Length == 0) return;
 
-        var settings = _store.Load();
-        var ls = settings.Devices.LianLiLighting;
         var globalBrightness = MasterBrightness.Effective(settings.Lighting);
 
-        var profile = _hub.Profile;
         // A rejected init is retried on its own window but never aborts the tick:
         // pre-retry this was fire-and-forget, and custom mode streams without it.
         if (!_hubInitialised && !_initRetry.BackingOff(NowMs()))

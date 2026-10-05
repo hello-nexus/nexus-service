@@ -191,6 +191,15 @@ public sealed class LianLiHub : IDisposable
         }
     }
 
+    public bool SendArgbSync(bool on)
+    {
+        lock (_lock)
+        {
+            if (_device == null) return false;
+            return _device.SetFeature(LianLiProtocol.BuildArgbSync(_profile, on));
+        }
+    }
+
     public bool SendFrameSync()
     {
         lock (_lock)
