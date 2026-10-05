@@ -53,4 +53,18 @@ public class LianLiCoolingProviderTests
         Assert.Equal(4, provider.GetFanChannels().Count);
         Assert.Equal(4, Assert.Single(provider.GetAll()).Devices.Count);
     }
+
+    [Fact]
+    public void Labels_ports_one_based_like_the_hub()
+    {
+        var store = new InMemoryConfigStore();
+        store.Update(s => { for (var p = 0; p < 4; p++) s.Devices.LianLi.SetFans(p, p == 1 ? 3 : 0); });
+        var provider = Connected(store);
+
+        var channel = Assert.Single(provider.GetFanChannels());
+        Assert.Equal("lianli:port1", channel.Id);
+        Assert.Equal("Port 2", channel.PortLabel);
+        Assert.EndsWith(" Port 2", channel.Name);
+        Assert.EndsWith(" Port 2", Assert.Single(Assert.Single(provider.GetAll()).Devices).Name);
+    }
 }
