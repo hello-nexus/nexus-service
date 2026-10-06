@@ -86,6 +86,16 @@ public static class DisplayRoutes
             store.Update(s => s.Y70.CompatibilityRendering = body.Enabled);
             return ApiResponse.Ok();
         }).AllowPanel();
+        app.MapGet("/y70/keep-cursor-off", (IConfigStore store) => new Y70KeepCursorOffParams
+        {
+            Enabled = store.Load().Y70.KeepCursorOff,
+            Supported = OperatingSystem.IsWindows(),
+        }).AllowPanel();
+        app.MapPost("/y70/keep-cursor-off", (Y70KeepCursorOffParams body, IConfigStore store) =>
+        {
+            store.Update(s => s.Y70.KeepCursorOff = body.Enabled);
+            return ApiResponse.Ok();
+        }).AllowPanel();
 
         // Q-series (Q60/Q80) - 180 degree flip only, no landscape.
         app.MapGet("/qseries/rotation", (IConfigStore store) => new QSeriesRotationParams

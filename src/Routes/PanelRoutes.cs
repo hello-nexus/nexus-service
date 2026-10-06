@@ -549,6 +549,7 @@ public static class PanelRoutes
                 {
                     s.Panel.AutoLaunch = new PanelSettings().AutoLaunch;
                     s.Y70.CompatibilityRendering = defaults.CompatibilityRendering;
+                    s.Y70.KeepCursorOff = defaults.KeepCursorOff;
                 });
                 PanelTopics.BroadcastPrefs(hub);
                 var y70 = sp.GetRequiredService<Peripherals.Y70.IY70Provider>();

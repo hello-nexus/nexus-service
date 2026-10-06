@@ -56,6 +56,7 @@ public static class OverlayRoutes
                 ReserveMonitor = s.Panel.ReserveMonitor,
                 Y70Backdrop = registry.GetY70Backdrop(),
                 Y70CompatibilityRendering = s.Y70.CompatibilityRendering,
+                Y70KeepCursorOff = s.Y70.KeepCursorOff,
                 OverlayEnabled = s.Overlay.Enabled,
                 AlwaysOnTop = s.Overlay.AlwaysOnTop,
                 Monitor = s.Overlay.Monitor,

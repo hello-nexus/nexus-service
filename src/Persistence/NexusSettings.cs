@@ -1153,6 +1153,10 @@ public sealed class Y70Settings
     /// around an AMD driver fault that scrambles a full-screen DirectComposition
     /// window on a rotated display once focus or input changes.</summary>
     public bool CompatibilityRendering { get; set; } = InstallDefaults.Y70.CompatibilityRendering;
+    /// <summary>When true, nexus-overlay moves the mouse cursor off the panel
+    /// whenever it lands there and another monitor is attached, so neither a
+    /// touch nor a mouse move can leave it on the panel.</summary>
+    public bool KeepCursorOff { get; set; } = InstallDefaults.Y70.KeepCursorOff;
 }
 
 public sealed class QSeriesSettings

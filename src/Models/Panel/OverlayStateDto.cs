@@ -10,6 +10,7 @@ public sealed class OverlayStateResponse
     public bool ReserveMonitor { get; set; }
     public string Y70Backdrop { get; set; } = "";
     public bool Y70CompatibilityRendering { get; set; }
+    public bool Y70KeepCursorOff { get; set; }
     public bool OverlayEnabled { get; set; }
     public bool AlwaysOnTop { get; set; }
     public int Monitor { get; set; } = -1;
