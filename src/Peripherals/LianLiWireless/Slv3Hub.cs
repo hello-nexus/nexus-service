@@ -968,6 +968,10 @@ public sealed class Slv3Hub : IDisposable
         EffectIndex = Convert.ToHexString(record.EffectIndex),
         Stale = stale,
         CoolantTempC = record.CoolantTempC,
+        FirmwareVersion = record.RfVersion,
+        ArgbCableConnected = record.ArgbCableConnected,
+        PlayingMotherboardArgb = record.PlayingMotherboardArgb,
+        PwmCableConnected = record.PwmCableConnected,
     };
 
     private bool TryFindRecordLocked(byte[] mac, out Slv3DeviceRecord record)

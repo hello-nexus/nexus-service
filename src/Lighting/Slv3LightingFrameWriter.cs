@@ -207,41 +207,8 @@ public sealed class Slv3LightingFrameWriter : IHostedService, IDisposable
             SegmentFrameComposer.Compose(
                 structure, zones, devices, disabled, uncontrolled, prefs, globalBrightness, 1.0, nowTicks, _identify, _segmentBuffers);
 
-            int totalLeds;
-            if (Slv3LightingDeviceProvider.IsSingleSegmentStructure(structure))
-            {
-                // The one segment is the wire buffer, in wire order.
-                var cable = _segmentBuffers[0];
-                totalLeds = cable.Length;
-                EnsureWireBuffer(totalLeds);
-                cable.CopyTo(_wireBuffer, 0);
-            }
-            else
-            {
-                // Ring length is family-dependent; it must match the provider's
-                // structure for this chain or the fan-major interleave below
-                // misaligns.
-                var fanInfo = FindFanInfo(macHex);
-                if (fanInfo is null) continue;
-                var ringLen = Slv3LightingDeviceProvider.RingLedsFor(fanInfo);
-                var ledsPerFan = ringLen * 2;
-                var fanCount = structure.Segments[Slv3LightingDeviceProvider.InnerSegment].LedCount / ringLen;
-                if (fanCount <= 0) continue;
-                totalLeds = fanCount * ledsPerFan;
-                EnsureWireBuffer(totalLeds);
-
-                var inner = _segmentBuffers[Slv3LightingDeviceProvider.InnerSegment];
-                var outer = _segmentBuffers[Slv3LightingDeviceProvider.OuterSegment];
-                for (var f = 0; f < fanCount; f++)
-                {
-                    var baseIdx = f * ledsPerFan;
-                    for (var i = 0; i < ringLen; i++)
-                    {
-                        _wireBuffer[baseIdx + i] = inner[f * ringLen + i];
-                        _wireBuffer[baseIdx + ringLen + i] = outer[f * ringLen + i];
-                    }
-                }
-            }
+            var totalLeds = FillWireBuffer(macHex, structure);
+            if (totalLeds == 0) continue;
 
             var frameSpan = _wireBuffer.AsSpan(0, totalLeds);
             var hash = ComputeHash(frameSpan);
@@ -695,9 +662,13 @@ public sealed class Slv3LightingFrameWriter : IHostedService, IDisposable
         }
         var fanInfo = FindFanInfo(macHex);
         if (fanInfo is null) return 0;
-        var ringLen = Slv3LightingDeviceProvider.RingLedsFor(fanInfo);
-        var ledsPerFan = ringLen * 2;
-        var fanCount = structure.Segments[Slv3LightingDeviceProvider.InnerSegment].LedCount / ringLen;
+        // Ring lengths must match the provider's structure for this chain or
+        // the fan-major interleave misaligns.
+        var innerLen = Slv3LightingDeviceProvider.RingLedsFor(fanInfo);
+        var outerLen = Slv3LightingDeviceProvider.OuterRingLedsFor(fanInfo);
+        if (innerLen <= 0) return 0;
+        var ledsPerFan = innerLen + outerLen;
+        var fanCount = structure.Segments[Slv3LightingDeviceProvider.InnerSegment].LedCount / innerLen;
         if (fanCount <= 0) return 0;
         var totalLeds = fanCount * ledsPerFan;
         EnsureWireBuffer(totalLeds);
@@ -706,10 +677,13 @@ public sealed class Slv3LightingFrameWriter : IHostedService, IDisposable
         for (var f = 0; f < fanCount; f++)
         {
             var baseIdx = f * ledsPerFan;
-            for (var i = 0; i < ringLen; i++)
+            for (var i = 0; i < innerLen; i++)
             {
-                _wireBuffer[baseIdx + i] = inner[f * ringLen + i];
-                _wireBuffer[baseIdx + ringLen + i] = outer[f * ringLen + i];
+                _wireBuffer[baseIdx + i] = inner[f * innerLen + i];
+            }
+            for (var i = 0; i < outerLen; i++)
+            {
+                _wireBuffer[baseIdx + innerLen + i] = outer[f * outerLen + i];
             }
         }
         return totalLeds;
@@ -765,7 +739,7 @@ public sealed class Slv3LightingFrameWriter : IHostedService, IDisposable
         // CL fans pair a center with an outer ring of a different length,
         // which the uniform two-ring chain layout does not describe.
         var ledCount = isStrimer ? lanes * ledsPerLane : fanCount * Slv3Protocol.LedsPerFanFor(family);
-        if (ledCount <= 0 || (!isStrimer && (family == Slv3FanFamily.Cl || fanCount > Slv3FanEffects.MaxFans)))
+        if (ledCount <= 0 || (!isStrimer && (Slv3Protocol.IsClFamily(family) || fanCount > Slv3FanEffects.MaxFans)))
         {
             return false;
         }

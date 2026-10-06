@@ -434,9 +434,20 @@ public class Slv3ProtocolTests
     [InlineData(35, Slv3FanFamily.Tlv2Lcd)]
     [InlineData(36, Slv3FanFamily.SlInf)]
     [InlineData(39, Slv3FanFamily.SlInf)]
-    [InlineData(40, Slv3FanFamily.Cl)]
+    [InlineData(40, Slv3FanFamily.Rl120)]
+    [InlineData(41, Slv3FanFamily.Cl)]
     [InlineData(42, Slv3FanFamily.Cl)]
-    [InlineData(43, Slv3FanFamily.Unknown)]
+    [InlineData(43, Slv3FanFamily.SlInfFlex)]
+    [InlineData(50, Slv3FanFamily.SlInfFlex)]
+    [InlineData(51, Slv3FanFamily.TlFlex)]
+    [InlineData(58, Slv3FanFamily.TlFlex)]
+    [InlineData(59, Slv3FanFamily.SlV4)]
+    [InlineData(62, Slv3FanFamily.SlV4)]
+    [InlineData(63, Slv3FanFamily.P28V2)]
+    [InlineData(64, Slv3FanFamily.Unknown)]
+    [InlineData(125, Slv3FanFamily.Unknown)]
+    [InlineData(126, Slv3FanFamily.ClV2)]
+    [InlineData(127, Slv3FanFamily.ClV2)]
     public void ClassifyFanFamily_matches_the_documented_ranges(byte fansTypeByte, Slv3FanFamily expected)
     {
         Assert.Equal(expected, Slv3Protocol.ClassifyFanFamily(fansTypeByte));
@@ -449,6 +460,12 @@ public class Slv3ProtocolTests
     [InlineData(Slv3FanFamily.Cl, 24)]
     [InlineData(Slv3FanFamily.Slv3Led, 40)]
     [InlineData(Slv3FanFamily.Slv3Lcd, 40)]
+    [InlineData(Slv3FanFamily.Rl120, 26)]
+    [InlineData(Slv3FanFamily.SlInfFlex, 44)]
+    [InlineData(Slv3FanFamily.TlFlex, 26)]
+    [InlineData(Slv3FanFamily.SlV4, 52)]
+    [InlineData(Slv3FanFamily.P28V2, 9)]
+    [InlineData(Slv3FanFamily.ClV2, 24)]
     [InlineData(Slv3FanFamily.Unknown, 40)]
     public void LedsPerFanFor_matches_family(Slv3FanFamily family, int expected)
     {
@@ -636,8 +653,13 @@ public class Slv3ProtocolTests
     [Theory]
     [InlineData(Slv3FanFamily.Tlv2Lcd, 10)]
     [InlineData(Slv3FanFamily.Cl, 10)]
+    [InlineData(Slv3FanFamily.ClV2, 10)]
     [InlineData(Slv3FanFamily.Tlv2Led, 11)]
     [InlineData(Slv3FanFamily.SlInf, 11)]
+    [InlineData(Slv3FanFamily.SlInfFlex, 11)]
+    [InlineData(Slv3FanFamily.TlFlex, 11)]
+    [InlineData(Slv3FanFamily.SlV4, 14)]
+    [InlineData(Slv3FanFamily.P28V2, 14)]
     [InlineData(Slv3FanFamily.Slv3Led, 14)]
     [InlineData(Slv3FanFamily.Slv3Lcd, 14)]
     [InlineData(Slv3FanFamily.Unknown, 14)]
@@ -685,6 +707,42 @@ public class Slv3ProtocolTests
         Assert.Equal(3, record.FanCount);
         Assert.Equal(0x0ABC, record.Rpm[0]);   // hi nibble flags masked off
         Assert.Equal(55, record.Pwm[0]);
+    }
+
+    [Fact]
+    public void TryParseRecord_reads_cable_flags_and_rf_version_from_the_speed_nibbles()
+    {
+        var reply = new byte[Slv3Protocol.RecordHeaderLength + Slv3Protocol.RecordLength];
+        var rec = reply.AsSpan(Slv3Protocol.RecordHeaderLength);
+        FanMac.CopyTo(rec.Slice(0));
+        rec[24] = 51;
+        rec[28] = 0xA3; rec[29] = 0x20; // ARGB cable + PWM cable, port 0 RPM 0x320
+        rec[32] = 0x10; rec[34] = 0x80; // RF version 0x18
+        rec[41] = 0x1C;
+
+        Assert.True(Slv3Protocol.TryParseRecord(reply, Slv3Protocol.RecordHeaderLength, out var record));
+        Assert.True(record.ArgbCableConnected);
+        Assert.False(record.PlayingMotherboardArgb);
+        Assert.True(record.PwmCableConnected);
+        Assert.Equal(0x18, record.RfVersion);
+        Assert.Equal(0x320, record.Rpm[0]);
+        Assert.Equal(0, record.Rpm[2]);
+        Assert.Equal(Slv3FanFamily.TlFlex, record.Family);
+    }
+
+    [Fact]
+    public void TryParseRecord_reads_the_motherboard_argb_flag()
+    {
+        var reply = new byte[Slv3Protocol.RecordHeaderLength + Slv3Protocol.RecordLength];
+        var rec = reply.AsSpan(Slv3Protocol.RecordHeaderLength);
+        rec[28] = 0xC0;
+        rec[41] = 0x1C;
+
+        Assert.True(Slv3Protocol.TryParseRecord(reply, Slv3Protocol.RecordHeaderLength, out var record));
+        Assert.True(record.ArgbCableConnected);
+        Assert.True(record.PlayingMotherboardArgb);
+        Assert.False(record.PwmCableConnected);
+        Assert.Equal(0, record.RfVersion);
     }
 
     [Fact]

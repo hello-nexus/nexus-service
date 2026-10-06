@@ -518,20 +518,27 @@ public sealed class Slv3LightingDeviceProvider : ILightingDeviceProvider, ILight
         return structure;
     }
 
-    /// <summary>Half the family's wire LED count: the two ring zones split each fan's LEDs evenly (v1 approximation).</summary>
-    internal static int RingLedsFor(Slv3FanInfo fan) =>
-        Slv3Protocol.LedsPerFanFor(Slv3Protocol.ClassifyFanFamily((byte)fan.FanType)) / 2;
+    /// <summary>Inner ring LEDs per fan: half the family's wire LED count (v1 approximation).</summary>
+    internal static int RingLedsFor(Slv3FanInfo fan) => LedsPerFan(fan) / 2;
+
+    /// <summary>Outer ring LEDs per fan: the rest of the wire count, so an odd count still reaches every LED.</summary>
+    internal static int OuterRingLedsFor(Slv3FanInfo fan) => LedsPerFan(fan) - RingLedsFor(fan);
+
+    private static int LedsPerFan(Slv3FanInfo fan) =>
+        Slv3Protocol.LedsPerFanFor(Slv3Protocol.ClassifyFanFamily((byte)fan.FanType));
 
     private static DeviceStructure BuildStructure(Slv3FanInfo fan)
     {
         var deviceId = DeviceIdFor(fan.Mac);
         var deviceKey = DeviceKeyComputer.ForFirstParty(Slv3Protocol.TxVendorId, Slv3Protocol.TxProductId, "wireless-fan");
         var ledsPerRing = RingLedsFor(fan);
+        var outerPerRing = OuterRingLedsFor(fan);
         var ringLeds = fan.FanCount * ledsPerRing;
+        var outerLeds = fan.FanCount * outerPerRing;
         var family = Slv3Protocol.ClassifyFanFamily((byte)fan.FanType);
         var edgeBars = family is Slv3FanFamily.Slv3Led or Slv3FanFamily.Slv3Lcd && ledsPerRing == EdgeBarLeds + EdgeLineLeds;
         var (innerU, innerV) = edgeBars ? BuildEdgeBarUV(fan.FanCount, top: true) : BuildFanRingUV(fan.FanCount, InnerRadius, ledsPerRing);
-        var (outerU, outerV) = edgeBars ? BuildEdgeBarUV(fan.FanCount, top: false) : BuildFanRingUV(fan.FanCount, OuterRadius, ledsPerRing);
+        var (outerU, outerV) = edgeBars ? BuildEdgeBarUV(fan.FanCount, top: false) : BuildFanRingUV(fan.FanCount, OuterRadius, outerPerRing);
         var innerName = edgeBars ? "Top" : "Inner Ring";
         var outerName = edgeBars ? "Bottom" : "Outer Ring";
 
@@ -556,8 +563,8 @@ public sealed class Slv3LightingDeviceProvider : ILightingDeviceProvider, ILight
         {
             Index = OuterSegment,
             Name = outerName,
-            LedCount = ringLeds,
-            FrameLedCount = ringLeds,
+            LedCount = outerLeds,
+            FrameLedCount = outerLeds,
             Resizable = false,
             ZoneType = "linear",
             DefaultU = outerU,
@@ -579,7 +586,7 @@ public sealed class Slv3LightingDeviceProvider : ILightingDeviceProvider, ILight
             RawName = outerName,
             DeviceKey = DeviceKeyComputer.ForFirstParty(Slv3Protocol.TxVendorId, Slv3Protocol.TxProductId, "wireless-fan-outer"),
             LegacyZoneIndex = -1,
-            Slices = { new ZoneSlice { Segment = OuterSegment, Start = 0, Count = ringLeds } },
+            Slices = { new ZoneSlice { Segment = OuterSegment, Start = 0, Count = outerLeds } },
         });
         return structure;
     }

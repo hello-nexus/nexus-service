@@ -105,9 +105,9 @@ public static class Slv3Protocol
     public const byte DevTypeSlInfinity = 36;   // 36-39 SL-Infinity
 
     /// <summary>
-    /// Fan family from a fans_type byte (lian-li-linux fan_type.rs ranges):
-    /// SLV3-LED 20-23, SLV3-LCD 24-26, TLV2-LCD 27 and 32-35, TLV2-LED 28-31,
-    /// SL-INF wireless 36-39, CL/RL120 40-42.
+    /// Fan family from a fans_type byte: SLV3-LED 20-23, SLV3-LCD 24-26, TLV2-LCD
+    /// 27 and 32-35, TLV2-LED 28-31, SL-INF 36-39, RL120 40, CL 41-42, SL-INF
+    /// Flex 43-50, TL Flex 51-58, SL V4 59-62, P28 V2 63, CL V2 126-127.
     /// </summary>
     public static Slv3FanFamily ClassifyFanFamily(byte fansTypeByte) => fansTypeByte switch
     {
@@ -116,7 +116,13 @@ public static class Slv3Protocol
         27 or (>= 32 and <= 35) => Slv3FanFamily.Tlv2Lcd,
         >= 28 and <= 31 => Slv3FanFamily.Tlv2Led,
         >= 36 and <= 39 => Slv3FanFamily.SlInf,
-        >= 40 and <= 42 => Slv3FanFamily.Cl,
+        40 => Slv3FanFamily.Rl120,
+        41 or 42 => Slv3FanFamily.Cl,
+        >= 43 and <= 50 => Slv3FanFamily.SlInfFlex,
+        >= 51 and <= 58 => Slv3FanFamily.TlFlex,
+        >= 59 and <= 62 => Slv3FanFamily.SlV4,
+        63 => Slv3FanFamily.P28V2,
+        126 or 127 => Slv3FanFamily.ClV2,
         _ => Slv3FanFamily.Unknown,
     };
 
@@ -245,22 +251,27 @@ public static class Slv3Protocol
         _ => (0, 0),
     };
 
-    /// <summary>Wire LED count per physical fan (lian-li-linux leds_per_fan). Unknown keeps the bench-verified SLV3 value.</summary>
+    /// <summary>Wire LED count per physical fan. Unknown keeps the bench-verified SLV3 value.</summary>
     public static int LedsPerFanFor(Slv3FanFamily family) => family switch
     {
-        Slv3FanFamily.Tlv2Lcd or Slv3FanFamily.Tlv2Led => 26,
-        Slv3FanFamily.SlInf => 44,
-        Slv3FanFamily.Cl => 24,
+        Slv3FanFamily.Tlv2Lcd or Slv3FanFamily.Tlv2Led or Slv3FanFamily.TlFlex or Slv3FanFamily.Rl120 => 26,
+        Slv3FanFamily.SlInf or Slv3FanFamily.SlInfFlex => 44,
+        Slv3FanFamily.Cl or Slv3FanFamily.ClV2 => 24,
+        Slv3FanFamily.SlV4 => 52,
+        Slv3FanFamily.P28V2 => 9,
         _ => 40,
     };
 
-    /// <summary>Minimum non-zero duty percent per family; lower requests stall the fan (lian-li-linux min_duty_percent). Unknown keeps the SLV3 floor.</summary>
+    /// <summary>Minimum non-zero duty percent per family; lower requests stall the fan. Families without a measured floor keep the SLV3 one.</summary>
     public static int MinDutyPercentFor(Slv3FanFamily family) => family switch
     {
-        Slv3FanFamily.Tlv2Lcd or Slv3FanFamily.Cl => 10,
-        Slv3FanFamily.Tlv2Led or Slv3FanFamily.SlInf => 11,
+        Slv3FanFamily.Tlv2Lcd or Slv3FanFamily.Cl or Slv3FanFamily.ClV2 => 10,
+        Slv3FanFamily.Tlv2Led or Slv3FanFamily.SlInf or Slv3FanFamily.SlInfFlex or Slv3FanFamily.TlFlex => 11,
         _ => MinDutyPercent,
     };
+
+    /// <summary>A family whose fan pairs a centre with an outer ring of a different length, which the uniform two-ring chain layout does not describe.</summary>
+    public static bool IsClFamily(Slv3FanFamily family) => family is Slv3FanFamily.Cl or Slv3FanFamily.ClV2;
 
     /// <summary>
     /// Fragment a 240-byte RF payload into <see cref="UsbPacketSize"/>-byte USB
@@ -651,7 +662,16 @@ public static class Slv3Protocol
             for (var k = 0; k < PortsPerRecord; k++) pwm[k] = 100;
         }
 
-        record = new Slv3DeviceRecord(mac, masterMac, channel, rxType, devType, fanNum, rightAttach, effectIndex, fansType, rpm, pwm, rec[40]);
+        // fans_speed[0] hi nibble carries the cable flags; the hi nibbles of
+        // fans_speed[4] and [6] together are the chain's RF firmware version.
+        var flags = (byte)(rec[28] >> 4);
+        var rfVersion = (rec[32] & 0xF0) | (rec[34] >> 4);
+
+        record = new Slv3DeviceRecord(mac, masterMac, channel, rxType, devType, fanNum, rightAttach, effectIndex, fansType, rpm, pwm, rec[40])
+        {
+            Flags = flags,
+            RfVersion = rfVersion,
+        };
         return true;
     }
 
@@ -702,6 +722,18 @@ public readonly record struct Slv3DeviceRecord(
     /// <summary>A record with dev_type 0xFF is another master on the link, not a fan.</summary>
     public bool IsMaster => DevType == 0xFF;
 
+    /// <summary>Cable flag nibble: bit 3 ARGB sync cable, bit 2 playing the motherboard ARGB input, bit 1 PWM cable, bit 0 tach output.</summary>
+    public byte Flags { get; init; }
+
+    /// <summary>Chain RF firmware version; 0 when not reported.</summary>
+    public int RfVersion { get; init; }
+
+    public bool ArgbCableConnected => (Flags & 0x8) != 0;
+
+    public bool PlayingMotherboardArgb => (Flags & 0x4) != 0;
+
+    public bool PwmCableConnected => (Flags & 0x2) != 0;
+
     /// <summary>A Strimer Wireless cable: no fan ports, RGB only.</summary>
     public bool IsStrimer => Slv3Protocol.IsStrimerDevType(DevType);
 
@@ -750,4 +782,10 @@ public enum Slv3FanFamily
     Tlv2Lcd,
     SlInf,
     Cl,
+    Rl120,
+    SlInfFlex,
+    TlFlex,
+    SlV4,
+    P28V2,
+    ClV2,
 }
