@@ -41,19 +41,24 @@ public sealed record ThermalGuardThresholds
 
     /// <summary>The floor ramp starts this far under the limit.</summary>
     public double FloorStartBelowLimitC { get; init; } = 15;
-    /// <summary>The floor ramp reaches full duty this far under the limit.</summary>
-    public double FloorFullBelowLimitC { get; init; } = 5;
-    public double LimitTripBelowLimitC { get; init; } = 5;
-    public long LimitSustainMs { get; init; } = 3000;
+    /// <summary>Floor duty reached at the limit itself; a curve already at or above it is never touched.</summary>
+    public double FloorAtLimitPercent { get; init; } = 60;
+    /// <summary>The floor reaches full duty this far above the limit.</summary>
+    public double FloorFullAboveLimitC { get; init; } = 3;
+    /// <summary>The CPU cannot hold its own limit: trip when this far above it for <see cref="LimitSustainMs"/>.</summary>
+    public double LimitTripAboveLimitC { get; init; } = 3;
+    public long LimitSustainMs { get; init; } = 5000;
     public long CoolingLossWindowMs { get; init; } = 180_000;
     public double CoolingLossRiseCPerMin { get; init; } = 2.0;
     public double CoolingLossMaxLoadPercent { get; init; } = 20;
     public double CoolingLossMaxDutyPercent { get; init; } = 20;
     /// <summary>Cooling-loss only trips once the temperature is this close to the limit.</summary>
     public double CoolingLossGateBelowLimitC { get; init; } = 15;
-    public long EscalateAfterMs { get; init; } = 30_000;
-    public double EscalateRiseC { get; init; } = 1.0;
-    public double ReleaseBelowLimitC { get; init; } = 20;
+    /// <summary>Escalation is considered this long after the trip, and only while the temperature is still at the limit.</summary>
+    public long EscalateAfterMs { get; init; } = 20_000;
+    /// <summary>A fan that has reported RPM counts as not responding below this fraction of its highest RPM.</summary>
+    public double EscalateRpmFraction { get; init; } = 0.25;
+    public double ReleaseBelowLimitC { get; init; } = 10;
     public long ReleaseSustainMs { get; init; } = 60_000;
 }
 
@@ -73,7 +78,6 @@ public sealed class ThermalGuard
     private long? _hotSinceMs;
     private long? _belowSinceMs;
     private long _tripAtMs;
-    private double _tripTempC;
     private string? _tripReason;
 
     public ThermalGuard(ThermalGuardThresholds? thresholds = null)
@@ -104,21 +108,37 @@ public sealed class ThermalGuard
     public static int FloorFor(double tempC, double limitC, ThermalGuardThresholds t)
     {
         var start = limitC - t.FloorStartBelowLimitC;
-        var full = limitC - t.FloorFullBelowLimitC;
+        var full = limitC + t.FloorFullAboveLimitC;
+        double duty;
         if (tempC <= start)
         {
-            return 0;
+            duty = 0;
         }
-        if (tempC >= full)
+        else if (tempC <= limitC)
         {
-            return 100;
+            duty = (tempC - start) / (limitC - start) * t.FloorAtLimitPercent;
         }
-        return (int)Math.Ceiling((tempC - start) / (full - start) * 100.0);
+        else if (tempC < full)
+        {
+            duty = t.FloorAtLimitPercent + (tempC - limitC) / (full - limitC) * (100 - t.FloorAtLimitPercent);
+        }
+        else
+        {
+            duty = 100;
+        }
+        return (int)Math.Round(duty, MidpointRounding.AwayFromZero);
     }
 
     /// <param name="maxCpuCoolingDutyPercent">Highest duty across CPU-cooling fans; null means there is none to judge, so no cooling-loss trip.</param>
     /// <param name="cpuLoadPercent">Null when unreadable; treated as low so the check stays conservative.</param>
-    public ThermalGuardOutput Step(long nowMs, double? tempC, double limitC, double? cpuLoadPercent, double? maxCpuCoolingDutyPercent)
+    /// <param name="writesNotLanding">True when every guarded fan that ever reported RPM is still spinning far below its best; the only thing that escalates.</param>
+    public ThermalGuardOutput Step(
+        long nowMs,
+        double? tempC,
+        double limitC,
+        double? cpuLoadPercent,
+        double? maxCpuCoolingDutyPercent,
+        bool writesNotLanding = false)
     {
         if (tempC is not { } temp || !double.IsFinite(temp) || temp <= 0 || temp > 150)
         {
@@ -133,17 +153,13 @@ public sealed class ThermalGuard
 
         if (IsTripped)
         {
-            return StepTripped(nowMs, temp, limitC);
+            return StepTripped(nowMs, temp, limitC, writesNotLanding);
         }
 
         Record(nowMs, temp);
 
         string? reason = null;
-        if (temp >= limitC)
-        {
-            reason = ThermalTripReasons.Limit;
-        }
-        else if (temp >= limitC - _t.LimitTripBelowLimitC)
+        if (temp >= limitC + _t.LimitTripAboveLimitC)
         {
             _hotSinceMs ??= nowMs;
             if (nowMs - _hotSinceMs.Value >= _t.LimitSustainMs)
@@ -165,7 +181,6 @@ public sealed class ThermalGuard
             _state = ThermalGuardStates.Tripped;
             _tripReason = reason;
             _tripAtMs = nowMs;
-            _tripTempC = temp;
             PeakC = temp;
             _belowSinceMs = null;
             _hotSinceMs = null;
@@ -178,13 +193,14 @@ public sealed class ThermalGuard
         return Output(false, false, false, floor);
     }
 
-    private ThermalGuardOutput StepTripped(long nowMs, double temp, double limitC)
+    private ThermalGuardOutput StepTripped(long nowMs, double temp, double limitC, bool writesNotLanding)
     {
         PeakC = Math.Max(PeakC, temp);
 
         if (_state == ThermalGuardStates.Tripped
             && nowMs - _tripAtMs >= _t.EscalateAfterMs
-            && temp >= _tripTempC + _t.EscalateRiseC)
+            && temp >= limitC
+            && writesNotLanding)
         {
             _state = ThermalGuardStates.Escalated;
             return Output(false, false, true, 100);

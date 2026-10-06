@@ -71,6 +71,15 @@ public class ThermalGuardEngineTests
         return (engine, fans, store, clock);
     }
 
+    // Default limit without a sensor provider is 90 C; the limit trip is 93 C held for 5 s.
+    private static void Trip(CurveEngine engine, Fans fans, long[] clock)
+    {
+        fans.CpuTemp = 99f;
+        engine.Tick();
+        clock[0] += 5000;
+        engine.Tick();
+    }
+
     private static int LastDuty(Fans fans, string id) => fans.Driven.Last(d => d.Id == id).Duty;
 
     [Fact]
@@ -86,10 +95,10 @@ public class ThermalGuardEngineTests
     public void Floor_RaisesACurveDutyAndAManualDuty_ThenRestoresTheManualOne()
     {
         var (engine, fans, _, clock) = Build();
-        fans.CpuTemp = 80f; // floor 50 at the default limit of 90
+        fans.CpuTemp = 85f; // 40 percent floor at the default limit of 90
         engine.Tick();
-        Assert.Equal(50, LastDuty(fans, "f1"));
-        Assert.Equal(50, LastDuty(fans, "f2"));
+        Assert.Equal(40, LastDuty(fans, "f1"));
+        Assert.Equal(40, LastDuty(fans, "f2"));
 
         fans.CpuTemp = 50f;
         clock[0] += 1000;
@@ -99,11 +108,34 @@ public class ThermalGuardEngineTests
     }
 
     [Fact]
+    public void WorkingCurveAtOrAboveSixtyAtTheLimit_IsNeverTouched()
+    {
+        var (engine, fans, store, _) = Build();
+        store.Update(s => s.Cooling.Curves[0].Flat!.Speed = 70);
+        fans.CpuTemp = 90f;
+        engine.Tick();
+        Assert.Equal(new[] { ("f1", 70) }, fans.Driven.Where(d => d.Id == "f1").ToArray());
+    }
+
+    [Fact]
+    public void SittingAtTheLimit_DoesNotTrip()
+    {
+        var (engine, fans, store, clock) = Build();
+        fans.CpuTemp = 91f;
+        for (var i = 0; i < 20; i++)
+        {
+            clock[0] += 1000;
+            engine.Tick();
+        }
+        Assert.Null(store.Load().Cooling.LastThermalTrip);
+        Assert.DoesNotContain(fans.Driven, d => d.Duty == 100);
+    }
+
+    [Fact]
     public void LimitTrip_ForcesEveryNexusDrivenChannelToMax()
     {
-        var (engine, fans, _, _) = Build();
-        fans.CpuTemp = 95f;
-        engine.Tick();
+        var (engine, fans, _, clock) = Build();
+        Trip(engine, fans, clock);
         Assert.Equal(100, LastDuty(fans, "f1"));
         Assert.Equal(100, LastDuty(fans, "f2"));
     }
@@ -111,10 +143,8 @@ public class ThermalGuardEngineTests
     [Fact]
     public void Trip_PersistsTheRecordAndReportsTrippedState()
     {
-        var (engine, fans, store, _) = Build();
-        var guard = new ThermalGuardController(fans, store);
-        fans.CpuTemp = 95f;
-        engine.Tick();
+        var (engine, fans, store, clock) = Build();
+        Trip(engine, fans, clock);
 
         var trip = store.Load().Cooling.LastThermalTrip;
         Assert.NotNull(trip);
@@ -125,7 +155,7 @@ public class ThermalGuardEngineTests
     [Fact]
     public void LockedChannelNexusDrives_IsRaisedByTheGuard_ButUncontrolledNever()
     {
-        var (engine, fans, store, _) = Build();
+        var (engine, fans, store, clock) = Build();
         fans.Channels[0].Kind = FanKinds.Pump; // pumps are locked by default
         store.Update(s =>
         {
@@ -134,8 +164,7 @@ public class ThermalGuardEngineTests
         });
         fans.Channels.Add(new FanChannel { Id = "f3", Name = "Fan 3" });
         store.Update(s => s.Cooling.UncontrolledFanChannels.Add("f3"));
-        fans.CpuTemp = 99f;
-        engine.Tick();
+        Trip(engine, fans, clock);
 
         Assert.Equal(100, LastDuty(fans, "f1"));
         Assert.Equal(100, LastDuty(fans, "f2"));
@@ -157,7 +186,7 @@ public class ThermalGuardEngineTests
     [Fact]
     public void ThrowingCurve_DoesNotKeepTheOverrideOffOtherChannels()
     {
-        var (engine, fans, store, _) = Build();
+        var (engine, fans, store, clock) = Build();
         var bad = Flat("f1", 20);
         bad.Id = "bad";
         bad.Type = "Graph";
@@ -169,9 +198,8 @@ public class ThermalGuardEngineTests
             s.Cooling.Curves.Add(Flat("f4", 20));
         });
         fans.Channels.Add(new FanChannel { Id = "f4", Name = "Fan 4" });
-        fans.CpuTemp = 99f;
 
-        engine.Tick();
+        Trip(engine, fans, clock);
 
         Assert.Equal(100, LastDuty(fans, "f4"));
         Assert.Equal(100, LastDuty(fans, "f2"));
@@ -188,8 +216,7 @@ public class ThermalGuardEngineTests
             Outputs = { new CurveOutputDocument { Id = "f5", Type = "Fan" } },
         }));
         fans.Channels.Add(new FanChannel { Id = "f5", Name = "Fan 5" });
-        fans.CpuTemp = 99f;
-        engine.Tick();
+        Trip(engine, fans, clock);
         Assert.Equal(100, LastDuty(fans, "f5"));
 
         store.Update(s => s.Cooling.ThermalGuardEnabled = false);
@@ -237,9 +264,8 @@ public class ThermalGuardEngineTests
     [Fact]
     public void ActiveTrip_StaysOpenWhileTripped()
     {
-        var (engine, fans, store, _) = Build();
-        fans.CpuTemp = 99f;
-        engine.Tick();
+        var (engine, fans, store, clock) = Build();
+        Trip(engine, fans, clock);
         Assert.Null(store.Load().Cooling.LastThermalTrip!.EndedAtUtcMs);
     }
 
@@ -258,8 +284,7 @@ public class ThermalGuardEngineTests
 
         void TripAndRelease()
         {
-            fans.CpuTemp = 99f;
-            engine.Tick();
+            Trip(engine, fans, clock);
             fans.CpuTemp = 50f;
             engine.Tick();
             clock[0] += 61_000;
@@ -367,19 +392,58 @@ public class ThermalGuardEngineTests
     }
 
     [Fact]
-    public void Escalated_StopsWritingAndReleasesAllToBios()
+    public void Escalated_WhenFansThatReportedRpmStayFarBelowTheirBest_StopsWritingAndReleasesAll()
     {
         var (engine, fans, _, clock) = Build();
-        fans.CpuTemp = 95f;
+        fans.Channels[0].Rpm = 1000;
+        fans.Channels[1].Rpm = 1000;
+        fans.CpuTemp = 99f;
+        engine.Tick();
+        clock[0] += 5000;
         engine.Tick();
         var writes = fans.Driven.Count;
 
-        fans.CpuTemp = 97f;
-        clock[0] += 31_000;
+        fans.Channels[0].Rpm = 100;
+        fans.Channels[1].Rpm = 100;
+        clock[0] += 21_000;
         engine.Tick();
 
         Assert.Equal(1, fans.ReleaseAllCalls);
         Assert.Equal(writes, fans.Driven.Count);
+    }
+
+    [Fact]
+    public void Trip_NeverEscalatesOnTemperatureAloneOrWithFansNeverReportingRpm()
+    {
+        var (engine, fans, _, clock) = Build();
+        Trip(engine, fans, clock);
+
+        fans.CpuTemp = 110f;
+        clock[0] += 60_000;
+        engine.Tick();
+
+        Assert.Equal(0, fans.ReleaseAllCalls);
+    }
+
+    [Fact]
+    public void TripEnd_WithNoHazardsInTheConfig_ChangesNoCurves()
+    {
+        var (engine, fans, store, clock) = Build();
+        store.Update(s =>
+        {
+            s.Cooling.Curves[0].Flat!.Speed = 70; // a healthy curve: nothing for the lint to flag
+            s.Cooling.ManualSpeeds["f2"] = 70;
+        });
+        var before = store.Load().Cooling.Curves.Select(c => c.Id).ToArray();
+        Trip(engine, fans, clock);
+        fans.CpuTemp = 50f;
+        engine.Tick();
+        clock[0] += 61_000;
+        engine.Tick();
+
+        Assert.Equal(before, store.Load().Cooling.Curves.Select(c => c.Id).ToArray());
+        Assert.Null(store.Load().Cooling.HealSnapshot);
+        Assert.NotNull(store.Load().Cooling.LastThermalTrip!.EndedAtUtcMs);
     }
 
     [Fact]

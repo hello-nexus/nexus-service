@@ -77,6 +77,7 @@ public sealed class ThermalGuardController
     private readonly ThermalGuard _cpu;
     private readonly Dictionary<string, GpuThermalGuard> _gpus = new(StringComparer.Ordinal);
     private readonly Dictionary<string, (string Name, double? Temp, double? Limit, string? Source)> _gpuInfo = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, int> _maxRpmSeen = new(StringComparer.Ordinal);
     private readonly Dictionary<string, long> _lastTripAlertMs = new(StringComparer.Ordinal);
     private readonly ThermalGuardThresholds _thresholds;
 
@@ -246,6 +247,7 @@ public sealed class ThermalGuardController
                 eligible.Add(ch.Id);
             }
         }
+        var writesNotLanding = WritesNotLanding(channels, eligible);
 
         ThermalGuardOutput output;
         var plan = new GuardPlan();
@@ -253,7 +255,7 @@ public sealed class ThermalGuardController
         {
             _watchdogArmed = true;
             _guardTemp = guardTemp;
-            output = _cpu.Step(nowMs, guardTemp, _limit.LimitC, _cpuLoad, maxCpuDuty);
+            output = _cpu.Step(nowMs, guardTemp, _limit.LimitC, _cpuLoad, maxCpuDuty, writesNotLanding);
             SetPublicState(output.State, output.TripStarted ? _utcNowMs() : null);
             plan = BuildGpuPlan(nowMs, cooling, manual, channels, sources, nexusDriven, output, eligible);
         }
@@ -271,6 +273,42 @@ public sealed class ThermalGuardController
         }
         HandleTransitions(output, settings);
         return plan;
+    }
+
+    /// <summary>
+    /// True when at least one guarded fan has ever reported RPM and every such fan reads
+    /// below a fraction of its best (or its calibrated max). A fan that never reported RPM
+    /// says nothing about whether writes land, so it does not count.
+    /// </summary>
+    private bool WritesNotLanding(IReadOnlyList<FanChannel> channels, HashSet<string> eligible)
+    {
+        var qualifying = 0;
+        var allLow = true;
+        lock (_gate)
+        {
+            foreach (var ch in channels)
+            {
+                if (ch.Rpm > 0 && (!_maxRpmSeen.TryGetValue(ch.Id, out var seen) || ch.Rpm > seen))
+                {
+                    _maxRpmSeen[ch.Id] = ch.Rpm;
+                }
+                if (!eligible.Contains(ch.Id))
+                {
+                    continue;
+                }
+                var best = ch.MaxRpm is > 0 ? ch.MaxRpm.Value : (_maxRpmSeen.TryGetValue(ch.Id, out var m) ? m : 0);
+                if (best <= 0)
+                {
+                    continue;
+                }
+                qualifying++;
+                if (ch.Rpm >= best * _thresholds.EscalateRpmFraction)
+                {
+                    allLow = false;
+                }
+            }
+        }
+        return qualifying > 0 && allLow;
     }
 
     // CPU-side writable: Nexus drives it and it is controlled. A preset lock does not matter
