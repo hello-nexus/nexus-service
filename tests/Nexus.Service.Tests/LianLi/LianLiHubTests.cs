@@ -68,7 +68,7 @@ public class LianLiHubTests
     [Fact]
     public void ReadFirmwareVersion_primes_then_decodes_the_reply()
     {
-        var spy = new HubTransportSpy { InputReport = new byte[] { 0xE0, 0xE0, 0x50, 0x80, 0xC4, 0x14 } };
+        var spy = new HubTransportSpy { InputReport = new byte[] { 0xE0, 0xE0, 0x50, 0x80, 0xC4, 0x0D } };
         var hub = new LianLiHub();
         hub.Attach(spy, SlInfinityProfile());
 

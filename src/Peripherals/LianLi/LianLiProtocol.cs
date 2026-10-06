@@ -211,20 +211,42 @@ public static class LianLiProtocol
 
     /// <summary>
     /// Decodes the firmware reply: [1..2] echo E0 50, [3] major id, [4] the
-    /// family id, [5] the version with major in the high nibble and minor in
-    /// the low one. A version byte outside that encoding comes back as hex.
+    /// family id, [5] the version byte, whose encoding differs per family. A
+    /// byte outside its family's encoding comes back as hex.
     /// </summary>
-    public static bool TryDecodeFirmware(ReadOnlySpan<byte> buf, out string version, out byte familyId)
+    public static bool TryDecodeFirmware(ReadOnlySpan<byte> buf, LianLiFanFamily family, out string version, out byte familyId)
     {
         version = "";
         familyId = 0;
         if (buf.Length < 6 || buf[1] != ReportId || buf[2] != 0x50) return false;
         familyId = buf[4];
-        var fine = buf[5];
-        var major = fine >> 4;
-        var minor = fine & 0x0F;
-        version = major > 0 && minor <= 9 ? $"{major}.{minor}" : $"0x{fine:X2}";
+        var number = FirmwareNumber(buf[5], family, familyId);
+        version = number is { } n ? $"{n / 10}.{n % 10}" : $"0x{buf[5]:X2}";
         return true;
+    }
+
+    // The version as major*10+minor, or null outside the family's encoding.
+    // SL-Infinity leaves 0..3 and 15..31 unused and reads 13 and 14 one minor
+    // step up; AL reads two steps up with 1.0 below 8; SL v2 family 0xC7 reads
+    // 0 as 0.5 and leaves 1..5 unused.
+    private static int? FirmwareNumber(byte fine, LianLiFanFamily family, byte familyId)
+    {
+        var hi = fine >> 4;
+        var lo = fine & 0x0F;
+        switch (family)
+        {
+            case LianLiFanFamily.SlInfinity:
+                if (fine <= 3 || (fine >= 15 && fine <= 31) || (fine >= 32 && lo > 9)) return null;
+                if (fine is 13 or 14) lo++;
+                return hi * 10 + lo;
+            case LianLiFanFamily.Al:
+                if (lo > 9) return null;
+                return fine < 8 ? 10 : hi * 10 + lo + 2;
+            case LianLiFanFamily.SlV2 when familyId == 0xC7 && fine <= 5:
+                return fine == 0 ? 5 : null;
+            default:
+                return lo > 9 ? null : hi * 10 + lo;
+        }
     }
 
     /// <summary>

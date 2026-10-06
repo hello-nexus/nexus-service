@@ -243,7 +243,7 @@ public sealed class LianLiHub : IDisposable
             Span<byte> buf = stackalloc byte[LianLiProtocol.InputReportSize];
             buf[0] = LianLiProtocol.ReportId;
             if (!_device.GetInputReport(buf)) return false;
-            if (!LianLiProtocol.TryDecodeFirmware(buf, out var version, out familyId)) return false;
+            if (!LianLiProtocol.TryDecodeFirmware(buf, _profile.Family, out var version, out familyId)) return false;
             State.FirmwareVersion = version;
             return true;
         }

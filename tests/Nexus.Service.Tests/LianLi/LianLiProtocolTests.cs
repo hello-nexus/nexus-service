@@ -386,16 +386,33 @@ public class LianLiProtocolTests
     }
 
     [Theory]
-    [InlineData(0x14, "1.4")]
-    [InlineData(0x21, "2.1")]
-    [InlineData(0x0D, "0x0D")]
-    [InlineData(0x1A, "0x1A")]
-    public void TryDecodeFirmware_reads_the_version_nibbles(int fine, string expected)
+    [InlineData(LianLiFanFamily.SlInfinity, 0xC4, 0x0D, "1.4")]
+    [InlineData(LianLiFanFamily.SlInfinity, 0xC4, 0x0E, "1.5")]
+    [InlineData(LianLiFanFamily.SlInfinity, 0xC4, 0x0A, "1.0")]
+    [InlineData(LianLiFanFamily.SlInfinity, 0xC4, 0x21, "2.1")]
+    [InlineData(LianLiFanFamily.SlInfinity, 0xC4, 0x10, "0x10")]
+    [InlineData(LianLiFanFamily.SlInfinity, 0xC4, 0x03, "0x03")]
+    [InlineData(LianLiFanFamily.SlInfinity, 0xC4, 0x0F, "0x0F")]
+    [InlineData(LianLiFanFamily.SlInfinity, 0xC4, 0x1F, "0x1F")]
+    [InlineData(LianLiFanFamily.SlInfinity, 0xC4, 0x2A, "0x2A")]
+    [InlineData(LianLiFanFamily.Al, 0xC3, 0x07, "1.0")]
+    [InlineData(LianLiFanFamily.Al, 0xC3, 0x08, "1.0")]
+    [InlineData(LianLiFanFamily.Al, 0xC3, 0x1A, "0x1A")]
+    [InlineData(LianLiFanFamily.SlV2, 0xC7, 0x13, "1.3")]
+    [InlineData(LianLiFanFamily.Sl, 0xC2, 0x14, "1.4")]
+    [InlineData(LianLiFanFamily.Sl, 0xC2, 0x1A, "0x1A")]
+    [InlineData(LianLiFanFamily.Al, 0xC3, 0x05, "1.0")]
+    [InlineData(LianLiFanFamily.Al, 0xC3, 0x12, "1.4")]
+    [InlineData(LianLiFanFamily.SlV2, 0xC7, 0x00, "0.5")]
+    [InlineData(LianLiFanFamily.SlV2, 0xC7, 0x03, "0x03")]
+    [InlineData(LianLiFanFamily.SlV2, 0xC5, 0x13, "1.3")]
+    [InlineData(LianLiFanFamily.AlV2, 0xC6, 0x11, "1.1")]
+    public void TryDecodeFirmware_follows_each_familys_encoding(LianLiFanFamily family, int familyId, int fine, string expected)
     {
-        var buf = new byte[] { 0xE0, 0xE0, 0x50, 0x80, 0xC4, (byte)fine };
-        Assert.True(LianLiProtocol.TryDecodeFirmware(buf, out var version, out var family));
+        var buf = new byte[] { 0xE0, 0xE0, 0x50, 0x80, (byte)familyId, (byte)fine };
+        Assert.True(LianLiProtocol.TryDecodeFirmware(buf, family, out var version, out var id));
         Assert.Equal(expected, version);
-        Assert.Equal(0xC4, family);
+        Assert.Equal(familyId, id);
     }
 
     [Fact]
