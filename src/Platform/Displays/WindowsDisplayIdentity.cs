@@ -2,6 +2,8 @@
 using System;
 using System.Collections.Generic;
 using System.Runtime.InteropServices;
+using System.Text;
+using Microsoft.Win32;
 
 namespace Nexus.Service.Platform.Displays;
 
@@ -97,6 +99,30 @@ internal static class WindowsDisplayIdentity
             return "";
         }
         return monitor.DeviceID ?? "";
+    }
+
+    /// <summary>EDID monitor-name descriptor (0xFC), used when dxva2's description is generic.</summary>
+    internal static string ReadEdidMonitorName(string adapterDeviceName)
+    {
+        try
+        {
+            var deviceId = ReadMonitorDeviceId(adapterDeviceName);
+            var parts = deviceId.Split('#');
+            if (parts.Length < 3) return "";
+            var path = $@"SYSTEM\CurrentControlSet\Enum\DISPLAY\{parts[1]}\{parts[2]}\Device Parameters";
+            using var key = Registry.LocalMachine.OpenSubKey(path);
+            if (key?.GetValue("EDID") is not byte[] edid || edid.Length < 126) return "";
+            foreach (var offset in new[] { 54, 72, 90, 108 })
+            {
+                if (edid[offset] == 0 && edid[offset + 1] == 0 && edid[offset + 2] == 0
+                    && edid[offset + 3] == 0xFC && edid[offset + 4] == 0)
+                {
+                    return Encoding.ASCII.GetString(edid, offset + 5, 13).Trim('\0', '\n', '\r', ' ');
+                }
+            }
+        }
+        catch { /* A missing or protected EDID is not a display-enumeration failure. */ }
+        return "";
     }
 
     /// <summary>

@@ -8,6 +8,8 @@ public sealed class DisplayDto
     public string Name { get; set; } = "";
     public string Manufacturer { get; set; } = "";
     public string Model { get; set; } = "";
+    /// <summary>Physical monitor description from dxva2 or the EDID name on Windows.</summary>
+    public string PhysicalDescription { get; set; } = "";
     public bool IsInternal { get; set; }
     public bool IsDdcCapable { get; set; }
     /// <summary>False when the user turned brightness control off for this

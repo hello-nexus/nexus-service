@@ -84,8 +84,17 @@ public sealed class WindowsDisplayBrightnessProvider : IDisplayBrightnessProvide
                     Name = name,
                     Manufacturer = manufacturer,
                     Model = model,
+                    PhysicalDescription = manufacturer.Equals("DEL", StringComparison.OrdinalIgnoreCase)
+                        ? GetPhysicalDescription(entry.HMonitor) : "",
                     IsInternal = isInternal,
                 };
+                if (manufacturer.Equals("DEL", StringComparison.OrdinalIgnoreCase)
+                    && !dto.PhysicalDescription.Contains("AW3225QF", StringComparison.OrdinalIgnoreCase))
+                {
+                    var edidName = WindowsDisplayIdentity.ReadEdidMonitorName(entry.AdapterDevice);
+                    if (edidName.Contains("AW3225QF", StringComparison.OrdinalIgnoreCase))
+                        dto.PhysicalDescription = edidName;
+                }
 
                 dto.BrightnessControl.UnsupportedReason = "Brightness control is not available for this display.";
 
@@ -440,6 +449,18 @@ public sealed class WindowsDisplayBrightnessProvider : IDisplayBrightnessProvide
         // Free the description-bearing entries we don't keep.
         for (uint i = 1; i < count; i++) DestroyPhysicalMonitor(arr[i].hPhysicalMonitor);
         return phys != IntPtr.Zero;
+    }
+
+    private static string GetPhysicalDescription(IntPtr hMonitor)
+    {
+        if (!GetNumberOfPhysicalMonitorsFromHMONITOR(hMonitor, out var count) || count == 0) return "";
+        var monitors = new PHYSICAL_MONITOR[count];
+        if (!GetPhysicalMonitorsFromHMONITOR(hMonitor, count, monitors)) return "";
+        try { return monitors[0].szPhysicalMonitorDescription ?? ""; }
+        finally
+        {
+            foreach (var monitor in monitors) DestroyPhysicalMonitor(monitor.hPhysicalMonitor);
+        }
     }
 
     private static bool TryGetMonitorBrightness(IntPtr phys, out uint min, out uint cur, out uint max)

@@ -175,6 +175,16 @@ public static class DisplayRoutes
         // System monitors (external DDC/CI + internal panels)
         app.MapGet("/displays", (DisplayBrightnessController d) => d.ListDisplays()).AllowPanel();
 
+        app.MapGet("/devices/aw3225qf/crosshair", async (Aw3225QfCrosshairController crosshair, CancellationToken ct) =>
+            Results.Json(await crosshair.GetStatusAsync(ct), AppJsonContext.Default.Aw3225QfCrosshairStatus)).AllowPanel();
+        app.MapPost("/devices/aw3225qf/crosshair", async (
+            Aw3225QfCrosshairRequest body, Aw3225QfCrosshairController crosshair, CancellationToken ct) =>
+        {
+            var status = await crosshair.ApplyAsync(body, ct);
+            return Results.Json(status, AppJsonContext.Default.Aw3225QfCrosshairStatus,
+                statusCode: status.Error.Length == 0 ? 200 : 422);
+        }).AllowPanel();
+
         // OS monitor topology (positions, modes, scale) merged with panel state.
         app.MapGet("/displays/topology", (DisplayTopologyService topology) => topology.GetTopology()).AllowPanel();
 

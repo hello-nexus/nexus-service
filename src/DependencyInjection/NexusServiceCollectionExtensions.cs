@@ -1185,6 +1185,7 @@ public static class NexusServiceCollectionExtensions
         services.AddSingleton<IDeviceHandler, Nexus.Service.Devices.Handlers.SmbusDramHandler>();
         services.AddSingleton<IDeviceHandler, Nexus.Service.Devices.Handlers.QSeriesHandler>();
         services.AddSingleton<IDeviceHandler, Nexus.Service.Devices.Handlers.Y70Handler>();
+        services.AddSingleton<IDeviceHandler, Nexus.Service.Devices.Handlers.Aw3225QfHandler>();
         services.AddSingleton<IDeviceHandler, Nexus.Service.Devices.Handlers.KeebHandler>();
         services.AddSingleton<IDeviceHandler, Nexus.Service.Devices.Handlers.IbpKeyboardHandler>();
         services.AddSingleton<IDeviceHandler, Nexus.Service.Devices.Handlers.IbpMouseHandler>();
@@ -1559,6 +1560,7 @@ public static class NexusServiceCollectionExtensions
 #endif
         services.AddSingleton<Nexus.Service.Platform.Displays.TouchMappingGuard>();
         services.AddSingleton<Nexus.Service.Platform.Displays.DisplayBrightnessController>();
+        services.AddSingleton<Nexus.Service.Platform.Displays.Aw3225QfCrosshairController>();
         services.AddSingleton<Nexus.Service.Platform.Displays.DisplayTopologyService>();
         services.AddSingleton<Nexus.Service.Platform.Displays.TouchRoutingStatus>();
         return services;
