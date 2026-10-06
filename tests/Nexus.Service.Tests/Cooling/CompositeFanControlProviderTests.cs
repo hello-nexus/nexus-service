@@ -104,6 +104,43 @@ public class CompositeFanControlProviderTests
         Assert.Equal(FanKinds.Pump, channels["mb:fan2"].Kind);
     }
 
+    [Fact]
+    public void ReleaseAll_AttemptsEveryProvider_EvenWhenOneThrows_AndRethrowsNothing()
+    {
+        var noPorts = new NoPorts();
+        var extra = new CountingRelease();
+        var composite = new CompositeFanControlProvider(
+            new ThrowingRelease(),
+            new Np50CoolingProvider(new Np50Hub(noPorts, _ => null!)),
+            new MiniHubCoolingProvider(new MiniHubHub(noPorts, _ => null!)),
+            new PluginProviderRegistry(),
+            new CompositeFanControlProvider.FanSource(_ => false, extra));
+
+        composite.ReleaseAll();
+
+        Assert.Equal(1, extra.Releases);
+    }
+
+    private class CountingRelease : IFanControlProvider
+    {
+        public int Releases;
+        public IReadOnlyList<FanChannel> GetFanChannels() => Array.Empty<FanChannel>();
+        public IReadOnlyList<TemperatureSource> GetTemperatureSources() => Array.Empty<TemperatureSource>();
+        public float? ReadTemperature(string sensorId) => null;
+        public int SetFanSpeed(string channelId, int dutyPercent) => dutyPercent;
+        public void DriveFanSpeed(string channelId, int dutyPercent) { }
+        public void ReleaseFan(string channelId) { }
+        public virtual void ReleaseAll() => Releases++;
+        public Task<IReadOnlyList<FanCalibration>> CalibrateAsync(
+            IReadOnlyList<string> fanIds, IProgress<FanCalibrationProgress> progress, CancellationToken ct)
+            => Task.FromResult<IReadOnlyList<FanCalibration>>(Array.Empty<FanCalibration>());
+    }
+
+    private sealed class ThrowingRelease : CountingRelease
+    {
+        public override void ReleaseAll() => throw new InvalidOperationException("provider failed");
+    }
+
     private sealed class NoPorts : INp50PortDiscovery
     {
         public IReadOnlyList<Np50PortInfo> Discover() => Array.Empty<Np50PortInfo>();

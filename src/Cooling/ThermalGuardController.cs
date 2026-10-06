@@ -95,6 +95,9 @@ public sealed class ThermalGuardController
     private ThermalLimit _detected = new(ThermalLimits.GenericDefaultC, ThermalLimitSources.Default);
     private ThermalLimit _limit = new(ThermalLimits.GenericDefaultC, ThermalLimitSources.Default);
     private double? _loggedOverrideC;
+    // The user's limit, read under _gate. Written by SetConfig and loaded at construction.
+    private double? _overrideC;
+    private bool _detectionResolved;
     private long? _sinceUtcMs;
     private long? _cpuInfoAtMs;
     private double? _cpuLoad;
@@ -129,6 +132,8 @@ public sealed class ThermalGuardController
         _utcNowMs = utcNowMs ?? (() => DateTimeOffset.UtcNow.ToUnixTimeMilliseconds());
         _thresholds = thresholds ?? ThermalGuardThresholds.Default;
         _cpu = new ThermalGuard(_thresholds);
+        _overrideC = store.Load().Cooling.ThermalGuardLimitOverrideC;
+        _detectionResolved = sensors is null;
         // A trip record still open at construction belongs to a previous run that never closed it.
         CloseOpenTrip();
     }
@@ -291,8 +296,6 @@ public sealed class ThermalGuardController
                 : GuardPlan.None;
         }
 
-        RefreshCpuInfo(nowMs);
-        ApplyLimitOverride(cooling.ThermalGuardLimitOverrideC);
 
         var guardTemp = ThermalLimits.MaxPlausible(
             sources.Where(s => s.Category == "CPU" && s.DeviceId is null && !ThermalLimits.IsDistanceToTjMax(s.Name))
@@ -575,6 +578,16 @@ public sealed class ThermalGuardController
         });
     }
 
+    /// <summary>
+    /// Detects the CPU limit and applies the user's override to it. Called by the engine every
+    /// tick, at the cadences below, whether or not the guard is enabled.
+    /// </summary>
+    public void RefreshDetection(long nowMs)
+    {
+        RefreshCpuInfo(nowMs);
+        ApplyLimitOverride();
+    }
+
     // Reads only what is already cached: the engine refreshes the hardware itself every tick
     // (through the temperature sources), so another refresh here would only repeat that work.
     private void RefreshCpuInfo(long nowMs)
@@ -605,6 +618,7 @@ public sealed class ThermalGuardController
         lock (_gate)
         {
             _cpuModel = model;
+            _detectionResolved = _detectionResolved || model.Length > 0;
             _detected = limit;
             if (_limit.Source != ThermalLimitSources.User)
             {
@@ -637,13 +651,17 @@ public sealed class ThermalGuardController
         return (_detected, false);
     }
 
-    private void ApplyLimitOverride(double? overrideC)
+    private void ApplyLimitOverride()
     {
         bool clear;
         lock (_gate)
         {
-            var (effective, clearStored) = EffectiveFor(overrideC);
+            var (effective, clearStored) = EffectiveFor(_overrideC);
             clear = clearStored;
+            if (clearStored)
+            {
+                _overrideC = null;
+            }
             _limit = effective;
             var applied = effective.Source == ThermalLimitSources.User ? (double?)effective.LimitC : null;
             if (applied != _loggedOverrideC)
@@ -895,33 +913,44 @@ public sealed class ThermalGuardController
     /// </summary>
     public (ThermalGuardResponse? Result, string? Error) SetConfig(SetThermalGuardConfigBody body)
     {
+        if (body.LimitOverrideC is not null && body.ClearLimitOverride == true)
+        {
+            return (null, "Send either a limit or a reset, not both.");
+        }
         if (body.LimitOverrideC is { } requested)
         {
             if (!double.IsFinite(requested))
             {
                 return (null, "The limit must be a number.");
             }
-            bool hardware;
-            lock (_gate) { hardware = _detected.Source == ThermalLimitSources.Hardware; }
-            if (hardware)
+            lock (_gate)
             {
-                return (null, "The CPU reports its own temperature limit, which cannot be overridden.");
+                if (!_detectionResolved)
+                {
+                    return (null, "Still detecting the CPU limit, try again in a moment.");
+                }
+                if (_detected.Source == ThermalLimitSources.Hardware)
+                {
+                    return (null, "The CPU reports its own temperature limit, which cannot be overridden.");
+                }
             }
         }
 
         if (body.LimitOverrideC is { } value)
         {
             var clamped = Math.Clamp(value, ThermalLimits.UserMinC, ThermalLimits.UserMaxC);
+            lock (_gate) { _overrideC = clamped; }
             _store.Update(s => s.Cooling.ThermalGuardLimitOverrideC = clamped);
         }
         else if (body.ClearLimitOverride == true)
         {
+            lock (_gate) { _overrideC = null; }
             _store.Update(s => s.Cooling.ThermalGuardLimitOverrideC = null);
         }
         if (body.LimitOverrideC is not null || body.ClearLimitOverride == true)
         {
             // Effective from the next tick on; reflect it now so the response agrees.
-            ApplyLimitOverride(_store.Load().Cooling.ThermalGuardLimitOverrideC);
+            ApplyLimitOverride();
         }
 
         if (body.Enabled is { } enabled)
@@ -966,9 +995,8 @@ public sealed class ThermalGuardController
         {
             response.DetectedLimitC = _detected.LimitC;
             response.DetectedLimitSource = _detected.Source;
-            response.LimitOverrideC = EffectiveFor(cooling.ThermalGuardLimitOverrideC).Effective.Source == ThermalLimitSources.User
-                ? EffectiveFor(cooling.ThermalGuardLimitOverrideC).Effective.LimitC
-                : null;
+            var effective = EffectiveFor(_overrideC).Effective;
+            response.LimitOverrideC = effective.Source == ThermalLimitSources.User ? effective.LimitC : null;
             if (!cooling.ThermalGuardEnabled)
             {
                 response.State = ThermalGuardStates.Off;
@@ -977,7 +1005,6 @@ public sealed class ThermalGuardController
             {
                 response.State = _publicState;
                 response.GuardTempC = _guardTemp;
-                var effective = EffectiveFor(cooling.ThermalGuardLimitOverrideC).Effective;
                 response.LimitC = effective.LimitC;
                 response.LimitSource = effective.Source;
                 response.SinceUtcMs = _sinceUtcMs;

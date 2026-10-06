@@ -787,12 +787,51 @@ public class ThermalGuardEngineTests
     }
 
     [Fact]
+    public void LimitDetection_RunsWithTheGuardOff_SoAnOverrideIsRejectedOnAHardwareLimitCpu()
+    {
+        var (_, fans, store, _) = Build();
+        store.Update(s => s.Cooling.ThermalGuardEnabled = false);
+        var guard = new ThermalGuardController(fans, store, null, new FlakySensors { ThrowFirst = false, Model = "Intel(R) Core(TM) i9-14900K", TjMax = 100 });
+        var e = new CurveEngine(fans, store, new MultiplexHub(), null, guard) { Clock = () => 1_000_000 };
+        e.Tick();
+
+        Assert.Equal(ThermalLimitSources.Hardware, guard.GetState().DetectedLimitSource);
+        var (state, error) = guard.SetConfig(new SetThermalGuardConfigBody { LimitOverrideC = 110 });
+        Assert.Null(state);
+        Assert.NotNull(error);
+        Assert.Null(store.Load().Cooling.ThermalGuardLimitOverrideC);
+    }
+
+    [Fact]
+    public void WhileTheCpuModelIsStillUnknown_AnOverrideIsRejectedAsStillDetecting()
+    {
+        var (_, _, store, guard, _) = LimitRig(new FlakySensors()); // first model read throws
+        var (state, error) = guard.SetConfig(new SetThermalGuardConfigBody { LimitOverrideC = 100 });
+        Assert.Null(state);
+        Assert.Contains("Still detecting", error);
+        Assert.Null(store.Load().Cooling.ThermalGuardLimitOverrideC);
+    }
+
+    [Fact]
+    public void ALimitAndAResetInOneBody_IsRejected()
+    {
+        var (_, _, store, guard, _) = LimitRig(null);
+        var (state, error) = guard.SetConfig(new SetThermalGuardConfigBody { LimitOverrideC = 100, ClearLimitOverride = true });
+        Assert.Null(state);
+        Assert.Contains("not both", error);
+        Assert.Null(store.Load().Cooling.ThermalGuardLimitOverrideC);
+    }
+
+    [Fact]
     public void AStoredOverride_IsClearedOnceTheHardwareReportsItsOwnLimit()
     {
-        var (e, _, store, guard, clock) = LimitRig(new FlakySensors { ThrowFirst = false, Model = "Intel(R) Core(TM) i9-14900K", TjMax = 100 });
+        var (_, fans, store, _) = Build();
         store.Update(s => s.Cooling.ThermalGuardLimitOverrideC = 110);
+        // The override is loaded at construction, before the CPU limit is detected.
+        var guard = new ThermalGuardController(fans, store, null, new FlakySensors { ThrowFirst = false, Model = "Intel(R) Core(TM) i9-14900K", TjMax = 100 });
+        var clock = new long[] { 1_000_000 };
+        var e = new CurveEngine(fans, store, new MultiplexHub(), null, guard) { Clock = () => clock[0] };
 
-        clock[0] += 1000;
         e.Tick();
 
         Assert.Null(store.Load().Cooling.ThermalGuardLimitOverrideC);

@@ -205,13 +205,16 @@ public sealed class CurveEngine : BackgroundService
         // The watchdog released every fan from its own thread while this loop was stalled:
         // forget what was written so every duty, unchanged ones included, is written again.
         // After repeated stalls it latches instead and the BIOS keeps the fans.
+        // Limit detection runs whether or not the guard is enabled, so the settings route can
+        // trust what it reports.
+        Isolated("guard limit detection", () => _guard.RefreshDetection(Clock()));
         _noWrites = _guard.WatchdogLatched;
         if (_noWrites && !_latchReleased)
         {
             // The single writer hands the fans over once itself: a stalled tick may have
             // written after the watchdog timer's release, leaving a stale Nexus duty.
-            _latchReleased = true;
             Isolated("latch release", () => _fans.ReleaseAll());
+            _latchReleased = true;
         }
         else if (!_noWrites)
         {
