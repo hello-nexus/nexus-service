@@ -16,7 +16,7 @@ internal static class Slv3TestHub
         var net = new FakeSlv3Network();
         var tx = new FakeTxTransport(net);
         var rx = new FakeRxTransport(net);
-        var hub = new Slv3Hub(new FakeDiscovery(), port => port.Role == Slv3DongleRole.Tx ? tx : rx);
+        var hub = new Slv3Hub(new FakeDiscovery(), port => port.Role == Slv3DongleRole.Tx ? tx : rx) { ConfirmNewChains = false };
         if (!hub.EnsureConnected())
         {
             throw new InvalidOperationException("test harness failed to connect");

@@ -40,6 +40,16 @@ public sealed class Slv3Hub : IDisposable
     // cooling/lighting (Y70 log: "device list: 2 -> 1 -> 2" continuously).
     private readonly Dictionary<string, Slv3KnownChain> _knownChains = new(StringComparer.Ordinal);
 
+    // A validated record can still carry a corrupted MAC, so a new chain is
+    // listed only once another poll within the confirm window repeats it.
+    // Value: the poll the MAC was first seen in.
+    private readonly Dictionary<string, long> _unconfirmedChains = new(StringComparer.Ordinal);
+    private long _devicePolls;
+    internal const int ChainConfirmWindowPolls = 10;
+
+    /// <summary>False lists a new chain on first sight.</summary>
+    internal bool ConfirmNewChains { get; init; } = true;
+
     // Per-chain PWM port targets keyed by fan MAC hex; a missing key or a
     // null element means that port follows the motherboard PWM header. Read
     // by the PWM sync, written by SetPortDuty; both hold _lock.
@@ -278,6 +288,7 @@ public sealed class Slv3Hub : IDisposable
         State.MotherboardPwmPercent = null;
         _lastFanRecords = new List<Slv3DeviceRecord>();
         _knownChains.Clear();
+        _unconfirmedChains.Clear();
         _pending.Clear();
         _pendingCommands.Clear();
         _lastIssuedSeq.Clear();
@@ -782,6 +793,7 @@ public sealed class Slv3Hub : IDisposable
 
         var count = Slv3Protocol.RecordCount(reply);
         var nowMs = _nowMs();
+        _devicePolls++;
         for (var i = 0; i < count; i++)
         {
             var offset = Slv3Protocol.RecordHeaderLength + i * Slv3Protocol.RecordLength;
@@ -790,6 +802,13 @@ public sealed class Slv3Hub : IDisposable
                 var key = Convert.ToHexString(record.Mac);
                 if (!_knownChains.ContainsKey(key))
                 {
+                    if (ConfirmNewChains
+                        && (!_unconfirmedChains.TryGetValue(key, out var firstPoll) || firstPoll == _devicePolls))
+                    {
+                        _unconfirmedChains.TryAdd(key, _devicePolls);
+                        continue;
+                    }
+                    _unconfirmedChains.Remove(key);
                     var what = record.IsStrimer ? $"Strimer dev_type {record.DevType}"
                         : record.IsHydroShift ? $"HydroShift II dev_type {record.DevType}, {record.FanCount} fan(s)"
                         : $"{record.FanCount} fan(s), {record.Family}";
@@ -800,6 +819,18 @@ public sealed class Slv3Hub : IDisposable
         }
 
         List<string>? gone = null;
+        foreach (var (key, firstPoll) in _unconfirmedChains)
+        {
+            if (_devicePolls - firstPoll >= ChainConfirmWindowPolls)
+            {
+                (gone ??= new List<string>()).Add(key);
+            }
+        }
+        if (gone is not null)
+        {
+            foreach (var key in gone) _unconfirmedChains.Remove(key);
+            gone = null;
+        }
         foreach (var (key, chain) in _knownChains)
         {
             if (nowMs - chain.LastSeenMs > ChainExpiryMs)

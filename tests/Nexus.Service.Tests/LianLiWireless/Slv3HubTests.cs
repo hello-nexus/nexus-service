@@ -917,7 +917,7 @@ public class Slv3HubTests
             }
             rxOpens++;
             return rx;
-        });
+        }) { ConfirmNewChains = false };
         Assert.True(hub.EnsureConnected());
         return (hub, net, tx, rx, () => rxOpens);
     }
@@ -982,7 +982,7 @@ public class Slv3HubTests
             var tx = new FakeTxTransport(net);
             txs.Add(tx);
             return tx;
-        });
+        }) { ConfirmNewChains = false };
         Assert.True(hub.EnsureConnected());
         net.Fans.Add(new SimulatedFan { Mac = FanMac });
         Assert.True(hub.DriveTick());
@@ -1003,7 +1003,7 @@ public class Slv3HubTests
         var rx = new FakeRxTransport(net);
         var tx = new FakeTxTransport(net);
         var discovery = new SwitchableDiscovery();
-        var hub = new Slv3Hub(discovery, port => port.Role == Slv3DongleRole.Tx ? tx : rx);
+        var hub = new Slv3Hub(discovery, port => port.Role == Slv3DongleRole.Tx ? tx : rx) { ConfirmNewChains = false };
         Assert.True(hub.EnsureConnected());
         net.Fans.Add(new SimulatedFan { Mac = FanMac });
         Assert.True(hub.DriveTick());
@@ -1041,7 +1041,7 @@ public class Slv3HubTests
         var net = new FakeSlv3Network();
         var tx = new FakeTxTransport(net) { MasterChannel = 15 };
         var rx = new FakeRxTransport(net);
-        var hub = new Slv3Hub(new FakeDiscovery(), port => port.Role == Slv3DongleRole.Tx ? tx : rx);
+        var hub = new Slv3Hub(new FakeDiscovery(), port => port.Role == Slv3DongleRole.Tx ? tx : rx) { ConfirmNewChains = false };
 
         // One attempt probes a bounded slice of the scan order (each dead
         // channel costs a full read timeout under the hub lock); the cursor
@@ -1062,7 +1062,7 @@ public class Slv3HubTests
         var net = new FakeSlv3Network();
         var tx = new FakeTxTransport(net); // MasterChannel defaults to Slv3Protocol.DefaultChannel
         var rx = new FakeRxTransport(net);
-        var hub = new Slv3Hub(new FakeDiscovery(), port => port.Role == Slv3DongleRole.Tx ? tx : rx);
+        var hub = new Slv3Hub(new FakeDiscovery(), port => port.Role == Slv3DongleRole.Tx ? tx : rx) { ConfirmNewChains = false };
 
         Assert.True(hub.EnsureConnected());
 
@@ -1348,7 +1348,7 @@ public class Slv3HubTests
         var net = new FakeSlv3Network();
         var tx = new FakeTxTransport(net);
         var rx = new FakeRxTransport(net);
-        var hub = new Slv3Hub(new FakeDiscovery(), port => port.Role == Slv3DongleRole.Tx ? tx : rx, nowMs);
+        var hub = new Slv3Hub(new FakeDiscovery(), port => port.Role == Slv3DongleRole.Tx ? tx : rx, nowMs) { ConfirmNewChains = false };
         Assert.True(hub.EnsureConnected());
         return (hub, net, tx, rx);
     }
@@ -1590,5 +1590,82 @@ public class Slv3HubTests
         public void Dispose()
         {
         }
+    }
+
+    [Fact]
+    public void A_new_chain_is_listed_only_once_a_second_poll_confirms_it()
+    {
+        var net = new FakeSlv3Network();
+        var tx = new FakeTxTransport(net);
+        var rx = new FakeRxTransport(net);
+        var hub = new Slv3Hub(new FakeDiscovery(), port => port.Role == Slv3DongleRole.Tx ? tx : rx);
+        Assert.True(hub.EnsureConnected());
+        net.Fans.Add(new SimulatedFan { Mac = FanMac });
+
+        Assert.True(hub.DriveTick());
+        Assert.Empty(hub.State.Fans);
+
+        Assert.True(hub.DriveTick());
+        Assert.Single(hub.State.Fans);
+    }
+
+    [Fact]
+    public void A_chain_missed_by_one_poll_under_rf_load_is_still_listed()
+    {
+        var net = new FakeSlv3Network();
+        var tx = new FakeTxTransport(net);
+        var rx = new FakeRxTransport(net);
+        var hub = new Slv3Hub(new FakeDiscovery(), port => port.Role == Slv3DongleRole.Tx ? tx : rx);
+        Assert.True(hub.EnsureConnected());
+        var fan = new SimulatedFan { Mac = FanMac };
+        net.Fans.Add(fan);
+        Assert.True(hub.DriveTick());
+        net.Fans.Remove(fan);
+        Assert.True(hub.DriveTick());
+        net.Fans.Add(fan);
+
+        Assert.True(hub.DriveTick());
+
+        Assert.Single(hub.State.Fans);
+    }
+
+    [Fact]
+    public void A_sighting_outside_the_confirm_window_starts_over()
+    {
+        var net = new FakeSlv3Network();
+        var tx = new FakeTxTransport(net);
+        var rx = new FakeRxTransport(net);
+        var hub = new Slv3Hub(new FakeDiscovery(), port => port.Role == Slv3DongleRole.Tx ? tx : rx);
+        Assert.True(hub.EnsureConnected());
+        var fan = new SimulatedFan { Mac = FanMac };
+        net.Fans.Add(fan);
+        Assert.True(hub.DriveTick());
+        net.Fans.Remove(fan);
+        for (var i = 0; i < Slv3Hub.ChainConfirmWindowPolls; i++) Assert.True(hub.DriveTick());
+        net.Fans.Add(fan);
+
+        Assert.True(hub.DriveTick());
+        Assert.Empty(hub.State.Fans);
+
+        Assert.True(hub.DriveTick());
+        Assert.Single(hub.State.Fans);
+    }
+
+    [Fact]
+    public void A_mac_read_in_one_poll_only_never_appears()
+    {
+        var net = new FakeSlv3Network();
+        var tx = new FakeTxTransport(net);
+        var rx = new FakeRxTransport(net);
+        var hub = new Slv3Hub(new FakeDiscovery(), port => port.Role == Slv3DongleRole.Tx ? tx : rx);
+        Assert.True(hub.EnsureConnected());
+        var phantom = new SimulatedFan { Mac = Convert.FromHexString("64F2710066E1"), DevType = 2 };
+        net.Fans.Add(phantom);
+        Assert.True(hub.DriveTick());
+        net.Fans.Remove(phantom);
+
+        for (var i = 0; i < 3; i++) Assert.True(hub.DriveTick());
+
+        Assert.Empty(hub.State.Fans);
     }
 }
