@@ -42,9 +42,16 @@ public sealed class ThermalGuardResponse : ApiResponse
     /// <summary>"off" | "inactive" | "normal" | "floor" | "tripped" | "escalated".</summary>
     public string State { get; set; } = "inactive";
     public double? GuardTempC { get; set; }
+    /// <summary>The effective CPU limit.</summary>
     public double? LimitC { get; set; }
-    /// <summary>"hardware" | "spec" | "default", null when there is no limit.</summary>
+    /// <summary>"hardware" | "spec" | "default" | "user" (the override is in effect), null when there is no limit.</summary>
     public string? LimitSource { get; set; }
+    /// <summary>What the service detected, whatever the override.</summary>
+    public double? DetectedLimitC { get; set; }
+    /// <summary>"hardware" | "spec" | "default".</summary>
+    public string? DetectedLimitSource { get; set; }
+    /// <summary>The user's limit in C, null = automatic.</summary>
+    public double? LimitOverrideC { get; set; }
     public long? SinceUtcMs { get; set; }
     /// <summary>True after repeated cooling-engine stalls: Nexus writes no fan until restart or a guard toggle.</summary>
     public bool WatchdogLatched { get; set; }
@@ -53,9 +60,12 @@ public sealed class ThermalGuardResponse : ApiResponse
     public List<GpuGuardDto> Gpus { get; set; } = new();
 }
 
+/// <summary>Partial update: only the fields present change.</summary>
 public sealed class SetThermalGuardConfigBody
 {
-    public bool Enabled { get; set; }
+    public bool? Enabled { get; set; }
+    public double? LimitOverrideC { get; set; }
+    public bool? ClearLimitOverride { get; set; }
 }
 
 public sealed class LintHazardDto

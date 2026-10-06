@@ -72,7 +72,8 @@ public static class CoolingRoutes
             {
                 return Results.Conflict(new FeatureDisabledResponse { Feature = FeatureNames.Cooling });
             }
-            return Results.Ok(guard.SetEnabled(body.Enabled));
+            var (result, error) = guard.SetConfig(body);
+            return error is not null ? Results.Ok(ApiResponse.Fail(error)) : Results.Ok(result);
         });
 
         app.MapPost("/cooling/curves/lint", (SetCurvesBody body, ThermalGuardController guard) =>

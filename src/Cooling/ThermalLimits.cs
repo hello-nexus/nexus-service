@@ -10,6 +10,8 @@ public static class ThermalLimitSources
     public const string Hardware = "hardware";
     public const string Spec = "spec";
     public const string Default = "default";
+    /// <summary>The user's own limit, replacing a spec or default one.</summary>
+    public const string User = "user";
 }
 
 public readonly record struct ThermalLimit(double LimitC, string Source);
@@ -21,6 +23,9 @@ public readonly record struct ThermalLimit(double LimitC, string Source);
 /// </summary>
 public static class ThermalLimits
 {
+    /// <summary>Range of a user-set CPU limit.</summary>
+    public const double UserMinC = 80;
+    public const double UserMaxC = 120;
     public const double AmdDefaultC = 95;
     public const double GenericDefaultC = 90;
 

@@ -1012,6 +1012,8 @@ public sealed class CoolingSettings
     public string? PreferredGpuId { get; set; }
     /// <summary>CPU thermal guard master switch. On by default; a settings file without the key reads as on.</summary>
     public bool ThermalGuardEnabled { get; set; } = true;
+    /// <summary>User-set CPU limit in C, null = automatic. Applies only when the detected limit is not read from the hardware itself.</summary>
+    public double? ThermalGuardLimitOverrideC { get; set; }
     /// <summary>The curves as they were before the last auto-heal, restored by undo. Null when there is nothing to undo.</summary>
     public List<CurveDocument>? HealSnapshot { get; set; }
     public long? HealedAtUtcMs { get; set; }

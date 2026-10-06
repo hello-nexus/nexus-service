@@ -659,10 +659,14 @@ public class ThermalGuardEngineTests
     private sealed class FlakySensors : ISensorProvider
     {
         public int ModelCalls;
-        public string GetCpuModel() => "AMD Ryzen 7 9800X3D 8-Core Processor";
+        public bool ThrowFirst = true;
+        public string Model = "AMD Ryzen 7 9800X3D 8-Core Processor";
+        public float? TjMax;
+        public float? GetCpuTjMaxC() => TjMax;
+        public string GetCpuModel() => Model;
         public string GetCpuModelCached()
         {
-            if (ModelCalls++ == 0)
+            if (ModelCalls++ == 0 && ThrowFirst)
             {
                 throw new InvalidOperationException("hardware busy");
             }
@@ -686,6 +690,128 @@ public class ThermalGuardEngineTests
         public string GetOsVersion() => "";
         public void SetPollingRate(int pollingRate) { }
         public Task ReadyAsync(CancellationToken ct = default) => Task.CompletedTask;
+    }
+
+    private static (CurveEngine Engine, Fans Fans, InMemoryConfigStore Store, ThermalGuardController Guard, long[] Clock) LimitRig(FlakySensors? sensors)
+    {
+        var (_, fans, store, _) = Build();
+        var guard = new ThermalGuardController(fans, store, null, sensors);
+        var clock = new long[] { 1_000_000 };
+        var e = new CurveEngine(fans, store, new MultiplexHub(), null, guard) { Clock = () => clock[0] };
+        fans.CpuTemp = 50f;
+        e.Tick();
+        return (e, fans, store, guard, clock);
+    }
+
+    [Theory]
+    [InlineData(false)] // default source
+    [InlineData(true)] // spec source
+    public void LimitOverride_AppliesWhenTheDetectedLimitIsNotFromTheHardware(bool spec)
+    {
+        var sensors = spec ? new FlakySensors { ThrowFirst = false } : null;
+        var (_, _, store, guard, _) = LimitRig(sensors);
+
+        var (state, error) = guard.SetConfig(new SetThermalGuardConfigBody { LimitOverrideC = 100 });
+
+        Assert.Null(error);
+        Assert.Equal(100, state!.LimitC);
+        Assert.Equal(ThermalLimitSources.User, state.LimitSource);
+        Assert.Equal(100, state.LimitOverrideC);
+        Assert.Equal(spec ? 95 : 90, state.DetectedLimitC);
+        Assert.Equal(spec ? ThermalLimitSources.Spec : ThermalLimitSources.Default, state.DetectedLimitSource);
+        Assert.Equal(100, store.Load().Cooling.ThermalGuardLimitOverrideC);
+    }
+
+    [Fact]
+    public void LimitOverride_IsRejectedWhileTheHardwareReportsItsOwnLimit_AndNothingChanges()
+    {
+        var (_, _, store, guard, _) = LimitRig(new FlakySensors { ThrowFirst = false, Model = "Intel(R) Core(TM) i9-14900K", TjMax = 100 });
+        Assert.Equal(ThermalLimitSources.Hardware, guard.GetState().DetectedLimitSource);
+
+        var (state, error) = guard.SetConfig(new SetThermalGuardConfigBody { LimitOverrideC = 110, Enabled = false });
+
+        Assert.Null(state);
+        Assert.NotNull(error);
+        Assert.Null(store.Load().Cooling.ThermalGuardLimitOverrideC);
+        Assert.True(store.Load().Cooling.ThermalGuardEnabled);
+        Assert.Equal(100, guard.GetState().LimitC);
+        Assert.Equal(ThermalLimitSources.Hardware, guard.GetState().LimitSource);
+    }
+
+    [Fact]
+    public void AStoredOverride_IsClearedOnceTheHardwareReportsItsOwnLimit()
+    {
+        var (e, _, store, guard, clock) = LimitRig(new FlakySensors { ThrowFirst = false, Model = "Intel(R) Core(TM) i9-14900K", TjMax = 100 });
+        store.Update(s => s.Cooling.ThermalGuardLimitOverrideC = 110);
+
+        clock[0] += 1000;
+        e.Tick();
+
+        Assert.Null(store.Load().Cooling.ThermalGuardLimitOverrideC);
+        Assert.Equal(100, guard.GetState().LimitC);
+        Assert.Null(guard.GetState().LimitOverrideC);
+    }
+
+    [Theory]
+    [InlineData(200, 120)]
+    [InlineData(10, 80)]
+    [InlineData(95, 95)]
+    public void LimitOverride_IsClampedToEightyToOneTwenty(double requested, double expected)
+    {
+        var (_, _, store, guard, _) = LimitRig(null);
+        var (state, error) = guard.SetConfig(new SetThermalGuardConfigBody { LimitOverrideC = requested });
+        Assert.Null(error);
+        Assert.Equal(expected, state!.LimitC);
+        Assert.Equal(expected, store.Load().Cooling.ThermalGuardLimitOverrideC);
+    }
+
+    [Fact]
+    public void ClearLimitOverride_RestoresTheDetectedLimit_AndAPartialUpdateLeavesTheRestAlone()
+    {
+        var (_, _, store, guard, _) = LimitRig(null);
+        guard.SetConfig(new SetThermalGuardConfigBody { LimitOverrideC = 105 });
+
+        // Toggling the guard alone keeps the override.
+        guard.SetConfig(new SetThermalGuardConfigBody { Enabled = true });
+        Assert.Equal(105, store.Load().Cooling.ThermalGuardLimitOverrideC);
+
+        var (state, _) = guard.SetConfig(new SetThermalGuardConfigBody { ClearLimitOverride = true });
+
+        Assert.Null(store.Load().Cooling.ThermalGuardLimitOverrideC);
+        Assert.Equal(90, state!.LimitC);
+        Assert.Equal(ThermalLimitSources.Default, state.LimitSource);
+        Assert.Null(state.LimitOverrideC);
+    }
+
+    [Fact]
+    public void TheFloorAndTheTripMoveWithTheOverride()
+    {
+        var (e, fans, store, guard, clock) = LimitRig(null);
+        guard.SetConfig(new SetThermalGuardConfigBody { LimitOverrideC = 100 });
+
+        // 95 C against a limit of 100 is a 40 percent floor (at the default limit it would be 60).
+        fans.CpuTemp = 95f;
+        clock[0] += 1000;
+        e.Tick();
+        Assert.Equal(40, LastDuty(fans, "f1"));
+
+        // 99 C held for longer than the trip sustain: past the default limit's trip point, not this one.
+        fans.CpuTemp = 99f;
+        for (var i = 0; i < 8; i++)
+        {
+            clock[0] += 1000;
+            e.Tick();
+        }
+        Assert.Null(store.Load().Cooling.LastThermalTrip);
+
+        // 104 C is beyond the overridden limit plus its margin.
+        fans.CpuTemp = 104f;
+        clock[0] += 1000;
+        e.Tick();
+        clock[0] += 5000;
+        e.Tick();
+        Assert.NotNull(store.Load().Cooling.LastThermalTrip);
+        Assert.Equal(100, LastDuty(fans, "f1"));
     }
 
     [Fact]
