@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Threading;
 using Nexus.Service.Peripherals.Hid;
 
@@ -209,12 +210,12 @@ public sealed class LianLiHub : IDisposable
         }
     }
 
-    public bool SendMergeOrder()
+    public bool SendMergeOrder(IReadOnlyList<int> order)
     {
         lock (_lock)
         {
             if (_device == null) return false;
-            return _device.SetFeature(LianLiProtocol.BuildMergeOrder());
+            return _device.SetFeature(LianLiProtocol.BuildMergeOrder(order));
         }
     }
 

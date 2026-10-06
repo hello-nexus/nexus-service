@@ -1707,6 +1707,44 @@ public sealed class LianLiLightingSettings
     /// </summary>
     public bool ArgbSync { get; set; }
     public string? ArgbSyncSource { get; set; }
+
+    /// <summary>Every port's rings play these instead of <see cref="Mode"/>; both set or both null.</summary>
+    public LianLiEffectSettings? InnerRing { get; set; }
+    public LianLiEffectSettings? OuterRing { get; set; }
+
+    /// <summary>Per-port looks by port index; a null entry plays the hub's.</summary>
+    public List<LianLiPortLighting?> Ports { get; set; } = new();
+
+    /// <summary>Ports in the order a merged animation runs through; empty runs them in index order.</summary>
+    public List<int> MergeOrder { get; set; } = new();
+}
+
+/// <summary>A firmware animation and its parameters.</summary>
+public sealed class LianLiEffectSettings
+{
+    public string Mode { get; set; } = "static";
+    public int Speed { get; set; } = 2;
+    public int Direction { get; set; }
+    public int Brightness { get; set; } = 4;
+    public List<string> Colors { get; set; } = new();
+
+    public LianLiEffectSettings Clone() => new()
+    {
+        Mode = Mode,
+        Speed = Speed,
+        Direction = Direction,
+        Brightness = Brightness,
+        Colors = new List<string>(Colors),
+    };
+}
+
+/// <summary>A port's own look in place of the hub's.</summary>
+public sealed class LianLiPortLighting
+{
+    public LianLiEffectSettings Whole { get; set; } = new();
+    /// <summary>The port's rings play these instead of <see cref="Whole"/>; both set or both null.</summary>
+    public LianLiEffectSettings? InnerRing { get; set; }
+    public LianLiEffectSettings? OuterRing { get; set; }
 }
 
 public sealed class TlLightingSettings

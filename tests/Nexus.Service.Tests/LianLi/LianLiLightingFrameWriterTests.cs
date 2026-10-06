@@ -287,6 +287,160 @@ public class LianLiLightingFrameWriterTests
     }
 
     [Fact]
+    public void Merged_animation_follows_the_saved_port_order()
+    {
+        AttachMerged(0xA102, "runway");
+        _store.Update(s => s.Devices.LianLiLighting.MergeOrder = new List<int> { 3, 2, 1, 0 });
+
+        _writer.Tick();
+
+        Assert.Equal(new byte[] { 0xE0, 0x10, 0x63, 0x03, 0x02, 0x01, 0x00, 0x08 }, Calls[0].Bytes);
+    }
+
+    // ── Per-port and per-ring looks ──
+
+    private static LianLiEffectSettings Effect(string mode, params string[] colors) =>
+        new() { Mode = mode, Colors = colors.ToList() };
+
+    // Effect byte committed on each channel, in commit order.
+    private Dictionary<int, byte> CommittedEffects() => Calls
+        .Where(c => c.IsSetFeature && (c.Bytes[1] & 0xF0) == 0x10 && c.Bytes[2] is not (0x34 or 0x60 or 0x63))
+        .ToDictionary(c => c.Bytes[1] & 0x0F, c => c.Bytes[2]);
+
+    private void AttachPorts(int pid, params int[] fansPerPort)
+    {
+        _hub.Attach(_spy, Profile(pid));
+        _store.Update(s =>
+        {
+            for (var p = 0; p < LianLiProtocol.PortCount; p++) s.Devices.LianLi.SetFans(p, p < fansPerPort.Length ? fansPerPort[p] : 0);
+        });
+        _engine.UpdateDevices(new[] { new DeviceFrame(0, "lianli:port0", 16, 0, 0, 1, 1, 0) });
+    }
+
+    [Fact]
+    public void Split_rings_commit_each_ring_its_own_effect()
+    {
+        AttachPorts(0xA102, 2);
+        _store.Update(s =>
+        {
+            s.Devices.LianLiLighting.Mode = "rainbowWave";
+            s.Devices.LianLiLighting.InnerRing = Effect("taichi");
+            s.Devices.LianLiLighting.OuterRing = Effect("reflect");
+        });
+
+        _writer.Tick();
+
+        Assert.Equal(new Dictionary<int, byte> { [0] = 0x1C, [1] = 0x30 }, CommittedEffects());
+    }
+
+    [Fact]
+    public void A_port_with_its_own_look_commits_it_and_the_others_keep_the_hubs()
+    {
+        AttachPorts(0xA102, 2, 2);
+        _store.Update(s =>
+        {
+            s.Devices.LianLiLighting.Mode = "rainbowWave";
+            s.Devices.LianLiLighting.Ports = new List<LianLiPortLighting?>
+            {
+                null,
+                new() { Whole = Effect("static"), InnerRing = Effect("meteor"), OuterRing = Effect("static") },
+            };
+        });
+
+        _writer.Tick();
+
+        Assert.Equal(new Dictionary<int, byte> { [0] = 0x05, [1] = 0x05, [2] = 0x19, [3] = 0x01 }, CommittedEffects());
+    }
+
+    [Fact]
+    public void Split_rings_on_a_family_without_ring_effects_play_the_whole_fan_mode()
+    {
+        AttachPorts(0x7750, 1);
+        _store.Update(s =>
+        {
+            s.Devices.LianLiLighting.Mode = "rainbowWave";
+            s.Devices.LianLiLighting.InnerRing = Effect("taichi");
+            s.Devices.LianLiLighting.OuterRing = Effect("reflect");
+        });
+
+        _writer.Tick();
+
+        Assert.All(CommittedEffects().Values, b => Assert.Equal(0x05, b));
+    }
+
+    [Fact]
+    public void Split_rings_switch_off_merge()
+    {
+        AttachMerged(0xA102, "runway");
+        _store.Update(s =>
+        {
+            s.Devices.LianLiLighting.InnerRing = Effect("static");
+            s.Devices.LianLiLighting.OuterRing = Effect("static");
+        });
+
+        _writer.Tick();
+
+        Assert.DoesNotContain(Calls, c => c.Bytes[2] == 0x63);
+    }
+
+    [Fact]
+    public void A_corner_palette_colours_each_side_of_the_outer_ring()
+    {
+        AttachPorts(0xA101, 1);
+        _store.Update(s =>
+        {
+            s.Devices.LianLiLighting.Mode = "static";
+            s.Devices.LianLiLighting.InnerRing = Effect("static");
+            s.Devices.LianLiLighting.OuterRing = Effect("staticColorful", "#FF0000", "#0000FF", "#00FF00", "#800000");
+        });
+
+        _writer.Tick();
+
+        var outer = Calls.First(c => c.Kind == HubTransportSpy.CallKind.OutputReport && c.Bytes[1] == 0x31).Bytes;
+        // wire R,B,G: each side of the ring holds one palette colour
+        Assert.Equal(new byte[] { 0xFF, 0x00, 0x00 }, outer[2..5]);
+        Assert.Equal(new byte[] { 0xFF, 0x00, 0x00 }, outer[(2 + 2 * 3)..(2 + 3 * 3)]);
+        Assert.Equal(new byte[] { 0x00, 0xFF, 0x00 }, outer[(2 + 3 * 3)..(2 + 4 * 3)]);
+        Assert.Equal(new byte[] { 0x00, 0x00, 0xFF }, outer[(2 + 6 * 3)..(2 + 7 * 3)]);
+        Assert.Equal(new byte[] { 0x80, 0x00, 0x00 }, outer[(2 + 11 * 3)..(2 + 12 * 3)]);
+    }
+
+    [Fact]
+    public void A_merged_animation_ignores_port_looks_and_does_not_restart_for_them()
+    {
+        AttachMerged(0xA102, "runway");
+        _store.Update(s => s.Devices.LianLiLighting.Ports = new List<LianLiPortLighting?> { new() { Whole = Effect("static") } });
+        _writer.Tick();
+        Assert.Contains(Calls, c => c.Bytes[2] == 0x63);
+        Assert.DoesNotContain(CommittedEffects(), e => e.Value == 0x01);
+        Calls.Clear();
+
+        _store.Update(s => s.Devices.LianLiLighting.Ports = new List<LianLiPortLighting?> { new() { Whole = Effect("breathing") } });
+        _writer.Tick();
+
+        Assert.Empty(Calls);
+    }
+
+    [Fact]
+    public void Changing_a_ring_recommits()
+    {
+        AttachPorts(0xA102, 1);
+        _store.Update(s =>
+        {
+            s.Devices.LianLiLighting.Mode = "static";
+            s.Devices.LianLiLighting.InnerRing = Effect("static");
+            s.Devices.LianLiLighting.OuterRing = Effect("static");
+        });
+        _writer.Tick();
+        Calls.Clear();
+
+        _store.Update(s => s.Devices.LianLiLighting.OuterRing!.Speed = 4);
+        _writer.Tick();
+
+        Assert.NotEmpty(CommittedEffects());
+    }
+
+    [Fact]
     public void Merge_on_a_mode_without_a_merged_variant_commits_per_port()
     {
         AttachMerged(0xA102, "rainbowWave");

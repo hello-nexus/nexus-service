@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 
 namespace Nexus.Service.Peripherals.LianLi;
 
@@ -164,13 +165,35 @@ public static class LianLiProtocol
     }
 
     /// <summary>
-    /// Order a merged effect travels through the ports: E0 10 63 p0 p1 p2 p3 08,
-    /// here the identity order 0,1,2,3. Feature report longer than the
-    /// SL-Infinity feature length; it goes out untruncated.
+    /// Order a merged effect travels through the ports: E0 10 63, the port at
+    /// each position, then 08. Feature report longer than the SL-Infinity
+    /// feature length; it goes out untruncated.
     /// </summary>
-    public static byte[] BuildMergeOrder()
+    public static byte[] BuildMergeOrder(IReadOnlyList<int> order)
     {
-        return new byte[] { ReportId, 0x10, 0x63, 0x00, 0x01, 0x02, 0x03, 0x08 };
+        var report = new byte[] { ReportId, 0x10, 0x63, 0x00, 0x01, 0x02, 0x03, 0x08 };
+        for (var i = 0; i < PortCount && i < order.Count; i++) report[3 + i] = (byte)order[i];
+        return report;
+    }
+
+    /// <summary>The order when it names every port once; index order otherwise.</summary>
+    public static int[] ValidMergeOrder(IReadOnlyList<int>? order)
+    {
+        var result = new int[PortCount];
+        var seen = 0;
+        if (order is not null && order.Count == PortCount)
+        {
+            for (var i = 0; i < PortCount; i++)
+            {
+                var p = order[i];
+                if (p < 0 || p >= PortCount || (seen & (1 << p)) != 0) break;
+                seen |= 1 << p;
+                result[i] = p;
+            }
+        }
+        if (seen == (1 << PortCount) - 1) return result;
+        for (var i = 0; i < PortCount; i++) result[i] = i;
+        return result;
     }
 
     /// <summary>

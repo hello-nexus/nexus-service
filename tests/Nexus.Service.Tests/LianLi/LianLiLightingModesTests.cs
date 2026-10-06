@@ -158,6 +158,40 @@ public class LianLiLightingModesTests
     }
 
     [Theory]
+    [InlineData(LianLiFanFamily.SlInfinity)]
+    [InlineData(LianLiFanFamily.Al)]
+    [InlineData(LianLiFanFamily.AlV2)]
+    public void Two_ring_families_have_a_catalog_per_ring_with_unique_keys_and_static(LianLiFanFamily family)
+    {
+        foreach (var outer in new[] { false, true })
+        {
+            var catalog = LianLiLightingModes.RingCatalogFor(family, outer);
+            Assert.NotEmpty(catalog);
+            Assert.Equal(catalog.Count, catalog.Select(m => m.Key).Distinct().Count());
+            Assert.NotNull(LianLiLightingModes.FindRing(family, outer, "static"));
+            Assert.DoesNotContain(catalog, m => m.Key == "custom");
+        }
+    }
+
+    [Theory]
+    [InlineData(LianLiFanFamily.Sl)]
+    [InlineData(LianLiFanFamily.SlV2)]
+    public void One_ring_families_have_no_ring_catalog(LianLiFanFamily family)
+    {
+        Assert.Empty(LianLiLightingModes.RingCatalogFor(family, outer: false));
+        Assert.Empty(LianLiLightingModes.RingCatalogFor(family, outer: true));
+    }
+
+    [Fact]
+    public void The_same_ring_byte_names_different_effects_on_each_ring()
+    {
+        Assert.Equal(0x1C, LianLiLightingModes.FindRing(LianLiFanFamily.SlInfinity, outer: false, "taichi")!.EffectByte);
+        Assert.Null(LianLiLightingModes.FindRing(LianLiFanFamily.SlInfinity, outer: true, "taichi"));
+        Assert.Equal(0x30, LianLiLightingModes.FindRing(LianLiFanFamily.SlInfinity, outer: true, "reflect")!.EffectByte);
+        Assert.True(LianLiLightingModes.FindRing(LianLiFanFamily.Al, outer: true, "staticColorful")!.CornerPalette);
+    }
+
+    [Theory]
     [InlineData(0, 0x02)]
     [InlineData(2, 0x00)]
     [InlineData(4, 0xFE)]

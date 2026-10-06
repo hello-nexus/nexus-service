@@ -500,4 +500,27 @@ public class LianLiProtocolTests
         Assert.Equal(new byte[] { 0xE0, 0x10, (byte)register, 0x01, 0x00, 0x00, 0x00 }, LianLiProtocol.BuildArgbSync(Profile(pid), on: true));
         Assert.Equal(new byte[] { 0xE0, 0x10, (byte)register, 0x00, 0x00, 0x00, 0x00 }, LianLiProtocol.BuildArgbSync(Profile(pid), on: false));
     }
+
+    [Fact]
+    public void Merge_order_carries_the_port_at_each_position()
+    {
+        Assert.Equal(new byte[] { 0xE0, 0x10, 0x63, 0x03, 0x02, 0x01, 0x00, 0x08 }, LianLiProtocol.BuildMergeOrder(new[] { 3, 2, 1, 0 }));
+    }
+
+    [Theory]
+    [InlineData(new int[0])]
+    [InlineData(new[] { 0, 1, 2 })]
+    [InlineData(new[] { 0, 0, 1, 2 })]
+    [InlineData(new[] { 0, 1, 2, 4 })]
+    [InlineData(new[] { -1, 1, 2, 3 })]
+    public void A_merge_order_that_does_not_name_every_port_once_runs_in_index_order(int[] order)
+    {
+        Assert.Equal(new[] { 0, 1, 2, 3 }, LianLiProtocol.ValidMergeOrder(order));
+    }
+
+    [Fact]
+    public void A_valid_merge_order_is_kept()
+    {
+        Assert.Equal(new[] { 2, 0, 3, 1 }, LianLiProtocol.ValidMergeOrder(new[] { 2, 0, 3, 1 }));
+    }
 }

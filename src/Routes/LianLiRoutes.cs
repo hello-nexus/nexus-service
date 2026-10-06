@@ -193,23 +193,14 @@ public static partial class DevicesRoutes
             var family = profile.Family;
             var composed = LianLiZoneSupport.Compose(hub.DeviceId, profile, LianLiZoneSupport.ReadComposition(s, hub.DeviceId), hubFans);
             var mergeBlocked = LianLiLightingFrameWriter.AnyDeviceExcluded(composed, s);
-            var modes = LianLiLightingModes.CatalogFor(family);
-            var catalog = new LianLiModeInfoDto[modes.Count];
-            for (var i = 0; i < modes.Count; i++)
+            var catalog = ModeDtos(LianLiLightingModes.CatalogFor(family), profile, mergeBlocked);
+            var ports = new LianLiPortLookDto?[LianLiProtocol.PortCount];
+            var savedPorts = ls.Ports ?? [];
+            for (var p = 0; p < ports.Length && p < savedPorts.Count; p++)
             {
-                var m = modes[i];
-                catalog[i] = new LianLiModeInfoDto
-                {
-                    Key = m.Key,
-                    Label = m.Label,
-                    HasSpeed = m.HasSpeed,
-                    HasDirection = m.HasDirection,
-                    HasBrightness = m.HasBrightness,
-                    ColorsMin = m.ColorsMin,
-                    ColorsMax = m.ColorsMax,
-                    DefaultColors = [.. m.DefaultColors],
-                    Mergeable = m.MergesOn(profile) && !mergeBlocked,
-                };
+                var look = savedPorts[p];
+                if (look is null) continue;
+                ports[p] = new LianLiPortLookDto { Whole = EffectDto(look.Whole)!, InnerRing = EffectDto(look.InnerRing), OuterRing = EffectDto(look.OuterRing) };
             }
             // Report the mode the writer commits: a persisted key outside this
             // family's catalog falls back to static there too.
@@ -231,6 +222,17 @@ public static partial class DevicesRoutes
                 ArgbSyncSupported = true,
                 ArgbSyncSourcesSupported = profile.ArgbSyncVerified,
                 ArgbSyncSources = ArgbSyncSources(topology, hub.DeviceId, profile, hubFans),
+                RingModes = HasRingEffects(profile)
+                    ? new LianLiRingModesDto
+                    {
+                        Inner = ModeDtos(LianLiLightingModes.RingCatalogFor(family, outer: false), profile, mergeBlocked: true),
+                        Outer = ModeDtos(LianLiLightingModes.RingCatalogFor(family, outer: true), profile, mergeBlocked: true),
+                    }
+                    : null,
+                InnerRing = EffectDto(ls.InnerRing),
+                OuterRing = EffectDto(ls.OuterRing),
+                Ports = ports,
+                MergeOrder = LianLiProtocol.ValidMergeOrder(ls.MergeOrder),
             }, AppJsonContext.Default.LianLiLightingResponse);
         });
 
@@ -257,14 +259,26 @@ public static partial class DevicesRoutes
             {
                 return Results.BadRequest(ApiResponse.Fail("ARGB sync source is not an addressable port"));
             }
-            var family = hub.Profile.Family;
-            if (body.Mode != null && body.Mode != "custom" && LianLiLightingModes.Find(family, body.Mode) == null)
+            var profile = hub.Profile;
+            var family = profile.Family;
+            var targetError = ValidateTarget(body, profile, LianLiHubSet.LightingOf(store.Load().Devices, hub.DeviceId));
+            if (targetError != null)
+            {
+                return Results.BadRequest(ApiResponse.Fail(targetError));
+            }
+            if (body.Port == null && body.Ring == null && body.Mode != null && body.Mode != "custom" && LianLiLightingModes.Find(family, body.Mode) == null)
             {
                 return Results.BadRequest(ApiResponse.Fail("unknown mode key"));
             }
             store.Update(s =>
             {
                 var ls = LianLiHubSet.Editable(s.Devices, hub.DeviceId).Lighting;
+                if (body.MergeOrder != null) ls.MergeOrder = [.. body.MergeOrder];
+                if (body.Port != null || body.Ring != null || body.SplitRings.HasValue)
+                {
+                    ApplyLook(ls, body, profile);
+                    return;
+                }
                 if (body.Mode != null)
                 {
                     ls.Mode = body.Mode;
@@ -300,6 +314,166 @@ public static partial class DevicesRoutes
         string.IsNullOrEmpty(hubQuery) ? hubs.Primary
         : hubQuery.Contains(':', StringComparison.Ordinal) ? null
         : hubs.Owner(hubQuery);
+
+    // Rings take their own animations on a two-ring hub whose family has per-ring effects.
+    private static bool HasRingEffects(in LianLiFanProfile profile) =>
+        profile.ChannelsPerPort == 2 && LianLiLightingModes.RingCatalogFor(profile.Family, outer: false).Count > 0;
+
+    private static LianLiModeInfoDto[] ModeDtos(IReadOnlyList<LianLiModeInfo> modes, in LianLiFanProfile profile, bool mergeBlocked)
+    {
+        var catalog = new LianLiModeInfoDto[modes.Count];
+        for (var i = 0; i < modes.Count; i++)
+        {
+            var m = modes[i];
+            catalog[i] = new LianLiModeInfoDto
+            {
+                Key = m.Key,
+                Label = m.Label,
+                HasSpeed = m.HasSpeed,
+                HasDirection = m.HasDirection,
+                HasBrightness = m.HasBrightness,
+                ColorsMin = m.ColorsMin,
+                ColorsMax = m.ColorsMax,
+                DefaultColors = [.. m.DefaultColors],
+                Mergeable = m.MergesOn(profile) && !mergeBlocked,
+            };
+        }
+        return catalog;
+    }
+
+    private static LianLiEffectDto? EffectDto(LianLiEffectSettings? e) => e is null ? null : new LianLiEffectDto
+    {
+        Mode = e.Mode,
+        Speed = e.Speed,
+        Direction = e.Direction,
+        Brightness = e.Brightness,
+        Colors = [.. e.Colors],
+    };
+
+    // Why a port, ring or merge-order patch cannot apply; null when it can.
+    private static string? ValidateTarget(LianLiLightingRequest body, in LianLiFanProfile profile, LianLiLightingSettings ls)
+    {
+        if (body.MergeOrder != null)
+        {
+            var valid = LianLiProtocol.ValidMergeOrder(body.MergeOrder);
+            if (body.MergeOrder.Length != valid.Length || !body.MergeOrder.AsSpan().SequenceEqual(valid)) return "merge order must name every port once";
+        }
+        if (body.Port is int port && (port < 0 || port >= LianLiProtocol.PortCount)) return $"port must be 0..{LianLiProtocol.PortCount - 1}";
+        // A look edit saves only the look, so hub-wide fields alongside it would be dropped.
+        if ((body.Port != null || body.Ring != null || body.SplitRings.HasValue)
+            && (body.Merge.HasValue || body.ArgbSync.HasValue || body.ArgbSyncSource != null))
+        {
+            return "a port or ring edit cannot carry hub settings";
+        }
+        if (body.ResetPort == true && body.Port == null) return "resetPort needs a port";
+        if (body.Ring != null && body.Ring != "inner" && body.Ring != "outer") return "ring must be inner or outer";
+        if ((body.Ring != null || body.SplitRings == true) && !HasRingEffects(profile)) return "this hub has no per-ring effects";
+        if (body.Ring != null && body.SplitRings != true)
+        {
+            // A port without its own look starts from the hub's, rings included.
+            var saved = ls.Ports ?? [];
+            var own = body.Port is int p && p < saved.Count ? saved[p] : null;
+            var (inner, outer) = own is null ? (ls.InnerRing, ls.OuterRing) : (own.InnerRing, own.OuterRing);
+            if (inner is null || outer is null) return "rings are not separate";
+        }
+        if (body.Mode == null || (body.Port == null && body.Ring == null)) return null;
+        var known = body.Ring != null
+            ? LianLiLightingModes.FindRing(profile.Family, body.Ring == "outer", body.Mode) != null
+            : body.Mode != "custom" && LianLiLightingModes.Find(profile.Family, body.Mode) != null;
+        return known ? null : "unknown mode key";
+    }
+
+    // Applies a port, ring or split patch. A port's first edit starts its look
+    // from the hub's; splitting seeds each ring from the whole-fan mode.
+    private static void ApplyLook(LianLiLightingSettings ls, LianLiLightingRequest body, in LianLiFanProfile profile)
+    {
+        var family = profile.Family;
+        LianLiPortLighting? look = null;
+        if (body.Port is int port)
+        {
+            var ports = new List<LianLiPortLighting?>(ls.Ports ?? []);
+            while (ports.Count < LianLiProtocol.PortCount) ports.Add(null);
+            if (body.ResetPort == true)
+            {
+                ports[port] = null;
+                ls.Ports = ports;
+                return;
+            }
+            look = ports[port] ?? new LianLiPortLighting
+            {
+                Whole = HubWhole(ls, family),
+                InnerRing = ls.InnerRing?.Clone(),
+                OuterRing = ls.OuterRing?.Clone(),
+            };
+            ports[port] = look;
+            ls.Ports = ports;
+        }
+        var whole = look?.Whole;
+        if (body.SplitRings is bool split)
+        {
+            var source = whole ?? HubWhole(ls, family);
+            var inner = split ? SeedRing(source, family, outer: false) : null;
+            var outer = split ? SeedRing(source, family, outer: true) : null;
+            if (look is null)
+            {
+                ls.InnerRing = inner;
+                ls.OuterRing = outer;
+            }
+            else
+            {
+                look.InnerRing = inner;
+                look.OuterRing = outer;
+            }
+        }
+        LianLiEffectSettings? target;
+        Func<string, LianLiModeInfo?> find;
+        if (body.Ring != null)
+        {
+            var isOuter = body.Ring == "outer";
+            target = isOuter ? (look is null ? ls.OuterRing : look.OuterRing) : (look is null ? ls.InnerRing : look.InnerRing);
+            find = key => LianLiLightingModes.FindRing(family, isOuter, key);
+        }
+        else
+        {
+            target = whole;
+            find = key => LianLiLightingModes.Find(family, key);
+        }
+        if (target is null) return;
+        if (body.Mode != null) target.Mode = body.Mode;
+        if (body.Speed.HasValue) target.Speed = Math.Clamp(body.Speed.Value, 0, 4);
+        if (body.Direction.HasValue) target.Direction = Math.Clamp(body.Direction.Value, 0, 1);
+        if (body.Brightness.HasValue) target.Brightness = Math.Clamp(body.Brightness.Value, 0, 4);
+        if (body.Colors != null)
+        {
+            var max = find(target.Mode)?.ColorsMax ?? 0;
+            target.Colors = [.. body.Colors.AsSpan(0, Math.Min(body.Colors.Length, max))];
+        }
+    }
+
+    // The hub's whole-fan animation as an effect: the one it plays, or returns to from the Lighting page.
+    private static LianLiEffectSettings HubWhole(LianLiLightingSettings ls, LianLiFanFamily family)
+    {
+        var key = ls.Mode == "custom" ? ls.EffectMode : ls.Mode;
+        var mode = LianLiLightingModes.Find(family, key);
+        return new LianLiEffectSettings
+        {
+            Mode = mode is null || mode == LianLiLightingModes.Custom ? "static" : mode.Key,
+            Speed = ls.Speed,
+            Direction = ls.Direction,
+            Brightness = ls.Brightness,
+            Colors = new List<string>(ls.Colors),
+        };
+    }
+
+    // A ring starts on the whole-fan mode when its catalog has it, else on its first mode.
+    private static LianLiEffectSettings SeedRing(LianLiEffectSettings whole, LianLiFanFamily family, bool outer)
+    {
+        var mode = LianLiLightingModes.FindRing(family, outer, whole.Mode) ?? LianLiLightingModes.RingCatalogFor(family, outer)[0];
+        var ring = whole.Clone();
+        ring.Mode = mode.Key;
+        if (ring.Colors.Count > mode.ColorsMax) ring.Colors = ring.Colors.GetRange(0, mode.ColorsMax);
+        return ring;
+    }
 
     private static int[] FansPerPort(LianLiSettings fans)
     {
@@ -398,6 +572,35 @@ public sealed class LianLiLightingResponse
     public bool ArgbSyncSourcesSupported { get; set; }
     public string? ArgbSyncSource { get; set; }
     public LianLiArgbSourceDto[] ArgbSyncSources { get; set; } = Array.Empty<LianLiArgbSourceDto>();
+    /// <summary>Each ring's own catalog; null on a hub without per-ring effects.</summary>
+    public LianLiRingModesDto? RingModes { get; set; }
+    public LianLiEffectDto? InnerRing { get; set; }
+    public LianLiEffectDto? OuterRing { get; set; }
+    /// <summary>Per-port looks by port; null plays the hub's.</summary>
+    public LianLiPortLookDto?[] Ports { get; set; } = Array.Empty<LianLiPortLookDto?>();
+    public int[] MergeOrder { get; set; } = Array.Empty<int>();
+}
+
+public sealed class LianLiEffectDto
+{
+    public string Mode { get; set; } = "";
+    public int Speed { get; set; }
+    public int Direction { get; set; }
+    public int Brightness { get; set; }
+    public string[] Colors { get; set; } = Array.Empty<string>();
+}
+
+public sealed class LianLiPortLookDto
+{
+    public LianLiEffectDto Whole { get; set; } = new();
+    public LianLiEffectDto? InnerRing { get; set; }
+    public LianLiEffectDto? OuterRing { get; set; }
+}
+
+public sealed class LianLiRingModesDto
+{
+    public LianLiModeInfoDto[] Inner { get; set; } = Array.Empty<LianLiModeInfoDto>();
+    public LianLiModeInfoDto[] Outer { get; set; } = Array.Empty<LianLiModeInfoDto>();
 }
 
 public sealed class LianLiArgbSourceDto
@@ -417,5 +620,13 @@ public sealed class LianLiLightingRequest
     public bool? ArgbSync { get; set; }
     /// <summary>Lighting card driving the hub's ARGB input; empty clears it.</summary>
     public string? ArgbSyncSource { get; set; }
+    /// <summary>The port the effect fields edit; the hub when null.</summary>
+    public int? Port { get; set; }
+    /// <summary>"inner" or "outer": the ring the effect fields edit; the whole fan when null.</summary>
+    public string? Ring { get; set; }
+    public bool? SplitRings { get; set; }
+    /// <summary>Drops the port's own look so it plays the hub's again.</summary>
+    public bool? ResetPort { get; set; }
+    public int[]? MergeOrder { get; set; }
 }
 

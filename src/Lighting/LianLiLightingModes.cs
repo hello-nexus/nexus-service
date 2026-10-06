@@ -8,7 +8,7 @@ public sealed class LianLiModeInfo
 {
     public LianLiModeInfo(
         string key, string label, byte effect,
-        bool speed = false, bool direction = false, string[]? colors = null, byte merged = 0, bool wholeFan = false)
+        bool speed = false, bool direction = false, string[]? colors = null, byte merged = 0, bool wholeFan = false, bool corners = false)
     {
         Key = key;
         Label = label;
@@ -18,6 +18,7 @@ public sealed class LianLiModeInfo
         DefaultColors = colors ?? Array.Empty<string>();
         MergedEffectByte = merged;
         WholeFan = wholeFan;
+        CornerPalette = corners;
     }
 
     public string Key { get; }
@@ -35,6 +36,8 @@ public sealed class LianLiModeInfo
     public byte MergedEffectByte { get; }
     /// <summary>On a two-ring hub the firmware animates both rings from one commit on the port's inner channel; the outer channel's byte space means a different effect.</summary>
     public bool WholeFan { get; }
+    /// <summary>The palette colours the four sides of each fan's ring in turn instead of filling slots.</summary>
+    public bool CornerPalette { get; }
 
     public bool MergesOn(in LianLiFanProfile profile) => MergedEffectByte != 0 && profile.SupportsMerge;
 }
@@ -173,6 +176,185 @@ public static class LianLiLightingModes
         },
 
     };
+
+    // A two-ring family's per-ring effects: the inner channel and the outer
+    // channel read the same effect byte as different animations.
+    private static readonly Dictionary<LianLiFanFamily, LianLiModeInfo[]> InnerRingCatalogs = new()
+    {
+        [LianLiFanFamily.Al] = new LianLiModeInfo[]
+        {
+            new("rainbowWave", "Rainbow Wave", 0x05, speed: true, direction: true),
+            new("static", "Static", 0x01, colors: new[] { "#00D7FF", "#FF0000", "#00FF00", "#96FF00" }),
+            new("breathing", "Breathing", 0x02, speed: true, colors: new[] { "#00D7FF", "#FF0000", "#00FF00", "#96FF00" }),
+            new("colorCycle", "Color Cycle", 0x18, speed: true, direction: true, colors: new[] { "#00D7FF", "#FF0000", "#00FF00", "#96FF00" }),
+            new("runway", "Runway", 0x1A, speed: true, colors: new[] { "#00D7FF", "#FF0000" }),
+            new("mopUp", "Mop Up", 0x1B, speed: true, colors: new[] { "#00D7FF", "#FF0000" }),
+            new("pacMan", "Chomper", 0x27, speed: true, direction: true, colors: new[] { "#00D7FF", "#FF0000" }),
+            new("meteor", "Meteor", 0x19, speed: true, direction: true, colors: new[] { "#00D7FF", "#FF0000", "#00FF00", "#96FF00" }),
+            new("meteorRainbow", "Meteor Rainbow", 0x08, speed: true, direction: true),
+            new("lottery", "Lottery", 0x1D, speed: true, direction: true, colors: new[] { "#00D7FF", "#FF0000" }),
+            new("wave", "Wave", 0x1E, speed: true, colors: new[] { "#FF0000" }),
+            new("spring", "Spring", 0x1F, speed: true, direction: true, colors: new[] { "#00D7FF", "#FF0000", "#00FF00", "#96FF00" }),
+            new("tailChasing", "Tail Chasing", 0x20, speed: true, direction: true, colors: new[] { "#00D7FF", "#FF0000", "#00FF00", "#96FF00" }),
+            new("warning", "Warning", 0x21, speed: true, colors: new[] { "#00D7FF", "#FF0000", "#00FF00", "#96FF00" }),
+            new("voice", "Voice", 0x22, speed: true, direction: true, colors: new[] { "#00D7FF", "#FF0000", "#00FF00", "#96FF00" }),
+            new("mixing", "Mixing", 0x23, speed: true, colors: new[] { "#00D7FF", "#FF0000" }),
+            new("stack", "Stack", 0x24, speed: true, direction: true, colors: new[] { "#00D7FF", "#FF0000" }),
+            new("tide", "Tide", 0x25, speed: true, colors: new[] { "#00D7FF", "#FF0000", "#00FF00", "#96FF00" }),
+            new("scan", "Scan", 0x26, speed: true, colors: new[] { "#00D7FF" }),
+        },
+        [LianLiFanFamily.SlInfinity] = new LianLiModeInfo[]
+        {
+            new("rainbowWave", "Rainbow Wave", 0x05, speed: true, direction: true),
+            new("spectrumCycle", "Spectrum Cycle", 0x04, speed: true),
+            new("static", "Static", 0x01, colors: new[] { "#FF0000", "#0000FF", "#00FF55", "#FF6900" }),
+            new("breathing", "Breathing", 0x02, speed: true, colors: new[] { "#FF0000", "#0000FF", "#00FF55", "#FF6900" }),
+            new("breathingRainbow", "Breathing Rainbow", 0x06, speed: true),
+            new("taichi", "Taichi", 0x1C, speed: true, direction: true, colors: new[] { "#FF0000", "#0000FF" }),
+            new("colorCycle", "Color Cycle", 0x18, speed: true, direction: true, colors: new[] { "#FF0000", "#0000FF", "#00FF55", "#FF6900" }),
+            new("runway", "Runway", 0x1A, speed: true, colors: new[] { "#FF0000", "#0000FF" }),
+            new("mopUp", "Mop Up", 0x1B, speed: true, colors: new[] { "#FF0000", "#0000FF", "#00FF55", "#FF6900" }),
+            new("meteor", "Meteor", 0x19, speed: true, direction: true, colors: new[] { "#FF0000", "#0000FF", "#00FF55", "#FF6900" }),
+            new("meteorRainbow", "Meteor Rainbow", 0x08, speed: true, direction: true),
+            new("lottery", "Lottery", 0x26, speed: true, direction: true, colors: new[] { "#FF0000", "#0000FF" }),
+            new("warning", "Warning", 0x29, speed: true, colors: new[] { "#FF0000", "#0000FF", "#00FF55", "#FF6900" }),
+            new("voice", "Voice", 0x2A, speed: true, direction: true, colors: new[] { "#FF0000", "#0000FF", "#00FF55", "#FF6900" }),
+            new("mixing", "Mixing", 0x2B, speed: true, colors: new[] { "#FF0000", "#0000FF" }),
+            new("stack", "Stack", 0x2C, speed: true, direction: true, colors: new[] { "#FF0000", "#0000FF" }),
+            new("tide", "Tide", 0x2D, speed: true, colors: new[] { "#FF0000", "#0000FF", "#00FF55", "#FF6900" }),
+            new("scan", "Scan", 0x2E, speed: true, colors: new[] { "#FF0000" }),
+            new("doubleMeteor", "Double Meteor", 0x1D, speed: true, colors: new[] { "#FF0000", "#0000FF", "#00FF55", "#FF6900" }),
+            new("meteorContest", "Meteor Contest", 0x1E, speed: true, direction: true, colors: new[] { "#FF0000", "#0000FF" }),
+            new("meteorMix", "Meteor Mix", 0x1F, speed: true, colors: new[] { "#FF0000", "#0000FF" }),
+            new("returnArc", "Return Arc", 0x20, speed: true, direction: true, colors: new[] { "#FF0000", "#0000FF", "#00FF55", "#FF6900" }),
+            new("doubleArc", "Double Arc", 0x21, speed: true, direction: true, colors: new[] { "#FF0000", "#0000FF", "#00FF55", "#FF6900" }),
+            new("door", "Door", 0x22, speed: true, colors: new[] { "#FF0000", "#0000FF", "#00FF55", "#FF6900" }),
+            new("heartBeat", "Heart Beat", 0x24, speed: true, colors: new[] { "#FF0000" }),
+            new("heartBeatRunway", "Heart Beat Runway", 0x45, speed: true, direction: true, colors: new[] { "#FF0000" }),
+            new("disco", "Disco", 0x23, speed: true, direction: true, colors: new[] { "#0000FF", "#FF6900", "#0000FF", "#FF6900" }),
+        },
+        [LianLiFanFamily.AlV2] = new LianLiModeInfo[]
+        {
+            new("rainbowWave", "Rainbow Wave", 0x05, speed: true, direction: true),
+            new("spectrumCycle", "Spectrum Cycle", 0x04, speed: true),
+            new("static", "Static", 0x01, colors: new[] { "#00D7FF", "#FF0000", "#00FF00", "#96FF00", "#FF6900", "#FFD700" }),
+            new("breathing", "Breathing", 0x02, speed: true, colors: new[] { "#00D7FF", "#FF0000", "#00FF00", "#96FF00", "#FF6900", "#FFD700" }),
+            new("colorCycle", "Color Cycle", 0x18, speed: true, direction: true, colors: new[] { "#00D7FF", "#FF0000", "#00FF00", "#96FF00" }),
+            new("runway", "Runway", 0x1A, speed: true, colors: new[] { "#00D7FF", "#FF0000" }),
+            new("mopUp", "Mop Up", 0x1B, speed: true, colors: new[] { "#00D7FF", "#FF0000" }),
+            new("pacMan", "Chomper", 0x27, speed: true, direction: true, colors: new[] { "#00D7FF", "#FF0000" }),
+            new("meteor", "Meteor", 0x19, speed: true, direction: true, colors: new[] { "#00D7FF", "#FF0000", "#00FF00", "#96FF00" }),
+            new("meteorRainbow", "Meteor Rainbow", 0x08, speed: true, direction: true),
+            new("lottery", "Lottery", 0x1D, speed: true, direction: true, colors: new[] { "#00D7FF", "#FF0000" }),
+            new("wave", "Wave", 0x1E, speed: true, colors: new[] { "#FF0000" }),
+            new("spring", "Spring", 0x1F, speed: true, direction: true, colors: new[] { "#00D7FF", "#FF0000", "#00FF00", "#96FF00" }),
+            new("tailChasing", "Tail Chasing", 0x20, speed: true, direction: true, colors: new[] { "#00D7FF", "#FF0000", "#00FF00", "#96FF00" }),
+            new("warning", "Warning", 0x21, speed: true, colors: new[] { "#00D7FF", "#FF0000", "#00FF00", "#96FF00" }),
+            new("voice", "Voice", 0x22, speed: true, direction: true, colors: new[] { "#00D7FF", "#FF0000", "#00FF00", "#96FF00" }),
+            new("mixing", "Mixing", 0x23, speed: true, colors: new[] { "#00D7FF", "#FF0000" }),
+            new("stack", "Stack", 0x24, speed: true, direction: true, colors: new[] { "#00D7FF", "#FF0000" }),
+            new("tide", "Tide", 0x25, speed: true, colors: new[] { "#00D7FF", "#FF0000", "#00FF00", "#96FF00" }),
+            new("scan", "Scan", 0x26, speed: true, colors: new[] { "#00D7FF" }),
+            new("colorfulCity", "Colorful City", 0x28, speed: true),
+            new("render", "Render", 0x29, speed: true, direction: true, colors: new[] { "#FF0096", "#00D7FF", "#FF6900", "#96FF00" }),
+            new("twinkle", "Twinkle", 0x2A, speed: true),
+        },
+    };
+
+    private static readonly Dictionary<LianLiFanFamily, LianLiModeInfo[]> OuterRingCatalogs = new()
+    {
+        [LianLiFanFamily.Al] = new LianLiModeInfo[]
+        {
+            new("rainbowWave", "Rainbow Wave", 0x05, speed: true, direction: true),
+            new("static", "Static", 0x01, colors: new[] { "#00D7FF", "#FF0000", "#00FF00", "#96FF00" }),
+            new("staticColorful", "Static Colorful", 0x01, corners: true, colors: new[] { "#00D7FF", "#FF0000", "#00FF00", "#96FF00" }),
+            new("breathing", "Breathing", 0x02, speed: true, colors: new[] { "#00D7FF", "#FF0000", "#00FF00", "#96FF00" }),
+            new("breathingColorful", "Breathing Colorful", 0x02, speed: true, corners: true, colors: new[] { "#00D7FF", "#FF0000", "#00FF00", "#96FF00" }),
+            new("breathingRainbow", "Breathing Rainbow", 0x06, speed: true),
+            new("colorCycle", "Color Cycle", 0x18, speed: true, direction: true, colors: new[] { "#00D7FF", "#FF0000", "#00FF00", "#96FF00" }),
+            new("runway", "Runway", 0x1A, speed: true, colors: new[] { "#00D7FF", "#FF0000" }),
+            new("mopUp", "Mop Up", 0x1B, speed: true, colors: new[] { "#00D7FF", "#FF0000" }),
+            new("meteor", "Meteor", 0x19, speed: true, direction: true, colors: new[] { "#00D7FF", "#FF0000", "#00FF00", "#96FF00" }),
+            new("meteorRainbow", "Meteor Rainbow", 0x08, speed: true, direction: true),
+            new("lottery", "Lottery", 0x1D, speed: true, direction: true, colors: new[] { "#00D7FF", "#FF0000" }),
+            new("wave", "Wave", 0x1E, speed: true, colors: new[] { "#FF0000" }),
+            new("spring", "Spring", 0x1F, speed: true, direction: true, colors: new[] { "#00D7FF", "#FF0000", "#00FF00", "#96FF00" }),
+            new("tailChasing", "Tail Chasing", 0x20, speed: true, direction: true, colors: new[] { "#00D7FF", "#FF0000", "#00FF00", "#96FF00" }),
+            new("warning", "Warning", 0x21, speed: true, colors: new[] { "#00D7FF", "#FF0000", "#00FF00", "#96FF00" }),
+            new("voice", "Voice", 0x22, speed: true, direction: true, colors: new[] { "#00D7FF", "#FF0000", "#00FF00", "#96FF00" }),
+            new("mixing", "Mixing", 0x23, speed: true, colors: new[] { "#00D7FF", "#FF0000" }),
+            new("stack", "Stack", 0x24, speed: true, direction: true, colors: new[] { "#00D7FF", "#FF0000" }),
+            new("tide", "Tide", 0x25, speed: true, colors: new[] { "#00D7FF", "#FF0000", "#00FF00", "#96FF00" }),
+            new("scan", "Scan", 0x26, speed: true, colors: new[] { "#00D7FF" }),
+        },
+        [LianLiFanFamily.SlInfinity] = new LianLiModeInfo[]
+        {
+            new("rainbowWave", "Rainbow Wave", 0x05, speed: true, direction: true),
+            new("spectrumCycle", "Spectrum Cycle", 0x04, speed: true),
+            new("static", "Static", 0x01, colors: new[] { "#FF0000", "#0000FF", "#00FF55", "#FF6900" }),
+            new("breathing", "Breathing", 0x02, speed: true, colors: new[] { "#FF0000", "#0000FF", "#00FF55", "#FF6900" }),
+            new("breathingRainbow", "Breathing Rainbow", 0x06, speed: true),
+            new("colorCycle", "Color Cycle", 0x18, speed: true, direction: true, colors: new[] { "#FF0000", "#0000FF", "#00FF55", "#FF6900" }),
+            new("runway", "Runway", 0x1A, speed: true, colors: new[] { "#FF0000", "#0000FF" }),
+            new("mopUp", "Mop Up", 0x1B, speed: true, colors: new[] { "#FF0000", "#0000FF", "#00FF55", "#FF6900" }),
+            new("meteor", "Meteor", 0x19, speed: true, direction: true, colors: new[] { "#FF0000", "#0000FF", "#00FF55", "#FF6900" }),
+            new("meteorRainbow", "Meteor Rainbow", 0x08, speed: true, direction: true),
+            new("colorfulMeteor", "Colorful Meteor", 0x27, speed: true, direction: true),
+            new("lottery", "Lottery", 0x26, speed: true, direction: true, colors: new[] { "#FF0000", "#0000FF" }),
+            new("warning", "Warning", 0x29, speed: true, colors: new[] { "#FF0000", "#0000FF", "#00FF55", "#FF6900" }),
+            new("voice", "Voice", 0x2A, speed: true, direction: true, colors: new[] { "#FF0000", "#0000FF", "#00FF55", "#FF6900" }),
+            new("mixing", "Mixing", 0x2B, speed: true, colors: new[] { "#FF0000", "#0000FF" }),
+            new("stack", "Stack", 0x2C, speed: true, direction: true, colors: new[] { "#FF0000", "#0000FF" }),
+            new("tide", "Tide", 0x2D, speed: true, colors: new[] { "#FF0000", "#0000FF", "#00FF55", "#FF6900" }),
+            new("scan", "Scan", 0x2E, speed: true, colors: new[] { "#FF0000" }),
+            new("door", "Door", 0x22, speed: true, colors: new[] { "#FF0000", "#0000FF", "#00FF55", "#FF6900" }),
+            new("heartBeat", "Heart Beat", 0x24, speed: true, colors: new[] { "#FF0000" }),
+            new("disco", "Disco", 0x23, speed: true, direction: true, colors: new[] { "#0000FF", "#FF6900", "#0000FF", "#FF6900" }),
+            new("reflect", "Reflect", 0x30, speed: true, colors: new[] { "#FF0000" }),
+        },
+        [LianLiFanFamily.AlV2] = new LianLiModeInfo[]
+        {
+            new("rainbowWave", "Rainbow Wave", 0x05, speed: true, direction: true),
+            new("spectrumCycle", "Spectrum Cycle", 0x04, speed: true),
+            new("static", "Static", 0x01, colors: new[] { "#00D7FF", "#FF0000", "#00FF00", "#96FF00", "#FF6900", "#FFD700" }),
+            new("staticColorful", "Static Colorful", 0x01, corners: true, colors: new[] { "#00D7FF", "#FF0000", "#00FF00", "#96FF00" }),
+            new("breathing", "Breathing", 0x02, speed: true, colors: new[] { "#00D7FF", "#FF0000", "#00FF00", "#96FF00", "#FF6900", "#FFD700" }),
+            new("breathingColorful", "Breathing Colorful", 0x02, speed: true, corners: true, colors: new[] { "#00D7FF", "#FF0000", "#00FF00", "#96FF00" }),
+            new("breathingRainbow", "Breathing Rainbow", 0x06, speed: true),
+            new("colorCycle", "Color Cycle", 0x1C, speed: true, direction: true, colors: new[] { "#00D7FF", "#FF0000", "#00FF00", "#96FF00" }),
+            new("runway", "Runway", 0x1A, speed: true, colors: new[] { "#00D7FF", "#FF0000" }),
+            new("mopUp", "Mop Up", 0x1B, speed: true, colors: new[] { "#00D7FF", "#FF0000" }),
+            new("meteor", "Meteor", 0x19, speed: true, direction: true, colors: new[] { "#00D7FF", "#FF0000", "#00FF00", "#96FF00" }),
+            new("meteorRainbow", "Meteor Rainbow", 0x08, speed: true, direction: true),
+            new("lottery", "Lottery", 0x1D, speed: true, direction: true, colors: new[] { "#00D7FF", "#FF0000" }),
+            new("wave", "Wave", 0x1E, speed: true, colors: new[] { "#FF0000" }),
+            new("spring", "Spring", 0x1F, speed: true, direction: true, colors: new[] { "#00D7FF", "#FF0000", "#00FF00", "#96FF00" }),
+            new("tailChasing", "Tail Chasing", 0x20, speed: true, direction: true, colors: new[] { "#00D7FF", "#FF0000", "#00FF00", "#96FF00" }),
+            new("warning", "Warning", 0x21, speed: true, colors: new[] { "#00D7FF", "#FF0000", "#00FF00", "#96FF00" }),
+            new("voice", "Voice", 0x22, speed: true, direction: true, colors: new[] { "#00D7FF", "#FF0000", "#00FF00", "#96FF00" }),
+            new("mixing", "Mixing", 0x23, speed: true, colors: new[] { "#00D7FF", "#FF0000" }),
+            new("stack", "Stack", 0x24, speed: true, direction: true, colors: new[] { "#00D7FF", "#FF0000" }),
+            new("tide", "Tide", 0x25, speed: true, colors: new[] { "#00D7FF", "#FF0000", "#00FF00", "#96FF00" }),
+            new("scan", "Scan", 0x26, speed: true, colors: new[] { "#00D7FF" }),
+            new("colorfulCity", "Colorful City", 0x28, speed: true),
+            new("render", "Render", 0x29, speed: true, direction: true, colors: new[] { "#FF0096", "#00D7FF", "#FF6900", "#96FF00" }),
+            new("twinkle", "Twinkle", 0x2A, speed: true),
+        },
+    };
+
+    /// <summary>The modes one ring of a two-ring family accepts; empty for a family without per-ring effects.</summary>
+    public static IReadOnlyList<LianLiModeInfo> RingCatalogFor(LianLiFanFamily family, bool outer) =>
+        (outer ? OuterRingCatalogs : InnerRingCatalogs).TryGetValue(family, out var list) ? list : Array.Empty<LianLiModeInfo>();
+
+    public static LianLiModeInfo? FindRing(LianLiFanFamily family, bool outer, string? key)
+    {
+        if (string.IsNullOrEmpty(key)) return null;
+        foreach (var m in RingCatalogFor(family, outer))
+        {
+            if (m.Key == key) return m;
+        }
+        return null;
+    }
 
     /// <summary>The modes a family's firmware accepts, in display order, custom first.</summary>
     public static IReadOnlyList<LianLiModeInfo> CatalogFor(LianLiFanFamily family) =>
