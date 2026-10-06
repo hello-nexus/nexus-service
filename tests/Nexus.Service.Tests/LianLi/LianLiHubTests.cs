@@ -36,7 +36,14 @@ internal sealed class HubTransportSpy : IHidDevice
     public bool SetFeature(ReadOnlySpan<byte> report) { Calls.Add(new Call(CallKind.Feature, report.ToArray())); return Accept(); }
     public bool Write(ReadOnlySpan<byte> report) { Calls.Add(new Call(CallKind.Write, report.ToArray())); return Accept(); }
     public bool GetFeature(Span<byte> buffer) => false;
-    public bool GetInputReport(Span<byte> buffer) => false;
+    /// <summary>Input report the hub reads back after a primer; null fails the read.</summary>
+    public byte[]? InputReport { get; set; }
+    public bool GetInputReport(Span<byte> buffer)
+    {
+        if (InputReport is null) return false;
+        InputReport.AsSpan(0, Math.Min(InputReport.Length, buffer.Length)).CopyTo(buffer);
+        return true;
+    }
     public bool SetOutputReport(ReadOnlySpan<byte> report) { Calls.Add(new Call(CallKind.OutputReport, report.ToArray())); return Accept(); }
     public int Read(Span<byte> buffer, int timeoutMs) => 0;
     public void Dispose() { }
@@ -54,6 +61,35 @@ public class LianLiHubTests
     {
         LianLiFanProfiles.TryGet(0xA100, out var p);
         return p;
+    }
+
+    // ── Firmware version ──
+
+    [Fact]
+    public void ReadFirmwareVersion_primes_then_decodes_the_reply()
+    {
+        var spy = new HubTransportSpy { InputReport = new byte[] { 0xE0, 0xE0, 0x50, 0x80, 0xC4, 0x14 } };
+        var hub = new LianLiHub();
+        hub.Attach(spy, SlInfinityProfile());
+
+        Assert.True(hub.ReadFirmwareVersion(out var family));
+        Assert.Equal(0xC4, family);
+
+        Assert.Equal(new byte[] { 0xE0, 0x50, 0x01, 0x00, 0x00, 0x00, 0x00 }, spy.Calls[0].Bytes);
+        Assert.Equal("1.4", hub.State.FirmwareVersion);
+        hub.Detach();
+        Assert.Equal("", hub.State.FirmwareVersion);
+    }
+
+    [Fact]
+    public void ReadFirmwareVersion_rejects_a_reply_without_the_echo()
+    {
+        var spy = new HubTransportSpy { InputReport = new byte[] { 0xE0, 0x00, 0x00, 0x00, 0x00, 0x00 } };
+        var hub = new LianLiHub();
+        hub.Attach(spy, SlInfinityProfile());
+
+        Assert.False(hub.ReadFirmwareVersion(out _));
+        Assert.Equal("", hub.State.FirmwareVersion);
     }
 
     // ── Transport routing ──

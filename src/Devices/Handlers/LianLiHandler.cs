@@ -42,5 +42,5 @@ public sealed class LianLiHandler : IDeviceHandler
             Identifiers.Any(id => id.VendorId == d.VendorId && id.ProductId == d.ProductId));
     }
 
-    public string GetFirmwareVersion() => "";
+    public string GetFirmwareVersion() => _hub.State.FirmwareVersion;
 }

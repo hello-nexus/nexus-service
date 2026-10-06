@@ -29,13 +29,15 @@ public sealed class LinuxResumeListener : IHostedService, IDisposable
 
     private readonly RgbBridge _bridge;
     private readonly Nexus.Service.QSeries.QSeriesPortWatcher? _qseries;
+    private readonly Nexus.Service.Peripherals.LianLi.LianLiHub? _lianLi;
     private DBusConnection? _dbus;
     private CancellationTokenSource? _cts;
 
-    public LinuxResumeListener(RgbBridge bridge, Nexus.Service.QSeries.QSeriesPortWatcher? qseries = null)
+    public LinuxResumeListener(RgbBridge bridge, Nexus.Service.QSeries.QSeriesPortWatcher? qseries = null, Nexus.Service.Peripherals.LianLi.LianLiHub? lianLi = null)
     {
         _bridge = bridge;
         _qseries = qseries;
+        _lianLi = lianLi;
     }
 
     public Task StartAsync(CancellationToken cancellationToken)
@@ -101,6 +103,7 @@ public sealed class LinuxResumeListener : IHostedService, IDisposable
                         ServiceLog.Info("[power-events] system resumed - bouncing OpenRGB subprocess");
                         _bridge.OnSystemResume();
                         _qseries?.OnHostResumed();
+                        _lianLi?.OnSystemResumed();
                     }
                 }
             }

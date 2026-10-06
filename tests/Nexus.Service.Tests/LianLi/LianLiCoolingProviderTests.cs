@@ -7,12 +7,67 @@ namespace Nexus.Service.Tests.LianLi;
 
 public class LianLiCoolingProviderTests
 {
-    private static LianLiCoolingProvider Connected(InMemoryConfigStore store)
+    private static LianLiCoolingProvider Connected(InMemoryConfigStore store) => Connected(store, out _, out _);
+
+    private static LianLiCoolingProvider Connected(InMemoryConfigStore store, out LianLiHub hub, out HubTransportSpy spy)
     {
-        var hub = new LianLiHub();
+        hub = new LianLiHub();
+        spy = new HubTransportSpy();
         LianLiFanProfiles.TryGet(0xA102, out var profile);
-        hub.Attach(new HubTransportSpy(), profile);
+        hub.Attach(spy, profile);
         return new LianLiCoolingProvider(hub, store);
+    }
+
+    // Manual mode for port 0 is E0 10 62 10.
+    private static bool IsManualMode(HubTransportSpy.Call c) => c.Bytes[1] == 0x10 && c.Bytes[2] == 0x62 && c.Bytes[3] == 0x10;
+
+    [Fact]
+    public void Reassert_refreshes_duty_only_until_a_resume_then_reenters_manual_mode_once()
+    {
+        var provider = Connected(new InMemoryConfigStore(), out var hub, out var spy);
+        provider.SetFanSpeed("lianli:port0", 40);
+        spy.Calls.Clear();
+
+        provider.ReassertControl();
+        Assert.DoesNotContain(spy.Calls, IsManualMode);
+
+        hub.OnSystemResumed();
+        provider.ReassertControl();
+        Assert.Single(spy.Calls, IsManualMode);
+
+        spy.Calls.Clear();
+        provider.ReassertControl();
+        Assert.DoesNotContain(spy.Calls, IsManualMode);
+    }
+
+    [Fact]
+    public void A_failed_reentry_after_resume_is_retried_on_the_next_reassert()
+    {
+        var provider = Connected(new InMemoryConfigStore(), out var hub, out var spy);
+        provider.SetFanSpeed("lianli:port0", 40);
+        hub.OnSystemResumed();
+        spy.RejectWrites = true;
+        provider.ReassertControl();
+
+        spy.RejectWrites = false;
+        spy.Calls.Clear();
+        provider.ReassertControl();
+
+        Assert.Single(spy.Calls, IsManualMode);
+    }
+
+    [Fact]
+    public void A_resume_with_no_port_under_control_is_consumed()
+    {
+        var provider = Connected(new InMemoryConfigStore(), out var hub, out var spy);
+        hub.OnSystemResumed();
+        provider.ReassertControl();
+        provider.SetFanSpeed("lianli:port0", 40);
+        spy.Calls.Clear();
+
+        provider.ReassertControl();
+
+        Assert.DoesNotContain(spy.Calls, IsManualMode);
     }
 
     [Fact]

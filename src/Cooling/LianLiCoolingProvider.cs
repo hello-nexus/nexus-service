@@ -23,6 +23,7 @@ public sealed class LianLiCoolingProvider : IFanControlProvider, ICoolingProvide
     // guard both behind _ctrlLock like QSeriesCoolerCoolingProvider does.
     private readonly object _ctrlLock = new();
     private readonly int[] _pendingDuty = new int[LianLiProtocol.PortCount];
+    private int _resumeEpochSeen;
     private readonly HashSet<string> _softwareControlled = new(StringComparer.Ordinal);
 
     public LianLiCoolingProvider(LianLiHub hub, IConfigStore store)
@@ -200,11 +201,21 @@ public sealed class LianLiCoolingProvider : IFanControlProvider, ICoolingProvide
     public void ReassertControl()
     {
         if (!_hub.IsConnected) return;
+        // Across sleep the hub drops manual mode, so the first re-assert after a
+        // resume re-enters it; every other one is speed-only, as SetSpeed's
+        // re-entry resets the fan to its default each tick. A resume is consumed
+        // only once every port took the re-entry.
+        var resumeEpoch = _hub.ResumeEpoch;
         int[] ports;
         int[] duties;
         lock (_ctrlLock)
         {
-            if (_softwareControlled.Count == 0) return;
+            if (_softwareControlled.Count == 0)
+            {
+                // Nothing to re-enter: a port taken over later starts with SetSpeed anyway.
+                _resumeEpochSeen = resumeEpoch;
+                return;
+            }
             ports = new int[_softwareControlled.Count];
             duties = new int[_softwareControlled.Count];
             var idx = 0;
@@ -223,14 +234,20 @@ public sealed class LianLiCoolingProvider : IFanControlProvider, ICoolingProvide
                 Array.Resize(ref duties, idx);
             }
         }
+        var reenter = resumeEpoch != _resumeEpochSeen;
+        var allOk = true;
         for (var i = 0; i < ports.Length; i++)
         {
-            // Speed-only refresh - SetSpeed re-enters manual mode, which resets
-            // the fan to its default each tick and prevents the duty from taking.
-            if (!_hub.SetDuty(ports[i], duties[i]))
+            var ok = reenter ? _hub.SetSpeed(ports[i], duties[i]) : _hub.SetDuty(ports[i], duties[i]);
+            allOk &= ok;
+            if (!ok)
             {
                 ServiceLog.Warn($"[lianli-cooling] ReassertControl port {ports[i]} duty {duties[i]} returned false");
             }
+        }
+        if (allOk)
+        {
+            _resumeEpochSeen = resumeEpoch;
         }
     }
 

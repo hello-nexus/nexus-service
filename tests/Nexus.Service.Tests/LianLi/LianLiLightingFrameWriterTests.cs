@@ -126,6 +126,77 @@ public class LianLiLightingFrameWriterTests
     }
 
     [Fact]
+    public void Al_whole_fan_mode_commits_the_inner_channel_only()
+    {
+        Attach(0xA101, port: 1, fans: 2);
+        SetMode("taichi");
+
+        _writer.Tick();
+
+        var commits = Calls.Where(c => c.IsSetFeature && (c.Bytes[1] & 0xF0) == 0x10 && c.Bytes[2] == 0x2C).ToList();
+        Assert.Single(commits);
+        Assert.Equal(0x12, commits[0].Bytes[1]); // inner channel 2 of port 1
+        Assert.DoesNotContain(Calls, c => c.Kind == HubTransportSpy.CallKind.OutputReport && c.Bytes[1] == 0x33);
+    }
+
+    [Fact]
+    public void Al_split_ring_mode_commits_both_channels()
+    {
+        Attach(0xA101, port: 0, fans: 2);
+        SetMode("runway");
+
+        _writer.Tick();
+
+        var commits = Calls.Where(c => c.IsSetFeature && c.Bytes[2] == 0x1A && (c.Bytes[1] & 0xF0) == 0x10).Select(c => c.Bytes[1]).ToArray();
+        Assert.Equal(new byte[] { 0x10, 0x11 }, commits);
+    }
+
+    [Fact]
+    public void Sl_v2_commits_one_channel_per_port_and_latches_on_four()
+    {
+        Attach(0xA103, port: 2, fans: 6);
+        SetMode("tide");
+
+        _writer.Tick();
+
+        Assert.Contains(Calls, c => c.IsSetFeature && c.Bytes[2] == 0x60 && c.Bytes[3] == 0x26);
+        Assert.Contains(Calls, c => c.IsSetFeature && c.Bytes[1] == 0x12 && c.Bytes[2] == 0x1A);
+        Assert.DoesNotContain(Calls, c => c.IsSetFeature && c.Bytes[1] is 0x14 or 0x15);
+        Assert.Equal(new byte[] { 0xE0, 0x60, 0x00, 0x04, 0x00, 0x00, 0x00 }, Calls[^1].Bytes);
+    }
+
+    [Fact]
+    public void An_empty_palette_falls_back_to_the_mode_defaults()
+    {
+        Attach(0xA102, port: 0, fans: 1);
+        _store.Update(s => { s.Devices.LianLiLighting.Mode = "runway"; s.Devices.LianLiLighting.Colors.Clear(); });
+
+        _writer.Tick();
+
+        var colour = Calls.First(c => c.Kind == HubTransportSpy.CallKind.OutputReport && c.Bytes[1] == 0x30).Bytes;
+        // Default runway palette red then blue, on the R,B,G wire.
+        Assert.Equal(new byte[] { 0xFF, 0x00, 0x00 }, colour[2..5]);
+        Assert.Equal(new byte[] { 0x00, 0xFF, 0x00 }, colour[5..8]);
+    }
+
+    [Fact]
+    public void A_system_resume_recommits_an_unchanged_firmware_mode()
+    {
+        Attach(0xA102, port: 0, fans: 2);
+        SetMode("rainbowWave");
+        _writer.Tick();
+        var afterFirst = Calls.Count;
+        _writer.Tick();
+        Assert.Equal(afterFirst, Calls.Count);
+
+        _hub.OnSystemResumed();
+        _writer.Tick();
+
+        Assert.True(Calls.Count > afterFirst);
+        Assert.Equal(0x60, Calls[^1].Bytes[1]);
+    }
+
+    [Fact]
     public void Sl_v1_falls_back_to_static_for_a_persisted_sl_infinity_only_mode()
     {
         Attach(0xA100, port: 0, fans: 1);

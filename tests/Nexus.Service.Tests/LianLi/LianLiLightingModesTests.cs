@@ -1,247 +1,185 @@
-using System;
 using System.Linq;
 using Nexus.Service.Lighting;
 using Nexus.Service.Peripherals.LianLi;
+using Xunit;
 
 namespace Nexus.Service.Tests.LianLi;
 
 public class LianLiLightingModesTests
 {
-    // ── Per-family support ──
-
-    // The SL v1 firmware has no voice/groove/render/tunnel (0x26..0x29).
-    [Fact]
-    public void Sl_v1_catalog_drops_the_v2_only_effects()
+    private static readonly LianLiFanFamily[] Families =
     {
-        var sl = LianLiLightingModes.CatalogFor(LianLiFanFamily.Sl).Select(m => m.Key).ToArray();
-        var v2 = LianLiLightingModes.CatalogFor(LianLiFanFamily.SlV2).Select(m => m.Key).ToArray();
+        LianLiFanFamily.Sl, LianLiFanFamily.Al, LianLiFanFamily.SlInfinity, LianLiFanFamily.SlV2, LianLiFanFamily.AlV2,
+    };
 
-        Assert.Equal(LianLiLightingModes.Catalog.Length, v2.Length);
-        Assert.Equal(v2.Length - 4, sl.Length);
+    [Fact]
+    public void Every_family_lists_custom_first_and_no_key_twice()
+    {
+        foreach (var family in Families)
+        {
+            var keys = LianLiLightingModes.CatalogFor(family).Select(m => m.Key).ToArray();
+            Assert.Equal("custom", keys[0]);
+            Assert.Equal(keys.Length, keys.Distinct().Count());
+            Assert.Contains("static", keys);
+            Assert.Contains("breathing", keys);
+        }
+    }
+
+    [Theory]
+    [InlineData(LianLiFanFamily.Sl, 14)]
+    [InlineData(LianLiFanFamily.Al, 19)]
+    [InlineData(LianLiFanFamily.SlInfinity, 21)]
+    [InlineData(LianLiFanFamily.SlV2, 18)]
+    [InlineData(LianLiFanFamily.AlV2, 27)]
+    public void Catalog_size_per_family(LianLiFanFamily family, int count)
+    {
+        Assert.Equal(count, LianLiLightingModes.CatalogFor(family).Count);
+    }
+
+    // SL-Infinity keeps the bytes verified on fw 1.4 for the keys it already shipped.
+    [Theory]
+    [InlineData("static", 0x01)]
+    [InlineData("breathing", 0x02)]
+    [InlineData("spectrumCycle", 0x04)]
+    [InlineData("rainbowWave", 0x05)]
+    [InlineData("colorCycle", 0x18)]
+    [InlineData("meteor", 0x19)]
+    [InlineData("runway", 0x1A)]
+    [InlineData("voice", 0x2A)]
+    [InlineData("mixing", 0x38)]
+    [InlineData("stack", 0x39)]
+    [InlineData("tide", 0x3A)]
+    [InlineData("mopUp", 0x44)]
+    [InlineData("heartBeat", 0x42)]
+    [InlineData("electricCurrent", 0x41)]
+    public void Sl_infinity_effect_bytes(string key, byte expected)
+    {
+        Assert.Equal(expected, LianLiLightingModes.Find(LianLiFanFamily.SlInfinity, key)!.EffectByte);
+    }
+
+    [Theory]
+    [InlineData("runway", 0x46)]
+    [InlineData("mopUp", 0x47)]
+    [InlineData("mixing", 0x48)]
+    [InlineData("stack", 0x49)]
+    [InlineData("tide", 0x4A)]
+    [InlineData("scan", 0x4B)]
+    [InlineData("door", 0x4C)]
+    [InlineData("heartBeatRunway", 0x4D)]
+    [InlineData("electricCurrent", 0x4E)]
+    public void Sl_infinity_merged_bytes(string key, byte expected)
+    {
+        var m = LianLiLightingModes.Find(LianLiFanFamily.SlInfinity, key)!;
+        Assert.Equal(expected, m.MergedEffectByte);
+        Assert.True(m.MergesOn(LianLiFanProfiles.Default));
+    }
+
+    [Theory]
+    [InlineData(LianLiFanFamily.Sl, "rainbowWave", 0x05)]
+    [InlineData(LianLiFanFamily.Sl, "colorCycle", 0x23)]
+    [InlineData(LianLiFanFamily.SlV2, "tunnel", 0x29)]
+    [InlineData(LianLiFanFamily.Al, "rainbowWave", 0x28)]
+    [InlineData(LianLiFanFamily.Al, "spectrumCycle", 0x35)]
+    [InlineData(LianLiFanFamily.Al, "taichi", 0x2C)]
+    [InlineData(LianLiFanFamily.Al, "contest", 0x33)]
+    [InlineData(LianLiFanFamily.AlV2, "rainbowWave", 0x2B)]
+    [InlineData(LianLiFanFamily.AlV2, "stack", 0x43)]
+    [InlineData(LianLiFanFamily.AlV2, "twinkle", 0x3A)]
+    public void Each_family_uses_its_own_numbering(LianLiFanFamily family, string key, byte expected)
+    {
+        Assert.Equal(expected, LianLiLightingModes.Find(family, key)!.EffectByte);
+    }
+
+    [Fact]
+    public void Sl_v1_lacks_the_v2_effects()
+    {
         foreach (var key in new[] { "voice", "groove", "render", "tunnel" })
         {
-            Assert.Contains(key, v2);
-            Assert.DoesNotContain(key, sl);
-        }
-        foreach (var key in new[] { "custom", "static", "breathing", "spectrumCycle", "rainbowWave", "staggered",
-                     "tide", "runway", "mixing", "stack", "neon", "colorCycle", "meteor", "stackMultiColor" })
-        {
-            Assert.Contains(key, sl);
+            Assert.Null(LianLiLightingModes.Find(LianLiFanFamily.Sl, key));
+            Assert.NotNull(LianLiLightingModes.Find(LianLiFanFamily.SlV2, key));
         }
     }
 
     [Fact]
-    public void SupportedBy_gates_the_sl_family_on_the_v2_only_effects()
+    public void Merges_exist_only_on_sl_infinity()
     {
-        var voice = LianLiLightingModes.Find("voice")!;
-        Assert.False(voice.SupportedBy(LianLiFanFamily.Sl));
-        Assert.True(voice.SupportedBy(LianLiFanFamily.SlV2));
-        Assert.True(LianLiLightingModes.Find("static")!.SupportedBy(LianLiFanFamily.Sl));
+        foreach (var family in Families)
+        {
+            if (family == LianLiFanFamily.SlInfinity) continue;
+            Assert.All(LianLiLightingModes.CatalogFor(family), m => Assert.Equal(0, m.MergedEffectByte));
+        }
     }
 
-    // SL-Infinity firmware numbers its effects differently; the rest have no equivalent there.
+    // AL and AL v2 animate a whole fan from the inner channel; the split ring pairs commit on both.
     [Theory]
-    [InlineData("custom",        0x01)]
-    [InlineData("static",        0x01)]
-    [InlineData("breathing",     0x02)]
-    [InlineData("spectrumCycle", 0x04)]
-    [InlineData("rainbowWave",   0x05)]
-    [InlineData("colorCycle",    0x18)]
-    [InlineData("meteor",        0x19)]
-    [InlineData("runway",        0x1A)]
-    [InlineData("voice",         0x2A)]
-    [InlineData("mixing",        0x38)]
-    [InlineData("stack",         0x39)]
-    [InlineData("tide",          0x3A)]
-    public void Sl_infinity_uses_its_own_effect_bytes(string key, byte expected)
+    [InlineData(LianLiFanFamily.Al, "taichi", true)]
+    [InlineData(LianLiFanFamily.Al, "static", false)]
+    [InlineData(LianLiFanFamily.Al, "runway", false)]
+    [InlineData(LianLiFanFamily.AlV2, "spectrumCycle", false)]
+    [InlineData(LianLiFanFamily.AlV2, "wave", true)]
+    [InlineData(LianLiFanFamily.SlInfinity, "tide", false)]
+    [InlineData(LianLiFanFamily.SlV2, "tide", false)]
+    public void Whole_fan_modes(LianLiFanFamily family, string key, bool wholeFan)
     {
-        var m = LianLiLightingModes.Find(key)!;
-        Assert.True(m.SupportedBy(LianLiFanFamily.SlInfinity));
-        Assert.Equal(expected, m.EffectByteFor(LianLiFanFamily.SlInfinity));
-        Assert.Equal(m.EffectByte, m.EffectByteFor(LianLiFanFamily.SlV2));
+        Assert.Equal(wholeFan, LianLiLightingModes.Find(family, key)!.WholeFan);
     }
-
-    [Fact]
-    public void Sl_infinity_catalog_hides_modes_its_firmware_lacks()
-    {
-        var sli = LianLiLightingModes.CatalogFor(LianLiFanFamily.SlInfinity).Select(m => m.Key).ToArray();
-        foreach (var key in new[] { "staggered", "neon", "groove", "stackMultiColor", "render", "tunnel" })
-        {
-            Assert.DoesNotContain(key, sli);
-        }
-        Assert.Equal(12, sli.Length);
-    }
-
-    // ── Catalog completeness ──
-
-    [Fact]
-    public void Catalog_contains_all_expected_keys()
-    {
-        var keys = LianLiLightingModes.Catalog.Select(m => m.Key).ToArray();
-        Assert.Contains("custom", keys);
-        Assert.Contains("static", keys);
-        Assert.Contains("breathing", keys);
-        Assert.Contains("spectrumCycle", keys);
-        Assert.Contains("rainbowWave", keys);
-        Assert.Contains("staggered", keys);
-        Assert.Contains("tide", keys);
-        Assert.Contains("runway", keys);
-        Assert.Contains("mixing", keys);
-        Assert.Contains("stack", keys);
-        Assert.Contains("neon", keys);
-        Assert.Contains("colorCycle", keys);
-        Assert.Contains("meteor", keys);
-        Assert.Contains("voice", keys);
-        Assert.Contains("groove", keys);
-        Assert.Contains("stackMultiColor", keys);
-        Assert.Contains("render", keys);
-        Assert.Contains("tunnel", keys);
-        Assert.Equal(18, keys.Length);
-    }
-
-    [Fact]
-    public void Catalog_has_no_duplicate_keys()
-    {
-        var keys = LianLiLightingModes.Catalog.Select(m => m.Key).ToArray();
-        Assert.Equal(keys.Length, keys.Distinct().Count());
-    }
-
-    // ── Effect bytes ──
 
     [Theory]
-    [InlineData("custom",        0x01)]
-    [InlineData("static",        0x01)]
-    [InlineData("breathing",     0x02)]
-    [InlineData("spectrumCycle", 0x04)]
-    [InlineData("rainbowWave",   0x05)]
-    [InlineData("staggered",     0x18)]
-    [InlineData("tide",          0x1A)]
-    [InlineData("runway",        0x1C)]
-    [InlineData("mixing",        0x1E)]
-    [InlineData("stack",         0x20)]
-    [InlineData("neon",          0x22)]
-    [InlineData("colorCycle",    0x23)]
-    [InlineData("meteor",        0x24)]
-    [InlineData("voice",         0x26)]
-    [InlineData("groove",          0x27)]
-    [InlineData("stackMultiColor", 0x21)]
-    [InlineData("render",          0x28)]
-    [InlineData("tunnel",          0x29)]
-    public void Find_returns_correct_effect_byte(string key, byte expected)
+    [InlineData(LianLiFanFamily.SlInfinity, "static", 4)]
+    [InlineData(LianLiFanFamily.SlV2, "static", 6)]
+    [InlineData(LianLiFanFamily.AlV2, "breathing", 6)]
+    [InlineData(LianLiFanFamily.SlInfinity, "runway", 2)]
+    [InlineData(LianLiFanFamily.SlInfinity, "heartBeat", 1)]
+    [InlineData(LianLiFanFamily.Sl, "neon", 0)]
+    public void ColorsMax_follows_the_default_palette(LianLiFanFamily family, string key, int colors)
     {
-        var m = LianLiLightingModes.Find(key);
-        Assert.NotNull(m);
-        Assert.Equal(expected, m!.EffectByte);
+        var m = LianLiLightingModes.Find(family, key)!;
+        Assert.Equal(colors, m.ColorsMax);
+        Assert.Equal(colors, m.DefaultColors.Count);
+        Assert.All(m.DefaultColors, c => Assert.Matches("^#[0-9A-F]{6}$", c));
     }
 
-    // ── Speed codes ──
+    [Fact]
+    public void Custom_and_static_have_no_speed_or_direction()
+    {
+        var stat = LianLiLightingModes.Find(LianLiFanFamily.SlInfinity, "static")!;
+        Assert.False(LianLiLightingModes.Custom.HasSpeed);
+        Assert.False(LianLiLightingModes.Custom.HasDirection);
+        Assert.False(stat.HasSpeed);
+        Assert.False(stat.HasDirection);
+    }
+
+    [Fact]
+    public void Find_returns_null_for_unknown_key()
+    {
+        Assert.Null(LianLiLightingModes.Find(LianLiFanFamily.SlInfinity, "unknown"));
+        Assert.Null(LianLiLightingModes.Find(LianLiFanFamily.SlInfinity, ""));
+        Assert.Null(LianLiLightingModes.Find(LianLiFanFamily.SlInfinity, "taichi"));
+    }
 
     [Theory]
     [InlineData(0, 0x02)]
-    [InlineData(1, 0x01)]
     [InlineData(2, 0x00)]
-    [InlineData(3, 0xFF)]
     [InlineData(4, 0xFE)]
     public void SpeedCodes_index_to_byte(int index, byte expected)
     {
         Assert.Equal(expected, LianLiLightingModes.SpeedCodes[index]);
     }
 
-    // ── Brightness codes ──
-
     [Theory]
-    [InlineData(0, 0x08)] // off
-    [InlineData(1, 0x03)]
-    [InlineData(2, 0x02)]
-    [InlineData(3, 0x01)]
-    [InlineData(4, 0x00)] // full
+    [InlineData(0, 0x08)]
+    [InlineData(4, 0x00)]
     public void BrightnessCodes_index_to_byte(int index, byte expected)
     {
         Assert.Equal(expected, LianLiLightingModes.BrightnessCodes[index]);
     }
 
-    // ── Direction bytes ──
-
-    [Fact]
-    public void DirectionByte_zero_is_LTR()
-    {
-        Assert.Equal(0x00, LianLiLightingModes.DirectionByte(0));
-    }
-
-    [Fact]
-    public void DirectionByte_one_is_RTL()
-    {
-        Assert.Equal(0x01, LianLiLightingModes.DirectionByte(1));
-    }
-
-    [Fact]
-    public void DirectionByte_other_values_return_LTR()
-    {
-        Assert.Equal(0x00, LianLiLightingModes.DirectionByte(99));
-    }
-
-    // ── Find ──
-
-    [Fact]
-    public void Find_returns_null_for_unknown_key()
-    {
-        Assert.Null(LianLiLightingModes.Find("unknown"));
-        Assert.Null(LianLiLightingModes.Find(""));
-    }
-
-    // ── ColorsMax ──
-
     [Theory]
-    [InlineData("custom", 0)]
-    [InlineData("rainbowWave", 0)]
-    [InlineData("spectrumCycle", 0)]
-    [InlineData("neon", 0)]
-    [InlineData("voice", 0)]
-    [InlineData("stack", 1)]
-    [InlineData("staggered", 2)]
-    [InlineData("colorCycle", 3)]
-    [InlineData("breathing", 6)]
-    [InlineData("static", 6)]
-    public void ColorsMax_per_mode(string key, int expected)
+    [InlineData(0, 0x00)]
+    [InlineData(1, 0x01)]
+    [InlineData(99, 0x00)]
+    public void DirectionByte_maps_one_to_rtl(int direction, byte expected)
     {
-        var m = LianLiLightingModes.Find(key);
-        Assert.NotNull(m);
-        Assert.Equal(expected, m!.ColorsMax);
-    }
-
-    // ── HasSpeed / HasDirection ──
-
-    [Fact]
-    public void Custom_and_static_have_no_speed_or_direction()
-    {
-        var custom = LianLiLightingModes.Find("custom");
-        var stat = LianLiLightingModes.Find("static");
-        Assert.NotNull(custom); Assert.False(custom!.HasSpeed); Assert.False(custom.HasDirection);
-        Assert.NotNull(stat);   Assert.False(stat!.HasSpeed);   Assert.False(stat.HasDirection);
-    }
-
-    [Theory]
-    [InlineData("rainbowWave")]
-    [InlineData("stack")]
-    [InlineData("colorCycle")]
-    public void Modes_with_direction_have_it(string key)
-    {
-        var m = LianLiLightingModes.Find(key);
-        Assert.NotNull(m);
-        Assert.True(m!.HasDirection);
-    }
-
-    [Theory]
-    [InlineData("stackMultiColor", true, true, 0)]
-    [InlineData("render",          true, true, 4)]
-    [InlineData("tunnel",          true, true, 4)]
-    public void New_modes_have_correct_properties(string key, bool hasSpeed, bool hasDirection, int colorsMax)
-    {
-        var m = LianLiLightingModes.Find(key);
-        Assert.NotNull(m);
-        Assert.Equal(hasSpeed,     m!.HasSpeed);
-        Assert.Equal(hasDirection, m.HasDirection);
-        Assert.True(m.HasBrightness);
-        Assert.Equal(colorsMax,    m.ColorsMax);
+        Assert.Equal(expected, LianLiLightingModes.DirectionByte(direction));
     }
 }

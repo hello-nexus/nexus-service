@@ -9,4 +9,7 @@ public sealed class LianLiState
     public int[] Duty { get; } = new int[LianLiProtocol.PortCount];
 
     public bool IsConnected { get; set; }
+
+    /// <summary>Hub firmware version read on attach, as major.minor (raw hex when the encoding is unknown); empty until read.</summary>
+    public string FirmwareVersion { get; set; } = "";
 }

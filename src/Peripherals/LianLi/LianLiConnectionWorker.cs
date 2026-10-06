@@ -16,6 +16,8 @@ public sealed class LianLiConnectionWorker : BackgroundService
     private const int ConnectPollMs = 5000;
     private const int RpmPollMs = 2000;
     private const int MaxConsecutiveFailures = 3;
+    // A hub that never answers the version query stops being asked; each ask holds the hub lock the frame writer needs.
+    private const int MaxFirmwareReads = 5;
 
     private readonly IHidEnumerator _hid;
     private readonly LianLiHub _hub;
@@ -61,8 +63,15 @@ public sealed class LianLiConnectionWorker : BackgroundService
                     try
                     {
                         var failures = 0;
+                        var firmwareReads = 0;
                         while (!stoppingToken.IsCancellationRequested && _gate.IsEnabled("lianli"))
                         {
+                            // The hub can answer the version query empty for a while after attach.
+                            if (string.IsNullOrEmpty(_hub.State.FirmwareVersion) && firmwareReads++ < MaxFirmwareReads
+                                && _hub.ReadFirmwareVersion(out var familyId))
+                            {
+                                ServiceLog.Info($"[lianli] firmware {_hub.State.FirmwareVersion} (family 0x{familyId:X2})");
+                            }
                             if (_hub.ReadRpm())
                             {
                                 failures = 0;

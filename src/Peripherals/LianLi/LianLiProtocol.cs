@@ -26,8 +26,8 @@ public static class LianLiProtocol
     /// <summary>Physical fan ports on the hub.</summary>
     public const int PortCount = 4;
 
-    /// <summary>Fans a single port group can daisy-chain.</summary>
-    public const int MaxFansPerPort = 4;
+    /// <summary>Most fans any family daisy-chains on one port; buffers size to it, the profile caps each hub.</summary>
+    public const int MaxFansPerPort = 6;
 
     // Per-fan LED counts, hardware-confirmed on fw 1.4 (2026-08-27) by lighting
     // single indices with the service stopped and reading them off a camera:
@@ -56,9 +56,6 @@ public static class LianLiProtocol
     /// <summary>Parked on every channel but 0 while a merged effect runs, committed at brightness off.</summary>
     public const byte EffectMergeIdle = 0x32;
 
-    /// <summary>Palette bytes for a merged effect on channel 0: every fan's colour slots.</summary>
-    public const int MergedPaletteBytes = MaxFansPerPort * 4 * 3;
-
     /// <summary>
     /// Minimum gap between manual-mode and duty writes; firmware drops the duty
     /// byte if it arrives before the mode-transition settles.
@@ -72,13 +69,14 @@ public static class LianLiProtocol
     public const byte BrightnessDefault = 0x00;
 
     /// <summary>
-    /// Set number of fans on a port group (g=0..3). Feature report.
-    /// SL-Infinity form: E0 10 &lt;quantityRegister&gt; (g+1) (qty 0..4) 00 00.
-    /// SL v1 form (PackedQuantity): E0 10 &lt;quantityRegister&gt; ((g shl 4) or qty) 00 00 00.
+    /// Set number of fans on a port group (g=0..3), qty clamped to the
+    /// profile's cap. Feature report.
+    /// Unpacked form: E0 10 &lt;quantityRegister&gt; (g+1) qty 00 00.
+    /// Packed form (<see cref="LianLiFanProfile.PackedQuantity"/>): E0 10 &lt;quantityRegister&gt; ((g shl 4) or qty) 00 00 00.
     /// </summary>
     public static byte[] BuildSetQuantity(in LianLiFanProfile profile, int group, int qty)
     {
-        var q = (byte)Math.Clamp(qty, 0, MaxFansPerPort);
+        var q = (byte)Math.Clamp(qty, 0, profile.MaxFans);
         if (profile.PackedQuantity)
         {
             return new byte[]
@@ -189,12 +187,11 @@ public static class LianLiProtocol
     /// Frame sync, sent once after every lighting apply. Without it the firmware
     /// keeps rendering the previous effect settings - a mode change lands on the
     /// per-channel commit, but speed and brightness do not take until this
-    /// arrives. Feature report. E0 60 00 01 00 00 00.
-    /// Source: L-Connect 3 SLInfinityController.syncLightingFrame -> SetFrame(1).
+    /// arrives. Feature report. E0 60 00 [profile.FrameLatch] 00 00 00.
     /// </summary>
-    public static byte[] BuildFrameSync()
+    public static byte[] BuildFrameSync(in LianLiFanProfile profile)
     {
-        return new byte[] { ReportId, 0x60, 0x00, 0x01, 0x00, 0x00, 0x00 };
+        return new byte[] { ReportId, 0x60, 0x00, profile.FrameLatch, 0x00, 0x00, 0x00 };
     }
 
     /// <summary>
@@ -204,6 +201,30 @@ public static class LianLiProtocol
     public static byte[] BuildRpmPrimer()
     {
         return new byte[] { ReportId, 0x50, 0x00, 0x00, 0x00, 0x00, 0x00 };
+    }
+
+    /// <summary>Feature report that primes the next input report with the firmware version: E0 50 01 00 00 00 00.</summary>
+    public static byte[] BuildFirmwarePrimer()
+    {
+        return new byte[] { ReportId, 0x50, 0x01, 0x00, 0x00, 0x00, 0x00 };
+    }
+
+    /// <summary>
+    /// Decodes the firmware reply: [1..2] echo E0 50, [3] major id, [4] the
+    /// family id, [5] the version with major in the high nibble and minor in
+    /// the low one. A version byte outside that encoding comes back as hex.
+    /// </summary>
+    public static bool TryDecodeFirmware(ReadOnlySpan<byte> buf, out string version, out byte familyId)
+    {
+        version = "";
+        familyId = 0;
+        if (buf.Length < 6 || buf[1] != ReportId || buf[2] != 0x50) return false;
+        familyId = buf[4];
+        var fine = buf[5];
+        var major = fine >> 4;
+        var minor = fine & 0x0F;
+        version = major > 0 && minor <= 9 ? $"{major}.{minor}" : $"0x{fine:X2}";
+        return true;
     }
 
     /// <summary>

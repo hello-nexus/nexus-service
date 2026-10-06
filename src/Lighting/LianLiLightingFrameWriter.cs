@@ -102,6 +102,7 @@ public sealed class LianLiLightingFrameWriter : IHostedService, IDisposable
     private int _argbRecommitsDone = ArgbReleaseRecommitMs.Length;
 
     private bool _customMergeCleared;
+    private int _resumeEpochSeen;
     private long _lastCustomFrameMs = long.MinValue / 2;
 
     // Per-device resolved zones for the firmware-mode sig/commit pair, reused
@@ -196,20 +197,14 @@ public sealed class LianLiLightingFrameWriter : IHostedService, IDisposable
                 timeEndPeriod(1);
                 _highResTimer = false;
             }
-            // The hub loses commanded LED state on USB re-enumeration, so clear
-            // the committed sig: the first reconnected tick re-commits the
-            // firmware mode even when settings are unchanged. The cooling path
-            // re-asserts on reconnect for the same reason.
-            _lastFirmwareSig = null;
-            _pendingFirmwareSig = null;
-            _hubInitialised = false;
-            _argbSyncSent = false;
-            _argbRecommitsDone = ArgbReleaseRecommitMs.Length;
-            _argbSyncRetry.Reset();
-            _customMergeCleared = false;
-            _initRetry.Reset();
-            _commitRetry.Reset();
+            ForgetHubState();
             return;
+        }
+        var resumeEpoch = _hub.ResumeEpoch;
+        if (resumeEpoch != _resumeEpochSeen)
+        {
+            _resumeEpochSeen = resumeEpoch;
+            ForgetHubState();
         }
         var settings = _store.Load();
         var ls = settings.Devices.LianLiLighting;
@@ -310,16 +305,12 @@ public sealed class LianLiLightingFrameWriter : IHostedService, IDisposable
             _highResTimer = false;
         }
 
-        var mode = LianLiLightingModes.Find(ls.Mode);
+        // A key persisted for another family (the route rejects new ones) falls
+        // back to static, the one commit every Uni hub accepts.
+        var mode = LianLiLightingModes.Find(profile.Family, ls.Mode) ?? LianLiLightingModes.Find(profile.Family, "static");
         if (mode == null)
         {
             return;
-        }
-        if (!mode.SupportedBy(profile.Family))
-        {
-            // A mode persisted for another family (the route rejects new ones);
-            // static is the one commit every Uni hub accepts.
-            mode = LianLiLightingModes.Find("static")!;
         }
 
         var uncontrolled = settings.Devices.UncontrolledLightingDevices;
@@ -361,6 +352,23 @@ public sealed class LianLiLightingFrameWriter : IHostedService, IDisposable
         {
             NoteFailure(_commitRetry, "firmware commit");
         }
+    }
+
+    // The hub loses commanded LED state on USB re-enumeration and across sleep,
+    // so forget what it was sent: the next tick re-initialises it and re-commits
+    // the firmware mode even when settings are unchanged. The cooling path
+    // re-asserts for the same reason.
+    private void ForgetHubState()
+    {
+        _lastFirmwareSig = null;
+        _pendingFirmwareSig = null;
+        _hubInitialised = false;
+        _argbSyncSent = false;
+        _argbRecommitsDone = ArgbReleaseRecommitMs.Length;
+        _argbSyncRetry.Reset();
+        _customMergeCleared = false;
+        _initRetry.Reset();
+        _commitRetry.Reset();
     }
 
     /// <summary>Test seam: tests advance the backoff clock instead of sleeping out the cap.</summary>
@@ -422,7 +430,7 @@ public sealed class LianLiLightingFrameWriter : IHostedService, IDisposable
         if (profile.StartActionPerFrame) return true;
         for (var p = 0; p < LianLiProtocol.PortCount; p++)
         {
-            if (!_hub.SetQuantity(p, LianLiZoneSupport.ClampFans(fans.GetFans(p)))) return false;
+            if (!_hub.SetQuantity(p, LianLiZoneSupport.ClampFans(fans.GetFans(p), profile))) return false;
             Settle();
         }
         return true;
@@ -487,7 +495,7 @@ public sealed class LianLiLightingFrameWriter : IHostedService, IDisposable
                 {
                     if (profile.StartActionPerFrame)
                     {
-                        _hub.SendStartAction(ch / profile.ChannelsPerPort, LianLiProtocol.MaxFansPerPort);
+                        _hub.SendStartAction(ch / profile.ChannelsPerPort, profile.MaxFans);
                         if (!paced) Settle();
                     }
                     _hub.SendColorData(ch, _channelBuf.AsSpan(0, byteCount));
@@ -546,13 +554,13 @@ public sealed class LianLiLightingFrameWriter : IHostedService, IDisposable
             {
                 foreach (var ch in device.SegmentChannels[seg])
                 {
+                    if (mode.WholeFan && profile.ChannelsPerPort == 2 && (ch & 1) == 1) continue;
                     // Inner and outer rings hold different per-fan counts, so the
                     // palette is refilled per channel rather than once per device.
                     var ledsPerFan = profile.LedsPerFanForChannel(ch);
-                    var effectByte = mode.EffectByteFor(profile.Family);
-                    var perFan = profile.PerFanStaticPalette && effectByte is LianLiProtocol.EffectStatic or LianLiProtocol.EffectBreathing;
-                    FillPaletteBuffer(_channelBuf, mode, ls.Colors, numFans, ledsPerFan, perFan);
-                    var byteCount = numFans * ledsPerFan * 3;
+                    var effectByte = mode.EffectByte;
+                    var perFan = effectByte is LianLiProtocol.EffectStatic or LianLiProtocol.EffectBreathing;
+                    var byteCount = FillPaletteBuffer(_channelBuf, mode, ls.Colors, numFans, ledsPerFan, perFan, profile.PaletteSlotsPerFan);
                     if (profile.StartActionPerFrame)
                     {
                         if (!_hub.SendStartAction(ch / profile.ChannelsPerPort, numFans)) return false;
@@ -608,7 +616,7 @@ public sealed class LianLiLightingFrameWriter : IHostedService, IDisposable
         Settle();
         for (var p = 0; p < LianLiProtocol.PortCount; p++)
         {
-            if (!_hub.SetQuantity(p, LianLiZoneSupport.ClampFans(fans.GetFans(p)))) return false;
+            if (!_hub.SetQuantity(p, LianLiZoneSupport.ClampFans(fans.GetFans(p), profile))) return false;
             Settle();
         }
         for (var ch = LianLiProtocol.PortCount * profile.ChannelsPerPort - 1; ch >= 1; ch--)
@@ -617,8 +625,8 @@ public sealed class LianLiLightingFrameWriter : IHostedService, IDisposable
             if (!_hub.SendModeCommit(ch, LianLiProtocol.EffectMergeIdle, LianLiProtocol.SpeedDefault, LianLiProtocol.DirectionDefault, off)) return false;
             Settle();
         }
-        FillPaletteBuffer(_channelBuf, mode, ls.Colors, LianLiProtocol.MaxFansPerPort, profile.LedsPerFanForChannel(0), perFan: false);
-        if (!_hub.SendColorData(0, _channelBuf.AsSpan(0, LianLiProtocol.MergedPaletteBytes))) return false;
+        var paletteBytes = FillPaletteBuffer(_channelBuf, mode, ls.Colors, profile.MaxFans, profile.LedsPerFanForChannel(0), perFan: false, profile.PaletteSlotsPerFan);
+        if (!_hub.SendColorData(0, _channelBuf.AsSpan(0, paletteBytes))) return false;
         Settle();
         if (!_hub.SendModeCommit(0, mode.MergedEffectByte, speedByte, dirByte, brightnessByte)) return false;
         Settle();
@@ -657,11 +665,11 @@ public sealed class LianLiLightingFrameWriter : IHostedService, IDisposable
     {
         if (device.Structure.Segments.Count == 0 || profile.InnerLedsPerFan <= 0)
         {
-            return LianLiProtocol.MaxFansPerPort;
+            return profile.MaxFans;
         }
         // Segment 0 is the inner (or only) ring, so its count divides by that per-fan value.
         var fans = device.Structure.Segments[0].LedCount / profile.InnerLedsPerFan;
-        return Math.Clamp(fans, 1, LianLiProtocol.MaxFansPerPort);
+        return Math.Clamp(fans, 1, profile.MaxFans);
     }
 
     private static byte DeviceBrightnessByte(
@@ -697,85 +705,53 @@ public sealed class LianLiLightingFrameWriter : IHostedService, IDisposable
         return false;
     }
 
-    // 6 colors: each fills one fan slot. Fewer: resize to 4, interleaved across fans.
-    // perFan: colour i fills fan i's whole ring (cycling when fewer colours than fans).
-    // Input colors are RGB; SendColorData applies the R,B,G wire swap.
-    private static void FillPaletteBuffer(byte[] buf, LianLiModeInfo mode, IReadOnlyList<string> colors, int numFans, int ledsPerFan, bool perFan)
+    // perFan: colour i fills fan i's whole ring (cycling when fewer colours than
+    // fans). Otherwise each fan carries the palette in its own run of slots,
+    // missing colours black. No user colours means the mode's defaults. Input
+    // colours are RGB; SendColorData applies the R,B,G wire swap. Returns the
+    // bytes filled.
+    private static int FillPaletteBuffer(byte[] buf, LianLiModeInfo mode, IReadOnlyList<string> colors, int numFans, int ledsPerFan, bool perFan, int slotsPerFan)
     {
         Array.Clear(buf);
-        if (mode.ColorsMax == 0 || colors.Count == 0)
+        var byteCount = perFan ? numFans * ledsPerFan * 3 : numFans * slotsPerFan * 3;
+        if (mode.ColorsMax == 0)
         {
-            return;
+            return byteCount;
+        }
+        var source = colors.Count > 0 ? colors : mode.DefaultColors;
+        var count = Math.Min(source.Count, mode.ColorsMax);
+        if (count == 0)
+        {
+            return byteCount;
         }
 
-        var count = Math.Min(colors.Count, mode.ColorsMax);
-        var parsed = new (byte r, byte g, byte b)[count];
-        for (var i = 0; i < count; i++)
+        for (var fanIdx = 0; fanIdx < numFans; fanIdx++)
         {
-            parsed[i] = ParseHexColor(colors[i]);
-        }
-
-        if (perFan)
-        {
-            for (var fanIdx = 0; fanIdx < numFans; fanIdx++)
+            if (perFan)
             {
-                var (r, g, b) = parsed[fanIdx % count];
+                var (r, g, b) = ParseHexColor(source[fanIdx % count]);
                 for (var led = 0; led < ledsPerFan; led++)
                 {
-                    var off = (fanIdx * ledsPerFan + led) * 3;
-                    if (off + 2 < buf.Length)
-                    {
-                        buf[off]     = r;
-                        buf[off + 1] = g;
-                        buf[off + 2] = b;
-                    }
+                    Put(buf, fanIdx * ledsPerFan + led, r, g, b);
                 }
+                continue;
             }
-            return;
+            for (var j = 0; j < slotsPerFan && j < count; j++)
+            {
+                var (r, g, b) = ParseHexColor(source[j]);
+                Put(buf, fanIdx * slotsPerFan + j, r, g, b);
+            }
         }
+        return byteCount;
+    }
 
-        if (count == 6)
-        {
-            // Fill each fan slot with its corresponding color.
-            for (var fanIdx = 0; fanIdx < numFans && fanIdx < count; fanIdx++)
-            {
-                var (r, g, b) = parsed[fanIdx];
-                for (var led = 0; led < ledsPerFan; led++)
-                {
-                    var off = (fanIdx * ledsPerFan + led) * 3;
-                    if (off + 2 < buf.Length)
-                    {
-                        buf[off]     = r;
-                        buf[off + 1] = g;
-                        buf[off + 2] = b;
-                    }
-                }
-            }
-        }
-        else
-        {
-            // Resize to 4 slots (pad with black). Interleaved: j=color, i=fan.
-            // Position = i * 12 + j * 3.
-            var slots = new (byte r, byte g, byte b)[4];
-            for (var i = 0; i < count && i < 4; i++)
-            {
-                slots[i] = parsed[i];
-            }
-            for (var j = 0; j < 4; j++)
-            {
-                var (r, g, b) = slots[j];
-                for (var i = 0; i < numFans; i++)
-                {
-                    var off = i * 12 + j * 3;
-                    if (off + 2 < buf.Length)
-                    {
-                        buf[off]     = r;
-                        buf[off + 1] = g;
-                        buf[off + 2] = b;
-                    }
-                }
-            }
-        }
+    private static void Put(byte[] buf, int index, byte r, byte g, byte b)
+    {
+        var off = index * 3;
+        if (off + 2 >= buf.Length) return;
+        buf[off] = r;
+        buf[off + 1] = g;
+        buf[off + 2] = b;
     }
 
     private static (byte r, byte g, byte b) ParseHexColor(string hex)

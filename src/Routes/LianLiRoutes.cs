@@ -23,6 +23,8 @@ public static partial class DevicesRoutes
             {
                 IsConnected = hub.IsConnected,
                 ModelName = hub.ModelName,
+                MaxFansPerPort = hub.Profile.MaxFans,
+                FirmwareVersion = state.FirmwareVersion,
                 Rpm = new[] { state.Rpm[0], state.Rpm[1], state.Rpm[2], state.Rpm[3] },
                 Duty = new[] { state.Duty[0], state.Duty[1], state.Duty[2], state.Duty[3] },
                 FansPerPort = new[]
@@ -49,9 +51,10 @@ public static partial class DevicesRoutes
             {
                 return Results.BadRequest(ApiResponse.Fail("port must be 0..3"));
             }
-            if (body.Count < 0 || body.Count > 4)
+            var maxFans = hub.Profile.MaxFans;
+            if (body.Count < 0 || body.Count > maxFans)
             {
-                return Results.BadRequest(ApiResponse.Fail("count must be 0..4"));
+                return Results.BadRequest(ApiResponse.Fail($"count must be 0..{maxFans}"));
             }
             if (hub.IsConnected)
             {
@@ -72,7 +75,7 @@ public static partial class DevicesRoutes
             var fans = new int[LianLiProtocol.PortCount];
             for (var p = 0; p < LianLiProtocol.PortCount; p++)
             {
-                fans[p] = LianLiZoneSupport.ClampFans(s.Devices.LianLi.GetFans(p));
+                fans[p] = LianLiZoneSupport.ClampFans(s.Devices.LianLi.GetFans(p), hub.Profile);
                 active[p] = fans[p] > 0;
             }
             return Results.Json(new LianLiCompositionResponse
@@ -119,8 +122,8 @@ public static partial class DevicesRoutes
                     for (var p = 0; p < LianLiProtocol.PortCount && p < body.Ports.Length; p++)
                     {
                         var on = body.Ports[p];
-                        var cur = LianLiZoneSupport.ClampFans(s.Devices.LianLi.GetFans(p));
-                        if (on && cur == 0) s.Devices.LianLi.SetFans(p, LianLiProtocol.MaxFansPerPort);
+                        var cur = LianLiZoneSupport.ClampFans(s.Devices.LianLi.GetFans(p), profile);
+                        if (on && cur == 0) s.Devices.LianLi.SetFans(p, profile.MaxFans);
                         else if (!on && cur > 0) s.Devices.LianLi.SetFans(p, 0);
                     }
                 }
@@ -148,7 +151,7 @@ public static partial class DevicesRoutes
                 var after = store.Load();
                 for (var p = 0; p < LianLiProtocol.PortCount && p < body.Ports.Length; p++)
                 {
-                    hub.SetQuantity(p, LianLiZoneSupport.ClampFans(after.Devices.LianLi.GetFans(p)));
+                    hub.SetQuantity(p, LianLiZoneSupport.ClampFans(after.Devices.LianLi.GetFans(p), profile));
                 }
             }
 
@@ -181,15 +184,15 @@ public static partial class DevicesRoutes
                     HasBrightness = m.HasBrightness,
                     ColorsMin = m.ColorsMin,
                     ColorsMax = m.ColorsMax,
+                    DefaultColors = [.. m.DefaultColors],
                     Mergeable = m.MergesOn(profile) && !mergeBlocked,
                 };
             }
             // Report the mode the writer commits: a persisted key outside this
             // family's catalog falls back to static there too.
-            var persisted = LianLiLightingModes.Find(ls.Mode);
-            var effectiveMode = persisted != null && !persisted.SupportedBy(family) ? "static" : ls.Mode;
-            var effect = LianLiLightingModes.Find(ls.Mode == "custom" ? ls.EffectMode ?? "rainbowWave" : ls.Mode);
-            var effectMode = effect != null && effect.Key != "custom" && effect.SupportedBy(family) ? effect.Key : "static";
+            var effectiveMode = ls.Mode == "custom" || LianLiLightingModes.Find(family, ls.Mode) != null ? ls.Mode : "static";
+            var effect = LianLiLightingModes.Find(family, ls.Mode == "custom" ? ls.EffectMode ?? "rainbowWave" : ls.Mode);
+            var effectMode = effect != null && effect.Key != "custom" ? effect.Key : "static";
             return Results.Json(new LianLiLightingResponse
             {
                 Mode = effectiveMode,
@@ -228,13 +231,10 @@ public static partial class DevicesRoutes
             {
                 return Results.BadRequest(ApiResponse.Fail("ARGB sync source is not an addressable port"));
             }
-            if (body.Mode != null)
+            var family = hub.Profile.Family;
+            if (body.Mode != null && body.Mode != "custom" && LianLiLightingModes.Find(family, body.Mode) == null)
             {
-                var info = LianLiLightingModes.Find(body.Mode);
-                if (info == null || !info.SupportedBy(hub.Profile.Family))
-                {
-                    return Results.BadRequest(ApiResponse.Fail("unknown mode key"));
-                }
+                return Results.BadRequest(ApiResponse.Fail("unknown mode key"));
             }
             store.Update(s =>
             {
@@ -252,8 +252,7 @@ public static partial class DevicesRoutes
                 if (body.ArgbSync.HasValue) ls.ArgbSync = body.ArgbSync.Value;
                 if (body.Colors != null)
                 {
-                    var modeKey = ls.Mode;
-                    var modeInfo = LianLiLightingModes.Find(modeKey);
+                    var modeInfo = LianLiLightingModes.Find(family, ls.Mode);
                     var maxColors = modeInfo?.ColorsMax ?? 0;
                     var count = Math.Min(body.Colors.Length, maxColors);
                     ls.Colors = new List<string>(count);
@@ -296,6 +295,9 @@ public sealed class LianLiStateResponse
 {
     public bool IsConnected { get; set; }
     public string ModelName { get; set; } = "";
+    /// <summary>Fans the attached family chains on one port.</summary>
+    public int MaxFansPerPort { get; set; }
+    public string FirmwareVersion { get; set; } = "";
     public int[] Rpm { get; set; } = Array.Empty<int>();
     public int[] Duty { get; set; } = Array.Empty<int>();
     public int[] FansPerPort { get; set; } = Array.Empty<int>();
@@ -335,6 +337,8 @@ public sealed class LianLiModeInfoDto
     public bool HasBrightness { get; set; }
     public int ColorsMin { get; set; }
     public int ColorsMax { get; set; }
+    /// <summary>Palette the mode starts from, as #RRGGBB.</summary>
+    public string[] DefaultColors { get; set; } = Array.Empty<string>();
     public bool Mergeable { get; set; }
 }
 
