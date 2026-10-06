@@ -1024,8 +1024,13 @@ public sealed class CoolingSettings
     public Dictionary<string, int> GpuManualBackup { get; set; } = new();
 
     /// <summary>Forget the auto-heal undo state: undo is valid only until the next edit of the curves.</summary>
-    public void ClearHeal()
+    public void ClearHeal(string reason)
     {
+        if (HealSnapshot is not null)
+        {
+            // The one place an undo snapshot is dropped by an edit: name the writer.
+            Console.Error.WriteLine($"[thermal-guard] heal undo cleared ({reason})");
+        }
         HealSnapshot = null;
         HealedAtUtcMs = null;
         HealedChannels = new List<HealedChannelRecord>();

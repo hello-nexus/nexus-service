@@ -146,7 +146,7 @@ public static class FanProfiles
         List<(string FanId, int Duty)>? restoredManual = null;
         store.Update(s =>
         {
-            s.Cooling.ClearHeal();
+            s.Cooling.ClearHeal($"profile-apply:{canonical}");
             // Snapshot the user's custom mapping on the way out of "custom":
             // curve assignments and manual duties both, so Custom restores the
             // full arrangement. The manual copy is load-bearing for the Off
@@ -427,7 +427,7 @@ public static class FanProfiles
             // Undo is only invalidated by an edit that actually changed the curves.
             if (removed)
             {
-                s.Cooling.ClearHeal();
+                s.Cooling.ClearHeal($"detach:{fanId}");
             }
         });
     }
@@ -514,7 +514,7 @@ public static class FanProfiles
 
         store.Update(s =>
         {
-            s.Cooling.ClearHeal();
+            s.Cooling.ClearHeal($"preset-reset:{canonical}");
             // EnsurePresetCurve returns the existing curve (normalizing the
             // Preset flag) or creates a fresh one at defaults. Either way we
             // then forcibly overwrite the template fields below; the redundant

@@ -369,7 +369,7 @@ public class ThermalGuardEngineTests
             HealedAtUtcMs = 5,
             HealedChannels = { new HealedChannelRecord { Id = "a" } },
         };
-        settings.ClearHeal();
+        settings.ClearHeal("test");
         Assert.Null(settings.HealSnapshot);
         Assert.Null(settings.HealedAtUtcMs);
         Assert.Empty(settings.HealedChannels);

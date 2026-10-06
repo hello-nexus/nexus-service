@@ -27,7 +27,7 @@ public sealed class StubCoolingProvider : ICoolingProvider, ICurveProvider, IFan
         {
             s.Cooling.GlobalSpeedModifier = body.GlobalSpeedModifier;
             // Undo is valid only until the next edit of the curves.
-            s.Cooling.ClearHeal();
+            s.Cooling.ClearHeal("curves-set");
             s.Cooling.Curves.Clear();
             foreach (var c in body.Curves)
             {
