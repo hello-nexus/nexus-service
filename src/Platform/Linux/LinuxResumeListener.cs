@@ -29,11 +29,11 @@ public sealed class LinuxResumeListener : IHostedService, IDisposable
 
     private readonly RgbBridge _bridge;
     private readonly Nexus.Service.QSeries.QSeriesPortWatcher? _qseries;
-    private readonly Nexus.Service.Peripherals.LianLi.LianLiHub? _lianLi;
+    private readonly Nexus.Service.Peripherals.LianLi.LianLiHubSet? _lianLi;
     private DBusConnection? _dbus;
     private CancellationTokenSource? _cts;
 
-    public LinuxResumeListener(RgbBridge bridge, Nexus.Service.QSeries.QSeriesPortWatcher? qseries = null, Nexus.Service.Peripherals.LianLi.LianLiHub? lianLi = null)
+    public LinuxResumeListener(RgbBridge bridge, Nexus.Service.QSeries.QSeriesPortWatcher? qseries = null, Nexus.Service.Peripherals.LianLi.LianLiHubSet? lianLi = null)
     {
         _bridge = bridge;
         _qseries = qseries;

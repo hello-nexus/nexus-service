@@ -12,6 +12,8 @@ namespace Nexus.Service.Serialization;
 [JsonSerializable(typeof(TryxOverlaySensorItemSettings))]
 [JsonSerializable(typeof(List<TryxOverlaySensorItemSettings>))]
 [JsonSerializable(typeof(LianLiSettings))]
+[JsonSerializable(typeof(LianLiHubSettings))]
+[JsonSerializable(typeof(Dictionary<string, LianLiHubSettings>))]
 [JsonSerializable(typeof(LianLiWirelessSettings))]
 [JsonSerializable(typeof(LianLiWirelessScreenSettings))]
 [JsonSerializable(typeof(Dictionary<string, LianLiWirelessScreenSettings>))]

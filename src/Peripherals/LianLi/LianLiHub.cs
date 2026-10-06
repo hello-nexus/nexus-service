@@ -14,7 +14,24 @@ public sealed class LianLiHub : IDisposable
     private bool _disposed;
     private int _resumeEpoch;
 
-    public string DeviceId => "lianli";
+    public LianLiHub(string deviceId = LianLiHubSet.PrimaryId)
+    {
+        DeviceId = deviceId;
+    }
+
+    /// <summary>Hub id: the device id prefix of its zones and cooling channels.</summary>
+    public string DeviceId { get; }
+
+    /// <summary>HID path of the attached device; empty while detached.</summary>
+    public string AttachedPath { get; private set; } = "";
+
+    /// <summary>The hub pinned to this slot is on the bus, attached or not: one whose Nexus Control is off stays listed so it can be turned back on.</summary>
+    public bool Present
+    {
+        get => Volatile.Read(ref _present);
+        set => Volatile.Write(ref _present, value);
+    }
+    private bool _present;
 
     public LianLiState State { get; } = new();
 
@@ -34,12 +51,14 @@ public sealed class LianLiHub : IDisposable
         get { lock (_lock) { return _profile; } }
     }
 
-    public void Attach(IHidDevice device, LianLiFanProfile profile)
+    /// <param name="path">The enumerated HID path the device was opened from; the handle's own path when omitted.</param>
+    public void Attach(IHidDevice device, LianLiFanProfile profile, string? path = null)
     {
         lock (_lock)
         {
             _device = device;
             _profile = profile;
+            AttachedPath = path ?? device.Path;
             _modelName = profile.ModelName ?? "";
             State.IsConnected = true;
         }
@@ -51,6 +70,7 @@ public sealed class LianLiHub : IDisposable
         {
             _device?.Dispose();
             _device = null;
+            AttachedPath = "";
             _profile = LianLiFanProfiles.Default;
             _modelName = "";
             State.FirmwareVersion = "";

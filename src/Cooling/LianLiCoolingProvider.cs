@@ -10,64 +10,73 @@ using Nexus.Service.Platform;
 namespace Nexus.Service.Cooling;
 
 /// <summary>
-/// Bridges the Lian Li Uni Hub into the fan-control subsystem.
-/// Channel IDs are "lianli:port{N}" for ports 0..3.
+/// Bridges every Lian Li Uni Hub into the fan-control subsystem. Channel ids
+/// are "{hubId}:port{N}" per port, so the first hub keeps "lianli:portN".
 /// </summary>
 public sealed class LianLiCoolingProvider : IFanControlProvider, ICoolingProvider
 {
-    private readonly LianLiHub _hub;
+    private readonly LianLiHubSet _hubs;
     private readonly IConfigStore _store;
 
     // _pendingDuty/_softwareControlled are read on HTTP threads (GetFanChannels,
     // GetAll) and mutated by the curve worker (DriveFanSpeed) plus HTTP setters;
     // guard both behind _ctrlLock like QSeriesCoolerCoolingProvider does.
     private readonly object _ctrlLock = new();
-    private readonly int[] _pendingDuty = new int[LianLiProtocol.PortCount];
-    private int _resumeEpochSeen;
+    private readonly int[][] _pendingDuty;
+    private readonly int[] _resumeEpochSeen = new int[LianLiHubSet.Capacity];
     private readonly HashSet<string> _softwareControlled = new(StringComparer.Ordinal);
 
-    public LianLiCoolingProvider(LianLiHub hub, IConfigStore store)
+    public LianLiCoolingProvider(LianLiHubSet hubs, IConfigStore store)
     {
-        _hub = hub;
+        _hubs = hubs;
         _store = store;
+        _pendingDuty = new int[LianLiHubSet.Capacity][];
+        for (var i = 0; i < LianLiHubSet.Capacity; i++)
+        {
+            _pendingDuty[i] = new int[LianLiProtocol.PortCount];
+        }
     }
 
     // ── IFanControlProvider ──
 
     public IReadOnlyList<FanChannel> GetFanChannels()
     {
-        if (!_hub.IsConnected) return Array.Empty<FanChannel>();
-        var lianli = _store.Load().Devices.LianLi;
-        var result = new List<FanChannel>(LianLiProtocol.PortCount);
-        var deviceId = _hub.DeviceId;
-        var modelLabel = _hub.ModelName.Length > 0 ? _hub.ModelName : "SL-Infinity";
-        var deviceLabel = $"Lian Li {modelLabel}";
-        for (var p = 0; p < LianLiProtocol.PortCount; p++)
+        var result = new List<FanChannel>();
+        var devices = _store.Load().Devices;
+        for (var slot = 0; slot < LianLiHubSet.Capacity; slot++)
         {
-            // A port with no fans set on the device page is an empty header, not a controllable channel.
-            if (lianli.GetFans(p) <= 0) continue;
-            var id = $"lianli:port{p}";
-            var rpm = _hub.State.Rpm[p];
-            int duty;
-            bool sw;
-            lock (_ctrlLock)
+            var hub = _hubs.Hubs[slot];
+            if (!hub.IsConnected) continue;
+            var fans = LianLiHubSet.FansOf(devices, hub.DeviceId);
+            var modelLabel = ModelLabel(hub, slot);
+            var deviceLabel = $"Lian Li {modelLabel}";
+            for (var p = 0; p < LianLiProtocol.PortCount; p++)
             {
-                duty = _pendingDuty[p];
-                sw = _softwareControlled.Contains(id);
+                // A port with no fans set on the device page is an empty header, not a controllable channel.
+                if (fans.GetFans(p) <= 0) continue;
+                var id = ChannelId(hub, p);
+                var rpm = hub.State.Rpm[p];
+                int duty;
+                bool sw;
+                lock (_ctrlLock)
+                {
+                    duty = _pendingDuty[slot][p];
+                    sw = _softwareControlled.Contains(id);
+                }
+                result.Add(new FanChannel
+                {
+                    Id = id,
+                    Name = $"{modelLabel} Port {p + 1}",
+                    DutyPercent = duty,
+                    Rpm = rpm >= 0 ? rpm : 0,
+                    Mode = sw ? FanModes.Manual : FanModes.Auto,
+                    DeviceId = hub.DeviceId,
+                    DeviceName = deviceLabel,
+                    PortLabel = $"Port {p + 1}",
+                    FanModel = null,
+                    Orientation = null,
+                });
             }
-            result.Add(new FanChannel
-            {
-                Id = id,
-                Name = $"{modelLabel} Port {p + 1}",
-                DutyPercent = duty,
-                Rpm = rpm >= 0 ? rpm : 0,
-                Mode = sw ? FanModes.Manual : FanModes.Auto,
-                DeviceId = deviceId,
-                DeviceName = deviceLabel,
-                PortLabel = $"Port {p + 1}",
-                FanModel = null,
-                Orientation = null,
-            });
         }
         return result;
     }
@@ -91,19 +100,15 @@ public sealed class LianLiCoolingProvider : IFanControlProvider, ICoolingProvide
 
     public void ReleaseFan(string channelId)
     {
-        if (!IsLianLiId(channelId)) return;
-        var hasPort = TryParsePort(channelId, out var port);
+        if (!TryResolve(channelId, out var slot, out var port)) return;
         lock (_ctrlLock)
         {
             _softwareControlled.Remove(channelId);
             // Released to firmware control; drop the manual duty so GetAll reports Auto.
-            if (hasPort) _pendingDuty[port] = 0;
+            _pendingDuty[slot][port] = 0;
         }
-        if (!_hub.IsConnected) return;
-        if (hasPort)
-        {
-            _hub.SetReleaseMode(port);
-        }
+        var hub = _hubs.Hubs[slot];
+        if (hub.IsConnected) hub.SetReleaseMode(port);
     }
 
     public void ReleaseAll()
@@ -111,12 +116,15 @@ public sealed class LianLiCoolingProvider : IFanControlProvider, ICoolingProvide
         lock (_ctrlLock)
         {
             _softwareControlled.Clear();
-            System.Array.Clear(_pendingDuty);
+            foreach (var duties in _pendingDuty) Array.Clear(duties);
         }
-        if (!_hub.IsConnected) return;
-        for (var p = 0; p < LianLiProtocol.PortCount; p++)
+        foreach (var hub in _hubs.Hubs)
         {
-            _hub.SetReleaseMode(p);
+            if (!hub.IsConnected) continue;
+            for (var p = 0; p < LianLiProtocol.PortCount; p++)
+            {
+                hub.SetReleaseMode(p);
+            }
         }
     }
 
@@ -132,136 +140,141 @@ public sealed class LianLiCoolingProvider : IFanControlProvider, ICoolingProvide
 
     public IReadOnlyList<CoolingComponent> GetAll()
     {
-        if (!_hub.IsConnected) return Array.Empty<CoolingComponent>();
-        var lianli = _store.Load().Devices.LianLi;
-        var deviceId = _hub.DeviceId;
-        var modelLabel = _hub.ModelName.Length > 0 ? _hub.ModelName : "SL-Infinity";
-        var devices = new List<CoolingDevice>(LianLiProtocol.PortCount);
-        for (var p = 0; p < LianLiProtocol.PortCount; p++)
+        var components = new List<CoolingComponent>();
+        var settings = _store.Load().Devices;
+        for (var slot = 0; slot < LianLiHubSet.Capacity; slot++)
         {
-            // Only ports with fans are surfaced (matches GetFanChannels).
-            if (lianli.GetFans(p) <= 0) continue;
-            var rpm = _hub.State.Rpm[p];
-            int duty;
-            lock (_ctrlLock) duty = _pendingDuty[p];
-            devices.Add(new CoolingDevice
+            var hub = _hubs.Hubs[slot];
+            if (!hub.IsConnected) continue;
+            var fans = LianLiHubSet.FansOf(settings, hub.DeviceId);
+            var modelLabel = ModelLabel(hub, slot);
+            var devices = new List<CoolingDevice>(LianLiProtocol.PortCount);
+            for (var p = 0; p < LianLiProtocol.PortCount; p++)
             {
-                Id = $"lianli:port{p}",
-                Name = $"{modelLabel} Port {p + 1}",
-                Type = "Fan",
-                Rpm = rpm >= 0 ? rpm : 0,
-                Pwm = duty,
-            });
-        }
-        return new[]
-        {
-            new CoolingComponent
+                // Only ports with fans are surfaced (matches GetFanChannels).
+                if (fans.GetFans(p) <= 0) continue;
+                var rpm = hub.State.Rpm[p];
+                int duty;
+                lock (_ctrlLock) duty = _pendingDuty[slot][p];
+                devices.Add(new CoolingDevice
+                {
+                    Id = ChannelId(hub, p),
+                    Name = $"{modelLabel} Port {p + 1}",
+                    Type = "Fan",
+                    Rpm = rpm >= 0 ? rpm : 0,
+                    Pwm = duty,
+                });
+            }
+            components.Add(new CoolingComponent
             {
-                Id = deviceId,
+                Id = hub.DeviceId,
                 Name = $"Lian Li {modelLabel}",
                 Type = "LianLiHub",
                 Devices = devices,
-            },
-        };
+            });
+        }
+        return components;
     }
 
     // ── Internals ──
 
-    public static bool IsLianLiId(string id) =>
-        !string.IsNullOrEmpty(id) && id.StartsWith("lianli:", StringComparison.Ordinal);
+    public static bool IsLianLiId(string id) => LianLiHubSet.SlotOf(id) >= 0 && id.Contains(':', StringComparison.Ordinal);
+
+    private static string ChannelId(LianLiHub hub, int port) => $"{hub.DeviceId}:port{port}";
+
+    // The model name; a hub past the first carries its slot number so two hubs of one model stay apart.
+    private static string ModelLabel(LianLiHub hub, int slot)
+    {
+        var model = hub.ModelName.Length > 0 ? hub.ModelName : "SL-Infinity";
+        return slot == 0 ? model : $"{model} {slot + 1}";
+    }
 
     private void ApplyChannelWrite(string channelId, int dutyPercent)
     {
-        if (!IsLianLiId(channelId)) return;
-        if (!_hub.IsConnected)
+        if (!TryResolve(channelId, out var slot, out var port)) return;
+        var hub = _hubs.Hubs[slot];
+        if (!hub.IsConnected)
         {
             ServiceLog.Warn($"[lianli-cooling] write to {channelId} dropped: hub not connected");
             return;
         }
-        if (!TryParsePort(channelId, out var port)) return;
         bool wasControlled;
         lock (_ctrlLock)
         {
             wasControlled = _softwareControlled.Contains(channelId);
             _softwareControlled.Add(channelId);
-            _pendingDuty[port] = dutyPercent;
+            _pendingDuty[slot][port] = dutyPercent;
         }
         // SetSpeed re-enters manual mode (mode write + settle + duty write): use it
         // only on the first write to take the port off mobo PWM. Subsequent writes
         // use SetDuty (duty write only) so re-entry does not reset the fan to default.
         var ok = wasControlled
-            ? _hub.SetDuty(port, dutyPercent)
-            : _hub.SetSpeed(port, dutyPercent);
+            ? hub.SetDuty(port, dutyPercent)
+            : hub.SetSpeed(port, dutyPercent);
         if (!ok)
         {
-            ServiceLog.Warn($"[lianli-cooling] {(wasControlled ? "SetDuty" : "SetSpeed")} port {port} duty {dutyPercent} returned false");
+            ServiceLog.Warn($"[lianli-cooling] {(wasControlled ? "SetDuty" : "SetSpeed")} {channelId} duty {dutyPercent} returned false");
         }
     }
 
-    public void ReassertControl()
+    /// <summary>Re-sends the duty of every software-controlled port on <paramref name="hub"/>; the connection worker calls it each poll.</summary>
+    public void ReassertControl(LianLiHub hub)
     {
-        if (!_hub.IsConnected) return;
+        if (!hub.IsConnected) return;
+        var slot = LianLiHubSet.SlotOf(hub.DeviceId);
+        if (slot < 0) return;
         // Across sleep the hub drops manual mode, so the first re-assert after a
         // resume re-enters it; every other one is speed-only, as SetSpeed's
         // re-entry resets the fan to its default each tick. A resume is consumed
         // only once every port took the re-entry.
-        var resumeEpoch = _hub.ResumeEpoch;
-        int[] ports;
-        int[] duties;
+        var resumeEpoch = hub.ResumeEpoch;
+        var ports = new List<int>(LianLiProtocol.PortCount);
+        var duties = new List<int>(LianLiProtocol.PortCount);
         lock (_ctrlLock)
         {
-            if (_softwareControlled.Count == 0)
+            for (var p = 0; p < LianLiProtocol.PortCount; p++)
+            {
+                if (!_softwareControlled.Contains(ChannelId(hub, p))) continue;
+                ports.Add(p);
+                duties.Add(_pendingDuty[slot][p]);
+            }
+            if (ports.Count == 0)
             {
                 // Nothing to re-enter: a port taken over later starts with SetSpeed anyway.
-                _resumeEpochSeen = resumeEpoch;
+                _resumeEpochSeen[slot] = resumeEpoch;
                 return;
             }
-            ports = new int[_softwareControlled.Count];
-            duties = new int[_softwareControlled.Count];
-            var idx = 0;
-            foreach (var id in _softwareControlled)
-            {
-                if (TryParsePort(id, out var p))
-                {
-                    ports[idx] = p;
-                    duties[idx] = _pendingDuty[p];
-                    idx++;
-                }
-            }
-            if (idx < ports.Length)
-            {
-                Array.Resize(ref ports, idx);
-                Array.Resize(ref duties, idx);
-            }
         }
-        var reenter = resumeEpoch != _resumeEpochSeen;
+        var reenter = resumeEpoch != _resumeEpochSeen[slot];
         var allOk = true;
-        for (var i = 0; i < ports.Length; i++)
+        for (var i = 0; i < ports.Count; i++)
         {
-            var ok = reenter ? _hub.SetSpeed(ports[i], duties[i]) : _hub.SetDuty(ports[i], duties[i]);
+            var ok = reenter ? hub.SetSpeed(ports[i], duties[i]) : hub.SetDuty(ports[i], duties[i]);
             allOk &= ok;
             if (!ok)
             {
-                ServiceLog.Warn($"[lianli-cooling] ReassertControl port {ports[i]} duty {duties[i]} returned false");
+                ServiceLog.Warn($"[lianli-cooling] ReassertControl {ChannelId(hub, ports[i])} duty {duties[i]} returned false");
             }
         }
         if (allOk)
         {
-            _resumeEpochSeen = resumeEpoch;
+            _resumeEpochSeen[slot] = resumeEpoch;
         }
     }
 
-    private static bool TryParsePort(string channelId, out int port)
+    // channelId shape: "{hubId}:port{N}". The curve path (DriveFanSpeed) can hand
+    // a stale id like "lianli:port7" that the routes never validate, so the
+    // port is bounds-checked here.
+    private static bool TryResolve(string channelId, out int slot, out int port)
     {
         port = 0;
-        // channelId shape: "lianli:port{N}"
+        slot = LianLiHubSet.SlotOf(channelId);
+        if (slot < 0) return false;
         var portIdx = channelId.LastIndexOf(':');
         if (portIdx < 0) return false;
         var seg = channelId.AsSpan(portIdx + 1);
         if (!seg.StartsWith("port", StringComparison.Ordinal)) return false;
         if (!int.TryParse(seg.Slice(4), out port)) return false;
-        // Guard the int[]/SetSpeed indexers: the curve path (DriveFanSpeed) can
-        // hand a stale id like "lianli:port7" that the routes never validate.
         return port >= 0 && port < LianLiProtocol.PortCount;
     }
 }

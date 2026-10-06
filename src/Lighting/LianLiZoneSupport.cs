@@ -72,7 +72,7 @@ public static class LianLiZoneSupport
     {
         var comp = ReadComposition(settings, hubId);
         var ids = new List<string>();
-        foreach (var device in Compose(hubId, profile, comp, settings.Devices.LianLi))
+        foreach (var device in Compose(hubId, profile, comp, LianLiHubSet.FansOf(settings.Devices, hubId)))
         {
             foreach (var zone in ZoneResolution.Resolve(device.Structure, settings))
             {
@@ -87,7 +87,7 @@ public static class LianLiZoneSupport
     {
         var comp = ReadComposition(settings, hubId);
         var ids = new List<string>();
-        foreach (var device in Compose(hubId, profile, comp, settings.Devices.LianLi))
+        foreach (var device in Compose(hubId, profile, comp, LianLiHubSet.FansOf(settings.Devices, hubId)))
         {
             ids.Add(device.Structure.DeviceId);
         }

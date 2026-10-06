@@ -26,12 +26,12 @@ public sealed class PowerEventListener : IHostedService, IDisposable
 {
     private readonly RgbBridge _bridge;
     private readonly SleepBlackoutCoordinator _blackout;
-    private readonly Nexus.Service.Peripherals.LianLi.LianLiHub? _lianLi;
+    private readonly Nexus.Service.Peripherals.LianLi.LianLiHubSet? _lianLi;
 #if WINDOWS
     private bool _subscribed;
 #endif
 
-    public PowerEventListener(RgbBridge bridge, SleepBlackoutCoordinator blackout, Nexus.Service.Peripherals.LianLi.LianLiHub? lianLi = null)
+    public PowerEventListener(RgbBridge bridge, SleepBlackoutCoordinator blackout, Nexus.Service.Peripherals.LianLi.LianLiHubSet? lianLi = null)
     {
         _bridge = bridge;
         _blackout = blackout;

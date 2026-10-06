@@ -8,13 +8,15 @@ namespace Nexus.Service.Tests.LianLi;
 
 public class LianLiLightingDeviceProviderTests
 {
-    private readonly LianLiHub _hub = new();
+    private readonly LianLiHubSet _hubs = new();
+    private readonly LianLiHub _hub;
     private readonly InMemoryConfigStore _store = new();
     private readonly LianLiLightingDeviceProvider _provider;
 
     public LianLiLightingDeviceProviderTests()
     {
-        _provider = new LianLiLightingDeviceProvider(_hub, _store, new Np50IdentifyTracker());
+        _hub = _hubs.Primary;
+        _provider = new LianLiLightingDeviceProvider(_hubs, _store, new Np50IdentifyTracker());
     }
 
     private void Connect() => _hub.State.IsConnected = true;
@@ -331,5 +333,39 @@ public class LianLiLightingDeviceProviderTests
 
         Assert.Empty(_provider.GetAll().Devices);
         Assert.Empty(_provider.GetStructures());
+    }
+
+    [Fact]
+    public void A_second_hub_adds_its_own_cards_from_its_own_settings()
+    {
+        Connect();
+        _hubs.Hubs[1].Attach(new HubTransportSpy(), Sli);
+        _store.Update(s =>
+        {
+            for (var p = 0; p < 4; p++) s.Devices.LianLi.SetFans(p, p == 0 ? 2 : 0);
+            var second = LianLiHubSet.Editable(s.Devices, "lianli2").Fans;
+            for (var p = 0; p < 4; p++) second.SetFans(p, p == 1 ? 3 : 0);
+        });
+
+        var cards = _provider.GetAll().Devices;
+
+        Assert.Contains(cards, c => c.ParentDeviceId == "lianli" && c.Id.StartsWith("lianli:port0", System.StringComparison.Ordinal));
+        Assert.Contains(cards, c => c.ParentDeviceId == "lianli2" && c.Id.StartsWith("lianli2:port1", System.StringComparison.Ordinal));
+        Assert.DoesNotContain(cards, c => c.Id.StartsWith("lianli2:port0", System.StringComparison.Ordinal));
+        Assert.Equal(cards.Count, cards.Select(c => c.Id).Distinct().Count());
+        Assert.Equal("lianli2", _provider.DescribeComposition("lianli2:port1")!.HubId);
+    }
+
+    [Fact]
+    public void A_second_hub_under_argb_sync_hides_only_its_own_cards()
+    {
+        Connect();
+        _hubs.Hubs[1].Attach(new HubTransportSpy(), Sli);
+        _store.Update(s => LianLiHubSet.Editable(s.Devices, "lianli2").Lighting.ArgbSync = true);
+
+        var cards = _provider.GetAll().Devices;
+
+        Assert.Contains(cards, c => c.ParentDeviceId == "lianli");
+        Assert.DoesNotContain(cards, c => c.ParentDeviceId == "lianli2");
     }
 }

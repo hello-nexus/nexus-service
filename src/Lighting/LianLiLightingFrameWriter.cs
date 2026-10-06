@@ -23,6 +23,8 @@ public sealed class LianLiLightingFrameWriter : IHostedService, IDisposable
 {
     // Tick cadence while the engine is stopped and publishes nothing.
     private const int IdleTickMs = 100;
+    // Polls an empty hub slot for an attach; the slot's lighting starts within one tick of it.
+    private const int DetachedTickMs = 1000;
 
     // Settle between writes; SL-Infinity custom streaming is paced per frame
     // instead (SlInfinityFrameIntervalMs).
@@ -164,6 +166,8 @@ public sealed class LianLiLightingFrameWriter : IHostedService, IDisposable
 
     private void OnFramePublished()
     {
+        // A writer for an empty slot waits out its slow tick instead of waking at frame rate.
+        if (!_hub.IsConnected) return;
         // The engine may still invoke a handler list it read before StopAsync unsubscribed.
         try { _framePublished.Set(); }
         catch (ObjectDisposedException) { }
@@ -182,7 +186,7 @@ public sealed class LianLiLightingFrameWriter : IHostedService, IDisposable
             {
                 Console.Error.WriteLine($"[lianli-lighting-writer] tick exception: {ex.GetType().Name}: {ex.Message}");
             }
-            try { WaitHandle.WaitAny(wake, IdleTickMs); }
+            try { WaitHandle.WaitAny(wake, _hub.IsConnected ? IdleTickMs : DetachedTickMs); }
             catch (ObjectDisposedException) { break; }
         }
     }
@@ -207,7 +211,8 @@ public sealed class LianLiLightingFrameWriter : IHostedService, IDisposable
             ForgetHubState();
         }
         var settings = _store.Load();
-        var ls = settings.Devices.LianLiLighting;
+        var ls = LianLiHubSet.LightingOf(settings.Devices, _hub.DeviceId);
+        var fans = LianLiHubSet.FansOf(settings.Devices, _hub.DeviceId);
         var profile = _hub.Profile;
         var argbSync = profile.PlaysArgbInput(ls.ArgbSync);
         if (_argbSyncSent != argbSync && !_argbSyncRetry.BackingOff(NowMs()))
@@ -260,7 +265,7 @@ public sealed class LianLiLightingFrameWriter : IHostedService, IDisposable
         // pre-retry this was fire-and-forget, and custom mode streams without it.
         if (!_hubInitialised && !_initRetry.BackingOff(NowMs()))
         {
-            if (InitialiseHub(profile, settings.Devices.LianLi))
+            if (InitialiseHub(profile, fans))
             {
                 NoteSuccess(_initRetry, "hub init");
                 _hubInitialised = true;
@@ -271,7 +276,7 @@ public sealed class LianLiLightingFrameWriter : IHostedService, IDisposable
             }
         }
         var comp = LianLiZoneSupport.ReadComposition(settings, _hub.DeviceId);
-        var composed = LianLiZoneSupport.Compose(_hub.DeviceId, profile, comp, settings.Devices.LianLi);
+        var composed = LianLiZoneSupport.Compose(_hub.DeviceId, profile, comp, fans);
 
         if (ls.Mode == "custom")
         {
@@ -341,7 +346,7 @@ public sealed class LianLiLightingFrameWriter : IHostedService, IDisposable
         var merged = ls.Merge && mode.MergesOn(profile)
             && !AnyDeviceExcluded(composed, settings);
         var committed = merged
-            ? CommitMergedMode(ls, mode, globalBrightness, composed, profile, settings.Devices.DisabledLightingDevices, settings.Devices.LianLi)
+            ? CommitMergedMode(ls, mode, globalBrightness, composed, profile, settings.Devices.DisabledLightingDevices, fans)
             : CommitFirmwareMode(ls, mode, globalBrightness, composed, profile, settings.Devices.DisabledLightingDevices, uncontrolled, _firmwareZonesByDevice);
         if (committed)
         {

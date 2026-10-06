@@ -1291,6 +1291,10 @@ public sealed class DevicesSettings
     public LianLiSettings LianLi { get; set; } = new();
     public LianLiWirelessSettings LianLiWireless { get; set; } = new();
     public LianLiLightingSettings LianLiLighting { get; set; } = new();
+    /// <summary>Uni hubs past the first, keyed by hub id; the first hub keeps <see cref="LianLi"/> and <see cref="LianLiLighting"/>.</summary>
+    public Dictionary<string, LianLiHubSettings> LianLiExtraHubs { get; set; } = new();
+    /// <summary>The key of the hub pinned to each slot, first slot first: its USB serial, or its device path when it reports none.</summary>
+    public List<string> LianLiHubKeys { get; set; } = new();
     public TlLightingSettings TlLighting { get; set; } = new();
     public StrimerLightingSettings StrimerLighting { get; set; } = new();
     public Galahad2LightingSettings Galahad2Lighting { get; set; } = new();
@@ -1515,6 +1519,12 @@ public sealed class LianLiSettings
             case 3: Port3Fans = qty; break;
         }
     }
+}
+
+public sealed class LianLiHubSettings
+{
+    public LianLiSettings Fans { get; set; } = new();
+    public LianLiLightingSettings Lighting { get; set; } = new();
 }
 
 public sealed class LianLiWirelessSettings

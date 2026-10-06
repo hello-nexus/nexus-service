@@ -88,6 +88,11 @@ public sealed class DeviceControlGate
         {
             return true;
         }
+        // A Uni hub past the first follows the first hub's choice until it has one of its own.
+        if (Nexus.Service.Peripherals.LianLi.LianLiHubSet.SlotOf(handlerId) > 0)
+        {
+            return IsEnabled(devices, Nexus.Service.Peripherals.LianLi.LianLiHubSet.PrimaryId);
+        }
         return DeviceControlPolicy.DefaultOn(handlerId);
     }
 
