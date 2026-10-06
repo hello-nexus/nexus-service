@@ -62,12 +62,28 @@ public static class DashboardPresets
         return true;
     }
 
-    /// <summary>Deleting the active preset leaves the live layout as it is, with no preset loaded.</summary>
+    /// <summary>
+    /// Deleting the active preset loads the one that takes its place, so the
+    /// live layout never outlives its preset and a later switch cannot drop it
+    /// unsaved. Deleting the last one leaves the live layout with none loaded.
+    /// </summary>
     public static void Delete(PanelSettings panel, string presetId)
     {
-        panel.DashboardPresets?.RemoveAll(p => p.Id == presetId);
-        if (panel.DashboardActivePresetId == presetId)
+        var presets = panel.DashboardPresets;
+        var index = presets?.FindIndex(p => p.Id == presetId) ?? -1;
+        if (presets is null || index < 0)
+            return;
+        presets.RemoveAt(index);
+        if (panel.DashboardActivePresetId != presetId)
+            return;
+        if (presets.Count == 0)
+        {
             panel.DashboardActivePresetId = null;
+            return;
+        }
+        var next = presets[Math.Min(index, presets.Count - 1)];
+        panel.DashboardLayout = PanelPresets.CloneLayout(next.Layout);
+        panel.DashboardActivePresetId = next.Id;
     }
 
     public static bool Activate(PanelSettings panel, string presetId)

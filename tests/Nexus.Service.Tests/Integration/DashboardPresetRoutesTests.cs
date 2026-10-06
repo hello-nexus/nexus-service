@@ -133,7 +133,42 @@ public sealed class DashboardPresetRoutesTests : IClassFixture<StubDeviceHostFac
     }
 
     [Fact]
-    public async Task Deleting_the_active_preset_keeps_the_live_layout()
+    public async Task Deleting_the_active_preset_loads_the_one_that_takes_its_place()
+    {
+        var seeded = await ReadJson(await SeedAsync(("Default", "clock"), ("Monitoring", "monitoring"), ("Gaming", "deck")));
+        var monitoringId = seeded.GetProperty("presets")[1].GetProperty("id").GetString()!;
+        var gamingId = seeded.GetProperty("presets")[2].GetProperty("id").GetString()!;
+        Store.Update(s => s.Panel.DashboardLayout = Layout("clock"));
+        await ReadJson(await _client.PostAsync($"/dashboard/presets/{monitoringId}/activate", Json("{}")));
+
+        var root = await ReadJson(await _client.DeleteAsync($"/dashboard/presets/{monitoringId}"));
+
+        Assert.Equal(gamingId, root.GetProperty("activeId").GetString());
+        Assert.Equal("deck", WidgetType(Store.Load().Panel.DashboardLayout));
+
+        root = await ReadJson(await _client.DeleteAsync($"/dashboard/presets/{gamingId}"));
+
+        Assert.Equal("Default", root.GetProperty("presets")[0].GetProperty("name").GetString());
+        Assert.Equal(root.GetProperty("presets")[0].GetProperty("id").GetString(), root.GetProperty("activeId").GetString());
+        Assert.Equal("clock", WidgetType(Store.Load().Panel.DashboardLayout));
+    }
+
+    [Fact]
+    public async Task Deleting_an_inactive_preset_leaves_the_live_layout_alone()
+    {
+        var seeded = await ReadJson(await SeedAsync(("Default", "clock"), ("Monitoring", "monitoring")));
+        var defaultId = seeded.GetProperty("presets")[0].GetProperty("id").GetString()!;
+        var monitoringId = seeded.GetProperty("presets")[1].GetProperty("id").GetString()!;
+        Store.Update(s => s.Panel.DashboardLayout = Layout("weather"));
+
+        var root = await ReadJson(await _client.DeleteAsync($"/dashboard/presets/{monitoringId}"));
+
+        Assert.Equal(defaultId, root.GetProperty("activeId").GetString());
+        Assert.Equal("weather", WidgetType(Store.Load().Panel.DashboardLayout));
+    }
+
+    [Fact]
+    public async Task Deleting_the_last_preset_keeps_the_live_layout()
     {
         var seeded = await ReadJson(await SeedAsync(("Default", "clock")));
         var id = seeded.GetProperty("activeId").GetString()!;

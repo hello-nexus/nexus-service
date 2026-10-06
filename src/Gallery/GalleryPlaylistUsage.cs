@@ -10,7 +10,7 @@ namespace Nexus.Service.Gallery;
 
 /// <summary>
 /// Which gallery widgets play a playlist, across every place one can be
-/// placed: the desktop dashboard, each panel device (including a Q-series'
+/// placed: the desktop dashboard and its saved presets, each panel device (including a Q-series'
 /// remembered config for a gallery it is not showing right now) and the
 /// pinned desktop widgets. Read-only; a deleted playlist's id is left in
 /// those configs and resolves to the whole library.
@@ -24,7 +24,11 @@ public static class GalleryPlaylistUsage
     {
         var uses = new List<GalleryPlaylistUse>();
 
-        var dashboard = CountInLayout(s.Panel.DashboardLayout, playlistId);
+        // The active preset's stored copy is stale; the live layout stands in for it.
+        var dashboard = CountInLayout(s.Panel.DashboardLayout, playlistId)
+            + (s.Panel.DashboardPresets?
+                .Where(p => p.Id != s.Panel.DashboardActivePresetId)
+                .Sum(p => CountInLayout(p.Layout, playlistId)) ?? 0);
         if (dashboard > 0)
         {
             uses.Add(new GalleryPlaylistUse { Surface = GalleryPlaylistUseSurfaces.Dashboard, Count = dashboard });
