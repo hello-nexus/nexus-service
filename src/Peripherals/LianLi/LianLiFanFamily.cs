@@ -81,11 +81,11 @@ public readonly struct LianLiFanProfile
     /// <summary>Firmware has merged effects: channel 0 carries one animation across every port in merge-order sequence.</summary>
     public bool SupportsMerge { get; init; }
 
-    /// <summary>The ARGB-input layout (every port from LED 0, inner ring then edge per fan) was measured on SL-Infinity only.</summary>
+    /// <summary>The ARGB-input layout (every port from LED 0, inner ring then edge per fan) was measured on SL-Infinity only, so only it offers a Nexus card as the input's source.</summary>
     public bool ArgbSyncVerified => Family == LianLiFanFamily.SlInfinity;
 
-    /// <summary>Whether the hub plays its motherboard ARGB input when the user asked for it: only on the verified family.</summary>
-    public bool PlaysArgbInput(bool argbSyncSetting) => argbSyncSetting && ArgbSyncVerified;
+    /// <summary>Whether the hub plays its motherboard ARGB input: every family switches with the same register write.</summary>
+    public bool PlaysArgbInput(bool argbSyncSetting) => argbSyncSetting;
 
     public string? ModelName { get; init; }
 

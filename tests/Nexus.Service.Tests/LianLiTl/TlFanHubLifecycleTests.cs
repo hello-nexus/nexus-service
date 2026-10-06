@@ -169,3 +169,80 @@ public class TlFanHubLifecycleTests
         Assert.Contains(addrP1F2, addresses);
     }
 }
+
+public class TlLightingFrameWriterArgbSyncTests
+{
+    private static byte[] Handshake(params (int port, int fanIdx)[] fans)
+    {
+        var packet = new byte[CommandPacket.Length];
+        packet[0] = CommandPacket.ReportId;
+        packet[1] = 0xA1;
+        packet[CommandPacket.PayloadOffset - 1] = (byte)(fans.Length * 3);
+        for (int i = 0; i < fans.Length; i++)
+        {
+            packet[CommandPacket.PayloadOffset + i * 3] = (byte)(0x80 | ((fans[i].port & 0x03) << 4) | (fans[i].fanIdx & 0x0F));
+        }
+        return packet;
+    }
+
+    [Fact]
+    public void Argb_sync_sets_the_sync_bit_on_every_fan_whatever_the_scope()
+    {
+        var fake = new TlDeviceFake(Handshake((0, 0), (1, 2)));
+        using var hub = new TlFanHub();
+        hub.Attach(fake);
+        Assert.True(hub.DiscoverFans());
+        var store = new InMemoryConfigStore();
+        store.Update(s => { s.Devices.TlLighting.Scope = "top"; s.Devices.TlLighting.ArgbSync = true; });
+        var writer = new Nexus.Service.Lighting.TlLightingFrameWriter(hub, store);
+        fake.Writes.Clear();
+
+        writer.Tick();
+
+        var fanLights = fake.Writes.FindAll(w => w[1] == 0xA3);
+        Assert.Equal(2, fanLights.Count);
+        Assert.All(fanLights, w => Assert.Equal(1, w[CommandPacket.PayloadOffset] & 0x01));
+    }
+
+    [Fact]
+    public void Leaving_sync_on_a_scoped_look_clears_each_fans_sync_bit()
+    {
+        var fake = new TlDeviceFake(Handshake((0, 0), (1, 1)));
+        using var hub = new TlFanHub();
+        hub.Attach(fake);
+        Assert.True(hub.DiscoverFans());
+        var store = new InMemoryConfigStore();
+        store.Update(s => { s.Devices.TlLighting.Scope = "top"; s.Devices.TlLighting.ArgbSync = true; });
+        var writer = new Nexus.Service.Lighting.TlLightingFrameWriter(hub, store);
+        writer.Tick();
+        fake.Writes.Clear();
+
+        store.Update(s => s.Devices.TlLighting.ArgbSync = false);
+        writer.Tick();
+
+        var fanLights = fake.Writes.FindAll(w => w[1] == 0xA3);
+        Assert.Equal(2, fanLights.Count);
+        Assert.All(fanLights, w => Assert.Equal(0, w[CommandPacket.PayloadOffset] & 0x01));
+        Assert.Contains(fake.Writes, w => w[1] != 0xA3);
+    }
+
+    [Fact]
+    public void Turning_argb_sync_off_recommits_without_the_sync_bit()
+    {
+        var fake = new TlDeviceFake(Handshake((0, 0)));
+        using var hub = new TlFanHub();
+        hub.Attach(fake);
+        Assert.True(hub.DiscoverFans());
+        var store = new InMemoryConfigStore();
+        store.Update(s => s.Devices.TlLighting.ArgbSync = true);
+        var writer = new Nexus.Service.Lighting.TlLightingFrameWriter(hub, store);
+        writer.Tick();
+        fake.Writes.Clear();
+
+        store.Update(s => s.Devices.TlLighting.ArgbSync = false);
+        writer.Tick();
+
+        var fanLight = Assert.Single(fake.Writes.FindAll(w => w[1] == 0xA3));
+        Assert.Equal(0, fanLight[CommandPacket.PayloadOffset] & 0x01);
+    }
+}

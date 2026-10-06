@@ -496,7 +496,7 @@ public sealed class Slv3Hub : IDisposable
             }
             if (found)
             {
-                SendSequencedCommandLocked(record, cmd.RfCmd, cmd.TargetSeq);
+                SendSequencedCommandLocked(record, cmd.RfCmd, cmd.TargetSeq, cmd.Arg);
             }
             // A chain that dropped out of the list still spends its budget, so a
             // stale command cannot outlive the chain and fire on its return.
@@ -1039,7 +1039,7 @@ public sealed class Slv3Hub : IDisposable
         return true;
     }
 
-    private bool SendSequencedCommandLocked(Slv3DeviceRecord record, byte rfCmd, byte cmdSeq)
+    private bool SendSequencedCommandLocked(Slv3DeviceRecord record, byte rfCmd, byte cmdSeq, byte arg = 0)
     {
         if (_tx is null)
         {
@@ -1047,7 +1047,7 @@ public sealed class Slv3Hub : IDisposable
         }
         // lian-li-linux switch_to_wireless_theme carries the AIO's bind ordinal at [16].
         var slot = rfCmd == Slv3Protocol.RfAioSwitchWireless ? BindOrdinalLocked(record.Mac) : (byte)0;
-        var payload = Slv3Protocol.BuildSequencedCommand(rfCmd, record.Mac, _masterMac, record.RxType, record.Channel, cmdSeq, slot);
+        var payload = Slv3Protocol.BuildSequencedCommand(rfCmd, record.Mac, _masterMac, record.RxType, record.Channel, cmdSeq, slot, arg);
         return SendRfPayloadLocked(record.Channel, record.RxType, payload);
     }
 
@@ -1202,7 +1202,20 @@ public sealed class Slv3Hub : IDisposable
     /// </summary>
     public bool Identify(string macHex) => QueueSequencedCommand(macHex, Slv3Protocol.RfSelect, "identify");
 
-    private bool QueueSequencedCommand(string macHex, byte rfCmd, string label)
+    /// <summary>True while a sequenced command other than <paramref name="rfCmd"/> waits for the chain's echo; a chain holds one at a time.</summary>
+    public bool HasOtherPendingCommand(string macHex, byte rfCmd)
+    {
+        lock (_lock)
+        {
+            return _pendingCommands.TryGetValue(macHex, out var cmd) && cmd.RfCmd != rfCmd;
+        }
+    }
+
+    /// <summary>Hands a chain to its motherboard ARGB input (on) or back to the host (off), re-sent until the chain echoes the command sequence.</summary>
+    public bool SetMotherboardArgb(string macHex, bool on) =>
+        QueueSequencedCommand(macHex, Slv3Protocol.RfArgbSyncSwitch, on ? "motherboard ARGB on" : "motherboard ARGB off", on ? (byte)1 : (byte)0);
+
+    private bool QueueSequencedCommand(string macHex, byte rfCmd, string label, byte arg = 0)
     {
         if (!TryParseMac(macHex, out var mac))
         {
@@ -1214,7 +1227,7 @@ public sealed class Slv3Hub : IDisposable
             {
                 return false;
             }
-            if (QueueSequencedCommandLocked(record, rfCmd) is not { } seq)
+            if (QueueSequencedCommandLocked(record, rfCmd, arg) is not { } seq)
             {
                 return false;
             }
@@ -1224,17 +1237,17 @@ public sealed class Slv3Hub : IDisposable
     }
 
     // Sends the first frame now and leaves the rest to SyncControlLocked; null when the send failed.
-    private byte? QueueSequencedCommandLocked(Slv3DeviceRecord record, byte rfCmd)
+    private byte? QueueSequencedCommandLocked(Slv3DeviceRecord record, byte rfCmd, byte arg = 0)
     {
         var key = Convert.ToHexString(record.Mac);
         _lastIssuedSeq.TryGetValue(key, out var lastIssued);
         var seq = Slv3Protocol.NextCmdSeq((byte)Math.Max(lastIssued, record.CmdSeq));
-        if (!SendSequencedCommandLocked(record, rfCmd, seq))
+        if (!SendSequencedCommandLocked(record, rfCmd, seq, arg))
         {
             return null;
         }
         _lastIssuedSeq[key] = seq;
-        _pendingCommands[key] = new Slv3PendingCommand(record.Mac, rfCmd, seq, SequencedCommandBudget - 1);
+        _pendingCommands[key] = new Slv3PendingCommand(record.Mac, rfCmd, seq, SequencedCommandBudget - 1, arg);
         return seq;
     }
 
@@ -1703,7 +1716,7 @@ public sealed class Slv3Hub : IDisposable
 
     private readonly record struct Slv3PendingOp(byte[] Mac, byte TargetSlot, bool Unbind, int TicksRemaining);
 
-    private readonly record struct Slv3PendingCommand(byte[] Mac, byte RfCmd, byte TargetSeq, int SendsRemaining);
+    private readonly record struct Slv3PendingCommand(byte[] Mac, byte RfCmd, byte TargetSeq, int SendsRemaining, byte Arg = 0);
 
     private readonly record struct Slv3KnownChain(Slv3DeviceRecord Record, long LastSeenMs);
 

@@ -56,6 +56,7 @@ public static class Slv3Protocol
     public const byte RfRgbSync = 0x20;            // streamed RGB frame animation
     public const byte RfMbSyncSwitch = 0x24;
     public const byte RfLightSyncSwitch = 0x26;
+    public const byte RfArgbSyncSwitch = 0x27;     // fan chain plays its motherboard ARGB input; [20] = 1 on, 0 off (cmdSeq-acked)
 
     /// <summary>Constant frame-type byte at RF payload[0] for every host->fan frame.</summary>
     public const byte RfFrameType = 0x12;
@@ -575,10 +576,12 @@ public static class Slv3Protocol
     /// (L-Connect SyncControlInfo).
     /// </summary>
     public static byte[] BuildSequencedCommand(
-        byte rfCmd, ReadOnlySpan<byte> fanMac, ReadOnlySpan<byte> masterMac, byte targetRx, byte targetChannel, byte cmdSeq, byte slot = 0)
+        byte rfCmd, ReadOnlySpan<byte> fanMac, ReadOnlySpan<byte> masterMac, byte targetRx, byte targetChannel, byte cmdSeq, byte slot = 0, byte arg = 0)
     {
         var payload = new byte[RfPayloadSize];
         WriteRfHeader(payload, rfCmd, fanMac, masterMac, targetRx, targetChannel, slot, cmdSeq);
+        // Switch commands carry their on/off byte here; the rest leave it zero.
+        payload[20] = arg;
         return payload;
     }
 

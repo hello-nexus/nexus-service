@@ -323,13 +323,13 @@ public class LianLiLightingDeviceProviderTests
     }
 
     [Fact]
-    public void Argb_sync_left_on_from_a_verified_hub_does_not_hide_another_familys_cards()
+    public void Argb_sync_hides_the_cards_on_every_family()
     {
         ConnectSl();
         OnlyPort0(2);
         _store.Update(s => s.Devices.LianLiLighting.ArgbSync = true);
 
-        Assert.NotEmpty(_provider.GetAll().Devices);
-        Assert.NotEmpty(_provider.GetStructures());
+        Assert.Empty(_provider.GetAll().Devices);
+        Assert.Empty(_provider.GetStructures());
     }
 }

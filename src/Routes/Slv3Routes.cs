@@ -56,6 +56,12 @@ public sealed class Slv3ChainLightingDto
     public string[] Colors { get; set; } = Array.Empty<string>();
     public bool Merge { get; set; }
     public Slv3LaneDto[] LaneSettings { get; set; } = Array.Empty<Slv3LaneDto>();
+    /// <summary>Saved choice to play the motherboard ARGB header through the chain's sync cable; null when never chosen.</summary>
+    public bool? MotherboardArgb { get; set; }
+    /// <summary>The chain reports its ARGB sync cable plugged in.</summary>
+    public bool ArgbCableConnected { get; set; }
+    /// <summary>The chain reports it is playing its motherboard input.</summary>
+    public bool PlayingMotherboardArgb { get; set; }
 }
 
 public sealed class Slv3LightingResponse
@@ -74,6 +80,7 @@ public sealed class Slv3ChainLightingRequest
     public string[]? Colors { get; set; }
     public bool? Merge { get; set; }
     public Slv3LaneDto[]? LaneSettings { get; set; }
+    public bool? MotherboardArgb { get; set; }
 }
 
 /// <summary>
@@ -137,7 +144,8 @@ public static partial class Slv3Routes
 
         // PUT /devices/lianli-wireless/lighting/{mac} - patch one bound chain's lighting mode.
         app.MapPut("/devices/lianli-wireless/lighting/{mac}", (
-            string mac, Slv3ChainLightingRequest body, Slv3Hub hub, IConfigStore store, Nexus.Service.Sockets.MultiplexHub mux) =>
+            string mac, Slv3ChainLightingRequest body, Slv3Hub hub, IConfigStore store,
+            Nexus.Service.Lighting.Slv3LightingDeviceProvider lighting, Nexus.Service.Sockets.MultiplexHub mux) =>
         {
             if (!MacHex().IsMatch(mac))
             {
@@ -188,10 +196,12 @@ public static partial class Slv3Routes
                         Colors = body.Colors is not null ? new List<string>(body.Colors) : old.Colors,
                         Merge = body.Merge ?? old.Merge,
                         Lanes = lanes,
+                        MotherboardArgb = body.MotherboardArgb ?? old.MotherboardArgb,
                     },
                 };
                 s.Devices.LianLiWireless.Chains = next;
             });
+            if (body.MotherboardArgb.HasValue) lighting.OnHubStateUpdated();
             Nexus.Service.Sockets.PanelTopics.BroadcastLighting(mux);
             return Results.Json(ApiResponse.Ok(), AppJsonContext.Default.ApiResponse);
         });
@@ -336,6 +346,9 @@ public static partial class Slv3Routes
                 Colors = ls.Colors.ToArray(),
                 Merge = ls.Merge,
                 LaneSettings = laneDtos,
+                MotherboardArgb = ls.MotherboardArgb,
+                ArgbCableConnected = fan.ArgbCableConnected,
+                PlayingMotherboardArgb = fan.PlayingMotherboardArgb,
             });
         }
 

@@ -29,6 +29,10 @@ public sealed class TlLightingFrameWriter : IHostedService, IDisposable
     // Last look committed to hardware, keyed to the connection it was committed on;
     // a reconnect leaves the controller with no look, so the generation takes part.
     private string? _lastSig;
+    // Whether the controller may still hold a per-fan sync flag; assumed so until a
+    // per-fan pass has cleared it on this connection, since a flag set before a
+    // reconnect or restart may survive on the controller.
+    private bool _argbSyncCommitted = true;
 
     public TlLightingFrameWriter(TlFanHub hub, IConfigStore store, FeatureGates? gates = null)
     {
@@ -89,7 +93,7 @@ public sealed class TlLightingFrameWriter : IHostedService, IDisposable
         }
     }
 
-    private void Tick()
+    internal void Tick()
     {
         if (!_gates.Lighting)
         {
@@ -101,6 +105,7 @@ public sealed class TlLightingFrameWriter : IHostedService, IDisposable
             // A disconnected controller forgets its look, so the next connect must
             // re-commit even when nothing in settings moved.
             _lastSig = null;
+            _argbSyncCommitted = true;
             return;
         }
 
@@ -132,15 +137,23 @@ public sealed class TlLightingFrameWriter : IHostedService, IDisposable
 
 
         bool allOk = true;
-        if (scope == "all")
+        // Motherboard sync is a flag on each fan's light command; the fan then
+        // ignores the rest of the payload, so the scope does not apply. Leaving
+        // it takes one per-fan pass with the flag clear, since the group
+        // commands of a scoped look never touch it.
+        if (ls.ArgbSync || scope == "all" || _argbSyncCommitted)
         {
             for (int i = 0; i < snap.ChannelCount; i++)
             {
                 allOk &= _hub.SetFanLight(
                     snap.Port[i], snap.FanIndex[i], mode.ModeByte,
-                    ls.Brightness, ls.Speed, ls.Direction, colors, colorCount, mode.IsOff);
+                    ls.Brightness, ls.Speed, ls.Direction, colors, colorCount, mode.IsOff, ls.ArgbSync);
             }
-            return allOk;
+            _argbSyncCommitted = ls.ArgbSync;
+            if (ls.ArgbSync || scope == "all")
+            {
+                return allOk;
+            }
         }
 
         bool topHalf = scope == "top";
@@ -192,7 +205,7 @@ public sealed class TlLightingFrameWriter : IHostedService, IDisposable
     {
         var colors = ls.Colors is null ? "" : string.Join(',', ls.Colors);
         var topology = string.Join('/', snap.PortFanCounts);
-        return $"{generation}|{ls.Mode}|{ls.Speed}|{ls.Direction}|{ls.Brightness}|{NormalizeScope(ls.Scope)}|{colors}|{topology}";
+        return $"{generation}|{ls.Mode}|{ls.Speed}|{ls.Direction}|{ls.Brightness}|{NormalizeScope(ls.Scope)}|{colors}|{topology}|{ls.ArgbSync}";
     }
 
     private static (byte r, byte g, byte b) ParseHexColor(string hex)

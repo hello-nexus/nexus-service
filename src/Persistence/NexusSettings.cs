@@ -1551,6 +1551,8 @@ public sealed class LianLiWirelessChainLighting
     public bool Merge { get; set; }
     /// <summary>One entry per lane, used by <see cref="ModePerLane"/>.</summary>
     public List<LianLiWirelessLane> Lanes { get; set; } = new();
+    /// <summary>The chain plays the motherboard ARGB header through its sync cable instead of Nexus; null leaves the chain's own state alone.</summary>
+    public bool? MotherboardArgb { get; set; }
 }
 
 public sealed class LianLiWirelessLane
@@ -1708,6 +1710,9 @@ public sealed class TlLightingSettings
     public string Scope { get; set; } = "all";
 
     public List<string> Colors { get; set; } = new();
+
+    /// <summary>The fans play the motherboard ARGB header through the controller's sync cable instead of the saved look.</summary>
+    public bool ArgbSync { get; set; }
 }
 
 public sealed class StrimerLightingSettings
@@ -1719,6 +1724,8 @@ public sealed class StrimerLightingSettings
     public int Direction { get; set; } = 0;
     public int Brightness { get; set; } = 4;
     public List<string> Colors { get; set; } = new();
+    /// <summary>The cable plays the motherboard ARGB header through the controller's sync cable instead of Nexus.</summary>
+    public bool ArgbSync { get; set; }
 }
 
 public sealed class Galahad2LightingSettings

@@ -120,13 +120,23 @@ public sealed class Slv3LightingDeviceProvider : ILightingDeviceProvider, ILight
         });
     }
 
+    /// <summary>The chain plays its motherboard input: the saved choice, or with none saved, what the chain reports.</summary>
+    internal static bool PlaysMotherboardArgb(Slv3FanInfo fan, IReadOnlyDictionary<string, LianLiWirelessChainLighting> chains) =>
+        (chains.TryGetValue(fan.Mac, out var chain) ? chain.MotherboardArgb : null) ?? fan.PlayingMotherboardArgb;
+
     private string BuildSignature()
     {
         if (!_hub.IsConnected) return "disconnected";
         var sb = new System.Text.StringBuilder("connected");
+        var chains = _store.Load().Devices.LianLiWireless.Chains;
         foreach (var fan in _hub.State.Fans)
         {
             if (!fan.BoundToUs) continue;
+            if (PlaysMotherboardArgb(fan, chains))
+            {
+                sb.Append('|').Append(fan.Mac).Append(":argb");
+                continue;
+            }
             // FanType is part of the signature because the family sets the LED
             // count: a chain first seen with a starved beacon (fans_type all 0,
             // Unknown family) rebuilds once the real subtype arrives. DevType
@@ -355,9 +365,12 @@ public sealed class Slv3LightingDeviceProvider : ILightingDeviceProvider, ILight
     internal List<DeviceStructure> BuildStructures()
     {
         var structures = new List<DeviceStructure>();
+        var chains = _store.Load().Devices.LianLiWireless.Chains;
         foreach (var fan in _hub.State.Fans)
         {
             if (!fan.BoundToUs) continue;
+            // A chain playing its motherboard ARGB input has no cards of its own.
+            if (PlaysMotherboardArgb(fan, chains)) continue;
             if (Slv3Protocol.IsStrimerDevType((byte)fan.DevType))
             {
                 var ledCount = StrimerLedCountFor((byte)fan.DevType);

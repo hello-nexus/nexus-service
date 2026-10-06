@@ -579,6 +579,23 @@ public class LianLiLightingFrameWriterTests
     private static bool IsArgbSync(HubTransportSpy.Call c, byte on) =>
         c.IsSetFeature && c.Bytes.Length >= 4 && c.Bytes[1] == 0x10 && c.Bytes[2] == 0x61 && c.Bytes[3] == on;
 
+    [Theory]
+    [InlineData(0xA101, 0x41)]
+    [InlineData(0xA100, 0x30)]
+    [InlineData(0xA103, 0x61)]
+    public void Argb_sync_switches_every_family_on_its_own_register(int pid, int register)
+    {
+        UseFakeClock();
+        Attach(pid, port: 0, fans: 2);
+        SetMode("static");
+        _store.Update(s => s.Devices.LianLiLighting.ArgbSync = true);
+
+        _writer.Tick();
+
+        Assert.Single(Calls, c => c.IsSetFeature && c.Bytes[1] == 0x10 && c.Bytes[2] == register && c.Bytes[3] == 1);
+        Assert.DoesNotContain(Calls, c => c.Bytes.Length > 1 && (c.Bytes[1] & 0xF0) == 0x30);
+    }
+
     [Fact]
     public void Argb_sync_switches_the_hub_once_and_stops_streaming()
     {
@@ -671,28 +688,4 @@ public class LianLiLightingFrameWriterTests
         Assert.Equal(3, commits);
     }
 
-    [Fact]
-    public void An_unverified_family_is_never_sent_the_sync_register()
-    {
-        Attach(0xA100, port: 2, fans: 3);
-        SetMode("static");
-        _store.Update(s => { s.Devices.LianLiLighting.ArgbSync = true; s.Devices.LianLiLighting.ArgbSyncSource = "openrgb-s-1-1"; });
-
-        _writer.Tick();
-
-        Assert.DoesNotContain(Calls, c => c.IsSetFeature && c.Bytes.Length >= 3 && c.Bytes[1] == 0x10 && c.Bytes[2] == 0x30);
-    }
-
-    [Fact]
-    public void Argb_sync_left_on_does_not_switch_an_unverified_family()
-    {
-        Attach(0xA100, port: 2, fans: 3);
-        SetMode("custom");
-        _store.Update(s => s.Devices.LianLiLighting.ArgbSync = true);
-
-        _writer.Tick();
-
-        Assert.DoesNotContain(Calls, c => c.IsSetFeature && c.Bytes.Length >= 3 && c.Bytes[1] == 0x10 && c.Bytes[2] == 0x30);
-        Assert.Contains(Calls, c => c.Kind == HubTransportSpy.CallKind.Write);
-    }
 }

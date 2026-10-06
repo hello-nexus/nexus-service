@@ -205,7 +205,8 @@ public static partial class DevicesRoutes
                 Modes = catalog,
                 ArgbSync = ls.ArgbSync,
                 ArgbSyncSource = ls.ArgbSyncSource,
-                ArgbSyncSupported = profile.ArgbSyncVerified,
+                ArgbSyncSupported = true,
+                ArgbSyncSourcesSupported = profile.ArgbSyncVerified,
                 ArgbSyncSources = ArgbSyncSources(topology, hub.DeviceId, profile, s.Devices.LianLi),
             }, AppJsonContext.Default.LianLiLightingResponse);
         });
@@ -219,10 +220,6 @@ public static partial class DevicesRoutes
             LianLiLightingDeviceProvider lighting,
             Nexus.Service.Sockets.MultiplexHub mux) =>
         {
-            if (body.ArgbSync == true && !hub.Profile.ArgbSyncVerified)
-            {
-                return Results.BadRequest(ApiResponse.Fail("ARGB sync is not supported on this hub"));
-            }
             // Only a source being switched to must still be listed: turning sync
             // off has to work after the stored source dropped out of the list.
             var stored = store.Load().Devices.LianLiLighting.ArgbSyncSource;
@@ -355,6 +352,8 @@ public sealed class LianLiLightingResponse
     public LianLiModeInfoDto[] Modes { get; set; } = Array.Empty<LianLiModeInfoDto>();
     public bool ArgbSync { get; set; }
     public bool ArgbSyncSupported { get; set; }
+    /// <summary>The hub's input layout is known, so a Nexus card can drive the header; otherwise sync hands the fans to the motherboard alone.</summary>
+    public bool ArgbSyncSourcesSupported { get; set; }
     public string? ArgbSyncSource { get; set; }
     public LianLiArgbSourceDto[] ArgbSyncSources { get; set; } = Array.Empty<LianLiArgbSourceDto>();
 }
