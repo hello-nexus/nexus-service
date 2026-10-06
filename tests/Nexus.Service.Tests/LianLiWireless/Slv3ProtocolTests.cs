@@ -559,6 +559,48 @@ public class Slv3ProtocolTests
     }
 
     [Fact]
+    public void BuildAioParamBlock_draws_the_configured_screen()
+    {
+        var screen = Slv3Protocol.AioScreenFrom(45, 7, "#102030", "#405060", "#708090",
+            cpuTemp: true, cpuLoad: false, gpuTemp: true, gpuLoad: false, fanSpeed: true);
+
+        var p = Slv3Protocol.BuildAioParamBlock(new Slv3AioSensors(60f, 30f, 70f, 40f), pumpTimer: 963, screen, fanRpm: 1234);
+
+        Assert.Equal(new byte[] { 60, 0, 70, 0 }, p[0..4]);
+        Assert.Equal(1234, (p[4] << 8) | p[5]);
+        Assert.Equal(new byte[] { 1, 0, 1, 0, 1 }, p[8..13]);
+        Assert.Equal(new byte[] { 0xFF, 0x10, 0x20, 0x30 }, p[13..17]);
+        Assert.Equal(new byte[] { 0xFF, 0x40, 0x50, 0x60 }, p[17..21]);
+        Assert.Equal(new byte[] { 0xFF, 0x70, 0x80, 0x90 }, p[21..25]);
+        Assert.Equal(45, p[25]);
+        Assert.Equal(7, p[27]);
+        Assert.Equal(963, (p[28] << 8) | p[29]);
+    }
+
+    [Fact]
+    public void A_fan_speed_readout_needs_a_spinning_fan()
+    {
+        var screen = Slv3AioScreen.Default with { FanSpeed = true };
+
+        var p = Slv3Protocol.BuildAioParamBlock(default, pumpTimer: 0, screen, fanRpm: 0);
+
+        Assert.Equal(new byte[] { 0, 0 }, p[4..6]);
+        Assert.Equal(0, p[12]);
+    }
+
+    [Fact]
+    public void A_screen_from_settings_clamps_and_falls_back_to_white()
+    {
+        var screen = Slv3Protocol.AioScreenFrom(250, 99, "red", "#12345", "#ABCDEF", true, true, true, true, false);
+
+        Assert.Equal(100, screen.Brightness);
+        Assert.Equal(Slv3Protocol.AioThemeCount - 1, screen.Theme);
+        Assert.Equal(0xFFFFFFFFu, screen.LabelArgb);
+        Assert.Equal(0xFFFFFFFFu, screen.ValueArgb);
+        Assert.Equal(0xFFABCDEFu, screen.UnitArgb);
+    }
+
+    [Fact]
     public void Aio_switch_frame_matches_the_reference_packet()
     {
         var payload = Slv3Protocol.BuildSequencedCommand(

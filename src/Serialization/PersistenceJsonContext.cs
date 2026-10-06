@@ -22,6 +22,8 @@ namespace Nexus.Service.Serialization;
 [JsonSerializable(typeof(Dictionary<string, LianLiWirelessScreenSettings>))]
 [JsonSerializable(typeof(LianLiWirelessChainLighting))]
 [JsonSerializable(typeof(Dictionary<string, LianLiWirelessChainLighting>))]
+[JsonSerializable(typeof(LianLiAioScreenSettings))]
+[JsonSerializable(typeof(Dictionary<string, LianLiAioScreenSettings>))]
 [JsonSerializable(typeof(LianLiWirelessLane))]
 [JsonSerializable(typeof(List<LianLiWirelessLane>))]
 [JsonSerializable(typeof(CorsairSettings))]

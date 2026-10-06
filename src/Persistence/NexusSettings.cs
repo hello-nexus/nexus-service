@@ -1534,6 +1534,27 @@ public sealed class LianLiWirelessSettings
 
     /// <summary>Lighting mode per bound wireless chain (Strimer cable or fan chain), keyed by its MAC hex (uppercase).</summary>
     public Dictionary<string, LianLiWirelessChainLighting> Chains { get; set; } = new();
+
+    /// <summary>HydroShift II screen settings, keyed by the AIO's MAC hex (uppercase).</summary>
+    public Dictionary<string, LianLiAioScreenSettings> AioScreens { get; set; } = new();
+}
+
+/// <summary>What a HydroShift II's screen shows while Nexus drives its pump.</summary>
+public sealed class LianLiAioScreenSettings
+{
+    /// <summary>Backlight, percent.</summary>
+    public int Brightness { get; set; } = Nexus.Service.Peripherals.LianLiWireless.Slv3Protocol.AioLcdBrightness;
+    /// <summary>Index of one of the AIO's built-in screen themes.</summary>
+    public int Theme { get; set; }
+    public string LabelColor { get; set; } = "#FFFFFF";
+    public string ValueColor { get; set; } = "#FFFFFF";
+    public string UnitColor { get; set; } = "#FFFFFF";
+    public bool ShowCpuTemp { get; set; } = true;
+    public bool ShowCpuLoad { get; set; } = true;
+    public bool ShowGpuTemp { get; set; } = true;
+    public bool ShowGpuLoad { get; set; } = true;
+    /// <summary>Shows the radiator fans' speed.</summary>
+    public bool ShowFanSpeed { get; set; }
 }
 
 /// <summary>

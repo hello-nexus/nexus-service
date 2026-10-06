@@ -1185,6 +1185,8 @@ namespace Nexus.Service.Serialization;
 [JsonSerializable(typeof(Nexus.Service.Routes.Slv3LaneDto))]
 [JsonSerializable(typeof(Nexus.Service.Routes.Slv3LaneDto[]))]
 [JsonSerializable(typeof(Nexus.Service.Routes.Slv3ChainLightingRequest))]
+[JsonSerializable(typeof(Nexus.Service.Routes.Slv3AioScreenDto))]
+[JsonSerializable(typeof(Nexus.Service.Routes.Slv3AioScreenRequest))]
 // Lian Li L-Wireless SL-LCD fan screens: discovery/settings, content, media library.
 [JsonSerializable(typeof(Nexus.Service.Peripherals.LianLiWireless.Slv3LcdMediaItem))]
 [JsonSerializable(typeof(Nexus.Service.Routes.Slv3LcdScreenDto))]

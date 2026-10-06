@@ -83,6 +83,38 @@ public sealed class Slv3ChainLightingRequest
     public bool? MotherboardArgb { get; set; }
 }
 
+/// <summary>A HydroShift II screen's settings, as saved or defaulted.</summary>
+public sealed class Slv3AioScreenDto
+{
+    public int Brightness { get; set; }
+    public int Theme { get; set; }
+    /// <summary>Themes the AIO offers, numbered from 0.</summary>
+    public int ThemeCount { get; set; }
+    public string LabelColor { get; set; } = "";
+    public string ValueColor { get; set; } = "";
+    public string UnitColor { get; set; } = "";
+    public bool ShowCpuTemp { get; set; }
+    public bool ShowCpuLoad { get; set; }
+    public bool ShowGpuTemp { get; set; }
+    public bool ShowGpuLoad { get; set; }
+    public bool ShowFanSpeed { get; set; }
+}
+
+/// <summary>Patch for a HydroShift II screen; null fields keep their value.</summary>
+public sealed class Slv3AioScreenRequest
+{
+    public int? Brightness { get; set; }
+    public int? Theme { get; set; }
+    public string? LabelColor { get; set; }
+    public string? ValueColor { get; set; }
+    public string? UnitColor { get; set; }
+    public bool? ShowCpuTemp { get; set; }
+    public bool? ShowCpuLoad { get; set; }
+    public bool? ShowGpuTemp { get; set; }
+    public bool? ShowGpuLoad { get; set; }
+    public bool? ShowFanSpeed { get; set; }
+}
+
 /// <summary>
 /// First-party Lian Li L-Wireless (SLV3) dongle routes: discovery,
 /// bind/unbind/identify, chain reset.
@@ -94,6 +126,70 @@ public static partial class Slv3Routes
         // GET /devices/lianli-wireless/state - link + fan list.
         app.MapGet("/devices/lianli-wireless/state", (Slv3Hub hub) =>
             Results.Json(hub.State, AppJsonContext.Default.Slv3State));
+
+        // GET /devices/lianli-wireless/aio-screen/{mac} - what a HydroShift II screen shows while Nexus drives its pump.
+        app.MapGet("/devices/lianli-wireless/aio-screen/{mac}", (string mac, Slv3Hub hub, IConfigStore store) =>
+        {
+            if (!MacHex().IsMatch(mac))
+            {
+                return Results.BadRequest(ApiResponse.Fail("invalid mac"));
+            }
+            if (!IsKnownHydroShift(hub, mac))
+            {
+                return Results.NotFound(ApiResponse.Fail("HydroShift II not found"));
+            }
+            store.Load().Devices.LianLiWireless.AioScreens.TryGetValue(mac.ToUpperInvariant(), out var saved);
+            return Results.Json(AioScreenDto(saved ?? new LianLiAioScreenSettings()), AppJsonContext.Default.Slv3AioScreenDto);
+        });
+
+        // PUT /devices/lianli-wireless/aio-screen/{mac} - patch a HydroShift II screen.
+        app.MapPut("/devices/lianli-wireless/aio-screen/{mac}", (string mac, Slv3AioScreenRequest body, Slv3Hub hub, IConfigStore store) =>
+        {
+            if (!MacHex().IsMatch(mac))
+            {
+                return Results.BadRequest(ApiResponse.Fail("invalid mac"));
+            }
+            if (!IsKnownHydroShift(hub, mac))
+            {
+                return Results.NotFound(ApiResponse.Fail("HydroShift II not found"));
+            }
+            foreach (var color in new[] { body.LabelColor, body.ValueColor, body.UnitColor })
+            {
+                if (color is not null && !HexColor().IsMatch(color))
+                {
+                    return Results.BadRequest(ApiResponse.Fail("invalid color"));
+                }
+            }
+            if (body.Theme is int theme && (theme < 0 || theme >= Slv3Protocol.AioThemeCount))
+            {
+                return Results.BadRequest(ApiResponse.Fail("unknown theme"));
+            }
+            var key = mac.ToUpperInvariant();
+            // The hub reads these settings outside the store lock, so the patched entry and its map are swapped in by reference.
+            store.Update(s =>
+            {
+                var current = s.Devices.LianLiWireless.AioScreens;
+                current.TryGetValue(key, out var old);
+                old ??= new LianLiAioScreenSettings();
+                s.Devices.LianLiWireless.AioScreens = new Dictionary<string, LianLiAioScreenSettings>(current)
+                {
+                    [key] = new LianLiAioScreenSettings
+                    {
+                        Brightness = body.Brightness is int b ? Math.Clamp(b, 0, 100) : old.Brightness,
+                        Theme = body.Theme ?? old.Theme,
+                        LabelColor = body.LabelColor ?? old.LabelColor,
+                        ValueColor = body.ValueColor ?? old.ValueColor,
+                        UnitColor = body.UnitColor ?? old.UnitColor,
+                        ShowCpuTemp = body.ShowCpuTemp ?? old.ShowCpuTemp,
+                        ShowCpuLoad = body.ShowCpuLoad ?? old.ShowCpuLoad,
+                        ShowGpuTemp = body.ShowGpuTemp ?? old.ShowGpuTemp,
+                        ShowGpuLoad = body.ShowGpuLoad ?? old.ShowGpuLoad,
+                        ShowFanSpeed = body.ShowFanSpeed ?? old.ShowFanSpeed,
+                    },
+                };
+            });
+            return Results.Json(ApiResponse.Ok(), AppJsonContext.Default.ApiResponse);
+        });
 
         // POST /devices/lianli-wireless/bind - request binding a discovered fan
         // to our master, into the first free slot. The connection worker's tick
@@ -213,6 +309,33 @@ public static partial class Slv3Routes
 
     [GeneratedRegex("^#[0-9A-Fa-f]{6}$")]
     private static partial Regex HexColor();
+
+    private static bool IsKnownHydroShift(Slv3Hub hub, string mac)
+    {
+        foreach (var fan in hub.State.Fans)
+        {
+            if (string.Equals(fan.Mac, mac, StringComparison.OrdinalIgnoreCase) && Slv3Protocol.IsHydroShiftDevType((byte)fan.DevType))
+            {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private static Slv3AioScreenDto AioScreenDto(LianLiAioScreenSettings s) => new()
+    {
+        Brightness = s.Brightness,
+        Theme = s.Theme,
+        ThemeCount = Slv3Protocol.AioThemeCount,
+        LabelColor = s.LabelColor,
+        ValueColor = s.ValueColor,
+        UnitColor = s.UnitColor,
+        ShowCpuTemp = s.ShowCpuTemp,
+        ShowCpuLoad = s.ShowCpuLoad,
+        ShowGpuTemp = s.ShowGpuTemp,
+        ShowGpuLoad = s.ShowGpuLoad,
+        ShowFanSpeed = s.ShowFanSpeed,
+    };
 
     [GeneratedRegex("^[0-9A-Fa-f]{12}$")]
     private static partial Regex MacHex();

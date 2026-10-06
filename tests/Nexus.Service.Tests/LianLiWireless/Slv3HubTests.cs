@@ -382,6 +382,29 @@ public class Slv3HubTests
     }
 
     [Fact]
+    public void Driven_hydroshift_screen_follows_its_saved_settings()
+    {
+        var (hub, net, tx, _) = CreateConnectedHub();
+        net.Fans.Add(new SimulatedFan { Mac = FanMac, MasterMac = net.MasterMac, RxType = 1, DevType = 10, FanCount = 0 });
+        hub.AioSensors = () => new Slv3AioSensors(55f, 12f, null, null);
+        hub.AioScreens = () => new Dictionary<string, Slv3AioScreen>
+        {
+            [Convert.ToHexString(FanMac)] = Slv3Protocol.AioScreenFrom(30, 4, "#FF0000", "#00FF00", "#0000FF", cpuTemp: false, cpuLoad: true, gpuTemp: false, gpuLoad: false, fanSpeed: false),
+        };
+        Assert.True(hub.DriveTick());
+        Assert.True(hub.SetPumpDuty(Convert.ToHexString(FanMac), 50));
+
+        Assert.True(hub.DriveTick());
+
+        var paramsFrame = Assert.Single(RfFrames(tx, Slv3Protocol.RfAioParams));
+        Assert.Equal(new byte[] { 0, 12, 0, 0 }, paramsFrame[22..26]);
+        Assert.Equal(new byte[] { 0, 1, 0, 0 }, paramsFrame[30..34]);
+        Assert.Equal(new byte[] { 0xFF, 0xFF, 0x00, 0x00 }, paramsFrame[35..39]);
+        Assert.Equal(30, paramsFrame[47]);
+        Assert.Equal(4, paramsFrame[49]);
+    }
+
+    [Fact]
     public void Driven_hydroshift_pump_gets_the_switch_until_echoed_and_params_every_drive_tick()
     {
         var (hub, net, tx, _) = CreateConnectedHub();

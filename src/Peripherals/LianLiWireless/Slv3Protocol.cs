@@ -151,7 +151,7 @@ public static class Slv3Protocol
 
     // lian-li-linux AioConfig defaults for the LCD fields of the param block.
     private const byte AioLcdLoopInterval = 3;
-    private const byte AioLcdBrightness = 80;
+    public const byte AioLcdBrightness = 80;
 
     /// <summary>Pump RPM span per head (lian-li-linux pump_rpm_range): 10 = LCD-C, 11 = LCD-S.</summary>
     public static (int Min, int Max) HydroShiftPumpRpmRange(byte devType) => devType == 11 ? (1600, 3200) : (1600, 2500);
@@ -193,29 +193,68 @@ public static class Slv3Protocol
         return (ushort)Math.Clamp(t, 0f, ushort.MaxValue);
     }
 
+    /// <summary>Screen themes a HydroShift II accepts, numbered from 0.</summary>
+    public const int AioThemeCount = 13;
+
     /// <summary>
     /// The 32-byte RF_AioParams block (lian-li-linux build_aio_param): [0..3]
-    /// CPU temp, CPU load, GPU temp, GPU load (0..99) for the LCD, [8..11]
-    /// which of those are valid, [6] LCD loop interval, [7] and [26] = 1,
-    /// [13..24] label/value/unit colours as ARGB, [25] LCD brightness, [27]
-    /// theme, [28..29] pump timer big-endian, [30] rotation.
+    /// CPU temp, CPU load, GPU temp, GPU load (0..99) for the LCD, [4..5] fan
+    /// speed big-endian, [8..12] which of those five are shown, [6] LCD loop
+    /// interval, [7] and [26] = 1, [13..24] label/value/unit colours as ARGB,
+    /// [25] LCD brightness, [27] theme, [28..29] pump timer big-endian, [30]
+    /// rotation.
     /// </summary>
-    public static byte[] BuildAioParamBlock(Slv3AioSensors sensors, ushort pumpTimer)
+    public static byte[] BuildAioParamBlock(Slv3AioSensors sensors, ushort pumpTimer) =>
+        BuildAioParamBlock(sensors, pumpTimer, Slv3AioScreen.Default, fanRpm: 0);
+
+    /// <param name="fanRpm">The radiator fans' speed, shown when <paramref name="screen"/> asks for it.</param>
+    public static byte[] BuildAioParamBlock(Slv3AioSensors sensors, ushort pumpTimer, Slv3AioScreen screen, int fanRpm)
     {
         var p = new byte[AioParamLength];
-        WriteAioSensor(p, 0, sensors.CpuTemp);
-        WriteAioSensor(p, 1, sensors.CpuLoad);
-        WriteAioSensor(p, 2, sensors.GpuTemp);
-        WriteAioSensor(p, 3, sensors.GpuLoad);
+        WriteAioSensor(p, 0, screen.CpuTemp ? sensors.CpuTemp : null);
+        WriteAioSensor(p, 1, screen.CpuLoad ? sensors.CpuLoad : null);
+        WriteAioSensor(p, 2, screen.GpuTemp ? sensors.GpuTemp : null);
+        WriteAioSensor(p, 3, screen.GpuLoad ? sensors.GpuLoad : null);
+        if (screen.FanSpeed && fanRpm > 0)
+        {
+            var rpm = Math.Min(fanRpm, ushort.MaxValue);
+            p[4] = (byte)(rpm >> 8);
+            p[5] = (byte)rpm;
+            p[12] = 1;
+        }
         p[6] = AioLcdLoopInterval;
         p[7] = 1;
-        p.AsSpan(13, 12).Fill(0xFF);
-        p[25] = AioLcdBrightness;
+        WriteArgb(p, 13, screen.LabelArgb);
+        WriteArgb(p, 17, screen.ValueArgb);
+        WriteArgb(p, 21, screen.UnitArgb);
+        p[25] = screen.Brightness;
         p[26] = 1;
+        p[27] = screen.Theme;
         p[28] = (byte)(pumpTimer >> 8);
         p[29] = (byte)pumpTimer;
         return p;
     }
+
+    private static void WriteArgb(byte[] p, int offset, uint argb)
+    {
+        p[offset] = (byte)(argb >> 24);
+        p[offset + 1] = (byte)(argb >> 16);
+        p[offset + 2] = (byte)(argb >> 8);
+        p[offset + 3] = (byte)argb;
+    }
+
+    /// <summary>A screen from user settings: brightness and theme clamped, "#RRGGBB" colours made opaque (white when unreadable).</summary>
+    public static Slv3AioScreen AioScreenFrom(
+        int brightness, int theme, string labelColor, string valueColor, string unitColor,
+        bool cpuTemp, bool cpuLoad, bool gpuTemp, bool gpuLoad, bool fanSpeed) =>
+        new((byte)Math.Clamp(brightness, 0, 100), (byte)Math.Clamp(theme, 0, AioThemeCount - 1),
+            OpaqueArgb(labelColor), OpaqueArgb(valueColor), OpaqueArgb(unitColor),
+            cpuTemp, cpuLoad, gpuTemp, gpuLoad, fanSpeed);
+
+    private static uint OpaqueArgb(string hex) =>
+        hex.Length == 7 && hex[0] == '#' && uint.TryParse(hex.AsSpan(1), System.Globalization.NumberStyles.HexNumber, null, out var rgb)
+            ? 0xFF000000u | rgb
+            : 0xFFFFFFFFu;
 
     private static void WriteAioSensor(byte[] p, int index, float? reading)
     {
@@ -774,6 +813,16 @@ public readonly record struct Slv3DeviceRecord(
 
 /// <summary>Host readings a HydroShift II shows on its LCD; null when the sensor is unavailable.</summary>
 public readonly record struct Slv3AioSensors(float? CpuTemp, float? CpuLoad, float? GpuTemp, float? GpuLoad);
+
+/// <summary>How a HydroShift II screen draws: backlight percent, theme, ARGB text colours, and which readings it shows.</summary>
+public readonly record struct Slv3AioScreen(
+    byte Brightness, byte Theme, uint LabelArgb, uint ValueArgb, uint UnitArgb,
+    bool CpuTemp, bool CpuLoad, bool GpuTemp, bool GpuLoad, bool FanSpeed)
+{
+    /// <summary>The screen a driven AIO gets before the user changes anything.</summary>
+    public static Slv3AioScreen Default =>
+        Slv3Protocol.AioScreenFrom(Slv3Protocol.AioLcdBrightness, 0, "#FFFFFF", "#FFFFFF", "#FFFFFF", true, true, true, true, false);
+}
 
 /// <summary>Wireless fan family, classified from a record's fans_type bytes.</summary>
 public enum Slv3FanFamily

@@ -63,6 +63,9 @@ public sealed class Slv3Hub : IDisposable
     /// <summary>Host readings for a driven HydroShift II's LCD; read once per <see cref="DriveTick"/>, outside the hub lock.</summary>
     public Func<Slv3AioSensors>? AioSensors { get; set; }
 
+    /// <summary>Saved HydroShift II screens by AIO MAC hex; read once per <see cref="DriveTick"/>, outside the hub lock.</summary>
+    public Func<IReadOnlyDictionary<string, Slv3AioScreen>>? AioScreens { get; set; }
+
     private ISlv3Transport? _tx;
     private ISlv3Transport? _rx;
     private byte[] _masterMac = new byte[Slv3Protocol.MacLength];
@@ -434,6 +437,7 @@ public sealed class Slv3Hub : IDisposable
     public bool DriveTick()
     {
         var aioSensors = _anyAioControlled ? ReadAioSensors() : default;
+        var aioScreens = _anyAioControlled ? ReadAioScreens() : null;
         lock (_lock)
         {
             if (!PollLocked())
@@ -445,7 +449,7 @@ public sealed class Slv3Hub : IDisposable
                 return true;
             }
             SyncPwmLocked();
-            SyncAioLocked(aioSensors);
+            SyncAioLocked(aioSensors, aioScreens);
             RefreshMasterMacLocked();
             SendClockHeartbeatLocked();
             RunSaveCfgScheduleLocked();
@@ -574,7 +578,7 @@ public sealed class Slv3Hub : IDisposable
     // lian-li-linux control_wireless: while Nexus drives an AIO's pump, the
     // switch to RF params is re-sent until the AIO echoes its cmdSeq, and the
     // param block (pump timer plus LCD readings) goes out every DriveTick.
-    private void SyncAioLocked(Slv3AioSensors sensors)
+    private void SyncAioLocked(Slv3AioSensors sensors, IReadOnlyDictionary<string, Slv3AioScreen>? screens)
     {
         if (_aioControl.Count == 0)
         {
@@ -604,10 +608,40 @@ public sealed class Slv3Hub : IDisposable
                 }
             }
             var rpm = Slv3Protocol.HydroShiftPumpRpm(control.Percent, record.DevType);
-            var block = Slv3Protocol.BuildAioParamBlock(sensors, Slv3Protocol.HydroShiftPumpTimer(rpm, record.DevType));
+            var block = Slv3Protocol.BuildAioParamBlock(
+                sensors, Slv3Protocol.HydroShiftPumpTimer(rpm, record.DevType),
+                screens is not null && screens.TryGetValue(key, out var screen) ? screen : Slv3AioScreen.Default,
+                RadiatorFanRpm(record));
             var payload = Slv3Protocol.BuildAioParams(record.Mac, _masterMac, record.RxType, record.Channel, BindOrdinalLocked(record.Mac), block);
             SendRfPayloadLocked(record.Channel, record.RxType, payload);
         }
+    }
+
+    private IReadOnlyDictionary<string, Slv3AioScreen>? ReadAioScreens()
+    {
+        try
+        {
+            return AioScreens?.Invoke();
+        }
+        catch (Exception ex)
+        {
+            ServiceLog.Warn($"[lianli-wireless] AIO screen settings read failed: {ex.Message}");
+            return null;
+        }
+    }
+
+    // Average of the HydroShift II's spinning fan ports; its pump has its own slot.
+    private static int RadiatorFanRpm(Slv3DeviceRecord record)
+    {
+        var sum = 0;
+        var spinning = 0;
+        for (var port = 0; port < Slv3Protocol.HydroShiftPumpPort && port < record.Rpm.Length; port++)
+        {
+            if (record.Rpm[port] <= 0) continue;
+            sum += record.Rpm[port];
+            spinning++;
+        }
+        return spinning == 0 ? 0 : sum / spinning;
     }
 
     private Slv3AioSensors ReadAioSensors()

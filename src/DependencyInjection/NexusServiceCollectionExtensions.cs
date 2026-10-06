@@ -937,6 +937,18 @@ public static class NexusServiceCollectionExtensions
                     Nexus.Service.Sensors.SummarySensors.Value(sensors, Nexus.Service.Sensors.SummarySensorKind.GpuTemp),
                     Nexus.Service.Sensors.SummarySensors.Value(sensors, Nexus.Service.Sensors.SummarySensorKind.GpuUsage));
             };
+            var store = sp.GetRequiredService<IConfigStore>();
+            hub.AioScreens = () =>
+            {
+                var screens = new Dictionary<string, Nexus.Service.Peripherals.LianLiWireless.Slv3AioScreen>(StringComparer.Ordinal);
+                foreach (var (mac, s) in store.Load().Devices.LianLiWireless.AioScreens)
+                {
+                    screens[mac] = Nexus.Service.Peripherals.LianLiWireless.Slv3Protocol.AioScreenFrom(
+                        s.Brightness, s.Theme, s.LabelColor, s.ValueColor, s.UnitColor,
+                        s.ShowCpuTemp, s.ShowCpuLoad, s.ShowGpuTemp, s.ShowGpuLoad, s.ShowFanSpeed);
+                }
+                return screens;
+            };
             return new Nexus.Service.Cooling.Slv3CoolingProvider(hub);
         });
         services.AddHostedService<Nexus.Service.Peripherals.LianLiWireless.Slv3ConnectionWorker>();
