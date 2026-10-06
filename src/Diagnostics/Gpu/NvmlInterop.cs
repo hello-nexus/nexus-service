@@ -86,9 +86,10 @@ internal static unsafe class NvmlInterop
         public ulong ViolationTimeUs;
     }
 
-    /// <summary>Loads the platform NVML library and resolves every symbol once.
-    /// Returns false (and stays false) when the driver isn't present or lacks
-    /// the core enumeration entry points; never throws.</summary>
+    /// <summary>Loads the platform NVML library and resolves every symbol once it
+    /// succeeds. Returns false when the driver isn't present or lacks the core
+    /// enumeration entry points, and tries again after a backoff (the driver may
+    /// not be ready at boot); a success is final. Never throws.</summary>
     public static bool TryLoad()
     {
         lock (Gate)

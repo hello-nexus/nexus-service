@@ -79,6 +79,7 @@ public sealed class CurveEngine : BackgroundService
 
     // Set per tick while the watchdog has latched after repeated stalls: no fan is written.
     private bool _noWrites;
+    private bool _latchReleased;
 
     /// <summary>Millisecond clock for write gating and the guard; tests substitute it.</summary>
     internal Func<long> Clock { get; set; } = () => Environment.TickCount64;
@@ -205,6 +206,17 @@ public sealed class CurveEngine : BackgroundService
         // forget what was written so every duty, unchanged ones included, is written again.
         // After repeated stalls it latches instead and the BIOS keeps the fans.
         _noWrites = _guard.WatchdogLatched;
+        if (_noWrites && !_latchReleased)
+        {
+            // The single writer hands the fans over once itself: a stalled tick may have
+            // written after the watchdog timer's release, leaving a stale Nexus duty.
+            _latchReleased = true;
+            Isolated("latch release", () => _fans.ReleaseAll());
+        }
+        else if (!_noWrites)
+        {
+            _latchReleased = false;
+        }
         if (_guard.ConsumeWatchdogRelease() || _noWrites)
         {
             lock (_lastWrite) { _lastWrite.Clear(); }

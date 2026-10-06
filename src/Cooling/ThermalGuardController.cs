@@ -184,7 +184,6 @@ public sealed class ThermalGuardController
                 return;
             }
             _watchdogFired = true;
-            _watchdogPending = true;
             _watchdogFires.Add(nowMs);
             _watchdogFires.RemoveAll(t => nowMs - t > WatchdogLatchWindowMs);
             if (_watchdogFires.Count >= WatchdogLatchFires)
@@ -197,6 +196,8 @@ public sealed class ThermalGuardController
         Console.Error.WriteLine("[thermal-guard] curve engine stalled: releasing all fans to BIOS");
         try { _fans.ReleaseAll(); }
         catch { /* the fans are already in an unknown state; nothing more to do */ }
+        // Only now may the engine re-drive: it can never run ahead of a release still in flight.
+        lock (_gate) { _watchdogPending = true; }
         if (latchedNow)
         {
             Console.Error.WriteLine("[thermal-guard] repeated engine stalls: Nexus fan writes stopped until restart or a guard toggle");
@@ -574,8 +575,8 @@ public sealed class ThermalGuardController
         });
     }
 
-    // Reads only what the monitoring sampler has already cached: forcing a hardware refresh
-    // from the engine thread would race the sampler's own use of the hardware.
+    // Reads only what is already cached: the engine refreshes the hardware itself every tick
+    // (through the temperature sources), so another refresh here would only repeat that work.
     private void RefreshCpuInfo(long nowMs)
     {
         if (_sensors is null)

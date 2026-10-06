@@ -618,6 +618,7 @@ public class ThermalGuardEngineTests
         Assert.True(guard.WatchdogLatched);
         Assert.Equal(1, alerts.Count(a => a.Contains("BIOS")));
 
+        var releasesAtLatch = fans.ReleaseAllCalls;
         var writes = fans.Driven.Count;
         store.Update(s => s.Cooling.Curves[0].Flat!.Speed = 33);
         fans.CpuTemp = 95f;
@@ -629,6 +630,8 @@ public class ThermalGuardEngineTests
         }
 
         Assert.Equal(writes, fans.Driven.Count);
+        // The engine thread released the fans itself, once.
+        Assert.Equal(releasesAtLatch + 1, fans.ReleaseAllCalls);
         var state = guard.GetState();
         Assert.True(state.WatchdogLatched);
         Assert.NotNull(state.GuardTempC);
@@ -654,6 +657,51 @@ public class ThermalGuardEngineTests
         guard.TickCompleted();
         e.Tick();
         Assert.True(fans.Driven.Count > writes);
+    }
+
+    private sealed class BlockingReleaseFans : IFanControlProvider
+    {
+        private readonly Fans _inner;
+        public readonly ManualResetEventSlim ReleaseStarted = new(false);
+        public readonly ManualResetEventSlim AllowRelease = new(false);
+        public BlockingReleaseFans(Fans inner) { _inner = inner; }
+        public IReadOnlyList<FanChannel> GetFanChannels() => _inner.GetFanChannels();
+        public IReadOnlyList<TemperatureSource> GetTemperatureSources() => _inner.GetTemperatureSources();
+        public float? ReadTemperature(string sensorId) => _inner.ReadTemperature(sensorId);
+        public int SetFanSpeed(string channelId, int dutyPercent) => _inner.SetFanSpeed(channelId, dutyPercent);
+        public void DriveFanSpeed(string channelId, int dutyPercent) => _inner.DriveFanSpeed(channelId, dutyPercent);
+        public void ReleaseFan(string channelId) => _inner.ReleaseFan(channelId);
+        public void ReleaseAll()
+        {
+            ReleaseStarted.Set();
+            AllowRelease.Wait();
+            _inner.ReleaseAll();
+        }
+        public Task<IReadOnlyList<FanCalibration>> CalibrateAsync(
+            IReadOnlyList<string> fanIds, IProgress<FanCalibrationProgress> progress, CancellationToken ct)
+            => _inner.CalibrateAsync(fanIds, progress, ct);
+    }
+
+    [Fact]
+    public async Task TheRedriveFlag_IsOnlySetOnceTheWatchdogsReleaseHasReturned()
+    {
+        var (_, fans, store, _) = Build();
+        var blocking = new BlockingReleaseFans(fans);
+        var mono = new long[] { 1_000 };
+        var guard = new ThermalGuardController(blocking, store) { MonotonicMs = () => mono[0] };
+        var e = new CurveEngine(blocking, store, new MultiplexHub(), null, guard) { Clock = () => mono[0] };
+        fans.CpuTemp = 90f;
+        mono[0] += 1000;
+        e.Tick();
+        guard.TickCompleted();
+
+        var watchdog = Task.Run(() => guard.WatchdogCheck(mono[0] + 11_000));
+        Assert.True(blocking.ReleaseStarted.Wait(5000));
+        Assert.False(guard.ConsumeWatchdogRelease());
+
+        blocking.AllowRelease.Set();
+        await watchdog;
+        Assert.True(guard.ConsumeWatchdogRelease());
     }
 
     private sealed class FlakySensors : ISensorProvider
