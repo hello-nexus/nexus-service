@@ -22380,6 +22380,12 @@
               "boolean"
             ]
           },
+          "keepCursorOff": {
+            "type": [
+              "null",
+              "boolean"
+            ]
+          },
           "flip180": {
             "type": [
               "null",

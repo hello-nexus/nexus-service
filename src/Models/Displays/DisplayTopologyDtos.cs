@@ -134,6 +134,8 @@ public sealed class DisplayAssignmentDto
     /// <summary>Panel backdrop; "desktop" tells the overlay to host this kiosk
     /// as a transparent window so the live desktop shows through.</summary>
     public string Backdrop { get; set; } = "";
+    /// <summary>Per-panel "keep the mouse off the panel" (record setting; default false).</summary>
+    public bool KeepCursorOff { get; set; }
 }
 
 /// <summary>Body for POST /displays/{id}/rotation.</summary>

@@ -113,6 +113,13 @@ public sealed class PanelDeviceRecord : IPanelPersonalization
     /// Display-bound records only; null = default (true).
     /// </summary>
     public bool? AutoOrient { get; set; }
+    /// <summary>
+    /// Per-panel "keep the mouse off the panel": the overlay stops the mouse
+    /// entering this panel's monitor and moves the cursor off when it lands
+    /// there. Display-bound records only; null = default (false). The Y70
+    /// kiosk uses the global Y70.KeepCursorOff.
+    /// </summary>
+    public bool? KeepCursorOff { get; set; }
     /// <summary>Turn the pushed frame 180 degrees; a cooler LCD's pump head rotates with the
     /// tubing. Applied in the transport, not the renderer. Pushed-frame panels only; null = off.</summary>
     public bool? Flip180 { get; set; }
@@ -384,6 +391,8 @@ public sealed class PanelDevicePatch
     public bool? ReserveMonitor { get; set; }
     /// <summary>Display-bound records only; ignored for other panels.</summary>
     public bool? AutoOrient { get; set; }
+    /// <summary>Display-bound records only; ignored for other panels.</summary>
+    public bool? KeepCursorOff { get; set; }
     /// <summary>Turn the pushed frame 180 degrees; a cooler LCD's pump head rotates with the
     /// tubing. Applied in the transport, not the renderer. Pushed-frame panels only; null = off.</summary>
     public bool? Flip180 { get; set; }

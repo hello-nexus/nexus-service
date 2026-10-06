@@ -63,7 +63,7 @@ public static class OverlayRoutes
                 Pinned = s.Overlay.Layout.Count,
                 Streams = streams.GetAssignments().Assignments,
             };
-            foreach (var (displayId, panelDeviceId, reserveMonitor, backdrop) in registry.ListAssignments())
+            foreach (var (displayId, panelDeviceId, reserveMonitor, backdrop, keepCursorOff) in registry.ListAssignments())
             {
                 state.Assignments.Add(new DisplayAssignmentDto
                 {
@@ -71,6 +71,7 @@ public static class OverlayRoutes
                     PanelDeviceId = panelDeviceId,
                     ReserveMonitor = reserveMonitor,
                     Backdrop = backdrop,
+                    KeepCursorOff = keepCursorOff,
                 });
             }
             return Results.Json(state, AppJsonContext.Default.OverlayStateResponse);

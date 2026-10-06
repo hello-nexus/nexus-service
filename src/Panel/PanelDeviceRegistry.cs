@@ -295,13 +295,13 @@ public sealed class PanelDeviceRegistry
 
     /// <summary>Active displayId -> panelDeviceId bindings (kiosk reconcile
     /// input). Disabled panels keep their record but host no kiosk.</summary>
-    public IReadOnlyList<(string DisplayId, string PanelDeviceId, bool ReserveMonitor, string Backdrop)> ListAssignments()
+    public IReadOnlyList<(string DisplayId, string PanelDeviceId, bool ReserveMonitor, string Backdrop, bool KeepCursorOff)> ListAssignments()
     {
-        var assignments = new List<(string, string, bool, string)>();
+        var assignments = new List<(string, string, bool, string, bool)>();
         foreach (var record in _store.Load().PanelDevices.Values)
         {
             if (!string.IsNullOrEmpty(record.DisplayId) && record.Enabled != false)
-                assignments.Add((record.DisplayId, record.Id, record.ReserveMonitor ?? true, record.Backdrop ?? ""));
+                assignments.Add((record.DisplayId, record.Id, record.ReserveMonitor ?? true, record.Backdrop ?? "", record.KeepCursorOff ?? false));
         }
         return assignments;
     }
@@ -589,6 +589,8 @@ public sealed class PanelDeviceRegistry
             // sensor worker resolves a record by DisplayId).
             if (patch.AutoOrient.HasValue && !string.IsNullOrEmpty(record.DisplayId))
                 record.AutoOrient = patch.AutoOrient.Value;
+            if (patch.KeepCursorOff.HasValue && !string.IsNullOrEmpty(record.DisplayId))
+                record.KeepCursorOff = patch.KeepCursorOff.Value;
             // Orientation is a property of how the glass is physically mounted, so it
             // applies to any record; the transport ignores it on surfaces it cannot turn.
             if (patch.Flip180.HasValue)
@@ -631,7 +633,7 @@ public sealed class PanelDeviceRegistry
     /// theme, background, and widget fields all clear, so defaults reseed on
     /// the next read. Identity and hardware-scoped state survive - id, name,
     /// display binding, capabilities, enabled state, monitor behavior
-    /// (ReserveMonitor/AutoOrient - see <see cref="ResetHardwareSettings"/>),
+    /// (ReserveMonitor/AutoOrient/KeepCursorOff - see <see cref="ResetHardwareSettings"/>),
     /// and the persisted orientation / Xeneon DDC record. Uploaded media is
     /// the caller's to delete (PanelBgLibrary); the cleared BackgroundMediaId
     /// is what unreferences it here. Returns null when the id is unknown.
@@ -692,7 +694,8 @@ public sealed class PanelDeviceRegistry
     /// <summary>
     /// Hardware-scoped counterpart of <see cref="ResetToDefaults"/>: clears
     /// the record's monitor-behavior fields (ReserveMonitor / AutoOrient,
-    /// null = default on) and the recorded Xeneon DDC values. The route owns
+    /// null = default on; KeepCursorOff, null = default off) and the recorded
+    /// Xeneon DDC values. The route owns
     /// applying family defaults to the actual hardware; this only resets what
     /// the record stores. Returns null when the id is unknown.
     /// </summary>
@@ -709,6 +712,7 @@ public sealed class PanelDeviceRegistry
                 return;
             record.ReserveMonitor = null;
             record.AutoOrient = null;
+            record.KeepCursorOff = null;
             record.Flip180 = null;
             record.Mirror = null;
             record.LcdBrightness = null;
@@ -988,6 +992,7 @@ public sealed class PanelDeviceRegistry
             DisplayId = r.DisplayId,
             ReserveMonitor = r.ReserveMonitor,
             AutoOrient = r.AutoOrient,
+            KeepCursorOff = r.KeepCursorOff,
             Flip180 = r.Flip180,
             Mirror = r.Mirror,
             LcdBrightness = r.LcdBrightness,

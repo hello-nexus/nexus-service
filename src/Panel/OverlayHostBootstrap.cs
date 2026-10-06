@@ -86,7 +86,7 @@ internal static class OverlayHostBootstrap
         foreach (var record in snapshot.PanelDevices.Values)
         {
             if (!string.IsNullOrEmpty(record.DisplayId) && record.Enabled != false)
-                parts.Add($"{record.DisplayId}|{record.Id}|{record.ReserveMonitor ?? true}");
+                parts.Add($"{record.DisplayId}|{record.Id}|{record.ReserveMonitor ?? true}|{record.KeepCursorOff ?? false}");
         }
         parts.Sort(StringComparer.Ordinal);
         return string.Join(";", parts);
