@@ -23,6 +23,13 @@ public interface ISensorProvider
     /// <summary>The temperature limit the CPU itself reports (Intel Tjmax, hwmon crit/max), or null when the platform exposes none.</summary>
     float? GetCpuTjMaxC() => null;
 
+    /// <summary>The CPU model from what is already cached; never forces a hardware refresh, so a background caller cannot race the sampler.</summary>
+    string GetCpuModelCached() => GetCpuModel();
+
+    /// <summary>Total CPU load from already sampled sensors; never forces a hardware refresh. Null when unknown.</summary>
+    float? GetCpuTotalLoadCached() => System.Linq.Enumerable.FirstOrDefault(
+        GetCpuSensors(), s => s.Type == "Load" && s.Name.Equals("CPU Total", System.StringComparison.OrdinalIgnoreCase))?.Value;
+
     IReadOnlyList<string> GetGpuModels();
     IReadOnlyList<HardwareSensor> GetGpuSensors();
 

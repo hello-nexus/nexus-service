@@ -58,22 +58,15 @@ public sealed class GuardPlan
 /// machines, and owns the side effects of a trip (persisted record, broadcast,
 /// alert, timeline event, auto-heal). Writing fans stays with CurveEngine.
 /// </summary>
-public enum WatchdogTickMode
-{
-    Normal,
-    /// <summary>A watchdog release is in force: no curve or manual writes.</summary>
-    Hold,
-    /// <summary>The hold just ended: forget the write state and drive everything again.</summary>
-    Redrive,
-}
-
 public sealed class ThermalGuardController
 {
     private const long CpuInfoRefreshMs = 5000;
     private const long WatchdogHotStallMs = 10_000;
     private const long WatchdogStallMs = 30_000;
-    // Ticks must complete within the hot stall window for this long before Nexus takes the fans back.
-    private const long WatchdogHealthyMs = 30_000;
+    // Stalls this many times within the window mean the engine cannot be trusted with the fans.
+    private const int WatchdogLatchFires = 3;
+    private const long WatchdogLatchWindowMs = 10 * 60_000;
+    private const long CpuLimitRefreshMs = 60_000;
     private const long TachZeroSustainMs = 60_000;
     private const int TachConsecutiveTicks = 3;
     private const int TachMaxRpm = 10_000;
@@ -100,10 +93,15 @@ public sealed class ThermalGuardController
     private double? _guardTemp;
     private ThermalLimit _limit = new(ThermalLimits.GenericDefaultC, ThermalLimitSources.Default);
     private long? _sinceUtcMs;
-    private long _cpuInfoAtMs = long.MinValue;
+    private long? _cpuInfoAtMs;
     private double? _cpuLoad;
     private long _lastTickMs;
-    private long? _healthySinceMs;
+    private readonly List<long> _watchdogFires = new();
+    private bool _watchdogLatched;
+    private string _cpuModel = "";
+    private long? _cpuLimitAtMs;
+    private bool _cpuInfoFailureLogged;
+    private string _loggedLimitKey = "";
     private bool _watchdogArmed;
     private bool _watchdogFired;
     private bool _watchdogPending;
@@ -161,23 +159,17 @@ public sealed class ThermalGuardController
     {
         lock (_gate)
         {
-            var now = MonotonicMs();
-            // A tick that arrived after a long gap restarts the healthy streak.
-            _healthySinceMs = _lastTickMs != 0 && now - _lastTickMs > WatchdogHotStallMs ? now : _healthySinceMs ?? now;
-            _lastTickMs = now;
-            // A hold in progress already released the fans; a slow tick does not release them again.
-            if (!_watchdogPending)
-            {
-                _watchdogFired = false;
-            }
+            _lastTickMs = MonotonicMs();
+            _watchdogFired = false;
         }
     }
 
     internal void WatchdogCheck(long nowMs)
     {
+        var latchedNow = false;
         lock (_gate)
         {
-            if (!_watchdogArmed || _watchdogFired)
+            if (!_watchdogArmed || _watchdogFired || _watchdogLatched)
             {
                 return;
             }
@@ -190,44 +182,46 @@ public sealed class ThermalGuardController
             }
             _watchdogFired = true;
             _watchdogPending = true;
-            _healthySinceMs = null;
+            _watchdogFires.Add(nowMs);
+            _watchdogFires.RemoveAll(t => nowMs - t > WatchdogLatchWindowMs);
+            if (_watchdogFires.Count >= WatchdogLatchFires)
+            {
+                // Repeated stalls: stop handing fans back and forth, the BIOS keeps them.
+                _watchdogLatched = true;
+                latchedNow = true;
+            }
         }
         Console.Error.WriteLine("[thermal-guard] curve engine stalled: releasing all fans to BIOS");
         try { _fans.ReleaseAll(); }
         catch { /* the fans are already in an unknown state; nothing more to do */ }
-    }
-
-    private bool HealthyLongEnough() =>
-        _healthySinceMs is { } since && MonotonicMs() - since >= WatchdogHealthyMs;
-
-    /// <summary>True from a watchdog release until ticks have completed on time for a sustained spell.</summary>
-    public bool WatchdogHolding
-    {
-        get
+        if (latchedNow)
         {
-            lock (_gate) { return _watchdogPending && !HealthyLongEnough(); }
+            Console.Error.WriteLine("[thermal-guard] repeated engine stalls: Nexus fan writes stopped until restart or a guard toggle");
+            Raise("Cooling handed to the BIOS", "Nexus handed your fans to the BIOS because the cooling engine kept stalling.");
+            if (_hub is not null)
+            {
+                PanelTopics.BroadcastCooling(_hub);
+            }
         }
     }
 
-    /// <summary>
-    /// What the engine does with this tick, decided once and atomically: during a hold it
-    /// reads and evaluates as usual but writes only the guard's own overrides; the first tick
-    /// after the hold ends re-drives everything from a clean write state.
-    /// </summary>
-    public WatchdogTickMode BeginTick()
+    /// <summary>True once after the watchdog released the fans: the next tick forgets what it wrote so every duty is written again, unchanged ones included.</summary>
+    public bool ConsumeWatchdogRelease()
     {
         lock (_gate)
         {
-            if (!_watchdogPending)
-            {
-                return WatchdogTickMode.Normal;
-            }
-            if (!HealthyLongEnough())
-            {
-                return WatchdogTickMode.Hold;
-            }
+            var pending = _watchdogPending;
             _watchdogPending = false;
-            return WatchdogTickMode.Redrive;
+            return pending;
+        }
+    }
+
+    /// <summary>True after repeated engine stalls: Nexus writes no fan until restart or a guard toggle. The guard still evaluates and reports.</summary>
+    public bool WatchdogLatched
+    {
+        get
+        {
+            lock (_gate) { return _watchdogLatched; }
         }
     }
 
@@ -243,6 +237,10 @@ public sealed class ThermalGuardController
         lock (_gate)
         {
             _watchdogArmed = false;
+            // Leaving a latch means the fans were released: the next tick must write everything again.
+            _watchdogPending |= _watchdogLatched;
+            _watchdogLatched = false;
+            _watchdogFires.Clear();
             _cpu.Reset();
             _guardTemp = null;
             SetPublicState(state, null);
@@ -572,32 +570,57 @@ public sealed class ThermalGuardController
         });
     }
 
+    // Reads only what the monitoring sampler has already cached: forcing a hardware refresh
+    // from the engine thread would race the sampler's own use of the hardware.
     private void RefreshCpuInfo(long nowMs)
     {
-        if (nowMs - _cpuInfoAtMs < CpuInfoRefreshMs)
+        if (_sensors is null)
         {
             return;
         }
-        _cpuInfoAtMs = nowMs;
-        double? load = null;
-        string model = "";
-        double? tjMax = null;
-        if (_sensors is not null)
+        if (_cpuInfoAtMs is not { } infoAt || nowMs - infoAt >= CpuInfoRefreshMs)
         {
-            try
-            {
-                model = _sensors.GetCpuModel();
-                tjMax = _sensors.GetCpuTjMaxC();
-                var total = _sensors.GetCpuSensors()
-                    .FirstOrDefault(s => s.Type == "Load" && s.Name.Equals("CPU Total", StringComparison.OrdinalIgnoreCase));
-                load = total?.Value;
-            }
-            catch { /* sensor read failed: keep the conservative defaults */ }
+            _cpuInfoAtMs = nowMs;
+            var load = TryRead(() => _sensors.GetCpuTotalLoadCached());
+            lock (_gate) { _cpuLoad = load; }
         }
+
+        // Retry quickly until the model is known, then re-resolve slowly (Intel's reported
+        // limit can appear after the first sensor samples).
+        var interval = _cpuModel.Length > 0 ? CpuLimitRefreshMs : CpuInfoRefreshMs;
+        if (_cpuLimitAtMs is { } limitAt && nowMs - limitAt < interval)
+        {
+            return;
+        }
+        _cpuLimitAtMs = nowMs;
+        var read = TryRead(() => _sensors.GetCpuModelCached());
+        var model = string.IsNullOrWhiteSpace(read) ? _cpuModel : read;
+        var tjMax = TryRead(() => _sensors.GetCpuTjMaxC());
+        var limit = ThermalLimits.ResolveCpu(model, tjMax);
         lock (_gate)
         {
-            _cpuLoad = load;
-            _limit = ThermalLimits.ResolveCpu(model, tjMax);
+            _cpuModel = model;
+            _limit = limit;
+        }
+        var key = $"{limit.LimitC}|{limit.Source}|{model}";
+        if (key != _loggedLimitKey)
+        {
+            _loggedLimitKey = key;
+            Console.Error.WriteLine($"[thermal-guard] CPU limit {limit.LimitC:0.#} C ({limit.Source}) for model \"{model}\"");
+        }
+    }
+
+    private T? TryRead<T>(Func<T> read)
+    {
+        try { return read(); }
+        catch (Exception ex)
+        {
+            if (!_cpuInfoFailureLogged)
+            {
+                _cpuInfoFailureLogged = true;
+                Console.Error.WriteLine($"[thermal-guard] CPU sensor read failed, will retry: {ex.Message}");
+            }
+            return default;
         }
     }
 
@@ -842,7 +865,7 @@ public sealed class ThermalGuardController
     public ThermalGuardResponse GetState()
     {
         var cooling = _store.Load().Cooling;
-        var response = new ThermalGuardResponse { Heal = BuildHealState(cooling) };
+        var response = new ThermalGuardResponse { Heal = BuildHealState(cooling), WatchdogLatched = WatchdogLatched };
         lock (_gate)
         {
             if (!cooling.ThermalGuardEnabled)

@@ -7,6 +7,8 @@ using System.Threading.Tasks;
 using Nexus.Service.Cooling;
 using Nexus.Service.Lifecycle;
 using Nexus.Service.Models.Cooling;
+using Nexus.Service.Models.Sensors;
+using Nexus.Service.Sensors;
 using Nexus.Service.Persistence;
 using Nexus.Service.Serialization;
 using Nexus.Service.Sockets;
@@ -571,80 +573,139 @@ public class ThermalGuardEngineTests
     }
 
     [Fact]
-    public void WatchdogHold_SuppressesCurveAndManualWrites_ThenTheFirstTickAfterItRedrivesEverything()
+    public void StallWhileTheFloorIsDriving_RewritesTheSameDutyOnTheNextTickAfterTheRelease()
     {
         var (_, fans, store, _) = Build();
         var (e, guard, mono) = WatchdogRig(fans, store);
-        fans.CpuTemp = 70f; // no floor: only curve and manual writes exist
+        fans.CpuTemp = 90f;
+        mono[0] += 1000;
         e.Tick();
         guard.TickCompleted();
-        var afterFirst = fans.Driven.Count;
-        Assert.True(afterFirst >= 1);
+        Assert.Equal(60, LastDuty(fans, "f1"));
+        var before = fans.Driven.Count(d => d.Id == "f1" && d.Duty == 60);
 
-        guard.WatchdogCheck(mono[0] + 31_000);
-        mono[0] += 31_000;
-        // Curve change during the hold: not written.
-        store.Update(s => s.Cooling.Curves[0].Flat!.Speed = 25);
+        guard.WatchdogCheck(mono[0] + 11_000);
+        Assert.Equal(1, fans.ReleaseAllCalls);
+        mono[0] += 12_000;
+        guard.TickCompleted();
+        e.Tick();
+
+        Assert.True(fans.Driven.Count(d => d.Id == "f1" && d.Duty == 60) > before);
+    }
+
+    private static void Stall(Fans fans, CurveEngine e, ThermalGuardController guard, long[] mono)
+    {
         mono[0] += 1000;
-        guard.TickCompleted(); // first on-time tick after the stall starts the healthy spell
-        for (var i = 0; i < 29; i++)
+        e.Tick();
+        guard.TickCompleted();
+        guard.WatchdogCheck(mono[0] + 31_000);
+        mono[0] += 32_000;
+    }
+
+    [Fact]
+    public void ThreeStallsInTenMinutes_LatchAndNoFanIsWrittenAfterwards_ButTheGuardKeepsReporting()
+    {
+        var (_, fans, store, _) = Build();
+        var (e, guard, mono) = WatchdogRig(fans, store);
+        var alerts = new List<string>();
+        guard.AlertSink = n => alerts.Add(n.Title);
+        fans.CpuTemp = 90f;
+
+        Stall(fans, e, guard, mono);
+        Stall(fans, e, guard, mono);
+        Assert.False(guard.WatchdogLatched);
+        Stall(fans, e, guard, mono);
+        Assert.True(guard.WatchdogLatched);
+        Assert.Equal(1, alerts.Count(a => a.Contains("BIOS")));
+
+        var writes = fans.Driven.Count;
+        store.Update(s => s.Cooling.Curves[0].Flat!.Speed = 33);
+        fans.CpuTemp = 95f;
+        for (var i = 0; i < 5; i++)
         {
             mono[0] += 1000;
             guard.TickCompleted();
             e.Tick();
-            Assert.True(guard.WatchdogHolding);
         }
-        Assert.Equal(afterFirst, fans.Driven.Count);
 
-        mono[0] += 1000;
-        guard.TickCompleted();
-        e.Tick(); // the very first tick after the hold re-drives
-        Assert.False(guard.WatchdogHolding);
-        Assert.Equal(25, LastDuty(fans, "f1"));
+        Assert.Equal(writes, fans.Driven.Count);
+        var state = guard.GetState();
+        Assert.True(state.WatchdogLatched);
+        Assert.NotNull(state.GuardTempC);
     }
 
     [Fact]
-    public void WatchdogHold_GuardOverridesStillGoThrough()
+    public void TogglingTheGuardOffAndOn_ClearsTheWatchdogLatch()
     {
         var (_, fans, store, _) = Build();
         var (e, guard, mono) = WatchdogRig(fans, store);
-        fans.CpuTemp = 70f;
-        e.Tick();
-        guard.TickCompleted();
-        guard.WatchdogCheck(mono[0] + 31_000);
-        mono[0] += 31_000;
+        fans.CpuTemp = 90f;
+        Stall(fans, e, guard, mono);
+        Stall(fans, e, guard, mono);
+        Stall(fans, e, guard, mono);
+        Assert.True(guard.WatchdogLatched);
 
-        fans.CpuTemp = 90f; // 60 percent floor at the default limit of 90
+        guard.SetEnabled(false);
+        guard.SetEnabled(true);
+        Assert.False(guard.WatchdogLatched);
+
+        var writes = fans.Driven.Count;
         mono[0] += 1000;
         guard.TickCompleted();
         e.Tick();
-
-        Assert.Equal(60, LastDuty(fans, "f1"));
+        Assert.True(fans.Driven.Count > writes);
     }
 
-    [Fact]
-    public void WatchdogHold_WithEveryTickSlow_NeverEndsAndNeverFlapsFans()
+    private sealed class FlakySensors : ISensorProvider
     {
-        var (_, fans, store, _) = Build();
-        var (e, guard, mono) = WatchdogRig(fans, store);
-        fans.CpuTemp = 70f;
-        e.Tick();
-        guard.TickCompleted();
-        var afterFirst = fans.Driven.Count;
-
-        guard.WatchdogCheck(mono[0] + 31_000);
-        mono[0] += 31_000;
-        for (var i = 0; i < 20; i++)
+        public int ModelCalls;
+        public string GetCpuModel() => "AMD Ryzen 7 9800X3D 8-Core Processor";
+        public string GetCpuModelCached()
         {
-            mono[0] += 12_000; // every real tick completes outside the stall window
-            guard.TickCompleted();
-            e.Tick();
-            guard.WatchdogCheck(mono[0]);
-            Assert.True(guard.WatchdogHolding);
+            if (ModelCalls++ == 0)
+            {
+                throw new InvalidOperationException("hardware busy");
+            }
+            return GetCpuModel();
         }
+        public IReadOnlyList<HardwareSensor> GetCpuSensors() => Array.Empty<HardwareSensor>();
+        public (bool Healthy, float DistanceToTJMax) GetCpuHealth() => (true, 0f);
+        public IReadOnlyList<string> GetGpuModels() => Array.Empty<string>();
+        public IReadOnlyList<HardwareSensor> GetGpuSensors() => Array.Empty<HardwareSensor>();
+        public IReadOnlyList<GpuReadout> GetGpus() => Array.Empty<GpuReadout>();
+        public IReadOnlyList<HardwareSensor> GetMemorySensors() => Array.Empty<HardwareSensor>();
+        public string GetMemoryTotalFormatted() => "";
+        public string GetRamBrandModel() => "";
+        public IReadOnlyDictionary<string, StorageComponent> GetStorageComponents(bool includeSmart = true) => new Dictionary<string, StorageComponent>();
+        public IReadOnlyList<string> GetStoragePartitions() => Array.Empty<string>();
+        public IReadOnlyList<StorageDriveInfo> GetStorageInfo() => Array.Empty<StorageDriveInfo>();
+        public string GetStorageBrandModel() => "";
+        public IReadOnlyList<HardwareSensor> GetMotherboardSensors() => Array.Empty<HardwareSensor>();
+        public string GetMotherboardModel() => "";
+        public SensorExtras GetSensorExtras() => new();
+        public string GetOsVersion() => "";
+        public void SetPollingRate(int pollingRate) { }
+        public Task ReadyAsync(CancellationToken ct = default) => Task.CompletedTask;
+    }
 
-        Assert.Equal(afterFirst, fans.Driven.Count);
-        Assert.Equal(1, fans.ReleaseAllCalls);
+    [Fact]
+    public void CpuModelThatThrowsOnTheFirstRead_ResolvesTheLimitOnTheRetry()
+    {
+        var (_, fans, store, _) = Build();
+        var sensors = new FlakySensors();
+        var guard = new ThermalGuardController(fans, store, null, sensors);
+        var clock = new long[] { 1_000_000 };
+        var e = new CurveEngine(fans, store, new MultiplexHub(), null, guard) { Clock = () => clock[0] };
+        fans.CpuTemp = 50f;
+
+        e.Tick();
+        Assert.Equal(ThermalLimitSources.Default, guard.GetState().LimitSource);
+        Assert.Equal(ThermalLimits.GenericDefaultC, guard.GetState().LimitC);
+
+        clock[0] += 6000;
+        e.Tick();
+        Assert.Equal(ThermalLimitSources.Spec, guard.GetState().LimitSource);
+        Assert.Equal(95, guard.GetState().LimitC);
     }
 
     [Fact]

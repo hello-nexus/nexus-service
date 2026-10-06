@@ -60,6 +60,8 @@ internal static unsafe class NvmlInterop
 
     private static readonly object Gate = new();
     private static bool _attempted;
+    private static long _loadFailedAtMs;
+    private const long LoadRetryMs = 5 * 60_000;
     private static bool _loaded;
     private static IntPtr _handle;
 
@@ -95,8 +97,14 @@ internal static unsafe class NvmlInterop
             // a re-entrant call must return the same value the first call computed,
             // or a handle-loaded-but-export-missing state would let a later caller
             // invoke through a null function pointer (an uncatchable native crash).
-            if (_attempted) return _loaded;
+            // A failed load is retried after a backoff (boot before the driver is ready);
+            // a success is final.
+            if (_attempted)
+            {
+                if (_loaded || Environment.TickCount64 - _loadFailedAtMs < LoadRetryMs) return _loaded;
+            }
             _attempted = true;
+            _loadFailedAtMs = Environment.TickCount64;
             try
             {
                 if (!TryLoadPlatformLibrary())
@@ -255,8 +263,9 @@ internal static unsafe class NvmlInterop
         var transient = Nexus.Service.Cooling.GpuSlowdownThreshold.Read.Transient;
         try
         {
+            // A failed load is retried by the caller's backoff: the driver may not be ready at boot.
             if (!TryLoad())
-                return notSupported;
+                return transient;
             lock (SlowdownInitGate)
             {
                 if (!_slowdownInitOk)

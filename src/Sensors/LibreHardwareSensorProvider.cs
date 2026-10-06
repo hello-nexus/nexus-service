@@ -57,10 +57,29 @@ public sealed class LibreHardwareSensorProvider : ISensorProvider
         return result;
     }
 
+    // The cached readers below never call Update: values are whatever the sampler last read.
+    public string GetCpuModelCached() =>
+        _lhm.OpenTask.IsCompletedSuccessfully ? FindHardware(HardwareType.Cpu).FirstOrDefault()?.Name ?? "" : "";
+
+    public float? GetCpuTotalLoadCached()
+    {
+        if (!_lhm.OpenTask.IsCompletedSuccessfully)
+        {
+            return null;
+        }
+        return FindHardware(HardwareType.Cpu)
+            .SelectMany(h => h.Sensors)
+            .FirstOrDefault(s => s.SensorType == SensorType.Load && s.Name.Equals("CPU Total", StringComparison.OrdinalIgnoreCase))
+            ?.Value;
+    }
+
     // LibreHardwareMonitor exposes no TjMax sensor, only each core's distance to it.
     public float? GetCpuTjMaxC()
     {
-        _lhm.Update();
+        if (!_lhm.OpenTask.IsCompletedSuccessfully)
+        {
+            return null;
+        }
         var cpu = FindHardware(HardwareType.Cpu).FirstOrDefault();
         if (cpu is null)
         {

@@ -46,6 +46,8 @@ public sealed class ThermalGuardResponse : ApiResponse
     /// <summary>"hardware" | "spec" | "default", null when there is no limit.</summary>
     public string? LimitSource { get; set; }
     public long? SinceUtcMs { get; set; }
+    /// <summary>True after repeated cooling-engine stalls: Nexus writes no fan until restart or a guard toggle.</summary>
+    public bool WatchdogLatched { get; set; }
     public ThermalGuardTripDto? LastTrip { get; set; }
     public HealStateDto Heal { get; set; } = new();
     public List<GpuGuardDto> Gpus { get; set; } = new();
