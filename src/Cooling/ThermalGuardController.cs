@@ -58,6 +58,15 @@ public sealed class GuardPlan
 /// machines, and owns the side effects of a trip (persisted record, broadcast,
 /// alert, timeline event, auto-heal). Writing fans stays with CurveEngine.
 /// </summary>
+public enum WatchdogTickMode
+{
+    Normal,
+    /// <summary>A watchdog release is in force: no curve or manual writes.</summary>
+    Hold,
+    /// <summary>The hold just ended: forget the write state and drive everything again.</summary>
+    Redrive,
+}
+
 public sealed class ThermalGuardController
 {
     private const long CpuInfoRefreshMs = 5000;
@@ -156,7 +165,11 @@ public sealed class ThermalGuardController
             // A tick that arrived after a long gap restarts the healthy streak.
             _healthySinceMs = _lastTickMs != 0 && now - _lastTickMs > WatchdogHotStallMs ? now : _healthySinceMs ?? now;
             _lastTickMs = now;
-            _watchdogFired = false;
+            // A hold in progress already released the fans; a slow tick does not release them again.
+            if (!_watchdogPending)
+            {
+                _watchdogFired = false;
+            }
         }
     }
 
@@ -187,7 +200,7 @@ public sealed class ThermalGuardController
     private bool HealthyLongEnough() =>
         _healthySinceMs is { } since && MonotonicMs() - since >= WatchdogHealthyMs;
 
-    /// <summary>True from a watchdog release until ticks have completed on time for a sustained spell: the engine writes nothing meanwhile, so fans do not flap between BIOS and Nexus.</summary>
+    /// <summary>True from a watchdog release until ticks have completed on time for a sustained spell.</summary>
     public bool WatchdogHolding
     {
         get
@@ -196,17 +209,25 @@ public sealed class ThermalGuardController
         }
     }
 
-    /// <summary>True once after a watchdog release has ended: the engine must forget its write state and re-drive.</summary>
-    public bool ConsumeWatchdogRelease()
+    /// <summary>
+    /// What the engine does with this tick, decided once and atomically: during a hold it
+    /// reads and evaluates as usual but writes only the guard's own overrides; the first tick
+    /// after the hold ends re-drives everything from a clean write state.
+    /// </summary>
+    public WatchdogTickMode BeginTick()
     {
         lock (_gate)
         {
-            if (!_watchdogPending || !HealthyLongEnough())
+            if (!_watchdogPending)
             {
-                return false;
+                return WatchdogTickMode.Normal;
+            }
+            if (!HealthyLongEnough())
+            {
+                return WatchdogTickMode.Hold;
             }
             _watchdogPending = false;
-            return true;
+            return WatchdogTickMode.Redrive;
         }
     }
 
@@ -325,10 +346,10 @@ public sealed class ThermalGuardController
 
     /// <summary>
     /// True when at least one guarded fan (pumps excluded: they run steady by design) has a
-    /// known best RPM and every such fan reads far below it. A reading of 0 counts only
-    /// after it has lasted a minute, so a tach that flaps to 0 is not evidence; a fan with
-    /// no known best says nothing about whether writes land. The best is trusted only
-    /// after three consecutive ticks, so a single spike never sets it.
+    /// known best RPM and every such fan reads far below it. A zero reading counts only once
+    /// it has lasted a sustained spell, so a tach that flaps to zero is not evidence; a fan
+    /// with no known best says nothing about whether writes land. The best is trusted only
+    /// after consecutive ticks, so a single spike never sets it.
     /// </summary>
     private bool WritesNotLanding(long nowMs, IReadOnlyList<FanChannel> channels, HashSet<string> eligible)
     {
@@ -510,7 +531,7 @@ public sealed class ThermalGuardController
         {
             return null;
         }
-        return Nvml.GetSlowdownThreshold(index);
+        return GpuSlowdownThreshold.Get(index);
     }
 
     /// <summary>

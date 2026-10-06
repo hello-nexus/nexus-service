@@ -77,6 +77,9 @@ public sealed class CurveEngine : BackgroundService
 
     private readonly ThermalGuardController _guard;
 
+    // Set per tick by the watchdog hold; only the engine thread touches it.
+    private bool _hold;
+
     /// <summary>Millisecond clock for write gating and the guard; tests substitute it.</summary>
     internal Func<long> Clock { get; set; } = () => Environment.TickCount64;
 
@@ -198,21 +201,19 @@ public sealed class CurveEngine : BackgroundService
             return;
         }
 
-        // The watchdog released every fan from its own thread while this loop was
-        // stalled; forget what was written so everything is driven again.
-        if (_guard.ConsumeWatchdogRelease())
+        // The watchdog released every fan from its own thread while this loop was stalled.
+        // Until ticks have been on time for a sustained spell the BIOS owns the fans: this
+        // tick still reads and evaluates, but writes only the guard's own overrides, so a run
+        // of slow ticks cannot flap fans between owners. When the hold ends, everything is
+        // driven again from a clean write state.
+        var mode = _guard.BeginTick();
+        _hold = mode == WatchdogTickMode.Hold;
+        if (mode == WatchdogTickMode.Redrive)
         {
             lock (_lastWrite) { _lastWrite.Clear(); }
             ClearManualReplayed();
             _guardOverriddenManual.Clear();
             _guardDrivenOrphans.Clear();
-        }
-
-        // After a watchdog release the BIOS owns the fans until ticks have been on time for a
-        // sustained spell, so a run of slow ticks cannot flap them between owners.
-        if (_guard.WatchdogHolding)
-        {
-            return;
         }
 
         var settings = _store.Load();
@@ -270,7 +271,10 @@ public sealed class CurveEngine : BackgroundService
         Isolated("guard side effects", () => ApplyPlanSideEffects(activePlan));
 
         Isolated("uncontrolled release", () => ReleaseUncontrolledOnAppearance(settings, present));
-        Isolated("manual replay", () => ReplayManualDuties(settings, present, owned));
+        if (!_hold)
+        {
+            Isolated("manual replay", () => ReplayManualDuties(settings, present, owned));
+        }
         Isolated("guard manual pass", () => ApplyGuardToUnownedChannels(activePlan, manualSnapshot, present, owned));
 
         if (curves.Count == 0)
@@ -357,7 +361,8 @@ public sealed class CurveEngine : BackgroundService
                     channelDuty[output.Id] = appliedSpeed;
                     if (present.Contains(output.Id))
                     {
-                        if (guarded is not null && TryReserveWrite(output.Id, appliedSpeed, nowMs))
+                        if (guarded is not null && (!_hold || GuardOverrides(activePlan, output.Id))
+                        && TryReserveWrite(output.Id, appliedSpeed, nowMs))
                         {
                             SafeDrive(output.Id, appliedSpeed);
                         }
@@ -448,6 +453,10 @@ public sealed class CurveEngine : BackgroundService
     }
 
     // ── Thermal guard ──
+
+    // The guard is actively raising this channel: its write is the safety, hold or not.
+    private static bool GuardOverrides(GuardPlan plan, string channelId) =>
+        (plan.Output.FloorDuty > 0 && plan.Eligible.Contains(channelId)) || plan.GpuForced.Contains(channelId);
 
     private static void Isolated(string what, Action action)
     {
@@ -563,7 +572,7 @@ public sealed class CurveEngine : BackgroundService
                     SafeDrive(id, desired.Value);
                 }
             }
-            else if (_guardOverriddenManual.Remove(id))
+            else if (!_hold && _guardOverriddenManual.Remove(id))
             {
                 ForgetWrite(id);
                 SafeDrive(id, saved);

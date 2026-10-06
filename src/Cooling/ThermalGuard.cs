@@ -131,7 +131,7 @@ public sealed class ThermalGuard
 
     /// <param name="maxCpuCoolingDutyPercent">Highest duty across CPU-cooling fans; null means there is none to judge, so no cooling-loss trip.</param>
     /// <param name="cpuLoadPercent">Null when unreadable; treated as low so the check stays conservative.</param>
-    /// <param name="writesNotLanding">True when every guarded fan that ever reported RPM is still spinning far below its best; the only thing that escalates.</param>
+    /// <param name="writesNotLanding">True when every guarded non-pump fan with a known best RPM (established over consecutive ticks, or calibrated) reads far below it, a zero reading counting only once sustained; the only thing that escalates.</param>
     public ThermalGuardOutput Step(
         long nowMs,
         double? tempC,

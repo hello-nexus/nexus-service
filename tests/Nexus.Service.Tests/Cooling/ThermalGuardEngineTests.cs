@@ -438,7 +438,7 @@ public class ThermalGuardEngineTests
         engine.Tick();
         Trip(engine, fans, clock);
 
-        // 500 is half of the real best: a working fan, no escalation.
+        // Well above a quarter of the real best: a working fan, no escalation.
         fans.Channels[0].Rpm = 500;
         fans.Channels[1].Rpm = 500;
         clock[0] += 25_000;
@@ -542,7 +542,7 @@ public class ThermalGuardEngineTests
     {
         var mono = new long[] { 1_000 };
         var guard = new ThermalGuardController(fans, store) { MonotonicMs = () => mono[0] };
-        var engine = new CurveEngine(fans, store, new MultiplexHub(), null, guard) { Clock = () => 1_000_000 };
+        var engine = new CurveEngine(fans, store, new MultiplexHub(), null, guard) { Clock = () => mono[0] };
         return (engine, guard, mono);
     }
 
@@ -571,32 +571,80 @@ public class ThermalGuardEngineTests
     }
 
     [Fact]
-    public void WatchdogRelease_HoldsTheEngineOffUntilThirtySecondsOfOnTimeTicks_ThenRedrives()
+    public void WatchdogHold_SuppressesCurveAndManualWrites_ThenTheFirstTickAfterItRedrivesEverything()
     {
         var (_, fans, store, _) = Build();
         var (e, guard, mono) = WatchdogRig(fans, store);
-        fans.CpuTemp = 85f;
+        fans.CpuTemp = 70f; // no floor: only curve and manual writes exist
         e.Tick();
         guard.TickCompleted();
         var afterFirst = fans.Driven.Count;
+        Assert.True(afterFirst >= 1);
 
-        guard.WatchdogCheck(mono[0] + 11_000);
-        mono[0] += 11_000;
+        guard.WatchdogCheck(mono[0] + 31_000);
+        mono[0] += 31_000;
+        // Curve change during the hold: not written.
+        store.Update(s => s.Cooling.Curves[0].Flat!.Speed = 25);
+        mono[0] += 1000;
+        guard.TickCompleted(); // first on-time tick after the stall starts the healthy spell
         for (var i = 0; i < 29; i++)
         {
             mono[0] += 1000;
             guard.TickCompleted();
             e.Tick();
+            Assert.True(guard.WatchdogHolding);
         }
         Assert.Equal(afterFirst, fans.Driven.Count);
-        Assert.True(guard.WatchdogHolding);
 
-        mono[0] += 2000;
+        mono[0] += 1000;
+        guard.TickCompleted();
+        e.Tick(); // the very first tick after the hold re-drives
+        Assert.False(guard.WatchdogHolding);
+        Assert.Equal(25, LastDuty(fans, "f1"));
+    }
+
+    [Fact]
+    public void WatchdogHold_GuardOverridesStillGoThrough()
+    {
+        var (_, fans, store, _) = Build();
+        var (e, guard, mono) = WatchdogRig(fans, store);
+        fans.CpuTemp = 70f;
+        e.Tick();
+        guard.TickCompleted();
+        guard.WatchdogCheck(mono[0] + 31_000);
+        mono[0] += 31_000;
+
+        fans.CpuTemp = 90f; // 60 percent floor at the default limit of 90
+        mono[0] += 1000;
         guard.TickCompleted();
         e.Tick();
-        Assert.False(guard.WatchdogHolding);
+
+        Assert.Equal(60, LastDuty(fans, "f1"));
+    }
+
+    [Fact]
+    public void WatchdogHold_WithEveryTickSlow_NeverEndsAndNeverFlapsFans()
+    {
+        var (_, fans, store, _) = Build();
+        var (e, guard, mono) = WatchdogRig(fans, store);
+        fans.CpuTemp = 70f;
         e.Tick();
-        Assert.True(fans.Driven.Count > afterFirst);
+        guard.TickCompleted();
+        var afterFirst = fans.Driven.Count;
+
+        guard.WatchdogCheck(mono[0] + 31_000);
+        mono[0] += 31_000;
+        for (var i = 0; i < 20; i++)
+        {
+            mono[0] += 12_000; // every real tick completes outside the stall window
+            guard.TickCompleted();
+            e.Tick();
+            guard.WatchdogCheck(mono[0]);
+            Assert.True(guard.WatchdogHolding);
+        }
+
+        Assert.Equal(afterFirst, fans.Driven.Count);
+        Assert.Equal(1, fans.ReleaseAllCalls);
     }
 
     [Fact]
@@ -614,8 +662,31 @@ public class ThermalGuardEngineTests
         store.Update(s => s.Cooling.Curves.Add(Flat("f1", 20)));
         guard.HealNow(automatic: false);
         Assert.NotNull(store.Load().Cooling.HealSnapshot);
+        FanProfiles.DetachFanFromCurves("not-a-curve-output", store);
+        Assert.NotNull(store.Load().Cooling.HealSnapshot);
         FanProfiles.DetachFanFromCurves("f1", store);
         Assert.Null(store.Load().Cooling.HealSnapshot);
+    }
+
+    [Fact]
+    public void NvmlSlowdown_SuccessAndNotSupportedAreCachedForGood_TransientRetriesAfterBackoff()
+    {
+        var cache = new Dictionary<int, (GpuSlowdownThreshold.Read Read, long RetryAtMs)>();
+        var calls = 0;
+        GpuSlowdownThreshold.Read Next(GpuSlowdownThreshold.Read r) { calls++; return r; }
+
+        // Transient: retried only after the backoff.
+        Assert.Null(GpuSlowdownThreshold.Resolve(0, () => Next(GpuSlowdownThreshold.Read.Transient), 1000, cache));
+        Assert.Null(GpuSlowdownThreshold.Resolve(0, () => Next(GpuSlowdownThreshold.Read.Transient), 2000, cache));
+        Assert.Equal(1, calls);
+        Assert.Equal(88, GpuSlowdownThreshold.Resolve(0, () => Next(GpuSlowdownThreshold.Read.Ok(88)), 1000 + 5 * 60_000, cache));
+        Assert.Equal(88, GpuSlowdownThreshold.Resolve(0, () => Next(GpuSlowdownThreshold.Read.Transient), 10_000_000, cache));
+        Assert.Equal(2, calls);
+
+        // Not supported: never asked again.
+        Assert.Null(GpuSlowdownThreshold.Resolve(1, () => Next(GpuSlowdownThreshold.Read.NotSupported), 0, cache));
+        Assert.Null(GpuSlowdownThreshold.Resolve(1, () => Next(GpuSlowdownThreshold.Read.Ok(90)), 10_000_000, cache));
+        Assert.Equal(3, calls);
     }
 
     [Fact]

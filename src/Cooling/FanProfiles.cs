@@ -419,10 +419,15 @@ public static class FanProfiles
     {
         store.Update(s =>
         {
-            s.Cooling.ClearHeal();
+            var removed = false;
             foreach (var curve in s.Cooling.Curves)
             {
-                curve.Outputs.RemoveAll(o => o.Id == fanId);
+                removed |= curve.Outputs.RemoveAll(o => o.Id == fanId) > 0;
+            }
+            // Undo is only invalidated by an edit that actually changed the curves.
+            if (removed)
+            {
+                s.Cooling.ClearHeal();
             }
         });
     }

@@ -238,6 +238,51 @@ internal static unsafe class NvmlInterop
         return ((delegate* unmanaged[Stdcall]<IntPtr, int, out NvmlViolationTime, int>)_pDeviceGetViolationStatus)(device, policyType, out violation);
     }
 
+    private const uint ThresholdSlowdown = 1; // NVML_TEMPERATURE_THRESHOLD_SLOWDOWN
+
+    private static readonly object SlowdownInitGate = new();
+    private static bool _slowdownInitOk;
+    private static long _slowdownInitRetryAtMs;
+
+    /// <summary>
+    /// One attempt at a GPU's slowdown temperature threshold. NVML is initialised once on
+    /// success (refcounted by the driver, never shut down by this daemon); a failed init is
+    /// retried only after the caller's backoff has passed.
+    /// </summary>
+    public static Nexus.Service.Cooling.GpuSlowdownThreshold.Read ReadSlowdownThreshold(int gpu)
+    {
+        var notSupported = Nexus.Service.Cooling.GpuSlowdownThreshold.Read.NotSupported;
+        var transient = Nexus.Service.Cooling.GpuSlowdownThreshold.Read.Transient;
+        try
+        {
+            if (!TryLoad())
+                return notSupported;
+            lock (SlowdownInitGate)
+            {
+                if (!_slowdownInitOk)
+                {
+                    var now = Environment.TickCount64;
+                    if (now < _slowdownInitRetryAtMs)
+                        return transient;
+                    _slowdownInitOk = Init() == Success;
+                    _slowdownInitRetryAtMs = now + Nexus.Service.Cooling.GpuSlowdownThreshold.RetryBackoffMs;
+                    if (!_slowdownInitOk)
+                        return transient;
+                }
+            }
+            if (DeviceGetHandleByIndex((uint)gpu, out var dev) != Success)
+                return transient;
+            var rc = GetTemperatureThreshold(dev, ThresholdSlowdown, out var t);
+            if (rc == Success)
+                return Nexus.Service.Cooling.GpuSlowdownThreshold.Read.Ok((int)t);
+            return rc == NotSupported ? notSupported : transient;
+        }
+        catch
+        {
+            return transient;
+        }
+    }
+
     private static string TrimAtNull(Span<byte> buf)
     {
         var end = buf.IndexOf((byte)0);

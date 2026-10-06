@@ -18,6 +18,7 @@ internal static unsafe partial class Nvml
     private const string Lib = "libnvidia-ml.so.1";
     private const int Success = 0;          // NVML_SUCCESS
     private const uint TemperatureGpu = 0;  // NVML_TEMPERATURE_GPU
+    private const int NotSupportedRc = 3;      // NVML_ERROR_NOT_SUPPORTED
     private const uint ThresholdSlowdown = 1; // NVML_TEMPERATURE_THRESHOLD_SLOWDOWN
     private const int NameBuf = 96;         // NVML_DEVICE_NAME_V2_BUFFER_SIZE
 
@@ -92,55 +93,22 @@ internal static unsafe partial class Nvml
         catch { return false; }
     }
 
-    private static readonly System.Collections.Concurrent.ConcurrentDictionary<int, int?> SlowdownCache = new();
-    private static readonly object WindowsInitGate = new();
-    private static bool? _windowsInit;
-
-    /// <summary>
-    /// The GPU's slowdown temperature threshold in C, or null when NVML or the symbol is
-    /// unavailable. Windows goes through the nvml.dll loader the GPU health monitor already
-    /// uses; the index is NVML's, which is assumed to match the vendor-neutral enumeration order.
-    /// </summary>
-    public static int? GetSlowdownThreshold(int gpu)
-    {
-        // Failures are cached too: an unsupported card stays unsupported, and the caller
-        // asks every tick.
-        return SlowdownCache.GetOrAdd(gpu, g => OperatingSystem.IsWindows() ? ReadSlowdownWindows(g) : ReadSlowdownLinux(g));
-    }
-
-    private static int? ReadSlowdownLinux(int gpu)
+    /// <summary>One attempt at the GPU's slowdown threshold through libnvidia-ml (Linux).</summary>
+    internal static GpuSlowdownThreshold.Read ReadSlowdown(int gpu)
     {
         if (!Available)
-            return null;
+            return GpuSlowdownThreshold.Read.NotSupported;
         try
         {
             if (nvmlDeviceGetHandleByIndex_v2((uint)gpu, out var dev) != Success)
-                return null;
-            return nvmlDeviceGetTemperatureThreshold(dev, ThresholdSlowdown, out var t) == Success ? (int)t : null;
+                return GpuSlowdownThreshold.Read.Transient;
+            var rc = nvmlDeviceGetTemperatureThreshold(dev, ThresholdSlowdown, out var t);
+            return rc == Success
+                ? GpuSlowdownThreshold.Read.Ok((int)t)
+                : (rc == NotSupportedRc ? GpuSlowdownThreshold.Read.NotSupported : GpuSlowdownThreshold.Read.Transient);
         }
-        catch { return null; }
-    }
-
-    private static int? ReadSlowdownWindows(int gpu)
-    {
-        try
-        {
-            if (!Nexus.Service.Diagnostics.Gpu.NvmlInterop.TryLoad())
-                return null;
-            // Refcounted by the driver, and this daemon never shuts NVML down, so one init suffices.
-            lock (WindowsInitGate)
-            {
-                _windowsInit ??= Nexus.Service.Diagnostics.Gpu.NvmlInterop.Init() == Success;
-                if (_windowsInit != true)
-                    return null;
-            }
-            if (Nexus.Service.Diagnostics.Gpu.NvmlInterop.DeviceGetHandleByIndex((uint)gpu, out var dev) != Success)
-                return null;
-            return Nexus.Service.Diagnostics.Gpu.NvmlInterop.GetTemperatureThreshold(dev, ThresholdSlowdown, out var t) == Success
-                ? (int)t
-                : null;
-        }
-        catch { return null; }
+        catch (EntryPointNotFoundException) { return GpuSlowdownThreshold.Read.NotSupported; }
+        catch { return GpuSlowdownThreshold.Read.Transient; }
     }
 
     private static string ReadName(IntPtr dev)
