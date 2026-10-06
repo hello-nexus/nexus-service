@@ -16,11 +16,13 @@ public sealed class GetCoolingStateTool : IMcpTool
 {
     private readonly IFanControlProvider _fans;
     private readonly IConfigStore _store;
+    private readonly ThermalGuardController? _guard;
 
-    public GetCoolingStateTool(IFanControlProvider fans, IConfigStore store)
+    public GetCoolingStateTool(IFanControlProvider fans, IConfigStore store, ThermalGuardController? guard = null)
     {
         _fans = fans;
         _store = store;
+        _guard = guard;
     }
 
     public string Name => "get_cooling_state";
@@ -45,6 +47,7 @@ public sealed class GetCoolingStateTool : IMcpTool
             Curves = cooling.Curves.Select(McpCurveMapper.ToWireCurve).ToList(),
             ActivePreset = cooling.ActivePreset,
             GlobalSpeedModifier = cooling.GlobalSpeedModifier,
+            ThermalGuard = _guard?.GetState(),
         };
         var json = JsonSerializer.Serialize(result, AppJsonContext.Default.McpCoolingStateResult);
         return Task.FromResult(McpToolExecutionResult.Ok(json));

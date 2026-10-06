@@ -1010,6 +1010,32 @@ public sealed class CoolingSettings
     public string? PreferredGpuTempSensorId { get; set; }
     /// <summary>User-chosen "primary" GPU (by model name) used wherever a single GPU's sensors are shown: the Monitoring widget, sensors/Detailed view, and the GPU temp display. Keyed by model name (not enumeration index) so the choice survives reboots / driver re-enumeration. Same nullable semantics as the temp prefs: null = auto (client defaults to the first discrete GPU), empty string on PATCH collapses to null.</summary>
     public string? PreferredGpuId { get; set; }
+    /// <summary>CPU thermal guard master switch. On by default; a settings file without the key reads as on.</summary>
+    public bool ThermalGuardEnabled { get; set; } = true;
+    /// <summary>The curves as they were before the last auto-heal, restored by undo. Null when there is nothing to undo.</summary>
+    public List<CurveDocument>? HealSnapshot { get; set; }
+    public long? HealedAtUtcMs { get; set; }
+    public List<HealedChannelRecord> HealedChannels { get; set; } = new();
+    /// <summary>The most recent guard trip, kept across restarts so diagnostics can report it for a day.</summary>
+    public ThermalGuardTripRecord? LastThermalTrip { get; set; }
+}
+
+public sealed class HealedChannelRecord
+{
+    public string Id { get; set; } = "";
+    public string Name { get; set; } = "";
+    public string Hazard { get; set; } = "";
+}
+
+public sealed class ThermalGuardTripRecord
+{
+    public long AtUtcMs { get; set; }
+    public double PeakC { get; set; }
+    /// <summary>"limit" or "cooling-loss".</summary>
+    public string Reason { get; set; } = "";
+    public bool Escalated { get; set; }
+    /// <summary>Null while the trip is still active.</summary>
+    public long? EndedAtUtcMs { get; set; }
 }
 
 /// <summary>One user-saved cooling configuration. Holds fan-to-curve assignments rather than copies of the curves, so the curve library stays shared and editing a curve is visible to every preset that uses it.</summary>

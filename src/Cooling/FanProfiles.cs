@@ -599,7 +599,7 @@ public static class FanProfiles
     /// no fan outputs attached. Used both to create a preset lazily on first
     /// activation and to seed all four on a blank install.
     /// </summary>
-    private static CurveDocument BuildPresetCurve(string presetName, TemperatureSource? inputSensor)
+    internal static CurveDocument BuildPresetCurve(string presetName, TemperatureSource? inputSensor)
     {
         var defaults = PresetDefaults.For(presetName);
         var flat = IsFlatPreset(presetName);
@@ -631,7 +631,7 @@ public static class FanProfiles
         };
     }
 
-    private static TemperatureSource? PreferredInput(IReadOnlyList<TemperatureSource> temps)
+    internal static TemperatureSource? PreferredInput(IReadOnlyList<TemperatureSource> temps)
     {
         return temps.FirstOrDefault(t => t.Category == "CPU" && t.Name.Contains("Package", System.StringComparison.OrdinalIgnoreCase))
             ?? temps.FirstOrDefault(t => t.Category == "CPU")

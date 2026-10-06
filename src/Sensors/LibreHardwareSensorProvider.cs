@@ -57,6 +57,16 @@ public sealed class LibreHardwareSensorProvider : ISensorProvider
         return result;
     }
 
+    public float? GetCpuTjMaxC()
+    {
+        _lhm.Update();
+        var cpu = FindHardware(HardwareType.Cpu).FirstOrDefault();
+        return cpu?.Sensors
+            .Where(s => s.SensorType == SensorType.Temperature && s.Name.Contains("TjMax", StringComparison.OrdinalIgnoreCase))
+            .Select(s => s.Value)
+            .FirstOrDefault();
+    }
+
     public (bool Healthy, float DistanceToTJMax) GetCpuHealth()
     {
         _lhm.Update();

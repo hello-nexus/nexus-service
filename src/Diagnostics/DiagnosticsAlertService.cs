@@ -14,7 +14,7 @@ namespace Nexus.Service.Diagnostics;
 /// needs attention. Consumed the same way as
 /// <see cref="Nexus.Service.Transfer.TransferAttentionNotice"/>: platform
 /// bootstraps subscribe and surface a tray balloon / native banner.</summary>
-/// <summary>Kind is the component kind ("storage", "gpu", "memory", "system", "cooling"), which is also the diagnostics tab slug the alert deep-links to.</summary>
+/// <summary>Kind is the component kind ("storage", "gpu", "memory", "system", "cooling") or "thermalGuard" for a thermal guard trip, which is also the diagnostics tab slug the alert deep-links to.</summary>
 public sealed record DiagnosticsAlertNotice(string Title, string Text, string Kind);
 
 /// <summary>
@@ -53,6 +53,23 @@ public sealed class DiagnosticsAlertService : BackgroundService
         _health = health;
         _store = store;
         _gates = gates ?? FeatureGates.AllEnabled;
+    }
+
+    /// <summary>Raises a notice outside the health poll (the thermal guard trip), still honoring the master notifications switch.</summary>
+    public void Raise(DiagnosticsAlertNotice notice)
+    {
+        if (!_store.Load().Diagnostics.Notifications.Enabled)
+        {
+            return;
+        }
+        try
+        {
+            AlertNeedsAttention?.Invoke(notice);
+        }
+        catch (Exception ex)
+        {
+            ServiceLog.Warn($"[diagnostics-alert] notify subscriber failed: {ex.Message}");
+        }
     }
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
@@ -167,7 +184,7 @@ public sealed class DiagnosticsAlertService : BackgroundService
         "memory" => "/system/diagnostics/memory",
         "system" => "/system/diagnostics/system",
         // GPU throttling is reported on the cooling tab.
-        "cooling" or "gpu" => "/system/diagnostics/cooling",
+        "cooling" or "gpu" or "thermalGuard" => "/system/diagnostics/cooling",
         _ => null,
     };
 

@@ -291,6 +291,7 @@ public static class NexusServiceCollectionExtensions
         services.AddSingleton<SmartHubCoolingProvider>();
         services.AddSingleton<QSeriesCoolerCoolingProvider>();
         services.AddSingleton<ICurveProvider>(sp => sp.GetRequiredService<StubCoolingProvider>());
+        services.AddSingleton<ThermalGuardController>();
         services.AddSingleton<CurveEngine>();
         services.AddHostedService(sp => sp.GetRequiredService<CurveEngine>());
         services.AddSingleton<CalibrationRunner>();

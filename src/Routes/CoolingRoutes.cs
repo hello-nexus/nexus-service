@@ -63,6 +63,39 @@ public static class CoolingRoutes
             return Results.Ok(ApiResponse.Ok());
         });
 
+        // Thermal guard + auto-heal. Lint is advisory and never blocks a save.
+        app.MapGet("/cooling/guard", (ThermalGuardController guard) => guard.GetState()).AllowPanel();
+
+        app.MapPost("/cooling/guard/config", (SetThermalGuardConfigBody body, ThermalGuardController guard, FeatureGates gates) =>
+        {
+            if (!gates.Cooling)
+            {
+                return Results.Conflict(new FeatureDisabledResponse { Feature = FeatureNames.Cooling });
+            }
+            return Results.Ok(guard.SetEnabled(body.Enabled));
+        });
+
+        app.MapPost("/cooling/curves/lint", (SetCurvesBody body, ThermalGuardController guard) =>
+            guard.Lint(body));
+
+        app.MapPost("/cooling/heal", (ThermalGuardController guard, FeatureGates gates) =>
+        {
+            if (!gates.Cooling)
+            {
+                return Results.Conflict(new FeatureDisabledResponse { Feature = FeatureNames.Cooling });
+            }
+            return Results.Ok(guard.HealNow(automatic: false));
+        });
+
+        app.MapPost("/cooling/heal/undo", (ThermalGuardController guard, FeatureGates gates) =>
+        {
+            if (!gates.Cooling)
+            {
+                return Results.Conflict(new FeatureDisabledResponse { Feature = FeatureNames.Cooling });
+            }
+            return Results.Ok(guard.Undo());
+        });
+
         // Fan control
         app.MapGet("/cooling/fans", (IFanControlProvider f, IConfigStore store) =>
         {

@@ -75,16 +75,29 @@ public sealed class CurveEngine : BackgroundService
     // tick that already read the gate as enabled this cycle.
     private int _pendingRelease;
 
+    private readonly ThermalGuardController _guard;
+
+    /// <summary>Millisecond clock for write gating and the guard; tests substitute it.</summary>
+    internal Func<long> Clock { get; set; } = () => Environment.TickCount64;
+
+    // Channels whose duty the guard raised above the user's manual value, and
+    // curve outputs the guard drove while their curve produced nothing. Both are
+    // put back once the guard stops overriding them.
+    private readonly HashSet<string> _guardOverriddenManual = new(StringComparer.Ordinal);
+    private readonly HashSet<string> _guardDrivenOrphans = new(StringComparer.Ordinal);
+
     public CurveEngine(
         IFanControlProvider fans,
         IConfigStore store,
         MultiplexHub hub,
-        FeatureGates? gates = null)
+        FeatureGates? gates = null,
+        ThermalGuardController? guard = null)
     {
         _fans = fans;
         _store = store;
         _hub = hub;
         _gates = gates ?? FeatureGates.AllEnabled;
+        _guard = guard ?? new ThermalGuardController(fans, store, hub);
     }
 
     public void RequestRelease() => Interlocked.Exchange(ref _pendingRelease, 1);
@@ -122,6 +135,7 @@ public sealed class CurveEngine : BackgroundService
     {
         // Let hardware init finish before starting curve evaluation
         await Task.Delay(3000, stoppingToken);
+        _guard.StartWatchdog();
 
         while (!stoppingToken.IsCancellationRequested)
         {
@@ -133,6 +147,7 @@ public sealed class CurveEngine : BackgroundService
             {
                 Console.Error.WriteLine($"[curve-engine] tick failed: {ex.Message}");
             }
+            _guard.TickCompleted();
 
             try
             { await Task.Delay(_intervalMs, stoppingToken); }
@@ -142,6 +157,7 @@ public sealed class CurveEngine : BackgroundService
 
     public override async Task StopAsync(CancellationToken cancellationToken)
     {
+        _guard.StopWatchdog();
         await base.StopAsync(cancellationToken);
         if (!_gates.Cooling)
         {
@@ -173,9 +189,12 @@ public sealed class CurveEngine : BackgroundService
     {
         if (!_gates.Cooling)
         {
+            _guard.NotifyCoolingOff();
             ReleaseIfPending();
             ForgetWritesNotOwned(null);
             ClearManualReplayed();
+            _guardOverriddenManual.Clear();
+            _guardDrivenOrphans.Clear();
             return;
         }
 
@@ -204,18 +223,34 @@ public sealed class CurveEngine : BackgroundService
         // partial list at first, so per-tick presence gates both the curve
         // write dedup and the manual-duty replay below.
         var present = new HashSet<string>(StringComparer.Ordinal);
+        var channelList = _fans.GetFanChannels();
         // Seeded from hardware so a Sync curve pointed at a manual or BIOS fan
         // still has something to follow; curve-driven channels overwrite their
         // entry as they are evaluated below.
         var channelDuty = new Dictionary<string, double>(StringComparer.Ordinal);
-        foreach (var ch in _fans.GetFanChannels())
+        foreach (var ch in channelList)
         {
             present.Add(ch.Id);
             channelDuty[ch.Id] = ch.DutyPercent;
         }
 
+        // The guard runs before any curve work, in its own try/catch: a curve that
+        // throws below must not be able to skip it, and a guard failure must not
+        // stop the curves.
+        var plan = GuardPlan.None;
+        try
+        {
+            plan = _guard.Evaluate(Clock(), settings, channelList, _fans.GetTemperatureSources());
+            ApplyPlanSideEffects(plan);
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine($"[thermal-guard] evaluation failed: {ex.Message}");
+        }
+
         ReleaseUncontrolledOnAppearance(settings, present);
         ReplayManualDuties(settings, present, owned);
+        ApplyGuardToUnownedChannels(plan, settings, present, owned);
 
         if (curves.Count == 0)
         {
@@ -282,15 +317,22 @@ public sealed class CurveEngine : BackgroundService
             // wrote to that channel and rate-limit per-channel writes so we
             // don't push redundant PWM commands at the firmware.
             var outputStates = new List<CurveOutputState>();
-            var nowMs = Environment.TickCount64;
+            var nowMs = Clock();
             foreach (var output in curveDoc.Outputs)
             {
                 var offset = offsets.TryGetValue(output.Id, out var off) ? off : 0;
                 var appliedSpeed = CoolingSafety.ClampDuty((int)Math.Round(smoothedSpeed) + offset);
+                // The guard's floor / override is the last word on a guarded channel's
+                // duty; null means it forbids writing the channel this tick.
+                var guarded = plan.Apply(output.Id, appliedSpeed);
+                if (guarded is int g)
+                {
+                    appliedSpeed = g;
+                }
                 channelDuty[output.Id] = appliedSpeed;
                 if (present.Contains(output.Id))
                 {
-                    if (TryReserveWrite(output.Id, appliedSpeed, nowMs))
+                    if (guarded is not null && TryReserveWrite(output.Id, appliedSpeed, nowMs))
                     {
                         _fans.DriveFanSpeed(output.Id, appliedSpeed);
                     }
@@ -322,6 +364,8 @@ public sealed class CurveEngine : BackgroundService
                 Outputs = outputStates,
             });
         }
+
+        ApplyGuardToOrphanOutputs(plan, settings, present, owned, drivenChannels);
 
         // Broadcast to multiplexed WebSocket (only if topic has subscribers)
         if (_hub.TopicHasSubscribers("cooling-curves"))
@@ -370,6 +414,133 @@ public sealed class CurveEngine : BackgroundService
             var env = WsEnvelope.Build("cooling-realtime", payload,
                 AppJsonContext.Default.GetAllCoolingResponse);
             _ = _hub.BroadcastTopicAsync("cooling-realtime", env);
+        }
+    }
+
+    // ── Thermal guard ──
+
+    /// <summary>One-shot actions the guard asks of the single writer.</summary>
+    private void ApplyPlanSideEffects(GuardPlan plan)
+    {
+        if (plan.Output.TripStarted)
+        {
+            // No dedup or rate-gate record: the first override write always lands.
+            lock (_lastWrite)
+            {
+                foreach (var id in plan.Eligible)
+                {
+                    _lastWrite.Remove(id);
+                }
+            }
+        }
+        if (plan.Output.ReleaseAllNow)
+        {
+            // Writes may not be landing: hand every fan to the BIOS and forget what we wrote.
+            _fans.ReleaseAll();
+            lock (_lastWrite) { _lastWrite.Clear(); }
+            Console.Error.WriteLine("[thermal-guard] still heating after the override: all fans released to BIOS");
+        }
+        if (plan.Output.TripEnded)
+        {
+            lock (_lastWrite) { _lastWrite.Clear(); }
+            ClearManualReplayed();
+        }
+        foreach (var id in plan.GpuRelease)
+        {
+            _fans.ReleaseFan(id);
+            ForgetWrite(id);
+        }
+        if (plan.GpuResume.Count > 0)
+        {
+            _guard.RestoreGpuManual(plan.GpuResume);
+            lock (_manualReplayed)
+            {
+                foreach (var id in plan.GpuResume)
+                {
+                    _manualReplayed.Remove(id);
+                }
+            }
+            foreach (var id in plan.GpuResume)
+            {
+                ForgetWrite(id);
+            }
+        }
+    }
+
+    /// <summary>
+    /// Guard handling for channels no curve owns: persisted manual duties (raised to the
+    /// floor or to 100, restored afterwards) and GPU fans the guard is driving at 100.
+    /// </summary>
+    private void ApplyGuardToUnownedChannels(GuardPlan plan, NexusSettings settings, HashSet<string> present, HashSet<string> owned)
+    {
+        var manual = new Dictionary<string, int>(settings.Cooling.ManualSpeeds, StringComparer.Ordinal);
+        var candidates = new HashSet<string>(manual.Keys, StringComparer.Ordinal);
+        candidates.UnionWith(plan.GpuForced);
+        candidates.UnionWith(_guardOverriddenManual);
+        var nowMs = Clock();
+        foreach (var id in candidates)
+        {
+            if (!present.Contains(id) || owned.Contains(id))
+            {
+                continue;
+            }
+            var hasManual = manual.TryGetValue(id, out var saved);
+            int? desired = plan.GpuForced.Contains(id) ? 100 : (hasManual ? plan.Apply(id, saved) : null);
+            if (desired is null)
+            {
+                continue;
+            }
+            if (!hasManual || desired.Value != saved)
+            {
+                _guardOverriddenManual.Add(id);
+                if (TryReserveWrite(id, desired.Value, nowMs))
+                {
+                    _fans.DriveFanSpeed(id, desired.Value);
+                }
+            }
+            else if (_guardOverriddenManual.Remove(id))
+            {
+                ForgetWrite(id);
+                _fans.DriveFanSpeed(id, saved);
+            }
+        }
+    }
+
+    /// <summary>
+    /// Curve outputs whose curve produced nothing this tick (sync source off, sensor
+    /// missing): the guard still raises them when it overrides, and releases them after.
+    /// </summary>
+    private void ApplyGuardToOrphanOutputs(
+        GuardPlan plan,
+        NexusSettings settings,
+        HashSet<string> present,
+        HashSet<string> owned,
+        HashSet<string> driven)
+    {
+        var nowMs = Clock();
+        foreach (var id in owned)
+        {
+            if (driven.Contains(id) || !present.Contains(id) || !plan.Eligible.Contains(id))
+            {
+                continue;
+            }
+            var desired = plan.Apply(id, 0);
+            if (plan.Output.FloorDuty > 0 && desired is int d)
+            {
+                _guardDrivenOrphans.Add(id);
+                if (TryReserveWrite(id, d, nowMs))
+                {
+                    _fans.DriveFanSpeed(id, d);
+                }
+            }
+            else if (_guardDrivenOrphans.Remove(id))
+            {
+                ForgetWrite(id);
+                if (!settings.Cooling.ManualSpeeds.ContainsKey(id))
+                {
+                    _fans.ReleaseFan(id);
+                }
+            }
         }
     }
 

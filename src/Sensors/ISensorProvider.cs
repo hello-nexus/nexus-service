@@ -20,6 +20,9 @@ public interface ISensorProvider
     IReadOnlyList<HardwareSensor> GetCpuSensors();
     (bool Healthy, float DistanceToTJMax) GetCpuHealth();
 
+    /// <summary>The temperature limit the CPU itself reports (Intel Tjmax, hwmon crit/max), or null when the platform exposes none.</summary>
+    float? GetCpuTjMaxC() => null;
+
     IReadOnlyList<string> GetGpuModels();
     IReadOnlyList<HardwareSensor> GetGpuSensors();
 
