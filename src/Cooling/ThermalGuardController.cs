@@ -61,7 +61,13 @@ public sealed class GuardPlan
 public sealed class ThermalGuardController
 {
     private const long CpuInfoRefreshMs = 5000;
-    private const long WatchdogStallMs = 10_000;
+    private const long WatchdogHotStallMs = 10_000;
+    private const long WatchdogStallMs = 30_000;
+    // Ticks must complete within the hot stall window for this long before Nexus takes the fans back.
+    private const long WatchdogHealthyMs = 30_000;
+    private const long TachZeroSustainMs = 60_000;
+    private const int TachConsecutiveTicks = 3;
+    private const int TachMaxRpm = 10_000;
     private const long WatchdogPollMs = 2000;
     private const long TripAlertCooldownMs = 30 * 60_000;
 
@@ -77,7 +83,7 @@ public sealed class ThermalGuardController
     private readonly ThermalGuard _cpu;
     private readonly Dictionary<string, GpuThermalGuard> _gpus = new(StringComparer.Ordinal);
     private readonly Dictionary<string, (string Name, double? Temp, double? Limit, string? Source)> _gpuInfo = new(StringComparer.Ordinal);
-    private readonly Dictionary<string, int> _maxRpmSeen = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, RpmTrack> _rpm = new(StringComparer.Ordinal);
     private readonly Dictionary<string, long> _lastTripAlertMs = new(StringComparer.Ordinal);
     private readonly ThermalGuardThresholds _thresholds;
 
@@ -87,10 +93,11 @@ public sealed class ThermalGuardController
     private long? _sinceUtcMs;
     private long _cpuInfoAtMs = long.MinValue;
     private double? _cpuLoad;
-    private long _lastTickMs = Environment.TickCount64;
+    private long _lastTickMs;
+    private long? _healthySinceMs;
     private bool _watchdogArmed;
     private bool _watchdogFired;
-    private int _watchdogReleasePending;
+    private bool _watchdogPending;
     private Timer? _watchdog;
 
     public ThermalGuardController(
@@ -116,11 +123,23 @@ public sealed class ThermalGuardController
         CloseOpenTrip();
     }
 
+    private sealed class RpmTrack
+    {
+        public int Best;
+        public int Streak;
+        public int StreakMin;
+        public long? ZeroSinceMs;
+    }
+
+    /// <summary>Monotonic millisecond clock for the watchdog; tests substitute it.</summary>
+    internal Func<long> MonotonicMs { get; set; } = () => Environment.TickCount64;
+
     // ── Engine hooks ──
 
     public void StartWatchdog()
     {
-        _watchdog ??= new Timer(_ => WatchdogCheck(Environment.TickCount64), null, WatchdogPollMs, WatchdogPollMs);
+        lock (_gate) { _lastTickMs = MonotonicMs(); }
+        _watchdog ??= new Timer(_ => WatchdogCheck(MonotonicMs()), null, WatchdogPollMs, WatchdogPollMs);
     }
 
     public void StopWatchdog()
@@ -133,7 +152,10 @@ public sealed class ThermalGuardController
     {
         lock (_gate)
         {
-            _lastTickMs = Environment.TickCount64;
+            var now = MonotonicMs();
+            // A tick that arrived after a long gap restarts the healthy streak.
+            _healthySinceMs = _lastTickMs != 0 && now - _lastTickMs > WatchdogHotStallMs ? now : _healthySinceMs ?? now;
+            _lastTickMs = now;
             _watchdogFired = false;
         }
     }
@@ -142,26 +164,51 @@ public sealed class ThermalGuardController
     {
         lock (_gate)
         {
-            if (!_watchdogArmed || _watchdogFired || nowMs - _lastTickMs < WatchdogStallMs)
+            if (!_watchdogArmed || _watchdogFired)
             {
                 return;
             }
-            if (_guardTemp is not { } temp || temp < _limit.LimitC - _thresholds.FloorStartBelowLimitC)
+            var stalled = nowMs - _lastTickMs;
+            var hot = _guardTemp is { } temp && temp >= _limit.LimitC - _thresholds.FloorStartBelowLimitC;
+            // A stalled engine is not managing fans, so the BIOS is the safe owner whatever the temperature.
+            if (stalled < (hot ? WatchdogHotStallMs : WatchdogStallMs))
             {
                 return;
             }
             _watchdogFired = true;
-            // The engine has made no progress for the stall window, so it is not writing
-            // fans now; it re-drives everything on its next tick (see ConsumeWatchdogRelease).
-            Interlocked.Exchange(ref _watchdogReleasePending, 1);
+            _watchdogPending = true;
+            _healthySinceMs = null;
         }
-        Console.Error.WriteLine("[thermal-guard] curve engine stalled while hot: releasing all fans to BIOS");
+        Console.Error.WriteLine("[thermal-guard] curve engine stalled: releasing all fans to BIOS");
         try { _fans.ReleaseAll(); }
         catch { /* the fans are already in an unknown state; nothing more to do */ }
     }
 
-    /// <summary>True once after the watchdog released the fans: the engine must forget its write state.</summary>
-    public bool ConsumeWatchdogRelease() => Interlocked.Exchange(ref _watchdogReleasePending, 0) == 1;
+    private bool HealthyLongEnough() =>
+        _healthySinceMs is { } since && MonotonicMs() - since >= WatchdogHealthyMs;
+
+    /// <summary>True from a watchdog release until ticks have completed on time for a sustained spell: the engine writes nothing meanwhile, so fans do not flap between BIOS and Nexus.</summary>
+    public bool WatchdogHolding
+    {
+        get
+        {
+            lock (_gate) { return _watchdogPending && !HealthyLongEnough(); }
+        }
+    }
+
+    /// <summary>True once after a watchdog release has ended: the engine must forget its write state and re-drive.</summary>
+    public bool ConsumeWatchdogRelease()
+    {
+        lock (_gate)
+        {
+            if (!_watchdogPending || !HealthyLongEnough())
+            {
+                return false;
+            }
+            _watchdogPending = false;
+            return true;
+        }
+    }
 
     /// <summary>Called by the engine on a tick where the Cooling feature is off.</summary>
     public void NotifyCoolingOff() => Stand(ThermalGuardStates.Inactive);
@@ -227,7 +274,8 @@ public sealed class ThermalGuardController
             sources.Where(s => s.Category == "CPU" && s.DeviceId is null && !ThermalLimits.IsDistanceToTjMax(s.Name))
                 .Select(s => (double)s.Value));
         var nexusDriven = NexusDrivenIds(curves, manual);
-        var roles = cooling.FanRoles;
+        var roles = CoolingSnapshots.FanRoles(cooling);
+        var uncontrolled = CoolingSnapshots.Uncontrolled(cooling);
 
         // Pumps run at a steady speed by design; only fans say whether air is moving.
         double? maxCpuDuty = null;
@@ -242,12 +290,12 @@ public sealed class ThermalGuardController
         var eligible = new HashSet<string>(StringComparer.Ordinal);
         foreach (var ch in channels)
         {
-            if (nexusDriven.Contains(ch.Id) && IsGuardWritable(ch, cooling))
+            if (nexusDriven.Contains(ch.Id) && IsGuardWritable(ch, uncontrolled))
             {
                 eligible.Add(ch.Id);
             }
         }
-        var writesNotLanding = WritesNotLanding(channels, eligible);
+        var writesNotLanding = WritesNotLanding(nowMs, channels, eligible);
 
         ThermalGuardOutput output;
         var plan = new GuardPlan();
@@ -257,7 +305,7 @@ public sealed class ThermalGuardController
             _guardTemp = guardTemp;
             output = _cpu.Step(nowMs, guardTemp, _limit.LimitC, _cpuLoad, maxCpuDuty, writesNotLanding);
             SetPublicState(output.State, output.TripStarted ? _utcNowMs() : null);
-            plan = BuildGpuPlan(nowMs, cooling, manual, channels, sources, nexusDriven, output, eligible);
+            plan = BuildGpuPlan(nowMs, cooling, uncontrolled, manual, channels, sources, nexusDriven, output, eligible);
         }
 
         if (plan.GpuBackup.Count > 0)
@@ -276,11 +324,13 @@ public sealed class ThermalGuardController
     }
 
     /// <summary>
-    /// True when at least one guarded fan has ever reported RPM and every such fan reads
-    /// below a fraction of its best (or its calibrated max). A fan that never reported RPM
-    /// says nothing about whether writes land, so it does not count.
+    /// True when at least one guarded fan (pumps excluded: they run steady by design) has a
+    /// known best RPM and every such fan reads far below it. A reading of 0 counts only
+    /// after it has lasted a minute, so a tach that flaps to 0 is not evidence; a fan with
+    /// no known best says nothing about whether writes land. The best is trusted only
+    /// after three consecutive ticks, so a single spike never sets it.
     /// </summary>
-    private bool WritesNotLanding(IReadOnlyList<FanChannel> channels, HashSet<string> eligible)
+    private bool WritesNotLanding(long nowMs, IReadOnlyList<FanChannel> channels, HashSet<string> eligible)
     {
         var qualifying = 0;
         var allLow = true;
@@ -288,21 +338,25 @@ public sealed class ThermalGuardController
         {
             foreach (var ch in channels)
             {
-                if (ch.Rpm > 0 && (!_maxRpmSeen.TryGetValue(ch.Id, out var seen) || ch.Rpm > seen))
+                if (!_rpm.TryGetValue(ch.Id, out var track))
                 {
-                    _maxRpmSeen[ch.Id] = ch.Rpm;
+                    _rpm[ch.Id] = track = new RpmTrack();
                 }
-                if (!eligible.Contains(ch.Id))
+                ObserveRpm(track, ch.Rpm, nowMs);
+                if (!eligible.Contains(ch.Id) || ch.Kind == FanKinds.Pump)
                 {
                     continue;
                 }
-                var best = ch.MaxRpm is > 0 ? ch.MaxRpm.Value : (_maxRpmSeen.TryGetValue(ch.Id, out var m) ? m : 0);
+                var best = ch.MaxRpm is > 0 ? Math.Min(ch.MaxRpm.Value, TachMaxRpm) : track.Best;
                 if (best <= 0)
                 {
                     continue;
                 }
                 qualifying++;
-                if (ch.Rpm >= best * _thresholds.EscalateRpmFraction)
+                var low = ch.Rpm <= 0
+                    ? track.ZeroSinceMs is { } since && nowMs - since >= TachZeroSustainMs
+                    : ch.Rpm < best * _thresholds.EscalateRpmFraction;
+                if (!low)
                 {
                     allLow = false;
                 }
@@ -311,10 +365,33 @@ public sealed class ThermalGuardController
         return qualifying > 0 && allLow;
     }
 
+    private static void ObserveRpm(RpmTrack track, int rpm, long nowMs)
+    {
+        if (rpm <= 0)
+        {
+            track.ZeroSinceMs ??= nowMs;
+            track.Streak = 0;
+            return;
+        }
+        track.ZeroSinceMs = null;
+        if (rpm > TachMaxRpm || rpm <= track.Best)
+        {
+            track.Streak = 0;
+            return;
+        }
+        track.StreakMin = track.Streak == 0 ? rpm : Math.Min(track.StreakMin, rpm);
+        track.Streak++;
+        if (track.Streak >= TachConsecutiveTicks)
+        {
+            track.Best = track.StreakMin;
+            track.Streak = 0;
+        }
+    }
+
     // CPU-side writable: Nexus drives it and it is controlled. A preset lock does not matter
     // here (it only exempts a channel from preset applies); a GPU fan has its own guard.
-    private static bool IsGuardWritable(FanChannel ch, CoolingSettings cooling) =>
-        !ch.IsGpu && !cooling.UncontrolledFanChannels.Contains(ch.Id);
+    private static bool IsGuardWritable(FanChannel ch, HashSet<string> uncontrolled) =>
+        !ch.IsGpu && !uncontrolled.Contains(ch.Id);
 
     private static HashSet<string> NexusDrivenIds(IReadOnlyList<CurveDocument> curves, IReadOnlyDictionary<string, int> manual)
     {
@@ -329,6 +406,7 @@ public sealed class ThermalGuardController
     private GuardPlan BuildGpuPlan(
         long nowMs,
         CoolingSettings cooling,
+        HashSet<string> uncontrolled,
         IReadOnlyDictionary<string, int> manual,
         IReadOnlyList<FanChannel> channels,
         IReadOnlyList<TemperatureSource> sources,
@@ -348,16 +426,35 @@ public sealed class ThermalGuardController
             var coreTemp = GpuCoreTemp(sources, deviceId);
             _gpuInfo[deviceId] = (name, coreTemp, limit, limit is null ? null : ThermalLimitSources.Hardware);
             seen.Add(deviceId);
-            if (limit is null || coreTemp is null)
-            {
-                continue;
-            }
             var guarded = group
-                .Where(c => (nexusDriven.Contains(c.Id) || backup.ContainsKey(c.Id)) && !cooling.UncontrolledFanChannels.Contains(c.Id))
+                .Where(c => (nexusDriven.Contains(c.Id) || backup.ContainsKey(c.Id)) && !uncontrolled.Contains(c.Id))
                 .Select(c => c.Id)
                 .ToList();
             if (guarded.Count == 0)
             {
+                continue;
+            }
+            if (limit is null)
+            {
+                // No threshold to defend: never strand a manual duty the guard backed up.
+                _gpus.Remove(deviceId);
+                plan.GpuResume.AddRange(guarded.Where(backup.ContainsKey));
+                continue;
+            }
+            if (coreTemp is null)
+            {
+                // A missing reading never returns a handed-back fan to its curve.
+                if (_gpus.TryGetValue(deviceId, out var held))
+                {
+                    if (held.State == GpuGuardStates.HandedBack)
+                    {
+                        plan.GpuBlocked.UnionWith(guarded);
+                    }
+                    else if (held.State == GpuGuardStates.Forced)
+                    {
+                        plan.GpuForced.UnionWith(guarded);
+                    }
+                }
                 continue;
             }
             if (!_gpus.TryGetValue(deviceId, out var g))

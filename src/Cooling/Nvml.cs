@@ -92,7 +92,9 @@ internal static unsafe partial class Nvml
         catch { return false; }
     }
 
-    private static readonly System.Collections.Concurrent.ConcurrentDictionary<int, int> SlowdownCache = new();
+    private static readonly System.Collections.Concurrent.ConcurrentDictionary<int, int?> SlowdownCache = new();
+    private static readonly object WindowsInitGate = new();
+    private static bool? _windowsInit;
 
     /// <summary>
     /// The GPU's slowdown temperature threshold in C, or null when NVML or the symbol is
@@ -101,12 +103,9 @@ internal static unsafe partial class Nvml
     /// </summary>
     public static int? GetSlowdownThreshold(int gpu)
     {
-        if (SlowdownCache.TryGetValue(gpu, out var cached))
-            return cached;
-        var read = OperatingSystem.IsWindows() ? ReadSlowdownWindows(gpu) : ReadSlowdownLinux(gpu);
-        if (read is { } value)
-            SlowdownCache[gpu] = value;
-        return read;
+        // Failures are cached too: an unsupported card stays unsupported, and the caller
+        // asks every tick.
+        return SlowdownCache.GetOrAdd(gpu, g => OperatingSystem.IsWindows() ? ReadSlowdownWindows(g) : ReadSlowdownLinux(g));
     }
 
     private static int? ReadSlowdownLinux(int gpu)
@@ -128,9 +127,13 @@ internal static unsafe partial class Nvml
         {
             if (!Nexus.Service.Diagnostics.Gpu.NvmlInterop.TryLoad())
                 return null;
-            // Refcounted by the driver: a second init alongside the health monitor is harmless.
-            if (Nexus.Service.Diagnostics.Gpu.NvmlInterop.Init() != Success)
-                return null;
+            // Refcounted by the driver, and this daemon never shuts NVML down, so one init suffices.
+            lock (WindowsInitGate)
+            {
+                _windowsInit ??= Nexus.Service.Diagnostics.Gpu.NvmlInterop.Init() == Success;
+                if (_windowsInit != true)
+                    return null;
+            }
             if (Nexus.Service.Diagnostics.Gpu.NvmlInterop.DeviceGetHandleByIndex((uint)gpu, out var dev) != Success)
                 return null;
             return Nexus.Service.Diagnostics.Gpu.NvmlInterop.GetTemperatureThreshold(dev, ThresholdSlowdown, out var t) == Success

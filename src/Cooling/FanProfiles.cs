@@ -146,6 +146,7 @@ public static class FanProfiles
         List<(string FanId, int Duty)>? restoredManual = null;
         store.Update(s =>
         {
+            s.Cooling.ClearHeal();
             // Snapshot the user's custom mapping on the way out of "custom":
             // curve assignments and manual duties both, so Custom restores the
             // full arrangement. The manual copy is load-bearing for the Off
@@ -418,6 +419,7 @@ public static class FanProfiles
     {
         store.Update(s =>
         {
+            s.Cooling.ClearHeal();
             foreach (var curve in s.Cooling.Curves)
             {
                 curve.Outputs.RemoveAll(o => o.Id == fanId);
@@ -507,6 +509,7 @@ public static class FanProfiles
 
         store.Update(s =>
         {
+            s.Cooling.ClearHeal();
             // EnsurePresetCurve returns the existing curve (normalizing the
             // Preset flag) or creates a fresh one at defaults. Either way we
             // then forcibly overwrite the template fields below; the redundant

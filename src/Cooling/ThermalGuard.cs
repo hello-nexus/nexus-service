@@ -69,7 +69,7 @@ public sealed record ThermalGuardThresholds
 public sealed class ThermalGuard
 {
     private const long SampleSpacingMs = 1000;
-    // Slack so a window of 1 s samples counts as covering the full window.
+    // Slack so a window of one-second samples counts as covering the full window.
     private const long WindowCoverageSlackMs = 10_000;
 
     private readonly ThermalGuardThresholds _t;

@@ -275,7 +275,7 @@ public static class CoolingConfigLint
     }
 
     /// <summary>
-    /// A floor, not a preset: 0 percent until well under the limit, rising to full duty just
+    /// A floor, not a preset: silent until well under the limit, rising to full duty just
     /// below it, so a healed quiet channel stays quiet at normal temperatures.
     /// </summary>
     internal static CurveDocument BuildSafeFloorCurve(TemperatureSource cpuInput, double limitC) => new()
@@ -306,9 +306,11 @@ public static class CoolingConfigLint
         _ => 1.0,
     };
 
-    /// <summary>Members a Mixed must not scale by the global modifier: Sync outputs already carry it, and a manual duty is never modified.</summary>
+    /// <summary>Members a Mixed must not scale by the global modifier: Sync outputs already carry it, a manual duty is never modified, and the safety floor must not be scaled down.</summary>
     internal static bool IsGlobalModifierExempt(CurveDocument member) =>
-        member.Type == "Sync" || member.Id.StartsWith(ManualIdPrefix, StringComparison.Ordinal);
+        member.Type == "Sync"
+        || member.Id == SafeCurveId
+        || member.Id.StartsWith(ManualIdPrefix, StringComparison.Ordinal);
 
     public static CurveDocument CloneCurve(CurveDocument d) => CurveWireMapper.ToDocument(CurveWireMapper.ToWire(d));
 }

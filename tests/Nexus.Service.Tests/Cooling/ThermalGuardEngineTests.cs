@@ -302,24 +302,6 @@ public class ThermalGuardEngineTests
     }
 
     [Fact]
-    public void WatchdogRelease_MakesTheNextTickRedriveEveryChannel()
-    {
-        var (engine, fans, store, _) = Build();
-        var guard = new ThermalGuardController(fans, store);
-        var e = new CurveEngine(fans, store, new MultiplexHub(), null, guard) { Clock = () => 1_000_000 };
-        fans.CpuTemp = 80f;
-        e.Tick();
-        var afterFirst = fans.Driven.Count;
-        e.Tick();
-        Assert.Equal(afterFirst, fans.Driven.Count);
-
-        guard.WatchdogCheck(Environment.TickCount64 + 11_000);
-        e.Tick();
-
-        Assert.True(fans.Driven.Count > afterFirst);
-    }
-
-    [Fact]
     public void HealedSyncMember_IsNotScaledByTheGlobalModifier()
     {
         var fans = new Fans();
@@ -391,16 +373,24 @@ public class ThermalGuardEngineTests
         Assert.Empty(settings.HealedChannels);
     }
 
+    // Three ticks at a steady RPM establish the fan's best before the trip.
+    private static void LearnRpm(CurveEngine engine, Fans fans, long[] clock, int rpm)
+    {
+        fans.Channels[0].Rpm = rpm;
+        fans.Channels[1].Rpm = rpm;
+        for (var i = 0; i < 3; i++)
+        {
+            clock[0] += 1000;
+            engine.Tick();
+        }
+    }
+
     [Fact]
     public void Escalated_WhenFansThatReportedRpmStayFarBelowTheirBest_StopsWritingAndReleasesAll()
     {
         var (engine, fans, _, clock) = Build();
-        fans.Channels[0].Rpm = 1000;
-        fans.Channels[1].Rpm = 1000;
-        fans.CpuTemp = 99f;
-        engine.Tick();
-        clock[0] += 5000;
-        engine.Tick();
+        LearnRpm(engine, fans, clock, 1000);
+        Trip(engine, fans, clock);
         var writes = fans.Driven.Count;
 
         fans.Channels[0].Rpm = 100;
@@ -410,6 +400,66 @@ public class ThermalGuardEngineTests
 
         Assert.Equal(1, fans.ReleaseAllCalls);
         Assert.Equal(writes, fans.Driven.Count);
+    }
+
+    [Fact]
+    public void TachDroppingToZero_EscalatesOnlyAfterAMinute()
+    {
+        var (engine, fans, _, clock) = Build();
+        LearnRpm(engine, fans, clock, 1000);
+        Trip(engine, fans, clock);
+
+        fans.Channels[0].Rpm = 0;
+        fans.Channels[1].Rpm = 0;
+        clock[0] += 21_000;
+        engine.Tick();
+        clock[0] += 30_000;
+        engine.Tick();
+        Assert.Equal(0, fans.ReleaseAllCalls);
+
+        clock[0] += 31_000;
+        engine.Tick();
+        Assert.Equal(1, fans.ReleaseAllCalls);
+    }
+
+    [Fact]
+    public void ARpmSpike_NeverSetsTheBest()
+    {
+        var (engine, fans, _, clock) = Build();
+        LearnRpm(engine, fans, clock, 1000);
+        // One tick at a high value, then back to normal: not three consecutive readings.
+        fans.Channels[0].Rpm = 9000;
+        fans.Channels[1].Rpm = 9000;
+        clock[0] += 1000;
+        engine.Tick();
+        fans.Channels[0].Rpm = 1000;
+        fans.Channels[1].Rpm = 1000;
+        clock[0] += 1000;
+        engine.Tick();
+        Trip(engine, fans, clock);
+
+        // 500 is half of the real best: a working fan, no escalation.
+        fans.Channels[0].Rpm = 500;
+        fans.Channels[1].Rpm = 500;
+        clock[0] += 25_000;
+        engine.Tick();
+        Assert.Equal(0, fans.ReleaseAllCalls);
+    }
+
+    [Fact]
+    public void PumpsAreNotEscalationEvidence()
+    {
+        var (engine, fans, _, clock) = Build();
+        fans.Channels[0].Kind = FanKinds.Pump;
+        fans.Channels[1].Kind = FanKinds.Pump;
+        LearnRpm(engine, fans, clock, 1000);
+        Trip(engine, fans, clock);
+
+        fans.Channels[0].Rpm = 0;
+        fans.Channels[1].Rpm = 0;
+        clock[0] += 100_000;
+        engine.Tick();
+        Assert.Equal(0, fans.ReleaseAllCalls);
     }
 
     [Fact]
@@ -488,24 +538,111 @@ public class ThermalGuardEngineTests
         Assert.False(off.Cooling.ThermalGuardEnabled);
     }
 
-    [Fact]
-    public void Watchdog_ReleasesAllWhenTheEngineStallsWhileHot_AndNotWhenCool()
+    private static (CurveEngine Engine, ThermalGuardController Guard, long[] Mono) WatchdogRig(Fans fans, InMemoryConfigStore store)
     {
-        var (engine, fans, store, _) = Build();
-        var guard = new ThermalGuardController(fans, store);
-        var e = new CurveEngine(fans, store, new MultiplexHub(), null, guard) { Clock = () => 1_000_000 };
+        var mono = new long[] { 1_000 };
+        var guard = new ThermalGuardController(fans, store) { MonotonicMs = () => mono[0] };
+        var engine = new CurveEngine(fans, store, new MultiplexHub(), null, guard) { Clock = () => 1_000_000 };
+        return (engine, guard, mono);
+    }
+
+    [Fact]
+    public void Watchdog_ReleasesAfterTenSecondsWhenHot_ThirtyWhenCool()
+    {
+        var (_, fans, store, _) = Build();
+        var (e, guard, mono) = WatchdogRig(fans, store);
         fans.CpuTemp = 85f;
         e.Tick();
-
-        guard.WatchdogCheck(Environment.TickCount64 + 11_000);
+        guard.TickCompleted();
+        guard.WatchdogCheck(mono[0] + 9_000);
+        Assert.Equal(0, fans.ReleaseAllCalls);
+        guard.WatchdogCheck(mono[0] + 11_000);
         Assert.Equal(1, fans.ReleaseAllCalls);
 
-        var (e2, fans2, store2, _) = Build();
-        var guard2 = new ThermalGuardController(fans2, store2);
-        var eng2 = new CurveEngine(fans2, store2, new MultiplexHub(), null, guard2) { Clock = () => 1_000_000 };
+        var (_, fans2, store2, _) = Build();
+        var (e2, guard2, mono2) = WatchdogRig(fans2, store2);
         fans2.CpuTemp = 50f;
-        eng2.Tick();
-        guard2.WatchdogCheck(Environment.TickCount64 + 11_000);
+        e2.Tick();
+        guard2.TickCompleted();
+        guard2.WatchdogCheck(mono2[0] + 11_000);
         Assert.Equal(0, fans2.ReleaseAllCalls);
+        guard2.WatchdogCheck(mono2[0] + 31_000);
+        Assert.Equal(1, fans2.ReleaseAllCalls);
+    }
+
+    [Fact]
+    public void WatchdogRelease_HoldsTheEngineOffUntilThirtySecondsOfOnTimeTicks_ThenRedrives()
+    {
+        var (_, fans, store, _) = Build();
+        var (e, guard, mono) = WatchdogRig(fans, store);
+        fans.CpuTemp = 85f;
+        e.Tick();
+        guard.TickCompleted();
+        var afterFirst = fans.Driven.Count;
+
+        guard.WatchdogCheck(mono[0] + 11_000);
+        mono[0] += 11_000;
+        for (var i = 0; i < 29; i++)
+        {
+            mono[0] += 1000;
+            guard.TickCompleted();
+            e.Tick();
+        }
+        Assert.Equal(afterFirst, fans.Driven.Count);
+        Assert.True(guard.WatchdogHolding);
+
+        mono[0] += 2000;
+        guard.TickCompleted();
+        e.Tick();
+        Assert.False(guard.WatchdogHolding);
+        e.Tick();
+        Assert.True(fans.Driven.Count > afterFirst);
+    }
+
+    [Fact]
+    public void NonRouteCurveWriters_ClearTheHealUndoState()
+    {
+        var (_, fans, store, _) = Build();
+        var guard = new ThermalGuardController(fans, store);
+        guard.HealNow(automatic: false);
+        Assert.NotNull(store.Load().Cooling.HealSnapshot);
+
+        // The provider behind the MCP tools and every curve save.
+        new StubCoolingProvider(store).SetCurves(new SetCurvesBody());
+        Assert.Null(store.Load().Cooling.HealSnapshot);
+
+        store.Update(s => s.Cooling.Curves.Add(Flat("f1", 20)));
+        guard.HealNow(automatic: false);
+        Assert.NotNull(store.Load().Cooling.HealSnapshot);
+        FanProfiles.DetachFanFromCurves("f1", store);
+        Assert.Null(store.Load().Cooling.HealSnapshot);
+    }
+
+    [Fact]
+    public void ManualOnlyConfig_DoesNotRewriteTheGuardOverrideEveryTick()
+    {
+        var fans = new Fans();
+        fans.Channels.Add(new FanChannel { Id = "m1", Name = "M1" });
+        var store = new InMemoryConfigStore();
+        store.Update(s => s.Cooling.ManualSpeeds["m1"] = 30);
+        var clock = new long[] { 1_000_000 };
+        var engine = new CurveEngine(fans, store, new MultiplexHub(), null, new ThermalGuardController(fans, store)) { Clock = () => clock[0] };
+        fans.CpuTemp = 85f;
+        engine.Tick();
+        var writes = fans.Driven.Count;
+        Assert.True(writes >= 1);
+        for (var i = 0; i < 3; i++)
+        {
+            clock[0] += 1000;
+            engine.Tick();
+        }
+        Assert.Equal(writes, fans.Driven.Count);
+    }
+
+    [Fact]
+    public void HealedSafeFloorMember_IsExemptFromTheGlobalModifier()
+    {
+        Assert.True(CoolingConfigLint.IsGlobalModifierExempt(new CurveDocument { Id = CoolingConfigLint.SafeCurveId }));
+        Assert.False(CoolingConfigLint.IsGlobalModifierExempt(new CurveDocument { Id = "x", Type = "Graph" }));
     }
 }

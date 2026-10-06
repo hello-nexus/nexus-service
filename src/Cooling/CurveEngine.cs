@@ -208,6 +208,13 @@ public sealed class CurveEngine : BackgroundService
             _guardDrivenOrphans.Clear();
         }
 
+        // After a watchdog release the BIOS owns the fans until ticks have been on time for a
+        // sustained spell, so a run of slow ticks cannot flap them between owners.
+        if (_guard.WatchdogHolding)
+        {
+            return;
+        }
+
         var settings = _store.Load();
         if (settings.Cooling.Curves.Count == 0
             && settings.Cooling.ManualSpeeds.Count == 0
@@ -989,7 +996,7 @@ public sealed class CurveEngine : BackgroundService
             {
                 return;
             }
-            if (owned is null || owned.Count == 0)
+            if (owned is null)
             {
                 _lastWrite.Clear();
                 return;

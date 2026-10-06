@@ -28,8 +28,8 @@ public static class ThermalLimits
     private const double MinPlausibleLimitC = 60;
     private const double MaxPlausibleLimitC = 125;
 
-    // Published "Max. Operating Temperature (Tjmax)" per AMD model, substring-matched
-    // against the CPU name. Each entry cites its product page on amd.com; add an entry
+    // Published "Max. Operating Temperature (Tjmax)" per AMD model, matched as a whole
+    // token of the CPU name. Each entry cites its product page on amd.com; add an entry
     // only after reading it off that page. Models absent here fall back to AmdDefaultC.
     // TODO: an SMU / PM-table reader would be the future hardware source for AMD.
     private static readonly (string Match, double TjMaxC)[] AmdSpec =
@@ -42,6 +42,8 @@ public static class ThermalLimits
         ("7800X3D", 89), // https://www.amd.com/en/products/processors/desktops/ryzen/7000-series/amd-ryzen-7-7800x3d.html
         ("5800X3D", 90), // https://www.amd.com/en/products/processors/desktops/ryzen/5000-series/amd-ryzen-7-5800x3d.html
         ("5700X3D", 90), // https://www.amd.com/en/products/processors/desktops/ryzen/5000-series/amd-ryzen-7-5700x3d.html
+        ("5800X", 90),   // https://www.amd.com/en/products/processors/desktops/ryzen/5000-series/amd-ryzen-7-5800x.html
+        ("5700X", 90),   // https://www.amd.com/en/products/processors/desktops/ryzen/5000-series/amd-ryzen-7-5700x.html
         ("5950X", 90),   // https://www.amd.com/en/products/processors/desktops/ryzen/5000-series/amd-ryzen-9-5950x.html
         ("5900X", 90),   // https://www.amd.com/en/products/processors/desktops/ryzen/5000-series/amd-ryzen-9-5900x.html
         ("5600X", 95),   // https://www.amd.com/en/products/processors/desktops/ryzen/5000-series/amd-ryzen-5-5600x.html
@@ -101,9 +103,11 @@ public static class ThermalLimits
             return new ThermalLimit(GenericDefaultC, ThermalLimitSources.Default);
         }
 
+        // Exact model token, so 5900X does not match 5900XT.
+        var tokens = model.Split(new[] { ' ', '-', '(', ')', ',', '/' }, StringSplitOptions.RemoveEmptyEntries);
         foreach (var (match, tjMax) in AmdSpec)
         {
-            if (model.Contains(match, StringComparison.OrdinalIgnoreCase))
+            if (tokens.Any(t => t.Equals(match, StringComparison.OrdinalIgnoreCase)))
             {
                 return new ThermalLimit(tjMax, ThermalLimitSources.Spec);
             }

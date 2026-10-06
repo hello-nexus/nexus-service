@@ -58,12 +58,7 @@ public static class CoolingRoutes
             // Recompute the active preset from the saved curve outputs so the
             // profile bar stays in sync after a manual edit in the curve list.
             var derived = FanProfiles.DerivePresetFromCurves(store, f);
-            store.Update(s =>
-            {
-                s.Cooling.ActivePreset = derived;
-                // Undo is valid only until the next edit of the curves.
-                s.Cooling.ClearHeal();
-            });
+            store.Update(s => s.Cooling.ActivePreset = derived);
             PanelTopics.BroadcastCooling(hub);
             return Results.Ok(ApiResponse.Ok());
         });
@@ -353,7 +348,6 @@ public static class CoolingRoutes
             }
             var requested = isAutoSynonym ? "off" : profile!.Name;
             var applied = FanProfiles.Apply(requested, f, store);
-            store.Update(s => s.Cooling.ClearHeal());
             PanelTopics.BroadcastCooling(hub);
             telemetry.Capture(Nexus.Service.Telemetry.TelemetryEvents.FanCurveApplied, ("preset", requested));
             return Results.Ok(new ApplyProfileResponse { Applied = applied });
@@ -374,7 +368,6 @@ public static class CoolingRoutes
                 return Results.BadRequest(new ApiResponse { Error = true, Msg = $"Cannot reset preset: {name}" });
             }
             FanProfiles.ResetPresetCurve(canonical, f, store);
-            store.Update(s => s.Cooling.ClearHeal());
             PanelTopics.BroadcastCooling(hub);
             return Results.Ok(ApiResponse.Ok());
         }).AllowPanel();
@@ -457,7 +450,6 @@ public static class CoolingRoutes
             {
                 return Results.NotFound(new ApiResponse { Error = true, Msg = "Preset not found" });
             }
-            store.Update(s => s.Cooling.ClearHeal());
             PanelTopics.BroadcastCooling(hub);
             return Results.Ok(ApiResponse.Ok());
         }).AllowPanel();
