@@ -23,6 +23,8 @@ public sealed class GuardPlan
     public HashSet<string> GpuForced { get; init; } = new(StringComparer.Ordinal);
     public List<string> GpuRelease { get; init; } = new();
     public List<string> GpuResume { get; init; } = new();
+    /// <summary>Manual duties to persist before the engine releases the GPU fans.</summary>
+    public Dictionary<string, int> GpuBackup { get; init; } = new(StringComparer.Ordinal);
 
     public static readonly GuardPlan None = new() { Output = new ThermalGuardOutput(ThermalGuardStates.Off, 0, false, false, false, false, false, null) };
 
@@ -61,7 +63,7 @@ public sealed class ThermalGuardController
     private const long CpuInfoRefreshMs = 5000;
     private const long WatchdogStallMs = 10_000;
     private const long WatchdogPollMs = 2000;
-    private static readonly TimeSpan HealTripWindow = TimeSpan.FromHours(24);
+    private const long TripAlertCooldownMs = 30 * 60_000;
 
     private readonly IFanControlProvider _fans;
     private readonly IConfigStore _store;
@@ -72,10 +74,11 @@ public sealed class ThermalGuardController
     private readonly Func<long> _utcNowMs;
 
     private readonly object _gate = new();
-    private readonly ThermalGuard _cpu = new();
+    private readonly ThermalGuard _cpu;
     private readonly Dictionary<string, GpuThermalGuard> _gpus = new(StringComparer.Ordinal);
     private readonly Dictionary<string, (string Name, double? Temp, double? Limit, string? Source)> _gpuInfo = new(StringComparer.Ordinal);
-    private readonly Dictionary<string, int> _gpuManualBackup = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, long> _lastTripAlertMs = new(StringComparer.Ordinal);
+    private readonly ThermalGuardThresholds _thresholds;
 
     private string _publicState = ThermalGuardStates.Inactive;
     private double? _guardTemp;
@@ -86,6 +89,7 @@ public sealed class ThermalGuardController
     private long _lastTickMs = Environment.TickCount64;
     private bool _watchdogArmed;
     private bool _watchdogFired;
+    private int _watchdogReleasePending;
     private Timer? _watchdog;
 
     public ThermalGuardController(
@@ -95,7 +99,8 @@ public sealed class ThermalGuardController
         ISensorProvider? sensors = null,
         IMonitoringEventStore? events = null,
         DiagnosticsAlertService? alerts = null,
-        Func<long>? utcNowMs = null)
+        Func<long>? utcNowMs = null,
+        ThermalGuardThresholds? thresholds = null)
     {
         _fans = fans;
         _store = store;
@@ -104,6 +109,10 @@ public sealed class ThermalGuardController
         _events = events;
         _alerts = alerts;
         _utcNowMs = utcNowMs ?? (() => DateTimeOffset.UtcNow.ToUnixTimeMilliseconds());
+        _thresholds = thresholds ?? ThermalGuardThresholds.Default;
+        _cpu = new ThermalGuard(_thresholds);
+        // A trip record still open at construction belongs to a previous run that never closed it.
+        CloseOpenTrip();
     }
 
     // ── Engine hooks ──
@@ -136,31 +145,63 @@ public sealed class ThermalGuardController
             {
                 return;
             }
-            if (_guardTemp is not { } temp || temp < _limit.LimitC - ThermalGuard.FloorStartBelowLimitC)
+            if (_guardTemp is not { } temp || temp < _limit.LimitC - _thresholds.FloorStartBelowLimitC)
             {
                 return;
             }
             _watchdogFired = true;
+            // The engine has made no progress for the stall window, so it is not writing
+            // fans now; it re-drives everything on its next tick (see ConsumeWatchdogRelease).
+            Interlocked.Exchange(ref _watchdogReleasePending, 1);
         }
         Console.Error.WriteLine("[thermal-guard] curve engine stalled while hot: releasing all fans to BIOS");
         try { _fans.ReleaseAll(); }
         catch { /* the fans are already in an unknown state; nothing more to do */ }
     }
 
+    /// <summary>True once after the watchdog released the fans: the engine must forget its write state.</summary>
+    public bool ConsumeWatchdogRelease() => Interlocked.Exchange(ref _watchdogReleasePending, 0) == 1;
+
     /// <summary>Called by the engine on a tick where the Cooling feature is off.</summary>
-    public void NotifyCoolingOff()
+    public void NotifyCoolingOff() => Stand(ThermalGuardStates.Inactive);
+
+    /// <summary>Called by the engine on a tick with nothing configured to drive.</summary>
+    public void NotifyIdle() => Stand(ThermalGuardStates.Inactive);
+
+    // The guard stops acting: reset the machine, publish the state, and close any open trip record.
+    private void Stand(string state)
     {
         lock (_gate)
         {
             _watchdogArmed = false;
             _cpu.Reset();
-            SetPublicState(ThermalGuardStates.Inactive, null);
+            _guardTemp = null;
+            SetPublicState(state, null);
         }
+        CloseOpenTrip();
+    }
+
+    private void CloseOpenTrip()
+    {
+        if (_store.Load().Cooling.LastThermalTrip is not { EndedAtUtcMs: null })
+        {
+            return;
+        }
+        var now = _utcNowMs();
+        _store.Update(s =>
+        {
+            if (s.Cooling.LastThermalTrip is { EndedAtUtcMs: null } trip)
+            {
+                trip.EndedAtUtcMs = now;
+            }
+        });
     }
 
     public GuardPlan Evaluate(
         long nowMs,
         NexusSettings settings,
+        IReadOnlyList<CurveDocument> curves,
+        IReadOnlyDictionary<string, int> manual,
         IReadOnlyList<FanChannel> channels,
         IReadOnlyList<TemperatureSource> sources)
     {
@@ -169,31 +210,29 @@ public sealed class ThermalGuardController
         {
             lock (_gate)
             {
-                _watchdogArmed = false;
-                _cpu.Reset();
                 _gpus.Clear();
                 _gpuInfo.Clear();
-                _guardTemp = null;
-                SetPublicState(ThermalGuardStates.Off, null);
-                if (_gpuManualBackup.Count > 0)
-                {
-                    return new GuardPlan { Output = GuardPlan.None.Output, GpuResume = _gpuManualBackup.Keys.ToList() };
-                }
             }
-            return GuardPlan.None;
+            Stand(ThermalGuardStates.Off);
+            var backup = CoolingSnapshots.GpuManualBackup(cooling);
+            return backup.Count > 0
+                ? new GuardPlan { Output = GuardPlan.None.Output, GpuResume = backup.Keys.ToList() }
+                : GuardPlan.None;
         }
 
         RefreshCpuInfo(nowMs);
 
         var guardTemp = ThermalLimits.MaxPlausible(
-            sources.Where(s => s.Category == "CPU" && s.DeviceId is null).Select(s => (double)s.Value));
-        var nexusDriven = NexusDrivenIds(cooling);
+            sources.Where(s => s.Category == "CPU" && s.DeviceId is null && !ThermalLimits.IsDistanceToTjMax(s.Name))
+                .Select(s => (double)s.Value));
+        var nexusDriven = NexusDrivenIds(curves, manual);
         var roles = cooling.FanRoles;
 
+        // Pumps run at a steady speed by design; only fans say whether air is moving.
         double? maxCpuDuty = null;
         foreach (var ch in channels)
         {
-            if (CoolingConfigLint.IsCpuCooling(ch, roles))
+            if (ch.Kind != FanKinds.Pump && CoolingConfigLint.IsCpuCooling(ch, roles))
             {
                 maxCpuDuty = Math.Max(maxCpuDuty ?? 0, ch.DutyPercent);
             }
@@ -216,28 +255,35 @@ public sealed class ThermalGuardController
             _guardTemp = guardTemp;
             output = _cpu.Step(nowMs, guardTemp, _limit.LimitC, _cpuLoad, maxCpuDuty);
             SetPublicState(output.State, output.TripStarted ? _utcNowMs() : null);
-            plan = BuildGpuPlan(nowMs, cooling, channels, sources, nexusDriven, output, eligible);
+            plan = BuildGpuPlan(nowMs, cooling, manual, channels, sources, nexusDriven, output, eligible);
         }
 
+        if (plan.GpuBackup.Count > 0)
+        {
+            var persist = plan.GpuBackup.ToList();
+            _store.Update(st =>
+            {
+                foreach (var kv in persist)
+                {
+                    st.Cooling.GpuManualBackup[kv.Key] = kv.Value;
+                }
+            });
+        }
         HandleTransitions(output, settings);
         return plan;
     }
 
-    // CPU-side writable: controlled, not locked, not a GPU fan (GPU fans have their own guard).
+    // CPU-side writable: Nexus drives it and it is controlled. A preset lock does not matter
+    // here (it only exempts a channel from preset applies); a GPU fan has its own guard.
     private static bool IsGuardWritable(FanChannel ch, CoolingSettings cooling) =>
-        !ch.IsGpu
-        && !cooling.UncontrolledFanChannels.Contains(ch.Id)
-        && !FanProfiles.IsLocked(ch, cooling.FanLockOverrides);
+        !ch.IsGpu && !cooling.UncontrolledFanChannels.Contains(ch.Id);
 
-    private static HashSet<string> NexusDrivenIds(CoolingSettings cooling)
+    private static HashSet<string> NexusDrivenIds(IReadOnlyList<CurveDocument> curves, IReadOnlyDictionary<string, int> manual)
     {
-        var ids = new HashSet<string>(cooling.ManualSpeeds.Keys, StringComparer.Ordinal);
-        foreach (var curve in cooling.Curves)
+        var ids = new HashSet<string>(manual.Keys, StringComparer.Ordinal);
+        foreach (var curve in curves)
         {
-            foreach (var o in curve.Outputs)
-            {
-                ids.Add(o.Id);
-            }
+            ids.UnionWith(CoolingSnapshots.OutputIds(curve));
         }
         return ids;
     }
@@ -245,6 +291,7 @@ public sealed class ThermalGuardController
     private GuardPlan BuildGpuPlan(
         long nowMs,
         CoolingSettings cooling,
+        IReadOnlyDictionary<string, int> manual,
         IReadOnlyList<FanChannel> channels,
         IReadOnlyList<TemperatureSource> sources,
         HashSet<string> nexusDriven,
@@ -252,7 +299,7 @@ public sealed class ThermalGuardController
         HashSet<string> eligible)
     {
         var plan = new GuardPlan { Output = output, Eligible = eligible };
-        var gpuTemp = ThermalLimits.MaxPlausible(sources.Where(s => s.Category == "GPU").Select(s => (double)s.Value));
+        var backup = CoolingSnapshots.GpuManualBackup(cooling);
         _gpuInfo.Clear();
         var seen = new HashSet<string>(StringComparer.Ordinal);
         foreach (var group in channels.Where(c => c.IsGpu && c.DeviceId is not null).GroupBy(c => c.DeviceId!))
@@ -260,15 +307,17 @@ public sealed class ThermalGuardController
             var deviceId = group.Key;
             var name = group.First().DeviceName ?? deviceId;
             var limit = GpuLimit(deviceId);
-            _gpuInfo[deviceId] = (name, gpuTemp, limit, limit is null ? null : ThermalLimitSources.Hardware);
+            var coreTemp = GpuCoreTemp(sources, deviceId);
+            _gpuInfo[deviceId] = (name, coreTemp, limit, limit is null ? null : ThermalLimitSources.Hardware);
             seen.Add(deviceId);
-            if (limit is null || gpuTemp is null)
+            if (limit is null || coreTemp is null)
             {
                 continue;
             }
-            var guarded = group.Where(c => (nexusDriven.Contains(c.Id) || _gpuManualBackup.ContainsKey(c.Id))
-                && !cooling.UncontrolledFanChannels.Contains(c.Id)
-                && !FanProfiles.IsLocked(c, cooling.FanLockOverrides)).Select(c => c.Id).ToList();
+            var guarded = group
+                .Where(c => (nexusDriven.Contains(c.Id) || backup.ContainsKey(c.Id)) && !cooling.UncontrolledFanChannels.Contains(c.Id))
+                .Select(c => c.Id)
+                .ToList();
             if (guarded.Count == 0)
             {
                 continue;
@@ -277,20 +326,21 @@ public sealed class ThermalGuardController
             {
                 _gpus[deviceId] = g = new GpuThermalGuard();
             }
-            var (state, handBack, resumed) = g.Step(nowMs, gpuTemp.Value, limit.Value);
+            var (state, handBack, resumed) = g.Step(nowMs, coreTemp.Value, limit.Value);
             if (handBack)
             {
                 plan.GpuRelease.AddRange(guarded);
                 foreach (var id in guarded)
                 {
-                    if (cooling.ManualSpeeds.TryGetValue(id, out var manual))
+                    if (manual.TryGetValue(id, out var duty))
                     {
-                        _gpuManualBackup[id] = manual;
+                        plan.GpuBackup[id] = duty;
                     }
                 }
-                Console.Error.WriteLine($"[thermal-guard] GPU {name} at {gpuTemp:0.#} C near its {limit} C slowdown threshold: fan handed back to the driver");
+                Console.Error.WriteLine($"[thermal-guard] GPU {name} at {coreTemp:0.#} C near its {limit} C slowdown threshold: fan handed back to the driver");
             }
-            if (resumed)
+            // A backup with a guard that is Normal is a handback a previous run never finished.
+            if (resumed || (state == GpuGuardStates.Normal && !handBack && guarded.Any(backup.ContainsKey)))
             {
                 plan.GpuResume.AddRange(guarded);
                 Console.Error.WriteLine($"[thermal-guard] GPU {name} cooled down: Nexus fan control resumed");
@@ -311,8 +361,15 @@ public sealed class ThermalGuardController
         return plan;
     }
 
+    // NVIDIA only: other vendors self-protect, and the NVML index is read off the device id.
     private static double? GpuLimit(string deviceId)
     {
+        var nvidia = deviceId.StartsWith("/gpu-nvidia/", StringComparison.Ordinal)
+            || deviceId.StartsWith("nvidia:", StringComparison.Ordinal);
+        if (!nvidia)
+        {
+            return null;
+        }
         var digits = new string(deviceId.Reverse().TakeWhile(char.IsDigit).Reverse().ToArray());
         if (digits.Length == 0 || !int.TryParse(digits, NumberStyles.None, CultureInfo.InvariantCulture, out var index))
         {
@@ -321,30 +378,42 @@ public sealed class ThermalGuardController
         return Nvml.GetSlowdownThreshold(index);
     }
 
+    /// <summary>
+    /// That GPU's own core temperature, never the hot spot, memory junction or another GPU's
+    /// sensor: the slowdown threshold is a core-temperature threshold.
+    /// </summary>
+    internal static double? GpuCoreTemp(IReadOnlyList<TemperatureSource> sources, string deviceId)
+    {
+        if (deviceId.StartsWith("nvidia:", StringComparison.Ordinal))
+        {
+            var id = "nvidia:temp:" + deviceId["nvidia:".Length..];
+            return ThermalLimits.MaxPlausible(sources.Where(s => s.Id == id).Select(s => (double)s.Value));
+        }
+        var prefix = deviceId + "/temperature/";
+        return ThermalLimits.MaxPlausible(sources
+            .Where(s => s.Category == "GPU"
+                && s.Id.StartsWith(prefix, StringComparison.Ordinal)
+                && s.Name.Equals("GPU Core", StringComparison.OrdinalIgnoreCase))
+            .Select(s => (double)s.Value));
+    }
+
     /// <summary>The engine reports the GPU manual duties it must put back after a resume.</summary>
     public void RestoreGpuManual(IEnumerable<string> ids)
     {
-        var restore = new List<KeyValuePair<string, int>>();
-        lock (_gate)
+        var backup = CoolingSnapshots.GpuManualBackup(_store.Load().Cooling);
+        var restore = ids.Where(backup.ContainsKey).Select(id => new KeyValuePair<string, int>(id, backup[id])).ToList();
+        if (restore.Count == 0)
         {
-            foreach (var id in ids)
+            return;
+        }
+        _store.Update(s =>
+        {
+            foreach (var kv in restore)
             {
-                if (_gpuManualBackup.Remove(id, out var duty))
-                {
-                    restore.Add(new(id, duty));
-                }
+                s.Cooling.ManualSpeeds[kv.Key] = kv.Value;
+                s.Cooling.GpuManualBackup.Remove(kv.Key);
             }
-        }
-        if (restore.Count > 0)
-        {
-            _store.Update(s =>
-            {
-                foreach (var kv in restore)
-                {
-                    s.Cooling.ManualSpeeds[kv.Key] = kv.Value;
-                }
-            });
-        }
+        });
     }
 
     private void RefreshCpuInfo(long nowMs)
@@ -408,8 +477,12 @@ public sealed class ThermalGuardController
                 Reason = reason,
             });
             var cause = reason == ThermalTripReasons.CoolingLoss ? "cooling loss" : "temperature limit";
-            var text = $"CPU reached {peak:0} C ({cause}). Fans forced to 100%.";
-            Raise("CPU thermal guard tripped", text);
+            var text = $"CPU reached {peak:0} C ({cause}). Fans forced to full speed.";
+            if (!_lastTripAlertMs.TryGetValue(reason, out var lastAlert) || now - lastAlert >= TripAlertCooldownMs)
+            {
+                _lastTripAlertMs[reason] = now;
+                Raise("CPU thermal guard tripped", text);
+            }
             AppendTimeline(now, "CPU thermal guard", text);
         }
         if (output.ReleaseAllNow)
@@ -441,9 +514,23 @@ public sealed class ThermalGuardController
         }
     }
 
+    /// <summary>Where trip and heal notices go. Defaults to the diagnostics alert service; tests substitute it.</summary>
+    internal Action<DiagnosticsAlertNotice>? AlertSink { get; set; }
+
     private void Raise(string title, string text)
     {
-        try { _alerts?.Raise(new DiagnosticsAlertNotice(title, text, "thermalGuard")); }
+        try
+        {
+            var notice = new DiagnosticsAlertNotice(title, text, "thermalGuard");
+            if (AlertSink is { } sink)
+            {
+                sink(notice);
+            }
+            else
+            {
+                _alerts?.Raise(notice);
+            }
+        }
         catch { /* a subscriber failure must not affect fan control */ }
     }
 
@@ -455,10 +542,13 @@ public sealed class ThermalGuardController
 
     // ── Heal ──
 
-    internal LintInput BuildLintInput(NexusSettings settings, IReadOnlyList<CurveDocument> curves)
+    internal LintInput BuildLintInput(
+        CoolingSettings cooling,
+        IReadOnlyList<FanChannel> channels,
+        IReadOnlyList<TemperatureSource> sources,
+        IReadOnlyList<CurveDocument> curves)
     {
-        var cooling = settings.Cooling;
-        var channels = _fans.GetFanChannels()
+        var named = channels
             .Select(c => new FanChannel
             {
                 Id = c.Id,
@@ -474,11 +564,11 @@ public sealed class ThermalGuardController
         return new LintInput
         {
             Curves = curves,
-            Channels = channels,
-            Sources = _fans.GetTemperatureSources(),
+            Channels = named,
+            Sources = sources,
             FanRoles = cooling.FanRoles,
-            ManualSpeeds = cooling.ManualSpeeds,
-            Uncontrolled = cooling.UncontrolledFanChannels,
+            ManualSpeeds = CoolingSnapshots.ManualSpeeds(cooling),
+            Uncontrolled = cooling.UncontrolledFanChannels.ToList(),
             LimitC = limit,
         };
     }
@@ -487,7 +577,7 @@ public sealed class ThermalGuardController
     {
         var settings = _store.Load();
         var curves = body.Curves.ConvertAll(CurveWireMapper.ToDocument);
-        var input = BuildLintInput(settings, curves);
+        var input = BuildLintInput(settings.Cooling, _fans.GetFanChannels(), _fans.GetTemperatureSources(), curves);
         var hazards = CoolingConfigLint.Analyze(input);
         return new LintCurvesResponse
         {
@@ -506,29 +596,34 @@ public sealed class ThermalGuardController
     /// <summary>Heals the saved config. Returns the new heal state; a no-op when there is nothing to fix.</summary>
     public HealStateDto HealNow(bool automatic)
     {
-        var settings = _store.Load();
-        if (!settings.Cooling.ThermalGuardEnabled && automatic)
+        if (!_store.Load().Cooling.ThermalGuardEnabled && automatic)
         {
-            return BuildHealState(settings.Cooling);
+            return BuildHealState(_store.Load().Cooling);
         }
-        var input = BuildLintInput(settings, settings.Cooling.Curves);
-        var hazards = CoolingConfigLint.Analyze(input);
-        var result = CoolingConfigLint.Heal(input, hazards);
-        if (result is null)
-        {
-            return BuildHealState(settings.Cooling);
-        }
-        var snapshot = settings.Cooling.Curves.Select(CoolingConfigLint.CloneCurve).ToList();
-        var now = _utcNowMs();
+        // Hardware reads stay outside the store lock; the transform runs on the settings
+        // the update hands over, so a concurrent curves/set cannot be overwritten.
+        var channels = _fans.GetFanChannels();
+        var sources = _fans.GetTemperatureSources();
+        HealResult? result = null;
         _store.Update(s =>
         {
-            s.Cooling.HealSnapshot = snapshot;
+            var input = BuildLintInput(s.Cooling, channels, sources, s.Cooling.Curves);
+            result = CoolingConfigLint.Heal(input, CoolingConfigLint.Analyze(input));
+            if (result is null)
+            {
+                return;
+            }
+            s.Cooling.HealSnapshot = s.Cooling.Curves.Select(CoolingConfigLint.CloneCurve).ToList();
             s.Cooling.Curves = result.Curves;
-            s.Cooling.HealedAtUtcMs = now;
+            s.Cooling.HealedAtUtcMs = _utcNowMs();
             s.Cooling.HealedChannels = result.Healed
                 .Select(h => new HealedChannelRecord { Id = h.ChannelId, Name = h.ChannelName, Hazard = h.Kind })
                 .ToList();
         });
+        if (result is null)
+        {
+            return BuildHealState(_store.Load().Cooling);
+        }
         var derived = FanProfiles.DerivePresetFromCurves(_store, _fans);
         _store.Update(s => s.Cooling.ActivePreset = derived);
         Console.Error.WriteLine($"[thermal-guard] healed {result.Healed.Count} channel(s): {string.Join(", ", result.Healed.Select(h => h.ChannelId))}");
@@ -570,12 +665,7 @@ public sealed class ThermalGuardController
         _store.Update(s => s.Cooling.ThermalGuardEnabled = enabled);
         if (!enabled)
         {
-            lock (_gate)
-            {
-                _cpu.Reset();
-                _guardTemp = null;
-                SetPublicState(ThermalGuardStates.Off, null);
-            }
+            Stand(ThermalGuardStates.Off);
         }
         if (_hub is not null)
         {

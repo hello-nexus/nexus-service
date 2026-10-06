@@ -1018,6 +1018,16 @@ public sealed class CoolingSettings
     public List<HealedChannelRecord> HealedChannels { get; set; } = new();
     /// <summary>The most recent guard trip, kept across restarts so diagnostics can report it for a day.</summary>
     public ThermalGuardTripRecord? LastThermalTrip { get; set; }
+    /// <summary>Manual fan duties of GPU fans the thermal guard handed back to the driver, keyed by channel id, restored when the GPU cools. Persisted so a restart mid-handback does not lose them.</summary>
+    public Dictionary<string, int> GpuManualBackup { get; set; } = new();
+
+    /// <summary>Forget the auto-heal undo state: undo is valid only until the next edit of the curves.</summary>
+    public void ClearHeal()
+    {
+        HealSnapshot = null;
+        HealedAtUtcMs = null;
+        HealedChannels = new List<HealedChannelRecord>();
+    }
 }
 
 public sealed class HealedChannelRecord

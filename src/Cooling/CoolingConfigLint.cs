@@ -39,13 +39,16 @@ public static class CoolingConfigLint
     public const string MixIdPrefix = "guard-mix-";
     public const string ManualIdPrefix = "guard-manual-";
 
+    // The safe floor member is silent below this far under the limit and full duty by the second.
+    private const double SafeFloorStartBelowLimitC = 30;
+    private const double SafeFloorFullBelowLimitC = 5;
+
     private const double MinCeilingPercent = 60;
     private const double MinManualPercent = 30;
 
     /// <summary>
-    /// CPU-cooling: an explicit CPU role, a pump or AIO channel, or a motherboard header
-    /// (no owning device) that is not a GPU fan. Hub fans without a role are case fans
-    /// and are left out.
+    /// CPU-cooling: everything that is not a GPU fan. An unknown channel counts as
+    /// CPU-cooling (conservative), the same as a motherboard header.
     /// </summary>
     public static bool IsCpuCooling(FanChannel ch, IReadOnlyDictionary<string, string> roles)
     {
@@ -54,11 +57,7 @@ public static class CoolingConfigLint
         {
             return true;
         }
-        if (role == FanRoleKind.Gpu || ch.IsGpu)
-        {
-            return false;
-        }
-        return ch.Kind == FanKinds.Pump || ch.IsAio || ch.DeviceId is null;
+        return role != FanRoleKind.Gpu && !ch.IsGpu;
     }
 
     private static bool IsGpuFan(FanChannel ch, IReadOnlyDictionary<string, string> roles) =>
@@ -216,10 +215,7 @@ public static class CoolingConfigLint
         var safe = curves.FirstOrDefault(c => c.Id == SafeCurveId);
         if (safe is null)
         {
-            safe = FanProfiles.BuildPresetCurve("balanced", cpuInput);
-            safe.Id = SafeCurveId;
-            safe.Name = "Thermal guard (CPU)";
-            safe.Preset = null;
+            safe = BuildSafeFloorCurve(cpuInput, input.LimitC);
             curves.Add(safe);
         }
 
@@ -265,13 +261,54 @@ public static class CoolingConfigLint
                 Id = mixId,
                 Name = hazard.ChannelName + " (thermal guard)",
                 Type = "Mixed",
-                Mixed = new MixedCurveData { Fn = "max", CurveIds = new List<string> { originalId, SafeCurveId } },
+                Mixed = new MixedCurveData
+                {
+                    Fn = "max",
+                    CurveIds = new List<string> { originalId, SafeCurveId },
+                    ResponseTime = ResponseTimeOf(original),
+                },
                 Outputs = new List<CurveOutputDocument> { new() { Id = hazard.ChannelId, Type = outputType } },
             });
             healed.Add(hazard);
         }
         return healed.Count == 0 ? null : new HealResult(curves, healed);
     }
+
+    /// <summary>
+    /// A floor, not a preset: 0 percent until well under the limit, rising to full duty just
+    /// below it, so a healed quiet channel stays quiet at normal temperatures.
+    /// </summary>
+    internal static CurveDocument BuildSafeFloorCurve(TemperatureSource cpuInput, double limitC) => new()
+    {
+        Id = SafeCurveId,
+        Name = "Thermal guard (CPU)",
+        Type = "Graph",
+        Input = new CurveInputDocument { Id = cpuInput.Id, Type = "Temperature", Device = cpuInput.Category },
+        Graph = new GraphCurveData
+        {
+            ResponseTime = 1.0,
+            SpeedModifier = 1.0,
+            Points = new List<Persistence.GraphPoint>
+            {
+                new() { Temp = Math.Round(limitC - SafeFloorStartBelowLimitC), Speed = 0 },
+                new() { Temp = Math.Round(limitC - SafeFloorFullBelowLimitC), Speed = 100 },
+            },
+        },
+    };
+
+    /// <summary>The engine's own slew for the original curve type, so the Mixed keeps its pacing.</summary>
+    private static double ResponseTimeOf(CurveDocument? original) => original?.Type switch
+    {
+        "Linear" => original.Linear?.ResponseTime ?? 1.0,
+        "Graph" => original.Graph?.ResponseTime ?? 1.0,
+        "Mixed" => original.Mixed?.ResponseTime ?? 1.0,
+        "Sync" or "Trigger" or "Auto" => 0.0,
+        _ => 1.0,
+    };
+
+    /// <summary>Members a Mixed must not scale by the global modifier: Sync outputs already carry it, and a manual duty is never modified.</summary>
+    internal static bool IsGlobalModifierExempt(CurveDocument member) =>
+        member.Type == "Sync" || member.Id.StartsWith(ManualIdPrefix, StringComparison.Ordinal);
 
     public static CurveDocument CloneCurve(CurveDocument d) => CurveWireMapper.ToDocument(CurveWireMapper.ToWire(d));
 }

@@ -32,30 +32,42 @@ public readonly record struct ThermalGuardOutput(
     string? TripReason);
 
 /// <summary>
+/// Every tunable of <see cref="ThermalGuard"/> in one place. Temperatures are offsets below
+/// the limit, durations are milliseconds. Pass a different instance to change the design.
+/// </summary>
+public sealed record ThermalGuardThresholds
+{
+    public static readonly ThermalGuardThresholds Default = new();
+
+    /// <summary>The floor ramp starts this far under the limit.</summary>
+    public double FloorStartBelowLimitC { get; init; } = 15;
+    /// <summary>The floor ramp reaches full duty this far under the limit.</summary>
+    public double FloorFullBelowLimitC { get; init; } = 5;
+    public double LimitTripBelowLimitC { get; init; } = 5;
+    public long LimitSustainMs { get; init; } = 3000;
+    public long CoolingLossWindowMs { get; init; } = 180_000;
+    public double CoolingLossRiseCPerMin { get; init; } = 2.0;
+    public double CoolingLossMaxLoadPercent { get; init; } = 20;
+    public double CoolingLossMaxDutyPercent { get; init; } = 20;
+    /// <summary>Cooling-loss only trips once the temperature is this close to the limit.</summary>
+    public double CoolingLossGateBelowLimitC { get; init; } = 15;
+    public long EscalateAfterMs { get; init; } = 30_000;
+    public double EscalateRiseC { get; init; } = 1.0;
+    public double ReleaseBelowLimitC { get; init; } = 20;
+    public long ReleaseSustainMs { get; init; } = 60_000;
+}
+
+/// <summary>
 /// Pure, tick-driven CPU thermal guard. No I/O and no clock: callers pass the time
-/// in milliseconds. See the thresholds below.
+/// in milliseconds. Tunables live in <see cref="ThermalGuardThresholds"/>.
 /// </summary>
 public sealed class ThermalGuard
 {
-    /// <summary>Floor ramp starts this far under the limit, at 0 percent.</summary>
-    public const double FloorStartBelowLimitC = 15;
-    /// <summary>Floor reaches 100 percent this far under the limit.</summary>
-    public const double FloorFullBelowLimitC = 5;
-    public const double LimitTripBelowLimitC = 5;
-    public const long LimitSustainMs = 3000;
-    public const long CoolingLossWindowMs = 180_000;
-    public const double CoolingLossRiseCPerMin = 2.0;
-    public const double CoolingLossMaxLoadPercent = 20;
-    public const double CoolingLossMaxDutyPercent = 20;
-    public const long EscalateAfterMs = 30_000;
-    public const double EscalateRiseC = 1.0;
-    public const double ReleaseBelowLimitC = 20;
-    public const long ReleaseSustainMs = 60_000;
-
     private const long SampleSpacingMs = 1000;
     // Slack so a window of 1 s samples counts as covering the full window.
     private const long WindowCoverageSlackMs = 10_000;
 
+    private readonly ThermalGuardThresholds _t;
     private readonly List<(long Ms, double Temp)> _history = new();
     private string _state = ThermalGuardStates.Inactive;
     private long? _hotSinceMs;
@@ -63,6 +75,11 @@ public sealed class ThermalGuard
     private long _tripAtMs;
     private double _tripTempC;
     private string? _tripReason;
+
+    public ThermalGuard(ThermalGuardThresholds? thresholds = null)
+    {
+        _t = thresholds ?? ThermalGuardThresholds.Default;
+    }
 
     public string State => _state;
     public double PeakC { get; private set; }
@@ -82,10 +99,12 @@ public sealed class ThermalGuard
         PeakC = 0;
     }
 
-    public static int FloorFor(double tempC, double limitC)
+    public static int FloorFor(double tempC, double limitC) => FloorFor(tempC, limitC, ThermalGuardThresholds.Default);
+
+    public static int FloorFor(double tempC, double limitC, ThermalGuardThresholds t)
     {
-        var start = limitC - FloorStartBelowLimitC;
-        var full = limitC - FloorFullBelowLimitC;
+        var start = limitC - t.FloorStartBelowLimitC;
+        var full = limitC - t.FloorFullBelowLimitC;
         if (tempC <= start)
         {
             return 0;
@@ -97,7 +116,7 @@ public sealed class ThermalGuard
         return (int)Math.Ceiling((tempC - start) / (full - start) * 100.0);
     }
 
-    /// <param name="maxCpuCoolingDutyPercent">Highest duty across CPU-cooling channels; null when unknown.</param>
+    /// <param name="maxCpuCoolingDutyPercent">Highest duty across CPU-cooling fans; null means there is none to judge, so no cooling-loss trip.</param>
     /// <param name="cpuLoadPercent">Null when unreadable; treated as low so the check stays conservative.</param>
     public ThermalGuardOutput Step(long nowMs, double? tempC, double limitC, double? cpuLoadPercent, double? maxCpuCoolingDutyPercent)
     {
@@ -124,10 +143,10 @@ public sealed class ThermalGuard
         {
             reason = ThermalTripReasons.Limit;
         }
-        else if (temp >= limitC - LimitTripBelowLimitC)
+        else if (temp >= limitC - _t.LimitTripBelowLimitC)
         {
             _hotSinceMs ??= nowMs;
-            if (nowMs - _hotSinceMs.Value >= LimitSustainMs)
+            if (nowMs - _hotSinceMs.Value >= _t.LimitSustainMs)
             {
                 reason = ThermalTripReasons.Limit;
             }
@@ -137,7 +156,7 @@ public sealed class ThermalGuard
             _hotSinceMs = null;
         }
 
-        reason ??= CoolingLossDetected(nowMs, temp, cpuLoadPercent, maxCpuCoolingDutyPercent)
+        reason ??= CoolingLossDetected(nowMs, temp, limitC, cpuLoadPercent, maxCpuCoolingDutyPercent)
             ? ThermalTripReasons.CoolingLoss
             : null;
 
@@ -154,7 +173,7 @@ public sealed class ThermalGuard
             return Output(true, false, false, 100);
         }
 
-        var floor = FloorFor(temp, limitC);
+        var floor = FloorFor(temp, limitC, _t);
         _state = floor > 0 ? ThermalGuardStates.Floor : ThermalGuardStates.Normal;
         return Output(false, false, false, floor);
     }
@@ -164,17 +183,17 @@ public sealed class ThermalGuard
         PeakC = Math.Max(PeakC, temp);
 
         if (_state == ThermalGuardStates.Tripped
-            && nowMs - _tripAtMs >= EscalateAfterMs
-            && temp >= _tripTempC + EscalateRiseC)
+            && nowMs - _tripAtMs >= _t.EscalateAfterMs
+            && temp >= _tripTempC + _t.EscalateRiseC)
         {
             _state = ThermalGuardStates.Escalated;
             return Output(false, false, true, 100);
         }
 
-        if (temp < limitC - ReleaseBelowLimitC)
+        if (temp < limitC - _t.ReleaseBelowLimitC)
         {
             _belowSinceMs ??= nowMs;
-            if (nowMs - _belowSinceMs.Value >= ReleaseSustainMs)
+            if (nowMs - _belowSinceMs.Value >= _t.ReleaseSustainMs)
             {
                 _state = ThermalGuardStates.Normal;
                 _belowSinceMs = null;
@@ -209,7 +228,7 @@ public sealed class ThermalGuard
         {
             _history.Add((nowMs, temp));
         }
-        var cutoff = nowMs - CoolingLossWindowMs - WindowCoverageSlackMs;
+        var cutoff = nowMs - _t.CoolingLossWindowMs - WindowCoverageSlackMs;
         var drop = 0;
         while (drop < _history.Count && _history[drop].Ms < cutoff)
         {
@@ -221,13 +240,18 @@ public sealed class ThermalGuard
         }
     }
 
-    private bool CoolingLossDetected(long nowMs, double temp, double? load, double? maxDuty)
+    private bool CoolingLossDetected(long nowMs, double temp, double limitC, double? load, double? maxDuty)
     {
-        if (load is { } l && l >= CoolingLossMaxLoadPercent)
+        // No CPU-cooling fan to judge: nothing to say about it.
+        if (maxDuty is not { } d || d >= _t.CoolingLossMaxDutyPercent)
         {
             return false;
         }
-        if (maxDuty is { } d && d >= CoolingLossMaxDutyPercent)
+        if (temp < limitC - _t.CoolingLossGateBelowLimitC)
+        {
+            return false;
+        }
+        if (load is { } l && l >= _t.CoolingLossMaxLoadPercent)
         {
             return false;
         }
@@ -237,12 +261,12 @@ public sealed class ThermalGuard
         }
         var oldest = _history[0];
         var span = nowMs - oldest.Ms;
-        if (span < CoolingLossWindowMs - WindowCoverageSlackMs)
+        if (span < _t.CoolingLossWindowMs - WindowCoverageSlackMs)
         {
             return false;
         }
         var perMin = (temp - oldest.Temp) / (span / 60_000.0);
-        return perMin >= CoolingLossRiseCPerMin;
+        return perMin >= _t.CoolingLossRiseCPerMin;
     }
 }
 
@@ -256,7 +280,7 @@ public static class GpuGuardStates
 
 /// <summary>
 /// Pure per-GPU guard against its own slowdown threshold: hand the fan back to the
-/// driver near the threshold, drive 100 percent if it keeps rising, resume after a
+/// driver near the threshold, drive full duty if it keeps rising, resume after a
 /// sustained cool-down.
 /// </summary>
 public sealed class GpuThermalGuard

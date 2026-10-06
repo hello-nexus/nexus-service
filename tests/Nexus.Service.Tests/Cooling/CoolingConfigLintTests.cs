@@ -137,14 +137,43 @@ public class CoolingConfigLintTests
     }
 
     [Fact]
-    public void GpuAndHubFans_AreNotCpuCooling_ButPumpsAre()
+    public void OnlyGpuFansAreNotCpuCooling_UnknownCountsAsCpuCooling()
     {
         var roles = new Dictionary<string, string>();
         Assert.False(CoolingConfigLint.IsCpuCooling(new FanChannel { Id = "g", IsGpu = true }, roles));
-        Assert.False(CoolingConfigLint.IsCpuCooling(new FanChannel { Id = "h", DeviceId = "np50:1" }, roles));
+        Assert.True(CoolingConfigLint.IsCpuCooling(new FanChannel { Id = "h", DeviceId = "np50:1" }, roles));
         Assert.True(CoolingConfigLint.IsCpuCooling(new FanChannel { Id = "p", Kind = FanKinds.Pump, DeviceId = "q:1" }, roles));
         Assert.True(CoolingConfigLint.IsCpuCooling(new FanChannel { Id = "m" }, roles));
-        Assert.False(CoolingConfigLint.IsCpuCooling(new FanChannel { Id = "m" }, new Dictionary<string, string> { ["m"] = FanRoleKind.Gpu }));
+        var gpuRole = new Dictionary<string, string> { ["m"] = FanRoleKind.Gpu, ["h"] = FanRoleKind.Gpu };
+        Assert.False(CoolingConfigLint.IsCpuCooling(new FanChannel { Id = "m" }, gpuRole));
+        Assert.False(CoolingConfigLint.IsCpuCooling(new FanChannel { Id = "h", DeviceId = "np50:1" }, gpuRole));
+    }
+
+    [Fact]
+    public void HealedSafeMember_IsAFloor_SilentBelowLimitMinus30_FullByLimitMinus5()
+    {
+        var input = Input(T1Curves());
+        var result = CoolingConfigLint.Heal(input, CoolingConfigLint.Analyze(input))!;
+        var safe = result.Curves.Single(c => c.Id == CoolingConfigLint.SafeCurveId);
+
+        Assert.Equal(0, CurveEngine.EvaluateGraph(safe.Graph, 40));
+        Assert.Equal(0, CurveEngine.EvaluateGraph(safe.Graph, 65));
+        Assert.Equal(100, CurveEngine.EvaluateGraph(safe.Graph, 90));
+        Assert.Equal(100, CurveEngine.EvaluateGraph(safe.Graph, 110));
+    }
+
+    [Fact]
+    public void Heal_KeepsTheOriginalCurvesResponseTime()
+    {
+        var curves = new List<CurveDocument> { Graph("low", "/amdcpu/0/temperature/2", Fan1, (30, 20), (95, 50)) };
+        curves[0].Graph!.ResponseTime = 4.5;
+        var input = Input(curves);
+        var result = CoolingConfigLint.Heal(input, CoolingConfigLint.Analyze(input))!;
+        Assert.Equal(4.5, result.Curves.Single(c => c.Id == CoolingConfigLint.MixIdPrefix + Fan1).Mixed!.ResponseTime);
+
+        var sync = Input(T1Curves());
+        var syncResult = CoolingConfigLint.Heal(sync, CoolingConfigLint.Analyze(sync))!;
+        Assert.Equal(0, syncResult.Curves.Single(c => c.Id == CoolingConfigLint.MixIdPrefix + Fan1).Mixed!.ResponseTime);
     }
 
     [Fact]

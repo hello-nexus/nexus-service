@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Linq;
 
 namespace Nexus.Service.Cooling;
 
@@ -28,15 +29,59 @@ public static class ThermalLimits
     private const double MaxPlausibleLimitC = 125;
 
     // Published "Max. Operating Temperature (Tjmax)" per AMD model, substring-matched
-    // against the CPU name. Source: the product spec page of each model under
-    // https://www.amd.com/en/products/processors/desktops/ryzen.html.
-    // Add an entry only after reading it off that page. Models absent here fall back
-    // to AmdDefaultC.
+    // against the CPU name. Each entry cites its product page on amd.com; add an entry
+    // only after reading it off that page. Models absent here fall back to AmdDefaultC.
     // TODO: an SMU / PM-table reader would be the future hardware source for AMD.
     private static readonly (string Match, double TjMaxC)[] AmdSpec =
     {
-        ("9800X3D", 95),
+        ("9950X3D", 95), // https://www.amd.com/en/products/processors/desktops/ryzen/9000-series/amd-ryzen-9-9950x3d.html
+        ("9900X3D", 95), // https://www.amd.com/en/products/processors/desktops/ryzen/9000-series/amd-ryzen-9-9900x3d.html
+        ("9800X3D", 95), // https://www.amd.com/en/products/processors/desktops/ryzen/9000-series/amd-ryzen-7-9800x3d.html
+        ("7950X3D", 89), // https://www.amd.com/en/products/processors/desktops/ryzen/7000-series/amd-ryzen-9-7950x3d.html
+        ("7900X3D", 89), // https://www.amd.com/en/products/processors/desktops/ryzen/7000-series/amd-ryzen-9-7900x3d.html
+        ("7800X3D", 89), // https://www.amd.com/en/products/processors/desktops/ryzen/7000-series/amd-ryzen-7-7800x3d.html
+        ("5800X3D", 90), // https://www.amd.com/en/products/processors/desktops/ryzen/5000-series/amd-ryzen-7-5800x3d.html
+        ("5700X3D", 90), // https://www.amd.com/en/products/processors/desktops/ryzen/5000-series/amd-ryzen-7-5700x3d.html
+        ("5950X", 90),   // https://www.amd.com/en/products/processors/desktops/ryzen/5000-series/amd-ryzen-9-5950x.html
+        ("5900X", 90),   // https://www.amd.com/en/products/processors/desktops/ryzen/5000-series/amd-ryzen-9-5900x.html
+        ("5600X", 95),   // https://www.amd.com/en/products/processors/desktops/ryzen/5000-series/amd-ryzen-5-5600x.html
     };
+
+    /// <summary>
+    /// Intel Tjmax from per-core "Distance to TjMax" sensors: core temperature plus that
+    /// core's distance, same core name, highest wins. Null when no pair is usable.
+    /// </summary>
+    public static double? TjMaxFromCoreDistances(IEnumerable<(string Name, double Value)> temperatures)
+    {
+        const string suffix = " Distance to TjMax";
+        var list = temperatures.ToList();
+        double? best = null;
+        foreach (var (name, distance) in list)
+        {
+            if (!name.EndsWith(suffix, StringComparison.OrdinalIgnoreCase))
+            {
+                continue;
+            }
+            var core = name[..^suffix.Length];
+            foreach (var (otherName, temp) in list)
+            {
+                if (!otherName.Equals(core, StringComparison.OrdinalIgnoreCase))
+                {
+                    continue;
+                }
+                var tj = temp + distance;
+                if (double.IsFinite(tj) && tj >= MinPlausibleLimitC && tj <= MaxPlausibleLimitC && (best is null || tj > best))
+                {
+                    best = tj;
+                }
+            }
+        }
+        return best;
+    }
+
+    /// <summary>True for the sensors that report a distance, not a temperature the guard may read.</summary>
+    public static bool IsDistanceToTjMax(string sensorName) =>
+        sensorName.Contains("Distance to TjMax", StringComparison.OrdinalIgnoreCase);
 
     /// <summary>Limit for a CPU given its model string and, when readable, its reported Tjmax.</summary>
     public static ThermalLimit ResolveCpu(string? cpuModel, double? hardwareTjMaxC)

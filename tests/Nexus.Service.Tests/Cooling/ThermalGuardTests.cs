@@ -214,6 +214,9 @@ public class ThermalGuardTests
     [Theory]
     [InlineData("Intel(R) Core(TM) i9-14900K", 100.0, 100.0, "hardware")]
     [InlineData("AMD Ryzen 7 9800X3D 8-Core Processor", null, 95.0, "spec")]
+    [InlineData("AMD Ryzen 7 7800X3D 8-Core Processor", null, 89.0, "spec")]
+    [InlineData("AMD Ryzen 9 5900X 12-Core Processor", null, 90.0, "spec")]
+    [InlineData("AMD Ryzen 5 5600X 6-Core Processor", null, 95.0, "spec")]
     [InlineData("AMD Ryzen 5 1600", null, 95.0, "default")]
     [InlineData("Some Other CPU", null, 90.0, "default")]
     [InlineData("AMD Ryzen 7 9800X3D 8-Core Processor", 0.0, 95.0, "spec")]
@@ -229,5 +232,54 @@ public class ThermalGuardTests
     {
         Assert.Equal(70, ThermalLimits.MaxPlausible(new[] { 55.0, double.NaN, 70, 0, -5, 199 }));
         Assert.Null(ThermalLimits.MaxPlausible(new[] { double.NaN, 0.0 }));
+    }
+
+    [Fact]
+    public void IntelTjMax_IsCoreTempPlusThatCoresDistance_NotTheDistanceItself()
+    {
+        var temps = new (string, double)[]
+        {
+            ("CPU Core #1", 35), ("CPU Core #1 Distance to TjMax", 65),
+            ("CPU Core #2", 40), ("CPU Core #2 Distance to TjMax", 60),
+            ("CPU Package", 42),
+        };
+        Assert.Equal(100, ThermalLimits.TjMaxFromCoreDistances(temps));
+        Assert.Null(ThermalLimits.TjMaxFromCoreDistances(new (string, double)[] { ("CPU Core #1 Distance to TjMax", 65) }));
+        Assert.True(ThermalLimits.IsDistanceToTjMax("CPU Core #1 Distance to TjMax"));
+        Assert.False(ThermalLimits.IsDistanceToTjMax("CPU Core #1"));
+    }
+
+    [Fact]
+    public void CoolingLoss_NeverTripsBelowLimitMinus15()
+    {
+        var g = new ThermalGuard();
+        for (var s = 0; s <= 600; s++)
+        {
+            // 3 C/min, but staying in the 50s: far from the limit.
+            var o = g.Step(s * 1000L, 40 + s / 60.0 * 3, L, 2, 0);
+            Assert.False(o.TripStarted);
+        }
+    }
+
+    [Fact]
+    public void CoolingLoss_WithNoCpuCoolingFanToJudge_DoesNotTrip()
+    {
+        var g = new ThermalGuard();
+        for (var s = 0; s <= 1000; s++)
+        {
+            var o = g.Step(s * 1000L, 61 + 53.0 * s / 1020, L, 2, null);
+            Assert.False(o.TripStarted && o.TripReason == ThermalTripReasons.CoolingLoss);
+        }
+    }
+
+    [Fact]
+    public void Thresholds_AreOneRecord_AndChangeBehaviour()
+    {
+        var instant = new ThermalGuard(new ThermalGuardThresholds { LimitSustainMs = 0 });
+        Assert.Equal(ThermalGuardStates.Tripped, instant.Step(0, 91, L, 50, 50).State);
+
+        var earlyFloor = new ThermalGuardThresholds { FloorStartBelowLimitC = 30 };
+        Assert.True(ThermalGuard.FloorFor(70, L, earlyFloor) > 0);
+        Assert.Equal(0, ThermalGuard.FloorFor(70, L));
     }
 }

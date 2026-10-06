@@ -74,6 +74,7 @@ internal static unsafe class NvmlInterop
     private static IntPtr _pDeviceGetEnforcedPowerLimit;
     private static IntPtr _pDeviceGetClocksReasons;
     private static IntPtr _pDeviceGetViolationStatus;
+    private static IntPtr _pDeviceGetTemperatureThreshold;
 
     /// <summary>nvmlViolationTime_t: cumulative microseconds since driver load.</summary>
     [StructLayout(LayoutKind.Sequential)]
@@ -114,6 +115,7 @@ internal static unsafe class NvmlInterop
                 _pDeviceGetPowerUsage = Export("nvmlDeviceGetPowerUsage");
                 _pDeviceGetEnforcedPowerLimit = Export("nvmlDeviceGetEnforcedPowerLimit");
                 _pDeviceGetViolationStatus = Export("nvmlDeviceGetViolationStatus");
+                _pDeviceGetTemperatureThreshold = Export("nvmlDeviceGetTemperatureThreshold");
 
                 // Newer drivers renamed ThrottleReasons -> EventReasons (same
                 // signature/bitmask); fall back to the old symbol for older drivers.
@@ -199,6 +201,13 @@ internal static unsafe class NvmlInterop
         tempC = 0;
         if (_pDeviceGetTemperature == IntPtr.Zero) return NotSupported;
         return ((delegate* unmanaged[Stdcall]<IntPtr, uint, out uint, int>)_pDeviceGetTemperature)(device, TemperatureGpu, out tempC);
+    }
+
+    public static int GetTemperatureThreshold(IntPtr device, uint thresholdType, out uint tempC)
+    {
+        tempC = 0;
+        if (_pDeviceGetTemperatureThreshold == IntPtr.Zero) return NotSupported;
+        return ((delegate* unmanaged[Stdcall]<IntPtr, uint, out uint, int>)_pDeviceGetTemperatureThreshold)(device, thresholdType, out tempC);
     }
 
     public static int GetPowerUsageMilliwatts(IntPtr device, out uint milliwatts)
