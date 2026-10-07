@@ -91,7 +91,7 @@ public sealed class SentryRoutesTests : IClassFixture<SentryAppFactory>
         Assert.False(body.GetProperty("locked").GetBoolean());
         Assert.Equal(0, body.GetProperty("alertPhones").GetInt32());
         Assert.Equal(JsonValueKind.Null, body.GetProperty("lastAlertAt").ValueKind);
-        Assert.Equal(3600, body.GetProperty("cooldownSeconds").GetInt32());
+        Assert.Equal((int)Nexus.Service.Sentry.SentryCoordinator.Cooldown.TotalSeconds, body.GetProperty("cooldownSeconds").GetInt32());
     }
 
     [Fact]

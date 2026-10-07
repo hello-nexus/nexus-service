@@ -71,6 +71,7 @@ public class ConflictWhitelistTests
     [Theory]
     [InlineData("corsair-link-lcd", ICue)]
     [InlineData("lianli-screen88", LConnect)]
+    [InlineData("lianli-hydroshift2", LConnect)]
     [InlineData("lianli-galahad2-lcd", LConnect)]
     public void EveryThirdPartyDeviceNamesItsVendorApp(string handlerId, string appId)
     {

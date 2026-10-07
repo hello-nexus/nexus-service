@@ -270,6 +270,43 @@ public class Slv3LightingDeviceProviderTests
         Assert.Equal("cooler", card.IconType);
     }
 
+    [Theory]
+    [InlineData(0)]
+    [InlineData(1)]
+    public void Square_hydroshift_lays_its_pump_ring_round_a_square_from_the_top_centre(int fanCount)
+    {
+        var (u, v) = HydroShiftRingUV(devType: 11, fanCount);
+        var centreU = 0.5f / (1 + fanCount);
+        Assert.Equal(centreU, u[0], 3);
+        Assert.True(v[0] < 0.5f);
+        Assert.Equal(v[0], v[3], 3);
+        Assert.Equal(u[3], u[9], 3);
+        Assert.True(u[3] > centreU && v[9] > 0.5f);
+        if (fanCount > 0)
+        {
+            // A fan wired to the AIO stays a round ring: LED 0 of it sits right of its centre on the midline.
+            Assert.Equal(0.5f, v[24], 3);
+        }
+    }
+
+    [Fact]
+    public void Round_hydroshift_keeps_the_circular_pump_ring()
+    {
+        var (u, v) = HydroShiftRingUV(devType: 10, fanCount: 0);
+        Assert.Equal(0.5f, v[0], 3);
+        Assert.True(u[0] > 0.5f);
+    }
+
+    private static (float[] U, float[] V) HydroShiftRingUV(byte devType, int fanCount)
+    {
+        var (hub, net, _) = Slv3TestHub.CreateConnected();
+        net.Fans.Add(new Slv3TestHub.SimulatedFan { Mac = FanMac, MasterMac = net.MasterMac, RxType = 1, DevType = devType, FanCount = (byte)fanCount, CoolantTempC = 30 });
+        Assert.True(hub.DriveTick());
+        var provider = new Slv3LightingDeviceProvider(hub, new InMemoryConfigStore(), new Np50IdentifyTracker());
+        var segment = Assert.Single(Assert.Single(provider.GetStructures()).Segments);
+        return (segment.DefaultU!, segment.DefaultV!);
+    }
+
     [Fact]
     public void Strimer_dev_type_without_a_known_geometry_is_not_a_device()
     {

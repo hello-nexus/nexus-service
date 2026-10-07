@@ -333,7 +333,7 @@ public class BulkPanelDriverTests
         IBulkPanelDriver[] drivers =
         {
             new ThermalrightPanelDriver(), new RyujinPanelDriver(), new UniversalScreen88Driver(),
-            new ZMatricesPanelDriver(),
+            new ZMatricesPanelDriver(), new HydroShift2LcdDriver(),
         };
 
         Assert.All(drivers, d =>

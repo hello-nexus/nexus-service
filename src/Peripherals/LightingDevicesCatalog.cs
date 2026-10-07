@@ -341,6 +341,10 @@ public static class LightingDevicesCatalog
         Native("Thermalright", "Vision LCD",        "aio",      "0x87AD", "0x70DB", screen: true, rgb: false),
         Native("ASUS",       "Ryujin LCD",          "aio",      "0x0B05", "0x1AA2", screen: true, rgb: false),
         Native("Lian Li",    "Universal Screen 8.8","light",    "0x1CBE", "0xA088", screen: true, rgb: false),
+
+        // HydroShift II LCD-S over USB: glass, pump, fan headers and ring on one bulk pipe -
+        // src/Peripherals/BulkPanels/HydroShift2LcdDriver.cs.
+        Native("Lian Li",    "HydroShift II LCD-S", "aio",      "0x1CBE", "0xA034", screen: true),
     };
 
     /// <summary>

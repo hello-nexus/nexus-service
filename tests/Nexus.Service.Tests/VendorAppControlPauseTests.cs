@@ -86,6 +86,7 @@ public class VendorAppControlPauseTests
     [InlineData("lianli-aio")]
     [InlineData("strimer")]
     [InlineData("lianli-screen88")]
+    [InlineData("lianli-hydroshift2")]
     public void EveryLianLiDeviceWaitsForAWhitelistedLConnect(string handler)
     {
         var (gate, detector, pause) = Setup(new[] { handler }, whitelisted: new[] { "lian-li-l-connect" });

@@ -141,6 +141,9 @@ public static class Slv3Protocol
     /// </summary>
     public static bool IsHydroShiftDevType(byte devType) => devType is 10 or 11;
 
+    /// <summary>The square-headed HydroShift II LCD-S.</summary>
+    public static bool IsHydroShiftSquare(byte devType) => devType == 11;
+
     /// <summary>The HydroShift II pump's slot in the record's RPM and PWM tuples.</summary>
     public const int HydroShiftPumpPort = 3;
 

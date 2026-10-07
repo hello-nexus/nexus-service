@@ -110,9 +110,9 @@ public class NexusServiceCollectionExtensionsTests
         // bus as a device), plus one JpegPanelHandler per JpegPanelModel (Galahad II LCD,
         // Corsair XC7, Corsair Elite Capellix, ID-Cooling FX-LCD).
         // ... plus one BulkPanelHandler per bulk-pipe driver (Thermalright, Ryujin, Screen 8.8,
-        // ZMatrices).
+        // ZMatrices, HydroShift II).
         Assert.Equal(
-            21 + Nexus.Service.Peripherals.LianLi.LianLiHubSet.Capacity + Nexus.Service.Peripherals.JpegPanels.JpegPanelModel.All.Length + 4,
+            21 + Nexus.Service.Peripherals.LianLi.LianLiHubSet.Capacity + Nexus.Service.Peripherals.JpegPanels.JpegPanelModel.All.Length + 5,
             handlers.Length);
     }
 

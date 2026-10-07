@@ -31,7 +31,14 @@ public sealed class SentryCoordinator : IHostedService, IDisposable
     /// <summary>Input this soon after arming never alerts: the click that armed it and the walk-away.</summary>
     internal static readonly TimeSpan ArmGrace = TimeSpan.FromSeconds(10);
 
-    internal static readonly TimeSpan Cooldown = TimeSpan.FromHours(1);
+    /// <summary>Production alert limit. Dev-tools builds use a short one for testing; not zero,
+    /// because one alert per input would spend nexus-api's per-IP push budget in seconds.</summary>
+    internal static readonly TimeSpan Cooldown =
+#if DEV_TOOLS
+        TimeSpan.FromSeconds(30);
+#else
+        TimeSpan.FromMinutes(10);
+#endif
 
     /// <summary>Pause after a failed send, so held keys against an unreachable cloud do not become a request per input.</summary>
     internal static readonly TimeSpan RetryBackoff = TimeSpan.FromSeconds(30);

@@ -232,6 +232,8 @@ public static class NexusServiceCollectionExtensions
             new CompositeFanControlProvider.FanSource(
                 Nexus.Service.Cooling.KrakenCoolingProvider.IsKrakenId, sp.GetRequiredService<Nexus.Service.Cooling.KrakenCoolingProvider>()),
             new CompositeFanControlProvider.FanSource(
+                Nexus.Service.Cooling.HydroShift2CoolingProvider.IsHydroShift2Id, sp.GetRequiredService<Nexus.Service.Cooling.HydroShift2CoolingProvider>()),
+            new CompositeFanControlProvider.FanSource(
                 Nexus.Service.Cooling.CorsairLinkCoolingProvider.IsCorsairId, sp.GetRequiredService<Nexus.Service.Cooling.CorsairLinkCoolingProvider>()),
             new CompositeFanControlProvider.FanSource(
                 Nexus.Service.Cooling.Slv3CoolingProvider.IsSlv3Id, sp.GetRequiredService<Nexus.Service.Cooling.Slv3CoolingProvider>())));
@@ -256,6 +258,8 @@ public static class NexusServiceCollectionExtensions
                 Nexus.Service.Cooling.Galahad2CoolingProvider.IsGalahad2Id, sp.GetRequiredService<Nexus.Service.Cooling.Galahad2CoolingProvider>()),
             new CompositeFanControlProvider.FanSource(
                 Nexus.Service.Cooling.KrakenCoolingProvider.IsKrakenId, sp.GetRequiredService<Nexus.Service.Cooling.KrakenCoolingProvider>()),
+            new CompositeFanControlProvider.FanSource(
+                Nexus.Service.Cooling.HydroShift2CoolingProvider.IsHydroShift2Id, sp.GetRequiredService<Nexus.Service.Cooling.HydroShift2CoolingProvider>()),
             new CompositeFanControlProvider.FanSource(
                 Nexus.Service.Cooling.CorsairLinkCoolingProvider.IsCorsairId, sp.GetRequiredService<Nexus.Service.Cooling.CorsairLinkCoolingProvider>()),
             new CompositeFanControlProvider.FanSource(
@@ -290,6 +294,8 @@ public static class NexusServiceCollectionExtensions
             new CompositeFanControlProvider.FanSource(
                 Nexus.Service.Cooling.KrakenCoolingProvider.IsKrakenId, sp.GetRequiredService<Nexus.Service.Cooling.KrakenCoolingProvider>()),
             new CompositeFanControlProvider.FanSource(
+                Nexus.Service.Cooling.HydroShift2CoolingProvider.IsHydroShift2Id, sp.GetRequiredService<Nexus.Service.Cooling.HydroShift2CoolingProvider>()),
+            new CompositeFanControlProvider.FanSource(
                 Nexus.Service.Cooling.CorsairLinkCoolingProvider.IsCorsairId, sp.GetRequiredService<Nexus.Service.Cooling.CorsairLinkCoolingProvider>()),
             new CompositeFanControlProvider.FanSource(
                 Nexus.Service.Cooling.Slv3CoolingProvider.IsSlv3Id, sp.GetRequiredService<Nexus.Service.Cooling.Slv3CoolingProvider>())));
@@ -313,6 +319,8 @@ public static class NexusServiceCollectionExtensions
                 Nexus.Service.Cooling.Galahad2CoolingProvider.IsGalahad2Id, sp.GetRequiredService<Nexus.Service.Cooling.Galahad2CoolingProvider>()),
             new CompositeFanControlProvider.FanSource(
                 Nexus.Service.Cooling.KrakenCoolingProvider.IsKrakenId, sp.GetRequiredService<Nexus.Service.Cooling.KrakenCoolingProvider>()),
+            new CompositeFanControlProvider.FanSource(
+                Nexus.Service.Cooling.HydroShift2CoolingProvider.IsHydroShift2Id, sp.GetRequiredService<Nexus.Service.Cooling.HydroShift2CoolingProvider>()),
             new CompositeFanControlProvider.FanSource(
                 Nexus.Service.Cooling.CorsairLinkCoolingProvider.IsCorsairId, sp.GetRequiredService<Nexus.Service.Cooling.CorsairLinkCoolingProvider>()),
             new CompositeFanControlProvider.FanSource(
@@ -1079,11 +1087,12 @@ public static class NexusServiceCollectionExtensions
                 _ => new Nexus.Service.Devices.Handlers.JpegPanelHandler(jpegPanelHub));
         }
 
-        // Bulk-pipe cooler LCDs (ASUS Ryujin, Thermalright, Lian Li Universal Screen 8.8, ZMatrices).
-        // Their pixels ride a USB bulk endpoint rather than HID, so they are reachable only
-        // where Windows has bound WinUSB; off Windows the factory is a null object and the
-        // workers simply never find a panel. All but ZMatrices are transcribed and untested,
-        // so they default OFF.
+        // Bulk-pipe cooler LCDs (ASUS Ryujin, Thermalright, Lian Li Universal Screen 8.8, ZMatrices,
+        // Lian Li HydroShift II). Their pixels ride a USB bulk endpoint rather than HID, so they
+        // are reachable only where Windows has bound WinUSB; off Windows the factory is a null
+        // object and the workers simply never find a panel. Ryujin, Thermalright and the Screen
+        // 8.8 are transcribed and untested and the Lian Li units contend with L-Connect, so
+        // those default OFF.
         // Only the Windows host can create a monitor; elsewhere the setting is not offered.
 #if WINDOWS
         services.AddSingleton<Nexus.Service.Panel.Streams.IVirtualMonitorHost>(sp =>
@@ -1103,6 +1112,7 @@ public static class NexusServiceCollectionExtensions
             new Nexus.Service.Peripherals.BulkPanels.RyujinPanelDriver(),
             new Nexus.Service.Peripherals.BulkPanels.UniversalScreen88Driver(),
             new Nexus.Service.Peripherals.BulkPanels.ZMatricesPanelDriver(),
+            new Nexus.Service.Peripherals.BulkPanels.HydroShift2LcdDriver(),
         })
         {
             var bulkPanelHub = new Nexus.Service.Peripherals.BulkPanels.BulkPanelHub(bulkPanelDriver);
@@ -1120,6 +1130,10 @@ public static class NexusServiceCollectionExtensions
                     bulkPanelHub, sp.GetService<Nexus.Service.Panel.Streams.IVirtualMonitorHost>()));
             services.AddSingleton<IDeviceHandler>(
                 _ => new Nexus.Service.Devices.Handlers.BulkPanelHandler(bulkPanelHub));
+            if (bulkPanelDriver is Nexus.Service.Peripherals.BulkPanels.HydroShift2LcdDriver hydroShift2)
+            {
+                AddHydroShift2Aio(services, bulkPanelHub, hydroShift2);
+            }
         }
 
         // Corsair iCUE LINK System Hub: HID connection worker + lighting + cooling.
@@ -1206,6 +1220,7 @@ public static class NexusServiceCollectionExtensions
                 sp.GetRequiredService<Nexus.Service.Lighting.Galahad2LightingDeviceProvider>(),
                 sp.GetRequiredService<Nexus.Service.Lighting.NollieLightingDeviceProvider>(),
                 sp.GetRequiredService<Nexus.Service.Lighting.KrakenLightingDeviceProvider>(),
+                sp.GetRequiredService<Nexus.Service.Lighting.HydroShift2LightingDeviceProvider>(),
                 sp.GetRequiredService<Nexus.Service.Lighting.Smart.SmartLightProvider>(),
                 sp.GetRequiredService<Nexus.Service.Persistence.IConfigStore>(),
                 sp.GetRequiredService<Nexus.Service.Lighting.Engine.LightingEngine>()));
@@ -1228,6 +1243,7 @@ public static class NexusServiceCollectionExtensions
                 sp.GetRequiredService<Nexus.Service.Lighting.Galahad2LightingDeviceProvider>(),
                 sp.GetRequiredService<Nexus.Service.Lighting.NollieLightingDeviceProvider>(),
                 sp.GetRequiredService<Nexus.Service.Lighting.KrakenLightingDeviceProvider>(),
+                sp.GetRequiredService<Nexus.Service.Lighting.HydroShift2LightingDeviceProvider>(),
                 sp.GetRequiredService<Nexus.Service.Lighting.Smart.SmartLightProvider>(),
                 sp.GetRequiredService<Nexus.Service.Persistence.IConfigStore>(),
                 sp.GetRequiredService<Nexus.Service.Lighting.Engine.LightingEngine>()));
@@ -1472,6 +1488,33 @@ public static class NexusServiceCollectionExtensions
         services.AddSingleton<Nexus.Service.Devices.DeviceBroadcaster>();
         services.AddHostedService(sp => sp.GetRequiredService<Nexus.Service.Devices.DeviceBroadcaster>());
         return services;
+    }
+
+    /// <summary>The HydroShift II's pump, fans, coolant probe and ring, which ride its LCD's bulk pipe.</summary>
+    private static void AddHydroShift2Aio(
+        IServiceCollection services,
+        Nexus.Service.Peripherals.BulkPanels.BulkPanelHub hub,
+        Nexus.Service.Peripherals.BulkPanels.HydroShift2LcdDriver driver)
+    {
+        services.AddSingleton(sp =>
+        {
+            var wireless = sp.GetRequiredService<Nexus.Service.Peripherals.LianLiWireless.Slv3Hub>();
+            // The USB params and the wireless record carry the same radio MAC (checked on a unit
+            // bound both ways); until the first reading names it, any bound HydroShift II counts.
+            return new Nexus.Service.Peripherals.BulkPanels.HydroShift2Aio(hub, driver, mac =>
+                wireless.IsConnected
+                && Array.Exists(wireless.State.Fans, f => f.BoundToUs
+                    && Nexus.Service.Peripherals.LianLiWireless.Slv3Protocol.IsHydroShiftDevType((byte)f.DevType)
+                    && (mac is null || string.Equals(f.Mac, mac, StringComparison.OrdinalIgnoreCase))));
+        });
+        services.AddHostedService(sp => sp.GetRequiredService<Nexus.Service.Peripherals.BulkPanels.HydroShift2Aio>());
+        services.AddSingleton<Nexus.Service.Cooling.HydroShift2CoolingProvider>();
+        services.AddSingleton<Nexus.Service.Lighting.HydroShift2LightingDeviceProvider>();
+        services.AddSingleton<Nexus.Service.Lighting.ILightingFrameContributor>(
+            sp => sp.GetRequiredService<Nexus.Service.Lighting.HydroShift2LightingDeviceProvider>());
+        services.AddSingleton<Nexus.Service.Lighting.Zones.IDeviceStructureSource>(
+            sp => sp.GetRequiredService<Nexus.Service.Lighting.HydroShift2LightingDeviceProvider>());
+        services.AddHostedService<Nexus.Service.Lighting.HydroShift2LightingFrameWriter>();
     }
 
     public static IServiceCollection AddNexusWeather(this IServiceCollection services)
