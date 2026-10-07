@@ -164,6 +164,7 @@ public sealed class Y70Defaults
     public bool ScreenOff { get; set; }
     public bool ForceOrientation { get; set; } = true;
     public bool CompatibilityRendering { get; set; }
+    public bool KeepCursorOff { get; set; }
 }
 
 public sealed class KeebDefaults

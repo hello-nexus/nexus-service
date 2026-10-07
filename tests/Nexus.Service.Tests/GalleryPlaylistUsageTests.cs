@@ -51,6 +51,22 @@ public sealed class GalleryPlaylistUsageTests
     }
 
     [Fact]
+    public void Counts_SavedDashboardPresets_ButNotTheActivePresetsStaleCopy()
+    {
+        var s = new NexusSettings();
+        s.Panel.DashboardLayout = Layout(Gallery("pl-a"));
+        s.Panel.DashboardPresets = new()
+        {
+            new DashboardPreset { Id = "active", Name = "Default", Layout = Layout(Gallery("pl-a"), Gallery("pl-a")) },
+            new DashboardPreset { Id = "saved", Name = "Gaming", Layout = Layout(Gallery("pl-a")) },
+        };
+        s.Panel.DashboardActivePresetId = "active";
+
+        var use = Assert.Single(GalleryPlaylistUsage.Find(s, "pl-a"));
+        Assert.Equal((GalleryPlaylistUseSurfaces.Dashboard, 2), (use.Surface, use.Count));
+    }
+
+    [Fact]
     public void IgnoresOtherWidgetTypes_AndNonStringValues()
     {
         var s = new NexusSettings();

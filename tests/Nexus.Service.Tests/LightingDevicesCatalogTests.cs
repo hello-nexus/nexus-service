@@ -198,4 +198,25 @@ public class LightingDevicesCatalogTests
         Assert.Contains(0x391A, ids); // Tryx (first-party only)
         Assert.DoesNotContain(0x0781, ids); // SanDisk - storage, never RGB
     }
+
+    [Theory]
+    [InlineData("Cooler Master MM711", "Cooler Master", "MM711")]
+    [InlineData("Turtle Beach Vulcan II TKL", "Turtle Beach", "Vulcan II TKL")]
+    [InlineData("Red Square Keyrox TKL", "Red Square", "Keyrox TKL")]
+    [InlineData("Lian Li O11 Dynamic - Razer Edition", "Lian Li", "O11 Dynamic - Razer Edition")]
+    [InlineData("Corsair K70 RGB", "Corsair", "K70 RGB")]
+    [InlineData("Cooler", "", "Cooler")]
+    public void SplitVendorModel_KeepsMultiWordBrandsWhole(string name, string vendor, string model)
+    {
+        Assert.Equal((vendor, model), LightingDevicesCatalog.SplitVendorModel(name));
+    }
+
+    [Fact]
+    public void Catalog_NamesCoolerMasterInFull()
+    {
+        var rows = LightingDevicesCatalog.All.Where(d => d.Source == "openrgb").ToList();
+
+        Assert.Contains(rows, d => d.Vendor == "Cooler Master");
+        Assert.DoesNotContain(rows, d => d.Vendor == "Cooler");
+    }
 }

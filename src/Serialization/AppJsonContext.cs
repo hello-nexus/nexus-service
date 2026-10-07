@@ -255,6 +255,8 @@ namespace Nexus.Service.Serialization;
 [JsonSerializable(typeof(Nexus.Service.Models.Panel.PanelDeviceListResponse))]
 [JsonSerializable(typeof(Nexus.Service.Models.Panel.PanelPresetsResponse))]
 [JsonSerializable(typeof(Nexus.Service.Models.Panel.PanelPresetNameBody))]
+[JsonSerializable(typeof(Nexus.Service.Models.Panel.DashboardPresetsResponse))]
+[JsonSerializable(typeof(Nexus.Service.Models.Panel.DashboardPresetSeedBody))]
 [JsonSerializable(typeof(List<Nexus.Service.Models.Panel.PanelDeviceRecord>))]
 [JsonSerializable(typeof(Dictionary<string, Nexus.Service.Models.Panel.PanelDeviceRecord>))]
 [JsonSerializable(typeof(Nexus.Service.Models.Panel.PrefsChangedFrame))]
@@ -805,6 +807,7 @@ namespace Nexus.Service.Serialization;
 // Displays
 [JsonSerializable(typeof(Y70RotationParams))]
 [JsonSerializable(typeof(Y70CompatibilityRenderingParams))]
+[JsonSerializable(typeof(Y70KeepCursorOffParams))]
 [JsonSerializable(typeof(Y70BrightnessResponse))]
 [JsonSerializable(typeof(Y70BrightnessParams))]
 [JsonSerializable(typeof(Y70ToggleScreenResponse))]

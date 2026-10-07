@@ -627,6 +627,7 @@ app.MapPanelBgEndpoints();
 app.MapGalleryEndpoints();
 app.MapTransferEndpoints();
 app.MapProfileEndpoints();
+app.MapDashboardPresetEndpoints();
 app.MapPanelEndpoints();
 app.MapPanelDeckEndpoints();
 app.MapStreamedPanelEndpoints();

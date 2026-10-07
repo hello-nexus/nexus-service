@@ -483,7 +483,7 @@ public static class PanelRoutes
         // brightness/orientation/screen + panel auto-launch, Q-series
         // brightness/orientation/screen/sleep-with-host, Xeneon Edge DDC
         // picture values - plus the record's monitor behavior
-        // (ReserveMonitor/AutoOrient). Personalization is untouched.
+        // (ReserveMonitor/AutoOrient/KeepCursorOff). Personalization is untouched.
         // Factory reset: everything the user configured for this panel, plus the
         // panel's own software. Composes the personalization reset above and the
         // hardware reset below with an APK uninstall + reinstall, matching what
@@ -549,6 +549,7 @@ public static class PanelRoutes
                 {
                     s.Panel.AutoLaunch = new PanelSettings().AutoLaunch;
                     s.Y70.CompatibilityRendering = defaults.CompatibilityRendering;
+                    s.Y70.KeepCursorOff = defaults.KeepCursorOff;
                 });
                 PanelTopics.BroadcastPrefs(hub);
                 var y70 = sp.GetRequiredService<Peripherals.Y70.IY70Provider>();
