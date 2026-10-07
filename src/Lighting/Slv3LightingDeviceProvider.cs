@@ -446,6 +446,16 @@ public sealed class Slv3LightingDeviceProvider : ILightingDeviceProvider, ILight
         var rings = 1 + Math.Clamp(fan.FanCount, 0, Slv3Protocol.PortsPerRecord);
         var ledCount = rings * ringLeds;
         var (u, v) = BuildFanRingUV(rings, OuterRadius, ringLeds);
+        // The LCD-S head is square, its LEDs in the same order as over USB.
+        if (Slv3Protocol.IsHydroShiftSquare((byte)fan.DevType))
+        {
+            for (var i = 0; i < ringLeds; i++)
+            {
+                var (su, sv) = HydroShift2LightingDeviceProvider.SquareRingPosition(i);
+                u[i] = (0.5f / rings) + ((su - 0.5f) * 2f * OuterRadius / rings);
+                v[i] = 0.5f + ((sv - 0.5f) * 2f * OuterRadius);
+            }
+        }
         var structure = new DeviceStructure
         {
             DeviceId = deviceId,
