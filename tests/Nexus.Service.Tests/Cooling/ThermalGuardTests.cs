@@ -401,4 +401,20 @@ public class ThermalGuardTests
         // A one-sample window is the raw reading again.
         Assert.Equal(40, wide.Step(5000, 90, L, 3, 0).FloorDuty);
     }
+
+    [Fact]
+    public void ADropoutClearsTheSmoothingWindow_SoOldSamplesDoNotBiasTheFirstReadingsAfterIt()
+    {
+        var g = new ThermalGuard();
+        for (var s = 0; s < 6; s++)
+        {
+            g.Step(s * 1000L, 90, L, 3, 0);
+        }
+        Assert.Equal(40, g.Step(6000, 90, L, 3, 0).FloorDuty);
+
+        Assert.Equal(ThermalGuardStates.Inactive, g.Step(7000, null, L, 3, 0).State);
+
+        // Without the clear, the stale 90 C samples would dominate the median and keep the floor up.
+        Assert.Equal(0, g.Step(8000, 65, L, 3, 0).FloorDuty);
+    }
 }

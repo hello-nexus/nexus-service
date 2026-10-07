@@ -147,6 +147,8 @@ public sealed class ThermalGuard
     {
         if (tempC is not { } temp || !double.IsFinite(temp) || temp <= 0 || temp > 150)
         {
+            // Samples from before the dropout must not bias the medians that follow it.
+            _recent.Clear();
             if (!IsTripped)
             {
                 _state = ThermalGuardStates.Inactive;
