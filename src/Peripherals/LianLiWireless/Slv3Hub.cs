@@ -40,6 +40,16 @@ public sealed class Slv3Hub : IDisposable
     // cooling/lighting (Y70 log: "device list: 2 -> 1 -> 2" continuously).
     private readonly Dictionary<string, Slv3KnownChain> _knownChains = new(StringComparer.Ordinal);
 
+    // A validated record can still carry a corrupted MAC, so a new chain is
+    // listed only once another poll within the confirm window repeats it.
+    // Value: the poll the MAC was first seen in.
+    private readonly Dictionary<string, long> _unconfirmedChains = new(StringComparer.Ordinal);
+    private long _devicePolls;
+    internal const int ChainConfirmWindowPolls = 10;
+
+    /// <summary>False lists a new chain on first sight.</summary>
+    internal bool ConfirmNewChains { get; init; } = true;
+
     // Per-chain PWM port targets keyed by fan MAC hex; a missing key or a
     // null element means that port follows the motherboard PWM header. Read
     // by the PWM sync, written by SetPortDuty; both hold _lock.
@@ -52,6 +62,9 @@ public sealed class Slv3Hub : IDisposable
 
     /// <summary>Host readings for a driven HydroShift II's LCD; read once per <see cref="DriveTick"/>, outside the hub lock.</summary>
     public Func<Slv3AioSensors>? AioSensors { get; set; }
+
+    /// <summary>Saved HydroShift II screens by AIO MAC hex; read once per <see cref="DriveTick"/>, outside the hub lock.</summary>
+    public Func<IReadOnlyDictionary<string, Slv3AioScreen>>? AioScreens { get; set; }
 
     private ISlv3Transport? _tx;
     private ISlv3Transport? _rx;
@@ -278,6 +291,7 @@ public sealed class Slv3Hub : IDisposable
         State.MotherboardPwmPercent = null;
         _lastFanRecords = new List<Slv3DeviceRecord>();
         _knownChains.Clear();
+        _unconfirmedChains.Clear();
         _pending.Clear();
         _pendingCommands.Clear();
         _lastIssuedSeq.Clear();
@@ -423,6 +437,7 @@ public sealed class Slv3Hub : IDisposable
     public bool DriveTick()
     {
         var aioSensors = _anyAioControlled ? ReadAioSensors() : default;
+        var aioScreens = _anyAioControlled ? ReadAioScreens() : null;
         lock (_lock)
         {
             if (!PollLocked())
@@ -434,7 +449,7 @@ public sealed class Slv3Hub : IDisposable
                 return true;
             }
             SyncPwmLocked();
-            SyncAioLocked(aioSensors);
+            SyncAioLocked(aioSensors, aioScreens);
             RefreshMasterMacLocked();
             SendClockHeartbeatLocked();
             RunSaveCfgScheduleLocked();
@@ -496,7 +511,7 @@ public sealed class Slv3Hub : IDisposable
             }
             if (found)
             {
-                SendSequencedCommandLocked(record, cmd.RfCmd, cmd.TargetSeq);
+                SendSequencedCommandLocked(record, cmd.RfCmd, cmd.TargetSeq, cmd.Arg);
             }
             // A chain that dropped out of the list still spends its budget, so a
             // stale command cannot outlive the chain and fire on its return.
@@ -563,7 +578,7 @@ public sealed class Slv3Hub : IDisposable
     // lian-li-linux control_wireless: while Nexus drives an AIO's pump, the
     // switch to RF params is re-sent until the AIO echoes its cmdSeq, and the
     // param block (pump timer plus LCD readings) goes out every DriveTick.
-    private void SyncAioLocked(Slv3AioSensors sensors)
+    private void SyncAioLocked(Slv3AioSensors sensors, IReadOnlyDictionary<string, Slv3AioScreen>? screens)
     {
         if (_aioControl.Count == 0)
         {
@@ -593,10 +608,40 @@ public sealed class Slv3Hub : IDisposable
                 }
             }
             var rpm = Slv3Protocol.HydroShiftPumpRpm(control.Percent, record.DevType);
-            var block = Slv3Protocol.BuildAioParamBlock(sensors, Slv3Protocol.HydroShiftPumpTimer(rpm, record.DevType));
+            var block = Slv3Protocol.BuildAioParamBlock(
+                sensors, Slv3Protocol.HydroShiftPumpTimer(rpm, record.DevType),
+                screens is not null && screens.TryGetValue(key, out var screen) ? screen : Slv3AioScreen.Default,
+                RadiatorFanRpm(record));
             var payload = Slv3Protocol.BuildAioParams(record.Mac, _masterMac, record.RxType, record.Channel, BindOrdinalLocked(record.Mac), block);
             SendRfPayloadLocked(record.Channel, record.RxType, payload);
         }
+    }
+
+    private IReadOnlyDictionary<string, Slv3AioScreen>? ReadAioScreens()
+    {
+        try
+        {
+            return AioScreens?.Invoke();
+        }
+        catch (Exception ex)
+        {
+            ServiceLog.Warn($"[lianli-wireless] AIO screen settings read failed: {ex.Message}");
+            return null;
+        }
+    }
+
+    // Average of the HydroShift II's spinning fan ports; its pump has its own slot.
+    private static int RadiatorFanRpm(Slv3DeviceRecord record)
+    {
+        var sum = 0;
+        var spinning = 0;
+        for (var port = 0; port < Slv3Protocol.HydroShiftPumpPort && port < record.Rpm.Length; port++)
+        {
+            if (record.Rpm[port] <= 0) continue;
+            sum += record.Rpm[port];
+            spinning++;
+        }
+        return spinning == 0 ? 0 : sum / spinning;
     }
 
     private Slv3AioSensors ReadAioSensors()
@@ -782,6 +827,7 @@ public sealed class Slv3Hub : IDisposable
 
         var count = Slv3Protocol.RecordCount(reply);
         var nowMs = _nowMs();
+        _devicePolls++;
         for (var i = 0; i < count; i++)
         {
             var offset = Slv3Protocol.RecordHeaderLength + i * Slv3Protocol.RecordLength;
@@ -790,6 +836,13 @@ public sealed class Slv3Hub : IDisposable
                 var key = Convert.ToHexString(record.Mac);
                 if (!_knownChains.ContainsKey(key))
                 {
+                    if (ConfirmNewChains
+                        && (!_unconfirmedChains.TryGetValue(key, out var firstPoll) || firstPoll == _devicePolls))
+                    {
+                        _unconfirmedChains.TryAdd(key, _devicePolls);
+                        continue;
+                    }
+                    _unconfirmedChains.Remove(key);
                     var what = record.IsStrimer ? $"Strimer dev_type {record.DevType}"
                         : record.IsHydroShift ? $"HydroShift II dev_type {record.DevType}, {record.FanCount} fan(s)"
                         : $"{record.FanCount} fan(s), {record.Family}";
@@ -800,6 +853,18 @@ public sealed class Slv3Hub : IDisposable
         }
 
         List<string>? gone = null;
+        foreach (var (key, firstPoll) in _unconfirmedChains)
+        {
+            if (_devicePolls - firstPoll >= ChainConfirmWindowPolls)
+            {
+                (gone ??= new List<string>()).Add(key);
+            }
+        }
+        if (gone is not null)
+        {
+            foreach (var key in gone) _unconfirmedChains.Remove(key);
+            gone = null;
+        }
         foreach (var (key, chain) in _knownChains)
         {
             if (nowMs - chain.LastSeenMs > ChainExpiryMs)
@@ -968,6 +1033,10 @@ public sealed class Slv3Hub : IDisposable
         EffectIndex = Convert.ToHexString(record.EffectIndex),
         Stale = stale,
         CoolantTempC = record.CoolantTempC,
+        FirmwareVersion = record.RfVersion,
+        ArgbCableConnected = record.ArgbCableConnected,
+        PlayingMotherboardArgb = record.PlayingMotherboardArgb,
+        PwmCableConnected = record.PwmCableConnected,
     };
 
     private bool TryFindRecordLocked(byte[] mac, out Slv3DeviceRecord record)
@@ -1035,7 +1104,7 @@ public sealed class Slv3Hub : IDisposable
         return true;
     }
 
-    private bool SendSequencedCommandLocked(Slv3DeviceRecord record, byte rfCmd, byte cmdSeq)
+    private bool SendSequencedCommandLocked(Slv3DeviceRecord record, byte rfCmd, byte cmdSeq, byte arg = 0)
     {
         if (_tx is null)
         {
@@ -1043,7 +1112,7 @@ public sealed class Slv3Hub : IDisposable
         }
         // lian-li-linux switch_to_wireless_theme carries the AIO's bind ordinal at [16].
         var slot = rfCmd == Slv3Protocol.RfAioSwitchWireless ? BindOrdinalLocked(record.Mac) : (byte)0;
-        var payload = Slv3Protocol.BuildSequencedCommand(rfCmd, record.Mac, _masterMac, record.RxType, record.Channel, cmdSeq, slot);
+        var payload = Slv3Protocol.BuildSequencedCommand(rfCmd, record.Mac, _masterMac, record.RxType, record.Channel, cmdSeq, slot, arg);
         return SendRfPayloadLocked(record.Channel, record.RxType, payload);
     }
 
@@ -1198,7 +1267,20 @@ public sealed class Slv3Hub : IDisposable
     /// </summary>
     public bool Identify(string macHex) => QueueSequencedCommand(macHex, Slv3Protocol.RfSelect, "identify");
 
-    private bool QueueSequencedCommand(string macHex, byte rfCmd, string label)
+    /// <summary>True while a sequenced command other than <paramref name="rfCmd"/> waits for the chain's echo; a chain holds one at a time.</summary>
+    public bool HasOtherPendingCommand(string macHex, byte rfCmd)
+    {
+        lock (_lock)
+        {
+            return _pendingCommands.TryGetValue(macHex, out var cmd) && cmd.RfCmd != rfCmd;
+        }
+    }
+
+    /// <summary>Hands a chain to its motherboard ARGB input (on) or back to the host (off), re-sent until the chain echoes the command sequence.</summary>
+    public bool SetMotherboardArgb(string macHex, bool on) =>
+        QueueSequencedCommand(macHex, Slv3Protocol.RfArgbSyncSwitch, on ? "motherboard ARGB on" : "motherboard ARGB off", on ? (byte)1 : (byte)0);
+
+    private bool QueueSequencedCommand(string macHex, byte rfCmd, string label, byte arg = 0)
     {
         if (!TryParseMac(macHex, out var mac))
         {
@@ -1210,7 +1292,7 @@ public sealed class Slv3Hub : IDisposable
             {
                 return false;
             }
-            if (QueueSequencedCommandLocked(record, rfCmd) is not { } seq)
+            if (QueueSequencedCommandLocked(record, rfCmd, arg) is not { } seq)
             {
                 return false;
             }
@@ -1220,17 +1302,17 @@ public sealed class Slv3Hub : IDisposable
     }
 
     // Sends the first frame now and leaves the rest to SyncControlLocked; null when the send failed.
-    private byte? QueueSequencedCommandLocked(Slv3DeviceRecord record, byte rfCmd)
+    private byte? QueueSequencedCommandLocked(Slv3DeviceRecord record, byte rfCmd, byte arg = 0)
     {
         var key = Convert.ToHexString(record.Mac);
         _lastIssuedSeq.TryGetValue(key, out var lastIssued);
         var seq = Slv3Protocol.NextCmdSeq((byte)Math.Max(lastIssued, record.CmdSeq));
-        if (!SendSequencedCommandLocked(record, rfCmd, seq))
+        if (!SendSequencedCommandLocked(record, rfCmd, seq, arg))
         {
             return null;
         }
         _lastIssuedSeq[key] = seq;
-        _pendingCommands[key] = new Slv3PendingCommand(record.Mac, rfCmd, seq, SequencedCommandBudget - 1);
+        _pendingCommands[key] = new Slv3PendingCommand(record.Mac, rfCmd, seq, SequencedCommandBudget - 1, arg);
         return seq;
     }
 
@@ -1699,7 +1781,7 @@ public sealed class Slv3Hub : IDisposable
 
     private readonly record struct Slv3PendingOp(byte[] Mac, byte TargetSlot, bool Unbind, int TicksRemaining);
 
-    private readonly record struct Slv3PendingCommand(byte[] Mac, byte RfCmd, byte TargetSeq, int SendsRemaining);
+    private readonly record struct Slv3PendingCommand(byte[] Mac, byte RfCmd, byte TargetSeq, int SendsRemaining, byte Arg = 0);
 
     private readonly record struct Slv3KnownChain(Slv3DeviceRecord Record, long LastSeenMs);
 

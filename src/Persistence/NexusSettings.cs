@@ -1341,6 +1341,10 @@ public sealed class DevicesSettings
     public LianLiSettings LianLi { get; set; } = new();
     public LianLiWirelessSettings LianLiWireless { get; set; } = new();
     public LianLiLightingSettings LianLiLighting { get; set; } = new();
+    /// <summary>Uni hubs past the first, keyed by hub id; the first hub keeps <see cref="LianLi"/> and <see cref="LianLiLighting"/>.</summary>
+    public Dictionary<string, LianLiHubSettings> LianLiExtraHubs { get; set; } = new();
+    /// <summary>The key of the hub pinned to each slot, first slot first: its USB serial, or its device path when it reports none.</summary>
+    public List<string> LianLiHubKeys { get; set; } = new();
     public TlLightingSettings TlLighting { get; set; } = new();
     public StrimerLightingSettings StrimerLighting { get; set; } = new();
     public Galahad2LightingSettings Galahad2Lighting { get; set; } = new();
@@ -1567,6 +1571,12 @@ public sealed class LianLiSettings
     }
 }
 
+public sealed class LianLiHubSettings
+{
+    public LianLiSettings Fans { get; set; } = new();
+    public LianLiLightingSettings Lighting { get; set; } = new();
+}
+
 public sealed class LianLiWirelessSettings
 {
     /// <summary>Per-screen LCD content and display settings, keyed by the SL-LCD Wireless screen's 16-hex serial.</summary>
@@ -1574,6 +1584,27 @@ public sealed class LianLiWirelessSettings
 
     /// <summary>Lighting mode per bound wireless chain (Strimer cable or fan chain), keyed by its MAC hex (uppercase).</summary>
     public Dictionary<string, LianLiWirelessChainLighting> Chains { get; set; } = new();
+
+    /// <summary>HydroShift II screen settings, keyed by the AIO's MAC hex (uppercase).</summary>
+    public Dictionary<string, LianLiAioScreenSettings> AioScreens { get; set; } = new();
+}
+
+/// <summary>What a HydroShift II's screen shows while Nexus drives its pump.</summary>
+public sealed class LianLiAioScreenSettings
+{
+    /// <summary>Backlight, percent.</summary>
+    public int Brightness { get; set; } = Nexus.Service.Peripherals.LianLiWireless.Slv3Protocol.AioLcdBrightness;
+    /// <summary>Index of one of the AIO's built-in screen themes.</summary>
+    public int Theme { get; set; }
+    public string LabelColor { get; set; } = "#FFFFFF";
+    public string ValueColor { get; set; } = "#FFFFFF";
+    public string UnitColor { get; set; } = "#FFFFFF";
+    public bool ShowCpuTemp { get; set; } = true;
+    public bool ShowCpuLoad { get; set; } = true;
+    public bool ShowGpuTemp { get; set; } = true;
+    public bool ShowGpuLoad { get; set; } = true;
+    /// <summary>Shows the radiator fans' speed.</summary>
+    public bool ShowFanSpeed { get; set; }
 }
 
 /// <summary>
@@ -1601,6 +1632,8 @@ public sealed class LianLiWirelessChainLighting
     public bool Merge { get; set; }
     /// <summary>One entry per lane, used by <see cref="ModePerLane"/>.</summary>
     public List<LianLiWirelessLane> Lanes { get; set; } = new();
+    /// <summary>The chain plays the motherboard ARGB header through its sync cable instead of Nexus; null leaves the chain's own state alone.</summary>
+    public bool? MotherboardArgb { get; set; }
 }
 
 public sealed class LianLiWirelessLane
@@ -1745,6 +1778,44 @@ public sealed class LianLiLightingSettings
     /// </summary>
     public bool ArgbSync { get; set; }
     public string? ArgbSyncSource { get; set; }
+
+    /// <summary>Every port's rings play these instead of <see cref="Mode"/>; both set or both null.</summary>
+    public LianLiEffectSettings? InnerRing { get; set; }
+    public LianLiEffectSettings? OuterRing { get; set; }
+
+    /// <summary>Per-port looks by port index; a null entry plays the hub's.</summary>
+    public List<LianLiPortLighting?> Ports { get; set; } = new();
+
+    /// <summary>Ports in the order a merged animation runs through; empty runs them in index order.</summary>
+    public List<int> MergeOrder { get; set; } = new();
+}
+
+/// <summary>A firmware animation and its parameters.</summary>
+public sealed class LianLiEffectSettings
+{
+    public string Mode { get; set; } = "static";
+    public int Speed { get; set; } = 2;
+    public int Direction { get; set; }
+    public int Brightness { get; set; } = 4;
+    public List<string> Colors { get; set; } = new();
+
+    public LianLiEffectSettings Clone() => new()
+    {
+        Mode = Mode,
+        Speed = Speed,
+        Direction = Direction,
+        Brightness = Brightness,
+        Colors = new List<string>(Colors),
+    };
+}
+
+/// <summary>A port's own look in place of the hub's.</summary>
+public sealed class LianLiPortLighting
+{
+    public LianLiEffectSettings Whole { get; set; } = new();
+    /// <summary>The port's rings play these instead of <see cref="Whole"/>; both set or both null.</summary>
+    public LianLiEffectSettings? InnerRing { get; set; }
+    public LianLiEffectSettings? OuterRing { get; set; }
 }
 
 public sealed class TlLightingSettings
@@ -1758,6 +1829,9 @@ public sealed class TlLightingSettings
     public string Scope { get; set; } = "all";
 
     public List<string> Colors { get; set; } = new();
+
+    /// <summary>The fans play the motherboard ARGB header through the controller's sync cable instead of the saved look.</summary>
+    public bool ArgbSync { get; set; }
 }
 
 public sealed class StrimerLightingSettings
@@ -1769,6 +1843,8 @@ public sealed class StrimerLightingSettings
     public int Direction { get; set; } = 0;
     public int Brightness { get; set; } = 4;
     public List<string> Colors { get; set; } = new();
+    /// <summary>The cable plays the motherboard ARGB header through the controller's sync cable instead of Nexus.</summary>
+    public bool ArgbSync { get; set; }
 }
 
 public sealed class Galahad2LightingSettings

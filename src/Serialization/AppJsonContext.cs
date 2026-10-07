@@ -259,6 +259,8 @@ namespace Nexus.Service.Serialization;
 [JsonSerializable(typeof(Nexus.Service.Models.Panel.PanelDeviceListResponse))]
 [JsonSerializable(typeof(Nexus.Service.Models.Panel.PanelPresetsResponse))]
 [JsonSerializable(typeof(Nexus.Service.Models.Panel.PanelPresetNameBody))]
+[JsonSerializable(typeof(Nexus.Service.Models.Panel.DashboardPresetsResponse))]
+[JsonSerializable(typeof(Nexus.Service.Models.Panel.DashboardPresetSeedBody))]
 [JsonSerializable(typeof(List<Nexus.Service.Models.Panel.PanelDeviceRecord>))]
 [JsonSerializable(typeof(Dictionary<string, Nexus.Service.Models.Panel.PanelDeviceRecord>))]
 [JsonSerializable(typeof(Nexus.Service.Models.Panel.PrefsChangedFrame))]
@@ -1190,6 +1192,8 @@ namespace Nexus.Service.Serialization;
 [JsonSerializable(typeof(Nexus.Service.Routes.Slv3LaneDto))]
 [JsonSerializable(typeof(Nexus.Service.Routes.Slv3LaneDto[]))]
 [JsonSerializable(typeof(Nexus.Service.Routes.Slv3ChainLightingRequest))]
+[JsonSerializable(typeof(Nexus.Service.Routes.Slv3AioScreenDto))]
+[JsonSerializable(typeof(Nexus.Service.Routes.Slv3AioScreenRequest))]
 // Lian Li L-Wireless SL-LCD fan screens: discovery/settings, content, media library.
 [JsonSerializable(typeof(Nexus.Service.Peripherals.LianLiWireless.Slv3LcdMediaItem))]
 [JsonSerializable(typeof(Nexus.Service.Routes.Slv3LcdScreenDto))]

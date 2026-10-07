@@ -11,7 +11,7 @@ using Nexus.Service.Persistence;
 namespace Nexus.Service.Lighting;
 
 /// <summary>
-/// Exposes the Lian Li Uni Hub SL-Infinity fans on the lighting page. The hub's
+/// Exposes every attached Lian Li Uni Hub's fans on the lighting page. A hub's
 /// physical channels compose into a configurable device set (per-port vs mirror,
 /// rings combined vs split) via <see cref="LianLiZoneSupport"/>; each device is
 /// a 2-segment partitionable structure the user can re-zone freely. Frames are
@@ -21,21 +21,21 @@ namespace Nexus.Service.Lighting;
 public sealed class LianLiLightingDeviceProvider :
     ILightingDeviceProvider, ILightingFrameContributor, IDeviceStructureSource, IComposableHubSource, IOpenRgbDeviceOwner
 {
-    private readonly LianLiHub _hub;
+    private readonly LianLiHubSet _hubs;
     private readonly IConfigStore _store;
     private readonly Np50IdentifyTracker _identify;
     private string _lastSignature = "";
 
     private readonly Dictionary<string, DeviceFrame> _frameCache = new();
 
-    public LianLiLightingDeviceProvider(LianLiHub hub, IConfigStore store, Np50IdentifyTracker identify)
+    public LianLiLightingDeviceProvider(LianLiHubSet hubs, IConfigStore store, Np50IdentifyTracker identify)
     {
-        _hub = hub;
+        _hubs = hubs;
         _store = store;
         _identify = identify;
     }
 
-    public bool IsConnected => _hub.IsConnected;
+    public bool IsConnected => _hubs.AnyConnected;
 
     /// <summary>
     /// The Lian Li Uni Hub exposes both USB HID (used here) and USB CDC (used by
@@ -64,39 +64,57 @@ public sealed class LianLiLightingDeviceProvider :
 
     private string BuildSignature()
     {
-        if (!_hub.IsConnected) return "disconnected";
         var settings = _store.Load();
-        var comp = LianLiZoneSupport.ReadComposition(settings, _hub.DeviceId);
-        var sb = new System.Text.StringBuilder("connected");
-        sb.Append("|a=").Append(_hub.Profile.PlaysArgbInput(settings.Devices.LianLiLighting.ArgbSync) ? '1' : '0');
-        sb.Append("|m=").Append(comp.Mirror ? '1' : '0');
-        sb.Append("|c=").Append(comp.CombineRings ? '1' : '0');
-        var lianLi = settings.Devices.LianLi;
-        for (var p = 0; p < LianLiProtocol.PortCount; p++)
+        var sb = new System.Text.StringBuilder();
+        foreach (var hub in _hubs.Hubs)
         {
-            sb.Append('|').Append(LianLiZoneSupport.ClampFans(lianLi.GetFans(p)));
+            sb.Append(hub.DeviceId);
+            if (!hub.IsConnected)
+            {
+                sb.Append(":off;");
+                continue;
+            }
+            var comp = LianLiZoneSupport.ReadComposition(settings, hub.DeviceId);
+            sb.Append(":on|p=").Append(hub.Profile.ProductId);
+            sb.Append("|a=").Append(PlaysArgbInput(hub, settings) ? '1' : '0');
+            sb.Append("|m=").Append(comp.Mirror ? '1' : '0');
+            sb.Append("|c=").Append(comp.CombineRings ? '1' : '0');
+            var fans = LianLiHubSet.FansOf(settings.Devices, hub.DeviceId);
+            for (var p = 0; p < LianLiProtocol.PortCount; p++)
+            {
+                sb.Append('|').Append(LianLiZoneSupport.ClampFans(fans.GetFans(p)));
+            }
+            sb.Append(';');
         }
         return sb.ToString();
     }
 
+    private static bool PlaysArgbInput(LianLiHub hub, NexusSettings settings) =>
+        hub.Profile.PlaysArgbInput(LianLiHubSet.LightingOf(settings.Devices, hub.DeviceId).ArgbSync);
+
     public GetLightingDevicesResponse GetAll()
     {
         var resp = new GetLightingDevicesResponse { IsInit = true };
-        if (!_hub.IsConnected) return resp;
         var settings = _store.Load();
-        // Under ARGB sync the fans play the source header's card, so the ports have none of their own.
-        if (_hub.Profile.PlaysArgbInput(settings.Devices.LianLiLighting.ArgbSync)) return resp;
-        resp.Devices.AddRange(BuildCards(_hub.DeviceId, _hub.Profile, settings));
+        var slot = 0;
+        foreach (var hub in _hubs.Hubs)
+        {
+            // Under ARGB sync the fans play the source header's card, so the ports have none of their own.
+            if (!hub.IsConnected || PlaysArgbInput(hub, settings)) continue;
+            var cards = BuildCards(hub.DeviceId, hub.Profile, settings, slot);
+            slot += cards.Count;
+            resp.Devices.AddRange(cards);
+        }
         return resp;
     }
 
     /// <summary>Pure card emission for the current composition + partition; static so tests cover it without a live hub.</summary>
-    internal static List<LightingDevice> BuildCards(string hubId, in LianLiFanProfile profile, NexusSettings settings)
+    internal static List<LightingDevice> BuildCards(string hubId, in LianLiFanProfile profile, NexusSettings settings, int firstSlot = 0)
     {
         var comp = LianLiZoneSupport.ReadComposition(settings, hubId);
-        var composed = LianLiZoneSupport.Compose(hubId, profile, comp, settings.Devices.LianLi);
+        var composed = LianLiZoneSupport.Compose(hubId, profile, comp, LianLiHubSet.FansOf(settings.Devices, hubId));
         var cards = new List<LightingDevice>();
-        var slot = 0;
+        var slot = firstSlot;
         foreach (var device in composed)
         {
             var zones = ZoneResolution.Resolve(device.Structure, settings);
@@ -217,13 +235,13 @@ public sealed class LianLiLightingDeviceProvider :
 
     public HubCompositionInfo? DescribeComposition(string deviceId)
     {
-        var hubId = _hub.DeviceId;
-        if (!_hub.IsConnected || string.IsNullOrEmpty(hubId)) return null;
-        if (deviceId != hubId && !deviceId.StartsWith(hubId + ":", StringComparison.Ordinal)) return null;
+        var hub = _hubs.Owner(deviceId);
+        if (hub is null || !hub.IsConnected) return null;
+        var hubId = hub.DeviceId;
 
         var settings = _store.Load();
         var comp = LianLiZoneSupport.ReadComposition(settings, hubId);
-        var lianLi = settings.Devices.LianLi;
+        var lianLi = LianLiHubSet.FansOf(settings.Devices, hubId);
         var active = new bool[LianLiProtocol.PortCount];
         for (var p = 0; p < LianLiProtocol.PortCount; p++)
         {
@@ -234,7 +252,7 @@ public sealed class LianLiLightingDeviceProvider :
             HubId = hubId,
             HubKind = "lianli",
             PortCount = LianLiProtocol.PortCount,
-            HasRingsAxis = _hub.Profile.ChannelsPerPort == 2,
+            HasRingsAxis = hub.Profile.ChannelsPerPort == 2,
             HasPortToggle = false,
             HasMirror = false,
             Mirror = false,
@@ -247,33 +265,35 @@ public sealed class LianLiLightingDeviceProvider :
 
     public IReadOnlyList<DeviceStructure> GetStructures()
     {
-        if (!_hub.IsConnected || string.IsNullOrEmpty(_hub.DeviceId))
-        {
-            return Array.Empty<DeviceStructure>();
-        }
         var settings = _store.Load();
-        if (_hub.Profile.PlaysArgbInput(settings.Devices.LianLiLighting.ArgbSync)) return Array.Empty<DeviceStructure>();
-        var comp = LianLiZoneSupport.ReadComposition(settings, _hub.DeviceId);
-        var composed = LianLiZoneSupport.Compose(_hub.DeviceId, _hub.Profile, comp, settings.Devices.LianLi);
-        var structures = new List<DeviceStructure>(composed.Count);
-        foreach (var device in composed)
+        var structures = new List<DeviceStructure>();
+        foreach (var device in ComposeAll(settings))
         {
             structures.Add(device.Structure);
         }
         return structures;
     }
 
+    // Every attached hub's devices, hub by hub; a hub under ARGB sync has none.
+    private List<ComposedDevice> ComposeAll(NexusSettings settings)
+    {
+        var all = new List<ComposedDevice>();
+        foreach (var hub in _hubs.Hubs)
+        {
+            if (!hub.IsConnected || PlaysArgbInput(hub, settings)) continue;
+            var comp = LianLiZoneSupport.ReadComposition(settings, hub.DeviceId);
+            all.AddRange(LianLiZoneSupport.Compose(hub.DeviceId, hub.Profile, comp, LianLiHubSet.FansOf(settings.Devices, hub.DeviceId)));
+        }
+        return all;
+    }
+
     // ── ILightingFrameContributor ──
 
     public IReadOnlyList<DeviceFrame> BuildFrames(int startingIndex)
     {
-        if (!_hub.IsConnected) return Array.Empty<DeviceFrame>();
-
         var settings = _store.Load();
-        if (_hub.Profile.PlaysArgbInput(settings.Devices.LianLiLighting.ArgbSync)) return Array.Empty<DeviceFrame>();
         var layouts = settings.Lighting.DeviceLayouts;
-        var comp = LianLiZoneSupport.ReadComposition(settings, _hub.DeviceId);
-        var composed = LianLiZoneSupport.Compose(_hub.DeviceId, _hub.Profile, comp, settings.Devices.LianLi);
+        var composed = ComposeAll(settings);
 
         var frames = new List<DeviceFrame>();
         var idx = startingIndex;

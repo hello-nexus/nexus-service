@@ -7,6 +7,7 @@ using Nexus.Service.Lighting.Engine;
 using Nexus.Service.Lighting.Zones;
 using Nexus.Service.Peripherals.Strimer;
 using Nexus.Service.Persistence;
+using Nexus.Service.Platform;
 using RgbColor = Nexus.Service.Peripherals.Hyte.Np50.RgbColor;
 
 namespace Nexus.Service.Lighting;
@@ -33,6 +34,10 @@ public sealed class StrimerLightingFrameWriter : IHostedService, IDisposable
 
     // Last firmware-mode signature committed; null forces re-commit on next tick.
     private int? _lastFirmwareSig;
+    // Sync state the controller last accepted; false after attach, so a cable never put on sync sees no extra write.
+    private bool _argbSyncSent;
+    private const long ArgbRetryMs = 1000;
+    private long _argbRetryAtMs;
 
     private readonly FeatureGates _gates;
 
@@ -92,20 +97,39 @@ public sealed class StrimerLightingFrameWriter : IHostedService, IDisposable
         }
     }
 
-    private void Tick()
+    internal void Tick()
     {
         if (!_gates.Lighting) return;
         if (!_hub.IsConnected)
         {
             _lastFirmwareSig = null;
+            _argbSyncSent = false;
+            _argbRetryAtMs = 0;
             return;
         }
+
+        var settings         = _store.Load();
+        var ls               = settings.Devices.StrimerLighting;
+        // Under sync the cable has no engine cards, so the switch runs before the device check.
+        if (ls.ArgbSync != _argbSyncSent)
+        {
+            var now = Environment.TickCount64;
+            if (now < _argbRetryAtMs) return;
+            if (!_hub.SendArgbSync(ls.ArgbSync))
+            {
+                if (_argbRetryAtMs == 0) ServiceLog.Warn("[strimer-lighting-writer] ARGB sync switch rejected by the controller; retrying");
+                _argbRetryAtMs = now + ArgbRetryMs;
+                return;
+            }
+            _argbRetryAtMs = 0;
+            _argbSyncSent = ls.ArgbSync;
+            _lastFirmwareSig = null;
+        }
+        if (ls.ArgbSync) return;
 
         var devices = _engine.Devices;
         if (devices.Length == 0) return;
 
-        var settings         = _store.Load();
-        var ls               = settings.Devices.StrimerLighting;
         var globalBrightness = MasterBrightness.Effective(settings.Lighting);
 
         if (ls.Mode == "custom")

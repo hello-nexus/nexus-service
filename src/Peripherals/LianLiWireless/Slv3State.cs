@@ -76,4 +76,12 @@ public sealed class Slv3FanInfo
     public bool Stale { get; set; }
     /// <summary>HydroShift II coolant temperature in °C; null for other devices or when not reported.</summary>
     public int? CoolantTempC { get; set; }
+    /// <summary>Chain RF firmware version; 0 when not reported.</summary>
+    public int FirmwareVersion { get; set; }
+    /// <summary>The chain's ARGB sync cable to a motherboard header is plugged in.</summary>
+    public bool ArgbCableConnected { get; set; }
+    /// <summary>The chain is playing its motherboard ARGB input instead of the host's frames.</summary>
+    public bool PlayingMotherboardArgb { get; set; }
+    /// <summary>The chain's PWM cable to a motherboard fan header is plugged in; without it, following the header has no input.</summary>
+    public bool PwmCableConnected { get; set; }
 }

@@ -50,6 +50,9 @@ public static class LianLiZoneSupport
 
     public static int ClampFans(int fans) => Math.Clamp(fans, 0, LianLiProtocol.MaxFansPerPort);
 
+    /// <summary>A port's fan count within what the attached family chains.</summary>
+    public static int ClampFans(int fans, in LianLiFanProfile profile) => Math.Clamp(fans, 0, profile.MaxFans);
+
     /// <summary>Ports with at least one fan, in ascending order.</summary>
     public static List<int> ActivePorts(LianLiSettings fans)
     {
@@ -69,7 +72,7 @@ public static class LianLiZoneSupport
     {
         var comp = ReadComposition(settings, hubId);
         var ids = new List<string>();
-        foreach (var device in Compose(hubId, profile, comp, settings.Devices.LianLi))
+        foreach (var device in Compose(hubId, profile, comp, LianLiHubSet.FansOf(settings.Devices, hubId)))
         {
             foreach (var zone in ZoneResolution.Resolve(device.Structure, settings))
             {
@@ -84,7 +87,7 @@ public static class LianLiZoneSupport
     {
         var comp = ReadComposition(settings, hubId);
         var ids = new List<string>();
-        foreach (var device in Compose(hubId, profile, comp, settings.Devices.LianLi))
+        foreach (var device in Compose(hubId, profile, comp, LianLiHubSet.FansOf(settings.Devices, hubId)))
         {
             ids.Add(device.Structure.DeviceId);
         }
@@ -103,7 +106,7 @@ public static class LianLiZoneSupport
 
         foreach (var p in active)
         {
-            var fanCount = ClampFans(fans.GetFans(p));
+            var fanCount = ClampFans(fans.GetFans(p), profile);
             devices.Add(profile.ChannelsPerPort == 1
                 ? BuildSingleRingDevice(hubId, profile, $"port{p}", $"Port {p + 1}", fanCount, new[] { p })
                 : BuildDevice(hubId, profile, $"port{p}", $"Port {p + 1}", fanCount, comp.CombineRings,
