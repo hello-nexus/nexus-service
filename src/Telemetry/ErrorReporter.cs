@@ -1,5 +1,7 @@
 using System;
+using System.Collections.Concurrent;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.IO;
 using System.Linq;
 using System.Runtime.InteropServices;
@@ -32,10 +34,11 @@ internal sealed partial class ErrorReporter
 {
     internal const int MaxDistinct = 100;
     internal const int MaxPerPost = 20;
+    internal const int MaxRaw = 200;
     internal const int MaxCrashFileBytes = 64 * 1024;
     internal static readonly TimeSpan ResendWindow = TimeSpan.FromHours(1);
 
-    private const int KindMax = 32, FingerprintMax = 64, TypeMax = 128, MessageMax = 1000, StackMax = 8000, ContextMax = 500;
+    private const int KindMax = 32, FingerprintMax = 64, TypeMax = 128, MessageMax = 1000, StackMax = 4000, ContextMax = 500;
     private const int FrameCount = 5;
 
     private readonly IConfigStore _store;
@@ -46,17 +49,26 @@ internal sealed partial class ErrorReporter
     private readonly Dictionary<string, ErrorReportItem> _pending = new();
     private readonly Dictionary<string, DateTimeOffset> _lastSent = new();
     private readonly SemaphoreSlim _flushGate = new(1, 1);
+    private readonly ConcurrentQueue<RawReport> _raw = new();
+    private readonly object _rateLock = new();
+    private readonly double _ratePerSecond;
+    private double _tokens;
+    private long _lastTicks = Stopwatch.GetTimestamp();
+    private int _rawCount;
+    private long _dropped;
     private volatile bool _enabled;
 
     [ThreadStatic] private static bool t_inReport;
 
     public ErrorReporter(IConfigStore store, IErrorTransport transport)
-        : this(store, transport, TimeProvider.System, DefaultCrashFile())
+        : this(store, transport, TimeProvider.System, DefaultCrashFile(), 10)
     {
     }
 
-    internal ErrorReporter(IConfigStore store, IErrorTransport transport, TimeProvider clock, string crashFile)
+    internal ErrorReporter(IConfigStore store, IErrorTransport transport, TimeProvider clock, string crashFile, int ratePerSecond = 1_000_000)
     {
+        _ratePerSecond = ratePerSecond;
+        _tokens = ratePerSecond;
         _store = store;
         _transport = transport;
         _clock = clock;
@@ -70,7 +82,11 @@ internal sealed partial class ErrorReporter
 
     internal int PendingCount
     {
-        get { lock (_lock) return _pending.Count; }
+        get
+        {
+            Drain();
+            lock (_lock) return _pending.Count;
+        }
     }
 
     private void OnSettingsChanged()
@@ -90,6 +106,8 @@ internal sealed partial class ErrorReporter
 
     private void ClearState()
     {
+        while (_raw.TryDequeue(out _))
+            Interlocked.Decrement(ref _rawCount);
         lock (_lock)
         {
             _pending.Clear();
@@ -98,57 +116,100 @@ internal sealed partial class ErrorReporter
         try { File.Delete(_crashFile); } catch { /* best-effort */ }
     }
 
-    /// <summary>Records a service-side exception. Safe to call from anywhere, including failure paths.</summary>
+    /// <summary>Records a service-side exception. Safe to call from anywhere, including failure paths. Costs a rate-gate check and a queue push; fingerprinting, scrubbing and truncation happen at flush time.</summary>
     public void Report(Exception ex, string kind, string? context)
     {
-        if (!_enabled || t_inReport)
+        if (!_enabled || !TryAcquire())
             return;
-        t_inReport = true;
-        try
+        Enqueue(new RawReport { Exception = ex, Kind = kind, Context = context, At = _clock.GetUtcNow() });
+    }
+
+    /// <summary>Records an error the browser already serialized (source "web"); same cost profile as <see cref="Report"/>.</summary>
+    public void ReportClient(string kind, string fingerprint, string type, string message, string stack, string? context, int count)
+    {
+        if (!_enabled || !TryAcquire())
+            return;
+        Enqueue(new RawReport
         {
-            Add(BuildItem(ex, kind, context));
+            Kind = kind, Fingerprint = fingerprint, Type = type, Message = message, Stack = stack, Context = context,
+            Count = count, At = _clock.GetUtcNow(),
+        });
+    }
+
+    /// <summary>Reports refused by the process-wide rate gate or a full raw queue.</summary>
+    internal long DroppedCount => Interlocked.Read(ref _dropped);
+
+    // Token bucket: capacity and refill are both _ratePerSecond. A hot loop pays one short lock and a counter bump.
+    private bool TryAcquire()
+    {
+        lock (_rateLock)
+        {
+            var now = Stopwatch.GetTimestamp();
+            _tokens = Math.Min(_ratePerSecond, _tokens + (now - _lastTicks) * _ratePerSecond / (double)Stopwatch.Frequency);
+            _lastTicks = now;
+            if (_tokens >= 1)
+            {
+                _tokens -= 1;
+                return true;
+            }
         }
-        catch (Exception inner)
+        Interlocked.Increment(ref _dropped);
+        return false;
+    }
+
+    private void Enqueue(RawReport raw)
+    {
+        if (Interlocked.Increment(ref _rawCount) > MaxRaw)
         {
-            Console.Error.WriteLine($"[error-report] report failed: {inner.GetType().Name}");
+            Interlocked.Decrement(ref _rawCount);
+            Interlocked.Increment(ref _dropped);
+            return;
         }
-        finally
+        _raw.Enqueue(raw);
+    }
+
+    // Turns queued raw reports into scrubbed, capped, fingerprinted items. Runs on the flush thread.
+    private void Drain()
+    {
+        while (_raw.TryDequeue(out var r))
         {
-            t_inReport = false;
+            Interlocked.Decrement(ref _rawCount);
+            try
+            {
+                Add(r.Exception is not null ? BuildItem(r.Exception, r.Kind, r.Context, r.At) : BuildClientItem(r));
+            }
+            catch (Exception inner)
+            {
+                Console.Error.WriteLine($"[error-report] item failed: {inner.GetType().Name}");
+            }
         }
     }
 
-    /// <summary>Records an error the browser already serialized (source "web").</summary>
-    public void ReportClient(string kind, string fingerprint, string type, string message, string stack, string? context, int count)
+    private static ErrorReportItem BuildClientItem(RawReport r) => new()
     {
-        if (!_enabled || t_inReport)
-            return;
-        t_inReport = true;
-        try
-        {
-            var now = _clock.GetUtcNow();
-            Add(new ErrorReportItem
-            {
-                Source = "web",
-                Kind = Cap(kind, KindMax),
-                Fingerprint = Cap(fingerprint, FingerprintMax),
-                Type = string.IsNullOrWhiteSpace(type) ? "Error" : Cap(Scrub(type), TypeMax),
-                Message = Cap(Scrub(message), MessageMax),
-                Stack = Cap(Scrub(stack), StackMax),
-                Context = Cap(Scrub(context ?? ""), ContextMax),
-                Count = Math.Max(1, count),
-                FirstSeen = now,
-                LastSeen = now,
-            });
-        }
-        catch (Exception inner)
-        {
-            Console.Error.WriteLine($"[error-report] report failed: {inner.GetType().Name}");
-        }
-        finally
-        {
-            t_inReport = false;
-        }
+        Source = "web",
+        Kind = Cap(r.Kind, KindMax),
+        Fingerprint = Cap(r.Fingerprint ?? "", FingerprintMax),
+        Type = string.IsNullOrWhiteSpace(r.Type) ? "Error" : Cap(Scrub(r.Type), TypeMax),
+        Message = Cap(Scrub(r.Message ?? ""), MessageMax),
+        Stack = Cap(Scrub(r.Stack ?? ""), StackMax),
+        Context = Cap(Scrub(r.Context ?? ""), ContextMax),
+        Count = Math.Max(1, r.Count),
+        FirstSeen = r.At,
+        LastSeen = r.At,
+    };
+
+    private sealed class RawReport
+    {
+        public Exception? Exception { get; init; }
+        public string Kind { get; init; } = "";
+        public string? Fingerprint { get; init; }
+        public string? Type { get; init; }
+        public string? Message { get; init; }
+        public string? Stack { get; init; }
+        public string? Context { get; init; }
+        public int Count { get; init; } = 1;
+        public DateTimeOffset At { get; init; }
     }
 
     internal static string DefaultCrashFilePath() => DefaultCrashFile();
@@ -161,7 +222,7 @@ internal sealed partial class ErrorReporter
         t_inReport = true;
         try
         {
-            var json = JsonSerializer.Serialize(BuildItem(ex, ErrorKinds.Crash, null, TimeProvider.System), AppJsonContext.Default.ErrorReportItem);
+            var json = JsonSerializer.Serialize(BuildItem(ex, ErrorKinds.Crash, null, DateTimeOffset.UtcNow), AppJsonContext.Default.ErrorReportItem);
             if (Encoding.UTF8.GetByteCount(json) > MaxCrashFileBytes)
                 return;
             Directory.CreateDirectory(Path.GetDirectoryName(path)!);
@@ -224,6 +285,7 @@ internal sealed partial class ErrorReporter
 
     private async Task FlushCoreAsync(CancellationToken ct)
     {
+        Drain();
         var now = _clock.GetUtcNow();
         var batch = new List<ErrorReportItem>();
         var crash = ReadCrashFile();
@@ -303,13 +365,12 @@ internal sealed partial class ErrorReporter
         }
     }
 
-    internal ErrorReportItem BuildItem(Exception ex, string kind, string? context) => BuildItem(ex, kind, context, _clock);
+    internal ErrorReportItem BuildItem(Exception ex, string kind, string? context) => BuildItem(ex, kind, context, _clock.GetUtcNow());
 
-    private static ErrorReportItem BuildItem(Exception ex, string kind, string? context, TimeProvider clock)
+    private static ErrorReportItem BuildItem(Exception ex, string kind, string? context, DateTimeOffset now)
     {
         var raw = ex.ToString();
         var type = ex.GetType().FullName ?? ex.GetType().Name;
-        var now = clock.GetUtcNow();
         return new ErrorReportItem
         {
             Source = "service",

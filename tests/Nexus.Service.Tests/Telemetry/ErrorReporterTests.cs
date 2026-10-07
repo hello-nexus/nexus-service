@@ -2,17 +2,26 @@ using System.Text.Json;
 using Nexus.Service.Serialization;
 using Nexus.Service.Telemetry;
 using Xunit;
+using Xunit.Abstractions;
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging;
 
 namespace Nexus.Service.Tests.Telemetry;
 
 public class ErrorReporterTests : IDisposable
 {
+    private readonly ITestOutputHelper _out;
+
     private readonly string _dir = Path.Combine(Path.GetTempPath(), "nexus-err-" + Guid.NewGuid().ToString("N"));
     private readonly InMemoryConfigStore _store = new();
     private readonly CapturingTransport _transport = new();
     private readonly TestClock _clock = new();
 
-    public ErrorReporterTests() => _store.Update(s => s.Telemetry.CollectAnonymousData = true);
+    public ErrorReporterTests(ITestOutputHelper output)
+    {
+        _out = output;
+        _store.Update(s => s.Telemetry.CollectAnonymousData = true);
+    }
 
     public void Dispose()
     {
@@ -112,7 +121,7 @@ public class ErrorReporterTests : IDisposable
         var item = Reporter().BuildItem(Thrown(new string('m', 5000)), new string('k', 100), new string('c', 5000));
         Assert.True(item.Kind.Length <= 32);
         Assert.True(item.Message.Length <= 1000);
-        Assert.True(item.Stack.Length <= 8000);
+        Assert.True(item.Stack.Length <= 4000);
         Assert.True(item.Context.Length <= 500);
         Assert.True(item.Type.Length <= 128);
     }
@@ -242,5 +251,55 @@ public class ErrorReporterTests : IDisposable
         Assert.Matches(@"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?(Z|[+-]\d{2}:\d{2})$", first);
         Assert.Matches(@"^\d{4}-\d{2}-\d{2}T", e.GetProperty("lastSeen").GetString()!);
         Assert.True(root.GetProperty("devTools").ValueKind is JsonValueKind.True or JsonValueKind.False);
+    }
+
+    [Fact]
+    public void Rate_gate_drops_a_burst_beyond_the_bucket_without_queueing_it()
+    {
+        var r = new ErrorReporter(_store, _transport, _clock, CrashFile, ratePerSecond: 10);
+        for (var i = 0; i < 100; i++)
+            r.ReportClient("render", "fp" + i, "T", "m", "s", null, 1);
+        Assert.InRange(r.PendingCount, 10, 14);
+        Assert.True(r.DroppedCount >= 86);
+    }
+
+    [Fact]
+    public void Hundred_thousand_reports_of_one_exception_stay_cheap()
+    {
+        var ex = Thrown();
+        foreach (var rate in new[] { 10, 1_000_000 })
+        {
+            var r = new ErrorReporter(_store, _transport, _clock, CrashFile, rate);
+            var sw = System.Diagnostics.Stopwatch.StartNew();
+            for (var i = 0; i < 100_000; i++)
+                r.Report(ex, "logged", "ctx");
+            sw.Stop();
+            _out.WriteLine($"rate {rate}/s: 100000 Report calls in {sw.Elapsed.TotalMilliseconds:F1} ms, pending {r.PendingCount}, dropped {r.DroppedCount}");
+            Assert.True(sw.Elapsed < TimeSpan.FromSeconds(1), $"took {sw.Elapsed}");
+        }
+    }
+
+    [Fact]
+    public void Logger_provider_is_disabled_below_Error()
+    {
+        var sp = new ServiceCollection().BuildServiceProvider();
+        var logger = new ErrorLoggerProvider(sp).CreateLogger("x");
+        Assert.False(logger.IsEnabled(LogLevel.Trace));
+        Assert.False(logger.IsEnabled(LogLevel.Information));
+        Assert.False(logger.IsEnabled(LogLevel.Warning));
+        Assert.True(logger.IsEnabled(LogLevel.Error));
+        Assert.True(logger.IsEnabled(LogLevel.Critical));
+    }
+
+    [Fact]
+    public async Task No_post_when_nothing_is_pending_and_one_post_per_flush()
+    {
+        var r = Reporter();
+        await r.FlushAsync(default);
+        Assert.Empty(_transport.Sent);
+        for (var i = 0; i < 50; i++)
+            r.ReportClient("render", "fp" + i, "T", "m", "s", null, 1);
+        await r.FlushAsync(default);
+        Assert.Single(_transport.Sent);
     }
 }
