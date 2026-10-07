@@ -697,6 +697,43 @@ public class ThermalGuardEngineTests
     }
 
     [Fact]
+    public void KeepingAHeal_ClearsTheUndoSnapshotAndTheHealedList_ButKeepsTheCurves()
+    {
+        var (_, fans, store, _) = Build();
+        var guard = new ThermalGuardController(fans, store);
+        var healed = guard.HealNow(automatic: false);
+        Assert.True(healed.UndoAvailable);
+        Assert.NotEmpty(healed.Channels);
+        var curvesAfterHeal = store.Load().Cooling.Curves.Select(c => c.Id).ToArray();
+
+        var kept = guard.Keep();
+
+        Assert.False(kept.UndoAvailable);
+        Assert.Empty(kept.Channels);
+        Assert.Null(kept.HealedAtUtcMs);
+        Assert.Null(store.Load().Cooling.HealSnapshot);
+        Assert.Equal(curvesAfterHeal, store.Load().Cooling.Curves.Select(c => c.Id).ToArray());
+        // Nothing left to undo.
+        Assert.False(guard.Undo().UndoAvailable);
+        Assert.Equal(curvesAfterHeal, store.Load().Cooling.Curves.Select(c => c.Id).ToArray());
+    }
+
+    [Fact]
+    public void KeepingWithNothingToKeep_IsANoOp_ThatReturnsTheCurrentHealState()
+    {
+        var (_, fans, store, _) = Build();
+        var guard = new ThermalGuardController(fans, store);
+        var changes = 0;
+        store.OnChanged += () => changes++;
+
+        var state = guard.Keep();
+
+        Assert.False(state.UndoAvailable);
+        Assert.Empty(state.Channels);
+        Assert.Equal(0, changes);
+    }
+
+    [Fact]
     public void HealUndo_RestoresTheCurvesAndTheDroppedManualSpeedsExactly()
     {
         var (_, fans, store, _) = Build();

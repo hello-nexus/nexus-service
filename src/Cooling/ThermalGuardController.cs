@@ -939,6 +939,22 @@ public sealed class ThermalGuardController
         return BuildHealState(_store.Load().Cooling);
     }
 
+    /// <summary>Accepts the last heal: drops the undo snapshot and the healed-channel list. A no-op when there is nothing to keep.</summary>
+    public HealStateDto Keep()
+    {
+        var cooling = _store.Load().Cooling;
+        if (cooling.HealSnapshot is null)
+        {
+            return BuildHealState(cooling);
+        }
+        _store.Update(s => s.Cooling.ClearHeal("kept"));
+        if (_hub is not null)
+        {
+            PanelTopics.BroadcastCooling(_hub);
+        }
+        return BuildHealState(_store.Load().Cooling);
+    }
+
     public HealStateDto Undo()
     {
         var settings = _store.Load();

@@ -88,6 +88,15 @@ public static class CoolingRoutes
             return Results.Ok(guard.HealNow(automatic: false));
         });
 
+        app.MapPost("/cooling/heal/keep", (ThermalGuardController guard, FeatureGates gates) =>
+        {
+            if (!gates.Cooling)
+            {
+                return Results.Conflict(new FeatureDisabledResponse { Feature = FeatureNames.Cooling });
+            }
+            return Results.Ok(guard.Keep());
+        });
+
         app.MapPost("/cooling/heal/undo", (ThermalGuardController guard, FeatureGates gates) =>
         {
             if (!gates.Cooling)
