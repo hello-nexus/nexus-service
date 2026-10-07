@@ -74,6 +74,8 @@ public sealed class Slv3FanInfo
     public string EffectIndex { get; set; } = "";
     /// <summary>True when the chain has missed recent device-list polls (beacon unheard); telemetry is last-known, not live.</summary>
     public bool Stale { get; set; }
+    /// <summary>A HydroShift II that is also on the USB link (same radio MAC), where its screen has its own panel page.</summary>
+    public bool UsbConnected { get; set; }
     /// <summary>HydroShift II coolant temperature in °C; null for other devices or when not reported.</summary>
     public int? CoolantTempC { get; set; }
     /// <summary>Chain RF firmware version; 0 when not reported.</summary>

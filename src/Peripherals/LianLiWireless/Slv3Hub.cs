@@ -64,6 +64,10 @@ public sealed class Slv3Hub : IDisposable
     /// <summary>Host readings for a HydroShift II's LCD; read once per <see cref="DriveTick"/>, outside the hub lock.</summary>
     public Func<Slv3AioSensors>? AioSensors { get; set; }
 
+    /// <summary>Radio MAC hex of the HydroShift II on the USB link, or null; read once per tick, outside the hub lock.</summary>
+    public Func<string?>? UsbAioMac { get; set; }
+    private volatile string? _usbAioMac;
+
     /// <summary>Saved HydroShift II screens by AIO MAC hex; read once per <see cref="DriveTick"/>, outside the hub lock.</summary>
     public Func<IReadOnlyDictionary<string, Slv3AioScreen>>? AioScreens { get; set; }
 
@@ -424,6 +428,7 @@ public sealed class Slv3Hub : IDisposable
     /// </summary>
     public bool PollTick()
     {
+        _usbAioMac = ReadUsbAioMac();
         lock (_lock)
         {
             return PollLocked();
@@ -438,6 +443,7 @@ public sealed class Slv3Hub : IDisposable
     /// </summary>
     public bool DriveTick()
     {
+        _usbAioMac = ReadUsbAioMac();
         var aio = _anyAioControlled || _anyAioBound;
         var aioSensors = aio ? ReadAioSensors() : default;
         var aioScreens = aio ? ReadAioScreens() : null;
@@ -665,6 +671,19 @@ public sealed class Slv3Hub : IDisposable
                 _aioControl.Remove(key);
             }
             _anyAioControlled = _aioControl.Count > 0;
+        }
+    }
+
+    private string? ReadUsbAioMac()
+    {
+        try
+        {
+            return UsbAioMac?.Invoke();
+        }
+        catch (Exception ex)
+        {
+            ServiceLog.Warn($"[lianli-wireless] USB AIO lookup failed: {ex.Message}");
+            return null;
         }
     }
 
@@ -1084,6 +1103,8 @@ public sealed class Slv3Hub : IDisposable
         Pwm = (int[])record.Pwm.Clone(),
         EffectIndex = Convert.ToHexString(record.EffectIndex),
         Stale = stale,
+        UsbConnected = record.IsHydroShift && _usbAioMac is { } usbMac
+            && string.Equals(usbMac, Convert.ToHexString(record.Mac), StringComparison.OrdinalIgnoreCase),
         CoolantTempC = record.CoolantTempC,
         FirmwareVersion = record.RfVersion,
         ArgbCableConnected = record.ArgbCableConnected,

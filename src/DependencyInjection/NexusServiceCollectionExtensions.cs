@@ -991,6 +991,10 @@ public static class NexusServiceCollectionExtensions
                 }
                 return screens;
             };
+            // Resolved on first use: the USB AIO service itself depends on this hub.
+            var usbAio = new Lazy<Nexus.Service.Peripherals.BulkPanels.HydroShift2Aio?>(
+                () => sp.GetService<Nexus.Service.Peripherals.BulkPanels.HydroShift2Aio>());
+            hub.UsbAioMac = () => usbAio.Value?.Params?.Mac;
             return new Nexus.Service.Cooling.Slv3CoolingProvider(hub);
         });
         services.AddHostedService<Nexus.Service.Peripherals.LianLiWireless.Slv3ConnectionWorker>();

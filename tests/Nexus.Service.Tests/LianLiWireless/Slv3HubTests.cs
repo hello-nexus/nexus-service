@@ -493,6 +493,21 @@ public class Slv3HubTests
     }
 
     [Fact]
+    public void Only_the_hydroshift_on_the_usb_link_is_marked_usb_connected()
+    {
+        var (hub, net, _, _) = CreateConnectedHub();
+        var other = Convert.FromHexString("102030405060");
+        net.Fans.Add(new SimulatedFan { Mac = FanMac, MasterMac = net.MasterMac, RxType = 1, DevType = 11, FanCount = 0 });
+        net.Fans.Add(new SimulatedFan { Mac = other, MasterMac = net.MasterMac, RxType = 2, DevType = 11, FanCount = 0 });
+        hub.UsbAioMac = () => Convert.ToHexString(FanMac).ToLowerInvariant();
+
+        Assert.True(hub.DriveTick());
+
+        Assert.True(hub.State.Fans.Single(f => f.Mac == Convert.ToHexString(FanMac)).UsbConnected);
+        Assert.False(hub.State.Fans.Single(f => f.Mac == Convert.ToHexString(other)).UsbConnected);
+    }
+
+    [Fact]
     public void Screen_held_hydroshift_is_switched_again_after_an_unbind_and_rebind()
     {
         var (hub, net, tx, _) = CreateConnectedHub();
