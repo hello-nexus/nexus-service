@@ -44,6 +44,12 @@ public class KrakenModelTests
     }
 
     [Fact]
+    public void Only_the_2023_Elite_streams_on_the_direct_path()
+    {
+        Assert.Equal(new[] { 0x300C }, KrakenModel.All.Where(m => m.DirectStream).Select(m => m.ProductId));
+    }
+
+    [Fact]
     public void Unknown_product_id_has_no_model()
     {
         Assert.Null(KrakenModel.Find(0x170E));

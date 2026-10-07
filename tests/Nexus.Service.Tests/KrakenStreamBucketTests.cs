@@ -17,7 +17,8 @@ namespace Nexus.Service.Tests;
 public class KrakenStreamBucketTests
 {
     // No lighting channels, so Connect skips the accessory table and the fake only has to
-    // ack what it is asked.
+    // ack what it is asked. The 2023 Kraken streams through buckets; the 2023 Elite does not.
+    private static readonly KrakenModel BucketStreamNoRgb = KrakenModel.Find(0x300E)!;
     private static readonly KrakenModel EliteNoRgb = KrakenModel.Find(0x300C)!;
 
     [Fact]
@@ -26,18 +27,18 @@ public class KrakenStreamBucketTests
         var hid = new AckingHidDevice();
         var lcd = new RecordingLcdTransport();
         var hub = new KrakenHub(new FixedLcdFactory(lcd));
-        hub.Attach(hid, EliteNoRgb, KrakenProtocol.ReportLength);
+        hub.Attach(hid, BucketStreamNoRgb, KrakenProtocol.ReportLength);
         Assert.True(hub.Connect());
         Assert.True(hub.HasLcd);
 
-        var frame = new byte[EliteNoRgb.LcdFrameBytes];
+        var frame = new byte[BucketStreamNoRgb.LcdFrameBytes];
         for (int i = 0; i < 7; i++)
         {
             Assert.True(hub.PushStreamFrame(frame), $"push {i}");
         }
 
         var setups = hid.Writes.Where(w => w[0] == 0x32 && w[1] == 0x01).Select(w => (Index: w[2], StartPage: w[4] | (w[5] << 8))).ToList();
-        var pages = KrakenProtocol.PagesFor(EliteNoRgb.LcdFrameBytes);
+        var pages = KrakenProtocol.PagesFor(BucketStreamNoRgb.LcdFrameBytes);
         Assert.Equal(new[] { (0, 0), (1, pages), (2, 2 * pages) }, setups.Select(s => ((int)s.Index, s.StartPage)));
 
         var starts = hid.Writes.Where(w => w[0] == 0x36 && w[1] == 0x01).Select(w => (int)w[2]).ToList();
@@ -55,6 +56,100 @@ public class KrakenStreamBucketTests
             Assert.NotEqual(activations[k - 2], starts[k]);
         }
         Assert.Equal(7, lcd.Frames);
+    }
+
+    [Fact]
+    public void Elite_2023_streams_raw_bgr_frames_without_touching_buckets()
+    {
+        var hid = new AckingHidDevice();
+        var lcd = new RecordingLcdTransport();
+        var hub = new KrakenHub(new FixedLcdFactory(lcd));
+        hub.Attach(hid, EliteNoRgb, 64);
+        Assert.True(hub.Connect());
+
+        var frame = new byte[EliteNoRgb.LcdFrameBytes];
+        for (int i = 0; i < 3; i++)
+        {
+            Assert.True(hub.PushStreamFrame(frame), $"push {i}");
+        }
+
+        Assert.DoesNotContain(hid.Writes, w => w[0] == 0x32 && w[1] == 0x01);
+        Assert.DoesNotContain(hid.Writes, w => w[0] == 0x38 && w[1] == 0x01 && w[2] == (byte)KrakenDisplayMode.Bucket);
+        var starts = hid.Writes.Where(w => w[0] == 0x36 && w[1] == 0x01).ToList();
+        Assert.Equal(3, starts.Count);
+        Assert.All(starts, s => Assert.Equal(new byte[] { 0x36, 0x01, 0x00, 0x01, 0x09 }, s[..5]));
+        Assert.Equal(3, hid.Writes.Count(w => w[0] == 0x36 && w[1] == 0x02));
+        // CAM's one-time entry runs once per stream, not per frame.
+        Assert.Single(hid.Writes, w => w[0] == 0x36 && w[1] == 0x03);
+
+        int rawBytes = EliteNoRgb.LcdWidth * EliteNoRgb.LcdHeight * 3;
+        Assert.Equal(3, lcd.Frames);
+        Assert.All(lcd.Headers, h =>
+        {
+            Assert.Equal(KrakenProtocol.BulkFormatBgr888, h[12]);
+            Assert.Equal(rawBytes, BitConverter.ToInt32(h, 16));
+        });
+        Assert.Equal(3 * rawBytes, lcd.ChunkSizes.Sum());
+        // CAM's transfer size, which divides a full frame evenly.
+        Assert.All(lcd.ChunkSizes, n => Assert.Equal(245_760, n));
+        Assert.Equal(KrakenDisplayMode.Liquid, hub.Snapshot.DisplayMode);
+    }
+
+    [Fact]
+    public void Direct_stream_reenters_after_a_mode_change()
+    {
+        var hid = new AckingHidDevice();
+        var hub = new KrakenHub(new FixedLcdFactory(new RecordingLcdTransport()));
+        hub.Attach(hid, EliteNoRgb, 64);
+        Assert.True(hub.Connect());
+        var frame = new byte[EliteNoRgb.LcdFrameBytes];
+
+        Assert.True(hub.PushStreamFrame(frame));
+        Assert.True(hub.PushStreamFrame(frame));
+        Assert.True(hub.SetDisplayMode(KrakenDisplayMode.Blank));
+        Assert.True(hub.PushStreamFrame(frame));
+
+        Assert.Equal(2, hid.Writes.Count(w => w[0] == 0x36 && w[1] == 0x03));
+    }
+
+    [Fact]
+    public void Elite_2023_on_firmware_1_keeps_the_bucket_stream()
+    {
+        var hid = new AckingHidDevice { FirmwareMajor = 1 };
+        var hub = new KrakenHub(new FixedLcdFactory(new RecordingLcdTransport()));
+        hub.Attach(hid, EliteNoRgb, 64);
+        Assert.True(hub.Connect());
+
+        Assert.True(hub.PushStreamFrame(new byte[EliteNoRgb.LcdFrameBytes]));
+
+        Assert.Contains(hid.Writes, w => w[0] == 0x32 && w[1] == 0x01);
+        Assert.DoesNotContain(hid.Writes, w => w[0] == 0x36 && w[1] == 0x01 && w[4] == KrakenProtocol.BulkFormatBgr888);
+    }
+
+    [Fact]
+    public void Bucket_models_still_reject_a_non_ack_bucket_setup_reply()
+    {
+        var hid = new AckingHidDevice { SetupReplyByte = 0x05 };
+        var hub = new KrakenHub(new FixedLcdFactory(new RecordingLcdTransport()));
+        hub.Attach(hid, BucketStreamNoRgb, 64);
+        Assert.True(hub.Connect());
+
+        Assert.False(hub.UploadLcdImage(new byte[BucketStreamNoRgb.LcdFrameBytes]));
+    }
+
+    [Fact]
+    public void Elite_2023_still_upload_accepts_a_non_ack_bucket_setup_reply()
+    {
+        // Firmware 2.x is reported to answer a successful bucket setup with 0x05.
+        var hid = new AckingHidDevice { SetupReplyByte = 0x05 };
+        var lcd = new RecordingLcdTransport();
+        var hub = new KrakenHub(new FixedLcdFactory(lcd));
+        hub.Attach(hid, EliteNoRgb, 64);
+        Assert.True(hub.Connect());
+
+        Assert.True(hub.UploadLcdImage(new byte[EliteNoRgb.LcdFrameBytes]));
+        Assert.Equal(new byte[] { 0x36, 0x03 }, hid.Writes.First(w => w[0] == 0x36)[..2]);
+        Assert.Equal(1, lcd.Frames);
     }
 
     [Fact]
@@ -83,6 +178,9 @@ public class KrakenStreamBucketTests
         public int UsagePage => 0xFF00;
         public int Usage => 1;
 
+        public byte SetupReplyByte { get; init; } = KrakenProtocol.AckOk;
+        public byte FirmwareMajor { get; init; } = 2;
+
         public bool Write(ReadOnlySpan<byte> report)
         {
             var copy = report.ToArray();
@@ -90,7 +188,12 @@ public class KrakenStreamBucketTests
             var reply = new byte[KrakenProtocol.ReportLength];
             reply[0] = (byte)(copy[0] + 1);
             reply[1] = copy[1];
-            reply[14] = KrakenProtocol.AckOk;
+            reply[14] = copy[0] == 0x32 && copy[1] == 0x01 ? SetupReplyByte : KrakenProtocol.AckOk;
+            if (copy[0] == 0x10)
+            {
+                reply[0x11] = FirmwareMajor;
+                reply[0x12] = 1;
+            }
             _replies.Enqueue(reply);
             return true;
         }
@@ -114,9 +217,19 @@ public class KrakenStreamBucketTests
     {
         // A header write starts a frame; the pixel chunks that follow belong to it.
         public int Frames { get; private set; }
+        public List<byte[]> Headers { get; } = new();
+        public List<int> ChunkSizes { get; } = new();
         public bool Write(ReadOnlySpan<byte> data)
         {
-            if (data.Length == 20) Frames++;
+            if (data.Length == 20)
+            {
+                Frames++;
+                Headers.Add(data.ToArray());
+            }
+            else
+            {
+                ChunkSizes.Add(data.Length);
+            }
             return true;
         }
         public void Dispose() { }

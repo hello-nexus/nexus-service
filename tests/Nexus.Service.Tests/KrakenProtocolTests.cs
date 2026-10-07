@@ -149,6 +149,44 @@ public class KrakenProtocolTests
     }
 
     [Fact]
+    public void Direct_transfer_start_matches_the_cam_capture()
+    {
+        Assert.Equal(new byte[] { 0x36, 0x01, 0x00, 0x01, 0x09 }, KrakenProtocol.EncodeStartDirectTransfer()[..5]);
+        Assert.Equal(new byte[] { 0x36, 0x03 }, KrakenProtocol.EncodeCancelTransfers()[..2]);
+    }
+
+    [Fact]
+    public void ToWireBgr_writes_three_bytes_a_pixel_in_bgr_order()
+    {
+        var bgra = new byte[] { 1, 2, 3, 0, 4, 5, 6, 0, 7, 8, 9, 0, 10, 11, 12, 0 };
+        var dst = new byte[12];
+        Assert.Equal(12, KrakenProtocol.ToWireBgr(bgra, 2, 2, 0, sourceIsBgra: true, dst));
+        Assert.Equal(new byte[] { 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12 }, dst);
+
+        var one = new byte[3];
+        KrakenProtocol.ToWireBgr(new byte[] { 3, 2, 1, 0 }, 1, 1, 0, sourceIsBgra: false, one);
+        Assert.Equal(new byte[] { 1, 2, 3 }, one);
+    }
+
+    [Fact]
+    public void ToWireBgr_rotates_like_the_rgba_path()
+    {
+        var bgra = Enumerable.Range(0, 3 * 3 * 4).Select(i => (byte)i).ToArray();
+        for (int turns = 0; turns < 4; turns++)
+        {
+            var rgba = KrakenProtocol.ToWireRgba(bgra, 3, 3, turns, sourceIsBgra: true);
+            var bgr = new byte[27];
+            KrakenProtocol.ToWireBgr(bgra, 3, 3, turns, sourceIsBgra: true, bgr);
+            for (int p = 0; p < 9; p++)
+            {
+                Assert.Equal(rgba[(p * 4) + 2], bgr[p * 3]);
+                Assert.Equal(rgba[(p * 4) + 1], bgr[(p * 3) + 1]);
+                Assert.Equal(rgba[p * 4], bgr[(p * 3) + 2]);
+            }
+        }
+    }
+
+    [Fact]
     public void EncodeSpeedCurve_uses_the_verified_channel_tuples()
     {
         var duties = Enumerable.Repeat((byte)55, KrakenProtocol.CurvePointCount).ToArray();

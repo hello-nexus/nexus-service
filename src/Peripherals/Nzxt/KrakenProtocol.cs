@@ -219,6 +219,21 @@ internal static class KrakenProtocol
 
     public static byte[] EncodeEndTransfer() => NewReport(ReportTransferRequest, 0x02);
 
+    /// <summary>Aborts any half-finished transfer; CAM and liquidctl send it before every upload.</summary>
+    public static byte[] EncodeCancelTransfers() => NewReport(ReportTransferRequest, 0x03);
+
+    /// <summary>
+    /// Starts a live frame straight to the panel, no bucket: <c>36 01 00 01 09</c>, as
+    /// captured from NZXT CAM driving the 2023 Kraken Elite. Byte 4 is the bulk format.
+    /// </summary>
+    public static byte[] EncodeStartDirectTransfer()
+    {
+        var report = NewReport(ReportTransferRequest, 0x01);
+        report[3] = 0x01;
+        report[4] = BulkFormatBgr888;
+        return report;
+    }
+
     /// <summary>
     /// One duty per degree from 20 C to 59 C. <paramref name="duties"/> must hold
     /// <see cref="CurvePointCount"/> entries.
@@ -404,6 +419,9 @@ internal static class KrakenProtocol
     /// <summary>Uncompressed RGB565. The 2023 Kraken (0x300E) takes only this.</summary>
     public const byte BulkFormatRgb565 = 0x06;
 
+    /// <summary>Raw B G R, 3 bytes a pixel: CAM's live-frame format on the direct path.</summary>
+    public const byte BulkFormatBgr888 = 0x09;
+
     /// <summary>
     /// The 20-byte preamble that precedes the pixels. It must be written as its own bulk
     /// transfer; concatenating it with the pixel data corrupts the upload silently.
@@ -494,6 +512,41 @@ internal static class KrakenProtocol
             }
         }
         return dst;
+    }
+
+    /// <summary>
+    /// Rotates a frame into <paramref name="dst"/> as B G R, 3 bytes a pixel, for
+    /// <see cref="BulkFormatBgr888"/>. Returns the bytes written.
+    /// </summary>
+    public static int ToWireBgr(ReadOnlySpan<byte> frame, int width, int height, int quarterTurns, bool sourceIsBgra, Span<byte> dst)
+    {
+        int turns = ((quarterTurns % 4) + 4) % 4;
+        if (turns != 0 && width != height)
+        {
+            throw new ArgumentException("rotation assumes a square panel", nameof(width));
+        }
+        int blue = sourceIsBgra ? 0 : 2;
+        int red = sourceIsBgra ? 2 : 0;
+        for (int y = 0; y < height; y++)
+        {
+            for (int x = 0; x < width; x++)
+            {
+                int sx, sy;
+                switch (turns)
+                {
+                    case 1: sx = y; sy = height - 1 - x; break;
+                    case 2: sx = width - 1 - x; sy = height - 1 - y; break;
+                    case 3: sx = width - 1 - y; sy = x; break;
+                    default: sx = x; sy = y; break;
+                }
+                int from = ((sy * width) + sx) * 4;
+                int to = ((y * width) + x) * 3;
+                dst[to] = frame[from + blue];
+                dst[to + 1] = frame[from + 1];
+                dst[to + 2] = frame[from + red];
+            }
+        }
+        return width * height * 3;
     }
 
     /// <summary>Pages a bucket must reserve to hold header plus payload.</summary>

@@ -49,7 +49,8 @@ public sealed record KrakenModel(
     int LcdHeight,
     KrakenLcdFormat LcdFormat,
     KrakenLightingProtocol Lighting,
-    bool SpeedChannelsFollowFirmware = false)
+    bool SpeedChannelsFollowFirmware = false,
+    bool DirectStream = false)
 {
     public bool HasLcd => LcdFormat != KrakenLcdFormat.None;
 
@@ -74,8 +75,9 @@ public sealed record KrakenModel(
 
         // 2023 Kraken Elite. Same 640x640 Q565 panel; no ARGB anywhere on the pump, so no
         // lighting to drive. Its 0x72 channel tuples moved at firmware 2.1.1, hence
-        // SpeedChannelsFollowFirmware.
-        new(0x300C, "NZXT Kraken Elite", 640, 640, KrakenLcdFormat.Q565, KrakenLightingProtocol.None, true),
+        // SpeedChannelsFollowFirmware. Bucket uploads are reported to wedge its 2.x firmware
+        // at streaming rates, so live frames take CAM's direct path (DirectStream).
+        new(0x300C, "NZXT Kraken Elite", 640, 640, KrakenLcdFormat.Q565, KrakenLightingProtocol.None, true, DirectStream: true),
         // 2023 Kraken. Smaller panel, and the only model that takes uncompressed RGB565 -
         // its firmware has no Q565 decoder.
         new(0x300E, "NZXT Kraken", 240, 240, KrakenLcdFormat.Rgb565, KrakenLightingProtocol.None, true),

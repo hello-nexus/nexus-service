@@ -1,9 +1,12 @@
 #if WINDOWS
 using System;
+using System.Collections.Generic;
 using System.Globalization;
 using System.IO;
 using System.Runtime.InteropServices;
+using System.Security;
 using System.Threading;
+using Microsoft.Win32;
 using Microsoft.Win32.SafeHandles;
 using Nexus.Service.Peripherals.LianLiWireless;
 using Nexus.Service.Platform;
@@ -151,8 +154,10 @@ public sealed class WindowsKrakenLcdTransport : IKrakenLcdTransport
 
 public sealed class WindowsKrakenLcdTransportFactory : IKrakenLcdTransportFactory
 {
-    // Published by the cooler's own MS OS descriptors; the trailing digits encode the PID.
+    // Each model publishes its own interface GUID, which Windows records under the
+    // interface's Device Parameters. The V2 value is the fallback when that key cannot be read.
     private static readonly Guid KrakenEliteV2InterfaceGuid = new("30123011-7EE7-1125-0724-101503010819");
+    private const string UsbEnumKey = @"SYSTEM\CurrentControlSet\Enum\USB";
 
     public IKrakenLcdTransport? Open(string? serial)
     {
@@ -174,7 +179,21 @@ public sealed class WindowsKrakenLcdTransportFactory : IKrakenLcdTransportFactor
 
     private static string? FindDevicePath(string? serial)
     {
-        var guid = KrakenEliteV2InterfaceGuid;
+        string? firstMatch = null;
+        foreach (var guid in InterfaceGuids())
+        {
+            var path = FindDevicePath(guid, serial, ref firstMatch);
+            if (path != null)
+            {
+                return path;
+            }
+        }
+        return firstMatch;
+    }
+
+    /// <summary>Returns the path whose segment carries <paramref name="serial"/>; records the first Kraken path seen.</summary>
+    private static string? FindDevicePath(Guid guid, string? serial, ref string? firstMatch)
+    {
         var devInfo = Slv3WinUsbInterop.SetupDiGetClassDevs(ref guid, null, IntPtr.Zero,
             Slv3WinUsbInterop.DIGCF_PRESENT | Slv3WinUsbInterop.DIGCF_DEVICEINTERFACE);
         if (devInfo == (IntPtr)(-1))
@@ -186,7 +205,6 @@ public sealed class WindowsKrakenLcdTransportFactory : IKrakenLcdTransportFactor
             var idx = 0u;
             var ifaceData = new Slv3WinUsbInterop.SP_DEVICE_INTERFACE_DATA();
             ifaceData.cbSize = Marshal.SizeOf(ifaceData);
-            string? firstMatch = null;
 
             while (Slv3WinUsbInterop.SetupDiEnumDeviceInterfaces(devInfo, IntPtr.Zero, ref guid, idx, ref ifaceData))
             {
@@ -204,11 +222,61 @@ public sealed class WindowsKrakenLcdTransportFactory : IKrakenLcdTransportFactor
                     return path;
                 }
             }
-            return firstMatch;
+            return null;
         }
         finally
         {
             Slv3WinUsbInterop.SetupDiDestroyDeviceInfoList(devInfo);
+        }
+    }
+
+    /// <summary>Interface GUIDs recorded for every Kraken interface Windows has enumerated, V2 fallback last.</summary>
+    private static List<Guid> InterfaceGuids()
+    {
+        var guids = new List<Guid>();
+        try
+        {
+            using var usb = Registry.LocalMachine.OpenSubKey(UsbEnumKey);
+            foreach (var name in usb?.GetSubKeyNames() ?? Array.Empty<string>())
+            {
+                if (!MatchesKraken(name))
+                {
+                    continue;
+                }
+                using var device = usb!.OpenSubKey(name);
+                foreach (var instance in device?.GetSubKeyNames() ?? Array.Empty<string>())
+                {
+                    using var parameters = device!.OpenSubKey($@"{instance}\Device Parameters");
+                    AddGuids(guids, parameters?.GetValue("DeviceInterfaceGUIDs"));
+                    AddGuids(guids, parameters?.GetValue("DeviceInterfaceGUID"));
+                }
+            }
+        }
+        catch (Exception ex) when (ex is SecurityException or UnauthorizedAccessException or IOException)
+        {
+            ServiceLog.Warn($"[nzxt-kraken] reading interface GUIDs failed: {ex.Message}");
+        }
+        if (!guids.Contains(KrakenEliteV2InterfaceGuid))
+        {
+            guids.Add(KrakenEliteV2InterfaceGuid);
+        }
+        return guids;
+    }
+
+    private static void AddGuids(List<Guid> guids, object? value)
+    {
+        var entries = value switch
+        {
+            string[] multi => multi,
+            string single => new[] { single },
+            _ => Array.Empty<string>(),
+        };
+        foreach (var entry in entries)
+        {
+            if (Guid.TryParse(entry, out var guid) && !guids.Contains(guid))
+            {
+                guids.Add(guid);
+            }
         }
     }
 
