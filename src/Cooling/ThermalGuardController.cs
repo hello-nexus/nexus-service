@@ -824,7 +824,8 @@ public sealed class ThermalGuardController
         CoolingSettings cooling,
         IReadOnlyList<FanChannel> channels,
         IReadOnlyList<TemperatureSource> sources,
-        IReadOnlyList<CurveDocument> curves)
+        IReadOnlyList<CurveDocument> curves,
+        LintScope scope)
     {
         var named = channels
             .Select(c => new FanChannel
@@ -848,6 +849,7 @@ public sealed class ThermalGuardController
             ManualSpeeds = CoolingSnapshots.ManualSpeeds(cooling),
             Uncontrolled = cooling.UncontrolledFanChannels.ToList(),
             LimitC = limit,
+            Scope = scope,
         };
     }
 
@@ -855,7 +857,7 @@ public sealed class ThermalGuardController
     {
         var settings = _store.Load();
         var curves = body.Curves.ConvertAll(CurveWireMapper.ToDocument);
-        var input = BuildLintInput(settings.Cooling, _fans.GetFanChannels(), _fans.GetTemperatureSources(), curves);
+        var input = BuildLintInput(settings.Cooling, _fans.GetFanChannels(), _fans.GetTemperatureSources(), curves, LintScope.Severe);
         var hazards = CoolingConfigLint.Analyze(input);
         return new LintCurvesResponse
         {
@@ -885,7 +887,7 @@ public sealed class ThermalGuardController
         HealResult? result = null;
         _store.Update(s =>
         {
-            var input = BuildLintInput(s.Cooling, channels, sources, s.Cooling.Curves);
+            var input = BuildLintInput(s.Cooling, channels, sources, s.Cooling.Curves, automatic ? LintScope.AfterTrip : LintScope.Severe);
             result = CoolingConfigLint.Heal(input, CoolingConfigLint.Analyze(input));
             if (result is null)
             {

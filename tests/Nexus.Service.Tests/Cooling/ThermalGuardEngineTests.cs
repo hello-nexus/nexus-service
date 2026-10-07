@@ -61,7 +61,7 @@ public class ThermalGuardEngineTests
         var store = new InMemoryConfigStore();
         store.Update(s =>
         {
-            s.Cooling.Curves.Add(Flat("f1", 20));
+            s.Cooling.Curves.Add(Flat("f1", 10));
             s.Cooling.ManualSpeeds["f2"] = 30;
         });
         var clock = new long[] { 1_000_000 };
@@ -100,7 +100,7 @@ public class ThermalGuardEngineTests
         var (engine, fans, _, _) = Build();
         fans.CpuTemp = 50f;
         engine.Tick();
-        Assert.Equal(new[] { ("f1", 20) }, fans.Driven);
+        Assert.Equal(new[] { ("f1", 10) }, fans.Driven);
     }
 
     [Fact]
@@ -115,7 +115,7 @@ public class ThermalGuardEngineTests
         fans.CpuTemp = 50f;
         clock[0] += 1000;
         engine.Tick();
-        Assert.Equal(20, LastDuty(fans, "f1"));
+        Assert.Equal(10, LastDuty(fans, "f1"));
         Assert.Equal(30, LastDuty(fans, "f2"));
     }
 
@@ -172,7 +172,7 @@ public class ThermalGuardEngineTests
         store.Update(s =>
         {
             s.Cooling.FanLockOverrides["f2"] = true;
-            s.Cooling.Curves.Add(Flat("f3", 20));
+            s.Cooling.Curves.Add(Flat("f3", 10));
         });
         fans.Channels.Add(new FanChannel { Id = "f3", Name = "Fan 3" });
         store.Update(s => s.Cooling.UncontrolledFanChannels.Add("f3"));
@@ -199,7 +199,7 @@ public class ThermalGuardEngineTests
     public void ThrowingCurve_DoesNotKeepTheOverrideOffOtherChannels()
     {
         var (engine, fans, store, clock) = Build();
-        var bad = Flat("f1", 20);
+        var bad = Flat("f1", 10);
         bad.Id = "bad";
         bad.Type = "Graph";
         bad.Input = new CurveInputDocument { Id = "boom", Type = "Temperature" };
@@ -207,7 +207,7 @@ public class ThermalGuardEngineTests
         store.Update(s =>
         {
             s.Cooling.Curves.Insert(0, bad);
-            s.Cooling.Curves.Add(Flat("f4", 20));
+            s.Cooling.Curves.Add(Flat("f4", 10));
         });
         fans.Channels.Add(new FanChannel { Id = "f4", Name = "Fan 4" });
 
@@ -287,7 +287,7 @@ public class ThermalGuardEngineTests
         var fans = new Fans();
         fans.Channels.Add(new FanChannel { Id = "f1", Name = "Fan 1" });
         var store = new InMemoryConfigStore();
-        store.Update(s => s.Cooling.Curves.Add(Flat("f1", 20)));
+        store.Update(s => s.Cooling.Curves.Add(Flat("f1", 10)));
         var utc = new long[] { 10_000_000 };
         var alerts = new List<string>();
         var guard = new ThermalGuardController(fans, store, null, null, null, null, () => utc[0]) { AlertSink = n => alerts.Add(n.Title) };
@@ -1060,7 +1060,7 @@ public class ThermalGuardEngineTests
         fans.CpuTemp = 99f;
         engine.Tick();
 
-        Assert.Equal(20, LastDuty(fans, "f1"));
+        Assert.Equal(10, LastDuty(fans, "f1"));
         Assert.DoesNotContain(fans.Driven, d => d.Duty == 100);
         Assert.Equal(0, fans.ReleaseAllCalls);
         Assert.Null(store.Load().Cooling.LastThermalTrip);
@@ -1504,7 +1504,7 @@ public class ThermalGuardEngineTests
         new StubCoolingProvider(store).SetCurves(new SetCurvesBody());
         Assert.Null(store.Load().Cooling.HealSnapshot);
 
-        store.Update(s => s.Cooling.Curves.Add(Flat("f1", 20)));
+        store.Update(s => s.Cooling.Curves.Add(Flat("f1", 10)));
         guard.HealNow(automatic: false);
         Assert.NotNull(store.Load().Cooling.HealSnapshot);
         FanProfiles.DetachFanFromCurves("not-a-curve-output", store);

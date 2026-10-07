@@ -14,6 +14,17 @@ public static class CoolingHazardKinds
     public const string ManualLow = "manual-low";
 }
 
+/// <summary>
+/// Which configs count as hazards. Severe is what a save warns about: fans that can stop or nearly
+/// stop while the CPU is hot. AfterTrip, used by the heal at the end of a trip, also takes configs
+/// the trip proved too weak.
+/// </summary>
+public enum LintScope
+{
+    Severe,
+    AfterTrip,
+}
+
 public sealed record LintHazard(string ChannelId, string ChannelName, string Kind, string RootId, string RootName);
 
 public sealed class LintInput
@@ -25,6 +36,7 @@ public sealed class LintInput
     public IReadOnlyDictionary<string, int> ManualSpeeds { get; init; } = new Dictionary<string, int>();
     public IReadOnlyCollection<string> Uncontrolled { get; init; } = Array.Empty<string>();
     public double LimitC { get; init; } = ThermalLimits.GenericDefaultC;
+    public LintScope Scope { get; init; } = LintScope.Severe;
 }
 
 public sealed record HealResult(List<CurveDocument> Curves, List<LintHazard> Healed, List<string> ManualDrops);
@@ -49,8 +61,10 @@ public static class CoolingConfigLint
         (55, 30), (40, 40), (25, 60), (10, 85), (0, 100),
     };
 
-    private const double MinCeilingPercent = 60;
-    private const double MinManualPercent = 30;
+    // Below this a fan stops or barely turns.
+    private const double StopPercent = 20;
+    private const double AfterTripMinCeilingPercent = 60;
+    private const double AfterTripMinManualPercent = 30;
 
     /// <summary>
     /// CPU-cooling: everything that is not a GPU fan. An unknown channel counts as
@@ -82,7 +96,8 @@ public static class CoolingConfigLint
             var curve = input.Curves.FirstOrDefault(c => c.Outputs.Any(o => o.Id == ch.Id));
             if (curve is null)
             {
-                if (input.ManualSpeeds.TryGetValue(ch.Id, out var manual) && manual < MinManualPercent)
+                var minManual = input.Scope == LintScope.AfterTrip ? AfterTripMinManualPercent : StopPercent;
+                if (input.ManualSpeeds.TryGetValue(ch.Id, out var manual) && manual < minManual)
                 {
                     result.Add(new LintHazard(ch.Id, ch.Name, CoolingHazardKinds.ManualLow, ch.Id, ch.Name));
                 }
@@ -176,11 +191,21 @@ public static class CoolingConfigLint
             var src = input.Sources.FirstOrDefault(s => s.Id == curve.Input.Id);
             if (src is not null && src.Category != "CPU")
             {
+                if (input.Scope == LintScope.AfterTrip)
+                {
+                    return new Found(CoolingHazardKinds.NonCpuSensor, src.Id, src.Name);
+                }
+                // A cooler's liquid temperature rises with CPU heat, so its curve still ramps.
+                if (src.Category == "Cooler" || !(FloorOf(curve) is { } floor && floor < StopPercent))
+                {
+                    return null;
+                }
                 return new Found(CoolingHazardKinds.NonCpuSensor, src.Id, src.Name);
             }
         }
         var ceiling = CeilingAt(curve, input.LimitC);
-        if (ceiling is { } c && c < MinCeilingPercent)
+        var minCeiling = input.Scope == LintScope.AfterTrip ? AfterTripMinCeilingPercent : StopPercent;
+        if (ceiling is { } c && c < minCeiling)
         {
             return new Found(CoolingHazardKinds.LowCeiling, curve.Id, curve.Name);
         }
@@ -200,6 +225,16 @@ public static class CoolingConfigLint
             (float)limitC),
         "Trigger" => curve.Trigger is null ? null : (limitC >= curve.Trigger.LoadTemp ? curve.Trigger.LoadSpeed : curve.Trigger.IdleSpeed),
         "Auto" => curve.Auto?.MaxSpeed,
+        _ => null,
+    };
+
+    /// <summary>The lowest duty a curve can give, whatever its input reads.</summary>
+    private static double? FloorOf(CurveDocument curve) => curve.Type switch
+    {
+        "Linear" => curve.Linear is null ? null : Math.Min(curve.Linear.MinSpeed, curve.Linear.MaxSpeed),
+        "Graph" => curve.Graph is null || curve.Graph.Points.Count == 0 ? null : curve.Graph.Points.Min(p => p.Speed) * curve.Graph.SpeedModifier,
+        "Trigger" => curve.Trigger is null ? null : Math.Min(curve.Trigger.IdleSpeed, curve.Trigger.LoadSpeed),
+        "Auto" => curve.Auto?.MinSpeed,
         _ => null,
     };
 

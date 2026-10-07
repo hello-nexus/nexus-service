@@ -53,9 +53,10 @@ public class CoolingConfigLintTests
         },
     };
 
-    private static LintInput Input(List<CurveDocument> curves, double limit = 95) => new()
+    private static LintInput Input(List<CurveDocument> curves, double limit = 95, LintScope scope = LintScope.Severe) => new()
     {
         Curves = curves,
+        Scope = scope,
         Channels = T1Channels(),
         Sources = Sources(),
         LimitC = limit,
@@ -106,20 +107,52 @@ public class CoolingConfigLintTests
     }
 
     [Fact]
-    public void NonCpuSensorCurve_IsFlagged()
+    public void NonCpuSensorCurve_IsFlaggedOnSaveOnlyWhenItCanStopTheFan()
     {
-        var curves = new List<CurveDocument> { Graph("nvme", "/nvme/0/temperature/0", Fan1, (30, 30), (90, 100)) };
-        var h = Assert.Single(CoolingConfigLint.Analyze(Input(curves)));
+        var stops = new List<CurveDocument> { Graph("nvme", "/nvme/0/temperature/0", Fan1, (30, 0), (90, 100)) };
+        var h = Assert.Single(CoolingConfigLint.Analyze(Input(stops)));
         Assert.Equal(CoolingHazardKinds.NonCpuSensor, h.Kind);
         Assert.Equal("/nvme/0/temperature/0", h.RootId);
+
+        var spins = new List<CurveDocument> { Graph("nvme", "/nvme/0/temperature/0", Fan1, (30, 30), (90, 100)) };
+        Assert.Empty(CoolingConfigLint.Analyze(Input(spins)));
+        Assert.Equal(CoolingHazardKinds.NonCpuSensor, Assert.Single(CoolingConfigLint.Analyze(Input(spins, scope: LintScope.AfterTrip))).Kind);
     }
 
     [Fact]
-    public void LowCeilingAtLimit_IsFlagged()
+    public void LiquidTemperatureCurve_IsNotFlaggedOnSave()
     {
-        var curves = new List<CurveDocument> { Graph("low", "/amdcpu/0/temperature/2", Fan1, (30, 20), (95, 50)) };
-        var h = Assert.Single(CoolingConfigLint.Analyze(Input(curves)));
-        Assert.Equal(CoolingHazardKinds.LowCeiling, h.Kind);
+        var input = new LintInput
+        {
+            Curves = new List<CurveDocument> { Graph("liquid", "kraken:liquid", Fan1, (25, 0), (40, 100)) },
+            Channels = T1Channels(),
+            Sources = new List<TemperatureSource> { new() { Id = "kraken:liquid", Name = "Liquid", Category = "Cooler", Value = 30 } },
+        };
+        Assert.Empty(CoolingConfigLint.Analyze(input));
+    }
+
+    [Fact]
+    public void LowCeilingAtLimit_IsFlaggedOnSaveOnlyBelowTheStopSpeed()
+    {
+        var quiet = new List<CurveDocument> { Graph("low", "/amdcpu/0/temperature/2", Fan1, (30, 20), (95, 50)) };
+        Assert.Empty(CoolingConfigLint.Analyze(Input(quiet)));
+        Assert.Equal(CoolingHazardKinds.LowCeiling, Assert.Single(CoolingConfigLint.Analyze(Input(quiet, scope: LintScope.AfterTrip))).Kind);
+
+        var stalled = new List<CurveDocument> { Graph("low", "/amdcpu/0/temperature/2", Fan1, (30, 0), (95, 10)) };
+        Assert.Equal(CoolingHazardKinds.LowCeiling, Assert.Single(CoolingConfigLint.Analyze(Input(stalled))).Kind);
+    }
+
+    [Fact]
+    public void FixedSpeedCurve_IsFlaggedOnSaveOnlyBelowTheStopSpeed()
+    {
+        CurveDocument Fixed(int speed) => new()
+        {
+            Id = "fixed", Name = "fixed", Type = "Flat", Flat = new FlatCurveData { Speed = speed },
+            Outputs = { new CurveOutputDocument { Id = Fan1, Type = "Fan" } },
+        };
+        Assert.Empty(CoolingConfigLint.Analyze(Input(new List<CurveDocument> { Fixed(40) })));
+        Assert.Single(CoolingConfigLint.Analyze(Input(new List<CurveDocument> { Fixed(40) }, scope: LintScope.AfterTrip)));
+        Assert.Equal(CoolingHazardKinds.LowCeiling, Assert.Single(CoolingConfigLint.Analyze(Input(new List<CurveDocument> { Fixed(0) }))).Kind);
     }
 
     [Fact]
@@ -129,11 +162,14 @@ public class CoolingConfigLintTests
         {
             Channels = T1Channels(),
             Sources = Sources(),
-            ManualSpeeds = new Dictionary<string, int> { [Fan1] = 20, [Followers[0]] = 60 },
+            ManualSpeeds = new Dictionary<string, int> { [Fan1] = 10, [Followers[0]] = 25 },
         };
         var h = Assert.Single(CoolingConfigLint.Analyze(input));
         Assert.Equal(CoolingHazardKinds.ManualLow, h.Kind);
         Assert.Equal(Fan1, h.ChannelId);
+
+        var afterTrip = new LintInput { Channels = input.Channels, Sources = input.Sources, ManualSpeeds = input.ManualSpeeds, Scope = LintScope.AfterTrip };
+        Assert.Equal(2, CoolingConfigLint.Analyze(afterTrip).Count);
     }
 
     [Fact]
@@ -196,7 +232,7 @@ public class CoolingConfigLintTests
         {
             Channels = T1Channels(),
             Sources = Sources(),
-            ManualSpeeds = new Dictionary<string, int> { [Fan1] = 20 },
+            ManualSpeeds = new Dictionary<string, int> { [Fan1] = 10 },
         };
         var result = CoolingConfigLint.Heal(input, CoolingConfigLint.Analyze(input))!;
 
@@ -250,9 +286,9 @@ public class CoolingConfigLintTests
         var after = new LintInput { Curves = healed.Curves, Channels = input.Channels, Sources = input.Sources, LimitC = input.LimitC };
         Assert.Empty(CoolingConfigLint.Analyze(after));
 
-        // A hand edit that drops the ceiling below the safe minimum at the limit.
+        // A hand edit that drops the ceiling below the stop speed at the limit.
         var broken = healed.Curves.Select(CoolingConfigLint.CloneCurve).ToList();
-        broken.Single(c => c.Id == CoolingConfigLint.GuardCurveId).Graph!.Points.ForEach(p => p.Speed = 20);
+        broken.Single(c => c.Id == CoolingConfigLint.GuardCurveId).Graph!.Points.ForEach(p => p.Speed = 10);
         var brokenInput = new LintInput { Curves = broken, Channels = input.Channels, Sources = input.Sources, LimitC = input.LimitC };
         var hazards = CoolingConfigLint.Analyze(brokenInput);
         Assert.Equal(4, hazards.Count);
@@ -302,6 +338,18 @@ public class CoolingConfigLintTests
         Assert.False(undone.UndoAvailable);
         Assert.Empty(undone.Channels);
         Assert.Equal(before, Json(store.Load().Cooling.Curves));
+    }
+
+    [Fact]
+    public void ControllerHeal_AfterATripAlsoTakesWeakCurves_AFixFromTheSavePromptDoesNot()
+    {
+        var fans = new LintFans(T1Channels(), Sources());
+        var store = new InMemoryConfigStore();
+        store.Update(s => s.Cooling.Curves.Add(Graph("quiet", "/amdcpu/0/temperature/2", Fan1, (30, 20), (95, 50))));
+        var controller = new ThermalGuardController(fans, store);
+
+        Assert.Empty(controller.HealNow(automatic: false).Channels);
+        Assert.Equal(Fan1, Assert.Single(controller.HealNow(automatic: true).Channels).Id);
     }
 
     [Fact]
