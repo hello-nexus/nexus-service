@@ -106,6 +106,15 @@ public sealed class BulkPanelHub : IDisposable
         }
     }
 
+    /// <summary>Runs <paramref name="exchange"/> on the open pipe between frames; <paramref name="fallback"/> while nothing is attached.</summary>
+    public T Exchange<T>(Func<IBulkUsbPipe, T> exchange, T fallback)
+    {
+        lock (_lock)
+        {
+            return _attached && _pipe is not null ? exchange(_pipe) : fallback;
+        }
+    }
+
     public void Detach()
     {
         lock (_lock)
