@@ -149,65 +149,115 @@ public class CoolingConfigLintTests
         Assert.False(CoolingConfigLint.IsCpuCooling(new FanChannel { Id = "h", DeviceId = "np50:1" }, gpuRole));
     }
 
+    private static (double Temp, double Speed)[] Points(CurveDocument c) =>
+        c.Graph!.Points.Select(p => (p.Temp, p.Speed)).ToArray();
+
     [Fact]
-    public void HealedSafeMember_IsAFloor_SilentBelowLimitMinus30_FullByLimitMinus5()
+    public void Heal_MovesEveryFlaggedChannelOntoOneSharedCurve_AndLeavesNoHazards()
     {
         var input = Input(T1Curves());
         var result = CoolingConfigLint.Heal(input, CoolingConfigLint.Analyze(input))!;
-        var safe = result.Curves.Single(c => c.Id == CoolingConfigLint.SafeCurveId);
 
-        Assert.Equal(0, CurveEngine.EvaluateGraph(safe.Graph, 40));
-        Assert.Equal(0, CurveEngine.EvaluateGraph(safe.Graph, 65));
-        Assert.Equal(100, CurveEngine.EvaluateGraph(safe.Graph, 90));
-        Assert.Equal(100, CurveEngine.EvaluateGraph(safe.Graph, 110));
-    }
+        var guard = Assert.Single(result.Curves, c => c.Id == CoolingConfigLint.GuardCurveId);
+        Assert.Equal("Thermal guard", guard.Name);
+        Assert.Equal("Graph", guard.Type);
+        Assert.Equal("/amdcpu/0/temperature/2", guard.Input.Id);
+        Assert.Equal(4, guard.Outputs.Count);
+        Assert.Equal(
+            new[] { Fan1 }.Concat(Followers).OrderBy(x => x),
+            guard.Outputs.Select(o => o.Id).OrderBy(x => x));
+        Assert.Equal(FanProfiles.PresetDefaults.For("balanced").ResponseTime, guard.Graph!.ResponseTime);
+        Assert.Equal(4, result.Healed.Count);
 
-    [Fact]
-    public void Heal_KeepsTheOriginalCurvesResponseTime()
-    {
-        var curves = new List<CurveDocument> { Graph("low", "/amdcpu/0/temperature/2", Fan1, (30, 20), (95, 50)) };
-        curves[0].Graph!.ResponseTime = 4.5;
-        var input = Input(curves);
-        var result = CoolingConfigLint.Heal(input, CoolingConfigLint.Analyze(input))!;
-        Assert.Equal(4.5, result.Curves.Single(c => c.Id == CoolingConfigLint.MixIdPrefix + Fan1).Mixed!.ResponseTime);
-
-        var sync = Input(T1Curves());
-        var syncResult = CoolingConfigLint.Heal(sync, CoolingConfigLint.Analyze(sync))!;
-        Assert.Equal(0, syncResult.Curves.Single(c => c.Id == CoolingConfigLint.MixIdPrefix + Fan1).Mixed!.ResponseTime);
-    }
-
-    [Fact]
-    public void Heal_ProducesMixedMaxOfOriginalAndSafeCpuCurve_AndLeavesNoHazards()
-    {
-        var curves = T1Curves();
-        var input = Input(curves);
-        var hazards = CoolingConfigLint.Analyze(input);
-
-        var result = CoolingConfigLint.Heal(input, hazards);
-
-        Assert.NotNull(result);
-        Assert.Equal(4, result!.Healed.Count);
-        var mix = result.Curves.Single(c => c.Id == CoolingConfigLint.MixIdPrefix + Fan1);
-        Assert.Equal("Mixed", mix.Type);
-        Assert.Equal("max", mix.Mixed!.Fn);
-        Assert.Equal(new[] { "preset-silent", CoolingConfigLint.SafeCurveId }, mix.Mixed.CurveIds);
-        Assert.Equal(Fan1, Assert.Single(mix.Outputs).Id);
-        var safe = result.Curves.Single(c => c.Id == CoolingConfigLint.SafeCurveId);
-        Assert.Equal("Graph", safe.Type);
-        Assert.Equal("/amdcpu/0/temperature/2", safe.Input.Id);
-
-        // Evaluated with the GPU fan at 0 and the CPU at 85 C, the result follows the safe curve.
-        var silentRaw = CurveEngine.EvaluateSync(new SyncCurveData { SourceChannelId = GpuFan },
-            new Dictionary<string, double> { [GpuFan] = 0 })!.Value;
-        var safeRaw = CurveEngine.EvaluateGraph(safe.Graph, 85)!.Value;
-        var mixed = CurveEngine.EvaluateMix(mix.Mixed,
-            new Dictionary<string, double> { ["preset-silent"] = silentRaw, [CoolingConfigLint.SafeCurveId] = safeRaw })!.Value;
-        Assert.Equal(0, silentRaw);
-        Assert.Equal(System.Math.Max(silentRaw, safeRaw), mixed);
-        Assert.True(mixed >= 60);
+        // Nothing else drives those channels, and no per-channel curves exist.
+        Assert.All(result.Curves.Where(c => c.Id != CoolingConfigLint.GuardCurveId), c => Assert.Empty(c.Outputs));
+        Assert.DoesNotContain(result.Curves, c => c.Type == "Mixed");
 
         var after = new LintInput { Curves = result.Curves, Channels = input.Channels, Sources = input.Sources, LimitC = input.LimitC };
         Assert.Empty(CoolingConfigLint.Analyze(after));
+    }
+
+    [Fact]
+    public void TheSharedCurve_IsABalancedCurveRelativeToTheLimit()
+    {
+        var input = Input(T1Curves(), 95);
+        var guard = CoolingConfigLint.Heal(input, CoolingConfigLint.Analyze(input))!.Curves.Single(c => c.Id == CoolingConfigLint.GuardCurveId);
+        Assert.Equal(new (double, double)[] { (40, 30), (55, 40), (70, 60), (85, 85), (95, 100) }, Points(guard));
+
+        var raised = Input(T1Curves(), 100);
+        var guard100 = CoolingConfigLint.Heal(raised, CoolingConfigLint.Analyze(raised))!.Curves.Single(c => c.Id == CoolingConfigLint.GuardCurveId);
+        Assert.Equal(new (double, double)[] { (45, 30), (60, 40), (75, 60), (90, 85), (100, 100) }, Points(guard100));
+    }
+
+    [Fact]
+    public void Heal_ManualLowChannelJoinsTheSharedCurve_AndItsManualSpeedIsDropped()
+    {
+        var input = new LintInput
+        {
+            Channels = T1Channels(),
+            Sources = Sources(),
+            ManualSpeeds = new Dictionary<string, int> { [Fan1] = 20 },
+        };
+        var result = CoolingConfigLint.Heal(input, CoolingConfigLint.Analyze(input))!;
+
+        var guard = Assert.Single(result.Curves);
+        Assert.Equal(Fan1, Assert.Single(guard.Outputs).Id);
+        Assert.Equal(new[] { Fan1 }, result.ManualDrops);
+    }
+
+    [Fact]
+    public void ASecondHeal_AddsToTheSameCurve()
+    {
+        var input = Input(T1Curves());
+        var first = CoolingConfigLint.Heal(input, CoolingConfigLint.Analyze(input))!;
+
+        var extra = new List<FanChannel>(T1Channels()) { Mobo("/lpc/it8696e/0/control/5", "Fan #6") };
+        var second = new LintInput
+        {
+            Curves = first.Curves,
+            Channels = extra,
+            Sources = Sources(),
+            ManualSpeeds = new Dictionary<string, int> { ["/lpc/it8696e/0/control/5"] = 10 },
+            LimitC = 95,
+        };
+        var result = CoolingConfigLint.Heal(second, CoolingConfigLint.Analyze(second))!;
+
+        Assert.Single(result.Curves, c => c.Id == CoolingConfigLint.GuardCurveId);
+        Assert.Equal(5, result.Curves.Single(c => c.Id == CoolingConfigLint.GuardCurveId).Outputs.Count);
+    }
+
+    [Fact]
+    public void LeftoverPerChannelCurvesFromAnEarlierDesign_AreRemovedAndTheirChannelsJoinTheSharedCurve()
+    {
+        var curves = new List<CurveDocument>
+        {
+            new() { Id = "guard-safe-cpu", Name = "x", Type = "Graph" },
+            new() { Id = "guard-mix-" + Fan1, Name = "x", Type = "Mixed", Outputs = { new CurveOutputDocument { Id = Fan1, Type = "Fan" } } },
+            new() { Id = "guard-manual-" + Followers[0], Name = "x", Type = "Flat", Flat = new FlatCurveData { Speed = 20 } },
+        };
+        var input = Input(curves);
+        var result = CoolingConfigLint.Heal(input, new List<LintHazard>())!;
+
+        Assert.DoesNotContain(result.Curves, c => c.Id.StartsWith("guard-mix-") || c.Id.StartsWith("guard-manual-") || c.Id == "guard-safe-cpu");
+        Assert.Contains(Fan1, result.Curves.Single(c => c.Id == CoolingConfigLint.GuardCurveId).Outputs.Select(o => o.Id));
+    }
+
+    [Fact]
+    public void AChannelOnTheSharedCurve_IsNeverAHazard_EvenWhenSyncedTo()
+    {
+        var guard = new CurveDocument
+        {
+            Id = CoolingConfigLint.GuardCurveId, Name = "Thermal guard", Type = "Graph",
+            Input = new CurveInputDocument { Id = "/amdcpu/0/temperature/2" },
+            Graph = new GraphCurveData { Points = new List<Nexus.Service.Persistence.GraphPoint> { new() { Temp = 40, Speed = 0 } } },
+            Outputs = { new CurveOutputDocument { Id = Fan1, Type = "Fan" } },
+        };
+        var follower = new CurveDocument
+        {
+            Id = "s", Name = "s", Type = "Sync", Sync = new SyncCurveData { SourceChannelId = Fan1 },
+            Outputs = { new CurveOutputDocument { Id = Followers[0] } },
+        };
+        Assert.Empty(CoolingConfigLint.Analyze(Input(new List<CurveDocument> { guard, follower })));
     }
 
     [Fact]
@@ -218,21 +268,6 @@ public class CoolingConfigLintTests
         var input = Input(curves);
         CoolingConfigLint.Heal(input, CoolingConfigLint.Analyze(input));
         Assert.Equal(before, Json(curves));
-    }
-
-    [Fact]
-    public void Heal_ManualLowChannel_KeepsTheManualDutyAsAMixMember()
-    {
-        var input = new LintInput
-        {
-            Channels = T1Channels(),
-            Sources = Sources(),
-            ManualSpeeds = new Dictionary<string, int> { [Fan1] = 20 },
-        };
-        var result = CoolingConfigLint.Heal(input, CoolingConfigLint.Analyze(input))!;
-        var manual = result.Curves.Single(c => c.Id == CoolingConfigLint.ManualIdPrefix + Fan1);
-        Assert.Equal(20, manual.Flat!.Speed);
-        Assert.Empty(CoolingConfigLint.Analyze(new LintInput { Curves = result.Curves, Channels = input.Channels, Sources = input.Sources, ManualSpeeds = input.ManualSpeeds }));
     }
 
     [Fact]

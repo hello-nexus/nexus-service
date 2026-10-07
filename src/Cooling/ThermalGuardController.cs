@@ -97,6 +97,7 @@ public sealed class ThermalGuardController
     private double? _loggedOverrideC;
     // The user's limit, read under _gate. Written by SetConfig and loaded at construction.
     private double? _overrideC;
+    private double? _guardCurveSyncedLimit;
     private bool _detectionResolved;
     private long? _sinceUtcMs;
     private long? _cpuInfoAtMs;
@@ -586,6 +587,37 @@ public sealed class ThermalGuardController
     {
         RefreshCpuInfo(nowMs);
         ApplyLimitOverride();
+        SyncGuardCurve();
+    }
+
+    /// <summary>Keeps the shared heal curve's points matching the current limit. A curve change by the service itself, not a user edit, so the undo snapshot stays.</summary>
+    private void SyncGuardCurve()
+    {
+        double limit;
+        lock (_gate)
+        {
+            limit = _limit.LimitC;
+            if (_guardCurveSyncedLimit == limit)
+            {
+                return;
+            }
+        }
+        var points = CoolingConfigLint.GuardCurvePoints(limit);
+        _store.Update(s =>
+        {
+            var curve = s.Cooling.Curves.FirstOrDefault(c => c.Id == CoolingConfigLint.GuardCurveId);
+            if (curve?.Graph is null)
+            {
+                return;
+            }
+            var same = curve.Graph.Points.Count == points.Count
+                && curve.Graph.Points.Zip(points).All(p => p.First.Temp == p.Second.Temp && p.First.Speed == p.Second.Speed);
+            if (!same)
+            {
+                curve.Graph.Points = points;
+            }
+        });
+        lock (_gate) { _guardCurveSyncedLimit = limit; }
     }
 
     // Reads only what is already cached: the engine refreshes the hardware itself every tick
@@ -633,35 +665,17 @@ public sealed class ThermalGuardController
         }
     }
 
-    /// <summary>
-    /// The effective limit for an override: the user's value (clamped) when the detected limit
-    /// is not read from the hardware, otherwise the detected one. Also says whether a stored
-    /// override must be dropped because the hardware now reports its own.
-    /// </summary>
-    private (ThermalLimit Effective, bool ClearStored) EffectiveFor(double? overrideC)
-    {
-        if (_detected.Source == ThermalLimitSources.Hardware)
-        {
-            return (_detected, overrideC is not null);
-        }
-        if (overrideC is { } o && double.IsFinite(o))
-        {
-            return (new ThermalLimit(Math.Clamp(o, ThermalLimits.UserMinC, ThermalLimits.UserMaxC), ThermalLimitSources.User), false);
-        }
-        return (_detected, false);
-    }
+    /// <summary>The effective limit: the user's value (clamped) when one is set, whatever was detected, otherwise the detected one.</summary>
+    private ThermalLimit EffectiveFor(double? overrideC) =>
+        overrideC is { } o && double.IsFinite(o)
+            ? new ThermalLimit(Math.Clamp(o, ThermalLimits.UserMinC, ThermalLimits.UserMaxC), ThermalLimitSources.User)
+            : _detected;
 
     private void ApplyLimitOverride()
     {
-        bool clear;
         lock (_gate)
         {
-            var (effective, clearStored) = EffectiveFor(_overrideC);
-            clear = clearStored;
-            if (clearStored)
-            {
-                _overrideC = null;
-            }
+            var effective = EffectiveFor(_overrideC);
             _limit = effective;
             var applied = effective.Source == ThermalLimitSources.User ? (double?)effective.LimitC : null;
             if (applied != _loggedOverrideC)
@@ -671,10 +685,6 @@ public sealed class ThermalGuardController
                     ? $"[thermal-guard] CPU limit override set: {v:0.#} C"
                     : $"[thermal-guard] CPU limit override cleared, using {effective.LimitC:0.#} C ({effective.Source})");
             }
-        }
-        if (clear)
-        {
-            _store.Update(s => s.Cooling.ThermalGuardLimitOverrideC = null);
         }
     }
 
@@ -862,6 +872,14 @@ public sealed class ThermalGuardController
             }
             s.Cooling.HealSnapshot = s.Cooling.Curves.Select(CoolingConfigLint.CloneCurve).ToList();
             s.Cooling.Curves = result.Curves;
+            // The shared curve drives these channels now; a manual speed would only fight it.
+            s.Cooling.HealDroppedManualSpeeds = result.ManualDrops
+                .Where(s.Cooling.ManualSpeeds.ContainsKey)
+                .ToDictionary(id => id, id => s.Cooling.ManualSpeeds[id]);
+            foreach (var id in result.ManualDrops)
+            {
+                s.Cooling.ManualSpeeds.Remove(id);
+            }
             s.Cooling.HealedAtUtcMs = _utcNowMs();
             s.Cooling.HealedChannels = result.Healed
                 .Select(h => new HealedChannelRecord { Id = h.ChannelId, Name = h.ChannelName, Hazard = h.Kind })
@@ -891,9 +909,15 @@ public sealed class ThermalGuardController
             return BuildHealState(settings.Cooling);
         }
         var restored = snapshot.Select(CoolingConfigLint.CloneCurve).ToList();
+        var droppedManual = new Dictionary<string, int>(settings.Cooling.HealDroppedManualSpeeds);
         _store.Update(s =>
         {
             s.Cooling.Curves = restored;
+            foreach (var kv in droppedManual)
+            {
+                s.Cooling.ManualSpeeds[kv.Key] = kv.Value;
+            }
+            s.Cooling.HealDroppedManualSpeeds = new Dictionary<string, int>();
             s.Cooling.HealSnapshot = null;
             s.Cooling.HealedAtUtcMs = null;
             s.Cooling.HealedChannels = new List<HealedChannelRecord>();
@@ -908,8 +932,8 @@ public sealed class ThermalGuardController
     }
 
     /// <summary>
-    /// Partial config update. A limit override is refused while the detected limit comes from
-    /// the hardware itself, and nothing changes in that case.
+    /// Partial config update. A limit override is refused while the detected limit is still being
+    /// resolved, or together with a reset, and nothing changes in either case.
     /// </summary>
     public (ThermalGuardResponse? Result, string? Error) SetConfig(SetThermalGuardConfigBody body)
     {
@@ -928,10 +952,6 @@ public sealed class ThermalGuardController
                 if (!_detectionResolved)
                 {
                     return (null, "Still detecting the CPU limit, try again in a moment.");
-                }
-                if (_detected.Source == ThermalLimitSources.Hardware)
-                {
-                    return (null, "The CPU reports its own temperature limit, which cannot be overridden.");
                 }
             }
         }
@@ -990,12 +1010,17 @@ public sealed class ThermalGuardController
     public ThermalGuardResponse GetState()
     {
         var cooling = _store.Load().Cooling;
-        var response = new ThermalGuardResponse { Heal = BuildHealState(cooling), WatchdogLatched = WatchdogLatched };
+        var response = new ThermalGuardResponse
+        {
+            Enabled = cooling.ThermalGuardEnabled,
+            Heal = BuildHealState(cooling),
+            WatchdogLatched = WatchdogLatched,
+        };
         lock (_gate)
         {
             response.DetectedLimitC = _detected.LimitC;
             response.DetectedLimitSource = _detected.Source;
-            var effective = EffectiveFor(_overrideC).Effective;
+            var effective = EffectiveFor(_overrideC);
             response.LimitOverrideC = effective.Source == ThermalLimitSources.User ? effective.LimitC : null;
             if (!cooling.ThermalGuardEnabled)
             {

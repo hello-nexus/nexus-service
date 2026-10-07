@@ -304,32 +304,87 @@ public class ThermalGuardEngineTests
     }
 
     [Fact]
-    public void HealedSyncMember_IsNotScaledByTheGlobalModifier()
+    public void AHealedChannel_FollowsTheSharedCurveOnTheCpuTemperature()
     {
         var fans = new Fans();
-        fans.Channels.Add(new FanChannel { Id = "gpufan", Name = "GPU Fan", IsGpu = true, DeviceId = "/gpu-nvidia/0", DutyPercent = 40 });
+        fans.Channels.Add(new FanChannel { Id = "gpufan", Name = "GPU Fan", IsGpu = true, DeviceId = "/gpu-nvidia/0", DutyPercent = 0 });
         fans.Channels.Add(new FanChannel { Id = "f1", Name = "Fan 1" });
         var store = new InMemoryConfigStore();
-        store.Update(s =>
+        store.Update(s => s.Cooling.Curves.Add(new CurveDocument
         {
-            s.Cooling.GlobalSpeedModifier = 1.5;
-            s.Cooling.Curves.Add(new CurveDocument
-            {
-                Id = "sync", Name = "sync", Type = "Sync",
-                Sync = new SyncCurveData { SourceChannelId = "gpufan" },
-                Outputs = { new CurveOutputDocument { Id = "f1", Type = "Fan" } },
-            });
-        });
+            Id = "sync", Name = "sync", Type = "Sync",
+            Sync = new SyncCurveData { SourceChannelId = "gpufan" },
+            Outputs = { new CurveOutputDocument { Id = "f1", Type = "Fan" } },
+        }));
         var guard = new ThermalGuardController(fans, store);
         guard.HealNow(automatic: false);
-        Assert.Contains(store.Load().Cooling.Curves, c => c.Id == CoolingConfigLint.MixIdPrefix + "f1");
+        var healed = Assert.Single(store.Load().Cooling.Curves, c => c.Id == CoolingConfigLint.GuardCurveId);
+        Assert.Equal("f1", Assert.Single(healed.Outputs).Id);
 
-        fans.CpuTemp = 40f;
+        fans.CpuTemp = 65f; // default limit 90: the 65 C point is 60 percent
         new CurveEngine(fans, store, new MultiplexHub(), null, guard) { Clock = () => 1_000_000 }.Tick();
 
-        Assert.Equal(40, LastDuty(fans, "f1"));
+        Assert.Equal(60, LastDuty(fans, "f1"));
     }
 
+    [Fact]
+    public void HealUndo_RestoresTheCurvesAndTheDroppedManualSpeedsExactly()
+    {
+        var (_, fans, store, _) = Build();
+        var guard = new ThermalGuardController(fans, store);
+        var curvesBefore = store.Load().Cooling.Curves.Select(c => c.Id).ToArray();
+        store.Update(s => s.Cooling.ManualSpeeds["f2"] = 10); // manual-low: flagged
+        var manualBefore = new Dictionary<string, int>(store.Load().Cooling.ManualSpeeds);
+
+        guard.HealNow(automatic: false);
+        Assert.DoesNotContain("f2", store.Load().Cooling.ManualSpeeds.Keys);
+
+        guard.Undo();
+        Assert.Equal(curvesBefore, store.Load().Cooling.Curves.Select(c => c.Id).ToArray());
+        Assert.Equal(manualBefore, store.Load().Cooling.ManualSpeeds);
+    }
+
+    [Fact]
+    public void TheSharedCurve_FollowsTheLimitWhenTheOverrideChanges()
+    {
+        var (e, fans, store, guard, clock) = LimitRig(null);
+        guard.HealNow(automatic: false);
+        double[] Temps() => store.Load().Cooling.Curves.Single(c => c.Id == CoolingConfigLint.GuardCurveId).Graph!.Points.Select(p => p.Temp).ToArray();
+        Assert.Equal(new double[] { 35, 50, 65, 80, 90 }, Temps());
+
+        guard.SetConfig(new SetThermalGuardConfigBody { LimitOverrideC = 100 });
+        clock[0] += 1000;
+        e.Tick();
+        Assert.Equal(new double[] { 45, 60, 75, 90, 100 }, Temps());
+        // The undo snapshot survives the service's own adjustment.
+        Assert.NotNull(store.Load().Cooling.HealSnapshot);
+
+        guard.SetConfig(new SetThermalGuardConfigBody { ClearLimitOverride = true });
+        clock[0] += 1000;
+        e.Tick();
+        Assert.Equal(new double[] { 35, 50, 65, 80, 90 }, Temps());
+    }
+
+    [Fact]
+    public void TheGuardSwitch_IsReportedAtOnceWhileTheStateFollowsTheNextTick()
+    {
+        var (_, fans, store, _) = Build();
+        store.Update(s => s.Cooling.ThermalGuardEnabled = false);
+        var guard = new ThermalGuardController(fans, store);
+        Assert.False(guard.GetState().Enabled);
+
+        var (state, _) = guard.SetConfig(new SetThermalGuardConfigBody { Enabled = true });
+
+        Assert.True(state!.Enabled);
+        Assert.True(guard.GetState().Enabled);
+    }
+
+    [Fact]
+    public void OnlySyncMembersOfAMixedAreExemptFromTheGlobalModifier()
+    {
+        Assert.True(CoolingConfigLint.IsGlobalModifierExempt(new CurveDocument { Id = "x", Type = "Sync" }));
+        Assert.False(CoolingConfigLint.IsGlobalModifierExempt(new CurveDocument { Id = CoolingConfigLint.GuardCurveId, Type = "Graph" }));
+    }
     [Fact]
     public void GpuCoreTemp_UsesThatGpusOwnCoreSensorOnly()
     {
@@ -771,23 +826,23 @@ public class ThermalGuardEngineTests
     }
 
     [Fact]
-    public void LimitOverride_IsRejectedWhileTheHardwareReportsItsOwnLimit_AndNothingChanges()
+    public void LimitOverride_AppliesOnAHardwareLimitToo_WithTheDetectedValueKept()
     {
         var (_, _, store, guard, _) = LimitRig(new FlakySensors { ThrowFirst = false, Model = "Intel(R) Core(TM) i9-14900K", TjMax = 100 });
         Assert.Equal(ThermalLimitSources.Hardware, guard.GetState().DetectedLimitSource);
 
-        var (state, error) = guard.SetConfig(new SetThermalGuardConfigBody { LimitOverrideC = 110, Enabled = false });
+        var (state, error) = guard.SetConfig(new SetThermalGuardConfigBody { LimitOverrideC = 108 });
 
-        Assert.Null(state);
-        Assert.NotNull(error);
-        Assert.Null(store.Load().Cooling.ThermalGuardLimitOverrideC);
-        Assert.True(store.Load().Cooling.ThermalGuardEnabled);
-        Assert.Equal(100, guard.GetState().LimitC);
-        Assert.Equal(ThermalLimitSources.Hardware, guard.GetState().LimitSource);
+        Assert.Null(error);
+        Assert.Equal(108, state!.LimitC);
+        Assert.Equal(ThermalLimitSources.User, state.LimitSource);
+        Assert.Equal(100, state.DetectedLimitC);
+        Assert.Equal(ThermalLimitSources.Hardware, state.DetectedLimitSource);
+        Assert.Equal(108, store.Load().Cooling.ThermalGuardLimitOverrideC);
     }
 
     [Fact]
-    public void LimitDetection_RunsWithTheGuardOff_SoAnOverrideIsRejectedOnAHardwareLimitCpu()
+    public void LimitDetection_RunsWithTheGuardOff_AndAnOverrideStillWinsOnAHardwareLimit()
     {
         var (_, fans, store, _) = Build();
         store.Update(s => s.Cooling.ThermalGuardEnabled = false);
@@ -796,10 +851,10 @@ public class ThermalGuardEngineTests
         e.Tick();
 
         Assert.Equal(ThermalLimitSources.Hardware, guard.GetState().DetectedLimitSource);
-        var (state, error) = guard.SetConfig(new SetThermalGuardConfigBody { LimitOverrideC = 110 });
-        Assert.Null(state);
-        Assert.NotNull(error);
-        Assert.Null(store.Load().Cooling.ThermalGuardLimitOverrideC);
+        var (state, error) = guard.SetConfig(new SetThermalGuardConfigBody { LimitOverrideC = 105 });
+        Assert.Null(error);
+        Assert.Equal(105, state!.LimitOverrideC);
+        Assert.Equal(105, store.Load().Cooling.ThermalGuardLimitOverrideC);
     }
 
     [Fact]
@@ -823,27 +878,26 @@ public class ThermalGuardEngineTests
     }
 
     [Fact]
-    public void AStoredOverride_IsClearedOnceTheHardwareReportsItsOwnLimit()
+    public void AStoredOverride_StaysWhenTheHardwareReportsItsOwnLimit()
     {
         var (_, fans, store, _) = Build();
-        store.Update(s => s.Cooling.ThermalGuardLimitOverrideC = 110);
-        // The override is loaded at construction, before the CPU limit is detected.
+        store.Update(s => s.Cooling.ThermalGuardLimitOverrideC = 105);
         var guard = new ThermalGuardController(fans, store, null, new FlakySensors { ThrowFirst = false, Model = "Intel(R) Core(TM) i9-14900K", TjMax = 100 });
         var clock = new long[] { 1_000_000 };
         var e = new CurveEngine(fans, store, new MultiplexHub(), null, guard) { Clock = () => clock[0] };
 
         e.Tick();
 
-        Assert.Null(store.Load().Cooling.ThermalGuardLimitOverrideC);
-        Assert.Equal(100, guard.GetState().LimitC);
-        Assert.Null(guard.GetState().LimitOverrideC);
+        Assert.Equal(105, store.Load().Cooling.ThermalGuardLimitOverrideC);
+        Assert.Equal(105, guard.GetState().LimitC);
+        Assert.Equal(ThermalLimitSources.User, guard.GetState().LimitSource);
     }
 
     [Theory]
-    [InlineData(200, 120)]
-    [InlineData(10, 80)]
+    [InlineData(200, 110)]
+    [InlineData(10, 85)]
     [InlineData(95, 95)]
-    public void LimitOverride_IsClampedToEightyToOneTwenty(double requested, double expected)
+    public void LimitOverride_IsClampedToEightyFiveToOneTen(double requested, double expected)
     {
         var (_, _, store, guard, _) = LimitRig(null);
         var (state, error) = guard.SetConfig(new SetThermalGuardConfigBody { LimitOverrideC = requested });
@@ -984,10 +1038,4 @@ public class ThermalGuardEngineTests
         Assert.Equal(writes, fans.Driven.Count);
     }
 
-    [Fact]
-    public void HealedSafeFloorMember_IsExemptFromTheGlobalModifier()
-    {
-        Assert.True(CoolingConfigLint.IsGlobalModifierExempt(new CurveDocument { Id = CoolingConfigLint.SafeCurveId }));
-        Assert.False(CoolingConfigLint.IsGlobalModifierExempt(new CurveDocument { Id = "x", Type = "Graph" }));
-    }
 }

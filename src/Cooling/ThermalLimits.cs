@@ -24,8 +24,8 @@ public readonly record struct ThermalLimit(double LimitC, string Source);
 public static class ThermalLimits
 {
     /// <summary>Range of a user-set CPU limit.</summary>
-    public const double UserMinC = 80;
-    public const double UserMaxC = 120;
+    public const double UserMinC = 85;
+    public const double UserMaxC = 110;
     public const double AmdDefaultC = 95;
     public const double GenericDefaultC = 90;
 

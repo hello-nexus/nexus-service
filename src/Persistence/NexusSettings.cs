@@ -1012,11 +1012,13 @@ public sealed class CoolingSettings
     public string? PreferredGpuId { get; set; }
     /// <summary>CPU thermal guard master switch. On by default; a settings file without the key reads as on.</summary>
     public bool ThermalGuardEnabled { get; set; } = true;
-    /// <summary>User-set CPU limit in C, null = automatic. Applies only when the detected limit is not read from the hardware itself.</summary>
+    /// <summary>User-set CPU limit in C, null = automatic. Wins over the detected limit, whatever its source.</summary>
     public double? ThermalGuardLimitOverrideC { get; set; }
     /// <summary>The curves as they were before the last auto-heal, restored by undo. Null when there is nothing to undo.</summary>
     public List<CurveDocument>? HealSnapshot { get; set; }
     public long? HealedAtUtcMs { get; set; }
+    /// <summary>Manual speeds the last heal dropped (channel id to duty), put back by undo.</summary>
+    public Dictionary<string, int> HealDroppedManualSpeeds { get; set; } = new();
     public List<HealedChannelRecord> HealedChannels { get; set; } = new();
     /// <summary>The most recent guard trip, kept across restarts so diagnostics can report it for a day.</summary>
     public ThermalGuardTripRecord? LastThermalTrip { get; set; }
@@ -1032,6 +1034,7 @@ public sealed class CoolingSettings
             Console.Error.WriteLine($"[thermal-guard] heal undo cleared ({reason})");
         }
         HealSnapshot = null;
+        HealDroppedManualSpeeds = new Dictionary<string, int>();
         HealedAtUtcMs = null;
         HealedChannels = new List<HealedChannelRecord>();
     }

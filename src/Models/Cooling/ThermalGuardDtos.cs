@@ -39,6 +39,8 @@ public sealed class GpuGuardDto
 /// <summary>GET /cooling/guard and POST /cooling/guard/config.</summary>
 public sealed class ThermalGuardResponse : ApiResponse
 {
+    /// <summary>The guard switch as stored; it changes at once, while <see cref="State"/> follows on the next engine tick.</summary>
+    public bool Enabled { get; set; } = true;
     /// <summary>"off" | "inactive" | "normal" | "floor" | "tripped" | "escalated".</summary>
     public string State { get; set; } = "inactive";
     public double? GuardTempC { get; set; }
