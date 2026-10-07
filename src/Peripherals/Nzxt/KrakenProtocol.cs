@@ -219,12 +219,12 @@ internal static class KrakenProtocol
 
     public static byte[] EncodeEndTransfer() => NewReport(ReportTransferRequest, 0x02);
 
-    /// <summary>Aborts any half-finished transfer; CAM and liquidctl send it before every upload.</summary>
+    /// <summary>Aborts any half-finished transfer.</summary>
     public static byte[] EncodeCancelTransfers() => NewReport(ReportTransferRequest, 0x03);
 
     /// <summary>
     /// Starts a live frame straight to the panel, no bucket: <c>36 01 00 01 09</c>, as
-    /// captured from NZXT CAM driving the 2023 Kraken Elite. Byte 4 is the bulk format.
+    /// captured from the 2023 Kraken Elite's live frames. Byte 4 is the bulk format.
     /// </summary>
     public static byte[] EncodeStartDirectTransfer()
     {
@@ -419,7 +419,7 @@ internal static class KrakenProtocol
     /// <summary>Uncompressed RGB565. The 2023 Kraken (0x300E) takes only this.</summary>
     public const byte BulkFormatRgb565 = 0x06;
 
-    /// <summary>Raw B G R, 3 bytes a pixel: CAM's live-frame format on the direct path.</summary>
+    /// <summary>Raw B G R, 3 bytes a pixel: the live-frame format on the direct path.</summary>
     public const byte BulkFormatBgr888 = 0x09;
 
     /// <summary>

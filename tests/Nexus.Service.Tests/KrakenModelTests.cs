@@ -50,6 +50,12 @@ public class KrakenModelTests
     }
 
     [Fact]
+    public void Only_the_Z3_panel_takes_still_images_only()
+    {
+        Assert.Equal(new[] { 0x3008 }, KrakenModel.All.Where(m => m.StillImageOnly).Select(m => m.ProductId));
+    }
+
+    [Fact]
     public void Unknown_product_id_has_no_model()
     {
         Assert.Null(KrakenModel.Find(0x170E));

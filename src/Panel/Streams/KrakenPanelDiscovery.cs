@@ -30,8 +30,9 @@ public sealed class KrakenPanelDiscovery : IStreamedPanelDiscovery
     public IReadOnlyList<StreamedPanelDeviceInfo> Discover()
     {
         // The bulk pipe is what carries frames; without it the cooler still works as a
-        // cooler but has no panel to offer.
-        if (!_hub.IsConnected || !_hub.HasLcd || _hub.LcdWidth <= 0 || _hub.LcdHeight <= 0)
+        // cooler but has no panel to offer. A still-image-only panel is not a stream target.
+        if (!_hub.IsConnected || !_hub.HasLcd || _hub.LcdWidth <= 0 || _hub.LcdHeight <= 0
+            || _hub.Model.StillImageOnly)
         {
             return Array.Empty<StreamedPanelDeviceInfo>();
         }

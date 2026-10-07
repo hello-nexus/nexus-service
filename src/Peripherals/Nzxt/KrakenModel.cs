@@ -50,7 +50,8 @@ public sealed record KrakenModel(
     KrakenLcdFormat LcdFormat,
     KrakenLightingProtocol Lighting,
     bool SpeedChannelsFollowFirmware = false,
-    bool DirectStream = false)
+    bool DirectStream = false,
+    bool StillImageOnly = false)
 {
     public bool HasLcd => LcdFormat != KrakenLcdFormat.None;
 
@@ -76,15 +77,16 @@ public sealed record KrakenModel(
         // 2023 Kraken Elite. Same 640x640 Q565 panel; no ARGB anywhere on the pump, so no
         // lighting to drive. Its 0x72 channel tuples moved at firmware 2.1.1, hence
         // SpeedChannelsFollowFirmware. Bucket uploads are reported to wedge its 2.x firmware
-        // at streaming rates, so live frames take CAM's direct path (DirectStream).
+        // at streaming rates, so live frames take the bucketless direct path.
         new(0x300C, "NZXT Kraken Elite", 640, 640, KrakenLcdFormat.Q565, KrakenLightingProtocol.None, true, DirectStream: true),
         // 2023 Kraken. Smaller panel, and the only model that takes uncompressed RGB565 -
         // its firmware has no Q565 decoder.
         new(0x300E, "NZXT Kraken", 240, 240, KrakenLcdFormat.Rgb565, KrakenLightingProtocol.None, true),
 
-        // Kraken Z3 (Z53/Z63/Z73). 320x320, and the only model still on raw RGBA: 409,600
-        // bytes a frame, so its panel is a still-image surface, not a stream target.
-        new(0x3008, "NZXT Kraken Z3", 320, 320, KrakenLcdFormat.Rgba8888, KrakenLightingProtocol.StreamedTables),
+        // Kraken Z3 (Z53/Z63/Z73). 320x320, and the only model still on raw RGBA. A used
+        // bucket is deleted before it is rewritten, which a stream would do to the pump's
+        // flash every frame, so the panel takes still images only.
+        new(0x3008, "NZXT Kraken Z3", 320, 320, KrakenLcdFormat.Rgba8888, KrakenLightingProtocol.StreamedTables, StillImageOnly: true),
 
         // Kraken X3 (X53/X63/X73). Infinity-mirror ring, no panel.
         new(0x2007, "NZXT Kraken X3", 0, 0, KrakenLcdFormat.None, KrakenLightingProtocol.StreamedTables),

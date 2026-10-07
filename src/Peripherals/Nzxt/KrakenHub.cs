@@ -16,13 +16,13 @@ public sealed class KrakenHub : IDisposable
 {
     private const int ConnectReadTimeoutMs = 1000;
     private const int CommandReadTimeoutMs = 700;
-    // CAM's reader gives each direct-path reply this long; the device answers in a few ms.
+    // A direct-path reply arrives within a few ms; a missing one is not an error.
     private const int DirectReplyTimeoutMs = 150;
     private const int PollReadTimeoutMs = 250;
 
     // Bulk pixel data goes out in chunks; 64 KiB measured ~13 MB/s on the bench unit.
     private const int BulkChunkBytes = 64 * 1024;
-    // CAM's bulk transfer size on the direct path.
+    // Direct-path transfer size; divides a 640x640 BGR888 frame evenly.
     private const int DirectChunkBytes = 245_760;
 
     private readonly object _lock = new();
@@ -586,7 +586,8 @@ public sealed class KrakenHub : IDisposable
         // The bucket wipe below invalidates whatever a stream set up.
         _streamReady = false;
         {
-            if (_directStream)
+            // Drops a half-finished transfer; these models' uploads open with it.
+            if (_directStream || _model.StillImageOnly)
             {
                 ExchangeLocked(KrakenProtocol.EncodeCancelTransfers(), 0x37, 0x03, CommandReadTimeoutMs);
             }
@@ -726,7 +727,7 @@ public sealed class KrakenHub : IDisposable
     }
 
     /// <summary>
-    /// One live frame the way NZXT CAM drives the 2023 Elite: start, raw BGR888 on the bulk
+    /// One live frame on the 2023 Elite's direct path: start, raw BGR888 on the bulk
     /// endpoint, end. No bucket and no per-frame mode switch, so the flash store is never written.
     /// </summary>
     private bool PushDirectFrame(ReadOnlySpan<byte> bgra)
@@ -755,7 +756,7 @@ public sealed class KrakenHub : IDisposable
                 }
                 if (!_streamReady)
                 {
-                    // CAM's one-time entry: drop half-done transfers and stored images.
+                    // One-time entry: drop half-done transfers and stored images.
                     ExchangeLocked(KrakenProtocol.EncodeCancelTransfers(), 0x37, 0x03, CommandReadTimeoutMs);
                     ExchangeLocked(KrakenProtocol.EncodeSetDisplayMode(KrakenDisplayMode.Liquid, 0), 0x39, 0x01, CommandReadTimeoutMs);
                     for (int i = 0; i < KrakenProtocol.BucketCount; i++)
@@ -769,7 +770,7 @@ public sealed class KrakenHub : IDisposable
                 EnsureLcdScratch(_lcdWidth * _lcdHeight * 3);
                 encoded = KrakenProtocol.ToWireBgr(
                     bgra, _lcdWidth, _lcdHeight, _snapshot.LcdOrientationQuarterTurns, sourceIsBgra: true, _lcdScratch);
-                // The capture only shows CAM reading one report after start and end, not which,
+                // The capture shows one report read after start and end, not which,
                 // so neither reply is required; re-entry is left to the calls that invalidate it.
                 ExchangeLocked(KrakenProtocol.EncodeStartDirectTransfer(), 0x37, 0x01, DirectReplyTimeoutMs);
                 scratch = _lcdScratch;
