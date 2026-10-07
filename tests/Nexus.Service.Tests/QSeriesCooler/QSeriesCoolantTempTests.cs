@@ -44,7 +44,7 @@ public class QSeriesCoolantTempTests
     }
 
     [Fact]
-    public void PollTelemetry_accepts_the_legacy_14_byte_Q60_response()
+    public void PollTelemetry_accepts_the_14_byte_Q60_response()
     {
         var hub = NewConnectedHub(out var t);
         var extended = BuildPort0(InHigh, InLow, OutHigh, OutLow);

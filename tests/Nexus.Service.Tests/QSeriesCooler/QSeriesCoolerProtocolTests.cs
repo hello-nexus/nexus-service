@@ -204,7 +204,7 @@ public class QSeriesCoolerProtocolTests
     }
 
     [Theory]
-    [InlineData(13)]                 // one byte short of the legacy telemetry shape
+    [InlineData(13)]                 // one byte short of the base telemetry shape
     public void TryParsePort0PumpRpm_rejects_short_response(int length)
     {
         var resp = new byte[length];
@@ -213,7 +213,7 @@ public class QSeriesCoolerProtocolTests
     }
 
     [Fact]
-    public void Port0_parsers_accept_Q60_firmware_1_0_6_1_legacy_14_byte_response()
+    public void Port0_parsers_accept_Q60_firmware_1_0_6_1_14_byte_response()
     {
         // Captured from a real Q60 on Linux. This firmware stops before the
         // turbo/animation extension, but all cooling telemetry is present.

@@ -91,7 +91,7 @@ public static class QSeriesCoolerProtocol
     public const int SerialResponseLength = 37;
 
     /// <summary>
-    /// Minimum length of the legacy Port-0 status response. Q60 firmware 1.0.6.1
+    /// Minimum length of the Port-0 status response. Q60 firmware 1.0.6.1
     /// stops after byte [13]; pump tach, temperatures, and control mode are all
     /// present, but turbo and firmware-animation state are not.
     /// </summary>
@@ -315,9 +315,9 @@ public static class QSeriesCoolerProtocol
 
     /// <summary>
     /// Parse the pump RPM from a Port-0 status response (tach in bytes [9..10]).
-    /// Legacy Q60 firmware returns 14 bytes; newer firmware appends turbo and
-    /// firmware-animation state through byte [19]. Returns false on a response
-    /// shorter than the legacy telemetry shape or with a mis-echoed header.
+    /// Q60 firmware 1.0.6.1 returns 14 bytes; extended responses append turbo
+    /// and firmware-animation state through byte [19]. Returns false on a response
+    /// shorter than the base telemetry shape or with a mis-echoed header.
     /// </summary>
     public static bool TryParsePort0PumpRpm(ReadOnlySpan<byte> response, out int pumpRpm)
     {
