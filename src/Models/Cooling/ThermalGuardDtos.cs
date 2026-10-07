@@ -60,7 +60,7 @@ public sealed class ThermalGuardResponse : ApiResponse
     public long? SinceUtcMs { get; set; }
     /// <summary>True after repeated cooling-engine stalls: Nexus writes no fan until restart or a guard toggle.</summary>
     public bool WatchdogLatched { get; set; }
-    /// <summary>Whether the cooling page warns before saving a risky curve config.</summary>
+    /// <summary>Whether the cooling page flags fans that can stop while the CPU is hot.</summary>
     public bool LintWarnings { get; set; } = true;
     /// <summary>Fans in the saved config that can stop while the CPU is hot; empty while LintWarnings is off.</summary>
     public List<LintHazardDto> Hazards { get; set; } = new();
