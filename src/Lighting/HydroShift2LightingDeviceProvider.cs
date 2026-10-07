@@ -170,10 +170,7 @@ public sealed class HydroShift2LightingDeviceProvider :
         var v = new float[leds];
         for (int i = 0; i < leds; i++)
         {
-            // Clockwise from 12 o'clock.
-            var angle = (i / (double)leds * 2.0 * Math.PI) - (Math.PI / 2.0);
-            u[i] = 0.5f + (0.42f * (float)Math.Cos(angle));
-            v[i] = 0.5f + (0.42f * (float)Math.Sin(angle));
+            (u[i], v[i]) = SquareRingPosition(i);
         }
         var structure = new DeviceStructure
         {
@@ -203,6 +200,27 @@ public sealed class HydroShift2LightingDeviceProvider :
             Slices = { new ZoneSlice { Segment = 0, Start = 0, Count = leds } },
         });
         return structure;
+    }
+
+    /// <summary>
+    /// Where LED <paramref name="index"/> sits on the square pump head, seen from the front with
+    /// the tubes up: evenly spaced clockwise round the bezel, six to a side, LED 0 at the top
+    /// centre and LEDs 3, 9, 15 and 21 in the corners (camera-mapped one LED at a time).
+    /// </summary>
+    internal static (float U, float V) SquareRingPosition(int index)
+    {
+        const float Margin = 0.08f;
+        const int leds = HydroShift2Protocol.RingLedCount;
+        // Distance round the perimeter from the top-left corner, in sides.
+        var s = ((index + 3) % leds) * 4f / leds;
+        var (u, v) = s switch
+        {
+            < 1f => (s, 0f),
+            < 2f => (1f, s - 1f),
+            < 3f => (3f - s, 1f),
+            _ => (0f, 4f - s),
+        };
+        return (Margin + (u * (1f - (2f * Margin))), Margin + (v * (1f - (2f * Margin))));
     }
 
     /// <summary>A square on the effect canvas so the ring samples a spread of the effect rather than one patch.</summary>

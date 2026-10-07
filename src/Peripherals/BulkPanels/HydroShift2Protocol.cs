@@ -121,22 +121,11 @@ public static class HydroShift2Protocol
         return EncodeCommand(CommandSyncPumpFan, block, timestampMs);
     }
 
-    /// <summary>The pump's speed register for a target rpm: a falling piecewise curve, L-Connect's table for the square head.</summary>
-    public static int PumpTimer(int rpm)
-    {
-        rpm = Math.Clamp(rpm, PumpMinRpm, PumpMaxRpm);
-        return rpm switch
-        {
-            <= 1800 => 1590 - (int)((rpm - 1600) * 0.95),
-            <= 2000 => 1400 - (rpm - 1800),
-            <= 2200 => 1200 - (rpm - 2000),
-            <= 2400 => 1000 - (rpm - 2200),
-            <= 2600 => 800 - (rpm - 2400),
-            <= 2800 => 580 - (int)((rpm - 2600) * 1.11),
-            <= 3000 => 330 - (int)((rpm - 2800) * 1.2),
-            _ => 90 - (int)((rpm - 3000) * 0.45),
-        };
-    }
+    /// <summary>The wireless record's dev_type for this square head, whose pump timer table the USB link shares.</summary>
+    private const byte SquareHeadDevType = 11;
+
+    /// <summary>The pump's speed register for a target rpm.</summary>
+    public static int PumpTimer(int rpm) => Slv3Protocol.HydroShiftPumpTimer(rpm, SquareHeadDevType);
 
     /// <summary>Pump duty percent mapped linearly onto the pump's rpm range.</summary>
     public static int PumpRpmForDuty(int dutyPercent) =>

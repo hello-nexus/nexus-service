@@ -224,6 +224,22 @@ public class HydroShift2Tests
         Assert.Equal(HydroShift2Protocol.PumpTimer(HydroShift2Protocol.DefaultPumpRpm), Assert.Single(pipe.SyncPumpFans).Timer);
     }
 
+    [Theory]
+    [InlineData(0, 0.5f, 0.08f)]
+    [InlineData(3, 0.92f, 0.08f)]
+    [InlineData(6, 0.92f, 0.5f)]
+    [InlineData(9, 0.92f, 0.92f)]
+    [InlineData(12, 0.5f, 0.92f)]
+    [InlineData(15, 0.08f, 0.92f)]
+    [InlineData(18, 0.08f, 0.5f)]
+    [InlineData(21, 0.08f, 0.08f)]
+    public void Ring_leds_sit_round_the_square_bezel(int index, float u, float v)
+    {
+        var (actualU, actualV) = Nexus.Service.Lighting.HydroShift2LightingDeviceProvider.SquareRingPosition(index);
+        Assert.Equal(u, actualU, 3);
+        Assert.Equal(v, actualV, 3);
+    }
+
     // ── AIO loop ──
 
     [Fact]
