@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Threading;
 using Nexus.Service.Peripherals.Hid;
 
@@ -12,12 +13,35 @@ public sealed class LianLiHub : IDisposable
     private LianLiFanProfile _profile = LianLiFanProfiles.Default;
     private volatile string _modelName = "";
     private bool _disposed;
+    private int _resumeEpoch;
 
-    public string DeviceId => "lianli";
+    public LianLiHub(string deviceId = LianLiHubSet.PrimaryId)
+    {
+        DeviceId = deviceId;
+    }
+
+    /// <summary>Hub id: the device id prefix of its zones and cooling channels.</summary>
+    public string DeviceId { get; }
+
+    /// <summary>HID path of the attached device; empty while detached.</summary>
+    public string AttachedPath { get; private set; } = "";
+
+    /// <summary>The hub pinned to this slot is on the bus, attached or not: one whose Nexus Control is off stays listed so it can be turned back on.</summary>
+    public bool Present
+    {
+        get => Volatile.Read(ref _present);
+        set => Volatile.Write(ref _present, value);
+    }
+    private bool _present;
 
     public LianLiState State { get; } = new();
 
     public bool IsConnected => State.IsConnected;
+
+    /// <summary>Bumped on every system resume: the hub's commanded lighting and fan modes do not survive sleep, so readers re-send them when it moves.</summary>
+    public int ResumeEpoch => Volatile.Read(ref _resumeEpoch);
+
+    public void OnSystemResumed() => Interlocked.Increment(ref _resumeEpoch);
 
     /// <summary>Short model name for the attached device, or empty when not connected.</summary>
     public string ModelName => _modelName;
@@ -28,12 +52,14 @@ public sealed class LianLiHub : IDisposable
         get { lock (_lock) { return _profile; } }
     }
 
-    public void Attach(IHidDevice device, LianLiFanProfile profile)
+    /// <param name="path">The enumerated HID path the device was opened from; the handle's own path when omitted.</param>
+    public void Attach(IHidDevice device, LianLiFanProfile profile, string? path = null)
     {
         lock (_lock)
         {
             _device = device;
             _profile = profile;
+            AttachedPath = path ?? device.Path;
             _modelName = profile.ModelName ?? "";
             State.IsConnected = true;
         }
@@ -45,8 +71,10 @@ public sealed class LianLiHub : IDisposable
         {
             _device?.Dispose();
             _device = null;
+            AttachedPath = "";
             _profile = LianLiFanProfiles.Default;
             _modelName = "";
+            State.FirmwareVersion = "";
             State.IsConnected = false;
         }
     }
@@ -182,12 +210,12 @@ public sealed class LianLiHub : IDisposable
         }
     }
 
-    public bool SendMergeOrder()
+    public bool SendMergeOrder(IReadOnlyList<int> order)
     {
         lock (_lock)
         {
             if (_device == null) return false;
-            return _device.SetFeature(LianLiProtocol.BuildMergeOrder());
+            return _device.SetFeature(LianLiProtocol.BuildMergeOrder(order));
         }
     }
 
@@ -212,7 +240,7 @@ public sealed class LianLiHub : IDisposable
                 ok &= WriteCommand(LianLiProtocol.BuildEffectCommit(ch, LianLiProtocol.EffectStatic,
                     LianLiProtocol.SpeedDefault, LianLiProtocol.DirectionDefault, LianLiProtocol.BrightnessDefault));
             }
-            return ok && _device.SetFeature(LianLiProtocol.BuildFrameSync());
+            return ok && _device.SetFeature(LianLiProtocol.BuildFrameSync(_profile));
         }
     }
 
@@ -221,7 +249,24 @@ public sealed class LianLiHub : IDisposable
         lock (_lock)
         {
             if (_device == null) return false;
-            return _device.SetFeature(LianLiProtocol.BuildFrameSync());
+            return _device.SetFeature(LianLiProtocol.BuildFrameSync(_profile));
+        }
+    }
+
+    /// <summary>Reads the firmware version into <see cref="LianLiState.FirmwareVersion"/>; false when the hub gave no valid reply. <paramref name="familyId"/> is the family byte the hub reports.</summary>
+    public bool ReadFirmwareVersion(out byte familyId)
+    {
+        familyId = 0;
+        lock (_lock)
+        {
+            if (_device == null) return false;
+            if (!_device.SetFeature(LianLiProtocol.BuildFirmwarePrimer())) return false;
+            Span<byte> buf = stackalloc byte[LianLiProtocol.InputReportSize];
+            buf[0] = LianLiProtocol.ReportId;
+            if (!_device.GetInputReport(buf)) return false;
+            if (!LianLiProtocol.TryDecodeFirmware(buf, _profile.Family, out var version, out familyId)) return false;
+            State.FirmwareVersion = version;
+            return true;
         }
     }
 

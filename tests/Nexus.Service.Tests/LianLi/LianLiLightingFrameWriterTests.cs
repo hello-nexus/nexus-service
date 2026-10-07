@@ -126,6 +126,77 @@ public class LianLiLightingFrameWriterTests
     }
 
     [Fact]
+    public void Al_whole_fan_mode_commits_the_inner_channel_only()
+    {
+        Attach(0xA101, port: 1, fans: 2);
+        SetMode("taichi");
+
+        _writer.Tick();
+
+        var commits = Calls.Where(c => c.IsSetFeature && (c.Bytes[1] & 0xF0) == 0x10 && c.Bytes[2] == 0x2C).ToList();
+        Assert.Single(commits);
+        Assert.Equal(0x12, commits[0].Bytes[1]); // inner channel 2 of port 1
+        Assert.DoesNotContain(Calls, c => c.Kind == HubTransportSpy.CallKind.OutputReport && c.Bytes[1] == 0x33);
+    }
+
+    [Fact]
+    public void Al_split_ring_mode_commits_both_channels()
+    {
+        Attach(0xA101, port: 0, fans: 2);
+        SetMode("runway");
+
+        _writer.Tick();
+
+        var commits = Calls.Where(c => c.IsSetFeature && c.Bytes[2] == 0x1A && (c.Bytes[1] & 0xF0) == 0x10).Select(c => c.Bytes[1]).ToArray();
+        Assert.Equal(new byte[] { 0x10, 0x11 }, commits);
+    }
+
+    [Fact]
+    public void Sl_v2_commits_one_channel_per_port_and_latches_on_four()
+    {
+        Attach(0xA103, port: 2, fans: 6);
+        SetMode("tide");
+
+        _writer.Tick();
+
+        Assert.Contains(Calls, c => c.IsSetFeature && c.Bytes[2] == 0x60 && c.Bytes[3] == 0x26);
+        Assert.Contains(Calls, c => c.IsSetFeature && c.Bytes[1] == 0x12 && c.Bytes[2] == 0x1A);
+        Assert.DoesNotContain(Calls, c => c.IsSetFeature && c.Bytes[1] is 0x14 or 0x15);
+        Assert.Equal(new byte[] { 0xE0, 0x60, 0x00, 0x04, 0x00, 0x00, 0x00 }, Calls[^1].Bytes);
+    }
+
+    [Fact]
+    public void An_empty_palette_falls_back_to_the_mode_defaults()
+    {
+        Attach(0xA102, port: 0, fans: 1);
+        _store.Update(s => { s.Devices.LianLiLighting.Mode = "runway"; s.Devices.LianLiLighting.Colors.Clear(); });
+
+        _writer.Tick();
+
+        var colour = Calls.First(c => c.Kind == HubTransportSpy.CallKind.OutputReport && c.Bytes[1] == 0x30).Bytes;
+        // Default runway palette red then blue, on the R,B,G wire.
+        Assert.Equal(new byte[] { 0xFF, 0x00, 0x00 }, colour[2..5]);
+        Assert.Equal(new byte[] { 0x00, 0xFF, 0x00 }, colour[5..8]);
+    }
+
+    [Fact]
+    public void A_system_resume_recommits_an_unchanged_firmware_mode()
+    {
+        Attach(0xA102, port: 0, fans: 2);
+        SetMode("rainbowWave");
+        _writer.Tick();
+        var afterFirst = Calls.Count;
+        _writer.Tick();
+        Assert.Equal(afterFirst, Calls.Count);
+
+        _hub.OnSystemResumed();
+        _writer.Tick();
+
+        Assert.True(Calls.Count > afterFirst);
+        Assert.Equal(0x60, Calls[^1].Bytes[1]);
+    }
+
+    [Fact]
     public void Sl_v1_falls_back_to_static_for_a_persisted_sl_infinity_only_mode()
     {
         Attach(0xA100, port: 0, fans: 1);
@@ -213,6 +284,160 @@ public class LianLiLightingFrameWriterTests
         Assert.Equal(new byte[] { 0xFF, 0x00, 0x00 }, colour.Bytes[14..17]);
         Assert.Equal(new byte[] { 0xE0, 0x10, 0x46, 0x00, 0x00, 0x00, 0x00 }, Calls[13].Bytes);
         Assert.DoesNotContain(Calls, c => c.Bytes[1] == 0x60);
+    }
+
+    [Fact]
+    public void Merged_animation_follows_the_saved_port_order()
+    {
+        AttachMerged(0xA102, "runway");
+        _store.Update(s => s.Devices.LianLiLighting.MergeOrder = new List<int> { 3, 2, 1, 0 });
+
+        _writer.Tick();
+
+        Assert.Equal(new byte[] { 0xE0, 0x10, 0x63, 0x03, 0x02, 0x01, 0x00, 0x08 }, Calls[0].Bytes);
+    }
+
+    // ── Per-port and per-ring looks ──
+
+    private static LianLiEffectSettings Effect(string mode, params string[] colors) =>
+        new() { Mode = mode, Colors = colors.ToList() };
+
+    // Effect byte committed on each channel, in commit order.
+    private Dictionary<int, byte> CommittedEffects() => Calls
+        .Where(c => c.IsSetFeature && (c.Bytes[1] & 0xF0) == 0x10 && c.Bytes[2] is not (0x34 or 0x60 or 0x63))
+        .ToDictionary(c => c.Bytes[1] & 0x0F, c => c.Bytes[2]);
+
+    private void AttachPorts(int pid, params int[] fansPerPort)
+    {
+        _hub.Attach(_spy, Profile(pid));
+        _store.Update(s =>
+        {
+            for (var p = 0; p < LianLiProtocol.PortCount; p++) s.Devices.LianLi.SetFans(p, p < fansPerPort.Length ? fansPerPort[p] : 0);
+        });
+        _engine.UpdateDevices(new[] { new DeviceFrame(0, "lianli:port0", 16, 0, 0, 1, 1, 0) });
+    }
+
+    [Fact]
+    public void Split_rings_commit_each_ring_its_own_effect()
+    {
+        AttachPorts(0xA102, 2);
+        _store.Update(s =>
+        {
+            s.Devices.LianLiLighting.Mode = "rainbowWave";
+            s.Devices.LianLiLighting.InnerRing = Effect("taichi");
+            s.Devices.LianLiLighting.OuterRing = Effect("reflect");
+        });
+
+        _writer.Tick();
+
+        Assert.Equal(new Dictionary<int, byte> { [0] = 0x1C, [1] = 0x30 }, CommittedEffects());
+    }
+
+    [Fact]
+    public void A_port_with_its_own_look_commits_it_and_the_others_keep_the_hubs()
+    {
+        AttachPorts(0xA102, 2, 2);
+        _store.Update(s =>
+        {
+            s.Devices.LianLiLighting.Mode = "rainbowWave";
+            s.Devices.LianLiLighting.Ports = new List<LianLiPortLighting?>
+            {
+                null,
+                new() { Whole = Effect("static"), InnerRing = Effect("meteor"), OuterRing = Effect("static") },
+            };
+        });
+
+        _writer.Tick();
+
+        Assert.Equal(new Dictionary<int, byte> { [0] = 0x05, [1] = 0x05, [2] = 0x19, [3] = 0x01 }, CommittedEffects());
+    }
+
+    [Fact]
+    public void Split_rings_on_a_family_without_ring_effects_play_the_whole_fan_mode()
+    {
+        AttachPorts(0x7750, 1);
+        _store.Update(s =>
+        {
+            s.Devices.LianLiLighting.Mode = "rainbowWave";
+            s.Devices.LianLiLighting.InnerRing = Effect("taichi");
+            s.Devices.LianLiLighting.OuterRing = Effect("reflect");
+        });
+
+        _writer.Tick();
+
+        Assert.All(CommittedEffects().Values, b => Assert.Equal(0x05, b));
+    }
+
+    [Fact]
+    public void Split_rings_switch_off_merge()
+    {
+        AttachMerged(0xA102, "runway");
+        _store.Update(s =>
+        {
+            s.Devices.LianLiLighting.InnerRing = Effect("static");
+            s.Devices.LianLiLighting.OuterRing = Effect("static");
+        });
+
+        _writer.Tick();
+
+        Assert.DoesNotContain(Calls, c => c.Bytes[2] == 0x63);
+    }
+
+    [Fact]
+    public void A_corner_palette_colours_each_side_of_the_outer_ring()
+    {
+        AttachPorts(0xA101, 1);
+        _store.Update(s =>
+        {
+            s.Devices.LianLiLighting.Mode = "static";
+            s.Devices.LianLiLighting.InnerRing = Effect("static");
+            s.Devices.LianLiLighting.OuterRing = Effect("staticColorful", "#FF0000", "#0000FF", "#00FF00", "#800000");
+        });
+
+        _writer.Tick();
+
+        var outer = Calls.First(c => c.Kind == HubTransportSpy.CallKind.OutputReport && c.Bytes[1] == 0x31).Bytes;
+        // wire R,B,G: each side of the ring holds one palette colour
+        Assert.Equal(new byte[] { 0xFF, 0x00, 0x00 }, outer[2..5]);
+        Assert.Equal(new byte[] { 0xFF, 0x00, 0x00 }, outer[(2 + 2 * 3)..(2 + 3 * 3)]);
+        Assert.Equal(new byte[] { 0x00, 0xFF, 0x00 }, outer[(2 + 3 * 3)..(2 + 4 * 3)]);
+        Assert.Equal(new byte[] { 0x00, 0x00, 0xFF }, outer[(2 + 6 * 3)..(2 + 7 * 3)]);
+        Assert.Equal(new byte[] { 0x80, 0x00, 0x00 }, outer[(2 + 11 * 3)..(2 + 12 * 3)]);
+    }
+
+    [Fact]
+    public void A_merged_animation_ignores_port_looks_and_does_not_restart_for_them()
+    {
+        AttachMerged(0xA102, "runway");
+        _store.Update(s => s.Devices.LianLiLighting.Ports = new List<LianLiPortLighting?> { new() { Whole = Effect("static") } });
+        _writer.Tick();
+        Assert.Contains(Calls, c => c.Bytes[2] == 0x63);
+        Assert.DoesNotContain(CommittedEffects(), e => e.Value == 0x01);
+        Calls.Clear();
+
+        _store.Update(s => s.Devices.LianLiLighting.Ports = new List<LianLiPortLighting?> { new() { Whole = Effect("breathing") } });
+        _writer.Tick();
+
+        Assert.Empty(Calls);
+    }
+
+    [Fact]
+    public void Changing_a_ring_recommits()
+    {
+        AttachPorts(0xA102, 1);
+        _store.Update(s =>
+        {
+            s.Devices.LianLiLighting.Mode = "static";
+            s.Devices.LianLiLighting.InnerRing = Effect("static");
+            s.Devices.LianLiLighting.OuterRing = Effect("static");
+        });
+        _writer.Tick();
+        Calls.Clear();
+
+        _store.Update(s => s.Devices.LianLiLighting.OuterRing!.Speed = 4);
+        _writer.Tick();
+
+        Assert.NotEmpty(CommittedEffects());
     }
 
     [Fact]
@@ -508,6 +733,23 @@ public class LianLiLightingFrameWriterTests
     private static bool IsArgbSync(HubTransportSpy.Call c, byte on) =>
         c.IsSetFeature && c.Bytes.Length >= 4 && c.Bytes[1] == 0x10 && c.Bytes[2] == 0x61 && c.Bytes[3] == on;
 
+    [Theory]
+    [InlineData(0xA101, 0x41)]
+    [InlineData(0xA100, 0x30)]
+    [InlineData(0xA103, 0x61)]
+    public void Argb_sync_switches_every_family_on_its_own_register(int pid, int register)
+    {
+        UseFakeClock();
+        Attach(pid, port: 0, fans: 2);
+        SetMode("static");
+        _store.Update(s => s.Devices.LianLiLighting.ArgbSync = true);
+
+        _writer.Tick();
+
+        Assert.Single(Calls, c => c.IsSetFeature && c.Bytes[1] == 0x10 && c.Bytes[2] == register && c.Bytes[3] == 1);
+        Assert.DoesNotContain(Calls, c => c.Bytes.Length > 1 && (c.Bytes[1] & 0xF0) == 0x30);
+    }
+
     [Fact]
     public void Argb_sync_switches_the_hub_once_and_stops_streaming()
     {
@@ -600,28 +842,4 @@ public class LianLiLightingFrameWriterTests
         Assert.Equal(3, commits);
     }
 
-    [Fact]
-    public void An_unverified_family_is_never_sent_the_sync_register()
-    {
-        Attach(0xA100, port: 2, fans: 3);
-        SetMode("static");
-        _store.Update(s => { s.Devices.LianLiLighting.ArgbSync = true; s.Devices.LianLiLighting.ArgbSyncSource = "openrgb-s-1-1"; });
-
-        _writer.Tick();
-
-        Assert.DoesNotContain(Calls, c => c.IsSetFeature && c.Bytes.Length >= 3 && c.Bytes[1] == 0x10 && c.Bytes[2] == 0x30);
-    }
-
-    [Fact]
-    public void Argb_sync_left_on_does_not_switch_an_unverified_family()
-    {
-        Attach(0xA100, port: 2, fans: 3);
-        SetMode("custom");
-        _store.Update(s => s.Devices.LianLiLighting.ArgbSync = true);
-
-        _writer.Tick();
-
-        Assert.DoesNotContain(Calls, c => c.IsSetFeature && c.Bytes.Length >= 3 && c.Bytes[1] == 0x10 && c.Bytes[2] == 0x30);
-        Assert.Contains(Calls, c => c.Kind == HubTransportSpy.CallKind.Write);
-    }
 }

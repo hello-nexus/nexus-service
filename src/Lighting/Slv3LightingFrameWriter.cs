@@ -148,12 +148,16 @@ public sealed class Slv3LightingFrameWriter : IHostedService, IDisposable
             _lastPushTicks.Clear();
             _clock.Clear();
             DropSharedWindow();
+            _argbRequests.Clear();
             return;
         }
+        var settings = _store.Load();
+        // A chain on its motherboard input has no engine cards, so this runs before the device check.
+        ReconcileMotherboardArgb(settings, _nowTicks() / TimeSpan.TicksPerMillisecond);
+
         var devices = _engine.Devices;
         if (devices.Length == 0) return;
 
-        var settings = _store.Load();
         var globalBrightness = MasterBrightness.Effective(settings.Lighting);
         var disabled = settings.Devices.DisabledLightingDevices;
         var uncontrolled = settings.Devices.UncontrolledLightingDevices;
@@ -207,41 +211,8 @@ public sealed class Slv3LightingFrameWriter : IHostedService, IDisposable
             SegmentFrameComposer.Compose(
                 structure, zones, devices, disabled, uncontrolled, prefs, globalBrightness, 1.0, nowTicks, _identify, _segmentBuffers);
 
-            int totalLeds;
-            if (Slv3LightingDeviceProvider.IsSingleSegmentStructure(structure))
-            {
-                // The one segment is the wire buffer, in wire order.
-                var cable = _segmentBuffers[0];
-                totalLeds = cable.Length;
-                EnsureWireBuffer(totalLeds);
-                cable.CopyTo(_wireBuffer, 0);
-            }
-            else
-            {
-                // Ring length is family-dependent; it must match the provider's
-                // structure for this chain or the fan-major interleave below
-                // misaligns.
-                var fanInfo = FindFanInfo(macHex);
-                if (fanInfo is null) continue;
-                var ringLen = Slv3LightingDeviceProvider.RingLedsFor(fanInfo);
-                var ledsPerFan = ringLen * 2;
-                var fanCount = structure.Segments[Slv3LightingDeviceProvider.InnerSegment].LedCount / ringLen;
-                if (fanCount <= 0) continue;
-                totalLeds = fanCount * ledsPerFan;
-                EnsureWireBuffer(totalLeds);
-
-                var inner = _segmentBuffers[Slv3LightingDeviceProvider.InnerSegment];
-                var outer = _segmentBuffers[Slv3LightingDeviceProvider.OuterSegment];
-                for (var f = 0; f < fanCount; f++)
-                {
-                    var baseIdx = f * ledsPerFan;
-                    for (var i = 0; i < ringLen; i++)
-                    {
-                        _wireBuffer[baseIdx + i] = inner[f * ringLen + i];
-                        _wireBuffer[baseIdx + ringLen + i] = outer[f * ringLen + i];
-                    }
-                }
-            }
+            var totalLeds = FillWireBuffer(macHex, structure);
+            if (totalLeds == 0) continue;
 
             var frameSpan = _wireBuffer.AsSpan(0, totalLeds);
             var hash = ComputeHash(frameSpan);
@@ -695,9 +666,13 @@ public sealed class Slv3LightingFrameWriter : IHostedService, IDisposable
         }
         var fanInfo = FindFanInfo(macHex);
         if (fanInfo is null) return 0;
-        var ringLen = Slv3LightingDeviceProvider.RingLedsFor(fanInfo);
-        var ledsPerFan = ringLen * 2;
-        var fanCount = structure.Segments[Slv3LightingDeviceProvider.InnerSegment].LedCount / ringLen;
+        // Ring lengths must match the provider's structure for this chain or
+        // the fan-major interleave misaligns.
+        var innerLen = Slv3LightingDeviceProvider.RingLedsFor(fanInfo);
+        var outerLen = Slv3LightingDeviceProvider.OuterRingLedsFor(fanInfo);
+        if (innerLen <= 0) return 0;
+        var ledsPerFan = innerLen + outerLen;
+        var fanCount = structure.Segments[Slv3LightingDeviceProvider.InnerSegment].LedCount / innerLen;
         if (fanCount <= 0) return 0;
         var totalLeds = fanCount * ledsPerFan;
         EnsureWireBuffer(totalLeds);
@@ -706,13 +681,62 @@ public sealed class Slv3LightingFrameWriter : IHostedService, IDisposable
         for (var f = 0; f < fanCount; f++)
         {
             var baseIdx = f * ledsPerFan;
-            for (var i = 0; i < ringLen; i++)
+            for (var i = 0; i < innerLen; i++)
             {
-                _wireBuffer[baseIdx + i] = inner[f * ringLen + i];
-                _wireBuffer[baseIdx + ringLen + i] = outer[f * ringLen + i];
+                _wireBuffer[baseIdx + i] = inner[f * innerLen + i];
+            }
+            for (var i = 0; i < outerLen; i++)
+            {
+                _wireBuffer[baseIdx + innerLen + i] = outer[f * outerLen + i];
             }
         }
         return totalLeds;
+    }
+
+    // Retry spacing and cap for the motherboard ARGB switch: the hub already
+    // re-sends each request until the chain echoes it, so this only covers a
+    // chain whose flag never follows (firmware without the switch).
+    private const long ArgbRetryMs = 5_000;
+    private const int MaxArgbRequests = 3;
+    private readonly Dictionary<string, (bool Want, long AtMs, int Sent)> _argbRequests = new(StringComparer.Ordinal);
+
+    // Brings each bound chain's motherboard ARGB flag to the user's saved
+    // choice; a chain with no saved choice is left as it is.
+    private void ReconcileMotherboardArgb(NexusSettings settings, long nowMs)
+    {
+        var chains = settings.Devices.LianLiWireless.Chains;
+        var fans = _hub.State.Fans;
+        if (_argbRequests.Count > 0)
+        {
+            // A chain that left the list gets a fresh budget when it returns.
+            List<string>? gone = null;
+            foreach (var mac in _argbRequests.Keys)
+            {
+                if (Array.FindIndex(fans, f => f.Mac == mac && f.BoundToUs && !f.Stale) < 0) (gone ??= new()).Add(mac);
+            }
+            if (gone is not null) foreach (var mac in gone) _argbRequests.Remove(mac);
+        }
+        foreach (var fan in fans)
+        {
+            if (!fan.BoundToUs || fan.Stale) continue;
+            if (!chains.TryGetValue(fan.Mac, out var chain) || chain.MotherboardArgb is not { } want) continue;
+            if (fan.PlayingMotherboardArgb == want)
+            {
+                _argbRequests.Remove(fan.Mac);
+                continue;
+            }
+            // A reboot, identify or AIO switch waiting for its echo would be overwritten.
+            if (_hub.HasOtherPendingCommand(fan.Mac, Slv3Protocol.RfArgbSyncSwitch)) continue;
+            _argbRequests.TryGetValue(fan.Mac, out var last);
+            var fresh = last.Sent == 0 || last.Want != want;
+            if (!fresh && (last.Sent >= MaxArgbRequests || nowMs - last.AtMs < ArgbRetryMs)) continue;
+            if (_hub.SetMotherboardArgb(fan.Mac, want))
+            {
+                _argbRequests[fan.Mac] = (want, nowMs, fresh ? 1 : last.Sent + 1);
+                // Leaving the input, the chain shows nothing of ours until re-sent.
+                if (!want) _lastSent.Remove(fan.Mac);
+            }
+        }
     }
 
     private Slv3FanInfo? FindFanInfo(string macHex)
@@ -765,7 +789,7 @@ public sealed class Slv3LightingFrameWriter : IHostedService, IDisposable
         // CL fans pair a center with an outer ring of a different length,
         // which the uniform two-ring chain layout does not describe.
         var ledCount = isStrimer ? lanes * ledsPerLane : fanCount * Slv3Protocol.LedsPerFanFor(family);
-        if (ledCount <= 0 || (!isStrimer && (family == Slv3FanFamily.Cl || fanCount > Slv3FanEffects.MaxFans)))
+        if (ledCount <= 0 || (!isStrimer && (Slv3Protocol.IsClFamily(family) || fanCount > Slv3FanEffects.MaxFans)))
         {
             return false;
         }

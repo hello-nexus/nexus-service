@@ -74,6 +74,16 @@ public sealed class StrimerHub : IDisposable
         }
     }
 
+    /// <summary>Hands the cable to the motherboard ARGB input (on) or back to the host (off).</summary>
+    public bool SendArgbSync(bool on)
+    {
+        lock (_lock)
+        {
+            if (_device == null) return false;
+            return WriteCommand(StrimerProtocol.BuildArgbSync(on)) && WriteCommand(StrimerProtocol.BuildEffectEnable());
+        }
+    }
+
     // Caller holds _lock.
     private bool WriteCommand(ReadOnlySpan<byte> command)
     {

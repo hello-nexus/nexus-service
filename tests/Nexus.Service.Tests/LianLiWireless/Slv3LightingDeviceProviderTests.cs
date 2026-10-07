@@ -75,6 +75,24 @@ public class Slv3LightingDeviceProviderTests
     }
 
     [Fact]
+    public void Odd_per_fan_led_count_gives_the_outer_ring_the_extra_led()
+    {
+        var (hub, net, _) = Slv3TestHub.CreateConnected();
+        net.Fans.Add(new Slv3TestHub.SimulatedFan { Mac = FanMac, MasterMac = net.MasterMac, RxType = 1, FanCount = 3, FansType = 63 });
+        Assert.True(hub.DriveTick());
+
+        var provider = new Slv3LightingDeviceProvider(hub, new InMemoryConfigStore(), new Np50IdentifyTracker());
+        var structure = Assert.Single(provider.GetStructures());
+        var inner = structure.Segments[Slv3LightingDeviceProvider.InnerSegment];
+        var outer = structure.Segments[Slv3LightingDeviceProvider.OuterSegment];
+
+        Assert.Equal(3 * 4, inner.LedCount);
+        Assert.Equal(3 * 5, outer.LedCount);
+        Assert.Equal(outer.LedCount, outer.DefaultU!.Length);
+        Assert.Equal(3 * Slv3Protocol.LedsPerFanFor(Slv3FanFamily.P28V2), inner.LedCount + outer.LedCount);
+    }
+
+    [Fact]
     public void Unbound_fan_is_not_a_device()
     {
         var (hub, net, _) = Slv3TestHub.CreateConnected();

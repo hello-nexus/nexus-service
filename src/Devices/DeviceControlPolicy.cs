@@ -23,6 +23,9 @@ public static class DeviceControlPolicy
     private static readonly Dictionary<string, string> ConflictAppByHandler = new(StringComparer.OrdinalIgnoreCase)
     {
         ["lianli"] = "lian-li-l-connect",
+        ["lianli2"] = "lian-li-l-connect",
+        ["lianli3"] = "lian-li-l-connect",
+        ["lianli4"] = "lian-li-l-connect",
         ["lianli-tl"] = "lian-li-l-connect",
         ["lianli-wireless"] = "lian-li-l-connect",
         ["lianli-aio"] = "lian-li-l-connect",

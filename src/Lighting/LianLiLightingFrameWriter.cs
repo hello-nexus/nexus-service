@@ -23,6 +23,8 @@ public sealed class LianLiLightingFrameWriter : IHostedService, IDisposable
 {
     // Tick cadence while the engine is stopped and publishes nothing.
     private const int IdleTickMs = 100;
+    // Polls an empty hub slot for an attach; the slot's lighting starts within one tick of it.
+    private const int DetachedTickMs = 1000;
 
     // Settle between writes; SL-Infinity custom streaming is paced per frame
     // instead (SlInfinityFrameIntervalMs).
@@ -102,6 +104,7 @@ public sealed class LianLiLightingFrameWriter : IHostedService, IDisposable
     private int _argbRecommitsDone = ArgbReleaseRecommitMs.Length;
 
     private bool _customMergeCleared;
+    private int _resumeEpochSeen;
     private long _lastCustomFrameMs = long.MinValue / 2;
 
     // Per-device resolved zones for the firmware-mode sig/commit pair, reused
@@ -163,6 +166,8 @@ public sealed class LianLiLightingFrameWriter : IHostedService, IDisposable
 
     private void OnFramePublished()
     {
+        // A writer for an empty slot waits out its slow tick instead of waking at frame rate.
+        if (!_hub.IsConnected) return;
         // The engine may still invoke a handler list it read before StopAsync unsubscribed.
         try { _framePublished.Set(); }
         catch (ObjectDisposedException) { }
@@ -181,7 +186,7 @@ public sealed class LianLiLightingFrameWriter : IHostedService, IDisposable
             {
                 Console.Error.WriteLine($"[lianli-lighting-writer] tick exception: {ex.GetType().Name}: {ex.Message}");
             }
-            try { WaitHandle.WaitAny(wake, IdleTickMs); }
+            try { WaitHandle.WaitAny(wake, _hub.IsConnected ? IdleTickMs : DetachedTickMs); }
             catch (ObjectDisposedException) { break; }
         }
     }
@@ -196,23 +201,18 @@ public sealed class LianLiLightingFrameWriter : IHostedService, IDisposable
                 timeEndPeriod(1);
                 _highResTimer = false;
             }
-            // The hub loses commanded LED state on USB re-enumeration, so clear
-            // the committed sig: the first reconnected tick re-commits the
-            // firmware mode even when settings are unchanged. The cooling path
-            // re-asserts on reconnect for the same reason.
-            _lastFirmwareSig = null;
-            _pendingFirmwareSig = null;
-            _hubInitialised = false;
-            _argbSyncSent = false;
-            _argbRecommitsDone = ArgbReleaseRecommitMs.Length;
-            _argbSyncRetry.Reset();
-            _customMergeCleared = false;
-            _initRetry.Reset();
-            _commitRetry.Reset();
+            ForgetHubState();
             return;
         }
+        var resumeEpoch = _hub.ResumeEpoch;
+        if (resumeEpoch != _resumeEpochSeen)
+        {
+            _resumeEpochSeen = resumeEpoch;
+            ForgetHubState();
+        }
         var settings = _store.Load();
-        var ls = settings.Devices.LianLiLighting;
+        var ls = LianLiHubSet.LightingOf(settings.Devices, _hub.DeviceId);
+        var fans = LianLiHubSet.FansOf(settings.Devices, _hub.DeviceId);
         var profile = _hub.Profile;
         var argbSync = profile.PlaysArgbInput(ls.ArgbSync);
         if (_argbSyncSent != argbSync && !_argbSyncRetry.BackingOff(NowMs()))
@@ -265,7 +265,7 @@ public sealed class LianLiLightingFrameWriter : IHostedService, IDisposable
         // pre-retry this was fire-and-forget, and custom mode streams without it.
         if (!_hubInitialised && !_initRetry.BackingOff(NowMs()))
         {
-            if (InitialiseHub(profile, settings.Devices.LianLi))
+            if (InitialiseHub(profile, fans))
             {
                 NoteSuccess(_initRetry, "hub init");
                 _hubInitialised = true;
@@ -276,7 +276,7 @@ public sealed class LianLiLightingFrameWriter : IHostedService, IDisposable
             }
         }
         var comp = LianLiZoneSupport.ReadComposition(settings, _hub.DeviceId);
-        var composed = LianLiZoneSupport.Compose(_hub.DeviceId, profile, comp, settings.Devices.LianLi);
+        var composed = LianLiZoneSupport.Compose(_hub.DeviceId, profile, comp, fans);
 
         if (ls.Mode == "custom")
         {
@@ -310,16 +310,12 @@ public sealed class LianLiLightingFrameWriter : IHostedService, IDisposable
             _highResTimer = false;
         }
 
-        var mode = LianLiLightingModes.Find(ls.Mode);
+        // A key persisted for another family (the route rejects new ones) falls
+        // back to static, the one commit every Uni hub accepts.
+        var mode = LianLiLightingModes.Find(profile.Family, ls.Mode) ?? LianLiLightingModes.Find(profile.Family, "static");
         if (mode == null)
         {
             return;
-        }
-        if (!mode.SupportedBy(profile.Family))
-        {
-            // A mode persisted for another family (the route rejects new ones);
-            // static is the one commit every Uni hub accepts.
-            mode = LianLiLightingModes.Find("static")!;
         }
 
         var uncontrolled = settings.Devices.UncontrolledLightingDevices;
@@ -329,7 +325,10 @@ public sealed class LianLiLightingFrameWriter : IHostedService, IDisposable
             _firmwareZonesByDevice.Add(ZoneResolution.Resolve(device.Structure, settings));
         }
 
-        var sig = ComputeFirmwareSig(ls, globalBrightness, composed, profile, settings.Devices.DisabledLightingDevices, uncontrolled, _firmwareZonesByDevice);
+        // One merged animation cannot honour per-port control, so any excluded port keeps the per-port commit.
+        var merged = ls.Merge && mode.MergesOn(profile) && !(ls.InnerRing is not null && ls.OuterRing is not null)
+            && !AnyDeviceExcluded(composed, settings);
+        var sig = ComputeFirmwareSig(ls, merged, globalBrightness, composed, profile, settings.Devices.DisabledLightingDevices, uncontrolled, _firmwareZonesByDevice);
         if (_lastFirmwareSig.HasValue && sig == _lastFirmwareSig.Value)
         {
             return;
@@ -346,11 +345,8 @@ public sealed class LianLiLightingFrameWriter : IHostedService, IDisposable
             return;
         }
 
-        // One merged animation cannot honour per-port control, so any excluded port keeps the per-port commit.
-        var merged = ls.Merge && mode.MergesOn(profile)
-            && !AnyDeviceExcluded(composed, settings);
         var committed = merged
-            ? CommitMergedMode(ls, mode, globalBrightness, composed, profile, settings.Devices.DisabledLightingDevices, settings.Devices.LianLi)
+            ? CommitMergedMode(ls, mode, globalBrightness, composed, profile, settings.Devices.DisabledLightingDevices, fans)
             : CommitFirmwareMode(ls, mode, globalBrightness, composed, profile, settings.Devices.DisabledLightingDevices, uncontrolled, _firmwareZonesByDevice);
         if (committed)
         {
@@ -361,6 +357,23 @@ public sealed class LianLiLightingFrameWriter : IHostedService, IDisposable
         {
             NoteFailure(_commitRetry, "firmware commit");
         }
+    }
+
+    // The hub loses commanded LED state on USB re-enumeration and across sleep,
+    // so forget what it was sent: the next tick re-initialises it and re-commits
+    // the firmware mode even when settings are unchanged. The cooling path
+    // re-asserts for the same reason.
+    private void ForgetHubState()
+    {
+        _lastFirmwareSig = null;
+        _pendingFirmwareSig = null;
+        _hubInitialised = false;
+        _argbSyncSent = false;
+        _argbRecommitsDone = ArgbReleaseRecommitMs.Length;
+        _argbSyncRetry.Reset();
+        _customMergeCleared = false;
+        _initRetry.Reset();
+        _commitRetry.Reset();
     }
 
     /// <summary>Test seam: tests advance the backoff clock instead of sleeping out the cap.</summary>
@@ -422,7 +435,7 @@ public sealed class LianLiLightingFrameWriter : IHostedService, IDisposable
         if (profile.StartActionPerFrame) return true;
         for (var p = 0; p < LianLiProtocol.PortCount; p++)
         {
-            if (!_hub.SetQuantity(p, LianLiZoneSupport.ClampFans(fans.GetFans(p)))) return false;
+            if (!_hub.SetQuantity(p, LianLiZoneSupport.ClampFans(fans.GetFans(p), profile))) return false;
             Settle();
         }
         return true;
@@ -487,7 +500,7 @@ public sealed class LianLiLightingFrameWriter : IHostedService, IDisposable
                 {
                     if (profile.StartActionPerFrame)
                     {
-                        _hub.SendStartAction(ch / profile.ChannelsPerPort, LianLiProtocol.MaxFansPerPort);
+                        _hub.SendStartAction(ch / profile.ChannelsPerPort, profile.MaxFans);
                         if (!paced) Settle();
                     }
                     _hub.SendColorData(ch, _channelBuf.AsSpan(0, byteCount));
@@ -519,9 +532,6 @@ public sealed class LianLiLightingFrameWriter : IHostedService, IDisposable
         IReadOnlyList<string> uncontrolled,
         List<IReadOnlyList<ResolvedZone>> zonesByDevice)
     {
-        var speedByte = LianLiLightingModes.SpeedCodes[Math.Clamp(ls.Speed, 0, 4)];
-        var dirByte = LianLiLightingModes.DirectionByte(ls.Direction);
-
         // Per-channel commits do not exit a merged effect; only merge-off does (the identity merge order does not).
         if (profile.SupportsMerge)
         {
@@ -540,19 +550,21 @@ public sealed class LianLiLightingFrameWriter : IHostedService, IDisposable
             }
 
             var numFans = NumFansForDevice(device, profile);
-            var brightnessByte = DeviceBrightnessByte(device, ls, globalBrightness, disabled);
 
             for (var seg = 0; seg < device.SegmentChannels.Count; seg++)
             {
                 foreach (var ch in device.SegmentChannels[seg])
                 {
+                    if (EffectFor(ls, mode, profile, ch) is not { } effect) continue;
                     // Inner and outer rings hold different per-fan counts, so the
                     // palette is refilled per channel rather than once per device.
                     var ledsPerFan = profile.LedsPerFanForChannel(ch);
-                    var effectByte = mode.EffectByteFor(profile.Family);
-                    var perFan = profile.PerFanStaticPalette && effectByte is LianLiProtocol.EffectStatic or LianLiProtocol.EffectBreathing;
-                    FillPaletteBuffer(_channelBuf, mode, ls.Colors, numFans, ledsPerFan, perFan);
-                    var byteCount = numFans * ledsPerFan * 3;
+                    var effectByte = effect.Mode.EffectByte;
+                    var perFan = effectByte is LianLiProtocol.EffectStatic or LianLiProtocol.EffectBreathing;
+                    var byteCount = FillPaletteBuffer(_channelBuf, effect.Mode, effect.Colors, numFans, ledsPerFan, perFan, profile.PaletteSlotsPerFan);
+                    var speedByte = LianLiLightingModes.SpeedCodes[Math.Clamp(effect.Speed, 0, 4)];
+                    var dirByte = LianLiLightingModes.DirectionByte(effect.Direction);
+                    var brightnessByte = DeviceBrightnessByte(device, effect.Brightness, globalBrightness, disabled);
                     if (profile.StartActionPerFrame)
                     {
                         if (!_hub.SendStartAction(ch / profile.ChannelsPerPort, numFans)) return false;
@@ -602,13 +614,13 @@ public sealed class LianLiLightingFrameWriter : IHostedService, IDisposable
 
         var speedByte = LianLiLightingModes.SpeedCodes[Math.Clamp(ls.Speed, 0, 4)];
         var dirByte = LianLiLightingModes.DirectionByte(ls.Direction);
-        var brightnessByte = DeviceBrightnessByte(anchor, ls, globalBrightness, disabled);
+        var brightnessByte = DeviceBrightnessByte(anchor, ls.Brightness, globalBrightness, disabled);
 
-        if (!_hub.SendMergeOrder()) return false;
+        if (!_hub.SendMergeOrder(LianLiProtocol.ValidMergeOrder(ls.MergeOrder))) return false;
         Settle();
         for (var p = 0; p < LianLiProtocol.PortCount; p++)
         {
-            if (!_hub.SetQuantity(p, LianLiZoneSupport.ClampFans(fans.GetFans(p)))) return false;
+            if (!_hub.SetQuantity(p, LianLiZoneSupport.ClampFans(fans.GetFans(p), profile))) return false;
             Settle();
         }
         for (var ch = LianLiProtocol.PortCount * profile.ChannelsPerPort - 1; ch >= 1; ch--)
@@ -617,8 +629,8 @@ public sealed class LianLiLightingFrameWriter : IHostedService, IDisposable
             if (!_hub.SendModeCommit(ch, LianLiProtocol.EffectMergeIdle, LianLiProtocol.SpeedDefault, LianLiProtocol.DirectionDefault, off)) return false;
             Settle();
         }
-        FillPaletteBuffer(_channelBuf, mode, ls.Colors, LianLiProtocol.MaxFansPerPort, profile.LedsPerFanForChannel(0), perFan: false);
-        if (!_hub.SendColorData(0, _channelBuf.AsSpan(0, LianLiProtocol.MergedPaletteBytes))) return false;
+        var paletteBytes = FillPaletteBuffer(_channelBuf, mode, ls.Colors, profile.MaxFans, profile.LedsPerFanForChannel(0), perFan: false, profile.PaletteSlotsPerFan);
+        if (!_hub.SendColorData(0, _channelBuf.AsSpan(0, paletteBytes))) return false;
         Settle();
         if (!_hub.SendModeCommit(0, mode.MergedEffectByte, speedByte, dirByte, brightnessByte)) return false;
         Settle();
@@ -657,16 +669,16 @@ public sealed class LianLiLightingFrameWriter : IHostedService, IDisposable
     {
         if (device.Structure.Segments.Count == 0 || profile.InnerLedsPerFan <= 0)
         {
-            return LianLiProtocol.MaxFansPerPort;
+            return profile.MaxFans;
         }
         // Segment 0 is the inner (or only) ring, so its count divides by that per-fan value.
         var fans = device.Structure.Segments[0].LedCount / profile.InnerLedsPerFan;
-        return Math.Clamp(fans, 1, LianLiProtocol.MaxFansPerPort);
+        return Math.Clamp(fans, 1, profile.MaxFans);
     }
 
     private static byte DeviceBrightnessByte(
         ComposedDevice device,
-        LianLiLightingSettings ls,
+        int brightness,
         float globalBrightness,
         IReadOnlyList<string> disabled)
     {
@@ -678,7 +690,7 @@ public sealed class LianLiLightingFrameWriter : IHostedService, IDisposable
         {
             return LianLiLightingModes.BrightnessCodes[0];
         }
-        var idx = (int)Math.Round(Math.Min((double)ls.Brightness, globalBrightness * 4.0));
+        var idx = (int)Math.Round(Math.Min((double)brightness, globalBrightness * 4.0));
         return LianLiLightingModes.BrightnessCodes[Math.Clamp(idx, 0, 4)];
     }
 
@@ -697,85 +709,107 @@ public sealed class LianLiLightingFrameWriter : IHostedService, IDisposable
         return false;
     }
 
-    // 6 colors: each fills one fan slot. Fewer: resize to 4, interleaved across fans.
-    // perFan: colour i fills fan i's whole ring (cycling when fewer colours than fans).
-    // Input colors are RGB; SendColorData applies the R,B,G wire swap.
-    private static void FillPaletteBuffer(byte[] buf, LianLiModeInfo mode, IReadOnlyList<string> colors, int numFans, int ledsPerFan, bool perFan)
+    // perFan: colour i fills fan i's whole ring (cycling when fewer colours than
+    // fans). Otherwise each fan carries the palette in its own run of slots,
+    // missing colours black. No user colours means the mode's defaults. Input
+    // colours are RGB; SendColorData applies the R,B,G wire swap. Returns the
+    // bytes filled.
+    private static int FillPaletteBuffer(byte[] buf, LianLiModeInfo mode, IReadOnlyList<string> colors, int numFans, int ledsPerFan, bool perFan, int slotsPerFan)
     {
         Array.Clear(buf);
-        if (mode.ColorsMax == 0 || colors.Count == 0)
+        var corners = mode.CornerPalette;
+        var byteCount = perFan || corners ? numFans * ledsPerFan * 3 : numFans * slotsPerFan * 3;
+        if (mode.ColorsMax == 0)
         {
-            return;
+            return byteCount;
+        }
+        var source = colors.Count > 0 ? colors : mode.DefaultColors;
+        var count = Math.Min(source.Count, mode.ColorsMax);
+        if (count == 0)
+        {
+            return byteCount;
         }
 
-        var count = Math.Min(colors.Count, mode.ColorsMax);
-        var parsed = new (byte r, byte g, byte b)[count];
-        for (var i = 0; i < count; i++)
+        for (var fanIdx = 0; fanIdx < numFans; fanIdx++)
         {
-            parsed[i] = ParseHexColor(colors[i]);
-        }
-
-        if (perFan)
-        {
-            for (var fanIdx = 0; fanIdx < numFans; fanIdx++)
+            if (corners)
             {
-                var (r, g, b) = parsed[fanIdx % count];
                 for (var led = 0; led < ledsPerFan; led++)
                 {
-                    var off = (fanIdx * ledsPerFan + led) * 3;
-                    if (off + 2 < buf.Length)
-                    {
-                        buf[off]     = r;
-                        buf[off + 1] = g;
-                        buf[off + 2] = b;
-                    }
+                    var (r, g, b) = ParseHexColor(source[led * CornersPerFan / ledsPerFan % count]);
+                    Put(buf, fanIdx * ledsPerFan + led, r, g, b);
                 }
+                continue;
             }
-            return;
-        }
-
-        if (count == 6)
-        {
-            // Fill each fan slot with its corresponding color.
-            for (var fanIdx = 0; fanIdx < numFans && fanIdx < count; fanIdx++)
+            if (perFan)
             {
-                var (r, g, b) = parsed[fanIdx];
+                var (r, g, b) = ParseHexColor(source[fanIdx % count]);
                 for (var led = 0; led < ledsPerFan; led++)
                 {
-                    var off = (fanIdx * ledsPerFan + led) * 3;
-                    if (off + 2 < buf.Length)
-                    {
-                        buf[off]     = r;
-                        buf[off + 1] = g;
-                        buf[off + 2] = b;
-                    }
+                    Put(buf, fanIdx * ledsPerFan + led, r, g, b);
                 }
+                continue;
             }
+            for (var j = 0; j < slotsPerFan && j < count; j++)
+            {
+                var (r, g, b) = ParseHexColor(source[j]);
+                Put(buf, fanIdx * slotsPerFan + j, r, g, b);
+            }
+        }
+        return byteCount;
+    }
+
+    // A corner palette's colours, one per side of the fan's ring.
+    private const int CornersPerFan = 4;
+
+    /// <summary>What one channel plays: the catalog entry and its parameters.</summary>
+    internal readonly record struct ChannelEffect(LianLiModeInfo Mode, int Speed, int Direction, int Brightness, IReadOnlyList<string> Colors);
+
+    /// <summary>
+    /// The animation channel <paramref name="ch"/> plays: its port's own look or
+    /// the hub's, one ring at a time when both rings are set on a hub with
+    /// per-ring effects. Null when the channel takes no commit: a whole-fan
+    /// mode animates both rings from the inner channel.
+    /// </summary>
+    internal static ChannelEffect? EffectFor(LianLiLightingSettings ls, LianLiModeInfo hubMode, in LianLiFanProfile profile, int ch)
+    {
+        var port = ch / profile.ChannelsPerPort;
+        var ports = ls.Ports;
+        var own = ports is not null && port < ports.Count ? ports[port] : null;
+        var inner = own is null ? ls.InnerRing : own.InnerRing;
+        var outer = own is null ? ls.OuterRing : own.OuterRing;
+        if (profile.ChannelsPerPort == 2 && inner is not null && outer is not null
+            && LianLiLightingModes.RingCatalogFor(profile.Family, outer: false).Count > 0)
+        {
+            var isOuter = (ch & 1) == 1;
+            var ring = isOuter ? outer : inner;
+            var ringMode = LianLiLightingModes.FindRing(profile.Family, isOuter, ring.Mode)
+                ?? LianLiLightingModes.FindRing(profile.Family, isOuter, "static");
+            return ringMode is null ? null : new ChannelEffect(ringMode, ring.Speed, ring.Direction, ring.Brightness, ring.Colors);
+        }
+        ChannelEffect effect;
+        if (own is null)
+        {
+            effect = new ChannelEffect(hubMode, ls.Speed, ls.Direction, ls.Brightness, ls.Colors);
         }
         else
         {
-            // Resize to 4 slots (pad with black). Interleaved: j=color, i=fan.
-            // Position = i * 12 + j * 3.
-            var slots = new (byte r, byte g, byte b)[4];
-            for (var i = 0; i < count && i < 4; i++)
-            {
-                slots[i] = parsed[i];
-            }
-            for (var j = 0; j < 4; j++)
-            {
-                var (r, g, b) = slots[j];
-                for (var i = 0; i < numFans; i++)
-                {
-                    var off = i * 12 + j * 3;
-                    if (off + 2 < buf.Length)
-                    {
-                        buf[off]     = r;
-                        buf[off + 1] = g;
-                        buf[off + 2] = b;
-                    }
-                }
-            }
+            var mode = LianLiLightingModes.Find(profile.Family, own.Whole.Mode);
+            if (mode is null || mode == LianLiLightingModes.Custom) mode = LianLiLightingModes.Find(profile.Family, "static");
+            if (mode is null) return null;
+            effect = new ChannelEffect(mode, own.Whole.Speed, own.Whole.Direction, own.Whole.Brightness, own.Whole.Colors);
         }
+        if (effect.Mode.WholeFan && profile.ChannelsPerPort == 2 && (ch & 1) == 1) return null;
+        return effect;
+    }
+
+    private static void Put(byte[] buf, int index, byte r, byte g, byte b)
+    {
+        var off = index * 3;
+        if (off + 2 >= buf.Length) return;
+        buf[off] = r;
+        buf[off + 1] = g;
+        buf[off + 2] = b;
     }
 
     private static (byte r, byte g, byte b) ParseHexColor(string hex)
@@ -793,6 +827,7 @@ public sealed class LianLiLightingFrameWriter : IHostedService, IDisposable
 
     private static int ComputeFirmwareSig(
         LianLiLightingSettings ls,
+        bool merged,
         float globalBrightness,
         List<ComposedDevice> composed,
         in LianLiFanProfile profile,
@@ -804,11 +839,17 @@ public sealed class LianLiLightingFrameWriter : IHostedService, IDisposable
         hc.Add(ls.Mode);
         hc.Add(ls.Speed);
         hc.Add(ls.Direction);
-        hc.Add(ls.Merge);
+        hc.Add(ls.Brightness);
+        hc.Add(merged);
         foreach (var c in ls.Colors)
         {
             hc.Add(c);
         }
+        foreach (var p in LianLiProtocol.ValidMergeOrder(ls.MergeOrder))
+        {
+            hc.Add(p);
+        }
+        var mode = LianLiLightingModes.Find(profile.Family, ls.Mode) ?? LianLiLightingModes.Find(profile.Family, "static");
         for (var i = 0; i < composed.Count; i++)
         {
             var device = composed[i];
@@ -819,13 +860,27 @@ public sealed class LianLiLightingFrameWriter : IHostedService, IDisposable
                 continue;
             }
             hc.Add(NumFansForDevice(device, profile));
-            var brightnessByte = DeviceBrightnessByte(device, ls, globalBrightness, disabled);
+            hc.Add(DeviceBrightnessByte(device, ls.Brightness, globalBrightness, disabled));
             for (var seg = 0; seg < device.SegmentChannels.Count; seg++)
             {
                 foreach (var ch in device.SegmentChannels[seg])
                 {
                     hc.Add(ch);
-                    hc.Add(brightnessByte);
+                    // A merged commit plays the hub's look only, so port and ring looks do not restart it.
+                    if (merged || mode is null || EffectFor(ls, mode, profile, ch) is not { } effect)
+                    {
+                        hc.Add(-1);
+                        continue;
+                    }
+                    hc.Add(effect.Mode.EffectByte);
+                    hc.Add(effect.Mode.Key);
+                    hc.Add(effect.Speed);
+                    hc.Add(effect.Direction);
+                    hc.Add(DeviceBrightnessByte(device, effect.Brightness, globalBrightness, disabled));
+                    foreach (var c in effect.Colors)
+                    {
+                        hc.Add(c);
+                    }
                 }
             }
         }

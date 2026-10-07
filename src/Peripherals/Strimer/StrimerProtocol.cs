@@ -74,6 +74,15 @@ public static class StrimerProtocol
         };
     }
 
+    /// <summary>Effect mode that hands every zone to the motherboard ARGB input; the speed byte is the on/off flag.</summary>
+    public const byte ModeMotherboardSync = 0x40;
+
+    /// <summary>Motherboard ARGB sync on or off: E0 10 40 [on] 00 00 00.</summary>
+    public static byte[] BuildArgbSync(bool on) => BuildEffectCommit(0, ModeMotherboardSync, on ? (byte)1 : (byte)0, 0, 0);
+
+    /// <summary>Applies the sync switch to the controller: E0 20 00 00.</summary>
+    public static byte[] BuildEffectEnable() => new byte[] { ReportId, 0x20, 0x00, 0x00 };
+
     /// <summary>
     /// One apply-latch per full update cycle. Byte 2/3 are a big-endian bitmask of the zones
     /// the controller should light: bits 0..5 are the 24-pin ATX zones and bits 6.. the GPU

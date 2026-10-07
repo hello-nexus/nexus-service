@@ -16,7 +16,7 @@ internal static class Slv3TestHub
         var net = new FakeSlv3Network();
         var tx = new FakeTxTransport(net);
         var rx = new FakeRxTransport(net);
-        var hub = new Slv3Hub(new FakeDiscovery(), port => port.Role == Slv3DongleRole.Tx ? tx : rx);
+        var hub = new Slv3Hub(new FakeDiscovery(), port => port.Role == Slv3DongleRole.Tx ? tx : rx) { ConfirmNewChains = false };
         if (!hub.EnsureConnected())
         {
             throw new InvalidOperationException("test harness failed to connect");
@@ -48,6 +48,14 @@ internal static class Slv3TestHub
         public byte CoolantTempC { get; set; }
         /// <summary>RPM reported in slot 3, a HydroShift II's pump.</summary>
         public int PumpRpm { get; set; }
+        /// <summary>The chain reports its ARGB sync cable plugged in.</summary>
+        public bool ArgbCable { get; set; }
+        /// <summary>The chain is playing its motherboard ARGB input.</summary>
+        public bool PlayingMotherboardArgb { get; set; }
+        /// <summary>The chain obeys the motherboard ARGB switch; off models firmware without it.</summary>
+        public bool SupportsArgbSwitch { get; set; } = true;
+        /// <summary>Command sequence the chain last applied, echoed at record byte 40.</summary>
+        public byte CmdSeq { get; set; }
     }
 
     public sealed class FakeSlv3Network
@@ -96,6 +104,20 @@ internal static class Slv3TestHub
                     {
                         fan.EffectIndex = copy.AsSpan(18, 4).ToArray();
                         break;
+                    }
+                }
+            }
+            // The motherboard ARGB switch: RF [17] cmdSeq and [20] on/off land at USB [21] and [24].
+            if (copy.Length >= 25 && copy[0] == Slv3Protocol.UsbSendRf && copy[1] == 0
+                && copy[4] == Slv3Protocol.RfFrameType && copy[5] == Slv3Protocol.RfArgbSyncSwitch)
+            {
+                var fanMac = copy.AsSpan(6, 6).ToArray();
+                foreach (var fan in _net.Fans)
+                {
+                    if (Slv3Protocol.MacEquals(fan.Mac, fanMac) && fan.SupportsArgbSwitch)
+                    {
+                        fan.PlayingMotherboardArgb = copy[24] == 1;
+                        fan.CmdSeq = copy[21];
                     }
                 }
             }
@@ -151,6 +173,8 @@ internal static class Slv3TestHub
                 rec[34] = (byte)(fan.PumpRpm >> 8);
                 rec[35] = (byte)fan.PumpRpm;
                 fan.EffectIndex.CopyTo(rec.Slice(20, 4));
+                rec[28] = (byte)((fan.ArgbCable ? 0x80 : 0) | (fan.PlayingMotherboardArgb ? 0x40 : 0));
+                rec[40] = fan.CmdSeq;
                 rec[41] = Slv3Protocol.RecordValidator;
             }
             // Firmware sends only the requested pages: the header still reports the

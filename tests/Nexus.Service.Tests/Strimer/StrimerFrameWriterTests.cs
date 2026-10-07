@@ -65,3 +65,57 @@ public class StrimerFrameWriterTests
         Assert.Equal(0xFF, last[3]);
     }
 }
+
+public class StrimerArgbSyncTests
+{
+    private readonly StrimerTransportSpy _spy = new();
+    private readonly StrimerHub _hub = new();
+    private readonly InMemoryConfigStore _store = new();
+    private readonly StrimerLightingDeviceProvider _provider;
+    private readonly StrimerLightingFrameWriter _writer;
+
+    public StrimerArgbSyncTests()
+    {
+        _hub.Attach(_spy);
+        _provider = new StrimerLightingDeviceProvider(_hub, _store, new Np50IdentifyTracker());
+        _writer = new StrimerLightingFrameWriter(new LightingEngine(), _hub, _store, new Np50IdentifyTracker(), _provider);
+    }
+
+    private static bool IsSync(StrimerTransportSpy.Call c, byte on) => c.Bytes[1] == 0x10 && c.Bytes[2] == 0x40 && c.Bytes[3] == on;
+
+    [Fact]
+    public void Turning_sync_on_switches_the_controller_once_and_hides_the_cable()
+    {
+        _store.Update(s => s.Devices.StrimerLighting.ArgbSync = true);
+
+        _writer.Tick();
+        _writer.Tick();
+
+        Assert.Single(_spy.Calls, c => IsSync(c, 1));
+        Assert.Equal(new byte[] { 0xE0, 0x20, 0x00, 0x00 }, _spy.Calls[1].Bytes[0..4]);
+        Assert.Equal(2, _spy.Calls.Count);
+        Assert.Empty(_provider.GetStructures());
+        Assert.Empty(_provider.BuildFrames(0));
+    }
+
+    [Fact]
+    public void A_cable_never_put_on_sync_gets_no_sync_write()
+    {
+        _writer.Tick();
+
+        Assert.DoesNotContain(_spy.Calls, c => c.Bytes[2] == 0x40);
+    }
+
+    [Fact]
+    public void Turning_sync_off_switches_the_controller_back()
+    {
+        _store.Update(s => s.Devices.StrimerLighting.ArgbSync = true);
+        _writer.Tick();
+        _store.Update(s => s.Devices.StrimerLighting.ArgbSync = false);
+
+        _writer.Tick();
+
+        Assert.Single(_spy.Calls, c => IsSync(c, 0));
+        Assert.NotEmpty(_provider.GetStructures());
+    }
+}
