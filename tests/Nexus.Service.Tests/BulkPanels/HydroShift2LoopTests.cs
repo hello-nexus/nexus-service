@@ -42,6 +42,42 @@ public class HydroShift2LoopTests
     }
 
     [Fact]
+    public void A_slow_drift_is_not_taken_for_a_short_period()
+    {
+        var frames = Render((f, c) => (byte)(f / 3));
+
+        var (_, count) = HydroShift2LightingFrameWriter.FitLoop(frames);
+
+        Assert.Equal(HydroShift2LightingFrameWriter.LoopMaxFrames, count);
+    }
+
+    [Fact]
+    public void A_dim_repeating_effect_is_matched_on_its_raw_colours()
+    {
+        var source = Render((f, c) => (byte)(((f % 37) * 7) + c));
+        var dimmed = source.Select(fr => fr.Select(b => (byte)(b / 16)).ToArray()).ToList();
+
+        var (_, count) = HydroShift2LightingFrameWriter.FitLoop(source, dimmed);
+
+        Assert.Equal(37, count);
+    }
+
+    [Fact]
+    public void A_loop_too_big_for_one_upload_halves_its_frame_rate()
+    {
+        var packed = new byte[320 * FrameBytes];
+        new Random(3).NextBytes(packed);
+
+        var (frames, count, interval) = HydroShift2LightingFrameWriter.FitUpload(packed, 320, HydroShift2LightingFrameWriter.LoopIntervalTicks);
+
+        Assert.True(count < 320);
+        Assert.Equal(count * FrameBytes, frames.Length);
+        var lengthTicks = 320 * HydroShift2LightingFrameWriter.LoopIntervalTicks;
+        Assert.InRange(count * interval, lengthTicks, lengthTicks + interval);
+        HydroShift2Protocol.EncodeRing(frames, count, interval, 1);
+    }
+
+    [Fact]
     public void The_longest_loop_of_random_colours_fits_one_upload()
     {
         var random = new Random(7);

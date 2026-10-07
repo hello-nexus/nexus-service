@@ -30,6 +30,9 @@ public static class HydroShift2Protocol
     public const byte CommandPushRgb = 0xFC;
 
     public const int RingLedCount = 24;
+
+    /// <summary>Length of one ring clock tick, the unit of a ring animation's frame interval.</summary>
+    public const double RingTickMs = 0.625;
     public const int FanSlots = 3;
     public const int PumpMinRpm = 1600;
     public const int PumpMaxRpm = 3200;

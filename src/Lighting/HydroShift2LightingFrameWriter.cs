@@ -7,6 +7,7 @@ using Microsoft.Extensions.Hosting;
 using Nexus.Service.Lifecycle;
 using Nexus.Service.Lighting.Engine;
 using Nexus.Service.Peripherals.BulkPanels;
+using Nexus.Service.Peripherals.LianLiWireless;
 using Nexus.Service.Persistence;
 using Nexus.Service.Platform;
 
@@ -22,16 +23,21 @@ public sealed class HydroShift2LightingFrameWriter : BackgroundService
 {
     private const int TickMs = 100;
 
-    /// <summary>Loop frame interval in ring clock ticks (0.625 ms), so one frame every 50 ms.</summary>
+    /// <summary>Loop frame interval in ring clock ticks.</summary>
     internal const int LoopIntervalTicks = 80;
-    private const double LoopFrameMs = LoopIntervalTicks * 0.625;
+    private const double LoopFrameMs = LoopIntervalTicks * HydroShift2Protocol.RingTickMs;
     /// <summary>Longest loop: past this an effect that never repeats gets a crossfaded seam.</summary>
     internal const int LoopMaxFrames = 160;
     /// <summary>Frames compared to find where an effect repeats, also the crossfade length.</summary>
     internal const int LoopMatchFrames = 12;
     private const int LoopMinFrames = 8;
-    /// <summary>Mean per-channel difference under which two stretches of frames count as the same.</summary>
+    /// <summary>Mean per-channel difference, on the engine's raw colours, under which two stretches of frames count as the same.</summary>
     private const double LoopMatchTolerance = 3.0;
+    /// <summary>A repeat is a period only if the frames half that length away differ this many times more, which rules out slow drift.</summary>
+    private const double LoopHalfPeriodContrast = 4.0;
+    /// <summary>Master brightness steps a loop is rendered at, so a brightness schedule re-renders at most once per step rather than once a minute; finer below a tenth, where a coarse step would round a dim ring to off.</summary>
+    private const double LoopBrightnessSteps = 20;
+    private const double LoopDimBrightnessSteps = 100;
     /// <summary>The ring applies an upload a few hundred ms after the request, so rendering starts past that.</summary>
     private const int LoopLeadMs = 300;
 
@@ -159,7 +165,9 @@ public sealed class HydroShift2LightingFrameWriter : BackgroundService
             {
                 return;
             }
+            var source = new List<byte[]>(request.Frames.Length);
             var frames = new List<byte[]>(request.Frames.Length);
+            var master = LoopMasterBrightness(settings);
             foreach (var rendered in request.Frames)
             {
                 var ring = Array.Find(rendered, d => d.Id == id);
@@ -168,13 +176,15 @@ public sealed class HydroShift2LightingFrameWriter : BackgroundService
                     // The ring left the engine's device list mid-render; the next tick asks again.
                     return;
                 }
+                source.Add(ring.LedBytes.ToArray());
                 var bytes = new byte[_ring.Length];
-                ToRing(settings, id, ring.LedBytes, bytes);
+                ToRing(settings, id, ring.LedBytes, bytes, master);
                 frames.Add(bytes);
             }
-            var (packed, count) = FitLoop(frames);
-            ServiceLog.Info($"[{HydroShift2LcdDriver.Id}] ring loop: {count} frames from {frames.Count} rendered");
-            _aio.SetRingAnimation(packed, count, LoopIntervalTicks);
+            var (packed, count) = FitLoop(source, frames);
+            var (upload, uploadCount, interval) = FitUpload(packed, count, LoopIntervalTicks);
+            ServiceLog.Info($"[{HydroShift2LcdDriver.Id}] ring loop: {uploadCount} frames from {frames.Count} rendered");
+            _aio.SetRingAnimation(upload, uploadCount, interval);
             _loopContext = context;
             return;
         }
@@ -210,7 +220,15 @@ public sealed class HydroShift2LightingFrameWriter : BackgroundService
     {
         var hc = new HashCode();
         hc.Add(System.Runtime.CompilerServices.RuntimeHelpers.GetHashCode(_engine.CurrentEffect));
-        hc.Add(MasterBrightness.Effective(settings.Lighting));
+        hc.Add(LoopMasterBrightness(settings));
+        // The LED map (editor save, mapping, import). Hashed by value: bridge rebuilds hand the
+        // frame fresh arrays even when nothing in them changed.
+        if (Array.Find(_engine.Devices, d => d.Id == id) is { } live)
+        {
+            foreach (var u in live.LedU ?? Array.Empty<float>()) hc.Add(u);
+            foreach (var v in live.LedV ?? Array.Empty<float>()) hc.Add(v);
+            foreach (var off in live.LedDisabled ?? Array.Empty<bool>()) hc.Add(off);
+        }
         if (settings.Lighting.DeviceLayouts.TryGetValue(id, out var layout))
         {
             hc.Add(layout.X);
@@ -238,12 +256,24 @@ public sealed class HydroShift2LightingFrameWriter : BackgroundService
         return hc.ToHashCode().ToString(CultureInfo.InvariantCulture);
     }
 
-    private static void ToRing(NexusSettings settings, string id, ReadOnlySpan<byte> src, byte[] ring)
+    private static double LoopMasterBrightness(NexusSettings settings)
+    {
+        double master = MasterBrightness.Effective(settings.Lighting);
+        if (master <= 0)
+        {
+            return 0;
+        }
+        var steps = master < 0.1 ? LoopDimBrightnessSteps : LoopBrightnessSteps;
+        return Math.Max(1, Math.Round(master * steps)) / steps;
+    }
+
+    private static void ToRing(NexusSettings settings, string id, ReadOnlySpan<byte> src, byte[] ring) =>
+        ToRing(settings, id, src, ring, MasterBrightness.Effective(settings.Lighting));
+
+    private static void ToRing(NexusSettings settings, string id, ReadOnlySpan<byte> src, byte[] ring, double master)
     {
         settings.Devices.LightingDevicePrefs.TryGetValue(id, out var pref);
-        var brightness = Math.Min(
-            Math.Clamp(pref?.Brightness ?? 100, 0, 100) / 100.0,
-            MasterBrightness.Effective(settings.Lighting));
+        var brightness = Math.Min(Math.Clamp(pref?.Brightness ?? 100, 0, 100) / 100.0, master);
         var adjust = DeviceColorAdjust.For(pref);
         for (int i = 0; i + 2 < ring.Length && i + 2 < src.Length; i += 3)
         {
@@ -252,26 +282,40 @@ public sealed class HydroShift2LightingFrameWriter : BackgroundService
     }
 
     /// <summary>
-    /// Turns frames rendered at the loop interval into a seamless loop. The first
-    /// <see cref="LoopMatchFrames"/> are a pre-roll; the loop is the shortest stretch after it
-    /// that the effect repeats, or, for an effect that never does, everything after the
-    /// pre-roll with its last frames crossfaded into the pre-roll so the wrap is continuous.
+    /// Turns frames rendered at the loop interval into a seamless loop of <paramref name="output"/>
+    /// frames, judged on the engine's raw <paramref name="source"/> colours. The first
+    /// <see cref="LoopMatchFrames"/> are a pre-roll; the loop is the shortest period after it,
+    /// or, for an effect without one, everything after the pre-roll with its last frames
+    /// crossfaded into the pre-roll so the wrap is continuous.
     /// </summary>
-    internal static (byte[] Frames, int Count) FitLoop(IReadOnlyList<byte[]> frames)
+    internal static (byte[] Frames, int Count) FitLoop(IReadOnlyList<byte[]> source, IReadOnlyList<byte[]> output)
     {
         const int pre = LoopMatchFrames;
-        var body = frames.Count - pre;
-        for (int length = LoopMinFrames; length + LoopMatchFrames <= body; length++)
+        var body = output.Count - pre;
+        if (body < LoopMatchFrames + LoopMinFrames)
         {
-            if (MeanDifference(frames, pre, pre + length, LoopMatchFrames) <= LoopMatchTolerance)
+            return (Pack(output, 0, output.Count), output.Count);
+        }
+        var diff = new double[body - LoopMatchFrames + 1];
+        var largest = 0.0;
+        for (int length = LoopMinFrames / 2; length < diff.Length; length++)
+        {
+            diff[length] = MeanDifference(source, pre, pre + length, LoopMatchFrames);
+            largest = Math.Max(largest, diff[length]);
+        }
+        var still = largest <= LoopMatchTolerance;
+        for (int length = LoopMinFrames; length < diff.Length; length++)
+        {
+            if (diff[length] <= LoopMatchTolerance
+                && (still || diff[length / 2] >= LoopHalfPeriodContrast * Math.Max(diff[length], 1.0)))
             {
-                return (Pack(frames, pre, length), length);
+                return (Pack(output, pre, length), length);
             }
         }
         var faded = new List<byte[]>(body);
         for (int i = 0; i < body; i++)
         {
-            faded.Add(frames[pre + i]);
+            faded.Add(output[pre + i]);
         }
         for (int i = 0; i < LoopMatchFrames; i++)
         {
@@ -281,11 +325,41 @@ public sealed class HydroShift2LightingFrameWriter : BackgroundService
             var blended = new byte[tail.Length];
             for (int c = 0; c < tail.Length; c++)
             {
-                blended[c] = (byte)Math.Round((tail[c] * (1 - alpha)) + (frames[i][c] * alpha));
+                blended[c] = (byte)Math.Round((tail[c] * (1 - alpha)) + (output[i][c] * alpha));
             }
             faded[body - LoopMatchFrames + i] = blended;
         }
         return (Pack(faded, 0, body), body);
+    }
+
+    internal static (byte[] Frames, int Count) FitLoop(IReadOnlyList<byte[]> frames) => FitLoop(frames, frames);
+
+    /// <summary>Halves the frame rate of a loop whose upload would not fit the ring's decompressor, keeping its length in time.</summary>
+    internal static (byte[] Frames, int Count, byte IntervalTicks) FitUpload(byte[] frames, int count, int intervalTicks)
+    {
+        var size = frames.Length / count;
+        while (true)
+        {
+            try
+            {
+                TinyUz.Compress(frames);
+                return (frames, count, (byte)intervalTicks);
+            }
+            catch (InvalidOperationException) when (count > 1)
+            {
+                var halved = (count + 1) / 2;
+                var next = new byte[halved * size];
+                // Past the longest interval a tick byte holds, the loop is cut short instead.
+                var stride = intervalTicks * 2 <= byte.MaxValue ? 2 : 1;
+                for (int k = 0; k < halved; k++)
+                {
+                    Array.Copy(frames, k * stride * size, next, k * size, size);
+                }
+                frames = next;
+                count = halved;
+                intervalTicks *= stride;
+            }
+        }
     }
 
     private static double MeanDifference(IReadOnlyList<byte[]> frames, int a, int b, int count)

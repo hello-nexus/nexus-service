@@ -24,7 +24,7 @@ public sealed class HydroShift2Aio : BackgroundService
 
     private readonly BulkPanelHub _hub;
     private readonly HydroShift2LcdDriver _driver;
-    private readonly Func<bool> _wirelessOwns;
+    private readonly Func<string?, bool> _wirelessOwns;
 
     private readonly object _lock = new();
     private HydroShift2Params? _params;
@@ -44,8 +44,8 @@ public sealed class HydroShift2Aio : BackgroundService
     private bool _wasAvailable;
     private bool _driving;
 
-    /// <param name="wirelessOwns">True while a wireless dongle Nexus drives has any HydroShift II bound; that link then owns pump, fans and ring, as in L-Connect.</param>
-    public HydroShift2Aio(BulkPanelHub hub, HydroShift2LcdDriver driver, Func<bool> wirelessOwns)
+    /// <param name="wirelessOwns">True while a wireless dongle Nexus drives has this unit (by radio MAC; null before the first reading) bound; that link then owns pump, fans and ring.</param>
+    public HydroShift2Aio(BulkPanelHub hub, HydroShift2LcdDriver driver, Func<string?, bool> wirelessOwns)
     {
         _hub = hub;
         _driver = driver;
@@ -53,7 +53,7 @@ public sealed class HydroShift2Aio : BackgroundService
     }
 
     /// <summary>Connected over USB and not handed to the wireless link.</summary>
-    public bool IsAvailable => _hub.IsConnected && !_wirelessOwns();
+    public bool IsAvailable => _hub.IsConnected && !_wirelessOwns(Params?.Mac);
 
     public HydroShift2Params? Params { get { lock (_lock) { return _params; } } }
 

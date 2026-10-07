@@ -214,7 +214,7 @@ public class HydroShift2Tests
         var hub = new BulkPanelHub(driver);
         var pipe = new FirmwarePipe();
         hub.Attach(pipe, null);
-        var aio = new HydroShift2Aio(hub, driver, () => false);
+        var aio = new HydroShift2Aio(hub, driver, _ => false);
         aio.SetPumpDuty(100);
         aio.Tick(10_000);
         pipe.Writes.Clear();
@@ -329,6 +329,15 @@ public class HydroShift2Tests
     }
 
     [Fact]
+    public void Only_this_units_wireless_binding_takes_it_over()
+    {
+        var (aio, _) = Attached(mac => mac is null || mac == "AABBCCDDEEFF");
+        aio.Tick(10_000);
+
+        Assert.True(aio.IsAvailable);
+    }
+
+    [Fact]
     public void An_unanswered_ring_upload_is_tried_again()
     {
         var (aio, pipe) = Attached();
@@ -346,7 +355,7 @@ public class HydroShift2Tests
     public void The_ring_is_reuploaded_when_the_wireless_link_lets_go()
     {
         var owned = false;
-        var (aio, pipe) = Attached(() => owned);
+        var (aio, pipe) = Attached(_ => owned);
         aio.SetRing(Solid(255, 0, 0));
         aio.Tick(10_000);
         owned = true;
@@ -361,7 +370,7 @@ public class HydroShift2Tests
     [Fact]
     public void A_wirelessly_bound_aio_is_left_to_the_dongle()
     {
-        var (aio, pipe) = Attached(() => true);
+        var (aio, pipe) = Attached(_ => true);
         aio.SetPumpDuty(100);
         aio.SetRing(Solid(255, 0, 0));
 
@@ -395,14 +404,14 @@ public class HydroShift2Tests
         Assert.Null(aio.PumpDuty);
     }
 
-    private static (HydroShift2Aio Aio, FirmwarePipe Pipe) Attached(Func<bool>? wirelessOwns = null)
+    private static (HydroShift2Aio Aio, FirmwarePipe Pipe) Attached(Func<string?, bool>? wirelessOwns = null)
     {
         var driver = new HydroShift2LcdDriver();
         var hub = new BulkPanelHub(driver);
         var pipe = new FirmwarePipe();
         Assert.True(hub.Attach(pipe, null));
         pipe.Writes.Clear();
-        return (new HydroShift2Aio(hub, driver, wirelessOwns ?? (() => false)), pipe);
+        return (new HydroShift2Aio(hub, driver, wirelessOwns ?? (_ => false)), pipe);
     }
 
     private static byte[] Solid(byte r, byte g, byte b)

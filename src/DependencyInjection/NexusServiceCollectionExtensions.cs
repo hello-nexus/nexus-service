@@ -1465,10 +1465,13 @@ public static class NexusServiceCollectionExtensions
         services.AddSingleton(sp =>
         {
             var wireless = sp.GetRequiredService<Nexus.Service.Peripherals.LianLiWireless.Slv3Hub>();
-            return new Nexus.Service.Peripherals.BulkPanels.HydroShift2Aio(hub, driver, () =>
+            // The USB params and the wireless record carry the same radio MAC (checked on a unit
+            // bound both ways); until the first reading names it, any bound HydroShift II counts.
+            return new Nexus.Service.Peripherals.BulkPanels.HydroShift2Aio(hub, driver, mac =>
                 wireless.IsConnected
                 && Array.Exists(wireless.State.Fans, f => f.BoundToUs
-                    && Nexus.Service.Peripherals.LianLiWireless.Slv3Protocol.IsHydroShiftDevType((byte)f.DevType)));
+                    && Nexus.Service.Peripherals.LianLiWireless.Slv3Protocol.IsHydroShiftDevType((byte)f.DevType)
+                    && (mac is null || string.Equals(f.Mac, mac, StringComparison.OrdinalIgnoreCase))));
         });
         services.AddHostedService(sp => sp.GetRequiredService<Nexus.Service.Peripherals.BulkPanels.HydroShift2Aio>());
         services.AddSingleton<Nexus.Service.Cooling.HydroShift2CoolingProvider>();
