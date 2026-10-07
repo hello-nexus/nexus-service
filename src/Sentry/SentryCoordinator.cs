@@ -188,7 +188,8 @@ public sealed class SentryCoordinator : IHostedService, IDisposable
             if (!_locked)
             {
                 // Registered before the lock is issued so the transition cannot slip
-                // past. A concurrent arm shares the in-flight waiter.
+                // past. A concurrent arm shares the in-flight waiter, and one left by a
+                // timed-out arm is reused: only a later lock can complete it.
                 waiter = _lockWaiter ??= new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
             }
         }
@@ -264,8 +265,7 @@ public sealed class SentryCoordinator : IHostedService, IDisposable
             _locked = locked;
             if (locked)
             {
-                // Completes every arm sharing the waiter; a waiter nobody completes
-                // stays for the next arm to reuse, which the same lock satisfies.
+                // Completes every arm sharing the waiter.
                 _lockWaiter?.TrySetResult();
                 _lockWaiter = null;
             }
