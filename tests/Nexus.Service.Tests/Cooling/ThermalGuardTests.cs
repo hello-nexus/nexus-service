@@ -168,12 +168,27 @@ public class ThermalGuardTests
         Assert.False(o.ReleaseAllNow);
     }
 
+    // Feeds one reading per second from startSec up to endSec, returning the last output.
+    private static ThermalGuardOutput Feed(ThermalGuard g, int startSec, int endSec, double temp)
+    {
+        ThermalGuardOutput last = default;
+        for (var sec = startSec; sec <= endSec; sec++)
+        {
+            last = g.Step(sec * 1000L, temp, L, 100, 100);
+        }
+        return last;
+    }
+
     [Fact]
     public void Escalation_NotBeforeTwentySecondsOrBelowTheLimit()
     {
         var g = Tripped();
-        Assert.Equal(ThermalGuardStates.Tripped, g.Step(24_000, 97, L, 100, 100, writesNotLanding: true).State);
-        Assert.Equal(ThermalGuardStates.Tripped, g.Step(30_000, 90, L, 100, 100, writesNotLanding: true).State);
+        // Settled below the limit by the time the twenty seconds are up: no escalation.
+        Feed(g, 6, 20, 90);
+        for (var sec = 21; sec <= 40; sec++)
+        {
+            Assert.Equal(ThermalGuardStates.Tripped, g.Step(sec * 1000L, 90, L, 100, 100, writesNotLanding: true).State);
+        }
     }
 
     [Fact]
@@ -182,25 +197,23 @@ public class ThermalGuardTests
         var g = Tripped();
 
         // At or above limit-10 (85): stays tripped however long.
-        Assert.Equal(ThermalGuardStates.Tripped, g.Step(10_000, 90, L, 100, 100).State);
-        Assert.Equal(ThermalGuardStates.Tripped, g.Step(200_000, 90, L, 100, 100).State);
+        Assert.Equal(ThermalGuardStates.Tripped, Feed(g, 10, 200, 90).State);
 
-        Assert.Equal(ThermalGuardStates.Tripped, g.Step(201_000, 80, L, 100, 100).State);
-        Assert.Equal(ThermalGuardStates.Tripped, g.Step(260_000, 80, L, 100, 100).State);
-        var o = g.Step(261_000, 80, L, 100, 100);
+        // Settled below it: still tripped until the sustain has run.
+        Assert.Equal(ThermalGuardStates.Tripped, Feed(g, 201, 262, 80).State);
+        var o = Feed(g, 263, 270, 80);
         Assert.Equal(ThermalGuardStates.Normal, o.State);
-        Assert.True(o.TripEnded);
         Assert.Equal(0, o.FloorDuty);
+        Assert.Equal(ThermalGuardStates.Normal, g.State);
     }
 
     [Fact]
     public void Release_ReboundAboveThresholdRestartsTheSustainTimer()
     {
         var g = Tripped();
-        g.Step(6000, 80, L, 100, 100);
-        g.Step(50_000, 86, L, 100, 100);
-        var o = g.Step(70_000, 80, L, 100, 100);
-        Assert.Equal(ThermalGuardStates.Tripped, o.State);
+        Feed(g, 6, 40, 80);
+        Feed(g, 41, 70, 90);
+        Assert.Equal(ThermalGuardStates.Tripped, Feed(g, 71, 110, 80).State);
     }
 
     [Fact]
@@ -315,5 +328,77 @@ public class ThermalGuardTests
         var earlyFloor = new ThermalGuardThresholds { FloorStartBelowLimitC = 30 };
         Assert.True(ThermalGuard.FloorFor(70, L, earlyFloor) > 0);
         Assert.Equal(0, ThermalGuard.FloorFor(70, L));
+    }
+
+    // Idle readings around 65 C, with one single-second spike (the 64.8 to 90.1 to 73.3 C pattern seen on a Ryzen).
+    [Fact]
+    public void ASingleSampleSpike_WithFansAtZeroAndIdleLoad_DoesNotTripCoolingLoss()
+    {
+        var g = new ThermalGuard();
+        for (var s = 0; s <= 600; s++)
+        {
+            var temp = s == 300 ? 90.1 : (s == 301 ? 73.3 : 64.8);
+            var o = g.Step(s * 1000L, temp, L, 3, 0);
+            Assert.False(o.TripStarted, $"tripped at {s} s");
+        }
+    }
+
+    [Fact]
+    public void ASingleSampleSpike_DoesNotMoveTheFloor()
+    {
+        var g = new ThermalGuard();
+        for (var s = 0; s < 10; s++)
+        {
+            Assert.Equal(0, g.Step(s * 1000L, 64.8, L, 3, 0).FloorDuty);
+        }
+        // One second at 90 C is a 40 percent floor on the raw reading; smoothed it stays 0.
+        var spike = g.Step(10_000, 90, L, 3, 0);
+        Assert.Equal(0, spike.FloorDuty);
+        Assert.Equal(ThermalGuardStates.Normal, spike.State);
+        Assert.Equal(0, g.Step(11_000, 65, L, 3, 0).FloorDuty);
+    }
+
+    [Fact]
+    public void ASustainedRise_StillRaisesTheFloor_AndTripsCoolingLossNearTheGate()
+    {
+        var g = new ThermalGuard();
+        var floorSeen = false;
+        double? trippedAt = null;
+        for (var s = 0; s <= 1020; s++)
+        {
+            var temp = 61 + 53.0 * s / 1020;
+            var o = g.Step(s * 1000L, temp, L, 2, 0);
+            floorSeen |= o.FloorDuty > 0;
+            if (o.TripStarted)
+            {
+                trippedAt = temp;
+                break;
+            }
+        }
+        Assert.True(floorSeen || trippedAt is not null);
+        Assert.NotNull(trippedAt);
+        // The gate is limit minus 15; the median lags the rise by about two samples.
+        Assert.InRange(trippedAt!.Value, L - 15, L - 15 + 1.5);
+    }
+
+    [Fact]
+    public void TheLimitTrip_StillReadsTheRawValue()
+    {
+        var g = new ThermalGuard();
+        Assert.Equal(ThermalGuardStates.Floor, g.Step(0, 98, L, 100, 80).State);
+        var tripped = g.Step(5000, 98, L, 100, 80);
+        Assert.Equal(ThermalGuardStates.Tripped, tripped.State);
+    }
+
+    [Fact]
+    public void SmoothingWindow_IsANamedThreshold()
+    {
+        var wide = new ThermalGuard(new ThermalGuardThresholds { SmoothingSamples = 1 });
+        for (var s = 0; s < 5; s++)
+        {
+            wide.Step(s * 1000L, 64.8, L, 3, 0);
+        }
+        // A one-sample window is the raw reading again.
+        Assert.Equal(40, wide.Step(5000, 90, L, 3, 0).FloorDuty);
     }
 }

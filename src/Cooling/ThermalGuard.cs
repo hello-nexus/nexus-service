@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Linq;
 
 namespace Nexus.Service.Cooling;
 
@@ -39,6 +40,8 @@ public sealed record ThermalGuardThresholds
 {
     public static readonly ThermalGuardThresholds Default = new();
 
+    /// <summary>The floor, the cooling-loss check, escalation and release read the median of this many recent one-second samples, so a single-sample spike never moves them. The limit trip keeps the raw value.</summary>
+    public int SmoothingSamples { get; init; } = 5;
     /// <summary>The floor ramp starts this far under the limit.</summary>
     public double FloorStartBelowLimitC { get; init; } = 15;
     /// <summary>Floor duty reached at the limit itself; a curve already at or above it is never touched.</summary>
@@ -74,6 +77,7 @@ public sealed class ThermalGuard
 
     private readonly ThermalGuardThresholds _t;
     private readonly List<(long Ms, double Temp)> _history = new();
+    private readonly List<(long Ms, double Temp)> _recent = new();
     private string _state = ThermalGuardStates.Inactive;
     private long? _hotSinceMs;
     private long? _belowSinceMs;
@@ -97,6 +101,7 @@ public sealed class ThermalGuard
     public void Reset()
     {
         _history.Clear();
+        _recent.Clear();
         _state = ThermalGuardStates.Inactive;
         _hotSinceMs = null;
         _belowSinceMs = null;
@@ -151,12 +156,13 @@ public sealed class ThermalGuard
             return Output(false, false, false, 0);
         }
 
+        var smooth = Smooth(nowMs, temp);
         if (IsTripped)
         {
-            return StepTripped(nowMs, temp, limitC, writesNotLanding);
+            return StepTripped(nowMs, temp, smooth, limitC, writesNotLanding);
         }
 
-        Record(nowMs, temp);
+        Record(nowMs, smooth);
 
         string? reason = null;
         if (temp >= limitC + _t.LimitTripAboveLimitC)
@@ -172,7 +178,7 @@ public sealed class ThermalGuard
             _hotSinceMs = null;
         }
 
-        reason ??= CoolingLossDetected(nowMs, temp, limitC, cpuLoadPercent, maxCpuCoolingDutyPercent)
+        reason ??= CoolingLossDetected(nowMs, smooth, limitC, cpuLoadPercent, maxCpuCoolingDutyPercent)
             ? ThermalTripReasons.CoolingLoss
             : null;
 
@@ -188,25 +194,25 @@ public sealed class ThermalGuard
             return Output(true, false, false, 100);
         }
 
-        var floor = FloorFor(temp, limitC, _t);
+        var floor = FloorFor(smooth, limitC, _t);
         _state = floor > 0 ? ThermalGuardStates.Floor : ThermalGuardStates.Normal;
         return Output(false, false, false, floor);
     }
 
-    private ThermalGuardOutput StepTripped(long nowMs, double temp, double limitC, bool writesNotLanding)
+    private ThermalGuardOutput StepTripped(long nowMs, double temp, double smooth, double limitC, bool writesNotLanding)
     {
         PeakC = Math.Max(PeakC, temp);
 
         if (_state == ThermalGuardStates.Tripped
             && nowMs - _tripAtMs >= _t.EscalateAfterMs
-            && temp >= limitC
+            && smooth >= limitC
             && writesNotLanding)
         {
             _state = ThermalGuardStates.Escalated;
             return Output(false, false, true, 100);
         }
 
-        if (temp < limitC - _t.ReleaseBelowLimitC)
+        if (smooth < limitC - _t.ReleaseBelowLimitC)
         {
             _belowSinceMs ??= nowMs;
             if (nowMs - _belowSinceMs.Value >= _t.ReleaseSustainMs)
@@ -236,6 +242,28 @@ public sealed class ThermalGuard
             TripStarted: tripStarted,
             TripEnded: tripEnded,
             TripReason: tripStarted ? _tripReason : null);
+    }
+
+    // Median of the last few one-second samples; the current reading always counts, and a
+    // reading inside the same second replaces that second's sample instead of adding one.
+    private double Smooth(long nowMs, double temp)
+    {
+        if (_recent.Count == 0 || nowMs - _recent[^1].Ms >= SampleSpacingMs)
+        {
+            _recent.Add((nowMs, temp));
+        }
+        else
+        {
+            _recent[^1] = (_recent[^1].Ms, temp);
+        }
+        var excess = _recent.Count - Math.Max(1, _t.SmoothingSamples);
+        if (excess > 0)
+        {
+            _recent.RemoveRange(0, excess);
+        }
+        var sorted = _recent.Select(r => r.Temp).OrderBy(t => t).ToList();
+        var mid = sorted.Count / 2;
+        return sorted.Count % 2 == 1 ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) / 2.0;
     }
 
     private void Record(long nowMs, double temp)

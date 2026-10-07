@@ -1105,9 +1105,13 @@ public class ThermalGuardEngineTests
         guard.SetConfig(new SetThermalGuardConfigBody { LimitOverrideC = 100 });
 
         // 95 C against a limit of 100 is a 40 percent floor (at the default limit it would be 60).
+        // The floor reads a smoothed temperature, so let a few seconds of readings settle.
         fans.CpuTemp = 95f;
-        clock[0] += 1000;
-        e.Tick();
+        for (var i = 0; i < 4; i++)
+        {
+            clock[0] += 1000;
+            e.Tick();
+        }
         Assert.Equal(40, LastDuty(fans, "f1"));
 
         // 99 C held for longer than the trip sustain: past the default limit's trip point, not this one.
