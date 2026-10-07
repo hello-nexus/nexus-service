@@ -201,6 +201,7 @@ public sealed class KrakenHub : IDisposable
                 _useNewSpeedChannels = KrakenProtocol.UsesNewSpeedChannels(fw);
             }
             _directStream = _model.DirectStream && fw is { Major: >= 2 };
+            ServiceLog.Info($"[nzxt-kraken] diag: model {_model.ProductId:X4} fw {fw?.ToString() ?? "?"} directStream={_directStream} reportLength={_reportLength}");
 
             // Starts the cooler's telemetry stream. Without it the accessory table is not
             // populated yet and the lighting query answers with zero channels.
@@ -581,6 +582,7 @@ public sealed class KrakenHub : IDisposable
         var payload = _lcdScratch.AsSpan(0, encoded);
         var header = KrakenProtocol.EncodeBulkHeader(format, encoded);
         int pages = KrakenProtocol.PagesFor(encoded);
+        ServiceLog.Info($"[nzxt-kraken] diag: still upload format {format:X2}, {encoded} B, {pages} pages, direct={_directStream}");
         // The bucket wipe below invalidates whatever a stream set up.
         _streamReady = false;
         {
@@ -729,6 +731,17 @@ public sealed class KrakenHub : IDisposable
     /// </summary>
     private bool PushDirectFrame(ReadOnlySpan<byte> bgra)
     {
+        var sw = System.Diagnostics.Stopwatch.StartNew();
+        bool ok = PushDirectFrameCore(bgra);
+        lock (_lock)
+        {
+            DiagFrame(ok, sw.ElapsedMilliseconds);
+        }
+        return ok;
+    }
+
+    private bool PushDirectFrameCore(ReadOnlySpan<byte> bgra)
+    {
         lock (_lcdTransferLock)
         {
             int encoded;
@@ -764,6 +777,7 @@ public sealed class KrakenHub : IDisposable
 
             if (!WriteBulkPayload(lcd, KrakenProtocol.BulkFormatBgr888, scratch.AsSpan(0, encoded), DirectChunkBytes))
             {
+                ServiceLog.Warn($"[nzxt-kraken] diag: direct bulk write failed ({encoded} B)");
                 lock (_lock) { _streamReady = false; }
                 return false;
             }
@@ -839,6 +853,58 @@ public sealed class KrakenHub : IDisposable
     /// Returns null when no matching reply arrived.
     /// </summary>
     private byte[]? ExchangeLocked(byte[] request, byte replyReportId, byte replySubCommand, int timeoutMs)
+    {
+        var sw = System.Diagnostics.Stopwatch.StartNew();
+        var reply = ExchangeCoreLocked(request, replyReportId, replySubCommand, timeoutMs);
+        DiagExchange(request, reply, sw.ElapsedMilliseconds);
+        return reply;
+    }
+
+    // TEMP diagnostics for the 2023 Elite LCD bring-up; remove once it is confirmed on hardware.
+    private int _diagExchanges;
+    private long _diagWindowStart;
+    private int _diagFrames, _diagFrameFailures;
+    private long _diagFrameMs;
+
+    private void DiagExchange(byte[] request, byte[]? reply, long ms)
+    {
+        if (request[0] is not (0x30 or 0x32 or 0x36 or 0x38) || _diagExchanges >= 250)
+        {
+            return;
+        }
+        _diagExchanges++;
+        var tx = Convert.ToHexString(request, 0, Math.Min(request.Length, 9));
+        var rx = reply == null ? "no reply" : Convert.ToHexString(reply, 0, Math.Min(reply.Length, 32));
+        ServiceLog.Info($"[nzxt-kraken] diag: {tx} -> {rx} ({ms} ms, #{_diagExchanges})");
+    }
+
+    private void DiagFrame(bool ok, long ms)
+    {
+        _diagFrames++;
+        _diagFrameMs += ms;
+        if (!ok)
+        {
+            _diagFrameFailures++;
+        }
+        long now = Environment.TickCount64;
+        if (_diagWindowStart == 0)
+        {
+            _diagWindowStart = now;
+            ServiceLog.Info($"[nzxt-kraken] diag: first direct frame ok={ok} {ms} ms, panel {_lcdWidth}x{_lcdHeight}");
+        }
+        else if (now - _diagWindowStart >= 10_000)
+        {
+            ServiceLog.Info(
+                $"[nzxt-kraken] diag: direct stream {_diagFrames} frames in {(now - _diagWindowStart) / 1000.0:F1} s, " +
+                $"{_diagFrameFailures} failed, avg {_diagFrameMs / Math.Max(1, _diagFrames)} ms");
+            _diagWindowStart = now;
+            _diagFrames = 0;
+            _diagFrameFailures = 0;
+            _diagFrameMs = 0;
+        }
+    }
+
+    private byte[]? ExchangeCoreLocked(byte[] request, byte replyReportId, byte replySubCommand, int timeoutMs)
     {
         if (_device == null)
         {

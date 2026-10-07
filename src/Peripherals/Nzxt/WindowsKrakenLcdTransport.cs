@@ -35,6 +35,7 @@ public sealed class WindowsKrakenLcdTransport : IKrakenLcdTransport
     private readonly IntPtr _writeEvent;
     private readonly object _ioLock = new();
     private bool _disposed;
+    private int _diagWriteFailures;
 
     public WindowsKrakenLcdTransport(string devicePath)
     {
@@ -121,6 +122,11 @@ public sealed class WindowsKrakenLcdTransport : IKrakenLcdTransport
                 }
                 ok = Slv3WinUsbInterop.WinUsb_GetOverlappedResult(_winUsbHandle, ovPtr, out transferred, wait: true);
             }
+            if ((!ok || transferred != buffer.Length) && _diagWriteFailures++ < 20)
+            {
+                ServiceLog.Warn(
+                    $"[nzxt-kraken] diag: WinUsb_WritePipe ok={ok} err={Marshal.GetLastWin32Error()} {transferred}/{buffer.Length} B");
+            }
             return ok && transferred == buffer.Length;
         }
         finally
@@ -180,15 +186,21 @@ public sealed class WindowsKrakenLcdTransportFactory : IKrakenLcdTransportFactor
     private static string? FindDevicePath(string? serial)
     {
         string? firstMatch = null;
-        foreach (var guid in InterfaceGuids())
+        var guids = InterfaceGuids();
+        string? found = null;
+        foreach (var guid in guids)
         {
             var path = FindDevicePath(guid, serial, ref firstMatch);
             if (path != null)
             {
-                return path;
+                found = path;
+                break;
             }
         }
-        return firstMatch;
+        found ??= firstMatch;
+        ServiceLog.Info(
+            $"[nzxt-kraken] diag: LCD interface GUIDs [{string.Join(", ", guids)}], serial {serial ?? "?"}, path {found ?? "none"}");
+        return found;
     }
 
     /// <summary>Returns the path whose segment carries <paramref name="serial"/>; records the first Kraken path seen.</summary>
