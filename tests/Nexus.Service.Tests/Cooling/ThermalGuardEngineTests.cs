@@ -373,6 +373,73 @@ public class ThermalGuardEngineTests
     }
 
     [Fact]
+    public void ASensorThatComesAndGoes_DoesNotFlipTheGuardCurvesInputOrRewriteIt()
+    {
+        var (_, fans, store, _) = Build();
+        var guard = new ThermalGuardController(fans, store);
+        guard.HealNow(automatic: false);
+        Assert.Equal("cpu", store.Load().Cooling.Curves.Single(c => c.Id == CoolingConfigLint.GuardCurveId).Input.Id);
+        var e = new CurveEngine(fans, store, new MultiplexHub(), null, guard) { Clock = () => 1_000_000 };
+        var changes = 0;
+        store.OnChanged += () => changes++;
+
+        // A Package sensor appears (it would be the preferred input), then drops out again.
+        fans.ExtraSources.Add(new TemperatureSource { Id = "pkg", Name = "CPU Package", Category = "CPU", Value = 50 });
+        e.Tick();
+        e.Tick();
+        fans.ExtraSources.Clear();
+        e.Tick();
+        e.Tick();
+
+        Assert.Equal(0, changes);
+        Assert.Equal("cpu", store.Load().Cooling.Curves.Single(c => c.Id == CoolingConfigLint.GuardCurveId).Input.Id);
+    }
+
+    [Fact]
+    public void AThrowingCurveSync_StillAppliesTheFloorThatTick()
+    {
+        var (_, fans, store, _) = Build();
+        // A malformed guard curve makes the sync throw when it clones the stored curve.
+        store.Update(s => s.Cooling.Curves.Add(new CurveDocument
+        {
+            Id = CoolingConfigLint.GuardCurveId, Name = "Thermal guard", Type = "Graph", Input = null!,
+        }));
+        var guard = new ThermalGuardController(fans, store);
+        var clock = new long[] { 1_000_000 };
+        var e = new CurveEngine(fans, store, new MultiplexHub(), null, guard) { Clock = () => clock[0] };
+
+        fans.CpuTemp = 85f; // 40 percent floor at the default limit of 90
+        for (var i = 0; i < 6; i++)
+        {
+            clock[0] += 1000;
+            e.Tick();
+        }
+
+        Assert.Equal(40, LastDuty(fans, "f1"));
+    }
+
+    [Fact]
+    public void GuardCurveMatches_ComparesTheWholeManagedShape()
+    {
+        var cpu = new TemperatureSource { Id = "cpu", Name = "Core", Category = "CPU" };
+        var curve = new CurveDocument { Id = CoolingConfigLint.GuardCurveId, Outputs = { new CurveOutputDocument { Id = "f1", Type = "Fan" } } };
+        CoolingConfigLint.ApplyGuardCurve(curve, cpu, 90);
+        Assert.True(CoolingConfigLint.GuardCurveMatches(curve, cpu, 90));
+
+        var otherDevice = CoolingConfigLint.CloneCurve(curve);
+        otherDevice.Input.Device = "GPU";
+        Assert.False(CoolingConfigLint.GuardCurveMatches(otherDevice, cpu, 90));
+
+        var strayData = CoolingConfigLint.CloneCurve(curve);
+        strayData.Flat = new FlatCurveData { Speed = 5 };
+        Assert.False(CoolingConfigLint.GuardCurveMatches(strayData, cpu, 90));
+
+        var preset = CoolingConfigLint.CloneCurve(curve);
+        preset.Preset = "silent";
+        Assert.False(CoolingConfigLint.GuardCurveMatches(preset, cpu, 90));
+    }
+
+    [Fact]
     public void AHandEditToTheGuardCurve_IsRevertedOnTheNextTick()
     {
         var (_, fans, store, _) = Build();

@@ -226,18 +226,26 @@ public static class CoolingConfigLint
     /// <summary>True when the stored curve already equals its computed form.</summary>
     public static bool GuardCurveMatches(CurveDocument curve, TemperatureSource cpuInput, double limitC)
     {
-        var expected = new CurveDocument { Id = curve.Id };
-        ApplyGuardCurve(expected, cpuInput, limitC);
-        var a = curve.Graph;
-        var b = expected.Graph!;
-        return curve.Type == expected.Type
-            && curve.Name == expected.Name
-            && curve.Input.Id == expected.Input.Id
-            && a is not null
-            && a.ResponseTime == b.ResponseTime
-            && a.SpeedModifier == b.SpeedModifier
-            && a.Points.Count == b.Points.Count
-            && a.Points.Zip(b.Points).All(p => p.First.Temp == p.Second.Temp && p.First.Speed == p.Second.Speed);
+        // Compared as wire shapes, so every field of the curve counts, not just the ones we know to check.
+        var desired = new CurveDocument
+        {
+            Id = curve.Id,
+            Outputs = curve.Outputs.Select(o => new CurveOutputDocument { Id = o.Id, Type = o.Type }).ToList(),
+        };
+        ApplyGuardCurve(desired, cpuInput, limitC);
+        return WireJson(curve) == WireJson(desired);
+    }
+
+    private static string WireJson(CurveDocument curve) => System.Text.Json.JsonSerializer.Serialize(
+        new SetCurvesBody { Curves = new List<Curve> { CurveWireMapper.ToWire(curve) } },
+        Nexus.Service.Serialization.AppJsonContext.Default.SetCurvesBody);
+
+    /// <summary>The input the guard curve reads: the one it already has while that is still a CPU source, otherwise the preferred one. A sensor that comes and goes elsewhere must not flip it.</summary>
+    public static TemperatureSource? PickGuardInput(CurveDocument? existing, IReadOnlyList<TemperatureSource> sources)
+    {
+        var cpu = sources.Where(s => s.Category == "CPU").ToList();
+        var kept = existing is null ? null : cpu.FirstOrDefault(s => s.Id == existing.Input?.Id);
+        return kept ?? FanProfiles.PreferredInput(cpu);
     }
 
     /// <summary>The shared curve's points for a limit: a balanced curve relative to it.</summary>
@@ -254,8 +262,7 @@ public static class CoolingConfigLint
     /// </summary>
     public static HealResult? Heal(LintInput input, IReadOnlyList<LintHazard> hazards)
     {
-        var cpuSources = input.Sources.Where(s => s.Category == "CPU").ToList();
-        var cpuInput = FanProfiles.PreferredInput(cpuSources);
+        var cpuInput = PickGuardInput(input.Curves.FirstOrDefault(c => c.Id == GuardCurveId), input.Sources);
         var legacy = input.Curves.Where(IsLegacyGuardCurve).ToList();
         if (cpuInput is null || (hazards.Count == 0 && legacy.Count == 0))
         {

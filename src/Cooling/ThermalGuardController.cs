@@ -107,6 +107,7 @@ public sealed class ThermalGuardController
     private string _cpuModel = "";
     private long? _cpuLimitAtMs;
     private bool _cpuInfoFailureLogged;
+    private bool _syncFailureLogged;
     private string _loggedLimitKey = "";
     private bool _watchdogArmed;
     private bool _watchdogFired;
@@ -282,7 +283,19 @@ public sealed class ThermalGuardController
         IReadOnlyList<TemperatureSource> sources)
     {
         var cooling = settings.Cooling;
-        SyncGuardCurve(sources, broadcast: true);
+        try
+        {
+            SyncGuardCurve(sources, broadcast: true);
+        }
+        catch (Exception ex)
+        {
+            // The curve sync must never cost the tick its guard.
+            if (!_syncFailureLogged)
+            {
+                _syncFailureLogged = true;
+                Console.Error.WriteLine($"[thermal-guard] guard curve sync failed: {ex.Message}");
+            }
+        }
         if (!cooling.ThermalGuardEnabled)
         {
             lock (_gate)
@@ -601,8 +614,8 @@ public sealed class ThermalGuardController
             }
             limit = _limit.LimitC;
         }
-        var cpuInput = FanProfiles.PreferredInput(sources.Where(s => s.Category == "CPU").ToList());
         var stored = CoolingSnapshots.Curves(_store.Load().Cooling).FirstOrDefault(c => c.Id == CoolingConfigLint.GuardCurveId);
+        var cpuInput = CoolingConfigLint.PickGuardInput(stored, sources);
         if (cpuInput is null || stored is null || CoolingConfigLint.GuardCurveMatches(CoolingConfigLint.CloneCurve(stored), cpuInput, limit))
         {
             return;
