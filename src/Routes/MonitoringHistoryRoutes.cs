@@ -81,11 +81,7 @@ public static class MonitoringHistoryRoutes
 
     internal const string DefaultCpuTempName = "CPU Temperature";
 
-    /// <summary>
-    /// The CPU temperature series name from a sample's CpuName (which the sampler resolves and
-    /// caches): the model, trimmed, or the generic label when it is unknown. The sampler's own
-    /// placeholder for an unknown model ("CPU") never becomes a series name.
-    /// </summary>
+    /// <summary>The CPU temperature series name from a sample's CpuName: the trimmed model, or the generic label for an unknown one (the sampler's "CPU" placeholder included).</summary>
     internal static string ResolveCpuTempName(string? sampleCpuName)
     {
         var name = sampleCpuName?.Trim();

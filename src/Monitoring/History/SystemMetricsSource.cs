@@ -136,8 +136,9 @@ public sealed class SystemMetricsSource : IMetricsSource
             diskRead, diskWrite);
     }
 
-    // Resolved once and kept for the process lifetime: the CPU model never
-    // changes without a reboot.
+    // A real name is kept for the process lifetime (the model never changes without a
+    // reboot); until one is read, the placeholder is returned and the read is retried, since
+    // the first read can land before the hardware library has opened.
     private string ResolveCpuName()
     {
         if (_cpuName is not null)
@@ -147,13 +148,17 @@ public sealed class SystemMetricsSource : IMetricsSource
         try
         {
             var model = _sensors.GetCpuModel();
-            _cpuName = string.IsNullOrWhiteSpace(model) ? "CPU" : model;
+            if (!string.IsNullOrWhiteSpace(model))
+            {
+                _cpuName = model;
+                return _cpuName;
+            }
         }
         catch
         {
-            _cpuName = "CPU";
+            // Retried on the next sample.
         }
-        return _cpuName;
+        return "CPU";
     }
 
     // Storage temperature via SmartHealthMonitor's own 10-minute cache (cheap
