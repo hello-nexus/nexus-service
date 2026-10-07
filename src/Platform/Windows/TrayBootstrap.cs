@@ -470,7 +470,12 @@ internal static class TrayBootstrap
             // A reboot's first sign-in is a logon, never an unlock.
             if (sentry is not null)
             {
-                Nexus.Service.Lifecycle.WindowsServiceHost.SessionLogon += sentry.OnSessionLogon;
+                // Off the SCM control-handler thread, which waits on this callback.
+                Nexus.Service.Lifecycle.WindowsServiceHost.SessionLogon += () => _ = Task.Run(() =>
+                {
+                    try { sentry.OnSessionLogon(); }
+                    catch (Exception ex) { Console.Error.WriteLine($"[sentry] logon disarm failed: {ex.Message}"); }
+                });
             }
             // The push is dropped when no helper is connected, so a lock that
             // spans a helper reconnect would come back with the poll in the

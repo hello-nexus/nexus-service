@@ -369,6 +369,25 @@ public sealed class SentryCoordinatorTests
     }
 
     [Fact]
+    public async Task Two_concurrent_lock_arms_both_succeed_on_one_observed_lock()
+    {
+        var issued = 0;
+        _power.OnLock = () => Interlocked.Increment(ref issued);
+        var wait = new SentryCoordinator(
+            _store, _pairing, _cloud, _power, lockListener: null, clock: () => _now,
+            readLockState: () => false, lockWait: TimeSpan.FromSeconds(5));
+        wait.LockInputWatch = _watch.Add;
+
+        var first = wait.ArmAsync(lockFirst: true);
+        var second = wait.ArmAsync(lockFirst: true);
+        Assert.Equal(2, Volatile.Read(ref issued));
+        wait.OnLockChanged(true);
+
+        Assert.Equal(SentryCoordinator.ArmOutcome.Armed, await first);
+        Assert.Equal(SentryCoordinator.ArmOutcome.Armed, await second);
+    }
+
+    [Fact]
     public async Task A_late_lock_after_the_wait_does_not_arm()
     {
         var coordinator = Create();

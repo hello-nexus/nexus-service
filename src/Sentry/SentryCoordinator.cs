@@ -187,15 +187,14 @@ public sealed class SentryCoordinator : IHostedService, IDisposable
         {
             if (!_locked)
             {
-                // Registered before the lock is issued so the transition cannot slip past.
-                waiter = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-                _lockWaiter = waiter;
+                // Registered before the lock is issued so the transition cannot slip
+                // past. A concurrent arm shares the in-flight waiter.
+                waiter = _lockWaiter ??= new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
             }
         }
 
         if (!_power.Lock())
         {
-            ClearWaiter(waiter);
             return ArmOutcome.LockFailed;
         }
 
@@ -203,7 +202,6 @@ public sealed class SentryCoordinator : IHostedService, IDisposable
         {
             // True only means the request was issued; the session still has to lock.
             var done = await Task.WhenAny(waiter.Task, Task.Delay(_lockWait)).ConfigureAwait(false);
-            ClearWaiter(waiter);
             if (done != waiter.Task)
             {
                 ServiceLog.Info("[sentry] lock was not observed in time; not armed");
@@ -214,17 +212,6 @@ public sealed class SentryCoordinator : IHostedService, IDisposable
         lock (_gate)
         {
             return _locked ? CommitArm() : ArmOutcome.LockNotConfirmed;
-        }
-    }
-
-    private void ClearWaiter(TaskCompletionSource? waiter)
-    {
-        lock (_gate)
-        {
-            if (ReferenceEquals(_lockWaiter, waiter))
-            {
-                _lockWaiter = null;
-            }
         }
     }
 
@@ -277,7 +264,10 @@ public sealed class SentryCoordinator : IHostedService, IDisposable
             _locked = locked;
             if (locked)
             {
+                // Completes every arm sharing the waiter; a waiter nobody completes
+                // stays for the next arm to reuse, which the same lock satisfies.
                 _lockWaiter?.TrySetResult();
+                _lockWaiter = null;
             }
             else
             {
