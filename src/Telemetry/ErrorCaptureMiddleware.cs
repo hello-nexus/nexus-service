@@ -28,6 +28,8 @@ internal static class ErrorCaptureMiddleware
             return false;
         var pattern = (ctx.GetEndpoint() as RouteEndpoint)?.RoutePattern.RawText ?? "unmatched";
         reporter.Report(ex, ErrorKinds.Request, pattern);
+        // Kestrel logs the same exception at Error; the logger provider skips marked ones.
+        try { ex.Data[ErrorKinds.ReportedMarker] = true; } catch { /* read-only Data */ }
         return false;
     }
 }

@@ -88,6 +88,24 @@ string? emitOpenApiPath = null;
 var testHost = Environment.GetEnvironmentVariable("NEXUS_TEST_HOST") == "1"
     || emitOpenApiPath is not null;
 
+// First thing for a real host: a startup crash (crash loops) is the most valuable error, so the
+// crash-file hook cannot wait for DI. It writes regardless of consent; the reporter checks consent at send time.
+if (!testHost)
+{
+    AppDomain.CurrentDomain.UnhandledException += (_, e) =>
+    {
+        try
+        {
+            if (e.ExceptionObject is Exception ex)
+                Nexus.Service.Telemetry.ErrorReporter.WriteCrashFile(ex, Nexus.Service.Telemetry.ErrorReporter.DefaultCrashFilePath());
+        }
+        catch
+        {
+            // The process is already dying; nothing to add.
+        }
+    };
+}
+
 // Hold LhmComputer's background Open until the boot-time PawnIO check has
 // run, so a driver installed or repaired this boot is visible to SuperIO
 // enumeration immediately. Armed only where WireAppWindowAndPawnIo will
@@ -209,11 +227,6 @@ var panelTunnelMonitor = new Nexus.Service.Panel.PanelTunnelMonitor(
 
 static void InstallErrorHooks(Nexus.Service.Telemetry.ErrorReporter reporter)
 {
-    AppDomain.CurrentDomain.UnhandledException += (_, e) =>
-    {
-        if (e.ExceptionObject is Exception ex)
-            reporter.WriteCrashFile(ex);
-    };
     // Observation only: the exception is deliberately not marked observed, so runtime behavior is unchanged.
     TaskScheduler.UnobservedTaskException += (_, e) =>
         reporter.Report(e.Exception, Nexus.Service.Telemetry.ErrorKinds.UnobservedTask, null);

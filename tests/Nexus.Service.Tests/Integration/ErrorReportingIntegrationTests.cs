@@ -7,7 +7,10 @@ using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.TestHost;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Hosting;
+using Microsoft.Extensions.Logging;
 using Nexus.Service.Auth;
+using Nexus.Service.Persistence;
 using Nexus.Service.Telemetry;
 
 namespace Nexus.Service.Tests.Integration;
@@ -92,7 +95,56 @@ public sealed class ErrorReportingIntegrationTests : IClassFixture<NexusAppFacto
         await app.StartAsync();
 
         var before = reporter.PendingCount;
-        await Assert.ThrowsAsync<InvalidOperationException>(() => app.GetTestClient().GetAsync("/boom/42?secret=1"));
+        var ex = await Assert.ThrowsAsync<InvalidOperationException>(() => app.GetTestClient().GetAsync("/boom/42?secret=1"));
         Assert.Equal(before + 1, reporter.PendingCount);
+        Assert.True(ex.Data.Contains(ErrorKinds.ReportedMarker));
+    }
+
+    private static (ErrorReporter Reporter, ServiceProvider Services) ReporterServices()
+    {
+        var services = new ServiceCollection();
+        services.AddSingleton<IConfigStore>(new JsonConfigStore(Path.Combine(Path.GetTempPath(), "nexus-err-" + Guid.NewGuid().ToString("N"), "settings.json")));
+        services.AddSingleton<IErrorTransport, NullErrorTransport>();
+        services.AddSingleton<ErrorReporter>();
+        var sp = services.BuildServiceProvider();
+        return (sp.GetRequiredService<ErrorReporter>(), sp);
+    }
+
+    [Fact]
+    public void Logger_provider_skips_exceptions_the_middleware_already_reported()
+    {
+        var (reporter, sp) = ReporterServices();
+        var logger = new ErrorLoggerProvider(sp).CreateLogger("Microsoft.AspNetCore.Server.Kestrel");
+
+        var marked = new InvalidOperationException("a");
+        marked.Data[ErrorKinds.ReportedMarker] = true;
+        logger.LogError(marked, "unhandled");
+        Assert.Equal(0, reporter.PendingCount);
+
+        logger.LogError(new InvalidOperationException("b"), "unhandled");
+        Assert.Equal(1, reporter.PendingCount);
+    }
+
+    private sealed class CrashingWorker : BackgroundService
+    {
+        protected override Task ExecuteAsync(CancellationToken stoppingToken) => throw new InvalidOperationException("worker down");
+    }
+
+    [Fact]
+    public async Task Logger_provider_captures_a_crashing_background_service()
+    {
+        var (reporter, _) = ReporterServices();
+        var builder = Host.CreateApplicationBuilder();
+        builder.Services.AddSingleton(reporter);
+        builder.Services.AddSingleton<ILoggerProvider, ErrorLoggerProvider>();
+        builder.Services.AddHostedService<CrashingWorker>();
+        using var host = builder.Build();
+
+        await host.StartAsync();
+        for (var i = 0; i < 100 && reporter.PendingCount == 0; i++)
+            await Task.Delay(50);
+        await host.StopAsync();
+
+        Assert.Equal(1, reporter.PendingCount);
     }
 }

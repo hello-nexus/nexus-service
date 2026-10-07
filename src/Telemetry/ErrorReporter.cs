@@ -20,6 +20,7 @@ internal static class ErrorKinds
     public const string UnobservedTask = "unobserved-task";
     public const string Logged = "logged";
     public const string Request = "request";
+    public const string ReportedMarker = "nexus.error.reported";
 }
 
 /// <summary>
@@ -131,7 +132,7 @@ internal sealed partial class ErrorReporter
                 Source = "web",
                 Kind = Cap(kind, KindMax),
                 Fingerprint = Cap(fingerprint, FingerprintMax),
-                Type = Cap(Scrub(type), TypeMax),
+                Type = string.IsNullOrWhiteSpace(type) ? "Error" : Cap(Scrub(type), TypeMax),
                 Message = Cap(Scrub(message), MessageMax),
                 Stack = Cap(Scrub(stack), StackMax),
                 Context = Cap(Scrub(context ?? ""), ContextMax),
@@ -150,19 +151,21 @@ internal sealed partial class ErrorReporter
         }
     }
 
-    /// <summary>Called as the process dies: writes one bounded file synchronously; the next start's first flush delivers and deletes it.</summary>
-    public void WriteCrashFile(Exception ex)
+    internal static string DefaultCrashFilePath() => DefaultCrashFile();
+
+    /// <summary>Called as the process dies, regardless of consent (the file never leaves the machine until a flush finds consent on): writes one bounded file synchronously; the next start's first flush delivers and deletes it.</summary>
+    public static void WriteCrashFile(Exception ex, string path)
     {
-        if (!_enabled || t_inReport)
+        if (t_inReport)
             return;
         t_inReport = true;
         try
         {
-            var json = JsonSerializer.Serialize(BuildItem(ex, ErrorKinds.Crash, null), AppJsonContext.Default.ErrorReportItem);
+            var json = JsonSerializer.Serialize(BuildItem(ex, ErrorKinds.Crash, null, TimeProvider.System), AppJsonContext.Default.ErrorReportItem);
             if (Encoding.UTF8.GetByteCount(json) > MaxCrashFileBytes)
                 return;
-            Directory.CreateDirectory(Path.GetDirectoryName(_crashFile)!);
-            File.WriteAllText(_crashFile, json);
+            Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+            File.WriteAllText(path, json);
         }
         catch (Exception inner)
         {
@@ -178,8 +181,6 @@ internal sealed partial class ErrorReporter
     {
         lock (_lock)
         {
-            if (_lastSent.TryGetValue(item.Fingerprint, out var sent) && _clock.GetUtcNow() - sent < ResendWindow)
-                return;
             if (_pending.TryGetValue(item.Fingerprint, out var existing))
             {
                 existing.Count += item.Count;
@@ -238,6 +239,9 @@ internal sealed partial class ErrorReporter
             {
                 if (batch.Count >= MaxPerPost)
                     break;
+                // Held back (keeps aggregating) until an hour has passed since its last send.
+                if (_lastSent.TryGetValue(item.Fingerprint, out var sent) && now - sent < ResendWindow)
+                    continue;
                 if (batch.Any(b => b.Fingerprint == item.Fingerprint))
                     continue;
                 batch.Add(item);
@@ -246,6 +250,8 @@ internal sealed partial class ErrorReporter
             }
         }
 
+        // One malformed item would 400 the whole batch at nexus-api; drop it instead.
+        batch.RemoveAll(i => string.IsNullOrWhiteSpace(i.Kind) || string.IsNullOrWhiteSpace(i.Fingerprint) || string.IsNullOrWhiteSpace(i.Type));
         if (batch.Count == 0)
             return;
         var installId = InstallIdentity.Resolve(_store);
@@ -297,11 +303,13 @@ internal sealed partial class ErrorReporter
         }
     }
 
-    internal ErrorReportItem BuildItem(Exception ex, string kind, string? context)
+    internal ErrorReportItem BuildItem(Exception ex, string kind, string? context) => BuildItem(ex, kind, context, _clock);
+
+    private static ErrorReportItem BuildItem(Exception ex, string kind, string? context, TimeProvider clock)
     {
         var raw = ex.ToString();
         var type = ex.GetType().FullName ?? ex.GetType().Name;
-        var now = _clock.GetUtcNow();
+        var now = clock.GetUtcNow();
         return new ErrorReportItem
         {
             Source = "service",

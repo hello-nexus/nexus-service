@@ -35,6 +35,12 @@ internal sealed class ErrorLoggerProvider : ILoggerProvider
             _category = category;
         }
 
+        private static bool IsMarked(Exception ex)
+        {
+            try { return ex.Data.Contains(ErrorKinds.ReportedMarker); }
+            catch { return false; }
+        }
+
         public IDisposable? BeginScope<TState>(TState state) where TState : notnull => null;
 
         public bool IsEnabled(LogLevel logLevel) => logLevel >= LogLevel.Error;
@@ -42,6 +48,8 @@ internal sealed class ErrorLoggerProvider : ILoggerProvider
         public void Log<TState>(LogLevel logLevel, EventId eventId, TState state, Exception? exception, Func<TState, Exception?, string> formatter)
         {
             if (logLevel < LogLevel.Error || exception is null)
+                return;
+            if (IsMarked(exception))
                 return;
             _owner.Reporter()?.Report(exception, ErrorKinds.Logged, _category);
         }

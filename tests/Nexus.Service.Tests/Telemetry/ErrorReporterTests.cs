@@ -55,7 +55,7 @@ public class ErrorReporterTests : IDisposable
     {
         var r = Reporter();
         r.Report(Thrown(), "logged", null);
-        r.WriteCrashFile(Thrown("crash"));
+        ErrorReporter.WriteCrashFile(Thrown("crash"), CrashFile);
         Assert.Equal(1, r.PendingCount);
         Assert.True(File.Exists(CrashFile));
 
@@ -65,10 +65,8 @@ public class ErrorReporterTests : IDisposable
 
         r.Report(Thrown(), "logged", null);
         r.ReportClient("render", "fp", "T", "m", "s", null, 1);
-        r.WriteCrashFile(Thrown());
         await r.FlushAsync(default);
         Assert.Equal(0, r.PendingCount);
-        Assert.False(File.Exists(CrashFile));
         Assert.Empty(_transport.Sent);
     }
 
@@ -142,21 +140,49 @@ public class ErrorReporterTests : IDisposable
     }
 
     [Fact]
-    public async Task A_fingerprint_is_sent_at_most_once_per_hour()
+    public async Task A_fingerprint_is_sent_at_most_once_per_hour_and_keeps_its_count()
     {
         var r = Reporter();
         r.ReportClient("render", "fp", "T", "m", "s", null, 1);
         await r.FlushAsync(default);
         Assert.Single(_transport.Sent);
 
-        r.ReportClient("render", "fp", "T", "m", "s", null, 1);
+        r.ReportClient("render", "fp", "T", "m", "s", null, 2);
+        r.ReportClient("render", "fp", "T", "m", "s", null, 3);
         await r.FlushAsync(default);
         Assert.Single(_transport.Sent);
+        Assert.Equal(1, r.PendingCount);
 
         _clock.Now += TimeSpan.FromMinutes(61);
-        r.ReportClient("render", "fp", "T", "m", "s", null, 1);
         await r.FlushAsync(default);
         Assert.Equal(2, _transport.Sent.Count);
+        Assert.Equal(5, _transport.Sent[1].Errors.Single().Count);
+        Assert.Equal(0, r.PendingCount);
+    }
+
+    [Fact]
+    public async Task Empty_web_type_defaults_to_Error_and_malformed_items_are_dropped_not_the_batch()
+    {
+        var r = Reporter();
+        r.ReportClient("render", "fp1", "  ", "m", "s", null, 1);
+        r.ReportClient("render", "", "T", "m", "s", null, 1);
+        r.ReportClient("", "fp3", "T", "m", "s", null, 1);
+        await r.FlushAsync(default);
+        var item = Assert.Single(Assert.Single(_transport.Sent).Errors);
+        Assert.Equal("Error", item.Type);
+        Assert.Equal("fp1", item.Fingerprint);
+    }
+
+    [Fact]
+    public async Task Crash_file_written_while_opted_out_is_never_sent_and_is_deleted_on_flush()
+    {
+        _store.Update(s => s.Telemetry.CollectAnonymousData = false);
+        var r = Reporter();
+        ErrorReporter.WriteCrashFile(Thrown(), CrashFile);
+        Assert.True(File.Exists(CrashFile));
+        await r.FlushAsync(default);
+        Assert.Empty(_transport.Sent);
+        Assert.False(File.Exists(CrashFile));
     }
 
     [Fact]
@@ -172,7 +198,7 @@ public class ErrorReporterTests : IDisposable
     [Fact]
     public async Task Crash_file_is_written_delivered_on_next_flush_and_deleted()
     {
-        Reporter().WriteCrashFile(Thrown("dying"));
+        ErrorReporter.WriteCrashFile(Thrown("dying"), CrashFile);
         Assert.True(File.Exists(CrashFile));
         Assert.True(new FileInfo(CrashFile).Length < ErrorReporter.MaxCrashFileBytes);
 
@@ -188,7 +214,7 @@ public class ErrorReporterTests : IDisposable
     [Fact]
     public async Task Crash_file_survives_a_failed_send()
     {
-        Reporter().WriteCrashFile(Thrown());
+        ErrorReporter.WriteCrashFile(Thrown(), CrashFile);
         _transport.Result = false;
         await Reporter().FlushAsync(default);
         Assert.True(File.Exists(CrashFile));
