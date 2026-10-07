@@ -208,6 +208,7 @@ public static class CoolingConfigLint
     {
         curve.Name = "Thermal guard";
         curve.Preset = null;
+        curve.Outputs = (curve.Outputs ?? new List<CurveOutputDocument>()).Where(o => o is not null).ToList();
         curve.Type = "Graph";
         curve.Input = new CurveInputDocument { Id = cpuInput.Id, Type = "Temperature", Device = cpuInput.Category };
         curve.Flat = null;
@@ -228,7 +229,13 @@ public static class CoolingConfigLint
     public static bool GuardCurveMatches(CurveDocument curve, TemperatureSource cpuInput, double limitC)
     {
         // A curve with a missing part is simply not the computed form (so it gets repaired), never an error.
-        if (curve.Input is null || curve.Outputs is null)
+        if (curve.Input is null
+            || curve.Outputs is null
+            || curve.Outputs.Any(o => o is null)
+            || curve.Graph is null
+            || curve.Graph.Points is null
+            || curve.Graph.Points.Any(p => p is null)
+            || curve.Mixed is not null)
         {
             return false;
         }
@@ -239,14 +246,7 @@ public static class CoolingConfigLint
             Outputs = curve.Outputs.Select(o => new CurveOutputDocument { Id = o.Id, Type = o.Type }).ToList(),
         };
         ApplyGuardCurve(desired, cpuInput, limitC);
-        try
-        {
-            return WireJson(curve) == WireJson(desired);
-        }
-        catch (NullReferenceException)
-        {
-            return false;
-        }
+        return WireJson(curve) == WireJson(desired);
     }
 
     private static string WireJson(CurveDocument curve) => System.Text.Json.JsonSerializer.Serialize(

@@ -450,8 +450,65 @@ public class ThermalGuardEngineTests
             e.Tick();
         }
 
-        // f1 follows the healed guard curve; f2 is a plain manual fan raised by the floor.
+        // f2 is a plain manual fan raised by the floor; f1 sits on the guard curve and is at least as high.
         Assert.Equal(40, LastDuty(fans, "f2"));
+        Assert.InRange(LastDuty(fans, "f1"), 40, 100);
+    }
+
+    private static CurveDocument ManagedGuardCurve(params string[] outputs)
+    {
+        var cpu = new TemperatureSource { Id = "cpu", Name = "Core", Category = "CPU" };
+        var curve = new CurveDocument { Id = CoolingConfigLint.GuardCurveId };
+        foreach (var id in outputs)
+        {
+            curve.Outputs.Add(new CurveOutputDocument { Id = id, Type = "Fan" });
+        }
+        CoolingConfigLint.ApplyGuardCurve(curve, cpu, 90);
+        return curve;
+    }
+
+    [Fact]
+    public void GuardCurveMatches_ReturnsFalseForEveryNullPart_WithoutThrowing_AndApplyRepairsThem()
+    {
+        var cpu = new TemperatureSource { Id = "cpu", Name = "Core", Category = "CPU" };
+        var damage = new Action<CurveDocument>[]
+        {
+            c => c.Input = null!,
+            c => c.Outputs = null!,
+            c => c.Outputs.Add(null!),
+            c => c.Graph = null,
+            c => c.Graph!.Points = null!,
+            c => c.Graph!.Points.Add(null!),
+            c => c.Mixed = new MixedCurveData { CurveIds = null! },
+        };
+
+        foreach (var hurt in damage)
+        {
+            var curve = ManagedGuardCurve("f1");
+            Assert.True(CoolingConfigLint.GuardCurveMatches(curve, cpu, 90));
+            hurt(curve);
+
+            Assert.False(CoolingConfigLint.GuardCurveMatches(curve, cpu, 90));
+
+            CoolingConfigLint.ApplyGuardCurve(curve, cpu, 90);
+            Assert.True(CoolingConfigLint.GuardCurveMatches(curve, cpu, 90));
+        }
+    }
+
+    [Fact]
+    public void ApplyGuardCurve_CreatesMissingOutputs_AndDropsNullElements_KeepingTheRealOnes()
+    {
+        var cpu = new TemperatureSource { Id = "cpu", Name = "Core", Category = "CPU" };
+
+        var missing = new CurveDocument { Id = CoolingConfigLint.GuardCurveId, Outputs = null! };
+        CoolingConfigLint.ApplyGuardCurve(missing, cpu, 90);
+        Assert.NotNull(missing.Outputs);
+        Assert.Empty(missing.Outputs);
+
+        var withNull = ManagedGuardCurve("f1");
+        withNull.Outputs.Insert(0, null!);
+        CoolingConfigLint.ApplyGuardCurve(withNull, cpu, 90);
+        Assert.Equal(new[] { "f1" }, withNull.Outputs.Select(o => o.Id));
     }
 
     [Fact]
