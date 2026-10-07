@@ -227,6 +227,11 @@ public static class CoolingConfigLint
     /// <summary>True when the stored curve already equals its computed form.</summary>
     public static bool GuardCurveMatches(CurveDocument curve, TemperatureSource cpuInput, double limitC)
     {
+        // A curve with a missing part is simply not the computed form (so it gets repaired), never an error.
+        if (curve.Input is null || curve.Outputs is null)
+        {
+            return false;
+        }
         // Compared as wire shapes, so every field of the curve counts, not just the ones we know to check.
         var desired = new CurveDocument
         {
@@ -234,7 +239,14 @@ public static class CoolingConfigLint
             Outputs = curve.Outputs.Select(o => new CurveOutputDocument { Id = o.Id, Type = o.Type }).ToList(),
         };
         ApplyGuardCurve(desired, cpuInput, limitC);
-        return WireJson(curve) == WireJson(desired);
+        try
+        {
+            return WireJson(curve) == WireJson(desired);
+        }
+        catch (NullReferenceException)
+        {
+            return false;
+        }
     }
 
     private static string WireJson(CurveDocument curve) => System.Text.Json.JsonSerializer.Serialize(

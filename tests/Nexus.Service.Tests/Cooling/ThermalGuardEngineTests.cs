@@ -404,16 +404,42 @@ public class ThermalGuardEngineTests
         Assert.Equal("cpu", store.Load().Cooling.Curves.Single(c => c.Id == CoolingConfigLint.GuardCurveId).Input.Id);
     }
 
+    // A store whose writes fail once they change the guard curve: the failure the curve sync must survive.
+    private sealed class GuardWriteFailingStore : IConfigStore
+    {
+        private readonly InMemoryConfigStore _inner;
+        public bool Failing;
+        public GuardWriteFailingStore(InMemoryConfigStore inner) { _inner = inner; }
+        public string SettingsPath => _inner.SettingsPath;
+        public NexusSettings Load() => _inner.Load();
+        public void Reload() => _inner.Reload();
+        public void FlushNow() => _inner.FlushNow();
+        public event Action? OnChanged { add => _inner.OnChanged += value; remove => _inner.OnChanged -= value; }
+
+        private string GuardSignature() => string.Join(",", _inner.Load().Cooling.Curves
+            .Where(c => c.Id == CoolingConfigLint.GuardCurveId && c.Graph is not null)
+            .SelectMany(c => c.Graph!.Points.Select(p => $"{p.Temp}:{p.Speed}")));
+
+        public void Update(Action<NexusSettings> mutator)
+        {
+            var before = GuardSignature();
+            _inner.Update(mutator);
+            if (Failing && GuardSignature() != before)
+            {
+                throw new InvalidOperationException("store write failed");
+            }
+        }
+    }
+
     [Fact]
     public void AThrowingCurveSync_StillAppliesTheFloorThatTick()
     {
-        var (_, fans, store, _) = Build();
-        // A malformed guard curve makes the sync throw when it clones the stored curve.
-        store.Update(s => s.Cooling.Curves.Add(new CurveDocument
-        {
-            Id = CoolingConfigLint.GuardCurveId, Name = "Thermal guard", Type = "Graph", Input = null!,
-        }));
+        var (_, fans, inner, _) = Build();
+        var store = new GuardWriteFailingStore(inner);
         var guard = new ThermalGuardController(fans, store);
+        guard.HealNow(automatic: false);
+        inner.Update(s => s.Cooling.Curves.Single(c => c.Id == CoolingConfigLint.GuardCurveId).Graph!.Points[0].Speed = 55);
+        store.Failing = true; // the sync now tries to repair the curve and the write throws
         var clock = new long[] { 1_000_000 };
         var e = new CurveEngine(fans, store, new MultiplexHub(), null, guard) { Clock = () => clock[0] };
 
@@ -424,7 +450,22 @@ public class ThermalGuardEngineTests
             e.Tick();
         }
 
-        Assert.Equal(40, LastDuty(fans, "f1"));
+        // f1 follows the healed guard curve; f2 is a plain manual fan raised by the floor.
+        Assert.Equal(40, LastDuty(fans, "f2"));
+    }
+
+    [Fact]
+    public void AGuardCurveWithAMissingInput_IsRepairedNotAnError()
+    {
+        var (_, fans, store, _) = Build();
+        var guard = new ThermalGuardController(fans, store);
+        guard.HealNow(automatic: false);
+        store.Update(s => s.Cooling.Curves.Single(c => c.Id == CoolingConfigLint.GuardCurveId).Input = null!);
+        var e = new CurveEngine(fans, store, new MultiplexHub(), null, guard) { Clock = () => 1_000_000 };
+
+        e.Tick();
+
+        Assert.Equal("cpu", store.Load().Cooling.Curves.Single(c => c.Id == CoolingConfigLint.GuardCurveId).Input.Id);
     }
 
     [Fact]
@@ -472,18 +513,17 @@ public class ThermalGuardEngineTests
     [Fact]
     public void AThrowingCurveSyncInSetConfig_StillKeepsThePersistedOverrideAndAnswers()
     {
-        var (_, fans, store, _) = Build();
-        store.Update(s => s.Cooling.Curves.Add(new CurveDocument
-        {
-            Id = CoolingConfigLint.GuardCurveId, Name = "Thermal guard", Type = "Graph", Input = null!,
-        }));
+        var (_, fans, inner, _) = Build();
+        var store = new GuardWriteFailingStore(inner);
         var guard = new ThermalGuardController(fans, store);
+        guard.HealNow(automatic: false);
+        store.Failing = true; // the sync after the override change writes new points and throws
 
         var (state, error) = guard.SetConfig(new SetThermalGuardConfigBody { LimitOverrideC = 100, Enabled = true });
 
         Assert.Null(error);
         Assert.Equal(100, state!.LimitC);
-        Assert.Equal(100, store.Load().Cooling.ThermalGuardLimitOverrideC);
+        Assert.Equal(100, inner.Load().Cooling.ThermalGuardLimitOverrideC);
     }
 
     [Fact]

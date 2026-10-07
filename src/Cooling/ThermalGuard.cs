@@ -225,11 +225,12 @@ public sealed class ThermalGuard
             return Output(false, false, true, 100);
         }
 
-        // Smoothing may only keep a trip, never end one early: the raw reading must be below too.
-        if (Math.Max(temp, smooth) < limitC - _t.ReleaseBelowLimitC)
+        // The sustain timer runs on the smoothed value, so a single raw spike does not restart it;
+        // the release itself also needs the raw reading below the line, and otherwise waits a tick.
+        if (smooth < limitC - _t.ReleaseBelowLimitC)
         {
             _belowSinceMs ??= nowMs;
-            if (nowMs - _belowSinceMs.Value >= _t.ReleaseSustainMs)
+            if (nowMs - _belowSinceMs.Value >= _t.ReleaseSustainMs && temp < limitC - _t.ReleaseBelowLimitC)
             {
                 _state = ThermalGuardStates.Normal;
                 _belowSinceMs = null;

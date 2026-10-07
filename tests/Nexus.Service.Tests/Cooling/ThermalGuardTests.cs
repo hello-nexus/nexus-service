@@ -434,16 +434,43 @@ public class ThermalGuardTests
     }
 
     [Fact]
-    public void AfterALongPauseInTheReadings_OldCoolSamplesDoNotReleaseTheTrip()
+    public void AGapInTheReadings_RestartsTheReleaseTimerFromTheGap_NotCountingIt()
     {
         var g = Tripped();
         Feed(g, 6, 40, 80); // the release timer is running
 
-        // Nothing is observed for a long while, then a hot reading arrives.
-        var o = g.Step(71_000, 96, L, 100, 100);
+        // Nothing is observed for a long while, then cool readings resume. Without the rule the
+        // timer would count the unobserved time and release at once.
+        Assert.Equal(ThermalGuardStates.Tripped, g.Step(80_000, 80, L, 100, 100).State);
+        Assert.Equal(ThermalGuardStates.Tripped, Feed(g, 81, 139, 80).State);
+        Assert.Equal(ThermalGuardStates.Normal, Feed(g, 140, 142, 80).State);
+    }
 
-        Assert.Equal(ThermalGuardStates.Tripped, o.State);
-        Assert.False(o.TripEnded);
+    [Fact]
+    public void RawSpikesDuringTheCooldown_DoNotRestartTheReleaseTimer()
+    {
+        var g = Tripped();
+        var released = false;
+        for (var sec = 6; sec <= 100 && !released; sec++)
+        {
+            var spike = sec % 30 == 0;
+            released = g.Step(sec * 1000L, spike ? 96 : 80, L, 100, 100).TripEnded;
+        }
+        Assert.True(released);
+    }
+
+    [Fact]
+    public void AHotRawReadingAtTheReleaseInstant_DefersTheReleaseByATick()
+    {
+        var g = Tripped();
+        Assert.Equal(ThermalGuardStates.Tripped, Feed(g, 6, 66, 80).State);
+
+        var deferred = g.Step(67_000, 96, L, 100, 100);
+        Assert.Equal(ThermalGuardStates.Tripped, deferred.State);
+        Assert.False(deferred.TripEnded);
+
+        var released = g.Step(68_000, 80, L, 100, 100);
+        Assert.True(released.TripEnded);
     }
 
     [Fact]

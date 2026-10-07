@@ -616,7 +616,7 @@ public sealed class ThermalGuardController
         }
         var stored = CoolingSnapshots.Curves(_store.Load().Cooling).FirstOrDefault(c => c.Id == CoolingConfigLint.GuardCurveId);
         var cpuInput = CoolingConfigLint.PickGuardInput(stored, sources);
-        if (cpuInput is null || stored is null || CoolingConfigLint.GuardCurveMatches(CoolingConfigLint.CloneCurve(stored), cpuInput, limit))
+        if (cpuInput is null || stored is null || CoolingConfigLint.GuardCurveMatches(stored, cpuInput, limit))
         {
             return;
         }
