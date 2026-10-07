@@ -50,6 +50,31 @@ public class MonitoringHistoryRouteResponseTests
     }
 
     [Fact]
+    public void BuildHistoryResponse_CpuTempSeries_CarriesTheCpuModel_WithIdAndKindUnchanged()
+    {
+        var db = new[] { Scalars(0) };
+
+        var named = MonitoringHistoryRoutes.BuildHistoryResponse(
+            db, Array.Empty<MetricSample>(), 0, 10, 600, null, NoLuids, "AMD Ryzen 7 9800X3D");
+        var fallback = MonitoringHistoryRoutes.BuildHistoryResponse(
+            db, Array.Empty<MetricSample>(), 0, 10, 600, null, NoLuids);
+
+        var series = named.Series.Single(x => x.Id == "cpu-temp");
+        Assert.Equal("AMD Ryzen 7 9800X3D", series.Name);
+        Assert.Equal("cpu-temp", series.Kind);
+        Assert.Equal("CPU Temperature", fallback.Series.Single(x => x.Id == "cpu-temp").Name);
+    }
+
+    [Fact]
+    public void ResolveCpuTempName_UsesTheModel_AndFallsBackWhenUnknownOrFailing()
+    {
+        Assert.Equal("AMD Ryzen 7 9800X3D", MonitoringHistoryRoutes.ResolveCpuTempName(() => " AMD Ryzen 7 9800X3D "));
+        Assert.Equal("CPU Temperature", MonitoringHistoryRoutes.ResolveCpuTempName(() => ""));
+        Assert.Equal("CPU Temperature", MonitoringHistoryRoutes.ResolveCpuTempName(() => null));
+        Assert.Equal("CPU Temperature", MonitoringHistoryRoutes.ResolveCpuTempName(() => throw new InvalidOperationException("busy")));
+    }
+
+    [Fact]
     public void BuildHistoryResponse_FpsSeries_HasCorrectKindAndName()
     {
         var db = new[] { new MetricSample(0, null, null, null, null, null,

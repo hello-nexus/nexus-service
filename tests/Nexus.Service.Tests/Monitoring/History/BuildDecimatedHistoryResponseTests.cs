@@ -31,6 +31,22 @@ public class BuildDecimatedHistoryResponseTests
     }
 
     [Fact]
+    public void BuildDecimatedHistoryResponse_CpuTempSeries_CarriesTheCpuModel_WithIdAndKindUnchanged()
+    {
+        var dbScalars = new[] { ScalarSlot(1000, 42, 50) };
+
+        var response = MonitoringHistoryRoutes.BuildDecimatedHistoryResponse(
+            dbScalars, Array.Empty<GpuDecimatedSlot>(), Array.Empty<FanDecimatedSlot>(), Array.Empty<ComponentTempDecimatedSlot>(), Array.Empty<MetricSample>(),
+            fromSec: 1000, toSec: 1000, stepSeconds: 600, seriesFilter: new HashSet<string> { "cpu-temp" }, gpuAdapterLuids: NoLuids,
+            cpuTempName: "AMD Ryzen 7 9800X3D");
+
+        var series = Assert.Single(response.Series);
+        Assert.Equal("cpu-temp", series.Id);
+        Assert.Equal("cpu-temp", series.Kind);
+        Assert.Equal("AMD Ryzen 7 9800X3D", series.Name);
+    }
+
+    [Fact]
     public void BuildDecimatedHistoryResponse_FpsSlot_ProducesTheFpsSeries()
     {
         var dbScalars = new[] { new ScalarDecimatedSlot(

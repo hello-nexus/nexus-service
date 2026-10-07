@@ -79,6 +79,38 @@ public static class MonitoringHistoryRoutes
     private static long s_lastHistoryTimingLogTicks;
     private static long s_lastAppsTimingLogTicks;
 
+    internal const string DefaultCpuTempName = "CPU Temperature";
+
+    private static string? s_cpuTempName;
+
+    /// <summary>The CPU temperature series name: the CPU model like the GPU and drive series carry theirs, or the generic label when the model is unknown. Only a successful read is kept.</summary>
+    internal static string ResolveCpuTempName(Func<string?> readModel)
+    {
+        try
+        {
+            var model = readModel();
+            return string.IsNullOrWhiteSpace(model) ? DefaultCpuTempName : model.Trim();
+        }
+        catch
+        {
+            return DefaultCpuTempName;
+        }
+    }
+
+    private static string CachedCpuTempName(ISensorProvider sensors)
+    {
+        if (s_cpuTempName is { } cached)
+        {
+            return cached;
+        }
+        var name = ResolveCpuTempName(sensors.GetCpuModel);
+        if (name != DefaultCpuTempName)
+        {
+            s_cpuTempName = name;
+        }
+        return name;
+    }
+
     public static void MapMonitoringHistoryEndpoints(this WebApplication app)
     {
         app.MapGet("/monitoring/history", (
@@ -99,6 +131,7 @@ public static class MonitoringHistoryRoutes
             try
             {
                 var adapterLuids = ResolveGpuAdapterLuids(sensors);
+                var cpuTempName = CachedCpuTempName(sensors);
                 var stepSeconds = MetricsDecimation.StepSecondsFor(Math.Max(0, toSec - fromSec), clampedMaxPoints);
 
                 MetricsHistoryResponse response;
@@ -116,7 +149,7 @@ public static class MonitoringHistoryRoutes
                     var dbFan = store.QueryFanDecimated(fromSec, toSec, stepSeconds);
                     var dbComponentTemps = store.QueryComponentTempDecimated(fromSec, toSec, stepSeconds);
                     response = BuildDecimatedHistoryResponse(
-                        dbScalars, dbGpu, dbFan, dbComponentTemps, tailSamples, fromSec, toSec, stepSeconds, seriesFilter, adapterLuids);
+                        dbScalars, dbGpu, dbFan, dbComponentTemps, tailSamples, fromSec, toSec, stepSeconds, seriesFilter, adapterLuids, cpuTempName);
                 }
                 else
                 {
@@ -131,7 +164,7 @@ public static class MonitoringHistoryRoutes
                     var tailSamples = buffer.SnapshotRange(fromSec, toSec);
                     var dbSamples = store.Query(fromSec, toSec);
                     response = BuildHistoryResponse(
-                        dbSamples, tailSamples, fromSec, toSec, clampedMaxPoints, seriesFilter, adapterLuids);
+                        dbSamples, tailSamples, fromSec, toSec, clampedMaxPoints, seriesFilter, adapterLuids, cpuTempName);
                 }
 
                 LogTimingThrottled(
@@ -688,7 +721,8 @@ public static class MonitoringHistoryRoutes
         IReadOnlyList<MetricSample> tailSamples,
         long fromSec, long toSec, int stepSeconds,
         IReadOnlySet<string>? seriesFilter,
-        IReadOnlyDictionary<string, string> gpuAdapterLuids)
+        IReadOnlyDictionary<string, string> gpuAdapterLuids,
+        string? cpuTempName = null)
     {
         var series = new List<MetricSeriesWire>();
 
@@ -710,7 +744,7 @@ public static class MonitoringHistoryRoutes
         AddDecimatedScalarSeries(series, "disk-write", "disk", "Disk Write",
             dbScalars.Select(s => (s.Slot, s.DiskWriteAvg, s.DiskWriteMax)), s => s.DiskWriteBytesPerSec,
             tailSamples, fromSec, toSec, stepSeconds, seriesFilter, wholeNumbers: true);
-        AddDecimatedScalarSeries(series, "cpu-temp", "cpu-temp", "CPU Temperature",
+        AddDecimatedScalarSeries(series, "cpu-temp", "cpu-temp", cpuTempName ?? DefaultCpuTempName,
             dbScalars.Select(s => (s.Slot, s.CpuTempAvg, s.CpuTempMax)), s => s.CpuTempC,
             tailSamples, fromSec, toSec, stepSeconds, seriesFilter, wholeNumbers: false);
         AddDecimatedScalarSeries(series, "fps", "fps", "FPS",
@@ -1064,7 +1098,8 @@ public static class MonitoringHistoryRoutes
         IReadOnlyList<MetricSample> tailSamples,
         long fromSec, long toSec, int maxPoints,
         IReadOnlySet<string>? seriesFilter,
-        IReadOnlyDictionary<string, string> gpuAdapterLuids)
+        IReadOnlyDictionary<string, string> gpuAdapterLuids,
+        string? cpuTempName = null)
     {
         var merged = MergeSamples(dbSamples, tailSamples);
         var stepSeconds = MetricsDecimation.StepSecondsFor(Math.Max(0, toSec - fromSec), maxPoints);
@@ -1076,7 +1111,7 @@ public static class MonitoringHistoryRoutes
         AddScalarSeries(series, merged, "net-out", "net", "Network Out", s => s.NetOutBytesPerSec, fromSec, toSec, stepSeconds, seriesFilter, wholeNumbers: true);
         AddScalarSeries(series, merged, "disk-read", "disk", "Disk Read", s => s.DiskReadBytesPerSec, fromSec, toSec, stepSeconds, seriesFilter, wholeNumbers: true);
         AddScalarSeries(series, merged, "disk-write", "disk", "Disk Write", s => s.DiskWriteBytesPerSec, fromSec, toSec, stepSeconds, seriesFilter, wholeNumbers: true);
-        AddScalarSeries(series, merged, "cpu-temp", "cpu-temp", "CPU Temperature", s => s.CpuTempC, fromSec, toSec, stepSeconds, seriesFilter, wholeNumbers: false);
+        AddScalarSeries(series, merged, "cpu-temp", "cpu-temp", cpuTempName ?? DefaultCpuTempName, s => s.CpuTempC, fromSec, toSec, stepSeconds, seriesFilter, wholeNumbers: false);
         AddScalarSeries(series, merged, "fps", "fps", "FPS", s => (double?)s.Fps, fromSec, toSec, stepSeconds, seriesFilter, wholeNumbers: true);
 
         AddGpuSeries(series, merged, fromSec, toSec, stepSeconds, seriesFilter, gpuAdapterLuids);
