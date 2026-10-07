@@ -330,7 +330,7 @@ public class ThermalGuardTests
         Assert.Equal(0, ThermalGuard.FloorFor(70, L));
     }
 
-    // Idle readings around 65 C, with one single-second spike (the 64.8 to 90.1 to 73.3 C pattern seen on a Ryzen).
+    // A single-second spike on otherwise idle readings.
     [Fact]
     public void ASingleSampleSpike_WithFansAtZeroAndIdleLoad_DoesNotTripCoolingLoss()
     {
@@ -351,7 +351,7 @@ public class ThermalGuardTests
         {
             Assert.Equal(0, g.Step(s * 1000L, 64.8, L, 3, 0).FloorDuty);
         }
-        // One second at 90 C is a 40 percent floor on the raw reading; smoothed it stays 0.
+        // On the raw reading the floor would jump; smoothed it stays at zero.
         var spike = g.Step(10_000, 90, L, 3, 0);
         Assert.Equal(0, spike.FloorDuty);
         Assert.Equal(ThermalGuardStates.Normal, spike.State);
@@ -377,7 +377,7 @@ public class ThermalGuardTests
         }
         Assert.True(floorSeen || trippedAt is not null);
         Assert.NotNull(trippedAt);
-        // The gate is limit minus 15; the median lags the rise by about two samples.
+        // The median lags the rise by a couple of samples.
         Assert.InRange(trippedAt!.Value, L - 15, L - 15 + 1.5);
     }
 
@@ -416,5 +416,51 @@ public class ThermalGuardTests
 
         // Without the clear, the stale 90 C samples would dominate the median and keep the floor up.
         Assert.Equal(0, g.Step(8000, 65, L, 3, 0).FloorDuty);
+    }
+
+    [Fact]
+    public void TwoHotRawSamples_CannotBeOutvotedByTheMedian_AndSoKeepTheTrip()
+    {
+        var g = Tripped();
+        // Cool long enough that the release timer is almost due.
+        Assert.Equal(ThermalGuardStates.Tripped, Feed(g, 6, 66, 80).State);
+
+        // The median stays cool for two more samples, but the raw readings are hot.
+        g.Step(67_000, 96, L, 100, 100);
+        var o = g.Step(68_000, 96, L, 100, 100);
+
+        Assert.Equal(ThermalGuardStates.Tripped, o.State);
+        Assert.False(o.TripEnded);
+    }
+
+    [Fact]
+    public void AfterALongPauseInTheReadings_OldCoolSamplesDoNotReleaseTheTrip()
+    {
+        var g = Tripped();
+        Feed(g, 6, 40, 80); // the release timer is running
+
+        // Nothing is observed for a long while, then a hot reading arrives.
+        var o = g.Step(71_000, 96, L, 100, 100);
+
+        Assert.Equal(ThermalGuardStates.Tripped, o.State);
+        Assert.False(o.TripEnded);
+    }
+
+    [Fact]
+    public void TicksJustUnderASecondApart_DoNotMergeInPairs()
+    {
+        var g = new ThermalGuard();
+        for (var i = 0; i < 10; i++)
+        {
+            g.Step(i * 990L, 65, L, 3, 0);
+        }
+        ThermalGuardOutput last = default;
+        for (var i = 10; i < 13; i++)
+        {
+            last = g.Step(i * 990L, 90, L, 3, 0);
+        }
+
+        // Three hot samples in a window of five move the median.
+        Assert.Equal(40, last.FloorDuty);
     }
 }

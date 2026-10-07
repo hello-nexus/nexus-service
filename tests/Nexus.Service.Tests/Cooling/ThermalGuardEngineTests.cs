@@ -82,6 +82,16 @@ public class ThermalGuardEngineTests
         engine.Tick();
     }
 
+    // Ticks once a second, as the engine does, until the guard has had time to release.
+    private static void CoolDown(CurveEngine engine, long[] clock)
+    {
+        for (var i = 0; i < 70; i++)
+        {
+            clock[0] += 1000;
+            engine.Tick();
+        }
+    }
+
     private static int LastDuty(Fans fans, string id) => fans.Driven.Last(d => d.Id == id).Duty;
 
     [Fact]
@@ -97,7 +107,7 @@ public class ThermalGuardEngineTests
     public void Floor_RaisesACurveDutyAndAManualDuty_ThenRestoresTheManualOne()
     {
         var (engine, fans, _, clock) = Build();
-        fans.CpuTemp = 85f; // 40 percent floor at the default limit of 90
+        fans.CpuTemp = 85f;
         engine.Tick();
         Assert.Equal(40, LastDuty(fans, "f1"));
         Assert.Equal(40, LastDuty(fans, "f2"));
@@ -289,8 +299,7 @@ public class ThermalGuardEngineTests
             Trip(engine, fans, clock);
             fans.CpuTemp = 50f;
             engine.Tick();
-            clock[0] += 61_000;
-            engine.Tick();
+            CoolDown(engine, clock);
         }
 
         TripAndRelease();
@@ -408,7 +417,7 @@ public class ThermalGuardEngineTests
         var clock = new long[] { 1_000_000 };
         var e = new CurveEngine(fans, store, new MultiplexHub(), null, guard) { Clock = () => clock[0] };
 
-        fans.CpuTemp = 85f; // 40 percent floor at the default limit of 90
+        fans.CpuTemp = 85f;
         for (var i = 0; i < 6; i++)
         {
             clock[0] += 1000;
@@ -437,6 +446,44 @@ public class ThermalGuardEngineTests
         var preset = CoolingConfigLint.CloneCurve(curve);
         preset.Preset = "silent";
         Assert.False(CoolingConfigLint.GuardCurveMatches(preset, cpu, 90));
+    }
+
+    [Fact]
+    public void AGuardCurveCarryingAPreset_IsRewrittenOnceNotOnEveryTick()
+    {
+        var (_, fans, store, _) = Build();
+        var guard = new ThermalGuardController(fans, store);
+        guard.HealNow(automatic: false);
+        store.Update(s => s.Cooling.Curves.Single(c => c.Id == CoolingConfigLint.GuardCurveId).Preset = "silent");
+        var e = new CurveEngine(fans, store, new MultiplexHub(), null, guard) { Clock = () => 1_000_000 };
+        var changes = 0;
+        store.OnChanged += () => changes++;
+
+        e.Tick();
+        var afterFirst = changes;
+        e.Tick();
+        e.Tick();
+
+        Assert.Equal(1, afterFirst);
+        Assert.Equal(afterFirst, changes);
+        Assert.Null(store.Load().Cooling.Curves.Single(c => c.Id == CoolingConfigLint.GuardCurveId).Preset);
+    }
+
+    [Fact]
+    public void AThrowingCurveSyncInSetConfig_StillKeepsThePersistedOverrideAndAnswers()
+    {
+        var (_, fans, store, _) = Build();
+        store.Update(s => s.Cooling.Curves.Add(new CurveDocument
+        {
+            Id = CoolingConfigLint.GuardCurveId, Name = "Thermal guard", Type = "Graph", Input = null!,
+        }));
+        var guard = new ThermalGuardController(fans, store);
+
+        var (state, error) = guard.SetConfig(new SetThermalGuardConfigBody { LimitOverrideC = 100, Enabled = true });
+
+        Assert.Null(error);
+        Assert.Equal(100, state!.LimitC);
+        Assert.Equal(100, store.Load().Cooling.ThermalGuardLimitOverrideC);
     }
 
     [Fact]
@@ -772,8 +819,7 @@ public class ThermalGuardEngineTests
         Trip(engine, fans, clock);
         fans.CpuTemp = 50f;
         engine.Tick();
-        clock[0] += 61_000;
-        engine.Tick();
+        CoolDown(engine, clock);
 
         Assert.Equal(before, store.Load().Cooling.Curves.Select(c => c.Id).ToArray());
         Assert.Null(store.Load().Cooling.HealSnapshot);
@@ -1171,7 +1217,7 @@ public class ThermalGuardEngineTests
         var (e, fans, store, guard, clock) = LimitRig(null);
         guard.SetConfig(new SetThermalGuardConfigBody { LimitOverrideC = 100 });
 
-        // 95 C against a limit of 100 is a 40 percent floor (at the default limit it would be 60).
+        // Against the raised limit the same temperature gives a smaller floor than the default limit would.
         // The floor reads a smoothed temperature, so let a few seconds of readings settle.
         fans.CpuTemp = 95f;
         for (var i = 0; i < 4; i++)

@@ -207,6 +207,7 @@ public static class CoolingConfigLint
     public static void ApplyGuardCurve(CurveDocument curve, TemperatureSource cpuInput, double limitC)
     {
         curve.Name = "Thermal guard";
+        curve.Preset = null;
         curve.Type = "Graph";
         curve.Input = new CurveInputDocument { Id = cpuInput.Id, Type = "Temperature", Device = cpuInput.Category };
         curve.Flat = null;

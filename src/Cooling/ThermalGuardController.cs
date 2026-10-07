@@ -1013,7 +1013,19 @@ public sealed class ThermalGuardController
             // Effective from the next tick on; reflect it now so the response agrees, with the
             // heal curve rewritten before the broadcast below.
             ApplyLimitOverride();
-            SyncGuardCurve(_fans.GetTemperatureSources(), broadcast: false);
+            try
+            {
+                SyncGuardCurve(_fans.GetTemperatureSources(), broadcast: false);
+            }
+            catch (Exception ex)
+            {
+                // The override is already persisted; a failed curve sync must not skip the rest of the request.
+                if (!_syncFailureLogged)
+                {
+                    _syncFailureLogged = true;
+                    Console.Error.WriteLine($"[thermal-guard] guard curve sync failed: {ex.Message}");
+                }
+            }
         }
 
         if (body.Enabled is { } enabled)

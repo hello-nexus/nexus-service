@@ -72,12 +72,16 @@ public sealed record ThermalGuardThresholds
 public sealed class ThermalGuard
 {
     private const long SampleSpacingMs = 1000;
+    // Readings further apart than this many sample spacings restart the release timer.
+    private const long GapResetSpacings = 5;
     // Slack so a window of one-second samples counts as covering the full window.
     private const long WindowCoverageSlackMs = 10_000;
 
     private readonly ThermalGuardThresholds _t;
     private readonly List<(long Ms, double Temp)> _history = new();
-    private readonly List<(long Ms, double Temp)> _recent = new();
+    // One entry per second bucket (nowMs / SampleSpacingMs), so ticks a little under a second apart do not merge in pairs.
+    private readonly List<(long Bucket, double Temp)> _recent = new();
+    private long? _lastStepMs;
     private string _state = ThermalGuardStates.Inactive;
     private long? _hotSinceMs;
     private long? _belowSinceMs;
@@ -102,6 +106,7 @@ public sealed class ThermalGuard
     {
         _history.Clear();
         _recent.Clear();
+        _lastStepMs = null;
         _state = ThermalGuardStates.Inactive;
         _hotSinceMs = null;
         _belowSinceMs = null;
@@ -158,6 +163,12 @@ public sealed class ThermalGuard
             return Output(false, false, false, 0);
         }
 
+        // After a long pause in the readings the release timer starts over: it cannot count time nobody observed.
+        if (_lastStepMs is { } last && nowMs - last > GapResetSpacings * SampleSpacingMs)
+        {
+            _belowSinceMs = null;
+        }
+        _lastStepMs = nowMs;
         var smooth = Smooth(nowMs, temp);
         if (IsTripped)
         {
@@ -214,7 +225,8 @@ public sealed class ThermalGuard
             return Output(false, false, true, 100);
         }
 
-        if (smooth < limitC - _t.ReleaseBelowLimitC)
+        // Smoothing may only keep a trip, never end one early: the raw reading must be below too.
+        if (Math.Max(temp, smooth) < limitC - _t.ReleaseBelowLimitC)
         {
             _belowSinceMs ??= nowMs;
             if (nowMs - _belowSinceMs.Value >= _t.ReleaseSustainMs)
@@ -250,15 +262,19 @@ public sealed class ThermalGuard
     // reading inside the same second replaces that second's sample instead of adding one.
     private double Smooth(long nowMs, double temp)
     {
-        if (_recent.Count == 0 || nowMs - _recent[^1].Ms >= SampleSpacingMs)
+        var bucket = nowMs / SampleSpacingMs;
+        var window = Math.Max(1, _t.SmoothingSamples);
+        // Samples older than the window have aged out, however few remain.
+        _recent.RemoveAll(r => bucket - r.Bucket >= window);
+        if (_recent.Count > 0 && _recent[^1].Bucket == bucket)
         {
-            _recent.Add((nowMs, temp));
+            _recent[^1] = (bucket, temp);
         }
         else
         {
-            _recent[^1] = (_recent[^1].Ms, temp);
+            _recent.Add((bucket, temp));
         }
-        var excess = _recent.Count - Math.Max(1, _t.SmoothingSamples);
+        var excess = _recent.Count - window;
         if (excess > 0)
         {
             _recent.RemoveRange(0, excess);
