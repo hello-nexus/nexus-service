@@ -14,11 +14,7 @@ public static class CoolingHazardKinds
     public const string ManualLow = "manual-low";
 }
 
-/// <summary>
-/// Which configs count as hazards. Severe is what a save warns about: fans that can stop or nearly
-/// stop while the CPU is hot. AfterTrip, used by the heal at the end of a trip, also takes configs
-/// the trip proved too weak.
-/// </summary>
+/// <summary>Severe (save warnings): fans that can stop while the CPU is hot. AfterTrip (trip-end heal) adds configs a trip proved too weak.</summary>
 public enum LintScope
 {
     Severe,
@@ -189,14 +185,11 @@ public static class CoolingConfigLint
         if (curve.Type is "Linear" or "Graph" or "Trigger" or "Auto" && curve.Input.Id.Length > 0)
         {
             var src = input.Sources.FirstOrDefault(s => s.Id == curve.Input.Id);
-            if (src is not null && src.Category != "CPU")
+            // A cooler's liquid temperature rises with CPU heat, so on save it is judged like a CPU sensor.
+            var liquid = src?.Category == "Cooler" && input.Scope == LintScope.Severe;
+            if (src is not null && src.Category != "CPU" && !liquid)
             {
-                if (input.Scope == LintScope.AfterTrip)
-                {
-                    return new Found(CoolingHazardKinds.NonCpuSensor, src.Id, src.Name);
-                }
-                // A cooler's liquid temperature rises with CPU heat, so its curve still ramps.
-                if (src.Category == "Cooler" || !(FloorOf(curve) is { } floor && floor < StopPercent))
+                if (input.Scope == LintScope.Severe && FloorOf(curve) is { } floor && floor >= StopPercent)
                 {
                     return null;
                 }

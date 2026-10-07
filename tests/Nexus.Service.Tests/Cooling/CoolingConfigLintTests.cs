@@ -120,15 +120,16 @@ public class CoolingConfigLintTests
     }
 
     [Fact]
-    public void LiquidTemperatureCurve_IsNotFlaggedOnSave()
+    public void LiquidTemperatureCurve_IsFlaggedOnSaveOnlyWhenItNeverPassesTheStopSpeed()
     {
-        var input = new LintInput
+        LintInput Liquid(params (double Temp, double Speed)[] points) => new()
         {
-            Curves = new List<CurveDocument> { Graph("liquid", "kraken:liquid", Fan1, (25, 0), (40, 100)) },
+            Curves = new List<CurveDocument> { Graph("liquid", "kraken:liquid", Fan1, points) },
             Channels = T1Channels(),
             Sources = new List<TemperatureSource> { new() { Id = "kraken:liquid", Name = "Liquid", Category = "Cooler", Value = 30 } },
         };
-        Assert.Empty(CoolingConfigLint.Analyze(input));
+        Assert.Empty(CoolingConfigLint.Analyze(Liquid((25, 0), (40, 100))));
+        Assert.Equal(CoolingHazardKinds.LowCeiling, Assert.Single(CoolingConfigLint.Analyze(Liquid((25, 0), (40, 10)))).Kind);
     }
 
     [Fact]
