@@ -22,7 +22,7 @@ namespace Nexus.Service.Platform.Weather;
 /// cities. ipwho.is location caches only the auto path, for 24 h. Weather per
 /// key is cached for 15 min. A single request failure returns the last-known
 /// good snapshot for that key if it's still reasonably fresh; total failure
-/// returns WeatherSnapshot.Empty.
+/// returns an empty snapshot that names why (<see cref="WeatherUnavailable"/>).
 /// </summary>
 public sealed class OpenMeteoWeatherProvider : IWeatherProvider
 {
@@ -37,7 +37,7 @@ public sealed class OpenMeteoWeatherProvider : IWeatherProvider
     private readonly SemaphoreSlim _locationLock = new(1, 1);
 
     private readonly Dictionary<string, (WeatherSnapshot Snapshot, DateTime FetchedUtc)> _weatherCache = new();
-    private readonly Dictionary<string, Task<WeatherSnapshot?>> _inflight = new();
+    private readonly Dictionary<string, Task<(WeatherSnapshot? Snapshot, string? Failure)>> _inflight = new();
 
     // Guards the two dictionaries; never held across an upstream call.
     private readonly SemaphoreSlim _lock = new(1, 1);
@@ -67,17 +67,18 @@ public sealed class OpenMeteoWeatherProvider : IWeatherProvider
             }
             else
             {
-                var auto = await GetLocationAsync().ConfigureAwait(false);
+                var (auto, locationFailure) = await GetLocationAsync().ConfigureAwait(false);
                 if (auto is null)
                 {
-                    return await TryGetCachedAsync(key, StaleServeTtl, now).ConfigureAwait(false) ?? WeatherSnapshot.Empty;
+                    return await TryGetCachedAsync(key, StaleServeTtl, now).ConfigureAwait(false)
+                        ?? WeatherSnapshot.UnavailableBecause(locationFailure ?? WeatherUnavailable.Service);
                 }
                 loc = auto;
             }
 
             // The rail asks for every saved place at once; one upstream round trip
             // per key runs outside the lock, and callers for the same key share it.
-            Task<WeatherSnapshot?> fetch;
+            Task<(WeatherSnapshot? Snapshot, string? Failure)> fetch;
             await _lock.WaitAsync().ConfigureAwait(false);
             try
             {
@@ -93,9 +94,10 @@ public sealed class OpenMeteoWeatherProvider : IWeatherProvider
             }
 
             WeatherSnapshot? snapshot;
+            string? failure;
             try
             {
-                snapshot = await fetch.ConfigureAwait(false);
+                (snapshot, failure) = await fetch.ConfigureAwait(false);
             }
             finally
             {
@@ -127,12 +129,13 @@ public sealed class OpenMeteoWeatherProvider : IWeatherProvider
                 return snapshot;
             }
 
-            return await TryGetCachedAsync(key, StaleServeTtl, now).ConfigureAwait(false) ?? WeatherSnapshot.Empty;
+            return await TryGetCachedAsync(key, StaleServeTtl, now).ConfigureAwait(false)
+                ?? WeatherSnapshot.UnavailableBecause(failure ?? WeatherUnavailable.Service);
         }
         catch (Exception ex)
         {
             Console.Error.WriteLine($"[weather] failed: {ex.Message}");
-            return WeatherSnapshot.Empty;
+            return WeatherSnapshot.UnavailableBecause(Classify(ex));
         }
     }
 
@@ -149,7 +152,13 @@ public sealed class OpenMeteoWeatherProvider : IWeatherProvider
         }
     }
 
-    private async Task<IpLocation?> GetLocationAsync()
+    // No reply at all is the connection; an error reply or an unreadable one is the weather service.
+    internal static string Classify(Exception ex) =>
+        ex is TaskCanceledException || (ex is HttpRequestException h && h.StatusCode is null)
+            ? WeatherUnavailable.Network
+            : WeatherUnavailable.Service;
+
+    private async Task<(IpLocation? Location, string? Failure)> GetLocationAsync()
     {
         await _locationLock.WaitAsync().ConfigureAwait(false);
         try
@@ -157,7 +166,7 @@ public sealed class OpenMeteoWeatherProvider : IWeatherProvider
             var now = DateTime.UtcNow;
             if (_cachedLocation is not null && (now - _locationFetchedUtc) < LocationTtl)
             {
-                return _cachedLocation;
+                return (_cachedLocation, null);
             }
 
             using var client = _http.CreateClient();
@@ -166,7 +175,7 @@ public sealed class OpenMeteoWeatherProvider : IWeatherProvider
             if (!resp.IsSuccessStatusCode)
             {
                 Console.Error.WriteLine($"[weather] ipwho.is returned {(int)resp.StatusCode}");
-                return _cachedLocation;
+                return (_cachedLocation, WeatherUnavailable.Service);
             }
 
             var loc = await resp.Content.ReadFromJsonAsync(
@@ -175,17 +184,17 @@ public sealed class OpenMeteoWeatherProvider : IWeatherProvider
             if (loc is null || loc.Latitude is null || loc.Longitude is null)
             {
                 Console.Error.WriteLine($"[weather] ipwho.is returned empty lat/lon");
-                return _cachedLocation;
+                return (_cachedLocation, WeatherUnavailable.Service);
             }
 
             _cachedLocation = loc;
             _locationFetchedUtc = now;
-            return loc;
+            return (loc, null);
         }
         catch (Exception ex)
         {
             Console.Error.WriteLine($"[weather] ipwho.is lookup failed: {ex.Message}");
-            return _cachedLocation;
+            return (_cachedLocation, Classify(ex));
         }
         finally
         {
@@ -193,7 +202,7 @@ public sealed class OpenMeteoWeatherProvider : IWeatherProvider
         }
     }
 
-    private async Task<WeatherSnapshot?> FetchWeatherAsync(IpLocation loc, string? labelOverride)
+    private async Task<(WeatherSnapshot? Snapshot, string? Failure)> FetchWeatherAsync(IpLocation loc, string? labelOverride)
     {
         try
         {
@@ -210,8 +219,9 @@ public sealed class OpenMeteoWeatherProvider : IWeatherProvider
             var resp = await forecastTask.ConfigureAwait(false);
             if (!resp.IsSuccessStatusCode)
             {
+                Console.Error.WriteLine($"[weather] open-meteo returned {(int)resp.StatusCode}");
                 await airQualityTask.ConfigureAwait(false);
-                return null;
+                return (null, WeatherUnavailable.Service);
             }
 
             var payload = await resp.Content.ReadFromJsonAsync(
@@ -220,14 +230,14 @@ public sealed class OpenMeteoWeatherProvider : IWeatherProvider
             if (payload?.Current is null)
             {
                 await airQualityTask.ConfigureAwait(false);
-                return null;
+                return (null, WeatherUnavailable.Service);
             }
 
             var c = payload.Current;
             var hourly = BuildHourlyForecast(payload.Hourly);
             var currentHour = FindCurrentHour(payload.Hourly, c.Time);
 
-            return new WeatherSnapshot
+            return (new WeatherSnapshot
             {
                 TemperatureC = c.Temperature2m,
                 TemperatureF = ToF(c.Temperature2m),
@@ -258,12 +268,12 @@ public sealed class OpenMeteoWeatherProvider : IWeatherProvider
                 AsOf = DateTime.UtcNow.ToString("o"),
                 Hourly = hourly,
                 Daily = BuildDailyForecast(payload.Daily),
-            };
+            }, null);
         }
         catch (Exception ex)
         {
             Console.Error.WriteLine($"[weather] open-meteo fetch failed: {ex.Message}");
-            return null;
+            return (null, Classify(ex));
         }
     }
 

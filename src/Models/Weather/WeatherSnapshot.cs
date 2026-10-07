@@ -55,8 +55,20 @@ public sealed class WeatherSnapshot
     public List<WeatherHourlyForecast> Hourly { get; set; } = new();
     /// <summary>Daily forecast rows in local weather-provider dates.</summary>
     public List<WeatherDailyForecast> Daily { get; set; } = new();
+    /// <summary>Why there is no data (<see cref="WeatherUnavailable"/>); null whenever data is present.</summary>
+    public string? Unavailable { get; set; }
 
     public static WeatherSnapshot Empty => new();
+
+    public static WeatherSnapshot UnavailableBecause(string reason) => new() { Unavailable = reason };
+}
+
+public static class WeatherUnavailable
+{
+    /// <summary>The weather provider answered with an error or an unreadable reply.</summary>
+    public const string Service = "service";
+    /// <summary>The weather provider could not be reached: name lookup, connection or timeout.</summary>
+    public const string Network = "network";
 }
 
 public sealed class WeatherHourlyForecast
