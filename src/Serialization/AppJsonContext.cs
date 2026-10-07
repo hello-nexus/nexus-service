@@ -1249,6 +1249,7 @@ namespace Nexus.Service.Serialization;
 [JsonSerializable(typeof(Nexus.Service.Routes.NollieSimulateBody))]
 #if DEV_TOOLS
 [JsonSerializable(typeof(Nexus.Service.Routes.DevPanelVariantDto))]
+[JsonSerializable(typeof(Nexus.Service.Routes.DevSimEventsResponse))]
 [JsonSerializable(typeof(Nexus.Service.Telemetry.AppTelemetryRequest))]
 [JsonSerializable(typeof(Nexus.Service.Telemetry.AppPageClosedRequest))]
 #endif

@@ -109,7 +109,53 @@ public sealed class DiagnosticsHealthModel
     /// <summary>forceRefresh bypasses this model's own cache; module caches are
     /// unaffected - each module snapshot still goes through its normal
     /// Snapshot() call.</summary>
-    public DiagnosticsHealthResponse BuildHealth(bool forceRefresh = false)
+#if DEV_TOOLS
+    public DiagnosticsHealthResponse BuildHealth(bool forceRefresh = false) =>
+        ApplySimulation(BuildHealthCore(forceRefresh), Nexus.Service.Dev.DevSimEvents.Current);
+
+    /// <summary>The health without simulated events: what the alert service polls, so a simulation raises its own notice once instead of being re-alerted by the poll.</summary>
+    internal DiagnosticsHealthResponse BuildRealHealth(bool forceRefresh = false) => BuildHealthCore(forceRefresh);
+
+    // Dev tools: merges the active simulated health components into a copy; the cached real result is untouched.
+    internal static DiagnosticsHealthResponse ApplySimulation(DiagnosticsHealthResponse real, Nexus.Service.Dev.DevSimEvents? sim)
+    {
+        if (sim is null)
+        {
+            return real;
+        }
+        var extra = sim.HealthComponents().ToList();
+        if (sim.SimulatedTrip() is { } trip)
+        {
+            AddThermalGuardComponent(extra, trip, DateTime.UtcNow);
+        }
+        if (extra.Count == 0)
+        {
+            return real;
+        }
+        var components = real.Components.ToList();
+        foreach (var add in extra)
+        {
+            var existing = components.FindIndex(c => c.Id == add.Id);
+            if (existing < 0)
+            {
+                components.Add(add);
+                continue;
+            }
+            var merged = components[existing];
+            var reasons = merged.Reasons.Concat(add.Reasons).ToList();
+            components[existing] = merged with
+            {
+                Reasons = reasons,
+                Status = WorstStatus(new[] { merged.Status, add.Status }),
+            };
+        }
+        return real with { Components = components, Overall = WorstStatus(components.Select(c => c.Status)) };
+    }
+#else
+    public DiagnosticsHealthResponse BuildHealth(bool forceRefresh = false) => BuildHealthCore(forceRefresh);
+#endif
+
+    private DiagnosticsHealthResponse BuildHealthCore(bool forceRefresh)
     {
         lock (_gate)
         {

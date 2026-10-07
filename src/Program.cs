@@ -645,6 +645,7 @@ app.MapCloudEndpoints();
 app.MapAiEndpoints();
 #if DEV_TOOLS
 app.MapAiAssistantEndpoints();
+app.MapDevSimEndpoints();
 #endif
 app.MapWebSocketEndpoints();
 app.MapRtcEndpoints();

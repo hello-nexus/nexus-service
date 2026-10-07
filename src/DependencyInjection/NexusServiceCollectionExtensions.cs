@@ -120,6 +120,17 @@ public static class NexusServiceCollectionExtensions
         // worker stays dormant until a PostHog key is configured (PostHogOptions).
         services.AddSingleton<Nexus.Service.Telemetry.TelemetryClient>();
 #if DEV_TOOLS
+        // Dev-tools simulated events: in-memory read-path overlays, never fan or settings writes.
+        services.AddSingleton<Nexus.Service.Dev.DevSimEvents>(sp =>
+        {
+            var sim = new Nexus.Service.Dev.DevSimEvents();
+            sim.Changed += () =>
+            {
+                try { Nexus.Service.Routes.DevSimRoutes.BroadcastAll(sp); }
+                catch { /* best effort: a failed broadcast must not fail the toggle */ }
+            };
+            return sim;
+        });
         // Dev-tools builds keep the last app_* events for GET /apps-api/telemetry/recent.
         services.AddSingleton<Nexus.Service.Telemetry.AppEventRecorder>(sp => new Nexus.Service.Telemetry.AppEventRecorder(
             sp.GetRequiredService<Nexus.Service.Telemetry.TelemetryClient>(),

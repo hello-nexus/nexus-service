@@ -64,7 +64,14 @@ public static class CoolingRoutes
         });
 
         // Thermal guard + auto-heal. Lint is advisory and never blocks a save.
-        app.MapGet("/cooling/guard", (ThermalGuardController guard) => guard.GetState()).AllowPanel();
+        app.MapGet("/cooling/guard", (ThermalGuardController guard) =>
+        {
+            var state = guard.GetState();
+#if DEV_TOOLS
+            Nexus.Service.Dev.DevSimEvents.Current?.ApplyGuard(state);
+#endif
+            return state;
+        }).AllowPanel();
 
         app.MapPost("/cooling/guard/config", (SetThermalGuardConfigBody body, ThermalGuardController guard, FeatureGates gates) =>
         {
@@ -73,6 +80,12 @@ public static class CoolingRoutes
                 return Results.Conflict(new FeatureDisabledResponse { Feature = FeatureNames.Cooling });
             }
             var (result, error) = guard.SetConfig(body);
+#if DEV_TOOLS
+            if (result is not null)
+            {
+                Nexus.Service.Dev.DevSimEvents.Current?.ApplyGuard(result);
+            }
+#endif
             return error is not null ? Results.Ok(ApiResponse.Fail(error)) : Results.Ok(result);
         });
 
@@ -82,7 +95,17 @@ public static class CoolingRoutes
             {
                 return Results.Conflict(new FeatureDisabledResponse { Feature = FeatureNames.Cooling });
             }
+#if DEV_TOOLS
+            // Acknowledging through the real route ends a simulated ended trip too; nothing real changes.
+            Nexus.Service.Dev.DevSimEvents.Current?.Stop(Nexus.Service.Dev.DevSimEvents.GuardEndedTrip);
+#endif
             var (result, error) = guard.AcknowledgeTrip();
+#if DEV_TOOLS
+            if (result is not null)
+            {
+                Nexus.Service.Dev.DevSimEvents.Current?.ApplyGuard(result);
+            }
+#endif
             return error is not null ? Results.Ok(ApiResponse.Fail(error)) : Results.Ok(result);
         });
 
@@ -104,6 +127,10 @@ public static class CoolingRoutes
             {
                 return Results.Conflict(new FeatureDisabledResponse { Feature = FeatureNames.Cooling });
             }
+#if DEV_TOOLS
+            // Keep or Undo ends a simulated pending heal; the real heal state is untouched.
+            Nexus.Service.Dev.DevSimEvents.Current?.Stop(Nexus.Service.Dev.DevSimEvents.GuardPendingHeal);
+#endif
             return Results.Ok(guard.Keep());
         });
 
@@ -113,6 +140,9 @@ public static class CoolingRoutes
             {
                 return Results.Conflict(new FeatureDisabledResponse { Feature = FeatureNames.Cooling });
             }
+#if DEV_TOOLS
+            Nexus.Service.Dev.DevSimEvents.Current?.Stop(Nexus.Service.Dev.DevSimEvents.GuardPendingHeal);
+#endif
             return Results.Ok(guard.Undo());
         });
 

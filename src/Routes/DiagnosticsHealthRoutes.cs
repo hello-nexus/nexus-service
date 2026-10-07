@@ -407,11 +407,19 @@ public static class DiagnosticsHealthRoutes
         }
 
         var decorated = DecorateGameCrashes(incidents, steamCache);
+        var listed = group ? GroupRepeats(decorated) : decorated;
+#if DEV_TOOLS
+        // Simulated incidents: extra rows on the read path only; the real log is untouched.
+        if (Nexus.Service.Dev.DevSimEvents.Current?.Incidents(DateTime.UtcNow) is { Count: > 0 } simulated)
+        {
+            listed = simulated.Concat(listed).ToList();
+        }
+#endif
         return new IncidentsResponse
         {
             Supported = OperatingSystem.IsWindows() || events.IsLinuxSupported,
             WindowDays = windowDays,
-            Incidents = group ? GroupRepeats(decorated) : decorated,
+            Incidents = listed,
         };
     }
 

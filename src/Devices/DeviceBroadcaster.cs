@@ -70,6 +70,10 @@ public sealed class DeviceBroadcaster : BackgroundService
         try
         {
             curated = _manager.GetAll();
+#if DEV_TOOLS
+            // The fingerprint reads the simulated list too, so starting or stopping a sim broadcasts.
+            Nexus.Service.Dev.DevSimEvents.Current?.ApplyDevices(curated);
+#endif
             usb = _manager.GetUsbDevices();
         }
         catch
