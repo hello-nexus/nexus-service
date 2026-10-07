@@ -97,7 +97,6 @@ public sealed class ThermalGuardController
     private double? _loggedOverrideC;
     // The user's limit, read under _gate. Written by SetConfig and loaded at construction.
     private double? _overrideC;
-    private double? _guardCurveSyncedLimit;
     private bool _detectionResolved;
     private long? _sinceUtcMs;
     private long? _cpuInfoAtMs;
@@ -283,6 +282,7 @@ public sealed class ThermalGuardController
         IReadOnlyList<TemperatureSource> sources)
     {
         var cooling = settings.Cooling;
+        SyncGuardCurve(sources, broadcast: true);
         if (!cooling.ThermalGuardEnabled)
         {
             lock (_gate)
@@ -587,45 +587,38 @@ public sealed class ThermalGuardController
     {
         RefreshCpuInfo(nowMs);
         ApplyLimitOverride();
-        SyncGuardCurve(broadcast: true);
     }
 
-    /// <summary>
-    /// Keeps the shared heal curve's points matching the current limit. Regenerated only when the
-    /// effective limit differs from the one the points were generated for (persisted), so a hand
-    /// edit survives restarts until the limit changes. A service edit, not a user one, so the undo
-    /// snapshot stays; nothing is written when the points are already current.
-    /// </summary>
-    private void SyncGuardCurve(bool broadcast)
+    /// <summary>The guard curve is managed: it reverts to the computed points.</summary>
+    private void SyncGuardCurve(IReadOnlyList<TemperatureSource> sources, bool broadcast)
     {
         double limit;
         lock (_gate)
         {
-            limit = _limit.LimitC;
-            if (_guardCurveSyncedLimit == limit)
+            if (!_detectionResolved)
             {
                 return;
             }
+            limit = _limit.LimitC;
         }
-        var current = _store.Load().Cooling;
-        var hasCurve = current.Curves.Any(c => c.Id == CoolingConfigLint.GuardCurveId && c.Graph is not null);
-        if (!hasCurve || current.GuardCurveLimitC == limit)
+        var cpuInput = FanProfiles.PreferredInput(sources.Where(s => s.Category == "CPU").ToList());
+        var stored = CoolingSnapshots.Curves(_store.Load().Cooling).FirstOrDefault(c => c.Id == CoolingConfigLint.GuardCurveId);
+        if (cpuInput is null || stored is null || CoolingConfigLint.GuardCurveMatches(CoolingConfigLint.CloneCurve(stored), cpuInput, limit))
         {
-            lock (_gate) { _guardCurveSyncedLimit = limit; }
             return;
         }
-        var points = CoolingConfigLint.GuardCurvePoints(limit);
         _store.Update(s =>
         {
             var curve = s.Cooling.Curves.FirstOrDefault(c => c.Id == CoolingConfigLint.GuardCurveId);
-            if (curve?.Graph is null)
+            if (curve is null)
             {
                 return;
             }
-            curve.Graph.Points = points;
-            s.Cooling.GuardCurveLimitC = limit;
+            // The limit is read again here so a concurrent SetConfig is never overwritten with an older one.
+            double current;
+            lock (_gate) { current = _limit.LimitC; }
+            CoolingConfigLint.ApplyGuardCurve(curve, cpuInput, current);
         });
-        lock (_gate) { _guardCurveSyncedLimit = limit; }
         if (broadcast && _hub is not null)
         {
             // After the points are written, so no client refetches the old ones.
@@ -681,7 +674,10 @@ public sealed class ThermalGuardController
     /// <summary>The effective limit: the user's value (clamped) when one is set, whatever was detected, otherwise the detected one.</summary>
     private ThermalLimit EffectiveFor(double? overrideC) =>
         overrideC is { } o && double.IsFinite(o)
-            ? new ThermalLimit(ThermalLimits.ClampUser(o, _detected.LimitC), ThermalLimitSources.User)
+            ? new ThermalLimit(
+                // Until detection resolves the detected limit is only a placeholder: keep the stored value, bounded loosely.
+                _detectionResolved ? ThermalLimits.ClampUser(o, _detected.LimitC) : Math.Clamp(o, ThermalLimits.UnresolvedMinC, ThermalLimits.UserMaxC),
+                ThermalLimitSources.User)
             : _detected;
 
     private void ApplyLimitOverride()
@@ -891,10 +887,6 @@ public sealed class ThermalGuardController
                 s.Cooling.HealSnapshot = s.Cooling.Curves.Select(CoolingConfigLint.CloneCurve).ToList();
             }
             s.Cooling.Curves = result.Curves;
-            if (result.GuardCurveRegenerated)
-            {
-                s.Cooling.GuardCurveLimitC = input.LimitC;
-            }
             // The shared curve drives these channels now; a manual speed would only fight it.
             if (repairing)
             {
@@ -1008,7 +1000,7 @@ public sealed class ThermalGuardController
             // Effective from the next tick on; reflect it now so the response agrees, with the
             // heal curve rewritten before the broadcast below.
             ApplyLimitOverride();
-            SyncGuardCurve(broadcast: false);
+            SyncGuardCurve(_fans.GetTemperatureSources(), broadcast: false);
         }
 
         if (body.Enabled is { } enabled)

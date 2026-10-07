@@ -353,30 +353,107 @@ public class ThermalGuardEngineTests
         Assert.Equal(100, LastDuty(fans, "f1"));
     }
 
+    private static double[] GuardTemps(InMemoryConfigStore store) =>
+        store.Load().Cooling.Curves.Single(c => c.Id == CoolingConfigLint.GuardCurveId).Graph!.Points.Select(p => p.Temp).ToArray();
+
     [Fact]
-    public void ANoOpResync_WritesNothingToTheStore_AndAHandEditSurvivesARestart()
+    public void ANoOpResync_WritesNothingToTheStore()
     {
         var (_, fans, store, _) = Build();
         var guard = new ThermalGuardController(fans, store);
         guard.HealNow(automatic: false);
-        Assert.Equal(90, store.Load().Cooling.GuardCurveLimitC);
-
-        // Hand edit one point, then "restart" with a fresh controller at the same limit.
-        store.Update(s => s.Cooling.Curves.Single(c => c.Id == CoolingConfigLint.GuardCurveId).Graph!.Points[0].Speed = 55);
-        var restarted = new ThermalGuardController(fans, store);
-        var e = new CurveEngine(fans, store, new MultiplexHub(), null, restarted) { Clock = () => 1_000_000 };
+        var e = new CurveEngine(fans, store, new MultiplexHub(), null, guard) { Clock = () => 1_000_000 };
         var changes = 0;
         store.OnChanged += () => changes++;
+
         e.Tick();
         e.Tick();
 
-        Assert.Equal(55, store.Load().Cooling.Curves.Single(c => c.Id == CoolingConfigLint.GuardCurveId).Graph!.Points[0].Speed);
         Assert.Equal(0, changes);
+    }
 
-        // A limit change regenerates it.
-        restarted.SetConfig(new SetThermalGuardConfigBody { LimitOverrideC = 100 });
+    [Fact]
+    public void AHandEditToTheGuardCurve_IsRevertedOnTheNextTick()
+    {
+        var (_, fans, store, _) = Build();
+        var guard = new ThermalGuardController(fans, store);
+        guard.HealNow(automatic: false);
+        var e = new CurveEngine(fans, store, new MultiplexHub(), null, guard) { Clock = () => 1_000_000 };
+        store.Update(s => s.Cooling.Curves.Single(c => c.Id == CoolingConfigLint.GuardCurveId).Graph!.Points[0].Speed = 55);
+
+        e.Tick();
+
         Assert.Equal(30, store.Load().Cooling.Curves.Single(c => c.Id == CoolingConfigLint.GuardCurveId).Graph!.Points[0].Speed);
-        Assert.Equal(100, store.Load().Cooling.GuardCurveLimitC);
+    }
+
+    [Fact]
+    public void AfterABootWhereTheModelResolvesOnALaterTick_TheGuardCurveIsWrittenExactlyOnce_AtTheRealLimit()
+    {
+        var (_, fans, store, _) = Build();
+        new ThermalGuardController(fans, store).HealNow(automatic: false); // leaves the curve built for the placeholder limit
+        Assert.Equal(new double[] { 35, 50, 65, 80, 90 }, GuardTemps(store));
+
+        var guard = new ThermalGuardController(fans, store, null, new FlakySensors()); // first model read throws
+        var clock = new long[] { 1_000_000 };
+        var e = new CurveEngine(fans, store, new MultiplexHub(), null, guard) { Clock = () => clock[0] };
+        var curveWrites = 0;
+        store.OnChanged += () =>
+        {
+            var pts = GuardTemps(store);
+            if (!pts.SequenceEqual(new double[] { 35, 50, 65, 80, 90 }))
+            {
+                curveWrites++;
+            }
+        };
+
+        e.Tick(); // unresolved: nothing is synced against the placeholder
+        Assert.Equal(new double[] { 35, 50, 65, 80, 90 }, GuardTemps(store));
+        clock[0] += 6000;
+        e.Tick(); // resolved: 9800X3D, limit 95
+        clock[0] += 1000;
+        e.Tick();
+        e.Tick();
+
+        Assert.Equal(new double[] { 40, 55, 70, 85, 95 }, GuardTemps(store));
+        Assert.Equal(1, curveWrites);
+    }
+
+    [Fact]
+    public void UndoFollowedByATick_ResyncsTheRestoredGuardCurveToTheCurrentLimit()
+    {
+        var (e, fans, store, guard, clock) = LimitRig(null);
+        guard.HealNow(automatic: false);
+        guard.SetConfig(new SetThermalGuardConfigBody { LimitOverrideC = 100 });
+        Assert.Equal(new double[] { 45, 60, 75, 90, 100 }, GuardTemps(store));
+        store.Update(s => s.Cooling.ManualSpeeds["f2"] = 10); // a second hazard
+        guard.HealNow(automatic: false); // its snapshot holds the guard curve built for 100
+        guard.SetConfig(new SetThermalGuardConfigBody { ClearLimitOverride = true });
+        Assert.Equal(new double[] { 35, 50, 65, 80, 90 }, GuardTemps(store));
+
+        guard.Undo();
+        Assert.Equal(new double[] { 45, 60, 75, 90, 100 }, GuardTemps(store));
+
+        clock[0] += 1000;
+        e.Tick();
+        Assert.Equal(new double[] { 35, 50, 65, 80, 90 }, GuardTemps(store));
+    }
+
+    [Fact]
+    public void APersistedOverrideOf89_StaysAsStoredUntilDetectionResolvesOnAn89CPart()
+    {
+        var (_, fans, store, _) = Build();
+        store.Update(s => s.Cooling.ThermalGuardLimitOverrideC = 89);
+        var guard = new ThermalGuardController(fans, store, null, new FlakySensors { Model = "AMD Ryzen 7 7800X3D 8-Core Processor" });
+        var clock = new long[] { 1_000_000 };
+        var e = new CurveEngine(fans, store, new MultiplexHub(), null, guard) { Clock = () => clock[0] };
+
+        e.Tick(); // model unknown: the stored value is not clamped against the 90 placeholder
+        Assert.Equal(89, guard.GetState().LimitC);
+
+        clock[0] += 6000;
+        e.Tick(); // resolved: the 7800X3D's own 89 C is inside the range
+        Assert.Equal(89, guard.GetState().LimitC);
+        Assert.Equal(89, guard.GetState().DetectedLimitC);
     }
 
     [Fact]

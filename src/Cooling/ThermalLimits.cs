@@ -26,6 +26,8 @@ public static class ThermalLimits
     /// <summary>Range of a user-set CPU limit.</summary>
     public const double UserMinC = 90;
     public const double UserMaxC = 110;
+    /// <summary>The lowest stored user limit honoured before detection has resolved.</summary>
+    public const double UnresolvedMinC = 85;
 
     /// <summary>
     /// A user limit clamped to the range, widened to include the detected limit so a part whose own

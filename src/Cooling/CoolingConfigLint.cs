@@ -27,7 +27,7 @@ public sealed class LintInput
     public double LimitC { get; init; } = ThermalLimits.GenericDefaultC;
 }
 
-public sealed record HealResult(List<CurveDocument> Curves, List<LintHazard> Healed, List<string> ManualDrops, bool GuardCurveRegenerated);
+public sealed record HealResult(List<CurveDocument> Curves, List<LintHazard> Healed, List<string> ManualDrops);
 
 /// <summary>
 /// Pure hazard detection and heal transform for fan curve configs. A hazard is a
@@ -203,6 +203,43 @@ public static class CoolingConfigLint
         _ => null,
     };
 
+    /// <summary>Sets the shared curve to its computed form: a Graph on the CPU input with the limit-relative points and the Balanced preset's response time.</summary>
+    public static void ApplyGuardCurve(CurveDocument curve, TemperatureSource cpuInput, double limitC)
+    {
+        curve.Name = "Thermal guard";
+        curve.Type = "Graph";
+        curve.Input = new CurveInputDocument { Id = cpuInput.Id, Type = "Temperature", Device = cpuInput.Category };
+        curve.Flat = null;
+        curve.Linear = null;
+        curve.Mixed = null;
+        curve.Trigger = null;
+        curve.Sync = null;
+        curve.Auto = null;
+        curve.Graph = new GraphCurveData
+        {
+            ResponseTime = FanProfiles.PresetDefaults.For("balanced").ResponseTime,
+            SpeedModifier = 1.0,
+            Points = GuardCurvePoints(limitC),
+        };
+    }
+
+    /// <summary>True when the stored curve already equals its computed form.</summary>
+    public static bool GuardCurveMatches(CurveDocument curve, TemperatureSource cpuInput, double limitC)
+    {
+        var expected = new CurveDocument { Id = curve.Id };
+        ApplyGuardCurve(expected, cpuInput, limitC);
+        var a = curve.Graph;
+        var b = expected.Graph!;
+        return curve.Type == expected.Type
+            && curve.Name == expected.Name
+            && curve.Input.Id == expected.Input.Id
+            && a is not null
+            && a.ResponseTime == b.ResponseTime
+            && a.SpeedModifier == b.SpeedModifier
+            && a.Points.Count == b.Points.Count
+            && a.Points.Zip(b.Points).All(p => p.First.Temp == p.Second.Temp && p.First.Speed == p.Second.Speed);
+    }
+
     /// <summary>The shared curve's points for a limit: a balanced curve relative to it.</summary>
     public static List<Persistence.GraphPoint> GuardCurvePoints(double limitC) =>
         GuardCurveShape
@@ -227,32 +264,12 @@ public static class CoolingConfigLint
 
         var curves = input.Curves.Select(CloneCurve).ToList();
         var guard = curves.FirstOrDefault(c => c.Id == GuardCurveId);
-        // The shared curve is linted like any other: if hand edits broke a rule, a channel on it is
-        // flagged, and healing rebuilds it. An intact one keeps its points, hand edits included.
-        var broken = guard is not null && hazards.Any(h => guard.Outputs.Any(o => o.Id == h.ChannelId));
-        var regenerate = guard is null || broken;
         if (guard is null)
         {
-            guard = new CurveDocument { Id = GuardCurveId, Name = "Thermal guard" };
+            guard = new CurveDocument { Id = GuardCurveId };
             curves.Add(guard);
         }
-        if (regenerate)
-        {
-            guard.Type = "Graph";
-            guard.Input = new CurveInputDocument { Id = cpuInput.Id, Type = "Temperature", Device = cpuInput.Category };
-            guard.Flat = null;
-            guard.Linear = null;
-            guard.Mixed = null;
-            guard.Trigger = null;
-            guard.Sync = null;
-            guard.Auto = null;
-            guard.Graph = new GraphCurveData
-            {
-                ResponseTime = FanProfiles.PresetDefaults.For("balanced").ResponseTime,
-                SpeedModifier = 1.0,
-                Points = GuardCurvePoints(input.LimitC),
-            };
-        }
+        ApplyGuardCurve(guard, cpuInput, input.LimitC);
 
         // Channels an earlier design healed join the shared curve too.
         foreach (var old in curves.Where(IsLegacyGuardCurve).ToList())
@@ -268,7 +285,7 @@ public static class CoolingConfigLint
         var manualDrops = guard.Outputs
             .Select(o => o.Id)
             .Where(input.ManualSpeeds.ContainsKey)
-            .ToList(); // channels migrated from the earlier design: a stale manual speed would only fight the curve
+            .ToList(); // outputs already on the shared curve, migrated leftovers included: a manual speed would only fight it
         foreach (var hazard in hazards)
         {
             if (healed.Any(h => h.ChannelId == hazard.ChannelId))
@@ -288,7 +305,7 @@ public static class CoolingConfigLint
             }
             healed.Add(hazard);
         }
-        return new HealResult(curves, healed, manualDrops, regenerate);
+        return new HealResult(curves, healed, manualDrops);
     }
 
     private static bool IsLegacyGuardCurve(CurveDocument c) =>
