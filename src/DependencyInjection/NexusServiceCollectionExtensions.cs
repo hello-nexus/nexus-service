@@ -987,7 +987,7 @@ public static class NexusServiceCollectionExtensions
                 {
                     screens[mac] = Nexus.Service.Peripherals.LianLiWireless.Slv3Protocol.AioScreenFrom(
                         s.Brightness, s.Theme, s.LabelColor, s.ValueColor, s.UnitColor,
-                        s.ShowCpuTemp, s.ShowCpuLoad, s.ShowGpuTemp, s.ShowGpuLoad, s.ShowFanSpeed);
+                        s.ShowCpuTemp, s.ShowCpuLoad, s.ShowGpuTemp, s.ShowGpuLoad, s.ShowFanSpeed, s.LoopInterval);
                 }
                 return screens;
             };

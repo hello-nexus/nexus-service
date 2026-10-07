@@ -450,6 +450,74 @@ public class Slv3HubTests
     }
 
     [Fact]
+    public void Undriven_hydroshift_with_saved_screen_settings_gets_them_at_the_default_pump_speed()
+    {
+        var (hub, net, tx, _) = CreateConnectedHub();
+        net.Fans.Add(new SimulatedFan { Mac = FanMac, MasterMac = net.MasterMac, RxType = 1, DevType = 11, FanCount = 0 });
+        hub.AioScreens = () => new Dictionary<string, Slv3AioScreen>
+        {
+            [Convert.ToHexString(FanMac)] = Slv3Protocol.AioScreenFrom(30, 4, "#FFFFFF", "#FFFFFF", "#FFFFFF", true, false, false, false, false, loopInterval: 7),
+        };
+        Assert.True(hub.DriveTick());
+        Assert.True(hub.DriveTick());
+
+        Assert.Null(hub.GetPumpDuty(Convert.ToHexString(FanMac)));
+        Assert.NotEmpty(RfFrames(tx, Slv3Protocol.RfAioSwitchWireless));
+        var paramsFrame = RfFrames(tx, Slv3Protocol.RfAioParams)[^1];
+        Assert.Equal(4, paramsFrame[49]);
+        Assert.Equal(7, paramsFrame[28]);
+        Assert.Equal(Slv3Protocol.HydroShiftPumpTimer(Slv3Protocol.HydroShiftDefaultPumpRpm, 11), (paramsFrame[50] << 8) | paramsFrame[51]);
+    }
+
+    [Fact]
+    public void Released_hydroshift_pump_with_saved_screen_settings_keeps_its_screen_at_the_default_pump_speed()
+    {
+        var (hub, net, tx, _) = CreateConnectedHub();
+        net.Fans.Add(new SimulatedFan { Mac = FanMac, MasterMac = net.MasterMac, RxType = 1, DevType = 11, FanCount = 0 });
+        hub.AioScreens = () => new Dictionary<string, Slv3AioScreen>
+        {
+            [Convert.ToHexString(FanMac)] = Slv3Protocol.AioScreenFrom(30, 4, "#FFFFFF", "#FFFFFF", "#FFFFFF", true, false, false, false, false),
+        };
+        Assert.True(hub.DriveTick());
+        Assert.True(hub.SetPumpDuty(Convert.ToHexString(FanMac), 100));
+        Assert.True(hub.DriveTick());
+        Assert.Equal(0, (RfFrames(tx, Slv3Protocol.RfAioParams)[^1][50] << 8) | RfFrames(tx, Slv3Protocol.RfAioParams)[^1][51]);
+
+        Assert.True(hub.SetPumpDuty(Convert.ToHexString(FanMac), null));
+        tx.SentFrames.Clear();
+        Assert.True(hub.DriveTick());
+
+        Assert.Null(hub.GetPumpDuty(Convert.ToHexString(FanMac)));
+        var paramsFrame = Assert.Single(RfFrames(tx, Slv3Protocol.RfAioParams));
+        Assert.Equal(Slv3Protocol.HydroShiftPumpTimer(Slv3Protocol.HydroShiftDefaultPumpRpm, 11), (paramsFrame[50] << 8) | paramsFrame[51]);
+    }
+
+    [Fact]
+    public void Screen_held_hydroshift_is_switched_again_after_an_unbind_and_rebind()
+    {
+        var (hub, net, tx, _) = CreateConnectedHub();
+        var aio = new SimulatedFan { Mac = FanMac, MasterMac = net.MasterMac, RxType = 1, DevType = 11, FanCount = 0 };
+        net.Fans.Add(aio);
+        hub.AioScreens = () => new Dictionary<string, Slv3AioScreen>
+        {
+            [Convert.ToHexString(FanMac)] = Slv3Protocol.AioScreenFrom(30, 4, "#FFFFFF", "#FFFFFF", "#FFFFFF", true, false, false, false, false),
+        };
+        for (var i = 0; i < 4; i++)
+        {
+            Assert.True(hub.DriveTick());
+        }
+        var switches = RfFrames(tx, Slv3Protocol.RfAioSwitchWireless).Count;
+
+        aio.MasterMac = new byte[6];
+        Assert.True(hub.DriveTick());
+        aio.MasterMac = net.MasterMac;
+        Assert.True(hub.DriveTick());
+        Assert.True(hub.DriveTick());
+
+        Assert.True(RfFrames(tx, Slv3Protocol.RfAioSwitchWireless).Count > switches);
+    }
+
+    [Fact]
     public void Released_hydroshift_pump_gets_no_more_params()
     {
         var (hub, net, tx, _) = CreateConnectedHub();

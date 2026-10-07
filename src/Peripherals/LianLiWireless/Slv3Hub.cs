@@ -55,12 +55,13 @@ public sealed class Slv3Hub : IDisposable
     // by the PWM sync, written by SetPortDuty; both hold _lock.
     private readonly Dictionary<string, int?[]> _dutyTargets = new(StringComparer.Ordinal);
 
-    // HydroShift II pumps Nexus drives, keyed by AIO MAC hex. An AIO without an
-    // entry is sent no params.
+    // HydroShift IIs under RF control (pump driven or screen saved), keyed by AIO
+    // MAC hex. An AIO without an entry is sent no params.
     private readonly Dictionary<string, Slv3AioControl> _aioControl = new(StringComparer.Ordinal);
     private volatile bool _anyAioControlled;
+    private volatile bool _anyAioBound;
 
-    /// <summary>Host readings for a driven HydroShift II's LCD; read once per <see cref="DriveTick"/>, outside the hub lock.</summary>
+    /// <summary>Host readings for a HydroShift II's LCD; read once per <see cref="DriveTick"/>, outside the hub lock.</summary>
     public Func<Slv3AioSensors>? AioSensors { get; set; }
 
     /// <summary>Saved HydroShift II screens by AIO MAC hex; read once per <see cref="DriveTick"/>, outside the hub lock.</summary>
@@ -290,6 +291,7 @@ public sealed class Slv3Hub : IDisposable
         State.Fans = Array.Empty<Slv3FanInfo>();
         State.MotherboardPwmPercent = null;
         _lastFanRecords = new List<Slv3DeviceRecord>();
+        _anyAioBound = false;
         _knownChains.Clear();
         _unconfirmedChains.Clear();
         _pending.Clear();
@@ -436,8 +438,9 @@ public sealed class Slv3Hub : IDisposable
     /// </summary>
     public bool DriveTick()
     {
-        var aioSensors = _anyAioControlled ? ReadAioSensors() : default;
-        var aioScreens = _anyAioControlled ? ReadAioScreens() : null;
+        var aio = _anyAioControlled || _anyAioBound;
+        var aioSensors = aio ? ReadAioSensors() : default;
+        var aioScreens = aio ? ReadAioScreens() : null;
         lock (_lock)
         {
             if (!PollLocked())
@@ -575,24 +578,53 @@ public sealed class Slv3Hub : IDisposable
         }
     }
 
-    // lian-li-linux control_wireless: while Nexus drives an AIO's pump, the
-    // switch to RF params is re-sent until the AIO echoes its cmdSeq, and the
-    // param block (pump timer plus LCD readings) goes out every DriveTick.
+    // lian-li-linux control_wireless: while Nexus drives an AIO's pump or holds
+    // screen settings for it, the switch to RF params is re-sent until the AIO
+    // echoes its cmdSeq, and the param block (pump timer plus LCD settings and
+    // readings) goes out every DriveTick. The block always carries a pump timer,
+    // so a screen-only AIO gets the default pump speed.
     private void SyncAioLocked(Slv3AioSensors sensors, IReadOnlyDictionary<string, Slv3AioScreen>? screens)
     {
-        if (_aioControl.Count == 0)
+        if (_aioControl.Count == 0 && (screens is null || screens.Count == 0))
         {
             return;
         }
+        HashSet<string>? bound = null;
         foreach (var record in _lastFanRecords)
         {
-            if (!record.IsHydroShift || !IsBoundToUsLocked(record))
+            if (!record.IsHydroShift)
             {
                 continue;
             }
             var key = Convert.ToHexString(record.Mac);
+            if (!IsBoundToUsLocked(record))
+            {
+                // The AIO's mode after an unbind is unknown, so a rebind sends the switch again.
+                if (_aioControl.TryGetValue(key, out var unbound))
+                {
+                    unbound.Switched = false;
+                    unbound.SwitchSeq = 0;
+                }
+                continue;
+            }
+            (bound ??= new HashSet<string>(StringComparer.Ordinal)).Add(key);
+            Slv3AioScreen screen = default;
+            var screenSet = screens is not null && screens.TryGetValue(key, out screen);
             if (!_aioControl.TryGetValue(key, out var control))
             {
+                if (!screenSet)
+                {
+                    continue;
+                }
+                control = new Slv3AioControl();
+                _aioControl[key] = control;
+                _anyAioControlled = true;
+                ServiceLog.Info($"[lianli-wireless] HydroShift II {key} screen held by Nexus");
+            }
+            else if (control.Percent is null && !screenSet)
+            {
+                _aioControl.Remove(key);
+                _anyAioControlled = _aioControl.Count > 0;
                 continue;
             }
             if (!control.Switched)
@@ -607,13 +639,32 @@ public sealed class Slv3Hub : IDisposable
                     control.SwitchSeq = QueueSequencedCommandLocked(record, Slv3Protocol.RfAioSwitchWireless) ?? 0;
                 }
             }
-            var rpm = Slv3Protocol.HydroShiftPumpRpm(control.Percent, record.DevType);
+            var rpm = control.Percent is int percent
+                ? Slv3Protocol.HydroShiftPumpRpm(percent, record.DevType)
+                : Slv3Protocol.HydroShiftDefaultPumpRpm;
             var block = Slv3Protocol.BuildAioParamBlock(
                 sensors, Slv3Protocol.HydroShiftPumpTimer(rpm, record.DevType),
-                screens is not null && screens.TryGetValue(key, out var screen) ? screen : Slv3AioScreen.Default,
+                screenSet ? screen : Slv3AioScreen.Default,
                 RadiatorFanRpm(record));
             var payload = Slv3Protocol.BuildAioParams(record.Mac, _masterMac, record.RxType, record.Channel, BindOrdinalLocked(record.Mac), block);
             SendRfPayloadLocked(record.Channel, record.RxType, payload);
+        }
+        // A released pump on an AIO that is no longer bound here has nothing left to hold.
+        List<string>? released = null;
+        foreach (var (key, control) in _aioControl)
+        {
+            if (control.Percent is null && (bound is null || !bound.Contains(key)))
+            {
+                (released ??= new List<string>()).Add(key);
+            }
+        }
+        if (released is not null)
+        {
+            foreach (var key in released)
+            {
+                _aioControl.Remove(key);
+            }
+            _anyAioControlled = _aioControl.Count > 0;
         }
     }
 
@@ -906,6 +957,7 @@ public sealed class Slv3Hub : IDisposable
             fans.Add(ToFanInfo(chain.Record, stale: nowMs - chain.LastSeenMs > ChainStaleMs));
         }
         _lastFanRecords = records;
+        _anyAioBound = records.Exists(r => r.IsHydroShift && IsBoundToUsLocked(r));
         State.Fans = fans.ToArray();
     }
 
@@ -1318,8 +1370,10 @@ public sealed class Slv3Hub : IDisposable
 
     /// <summary>
     /// Sets the duty a HydroShift II pump is driven at; 0% still runs it at the
-    /// head's minimum RPM. Null stops sending it params; nothing switches the
-    /// AIO back from RF control. False for a MAC that is not a known HydroShift II.
+    /// head's minimum RPM. Null stops driving it: an AIO with a saved screen keeps
+    /// getting params at the default pump speed, any other gets none; nothing
+    /// switches the AIO back from RF control. False for a MAC that is not a known
+    /// HydroShift II.
     /// </summary>
     public bool SetPumpDuty(string macHex, int? percent)
     {
@@ -1332,8 +1386,10 @@ public sealed class Slv3Hub : IDisposable
         {
             if (percent is null)
             {
-                if (_aioControl.Remove(key))
+                // A held screen keeps the AIO under RF control; the next DriveTick drops it otherwise.
+                if (_aioControl.TryGetValue(key, out var held) && held.Percent is not null)
                 {
+                    held.Percent = null;
                     ServiceLog.Info($"[lianli-wireless] HydroShift II {key} pump released");
                 }
             }
@@ -1788,7 +1844,8 @@ public sealed class Slv3Hub : IDisposable
     // SwitchSeq is the cmdSeq of the last RF_AioSwitchWireless sent; 0 = none in flight.
     private sealed class Slv3AioControl
     {
-        public int Percent;
+        /// <summary>The pump duty Nexus drives; null while only the screen is held.</summary>
+        public int? Percent;
         public byte SwitchSeq;
         public bool Switched;
     }

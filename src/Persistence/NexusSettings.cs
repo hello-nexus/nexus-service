@@ -1612,6 +1612,8 @@ public sealed class LianLiAioScreenSettings
     public bool ShowGpuLoad { get; set; } = true;
     /// <summary>Shows the radiator fans' speed.</summary>
     public bool ShowFanSpeed { get; set; }
+    /// <summary>How long each shown reading stays up before the screen moves to the next.</summary>
+    public int LoopInterval { get; set; } = Nexus.Service.Peripherals.LianLiWireless.Slv3Protocol.AioLcdLoopInterval;
 }
 
 /// <summary>

@@ -153,8 +153,12 @@ public static class Slv3Protocol
     public const int AioParamLength = 32;
 
     // lian-li-linux AioConfig defaults for the LCD fields of the param block.
-    private const byte AioLcdLoopInterval = 3;
+    public const byte AioLcdLoopInterval = 3;
+    public const int AioLcdLoopIntervalMax = 60;
     public const byte AioLcdBrightness = 80;
+
+    /// <summary>L-Connect's default pump target (lianli.lcd207.dll), sent while Nexus holds only the screen.</summary>
+    public const int HydroShiftDefaultPumpRpm = 2080;
 
     /// <summary>Pump RPM span per head (lian-li-linux pump_rpm_range): 10 = LCD-C, 11 = LCD-S.</summary>
     public static (int Min, int Max) HydroShiftPumpRpmRange(byte devType) => devType == 11 ? (1600, 3200) : (1600, 2500);
@@ -225,7 +229,7 @@ public static class Slv3Protocol
             p[5] = (byte)rpm;
             p[12] = 1;
         }
-        p[6] = AioLcdLoopInterval;
+        p[6] = screen.LoopInterval;
         p[7] = 1;
         WriteArgb(p, 13, screen.LabelArgb);
         WriteArgb(p, 17, screen.ValueArgb);
@@ -249,10 +253,10 @@ public static class Slv3Protocol
     /// <summary>A screen from user settings: brightness and theme clamped, "#RRGGBB" colours made opaque (white when unreadable).</summary>
     public static Slv3AioScreen AioScreenFrom(
         int brightness, int theme, string labelColor, string valueColor, string unitColor,
-        bool cpuTemp, bool cpuLoad, bool gpuTemp, bool gpuLoad, bool fanSpeed) =>
+        bool cpuTemp, bool cpuLoad, bool gpuTemp, bool gpuLoad, bool fanSpeed, int loopInterval = AioLcdLoopInterval) =>
         new((byte)Math.Clamp(brightness, 0, 100), (byte)Math.Clamp(theme, 0, AioThemeCount - 1),
             OpaqueArgb(labelColor), OpaqueArgb(valueColor), OpaqueArgb(unitColor),
-            cpuTemp, cpuLoad, gpuTemp, gpuLoad, fanSpeed);
+            cpuTemp, cpuLoad, gpuTemp, gpuLoad, fanSpeed, (byte)Math.Clamp(loopInterval, 1, AioLcdLoopIntervalMax));
 
     private static uint OpaqueArgb(string hex) =>
         hex.Length == 7 && hex[0] == '#' && uint.TryParse(hex.AsSpan(1), System.Globalization.NumberStyles.HexNumber, null, out var rgb)
@@ -820,7 +824,7 @@ public readonly record struct Slv3AioSensors(float? CpuTemp, float? CpuLoad, flo
 /// <summary>How a HydroShift II screen draws: backlight percent, theme, ARGB text colours, and which readings it shows.</summary>
 public readonly record struct Slv3AioScreen(
     byte Brightness, byte Theme, uint LabelArgb, uint ValueArgb, uint UnitArgb,
-    bool CpuTemp, bool CpuLoad, bool GpuTemp, bool GpuLoad, bool FanSpeed)
+    bool CpuTemp, bool CpuLoad, bool GpuTemp, bool GpuLoad, bool FanSpeed, byte LoopInterval)
 {
     /// <summary>The screen a driven AIO gets before the user changes anything.</summary>
     public static Slv3AioScreen Default =>
