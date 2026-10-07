@@ -158,3 +158,19 @@ protocol constants or frame layouts taken from OpenRGB device controllers:
   `database/external/lsh.json`. The LCD write-buffer layout in
   `CorsairLinkLcd.cs` is byte-identical to that project's `transferToLcd`, and
   the pump/AIO minimum-duty floors mirror its manual-write behaviour.
+
+## Code ported from MIT projects
+
+### lian-li-linux (MIT)
+
+- **Upstream**: https://github.com/sgtaziz/lian-li-linux
+- **License**: MIT, Copyright (c) 2026 sgtaziz. Permission is hereby granted,
+  free of charge, to any person obtaining a copy of this software and
+  associated documentation files, to deal in the Software without restriction,
+  provided the copyright notice and this permission notice are included in all
+  copies or substantial portions of the Software. The software is provided
+  "as is", without warranty of any kind.
+- `src/Peripherals/BulkPanels/HydroShift2RingEffects.cs` ports the HydroShift II
+  pump-ring effect renderers (`crates/lianli-media/src/rgb/h2/`), and
+  `tests/Nexus.Service.Tests/BulkPanels/HydroShift2RingEffectsTests.cs` reuses
+  their frame hashes.

@@ -71,21 +71,22 @@ public static class HydroShift2Protocol
     }, timestampMs);
 
     /// <summary>
-    /// One ring colour frame: TinyUZ-compressed RGB for every LED, then frame count (u16 BE),
-    /// tick interval and LED count. The length rides params[4..8], not params[0..4].
+    /// A ring animation the firmware loops on its own: TinyUZ-compressed RGB for every LED of
+    /// every frame, then frame count (u16 BE), per-frame interval in 0.625 ms ticks and LED
+    /// count. The length rides params[4..8], not params[0..4].
     /// </summary>
-    public static byte[] EncodeRing(ReadOnlySpan<byte> rgb, uint timestampMs)
+    public static byte[] EncodeRing(ReadOnlySpan<byte> frames, int frameCount, byte intervalTicks, uint timestampMs)
     {
-        if (rgb.Length != RingLedCount * 3)
+        if (frameCount < 1 || frameCount > ushort.MaxValue || frames.Length != frameCount * RingLedCount * 3)
         {
-            throw new ArgumentException($"expected {RingLedCount * 3} bytes", nameof(rgb));
+            throw new ArgumentException($"expected {RingLedCount * 3} bytes per frame", nameof(frames));
         }
-        var compressed = TinyUz.Compress(rgb);
+        var compressed = TinyUz.Compress(frames);
         var payload = new byte[compressed.Length + 4];
         compressed.CopyTo(payload, 0);
-        payload[compressed.Length] = 0;
-        payload[compressed.Length + 1] = 1;
-        payload[compressed.Length + 2] = 1;
+        payload[compressed.Length] = (byte)(frameCount >> 8);
+        payload[compressed.Length + 1] = (byte)frameCount;
+        payload[compressed.Length + 2] = Math.Max((byte)1, intervalTicks);
         payload[compressed.Length + 3] = RingLedCount;
 
         Span<byte> parameters = stackalloc byte[8];

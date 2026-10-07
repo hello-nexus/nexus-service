@@ -79,7 +79,7 @@ public class HydroShift2Tests
     {
         var rgb = Enumerable.Range(0, HydroShift2Protocol.RingLedCount * 3).Select(i => (byte)(i * 7)).ToArray();
 
-        var packet = HydroShift2Protocol.EncodeRing(rgb, 9);
+        var packet = HydroShift2Protocol.EncodeRing(rgb, 1, 1, 9);
 
         var plain = Decrypt(packet);
         Assert.Equal(HydroShift2Protocol.CommandPushRgb, plain[0]);
@@ -89,6 +89,21 @@ public class HydroShift2Tests
         Assert.Equal(new byte[] { 0, 1, 1, HydroShift2Protocol.RingLedCount }, payload[^4..]);
         var (_, decoded) = TinyUz.Decompress(payload.AsSpan(0, payload.Length - 4));
         Assert.Equal(rgb, decoded);
+    }
+
+    [Fact]
+    public void Every_effect_fits_one_ring_upload()
+    {
+        foreach (var mode in HydroShift2RingEffects.Modes)
+        {
+            var (frames, interval) = HydroShift2RingEffects.Render(mode, [], 4, 0, false);
+            var packed = frames.SelectMany(f => f).ToArray();
+
+            var payload = HydroShift2Protocol.EncodeRing(packed, frames.Count, interval, 1).AsSpan(512).ToArray();
+
+            Assert.Equal(new byte[] { (byte)(frames.Count >> 8), (byte)frames.Count, interval, HydroShift2Protocol.RingLedCount }, payload[^4..]);
+            Assert.Equal(packed, TinyUz.Decompress(payload.AsSpan(0, payload.Length - 4)).Data);
+        }
     }
 
     [Fact]
@@ -294,6 +309,36 @@ public class HydroShift2Tests
         Assert.Equal(1, pipe.Commands.Count(c => c == HydroShift2Protocol.CommandPushRgb));
 
         aio.Tick(12_000);
+        Assert.Equal(2, pipe.Commands.Count(c => c == HydroShift2Protocol.CommandPushRgb));
+    }
+
+    [Fact]
+    public void An_unanswered_ring_upload_is_tried_again()
+    {
+        var (aio, pipe) = Attached();
+        pipe.Silent = true;
+        aio.SetRing(Solid(255, 0, 0));
+        aio.Tick(10_000);
+        pipe.Silent = false;
+
+        aio.Tick(12_000);
+
+        Assert.Equal(2, pipe.Commands.Count(c => c == HydroShift2Protocol.CommandPushRgb));
+    }
+
+    [Fact]
+    public void The_ring_is_reuploaded_when_the_wireless_link_lets_go()
+    {
+        var owned = false;
+        var (aio, pipe) = Attached(() => owned);
+        aio.SetRing(Solid(255, 0, 0));
+        aio.Tick(10_000);
+        owned = true;
+        aio.Tick(12_000);
+        owned = false;
+
+        aio.Tick(14_000);
+
         Assert.Equal(2, pipe.Commands.Count(c => c == HydroShift2Protocol.CommandPushRgb));
     }
 

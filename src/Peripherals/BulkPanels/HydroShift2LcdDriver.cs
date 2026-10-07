@@ -134,9 +134,10 @@ public sealed class HydroShift2LcdDriver : IBulkPanelDriver
         return answered;
     }
 
-    /// <summary>Sets every ring LED from packed RGB. Call only under the hub's lock.</summary>
-    public bool PushRing(IBulkUsbPipe pipe, ReadOnlySpan<byte> rgb) =>
-        Exchange(pipe, HydroShift2Protocol.CommandPushRgb, HydroShift2Protocol.EncodeRing(rgb, NextTimestamp())) is not null;
+    /// <summary>Uploads a ring animation (packed RGB frames) for the firmware to loop. Call only under the hub's lock.</summary>
+    public bool PushRing(IBulkUsbPipe pipe, ReadOnlySpan<byte> frames, int frameCount, byte intervalTicks) =>
+        Exchange(pipe, HydroShift2Protocol.CommandPushRgb,
+            HydroShift2Protocol.EncodeRing(frames, frameCount, intervalTicks, NextTimestamp())) is not null;
 
     private bool Command(IBulkUsbPipe pipe, byte command, ReadOnlySpan<byte> parameters) =>
         Exchange(pipe, command, HydroShift2Protocol.EncodeCommand(command, parameters, NextTimestamp())) is not null;

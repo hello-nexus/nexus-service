@@ -1298,6 +1298,7 @@ public sealed class DevicesSettings
     public TlLightingSettings TlLighting { get; set; } = new();
     public StrimerLightingSettings StrimerLighting { get; set; } = new();
     public Galahad2LightingSettings Galahad2Lighting { get; set; } = new();
+    public HydroShift2LightingSettings HydroShift2Lighting { get; set; } = new();
     public CorsairSettings Corsair { get; set; } = new();
     public NollieSettings Nollie { get; set; } = new();
     /// <summary>
@@ -1722,6 +1723,24 @@ public sealed class StrimerLightingSettings
     public int Speed { get; set; } = 2;
     public int Direction { get; set; } = 0;
     public int Brightness { get; set; } = 4;
+    public List<string> Colors { get; set; } = new();
+}
+
+/// <summary>The HydroShift II pump ring: "canvas" follows the Lighting page, any other mode is a ring effect the pump head plays on its own.</summary>
+public sealed class HydroShift2LightingSettings
+{
+    public const string CanvasMode = "canvas";
+
+    public string Mode { get; set; } = "rainbow";
+    /// <summary>Last mode other than the Lighting page one, restored when Lighting page control is turned off.</summary>
+    public string? EffectMode { get; set; }
+    /// <summary>Level on the ring's speed scale, up to <c>HydroShift2RingEffects.MaxLevel</c>.</summary>
+    public int Speed { get; set; } = 2;
+    /// <summary>0 clockwise, 1 counter-clockwise.</summary>
+    public int Direction { get; set; } = 0;
+    /// <summary>Level on the ring's brightness scale, up to <c>HydroShift2RingEffects.MaxLevel</c>.</summary>
+    public int Brightness { get; set; } = 4;
+    /// <summary>"#RRGGBB" palette; missing entries fall back to the effect's defaults.</summary>
     public List<string> Colors { get; set; } = new();
 }
 

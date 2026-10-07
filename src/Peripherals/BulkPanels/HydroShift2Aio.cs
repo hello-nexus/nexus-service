@@ -34,6 +34,8 @@ public sealed class HydroShift2Aio : BackgroundService
     private byte[]? _sentFans;
     private bool _pumpFanDirty;
     private byte[]? _ring;
+    private int _ringFrames;
+    private byte _ringInterval;
     private bool _ringDirty;
 
     private long _lastParamsAt;
@@ -89,13 +91,18 @@ public sealed class HydroShift2Aio : BackgroundService
         }
     }
 
-    /// <summary>Sets the ring from packed RGB; unchanged colours are not re-sent.</summary>
-    public void SetRing(ReadOnlySpan<byte> rgb)
+    /// <summary>Sets the ring to one still frame of packed RGB; unchanged colours are not re-sent.</summary>
+    public void SetRing(ReadOnlySpan<byte> rgb) => SetRingAnimation(rgb, 1, 1);
+
+    /// <summary>Sets the ring to an animation the firmware loops (packed RGB frames, interval in 0.625 ms ticks); an unchanged one is not re-sent.</summary>
+    public void SetRingAnimation(ReadOnlySpan<byte> frames, int frameCount, byte intervalTicks)
     {
         lock (_lock)
         {
-            if (_ring is not null && rgb.SequenceEqual(_ring)) return;
-            _ring = rgb.ToArray();
+            if (_ring is not null && _ringFrames == frameCount && _ringInterval == intervalTicks && frames.SequenceEqual(_ring)) return;
+            _ring = frames.ToArray();
+            _ringFrames = frameCount;
+            _ringInterval = intervalTicks;
             _ringDirty = true;
         }
     }
@@ -157,6 +164,14 @@ public sealed class HydroShift2Aio : BackgroundService
         if (available != _wasAvailable)
         {
             _wasAvailable = available;
+            if (available)
+            {
+                // Back from the wireless link, which may have repainted the ring.
+                lock (_lock)
+                {
+                    _ringDirty = _ring is not null;
+                }
+            }
             RaiseAvailabilityChanged();
         }
         if (!available)
@@ -207,6 +222,8 @@ public sealed class HydroShift2Aio : BackgroundService
     private void SendRingIfDue(long now)
     {
         byte[] ring;
+        int frames;
+        byte interval;
         lock (_lock)
         {
             if (!_ringDirty || _ring is null || now - _lastRingAt < RingMinIntervalMs)
@@ -214,12 +231,19 @@ public sealed class HydroShift2Aio : BackgroundService
                 return;
             }
             ring = _ring;
+            frames = _ringFrames;
+            interval = _ringInterval;
             _ringDirty = false;
         }
         _lastRingAt = now;
-        if (!_hub.Exchange(pipe => _driver.PushRing(pipe, ring), false))
+        if (!_hub.Exchange(pipe => _driver.PushRing(pipe, ring, frames, interval), false))
         {
             ServiceLog.Warn($"[{HydroShift2LcdDriver.Id}] ring write unanswered");
+            lock (_lock)
+            {
+                // A ring effect is set once, so an unanswered upload would never be tried again.
+                _ringDirty |= ReferenceEquals(_ring, ring);
+            }
         }
     }
 
