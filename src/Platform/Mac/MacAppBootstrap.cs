@@ -135,29 +135,23 @@ internal static class MacAppBootstrap
         }
 
         // Lock-screen wake-on-input, as TrayBootstrap wires the Windows helper's
-        // poll: one watch runs while either consumer wants it, and every input
-        // reaches both.
+        // poll: one watch runs while any consumer wants it, and every input
+        // reaches all of them.
         var lockBlackout = app.Services.GetService<Nexus.Service.Lighting.SleepBlackoutCoordinator>();
         var deckWorker = app.Services.GetService<Nexus.Service.Peripherals.StreamDeck.StreamDeckConnectionWorker>();
-        if (lockBlackout is not null || deckWorker is not null)
+        var sentry = app.Services.GetService<Nexus.Service.Sentry.SentryCoordinator>();
+        if (lockBlackout is not null || deckWorker is not null || sentry is not null)
         {
-            var lightingArmed = false;
-            var deckArmed = false;
             var watch = new MacLockInputWatch(() =>
             {
                 lockBlackout?.OnLockScreenInput();
                 deckWorker?.OnLockScreenInput();
+                sentry?.OnLockScreenInput();
             });
-            lockBlackout?.LockInputWatch = enabled =>
-            {
-                lightingArmed = enabled;
-                watch.Set(lightingArmed || deckArmed);
-            };
-            deckWorker?.LockInputWatch = enabled =>
-            {
-                deckArmed = enabled;
-                watch.Set(lightingArmed || deckArmed);
-            };
+            var demand = new Nexus.Service.Lighting.LockInputWatchDemand(3, watch.Set);
+            lockBlackout?.LockInputWatch = demand.Consumer(0);
+            deckWorker?.LockInputWatch = demand.Consumer(1);
+            sentry?.LockInputWatch = demand.Consumer(2);
         }
 
         store.OnChanged += () =>

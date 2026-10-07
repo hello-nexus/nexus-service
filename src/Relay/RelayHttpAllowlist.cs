@@ -57,6 +57,10 @@ public static class RelayHttpAllowlist
         // WebRTC DataChannel direct P2P signaling: the phone POSTs its offer
         // over this same relay HTTP tunnel to upgrade off the relay.
         "/rtc",
+        // Sentry status, arm and disarm. Arming with a lock is gated to the
+        // desktop token in the route, so a relayed phone can only arm a PC that
+        // is already locked.
+        "/sentry",
     };
 
     /// <summary>

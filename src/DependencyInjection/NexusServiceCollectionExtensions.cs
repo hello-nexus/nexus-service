@@ -1921,6 +1921,17 @@ public static class NexusServiceCollectionExtensions
             () => sp.GetRequiredService<Nexus.Service.Peripherals.Hyte.Y70Display.Y70DisplayHeartbeatWorker>().Detected,
             () => sp.GetRequiredService<Nexus.Service.Panel.Streams.StreamedPanelCoordinator>().GetAssignments().Assignments.Count > 0));
         services.AddSingleton<Nexus.Service.Panel.PanelPhonePairingService>();
+
+        // Registered on every OS so GET /sentry can answer supported:false where
+        // no lock input watch is wired (Linux). Hosted so it is built at startup
+        // and a persisted armed state resumes.
+        services.AddSingleton(sp => new Nexus.Service.Sentry.SentryCoordinator(
+            sp.GetRequiredService<Nexus.Service.Persistence.IConfigStore>(),
+            sp.GetRequiredService<Nexus.Service.Panel.PanelPhonePairingService>(),
+            sp.GetRequiredService<Nexus.Service.Cloud.ICloudApiClient>(),
+            sp.GetRequiredService<Nexus.Service.Platform.Power.ISystemPowerProvider>(),
+            sp.GetService<Nexus.Service.Lighting.SessionLockListener>()));
+        services.AddHostedService(sp => sp.GetRequiredService<Nexus.Service.Sentry.SentryCoordinator>());
         services.AddSingleton<Nexus.Service.Panel.PanelDeviceRegistry>();
         services.AddSingleton<Nexus.Service.Panel.PanelAutoPromotion>();
 
