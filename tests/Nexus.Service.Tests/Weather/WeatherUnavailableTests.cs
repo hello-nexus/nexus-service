@@ -51,6 +51,13 @@ public sealed class WeatherUnavailableTests
     }
 
     [Fact]
+    public async Task AFailedLocationLookup_OnTheAutoPath_CarriesItsReason()
+    {
+        var provider = new OpenMeteoWeatherProvider(new StubFactory(new StubHandler(_ => throw new HttpRequestException("No such host is known."))));
+        Assert.Equal(WeatherUnavailable.Network, (await provider.GetCurrentAsync()).Unavailable);
+    }
+
+    [Fact]
     public void AnExceptionCarryingAStatusCode_IsTheWeatherService()
     {
         Assert.Equal(WeatherUnavailable.Service, OpenMeteoWeatherProvider.Classify(new HttpRequestException("bad", null, HttpStatusCode.BadGateway)));

@@ -58,8 +58,6 @@ public sealed class WeatherSnapshot
     /// <summary>Why there is no data (<see cref="WeatherUnavailable"/>); null whenever data is present.</summary>
     public string? Unavailable { get; set; }
 
-    public static WeatherSnapshot Empty => new();
-
     public static WeatherSnapshot UnavailableBecause(string reason) => new() { Unavailable = reason };
 }
 
