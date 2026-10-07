@@ -24,17 +24,10 @@ public static class SentryRoutes
             Results.Json(sentry.GetStatus(), AppJsonContext.Default.SentryStatusResponse))
             .AllowPanel();
 
-        // Locking the PC is a desktop-token action: a relayed or LAN phone can
-        // only arm a PC that is already locked.
-        app.MapPost("/sentry/arm", async (SentryArmBody? body, HttpContext ctx, SentryCoordinator sentry, TokenService tokens) =>
+        // A paired phone may lock first, as it already can through /system/power/lock.
+        app.MapPost("/sentry/arm", async (SentryArmBody? body, SentryCoordinator sentry) =>
         {
             var lockFirst = body?.Lock ?? false;
-            if (lockFirst && !ServiceTokenRequests.HasServiceToken(ctx, tokens))
-            {
-                // Not 401: the panel reads that as an unpaired session and re-pairs.
-                return Error(StatusCodes.Status403Forbidden, "desktop_only");
-            }
-
             return await sentry.ArmAsync(lockFirst) switch
             {
                 SentryCoordinator.ArmOutcome.Armed =>

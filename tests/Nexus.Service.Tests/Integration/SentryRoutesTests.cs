@@ -123,14 +123,21 @@ public sealed class SentryRoutesTests : IClassFixture<SentryAppFactory>
     }
 
     [Fact]
-    public async Task Arming_with_a_lock_is_desktop_only_and_locks_through_the_provider()
+    public async Task A_phone_can_lock_and_arm_through_the_provider()
     {
         _factory.Power.OnLock = () => _sentry.OnLockChanged(true);
+
         var phone = await Phone().PostAsync("/sentry/arm", Json("""{"lock":true}"""));
-        // 403, not 401: the panel treats a 401 as an unpaired session.
-        Assert.Equal(HttpStatusCode.Forbidden, phone.StatusCode);
-        Assert.Equal("desktop_only", (await Body(phone)).GetProperty("error").GetString());
-        Assert.Equal(0, _factory.Power.LockCalls);
+
+        Assert.Equal(HttpStatusCode.OK, phone.StatusCode);
+        Assert.Equal(1, _factory.Power.LockCalls);
+        Assert.True((await Body(phone)).GetProperty("armed").GetBoolean());
+    }
+
+    [Fact]
+    public async Task The_desktop_can_lock_and_arm_through_the_provider()
+    {
+        _factory.Power.OnLock = () => _sentry.OnLockChanged(true);
 
         var desktop = await Desktop().PostAsync("/sentry/arm", Json("""{"lock":true}"""));
 
