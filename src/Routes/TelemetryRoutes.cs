@@ -1,8 +1,12 @@
 using System;
+using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
+using Microsoft.AspNetCore.Http.Features;
+using Nexus.Service.Models;
+using Nexus.Service.Serialization;
 using Nexus.Service.Auth;
 using Nexus.Service.Persistence;
 using Nexus.Service.Telemetry;
@@ -59,7 +63,42 @@ internal static class TelemetryRoutes
                 Enabled = store.Load().Telemetry.CollectAnonymousData,
             });
         }).LocalhostOnly();
+
+        // nexus-web (dashboard and paired panels/phones) relays browser errors here; the same opt-out, scrubbing and caps as service errors apply.
+        app.MapPost("/telemetry/client-errors", async (HttpContext ctx, ErrorReporter reporter) =>
+        {
+            if (ctx.Request.ContentLength is > MaxClientErrorsBytes)
+                return Results.StatusCode(StatusCodes.Status413PayloadTooLarge);
+            var bodySize = ctx.Features.Get<IHttpMaxRequestBodySizeFeature>();
+            if (bodySize is { IsReadOnly: false })
+                bodySize.MaxRequestBodySize = MaxClientErrorsBytes;
+            ClientErrorsBody? body;
+            try
+            {
+                body = await JsonSerializer.DeserializeAsync(ctx.Request.Body, AppJsonContext.Default.ClientErrorsBody, ctx.RequestAborted);
+            }
+            catch (BadHttpRequestException)
+            {
+                return Results.StatusCode(StatusCodes.Status413PayloadTooLarge);
+            }
+            catch (JsonException)
+            {
+                return Results.BadRequest(ApiResponse.Fail("body is malformed"));
+            }
+            if (body?.Errors is null or { Count: 0 or > MaxClientErrors })
+                return Results.BadRequest(ApiResponse.Fail("1 to 10 errors required"));
+            foreach (var e in body.Errors)
+            {
+                if (e.Kind is not ("window-error" or "unhandled-rejection" or "render") || string.IsNullOrEmpty(e.Fingerprint))
+                    continue;
+                reporter.ReportClient(e.Kind, e.Fingerprint, e.Type ?? "", e.Message ?? "", e.Stack ?? "", e.Context, e.Count);
+            }
+            return Results.NoContent();
+        }).AllowPanel();
     }
+
+    private const int MaxClientErrors = 10;
+    private const int MaxClientErrorsBytes = 128 * 1024;
 
     private static async Task DeliverInBackground(FleetEventService fleet, string transitionType)
     {

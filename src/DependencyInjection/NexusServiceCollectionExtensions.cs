@@ -156,6 +156,18 @@ public static class NexusServiceCollectionExtensions
         {
             services.AddHostedService<Nexus.Service.Telemetry.FleetTelemetryWorker>();
         }
+        // Global error reporting: unhandled errors aggregate by fingerprint and ride to nexus-api's /telemetry/errors.
+        if (Nexus.Service.Common.ClientCredential.IsOfficial)
+        {
+            services.AddSingleton<Nexus.Service.Telemetry.IErrorTransport, Nexus.Service.Telemetry.ErrorTransport>();
+            services.AddHostedService<Nexus.Service.Telemetry.ErrorReportWorker>();
+        }
+        else
+        {
+            services.AddSingleton<Nexus.Service.Telemetry.IErrorTransport, Nexus.Service.Telemetry.NullErrorTransport>();
+        }
+        services.AddSingleton<Nexus.Service.Telemetry.ErrorReporter>();
+        services.AddSingleton<Microsoft.Extensions.Logging.ILoggerProvider, Nexus.Service.Telemetry.ErrorLoggerProvider>();
 #if WINDOWS
         // Triggers the IFanControlProvider singleton ctor (which transitively
         // constructs LhmComputer + kicks off its background Open()) right

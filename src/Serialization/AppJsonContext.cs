@@ -1145,6 +1145,9 @@ namespace Nexus.Service.Serialization;
 // Fleet events (install / specs / opt_out / opt_in) posted to nexus-api.
 [JsonSerializable(typeof(Nexus.Service.Telemetry.FleetEventPayload))]
 [JsonSerializable(typeof(Nexus.Service.Telemetry.FleetEventSpecs))]
+[JsonSerializable(typeof(Nexus.Service.Telemetry.ErrorReportPayload))]
+[JsonSerializable(typeof(Nexus.Service.Telemetry.ErrorReportItem))]
+[JsonSerializable(typeof(Nexus.Service.Telemetry.ClientErrorsBody))]
 
 // Fps session upload batch posted to nexus-api.
 [JsonSerializable(typeof(Nexus.Service.Games.FpsUploadPayload))]

@@ -207,6 +207,18 @@ var panelTunnelPort = servicePort + 1;
 var panelTunnelMonitor = new Nexus.Service.Panel.PanelTunnelMonitor(
     (OperatingSystem.IsWindows() || OperatingSystem.IsLinux()) && !testHost && IsLoopbackPortFree(panelTunnelPort) ? panelTunnelPort : null);
 
+static void InstallErrorHooks(Nexus.Service.Telemetry.ErrorReporter reporter)
+{
+    AppDomain.CurrentDomain.UnhandledException += (_, e) =>
+    {
+        if (e.ExceptionObject is Exception ex)
+            reporter.WriteCrashFile(ex);
+    };
+    // Observation only: the exception is deliberately not marked observed, so runtime behavior is unchanged.
+    TaskScheduler.UnobservedTaskException += (_, e) =>
+        reporter.Report(e.Exception, Nexus.Service.Telemetry.ErrorKinds.UnobservedTask, null);
+}
+
 static bool IsLoopbackPortFree(int port)
 {
     try
@@ -475,6 +487,7 @@ if (!testHost)
     Nexus.Service.Lifecycle.BootTimer.Mark("after WireBeatsAndPresence");
     app.Services.GetRequiredService<Nexus.Service.Telemetry.ITelemetry>()
         .Capture(Nexus.Service.Telemetry.TelemetryEvents.AppStarted);
+    InstallErrorHooks(app.Services.GetRequiredService<Nexus.Service.Telemetry.ErrorReporter>());
 }
 
 // Middleware pipeline
@@ -497,6 +510,9 @@ if (!testHost)
         await next(ctx);
     });
 }
+
+// Unhandled request exceptions never reach ILogger under every host, so observe them here (report, then rethrow).
+Nexus.Service.Telemetry.ErrorCaptureMiddleware.UseErrorCapture(app, app.Services.GetRequiredService<Nexus.Service.Telemetry.ErrorReporter>());
 
 var wsOptions = new WebSocketOptions();
 // Real PING/PONG keepalive. KeepAliveTimeout must be set: without it the
