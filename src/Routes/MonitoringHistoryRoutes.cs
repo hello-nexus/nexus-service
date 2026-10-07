@@ -81,34 +81,17 @@ public static class MonitoringHistoryRoutes
 
     internal const string DefaultCpuTempName = "CPU Temperature";
 
-    private static string? s_cpuTempName;
-
-    /// <summary>The CPU temperature series name: the CPU model like the GPU and drive series carry theirs, or the generic label when the model is unknown. Only a successful read is kept.</summary>
-    internal static string ResolveCpuTempName(Func<string?> readModel)
+    /// <summary>
+    /// The CPU temperature series name from a sample's CpuName (which the sampler resolves and
+    /// caches): the model, trimmed, or the generic label when it is unknown. The sampler's own
+    /// placeholder for an unknown model ("CPU") never becomes a series name.
+    /// </summary>
+    internal static string ResolveCpuTempName(string? sampleCpuName)
     {
-        try
-        {
-            var model = readModel();
-            return string.IsNullOrWhiteSpace(model) ? DefaultCpuTempName : model.Trim();
-        }
-        catch
-        {
-            return DefaultCpuTempName;
-        }
-    }
-
-    private static string CachedCpuTempName(ISensorProvider sensors)
-    {
-        if (s_cpuTempName is { } cached)
-        {
-            return cached;
-        }
-        var name = ResolveCpuTempName(sensors.GetCpuModel);
-        if (name != DefaultCpuTempName)
-        {
-            s_cpuTempName = name;
-        }
-        return name;
+        var name = sampleCpuName?.Trim();
+        return string.IsNullOrEmpty(name) || name.Equals("CPU", StringComparison.OrdinalIgnoreCase)
+            ? DefaultCpuTempName
+            : name;
     }
 
     public static void MapMonitoringHistoryEndpoints(this WebApplication app)
@@ -131,7 +114,7 @@ public static class MonitoringHistoryRoutes
             try
             {
                 var adapterLuids = ResolveGpuAdapterLuids(sensors);
-                var cpuTempName = CachedCpuTempName(sensors);
+                var cpuTempName = ResolveCpuTempName(buffer.LatestCpuName);
                 var stepSeconds = MetricsDecimation.StepSecondsFor(Math.Max(0, toSec - fromSec), clampedMaxPoints);
 
                 MetricsHistoryResponse response;

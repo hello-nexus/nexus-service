@@ -45,7 +45,8 @@ public sealed class MonitoringHistoryTailBroadcaster : IMetricsSampleSink
 
         var response = MonitoringHistoryRoutes.BuildHistoryResponse(
             Array.Empty<MetricSample>(), new[] { sample },
-            sample.TsSec, sample.TsSec, MaxPoints, seriesFilter: null, adapterLuids);
+            sample.TsSec, sample.TsSec, MaxPoints, seriesFilter: null, adapterLuids,
+            MonitoringHistoryRoutes.ResolveCpuTempName(sample.CpuName));
 
         var env = WsEnvelope.Build(
             PanelTopics.MonitoringHistoryTail, response, AppJsonContext.Default.MetricsHistoryResponse);

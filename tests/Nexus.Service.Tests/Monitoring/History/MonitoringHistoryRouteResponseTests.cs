@@ -66,12 +66,27 @@ public class MonitoringHistoryRouteResponseTests
     }
 
     [Fact]
-    public void ResolveCpuTempName_UsesTheModel_AndFallsBackWhenUnknownOrFailing()
+    public void ResolveCpuTempName_UsesTheTrimmedModel_AndNeverYieldsTheSamplersPlaceholder()
     {
-        Assert.Equal("AMD Ryzen 7 9800X3D", MonitoringHistoryRoutes.ResolveCpuTempName(() => " AMD Ryzen 7 9800X3D "));
-        Assert.Equal("CPU Temperature", MonitoringHistoryRoutes.ResolveCpuTempName(() => ""));
-        Assert.Equal("CPU Temperature", MonitoringHistoryRoutes.ResolveCpuTempName(() => null));
-        Assert.Equal("CPU Temperature", MonitoringHistoryRoutes.ResolveCpuTempName(() => throw new InvalidOperationException("busy")));
+        Assert.Equal("AMD Ryzen 7 9800X3D", MonitoringHistoryRoutes.ResolveCpuTempName(" AMD Ryzen 7 9800X3D "));
+        Assert.Equal("CPU Temperature", MonitoringHistoryRoutes.ResolveCpuTempName(""));
+        Assert.Equal("CPU Temperature", MonitoringHistoryRoutes.ResolveCpuTempName("   "));
+        Assert.Equal("CPU Temperature", MonitoringHistoryRoutes.ResolveCpuTempName(null));
+        // The sampler's fallback for an unknown model is "CPU": a series name only for the model.
+        Assert.Equal("CPU Temperature", MonitoringHistoryRoutes.ResolveCpuTempName("CPU"));
+        Assert.Equal("CPU Temperature", MonitoringHistoryRoutes.ResolveCpuTempName("cpu"));
+    }
+
+    [Fact]
+    public void TheBuffer_KeepsTheLatestCpuName_AcrossAFlush()
+    {
+        var buffer = new MetricsSampleBuffer();
+        buffer.Append(Scalars(1) with { CpuName = "AMD Ryzen 7 9800X3D" });
+        buffer.Append(Scalars(2) with { CpuName = null });
+        buffer.RemoveThrough(10);
+
+        Assert.Empty(buffer.PendingSnapshot());
+        Assert.Equal("AMD Ryzen 7 9800X3D", buffer.LatestCpuName);
     }
 
     [Fact]

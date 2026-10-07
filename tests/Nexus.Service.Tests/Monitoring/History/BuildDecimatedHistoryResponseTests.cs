@@ -46,6 +46,21 @@ public class BuildDecimatedHistoryResponseTests
         Assert.Equal("AMD Ryzen 7 9800X3D", series.Name);
     }
 
+    [Theory]
+    [InlineData(null)]
+    [InlineData("CPU")]
+    public void BuildDecimatedHistoryResponse_CpuTempSeries_FallsBackToTheGenericNameWhenTheModelIsUnknown(string? sampleCpuName)
+    {
+        var dbScalars = new[] { ScalarSlot(1000, 42, 50) };
+
+        var response = MonitoringHistoryRoutes.BuildDecimatedHistoryResponse(
+            dbScalars, Array.Empty<GpuDecimatedSlot>(), Array.Empty<FanDecimatedSlot>(), Array.Empty<ComponentTempDecimatedSlot>(), Array.Empty<MetricSample>(),
+            fromSec: 1000, toSec: 1000, stepSeconds: 600, seriesFilter: new HashSet<string> { "cpu-temp" }, gpuAdapterLuids: NoLuids,
+            cpuTempName: MonitoringHistoryRoutes.ResolveCpuTempName(sampleCpuName));
+
+        Assert.Equal("CPU Temperature", Assert.Single(response.Series).Name);
+    }
+
     [Fact]
     public void BuildDecimatedHistoryResponse_FpsSlot_ProducesTheFpsSeries()
     {
