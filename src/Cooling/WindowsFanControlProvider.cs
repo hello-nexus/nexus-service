@@ -8,6 +8,7 @@ using Nexus.Service.Persistence;
 using Nexus.Service.Platform;
 using Nexus.Service.Sensors;
 using LibreHardwareMonitor.Hardware;
+using LibreHardwareMonitor.Hardware.Gpu;
 
 namespace Nexus.Service.Cooling;
 
@@ -51,6 +52,14 @@ public sealed class WindowsFanControlProvider : IFanControlProvider, ICoolingPro
     // directions are enforced here, at the write path, so no caller can opt out.
     private readonly Dictionary<string, (ChannelMapping Mapping, ControlMode Mode, float Value)> _calibrationLease = new(StringComparer.Ordinal);
     private readonly object _calibrationLock = new();
+
+    // AMD cards whose fan ADLX drives, by LHM hardware identifier. A miss retries a few
+    // times per card: a service that autostarts can run before the AMD driver's ADLX is ready.
+    private readonly Dictionary<string, AdlxGpuFan> _amdFans = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, (int Attempts, long RetryAtMs)> _amdMisses = new(StringComparer.Ordinal);
+    private AdlxGpuFans? _adlx;
+    private const int AmdMaxAttempts = 5;
+    private const int AmdRetryMs = 30_000;
 
     public WindowsFanControlProvider(LhmComputer lhm, IConfigStore config)
     {
@@ -168,7 +177,7 @@ public sealed class WindowsFanControlProvider : IFanControlProvider, ICoolingPro
         var mapping = mappings.FirstOrDefault(m => m.Id == channelId);
         if (mapping is null) return clamped;
 
-        mapping.ControlSensor.Control.SetSoftware(clamped);
+        WriteDuty(mapping, clamped);
         _softwareControlled.Add(channelId);
         _config.Update(s => s.Cooling.ManualSpeeds[channelId] = clamped);
         return clamped;
@@ -181,7 +190,8 @@ public sealed class WindowsFanControlProvider : IFanControlProvider, ICoolingPro
         var mappings = EnsureDiscovered();
         var mapping = mappings.FirstOrDefault(m => m.Id == channelId);
         if (mapping is null) return;
-        mapping.ControlSensor.Control.SetSoftware(clamped);
+        // CurveEngine retries only a write that throws.
+        if (!WriteDuty(mapping, clamped)) throw new InvalidOperationException($"ADLX refused the fan write for {channelId}");
         _softwareControlled.Add(channelId);
         // No ManualSpeeds write - see interface doc.
     }
@@ -193,7 +203,7 @@ public sealed class WindowsFanControlProvider : IFanControlProvider, ICoolingPro
         var mapping = mappings.FirstOrDefault(m => m.Id == channelId);
         if (mapping is null) return;
 
-        mapping.ControlSensor.Control.SetDefault();
+        WriteDefault(mapping);
         _softwareControlled.Remove(channelId);
         _config.Update(s => s.Cooling.ManualSpeeds.Remove(channelId));
     }
@@ -207,7 +217,7 @@ public sealed class WindowsFanControlProvider : IFanControlProvider, ICoolingPro
         var mappings = EnsureDiscovered();
         foreach (var m in mappings)
         {
-            try { m.ControlSensor.Control.SetDefault(); }
+            try { WriteDefault(m); }
             catch { /* swallow */ }
         }
         _softwareControlled.Clear();
@@ -272,8 +282,8 @@ public sealed class WindowsFanControlProvider : IFanControlProvider, ICoolingPro
         var snapshot = new Dictionary<string, (ChannelMapping, ControlMode, float)>(toCalibrate.Count, StringComparer.Ordinal);
         foreach (var m in toCalibrate)
         {
-            var control = m.ControlSensor.Control;
-            snapshot[m.Id] = (m, control.ControlMode, control.SoftwareValue);
+            var (mode, value) = ReadControlState(m);
+            snapshot[m.Id] = (m, mode, value);
         }
 
         lock (_calibrationLock)
@@ -301,8 +311,8 @@ public sealed class WindowsFanControlProvider : IFanControlProvider, ICoolingPro
         {
             try
             {
-                if (mode == ControlMode.Software) mapping.ControlSensor.Control.SetSoftware(value);
-                else mapping.ControlSensor.Control.SetDefault();
+                if (mode == ControlMode.Software) WriteDuty(mapping, value);
+                else WriteDefault(mapping);
             }
             catch { /* a header that vanished mid-ramp must not strand the others */ }
         }
@@ -318,8 +328,29 @@ public sealed class WindowsFanControlProvider : IFanControlProvider, ICoolingPro
             // the fan and persist that over a valid calibration.
             if (!_calibrationLease.ContainsKey(mapping.Id))
                 throw new OperationCanceledException($"calibration lease revoked for {mapping.Id}");
-            mapping.ControlSensor.Control.SetSoftware(Math.Clamp(duty, 0, 100));
+            WriteDuty(mapping, Math.Clamp(duty, 0, 100));
         }
+    }
+
+    private static bool WriteDuty(ChannelMapping mapping, float duty)
+    {
+        if (mapping.AmdFan is { } amd) return amd.SetDuty((int)MathF.Round(duty));
+        mapping.ControlSensor.Control.SetSoftware(duty);
+        return true;
+    }
+
+    private static void WriteDefault(ChannelMapping mapping)
+    {
+        if (mapping.AmdFan is { } amd) amd.Release();
+        else mapping.ControlSensor.Control.SetDefault();
+    }
+
+    private static (ControlMode Mode, float Value) ReadControlState(ChannelMapping mapping)
+    {
+        if (mapping.AmdFan is { } amd)
+            return amd.Duty is int duty ? (ControlMode.Software, duty) : (ControlMode.Default, 0f);
+        var control = mapping.ControlSensor.Control;
+        return (control.ControlMode, control.SoftwareValue);
     }
 
     private int ReadCalibrationRpm(ChannelMapping mapping)
@@ -418,12 +449,12 @@ public sealed class WindowsFanControlProvider : IFanControlProvider, ICoolingPro
             if (hw.HardwareType == HardwareType.Motherboard)
             {
                 foreach (var sub in hw.SubHardware)
-                    DiscoverFromHardware(result, sub, "Motherboard", layouts, isGpu: false);
+                    DiscoverFromHardware(result, sub, "Motherboard", layouts, isGpu: false, amdFan: null);
             }
 
             // GPU fans
             if (hw.HardwareType is HardwareType.GpuNvidia or HardwareType.GpuAmd or HardwareType.GpuIntel)
-                DiscoverFromHardware(result, hw, "GPU", layouts, isGpu: true);
+                DiscoverFromHardware(result, hw, "GPU", layouts, isGpu: true, ResolveAmdFan(hw));
         }
 
         var currentIds = new HashSet<string>(result.Select(c => $"{c.Id}|{c.Name}"), StringComparer.Ordinal);
@@ -440,7 +471,43 @@ public sealed class WindowsFanControlProvider : IFanControlProvider, ICoolingPro
         return result;
     }
 
-    private static void DiscoverFromHardware(List<ChannelMapping> result, IHardware hw, string prefix, List<string> layouts, bool isGpu)
+    /// <summary>Runs under _discoveryLock. Only cards with a fan load ADLX, so iGPU-only systems never touch it.</summary>
+    private AdlxGpuFan? ResolveAmdFan(IHardware hw)
+    {
+        if (hw.HardwareType != HardwareType.GpuAmd || hw is not GenericGpu gpu
+            || !hw.Sensors.Any(s => s.SensorType == SensorType.Fan))
+        {
+            return null;
+        }
+        var key = hw.Identifier.ToString();
+        if (_amdFans.TryGetValue(key, out var cached))
+        {
+            cached.RetryRelease();
+            return cached;
+        }
+        var now = Environment.TickCount64;
+        var miss = _amdMisses.GetValueOrDefault(key);
+        if (miss.Attempts >= AmdMaxAttempts || now < miss.RetryAtMs) return null;
+        _amdMisses[key] = (miss.Attempts + 1, now + AmdRetryMs);
+
+        _adlx ??= AdlxGpuFans.TryCreate();
+        AdlxGpuFan? fan = null;
+        var pnpMatched = false;
+        if (_adlx is not null) fan = _adlx.Find(gpu.DeviceId, out pnpMatched);
+        if (fan is not null)
+        {
+            _amdFans[key] = fan;
+            _amdMisses.Remove(key);
+        }
+        // ADLX enumerated before the driver brought this card up; the next attempt re-enumerates.
+        else if (_adlx is not null && !pnpMatched)
+        {
+            _adlx = null;
+        }
+        return fan;
+    }
+
+    private static void DiscoverFromHardware(List<ChannelMapping> result, IHardware hw, string prefix, List<string> layouts, bool isGpu, AdlxGpuFan? amdFan)
     {
         var fans = hw.Sensors
             .Where(s => s.SensorType == SensorType.Fan)
@@ -484,6 +551,7 @@ public sealed class WindowsFanControlProvider : IFanControlProvider, ICoolingPro
                 // provider reports them; board headers carry no device.
                 DeviceId = isGpu ? hw.Identifier.ToString() : null,
                 DeviceName = isGpu ? hw.Name : null,
+                AmdFan = amdFan,
             });
         }
     }
@@ -549,6 +617,9 @@ public sealed class WindowsFanControlProvider : IFanControlProvider, ICoolingPro
 
         /// <summary>Product name of <see cref="DeviceId"/>; null for a motherboard header.</summary>
         public string? DeviceName { get; init; }
+
+        /// <summary>Set when ADLX drives this AMD card's fan instead of <see cref="ControlSensor"/>.</summary>
+        public AdlxGpuFan? AmdFan { get; init; }
 
         /// <summary>The join key monitoring sensors carry; <see cref="Id"/> is the control sensor.</summary>
         public string FanSensorId => FanSensor.Identifier.ToString();
