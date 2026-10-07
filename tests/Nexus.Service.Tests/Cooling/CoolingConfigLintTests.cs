@@ -354,6 +354,29 @@ public class CoolingConfigLintTests
     }
 
     [Fact]
+    public void GuardState_ListsTheSavedConfigsHazards_FromWhatTheLastTickSaw()
+    {
+        var fans = new LintFans(T1Channels(), Sources());
+        var store = new InMemoryConfigStore();
+        store.Update(s => s.Cooling.Curves.AddRange(T1Curves()));
+        var controller = new ThermalGuardController(fans, store);
+        Assert.Empty(controller.GetState().Hazards);
+
+        var settings = store.Load();
+        controller.Evaluate(0, settings, settings.Cooling.Curves, new Dictionary<string, int>(), T1Channels(), Sources());
+        var hazards = controller.GetState().Hazards;
+        Assert.Equal(4, hazards.Count);
+        Assert.All(hazards, h => Assert.Equal(CoolingHazardKinds.FollowsStoppableSource, h.Kind));
+
+        store.Update(s => s.Cooling.CurveLintWarnings = false);
+        Assert.Empty(controller.GetState().Hazards);
+
+        store.Update(s => s.Cooling.CurveLintWarnings = true);
+        controller.NotifyIdle();
+        Assert.Empty(controller.GetState().Hazards);
+    }
+
+    [Fact]
     public void ControllerLint_ReportsHazardsAndFixAvailability()
     {
         var fans = new LintFans(T1Channels(), Sources());

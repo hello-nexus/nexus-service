@@ -62,6 +62,8 @@ public sealed class ThermalGuardResponse : ApiResponse
     public bool WatchdogLatched { get; set; }
     /// <summary>Whether the cooling page warns before saving a risky curve config.</summary>
     public bool LintWarnings { get; set; } = true;
+    /// <summary>Fans in the saved config that can stop while the CPU is hot; empty while LintWarnings is off.</summary>
+    public List<LintHazardDto> Hazards { get; set; } = new();
     public ThermalGuardTripDto? LastTrip { get; set; }
     public HealStateDto Heal { get; set; } = new();
     public List<GpuGuardDto> Gpus { get; set; } = new();

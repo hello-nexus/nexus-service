@@ -98,6 +98,8 @@ public sealed class ThermalGuardController
     // The user's limit, read under _gate. Written by SetConfig and loaded at construction.
     private double? _overrideC;
     private bool _detectionResolved;
+    // The fans and sensors the last tick saw, for the hazard list in GetState; null while nothing is driven.
+    private (IReadOnlyList<FanChannel> Channels, IReadOnlyList<TemperatureSource> Sources)? _lastSeen;
     private long? _sinceUtcMs;
     private long? _cpuInfoAtMs;
     private double? _cpuLoad;
@@ -236,10 +238,18 @@ public sealed class ThermalGuardController
     }
 
     /// <summary>Called by the engine on a tick where the Cooling feature is off.</summary>
-    public void NotifyCoolingOff() => Stand(ThermalGuardStates.Inactive);
+    public void NotifyCoolingOff()
+    {
+        lock (_gate) { _lastSeen = null; }
+        Stand(ThermalGuardStates.Inactive);
+    }
 
     /// <summary>Called by the engine on a tick with nothing configured to drive.</summary>
-    public void NotifyIdle() => Stand(ThermalGuardStates.Inactive);
+    public void NotifyIdle()
+    {
+        lock (_gate) { _lastSeen = null; }
+        Stand(ThermalGuardStates.Inactive);
+    }
 
     // The guard stops acting: reset the machine, publish the state, and close any open trip record.
     private void Stand(string state)
@@ -283,6 +293,7 @@ public sealed class ThermalGuardController
         IReadOnlyList<TemperatureSource> sources)
     {
         var cooling = settings.Cooling;
+        lock (_gate) { _lastSeen = (channels, sources); }
         try
         {
             SyncGuardCurve(sources, broadcast: true);
@@ -861,16 +872,31 @@ public sealed class ThermalGuardController
         var hazards = CoolingConfigLint.Analyze(input);
         return new LintCurvesResponse
         {
-            Hazards = hazards.ConvertAll(h => new LintHazardDto
-            {
-                ChannelId = h.ChannelId,
-                ChannelName = h.ChannelName,
-                Kind = h.Kind,
-                RootId = h.RootId,
-                RootName = h.RootName,
-            }),
+            Hazards = hazards.ConvertAll(ToDto),
             FixAvailable = hazards.Count > 0 && CoolingConfigLint.Heal(input, hazards) is not null,
         };
+    }
+
+    private static LintHazardDto ToDto(LintHazard h) => new()
+    {
+        ChannelId = h.ChannelId,
+        ChannelName = h.ChannelName,
+        Kind = h.Kind,
+        RootId = h.RootId,
+        RootName = h.RootName,
+    };
+
+    // Severe hazards in the saved config, judged on what the last tick saw: no hardware read here.
+    private List<LintHazardDto> SavedConfigHazards(CoolingSettings cooling)
+    {
+        (IReadOnlyList<FanChannel> Channels, IReadOnlyList<TemperatureSource> Sources)? seen;
+        lock (_gate) { seen = _lastSeen; }
+        if (!cooling.CurveLintWarnings || seen is not { } last)
+        {
+            return new List<LintHazardDto>();
+        }
+        var input = BuildLintInput(cooling, last.Channels, last.Sources, CoolingSnapshots.Curves(cooling), LintScope.Severe);
+        return CoolingConfigLint.Analyze(input).ConvertAll(ToDto);
     }
 
     /// <summary>Heals the saved config. Returns the new heal state; a no-op when there is nothing to fix.</summary>
@@ -1118,6 +1144,7 @@ public sealed class ThermalGuardController
         {
             Enabled = cooling.ThermalGuardEnabled,
             LintWarnings = cooling.CurveLintWarnings,
+            Hazards = SavedConfigHazards(cooling),
             Heal = BuildHealState(cooling),
             WatchdogLatched = WatchdogLatched,
         };
