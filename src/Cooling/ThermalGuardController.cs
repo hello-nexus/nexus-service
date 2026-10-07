@@ -98,7 +98,7 @@ public sealed class ThermalGuardController
     // The user's limit, read under _gate. Written by SetConfig and loaded at construction.
     private double? _overrideC;
     private bool _detectionResolved;
-    // The fans and sensors the last tick saw, for the hazard list in GetState; null while nothing is driven.
+    // The fans and sensors the last tick saw, for the hazard list in GetState; null until a tick evaluates a non-idle config.
     private (IReadOnlyList<FanChannel> Channels, IReadOnlyList<TemperatureSource> Sources)? _lastSeen;
     private long? _sinceUtcMs;
     private long? _cpuInfoAtMs;
@@ -838,11 +838,12 @@ public sealed class ThermalGuardController
         IReadOnlyList<CurveDocument> curves,
         LintScope scope)
     {
+        var names = CoolingSnapshots.FanNames(cooling);
         var named = channels
             .Select(c => new FanChannel
             {
                 Id = c.Id,
-                Name = cooling.FanNames.TryGetValue(c.Id, out var custom) ? custom : c.Name,
+                Name = names.TryGetValue(c.Id, out var custom) ? custom : c.Name,
                 Kind = c.Kind,
                 IsAio = c.IsAio,
                 IsGpu = c.IsGpu,
@@ -856,9 +857,9 @@ public sealed class ThermalGuardController
             Curves = curves,
             Channels = named,
             Sources = sources,
-            FanRoles = cooling.FanRoles,
+            FanRoles = CoolingSnapshots.FanRoles(cooling),
             ManualSpeeds = CoolingSnapshots.ManualSpeeds(cooling),
-            Uncontrolled = cooling.UncontrolledFanChannels.ToList(),
+            Uncontrolled = CoolingSnapshots.Uncontrolled(cooling),
             LimitC = limit,
             Scope = scope,
         };
@@ -895,8 +896,9 @@ public sealed class ThermalGuardController
         {
             return new List<LintHazardDto>();
         }
-        var input = BuildLintInput(cooling, last.Channels, last.Sources, CoolingSnapshots.Curves(cooling), LintScope.Severe);
-        return CoolingConfigLint.Analyze(input).ConvertAll(ToDto);
+        // The curves' outputs are still the live lists a route thread can edit, so a racing read is retried.
+        return CoolingSnapshots.Retry(() => CoolingConfigLint.Analyze(
+            BuildLintInput(cooling, last.Channels, last.Sources, CoolingSnapshots.Curves(cooling), LintScope.Severe))).ConvertAll(ToDto);
     }
 
     /// <summary>Heals the saved config. Returns the new heal state; a no-op when there is nothing to fix.</summary>

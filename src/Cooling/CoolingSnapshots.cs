@@ -19,20 +19,24 @@ internal static class CoolingSnapshots
 
     public static Dictionary<string, int> ManualSpeeds(CoolingSettings cooling) => Retry(() => Copy(cooling.ManualSpeeds));
 
-    public static Dictionary<string, string> FanRoles(CoolingSettings cooling) => Retry(() =>
-    {
-        var copy = new Dictionary<string, string>(StringComparer.Ordinal);
-        foreach (var kv in cooling.FanRoles)
-        {
-            copy[kv.Key] = kv.Value;
-        }
-        return copy;
-    });
+    public static Dictionary<string, string> FanRoles(CoolingSettings cooling) => Retry(() => Copy(cooling.FanRoles));
+
+    public static Dictionary<string, string> FanNames(CoolingSettings cooling) => Retry(() => Copy(cooling.FanNames));
 
     public static HashSet<string> Uncontrolled(CoolingSettings cooling) =>
         Retry(() => new HashSet<string>(cooling.UncontrolledFanChannels, StringComparer.Ordinal));
 
     public static Dictionary<string, int> GpuManualBackup(CoolingSettings cooling) => Retry(() => Copy(cooling.GpuManualBackup));
+
+    private static Dictionary<string, string> Copy(Dictionary<string, string> source)
+    {
+        var copy = new Dictionary<string, string>(StringComparer.Ordinal);
+        foreach (var kv in source)
+        {
+            copy[kv.Key] = kv.Value;
+        }
+        return copy;
+    }
 
     private static Dictionary<string, int> Copy(Dictionary<string, int> source)
     {
@@ -44,7 +48,7 @@ internal static class CoolingSnapshots
         return copy;
     }
 
-    private static T Retry<T>(Func<T> read)
+    internal static T Retry<T>(Func<T> read)
     {
         for (var i = 1; i < Attempts; i++)
         {
