@@ -151,17 +151,17 @@ public sealed class SentryCoordinatorTests
     }
 
     [Fact]
-    public async Task One_alert_per_hour()
+    public async Task One_alert_per_cooldown()
     {
         var coordinator = Armed();
         Advance(TimeSpan.FromSeconds(11));
         await coordinator.OnInputAsync();
 
-        Advance(TimeSpan.FromMinutes(59));
+        Advance(SentryCoordinator.Cooldown - TimeSpan.FromSeconds(1));
         await coordinator.OnInputAsync();
         Assert.Single(_sent);
 
-        Advance(TimeSpan.FromMinutes(1));
+        Advance(TimeSpan.FromSeconds(1));
         await coordinator.OnInputAsync();
         Assert.Equal(2, _sent.Count);
     }
@@ -517,7 +517,7 @@ public sealed class SentryCoordinatorTests
         Assert.False(status.Armed);
         Assert.Equal(1, status.AlertPhones);
         Assert.Null(status.LastAlertAt);
-        Assert.Equal(3600, status.CooldownSeconds);
+        Assert.Equal((int)SentryCoordinator.Cooldown.TotalSeconds, status.CooldownSeconds);
     }
 
     [Fact]
@@ -527,7 +527,7 @@ public sealed class SentryCoordinatorTests
 
         using var doc = JsonDocument.Parse(json);
         Assert.Equal(JsonValueKind.Null, doc.RootElement.GetProperty("lastAlertAt").ValueKind);
-        Assert.Equal(3600, doc.RootElement.GetProperty("cooldownSeconds").GetInt32());
+        Assert.Equal((int)SentryCoordinator.Cooldown.TotalSeconds, doc.RootElement.GetProperty("cooldownSeconds").GetInt32());
     }
 
     [Theory]
