@@ -1044,10 +1044,42 @@ public sealed class ThermalGuardController
             }
         }
 
+        if (body.LintWarnings is { } lintWarnings)
+        {
+            _store.Update(s => s.Cooling.CurveLintWarnings = lintWarnings);
+        }
+
         if (body.Enabled is { } enabled)
         {
             return (SetEnabled(enabled), null);
         }
+        if (_hub is not null)
+        {
+            PanelTopics.BroadcastCooling(_hub);
+        }
+        return (GetState(), null);
+    }
+
+    /// <summary>Marks an ended trip as dealt with. Refused while the trip is still active; a no-op when there is no trip.</summary>
+    public (ThermalGuardResponse? Result, string? Error) AcknowledgeTrip()
+    {
+        var trip = _store.Load().Cooling.LastThermalTrip;
+        if (trip is null)
+        {
+            return (GetState(), null);
+        }
+        if (trip.EndedAtUtcMs is null)
+        {
+            return (null, "The thermal guard is still active.");
+        }
+        var now = _utcNowMs();
+        _store.Update(s =>
+        {
+            if (s.Cooling.LastThermalTrip is { EndedAtUtcMs: not null } t && t.AcknowledgedAtUtcMs is null)
+            {
+                t.AcknowledgedAtUtcMs = now;
+            }
+        });
         if (_hub is not null)
         {
             PanelTopics.BroadcastCooling(_hub);
@@ -1084,6 +1116,7 @@ public sealed class ThermalGuardController
         var response = new ThermalGuardResponse
         {
             Enabled = cooling.ThermalGuardEnabled,
+            LintWarnings = cooling.CurveLintWarnings,
             Heal = BuildHealState(cooling),
             WatchdogLatched = WatchdogLatched,
         };
@@ -1126,6 +1159,8 @@ public sealed class ThermalGuardController
                     PeakC = live ? Math.Max(t.PeakC, _cpu.PeakC) : t.PeakC,
                     Reason = t.Reason,
                     Escalated = t.Escalated || _cpu.Escalated,
+                    EndedAtUtcMs = t.EndedAtUtcMs,
+                    Acknowledged = t.AcknowledgedAtUtcMs is not null,
                 };
             }
         }

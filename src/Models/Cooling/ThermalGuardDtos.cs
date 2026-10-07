@@ -9,6 +9,9 @@ public sealed class ThermalGuardTripDto
     /// <summary>"limit" | "cooling-loss".</summary>
     public string Reason { get; set; } = "";
     public bool Escalated { get; set; }
+    /// <summary>Null while the trip is still active.</summary>
+    public long? EndedAtUtcMs { get; set; }
+    public bool Acknowledged { get; set; }
 }
 
 public sealed class HealChannelDto
@@ -57,6 +60,8 @@ public sealed class ThermalGuardResponse : ApiResponse
     public long? SinceUtcMs { get; set; }
     /// <summary>True after repeated cooling-engine stalls: Nexus writes no fan until restart or a guard toggle.</summary>
     public bool WatchdogLatched { get; set; }
+    /// <summary>Whether the cooling page warns before saving a risky curve config.</summary>
+    public bool LintWarnings { get; set; } = true;
     public ThermalGuardTripDto? LastTrip { get; set; }
     public HealStateDto Heal { get; set; } = new();
     public List<GpuGuardDto> Gpus { get; set; } = new();
@@ -68,6 +73,7 @@ public sealed class SetThermalGuardConfigBody
     public bool? Enabled { get; set; }
     public double? LimitOverrideC { get; set; }
     public bool? ClearLimitOverride { get; set; }
+    public bool? LintWarnings { get; set; }
 }
 
 public sealed class LintHazardDto

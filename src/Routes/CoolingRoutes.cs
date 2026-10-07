@@ -76,6 +76,16 @@ public static class CoolingRoutes
             return error is not null ? Results.Ok(ApiResponse.Fail(error)) : Results.Ok(result);
         });
 
+        app.MapPost("/cooling/guard/trip/acknowledge", (ThermalGuardController guard, FeatureGates gates) =>
+        {
+            if (!gates.Cooling)
+            {
+                return Results.Conflict(new FeatureDisabledResponse { Feature = FeatureNames.Cooling });
+            }
+            var (result, error) = guard.AcknowledgeTrip();
+            return error is not null ? Results.Ok(ApiResponse.Fail(error)) : Results.Ok(result);
+        });
+
         app.MapPost("/cooling/curves/lint", (SetCurvesBody body, ThermalGuardController guard) =>
             guard.Lint(body));
 

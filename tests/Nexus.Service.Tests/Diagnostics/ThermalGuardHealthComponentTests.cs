@@ -53,4 +53,26 @@ public class ThermalGuardHealthComponentTests
         Assert.Contains("CPU reached its temperature limit", recent.Detail);
         Assert.Contains("active=False", recent.Detail);
     }
+
+    [Fact]
+    public void AnAcknowledgedTrip_ProducesNoComponent_SoTheTileGoesGreen()
+    {
+        var result = DiagnosticsHealthModel.Compute(
+            smart: new SmartSnapshot { Supported = true, Drives = Array.Empty<SmartDriveInfo>() },
+            cooling: new CoolingStallSnapshot(true, Array.Empty<CoolingStallDevice>()),
+            gpu: GpuHealthSnapshot.Unsupported,
+            counts30d: new Dictionary<string, int>(),
+            lastMemoryTest: null,
+            pnp: new PnpProblemSnapshot(true, Array.Empty<PnpProblemDevice>()),
+            knownGpuModels: Array.Empty<string>(),
+            windowsSupported: true,
+            generatedAtUtc: Now,
+            thermalTrip: new ThermalGuardTripRecord
+            {
+                AtUtcMs = Ms(Now.AddHours(-3)), EndedAtUtcMs = Ms(Now.AddHours(-2)), AcknowledgedAtUtcMs = Ms(Now.AddHours(-1)),
+                PeakC = 96, Reason = "limit",
+            });
+
+        Assert.DoesNotContain(result.Components, c => c.Id == "cooling:thermal-guard");
+    }
 }

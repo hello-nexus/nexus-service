@@ -394,7 +394,8 @@ public sealed class DiagnosticsHealthModel
     /// <summary>Act while the guard is tripped or escalated, watch for a day after it ends.</summary>
     private static void AddThermalGuardComponent(List<HealthComponent> components, ThermalGuardTripRecord? trip, DateTime generatedAtUtc)
     {
-        if (trip is null)
+        // An acknowledged trip is dealt with: no component, so the tile goes green.
+        if (trip is null || trip.AcknowledgedAtUtcMs is not null)
         {
             return;
         }

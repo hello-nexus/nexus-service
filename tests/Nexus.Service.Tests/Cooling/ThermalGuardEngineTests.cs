@@ -697,6 +697,98 @@ public class ThermalGuardEngineTests
     }
 
     [Fact]
+    public void AcknowledgingAnEndedTrip_MarksItAndTheStateReportsIt()
+    {
+        var (_, fans, store, _) = Build();
+        var guard = new ThermalGuardController(fans, store, null, null, null, null, () => 5_000);
+        store.Update(s => s.Cooling.LastThermalTrip = new ThermalGuardTripRecord
+        {
+            AtUtcMs = 1_000, EndedAtUtcMs = 2_000, PeakC = 99, Reason = ThermalTripReasons.Limit,
+        });
+        Assert.False(guard.GetState().LastTrip!.Acknowledged);
+        Assert.Equal(2_000, guard.GetState().LastTrip!.EndedAtUtcMs);
+
+        var (state, error) = guard.AcknowledgeTrip();
+
+        Assert.Null(error);
+        Assert.True(state!.LastTrip!.Acknowledged);
+        Assert.Equal(5_000, store.Load().Cooling.LastThermalTrip!.AcknowledgedAtUtcMs);
+    }
+
+    [Fact]
+    public void AcknowledgingAnActiveTrip_IsRefused_AndNothingChanges()
+    {
+        var (_, fans, store, _) = Build();
+        var live = new ThermalGuardController(fans, store);
+        // The record is written after the controller exists, so the restart cleanup has not closed it.
+        store.Update(s => s.Cooling.LastThermalTrip = new ThermalGuardTripRecord { AtUtcMs = 1_000, PeakC = 99, Reason = ThermalTripReasons.Limit });
+
+        var (state, error) = live.AcknowledgeTrip();
+
+        Assert.Null(state);
+        Assert.Equal("The thermal guard is still active.", error);
+        Assert.Null(store.Load().Cooling.LastThermalTrip!.AcknowledgedAtUtcMs);
+    }
+
+    [Fact]
+    public void AcknowledgingWithNoTrip_IsANoOp()
+    {
+        var (_, fans, store, _) = Build();
+        var guard = new ThermalGuardController(fans, store);
+        var changes = 0;
+        store.OnChanged += () => changes++;
+
+        var (state, error) = guard.AcknowledgeTrip();
+
+        Assert.Null(error);
+        Assert.NotNull(state);
+        Assert.Equal(0, changes);
+    }
+
+    [Fact]
+    public void ANewTrip_ReplacesAnAcknowledgedRecordUnacknowledged()
+    {
+        var (engine, fans, store, clock) = Build();
+        store.Update(s => s.Cooling.LastThermalTrip = new ThermalGuardTripRecord
+        {
+            AtUtcMs = 1, EndedAtUtcMs = 2, AcknowledgedAtUtcMs = 3, PeakC = 90, Reason = ThermalTripReasons.Limit,
+        });
+
+        Trip(engine, fans, clock);
+
+        var trip = store.Load().Cooling.LastThermalTrip!;
+        Assert.NotEqual(1, trip.AtUtcMs);
+        Assert.Null(trip.AcknowledgedAtUtcMs);
+        Assert.Null(trip.EndedAtUtcMs);
+    }
+
+    [Fact]
+    public void LintWarnings_DefaultOn_ArePartiallyUpdatable_AndDoNotStopTheAutoHeal()
+    {
+        Assert.True(new CoolingSettings().CurveLintWarnings);
+        var missingKey = JsonSerializer.Deserialize("{\"cooling\":{}}", PersistenceJsonContext.Default.NexusSettings)!;
+        Assert.True(missingKey.Cooling.CurveLintWarnings);
+
+        var (engine, fans, store, clock) = Build();
+        var guard = new ThermalGuardController(fans, store);
+        Assert.True(guard.GetState().LintWarnings);
+
+        var (state, error) = guard.SetConfig(new SetThermalGuardConfigBody { LintWarnings = false });
+        Assert.Null(error);
+        Assert.False(state!.LintWarnings);
+        Assert.True(state.Enabled);
+        Assert.False(store.Load().Cooling.CurveLintWarnings);
+
+        // The trip-end auto-heal does not consult the setting: the config here has a hazard.
+        var e = new CurveEngine(fans, store, new MultiplexHub(), null, guard) { Clock = () => clock[0] };
+        Trip(e, fans, clock);
+        fans.CpuTemp = 50f;
+        e.Tick();
+        CoolDown(e, clock);
+        Assert.NotNull(store.Load().Cooling.HealSnapshot);
+    }
+
+    [Fact]
     public void KeepingAHeal_ClearsTheUndoSnapshotAndTheHealedList_ButKeepsTheCurves()
     {
         var (_, fans, store, _) = Build();

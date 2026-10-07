@@ -1012,6 +1012,8 @@ public sealed class CoolingSettings
     public string? PreferredGpuId { get; set; }
     /// <summary>CPU thermal guard master switch. On by default; a settings file without the key reads as on.</summary>
     public bool ThermalGuardEnabled { get; set; } = true;
+    /// <summary>Whether the cooling page warns before saving a curve config that can stall a CPU fan. Advisory only: the lint route and auto-heal are unaffected. A missing key counts as on.</summary>
+    public bool CurveLintWarnings { get; set; } = true;
     /// <summary>User-set CPU limit in C, null = automatic. Wins over the detected limit, whatever its source.</summary>
     public double? ThermalGuardLimitOverrideC { get; set; }
     /// <summary>The curves as they were before the last auto-heal, restored by undo. Null when there is nothing to undo.</summary>
@@ -1056,6 +1058,8 @@ public sealed class ThermalGuardTripRecord
     public bool Escalated { get; set; }
     /// <summary>Null while the trip is still active.</summary>
     public long? EndedAtUtcMs { get; set; }
+    /// <summary>Set when the user acknowledged the ended trip; Diagnostics stops reporting it. A new trip replaces the record.</summary>
+    public long? AcknowledgedAtUtcMs { get; set; }
 }
 
 /// <summary>One user-saved cooling configuration. Holds fan-to-curve assignments rather than copies of the curves, so the curve library stays shared and editing a curve is visible to every preset that uses it.</summary>
