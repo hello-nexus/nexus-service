@@ -406,9 +406,7 @@ public sealed class DiagnosticsHealthModel
         }
         var cause = trip.Reason == "cooling-loss" ? "fans were not cooling the CPU" : "CPU reached its temperature limit";
         var severity = active ? HealthStatuses.Act : HealthStatuses.Watch;
-        var summary = active
-            ? $"CPU thermal guard active: {cause}, peak {trip.PeakC:0} C"
-            : $"CPU thermal guard tripped in the last day: {cause}, peak {trip.PeakC:0} C";
+        var summary = $"Thermal guard tripped, peak {trip.PeakC:0} C";
         components.Add(new HealthComponent
         {
             Id = "cooling:thermal-guard",
@@ -418,7 +416,7 @@ public sealed class DiagnosticsHealthModel
             Reasons = new List<HealthComponentReason>
             {
                 new("cooling.thermalGuardTrip", severity, summary,
-                    $"reason={trip.Reason} peakC={trip.PeakC:0.0} escalated={trip.Escalated} at={trip.AtUtcMs}"),
+                    $"cause={cause} active={active} reason={trip.Reason} peakC={trip.PeakC:0.0} escalated={trip.Escalated} at={trip.AtUtcMs}"),
             },
         });
     }
