@@ -5,7 +5,7 @@ using Microsoft.Extensions.Hosting;
 
 namespace Nexus.Service.Telemetry;
 
-/// <summary>First flush about a minute after start (delivers a leftover crash file), then every few minutes.</summary>
+/// <summary>Flushes after a short startup delay, which also delivers a leftover crash file, then on a fixed interval.</summary>
 internal sealed class ErrorReportWorker : BackgroundService
 {
     private static readonly TimeSpan FirstDelay = TimeSpan.FromMinutes(1);

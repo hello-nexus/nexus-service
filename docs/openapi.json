@@ -1151,6 +1151,18 @@
         }
       }
     },
+    "/telemetry/client-errors": {
+      "post": {
+        "tags": [
+          "Nexus"
+        ],
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        }
+      }
+    },
     "/onboarding": {
       "get": {
         "tags": [
@@ -1501,6 +1513,124 @@
           },
           "required": true
         },
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        }
+      }
+    },
+    "/cooling/guard": {
+      "get": {
+        "tags": [
+          "Nexus"
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ThermalGuardResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/cooling/guard/config": {
+      "post": {
+        "tags": [
+          "Nexus"
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SetThermalGuardConfigBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        }
+      }
+    },
+    "/cooling/guard/trip/acknowledge": {
+      "post": {
+        "tags": [
+          "Nexus"
+        ],
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        }
+      }
+    },
+    "/cooling/curves/lint": {
+      "post": {
+        "tags": [
+          "Nexus"
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SetCurvesBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LintCurvesResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/cooling/heal": {
+      "post": {
+        "tags": [
+          "Nexus"
+        ],
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        }
+      }
+    },
+    "/cooling/heal/keep": {
+      "post": {
+        "tags": [
+          "Nexus"
+        ],
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        }
+      }
+    },
+    "/cooling/heal/undo": {
+      "post": {
+        "tags": [
+          "Nexus"
+        ],
         "responses": {
           "200": {
             "description": "OK"
@@ -6465,6 +6595,15 @@
         "tags": [
           "Nexus"
         ],
+        "parameters": [
+          {
+            "name": "hub",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
         "responses": {
           "200": {
             "description": "OK"
@@ -6476,6 +6615,15 @@
       "put": {
         "tags": [
           "Nexus"
+        ],
+        "parameters": [
+          {
+            "name": "hub",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          }
         ],
         "requestBody": {
           "content": {
@@ -6499,6 +6647,15 @@
         "tags": [
           "Nexus"
         ],
+        "parameters": [
+          {
+            "name": "hub",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
         "responses": {
           "200": {
             "description": "OK"
@@ -6508,6 +6665,15 @@
       "put": {
         "tags": [
           "Nexus"
+        ],
+        "parameters": [
+          {
+            "name": "hub",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          }
         ],
         "requestBody": {
           "content": {
@@ -6531,6 +6697,15 @@
         "tags": [
           "Nexus"
         ],
+        "parameters": [
+          {
+            "name": "hub",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
         "responses": {
           "200": {
             "description": "OK"
@@ -6540,6 +6715,15 @@
       "put": {
         "tags": [
           "Nexus"
+        ],
+        "parameters": [
+          {
+            "name": "hub",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          }
         ],
         "requestBody": {
           "content": {
@@ -11674,6 +11858,134 @@
         }
       }
     },
+    "/dashboard/presets": {
+      "get": {
+        "tags": [
+          "Nexus"
+        ],
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "Nexus"
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PanelPresetNameBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        }
+      }
+    },
+    "/dashboard/presets/seed": {
+      "post": {
+        "tags": [
+          "Nexus"
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DashboardPresetSeedBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        }
+      }
+    },
+    "/dashboard/presets/{presetId}": {
+      "put": {
+        "tags": [
+          "Nexus"
+        ],
+        "parameters": [
+          {
+            "name": "presetId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PanelPresetNameBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "Nexus"
+        ],
+        "parameters": [
+          {
+            "name": "presetId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        }
+      }
+    },
+    "/dashboard/presets/{presetId}/activate": {
+      "post": {
+        "tags": [
+          "Nexus"
+        ],
+        "parameters": [
+          {
+            "name": "presetId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        }
+      }
+    },
     "/panel/status": {
       "get": {
         "tags": [
@@ -13735,6 +14047,58 @@
         "tags": [
           "Nexus"
         ],
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        }
+      }
+    },
+    "/devices/lianli-wireless/aio-screen/{mac}": {
+      "get": {
+        "tags": [
+          "Nexus"
+        ],
+        "parameters": [
+          {
+            "name": "mac",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        }
+      },
+      "put": {
+        "tags": [
+          "Nexus"
+        ],
+        "parameters": [
+          {
+            "name": "mac",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/Slv3AioScreenRequest"
+              }
+            }
+          },
+          "required": true
+        },
         "responses": {
           "200": {
             "description": "OK"
@@ -16422,6 +16786,38 @@
           }
         }
       },
+      "DashboardPreset": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "layout": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/PanelLayoutDto"
+              }
+            ]
+          }
+        }
+      },
+      "DashboardPresetSeedBody": {
+        "type": "object",
+        "properties": {
+          "presets": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/DashboardPreset"
+            }
+          }
+        }
+      },
       "DeckConfig": { },
       "DeleteResponse": {
         "type": "object",
@@ -19017,6 +19413,44 @@
           }
         }
       },
+      "GpuGuardDto": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "tempC": {
+            "pattern": "^-?(?:0|[1-9]\\d*)(?:\\.\\d+)?(?:[eE][+-]?\\d+)?$",
+            "type": [
+              "null",
+              "number",
+              "string"
+            ],
+            "format": "double"
+          },
+          "limitC": {
+            "pattern": "^-?(?:0|[1-9]\\d*)(?:\\.\\d+)?(?:[eE][+-]?\\d+)?$",
+            "type": [
+              "null",
+              "number",
+              "string"
+            ],
+            "format": "double"
+          },
+          "limitSource": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "state": {
+            "type": "string"
+          }
+        }
+      },
       "GpuHealthResponse": {
         "type": "object",
         "properties": {
@@ -19429,6 +19863,43 @@
               "null",
               "string"
             ]
+          }
+        }
+      },
+      "HealChannelDto": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "hazard": {
+            "type": "string"
+          }
+        }
+      },
+      "HealStateDto": {
+        "type": "object",
+        "properties": {
+          "undoAvailable": {
+            "type": "boolean"
+          },
+          "healedAtUtcMs": {
+            "pattern": "^-?(?:0|[1-9]\\d*)$",
+            "type": [
+              "null",
+              "integer",
+              "string"
+            ],
+            "format": "int64"
+          },
+          "channels": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/HealChannelDto"
+            }
           }
         }
       },
@@ -20129,6 +20600,47 @@
               "null",
               "string"
             ]
+          },
+          "port": {
+            "pattern": "^-?(?:0|[1-9]\\d*)$",
+            "type": [
+              "null",
+              "integer",
+              "string"
+            ],
+            "format": "int32"
+          },
+          "ring": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "splitRings": {
+            "type": [
+              "null",
+              "boolean"
+            ]
+          },
+          "resetPort": {
+            "type": [
+              "null",
+              "boolean"
+            ]
+          },
+          "mergeOrder": {
+            "type": [
+              "null",
+              "array"
+            ],
+            "items": {
+              "pattern": "^-?(?:0|[1-9]\\d*)$",
+              "type": [
+                "integer",
+                "string"
+              ],
+              "format": "int32"
+            }
           }
         }
       },
@@ -20182,6 +20694,12 @@
             "items": {
               "type": "string"
             }
+          },
+          "argbSync": {
+            "type": [
+              "null",
+              "boolean"
+            ]
           }
         }
       },
@@ -20663,6 +21181,46 @@
               "string"
             ],
             "format": "double"
+          }
+        }
+      },
+      "LintCurvesResponse": {
+        "type": "object",
+        "properties": {
+          "hazards": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/LintHazardDto"
+            }
+          },
+          "fixAvailable": {
+            "type": "boolean"
+          },
+          "error": {
+            "type": "boolean"
+          },
+          "msg": {
+            "type": "string"
+          }
+        }
+      },
+      "LintHazardDto": {
+        "type": "object",
+        "properties": {
+          "channelId": {
+            "type": "string"
+          },
+          "channelName": {
+            "type": "string"
+          },
+          "kind": {
+            "type": "string"
+          },
+          "rootId": {
+            "type": "string"
+          },
+          "rootName": {
+            "type": "string"
           }
         }
       },
@@ -22801,6 +23359,21 @@
               {
                 "$ref": "#/components/schemas/PanelLayoutDto"
               }
+            ]
+          },
+          "dashboardPresets": {
+            "type": [
+              "null",
+              "array"
+            ],
+            "items": {
+              "$ref": "#/components/schemas/DashboardPreset"
+            }
+          },
+          "dashboardActivePresetId": {
+            "type": [
+              "null",
+              "string"
             ]
           },
           "dashboardGaugeGradient": {
@@ -25026,6 +25599,38 @@
           }
         }
       },
+      "SetThermalGuardConfigBody": {
+        "type": "object",
+        "properties": {
+          "enabled": {
+            "type": [
+              "null",
+              "boolean"
+            ]
+          },
+          "limitOverrideC": {
+            "pattern": "^-?(?:0|[1-9]\\d*)(?:\\.\\d+)?(?:[eE][+-]?\\d+)?$",
+            "type": [
+              "null",
+              "number",
+              "string"
+            ],
+            "format": "double"
+          },
+          "clearLimitOverride": {
+            "type": [
+              "null",
+              "boolean"
+            ]
+          },
+          "lintWarnings": {
+            "type": [
+              "null",
+              "boolean"
+            ]
+          }
+        }
+      },
       "SetTrackingBody": {
         "type": "object",
         "properties": {
@@ -25191,6 +25796,77 @@
           }
         }
       },
+      "Slv3AioScreenRequest": {
+        "type": "object",
+        "properties": {
+          "brightness": {
+            "pattern": "^-?(?:0|[1-9]\\d*)$",
+            "type": [
+              "null",
+              "integer",
+              "string"
+            ],
+            "format": "int32"
+          },
+          "theme": {
+            "pattern": "^-?(?:0|[1-9]\\d*)$",
+            "type": [
+              "null",
+              "integer",
+              "string"
+            ],
+            "format": "int32"
+          },
+          "labelColor": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "valueColor": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "unitColor": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "showCpuTemp": {
+            "type": [
+              "null",
+              "boolean"
+            ]
+          },
+          "showCpuLoad": {
+            "type": [
+              "null",
+              "boolean"
+            ]
+          },
+          "showGpuTemp": {
+            "type": [
+              "null",
+              "boolean"
+            ]
+          },
+          "showGpuLoad": {
+            "type": [
+              "null",
+              "boolean"
+            ]
+          },
+          "showFanSpeed": {
+            "type": [
+              "null",
+              "boolean"
+            ]
+          }
+        }
+      },
       "Slv3ChainLightingRequest": {
         "type": "object",
         "properties": {
@@ -25250,6 +25926,12 @@
             "items": {
               "$ref": "#/components/schemas/Slv3LaneDto"
             }
+          },
+          "motherboardArgb": {
+            "type": [
+              "null",
+              "boolean"
+            ]
           }
         }
       },
@@ -26619,6 +27301,12 @@
             "items": {
               "type": "string"
             }
+          },
+          "argbSync": {
+            "type": [
+              "null",
+              "boolean"
+            ]
           }
         }
       },
@@ -26928,6 +27616,144 @@
               "null",
               "string"
             ]
+          }
+        }
+      },
+      "ThermalGuardResponse": {
+        "type": "object",
+        "properties": {
+          "enabled": {
+            "type": "boolean"
+          },
+          "state": {
+            "type": "string"
+          },
+          "guardTempC": {
+            "pattern": "^-?(?:0|[1-9]\\d*)(?:\\.\\d+)?(?:[eE][+-]?\\d+)?$",
+            "type": [
+              "null",
+              "number",
+              "string"
+            ],
+            "format": "double"
+          },
+          "limitC": {
+            "pattern": "^-?(?:0|[1-9]\\d*)(?:\\.\\d+)?(?:[eE][+-]?\\d+)?$",
+            "type": [
+              "null",
+              "number",
+              "string"
+            ],
+            "format": "double"
+          },
+          "limitSource": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "detectedLimitC": {
+            "pattern": "^-?(?:0|[1-9]\\d*)(?:\\.\\d+)?(?:[eE][+-]?\\d+)?$",
+            "type": [
+              "null",
+              "number",
+              "string"
+            ],
+            "format": "double"
+          },
+          "detectedLimitSource": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "limitOverrideC": {
+            "pattern": "^-?(?:0|[1-9]\\d*)(?:\\.\\d+)?(?:[eE][+-]?\\d+)?$",
+            "type": [
+              "null",
+              "number",
+              "string"
+            ],
+            "format": "double"
+          },
+          "sinceUtcMs": {
+            "pattern": "^-?(?:0|[1-9]\\d*)$",
+            "type": [
+              "null",
+              "integer",
+              "string"
+            ],
+            "format": "int64"
+          },
+          "watchdogLatched": {
+            "type": "boolean"
+          },
+          "lintWarnings": {
+            "type": "boolean"
+          },
+          "lastTrip": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/ThermalGuardTripDto"
+              }
+            ]
+          },
+          "heal": {
+            "$ref": "#/components/schemas/HealStateDto"
+          },
+          "gpus": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/GpuGuardDto"
+            }
+          },
+          "error": {
+            "type": "boolean"
+          },
+          "msg": {
+            "type": "string"
+          }
+        }
+      },
+      "ThermalGuardTripDto": {
+        "type": "object",
+        "properties": {
+          "atUtcMs": {
+            "pattern": "^-?(?:0|[1-9]\\d*)$",
+            "type": [
+              "integer",
+              "string"
+            ],
+            "format": "int64"
+          },
+          "peakC": {
+            "pattern": "^-?(?:0|[1-9]\\d*)(?:\\.\\d+)?(?:[eE][+-]?\\d+)?$",
+            "type": [
+              "number",
+              "string"
+            ],
+            "format": "double"
+          },
+          "reason": {
+            "type": "string"
+          },
+          "escalated": {
+            "type": "boolean"
+          },
+          "endedAtUtcMs": {
+            "pattern": "^-?(?:0|[1-9]\\d*)$",
+            "type": [
+              "null",
+              "integer",
+              "string"
+            ],
+            "format": "int64"
+          },
+          "acknowledged": {
+            "type": "boolean"
           }
         }
       },

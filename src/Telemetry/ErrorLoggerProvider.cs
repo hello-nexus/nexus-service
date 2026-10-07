@@ -7,6 +7,8 @@ namespace Nexus.Service.Telemetry;
 /// <summary>Forwards Error/Critical log entries that carry an exception (unhandled request exceptions, crashed hosted services) to <see cref="ErrorReporter"/>. Observes only; the entry still reaches every other provider.</summary>
 internal sealed class ErrorLoggerProvider : ILoggerProvider
 {
+    [ThreadStatic] private static bool t_inLog;
+
     private readonly IServiceProvider _services;
 
     public ErrorLoggerProvider(IServiceProvider services) => _services = services;
@@ -49,9 +51,17 @@ internal sealed class ErrorLoggerProvider : ILoggerProvider
         {
             if (logLevel < LogLevel.Error || exception is null)
                 return;
-            if (IsMarked(exception))
+            if (t_inLog || IsMarked(exception))
                 return;
-            _owner.Reporter()?.Report(exception, ErrorKinds.Logged, _category);
+            t_inLog = true;
+            try
+            {
+                _owner.Reporter()?.Report(exception, ErrorKinds.Logged, _category);
+            }
+            finally
+            {
+                t_inLog = false;
+            }
         }
     }
 }

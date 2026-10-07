@@ -7,6 +7,7 @@ using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.TestHost;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using Nexus.Service.Auth;
@@ -17,9 +18,18 @@ namespace Nexus.Service.Tests.Integration;
 
 public sealed class ErrorReportingIntegrationTests : IClassFixture<NexusAppFactory>
 {
-    private readonly NexusAppFactory _factory;
+    private static readonly string CrashFile =
+        Path.Combine(Path.GetTempPath(), "nexus-err-itest-" + Guid.NewGuid().ToString("N"), "error-crash.json");
 
-    public ErrorReportingIntegrationTests(NexusAppFactory factory) => _factory = factory;
+    private readonly Microsoft.AspNetCore.Mvc.Testing.WebApplicationFactory<Program> _factory;
+
+    // The shared host reports nothing in a non-official build, so the reporter is swapped for a capturing one on a temp crash file.
+    public ErrorReportingIntegrationTests(NexusAppFactory factory) =>
+        _factory = factory.WithWebHostBuilder(b => b.ConfigureTestServices(s =>
+        {
+            s.RemoveAll<ErrorReporter>();
+            s.AddSingleton(sp => new ErrorReporter(sp.GetRequiredService<IConfigStore>(), new NullErrorTransport(), TimeProvider.System, CrashFile));
+        }));
 
     private string Token => _factory.Services.GetRequiredService<TokenService>().Token;
 
@@ -51,6 +61,10 @@ public sealed class ErrorReportingIntegrationTests : IClassFixture<NexusAppFacto
         Assert.Equal(StatusCodes.Status204NoContent, await PostClientErrors(OneError.Replace("abc", "fp-" + Guid.NewGuid().ToString("N"))));
         Assert.Equal(before + 1, reporter.PendingCount);
     }
+
+    [Fact]
+    public async Task Client_errors_skips_null_elements_instead_of_failing()
+        => Assert.Equal(StatusCodes.Status204NoContent, await PostClientErrors("{\"errors\":[null]}"));
 
     [Fact]
     public async Task Client_errors_requires_a_token()
@@ -105,9 +119,34 @@ public sealed class ErrorReportingIntegrationTests : IClassFixture<NexusAppFacto
         var services = new ServiceCollection();
         services.AddSingleton<IConfigStore>(new JsonConfigStore(Path.Combine(Path.GetTempPath(), "nexus-err-" + Guid.NewGuid().ToString("N"), "settings.json")));
         services.AddSingleton<IErrorTransport, NullErrorTransport>();
-        services.AddSingleton<ErrorReporter>();
+        services.AddSingleton(sp => new ErrorReporter(sp.GetRequiredService<IConfigStore>(), new NullErrorTransport(), TimeProvider.System, CrashFile));
         var sp = services.BuildServiceProvider();
         return (sp.GetRequiredService<ErrorReporter>(), sp);
+    }
+
+    [Fact]
+    public async Task An_exception_on_an_aborted_request_is_marked_but_not_reported()
+    {
+        var reporter = _factory.Services.GetRequiredService<ErrorReporter>();
+        var app = new ApplicationBuilder(_factory.Services);
+        app.UseErrorCapture(reporter);
+        app.Run(_ => throw new InvalidOperationException("aborted"));
+        var pipeline = app.Build();
+        using var cts = new CancellationTokenSource();
+        cts.Cancel();
+        var ctx = new DefaultHttpContext { RequestAborted = cts.Token };
+
+        var before = reporter.PendingCount;
+        var ex = await Assert.ThrowsAsync<InvalidOperationException>(() => pipeline(ctx));
+        Assert.Equal(before, reporter.PendingCount);
+        Assert.True(ex.Data.Contains(ErrorKinds.ReportedMarker));
+    }
+
+    [Fact]
+    public void Relay_allows_only_the_client_errors_telemetry_route()
+    {
+        Assert.True(Nexus.Service.Relay.RelayHttpAllowlist.IsAllowed("POST", "/telemetry/client-errors"));
+        Assert.False(Nexus.Service.Relay.RelayHttpAllowlist.IsAllowed("POST", "/telemetry/consent"));
     }
 
     [Fact]

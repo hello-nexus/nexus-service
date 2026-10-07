@@ -99,20 +99,27 @@ public class ErrorReporterTests : IDisposable
         Assert.Equal(1, r.PendingCount);
     }
 
-    [Fact]
-    public void Scrub_replaces_profile_path_user_email_and_ip()
+    [Theory]
+    [InlineData(@"open C:\Users\alice\AppData\x.json failed", @"~\AppData\x.json")]
+    [InlineData("open c:/Users/alice/x failed", "~/x")]
+    [InlineData("open /Users/alice/Library/x failed", "~/Library/x")]
+    [InlineData("open /home/alice/.config/x failed", "~/.config/x")]
+    public void Scrub_replaces_user_profile_paths_for_any_account(string input, string expectedFragment)
     {
-        var profile = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
-        var user = Environment.UserName;
-        var scrubbed = ErrorReporter.Scrub($"open {profile}/x failed for me@example.com at 192.168.1.50 as {user}");
-        Assert.DoesNotContain(profile, scrubbed);
-        Assert.DoesNotContain("me@example.com", scrubbed);
-        Assert.DoesNotContain("192.168.1.50", scrubbed);
-        Assert.Contains("~/x", scrubbed);
+        var scrubbed = ErrorReporter.Scrub(input);
+        Assert.DoesNotContain("alice", scrubbed);
+        Assert.Contains(expectedFragment, scrubbed);
+    }
+
+    [Fact]
+    public void Scrub_replaces_email_and_ip_and_leaves_type_names_alone()
+    {
+        var scrubbed = ErrorReporter.Scrub("System.InvalidOperationException: me@example.com at 192.168.1.50 in root and SYSTEM");
+        Assert.StartsWith("System.InvalidOperationException:", scrubbed);
         Assert.Contains("<email>", scrubbed);
         Assert.Contains("<ip>", scrubbed);
-        if (user.Length >= 3)
-            Assert.DoesNotContain(user, scrubbed.Replace("~", ""), StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("<user>", scrubbed);
+        Assert.Contains("root and SYSTEM", scrubbed);
     }
 
     [Fact]
@@ -127,14 +134,14 @@ public class ErrorReporterTests : IDisposable
     }
 
     [Fact]
-    public async Task Distinct_fingerprints_are_capped_per_process()
+    public async Task Web_distinct_fingerprints_are_capped_below_the_overall_cap()
     {
         var r = Reporter();
-        for (var i = 0; i < ErrorReporter.MaxDistinct + 50; i++)
+        for (var i = 0; i < ErrorReporter.MaxWebDistinct + 20; i++)
             r.ReportClient("render", "fp" + i, "T", "m", "s", null, 1);
-        Assert.Equal(ErrorReporter.MaxDistinct, r.PendingCount);
+        Assert.Equal(ErrorReporter.MaxWebDistinct, r.PendingCount);
         await r.FlushAsync(default);
-        Assert.Equal(ErrorReporter.MaxDistinct - ErrorReporter.MaxPerPost, r.PendingCount);
+        Assert.Equal(ErrorReporter.MaxWebDistinct - ErrorReporter.MaxPerPost, r.PendingCount);
     }
 
     [Fact]
@@ -256,10 +263,12 @@ public class ErrorReporterTests : IDisposable
     [Fact]
     public void Rate_gate_drops_a_burst_beyond_the_bucket_without_queueing_it()
     {
-        var r = new ErrorReporter(_store, _transport, _clock, CrashFile, ratePerSecond: 10);
+        var r = new ErrorReporter(_store, _transport, _clock, CrashFile, webRatePerSecond: 10);
         for (var i = 0; i < 100; i++)
             r.ReportClient("render", "fp" + i, "T", "m", "s", null, 1);
         Assert.InRange(r.PendingCount, 10, 14);
+        r.Report(Thrown(), "logged", null);
+        Assert.InRange(r.PendingCount, 11, 15);
         Assert.True(r.DroppedCount >= 86);
     }
 
@@ -301,5 +310,69 @@ public class ErrorReporterTests : IDisposable
             r.ReportClient("render", "fp" + i, "T", "m", "s", null, 1);
         await r.FlushAsync(default);
         Assert.Single(_transport.Sent);
+    }
+
+    [Fact]
+    public void A_flooding_web_client_cannot_starve_service_reports()
+    {
+        var r = new ErrorReporter(_store, _transport, _clock, CrashFile, ratePerSecond: 1_000_000, webRatePerSecond: 1);
+        for (var i = 0; i < 1000; i++)
+            r.ReportClient("render", "fp" + i, "T", "m", "s", null, 1);
+        var before = r.PendingCount;
+        r.Report(Thrown(), "logged", null);
+        Assert.Equal(before + 1, r.PendingCount);
+    }
+
+    [Fact]
+    public async Task Count_is_clamped_and_aggregation_saturates()
+    {
+        var r = Reporter();
+        r.ReportClient("render", "fp", "T", "m", "s", null, int.MaxValue);
+        r.ReportClient("render", "fp", "T", "m", "s", null, int.MaxValue);
+        r.ReportClient("render", "neg", "T", "m", "s", null, -5);
+        await r.FlushAsync(default);
+        var items = _transport.Sent.Single().Errors;
+        Assert.Equal(ErrorReporter.MaxCount, items.Single(i => i.Fingerprint == "fp").Count);
+        Assert.Equal(1, items.Single(i => i.Fingerprint == "neg").Count);
+    }
+
+    [Fact]
+    public async Task Os_version_is_capped_and_relayed_context_loses_query_and_fragment()
+    {
+        var r = Reporter();
+        r.ReportClient("render", "fp", "T", "m", "s", "/devices?token=abc#frag", 1);
+        await r.FlushAsync(default);
+        var sent = _transport.Sent.Single();
+        Assert.True(sent.OsVersion.Length <= 32);
+        Assert.Equal("/devices", sent.Errors.Single().Context);
+    }
+
+    [Fact]
+    public void A_reporter_that_does_not_capture_holds_nothing()
+    {
+        var r = new ErrorReporter(_store, _transport, _clock, CrashFile, capture: false);
+        r.Report(Thrown(), "logged", null);
+        r.ReportClient("render", "fp", "T", "m", "s", null, 1);
+        Assert.Equal(0, r.PendingCount);
+    }
+
+    [Fact]
+    public void A_reporter_created_while_opted_out_deletes_the_crash_file()
+    {
+        ErrorReporter.WriteCrashFile(Thrown(), CrashFile);
+        Assert.True(File.Exists(CrashFile));
+        _store.Update(s => s.Telemetry.CollectAnonymousData = false);
+        _ = Reporter();
+        Assert.False(File.Exists(CrashFile));
+    }
+
+    [Fact]
+    public void Unrelated_settings_writes_do_not_clear_pending_state()
+    {
+        var r = Reporter();
+        r.ReportClient("render", "fp", "T", "m", "s", null, 1);
+        Assert.Equal(1, r.PendingCount);
+        _store.Update(s => s.Telemetry.InstallId = "other");
+        Assert.Equal(1, r.PendingCount);
     }
 }

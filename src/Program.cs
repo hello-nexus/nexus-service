@@ -88,15 +88,15 @@ string? emitOpenApiPath = null;
 var testHost = Environment.GetEnvironmentVariable("NEXUS_TEST_HOST") == "1"
     || emitOpenApiPath is not null;
 
-// First thing for a real host: a startup crash (crash loops) is the most valuable error, so the
-// crash-file hook cannot wait for DI. It writes regardless of consent; the reporter checks consent at send time.
-if (!testHost)
+// Installed before the host builds so a startup crash is captured. It consults the reporter's static consent flag,
+// which defaults to allowed until the reporter exists; the reporter also checks consent when it sends.
+if (!testHost && Nexus.Service.Common.ClientCredential.IsOfficial)
 {
     AppDomain.CurrentDomain.UnhandledException += (_, e) =>
     {
         try
         {
-            if (e.ExceptionObject is Exception ex)
+            if (Nexus.Service.Telemetry.ErrorReporter.CrashFileAllowed && e.ExceptionObject is Exception ex)
                 Nexus.Service.Telemetry.ErrorReporter.WriteCrashFile(ex, Nexus.Service.Telemetry.ErrorReporter.DefaultCrashFilePath());
         }
         catch

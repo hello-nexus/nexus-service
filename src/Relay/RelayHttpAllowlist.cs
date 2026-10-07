@@ -57,6 +57,8 @@ public static class RelayHttpAllowlist
         // WebRTC DataChannel direct P2P signaling: the phone POSTs its offer
         // over this same relay HTTP tunnel to upgrade off the relay.
         "/rtc",
+        // Browser error relay only. Never widen to "/telemetry": the consent routes under it are LocalhostOnly.
+        "/telemetry/client-errors",
     };
 
     /// <summary>

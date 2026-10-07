@@ -35,11 +35,15 @@ internal sealed partial class ErrorReporter
     internal const int MaxDistinct = 100;
     internal const int MaxPerPost = 20;
     internal const int MaxRaw = 200;
+    internal const int MaxRawWeb = 50;
+    internal const int MaxWebDistinct = 30;
+    internal const int MaxCount = 1_000_000;
     internal const int MaxCrashFileBytes = 64 * 1024;
     internal static readonly TimeSpan ResendWindow = TimeSpan.FromHours(1);
 
     private const int KindMax = 32, FingerprintMax = 64, TypeMax = 128, MessageMax = 1000, StackMax = 4000, ContextMax = 500;
     private const int FrameCount = 5;
+    private const int OsVersionMax = 32;
 
     private readonly IConfigStore _store;
     private readonly IErrorTransport _transport;
@@ -50,35 +54,50 @@ internal sealed partial class ErrorReporter
     private readonly Dictionary<string, DateTimeOffset> _lastSent = new();
     private readonly SemaphoreSlim _flushGate = new(1, 1);
     private readonly ConcurrentQueue<RawReport> _raw = new();
-    private readonly object _rateLock = new();
-    private readonly double _ratePerSecond;
-    private double _tokens;
-    private long _lastTicks = Stopwatch.GetTimestamp();
+    private readonly TokenBucket _serviceBucket;
+    private readonly TokenBucket _webBucket;
+    private readonly bool _capture;
     private int _rawCount;
+    private int _rawWebCount;
     private long _dropped;
     private volatile bool _enabled;
+
+    // Consent as seen by the crash hook, which runs before DI exists. Defaults to allowed so a startup crash is still written.
+    private static volatile bool s_crashFileAllowed = true;
+
+    internal static bool CrashFileAllowed => s_crashFileAllowed;
 
     [ThreadStatic] private static bool t_inReport;
 
     public ErrorReporter(IConfigStore store, IErrorTransport transport)
-        : this(store, transport, TimeProvider.System, DefaultCrashFile(), 10)
+        : this(store, transport, TimeProvider.System, DefaultCrashFile(), 10, 5, Common.ClientCredential.IsOfficial)
     {
     }
 
-    internal ErrorReporter(IConfigStore store, IErrorTransport transport, TimeProvider clock, string crashFile, int ratePerSecond = 1_000_000)
+    internal ErrorReporter(IConfigStore store, IErrorTransport transport, TimeProvider clock, string crashFile,
+        int ratePerSecond = 1_000_000, int webRatePerSecond = 1_000_000, bool capture = true)
     {
-        _ratePerSecond = ratePerSecond;
-        _tokens = ratePerSecond;
+        _serviceBucket = new TokenBucket(ratePerSecond);
+        _webBucket = new TokenBucket(webRatePerSecond);
+        _capture = capture;
         _store = store;
         _transport = transport;
         _clock = clock;
         _crashFile = crashFile;
         _enabled = store.Load().Telemetry.CollectAnonymousData;
+        if (capture)
+        {
+            s_crashFileAllowed = _enabled;
+            if (!_enabled)
+            {
+                try { File.Delete(_crashFile); } catch { /* best-effort */ }
+            }
+        }
         _store.OnChanged += OnSettingsChanged;
     }
 
     private static string DefaultCrashFile() =>
-        Path.Combine(Media.MediaLibrary.NexusDataDir(), "error-crash.json");
+        Path.Combine(Persistence.NexusDataPaths.NexusRoot(), "error-crash.json");
 
     internal int PendingCount
     {
@@ -94,8 +113,11 @@ internal sealed partial class ErrorReporter
         try
         {
             var enabled = _store.Load().Telemetry.CollectAnonymousData;
+            var was = _enabled;
             _enabled = enabled;
-            if (!enabled)
+            if (_capture)
+                s_crashFileAllowed = enabled;
+            if (was && !enabled)
                 ClearState();
         }
         catch
@@ -106,8 +128,13 @@ internal sealed partial class ErrorReporter
 
     private void ClearState()
     {
-        while (_raw.TryDequeue(out _))
-            Interlocked.Decrement(ref _rawCount);
+        while (_raw.TryDequeue(out var dropped))
+        {
+            if (dropped.Exception is null)
+                Interlocked.Decrement(ref _rawWebCount);
+            else
+                Interlocked.Decrement(ref _rawCount);
+        }
         lock (_lock)
         {
             _pending.Clear();
@@ -119,16 +146,22 @@ internal sealed partial class ErrorReporter
     /// <summary>Records a service-side exception. Safe to call from anywhere, including failure paths. Costs a rate-gate check and a queue push; fingerprinting, scrubbing and truncation happen at flush time.</summary>
     public void Report(Exception ex, string kind, string? context)
     {
-        if (!_enabled || !TryAcquire())
+        if (!_capture || !_enabled || !_serviceBucket.TryTake())
+        {
+            CountDrop();
             return;
+        }
         Enqueue(new RawReport { Exception = ex, Kind = kind, Context = context, At = _clock.GetUtcNow() });
     }
 
     /// <summary>Records an error the browser already serialized (source "web"); same cost profile as <see cref="Report"/>.</summary>
     public void ReportClient(string kind, string fingerprint, string type, string message, string stack, string? context, int count)
     {
-        if (!_enabled || !TryAcquire())
+        if (!_capture || !_enabled || !_webBucket.TryTake())
+        {
+            CountDrop();
             return;
+        }
         Enqueue(new RawReport
         {
             Kind = kind, Fingerprint = fingerprint, Type = type, Message = message, Stack = stack, Context = context,
@@ -139,27 +172,54 @@ internal sealed partial class ErrorReporter
     /// <summary>Reports refused by the process-wide rate gate or a full raw queue.</summary>
     internal long DroppedCount => Interlocked.Read(ref _dropped);
 
-    // Token bucket: capacity and refill are both _ratePerSecond. A hot loop pays one short lock and a counter bump.
-    private bool TryAcquire()
+    private void CountDrop()
     {
-        lock (_rateLock)
+        if (_capture && _enabled)
+            Interlocked.Increment(ref _dropped);
+    }
+
+    // Capacity and refill are both the per-second rate. A hot loop pays one short lock.
+    private sealed class TokenBucket
+    {
+        private readonly object _gate = new();
+        private readonly double _rate;
+        private double _tokens;
+        private long _last = Stopwatch.GetTimestamp();
+
+        public TokenBucket(int ratePerSecond)
         {
-            var now = Stopwatch.GetTimestamp();
-            _tokens = Math.Min(_ratePerSecond, _tokens + (now - _lastTicks) * _ratePerSecond / (double)Stopwatch.Frequency);
-            _lastTicks = now;
-            if (_tokens >= 1)
+            _rate = ratePerSecond;
+            _tokens = ratePerSecond;
+        }
+
+        public bool TryTake()
+        {
+            lock (_gate)
             {
+                var now = Stopwatch.GetTimestamp();
+                _tokens = Math.Min(_rate, _tokens + (now - _last) * _rate / Stopwatch.Frequency);
+                _last = now;
+                if (_tokens < 1)
+                    return false;
                 _tokens -= 1;
                 return true;
             }
         }
-        Interlocked.Increment(ref _dropped);
-        return false;
     }
 
     private void Enqueue(RawReport raw)
     {
-        if (Interlocked.Increment(ref _rawCount) > MaxRaw)
+        var web = raw.Exception is null;
+        if (web)
+        {
+            if (Interlocked.Increment(ref _rawWebCount) > MaxRawWeb)
+            {
+                Interlocked.Decrement(ref _rawWebCount);
+                Interlocked.Increment(ref _dropped);
+                return;
+            }
+        }
+        else if (Interlocked.Increment(ref _rawCount) > MaxRaw)
         {
             Interlocked.Decrement(ref _rawCount);
             Interlocked.Increment(ref _dropped);
@@ -173,7 +233,10 @@ internal sealed partial class ErrorReporter
     {
         while (_raw.TryDequeue(out var r))
         {
-            Interlocked.Decrement(ref _rawCount);
+            if (r.Exception is null)
+                Interlocked.Decrement(ref _rawWebCount);
+            else
+                Interlocked.Decrement(ref _rawCount);
             try
             {
                 Add(r.Exception is not null ? BuildItem(r.Exception, r.Kind, r.Context, r.At) : BuildClientItem(r));
@@ -193,8 +256,8 @@ internal sealed partial class ErrorReporter
         Type = string.IsNullOrWhiteSpace(r.Type) ? "Error" : Cap(Scrub(r.Type), TypeMax),
         Message = Cap(Scrub(r.Message ?? ""), MessageMax),
         Stack = Cap(Scrub(r.Stack ?? ""), StackMax),
-        Context = Cap(Scrub(r.Context ?? ""), ContextMax),
-        Count = Math.Max(1, r.Count),
+        Context = Cap(Scrub(StripQuery(r.Context ?? "")), ContextMax),
+        Count = Math.Clamp(r.Count, 1, MaxCount),
         FirstSeen = r.At,
         LastSeen = r.At,
     };
@@ -244,11 +307,13 @@ internal sealed partial class ErrorReporter
         {
             if (_pending.TryGetValue(item.Fingerprint, out var existing))
             {
-                existing.Count += item.Count;
+                existing.Count = (int)Math.Min(MaxCount, (long)existing.Count + item.Count);
                 existing.LastSeen = item.LastSeen;
                 return;
             }
             if (_pending.Count >= MaxDistinct)
+                return;
+            if (item.Source == "web" && _pending.Values.Count(i => i.Source == "web") >= MaxWebDistinct)
                 return;
             _pending[item.Fingerprint] = item;
         }
@@ -301,7 +366,7 @@ internal sealed partial class ErrorReporter
             {
                 if (batch.Count >= MaxPerPost)
                     break;
-                // Held back (keeps aggregating) until an hour has passed since its last send.
+                // Held back (keeps aggregating) until the resend window has passed since its last send.
                 if (_lastSent.TryGetValue(item.Fingerprint, out var sent) && now - sent < ResendWindow)
                     continue;
                 if (batch.Any(b => b.Fingerprint == item.Fingerprint))
@@ -325,7 +390,7 @@ internal sealed partial class ErrorReporter
             InstallId = installId,
             Version = BuildInfo.Version,
             Os = TelemetryPlatform.OsTag(),
-            OsVersion = RuntimeInformation.OSDescription,
+            OsVersion = Cap(RuntimeInformation.OSDescription, OsVersionMax),
 #if DEV_TOOLS
             DevTools = true,
 #endif
@@ -398,21 +463,30 @@ internal sealed partial class ErrorReporter
     {
         if (text.Length == 0)
             return text;
-        var profile = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
-        if (profile.Length > 3)
-        {
-            text = text.Replace(profile, "~", StringComparison.OrdinalIgnoreCase);
-            text = text.Replace(profile.Replace('\\', '/'), "~", StringComparison.OrdinalIgnoreCase);
-        }
+        text = WindowsUserPathRegex().Replace(text, "~");
+        text = MacUserPathRegex().Replace(text, "~");
+        text = LinuxHomePathRegex().Replace(text, "~");
         text = EmailRegex().Replace(text, "<email>");
         text = Ipv4Regex().Replace(text, "<ip>");
-        var user = Environment.UserName;
-        if (user.Length >= 3)
-            text = text.Replace(user, "<user>", StringComparison.OrdinalIgnoreCase);
         return text;
     }
 
+    private static string StripQuery(string s)
+    {
+        var i = s.AsSpan().IndexOfAny('?', '#');
+        return i < 0 ? s : s[..i];
+    }
+
     private static string Cap(string s, int max) => s.Length <= max ? s : s[..max];
+
+    [GeneratedRegex(@"[A-Za-z]:[\\/]Users[\\/][^\\/\s]+")]
+    private static partial Regex WindowsUserPathRegex();
+
+    [GeneratedRegex(@"/Users/[^/\s]+")]
+    private static partial Regex MacUserPathRegex();
+
+    [GeneratedRegex(@"/home/[^/\s]+")]
+    private static partial Regex LinuxHomePathRegex();
 
     [GeneratedRegex(@"^\s*at\s+([^\s(]+)", RegexOptions.Multiline)]
     private static partial Regex FrameRegex();

@@ -89,9 +89,11 @@ internal static class TelemetryRoutes
                 return Results.BadRequest(ApiResponse.Fail("1 to 10 errors required"));
             foreach (var e in body.Errors)
             {
+                if (e is null)
+                    continue;
                 if (e.Kind is not ("window-error" or "unhandled-rejection" or "render") || string.IsNullOrEmpty(e.Fingerprint))
                     continue;
-                reporter.ReportClient(e.Kind, e.Fingerprint, e.Type ?? "", e.Message ?? "", e.Stack ?? "", e.Context, e.Count);
+                reporter.ReportClient(e.Kind, e.Fingerprint, e.Type ?? "", e.Message ?? "", e.Stack ?? "", e.Context, Math.Clamp(e.Count, 1, ErrorReporter.MaxCount));
             }
             return Results.NoContent();
         }).AllowPanel();

@@ -24,12 +24,12 @@ internal static class ErrorCaptureMiddleware
     // Always false: observes the exception in the filter without altering unwinding.
     private static bool Capture(ErrorReporter reporter, HttpContext ctx, Exception ex)
     {
+        // Marked even when skipped, so the logger provider never reports the same exception.
+        try { ex.Data[ErrorKinds.ReportedMarker] = true; } catch { /* read-only Data */ }
         if (ex is OperationCanceledException || ctx.RequestAborted.IsCancellationRequested)
             return false;
         var pattern = (ctx.GetEndpoint() as RouteEndpoint)?.RoutePattern.RawText ?? "unmatched";
         reporter.Report(ex, ErrorKinds.Request, pattern);
-        // Kestrel logs the same exception at Error; the logger provider skips marked ones.
-        try { ex.Data[ErrorKinds.ReportedMarker] = true; } catch { /* read-only Data */ }
         return false;
     }
 }
