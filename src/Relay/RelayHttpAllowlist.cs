@@ -59,9 +59,7 @@ public static class RelayHttpAllowlist
         "/rtc",
         // Browser error relay only. Never widen to "/telemetry": the consent routes under it are LocalhostOnly.
         "/telemetry/client-errors",
-        // Sentry status, arm and disarm. Arming with a lock is gated to the
-        // desktop token in the route, so a relayed phone can only arm a PC that
-        // is already locked.
+        // Sentry status, arm (optionally locking first) and disarm.
         "/sentry",
     };
 
