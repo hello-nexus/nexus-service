@@ -157,11 +157,11 @@ public sealed class SentryCoordinatorTests
         Advance(TimeSpan.FromSeconds(11));
         await coordinator.OnInputAsync();
 
-        Advance(SentryCoordinator.Cooldown - TimeSpan.FromMinutes(1));
+        Advance(SentryCoordinator.Cooldown - TimeSpan.FromSeconds(1));
         await coordinator.OnInputAsync();
         Assert.Single(_sent);
 
-        Advance(TimeSpan.FromMinutes(1));
+        Advance(TimeSpan.FromSeconds(1));
         await coordinator.OnInputAsync();
         Assert.Equal(2, _sent.Count);
     }

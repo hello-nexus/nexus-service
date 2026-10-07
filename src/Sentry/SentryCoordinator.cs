@@ -31,10 +31,11 @@ public sealed class SentryCoordinator : IHostedService, IDisposable
     /// <summary>Input this soon after arming never alerts: the click that armed it and the walk-away.</summary>
     internal static readonly TimeSpan ArmGrace = TimeSpan.FromSeconds(10);
 
-    /// <summary>Production alert limit; dev-tools builds alert on every input for testing.</summary>
+    /// <summary>Production alert limit. Dev-tools builds use a short one for testing; not zero,
+    /// because one alert per input would spend nexus-api's per-IP push budget in seconds.</summary>
     internal static readonly TimeSpan Cooldown =
 #if DEV_TOOLS
-        TimeSpan.Zero;
+        TimeSpan.FromSeconds(30);
 #else
         TimeSpan.FromMinutes(10);
 #endif
