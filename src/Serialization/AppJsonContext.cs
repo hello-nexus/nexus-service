@@ -57,6 +57,10 @@ namespace Nexus.Service.Serialization;
 [JsonSerializable(typeof(CoolingComponent))]
 [JsonSerializable(typeof(GetAllCoolingResponse))]
 [JsonSerializable(typeof(SetCurvesBody))]
+[JsonSerializable(typeof(ThermalGuardResponse))]
+[JsonSerializable(typeof(SetThermalGuardConfigBody))]
+[JsonSerializable(typeof(LintCurvesResponse))]
+[JsonSerializable(typeof(HealStateDto))]
 [JsonSerializable(typeof(Nexus.Service.Models.Cooling.SetFanOffsetBody))]
 [JsonSerializable(typeof(GetCurvesResponse))]
 [JsonSerializable(typeof(CoolingWarning))]
@@ -279,6 +283,12 @@ namespace Nexus.Service.Serialization;
 [JsonSerializable(typeof(Nexus.Service.Models.Panel.PanelPhoneClaimBody))]
 [JsonSerializable(typeof(Nexus.Service.Models.Panel.PanelPhoneClaimResponse))]
 [JsonSerializable(typeof(Nexus.Service.Models.Panel.PanelPhoneServiceInfoResponse))]
+[JsonSerializable(typeof(Nexus.Service.Models.Sentry.SentryStatusResponse))]
+[JsonSerializable(typeof(Nexus.Service.Models.Sentry.SentryArmBody))]
+[JsonSerializable(typeof(Nexus.Service.Models.Sentry.SentryErrorResponse))]
+[JsonSerializable(typeof(Nexus.Service.Models.Sentry.PanelPhonePushBody))]
+[JsonSerializable(typeof(Nexus.Service.Models.Sentry.SentryPushRequest))]
+[JsonSerializable(typeof(Nexus.Service.Models.Sentry.SentryPushResponse))]
 [JsonSerializable(typeof(Nexus.Service.Models.Panel.PanelPhoneSessionNameBody))]
 [JsonSerializable(typeof(Nexus.Service.Models.Panel.PanelHostNameBody))]
 [JsonSerializable(typeof(Nexus.Service.Models.Panel.PanelHostNameResponse))]
@@ -1141,6 +1151,9 @@ namespace Nexus.Service.Serialization;
 // Fleet events (install / specs / opt_out / opt_in) posted to nexus-api.
 [JsonSerializable(typeof(Nexus.Service.Telemetry.FleetEventPayload))]
 [JsonSerializable(typeof(Nexus.Service.Telemetry.FleetEventSpecs))]
+[JsonSerializable(typeof(Nexus.Service.Telemetry.ErrorReportPayload))]
+[JsonSerializable(typeof(Nexus.Service.Telemetry.ErrorReportItem))]
+[JsonSerializable(typeof(Nexus.Service.Telemetry.ClientErrorsBody))]
 
 // Fps session upload batch posted to nexus-api.
 [JsonSerializable(typeof(Nexus.Service.Games.FpsUploadPayload))]
@@ -1248,6 +1261,7 @@ namespace Nexus.Service.Serialization;
 [JsonSerializable(typeof(Nexus.Service.Routes.NollieSimulateBody))]
 #if DEV_TOOLS
 [JsonSerializable(typeof(Nexus.Service.Routes.DevPanelVariantDto))]
+[JsonSerializable(typeof(Nexus.Service.Routes.DevSimEventsResponse))]
 [JsonSerializable(typeof(Nexus.Service.Telemetry.AppTelemetryRequest))]
 [JsonSerializable(typeof(Nexus.Service.Telemetry.AppPageClosedRequest))]
 #endif

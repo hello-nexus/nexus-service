@@ -813,6 +813,59 @@ public sealed class PanelPhonePairingService
         return updated;
     }
 
+    /// <summary>Stores (or with null clears) the Sentry push target on one phone session. False when the session no longer exists.</summary>
+    public bool SetPushTarget(string sessionId, PanelPhonePushTarget? target)
+    {
+        if (string.IsNullOrWhiteSpace(sessionId))
+            return false;
+
+        var found = false;
+        _store.Update(s =>
+        {
+            var session = s.Auth?.PanelPhoneSessions?.FirstOrDefault(t =>
+                string.Equals(t.Id, sessionId, StringComparison.Ordinal));
+            if (session is null)
+                return;
+            session.PushTarget = target;
+            found = true;
+        });
+        return found;
+    }
+
+    /// <summary>Every registered push target, one per distinct token, in session order.</summary>
+    public IReadOnlyList<PanelPhonePushTarget> GetPushTargets()
+    {
+        var sessions = _store.Load().Auth?.PanelPhoneSessions;
+        if (sessions is null)
+            return Array.Empty<PanelPhonePushTarget>();
+
+        return sessions
+            .Select(session => session.PushTarget)
+            .Where(target => target is not null && !string.IsNullOrEmpty(target.Token))
+            .GroupBy(target => target!.Token, StringComparer.Ordinal)
+            .Select(group => group.First()!)
+            .ToList();
+    }
+
+    /// <summary>Drops every push target holding one of <paramref name="tokens"/>; the cloud reported them dead.</summary>
+    public void RemovePushTargets(IReadOnlyCollection<string> tokens)
+    {
+        if (tokens.Count == 0)
+            return;
+
+        _store.Update(s =>
+        {
+            var sessions = s.Auth?.PanelPhoneSessions;
+            if (sessions is null)
+                return;
+            foreach (var session in sessions)
+            {
+                if (session.PushTarget is not null && tokens.Contains(session.PushTarget.Token))
+                    session.PushTarget = null;
+            }
+        });
+    }
+
     public async Task<int> RevokeAllSessionsAsync()
     {
         var removed = 0;
@@ -1175,6 +1228,7 @@ public sealed class PanelPhonePairingService
             CreatedAt = session.CreatedAt,
             LastSeenAt = session.LastSeenAt,
             ClaimedOverHttps = session.ClaimedOverHttps,
+            PushTarget = session.PushTarget,
         };
     }
 

@@ -106,10 +106,73 @@ public sealed class DiagnosticsHealthModel
         _store = store;
     }
 
-    /// <summary>forceRefresh bypasses this model's own cache; module caches are
-    /// unaffected - each module snapshot still goes through its normal
-    /// Snapshot() call.</summary>
-    public DiagnosticsHealthResponse BuildHealth(bool forceRefresh = false)
+    /// <summary>The health without any dev-tools simulation: what the alert poll, the support bundle, the PDF report and the MCP health tool read.</summary>
+    internal DiagnosticsHealthResponse BuildRealHealth(bool forceRefresh = false) => BuildHealthCore(forceRefresh);
+
+#if DEV_TOOLS
+    /// <summary>forceRefresh bypasses this model's own cache; module caches are unaffected.</summary>
+    public DiagnosticsHealthResponse BuildHealth(bool forceRefresh = false) =>
+        ApplySimulation(BuildHealthCore(forceRefresh), Nexus.Service.Dev.DevSimEvents.Current, _store.Load().Diagnostics);
+
+    /// <summary>Simulated components pass the same domain toggles and ignore list as real ones.</summary>
+    internal static List<HealthComponent> FilterSimulated(IEnumerable<HealthComponent> components, DiagnosticsSettings diagnostics)
+    {
+        var ignored = new HashSet<string>(diagnostics.IgnoredComponents ?? new List<string>(), StringComparer.Ordinal);
+        var domains = diagnostics.Components;
+        return components.Where(c => !ignored.Contains(c.Id) && c.Kind switch
+        {
+            "storage" => domains.Storage,
+            "gpu" => domains.Gpu,
+            "memory" => domains.Ram,
+            "system" => domains.System,
+            "cooling" => domains.Cooling,
+            _ => true,
+        }).ToList();
+    }
+
+    // Dev tools: merges the active simulated health components into a copy; the cached real result is untouched.
+    internal static DiagnosticsHealthResponse ApplySimulation(
+        DiagnosticsHealthResponse real, Nexus.Service.Dev.DevSimEvents? sim, DiagnosticsSettings diagnostics)
+    {
+        if (sim is null)
+        {
+            return real;
+        }
+        var simulated = sim.HealthComponents().ToList();
+        if (sim.SimulatedTrip() is { } trip)
+        {
+            AddThermalGuardComponent(simulated, trip, DateTime.UtcNow);
+        }
+        var extra = FilterSimulated(simulated, diagnostics);
+        if (extra.Count == 0)
+        {
+            return real;
+        }
+        var components = real.Components.ToList();
+        foreach (var add in extra)
+        {
+            var existing = components.FindIndex(c => c.Id == add.Id);
+            if (existing < 0)
+            {
+                components.Add(add);
+                continue;
+            }
+            var merged = components[existing];
+            var reasons = merged.Reasons.Concat(add.Reasons).ToList();
+            components[existing] = merged with
+            {
+                Reasons = reasons,
+                Status = WorstStatus(new[] { merged.Status, add.Status }),
+            };
+        }
+        return real with { Components = components, Overall = WorstStatus(components.Select(c => c.Status)) };
+    }
+#else
+    /// <summary>forceRefresh bypasses this model's own cache; module caches are unaffected.</summary>
+    public DiagnosticsHealthResponse BuildHealth(bool forceRefresh = false) => BuildHealthCore(forceRefresh);
+#endif
+
+    private DiagnosticsHealthResponse BuildHealthCore(bool forceRefresh)
     {
         lock (_gate)
         {
@@ -143,7 +206,8 @@ public sealed class DiagnosticsHealthModel
                 windowsSupported: OperatingSystem.IsWindows(),
                 generatedAtUtc: now,
                 tempEpisodes: TemperatureInsights.DetectEpisodes(QueryTempRows(now), thresholdOverrides),
-                diagnostics: diagnostics);
+                diagnostics: diagnostics,
+                thermalTrip: _store.Load().Cooling.LastThermalTrip);
 
             _cached = result;
             _cachedAtUtc = now;
@@ -196,7 +260,8 @@ public sealed class DiagnosticsHealthModel
         bool windowsSupported,
         DateTime generatedAtUtc,
         IReadOnlyList<TemperatureEpisode>? tempEpisodes = null,
-        DiagnosticsSettings? diagnostics = null)
+        DiagnosticsSettings? diagnostics = null,
+        ThermalGuardTripRecord? thermalTrip = null)
     {
         var diag = diagnostics ?? new DiagnosticsSettings();
         var ignored = new HashSet<string>(diag.IgnoredComponents ?? new List<string>(), StringComparer.Ordinal);
@@ -233,6 +298,10 @@ public sealed class DiagnosticsHealthModel
             }
         }
         AddCoolingComponents(components, cooling, tempEpisodes ?? Array.Empty<TemperatureEpisode>(), generatedAtUtc, diag, ignored);
+        if (diag.Components.Cooling)
+        {
+            AddThermalGuardComponent(components, thermalTrip, generatedAtUtc);
+        }
 
         // Windows always reports the grid (its per-domain scanners exist even
         // when a domain is empty). Elsewhere the grid is meaningful only when
@@ -383,6 +452,37 @@ public sealed class DiagnosticsHealthModel
                 Reasons = reasons,
             });
         }
+    }
+
+    /// <summary>Act while the guard is tripped or escalated, watch for a day after it ends.</summary>
+    private static void AddThermalGuardComponent(List<HealthComponent> components, ThermalGuardTripRecord? trip, DateTime generatedAtUtc)
+    {
+        // An acknowledged trip is dealt with: no component, so the tile goes green.
+        if (trip is null || trip.AcknowledgedAtUtcMs is not null)
+        {
+            return;
+        }
+        var active = trip.EndedAtUtcMs is null;
+        var reference = DateTimeOffset.FromUnixTimeMilliseconds(trip.EndedAtUtcMs ?? trip.AtUtcMs).UtcDateTime;
+        if (!active && generatedAtUtc - reference > TimeSpan.FromHours(24))
+        {
+            return;
+        }
+        var cause = trip.Reason == "cooling-loss" ? "fans were not cooling the CPU" : "CPU reached its temperature limit";
+        var severity = active ? HealthStatuses.Act : HealthStatuses.Watch;
+        var summary = $"Thermal guard tripped, peak {trip.PeakC:0} C";
+        components.Add(new HealthComponent
+        {
+            Id = "cooling:thermal-guard",
+            Kind = "cooling",
+            Name = "CPU thermal guard",
+            Status = severity,
+            Reasons = new List<HealthComponentReason>
+            {
+                new("cooling.thermalGuardTrip", severity, summary,
+                    $"cause={cause} active={active} reason={trip.Reason} peakC={trip.PeakC:0.0} escalated={trip.Escalated} at={trip.AtUtcMs}"),
+            },
+        });
     }
 
     private static bool IsTempKindEnabled(string kind, DiagnosticsComponents components) => kind switch

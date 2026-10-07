@@ -53,6 +53,8 @@ public sealed class NexusSettings
     public TelemetrySettings Telemetry { get; set; } = new();
     public DiagnosticsSettings Diagnostics { get; set; } = new();
     public FeaturesSettings Features { get; set; } = new();
+    /// <summary>Sentry alert state: armed and the last alert time. NOT profile-scoped: it describes this workstation's lock state, not a persona.</summary>
+    public SentrySettings Sentry { get; set; } = new();
     /// <summary>Registered panel devices keyed by opaque deviceId. Each record carries the per-device layout + theme overrides + capabilities. NOT profile-scoped: device identity is hardware-level and survives profile switches.</summary>
     public Dictionary<string, Nexus.Service.Models.Panel.PanelDeviceRecord> PanelDevices { get; set; } = new();
 
@@ -1010,6 +1012,56 @@ public sealed class CoolingSettings
     public string? PreferredGpuTempSensorId { get; set; }
     /// <summary>User-chosen "primary" GPU (by model name) used wherever a single GPU's sensors are shown: the Monitoring widget, sensors/Detailed view, and the GPU temp display. Keyed by model name (not enumeration index) so the choice survives reboots / driver re-enumeration. Same nullable semantics as the temp prefs: null = auto (client defaults to the first discrete GPU), empty string on PATCH collapses to null.</summary>
     public string? PreferredGpuId { get; set; }
+    /// <summary>CPU thermal guard master switch. On by default; a settings file without the key reads as on.</summary>
+    public bool ThermalGuardEnabled { get; set; } = true;
+    /// <summary>Whether the cooling page warns before saving a curve config that can stall a CPU fan. Advisory only: the lint route and auto-heal are unaffected. A missing key counts as on.</summary>
+    public bool CurveLintWarnings { get; set; } = true;
+    /// <summary>User-set CPU limit in C, null = automatic. Wins over the detected limit, whatever its source.</summary>
+    public double? ThermalGuardLimitOverrideC { get; set; }
+    /// <summary>The curves as they were before the last auto-heal, restored by undo. Null when there is nothing to undo.</summary>
+    public List<CurveDocument>? HealSnapshot { get; set; }
+    public long? HealedAtUtcMs { get; set; }
+    /// <summary>Manual speeds the last heal dropped (channel id to duty), put back by undo.</summary>
+    public Dictionary<string, int> HealDroppedManualSpeeds { get; set; } = new();
+    public List<HealedChannelRecord> HealedChannels { get; set; } = new();
+    /// <summary>The most recent guard trip, kept across restarts so diagnostics can report it for a day.</summary>
+    public ThermalGuardTripRecord? LastThermalTrip { get; set; }
+    /// <summary>Manual fan duties of GPU fans the thermal guard handed back to the driver, keyed by channel id, restored when the GPU cools. Persisted so a restart mid-handback does not lose them.</summary>
+    public Dictionary<string, int> GpuManualBackup { get; set; } = new();
+
+    /// <summary>Forget the auto-heal undo state: undo is valid only until the next edit of the curves.</summary>
+    public void ClearHeal(string reason)
+    {
+        if (HealSnapshot is not null)
+        {
+            // The one place an undo snapshot is dropped by an edit: name the writer.
+            Console.Error.WriteLine($"[thermal-guard] heal undo cleared ({reason})");
+        }
+        HealSnapshot = null;
+        HealDroppedManualSpeeds = new Dictionary<string, int>();
+        HealedAtUtcMs = null;
+        HealedChannels = new List<HealedChannelRecord>();
+    }
+}
+
+public sealed class HealedChannelRecord
+{
+    public string Id { get; set; } = "";
+    public string Name { get; set; } = "";
+    public string Hazard { get; set; } = "";
+}
+
+public sealed class ThermalGuardTripRecord
+{
+    public long AtUtcMs { get; set; }
+    public double PeakC { get; set; }
+    /// <summary>"limit" or "cooling-loss".</summary>
+    public string Reason { get; set; } = "";
+    public bool Escalated { get; set; }
+    /// <summary>Null while the trip is still active.</summary>
+    public long? EndedAtUtcMs { get; set; }
+    /// <summary>Set when the user acknowledged the ended trip; Diagnostics stops reporting it. A new trip replaces the record.</summary>
+    public long? AcknowledgedAtUtcMs { get; set; }
 }
 
 /// <summary>One user-saved cooling configuration. Holds fan-to-curve assignments rather than copies of the curves, so the curve library stays shared and editing a curve is visible to every preset that uses it.</summary>
@@ -1970,8 +2022,30 @@ public sealed class PairBroadcastSettings
     public long UntilUnixSeconds { get; set; }
 }
 
+public sealed class SentrySettings
+{
+    /// <summary>True while Sentry is waiting for input on a locked PC. Survives restarts; an unlock clears it.</summary>
+    public bool Armed { get; set; }
+
+    /// <summary>Epoch ms of the last alert the cloud accepted or rate-limited. Null until one has gone out. Drives the one-alert-per-hour cooldown.</summary>
+    public long? LastAlertAt { get; set; }
+}
+
+/// <summary>Where a phone's Sentry alerts are pushed, as the phone's panel page registered it. Title and body are already translated; <c>{pc}</c> is filled at send time.</summary>
+public sealed class PanelPhonePushTarget
+{
+    public string Platform { get; set; } = "";
+    public string Token { get; set; } = "";
+    public string Environment { get; set; } = "";
+    public string Title { get; set; } = "";
+    public string Body { get; set; } = "";
+}
+
 public sealed class PanelPhoneSessionToken
 {
+    /// <summary>Push target for Sentry alerts. Lives and dies with the session: unpair and revoke remove the record, and this with it.</summary>
+    public PanelPhonePushTarget? PushTarget { get; set; }
+
     public string Id { get; set; } = "";
     public string Hash { get; set; } = "";
     public string Name { get; set; } = "";

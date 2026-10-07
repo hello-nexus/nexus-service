@@ -23,6 +23,9 @@ public static class ConflictRoutes
         app.MapGet("/conflicts", (ConflictWatcher watcher) =>
         {
             var conflicts = watcher.GetConflicts();
+#if DEV_TOOLS
+            conflicts = Nexus.Service.Dev.DevSimEvents.Current?.ApplyConflicts(conflicts) ?? conflicts;
+#endif
             var response = new GetConflictsResponse();
             foreach (var c in conflicts)
                 response.Conflicts.Add(c);

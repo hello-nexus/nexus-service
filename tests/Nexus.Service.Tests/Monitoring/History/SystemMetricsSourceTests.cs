@@ -187,6 +187,23 @@ public class SystemMetricsSourceTests
     }
 
     [Fact]
+    public async Task SampleAsync_RetriesTheCpuNameUntilARealOneIsRead_ThenKeepsIt()
+    {
+        var sensors = new StubSensors { CpuModel = "" }; // the hardware library has not opened yet
+        var source = CreateSource(sensors);
+
+        var early = await source.SampleAsync(1000, CancellationToken.None);
+        sensors.CpuModel = "AMD Ryzen 7 9800X3D";
+        var resolved = await source.SampleAsync(1001, CancellationToken.None);
+        sensors.CpuModel = "changed again";
+        var kept = await source.SampleAsync(1002, CancellationToken.None);
+
+        Assert.Equal("CPU", early.CpuName);
+        Assert.Equal("AMD Ryzen 7 9800X3D", resolved.CpuName);
+        Assert.Equal("AMD Ryzen 7 9800X3D", kept.CpuName);
+    }
+
+    [Fact]
     public async Task SampleAsync_ResolvesCpuNameFromSensors_AndCachesItAcrossCalls()
     {
         var sensors = new StubSensors { CpuModel = "AMD Ryzen 9 7950X" };

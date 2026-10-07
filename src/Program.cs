@@ -88,6 +88,24 @@ string? emitOpenApiPath = null;
 var testHost = Environment.GetEnvironmentVariable("NEXUS_TEST_HOST") == "1"
     || emitOpenApiPath is not null;
 
+// Installed before the host builds so a startup crash is captured. It consults the reporter's static consent flag,
+// which defaults to allowed until the reporter exists; the reporter also checks consent when it sends.
+if (!testHost && Nexus.Service.Common.ClientCredential.IsOfficial)
+{
+    AppDomain.CurrentDomain.UnhandledException += (_, e) =>
+    {
+        try
+        {
+            if (Nexus.Service.Telemetry.ErrorReporter.CrashFileAllowed && e.ExceptionObject is Exception ex)
+                Nexus.Service.Telemetry.ErrorReporter.WriteCrashFile(ex, Nexus.Service.Telemetry.ErrorReporter.DefaultCrashFilePath());
+        }
+        catch
+        {
+            // The process is already dying; nothing to add.
+        }
+    };
+}
+
 // Hold LhmComputer's background Open until the boot-time PawnIO check has
 // run, so a driver installed or repaired this boot is visible to SuperIO
 // enumeration immediately. Armed only where WireAppWindowAndPawnIo will
@@ -206,6 +224,13 @@ var httpsPort = servicePort == 9400 ? 9443 : servicePort + 443;
 var panelTunnelPort = servicePort + 1;
 var panelTunnelMonitor = new Nexus.Service.Panel.PanelTunnelMonitor(
     (OperatingSystem.IsWindows() || OperatingSystem.IsLinux()) && !testHost && IsLoopbackPortFree(panelTunnelPort) ? panelTunnelPort : null);
+
+static void InstallErrorHooks(Nexus.Service.Telemetry.ErrorReporter reporter)
+{
+    // Observation only: the exception is deliberately not marked observed, so runtime behavior is unchanged.
+    TaskScheduler.UnobservedTaskException += (_, e) =>
+        reporter.Report(e.Exception, Nexus.Service.Telemetry.ErrorKinds.UnobservedTask, null);
+}
 
 static bool IsLoopbackPortFree(int port)
 {
@@ -475,6 +500,7 @@ if (!testHost)
     Nexus.Service.Lifecycle.BootTimer.Mark("after WireBeatsAndPresence");
     app.Services.GetRequiredService<Nexus.Service.Telemetry.ITelemetry>()
         .Capture(Nexus.Service.Telemetry.TelemetryEvents.AppStarted);
+    InstallErrorHooks(app.Services.GetRequiredService<Nexus.Service.Telemetry.ErrorReporter>());
 }
 
 // Middleware pipeline
@@ -497,6 +523,9 @@ if (!testHost)
         await next(ctx);
     });
 }
+
+// Unhandled request exceptions never reach ILogger under every host, so observe them here (report, then rethrow).
+Nexus.Service.Telemetry.ErrorCaptureMiddleware.UseErrorCapture(app, app.Services.GetRequiredService<Nexus.Service.Telemetry.ErrorReporter>());
 
 var wsOptions = new WebSocketOptions();
 // Real PING/PONG keepalive. KeepAliveTimeout must be set: without it the
@@ -629,6 +658,7 @@ app.MapTransferEndpoints();
 app.MapProfileEndpoints();
 app.MapDashboardPresetEndpoints();
 app.MapPanelEndpoints();
+app.MapSentryEndpoints();
 app.MapPanelDeckEndpoints();
 app.MapStreamedPanelEndpoints();
 app.MapOverlayEndpoints();
@@ -645,6 +675,7 @@ app.MapCloudEndpoints();
 app.MapAiEndpoints();
 #if DEV_TOOLS
 app.MapAiAssistantEndpoints();
+app.MapDevSimEndpoints();
 #endif
 app.MapWebSocketEndpoints();
 app.MapRtcEndpoints();

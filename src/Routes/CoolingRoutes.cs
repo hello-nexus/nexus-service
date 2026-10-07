@@ -63,6 +63,103 @@ public static class CoolingRoutes
             return Results.Ok(ApiResponse.Ok());
         });
 
+        // Thermal guard + auto-heal. Lint is advisory and never blocks a save.
+        app.MapGet("/cooling/guard", (ThermalGuardController guard) =>
+        {
+            var state = guard.GetState();
+#if DEV_TOOLS
+            Nexus.Service.Dev.DevSimEvents.Current?.ApplyGuard(state);
+#endif
+            return state;
+        }).AllowPanel();
+
+        app.MapPost("/cooling/guard/config", (SetThermalGuardConfigBody body, ThermalGuardController guard, FeatureGates gates) =>
+        {
+            if (!gates.Cooling)
+            {
+                return Results.Conflict(new FeatureDisabledResponse { Feature = FeatureNames.Cooling });
+            }
+            var (result, error) = guard.SetConfig(body);
+#if DEV_TOOLS
+            if (result is not null)
+            {
+                Nexus.Service.Dev.DevSimEvents.Current?.ApplyGuard(result);
+            }
+#endif
+            return error is not null ? Results.Ok(ApiResponse.Fail(error)) : Results.Ok(result);
+        });
+
+        app.MapPost("/cooling/guard/trip/acknowledge", (ThermalGuardController guard, FeatureGates gates) =>
+        {
+            if (!gates.Cooling)
+            {
+                return Results.Conflict(new FeatureDisabledResponse { Feature = FeatureNames.Cooling });
+            }
+#if DEV_TOOLS
+            // A simulated ended trip is acknowledged by ending the sim only: the real trip, if any, is not touched.
+            if (Nexus.Service.Dev.DevSimEvents.Current is { } sim && sim.IsActive(Nexus.Service.Dev.DevSimEvents.GuardEndedTrip))
+            {
+                sim.Stop(Nexus.Service.Dev.DevSimEvents.GuardEndedTrip);
+                var current = guard.GetState();
+                sim.ApplyGuard(current);
+                return Results.Ok(current);
+            }
+#endif
+            var (result, error) = guard.AcknowledgeTrip();
+#if DEV_TOOLS
+            if (result is not null)
+            {
+                Nexus.Service.Dev.DevSimEvents.Current?.ApplyGuard(result);
+            }
+#endif
+            return error is not null ? Results.Ok(ApiResponse.Fail(error)) : Results.Ok(result);
+        });
+
+        app.MapPost("/cooling/curves/lint", (SetCurvesBody body, ThermalGuardController guard) =>
+            guard.Lint(body));
+
+        app.MapPost("/cooling/heal", (ThermalGuardController guard, FeatureGates gates) =>
+        {
+            if (!gates.Cooling)
+            {
+                return Results.Conflict(new FeatureDisabledResponse { Feature = FeatureNames.Cooling });
+            }
+            return Results.Ok(guard.HealNow(automatic: false));
+        });
+
+        app.MapPost("/cooling/heal/keep", (ThermalGuardController guard, FeatureGates gates) =>
+        {
+            if (!gates.Cooling)
+            {
+                return Results.Conflict(new FeatureDisabledResponse { Feature = FeatureNames.Cooling });
+            }
+#if DEV_TOOLS
+            // Keep or Undo on a simulated pending heal ends the sim only: a real pending heal is not touched.
+            if (Nexus.Service.Dev.DevSimEvents.Current is { } sim && sim.IsActive(Nexus.Service.Dev.DevSimEvents.GuardPendingHeal))
+            {
+                sim.Stop(Nexus.Service.Dev.DevSimEvents.GuardPendingHeal);
+                return Results.Ok(guard.GetState().Heal);
+            }
+#endif
+            return Results.Ok(guard.Keep());
+        });
+
+        app.MapPost("/cooling/heal/undo", (ThermalGuardController guard, FeatureGates gates) =>
+        {
+            if (!gates.Cooling)
+            {
+                return Results.Conflict(new FeatureDisabledResponse { Feature = FeatureNames.Cooling });
+            }
+#if DEV_TOOLS
+            if (Nexus.Service.Dev.DevSimEvents.Current is { } sim && sim.IsActive(Nexus.Service.Dev.DevSimEvents.GuardPendingHeal))
+            {
+                sim.Stop(Nexus.Service.Dev.DevSimEvents.GuardPendingHeal);
+                return Results.Ok(guard.GetState().Heal);
+            }
+#endif
+            return Results.Ok(guard.Undo());
+        });
+
         // Fan control
         app.MapGet("/cooling/fans", (IFanControlProvider f, IConfigStore store) =>
         {

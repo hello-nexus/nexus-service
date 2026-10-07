@@ -518,6 +518,7 @@ public sealed class QSeriesCoolerCoolingProvider : IFanControlProvider, ICooling
                 MigrateOrderList(s.Cooling.FanChannelOrder, legacyId, newIds);
                 s.Cooling.FanNames.Remove(legacyId);
 
+                s.Cooling.ClearHeal("qseries-migration");
                 foreach (var curve in s.Cooling.Curves)
                 {
                     var legacyOutput = curve.Outputs.Find(o => o.Id == legacyId);

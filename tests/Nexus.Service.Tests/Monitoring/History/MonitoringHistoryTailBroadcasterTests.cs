@@ -59,4 +59,34 @@ public class MonitoringHistoryTailBroadcasterTests
         var gpuSeries = response.Series.Single(s => s.Kind == "gpu");
         Assert.Equal("LUID-1234", gpuSeries.AdapterLuid);
     }
+
+    private static string CpuTempSeriesName(MetricSample sample)
+    {
+        var hub = new MultiplexHub();
+        var captured = new List<byte[]>();
+        hub.OnBroadcastForTest += (_, payload) => captured.Add(payload.ToArray());
+        using var sub = hub.AddTestSubscription(PanelTopics.MonitoringHistoryTail);
+        new MonitoringHistoryTailBroadcaster(hub).OnSample(sample, DateTime.UtcNow);
+        using var doc = JsonDocument.Parse(captured.Single());
+        var response = JsonSerializer.Deserialize(
+            doc.RootElement.GetProperty("d").GetRawText(), AppJsonContext.Default.MetricsHistoryResponse)!;
+        var series = response.Series.Single(s => s.Id == "cpu-temp");
+        Assert.Equal("cpu-temp", series.Kind);
+        return series.Name;
+    }
+
+    [Fact]
+    public void OnSample_TheTailFramesCpuTempSeriesCarriesTheModel()
+    {
+        Assert.Equal("AMD Ryzen 7 9800X3D", CpuTempSeriesName(FullScalarSample(1000) with { CpuName = "AMD Ryzen 7 9800X3D" }));
+    }
+
+    [Theory]
+    [InlineData(null)]
+    [InlineData("")]
+    [InlineData("CPU")]
+    public void OnSample_AnUnknownModelNeverBecomesTheSeriesName(string? cpuName)
+    {
+        Assert.Equal("CPU Temperature", CpuTempSeriesName(FullScalarSample(1000) with { CpuName = cpuName }));
+    }
 }
