@@ -106,13 +106,11 @@ public sealed class DiagnosticsHealthModel
         _store = store;
     }
 
-    /// <summary>forceRefresh bypasses this model's own cache; module caches are
-    /// unaffected - each module snapshot still goes through its normal
-    /// Snapshot() call.</summary>
     /// <summary>The health without any dev-tools simulation: what the alert poll, the support bundle, the PDF report and the MCP health tool read.</summary>
     internal DiagnosticsHealthResponse BuildRealHealth(bool forceRefresh = false) => BuildHealthCore(forceRefresh);
 
 #if DEV_TOOLS
+    /// <summary>forceRefresh bypasses this model's own cache; module caches are unaffected.</summary>
     public DiagnosticsHealthResponse BuildHealth(bool forceRefresh = false) =>
         ApplySimulation(BuildHealthCore(forceRefresh), Nexus.Service.Dev.DevSimEvents.Current, _store.Load().Diagnostics);
 
@@ -170,6 +168,7 @@ public sealed class DiagnosticsHealthModel
         return real with { Components = components, Overall = WorstStatus(components.Select(c => c.Status)) };
     }
 #else
+    /// <summary>forceRefresh bypasses this model's own cache; module caches are unaffected.</summary>
     public DiagnosticsHealthResponse BuildHealth(bool forceRefresh = false) => BuildHealthCore(forceRefresh);
 #endif
 
