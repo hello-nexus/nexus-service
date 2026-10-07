@@ -120,6 +120,27 @@ public static class NexusServiceCollectionExtensions
         // worker stays dormant until a PostHog key is configured (PostHogOptions).
         services.AddSingleton<Nexus.Service.Telemetry.TelemetryClient>();
 #if DEV_TOOLS
+        // Dev-tools simulated events: in-memory read-path overlays, never fan or settings writes.
+        services.AddSingleton<Nexus.Service.Dev.DevSimEvents>(sp =>
+        {
+            var sim = new Nexus.Service.Dev.DevSimEvents();
+            sim.EffectiveLimit = () => sp.GetService<Nexus.Service.Cooling.ThermalGuardController>()?.GetState().LimitC;
+            var failureLogged = false;
+            sim.Changed += () =>
+            {
+                try { Nexus.Service.Routes.DevSimRoutes.BroadcastAll(sp); }
+                catch (Exception ex)
+                {
+                    // A failed broadcast must not fail the toggle; the first one is logged.
+                    if (!failureLogged)
+                    {
+                        failureLogged = true;
+                        Console.Error.WriteLine($"[dev-sim] broadcast failed: {ex.Message}");
+                    }
+                }
+            };
+            return sim;
+        });
         // Dev-tools builds keep the last app_* events for GET /apps-api/telemetry/recent.
         services.AddSingleton<Nexus.Service.Telemetry.AppEventRecorder>(sp => new Nexus.Service.Telemetry.AppEventRecorder(
             sp.GetRequiredService<Nexus.Service.Telemetry.TelemetryClient>(),
@@ -156,6 +177,18 @@ public static class NexusServiceCollectionExtensions
         {
             services.AddHostedService<Nexus.Service.Telemetry.FleetTelemetryWorker>();
         }
+        // Global error reporting: unhandled errors aggregate by fingerprint and ride to nexus-api's /telemetry/errors.
+        if (Nexus.Service.Common.ClientCredential.IsOfficial)
+        {
+            services.AddSingleton<Nexus.Service.Telemetry.IErrorTransport, Nexus.Service.Telemetry.ErrorTransport>();
+            services.AddHostedService<Nexus.Service.Telemetry.ErrorReportWorker>();
+        }
+        else
+        {
+            services.AddSingleton<Nexus.Service.Telemetry.IErrorTransport, Nexus.Service.Telemetry.NullErrorTransport>();
+        }
+        services.AddSingleton<Nexus.Service.Telemetry.ErrorReporter>();
+        services.AddSingleton<Microsoft.Extensions.Logging.ILoggerProvider, Nexus.Service.Telemetry.ErrorLoggerProvider>();
 #if WINDOWS
         // Triggers the IFanControlProvider singleton ctor (which transitively
         // constructs LhmComputer + kicks off its background Open()) right

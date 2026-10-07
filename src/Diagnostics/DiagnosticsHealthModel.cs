@@ -106,10 +106,73 @@ public sealed class DiagnosticsHealthModel
         _store = store;
     }
 
-    /// <summary>forceRefresh bypasses this model's own cache; module caches are
-    /// unaffected - each module snapshot still goes through its normal
-    /// Snapshot() call.</summary>
-    public DiagnosticsHealthResponse BuildHealth(bool forceRefresh = false)
+    /// <summary>The health without any dev-tools simulation: what the alert poll, the support bundle, the PDF report and the MCP health tool read.</summary>
+    internal DiagnosticsHealthResponse BuildRealHealth(bool forceRefresh = false) => BuildHealthCore(forceRefresh);
+
+#if DEV_TOOLS
+    /// <summary>forceRefresh bypasses this model's own cache; module caches are unaffected.</summary>
+    public DiagnosticsHealthResponse BuildHealth(bool forceRefresh = false) =>
+        ApplySimulation(BuildHealthCore(forceRefresh), Nexus.Service.Dev.DevSimEvents.Current, _store.Load().Diagnostics);
+
+    /// <summary>Simulated components pass the same domain toggles and ignore list as real ones.</summary>
+    internal static List<HealthComponent> FilterSimulated(IEnumerable<HealthComponent> components, DiagnosticsSettings diagnostics)
+    {
+        var ignored = new HashSet<string>(diagnostics.IgnoredComponents ?? new List<string>(), StringComparer.Ordinal);
+        var domains = diagnostics.Components;
+        return components.Where(c => !ignored.Contains(c.Id) && c.Kind switch
+        {
+            "storage" => domains.Storage,
+            "gpu" => domains.Gpu,
+            "memory" => domains.Ram,
+            "system" => domains.System,
+            "cooling" => domains.Cooling,
+            _ => true,
+        }).ToList();
+    }
+
+    // Dev tools: merges the active simulated health components into a copy; the cached real result is untouched.
+    internal static DiagnosticsHealthResponse ApplySimulation(
+        DiagnosticsHealthResponse real, Nexus.Service.Dev.DevSimEvents? sim, DiagnosticsSettings diagnostics)
+    {
+        if (sim is null)
+        {
+            return real;
+        }
+        var simulated = sim.HealthComponents().ToList();
+        if (sim.SimulatedTrip() is { } trip)
+        {
+            AddThermalGuardComponent(simulated, trip, DateTime.UtcNow);
+        }
+        var extra = FilterSimulated(simulated, diagnostics);
+        if (extra.Count == 0)
+        {
+            return real;
+        }
+        var components = real.Components.ToList();
+        foreach (var add in extra)
+        {
+            var existing = components.FindIndex(c => c.Id == add.Id);
+            if (existing < 0)
+            {
+                components.Add(add);
+                continue;
+            }
+            var merged = components[existing];
+            var reasons = merged.Reasons.Concat(add.Reasons).ToList();
+            components[existing] = merged with
+            {
+                Reasons = reasons,
+                Status = WorstStatus(new[] { merged.Status, add.Status }),
+            };
+        }
+        return real with { Components = components, Overall = WorstStatus(components.Select(c => c.Status)) };
+    }
+#else
+    /// <summary>forceRefresh bypasses this model's own cache; module caches are unaffected.</summary>
+    public DiagnosticsHealthResponse BuildHealth(bool forceRefresh = false) => BuildHealthCore(forceRefresh);
+#endif
+
+    private DiagnosticsHealthResponse BuildHealthCore(bool forceRefresh)
     {
         lock (_gate)
         {

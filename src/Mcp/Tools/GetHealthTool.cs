@@ -37,7 +37,7 @@ public sealed class GetHealthTool : IMcpTool
 
     public Task<McpToolExecutionResult> ExecuteAsync(JsonElement? args, CancellationToken ct)
     {
-        var health = _gates.Diagnostics ? _model.BuildHealth() : new DiagnosticsHealthResponse { Enabled = false };
+        var health = _gates.Diagnostics ? _model.BuildRealHealth() : new DiagnosticsHealthResponse { Enabled = false };
         var result = new McpHealthResult
         {
             Supported = health.Supported,

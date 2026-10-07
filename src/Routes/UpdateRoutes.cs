@@ -16,8 +16,13 @@ public static class UpdateRoutes
     {
         // Current update availability and state.
         app.MapGet("/update/status", (UpdateService svc) =>
-            Results.Json(svc.Status, AppJsonContext.Default.UpdateStatusResponse))
-            .LocalhostOnly();
+        {
+            var status = svc.Status;
+#if DEV_TOOLS
+            status = Nexus.Service.Dev.DevSimEvents.Current?.ApplyUpdate(status) ?? status;
+#endif
+            return Results.Json(status, AppJsonContext.Default.UpdateStatusResponse);
+        }).LocalhostOnly();
 
         // Trigger an immediate check. Always returns 200 (network failures are
         // surfaced in lastCheckError).

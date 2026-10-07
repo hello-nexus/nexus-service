@@ -113,6 +113,9 @@ public static partial class DevicesRoutes
                 }
             }
 
+#if DEV_TOOLS
+            Nexus.Service.Dev.DevSimEvents.Current?.ApplyFirmware(result);
+#endif
             return result;
         });
 
