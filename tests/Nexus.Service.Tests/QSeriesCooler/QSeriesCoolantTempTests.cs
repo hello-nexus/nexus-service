@@ -44,6 +44,21 @@ public class QSeriesCoolantTempTests
     }
 
     [Fact]
+    public void PollTelemetry_accepts_the_legacy_14_byte_Q60_response()
+    {
+        var hub = NewConnectedHub(out var t);
+        var extended = BuildPort0(InHigh, InLow, OutHigh, OutLow);
+        extended[12] = QSeriesCoolerProtocol.ControlModeFirmware;
+        t.Port0Response = extended[..QSeriesCoolerProtocol.Port0TelemetryResponseLength];
+
+        Assert.True(hub.PollTelemetry());
+        Assert.Equal(1500, hub.State.PumpRpm);
+        Assert.Equal(QSeriesCoolerProtocol.ControlModeFirmware, hub.State.ControlMode);
+        Assert.Equal(50f, hub.State.CoolantTempInC);
+        Assert.Equal(25f, hub.State.CoolantTempOutC);
+    }
+
+    [Fact]
     public void GetTemperatureSources_exposes_both_coolant_probes_when_connected()
     {
         var hub = NewConnectedHub(out var t);

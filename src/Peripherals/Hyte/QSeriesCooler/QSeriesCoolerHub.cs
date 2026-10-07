@@ -193,7 +193,9 @@ public sealed class QSeriesCoolerHub : IDisposable, IDfuFlashTarget
     {
         if (!EnsureConnected()) return false;
         var port0 = new byte[QSeriesCoolerProtocol.Port0ResponseLength];
-        var ok = !ReadPort0(port0) || !QSeriesCoolerProtocol.TurboOnOf(port0) || SetTurbo(false);
+        var ok = !ReadPort0(port0, out var port0Length)
+            || !QSeriesCoolerProtocol.TurboOnOf(port0.AsSpan(0, port0Length))
+            || SetTurbo(false);
         if (SupportsFirmwareCurve)
             ok &= WriteFirmwareCurve(QSeriesCoolerProtocol.DefaultFirmwareCurve());
         if (SupportsFirmwareAnimation)
@@ -369,10 +371,11 @@ public sealed class QSeriesCoolerHub : IDisposable, IDfuFlashTarget
                 var n = transport.Read(buf, TelemetryReadTimeoutMs);
                 if (!QSeriesCoolerProtocol.TryParsePort0PumpRpm(buf.AsSpan(0, n), out var pumpRpm))
                     return false;
+                var port0 = buf.AsSpan(0, n);
                 State.PumpRpm = pumpRpm;
-                State.ControlMode = QSeriesCoolerProtocol.ControlModeOf(buf);
-                State.TurboOn = QSeriesCoolerProtocol.TurboOnOf(buf);
-                (State.CoolantTempInC, State.CoolantTempOutC) = QSeriesCoolerProtocol.CoolantTempsOf(buf);
+                State.ControlMode = QSeriesCoolerProtocol.ControlModeOf(port0);
+                State.TurboOn = QSeriesCoolerProtocol.TurboOnOf(port0);
+                (State.CoolantTempInC, State.CoolantTempOutC) = QSeriesCoolerProtocol.CoolantTempsOf(port0);
 
                 // Q80 has a single pump, same as Q60 - the second-pump port is
                 // not queried, so HasPump2 stays false and no Pump 2 is shown.
@@ -421,15 +424,15 @@ public sealed class QSeriesCoolerHub : IDisposable, IDfuFlashTarget
 
     // Caller holds _lock. Reads the 20-byte Port-0 status into buf; false on a
     // short / mis-framed reply. A control write echoes buf's fw-animation bytes.
-    private bool ReadPort0(byte[] buf)
+    private bool ReadPort0(byte[] buf, out int length)
     {
+        length = 0;
         var t = _transport;
         if (t is null) return false;
         t.DiscardInput();
         t.Write(QSeriesCoolerProtocol.BuildGetPort0Info());
-        var n = t.Read(buf, TelemetryReadTimeoutMs);
-        return n >= QSeriesCoolerProtocol.Port0ResponseLength
-            && QSeriesCoolerProtocol.TryParsePort0PumpRpm(buf.AsSpan(0, n), out _);
+        length = t.Read(buf, TelemetryReadTimeoutMs);
+        return QSeriesCoolerProtocol.TryParsePort0PumpRpm(buf.AsSpan(0, length), out _);
     }
 
     /// <summary>
@@ -447,17 +450,18 @@ public sealed class QSeriesCoolerHub : IDisposable, IDfuFlashTarget
             try
             {
                 var port0 = new byte[QSeriesCoolerProtocol.Port0ResponseLength];
-                if (!ReadPort0(port0)) return false;
-                var turboOn = QSeriesCoolerProtocol.TurboOnOf(port0);
+                if (!ReadPort0(port0, out var port0Length)) return false;
+                var status = port0.AsSpan(0, port0Length);
+                var turboOn = QSeriesCoolerProtocol.TurboOnOf(status);
                 var wire = QSeriesCoolerProtocol.MapPumpDutyToWire(dutyPercent, turboOn);
                 var turboByte = turboOn ? QSeriesCoolerProtocol.TurboOnByte : QSeriesCoolerProtocol.TurboOffByte;
                 // HYTE switches to software mode in one frame, then sends the speed
                 // in a SEPARATE frame with the mode byte cleared. Re-asserting the
                 // mode in the speed frame resets the pump, so only switch when the
                 // hub isn't already in software control.
-                if (QSeriesCoolerProtocol.ControlModeOf(port0) != QSeriesCoolerProtocol.ControlModeSoftware)
-                    t.Write(QSeriesCoolerProtocol.BuildSetControl(QSeriesCoolerProtocol.ControlModeSoftware, wire, turboByte, port0));
-                t.Write(QSeriesCoolerProtocol.BuildSetControl(QSeriesCoolerProtocol.ControlModeKeep, wire, turboByte, port0));
+                if (QSeriesCoolerProtocol.ControlModeOf(status) != QSeriesCoolerProtocol.ControlModeSoftware)
+                    t.Write(QSeriesCoolerProtocol.BuildSetControl(QSeriesCoolerProtocol.ControlModeSoftware, wire, turboByte, status));
+                t.Write(QSeriesCoolerProtocol.BuildSetControl(QSeriesCoolerProtocol.ControlModeKeep, wire, turboByte, status));
                 _lastPumpDuty = Math.Clamp(dutyPercent, 0, 100);
                 State.ControlMode = QSeriesCoolerProtocol.ControlModeSoftware;
                 return true;
@@ -502,8 +506,9 @@ public sealed class QSeriesCoolerHub : IDisposable, IDfuFlashTarget
             try
             {
                 var port0 = new byte[QSeriesCoolerProtocol.Port0ResponseLength];
-                if (!ReadPort0(port0)) return false;
-                var turboOn = QSeriesCoolerProtocol.TurboOnOf(port0);
+                if (!ReadPort0(port0, out var port0Length)) return false;
+                var status = port0.AsSpan(0, port0Length);
+                var turboOn = QSeriesCoolerProtocol.TurboOnOf(status);
                 var capped = new QSeriesCoolerProtocol.QSeriesFanSlotDuty[slotDuties.Count];
                 for (var i = 0; i < slotDuties.Count; i++)
                 {
@@ -516,11 +521,11 @@ public sealed class QSeriesCoolerHub : IDisposable, IDfuFlashTarget
                 // The fan frame only takes effect in software mode; switch if
                 // needed, preserving the pump's last commanded duty so we don't
                 // stall it while bringing the fan channel under control.
-                if (QSeriesCoolerProtocol.ControlModeOf(port0) != QSeriesCoolerProtocol.ControlModeSoftware)
+                if (QSeriesCoolerProtocol.ControlModeOf(status) != QSeriesCoolerProtocol.ControlModeSoftware)
                 {
                     var pumpWire = QSeriesCoolerProtocol.MapPumpDutyToWire(_lastPumpDuty, turboOn);
                     var turboByte = turboOn ? QSeriesCoolerProtocol.TurboOnByte : QSeriesCoolerProtocol.TurboOffByte;
-                    t.Write(QSeriesCoolerProtocol.BuildSetControl(QSeriesCoolerProtocol.ControlModeSoftware, pumpWire, turboByte, port0));
+                    t.Write(QSeriesCoolerProtocol.BuildSetControl(QSeriesCoolerProtocol.ControlModeSoftware, pumpWire, turboByte, status));
                 }
                 t.Write(QSeriesCoolerProtocol.BuildSetChannelFanSpeeds(channel, capped));
                 State.ControlMode = QSeriesCoolerProtocol.ControlModeSoftware;
@@ -554,13 +559,14 @@ public sealed class QSeriesCoolerHub : IDisposable, IDfuFlashTarget
             try
             {
                 var port0 = new byte[QSeriesCoolerProtocol.Port0ResponseLength];
-                if (!ReadPort0(port0)) return false;
-                if (QSeriesCoolerProtocol.ControlModeOf(port0) != mode)
+                if (!ReadPort0(port0, out var port0Length)) return false;
+                var status = port0.AsSpan(0, port0Length);
+                if (QSeriesCoolerProtocol.ControlModeOf(status) != mode)
                 {
                     t.Write(QSeriesCoolerProtocol.BuildSetControl(
                         mode, 0,
-                        QSeriesCoolerProtocol.TurboOnOf(port0) ? QSeriesCoolerProtocol.TurboOnByte : QSeriesCoolerProtocol.TurboOffByte,
-                        port0));
+                        QSeriesCoolerProtocol.TurboOnOf(status) ? QSeriesCoolerProtocol.TurboOnByte : QSeriesCoolerProtocol.TurboOffByte,
+                        status));
                 }
                 State.ControlMode = mode;
                 if (pin) _desiredControlMode = mode; // pin: a user-chosen mode the engine must not override
@@ -635,11 +641,12 @@ public sealed class QSeriesCoolerHub : IDisposable, IDfuFlashTarget
             try
             {
                 var port0 = new byte[QSeriesCoolerProtocol.Port0ResponseLength];
-                if (!ReadPort0(port0)) return false;
-                var mode = QSeriesCoolerProtocol.ControlModeOf(port0);
+                if (!ReadPort0(port0, out var port0Length)) return false;
+                var status = port0.AsSpan(0, port0Length);
+                var mode = QSeriesCoolerProtocol.ControlModeOf(status);
                 var wire = QSeriesCoolerProtocol.MapPumpDutyToWire(_lastPumpDuty, on);
                 var turboByte = on ? QSeriesCoolerProtocol.TurboOnByte : QSeriesCoolerProtocol.TurboOffByte;
-                t.Write(QSeriesCoolerProtocol.BuildSetControl(mode, wire, turboByte, port0));
+                t.Write(QSeriesCoolerProtocol.BuildSetControl(mode, wire, turboByte, status));
                 t.Write(QSeriesCoolerProtocol.BuildSetTurboMcu(turboByte));
                 State.TurboOn = on;
                 return true;
@@ -667,8 +674,8 @@ public sealed class QSeriesCoolerHub : IDisposable, IDfuFlashTarget
             try
             {
                 var port0 = new byte[QSeriesCoolerProtocol.Port0ResponseLength];
-                if (!ReadPort0(port0)) return null;
-                return QSeriesCoolerProtocol.TryParseFirmwareAnimation(port0, out var animation) ? animation : null;
+                if (!ReadPort0(port0, out var port0Length)) return null;
+                return QSeriesCoolerProtocol.TryParseFirmwareAnimation(port0.AsSpan(0, port0Length), out var animation) ? animation : null;
             }
             catch (Exception ex)
             {
@@ -701,8 +708,9 @@ public sealed class QSeriesCoolerHub : IDisposable, IDfuFlashTarget
             try
             {
                 var port0 = new byte[QSeriesCoolerProtocol.Port0ResponseLength];
-                if (!ReadPort0(port0)) return false;
-                if (QSeriesCoolerProtocol.TryParseFirmwareAnimation(port0, out var current)
+                if (!ReadPort0(port0, out var port0Length)) return false;
+                var status = port0.AsSpan(0, port0Length);
+                if (QSeriesCoolerProtocol.TryParseFirmwareAnimation(status, out var current)
                     && current.Animation == animation && current.R == r && current.G == g
                     && current.B == b && current.Brightness == brightness)
                 {
@@ -714,9 +722,9 @@ public sealed class QSeriesCoolerHub : IDisposable, IDfuFlashTarget
                 // reporting the old animation, which is what made a save look
                 // accepted and then revert (NEX-62). Order and pairing match
                 // HYTE's SmartHubCommandBase animation entry points.
-                var turboOn = QSeriesCoolerProtocol.TurboOnOf(port0);
+                var turboOn = QSeriesCoolerProtocol.TurboOnOf(status);
                 t.Write(QSeriesCoolerProtocol.BuildSetControlWithAnimation(
-                    QSeriesCoolerProtocol.ControlModeOf(port0),
+                    QSeriesCoolerProtocol.ControlModeOf(status),
                     QSeriesCoolerProtocol.MapPumpDutyToWire(_lastPumpDuty, turboOn),
                     turboOn ? QSeriesCoolerProtocol.TurboOnByte : QSeriesCoolerProtocol.TurboOffByte,
                     animation, r, g, b, brightness));
@@ -724,8 +732,8 @@ public sealed class QSeriesCoolerHub : IDisposable, IDfuFlashTarget
 
                 Thread.Sleep(FwAnimationVerifySettleMs);
                 var verify = new byte[QSeriesCoolerProtocol.Port0ResponseLength];
-                if (!ReadPort0(verify)
-                    || !QSeriesCoolerProtocol.TryParseFirmwareAnimation(verify, out var applied))
+                if (!ReadPort0(verify, out var verifyLength)
+                    || !QSeriesCoolerProtocol.TryParseFirmwareAnimation(verify.AsSpan(0, verifyLength), out var applied))
                 {
                     ServiceLog.Warn("[qseries-cooler] firmware animation write unverified: readback unavailable");
                     return true;
