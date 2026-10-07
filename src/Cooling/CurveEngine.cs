@@ -346,8 +346,9 @@ public sealed class CurveEngine : BackgroundService
                 lock (_lastRaw) { _lastRaw[curveDoc.Id] = rawSpeed.Value; }
 
                 // Sync mirrors a channel whose duty already carries the global
-                // boost; applying it again would compound it.
-                var modifiedSpeed = curveDoc.Type == "Sync"
+                // boost; applying it again would compound it. The guard curve is a
+                // safety curve and is never scaled.
+                var modifiedSpeed = CoolingConfigLint.IsGlobalModifierExempt(curveDoc)
                     ? Math.Clamp(rawSpeed.Value, 0, 100)
                     : Math.Clamp(rawSpeed.Value * globalMod, 0, 100);
 

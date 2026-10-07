@@ -1019,6 +1019,8 @@ public sealed class CoolingSettings
     public long? HealedAtUtcMs { get; set; }
     /// <summary>Manual speeds the last heal dropped (channel id to duty), put back by undo.</summary>
     public Dictionary<string, int> HealDroppedManualSpeeds { get; set; } = new();
+    /// <summary>The CPU limit the shared heal curve's points were generated for. The points are regenerated only when the effective limit differs, so a hand edit survives restarts until the limit changes.</summary>
+    public double? GuardCurveLimitC { get; set; }
     public List<HealedChannelRecord> HealedChannels { get; set; } = new();
     /// <summary>The most recent guard trip, kept across restarts so diagnostics can report it for a day.</summary>
     public ThermalGuardTripRecord? LastThermalTrip { get; set; }

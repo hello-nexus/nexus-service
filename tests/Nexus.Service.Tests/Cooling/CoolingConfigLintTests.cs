@@ -243,21 +243,26 @@ public class CoolingConfigLintTests
     }
 
     [Fact]
-    public void AChannelOnTheSharedCurve_IsNeverAHazard_EvenWhenSyncedTo()
+    public void TheSharedCurve_IsLintedByContent_AnIntactOnePassesAndABrokenOneIsFlaggedAndRebuilt()
     {
-        var guard = new CurveDocument
-        {
-            Id = CoolingConfigLint.GuardCurveId, Name = "Thermal guard", Type = "Graph",
-            Input = new CurveInputDocument { Id = "/amdcpu/0/temperature/2" },
-            Graph = new GraphCurveData { Points = new List<Nexus.Service.Persistence.GraphPoint> { new() { Temp = 40, Speed = 0 } } },
-            Outputs = { new CurveOutputDocument { Id = Fan1, Type = "Fan" } },
-        };
-        var follower = new CurveDocument
-        {
-            Id = "s", Name = "s", Type = "Sync", Sync = new SyncCurveData { SourceChannelId = Fan1 },
-            Outputs = { new CurveOutputDocument { Id = Followers[0] } },
-        };
-        Assert.Empty(CoolingConfigLint.Analyze(Input(new List<CurveDocument> { guard, follower })));
+        var input = Input(T1Curves());
+        var healed = CoolingConfigLint.Heal(input, CoolingConfigLint.Analyze(input))!;
+        var after = new LintInput { Curves = healed.Curves, Channels = input.Channels, Sources = input.Sources, LimitC = input.LimitC };
+        Assert.Empty(CoolingConfigLint.Analyze(after));
+
+        // A hand edit that drops the ceiling below the safe minimum at the limit.
+        var broken = healed.Curves.Select(CoolingConfigLint.CloneCurve).ToList();
+        broken.Single(c => c.Id == CoolingConfigLint.GuardCurveId).Graph!.Points.ForEach(p => p.Speed = 20);
+        var brokenInput = new LintInput { Curves = broken, Channels = input.Channels, Sources = input.Sources, LimitC = input.LimitC };
+        var hazards = CoolingConfigLint.Analyze(brokenInput);
+        Assert.Equal(4, hazards.Count);
+        Assert.All(hazards, h => Assert.Equal(CoolingHazardKinds.LowCeiling, h.Kind));
+
+        var rebuilt = CoolingConfigLint.Heal(brokenInput, hazards)!;
+        var guard = rebuilt.Curves.Single(c => c.Id == CoolingConfigLint.GuardCurveId);
+        Assert.Equal(100, guard.Graph!.Points[^1].Speed);
+        Assert.Equal(4, guard.Outputs.Count);
+        Assert.Empty(CoolingConfigLint.Analyze(new LintInput { Curves = rebuilt.Curves, Channels = input.Channels, Sources = input.Sources, LimitC = input.LimitC }));
     }
 
     [Fact]

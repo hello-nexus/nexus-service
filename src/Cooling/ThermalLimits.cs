@@ -24,8 +24,15 @@ public readonly record struct ThermalLimit(double LimitC, string Source);
 public static class ThermalLimits
 {
     /// <summary>Range of a user-set CPU limit.</summary>
-    public const double UserMinC = 85;
+    public const double UserMinC = 90;
     public const double UserMaxC = 110;
+
+    /// <summary>
+    /// A user limit clamped to the range, widened to include the detected limit so a part whose own
+    /// limit lies outside it (a lower one, say) can still sit at that value.
+    /// </summary>
+    public static double ClampUser(double requestedC, double detectedC) =>
+        Math.Clamp(requestedC, Math.Min(UserMinC, detectedC), Math.Max(UserMaxC, detectedC));
     public const double AmdDefaultC = 95;
     public const double GenericDefaultC = 90;
 
