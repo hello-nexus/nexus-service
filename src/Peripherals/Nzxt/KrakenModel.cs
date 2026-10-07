@@ -51,7 +51,8 @@ public sealed record KrakenModel(
     KrakenLightingProtocol Lighting,
     bool SpeedChannelsFollowFirmware = false,
     bool DirectStream = false,
-    bool StillImageOnly = false)
+    bool StillImageOnly = false,
+    bool FirmwareGif = false)
 {
     public bool HasLcd => LcdFormat != KrakenLcdFormat.None;
 
@@ -85,8 +86,10 @@ public sealed record KrakenModel(
 
         // Kraken Z3 (Z53/Z63/Z73). 320x320, and the only model still on raw RGBA. A used
         // bucket is deleted before it is rewritten, which a stream would do to the pump's
-        // flash every frame, so the panel takes still images only.
-        new(0x3008, "NZXT Kraken Z3", 320, 320, KrakenLcdFormat.Rgba8888, KrakenLightingProtocol.StreamedTables, StillImageOnly: true),
+        // flash every frame, so the panel takes still images only. It animates an uploaded
+        // GIF on its own.
+        new(0x3008, "NZXT Kraken Z3", 320, 320, KrakenLcdFormat.Rgba8888, KrakenLightingProtocol.StreamedTables,
+            StillImageOnly: true, FirmwareGif: true),
 
         // Kraken X3 (X53/X63/X73). Infinity-mirror ring, no panel.
         new(0x2007, "NZXT Kraken X3", 0, 0, KrakenLcdFormat.None, KrakenLightingProtocol.StreamedTables),

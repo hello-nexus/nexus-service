@@ -422,6 +422,9 @@ internal static class KrakenProtocol
     /// <summary>Raw B G R, 3 bytes a pixel: the live-frame format on the direct path.</summary>
     public const byte BulkFormatBgr888 = 0x09;
 
+    /// <summary>A whole GIF file, decoded and animated by the pump itself.</summary>
+    public const byte BulkFormatGif = 0x01;
+
     /// <summary>
     /// The 20-byte preamble that precedes the pixels. It must be written as its own bulk
     /// transfer; concatenating it with the pixel data corrupts the upload silently.

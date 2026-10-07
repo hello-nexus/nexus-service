@@ -3,9 +3,12 @@ using System.Collections.Generic;
 using System.IO;
 using System.Threading.Tasks;
 using Microsoft.AspNetCore.Http;
+using Nexus.Service.Klipy;
 using Nexus.Service.Models;
+using Nexus.Service.Models.Klipy;
 using Nexus.Service.Peripherals.Nzxt;
 using Nexus.Service.Persistence;
+using Nexus.Service.Platform;
 using Nexus.Service.Serialization;
 
 namespace Nexus.Service.Routes;
@@ -43,6 +46,7 @@ public static partial class DevicesRoutes
                     HasLcd = hub.HasLcd,
                     LcdWidth = hub.LcdWidth,
                     LcdHeight = hub.LcdHeight,
+                    LcdGif = hub.HasLcd && hub.Model.FirmwareGif,
                     LcdBrightness = snap.LcdBrightness,
                     LcdOrientation = snap.LcdOrientationQuarterTurns * 90,
                     LcdMode = snap.DisplayMode switch
@@ -57,7 +61,7 @@ public static partial class DevicesRoutes
         });
 
         // PUT /devices/nzxt-kraken/lcd - backlight, rotation and display mode.
-        app.MapPut("/devices/nzxt-kraken/lcd", (KrakenLcdRequest body, KrakenHub hub) =>
+        app.MapPut("/devices/nzxt-kraken/lcd", async (KrakenLcdRequest body, KrakenHub hub, HttpContext ctx) =>
         {
             if (!hub.IsConnected)
             {
@@ -81,9 +85,29 @@ public static partial class DevicesRoutes
                     quarterTurns = deg / 90;
                 }
                 // Backlight and rotation share one command, so both always go together.
+                var shownGif = hub.ShownLcdGif;
                 if (!hub.SetLcdBacklight(body.Brightness ?? snap.LcdBrightness, quarterTurns))
                 {
                     return Results.BadRequest(ApiResponse.Fail("failed to set lcd backlight"));
+                }
+                // The hub re-renders a still on rotation itself; a GIF needs ffmpeg, so it is redone here.
+                if (shownGif != null && quarterTurns != snap.LcdOrientationQuarterTurns)
+                {
+                    byte[] rotated;
+                    try
+                    {
+                        rotated = await KrakenGif.RotateAsync(shownGif, quarterTurns, ctx.RequestAborted).ConfigureAwait(false);
+                    }
+                    catch (InvalidOperationException ex)
+                    {
+                        ServiceLog.Warn($"[nzxt-kraken] gif rotation failed: {ex.Message}");
+                        return Results.BadRequest(ApiResponse.Fail("failed to rotate the gif"));
+                    }
+                    // Stale: a newer upload or rotation took the panel over and owns its orientation.
+                    if (hub.UploadLcdGif(rotated, shownGif, quarterTurns, onlyIfShown: true) == KrakenGifUpload.Failed)
+                    {
+                        return Results.BadRequest(ApiResponse.Fail("lcd upload rejected by device"));
+                    }
                 }
             }
 
@@ -146,6 +170,74 @@ public static partial class DevicesRoutes
             return hub.UploadLcdImage(buffer)
                 ? Results.Json(ApiResponse.Ok(), AppJsonContext.Default.ApiResponse)
                 : Results.BadRequest(ApiResponse.Fail("lcd upload rejected by device"));
+        });
+
+        // POST /devices/nzxt-kraken/lcd/gif - raw GIF (or any clip ffmpeg reads); fitted to the panel here.
+        app.MapPost("/devices/nzxt-kraken/lcd/gif", async (HttpRequest request, KrakenHub hub) =>
+        {
+            if (GifUnavailable(hub) is { } refused)
+            {
+                return refused;
+            }
+            var source = Path.Combine(Path.GetTempPath(), $"nexus-kraken-{Guid.NewGuid():N}.src");
+            try
+            {
+                long total = 0;
+                await using (var file = File.Create(source))
+                {
+                    var buffer = new byte[81920];
+                    int n;
+                    while ((n = await request.Body.ReadAsync(buffer, request.HttpContext.RequestAborted).ConfigureAwait(false)) > 0)
+                    {
+                        total += n;
+                        if (total > KrakenGif.MaxSourceBytes)
+                        {
+                            return Results.BadRequest(ApiResponse.Fail($"gif larger than {KrakenGif.MaxSourceBytes} bytes"));
+                        }
+                        await file.WriteAsync(buffer.AsMemory(0, n), request.HttpContext.RequestAborted).ConfigureAwait(false);
+                    }
+                }
+                if (total == 0)
+                {
+                    return Results.BadRequest(ApiResponse.Fail("empty body"));
+                }
+                return await ShowGifAsync(hub, source, request.HttpContext.RequestAborted).ConfigureAwait(false);
+            }
+            finally
+            {
+                try { File.Delete(source); }
+                catch { }
+            }
+        });
+
+        // POST /devices/nzxt-kraken/lcd/klipy - { slug } from a Klipy search in this process.
+        app.MapPost("/devices/nzxt-kraken/lcd/klipy", async (
+            KlipyImportRequest body, KrakenHub hub, IKlipyCatalog catalog, HttpContext ctx) =>
+        {
+            if (GifUnavailable(hub) is { } refused)
+            {
+                return refused;
+            }
+            if (!KlipyCatalog.IsValidSlug(body.Slug))
+            {
+                return Results.BadRequest(ApiResponse.Fail("invalid slug"));
+            }
+            var source = await catalog.DownloadAsync(body.Slug, Path.GetTempPath(), ctx.RequestAborted).ConfigureAwait(false);
+            if (source == null)
+            {
+                return Results.BadRequest(ApiResponse.Fail("download failed"));
+            }
+            try
+            {
+                var result = await ShowGifAsync(hub, source, ctx.RequestAborted).ConfigureAwait(false);
+                _ = catalog.TriggerShareAsync(body.Slug);
+                return result;
+            }
+            finally
+            {
+                try { File.Delete(source); }
+                catch { }
+            }
         });
 
         // GET /devices/nzxt-kraken/firmware-lighting - the animations the cooler can play
@@ -297,6 +389,53 @@ public static partial class DevicesRoutes
     }
 }
 
+public static partial class DevicesRoutes
+{
+    private static IResult? GifUnavailable(KrakenHub hub)
+    {
+        if (!hub.IsConnected)
+        {
+            return Results.BadRequest(ApiResponse.Fail("kraken not connected"));
+        }
+        if (!hub.HasLcd)
+        {
+            return Results.BadRequest(ApiResponse.Fail("lcd bulk pipe unavailable"));
+        }
+        return hub.Model.FirmwareGif ? null : Results.BadRequest(ApiResponse.Fail("this kraken does not play gifs"));
+    }
+
+    private static async Task<IResult> ShowGifAsync(KrakenHub hub, string sourcePath, System.Threading.CancellationToken ct)
+    {
+        try
+        {
+            var fitted = await KrakenGif.FitAsync(sourcePath, hub.LcdWidth, hub.LcdHeight, ct).ConfigureAwait(false);
+            // A rotation that lands during the conversion makes the upload Stale; redo it.
+            for (int attempt = 0; attempt < 3; attempt++)
+            {
+                int turns = hub.Snapshot.LcdOrientationQuarterTurns;
+                var wire = await KrakenGif.RotateAsync(fitted, turns, ct).ConfigureAwait(false);
+                if (wire.Length == 0 || wire.Length > KrakenGif.MaxWireBytes)
+                {
+                    return Results.BadRequest(ApiResponse.Fail($"converted gif is {wire.Length} bytes; the pump takes up to {KrakenGif.MaxWireBytes}"));
+                }
+                switch (hub.UploadLcdGif(wire, fitted, turns))
+                {
+                    case KrakenGifUpload.Shown:
+                        return Results.Json(ApiResponse.Ok(), AppJsonContext.Default.ApiResponse);
+                    case KrakenGifUpload.Failed:
+                        return Results.BadRequest(ApiResponse.Fail("lcd upload rejected by device"));
+                }
+            }
+            return Results.BadRequest(ApiResponse.Fail("the screen kept rotating during the upload"));
+        }
+        catch (InvalidOperationException ex)
+        {
+            ServiceLog.Warn($"[nzxt-kraken] gif conversion failed: {ex.Message}");
+            return Results.BadRequest(ApiResponse.Fail("could not read that file as an animation"));
+        }
+    }
+}
+
 public sealed class KrakenChannelDto
 {
     public string Id { get; set; } = "";
@@ -316,6 +455,8 @@ public sealed class KrakenStateResponse
     public bool HasLcd { get; set; }
     public int LcdWidth { get; set; }
     public int LcdHeight { get; set; }
+    /// <summary>True when the pump animates an uploaded GIF itself.</summary>
+    public bool LcdGif { get; set; }
     public int LcdBrightness { get; set; }
     public int LcdOrientation { get; set; }
     public string LcdMode { get; set; } = "";

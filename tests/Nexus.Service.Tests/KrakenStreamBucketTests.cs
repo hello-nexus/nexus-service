@@ -190,6 +190,102 @@ public class KrakenStreamBucketTests
     }
 
     [Fact]
+    public void Z3_gif_upload_sends_the_file_whole_as_format_01()
+    {
+        var hid = new AckingHidDevice();
+        var lcd = new RecordingLcdTransport();
+        var hub = new KrakenHub(new FixedLcdFactory(lcd));
+        hub.Attach(hid, Z3, 64);
+        Assert.True(hub.Connect());
+        var gif = new byte[3000];
+        var unrotated = new byte[2900];
+
+        Assert.Equal(KrakenGifUpload.Shown, hub.UploadLcdGif(gif, unrotated, hub.Snapshot.LcdOrientationQuarterTurns));
+
+        var header = Assert.Single(lcd.Headers);
+        Assert.Equal(KrakenProtocol.BulkFormatGif, header[12]);
+        Assert.Equal(gif.Length, BitConverter.ToInt32(header, 16));
+        Assert.Equal(gif.Length, lcd.ChunkSizes.Sum());
+        var setup = Assert.Single(hid.Writes, w => w[0] == 0x32 && w[1] == 0x01);
+        Assert.Equal(KrakenProtocol.PagesFor(gif.Length), setup[6] | (setup[7] << 8));
+        Assert.Same(unrotated, hub.ShownLcdGif);
+    }
+
+    [Fact]
+    public void Rotation_after_a_gif_does_not_bring_back_the_earlier_still()
+    {
+        var lcd = new RecordingLcdTransport();
+        var hub = new KrakenHub(new FixedLcdFactory(lcd));
+        hub.Attach(new AckingHidDevice(), Z3, 64);
+        Assert.True(hub.Connect());
+        Assert.True(hub.UploadLcdImage(new byte[Z3.LcdFrameBytes]));
+        Assert.Equal(KrakenGifUpload.Shown, hub.UploadLcdGif(new byte[100], new byte[100], hub.Snapshot.LcdOrientationQuarterTurns));
+
+        Assert.True(hub.SetLcdBacklight(100, (hub.Snapshot.LcdOrientationQuarterTurns + 1) & 3));
+
+        Assert.Equal(2, lcd.Frames);
+    }
+
+    [Fact]
+    public void A_still_upload_forgets_the_gif()
+    {
+        var hub = new KrakenHub(new FixedLcdFactory(new RecordingLcdTransport()));
+        hub.Attach(new AckingHidDevice(), Z3, 64);
+        Assert.True(hub.Connect());
+        Assert.Equal(KrakenGifUpload.Shown, hub.UploadLcdGif(new byte[100], new byte[100], hub.Snapshot.LcdOrientationQuarterTurns));
+
+        Assert.True(hub.UploadLcdImage(new byte[Z3.LcdFrameBytes]));
+
+        Assert.Null(hub.ShownLcdGif);
+    }
+
+    [Fact]
+    public void A_gif_rotated_for_an_old_orientation_is_stale()
+    {
+        var lcd = new RecordingLcdTransport();
+        var hub = new KrakenHub(new FixedLcdFactory(lcd));
+        hub.Attach(new AckingHidDevice(), Z3, 64);
+        Assert.True(hub.Connect());
+
+        var result = hub.UploadLcdGif(new byte[100], new byte[100], hub.Snapshot.LcdOrientationQuarterTurns + 1);
+
+        Assert.Equal(KrakenGifUpload.Stale, result);
+        Assert.Equal(0, lcd.Frames);
+    }
+
+    [Fact]
+    public void A_rotation_redo_does_not_replace_a_newer_gif()
+    {
+        var lcd = new RecordingLcdTransport();
+        var hub = new KrakenHub(new FixedLcdFactory(lcd));
+        hub.Attach(new AckingHidDevice(), Z3, 64);
+        Assert.True(hub.Connect());
+        int turns = hub.Snapshot.LcdOrientationQuarterTurns;
+        var older = new byte[100];
+        var newer = new byte[100];
+        Assert.Equal(KrakenGifUpload.Shown, hub.UploadLcdGif(new byte[100], older, turns));
+        Assert.Equal(KrakenGifUpload.Shown, hub.UploadLcdGif(new byte[100], newer, turns));
+
+        var result = hub.UploadLcdGif(new byte[100], older, turns, onlyIfShown: true);
+
+        Assert.Equal(KrakenGifUpload.Stale, result);
+        Assert.Equal(2, lcd.Frames);
+        Assert.Same(newer, hub.ShownLcdGif);
+    }
+
+    [Fact]
+    public void Gif_upload_is_refused_where_the_pump_cannot_play_one()
+    {
+        var lcd = new RecordingLcdTransport();
+        var hub = new KrakenHub(new FixedLcdFactory(lcd));
+        hub.Attach(new AckingHidDevice(), BucketStreamNoRgb, 64);
+        Assert.True(hub.Connect());
+
+        Assert.Equal(KrakenGifUpload.Failed, hub.UploadLcdGif(new byte[100], new byte[100], hub.Snapshot.LcdOrientationQuarterTurns));
+        Assert.Equal(0, lcd.Frames);
+    }
+
+    [Fact]
     public void Bucket_model_still_upload_sends_no_cancel()
     {
         var hid = new AckingHidDevice();

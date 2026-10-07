@@ -55,6 +55,8 @@ public sealed class KrakenHub : IDisposable
     private volatile KrakenSnapshot _snapshot = KrakenSnapshot.Empty;
     // Last image pushed, stored unrotated so a rotation change can re-render it.
     private byte[]? _lastLcdFrame;
+    // Last GIF pushed, panel-sized and unrotated; rotating it takes ffmpeg, so the caller does.
+    private byte[]? _lastLcdGif;
 
     // Streaming state. The buckets are allocated once, then rotated: the panel rejects
     // a transfer into the bucket it is currently displaying (code 9), so a stream has
@@ -525,6 +527,7 @@ public sealed class KrakenHub : IDisposable
                 return false;
             }
             _lastLcdFrame = source;
+            _lastLcdGif = null;
             return UploadLcdFrameLocked(source, _snapshot.LcdOrientationQuarterTurns);
         }
     }
@@ -573,16 +576,63 @@ public sealed class KrakenHub : IDisposable
 
     private bool UploadLcdFrameLocked(byte[] source, int quarterTurns)
     {
+        if (_device == null || _lcd == null)
+        {
+            return false;
+        }
+        int encoded = EncodeLcdPayloadLocked(source, quarterTurns, sourceIsBgra: false, out var format);
+        return UploadBucketLocked(_lcdScratch.AsSpan(0, encoded), format);
+    }
+
+    /// <summary>
+    /// Uploads a GIF the pump animates itself and shows it. <paramref name="gif"/> was rotated
+    /// for <paramref name="quarterTurns"/> off the lock, so a rotation since makes it Stale, as
+    /// does, with <paramref name="onlyIfShown"/>, any upload that replaced <paramref name="unrotated"/>.
+    /// The bulk transfer holds the HID lock; the cooler runs its own curves meanwhile.
+    /// </summary>
+    public KrakenGifUpload UploadLcdGif(byte[] gif, byte[] unrotated, int quarterTurns, bool onlyIfShown = false)
+    {
+        lock (_lcdTransferLock)
+        lock (_lock)
+        {
+            if (_device == null || _lcd == null || !_model.FirmwareGif)
+            {
+                return KrakenGifUpload.Failed;
+            }
+            if (_snapshot.LcdOrientationQuarterTurns != (quarterTurns & 0x03)
+                || (onlyIfShown && (!ReferenceEquals(_lastLcdGif, unrotated) || _snapshot.DisplayMode != KrakenDisplayMode.Bucket)))
+            {
+                return KrakenGifUpload.Stale;
+            }
+            // A rotation must not bring back the still this GIF replaced.
+            _lastLcdFrame = null;
+            _lastLcdGif = unrotated;
+            return UploadBucketLocked(gif, KrakenProtocol.BulkFormatGif) ? KrakenGifUpload.Shown : KrakenGifUpload.Failed;
+        }
+    }
+
+    /// <summary>The unrotated copy of the GIF on the panel, or null when it shows anything else.</summary>
+    public byte[]? ShownLcdGif
+    {
+        get
+        {
+            lock (_lock)
+            {
+                return _snapshot.DisplayMode == KrakenDisplayMode.Bucket ? _lastLcdGif : null;
+            }
+        }
+    }
+
+    private bool UploadBucketLocked(ReadOnlySpan<byte> payload, byte format)
+    {
         var lcd = _lcd;
         if (_device == null || lcd == null)
         {
             return false;
         }
-        int encoded = EncodeLcdPayloadLocked(source, quarterTurns, sourceIsBgra: false, out var format);
-        var payload = _lcdScratch.AsSpan(0, encoded);
-        var header = KrakenProtocol.EncodeBulkHeader(format, encoded);
-        int pages = KrakenProtocol.PagesFor(encoded);
-        ServiceLog.Info($"[nzxt-kraken] diag: still upload format {format:X2}, {encoded} B, {pages} pages, direct={_directStream}");
+        var header = KrakenProtocol.EncodeBulkHeader(format, payload.Length);
+        int pages = KrakenProtocol.PagesFor(payload.Length);
+        ServiceLog.Info($"[nzxt-kraken] diag: bucket upload format {format:X2}, {payload.Length} B, {pages} pages, direct={_directStream}");
         // The bucket wipe below invalidates whatever a stream set up.
         _streamReady = false;
         {
@@ -1021,4 +1071,12 @@ public sealed class KrakenHub : IDisposable
             _device = null;
         }
     }
+}
+
+public enum KrakenGifUpload
+{
+    Shown,
+    /// <summary>The orientation or the shown GIF changed while it was being prepared; nothing was sent.</summary>
+    Stale,
+    Failed,
 }

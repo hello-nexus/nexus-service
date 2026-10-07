@@ -56,6 +56,12 @@ public class KrakenModelTests
     }
 
     [Fact]
+    public void Only_the_Z3_plays_an_uploaded_gif()
+    {
+        Assert.Equal(new[] { 0x3008 }, KrakenModel.All.Where(m => m.FirmwareGif).Select(m => m.ProductId));
+    }
+
+    [Fact]
     public void Unknown_product_id_has_no_model()
     {
         Assert.Null(KrakenModel.Find(0x170E));
