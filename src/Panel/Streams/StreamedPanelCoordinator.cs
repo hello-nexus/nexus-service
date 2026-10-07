@@ -376,6 +376,8 @@ public sealed class StreamedPanelCoordinator : BackgroundService
         // glance when a device misbehaves on supposedly-fixed defaults.
         ServiceLog.Info($"[streamed-panel] session started serial={info.Serial} session={session.SessionId} "
             + $"panel={panelDeviceId} profile={info.Profile.Kind} {info.Profile.CssWidth}x{info.Profile.CssHeight}@{info.Profile.Fps} {info.Profile.BitrateKbps}kbps");
+        // A record's `streamed` flag follows the session, so clients re-read the panel list.
+        _notifyPanelChanged?.Invoke(panelDeviceId);
 
         TryReopenTransport(ds);
         return true;
@@ -517,6 +519,7 @@ public sealed class StreamedPanelCoordinator : BackgroundService
             try { ingest.Abort(); } catch { }
         }
         ServiceLog.Info($"[streamed-panel] session closed serial={ds.Info.Serial} session={ds.Session.SessionId} ({reason})");
+        _notifyPanelChanged?.Invoke(ds.Session.PanelDeviceId);
     }
 
     private void CloseAll(string reason)

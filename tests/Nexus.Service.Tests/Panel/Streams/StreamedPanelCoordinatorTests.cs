@@ -24,6 +24,7 @@ public sealed class StreamedPanelCoordinatorTests : IDisposable
     private readonly StreamedPanelStore _store;
     private readonly FakeDiscovery _discovery = new();
     private long _nowMs = 1_000_000;
+    private readonly List<string> _panelChanges = new();
     private StreamedPanelCoordinator? _coordinator;
 
     public StreamedPanelCoordinatorTests()
@@ -56,7 +57,8 @@ public sealed class StreamedPanelCoordinatorTests : IDisposable
             _registry,
             _gate,
             notifyOverlay: null,
-            nowMs: () => _nowMs);
+            nowMs: () => _nowMs,
+            notifyPanelChanged: _panelChanges.Add);
         return _coordinator;
     }
 
@@ -203,6 +205,21 @@ public sealed class StreamedPanelCoordinatorTests : IDisposable
         coordinator.TickOnce();
 
         Assert.Empty(coordinator.GetAssignments().Assignments);
+    }
+
+    [Fact]
+    public void Session_start_and_close_tell_clients_the_panel_list_changed()
+    {
+        _discovery.Devices.Add(Device());
+        var coordinator = Coordinator();
+        coordinator.TickOnce();
+        var id = Assert.Single(coordinator.GetAssignments().Assignments).PanelDeviceId;
+        Assert.Equal(new[] { id }, _panelChanges);
+
+        _gate.SetEnabled("fake-panel", false);
+        coordinator.TickOnce();
+
+        Assert.Equal(new[] { id, id }, _panelChanges);
     }
 
     [Fact]
