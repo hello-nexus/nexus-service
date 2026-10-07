@@ -338,21 +338,73 @@ public class HydroShift2Tests
     }
 
     [Fact]
-    public void An_unanswered_ring_upload_is_tried_again()
+    public void An_unanswered_ring_upload_is_tried_again_with_a_growing_backoff()
     {
         var (aio, pipe) = Attached();
         pipe.Silent = true;
         aio.SetRing(Solid(255, 0, 0));
         aio.Tick(10_000);
-        pipe.Silent = false;
+        aio.Tick(14_750);
+        Assert.Equal(1, pipe.Commands.Count(c => c == HydroShift2Protocol.CommandPushRgb));
 
-        aio.Tick(12_000);
-
+        aio.Tick(15_000);
         Assert.Equal(2, pipe.Commands.Count(c => c == HydroShift2Protocol.CommandPushRgb));
+
+        pipe.Silent = false;
+        aio.Tick(24_750);
+        Assert.Equal(2, pipe.Commands.Count(c => c == HydroShift2Protocol.CommandPushRgb));
+        aio.Tick(25_000);
+        Assert.Equal(3, pipe.Commands.Count(c => c == HydroShift2Protocol.CommandPushRgb));
+
+        // An answered upload resets the backoff to its first step.
+        pipe.Silent = true;
+        aio.SetRing(Solid(0, 255, 0));
+        aio.Tick(27_000);
+        aio.Tick(31_750);
+        Assert.Equal(4, pipe.Commands.Count(c => c == HydroShift2Protocol.CommandPushRgb));
+        aio.Tick(32_000);
+        Assert.Equal(5, pipe.Commands.Count(c => c == HydroShift2Protocol.CommandPushRgb));
     }
 
     [Fact]
-    public void The_ring_is_reuploaded_when_the_wireless_link_lets_go()
+    public void Ring_retries_stop_growing_at_the_cap()
+    {
+        var (aio, pipe) = Attached();
+        pipe.Silent = true;
+        aio.SetRing(Solid(255, 0, 0));
+        foreach (var t in new[] { 10_000, 15_000, 25_000, 45_000, 85_000, 124_750 })
+        {
+            aio.Tick(t);
+        }
+        Assert.Equal(5, pipe.Commands.Count(c => c == HydroShift2Protocol.CommandPushRgb));
+
+        aio.Tick(125_000);
+        Assert.Equal(6, pipe.Commands.Count(c => c == HydroShift2Protocol.CommandPushRgb));
+    }
+
+    [Fact]
+    public void A_usb_reconnect_after_the_dongle_had_the_unit_uploads_without_a_hold()
+    {
+        var owned = true;
+        var driver = new HydroShift2LcdDriver();
+        var hub = new BulkPanelHub(driver);
+        Assert.True(hub.Attach(new FirmwarePipe(), null));
+        var aio = new HydroShift2Aio(hub, driver, _ => owned);
+        aio.SetRing(Solid(255, 0, 0));
+        aio.Tick(10_000);
+        hub.Detach();
+        aio.Tick(11_000);
+
+        owned = false;
+        var pipe = new FirmwarePipe();
+        Assert.True(hub.Attach(pipe, null));
+        aio.Tick(12_000);
+
+        Assert.Equal(1, pipe.Commands.Count(c => c == HydroShift2Protocol.CommandPushRgb));
+    }
+
+    [Fact]
+    public void The_ring_is_reuploaded_once_the_firmware_has_left_the_wireless_link()
     {
         var owned = false;
         var (aio, pipe) = Attached(_ => owned);
@@ -363,7 +415,10 @@ public class HydroShift2Tests
         owned = false;
 
         aio.Tick(14_000);
+        aio.Tick(33_750);
+        Assert.Equal(1, pipe.Commands.Count(c => c == HydroShift2Protocol.CommandPushRgb));
 
+        aio.Tick(34_000);
         Assert.Equal(2, pipe.Commands.Count(c => c == HydroShift2Protocol.CommandPushRgb));
     }
 

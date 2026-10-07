@@ -22,6 +22,16 @@ public sealed class HydroShift2Aio : BackgroundService
     /// <summary>The firmware acks nothing else while it applies a ring upload, so each upload hitches the glass (measured).</summary>
     private const int RingMinIntervalMs = 2000;
 
+    /// <summary>
+    /// The firmware leaves ring uploads unanswered while bound to a dongle and for ~13 s after
+    /// it is released (measured), and each unanswered upload stalls the glass for seconds.
+    /// </summary>
+    private const int RingAfterWirelessHoldMs = 20_000;
+
+    /// <summary>First retry after an unanswered ring upload, past the few-second stall it causes (measured); doubles up to the cap.</summary>
+    private const int RingRetryMs = 5000;
+    private const int RingRetryMaxMs = 40_000;
+
     private readonly BulkPanelHub _hub;
     private readonly HydroShift2LcdDriver _driver;
     private readonly Func<string?, bool> _wirelessOwns;
@@ -41,6 +51,9 @@ public sealed class HydroShift2Aio : BackgroundService
     private long _lastParamsAt;
     private long _lastPumpFanAt;
     private long _lastRingAt;
+    private long _ringHoldUntil;
+    private int _ringRetryMs;
+    private bool _wirelessHeld;
     private bool _wasAvailable;
     private bool _driving;
 
@@ -135,6 +148,10 @@ public sealed class HydroShift2Aio : BackgroundService
     {
         if (!_hub.IsConnected)
         {
+            // Cleared even while the dongle owns the unit, so a reconnect starts without a hold.
+            _ringHoldUntil = 0;
+            _ringRetryMs = 0;
+            _wirelessHeld = false;
             if (_wasAvailable)
             {
                 OnDisconnected();
@@ -171,11 +188,17 @@ public sealed class HydroShift2Aio : BackgroundService
                 {
                     _ringDirty = _ring is not null;
                 }
+                if (_wirelessHeld)
+                {
+                    _wirelessHeld = false;
+                    _ringHoldUntil = now + RingAfterWirelessHoldMs;
+                }
             }
             RaiseAvailabilityChanged();
         }
         if (!available)
         {
+            _wirelessHeld = true;
             return;
         }
 
@@ -226,7 +249,7 @@ public sealed class HydroShift2Aio : BackgroundService
         byte interval;
         lock (_lock)
         {
-            if (!_ringDirty || _ring is null || now - _lastRingAt < RingMinIntervalMs)
+            if (!_ringDirty || _ring is null || now - _lastRingAt < RingMinIntervalMs || now < _ringHoldUntil)
             {
                 return;
             }
@@ -236,14 +259,19 @@ public sealed class HydroShift2Aio : BackgroundService
             _ringDirty = false;
         }
         _lastRingAt = now;
-        if (!_hub.Exchange(pipe => _driver.PushRing(pipe, ring, frames, interval), false))
+        if (_hub.Exchange(pipe => _driver.PushRing(pipe, ring, frames, interval), false))
         {
-            ServiceLog.Warn($"[{HydroShift2LcdDriver.Id}] ring write unanswered");
-            lock (_lock)
-            {
-                // A ring effect is set once, so an unanswered upload would never be tried again.
-                _ringDirty |= ReferenceEquals(_ring, ring);
-            }
+            _ringRetryMs = 0;
+            return;
+        }
+        // Retrying while the firmware still ignores uploads keeps the glass stalled, so back off.
+        _ringRetryMs = _ringRetryMs == 0 ? RingRetryMs : Math.Min(_ringRetryMs * 2, RingRetryMaxMs);
+        _ringHoldUntil = now + _ringRetryMs;
+        ServiceLog.Warn($"[{HydroShift2LcdDriver.Id}] ring write unanswered; retrying in {_ringRetryMs / 1000} s");
+        lock (_lock)
+        {
+            // A ring effect is set once, so an unanswered upload would never be tried again.
+            _ringDirty |= ReferenceEquals(_ring, ring);
         }
     }
 
