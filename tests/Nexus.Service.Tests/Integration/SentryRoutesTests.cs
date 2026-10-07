@@ -48,6 +48,7 @@ public sealed class SentryRoutesTests : IClassFixture<SentryAppFactory>
         _factory.ResetSettings();
         _factory.Power.LockCalls = 0;
         _factory.Power.LockResult = true;
+        _factory.Power.OnLock = null;
         _sentry = _factory.Services.GetRequiredService<SentryCoordinator>();
         _pairing = _factory.Services.GetRequiredService<PanelPhonePairingService>();
         // No watch is wired in the test host; give it one so the feature reads as supported.
@@ -124,8 +125,11 @@ public sealed class SentryRoutesTests : IClassFixture<SentryAppFactory>
     [Fact]
     public async Task Arming_with_a_lock_is_desktop_only_and_locks_through_the_provider()
     {
+        _factory.Power.OnLock = () => _sentry.OnLockChanged(true);
         var phone = await Phone().PostAsync("/sentry/arm", Json("""{"lock":true}"""));
-        Assert.Equal(HttpStatusCode.Unauthorized, phone.StatusCode);
+        // 403, not 401: the panel treats a 401 as an unpaired session.
+        Assert.Equal(HttpStatusCode.Forbidden, phone.StatusCode);
+        Assert.Equal("desktop_only", (await Body(phone)).GetProperty("error").GetString());
         Assert.Equal(0, _factory.Power.LockCalls);
 
         var desktop = await Desktop().PostAsync("/sentry/arm", Json("""{"lock":true}"""));

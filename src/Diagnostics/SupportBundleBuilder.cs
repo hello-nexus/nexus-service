@@ -87,6 +87,8 @@ public static class SupportBundleBuilder
             {
                 session.Hash = blank;
                 session.RelayKey = blank;
+                // A device push token is a credential to alert that phone.
+                session.PushTarget = null;
             }
             foreach (var account in copy.Auth.CloudAccounts)
             {

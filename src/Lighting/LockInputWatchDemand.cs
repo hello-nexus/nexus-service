@@ -2,6 +2,14 @@ using System;
 
 namespace Nexus.Service.Lighting;
 
+/// <summary>Who can want the lock input watch. Add a member here and nothing else needs a count.</summary>
+internal enum LockInputWatchConsumer
+{
+    Blackout,
+    StreamDeck,
+    Sentry,
+}
+
 /// <summary>
 /// One lock input watch, several consumers (lock blackout, Stream Deck lock
 /// sleep, Sentry). Each consumer reports only whether it wants the watch; the
@@ -14,9 +22,9 @@ internal sealed class LockInputWatchDemand
     private readonly bool[] _wanted;
     private readonly Action<bool> _apply;
 
-    public LockInputWatchDemand(int consumers, Action<bool> apply)
+    public LockInputWatchDemand(Action<bool> apply)
     {
-        _wanted = new bool[consumers];
+        _wanted = new bool[Enum.GetValues<LockInputWatchConsumer>().Length];
         _apply = apply;
     }
 
@@ -32,12 +40,12 @@ internal sealed class LockInputWatchDemand
         }
     }
 
-    /// <summary>The arm/disarm callback for consumer <paramref name="index"/>.</summary>
-    public Action<bool> Consumer(int index) => enabled =>
+    /// <summary>The arm/disarm callback for <paramref name="consumer"/>.</summary>
+    public Action<bool> Consumer(LockInputWatchConsumer consumer) => enabled =>
     {
         lock (_gate)
         {
-            _wanted[index] = enabled;
+            _wanted[(int)consumer] = enabled;
             _apply(Array.IndexOf(_wanted, true) >= 0);
         }
     };

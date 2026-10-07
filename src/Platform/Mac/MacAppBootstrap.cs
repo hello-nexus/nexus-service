@@ -148,10 +148,10 @@ internal static class MacAppBootstrap
                 deckWorker?.OnLockScreenInput();
                 sentry?.OnLockScreenInput();
             });
-            var demand = new Nexus.Service.Lighting.LockInputWatchDemand(3, watch.Set);
-            lockBlackout?.LockInputWatch = demand.Consumer(0);
-            deckWorker?.LockInputWatch = demand.Consumer(1);
-            sentry?.LockInputWatch = demand.Consumer(2);
+            var demand = new Nexus.Service.Lighting.LockInputWatchDemand(watch.Set);
+            lockBlackout?.LockInputWatch = demand.Consumer(Nexus.Service.Lighting.LockInputWatchConsumer.Blackout);
+            deckWorker?.LockInputWatch = demand.Consumer(Nexus.Service.Lighting.LockInputWatchConsumer.StreamDeck);
+            sentry?.LockInputWatch = demand.Consumer(Nexus.Service.Lighting.LockInputWatchConsumer.Sentry);
         }
 
         store.OnChanged += () =>

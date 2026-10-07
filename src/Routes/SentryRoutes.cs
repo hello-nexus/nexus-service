@@ -15,8 +15,8 @@ namespace Nexus.Service.Routes;
 public static class SentryRoutes
 {
     private const int MaxTokenLength = 4096;
-    private const int MaxTitleLength = 64;
-    private const int MaxBodyLength = 200;
+    private const int MaxTitleLength = SentryCoordinator.MaxTitleLength;
+    private const int MaxBodyLength = SentryCoordinator.MaxBodyLength;
 
     public static void MapSentryEndpoints(this WebApplication app)
     {
@@ -26,15 +26,16 @@ public static class SentryRoutes
 
         // Locking the PC is a desktop-token action: a relayed or LAN phone can
         // only arm a PC that is already locked.
-        app.MapPost("/sentry/arm", (SentryArmBody? body, HttpContext ctx, SentryCoordinator sentry, TokenService tokens) =>
+        app.MapPost("/sentry/arm", async (SentryArmBody? body, HttpContext ctx, SentryCoordinator sentry, TokenService tokens) =>
         {
             var lockFirst = body?.Lock ?? false;
             if (lockFirst && !ServiceTokenRequests.HasServiceToken(ctx, tokens))
             {
-                return Results.Unauthorized();
+                // Not 401: the panel reads that as an unpaired session and re-pairs.
+                return Error(StatusCodes.Status403Forbidden, "desktop_only");
             }
 
-            return sentry.Arm(lockFirst) switch
+            return await sentry.ArmAsync(lockFirst) switch
             {
                 SentryCoordinator.ArmOutcome.Armed =>
                     Results.Json(sentry.GetStatus(), AppJsonContext.Default.SentryStatusResponse),
@@ -42,6 +43,8 @@ public static class SentryRoutes
                     Error(StatusCodes.Status409Conflict, "not_locked"),
                 SentryCoordinator.ArmOutcome.Unsupported =>
                     Error(StatusCodes.Status400BadRequest, "unsupported"),
+                SentryCoordinator.ArmOutcome.LockNotConfirmed =>
+                    Error(StatusCodes.Status504GatewayTimeout, "lock_not_confirmed"),
                 _ => Error(StatusCodes.Status500InternalServerError, "lock_failed"),
             };
         }).AllowPanel();
@@ -113,13 +116,13 @@ public static class SentryRoutes
         var title = body.Title?.Trim() ?? "";
         if (title.Length == 0 || title.Length > MaxTitleLength)
         {
-            problem = "title must be 1 to 64 characters";
+            problem = $"title must be 1 to {MaxTitleLength} characters";
             return null;
         }
         var text = body.Body?.Trim() ?? "";
         if (text.Length == 0 || text.Length > MaxBodyLength)
         {
-            problem = "body must be 1 to 200 characters";
+            problem = $"body must be 1 to {MaxBodyLength} characters";
             return null;
         }
         return new PanelPhonePushTarget

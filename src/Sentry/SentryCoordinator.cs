@@ -36,9 +36,14 @@ public sealed class SentryCoordinator : IHostedService, IDisposable
     /// <summary>Pause after a failed send, so held keys against an unreachable cloud do not become a request per input.</summary>
     internal static readonly TimeSpan RetryBackoff = TimeSpan.FromSeconds(30);
 
+    /// <summary>nexus-api's limits on a push target; the routes validate against the same numbers.</summary>
+    internal const int MaxTitleLength = 64;
+    internal const int MaxBodyLength = 200;
+
+    /// <summary>How long a lock-then-arm waits to see the session actually lock before giving up.</summary>
+    internal static readonly TimeSpan DefaultLockWait = TimeSpan.FromSeconds(10);
+
     private const int MaxTargets = 10;
-    private const int MaxTitleLength = 64;
-    private const int MaxBodyLength = 200;
     private const string PcPlaceholder = "{pc}";
 
     private readonly IConfigStore _store;
@@ -47,6 +52,8 @@ public sealed class SentryCoordinator : IHostedService, IDisposable
     private readonly ISystemPowerProvider _power;
     private readonly SessionLockListener? _lockListener;
     private readonly Func<DateTimeOffset> _clock;
+    private readonly Func<bool?> _readLockState;
+    private readonly TimeSpan _lockWait;
     private readonly object _gate = new();
 
     private Action<bool>? _lockInputWatch;
@@ -55,6 +62,7 @@ public sealed class SentryCoordinator : IHostedService, IDisposable
     private long _armedAtMs;
     private long _retryAtMs;
     private bool _sending;
+    private TaskCompletionSource? _lockWaiter;
 
     public SentryCoordinator(
         IConfigStore store,
@@ -62,7 +70,9 @@ public sealed class SentryCoordinator : IHostedService, IDisposable
         ICloudApiClient cloud,
         ISystemPowerProvider power,
         SessionLockListener? lockListener = null,
-        Func<DateTimeOffset>? clock = null)
+        Func<DateTimeOffset>? clock = null,
+        Func<bool?>? readLockState = null,
+        TimeSpan? lockWait = null)
     {
         _store = store;
         _pairing = pairing;
@@ -70,12 +80,20 @@ public sealed class SentryCoordinator : IHostedService, IDisposable
         _power = power;
         _lockListener = lockListener;
         _clock = clock ?? (() => DateTimeOffset.UtcNow);
+        _readLockState = readLockState ?? SentryLockState.Read;
+        _lockWait = lockWait ?? DefaultLockWait;
 
-        _armed = store.Load().Sentry.Armed;
-        // Nothing re-derives lock state at startup (see SessionLockListener), and
-        // Armed is only ever saved true while locked with an unlock clearing it.
-        // So a restart that finds it set resumes locked; the next unlock disarms.
-        _locked = _armed;
+        // The real lock state, read once: a restart on a locked PC must report
+        // locked, and a reboot's first sign-in raises a logon, not an unlock, so
+        // a persisted armed state is only trusted while the session is verifiably
+        // locked. An unreadable state counts as not armed.
+        var state = _readLockState();
+        _locked = state == true;
+        _armed = store.Load().Sentry.Armed && _locked;
+        if (store.Load().Sentry.Armed && !_armed)
+        {
+            store.Update(s => s.Sentry.Armed = false);
+        }
         _armedAtMs = NowMs();
         _lockListener?.LockChanged += OnLockChanged;
     }
@@ -141,46 +159,86 @@ public sealed class SentryCoordinator : IHostedService, IDisposable
         Unsupported,
         NotLocked,
         LockFailed,
+        LockNotConfirmed,
     }
 
     /// <summary>
-    /// <paramref name="lockFirst"/> locks the PC and then arms (Settings);
-    /// otherwise arms only while the session is already locked (the phone).
+    /// <paramref name="lockFirst"/> locks the PC and then arms (Settings), but
+    /// only once the session lock is actually observed; otherwise arms only while
+    /// the session is already locked (the phone).
     /// </summary>
-    public ArmOutcome Arm(bool lockFirst)
+    public async Task<ArmOutcome> ArmAsync(bool lockFirst)
     {
         if (!Supported)
         {
             return ArmOutcome.Unsupported;
         }
 
-        if (lockFirst)
-        {
-            if (!_power.Lock())
-            {
-                return ArmOutcome.LockFailed;
-            }
-        }
-        else
+        if (!lockFirst)
         {
             lock (_gate)
             {
-                if (!_locked)
-                {
-                    return ArmOutcome.NotLocked;
-                }
+                return _locked ? CommitArm() : ArmOutcome.NotLocked;
+            }
+        }
+
+        TaskCompletionSource? waiter = null;
+        lock (_gate)
+        {
+            if (!_locked)
+            {
+                // Registered before the lock is issued so the transition cannot slip past.
+                waiter = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+                _lockWaiter = waiter;
+            }
+        }
+
+        if (!_power.Lock())
+        {
+            ClearWaiter(waiter);
+            return ArmOutcome.LockFailed;
+        }
+
+        if (waiter is not null)
+        {
+            // True only means the request was issued; the session still has to lock.
+            var done = await Task.WhenAny(waiter.Task, Task.Delay(_lockWait)).ConfigureAwait(false);
+            ClearWaiter(waiter);
+            if (done != waiter.Task)
+            {
+                ServiceLog.Info("[sentry] lock was not observed in time; not armed");
+                return ArmOutcome.LockNotConfirmed;
             }
         }
 
         lock (_gate)
         {
-            _armed = true;
-            // The lock transition arrives on its own hop shortly; the lock this
-            // call just issued is not in doubt, so record it now.
-            _locked = true;
-            _armedAtMs = NowMs();
-            _retryAtMs = 0;
+            return _locked ? CommitArm() : ArmOutcome.LockNotConfirmed;
         }
+    }
+
+    private void ClearWaiter(TaskCompletionSource? waiter)
+    {
+        lock (_gate)
+        {
+            if (ReferenceEquals(_lockWaiter, waiter))
+            {
+                _lockWaiter = null;
+            }
+        }
+    }
+
+    /// <summary>
+    /// Arms. Caller holds <see cref="_gate"/> and has checked <see cref="_locked"/>;
+    /// the persisted write and the watch change stay inside it, so an unlock
+    /// racing an arm (it takes the same gate) can never leave an armed state
+    /// behind on an unlocked desktop.
+    /// </summary>
+    private ArmOutcome CommitArm()
+    {
+        _armed = true;
+        _armedAtMs = NowMs();
+        _retryAtMs = 0;
         _store.Update(s => s.Sentry.Armed = true);
         SetWatch(true);
         ServiceLog.Info("[sentry] armed");
@@ -189,12 +247,16 @@ public sealed class SentryCoordinator : IHostedService, IDisposable
 
     public void Disarm()
     {
-        bool wasArmed;
         lock (_gate)
         {
-            wasArmed = _armed;
-            _armed = false;
+            DisarmLocked();
         }
+    }
+
+    private void DisarmLocked()
+    {
+        var wasArmed = _armed;
+        _armed = false;
         if (_store.Load().Sentry.Armed)
         {
             _store.Update(s => s.Sentry.Armed = false);
@@ -213,12 +275,22 @@ public sealed class SentryCoordinator : IHostedService, IDisposable
         lock (_gate)
         {
             _locked = locked;
-        }
-        if (!locked)
-        {
-            Disarm();
+            if (locked)
+            {
+                _lockWaiter?.TrySetResult();
+            }
+            else
+            {
+                DisarmLocked();
+            }
         }
     }
+
+    /// <summary>
+    /// A user signed in. After a reboot the first sign-in is a logon, never an
+    /// unlock, so it must end the lock the same way.
+    /// </summary>
+    public void OnSessionLogon() => OnLockChanged(false);
 
     /// <summary>Input happened at the lock screen, from the shared watch. Never blocks the watch's thread.</summary>
     public void OnLockScreenInput() => _ = Task.Run(() => OnInputAsync());

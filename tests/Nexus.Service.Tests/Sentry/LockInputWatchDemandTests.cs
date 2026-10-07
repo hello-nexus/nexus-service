@@ -12,9 +12,9 @@ public sealed class LockInputWatchDemandTests
     public void The_watch_runs_while_any_consumer_wants_it()
     {
         var applied = new List<bool>();
-        var demand = new LockInputWatchDemand(3, applied.Add);
-        var blackout = demand.Consumer(0);
-        var sentry = demand.Consumer(2);
+        var demand = new LockInputWatchDemand(applied.Add);
+        var blackout = demand.Consumer(LockInputWatchConsumer.Blackout);
+        var sentry = demand.Consumer(LockInputWatchConsumer.Sentry);
 
         blackout(true);
         sentry(true);
@@ -27,7 +27,7 @@ public sealed class LockInputWatchDemandTests
     }
 
     [Fact]
-    public void Blackout_and_Sentry_both_hold_the_watch_through_an_unlock()
+    public async Task Blackout_and_Sentry_both_hold_the_watch_through_an_unlock()
     {
         var store = new InMemoryConfigStore();
         using var engine = new Nexus.Service.Lighting.Engine.LightingEngine();
@@ -36,15 +36,16 @@ public sealed class LockInputWatchDemandTests
             store,
             new PanelPhonePairingService(store, new MultiplexHub()),
             new FakeCloudApiClient(),
-            new FakePowerProvider());
+            new FakePowerProvider(),
+            readLockState: () => false);
         var applied = new List<bool>();
-        var demand = new LockInputWatchDemand(2, applied.Add);
-        blackout.LockInputWatch = demand.Consumer(0);
-        sentry.LockInputWatch = demand.Consumer(1);
+        var demand = new LockInputWatchDemand(applied.Add);
+        blackout.LockInputWatch = demand.Consumer(LockInputWatchConsumer.Blackout);
+        sentry.LockInputWatch = demand.Consumer(LockInputWatchConsumer.Sentry);
 
         blackout.OnSessionLocked();
         sentry.OnLockChanged(true);
-        sentry.Arm(lockFirst: false);
+        await sentry.ArmAsync(lockFirst: false);
         Assert.True(demand.Armed);
 
         // Sentry disarms by itself: the blackout still holds the watch.
@@ -58,7 +59,7 @@ public sealed class LockInputWatchDemandTests
     }
 
     [Fact]
-    public void The_blackout_unlock_does_not_stop_a_watch_Sentry_still_holds()
+    public async Task The_blackout_unlock_does_not_stop_a_watch_Sentry_still_holds()
     {
         var store = new InMemoryConfigStore();
         using var engine = new Nexus.Service.Lighting.Engine.LightingEngine();
@@ -67,15 +68,16 @@ public sealed class LockInputWatchDemandTests
             store,
             new PanelPhonePairingService(store, new MultiplexHub()),
             new FakeCloudApiClient(),
-            new FakePowerProvider());
+            new FakePowerProvider(),
+            readLockState: () => false);
         var applied = new List<bool>();
-        var demand = new LockInputWatchDemand(2, applied.Add);
-        blackout.LockInputWatch = demand.Consumer(0);
-        sentry.LockInputWatch = demand.Consumer(1);
+        var demand = new LockInputWatchDemand(applied.Add);
+        blackout.LockInputWatch = demand.Consumer(LockInputWatchConsumer.Blackout);
+        sentry.LockInputWatch = demand.Consumer(LockInputWatchConsumer.Sentry);
 
         blackout.OnSessionLocked();
         sentry.OnLockChanged(true);
-        sentry.Arm(lockFirst: false);
+        await sentry.ArmAsync(lockFirst: false);
 
         blackout.OnSessionUnlocked();
 

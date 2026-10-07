@@ -18,9 +18,13 @@ public sealed class FakePowerProvider : ISystemPowerProvider
     public int LockCalls;
     public bool LockResult = true;
 
+    /// <summary>Runs inside Lock(), to model the session lock arriving (or not).</summary>
+    public Action? OnLock;
+
     public bool Lock()
     {
         LockCalls++;
+        OnLock?.Invoke();
         return LockResult;
     }
 
@@ -59,9 +63,13 @@ public sealed class SentryCoordinatorTests
         AddPhone("phone-1", "tok-1");
     }
 
+    private bool? _realLockState = false;
+
     private SentryCoordinator Create(bool supported = true)
     {
-        var coordinator = new SentryCoordinator(_store, _pairing, _cloud, _power, lockListener: null, clock: () => _now);
+        var coordinator = new SentryCoordinator(
+            _store, _pairing, _cloud, _power, lockListener: null, clock: () => _now,
+            readLockState: () => _realLockState, lockWait: TimeSpan.FromMilliseconds(100));
         if (supported)
         {
             coordinator.LockInputWatch = _watch.Add;
@@ -69,11 +77,14 @@ public sealed class SentryCoordinatorTests
         return coordinator;
     }
 
+    private static SentryCoordinator.ArmOutcome Arm(SentryCoordinator coordinator, bool lockFirst) =>
+        coordinator.ArmAsync(lockFirst).GetAwaiter().GetResult();
+
     private SentryCoordinator Armed()
     {
         var coordinator = Create();
         coordinator.OnLockChanged(true);
-        Assert.Equal(SentryCoordinator.ArmOutcome.Armed, coordinator.Arm(lockFirst: false));
+        Assert.Equal(SentryCoordinator.ArmOutcome.Armed, Arm(coordinator, lockFirst: false));
         return coordinator;
     }
 
@@ -320,7 +331,7 @@ public sealed class SentryCoordinatorTests
     {
         var coordinator = Create();
 
-        Assert.Equal(SentryCoordinator.ArmOutcome.NotLocked, coordinator.Arm(lockFirst: false));
+        Assert.Equal(SentryCoordinator.ArmOutcome.NotLocked, Arm(coordinator, lockFirst: false));
 
         Assert.Equal(0, _power.LockCalls);
         Assert.False(coordinator.GetStatus().Armed);
@@ -328,11 +339,12 @@ public sealed class SentryCoordinatorTests
     }
 
     [Fact]
-    public void Arming_with_a_lock_locks_once_then_arms()
+    public void Arming_with_a_lock_locks_once_then_arms_after_the_lock_is_seen()
     {
         var coordinator = Create();
+        _power.OnLock = () => coordinator.OnLockChanged(true);
 
-        Assert.Equal(SentryCoordinator.ArmOutcome.Armed, coordinator.Arm(lockFirst: true));
+        Assert.Equal(SentryCoordinator.ArmOutcome.Armed, Arm(coordinator, lockFirst: true));
 
         Assert.Equal(1, _power.LockCalls);
         var status = coordinator.GetStatus();
@@ -342,14 +354,98 @@ public sealed class SentryCoordinatorTests
     }
 
     [Fact]
+    public void A_lock_that_is_never_observed_does_not_arm_or_mark_locked()
+    {
+        var coordinator = Create();
+
+        Assert.Equal(SentryCoordinator.ArmOutcome.LockNotConfirmed, Arm(coordinator, lockFirst: true));
+
+        Assert.Equal(1, _power.LockCalls);
+        var status = coordinator.GetStatus();
+        Assert.False(status.Armed);
+        Assert.False(status.Locked);
+        Assert.False(_store.Load().Sentry.Armed);
+        Assert.Empty(_watch);
+    }
+
+    [Fact]
+    public async Task A_late_lock_after_the_wait_does_not_arm()
+    {
+        var coordinator = Create();
+        Assert.Equal(SentryCoordinator.ArmOutcome.LockNotConfirmed, await coordinator.ArmAsync(lockFirst: true));
+
+        coordinator.OnLockChanged(true);
+
+        Assert.False(coordinator.GetStatus().Armed);
+        Assert.Empty(_watch);
+    }
+
+    [Fact]
+    public void Arming_with_a_lock_on_an_already_locked_pc_does_not_wait()
+    {
+        var coordinator = Create();
+        coordinator.OnLockChanged(true);
+
+        Assert.Equal(SentryCoordinator.ArmOutcome.Armed, Arm(coordinator, lockFirst: true));
+    }
+
+    [Fact]
     public void A_failed_lock_does_not_arm()
     {
         _power.LockResult = false;
         var coordinator = Create();
 
-        Assert.Equal(SentryCoordinator.ArmOutcome.LockFailed, coordinator.Arm(lockFirst: true));
+        Assert.Equal(SentryCoordinator.ArmOutcome.LockFailed, Arm(coordinator, lockFirst: true));
 
         Assert.False(coordinator.GetStatus().Armed);
+        Assert.Empty(_watch);
+    }
+
+    [Fact]
+    public void The_phone_path_never_marks_the_pc_locked()
+    {
+        var coordinator = Create();
+
+        Assert.Equal(SentryCoordinator.ArmOutcome.NotLocked, Arm(coordinator, lockFirst: false));
+
+        Assert.False(coordinator.GetStatus().Locked);
+    }
+
+    [Fact]
+    public void Logon_disarms_like_an_unlock()
+    {
+        var coordinator = Armed();
+
+        coordinator.OnSessionLogon();
+
+        Assert.False(coordinator.GetStatus().Armed);
+        Assert.False(coordinator.GetStatus().Locked);
+        Assert.False(_store.Load().Sentry.Armed);
+    }
+
+    [Fact]
+    public void A_restart_on_a_locked_pc_reports_locked_so_the_phone_can_arm()
+    {
+        _realLockState = true;
+
+        var coordinator = Create();
+
+        Assert.True(coordinator.GetStatus().Locked);
+        Assert.Equal(SentryCoordinator.ArmOutcome.Armed, Arm(coordinator, lockFirst: false));
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(null)]
+    public void A_persisted_armed_state_is_dropped_unless_the_session_is_verifiably_locked(bool? state)
+    {
+        _store.Update(s => s.Sentry.Armed = true);
+        _realLockState = state;
+
+        var coordinator = Create();
+
+        Assert.False(coordinator.GetStatus().Armed);
+        Assert.False(_store.Load().Sentry.Armed);
         Assert.Empty(_watch);
     }
 
@@ -359,7 +455,7 @@ public sealed class SentryCoordinatorTests
         var coordinator = Create(supported: false);
 
         Assert.False(coordinator.GetStatus().Supported);
-        Assert.Equal(SentryCoordinator.ArmOutcome.Unsupported, coordinator.Arm(lockFirst: true));
+        Assert.Equal(SentryCoordinator.ArmOutcome.Unsupported, Arm(coordinator, lockFirst: true));
         Assert.Equal(0, _power.LockCalls);
     }
 
@@ -371,7 +467,7 @@ public sealed class SentryCoordinatorTests
         Assert.False(coordinator.GetStatus().Armed);
 
         coordinator.OnLockChanged(true);
-        coordinator.Arm(lockFirst: false);
+        Arm(coordinator, lockFirst: false);
         coordinator.Disarm();
         Assert.False(coordinator.GetStatus().Armed);
         Assert.False(_store.Load().Sentry.Armed);
@@ -383,6 +479,7 @@ public sealed class SentryCoordinatorTests
     public void A_persisted_armed_state_resumes_locked_and_reasserts_the_watch()
     {
         _store.Update(s => s.Sentry.Armed = true);
+        _realLockState = true;
 
         var coordinator = Create();
 

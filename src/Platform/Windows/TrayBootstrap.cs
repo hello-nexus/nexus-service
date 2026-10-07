@@ -453,20 +453,25 @@ internal static class TrayBootstrap
 
         // Lock-screen wake-on-input. The helper owns the poll because
         // GetLastInputInfo is session-scoped and this service runs in Session 0;
-        // the three consumers (lighting blackout, Stream Deck lock sleep, Sentry) each
+        // each consumer (lighting blackout, Stream Deck lock sleep, Sentry)
         // say when it is worth polling, and it runs while any of them wants it.
         var lockBlackout = app.Services.GetService<Nexus.Service.Lighting.SleepBlackoutCoordinator>();
         var deckWorker = app.Services.GetService<Nexus.Service.Peripherals.StreamDeck.StreamDeckConnectionWorker>();
         var sentry = app.Services.GetService<Nexus.Service.Sentry.SentryCoordinator>();
         if (lockBlackout is not null || deckWorker is not null || sentry is not null)
         {
-            var demand = new Nexus.Service.Lighting.LockInputWatchDemand(3, armed =>
+            var demand = new Nexus.Service.Lighting.LockInputWatchDemand(armed =>
             {
                 _ = Nexus.Service.Helper.Domains.LockLightingCommands.SetLockInputWatchAsync(helperRegistry, armed);
             });
-            lockBlackout?.LockInputWatch = demand.Consumer(0);
-            deckWorker?.LockInputWatch = demand.Consumer(1);
-            sentry?.LockInputWatch = demand.Consumer(2);
+            lockBlackout?.LockInputWatch = demand.Consumer(Nexus.Service.Lighting.LockInputWatchConsumer.Blackout);
+            deckWorker?.LockInputWatch = demand.Consumer(Nexus.Service.Lighting.LockInputWatchConsumer.StreamDeck);
+            sentry?.LockInputWatch = demand.Consumer(Nexus.Service.Lighting.LockInputWatchConsumer.Sentry);
+            // A reboot's first sign-in is a logon, never an unlock.
+            if (sentry is not null)
+            {
+                Nexus.Service.Lifecycle.WindowsServiceHost.SessionLogon += sentry.OnSessionLogon;
+            }
             // The push is dropped when no helper is connected, so a lock that
             // spans a helper reconnect would come back with the poll in the
             // wrong state - silently off for that lock, or armed for the rest
