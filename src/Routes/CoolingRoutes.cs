@@ -96,8 +96,14 @@ public static class CoolingRoutes
                 return Results.Conflict(new FeatureDisabledResponse { Feature = FeatureNames.Cooling });
             }
 #if DEV_TOOLS
-            // Acknowledging through the real route ends a simulated ended trip too; nothing real changes.
-            Nexus.Service.Dev.DevSimEvents.Current?.Stop(Nexus.Service.Dev.DevSimEvents.GuardEndedTrip);
+            // A simulated ended trip is acknowledged by ending the sim only: the real trip, if any, is not touched.
+            if (Nexus.Service.Dev.DevSimEvents.Current is { } sim && sim.IsActive(Nexus.Service.Dev.DevSimEvents.GuardEndedTrip))
+            {
+                sim.Stop(Nexus.Service.Dev.DevSimEvents.GuardEndedTrip);
+                var current = guard.GetState();
+                sim.ApplyGuard(current);
+                return Results.Ok(current);
+            }
 #endif
             var (result, error) = guard.AcknowledgeTrip();
 #if DEV_TOOLS
@@ -128,8 +134,12 @@ public static class CoolingRoutes
                 return Results.Conflict(new FeatureDisabledResponse { Feature = FeatureNames.Cooling });
             }
 #if DEV_TOOLS
-            // Keep or Undo ends a simulated pending heal; the real heal state is untouched.
-            Nexus.Service.Dev.DevSimEvents.Current?.Stop(Nexus.Service.Dev.DevSimEvents.GuardPendingHeal);
+            // Keep or Undo on a simulated pending heal ends the sim only: a real pending heal is not touched.
+            if (Nexus.Service.Dev.DevSimEvents.Current is { } sim && sim.IsActive(Nexus.Service.Dev.DevSimEvents.GuardPendingHeal))
+            {
+                sim.Stop(Nexus.Service.Dev.DevSimEvents.GuardPendingHeal);
+                return Results.Ok(guard.GetState().Heal);
+            }
 #endif
             return Results.Ok(guard.Keep());
         });
@@ -141,7 +151,11 @@ public static class CoolingRoutes
                 return Results.Conflict(new FeatureDisabledResponse { Feature = FeatureNames.Cooling });
             }
 #if DEV_TOOLS
-            Nexus.Service.Dev.DevSimEvents.Current?.Stop(Nexus.Service.Dev.DevSimEvents.GuardPendingHeal);
+            if (Nexus.Service.Dev.DevSimEvents.Current is { } sim && sim.IsActive(Nexus.Service.Dev.DevSimEvents.GuardPendingHeal))
+            {
+                sim.Stop(Nexus.Service.Dev.DevSimEvents.GuardPendingHeal);
+                return Results.Ok(guard.GetState().Heal);
+            }
 #endif
             return Results.Ok(guard.Undo());
         });

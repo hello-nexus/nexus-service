@@ -123,11 +123,7 @@ public sealed class DiagnosticsAlertService : BackgroundService
         {
             return;
         }
-#if DEV_TOOLS
         var health = _health.BuildRealHealth();
-#else
-        var health = _health.BuildHealth();
-#endif
         var notifications = _store.Load().Diagnostics.Notifications;
         var now = DateTime.UtcNow;
 

@@ -185,8 +185,8 @@ public static class DiagnosticsHealthRoutes
                 Settings = store.Load(),
                 Info = info,
                 StartupSnapshot = SupportBundleBuilder.ReadStartupSnapshot(),
-                Health = healthModel.BuildHealth(),
-                Incidents = BuildIncidentsResponse(events, steamCache, MaxIncidentDays, group: false),
+                Health = healthModel.BuildRealHealth(),
+                Incidents = BuildIncidentsResponse(events, steamCache, MaxIncidentDays, group: false, includeSimulated: false),
                 Smart = smart.Snapshot(),
                 Memory = BuildMemoryResponse(memDiag),
                 Gpu = BuildGpuResponse(gpu, events),
@@ -208,7 +208,7 @@ public static class DiagnosticsHealthRoutes
             PnpProblemScanner pnp,
             Nexus.Service.Persistence.IConfigStore store) =>
         {
-            var health = healthModel.BuildHealth();
+            var health = healthModel.BuildRealHealth();
             var smartSnapshot = smart.Snapshot();
             var ignored = store.Load().Diagnostics.IgnoredComponents ?? new List<string>();
             var snapshot = await DiagnosticsReportBuilder.GatherAsync(health, specs, smartSnapshot, gpu, events, memDiag, pnp, ignored);
@@ -398,7 +398,8 @@ public static class DiagnosticsHealthRoutes
     // internal: also called by the get_incidents MCP tool, so it serves the
     // same grouped and game-decorated response the REST route does.
     internal static IncidentsResponse BuildIncidentsResponse(
-        EventLogMonitor events, SteamGameLibraryCache steamCache, int windowDays, bool group, bool includeGpuDriver = true)
+        EventLogMonitor events, SteamGameLibraryCache steamCache, int windowDays, bool group, bool includeGpuDriver = true,
+        bool includeSimulated = true)
     {
         IReadOnlyList<DiagnosticIncident> incidents = events.Snapshot(windowDays);
         if (!includeGpuDriver)
@@ -410,7 +411,7 @@ public static class DiagnosticsHealthRoutes
         var listed = group ? GroupRepeats(decorated) : decorated;
 #if DEV_TOOLS
         // Simulated incidents: extra rows on the read path only; the real log is untouched.
-        if (Nexus.Service.Dev.DevSimEvents.Current?.Incidents(DateTime.UtcNow) is { Count: > 0 } simulated)
+        if (includeSimulated && Nexus.Service.Dev.DevSimEvents.Current?.Incidents(DateTime.UtcNow) is { Count: > 0 } simulated)
         {
             listed = simulated.Concat(listed).ToList();
         }

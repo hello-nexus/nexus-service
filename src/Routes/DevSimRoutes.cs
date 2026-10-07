@@ -47,7 +47,7 @@ public static class DevSimRoutes
     {
         app.MapGet("/dev/sim/events", (DevSimEvents sim) => Results.Json(Describe(sim), AppJsonContext.Default.DevSimEventsResponse));
 
-        app.MapPost("/dev/sim/events/{id}", (string id, DevSimEvents sim, DiagnosticsAlertService alerts) =>
+        app.MapPost("/dev/sim/events/{id}", (string id, DevSimEvents sim, DiagnosticsAlertService alerts, Nexus.Service.Persistence.IConfigStore store) =>
         {
             if (!sim.Start(id, out var isNew))
             {
@@ -55,7 +55,7 @@ public static class DevSimRoutes
             }
             if (isNew)
             {
-                RaiseAlert(sim, alerts, id);
+                RaiseAlert(sim, alerts, id, store.Load().Diagnostics);
             }
             return Results.Json(Describe(sim), AppJsonContext.Default.DevSimEventsResponse);
         });
@@ -86,14 +86,15 @@ public static class DevSimRoutes
         Results.Json(ApiResponse.Fail($"Unknown simulated event: {id}"), AppJsonContext.Default.ApiResponse, statusCode: StatusCodes.Status404NotFound);
 
     /// <summary>Raises the sim's own notice once: guard sims through the thermal guard's alert, the rest through the health alert evaluation so the notification switches apply.</summary>
-    internal static void RaiseAlert(DevSimEvents sim, DiagnosticsAlertService alerts, string id)
+    internal static void RaiseAlert(DevSimEvents sim, DiagnosticsAlertService alerts, string id, Nexus.Service.Persistence.DiagnosticsSettings diagnostics)
     {
         if (sim.GuardNoticeFor(id) is { } notice)
         {
             alerts.Raise(new DiagnosticsAlertNotice(notice.Title, notice.Text, "thermalGuard"));
             return;
         }
-        var components = sim.AlertComponentsFor(id);
+        // The same ignore list and domain toggles as a real component.
+        var components = DiagnosticsHealthModel.FilterSimulated(sim.AlertComponentsFor(id), diagnostics);
         if (components.Count > 0)
         {
             alerts.RaiseSimulated(components);

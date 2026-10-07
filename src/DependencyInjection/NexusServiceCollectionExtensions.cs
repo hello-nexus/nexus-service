@@ -124,10 +124,20 @@ public static class NexusServiceCollectionExtensions
         services.AddSingleton<Nexus.Service.Dev.DevSimEvents>(sp =>
         {
             var sim = new Nexus.Service.Dev.DevSimEvents();
+            sim.EffectiveLimit = () => sp.GetService<Nexus.Service.Cooling.ThermalGuardController>()?.GetState().LimitC;
+            var failureLogged = false;
             sim.Changed += () =>
             {
                 try { Nexus.Service.Routes.DevSimRoutes.BroadcastAll(sp); }
-                catch { /* best effort: a failed broadcast must not fail the toggle */ }
+                catch (Exception ex)
+                {
+                    // A failed broadcast must not fail the toggle; the first one is logged.
+                    if (!failureLogged)
+                    {
+                        failureLogged = true;
+                        Console.Error.WriteLine($"[dev-sim] broadcast failed: {ex.Message}");
+                    }
+                }
             };
             return sim;
         });

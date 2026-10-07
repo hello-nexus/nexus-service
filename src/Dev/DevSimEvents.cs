@@ -3,6 +3,7 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 using Nexus.Service.Conflicts;
+using Nexus.Service.Cooling;
 using Nexus.Service.Diagnostics;
 using Nexus.Service.Diagnostics.EventLog;
 using Nexus.Service.Models.Conflicts;
@@ -45,6 +46,9 @@ public sealed class DevSimEvents
     public const string AppConflict = "app.conflict";
     public const string DeviceDisconnect = "device.disconnect";
 
+    /// <summary>The limit used when the guard reports none (it is switched off): the same default the real guard falls back to.</summary>
+    public const double FallbackLimitC = ThermalLimits.GenericDefaultC;
+
     public static readonly IReadOnlyList<DevSimCatalogEntry> Catalog = new DevSimCatalogEntry[]
     {
         new(GuardLimitTrip, "guard", "Thermal guard: limit trip"),
@@ -75,6 +79,11 @@ public sealed class DevSimEvents
 
     // The singleton instance the read-path overlays consult; null in tests that build their own.
     public static DevSimEvents? Current { get; private set; }
+
+    /// <summary>Supplies the real effective CPU limit (null when the guard reports none), so every simulated trip uses it.</summary>
+    public Func<double?>? EffectiveLimit { get; set; }
+
+    public double CurrentLimitC => EffectiveLimit?.Invoke() ?? FallbackLimitC;
 
     /// <summary>Raised after the active set changed, so the host can broadcast the topics the affected surfaces listen on.</summary>
     public event Action? Changed;
@@ -166,33 +175,34 @@ public sealed class DevSimEvents
 
     // ── Thermal guard ──
 
+    // One precedence everywhere: escalated over limit over cooling-loss. An ended trip only shows when none is active.
+    private string? ActiveTripSim() =>
+        new[] { GuardEscalated, GuardLimitTrip, GuardCoolingLossTrip }.FirstOrDefault(IsActive);
+
+    private static double TripPeak(string simId, double limitC) => simId == GuardCoolingLossTrip ? limitC - 10 : limitC + 4;
+
+    private static string TripReason(string simId) => simId == GuardCoolingLossTrip ? ThermalTripReasons.CoolingLoss : ThermalTripReasons.Limit;
+
     /// <summary>Overlays GET /cooling/guard. The response is a fresh object per call, so it is edited in place.</summary>
     public void ApplyGuard(ThermalGuardResponse r)
     {
-        var limit = r.LimitC ?? 90;
+        var limit = r.LimitC ?? FallbackLimitC;
         if (StartedAt(GuardEndedTrip) is { } ended)
         {
             r.LastTrip = new ThermalGuardTripDto
             {
                 AtUtcMs = ended - 10 * 60_000,
-                PeakC = limit + 4,
-                Reason = "limit",
+                PeakC = TripPeak(GuardEndedTrip, limit),
+                Reason = ThermalTripReasons.Limit,
                 Escalated = false,
                 EndedAtUtcMs = ended - 5 * 60_000,
                 Acknowledged = false,
             };
         }
-        if (StartedAt(GuardCoolingLossTrip) is { } loss)
+        if (ActiveTripSim() is { } trip && StartedAt(trip) is { } startedAt)
         {
-            SetActiveTrip(r, loss, limit - 10, "cooling-loss", escalated: false, state: "tripped");
-        }
-        if (StartedAt(GuardLimitTrip) is { } trip)
-        {
-            SetActiveTrip(r, trip, limit + 4, "limit", escalated: false, state: "tripped");
-        }
-        if (StartedAt(GuardEscalated) is { } esc)
-        {
-            SetActiveTrip(r, esc, limit + 4, "limit", escalated: true, state: "escalated");
+            SetActiveTrip(r, startedAt, TripPeak(trip, limit), TripReason(trip), escalated: trip == GuardEscalated,
+                state: trip == GuardEscalated ? "escalated" : "tripped");
         }
         if (IsActive(GuardWatchdogLatched))
         {
@@ -241,16 +251,29 @@ public sealed class DevSimEvents
         };
     }
 
-    /// <summary>The simulated trip as a persisted-shape record, for the Diagnostics component. Null when no trip sim runs.</summary>
+    /// <summary>The simulated trip as a persisted-shape record, for the Diagnostics component, at the real effective limit. Null when no trip sim runs.</summary>
     public ThermalGuardTripRecord? SimulatedTrip()
     {
-        var limit = 90.0;
-        if (StartedAt(GuardLimitTrip) is { } a) return new ThermalGuardTripRecord { AtUtcMs = a, PeakC = limit + 4, Reason = "limit" };
-        if (StartedAt(GuardEscalated) is { } b) return new ThermalGuardTripRecord { AtUtcMs = b, PeakC = limit + 4, Reason = "limit", Escalated = true };
-        if (StartedAt(GuardCoolingLossTrip) is { } c) return new ThermalGuardTripRecord { AtUtcMs = c, PeakC = limit - 10, Reason = "cooling-loss" };
-        if (StartedAt(GuardEndedTrip) is { } d)
+        var limit = CurrentLimitC;
+        if (ActiveTripSim() is { } trip && StartedAt(trip) is { } startedAt)
         {
-            return new ThermalGuardTripRecord { AtUtcMs = d - 10 * 60_000, EndedAtUtcMs = d - 5 * 60_000, PeakC = limit + 4, Reason = "limit" };
+            return new ThermalGuardTripRecord
+            {
+                AtUtcMs = startedAt,
+                PeakC = TripPeak(trip, limit),
+                Reason = TripReason(trip),
+                Escalated = trip == GuardEscalated,
+            };
+        }
+        if (StartedAt(GuardEndedTrip) is { } ended)
+        {
+            return new ThermalGuardTripRecord
+            {
+                AtUtcMs = ended - 10 * 60_000,
+                EndedAtUtcMs = ended - 5 * 60_000,
+                PeakC = TripPeak(GuardEndedTrip, limit),
+                Reason = ThermalTripReasons.Limit,
+            };
         }
         return null;
     }
@@ -393,15 +416,20 @@ public sealed class DevSimEvents
         };
     }
 
-    /// <summary>The thermal guard notice a guard sim raises (title, text), or null when its real counterpart raises none.</summary>
-    public (string Title, string Text)? GuardNoticeFor(string id) => id switch
+    /// <summary>The thermal guard notice a guard sim raises, in the real notice's wording at the real effective limit; null when its real counterpart raises none.</summary>
+    public (string Title, string Text)? GuardNoticeFor(string id)
     {
-        GuardLimitTrip or GuardEscalated or GuardEndedTrip => ("CPU thermal guard tripped", "CPU reached 94 C (temperature limit). Fans forced to full speed."),
-        GuardCoolingLossTrip => ("CPU thermal guard tripped", "CPU reached 80 C (cooling loss). Fans forced to full speed."),
-        GuardWatchdogLatched => ("Cooling handed to the BIOS", "Nexus handed your fans to the BIOS because the cooling engine kept stalling."),
-        GuardPendingHeal => ("Cooling config repaired", "2 fan channel(s) could stop while the CPU is hot and now have a CPU safety curve."),
-        _ => null,
-    };
+        var limit = CurrentLimitC;
+        return id switch
+        {
+            GuardLimitTrip or GuardEscalated or GuardCoolingLossTrip =>
+                (ThermalGuardNotices.TripTitle, ThermalGuardNotices.TripText(TripPeak(id, limit), TripReason(id))),
+            GuardEndedTrip => (ThermalGuardNotices.TripTitle, ThermalGuardNotices.TripText(TripPeak(id, limit), ThermalTripReasons.Limit)),
+            GuardWatchdogLatched => (ThermalGuardNotices.LatchedTitle, ThermalGuardNotices.LatchedText),
+            GuardPendingHeal => (ThermalGuardNotices.HealedTitle, ThermalGuardNotices.HealedText(2)),
+            _ => null,
+        };
+    }
 
     // ── Device and app state ──
 

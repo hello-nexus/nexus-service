@@ -148,7 +148,7 @@ public class DevSimEventsTests
         Assert.Equal("normal", r.State);
 
         var overlaid = DiagnosticsHealthModel.ApplySimulation(
-            new DiagnosticsHealthResponse { Overall = HealthStatuses.Ok, Supported = true }, sim);
+            new DiagnosticsHealthResponse { Overall = HealthStatuses.Ok, Supported = true }, sim, new DiagnosticsSettings());
         var component = Assert.Single(overlaid.Components, c => c.Id == "cooling:thermal-guard");
         Assert.Equal(HealthStatuses.Watch, component.Status);
         Assert.Equal(HealthStatuses.Watch, overlaid.Overall);
@@ -197,7 +197,7 @@ public class DevSimEventsTests
         sim.Start(id, out _);
 
         var overlaid = DiagnosticsHealthModel.ApplySimulation(
-            new DiagnosticsHealthResponse { Overall = HealthStatuses.Ok, Supported = true }, sim);
+            new DiagnosticsHealthResponse { Overall = HealthStatuses.Ok, Supported = true }, sim, new DiagnosticsSettings());
 
         var component = Assert.Single(overlaid.Components);
         Assert.Equal(kind, component.Kind);
@@ -222,7 +222,7 @@ public class DevSimEventsTests
             },
         };
 
-        var overlaid = DiagnosticsHealthModel.ApplySimulation(real, sim);
+        var overlaid = DiagnosticsHealthModel.ApplySimulation(real, sim, new DiagnosticsSettings());
 
         var cooling = Assert.Single(overlaid.Components, c => c.Id == "cooling");
         Assert.Equal("Cooling (2)", cooling.Name);
@@ -239,8 +239,8 @@ public class DevSimEventsTests
     public void WithNoHealthSimActive_TheResponseIsReturnedAsIs()
     {
         var real = new DiagnosticsHealthResponse { Overall = HealthStatuses.Ok, Supported = true };
-        Assert.Same(real, DiagnosticsHealthModel.ApplySimulation(real, Sim()));
-        Assert.Same(real, DiagnosticsHealthModel.ApplySimulation(real, null));
+        Assert.Same(real, DiagnosticsHealthModel.ApplySimulation(real, Sim(), new DiagnosticsSettings()));
+        Assert.Same(real, DiagnosticsHealthModel.ApplySimulation(real, null, new DiagnosticsSettings()));
     }
 
     // ── Incidents ──
@@ -362,11 +362,11 @@ public class DevSimEventsTests
     [Fact]
     public void StartingAHealthSim_RaisesItsNoticeOnce_ThroughTheRealEvaluation()
     {
-        var (alerts, notices, _) = Alerts();
+        var (alerts, notices, store) = Alerts();
         var sim = Sim();
         sim.Start("health.fanStall", out _);
 
-        DevSimRoutes.RaiseAlert(sim, alerts, "health.fanStall");
+        DevSimRoutes.RaiseAlert(sim, alerts, "health.fanStall", store.Load().Diagnostics);
 
         var notice = Assert.Single(notices);
         Assert.Equal("cooling", notice.Kind);
@@ -379,7 +379,7 @@ public class DevSimEventsTests
         var (alerts, notices, store) = Alerts();
         store.Update(s => s.Diagnostics.Notifications.Cooling = false);
         var sim = Sim();
-        DevSimRoutes.RaiseAlert(sim, alerts, "health.fanStall");
+        DevSimRoutes.RaiseAlert(sim, alerts, "health.fanStall", store.Load().Diagnostics);
         Assert.Empty(notices);
 
         store.Update(s =>
@@ -387,21 +387,21 @@ public class DevSimEventsTests
             s.Diagnostics.Notifications.Cooling = true;
             s.Diagnostics.Notifications.Enabled = false;
         });
-        DevSimRoutes.RaiseAlert(sim, alerts, "guard.limitTrip");
-        DevSimRoutes.RaiseAlert(sim, alerts, "health.gpuTdr");
+        DevSimRoutes.RaiseAlert(sim, alerts, "guard.limitTrip", store.Load().Diagnostics);
+        DevSimRoutes.RaiseAlert(sim, alerts, "health.gpuTdr", store.Load().Diagnostics);
         Assert.Empty(notices);
     }
 
     [Fact]
     public void GuardSims_RaiseTheThermalGuardNotice_AndDeepLinkLikeTheRealOne()
     {
-        var (alerts, notices, _) = Alerts();
+        var (alerts, notices, store) = Alerts();
         var sim = Sim();
 
-        DevSimRoutes.RaiseAlert(sim, alerts, "guard.limitTrip");
-        DevSimRoutes.RaiseAlert(sim, alerts, "guard.watchdogLatched");
-        DevSimRoutes.RaiseAlert(sim, alerts, "guard.pendingHeal");
-        DevSimRoutes.RaiseAlert(sim, alerts, "guard.gpuHandback"); // the real handback raises no alert
+        DevSimRoutes.RaiseAlert(sim, alerts, "guard.limitTrip", store.Load().Diagnostics);
+        DevSimRoutes.RaiseAlert(sim, alerts, "guard.watchdogLatched", store.Load().Diagnostics);
+        DevSimRoutes.RaiseAlert(sim, alerts, "guard.pendingHeal", store.Load().Diagnostics);
+        DevSimRoutes.RaiseAlert(sim, alerts, "guard.gpuHandback", store.Load().Diagnostics); // the real handback raises no alert
 
         Assert.Equal(3, notices.Count);
         Assert.All(notices, n => Assert.Equal("thermalGuard", n.Kind));
@@ -412,14 +412,94 @@ public class DevSimEventsTests
     [Fact]
     public void IncidentAndDeviceSims_RaiseOrSkipTheirNotice()
     {
-        var (alerts, notices, _) = Alerts();
+        var (alerts, notices, store) = Alerts();
         var sim = Sim();
 
-        DevSimRoutes.RaiseAlert(sim, alerts, "incident.bsod");
-        DevSimRoutes.RaiseAlert(sim, alerts, "app.updateAvailable");
+        DevSimRoutes.RaiseAlert(sim, alerts, "incident.bsod", store.Load().Diagnostics);
+        DevSimRoutes.RaiseAlert(sim, alerts, "app.updateAvailable", store.Load().Diagnostics);
 
         var notice = Assert.Single(notices);
         Assert.Equal("system", notice.Kind);
+    }
+
+    // ── Consistency and filtering ──
+
+    [Fact]
+    public void EveryTripSurface_UsesTheRealEffectiveLimit_AndOnePrecedence()
+    {
+        var sim = Sim(DateTimeOffset.UtcNow.ToUnixTimeMilliseconds());
+        sim.EffectiveLimit = () => 100;
+        sim.Start("guard.coolingLossTrip", out _);
+        sim.Start("guard.limitTrip", out _);
+        sim.Start("guard.escalated", out _);
+
+        var r = new ThermalGuardResponse { State = "normal", LimitC = 100 };
+        sim.ApplyGuard(r);
+        var trip = sim.SimulatedTrip()!;
+        var notice = sim.GuardNoticeFor("guard.escalated")!.Value;
+
+        // Escalated wins over limit wins over cooling-loss, on every surface.
+        Assert.Equal("escalated", r.State);
+        Assert.Equal("limit", r.LastTrip!.Reason);
+        Assert.True(r.LastTrip.Escalated);
+        Assert.Equal(104, r.LastTrip.PeakC);
+        Assert.Equal(104, trip.PeakC);
+        Assert.True(trip.Escalated);
+        Assert.Contains("104 C", notice.Text);
+
+        sim.Stop("guard.escalated");
+        Assert.Equal("limit", sim.SimulatedTrip()!.Reason);
+        sim.Stop("guard.limitTrip");
+        var loss = sim.SimulatedTrip()!;
+        Assert.Equal("cooling-loss", loss.Reason);
+        Assert.Equal(90, loss.PeakC);
+        Assert.Contains("90 C", sim.GuardNoticeFor("guard.coolingLossTrip")!.Value.Text);
+    }
+
+    [Fact]
+    public void WithNoGuardLimitKnown_TheTripsFallBackToTheSameDefaultEverywhere()
+    {
+        var sim = Sim();
+        sim.Start("guard.limitTrip", out _);
+        var off = new ThermalGuardResponse { State = "off", LimitC = null };
+
+        sim.ApplyGuard(off);
+
+        Assert.Equal(DevSimEvents.FallbackLimitC + 4, off.LastTrip!.PeakC);
+        Assert.Equal(DevSimEvents.FallbackLimitC + 4, sim.SimulatedTrip()!.PeakC);
+    }
+
+    [Fact]
+    public void TheNoticeWording_IsTheRealControllersWording()
+    {
+        var sim = Sim();
+        sim.EffectiveLimit = () => 95;
+
+        var trip = sim.GuardNoticeFor("guard.limitTrip")!.Value;
+        Assert.Equal(Nexus.Service.Cooling.ThermalGuardNotices.TripTitle, trip.Title);
+        Assert.Equal(Nexus.Service.Cooling.ThermalGuardNotices.TripText(99, "limit"), trip.Text);
+        Assert.Equal(Nexus.Service.Cooling.ThermalGuardNotices.LatchedText, sim.GuardNoticeFor("guard.watchdogLatched")!.Value.Text);
+        Assert.Equal(Nexus.Service.Cooling.ThermalGuardNotices.HealedText(2), sim.GuardNoticeFor("guard.pendingHeal")!.Value.Text);
+    }
+
+    [Fact]
+    public void SimulatedComponents_PassTheSameIgnoreListAndDomainToggles_AsRealOnes()
+    {
+        var sim = Sim();
+        sim.Start("health.fanStall", out _);
+        sim.Start("health.gpuTdr", out _);
+        sim.Start("health.smartWarning", out _);
+        var real = new DiagnosticsHealthResponse { Overall = HealthStatuses.Ok, Supported = true };
+
+        var settings = new DiagnosticsSettings { IgnoredComponents = new List<string> { "cooling:sim-fan" } };
+        settings.Components.Gpu = false;
+        var shown = DiagnosticsHealthModel.ApplySimulation(real, sim, settings);
+
+        Assert.Equal(new[] { "storage:sim-smart" }, shown.Components.Select(c => c.Id));
+        Assert.Equal(HealthStatuses.Watch, shown.Overall);
+
+        var alerts = DiagnosticsHealthModel.FilterSimulated(sim.AlertComponentsFor("health.gpuTdr"), settings);
+        Assert.Empty(alerts);
     }
 
     [Fact]
@@ -450,7 +530,7 @@ public class DevSimEventsTests
 
         sim.ApplyGuard(RealGuard());
         sim.ApplyDevices(new List<DeviceListItem> { new() { Connected = true } });
-        DiagnosticsHealthModel.ApplySimulation(new DiagnosticsHealthResponse(), sim);
+        DiagnosticsHealthModel.ApplySimulation(new DiagnosticsHealthResponse(), sim, new DiagnosticsSettings());
         sim.Clear();
 
         var after = System.Text.Json.JsonSerializer.Serialize(store.Load(), Nexus.Service.Serialization.PersistenceJsonContext.Default.NexusSettings);
