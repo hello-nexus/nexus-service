@@ -50,6 +50,7 @@ public sealed class StreamedPanelCoordinator : BackgroundService
     private readonly Action? _notifyOverlay;
     private readonly Action<string>? _notifyPanelChanged;
     private readonly Func<long> _nowMs;
+    private readonly SemaphoreSlim _wake = new(0, 1);
 
     public StreamedPanelCoordinator(
         IEnumerable<IStreamedPanelDiscovery> discoveries,
@@ -87,11 +88,18 @@ public sealed class StreamedPanelCoordinator : BackgroundService
                 ServiceLog.Error($"[streamed-panel] tick failed: {ex.GetType().Name}: {ex.Message}");
             }
 
-            try { await Task.Delay(PollInterval, stoppingToken); }
-            catch (TaskCanceledException) { break; }
+            try { await _wake.WaitAsync(PollInterval, stoppingToken); }
+            catch (OperationCanceledException) { break; }
         }
 
         CloseAll("service stopping");
+    }
+
+    /// <summary>Runs the next discovery pass now instead of at the end of the poll interval.</summary>
+    public void Wake()
+    {
+        try { _wake.Release(); }
+        catch (SemaphoreFullException) { }
     }
 
     internal void TickOnce()
@@ -100,8 +108,9 @@ public sealed class StreamedPanelCoordinator : BackgroundService
         foreach (var discovery in _discoveries)
         {
             var enabled = _gate.IsEnabled(discovery.HandlerId);
+            var withheld = enabled && discovery.Withheld;
             IReadOnlyList<StreamedPanelDeviceInfo> devices;
-            if (!enabled)
+            if (!enabled || withheld)
             {
                 devices = Array.Empty<StreamedPanelDeviceInfo>();
             }
@@ -164,6 +173,11 @@ public sealed class StreamedPanelCoordinator : BackgroundService
                 if (!enabled)
                 {
                     CloseSession(ds, "control gate off");
+                    changed = true;
+                }
+                else if (withheld)
+                {
+                    CloseSession(ds, "screen handed to the device");
                     changed = true;
                 }
                 else if (now - ds.LastPresentAtMs > DetachLinger.TotalMilliseconds)

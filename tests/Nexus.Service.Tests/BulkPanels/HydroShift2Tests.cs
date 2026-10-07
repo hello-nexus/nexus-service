@@ -459,14 +459,86 @@ public class HydroShift2Tests
         Assert.Null(aio.PumpDuty);
     }
 
-    private static (HydroShift2Aio Aio, FirmwarePipe Pipe) Attached(Func<string?, bool>? wirelessOwns = null)
+    [Fact]
+    public void Each_usb_connect_and_change_of_screen_owner_is_reported_from_a_fresh_reading()
+    {
+        var widgets = false;
+        var driver = new HydroShift2LcdDriver();
+        var hub = new BulkPanelHub(driver);
+        Assert.True(hub.Attach(new FirmwarePipe(), null));
+        var aio = new HydroShift2Aio(hub, driver, _ => true, _ => widgets);
+        var owners = new List<(string Mac, bool Own)>();
+        aio.ScreenOwnerChanged += (mac, own) => owners.Add((mac, own));
+
+        aio.Tick(1_000);
+        aio.Tick(1_250);
+        Assert.True(aio.ShowsOwnScreen);
+        Assert.Equal(new[] { ("5ED6D8E566E1", true) }, owners);
+
+        widgets = true;
+        aio.Tick(1_500);
+        Assert.Equal(("5ED6D8E566E1", false), owners[^1]);
+
+        hub.Detach();
+        aio.Tick(2_000);
+        Assert.Null(aio.Params);
+        Assert.True(hub.Attach(new FirmwarePipe(), null));
+        aio.Tick(2_250);
+        Assert.Equal(3, owners.Count);
+    }
+
+    [Fact]
+    public void Nexus_widgets_keep_the_glass_unless_the_dongle_owns_a_unit_set_to_its_own_screen()
+    {
+        var (widgets, _) = Attached(_ => true);
+        widgets.Tick(1_000);
+        Assert.False(widgets.ShowsOwnScreen);
+
+        var (usbOnly, _) = Attached(_ => false, _ => false);
+        usbOnly.Tick(1_000);
+        Assert.False(usbOnly.ShowsOwnScreen);
+    }
+
+    [Fact]
+    public void Nexus_widgets_wipe_the_firmware_screen_when_they_take_the_glass_back_or_after_a_switch()
+    {
+        var widgets = false;
+        var (aio, pipe) = Attached(_ => true, _ => widgets);
+        aio.Tick(1_000);
+        aio.ClearScreenOverlay();
+        aio.Tick(1_250);
+        Assert.DoesNotContain(HydroShift2Protocol.CommandPushPng, pipe.Commands);
+
+        widgets = true;
+        aio.Tick(1_500);
+        Assert.Equal(1, pipe.Commands.Count(c => c == HydroShift2Protocol.CommandPushPng));
+
+        aio.ClearScreenOverlay();
+        aio.Tick(1_750);
+        Assert.Equal(2, pipe.Commands.Count(c => c == HydroShift2Protocol.CommandPushPng));
+    }
+
+    [Fact]
+    public void A_switch_acknowledged_before_the_first_reading_is_wiped_once_the_unit_is_read()
+    {
+        var (aio, pipe) = Attached(_ => true);
+        aio.ClearScreenOverlay();
+        aio.Tick(500);
+        Assert.DoesNotContain(HydroShift2Protocol.CommandPushPng, pipe.Commands);
+
+        aio.Tick(1_000);
+        Assert.Equal(1, pipe.Commands.Count(c => c == HydroShift2Protocol.CommandPushPng));
+    }
+
+    private static (HydroShift2Aio Aio, FirmwarePipe Pipe) Attached(
+        Func<string?, bool>? wirelessOwns = null, Func<string, bool>? nexusWidgets = null)
     {
         var driver = new HydroShift2LcdDriver();
         var hub = new BulkPanelHub(driver);
         var pipe = new FirmwarePipe();
         Assert.True(hub.Attach(pipe, null));
         pipe.Writes.Clear();
-        return (new HydroShift2Aio(hub, driver, wirelessOwns ?? (_ => false)), pipe);
+        return (new HydroShift2Aio(hub, driver, wirelessOwns ?? (_ => false), nexusWidgets), pipe);
     }
 
     private static byte[] Solid(byte r, byte g, byte b)

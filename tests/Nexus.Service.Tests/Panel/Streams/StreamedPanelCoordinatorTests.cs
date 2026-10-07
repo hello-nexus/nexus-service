@@ -121,6 +121,7 @@ public sealed class StreamedPanelCoordinatorTests : IDisposable
         public List<FakeBrightnessTransport> BrightnessTransports { get; } = new();
         public bool UseBrightnessTransport { get; set; }
         public bool FailOpen { get; set; }
+        public bool Withheld { get; set; }
 
         public IReadOnlyList<StreamedPanelDeviceInfo> Discover() => Devices.ToList();
 
@@ -191,6 +192,23 @@ public sealed class StreamedPanelCoordinatorTests : IDisposable
         _nowMs += 55_000;
         coordinator.TickOnce();
         Assert.Empty(coordinator.GetAssignments().Assignments);
+    }
+
+    [Fact]
+    public void A_withheld_screen_closes_immediately_and_returns_when_released()
+    {
+        _discovery.Devices.Add(Device());
+        var coordinator = Coordinator();
+        coordinator.TickOnce();
+        Assert.Single(coordinator.GetAssignments().Assignments);
+
+        _discovery.Withheld = true;
+        coordinator.TickOnce();
+        Assert.Empty(coordinator.GetAssignments().Assignments);
+
+        _discovery.Withheld = false;
+        coordinator.TickOnce();
+        Assert.Single(coordinator.GetAssignments().Assignments);
     }
 
     [Fact]

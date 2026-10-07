@@ -71,6 +71,12 @@ public sealed class Slv3Hub : IDisposable
     /// <summary>Saved HydroShift II screens by AIO MAC hex; read once per <see cref="DriveTick"/>, outside the hub lock.</summary>
     public Func<IReadOnlyDictionary<string, Slv3AioScreen>>? AioScreens { get; set; }
 
+    /// <summary>
+    /// Raised under the hub lock with an AIO's MAC hex when it acknowledges RF control.
+    /// The firmware then draws its own screen over whatever its USB link last showed.
+    /// </summary>
+    public event Action<string>? AioSwitched;
+
     private ISlv3Transport? _tx;
     private ISlv3Transport? _rx;
     private byte[] _masterMac = new byte[Slv3Protocol.MacLength];
@@ -639,6 +645,7 @@ public sealed class Slv3Hub : IDisposable
                 {
                     control.Switched = true;
                     ServiceLog.Info($"[lianli-wireless] HydroShift II {key} acknowledged RF control (seq {control.SwitchSeq})");
+                    RaiseAioSwitched(key);
                 }
                 else if (!_pendingCommands.ContainsKey(key))
                 {
@@ -1430,6 +1437,34 @@ public sealed class Slv3Hub : IDisposable
             }
             _anyAioControlled = _aioControl.Count > 0;
             return true;
+        }
+    }
+
+    private void RaiseAioSwitched(string macHex)
+    {
+        try
+        {
+            AioSwitched?.Invoke(macHex);
+        }
+        catch (Exception ex)
+        {
+            ServiceLog.Warn($"[lianli-wireless] AIO switch subscriber failed: {ex.Message}");
+        }
+    }
+
+    /// <summary>
+    /// Sends a held HydroShift II the switch to RF control again, which makes it redraw its
+    /// own screen. No-op for an AIO Nexus is not holding.
+    /// </summary>
+    public void ResendAioSwitch(string macHex)
+    {
+        lock (_lock)
+        {
+            if (_aioControl.TryGetValue(macHex.ToUpperInvariant(), out var control))
+            {
+                control.Switched = false;
+                control.SwitchSeq = 0;
+            }
         }
     }
 

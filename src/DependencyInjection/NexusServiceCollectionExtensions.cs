@@ -1130,8 +1130,14 @@ public static class NexusServiceCollectionExtensions
                     sp.GetRequiredService<Nexus.Service.Devices.DeviceControlGate>(),
                     sp.GetRequiredService<Nexus.Service.Devices.Detection.HardwarePresence>()));
             services.AddSingleton<Nexus.Service.Panel.Streams.IStreamedPanelDiscovery>(sp =>
-                new Nexus.Service.Panel.Streams.BulkPanelDiscovery(
-                    bulkPanelHub, sp.GetService<Nexus.Service.Panel.Streams.IVirtualMonitorHost>()));
+            {
+                // A HydroShift II the user gave to its own wireless screen streams nothing.
+                Func<bool>? withheld = bulkPanelDriver is Nexus.Service.Peripherals.BulkPanels.HydroShift2LcdDriver
+                    ? () => sp.GetService<Nexus.Service.Peripherals.BulkPanels.HydroShift2Aio>()?.ShowsOwnScreen == true
+                    : null;
+                return new Nexus.Service.Panel.Streams.BulkPanelDiscovery(
+                    bulkPanelHub, sp.GetService<Nexus.Service.Panel.Streams.IVirtualMonitorHost>(), withheld);
+            });
             services.AddSingleton<IDeviceHandler>(
                 _ => new Nexus.Service.Devices.Handlers.BulkPanelHandler(bulkPanelHub));
             if (bulkPanelDriver is Nexus.Service.Peripherals.BulkPanels.HydroShift2LcdDriver hydroShift2)
@@ -1503,13 +1509,29 @@ public static class NexusServiceCollectionExtensions
         services.AddSingleton(sp =>
         {
             var wireless = sp.GetRequiredService<Nexus.Service.Peripherals.LianLiWireless.Slv3Hub>();
+            var store = sp.GetRequiredService<IConfigStore>();
             // The USB params and the wireless record carry the same radio MAC (checked on a unit
             // bound both ways); until the first reading names it, any bound HydroShift II counts.
-            return new Nexus.Service.Peripherals.BulkPanels.HydroShift2Aio(hub, driver, mac =>
+            var aio = new Nexus.Service.Peripherals.BulkPanels.HydroShift2Aio(hub, driver, mac =>
                 wireless.IsConnected
                 && Array.Exists(wireless.State.Fans, f => f.BoundToUs
                     && Nexus.Service.Peripherals.LianLiWireless.Slv3Protocol.IsHydroShiftDevType((byte)f.DevType)
-                    && (mac is null || string.Equals(f.Mac, mac, StringComparison.OrdinalIgnoreCase))));
+                    && (mac is null || string.Equals(f.Mac, mac, StringComparison.OrdinalIgnoreCase))),
+                mac => !store.Load().Devices.LianLiWireless.AioScreens.TryGetValue(mac, out var screen) || screen.NexusWidgets);
+            // Each switch to RF control redraws the AIO's own screen over the glass, so Nexus
+            // widgets wipe it again. A change of owner stops or starts the stream now; the AIO's
+            // own screen gets a fresh switch, acknowledged a drive tick or more after the stream
+            // closes, since the frames and the connect handshake wipe what an earlier one drew.
+            wireless.AioSwitched += _ => aio.ClearScreenOverlay();
+            aio.ScreenOwnerChanged += (mac, ownScreen) =>
+            {
+                sp.GetService<Nexus.Service.Panel.Streams.StreamedPanelCoordinator>()?.Wake();
+                if (ownScreen)
+                {
+                    wireless.ResendAioSwitch(mac);
+                }
+            };
+            return aio;
         });
         services.AddHostedService(sp => sp.GetRequiredService<Nexus.Service.Peripherals.BulkPanels.HydroShift2Aio>());
         services.AddSingleton<Nexus.Service.Cooling.HydroShift2CoolingProvider>();

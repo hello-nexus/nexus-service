@@ -99,6 +99,7 @@ public sealed class Slv3AioScreenDto
     public bool ShowGpuLoad { get; set; }
     public bool ShowFanSpeed { get; set; }
     public int LoopInterval { get; set; }
+    public bool NexusWidgets { get; set; }
 }
 
 /// <summary>Patch for a HydroShift II screen; null fields keep their value.</summary>
@@ -115,6 +116,7 @@ public sealed class Slv3AioScreenRequest
     public bool? ShowGpuLoad { get; set; }
     public bool? ShowFanSpeed { get; set; }
     public int? LoopInterval { get; set; }
+    public bool? NexusWidgets { get; set; }
 }
 
 /// <summary>
@@ -199,6 +201,7 @@ public static partial class Slv3Routes
                         ShowGpuLoad = body.ShowGpuLoad ?? old.ShowGpuLoad,
                         ShowFanSpeed = body.ShowFanSpeed ?? old.ShowFanSpeed,
                         LoopInterval = body.LoopInterval ?? old.LoopInterval,
+                        NexusWidgets = body.NexusWidgets ?? old.NexusWidgets,
                     },
                 };
             });
@@ -350,6 +353,7 @@ public static partial class Slv3Routes
         ShowGpuLoad = s.ShowGpuLoad,
         ShowFanSpeed = s.ShowFanSpeed,
         LoopInterval = s.LoopInterval,
+        NexusWidgets = s.NexusWidgets,
     };
 
     [GeneratedRegex("^[0-9A-Fa-f]{12}$")]

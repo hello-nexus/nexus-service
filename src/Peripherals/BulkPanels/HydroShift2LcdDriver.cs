@@ -71,8 +71,7 @@ public sealed class HydroShift2LcdDriver : IBulkPanelDriver
         Command(pipe, HydroShift2Protocol.CommandFrameRate, stackalloc byte[] { FrameRate });
         Exchange(pipe, HydroShift2Protocol.CommandSetClock, HydroShift2Protocol.EncodeSetClock(DateTime.Now, NextTimestamp()));
         Command(pipe, HydroShift2Protocol.CommandStopClock, stackalloc byte[] { 0 });
-        Exchange(pipe, HydroShift2Protocol.CommandPushPng, HydroShift2Protocol.EncodeImage(
-            HydroShift2Protocol.CommandPushPng, HydroShift2Protocol.EmptyOverlayPng(), NextTimestamp()));
+        ClearOverlay(pipe);
 
         _jpeg?.Dispose();
         _jpeg = new BgraJpegEncoder(HydroShift2Protocol.Width, HydroShift2Protocol.Height);
@@ -133,6 +132,15 @@ public sealed class HydroShift2LcdDriver : IBulkPanelDriver
         }
         return answered;
     }
+
+    /// <summary>
+    /// Pushes a transparent overlay, which wipes what the firmware draws over the frames: its
+    /// coolant readout, or its own wireless screen after a switch to RF control. Call only
+    /// under the hub's lock.
+    /// </summary>
+    public bool ClearOverlay(IBulkUsbPipe pipe) =>
+        Exchange(pipe, HydroShift2Protocol.CommandPushPng, HydroShift2Protocol.EncodeImage(
+            HydroShift2Protocol.CommandPushPng, HydroShift2Protocol.EmptyOverlayPng(), NextTimestamp())) is not null;
 
     /// <summary>Uploads a ring animation (packed RGB frames) for the firmware to loop. Call only under the hub's lock.</summary>
     public bool PushRing(IBulkUsbPipe pipe, ReadOnlySpan<byte> frames, int frameCount, byte intervalTicks) =>

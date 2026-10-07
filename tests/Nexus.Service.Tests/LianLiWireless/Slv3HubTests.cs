@@ -431,6 +431,28 @@ public class Slv3HubTests
     }
 
     [Fact]
+    public void Hydroshift_reports_each_acknowledged_switch_and_takes_it_again_on_request()
+    {
+        var (hub, net, tx, _) = CreateConnectedHub();
+        net.Fans.Add(new SimulatedFan { Mac = FanMac, MasterMac = net.MasterMac, RxType = 1, DevType = 11, FanCount = 0 });
+        var switched = new List<string>();
+        hub.AioSwitched += switched.Add;
+        Assert.True(hub.DriveTick());
+        Assert.True(hub.SetPumpDuty(Convert.ToHexString(FanMac), 50));
+        Assert.True(hub.DriveTick());
+        Assert.True(hub.DriveTick());
+        Assert.Equal(new[] { Convert.ToHexString(FanMac) }, switched);
+        Assert.Single(RfFrames(tx, Slv3Protocol.RfAioSwitchWireless));
+
+        hub.ResendAioSwitch(Convert.ToHexString(FanMac).ToLowerInvariant());
+        Assert.True(hub.DriveTick());
+        Assert.True(hub.DriveTick());
+
+        Assert.Equal(2, RfFrames(tx, Slv3Protocol.RfAioSwitchWireless).Count);
+        Assert.Equal(2, switched.Count);
+    }
+
+    [Fact]
     public void Hydroshift_switch_keeps_being_sent_while_the_aio_never_echoes()
     {
         var (hub, net, tx, _) = CreateConnectedHub();

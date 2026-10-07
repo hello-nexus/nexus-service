@@ -14,18 +14,23 @@ public sealed class BulkPanelDiscovery : IStreamedPanelDiscovery
 {
     private readonly BulkPanelHub _hub;
     private readonly IVirtualMonitorHost? _monitors;
+    private readonly Func<bool>? _withheld;
 
-    public BulkPanelDiscovery(BulkPanelHub hub, IVirtualMonitorHost? monitors = null)
+    /// <param name="withheld">True while the panel's glass shows something other than Nexus.</param>
+    public BulkPanelDiscovery(BulkPanelHub hub, IVirtualMonitorHost? monitors = null, Func<bool>? withheld = null)
     {
         _hub = hub;
         _monitors = monitors;
+        _withheld = withheld;
     }
 
     public string HandlerId => _hub.Driver.HandlerId;
 
+    public bool Withheld => _withheld?.Invoke() == true;
+
     public IReadOnlyList<StreamedPanelDeviceInfo> Discover()
     {
-        if (!_hub.IsConnected || _hub.Width <= 0 || _hub.Height <= 0)
+        if (!_hub.IsConnected || _hub.Width <= 0 || _hub.Height <= 0 || Withheld)
         {
             return Array.Empty<StreamedPanelDeviceInfo>();
         }

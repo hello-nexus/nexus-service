@@ -1614,6 +1614,8 @@ public sealed class LianLiAioScreenSettings
     public bool ShowFanSpeed { get; set; }
     /// <summary>How long each shown reading stays up before the screen moves to the next.</summary>
     public int LoopInterval { get; set; } = Nexus.Service.Peripherals.LianLiWireless.Slv3Protocol.AioLcdLoopInterval;
+    /// <summary>With the AIO's USB cable also connected, Nexus widgets own the glass; false gives it to this screen instead.</summary>
+    public bool NexusWidgets { get; set; } = true;
 }
 
 /// <summary>

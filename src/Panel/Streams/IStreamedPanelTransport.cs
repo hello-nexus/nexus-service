@@ -26,6 +26,12 @@ public interface IStreamedPanelDiscovery
 
     IReadOnlyList<StreamedPanelDeviceInfo> Discover();
 
+    /// <summary>
+    /// True while a present device's screen is handed to something other than Nexus, so its
+    /// session closes at once instead of lingering as a detach.
+    /// </summary>
+    bool Withheld => false;
+
     IStreamedPanelTransport CreateTransport(StreamedPanelDeviceInfo info);
 }
 

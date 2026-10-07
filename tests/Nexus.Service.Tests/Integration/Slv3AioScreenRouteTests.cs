@@ -57,6 +57,7 @@ public sealed class Slv3AioScreenRouteTests : IDisposable
         {
             Assert.Equal(Slv3Protocol.AioLcdBrightness, first.RootElement.GetProperty("brightness").GetInt32());
             Assert.Equal(Slv3Protocol.AioThemeCount, first.RootElement.GetProperty("themeCount").GetInt32());
+            Assert.True(first.RootElement.GetProperty("nexusWidgets").GetBoolean());
         }
 
         Assert.Equal(HttpStatusCode.OK, (await _client.PutAsJsonAsync($"/devices/lianli-wireless/aio-screen/{AioMac.ToLowerInvariant()}", new { theme = 4, valueColor = "#00FF00", showFanSpeed = true, brightness = 250 })).StatusCode);
@@ -74,6 +75,11 @@ public sealed class Slv3AioScreenRouteTests : IDisposable
         Assert.Equal(HttpStatusCode.OK, (await _client.PutAsJsonAsync($"/devices/lianli-wireless/aio-screen/{AioMac}", new { loopInterval = 9 })).StatusCode);
         using var after = JsonDocument.Parse(await _client.GetStringAsync($"/devices/lianli-wireless/aio-screen/{AioMac}"));
         Assert.Equal(9, after.RootElement.GetProperty("loopInterval").GetInt32());
+
+        Assert.Equal(HttpStatusCode.OK, (await _client.PutAsJsonAsync($"/devices/lianli-wireless/aio-screen/{AioMac}", new { nexusWidgets = false })).StatusCode);
+        using var own = JsonDocument.Parse(await _client.GetStringAsync($"/devices/lianli-wireless/aio-screen/{AioMac}"));
+        Assert.False(own.RootElement.GetProperty("nexusWidgets").GetBoolean());
+        Assert.Equal(4, own.RootElement.GetProperty("theme").GetInt32());
     }
 
     [Theory]
