@@ -53,6 +53,8 @@ public sealed class NexusSettings
     public TelemetrySettings Telemetry { get; set; } = new();
     public DiagnosticsSettings Diagnostics { get; set; } = new();
     public FeaturesSettings Features { get; set; } = new();
+    /// <summary>Sentry alert state: armed and the last alert time. NOT profile-scoped: it describes this workstation's lock state, not a persona.</summary>
+    public SentrySettings Sentry { get; set; } = new();
     /// <summary>Registered panel devices keyed by opaque deviceId. Each record carries the per-device layout + theme overrides + capabilities. NOT profile-scoped: device identity is hardware-level and survives profile switches.</summary>
     public Dictionary<string, Nexus.Service.Models.Panel.PanelDeviceRecord> PanelDevices { get; set; } = new();
 
@@ -2001,8 +2003,30 @@ public sealed class PairBroadcastSettings
     public long UntilUnixSeconds { get; set; }
 }
 
+public sealed class SentrySettings
+{
+    /// <summary>True while Sentry is waiting for input on a locked PC. Survives restarts; an unlock clears it.</summary>
+    public bool Armed { get; set; }
+
+    /// <summary>Epoch ms of the last alert the cloud accepted or rate-limited. Null until one has gone out. Drives the one-alert-per-hour cooldown.</summary>
+    public long? LastAlertAt { get; set; }
+}
+
+/// <summary>Where a phone's Sentry alerts are pushed, as the phone's panel page registered it. Title and body are already translated; <c>{pc}</c> is filled at send time.</summary>
+public sealed class PanelPhonePushTarget
+{
+    public string Platform { get; set; } = "";
+    public string Token { get; set; } = "";
+    public string Environment { get; set; } = "";
+    public string Title { get; set; } = "";
+    public string Body { get; set; } = "";
+}
+
 public sealed class PanelPhoneSessionToken
 {
+    /// <summary>Push target for Sentry alerts. Lives and dies with the session: unpair and revoke remove the record, and this with it.</summary>
+    public PanelPhonePushTarget? PushTarget { get; set; }
+
     public string Id { get; set; } = "";
     public string Hash { get; set; } = "";
     public string Name { get; set; } = "";

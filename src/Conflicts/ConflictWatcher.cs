@@ -239,7 +239,7 @@ public sealed class ConflictWatcher : BackgroundService, IConflictDetector
         if (!changed && _cachedEnvelope is not null)
             return;
 
-        var frame = new ConflictsFrame { Conflicts = detected.ToList() };
+        var frame = new ConflictsFrame { Conflicts = FrameConflicts(detected) };
         var env = WsEnvelope.Build(Topic, frame, AppJsonContext.Default.ConflictsFrame);
         _cachedEnvelope = env.ToArray();
 
@@ -248,6 +248,33 @@ public sealed class ConflictWatcher : BackgroundService, IConflictDetector
             _ = _hub.BroadcastTopicAsync(Topic, env);
         }
     }
+
+    private static List<DetectedConflict> FrameConflicts(IReadOnlyList<DetectedConflict> detected)
+    {
+#if DEV_TOOLS
+        // Dev tools: simulated conflicts ride the push frame too (the real list stays untouched).
+        return (Nexus.Service.Dev.DevSimEvents.Current?.ApplyConflicts(detected) ?? detected).ToList();
+#else
+        return detected.ToList();
+#endif
+    }
+
+#if DEV_TOOLS
+    /// <summary>Dev tools: rebuilds the pushed frame and the cached snapshot with the simulation applied, and broadcasts it.</summary>
+    public void RepublishForSimulation()
+    {
+        lock (_scanLock)
+        {
+            var frame = new ConflictsFrame { Conflicts = FrameConflicts(_latest) };
+            var env = WsEnvelope.Build(Topic, frame, AppJsonContext.Default.ConflictsFrame);
+            _cachedEnvelope = env.ToArray();
+            if (_hub.TopicHasSubscribers(Topic))
+            {
+                _ = _hub.BroadcastTopicAsync(Topic, env);
+            }
+        }
+    }
+#endif
 
     private List<DetectedConflict> DetectRunningConflicts()
     {

@@ -283,6 +283,12 @@ namespace Nexus.Service.Serialization;
 [JsonSerializable(typeof(Nexus.Service.Models.Panel.PanelPhoneClaimBody))]
 [JsonSerializable(typeof(Nexus.Service.Models.Panel.PanelPhoneClaimResponse))]
 [JsonSerializable(typeof(Nexus.Service.Models.Panel.PanelPhoneServiceInfoResponse))]
+[JsonSerializable(typeof(Nexus.Service.Models.Sentry.SentryStatusResponse))]
+[JsonSerializable(typeof(Nexus.Service.Models.Sentry.SentryArmBody))]
+[JsonSerializable(typeof(Nexus.Service.Models.Sentry.SentryErrorResponse))]
+[JsonSerializable(typeof(Nexus.Service.Models.Sentry.PanelPhonePushBody))]
+[JsonSerializable(typeof(Nexus.Service.Models.Sentry.SentryPushRequest))]
+[JsonSerializable(typeof(Nexus.Service.Models.Sentry.SentryPushResponse))]
 [JsonSerializable(typeof(Nexus.Service.Models.Panel.PanelPhoneSessionNameBody))]
 [JsonSerializable(typeof(Nexus.Service.Models.Panel.PanelHostNameBody))]
 [JsonSerializable(typeof(Nexus.Service.Models.Panel.PanelHostNameResponse))]
@@ -1252,6 +1258,7 @@ namespace Nexus.Service.Serialization;
 [JsonSerializable(typeof(Nexus.Service.Routes.NollieSimulateBody))]
 #if DEV_TOOLS
 [JsonSerializable(typeof(Nexus.Service.Routes.DevPanelVariantDto))]
+[JsonSerializable(typeof(Nexus.Service.Routes.DevSimEventsResponse))]
 [JsonSerializable(typeof(Nexus.Service.Telemetry.AppTelemetryRequest))]
 [JsonSerializable(typeof(Nexus.Service.Telemetry.AppPageClosedRequest))]
 #endif

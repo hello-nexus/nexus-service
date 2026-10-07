@@ -658,6 +658,7 @@ app.MapTransferEndpoints();
 app.MapProfileEndpoints();
 app.MapDashboardPresetEndpoints();
 app.MapPanelEndpoints();
+app.MapSentryEndpoints();
 app.MapPanelDeckEndpoints();
 app.MapStreamedPanelEndpoints();
 app.MapOverlayEndpoints();
@@ -674,6 +675,7 @@ app.MapCloudEndpoints();
 app.MapAiEndpoints();
 #if DEV_TOOLS
 app.MapAiAssistantEndpoints();
+app.MapDevSimEndpoints();
 #endif
 app.MapWebSocketEndpoints();
 app.MapRtcEndpoints();

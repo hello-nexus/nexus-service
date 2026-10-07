@@ -8,7 +8,14 @@ public static partial class DevicesRoutes
     private static void MapDeviceListingEndpoints(WebApplication app)
     {
         // Unified device list - registered handlers with connection status
-        app.MapGet("/devices/all", (DeviceManager dm) => dm.GetAll());
+        app.MapGet("/devices/all", (DeviceManager dm) =>
+        {
+            var devices = dm.GetAll();
+#if DEV_TOOLS
+            Nexus.Service.Dev.DevSimEvents.Current?.ApplyDevices(devices);
+#endif
+            return devices;
+        });
 
         // Raw USB device list - every device the OS reports, with full details
         app.MapGet("/devices/usb/all", (DeviceManager dm) => dm.GetUsbDevices());

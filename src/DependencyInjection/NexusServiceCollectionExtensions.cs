@@ -120,6 +120,27 @@ public static class NexusServiceCollectionExtensions
         // worker stays dormant until a PostHog key is configured (PostHogOptions).
         services.AddSingleton<Nexus.Service.Telemetry.TelemetryClient>();
 #if DEV_TOOLS
+        // Dev-tools simulated events: in-memory read-path overlays, never fan or settings writes.
+        services.AddSingleton<Nexus.Service.Dev.DevSimEvents>(sp =>
+        {
+            var sim = new Nexus.Service.Dev.DevSimEvents();
+            sim.EffectiveLimit = () => sp.GetService<Nexus.Service.Cooling.ThermalGuardController>()?.GetState().LimitC;
+            var failureLogged = false;
+            sim.Changed += () =>
+            {
+                try { Nexus.Service.Routes.DevSimRoutes.BroadcastAll(sp); }
+                catch (Exception ex)
+                {
+                    // A failed broadcast must not fail the toggle; the first one is logged.
+                    if (!failureLogged)
+                    {
+                        failureLogged = true;
+                        Console.Error.WriteLine($"[dev-sim] broadcast failed: {ex.Message}");
+                    }
+                }
+            };
+            return sim;
+        });
         // Dev-tools builds keep the last app_* events for GET /apps-api/telemetry/recent.
         services.AddSingleton<Nexus.Service.Telemetry.AppEventRecorder>(sp => new Nexus.Service.Telemetry.AppEventRecorder(
             sp.GetRequiredService<Nexus.Service.Telemetry.TelemetryClient>(),
@@ -1960,6 +1981,17 @@ public static class NexusServiceCollectionExtensions
             () => sp.GetRequiredService<Nexus.Service.Peripherals.Hyte.Y70Display.Y70DisplayHeartbeatWorker>().Detected,
             () => sp.GetRequiredService<Nexus.Service.Panel.Streams.StreamedPanelCoordinator>().GetAssignments().Assignments.Count > 0));
         services.AddSingleton<Nexus.Service.Panel.PanelPhonePairingService>();
+
+        // Registered on every OS so GET /sentry can answer supported:false where
+        // no lock input watch is wired (Linux). Hosted so it is built at startup
+        // and a persisted armed state resumes.
+        services.AddSingleton(sp => new Nexus.Service.Sentry.SentryCoordinator(
+            sp.GetRequiredService<Nexus.Service.Persistence.IConfigStore>(),
+            sp.GetRequiredService<Nexus.Service.Panel.PanelPhonePairingService>(),
+            sp.GetRequiredService<Nexus.Service.Cloud.ICloudApiClient>(),
+            sp.GetRequiredService<Nexus.Service.Platform.Power.ISystemPowerProvider>(),
+            sp.GetService<Nexus.Service.Lighting.SessionLockListener>()));
+        services.AddHostedService(sp => sp.GetRequiredService<Nexus.Service.Sentry.SentryCoordinator>());
         services.AddSingleton<Nexus.Service.Panel.PanelDeviceRegistry>();
         services.AddSingleton<Nexus.Service.Panel.PanelAutoPromotion>();
 

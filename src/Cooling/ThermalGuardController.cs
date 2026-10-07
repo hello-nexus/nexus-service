@@ -207,7 +207,7 @@ public sealed class ThermalGuardController
         if (latchedNow)
         {
             Console.Error.WriteLine("[thermal-guard] repeated engine stalls: Nexus fan writes stopped until restart or a guard toggle");
-            Raise("Cooling handed to the BIOS", "Nexus handed your fans to the BIOS because the cooling engine kept stalling.");
+            Raise(ThermalGuardNotices.LatchedTitle, ThermalGuardNotices.LatchedText);
             if (_hub is not null)
             {
                 PanelTopics.BroadcastCooling(_hub);
@@ -755,12 +755,11 @@ public sealed class ThermalGuardController
                 PeakC = peak,
                 Reason = reason,
             });
-            var cause = reason == ThermalTripReasons.CoolingLoss ? "cooling loss" : "temperature limit";
-            var text = $"CPU reached {peak:0} C ({cause}). Fans forced to full speed.";
+            var text = ThermalGuardNotices.TripText(peak, reason);
             if (!_lastTripAlertMs.TryGetValue(reason, out var lastAlert) || now - lastAlert >= TripAlertCooldownMs)
             {
                 _lastTripAlertMs[reason] = now;
-                Raise("CPU thermal guard tripped", text);
+                Raise(ThermalGuardNotices.TripTitle, text);
             }
             AppendTimeline(now, "CPU thermal guard", text);
         }
@@ -935,7 +934,7 @@ public sealed class ThermalGuardController
             return BuildHealState(_store.Load().Cooling);
         }
         Console.Error.WriteLine($"[thermal-guard] healed {result.Healed.Count} channel(s): {string.Join(", ", result.Healed.Select(h => h.ChannelId))}");
-        Raise("Cooling config repaired", $"{result.Healed.Count} fan channel(s) could stop while the CPU is hot and now have a CPU safety curve.");
+        Raise(ThermalGuardNotices.HealedTitle, ThermalGuardNotices.HealedText(result.Healed.Count));
         return BuildHealState(_store.Load().Cooling);
     }
 

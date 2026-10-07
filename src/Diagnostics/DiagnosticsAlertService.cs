@@ -72,6 +72,25 @@ public sealed class DiagnosticsAlertService : BackgroundService
         }
     }
 
+#if DEV_TOOLS
+    /// <summary>Dev tools: raises the notices a simulated event would, through the real evaluation (notification switches and deep links apply), once.</summary>
+    public void RaiseSimulated(IReadOnlyList<HealthComponent> components)
+    {
+        var notifications = _store.Load().Diagnostics.Notifications;
+        foreach (var notice in EvaluateNotifications(components, notifications, new Dictionary<string, DateTime>(StringComparer.Ordinal), DateTime.UtcNow))
+        {
+            try
+            {
+                AlertNeedsAttention?.Invoke(notice);
+            }
+            catch (Exception ex)
+            {
+                ServiceLog.Warn($"[diagnostics-alert] notify subscriber failed: {ex.Message}");
+            }
+        }
+    }
+#endif
+
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
         try
@@ -104,7 +123,7 @@ public sealed class DiagnosticsAlertService : BackgroundService
         {
             return;
         }
-        var health = _health.BuildHealth();
+        var health = _health.BuildRealHealth();
         var notifications = _store.Load().Diagnostics.Notifications;
         var now = DateTime.UtcNow;
 
