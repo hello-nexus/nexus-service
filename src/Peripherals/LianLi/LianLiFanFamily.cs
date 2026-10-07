@@ -69,17 +69,23 @@ public readonly struct LianLiFanProfile
     /// <summary>Send the merge-off command on attach so a merged port-0 profile left by another app cannot mute ports 1-3.</summary>
     public bool ClearMergeOnAttach { get; init; }
 
-    /// <summary>Static and breathing take one colour per fan replicated over its ring, not the 4-slot palette.</summary>
-    public bool PerFanStaticPalette { get; init; }
+    /// <summary>Fans a port daisy-chains.</summary>
+    public int MaxFans { get; init; }
+
+    /// <summary>Colour slots per fan in a firmware mode's palette.</summary>
+    public int PaletteSlotsPerFan { get; init; }
+
+    /// <summary>Value the frame sync carries; the firmware latches committed effect settings on it.</summary>
+    public byte FrameLatch { get; init; }
 
     /// <summary>Firmware has merged effects: channel 0 carries one animation across every port in merge-order sequence.</summary>
     public bool SupportsMerge { get; init; }
 
-    /// <summary>The ARGB-input layout (every port from LED 0, inner ring then edge per fan) was measured on SL-Infinity only.</summary>
+    /// <summary>The ARGB-input layout (every port from LED 0, inner ring then edge per fan) was measured on SL-Infinity only, so only it offers a Nexus card as the input's source.</summary>
     public bool ArgbSyncVerified => Family == LianLiFanFamily.SlInfinity;
 
-    /// <summary>Whether the hub plays its motherboard ARGB input when the user asked for it: only on the verified family.</summary>
-    public bool PlaysArgbInput(bool argbSyncSetting) => argbSyncSetting && ArgbSyncVerified;
+    /// <summary>Whether the hub plays its motherboard ARGB input: every family switches with the same register write.</summary>
+    public bool PlaysArgbInput(bool argbSyncSetting) => argbSyncSetting;
 
     public string? ModelName { get; init; }
 
@@ -96,16 +102,18 @@ public static class LianLiFanProfiles
 {
     // SL v1 (0xA100, Redragon OEM 0xA106): one 16-LED ring per fan on one channel
     // per port, quantity packed into a single byte, colours over interrupt-OUT.
-    // AL, SL v2 and AL v2 ring counts are unverified; they keep the SL-Infinity layout.
+    // SL v2 is one ring per fan on longer chains; AL and AL v2 share the
+    // SL-Infinity rings, AL v2 on longer chains with a wider palette. Only
+    // SL-Infinity and SL v1 are bench-verified.
     private static readonly (int Pid, LianLiFanProfile Profile)[] s_table =
     {
         (0x7750, SlInfinityLayout(new LianLiFanProfile { Family = LianLiFanFamily.Sl,         ProductId = 0x7750, FlooredDuty = false, ManualRegister = 0x31, ArgbRegister = 0x30, QuantityRegister = 0x60, RpmOffset = 1, ModelName = "Uni Hub" })),
         (0xA100, SlLayout(        new LianLiFanProfile { Family = LianLiFanFamily.Sl,         ProductId = 0xA100, FlooredDuty = false, ManualRegister = 0x31, ArgbRegister = 0x30, QuantityRegister = 0x32, RpmOffset = 1, ModelName = "Uni SL" })),
         (0xA101, SlInfinityLayout(new LianLiFanProfile { Family = LianLiFanFamily.Al,         ProductId = 0xA101, FlooredDuty = false, ManualRegister = 0x42, ArgbRegister = 0x41, QuantityRegister = 0x40, RpmOffset = 1, ModelName = "Uni AL" })),
-        (0xA102, SlInfinityLayout(new LianLiFanProfile { Family = LianLiFanFamily.SlInfinity, ProductId = 0xA102, FlooredDuty = true,  ManualRegister = 0x62, ArgbRegister = 0x61, QuantityRegister = 0x60, RpmOffset = 1, ModelName = "SL-Infinity" }) with { SupportsMerge = true, PerFanStaticPalette = true }),
-        (0xA103, SlInfinityLayout(new LianLiFanProfile { Family = LianLiFanFamily.SlV2,       ProductId = 0xA103, FlooredDuty = true,  ManualRegister = 0x62, ArgbRegister = 0x61, QuantityRegister = 0x60, RpmOffset = 2, ModelName = "Uni SL v2" })),
-        (0xA104, SlInfinityLayout(new LianLiFanProfile { Family = LianLiFanFamily.AlV2,       ProductId = 0xA104, FlooredDuty = true,  ManualRegister = 0x62, ArgbRegister = 0x61, QuantityRegister = 0x60, RpmOffset = 2, ModelName = "Uni AL v2" })),
-        (0xA105, SlInfinityLayout(new LianLiFanProfile { Family = LianLiFanFamily.SlV2,       ProductId = 0xA105, FlooredDuty = true,  ManualRegister = 0x62, ArgbRegister = 0x61, QuantityRegister = 0x60, RpmOffset = 2, ModelName = "Uni SL v2" })),
+        (0xA102, SlInfinityLayout(new LianLiFanProfile { Family = LianLiFanFamily.SlInfinity, ProductId = 0xA102, FlooredDuty = true,  ManualRegister = 0x62, ArgbRegister = 0x61, QuantityRegister = 0x60, RpmOffset = 1, ModelName = "SL-Infinity" }) with { SupportsMerge = true }),
+        (0xA103, SlV2Layout(      new LianLiFanProfile { Family = LianLiFanFamily.SlV2,       ProductId = 0xA103, FlooredDuty = true,  ManualRegister = 0x62, ArgbRegister = 0x61, QuantityRegister = 0x60, RpmOffset = 2, ModelName = "Uni SL v2" })),
+        (0xA104, SlInfinityLayout(new LianLiFanProfile { Family = LianLiFanFamily.AlV2,       ProductId = 0xA104, FlooredDuty = true,  ManualRegister = 0x62, ArgbRegister = 0x61, QuantityRegister = 0x60, RpmOffset = 2, ModelName = "Uni AL v2" }) with { MaxFans = 6, PaletteSlotsPerFan = 6 }),
+        (0xA105, SlV2Layout(      new LianLiFanProfile { Family = LianLiFanFamily.SlV2,       ProductId = 0xA105, FlooredDuty = true,  ManualRegister = 0x62, ArgbRegister = 0x61, QuantityRegister = 0x60, RpmOffset = 2, ModelName = "Uni SL v2" })),
         (0xA106, SlLayout(        new LianLiFanProfile { Family = LianLiFanFamily.Sl,         ProductId = 0xA106, FlooredDuty = false, ManualRegister = 0x31, ArgbRegister = 0x30, QuantityRegister = 0x32, RpmOffset = 1, ModelName = "Uni SL (Redragon OEM)" })),
     };
 
@@ -118,7 +126,20 @@ public static class LianLiFanProfiles
         ColorViaInterruptOut = true,
         StartActionPerFrame = false,
         ClearMergeOnAttach = true,
-        PerFanStaticPalette = true,
+        MaxFans = 4,
+        PaletteSlotsPerFan = 4,
+        FrameLatch = 1,
+    };
+
+    // The SL-Infinity transport with one ring per fan and a packed quantity byte.
+    private static LianLiFanProfile SlV2Layout(LianLiFanProfile p) => SlInfinityLayout(p) with
+    {
+        PackedQuantity = true,
+        ChannelsPerPort = 1,
+        InnerLedsPerFan = LianLiProtocol.SlLedsPerFan,
+        OuterLedsPerFan = 0,
+        MaxFans = 6,
+        FrameLatch = 4,
     };
 
     private static LianLiFanProfile SlInfinityLayout(LianLiFanProfile p) => p with
@@ -130,7 +151,9 @@ public static class LianLiFanProfiles
         ColorViaInterruptOut = false,
         StartActionPerFrame = true,
         ClearMergeOnAttach = false,
-        PerFanStaticPalette = false,
+        MaxFans = 4,
+        PaletteSlotsPerFan = 4,
+        FrameLatch = 1,
     };
 
     /// <summary>The SL-Infinity profile: the layout composition code assumes while no hub is attached.</summary>

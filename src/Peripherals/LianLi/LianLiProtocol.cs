@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 
 namespace Nexus.Service.Peripherals.LianLi;
 
@@ -26,8 +27,8 @@ public static class LianLiProtocol
     /// <summary>Physical fan ports on the hub.</summary>
     public const int PortCount = 4;
 
-    /// <summary>Fans a single port group can daisy-chain.</summary>
-    public const int MaxFansPerPort = 4;
+    /// <summary>Most fans any family daisy-chains on one port; buffers size to it, the profile caps each hub.</summary>
+    public const int MaxFansPerPort = 6;
 
     // Per-fan LED counts, hardware-confirmed on fw 1.4 (2026-08-27) by lighting
     // single indices with the service stopped and reading them off a camera:
@@ -56,9 +57,6 @@ public static class LianLiProtocol
     /// <summary>Parked on every channel but 0 while a merged effect runs, committed at brightness off.</summary>
     public const byte EffectMergeIdle = 0x32;
 
-    /// <summary>Palette bytes for a merged effect on channel 0: every fan's colour slots.</summary>
-    public const int MergedPaletteBytes = MaxFansPerPort * 4 * 3;
-
     /// <summary>
     /// Minimum gap between manual-mode and duty writes; firmware drops the duty
     /// byte if it arrives before the mode-transition settles.
@@ -72,13 +70,14 @@ public static class LianLiProtocol
     public const byte BrightnessDefault = 0x00;
 
     /// <summary>
-    /// Set number of fans on a port group (g=0..3). Feature report.
-    /// SL-Infinity form: E0 10 &lt;quantityRegister&gt; (g+1) (qty 0..4) 00 00.
-    /// SL v1 form (PackedQuantity): E0 10 &lt;quantityRegister&gt; ((g shl 4) or qty) 00 00 00.
+    /// Set number of fans on a port group (g=0..3), qty clamped to the
+    /// profile's cap. Feature report.
+    /// Unpacked form: E0 10 &lt;quantityRegister&gt; (g+1) qty 00 00.
+    /// Packed form (<see cref="LianLiFanProfile.PackedQuantity"/>): E0 10 &lt;quantityRegister&gt; ((g shl 4) or qty) 00 00 00.
     /// </summary>
     public static byte[] BuildSetQuantity(in LianLiFanProfile profile, int group, int qty)
     {
-        var q = (byte)Math.Clamp(qty, 0, MaxFansPerPort);
+        var q = (byte)Math.Clamp(qty, 0, profile.MaxFans);
         if (profile.PackedQuantity)
         {
             return new byte[]
@@ -166,13 +165,35 @@ public static class LianLiProtocol
     }
 
     /// <summary>
-    /// Order a merged effect travels through the ports: E0 10 63 p0 p1 p2 p3 08,
-    /// here the identity order 0,1,2,3. Feature report longer than the
-    /// SL-Infinity feature length; it goes out untruncated.
+    /// Order a merged effect travels through the ports: E0 10 63, the port at
+    /// each position, then 08. Feature report longer than the SL-Infinity
+    /// feature length; it goes out untruncated.
     /// </summary>
-    public static byte[] BuildMergeOrder()
+    public static byte[] BuildMergeOrder(IReadOnlyList<int> order)
     {
-        return new byte[] { ReportId, 0x10, 0x63, 0x00, 0x01, 0x02, 0x03, 0x08 };
+        var report = new byte[] { ReportId, 0x10, 0x63, 0x00, 0x01, 0x02, 0x03, 0x08 };
+        for (var i = 0; i < PortCount && i < order.Count; i++) report[3 + i] = (byte)order[i];
+        return report;
+    }
+
+    /// <summary>The order when it names every port once; index order otherwise.</summary>
+    public static int[] ValidMergeOrder(IReadOnlyList<int>? order)
+    {
+        var result = new int[PortCount];
+        var seen = 0;
+        if (order is not null && order.Count == PortCount)
+        {
+            for (var i = 0; i < PortCount; i++)
+            {
+                var p = order[i];
+                if (p < 0 || p >= PortCount || (seen & (1 << p)) != 0) break;
+                seen |= 1 << p;
+                result[i] = p;
+            }
+        }
+        if (seen == (1 << PortCount) - 1) return result;
+        for (var i = 0; i < PortCount; i++) result[i] = i;
+        return result;
     }
 
     /// <summary>
@@ -189,12 +210,11 @@ public static class LianLiProtocol
     /// Frame sync, sent once after every lighting apply. Without it the firmware
     /// keeps rendering the previous effect settings - a mode change lands on the
     /// per-channel commit, but speed and brightness do not take until this
-    /// arrives. Feature report. E0 60 00 01 00 00 00.
-    /// Source: L-Connect 3 SLInfinityController.syncLightingFrame -> SetFrame(1).
+    /// arrives. Feature report. E0 60 00 [profile.FrameLatch] 00 00 00.
     /// </summary>
-    public static byte[] BuildFrameSync()
+    public static byte[] BuildFrameSync(in LianLiFanProfile profile)
     {
-        return new byte[] { ReportId, 0x60, 0x00, 0x01, 0x00, 0x00, 0x00 };
+        return new byte[] { ReportId, 0x60, 0x00, profile.FrameLatch, 0x00, 0x00, 0x00 };
     }
 
     /// <summary>
@@ -204,6 +224,52 @@ public static class LianLiProtocol
     public static byte[] BuildRpmPrimer()
     {
         return new byte[] { ReportId, 0x50, 0x00, 0x00, 0x00, 0x00, 0x00 };
+    }
+
+    /// <summary>Feature report that primes the next input report with the firmware version: E0 50 01 00 00 00 00.</summary>
+    public static byte[] BuildFirmwarePrimer()
+    {
+        return new byte[] { ReportId, 0x50, 0x01, 0x00, 0x00, 0x00, 0x00 };
+    }
+
+    /// <summary>
+    /// Decodes the firmware reply: [1..2] echo E0 50, [3] major id, [4] the
+    /// family id, [5] the version byte, whose encoding differs per family. A
+    /// byte outside its family's encoding comes back as hex.
+    /// </summary>
+    public static bool TryDecodeFirmware(ReadOnlySpan<byte> buf, LianLiFanFamily family, out string version, out byte familyId)
+    {
+        version = "";
+        familyId = 0;
+        if (buf.Length < 6 || buf[1] != ReportId || buf[2] != 0x50) return false;
+        familyId = buf[4];
+        var number = FirmwareNumber(buf[5], family, familyId);
+        version = number is { } n ? $"{n / 10}.{n % 10}" : $"0x{buf[5]:X2}";
+        return true;
+    }
+
+    // The version as major*10+minor, or null outside the family's encoding.
+    // SL-Infinity leaves 0..3 and 15..31 unused and reads 13 and 14 one minor
+    // step up; AL reads two steps up with 1.0 below 8; SL v2 family 0xC7 reads
+    // 0 as 0.5 and leaves 1..5 unused.
+    private static int? FirmwareNumber(byte fine, LianLiFanFamily family, byte familyId)
+    {
+        var hi = fine >> 4;
+        var lo = fine & 0x0F;
+        switch (family)
+        {
+            case LianLiFanFamily.SlInfinity:
+                if (fine <= 3 || (fine >= 15 && fine <= 31) || (fine >= 32 && lo > 9)) return null;
+                if (fine is 13 or 14) lo++;
+                return hi * 10 + lo;
+            case LianLiFanFamily.Al:
+                if (lo > 9) return null;
+                return fine < 8 ? 10 : hi * 10 + lo + 2;
+            case LianLiFanFamily.SlV2 when familyId == 0xC7 && fine <= 5:
+                return fine == 0 ? 5 : null;
+            default:
+                return lo > 9 ? null : hi * 10 + lo;
+        }
     }
 
     /// <summary>

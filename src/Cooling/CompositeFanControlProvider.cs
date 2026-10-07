@@ -188,13 +188,35 @@ public sealed class CompositeFanControlProvider : IFanControlProvider, ICoolingP
     public void ReleaseFan(string channelId)
         => Route(channelId).ReleaseFan(channelId);
 
+    // Every provider is attempted: one that throws must not leave the others holding a
+    // Nexus duty. The first failure is logged and nothing is rethrown.
     public void ReleaseAll()
     {
-        _motherboard.ReleaseAll();
-        _np50.ReleaseAll();
-        _miniHub.ReleaseAll();
-        foreach (var e in Extras())
-            e.Provider.ReleaseAll();
+        var failureLogged = false;
+        void Attempt(string what, Action release)
+        {
+            try { release(); }
+            catch (Exception ex)
+            {
+                if (!failureLogged)
+                {
+                    failureLogged = true;
+                    Console.Error.WriteLine($"[cooling] release of {what} failed: {ex.Message}");
+                }
+            }
+        }
+        Attempt("the motherboard fans", _motherboard.ReleaseAll);
+        Attempt("the NP50 hub", _np50.ReleaseAll);
+        Attempt("the MiniHub", _miniHub.ReleaseAll);
+        IEnumerable<FanSource> extras;
+        try { extras = Extras().ToList(); }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine($"[cooling] listing providers to release failed: {ex.Message}");
+            return;
+        }
+        foreach (var e in extras)
+            Attempt("a cooling provider", e.Provider.ReleaseAll);
     }
 
     public Task<IReadOnlyList<FanCalibration>> CalibrateAsync(

@@ -41,6 +41,7 @@ public static partial class DevicesRoutes
                 Brightness= ls.Brightness,
                 Colors    = ls.Colors.ToArray(),
                 Modes     = catalog,
+                ArgbSync  = ls.ArgbSync,
             }, AppJsonContext.Default.StrimerLightingResponse);
         });
 
@@ -48,6 +49,7 @@ public static partial class DevicesRoutes
         app.MapPut("/devices/strimer/lighting", (
             StrimerLightingRequest body,
             IConfigStore store,
+            StrimerLightingDeviceProvider lighting,
             Nexus.Service.Sockets.MultiplexHub mux) =>
         {
             if (body.Mode != null && StrimerLightingModes.Find(body.Mode) == null)
@@ -76,7 +78,9 @@ public static partial class DevicesRoutes
                         ls.Colors.Add(body.Colors[i]);
                     }
                 }
+                if (body.ArgbSync.HasValue) ls.ArgbSync = body.ArgbSync.Value;
             });
+            if (body.ArgbSync.HasValue) lighting.OnHubStateUpdated();
             Nexus.Service.Sockets.PanelTopics.BroadcastLighting(mux);
             return Results.Json(ApiResponse.Ok(), AppJsonContext.Default.ApiResponse);
         });
@@ -103,6 +107,7 @@ public sealed class StrimerLightingResponse
     public int                Direction { get; set; }
     public int                Brightness{ get; set; }
     public string[]           Colors    { get; set; } = Array.Empty<string>();
+    public bool               ArgbSync  { get; set; }
     public StrimerModeInfoDto[] Modes   { get; set; } = Array.Empty<StrimerModeInfoDto>();
 }
 
@@ -113,4 +118,5 @@ public sealed class StrimerLightingRequest
     public int?     Direction { get; set; }
     public int?     Brightness{ get; set; }
     public string[]? Colors   { get; set; }
+    public bool?    ArgbSync  { get; set; }
 }

@@ -146,6 +146,7 @@ public static class FanProfiles
         List<(string FanId, int Duty)>? restoredManual = null;
         store.Update(s =>
         {
+            s.Cooling.ClearHeal($"profile-apply:{canonical}");
             // Snapshot the user's custom mapping on the way out of "custom":
             // curve assignments and manual duties both, so Custom restores the
             // full arrangement. The manual copy is load-bearing for the Off
@@ -418,9 +419,15 @@ public static class FanProfiles
     {
         store.Update(s =>
         {
+            var removed = false;
             foreach (var curve in s.Cooling.Curves)
             {
-                curve.Outputs.RemoveAll(o => o.Id == fanId);
+                removed |= curve.Outputs.RemoveAll(o => o.Id == fanId) > 0;
+            }
+            // Undo is only invalidated by an edit that actually changed the curves.
+            if (removed)
+            {
+                s.Cooling.ClearHeal($"detach:{fanId}");
             }
         });
     }
@@ -507,6 +514,7 @@ public static class FanProfiles
 
         store.Update(s =>
         {
+            s.Cooling.ClearHeal($"preset-reset:{canonical}");
             // EnsurePresetCurve returns the existing curve (normalizing the
             // Preset flag) or creates a fresh one at defaults. Either way we
             // then forcibly overwrite the template fields below; the redundant
@@ -599,7 +607,7 @@ public static class FanProfiles
     /// no fan outputs attached. Used both to create a preset lazily on first
     /// activation and to seed all four on a blank install.
     /// </summary>
-    private static CurveDocument BuildPresetCurve(string presetName, TemperatureSource? inputSensor)
+    internal static CurveDocument BuildPresetCurve(string presetName, TemperatureSource? inputSensor)
     {
         var defaults = PresetDefaults.For(presetName);
         var flat = IsFlatPreset(presetName);
@@ -631,7 +639,7 @@ public static class FanProfiles
         };
     }
 
-    private static TemperatureSource? PreferredInput(IReadOnlyList<TemperatureSource> temps)
+    internal static TemperatureSource? PreferredInput(IReadOnlyList<TemperatureSource> temps)
     {
         return temps.FirstOrDefault(t => t.Category == "CPU" && t.Name.Contains("Package", System.StringComparison.OrdinalIgnoreCase))
             ?? temps.FirstOrDefault(t => t.Category == "CPU")

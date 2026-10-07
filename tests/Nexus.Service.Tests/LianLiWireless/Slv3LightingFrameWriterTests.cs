@@ -151,6 +151,58 @@ public class Slv3LightingFrameWriterTests
     }
 
     [Fact]
+    public void Tick_interleaves_uneven_rings_fan_by_fan_on_the_wire()
+    {
+        var (hub, net, tx) = Slv3TestHub.CreateConnected();
+        net.Fans.Add(new Slv3TestHub.SimulatedFan { Mac = FanMac, MasterMac = net.MasterMac, RxType = 1, FanCount = 3, FansType = 63 });
+        Assert.True(hub.DriveTick());
+
+        var store = new InMemoryConfigStore();
+        var identify = new Np50IdentifyTracker();
+        var provider = new Slv3LightingDeviceProvider(hub, store, identify);
+        var frames = provider.BuildFrames(0).ToArray();
+        const int inner = 4, outer = 5, fans = 3;
+        Assert.Equal(2, frames.Length);
+        Assert.Equal(fans * inner, frames[0].LedCount);
+        Assert.Equal(fans * outer, frames[1].LedCount);
+        var engine = new LightingEngine();
+        engine.UpdateDevices(frames);
+        var writer = new Slv3LightingFrameWriter(engine, hub, store, identify, provider, () => 200 * TimeSpan.TicksPerMillisecond);
+        // Red numbers every ring LED: the inner zone's LEDs first, then the outer's.
+        for (var n = 0; n < frames[0].LedCount; n++) frames[0].SetLed(n, (byte)n, 0, 0);
+        for (var n = 0; n < frames[1].LedCount; n++) frames[1].SetLed(n, (byte)(fans * inner + n), 0, 0);
+        frames[0].Publish();
+        frames[1].Publish();
+
+        writer.Tick();
+
+        var sync = RgbSyncFrames(tx);
+        var header = sync.Find(f => f[22] == 0);
+        Assert.NotNull(header);
+        var compressedLen = (header![24] << 24) | (header[25] << 16) | (header[26] << 8) | header[27];
+        var compressed = new List<byte>();
+        foreach (var payload in ReassembleRfPayloads(tx))
+        {
+            if (payload[1] != Slv3Protocol.RfRgbSync || payload[18] == 0) continue;
+            compressed.AddRange(payload.AsSpan(Slv3RgbFrame.DataPacketOffset, Slv3RgbFrame.DataPacketChunk).ToArray());
+        }
+        var (_, raw) = TinyUz.Decompress(compressed.ToArray().AsSpan(0, compressedLen));
+        Assert.Equal(fans * (inner + outer) * 3, raw.Length);
+        for (var f = 0; f < fans; f++)
+        {
+            for (var i = 0; i < inner; i++)
+            {
+                Assert.Equal((byte)(((f * inner + i) * 255) >> 8), raw[(f * (inner + outer) + i) * 3]);
+            }
+            for (var i = 0; i < outer; i++)
+            {
+                var source = fans * inner + f * outer + i;
+                Assert.Equal((byte)((source * 255) >> 8), raw[(f * (inner + outer) + inner + i) * 3]);
+            }
+        }
+    }
+
+    [Fact]
     public void Tick_streams_a_bound_hydroshift_pump_ring_as_one_24_led_frame()
     {
         var (hub, net, tx) = Slv3TestHub.CreateConnected();

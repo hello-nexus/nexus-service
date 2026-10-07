@@ -18,6 +18,8 @@ internal static unsafe partial class Nvml
     private const string Lib = "libnvidia-ml.so.1";
     private const int Success = 0;          // NVML_SUCCESS
     private const uint TemperatureGpu = 0;  // NVML_TEMPERATURE_GPU
+    private const int NotSupportedRc = 3;      // NVML_ERROR_NOT_SUPPORTED
+    private const uint ThresholdSlowdown = 1; // NVML_TEMPERATURE_THRESHOLD_SLOWDOWN
     private const int NameBuf = 96;         // NVML_DEVICE_NAME_V2_BUFFER_SIZE
 
     private static readonly object Gate = new();
@@ -91,6 +93,24 @@ internal static unsafe partial class Nvml
         catch { return false; }
     }
 
+    /// <summary>One attempt at the GPU's slowdown threshold through libnvidia-ml (Linux).</summary>
+    internal static GpuSlowdownThreshold.Read ReadSlowdown(int gpu)
+    {
+        if (!Available)
+            return GpuSlowdownThreshold.Read.NotSupported;
+        try
+        {
+            if (nvmlDeviceGetHandleByIndex_v2((uint)gpu, out var dev) != Success)
+                return GpuSlowdownThreshold.Read.Transient;
+            var rc = nvmlDeviceGetTemperatureThreshold(dev, ThresholdSlowdown, out var t);
+            return rc == Success
+                ? GpuSlowdownThreshold.Read.Ok((int)t)
+                : (rc == NotSupportedRc ? GpuSlowdownThreshold.Read.NotSupported : GpuSlowdownThreshold.Read.Transient);
+        }
+        catch (EntryPointNotFoundException) { return GpuSlowdownThreshold.Read.NotSupported; }
+        catch { return GpuSlowdownThreshold.Read.Transient; }
+    }
+
     private static string ReadName(IntPtr dev)
     {
         Span<byte> buf = stackalloc byte[NameBuf];
@@ -131,6 +151,7 @@ internal static unsafe partial class Nvml
     [LibraryImport(Lib)] private static partial int nvmlDeviceGetName(IntPtr device, byte* name, uint length);
     [LibraryImport(Lib)] private static partial int nvmlDeviceGetNumFans(IntPtr device, out uint numFans);
     [LibraryImport(Lib)] private static partial int nvmlDeviceGetFanSpeed_v2(IntPtr device, uint fan, out uint speed);
+    [LibraryImport(Lib)] private static partial int nvmlDeviceGetTemperatureThreshold(IntPtr device, uint thresholdType, out uint temp);
     [LibraryImport(Lib)] private static partial int nvmlDeviceGetTemperature(IntPtr device, uint sensorType, out uint temp);
     [LibraryImport(Lib)] private static partial int nvmlDeviceSetFanSpeed_v2(IntPtr device, uint fan, uint speed);
     [LibraryImport(Lib)] private static partial int nvmlDeviceSetDefaultFanSpeed_v2(IntPtr device, uint fan);

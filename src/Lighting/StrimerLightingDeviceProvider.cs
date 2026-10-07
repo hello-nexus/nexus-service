@@ -39,7 +39,7 @@ public sealed class StrimerLightingDeviceProvider :
 
     public void OnHubStateUpdated()
     {
-        var sig = _hub.IsConnected ? "connected" : "disconnected";
+        var sig = !_hub.IsConnected ? "disconnected" : _store.Load().Devices.StrimerLighting.ArgbSync ? "argb" : "connected";
         if (sig == _lastSignature) return;
         _lastSignature = sig;
         try { DevicesChanged?.Invoke(); } catch { /* swallow subscriber failures */ }
@@ -52,6 +52,8 @@ public sealed class StrimerLightingDeviceProvider :
         var resp = new GetLightingDevicesResponse { IsInit = true };
         if (!_hub.IsConnected) return resp;
         var settings = _store.Load();
+        // Under ARGB sync the cable plays the motherboard header, so it has no cards of its own.
+        if (settings.Devices.StrimerLighting.ArgbSync) return resp;
         var slot = 0;
         var structures = BuildStructures();
         foreach (var structure in structures)
@@ -172,7 +174,7 @@ public sealed class StrimerLightingDeviceProvider :
 
     public IReadOnlyList<DeviceStructure> GetStructures()
     {
-        if (!_hub.IsConnected) return Array.Empty<DeviceStructure>();
+        if (!_hub.IsConnected || _store.Load().Devices.StrimerLighting.ArgbSync) return Array.Empty<DeviceStructure>();
         return BuildStructures();
     }
 
@@ -182,6 +184,7 @@ public sealed class StrimerLightingDeviceProvider :
     {
         if (!_hub.IsConnected) return Array.Empty<DeviceFrame>();
         var settings = _store.Load();
+        if (settings.Devices.StrimerLighting.ArgbSync) return Array.Empty<DeviceFrame>();
         var layouts  = settings.Lighting.DeviceLayouts;
         var frames   = new List<DeviceFrame>();
         var idx      = startingIndex;
