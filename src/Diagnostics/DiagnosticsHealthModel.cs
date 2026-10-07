@@ -143,7 +143,8 @@ public sealed class DiagnosticsHealthModel
                 windowsSupported: OperatingSystem.IsWindows(),
                 generatedAtUtc: now,
                 tempEpisodes: TemperatureInsights.DetectEpisodes(QueryTempRows(now), thresholdOverrides),
-                diagnostics: diagnostics);
+                diagnostics: diagnostics,
+                thermalTrip: _store.Load().Cooling.LastThermalTrip);
 
             _cached = result;
             _cachedAtUtc = now;
@@ -196,7 +197,8 @@ public sealed class DiagnosticsHealthModel
         bool windowsSupported,
         DateTime generatedAtUtc,
         IReadOnlyList<TemperatureEpisode>? tempEpisodes = null,
-        DiagnosticsSettings? diagnostics = null)
+        DiagnosticsSettings? diagnostics = null,
+        ThermalGuardTripRecord? thermalTrip = null)
     {
         var diag = diagnostics ?? new DiagnosticsSettings();
         var ignored = new HashSet<string>(diag.IgnoredComponents ?? new List<string>(), StringComparer.Ordinal);
@@ -233,6 +235,10 @@ public sealed class DiagnosticsHealthModel
             }
         }
         AddCoolingComponents(components, cooling, tempEpisodes ?? Array.Empty<TemperatureEpisode>(), generatedAtUtc, diag, ignored);
+        if (diag.Components.Cooling)
+        {
+            AddThermalGuardComponent(components, thermalTrip, generatedAtUtc);
+        }
 
         // Windows always reports the grid (its per-domain scanners exist even
         // when a domain is empty). Elsewhere the grid is meaningful only when
@@ -383,6 +389,37 @@ public sealed class DiagnosticsHealthModel
                 Reasons = reasons,
             });
         }
+    }
+
+    /// <summary>Act while the guard is tripped or escalated, watch for a day after it ends.</summary>
+    private static void AddThermalGuardComponent(List<HealthComponent> components, ThermalGuardTripRecord? trip, DateTime generatedAtUtc)
+    {
+        // An acknowledged trip is dealt with: no component, so the tile goes green.
+        if (trip is null || trip.AcknowledgedAtUtcMs is not null)
+        {
+            return;
+        }
+        var active = trip.EndedAtUtcMs is null;
+        var reference = DateTimeOffset.FromUnixTimeMilliseconds(trip.EndedAtUtcMs ?? trip.AtUtcMs).UtcDateTime;
+        if (!active && generatedAtUtc - reference > TimeSpan.FromHours(24))
+        {
+            return;
+        }
+        var cause = trip.Reason == "cooling-loss" ? "fans were not cooling the CPU" : "CPU reached its temperature limit";
+        var severity = active ? HealthStatuses.Act : HealthStatuses.Watch;
+        var summary = $"Thermal guard tripped, peak {trip.PeakC:0} C";
+        components.Add(new HealthComponent
+        {
+            Id = "cooling:thermal-guard",
+            Kind = "cooling",
+            Name = "CPU thermal guard",
+            Status = severity,
+            Reasons = new List<HealthComponentReason>
+            {
+                new("cooling.thermalGuardTrip", severity, summary,
+                    $"cause={cause} active={active} reason={trip.Reason} peakC={trip.PeakC:0.0} escalated={trip.Escalated} at={trip.AtUtcMs}"),
+            },
+        });
     }
 
     private static bool IsTempKindEnabled(string kind, DiagnosticsComponents components) => kind switch

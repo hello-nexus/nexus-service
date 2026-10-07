@@ -60,6 +60,8 @@ internal static unsafe class NvmlInterop
 
     private static readonly object Gate = new();
     private static bool _attempted;
+    private static long _loadFailedAtMs;
+    private const long LoadRetryMs = 5 * 60_000;
     private static bool _loaded;
     private static IntPtr _handle;
 
@@ -74,6 +76,7 @@ internal static unsafe class NvmlInterop
     private static IntPtr _pDeviceGetEnforcedPowerLimit;
     private static IntPtr _pDeviceGetClocksReasons;
     private static IntPtr _pDeviceGetViolationStatus;
+    private static IntPtr _pDeviceGetTemperatureThreshold;
 
     /// <summary>nvmlViolationTime_t: cumulative microseconds since driver load.</summary>
     [StructLayout(LayoutKind.Sequential)]
@@ -83,9 +86,10 @@ internal static unsafe class NvmlInterop
         public ulong ViolationTimeUs;
     }
 
-    /// <summary>Loads the platform NVML library and resolves every symbol once.
-    /// Returns false (and stays false) when the driver isn't present or lacks
-    /// the core enumeration entry points; never throws.</summary>
+    /// <summary>Loads the platform NVML library and resolves every symbol once it
+    /// succeeds. Returns false when the driver isn't present or lacks the core
+    /// enumeration entry points, and tries again after a backoff (the driver may
+    /// not be ready at boot); a success is final. Never throws.</summary>
     public static bool TryLoad()
     {
         lock (Gate)
@@ -94,8 +98,14 @@ internal static unsafe class NvmlInterop
             // a re-entrant call must return the same value the first call computed,
             // or a handle-loaded-but-export-missing state would let a later caller
             // invoke through a null function pointer (an uncatchable native crash).
-            if (_attempted) return _loaded;
+            // A failed load is retried after a backoff (boot before the driver is ready);
+            // a success is final.
+            if (_attempted)
+            {
+                if (_loaded || Environment.TickCount64 - _loadFailedAtMs < LoadRetryMs) return _loaded;
+            }
             _attempted = true;
+            _loadFailedAtMs = Environment.TickCount64;
             try
             {
                 if (!TryLoadPlatformLibrary())
@@ -114,6 +124,7 @@ internal static unsafe class NvmlInterop
                 _pDeviceGetPowerUsage = Export("nvmlDeviceGetPowerUsage");
                 _pDeviceGetEnforcedPowerLimit = Export("nvmlDeviceGetEnforcedPowerLimit");
                 _pDeviceGetViolationStatus = Export("nvmlDeviceGetViolationStatus");
+                _pDeviceGetTemperatureThreshold = Export("nvmlDeviceGetTemperatureThreshold");
 
                 // Newer drivers renamed ThrottleReasons -> EventReasons (same
                 // signature/bitmask); fall back to the old symbol for older drivers.
@@ -201,6 +212,13 @@ internal static unsafe class NvmlInterop
         return ((delegate* unmanaged[Stdcall]<IntPtr, uint, out uint, int>)_pDeviceGetTemperature)(device, TemperatureGpu, out tempC);
     }
 
+    public static int GetTemperatureThreshold(IntPtr device, uint thresholdType, out uint tempC)
+    {
+        tempC = 0;
+        if (_pDeviceGetTemperatureThreshold == IntPtr.Zero) return NotSupported;
+        return ((delegate* unmanaged[Stdcall]<IntPtr, uint, out uint, int>)_pDeviceGetTemperatureThreshold)(device, thresholdType, out tempC);
+    }
+
     public static int GetPowerUsageMilliwatts(IntPtr device, out uint milliwatts)
     {
         milliwatts = 0;
@@ -227,6 +245,52 @@ internal static unsafe class NvmlInterop
         violation = default;
         if (_pDeviceGetViolationStatus == IntPtr.Zero) return NotSupported;
         return ((delegate* unmanaged[Stdcall]<IntPtr, int, out NvmlViolationTime, int>)_pDeviceGetViolationStatus)(device, policyType, out violation);
+    }
+
+    private const uint ThresholdSlowdown = 1; // NVML_TEMPERATURE_THRESHOLD_SLOWDOWN
+
+    private static readonly object SlowdownInitGate = new();
+    private static bool _slowdownInitOk;
+    private static long _slowdownInitRetryAtMs;
+
+    /// <summary>
+    /// One attempt at a GPU's slowdown temperature threshold. NVML is initialised once on
+    /// success (refcounted by the driver, never shut down by this daemon); a failed init is
+    /// retried only after the caller's backoff has passed.
+    /// </summary>
+    public static Nexus.Service.Cooling.GpuSlowdownThreshold.Read ReadSlowdownThreshold(int gpu)
+    {
+        var notSupported = Nexus.Service.Cooling.GpuSlowdownThreshold.Read.NotSupported;
+        var transient = Nexus.Service.Cooling.GpuSlowdownThreshold.Read.Transient;
+        try
+        {
+            // A failed load is retried by the caller's backoff: the driver may not be ready at boot.
+            if (!TryLoad())
+                return transient;
+            lock (SlowdownInitGate)
+            {
+                if (!_slowdownInitOk)
+                {
+                    var now = Environment.TickCount64;
+                    if (now < _slowdownInitRetryAtMs)
+                        return transient;
+                    _slowdownInitOk = Init() == Success;
+                    _slowdownInitRetryAtMs = now + Nexus.Service.Cooling.GpuSlowdownThreshold.RetryBackoffMs;
+                    if (!_slowdownInitOk)
+                        return transient;
+                }
+            }
+            if (DeviceGetHandleByIndex((uint)gpu, out var dev) != Success)
+                return transient;
+            var rc = GetTemperatureThreshold(dev, ThresholdSlowdown, out var t);
+            if (rc == Success)
+                return Nexus.Service.Cooling.GpuSlowdownThreshold.Read.Ok((int)t);
+            return rc == NotSupported ? notSupported : transient;
+        }
+        catch
+        {
+            return transient;
+        }
     }
 
     private static string TrimAtNull(Span<byte> buf)

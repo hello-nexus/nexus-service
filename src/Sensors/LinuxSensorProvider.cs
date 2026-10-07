@@ -155,6 +155,35 @@ public sealed class LinuxSensorProvider : ISensorProvider
         return sensors;
     }
 
+    public float? GetCpuTjMaxC()
+    {
+        try
+        {
+            foreach (var hwmonDir in Directory.EnumerateDirectories("/sys/class/hwmon"))
+            {
+                var name = TryRead(Path.Combine(hwmonDir, "name"));
+                if (name is not ("k10temp" or "coretemp" or "zenpower"))
+                {
+                    continue;
+                }
+                foreach (var suffix in new[] { "_crit", "_max" })
+                {
+                    foreach (var input in Directory.EnumerateFiles(hwmonDir, "temp*_input"))
+                    {
+                        var index = Path.GetFileName(input).Replace("temp", "").Replace("_input", "");
+                        var milli = ParseFloat(TryRead(Path.Combine(hwmonDir, $"temp{index}{suffix}")));
+                        if (milli > 0)
+                        {
+                            return milli / 1000f;
+                        }
+                    }
+                }
+            }
+        }
+        catch { }
+        return null;
+    }
+
     public (bool Healthy, float DistanceToTJMax) GetCpuHealth()
     {
         try

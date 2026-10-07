@@ -291,6 +291,7 @@ public static class NexusServiceCollectionExtensions
         services.AddSingleton<SmartHubCoolingProvider>();
         services.AddSingleton<QSeriesCoolerCoolingProvider>();
         services.AddSingleton<ICurveProvider>(sp => sp.GetRequiredService<StubCoolingProvider>());
+        services.AddSingleton<ThermalGuardController>();
         services.AddSingleton<CurveEngine>();
         services.AddHostedService(sp => sp.GetRequiredService<CurveEngine>());
         services.AddSingleton<CalibrationRunner>();
@@ -880,8 +881,9 @@ public static class NexusServiceCollectionExtensions
         services.AddSingleton<Nexus.Service.Peripherals.StreamDeck.ElgatoImport.ElgatoProfileLocator>();
         services.AddSingleton<Nexus.Service.Peripherals.StreamDeck.ElgatoImport.ElgatoProfileTranslator>();
 
-        // Lian Li Uni Hub SL-Infinity: HID connection worker + lighting + cooling.
-        services.AddSingleton<Nexus.Service.Peripherals.LianLi.LianLiHub>();
+        // Lian Li Uni Hubs: one HID connection worker over every hub slot, one
+        // lighting writer per slot, lighting + cooling providers over the set.
+        services.AddSingleton<Nexus.Service.Peripherals.LianLi.LianLiHubSet>();
         services.AddSingleton<Nexus.Service.Cooling.LianLiCoolingProvider>();
         services.AddSingleton<Nexus.Service.Lighting.LianLiLightingDeviceProvider>();
         services.AddSingleton<Nexus.Service.Lighting.ILightingFrameContributor>(
@@ -890,8 +892,16 @@ public static class NexusServiceCollectionExtensions
             sp => sp.GetRequiredService<Nexus.Service.Lighting.LianLiLightingDeviceProvider>());
         services.AddSingleton<Nexus.Service.Lighting.Zones.IComposableHubSource>(
             sp => sp.GetRequiredService<Nexus.Service.Lighting.LianLiLightingDeviceProvider>());
-        services.AddSingleton<Nexus.Service.Lighting.LianLiLightingFrameWriter>();
-        services.AddHostedService(sp => sp.GetRequiredService<Nexus.Service.Lighting.LianLiLightingFrameWriter>());
+        for (var slot = 0; slot < Nexus.Service.Peripherals.LianLi.LianLiHubSet.Capacity; slot++)
+        {
+            var hubSlot = slot;
+            services.AddSingleton<Microsoft.Extensions.Hosting.IHostedService>(sp => new Nexus.Service.Lighting.LianLiLightingFrameWriter(
+                sp.GetRequiredService<Nexus.Service.Lighting.Engine.LightingEngine>(),
+                sp.GetRequiredService<Nexus.Service.Peripherals.LianLi.LianLiHubSet>().Hubs[hubSlot],
+                sp.GetRequiredService<IConfigStore>(),
+                sp.GetRequiredService<Nexus.Service.Lighting.Np50IdentifyTracker>(),
+                sp.GetService<Nexus.Service.Lifecycle.FeatureGates>()));
+        }
         services.AddHostedService<Nexus.Service.Peripherals.LianLi.LianLiConnectionWorker>();
 
         // Lian Li L-Wireless (SLV3) dongles: TX/RX transport (WinUSB on Windows,
@@ -927,6 +937,18 @@ public static class NexusServiceCollectionExtensions
                     Nexus.Service.Sensors.SummarySensors.Value(sensors, Nexus.Service.Sensors.SummarySensorKind.CpuUsage),
                     Nexus.Service.Sensors.SummarySensors.Value(sensors, Nexus.Service.Sensors.SummarySensorKind.GpuTemp),
                     Nexus.Service.Sensors.SummarySensors.Value(sensors, Nexus.Service.Sensors.SummarySensorKind.GpuUsage));
+            };
+            var store = sp.GetRequiredService<IConfigStore>();
+            hub.AioScreens = () =>
+            {
+                var screens = new Dictionary<string, Nexus.Service.Peripherals.LianLiWireless.Slv3AioScreen>(StringComparer.Ordinal);
+                foreach (var (mac, s) in store.Load().Devices.LianLiWireless.AioScreens)
+                {
+                    screens[mac] = Nexus.Service.Peripherals.LianLiWireless.Slv3Protocol.AioScreenFrom(
+                        s.Brightness, s.Theme, s.LabelColor, s.ValueColor, s.UnitColor,
+                        s.ShowCpuTemp, s.ShowCpuLoad, s.ShowGpuTemp, s.ShowGpuLoad, s.ShowFanSpeed);
+                }
+                return screens;
             };
             return new Nexus.Service.Cooling.Slv3CoolingProvider(hub);
         });
@@ -1192,7 +1214,12 @@ public static class NexusServiceCollectionExtensions
         services.AddSingleton<IDeviceHandler, Nexus.Service.Devices.Handlers.Aw5Handler>();
         services.AddSingleton<IDeviceHandler, Nexus.Service.Devices.Handlers.Np50Handler>();
         services.AddSingleton<IDeviceHandler, Nexus.Service.Devices.Handlers.SmartHubHandler>();
-        services.AddSingleton<IDeviceHandler, Nexus.Service.Devices.Handlers.LianLiHandler>();
+        for (var slot = 0; slot < Nexus.Service.Peripherals.LianLi.LianLiHubSet.Capacity; slot++)
+        {
+            var hubSlot = slot;
+            services.AddSingleton<IDeviceHandler>(sp => new Nexus.Service.Devices.Handlers.LianLiHandler(
+                sp.GetRequiredService<Nexus.Service.Peripherals.LianLi.LianLiHubSet>(), hubSlot));
+        }
         services.AddSingleton<IDeviceHandler, Nexus.Service.Devices.Handlers.LianLiTlHandler>();
         services.AddSingleton<IDeviceHandler, Nexus.Service.Devices.Handlers.LianLiWirelessHandler>();
         services.AddSingleton<IDeviceHandler, Nexus.Service.Devices.Handlers.Galahad2Handler>();

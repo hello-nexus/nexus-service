@@ -26,14 +26,16 @@ public sealed class PowerEventListener : IHostedService, IDisposable
 {
     private readonly RgbBridge _bridge;
     private readonly SleepBlackoutCoordinator _blackout;
+    private readonly Nexus.Service.Peripherals.LianLi.LianLiHubSet? _lianLi;
 #if WINDOWS
     private bool _subscribed;
 #endif
 
-    public PowerEventListener(RgbBridge bridge, SleepBlackoutCoordinator blackout)
+    public PowerEventListener(RgbBridge bridge, SleepBlackoutCoordinator blackout, Nexus.Service.Peripherals.LianLi.LianLiHubSet? lianLi = null)
     {
         _bridge = bridge;
         _blackout = blackout;
+        _lianLi = lianLi;
     }
 
     public Task StartAsync(CancellationToken cancellationToken)
@@ -79,6 +81,7 @@ public sealed class PowerEventListener : IHostedService, IDisposable
             ServiceLog.Info("[power-events] system resumed - bouncing OpenRGB subprocess");
             _blackout.OnResumed();
             _bridge.OnSystemResume();
+            _lianLi?.OnSystemResumed();
         }
     }
 #endif

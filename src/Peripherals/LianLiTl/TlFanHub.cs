@@ -144,7 +144,7 @@ public sealed class TlFanHub : IDisposable
     /// </summary>
     public bool SetFanLight(
         int port, int fanIndex, byte mode, int brightness, int speed, int direction,
-        ReadOnlySpan<byte> colorBytes, int colorCount, bool disabled)
+        ReadOnlySpan<byte> colorBytes, int colorCount, bool disabled, bool motherboardSync = false)
     {
         lock (_lock)
         {
@@ -154,7 +154,7 @@ public sealed class TlFanHub : IDisposable
             }
             var cmd = TlFanProtocol.EncodeSetFanLight(
                 port, fanIndex, mode, brightness, speed, direction,
-                colorBytes, colorCount, disabled, motherboardSync: false);
+                colorBytes, colorCount, disabled, motherboardSync);
             FlushInputLocked();
             bool ok = _device.Write(cmd);
             DiscardReplyLocked(LightReadTimeoutMs);

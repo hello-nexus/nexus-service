@@ -102,6 +102,7 @@ public sealed class FanControlImportService
                 // Drop the previous import's curves, then release the channels
                 // this one claims from any user curve still driving them: two
                 // curves on one channel would fight every tick.
+                s.Cooling.ClearHeal("import");
                 var importedChannels = new HashSet<string>(assignments.Keys, StringComparer.Ordinal);
                 s.Cooling.Curves.RemoveAll(c => c.Id.StartsWith(ImportedIdPrefix, StringComparison.Ordinal));
                 foreach (var existing in s.Cooling.Curves)

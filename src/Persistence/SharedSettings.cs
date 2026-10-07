@@ -88,6 +88,9 @@ public sealed class PanelSettings
     public PanelLayoutsDefaults? Layouts { get; set; }
     /// <summary>Active desktop dashboard layout (profile-scoped). Null in install-defaults; null in the live profile means "seed from Layouts.Desktop on first load".</summary>
     public PanelLayoutDto? DashboardLayout { get; set; }
+    /// <summary>Named dashboard layouts (profile-scoped). Null = never seeded; see <see cref="Nexus.Service.Panel.DashboardPresets"/>.</summary>
+    public List<DashboardPreset>? DashboardPresets { get; set; }
+    public string? DashboardActivePresetId { get; set; }
     /// <summary>The desktop dashboard's gauge colour stops (profile-scoped); null = the client default. Device panels keep theirs on the device record.</summary>
     public List<PanelGaugeGradientStop>? DashboardGaugeGradient { get; set; }
 }

@@ -18,6 +18,16 @@ public sealed class MetricsSampleBuffer
 
     private readonly object _lock = new();
     private readonly SortedDictionary<long, MetricSample> _samples = new();
+    private string? _latestCpuName;
+
+    /// <summary>The CpuName of the most recent sample that carried one. Kept across <see cref="RemoveThrough"/>, so the name does not vanish right after a flush empties the tail.</summary>
+    public string? LatestCpuName
+    {
+        get
+        {
+            lock (_lock) { return _latestCpuName; }
+        }
+    }
 
     /// <summary>Buffers a sample; a second Append at the same TsSec (a tick
     /// re-run) replaces rather than duplicates.</summary>
@@ -26,6 +36,10 @@ public sealed class MetricsSampleBuffer
         lock (_lock)
         {
             _samples[sample.TsSec] = sample;
+            if (!string.IsNullOrWhiteSpace(sample.CpuName))
+            {
+                _latestCpuName = sample.CpuName;
+            }
         }
     }
 

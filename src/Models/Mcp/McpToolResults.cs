@@ -33,6 +33,7 @@ public sealed class McpCoolingStateResult
     public List<Curve> Curves { get; set; } = new();
     public string ActivePreset { get; set; } = "";
     public double GlobalSpeedModifier { get; set; }
+    public ThermalGuardResponse? ThermalGuard { get; set; }
 }
 
 /// <summary>Payload for the get_lighting_state MCP tool.</summary>

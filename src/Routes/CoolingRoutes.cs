@@ -63,6 +63,59 @@ public static class CoolingRoutes
             return Results.Ok(ApiResponse.Ok());
         });
 
+        // Thermal guard + auto-heal. Lint is advisory and never blocks a save.
+        app.MapGet("/cooling/guard", (ThermalGuardController guard) => guard.GetState()).AllowPanel();
+
+        app.MapPost("/cooling/guard/config", (SetThermalGuardConfigBody body, ThermalGuardController guard, FeatureGates gates) =>
+        {
+            if (!gates.Cooling)
+            {
+                return Results.Conflict(new FeatureDisabledResponse { Feature = FeatureNames.Cooling });
+            }
+            var (result, error) = guard.SetConfig(body);
+            return error is not null ? Results.Ok(ApiResponse.Fail(error)) : Results.Ok(result);
+        });
+
+        app.MapPost("/cooling/guard/trip/acknowledge", (ThermalGuardController guard, FeatureGates gates) =>
+        {
+            if (!gates.Cooling)
+            {
+                return Results.Conflict(new FeatureDisabledResponse { Feature = FeatureNames.Cooling });
+            }
+            var (result, error) = guard.AcknowledgeTrip();
+            return error is not null ? Results.Ok(ApiResponse.Fail(error)) : Results.Ok(result);
+        });
+
+        app.MapPost("/cooling/curves/lint", (SetCurvesBody body, ThermalGuardController guard) =>
+            guard.Lint(body));
+
+        app.MapPost("/cooling/heal", (ThermalGuardController guard, FeatureGates gates) =>
+        {
+            if (!gates.Cooling)
+            {
+                return Results.Conflict(new FeatureDisabledResponse { Feature = FeatureNames.Cooling });
+            }
+            return Results.Ok(guard.HealNow(automatic: false));
+        });
+
+        app.MapPost("/cooling/heal/keep", (ThermalGuardController guard, FeatureGates gates) =>
+        {
+            if (!gates.Cooling)
+            {
+                return Results.Conflict(new FeatureDisabledResponse { Feature = FeatureNames.Cooling });
+            }
+            return Results.Ok(guard.Keep());
+        });
+
+        app.MapPost("/cooling/heal/undo", (ThermalGuardController guard, FeatureGates gates) =>
+        {
+            if (!gates.Cooling)
+            {
+                return Results.Conflict(new FeatureDisabledResponse { Feature = FeatureNames.Cooling });
+            }
+            return Results.Ok(guard.Undo());
+        });
+
         // Fan control
         app.MapGet("/cooling/fans", (IFanControlProvider f, IConfigStore store) =>
         {

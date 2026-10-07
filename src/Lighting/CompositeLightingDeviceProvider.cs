@@ -238,7 +238,8 @@ public sealed class CompositeLightingDeviceProvider : ILightingDeviceProvider
         if (lianLi.Devices.Count > 0)
         {
             rgb.IsInit = rgb.IsInit || lianLi.IsInit;
-            TagControlHandler(lianLi.Devices, "lianli");
+            // Each card belongs to its own hub's control toggle.
+            foreach (var card in lianLi.Devices) card.ControlHandlerId = card.ParentDeviceId;
             rgb.Devices.AddRange(lianLi.Devices);
         }
         var lianLiWireless = _lianLiWireless.GetAll();
@@ -435,7 +436,7 @@ public sealed class CompositeLightingDeviceProvider : ILightingDeviceProvider
         !string.IsNullOrEmpty(id) && id.StartsWith(Peripherals.Ibp.IbpPeripheralProtocol.DeviceIdPrefix, StringComparison.Ordinal);
 
     private static bool IsLianLiId(string id) =>
-        !string.IsNullOrEmpty(id) && id.StartsWith("lianli:", StringComparison.Ordinal);
+        !string.IsNullOrEmpty(id) && id.Contains(':', StringComparison.Ordinal) && Nexus.Service.Peripherals.LianLi.LianLiHubSet.OwnsId(id);
 
     private static bool IsLianLiWirelessId(string id) =>
         !string.IsNullOrEmpty(id) && id.StartsWith("lianli-wireless:", StringComparison.Ordinal);

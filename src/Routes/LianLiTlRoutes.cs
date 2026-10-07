@@ -71,6 +71,7 @@ public static partial class DevicesRoutes
                 Colors = ls.Colors.ToArray(),
                 Modes = modes,
                 MaxColors = Nexus.Service.Lighting.TlLightingModes.MaxColors,
+                ArgbSync = ls.ArgbSync,
             }, AppJsonContext.Default.LianLiTlLightingResponse);
         });
 
@@ -121,6 +122,7 @@ public static partial class DevicesRoutes
                 if (body.Brightness is { } brightness) { ls.Brightness = brightness; }
                 if (body.Scope is not null) { ls.Scope = body.Scope; }
                 if (body.Colors is not null) { ls.Colors = new List<string>(body.Colors); }
+                if (body.ArgbSync is { } argbSync) { ls.ArgbSync = argbSync; }
             });
             return Results.Json(ApiResponse.Ok(), AppJsonContext.Default.ApiResponse);
         });
@@ -137,6 +139,7 @@ public sealed class LianLiTlLightingResponse
     public string[] Colors { get; set; } = Array.Empty<string>();
     public LianLiTlModeDto[] Modes { get; set; } = Array.Empty<LianLiTlModeDto>();
     public int MaxColors { get; set; }
+    public bool ArgbSync { get; set; }
 }
 
 public sealed class LianLiTlModeDto
@@ -153,6 +156,7 @@ public sealed class LianLiTlLightingRequest
     public int? Brightness { get; set; }
     public string? Scope { get; set; }
     public string[]? Colors { get; set; }
+    public bool? ArgbSync { get; set; }
 }
 
 public sealed class LianLiTlStateResponse

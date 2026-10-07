@@ -78,7 +78,7 @@ public static class PanelPresets
 
     // Widget settings edit the layout in place, so a shared reference would
     // leak the live edit into the stored preset.
-    private static PanelLayoutDto? CloneLayout(PanelLayoutDto? layout) => layout is null
+    public static PanelLayoutDto? CloneLayout(PanelLayoutDto? layout) => layout is null
         ? null
         : JsonSerializer.Deserialize(
             JsonSerializer.SerializeToUtf8Bytes(layout, PersistenceJsonContext.Default.PanelLayoutDto),

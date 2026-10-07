@@ -20,6 +20,16 @@ public interface ISensorProvider
     IReadOnlyList<HardwareSensor> GetCpuSensors();
     (bool Healthy, float DistanceToTJMax) GetCpuHealth();
 
+    /// <summary>The temperature limit the CPU itself reports (Intel Tjmax, hwmon crit/max), or null when the platform exposes none.</summary>
+    float? GetCpuTjMaxC() => null;
+
+    /// <summary>The CPU model without forcing a hardware refresh where the provider can avoid one (the Windows provider reads what is already loaded); other platforms return the regular, cheap read.</summary>
+    string GetCpuModelCached() => GetCpuModel();
+
+    /// <summary>Total CPU load from already sampled sensors where the provider has such a read (the Windows provider does, without a refresh); other platforms fall back to the regular CPU sensor read. Null when unknown.</summary>
+    float? GetCpuTotalLoadCached() => System.Linq.Enumerable.FirstOrDefault(
+        GetCpuSensors(), s => s.Type == "Load" && s.Name.Equals("CPU Total", System.StringComparison.OrdinalIgnoreCase))?.Value;
+
     IReadOnlyList<string> GetGpuModels();
     IReadOnlyList<HardwareSensor> GetGpuSensors();
 

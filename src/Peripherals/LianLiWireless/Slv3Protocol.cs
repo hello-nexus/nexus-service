@@ -56,6 +56,7 @@ public static class Slv3Protocol
     public const byte RfRgbSync = 0x20;            // streamed RGB frame animation
     public const byte RfMbSyncSwitch = 0x24;
     public const byte RfLightSyncSwitch = 0x26;
+    public const byte RfArgbSyncSwitch = 0x27;     // fan chain plays its motherboard ARGB input; [20] = 1 on, 0 off (cmdSeq-acked)
 
     /// <summary>Constant frame-type byte at RF payload[0] for every host->fan frame.</summary>
     public const byte RfFrameType = 0x12;
@@ -105,9 +106,9 @@ public static class Slv3Protocol
     public const byte DevTypeSlInfinity = 36;   // 36-39 SL-Infinity
 
     /// <summary>
-    /// Fan family from a fans_type byte (lian-li-linux fan_type.rs ranges):
-    /// SLV3-LED 20-23, SLV3-LCD 24-26, TLV2-LCD 27 and 32-35, TLV2-LED 28-31,
-    /// SL-INF wireless 36-39, CL/RL120 40-42.
+    /// Fan family from a fans_type byte: SLV3-LED 20-23, SLV3-LCD 24-26, TLV2-LCD
+    /// 27 and 32-35, TLV2-LED 28-31, SL-INF 36-39, RL120 40, CL 41-42, SL-INF
+    /// Flex 43-50, TL Flex 51-58, SL V4 59-62, P28 V2 63, CL V2 126-127.
     /// </summary>
     public static Slv3FanFamily ClassifyFanFamily(byte fansTypeByte) => fansTypeByte switch
     {
@@ -116,7 +117,13 @@ public static class Slv3Protocol
         27 or (>= 32 and <= 35) => Slv3FanFamily.Tlv2Lcd,
         >= 28 and <= 31 => Slv3FanFamily.Tlv2Led,
         >= 36 and <= 39 => Slv3FanFamily.SlInf,
-        >= 40 and <= 42 => Slv3FanFamily.Cl,
+        40 => Slv3FanFamily.Rl120,
+        41 or 42 => Slv3FanFamily.Cl,
+        >= 43 and <= 50 => Slv3FanFamily.SlInfFlex,
+        >= 51 and <= 58 => Slv3FanFamily.TlFlex,
+        >= 59 and <= 62 => Slv3FanFamily.SlV4,
+        63 => Slv3FanFamily.P28V2,
+        126 or 127 => Slv3FanFamily.ClV2,
         _ => Slv3FanFamily.Unknown,
     };
 
@@ -144,7 +151,7 @@ public static class Slv3Protocol
 
     // lian-li-linux AioConfig defaults for the LCD fields of the param block.
     private const byte AioLcdLoopInterval = 3;
-    private const byte AioLcdBrightness = 80;
+    public const byte AioLcdBrightness = 80;
 
     /// <summary>Pump RPM span per head (lian-li-linux pump_rpm_range): 10 = LCD-C, 11 = LCD-S.</summary>
     public static (int Min, int Max) HydroShiftPumpRpmRange(byte devType) => devType == 11 ? (1600, 3200) : (1600, 2500);
@@ -186,29 +193,68 @@ public static class Slv3Protocol
         return (ushort)Math.Clamp(t, 0f, ushort.MaxValue);
     }
 
+    /// <summary>Screen themes a HydroShift II accepts, numbered from 0.</summary>
+    public const int AioThemeCount = 13;
+
     /// <summary>
     /// The 32-byte RF_AioParams block (lian-li-linux build_aio_param): [0..3]
-    /// CPU temp, CPU load, GPU temp, GPU load (0..99) for the LCD, [8..11]
-    /// which of those are valid, [6] LCD loop interval, [7] and [26] = 1,
-    /// [13..24] label/value/unit colours as ARGB, [25] LCD brightness, [27]
-    /// theme, [28..29] pump timer big-endian, [30] rotation.
+    /// CPU temp, CPU load, GPU temp, GPU load (0..99) for the LCD, [4..5] fan
+    /// speed big-endian, [8..12] which of those five are shown, [6] LCD loop
+    /// interval, [7] and [26] = 1, [13..24] label/value/unit colours as ARGB,
+    /// [25] LCD brightness, [27] theme, [28..29] pump timer big-endian, [30]
+    /// rotation.
     /// </summary>
-    public static byte[] BuildAioParamBlock(Slv3AioSensors sensors, ushort pumpTimer)
+    public static byte[] BuildAioParamBlock(Slv3AioSensors sensors, ushort pumpTimer) =>
+        BuildAioParamBlock(sensors, pumpTimer, Slv3AioScreen.Default, fanRpm: 0);
+
+    /// <param name="fanRpm">The radiator fans' speed, shown when <paramref name="screen"/> asks for it.</param>
+    public static byte[] BuildAioParamBlock(Slv3AioSensors sensors, ushort pumpTimer, Slv3AioScreen screen, int fanRpm)
     {
         var p = new byte[AioParamLength];
-        WriteAioSensor(p, 0, sensors.CpuTemp);
-        WriteAioSensor(p, 1, sensors.CpuLoad);
-        WriteAioSensor(p, 2, sensors.GpuTemp);
-        WriteAioSensor(p, 3, sensors.GpuLoad);
+        WriteAioSensor(p, 0, screen.CpuTemp ? sensors.CpuTemp : null);
+        WriteAioSensor(p, 1, screen.CpuLoad ? sensors.CpuLoad : null);
+        WriteAioSensor(p, 2, screen.GpuTemp ? sensors.GpuTemp : null);
+        WriteAioSensor(p, 3, screen.GpuLoad ? sensors.GpuLoad : null);
+        if (screen.FanSpeed && fanRpm > 0)
+        {
+            var rpm = Math.Min(fanRpm, ushort.MaxValue);
+            p[4] = (byte)(rpm >> 8);
+            p[5] = (byte)rpm;
+            p[12] = 1;
+        }
         p[6] = AioLcdLoopInterval;
         p[7] = 1;
-        p.AsSpan(13, 12).Fill(0xFF);
-        p[25] = AioLcdBrightness;
+        WriteArgb(p, 13, screen.LabelArgb);
+        WriteArgb(p, 17, screen.ValueArgb);
+        WriteArgb(p, 21, screen.UnitArgb);
+        p[25] = screen.Brightness;
         p[26] = 1;
+        p[27] = screen.Theme;
         p[28] = (byte)(pumpTimer >> 8);
         p[29] = (byte)pumpTimer;
         return p;
     }
+
+    private static void WriteArgb(byte[] p, int offset, uint argb)
+    {
+        p[offset] = (byte)(argb >> 24);
+        p[offset + 1] = (byte)(argb >> 16);
+        p[offset + 2] = (byte)(argb >> 8);
+        p[offset + 3] = (byte)argb;
+    }
+
+    /// <summary>A screen from user settings: brightness and theme clamped, "#RRGGBB" colours made opaque (white when unreadable).</summary>
+    public static Slv3AioScreen AioScreenFrom(
+        int brightness, int theme, string labelColor, string valueColor, string unitColor,
+        bool cpuTemp, bool cpuLoad, bool gpuTemp, bool gpuLoad, bool fanSpeed) =>
+        new((byte)Math.Clamp(brightness, 0, 100), (byte)Math.Clamp(theme, 0, AioThemeCount - 1),
+            OpaqueArgb(labelColor), OpaqueArgb(valueColor), OpaqueArgb(unitColor),
+            cpuTemp, cpuLoad, gpuTemp, gpuLoad, fanSpeed);
+
+    private static uint OpaqueArgb(string hex) =>
+        hex.Length == 7 && hex[0] == '#' && uint.TryParse(hex.AsSpan(1), System.Globalization.NumberStyles.HexNumber, null, out var rgb)
+            ? 0xFF000000u | rgb
+            : 0xFFFFFFFFu;
 
     private static void WriteAioSensor(byte[] p, int index, float? reading)
     {
@@ -245,22 +291,27 @@ public static class Slv3Protocol
         _ => (0, 0),
     };
 
-    /// <summary>Wire LED count per physical fan (lian-li-linux leds_per_fan). Unknown keeps the bench-verified SLV3 value.</summary>
+    /// <summary>Wire LED count per physical fan. Unknown keeps the bench-verified SLV3 value.</summary>
     public static int LedsPerFanFor(Slv3FanFamily family) => family switch
     {
-        Slv3FanFamily.Tlv2Lcd or Slv3FanFamily.Tlv2Led => 26,
-        Slv3FanFamily.SlInf => 44,
-        Slv3FanFamily.Cl => 24,
+        Slv3FanFamily.Tlv2Lcd or Slv3FanFamily.Tlv2Led or Slv3FanFamily.TlFlex or Slv3FanFamily.Rl120 => 26,
+        Slv3FanFamily.SlInf or Slv3FanFamily.SlInfFlex => 44,
+        Slv3FanFamily.Cl or Slv3FanFamily.ClV2 => 24,
+        Slv3FanFamily.SlV4 => 52,
+        Slv3FanFamily.P28V2 => 9,
         _ => 40,
     };
 
-    /// <summary>Minimum non-zero duty percent per family; lower requests stall the fan (lian-li-linux min_duty_percent). Unknown keeps the SLV3 floor.</summary>
+    /// <summary>Minimum non-zero duty percent per family; lower requests stall the fan. Families without a measured floor keep the SLV3 one.</summary>
     public static int MinDutyPercentFor(Slv3FanFamily family) => family switch
     {
-        Slv3FanFamily.Tlv2Lcd or Slv3FanFamily.Cl => 10,
-        Slv3FanFamily.Tlv2Led or Slv3FanFamily.SlInf => 11,
+        Slv3FanFamily.Tlv2Lcd or Slv3FanFamily.Cl or Slv3FanFamily.ClV2 => 10,
+        Slv3FanFamily.Tlv2Led or Slv3FanFamily.SlInf or Slv3FanFamily.SlInfFlex or Slv3FanFamily.TlFlex => 11,
         _ => MinDutyPercent,
     };
+
+    /// <summary>A family whose fan pairs a centre with an outer ring of a different length, which the uniform two-ring chain layout does not describe.</summary>
+    public static bool IsClFamily(Slv3FanFamily family) => family is Slv3FanFamily.Cl or Slv3FanFamily.ClV2;
 
     /// <summary>
     /// Fragment a 240-byte RF payload into <see cref="UsbPacketSize"/>-byte USB
@@ -564,10 +615,12 @@ public static class Slv3Protocol
     /// (L-Connect SyncControlInfo).
     /// </summary>
     public static byte[] BuildSequencedCommand(
-        byte rfCmd, ReadOnlySpan<byte> fanMac, ReadOnlySpan<byte> masterMac, byte targetRx, byte targetChannel, byte cmdSeq, byte slot = 0)
+        byte rfCmd, ReadOnlySpan<byte> fanMac, ReadOnlySpan<byte> masterMac, byte targetRx, byte targetChannel, byte cmdSeq, byte slot = 0, byte arg = 0)
     {
         var payload = new byte[RfPayloadSize];
         WriteRfHeader(payload, rfCmd, fanMac, masterMac, targetRx, targetChannel, slot, cmdSeq);
+        // Switch commands carry their on/off byte here; the rest leave it zero.
+        payload[20] = arg;
         return payload;
     }
 
@@ -651,7 +704,16 @@ public static class Slv3Protocol
             for (var k = 0; k < PortsPerRecord; k++) pwm[k] = 100;
         }
 
-        record = new Slv3DeviceRecord(mac, masterMac, channel, rxType, devType, fanNum, rightAttach, effectIndex, fansType, rpm, pwm, rec[40]);
+        // fans_speed[0] hi nibble carries the cable flags; the hi nibbles of
+        // fans_speed[4] and [6] together are the chain's RF firmware version.
+        var flags = (byte)(rec[28] >> 4);
+        var rfVersion = (rec[32] & 0xF0) | (rec[34] >> 4);
+
+        record = new Slv3DeviceRecord(mac, masterMac, channel, rxType, devType, fanNum, rightAttach, effectIndex, fansType, rpm, pwm, rec[40])
+        {
+            Flags = flags,
+            RfVersion = rfVersion,
+        };
         return true;
     }
 
@@ -702,6 +764,18 @@ public readonly record struct Slv3DeviceRecord(
     /// <summary>A record with dev_type 0xFF is another master on the link, not a fan.</summary>
     public bool IsMaster => DevType == 0xFF;
 
+    /// <summary>Cable flag nibble: bit 3 ARGB sync cable, bit 2 playing the motherboard ARGB input, bit 1 PWM cable, bit 0 tach output.</summary>
+    public byte Flags { get; init; }
+
+    /// <summary>Chain RF firmware version; 0 when not reported.</summary>
+    public int RfVersion { get; init; }
+
+    public bool ArgbCableConnected => (Flags & 0x8) != 0;
+
+    public bool PlayingMotherboardArgb => (Flags & 0x4) != 0;
+
+    public bool PwmCableConnected => (Flags & 0x2) != 0;
+
     /// <summary>A Strimer Wireless cable: no fan ports, RGB only.</summary>
     public bool IsStrimer => Slv3Protocol.IsStrimerDevType(DevType);
 
@@ -740,6 +814,16 @@ public readonly record struct Slv3DeviceRecord(
 /// <summary>Host readings a HydroShift II shows on its LCD; null when the sensor is unavailable.</summary>
 public readonly record struct Slv3AioSensors(float? CpuTemp, float? CpuLoad, float? GpuTemp, float? GpuLoad);
 
+/// <summary>How a HydroShift II screen draws: backlight percent, theme, ARGB text colours, and which readings it shows.</summary>
+public readonly record struct Slv3AioScreen(
+    byte Brightness, byte Theme, uint LabelArgb, uint ValueArgb, uint UnitArgb,
+    bool CpuTemp, bool CpuLoad, bool GpuTemp, bool GpuLoad, bool FanSpeed)
+{
+    /// <summary>The screen a driven AIO gets before the user changes anything.</summary>
+    public static Slv3AioScreen Default =>
+        Slv3Protocol.AioScreenFrom(Slv3Protocol.AioLcdBrightness, 0, "#FFFFFF", "#FFFFFF", "#FFFFFF", true, true, true, true, false);
+}
+
 /// <summary>Wireless fan family, classified from a record's fans_type bytes.</summary>
 public enum Slv3FanFamily
 {
@@ -750,4 +834,10 @@ public enum Slv3FanFamily
     Tlv2Lcd,
     SlInf,
     Cl,
+    Rl120,
+    SlInfFlex,
+    TlFlex,
+    SlV4,
+    P28V2,
+    ClV2,
 }

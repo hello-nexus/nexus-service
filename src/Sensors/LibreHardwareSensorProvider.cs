@@ -57,6 +57,40 @@ public sealed class LibreHardwareSensorProvider : ISensorProvider
         return result;
     }
 
+    // The cached readers below never call Update: values are whatever the sampler last read.
+    public string GetCpuModelCached() =>
+        _lhm.OpenTask.IsCompletedSuccessfully ? FindHardware(HardwareType.Cpu).FirstOrDefault()?.Name ?? "" : "";
+
+    public float? GetCpuTotalLoadCached()
+    {
+        if (!_lhm.OpenTask.IsCompletedSuccessfully)
+        {
+            return null;
+        }
+        return FindHardware(HardwareType.Cpu)
+            .SelectMany(h => h.Sensors)
+            .FirstOrDefault(s => s.SensorType == SensorType.Load && s.Name.Equals("CPU Total", StringComparison.OrdinalIgnoreCase))
+            ?.Value;
+    }
+
+    // LibreHardwareMonitor exposes no TjMax sensor, only each core's distance to it.
+    public float? GetCpuTjMaxC()
+    {
+        if (!_lhm.OpenTask.IsCompletedSuccessfully)
+        {
+            return null;
+        }
+        var cpu = FindHardware(HardwareType.Cpu).FirstOrDefault();
+        if (cpu is null)
+        {
+            return null;
+        }
+        var temps = cpu.Sensors
+            .Where(s => s.SensorType == SensorType.Temperature && s.Value.HasValue)
+            .Select(s => (s.Name, (double)s.Value!.Value));
+        return (float?)Nexus.Service.Cooling.ThermalLimits.TjMaxFromCoreDistances(temps);
+    }
+
     public (bool Healthy, float DistanceToTJMax) GetCpuHealth()
     {
         _lhm.Update();

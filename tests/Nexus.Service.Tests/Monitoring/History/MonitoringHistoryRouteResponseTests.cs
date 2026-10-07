@@ -50,6 +50,46 @@ public class MonitoringHistoryRouteResponseTests
     }
 
     [Fact]
+    public void BuildHistoryResponse_CpuTempSeries_CarriesTheCpuModel_WithIdAndKindUnchanged()
+    {
+        var db = new[] { Scalars(0) };
+
+        var named = MonitoringHistoryRoutes.BuildHistoryResponse(
+            db, Array.Empty<MetricSample>(), 0, 10, 600, null, NoLuids, "AMD Ryzen 7 9800X3D");
+        var fallback = MonitoringHistoryRoutes.BuildHistoryResponse(
+            db, Array.Empty<MetricSample>(), 0, 10, 600, null, NoLuids);
+
+        var series = named.Series.Single(x => x.Id == "cpu-temp");
+        Assert.Equal("AMD Ryzen 7 9800X3D", series.Name);
+        Assert.Equal("cpu-temp", series.Kind);
+        Assert.Equal("CPU Temperature", fallback.Series.Single(x => x.Id == "cpu-temp").Name);
+    }
+
+    [Fact]
+    public void ResolveCpuTempName_UsesTheTrimmedModel_AndNeverYieldsTheSamplersPlaceholder()
+    {
+        Assert.Equal("AMD Ryzen 7 9800X3D", MonitoringHistoryRoutes.ResolveCpuTempName(" AMD Ryzen 7 9800X3D "));
+        Assert.Equal("CPU Temperature", MonitoringHistoryRoutes.ResolveCpuTempName(""));
+        Assert.Equal("CPU Temperature", MonitoringHistoryRoutes.ResolveCpuTempName("   "));
+        Assert.Equal("CPU Temperature", MonitoringHistoryRoutes.ResolveCpuTempName(null));
+        // The sampler's fallback for an unknown model is "CPU": a series name only for the model.
+        Assert.Equal("CPU Temperature", MonitoringHistoryRoutes.ResolveCpuTempName("CPU"));
+        Assert.Equal("CPU Temperature", MonitoringHistoryRoutes.ResolveCpuTempName("cpu"));
+    }
+
+    [Fact]
+    public void TheBuffer_KeepsTheLatestCpuName_AcrossAFlush()
+    {
+        var buffer = new MetricsSampleBuffer();
+        buffer.Append(Scalars(1) with { CpuName = "AMD Ryzen 7 9800X3D" });
+        buffer.Append(Scalars(2) with { CpuName = null });
+        buffer.RemoveThrough(10);
+
+        Assert.Empty(buffer.PendingSnapshot());
+        Assert.Equal("AMD Ryzen 7 9800X3D", buffer.LatestCpuName);
+    }
+
+    [Fact]
     public void BuildHistoryResponse_FpsSeries_HasCorrectKindAndName()
     {
         var db = new[] { new MetricSample(0, null, null, null, null, null,
