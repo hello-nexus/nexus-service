@@ -453,24 +453,30 @@ internal static class TrayBootstrap
 
         // Lock-screen wake-on-input. The helper owns the poll because
         // GetLastInputInfo is session-scoped and this service runs in Session 0;
-        // the two consumers (lighting blackout, Stream Deck lock sleep) each
-        // say when it is worth polling, and it runs while either wants it.
+        // each consumer (lighting blackout, Stream Deck lock sleep, Sentry)
+        // say when it is worth polling, and it runs while any of them wants it.
         var lockBlackout = app.Services.GetService<Nexus.Service.Lighting.SleepBlackoutCoordinator>();
         var deckWorker = app.Services.GetService<Nexus.Service.Peripherals.StreamDeck.StreamDeckConnectionWorker>();
-        if (lockBlackout is not null || deckWorker is not null)
+        var sentry = app.Services.GetService<Nexus.Service.Sentry.SentryCoordinator>();
+        if (lockBlackout is not null || deckWorker is not null || sentry is not null)
         {
-            var lightingArmed = false;
-            var deckArmed = false;
-            lockBlackout?.LockInputWatch = enabled =>
+            var demand = new Nexus.Service.Lighting.LockInputWatchDemand(armed =>
             {
-                lightingArmed = enabled;
-                _ = Nexus.Service.Helper.Domains.LockLightingCommands.SetLockInputWatchAsync(helperRegistry, lightingArmed || deckArmed);
-            };
-            deckWorker?.LockInputWatch = enabled =>
+                _ = Nexus.Service.Helper.Domains.LockLightingCommands.SetLockInputWatchAsync(helperRegistry, armed);
+            });
+            lockBlackout?.LockInputWatch = demand.Consumer(Nexus.Service.Lighting.LockInputWatchConsumer.Blackout);
+            deckWorker?.LockInputWatch = demand.Consumer(Nexus.Service.Lighting.LockInputWatchConsumer.StreamDeck);
+            sentry?.LockInputWatch = demand.Consumer(Nexus.Service.Lighting.LockInputWatchConsumer.Sentry);
+            // A reboot's first sign-in is a logon, never an unlock.
+            if (sentry is not null)
             {
-                deckArmed = enabled;
-                _ = Nexus.Service.Helper.Domains.LockLightingCommands.SetLockInputWatchAsync(helperRegistry, lightingArmed || deckArmed);
-            };
+                // Off the SCM control-handler thread, which waits on this callback.
+                Nexus.Service.Lifecycle.WindowsServiceHost.SessionLogon += () => _ = Task.Run(() =>
+                {
+                    try { sentry.OnSessionLogon(); }
+                    catch (Exception ex) { Console.Error.WriteLine($"[sentry] logon disarm failed: {ex.Message}"); }
+                });
+            }
             // The push is dropped when no helper is connected, so a lock that
             // spans a helper reconnect would come back with the poll in the
             // wrong state - silently off for that lock, or armed for the rest
@@ -478,13 +484,14 @@ internal static class TrayBootstrap
             // orientation state above.
             helperRegistry.Connected += conn =>
             {
-                _ = Nexus.Service.Helper.Domains.LockLightingCommands.SetLockInputWatchAsync(helperRegistry, lightingArmed || deckArmed);
+                _ = Nexus.Service.Helper.Domains.LockLightingCommands.SetLockInputWatchAsync(helperRegistry, demand.Armed);
             };
             helperRegistry.InboundEnvelope += (_, env) =>
             {
                 if (env.Type != Nexus.Service.Helper.Domains.LockLightingCommands.InputSeenType) return;
                 lockBlackout?.OnLockScreenInput();
                 deckWorker?.OnLockScreenInput();
+                sentry?.OnLockScreenInput();
             };
         }
 

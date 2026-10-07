@@ -59,7 +59,14 @@ public sealed class WindowsSystemPowerProvider : ISystemPowerProvider
 /// <summary>macOS: pmset + System Events osascript (no sudo).</summary>
 public sealed class MacSystemPowerProvider : ISystemPowerProvider
 {
-    public bool Lock() => OperatingSystem.IsMacOS() && ShellExecutor.RunExit("/usr/bin/pmset", 2000, "displaysleepnow") == 0;
+    public bool Lock()
+    {
+#if MACOS
+        return OperatingSystem.IsMacOS() && Nexus.Service.Platform.Mac.MacScreenLock.Lock();
+#else
+        return false;
+#endif
+    }
     public bool Sleep() => OperatingSystem.IsMacOS() && ShellExecutor.RunExit("/usr/bin/pmset", 2000, "sleepnow") == 0;
     public bool Shutdown() => Osa("shut down");
     public bool Restart() => Osa("restart");

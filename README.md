@@ -87,6 +87,7 @@ src/
   Peripherals/         # protocol drivers per vendor (Hyte, LianLi*, Corsair*, Nzxt, Ibp, Tryx, StreamDeck, Keeb, Y70, ...)
   Conflicts/           # competing vendor-software detection, device ownership, opt-in shutdown
   Panel/               # panel pairing, kiosk launch, backgrounds; Streams/ = streamed-panel sessions + transports
+  Sentry/              # lock alert: armed on a locked PC, the first input pushes to paired phones through the cloud API (reads no input itself)
   Deck/  Rendering/    # deck action model + headless executor; server-rendered tiles and key images
   Widgets/  Store/     # nexus.app/1 app host and installer; cloud app-store proxy, entitlements
   Gallery/  Media/     # shared image/video sources; media import + library

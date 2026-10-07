@@ -98,7 +98,7 @@ public class SupportBundleBuilderTests : IDisposable
     {
         var settings = new NexusSettings();
         settings.Auth!.Token = "session-bearer";
-        settings.Auth.PanelPhoneSessions.Add(new PanelPhoneSessionToken { Hash = "s3cr3t-phone", RelayKey = "s3cr3t-relay" });
+        settings.Auth.PanelPhoneSessions.Add(new PanelPhoneSessionToken { Hash = "s3cr3t-phone", RelayKey = "s3cr3t-relay", PushTarget = new PanelPhonePushTarget { Token = "s3cr3t-push", Platform = "ios" } });
         settings.Auth.CloudAccounts.Add(new CloudAccountRecord { AccountId = "acct", RefreshToken = "s3cr3t-refresh" });
         settings.Auth.RelayEnabled = true;
         settings.AiIntegration.Token = "s3cr3t-ai";
@@ -125,6 +125,8 @@ public class SupportBundleBuilderTests : IDisposable
         Assert.True(shipped.Auth!.RelayEnabled);
         Assert.Equal("acct", shipped.Auth.CloudAccounts[0].AccountId);
         Assert.Single(shipped.Auth.PanelPhoneSessions);
+        Assert.Null(shipped.Auth.PanelPhoneSessions[0].PushTarget);
+        Assert.NotNull(settings.Auth.PanelPhoneSessions[0].PushTarget);
         Assert.Equal("session-bearer", settings.Auth.Token);
     }
 }
