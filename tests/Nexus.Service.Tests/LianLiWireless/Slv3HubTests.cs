@@ -786,6 +786,63 @@ public class Slv3HubTests
     }
 
     [Fact]
+    public void A_stranded_strimer_is_bound_back_from_the_misread_pipe_and_saved_once_it_reappears()
+    {
+        var clock = new ManualClock();
+        var (hub, net, tx, _) = CreateConnectedHub(clock.NowMs);
+        net.Fans.Add(new SimulatedFan { Mac = FanMac, MasterMac = net.MasterMac, RxType = 1 });
+        Assert.True(hub.DriveTick());
+        clock.AdvanceMs(10_000);
+        tx.SentFrames.Clear();
+        Assert.True(hub.DriveTick());
+        Assert.DoesNotContain(tx.SentFrames, IsRescueBind);
+
+        clock.AdvanceMs(6_000);
+        Assert.True(hub.DriveTick());
+        var first = tx.SentFrames.Find(f => IsRescueBind(f) && f[2] == 0x3D && f[3] == 0x19);
+        Assert.NotNull(first);
+        // Payload [14] target rx = the highest free slot, [15] target channel = ours.
+        Assert.Equal(Slv3Protocol.MaxSlot, first![18]);
+        Assert.Equal(Slv3Protocol.DefaultChannel, first[19]);
+
+        net.Fans.Add(new SimulatedFan { Mac = StrandedMac, MasterMac = net.MasterMac, RxType = Slv3Protocol.MaxSlot, DevType = 4, FanCount = 0 });
+        clock.AdvanceMs(1_000);
+        Assert.True(hub.DriveTick());
+        clock.AdvanceMs(1_000);
+        tx.SentFrames.Clear();
+        Assert.True(hub.DriveTick());
+        Assert.DoesNotContain(tx.SentFrames, IsRescueBind);
+        Assert.Contains(tx.SentFrames, f => f.Length >= 6 && f[0] == Slv3Protocol.UsbSendRf && f[1] == 0 && f[5] == Slv3Protocol.RfSaveCfg);
+    }
+
+    [Fact]
+    public void The_strimer_rescue_stops_after_its_window()
+    {
+        var clock = new ManualClock();
+        var (hub, net, tx, _) = CreateConnectedHub(clock.NowMs);
+        net.Fans.Add(new SimulatedFan { Mac = FanMac, MasterMac = net.MasterMac, RxType = 1 });
+        Assert.True(hub.DriveTick());
+        clock.AdvanceMs(16_000);
+        Assert.True(hub.DriveTick());
+        Assert.Contains(tx.SentFrames, IsRescueBind);
+
+        for (var i = 0; i < 300; i++)
+        {
+            clock.AdvanceMs(1_000);
+            Assert.True(hub.DriveTick());
+        }
+        clock.AdvanceMs(1_000);
+        tx.SentFrames.Clear();
+        Assert.True(hub.DriveTick());
+        Assert.DoesNotContain(tx.SentFrames, IsRescueBind);
+    }
+
+    private static readonly byte[] StrandedMac = Convert.FromHexString("B041BC7A4EE0");
+
+    private static bool IsRescueBind(byte[] f) => f.Length >= 24 && f[0] == Slv3Protocol.UsbSendRf && f[1] == 0
+        && f[5] == Slv3Protocol.RfBind && f.AsSpan(6, 6).SequenceEqual(StrandedMac);
+
+    [Fact]
     public void SendRgbFrame_fails_for_unbound_fan()
     {
         var (hub, net, _, _) = CreateConnectedHub();

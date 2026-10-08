@@ -305,6 +305,7 @@ public sealed class Slv3Hub : IDisposable
         _lastFanRecords = new List<Slv3DeviceRecord>();
         _anyAioBound = false;
         _knownChains.Clear();
+        _rescueStartMs = -1;
         _unconfirmedChains.Clear();
         _pending.Clear();
         _pendingCommands.Clear();
@@ -470,6 +471,7 @@ public sealed class Slv3Hub : IDisposable
             RefreshMasterMacLocked();
             SendClockHeartbeatLocked();
             RunSaveCfgScheduleLocked();
+            RescueStrandedChainLocked();
             return true;
         }
     }
@@ -1184,6 +1186,165 @@ public sealed class Slv3Hub : IDisposable
             }
         }
         return true;
+    }
+
+    // One-off for one customer build: their CPU Strimer left the dongle at
+    // 2026-10-08 ~02:00:15Z, when a live upload's timestamp effect index began
+    // 0x19 0x3D; a chain misreading that upload as RF_Bind takes [14]/[15] as
+    // its rx/channel. Binds it back from the misread pipes near that moment.
+    private static readonly byte[] StrandedMac = Convert.FromHexString("B041BC7A4EE0");
+    private const byte StrandedRx = 0x19;
+    private const byte StrandedChannel = 0x3D;
+    private const int RescueChannelSpread = 3;
+    private const int RescuePipesPerTick = 12;
+    private const long RescueSettleMs = 15_000;
+    // Counted across reconnects so a flapping link cannot keep it sending.
+    private const int RescueTickBudget = 300;
+    private List<(byte Channel, byte Rx)>? _rescuePipes;
+    private int _rescueCursor;
+    private long _rescueStartMs = -1;
+    private bool _rescueSent;
+    private int _rescueTicks;
+    private bool _rescueStopped;
+    private bool _rescueDone;
+
+    private void RescueStrandedChainLocked()
+    {
+        if (_rescueDone || _tx is null)
+        {
+            return;
+        }
+        var now = _nowMs();
+        if (_knownChains.TryGetValue(Convert.ToHexString(StrandedMac), out var back))
+        {
+            // Only a binding to us is persisted; one that came back anywhere else is left alone.
+            if (_rescueSent && IsBoundToUsLocked(back.Record))
+            {
+                ServiceLog.Info($"[lianli-wireless] rescue: B041BC7A4EE0 is back on the dongle at rx {back.Record.RxType}");
+                _saveCfgBurstRemaining = SaveCfgBurstSends;
+                NoteConfigChangedLocked();
+            }
+            _rescueDone = true;
+            return;
+        }
+        if (_rescueStopped)
+        {
+            return;
+        }
+        // The settle restarts with every connection (DisconnectLocked clears the
+        // start) and waits for chains to report, so occupied slots are known.
+        if (_knownChains.Count == 0)
+        {
+            _rescueStartMs = -1;
+            return;
+        }
+        if (_rescueStartMs < 0)
+        {
+            _rescueStartMs = now;
+        }
+        if (now - _rescueStartMs < RescueSettleMs)
+        {
+            return;
+        }
+        if (_rescueTicks >= RescueTickBudget)
+        {
+            ServiceLog.Info("[lianli-wireless] rescue: B041BC7A4EE0 did not answer, giving up");
+            _rescueStopped = true;
+            return;
+        }
+        var slot = HighestFreeSlotLocked();
+        if (slot < 0)
+        {
+            return;
+        }
+        _rescuePipes ??= BuildRescuePipes(_channel);
+        var payload = Slv3Protocol.BuildBind(StrandedMac, _masterMac, targetRx: (byte)slot, targetChannel: _channel,
+            slot: BindOrdinalLocked(StrandedMac), Slv3Protocol.BuildPwmTuple(DefaultDutyTargets, 0));
+        _rescueTicks++;
+        if (!_rescueSent)
+        {
+            ServiceLog.Info($"[lianli-wireless] rescue: binding B041BC7A4EE0 to rx {slot} ch {_channel} over {_rescuePipes.Count} pipes");
+            _rescueSent = true;
+        }
+        // The two likeliest pipes go out every tick, the rest rotate; a failed
+        // write ends the tick so a stuck TX holds the lock for one timeout only.
+        if (!SendRfPayloadLocked(_rescuePipes[0].Channel, _rescuePipes[0].Rx, payload)
+            || !SendRfPayloadLocked(_rescuePipes[1].Channel, _rescuePipes[1].Rx, payload))
+        {
+            return;
+        }
+        for (var i = 0; i < RescuePipesPerTick - 2; i++)
+        {
+            var pipe = _rescuePipes[2 + _rescueCursor];
+            _rescueCursor = (_rescueCursor + 1) % (_rescuePipes.Count - 2);
+            if (!SendRfPayloadLocked(pipe.Channel, pipe.Rx, payload))
+            {
+                return;
+            }
+        }
+    }
+
+    // Searched from the top: the customer's chains hold the low slots, and a
+    // chain still within its expiry keeps its slot even if a poll missed it.
+    private int HighestFreeSlotLocked()
+    {
+        var used = new HashSet<int>();
+        foreach (var chain in _knownChains.Values)
+        {
+            if (IsBoundToUsLocked(chain.Record))
+            {
+                used.Add(chain.Record.RxType);
+            }
+        }
+        foreach (var record in _lastFanRecords)
+        {
+            if (IsBoundToUsLocked(record))
+            {
+                used.Add(record.RxType);
+            }
+        }
+        foreach (var op in _pending.Values)
+        {
+            if (!op.Unbind)
+            {
+                used.Add(op.TargetSlot);
+            }
+        }
+        for (var slot = Slv3Protocol.MaxSlot; slot >= Slv3Protocol.MinSlot; slot--)
+        {
+            if (!used.Contains(slot))
+            {
+                return slot;
+            }
+        }
+        return -1;
+    }
+
+    // Misread channels nearest the drop first at the misread rx, then the misread
+    // rx on our channel, then every slot rx on those channels (a chain that moved
+    // only its channel).
+    private static List<(byte Channel, byte Rx)> BuildRescuePipes(byte ourChannel)
+    {
+        var channels = new List<byte> { StrandedChannel };
+        for (var d = 1; d <= RescueChannelSpread; d++)
+        {
+            channels.Add((byte)(StrandedChannel - d));
+            channels.Add((byte)(StrandedChannel + d));
+        }
+        var pipes = new List<(byte Channel, byte Rx)>();
+        foreach (var ch in channels)
+        {
+            pipes.Add((ch, StrandedRx));
+        }
+        pipes.Add((ourChannel, StrandedRx));
+        foreach (var ch in channels)
+        {
+            for (var rx = Slv3Protocol.MinSlot; rx <= Slv3Protocol.MaxSlot; rx++)
+            {
+                pipes.Add((ch, (byte)rx));
+            }
+        }
+        return pipes;
     }
 
     private bool SendSequencedCommandLocked(Slv3DeviceRecord record, byte rfCmd, byte cmdSeq, byte arg = 0)
