@@ -25,11 +25,6 @@ public sealed class LianLiAioHandshake : IJpegPanelHandshake, IJpegPanelBrightne
     /// <summary>A-command returning the firmware string, then a second date/time response.</summary>
     private const byte CmdGetFirmware = 0x86;
 
-    private const byte ReportIdA = 0x01;
-
-    /// <summary>A-command frame: report id, command, three pad bytes, payload length.</summary>
-    private const int AHeaderLength = 6;
-
     /// <summary>Longest firmware string the 64-byte A-frame can carry.</summary>
     private const int AMaxPayload = 58;
 
@@ -158,11 +153,7 @@ public sealed class LianLiAioHandshake : IJpegPanelHandshake, IJpegPanelBrightne
     /// </summary>
     private string? ReadFirmware(IHidDevice device, byte[] report)
     {
-        // A-commands are 64-byte frames, but Windows wants exactly the collection's output
-        // report length, so the frame goes out zero-padded to the full report.
-        report.AsSpan().Clear();
-        report[0] = ReportIdA;
-        report[1] = CmdGetFirmware;
+        LianLiAioProtocol.FillACommand(report, CmdGetFirmware, ReadOnlySpan<byte>.Empty);
         if (!device.Write(report))
         {
             return null;
@@ -186,7 +177,7 @@ public sealed class LianLiAioHandshake : IJpegPanelHandshake, IJpegPanelBrightne
             {
                 return null;
             }
-            return Encoding.ASCII.GetString(reply.Slice(AHeaderLength, length)).TrimEnd('\0').Trim();
+            return Encoding.ASCII.GetString(reply.Slice(LianLiAioProtocol.AHeaderLength, length)).TrimEnd('\0').Trim();
         }
         return null;
     }
