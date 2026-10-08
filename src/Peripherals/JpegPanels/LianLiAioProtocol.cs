@@ -20,7 +20,20 @@ public static class LianLiAioProtocol
     /// <summary>Payload <c>[source, pwm]</c>: source 0 is host control, 1 follows the motherboard header.</summary>
     public const byte CmdSetPumpPwm = 0x8A;
 
+    /// <summary>
+    /// The pump-head ring, a firmware effect: scope (0 inner, 1 outer, 2 both), mode, brightness 0-4,
+    /// speed 0-4, four RGB slots, direction, off flag, source (0 host, 1 motherboard ARGB).
+    /// </summary>
+    public const byte CmdSetPumpLight = 0x83;
+
     private const byte PumpSourceHost = 0x00;
+
+    private const byte LightScopeBoth = 2;
+    private const byte LightModeStatic = 3;
+    private const byte LightBrightnessFull = 4;
+    /// <summary>The reference driver's default speed; a static ring ignores it.</summary>
+    private const byte LightSpeedDefault = 2;
+    private const byte LightSourceHost = 0;
 
     /// <summary>Report id, command, three pad bytes, payload length.</summary>
     public const int AHeaderLength = 6;
@@ -56,6 +69,24 @@ public static class LianLiAioProtocol
         payload[0] = PumpSourceHost;
         payload[1] = (byte)Math.Clamp(dutyPercent, GalahadPumpDutyFloor, 100);
         FillACommand(report, CmdSetPumpPwm, payload);
+    }
+
+    /// <summary>Lights the whole ring one colour from the host, at full firmware brightness so the colour carries the level.</summary>
+    public static void FillSetPumpLight(Span<byte> report, byte r, byte g, byte b)
+    {
+        Span<byte> payload = stackalloc byte[19];
+        payload[0] = LightScopeBoth;
+        payload[1] = LightModeStatic;
+        payload[2] = LightBrightnessFull;
+        payload[3] = LightSpeedDefault;
+        for (int slot = 0; slot < 4; slot++)
+        {
+            payload[4 + (slot * 3)] = r;
+            payload[5 + (slot * 3)] = g;
+            payload[6 + (slot * 3)] = b;
+        }
+        payload[18] = LightSourceHost;
+        FillACommand(report, CmdSetPumpLight, payload);
     }
 
     /// <summary>The PWM that runs the pump at <paramref name="rpm"/>, interpolated and clamped to the table.</summary>

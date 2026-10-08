@@ -18,6 +18,9 @@ public sealed class Galahad2LcdAio : BackgroundService
 
     private const int ReplyTimeoutMs = 100;
 
+    /// <summary>The reference driver's ack wait; the frame path's drain matches it.</summary>
+    private const int AckTimeoutMs = 20;
+
     /// <summary>Frame acks and pump-write replies queue ahead of the status reply on the same IN pipe.</summary>
     private const int MaxReplyReads = 6;
 
@@ -70,6 +73,26 @@ public sealed class Galahad2LcdAio : BackgroundService
 
     public int? PumpDuty { get { lock (_lock) { return _pumpDuty; } } }
 
+    public bool IsConnected => _hub.IsConnected;
+
+    /// <summary>Raised from the tick when the panel's handle attaches or detaches.</summary>
+    public event Action? ConnectionChanged;
+
+    /// <summary>Lights the pump-head ring one colour; false when nothing is attached or the write fails.</summary>
+    public bool SetRing(byte r, byte g, byte b) => _hub.Exchange((device, report) =>
+    {
+        LianLiAioProtocol.FillSetPumpLight(report, r, g, b);
+        if (!device.Write(report))
+        {
+            return false;
+        }
+        // The frame path drains one ack per frame, so a control write drains its own or the
+        // IN endpoint backs up until the panel stops taking output reports.
+        Span<byte> ack = stackalloc byte[64];
+        device.Read(ack, AckTimeoutMs);
+        return true;
+    }, false);
+
     /// <summary>Drives the pump at a duty percent from the next tick, or hands it back with null.</summary>
     public void SetPumpDuty(int? dutyPercent)
     {
@@ -120,10 +143,15 @@ public sealed class Galahad2LcdAio : BackgroundService
                     _foundPwm = null;
                     _driving = false;
                 }
+                ConnectionChanged?.Invoke();
             }
             return;
         }
-        _connected = true;
+        if (!_connected)
+        {
+            _connected = true;
+            ConnectionChanged?.Invoke();
+        }
         if (now < _quietUntil)
         {
             return;

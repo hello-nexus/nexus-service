@@ -1104,6 +1104,12 @@ public static class NexusServiceCollectionExtensions
                 services.AddSingleton(galahadAio);
                 services.AddSingleton<Microsoft.Extensions.Hosting.IHostedService>(galahadAio);
                 services.AddSingleton<Nexus.Service.Cooling.Galahad2LcdCoolingProvider>();
+                services.AddSingleton<Nexus.Service.Lighting.Galahad2LcdLightingProvider>();
+                services.AddSingleton<Nexus.Service.Lighting.ILightingFrameContributor>(
+                    sp => sp.GetRequiredService<Nexus.Service.Lighting.Galahad2LcdLightingProvider>());
+                services.AddSingleton<Nexus.Service.Lighting.Zones.IDeviceStructureSource>(
+                    sp => sp.GetRequiredService<Nexus.Service.Lighting.Galahad2LcdLightingProvider>());
+                services.AddHostedService<Nexus.Service.Lighting.Galahad2LcdLightingFrameWriter>();
             }
         }
 
@@ -1247,6 +1253,7 @@ public static class NexusServiceCollectionExtensions
                 sp.GetRequiredService<Nexus.Service.Lighting.NollieLightingDeviceProvider>(),
                 sp.GetRequiredService<Nexus.Service.Lighting.KrakenLightingDeviceProvider>(),
                 sp.GetRequiredService<Nexus.Service.Lighting.HydroShift2LightingDeviceProvider>(),
+                sp.GetRequiredService<Nexus.Service.Lighting.Galahad2LcdLightingProvider>(),
                 sp.GetRequiredService<Nexus.Service.Lighting.Smart.SmartLightProvider>(),
                 sp.GetRequiredService<Nexus.Service.Persistence.IConfigStore>(),
                 sp.GetRequiredService<Nexus.Service.Lighting.Engine.LightingEngine>()));
@@ -1270,6 +1277,7 @@ public static class NexusServiceCollectionExtensions
                 sp.GetRequiredService<Nexus.Service.Lighting.NollieLightingDeviceProvider>(),
                 sp.GetRequiredService<Nexus.Service.Lighting.KrakenLightingDeviceProvider>(),
                 sp.GetRequiredService<Nexus.Service.Lighting.HydroShift2LightingDeviceProvider>(),
+                sp.GetRequiredService<Nexus.Service.Lighting.Galahad2LcdLightingProvider>(),
                 sp.GetRequiredService<Nexus.Service.Lighting.Smart.SmartLightProvider>(),
                 sp.GetRequiredService<Nexus.Service.Persistence.IConfigStore>(),
                 sp.GetRequiredService<Nexus.Service.Lighting.Engine.LightingEngine>()));

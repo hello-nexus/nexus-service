@@ -2,6 +2,8 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 using Nexus.Service.Cooling;
+using Nexus.Service.Lighting;
+using Nexus.Service.Lighting.Engine;
 using Nexus.Service.Models.Cooling;
 using Nexus.Service.Peripherals.Hid;
 using Nexus.Service.Peripherals.JpegPanels;
@@ -242,6 +244,81 @@ public class Galahad2LcdAioTests
         aio.Tick(1000);
 
         Assert.Null(aio.Status);
+    }
+
+    [Fact]
+    public void Ring_write_is_a_host_sourced_static_colour_on_both_scopes()
+    {
+        var report = new byte[ReportLength];
+        LianLiAioProtocol.FillSetPumpLight(report, 0x10, 0x20, 0x30);
+
+        Assert.Equal(new byte[] { 0x01, 0x83, 0, 0, 0, 19, 2, 3, 4, 2 }, report[..10]);
+        for (int slot = 0; slot < 4; slot++)
+        {
+            Assert.Equal(new byte[] { 0x10, 0x20, 0x30 }, report[(10 + (slot * 3))..(13 + (slot * 3))]);
+        }
+        Assert.Equal(new byte[] { 0, 0, 0 }, report[22..25]);
+        Assert.All(report[25..], b => Assert.Equal(0, b));
+    }
+
+    [Fact]
+    public void A_ring_write_drains_its_own_reply()
+    {
+        var (aio, device) = Attached();
+        device.Replies.Enqueue(new byte[] { 0x01, 0x83 });
+
+        Assert.True(aio.SetRing(1, 2, 3));
+
+        Assert.Empty(device.Replies);
+    }
+
+    [Fact]
+    public void Ring_colour_is_sent_once_per_change()
+    {
+        var (writer, frame, device, _) = RingWriter();
+
+        frame.Fill(255, 0, 0);
+        frame.Publish();
+        writer.Tick();
+        writer.Tick();
+        frame.Fill(0, 0, 255);
+        frame.Publish();
+        writer.Tick();
+
+        Assert.Equal(2, device.Writes.Count);
+        Assert.Equal(new byte[] { 255, 0, 0 }, device.Writes[0][10..13]);
+        Assert.Equal(new byte[] { 0, 0, 255 }, device.Writes[1][10..13]);
+    }
+
+    [Fact]
+    public void A_ring_switched_off_goes_dark_and_an_uncontrolled_one_is_left_alone()
+    {
+        var (writer, frame, device, store) = RingWriter();
+        frame.Fill(255, 255, 255);
+        frame.Publish();
+
+        store.Update(s => s.Devices.UncontrolledLightingDevices.Add(Galahad2LcdLightingProvider.RingZoneId));
+        writer.Tick();
+        Assert.Empty(device.Writes);
+
+        store.Update(s =>
+        {
+            s.Devices.UncontrolledLightingDevices.Clear();
+            s.Devices.DisabledLightingDevices.Add(Galahad2LcdLightingProvider.RingZoneId);
+        });
+        writer.Tick();
+        var write = Assert.Single(device.Writes);
+        Assert.Equal(new byte[] { 0, 0, 0 }, write[10..13]);
+    }
+
+    private static (Galahad2LcdLightingFrameWriter Writer, DeviceFrame Frame, QueuedHidDevice Device, InMemoryConfigStore Store) RingWriter()
+    {
+        var (aio, device) = Attached();
+        var store = new InMemoryConfigStore();
+        var engine = new LightingEngine();
+        var frame = new DeviceFrame(0, Galahad2LcdLightingProvider.RingZoneId, 1);
+        engine.UpdateDevices(new[] { frame });
+        return (new Galahad2LcdLightingFrameWriter(engine, aio, store, new Np50IdentifyTracker()), frame, device, store);
     }
 
     private static (Galahad2LcdAio Aio, QueuedHidDevice Device) Attached()
