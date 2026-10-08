@@ -280,6 +280,13 @@ internal static class AppBootstrap
         var smartLights = app.Services.GetRequiredService<Nexus.Service.Lighting.Smart.SmartLightProvider>();
         smartLights.OnlineChanged += () => PanelTopics.BroadcastLighting(muxHub);
 
+        // A lighting device appearing or dropping (boot, OpenRGB restart, hot-plug)
+        // refreshes every lighting view, so one that loaded earlier recounts.
+        if (app.Services.GetService<Nexus.Service.Lighting.Rgb.RgbBridge>() is { } rgbBridge)
+        {
+            rgbBridge.DeviceSetChanged += () => PanelTopics.BroadcastLighting(muxHub);
+        }
+
         // The recovery poll loop can sign in after its dialog closed, so account changes are pushed.
         var cloudAccounts = app.Services.GetRequiredService<Nexus.Service.Cloud.CloudAccountService>();
         cloudAccounts.OnAccountActivated += _ => PanelTopics.BroadcastCloudAccounts(muxHub);
