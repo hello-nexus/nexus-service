@@ -188,6 +188,10 @@ public sealed class HydroShift2CurveLcdDriver : IBulkPanelDriver
     /// </summary>
     public void Disconnect(IBulkUsbPipe pipe, IHidDevice? hid)
     {
+        if (_retired && !_sessionUp)
+        {
+            return;
+        }
         pipe.Write(HydroShift2Protocol.EncodeCommand(
             HydroShift2Protocol.CommandStopPlay, ReadOnlySpan<byte>.Empty, NextTimestamp()));
         if (_ownScreenOnRelease && _sessionUp)

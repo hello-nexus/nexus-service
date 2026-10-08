@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
+using System.Threading;
 using Nexus.Service.Devices;
 using Nexus.Service.Devices.Detection;
 using Nexus.Service.Lighting;
@@ -344,13 +345,20 @@ public class HydroShift2CurveTests
     }
 
     [Fact]
-    public void A_retired_glass_is_never_taken_back()
+    public void Retiring_releases_the_live_session_then_leaves_the_glass_alone()
     {
         var pipe = new GlassPipe { Answers = true };
-        var driver = new HydroShift2CurveLcdDriver();
-        driver.Retire();
+        var driver = new HydroShift2CurveLcdDriver { OwnScreenOnRelease = true };
+        Assert.NotNull(driver.Connect(pipe, null));
+        pipe.Commands.Clear();
 
+        driver.Retire();
+        driver.Disconnect(pipe, null);
+        Assert.Equal(new[] { HydroShift2Protocol.CommandStopPlay, HydroShift2CurveProtocol.CommandReboot }, pipe.Commands);
+
+        pipe.Commands.Clear();
         Assert.Null(driver.Connect(pipe, null));
+        driver.Disconnect(pipe, null);
         Assert.Empty(pipe.Commands);
     }
 
@@ -566,6 +574,7 @@ public class HydroShift2CurveTests
         {
             if (!_pending.TryDequeue(out var reply))
             {
+                Thread.Sleep(Math.Min(timeoutMs, 5));
                 return 0;
             }
             reply.CopyTo(buffer);

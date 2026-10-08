@@ -73,8 +73,9 @@ public sealed class HydroShift2CurvePlayer : BackgroundService
     /// <summary>The fast shutdown skips the connection worker's release, so the glass is let go here, for good.</summary>
     public void ReleaseForShutdown()
     {
-        _hub.Detach();
+        // Retired first: a worker waiting on the hub lock must not handshake in between.
         _driver.Retire();
+        _hub.Detach();
     }
 
     /// <summary>Settings changed: act now rather than on the next tick.</summary>
