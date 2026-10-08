@@ -37,7 +37,8 @@ public sealed unsafe class BgraJpegEncoder : IDisposable
     private readonly byte[] _turboOut;
     private bool _disposed;
 
-    public BgraJpegEncoder(int width, int height)
+    /// <param name="quality">Overrides <see cref="Quality"/> for a panel whose link, not its encoder, sets the frame rate.</param>
+    public BgraJpegEncoder(int width, int height, int quality = Quality)
     {
         if (width <= 0 || height <= 0)
         {
@@ -45,7 +46,7 @@ public sealed unsafe class BgraJpegEncoder : IDisposable
         }
         _width = width;
         _height = height;
-        _encoder = new JpegEncoder { Quality = Quality };
+        _encoder = new JpegEncoder { Quality = quality };
         // Grows to whatever the busiest frame needs and then stops reallocating.
         _buffer = new MemoryStream(64 * 1024);
         _turboOut = Array.Empty<byte>();
@@ -53,7 +54,7 @@ public sealed unsafe class BgraJpegEncoder : IDisposable
         {
             _turbo = TurboJpeg.tj3Init(TurboJpeg.InitCompress);
             if (_turbo != IntPtr.Zero
-                && (TurboJpeg.tj3Set(_turbo, TurboJpeg.ParamQuality, Quality) != 0
+                && (TurboJpeg.tj3Set(_turbo, TurboJpeg.ParamQuality, quality) != 0
                     || TurboJpeg.tj3Set(_turbo, TurboJpeg.ParamSubsamp, TurboJpeg.Subsamp420) != 0
                     || TurboJpeg.tj3Set(_turbo, TurboJpeg.ParamNoRealloc, 1) != 0))
             {

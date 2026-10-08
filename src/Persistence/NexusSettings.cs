@@ -1358,6 +1358,7 @@ public sealed class DevicesSettings
     public StrimerLightingSettings StrimerLighting { get; set; } = new();
     public Galahad2LightingSettings Galahad2Lighting { get; set; } = new();
     public HydroShift2LightingSettings HydroShift2Lighting { get; set; } = new();
+    public HydroShift2CurveSettings HydroShift2Curve { get; set; } = new();
     public CorsairSettings Corsair { get; set; } = new();
     public NollieSettings Nollie { get; set; } = new();
     /// <summary>
@@ -1880,6 +1881,17 @@ public sealed class HydroShift2LightingSettings
     public int Brightness { get; set; } = 4;
     /// <summary>"#RRGGBB" palette; missing entries fall back to the effect's defaults.</summary>
     public List<string> Colors { get; set; } = new();
+}
+
+/// <summary>The HydroShift II OLED Curved head position Nexus last drove; the motors have no position readback.</summary>
+public sealed class HydroShift2CurveSettings
+{
+    /// <summary>Degrees.</summary>
+    public int Tilt { get; set; }
+    /// <summary>0 is the middle of the slide's range.</summary>
+    public int Slide { get; set; }
+    /// <summary>A recalibration was under way; Tilt and Slide are unknown until it runs again.</summary>
+    public bool Recalibrating { get; set; }
 }
 
 public sealed class Galahad2LightingSettings

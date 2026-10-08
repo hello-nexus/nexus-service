@@ -1230,6 +1230,8 @@ namespace Nexus.Service.Serialization;
 [JsonSerializable(typeof(Nexus.Service.Routes.HydroShift2LightingResponse))]
 [JsonSerializable(typeof(Nexus.Service.Routes.HydroShift2LightingRequest))]
 [JsonSerializable(typeof(Nexus.Service.Routes.HydroShift2ModeDto[]))]
+[JsonSerializable(typeof(Nexus.Service.Routes.HydroShift2CurveHeadResponse))]
+[JsonSerializable(typeof(Nexus.Service.Routes.HydroShift2CurveHeadRequest))]
 [JsonSerializable(typeof(Nexus.Service.Routes.Galahad2LightingRequest))]
 [JsonSerializable(typeof(Nexus.Service.Routes.Galahad2ModeInfoDto))]
 [JsonSerializable(typeof(Nexus.Service.Routes.Galahad2ModeInfoDto[]))]

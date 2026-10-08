@@ -18,6 +18,6 @@ public static class StreamFraming
 
     public const byte KnownFlags = FlagIdr | FlagControl;
 
-    /// <summary>An access unit above this is framing corruption, not video.</summary>
-    public const int MaxPayloadBytes = 8 * 1024 * 1024;
+    /// <summary>A payload above this is framing corruption: the largest real one is a raw BGRA 2288x1080 frame (9.9 MB).</summary>
+    public const int MaxPayloadBytes = 16 * 1024 * 1024;
 }
