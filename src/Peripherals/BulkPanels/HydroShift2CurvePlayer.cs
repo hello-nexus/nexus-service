@@ -227,6 +227,7 @@ public sealed class HydroShift2CurvePlayer : BackgroundService
     {
         var mount = MountOf(record);
         bool StillWanted() => this.StillWanted(settingsAllow, record?.Id, mount);
+        _offlineClockTriedInPlay = null;
         var attemptStartedAt = Environment.TickCount64;
 
         var path = await _media.EnsureVariantAsync(name, mount.Flip180, mount.Mirror, ct).ConfigureAwait(false);
