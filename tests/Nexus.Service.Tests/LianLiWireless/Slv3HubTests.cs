@@ -738,6 +738,54 @@ public class Slv3HubTests
     }
 
     [Fact]
+    public void Live_and_animation_uploads_carry_the_chains_own_rx_and_channel_as_effect_index()
+    {
+        var (hub, net, tx, _) = CreateConnectedHub();
+        net.Fans.Add(new SimulatedFan { Mac = FanMac, MasterMac = net.MasterMac, RxType = 3, Channel = 21 });
+        Assert.True(hub.DriveTick());
+        var mac = Convert.ToHexString(FanMac);
+
+        tx.SentFrames.Clear();
+        Assert.True(hub.SendRgbFrame(mac, new RgbColor[40], 100, 100, out var liveIndex));
+        var liveHeader = HeaderIndex(tx);
+        tx.SentFrames.Clear();
+        Assert.True(hub.SendRgbAnimation(mac, new byte[4 * 40 * 3], 40, 4, 100, 100, out var animationIndex));
+        var animationHeader = HeaderIndex(tx);
+
+        // A chain that misreads [14]/[15] as a bind target re-binds onto the pipe it is already on.
+        Assert.Equal(liveIndex, liveHeader);
+        Assert.Equal(animationIndex, animationHeader);
+        Assert.StartsWith("0315", liveHeader);
+        Assert.StartsWith("0315", animationHeader);
+        Assert.NotEqual(liveHeader, animationHeader);
+
+        static string HeaderIndex(FakeTxTransport tx) => Convert.ToHexString(tx.SentFrames.Find(
+            f => f.Length >= 24 && f[1] == 0 && f[5] == Slv3Protocol.RfRgbSync && f[22] == 0)!.AsSpan(18, 4));
+    }
+
+    [Fact]
+    public void A_chains_next_upload_never_repeats_its_last_one_while_its_report_is_stale()
+    {
+        var (hub, net, _, _) = CreateConnectedHub();
+        hub.HeaderGapMs = 0;
+        var otherMac = Convert.FromHexString("AABBCCDDEEFF");
+        net.Fans.Add(new SimulatedFan { Mac = FanMac, MasterMac = net.MasterMac, RxType = 3 });
+        net.Fans.Add(new SimulatedFan { Mac = otherMac, MasterMac = net.MasterMac, RxType = 4 });
+        Assert.True(hub.DriveTick());
+        var mac = Convert.ToHexString(FanMac);
+
+        Assert.True(hub.SendRgbFrame(mac, new RgbColor[40], 100, 100, out var first));
+        // A full turn of the shared counter on the other chain, with no poll in between.
+        for (var i = 0; i < 254; i++)
+        {
+            Assert.True(hub.SendRgbFrame(Convert.ToHexString(otherMac), new RgbColor[40], 100, 100, out _));
+        }
+        Assert.True(hub.SendRgbFrame(mac, new RgbColor[40], 100, 100, out var second));
+
+        Assert.NotEqual(first, second);
+    }
+
+    [Fact]
     public void SendRgbFrame_fails_for_unbound_fan()
     {
         var (hub, net, _, _) = CreateConnectedHub();

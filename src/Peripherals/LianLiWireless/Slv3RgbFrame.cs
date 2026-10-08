@@ -77,13 +77,6 @@ public static class Slv3RgbFrame
         buf[off + 2] = (byte)b;
     }
 
-    /// <summary>4-byte big-endian change id derived from a ms timestamp; the firmware ignores a resend carrying the same value.</summary>
-    public static byte[] BuildEffectIndex(long unixTimeMs)
-    {
-        var v = unchecked((uint)unixTimeMs);
-        return new[] { (byte)(v >> 24), (byte)(v >> 16), (byte)(v >> 8), (byte)v };
-    }
-
     /// <summary>
     /// Builds the RF_RgbSync payload set. Index 0 is the header packet: common
     /// fields, then [20..23] compressed length BE32, [24] 0, [25..26] total
