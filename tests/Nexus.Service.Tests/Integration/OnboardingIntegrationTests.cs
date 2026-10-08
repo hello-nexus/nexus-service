@@ -83,6 +83,41 @@ public sealed class OnboardingIntegrationTests : IClassFixture<NexusAppFactory>
     [Fact]
     public async Task ImmersiveSwipeComplete_requires_a_token()
         => Assert.Equal(StatusCodes.Status401Unauthorized, await Send("POST", "/onboarding/panel-swipe/immersive/complete", withToken: false));
+
+    private async Task<int> SendJson(string path, string json)
+    {
+        using var client = _factory.CreateClient();
+        client.DefaultRequestHeaders.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", Token);
+        using var content = new StringContent(json, System.Text.Encoding.UTF8, "application/json");
+        var res = await client.PostAsync(path, content);
+        return (int)res.StatusCode;
+    }
+
+    [Fact]
+    public async Task ConflictsStep_accepts_a_known_action()
+        => Assert.Equal(StatusCodes.Status200OK, await SendJson("/onboarding/conflicts-step",
+            "{\"action\":\"resolveAll\",\"listed\":[\"signalrgb\"],\"whitelisted\":[],\"alreadyEnded\":[]}"));
+
+    [Fact]
+    public void ConflictsStep_line_names_catalog_ids_only()
+    {
+        var line = Nexus.Service.Routes.OnboardingRoutes.ConflictStepLine(new Nexus.Service.Routes.OnboardingConflictsStepBody
+        {
+            Action = "resolveAll",
+            Listed = { "signalrgb", "icue", "not-an-app\nINF forged" },
+            Whitelisted = { "icue" },
+        });
+
+        Assert.Equal("[onboarding] conflicts step: resolveAll listed=signalrgb,icue whitelisted=icue alreadyEnded=-", line);
+    }
+
+    [Fact]
+    public async Task ConflictsStep_rejects_an_unknown_action()
+        => Assert.Equal(StatusCodes.Status400BadRequest, await SendJson("/onboarding/conflicts-step", "{\"action\":\"wipe\"}"));
+
+    [Fact]
+    public async Task ConflictsStep_requires_a_token()
+        => Assert.Equal(StatusCodes.Status401Unauthorized, await Send("POST", "/onboarding/conflicts-step", withToken: false));
 }
 
 public sealed class OnboardingPanelSwipeCompleteIntegrationTests : IClassFixture<NexusAppFactory>
