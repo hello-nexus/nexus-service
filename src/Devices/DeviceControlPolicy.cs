@@ -15,8 +15,8 @@ namespace Nexus.Service.Devices;
 /// re-enable), and shared buses (whose monitoring nothing else provides)
 /// default on, as does any handler in neither ConflictAppByHandler nor
 /// UnverifiedHandlers. One source of truth for both facts. A device the user
-/// has on waits while its app runs only when that app is whitelisted
-/// (<see cref="VendorAppControlPause"/>).
+/// has on waits while its app runs only when that app is whitelisted, or when
+/// the device is in YieldsWhileAppRuns (<see cref="VendorAppControlPause"/>).
 /// </summary>
 public static class DeviceControlPolicy
 {
@@ -75,6 +75,12 @@ public static class DeviceControlPolicy
         ["streamdeck"] = StreamDeckHandler.ElgatoConflictAppId,
     };
 
+    /// <summary>Waits while its app runs, whitelisted or not: the LINK hub shares its file handles across hosts, so Nexus frames land in iCUE's open profile files and are stored (fw 4.1.656).</summary>
+    private static readonly HashSet<string> YieldsWhileAppRuns = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "corsair",
+    };
+
     private static readonly Dictionary<string, string> BusByHandler = new(StringComparer.OrdinalIgnoreCase)
     {
         [SmbusDramHandler.HandlerId] = "smbus",
@@ -92,6 +98,8 @@ public static class DeviceControlPolicy
         foreach (var handler in ConflictAppByHandler.Keys) yield return handler;
         foreach (var handler in HintOnlyConflictAppByHandler.Keys) yield return handler;
     }
+
+    public static bool YieldsToRunningApp(string handlerId) => YieldsWhileAppRuns.Contains(handlerId);
 
     public static string? ConflictAppFor(string handlerId)
         => ConflictAppByHandler.TryGetValue(handlerId, out var id) ? id

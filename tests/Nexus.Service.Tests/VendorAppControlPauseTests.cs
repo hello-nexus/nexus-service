@@ -42,13 +42,28 @@ public class VendorAppControlPauseTests
     [Fact]
     public void ADeviceTheUserTurnedOnKeepsDrivingWhileANonWhitelistedAppRuns()
     {
+        var (gate, detector, pause) = Setup("lianli");
+
+        detector.Running.Add("lian-li-l-connect");
+        pause.Refresh();
+
+        Assert.True(gate.IsEnabled("lianli"));
+        Assert.Null(gate.PausedByApp("lianli"));
+    }
+
+    [Fact]
+    public void TheCorsairHubWaitsForICueEvenWhenICueIsNotWhitelisted()
+    {
         var (gate, detector, pause) = Setup("corsair");
 
         detector.Running.Add("icue");
         pause.Refresh();
+        Assert.False(gate.IsEnabled("corsair"));
+        Assert.Equal("icue", gate.PausedByApp("corsair"));
 
+        detector.Running.Clear();
+        pause.Refresh();
         Assert.True(gate.IsEnabled("corsair"));
-        Assert.Null(gate.PausedByApp("corsair"));
     }
 
     [Fact]
@@ -71,12 +86,24 @@ public class VendorAppControlPauseTests
     [Fact]
     public void TurningADeviceOnWhileItsAppRunsTakesIt()
     {
+        var (gate, detector, _) = Setup(Array.Empty<string>(), whitelisted: new[] { "lian-li-l-connect" });
+        detector.Running.Add("lian-li-l-connect");
+
+        gate.SetEnabled("lianli", true);
+
+        Assert.True(gate.IsEnabled("lianli"));
+    }
+
+    [Fact]
+    public void TurningTheCorsairHubOnWhileICueRunsWaitsForICue()
+    {
         var (gate, detector, _) = Setup(Array.Empty<string>(), whitelisted: new[] { "icue" });
         detector.Running.Add("icue");
 
         gate.SetEnabled("corsair", true);
 
-        Assert.True(gate.IsEnabled("corsair"));
+        Assert.True(gate.IsChosenOn("corsair"));
+        Assert.False(gate.IsEnabled("corsair"));
     }
 
     [Theory]

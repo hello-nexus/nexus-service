@@ -21,6 +21,8 @@ public sealed class CorsairLinkHub : IDisposable
     // or the queue is empty; a short timeout caps how long a no-ack write holds
     // _lock (shared with the 30Hz SendColors) while realigning the stream.
     private const int ResyncReadTimeoutMs = 50;
+    // Caps the detach drain while another program keeps the hub answering.
+    private const int DrainReads = 8;
 
     private readonly object _lock = new();
     private readonly byte[] _write = new byte[CorsairLinkProtocol.WriteBufferLength];
@@ -53,11 +55,22 @@ public sealed class CorsairLinkHub : IDisposable
 
     public bool IsConnected => State.IsConnected;
 
+    /// <summary>Listens without writing. The hub never reports unprompted, so any input report answers another program's command.</summary>
+    public static bool HearsAnotherHost(IHidDevice device, int listenMs)
+    {
+        var buffer = new byte[CorsairLinkProtocol.WriteBufferLength];
+        return device.Read(buffer, listenMs) > 0;
+    }
+
+    /// <summary>Another program answered on the hub; every write is refused from then on, since the hub's handles are shared by all hosts.</summary>
+    public bool ForeignHostSeen { get; private set; }
+
     public void Attach(IHidDevice device)
     {
         lock (_lock)
         {
             _device = device;
+            ForeignHostSeen = false;
             _softwareMode = false;
             _firmwareMajor = 0;
             _colorPrimed = false;
@@ -70,12 +83,15 @@ public sealed class CorsairLinkHub : IDisposable
     {
         lock (_lock)
         {
-            if (_device != null && _softwareMode && handBack)
+            if (_device != null && _softwareMode && handBack && !ForeignHostSeen)
             {
                 // Hand the chain back to firmware so the fans keep running on the
                 // hub's own curve once Nexus lets go.
                 Transfer(CorsairLinkProtocol.CmdHardwareMode);
             }
+            // Drain replies still queued for this handle, or the next session's
+            // listen hears them as another program.
+            for (var i = 0; i < DrainReads && ReadStrippedLocked() > 0; i++) { }
             _device?.Dispose();
             _device = null;
             State.IsConnected = false;
@@ -350,7 +366,21 @@ public sealed class CorsairLinkHub : IDisposable
         var n = _device.Read(_readRaw, ResyncReadTimeoutMs);
         if (n <= 0) return n;
         _readRaw.AsSpan(1, CorsairLinkProtocol.ReportLength).CopyTo(_read);
+        NoteEcho(0);
         return n - 1;
+    }
+
+    // Every open HID handle receives every input report, so another program's
+    // replies reach this one. Nexus sends only these commands after Initialize's
+    // 02 13, whose reply can arrive late after a timed-out read; iCUE probes (09)
+    // every file it opens.
+    private bool IsOwnCommand(byte cmd) =>
+        cmd is 0x01 or 0x05 or 0x06 or 0x07 or 0x08 or 0x0D || (cmd == 0x02 && !_colorPrimed);
+
+    private void NoteEcho(byte sent)
+    {
+        var echo = _read[CorsairLinkProtocol.ResponseCommandOffset];
+        if (echo != 0 && echo != sent && !IsOwnCommand(echo)) ForeignHostSeen = true;
     }
 
     // close -> open -> write(inner) -> close. Inner = [len_lo, len_hi, 0, 0,
@@ -386,7 +416,7 @@ public sealed class CorsairLinkHub : IDisposable
 
     private int Transfer(ReadOnlySpan<byte> command, ReadOnlySpan<byte> payload)
     {
-        if (_device == null) return -1;
+        if (_device == null || ForeignHostSeen) return -1;
         Array.Clear(_write);
         _write[1] = 0x00;
         _write[2] = 0x01;
@@ -400,6 +430,7 @@ public sealed class CorsairLinkHub : IDisposable
         // Windows ReadFile returns the report with the report-id byte at [0]; hidapi
         // (which the parsers mirror) drops it. Strip it and report the stripped length.
         _readRaw.AsSpan(1, CorsairLinkProtocol.ReportLength).CopyTo(_read);
+        NoteEcho(command[0]);
         return n - 1;
     }
 
