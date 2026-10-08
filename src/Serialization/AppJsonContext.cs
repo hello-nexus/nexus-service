@@ -1494,6 +1494,8 @@ namespace Nexus.Service.Serialization;
 [JsonSerializable(typeof(AssistantPullProgressDto))]
 [JsonSerializable(typeof(SmartPollResponse))]
 [JsonSerializable(typeof(SmartPollDriveDto))]
+// Results.Problem bodies; without it every Problem response throws instead of returning its 500.
+[JsonSerializable(typeof(Microsoft.AspNetCore.Mvc.ProblemDetails))]
 
 // Metadata-only: skips the per-type generated fast-path writer, a large AOT
 // code cost across this context's roots; serialization runs through the
