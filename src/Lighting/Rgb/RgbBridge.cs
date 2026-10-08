@@ -213,14 +213,17 @@ public sealed class RgbBridge : IDisposable
 
     private readonly FeatureGates _gates;
     private readonly Nexus.Service.Devices.DeviceControlGate? _controlGate;
+    private readonly Nexus.Service.Peripherals.Hid.IHidEnumerator? _hid;
 
     public RgbBridge(OpenRgbProcessManager proc, IRgbController controller, LightingEngine engine, IConfigStore store, IUsbEnumerator usb,
         IEnumerable<ILightingFrameContributor>? frameContributors = null,
         Nexus.Service.Lighting.Mappings.ContributorFrameLayouts? contributorLayouts = null,
         FeatureGates? gates = null,
-        Nexus.Service.Devices.DeviceControlGate? controlGate = null)
+        Nexus.Service.Devices.DeviceControlGate? controlGate = null,
+        Nexus.Service.Peripherals.Hid.IHidEnumerator? hid = null)
     {
         _proc = proc;
+        _hid = hid;
         _controller = controller;
         _engine = engine;
         _store = store;
@@ -1993,6 +1996,7 @@ public sealed class RgbBridge : IDisposable
                 if (++tick % UsbCheckEveryNTicks == 0)
                 {
                     CheckUsbTopology();
+                    CheckHeldOffGamepads();
                 }
             }
         }
@@ -2104,6 +2108,48 @@ public sealed class RgbBridge : IDisposable
         }
     }
 
+    /// <summary>Shows or drops the off card of each held-off controller (<see cref="OpenRgbGamepadDefaults"/>) as it comes and goes. HID enumeration sees Bluetooth pads too and opens at most query-only, never sending a report.</summary>
+    private void CheckHeldOffGamepads()
+    {
+        if (_hid is null)
+        {
+            return;
+        }
+        var heldOff = OpenRgbGamepadDefaults.HeldOffDetectors(_store.Load());
+        if (heldOff.Count == 0)
+        {
+            return;
+        }
+        var present = new HashSet<string>(StringComparer.Ordinal);
+        try
+        {
+            foreach (var e in OpenRgbGamepadDefaults.Entries)
+            {
+                if (heldOff.Contains(e.Detector) && !present.Contains(e.Detector) && _hid.Find(e.VendorId, e.ProductId).Count > 0)
+                {
+                    present.Add(e.Detector);
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine($"[rgb-bridge] gamepad presence check failed: {ex.Message}");
+            return;
+        }
+        // Update marks settings dirty (flush + profile upload), so only when the cards move.
+        if (!OpenRgbGamepadDefaults.PresenceChanges(_store.Load(), present))
+        {
+            return;
+        }
+        var changed = false;
+        _store.Update(s => changed = OpenRgbGamepadDefaults.ApplyPresence(s, present));
+        if (changed)
+        {
+            ServiceLog.Info($"[rgb-bridge] held-off controllers present: {(present.Count == 0 ? "none" : string.Join(", ", present))}");
+            RequestTopologyRefresh();
+        }
+    }
+
     private void CheckUsbTopology()
     {
         Dictionary<string, int> current;
@@ -2133,6 +2179,8 @@ public sealed class RgbBridge : IDisposable
         // audio devices have been seen to choke on, so one is spent only on a
         // known RGB device the daemon's own hotplug did not pick up.
         var arrivals = UsbTopologyFilter.KnownRgbArrivals(previous, current, Nexus.Service.Peripherals.LightingDevicesCatalog.OpenRgbUsbIds);
+        var settings = _store.Load();
+        arrivals.RemoveAll(key => UsbTopologyFilter.TryParseVidPid(key, out var vid, out var pid) && OpenRgbGamepadDefaults.IsHeldOff(settings, vid, pid));
         if (arrivals.Count == 0)
         {
             ServiceLog.Info($"[rgb-bridge] usb topology changed (+{added}/-{removed}), no known RGB device arrived, no re-detect");

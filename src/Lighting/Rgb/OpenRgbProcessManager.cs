@@ -297,7 +297,8 @@ public sealed class OpenRgbProcessManager : IDisposable
 
     /// <summary>
     /// Detector names the user excluded by turning Nexus Control off for every
-    /// card of the device: disabled in the denylist, and recorded in
+    /// card of the device, plus every held-off game controller
+    /// (<see cref="OpenRgbGamepadDefaults"/>): disabled in the denylist, and recorded in
     /// <c>placeholder_only</c> so a lifted exclusion knows what to re-enable.
     /// Null when settings could not be read - the caller then leaves the
     /// on-disk placeholder state untouched rather than re-enabling detectors
@@ -307,17 +308,13 @@ public sealed class OpenRgbProcessManager : IDisposable
     {
         if (_store is null)
         {
-            return Array.Empty<string>();
+            return OpenRgbGamepadDefaults.HeldOffDetectors(new Nexus.Service.Persistence.NexusSettings());
         }
         try
         {
-            var exclusions = _store.Load().Devices.OpenRgbDetectorExclusions;
-            if (exclusions.Count == 0)
-            {
-                return Array.Empty<string>();
-            }
-            var names = new System.Collections.Generic.SortedSet<string>(StringComparer.Ordinal);
-            foreach (var kv in exclusions)
+            var settings = _store.Load();
+            var names = OpenRgbGamepadDefaults.HeldOffDetectors(settings);
+            foreach (var kv in settings.Devices.OpenRgbDetectorExclusions)
             {
                 if (!string.IsNullOrEmpty(kv.Value.DetectorName))
                 {

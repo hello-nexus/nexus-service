@@ -1396,6 +1396,9 @@ public sealed class DevicesSettings
     /// <summary>"{device name}#{same-name ordinal}" -> the "openrgb-N" id a serial- and location-less OpenRGB device first had, kept for good so its settings stay put when the list reorders.</summary>
     public Dictionary<string, string> OpenRgbPinnedIds { get; set; } = new();
 
+    /// <summary>Detector names from <see cref="Nexus.Service.Lighting.Rgb.OpenRgbGamepadDefaults"/> the user turned on; every other one stays disabled.</summary>
+    public List<string> OpenRgbGamepadDetectorsAllowed { get; set; } = new();
+
     /// <summary>Devices OpenRGB cannot auto-detect and only finds through a user registration in its own config; written into the daemon's OpenRGB.json at launch.</summary>
     public OpenRgbManualDevices OpenRgbManualDevices { get; set; } = new();
 }
