@@ -1151,7 +1151,8 @@ public static class NexusServiceCollectionExtensions
                     _ => null,
                 };
                 return new Nexus.Service.Panel.Streams.BulkPanelDiscovery(
-                    bulkPanelHub, sp.GetService<Nexus.Service.Panel.Streams.IVirtualMonitorHost>(), withheld);
+                    bulkPanelHub, sp.GetService<Nexus.Service.Panel.Streams.IVirtualMonitorHost>(), withheld,
+                    listedWhileWithheld: bulkPanelDriver is Nexus.Service.Peripherals.BulkPanels.HydroShift2CurveLcdDriver);
             });
             services.AddSingleton<IDeviceHandler>(
                 _ => new Nexus.Service.Devices.Handlers.BulkPanelHandler(bulkPanelHub));

@@ -43,6 +43,8 @@ public sealed class StreamedPanelCoordinator : BackgroundService
     private readonly object _lock = new();
     private readonly Dictionary<string, DeviceSession> _bySerial = new(StringComparer.Ordinal);
     private readonly Dictionary<string, DeviceSession> _bySessionId = new(StringComparer.Ordinal);
+    // Panel record ids whose glass the device holds for now; listed as present while it does.
+    private readonly Dictionary<IStreamedPanelDiscovery, string> _heldByDevice = new();
     private readonly IReadOnlyList<IStreamedPanelDiscovery> _discoveries;
     private readonly StreamedPanelStore _store;
     private readonly PanelDeviceRegistry _registry;
@@ -109,6 +111,10 @@ public sealed class StreamedPanelCoordinator : BackgroundService
         {
             var enabled = _gate.IsEnabled(discovery.HandlerId);
             var withheld = enabled && discovery.Withheld;
+            if (!withheld)
+            {
+                lock (_lock) _heldByDevice.Remove(discovery);
+            }
             IReadOnlyList<StreamedPanelDeviceInfo> devices;
             if (!enabled || withheld)
             {
@@ -177,6 +183,10 @@ public sealed class StreamedPanelCoordinator : BackgroundService
                 }
                 else if (withheld)
                 {
+                    if (discovery.ListedWhileWithheld)
+                    {
+                        lock (_lock) _heldByDevice[discovery] = ds.Session.PanelDeviceId;
+                    }
                     CloseSession(ds, "screen handed to the device");
                     changed = true;
                 }
@@ -193,7 +203,8 @@ public sealed class StreamedPanelCoordinator : BackgroundService
     }
 
     /// <summary>
-    /// Panel record ids currently owned by a live stream session. GET /panel/devices
+    /// Panel record ids currently owned by a live stream session, or whose glass their device
+    /// holds (<see cref="IStreamedPanelDiscovery.ListedWhileWithheld"/>). GET /panel/devices
     /// stamps these so the dashboard can list a streamed panel: it is backed by neither a
     /// curated device nor a display, so nothing else marks it as present and editable.
     /// </summary>
@@ -207,6 +218,7 @@ public sealed class StreamedPanelCoordinator : BackgroundService
                 if (!ds.Session.Closed)
                     ids.Add(ds.Session.PanelDeviceId);
             }
+            ids.UnionWith(_heldByDevice.Values);
         }
         return ids;
     }
