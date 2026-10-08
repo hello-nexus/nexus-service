@@ -4,6 +4,7 @@ using System.Threading.Tasks;
 using Microsoft.Extensions.Hosting;
 using Nexus.Service.Devices;
 using Nexus.Service.Devices.Detection;
+using Nexus.Service.Devices.Handlers;
 using Nexus.Service.Peripherals.Y70;
 using Nexus.Service.Platform;
 
@@ -61,7 +62,7 @@ public sealed class Y70DisplayHeartbeatWorker : BackgroundService
         // device control, so it must still open when Nexus Control is off.
         Detected = _y70.IsConnected();
 
-        if (!_gate.IsEnabled("y70"))
+        if (!_gate.IsEnabled(Y70Handler.HandlerId))
         {
             if (_hub.IsConnected) _hub.Disconnect();
             _wasDetected = false;
