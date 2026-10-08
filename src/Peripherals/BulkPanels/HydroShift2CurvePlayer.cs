@@ -38,6 +38,7 @@ public sealed class HydroShift2CurvePlayer : BackgroundService
     private TaskCompletionSource _stopped = Stopped();
     private bool _connected;
     private bool? _offlineClockSent;
+    private bool? _offlineClockTriedInPlay;
     private int? _saverBacklight;
     private int _saverMinutes;
     private long _nextSaverAt;
@@ -102,9 +103,11 @@ public sealed class HydroShift2CurvePlayer : BackgroundService
     {
         while (!stoppingToken.IsCancellationRequested)
         {
+            long tickStartedAt = Environment.TickCount64;
             try
             {
                 await _wake.WaitAsync(TickMs, stoppingToken).ConfigureAwait(false);
+                tickStartedAt = Environment.TickCount64;
                 await TickAsync(stoppingToken).ConfigureAwait(false);
             }
             catch (OperationCanceledException)
@@ -115,7 +118,7 @@ public sealed class HydroShift2CurvePlayer : BackgroundService
             {
                 ServiceLog.Warn($"[{HydroShift2CurveLcdDriver.Id}] player tick failed: {ex.Message}");
                 Release();
-                BackOff(Environment.TickCount64);
+                BackOff(tickStartedAt);
             }
         }
         Release();
@@ -171,14 +174,18 @@ public sealed class HydroShift2CurvePlayer : BackgroundService
         }
     }
 
-    /// <summary>During a play one attempt latches, so a glass that leaves it unanswered never stalls the stream again.</summary>
+    /// <summary>During a play it is tried once, so a glass that leaves it unanswered never stalls the stream; the tick retries after the play.</summary>
     private void ApplyOfflineClock(HydroShift2CurveSettings settings, bool playing = false)
     {
-        if (settings.OfflineClock is not { } clock || _offlineClockSent == clock)
+        if (settings.OfflineClock is not { } clock || _offlineClockSent == clock || (playing && _offlineClockTriedInPlay == clock))
         {
             return;
         }
-        if (_hub.Exchange(pipe => _driver.SetOfflineClock(pipe, clock), false) || playing)
+        if (playing)
+        {
+            _offlineClockTriedInPlay = clock;
+        }
+        if (_hub.Exchange(pipe => _driver.SetOfflineClock(pipe, clock), false))
         {
             _offlineClockSent = clock;
         }
@@ -332,6 +339,7 @@ public sealed class HydroShift2CurvePlayer : BackgroundService
             return true;
         }, false);
         _saverBacklight = null;
+        _offlineClockTriedInPlay = null;
         _driver.VideoOwnsGlass = false;
         _ownsGlass = false;
         _playing = null;

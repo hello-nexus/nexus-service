@@ -210,11 +210,18 @@ public static partial class DevicesRoutes
             var result = media.Delete(name);
             if (result == HydroShift2CurveMediaDelete.Busy)
             {
-                // The clip stays, so it stays picked.
+                // The clip stays, so it stays picked, unless a pick changed meanwhile.
                 store.Update(s =>
                 {
                     var c = s.Devices.HydroShift2Curve;
-                    (c.ScreenMode, c.Video, c.ScreenSaverVideo) = (mode, video, saver);
+                    if (video == name && c.Video is null && c.ScreenMode == HydroShift2CurveSettings.ScreenNexus)
+                    {
+                        (c.Video, c.ScreenMode) = (video, mode);
+                    }
+                    if (saver == name && c.ScreenSaverVideo is null)
+                    {
+                        c.ScreenSaverVideo = saver;
+                    }
                 });
                 player.Wake();
             }

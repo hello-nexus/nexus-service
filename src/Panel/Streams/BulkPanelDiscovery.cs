@@ -28,6 +28,8 @@ public sealed class BulkPanelDiscovery : IStreamedPanelDiscovery
 
     public bool ListedWhileWithheld { get; }
 
+    public string? WithheldSerial => _hub.IsConnected && Withheld ? _hub.Serial ?? _hub.Driver.HandlerId : null;
+
     public string HandlerId => _hub.Driver.HandlerId;
 
     public bool Withheld => _withheld?.Invoke() == true;
