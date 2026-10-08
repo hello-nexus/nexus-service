@@ -8,6 +8,8 @@ using System.Threading.Tasks;
 using Microsoft.Extensions.Hosting;
 using Nexus.Service.Cooling;
 using Nexus.Service.Devices;
+using Nexus.Service.Devices.Handlers;
+using Nexus.Service.Models.Devices;
 using Nexus.Service.Persistence;
 using Nexus.Service.Sensors;
 
@@ -88,10 +90,12 @@ internal sealed class SystemProfileService : BackgroundService
 
         var specs = await _specs.GetAsync(ct).ConfigureAwait(false);
 
+        var connected = _devices.GetAll().Where(d => d.Connected).ToList();
+        LatchY70Seen(_store, connected);
+
         // One list: handler-backed devices we drive (connected) ∪ any USB device
         // the OS names (recognized even if unsupported).
-        var devices = _devices.GetAll()
-            .Where(d => d.Connected)
+        var devices = connected
             .Select(d => d.Name)
             .Concat(_devices.GetUsbDevices().Select(u => u.Name))
             .Where(n => !string.IsNullOrWhiteSpace(n))
@@ -280,6 +284,13 @@ internal sealed class SystemProfileService : BackgroundService
     {
         if (!string.IsNullOrWhiteSpace(value))
             props.Add((key, value.Trim()));
+    }
+
+    /// <summary>Sets FleetY70Seen the first time the Y70 handler is among the connected devices; the fleet specs event reports it as y70Seen.</summary>
+    internal static void LatchY70Seen(IConfigStore store, IEnumerable<DeviceListItem> connected)
+    {
+        if (connected.Any(d => d.Id == Y70Handler.HandlerId) && !store.Load().Telemetry.FleetY70Seen)
+            store.Update(s => s.Telemetry.FleetY70Seen = true);
     }
 
     // "32 GB DDR5-6000 (...)" -> 32. The first GB figure is the total.
