@@ -70,6 +70,9 @@ public sealed class HydroShift2CurvePlayer : BackgroundService
     /// <summary>Raised when <see cref="OwnsGlass"/> flips, so the panel stream stops or resumes.</summary>
     public event Action? GlassOwnerChanged;
 
+    /// <summary>The fast shutdown skips the connection worker's release, so the glass is let go here.</summary>
+    public void ReleaseForShutdown() => _hub.Detach();
+
     /// <summary>Settings changed: act now rather than on the next tick.</summary>
     public void Wake()
     {
