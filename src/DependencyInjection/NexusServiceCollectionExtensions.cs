@@ -234,6 +234,8 @@ public static class NexusServiceCollectionExtensions
             new CompositeFanControlProvider.FanSource(
                 Nexus.Service.Cooling.HydroShift2CoolingProvider.IsHydroShift2Id, sp.GetRequiredService<Nexus.Service.Cooling.HydroShift2CoolingProvider>()),
             new CompositeFanControlProvider.FanSource(
+                Nexus.Service.Cooling.Galahad2LcdCoolingProvider.IsGalahad2LcdId, sp.GetRequiredService<Nexus.Service.Cooling.Galahad2LcdCoolingProvider>()),
+            new CompositeFanControlProvider.FanSource(
                 Nexus.Service.Cooling.CorsairLinkCoolingProvider.IsCorsairId, sp.GetRequiredService<Nexus.Service.Cooling.CorsairLinkCoolingProvider>()),
             new CompositeFanControlProvider.FanSource(
                 Nexus.Service.Cooling.Slv3CoolingProvider.IsSlv3Id, sp.GetRequiredService<Nexus.Service.Cooling.Slv3CoolingProvider>())));
@@ -260,6 +262,8 @@ public static class NexusServiceCollectionExtensions
                 Nexus.Service.Cooling.KrakenCoolingProvider.IsKrakenId, sp.GetRequiredService<Nexus.Service.Cooling.KrakenCoolingProvider>()),
             new CompositeFanControlProvider.FanSource(
                 Nexus.Service.Cooling.HydroShift2CoolingProvider.IsHydroShift2Id, sp.GetRequiredService<Nexus.Service.Cooling.HydroShift2CoolingProvider>()),
+            new CompositeFanControlProvider.FanSource(
+                Nexus.Service.Cooling.Galahad2LcdCoolingProvider.IsGalahad2LcdId, sp.GetRequiredService<Nexus.Service.Cooling.Galahad2LcdCoolingProvider>()),
             new CompositeFanControlProvider.FanSource(
                 Nexus.Service.Cooling.CorsairLinkCoolingProvider.IsCorsairId, sp.GetRequiredService<Nexus.Service.Cooling.CorsairLinkCoolingProvider>()),
             new CompositeFanControlProvider.FanSource(
@@ -296,6 +300,8 @@ public static class NexusServiceCollectionExtensions
             new CompositeFanControlProvider.FanSource(
                 Nexus.Service.Cooling.HydroShift2CoolingProvider.IsHydroShift2Id, sp.GetRequiredService<Nexus.Service.Cooling.HydroShift2CoolingProvider>()),
             new CompositeFanControlProvider.FanSource(
+                Nexus.Service.Cooling.Galahad2LcdCoolingProvider.IsGalahad2LcdId, sp.GetRequiredService<Nexus.Service.Cooling.Galahad2LcdCoolingProvider>()),
+            new CompositeFanControlProvider.FanSource(
                 Nexus.Service.Cooling.CorsairLinkCoolingProvider.IsCorsairId, sp.GetRequiredService<Nexus.Service.Cooling.CorsairLinkCoolingProvider>()),
             new CompositeFanControlProvider.FanSource(
                 Nexus.Service.Cooling.Slv3CoolingProvider.IsSlv3Id, sp.GetRequiredService<Nexus.Service.Cooling.Slv3CoolingProvider>())));
@@ -321,6 +327,8 @@ public static class NexusServiceCollectionExtensions
                 Nexus.Service.Cooling.KrakenCoolingProvider.IsKrakenId, sp.GetRequiredService<Nexus.Service.Cooling.KrakenCoolingProvider>()),
             new CompositeFanControlProvider.FanSource(
                 Nexus.Service.Cooling.HydroShift2CoolingProvider.IsHydroShift2Id, sp.GetRequiredService<Nexus.Service.Cooling.HydroShift2CoolingProvider>()),
+            new CompositeFanControlProvider.FanSource(
+                Nexus.Service.Cooling.Galahad2LcdCoolingProvider.IsGalahad2LcdId, sp.GetRequiredService<Nexus.Service.Cooling.Galahad2LcdCoolingProvider>()),
             new CompositeFanControlProvider.FanSource(
                 Nexus.Service.Cooling.CorsairLinkCoolingProvider.IsCorsairId, sp.GetRequiredService<Nexus.Service.Cooling.CorsairLinkCoolingProvider>()),
             new CompositeFanControlProvider.FanSource(
@@ -1089,6 +1097,14 @@ public static class NexusServiceCollectionExtensions
                 _ => new Nexus.Service.Panel.Streams.JpegPanelDiscovery(jpegPanelHub));
             services.AddSingleton<IDeviceHandler>(
                 _ => new Nexus.Service.Devices.Handlers.JpegPanelHandler(jpegPanelHub));
+            if (jpegPanelModel == Nexus.Service.Peripherals.JpegPanels.JpegPanelModel.GalahadIiLcd)
+            {
+                // Pump and coolant ride the panel's handle, so they share its gate and connection.
+                var galahadAio = new Nexus.Service.Peripherals.JpegPanels.Galahad2LcdAio(jpegPanelHub);
+                services.AddSingleton(galahadAio);
+                services.AddSingleton<Microsoft.Extensions.Hosting.IHostedService>(galahadAio);
+                services.AddSingleton<Nexus.Service.Cooling.Galahad2LcdCoolingProvider>();
+            }
         }
 
         // Bulk-pipe cooler LCDs (ASUS Ryujin, Thermalright, Lian Li Universal Screen 8.8, ZMatrices,

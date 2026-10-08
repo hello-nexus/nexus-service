@@ -92,6 +92,10 @@ public sealed class JpegPanelHub : IDisposable
                     WriteRawLocked(report);
                 }
             }
+            if (_device != null)
+            {
+                Detaching?.Invoke(_device, _report);
+            }
             if (_device != null && _model.Handshake is { } handshake)
             {
                 handshake.OnDetach(_device, _model.ReportLength);
@@ -169,6 +173,21 @@ public sealed class JpegPanelHub : IDisposable
                 chunkIndex++;
             }
             return true;
+        }
+    }
+
+    /// <summary>Best-effort last write on the handle as it detaches, under the hub lock with the report buffer.</summary>
+    public Action<IHidDevice, byte[]>? Detaching { get; set; }
+
+    /// <summary>
+    /// Runs a control exchange on the attached handle with the report buffer, between frames;
+    /// <paramref name="fallback"/> when nothing is attached.
+    /// </summary>
+    public T Exchange<T>(Func<IHidDevice, byte[], T> op, T fallback)
+    {
+        lock (_lock)
+        {
+            return _device != null && _attached ? op(_device, _report) : fallback;
         }
     }
 
