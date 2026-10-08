@@ -451,6 +451,19 @@ internal static class TrayBootstrap
             catch (Exception ex) { Console.Error.WriteLine($"[helper-sync] requestStop failed: {ex.Message}"); }
         };
 
+        helperRegistry.InboundEnvelope += (conn, env) =>
+        {
+            if (env.Type != Nexus.Service.Helper.Domains.SystemCommands.FocusWindowElevatedType || env.Payload is null) return;
+            try
+            {
+                var p = System.Text.Json.JsonSerializer.Deserialize(env.Payload.Value, Nexus.Service.Serialization.AppJsonContext.Default.FocusWindowPayload);
+                if (p is null) return;
+                var session = conn.SessionId;
+                Task.Run(() => Nexus.Service.Lifecycle.UserHelperBootstrapper.FocusWindowElevated(session, p.Hwnd, p.ExpectedForeground));
+            }
+            catch (Exception ex) { Console.Error.WriteLine($"[helper-sync] focusWindowElevated failed: {ex.Message}"); }
+        };
+
         // Lock-screen wake-on-input. The helper owns the poll because
         // GetLastInputInfo is session-scoped and this service runs in Session 0;
         // each consumer (lighting blackout, Stream Deck lock sleep, Sentry)
