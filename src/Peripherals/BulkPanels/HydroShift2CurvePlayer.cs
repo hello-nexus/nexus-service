@@ -69,16 +69,21 @@ public sealed class HydroShift2CurvePlayer : BackgroundService
     }
 
     /// <summary>How the head is mounted, from its panel record; library videos are encoded to match.</summary>
-    public (bool Flip180, bool Mirror) Mount()
+    public (bool Flip180, bool Mirror) Mount() =>
+        Record() is { } record ? (record.Flip180 == true, record.Mirror == true) : (false, false);
+
+    private bool ShowsSecondaryMonitor() => Record()?.SecondaryMonitor == true;
+
+    private Nexus.Service.Models.Panel.PanelDeviceRecord? Record()
     {
         foreach (var record in _registry.List())
         {
             if (record.Capabilities?.Family == HydroShift2CurveLcdDriver.Id)
             {
-                return (record.Flip180 == true, record.Mirror == true);
+                return record;
             }
         }
-        return (false, false);
+        return null;
     }
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
@@ -117,10 +122,10 @@ public sealed class HydroShift2CurvePlayer : BackgroundService
             _connected = true;
             ScheduleSaver(settings.ScreenSaverMinutes, force: true);
         }
-        if (_offlineClockSent != settings.OfflineClock
-            && _hub.Exchange(pipe => _driver.SetOfflineClock(pipe, settings.OfflineClock), false))
+        if (settings.OfflineClock is { } clock && _offlineClockSent != clock
+            && _hub.Exchange(pipe => _driver.SetOfflineClock(pipe, clock), false))
         {
-            _offlineClockSent = settings.OfflineClock;
+            _offlineClockSent = clock;
         }
         ScheduleSaver(settings.ScreenSaverMinutes, force: false);
 
@@ -134,7 +139,8 @@ public sealed class HydroShift2CurvePlayer : BackgroundService
         if (_saverMinutes > 0 && Environment.TickCount64 >= _nextSaverAt)
         {
             ScheduleSaver(_saverMinutes, force: true);
-            if (settings.ScreenSaverVideo is { } saver && _media.Exists(saver))
+            // A Windows monitor on the glass would be torn down and rebuilt every interval.
+            if (settings.ScreenSaverVideo is { } saver && _media.Exists(saver) && !ShowsSecondaryMonitor())
             {
                 var mount = Mount();
                 await PlayAsync(saver, loop: false, saverBacklight: settings.ScreenSaverBrightness,

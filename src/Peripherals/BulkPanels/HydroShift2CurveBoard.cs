@@ -52,6 +52,7 @@ public sealed class HydroShift2CurveBoard : BackgroundService
     private bool _pumpDriven;
     private bool? _followsHeader;
     private bool _restoreHeaderFollow;
+    private bool? _loggedFollow;
     private byte[]? _leds;
     private bool _ledsDirty;
     private int _tilt;
@@ -262,10 +263,16 @@ public sealed class HydroShift2CurveBoard : BackgroundService
                 Disconnect(handBack: false);
                 return;
             }
+            bool? reported = status is null ? null : HydroShift2CurveProtocol.DecodeFollowsHeader(status);
+            if (reported is { } follows && _loggedFollow != follows)
+            {
+                _loggedFollow = follows;
+                ServiceLog.Info($"[{HydroShift2CurveLcdDriver.Id}] pump {(follows ? "follows the motherboard header" : "runs its own speed")}");
+            }
             lock (_lock)
             {
                 _coolantC = status is null ? _coolantC : HydroShift2CurveProtocol.DecodeCoolant(status);
-                _followsHeader = status is null ? _followsHeader : HydroShift2CurveProtocol.DecodeFollowsHeader(status);
+                _followsHeader = reported ?? _followsHeader;
                 _pumpRpm = speed is null ? _pumpRpm : HydroShift2CurveProtocol.DecodePumpRpm(speed);
             }
             ApplyIdleFollow();

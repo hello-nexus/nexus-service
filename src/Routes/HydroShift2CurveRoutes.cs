@@ -67,7 +67,7 @@ public static partial class DevicesRoutes
                     ScreenSaverMinutes = s.ScreenSaverMinutes,
                     ScreenSaverVideo = s.ScreenSaverVideo,
                     ScreenSaverBrightness = s.ScreenSaverBrightness,
-                    OfflineClock = s.OfflineClock,
+                    OfflineClock = s.OfflineClock == true,
                     PumpFollowsMotherboard = board.FollowsMotherboardWhenIdle,
                 },
                 AppJsonContext.Default.HydroShift2CurveSettingsResponse);
