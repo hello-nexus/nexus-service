@@ -26,6 +26,10 @@ public sealed partial class HydroShift2CurveMedia
     private const string SourcePrefix = "source";
     private const string MetaFile = "meta.txt";
     private const string ThumbFile = "thumb.jpg";
+    private const string PreviewFile = "preview.mp4";
+    /// <summary>Preview size: half the glass, landscape, which plays in any browser.</summary>
+    private const int PreviewWidth = HydroShift2CurveProtocol.Width / 2;
+    private const int PreviewHeight = HydroShift2CurveProtocol.Height / 2;
     private const string TrashPrefix = ".deleted-";
 
     /// <summary>Longest clip kept; the glass loops whatever it gets.</summary>
@@ -144,7 +148,9 @@ public sealed partial class HydroShift2CurveMedia
                 if (!ok)
                 {
                     Delete(name);
+                    return;
                 }
+                await EnsurePreviewAsync(name, ct).ConfigureAwait(false);
             }
             catch (Exception ex)
             {
@@ -209,6 +215,58 @@ public sealed partial class HydroShift2CurveMedia
             ServiceLog.Warn($"[{HydroShift2CurveLcdDriver.Id}] encoding '{name}' failed: {ex.Message}");
             TryDeleteFile(target + ".tmp");
             _failedAt[target] = Environment.TickCount64;
+            return null;
+        }
+        finally
+        {
+            _encoding = null;
+            _encode.Release();
+        }
+    }
+
+    /// <summary>A browser-playable landscape mp4 of the cropped clip for the dashboard, made on first use; null when that fails.</summary>
+    public async Task<string?> EnsurePreviewAsync(string name, CancellationToken ct)
+    {
+        var target = Path.Combine(ItemDir(name), PreviewFile);
+        if (File.Exists(target))
+        {
+            return target;
+        }
+        if (SourcePath(name) is not { } source)
+        {
+            return null;
+        }
+        await _encode.WaitAsync(ct).ConfigureAwait(false);
+        var temp = target + ".tmp.mp4";
+        try
+        {
+            if (File.Exists(target))
+            {
+                return target;
+            }
+            var (_, crop, _) = ReadMeta(name);
+            _encoding = name;
+            await MediaImporter.RunFfmpeg(EncodeTimeoutSeconds, ct, new[]
+            {
+                "-y", "-i", source,
+                "-vf", $"{crop.ToFfmpegCrop()},scale={PreviewWidth}:{PreviewHeight}:flags=lanczos",
+                "-r", FrameRate.ToString(CultureInfo.InvariantCulture),
+                "-c:v", "libx264", "-preset", "veryfast", "-crf", "26", "-pix_fmt", "yuv420p",
+                "-an", "-movflags", "+faststart", "-t", MaxSeconds.ToString(CultureInfo.InvariantCulture),
+                temp,
+            }).ConfigureAwait(false);
+            File.Move(temp, target, overwrite: true);
+            return target;
+        }
+        catch (OperationCanceledException)
+        {
+            TryDeleteFile(temp);
+            throw;
+        }
+        catch (Exception ex)
+        {
+            ServiceLog.Warn($"[{HydroShift2CurveLcdDriver.Id}] preview for '{name}' failed: {ex.Message}");
+            TryDeleteFile(temp);
             return null;
         }
         finally

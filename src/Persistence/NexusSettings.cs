@@ -1905,7 +1905,7 @@ public sealed class HydroShift2CurveSettings
     public string? ScreenSaverVideo { get; set; }
     /// <summary>Backlight percent while the screen saver plays.</summary>
     public int ScreenSaverBrightness { get; set; } = 50;
-    /// <summary>The firmware shows its own clock while no host drives the glass; null leaves the glass's own choice.</summary>
+    /// <summary>In panel mode, releasing the glass returns it to its own coolant and pump screen; also sent as the firmware's offline-clock flag. Null leaves the glass's own choice.</summary>
     public bool? OfflineClock { get; set; }
     /// <summary>When Nexus is not driving the pump: true follows the motherboard header, false runs the
     /// power-on speed, null leaves the board as found.</summary>

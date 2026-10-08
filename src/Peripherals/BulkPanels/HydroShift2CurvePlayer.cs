@@ -135,13 +135,14 @@ public sealed class HydroShift2CurvePlayer : BackgroundService
 
     private async Task TickAsync(CancellationToken ct)
     {
+        var settings = _store.Load().Devices.HydroShift2Curve;
+        _driver.OwnScreenOnRelease = settings.OfflineClock == true && settings.ScreenMode == HydroShift2CurveSettings.ScreenNexus;
         if (!_hub.IsConnected)
         {
             _connected = false;
             _offlineClockSent = null;
             return;
         }
-        var settings = _store.Load().Devices.HydroShift2Curve;
         if (!_connected)
         {
             _connected = true;

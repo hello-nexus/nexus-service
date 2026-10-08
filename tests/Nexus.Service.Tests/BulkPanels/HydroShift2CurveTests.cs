@@ -101,15 +101,17 @@ public class HydroShift2CurveTests
     }
 
     [Fact]
-    public void Edge_leds_run_clockwise_from_the_curved_right_edge()
+    public void Edge_leds_run_clockwise_with_the_left_edge_at_15_to_19()
     {
-        Assert.Equal(1f, HydroShift2CurveLightingDeviceProvider.EdgePosition(0).U);
-        Assert.Equal(1f, HydroShift2CurveLightingDeviceProvider.EdgePosition(6).V);
-        Assert.Equal(0f, HydroShift2CurveLightingDeviceProvider.EdgePosition(18).U);
-        Assert.Equal(0f, HydroShift2CurveLightingDeviceProvider.EdgePosition(34).V);
+        var left = Enumerable.Range(0, 35).Where(i => HydroShift2CurveLightingDeviceProvider.EdgePosition(i).U == 0f).ToArray();
+        Assert.Equal(new[] { 15, 16, 17, 18, 19 }, left);
+        var right = Enumerable.Range(0, 35).Where(i => HydroShift2CurveLightingDeviceProvider.EdgePosition(i).U == 1f).ToArray();
+        Assert.Equal(new[] { 0, 1, 2, 32, 33, 34 }, right);
+        Assert.Equal(1f, HydroShift2CurveLightingDeviceProvider.EdgePosition(3).V);
+        Assert.Equal(0f, HydroShift2CurveLightingDeviceProvider.EdgePosition(20).V);
         // Clockwise: down the right edge, then leftwards along the bottom.
-        Assert.True(HydroShift2CurveLightingDeviceProvider.EdgePosition(1).V > HydroShift2CurveLightingDeviceProvider.EdgePosition(0).V);
-        Assert.True(HydroShift2CurveLightingDeviceProvider.EdgePosition(7).U < HydroShift2CurveLightingDeviceProvider.EdgePosition(6).U);
+        Assert.True(HydroShift2CurveLightingDeviceProvider.EdgePosition(0).V > HydroShift2CurveLightingDeviceProvider.EdgePosition(34).V);
+        Assert.True(HydroShift2CurveLightingDeviceProvider.EdgePosition(4).U < HydroShift2CurveLightingDeviceProvider.EdgePosition(3).U);
     }
 
     // ── board ──
@@ -324,6 +326,19 @@ public class HydroShift2CurveTests
         Assert.False(pipe.FollowsHeader);
     }
 
+    [Theory]
+    [InlineData(true, 2)]
+    [InlineData(false, 1)]
+    public void Release_reboots_the_glass_into_its_own_screen_only_when_asked(bool ownScreen, int writes)
+    {
+        var pipe = new RecordingPipe();
+        var driver = new HydroShift2CurveLcdDriver { OwnScreenOnRelease = ownScreen };
+
+        driver.Disconnect(pipe, null);
+
+        Assert.Equal(writes, pipe.Writes.Count);
+    }
+
     // ── native video ──
 
     [Fact]
@@ -499,6 +514,15 @@ public class HydroShift2CurveTests
             return reply.Length;
         }
 
+        public void Dispose() { }
+    }
+
+    private sealed class RecordingPipe : IBulkUsbPipe
+    {
+        public List<byte[]> Writes { get; } = new();
+        public bool Write(ReadOnlySpan<byte> data) { Writes.Add(data.ToArray()); return true; }
+        public bool Write(byte pipeId, ReadOnlySpan<byte> data) => Write(data);
+        public int Read(Span<byte> buffer, int timeoutMs) => 0;
         public void Dispose() { }
     }
 

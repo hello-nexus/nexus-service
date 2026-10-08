@@ -47,6 +47,10 @@ public sealed class HydroShift2CurveLcdDriver : IBulkPanelDriver
     public string? Firmware { get; private set; }
 
     private volatile bool _videoOwnsGlass;
+    private volatile bool _ownScreenOnRelease;
+
+    /// <summary>On release the glass returns to its own screen instead of holding the last frame.</summary>
+    public bool OwnScreenOnRelease { get => _ownScreenOnRelease; set => _ownScreenOnRelease = value; }
 
     /// <summary>While set, the glass plays a video on its own decoder and streamed frames are dropped.</summary>
     public bool VideoOwnsGlass { get => _videoOwnsGlass; set => _videoOwnsGlass = value; }
@@ -171,6 +175,12 @@ public sealed class HydroShift2CurveLcdDriver : IBulkPanelDriver
     {
         pipe.Write(HydroShift2Protocol.EncodeCommand(
             HydroShift2Protocol.CommandStopPlay, ReadOnlySpan<byte>.Empty, NextTimestamp()));
+        if (_ownScreenOnRelease)
+        {
+            // Nothing short of a reboot brings the firmware's own screen back (measured).
+            pipe.Write(HydroShift2Protocol.EncodeCommand(
+                HydroShift2CurveProtocol.CommandReboot, ReadOnlySpan<byte>.Empty, NextTimestamp()));
+        }
         _jpeg?.Dispose();
         _jpeg = null;
     }

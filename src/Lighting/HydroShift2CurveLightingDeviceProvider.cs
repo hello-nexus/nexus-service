@@ -203,20 +203,22 @@ public sealed class HydroShift2CurveLightingDeviceProvider :
     }
 
     /// <summary>
-    /// Where LED <paramref name="index"/> sits round the glass seen from the front, clockwise
-    /// (camera-mapped, +-1 LED at the corners): 0-5 down the curved right edge, 6-17 right
-    /// to left along the bottom, 18-22 up the left edge, 23-34 left to right along the top.
+    /// Where LED <paramref name="index"/> sits round the glass seen from the front, clockwise:
+    /// 32-34 and 0-2 down the curved right edge, 3-14 right to left along the bottom, 15-19 up
+    /// the left edge (user-confirmed on the unit), 20-31 left to right along the top.
     /// </summary>
     internal static (float U, float V) EdgePosition(int index)
     {
         const float Margin = 0.04f;
         static float Spread(int i, int count) => Margin + ((i + 0.5f) / count * (1f - (2f * Margin)));
-        return index switch
+        // Counted from the top of the right edge, three LEDs before index 0.
+        var k = (index + 3) % HydroShift2CurveProtocol.LedCount;
+        return k switch
         {
-            < 6 => (1f, Spread(index, 6)),
-            < 18 => (1f - Spread(index - 6, 12), 1f),
-            < 23 => (0f, 1f - Spread(index - 18, 5)),
-            _ => (Spread(index - 23, 12), 0f),
+            < 6 => (1f, Spread(k, 6)),
+            < 18 => (1f - Spread(k - 6, 12), 1f),
+            < 23 => (0f, 1f - Spread(k - 18, 5)),
+            _ => (Spread(k - 23, 12), 0f),
         };
     }
 

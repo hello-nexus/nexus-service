@@ -174,6 +174,17 @@ public static partial class DevicesRoutes
             }
         }).DisableAntiforgery();
 
+        app.MapGet("/devices/lianli-hydroshift2-curve/media/{name}/preview", async (string name, HttpContext ctx, HydroShift2CurveMedia media) =>
+        {
+            if (!media.Exists(name) || await media.EnsurePreviewAsync(name, ctx.RequestAborted) is not { } path)
+            {
+                return Results.NotFound();
+            }
+            // Shared for delete, so a browser holding the stream open never blocks removing the clip.
+            var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
+            return Results.File(stream, "video/mp4", enableRangeProcessing: true);
+        });
+
         app.MapPost("/devices/lianli-hydroshift2-curve/media/delete", async (HydroShift2CurveMediaDeleteRequest body, HydroShift2CurvePlayer player, HydroShift2CurveMedia media, IConfigStore store) =>
         {
             if (body.Name is not { } name || !media.Exists(name))
