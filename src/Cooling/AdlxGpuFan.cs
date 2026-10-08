@@ -264,6 +264,7 @@ internal sealed unsafe class AdlxGpuFan
             if (result == Write.Unfit)
             {
                 ServiceLog.Warn($"[amd-fan] '{_name}': no curve the driver accepts is left to restore; reset fan tuning in Radeon Software");
+                if (_zeroRpmSupported && zeroRpm is bool restore) WriteZeroRpm(restore);
                 AdlxTakeovers.Clear(_pnp);
                 Forget();
                 return false;
@@ -306,72 +307,110 @@ internal sealed unsafe class AdlxGpuFan
     /// <summary>Writes <paramref name="points"/>, or a flat curve at <paramref name="flatSpeed"/> when null.</summary>
     private Write WriteCurve(string op, (int Speed, int Temp)[]? points, int flatSpeed)
     {
-        nint list = 0;
-        var rc = Adlx.GetOut(_fan, 5, &list); // GetEmptyFanTuningStates
-        if (!Adlx.Succeeded(rc) || list == 0)
+        // The empty list is the ADLX sample's path; the current-states list is the fallback when its setters do not stick.
+        foreach (var source in new[] { 5, 4 }) // GetEmptyFanTuningStates, GetFanTuningStates
         {
-            WarnOnce($"{op}:empty:{rc}", $"GetEmptyFanTuningStates failed ({Adlx.Name(rc)})");
-            return Write.Refused;
-        }
-        try
-        {
-            var count = (int)((delegate* unmanaged[Stdcall]<nint, uint>)Adlx.Slot(list, 3))(list); // Size
-            points ??= AdlxFanCurve.Flat(flatSpeed, _temp, count);
-            if (points.Length != count)
+            nint list = 0;
+            var rc = Adlx.GetOut(_fan, source, &list);
+            if (!Check(rc) || list == 0)
             {
-                WarnOnce($"{op}:count", $"{op}: curve has {points.Length} points, driver expects {count}");
-                return Write.Unfit;
-            }
-            for (var i = 0; i < count; i++)
-            {
-                nint state = 0;
-                rc = ((delegate* unmanaged[Stdcall]<nint, uint, nint*, int>)Adlx.Slot(list, 11))(list, (uint)i, &state); // At_ManualFanTuningStateList
-                if (!Adlx.Succeeded(rc) || state == 0)
-                {
-                    WarnOnce($"{op}:at:{rc}", $"{op}: state {i} unavailable ({Adlx.Name(rc)})");
-                    return Write.Refused;
-                }
-                ((delegate* unmanaged[Stdcall]<nint, int, int>)Adlx.Slot(state, 4))(state, points[i].Speed); // SetFanSpeed
-                ((delegate* unmanaged[Stdcall]<nint, int, int>)Adlx.Slot(state, 6))(state, points[i].Temp); // SetTemperature
-                Adlx.Release(state);
-            }
-
-            var invalidIndex = -1;
-            rc = ((delegate* unmanaged[Stdcall]<nint, nint, int*, int>)Adlx.Slot(_fan, 6))(_fan, list, &invalidIndex); // IsValidFanTuningStates
-            if (!Adlx.Succeeded(rc) || invalidIndex != -1)
-            {
-                WarnOnce($"{op}:invalid:{rc}:{invalidIndex}", $"{op}: curve {Describe(points)} rejected at point {invalidIndex} ({Adlx.Name(rc)})");
-                return Adlx.Succeeded(rc) ? Write.Unfit : Write.Refused;
-            }
-            rc = ((delegate* unmanaged[Stdcall]<nint, nint, int>)Adlx.Slot(_fan, 7))(_fan, list); // SetFanTuningStates
-            if (!Adlx.Succeeded(rc))
-            {
-                WarnOnce($"{op}:set:{rc}", rc == Adlx.ResetNeeded
-                    ? $"{op}: refused while Radeon Software's automatic tuning is on; switch its GPU tuning to manual"
-                    : $"{op}: SetFanTuningStates failed ({Adlx.Name(rc)})");
+                WarnOnce($"{op}:list:{source}:{rc}", $"{op}: fan tuning state list (slot {source}) unavailable ({Adlx.Name(rc)})");
                 return Write.Refused;
             }
-            return Write.Ok;
+            try
+            {
+                var count = (int)((delegate* unmanaged[Stdcall]<nint, uint>)Adlx.Slot(list, 3))(list); // Size
+                points ??= AdlxFanCurve.Flat(flatSpeed, _temp, count);
+                if (points.Length != count)
+                {
+                    WarnOnce($"{op}:count", $"{op}: curve has {points.Length} points, driver expects {count}");
+                    return Write.Unfit;
+                }
+                if (!Fill(op, source, list, points)) continue;
+
+                // IsValidFanTuningStates reports index 0 for the driver's own curve on an RX 9070 XT (ADLX 1.5),
+                // so only its result code gates; SetFanTuningStates validates again.
+                var invalidIndex = -1;
+                rc = ((delegate* unmanaged[Stdcall]<nint, nint, int*, int>)Adlx.Slot(_fan, 6))(_fan, list, &invalidIndex); // IsValidFanTuningStates
+                if (!Check(rc))
+                {
+                    WarnOnce($"{op}:valid:{rc}", $"{op}: IsValidFanTuningStates failed ({Adlx.Name(rc)})");
+                    return Write.Refused;
+                }
+                if (invalidIndex != -1) InfoOnce($"{op}:index:{invalidIndex}", $"{op}: IsValidFanTuningStates reports index {invalidIndex} for {Describe(points)}; applying");
+
+                rc = ((delegate* unmanaged[Stdcall]<nint, nint, int>)Adlx.Slot(_fan, 7))(_fan, list); // SetFanTuningStates
+                if (!Check(rc))
+                {
+                    WarnOnce($"{op}:set:{rc}", rc == Adlx.ResetNeeded
+                        ? $"{op}: refused while Radeon Software's automatic tuning is on; switch its GPU tuning to manual"
+                        : $"{op}: SetFanTuningStates {Describe(points)} failed ({Adlx.Name(rc)})");
+                    return rc == Adlx.InvalidArgs ? Write.Unfit : Write.Refused;
+                }
+                var applied = ReadCurve(_fan, 4); // GetFanTuningStates
+                InfoOnce($"{op}:applied", $"{op}: wrote {Describe(points)} via list {source}, driver reports {Describe(applied)}");
+                if (applied is not null && !applied.SequenceEqual(points))
+                    WarnOnce($"{op}:mismatch", $"{op}: wrote {Describe(points)}, driver reports {Describe(applied)}");
+                return Write.Ok;
+            }
+            finally
+            {
+                Adlx.Release(list);
+            }
         }
-        finally
+        WarnOnce($"{op}:setters", $"{op}: fan tuning states ignore SetFanSpeed/SetTemperature on both lists");
+        return Write.Refused;
+    }
+
+    /// <summary>Sets every state and reads it back; false when a setter fails or its value does not stick.</summary>
+    private bool Fill(string op, int source, nint list, (int Speed, int Temp)[] points)
+    {
+        for (var i = 0; i < points.Length; i++)
         {
-            Adlx.Release(list);
+            nint state = 0;
+            var rc = ((delegate* unmanaged[Stdcall]<nint, uint, nint*, int>)Adlx.Slot(list, 11))(list, (uint)i, &state); // At_ManualFanTuningStateList
+            if (!Check(rc) || state == 0)
+            {
+                WarnOnce($"{op}:at:{source}:{rc}", $"{op}: state {i} of list {source} unavailable ({Adlx.Name(rc)})");
+                return false;
+            }
+            var speedRc = ((delegate* unmanaged[Stdcall]<nint, int, int>)Adlx.Slot(state, 4))(state, points[i].Speed); // SetFanSpeed
+            var tempRc = ((delegate* unmanaged[Stdcall]<nint, int, int>)Adlx.Slot(state, 6))(state, points[i].Temp); // SetTemperature
+            int speed = 0, temp = 0;
+            ((delegate* unmanaged[Stdcall]<nint, int*, int>)Adlx.Slot(state, 3))(state, &speed); // GetFanSpeed
+            ((delegate* unmanaged[Stdcall]<nint, int*, int>)Adlx.Slot(state, 5))(state, &temp); // GetTemperature
+            Adlx.Release(state);
+            if (!Adlx.Succeeded(speedRc) || !Adlx.Succeeded(tempRc) || speed != points[i].Speed || temp != points[i].Temp)
+            {
+                WarnOnce($"{op}:fill:{source}", $"{op}: list {source} state {i}: SetFanSpeed {Adlx.Name(speedRc)}, SetTemperature {Adlx.Name(tempRc)}, wrote {points[i].Speed}%@{points[i].Temp}C, reads {speed}%@{temp}C");
+                return false;
+            }
         }
+        return true;
     }
 
     private bool WriteZeroRpm(bool on)
     {
         var rc = ((delegate* unmanaged[Stdcall]<nint, byte, int>)Adlx.Slot(_fan, 10))(_fan, on ? (byte)1 : (byte)0); // SetZeroRPMState
-        if (Adlx.Succeeded(rc)) return true;
+        if (Check(rc)) return true;
         WarnOnce($"zero:{on}:{rc}", $"SetZeroRPMState({on}) failed ({Adlx.Name(rc)})");
         return false;
+    }
+
+    /// <summary>True when ADLX was torn down under this object (OS shutdown, driver reset); the provider then reopens the card.</summary>
+    public bool Dead { get; private set; }
+
+    private bool Check(int rc)
+    {
+        if (Adlx.IsDead(rc)) Dead = true;
+        return Adlx.Succeeded(rc);
     }
 
     private (int Speed, int Temp)[]? ReadCurve(nint obj, int slot)
     {
         nint list = 0;
         var rc = Adlx.GetOut(obj, slot, &list);
-        if (!Adlx.Succeeded(rc) || list == 0)
+        if (!Check(rc) || list == 0)
         {
             WarnOnce($"read:{slot}:{rc}", $"reading fan curve (slot {slot}) failed ({Adlx.Name(rc)})");
             return null;
@@ -409,6 +448,11 @@ internal sealed unsafe class AdlxGpuFan
     private void WarnOnce(string key, string message)
     {
         if (_warned.Add(key)) ServiceLog.Warn($"[amd-fan] '{_name}': {message}");
+    }
+
+    private void InfoOnce(string key, string message)
+    {
+        if (_warned.Add(key)) ServiceLog.Info($"[amd-fan] '{_name}': {message}");
     }
 
     private static string Describe((int Speed, int Temp)[]? points) =>
@@ -493,6 +537,7 @@ internal static class AdlxTakeovers
 internal static unsafe class Adlx
 {
     // ADLX_RESULT (ADLXDefines.h).
+    internal const int InvalidArgs = 4;
     internal const int ResetNeeded = 18;
 
     private static readonly string[] Names =
@@ -513,6 +558,9 @@ internal static unsafe class Adlx
 
     /// <summary>ADLX_SUCCEEDED: OK, ALREADY_ENABLED and ALREADY_INITIALIZED all count as success.</summary>
     internal static bool Succeeded(int rc) => rc is 0 or 1 or 2;
+
+    /// <summary>TERMINATED, INVALID_OBJECT, ORPHAN_OBJECTS: every interface from this ADLX instance is unusable.</summary>
+    internal static bool IsDead(int rc) => rc is 7 or 10 or 11;
 
     internal static string Name(int rc) => rc >= 0 && rc < Names.Length ? Names[rc] : rc.ToString();
 

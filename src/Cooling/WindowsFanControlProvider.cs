@@ -53,13 +53,14 @@ public sealed class WindowsFanControlProvider : IFanControlProvider, ICoolingPro
     private readonly Dictionary<string, (ChannelMapping Mapping, ControlMode Mode, float Value)> _calibrationLease = new(StringComparer.Ordinal);
     private readonly object _calibrationLock = new();
 
-    // AMD cards whose fan ADLX drives, by LHM hardware identifier. A miss retries a few
-    // times per card: a service that autostarts can run before the AMD driver's ADLX is ready.
-    private readonly Dictionary<string, AdlxGpuFan> _amdFans = new(StringComparer.Ordinal);
+    // AMD cards whose fan ADLX drives, by LHM hardware identifier. Opening retries a few times
+    // per card: a service that autostarts can run before the AMD driver's ADLX is ready.
+    private readonly Dictionary<string, (AdlxGpuFan Fan, long OpenedAtMs)> _amdFans = new(StringComparer.Ordinal);
     private readonly Dictionary<string, (int Attempts, long RetryAtMs)> _amdMisses = new(StringComparer.Ordinal);
     private AdlxGpuFans? _adlx;
     private const int AmdMaxAttempts = 5;
     private const int AmdRetryMs = 30_000;
+    private const int AmdHealthyMs = 600_000;
 
     public WindowsFanControlProvider(LhmComputer lhm, IConfigStore config)
     {
@@ -243,14 +244,26 @@ public sealed class WindowsFanControlProvider : IFanControlProvider, ICoolingPro
         BeginCalibrationLease(toCalibrate);
         try
         {
-            var tasks = toCalibrate.Select(m => FanCalibrator.CalibrateOneAsync(
-                m.Id,
-                duty => WriteCalibrationDuty(m, duty),
-                () => ReadCalibrationRpm(m),
-                progress,
-                ct));
+            var tasks = toCalibrate.Select(async m =>
+            {
+                try
+                {
+                    return await FanCalibrator.CalibrateOneAsync(
+                        m.Id,
+                        duty => WriteCalibrationDuty(m, duty),
+                        () => ReadCalibrationRpm(m),
+                        progress,
+                        ct);
+                }
+                catch (CalibrationWriteRefusedException)
+                {
+                    // A ramp the fan never followed would save a wrong curve over a valid one.
+                    ServiceLog.Warn($"[fan-control] calibration of {m.Id} skipped: the fan refused a duty write");
+                    return null;
+                }
+            });
 
-            results = await Task.WhenAll(tasks);
+            results = (await Task.WhenAll(tasks)).OfType<FanCalibration>().ToArray();
         }
         finally
         {
@@ -328,9 +341,11 @@ public sealed class WindowsFanControlProvider : IFanControlProvider, ICoolingPro
             // the fan and persist that over a valid calibration.
             if (!_calibrationLease.ContainsKey(mapping.Id))
                 throw new OperationCanceledException($"calibration lease revoked for {mapping.Id}");
-            WriteDuty(mapping, Math.Clamp(duty, 0, 100));
+            if (!WriteDuty(mapping, Math.Clamp(duty, 0, 100))) throw new CalibrationWriteRefusedException();
         }
     }
+
+    private sealed class CalibrationWriteRefusedException : Exception;
 
     private static bool WriteDuty(ChannelMapping mapping, float duty)
     {
@@ -480,12 +495,20 @@ public sealed class WindowsFanControlProvider : IFanControlProvider, ICoolingPro
             return null;
         }
         var key = hw.Identifier.ToString();
+        var now = Environment.TickCount64;
         if (_amdFans.TryGetValue(key, out var cached))
         {
-            cached.RetryRelease();
-            return cached;
+            if (!cached.Fan.Dead)
+            {
+                cached.Fan.RetryRelease();
+                return cached.Fan;
+            }
+            // A fresh ADLX reopens the card, and its persisted takeover is handed back on open.
+            _amdFans.Remove(key);
+            _adlx = null;
+            // Only failures close together exhaust the budget; a card that ran healthy gets it back.
+            if (now - cached.OpenedAtMs > AmdHealthyMs) _amdMisses.Remove(key);
         }
-        var now = Environment.TickCount64;
         var miss = _amdMisses.GetValueOrDefault(key);
         if (miss.Attempts >= AmdMaxAttempts || now < miss.RetryAtMs) return null;
         _amdMisses[key] = (miss.Attempts + 1, now + AmdRetryMs);
@@ -494,10 +517,10 @@ public sealed class WindowsFanControlProvider : IFanControlProvider, ICoolingPro
         AdlxGpuFan? fan = null;
         var pnpMatched = false;
         if (_adlx is not null) fan = _adlx.Find(gpu.DeviceId, out pnpMatched);
+        // Opens count against the same budget as misses, so a card that keeps dying is not reopened forever.
         if (fan is not null)
         {
-            _amdFans[key] = fan;
-            _amdMisses.Remove(key);
+            _amdFans[key] = (fan, now);
         }
         // ADLX enumerated before the driver brought this card up; the next attempt re-enumerates.
         else if (_adlx is not null && !pnpMatched)
