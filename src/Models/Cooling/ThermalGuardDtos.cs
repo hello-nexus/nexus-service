@@ -58,7 +58,7 @@ public sealed class ThermalGuardResponse : ApiResponse
     /// <summary>The user's limit in C, null = automatic.</summary>
     public double? LimitOverrideC { get; set; }
     public long? SinceUtcMs { get; set; }
-    /// <summary>True after repeated cooling-engine stalls: Nexus writes no fan until restart or a guard toggle.</summary>
+    /// <summary>True after repeated cooling-engine stalls: Nexus writes no fan until the engine runs steadily again, a restart or a guard toggle.</summary>
     public bool WatchdogLatched { get; set; }
     /// <summary>Whether the cooling page flags fans that can stop while the CPU is hot.</summary>
     public bool LintWarnings { get; set; } = true;

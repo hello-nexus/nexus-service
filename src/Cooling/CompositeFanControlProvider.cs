@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Runtime.CompilerServices;
 using System.Threading;
 using System.Threading.Tasks;
 using Nexus.Service.Models.Cooling;
@@ -36,6 +37,10 @@ public sealed class CompositeFanControlProvider : IFanControlProvider, ICoolingP
     private readonly FanSource[] _extras;
     private readonly PluginProviderRegistry _registry;
     private readonly IConfigStore? _store;
+    private readonly ConditionalWeakTable<IFanControlProvider, SourceGate> _gates = new();
+
+    /// <summary>How long a hub or USB cooler may take to answer before callers stop waiting on it.</summary>
+    internal TimeSpan CallBudget { get; set; } = TimeSpan.FromSeconds(5);
 
     public CompositeFanControlProvider(
         IFanControlProvider motherboard,
@@ -92,10 +97,8 @@ public sealed class CompositeFanControlProvider : IFanControlProvider, ICoolingP
     public IReadOnlyList<FanChannel> GetFanChannels()
     {
         var combined = new List<FanChannel>(_motherboard.GetFanChannels());
-        combined.AddRange(_np50.GetFanChannels());
-        combined.AddRange(_miniHub.GetFanChannels());
-        foreach (var e in Extras())
-            combined.AddRange(e.Provider.GetFanChannels());
+        foreach (var source in GatedSources())
+            combined.AddRange(Call(source, "a fan read", source.GetFanChannels, Array.Empty<FanChannel>()));
         foreach (var ch in combined)
             InferPumpKind(ch);
         MarkAioDevices(combined);
@@ -137,10 +140,7 @@ public sealed class CompositeFanControlProvider : IFanControlProvider, ICoolingP
     public IReadOnlyList<TemperatureSource> GetTemperatureSources()
     {
         var combined = new List<TemperatureSource>(_motherboard.GetTemperatureSources());
-        combined.AddRange(_np50.GetTemperatureSources());
-        combined.AddRange(_miniHub.GetTemperatureSources());
-        foreach (var e in Extras())
-            combined.AddRange(e.Provider.GetTemperatureSources());
+        combined.AddRange(GetDeviceTemperatureSources());
         return combined;
     }
 
@@ -150,20 +150,16 @@ public sealed class CompositeFanControlProvider : IFanControlProvider, ICoolingP
     /// </summary>
     public IReadOnlyList<TemperatureSource> GetDeviceTemperatureSources()
     {
-        var combined = new List<TemperatureSource>(_np50.GetTemperatureSources());
-        combined.AddRange(_miniHub.GetTemperatureSources());
-        foreach (var e in Extras())
-            combined.AddRange(e.Provider.GetTemperatureSources());
+        var combined = new List<TemperatureSource>();
+        foreach (var source in GatedSources())
+            combined.AddRange(Call(source, "a sensor read", source.GetTemperatureSources, Array.Empty<TemperatureSource>()));
         return combined;
     }
 
     public float? ReadTemperature(string sensorId)
     {
-        if (IsNp50Id(sensorId)) return _np50.ReadTemperature(sensorId);
-        if (MiniHubCoolingProvider.IsMiniHubId(sensorId)) return _miniHub.ReadTemperature(sensorId);
-        foreach (var e in Extras())
-            if (e.Owns(sensorId)) return e.Provider.ReadTemperature(sensorId);
-        return _motherboard.ReadTemperature(sensorId);
+        var source = Route(sensorId);
+        return Call(source, "a sensor read", () => source.ReadTemperature(sensorId), (float?)null);
     }
 
     // The single fan-write chokepoint: every duty that reaches hardware - from a
@@ -176,17 +172,24 @@ public sealed class CompositeFanControlProvider : IFanControlProvider, ICoolingP
         // asked for it, nothing rejected it, and the channel simply is not ours
         // to drive. A read of the channel still shows what the hardware does.
         if (IsUncontrolled(channelId)) return clamped;
-        return Route(channelId).SetFanSpeed(channelId, clamped);
+        var source = Route(channelId);
+        return Call(source, "a fan write", () => source.SetFanSpeed(channelId, clamped), clamped, gate => SupersedeRelease(gate, channelId));
     }
 
     public void DriveFanSpeed(string channelId, int dutyPercent)
     {
         if (IsUncontrolled(channelId)) return;
-        Route(channelId).DriveFanSpeed(channelId, CoolingSafety.ClampDuty(dutyPercent));
+        var source = Route(channelId);
+        var clamped = CoolingSafety.ClampDuty(dutyPercent);
+        Run(source, "a fan write", () => source.DriveFanSpeed(channelId, clamped), gate => SupersedeRelease(gate, channelId));
     }
 
     public void ReleaseFan(string channelId)
-        => Route(channelId).ReleaseFan(channelId);
+    {
+        var source = Route(channelId);
+        Run(source, "a fan release", () => source.ReleaseFan(channelId),
+            gate => (gate.ReleasesMissed ??= new HashSet<string>(StringComparer.Ordinal)).Add(channelId));
+    }
 
     // Every provider is attempted: one that throws must not leave the others holding a
     // Nexus duty. The first failure is logged and nothing is rethrown.
@@ -206,17 +209,15 @@ public sealed class CompositeFanControlProvider : IFanControlProvider, ICoolingP
             }
         }
         Attempt("the motherboard fans", _motherboard.ReleaseAll);
-        Attempt("the NP50 hub", _np50.ReleaseAll);
-        Attempt("the MiniHub", _miniHub.ReleaseAll);
-        IEnumerable<FanSource> extras;
-        try { extras = Extras().ToList(); }
+        List<IFanControlProvider> sources;
+        try { sources = GatedSources().ToList(); }
         catch (Exception ex)
         {
             Console.Error.WriteLine($"[cooling] listing providers to release failed: {ex.Message}");
             return;
         }
-        foreach (var e in extras)
-            Attempt("a cooling provider", e.Provider.ReleaseAll);
+        foreach (var source in sources)
+            Attempt(source.GetType().Name, () => Run(source, "a release", source.ReleaseAll, gate => gate.ReleaseAllMissed = true));
     }
 
     public Task<IReadOnlyList<FanCalibration>> CalibrateAsync(
@@ -255,14 +256,117 @@ public sealed class CompositeFanControlProvider : IFanControlProvider, ICoolingP
     {
         var combined = new List<CoolingComponent>(
             _motherboardCooling?.GetAll() ?? Array.Empty<CoolingComponent>());
-        combined.AddRange(_np50.GetAll());
-        combined.AddRange(_miniHub.GetAll());
-        foreach (var e in Extras())
+        foreach (var source in GatedSources())
         {
-            if (e.Provider is ICoolingProvider c)
-                combined.AddRange(c.GetAll());
+            if (source is ICoolingProvider c)
+                combined.AddRange(Call(source, "a status read", c.GetAll, Array.Empty<CoolingComponent>()));
         }
         return combined;
+    }
+
+    // ── stall isolation ──
+
+    // A hub or USB cooler can block its caller until Windows removes the device (a wedged
+    // WinUSB transfer), so its calls run off the caller's thread. One that overruns
+    // CallBudget leaves the source reading as disconnected until every overrun call has
+    // returned and the releases skipped meanwhile have run; the curve engine then re-drives
+    // the channels as they reappear.
+    private sealed class SourceGate
+    {
+        public readonly object Lock = new();
+        public int Overruns;
+        public bool Replaying;
+        public bool ReleaseAllMissed;
+        public HashSet<string>? ReleasesMissed;
+    }
+
+    // A write skipped after a skipped release is the later intent; the engine re-drives it on recovery.
+    private static void SupersedeRelease(SourceGate gate, string channelId) => gate.ReleasesMissed?.Remove(channelId);
+
+    private IEnumerable<IFanControlProvider> GatedSources()
+    {
+        yield return _np50;
+        yield return _miniHub;
+        foreach (var e in Extras()) yield return e.Provider;
+    }
+
+    private void Run(IFanControlProvider source, string what, Action action, Action<SourceGate>? onSkipped = null)
+        => Call(source, what, () => { action(); return true; }, false, onSkipped);
+
+    /// <summary>Runs <paramref name="call"/> within <see cref="CallBudget"/>, or returns <paramref name="whileStalled"/> for a source that has not answered.</summary>
+    private T Call<T>(IFanControlProvider source, string what, Func<T> call, T whileStalled, Action<SourceGate>? onSkipped = null)
+    {
+        // A stalled motherboard path must stall the tick, so the watchdog hands those fans to the BIOS.
+        if (ReferenceEquals(source, _motherboard))
+            return call();
+        var gate = _gates.GetValue(source, _ => new SourceGate());
+        lock (gate.Lock)
+        {
+            if (gate.Overruns > 0 || gate.Replaying)
+            {
+                onSkipped?.Invoke(gate);
+                return whileStalled;
+            }
+        }
+        var startedMs = Environment.TickCount64;
+        var task = Task.Run(call);
+        bool done;
+        try { done = task.Wait(CallBudget); }
+        catch (AggregateException) { done = true; }
+        if (done)
+            return task.GetAwaiter().GetResult();
+
+        bool first;
+        lock (gate.Lock) { first = ++gate.Overruns == 1 && !gate.Replaying; }
+        var name = source.GetType().Name;
+        if (first)
+            Console.Error.WriteLine($"[cooling] {name} did not answer {what} within {CallBudget.TotalSeconds:0.#} s; treating it as disconnected until it does");
+        task.ContinueWith(t =>
+        {
+            _ = t.Exception;
+            Recover(source, gate, name, startedMs);
+        }, TaskScheduler.Default);
+        return whileStalled;
+    }
+
+    // Runs once an overrun call returns; the last one replays the skipped releases, then reopens the source.
+    private static void Recover(IFanControlProvider source, SourceGate gate, string name, long startedMs)
+    {
+        lock (gate.Lock)
+        {
+            if (--gate.Overruns > 0)
+                return;
+            gate.Replaying = true;
+        }
+        Console.Error.WriteLine($"[cooling] {name} answered again after {(Environment.TickCount64 - startedMs) / 1000.0:0.0} s");
+        while (true)
+        {
+            bool all;
+            HashSet<string>? ids;
+            lock (gate.Lock)
+            {
+                all = gate.ReleaseAllMissed;
+                ids = gate.ReleasesMissed;
+                gate.ReleaseAllMissed = false;
+                gate.ReleasesMissed = null;
+                if (!all && ids is null)
+                {
+                    gate.Replaying = false;
+                    return;
+                }
+            }
+            try
+            {
+                if (all)
+                    source.ReleaseAll();
+                else
+                    foreach (var id in ids!) source.ReleaseFan(id);
+            }
+            catch (Exception ex)
+            {
+                Console.Error.WriteLine($"[cooling] {name} missed release replay failed: {ex.Message}");
+            }
+        }
     }
 
     // ── routing ──
