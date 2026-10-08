@@ -5,6 +5,7 @@ using System.Threading;
 using System.Threading.Tasks;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
+using Microsoft.Extensions.Hosting;
 using Nexus.Service.Media;
 using Nexus.Service.Models;
 using Nexus.Service.Peripherals.BulkPanels;
@@ -106,11 +107,10 @@ public static partial class DevicesRoutes
             return Results.Json(ApiResponse.Ok(), AppJsonContext.Default.ApiResponse);
         });
 
-        app.MapGet("/devices/lianli-hydroshift2-curve/media", (HydroShift2CurvePlayer player, HydroShift2CurveMedia media) =>
+        app.MapGet("/devices/lianli-hydroshift2-curve/media", (HydroShift2CurveMedia media) =>
         {
-            var (flip, mirror) = player.Mount();
             var items = new List<HydroShift2CurveMediaDto>();
-            foreach (var item in media.List(flip, mirror))
+            foreach (var item in media.List())
             {
                 var thumb = media.Thumbnail(item.Name);
                 items.Add(new HydroShift2CurveMediaDto
@@ -125,7 +125,7 @@ public static partial class DevicesRoutes
             return Results.Json(new HydroShift2CurveMediaResponse { Media = items }, AppJsonContext.Default.HydroShift2CurveMediaResponse);
         });
 
-        app.MapPost("/devices/lianli-hydroshift2-curve/media", async (HttpContext ctx, HydroShift2CurvePlayer player, HydroShift2CurveMedia media) =>
+        app.MapPost("/devices/lianli-hydroshift2-curve/media", async (HttpContext ctx, HydroShift2CurvePlayer player, HydroShift2CurveMedia media, IHostApplicationLifetime lifetime) =>
         {
             if (!ctx.Request.HasFormContentType)
             {
@@ -136,6 +136,10 @@ public static partial class DevicesRoutes
             if (file is null || file.Length == 0)
             {
                 return UploadResult(null, "No file provided");
+            }
+            if (HydroShift2CurveMedia.VideoExtension(file.FileName) is not { } ext)
+            {
+                return UploadResult(null, "Not a video file");
             }
             var rawCrop = form["crop"].ToString();
             var crop = new CropRect(0, 0, 1, 1);
@@ -148,7 +152,7 @@ public static partial class DevicesRoutes
             {
                 label = Path.GetFileNameWithoutExtension(file.FileName);
             }
-            var staged = Path.Combine(Path.GetTempPath(), $"nexus-curve-in-{Guid.NewGuid():N}{Path.GetExtension(file.FileName)}");
+            var staged = Path.Combine(Path.GetTempPath(), $"nexus-curve-in-{Guid.NewGuid():N}{ext}");
             try
             {
                 await using (var stream = File.Create(staged))
@@ -160,15 +164,8 @@ public static partial class DevicesRoutes
                 {
                     return UploadResult(null, "Could not read that video");
                 }
-                // Encoded off the request: the library lists it as not ready until done.
                 var (flip, mirror) = player.Mount();
-                _ = Task.Run(async () =>
-                {
-                    if (await media.EnsureVariantAsync(name, flip, mirror, CancellationToken.None) is null)
-                    {
-                        media.Delete(name);
-                    }
-                });
+                media.EncodeImport(name, flip, mirror, lifetime.ApplicationStopping);
                 return UploadResult(name, null);
             }
             finally
@@ -177,29 +174,47 @@ public static partial class DevicesRoutes
             }
         }).DisableAntiforgery();
 
-        app.MapPost("/devices/lianli-hydroshift2-curve/media/delete", (HydroShift2CurveMediaDeleteRequest body, HydroShift2CurvePlayer player, HydroShift2CurveMedia media, IConfigStore store) =>
+        app.MapPost("/devices/lianli-hydroshift2-curve/media/delete", async (HydroShift2CurveMediaDeleteRequest body, HydroShift2CurvePlayer player, HydroShift2CurveMedia media, IConfigStore store) =>
         {
-            if (!HydroShift2CurveMedia.IsSafeName(body.Name) || !media.Delete(body.Name!))
+            if (body.Name is not { } name || !media.Exists(name))
             {
                 return Results.BadRequest(ApiResponse.Fail("no such video"));
             }
+            // Unpicked first, so the player lets go of the file before it is removed.
             store.Update(s =>
             {
                 var c = s.Devices.HydroShift2Curve;
-                if (c.Video == body.Name)
+                if (c.Video == name)
                 {
                     c.Video = null;
                     c.ScreenMode = HydroShift2CurveSettings.ScreenNexus;
                 }
-                if (c.ScreenSaverVideo == body.Name)
+                if (c.ScreenSaverVideo == name)
                 {
                     c.ScreenSaverVideo = null;
                 }
             });
             player.Wake();
-            return Results.Json(ApiResponse.Ok(), AppJsonContext.Default.ApiResponse);
+            if (player.Playing == name)
+            {
+                try
+                {
+                    await player.WhenStopped.WaitAsync(DeleteStopTimeout);
+                }
+                catch (TimeoutException)
+                {
+                }
+            }
+            return media.Delete(name) switch
+            {
+                HydroShift2CurveMediaDelete.Deleted => Results.Json(ApiResponse.Ok(), AppJsonContext.Default.ApiResponse),
+                HydroShift2CurveMediaDelete.Busy => Results.Conflict(ApiResponse.Fail("video is in use, try again")),
+                _ => Results.BadRequest(ApiResponse.Fail("no such video")),
+            };
         });
     }
+
+    private static readonly TimeSpan DeleteStopTimeout = TimeSpan.FromSeconds(5);
 
     private static readonly int[] ScreenSaverIntervals = { 0, 5, 10, 15, 30, 45, 60 };
 

@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Globalization;
 using System.IO;
@@ -10,8 +11,10 @@ using Nexus.Service.Platform;
 
 namespace Nexus.Service.Peripherals.BulkPanels;
 
-/// <summary>One video in the HydroShift II OLED Curved library; not ready until encoded for the head's current mount.</summary>
+/// <summary>One video in the HydroShift II OLED Curved library; not ready while its upload is still being encoded.</summary>
 public sealed record HydroShift2CurveMediaItem(string Name, string Label, double? DurationSec, bool Ready);
+
+public enum HydroShift2CurveMediaDelete { Deleted, Missing, Busy }
 
 /// <summary>
 /// Videos the HydroShift II OLED Curved plays on its own decoder. Each keeps its upload and
@@ -29,10 +32,16 @@ public sealed partial class HydroShift2CurveMedia
     private const int EncodeTimeoutSeconds = 30 * 60;
     private const int ThumbTimeoutSeconds = 60;
     private const int FrameRate = 30;
+    /// <summary>A failed encode is not retried for this long; a broken source would otherwise rerun ffmpeg on every play attempt.</summary>
+    private const long FailedRetryMs = 10 * 60_000;
+
+    private static readonly string[] VideoExtensions = { ".mp4", ".webm", ".mov", ".avi", ".mkv", ".wmv", ".m4v", ".mpg", ".mpeg", ".gif" };
 
     private readonly string _root;
     private readonly SemaphoreSlim _encode = new(1, 1);
-    private readonly HashSet<string> _failed = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, long> _failedAt = new(StringComparer.Ordinal);
+    private readonly ConcurrentDictionary<string, byte> _importing = new(StringComparer.Ordinal);
+    private volatile string? _encoding;
 
     public HydroShift2CurveMedia(string? root = null)
     {
@@ -41,7 +50,14 @@ public sealed partial class HydroShift2CurveMedia
 
     public static bool IsSafeName(string? name) => !string.IsNullOrEmpty(name) && SafeName().IsMatch(name);
 
-    public IReadOnlyList<HydroShift2CurveMediaItem> List(bool flip180, bool mirror)
+    /// <summary>The upload's extension when it is a video container ffmpeg should read, else null.</summary>
+    public static string? VideoExtension(string? fileName)
+    {
+        var ext = Path.GetExtension(fileName ?? "").ToLowerInvariant();
+        return Array.IndexOf(VideoExtensions, ext) >= 0 ? ext : null;
+    }
+
+    public IReadOnlyList<HydroShift2CurveMediaItem> List()
     {
         var items = new List<HydroShift2CurveMediaItem>();
         if (!Directory.Exists(_root))
@@ -56,7 +72,7 @@ public sealed partial class HydroShift2CurveMedia
                 continue;
             }
             var (label, _, duration) = ReadMeta(name);
-            items.Add(new HydroShift2CurveMediaItem(name, label, duration, File.Exists(VariantPath(name, flip180, mirror))));
+            items.Add(new HydroShift2CurveMediaItem(name, label, duration, !_importing.ContainsKey(name)));
         }
         items.Sort((a, b) => Directory.GetCreationTimeUtc(ItemDir(b.Name)).CompareTo(Directory.GetCreationTimeUtc(ItemDir(a.Name))));
         return items;
@@ -78,12 +94,17 @@ public sealed partial class HydroShift2CurveMedia
     /// </summary>
     public async Task<string?> ImportAsync(string stagedPath, string label, CropRect crop, CancellationToken ct)
     {
+        if (VideoExtension(stagedPath) is not { } ext)
+        {
+            return null;
+        }
         var id = MediaImporter.SanitizeId(label);
         var name = $"{(id.Length > 24 ? id[..24] : id)}-{Guid.NewGuid():N}";
         var dir = ItemDir(name);
         Directory.CreateDirectory(dir);
-        var source = Path.Combine(dir, SourcePrefix + Path.GetExtension(stagedPath).ToLowerInvariant());
+        var source = Path.Combine(dir, SourcePrefix + ext);
         File.Move(stagedPath, source);
+        _importing[name] = 0;
         try
         {
             var stderr = await MediaImporter.RunFfmpeg(ThumbTimeoutSeconds, ct, new[]
@@ -93,16 +114,46 @@ public sealed partial class HydroShift2CurveMedia
                 "-frames:v", "1", "-q:v", "5",
                 Path.Combine(dir, ThumbFile),
             });
-            WriteMeta(name, label, crop, ParseDuration(stderr));
+            WriteMeta(name, label, crop, ParseDuration(stderr) is { } seconds ? Math.Min(seconds, MaxSeconds) : null);
             return name;
         }
-        catch (Exception ex) when (ex is not OperationCanceledException)
+        catch (OperationCanceledException)
+        {
+            _importing.TryRemove(name, out _);
+            Delete(name);
+            throw;
+        }
+        catch (Exception ex)
         {
             ServiceLog.Warn($"[{HydroShift2CurveLcdDriver.Id}] could not read upload '{label}': {ex.Message}");
+            _importing.TryRemove(name, out _);
             Delete(name);
             return null;
         }
     }
+
+    /// <summary>Encodes a fresh upload for the head's mount off the request; the item lists as not ready until it is done, and is dropped if it cannot be encoded.</summary>
+    public void EncodeImport(string name, bool flip180, bool mirror, CancellationToken ct) =>
+        _ = Task.Run(async () =>
+        {
+            try
+            {
+                var ok = await EnsureVariantAsync(name, flip180, mirror, ct).ConfigureAwait(false) is not null;
+                _importing.TryRemove(name, out _);
+                if (!ok)
+                {
+                    Delete(name);
+                }
+            }
+            catch (Exception ex)
+            {
+                _importing.TryRemove(name, out _);
+                if (ex is not OperationCanceledException)
+                {
+                    ServiceLog.Warn($"[{HydroShift2CurveLcdDriver.Id}] encoding upload '{name}' failed: {ex.Message}");
+                }
+            }
+        }, CancellationToken.None);
 
     /// <summary>The glass-ready stream for this mount, encoding it first if needed; null when that fails.</summary>
     public async Task<string?> EnsureVariantAsync(string name, bool flip180, bool mirror, CancellationToken ct)
@@ -123,12 +174,13 @@ public sealed partial class HydroShift2CurveMedia
             {
                 return target;
             }
-            if (_failed.Contains(target))
+            if (_failedAt.TryGetValue(target, out var failedAt) && Environment.TickCount64 - failedAt < FailedRetryMs)
             {
                 return null;
             }
             var (_, crop, _) = ReadMeta(name);
             var temp = target + ".tmp";
+            _encoding = name;
             ServiceLog.Info($"[{HydroShift2CurveLcdDriver.Id}] encoding '{name}' for the glass (flip={flip180}, mirror={mirror})");
             // Raw Annex-B: the bundled ffmpeg has no h264 muxer, and rawvideo writes the
             // packets exactly as libx264 emits them. No B-frames, as the glass's decoder needs.
@@ -143,35 +195,59 @@ public sealed partial class HydroShift2CurveMedia
                 "-f", "rawvideo", temp,
             }).ConfigureAwait(false);
             File.Move(temp, target, overwrite: true);
+            _failedAt.Remove(target);
             return target;
         }
-        catch (Exception ex) when (ex is not OperationCanceledException)
+        catch (OperationCanceledException)
+        {
+            TryDeleteFile(target + ".tmp");
+            throw;
+        }
+        catch (Exception ex)
         {
             ServiceLog.Warn($"[{HydroShift2CurveLcdDriver.Id}] encoding '{name}' failed: {ex.Message}");
-            _failed.Add(target);
+            TryDeleteFile(target + ".tmp");
+            _failedAt[target] = Environment.TickCount64;
             return null;
         }
         finally
         {
+            _encoding = null;
             _encode.Release();
         }
     }
 
-    public bool Delete(string name)
+    /// <summary>Removes a clip; Busy while ffmpeg is still writing it or a file is held open.</summary>
+    public HydroShift2CurveMediaDelete Delete(string name)
     {
         if (!IsSafeName(name) || !Directory.Exists(ItemDir(name)))
         {
-            return false;
+            return HydroShift2CurveMediaDelete.Missing;
+        }
+        if (_encoding == name)
+        {
+            return HydroShift2CurveMediaDelete.Busy;
         }
         try
         {
             Directory.Delete(ItemDir(name), recursive: true);
-            return true;
+            return HydroShift2CurveMediaDelete.Deleted;
         }
-        catch (IOException ex)
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
         {
             ServiceLog.Warn($"[{HydroShift2CurveLcdDriver.Id}] could not delete '{name}': {ex.Message}");
-            return false;
+            return HydroShift2CurveMediaDelete.Busy;
+        }
+    }
+
+    private static void TryDeleteFile(string path)
+    {
+        try
+        {
+            File.Delete(path);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
         }
     }
 

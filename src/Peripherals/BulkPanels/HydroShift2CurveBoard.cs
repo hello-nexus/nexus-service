@@ -333,7 +333,7 @@ public sealed class HydroShift2CurveBoard : BackgroundService
         }
     }
 
-    /// <summary>Settings changed: an idle pump picks up the follow choice on the next status poll.</summary>
+    /// <summary>Puts an idle pump on the user's follow choice when the board reports otherwise.</summary>
     private void ApplyIdleFollow()
     {
         bool? follows;

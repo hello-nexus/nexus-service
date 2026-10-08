@@ -370,7 +370,7 @@ public class HydroShift2CurveTests
     }
 
     [Fact]
-    public void The_library_lists_videos_ready_only_for_the_mount_they_were_encoded_for()
+    public void The_library_lists_imported_videos_and_deletes_only_safe_names()
     {
         var root = Path.Combine(Path.GetTempPath(), "nexus-curve-media-" + Guid.NewGuid().ToString("N"));
         try
@@ -379,24 +379,30 @@ public class HydroShift2CurveTests
             Directory.CreateDirectory(item);
             File.WriteAllBytes(Path.Combine(item, "source.mp4"), new byte[] { 1 });
             File.WriteAllLines(Path.Combine(item, "meta.txt"), new[] { "My clip", "0,0,1,1,0,0", "12.5" });
-            File.WriteAllBytes(Path.Combine(item, "glass-up.h264"), new byte[] { 1 });
             Directory.CreateDirectory(Path.Combine(root, "no-source"));
             var media = new HydroShift2CurveMedia(root);
 
-            var upright = Assert.Single(media.List(flip180: false, mirror: false));
-            Assert.Equal(new HydroShift2CurveMediaItem("clip-1", "My clip", 12.5, Ready: true), upright);
-            Assert.False(Assert.Single(media.List(flip180: true, mirror: false)).Ready);
+            Assert.Equal(new HydroShift2CurveMediaItem("clip-1", "My clip", 12.5, Ready: true), Assert.Single(media.List()));
 
             Assert.False(media.Exists("../clip-1"));
-            Assert.False(media.Delete("../clip-1"));
-            Assert.True(media.Delete("clip-1"));
-            Assert.Empty(media.List(false, false));
+            Assert.Equal(HydroShift2CurveMediaDelete.Missing, media.Delete("../clip-1"));
+            Assert.Equal(HydroShift2CurveMediaDelete.Deleted, media.Delete("clip-1"));
+            Assert.Empty(media.List());
         }
         finally
         {
             if (Directory.Exists(root)) Directory.Delete(root, recursive: true);
         }
     }
+
+    [Theory]
+    [InlineData("clip.MP4", ".mp4")]
+    [InlineData("loop.webm", ".webm")]
+    [InlineData("list.m3u8", null)]
+    [InlineData("clip.mp4:stream", null)]
+    [InlineData("noext", null)]
+    public void Only_video_containers_are_imported(string fileName, string? ext) =>
+        Assert.Equal(ext, HydroShift2CurveMedia.VideoExtension(fileName));
 
     private static (HydroShift2CurveBoard Board, BoardPipe Pipe, MemoryStore Store) Connected(
         int tilt = 0, int slide = 0, bool recalibrating = false)

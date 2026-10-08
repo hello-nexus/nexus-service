@@ -30,7 +30,7 @@ public static class HydroShift2CurveProtocol
     public const byte ClockOfflineOn = 1;
     public const byte ClockOfflineOff = 0;
 
-    /// <summary>Video chunk size when the glass does not report one; it reports 1 MB (measured), L-Connect falls back to 202752.</summary>
+    /// <summary>L-Connect's video chunk size when a GetH264Block reply carries none.</summary>
     public const int DefaultH264Block = 202752;
 
     /// <summary>A video chunk is answered with the device's buffered block count at [8]; above this, wait for it to drain.</summary>

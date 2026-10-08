@@ -131,7 +131,7 @@ public sealed class HydroShift2CurveLcdDriver : IBulkPanelDriver
             DateTime.Now, on ? HydroShift2CurveProtocol.ClockOfflineOn : HydroShift2CurveProtocol.ClockOfflineOff,
             NextTimestamp())) is not null;
 
-    /// <summary>Readies the decoder for a video and returns the chunk size the glass takes.</summary>
+    /// <summary>Readies the decoder for a video and returns the chunk size the glass takes, 0 when it did not answer.</summary>
     public int BeginVideo(IBulkUsbPipe pipe, int frameRate)
     {
         Command(pipe, HydroShift2Protocol.CommandStopPlay, ReadOnlySpan<byte>.Empty);
@@ -139,7 +139,7 @@ public sealed class HydroShift2CurveLcdDriver : IBulkPanelDriver
         Command(pipe, HydroShift2Protocol.CommandFrameRate, stackalloc byte[] { (byte)frameRate });
         var reply = Exchange(pipe, HydroShift2CurveProtocol.CommandGetH264Block, HydroShift2Protocol.EncodeCommand(
             HydroShift2CurveProtocol.CommandGetH264Block, ReadOnlySpan<byte>.Empty, NextTimestamp()));
-        return reply is null ? HydroShift2CurveProtocol.DefaultH264Block : HydroShift2CurveProtocol.DecodeH264Block(reply);
+        return reply is null ? 0 : HydroShift2CurveProtocol.DecodeH264Block(reply);
     }
 
     /// <summary>Queues one chunk of video; returns the blocks the glass now holds, or null when it did not answer.</summary>
