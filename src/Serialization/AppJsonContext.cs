@@ -1034,6 +1034,7 @@ namespace Nexus.Service.Serialization;
 [JsonSerializable(typeof(Nexus.Service.Helper.Domains.OpenUrlPayload))]
 [JsonSerializable(typeof(Nexus.Service.Helper.Domains.SystemThemePayload))]
 [JsonSerializable(typeof(Nexus.Service.Helper.Domains.OpenFilePayload))]
+[JsonSerializable(typeof(Nexus.Service.Helper.Domains.FocusWindowPayload))]
 // Per-app audio mixer (Core Audio session walk runs in the user-session helper)
 [JsonSerializable(typeof(Nexus.Service.Helper.Domains.AudioMixerSnapshotPayload))]
 [JsonSerializable(typeof(Nexus.Service.Helper.Domains.AudioMixerStreamPayload))]

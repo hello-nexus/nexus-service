@@ -258,6 +258,7 @@ public sealed class WindowsShortcutsProvider : IShortcutsProvider
             };
             psi.ArgumentList.Add($"shell:appsFolder\\{shortcut.Path}");
 
+            Nexus.Service.Platform.Windows.LaunchFocus.Arm();
             using var proc = Process.Start(psi);
             proc?.WaitForExit(5000);
             return true;

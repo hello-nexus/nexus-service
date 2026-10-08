@@ -203,6 +203,11 @@ public sealed class RgbBridge : IDisposable
     // Replaced wholesale (never mutated) so OnFrame reads it without
     // synchronization.
     private HashSet<string> _bridgeFrameIds = new(StringComparer.Ordinal);
+    // Touched only inside RefreshDevicesAsync, which _refreshSemaphore serializes.
+    private string _frameIdSignature = "";
+
+    /// <summary>Raised under the refresh lock when the engine's frame set changes (a device or zone appears, goes away, or gains its LEDs); handlers must not block.</summary>
+    public event Action? DeviceSetChanged;
 
     private readonly IReadOnlyList<ILightingFrameContributor> _frameContributors;
     private readonly Nexus.Service.Lighting.Mappings.ContributorFrameLayouts _contributorLayouts;
@@ -1366,6 +1371,20 @@ public sealed class RgbBridge : IDisposable
             foreach (var f in frames) liveIds.Add(f.Id);
             _contributorLayouts.Prune(liveIds);
             _engine.UpdateDevices(frames);
+
+            // The LED bit counts: /devices/lighting-devices/all hides a 0-LED device until its LEDs arrive.
+            var setKeys = new string[frames.Length];
+            for (var i = 0; i < frames.Length; i++)
+            {
+                setKeys[i] = frames[i].LedCount > 0 ? frames[i].Id : frames[i].Id + "#0";
+            }
+            Array.Sort(setKeys, StringComparer.Ordinal);
+            var signature = string.Join('\n', setKeys);
+            if (signature != _frameIdSignature)
+            {
+                _frameIdSignature = signature;
+                DeviceSetChanged?.Invoke();
+            }
 
             // Rebuild per-physical LED buffers sized to the OpenRGB device's full
             // length. OnFrame writes each zone's slice into the corresponding offset
