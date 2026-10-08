@@ -73,9 +73,11 @@ public sealed class BulkPanelConnectionWorker : BackgroundService
                 ServiceLog.Info($"[{driver.HandlerId}] connected: {driver.Name}, {_hub.Width}x{_hub.Height}");
                 try
                 {
+                    // An unplug fails no call the hub makes on its own, so presence is what ends the session.
                     while (!stoppingToken.IsCancellationRequested
                         && _gate.IsEnabled(driver.HandlerId)
-                        && _hub.IsConnected)
+                        && _hub.IsConnected
+                        && _presence.UsbPresent(driver.VendorId, driver.ProductIds))
                     {
                         await Task.Delay(PresencePollMs, stoppingToken).ConfigureAwait(false);
                     }

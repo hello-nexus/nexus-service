@@ -153,7 +153,9 @@ public sealed class HydroShift2CurvePlayer : BackgroundService
         }
         if (!_connected)
         {
+            // A play refused while the glass was gone gets its retry as soon as it is back.
             _connected = true;
+            Volatile.Write(ref _retryAt, 0);
             ScheduleSaver(settings.ScreenSaverMinutes, force: true);
         }
         ApplyOfflineClock(settings);
