@@ -5,6 +5,7 @@ using System.Threading;
 using System.Threading.Tasks;
 using Nexus.Service.Auth;
 using Nexus.Service.Deck;
+using Nexus.Service.Devices;
 using Nexus.Service.Devices.Detection;
 using Nexus.Service.Devices.Handlers;
 using Nexus.Service.Models;
@@ -33,10 +34,11 @@ public static class StreamDeckRoutes
     public static void MapStreamDeckEndpoints(this WebApplication app)
     {
         app.MapGet("/streamdeck/decks", (
-            StreamDeckConnectionWorker worker, IConfigStore store, StreamDeckHandler handler, IUsbEnumerator usb) =>
+            StreamDeckConnectionWorker worker, IConfigStore store, StreamDeckHandler handler, IUsbEnumerator usb, DeviceControlGate gate) =>
         {
             var settings = store.Load().StreamDeck;
-            var warning = handler.GetWarning(usb.Enumerate());
+            var usbDevices = usb.Enumerate();
+            var warning = handler.GetWarning(usbDevices);
             var conflictAppId = ResolveConflictAppId(warning);
             var response = new GetStreamDecksResponse();
             var seenSerials = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
@@ -60,30 +62,23 @@ public static class StreamDeckRoutes
                 {
                     continue;
                 }
-                response.Decks.Add(new StreamDeckSummaryDto
+                seenSerials.Add(serial);
+                response.Decks.Add(BuildOfflineSummary(worker, serial, model, deck, null, null));
+            }
+
+            // A plugged-in deck Nexus has never driven has no surface or record
+            // while Nexus Control is off; list it so the UI can offer the toggle.
+            // A Windows instance id with '&' is synthetic, not the HID serial.
+            foreach (var entry in gate.IsEnabled("streamdeck") ? new List<UsbDeviceEntry>() : usbDevices)
+            {
+                if (entry.VendorId != StreamDeckModels.VendorId || string.IsNullOrEmpty(entry.Serial)
+                    || entry.Serial.Contains('&') || StreamDeckModels.ByProductId(entry.ProductId) is not { } model
+                    || !seenSerials.Add(entry.Serial))
                 {
-                    Serial = serial,
-                    Model = model.Name,
-                    Name = string.IsNullOrEmpty(deck.Name) ? model.Name : deck.Name,
-                    Connected = false,
-                    Verified = model.Verified,
-                    Rows = model.Rows,
-                    Columns = model.Columns,
-                    KeyCount = model.KeyCount,
-                    KeyPixels = model.KeyPixelSize,
-                    Format = FormatName(model.ImageFormat),
-                    Transform = model.Transform,
-                    Brightness = deck.Brightness,
-                    Orientation = deck.Orientation,
-                    SleepAfterSeconds = deck.SleepAfterSeconds,
-                    SleepWhenLocked = deck.SleepWhenLocked,
-                    FirmwareVersion = "",
-                    Warning = null,
-                    ConflictAppId = null,
-                    CurrentPage = worker.GetCurrentPage(serial),
-                    FolderPath = worker.GetFolderPath(serial).ToList(),
-                    InstanceId = DeckInstanceResolver.PhysicalInstanceId(serial),
-                });
+                    continue;
+                }
+                var record = settings.Decks.TryGetValue(entry.Serial, out var saved) ? saved : new PhysicalDeckSettings();
+                response.Decks.Add(BuildOfflineSummary(worker, entry.Serial, model, record, warning, conflictAppId));
             }
             return response;
         }).LocalhostOnly();
@@ -330,6 +325,33 @@ public static class StreamDeckRoutes
             return ApiResponse.Ok();
         }).LocalhostOnly();
     }
+
+    private static StreamDeckSummaryDto BuildOfflineSummary(
+        StreamDeckConnectionWorker worker, string serial, StreamDeckModel model, PhysicalDeckSettings deck,
+        string? warning, string? conflictAppId) => new()
+    {
+        Serial = serial,
+        Model = model.Name,
+        Name = string.IsNullOrEmpty(deck.Name) ? model.Name : deck.Name,
+        Connected = false,
+        Verified = model.Verified,
+        Rows = model.Rows,
+        Columns = model.Columns,
+        KeyCount = model.KeyCount,
+        KeyPixels = model.KeyPixelSize,
+        Format = FormatName(model.ImageFormat),
+        Transform = model.Transform,
+        Brightness = deck.Brightness,
+        Orientation = deck.Orientation,
+        SleepAfterSeconds = deck.SleepAfterSeconds,
+        SleepWhenLocked = deck.SleepWhenLocked,
+        FirmwareVersion = "",
+        Warning = warning,
+        ConflictAppId = conflictAppId,
+        CurrentPage = worker.GetCurrentPage(serial),
+        FolderPath = worker.GetFolderPath(serial).ToList(),
+        InstanceId = DeckInstanceResolver.PhysicalInstanceId(serial),
+    };
 
     /// <summary>Shared DTO builder for GET /streamdeck/decks and the dev-tools simulate route.</summary>
     private static StreamDeckSummaryDto BuildSummary(

@@ -62,6 +62,13 @@ public class OpenRgbDetectorOverridesTests : IDisposable
         Assert.Contains("HYTE Keeb TKL", OpenRgbProcessManager.BuildDisabledDetectors(macOS: true));
     }
 
+    [Fact]
+    public void Stream_deck_detector_stays_disabled_on_every_os()
+    {
+        Assert.Contains("Elgato Stream Deck MK.2", OpenRgbProcessManager.BuildDisabledDetectors(macOS: false));
+        Assert.Contains("Elgato Stream Deck MK.2", OpenRgbProcessManager.BuildDisabledDetectors(macOS: true));
+    }
+
     [Theory]
     [InlineData("Lian Li Strimer L Connect")]
     [InlineData("Lian Li Uni Hub - SL")]

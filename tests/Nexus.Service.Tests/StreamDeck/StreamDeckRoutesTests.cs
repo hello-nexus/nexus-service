@@ -17,6 +17,7 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
 using Nexus.Service.Auth;
 using Nexus.Service.Deck;
+using Nexus.Service.Devices;
 using Nexus.Service.Devices.Handlers;
 using Nexus.Service.Peripherals.StreamDeck;
 using Nexus.Service.Persistence;
@@ -81,6 +82,7 @@ public sealed class StreamDeckRoutesTests : IClassFixture<StreamDeckRouteHostFac
         // tests attach to and others assert is absent.
         _host.ResetSettings();
         Executor.LastCall = null;
+        _host.Usb.Set();
         var worker = _host.Services.GetRequiredService<StreamDeckConnectionWorker>();
         worker.ClearSimulatedModel();
         worker.ResetPerDeckStateForTests();
@@ -130,6 +132,83 @@ public sealed class StreamDeckRoutesTests : IClassFixture<StreamDeckRouteHostFac
             Assert.True(entry.GetProperty("sleepWhenLocked").GetBoolean());
             Assert.True(!entry.TryGetProperty("warning", out var warningEl) || warningEl.ValueKind == JsonValueKind.Null);
             Assert.True(!entry.TryGetProperty("conflictAppId", out var conflictEl) || conflictEl.ValueKind == JsonValueKind.Null);
+        }
+    }
+
+    [Fact]
+    public async Task GetDecks_ListsAPluggedInDeckWithNoSurfaceOrRecordAsDisconnected()
+    {
+        var (factory, client) = Boot();
+        using (factory)
+        {
+            var mk2 = StreamDeckModels.ByProductId(0x0080)!;
+            _host.Usb.Set(
+                new UsbDeviceEntry { VendorId = StreamDeckModels.VendorId, ProductId = mk2.ProductId, Serial = "NEVER-DRIVEN" },
+                new UsbDeviceEntry { VendorId = StreamDeckModels.VendorId, ProductId = mk2.ProductId, Serial = "" },
+                new UsbDeviceEntry { VendorId = StreamDeckModels.VendorId, ProductId = mk2.ProductId, Serial = "7&250EC26&0&0000" });
+
+            var res = await client.GetAsync("/streamdeck/decks");
+            Assert.True(res.IsSuccessStatusCode);
+            using var doc = JsonDocument.Parse(await res.Content.ReadAsStringAsync());
+            var entry = Assert.Single(doc.RootElement.GetProperty("decks").EnumerateArray());
+
+            Assert.Equal("NEVER-DRIVEN", entry.GetProperty("serial").GetString());
+            Assert.False(entry.GetProperty("connected").GetBoolean());
+            Assert.Equal(mk2.Name, entry.GetProperty("model").GetString());
+            Assert.Equal(mk2.Name, entry.GetProperty("name").GetString());
+        }
+    }
+
+    [Fact]
+    public async Task GetDecks_PluggedInDeckWithAPersistedRecord_ListsOnce()
+    {
+        var (factory, client) = Boot();
+        using (factory)
+        {
+            var mini = StreamDeckModels.ByProductId(0x0063)!;
+            factory.Services.GetRequiredService<IConfigStore>().Update(s =>
+                s.StreamDeck.Decks["KNOWN"] = new PhysicalDeckSettings { Name = "Desk Deck", ProductId = mini.ProductId });
+            _host.Usb.Set(new UsbDeviceEntry { VendorId = StreamDeckModels.VendorId, ProductId = mini.ProductId, Serial = "KNOWN" });
+
+            var res = await client.GetAsync("/streamdeck/decks");
+            using var doc = JsonDocument.Parse(await res.Content.ReadAsStringAsync());
+            var entry = Assert.Single(doc.RootElement.GetProperty("decks").EnumerateArray());
+            Assert.Equal("Desk Deck", entry.GetProperty("name").GetString());
+        }
+    }
+
+    [Fact]
+    public async Task GetDecks_PluggedInDeckWhoseRecordHasNoModel_ListsFromUsbWithTheRecordName()
+    {
+        var (factory, client) = Boot();
+        using (factory)
+        {
+            var mini = StreamDeckModels.ByProductId(0x0063)!;
+            factory.Services.GetRequiredService<IConfigStore>().Update(s =>
+                s.StreamDeck.Decks["RENAMED"] = new PhysicalDeckSettings { Name = "Desk Deck" });
+            _host.Usb.Set(new UsbDeviceEntry { VendorId = StreamDeckModels.VendorId, ProductId = mini.ProductId, Serial = "RENAMED" });
+
+            var res = await client.GetAsync("/streamdeck/decks");
+            using var doc = JsonDocument.Parse(await res.Content.ReadAsStringAsync());
+            var entry = Assert.Single(doc.RootElement.GetProperty("decks").EnumerateArray());
+            Assert.Equal("Desk Deck", entry.GetProperty("name").GetString());
+            Assert.Equal(mini.Name, entry.GetProperty("model").GetString());
+        }
+    }
+
+    [Fact]
+    public async Task GetDecks_PluggedInDeckWithNoRecord_IsNotListedWhileNexusControlIsOn()
+    {
+        var (factory, client) = Boot();
+        using (factory)
+        {
+            factory.Services.GetRequiredService<IConfigStore>().Update(s =>
+                s.Devices.NexusControlEnabled = new() { "streamdeck" });
+            _host.Usb.Set(new UsbDeviceEntry { VendorId = StreamDeckModels.VendorId, ProductId = 0x0063, Serial = "NEVER-DRIVEN" });
+
+            var res = await client.GetAsync("/streamdeck/decks");
+            using var doc = JsonDocument.Parse(await res.Content.ReadAsStringAsync());
+            Assert.Empty(doc.RootElement.GetProperty("decks").EnumerateArray());
         }
     }
 
