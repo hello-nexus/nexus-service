@@ -1264,6 +1264,32 @@ public class ThermalGuardEngineTests
     }
 
     [Fact]
+    public void ASecondLatchInTheSameRun_HoldsUntilAGuardToggle()
+    {
+        var (_, fans, store, _) = Build();
+        var (e, guard, mono) = WatchdogRig(fans, store);
+        fans.CpuTemp = 90f;
+        Stall(fans, e, guard, mono);
+        Stall(fans, e, guard, mono);
+        Stall(fans, e, guard, mono);
+        Assert.True(guard.GetState().WatchdogResumes);
+        SteadyTicks(e, guard, mono, ThermalGuardController.WatchdogResumeMs + 2000);
+        Assert.False(guard.WatchdogLatched);
+
+        Stall(fans, e, guard, mono);
+        Stall(fans, e, guard, mono);
+        Stall(fans, e, guard, mono);
+        SteadyTicks(e, guard, mono, 3 * ThermalGuardController.WatchdogResumeMs);
+
+        Assert.True(guard.WatchdogLatched);
+        Assert.False(guard.GetState().WatchdogResumes);
+        guard.SetEnabled(false);
+        guard.SetEnabled(true);
+        Assert.False(guard.WatchdogLatched);
+        Assert.True(guard.WatchdogResumes);
+    }
+
+    [Fact]
     public void ALatchThatRecursSoonAfterResuming_DoesNotAlertAgain()
     {
         var (_, fans, store, _) = Build();
