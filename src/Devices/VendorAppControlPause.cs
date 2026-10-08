@@ -9,7 +9,7 @@ using Nexus.Service.Persistence;
 
 namespace Nexus.Service.Devices;
 
-/// <summary>Holds a device the user has on off while its whitelisted competing app runs, and hands it to Nexus once the app exits. A non-whitelisted app does not pause the device: the user chose Nexus over it, and the launch notice offers to end it.</summary>
+/// <summary>Holds a device the user has on off while its whitelisted competing app runs, and hands it to Nexus once the app exits. A non-whitelisted app does not pause the device: the user chose Nexus over it, and the launch notice offers to end it. A device that cannot share its hardware (<see cref="DeviceControlPolicy.YieldsToRunningApp"/>) waits either way.</summary>
 public sealed class VendorAppControlPause : BackgroundService
 {
     internal static readonly TimeSpan PollInterval = TimeSpan.FromSeconds(2);
@@ -39,7 +39,9 @@ public sealed class VendorAppControlPause : BackgroundService
         {
             if (!_gate.IsChosenOn(handler)) continue;
             var appId = DeviceControlPolicy.ConflictAppFor(handler)!;
-            if (!whitelist.Contains(appId, StringComparer.OrdinalIgnoreCase)) continue;
+            var yields = DeviceControlPolicy.YieldsToRunningApp(handler)
+                || whitelist.Contains(appId, StringComparer.OrdinalIgnoreCase);
+            if (!yields) continue;
             if (_detector.IsAppRunning(appId)) paused[handler] = appId;
         }
         _gate.SetPausedByApp(paused);

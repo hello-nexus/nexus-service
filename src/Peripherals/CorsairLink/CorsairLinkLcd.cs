@@ -150,16 +150,17 @@ public sealed class CorsairLinkLcd
     }
 
     /// <summary>Sends the shutdown feature-report sequence and disposes the device.</summary>
-    public void Detach()
+    /// <param name="handBack">False when another program now owns the LCD: the shutdown sequence would override its screen.</param>
+    public void Detach(bool handBack = true)
     {
         lock (_lock)
         {
             if (_device is null) return;
-            if (_claimed)
+            if (_claimed && handBack)
             {
                 SendShutdown();
-                _claimed = false;
             }
+            _claimed = false;
             _device.Dispose();
             _device = null;
             _attached = false;

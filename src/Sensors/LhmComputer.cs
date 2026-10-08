@@ -154,14 +154,15 @@ public sealed class LhmComputer : IDisposable
             {
                 enabled = _gate.IsEnabled(SmbusDramHandler.HandlerId);
                 // Group first (cancels its retry task, closes its DIMMs), then
-                // the driver whose PawnIO modules those DIMMs read through.
-                // Re-enabling probes eight addresses synchronously under the lock.
+                // the driver swap. Re-enabling probes eight addresses
+                // synchronously under the lock.
                 _computer.IsMemoryEnabled = false;
-                DriverManager.UnloadDriver();
-                if (!enabled)
-                {
-                    DriverManager.Driver = NoSpdDriver.Instance;
-                }
+                // Detach, never UnloadDriver: Unload disposes the PawnIO modules,
+                // and the closed group's SPDAccessor finalizers reset the DIMM
+                // page through them later, dereferencing the disposed module on
+                // the finalizer thread and terminating the process. The old
+                // modules stay open until the next re-enable re-detects buses.
+                DriverManager.Driver = enabled ? null : NoSpdDriver.Instance;
                 _computer.IsMemoryEnabled = true;
             }
             Console.WriteLine(enabled

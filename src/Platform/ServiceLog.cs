@@ -35,6 +35,13 @@ public static class ServiceLog
 
     public static string? LogFilePath => _path;
 
+    /// <summary>Lines kept for <see cref="RecentLines"/>.</summary>
+    internal const int RecentLineCount = 30;
+
+    // Ring of the last full lines written, oldest overwritten; guarded by Lock.
+    private static readonly string?[] s_recent = new string?[RecentLineCount];
+    private static int s_recentNext;
+
     /// <summary>
     /// Directory holding nexus-service.log (and nexus-overlay.log on Windows). Resolves
     /// even before <see cref="Initialize"/> runs, so the open-logs endpoint works
@@ -101,10 +108,37 @@ public static class ServiceLog
     {
         lock (Lock)
         {
+            if (newLine && text.Length > 0)
+            {
+                s_recent[s_recentNext] = text;
+                s_recentNext = (s_recentNext + 1) % RecentLineCount;
+            }
             if (_writer is null)
                 return;
             if (newLine) _writer.WriteLine(text);
             else _writer.Write(text);
+        }
+    }
+
+    /// <summary>The last <see cref="RecentLineCount"/> log lines, oldest first; empty when the log lock is held elsewhere, since this runs while the process dies.</summary>
+    public static string RecentLines()
+    {
+        if (!System.Threading.Monitor.TryEnter(Lock, 100))
+            return string.Empty;
+        try
+        {
+            var sb = new System.Text.StringBuilder();
+            for (var i = 0; i < RecentLineCount; i++)
+            {
+                var line = s_recent[(s_recentNext + i) % RecentLineCount];
+                if (line is not null)
+                    sb.Append(line).Append('\n');
+            }
+            return sb.ToString();
+        }
+        finally
+        {
+            System.Threading.Monitor.Exit(Lock);
         }
     }
 

@@ -77,10 +77,12 @@ public class FleetEventServiceTests
         IEnumerable<ITelemetrySink>? sinks = null,
         StubSensors? sensors = null,
         TimeProvider? clock = null,
-        IUsbEnumerator? usb = null) =>
+        IUsbEnumerator? usb = null,
+        bool ibuypowerSystem = false) =>
         new(store, transport, telemetry ?? new TelemetryClient(store),
             sinks ?? Array.Empty<ITelemetrySink>(), new SystemSpecsCollector(sensors ?? new StubSensors()),
-            usb ?? new StubUsbEnumerator(), clock ?? TimeProvider.System);
+            usb ?? new StubUsbEnumerator(), () => ibuypowerSystem,
+            clock ?? TimeProvider.System);
 
     private sealed class StubUsbEnumerator : IUsbEnumerator
     {
@@ -202,9 +204,42 @@ public class FleetEventServiceTests
         Assert.Equal(2, transport.Sent.Count(p => p.Type == TelemetryEvents.Specs));
         Assert.NotEqual("", store.Load().Telemetry.FleetSpecsHash);
 
-        // Delivered, so later passes stop evaluating specs for this process.
+        // Delivered and unchanged, so later passes do not resend.
         await svc.RunPendingRetriesAsync(CancellationToken.None);
         Assert.Equal(2, transport.Sent.Count(p => p.Type == TelemetryEvents.Specs));
+    }
+
+    [Fact]
+    public async Task Y70_latched_mid_session_resends_specs_on_a_later_pass()
+    {
+        var store = OptedInStore();
+        var transport = new FakeFleetEventTransport();
+        var sensors = new StubSensors { Cpu = "CPU A", GpuModels = new[] { "GPU A" }, MemoryFormatted = "32 GB", Motherboard = "Board A" };
+        var svc = MakeService(store, transport, sensors: sensors);
+
+        await svc.RunPendingRetriesAsync(CancellationToken.None);
+        Assert.False(transport.Sent.Single(p => p.Type == TelemetryEvents.Specs).Specs!.Y70Seen);
+
+        store.Update(s => s.Telemetry.FleetY70Seen = true);
+        await svc.RunPendingRetriesAsync(CancellationToken.None);
+        Assert.Equal(2, transport.Sent.Count(p => p.Type == TelemetryEvents.Specs));
+        Assert.True(transport.Sent.Last(p => p.Type == TelemetryEvents.Specs).Specs!.Y70Seen);
+
+        await svc.RunPendingRetriesAsync(CancellationToken.None);
+        Assert.Equal(2, transport.Sent.Count(p => p.Type == TelemetryEvents.Specs));
+    }
+
+    [Fact]
+    public async Task Specs_event_carries_the_ibuypower_system_flag()
+    {
+        var store = OptedInStore();
+        var transport = new FakeFleetEventTransport();
+        var sensors = new StubSensors { Cpu = "CPU A", GpuModels = new[] { "GPU A" }, MemoryFormatted = "32 GB", Motherboard = "Board A" };
+        var svc = MakeService(store, transport, sensors: sensors, ibuypowerSystem: true);
+
+        await svc.RunPendingRetriesAsync(CancellationToken.None);
+
+        Assert.True(transport.Sent.Single(p => p.Type == TelemetryEvents.Specs).Specs!.IbuypowerSystem);
     }
 
     [Fact]

@@ -20,7 +20,9 @@ public sealed class Y70Handler : IDeviceHandler
         _topology = topology;
     }
 
-    public string Id => "y70";
+    public const string HandlerId = "y70";
+
+    public string Id => HandlerId;
 
     // The connected variant's marketed name, or the family name until a
     // variant is known. A Truly is sold as a Y70 Touch Infinite, so it shares

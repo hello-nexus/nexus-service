@@ -172,6 +172,18 @@ public class CorsairLinkLcdTests
         Assert.False(lcd.HasDevice);
     }
 
+    [Fact]
+    public void Detach_without_hand_back_leaves_the_screen_to_the_other_program()
+    {
+        var (lcd, device) = AttachLcd();
+        lcd.SendFrame(new byte[] { 0xFF, 0xD8, 0xFF });
+
+        lcd.Detach(handBack: false);
+
+        Assert.Empty(device.Features);
+        Assert.False(lcd.HasDevice);
+    }
+
     // -------------------------------------------------------------------------
     // LCD HID discovery test
     // -------------------------------------------------------------------------
