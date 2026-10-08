@@ -7,9 +7,7 @@ using System.Security.Cryptography;
 using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
-using Nexus.Service.Devices;
 using Nexus.Service.Devices.Detection;
-using Nexus.Service.Devices.Handlers;
 using Nexus.Service.Persistence;
 using Nexus.Service.Sensors;
 using Nexus.Service.Store;
@@ -28,7 +26,6 @@ internal sealed class FleetEventService
     private readonly IReadOnlyList<ITelemetrySink> _sinks;
     private readonly SystemSpecsCollector _specs;
     private readonly IUsbEnumerator _usb;
-    private readonly Func<IReadOnlyList<UsbDeviceEntry>, bool> _y70Connected;
     private readonly Func<bool> _ibuypowerSystem;
     private readonly TimeProvider _clock;
     private readonly SemaphoreSlim _gate = new(1, 1);
@@ -46,10 +43,9 @@ internal sealed class FleetEventService
         IEnumerable<ITelemetrySink> sinks,
         SystemSpecsCollector specs,
         IUsbEnumerator usb,
-        IEnumerable<IDeviceHandler> handlers,
         HardwareAppCatalog hardware)
         : this(store, transport, telemetry, sinks, specs, usb,
-            Y70Probe(handlers), () => hardware.IsMatched(HardwareAppCatalog.IbuypowerAppId), TimeProvider.System)
+            () => hardware.IsMatched(HardwareAppCatalog.IbuypowerAppId), TimeProvider.System)
     {
     }
 
@@ -60,7 +56,6 @@ internal sealed class FleetEventService
         IEnumerable<ITelemetrySink> sinks,
         SystemSpecsCollector specs,
         IUsbEnumerator usb,
-        Func<IReadOnlyList<UsbDeviceEntry>, bool> y70Connected,
         Func<bool> ibuypowerSystem,
         TimeProvider clock)
     {
@@ -70,15 +65,8 @@ internal sealed class FleetEventService
         _sinks = sinks.Where(s => s.Enabled).ToArray();
         _specs = specs;
         _usb = usb;
-        _y70Connected = y70Connected;
         _ibuypowerSystem = ibuypowerSystem;
         _clock = clock;
-    }
-
-    private static Func<IReadOnlyList<UsbDeviceEntry>, bool> Y70Probe(IEnumerable<IDeviceHandler> handlers)
-    {
-        var y70 = handlers.OfType<Y70Handler>().FirstOrDefault();
-        return usb => y70?.IsConnected(usb) ?? false;
     }
 
     /// <summary>One retry pass: consent event first regardless of consent state (the opt-out exception), then install and specs only while opted in.</summary>
@@ -97,7 +85,7 @@ internal sealed class FleetEventService
             if (!_store.Load().Telemetry.FleetInstallDelivered)
                 await DeliverInstallAsync(ct).ConfigureAwait(false);
 
-            // Every pass, not just boot: the Y70's serial and EDID detection can land after the boot pass.
+            // Every pass, not just boot: SystemProfileService can latch FleetY70Seen mid-session.
             await MaybeDeliverSpecsAsync(ct).ConfigureAwait(false);
         }
         finally
@@ -226,10 +214,7 @@ internal sealed class FleetEventService
             " + ", StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
         var ramBytes = SystemProfileService.ParseRamGb(specs.Memory) is int gb ? (long)gb * 1024 * 1024 * 1024 : 0;
 
-        var usb = _usb.Enumerate();
-        var devices = FleetDeviceCollector.Collect(usb);
-        if (!_store.Load().Telemetry.FleetY70Seen && _y70Connected(usb))
-            _store.Update(s => s.Telemetry.FleetY70Seen = true);
+        var devices = FleetDeviceCollector.Collect(_usb.Enumerate());
         var y70Seen = _store.Load().Telemetry.FleetY70Seen;
         var ibuypowerSystem = _ibuypowerSystem();
         var hash = ComputeSpecsHash(specs.Processor, gpu, ramBytes, specs.Motherboard, devices, y70Seen, ibuypowerSystem);

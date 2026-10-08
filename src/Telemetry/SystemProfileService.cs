@@ -8,6 +8,7 @@ using System.Threading.Tasks;
 using Microsoft.Extensions.Hosting;
 using Nexus.Service.Cooling;
 using Nexus.Service.Devices;
+using Nexus.Service.Devices.Handlers;
 using Nexus.Service.Persistence;
 using Nexus.Service.Sensors;
 
@@ -88,10 +89,13 @@ internal sealed class SystemProfileService : BackgroundService
 
         var specs = await _specs.GetAsync(ct).ConfigureAwait(false);
 
+        var connected = _devices.GetAll().Where(d => d.Connected).ToList();
+        if (connected.Any(d => d.Id == Y70Handler.HandlerId) && !_store.Load().Telemetry.FleetY70Seen)
+            _store.Update(s => s.Telemetry.FleetY70Seen = true);
+
         // One list: handler-backed devices we drive (connected) ∪ any USB device
         // the OS names (recognized even if unsupported).
-        var devices = _devices.GetAll()
-            .Where(d => d.Connected)
+        var devices = connected
             .Select(d => d.Name)
             .Concat(_devices.GetUsbDevices().Select(u => u.Name))
             .Where(n => !string.IsNullOrWhiteSpace(n))
