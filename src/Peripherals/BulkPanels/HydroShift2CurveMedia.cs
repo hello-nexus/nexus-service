@@ -26,6 +26,7 @@ public sealed partial class HydroShift2CurveMedia
     private const string SourcePrefix = "source";
     private const string MetaFile = "meta.txt";
     private const string ThumbFile = "thumb.jpg";
+    private const string TrashPrefix = ".deleted-";
 
     /// <summary>Longest clip kept; the glass loops whatever it gets.</summary>
     private const int MaxSeconds = 300;
@@ -228,15 +229,34 @@ public sealed partial class HydroShift2CurveMedia
         {
             return HydroShift2CurveMediaDelete.Busy;
         }
+        // Renamed out of the library first: Windows refuses the rename while any file in it is
+        // open, so a clip in use stays whole instead of losing some files to a recursive delete.
+        var trash = Path.Combine(_root, TrashPrefix + name);
         try
         {
-            Directory.Delete(ItemDir(name), recursive: true);
-            return HydroShift2CurveMediaDelete.Deleted;
+            Directory.Move(ItemDir(name), trash);
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
         {
             ServiceLog.Warn($"[{HydroShift2CurveLcdDriver.Id}] could not delete '{name}': {ex.Message}");
             return HydroShift2CurveMediaDelete.Busy;
+        }
+        SweepTrash();
+        return HydroShift2CurveMediaDelete.Deleted;
+    }
+
+    /// <summary>Removes deleted clips whose files could not all go at once; their names never list.</summary>
+    private void SweepTrash()
+    {
+        foreach (var dir in Directory.GetDirectories(_root, TrashPrefix + "*"))
+        {
+            try
+            {
+                Directory.Delete(dir, recursive: true);
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+            {
+            }
         }
     }
 

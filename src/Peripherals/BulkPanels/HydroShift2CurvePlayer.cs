@@ -42,6 +42,7 @@ public sealed class HydroShift2CurvePlayer : BackgroundService
     private int _saverMinutes;
     private long _nextSaverAt;
     private long _retryAt;
+    private long _wokenAt;
 
     public HydroShift2CurvePlayer(
         BulkPanelHub hub, HydroShift2CurveLcdDriver driver, HydroShift2CurveMedia media, IConfigStore store, PanelDeviceRegistry registry)
@@ -71,7 +72,8 @@ public sealed class HydroShift2CurvePlayer : BackgroundService
     /// <summary>Settings changed: act now rather than on the next tick.</summary>
     public void Wake()
     {
-        _retryAt = 0;
+        Volatile.Write(ref _wokenAt, Environment.TickCount64);
+        Volatile.Write(ref _retryAt, 0);
         if (_wake.CurrentCount == 0)
         {
             try { _wake.Release(); } catch (SemaphoreFullException) { }
@@ -113,10 +115,19 @@ public sealed class HydroShift2CurvePlayer : BackgroundService
             {
                 ServiceLog.Warn($"[{HydroShift2CurveLcdDriver.Id}] player tick failed: {ex.Message}");
                 Release();
-                _retryAt = Environment.TickCount64 + RetryAfterFailMs;
+                BackOff(Environment.TickCount64);
             }
         }
         Release();
+    }
+
+    /// <summary>Holds off the next play after a failure, unless settings changed since the attempt began.</summary>
+    private void BackOff(long attemptStartedAt)
+    {
+        if (Volatile.Read(ref _wokenAt) <= attemptStartedAt)
+        {
+            Volatile.Write(ref _retryAt, Environment.TickCount64 + RetryAfterFailMs);
+        }
     }
 
     private async Task TickAsync(CancellationToken ct)
@@ -135,7 +146,7 @@ public sealed class HydroShift2CurvePlayer : BackgroundService
         }
         ApplyOfflineClock(settings);
         ScheduleSaver(settings.ScreenSaverMinutes, force: false);
-        if (Environment.TickCount64 < _retryAt)
+        if (Environment.TickCount64 < Volatile.Read(ref _retryAt))
         {
             return;
         }
@@ -160,10 +171,14 @@ public sealed class HydroShift2CurvePlayer : BackgroundService
         }
     }
 
-    private void ApplyOfflineClock(HydroShift2CurveSettings settings)
+    /// <summary>During a play one attempt latches, so a glass that leaves it unanswered never stalls the stream again.</summary>
+    private void ApplyOfflineClock(HydroShift2CurveSettings settings, bool playing = false)
     {
-        if (settings.OfflineClock is { } clock && _offlineClockSent != clock
-            && _hub.Exchange(pipe => _driver.SetOfflineClock(pipe, clock), false))
+        if (settings.OfflineClock is not { } clock || _offlineClockSent == clock)
+        {
+            return;
+        }
+        if (_hub.Exchange(pipe => _driver.SetOfflineClock(pipe, clock), false) || playing)
         {
             _offlineClockSent = clock;
         }
@@ -181,7 +196,7 @@ public sealed class HydroShift2CurvePlayer : BackgroundService
         {
             return false;
         }
-        ApplyOfflineClock(settings);
+        ApplyOfflineClock(settings, playing: true);
         if (_saverBacklight is { } applied && applied != settings.ScreenSaverBrightness)
         {
             _saverBacklight = settings.ScreenSaverBrightness;
@@ -205,11 +220,12 @@ public sealed class HydroShift2CurvePlayer : BackgroundService
     {
         var mount = MountOf(record);
         bool StillWanted() => this.StillWanted(settingsAllow, record?.Id, mount);
+        var attemptStartedAt = Environment.TickCount64;
 
         var path = await _media.EnsureVariantAsync(name, mount.Flip180, mount.Mirror, ct).ConfigureAwait(false);
         if (path is null)
         {
-            _retryAt = Environment.TickCount64 + RetryAfterFailMs;
+            BackOff(attemptStartedAt);
             return;
         }
         if (!StillWanted())
@@ -217,10 +233,11 @@ public sealed class HydroShift2CurvePlayer : BackgroundService
             return;
         }
 
+        // _stopped before _playing: a delete that sees the name must wait on this play.
+        Volatile.Write(ref _stopped, new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously));
         _driver.VideoOwnsGlass = true;
         _ownsGlass = true;
         _playing = name;
-        Volatile.Write(ref _stopped, new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously));
         RaiseGlassOwnerChanged();
         ServiceLog.Info($"[{HydroShift2CurveLcdDriver.Id}] playing '{name}'{(loop ? " in a loop" : " once")}");
         bool accepted = false;
@@ -293,7 +310,7 @@ public sealed class HydroShift2CurvePlayer : BackgroundService
             if (refused)
             {
                 ServiceLog.Warn($"[{HydroShift2CurveLcdDriver.Id}] the glass took none of '{name}'; retrying in {RetryAfterFailMs / 1000} s");
-                _retryAt = Environment.TickCount64 + RetryAfterFailMs;
+                BackOff(attemptStartedAt);
             }
         }
     }

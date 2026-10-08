@@ -181,6 +181,8 @@ public static partial class DevicesRoutes
                 return Results.BadRequest(ApiResponse.Fail("no such video"));
             }
             // Unpicked first, so the player lets go of the file before it is removed.
+            var before = store.Load().Devices.HydroShift2Curve;
+            var (mode, video, saver) = (before.ScreenMode, before.Video, before.ScreenSaverVideo);
             store.Update(s =>
             {
                 var c = s.Devices.HydroShift2Curve;
@@ -205,7 +207,18 @@ public static partial class DevicesRoutes
                 {
                 }
             }
-            return media.Delete(name) switch
+            var result = media.Delete(name);
+            if (result == HydroShift2CurveMediaDelete.Busy)
+            {
+                // The clip stays, so it stays picked.
+                store.Update(s =>
+                {
+                    var c = s.Devices.HydroShift2Curve;
+                    (c.ScreenMode, c.Video, c.ScreenSaverVideo) = (mode, video, saver);
+                });
+                player.Wake();
+            }
+            return result switch
             {
                 HydroShift2CurveMediaDelete.Deleted => Results.Json(ApiResponse.Ok(), AppJsonContext.Default.ApiResponse),
                 HydroShift2CurveMediaDelete.Busy => Results.Conflict(ApiResponse.Fail("video is in use, try again")),
