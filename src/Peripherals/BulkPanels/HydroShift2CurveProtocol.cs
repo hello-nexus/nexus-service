@@ -28,10 +28,6 @@ public static class HydroShift2CurveProtocol
     public const byte CommandStartPlay = 0x79;
     public const byte CommandQueryBlock = 0x7A;
 
-    /// <summary>SetClock mode bytes: show the firmware clock while no host drives the glass, or not.</summary>
-    public const byte ClockOfflineOn = 1;
-    public const byte ClockOfflineOff = 0;
-
     /// <summary>L-Connect's video chunk size when a GetH264Block reply carries none.</summary>
     public const int DefaultH264Block = 202752;
 
@@ -110,14 +106,6 @@ public static class HydroShift2CurveProtocol
         chunk.CopyTo(packet.AsSpan(header.Length));
         return packet;
     }
-
-    /// <summary>SetClock with an explicit mode (sync-only is <see cref="HydroShift2Protocol.EncodeSetClock"/>).</summary>
-    public static byte[] EncodeSetClock(DateTime now, byte mode, uint timestampMs) =>
-        HydroShift2Protocol.EncodeCommand(HydroShift2Protocol.CommandSetClock, new byte[]
-        {
-            (byte)(now.Year >> 8), (byte)now.Year, (byte)now.Month, (byte)now.Day,
-            (byte)now.Hour, (byte)now.Minute, (byte)now.Second, mode,
-        }, timestampMs);
 
     /// <summary>Video chunk size from a GetH264Block reply (u32 BE at [8]), or the default.</summary>
     public static int DecodeH264Block(ReadOnlySpan<byte> reply)

@@ -328,14 +328,12 @@ public class HydroShift2CurveTests
     }
 
     [Theory]
-    [InlineData(true, true, new byte[] { HydroShift2Protocol.CommandStopPlay, HydroShift2CurveProtocol.CommandReboot })]
-    [InlineData(false, true, new byte[] { HydroShift2Protocol.CommandStopPlay })]
-    [InlineData(true, false, new byte[] { HydroShift2Protocol.CommandStopPlay })]
-    public void Release_reboots_the_glass_into_its_own_screen_only_after_a_session_and_when_asked(
-        bool ownScreen, bool answers, byte[] releaseCommands)
+    [InlineData(true, new byte[] { HydroShift2Protocol.CommandStopPlay, HydroShift2CurveProtocol.CommandReboot })]
+    [InlineData(false, new byte[] { HydroShift2Protocol.CommandStopPlay })]
+    public void Release_reboots_the_glass_into_its_own_screen_only_after_a_session(bool answers, byte[] releaseCommands)
     {
         var pipe = new GlassPipe { Answers = answers };
-        var driver = new HydroShift2CurveLcdDriver { OwnScreenOnRelease = ownScreen };
+        var driver = new HydroShift2CurveLcdDriver();
         Assert.Equal(answers, driver.Connect(pipe, null) is not null);
         pipe.Commands.Clear();
 
@@ -348,7 +346,7 @@ public class HydroShift2CurveTests
     public void Retiring_releases_the_live_session_then_leaves_the_glass_alone()
     {
         var pipe = new GlassPipe { Answers = true };
-        var driver = new HydroShift2CurveLcdDriver { OwnScreenOnRelease = true };
+        var driver = new HydroShift2CurveLcdDriver();
         Assert.NotNull(driver.Connect(pipe, null));
         pipe.Commands.Clear();
 

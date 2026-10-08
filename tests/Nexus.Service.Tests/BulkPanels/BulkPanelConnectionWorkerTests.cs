@@ -22,7 +22,8 @@ public class BulkPanelConnectionWorkerTests
         var store = new InMemoryConfigStore();
         store.Update(s => s.Devices.NexusControlEnabled.Add(driver.HandlerId));
         var worker = new BulkPanelConnectionWorker(
-            new NoHid(), new PipeFactory(), hub, new DeviceControlGate(store), new HardwarePresence(usb));
+            new NoHid(), new PipeFactory(), hub, new DeviceControlGate(store), new HardwarePresence(usb),
+            connectPollMs: 100, presencePollMs: 50);
 
         await worker.StartAsync(CancellationToken.None);
         try
@@ -34,7 +35,7 @@ public class BulkPanelConnectionWorkerTests
             Assert.Equal(1, driver.Disconnects);
 
             usb.Present = true;
-            Assert.True(await Eventually(() => hub.IsConnected, timeoutMs: 8000));
+            Assert.True(await Eventually(() => hub.IsConnected));
         }
         finally
         {

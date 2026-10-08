@@ -69,7 +69,6 @@ public static partial class DevicesRoutes
                     ScreenSaverMinutes = s.ScreenSaverMinutes,
                     ScreenSaverVideo = s.ScreenSaverVideo is { } sv && media.Exists(sv) ? sv : null,
                     ScreenSaverBrightness = s.ScreenSaverBrightness,
-                    OfflineClock = s.OfflineClock == true,
                     PumpFollowsMotherboard = board.FollowsMotherboardWhenIdle,
                 },
                 AppJsonContext.Default.HydroShift2CurveSettingsResponse);
@@ -101,7 +100,6 @@ public static partial class DevicesRoutes
                 c.ScreenSaverMinutes = body.ScreenSaverMinutes ?? c.ScreenSaverMinutes;
                 c.ScreenSaverVideo = body.ScreenSaverVideo is null ? c.ScreenSaverVideo : body.ScreenSaverVideo.Length > 0 ? body.ScreenSaverVideo : null;
                 c.ScreenSaverBrightness = body.ScreenSaverBrightness ?? c.ScreenSaverBrightness;
-                c.OfflineClock = body.OfflineClock ?? c.OfflineClock;
                 c.PumpFollowsMotherboard = body.PumpFollowsMotherboard ?? c.PumpFollowsMotherboard;
             });
             player.Wake();
@@ -287,7 +285,6 @@ public sealed class HydroShift2CurveSettingsResponse
     public int ScreenSaverMinutes { get; set; }
     public string? ScreenSaverVideo { get; set; }
     public int ScreenSaverBrightness { get; set; }
-    public bool OfflineClock { get; set; }
     public bool PumpFollowsMotherboard { get; set; }
 }
 
@@ -300,7 +297,6 @@ public sealed class HydroShift2CurveSettingsRequest
     /// <summary>Empty string clears it.</summary>
     public string? ScreenSaverVideo { get; set; }
     public int? ScreenSaverBrightness { get; set; }
-    public bool? OfflineClock { get; set; }
     public bool? PumpFollowsMotherboard { get; set; }
 }
 

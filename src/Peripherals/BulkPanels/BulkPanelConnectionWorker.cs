@@ -19,8 +19,8 @@ namespace Nexus.Service.Peripherals.BulkPanels;
 /// </summary>
 public sealed class BulkPanelConnectionWorker : BackgroundService
 {
-    private const int ConnectPollMs = 5000;
-    private const int PresencePollMs = 2000;
+    private readonly int _connectPollMs;
+    private readonly int _presencePollMs;
 
     private readonly IHidEnumerator _hid;
     private readonly IBulkUsbPipeFactory _pipes;
@@ -29,8 +29,11 @@ public sealed class BulkPanelConnectionWorker : BackgroundService
     private readonly HardwarePresence _presence;
 
     public BulkPanelConnectionWorker(
-        IHidEnumerator hid, IBulkUsbPipeFactory pipes, BulkPanelHub hub, DeviceControlGate gate, HardwarePresence presence)
+        IHidEnumerator hid, IBulkUsbPipeFactory pipes, BulkPanelHub hub, DeviceControlGate gate, HardwarePresence presence,
+        int connectPollMs = 5000, int presencePollMs = 2000)
     {
+        _connectPollMs = connectPollMs;
+        _presencePollMs = presencePollMs;
         _hid = hid;
         _pipes = pipes;
         _hub = hub;
@@ -47,39 +50,45 @@ public sealed class BulkPanelConnectionWorker : BackgroundService
             {
                 if (!_gate.IsEnabled(driver.HandlerId))
                 {
-                    await Task.Delay(ConnectPollMs, stoppingToken).ConfigureAwait(false);
+                    await Task.Delay(_connectPollMs, stoppingToken).ConfigureAwait(false);
                     continue;
                 }
 
                 if (!_presence.UsbPresent(driver.VendorId, driver.ProductIds))
                 {
-                    await Task.Delay(ConnectPollMs, stoppingToken).ConfigureAwait(false);
+                    await Task.Delay(_connectPollMs, stoppingToken).ConfigureAwait(false);
                     continue;
                 }
 
                 if (!TryOpen(out var pipe, out var hid) || pipe is null)
                 {
                     hid?.Dispose();
-                    await Task.Delay(ConnectPollMs, stoppingToken).ConfigureAwait(false);
+                    await Task.Delay(_connectPollMs, stoppingToken).ConfigureAwait(false);
                     continue;
                 }
 
                 if (!_hub.Attach(pipe, hid))
                 {
-                    await Task.Delay(ConnectPollMs, stoppingToken).ConfigureAwait(false);
+                    await Task.Delay(_connectPollMs, stoppingToken).ConfigureAwait(false);
                     continue;
                 }
 
                 ServiceLog.Info($"[{driver.HandlerId}] connected: {driver.Name}, {_hub.Width}x{_hub.Height}");
                 try
                 {
-                    // An unplug fails no call the hub makes on its own, so presence is what ends the session.
+                    // The hub never detaches on a failed transfer, so presence is what ends the session
+                    // after an unplug; two misses in a row, so one incomplete bus scan does not.
+                    int misses = 0;
                     while (!stoppingToken.IsCancellationRequested
                         && _gate.IsEnabled(driver.HandlerId)
-                        && _hub.IsConnected
-                        && _presence.UsbPresent(driver.VendorId, driver.ProductIds))
+                        && _hub.IsConnected)
                     {
-                        await Task.Delay(PresencePollMs, stoppingToken).ConfigureAwait(false);
+                        misses = _presence.UsbPresent(driver.VendorId, driver.ProductIds) ? 0 : misses + 1;
+                        if (misses >= 2)
+                        {
+                            break;
+                        }
+                        await Task.Delay(_presencePollMs, stoppingToken).ConfigureAwait(false);
                     }
                 }
                 finally
@@ -95,7 +104,7 @@ public sealed class BulkPanelConnectionWorker : BackgroundService
             catch (Exception ex)
             {
                 ServiceLog.Error($"[{driver.HandlerId}] worker error: {ex.Message}");
-                await Task.Delay(ConnectPollMs, stoppingToken).ConfigureAwait(false);
+                await Task.Delay(_connectPollMs, stoppingToken).ConfigureAwait(false);
             }
         }
         _hub.Detach();

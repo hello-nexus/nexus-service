@@ -47,12 +47,9 @@ public sealed class HydroShift2CurveLcdDriver : IBulkPanelDriver
     public string? Firmware { get; private set; }
 
     private volatile bool _videoOwnsGlass;
-    private volatile bool _ownScreenOnRelease;
     private volatile bool _retired;
     private bool _sessionUp;
 
-    /// <summary>On release the glass returns to its own screen instead of holding the last frame.</summary>
-    public bool OwnScreenOnRelease { get => _ownScreenOnRelease; set => _ownScreenOnRelease = value; }
 
     /// <summary>Set at shutdown once the glass is let go: no reconnect may take it back.</summary>
     public void Retire() => _retired = true;
@@ -140,12 +137,6 @@ public sealed class HydroShift2CurveLcdDriver : IBulkPanelDriver
     public bool SetBacklight(IBulkUsbPipe pipe, int percent) =>
         Command(pipe, HydroShift2Protocol.CommandBrightness, stackalloc byte[] { (byte)(Math.Clamp(percent, 0, 100) / 2) });
 
-    /// <summary>Whether the firmware shows its own clock while no host drives the glass.</summary>
-    public bool SetOfflineClock(IBulkUsbPipe pipe, bool on) =>
-        Exchange(pipe, HydroShift2Protocol.CommandSetClock, HydroShift2CurveProtocol.EncodeSetClock(
-            DateTime.Now, on ? HydroShift2CurveProtocol.ClockOfflineOn : HydroShift2CurveProtocol.ClockOfflineOff,
-            NextTimestamp())) is not null;
-
     /// <summary>Readies the decoder for a video and returns the chunk size the glass takes, 0 when it did not answer.</summary>
     public int BeginVideo(IBulkUsbPipe pipe, int frameRate)
     {
@@ -182,9 +173,8 @@ public sealed class HydroShift2CurveLcdDriver : IBulkPanelDriver
     }
 
     /// <summary>
-    /// The glass keeps the last frame, or reboots onto its own screen when <see cref="OwnScreenOnRelease"/>;
-    /// only a reboot brings that screen back. A handshake that never completed sends no reboot, so a
-    /// glass still coming back from one is not sent round again.
+    /// Hands the glass back to its own screen, which only a reboot brings back. A handshake that
+    /// never completed sends no reboot, so a glass still coming back from one is not sent round again.
     /// </summary>
     public void Disconnect(IBulkUsbPipe pipe, IHidDevice? hid)
     {
@@ -194,7 +184,7 @@ public sealed class HydroShift2CurveLcdDriver : IBulkPanelDriver
         }
         pipe.Write(HydroShift2Protocol.EncodeCommand(
             HydroShift2Protocol.CommandStopPlay, ReadOnlySpan<byte>.Empty, NextTimestamp()));
-        if (_ownScreenOnRelease && _sessionUp)
+        if (_sessionUp)
         {
             pipe.Write(HydroShift2Protocol.EncodeCommand(
                 HydroShift2CurveProtocol.CommandReboot, ReadOnlySpan<byte>.Empty, NextTimestamp()));

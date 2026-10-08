@@ -37,8 +37,6 @@ public sealed class HydroShift2CurvePlayer : BackgroundService
     private volatile string? _playing;
     private TaskCompletionSource _stopped = Stopped();
     private bool _connected;
-    private bool? _offlineClockSent;
-    private bool? _offlineClockTriedInPlay;
     private int? _saverBacklight;
     private int _saverMinutes;
     private long _nextSaverAt;
@@ -144,11 +142,9 @@ public sealed class HydroShift2CurvePlayer : BackgroundService
     private async Task TickAsync(CancellationToken ct)
     {
         var settings = _store.Load().Devices.HydroShift2Curve;
-        _driver.OwnScreenOnRelease = settings.OfflineClock == true && settings.ScreenMode == HydroShift2CurveSettings.ScreenNexus;
         if (!_hub.IsConnected)
         {
             _connected = false;
-            _offlineClockSent = null;
             return;
         }
         if (!_connected)
@@ -158,7 +154,6 @@ public sealed class HydroShift2CurvePlayer : BackgroundService
             Volatile.Write(ref _retryAt, 0);
             ScheduleSaver(settings.ScreenSaverMinutes, force: true);
         }
-        ApplyOfflineClock(settings);
         ScheduleSaver(settings.ScreenSaverMinutes, force: false);
         if (Environment.TickCount64 < Volatile.Read(ref _retryAt))
         {
@@ -185,23 +180,6 @@ public sealed class HydroShift2CurvePlayer : BackgroundService
         }
     }
 
-    /// <summary>During a play it is tried once, so a glass that leaves it unanswered never stalls the stream; the tick retries after the play.</summary>
-    private void ApplyOfflineClock(HydroShift2CurveSettings settings, bool playing = false)
-    {
-        if (settings.OfflineClock is not { } clock || _offlineClockSent == clock || (playing && _offlineClockTriedInPlay == clock))
-        {
-            return;
-        }
-        if (playing)
-        {
-            _offlineClockTriedInPlay = clock;
-        }
-        if (_hub.Exchange(pipe => _driver.SetOfflineClock(pipe, clock), false))
-        {
-            _offlineClockSent = clock;
-        }
-    }
-
     /// <summary>Whether the play should go on; settings that act during a play apply here.</summary>
     private bool StillWanted(Func<HydroShift2CurveSettings, bool> settingsAllow, string? recordId, (bool, bool) mount)
     {
@@ -214,7 +192,6 @@ public sealed class HydroShift2CurvePlayer : BackgroundService
         {
             return false;
         }
-        ApplyOfflineClock(settings, playing: true);
         if (_saverBacklight is { } applied && applied != settings.ScreenSaverBrightness)
         {
             _saverBacklight = settings.ScreenSaverBrightness;
@@ -238,7 +215,6 @@ public sealed class HydroShift2CurvePlayer : BackgroundService
     {
         var mount = MountOf(record);
         bool StillWanted() => this.StillWanted(settingsAllow, record?.Id, mount);
-        _offlineClockTriedInPlay = null;
         var attemptStartedAt = Environment.TickCount64;
 
         var path = await _media.EnsureVariantAsync(name, mount.Flip180, mount.Mirror, ct).ConfigureAwait(false);
@@ -351,7 +327,6 @@ public sealed class HydroShift2CurvePlayer : BackgroundService
             return true;
         }, false);
         _saverBacklight = null;
-        _offlineClockTriedInPlay = null;
         _driver.VideoOwnsGlass = false;
         _ownsGlass = false;
         _playing = null;

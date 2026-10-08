@@ -63,6 +63,8 @@ public sealed class HydroShift2CurveBoard : BackgroundService
     private int _homingStep = -1;
     private readonly bool[] _motorBusy = new bool[3];
 
+    private volatile TaskCompletionSource? _shutdown;
+
     private long _lastStatusAt;
     private long _lastPumpAt;
     private long _lastMotorPollAt;
@@ -154,6 +156,12 @@ public sealed class HydroShift2CurveBoard : BackgroundService
             long lastGateAt = 0;
             while (!stoppingToken.IsCancellationRequested)
             {
+                if (_shutdown is { } shutdown)
+                {
+                    Disconnect(handBack: true);
+                    shutdown.TrySetResult();
+                    await Task.Delay(Timeout.Infinite, stoppingToken).ConfigureAwait(false);
+                }
                 var now = Environment.TickCount64;
                 if (!_connected || now - lastGateAt >= GateCheckMs)
                 {
@@ -188,6 +196,20 @@ public sealed class HydroShift2CurveBoard : BackgroundService
         finally
         {
             Disconnect(handBack: true);
+        }
+    }
+
+    /// <summary>
+    /// The fast shutdown skips this loop's own release, so it asks the loop to hand the pump back
+    /// now (the board owns its pipe from that one thread) and waits for it, bounded.
+    /// </summary>
+    public void ReleaseForShutdown(TimeSpan timeout)
+    {
+        var done = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        _shutdown = done;
+        if (_connected)
+        {
+            done.Task.Wait(timeout);
         }
     }
 
