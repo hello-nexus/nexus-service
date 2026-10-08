@@ -24,6 +24,9 @@ public sealed class ErrorReportItem
     public string Message { get; set; } = "";
     public string Stack { get; set; } = "";
     public string Context { get; set; } = "";
+
+    /// <summary>Recent service log lines; set only on a crash, null (omitted) otherwise.</summary>
+    public string? Log { get; set; }
     public int Count { get; set; } = 1;
     public DateTimeOffset FirstSeen { get; set; }
     public DateTimeOffset LastSeen { get; set; }
