@@ -101,6 +101,15 @@ Name: "english"; MessagesFile: "compiler:Default.isl"
 ; UninstalledAll, but if a stray file is held open we'd rather not
 ; alarm the user.
 UninstalledMost=%1 uninstall complete.%n%nA few files were still in use and will be cleaned up on next sign-in.
+; Inno's file-copy and [Run] failures. By the time these show, PrepareToInstall
+; and UnlockTarget have cleared every lock of ours, so what remains is almost
+; always antivirus quarantining a payload file or blocking it from running.
+#define AntivirusCause "Antivirus software blocking Nexus by mistake (a false positive) is the usual cause."
+#define AntivirusFix "Open your antivirus, restore the file above from its quarantine, add an exception for the Nexus folder"
+ErrorCreatingTemp=Setup could not save this file. {#AntivirusCause}%n%n{#AntivirusFix}, then click Try again.%n%nDetails:
+ErrorRenamingTemp=Setup could not save this file. {#AntivirusCause}%n%n{#AntivirusFix}, then click Try again.%n%nDetails:
+ErrorReplacingExistingFile=Setup could not replace this file. {#AntivirusCause}%n%n{#AntivirusFix}, then click Try again.%n%nDetails:
+ErrorExecutingProgram=Setup could not run this file:%n%1%n%n{#AntivirusCause}%n%n{#AntivirusFix}, then run Setup again.
 
 [Files]
 Source: "{#PublishDir}\*"; DestDir: "{app}"; Flags: recursesubdirs createallsubdirs ignoreversion; BeforeInstall: UnlockTarget
@@ -131,12 +140,14 @@ Name: "{group}\{cm:UninstallProgram,{#MyAppName}}"; Filename: "{uninstallexe}"
 ; Windows Service, installs PawnIO, opens the firewall, writes Add/Remove
 ; Programs, and starts the service. It is idempotent so re-running this
 ; installer is safe.
-Filename: "{app}\{#MyAppExeName}"; Parameters: "--install"; Flags: runhidden waituntilterminated; StatusMsg: "Installing Nexus service..."
+; Antivirus can quarantine Nexus.exe during the copy or when --install runs it,
+; so it is checked on both sides (PayloadPresent, RerunInstallIfBlocked).
+Filename: "{app}\{#MyAppExeName}"; Parameters: "--install"; Flags: runhidden waituntilterminated; StatusMsg: "Installing Nexus service..."; Check: PayloadPresent; AfterInstall: RerunInstallIfBlocked
 ; Open the dashboard as the chromeless --app window (overlay WebView2, Edge --app
 ; fallback), the same as the tray's "Open dashboard". runasoriginaluser drops the
 ; installer's elevation so it launches in the user session, like the tray's
 ; schtasks path; without it the window would spawn elevated/in the wrong session.
-Filename: "{app}\{#MyAppExeName}"; Parameters: "--open-app"; Flags: nowait skipifsilent runasoriginaluser; StatusMsg: "Opening dashboard..."
+Filename: "{app}\{#MyAppExeName}"; Parameters: "--open-app"; Flags: nowait skipifsilent runasoriginaluser; StatusMsg: "Opening dashboard..."; Check: PayloadInstalled
 
 ; NOTE: --uninstall is intentionally NOT run from [UninstallRun]. Running the
 ; payload {app}\Nexus.exe leaves its file handle held a moment past the
@@ -531,6 +542,55 @@ begin
   end;
 
   Log('[nexus] LOCKED AND UNMOVABLE, install will fail on this file: ' + Target);
+end;
+
+// Shown when Nexus.exe is gone after the copy step or after --install ran it.
+function AntivirusBlockedPrompt(): Integer;
+var
+  Btns: TArrayOfString;
+begin
+  SetArrayLength(Btns, 2);
+  Btns[0] := 'Try again';
+  Btns[1] := 'Close';
+  Result := SuppressibleTaskDialogMsgBox('Your antivirus blocked Nexus',
+    'Nexus.exe was blocked while Setup was installing it. This is almost always '
+    + 'antivirus software quarantining it by mistake (a false positive). Nexus is digitally signed and safe.'#13#10#13#10
+    + 'To finish installing:'#13#10
+    + '  1. Open your antivirus and find Nexus.exe in its quarantine or protection history.'#13#10
+    + '  2. Restore it, and add an exception for ' + ExpandConstant('{app}') + '.'#13#10
+    + '  3. Click Try again.',
+    mbError, MB_RETRYCANCEL, Btns, 0, IDCANCEL);
+end;
+
+function PayloadInstalled(): Boolean;
+begin
+  Result := FileExists(ExpandConstant('{app}\{#MyAppExeName}'));
+end;
+
+// Check for the --install [Run] entry: holds the install on the prompt until
+// the user restores Nexus.exe or gives up. Silent installs (OTA) get Close.
+function PayloadPresent(): Boolean;
+begin
+  Result := PayloadInstalled();
+  while not Result do
+  begin
+    Log('[nexus] Nexus.exe missing, likely quarantined');
+    if AntivirusBlockedPrompt() <> IDRETRY then exit;
+    Result := PayloadInstalled();
+  end;
+end;
+
+// Behavioural antivirus engines act when --install runs the exe, so a removal
+// can also happen during that run; repeat it once the user has restored the file.
+procedure RerunInstallIfBlocked();
+var
+  ResultCode: Integer;
+begin
+  while not PayloadInstalled() do
+  begin
+    if not PayloadPresent() then exit;
+    Exec(ExpandConstant('{app}\{#MyAppExeName}'), '--install', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+  end;
 end;
 
 function PrepareToInstall(var NeedsRestart: Boolean): String;
