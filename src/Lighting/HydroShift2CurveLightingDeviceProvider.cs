@@ -205,7 +205,7 @@ public sealed class HydroShift2CurveLightingDeviceProvider :
     /// <summary>
     /// Where LED <paramref name="index"/> sits round the glass seen from the front, clockwise:
     /// 32-34 and 0-2 down the curved right edge, 3-14 right to left along the bottom, 15-19 up
-    /// the left edge (user-confirmed on the unit), 20-31 left to right along the top.
+    /// the left edge, 20-31 left to right along the top.
     /// </summary>
     internal static (float U, float V) EdgePosition(int index)
     {

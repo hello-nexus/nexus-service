@@ -55,7 +55,7 @@ public static partial class DevicesRoutes
             return Results.Json(ApiResponse.Ok(), AppJsonContext.Default.ApiResponse);
         });
 
-        app.MapGet("/devices/lianli-hydroshift2-curve/settings", (HydroShift2CurvePlayer player, HydroShift2CurveBoard board, IConfigStore store) =>
+        app.MapGet("/devices/lianli-hydroshift2-curve/settings", (HydroShift2CurvePlayer player, HydroShift2CurveBoard board, HydroShift2CurveMedia media, IConfigStore store) =>
         {
             var s = store.Load().Devices.HydroShift2Curve;
             return Results.Json(
@@ -63,10 +63,11 @@ public static partial class DevicesRoutes
                 {
                     Connected = player.IsConnected,
                     ScreenMode = s.ScreenMode,
-                    Video = s.Video,
+                    // An upload is picked before its encode ends; one that failed is gone.
+                    Video = s.Video is { } v && media.Exists(v) ? v : null,
                     Playing = player.Playing,
                     ScreenSaverMinutes = s.ScreenSaverMinutes,
-                    ScreenSaverVideo = s.ScreenSaverVideo,
+                    ScreenSaverVideo = s.ScreenSaverVideo is { } sv && media.Exists(sv) ? sv : null,
                     ScreenSaverBrightness = s.ScreenSaverBrightness,
                     OfflineClock = s.OfflineClock == true,
                     PumpFollowsMotherboard = board.FollowsMotherboardWhenIdle,
@@ -180,7 +181,6 @@ public static partial class DevicesRoutes
             {
                 return Results.NotFound();
             }
-            // Shared for delete, so a browser holding the stream open never blocks removing the clip.
             var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
             return Results.File(stream, "video/mp4", enableRangeProcessing: true);
         });

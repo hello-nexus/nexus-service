@@ -23,7 +23,7 @@ public static class HydroShift2CurveProtocol
     public const byte CommandClearPng = 0x67;
     public const byte CommandHideShow = 0x68;
     public const byte CommandGetH264Block = 0x11;
-    /// <summary>Restarts the glass; it comes back in about 10 s on its own coolant and pump screen.</summary>
+    /// <summary>Restarts the glass; it comes back on its own coolant and pump screen.</summary>
     public const byte CommandReboot = 0x0B;
     public const byte CommandStartPlay = 0x79;
     public const byte CommandQueryBlock = 0x7A;

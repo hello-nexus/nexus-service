@@ -144,13 +144,15 @@ public sealed partial class HydroShift2CurveMedia
             try
             {
                 var ok = await EnsureVariantAsync(name, flip180, mirror, ct).ConfigureAwait(false) is not null;
+                if (ok)
+                {
+                    await EnsurePreviewAsync(name, ct).ConfigureAwait(false);
+                }
                 _importing.TryRemove(name, out _);
                 if (!ok)
                 {
                     Delete(name);
-                    return;
                 }
-                await EnsurePreviewAsync(name, ct).ConfigureAwait(false);
             }
             catch (Exception ex)
             {
@@ -244,6 +246,10 @@ public sealed partial class HydroShift2CurveMedia
             {
                 return target;
             }
+            if (_failedAt.TryGetValue(target, out var failedAt) && Environment.TickCount64 - failedAt < FailedRetryMs)
+            {
+                return null;
+            }
             var (_, crop, _) = ReadMeta(name);
             _encoding = name;
             await MediaImporter.RunFfmpeg(EncodeTimeoutSeconds, ct, new[]
@@ -267,6 +273,7 @@ public sealed partial class HydroShift2CurveMedia
         {
             ServiceLog.Warn($"[{HydroShift2CurveLcdDriver.Id}] preview for '{name}' failed: {ex.Message}");
             TryDeleteFile(temp);
+            _failedAt[target] = Environment.TickCount64;
             return null;
         }
         finally

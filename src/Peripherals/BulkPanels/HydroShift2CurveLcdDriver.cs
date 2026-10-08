@@ -48,9 +48,14 @@ public sealed class HydroShift2CurveLcdDriver : IBulkPanelDriver
 
     private volatile bool _videoOwnsGlass;
     private volatile bool _ownScreenOnRelease;
+    private volatile bool _retired;
+    private bool _sessionUp;
 
     /// <summary>On release the glass returns to its own screen instead of holding the last frame.</summary>
     public bool OwnScreenOnRelease { get => _ownScreenOnRelease; set => _ownScreenOnRelease = value; }
+
+    /// <summary>Set at shutdown once the glass is let go: no reconnect may take it back.</summary>
+    public void Retire() => _retired = true;
 
     /// <summary>While set, the glass plays a video on its own decoder and streamed frames are dropped.</summary>
     public bool VideoOwnsGlass { get => _videoOwnsGlass; set => _videoOwnsGlass = value; }
@@ -68,6 +73,11 @@ public sealed class HydroShift2CurveLcdDriver : IBulkPanelDriver
 
     public (int Width, int Height)? Connect(IBulkUsbPipe pipe, IHidDevice? hid)
     {
+        _sessionUp = false;
+        if (_retired)
+        {
+            return null;
+        }
         _clock.Restart();
         _lastTimestamp = 0;
 
@@ -94,6 +104,7 @@ public sealed class HydroShift2CurveLcdDriver : IBulkPanelDriver
         _jpeg = new BgraJpegEncoder(HydroShift2CurveProtocol.Height, HydroShift2CurveProtocol.Width, JpegQuality);
         _portrait = new byte[HydroShift2CurveProtocol.Width * HydroShift2CurveProtocol.Height * 4];
         ServiceLog.Info($"[{HandlerId}] firmware {Firmware ?? "unknown"}");
+        _sessionUp = true;
         return (HydroShift2CurveProtocol.Width, HydroShift2CurveProtocol.Height);
     }
 
@@ -170,17 +181,21 @@ public sealed class HydroShift2CurveLcdDriver : IBulkPanelDriver
         Command(pipe, HydroShift2CurveProtocol.CommandClearPng, ReadOnlySpan<byte>.Empty);
     }
 
-    /// <summary>The glass keeps the last frame; nothing restores the firmware's own screen short of a power cycle.</summary>
+    /// <summary>
+    /// The glass keeps the last frame, or reboots onto its own screen when <see cref="OwnScreenOnRelease"/>;
+    /// only a reboot brings that screen back. A handshake that never completed sends no reboot, so a
+    /// glass still coming back from one is not sent round again.
+    /// </summary>
     public void Disconnect(IBulkUsbPipe pipe, IHidDevice? hid)
     {
         pipe.Write(HydroShift2Protocol.EncodeCommand(
             HydroShift2Protocol.CommandStopPlay, ReadOnlySpan<byte>.Empty, NextTimestamp()));
-        if (_ownScreenOnRelease)
+        if (_ownScreenOnRelease && _sessionUp)
         {
-            // Nothing short of a reboot brings the firmware's own screen back (measured).
             pipe.Write(HydroShift2Protocol.EncodeCommand(
                 HydroShift2CurveProtocol.CommandReboot, ReadOnlySpan<byte>.Empty, NextTimestamp()));
         }
+        _sessionUp = false;
         _jpeg?.Dispose();
         _jpeg = null;
     }

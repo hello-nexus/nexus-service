@@ -327,16 +327,31 @@ public class HydroShift2CurveTests
     }
 
     [Theory]
-    [InlineData(true, 2)]
-    [InlineData(false, 1)]
-    public void Release_reboots_the_glass_into_its_own_screen_only_when_asked(bool ownScreen, int writes)
+    [InlineData(true, true, new byte[] { HydroShift2Protocol.CommandStopPlay, HydroShift2CurveProtocol.CommandReboot })]
+    [InlineData(false, true, new byte[] { HydroShift2Protocol.CommandStopPlay })]
+    [InlineData(true, false, new byte[] { HydroShift2Protocol.CommandStopPlay })]
+    public void Release_reboots_the_glass_into_its_own_screen_only_after_a_session_and_when_asked(
+        bool ownScreen, bool answers, byte[] releaseCommands)
     {
-        var pipe = new RecordingPipe();
+        var pipe = new GlassPipe { Answers = answers };
         var driver = new HydroShift2CurveLcdDriver { OwnScreenOnRelease = ownScreen };
+        Assert.Equal(answers, driver.Connect(pipe, null) is not null);
+        pipe.Commands.Clear();
 
         driver.Disconnect(pipe, null);
 
-        Assert.Equal(writes, pipe.Writes.Count);
+        Assert.Equal(releaseCommands, pipe.Commands);
+    }
+
+    [Fact]
+    public void A_retired_glass_is_never_taken_back()
+    {
+        var pipe = new GlassPipe { Answers = true };
+        var driver = new HydroShift2CurveLcdDriver();
+        driver.Retire();
+
+        Assert.Null(driver.Connect(pipe, null));
+        Assert.Empty(pipe.Commands);
     }
 
     // ── native video ──
@@ -517,12 +532,46 @@ public class HydroShift2CurveTests
         public void Dispose() { }
     }
 
-    private sealed class RecordingPipe : IBulkUsbPipe
+    /// <summary>Stands in for the glass: decrypts each command header and, when it answers, replies [cmd, C8].</summary>
+    private sealed class GlassPipe : IBulkUsbPipe
     {
-        public List<byte[]> Writes { get; } = new();
-        public bool Write(ReadOnlySpan<byte> data) { Writes.Add(data.ToArray()); return true; }
+        private readonly Queue<byte[]> _pending = new();
+        public bool Answers { get; set; }
+        public List<byte> Commands { get; } = new();
+
+        public bool Write(ReadOnlySpan<byte> data)
+        {
+#pragma warning disable CA5351 // The glass's own framing.
+            using var des = System.Security.Cryptography.DES.Create();
+#pragma warning restore CA5351
+            des.Key = des.IV = System.Text.Encoding.ASCII.GetBytes("slv3tuzx");
+            des.Mode = System.Security.Cryptography.CipherMode.CBC;
+            des.Padding = System.Security.Cryptography.PaddingMode.None;
+            using var decryptor = des.CreateDecryptor();
+            var command = decryptor.TransformFinalBlock(data[..8].ToArray(), 0, 8)[0];
+            Commands.Add(command);
+            if (Answers)
+            {
+                var reply = new byte[512];
+                reply[0] = command;
+                reply[1] = 0xC8;
+                _pending.Enqueue(reply);
+            }
+            return true;
+        }
+
         public bool Write(byte pipeId, ReadOnlySpan<byte> data) => Write(data);
-        public int Read(Span<byte> buffer, int timeoutMs) => 0;
+
+        public int Read(Span<byte> buffer, int timeoutMs)
+        {
+            if (!_pending.TryDequeue(out var reply))
+            {
+                return 0;
+            }
+            reply.CopyTo(buffer);
+            return reply.Length;
+        }
+
         public void Dispose() { }
     }
 
