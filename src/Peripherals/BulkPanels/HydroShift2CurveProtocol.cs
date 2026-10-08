@@ -22,6 +22,20 @@ public static class HydroShift2CurveProtocol
     public const byte CommandWarnSwitch = 0x2E;
     public const byte CommandClearPng = 0x67;
     public const byte CommandHideShow = 0x68;
+    public const byte CommandGetH264Block = 0x11;
+    public const byte CommandStartPlay = 0x79;
+    public const byte CommandQueryBlock = 0x7A;
+
+    /// <summary>SetClock mode bytes: show the firmware clock while no host drives the glass, or not.</summary>
+    public const byte ClockOfflineOn = 1;
+    public const byte ClockOfflineOff = 0;
+
+    /// <summary>Video chunk size when the glass does not report one; it reports 1 MB (measured), L-Connect falls back to 202752.</summary>
+    public const int DefaultH264Block = 202752;
+
+    /// <summary>A video chunk is answered with the device's buffered block count at [8]; above this, wait for it to drain.</summary>
+    public const int H264BufferHigh = 3;
+    public const int H264BufferLow = 2;
 
     public const byte BoardVersion = 0x10;
     public const byte BoardLedFrame = 0x11;
@@ -69,6 +83,62 @@ public static class HydroShift2CurveProtocol
         (SlideMotor, 2, 1800),
         (SlideMotor, 1, 980),
     };
+
+    /// <summary>
+    /// One chunk of an Annex-B H.264 stream for the glass's own decoder: length u32 BE at
+    /// params[0..4], last-chunk flag, play count, then a session tick u32 BE that stays the
+    /// same for the whole video.
+    /// </summary>
+    public static byte[] EncodeVideoChunk(ReadOnlySpan<byte> chunk, bool last, uint sessionTick, uint timestampMs)
+    {
+        Span<byte> parameters = stackalloc byte[10];
+        parameters[0] = (byte)(chunk.Length >> 24);
+        parameters[1] = (byte)(chunk.Length >> 16);
+        parameters[2] = (byte)(chunk.Length >> 8);
+        parameters[3] = (byte)chunk.Length;
+        parameters[4] = (byte)(last ? 1 : 0);
+        parameters[5] = 1;
+        parameters[6] = (byte)(sessionTick >> 24);
+        parameters[7] = (byte)(sessionTick >> 16);
+        parameters[8] = (byte)(sessionTick >> 8);
+        parameters[9] = (byte)sessionTick;
+        var header = HydroShift2Protocol.EncodeCommand(CommandStartPlay, parameters, timestampMs);
+        var packet = new byte[header.Length + chunk.Length];
+        header.CopyTo(packet, 0);
+        chunk.CopyTo(packet.AsSpan(header.Length));
+        return packet;
+    }
+
+    /// <summary>SetClock with an explicit mode (sync-only is <see cref="HydroShift2Protocol.EncodeSetClock"/>).</summary>
+    public static byte[] EncodeSetClock(DateTime now, byte mode, uint timestampMs) =>
+        HydroShift2Protocol.EncodeCommand(HydroShift2Protocol.CommandSetClock, new byte[]
+        {
+            (byte)(now.Year >> 8), (byte)now.Year, (byte)now.Month, (byte)now.Day,
+            (byte)now.Hour, (byte)now.Minute, (byte)now.Second, mode,
+        }, timestampMs);
+
+    /// <summary>Video chunk size from a GetH264Block reply (u32 BE at [8]), or the default.</summary>
+    public static int DecodeH264Block(ReadOnlySpan<byte> reply)
+    {
+        if (reply.Length < 12 || reply[0] != CommandGetH264Block)
+        {
+            return DefaultH264Block;
+        }
+        int size = (reply[8] << 24) | (reply[9] << 16) | (reply[10] << 8) | reply[11];
+        return size > 0 ? size : DefaultH264Block;
+    }
+
+    /// <summary>Blocks the glass holds queued, from a StartPlay or QueryBlock reply ([8]), or null.</summary>
+    public static int? DecodeBufferedBlocks(ReadOnlySpan<byte> reply) =>
+        reply.Length > 8 && (reply[0] == CommandStartPlay || reply[0] == CommandQueryBlock) ? reply[8] : null;
+
+    /// <summary>
+    /// ffmpeg filter that turns a cropped landscape frame into the glass's portrait framebuffer
+    /// for the way the head is mounted: a quarter clockwise upright, counter-clockwise when
+    /// flipped, mirrored before the turn.
+    /// </summary>
+    public static string MountFilter(bool flip180, bool mirror) =>
+        $"scale={Width}:{Height}:flags=lanczos,{(mirror ? "hflip," : "")}transpose={(flip180 ? 2 : 1)}";
 
     /// <summary>Version query; L-Connect sends it as a full 64-byte packet.</summary>
     public static byte[] EncodeVersionQuery()

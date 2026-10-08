@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.IO;
 using System.Linq;
 using Nexus.Service.Devices;
 using Nexus.Service.Devices.Detection;
@@ -287,6 +288,114 @@ public class HydroShift2CurveTests
 
         Assert.Equal("5001010000013B02", pipe.Moves[0]);
         Assert.True(store.Load().Devices.HydroShift2Curve.Recalibrating);
+    }
+
+    [Theory]
+    [InlineData(true, 0)]
+    [InlineData(false, 1)]
+    public void An_idle_pump_takes_the_follow_setting(bool follow, byte wire)
+    {
+        var (board, pipe, store) = Connected();
+        pipe.FollowsHeader = !follow;
+        board.Tick(1_000);
+        Assert.DoesNotContain(pipe.Writes, w => w[0] == HydroShift2CurveProtocol.BoardHeaderFollow);
+
+        store.Update(s => s.Devices.HydroShift2Curve.PumpFollowsMotherboard = follow);
+        board.Tick(2_100);
+
+        Assert.Contains(pipe.Writes, w => w[0] == HydroShift2CurveProtocol.BoardHeaderFollow && w[1] == wire);
+        Assert.Equal(follow ? Array.Empty<int>() : new[] { HydroShift2CurveProtocol.DefaultPumpOutput }, pipe.PumpOutputs);
+        Assert.Equal(follow, board.FollowsMotherboardWhenIdle);
+    }
+
+    [Fact]
+    public void The_follow_setting_overrides_how_the_pump_was_found_on_hand_back()
+    {
+        var (board, pipe, store) = Connected();
+        pipe.FollowsHeader = true;
+        store.Update(s => s.Devices.HydroShift2Curve.PumpFollowsMotherboard = false);
+        board.SetPumpDuty(50);
+        board.Tick(1_000);
+
+        board.SetPumpDuty(null);
+        board.Tick(1_100);
+
+        Assert.Equal(HydroShift2CurveProtocol.DefaultPumpOutput, pipe.PumpOutputs[^1]);
+        Assert.False(pipe.FollowsHeader);
+    }
+
+    // ── native video ──
+
+    [Fact]
+    public void A_video_chunk_carries_length_last_flag_play_count_and_session_tick_then_the_bytes()
+    {
+        var chunk = new byte[] { 0, 0, 0, 1, 0x67, 0x42 };
+
+        var packet = HydroShift2CurveProtocol.EncodeVideoChunk(chunk, last: true, sessionTick: 0x01020304, timestampMs: 77);
+
+        var header = HydroShift2Protocol.EncodeCommand(
+            HydroShift2CurveProtocol.CommandStartPlay, new byte[] { 0, 0, 0, 6, 1, 1, 1, 2, 3, 4 }, 77);
+        Assert.Equal(header, packet[..header.Length]);
+        Assert.Equal(chunk, packet[header.Length..]);
+    }
+
+    [Fact]
+    public void Decodes_the_block_size_and_the_buffered_count()
+    {
+        var block = new byte[16];
+        block[0] = HydroShift2CurveProtocol.CommandGetH264Block;
+        block[9] = 0x10;
+        Assert.Equal(1_048_576, HydroShift2CurveProtocol.DecodeH264Block(block));
+        Assert.Equal(HydroShift2CurveProtocol.DefaultH264Block, HydroShift2CurveProtocol.DecodeH264Block(new byte[16]));
+
+        var play = new byte[16];
+        play[0] = HydroShift2CurveProtocol.CommandStartPlay;
+        play[8] = 4;
+        Assert.Equal(4, HydroShift2CurveProtocol.DecodeBufferedBlocks(play));
+        Assert.Null(HydroShift2CurveProtocol.DecodeBufferedBlocks(new byte[] { 0x65, 0xC8 }));
+    }
+
+    [Theory]
+    [InlineData(false, false, "scale=2288:1080:flags=lanczos,transpose=1")]
+    [InlineData(true, false, "scale=2288:1080:flags=lanczos,transpose=2")]
+    [InlineData(false, true, "scale=2288:1080:flags=lanczos,hflip,transpose=1")]
+    public void Videos_turn_into_the_portrait_framebuffer_for_the_mount(bool flip, bool mirror, string filter) =>
+        Assert.Equal(filter, HydroShift2CurveProtocol.MountFilter(flip, mirror));
+
+    [Fact]
+    public void Reads_the_duration_ffmpeg_reports()
+    {
+        Assert.Equal(83.42, HydroShift2CurveMedia.ParseDuration("  Duration: 00:01:23.42, start: 0.000000, bitrate: 2 kb/s"));
+        Assert.Null(HydroShift2CurveMedia.ParseDuration("Duration: N/A"));
+    }
+
+    [Fact]
+    public void The_library_lists_videos_ready_only_for_the_mount_they_were_encoded_for()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "nexus-curve-media-" + Guid.NewGuid().ToString("N"));
+        try
+        {
+            var item = Path.Combine(root, "clip-1");
+            Directory.CreateDirectory(item);
+            File.WriteAllBytes(Path.Combine(item, "source.mp4"), new byte[] { 1 });
+            File.WriteAllLines(Path.Combine(item, "meta.txt"), new[] { "My clip", "0,0,1,1,0,0", "12.5" });
+            File.WriteAllBytes(Path.Combine(item, "glass-up.h264"), new byte[] { 1 });
+            Directory.CreateDirectory(Path.Combine(root, "no-source"));
+            var media = new HydroShift2CurveMedia(root);
+
+            var upright = Assert.Single(media.List(flip180: false, mirror: false));
+            Assert.Equal(new HydroShift2CurveMediaItem("clip-1", "My clip", 12.5, Ready: true), upright);
+            Assert.False(Assert.Single(media.List(flip180: true, mirror: false)).Ready);
+
+            Assert.False(media.Exists("../clip-1"));
+            Assert.False(media.Delete("../clip-1"));
+            Assert.True(media.Delete("clip-1"));
+            Assert.Empty(media.List(false, false));
+        }
+        finally
+        {
+            if (Directory.Exists(root)) Directory.Delete(root, recursive: true);
+        }
     }
 
     private static (HydroShift2CurveBoard Board, BoardPipe Pipe, MemoryStore Store) Connected(

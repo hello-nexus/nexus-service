@@ -101,8 +101,11 @@ internal sealed class SecondaryMonitorFeed : IDisposable
             }
             _monitor = monitor;
         }
-        _touch = new Thread(() => RunTouchGuarded(monitor, width, height)) { IsBackground = true, Name = $"secondary-monitor-touch-{_hub.Driver.HandlerId}" };
-        _touch.Start();
+        if (_hub.Driver.HasTouch)
+        {
+            _touch = new Thread(() => RunTouchGuarded(monitor, width, height)) { IsBackground = true, Name = $"secondary-monitor-touch-{_hub.Driver.HandlerId}" };
+            _touch.Start();
+        }
 
         var frame = new byte[width * height * 4];
         long interval = Stopwatch.Frequency / Math.Max(1, _hub.Driver.Fps);

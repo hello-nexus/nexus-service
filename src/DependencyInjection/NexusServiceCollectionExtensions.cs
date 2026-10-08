@@ -1140,10 +1140,16 @@ public static class NexusServiceCollectionExtensions
                     sp.GetRequiredService<Nexus.Service.Devices.Detection.HardwarePresence>()));
             services.AddSingleton<Nexus.Service.Panel.Streams.IStreamedPanelDiscovery>(sp =>
             {
-                // A HydroShift II the user gave to its own wireless screen streams nothing.
-                Func<bool>? withheld = bulkPanelDriver is Nexus.Service.Peripherals.BulkPanels.HydroShift2LcdDriver
-                    ? () => sp.GetService<Nexus.Service.Peripherals.BulkPanels.HydroShift2Aio>()?.ShowsOwnScreen == true
-                    : null;
+                // A HydroShift II the user gave to its own wireless screen streams nothing, nor
+                // does a Curve while its glass plays a video.
+                Func<bool>? withheld = bulkPanelDriver switch
+                {
+                    Nexus.Service.Peripherals.BulkPanels.HydroShift2LcdDriver =>
+                        () => sp.GetService<Nexus.Service.Peripherals.BulkPanels.HydroShift2Aio>()?.ShowsOwnScreen == true,
+                    Nexus.Service.Peripherals.BulkPanels.HydroShift2CurveLcdDriver =>
+                        () => sp.GetService<Nexus.Service.Peripherals.BulkPanels.HydroShift2CurvePlayer>()?.OwnsGlass == true,
+                    _ => null,
+                };
                 return new Nexus.Service.Panel.Streams.BulkPanelDiscovery(
                     bulkPanelHub, sp.GetService<Nexus.Service.Panel.Streams.IVirtualMonitorHost>(), withheld);
             });
@@ -1153,9 +1159,9 @@ public static class NexusServiceCollectionExtensions
             {
                 AddHydroShift2Aio(services, bulkPanelHub, hydroShift2);
             }
-            if (bulkPanelDriver is Nexus.Service.Peripherals.BulkPanels.HydroShift2CurveLcdDriver)
+            if (bulkPanelDriver is Nexus.Service.Peripherals.BulkPanels.HydroShift2CurveLcdDriver curve)
             {
-                AddHydroShift2Curve(services);
+                AddHydroShift2Curve(services, bulkPanelHub, curve);
             }
         }
 
@@ -1559,8 +1565,23 @@ public static class NexusServiceCollectionExtensions
     }
 
     /// <summary>The HydroShift II OLED Curved's LED, pump and head-motor board, a USB function of its own beside the glass.</summary>
-    private static void AddHydroShift2Curve(IServiceCollection services)
+    private static void AddHydroShift2Curve(
+        IServiceCollection services,
+        Nexus.Service.Peripherals.BulkPanels.BulkPanelHub hub,
+        Nexus.Service.Peripherals.BulkPanels.HydroShift2CurveLcdDriver driver)
     {
+        services.AddSingleton<Nexus.Service.Peripherals.BulkPanels.HydroShift2CurveMedia>();
+        services.AddSingleton(sp =>
+        {
+            var player = new Nexus.Service.Peripherals.BulkPanels.HydroShift2CurvePlayer(
+                hub, driver,
+                sp.GetRequiredService<Nexus.Service.Peripherals.BulkPanels.HydroShift2CurveMedia>(),
+                sp.GetRequiredService<Nexus.Service.Persistence.IConfigStore>(),
+                sp.GetRequiredService<Nexus.Service.Panel.PanelDeviceRegistry>());
+            player.GlassOwnerChanged += () => sp.GetService<Nexus.Service.Panel.Streams.StreamedPanelCoordinator>()?.Wake();
+            return player;
+        });
+        services.AddHostedService(sp => sp.GetRequiredService<Nexus.Service.Peripherals.BulkPanels.HydroShift2CurvePlayer>());
         services.AddSingleton<Nexus.Service.Peripherals.BulkPanels.HydroShift2CurveBoard>();
         services.AddHostedService(sp => sp.GetRequiredService<Nexus.Service.Peripherals.BulkPanels.HydroShift2CurveBoard>());
         services.AddSingleton<Nexus.Service.Cooling.HydroShift2CurveCoolingProvider>();

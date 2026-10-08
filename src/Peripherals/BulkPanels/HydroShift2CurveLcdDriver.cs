@@ -41,8 +41,18 @@ public sealed class HydroShift2CurveLcdDriver : IBulkPanelDriver
     public bool NeedsHidChannel => false;
     public bool SupportsBrightness => true;
 
+    public bool SupportsSecondaryMonitor => true;
+
     /// <summary>Firmware string read at connect, or null before it.</summary>
     public string? Firmware { get; private set; }
+
+    private volatile bool _videoOwnsGlass;
+
+    /// <summary>While set, the glass plays a video on its own decoder and streamed frames are dropped.</summary>
+    public bool VideoOwnsGlass { get => _videoOwnsGlass; set => _videoOwnsGlass = value; }
+
+    /// <summary>The backlight percent last set, restored after a screen saver dimmed it.</summary>
+    public int Brightness { get; private set; } = 100;
 
     /// <summary>Milliseconds since connect, clamped to strictly increase: the firmware drops a repeated stamp.</summary>
     private uint NextTimestamp()
@@ -85,6 +95,10 @@ public sealed class HydroShift2CurveLcdDriver : IBulkPanelDriver
 
     public bool SendFrame(IBulkUsbPipe pipe, IHidDevice? hid, ReadOnlySpan<byte> bgra)
     {
+        if (VideoOwnsGlass)
+        {
+            return true;
+        }
         if (_jpeg is null)
         {
             return false;
@@ -101,8 +115,56 @@ public sealed class HydroShift2CurveLcdDriver : IBulkPanelDriver
     }
 
     /// <summary>The glass takes half the percent (L-Connect sends 50 for 100%).</summary>
-    public bool SetBrightness(IBulkUsbPipe pipe, IHidDevice? hid, int percent) =>
+    public bool SetBrightness(IBulkUsbPipe pipe, IHidDevice? hid, int percent)
+    {
+        Brightness = Math.Clamp(percent, 0, 100);
+        return SetBacklight(pipe, Brightness);
+    }
+
+    /// <summary>Sets the backlight without changing the remembered <see cref="Brightness"/>.</summary>
+    public bool SetBacklight(IBulkUsbPipe pipe, int percent) =>
         Command(pipe, HydroShift2Protocol.CommandBrightness, stackalloc byte[] { (byte)(Math.Clamp(percent, 0, 100) / 2) });
+
+    /// <summary>Whether the firmware shows its own clock while no host drives the glass.</summary>
+    public bool SetOfflineClock(IBulkUsbPipe pipe, bool on) =>
+        Exchange(pipe, HydroShift2Protocol.CommandSetClock, HydroShift2CurveProtocol.EncodeSetClock(
+            DateTime.Now, on ? HydroShift2CurveProtocol.ClockOfflineOn : HydroShift2CurveProtocol.ClockOfflineOff,
+            NextTimestamp())) is not null;
+
+    /// <summary>Readies the decoder for a video and returns the chunk size the glass takes.</summary>
+    public int BeginVideo(IBulkUsbPipe pipe, int frameRate)
+    {
+        Command(pipe, HydroShift2Protocol.CommandStopPlay, ReadOnlySpan<byte>.Empty);
+        Command(pipe, HydroShift2Protocol.CommandStopClock, stackalloc byte[] { 0 });
+        Command(pipe, HydroShift2Protocol.CommandFrameRate, stackalloc byte[] { (byte)frameRate });
+        var reply = Exchange(pipe, HydroShift2CurveProtocol.CommandGetH264Block, HydroShift2Protocol.EncodeCommand(
+            HydroShift2CurveProtocol.CommandGetH264Block, ReadOnlySpan<byte>.Empty, NextTimestamp()));
+        return reply is null ? HydroShift2CurveProtocol.DefaultH264Block : HydroShift2CurveProtocol.DecodeH264Block(reply);
+    }
+
+    /// <summary>Queues one chunk of video; returns the blocks the glass now holds, or null when it did not answer.</summary>
+    public int? SendVideoChunk(IBulkUsbPipe pipe, ReadOnlySpan<byte> chunk, bool last, uint sessionTick)
+    {
+        var reply = Exchange(pipe, HydroShift2CurveProtocol.CommandStartPlay,
+            HydroShift2CurveProtocol.EncodeVideoChunk(chunk, last, sessionTick, NextTimestamp()));
+        return reply is null ? null : HydroShift2CurveProtocol.DecodeBufferedBlocks(reply);
+    }
+
+    public int? QueryVideoBuffer(IBulkUsbPipe pipe)
+    {
+        var reply = Exchange(pipe, HydroShift2CurveProtocol.CommandQueryBlock, HydroShift2Protocol.EncodeCommand(
+            HydroShift2CurveProtocol.CommandQueryBlock, ReadOnlySpan<byte>.Empty, NextTimestamp()));
+        return reply is null ? null : HydroShift2CurveProtocol.DecodeBufferedBlocks(reply);
+    }
+
+    /// <summary>Stops a video and readies the glass for pushed frames again (L-Connect's apply sequence).</summary>
+    public void EndVideo(IBulkUsbPipe pipe)
+    {
+        Command(pipe, HydroShift2Protocol.CommandStopPlay, ReadOnlySpan<byte>.Empty);
+        Command(pipe, HydroShift2Protocol.CommandStopClock, stackalloc byte[] { 0 });
+        Command(pipe, HydroShift2CurveProtocol.CommandClearPng, ReadOnlySpan<byte>.Empty);
+        Command(pipe, HydroShift2CurveProtocol.CommandClearPng, ReadOnlySpan<byte>.Empty);
+    }
 
     /// <summary>The glass keeps the last frame; nothing restores the firmware's own screen short of a power cycle.</summary>
     public void Disconnect(IBulkUsbPipe pipe, IHidDevice? hid)

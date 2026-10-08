@@ -1892,6 +1892,24 @@ public sealed class HydroShift2CurveSettings
     public int Slide { get; set; }
     /// <summary>A recalibration was under way; Tilt and Slide are unknown until it runs again.</summary>
     public bool Recalibrating { get; set; }
+
+    public const string ScreenNexus = "nexus";
+    public const string ScreenVideo = "video";
+
+    /// <summary><see cref="ScreenNexus"/> streams the Nexus panel; <see cref="ScreenVideo"/> loops <see cref="Video"/> on the glass's own decoder.</summary>
+    public string ScreenMode { get; set; } = ScreenNexus;
+    /// <summary>Media library item played in video mode.</summary>
+    public string? Video { get; set; }
+    /// <summary>Minutes between screen-saver plays; 0 is off.</summary>
+    public int ScreenSaverMinutes { get; set; }
+    public string? ScreenSaverVideo { get; set; }
+    /// <summary>Backlight percent while the screen saver plays.</summary>
+    public int ScreenSaverBrightness { get; set; } = 50;
+    /// <summary>The firmware shows its own clock while Nexus is not driving the glass.</summary>
+    public bool OfflineClock { get; set; }
+    /// <summary>When Nexus is not driving the pump: true follows the motherboard header, false runs the
+    /// power-on speed, null leaves the board as found.</summary>
+    public bool? PumpFollowsMotherboard { get; set; }
 }
 
 public sealed class Galahad2LightingSettings

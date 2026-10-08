@@ -268,6 +268,7 @@ public sealed class HydroShift2CurveBoard : BackgroundService
                 _followsHeader = status is null ? _followsHeader : HydroShift2CurveProtocol.DecodeFollowsHeader(status);
                 _pumpRpm = speed is null ? _pumpRpm : HydroShift2CurveProtocol.DecodePumpRpm(speed);
             }
+            ApplyIdleFollow();
         }
         SendPumpIfDue(now);
         SendLedsIfDirty();
@@ -312,10 +313,48 @@ public sealed class HydroShift2CurveBoard : BackgroundService
         _pumpDriven = true;
     }
 
-    /// <summary>Returns the pump to the header it followed before Nexus drove it, else to its power-on speed. True once answered.</summary>
+    /// <summary>Whether the pump follows the motherboard header while Nexus is not driving it.</summary>
+    public bool FollowsMotherboardWhenIdle
+    {
+        get
+        {
+            lock (_lock)
+            {
+                return _store.Load().Devices.HydroShift2Curve.PumpFollowsMotherboard
+                    ?? (_pumpDriven ? _restoreHeaderFollow : _followsHeader == true);
+            }
+        }
+    }
+
+    /// <summary>Settings changed: an idle pump picks up the follow choice on the next status poll.</summary>
+    private void ApplyIdleFollow()
+    {
+        bool? follows;
+        lock (_lock)
+        {
+            if (_pumpDuty is not null || _pumpDriven) return;
+            follows = _followsHeader;
+        }
+        if (follows is null || _store.Load().Devices.HydroShift2Curve.PumpFollowsMotherboard is not { } wanted || wanted == follows)
+        {
+            return;
+        }
+        if (Exchange(HydroShift2CurveProtocol.EncodeHeaderFollow(wanted)) is null)
+        {
+            return;
+        }
+        if (!wanted)
+        {
+            Exchange(HydroShift2CurveProtocol.EncodePumpOutput(HydroShift2CurveProtocol.DefaultPumpOutput));
+        }
+        lock (_lock) { _followsHeader = wanted; }
+    }
+
+    /// <summary>Returns the pump to the user's follow choice, else to how Nexus found it. True once answered.</summary>
     private bool HandBackPump()
     {
-        var command = _restoreHeaderFollow
+        var follow = _store.Load().Devices.HydroShift2Curve.PumpFollowsMotherboard ?? _restoreHeaderFollow;
+        var command = follow
             ? HydroShift2CurveProtocol.EncodeHeaderFollow(true)
             : HydroShift2CurveProtocol.EncodePumpOutput(HydroShift2CurveProtocol.DefaultPumpOutput);
         if (Exchange(command) is null)
