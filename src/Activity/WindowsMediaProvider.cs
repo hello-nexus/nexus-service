@@ -85,7 +85,7 @@ public sealed class WindowsMediaProvider : IMediaProvider, IMediaChangeSource, I
     }
 
     private static string ArtKey(MediaSession s)
-        => $"{s.Song?.Title}|{s.Song?.Artist}|{s.Song?.Album}";
+        => $"{s.Song?.Title}|{s.Song?.Artist}|{s.Song?.Album}|{s.Song?.ArtVersion}";
 
     public IReadOnlyDictionary<string, MediaSession> GetSessions()
     {
