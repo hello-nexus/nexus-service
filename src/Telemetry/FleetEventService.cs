@@ -7,9 +7,12 @@ using System.Security.Cryptography;
 using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
+using Nexus.Service.Devices;
 using Nexus.Service.Devices.Detection;
+using Nexus.Service.Devices.Handlers;
 using Nexus.Service.Persistence;
 using Nexus.Service.Sensors;
+using Nexus.Service.Store;
 
 namespace Nexus.Service.Telemetry;
 
@@ -25,6 +28,8 @@ internal sealed class FleetEventService
     private readonly IReadOnlyList<ITelemetrySink> _sinks;
     private readonly SystemSpecsCollector _specs;
     private readonly IUsbEnumerator _usb;
+    private readonly Func<IReadOnlyList<UsbDeviceEntry>, bool> _y70Connected;
+    private readonly Func<bool> _ibuypowerSystem;
     private readonly TimeProvider _clock;
     private readonly SemaphoreSlim _gate = new(1, 1);
 
@@ -34,17 +39,17 @@ internal sealed class FleetEventService
     // Not persisted: last consent-transition type PostHog was attempted for; a retry of the same type skips it, a new type gets its own attempt.
     private string? _postHogConsentAttemptedFor;
 
-    // Not persisted: specs are read once per process, at boot. Later hourly passes only re-attempt a delivery that has never landed, so a mid-session hardware change waits for the next start.
-    private bool _specsEvaluated;
-
     public FleetEventService(
         IConfigStore store,
         IFleetEventTransport transport,
         ITelemetry telemetry,
         IEnumerable<ITelemetrySink> sinks,
         SystemSpecsCollector specs,
-        IUsbEnumerator usb)
-        : this(store, transport, telemetry, sinks, specs, usb, TimeProvider.System)
+        IUsbEnumerator usb,
+        IEnumerable<IDeviceHandler> handlers,
+        HardwareAppCatalog hardware)
+        : this(store, transport, telemetry, sinks, specs, usb,
+            Y70Probe(handlers), () => hardware.IsMatched(HardwareAppCatalog.IbuypowerAppId), TimeProvider.System)
     {
     }
 
@@ -55,6 +60,8 @@ internal sealed class FleetEventService
         IEnumerable<ITelemetrySink> sinks,
         SystemSpecsCollector specs,
         IUsbEnumerator usb,
+        Func<IReadOnlyList<UsbDeviceEntry>, bool> y70Connected,
+        Func<bool> ibuypowerSystem,
         TimeProvider clock)
     {
         _store = store;
@@ -63,10 +70,18 @@ internal sealed class FleetEventService
         _sinks = sinks.Where(s => s.Enabled).ToArray();
         _specs = specs;
         _usb = usb;
+        _y70Connected = y70Connected;
+        _ibuypowerSystem = ibuypowerSystem;
         _clock = clock;
     }
 
-    /// <summary>One retry pass: consent event first regardless of consent state (the opt-out exception), then install only while opted in; specs are evaluated on the boot pass and afterwards only until one lands.</summary>
+    private static Func<IReadOnlyList<UsbDeviceEntry>, bool> Y70Probe(IEnumerable<IDeviceHandler> handlers)
+    {
+        var y70 = handlers.OfType<Y70Handler>().FirstOrDefault();
+        return usb => y70?.IsConnected(usb) ?? false;
+    }
+
+    /// <summary>One retry pass: consent event first regardless of consent state (the opt-out exception), then install and specs only while opted in.</summary>
     public async Task RunPendingRetriesAsync(CancellationToken ct)
     {
         await _gate.WaitAsync(ct).ConfigureAwait(false);
@@ -82,11 +97,8 @@ internal sealed class FleetEventService
             if (!_store.Load().Telemetry.FleetInstallDelivered)
                 await DeliverInstallAsync(ct).ConfigureAwait(false);
 
-            if (!_specsEvaluated || _store.Load().Telemetry.FleetSpecsHash.Length == 0)
-            {
-                _specsEvaluated = true;
-                await MaybeDeliverSpecsAsync(ct).ConfigureAwait(false);
-            }
+            // Every pass, not just boot: the Y70's serial and EDID detection can land after the boot pass.
+            await MaybeDeliverSpecsAsync(ct).ConfigureAwait(false);
         }
         finally
         {
@@ -214,10 +226,13 @@ internal sealed class FleetEventService
             " + ", StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
         var ramBytes = SystemProfileService.ParseRamGb(specs.Memory) is int gb ? (long)gb * 1024 * 1024 * 1024 : 0;
 
-        var devices = FleetDeviceCollector.Collect(_usb.Enumerate());
-        // Devices ride the hash too, so plugging in a keyboard re-sends at the
-        // next boot rather than waiting for a CPU or GPU change.
-        var hash = ComputeSpecsHash(specs.Processor, gpu, ramBytes, specs.Motherboard, devices);
+        var usb = _usb.Enumerate();
+        var devices = FleetDeviceCollector.Collect(usb);
+        if (!_store.Load().Telemetry.FleetY70Seen && _y70Connected(usb))
+            _store.Update(s => s.Telemetry.FleetY70Seen = true);
+        var y70Seen = _store.Load().Telemetry.FleetY70Seen;
+        var ibuypowerSystem = _ibuypowerSystem();
+        var hash = ComputeSpecsHash(specs.Processor, gpu, ramBytes, specs.Motherboard, devices, y70Seen, ibuypowerSystem);
         if (hash == _store.Load().Telemetry.FleetSpecsHash)
             return; // unchanged since the last successful send.
 
@@ -229,6 +244,8 @@ internal sealed class FleetEventService
             RamBytes = ramBytes,
             Motherboard = specs.Motherboard,
             Devices = devices,
+            Y70Seen = y70Seen,
+            IbuypowerSystem = ibuypowerSystem,
         };
 
         if (!await _transport.SendAsync(payload, ct).ConfigureAwait(false))
@@ -252,12 +269,13 @@ internal sealed class FleetEventService
 
     // Unit-separator delimiter stops a field containing it from colliding two summaries into one hash.
     internal static string ComputeSpecsHash(string cpu, IReadOnlyList<string> gpu, long ramBytes, string motherboard,
-        IReadOnlyList<FleetEventDevice>? devices = null)
+        IReadOnlyList<FleetEventDevice>? devices = null, bool y70Seen = false, bool ibuypowerSystem = false)
     {
         var deviceIds = devices is null
             ? ""
             : string.Join(',', devices.Select(d => $"{d.Vid:x4}:{d.Pid:x4}"));
-        var input = string.Join((char)0x1F, cpu, string.Join((char)0x1F, gpu), ramBytes.ToString(), motherboard, deviceIds);
+        var input = string.Join((char)0x1F, cpu, string.Join((char)0x1F, gpu), ramBytes.ToString(), motherboard, deviceIds,
+            y70Seen ? "y70" : "", ibuypowerSystem ? "ibp" : "");
         var bytes = SHA256.HashData(Encoding.UTF8.GetBytes(input));
         return Convert.ToHexString(bytes);
     }

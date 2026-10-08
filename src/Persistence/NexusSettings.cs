@@ -273,6 +273,9 @@ public sealed class TelemetrySettings
     /// <summary>Hash of the specs summary last delivered to nexus-api; a changed hash triggers a re-send.</summary>
     public string FleetSpecsHash { get; set; } = "";
 
+    /// <summary>Latched true once the Y70 handler reports a connection; boot-time detection lags, so the live value would flap false on every start.</summary>
+    public bool FleetY70Seen { get; set; }
+
     /// <summary>"opt_out"/"opt_in" fleet event awaiting delivery, persisted before CollectAnonymousData flips so a crash recovers on the next retry pass.</summary>
     public string FleetPendingConsentEvent { get; set; } = "";
 
