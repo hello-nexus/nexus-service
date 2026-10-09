@@ -82,6 +82,7 @@ public sealed class JsonConfigStore : IConfigStore, IDisposable
                 if (_cached.SchemaVersion < NexusSettings.CurrentSchemaVersion)
                 {
                     Migrate(_cached);
+                    Nexus.Service.Conflicts.ConflictWhitelistMigration.ReconcileBetaLock(_cached);
                     Persist(_cached);
                 }
                 else
@@ -100,6 +101,10 @@ public sealed class JsonConfigStore : IConfigStore, IDisposable
                         recovered = true;
                     }
                     if (NormalizeDeckInstanceModes(_cached))
+                    {
+                        recovered = true;
+                    }
+                    if (Nexus.Service.Conflicts.ConflictWhitelistMigration.ReconcileBetaLock(_cached))
                     {
                         recovered = true;
                     }

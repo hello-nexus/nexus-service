@@ -1296,6 +1296,8 @@ public sealed class DevicesSettings
     public List<string> NexusControlDisabled { get; set; } = new();
     /// <summary>Handler ids the user explicitly opted into (Nexus Control on). Overrides the brand default; a handler that defaults off stays off while absent here.</summary>
     public List<string> NexusControlEnabled { get; set; } = new();
+    /// <summary>Conflict apps a stable build put on the whitelist because every device they compete for is locked to beta builds (<see cref="Nexus.Service.Conflicts.ConflictWhitelistMigration.ReconcileBetaLock"/>); an unlocked build takes them off again.</summary>
+    public List<string> BetaLockWhitelisted { get; set; } = new();
     public Dictionary<string, LightingDevicePreference> LightingDevicePrefs { get; set; } = new();
     /// <summary>
     /// Firmware animation last written to each NZXT Kraken RGB channel, keyed by zone id.
