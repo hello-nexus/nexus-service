@@ -249,6 +249,20 @@ public sealed class DisplayTopologyTests : IDisposable
     }
 
     [Fact]
+    public void Known_display_match_finds_icue_link_5_inch_lcd()
+    {
+        Assert.Equal("icue-link-lcd5", KnownPanelDisplays.Match("XMD", "00EA", "XMD 00EA")?.Family);
+        Assert.Equal("icue-link-lcd5", KnownPanelDisplays.Match(null, null, "iCUE LINK 5''")?.Family);
+        Assert.Null(KnownPanelDisplays.Match("XMD", "0001", "XMD 0001"));
+
+        var caps = DisplayTopologyService.BuildPromotedCapabilities(
+            "XMD", "00EA", "XMD 00EA", 720, 1280, 1.0, isTouch: false, orientation: "LandscapeFlipped");
+        Assert.Equal(294, caps.Dpi);
+        Assert.Equal("icue-link-lcd5", caps.Family);
+        Assert.False(caps.Touch);
+    }
+
+    [Fact]
     public void Promoted_capabilities_carry_density_for_known_displays()
     {
         var caps = DisplayTopologyService.BuildPromotedCapabilities(

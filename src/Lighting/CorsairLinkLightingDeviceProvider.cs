@@ -302,6 +302,8 @@ public sealed class CorsairLinkLightingDeviceProvider :
         var key = DeviceKeyComputer.ForFirstParty(
             CorsairLinkProtocol.VendorId, CorsairLinkProtocol.ProductId, $"ch{dev.Channel}");
         var structure = new DeviceStructure { DeviceId = id, Name = name, DeviceKey = key };
+        var model = CorsairLinkModels.Lookup(dev.Type, dev.Model);
+        var hasLayout = model.LedU?.Length == dev.LedCount;
         structure.Segments.Add(new StructureSegment
         {
             Index = 0,
@@ -310,6 +312,8 @@ public sealed class CorsairLinkLightingDeviceProvider :
             FrameLedCount = dev.LedCount,
             Resizable = false,
             ZoneType = "linear",
+            DefaultU = hasLayout ? model.LedU : null,
+            DefaultV = hasLayout ? model.LedV : null,
         });
         structure.DefaultZones.Add(new DefaultZoneDef
         {
