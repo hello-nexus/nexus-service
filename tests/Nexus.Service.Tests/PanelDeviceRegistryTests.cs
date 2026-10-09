@@ -525,6 +525,20 @@ public sealed class PanelDeviceRegistryTests : IDisposable
     }
 
     [Fact]
+    public void WidgetSize_takes_only_known_values_and_survives_a_hardware_reset()
+    {
+        var record = _registry.Allocate("Q-series", Caps(PanelSurfaces.Q60));
+
+        Assert.Equal("small", _registry.Patch(record.Id, new PanelDevicePatch { WidgetSize = "small" })!.WidgetSize);
+        Assert.Equal("small", _registry.Patch(record.Id, new PanelDevicePatch { WidgetSize = "huge" })!.WidgetSize);
+        Assert.Equal("small", _registry.Patch(record.Id, new PanelDevicePatch { DisplayName = "Renamed" })!.WidgetSize);
+        Assert.Equal("large", _registry.Patch(record.Id, new PanelDevicePatch { WidgetSize = "large" })!.WidgetSize);
+
+        // A layout choice: the hardware reset leaves the layout, so it leaves the size too.
+        Assert.Equal("large", _registry.ResetHardwareSettings(record.Id)!.WidgetSize);
+    }
+
+    [Fact]
     public void ResetToDefaults_reseeds_a_streamed_strip_and_clears_a_display_bound_one()
     {
         var strip = new PanelDeviceCapabilities { Surface = PanelSurfaces.Monitor, CssWidth = 1920, CssHeight = 480 };

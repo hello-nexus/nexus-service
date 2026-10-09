@@ -613,6 +613,8 @@ public sealed class PanelDeviceRegistry
                 record.Portrait = patch.Portrait.Value;
             if (patch.HighResolution.HasValue)
                 record.HighResolution = patch.HighResolution.Value;
+            if (patch.WidgetSize is PanelWidgetSizes.Large or PanelWidgetSizes.Small)
+                record.WidgetSize = patch.WidgetSize;
             // Capabilities on display-bound records are owned by the topology
             // sync (rebuilt from OS facts); a client value would ping-pong
             // with the next sync pass.
@@ -1013,6 +1015,7 @@ public sealed class PanelDeviceRegistry
             SecondaryMonitor = r.SecondaryMonitor,
             Portrait = r.Portrait,
             HighResolution = r.HighResolution,
+            WidgetSize = r.WidgetSize,
             XeneonEdgeSettings = r.XeneonEdgeSettings is null
                 ? null
                 : new XeneonEdgeSettingsDto

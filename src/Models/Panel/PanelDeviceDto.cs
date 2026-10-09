@@ -140,6 +140,9 @@ public sealed class PanelDeviceRecord : IPanelPersonalization
     /// <summary>Render at the glass's native resolution instead of a lower one. Panels whose
     /// capabilities carry SupportsRenderScale; null = lower (high performance).</summary>
     public bool? HighResolution { get; set; }
+    /// <summary>"large" (fewer, bigger widgets) or "small" (a denser grid); null = the panel's
+    /// default. Which panels offer it, and what each value lays out, is decided by the web.</summary>
+    public string? WidgetSize { get; set; }
     /// <summary>
     /// Last known Corsair Xeneon Edge native display settings (vendor HID),
     /// applied/read through /displays/{id}/xeneon-settings. Display-bound
@@ -426,6 +429,9 @@ public sealed class PanelDevicePatch
     /// <summary>Render at the glass's native resolution instead of a lower one. Panels whose
     /// capabilities carry SupportsRenderScale; null = lower (high performance).</summary>
     public bool? HighResolution { get; set; }
+    /// <summary>"large" (fewer, bigger widgets) or "small" (a denser grid); null = the panel's
+    /// default. Which panels offer it, and what each value lays out, is decided by the web.</summary>
+    public string? WidgetSize { get; set; }
     public PanelDeviceCapabilities? Capabilities { get; set; }
 }
 

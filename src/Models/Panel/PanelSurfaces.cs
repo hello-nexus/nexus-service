@@ -52,3 +52,10 @@ public static class PanelSurfaces
     public static bool IsSingleInstance(string? surface) =>
         surface is not null && SingleInstance.Contains(surface);
 }
+
+/// <summary>Canonical <c>PanelDeviceRecord.WidgetSize</c> values.</summary>
+public static class PanelWidgetSizes
+{
+    public const string Large = "large";
+    public const string Small = "small";
+}
