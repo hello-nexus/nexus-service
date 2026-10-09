@@ -221,17 +221,18 @@
   </ItemGroup>
 
   <!-- Skia (MIT/BSD) for every host-rendered device bitmap: deck keys, dial strips,
-       monitoring/weather tiles, SL-LCD frames, image decode and PNG. Native
-       libSkiaSharp ships beside the binary per RID. Linux takes the fontconfig
-       build: the NoDependencies one finds no system font, so every label draws
-       empty. HarfBuzz shapes text past Latin (emoji sequences, complex
-       scripts). JPEG goes through libjpeg-turbo below, Skia's encoder is only
-       its fallback. -->
+       monitoring/weather tiles, SL-LCD frames, image decode and PNG. HarfBuzz shapes
+       text past Latin (emoji sequences, complex scripts). The native side is one
+       raster-only libSkiaSharp per RID that also carries HarfBuzz and libjpeg-turbo
+       (Bundled/skia/NOTES.md); the NuGet native assets are excluded so they never
+       reach a build. -->
   <ItemGroup>
     <PackageReference Include="SkiaSharp" Version="4.153.1" />
-    <PackageReference Include="SkiaSharp.NativeAssets.Linux" Version="4.153.1" />
     <PackageReference Include="HarfBuzzSharp" Version="14.2.1.301" />
-    <PackageReference Include="HarfBuzzSharp.NativeAssets.Linux" Version="14.2.1.301" />
+    <PackageReference Include="SkiaSharp.NativeAssets.Win32" Version="4.153.1" ExcludeAssets="all" />
+    <PackageReference Include="SkiaSharp.NativeAssets.macOS" Version="4.153.1" ExcludeAssets="all" />
+    <PackageReference Include="HarfBuzzSharp.NativeAssets.Win32" Version="14.2.1.301" ExcludeAssets="all" />
+    <PackageReference Include="HarfBuzzSharp.NativeAssets.macOS" Version="14.2.1.301" ExcludeAssets="all" />
   </ItemGroup>
 
   <!-- AOT publish strips native assets from `runtimes/<rid>/native/` that aren't
@@ -463,50 +464,84 @@
     </Content>
   </ItemGroup>
 
-  <!-- libjpeg-turbo (TurboJPEG 3 API, BSD/IJG), provenance in Bundled/turbojpeg-NOTES.md.
-       Gated on the RID alone, never the host OS: a Windows box cross-publishing
-       -r osx-arm64 would otherwise drop turbojpeg.dll into a macOS publish. -->
-  <ItemGroup Condition="'$(RuntimeIdentifier)' == 'win-x64'">
-    <Content Include="Bundled\win-x64\turbojpeg\turbojpeg.dll">
-      <Link>turbojpeg.dll</Link>
+  <!-- The bundled libSkiaSharp, gated on the RID alone for a publish: a Windows box
+       cross-publishing -r osx-arm64 would otherwise ship the DLL. The test project
+       builds without a RID, so a RID-less build takes the host's copy. -->
+  <ItemGroup Condition="'$(RuntimeIdentifier)' == 'win-x64' OR ('$(RuntimeIdentifier)' == '' AND $([MSBuild]::IsOSPlatform('Windows')))">
+    <Content Include="Bundled\win-x64\skia\libSkiaSharp.dll">
+      <Link>libSkiaSharp.dll</Link>
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
       <CopyToPublishDirectory>PreserveNewest</CopyToPublishDirectory>
     </Content>
   </ItemGroup>
-  <ItemGroup Condition="'$(RuntimeIdentifier)' == 'osx-arm64'">
-    <Content Include="Bundled/osx-arm64/turbojpeg/libturbojpeg.dylib">
-      <Link>libturbojpeg.dylib</Link>
+  <ItemGroup Condition="'$(RuntimeIdentifier)' == 'osx-arm64' OR ('$(RuntimeIdentifier)' == '' AND $([MSBuild]::IsOSPlatform('OSX')))">
+    <Content Include="Bundled/osx-arm64/skia/libSkiaSharp.dylib">
+      <Link>libSkiaSharp.dylib</Link>
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
       <CopyToPublishDirectory>PreserveNewest</CopyToPublishDirectory>
     </Content>
   </ItemGroup>
-  <ItemGroup Condition="'$(RuntimeIdentifier)' == 'linux-x64'">
-    <Content Include="Bundled/linux-x64/turbojpeg/libturbojpeg.so">
-      <Link>libturbojpeg.so</Link>
+  <ItemGroup Condition="'$(RuntimeIdentifier)' == 'linux-x64' OR ('$(RuntimeIdentifier)' == '' AND $([MSBuild]::IsOSPlatform('Linux')))">
+    <Content Include="Bundled/linux-x64/skia/libSkiaSharp.so">
+      <Link>libSkiaSharp.so</Link>
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
       <CopyToPublishDirectory>PreserveNewest</CopyToPublishDirectory>
     </Content>
   </ItemGroup>
-  <!-- The test project builds without a RID, so the encoder tests would silently only
-       ever exercise the Skia fallback; give a RID-less build the host's copy. -->
-  <ItemGroup Condition="'$(RuntimeIdentifier)' == '' AND $([MSBuild]::IsOSPlatform('Windows'))">
-    <Content Include="Bundled\win-x64\turbojpeg\turbojpeg.dll">
-      <Link>turbojpeg.dll</Link>
-      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
-    </Content>
-  </ItemGroup>
-  <ItemGroup Condition="'$(RuntimeIdentifier)' == '' AND $([MSBuild]::IsOSPlatform('OSX'))">
-    <Content Include="Bundled/osx-arm64/turbojpeg/libturbojpeg.dylib">
-      <Link>libturbojpeg.dylib</Link>
-      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
-    </Content>
-  </ItemGroup>
-  <ItemGroup Condition="'$(RuntimeIdentifier)' == '' AND $([MSBuild]::IsOSPlatform('Linux'))">
-    <Content Include="Bundled/linux-x64/turbojpeg/libturbojpeg.so">
-      <Link>libturbojpeg.so</Link>
-      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
-    </Content>
-  </ItemGroup>
+
+  <!-- libSkiaSharp exports only Bundled/skia/exports.txt. An AOT binary that binds any
+       other Skia or HarfBuzz entry point would throw EntryPointNotFoundException on the
+       first call, so the link fails instead. NativeAOT keeps the name of every bound
+       P/Invoke in the binary and no other. -->
+  <UsingTask TaskName="CheckSkiaExports" TaskFactory="RoslynCodeTaskFactory" AssemblyFile="$(MSBuildToolsPath)/Microsoft.Build.Tasks.Core.dll">
+    <ParameterGroup>
+      <Binary ParameterType="System.String" Required="true" />
+      <Exports ParameterType="System.String" Required="true" />
+      <Assemblies ParameterType="Microsoft.Build.Framework.ITaskItem[]" Required="true" />
+    </ParameterGroup>
+    <Task>
+      <Using Namespace="System.Collections.Generic" />
+      <Using Namespace="System.IO" />
+      <Using Namespace="System.Linq" />
+      <Using Namespace="System.Text.RegularExpressions" />
+      <Code Type="Fragment" Language="cs"><![CDATA[
+        var latin1 = System.Text.Encoding.GetEncoding(28591);
+        // Import names sit null-terminated in each managed assembly's string heap.
+        var name = new Regex(@"(?<![A-Za-z0-9_])((?:sk|gr|hb)_[a-z0-9_]+|tj3[A-Za-z0-9]+)\0");
+        var imports = new HashSet<string>(Assemblies.SelectMany(a =>
+            name.Matches(latin1.GetString(File.ReadAllBytes(a.ItemSpec))).Cast<Match>().Select(m => m.Groups[1].Value)));
+        var exported = new HashSet<string>(File.ReadAllLines(Exports).Select(l => l.Trim()).Where(l => l.Length > 0));
+        // The binary keeps bound names without a reliable terminator, so each candidate start
+        // takes the longest import name it begins with.
+        var byPrefix = imports.Where(n => n.Length >= 6).GroupBy(n => n.Substring(0, 6)).ToDictionary(g => g.Key, g => g.OrderByDescending(n => n.Length).ToArray());
+        var text = latin1.GetString(File.ReadAllBytes(Binary));
+        var bound = new HashSet<string>();
+        foreach (Match start in new Regex("(?:sk|gr|hb)_|tj3").Matches(text))
+        {
+            if (start.Index + 6 > text.Length || !byPrefix.TryGetValue(text.Substring(start.Index, 6), out var names)) continue;
+            var hit = names.FirstOrDefault(n => string.CompareOrdinal(text, start.Index, n, 0, n.Length) == 0);
+            if (hit != null) bound.Add(hit);
+        }
+        var missing = bound.Where(n => !exported.Contains(n)).OrderBy(n => n, StringComparer.Ordinal).ToList();
+        if (!imports.Contains("sk_canvas_draw_rect") || !bound.Contains("sk_canvas_draw_rect"))
+        {
+            Log.LogError("CheckSkiaExports found no SkiaSharp imports bound in " + Binary + "; check the inputs it is given.");
+        }
+        else if (missing.Count > 0)
+        {
+            Log.LogError("The AOT binary binds entry points the bundled libSkiaSharp does not export: "
+                + string.Join(", ", missing) + ". Add them to Bundled/skia/exports.txt and rebuild the libraries (Bundled/skia/NOTES.md).");
+        }
+      ]]></Code>
+    </Task>
+  </UsingTask>
+  <Target Name="CheckSkiaExports" AfterTargets="LinkNative" Condition="'$(PublishAot)' == 'true' AND '$(NativeBinary)' != ''">
+    <ItemGroup>
+      <_SkiaImporter Include="@(IlcReference)" Condition="'%(Filename)' == 'SkiaSharp' OR '%(Filename)' == 'HarfBuzzSharp'" />
+      <_SkiaImporter Include="@(IntermediateAssembly->'%(FullPath)')" />
+    </ItemGroup>
+    <CheckSkiaExports Binary="$(NativeBinary)" Exports="$(MSBuildThisFileDirectory)Bundled/skia/exports.txt" Assemblies="@(_SkiaImporter)" />
+  </Target>
 
   <!-- ArtInChip D213 streamed-panel device players: patched mpp_video_test
        builds pushed to the board's /tmp by AdbStreamTransport. DEV_TOOLS-only,
@@ -945,8 +980,8 @@
     <Copy SourceFiles="@(_WebDist)" DestinationFiles="@(_WebDist->'$(OutputPath)wwwroot/%(RecursiveDir)%(Filename)%(Extension)')" SkipUnchangedFiles="true" />
   </Target>
 
-  <!-- No debug symbols ship. SkiaSharp and HarfBuzzSharp carry their native .pdb as
-       runtimes/<rid>/native assets, so no .pdb reaches the publish list. -->
+  <!-- No debug symbols ship: no .pdb reaches the publish list, whichever package
+       or project carries one. -->
   <Target Name="DropPdbsFromPublish" AfterTargets="ComputeResolvedFilesToPublishList">
     <ItemGroup>
       <ResolvedFileToPublish Remove="@(ResolvedFileToPublish)" Condition="'%(Extension)' == '.pdb'" />

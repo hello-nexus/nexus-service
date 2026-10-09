@@ -1,5 +1,4 @@
 using System;
-using System.IO;
 using Nexus.Service.Peripherals.JpegPanels;
 using SkiaSharp;
 using Xunit;
@@ -134,21 +133,14 @@ public class BgraJpegEncoderTests
     /// <summary>
     /// Without this the channel-order tests above would pass while silently exercising only
     /// the Skia fallback - the exact false green that would hide a wrong TJPF_* value.
-    /// The bundled library is copied next to the test binary by the csproj, so on a build
-    /// that shipped it this must be the native path.
+    /// TurboJPEG is compiled into the bundled libSkiaSharp the csproj copies next to the
+    /// test binary, so this must be the native path.
     /// </summary>
     [Fact]
-    public void Bundled_turbojpeg_is_the_active_encoder()
+    public void Bundled_libjpeg_turbo_is_the_active_encoder()
     {
-        var bundled = File.Exists(Path.Combine(AppContext.BaseDirectory, "turbojpeg.dll"))
-            || File.Exists(Path.Combine(AppContext.BaseDirectory, "libturbojpeg.dylib"))
-            || File.Exists(Path.Combine(AppContext.BaseDirectory, "libturbojpeg.so"));
-        if (!bundled)
-        {
-            return;
-        }
         using var encoder = new BgraJpegEncoder(64, 64);
-        Assert.True(encoder.IsNative, "turbojpeg is bundled next to the test binary but the encoder fell back to Skia");
+        Assert.True(encoder.IsNative, "the bundled libSkiaSharp carries TurboJPEG but the encoder fell back to Skia");
     }
 
     [Fact]

@@ -85,6 +85,21 @@ public class RenderKitTests
         Assert.Equal(0, crop.GetPixel(1, 1).Alpha);
     }
 
+    /// <summary>HarfBuzz binds through the bundled libSkiaSharp; RenderKit would hide a binding failure as unshaped text.</summary>
+    [Fact]
+    public void Text_shaper_binds_harfbuzz_from_the_bundled_library()
+    {
+        var face = RenderKit.ResolveFont();
+        using var font = RenderKit.CreateFont(face, 24);
+
+        var shaper = TextShaper.Create(face);
+
+        Assert.NotNull(shaper);
+        var (glyphs, _, width) = shaper.Shape("Nexus", font);
+        Assert.Equal(5, glyphs.Length);
+        Assert.True(width > 0);
+    }
+
     /// <summary>Unshaped, a ZWJ family draws as its three people side by side; shaped, as the one family glyph.</summary>
     [Fact]
     public void Emoji_zwj_sequence_shapes_to_a_single_glyph()

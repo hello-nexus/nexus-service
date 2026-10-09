@@ -116,7 +116,7 @@ docs/
   shader-benchmark.md  # Q-series shader performance baseline
 data/                  # shipped defaults: install defaults, animate templates, OpenRGB device catalog,
                        # built-in ARGB product LED mappings (embedded; the picker works offline)
-Bundled/               # per-RID third-party binaries (adb, dfu-util, pawnio, gamesync, bench CLIs), openrgb + ffmpeg added at publish; macos/ linux/ windows/ = first-party helpers, icons, macOS build scripts
+Bundled/               # per-RID third-party binaries (adb, dfu-util, pawnio, gamesync, bench CLIs, skia), openrgb + ffmpeg added at publish; macos/ linux/ windows/ = first-party helpers, icons, macOS build scripts
 installer/             # Windows Inno Setup + web installer, MSIX, Linux tarball packager
 tests/
   Nexus.Service.Tests       # xUnit, AOT-safe
@@ -142,6 +142,11 @@ dotnet publish -c Release -r linux-x64 -o publish-linux
   configuration, compiled by `scripts/build-ffmpeg-minimal.sh`. It is optional
   at build time: `bash scripts/fetch-ffmpeg.sh all` (or `mac | win | linux`)
   produces it once per RID.
+- `Bundled/<rid>/skia/libSkiaSharp` is a raster-only Skia build with HarfBuzz
+  and libjpeg-turbo linked in, committed per RID and rebuilt with
+  `Bundled/skia/build.sh` / `build.ps1` (see `Bundled/skia/NOTES.md`). It
+  exports only `Bundled/skia/exports.txt`, and an AOT publish fails if the
+  service starts calling a SkiaSharp or HarfBuzzSharp API outside that list.
 - The Windows virtual display driver behind secondary-monitor mode is optional
   at build time: `Bundled/windows/nexus-vdd/build.ps1` builds it into
   `Bundled/win-x64/vdd/` with the VS Build Tools (it downloads the WDK package

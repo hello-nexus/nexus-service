@@ -14,8 +14,8 @@ namespace Nexus.Service.Peripherals.JpegPanels;
 /// because the overlay has no image library at all (WebView2 only), and adding one to a
 /// native-AOT Windows binary would make this path untestable off Windows.
 ///
-/// libjpeg-turbo (4:2:0, SIMD) drives it where the library loaded, Skia's encoder (4:2:0,
-/// several times slower on x64) otherwise.
+/// TurboJPEG (4:2:0, SIMD) drives it where the library loaded, Skia's slower encoder (4:2:0,
+/// optimize_coding) otherwise.
 /// Not thread-safe: one instance per stream transport, which is the only caller.
 /// </summary>
 public sealed unsafe class BgraJpegEncoder : IDisposable
