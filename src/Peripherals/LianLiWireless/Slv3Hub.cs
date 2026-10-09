@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Threading;
 using Nexus.Service.Platform;
 using RgbColor = Nexus.Service.Peripherals.Hyte.Np50.RgbColor;
 
@@ -43,9 +44,12 @@ public sealed class Slv3Hub : IDisposable
     // A validated record can still carry a corrupted MAC, so a new chain is
     // listed only once another poll within the confirm window repeats it.
     // Value: the poll the MAC was first seen in.
-    private readonly Dictionary<string, long> _unconfirmedChains = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, Slv3Unconfirmed> _unconfirmedChains = new(StringComparer.Ordinal);
     private long _devicePolls;
     internal const int ChainConfirmWindowPolls = 10;
+    internal const int ChainConfirmSightings = 3;
+    // Polls a chain must have been seen in before it counts as owned or can take part in a slot conflict.
+    internal const int EstablishedChainPolls = 20;
 
     /// <summary>False lists a new chain on first sight.</summary>
     internal bool ConfirmNewChains { get; init; } = true;
@@ -90,10 +94,16 @@ public sealed class Slv3Hub : IDisposable
     // Explicitly unbound through Nexus this session; never re-seeded as owned.
     private readonly HashSet<string> _userUnbound = new(StringComparer.Ordinal);
 
-    // An owned device found unbound is bound back at most this often, and
-    // only until it has failed to converge this many times in a row.
+    // An owned device found unbound or off our channel is bound back with a
+    // doubling wait between attempts, capped; it never gives up while owned.
     internal const long AutoRebindIntervalMs = 30_000;
-    internal const int AutoRebindMaxFailures = 3;
+    internal const long AutoRebindMaxIntervalMs = 300_000;
+    // Fresh polls two chains must report one slot before one is moved.
+    internal const int SlotConflictPolls = 5;
+    private readonly Dictionary<int, int> _slotConflicts = new();
+    private long _conflictPoll;
+
+    internal Action<int> SleepMs { get; init; } = Thread.Sleep;
     private readonly Dictionary<string, AutoRebindState> _rebind = new(StringComparer.Ordinal);
 
     private ISlv3Transport? _tx;
@@ -597,7 +607,8 @@ public sealed class Slv3Hub : IDisposable
         }
     }
 
-    // Any device seen bound to our master is ours, which also seeds the list on upgrade.
+    // Any established device seen bound to our master is ours, which also seeds
+    // the list on upgrade. A young chain may be a corrupt copy of a real one.
     private void TrackOwnedLocked()
     {
         foreach (var record in _lastFanRecords)
@@ -611,20 +622,40 @@ public sealed class Slv3Hub : IDisposable
             {
                 continue;
             }
-            if (!_owned.TryGetValue(key, out var slot) || slot != record.RxType)
+            var known = _owned.TryGetValue(key, out var slot);
+            if (known ? slot == record.RxType || SlotSharedLocked(record) : !EstablishedLocked(key))
             {
-                _owned[key] = record.RxType;
-                _ownedDirty = true;
+                continue;
             }
+            _owned[key] = record.RxType;
+            _ownedDirty = true;
         }
     }
 
-    // Binds an owned device back when it reports no master, as L-Connect does
-    // on start. A device bound to another master is never touched.
+    private bool EstablishedLocked(string key) =>
+        _knownChains.TryGetValue(key, out var chain) && chain.Sightings >= EstablishedChainPolls;
+
+    // Two chains bound to us reporting one slot: the owned slot is kept until the conflict resolves.
+    private bool SlotSharedLocked(Slv3DeviceRecord record)
+    {
+        foreach (var other in _lastFanRecords)
+        {
+            if (IsBoundToUsLocked(other) && other.RxType == record.RxType && !Slv3Protocol.MacEquals(other.Mac, record.Mac))
+            {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    // L-Connect SyncControlInfo for owned devices: bind one back when it reports
+    // no master or sits off our channel, addressed to its current pipe. A device
+    // on a non-zero foreign master is never touched.
     private void AutoRebindLocked()
     {
         if (Slv3Protocol.MacIsZero(_masterMac) || _owned.Count == 0)
         {
+            ResolveSlotConflictsLocked();
             return;
         }
         var now = _nowMs();
@@ -635,36 +666,117 @@ public sealed class Slv3Hub : IDisposable
             {
                 continue;
             }
-            var unbound = Slv3Protocol.MacIsZero(record.MasterMac);
-            if (!unbound || !_knownChains.TryGetValue(key, out var chain) || now - chain.LastSeenMs > ChainStaleMs)
+            var zeroMaster = Slv3Protocol.MacIsZero(record.MasterMac);
+            var ours = Slv3Protocol.MacEquals(record.MasterMac, _masterMac);
+            var settled = ours && IsBoundToUsLocked(record) && record.Channel == _channel;
+            if (!(zeroMaster || ours) || settled)
             {
-                if (!unbound)
-                {
-                    _rebind.Remove(key);
-                }
+                _rebind.Remove(key);
                 continue;
             }
-            if (record.Channel != _channel || _pending.ContainsKey(key))
+            if (!_knownChains.TryGetValue(key, out var chain) || now - chain.LastSeenMs > ChainStaleMs || _pending.ContainsKey(key))
             {
                 continue;
             }
             _rebind.TryGetValue(key, out var state);
-            if (state.Failures >= AutoRebindMaxFailures
-                || (state.Attempts > 0 && now - state.LastAttemptMs < AutoRebindIntervalMs))
+            if (state.Attempts > 0 && now - state.LastAttemptMs < RebindWaitMs(state.Attempts))
             {
                 continue;
             }
-            var slot = lastSlot >= Slv3Protocol.MinSlot && lastSlot <= Slv3Protocol.MaxSlot && !SlotInUseLocked(lastSlot)
-                ? lastSlot
+            var drift = ours && IsBoundToUsLocked(record);
+            var slot = drift ? record.RxType
+                : lastSlot >= Slv3Protocol.MinSlot && lastSlot <= Slv3Protocol.MaxSlot && !SlotInUseLocked(lastSlot) ? lastSlot
                 : FirstFreeSlotLocked();
             if (slot < 0)
             {
                 continue;
             }
-            _rebind[key] = new AutoRebindState(now, state.Failures, state.Attempts + 1);
-            ServiceLog.Info($"[lianli-wireless] auto-rebind {key} unbound, binding to slot {slot} (attempt {state.Attempts + 1})");
+            _rebind[key] = new AutoRebindState(now, state.Attempts + 1);
+            ServiceLog.Info($"[lianli-wireless] auto-rebind {key} {(drift ? "off our channel" : "unbound")}, binding to slot {slot} (attempt {state.Attempts + 1})");
             StartBindLocked(record, (byte)slot, auto: true);
         }
+        ResolveSlotConflictsLocked();
+    }
+
+    private static long RebindWaitMs(int attempts) =>
+        Math.Min(AutoRebindIntervalMs << Math.Min(attempts - 1, 8), AutoRebindMaxIntervalMs);
+
+    // L-Connect unbinds one of two chains reporting a slot for more than four
+    // polls; here the loser moves to the first free slot instead.
+    private void ResolveSlotConflictsLocked()
+    {
+        if (_devicePolls == _conflictPoll)
+        {
+            return;
+        }
+        _conflictPoll = _devicePolls;
+        var bySlot = new Dictionary<int, List<Slv3DeviceRecord>>();
+        foreach (var record in _lastFanRecords)
+        {
+            var key = Convert.ToHexString(record.Mac);
+            if (!IsBoundToUsLocked(record) || !_knownChains.TryGetValue(key, out var chain)
+                || chain.Poll != _devicePolls || chain.Sightings < EstablishedChainPolls)
+            {
+                continue;
+            }
+            if (!bySlot.TryGetValue(record.RxType, out var group))
+            {
+                bySlot[record.RxType] = group = new List<Slv3DeviceRecord>();
+            }
+            group.Add(record);
+        }
+        foreach (var slot in new List<int>(_slotConflicts.Keys))
+        {
+            if (!bySlot.TryGetValue(slot, out var g) || g.Count < 2)
+            {
+                _slotConflicts.Remove(slot);
+            }
+        }
+        foreach (var (slot, group) in bySlot)
+        {
+            if (group.Count < 2)
+            {
+                continue;
+            }
+            var count = _slotConflicts.GetValueOrDefault(slot) + 1;
+            if (count < SlotConflictPolls)
+            {
+                _slotConflicts[slot] = count;
+                continue;
+            }
+            _slotConflicts.Remove(slot);
+            var mover = PickConflictMover(group, slot);
+            var moverKey = Convert.ToHexString(mover.Mac);
+            var target = FirstFreeSlotLocked();
+            if (target < 0 || _pending.ContainsKey(moverKey))
+            {
+                continue;
+            }
+            ServiceLog.Info($"[lianli-wireless] slot {slot} reported by {group.Count} chains, moving {moverKey} to slot {target}");
+            StartBindLocked(mover, (byte)target, auto: true);
+        }
+    }
+
+    // Prefers the chain whose owned slot differs from the contested one; ties go to the higher MAC.
+    private Slv3DeviceRecord PickConflictMover(List<Slv3DeviceRecord> group, int slot)
+    {
+        Slv3DeviceRecord best = default;
+        var bestKey = "";
+        var bestDiffers = false;
+        foreach (var record in group)
+        {
+            var key = Convert.ToHexString(record.Mac);
+            var differs = _owned.TryGetValue(key, out var owned) && owned != slot;
+            if (bestKey.Length == 0
+                || (differs && !bestDiffers)
+                || (differs == bestDiffers && string.CompareOrdinal(key, bestKey) > 0))
+            {
+                best = record;
+                bestKey = key;
+                bestDiffers = differs;
+            }
+        }
+        return best;
     }
 
     // Re-send every pending bind/unbind frame and sequenced command, and one
@@ -932,7 +1044,7 @@ public sealed class Slv3Hub : IDisposable
             {
                 var done = op.Unbind
                     ? !IsBoundToUsLocked(record)
-                    : IsBoundToUsLocked(record);
+                    : IsBoundToUsLocked(record) && record.Channel == _channel && record.RxType == op.TargetSlot;
                 if (done)
                 {
                     (resolved ??= new List<string>()).Add(key);
@@ -982,9 +1094,7 @@ public sealed class Slv3Hub : IDisposable
                 ServiceLog.Warn($"[lianli-wireless] bind/unbind for {key} did not converge in {PendingOpTickBudget} polls, dropping");
                 if (_pending.TryGetValue(key, out var droppedOp) && droppedOp.Auto)
                 {
-                    var prior = _rebind.GetValueOrDefault(key);
-                    _rebind[key] = prior with { Failures = prior.Failures + 1 };
-                    ServiceLog.Warn($"[lianli-wireless] auto-rebind {key} failed ({prior.Failures + 1}/{AutoRebindMaxFailures})");
+                    ServiceLog.Warn($"[lianli-wireless] auto-rebind {key} did not converge, retrying after backoff");
                 }
                 _pending.Remove(key);
             }
@@ -1090,11 +1200,20 @@ public sealed class Slv3Hub : IDisposable
                 var key = Convert.ToHexString(record.Mac);
                 if (!_knownChains.ContainsKey(key))
                 {
-                    if (ConfirmNewChains
-                        && (!_unconfirmedChains.TryGetValue(key, out var firstPoll) || firstPoll == _devicePolls))
+                    if (IsZeroedCopyOfKnownChainLocked(record.Mac))
                     {
-                        _unconfirmedChains.TryAdd(key, _devicePolls);
                         continue;
+                    }
+                    if (ConfirmNewChains)
+                    {
+                        var seen = _unconfirmedChains.TryGetValue(key, out var u)
+                            ? (u.LastPoll == _devicePolls ? u : u with { LastPoll = _devicePolls, Sightings = u.Sightings + 1 })
+                            : new Slv3Unconfirmed(_devicePolls, _devicePolls, 1);
+                        _unconfirmedChains[key] = seen;
+                        if (seen.Sightings < ChainConfirmSightings)
+                        {
+                            continue;
+                        }
                     }
                     _unconfirmedChains.Remove(key);
                     var what = record.IsStrimer ? $"Strimer dev_type {record.DevType}"
@@ -1102,14 +1221,15 @@ public sealed class Slv3Hub : IDisposable
                         : $"{record.FanCount} fan(s), {record.Family}";
                     ServiceLog.Info($"[lianli-wireless] chain {key} appeared ({what})");
                 }
-                _knownChains[key] = new Slv3KnownChain(record, nowMs);
+                var sightings = (_knownChains.TryGetValue(key, out var prior) ? prior.Sightings : 0) + 1;
+                _knownChains[key] = new Slv3KnownChain(record, nowMs, _devicePolls, sightings);
             }
         }
 
         List<string>? gone = null;
-        foreach (var (key, firstPoll) in _unconfirmedChains)
+        foreach (var (key, unconfirmed) in _unconfirmedChains)
         {
-            if (_devicePolls - firstPoll >= ChainConfirmWindowPolls)
+            if (_devicePolls - unconfirmed.FirstPoll >= ChainConfirmWindowPolls)
             {
                 (gone ??= new List<string>()).Add(key);
             }
@@ -1163,6 +1283,29 @@ public sealed class Slv3Hub : IDisposable
         _lastFanRecords = records;
         _anyAioBound = records.Exists(r => r.IsHydroShift && IsBoundToUsLocked(r));
         State.Fans = fans.ToArray();
+    }
+
+    // A corrupt RX copy of a real chain: same MAC with some bytes zeroed.
+    private bool IsZeroedCopyOfKnownChainLocked(byte[] mac)
+    {
+        foreach (var chain in _knownChains.Values)
+        {
+            var known = chain.Record.Mac;
+            if (known.Length != mac.Length || Slv3Protocol.MacEquals(known, mac))
+            {
+                continue;
+            }
+            var copy = true;
+            for (var i = 0; i < mac.Length && copy; i++)
+            {
+                copy = mac[i] == known[i] || mac[i] == 0;
+            }
+            if (copy)
+            {
+                return true;
+            }
+        }
+        return false;
     }
 
     // MAC-ordered keys so the surfaced list is stable across polls regardless
@@ -1425,8 +1568,11 @@ public sealed class Slv3Hub : IDisposable
                 return false;
             }
             _userUnbound.Remove(key);
+            _owned[key] = slot;
+            _ownedDirty = true;
             StartBindLocked(existing, (byte)slot, auto: false);
         }
+        FlushOwned();
         return true;
     }
 
@@ -2015,9 +2161,45 @@ public sealed class Slv3Hub : IDisposable
         {
             _channel = (byte)channel;
             State.Channel = channel;
+            // Every device bound to us now reports the old channel; retarget them at once.
+            _rebind.Clear();
+            foreach (var record in _lastFanRecords)
+            {
+                if (IsBoundToUsLocked(record) && !_pending.ContainsKey(Convert.ToHexString(record.Mac)))
+                {
+                    StartBindLocked(record, record.RxType, auto: true);
+                }
+            }
         }
         return true;
     }
+
+    /// <summary>
+    /// System suspend: SaveCfg three times 200 ms apart (MasterDevice.SaveConfig),
+    /// so the bindings reach device flash before power drops. No-op with the link down.
+    /// </summary>
+    public void OnSystemSuspending()
+    {
+        lock (_lock)
+        {
+            if (!IsConnected || _tx is not { IsOpen: true })
+            {
+                return;
+            }
+            for (var i = 0; i < SuspendSaveCfgSends; i++)
+            {
+                if (i > 0)
+                {
+                    // 200 ms between sends per MasterDevice.SaveConfig tryCnt loop.
+                    SleepMs(SuspendSaveCfgGapMs);
+                }
+                SendSaveCfgLocked();
+            }
+        }
+    }
+
+    private const int SuspendSaveCfgSends = 3;
+    private const int SuspendSaveCfgGapMs = 200;
 
     // Slots already used by a fan bound to us, or already claimed by an in-flight
     // bind, are excluded. Caller holds _lock.
@@ -2105,11 +2287,13 @@ public sealed class Slv3Hub : IDisposable
 
     private readonly record struct Slv3PendingOp(byte[] Mac, byte TargetSlot, bool Unbind, int TicksRemaining, bool Auto = false);
 
-    private readonly record struct AutoRebindState(long LastAttemptMs, int Failures, int Attempts);
+    private readonly record struct AutoRebindState(long LastAttemptMs, int Attempts);
 
     private readonly record struct Slv3PendingCommand(byte[] Mac, byte RfCmd, byte TargetSeq, int SendsRemaining, byte Arg = 0);
 
-    private readonly record struct Slv3KnownChain(Slv3DeviceRecord Record, long LastSeenMs);
+    private readonly record struct Slv3KnownChain(Slv3DeviceRecord Record, long LastSeenMs, long Poll, int Sightings);
+
+    private readonly record struct Slv3Unconfirmed(long FirstPoll, long LastPoll, int Sightings);
 
     // SwitchSeq is the cmdSeq of the last RF_AioSwitchWireless sent; 0 = none in flight.
     private sealed class Slv3AioControl

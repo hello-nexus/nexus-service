@@ -27,12 +27,14 @@ public sealed class PowerEventListener : IHostedService, IDisposable
     private readonly RgbBridge _bridge;
     private readonly SleepBlackoutCoordinator _blackout;
     private readonly Nexus.Service.Peripherals.LianLi.LianLiHubSet? _lianLi;
+    private readonly Nexus.Service.Peripherals.LianLiWireless.Slv3Hub? _slv3;
 #if WINDOWS
     private bool _subscribed;
 #endif
 
-    public PowerEventListener(RgbBridge bridge, SleepBlackoutCoordinator blackout, Nexus.Service.Peripherals.LianLi.LianLiHubSet? lianLi = null)
+    public PowerEventListener(RgbBridge bridge, SleepBlackoutCoordinator blackout, Nexus.Service.Peripherals.LianLi.LianLiHubSet? lianLi = null, Nexus.Service.Peripherals.LianLiWireless.Slv3Hub? slv3 = null)
     {
+        _slv3 = slv3;
         _bridge = bridge;
         _blackout = blackout;
         _lianLi = lianLi;
@@ -75,6 +77,7 @@ public sealed class PowerEventListener : IHostedService, IDisposable
         if (e.Mode == PowerModes.Suspend)
         {
             _blackout.OnSuspending();
+            try { _slv3?.OnSystemSuspending(); } catch (Exception ex) { ServiceLog.Warn($"[lianli-wireless] suspend SaveCfg failed: {ex.Message}"); }
         }
         else if (e.Mode == PowerModes.Resume)
         {
