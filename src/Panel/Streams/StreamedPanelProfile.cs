@@ -23,7 +23,7 @@ public enum StreamCodec
 /// Per-serial overrides (fps/bitrate/profile kind) live in
 /// <see cref="StreamedPanelStore"/>.
 /// </summary>
-public sealed class StreamedPanelProfile
+public sealed record StreamedPanelProfile
 {
     /// <summary>Stable id persisted as a per-serial override key.</summary>
     public required string Kind { get; init; }
@@ -56,6 +56,23 @@ public sealed class StreamedPanelProfile
     public required int CssHeight { get; init; }
     public double Dpr { get; init; } = 1.0;
     public int Fps { get; init; } = 60;
+
+    /// <summary>Panels longer than this on either side render at half resolution unless their record asks for high resolution.</summary>
+    public const int RenderScaleMinSide = 1000;
+
+    public const double HalfRenderScale = 0.5;
+
+    /// <summary>
+    /// Fraction of the native resolution the overlay renders at; the ingest scales each frame
+    /// back up to native. Below 1 it trades sharpness for render, capture and copy cost.
+    /// </summary>
+    public double RenderScale { get; init; } = 1.0;
+
+    /// <summary>Only raw frames can be scaled back up before the device sees them.</summary>
+    public bool SupportsRenderScale => Codec == StreamCodec.RawBgra && Math.Max(CssWidth, CssHeight) > RenderScaleMinSide;
+
+    /// <summary>The overlay's frame length for a CSS length at a pixel ratio: its own even(round(css * dpr)).</summary>
+    public static int FramePixels(int cssLength, double dpr) => Math.Max(2, (int)Math.Round(cssLength * dpr) & ~1);
     public int BitrateKbps { get; init; } = 8000;
 
     /// <summary>BitrateKbps is ignored when this is not <see cref="StreamCodec.H264"/>.</summary>
@@ -86,6 +103,7 @@ public sealed class StreamedPanelProfile
         SupportsBrightness = SupportsBrightness ? true : null,
         SupportsSecondaryMonitor = SupportsSecondaryMonitor ? true : null,
         SupportsPortrait = SupportsPortrait ? true : null,
+        SupportsRenderScale = SupportsRenderScale ? true : null,
         Dpi = Dpi,
         Touch = false,
         CssWidth = CssWidth,
