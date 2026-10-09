@@ -14,23 +14,29 @@ public static class DeckWireImageEncoder
     /// <summary>Null when the encode fails or the resulting length does not match the model's wire format.</summary>
     public static byte[]? Encode(SKBitmap rendered, StreamDeckModel model, int orientation)
     {
-        var raw = new DeckRawImage(rendered.Width, rendered.Height, RenderKit.ToRgba32Bytes(rendered));
-        var oriented = DeckKeyTransformer.ApplyOrientation(raw, orientation);
-        var transformed = DeckKeyTransformer.ApplyKeyTransform(oriented, DeckKeyTransformer.ParseTransform(model.Transform));
-
+        var transform = DeckKeyTransformer.ParseTransform(model.Transform);
         byte[] wireBytes;
-        using (var transformedImage = RenderKit.FromRgba32Bytes(transformed.Data, transformed.Width, transformed.Height))
+        if (transform == DeckKeyTransform.None && orientation is not (90 or 180 or 270))
         {
-            wireBytes = model.ImageFormat switch
-            {
-                StreamDeckImageFormat.Bmp => BmpEncoder.Encode(RenderKit.ToRgb24(transformedImage), transformed.Width, transformed.Height),
-                StreamDeckImageFormat.Jpeg => EncodeKeyJpeg(transformedImage, model),
-                _ => System.Array.Empty<byte>(),
-            };
+            wireBytes = EncodeFormat(rendered, model);
+        }
+        else
+        {
+            var raw = new DeckRawImage(rendered.Width, rendered.Height, RenderKit.ToRgba32Bytes(rendered));
+            var transformed = DeckKeyTransformer.ApplyKeyTransform(DeckKeyTransformer.ApplyOrientation(raw, orientation), transform);
+            using var transformedImage = RenderKit.FromRgba32Bytes(transformed.Data, transformed.Width, transformed.Height);
+            wireBytes = EncodeFormat(transformedImage, model);
         }
 
         return wireBytes.Length == 0 || !model.IsValidWireImageLength(wireBytes.Length) ? null : wireBytes;
     }
+
+    private static byte[] EncodeFormat(SKBitmap image, StreamDeckModel model) => model.ImageFormat switch
+    {
+        StreamDeckImageFormat.Bmp => BmpEncoder.Encode(RenderKit.ToRgb24(image), image.Width, image.Height),
+        StreamDeckImageFormat.Jpeg => EncodeKeyJpeg(image, model),
+        _ => System.Array.Empty<byte>(),
+    };
 
     // Studio keys are wider than tall: the square render is centered on black.
     private static byte[] EncodeKeyJpeg(SKBitmap square, StreamDeckModel model)
@@ -54,6 +60,10 @@ public static class DeckWireImageEncoder
     /// </summary>
     public static byte[] EncodeScreen(SKBitmap upright, StreamDeckModel model)
     {
+        if (DeckKeyTransformer.ParseTransform(model.ScreenTransform) == DeckKeyTransform.None)
+        {
+            return RenderKit.EncodeJpeg(upright);
+        }
         var raw = new DeckRawImage(upright.Width, upright.Height, RenderKit.ToRgba32Bytes(upright));
         var transformed = DeckKeyTransformer.ApplyKeyTransform(raw, DeckKeyTransformer.ParseTransform(model.ScreenTransform));
         using var image = RenderKit.FromRgba32Bytes(transformed.Data, transformed.Width, transformed.Height);

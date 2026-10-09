@@ -33,6 +33,10 @@ public sealed class DeckKeyRenderer
     private static readonly Regex ExecutablePathRegex = new(@"\.(exe|lnk|app)$", RegexOptions.IgnoreCase | RegexOptions.Compiled);
 
     private static readonly ConcurrentDictionary<string, SKBitmap?> LucideCache = new(StringComparer.Ordinal);
+    private static readonly ConcurrentDictionary<(string Name, int Size), SKBitmap?> ScaledLucideCache = new();
+
+    /// <summary>Bounds the per-size glyph cache; a clear drops at most a few MB that the next renders rebuild.</summary>
+    private const int ScaledLucideCapacity = 512;
 
     private const int CacheCapacity = 256;
     private readonly object _cacheLock = new();
@@ -131,13 +135,13 @@ public sealed class DeckKeyRenderer
             PaintEmoji(canvas, icon.Value, size, size);
             return canvas;
         }
-        var lucide = LoadLucide(icon is { Kind: "lucide" } ? icon.Value : fallbackLucide);
+        var lucide = LoadLucide(icon is { Kind: "lucide" } ? icon.Value : fallbackLucide, size);
         if (lucide is null)
         {
             canvas.Dispose();
             return null;
         }
-        DrawCentered(canvas, lucide, size / 2f, size / 2f, size);
+        DrawGlyph(canvas, lucide, size / 2f, size / 2f);
         return canvas;
     }
 
@@ -304,10 +308,10 @@ public sealed class DeckKeyRenderer
         }
 
         var name = icon is { Kind: "lucide" } ? icon.Value : DeckIconDefaults.AutoIconName(action, display.IsFolder);
-        var lucide = LoadLucide(name);
+        var lucide = LoadLucide(name, target);
         if (lucide is not null)
         {
-            DrawCentered(image, lucide, cx, cy, target);
+            DrawGlyph(image, lucide, cx, cy);
         }
     }
 
@@ -355,6 +359,34 @@ public sealed class DeckKeyRenderer
             }
         }
         return _emojiFont = RenderKit.ResolveFont();
+    }
+
+    /// <summary>The named glyph contain-fit into size x size, resized once per size and shared read-only.</summary>
+    private static SKBitmap? LoadLucide(string name, int size)
+    {
+        if (ScaledLucideCache.TryGetValue((name, size), out var cached))
+        {
+            return cached;
+        }
+        SKBitmap? scaled = null;
+        if (LoadLucide(name) is { } source)
+        {
+            var scale = size / (float)Math.Max(Math.Max(source.Width, source.Height), 1);
+            scaled = RenderKit.Resize(source, Math.Max(1, (int)MathF.Round(source.Width * scale)), Math.Max(1, (int)MathF.Round(source.Height * scale)));
+            scaled.SetImmutable();
+        }
+        if (ScaledLucideCache.Count >= ScaledLucideCapacity)
+        {
+            // Never disposed here: another render may still be drawing an evicted bitmap.
+            ScaledLucideCache.Clear();
+        }
+        return ScaledLucideCache.GetOrAdd((name, size), scaled);
+    }
+
+    private static void DrawGlyph(SKBitmap image, SKBitmap glyph, float cx, float cy)
+    {
+        using var canvas = new SKCanvas(image);
+        RenderKit.DrawImage(canvas, glyph, (int)MathF.Round(cx - glyph.Width / 2f), (int)MathF.Round(cy - glyph.Height / 2f));
     }
 
     private static SKBitmap? LoadLucide(string name) => LucideCache.GetOrAdd(name, static key =>

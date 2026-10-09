@@ -45,6 +45,7 @@ internal static class WeatherTileRenderer
     private const float LocationFontSizeFraction = 0.145f;
 
     private static readonly ConcurrentDictionary<string, SKBitmap?> IconCache = new();
+    private static readonly ConcurrentDictionary<(string Name, int Size), SKBitmap?> ScaledIconCache = new();
 
     public static SKBitmap Render(WeatherTileInput input, int pixelSize)
     {
@@ -75,17 +76,16 @@ internal static class WeatherTileRenderer
 
     private static void DrawIcon(SKCanvas canvas, int weatherCode, int size)
     {
-        var icon = LoadIcon(IconResourceName(weatherCode));
-        if (icon is null)
-        {
-            return;
-        }
         var iconPx = (int)MathF.Round(size * IconSizeFraction);
         if (iconPx < 1)
         {
             return;
         }
-        using var scaled = RenderKit.Resize(icon, iconPx, iconPx);
+        var scaled = LoadIcon(IconResourceName(weatherCode), iconPx);
+        if (scaled is null)
+        {
+            return;
+        }
         var left = (int)MathF.Round(size / 2f - iconPx / 2f);
         var top = (int)MathF.Round(size * IconCenterYFraction - iconPx / 2f);
 
@@ -136,6 +136,18 @@ internal static class WeatherTileRenderer
         >= 95 and <= 99 => "cloud-lightning",
         _ => "circle-help",
     };
+
+    /// <summary>The icon at size x size, resized once per key size (a handful of models) and shared read-only.</summary>
+    private static SKBitmap? LoadIcon(string name, int size) => ScaledIconCache.GetOrAdd((name, size), static key =>
+    {
+        if (LoadIcon(key.Name) is not { } source)
+        {
+            return null;
+        }
+        var scaled = RenderKit.Resize(source, key.Size, key.Size);
+        scaled.SetImmutable();
+        return scaled;
+    });
 
     private static SKBitmap? LoadIcon(string name) => IconCache.GetOrAdd(name, static key =>
     {
