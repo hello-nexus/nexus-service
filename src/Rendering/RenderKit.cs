@@ -3,8 +3,8 @@ using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Globalization;
 using System.IO;
+using System.Threading;
 using SkiaSharp;
-using SkiaSharp.HarfBuzz;
 
 namespace Nexus.Service.Rendering;
 
@@ -33,8 +33,8 @@ internal static class RenderKit
     private static readonly ConcurrentDictionary<string, SKTypeface?> Families = new(StringComparer.OrdinalIgnoreCase);
     private static readonly ConcurrentDictionary<(string Family, bool Bold, bool Italic), SKTypeface> Faces = new();
 
-    /// <summary>One per typeface: each holds the font's tables in native memory. Shape calls lock it.</summary>
-    private static readonly ConcurrentDictionary<SKTypeface, SKShaper> Shapers = new();
+    /// <summary>One per typeface, built once (Lazy) because each holds that font's shaping tables.</summary>
+    private static readonly ConcurrentDictionary<SKTypeface, Lazy<TextShaper>> Shapers = new();
 
     /// <summary>Every bitmap here is RGBA8888 premultiplied, so pixel bytes are R,G,B,A in memory.</summary>
     public static SKImageInfo Info(int width, int height) => new(width, height, SKColorType.Rgba8888, SKAlphaType.Premul);
@@ -270,11 +270,7 @@ internal static class RenderKit
         {
             return font.MeasureText(text);
         }
-        var shaper = Shaper(font.Typeface);
-        lock (shaper)
-        {
-            return shaper.Shape(text, font).Width;
-        }
+        return Shaper(font.Typeface).Shape(text, font).Width;
     }
 
     public static void DrawCentered(SKCanvas canvas, string text, SKFont font, SKColor color, SKPoint center) =>
@@ -294,11 +290,23 @@ internal static class RenderKit
             canvas.DrawText(text, x, baseline, align, font, paint);
             return;
         }
-        var shaper = Shaper(font.Typeface);
-        lock (shaper)
+        var (glyphs, points, width) = Shaper(font.Typeface).Shape(text, font);
+        if (glyphs.Length == 0)
         {
-            canvas.DrawShapedText(shaper, text, x, baseline, align, font, paint);
+            return;
         }
+        using var builder = new SKTextBlobBuilder();
+        var run = builder.AllocatePositionedRun(font, glyphs.Length, null);
+        run.SetGlyphs(glyphs);
+        run.SetPositions(points);
+        using var blob = builder.Build();
+        var left = align switch
+        {
+            SKTextAlign.Center => x - width / 2f,
+            SKTextAlign.Right => x - width,
+            _ => x,
+        };
+        canvas.DrawText(blob, left, baseline, paint);
     }
 
     /// <summary>
@@ -317,7 +325,8 @@ internal static class RenderKit
         return false;
     }
 
-    private static SKShaper Shaper(SKTypeface typeface) => Shapers.GetOrAdd(typeface, static face => new SKShaper(face));
+    private static TextShaper Shaper(SKTypeface typeface) =>
+        Shapers.GetOrAdd(typeface, static face => new Lazy<TextShaper>(() => new TextShaper(face), LazyThreadSafetyMode.ExecutionAndPublication)).Value;
 
     /// <summary>Composites src at (x, y) at its own size.</summary>
     public static void DrawImage(SKCanvas canvas, SKBitmap src, int x, int y, float opacity = 1f)
