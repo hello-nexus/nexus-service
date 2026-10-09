@@ -154,6 +154,7 @@ public class HydroShift2Tests
     public void Connect_on_the_round_head_reports_a_round_glass()
     {
         var driver = new HydroShift2LcdDriver();
+        Assert.Equal("Lian Li HydroShift II", driver.Name);
 
         Assert.Equal((480, 480), driver.Connect(new FirmwarePipe { ProductId = HydroShift2Protocol.ProductIdCircle }, null));
         Assert.True(driver.Round);

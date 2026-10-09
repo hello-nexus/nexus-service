@@ -31,8 +31,11 @@ public sealed class HydroShift2LcdDriver : IBulkPanelDriver
 
     private volatile bool _round;
 
+    /// <summary>Set by the first connect; until then the device row cannot tell the heads apart.</summary>
+    private volatile bool _identified;
+
     public string HandlerId => Id;
-    public string Name => _round ? "Lian Li HydroShift II LCD-C" : "Lian Li HydroShift II LCD-S";
+    public string Name => !_identified ? "Lian Li HydroShift II" : _round ? "Lian Li HydroShift II LCD-C" : "Lian Li HydroShift II LCD-S";
     public int VendorId => 0x1CBE;
     public IReadOnlyList<int> ProductIds { get; } = new[] { HydroShift2Protocol.ProductIdSquare, HydroShift2Protocol.ProductIdCircle };
     public string Surface => _round ? Models.Panel.PanelSurfaces.LcdRound : Models.Panel.PanelSurfaces.LcdSquare;
@@ -59,6 +62,7 @@ public sealed class HydroShift2LcdDriver : IBulkPanelDriver
     public (int Width, int Height)? Connect(IBulkUsbPipe pipe, IHidDevice? hid)
     {
         _round = pipe.ProductId == HydroShift2Protocol.ProductIdCircle;
+        _identified = true;
         _clock.Restart();
         _lastTimestamp = 0;
 
