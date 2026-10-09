@@ -27,10 +27,12 @@ public sealed class ElgatoUnmappedEntry
 {
     /// <summary>1-based top-level page index; nested-folder entries report their top-level ancestor's page.</summary>
     public int Page { get; set; }
-    /// <summary>"col,row" within whichever grid the key lives in (the top page, or a folder's own grid); empty for a whole-page note.</summary>
+    /// <summary>"col,row" within whichever grid the key lives in (the top page, or a folder's own grid); empty for a dial or a whole-page note.</summary>
     public string Position { get; set; } = "";
+    /// <summary>1-based dial index when the entry is a dial rather than a key.</summary>
+    public int? Dial { get; set; }
     public string Name { get; set; } = "";
-    /// <summary>hotkey | open | website | text | media | plugin | unsupported | multiStep | encoder | pageLimit | hotkeyExtraSlots | textEnterIgnored | monitoringSensor | audioPath.</summary>
+    /// <summary>hotkey | open | website | text | media | plugin | unsupported | multiStep | pageLimit | hotkeyExtraSlots | textEnterIgnored | monitoringSensor | audioPath.</summary>
     public string Reason { get; set; } = "";
     public string? Detail { get; set; }
 }
@@ -38,9 +40,9 @@ public sealed class ElgatoUnmappedEntry
 /// <summary>POST /streamdeck/elgato/profiles/{id}/import report summary.</summary>
 public sealed class ElgatoImportReport
 {
-    /// <summary>Every translatable-relevant key across the profile (top pages and folders), excluding tutorial tiles, backtoparent, and empty cells.</summary>
+    /// <summary>Every translatable-relevant key and dial across the profile (top pages and folders), excluding tutorial tiles, backtoparent, and empty cells.</summary>
     public int TotalKeys { get; set; }
-    /// <summary>TotalKeys that produced a real (non-placeholder) DeckAction or folder.</summary>
+    /// <summary>TotalKeys that produced a real (non-placeholder) DeckAction, folder, or dial action.</summary>
     public int MappedKeys { get; set; }
     public List<ElgatoUnmappedEntry> Unmapped { get; set; } = new();
 }

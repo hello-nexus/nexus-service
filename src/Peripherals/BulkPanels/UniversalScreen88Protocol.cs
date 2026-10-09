@@ -2,8 +2,7 @@ using System;
 using System.IO;
 using System.Security.Cryptography;
 using System.Text;
-using SixLabors.ImageSharp;
-using SixLabors.ImageSharp.PixelFormats;
+using Nexus.Service.Rendering;
 
 namespace Nexus.Service.Peripherals.BulkPanels;
 
@@ -129,10 +128,8 @@ public static class UniversalScreen88Protocol
         {
             return cached;
         }
-        using var image = new Image<Rgba32>(Width, Height);
-        using var ms = new MemoryStream();
-        image.SaveAsPng(ms);
-        return _emptyOverlay = ms.ToArray();
+        using var image = RenderKit.NewImage(Width, Height);
+        return _emptyOverlay = RenderKit.EncodePng(image);
     }
 
     /// <summary>

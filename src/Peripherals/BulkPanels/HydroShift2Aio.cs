@@ -91,6 +91,9 @@ public sealed class HydroShift2Aio : BackgroundService
 
     public HydroShift2Params? Params { get { lock (_lock) { return _params; } } }
 
+    /// <summary>The connected head is the round LCD-C.</summary>
+    public bool Round => _driver.Round;
+
     /// <summary>Raised from the loop when <see cref="IsAvailable"/> flips.</summary>
     public event Action? AvailabilityChanged;
 
@@ -279,7 +282,7 @@ public sealed class HydroShift2Aio : BackgroundService
                 if (!_pumpFanDirty && now - _lastPumpFanAt < PumpFanResendMs) return;
                 _driving = true;
                 _pumpFanDirty = false;
-                pumpRpm = _pumpDuty is { } pump ? HydroShift2Protocol.PumpRpmForDuty(pump) : HydroShift2Protocol.DefaultPumpRpm;
+                pumpRpm = _pumpDuty is { } pump ? HydroShift2Protocol.PumpRpmForDuty(pump, _driver.Round) : HydroShift2Protocol.DefaultPumpRpm;
                 for (int i = 0; i < fans.Length; i++)
                 {
                     fans[i] = _fanDuty[i] is { } duty ? (byte)(Math.Clamp(duty, 0, 100) * 255 / 100) : HydroShift2Protocol.DefaultFanByte;

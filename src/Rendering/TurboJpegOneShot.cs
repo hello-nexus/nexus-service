@@ -25,7 +25,7 @@ internal static unsafe class TurboJpegOneShot
     /// <summary>
     /// Encodes <paramref name="pixels"/> (4 bytes per pixel, <paramref name="pixelFormat"/>
     /// one of the TJPF_* values on <see cref="TurboJpeg"/>). Returns null when turbojpeg is
-    /// unavailable or the compress call fails, so the caller uses its managed path.
+    /// unavailable or the compress call fails, so the caller uses its Skia path.
     /// </summary>
     public static byte[]? TryCompress(ReadOnlySpan<byte> pixels, int width, int height, int pixelFormat, int quality)
     {
@@ -62,7 +62,7 @@ internal static unsafe class TurboJpegOneShot
                     {
                         _failureLogged = true;
                         ServiceLog.Warn($"[jpeg] turbojpeg compress failed ({TurboJpeg.ErrorString(handle)}); "
-                            + "using the managed encoder. Logged once.");
+                            + "using the Skia encoder. Logged once.");
                     }
                     return null;
                 }

@@ -9,10 +9,9 @@ namespace Nexus.Service.Rendering;
 /// server-rendered device bitmap. The library ships next to the service binary
 /// (<c>Bundled/&lt;rid&gt;/turbojpeg</c>).
 ///
-/// Several times faster than ImageSharp's managed encoder at the same quality, for
-/// output of the same size; the ratio grows as the bitmap shrinks, because ImageSharp
-/// carries a fixed per-call cost. Every caller keeps a managed fallback, so nothing
-/// here throws on load.
+/// Several times faster than Skia's encoder on x64 at the same quality (Skia's
+/// bundled libjpeg-turbo carries no x86 SIMD). Every caller keeps the Skia
+/// fallback, so nothing here throws on load.
 /// </summary>
 internal static unsafe class TurboJpeg
 {
@@ -50,13 +49,13 @@ internal static unsafe class TurboJpeg
                     }
                     else
                     {
-                        ServiceLog.Warn("[jpeg] turbojpeg loaded but tj3Init failed; using the managed encoder");
+                        ServiceLog.Warn("[jpeg] turbojpeg loaded but tj3Init failed; using the Skia encoder");
                     }
                 }
                 catch (Exception ex) when (ex is DllNotFoundException or EntryPointNotFoundException or BadImageFormatException)
                 {
-                    ServiceLog.Warn($"[jpeg] turbojpeg unavailable, falling back to the managed encoder ({ex.GetType().Name}). "
-                        + "Device bitmaps will encode 3-4x slower; check that turbojpeg is beside the service binary.");
+                    ServiceLog.Warn($"[jpeg] turbojpeg unavailable, falling back to the Skia encoder ({ex.GetType().Name}). "
+                        + "Device bitmaps will encode 3-5x slower; check that turbojpeg is beside the service binary.");
                     _available = 0;
                 }
             }

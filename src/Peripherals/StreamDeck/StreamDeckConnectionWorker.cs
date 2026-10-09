@@ -22,8 +22,7 @@ using Nexus.Service.Platform.Weather;
 using Nexus.Service.Rendering;
 using Nexus.Service.Sensors;
 using Nexus.Service.Sockets;
-using SixLabors.ImageSharp;
-using SixLabors.ImageSharp.PixelFormats;
+using SkiaSharp;
 
 namespace Nexus.Service.Peripherals.StreamDeck;
 
@@ -1718,7 +1717,11 @@ public sealed partial class StreamDeckConnectionWorker : BackgroundService, IDec
         }
         try
         {
-            using var decoded = Image.Load<Rgba32>(wireBytes);
+            using var decoded = RenderKit.Decode(wireBytes);
+            if (decoded is null)
+            {
+                return null;
+            }
             using var pressed = PressedKeyRenderer.Render(decoded);
             return model.ImageFormat switch
             {
@@ -2070,7 +2073,7 @@ public sealed partial class StreamDeckConnectionWorker : BackgroundService, IDec
     };
 
     /// <summary>Renders a weather tile input once, mirroring RenderMonitoringTile: returns the rendered upright image (caller must dispose) plus this surface's wire bytes derived from it.</summary>
-    private static (Image<Rgba32> Rendered, byte[]? WireBytes) RenderWeatherTile(WeatherTileInput input, StreamDeckModel model, int orientation)
+    private static (SKBitmap Rendered, byte[]? WireBytes) RenderWeatherTile(WeatherTileInput input, StreamDeckModel model, int orientation)
     {
         var rendered = WeatherTileRenderer.Render(input, model.KeyPixelSize);
         try
@@ -2384,7 +2387,7 @@ public sealed partial class StreamDeckConnectionWorker : BackgroundService, IDec
     /// encodes the returned image directly for the streamdeckTiles broadcast
     /// so a tile is never rendered twice per key per tick.
     /// </summary>
-    private static (Image<Rgba32> Rendered, byte[]? WireBytes) RenderMonitoringTile(MonitoringTileInput input, StreamDeckModel model, int orientation)
+    private static (SKBitmap Rendered, byte[]? WireBytes) RenderMonitoringTile(MonitoringTileInput input, StreamDeckModel model, int orientation)
     {
         var rendered = MonitoringTileRenderer.Render(input, model.KeyPixelSize);
         try

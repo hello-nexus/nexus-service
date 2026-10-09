@@ -1,7 +1,7 @@
 # libjpeg-turbo (TurboJPEG 3 API)
 
 Used by `src/Rendering/TurboJpeg.cs` for every server-rendered device JPEG. Every
-caller falls back to ImageSharp when the library is absent, so a missing copy costs
+caller falls back to Skia's encoder when the library is absent, so a missing copy costs
 speed, not function.
 
 | | |

@@ -514,6 +514,30 @@ public sealed class PanelDeviceRegistryTests : IDisposable
     }
 
     [Fact]
+    public void HighResolution_persists_and_hardware_reset_clears_it()
+    {
+        var record = _registry.Allocate("Screen", Caps(PanelSurfaces.Monitor));
+
+        Assert.True(_registry.Patch(record.Id, new PanelDevicePatch { HighResolution = true })!.HighResolution);
+        Assert.True(_registry.Patch(record.Id, new PanelDevicePatch { DisplayName = "Renamed" })!.HighResolution);
+
+        Assert.Null(_registry.ResetHardwareSettings(record.Id)!.HighResolution);
+    }
+
+    [Fact]
+    public void ResetToDefaults_reseeds_a_streamed_strip_and_clears_a_display_bound_one()
+    {
+        var strip = new PanelDeviceCapabilities { Surface = PanelSurfaces.Monitor, CssWidth = 1920, CssHeight = 480 };
+        var streamed = _registry.Allocate("Strip", strip);
+        var (bound, _) = _registry.AllocateForDisplay("DISPLAY-1", "Edge", strip);
+
+        var reseeded = _registry.ResetToDefaults(streamed.Id)!.Layout;
+
+        Assert.Contains(Assert.Single(reseeded!.Pages).Widgets, w => w.Type == "weather" && w.Size == "4x4");
+        Assert.Null(_registry.ResetToDefaults(bound.Id)!.Layout);
+    }
+
+    [Fact]
     public void ResetToDefaults_UnknownId_ReturnsNull()
     {
         Assert.Null(_registry.ResetToDefaults("nope"));

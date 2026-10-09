@@ -64,7 +64,8 @@ public static class StreamDeckRoutes
                 {
                     Serial = serial,
                     Model = model.Name,
-                    Name = string.IsNullOrEmpty(deck.Name) ? model.Name : deck.Name,
+                    DisplayName = model.DisplayName,
+                    Name = string.IsNullOrEmpty(deck.Name) ? model.DisplayName : deck.Name,
                     Connected = false,
                     Verified = model.Verified,
                     Rows = model.Rows,
@@ -328,7 +329,7 @@ public static class StreamDeckRoutes
                 response.Models.Add(new StreamDeckDevModelDto
                 {
                     ProductId = model.ProductId,
-                    Name = model.Name,
+                    Name = model.DisplayName,
                     Rows = model.Rows,
                     Columns = model.Columns,
                     KeyCount = model.KeyCount,
@@ -415,7 +416,8 @@ public static class StreamDeckRoutes
     {
         Serial = surface.Serial,
         Model = surface.Model.Name,
-        Name = string.IsNullOrEmpty(deck?.Name) ? surface.Model.Name : deck!.Name,
+        DisplayName = surface.Model.DisplayName,
+        Name = string.IsNullOrEmpty(deck?.Name) ? surface.Model.DisplayName : deck!.Name,
         Connected = surface.IsConnected,
         Verified = surface.Model.Verified,
         Rows = surface.Model.Rows,

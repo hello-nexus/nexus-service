@@ -6,10 +6,7 @@ using Nexus.Service.Deck;
 using Nexus.Service.Models.Activity;
 using Nexus.Service.Peripherals.StreamDeck;
 using Nexus.Service.Rendering;
-using SixLabors.ImageSharp;
-using SixLabors.ImageSharp.Drawing.Processing;
-using SixLabors.ImageSharp.PixelFormats;
-using SixLabors.ImageSharp.Processing;
+using SkiaSharp;
 using Xunit;
 
 namespace Nexus.Service.Tests.Rendering;
@@ -44,25 +41,29 @@ public sealed class DeckKeyRendererTests : IDisposable
         try { Directory.Delete(_imagesDir, recursive: true); } catch { /* best effort */ }
     }
 
-    private static Image<Rgba32> Decode(byte[] wireBytes) => Image.Load<Rgba32>(wireBytes);
+    private static SKBitmap Decode(byte[] wireBytes) => TestImages.Decode(wireBytes);
 
-    private static int LitPixelCount(Image<Rgba32> image, int threshold = 40)
+    private static int LitPixelCount(SKBitmap image, int threshold = 40)
     {
         var lit = 0;
-        image.ProcessPixelRows(accessor =>
+        for (var y = 0; y < image.Height; y++)
         {
-            for (var y = 0; y < accessor.Height; y++)
+            for (var x = 0; x < image.Width; x++)
             {
-                foreach (ref var px in accessor.GetRowSpan(y))
+                var px = image.GetPixel(x, y);
+                if (px.Red > threshold || px.Green > threshold || px.Blue > threshold)
                 {
-                    if (px.R > threshold || px.G > threshold || px.B > threshold)
-                    {
-                        lit++;
-                    }
+                    lit++;
                 }
             }
-        });
+        }
         return lit;
+    }
+
+    private static byte[] Png(SKBitmap image)
+    {
+        using var data = image.Encode(SKEncodedImageFormat.Png, 100);
+        return data.ToArray();
     }
 
     [Fact]
@@ -84,8 +85,8 @@ public sealed class DeckKeyRendererTests : IDisposable
         Assert.NotNull(bytes);
 
         using var image = Decode(bytes!);
-        var center = image[Mk2.KeyPixelSize / 2, 2];
-        Assert.True(center.R > 150, $"expected a red-dominant pixel near the top edge, got {center}");
+        var center = image.GetPixel(Mk2.KeyPixelSize / 2, 2);
+        Assert.True(center.Red > 150, $"expected a red-dominant pixel near the top edge, got {center}");
     }
 
     [Fact]
@@ -97,8 +98,8 @@ public sealed class DeckKeyRendererTests : IDisposable
 
         using var image = Decode(bytes!);
         // DeckIconDefaults.CategoryColorHex(Power) = #ef4444 (red-dominant).
-        var corner = image[1, 1];
-        Assert.True(corner.R > corner.B, $"expected the power category's red-leaning fill, got {corner}");
+        var corner = image.GetPixel(1, 1);
+        Assert.True(corner.Red > corner.Blue, $"expected the power category's red-leaning fill, got {corner}");
     }
 
     [Fact]
@@ -181,12 +182,9 @@ public sealed class DeckKeyRendererTests : IDisposable
         var fallback = renderer.Render(slot, false, Mk2, 0);
         Assert.NotNull(fallback);
 
-        using (var icon = new Image<Rgba32>(16, 16))
+        using (var icon = TestImages.Solid(16, 16, SKColors.Lime))
         {
-            icon.Mutate(ctx => ctx.Fill(Color.Lime));
-            using var ms = new MemoryStream();
-            icon.SaveAsPng(ms);
-            shortcuts.Icon = ms.ToArray();
+            shortcuts.Icon = Png(icon);
         }
         var real = renderer.Render(slot, false, Mk2, 0);
 
@@ -210,16 +208,16 @@ public sealed class DeckKeyRendererTests : IDisposable
     [Fact]
     public void Render_AppIcon_IsTheKeyFaceOnBlack()
     {
-        var shortcuts = new SwitchableShortcutsProvider { Icon = SolidPng(Color.Red, 4, 4) };
+        var shortcuts = new SwitchableShortcutsProvider { Icon = SolidPng(SKColors.Red, 4, 4) };
         var renderer = new DeckKeyRenderer(new DeckImageStore(_imagesDir), shortcuts, new NullProcessIconProvider());
         var slot = new DeckSlot { Action = new DeckAction { Type = "launchApp", AppId = "app-1" } };
 
         using var image = Decode(renderer.Render(slot, false, Mk2, 0)!);
         // Artwork at 82% of the key on black: black at the edge, red just inside the 9% inset.
-        var edge = image[1, 1];
-        var inset = image[(int)(Mk2.KeyPixelSize * 0.12f), Mk2.KeyPixelSize / 2];
-        Assert.True(edge.R < 24 && edge.G < 24 && edge.B < 24, $"expected black around the artwork, got {edge}");
-        Assert.True(inset.R > 150 && inset.G < 100 && inset.B < 100, $"expected the app icon inside the inset, got {inset}");
+        var edge = image.GetPixel(1, 1);
+        var inset = image.GetPixel((int)(Mk2.KeyPixelSize * 0.12f), Mk2.KeyPixelSize / 2);
+        Assert.True(edge.Red < 24 && edge.Green < 24 && edge.Blue < 24, $"expected black around the artwork, got {edge}");
+        Assert.True(inset.Red > 150 && inset.Green < 100 && inset.Blue < 100, $"expected the app icon inside the inset, got {inset}");
     }
 
     /// <summary>A macOS-style icon keeps a clear margin around its rounded square; the artwork, not the margin, fills the key.</summary>
@@ -227,47 +225,45 @@ public sealed class DeckKeyRendererTests : IDisposable
     public void Render_AppIconWithClearMargin_CropsTheMarginAway()
     {
         byte[] padded;
-        using (var icon = new Image<Rgba32>(20, 20))
+        using (var icon = TestImages.Solid(20, 20, SKColors.Transparent))
         {
-            icon.Mutate(ctx => ctx.Fill(Color.Red, new Rectangle(5, 5, 10, 10)));
-            using var ms = new MemoryStream();
-            icon.SaveAsPng(ms);
-            padded = ms.ToArray();
+            icon.Erase(SKColors.Red, SKRectI.Create(5, 5, 10, 10));
+            padded = Png(icon);
         }
         var renderer = new DeckKeyRenderer(new DeckImageStore(_imagesDir), new SwitchableShortcutsProvider { Icon = padded }, new NullProcessIconProvider());
         var slot = new DeckSlot { Action = new DeckAction { Type = "launchApp", AppId = "app-1" } };
 
         using var image = Decode(renderer.Render(slot, false, Mk2, 0)!);
         // The 20px icon's 5px margin is cropped, so its 10px square lands at the same 82% as a margin-free icon.
-        var inset = image[(int)(Mk2.KeyPixelSize * 0.12f), Mk2.KeyPixelSize / 2];
-        Assert.True(inset.R > 150 && inset.G < 100, $"expected the cropped artwork inside the inset, got {inset}");
+        var inset = image.GetPixel((int)(Mk2.KeyPixelSize * 0.12f), Mk2.KeyPixelSize / 2);
+        Assert.True(inset.Red > 150 && inset.Green < 100, $"expected the cropped artwork inside the inset, got {inset}");
     }
 
     [Fact]
     public void Render_SelectedAppIcon_KeepsBlackBehindTheIcon()
     {
-        var shortcuts = new SwitchableShortcutsProvider { Icon = SolidPng(Color.Red, 4, 2) };
+        var shortcuts = new SwitchableShortcutsProvider { Icon = SolidPng(SKColors.Red, 4, 2) };
         var renderer = new DeckKeyRenderer(new DeckImageStore(_imagesDir), shortcuts, new NullProcessIconProvider());
         var slot = new DeckSlot { Action = new DeckAction { Type = "launchApp", AppId = "app-1" } };
 
         using var image = Decode(renderer.Render(slot, false, Mk2, 0, selected: true)!);
         // Inside the ring, above the 2:1 icon's letterbox: still black, no brightened fill.
-        var letterbox = image[Mk2.KeyPixelSize / 2, (int)(Mk2.KeyPixelSize * 0.12f)];
-        Assert.True(letterbox.R < 24 && letterbox.G < 24 && letterbox.B < 24, $"expected black in the letterbox of a selected app key, got {letterbox}");
+        var letterbox = image.GetPixel(Mk2.KeyPixelSize / 2, (int)(Mk2.KeyPixelSize * 0.12f));
+        Assert.True(letterbox.Red < 24 && letterbox.Green < 24 && letterbox.Blue < 24, $"expected black in the letterbox of a selected app key, got {letterbox}");
     }
 
     [Fact]
     public void Render_AppIcon_LetterboxesOnTheSlotsOwnColor()
     {
-        var shortcuts = new SwitchableShortcutsProvider { Icon = SolidPng(Color.Red, 4, 2) };
+        var shortcuts = new SwitchableShortcutsProvider { Icon = SolidPng(SKColors.Red, 4, 2) };
         var renderer = new DeckKeyRenderer(new DeckImageStore(_imagesDir), shortcuts, new NullProcessIconProvider());
         var slot = new DeckSlot { Color = "#00ff00", Action = new DeckAction { Type = "launchApp", AppId = "app-1" } };
 
         using var image = Decode(renderer.Render(slot, false, Mk2, 0)!);
-        var top = image[Mk2.KeyPixelSize / 2, 2];
-        var center = image[Mk2.KeyPixelSize / 2, Mk2.KeyPixelSize / 2];
-        Assert.True(top.G > 150 && top.R < 100, $"expected the slot color above a 2:1 icon, got {top}");
-        Assert.True(center.R > 150 && center.G < 100, $"expected the icon across the middle, got {center}");
+        var top = image.GetPixel(Mk2.KeyPixelSize / 2, 2);
+        var center = image.GetPixel(Mk2.KeyPixelSize / 2, Mk2.KeyPixelSize / 2);
+        Assert.True(top.Green > 150 && top.Red < 100, $"expected the slot color above a 2:1 icon, got {top}");
+        Assert.True(center.Red > 150 && center.Green < 100, $"expected the icon across the middle, got {center}");
     }
 
     /// <summary>
@@ -288,7 +284,7 @@ public sealed class DeckKeyRendererTests : IDisposable
         // Blank while pending: the bare category accent, no glyph.
         Assert.Equal(renderer.Render(new DeckSlot { Color = DeckIconDefaults.CategoryColorHex(DeckCategory.Launch) }, false, Mk2, 0), pending);
 
-        processIcons.Icon = SolidPng(Color.Red, 4, 4);
+        processIcons.Icon = SolidPng(SKColors.Red, 4, 4);
         var real = renderer.Render(slot, false, Mk2, 0);
         Assert.Equal(2, processIcons.Calls);
         Assert.NotEqual(pending, real);
@@ -302,26 +298,16 @@ public sealed class DeckKeyRendererTests : IDisposable
         public byte[]? GetIcon(string exePath) { Calls++; return Icon; }
     }
 
-    private static byte[] SolidPng(Color color, int width, int height)
+    private static byte[] SolidPng(SKColor color, int width, int height)
     {
-        using var image = new Image<Rgba32>(width, height);
-        image.Mutate(ctx => ctx.Fill(color));
-        using var ms = new MemoryStream();
-        image.SaveAsPng(ms);
-        return ms.ToArray();
+        using var image = TestImages.Solid(width, height, color);
+        return Png(image);
     }
 
     [Fact]
     public void Render_ImageIconFromDeckImageStore_CoverFillsTheKey()
     {
-        byte[] redPng;
-        using (var redImage = new Image<Rgba32>(4, 4))
-        {
-            redImage.Mutate(ctx => ctx.Fill(Color.Red));
-            using var ms = new MemoryStream();
-            redImage.SaveAsPng(ms);
-            redPng = ms.ToArray();
-        }
+        var redPng = SolidPng(SKColors.Red, 4, 4);
         var store = new DeckImageStore(_imagesDir);
         var id = store.Store(redPng);
         Assert.NotNull(id);
@@ -331,18 +317,16 @@ public sealed class DeckKeyRendererTests : IDisposable
         Assert.NotNull(bytes);
 
         using var image = Decode(bytes!);
-        var center = image[Mk2.KeyPixelSize / 2, Mk2.KeyPixelSize / 2];
-        Assert.True(center.R > 150 && center.G < 100 && center.B < 100, $"expected the cover-filled red source image, got {center}");
+        var center = image.GetPixel(Mk2.KeyPixelSize / 2, Mk2.KeyPixelSize / 2);
+        Assert.True(center.Red > 150 && center.Green < 100 && center.Blue < 100, $"expected the cover-filled red source image, got {center}");
     }
 
     /// <summary>A square image: a red band across the middle, transparent above and below it.</summary>
     private string StoreTransparentBandImage()
     {
-        using var image = new Image<Rgba32>(8, 8);
-        image.Mutate(ctx => ctx.Fill(Color.Red, new Rectangle(0, 2, 8, 4)));
-        using var ms = new MemoryStream();
-        image.SaveAsPng(ms);
-        var id = new DeckImageStore(_imagesDir).Store(ms.ToArray());
+        using var image = TestImages.Solid(8, 8, SKColors.Transparent);
+        image.Erase(SKColors.Red, SKRectI.Create(0, 2, 8, 4));
+        var id = new DeckImageStore(_imagesDir).Store(Png(image));
         Assert.NotNull(id);
         return id!;
     }
@@ -353,10 +337,10 @@ public sealed class DeckKeyRendererTests : IDisposable
         var slot = new DeckSlot { Icon = new DeckIcon { Kind = "image", Value = StoreTransparentBandImage() }, Action = new DeckAction { Type = "openUrl", Url = "https://example.com" } };
 
         using var image = Decode(_renderer.Render(slot, false, Mk2, 0)!);
-        var top = image[Mk2.KeyPixelSize / 2, 2];
-        var center = image[Mk2.KeyPixelSize / 2, Mk2.KeyPixelSize / 2];
-        Assert.True(top.R < 24 && top.G < 24 && top.B < 24, $"expected black, not the category color, behind a transparent image, got {top}");
-        Assert.True(center.R > 150 && center.G < 100, $"expected the image across the middle, got {center}");
+        var top = image.GetPixel(Mk2.KeyPixelSize / 2, 2);
+        var center = image.GetPixel(Mk2.KeyPixelSize / 2, Mk2.KeyPixelSize / 2);
+        Assert.True(top.Red < 24 && top.Green < 24 && top.Blue < 24, $"expected black, not the category color, behind a transparent image, got {top}");
+        Assert.True(center.Red > 150 && center.Green < 100, $"expected the image across the middle, got {center}");
     }
 
     [Fact]
@@ -365,8 +349,8 @@ public sealed class DeckKeyRendererTests : IDisposable
         var slot = new DeckSlot { Color = "#00ff00", Icon = new DeckIcon { Kind = "image", Value = StoreTransparentBandImage() } };
 
         using var image = Decode(_renderer.Render(slot, false, Mk2, 0)!);
-        var top = image[Mk2.KeyPixelSize / 2, 2];
-        Assert.True(top.G > 150 && top.R < 100, $"expected the slot color behind a transparent image, got {top}");
+        var top = image.GetPixel(Mk2.KeyPixelSize / 2, 2);
+        Assert.True(top.Green > 150 && top.Red < 100, $"expected the slot color behind a transparent image, got {top}");
     }
 
     /// <summary>

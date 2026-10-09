@@ -1,8 +1,5 @@
 using System;
-using SixLabors.ImageSharp;
-using SixLabors.ImageSharp.Drawing.Processing;
-using SixLabors.ImageSharp.PixelFormats;
-using SixLabors.ImageSharp.Processing;
+using SkiaSharp;
 
 namespace Nexus.Service.Rendering;
 
@@ -12,40 +9,36 @@ namespace Nexus.Service.Rendering;
 /// the top as the hold fraction (0..1) advances. At fraction 1 the ring is
 /// full and the connection worker fires the open-editor intent. Pure and
 /// square (KeyPixelSize per side); the worker runs the result through the same
-/// orient/transform/encode pipeline as a monitoring tile. Uses only primitive
-/// fills, so it is AOT-clean like the rest of RenderKit.
+/// orient/transform/encode pipeline as a monitoring tile.
 /// </summary>
 internal static class DeckHoldPromptRenderer
 {
-    private static readonly Color DefaultBackground = Color.Black;
-    private static readonly Color Track = Color.FromPixel(new Rgba32(255, 255, 255, 45));
-    private static readonly Color Accent = Color.ParseHex("#4DA3FF");
+    private static readonly SKColor DefaultBackground = SKColors.Black;
+    private static readonly SKColor Track = new(255, 255, 255, 45);
+    private static readonly SKColor Accent = new(0x4d, 0xa3, 0xff);
 
-    public static Image<Rgba32> Render(float fraction, int pixelSize) => Render(fraction, pixelSize, pixelSize, DefaultBackground);
+    public static SKBitmap Render(float fraction, int pixelSize) => Render(fraction, pixelSize, pixelSize, DefaultBackground);
 
     /// <summary>The same ring centred on a width x height canvas (a dial segment), sized by the shorter edge.</summary>
-    public static Image<Rgba32> Render(float fraction, int width, int height, Color background)
+    public static SKBitmap Render(float fraction, int width, int height, SKColor background)
     {
         var clamped = Math.Clamp(fraction, 0f, 1f);
         var pixelSize = Math.Min(width, height);
-        var image = new Image<Rgba32>(width, height);
-        var center = new PointF(width / 2f, height / 2f);
+        var image = RenderKit.NewImage(width, height, background);
+        var center = new SKPoint(width / 2f, height / 2f);
         var outerRadius = pixelSize * 0.40f;
         var thickness = pixelSize * 0.13f;
         var innerRadius = outerRadius - thickness;
 
-        image.Mutate(ctx =>
+        using var canvas = new SKCanvas(image);
+        RenderKit.FillPath(canvas, Track, RenderKit.BuildRingSegment(center, innerRadius, outerRadius, 0f, 360f));
+        if (clamped > 0f)
         {
-            ctx.Fill(background);
-            ctx.Fill(Track, RenderKit.BuildRingSegment(center, innerRadius, outerRadius, 0f, 360f));
-            if (clamped > 0f)
-            {
-                // Clockwise from 12 o'clock: BuildRingSegment measures degrees
-                // clockwise from the positive x-axis (screen space, y down),
-                // so 12 o'clock is -90.
-                ctx.Fill(Accent, RenderKit.BuildRingSegment(center, innerRadius, outerRadius, -90f, -90f + 360f * clamped));
-            }
-        });
+            // Clockwise from 12 o'clock: BuildRingSegment measures degrees
+            // clockwise from the positive x-axis (screen space, y down),
+            // so 12 o'clock is -90.
+            RenderKit.FillPath(canvas, Accent, RenderKit.BuildRingSegment(center, innerRadius, outerRadius, -90f, -90f + 360f * clamped));
+        }
 
         return image;
     }

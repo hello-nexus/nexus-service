@@ -261,7 +261,8 @@ public sealed class PanelDeviceRegistry
             && string.Equals(a.Family, b.Family, StringComparison.Ordinal)
             && a.SupportsBrightness == b.SupportsBrightness
             && a.SupportsSecondaryMonitor == b.SupportsSecondaryMonitor
-            && a.SupportsPortrait == b.SupportsPortrait;
+            && a.SupportsPortrait == b.SupportsPortrait
+            && a.SupportsRenderScale == b.SupportsRenderScale;
     }
 
     public PanelDeviceRecord? FindByDisplayId(string displayId)
@@ -482,6 +483,7 @@ public sealed class PanelDeviceRegistry
             SupportsBrightness = patch.SupportsBrightness ?? existing?.SupportsBrightness,
             SupportsSecondaryMonitor = patch.SupportsSecondaryMonitor ?? existing?.SupportsSecondaryMonitor,
             SupportsPortrait = patch.SupportsPortrait ?? existing?.SupportsPortrait,
+            SupportsRenderScale = patch.SupportsRenderScale ?? existing?.SupportsRenderScale,
         };
     }
 
@@ -609,6 +611,8 @@ public sealed class PanelDeviceRegistry
                 record.SecondaryMonitor = patch.SecondaryMonitor.Value;
             if (patch.Portrait.HasValue)
                 record.Portrait = patch.Portrait.Value;
+            if (patch.HighResolution.HasValue)
+                record.HighResolution = patch.HighResolution.Value;
             // Capabilities on display-bound records are owned by the topology
             // sync (rebuilt from OS facts); a client value would ping-pong
             // with the next sync pass.
@@ -637,7 +641,7 @@ public sealed class PanelDeviceRegistry
     /// <summary>
     /// Personalization reset: layout (including single-widget configs),
     /// theme, background, and widget fields all clear, so defaults reseed on
-    /// the next read. Identity and hardware-scoped state survive - id, name,
+    /// the next read; a streamed strip stores its strip seed instead. Identity and hardware-scoped state survive - id, name,
     /// display binding, capabilities, enabled state, monitor behavior
     /// (ReserveMonitor/AutoOrient/KeepCursorOff - see <see cref="ResetHardwareSettings"/>),
     /// and the persisted orientation / Xeneon DDC record. Uploaded media is
@@ -655,7 +659,7 @@ public sealed class PanelDeviceRegistry
         {
             if (!s.PanelDevices.TryGetValue(id, out var record))
                 return;
-            record.Layout = null;
+            record.Layout = PanelLayoutDefaults.StripSeedFor(record);
             record.ThemeMode = null;
             record.AccentColor = null;
             record.BackgroundColor = null;
@@ -725,6 +729,7 @@ public sealed class PanelDeviceRegistry
             record.LcdBrightness = null;
             record.SecondaryMonitor = null;
             record.Portrait = null;
+            record.HighResolution = null;
             record.XeneonEdgeSettings = null;
             record.LastSeenAt = now;
             snapshot = Clone(record);
@@ -1007,6 +1012,7 @@ public sealed class PanelDeviceRegistry
             LcdBrightness = r.LcdBrightness,
             SecondaryMonitor = r.SecondaryMonitor,
             Portrait = r.Portrait,
+            HighResolution = r.HighResolution,
             XeneonEdgeSettings = r.XeneonEdgeSettings is null
                 ? null
                 : new XeneonEdgeSettingsDto
