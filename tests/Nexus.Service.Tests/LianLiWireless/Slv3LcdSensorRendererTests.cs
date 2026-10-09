@@ -1,6 +1,5 @@
 using System.IO;
 using Nexus.Service.Peripherals.LianLiWireless;
-using SixLabors.ImageSharp;
 
 namespace Nexus.Service.Tests.LianLiWireless;
 
@@ -18,7 +17,7 @@ public class Slv3LcdSensorRendererTests
         var jpeg = Slv3LcdSensorRenderer.Render(style, value, 0f, 100f, "CPU", "%", "#00D1FF", "#FFFFFF");
 
         Assert.NotEmpty(jpeg);
-        var info = Image.Identify(jpeg);
+        var info = TestImages.Identify(jpeg);
         Assert.NotNull(info);
         Assert.Equal(400, info!.Width);
         Assert.Equal(400, info.Height);
@@ -29,7 +28,7 @@ public class Slv3LcdSensorRendererTests
     {
         var jpeg = Slv3LcdSensorRenderer.Render("BAR", 50f, 0f, 100f, "CPU", "%", null, null);
 
-        var info = Image.Identify(jpeg);
+        var info = TestImages.Identify(jpeg);
         Assert.Equal(400, info!.Width);
     }
 
@@ -41,7 +40,7 @@ public class Slv3LcdSensorRendererTests
         var jpeg = Slv3LcdSensorRenderer.Render(style, 50f, 0f, 100f, "CPU", "%", null, null);
 
         Assert.NotEmpty(jpeg);
-        var info = Image.Identify(jpeg);
+        var info = TestImages.Identify(jpeg);
         Assert.Equal(400, info!.Width);
         Assert.Equal(400, info.Height);
     }
@@ -52,7 +51,7 @@ public class Slv3LcdSensorRendererTests
         var jpeg = Slv3LcdSensorRenderer.Render("ring", 50f, 0f, 100f, "GPU", "RPM", "not-a-color", "");
 
         Assert.NotEmpty(jpeg);
-        var info = Image.Identify(jpeg);
+        var info = TestImages.Identify(jpeg);
         Assert.Equal(400, info!.Width);
     }
 
@@ -62,7 +61,7 @@ public class Slv3LcdSensorRendererTests
         var jpeg = Slv3LcdSensorRenderer.Render("ring", 999f, 0f, 100f, "CPU", "%", null, null);
 
         Assert.NotEmpty(jpeg);
-        var info = Image.Identify(jpeg);
+        var info = TestImages.Identify(jpeg);
         Assert.Equal(400, info!.Width);
         Assert.Equal(400, info.Height);
     }
@@ -73,7 +72,7 @@ public class Slv3LcdSensorRendererTests
         var jpeg = Slv3LcdSensorRenderer.Render("ring", 50f, 100f, 100f, "CPU", "%", null, null);
 
         Assert.NotEmpty(jpeg);
-        var info = Image.Identify(jpeg);
+        var info = TestImages.Identify(jpeg);
         Assert.Equal(400, info!.Width);
     }
 }

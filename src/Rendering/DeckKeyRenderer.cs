@@ -8,12 +8,9 @@ using System.Text.RegularExpressions;
 using Nexus.Service.Activity;
 using Nexus.Service.Deck;
 using Nexus.Service.Peripherals.StreamDeck;
+using Nexus.Service.Platform;
 using Nexus.Service.Serialization;
-using SixLabors.Fonts;
-using SixLabors.ImageSharp;
-using SixLabors.ImageSharp.Drawing.Processing;
-using SixLabors.ImageSharp.PixelFormats;
-using SixLabors.ImageSharp.Processing;
+using SkiaSharp;
 
 namespace Nexus.Service.Rendering;
 
@@ -36,7 +33,11 @@ public sealed class DeckKeyRenderer
 
     private static readonly Regex ExecutablePathRegex = new(@"\.(exe|lnk|app)$", RegexOptions.IgnoreCase | RegexOptions.Compiled);
 
-    private static readonly ConcurrentDictionary<string, Image<Rgba32>?> LucideCache = new(StringComparer.Ordinal);
+    private static readonly ConcurrentDictionary<string, SKBitmap?> LucideCache = new(StringComparer.Ordinal);
+    private static readonly ConcurrentDictionary<(string Name, int Size), SKBitmap?> ScaledLucideCache = new();
+
+    /// <summary>Bounds the per-size glyph cache; a clear drops at most a few MB that the next renders rebuild.</summary>
+    private const int ScaledLucideCapacity = 512;
 
     private const int CacheCapacity = 256;
     private readonly object _cacheLock = new();
@@ -60,7 +61,7 @@ public sealed class DeckKeyRenderer
     public byte[]? RenderBackKey(StreamDeckModel model, int orientation) => Render(BackKeySlot, isToggleOn: false, model, orientation);
 
     /// <summary>Accent used for the Recent Apps focused-key ring, matching MonitoringTileRenderer's default accent.</summary>
-    private static readonly Color SelectedAccent = Color.ParseHex("4da3ff");
+    private static readonly SKColor SelectedAccent = new(0x4d, 0xa3, 0xff);
 
     /// <summary>
     /// Renders one slot's wire bytes at model/orientation. isToggleOn selects
@@ -115,32 +116,50 @@ public sealed class DeckKeyRenderer
     /// fallback for an app icon, which the screens do not resolve). Null when
     /// nothing renders. Caller disposes.
     /// </summary>
-    public Image<Rgba32>? RenderIconGlyph(DeckIcon? icon, string fallbackLucide, int size)
+    public SKBitmap? RenderIconGlyph(DeckIcon? icon, string fallbackLucide, int size)
     {
         if (size <= 0)
         {
             return null;
         }
-        var canvas = new Image<Rgba32>(size, size);
+        var canvas = RenderKit.NewImage(size, size);
         if (icon is { Kind: "image" } && _imageStore.TryLoad(icon.Value) is { } loaded)
         {
-            using var source = Image.Load<Rgba32>(loaded.Bytes);
-            DrawCover(canvas, source, size);
-            return canvas;
+            if (DecodeStored(icon.Value, loaded.Bytes) is { } source)
+            {
+                using (source)
+                {
+                    DrawCover(canvas, source, size);
+                }
+                return canvas;
+            }
         }
         if (icon is { Kind: "emoji" })
         {
             PaintEmoji(canvas, icon.Value, size, size);
             return canvas;
         }
-        var lucide = LoadLucide(icon is { Kind: "lucide" } ? icon.Value : fallbackLucide);
+        var lucide = LoadLucide(icon is { Kind: "lucide" } ? icon.Value : fallbackLucide, size);
         if (lucide is null)
         {
             canvas.Dispose();
             return null;
         }
-        DrawCentered(canvas, lucide, size / 2f, size / 2f, size);
+        DrawGlyph(canvas, lucide, size / 2f, size / 2f);
         return canvas;
+    }
+
+    private static readonly ConcurrentDictionary<string, byte> UndecodableWarned = new(StringComparer.Ordinal);
+
+    /// <summary>A stored deck image's bitmap, or null (warned once per image) when it does not decode and the key falls back to its default icon.</summary>
+    private static SKBitmap? DecodeStored(string id, byte[] bytes)
+    {
+        var image = RenderKit.Decode(bytes);
+        if (image is null && UndecodableWarned.TryAdd(id, 0))
+        {
+            ServiceLog.Warn($"[deck] stored image {id} does not decode (corrupt or too large); the key shows its default icon");
+        }
+        return image;
     }
 
     private void Touch(string key)
@@ -201,27 +220,27 @@ public sealed class DeckKeyRenderer
         return new DisplaySlot(icon, slot.Label, isBlankOff ? "#000000" : colorHex!, explicitColor, slot.Title, isFolder, isBlankOff, effectiveAction);
     }
 
-    private Image<Rgba32> RenderImage(DisplaySlot display, int size, ref bool transient, bool selected = false)
+    private SKBitmap RenderImage(DisplaySlot display, int size, ref bool transient, bool selected = false)
     {
-        var image = new Image<Rgba32>(size, size);
+        var image = RenderKit.NewImage(size, size);
         var shouldPaintIcon = !display.IsBlankOff && (display.EffectiveAction is not null || display.IsFolder || display.Icon is not null);
         // Face precedence: a custom image, else the app icon, else PaintIcon's
         // emoji / lucide glyph. An image or app icon is the key face (as
         // DeckGrid.tsx faceFills): no accent behind it unless the slot has its
         // own color.
-        Image<Rgba32>? customImage = null;
-        Image<Rgba32>? appIcon = null;
+        SKBitmap? customImage = null;
+        SKBitmap? appIcon = null;
         var iconPending = false;
         if (shouldPaintIcon && display.Icon is { Kind: "image" } && _imageStore.TryLoad(display.Icon.Value) is { } loaded)
         {
-            customImage = Image.Load<Rgba32>(loaded.Bytes);
+            customImage = DecodeStored(display.Icon.Value, loaded.Bytes);
         }
         else if (shouldPaintIcon && display.Icon is not { Kind: "emoji" })
         {
             appIcon = LoadAppIcon(display, ref transient, out iconPending);
         }
         var iconOnBlack = (customImage is not null || appIcon is not null) && !display.ExplicitColor;
-        var background = iconOnBlack ? Color.Black : RenderKit.ParseColor(display.ColorHex, Color.Black);
+        var background = iconOnBlack ? SKColors.Black : RenderKit.ParseColor(display.ColorHex, SKColors.Black);
         // Selected: brighten a real accent; an icon on black keeps the ring
         // only (RecentAppsGrid.tsx .selected over a transparent face), so no
         // grey square shows through the icon's transparent letterbox.
@@ -229,7 +248,7 @@ public sealed class DeckKeyRenderer
         {
             background = Brighten(background, 0.25f);
         }
-        image.Mutate(ctx => ctx.Fill(background));
+        image.Erase(background);
 
         if (display.IsBlankOff)
         {
@@ -272,21 +291,22 @@ public sealed class DeckKeyRenderer
         if (selected)
         {
             var ringWidth = MathF.Max(2f, size * 0.06f);
-            var rect = new RectangleF(ringWidth / 2f, ringWidth / 2f, size - ringWidth, size - ringWidth);
-            image.Mutate(ctx => ctx.Draw(SelectedAccent, ringWidth, rect));
+            var rect = SKRect.Create(ringWidth / 2f, ringWidth / 2f, size - ringWidth, size - ringWidth);
+            using var canvas = new SKCanvas(image);
+            using var paint = RenderKit.Stroke(SelectedAccent, ringWidth);
+            canvas.DrawRect(rect, paint);
         }
         return image;
     }
 
     /// <summary>Lerps each channel toward white by amount (0..1), for the Recent Apps focused-key fill.</summary>
-    private static Color Brighten(Color color, float amount)
+    private static SKColor Brighten(SKColor color, float amount)
     {
-        var rgba = color.ToPixel<Rgba32>();
         byte Lerp(byte c) => (byte)MathF.Round(c + (255 - c) * amount);
-        return Color.FromRgba(Lerp(rgba.R), Lerp(rgba.G), Lerp(rgba.B), rgba.A);
+        return new SKColor(Lerp(color.Red), Lerp(color.Green), Lerp(color.Blue), color.Alpha);
     }
 
-    private void PaintIcon(Image<Rgba32> image, DisplaySlot display, int size)
+    private void PaintIcon(SKBitmap image, DisplaySlot display, int size)
     {
         var target = (int)MathF.Round(size * IconFraction);
         if (target <= 0)
@@ -305,10 +325,10 @@ public sealed class DeckKeyRenderer
         }
 
         var name = icon is { Kind: "lucide" } ? icon.Value : DeckIconDefaults.AutoIconName(action, display.IsFolder);
-        var lucide = LoadLucide(name);
+        var lucide = LoadLucide(name, target);
         if (lucide is not null)
         {
-            DrawCentered(image, lucide, cx, cy, target);
+            DrawGlyph(image, lucide, cx, cy);
         }
     }
 
@@ -333,29 +353,64 @@ public sealed class DeckKeyRenderer
     private static bool IsExecutablePath(string path) =>
         ExecutablePathRegex.IsMatch(path) || (OperatingSystem.IsLinux() && !Path.HasExtension(path) && File.Exists(path));
 
-    private static void PaintEmoji(Image<Rgba32> image, string emoji, int size, int target)
+    private static void PaintEmoji(SKBitmap image, string emoji, int size, int target)
     {
-        var font = ResolveEmojiFont().CreateFont(target * 0.85f, FontStyle.Regular);
-        image.Mutate(ctx => RenderKit.DrawCentered(ctx, emoji, font, Color.White, new PointF(size / 2f, size / 2f)));
+        using var font = RenderKit.CreateFont(ResolveEmojiFont(), target * 0.85f);
+        using var canvas = new SKCanvas(image);
+        RenderKit.DrawCentered(canvas, emoji, font, SKColors.White, new SKPoint(size / 2f, size / 2f));
     }
 
-    private static FontFamily ResolveEmojiFont()
+    private static SKTypeface? _emojiFont;
+
+    private static SKTypeface ResolveEmojiFont()
     {
+        if (_emojiFont is { } cached)
+        {
+            return cached;
+        }
         foreach (var name in EmojiFontNames)
         {
-            if (SystemFonts.TryGet(name, out var family))
+            if (RenderKit.TryFamily(name) is { } family)
             {
-                return family;
+                return _emojiFont = family;
             }
         }
-        return RenderKit.ResolveFont();
+        return _emojiFont = RenderKit.ResolveFont();
     }
 
-    private static Image<Rgba32>? LoadLucide(string name) => LucideCache.GetOrAdd(name, static key =>
+    /// <summary>The named glyph contain-fit into size x size, resized once per size and shared read-only.</summary>
+    private static SKBitmap? LoadLucide(string name, int size)
+    {
+        if (ScaledLucideCache.TryGetValue((name, size), out var cached))
+        {
+            return cached;
+        }
+        SKBitmap? scaled = null;
+        if (LoadLucide(name) is { } source)
+        {
+            var scale = size / (float)Math.Max(Math.Max(source.Width, source.Height), 1);
+            scaled = RenderKit.Resize(source, Math.Max(1, (int)MathF.Round(source.Width * scale)), Math.Max(1, (int)MathF.Round(source.Height * scale)));
+            scaled.SetImmutable();
+        }
+        if (ScaledLucideCache.Count >= ScaledLucideCapacity)
+        {
+            // Never disposed here: another render may still be drawing an evicted bitmap.
+            ScaledLucideCache.Clear();
+        }
+        return ScaledLucideCache.GetOrAdd((name, size), scaled);
+    }
+
+    private static void DrawGlyph(SKBitmap image, SKBitmap glyph, float cx, float cy)
+    {
+        using var canvas = new SKCanvas(image);
+        RenderKit.DrawImage(canvas, glyph, (int)MathF.Round(cx - glyph.Width / 2f), (int)MathF.Round(cy - glyph.Height / 2f));
+    }
+
+    private static SKBitmap? LoadLucide(string name) => LucideCache.GetOrAdd(name, static key =>
     {
         var asm = Assembly.GetExecutingAssembly();
         using var stream = asm.GetManifestResourceStream($"deck-icon-{key}.png");
-        return stream is null ? null : Image.Load<Rgba32>(stream);
+        return stream is null ? null : RenderKit.DecodeShared(stream);
     });
 
     /// <summary>
@@ -367,7 +422,7 @@ public sealed class DeckKeyRenderer
     /// pending is true when the process icon is still being extracted (one
     /// provider call per render; the caller leaves the face blank, uncached).
     /// </summary>
-    private Image<Rgba32>? LoadAppIcon(DisplaySlot display, ref bool transient, out bool pending)
+    private SKBitmap? LoadAppIcon(DisplaySlot display, ref bool transient, out bool pending)
     {
         pending = false;
         var action = display.EffectiveAction;
@@ -379,7 +434,7 @@ public sealed class DeckKeyRenderer
         var appIcon = _shortcuts.GetIcon(appId);
         if (appIcon.Length > 0)
         {
-            return Image.Load<Rgba32>(appIcon);
+            return RenderKit.Decode(appIcon);
         }
         var exePath = ResolveExePath(action);
         if (exePath is null)
@@ -393,7 +448,7 @@ public sealed class DeckKeyRenderer
             pending = true;
             return null;
         }
-        return processIcon.Length > 0 ? Image.Load<Rgba32>(processIcon) : null;
+        return processIcon.Length > 0 ? RenderKit.Decode(processIcon) : null;
     }
 
     /// <summary>Alpha below this is the icon's margin or drop shadow (macOS icons keep ~9% clear around the rounded square, shadow alpha peaks near 32), not artwork.</summary>
@@ -408,67 +463,67 @@ public sealed class DeckKeyRenderer
     /// and a Windows icon's edge-to-edge art end up the same size, then
     /// contain-fit centered on the black key.
     /// </summary>
-    private static void DrawAppIcon(Image<Rgba32> image, Image<Rgba32> src, int size)
+    private static void DrawAppIcon(SKBitmap image, SKBitmap src, int size)
     {
         var target = Math.Max(1, (int)MathF.Round(size * AppIconFraction));
         int minX = src.Width, minY = src.Height, maxX = -1, maxY = -1;
-        src.ProcessPixelRows(accessor =>
+        var pixels = src.GetPixelSpan();
+        for (var y = 0; y < src.Height; y++)
         {
-            for (var y = 0; y < accessor.Height; y++)
+            var row = pixels.Slice(y * src.RowBytes, src.Width * 4);
+            for (var x = 0; x < src.Width; x++)
             {
-                var row = accessor.GetRowSpan(y);
-                for (var x = 0; x < row.Length; x++)
+                if (row[x * 4 + 3] < AppIconOpaqueAlpha)
                 {
-                    if (row[x].A < AppIconOpaqueAlpha)
-                    {
-                        continue;
-                    }
-                    if (x < minX) minX = x;
-                    if (x > maxX) maxX = x;
-                    if (y < minY) minY = y;
-                    if (y > maxY) maxY = y;
+                    continue;
                 }
+                if (x < minX) minX = x;
+                if (x > maxX) maxX = x;
+                if (y < minY) minY = y;
+                if (y > maxY) maxY = y;
             }
-        });
+        }
         if (maxX < 0)
         {
             return;
         }
-        var box = new Rectangle(minX, minY, maxX - minX + 1, maxY - minY + 1);
+        var box = SKRectI.Create(minX, minY, maxX - minX + 1, maxY - minY + 1);
         if (box.Width == src.Width && box.Height == src.Height)
         {
             DrawCentered(image, src, size / 2f, size / 2f, target);
             return;
         }
-        using var cropped = src.Clone(c => c.Crop(box));
+        using var cropped = RenderKit.Crop(src, box);
         DrawCentered(image, cropped, size / 2f, size / 2f, target);
     }
 
     /// <summary>Glyph-sized centered fit, matching renderDeckKeyBitmap.ts's drawCentered.</summary>
-    private static void DrawCentered(Image<Rgba32> image, Image<Rgba32> src, float cx, float cy, int targetSize)
+    private static void DrawCentered(SKBitmap image, SKBitmap src, float cx, float cy, int targetSize)
     {
         var scale = targetSize / (float)Math.Max(Math.Max(src.Width, src.Height), 1);
         var w = Math.Max(1, (int)MathF.Round(src.Width * scale));
         var h = Math.Max(1, (int)MathF.Round(src.Height * scale));
-        using var resized = src.Clone(c => c.Resize(w, h));
+        using var resized = RenderKit.Resize(src, w, h);
         var x = (int)MathF.Round(cx - w / 2f);
         var y = (int)MathF.Round(cy - h / 2f);
-        image.Mutate(ctx => ctx.DrawImage(resized, new Point(x, y), 1f));
+        using var canvas = new SKCanvas(image);
+        RenderKit.DrawImage(canvas, resized, x, y);
     }
 
     /// <summary>Cover-fit whole-key-face fill, matching coverFitRect.ts.</summary>
-    private static void DrawCover(Image<Rgba32> image, Image<Rgba32> src, int size)
+    private static void DrawCover(SKBitmap image, SKBitmap src, int size)
     {
         var scale = Math.Max((float)size / src.Width, (float)size / src.Height);
         var w = Math.Max(1, (int)MathF.Round(src.Width * scale));
         var h = Math.Max(1, (int)MathF.Round(src.Height * scale));
-        using var resized = src.Clone(c => c.Resize(w, h));
+        using var resized = RenderKit.Resize(src, w, h);
         var x = (int)MathF.Round((size - w) / 2f);
         var y = (int)MathF.Round((size - h) / 2f);
-        image.Mutate(ctx => ctx.DrawImage(resized, new Point(x, y), 1f));
+        using var canvas = new SKCanvas(image);
+        RenderKit.DrawImage(canvas, resized, x, y);
     }
 
-    private readonly record struct ResolvedTitleStyle(bool Show, string Align, FontFamily Font, float SizePercent, bool Bold, bool Italic, bool Underline, string ColorHex);
+    private readonly record struct ResolvedTitleStyle(bool Show, string Align, SKTypeface Font, float SizePercent, bool Bold, bool Italic, bool Underline, string ColorHex);
 
     /// <summary>Defaults matching nexus-web's deckTitleStyle.ts resolveDeckTitleStyle: show defaults OFF, everything else has a concrete fallback.</summary>
     private static ResolvedTitleStyle ResolveTitleStyle(DeckTitleStyle? title) => new(
@@ -481,7 +536,7 @@ public sealed class DeckKeyRenderer
         Underline: title?.Underline ?? false,
         ColorHex: title?.Color ?? "#ffffff");
 
-    private static FontFamily ResolveFontFamily(string? fontId) => fontId switch
+    private static SKTypeface ResolveFontFamily(string? fontId) => fontId switch
     {
         "arial" => TryFamily("Arial"),
         "georgia" => TryFamily("Georgia"),
@@ -489,29 +544,22 @@ public sealed class DeckKeyRenderer
         _ => RenderKit.ResolveFont(),
     };
 
-    private static FontFamily TryFamily(string name) => SystemFonts.TryGet(name, out var family) ? family : RenderKit.ResolveFont();
+    private static SKTypeface TryFamily(string name) => RenderKit.TryFamily(name) ?? RenderKit.ResolveFont();
 
     /// <summary>
     /// Truncates with an ellipsis and draws centered at the style's alignment.
     /// Unlike the web renderer, this skips the dark stroke halo behind the
     /// fill - a visual-polish gap, not a functional one.
     /// </summary>
-    private static void PaintLabel(Image<Rgba32> image, string label, int size, ResolvedTitleStyle style)
+    private static void PaintLabel(SKBitmap image, string label, int size, ResolvedTitleStyle style)
     {
         var fontPx = Math.Max(8f, size * style.SizePercent / 100f);
-        var fontStyle = (style.Bold, style.Italic) switch
-        {
-            (true, true) => FontStyle.BoldItalic,
-            (true, false) => FontStyle.Bold,
-            (false, true) => FontStyle.Italic,
-            _ => FontStyle.Regular,
-        };
-        var font = style.Font.CreateFont(fontPx, fontStyle);
-        var color = RenderKit.ParseColor(style.ColorHex, Color.White);
+        using var font = RenderKit.CreateFont(style.Font, fontPx, style.Bold, style.Italic);
+        var color = RenderKit.ParseColor(style.ColorHex, SKColors.White);
 
         var maxWidth = size * 0.92f;
         var text = label;
-        while (text.Length > 1 && TextMeasurer.MeasureSize(text, new TextOptions(font)).Width > maxWidth)
+        while (text.Length > 1 && RenderKit.MeasureWidth(text, font) > maxWidth)
         {
             text = text[..^1];
         }
@@ -528,17 +576,14 @@ public sealed class DeckKeyRenderer
             _ => size / 2f,
         };
 
-        image.Mutate(ctx =>
+        using var canvas = new SKCanvas(image);
+        RenderKit.DrawCentered(canvas, text, font, color, new SKPoint(size / 2f, y));
+        if (style.Underline)
         {
-            RenderKit.DrawCentered(ctx, text, font, color, new PointF(size / 2f, y));
-            if (style.Underline)
-            {
-                var textWidth = TextMeasurer.MeasureSize(text, new TextOptions(font)).Width;
-                var thickness = Math.Max(1f, fontPx * 0.06f);
-                var rect = new RectangleF(size / 2f - textWidth / 2f, y + fontPx * 0.42f - thickness / 2f, textWidth, thickness);
-                ctx.Fill(color, rect);
-            }
-        });
+            var textWidth = RenderKit.MeasureWidth(text, font);
+            var thickness = Math.Max(1f, fontPx * 0.06f);
+            RenderKit.FillRect(canvas, color, SKRect.Create(size / 2f - textWidth / 2f, y + fontPx * 0.42f - thickness / 2f, textWidth, thickness));
+        }
     }
 }
 

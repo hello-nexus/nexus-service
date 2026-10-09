@@ -7,8 +7,7 @@ using Nexus.Service.Peripherals.StreamDeck;
 using Nexus.Service.Persistence;
 using Nexus.Service.Rendering;
 using Nexus.Service.Sockets;
-using SixLabors.ImageSharp;
-using SixLabors.ImageSharp.PixelFormats;
+using SkiaSharp;
 using Xunit;
 using static Nexus.Service.Tests.StreamDeck.DeckTestHelpers;
 
@@ -221,26 +220,23 @@ public sealed class StreamDeckHoldToEditTests : IDisposable
 /// <summary>The hold fill ring grows its accent arc with the hold fraction.</summary>
 public sealed class DeckHoldPromptRendererTests
 {
-    private static int AccentPixels(Image<Rgba32> image)
+    private static int AccentPixels(SKBitmap image)
     {
         var count = 0;
-        image.ProcessPixelRows(accessor =>
+        for (var y = 0; y < image.Height; y++)
         {
-            for (var y = 0; y < accessor.Height; y++)
+            for (var x = 0; x < image.Width; x++)
             {
-                var row = accessor.GetRowSpan(y);
-                for (var x = 0; x < row.Length; x++)
+                // The accent fill has a high blue and a low red; the black
+                // background and faint track ring do not, so this counts
+                // only the filled arc.
+                var px = image.GetPixel(x, y);
+                if (px.Blue >= 200 && px.Red <= 160)
                 {
-                    // The accent fill has a high blue and a low red; the black
-                    // background and faint track ring do not, so this counts
-                    // only the filled arc.
-                    if (row[x].B >= 200 && row[x].R <= 160)
-                    {
-                        count++;
-                    }
+                    count++;
                 }
             }
-        });
+        }
         return count;
     }
 

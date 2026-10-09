@@ -275,8 +275,7 @@ public sealed class HidStreamDeckSurface : IStreamDeckSurface
     // Black is orientation- and transform-invariant, so it goes out as rendered.
     private byte[] BuildBlankJpeg()
     {
-        using var black = new SixLabors.ImageSharp.Image<SixLabors.ImageSharp.PixelFormats.Rgba32>(
-            Model.KeyWidth, Model.KeyHeight, new SixLabors.ImageSharp.PixelFormats.Rgba32(0, 0, 0, 255));
+        using var black = Rendering.RenderKit.NewImage(Model.KeyWidth, Model.KeyHeight, SkiaSharp.SKColors.Black);
         return Rendering.RenderKit.EncodeJpeg(black);
     }
 

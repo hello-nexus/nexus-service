@@ -1,11 +1,7 @@
 using System;
 using System.Globalization;
-using SixLabors.Fonts;
-using SixLabors.ImageSharp;
-using SixLabors.ImageSharp.Drawing.Processing;
-using SixLabors.ImageSharp.PixelFormats;
-using SixLabors.ImageSharp.Processing;
 using Nexus.Service.Rendering;
+using SkiaSharp;
 
 namespace Nexus.Service.Peripherals.LianLiWireless;
 
@@ -20,9 +16,9 @@ public static class Slv3LcdSensorRenderer
     public const int Width = Slv3LcdProtocol.PanelWidth;
     public const int Height = Slv3LcdProtocol.PanelHeight;
 
-    private static readonly Color DefaultAccent = Color.ParseHex("#00D1FF");
-    private static readonly Color DefaultText = Color.White;
-    private static readonly Color TrackColor = Color.FromPixel(new Rgba32(255, 255, 255, 40));
+    private static readonly SKColor DefaultAccent = new(0x00, 0xd1, 0xff);
+    private static readonly SKColor DefaultText = SKColors.White;
+    private static readonly SKColor TrackColor = new(255, 255, 255, 40);
 
     public static byte[] Render(string? style, float value, float min, float max, string label, string unit, string? accentHex, string? textHex)
     {
@@ -36,10 +32,10 @@ public static class Slv3LcdSensorRenderer
             : RenderRing(fraction, label, valueText, unit, accent, text);
     }
 
-    private static byte[] RenderRing(float fraction, string label, string valueText, string unit, Color accent, Color text)
+    private static byte[] RenderRing(float fraction, string label, string valueText, string unit, SKColor accent, SKColor text)
     {
-        using var image = new Image<Rgba32>(Width, Height);
-        var center = new PointF(Width / 2f, Height / 2f);
+        using var image = RenderKit.NewImage(Width, Height, SKColors.Black);
+        var center = new SKPoint(Width / 2f, Height / 2f);
         const float outerRadius = 170f;
         const float thickness = 26f;
         const float innerRadius = outerRadius - thickness;
@@ -48,26 +44,28 @@ public static class Slv3LcdSensorRenderer
 
         var font = RenderKit.ResolveFont();
 
-        image.Mutate(ctx =>
+        using (var canvas = new SKCanvas(image))
         {
-            ctx.Fill(Color.Black);
-            ctx.Fill(TrackColor, RenderKit.BuildRingSegment(center, innerRadius, outerRadius, startDeg, startDeg + sweepDeg));
+            RenderKit.FillPath(canvas, TrackColor, RenderKit.BuildRingSegment(center, innerRadius, outerRadius, startDeg, startDeg + sweepDeg));
             if (fraction > 0f)
             {
-                ctx.Fill(accent, RenderKit.BuildRingSegment(center, innerRadius, outerRadius, startDeg, startDeg + sweepDeg * fraction));
+                RenderKit.FillPath(canvas, accent, RenderKit.BuildRingSegment(center, innerRadius, outerRadius, startDeg, startDeg + sweepDeg * fraction));
             }
 
-            RenderKit.DrawCentered(ctx, valueText, font.CreateFont(72, FontStyle.Bold), text, new PointF(center.X, center.Y - 16));
-            RenderKit.DrawCentered(ctx, unit, font.CreateFont(26, FontStyle.Regular), text, new PointF(center.X, center.Y + 44));
-            RenderKit.DrawCentered(ctx, label.ToUpperInvariant(), font.CreateFont(22, FontStyle.Regular), accent, new PointF(center.X, center.Y + 120));
-        });
+            using var valueFont = RenderKit.CreateFont(font, 72, bold: true);
+            using var unitFont = RenderKit.CreateFont(font, 26);
+            using var labelFont = RenderKit.CreateFont(font, 22);
+            RenderKit.DrawCentered(canvas, valueText, valueFont, text, new SKPoint(center.X, center.Y - 16));
+            RenderKit.DrawCentered(canvas, unit, unitFont, text, new SKPoint(center.X, center.Y + 44));
+            RenderKit.DrawCentered(canvas, label.ToUpperInvariant(), labelFont, accent, new SKPoint(center.X, center.Y + 120));
+        }
 
         return RenderKit.EncodeJpeg(image);
     }
 
-    private static byte[] RenderBar(float fraction, string label, string valueText, string unit, Color accent, Color text)
+    private static byte[] RenderBar(float fraction, string label, string valueText, string unit, SKColor accent, SKColor text)
     {
-        using var image = new Image<Rgba32>(Width, Height);
+        using var image = RenderKit.NewImage(Width, Height, SKColors.Black);
         var font = RenderKit.ResolveFont();
 
         const float barX = 60f;
@@ -76,21 +74,22 @@ public static class Slv3LcdSensorRenderer
         const float barHeight = 40f;
         var filledWidth = barWidth * fraction;
 
-        image.Mutate(ctx =>
+        using (var canvas = new SKCanvas(image))
         {
-            ctx.Fill(Color.Black);
-            RenderKit.DrawCentered(ctx, valueText, font.CreateFont(96, FontStyle.Bold), text, new PointF(Width / 2f, 150f));
-            RenderKit.DrawCentered(ctx, unit, font.CreateFont(28, FontStyle.Regular), text, new PointF(Width / 2f, 210f));
+            using var valueFont = RenderKit.CreateFont(font, 96, bold: true);
+            using var unitFont = RenderKit.CreateFont(font, 28);
+            using var labelFont = RenderKit.CreateFont(font, 22);
+            RenderKit.DrawCentered(canvas, valueText, valueFont, text, new SKPoint(Width / 2f, 150f));
+            RenderKit.DrawCentered(canvas, unit, unitFont, text, new SKPoint(Width / 2f, 210f));
 
-            var track = new RectangleF(barX, barY, barWidth, barHeight);
-            ctx.Fill(TrackColor, track);
+            RenderKit.FillRect(canvas, TrackColor, SKRect.Create(barX, barY, barWidth, barHeight));
             if (filledWidth > 0f)
             {
-                ctx.Fill(accent, new RectangleF(barX, barY, filledWidth, barHeight));
+                RenderKit.FillRect(canvas, accent, SKRect.Create(barX, barY, filledWidth, barHeight));
             }
 
-            RenderKit.DrawCentered(ctx, label.ToUpperInvariant(), font.CreateFont(22, FontStyle.Regular), accent, new PointF(Width / 2f, barY + barHeight + 34f));
-        });
+            RenderKit.DrawCentered(canvas, label.ToUpperInvariant(), labelFont, accent, new SKPoint(Width / 2f, barY + barHeight + 34f));
+        }
 
         return RenderKit.EncodeJpeg(image);
     }

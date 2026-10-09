@@ -10,9 +10,7 @@ using Nexus.Service.Persistence;
 using Nexus.Service.Platform;
 using Nexus.Service.Rendering;
 using Nexus.Service.Sensors;
-using SixLabors.ImageSharp;
-using SixLabors.ImageSharp.PixelFormats;
-using SixLabors.ImageSharp.Processing;
+using SkiaSharp;
 
 namespace Nexus.Service.Peripherals.StreamDeck;
 
@@ -1182,7 +1180,7 @@ public sealed partial class StreamDeckConnectionWorker
         }
     }
 
-    private void BroadcastDialTile(IStreamDeckSurface surface, int dialIndex, Image<Rgba32> upright)
+    private void BroadcastDialTile(IStreamDeckSurface surface, int dialIndex, SKBitmap upright)
     {
         if (!_hub.TopicHasSubscribers(Sockets.PanelTopics.StreamDeckTiles))
         {
@@ -1231,7 +1229,7 @@ public sealed partial class StreamDeckConnectionWorker
             {
                 state.SegmentKeys[i] = frames[i].Input.StateKey();
                 state.Dials[i].FeedbackActive = false;
-                using var tile = strip.Clone(c => c.Crop(new Rectangle(i * segmentWidth, 0, segmentWidth, screen.Height)));
+                using var tile = RenderKit.Crop(strip, SKRectI.Create(i * segmentWidth, 0, segmentWidth, screen.Height));
                 BroadcastDialTile(surface, i, tile);
             }
         }
@@ -1475,8 +1473,8 @@ public sealed partial class StreamDeckConnectionWorker
 
     private static (byte R, byte G, byte B) ParseRgb(string hex)
     {
-        var color = RenderKit.ParseColor(hex, SixLabors.ImageSharp.Color.ParseHex(DefaultDialAccentHex.TrimStart('#'))).ToPixel<Rgba32>();
-        return (color.R, color.G, color.B);
+        var color = RenderKit.ParseColor(hex, RenderKit.ParseColor(DefaultDialAccentHex, SKColors.White));
+        return (color.Red, color.Green, color.Blue);
     }
 
     private static (byte R, byte G, byte B) Scale((byte R, byte G, byte B) color, double factor) =>

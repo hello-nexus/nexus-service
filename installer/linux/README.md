@@ -38,11 +38,14 @@ originals alone so you can delete them once the upgrade looks right.
 Needs `sudo`. Immutable-distro friendly (Bazzite/rpm-ostree): `/opt` and
 `/etc` are writable there.
 
-Two things Nexus cannot bundle, both checked by `install.sh`, which prints a
-warning naming the package if either is missing:
+Three things Nexus cannot bundle, all checked by `install.sh`, which prints a
+warning naming the package if any is missing:
 
 - **hidapi + libusb**, for the RGB engine. Fedora/Bazzite and Arch ship them;
   Debian/Ubuntu/Mint need `sudo apt install libhidapi-hidraw0 libusb-1.0-0`.
+- **fontconfig**, for the device-screen renderer (Stream Deck keys, LCD
+  screens). Desktop installs ship it; otherwise `sudo apt install libfontconfig1`
+  (`fontconfig` on Fedora/Bazzite and Arch).
 - **A browser** for the Y70 panel and promoted-monitor kiosks. A
   Chromium-family browser is used when one is installed (`chromium`, `chrome`,
   `brave`, `edge`, `vivaldi` and the ungoogled-chromium forks), otherwise
