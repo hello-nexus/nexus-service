@@ -163,6 +163,24 @@ public sealed class StreamedPanelCoordinatorTests : IDisposable
     }
 
     [Fact]
+    public void A_known_strip_panel_with_no_stored_layout_gets_the_strip_seed_at_session_start()
+    {
+        var caps = new PanelDeviceCapabilities { Surface = "monitor", CssWidth = 1920, CssHeight = 480 };
+        var record = _registry.Allocate("Strip", caps);
+        _store.Save(new Dictionary<string, StreamedPanelRecord>(StringComparer.Ordinal) { ["strip"] = new() { PanelDeviceId = record.Id } });
+        _discovery.Devices.Add(new StreamedPanelDeviceInfo
+        {
+            Serial = "strip",
+            Profile = new StreamedPanelProfile { Kind = "strip", DisplayName = "Strip", Surface = "monitor", CssWidth = 1920, CssHeight = 480 },
+        });
+
+        Coordinator().TickOnce();
+
+        var widgets = Assert.Single(_registry.Get(record.Id)!.Layout!.Pages).Widgets;
+        Assert.Contains(widgets, w => w.Type == "weather" && w.Size == "4x4");
+    }
+
+    [Fact]
     public void A_new_panel_of_ordinary_shape_keeps_the_client_seed()
     {
         _discovery.Devices.Add(Device());
@@ -403,6 +421,28 @@ public sealed class StreamedPanelCoordinatorTests : IDisposable
 
         Assert.Equal(1.0, assignment.Dpr);
         Assert.Null(_registry.Get(assignment.PanelDeviceId)!.Capabilities!.SupportsRenderScale);
+    }
+
+    [Fact]
+    public void A_profile_change_tells_clients_only_once_the_new_session_is_live()
+    {
+        var liveAtNotify = new List<bool>();
+        StreamedPanelCoordinator? coordinator = null;
+        _coordinator = coordinator = new StreamedPanelCoordinator(
+            new[] { _discovery }, _store, _registry, _gate,
+            notifyOverlay: null,
+            nowMs: () => _nowMs,
+            notifyPanelChanged: id => liveAtNotify.Add(coordinator!.LivePanelDeviceIds().Contains(id)));
+        _discovery.Devices.Add(Device(fps: 30));
+        coordinator.TickOnce();
+        liveAtNotify.Clear();
+
+        _discovery.Devices.Clear();
+        _discovery.Devices.Add(Device(fps: 60));
+        coordinator.TickOnce();
+
+        Assert.Equal(60, Assert.Single(coordinator.GetAssignments().Assignments).Fps);
+        Assert.Equal(new[] { true }, liveAtNotify);
     }
 
     [Fact]

@@ -639,7 +639,7 @@ public sealed class PanelDeviceRegistry
     /// <summary>
     /// Personalization reset: layout (including single-widget configs),
     /// theme, background, and widget fields all clear, so defaults reseed on
-    /// the next read. Identity and hardware-scoped state survive - id, name,
+    /// the next read; a streamed strip stores its strip seed instead. Identity and hardware-scoped state survive - id, name,
     /// display binding, capabilities, enabled state, monitor behavior
     /// (ReserveMonitor/AutoOrient/KeepCursorOff - see <see cref="ResetHardwareSettings"/>),
     /// and the persisted orientation / Xeneon DDC record. Uploaded media is
@@ -657,7 +657,7 @@ public sealed class PanelDeviceRegistry
         {
             if (!s.PanelDevices.TryGetValue(id, out var record))
                 return;
-            record.Layout = null;
+            record.Layout = PanelLayoutDefaults.StripSeedFor(record);
             record.ThemeMode = null;
             record.AccentColor = null;
             record.BackgroundColor = null;

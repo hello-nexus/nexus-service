@@ -321,7 +321,10 @@ public static class PanelRoutes
             // the client posts an edit. Falls back to the y70 seed when the
             // device record has no capabilities yet (pre-handshake GETs).
             if (record.Layout is null)
-                record.Layout = PanelLayoutDefaults.ForSurface(record.Capabilities?.Surface ?? "y70");
+            {
+                record.Layout = PanelLayoutDefaults.StripSeedFor(record)
+                    ?? PanelLayoutDefaults.ForSurface(record.Capabilities?.Surface ?? "y70");
+            }
             registry.Touch(id);
             return Results.Json(record, AppJsonContext.Default.PanelDeviceRecord);
         }).AllowPanel();
