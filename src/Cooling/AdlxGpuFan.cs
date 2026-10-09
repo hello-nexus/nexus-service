@@ -4,6 +4,7 @@ using System.IO;
 using System.Linq;
 using System.Runtime.InteropServices;
 using System.Threading;
+using Nexus.Service.Models.Cooling;
 using Nexus.Service.Persistence;
 using Nexus.Service.Platform;
 
@@ -23,16 +24,18 @@ internal sealed unsafe class AdlxGpuFans
 
     private readonly nint _tuning;
     private readonly List<Gpu> _gpus;
+    private readonly Action _blockChanged;
     private readonly Dictionary<nint, AdlxGpuFan> _opened = new();
 
-    private AdlxGpuFans(nint tuning, List<Gpu> gpus)
+    private AdlxGpuFans(nint tuning, List<Gpu> gpus, Action blockChanged)
     {
         _tuning = tuning;
         _gpus = gpus;
+        _blockChanged = blockChanged;
     }
 
-    /// <summary>Null when the AMD driver's ADLX is absent or fails to initialize.</summary>
-    public static AdlxGpuFans? TryCreate()
+    /// <summary>Null when the AMD driver's ADLX is absent or fails to initialize. <paramref name="blockChanged"/> runs when a fan's <see cref="AdlxGpuFan.ControlBlocked"/> changes.</summary>
+    public static AdlxGpuFans? TryCreate(Action blockChanged)
     {
         var path = Path.Combine(Environment.SystemDirectory, "amdadlx64.dll");
         if (!File.Exists(path)) return null;
@@ -95,7 +98,7 @@ internal sealed unsafe class AdlxGpuFans
             Adlx.Release(list);
 
             ServiceLog.Info($"[amd-fan] ADLX {versionText}: {string.Join("; ", gpus.Select(g => $"'{g.Name}' pnp={g.Pnp} manualFanTuning={g.FanTuning}"))}");
-            return new AdlxGpuFans(tuning, gpus);
+            return new AdlxGpuFans(tuning, gpus, blockChanged);
         }
     }
 
@@ -113,7 +116,7 @@ internal sealed unsafe class AdlxGpuFans
             }
 
             if (_opened.TryGetValue(gpu.Ptr, out var opened)) return opened;
-            var fan = AdlxGpuFan.TryOpen(_tuning, gpu.Ptr, gpu.Name, gpu.Pnp);
+            var fan = AdlxGpuFan.TryOpen(_tuning, gpu.Ptr, gpu.Name, gpu.Pnp, _blockChanged);
             if (fan is not null) _opened[gpu.Ptr] = fan;
             return fan;
         }
@@ -146,8 +149,9 @@ internal sealed unsafe class AdlxGpuFan
     private long? _releaseRetryAtMs;
     private volatile bool _releaseRequested; // set without Sync by a TryRelease that timed out
 
-    private AdlxGpuFan(nint fan, nint fan1, string name, string pnp, AdlxFanCurve.Range speed, AdlxFanCurve.Range temp, bool zeroRpmSupported)
+    private AdlxGpuFan(nint fan, nint fan1, string name, string pnp, AdlxFanCurve.Range speed, AdlxFanCurve.Range temp, bool zeroRpmSupported, Action blockChanged)
     {
+        _block = new FanControlBlock(blockChanged);
         _fan = fan;
         _fan1 = fan1;
         _name = name;
@@ -157,6 +161,12 @@ internal sealed unsafe class AdlxGpuFan
         _zeroRpmSupported = zeroRpmSupported;
     }
 
+    /// <summary>A <see cref="FanControlBlocks"/> value while the driver refuses writes; cleared by the next accepted curve or a release.</summary>
+    public string? ControlBlocked => _block.Value;
+
+    private readonly FanControlBlock _block;
+    private long _blockedRetryAtMs;
+
     /// <summary>The duty Nexus last commanded, or null while the driver's own curve is in charge.</summary>
     public int? Duty
     {
@@ -164,7 +174,7 @@ internal sealed unsafe class AdlxGpuFan
     }
 
     /// <summary>Caller holds <see cref="AdlxGpuFans.Sync"/>.</summary>
-    internal static AdlxGpuFan? TryOpen(nint tuning, nint gpu, string name, string pnp)
+    internal static AdlxGpuFan? TryOpen(nint tuning, nint gpu, string name, string pnp, Action blockChanged)
     {
         nint ifc = 0;
         var rc = ((delegate* unmanaged[Stdcall]<nint, nint, nint*, int>)Adlx.Slot(tuning, 16))(tuning, gpu, &ifc); // GetManualFanTuning
@@ -192,7 +202,7 @@ internal sealed unsafe class AdlxGpuFan
         var result = new AdlxGpuFan(fan, fan1, name, pnp,
             new AdlxFanCurve.Range(speed.Min, speed.Max, speed.Step),
             new AdlxFanCurve.Range(temp.Min, temp.Max, temp.Step),
-            Adlx.Succeeded(rc) && zeroSupported != 0);
+            Adlx.Succeeded(rc) && zeroSupported != 0, blockChanged);
         ServiceLog.Info($"[amd-fan] '{name}': speed {speed.Min}-{speed.Max}% step {speed.Step}, temp {temp.Min}-{temp.Max}C step {temp.Step}, zeroRpm supported={result._zeroRpmSupported} on={ReadZeroRpm(fan, 9)}, curve {Describe(result.ReadCurve(fan, 4))}");
         result.RecoverLeftover();
         return result;
@@ -247,7 +257,7 @@ internal sealed unsafe class AdlxGpuFan
         return true;
     }
 
-    /// <summary>Restores the saved curve. False keeps the fan taken over and schedules <see cref="RetryRelease"/>.</summary>
+    /// <summary>Restores the saved curve. False keeps the fan taken over and schedules <see cref="RetryPending"/>.</summary>
     public bool Release()
     {
         lock (AdlxGpuFans.Sync)
@@ -274,7 +284,7 @@ internal sealed unsafe class AdlxGpuFan
             }
             if (result != Write.Ok || (_zeroRpmSupported && zeroRpm is bool z && !WriteZeroRpm(z)))
             {
-                _releaseRetryAtMs = Environment.TickCount64 + ReleaseRetryMs;
+                _releaseRetryAtMs = Environment.TickCount64 + RetryMs;
                 return false;
             }
 
@@ -285,7 +295,7 @@ internal sealed unsafe class AdlxGpuFan
         }
     }
 
-    /// <summary><see cref="Release"/> that gives up after <paramref name="wait"/> when another ADLX call holds the lock, leaving it to <see cref="RetryRelease"/>.</summary>
+    /// <summary><see cref="Release"/> that gives up after <paramref name="wait"/> when another ADLX call holds the lock, leaving it to <see cref="RetryPending"/>.</summary>
     public bool TryRelease(TimeSpan wait)
     {
         if (!Monitor.TryEnter(AdlxGpuFans.Sync, wait))
@@ -304,20 +314,37 @@ internal sealed unsafe class AdlxGpuFan
         _saved = Array.Empty<(int, int)>();
         _savedZeroRpm = null;
         _releaseRetryAtMs = null;
+        _block.Set(null);
     }
 
-    private const int ReleaseRetryMs = 10_000;
+    private const int RetryMs = 10_000;
 
-    /// <summary>Retries a release that failed, so a fan handed back by the guard or the user does not stay on Nexus's curve.</summary>
-    public void RetryRelease()
+    /// <summary>
+    /// Retries a release that failed, so a fan handed back by the guard or the user does not stay
+    /// on Nexus's curve, and re-applies the last duty while the driver refuses writes: a Manual
+    /// fan has no engine tick to retry it once the user fixes AMD Software.
+    /// </summary>
+    public void RetryPending()
     {
-        lock (AdlxGpuFans.Sync)
+        // Every fan-channel read lands here; a busy ADLX skips this round instead of stalling the read.
+        if (!Monitor.TryEnter(AdlxGpuFans.Sync)) return;
+        try
         {
-            if (_releaseRequested || (_releaseRetryAtMs is long at && Environment.TickCount64 >= at))
+            var now = Environment.TickCount64;
+            if (_releaseRequested || (_releaseRetryAtMs is long at && now >= at))
             {
                 _releaseRequested = false;
                 Release();
             }
+            else if (_block.Value is not null && _takenOver && _duty is int duty && now >= _blockedRetryAtMs)
+            {
+                _blockedRetryAtMs = now + RetryMs;
+                SetDuty(duty);
+            }
+        }
+        finally
+        {
+            Monitor.Exit(AdlxGpuFans.Sync);
         }
     }
 
@@ -361,11 +388,13 @@ internal sealed unsafe class AdlxGpuFan
                 rc = ((delegate* unmanaged[Stdcall]<nint, nint, int>)Adlx.Slot(_fan, 7))(_fan, list); // SetFanTuningStates
                 if (!Check(rc))
                 {
+                    NoteAutoTuning(rc);
                     WarnOnce($"{op}:set:{rc}", rc == Adlx.ResetNeeded
-                        ? $"{op}: refused while Radeon Software's automatic tuning is on; switch its GPU tuning to manual"
+                        ? $"{op}: refused while AMD Software's automatic GPU tuning is on; set its GPU tuning to Custom"
                         : $"{op}: SetFanTuningStates {Describe(points)} failed ({Adlx.Name(rc)})");
                     return rc == Adlx.InvalidArgs ? Write.Unfit : Write.Refused;
                 }
+                _block.Set(null);
                 var applied = ReadCurve(_fan, 4); // GetFanTuningStates
                 InfoOnce($"{op}:applied", $"{op}: wrote {Describe(points)} via list {source}, driver reports {Describe(applied)}");
                 if (applied is not null && !applied.SequenceEqual(points))
@@ -414,6 +443,15 @@ internal sealed unsafe class AdlxGpuFan
         if (Check(rc)) return true;
         WarnOnce($"zero:{on}:{rc}", $"SetZeroRPMState({on}) failed ({Adlx.Name(rc)})");
         return false;
+    }
+
+    // RESET_NEEDED is ADLX's answer while AMD Software's one-click automatic tuning is on. Only a
+    // refused curve sets the block: the curve is what the fan follows.
+    private void NoteAutoTuning(int rc)
+    {
+        if (rc != Adlx.ResetNeeded) return;
+        _block.Set(FanControlBlocks.AmdAutoTuning);
+        _blockedRetryAtMs = Environment.TickCount64 + RetryMs;
     }
 
     /// <summary>True when ADLX was torn down under this object (OS shutdown, driver reset); the provider then reopens the card.</summary>

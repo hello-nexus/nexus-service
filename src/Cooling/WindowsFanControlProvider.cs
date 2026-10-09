@@ -7,6 +7,7 @@ using Nexus.Service.Models.Cooling;
 using Nexus.Service.Persistence;
 using Nexus.Service.Platform;
 using Nexus.Service.Sensors;
+using Nexus.Service.Sockets;
 using LibreHardwareMonitor.Hardware;
 using LibreHardwareMonitor.Hardware.Gpu;
 
@@ -63,8 +64,11 @@ public sealed class WindowsFanControlProvider : IFanControlProvider, ICoolingPro
     private const int AmdHealthyMs = 600_000;
     private static readonly TimeSpan AmdReleaseWait = TimeSpan.FromSeconds(2);
 
-    public WindowsFanControlProvider(LhmComputer lhm, IConfigStore config)
+    private readonly MultiplexHub _hub;
+
+    public WindowsFanControlProvider(LhmComputer lhm, IConfigStore config, MultiplexHub hub)
     {
+        _hub = hub;
         _lhm = lhm;
         _config = config;
     }
@@ -122,6 +126,7 @@ public sealed class WindowsFanControlProvider : IFanControlProvider, ICoolingPro
                 IsGpu = m.IsGpu,
                 DeviceId = m.DeviceId,
                 DeviceName = m.DeviceName,
+                ControlBlocked = m.AmdFan?.ControlBlocked,
             };
             if (calibrations.TryGetValue(m.Id, out var cal))
             {
@@ -508,12 +513,14 @@ public sealed class WindowsFanControlProvider : IFanControlProvider, ICoolingPro
         {
             if (!cached.Fan.Dead)
             {
-                cached.Fan.RetryRelease();
+                cached.Fan.RetryPending();
                 return cached.Fan;
             }
             // A fresh ADLX reopens the card, and its persisted takeover is handed back on open.
             _amdFans.Remove(key);
             _adlx = null;
+            // The reopened instance starts unblocked, so the dead one's warning is retracted here.
+            if (cached.Fan.ControlBlocked is not null) OnControlBlockChanged();
             // Only failures close together exhaust the budget; a card that ran healthy gets it back.
             if (now - cached.OpenedAtMs > AmdHealthyMs) _amdMisses.Remove(key);
         }
@@ -521,7 +528,7 @@ public sealed class WindowsFanControlProvider : IFanControlProvider, ICoolingPro
         if (miss.Attempts >= AmdMaxAttempts || now < miss.RetryAtMs) return null;
         _amdMisses[key] = (miss.Attempts + 1, now + AmdRetryMs);
 
-        _adlx ??= AdlxGpuFans.TryCreate();
+        _adlx ??= AdlxGpuFans.TryCreate(OnControlBlockChanged);
         AdlxGpuFan? fan = null;
         var pnpMatched = false;
         if (_adlx is not null) fan = _adlx.Find(gpu.DeviceId, out pnpMatched);
@@ -537,6 +544,9 @@ public sealed class WindowsFanControlProvider : IFanControlProvider, ICoolingPro
         }
         return fan;
     }
+
+    // Engine writes fire no route mutation, so the change is pushed here for open pages to refetch.
+    private void OnControlBlockChanged() => PanelTopics.BroadcastCooling(_hub);
 
     private static void DiscoverFromHardware(List<ChannelMapping> result, IHardware hw, string prefix, List<string> layouts, bool isGpu, AdlxGpuFan? amdFan)
     {
