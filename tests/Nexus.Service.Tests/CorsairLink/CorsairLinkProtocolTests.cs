@@ -130,6 +130,8 @@ public class CorsairLinkProtocolTests
     [InlineData(1, 0, "iCUE LINK QX RGB", 34, CorsairLinkClass.Fan, true, true)]
     [InlineData(3, 0, "iCUE LINK RX RGB MAX", 8, CorsairLinkClass.Fan, true, false)]
     [InlineData(12, 0, "iCUE LINK XD5 Elite", 22, CorsairLinkClass.Pump, true, true)]
+    [InlineData(26, 1, "iCUE LINK TITAN II", 20, CorsairLinkClass.Aio, true, true)]
+    [InlineData(26, 8, "iCUE LINK 5\" LCD Screen Module", 32, CorsairLinkClass.Fan, true, true)]
     public void Models_lookup_known_devices(int type, int model, string name, int leds, CorsairLinkClass cls, bool speed, bool temp)
     {
         var m = CorsairLinkModels.Lookup(type, model);
@@ -145,6 +147,25 @@ public class CorsairLinkProtocolTests
     {
         var m = CorsairLinkModels.Lookup(0xEE, 0x00);
         Assert.Equal(CorsairLinkClass.Other, m.Class);
+    }
+
+    [Fact]
+    public void Type26_layouts_follow_wire_order()
+    {
+        var titan = CorsairLinkModels.Lookup(26, 1);
+        Assert.Equal(20, titan.LedU!.Length);
+        // Ring first, inner four last.
+        Assert.Equal((60f / 66, 44f / 66), (titan.LedU[0], titan.LedV![0]));
+        Assert.Equal((36f / 66, 25f / 66), (titan.LedU[16], titan.LedV[16]));
+
+        var lcd = CorsairLinkModels.Lookup(26, 8);
+        Assert.Equal(32, lcd.LedU!.Length);
+        // Portrait: wire 0 top centre, wire 14 bottom-right corner.
+        Assert.Equal((40f / 80, 10f / 130), (lcd.LedU[0], lcd.LedV![0]));
+        Assert.Equal((70f / 80, 120f / 130), (lcd.LedU[14], lcd.LedV[14]));
+
+        Assert.Null(CorsairLinkModels.Lookup(1, 0).LedU);
+        Assert.Equal("iCUE LINK Device 26.2", CorsairLinkModels.Lookup(26, 2).Name);
     }
 
     [Fact]
