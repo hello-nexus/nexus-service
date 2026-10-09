@@ -345,6 +345,10 @@ public static class LightingDevicesCatalog
         // HydroShift II LCD-S over USB: glass, pump, fan headers and ring on one bulk pipe -
         // src/Peripherals/BulkPanels/HydroShift2LcdDriver.cs.
         Native("Lian Li",    "HydroShift II LCD-S", "aio",      "0x1CBE", "0xA034", screen: true),
+
+        // HydroShift II OLED Curved: the glass on its own bulk pipe, LEDs, pump and head
+        // motors on a second USB function - HydroShift2CurveLcdDriver / HydroShift2CurveBoard.
+        Native("Lian Li",    "HydroShift II OLED Curved", "aio", "0x1CBE", "0xA068", screen: true),
     };
 
     /// <summary>

@@ -43,6 +43,8 @@ public sealed class StreamedPanelCoordinator : BackgroundService
     private readonly object _lock = new();
     private readonly Dictionary<string, DeviceSession> _bySerial = new(StringComparer.Ordinal);
     private readonly Dictionary<string, DeviceSession> _bySessionId = new(StringComparer.Ordinal);
+    // Panel record ids listed as present while their device holds the glass.
+    private readonly Dictionary<IStreamedPanelDiscovery, string> _heldByDevice = new();
     private readonly IReadOnlyList<IStreamedPanelDiscovery> _discoveries;
     private readonly StreamedPanelStore _store;
     private readonly PanelDeviceRegistry _registry;
@@ -109,6 +111,7 @@ public sealed class StreamedPanelCoordinator : BackgroundService
         {
             var enabled = _gate.IsEnabled(discovery.HandlerId);
             var withheld = enabled && discovery.Withheld;
+            TrackHeld(discovery, withheld);
             IReadOnlyList<StreamedPanelDeviceInfo> devices;
             if (!enabled || withheld)
             {
@@ -193,7 +196,8 @@ public sealed class StreamedPanelCoordinator : BackgroundService
     }
 
     /// <summary>
-    /// Panel record ids currently owned by a live stream session. GET /panel/devices
+    /// Panel record ids currently owned by a live stream session, or whose glass their device
+    /// holds (<see cref="IStreamedPanelDiscovery.ListedWhileWithheld"/>). GET /panel/devices
     /// stamps these so the dashboard can list a streamed panel: it is backed by neither a
     /// curated device nor a display, so nothing else marks it as present and editable.
     /// </summary>
@@ -207,6 +211,7 @@ public sealed class StreamedPanelCoordinator : BackgroundService
                 if (!ds.Session.Closed)
                     ids.Add(ds.Session.PanelDeviceId);
             }
+            ids.UnionWith(_heldByDevice.Values);
         }
         return ids;
     }
@@ -395,6 +400,38 @@ public sealed class StreamedPanelCoordinator : BackgroundService
 
         TryReopenTransport(ds);
         return true;
+    }
+
+    /// <summary>
+    /// Keeps a withheld panel listed when its discovery asks, whether the device took the glass
+    /// from a live session or before one ever opened (a restart or replug in that mode).
+    /// </summary>
+    private void TrackHeld(IStreamedPanelDiscovery discovery, bool withheld)
+    {
+        string? held;
+        lock (_lock) _heldByDevice.TryGetValue(discovery, out held);
+        string? now = null;
+        if (withheld && discovery.ListedWhileWithheld)
+        {
+            now = held;
+            if (now is null && discovery.WithheldSerial is { } serial
+                && _store.Load().TryGetValue(serial, out var rec)
+                && !string.IsNullOrEmpty(rec.PanelDeviceId)
+                && _registry.Get(rec.PanelDeviceId) is not null)
+            {
+                now = rec.PanelDeviceId;
+            }
+        }
+        if (now == held)
+        {
+            return;
+        }
+        lock (_lock)
+        {
+            if (now is null) _heldByDevice.Remove(discovery);
+            else _heldByDevice[discovery] = now;
+        }
+        _notifyPanelChanged?.Invoke(now ?? held!);
     }
 
     // The per-serial store keeps the panel record identity stable across

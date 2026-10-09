@@ -122,6 +122,8 @@ public sealed class StreamedPanelCoordinatorTests : IDisposable
         public bool UseBrightnessTransport { get; set; }
         public bool FailOpen { get; set; }
         public bool Withheld { get; set; }
+        public bool ListedWhileWithheld { get; set; }
+        public string? WithheldSerial => Withheld ? Devices.FirstOrDefault()?.Serial : null;
 
         public IReadOnlyList<StreamedPanelDeviceInfo> Discover() => Devices.ToList();
 
@@ -209,6 +211,48 @@ public sealed class StreamedPanelCoordinatorTests : IDisposable
         _discovery.Withheld = false;
         coordinator.TickOnce();
         Assert.Single(coordinator.GetAssignments().Assignments);
+    }
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public void A_withheld_panel_stays_listed_only_when_its_discovery_asks(bool listed)
+    {
+        _discovery.Devices.Add(Device());
+        _discovery.ListedWhileWithheld = listed;
+        var coordinator = Coordinator();
+        coordinator.TickOnce();
+        var panelId = Assert.Single(coordinator.LivePanelDeviceIds());
+
+        _discovery.Withheld = true;
+        coordinator.TickOnce();
+        Assert.Empty(coordinator.GetAssignments().Assignments);
+        Assert.Equal(listed, coordinator.LivePanelDeviceIds().Contains(panelId));
+
+        _discovery.Withheld = false;
+        _discovery.Devices.Clear();
+        coordinator.TickOnce();
+        Assert.Empty(coordinator.LivePanelDeviceIds());
+    }
+
+    [Fact]
+    public void A_panel_withheld_before_any_session_after_a_restart_is_still_listed()
+    {
+        _discovery.Devices.Add(Device());
+        _discovery.ListedWhileWithheld = true;
+        Coordinator().TickOnce();
+        var panelId = Assert.Single(_coordinator!.LivePanelDeviceIds());
+
+        _discovery.Withheld = true;
+        var restarted = new StreamedPanelCoordinator(
+            new[] { _discovery }, _store, _registry, _gate,
+            notifyOverlay: null, nowMs: () => _nowMs, notifyPanelChanged: _panelChanges.Add);
+        _panelChanges.Clear();
+        restarted.TickOnce();
+
+        Assert.Empty(restarted.GetAssignments().Assignments);
+        Assert.Contains(panelId, restarted.LivePanelDeviceIds());
+        Assert.Contains(panelId, _panelChanges);
     }
 
     [Fact]

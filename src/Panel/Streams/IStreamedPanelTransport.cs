@@ -32,6 +32,12 @@ public interface IStreamedPanelDiscovery
     /// </summary>
     bool Withheld => false;
 
+    /// <summary>A withheld panel stays listed, because its device page holds the switch that hands the screen back.</summary>
+    bool ListedWhileWithheld => false;
+
+    /// <summary>The serial <see cref="Discover"/> would report for the device whose screen is withheld, or null.</summary>
+    string? WithheldSerial => null;
+
     IStreamedPanelTransport CreateTransport(StreamedPanelDeviceInfo info);
 }
 

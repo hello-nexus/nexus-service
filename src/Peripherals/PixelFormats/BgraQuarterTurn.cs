@@ -57,4 +57,45 @@ public static class BgraQuarterTurn
             }
         }
     }
+
+    /// <summary>
+    /// Rotates <paramref name="src"/> a quarter turn clockwise into <paramref name="dest"/>,
+    /// which must hold width x height pixels with the sides swapped.
+    /// </summary>
+    public static void RotateCw(ReadOnlySpan<byte> src, int width, int height, Span<byte> dest)
+    {
+        int pixels = width * height;
+        if (src.Length < pixels * 4)
+        {
+            throw new ArgumentException("source is too small", nameof(src));
+        }
+        if (dest.Length < pixels * 4)
+        {
+            throw new ArgumentException("destination is too small", nameof(dest));
+        }
+
+        var s = MemoryMarshal.Cast<byte, uint>(src);
+        var d = MemoryMarshal.Cast<byte, uint>(dest);
+
+        // Clockwise sends the source's bottom-left corner to the destination's top-left,
+        // so a source row walks down a destination column, right to left.
+        for (int ty = 0; ty < height; ty += Tile)
+        {
+            int yEnd = Math.Min(ty + Tile, height);
+            for (int tx = 0; tx < width; tx += Tile)
+            {
+                int xEnd = Math.Min(tx + Tile, width);
+                for (int sy = ty; sy < yEnd; sy++)
+                {
+                    int srcIndex = sy * width + tx;
+                    int destIndex = tx * height + (height - 1 - sy);
+                    for (int sx = tx; sx < xEnd; sx++)
+                    {
+                        d[destIndex] = s[srcIndex++];
+                        destIndex += height;
+                    }
+                }
+            }
+        }
+    }
 }
