@@ -50,7 +50,9 @@ public sealed class SimulatedStreamDeckSurface : IStreamDeckSurface
         _centerLeds = new (byte, byte, byte)[model.Encoders];
     }
 
-    /// <summary>Test hook: every successful screen region push, in call order.</summary>
+    private const int MaxRecordedScreenRegions = 256;
+
+    /// <summary>Test hook: the most recent successful screen region pushes, in call order.</summary>
     public List<(int X, int Y, int Width, int Height, byte[] Bytes)> ScreenRegions { get; } = new();
 
     /// <summary>Test hook: the last whole info-screen image, or null.</summary>
@@ -215,6 +217,10 @@ public sealed class SimulatedStreamDeckSurface : IStreamDeckSurface
                 return false;
             }
             ScreenRegions.Add((x, y, width, height, wireBytes.ToArray()));
+            if (ScreenRegions.Count > MaxRecordedScreenRegions)
+            {
+                ScreenRegions.RemoveAt(0);
+            }
             return true;
         }
     }

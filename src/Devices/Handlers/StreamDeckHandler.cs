@@ -54,7 +54,8 @@ public sealed class StreamDeckHandler : IDeviceHandler
     {
         try
         {
-            return Process.GetProcessesByName("StreamDeck").Length > 0;
+            // macOS names the process "Stream Deck" (with a space).
+            return Process.GetProcessesByName("StreamDeck").Length > 0 || Process.GetProcessesByName("Stream Deck").Length > 0;
         }
         catch
         {

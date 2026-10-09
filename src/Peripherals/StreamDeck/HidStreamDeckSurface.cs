@@ -199,13 +199,27 @@ public sealed class HidStreamDeckSurface : IStreamDeckSurface
     public bool ClearKey(int keyIndex)
     {
         // The blank-image constant only covers the 80x80 BMP family (Mini and
-        // its siblings); other models get no blank until a matching image is
-        // available (or Phase 2 wires the web-rendered blank through the same path).
+        // its siblings) and the JPEG models; the Original (72x72 BMP) gets no
+        // blank until a matching image is available.
+        if (Model.ImageFormat == StreamDeckImageFormat.Jpeg)
+        {
+            return SetKeyImage(keyIndex, _blankJpeg ??= BuildBlankJpeg());
+        }
         if (Model.ImageFormat != StreamDeckImageFormat.Bmp || Model.KeyPixelSize != 80)
         {
             return false;
         }
         return SetKeyImage(keyIndex, StreamDeckProtocol.BuildBlankBmp(Model.KeyPixelSize));
+    }
+
+    private byte[]? _blankJpeg;
+
+    // Black is orientation- and transform-invariant, so it goes out as rendered.
+    private byte[] BuildBlankJpeg()
+    {
+        using var black = new SixLabors.ImageSharp.Image<SixLabors.ImageSharp.PixelFormats.Rgba32>(
+            Model.KeyWidth, Model.KeyHeight, new SixLabors.ImageSharp.PixelFormats.Rgba32(0, 0, 0, 255));
+        return Rendering.RenderKit.EncodeJpeg(black);
     }
 
     public bool SetScreenRegion(int x, int y, int width, int height, ReadOnlyMemory<byte> wireBytes)

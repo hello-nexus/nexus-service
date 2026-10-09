@@ -863,6 +863,14 @@ public static class NexusServiceCollectionExtensions
             sp.GetRequiredService<Nexus.Service.Lifecycle.FeatureGates>()));
         services.AddSingleton<Nexus.Service.Deck.IDeckActionExecutor>(sp =>
             sp.GetRequiredService<Nexus.Service.Deck.DeckActionExecutor>());
+        services.AddSingleton<Nexus.Service.Deck.IDeckDialValues>(sp => new Nexus.Service.Deck.DeckDialValueService(
+            sp.GetRequiredService<Nexus.Service.Activity.IVolumeProvider>(),
+            sp.GetRequiredService<Nexus.Service.Activity.IAudioDeviceProvider>(),
+            sp.GetRequiredService<Nexus.Service.Audio.AudioMixerService>(),
+            sp.GetRequiredService<Nexus.Service.Platform.Displays.DisplayBrightnessController>(),
+            sp.GetRequiredService<Nexus.Service.Persistence.IConfigStore>(),
+            sp.GetRequiredService<Nexus.Service.Peripherals.Y70.IY70Provider>(),
+            sp.GetRequiredService<Nexus.Service.Sockets.MultiplexHub>()));
         services.AddSingleton<Nexus.Service.Deck.RecentAppsState>();
         services.AddSingleton<Nexus.Service.Peripherals.StreamDeck.StreamDeckConnectionWorker>(sp =>
         {
@@ -880,7 +888,8 @@ public static class NexusServiceCollectionExtensions
                 fans: sp.GetRequiredService<Nexus.Service.Cooling.IFanControlProvider>(),
                 sessionLock: sp.GetService<Nexus.Service.Lighting.SessionLockListener>(),
                 recentAppsState: sp.GetRequiredService<Nexus.Service.Deck.RecentAppsState>(),
-                recentAppsActivator: sp.GetRequiredService<Nexus.Service.Deck.RecentAppsActivator>());
+                recentAppsActivator: sp.GetRequiredService<Nexus.Service.Deck.RecentAppsActivator>(),
+                dialValues: sp.GetRequiredService<Nexus.Service.Deck.IDeckDialValues>());
 #if WINDOWS
             // App icons come from the user-session helper; keys painted before
             // it connects carry the generic fallback until this repaint.

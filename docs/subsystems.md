@@ -95,11 +95,19 @@ media uploads via `POST /tryx/media`.
 
 ### Elgato Stream Deck and Deck Modes
 
-- Native gen1 (BMP) and gen2 (JPEG) HID transports across all 14 catalog
+- Native gen1 (BMP) and gen2 (JPEG) HID transports across all 18 catalog
   models, from the button-only families to the screenless Pedal, over the
   shared HID stack (`Peripherals/StreamDeck/`). Bench-verified on the Mini;
   the rest transcribed from the MIT python-elgato-streamdeck and
   elgato-streamdeck references.
+- Dials, touch strip and screens: Plus and Plus XL (dials under an
+  800x100 / 1200x100 touch strip), Neo (info screen and two touch keys),
+  Studio (two dials with LED rings) and the Corsair Galleon K100 SD (screen
+  and two dials). A `DeckPage` or folder carries `dials`; the connection
+  worker dispatches turns, presses and touches (`StreamDeckConnectionWorker.
+  Dials.cs`), `Rendering/DeckStripRenderer.cs` draws the segments, and
+  `Deck/DeckDialValues.cs` reads and writes the controlled levels.
+  `POST /streamdeck/dev/sim-input` drives the simulator's dials and strip.
 - A physical deck (`streamdeck:<serial>`) and the panel's on-screen Deck
   widget (`widget:<panelWidgetId>`) are both deck INSTANCES that point at a
   host-wide, grid-independent preset (`Persistence/NexusSettings.cs`

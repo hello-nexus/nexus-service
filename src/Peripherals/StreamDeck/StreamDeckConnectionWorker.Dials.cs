@@ -1,0 +1,1032 @@
+using System;
+using System.Collections.Generic;
+using System.Globalization;
+using System.Linq;
+using System.Threading;
+using System.Threading.Tasks;
+using Nexus.Service.Deck;
+using Nexus.Service.Models.Sensors;
+using Nexus.Service.Persistence;
+using Nexus.Service.Platform;
+using Nexus.Service.Rendering;
+using Nexus.Service.Sensors;
+using SixLabors.ImageSharp;
+using SixLabors.ImageSharp.PixelFormats;
+using SixLabors.ImageSharp.Processing;
+
+namespace Nexus.Service.Peripherals.StreamDeck;
+
+/// <summary>
+/// Dials, the touch strip, the Neo info screen and touch keys, and the
+/// encoder ring LEDs (plans/streamdeck-dials.md). Everything here runs under
+/// the worker's _lock, from the input threads, the tick or the animation loop.
+/// </summary>
+public sealed partial class StreamDeckConnectionWorker
+{
+    private const int DefaultDialStep = 2;
+    /// <summary>Turning a dial while it is held moves this many times the step.</summary>
+    private const int HeldStepMultiplier = 5;
+    /// <summary>Cap on custom key actions fired by one report; a fast spin reports up to +-10 ticks.</summary>
+    private const int MaxCustomTicksPerReport = 12;
+    /// <summary>deckBrightness never turns the deck fully dark.</summary>
+    private const int MinDialDeckBrightness = 5;
+    private const int FeedbackMs = 250;
+    private const int FeedbackSteps = 5;
+    /// <summary>A flick shorter than this (in strip pixels) is not a page swipe.</summary>
+    private const int SwipeMinPixels = 20;
+    private const string DefaultDialAccentHex = DeckStripRenderer.DefaultAccentHex;
+    private const int DialHistoryLength = 40;
+    /// <summary>Touch-key backlight when a page exists in that direction, and while pressed.</summary>
+    private static readonly (byte R, byte G, byte B) TouchKeyIdle = (60, 60, 60);
+    private static readonly (byte R, byte G, byte B) TouchKeyPressed = (255, 255, 255);
+
+    private readonly IDeckDialValues? _dialValues;
+    private readonly DeckStripRenderer _strip;
+
+    private sealed class DialRuntime
+    {
+        public bool Down;
+        public bool TurnedWhileHeld;
+        public int StackIndex;
+        public double LastNonZero = 50;
+        public DateTimeOffset FeedbackStartedAt;
+        public bool FeedbackActive;
+        public int FeedbackStep;
+    }
+
+    private sealed class DialDeckState
+    {
+        public DialRuntime[] Dials = Array.Empty<DialRuntime>();
+        public bool[] LastDialDown = Array.Empty<bool>();
+        public bool[] LastTouchKeys = Array.Empty<bool>();
+        public string?[] SegmentKeys = Array.Empty<string?>();
+        public string? InfoKey;
+        public string?[] RingKeys = Array.Empty<string?>();
+        public string?[] TouchKeyLights = Array.Empty<string?>();
+        public bool[] TouchKeyHeld = Array.Empty<bool>();
+        public Dictionary<string, List<float>> History = new(StringComparer.Ordinal);
+    }
+
+    private readonly Dictionary<string, DialDeckState> _dialStates = new(StringComparer.OrdinalIgnoreCase);
+    private volatile bool _anyDialFeedback;
+
+    private DialDeckState DialStateLocked(IStreamDeckSurface surface)
+    {
+        if (_dialStates.TryGetValue(surface.Serial, out var state))
+        {
+            return state;
+        }
+        var model = surface.Model;
+        state = new DialDeckState
+        {
+            Dials = Enumerable.Range(0, model.Encoders).Select(_ => new DialRuntime()).ToArray(),
+            LastDialDown = new bool[model.Encoders],
+            LastTouchKeys = new bool[model.TouchKeys],
+            SegmentKeys = new string?[model.Encoders],
+            RingKeys = new string?[model.Encoders],
+            TouchKeyLights = new string?[model.TouchKeys],
+            TouchKeyHeld = new bool[model.TouchKeys],
+        };
+        _dialStates[surface.Serial] = state;
+        return state;
+    }
+
+    private void RemoveDialStateForSerial(string serial)
+    {
+        _dialStates.Remove(serial);
+        _anyDialFeedback = _dialStates.Values.Any(s => s.Dials.Any(d => d.FeedbackActive));
+    }
+
+    /// <summary>Test seam: the shown stack entry for a dial.</summary>
+    internal int DialStackIndexForTests(string serial, int dial)
+    {
+        lock (_lock)
+        {
+            return _dialStates.TryGetValue(serial, out var state) && dial < state.Dials.Length ? state.Dials[dial].StackIndex : 0;
+        }
+    }
+
+    /// <summary>Drains the simulated deck's queued reports now instead of on the next tick, so a dev-route input is felt at once.</summary>
+    public void DrainSimulatedInput()
+    {
+        lock (_lock)
+        {
+            PumpSimulatedInput();
+        }
+    }
+
+    // ── Input ──
+
+    /// <summary>Routes one decoded report by kind. Caller holds _lock.</summary>
+    private void DispatchInput(string key, IStreamDeckSurface surface, StreamDeckInput input)
+    {
+        switch (input.Kind)
+        {
+            case StreamDeckInputKind.Keys:
+                ProcessKeyStates(key, surface, input.Keys);
+                ProcessTouchKeys(surface, input.TouchKeys);
+                break;
+            case StreamDeckInputKind.DialPress:
+                ProcessDialPress(surface, input.DialDown);
+                break;
+            case StreamDeckInputKind.DialRotate:
+                ProcessDialRotate(surface, input.DialTicks);
+                break;
+            case StreamDeckInputKind.Touch:
+                ProcessTouch(surface, input);
+                break;
+        }
+    }
+
+    private void ProcessDialPress(IStreamDeckSurface surface, bool[] down)
+    {
+        var state = DialStateLocked(surface);
+        _lastInputAt[surface.Serial] = _clock.GetUtcNow();
+        for (var i = 0; i < state.Dials.Length && i < down.Length; i++)
+        {
+            if (down[i] == state.LastDialDown[i])
+            {
+                continue;
+            }
+            state.LastDialDown[i] = down[i];
+            var runtime = state.Dials[i];
+            ServiceLog.Info($"[streamdeck] dial {(down[i] ? "down" : "up")} serial={surface.Serial} index={i}");
+            if (down[i])
+            {
+                WakeIfAsleep(surface);
+                runtime.Down = true;
+                runtime.TurnedWhileHeld = false;
+                continue;
+            }
+            runtime.Down = false;
+            if (!runtime.TurnedWhileHeld)
+            {
+                ActivateDial(surface, i, fromTouch: false);
+            }
+        }
+    }
+
+    private void ProcessDialRotate(IStreamDeckSurface surface, int[] ticks)
+    {
+        var state = DialStateLocked(surface);
+        _lastInputAt[surface.Serial] = _clock.GetUtcNow();
+        var woke = false;
+        for (var i = 0; i < state.Dials.Length && i < ticks.Length; i++)
+        {
+            if (ticks[i] == 0)
+            {
+                continue;
+            }
+            if (!woke)
+            {
+                WakeIfAsleep(surface);
+                woke = true;
+            }
+            var runtime = state.Dials[i];
+            if (runtime.Down)
+            {
+                runtime.TurnedWhileHeld = true;
+            }
+            TurnDial(surface, i, ticks[i], runtime);
+        }
+    }
+
+    private void TurnDial(IStreamDeckSurface surface, int dialIndex, int ticks, DialRuntime runtime)
+    {
+        var dials = VisibleDialsLocked(surface, out var config, out _, out _);
+        var effective = EffectiveDial(dials[dialIndex], runtime);
+        var action = effective?.Action;
+        if (action is null)
+        {
+            return;
+        }
+        switch (action.Type)
+        {
+            case DeckDialTypes.Page:
+                HandlePageAction(surface.Serial, config, new DeckAction { Type = "page", Op = ticks > 0 ? "next" : "prev" });
+                return;
+            case DeckDialTypes.Custom:
+            {
+                var run = ticks > 0 ? action.TurnRight : action.TurnLeft;
+                for (var n = 0; n < Math.Min(Math.Abs(ticks), MaxCustomTicksPerReport); n++)
+                {
+                    RunDialKeyAction(surface.Serial, dialIndex, run, ticks > 0 ? "right" : "left");
+                }
+                BeginFeedback(surface, dialIndex, runtime);
+                return;
+            }
+            case DeckDialTypes.DeckBrightness:
+            {
+                var delta = ticks * DialStep(action) * (runtime.Down ? HeldStepMultiplier : 1);
+                ApplyDeckBrightnessLocked(surface.Serial, (int)Math.Clamp(PersistedBrightness(surface.Serial) + delta, MinDialDeckBrightness, 100));
+                BeginFeedback(surface, dialIndex, runtime);
+                return;
+            }
+        }
+        if (!DeckDialTypes.IsServiceValueType(action.Type) || _dialValues is null)
+        {
+            return;
+        }
+        var reading = _dialValues.Read(action);
+        if (!reading.Supported || reading.Pending)
+        {
+            return;
+        }
+        var step = ticks * DialStep(action) * (runtime.Down ? HeldStepMultiplier : 1);
+        var target = Math.Clamp(reading.Percent + step, 0, 100);
+        if (target > 0)
+        {
+            runtime.LastNonZero = target;
+        }
+        _dialValues.Write(action, target);
+        BeginFeedback(surface, dialIndex, runtime);
+    }
+
+    private static double DialStep(DeckDialAction action) =>
+        action.Step is { } step and > 0 && double.IsFinite(step) ? step : DefaultDialStep;
+
+    /// <summary>The release of a dial press or a tap on its segment. A stacked dial advances on a press and acts on the shown entry for a tap.</summary>
+    private void ActivateDial(IStreamDeckSurface surface, int dialIndex, bool fromTouch)
+    {
+        var state = DialStateLocked(surface);
+        var runtime = state.Dials[dialIndex];
+        var dials = VisibleDialsLocked(surface, out var config, out _, out _);
+        var dial = dials[dialIndex];
+        if (!fromTouch && dial?.Stack is { Count: >= 2 } stack)
+        {
+            runtime.StackIndex = (runtime.StackIndex + 1) % stack.Count;
+            BeginFeedback(surface, dialIndex, runtime);
+            return;
+        }
+        var action = EffectiveDial(dial, runtime)?.Action;
+        if (action is null)
+        {
+            return;
+        }
+        switch (action.Type)
+        {
+            case DeckDialTypes.Page:
+                HandlePageAction(surface.Serial, config, new DeckAction { Type = "page", Op = "goto", Target = 0 });
+                return;
+            case DeckDialTypes.Monitoring:
+                if (action.Press is "taskManager" or "monitoringPage")
+                {
+                    RunDialKeyAction(surface.Serial, dialIndex, new DeckAction { Type = "monitoring", Press = action.Press }, "press");
+                }
+                break;
+            case DeckDialTypes.Custom:
+                RunDialKeyAction(surface.Serial, dialIndex, fromTouch ? action.Touch ?? action.Push : action.Push, fromTouch ? "touch" : "push");
+                break;
+            default:
+                if (_dialValues is not null && DeckDialTypes.IsServiceValueType(action.Type))
+                {
+                    ToggleDialValue(action, runtime);
+                }
+                break;
+        }
+        BeginFeedback(surface, dialIndex, runtime);
+    }
+
+    private void ToggleDialValue(DeckDialAction action, DialRuntime runtime)
+    {
+        var reading = _dialValues!.Read(action);
+        if (!reading.Supported || reading.Pending)
+        {
+            return;
+        }
+        if (DeckDialTypes.IsMuteType(action.Type))
+        {
+            _dialValues.SetMuted(action, !reading.Muted);
+            return;
+        }
+        if (reading.Percent > 0)
+        {
+            runtime.LastNonZero = reading.Percent;
+            _dialValues.Write(action, 0);
+        }
+        else
+        {
+            _dialValues.Write(action, runtime.LastNonZero > 0 ? runtime.LastNonZero : 50);
+        }
+    }
+
+    /// <summary>Runs a custom dial's key action the way a key press would: a page action navigates here, anything else goes to the executor off this thread.</summary>
+    private void RunDialKeyAction(string serial, int dialIndex, DeckAction? action, string kind)
+    {
+        if (action is null || string.IsNullOrEmpty(action.Type))
+        {
+            return;
+        }
+        if (action.Type == "page")
+        {
+            HandlePageAction(serial, LoadConfig(serial), action);
+            return;
+        }
+        if (action.Type == "pageIndicator")
+        {
+            return;
+        }
+        var latchKey = $"{serial}:dial{dialIndex}:{kind}";
+        LastDispatchTask = Task.Run(async () =>
+        {
+            try
+            {
+                await _executor.ExecuteAsync(action, serial, -(dialIndex + 1), latchKey, CancellationToken.None).ConfigureAwait(false);
+            }
+            catch (Exception ex)
+            {
+                ServiceLog.Error($"[streamdeck] dial dispatch crashed serial={serial} dial={dialIndex}: {ex.Message}");
+            }
+        });
+    }
+
+    private void ApplyDeckBrightnessLocked(string serial, int percent)
+    {
+        _store.Update(s =>
+        {
+            if (!s.StreamDeck.Decks.TryGetValue(serial, out var deck))
+            {
+                deck = new PhysicalDeckSettings();
+                s.StreamDeck.Decks[serial] = deck;
+            }
+            deck.Brightness = percent;
+        });
+        SetBrightnessIfAwake(serial, percent);
+        BroadcastDecksChanged(serial);
+    }
+
+    private void ProcessTouchKeys(IStreamDeckSurface surface, bool[] touchKeys)
+    {
+        if (surface.Model.TouchKeys == 0 || touchKeys.Length == 0)
+        {
+            return;
+        }
+        var state = DialStateLocked(surface);
+        for (var i = 0; i < state.LastTouchKeys.Length && i < touchKeys.Length; i++)
+        {
+            if (touchKeys[i] == state.LastTouchKeys[i])
+            {
+                continue;
+            }
+            state.LastTouchKeys[i] = touchKeys[i];
+            state.TouchKeyHeld[i] = touchKeys[i];
+            _lastInputAt[surface.Serial] = _clock.GetUtcNow();
+            ServiceLog.Info($"[streamdeck] touch key {(touchKeys[i] ? "down" : "up")} serial={surface.Serial} index={i}");
+            if (touchKeys[i])
+            {
+                WakeIfAsleep(surface);
+                // Left key pages back, right key pages forward.
+                SwipePage(surface, next: i == 1);
+            }
+            else
+            {
+                SyncAuxLightsLocked(surface);
+            }
+        }
+    }
+
+    private void ProcessTouch(IStreamDeckSurface surface, StreamDeckInput input)
+    {
+        var screen = surface.Model.Screen;
+        _lastInputAt[surface.Serial] = _clock.GetUtcNow();
+        if (screen is null || screen.Kind == StreamDeckScreenKind.InfoScreen || surface.Model.Encoders == 0)
+        {
+            return;
+        }
+        WakeIfAsleep(surface);
+        var segment = Math.Clamp(input.X * surface.Model.Encoders / Math.Max(screen.Width, 1), 0, surface.Model.Encoders - 1);
+        switch (input.TouchKind)
+        {
+            case StreamDeckTouchKind.Tap:
+                ActivateDial(surface, segment, fromTouch: true);
+                break;
+            case StreamDeckTouchKind.Long:
+            {
+                var dials = VisibleDialsLocked(surface, out _, out _, out _);
+                if (IsDialEmpty(dials[segment]))
+                {
+                    StartDialEdit(surface, segment);
+                }
+                else
+                {
+                    ActivateDial(surface, segment, fromTouch: true);
+                }
+                break;
+            }
+            case StreamDeckTouchKind.Flick:
+            {
+                var dx = input.X2 - input.X;
+                var dy = input.Y2 - input.Y;
+                if (Math.Abs(dx) >= SwipeMinPixels && Math.Abs(dx) > Math.Abs(dy))
+                {
+                    // Swipe left turns to the next page (Elgato's "swipe left to turn page").
+                    SwipePage(surface, next: dx < 0);
+                }
+                break;
+            }
+        }
+    }
+
+    /// <summary>One page step for a swipe or a Neo touch key, in either custom or Recent Apps mode.</summary>
+    private void SwipePage(IStreamDeckSurface surface, bool next)
+    {
+        var serial = surface.Serial;
+        if (IsRecentAppsMode(serial))
+        {
+            var pageCount = RecentAppsPageCountLocked(serial);
+            _currentPageBySerial[serial] = Math.Clamp(GetCurrentPageLocked(serial) + (next ? 1 : -1), 0, pageCount - 1);
+            PushRecentAppsView(surface, viewChanged: true);
+            BroadcastNav(serial, _currentPageBySerial[serial], new List<int>());
+            return;
+        }
+        HandlePageAction(serial, LoadConfig(serial), new DeckAction { Type = "page", Op = next ? "next" : "prev" });
+    }
+
+    /// <summary>Long touch on an empty segment: records the pending edit and asks the editor to select that dial.</summary>
+    private void StartDialEdit(IStreamDeckSurface surface, int dialIndex)
+    {
+        var serial = surface.Serial;
+        var page = GetCurrentPageLocked(serial);
+        var folderPath = _folderPathsBySerial.TryGetValue(serial, out var fp) ? new List<int>(fp) : new List<int>();
+        var now = _clock.GetUtcNow();
+        var token = now.ToUnixTimeMilliseconds();
+        _pendingEdit = new DeckPendingEdit(serial, page, folderPath, 0, token, now, dialIndex);
+        BroadcastEditRequest(serial, page, folderPath, 0, token, dialIndex);
+        ServiceLog.Info($"[streamdeck] dial hold-to-edit fired serial={serial} page={page} dial={dialIndex}");
+        LastHoldFireTask = Task.Run(() =>
+        {
+            try { _executor.OpenApp(); }
+            catch (Exception ex) { ServiceLog.Warn($"[streamdeck] dial hold-to-edit open-app failed serial={serial}: {ex.Message}"); }
+        });
+    }
+
+    // ── Dial resolution ──
+
+    /// <summary>
+    /// The dials shown for the deck's current view, one entry per encoder
+    /// (null = empty). The innermost folder in the path that carries its own
+    /// Dials wins; otherwise the page's. Recent Apps mode shows none.
+    /// </summary>
+    private DeckDial?[] VisibleDialsLocked(IStreamDeckSurface surface, out DeckConfig config, out int page, out List<int> folderPath)
+    {
+        var result = new DeckDial?[surface.Model.Encoders];
+        folderPath = _folderPathsBySerial.TryGetValue(surface.Serial, out var fp) ? fp : new List<int>();
+        if (IsRecentAppsMode(surface.Serial))
+        {
+            config = new DeckConfig();
+            page = GetCurrentPageLocked(surface.Serial);
+            return result;
+        }
+        config = LoadConfig(surface.Serial);
+        page = ClampCurrentPageLocked(surface.Serial, config);
+        var dials = config.Pages[page].Dials;
+        var slots = config.Pages[page].Slots;
+        foreach (var index in folderPath)
+        {
+            if (index < 0 || index >= slots.Count || slots[index].Folder is not { } folder)
+            {
+                break;
+            }
+            dials = folder.Dials ?? dials;
+            slots = folder.Slots;
+        }
+        for (var i = 0; i < result.Length; i++)
+        {
+            result[i] = dials is not null && i < dials.Count ? dials[i] : null;
+        }
+        return result;
+    }
+
+    /// <summary>The dial entry that currently acts: the shown stack entry for a stack of two or more, else the dial itself.</summary>
+    private static DeckDial? EffectiveDial(DeckDial? dial, DialRuntime runtime)
+    {
+        if (dial?.Stack is { Count: >= 2 } stack)
+        {
+            runtime.StackIndex = Math.Clamp(runtime.StackIndex, 0, stack.Count - 1);
+            return stack[runtime.StackIndex];
+        }
+        return dial;
+    }
+
+    private static bool IsDialEmpty(DeckDial? dial) =>
+        dial is null || (dial.Stack is not { Count: >= 2 } && dial.Action is null);
+
+    // ── Feedback ──
+
+    private void BeginFeedback(IStreamDeckSurface surface, int dialIndex, DialRuntime runtime)
+    {
+        if (surface.Model.Screen is null || surface.Model.Encoders == 0)
+        {
+            RefreshDialLightsNow(surface);
+            return;
+        }
+        runtime.FeedbackStartedAt = _clock.GetUtcNow();
+        runtime.FeedbackActive = true;
+        runtime.FeedbackStep = FeedbackSteps;
+        _anyDialFeedback = true;
+        var frames = BuildDialFramesLocked(surface, sampleHistory: false);
+        PushDialSegmentLocked(surface, dialIndex, frames[dialIndex].Input, FeedbackSteps / (float)FeedbackSteps);
+        SyncAuxLightsLocked(surface, frames);
+    }
+
+    private void RefreshDialLightsNow(IStreamDeckSurface surface)
+    {
+        if (surface.Model.RingKind != StreamDeckRingKind.None)
+        {
+            SyncAuxLightsLocked(surface);
+        }
+    }
+
+    /// <summary>
+    /// One frame of every dial's feedback fade: re-renders the segment at the
+    /// intensity the clock says it is at whenever that rounds to a new step,
+    /// and settles on the plain segment. Public so tests step it with a
+    /// manual clock, like AnimateHolds.
+    /// </summary>
+    public void AnimateDialFeedback()
+    {
+        lock (_lock)
+        {
+            if (_dialStates.Count == 0)
+            {
+                _anyDialFeedback = false;
+                return;
+            }
+            var now = _clock.GetUtcNow();
+            foreach (var (serial, state) in _dialStates.ToList())
+            {
+                var surface = FindBySerialLocked(serial);
+                if (surface is null || !surface.IsConnected)
+                {
+                    continue;
+                }
+                for (var i = 0; i < state.Dials.Length; i++)
+                {
+                    var runtime = state.Dials[i];
+                    if (!runtime.FeedbackActive)
+                    {
+                        continue;
+                    }
+                    var remaining = 1.0 - (now - runtime.FeedbackStartedAt).TotalMilliseconds / FeedbackMs;
+                    var step = remaining <= 0 ? 0 : (int)Math.Ceiling(remaining * FeedbackSteps);
+                    if (step == runtime.FeedbackStep)
+                    {
+                        continue;
+                    }
+                    runtime.FeedbackStep = step;
+                    var frames = BuildDialFramesLocked(surface, sampleHistory: false);
+                    PushDialSegmentLocked(surface, i, frames[i].Input, step / (float)FeedbackSteps);
+                    if (step == 0)
+                    {
+                        runtime.FeedbackActive = false;
+                        state.SegmentKeys[i] = frames[i].Input.StateKey();
+                    }
+                }
+            }
+            _anyDialFeedback = _dialStates.Values.Any(s => s.Dials.Any(d => d.FeedbackActive));
+        }
+    }
+
+    // ── Frames ──
+
+    /// <summary>One dial's resolved look and ring state.</summary>
+    private readonly record struct DialFrame(DialSegmentInput Input, double? RingFraction, bool Muted, string AccentHex, bool Bound);
+
+    private static string DefaultDialTitle(DeckDialAction action) => action.Type switch
+    {
+        DeckDialTypes.Volume => "Volume",
+        DeckDialTypes.MicVolume => "Microphone",
+        DeckDialTypes.AppVolume => string.IsNullOrEmpty(action.AppName) ? action.AppId ?? "App" : action.AppName,
+        DeckDialTypes.DisplayBrightness => "Display",
+        DeckDialTypes.DeckBrightness => "Deck",
+        DeckDialTypes.LightingBrightness => "Lighting",
+        DeckDialTypes.Y70Brightness => "Y70",
+        DeckDialTypes.Page => "Page",
+        _ => "",
+    };
+
+    private static string DefaultDialIcon(DeckDialAction action, bool muted) => action.Type switch
+    {
+        DeckDialTypes.Volume or DeckDialTypes.AppVolume => muted ? "VolumeX" : "Volume2",
+        DeckDialTypes.MicVolume => muted ? "MicOff" : "Mic",
+        DeckDialTypes.DisplayBrightness or DeckDialTypes.DeckBrightness => "Sun",
+        DeckDialTypes.LightingBrightness => "Lightbulb",
+        DeckDialTypes.Y70Brightness => "Monitor",
+        DeckDialTypes.Page => "Layers",
+        DeckDialTypes.Monitoring => "Activity",
+        _ => "Sliders",
+    };
+
+    /// <summary>Builds every dial's frame for the current view. sampleHistory appends one monitoring sample per monitoring dial (the tick and view pushes do; a turn does not).</summary>
+    private List<DialFrame> BuildDialFramesLocked(IStreamDeckSurface surface, bool sampleHistory)
+    {
+        var state = DialStateLocked(surface);
+        var dials = VisibleDialsLocked(surface, out var config, out var page, out _);
+        var snapshot = _store.Load();
+        var monitoringSources = GatherDialMonitoringSources(dials, state);
+        var frames = new List<DialFrame>(dials.Length);
+        for (var i = 0; i < dials.Length; i++)
+        {
+            var runtime = state.Dials[i];
+            var dial = dials[i];
+            var effective = EffectiveDial(dial, runtime);
+            var stackCount = dial?.Stack is { Count: >= 2 } stack ? stack.Count : 0;
+            frames.Add(BuildDialFrame(surface, i, effective, stackCount, runtime, state, config, page, snapshot, monitoringSources, sampleHistory));
+        }
+        return frames;
+    }
+
+    private SensorSnapshotSources? GatherDialMonitoringSources(DeckDial?[] dials, DialDeckState state)
+    {
+        List<MonitoringKeyRef>? refs = null;
+        for (var i = 0; i < dials.Length; i++)
+        {
+            var action = EffectiveDial(dials[i], state.Dials[i])?.Action;
+            if (action is not { Type: DeckDialTypes.Monitoring })
+            {
+                continue;
+            }
+            refs ??= new List<MonitoringKeyRef>();
+            refs.Add(new MonitoringKeyRef(
+                null!, i, "", new DeckSlot { Action = new DeckAction { Type = "monitoring", Category = action.Category, Sensor = action.Sensor } }, 0, 0, ""));
+        }
+        return refs is null ? null : GatherMonitoringSources(refs);
+    }
+
+    private DialFrame BuildDialFrame(
+        IStreamDeckSurface surface, int index, DeckDial? effective, int stackCount, DialRuntime runtime, DialDeckState state,
+        DeckConfig config, int page, NexusSettings snapshot, SensorSnapshotSources? sources, bool sampleHistory)
+    {
+        var action = effective?.Action;
+        if (action is null)
+        {
+            var emptyWithStack = stackCount >= 2;
+            return new DialFrame(
+                new DialSegmentInput { Kind = DialSegmentKind.Empty, StackCount = emptyWithStack ? stackCount : 0, StackIndex = runtime.StackIndex },
+                null, false, DefaultDialAccentHex, Bound: emptyWithStack);
+        }
+
+        var accent = string.IsNullOrWhiteSpace(effective!.Color) ? DefaultDialAccentHex : effective.Color!;
+        string Title(string fallback) => string.IsNullOrEmpty(effective.Label) ? fallback : effective.Label!;
+
+        switch (action.Type)
+        {
+            case DeckDialTypes.Page:
+            {
+                var pageCount = IsRecentAppsMode(surface.Serial) ? RecentAppsPageCountLocked(surface.Serial) : Math.Max(config.Pages.Count, 1);
+                return new DialFrame(new DialSegmentInput
+                {
+                    Kind = DialSegmentKind.Page,
+                    Title = Title(DefaultDialTitle(action)),
+                    Icon = effective.Icon,
+                    IconName = DefaultDialIcon(action, false),
+                    AccentHex = accent,
+                    ValueText = $"{page + 1} / {pageCount}",
+                    StackCount = stackCount,
+                    StackIndex = runtime.StackIndex,
+                }, null, false, accent, Bound: true);
+            }
+            case DeckDialTypes.Monitoring:
+                return BuildMonitoringDialFrame(surface, index, effective, action, stackCount, runtime, state, page, snapshot, sources, sampleHistory, accent);
+            case DeckDialTypes.Custom:
+                return new DialFrame(new DialSegmentInput
+                {
+                    Kind = DialSegmentKind.Custom,
+                    Title = Title(""),
+                    Icon = effective.Icon,
+                    IconName = DefaultDialIcon(action, false),
+                    AccentHex = accent,
+                    StackCount = stackCount,
+                    StackIndex = runtime.StackIndex,
+                }, null, false, accent, Bound: true);
+        }
+
+        DialReading reading;
+        if (action.Type == DeckDialTypes.DeckBrightness)
+        {
+            reading = new DialReading(true, false, PersistedBrightness(surface.Serial), false);
+        }
+        else if (DeckDialTypes.IsServiceValueType(action.Type) && _dialValues is not null)
+        {
+            reading = _dialValues.Read(action);
+        }
+        else
+        {
+            reading = DialReading.Unsupported;
+        }
+
+        var usable = reading.Supported && !reading.Pending;
+        var valueText = !usable
+            ? "--"
+            : reading.Muted && DeckDialTypes.IsMuteType(action.Type)
+                ? "Muted"
+                : $"{Math.Round(reading.Percent).ToString(CultureInfo.InvariantCulture)}%";
+        var muted = usable && reading.Muted && DeckDialTypes.IsMuteType(action.Type);
+        return new DialFrame(new DialSegmentInput
+        {
+            Kind = DialSegmentKind.Value,
+            Title = Title(DefaultDialTitle(action)),
+            Icon = effective.Icon,
+            IconName = DefaultDialIcon(action, muted),
+            AccentHex = accent,
+            ValueText = valueText,
+            Fraction = usable ? reading.Percent / 100.0 : 0,
+            Muted = muted,
+            StackCount = stackCount,
+            StackIndex = runtime.StackIndex,
+        }, usable ? reading.Percent / 100.0 : null, muted, accent, Bound: true);
+    }
+
+    private DialFrame BuildMonitoringDialFrame(
+        IStreamDeckSurface surface, int index, DeckDial effective, DeckDialAction action, int stackCount, DialRuntime runtime,
+        DialDeckState state, int page, NexusSettings snapshot, SensorSnapshotSources? sources, bool sampleHistory, string accent)
+    {
+        var sensor = SensorSnapshotResolver.ResolveOrDefault(_sensors, action.Category ?? "", action.Sensor ?? "", sources ?? default);
+        var historyKey = $"{page}:{index}:{runtime.StackIndex}";
+        if (!state.History.TryGetValue(historyKey, out var history))
+        {
+            history = new List<float>(DialHistoryLength);
+            state.History[historyKey] = history;
+        }
+        if (sensor is not null && sampleHistory)
+        {
+            history.Add(sensor.Value);
+            if (history.Count > DialHistoryLength)
+            {
+                history.RemoveAt(0);
+            }
+        }
+        var title = !string.IsNullOrEmpty(effective.Label)
+            ? effective.Label!
+            : !string.IsNullOrEmpty(action.LabelText)
+                ? action.LabelText!
+                : sensor is null ? "" : DeckMonitoringFormat.ResolveLabel(action.Category, sensor.Name);
+        var valueText = sensor is null
+            ? UnresolvedSensorValueText
+            : DeckMonitoringFormat.ResolveValueText(sensor, snapshot.Units.MonitoringTempUnit, snapshot.Units.NumberFormat);
+        return new DialFrame(new DialSegmentInput
+        {
+            Kind = DialSegmentKind.Monitoring,
+            Title = title,
+            Icon = effective.Icon,
+            IconName = DefaultDialIcon(action, false),
+            AccentHex = accent,
+            ValueText = valueText,
+            History = history.Select(h => MathF.Round(h, 1)).ToList(),
+            StackCount = stackCount,
+            StackIndex = runtime.StackIndex,
+        }, null, false, accent, Bound: true);
+    }
+
+    // ── Pushing ──
+
+    /// <summary>Renders one dial's segment and writes just that region. Caller holds _lock.</summary>
+    private void PushDialSegmentLocked(IStreamDeckSurface surface, int dialIndex, DialSegmentInput input, float feedback)
+    {
+        var screen = surface.Model.Screen;
+        if (screen is null || surface.Model.Encoders == 0)
+        {
+            return;
+        }
+        var segmentWidth = screen.Width / surface.Model.Encoders;
+        using var image = _strip.RenderSegment(input, segmentWidth, screen.Height, feedback);
+        var wire = DeckWireImageEncoder.EncodeScreen(image, surface.Model);
+        surface.SetScreenRegion(dialIndex * segmentWidth, 0, segmentWidth, screen.Height, wire);
+        if (feedback <= 0f)
+        {
+            BroadcastDialTile(surface, dialIndex, image);
+        }
+    }
+
+    private void BroadcastDialTile(IStreamDeckSurface surface, int dialIndex, Image<Rgba32> upright)
+    {
+        if (!_hub.TopicHasSubscribers(Sockets.PanelTopics.StreamDeckTiles))
+        {
+            return;
+        }
+        var folderPath = _folderPathsBySerial.TryGetValue(surface.Serial, out var fp) ? fp : new List<int>();
+        var slotPath = folderPath.Count == 0 ? $"dial:{dialIndex}" : $"{string.Join('.', folderPath)}.dial:{dialIndex}";
+        BroadcastPreviewTile(surface.Serial, GetCurrentPageLocked(surface.Serial), slotPath, RenderKit.EncodeJpeg(upright));
+    }
+
+    /// <summary>
+    /// A view push for the screens: the whole strip as one region write (the
+    /// Plus capture's order), the Neo info screen, and the lights. Caller
+    /// holds _lock; runs after the keys of the same view.
+    /// </summary>
+    private void PushScreens(IStreamDeckSurface surface, bool viewChanged)
+    {
+        var model = surface.Model;
+        if (!model.HasExpandedInput || model.Screen is null && model.RingKind == StreamDeckRingKind.None && model.TouchKeys == 0)
+        {
+            return;
+        }
+        var state = DialStateLocked(surface);
+        var frames = BuildDialFramesLocked(surface, sampleHistory: true);
+        if (model.Screen is { Kind: not StreamDeckScreenKind.InfoScreen } screen && model.Encoders > 0)
+        {
+            using var strip = _strip.RenderStrip(frames.Select(f => f.Input).ToList(), screen.Width, screen.Height);
+            surface.SetScreenRegion(0, 0, screen.Width, screen.Height, DeckWireImageEncoder.EncodeScreen(strip, model));
+            var segmentWidth = screen.Width / model.Encoders;
+            for (var i = 0; i < frames.Count; i++)
+            {
+                state.SegmentKeys[i] = frames[i].Input.StateKey();
+                state.Dials[i].FeedbackActive = false;
+                using var tile = strip.Clone(c => c.Crop(new Rectangle(i * segmentWidth, 0, segmentWidth, screen.Height)));
+                BroadcastDialTile(surface, i, tile);
+            }
+        }
+        PushInfoScreenLocked(surface, state, force: true);
+        SyncAuxLightsLocked(surface, frames);
+    }
+
+    private InfoScreenInput BuildInfoScreenInput(IStreamDeckSurface surface)
+    {
+        var mode = _store.Load().StreamDeck.Decks.TryGetValue(surface.Serial, out var deck) && deck.InfoScreen is "clock" or "page" or "off"
+            ? deck.InfoScreen
+            : "clock";
+        var pageCount = IsRecentAppsMode(surface.Serial) ? RecentAppsPageCountLocked(surface.Serial) : Math.Max(LoadConfig(surface.Serial).Pages.Count, 1);
+        return new InfoScreenInput
+        {
+            Mode = mode,
+            LocalTime = _clock.GetLocalNow().DateTime,
+            Page = GetCurrentPageLocked(surface.Serial),
+            PageCount = pageCount,
+        };
+    }
+
+    private void PushInfoScreenLocked(IStreamDeckSurface surface, DialDeckState state, bool force)
+    {
+        if (surface.Model.Screen is not { Kind: StreamDeckScreenKind.InfoScreen } screen)
+        {
+            return;
+        }
+        var input = BuildInfoScreenInput(surface);
+        var key = input.StateKey();
+        if (!force && key == state.InfoKey)
+        {
+            return;
+        }
+        state.InfoKey = key;
+        using var image = _strip.RenderInfoScreen(input, screen.Width, screen.Height);
+        surface.SetInfoScreen(DeckWireImageEncoder.EncodeScreen(image, surface.Model));
+        if (_hub.TopicHasSubscribers(Sockets.PanelTopics.StreamDeckTiles))
+        {
+            BroadcastPreviewTile(surface.Serial, GetCurrentPageLocked(surface.Serial), "info", RenderKit.EncodeJpeg(image));
+        }
+    }
+
+    /// <summary>
+    /// Once per tick: repaints a segment whose content changed (an outside
+    /// volume change, a sensor sample), the info screen when its text did,
+    /// and the lights. A dial mid-feedback belongs to the animation loop.
+    /// </summary>
+    private void RefreshDialSegments()
+    {
+        foreach (var surface in _surfaces.Values)
+        {
+            var model = surface.Model;
+            if (!surface.IsConnected || !model.HasExpandedInput)
+            {
+                continue;
+            }
+            if (_asleep.TryGetValue(surface.Serial, out var asleep) && asleep)
+            {
+                continue;
+            }
+            var state = DialStateLocked(surface);
+            var frames = BuildDialFramesLocked(surface, sampleHistory: true);
+            if (model.Screen is { Kind: not StreamDeckScreenKind.InfoScreen } && model.Encoders > 0)
+            {
+                for (var i = 0; i < frames.Count; i++)
+                {
+                    if (state.Dials[i].FeedbackActive)
+                    {
+                        continue;
+                    }
+                    var key = frames[i].Input.StateKey();
+                    if (key == state.SegmentKeys[i])
+                    {
+                        continue;
+                    }
+                    state.SegmentKeys[i] = key;
+                    PushDialSegmentLocked(surface, i, frames[i].Input, 0f);
+                }
+            }
+            PushInfoScreenLocked(surface, state, force: false);
+            SyncAuxLightsLocked(surface, frames);
+        }
+    }
+
+    // ── Lights: encoder rings and Neo touch-key backlights ──
+
+    private void SyncAuxLightsLocked(IStreamDeckSurface surface) =>
+        SyncAuxLightsLocked(surface, surface.Model.RingKind == StreamDeckRingKind.None ? null : BuildDialFramesLocked(surface, sampleHistory: false));
+
+    /// <summary>Pushes ring colours and touch-key backlights when they changed; everything goes dark while the deck is asleep.</summary>
+    private void SyncAuxLightsLocked(IStreamDeckSurface surface, List<DialFrame>? frames)
+    {
+        var model = surface.Model;
+        if (model.RingKind == StreamDeckRingKind.None && model.TouchKeys == 0)
+        {
+            return;
+        }
+        var state = DialStateLocked(surface);
+        var asleep = _asleep.TryGetValue(surface.Serial, out var a) && a;
+
+        if (model.RingKind != StreamDeckRingKind.None && frames is not null)
+        {
+            for (var i = 0; i < model.Encoders && i < frames.Count; i++)
+            {
+                var ring = asleep ? new byte[model.EncoderRingLeds * 3] : BuildRing(model, frames[i]);
+                var key = Convert.ToHexString(ring) + (asleep || !frames[i].Bound ? "-" : "c");
+                if (key == state.RingKeys[i])
+                {
+                    continue;
+                }
+                state.RingKeys[i] = key;
+                surface.SetRing(i, ring);
+                if (model.RingKind == StreamDeckRingKind.StudioReport)
+                {
+                    var (r, g, b) = asleep || !frames[i].Bound ? ((byte)0, (byte)0, (byte)0) : Scale(ParseRgb(frames[i].AccentHex), frames[i].Muted ? 0.15 : 1.0);
+                    surface.SetCenterLed(i, r, g, b);
+                }
+            }
+        }
+
+        if (model.TouchKeys > 0)
+        {
+            var page = GetCurrentPageLocked(surface.Serial);
+            var pageCount = IsRecentAppsMode(surface.Serial) ? RecentAppsPageCountLocked(surface.Serial) : Math.Max(LoadConfig(surface.Serial).Pages.Count, 1);
+            for (var k = 0; k < model.TouchKeys; k++)
+            {
+                var available = k == 0 ? page > 0 : page < pageCount - 1;
+                var color = asleep || !available ? (R: (byte)0, G: (byte)0, B: (byte)0) : state.TouchKeyHeld[k] ? TouchKeyPressed : TouchKeyIdle;
+                var key = $"{color.R},{color.G},{color.B}";
+                if (key == state.TouchKeyLights[k])
+                {
+                    continue;
+                }
+                state.TouchKeyLights[k] = key;
+                surface.FillKey(model.KeyCount + k, color.R, color.G, color.B);
+            }
+        }
+    }
+
+    /// <summary>Studio: the lit fraction of the 24 LEDs in the accent over a dim track. Galleon: lit LEDs of four. Dials with no value stay dark.</summary>
+    private static byte[] BuildRing(StreamDeckModel model, DialFrame frame)
+    {
+        var leds = model.EncoderRingLeds;
+        var ring = new byte[leds * 3];
+        if (!frame.Bound || frame.RingFraction is not { } fraction)
+        {
+            return ring;
+        }
+        var accent = ParseRgb(frame.AccentHex);
+        var lit = frame.Muted
+            ? 0
+            : model.RingKind == StreamDeckRingKind.GalleonFeature
+                ? (int)Math.Ceiling(fraction * leds - 0.01)
+                : (int)Math.Round(fraction * leds);
+        lit = Math.Clamp(lit, 0, leds);
+        for (var i = 0; i < leds; i++)
+        {
+            var (r, g, b) = i < lit ? accent : Scale(accent, 0.08);
+            ring[i * 3] = r;
+            ring[i * 3 + 1] = g;
+            ring[i * 3 + 2] = b;
+        }
+        return ring;
+    }
+
+    private static (byte R, byte G, byte B) ParseRgb(string hex)
+    {
+        var color = RenderKit.ParseColor(hex, SixLabors.ImageSharp.Color.ParseHex(DefaultDialAccentHex.TrimStart('#'))).ToPixel<Rgba32>();
+        return (color.R, color.G, color.B);
+    }
+
+    private static (byte R, byte G, byte B) Scale((byte R, byte G, byte B) color, double factor) =>
+        ((byte)(color.R * factor), (byte)(color.G * factor), (byte)(color.B * factor));
+
+    /// <summary>Darkens every ring and touch-key backlight before the firmware logo or a disconnect. Caller holds _lock.</summary>
+    private static void BlankAuxLights(IStreamDeckSurface surface)
+    {
+        var model = surface.Model;
+        if (model.RingKind != StreamDeckRingKind.None)
+        {
+            var black = new byte[model.EncoderRingLeds * 3];
+            for (var i = 0; i < model.Encoders; i++)
+            {
+                surface.SetRing(i, black);
+                if (model.RingKind == StreamDeckRingKind.StudioReport)
+                {
+                    surface.SetCenterLed(i, 0, 0, 0);
+                }
+            }
+        }
+        for (var k = 0; k < model.TouchKeys; k++)
+        {
+            surface.FillKey(model.KeyCount + k, 0, 0, 0);
+        }
+    }
+}

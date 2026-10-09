@@ -1689,6 +1689,8 @@ public sealed class PhysicalDeckSettings
     public int SleepAfterSeconds { get; set; }
     /// <summary>Blank the display while the desktop session is locked; input at the lock screen brings it back for a while.</summary>
     public bool SleepWhenLocked { get; set; } = true;
+    /// <summary>Neo info screen content: clock | page | off.</summary>
+    public string InfoScreen { get; set; } = "clock";
     /// <summary>Last-known StreamDeckModel.ProductId, so a disconnected deck can still report its layout via StreamDeckModels.ByProductId.</summary>
     public int ProductId { get; set; }
 

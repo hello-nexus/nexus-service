@@ -21,8 +21,25 @@ public sealed class StreamDeckSummaryDto
     public int KeyPixels { get; set; }
     /// <summary>"bmp" | "jpeg".</summary>
     public string Format { get; set; } = "";
-    /// <summary>"none" | "flipBoth" | "mirrorXRot90" - see StreamDeckModel.Transform.</summary>
+    /// <summary>"none" | "flipBoth" | "mirrorXRot90" | "rot90Ccw" - see StreamDeckModel.Transform.</summary>
     public string Transform { get; set; } = "";
+    /// <summary>Dial count: 0, 2, 4 or 6.</summary>
+    public int Encoders { get; set; }
+    /// <summary>"below" | "above" | "sides"; always serialized, null on a model without dials.</summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.Never)]
+    public string? DialPlacement { get; set; }
+    /// <summary>Screen beyond the keys, in logical pixels; always serialized, null when the model has none.</summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.Never)]
+    public StreamDeckScreenDto? Screen { get; set; }
+    /// <summary>Capacitive touch keys after the LCD keys (Neo).</summary>
+    public int TouchKeys { get; set; }
+    /// <summary>LEDs per dial ring (Studio 24, Galleon 4); 0 without rings.</summary>
+    public int EncoderRingLeds { get; set; }
+    /// <summary>Key bitmap size; KeyPixels stays the smaller edge.</summary>
+    public int KeyWidth { get; set; }
+    public int KeyHeight { get; set; }
+    /// <summary>Neo info screen mode: clock | page | off. Omitted on other models.</summary>
+    public string? InfoScreen { get; set; }
     /// <summary>Persisted value, 0-100.</summary>
     public int Brightness { get; set; }
     /// <summary>User rotation, in quarter-turn degree steps.</summary>
@@ -43,6 +60,14 @@ public sealed class StreamDeckSummaryDto
     public string InstanceId { get; set; } = "";
 }
 
+/// <summary>A deck screen beyond the keys. Kind: touchStrip | infoScreen | dialScreen.</summary>
+public sealed class StreamDeckScreenDto
+{
+    public int Width { get; set; }
+    public int Height { get; set; }
+    public string Kind { get; set; } = "";
+}
+
 public sealed class GetStreamDecksResponse
 {
     public List<StreamDeckSummaryDto> Decks { get; set; } = new();
@@ -58,6 +83,8 @@ public sealed class UpdateStreamDeckBody
     /// <summary>Seconds of no key input before the deck blanks; clamped to a non-negative value.</summary>
     public int? SleepAfterSeconds { get; set; }
     public bool? SleepWhenLocked { get; set; }
+    /// <summary>Neo info screen mode: clock | page | off. Other values are ignored.</summary>
+    public string? InfoScreen { get; set; }
 }
 
 /// <summary>Multiplex frame for the "streamdeck" topic.</summary>
@@ -75,6 +102,8 @@ public sealed class StreamDeckChangedFrame
     public int? KeyIndex { get; set; }
     /// <summary>One-shot id (creation epoch ms) for "editRequest", so a client consumes each blank-key hold once across the live frame and the boot-time GET.</summary>
     public long? Token { get; set; }
+    /// <summary>"editRequest" from a long touch on an empty dial segment: the editor selects this dial and ignores KeyIndex.</summary>
+    public int? DialIndex { get; set; }
 }
 
 /// <summary>
@@ -108,6 +137,8 @@ public sealed class StreamDeckPendingEditDto
     public int KeyIndex { get; set; }
     /// <summary>Matches the "editRequest" frame's Token; the client dedupes on it.</summary>
     public long Token { get; set; }
+    /// <summary>Set for a long touch on an empty dial segment: the editor selects this dial and ignores KeyIndex.</summary>
+    public int? DialIndex { get; set; }
 }
 
 /// <summary>GET /streamdeck/pending-edit envelope; Edit is null when no intent is pending (or the pending one has aged out).</summary>
@@ -122,6 +153,24 @@ public sealed class StreamDeckSimPressBody
 {
     public int KeyIndex { get; set; }
     public bool Pressed { get; set; }
+}
+
+/// <summary>
+/// POST /streamdeck/dev/sim-input body. Kind: rotate | dialDown | dialUp |
+/// tap | longTouch | swipe. Index is the dial for rotate/dialDown/dialUp;
+/// Ticks is signed (positive clockwise); X/Y is the touch point and X2/Y2 the
+/// swipe end.
+/// </summary>
+public sealed class StreamDeckSimInputBody
+{
+    public string Serial { get; set; } = "";
+    public string Kind { get; set; } = "";
+    public int? Index { get; set; }
+    public int? Ticks { get; set; }
+    public int? X { get; set; }
+    public int? Y { get; set; }
+    public int? X2 { get; set; }
+    public int? Y2 { get; set; }
 }
 
 /// <summary>POST /streamdeck/dev/simulate body: picks the model the simulated deck presents as.</summary>
@@ -146,6 +195,11 @@ public sealed class StreamDeckDevModelDto
     [JsonPropertyName("cols")]
     public int Columns { get; set; }
     public int KeyCount { get; set; }
+    public int Encoders { get; set; }
+    /// <summary>Always serialized, null when the model has no screen beyond the keys.</summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.Never)]
+    public StreamDeckScreenDto? Screen { get; set; }
+    public int TouchKeys { get; set; }
 }
 
 public sealed class StreamDeckDevModelsResponse

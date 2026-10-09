@@ -50,7 +50,7 @@ namespace Nexus.Service.Peripherals.StreamDeck;
 /// Opens every model in <see cref="StreamDeckModels.All"/>, gen1 and gen2
 /// alike; only the Mini is bench-verified (StreamDeckModel.Verified).
 /// </summary>
-public sealed class StreamDeckConnectionWorker : BackgroundService, IDeckSurfaceControl
+public sealed partial class StreamDeckConnectionWorker : BackgroundService, IDeckSurfaceControl
 {
     private const int TickMs = 1000;
 
@@ -196,7 +196,7 @@ public sealed class StreamDeckConnectionWorker : BackgroundService, IDeckSurface
     }
 
     /// <summary>A fired blank-key hold-to-edit intent. Token is the creation epoch ms; the web dedupes the live frame against the boot GET on it.</summary>
-    internal readonly record struct DeckPendingEdit(string Serial, int Page, IReadOnlyList<int> FolderPath, int SlotIndex, long Token, DateTimeOffset CreatedAt);
+    internal readonly record struct DeckPendingEdit(string Serial, int Page, IReadOnlyList<int> FolderPath, int SlotIndex, long Token, DateTimeOffset CreatedAt, int? DialIndex = null);
 
     /// <summary>Per "{serial}:{page}:{slotPath}" monitoring key sample history, oldest first, capped at MonitoringHistoryLength. Page-qualified because BuildSlotPath is not itself unique across a deck's pages.</summary>
     private readonly Dictionary<string, List<float>> _monitoringHistory = new(StringComparer.Ordinal);
@@ -273,7 +273,8 @@ public sealed class StreamDeckConnectionWorker : BackgroundService, IDeckSurface
         Nexus.Service.Cooling.IFanControlProvider? fans = null,
         SessionLockListener? sessionLock = null,
         Nexus.Service.Deck.RecentAppsState? recentAppsState = null,
-        Nexus.Service.Deck.RecentAppsActivator? recentAppsActivator = null)
+        Nexus.Service.Deck.RecentAppsActivator? recentAppsActivator = null,
+        IDeckDialValues? dialValues = null)
     {
         _hid = hid;
         _presence = presence;
@@ -291,6 +292,8 @@ public sealed class StreamDeckConnectionWorker : BackgroundService, IDeckSurface
         _sessionLock = sessionLock;
         _recentAppsState = recentAppsState;
         _recentAppsActivator = recentAppsActivator;
+        _dialValues = dialValues;
+        _strip = new DeckStripRenderer(keyRenderer);
         _hub.OnTopicFirstSubscriber += OnStreamDeckTilesFirstSubscriber;
         _sessionLock?.LockChanged += OnSessionLockChanged;
     }
@@ -462,6 +465,7 @@ public sealed class StreamDeckConnectionWorker : BackgroundService, IDeckSurface
             CancelBrightnessRampLocked(surface.Serial);
             surface.SetBrightness(0);
             _asleep[surface.Serial] = true;
+            SyncAuxLightsLocked(surface);
         }
     }
 
@@ -567,6 +571,11 @@ public sealed class StreamDeckConnectionWorker : BackgroundService, IDeckSurface
             {
                 Console.Error.WriteLine($"[streamdeck-conn] hold animation exception: {ex.GetType().Name}: {ex.Message}");
             }
+            try { if (_anyDialFeedback) { AnimateDialFeedback(); } }
+            catch (Exception ex)
+            {
+                Console.Error.WriteLine($"[streamdeck-conn] dial feedback exception: {ex.GetType().Name}: {ex.Message}");
+            }
             try { if (_anyRampActive) { AnimateBrightnessRamps(); } }
             catch (Exception ex)
             {
@@ -604,6 +613,7 @@ public sealed class StreamDeckConnectionWorker : BackgroundService, IDeckSurface
                 ApplySleepAfterIdle();
                 RefreshMonitoringKeys();
                 RefreshWeatherKeys();
+                RefreshDialSegments();
                 wantFps = _monitoringFpsDemandThisTick;
             }
         }
@@ -679,6 +689,8 @@ public sealed class StreamDeckConnectionWorker : BackgroundService, IDeckSurface
             _brightnessRamps.Clear();
             _anyRampActive = false;
             _heldKeysBySerial.Clear();
+            _dialStates.Clear();
+            _anyDialFeedback = false;
             _activeHolds.Clear();
             _monitoringHistory.Clear();
             _monitoringLastHash.Clear();
@@ -708,6 +720,7 @@ public sealed class StreamDeckConnectionWorker : BackgroundService, IDeckSurface
         CancelBrightnessRampLocked(existing.Serial);
         _currentPageBySerial.Remove(existing.Serial);
         _heldKeysBySerial.Remove(existing.Serial);
+        RemoveDialStateForSerial(existing.Serial);
         RemoveAllHoldsForSerial(existing.Serial);
         RemoveMonitoringStateForSerial(existing.Serial);
         BroadcastDecksChanged(existing.Serial);
@@ -799,6 +812,7 @@ public sealed class StreamDeckConnectionWorker : BackgroundService, IDeckSurface
             CancelBrightnessRampLocked(serial);
             _currentPageBySerial.Remove(serial);
             _heldKeysBySerial.Remove(serial);
+            RemoveDialStateForSerial(serial);
             RemoveAllHoldsForSerial(serial);
             RemoveMonitoringStateForSerial(serial);
             BroadcastDecksChanged(serial);
@@ -884,6 +898,7 @@ public sealed class StreamDeckConnectionWorker : BackgroundService, IDeckSurface
         }
         _folderPathsBySerial[surface.Serial] = new List<int>();
         _currentPageBySerial[surface.Serial] = 0;
+        RemoveDialStateForSerial(surface.Serial);
         PushCurrentView(surface, viewChanged: true);
         BroadcastDecksChanged(surface.Serial);
     }
@@ -954,6 +969,7 @@ public sealed class StreamDeckConnectionWorker : BackgroundService, IDeckSurface
             CancelBrightnessRampLocked(surface.Serial);
             surface.SetBrightness(0);
             _asleep[surface.Serial] = true;
+            SyncAuxLightsLocked(surface);
             ServiceLog.Info($"[streamdeck] deck asleep after {deck.SleepAfterSeconds}s idle (serial={surface.Serial})");
         }
     }
@@ -972,6 +988,7 @@ public sealed class StreamDeckConnectionWorker : BackgroundService, IDeckSurface
         }
         _asleep[surface.Serial] = false;
         ApplyPersistedBrightness(surface);
+        SyncAuxLightsLocked(surface);
         ServiceLog.Info($"[streamdeck] deck woken by key input (serial={surface.Serial})");
     }
 
@@ -1150,6 +1167,7 @@ public sealed class StreamDeckConnectionWorker : BackgroundService, IDeckSurface
         var from = _brightnessRamps.TryGetValue(serial, out var running)
             ? running.LastSent
             : to == 0 ? PersistedBrightness(serial) : 0;
+        SyncAuxLightsLocked(surface);
         if (from == to)
         {
             _brightnessRamps.Remove(serial);
@@ -1274,15 +1292,6 @@ public sealed class StreamDeckConnectionWorker : BackgroundService, IDeckSurface
                 return;
             }
             DispatchInput(key, surface, input);
-        }
-    }
-
-    /// <summary>Routes one decoded report by kind. Caller holds _lock.</summary>
-    private void DispatchInput(string key, IStreamDeckSurface surface, StreamDeckInput input)
-    {
-        if (input.Kind == StreamDeckInputKind.Keys)
-        {
-            ProcessKeyStates(key, surface, input.Keys);
         }
     }
 
@@ -2717,6 +2726,8 @@ public sealed class StreamDeckConnectionWorker : BackgroundService, IDeckSurface
             PushMonitoringKey(keyRef, sensor, tempUnit, numberFormat);
             _monitoringPaintedThisTick.Add(keyRef.HistoryKey);
         }
+
+        PushScreens(surface, effectiveViewChanged);
     }
 
     private void PushBackKey(IStreamDeckSurface surface, PhysicalDeckSettings? deck)
@@ -2799,6 +2810,8 @@ public sealed class StreamDeckConnectionWorker : BackgroundService, IDeckSurface
             _recentAppsLastHash[hashKey] = hash;
             surface.SetKeyImage(i, bytes);
         }
+
+        PushScreens(surface, viewChanged);
     }
 
     /// <summary>
@@ -3090,7 +3103,7 @@ public sealed class StreamDeckConnectionWorker : BackgroundService, IDeckSurface
         }
     }
 
-    private void BroadcastEditRequest(string serial, int page, List<int> folderPath, int keyIndex, long token) =>
+    private void BroadcastEditRequest(string serial, int page, List<int> folderPath, int keyIndex, long token, int? dialIndex = null) =>
         PanelTopics.BroadcastStreamDeck(_hub, new StreamDeckChangedFrame
         {
             Kind = "editRequest",
@@ -3099,6 +3112,7 @@ public sealed class StreamDeckConnectionWorker : BackgroundService, IDeckSurface
             FolderPath = new List<int>(folderPath),
             KeyIndex = keyIndex,
             Token = token,
+            DialIndex = dialIndex,
         });
 
     private void BroadcastDecksChanged(string? serial) =>
@@ -3144,6 +3158,8 @@ public sealed class StreamDeckConnectionWorker : BackgroundService, IDeckSurface
             _anyRampActive = false;
             _currentPageBySerial.Clear();
             _heldKeysBySerial.Clear();
+            _dialStates.Clear();
+            _anyDialFeedback = false;
             _activeHolds.Clear();
             _anyHoldActive = false;
             _monitoringHistory.Clear();
@@ -3174,6 +3190,7 @@ public sealed class StreamDeckConnectionWorker : BackgroundService, IDeckSurface
         settings.Decks.TryGetValue(surface.Serial, out var deck);
         var brightness = Math.Clamp(deck?.Brightness ?? PhysicalDeckSettings.DefaultBrightness, MinDisconnectBrightness, 100);
         surface.SetBrightness(brightness);
+        BlankAuxLights(surface);
         surface.Reset();
         ServiceLog.Info($"[streamdeck] reset before disconnect (serial={surface.Serial})");
     }

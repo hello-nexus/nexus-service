@@ -4,7 +4,7 @@ namespace Nexus.Service.Peripherals.StreamDeck;
 /// Per-model pixel transform a rendered key bitmap needs before it matches
 /// what the physical hardware expects on the wire (StreamDeckModel.Transform).
 /// </summary>
-public enum DeckKeyTransform { None, FlipBoth, MirrorXRot90 }
+public enum DeckKeyTransform { None, FlipBoth, MirrorXRot90, Rot90Ccw }
 
 /// <summary>RGBA, row-major, top-down pixel buffer. Mirrors nexus-web's deckKeyTransform.ts RawImage.</summary>
 public readonly struct DeckRawImage
@@ -33,6 +33,7 @@ public static class DeckKeyTransformer
     {
         "flipBoth" => DeckKeyTransform.FlipBoth,
         "mirrorXRot90" => DeckKeyTransform.MirrorXRot90,
+        "rot90Ccw" => DeckKeyTransform.Rot90Ccw,
         _ => DeckKeyTransform.None,
     };
 
@@ -42,6 +43,7 @@ public static class DeckKeyTransformer
         DeckKeyTransform.None => img,
         DeckKeyTransform.FlipBoth => Rotate180(img),
         DeckKeyTransform.MirrorXRot90 => Rotate90Ccw(MirrorX(img)),
+        DeckKeyTransform.Rot90Ccw => Rotate90Ccw(img),
         _ => img,
     };
 

@@ -73,6 +73,14 @@ public static class StreamDeckRoutes
                     KeyPixels = model.KeyPixelSize,
                     Format = FormatName(model.ImageFormat),
                     Transform = model.Transform,
+                    Encoders = model.Encoders,
+                    DialPlacement = DialPlacementName(model.DialPlacement),
+                    Screen = ScreenDto(model),
+                    TouchKeys = model.TouchKeys,
+                    EncoderRingLeds = model.EncoderRingLeds,
+                    KeyWidth = model.KeyWidth,
+                    KeyHeight = model.KeyHeight,
+                    InfoScreen = InfoScreenFor(model, deck),
                     Brightness = deck.Brightness,
                     Orientation = deck.Orientation,
                     SleepAfterSeconds = deck.SleepAfterSeconds,
@@ -118,7 +126,15 @@ public static class StreamDeckRoutes
                 {
                     deck.SleepWhenLocked = body.SleepWhenLocked.Value;
                 }
+                if (NormalizeInfoScreen(body.InfoScreen) is { } infoScreen)
+                {
+                    deck.InfoScreen = infoScreen;
+                }
             });
+            if (NormalizeInfoScreen(body.InfoScreen) is not null)
+            {
+                worker.RefreshView(serial);
+            }
             // Skipped while the deck is asleep (sleep-after or the session
             // lock blanked it): the new value already persisted above and
             // applies the moment the deck wakes.
@@ -156,6 +172,7 @@ public static class StreamDeckRoutes
                     FolderPath = edit.FolderPath.ToList(),
                     KeyIndex = edit.SlotIndex,
                     Token = edit.Token,
+                    DialIndex = edit.DialIndex,
                 };
             }
             return Results.Json(response, AppJsonContext.Default.StreamDeckPendingEditResponse);
@@ -278,6 +295,21 @@ public static class StreamDeckRoutes
             return ApiResponse.Fail("simulator not available");
         }).LocalhostOnly();
 
+        app.MapPost("/streamdeck/dev/sim-input", (StreamDeckSimInputBody body, StreamDeckConnectionWorker worker) =>
+        {
+            var surface = worker.FindBySerial(body.Serial);
+            if (surface is not SimulatedStreamDeckSurface simulated)
+            {
+                return ApiResponse.Fail("simulator not available");
+            }
+            if (!TrySimulateInput(simulated, body))
+            {
+                return ApiResponse.Fail("invalid input for this model");
+            }
+            worker.DrainSimulatedInput();
+            return ApiResponse.Ok();
+        }).LocalhostOnly();
+
         app.MapGet("/streamdeck/dev/models", () =>
         {
             var response = new StreamDeckDevModelsResponse();
@@ -290,6 +322,9 @@ public static class StreamDeckRoutes
                     Rows = model.Rows,
                     Columns = model.Columns,
                     KeyCount = model.KeyCount,
+                    Encoders = model.Encoders,
+                    Screen = ScreenDto(model),
+                    TouchKeys = model.TouchKeys,
                 });
             }
             return response;
@@ -331,6 +366,36 @@ public static class StreamDeckRoutes
         }).LocalhostOnly();
     }
 
+    /// <summary>Queues one simulated dial or touch report; false when the model lacks the control or the body is malformed.</summary>
+    private static bool TrySimulateInput(SimulatedStreamDeckSurface sim, StreamDeckSimInputBody body)
+    {
+        var dial = body.Index ?? 0;
+        var model = sim.Model;
+        switch (body.Kind)
+        {
+            case "rotate" when dial >= 0 && dial < model.Encoders && body.Ticks is { } ticks and not 0:
+                sim.PokeRotate(dial, ticks);
+                return true;
+            case "dialDown" when dial >= 0 && dial < model.Encoders:
+                sim.PokeDialPress(dial, true);
+                return true;
+            case "dialUp" when dial >= 0 && dial < model.Encoders:
+                sim.PokeDialPress(dial, false);
+                return true;
+            case "tap" when model.Screen is not null && body.X is { } x && body.Y is { } y:
+                sim.PokeTouch(StreamDeckTouchKind.Tap, x, y);
+                return true;
+            case "longTouch" when model.Screen is not null && body.X is { } lx && body.Y is { } ly:
+                sim.PokeTouch(StreamDeckTouchKind.Long, lx, ly);
+                return true;
+            case "swipe" when model.Screen is not null && body.X is { } sx && body.Y is { } sy && body.X2 is { } ex && body.Y2 is { } ey:
+                sim.PokeTouch(StreamDeckTouchKind.Flick, sx, sy, ex, ey);
+                return true;
+            default:
+                return false;
+        }
+    }
+
     /// <summary>Shared DTO builder for GET /streamdeck/decks and the dev-tools simulate route.</summary>
     private static StreamDeckSummaryDto BuildSummary(
         StreamDeckConnectionWorker worker, IStreamDeckSurface surface, PhysicalDeckSettings? deck, string? warning, string? conflictAppId) => new()
@@ -346,6 +411,14 @@ public static class StreamDeckRoutes
         KeyPixels = surface.Model.KeyPixelSize,
         Format = FormatName(surface.Model.ImageFormat),
         Transform = surface.Model.Transform,
+        Encoders = surface.Model.Encoders,
+        DialPlacement = DialPlacementName(surface.Model.DialPlacement),
+        Screen = ScreenDto(surface.Model),
+        TouchKeys = surface.Model.TouchKeys,
+        EncoderRingLeds = surface.Model.EncoderRingLeds,
+        KeyWidth = surface.Model.KeyWidth,
+        KeyHeight = surface.Model.KeyHeight,
+        InfoScreen = InfoScreenFor(surface.Model, deck),
         Brightness = deck?.Brightness ?? PhysicalDeckSettings.DefaultBrightness,
         Orientation = deck?.Orientation ?? 0,
         SleepAfterSeconds = deck?.SleepAfterSeconds ?? 0,
@@ -357,6 +430,33 @@ public static class StreamDeckRoutes
         FolderPath = worker.GetFolderPath(surface.Serial).ToList(),
         InstanceId = DeckInstanceResolver.PhysicalInstanceId(surface.Serial),
     };
+
+    private static string? DialPlacementName(StreamDeckDialPlacement placement) => placement switch
+    {
+        StreamDeckDialPlacement.Below => "below",
+        StreamDeckDialPlacement.Above => "above",
+        StreamDeckDialPlacement.Sides => "sides",
+        _ => null,
+    };
+
+    private static StreamDeckScreenDto? ScreenDto(StreamDeckModel model) => model.Screen is { } screen
+        ? new StreamDeckScreenDto
+        {
+            Width = screen.Width,
+            Height = screen.Height,
+            Kind = screen.Kind switch
+            {
+                StreamDeckScreenKind.TouchStrip => "touchStrip",
+                StreamDeckScreenKind.InfoScreen => "infoScreen",
+                _ => "dialScreen",
+            },
+        }
+        : null;
+
+    private static string? InfoScreenFor(StreamDeckModel model, PhysicalDeckSettings? deck) =>
+        model.Screen?.Kind == StreamDeckScreenKind.InfoScreen ? NormalizeInfoScreen(deck?.InfoScreen) ?? "clock" : null;
+
+    private static string? NormalizeInfoScreen(string? mode) => mode is "clock" or "page" or "off" ? mode : null;
 
     private static string FormatName(StreamDeckImageFormat format) => format switch
     {
