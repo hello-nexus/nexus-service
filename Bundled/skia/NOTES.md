@@ -61,9 +61,9 @@ tests on macOS (they load the bundled library) and an AOT publish per RID.
 
 - win-x64: KERNEL32, USER32. DirectWrite loads at runtime.
 - osx-arm64: CoreText, CoreGraphics, CoreFoundation, libc++; macOS 12.0+.
-- linux-x64: libfontconfig.so.1 (FreeType is linked in), glibc 2.34+ and
-  libstdc++ from GCC 11+ (GLIBCXX_3.4.29). The Nexus binary itself already
-  needs glibc 2.38 (v3.0.24-beta.1), so neither raises the floor.
+- linux-x64: libfontconfig.so.1 and glibc 2.35+. FreeType, libstdc++ and
+  libgcc are linked in, so the library needs no C++ runtime on the system. The
+  Nexus binary itself needs glibc 2.38 (v3.0.24-beta.1).
 
 ## Licenses
 

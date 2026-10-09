@@ -101,6 +101,7 @@ shared_library("SkiaSharp") {
     ldflags = [
       rebase_path(nexus_exports, root_build_dir),
       "-static-libgcc",
+      "-static-libstdc++",
     ]
   }
 }
