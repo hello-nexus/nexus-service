@@ -5,9 +5,8 @@ namespace Nexus.Service.Update;
 /// <summary>
 /// Semver compare for "v{major}.{minor}.{patch}[-prerelease]" version strings.
 /// A leading "v"/"V" is stripped. Prerelease precedence follows semver: a build
-/// with a "-beta.N" suffix ranks below the same major.minor.patch release, so a
-/// user on a beta is offered the matching stable once it ships. Non-parseable
-/// strings are never newer.
+/// with a "-beta.N" suffix ranks below the same major.minor.patch release.
+/// Non-parseable strings are never newer.
 /// </summary>
 public static class VersionCompare
 {
