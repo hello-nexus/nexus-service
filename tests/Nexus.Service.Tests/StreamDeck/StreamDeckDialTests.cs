@@ -481,6 +481,25 @@ public sealed class StreamDeckDialTests : IDisposable
     }
 
     [Fact]
+    public async Task SlowTurnAction_TurnsMadeAfterAPushRunAfterIt_NotBeforeIt()
+    {
+        var executor = BuildGated();
+        _sim!.PokeRotate(0, 1);
+        Drain();
+        Assert.True(SpinWait.SpinUntil(() => executor.Started >= 1, TimeSpan.FromSeconds(3)));
+
+        _sim.PokeRotate(0, 1);
+        Drain();
+        Press(0);
+        _sim.PokeRotate(0, 2);
+        Drain();
+        executor.Release();
+        await _worker!.LastDispatchTask!.WaitAsync(TimeSpan.FromSeconds(5));
+
+        Assert.Equal(new[] { "r", "r", "p", "r", "r" }, executor.Texts.ToArray());
+    }
+
+    [Fact]
     public async Task SlowTurnAction_WaitingTicksAreBounded_AndThePushStillRuns()
     {
         var executor = BuildGated();

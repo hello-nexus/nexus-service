@@ -246,6 +246,22 @@ public sealed class StreamDeckExpandedHidWorkerTests : IDisposable
     }
 
     [Fact]
+    public void ATransientLightWriteFailure_IsRetriedOnTheNextTick()
+    {
+        var neo = StreamDeckModels.ByProductId(0x009a)!;
+        var device = new MockStreamDeckHidDevice { ProductId = neo.ProductId };
+        var attempts = 0;
+        device.RejectFeature = report => report[1] == 0x06 && Interlocked.Increment(ref attempts) == 1;
+        var (worker, _) = Build(neo, "neo-path", "NEO1", device, Usb(neo), "{\"pages\":[{\"slots\":[]},{\"slots\":[]}]}");
+
+        worker.Tick();
+
+        Assert.Equal(1, Volatile.Read(ref attempts) - device.FeatureWrites.Count(w => w[1] == 0x06));
+        Assert.Contains(device.FeatureWrites, w => w[1] == 0x06 && w[2] == 8);
+        Assert.True(worker.FindBySerial("NEO1")!.IsConnected);
+    }
+
+    [Fact]
     public void Neo_ShutdownDarkensTheTouchKeyBacklights()
     {
         var neo = StreamDeckModels.ByProductId(0x009a)!;

@@ -25,6 +25,8 @@ public sealed partial class StreamDeckConnectionWorker
 {
     private const int DefaultDialStep = 2;
     private const int DefaultRestoreLevel = 50;
+    /// <summary>Refused writes of one light's content before it is left alone until the content changes; two lights per tick keep the surface's own failure threshold out of reach.</summary>
+    private const int MaxLightWriteAttempts = 2;
     /// <summary>Custom-turn ticks waiting behind a slow action, per dial; the oldest beyond this are dropped.</summary>
     private const int MaxPendingTurnTicks = 24;
     /// <summary>Turning a dial while it is held moves this many times the step.</summary>
@@ -46,6 +48,15 @@ public sealed partial class StreamDeckConnectionWorker
     private readonly IDeckDialValues? _dialValues;
     private readonly DeckStripRenderer _strip;
 
+    /// <summary>Custom-turn ticks waiting for one queued drain; mutated under the owning dial's TurnGate.</summary>
+    private sealed class TurnSegment
+    {
+        public int Right;
+        public int Left;
+        public DeckAction? RightAction;
+        public DeckAction? LeftAction;
+    }
+
     private sealed class DialRuntime
     {
         public bool Down;
@@ -56,11 +67,8 @@ public sealed partial class StreamDeckConnectionWorker
         public Task Dispatch = Task.CompletedTask;
         /// <summary>Guards the pending custom-turn counters below.</summary>
         public readonly object TurnGate = new();
-        public int PendingRight;
-        public int PendingLeft;
-        public DeckAction? RightAction;
-        public DeckAction? LeftAction;
-        public bool TurnDrainQueued;
+        /// <summary>The turn segment still accepting ticks; a push or touch closes it so later turns queue behind that action.</summary>
+        public TurnSegment? OpenSegment;
         public bool BacklogWarned;
         public DateTimeOffset FeedbackStartedAt;
         public bool FeedbackActive;
@@ -76,6 +84,11 @@ public sealed partial class StreamDeckConnectionWorker
         public string? InfoKey;
         public string?[] RingKeys = Array.Empty<string?>();
         public string?[] TouchKeyLights = Array.Empty<string?>();
+        /// <summary>Consecutive refused writes of the light content last attempted, per slot.</summary>
+        public int[] RingFailures = Array.Empty<int>();
+        public string?[] RingFailureKeys = Array.Empty<string?>();
+        public int[] TouchKeyFailures = Array.Empty<int>();
+        public string?[] TouchKeyFailureKeys = Array.Empty<string?>();
         public bool[] TouchKeyHeld = Array.Empty<bool>();
         public Dictionary<string, List<float>> History = new(StringComparer.Ordinal);
         /// <summary>Cancelled when the deck's dial state is dropped, so queued dial actions stop.</summary>
@@ -100,6 +113,10 @@ public sealed partial class StreamDeckConnectionWorker
             SegmentKeys = new string?[model.Encoders],
             RingKeys = new string?[model.Encoders],
             TouchKeyLights = new string?[model.TouchKeys],
+            RingFailures = new int[model.Encoders],
+            RingFailureKeys = new string?[model.Encoders],
+            TouchKeyFailures = new int[model.TouchKeys],
+            TouchKeyFailureKeys = new string?[model.TouchKeys],
             TouchKeyHeld = new bool[model.TouchKeys],
         };
         _dialStates[surface.Serial] = state;
@@ -391,6 +408,14 @@ public sealed partial class StreamDeckConnectionWorker
             return;
         }
         var token = DialToken(serial);
+        var runtime = DialStateForSerialLocked(serial)?.Dials[dialIndex];
+        if (runtime is not null)
+        {
+            lock (runtime.TurnGate)
+            {
+                runtime.OpenSegment = null;
+            }
+        }
         QueueDialAction(serial, dialIndex, () => ExecuteDialActionAsync(serial, dialIndex, action, kind, 1, token));
     }
 
@@ -414,80 +439,98 @@ public sealed partial class StreamDeckConnectionWorker
             }
             return;
         }
-        bool queueDrain;
+        TurnSegment? newSegment = null;
         lock (runtime.TurnGate)
         {
+            if (runtime.OpenSegment is null)
+            {
+                newSegment = runtime.OpenSegment = new TurnSegment();
+            }
+            var segment = runtime.OpenSegment;
             if (right)
             {
-                var cancelled = Math.Min(runtime.PendingLeft, ticks);
-                runtime.PendingLeft -= cancelled;
-                runtime.PendingRight += ticks - cancelled;
-                runtime.RightAction = action;
+                var cancelled = Math.Min(segment.Left, ticks);
+                segment.Left -= cancelled;
+                segment.Right += ticks - cancelled;
+                segment.RightAction = action;
             }
             else
             {
-                var cancelled = Math.Min(runtime.PendingRight, ticks);
-                runtime.PendingRight -= cancelled;
-                runtime.PendingLeft += ticks - cancelled;
-                runtime.LeftAction = action;
+                var cancelled = Math.Min(segment.Right, ticks);
+                segment.Right -= cancelled;
+                segment.Left += ticks - cancelled;
+                segment.LeftAction = action;
             }
-            if (runtime.PendingRight > MaxPendingTurnTicks || runtime.PendingLeft > MaxPendingTurnTicks)
+            if (segment.Right > MaxPendingTurnTicks || segment.Left > MaxPendingTurnTicks)
             {
-                runtime.PendingRight = Math.Min(runtime.PendingRight, MaxPendingTurnTicks);
-                runtime.PendingLeft = Math.Min(runtime.PendingLeft, MaxPendingTurnTicks);
+                segment.Right = Math.Min(segment.Right, MaxPendingTurnTicks);
+                segment.Left = Math.Min(segment.Left, MaxPendingTurnTicks);
                 if (!runtime.BacklogWarned)
                 {
                     runtime.BacklogWarned = true;
                     ServiceLog.Warn($"[streamdeck] dial {dialIndex} turn actions are backing up, dropping the oldest serial={serial}");
                 }
             }
-            queueDrain = !runtime.TurnDrainQueued && runtime.PendingRight + runtime.PendingLeft > 0;
-            runtime.TurnDrainQueued |= queueDrain;
         }
-        if (queueDrain)
+        if (newSegment is not null)
         {
             var token = DialToken(serial);
-            QueueDialAction(serial, dialIndex, () => DrainTurnsAsync(serial, dialIndex, runtime, token));
+            QueueDialAction(serial, dialIndex, () => DrainTurnsAsync(serial, dialIndex, runtime, newSegment, token));
         }
     }
 
     private CancellationToken DialToken(string serial) => DialStateForSerialLocked(serial)?.Cancel.Token ?? CancellationToken.None;
 
-    private async Task DrainTurnsAsync(string serial, int dialIndex, DialRuntime runtime, CancellationToken token)
+    /// <summary>Runs one segment's waiting ticks; ticks made after a push belong to a later segment and drain behind it.</summary>
+    private async Task DrainTurnsAsync(string serial, int dialIndex, DialRuntime runtime, TurnSegment segment, CancellationToken token)
     {
-        while (true)
+        try
         {
-            DeckAction? action;
-            int count;
-            bool right;
+            while (true)
+            {
+                DeckAction? action;
+                int count;
+                bool right;
+                lock (runtime.TurnGate)
+                {
+                    if (token.IsCancellationRequested)
+                    {
+                        segment.Right = 0;
+                        segment.Left = 0;
+                    }
+                    right = segment.Right > 0;
+                    count = right ? segment.Right : segment.Left;
+                    action = right ? segment.RightAction : segment.LeftAction;
+                    if (count == 0 || action is null)
+                    {
+                        if (ReferenceEquals(runtime.OpenSegment, segment))
+                        {
+                            runtime.OpenSegment = null;
+                            runtime.BacklogWarned = false;
+                        }
+                        return;
+                    }
+                    if (right)
+                    {
+                        segment.Right = 0;
+                    }
+                    else
+                    {
+                        segment.Left = 0;
+                    }
+                }
+                await ExecuteDialActionAsync(serial, dialIndex, action, right ? "right" : "left", count, token).ConfigureAwait(false);
+            }
+        }
+        finally
+        {
             lock (runtime.TurnGate)
             {
-                if (token.IsCancellationRequested)
+                if (ReferenceEquals(runtime.OpenSegment, segment))
                 {
-                    runtime.PendingRight = 0;
-                    runtime.PendingLeft = 0;
-                }
-                right = runtime.PendingRight > 0;
-                count = right ? runtime.PendingRight : runtime.PendingLeft;
-                action = right ? runtime.RightAction : runtime.LeftAction;
-                if (count == 0 || action is null)
-                {
-                    runtime.TurnDrainQueued = false;
-                    runtime.BacklogWarned = false;
-                    runtime.PendingRight = 0;
-                    runtime.PendingLeft = 0;
-                    return;
-                }
-                if (right)
-                {
-                    runtime.PendingRight = 0;
-                }
-                else
-                {
-                    runtime.PendingLeft = 0;
+                    runtime.OpenSegment = null;
                 }
             }
-            await ExecuteDialActionAsync(serial, dialIndex, action, right ? "right" : "left", count, token).ConfigureAwait(false);
         }
     }
 
@@ -1172,14 +1215,15 @@ public sealed partial class StreamDeckConnectionWorker
                 {
                     continue;
                 }
+                // Readiness is read before the write: the settle timer may flip it in between.
+                var ready = surface.IsReady;
                 var written = surface.SetRing(i, ring);
-                if (model.RingKind == StreamDeckRingKind.StudioReport)
+                if (written && model.RingKind == StreamDeckRingKind.StudioReport)
                 {
                     var (r, g, b) = asleep || !frames[i].Bound ? ((byte)0, (byte)0, (byte)0) : Scale(ParseRgb(frames[i].AccentHex), frames[i].Muted ? 0.15 : 1.0);
-                    written &= surface.SetCenterLed(i, r, g, b);
+                    written = surface.SetCenterLed(i, r, g, b);
                 }
-                // A refusal while the deck is not ready is retried; a failure on a ready deck is counted once and not retried until the state changes.
-                if (written || surface.IsReady)
+                if (LightSettled(written, ready, key, ref state.RingFailures[i], ref state.RingFailureKeys[i]))
                 {
                     state.RingKeys[i] = key;
                 }
@@ -1199,12 +1243,42 @@ public sealed partial class StreamDeckConnectionWorker
                 {
                     continue;
                 }
-                if (surface.FillKey(model.KeyCount + k, color.R, color.G, color.B) || surface.IsReady)
+                var ready = surface.IsReady;
+                var written = surface.FillKey(model.KeyCount + k, color.R, color.G, color.B);
+                if (LightSettled(written, ready, key, ref state.TouchKeyFailures[k], ref state.TouchKeyFailureKeys[k]))
                 {
                     state.TouchKeyLights[k] = key;
                 }
             }
         }
+    }
+
+    /// <summary>
+    /// Whether a light's content should be recorded as handled. A write
+    /// refused by a deck that was not ready is retried; a refusal by a ready
+    /// deck is retried until it repeats, then left alone until the content
+    /// changes, so a deck that always rejects a light cannot trip the
+    /// surface's consecutive-failure drop.
+    /// </summary>
+    private static bool LightSettled(bool written, bool readyBeforeWrite, string key, ref int failures, ref string? failureKey)
+    {
+        if (written)
+        {
+            failures = 0;
+            failureKey = null;
+            return true;
+        }
+        if (!readyBeforeWrite)
+        {
+            return false;
+        }
+        if (failureKey != key)
+        {
+            failureKey = key;
+            failures = 0;
+        }
+        failures++;
+        return failures >= MaxLightWriteAttempts;
     }
 
     /// <summary>Studio: the lit fraction of the 24 LEDs in the accent over a dim track. Galleon: lit LEDs of four. Dials with no value stay dark.</summary>
