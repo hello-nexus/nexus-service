@@ -10,14 +10,17 @@ using Nexus.Service.Persistence;
 
 namespace Nexus.Service.Lighting;
 
-/// <summary>The HydroShift II LCD-S pump-head ring, driven over USB as one fixed zone.</summary>
+/// <summary>The HydroShift II LCD-S or LCD-C pump-head ring, driven over USB as one fixed zone.</summary>
 public sealed class HydroShift2LightingDeviceProvider :
     ILightingDeviceProvider, ILightingFrameContributor, IDeviceStructureSource
 {
     public const string RingZoneId = HydroShift2LcdDriver.Id + ":ring";
 
-    private static readonly string DeviceKey =
+    private static readonly string SquareDeviceKey =
         DeviceKeyComputer.ForFirstParty(0x1CBE, HydroShift2Protocol.ProductIdSquare, "aio");
+
+    private static readonly string CircleDeviceKey =
+        DeviceKeyComputer.ForFirstParty(0x1CBE, HydroShift2Protocol.ProductIdCircle, "aio");
 
     private readonly HydroShift2Aio _aio;
     private readonly IConfigStore _store;
@@ -47,7 +50,7 @@ public sealed class HydroShift2LightingDeviceProvider :
             return resp;
         }
         var settings = _store.Load();
-        var structure = BuildStructure();
+        var structure = BuildStructure(_aio.Round);
         foreach (var zone in ZoneResolution.Resolve(structure, settings))
         {
             resp.Devices.Add(BuildCard(structure, zone, settings));
@@ -122,7 +125,7 @@ public sealed class HydroShift2LightingDeviceProvider :
     });
 
     public IReadOnlyList<DeviceStructure> GetStructures() =>
-        IsConnected ? new[] { BuildStructure() } : Array.Empty<DeviceStructure>();
+        IsConnected ? new[] { BuildStructure(_aio.Round) } : Array.Empty<DeviceStructure>();
 
     public IReadOnlyList<DeviceFrame> BuildFrames(int startingIndex)
     {
@@ -133,7 +136,7 @@ public sealed class HydroShift2LightingDeviceProvider :
         var settings = _store.Load();
         var frames = new List<DeviceFrame>(1);
         var index = startingIndex;
-        foreach (var zone in ZoneResolution.Resolve(BuildStructure(), settings))
+        foreach (var zone in ZoneResolution.Resolve(BuildStructure(_aio.Round), settings))
         {
             settings.Lighting.DeviceLayouts.TryGetValue(zone.Id, out var layout);
             var (defX, defY, defW, defH) = DefaultLayout;
@@ -163,20 +166,21 @@ public sealed class HydroShift2LightingDeviceProvider :
         return frames;
     }
 
-    internal static DeviceStructure BuildStructure()
+    internal static DeviceStructure BuildStructure(bool round = false)
     {
         const int leds = HydroShift2Protocol.RingLedCount;
         var u = new float[leds];
         var v = new float[leds];
         for (int i = 0; i < leds; i++)
         {
-            (u[i], v[i]) = SquareRingPosition(i);
+            (u[i], v[i]) = round ? CircleRingPosition(i) : SquareRingPosition(i);
         }
+        var deviceKey = round ? CircleDeviceKey : SquareDeviceKey;
         var structure = new DeviceStructure
         {
             DeviceId = HydroShift2LcdDriver.Id,
             Name = "HydroShift II",
-            DeviceKey = DeviceKey,
+            DeviceKey = deviceKey,
             Partitionable = false,
         };
         structure.Segments.Add(new StructureSegment
@@ -195,7 +199,7 @@ public sealed class HydroShift2LightingDeviceProvider :
             Id = RingZoneId,
             Name = "HydroShift II Pump Ring",
             RawName = "Pump Ring",
-            DeviceKey = DeviceKey,
+            DeviceKey = deviceKey,
             LegacyZoneIndex = -1,
             Slices = { new ZoneSlice { Segment = 0, Start = 0, Count = leds } },
         });
@@ -221,6 +225,14 @@ public sealed class HydroShift2LightingDeviceProvider :
             _ => (0f, 4f - s),
         };
         return (Margin + (u * (1f - (2f * Margin))), Margin + (v * (1f - (2f * Margin))));
+    }
+
+    /// <summary>Where LED <paramref name="index"/> sits on the round head: LED 0 at the top, clockwise (seen on an LCD-C).</summary>
+    internal static (float U, float V) CircleRingPosition(int index)
+    {
+        const float Radius = 0.42f;
+        var angle = (index / (double)HydroShift2Protocol.RingLedCount * 2.0 * Math.PI) - (Math.PI / 2.0);
+        return (0.5f + (Radius * (float)Math.Cos(angle)), 0.5f + (Radius * (float)Math.Sin(angle)));
     }
 
     /// <summary>A square on the effect canvas so the ring samples a spread of the effect rather than one patch.</summary>

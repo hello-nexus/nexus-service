@@ -37,6 +37,7 @@ public sealed class StreamSession
         SessionId = sessionId;
         Info = info;
         PanelDeviceId = panelDeviceId;
+        Upscaler = RawFrameUpscaler.For(sessionId, info.Profile);
         // Enough queue to absorb a transport blip while resuming near-live;
         // when even the newest GOP exceeds it, resync from the next IDR.
         // Raw frames are every one a keyframe and megabytes each, and the device
@@ -50,6 +51,9 @@ public sealed class StreamSession
     public string SessionId { get; }
     public StreamedPanelDeviceInfo Info { get; }
     public string PanelDeviceId { get; }
+
+    /// <summary>Set when the overlay renders below native; ingest runs every frame through it before <see cref="Enqueue"/>.</summary>
+    public RawFrameUpscaler? Upscaler { get; }
 
     public StreamSessionState State
     {
