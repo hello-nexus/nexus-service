@@ -337,7 +337,7 @@ public sealed class SystemActions
         {
             return ApiResponse.Fail("path is required");
         }
-        if (!File.Exists(trimmed) && !Directory.Exists(trimmed))
+        if (!File.Exists(trimmed) && !Directory.Exists(trimmed) && !IsWindowsCommandName(trimmed))
         {
             return ApiResponse.Fail("path does not exist");
         }
@@ -395,6 +395,10 @@ public sealed class SystemActions
             return ApiResponse.Fail($"failed to open path: {ex.Message}");
         }
     }
+
+    /// <summary>A bare command such as "calc" or "mspaint" (Elgato's Open action stores these): ShellExecute resolves it through the user's PATH and App Paths, which the service's own File.Exists cannot see.</summary>
+    private static bool IsWindowsCommandName(string path) =>
+        OperatingSystem.IsWindows() && path.IndexOfAny(['\\', '/', ':']) < 0 && path.Trim('.').Length > 0;
 
     public bool Lock() => _power.Lock();
     public bool Sleep() => _power.Sleep();

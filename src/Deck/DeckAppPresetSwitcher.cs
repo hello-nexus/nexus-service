@@ -15,8 +15,8 @@ namespace Nexus.Service.Deck;
 /// Activates a deck preset when an app it is bound to takes focus, mirroring
 /// AppPresetSwitcher's dwell timer and restore-previous state machine (same
 /// AppPresetFocusTracker, generalized over IAppBoundPreset) but with one
-/// tracker per physical or widget instance in appAware mode instead of a
-/// single global one - each instance can be bound to a different set of
+/// tracker per physical or widget instance outside Recent Apps mode instead
+/// of a single global one - each instance can be bound to a different set of
 /// presets. Paused while a deck editor is open (a streamdeckTiles or
 /// deck-edit subscriber), so an in-progress edit is never yanked away by a
 /// focus change; the last editor closing runs one settle pass in case focus
@@ -155,14 +155,16 @@ public sealed class DeckAppPresetSwitcher : BackgroundService
         var focused = _screenTime.GetCurrentSession()?.Name ?? "";
         var now = MonotonicNowMs();
 
-        var appAwareInstanceIds = new HashSet<string>(StringComparer.Ordinal);
+        var switchingInstanceIds = new HashSet<string>(StringComparer.Ordinal);
         foreach (var (instanceId, instance) in SnapshotInstances(settings))
         {
-            if (instance.Mode != "appAware")
+            // Recent Apps owns the keys; every other mode (custom, legacy
+            // appAware) follows its presets' app bindings.
+            if (instance.Mode == "recentApps")
             {
                 continue;
             }
-            appAwareInstanceIds.Add(instanceId);
+            switchingInstanceIds.Add(instanceId);
 
             if (!anyBindings)
             {
@@ -190,10 +192,10 @@ public sealed class DeckAppPresetSwitcher : BackgroundService
             _activator.Activate(instanceId, target);
         }
 
-        // An instance that left appAware mode (manual switch, or the instance
-        // was removed entirely) drops its tracker instead of resuming a stale
-        // restore-previous state if it returns to appAware later.
-        foreach (var staleId in _trackers.Keys.Where(id => !appAwareInstanceIds.Contains(id)).ToList())
+        // An instance that entered Recent Apps (or was removed entirely) drops
+        // its tracker instead of resuming a stale restore-previous state if it
+        // leaves Recent Apps later.
+        foreach (var staleId in _trackers.Keys.Where(id => !switchingInstanceIds.Contains(id)).ToList())
         {
             _trackers.Remove(staleId);
         }
