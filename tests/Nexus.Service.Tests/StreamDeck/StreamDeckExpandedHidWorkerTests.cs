@@ -144,6 +144,59 @@ public sealed class StreamDeckExpandedHidWorkerTests : IDisposable
     }
 
     [Fact]
+    public void Galleon_AnAsleepDeckIsBlankedOnceReady()
+    {
+        var galleon = StreamDeckModels.ByProductId(0x2b18)!;
+        var device = new MockStreamDeckHidDevice { ProductId = galleon.ProductId, VendorId = galleon.VendorId };
+        var (worker, _) = Build(galleon, "gal-path", "GAL1", device, Usb(galleon),
+            "{\"pages\":[{\"slots\":[],\"dials\":[{\"action\":{\"type\":\"volume\",\"deviceId\":\"out\"}}]}]}");
+        _values.Set("volume:out", 100);
+
+        worker.Tick();
+        worker.PutAsleep("GAL1");
+
+        Assert.True(SpinWait.SpinUntil(() => device.FeatureWrites.Any(w => w[1] == 0x08 && w[2] == 0), TimeSpan.FromSeconds(3)));
+    }
+
+    [Fact]
+    public void Galleon_RingStateRefusedBeforeReadyIsWrittenAfterwards()
+    {
+        var galleon = StreamDeckModels.ByProductId(0x2b18)!;
+        var device = new MockStreamDeckHidDevice { ProductId = galleon.ProductId, VendorId = galleon.VendorId };
+        var (worker, _) = Build(galleon, "gal-path", "GAL1", device, Usb(galleon),
+            "{\"pages\":[{\"slots\":[],\"dials\":[{\"action\":{\"type\":\"volume\",\"deviceId\":\"out\"}}]}]}");
+        _values.Set("volume:out", 100);
+
+        worker.Tick();
+
+        Assert.True(SpinWait.SpinUntil(
+            () => device.FeatureWrites.Any(w => w[1] == 0x24 && (w[3] > 40 || w[4] > 40 || w[5] > 40)), TimeSpan.FromSeconds(3)));
+    }
+
+    [Fact]
+    public void ASecondCollectionWithTheSameSerial_IsNotOpenedAsASecondSurface()
+    {
+        var galleon = StreamDeckModels.ByProductId(0x2b18)!;
+        var device = new MockStreamDeckHidDevice { ProductId = galleon.ProductId, VendorId = galleon.VendorId };
+        var (worker, hid) = Build(galleon, "gal-a", "GAL1", device, Usb(galleon));
+        hid.Infos.Add(new HidDeviceInfo
+        {
+            VendorId = galleon.VendorId, ProductId = galleon.ProductId, Path = "gal-b", Serial = "GAL1",
+            UsagePage = galleon.HidUsagePage, Usage = galleon.HidUsage, FeatureReportByteLength = 32,
+        });
+        hid.Devices["gal-b"] = new MockStreamDeckHidDevice { ProductId = galleon.ProductId, VendorId = galleon.VendorId };
+
+        worker.Tick();
+        worker.Tick();
+
+        Assert.Single(worker.Surfaces);
+        lock (hid.OpenedPaths)
+        {
+            Assert.DoesNotContain("gal-b", hid.OpenedPaths);
+        }
+    }
+
+    [Fact]
     public void Studio_ShutdownBlanksTheRingsAndCentreLedsBeforeTheLogo()
     {
         var studio = StreamDeckModels.ByProductId(0x00aa)!;

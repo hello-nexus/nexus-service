@@ -299,7 +299,7 @@ public static class StreamDeckRoutes
         app.MapPost("/streamdeck/dev/inject-report", (StreamDeckInjectReportBody body, StreamDeckConnectionWorker worker) =>
         {
             byte[] report;
-            try { report = Convert.FromHexString(body.Hex.Replace(" ", "")); }
+            try { report = Convert.FromHexString((body.Hex ?? "").Replace(" ", "")); }
             catch (FormatException) { return ApiResponse.Fail("hex"); }
             return worker.InjectReport(body.Serial, report) ? ApiResponse.Ok() : ApiResponse.Fail("no deck or undecodable report");
         }).LocalhostOnly();

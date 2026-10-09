@@ -581,7 +581,7 @@ public static class StreamDeckProtocol
 
     private static StreamDeckInput? DecodeDials(ReadOnlySpan<byte> report, StreamDeckModel model)
     {
-        if (report.Length <= DialSubtypeOffset)
+        if (report.Length < DialPayloadOffset + model.Encoders)
         {
             return null;
         }

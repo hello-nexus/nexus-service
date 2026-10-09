@@ -131,9 +131,11 @@ public sealed class DeckDialValueServiceTests
         public string Hint => "";
         public IReadOnlyList<DisplayDto> Enumerate(IReadOnlyCollection<string>? excludedIds = null) => Array.Empty<DisplayDto>();
         public int Reads;
+        public Action? BeforeRead;
         public int? GetBrightness(string id)
         {
             Interlocked.Increment(ref Reads);
+            BeforeRead?.Invoke();
             return Levels.TryGetValue(id, out var v) ? v : null;
         }
         public DisplayBrightnessDto SetBrightness(string id, int percent)
@@ -197,12 +199,7 @@ public sealed class DeckDialValueServiceTests
         public DialReading Read(DeckDialAction action)
         {
             var reading = Service.Read(action);
-            for (var i = 0; i < 300 && reading.Pending; i++)
-            {
-                Thread.Yield();
-                SpinWait.SpinUntil(() => false, 5);
-                reading = Service.Read(action);
-            }
+            WaitFor(() => !(reading = Service.Read(action)).Pending);
             return reading;
         }
     }
@@ -248,6 +245,30 @@ public sealed class DeckDialValueServiceTests
         clock.Advance(TimeSpan.FromSeconds(2));
         service.Read(action);
         Assert.True(rig.WaitFor(() => rig.Displays.Reads >= 2));
+    }
+
+    [Fact]
+    public void ARefreshDiscardedByAWrite_DoesNotPostponeTheConfirmingRead()
+    {
+        var rig = new Rig();
+        var clock = new ManualTimeProvider(DateTimeOffset.UtcNow);
+        var service = new DeckDialValueService(
+            rig.Volume, rig.Devices, new AudioMixerService(rig.Sessions, rig.Volume, rig.Devices, rig.Store, new MultiplexHub()),
+            new DisplayBrightnessController(rig.Displays), rig.Store, rig.Y70, new MultiplexHub(), clock);
+        var action = Rig.Action("displayBrightness", display: "d1");
+        using var gate = new ManualResetEventSlim();
+        rig.Displays.BeforeRead = () => gate.Wait(TimeSpan.FromSeconds(5));
+        service.Read(action);
+        Assert.True(rig.WaitFor(() => rig.Displays.Reads >= 1));
+
+        service.Write(action, 40);
+        gate.Set();
+        rig.Displays.BeforeRead = null;
+        Assert.True(rig.WaitFor(() => service.Read(action).Percent == 40));
+        clock.Advance(TimeSpan.FromSeconds(2));
+
+        // The discarded refresh may still be finishing; reads keep asking until the confirming one runs.
+        Assert.True(rig.WaitFor(() => { service.Read(action); return rig.Displays.Reads >= 2; }));
     }
 
     [Fact]

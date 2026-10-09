@@ -156,7 +156,9 @@ public sealed class HidStreamDeckSurface : IStreamDeckSurface
             {
                 // A silent keep-alive drops the Galleon back to keyboard mode, so keep pinging; the failure threshold drops the handle and a reconnect restarts the timer.
                 RecordWriteFailureLocked("keep-alive");
+                return;
             }
+            _consecutiveWriteFailures = 0;
         }
     }
 

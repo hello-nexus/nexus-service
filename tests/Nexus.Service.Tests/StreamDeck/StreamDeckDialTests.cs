@@ -472,6 +472,47 @@ public sealed class StreamDeckDialTests : IDisposable
         }
     }
 
+    [Fact]
+    public async Task CustomTurn_BacklogIsCapped_AndTheChainStopsWhenTheDeckDisconnects()
+    {
+        var executor = new BlockingExecutor();
+        _sim = new SimulatedStreamDeckSurface(Plus, Serial);
+        var gateDev = new DeviceControlGate(_store);
+        gateDev.SetEnabled("streamdeck", true);
+        _worker = new StreamDeckConnectionWorker(
+            new FakeWorkerHidEnumerator(), new HardwarePresence(new FixedUsbEnumerator()), gateDev, _store, executor,
+            NewTestKeyRenderer(), _hub, _sensors, _sim, _clock, dialValues: _values);
+        var config = JsonSerializer.Deserialize(Dials("{\"action\":{\"type\":\"custom\",\"turnRight\":{\"type\":\"text\",\"text\":\"r\"}}}"), AppJsonContext.Default.DeckConfig)!;
+        _store.Update(s => s.StreamDeck.Decks[Serial] = new PhysicalDeckSettings { LegacyDeck = config });
+        _store.Update(s => ActivateLegacyDeck(s, Serial, Plus.Columns, Plus.Rows));
+        _worker.Tick();
+
+        for (var i = 0; i < 30; i++)
+        {
+            _sim.PokeRotate(0, 1);
+        }
+        Drain();
+        Assert.True(SpinWait.SpinUntil(() => executor.Started >= 1, TimeSpan.FromSeconds(3)));
+        var chain = _worker.LastDispatchTask!;
+
+        _worker.ClearSimulatedModel();
+        await chain.WaitAsync(TimeSpan.FromSeconds(5));
+
+        Assert.Equal(1, executor.Started);
+    }
+
+    private sealed class BlockingExecutor : IDeckActionExecutor
+    {
+        public int Started;
+        public async Task ExecuteAsync(DeckAction? action, string serial, int keyIndex, string latchKey, CancellationToken ct)
+        {
+            Interlocked.Increment(ref Started);
+            await Task.Delay(Timeout.Infinite, ct);
+        }
+        public bool IsToggleOn(DeckToggleState? state, string latchKey) => false;
+        public void OpenApp() { }
+    }
+
     private sealed class OrderedExecutor : IDeckActionExecutor
     {
         private readonly List<string> _order;

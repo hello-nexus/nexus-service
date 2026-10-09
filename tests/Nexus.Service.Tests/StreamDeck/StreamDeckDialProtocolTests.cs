@@ -115,6 +115,8 @@ public class StreamDeckDialProtocolTests
     {
         Assert.Null(StreamDeckProtocol.DecodeInput(Hex("01 03"), Plus));
         Assert.Null(StreamDeckProtocol.DecodeInput(Hex("01 03 05 00"), Plus));
+        Assert.Null(StreamDeckProtocol.DecodeInput(Hex("01 03 05 00 00 01 00"), Plus));
+        Assert.Null(StreamDeckProtocol.DecodeInput(Hex("01 03 05 00 01 01"), Galleon));
         Assert.Null(StreamDeckProtocol.DecodeInput(Hex("01 02 0e 00 03"), Plus));
     }
 
@@ -475,22 +477,16 @@ public class StreamDeckDialProtocolTests
     }
 
     [Fact]
-    public async Task Galleon_AFailedPingKeepsPinging_UntilTheFailureThresholdDropsTheHandle()
+    public void Galleon_AFailedPingKeepsPinging_UntilTheFailureThresholdDropsTheHandle()
     {
         var (dev, surface) = Connect(Galleon);
-        for (var i = 0; i < 100 && dev.FeatureWrites.Count(w => w[1] == 0x27) < 1; i++)
-        {
-            await Task.Delay(20);
-        }
+        SpinWait.SpinUntil(() => dev.FeatureWrites.Count(w => w[1] == 0x27) >= 1, TimeSpan.FromSeconds(3));
 
         dev.FailNextFeatureWrite = true;
         var before = dev.FeatureWrites.Count(w => w[1] == 0x27);
-        for (var i = 0; i < 150 && dev.FeatureWrites.Count(w => w[1] == 0x27) < before + 2; i++)
-        {
-            await Task.Delay(20);
-        }
+        var resumed = SpinWait.SpinUntil(() => dev.FeatureWrites.Count(w => w[1] == 0x27) >= before + 2, TimeSpan.FromSeconds(4));
 
-        Assert.True(dev.FeatureWrites.Count(w => w[1] == 0x27) >= before + 2, "pings continue after one failure");
+        Assert.True(resumed, "pings continue after one failure");
         Assert.True(surface.IsConnected);
     }
 
@@ -499,11 +495,7 @@ public class StreamDeckDialProtocolTests
     {
         var (dev, surface) = Connect(Galleon);
 
-        for (var i = 0; i < 100 && dev.FeatureWrites.Count(w => w[1] == 0x27) < 2; i++)
-        {
-            await Task.Delay(20);
-        }
-        Assert.True(dev.FeatureWrites.Count(w => w[1] == 0x27) >= 2);
+        Assert.True(SpinWait.SpinUntil(() => dev.FeatureWrites.Count(w => w[1] == 0x27) >= 2, TimeSpan.FromSeconds(3)));
 
         surface.Disconnect();
         var after = dev.FeatureWrites.Count(w => w[1] == 0x27);

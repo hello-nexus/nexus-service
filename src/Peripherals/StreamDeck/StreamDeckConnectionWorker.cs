@@ -696,8 +696,7 @@ public sealed partial class StreamDeckConnectionWorker : BackgroundService, IDec
             _brightnessRamps.Clear();
             _anyRampActive = false;
             _heldKeysBySerial.Clear();
-            _dialStates.Clear();
-            _anyDialFeedback = false;
+            ClearDialStatesLocked();
             _activeHolds.Clear();
             _monitoringHistory.Clear();
             _monitoringLastHash.Clear();
@@ -761,6 +760,9 @@ public sealed partial class StreamDeckConnectionWorker : BackgroundService, IDec
         }
     }
 
+    /// <summary>Collection paths already reported as duplicates of a connected surface, so the warning is not repeated every tick.</summary>
+    private readonly HashSet<string> _duplicateCollectionsLogged = new(StringComparer.Ordinal);
+
     private void ReconcileHidSurfaces()
     {
         var seenPaths = new HashSet<string>();
@@ -783,16 +785,27 @@ public sealed partial class StreamDeckConnectionWorker : BackgroundService, IDec
                     continue;
                 }
 
+                if (!string.IsNullOrWhiteSpace(info.Serial)
+                    && _surfaces.Values.Any(s => s.IsConnected && s.Model == model && string.Equals(s.Serial, info.Serial, StringComparison.Ordinal)))
+                {
+                    if (_duplicateCollectionsLogged.Add(info.Path))
+                    {
+                        ServiceLog.Warn($"[streamdeck] ignoring a second {model.Name} collection with serial {info.Serial} ({info.Path})");
+                    }
+                    seenPaths.Remove(info.Path);
+                    continue;
+                }
+
                 var surface = new HidStreamDeckSurface(_hid, model);
+                if (model.OpenSettleMs > 0)
+                {
+                    surface.Ready += () => OnSurfaceReady(surface);
+                }
                 if (!surface.Connect(info))
                 {
                     continue;
                 }
                 _surfaces[info.Path] = surface;
-                if (model.OpenSettleMs > 0)
-                {
-                    surface.Ready += () => OnSurfaceReady(surface);
-                }
                 _lastKeyStates[info.Path] = new bool[model.KeyCount];
                 ServiceLog.Info($"[streamdeck] connected {model.Name} (serial={surface.Serial})");
                 OnSurfaceConnected(surface);
@@ -839,11 +852,22 @@ public sealed partial class StreamDeckConnectionWorker : BackgroundService, IDec
             {
                 return;
             }
-            if (!(_asleep.TryGetValue(surface.Serial, out var asleep) && asleep))
+            try
             {
-                ApplyPersistedBrightness(surface);
+                if (_asleep.TryGetValue(surface.Serial, out var asleep) && asleep)
+                {
+                    surface.SetBrightness(0);
+                }
+                else
+                {
+                    ApplyPersistedBrightness(surface);
+                }
+                PushCurrentView(surface, viewChanged: true);
             }
-            PushCurrentView(surface, viewChanged: true);
+            catch (Exception ex)
+            {
+                ServiceLog.Warn($"[streamdeck] ready repaint failed serial={surface.Serial}: {ex.Message}");
+            }
         }
     }
 
@@ -3188,8 +3212,7 @@ public sealed partial class StreamDeckConnectionWorker : BackgroundService, IDec
             _anyRampActive = false;
             _currentPageBySerial.Clear();
             _heldKeysBySerial.Clear();
-            _dialStates.Clear();
-            _anyDialFeedback = false;
+            ClearDialStatesLocked();
             _activeHolds.Clear();
             _anyHoldActive = false;
             _monitoringHistory.Clear();

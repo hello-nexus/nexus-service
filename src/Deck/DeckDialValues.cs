@@ -147,7 +147,14 @@ public sealed class DeckDialValueService : IDeckDialValues
         private DialReading _reading;
         private DateTimeOffset _readAt;
         private DateTimeOffset _writtenAt = DateTimeOffset.MinValue;
+        private int _version;
         public int Refreshing;
+
+        /// <summary>Counts writes; a read that started under an older version is stale.</summary>
+        public int Version
+        {
+            get { lock (_gate) { return _version; } }
+        }
 
         public Entry(DialReading reading, DateTimeOffset readAt)
         {
@@ -165,11 +172,28 @@ public sealed class DeckDialValueService : IDeckDialValues
             get { lock (_gate) { return (_readAt, _writtenAt); } }
         }
 
+        /// <summary>Applies a live read unless a write landed since it started or inside the optimistic window; a discarded read leaves the read time alone so the confirming read still happens.</summary>
+        public void ApplyRead(DialReading live, DateTimeOffset now, TimeSpan optimisticFor, int startedAtVersion)
+        {
+            lock (_gate)
+            {
+                if (_version == startedAtVersion && now - _writtenAt > optimisticFor)
+                {
+                    _reading = live;
+                    _readAt = now;
+                }
+            }
+        }
+
         public void Update(Func<DialReading, DialReading> change, DateTimeOffset? writtenAt = null, DateTimeOffset? readAt = null)
         {
             lock (_gate)
             {
                 _reading = change(_reading);
+                if (writtenAt is not null)
+                {
+                    _version++;
+                }
                 _writtenAt = writtenAt ?? _writtenAt;
                 _readAt = readAt ?? _readAt;
             }
@@ -230,10 +254,8 @@ public sealed class DeckDialValueService : IDeckDialValues
     {
         try
         {
-            var live = ReadLive(action);
-            var now = _clock.GetUtcNow();
-            var written = entry.Times.WrittenAt;
-            entry.Update(current => now - written > OptimisticFor ? live : current, readAt: now);
+            var version = entry.Version;
+            entry.ApplyRead(ReadLive(action), _clock.GetUtcNow(), OptimisticFor, version);
         }
         catch (Exception ex)
         {
