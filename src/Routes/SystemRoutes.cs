@@ -154,11 +154,12 @@ public static class SystemRoutes
             return result;
         }).AllowPanel();
 
-        // open-path opens any existing local file with its default handler in
-        // the user's session, so it is desktop-token only (and relay-denied in
-        // RelayHttpAllowlist.cs). A paired panel's deck "open file / folder"
-        // keys go through POST /panel/deck/dispatch, which opens the path saved
-        // in the layout rather than one named by the panel request.
+        // open-path opens any existing local file (or bare Windows command)
+        // with its default handler in the user's session, so it is
+        // desktop-token only (and relay-denied in RelayHttpAllowlist.cs). A
+        // paired panel's deck "open file / folder" keys go through POST
+        // /panel/deck/dispatch, which opens the path saved in the layout
+        // rather than one named by the panel request.
         app.MapPost("/system/open-path", (OpenPathBody body, Nexus.Service.Actions.SystemActions actions) =>
             actions.OpenPathAsync(body.Path ?? ""));
 
