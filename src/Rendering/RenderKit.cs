@@ -4,6 +4,7 @@ using System.Collections.Generic;
 using System.Globalization;
 using System.IO;
 using System.Threading;
+using Nexus.Service.Platform;
 using SkiaSharp;
 
 namespace Nexus.Service.Rendering;
@@ -33,8 +34,8 @@ internal static class RenderKit
     private static readonly ConcurrentDictionary<string, SKTypeface?> Families = new(StringComparer.OrdinalIgnoreCase);
     private static readonly ConcurrentDictionary<(string Family, bool Bold, bool Italic), SKTypeface> Faces = new();
 
-    /// <summary>One per typeface, built once (Lazy) because each holds that font's shaping tables.</summary>
-    private static readonly ConcurrentDictionary<SKTypeface, Lazy<TextShaper>> Shapers = new();
+    /// <summary>One per typeface, built once (Lazy) because each holds that font's shaping tables; null draws unshaped.</summary>
+    private static readonly ConcurrentDictionary<SKTypeface, Lazy<TextShaper?>> Shapers = new();
 
     /// <summary>Every bitmap here is RGBA8888 premultiplied, so pixel bytes are R,G,B,A in memory.</summary>
     public static SKImageInfo Info(int width, int height) => new(width, height, SKColorType.Rgba8888, SKAlphaType.Premul);
@@ -266,11 +267,11 @@ internal static class RenderKit
     /// <summary>Advance width of a single line at this font.</summary>
     public static float MeasureWidth(string text, SKFont font)
     {
-        if (!NeedsShaping(text))
+        if (!NeedsShaping(text) || Shaper(font.Typeface) is not { } shaper)
         {
             return font.MeasureText(text);
         }
-        return Shaper(font.Typeface).Shape(text, font).Width;
+        return shaper.Shape(text, font).Width;
     }
 
     public static void DrawCentered(SKCanvas canvas, string text, SKFont font, SKColor color, SKPoint center) =>
@@ -285,12 +286,12 @@ internal static class RenderKit
         var metrics = font.Metrics;
         var baseline = centerY - (metrics.Ascent + metrics.Descent) / 2f;
         using var paint = Fill(color);
-        if (!NeedsShaping(text))
+        if (!NeedsShaping(text) || Shaper(font.Typeface) is not { } shaper)
         {
             canvas.DrawText(text, x, baseline, align, font, paint);
             return;
         }
-        var (glyphs, points, width) = Shaper(font.Typeface).Shape(text, font);
+        var (glyphs, points, width) = shaper.Shape(text, font);
         if (glyphs.Length == 0)
         {
             return;
@@ -325,8 +326,26 @@ internal static class RenderKit
         return false;
     }
 
-    private static TextShaper Shaper(SKTypeface typeface) =>
-        Shapers.GetOrAdd(typeface, static face => new Lazy<TextShaper>(() => new TextShaper(face), LazyThreadSafetyMode.ExecutionAndPublication)).Value;
+    private static TextShaper? Shaper(SKTypeface typeface) =>
+        Shapers.GetOrAdd(typeface, static face => new Lazy<TextShaper?>(() => CreateShaper(face), LazyThreadSafetyMode.ExecutionAndPublication)).Value;
+
+    private static TextShaper? CreateShaper(SKTypeface typeface)
+    {
+        try
+        {
+            var shaper = TextShaper.Create(typeface);
+            if (shaper is null)
+            {
+                ServiceLog.Warn($"[render] {typeface.FamilyName} exposes no character map to HarfBuzz; its text draws unshaped");
+            }
+            return shaper;
+        }
+        catch (Exception ex)
+        {
+            ServiceLog.Warn($"[render] text shaping unavailable for {typeface.FamilyName}, drawing unshaped: {ex.Message}");
+            return null;
+        }
+    }
 
     /// <summary>Composites src at (x, y) at its own size.</summary>
     public static void DrawImage(SKCanvas canvas, SKBitmap src, int x, int y, float opacity = 1f)

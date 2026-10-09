@@ -8,12 +8,11 @@ using SkiaSharp;
 namespace Nexus.Service.Rendering;
 
 /// <summary>
-/// HarfBuzz shaping over one typeface's shaping tables. Skia's own SKShaper copies the
-/// whole font file into native memory, and colour-emoji files are mostly glyph bitmaps
-/// that shaping never reads (Apple Color Emoji cost hundreds of MB resident), so this
-/// rebuilds a font file without them. Immutable once built: shaping is thread-safe.
+/// HarfBuzz shaping over one typeface, from a copy of its tables minus the bitmap and
+/// colour ones: shaping never reads them, and they are most of a colour-emoji font.
+/// Immutable once built, so concurrent Shape calls are safe.
 /// </summary>
-internal sealed class TextShaper
+internal sealed unsafe class TextShaper
 {
     /// <summary>HarfBuzz positions come back in units of size / Scale.</summary>
     private const int Scale = 512;
@@ -26,17 +25,27 @@ internal sealed class TextShaper
 
     private readonly HarfBuzzSharp.Font _font;
 
-    public TextShaper(SKTypeface typeface)
+    private TextShaper(HarfBuzzSharp.Font font) => _font = font;
+
+    /// <summary>A shaper for the typeface, or null when Skia exposes no character map for it (shaping would map every character to the missing glyph).</summary>
+    public static TextShaper? Create(SKTypeface typeface)
     {
-        var sfnt = BuildSfnt(typeface);
-        var pinned = GCHandle.Alloc(sfnt, GCHandleType.Pinned);
+        var tables = ShapingTables(typeface);
+        if (!tables.Exists(t => t.Tag == TagOf("cmap")))
+        {
+            return null;
+        }
+        var size = SfntSize(tables);
+        var native = (byte*)NativeMemory.Alloc((nuint)size);
+        WriteSfnt(tables, new Span<byte>(native, size));
         // The face keeps its own blob reference and the font its own face reference, so the
-        // managed wrappers can go; the release delegate unpins once HarfBuzz lets go.
-        using var blob = new Blob(pinned.AddrOfPinnedObject(), sfnt.Length, MemoryMode.ReadOnly, () => pinned.Free());
+        // managed wrappers can go; HarfBuzz frees the copy through the release delegate.
+        using var blob = new Blob((IntPtr)native, size, MemoryMode.ReadOnly, () => NativeMemory.Free(native));
         using var face = new Face(blob, 0) { UnitsPerEm = typeface.UnitsPerEm };
-        _font = new HarfBuzzSharp.Font(face);
-        _font.SetScale(Scale, Scale);
-        _font.SetFunctionsOpenType();
+        var font = new HarfBuzzSharp.Font(face);
+        font.SetScale(Scale, Scale);
+        font.SetFunctionsOpenType();
+        return new TextShaper(font);
     }
 
     /// <summary>Glyph ids and pen positions from x = 0 on the baseline, and the run's advance width.</summary>
@@ -47,8 +56,8 @@ internal sealed class TextShaper
         buffer.GuessSegmentProperties();
         _font.Shape(buffer, Array.Empty<Feature>());
 
-        var infos = buffer.GlyphInfos;
-        var positions = buffer.GlyphPositions;
+        var infos = buffer.GetGlyphInfoSpan();
+        var positions = buffer.GetGlyphPositionSpan();
         var scaleY = font.Size / Scale;
         var scaleX = scaleY * font.ScaleX;
         var glyphs = new ushort[infos.Length];
@@ -64,8 +73,7 @@ internal sealed class TextShaper
         return (glyphs, points, x);
     }
 
-    /// <summary>An sfnt of every table but the bitmap/colour ones; HarfBuzz reads no checksums.</summary>
-    private static byte[] BuildSfnt(SKTypeface typeface)
+    private static List<(uint Tag, byte[] Data)> ShapingTables(SKTypeface typeface)
     {
         var tables = new List<(uint Tag, byte[] Data)>();
         if (typeface.TryGetTableTags(out var tags))
@@ -78,17 +86,26 @@ internal sealed class TextShaper
                 }
             }
         }
-        // HarfBuzz binary-searches the table directory, so it is sorted by tag.
+        // HarfBuzz binary-searches a large table directory, so it is sorted by tag.
         tables.Sort((a, b) => a.Tag.CompareTo(b.Tag));
+        return tables;
+    }
 
-        var offset = 12 + 16 * tables.Count;
-        var size = offset;
+    private static int SfntSize(List<(uint Tag, byte[] Data)> tables)
+    {
+        var size = 12 + 16 * tables.Count;
         foreach (var (_, data) in tables)
         {
             size += (data.Length + 3) & ~3;
         }
-        var sfnt = new byte[size];
-        var span = sfnt.AsSpan();
+        return size;
+    }
+
+    /// <summary>An sfnt of the given tables, zero-filled; HarfBuzz reads no checksums or search fields.</summary>
+    private static void WriteSfnt(List<(uint Tag, byte[] Data)> tables, Span<byte> span)
+    {
+        span.Clear();
+        var offset = 12 + 16 * tables.Count;
         BinaryPrimitives.WriteUInt32BigEndian(span, tables.Exists(t => t.Tag == TagOf("CFF ")) ? TagOf("OTTO") : 0x00010000u);
         BinaryPrimitives.WriteUInt16BigEndian(span[4..], (ushort)tables.Count);
         for (var i = 0; i < tables.Count; i++)
@@ -100,7 +117,6 @@ internal sealed class TextShaper
             tables[i].Data.CopyTo(span[offset..]);
             offset += (tables[i].Data.Length + 3) & ~3;
         }
-        return sfnt;
     }
 
     private static uint TagOf(string tag) =>
