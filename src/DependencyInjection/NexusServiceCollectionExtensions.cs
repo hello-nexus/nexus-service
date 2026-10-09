@@ -1157,9 +1157,7 @@ public static class NexusServiceCollectionExtensions
             {
                 if (bulkPanelDriver is Nexus.Service.Peripherals.BulkPanels.UniversalScreen88Driver screen88)
                 {
-                    var registry = sp.GetRequiredService<Nexus.Service.Panel.PanelDeviceRegistry>();
-                    screen88.BindPortrait(() => System.Linq.Enumerable.Any(registry.List(), r =>
-                        r.Capabilities?.Family == Nexus.Service.Peripherals.BulkPanels.UniversalScreen88Driver.Id && r.Portrait == true));
+                    BindScreen88Portrait(sp, screen88);
                 }
                 return new Nexus.Service.Peripherals.BulkPanels.BulkPanelConnectionWorker(
                     sp.GetRequiredService<Nexus.Service.Peripherals.Hid.IHidEnumerator>(),
@@ -1552,6 +1550,39 @@ public static class NexusServiceCollectionExtensions
         services.AddSingleton<Nexus.Service.Devices.DeviceBroadcaster>();
         services.AddHostedService(sp => sp.GetRequiredService<Nexus.Service.Devices.DeviceBroadcaster>());
         return services;
+    }
+
+    /// <summary>
+    /// The 8.8's mounting lives on the panel record its stream session minted, keyed by the
+    /// driver's handler id since the glass has no HID serial. A read that throws keeps the last
+    /// answer: the worker would otherwise release the glass and reboot it.
+    /// </summary>
+    private static void BindScreen88Portrait(IServiceProvider sp, Nexus.Service.Peripherals.BulkPanels.UniversalScreen88Driver driver)
+    {
+        var registry = sp.GetRequiredService<Nexus.Service.Panel.PanelDeviceRegistry>();
+        var streams = sp.GetRequiredService<Nexus.Service.Panel.Streams.StreamedPanelStore>();
+        string? recordId = null;
+        var portrait = false;
+        driver.BindPortrait(() =>
+        {
+            try
+            {
+                recordId ??= streams.Load().TryGetValue(Nexus.Service.Peripherals.BulkPanels.UniversalScreen88Driver.Id, out var rec)
+                    ? rec.PanelDeviceId
+                    : null;
+                var record = recordId is null ? null : registry.Get(recordId);
+                if (record is null)
+                {
+                    recordId = null;
+                }
+                portrait = record?.Portrait == true;
+            }
+            catch (Exception ex)
+            {
+                ServiceLog.Warn($"[{driver.HandlerId}] mounting read failed: {ex.GetType().Name}: {ex.Message}");
+            }
+            return portrait;
+        });
     }
 
     /// <summary>The HydroShift II's pump, fans, coolant probe and ring, which ride its LCD's bulk pipe.</summary>

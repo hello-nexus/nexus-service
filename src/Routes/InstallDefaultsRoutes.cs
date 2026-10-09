@@ -69,6 +69,7 @@ public static class InstallDefaultsRoutes
                                   ?? InstallDefaults.Panel.Layouts?.Phone ?? new(),
                         Q60     = ProjectFirstDeviceLayout(s.PanelDevices, "q60")
                                   ?? InstallDefaults.Panel.Layouts?.Q60 ?? new(),
+                        Strip   = InstallDefaults.Panel.Layouts?.Strip ?? new(),
                     },
                 },
                 Overlay = new OverlaySettings

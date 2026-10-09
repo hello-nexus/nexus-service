@@ -19,7 +19,7 @@ public sealed class UniversalScreen88Driver : IBulkPanelDriver
 
     private const int ReplyTimeoutMs = 1000;
 
-    /// <summary>The glass acks a busy 1920x480 JPEG in ~17 ms (measured), so the render rate is the ceiling, not the link.</summary>
+    /// <summary>The panel render rate; the glass acks frames faster than this (measured), so the link is never the ceiling.</summary>
     private const int FrameRate = 30;
     private const int JpegQuality = 85;
 
@@ -51,7 +51,7 @@ public sealed class UniversalScreen88Driver : IBulkPanelDriver
     public bool SupportsSecondaryMonitor => true;
     public bool SupportsPortrait => true;
 
-    /// <summary>1979 px across an 8.8 in diagonal. The monitor surface's desk-monitor estimate would read the strip as 4.4 in tall and double the rows.</summary>
+    /// <summary>The glass's real density (1920x480 on an 8.8 in diagonal); the monitor surface's desk-monitor estimate doubles the grid's rows.</summary>
     public double? Dpi => 225;
 
     /// <summary>Firmware string read at connect, or null before it.</summary>
@@ -96,7 +96,7 @@ public sealed class UniversalScreen88Driver : IBulkPanelDriver
             ServiceLog.Warn($"[{HandlerId}] no reply to GetVersion");
             return null;
         }
-        Firmware = HydroShift2Protocol.DecodeVersion(version);
+        Firmware = UniversalScreen88Protocol.DecodeVersion(version);
 
         var portrait = _wantsPortrait();
         Command(pipe, UniversalScreen88Protocol.CommandStopPlay, ReadOnlySpan<byte>.Empty);

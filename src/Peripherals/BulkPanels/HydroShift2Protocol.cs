@@ -135,17 +135,7 @@ public static class HydroShift2Protocol
         PumpMinRpm + ((PumpMaxRpm - PumpMinRpm) * Math.Clamp(dutyPercent, 0, 100) / 100);
 
     /// <summary>Firmware string from a GetVersion reply (ASCII at [8..40]), or null.</summary>
-    public static string? DecodeVersion(ReadOnlySpan<byte> reply)
-    {
-        if (reply.Length < 40 || reply[0] != CommandGetVersion)
-        {
-            return null;
-        }
-        var text = reply.Slice(8, 32);
-        int end = text.IndexOf((byte)0);
-        var version = System.Text.Encoding.ASCII.GetString(end < 0 ? text : text[..end]);
-        return version.Length > 0 ? version : null;
-    }
+    public static string? DecodeVersion(ReadOnlySpan<byte> reply) => UniversalScreen88Protocol.DecodeVersion(reply);
 
     /// <summary>
     /// GetParams reply: coolant °C at [13], fan rpm u16 BE at [14], [16], [18], pump rpm

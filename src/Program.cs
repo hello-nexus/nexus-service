@@ -911,9 +911,6 @@ static void FastServiceShutdown(WebApplication app)
     cloudQuiesce.Wait();
 }
 
-// The overlay host and tray helper run in the user session (spawned cross-session
-// via schtasks), so the KILL_ON_JOB_CLOSE job can't hold them. Reap the overlay
-// directly and ask the helper to exit, briefly.
 // The fast teardown skips the connection worker's release; retired first so no reconnect retakes the glass.
 static void ReleaseUniversalScreen88(IServiceProvider sp)
 {
@@ -927,6 +924,9 @@ static void ReleaseUniversalScreen88(IServiceProvider sp)
     }
 }
 
+// The overlay host and tray helper run in the user session (spawned cross-session
+// via schtasks), so the KILL_ON_JOB_CLOSE job can't hold them. Reap the overlay
+// directly and ask the helper to exit, briefly.
 static void FastWindowsUiTeardown(IServiceProvider sp)
 {
     // Stop() latches the no-respawn flag, but it reaps the overlay by a PID file

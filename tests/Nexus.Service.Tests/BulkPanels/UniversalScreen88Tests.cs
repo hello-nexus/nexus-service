@@ -145,6 +145,30 @@ public class UniversalScreen88Tests
     }
 
     [Fact]
+    public void Frames_rendered_for_the_old_mounting_are_dropped_until_the_session_is_remade()
+    {
+        var portrait = false;
+        var driver = new UniversalScreen88Driver();
+        driver.BindPortrait(() => portrait);
+        var pipe = new GlassPipe();
+        using var hub = new BulkPanelHub(driver);
+        Assert.True(hub.Attach(pipe, null));
+        using var transport = new BulkPanelStreamTransport(hub, "serial");
+        var landscape = Quadrants(1920, 480);
+        pipe.Clear();
+
+        transport.Write(landscape);
+        Assert.Single(pipe.Payloads);
+
+        portrait = true;
+        Assert.True(hub.Renegotiate());
+        pipe.Clear();
+        transport.Write(landscape);
+
+        Assert.Empty(pipe.Payloads);
+    }
+
+    [Fact]
     public void Discovery_offers_a_widget_panel_that_can_go_portrait()
     {
         using var hub = new BulkPanelHub(new UniversalScreen88Driver());

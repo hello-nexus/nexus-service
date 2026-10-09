@@ -194,7 +194,7 @@ public sealed class OpenRgbLightingDeviceProvider : ILightingDeviceProvider, IDe
     internal static (float x, float y, float w, float h) DefaultCardLayout(int slot, RgbDevice device)
     {
         var (x, y, w, h) = DefaultCardLayout(slot);
-        // The 8.8 screen's bezel is a 4:1 frame, still inside one column of the card grid.
+        // The 8.8 screen's bezel outline, narrow enough to stay inside one column of the card grid.
         return UniversalScreenRing.Matches(device) ? (x, y, 200f, 50f) : (x, y, w, h);
     }
 

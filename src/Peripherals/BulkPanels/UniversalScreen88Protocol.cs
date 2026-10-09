@@ -105,6 +105,19 @@ public static class UniversalScreen88Protocol
         (byte)now.Hour, (byte)now.Minute, (byte)now.Second, ClockSyncOnly,
     }, timestampMs);
 
+    /// <summary>Firmware string from a GetVersion reply (ASCII at [8..40]), or null.</summary>
+    public static string? DecodeVersion(ReadOnlySpan<byte> reply)
+    {
+        if (reply.Length < 40 || reply[0] != CommandGetVersion)
+        {
+            return null;
+        }
+        var text = reply.Slice(8, 32);
+        int end = text.IndexOf((byte)0);
+        var version = Encoding.ASCII.GetString(end < 0 ? text : text[..end]);
+        return version.Length > 0 ? version : null;
+    }
+
     /// <summary>
     /// A fully transparent framebuffer-sized PNG. The firmware composites a PNG layer over
     /// every JPEG and keeps whatever was last pushed there (L-Connect's sensor overlay), so
