@@ -1,10 +1,6 @@
 using System.Collections.Concurrent;
 using System.Reflection;
-using SixLabors.Fonts;
-using SixLabors.ImageSharp;
-using SixLabors.ImageSharp.Drawing.Processing;
-using SixLabors.ImageSharp.PixelFormats;
-using SixLabors.ImageSharp.Processing;
+using SkiaSharp;
 
 namespace Nexus.Service.Rendering;
 
@@ -26,7 +22,7 @@ public sealed class WeatherTileInput
 
 /// <summary>
 /// Draws a weather deck tile (condition glyph / temperature / location) into a
-/// square ImageSharp image at any pixel size. The glyph is the same lucide icon
+/// square Skia bitmap at any pixel size. The glyph is the same lucide icon
 /// nexus-web's WeatherIcon draws (rasterized white-on-transparent, embedded), and
 /// the icon/temperature/location stack mirrors DeckWeatherCell's proportions, so
 /// the physical key matches the desktop preview. Pure: no deck, HID, or
@@ -35,8 +31,9 @@ public sealed class WeatherTileInput
 /// </summary>
 internal static class WeatherTileRenderer
 {
-    private static readonly Color DefaultBackground = Color.ParseHex("0e1116");
-    private static readonly Color DefaultTitleColor = Color.White;
+    private static readonly SKColor DefaultBackground = new(0x0e, 0x11, 0x16);
+    private static readonly SKColor DefaultTitleColor = SKColors.White;
+    private static readonly SKColor TextShadow = new(0, 0, 0, 200);
 
     // Fractions of the square key, matching DeckWeatherCell.module.scss's flex
     // column (icon 42cqmin, temp 28cqmin, city 12-15px) centered as a stack.
@@ -47,39 +44,36 @@ internal static class WeatherTileRenderer
     private const float LocationCenterYFraction = 0.87f;
     private const float LocationFontSizeFraction = 0.145f;
 
-    private static readonly ConcurrentDictionary<string, Image<Rgba32>?> IconCache = new();
+    private static readonly ConcurrentDictionary<string, SKBitmap?> IconCache = new();
 
-    public static Image<Rgba32> Render(WeatherTileInput input, int pixelSize)
+    public static SKBitmap Render(WeatherTileInput input, int pixelSize)
     {
-        var image = new Image<Rgba32>(pixelSize, pixelSize);
         var background = RenderKit.ParseColor(input.BackgroundColorHex, DefaultBackground);
+        var image = RenderKit.NewImage(pixelSize, pixelSize, background);
         var titleColor = RenderKit.ParseColor(input.TitleColorHex, DefaultTitleColor);
         var font = RenderKit.ResolveFont();
 
-        image.Mutate(ctx =>
-        {
-            ctx.Fill(background);
-            DrawIcon(ctx, input.WeatherCode, pixelSize);
+        using var canvas = new SKCanvas(image);
+        DrawIcon(canvas, input.WeatherCode, pixelSize);
 
-            if (input.TemperatureText.Length > 0)
-            {
-                var tempFont = font.CreateFont(pixelSize * TemperatureFontSizeFraction, FontStyle.Bold);
-                DrawShadowedText(ctx, input.TemperatureText, tempFont, titleColor,
-                    new PointF(pixelSize / 2f, pixelSize * TemperatureCenterYFraction), pixelSize);
-            }
-            if (input.LocationLabel.Length > 0)
-            {
-                var locationFont = font.CreateFont(pixelSize * LocationFontSizeFraction, FontStyle.Regular);
-                var label = FitLocation(input.LocationLabel, locationFont, pixelSize * 0.96f);
-                DrawShadowedText(ctx, label, locationFont, titleColor,
-                    new PointF(pixelSize / 2f, pixelSize * LocationCenterYFraction), pixelSize);
-            }
-        });
+        if (input.TemperatureText.Length > 0)
+        {
+            using var tempFont = RenderKit.CreateFont(font, pixelSize * TemperatureFontSizeFraction, bold: true);
+            DrawShadowedText(canvas, input.TemperatureText, tempFont, titleColor,
+                new SKPoint(pixelSize / 2f, pixelSize * TemperatureCenterYFraction), pixelSize);
+        }
+        if (input.LocationLabel.Length > 0)
+        {
+            using var locationFont = RenderKit.CreateFont(font, pixelSize * LocationFontSizeFraction);
+            var label = FitLocation(input.LocationLabel, locationFont, pixelSize * 0.96f);
+            DrawShadowedText(canvas, label, locationFont, titleColor,
+                new SKPoint(pixelSize / 2f, pixelSize * LocationCenterYFraction), pixelSize);
+        }
 
         return image;
     }
 
-    private static void DrawIcon(IImageProcessingContext ctx, int weatherCode, int size)
+    private static void DrawIcon(SKCanvas canvas, int weatherCode, int size)
     {
         var icon = LoadIcon(IconResourceName(weatherCode));
         if (icon is null)
@@ -91,36 +85,37 @@ internal static class WeatherTileRenderer
         {
             return;
         }
-        using var scaled = icon.Clone(c => c.Resize(iconPx, iconPx));
+        using var scaled = RenderKit.Resize(icon, iconPx, iconPx);
         var left = (int)MathF.Round(size / 2f - iconPx / 2f);
         var top = (int)MathF.Round(size * IconCenterYFraction - iconPx / 2f);
 
         // Drop shadow (mirrors DeckWeatherCell's drop-shadow) so the white glyph
         // reads on a bright custom tile color: a black silhouette offset down.
         var shadowOffset = Math.Max(1, size / 72);
-        using (var shadow = scaled.Clone(c => c.Brightness(0)))
+        using (var silhouette = SKColorFilter.CreateBlendMode(SKColors.Black, SKBlendMode.SrcIn))
+        using (var shadow = new SKPaint { ColorFilter = silhouette, Color = SKColors.White.WithAlpha(140) })
         {
-            ctx.DrawImage(shadow, new Point(left, top + shadowOffset), 0.55f);
+            canvas.DrawBitmap(scaled, left, top + shadowOffset, SKSamplingOptions.Default, shadow);
         }
-        ctx.DrawImage(scaled, new Point(left, top), 1f);
+        RenderKit.DrawImage(canvas, scaled, left, top);
     }
 
-    private static void DrawShadowedText(IImageProcessingContext ctx, string text, Font font, Color color, PointF center, int size)
+    private static void DrawShadowedText(SKCanvas canvas, string text, SKFont font, SKColor color, SKPoint center, int size)
     {
         var offset = Math.Max(1, size / 72);
-        RenderKit.DrawCentered(ctx, text, font, Color.FromRgba(0, 0, 0, 200), new PointF(center.X, center.Y + offset));
-        RenderKit.DrawCentered(ctx, text, font, color, center);
+        RenderKit.DrawCentered(canvas, text, font, TextShadow, new SKPoint(center.X, center.Y + offset));
+        RenderKit.DrawCentered(canvas, text, font, color, center);
     }
 
-    private static string FitLocation(string label, Font font, float maxWidth)
+    private static string FitLocation(string label, SKFont font, float maxWidth)
     {
-        if (TextMeasurer.MeasureSize(label, new TextOptions(font)).Width <= maxWidth)
+        if (RenderKit.MeasureWidth(label, font) <= maxWidth)
         {
             return label;
         }
         var trimmed = label;
         while (trimmed.Length > 1
-            && TextMeasurer.MeasureSize(trimmed + "…", new TextOptions(font)).Width > maxWidth)
+            && RenderKit.MeasureWidth(trimmed + "…", font) > maxWidth)
         {
             trimmed = trimmed[..^1];
         }
@@ -142,10 +137,10 @@ internal static class WeatherTileRenderer
         _ => "circle-help",
     };
 
-    private static Image<Rgba32>? LoadIcon(string name) => IconCache.GetOrAdd(name, static key =>
+    private static SKBitmap? LoadIcon(string name) => IconCache.GetOrAdd(name, static key =>
     {
         var asm = Assembly.GetExecutingAssembly();
         using var stream = asm.GetManifestResourceStream($"weather-icon-{key}.png");
-        return stream is null ? null : Image.Load<Rgba32>(stream);
+        return stream is null ? null : RenderKit.Decode(stream);
     });
 }

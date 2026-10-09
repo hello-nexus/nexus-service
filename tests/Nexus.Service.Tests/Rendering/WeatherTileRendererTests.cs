@@ -37,16 +37,14 @@ public class WeatherTileRendererTests
             var input = new WeatherTileInput { WeatherCode = code };
             using var image = WeatherTileRenderer.Render(input, 96);
             var lit = 0;
-            image.ProcessPixelRows(accessor =>
+            for (var y = 0; y < image.Height; y++)
             {
-                for (var y = 0; y < accessor.Height; y++)
+                for (var x = 0; x < image.Width; x++)
                 {
-                    foreach (ref var px in accessor.GetRowSpan(y))
-                    {
-                        if (px.R > 40 || px.G > 40 || px.B > 40) { lit++; }
-                    }
+                    var px = image.GetPixel(x, y);
+                    if (px.Red > 40 || px.Green > 40 || px.Blue > 40) { lit++; }
                 }
-            });
+            }
             Assert.True(lit > 0, $"weather code {code} rendered no glyph");
         }
     }

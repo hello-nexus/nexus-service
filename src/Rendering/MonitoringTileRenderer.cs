@@ -1,12 +1,6 @@
 using System;
 using System.Collections.Generic;
-using SixLabors.Fonts;
-using SixLabors.ImageSharp;
-using SixLabors.ImageSharp.Drawing;
-using SixLabors.ImageSharp.Drawing.Processing;
-using SixLabors.ImageSharp.PixelFormats;
-using SixLabors.ImageSharp.Processing;
-using DrawingPath = SixLabors.ImageSharp.Drawing.Path;
+using SkiaSharp;
 
 namespace Nexus.Service.Rendering;
 
@@ -50,7 +44,7 @@ public sealed class MonitoringTileInput
 
 /// <summary>
 /// Draws a monitoring deck tile (sensor name / value / graph) into a square
-/// ImageSharp image at any pixel size. Pure: no deck, HID, or persistence
+/// Skia bitmap at any pixel size. Pure: no deck, HID, or persistence
 /// knowledge, so it is independently testable. This is the sole renderer for
 /// a physical key's bitmap; the same render also feeds the editor's live
 /// preview, broadcast as a streamdeckTiles frame, so the two are
@@ -58,10 +52,10 @@ public sealed class MonitoringTileInput
 /// </summary>
 internal static class MonitoringTileRenderer
 {
-    private static readonly Color DefaultBackground = Color.ParseHex("0e1116");
-    private static readonly Color DefaultAccent = Color.ParseHex("4da3ff");
-    private static readonly Color DefaultTitleColor = Color.White;
-    private static readonly Color TrackColor = Color.FromPixel(new Rgba32(255, 255, 255, 40));
+    private static readonly SKColor DefaultBackground = new(0x0e, 0x11, 0x16);
+    private static readonly SKColor DefaultAccent = new(0x4d, 0xa3, 0xff);
+    private static readonly SKColor DefaultTitleColor = SKColors.White;
+    private static readonly SKColor TrackColor = new(255, 255, 255, 40);
 
     private const int DefaultTitleSizePercent = 16;
     private const int MinTitleSizePercent = 8;
@@ -104,77 +98,73 @@ internal static class MonitoringTileRenderer
         _ => MonitoringTileStyle.Line,
     };
 
-    public static Image<Rgba32> Render(MonitoringTileInput input, int pixelSize)
+    public static SKBitmap Render(MonitoringTileInput input, int pixelSize)
     {
-        var image = new Image<Rgba32>(pixelSize, pixelSize);
         var background = RenderKit.ParseColor(input.BackgroundColorHex, DefaultBackground);
+        var image = RenderKit.NewImage(pixelSize, pixelSize, background);
         var accent = RenderKit.ParseColor(input.AccentColorHex, DefaultAccent);
         var titleColor = RenderKit.ParseColor(input.TitleColorHex, DefaultTitleColor);
         var titleFont = ResolveTitleFont(input.TitleFont);
-        var titleFontStyle = ResolveFontStyle(input.TitleBold, input.TitleItalic);
         var titleSizePx = TitlePixelSize(input.TitleSize, pixelSize);
         var displayName = string.IsNullOrEmpty(input.LabelText) ? input.Name : input.LabelText;
         var nameShown = input.ShowName && !string.IsNullOrEmpty(displayName);
         var domain = ResolveDomain(input);
 
-        image.Mutate(ctx =>
+        using var canvas = new SKCanvas(image);
+
+        // Backdrop's history fill spans the whole key face edge to edge,
+        // behind the name/value text (mirrors BackdropGauge.tsx's
+        // absolute inset:0 chart layer), so it draws before the name.
+        if (input.Style == MonitoringTileStyle.Backdrop)
         {
-            ctx.Fill(background);
+            RenderBackdrop(canvas, input, pixelSize, accent, domain);
+        }
 
-            // Backdrop's history fill spans the whole key face edge to edge,
-            // behind the name/value text (mirrors BackdropGauge.tsx's
-            // absolute inset:0 chart layer), so it draws before the name.
-            if (input.Style == MonitoringTileStyle.Backdrop)
-            {
-                RenderBackdrop(ctx, input, pixelSize, accent, domain);
-            }
+        if (nameShown)
+        {
+            using var nameFont = RenderKit.CreateFont(titleFont, titleSizePx, input.TitleBold, input.TitleItalic);
+            RenderKit.DrawCentered(canvas, displayName!, nameFont, titleColor, new SKPoint(pixelSize / 2f, pixelSize * NameYFraction));
+        }
 
-            if (nameShown)
-            {
-                var nameFont = titleFont.CreateFont(titleSizePx, titleFontStyle);
-                RenderKit.DrawCentered(ctx, displayName!, nameFont, titleColor, new PointF(pixelSize / 2f, pixelSize * NameYFraction));
-            }
-
-            switch (input.Style)
-            {
-                case MonitoringTileStyle.Number:
-                    RenderNumber(ctx, input, pixelSize, titleFont, titleColor, nameShown);
-                    break;
-                case MonitoringTileStyle.Segments:
-                    RenderSegments(ctx, input, pixelSize, accent, domain, nameShown);
-                    DrawBottomValue(ctx, input, pixelSize, titleFont, titleColor);
-                    break;
-                // Backdrop overlays the value big and centered on the graph,
-                // reusing Number's sizing/position, with no bottom value row.
-                case MonitoringTileStyle.Backdrop:
-                    RenderNumber(ctx, input, pixelSize, titleFont, titleColor, nameShown);
-                    break;
-                default:
-                    RenderLine(ctx, input, pixelSize, accent, domain, nameShown);
-                    DrawBottomValue(ctx, input, pixelSize, titleFont, titleColor);
-                    break;
-            }
-        });
+        switch (input.Style)
+        {
+            case MonitoringTileStyle.Number:
+                RenderNumber(canvas, input, pixelSize, titleFont, titleColor, nameShown);
+                break;
+            case MonitoringTileStyle.Segments:
+                RenderSegments(canvas, input, pixelSize, accent, domain, nameShown);
+                DrawBottomValue(canvas, input, pixelSize, titleFont, titleColor);
+                break;
+            // Backdrop overlays the value big and centered on the graph,
+            // reusing Number's sizing/position, with no bottom value row.
+            case MonitoringTileStyle.Backdrop:
+                RenderNumber(canvas, input, pixelSize, titleFont, titleColor, nameShown);
+                break;
+            default:
+                RenderLine(canvas, input, pixelSize, accent, domain, nameShown);
+                DrawBottomValue(canvas, input, pixelSize, titleFont, titleColor);
+                break;
+        }
 
         return image;
     }
 
-    private static void DrawBottomValue(IImageProcessingContext ctx, MonitoringTileInput input, int size, FontFamily font, Color color)
+    private static void DrawBottomValue(SKCanvas canvas, MonitoringTileInput input, int size, SKTypeface font, SKColor color)
     {
         if (string.IsNullOrEmpty(input.ValueText))
         {
             return;
         }
-        var valueFont = font.CreateFont(size * ValueFontSizeFraction, FontStyle.Bold);
-        RenderKit.DrawCentered(ctx, input.ValueText, valueFont, color, new PointF(size / 2f, size * ValueYFraction));
+        using var valueFont = RenderKit.CreateFont(font, size * ValueFontSizeFraction, bold: true);
+        RenderKit.DrawCentered(canvas, input.ValueText, valueFont, color, new SKPoint(size / 2f, size * ValueYFraction));
     }
 
-    private static RectangleF ComputeGraphBand(int size, bool nameShown)
+    private static SKRect ComputeGraphBand(int size, bool nameShown)
     {
         var bandTop = size * (nameShown ? LineBandTopWithName : LineBandTopNoName);
         var bandBottom = size * LineBandBottom;
         var inset = size * LineBandInsetXFraction;
-        return new RectangleF(inset, bandTop, size - inset * 2f, bandBottom - bandTop);
+        return SKRect.Create(inset, bandTop, size - inset * 2f, bandBottom - bandTop);
     }
 
     private static List<float> NormalizeSeries(IReadOnlyList<float> history, (float Min, float Max) domain)
@@ -189,22 +179,22 @@ internal static class MonitoringTileRenderer
 
     /// <summary>
     /// Draws a translucent accent-fill area topped with a full-opacity accent
-    /// stroke along the series' top edge. ImageSharp's fill primitive has no
-    /// separate stroke of its own, so the stroke is drawn as a second, open
-    /// path over the fill.
+    /// stroke along the series' top edge, an open path over the fill.
     /// </summary>
-    private static void RenderLine(IImageProcessingContext ctx, MonitoringTileInput input, int size, Color accent, (float Min, float Max) domain, bool nameShown)
+    private static void RenderLine(SKCanvas canvas, MonitoringTileInput input, int size, SKColor accent, (float Min, float Max) domain, bool nameShown)
     {
         var band = ComputeGraphBand(size, nameShown);
         var normalized = NormalizeSeries(input.History, domain);
 
-        ctx.Fill(WithAlpha(accent, LineFillAlpha), RenderKit.BuildFilledSeries(band, normalized));
+        RenderKit.FillPath(canvas, RenderKit.WithAlpha(accent, LineFillAlpha), RenderKit.BuildFilledSeries(band, normalized));
 
         var topEdge = BuildTopEdge(band, normalized);
         if (topEdge.Length >= 2)
         {
             var thickness = Math.Max(LineStrokeMinPx, size * LineStrokeThicknessFraction);
-            ctx.Draw(Pens.Solid(accent, thickness), new DrawingPath(new LinearLineSegment(topEdge)));
+            using var stroke = RenderKit.Stroke(accent, thickness);
+            using var path = RenderKit.Polygon(topEdge, close: false);
+            canvas.DrawPath(path, stroke);
         }
     }
 
@@ -213,18 +203,11 @@ internal static class MonitoringTileRenderer
     /// in a dimmed accent rather than the bold accent Line/Segments use; the
     /// Backdrop case in Render overlays the value on top afterward.
     /// </summary>
-    private static void RenderBackdrop(IImageProcessingContext ctx, MonitoringTileInput input, int size, Color accent, (float Min, float Max) domain)
+    private static void RenderBackdrop(SKCanvas canvas, MonitoringTileInput input, int size, SKColor accent, (float Min, float Max) domain)
     {
-        var band = new RectangleF(0f, 0f, size, size);
+        var band = SKRect.Create(0f, 0f, size, size);
         var normalized = NormalizeSeries(input.History, domain);
-        ctx.Fill(WithAlpha(accent, BackdropDimAlpha), RenderKit.BuildFilledSeries(band, normalized));
-    }
-
-    private static Color WithAlpha(Color color, float alpha)
-    {
-        var pixel = color.ToPixel<Rgba32>();
-        var a = (byte)Math.Round(Math.Clamp(alpha, 0f, 1f) * 255f);
-        return Color.FromPixel(new Rgba32(pixel.R, pixel.G, pixel.B, a));
+        RenderKit.FillPath(canvas, RenderKit.WithAlpha(accent, BackdropDimAlpha), RenderKit.BuildFilledSeries(band, normalized));
     }
 
     /// <summary>
@@ -234,21 +217,21 @@ internal static class MonitoringTileRenderer
     /// no stroke: nexus-web's Sparkline line path for one point is a bare
     /// SVG moveto with no line segment to stroke.
     /// </summary>
-    private static PointF[] BuildTopEdge(RectangleF band, IReadOnlyList<float> normalizedValues)
+    private static SKPoint[] BuildTopEdge(SKRect band, IReadOnlyList<float> normalizedValues)
     {
         var n = normalizedValues.Count;
         if (n <= 1)
         {
-            return Array.Empty<PointF>();
+            return Array.Empty<SKPoint>();
         }
 
-        var points = new PointF[n];
+        var points = new SKPoint[n];
         for (var i = 0; i < n; i++)
         {
             var x = band.Left + band.Width * i / (n - 1);
             var clamped = Math.Clamp(normalizedValues[i], 0f, 1f);
             var y = band.Bottom - clamped * band.Height;
-            points[i] = new PointF(x, y);
+            points[i] = new SKPoint(x, y);
         }
         return points;
     }
@@ -258,7 +241,7 @@ internal static class MonitoringTileRenderer
     /// left to right by the current reading's fill fraction. Reuses the Line
     /// band position so the middle graph area lines up across styles.
     /// </summary>
-    private static void RenderSegments(IImageProcessingContext ctx, MonitoringTileInput input, int size, Color accent, (float Min, float Max) domain, bool nameShown)
+    private static void RenderSegments(SKCanvas canvas, MonitoringTileInput input, int size, SKColor accent, (float Min, float Max) domain, bool nameShown)
     {
         var band = ComputeGraphBand(size, nameShown);
 
@@ -273,52 +256,18 @@ internal static class MonitoringTileRenderer
         var fraction = FillFraction(current, domain);
         var filledCount = (int)Math.Clamp(MathF.Round(fraction * SegmentsCount, MidpointRounding.AwayFromZero), 0f, (float)SegmentsCount);
 
+        using var track = RenderKit.Fill(TrackColor);
+        using var fill = RenderKit.Fill(accent);
         for (var i = 0; i < SegmentsCount; i++)
         {
             var x = band.Left + i * (segmentWidth + gap);
-            var rect = new RectangleF(x, band.Top, segmentWidth, band.Height);
-            var color = i < filledCount ? accent : TrackColor;
-            // Radius clamps to half the bar's width in BuildRoundedRect, so
-            // passing the width itself always yields a full pill at this scale.
-            ctx.Fill(color, BuildRoundedRect(rect, segmentWidth));
+            var rect = SKRect.Create(x, band.Top, segmentWidth, band.Height);
+            // A radius of half the bar's width yields a full pill.
+            canvas.DrawRoundRect(rect, segmentWidth / 2f, segmentWidth / 2f, i < filledCount ? fill : track);
         }
     }
 
-    /// <summary>
-    /// Builds a rounded-rectangle polygon from manual corner arcs, the same
-    /// approach RenderKit.BuildRingSegment uses, rather than depending on a
-    /// PathBuilder rounded-rect overload. Radius clamps to half the shorter
-    /// side, so a bar narrower than twice the requested radius renders as a
-    /// full pill.
-    /// </summary>
-    private static IPath BuildRoundedRect(RectangleF rect, float radius)
-    {
-        var maxRadius = Math.Max(0f, Math.Min(rect.Width, rect.Height) / 2f);
-        var r = Math.Clamp(radius, 0f, maxRadius);
-        if (r <= 0f)
-        {
-            return new RectangularPolygon(rect);
-        }
-
-        var points = new List<PointF>();
-        AddCornerArc(points, rect.Right - r, rect.Top + r, -90f, r);
-        AddCornerArc(points, rect.Right - r, rect.Bottom - r, 0f, r);
-        AddCornerArc(points, rect.Left + r, rect.Bottom - r, 90f, r);
-        AddCornerArc(points, rect.Left + r, rect.Top + r, 180f, r);
-        return new Polygon(new LinearLineSegment(points.ToArray()));
-    }
-
-    private static void AddCornerArc(List<PointF> points, float cx, float cy, float startDeg, float radius, int segments = 4)
-    {
-        for (var i = 0; i <= segments; i++)
-        {
-            var deg = startDeg + 90f * i / segments;
-            var rad = deg * MathF.PI / 180f;
-            points.Add(new PointF(cx + radius * MathF.Cos(rad), cy + radius * MathF.Sin(rad)));
-        }
-    }
-
-    private static void RenderNumber(IImageProcessingContext ctx, MonitoringTileInput input, int size, FontFamily font, Color color, bool nameShown)
+    private static void RenderNumber(SKCanvas canvas, MonitoringTileInput input, int size, SKTypeface font, SKColor color, bool nameShown)
     {
         var (numberText, unitText) = SplitFormatted(input.ValueText);
         if (numberText.Length == 0)
@@ -326,24 +275,26 @@ internal static class MonitoringTileRenderer
             return;
         }
         var centerY = size * (nameShown ? 0.58f : 0.52f);
-        var bigFont = font.CreateFont(size * NumberBigFontFraction, FontStyle.Bold);
+        using var bigFont = RenderKit.CreateFont(font, size * NumberBigFontFraction, bold: true);
         if (unitText.Length == 0)
         {
-            RenderKit.DrawCentered(ctx, numberText, bigFont, color, new PointF(size / 2f, centerY));
+            RenderKit.DrawCentered(canvas, numberText, bigFont, color, new SKPoint(size / 2f, centerY));
             return;
         }
 
         // Value + unit sit on one line, the unit small and immediately after
-        // the value (bottom-aligned), the pair centered as a group.
-        var unitFont = font.CreateFont(size * NumberUnitFontFraction, FontStyle.Regular);
-        var numSize = TextMeasurer.MeasureSize(numberText, new TextOptions(bigFont));
-        var unitSize = TextMeasurer.MeasureSize(unitText, new TextOptions(unitFont));
+        // the value on its baseline, the pair centered as a group.
+        using var unitFont = RenderKit.CreateFont(font, size * NumberUnitFontFraction);
+        var numWidth = RenderKit.MeasureWidth(numberText, bigFont);
+        var unitWidth = RenderKit.MeasureWidth(unitText, unitFont);
         var gap = size * 0.015f;
-        var groupLeft = size / 2f - (numSize.Width + gap + unitSize.Width) / 2f;
-        RenderKit.DrawCentered(ctx, numberText, bigFont, color, new PointF(groupLeft + numSize.Width / 2f, centerY));
-        var unitCenterX = groupLeft + numSize.Width + gap + unitSize.Width / 2f;
-        var unitCenterY = centerY + numSize.Height / 2f - unitSize.Height / 2f;
-        RenderKit.DrawCentered(ctx, unitText, unitFont, color, new PointF(unitCenterX, unitCenterY));
+        var groupLeft = size / 2f - (numWidth + gap + unitWidth) / 2f;
+        RenderKit.DrawCentered(canvas, numberText, bigFont, color, new SKPoint(groupLeft + numWidth / 2f, centerY));
+        var unitCenterX = groupLeft + numWidth + gap + unitWidth / 2f;
+        var big = bigFont.Metrics;
+        var unit = unitFont.Metrics;
+        var unitCenterY = centerY - (big.Ascent + big.Descent) / 2f + (unit.Ascent + unit.Descent) / 2f;
+        RenderKit.DrawCentered(canvas, unitText, unitFont, color, new SKPoint(unitCenterX, unitCenterY));
     }
 
     /// <summary>
@@ -446,32 +397,17 @@ internal static class MonitoringTileRenderer
         return pixelSize * clamped / 100f;
     }
 
-    private static FontStyle ResolveFontStyle(bool bold, bool italic)
-    {
-        if (bold && italic)
-        {
-            return FontStyle.BoldItalic;
-        }
-        if (bold)
-        {
-            return FontStyle.Bold;
-        }
-        return italic ? FontStyle.Italic : FontStyle.Regular;
-    }
-
-    private static FontFamily ResolveTitleFont(string? fontId)
+    private static SKTypeface ResolveTitleFont(string? fontId)
     {
         var family = fontId switch
         {
-            "arial" => TryFamily("Arial"),
-            "georgia" => TryFamily("Georgia"),
-            "courierNew" => TryFamily("Courier New"),
+            "arial" => RenderKit.TryFamily("Arial"),
+            "georgia" => RenderKit.TryFamily("Georgia"),
+            "courierNew" => RenderKit.TryFamily("Courier New"),
             _ => null,
         };
         return family ?? RenderKit.ResolveFont();
     }
-
-    private static FontFamily? TryFamily(string name) => SystemFonts.TryGet(name, out var family) ? family : null;
 
     /// <summary>Splits a leading numeric run (digits, '.', '-', ',') from its trailing unit suffix, e.g. "4713MHz" -> ("4713", "MHz"). Never reformats the value.</summary>
     private static (string Number, string Unit) SplitFormatted(string formatted)

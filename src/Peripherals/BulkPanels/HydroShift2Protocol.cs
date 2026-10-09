@@ -1,8 +1,7 @@
 using System;
 using System.IO;
 using Nexus.Service.Peripherals.LianLiWireless;
-using SixLabors.ImageSharp;
-using SixLabors.ImageSharp.PixelFormats;
+using Nexus.Service.Rendering;
 
 namespace Nexus.Service.Peripherals.BulkPanels;
 
@@ -175,10 +174,8 @@ public static class HydroShift2Protocol
     /// </summary>
     public static byte[] EmptyOverlayPng()
     {
-        using var image = new Image<Rgba32>(Width, Height);
-        using var ms = new MemoryStream();
-        image.SaveAsPng(ms);
-        return ms.ToArray();
+        using var image = RenderKit.NewImage(Width, Height);
+        return RenderKit.EncodePng(image);
     }
 
     private static void WriteBigEndian(Span<byte> target, int value)
