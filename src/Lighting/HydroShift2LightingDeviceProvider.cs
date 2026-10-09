@@ -227,11 +227,11 @@ public sealed class HydroShift2LightingDeviceProvider :
         return (Margin + (u * (1f - (2f * Margin))), Margin + (v * (1f - (2f * Margin))));
     }
 
-    /// <summary>Where LED <paramref name="index"/> sits on the round head, in the wireless path's order (LED 0 at 3 o'clock, clockwise); not camera-mapped.</summary>
+    /// <summary>Where LED <paramref name="index"/> sits on the round head: LED 0 at the top, clockwise (seen on an LCD-C).</summary>
     internal static (float U, float V) CircleRingPosition(int index)
     {
         const float Radius = 0.42f;
-        var angle = index / (double)HydroShift2Protocol.RingLedCount * 2.0 * Math.PI;
+        var angle = (index / (double)HydroShift2Protocol.RingLedCount * 2.0 * Math.PI) - (Math.PI / 2.0);
         return (0.5f + (Radius * (float)Math.Cos(angle)), 0.5f + (Radius * (float)Math.Sin(angle)));
     }
 

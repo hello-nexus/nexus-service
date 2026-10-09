@@ -269,11 +269,11 @@ public class HydroShift2Tests
     }
 
     [Theory]
-    [InlineData(0, 0.92f, 0.5f)]
-    [InlineData(6, 0.5f, 0.92f)]
-    [InlineData(12, 0.08f, 0.5f)]
-    [InlineData(18, 0.5f, 0.08f)]
-    public void Ring_leds_sit_round_the_round_head_like_the_wireless_path(int index, float u, float v)
+    [InlineData(0, 0.5f, 0.08f)]
+    [InlineData(6, 0.92f, 0.5f)]
+    [InlineData(12, 0.5f, 0.92f)]
+    [InlineData(18, 0.08f, 0.5f)]
+    public void Ring_leds_sit_round_the_round_head_clockwise_from_the_top(int index, float u, float v)
     {
         var (actualU, actualV) = Nexus.Service.Lighting.HydroShift2LightingDeviceProvider.CircleRingPosition(index);
         Assert.Equal(u, actualU, 3);
