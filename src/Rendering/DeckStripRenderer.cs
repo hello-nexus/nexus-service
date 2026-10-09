@@ -92,6 +92,10 @@ public sealed class DeckStripRenderer
         SKPoint P(float x, float y) => new(origin.X + x * scale, origin.Y + y * scale);
 
         using var canvas = new SKCanvas(image);
+        if (feedback > 0f)
+        {
+            RenderKit.FillRect(canvas, accent.WithAlpha((byte)Math.Clamp(feedback * 80f, 0f, 255f)), SKRect.Create(width, height));
+        }
         DrawTitle(canvas, input.Title, P(100, 16), scale);
         switch (input.Kind)
         {
@@ -110,12 +114,6 @@ public sealed class DeckStripRenderer
                 break;
         }
         DrawStackDots(canvas, input, accent, P, scale);
-        if (feedback > 0f)
-        {
-            RenderKit.FillRect(canvas, accent.WithAlpha((byte)Math.Clamp(feedback * 80f, 0f, 255f)), SKRect.Create(width, height));
-            using var stroke = RenderKit.Stroke(accent, MathF.Max(2f, 3f * scale));
-            canvas.DrawRect(SKRect.Create(width, height), stroke);
-        }
         return image;
     }
 

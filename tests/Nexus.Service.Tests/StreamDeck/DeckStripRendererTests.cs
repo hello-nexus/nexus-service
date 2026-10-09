@@ -114,13 +114,17 @@ public sealed class DeckStripRendererTests
     }
 
     [Fact]
-    public void Segment_FeedbackAddsAnAccentBorder_ThatFadesOut()
+    public void Segment_FeedbackTintsTheBackground_WithNoBorder()
     {
         using var plain = _renderer.RenderSegment(Value(0.5), 200, 100);
         using var lit = _renderer.RenderSegment(Value(0.5), 200, 100, feedback: 1f);
 
-        Assert.True(AccentPixels(lit, SKRectI.Create(0, 0, 200, 3)) > 100);
-        Assert.Equal(0, AccentPixels(plain, SKRectI.Create(0, 0, 200, 3)));
+        var corner = plain.GetPixel(0, 0);
+        var tinted = lit.GetPixel(0, 0);
+        Assert.True(tinted.Blue > corner.Blue && tinted.Green > corner.Green);
+        Assert.Equal(0, AccentPixels(lit, SKRectI.Create(0, 0, 200, 3)));
+        var bar = SKRectI.Create(76, 74, 108, 12);
+        Assert.Equal(AccentPixels(plain, bar), AccentPixels(lit, bar));
     }
 
     [Fact]

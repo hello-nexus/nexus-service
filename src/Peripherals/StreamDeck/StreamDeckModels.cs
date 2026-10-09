@@ -30,6 +30,13 @@ public sealed record StreamDeckScreen(int Width, int Height, StreamDeckScreenKin
 public sealed class StreamDeckModel
 {
     public string Name { get; }
+
+    /// <summary>Brand-prefixed product name for the UI; <see cref="Name"/> stays bare for model matching.</summary>
+    public string DisplayName => VendorId == StreamDeckModels.CorsairVendorId ? $"Corsair {Name}" : $"Elgato Stream Deck {DisplayModel ?? Name}";
+
+    /// <summary>Marketed model token when it differs from <see cref="Name"/> (Plus is sold as "+").</summary>
+    private string? DisplayModel { get; init; }
+
     public int ProductId { get; }
     public int KeyCount { get; }
     public int Rows { get; }
@@ -253,7 +260,7 @@ public sealed class StreamDeckModel
         StreamDeckScreen? screen = null, string screenTransform = "none", int touchKeys = 0,
         int ringLeds = 0, StreamDeckRingKind ringKind = StreamDeckRingKind.None,
         int vendorId = StreamDeckModels.VendorId, int hidUsage = 0, int hidUsagePage = 0, int keepAliveIntervalMs = 0,
-        int openSettleMs = 0) => new(
+        int openSettleMs = 0, string? displayModel = null) => new(
         name, productId, keyCount, rows, columns, keyPixelSize,
         StreamDeckImageFormat.Jpeg, rotation, mirror,
         StreamDeckProtocolGeneration.Gen2, verified: false)
@@ -271,6 +278,7 @@ public sealed class StreamDeckModel
         HidUsagePage = hidUsagePage,
         KeepAliveIntervalMs = keepAliveIntervalMs,
         OpenSettleMs = openSettleMs,
+        DisplayModel = displayModel,
     };
 
     internal static StreamDeckModel InputOnly(string name, int productId, int keyCount, int rows, int columns) => new(
@@ -319,10 +327,10 @@ public static class StreamDeckModels
         // key transform; Plus XL rotates keys and strip 90 CCW; Neo flips both
         // for keys and the info screen. KeyCount stays Rows*Columns; Neo's 2
         // touch keys report after the LCD keys and are TouchKeys, not keys.
-        StreamDeckModel.Expanded("Plus", 0x0084, 8, 2, 4, 120,
+        StreamDeckModel.Expanded("Plus", 0x0084, 8, 2, 4, 120, displayModel: "+",
             encoders: 4, dialPlacement: StreamDeckDialPlacement.Below,
             screen: new StreamDeckScreen(800, 100, StreamDeckScreenKind.TouchStrip)),
-        StreamDeckModel.Expanded("Plus XL", 0x00c6, 36, 4, 9, 112,
+        StreamDeckModel.Expanded("Plus XL", 0x00c6, 36, 4, 9, 112, displayModel: "+ XL",
             rotation: StreamDeckRotation.Rot90, encoders: 6, dialPlacement: StreamDeckDialPlacement.Below,
             screen: new StreamDeckScreen(1200, 100, StreamDeckScreenKind.TouchStrip), screenTransform: "rot90Ccw"),
         StreamDeckModel.Expanded("Neo", 0x009a, 8, 2, 4, 96,
