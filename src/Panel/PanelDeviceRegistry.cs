@@ -261,7 +261,8 @@ public sealed class PanelDeviceRegistry
             && string.Equals(a.Family, b.Family, StringComparison.Ordinal)
             && a.SupportsBrightness == b.SupportsBrightness
             && a.SupportsSecondaryMonitor == b.SupportsSecondaryMonitor
-            && a.SupportsPortrait == b.SupportsPortrait;
+            && a.SupportsPortrait == b.SupportsPortrait
+            && a.SupportsRenderScale == b.SupportsRenderScale;
     }
 
     public PanelDeviceRecord? FindByDisplayId(string displayId)
@@ -482,6 +483,7 @@ public sealed class PanelDeviceRegistry
             SupportsBrightness = patch.SupportsBrightness ?? existing?.SupportsBrightness,
             SupportsSecondaryMonitor = patch.SupportsSecondaryMonitor ?? existing?.SupportsSecondaryMonitor,
             SupportsPortrait = patch.SupportsPortrait ?? existing?.SupportsPortrait,
+            SupportsRenderScale = patch.SupportsRenderScale ?? existing?.SupportsRenderScale,
         };
     }
 
@@ -607,6 +609,8 @@ public sealed class PanelDeviceRegistry
                 record.SecondaryMonitor = patch.SecondaryMonitor.Value;
             if (patch.Portrait.HasValue)
                 record.Portrait = patch.Portrait.Value;
+            if (patch.HighResolution.HasValue)
+                record.HighResolution = patch.HighResolution.Value;
             // Capabilities on display-bound records are owned by the topology
             // sync (rebuilt from OS facts); a client value would ping-pong
             // with the next sync pass.
@@ -722,6 +726,7 @@ public sealed class PanelDeviceRegistry
             record.LcdBrightness = null;
             record.SecondaryMonitor = null;
             record.Portrait = null;
+            record.HighResolution = null;
             record.XeneonEdgeSettings = null;
             record.LastSeenAt = now;
             snapshot = Clone(record);
@@ -1003,6 +1008,7 @@ public sealed class PanelDeviceRegistry
             LcdBrightness = r.LcdBrightness,
             SecondaryMonitor = r.SecondaryMonitor,
             Portrait = r.Portrait,
+            HighResolution = r.HighResolution,
             XeneonEdgeSettings = r.XeneonEdgeSettings is null
                 ? null
                 : new XeneonEdgeSettingsDto

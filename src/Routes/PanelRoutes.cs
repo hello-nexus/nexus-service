@@ -350,6 +350,8 @@ public static class PanelRoutes
                 streams.ApplyBrightness(updated.Id);
             if (body.SecondaryMonitor.HasValue)
                 streams.ApplySecondaryMonitor(updated.Id);
+            if (body.HighResolution.HasValue)
+                streams.Wake();
             BroadcastDeviceChanged(hub, id);
             return Results.Json(updated, AppJsonContext.Default.PanelDeviceRecord);
         }).AllowPanel();
