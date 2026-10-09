@@ -81,7 +81,7 @@ public static class EventXmlParser
         {
             Id = $"{channel}/{recordId}",
             TimeUtc = timeUtc,
-            Source = entry.Source,
+            Source = extracted.Source ?? entry.Source,
             Severity = extracted.Severity,
             Title = extracted.Title,
             Detail = extracted.Detail,
@@ -90,7 +90,7 @@ public static class EventXmlParser
         };
     }
 
-    private sealed record ExtractedFields(string Severity, string Title, string Detail, DiagnosticAppInfo? App, IReadOnlyDictionary<string, string> Data);
+    private sealed record ExtractedFields(string Severity, string Title, string Detail, DiagnosticAppInfo? App, IReadOnlyDictionary<string, string> Data, string? Source = null);
 
     private static ExtractedFields? Extract(DiagnosticParseStrategy strategy, int eventId, XElement system, XElement? eventData) => strategy switch
     {
@@ -235,6 +235,13 @@ public static class EventXmlParser
         if (!string.IsNullOrEmpty(modulePath))
         {
             data["modulePath"] = modulePath;
+        }
+        if (string.Equals(appName, "Nexus.exe", StringComparison.OrdinalIgnoreCase)
+            && string.Equals(moduleName, "nvml.dll", StringComparison.OrdinalIgnoreCase))
+        {
+            return new ExtractedFields(DiagnosticSeverity.Info, "Nexus restarted during an NVIDIA driver update",
+                $"Nexus restarted when the NVIDIA driver reloaded (exception {exceptionCode} in {moduleName}).", app, data,
+                DiagnosticEventCatalog.SourceDriverRestart);
         }
         var detail = $"{appName} crashed (exception {exceptionCode}) in {moduleName}.";
         return new ExtractedFields(DiagnosticSeverity.Warning, "Application crash", detail, app, data);

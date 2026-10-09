@@ -406,10 +406,13 @@ begin
   Exec(ExpandConstant('{sys}\net.exe'), 'stop NexusService', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
   TaskKill := ExpandConstant('{sys}\taskkill.exe');
   StringChangeEx(TaskKill, '''', '''''', True);
+  // Public Sigma rules read "join" followed by "split" in these command lines
+  // as CrackMapExec obfuscation, and a high count of '{' as command-line
+  // obfuscation. Keep both out.
   OwnNexus := '$own = @(' + OwnNexusExes() + '); ' +
     '$mine = Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | ' +
     'Where-Object { $_.Name -ieq ''Nexus.exe'' -and (-not $_.ExecutablePath -or $own -icontains $_.ExecutablePath -or ' +
-    '(Test-Path -LiteralPath (Join-Path (Split-Path -Parent $_.ExecutablePath) ''overlay\nexus-overlay.exe''))) }; ';
+    '(Test-Path -LiteralPath ([IO.Path]::GetDirectoryName($_.ExecutablePath) + ''\overlay\nexus-overlay.exe''))) }; ';
   Exec(ExpandConstant('{sys}\WindowsPowerShell\v1.0\powershell.exe'),
     '-NoProfile -NonInteractive -Command "' + OwnNexus +
     'foreach ($m in $mine) { & ''' + TaskKill + ''' /F /PID $m.ProcessId }"',
@@ -448,10 +451,7 @@ begin
     OwnNexus +
     '$waits = @(Get-Process -Name OpenRGB-headless,nexus-overlay -ErrorAction SilentlyContinue); ' +
     'foreach ($m in $mine) { $waits += Get-Process -Id $m.ProcessId -ErrorAction SilentlyContinue }; ' +
-    '$d = [DateTime]::UtcNow.AddMilliseconds(2000); ' +
-    'foreach ($p in $waits) { ' +
-    '$ms = [int]($d - [DateTime]::UtcNow).TotalMilliseconds; ' +
-    'if ($ms -gt 0) { try { [void]$p.WaitForExit($ms) } catch { } } }"',
+    '$waits | Wait-Process -Timeout 2 -ErrorAction SilentlyContinue"',
     '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
 end;
 

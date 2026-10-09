@@ -45,6 +45,36 @@ public static class ConflictWhitelistMigration
         KeepOn(doc.Devices, "zmatrices-lcd");
     }
 
+    /// <summary>Runs on every load. Turning a device on took its app off the whitelist; while every device of the app is locked to beta builds, the app goes back on so it is neither ended nor announced. Once any of them is controllable again (a beta build, or a family promoted to stable), exactly that entry comes off. True when it changed anything.</summary>
+    public static bool ReconcileBetaLock(NexusSettings doc)
+    {
+        doc.Devices ??= new DevicesSettings();
+        doc.Ui ??= new UiSettings();
+        var changed = false;
+        foreach (var app in DeviceControlPolicy.AllHandlersByApp())
+        {
+            var locked = app.All(DeviceControlPolicy.RequiresBeta);
+            var chosenOn = app.Any(h => Contains(doc.Devices.NexusControlEnabled, h));
+            if (Contains(doc.Devices.BetaLockWhitelisted, app.Key))
+            {
+                if (locked) continue;
+                if (chosenOn) doc.Ui.ConflictAutoKillExclusions = Without(doc.Ui.ConflictAutoKillExclusions, app.Key);
+                doc.Devices.BetaLockWhitelisted = Without(doc.Devices.BetaLockWhitelisted, app.Key);
+                changed = true;
+            }
+            else if (locked && chosenOn && !Contains(doc.Ui.ConflictAutoKillExclusions, app.Key))
+            {
+                doc.Ui.ConflictAutoKillExclusions = doc.Ui.ConflictAutoKillExclusions.Append(app.Key).ToList();
+                doc.Devices.BetaLockWhitelisted = doc.Devices.BetaLockWhitelisted.Append(app.Key).ToList();
+                changed = true;
+            }
+        }
+        return changed;
+    }
+
+    private static List<string> Without(List<string> ids, string id) =>
+        ids.Where(x => !string.Equals(x, id, StringComparison.OrdinalIgnoreCase)).ToList();
+
     private static void KeepOn(DevicesSettings devices, string handlerId)
     {
         if (Contains(devices.NexusControlDisabled, handlerId) || Contains(devices.NexusControlEnabled, handlerId)) return;

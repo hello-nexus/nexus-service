@@ -80,6 +80,10 @@ public sealed class DeviceControlGate
 
     private static bool IsEnabled(DevicesSettings devices, string handlerId)
     {
+        if (DeviceControlPolicy.RequiresBeta(handlerId))
+        {
+            return false;
+        }
         if (devices.NexusControlDisabled.Contains(handlerId, StringComparer.OrdinalIgnoreCase))
         {
             return false;
@@ -99,6 +103,11 @@ public sealed class DeviceControlGate
     /// <summary>Persists the choice and, in the same mutation, takes the device's competing app off the conflict whitelist (on) or puts it on once none of that app's devices is still Nexus-controlled (off).</summary>
     public void SetEnabled(string handlerId, bool enabled)
     {
+        // Leaves the stored choice alone, so it applies again on a beta build.
+        if (DeviceControlPolicy.RequiresBeta(handlerId))
+        {
+            return;
+        }
         _store.Update(s =>
         {
             var devices = s.Devices;

@@ -1213,6 +1213,104 @@ public class ThermalGuardEngineTests
         Assert.True(fans.Driven.Count > writes);
     }
 
+    private static void SteadyTicks(CurveEngine e, ThermalGuardController guard, long[] mono, long forMs)
+    {
+        for (var end = mono[0] + forMs; mono[0] < end;)
+        {
+            mono[0] += 1000;
+            e.Tick();
+            guard.TickCompleted();
+        }
+    }
+
+    [Fact]
+    public void ALatchedEngineThatTicksSteadilyAgain_TakesTheFansBackAndRedrivesThem()
+    {
+        var (_, fans, store, _) = Build();
+        var (e, guard, mono) = WatchdogRig(fans, store);
+        fans.CpuTemp = 90f;
+        Stall(fans, e, guard, mono);
+        Stall(fans, e, guard, mono);
+        Stall(fans, e, guard, mono);
+        Assert.True(guard.WatchdogLatched);
+
+        var writes = fans.Driven.Count;
+        SteadyTicks(e, guard, mono, ThermalGuardController.WatchdogResumeMs - 2000);
+        Assert.True(guard.WatchdogLatched);
+        Assert.Equal(writes, fans.Driven.Count);
+
+        SteadyTicks(e, guard, mono, 3000);
+        Assert.False(guard.WatchdogLatched);
+        e.Tick();
+        Assert.True(fans.Driven.Count > writes);
+    }
+
+    [Fact]
+    public void AGapWhileLatched_RestartsTheSteadyClock()
+    {
+        var (_, fans, store, _) = Build();
+        var (e, guard, mono) = WatchdogRig(fans, store);
+        fans.CpuTemp = 90f;
+        Stall(fans, e, guard, mono);
+        Stall(fans, e, guard, mono);
+        Stall(fans, e, guard, mono);
+
+        SteadyTicks(e, guard, mono, ThermalGuardController.WatchdogResumeMs - 60_000);
+        mono[0] += 15_000;
+        guard.TickCompleted();
+        SteadyTicks(e, guard, mono, 120_000);
+
+        Assert.True(guard.WatchdogLatched);
+    }
+
+    [Fact]
+    public void ASecondLatchInTheSameRun_HoldsUntilAGuardToggle()
+    {
+        var (_, fans, store, _) = Build();
+        var (e, guard, mono) = WatchdogRig(fans, store);
+        fans.CpuTemp = 90f;
+        Stall(fans, e, guard, mono);
+        Stall(fans, e, guard, mono);
+        Stall(fans, e, guard, mono);
+        Assert.True(guard.GetState().WatchdogResumes);
+        SteadyTicks(e, guard, mono, ThermalGuardController.WatchdogResumeMs + 2000);
+        Assert.False(guard.WatchdogLatched);
+
+        Stall(fans, e, guard, mono);
+        Stall(fans, e, guard, mono);
+        Stall(fans, e, guard, mono);
+        SteadyTicks(e, guard, mono, 3 * ThermalGuardController.WatchdogResumeMs);
+
+        Assert.True(guard.WatchdogLatched);
+        Assert.False(guard.GetState().WatchdogResumes);
+        guard.SetEnabled(false);
+        guard.SetEnabled(true);
+        Assert.False(guard.WatchdogLatched);
+        Assert.True(guard.WatchdogResumes);
+    }
+
+    [Fact]
+    public void ALatchThatRecursSoonAfterResuming_DoesNotAlertAgain()
+    {
+        var (_, fans, store, _) = Build();
+        var (e, guard, mono) = WatchdogRig(fans, store);
+        var alerts = new List<string>();
+        guard.AlertSink = n => alerts.Add(n.Title);
+        fans.CpuTemp = 90f;
+        Stall(fans, e, guard, mono);
+        Stall(fans, e, guard, mono);
+        Stall(fans, e, guard, mono);
+        SteadyTicks(e, guard, mono, ThermalGuardController.WatchdogResumeMs + 2000);
+        Assert.False(guard.WatchdogLatched);
+
+        Stall(fans, e, guard, mono);
+        Stall(fans, e, guard, mono);
+        Stall(fans, e, guard, mono);
+
+        Assert.True(guard.WatchdogLatched);
+        Assert.Equal(1, alerts.Count(a => a.Contains("BIOS")));
+    }
+
     private sealed class BlockingReleaseFans : IFanControlProvider
     {
         private readonly Fans _inner;

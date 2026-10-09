@@ -121,6 +121,136 @@ public class CompositeFanControlProviderTests
         Assert.Equal(1, extra.Releases);
     }
 
+    private static CompositeFanControlProvider WithExtra(IFanControlProvider extra, TimeSpan? budget = null)
+    {
+        var noPorts = new NoPorts();
+        return new CompositeFanControlProvider(
+            new FakeFans("mb:fan0"),
+            new Np50CoolingProvider(new Np50Hub(noPorts, _ => null!)),
+            new MiniHubCoolingProvider(new MiniHubHub(noPorts, _ => null!)),
+            new PluginProviderRegistry(),
+            new CompositeFanControlProvider.FanSource(
+                id => id.StartsWith("ext:", StringComparison.Ordinal), extra))
+        { CallBudget = budget ?? TimeSpan.FromMilliseconds(100) };
+    }
+
+    [Fact]
+    public void A_source_that_stops_answering_reads_as_disconnected_and_is_not_called_again_until_it_answers()
+    {
+        var extra = new WedgingFans();
+        var composite = WithExtra(extra);
+        extra.Wedge();
+
+        var ids = composite.GetFanChannels().Select(c => c.Id).ToList();
+        Assert.Equal(new[] { "mb:fan0" }, ids);
+        Assert.Equal(1, extra.Reads);
+
+        Assert.Equal(new[] { "mb:fan0" }, composite.GetFanChannels().Select(c => c.Id));
+        Assert.Null(composite.ReadTemperature("ext:temp"));
+        composite.DriveFanSpeed("ext:fan0", 70);
+        Assert.Equal(1, extra.Reads);
+        Assert.Empty(extra.Driven);
+
+        extra.Unwedge();
+        Assert.True(SpinWait.SpinUntil(() => composite.GetFanChannels().Any(c => c.Id == "ext:fan0"), 5000));
+    }
+
+    [Fact]
+    public void Releases_skipped_while_a_source_is_stalled_run_before_it_reads_as_connected_again()
+    {
+        var extra = new WedgingFans();
+        var composite = WithExtra(extra);
+        extra.Wedge();
+        composite.GetFanChannels();
+
+        composite.ReleaseFan("ext:fan0");
+        composite.ReleaseAll();
+        Assert.Equal(0, extra.ReleaseAlls);
+
+        extra.Unwedge();
+        Assert.True(SpinWait.SpinUntil(() =>
+        {
+            composite.GetFanChannels();
+            lock (extra.Log) return extra.Log.Count >= 3;
+        }, 5000));
+
+        Assert.Equal(1, extra.ReleaseAlls);
+        lock (extra.Log) Assert.Equal(new[] { "read", "releaseAll", "read" }, extra.Log.Take(3));
+    }
+
+    [Fact]
+    public void Releases_skipped_while_a_source_is_stalled_run_when_it_answers_without_another_call()
+    {
+        var extra = new WedgingFans();
+        var composite = WithExtra(extra);
+        extra.Wedge();
+        composite.GetFanChannels();
+        composite.ReleaseAll();
+
+        extra.Unwedge();
+
+        Assert.True(SpinWait.SpinUntil(() => Volatile.Read(ref extra.ReleaseAlls) == 1, 5000));
+    }
+
+    [Fact]
+    public void A_write_skipped_after_a_skipped_release_cancels_that_release()
+    {
+        var extra = new WedgingFans();
+        var composite = WithExtra(extra);
+        extra.Wedge();
+        composite.GetFanChannels();
+        composite.ReleaseFan("ext:fan0");
+        composite.SetFanSpeed("ext:fan0", 60);
+
+        extra.Unwedge();
+        Assert.True(SpinWait.SpinUntil(() => composite.GetFanChannels().Any(c => c.Id == "ext:fan0"), 5000));
+
+        lock (extra.Log) Assert.DoesNotContain("releaseFan", extra.Log);
+    }
+
+    [Fact]
+    public void A_source_that_answers_within_budget_keeps_its_exceptions()
+    {
+        var extra = new WedgingFans { Throw = true };
+        var composite = WithExtra(extra, TimeSpan.FromSeconds(30));
+
+        Assert.Throws<InvalidOperationException>(() => composite.GetFanChannels());
+    }
+
+    /// <summary>An extra source whose reads block while wedged, like a WinUSB transfer to a hung device.</summary>
+    private sealed class WedgingFans : IFanControlProvider
+    {
+        private readonly ManualResetEventSlim _open = new(true);
+        public int Reads;
+        public int ReleaseAlls;
+        public bool Throw;
+        public readonly List<int> Driven = new();
+        public readonly List<string> Log = new();
+        public void Wedge() => _open.Reset();
+        public void Unwedge() => _open.Set();
+        public IReadOnlyList<FanChannel> GetFanChannels()
+        {
+            Interlocked.Increment(ref Reads);
+            _open.Wait();
+            lock (Log) Log.Add("read");
+            if (Throw) throw new InvalidOperationException("device error");
+            return new[] { new FanChannel { Id = "ext:fan0", Name = "ext" } };
+        }
+        public IReadOnlyList<TemperatureSource> GetTemperatureSources() => Array.Empty<TemperatureSource>();
+        public float? ReadTemperature(string sensorId) => 40f;
+        public int SetFanSpeed(string channelId, int dutyPercent) => dutyPercent;
+        public void DriveFanSpeed(string channelId, int dutyPercent) { lock (Driven) Driven.Add(dutyPercent); }
+        public void ReleaseFan(string channelId) { lock (Log) Log.Add("releaseFan"); }
+        public void ReleaseAll()
+        {
+            Interlocked.Increment(ref ReleaseAlls);
+            lock (Log) Log.Add("releaseAll");
+        }
+        public Task<IReadOnlyList<FanCalibration>> CalibrateAsync(
+            IReadOnlyList<string> fanIds, IProgress<FanCalibrationProgress> progress, CancellationToken ct)
+            => Task.FromResult<IReadOnlyList<FanCalibration>>(Array.Empty<FanCalibration>());
+    }
+
     private class CountingRelease : IFanControlProvider
     {
         public int Releases;
