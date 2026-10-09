@@ -135,8 +135,8 @@ public sealed class PanelDeviceRecord : IPanelPersonalization
     /// <summary>The glass is mounted on its short side, so the panel renders tall. Panels whose
     /// capabilities carry SupportsPortrait; null = landscape.</summary>
     public bool? Portrait { get; set; }
-    /// <summary>Render at the glass's native resolution instead of half of it. Panels whose
-    /// capabilities carry SupportsRenderScale; null = half (high performance).</summary>
+    /// <summary>Render at the glass's native resolution instead of a lower one. Panels whose
+    /// capabilities carry SupportsRenderScale; null = lower (high performance).</summary>
     public bool? HighResolution { get; set; }
     /// <summary>
     /// Last known Corsair Xeneon Edge native display settings (vendor HID),
@@ -418,8 +418,8 @@ public sealed class PanelDevicePatch
     /// <summary>The glass is mounted on its short side, so the panel renders tall. Panels whose
     /// capabilities carry SupportsPortrait; null = landscape.</summary>
     public bool? Portrait { get; set; }
-    /// <summary>Render at the glass's native resolution instead of half of it. Panels whose
-    /// capabilities carry SupportsRenderScale; null = half (high performance).</summary>
+    /// <summary>Render at the glass's native resolution instead of a lower one. Panels whose
+    /// capabilities carry SupportsRenderScale; null = lower (high performance).</summary>
     public bool? HighResolution { get; set; }
     public PanelDeviceCapabilities? Capabilities { get; set; }
 }

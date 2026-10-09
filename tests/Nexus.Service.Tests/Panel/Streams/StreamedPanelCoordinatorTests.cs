@@ -341,7 +341,7 @@ public sealed class StreamedPanelCoordinatorTests : IDisposable
     };
 
     [Fact]
-    public void A_raw_panel_over_1000_px_renders_at_half_until_its_record_asks_for_high_resolution()
+    public void A_raw_panel_over_1000_px_renders_lower_until_its_record_asks_for_high_resolution()
     {
         _discovery.Devices.Add(Sized(2288, 1080));
         var coordinator = Coordinator();
@@ -376,6 +376,7 @@ public sealed class StreamedPanelCoordinatorTests : IDisposable
         var coordinator = Coordinator();
         coordinator.TickOnce();
         var panelId = Assert.Single(coordinator.GetAssignments().Assignments).PanelDeviceId;
+        Assert.Equal(2.0 / 3, Assert.Single(coordinator.GetAssignments().Assignments).Dpr);
         _registry.Patch(panelId, new PanelDevicePatch { HighResolution = true });
         _discovery.Devices.Clear();
         _nowMs += 120_000;

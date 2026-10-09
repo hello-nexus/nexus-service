@@ -599,7 +599,7 @@ public sealed class StreamedPanelCoordinator : BackgroundService
         {
             return info;
         }
-        var scale = _registry.Get(panelDeviceId)?.HighResolution == true ? 1.0 : StreamedPanelProfile.HalfRenderScale;
+        var scale = _registry.Get(panelDeviceId)?.HighResolution == true ? 1.0 : profile.PerformanceRenderScale;
         return scale.Equals(profile.RenderScale)
             ? info
             : new StreamedPanelDeviceInfo { Serial = info.Serial, Profile = profile with { RenderScale = scale } };

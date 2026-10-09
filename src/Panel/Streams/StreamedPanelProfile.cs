@@ -57,10 +57,29 @@ public sealed record StreamedPanelProfile
     public double Dpr { get; init; } = 1.0;
     public int Fps { get; init; } = 60;
 
-    /// <summary>Panels longer than this on either side render at half resolution unless their record asks for high resolution.</summary>
+    /// <summary>Panels longer than this on either side render at a lower resolution unless their record asks for high resolution.</summary>
     public const int RenderScaleMinSide = 1000;
 
-    public const double HalfRenderScale = 0.5;
+    public const int PerformanceMinShortSide = 320;
+
+    // Small whole-number ratios, so the nearest-neighbour upscale repeats pixels evenly.
+    private static readonly double[] PerformanceScales = { 1.0 / 2, 2.0 / 3, 3.0 / 4 };
+
+    /// <summary>The lowest scale that keeps <see cref="PerformanceMinShortSide"/> px on the short side.</summary>
+    public double PerformanceRenderScale
+    {
+        get
+        {
+            foreach (var scale in PerformanceScales)
+            {
+                if (FramePixels(Math.Min(CssWidth, CssHeight), Dpr * scale) >= PerformanceMinShortSide)
+                {
+                    return scale;
+                }
+            }
+            return 1.0;
+        }
+    }
 
     /// <summary>
     /// Fraction of the native resolution the overlay renders at; the ingest scales each frame

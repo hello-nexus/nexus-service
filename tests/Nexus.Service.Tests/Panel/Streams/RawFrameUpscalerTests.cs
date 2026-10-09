@@ -54,6 +54,20 @@ public sealed class RawFrameUpscalerTests
         Assert.Equal(2288 * 1080 * 4, upscaler.TargetBytes);
     }
 
+    [Theory]
+    [InlineData(2288, 1080, 1144, 540)]
+    [InlineData(1600, 720, 800, 360)]
+    [InlineData(1920, 480, 1280, 320)]
+    [InlineData(1120, 540, 746, 360)]
+    [InlineData(1920, 462, 1440, 346)]
+    public void High_performance_takes_the_lowest_clean_scale_that_keeps_320_px_on_the_short_side(int width, int height, int renderWidth, int renderHeight)
+    {
+        var native = Profile(width, height, 1.0);
+        var upscaler = RawFrameUpscaler.For("s", native with { RenderScale = native.PerformanceRenderScale })!;
+
+        Assert.Equal(renderWidth * renderHeight * 4, upscaler.SourceBytes);
+    }
+
     [Fact]
     public void Half_scale_doubles_every_pixel_and_keeps_the_flags()
     {
