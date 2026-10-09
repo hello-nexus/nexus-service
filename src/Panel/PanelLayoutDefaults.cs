@@ -32,6 +32,15 @@ public static class PanelLayoutDefaults
             "q60" => layouts.Q60,
             _ => layouts.Y70,
         };
+        return Build(src, surface);
+    }
+
+    /// <summary>Starter page for a panel on a 4:1 strip, where the surface's own seed would fill a quarter of the glass.</summary>
+    public static PanelLayoutDto ForStrip(string surface) =>
+        Build((InstallDefaults.Panel.Layouts ?? new PanelLayoutsDefaults()).Strip, surface);
+
+    private static PanelLayoutDto Build(PanelLayoutDefault src, string surface)
+    {
         return new PanelLayoutDto
         {
             LayoutSchemaVersion = src.LayoutSchemaVersion,

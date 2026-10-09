@@ -58,6 +58,8 @@ public sealed class BulkPanelDiscovery : IStreamedPanelDiscovery
                     Fps = driver.Fps,
                     SupportsBrightness = driver.SupportsBrightness,
                     SupportsSecondaryMonitor = driver.SupportsSecondaryMonitor && _monitors is { IsAvailable: true },
+                    SupportsPortrait = driver.SupportsPortrait,
+                    Dpi = driver.Dpi,
                     // The driver owns compression - JPEG for most, raw pixels for the
                     // Ryujin - so the overlay hands back whole frames either way.
                     Codec = StreamCodec.RawBgra,

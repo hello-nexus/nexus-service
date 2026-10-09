@@ -1432,7 +1432,7 @@ public sealed class RgbBridge : IDisposable
         // persisted yet.
         var (dx, dy, dw, dh) = isStrip
             ? OpenRgbLightingDeviceProvider.DefaultStripLayout(canvasSlot)
-            : OpenRgbLightingDeviceProvider.DefaultCardLayout(canvasSlot);
+            : OpenRgbLightingDeviceProvider.DefaultCardLayout(canvasSlot, physicalDevice);
         var frame = new DeviceFrame(
             index: logicalOrdinal,
             id: id,

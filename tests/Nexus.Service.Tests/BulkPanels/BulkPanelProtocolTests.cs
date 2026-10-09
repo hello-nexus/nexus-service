@@ -197,49 +197,34 @@ public class BulkPanelProtocolTests
     }
 
     [Fact]
-    public void Us88_frame_header_carries_the_jpeg_length_big_endian()
+    public void Us88_image_header_carries_the_length_big_endian_and_the_image_follows()
     {
-        var header = UniversalScreen88Protocol.EncodeFrameHeader(0x00ABCDEF, timestampSeconds: 42);
+        var packet = UniversalScreen88Protocol.EncodeImage(UniversalScreen88Protocol.CommandPushJpeg, new byte[] { 0xFF, 0xD8, 0xFF }, 42);
 
-        var plain = Decrypt(header.AsSpan(0, 504));
+        var plain = Decrypt(packet.AsSpan(0, 504));
 
         Assert.Equal(UniversalScreen88Protocol.CommandPushJpeg, plain[0]);
         // Big-endian here, unlike the little-endian timestamp four bytes earlier.
-        Assert.Equal(new byte[] { 0x00, 0xAB, 0xCD, 0xEF }, plain[8..12]);
+        Assert.Equal(new byte[] { 0x00, 0x00, 0x00, 0x03 }, plain[8..12]);
+        Assert.Equal(new byte[] { 0xFF, 0xD8, 0xFF }, packet[512..]);
+    }
+
+    [Fact]
+    public void Us88_clock_sync_carries_the_date_and_the_sync_only_mode()
+    {
+        var packet = UniversalScreen88Protocol.EncodeSyncClock(new DateTime(2026, 10, 8, 17, 23, 32), 1);
+
+        var plain = Decrypt(packet.AsSpan(0, 504));
+
+        Assert.Equal(UniversalScreen88Protocol.CommandSetClock, plain[0]);
+        // Captured from L-Connect: 07ea 0a 08 11 17 20 02.
+        Assert.Equal(new byte[] { 0x07, 0xEA, 0x0A, 0x08, 0x11, 0x17, 0x20, 0x02 }, plain[8..16]);
     }
 
     [Fact]
     public void Us88_encryption_pads_500_bytes_to_504()
     {
         Assert.Equal(504, UniversalScreen88Protocol.Encrypt(new byte[500]).Length);
-    }
-
-    [Fact]
-    public void Us88_init_sequence_is_the_five_documented_commands_with_rising_timestamps()
-    {
-        uint t = 100;
-        var packets = UniversalScreen88Protocol.EncodeInitSequence(() => t++);
-
-        Assert.Equal(5, packets.Length);
-        var commands = packets.Select(p => Decrypt(p.AsSpan(0, 504))[0]).ToArray();
-        Assert.Equal(
-            new byte[]
-            {
-                UniversalScreen88Protocol.CommandGetVersion,
-                UniversalScreen88Protocol.CommandBrightness,
-                UniversalScreen88Protocol.CommandStopPlay,
-                UniversalScreen88Protocol.CommandStopClock,
-                UniversalScreen88Protocol.CommandFrameRate,
-            },
-            commands);
-
-        var timestamps = packets
-            .Select(p => BitConverter.ToUInt32(Decrypt(p.AsSpan(0, 504)), 4))
-            .ToArray();
-        for (int i = 1; i < timestamps.Length; i++)
-        {
-            Assert.True(timestamps[i] > timestamps[i - 1], "the panel rejects a repeated timestamp");
-        }
     }
 
     [Fact]
@@ -272,7 +257,7 @@ public class BulkPanelProtocolTests
     }
 
     [Fact]
-    public void Us88_panel_is_the_documented_tall_strip()
+    public void Us88_framebuffer_is_the_portrait_strip()
     {
         Assert.Equal(480, UniversalScreen88Protocol.Width);
         Assert.Equal(1920, UniversalScreen88Protocol.Height);

@@ -897,6 +897,7 @@ static void FastServiceShutdown(WebApplication app)
         Task.Run(() => { try { sp.GetService<Nexus.Service.Peripherals.StreamDeck.StreamDeckConnectionWorker>()?.ResetConnectedSurfacesForShutdown(); } catch { } }),
         Task.Run(() => { try { sp.GetService<Nexus.Service.Peripherals.Nollie.NollieConnectionWorker>()?.ReleaseAllForShutdown(); } catch { } }),
         Task.Run(() => { try { sp.GetService<Nexus.Service.Peripherals.BulkPanels.HydroShift2CurvePlayer>()?.ReleaseForShutdown(); } catch { } }),
+        Task.Run(() => { try { ReleaseUniversalScreen88(sp); } catch { } }),
         Task.Run(() => { try { sp.GetService<Nexus.Service.Peripherals.BulkPanels.HydroShift2CurveBoard>()?.ReleaseForShutdown(TimeSpan.FromSeconds(1)); } catch { } }),
         Task.Run(() => { try { sp.GetService<Nexus.Service.Common.ExternalTools.ExternalToolManager>()?.TerminateAll(); } catch { } }),
 #if DEV_TOOLS
@@ -908,6 +909,19 @@ static void FastServiceShutdown(WebApplication app)
         : Nexus.Service.Lifecycle.HostShutdown.FastTeardownBudget).TotalMilliseconds);
     Console.Error.WriteLine($"[shutdown] fast teardown {(done ? "complete" : "TIMED OUT")} in {sw.ElapsedMilliseconds}ms");
     cloudQuiesce.Wait();
+}
+
+// The fast teardown skips the connection worker's release; retired first so no reconnect retakes the glass.
+static void ReleaseUniversalScreen88(IServiceProvider sp)
+{
+    foreach (var hub in sp.GetServices<Nexus.Service.Peripherals.BulkPanels.BulkPanelHub>())
+    {
+        if (hub.Driver is Nexus.Service.Peripherals.BulkPanels.UniversalScreen88Driver screen88)
+        {
+            screen88.Retire();
+            hub.Detach();
+        }
+    }
 }
 
 // The overlay host and tray helper run in the user session (spawned cross-session

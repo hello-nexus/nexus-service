@@ -190,6 +190,14 @@ public sealed class OpenRgbLightingDeviceProvider : ILightingDeviceProvider, IDe
         return (30f + col * ColGap, 40f + row * RowGap, W, H);
     }
 
+    /// <summary><see cref="DefaultCardLayout(int)"/> in the device's own outline where Nexus knows it.</summary>
+    internal static (float x, float y, float w, float h) DefaultCardLayout(int slot, RgbDevice device)
+    {
+        var (x, y, w, h) = DefaultCardLayout(slot);
+        // The 8.8 screen's bezel outline, narrow enough to stay inside one column of the card grid.
+        return UniversalScreenRing.Matches(device) ? (x, y, 200f, 50f) : (x, y, w, h);
+    }
+
     /// <summary>
     /// Default on-canvas rectangle for a motherboard ARGB strip zone, roughly
     /// square like <see cref="DefaultCardLayout"/> so a grid or ring LED map

@@ -132,6 +132,9 @@ public sealed class PanelDeviceRecord : IPanelPersonalization
     /// <summary>Windows drives this glass as a secondary monitor instead of Nexus content.
     /// Pushed-frame panels whose capabilities carry SupportsSecondaryMonitor; null = off.</summary>
     public bool? SecondaryMonitor { get; set; }
+    /// <summary>The glass is mounted on its short side, so the panel renders tall. Panels whose
+    /// capabilities carry SupportsPortrait; null = landscape.</summary>
+    public bool? Portrait { get; set; }
     /// <summary>
     /// Last known Corsair Xeneon Edge native display settings (vendor HID),
     /// applied/read through /displays/{id}/xeneon-settings. Display-bound
@@ -327,6 +330,8 @@ public sealed class PanelDeviceCapabilities
     public bool? SupportsBrightness { get; set; }
     /// <summary>The service can turn this panel into a Windows secondary monitor.</summary>
     public bool? SupportsSecondaryMonitor { get; set; }
+    /// <summary>The glass can be mounted either way up and the record's Portrait picks the render shape.</summary>
+    public bool? SupportsPortrait { get; set; }
 }
 
 /// <summary>
@@ -405,6 +410,9 @@ public sealed class PanelDevicePatch
     /// <summary>Windows drives this glass as a secondary monitor instead of Nexus content.
     /// Pushed-frame panels whose capabilities carry SupportsSecondaryMonitor; null = off.</summary>
     public bool? SecondaryMonitor { get; set; }
+    /// <summary>The glass is mounted on its short side, so the panel renders tall. Panels whose
+    /// capabilities carry SupportsPortrait; null = landscape.</summary>
+    public bool? Portrait { get; set; }
     public PanelDeviceCapabilities? Capabilities { get; set; }
 }
 

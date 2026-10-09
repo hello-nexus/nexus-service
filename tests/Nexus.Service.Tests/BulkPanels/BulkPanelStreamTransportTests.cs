@@ -5,6 +5,7 @@ using System.Linq;
 using System.Threading;
 using Nexus.Service.Panel.Streams;
 using Nexus.Service.Peripherals.BulkPanels;
+using Nexus.Service.Peripherals.Hid;
 using Xunit;
 
 namespace Nexus.Service.Tests.BulkPanels;
@@ -34,7 +35,7 @@ public class BulkPanelStreamTransportTests
     public void Panel_without_a_backlight_command_never_gets_one()
     {
         var pipe = new RecordingPipe();
-        using var hub = new BulkPanelHub(new UniversalScreen88Driver());
+        using var hub = new BulkPanelHub(new UndimmableDriver());
         hub.Attach(pipe, null);
         var transport = new BulkPanelStreamTransport(hub, "serial");
 
@@ -49,11 +50,11 @@ public class BulkPanelStreamTransportTests
     {
         using var zm = new BulkPanelHub(new ZMatricesPanelDriver());
         zm.Attach(new RecordingPipe(), null);
-        using var screen88 = new BulkPanelHub(new UniversalScreen88Driver());
-        screen88.Attach(new RecordingPipe(), null);
+        using var undimmable = new BulkPanelHub(new UndimmableDriver());
+        undimmable.Attach(new RecordingPipe(), null);
 
         Assert.True(new BulkPanelDiscovery(zm).Discover().Single().Profile.SupportsBrightness);
-        Assert.False(new BulkPanelDiscovery(screen88).Discover().Single().Profile.SupportsBrightness);
+        Assert.False(new BulkPanelDiscovery(undimmable).Discover().Single().Profile.SupportsBrightness);
     }
 
     [Fact]
@@ -151,6 +152,23 @@ public class BulkPanelStreamTransportTests
         }
 
         public void Dispose() => Disposed = true;
+    }
+
+    /// <summary>A panel with no backlight command that connects on any pipe.</summary>
+    private sealed class UndimmableDriver : IBulkPanelDriver
+    {
+        public string HandlerId => "test-undimmable";
+        public string Name => "Undimmable";
+        public int VendorId => 0x1234;
+        public IReadOnlyList<int> ProductIds { get; } = new[] { 0x5678 };
+        public string Surface => Nexus.Service.Models.Panel.PanelSurfaces.LcdSquare;
+        public int Fps => 30;
+        public byte WritePipeId => 0x01;
+        public byte ReadPipeId => 0;
+        public bool NeedsHidChannel => false;
+        public (int Width, int Height)? Connect(IBulkUsbPipe pipe, IHidDevice? hid) => (16, 16);
+        public bool SendFrame(IBulkUsbPipe pipe, IHidDevice? hid, ReadOnlySpan<byte> bgra) => pipe.Write(bgra);
+        public void Disconnect(IBulkUsbPipe pipe, IHidDevice? hid) { }
     }
 
     private sealed class RecordingPipe : IBulkUsbPipe
