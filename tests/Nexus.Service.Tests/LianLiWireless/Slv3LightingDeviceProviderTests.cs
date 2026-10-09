@@ -290,11 +290,15 @@ public class Slv3LightingDeviceProviderTests
     }
 
     [Fact]
-    public void Round_hydroshift_keeps_the_circular_pump_ring()
+    public void Round_hydroshift_lays_its_pump_ring_clockwise_from_the_top()
     {
         var (u, v) = HydroShiftRingUV(devType: 10, fanCount: 0);
-        Assert.Equal(0.5f, v[0], 3);
-        Assert.True(u[0] > 0.5f);
+        Assert.Equal(0.5f, u[0], 3);
+        Assert.True(v[0] < 0.5f);
+        Assert.Equal(0.5f, v[6], 3);
+        Assert.True(u[6] > 0.5f);
+        Assert.Equal(0.5f, v[18], 3);
+        Assert.True(u[18] < 0.5f);
     }
 
     private static (float[] U, float[] V) HydroShiftRingUV(byte devType, int fanCount)

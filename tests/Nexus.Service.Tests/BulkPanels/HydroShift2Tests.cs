@@ -56,6 +56,18 @@ public class HydroShift2Tests
         Assert.Equal(timer, HydroShift2Protocol.PumpTimer(rpm));
     }
 
+    [Theory]
+    [InlineData(1600, 1500)]
+    [InlineData(1870, 1000)]
+    [InlineData(2000, 840)]
+    [InlineData(2080, 680)]
+    [InlineData(2500, 10)]
+    [InlineData(3200, 10)]
+    public void Pump_timer_follows_the_round_head_table(int rpm, int timer)
+    {
+        Assert.Equal(timer, HydroShift2Protocol.PumpTimer(rpm, round: true));
+    }
+
     [Fact]
     public void Crc_is_ccitt_xmodem()
     {
@@ -136,6 +148,22 @@ public class HydroShift2Tests
                 HydroShift2Protocol.CommandStopClock, HydroShift2Protocol.CommandPushPng,
             },
             pipe.Commands);
+    }
+
+    [Fact]
+    public void Connect_on_the_round_head_reports_a_round_glass()
+    {
+        var driver = new HydroShift2LcdDriver();
+        Assert.Equal("Lian Li HydroShift II", driver.Name);
+
+        Assert.Equal((480, 480), driver.Connect(new FirmwarePipe { ProductId = HydroShift2Protocol.ProductIdCircle }, null));
+        Assert.True(driver.Round);
+        Assert.Equal(Nexus.Service.Models.Panel.PanelSurfaces.LcdRound, driver.Surface);
+        Assert.Equal("Lian Li HydroShift II LCD-C", driver.Name);
+
+        driver.Connect(new FirmwarePipe { ProductId = HydroShift2Protocol.ProductIdSquare }, null);
+        Assert.False(driver.Round);
+        Assert.Equal(Nexus.Service.Models.Panel.PanelSurfaces.LcdSquare, driver.Surface);
     }
 
     [Fact]
@@ -240,6 +268,18 @@ public class HydroShift2Tests
         Assert.Equal(v, actualV, 3);
     }
 
+    [Theory]
+    [InlineData(0, 0.5f, 0.08f)]
+    [InlineData(6, 0.92f, 0.5f)]
+    [InlineData(12, 0.5f, 0.92f)]
+    [InlineData(18, 0.08f, 0.5f)]
+    public void Ring_leds_sit_round_the_round_head_clockwise_from_the_top(int index, float u, float v)
+    {
+        var (actualU, actualV) = Nexus.Service.Lighting.HydroShift2LightingDeviceProvider.CircleRingPosition(index);
+        Assert.Equal(u, actualU, 3);
+        Assert.Equal(v, actualV, 3);
+    }
+
     // ── AIO loop ──
 
     [Fact]
@@ -275,6 +315,17 @@ public class HydroShift2Tests
         Assert.Equal(3, pipe.SyncPumpFans.Count);
         Assert.Equal(HydroShift2Protocol.PumpTimer(2080), pipe.SyncPumpFans[2].Timer);
         Assert.Equal(new byte[] { 80, 80, 80 }, pipe.SyncPumpFans[2].Fans);
+    }
+
+    [Fact]
+    public void A_driven_round_head_pump_uses_its_own_range_and_table()
+    {
+        var (aio, pipe) = Attached(productId: HydroShift2Protocol.ProductIdCircle);
+        aio.SetPumpDuty(100);
+
+        aio.Tick(10_000);
+
+        Assert.Equal(HydroShift2Protocol.PumpTimer(2500, round: true), Assert.Single(pipe.SyncPumpFans).Timer);
     }
 
     [Fact]
@@ -531,11 +582,12 @@ public class HydroShift2Tests
     }
 
     private static (HydroShift2Aio Aio, FirmwarePipe Pipe) Attached(
-        Func<string?, bool>? wirelessOwns = null, Func<string, bool>? nexusWidgets = null)
+        Func<string?, bool>? wirelessOwns = null, Func<string, bool>? nexusWidgets = null,
+        int productId = HydroShift2Protocol.ProductIdSquare)
     {
         var driver = new HydroShift2LcdDriver();
         var hub = new BulkPanelHub(driver);
-        var pipe = new FirmwarePipe();
+        var pipe = new FirmwarePipe { ProductId = productId };
         Assert.True(hub.Attach(pipe, null));
         pipe.Writes.Clear();
         return (new HydroShift2Aio(hub, driver, wirelessOwns ?? (_ => false), nexusWidgets), pipe);
@@ -579,6 +631,7 @@ public class HydroShift2Tests
         public List<byte[]> Writes { get; } = new();
         public Queue<byte[]> Pending { get; } = new();
         public bool Silent { get; set; }
+        public int ProductId { get; set; } = HydroShift2Protocol.ProductIdSquare;
 
         public byte[] Commands => Writes.Select(w => Decrypt(w)[0]).ToArray();
 

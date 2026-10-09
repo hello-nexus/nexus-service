@@ -6,13 +6,15 @@ using Nexus.Service.Rendering;
 namespace Nexus.Service.Peripherals.BulkPanels;
 
 /// <summary>
-/// Lian Li HydroShift II LCD-S (1CBE:A034) over its USB link: the Universal Screen's
-/// DES-encrypted 512-byte commands plus the AIO opcodes, from L-Connect 3's lcd207
-/// WinUsbH2S. Every command is answered by a 512-byte reply whose first byte echoes it.
+/// Lian Li HydroShift II LCD-S (1CBE:A034) and LCD-C (1CBE:A021) over their USB link: the
+/// Universal Screen's DES-encrypted 512-byte commands plus the AIO opcodes, from L-Connect
+/// 3's lcd207 WinUsbH2S / WinUsbH2, which differ only in the pump table. Every command is
+/// answered by a 512-byte reply whose first byte echoes it.
 /// </summary>
 public static class HydroShift2Protocol
 {
     public const int ProductIdSquare = 0xA034;
+    public const int ProductIdCircle = 0xA021;
     public const int Width = 480;
     public const int Height = 480;
 
@@ -35,6 +37,7 @@ public static class HydroShift2Protocol
     public const int FanSlots = 3;
     public const int PumpMinRpm = 1600;
     public const int PumpMaxRpm = 3200;
+    public const int PumpMaxRpmCircle = 2500;
 
     /// <summary>
     /// L-Connect's own pump/fan values. SyncPumpFan always sets both halves, so these fill
@@ -104,13 +107,13 @@ public static class HydroShift2Protocol
     /// Pump target and raw fan bytes (0-255). Layout FF 0F A2 00, pump timer u16 BE, three
     /// fan bytes, then CRC-16/CCITT of the first 12 bytes at [12..13].
     /// </summary>
-    public static byte[] EncodeSyncPumpFan(int pumpRpm, ReadOnlySpan<byte> fans, uint timestampMs)
+    public static byte[] EncodeSyncPumpFan(int pumpRpm, ReadOnlySpan<byte> fans, uint timestampMs, bool round = false)
     {
         var block = new byte[16];
         block[0] = 0xFF;
         block[1] = 0x0F;
         block[2] = 0xA2;
-        var timer = PumpTimer(pumpRpm);
+        var timer = PumpTimer(pumpRpm, round);
         block[4] = (byte)(timer >> 8);
         block[5] = (byte)timer;
         for (int i = 0; i < FanSlots && i < fans.Length; i++)
@@ -123,15 +126,19 @@ public static class HydroShift2Protocol
         return EncodeCommand(CommandSyncPumpFan, block, timestampMs);
     }
 
-    /// <summary>The wireless record's dev_type for this square head, whose pump timer table the USB link shares.</summary>
+    /// <summary>The wireless records' dev_types for the square and round heads, whose pump timer tables the USB link shares.</summary>
     private const byte SquareHeadDevType = 11;
+    private const byte CircleHeadDevType = 10;
 
     /// <summary>The pump's speed register for a target rpm.</summary>
-    public static int PumpTimer(int rpm) => Slv3Protocol.HydroShiftPumpTimer(rpm, SquareHeadDevType);
+    public static int PumpTimer(int rpm, bool round = false) =>
+        Slv3Protocol.HydroShiftPumpTimer(rpm, round ? CircleHeadDevType : SquareHeadDevType);
+
+    public static int PumpMaxRpmFor(bool round) => round ? PumpMaxRpmCircle : PumpMaxRpm;
 
     /// <summary>Pump duty percent mapped linearly onto the pump's rpm range.</summary>
-    public static int PumpRpmForDuty(int dutyPercent) =>
-        PumpMinRpm + ((PumpMaxRpm - PumpMinRpm) * Math.Clamp(dutyPercent, 0, 100) / 100);
+    public static int PumpRpmForDuty(int dutyPercent, bool round = false) =>
+        PumpMinRpm + ((PumpMaxRpmFor(round) - PumpMinRpm) * Math.Clamp(dutyPercent, 0, 100) / 100);
 
     /// <summary>Firmware string from a GetVersion reply (ASCII at [8..40]), or null.</summary>
     public static string? DecodeVersion(ReadOnlySpan<byte> reply) => UniversalScreen88Protocol.DecodeVersion(reply);
