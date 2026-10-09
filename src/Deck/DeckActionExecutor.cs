@@ -396,6 +396,16 @@ public sealed class DeckActionExecutor : IDeckActionExecutor
             case "openSettings":
                 await _system.OpenSettingsAsync().ConfigureAwait(false);
                 return;
+            case "screenshot":
+            case "screenRecord":
+            {
+                var response = await _system.OpenScreenCaptureAsync(sa.Op == "screenRecord").ConfigureAwait(false);
+                if (response.Error)
+                {
+                    throw new InvalidOperationException(response.Msg);
+                }
+                return;
+            }
             case "mediaPlayPause":
             case "mediaNext":
             case "mediaPrev":

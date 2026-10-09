@@ -11,6 +11,7 @@ public static class DeckPlatformKeys
         foreach (var page in deck.Pages)
         {
             ApplySlots(page.Slots, mac);
+            ApplyDials(page.Dials, mac);
         }
     }
 
@@ -25,7 +26,16 @@ public static class DeckPlatformKeys
             if (slot.Folder is not null)
             {
                 ApplySlots(slot.Folder.Slots, mac);
+                ApplyDials(slot.Folder.Dials, mac);
             }
+        }
+    }
+
+    private static void ApplyDials(List<DeckDial>? dials, bool mac)
+    {
+        foreach (var action in DeckDials.AllActions(dials))
+        {
+            ApplyAction(action, mac);
         }
     }
 

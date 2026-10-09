@@ -187,7 +187,7 @@ public static class DeckConfigNavigation
             foreach (var chunk in ChunkRoot(trimmed, targetKeyCount))
             {
                 var fitted = chunk.Select(slot => FitSlot(slot, kind, targetKeyCount, depth: 0)).ToList();
-                outPages.Add(new DeckPage { Slots = PadTo(fitted, targetKeyCount) });
+                outPages.Add(new DeckPage { Slots = PadTo(fitted, targetKeyCount), Dials = page.Dials });
             }
         }
         if (outPages.Count == 0)
@@ -300,7 +300,7 @@ public static class DeckConfigNavigation
             Title = slot.Title,
             Action = slot.Action,
             Auto = slot.Auto,
-            Folder = new DeckFolder { Slots = PadTo(limited, capacity) },
+            Folder = new DeckFolder { Slots = PadTo(limited, capacity), Dials = slot.Folder.Dials },
         };
     }
 

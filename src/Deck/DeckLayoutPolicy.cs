@@ -98,6 +98,21 @@ public static class DeckLayoutPolicy
             {
                 yield return action;
             }
+            foreach (var action in PrivilegedDialActions(deckPage.Dials))
+            {
+                yield return action;
+            }
+        }
+    }
+
+    private static IEnumerable<DeckAction> PrivilegedDialActions(List<DeckDial>? dials)
+    {
+        foreach (var dialAction in DeckDials.AllActions(dials))
+        {
+            foreach (var action in PrivilegedActions(dialAction))
+            {
+                yield return action;
+            }
         }
     }
 
@@ -130,6 +145,10 @@ public static class DeckLayoutPolicy
             if (slot.Folder is not null)
             {
                 foreach (var action in PrivilegedActions(slot.Folder.Slots))
+                {
+                    yield return action;
+                }
+                foreach (var action in PrivilegedDialActions(slot.Folder.Dials))
                 {
                     yield return action;
                 }

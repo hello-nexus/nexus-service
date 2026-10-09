@@ -130,6 +130,36 @@
       "expected": { "pages": [ { "slots": [
         { "folder": { "slots": [ { "label": "f0" }, { "label": "f1" }, { "label": "f2" }, { "label": "f3" } ] } }, {}, {}, {}
       ] } ] }
+    },
+    {
+      "name": "dials_kept_on_same_grid",
+      "presetCols": 2,
+      "presetRows": 1,
+      "targetCols": 2,
+      "targetRows": 1,
+      "targetKind": "physical",
+      "preset": { "pages": [ { "slots": [ { "label": "0" }, { "label": "1" } ], "dials": [ { "label": "d0" }, { "label": "d1" } ] } ] },
+      "expected": { "pages": [ { "slots": [ { "label": "0" }, { "label": "1" } ], "dials": [ { "label": "d0" }, { "label": "d1" } ] } ] }
+    },
+    {
+      "name": "dials_carry_onto_every_chunk_physical",
+      "presetCols": 2,
+      "presetRows": 2,
+      "targetCols": 1,
+      "targetRows": 3,
+      "targetKind": "physical",
+      "preset": { "pages": [ { "slots": [ { "label": "0" }, { "label": "1" }, { "label": "2" }, { "label": "3" } ], "dials": [ { "label": "d0" }, { "label": "d1" } ] } ] },
+      "expected": { "pages": [ { "slots": [ { "label": "0" }, { "label": "1" }, { "action": { "type": "page", "op": "next" }, "auto": true } ], "dials": [ { "label": "d0" }, { "label": "d1" } ] }, { "slots": [ { "action": { "type": "page", "op": "prev" }, "auto": true }, { "label": "2" }, { "label": "3" } ], "dials": [ { "label": "d0" }, { "label": "d1" } ] } ] }
+    },
+    {
+      "name": "folder_dials_kept_on_physical",
+      "presetCols": 3,
+      "presetRows": 2,
+      "targetCols": 2,
+      "targetRows": 2,
+      "targetKind": "physical",
+      "preset": { "pages": [ { "slots": [ { "folder": { "slots": [ { "label": "f0" }, { "label": "f1" }, { "label": "f2" }, { "label": "f3" }, { "label": "f4" } ], "dials": [ { "label": "fd0" } ] } } ] } ] },
+      "expected": { "pages": [ { "slots": [ { "folder": { "slots": [ { "label": "f0" }, { "label": "f1" }, { "label": "f2" } ], "dials": [ { "label": "fd0" } ] } }, {}, {}, {} ] } ] }
     }
   ]
 }

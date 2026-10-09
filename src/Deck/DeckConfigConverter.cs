@@ -61,11 +61,37 @@ public sealed class DeckConfigConverter : JsonConverter<DeckConfig>
         {
             return new DeckPage();
         }
+        var page = new DeckPage();
         if (pageEl.TryGetProperty("slots", out var slotsEl) && slotsEl.ValueKind == JsonValueKind.Array)
         {
-            return new DeckPage { Slots = slotsEl.Deserialize(GetTypeInfo<List<DeckSlot>>(options)) ?? new() };
+            page.Slots = slotsEl.Deserialize(GetTypeInfo<List<DeckSlot>>(options)) ?? new();
         }
-        return new DeckPage();
+        if (pageEl.TryGetProperty("dials", out var dialsEl) && dialsEl.ValueKind == JsonValueKind.Array)
+        {
+            page.Dials = ReadDials(dialsEl, options);
+        }
+        return page;
+    }
+
+    // Dials are positional, so a malformed entry becomes an empty dial rather
+    // than shifting its neighbours or failing the whole settings load.
+    private static List<DeckDial> ReadDials(JsonElement dialsEl, JsonSerializerOptions options)
+    {
+        var dials = new List<DeckDial>();
+        foreach (var dialEl in dialsEl.EnumerateArray())
+        {
+            try
+            {
+                dials.Add(dialEl.ValueKind == JsonValueKind.Object
+                    ? dialEl.Deserialize(GetTypeInfo<DeckDial>(options)) ?? new DeckDial()
+                    : new DeckDial());
+            }
+            catch (JsonException)
+            {
+                dials.Add(new DeckDial());
+            }
+        }
+        return dials;
     }
 
     public override void Write(Utf8JsonWriter writer, DeckConfig value, JsonSerializerOptions options)
@@ -78,6 +104,11 @@ public sealed class DeckConfigConverter : JsonConverter<DeckConfig>
             writer.WriteStartObject();
             writer.WritePropertyName("slots");
             JsonSerializer.Serialize(writer, page.Slots, GetTypeInfo<List<DeckSlot>>(options));
+            if (page.Dials is not null)
+            {
+                writer.WritePropertyName("dials");
+                JsonSerializer.Serialize(writer, page.Dials, GetTypeInfo<List<DeckDial>>(options));
+            }
             writer.WriteEndObject();
         }
         writer.WriteEndArray();
