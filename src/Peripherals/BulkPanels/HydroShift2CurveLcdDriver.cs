@@ -50,7 +50,6 @@ public sealed class HydroShift2CurveLcdDriver : IBulkPanelDriver
     private volatile bool _retired;
     private bool _sessionUp;
 
-
     /// <summary>Set at shutdown once the glass is let go: no reconnect may take it back.</summary>
     public void Retire() => _retired = true;
 

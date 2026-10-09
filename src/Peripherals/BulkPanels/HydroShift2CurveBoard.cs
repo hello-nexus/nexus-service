@@ -49,7 +49,7 @@ public sealed class HydroShift2CurveBoard : BackgroundService
     private int? _pumpRpm;
     private int? _pumpDuty;
     private bool _pumpDirty;
-    private bool _pumpDriven;
+    private volatile bool _pumpDriven;
     private bool? _followsHeader;
     private bool _restoreHeaderFollow;
     private bool? _loggedFollow;
@@ -158,6 +158,11 @@ public sealed class HydroShift2CurveBoard : BackgroundService
             {
                 if (_shutdown is { } shutdown)
                 {
+                    // A glitch can have dropped the link with the pump still on Nexus's target.
+                    if (_pumpDriven && !_connected)
+                    {
+                        TryConnect();
+                    }
                     Disconnect(handBack: true);
                     shutdown.TrySetResult();
                     await Task.Delay(Timeout.Infinite, stoppingToken).ConfigureAwait(false);
@@ -207,7 +212,7 @@ public sealed class HydroShift2CurveBoard : BackgroundService
     {
         var done = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         _shutdown = done;
-        if (_connected)
+        if (_connected || _pumpDriven)
         {
             done.Task.Wait(timeout);
         }

@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using System.Threading;
+using System.Threading.Tasks;
 using Nexus.Service.Devices;
 using Nexus.Service.Devices.Detection;
 using Nexus.Service.Lighting;
@@ -282,6 +283,36 @@ public class HydroShift2CurveTests
     }
 
     [Fact]
+    public async Task Shutdown_hands_the_pump_back_from_the_board_loop()
+    {
+        var store = new MemoryStore();
+        store.Update(s => s.Devices.NexusControlEnabled.Add(HydroShift2CurveLcdDriver.Id));
+        var pipe = new BoardPipe();
+        var board = new HydroShift2CurveBoard(
+            new PipeFactory(pipe), new DeviceControlGate(store), new HardwarePresence(new BoardUsb()), store);
+        board.SetPumpDuty(100);
+
+        await board.StartAsync(CancellationToken.None);
+        try
+        {
+            var sw = System.Diagnostics.Stopwatch.StartNew();
+            while (Volatile.Read(ref pipe.PumpWriteCount) == 0 && sw.ElapsedMilliseconds < 4000)
+            {
+                await Task.Delay(20);
+            }
+            Assert.True(pipe.PumpWriteCount > 0);
+
+            board.ReleaseForShutdown(TimeSpan.FromSeconds(2));
+
+            Assert.Equal(HydroShift2CurveProtocol.DefaultPumpOutput, pipe.PumpOutputs[^1]);
+        }
+        finally
+        {
+            await board.StopAsync(CancellationToken.None);
+        }
+    }
+
+    [Fact]
     public void A_recalibration_cut_short_by_a_restart_runs_again()
     {
         var (board, pipe, store) = Connected(tilt: 20, slide: 2, recalibrating: true);
@@ -479,6 +510,7 @@ public class HydroShift2CurveTests
 
         public bool Silent { get; set; }
         public bool FollowsHeader { get; set; }
+        public int PumpWriteCount;
         public bool DropNextMoveReply { get; set; }
 
         public void Idle() => Array.Clear(_busy);
@@ -487,6 +519,10 @@ public class HydroShift2CurveTests
         {
             var packet = data.ToArray();
             Writes.Add(packet);
+            if (packet[0] == HydroShift2CurveProtocol.BoardPumpOutput)
+            {
+                Interlocked.Increment(ref PumpWriteCount);
+            }
             if (packet[0] == HydroShift2CurveProtocol.BoardHeaderFollow)
             {
                 FollowsHeader = packet[1] == 0;
@@ -592,6 +628,14 @@ public class HydroShift2CurveTests
     private sealed class NoUsb : IUsbEnumerator
     {
         public List<UsbDeviceEntry> Enumerate() => new();
+    }
+
+    private sealed class BoardUsb : IUsbEnumerator
+    {
+        public List<UsbDeviceEntry> Enumerate() => new()
+        {
+            new() { VendorId = HydroShift2CurveProtocol.BoardVendorId, ProductId = HydroShift2CurveProtocol.BoardProductId },
+        };
     }
 
     private sealed class MemoryStore : IConfigStore

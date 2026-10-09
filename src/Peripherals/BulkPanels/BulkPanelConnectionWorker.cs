@@ -19,6 +19,9 @@ namespace Nexus.Service.Peripherals.BulkPanels;
 /// </summary>
 public sealed class BulkPanelConnectionWorker : BackgroundService
 {
+    /// <summary>Missed presence scans in a row that end a session; one incomplete bus scan must not.</summary>
+    private const int MissesToDetach = 2;
+
     private readonly int _connectPollMs;
     private readonly int _presencePollMs;
 
@@ -76,15 +79,14 @@ public sealed class BulkPanelConnectionWorker : BackgroundService
                 ServiceLog.Info($"[{driver.HandlerId}] connected: {driver.Name}, {_hub.Width}x{_hub.Height}");
                 try
                 {
-                    // The hub never detaches on a failed transfer, so presence is what ends the session
-                    // after an unplug; two misses in a row, so one incomplete bus scan does not.
+                    // The hub never detaches on a failed transfer, so presence is what ends the session after an unplug.
                     int misses = 0;
                     while (!stoppingToken.IsCancellationRequested
                         && _gate.IsEnabled(driver.HandlerId)
                         && _hub.IsConnected)
                     {
                         misses = _presence.UsbPresent(driver.VendorId, driver.ProductIds) ? 0 : misses + 1;
-                        if (misses >= 2)
+                        if (misses >= MissesToDetach)
                         {
                             break;
                         }
