@@ -156,6 +156,8 @@ public sealed class ChannelSwitchTests
     [InlineData("v3.1.0-beta.1", "v3.1.0", false)]
     [InlineData("v3.1.0", "v3.1.0-beta.1", false)]
     [InlineData("v3.1.0", "v3.2.0", false)]
+    [InlineData("3.1.0-beta.1", "v3.1.0-beta.1", true)]
+    [InlineData("garbage", "v3.1.0", false)]
     public void InstallSucceeded_exact_marker_requires_the_same_version(string markerVersion, string running, bool expected)
     {
         var marker = new StagedInstallMarker { Version = markerVersion, ExactVersion = true };
@@ -181,7 +183,7 @@ public sealed class ChannelSwitchTests
         var bytes = JsonSerializer.SerializeToUtf8Bytes(
             new StagedInstallMarker { Version = "v3.1.0", ExactVersion = true }, AppJsonContext.Default.StagedInstallMarker);
         Assert.True(JsonSerializer.Deserialize(bytes, AppJsonContext.Default.StagedInstallMarker)!.ExactVersion);
-        Assert.Contains("\"exactVersion\":true", Encoding.UTF8.GetString(bytes));
+        Assert.Contains("\"exact_version\":true", Encoding.UTF8.GetString(bytes));
     }
 
     // Switch refusals

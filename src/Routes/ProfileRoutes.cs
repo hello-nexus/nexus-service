@@ -572,7 +572,7 @@ public static class ProfileRoutes
                 if (body.Update is { } update)
                 {
                     if (update.UpdateMode is "notify" or "download" or "always") s.Update.UpdateMode = update.UpdateMode;
-                    if (update.UpdateChannel is not null) s.Update.UpdateChannel = update.UpdateChannel;
+                    if (Nexus.Service.Update.UpdateService.IsValidChannel(update.UpdateChannel)) s.Update.UpdateChannel = update.UpdateChannel!;
                     if (update.LastDismissedUpdateVersion is not null) s.Update.LastDismissedUpdateVersion = update.LastDismissedUpdateVersion;
                 }
                 // Read once at service start; a change takes effect next boot.

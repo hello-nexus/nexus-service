@@ -13,8 +13,8 @@
 ; installers"). Rebuild ONLY when this script changes, and bump StubVersion -
 ; a rebuild is a new hash starting from zero.
 ;
-; Channel selects which release the site's redirects resolve: stable prefers
-; the newest non-prerelease, beta takes the newest release of either kind.
+; Channel selects which release the site's redirects resolve: stable takes
+; the newest non-prerelease, beta the highest prerelease.
 ; The installed service then derives its own update channel from the
 ; version it received (UpdateService.ResolveChannelForBuild).
 

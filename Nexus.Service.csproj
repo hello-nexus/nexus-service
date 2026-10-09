@@ -1127,10 +1127,13 @@
     </ItemGroup>
   </Target>
 
-  <!-- Lab-only update source override (-p:NexusUpdateApiBase=http://127.0.0.1:8790/repos/test/nexus).
-       Baked as a const like the credential; empty means the public GitHub repo, and no
-       runtime or env override exists, so a shipped build cannot be redirected. -->
+  <!-- Lab-only update source override (-p:NexusUpdateApiBase=<releases API base of a mock>).
+       Baked as a const like the credential; empty means the public GitHub repo. MSBuild
+       also reads it from an environment variable of the same name, so a release build
+       (GITHUB_ACTIONS=true, which every distributed build sets) refuses it outright. -->
   <Target Name="SetUpdateApiBase" BeforeTargets="CoreCompile">
+    <Error Condition="'$(_NexusIsCiBuild)' == 'true' AND '$(NexusUpdateApiBase)' != ''"
+           Text="NexusUpdateApiBase is set ('$(NexusUpdateApiBase)') in a release build; it is for lab builds only. Unset it (check the environment)." />
     <WriteLinesToFile File="$(IntermediateOutputPath)UpdateApiBase.g.cs" Lines="namespace Nexus.Service { internal static partial class BuildInfo { public const string UpdateApiBase = &quot;$(NexusUpdateApiBase)&quot;%3B } }" Overwrite="true" WriteOnlyWhenDifferent="true" />
     <ItemGroup>
       <Compile Include="$(IntermediateOutputPath)UpdateApiBase.g.cs" />
