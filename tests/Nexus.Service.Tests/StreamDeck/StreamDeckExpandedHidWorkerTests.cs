@@ -265,6 +265,38 @@ public sealed class StreamDeckExpandedHidWorkerTests : IDisposable
     }
 
     [Fact]
+    public void AStudioThatRefusesRingWrites_SurvivesAFullEmptyDialHold()
+    {
+        var studio = StreamDeckModels.ByProductId(0x00aa)!;
+        var device = new MockStreamDeckHidDevice { ProductId = studio.ProductId };
+        device.RejectOutput = report => report[1] == 0x0f;
+        var clock = new ManualTimeProvider(DateTimeOffset.UtcNow);
+        var hid = new RecordingWorkerHidEnumerator();
+        hid.Infos.Add(new HidDeviceInfo { VendorId = studio.VendorId, ProductId = studio.ProductId, Path = "studio-path", Serial = "STU1", UsagePage = 0xFF00, Usage = 1, FeatureReportByteLength = 32 });
+        hid.Devices["studio-path"] = device;
+        var gate = new DeviceControlGate(_store);
+        gate.SetEnabled("streamdeck", true);
+        _worker = new StreamDeckConnectionWorker(
+            hid, new HardwarePresence(new FixedUsbEnumerator(Usb(studio))), gate, _store, _executor, NewTestKeyRenderer(),
+            new MultiplexHub(), new FakeSensorProvider(), clock: clock, dialValues: _values);
+        var config = JsonSerializer.Deserialize("{\"pages\":[{\"slots\":[],\"dials\":[]}]}", AppJsonContext.Default.DeckConfig)!;
+        _store.Update(s => s.StreamDeck.Decks["STU1"] = new PhysicalDeckSettings { LegacyDeck = config });
+        _store.Update(s => ActivateLegacyDeck(s, "STU1", studio.Columns, studio.Rows));
+        _worker.Tick();
+
+        device.PendingReads.Enqueue(new byte[] { 0x01, 0x03, 0x05, 0x00, 0x00, 0x01, 0x00 });
+        Assert.True(SpinWait.SpinUntil(() => _worker.HasActiveDialHold("STU1", 0), TimeSpan.FromSeconds(3)));
+        for (var i = 0; i < 30; i++)
+        {
+            clock.Advance(TimeSpan.FromMilliseconds(40));
+            _worker.AnimateHolds();
+        }
+
+        Assert.False(device.Disposed);
+        Assert.True(_worker.FindBySerial("STU1")!.IsConnected);
+    }
+
+    [Fact]
     public void ATransientLightWriteFailure_IsRetriedOnTheNextTick()
     {
         var neo = StreamDeckModels.ByProductId(0x009a)!;

@@ -771,6 +771,48 @@ public sealed class StreamDeckDialTests : IDisposable
     }
 
     [Fact]
+    public void StackWithAnEmptyShownEntry_CountsAsBound_PressCyclesInsteadOfHolding()
+    {
+        Build(Plus, Dials("{\"stack\":[{},{\"action\":{\"type\":\"volume\",\"deviceId\":\"a\"}}]}"));
+
+        _sim!.PokeDialPress(0, true);
+        Drain();
+        Assert.False(_worker!.HasActiveDialHold(Serial, 0));
+        _clock.Advance(TimeSpan.FromSeconds(2));
+        _worker.AnimateHolds();
+        Assert.False(_worker.TryGetPendingEdit(out _));
+
+        _sim.PokeDialPress(0, false);
+        Drain();
+        Assert.Equal(1, _worker.DialStackIndexForTests(Serial, 0));
+    }
+
+    [Fact]
+    public void EmptyDialHold_BindingTheDialMidHoldDropsTheHold_AndShowsTheBoundRender()
+    {
+        Build(Plus, Dials(Volume("a")));
+        _values.Set("volume:a", 30);
+        _sim!.PokeDialPress(2, true);
+        Drain();
+        Assert.True(_worker!.HasActiveDialHold(Serial, 2));
+
+        _store.Update(s => ActiveDeck(s, Serial).Pages[0].Dials = new List<DeckDial>
+        {
+            new() { Action = new DeckDialAction { Type = "volume", DeviceId = "a" } },
+            new(),
+            new() { Action = new DeckDialAction { Type = "volume", DeviceId = "a" } },
+        });
+        _worker.RefreshView(Serial);
+        _clock.Advance(TimeSpan.FromSeconds(2));
+        _worker.AnimateHolds();
+
+        Assert.False(_worker.HasActiveDialHold(Serial, 2));
+        Assert.False(_worker.TryGetPendingEdit(out _));
+        Assert.Equal((400, 0, 200, 100), LastRegion());
+        Assert.NotEqual(EmptySegmentWire(Plus, 200, 100), _sim.ScreenRegions.Last().Bytes);
+    }
+
+    [Fact]
     public void EmptyDialHold_RecentAppsModeIsANoOp()
     {
         Build(Plus, Dials(Volume("a")));

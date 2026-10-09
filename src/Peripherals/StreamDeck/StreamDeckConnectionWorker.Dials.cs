@@ -732,9 +732,7 @@ public sealed partial class StreamDeckConnectionWorker
         {
             return;
         }
-        var state = DialStateLocked(surface);
-        var dials = VisibleDialsLocked(surface, out _, out _, out _);
-        if (!IsDialEmpty(EffectiveDial(dials[dialIndex], state.Dials[dialIndex])))
+        if (!DialHoldAllowed(surface, dialIndex))
         {
             return;
         }
@@ -749,9 +747,24 @@ public sealed partial class StreamDeckConnectionWorker
         PushDialHoldFrame(surface, dialIndex, 0);
     }
 
-    /// <summary>One animation frame of a dial hold. True when the hold completed and fired the editor intent.</summary>
+    /// <summary>A dial hold applies only to an empty dial (a stack counts as bound, as for a long touch) outside Recent Apps mode.</summary>
+    private bool DialHoldAllowed(IStreamDeckSurface surface, int dialIndex)
+    {
+        if (IsRecentAppsMode(surface.Serial))
+        {
+            return false;
+        }
+        return IsDialEmpty(VisibleDialsLocked(surface, out _, out _, out _)[dialIndex]);
+    }
+
+    /// <summary>One animation frame of a dial hold. True when the hold ended: completed and fired the editor intent, or the dial stopped being empty.</summary>
     private bool AdvanceDialHold(IStreamDeckSurface surface, int dialIndex, HoldEditState hold, float fraction)
     {
+        if (!DialHoldAllowed(surface, dialIndex))
+        {
+            RestoreDialVisuals(surface, dialIndex);
+            return true;
+        }
         if (fraction >= 1f)
         {
             // The hold took over the press: nothing else fires on release.
@@ -778,6 +791,10 @@ public sealed partial class StreamDeckConnectionWorker
             var segmentWidth = screen.Width / model.Encoders;
             using var image = _strip.RenderHoldPrompt(fraction, segmentWidth, screen.Height);
             surface.SetScreenRegion(dialIndex * segmentWidth, 0, segmentWidth, screen.Height, DeckWireImageEncoder.EncodeScreen(image, model));
+            return;
+        }
+        if (surface.ConsecutiveWriteFailures >= LightWriteFailureBudget)
+        {
             return;
         }
         var ring = new byte[model.EncoderRingLeds * 3];
