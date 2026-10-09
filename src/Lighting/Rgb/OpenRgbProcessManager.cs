@@ -297,7 +297,8 @@ public sealed class OpenRgbProcessManager : IDisposable
 
     /// <summary>
     /// Detector names the user excluded by turning Nexus Control off for every
-    /// card of the device: disabled in the denylist, and recorded in
+    /// card of the device, plus every held-off game controller
+    /// (<see cref="OpenRgbGamepadDefaults"/>): disabled in the denylist, and recorded in
     /// <c>placeholder_only</c> so a lifted exclusion knows what to re-enable.
     /// Null when settings could not be read - the caller then leaves the
     /// on-disk placeholder state untouched rather than re-enabling detectors
@@ -307,17 +308,13 @@ public sealed class OpenRgbProcessManager : IDisposable
     {
         if (_store is null)
         {
-            return Array.Empty<string>();
+            return OpenRgbGamepadDefaults.HeldOffDetectors(new Nexus.Service.Persistence.NexusSettings());
         }
         try
         {
-            var exclusions = _store.Load().Devices.OpenRgbDetectorExclusions;
-            if (exclusions.Count == 0)
-            {
-                return Array.Empty<string>();
-            }
-            var names = new System.Collections.Generic.SortedSet<string>(StringComparer.Ordinal);
-            foreach (var kv in exclusions)
+            var settings = _store.Load();
+            var names = OpenRgbGamepadDefaults.HeldOffDetectors(settings);
+            foreach (var kv in settings.Devices.OpenRgbDetectorExclusions)
             {
                 if (!string.IsNullOrEmpty(kv.Value.DetectorName))
                 {
@@ -774,12 +771,21 @@ public sealed class OpenRgbProcessManager : IDisposable
 
     private async Task SupervisorAsync(Process proc, CancellationToken ct)
     {
+        int exitCode;
         try
         {
             await proc.WaitForExitAsync(ct).ConfigureAwait(false);
+            exitCode = proc.ExitCode;
         }
         catch (OperationCanceledException)
         {
+            return;
+        }
+        catch (Exception ex)
+        {
+            // Stop() or Start() disposed this Process between its exit and these
+            // reads (Stop cancels only after cleanup); that path owns the restart.
+            ServiceLog.Info($"[openrgb-proc] supervisor ended: {ex.GetType().Name}: {ex.Message}");
             return;
         }
 
@@ -789,7 +795,7 @@ public sealed class OpenRgbProcessManager : IDisposable
         }
 
         var uptime = DateTime.UtcNow - _startedUtc;
-        ServiceLog.Warn($"[openrgb-proc] subprocess exited code={proc.ExitCode} after {uptime.TotalSeconds:F0}s");
+        ServiceLog.Warn($"[openrgb-proc] subprocess exited code={exitCode} after {uptime.TotalSeconds:F0}s");
 
         // Reset backoff if it lived long enough to be considered "stable"
         TimeSpan backoff;

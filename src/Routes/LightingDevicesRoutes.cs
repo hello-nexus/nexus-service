@@ -774,6 +774,8 @@ public static partial class DevicesRoutes
             if (body.Controlled && Nexus.Service.Lighting.Rgb.OpenRgbDetectorExclusions.ExcludedBaseOf(body.Id, store.Load()) is { } excludedBase)
             {
                 group.Add(excludedBase);
+                // Only this click allows a held-off controller: a preset switch also drops the key from the uncontrolled list.
+                store.Update(s => Nexus.Service.Lighting.Rgb.OpenRgbGamepadDefaults.AllowFor(s, excludedBase));
             }
             foreach (var id in group)
             {

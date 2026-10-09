@@ -4,6 +4,7 @@ using Nexus.Service.Auth;
 using Nexus.Service.Conflicts;
 using Nexus.Service.Models.Conflicts;
 using Nexus.Service.Persistence;
+using Nexus.Service.Platform;
 using Nexus.Service.Sockets;
 
 namespace Nexus.Service.Routes;
@@ -145,6 +146,7 @@ public static class ConflictRoutes
                 if (body!.Whitelisted) others.Add(def.Id);
                 s.Ui.ConflictAutoKillExclusions = others;
             });
+            ServiceLog.Info($"[conflicts] whitelist: {def.DisplayName} {(body!.Whitelisted ? "added" : "removed")}");
             PanelTopics.BroadcastPrefs(hub);
             return Results.Ok(new SetConflictWhitelistedResponse());
         });
@@ -171,6 +173,7 @@ public static class ConflictRoutes
             // processes, its own Kill being swallowed, and StopService counts an
             // already-stopped service as success.
             var outcome = ConflictKiller.Kill(def);
+            ServiceLog.Info($"[conflicts] end task: {def.DisplayName} runningBefore={outcome.RunningBefore} runningAfter={outcome.RunningAfter}");
 
             return Results.Ok(new KillConflictResponse
             {

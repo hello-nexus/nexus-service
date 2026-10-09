@@ -69,6 +69,10 @@ public sealed class CurveEngine : BackgroundService
     private readonly HashSet<string> _releasedUncontrolled = new(StringComparer.Ordinal);
 
     private int _intervalMs = 1000;
+    // What the tick is doing, for the watchdog's stall report; _stepCurve names the curve while _step is CurveStep.
+    private const string CurveStep = "curve";
+    private volatile string _step = "starting";
+    private volatile string _stepCurve = "";
     private readonly FeatureGates _gates;
 
     // Set by FeatureReconciler on the Cooling ON->OFF edge, consumed by the
@@ -142,7 +146,7 @@ public sealed class CurveEngine : BackgroundService
     {
         // Let hardware init finish before starting curve evaluation
         await Task.Delay(3000, stoppingToken);
-        _guard.StartWatchdog();
+        _guard.StartWatchdog(() => _step == CurveStep ? $"curve '{_stepCurve}'" : _step);
 
         while (!stoppingToken.IsCancellationRequested)
         {
@@ -155,6 +159,7 @@ public sealed class CurveEngine : BackgroundService
                 Console.Error.WriteLine($"[curve-engine] tick failed: {ex.Message}");
             }
             _guard.TickCompleted();
+            _step = "waiting for the next tick";
 
             try
             { await Task.Delay(_intervalMs, stoppingToken); }
@@ -231,6 +236,7 @@ public sealed class CurveEngine : BackgroundService
             _guardDrivenOrphans.Clear();
         }
 
+        _step = "loading settings";
         var settings = _store.Load();
         if (settings.Cooling.Curves.Count == 0
             && settings.Cooling.ManualSpeeds.Count == 0
@@ -259,6 +265,7 @@ public sealed class CurveEngine : BackgroundService
         // partial list at first, so per-tick presence gates both the curve
         // write dedup and the manual-duty replay below.
         var present = new HashSet<string>(StringComparer.Ordinal);
+        _step = "reading fan channels";
         var channelList = _fans.GetFanChannels();
         // Seeded from hardware so a Sync curve pointed at a manual or BIOS fan
         // still has something to follow; curve-driven channels overwrite their
@@ -276,7 +283,10 @@ public sealed class CurveEngine : BackgroundService
         var plan = GuardPlan.None;
         try
         {
-            plan = _guard.Evaluate(Clock(), settings, curves, manualSnapshot, channelList, _fans.GetTemperatureSources());
+            _step = "reading temperature sources";
+            var sources = _fans.GetTemperatureSources();
+            _step = "evaluating the thermal guard";
+            plan = _guard.Evaluate(Clock(), settings, curves, manualSnapshot, channelList, sources);
         }
         catch (Exception ex)
         {
@@ -315,6 +325,8 @@ public sealed class CurveEngine : BackgroundService
 
         foreach (var curveDoc in CurveOrdering.Sort(snapshot))
         {
+            _stepCurve = curveDoc.Id;
+            _step = CurveStep;
             try
             {
                 // Flat curves do not need a reading to evaluate, but they still
@@ -437,6 +449,7 @@ public sealed class CurveEngine : BackgroundService
         // instead of every tick.
         if (_hub.TopicHasSubscribers("cooling-realtime"))
         {
+            _step = "reading fan channels for the realtime stream";
             var channels = _fans.GetFanChannels();
             var component = new CoolingComponent
             {
@@ -469,8 +482,9 @@ public sealed class CurveEngine : BackgroundService
 
     // ── Thermal guard ──
 
-    private static void Isolated(string what, Action action)
+    private void Isolated(string what, Action action)
     {
+        _step = what;
         try { action(); }
         catch (Exception ex) { Console.Error.WriteLine($"[curve-engine] {what} failed: {ex.Message}"); }
     }

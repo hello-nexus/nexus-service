@@ -149,7 +149,8 @@ public static class OpenRgbDetectorExclusions
 
         foreach (var kv in exclusions)
         {
-            if (!uncontrolled.Contains(kv.Key))
+            // A held-off controller's card leaves only through ApplyPresence or the user's click (AllowFor), never a preset swap.
+            if (!uncontrolled.Contains(kv.Key) && !OpenRgbGamepadDefaults.IsHeldOffKey(settings, kv.Key))
             {
                 delta.Remove.Add(kv.Key);
             }

@@ -25,6 +25,8 @@
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
     <DebugType>none</DebugType>
     <DebugSymbols>false</DebugSymbols>
+    <!-- Turns off the SDK's AOT symbol copy, which runs after every AfterTargets="Publish" here. -->
+    <CopyOutputSymbolsToPublishDirectory>false</CopyOutputSymbolsToPublishDirectory>
     <EnforceCodeStyleInBuild>true</EnforceCodeStyleInBuild>
     <!-- WinExe subsystem on Windows: no console window, service lives in system tray only -->
     <OutputType Condition="$([MSBuild]::IsOSPlatform('Windows'))">WinExe</OutputType>
@@ -218,18 +220,18 @@
     <PackageReference Include="AdvancedSharpAdbClient" Version="3.4.14" />
   </ItemGroup>
 
-  <!-- Host-side raster rendering for the Lian Li Wireless SL-LCD sensor/clock/
-       animation screen content (Slv3LcdSensorRenderer/ClockRenderer/
-       AnimationRenderer): draws a 400x400 gauge/clock/animation frame and
-       encodes it to JPEG without shelling out to ffmpeg per frame. AOT-clean
-       (0 IL warnings) on win-x64 + osx-arm64. Pinned to the versions that
-       clear every published SixLabors.ImageSharp NuGet advisory (the GIF
-       decoder infinite-loop and out-of-bounds-write CVEs are fixed at
-       3.1.11/3.1.7; lower 3.1.x patch versions trip the audit warning). -->
+  <!-- Skia (MIT/BSD) for every host-rendered device bitmap: deck keys, dial strips,
+       monitoring/weather tiles, SL-LCD frames, image decode and PNG. Native
+       libSkiaSharp ships beside the binary per RID. Linux takes the fontconfig
+       build: the NoDependencies one finds no system font, so every label draws
+       empty. HarfBuzz shapes text past Latin (emoji sequences, complex
+       scripts). JPEG goes through libjpeg-turbo below, Skia's encoder is only
+       its fallback. -->
   <ItemGroup>
-    <PackageReference Include="SixLabors.ImageSharp" Version="3.1.12" />
-    <PackageReference Include="SixLabors.ImageSharp.Drawing" Version="2.1.7" />
-    <PackageReference Include="SixLabors.Fonts" Version="2.1.3" />
+    <PackageReference Include="SkiaSharp" Version="4.153.1" />
+    <PackageReference Include="SkiaSharp.NativeAssets.Linux" Version="4.153.1" />
+    <PackageReference Include="HarfBuzzSharp" Version="14.2.1.301" />
+    <PackageReference Include="HarfBuzzSharp.NativeAssets.Linux" Version="14.2.1.301" />
   </ItemGroup>
 
   <!-- AOT publish strips native assets from `runtimes/<rid>/native/` that aren't
@@ -486,7 +488,7 @@
     </Content>
   </ItemGroup>
   <!-- The test project builds without a RID, so the encoder tests would silently only
-       ever exercise the ImageSharp fallback; give a RID-less build the host's copy. -->
+       ever exercise the Skia fallback; give a RID-less build the host's copy. -->
   <ItemGroup Condition="'$(RuntimeIdentifier)' == '' AND $([MSBuild]::IsOSPlatform('Windows'))">
     <Content Include="Bundled\win-x64\turbojpeg\turbojpeg.dll">
       <Link>turbojpeg.dll</Link>
@@ -943,6 +945,14 @@
     <Copy SourceFiles="@(_WebDist)" DestinationFiles="@(_WebDist->'$(OutputPath)wwwroot/%(RecursiveDir)%(Filename)%(Extension)')" SkipUnchangedFiles="true" />
   </Target>
 
+  <!-- No debug symbols ship. SkiaSharp and HarfBuzzSharp carry their native .pdb as
+       runtimes/<rid>/native assets, so no .pdb reaches the publish list. -->
+  <Target Name="DropPdbsFromPublish" AfterTargets="ComputeResolvedFilesToPublishList">
+    <ItemGroup>
+      <ResolvedFileToPublish Remove="@(ResolvedFileToPublish)" Condition="'%(Extension)' == '.pdb'" />
+    </ItemGroup>
+  </Target>
+
   <!-- Trim SDK-generated files we don't need at runtime:
        - staticwebassets.endpoints.json: only used by MapStaticAssets() which we
          don't call (we use UseStaticFiles)
@@ -1005,7 +1015,8 @@
       <_OverlayPublishDirArg>$(_OverlayPublishDir.TrimEnd('\'))</_OverlayPublishDirArg>
     </PropertyGroup>
     <Message Text="Publishing nexus-overlay (desktop widget host) -&gt; $(_OverlayPublishDir)" Importance="high" />
-    <Exec Command="dotnet publish &quot;$(_OverlayProject)&quot; -c Release -r win-x64 --self-contained true -o &quot;$(_OverlayPublishDirArg)&quot;" />
+    <!-- The overlay's ILC output carries nexus-overlay.pdb; never copy it into publish. -->
+    <Exec Command="dotnet publish &quot;$(_OverlayProject)&quot; -c Release -r win-x64 --self-contained true -p:CopyOutputSymbolsToPublishDirectory=false -o &quot;$(_OverlayPublishDirArg)&quot;" />
     <Error Condition="!Exists('$(_OverlayPublishDir)nexus-overlay.exe')"
            Text="Overlay publish completed without the host EXE at $(_OverlayPublishDir)nexus-overlay.exe. Desktop widgets will not run." />
     <Error Condition="!Exists('$(_OverlayPublishDir)WebView2Loader.dll')"
@@ -1014,11 +1025,6 @@
          wrapper (NativeAOT-incompatible) and the WinForms host entirely. It
          P/Invokes WebView2Loader.dll directly and walks COM vtables. The
          only files that need to land are nexus-overlay.exe + WebView2Loader.dll. -->
-    <!-- ILC writes a 20+ MB pdb AFTER the overlay's own AfterTargets="Publish"
-         strip target runs, so we cannot remove it from the overlay side.
-         Delete it here, after the overlay publish has fully settled, to keep
-         debug symbols out of Nexus-Setup.exe. -->
-    <Delete Files="$(_OverlayPublishDir)nexus-overlay.pdb" />
   </Target>
 
 
@@ -1084,6 +1090,14 @@
     <ItemGroup>
       <Compile Include="$(IntermediateOutputPath)ClientCredential.g.cs" />
     </ItemGroup>
+  </Target>
+
+  <!-- Declared last so it runs after this file's other publish steps, the overlay's included. -->
+  <Target Name="RejectPublishedPdbs" AfterTargets="Publish">
+    <ItemGroup>
+      <_PublishedPdb Include="$(PublishDir)**\*.pdb" />
+    </ItemGroup>
+    <Error Condition="'@(_PublishedPdb)' != ''" Text="Publish output carries debug symbols, which never ship: @(_PublishedPdb)" />
   </Target>
 
 </Project>

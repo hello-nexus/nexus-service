@@ -260,7 +260,9 @@ public sealed class PanelDeviceRegistry
             && a.Dpi == b.Dpi
             && string.Equals(a.Family, b.Family, StringComparison.Ordinal)
             && a.SupportsBrightness == b.SupportsBrightness
-            && a.SupportsSecondaryMonitor == b.SupportsSecondaryMonitor;
+            && a.SupportsSecondaryMonitor == b.SupportsSecondaryMonitor
+            && a.SupportsPortrait == b.SupportsPortrait
+            && a.SupportsRenderScale == b.SupportsRenderScale;
     }
 
     public PanelDeviceRecord? FindByDisplayId(string displayId)
@@ -480,6 +482,8 @@ public sealed class PanelDeviceRegistry
             Family = patch.Family ?? existing?.Family,
             SupportsBrightness = patch.SupportsBrightness ?? existing?.SupportsBrightness,
             SupportsSecondaryMonitor = patch.SupportsSecondaryMonitor ?? existing?.SupportsSecondaryMonitor,
+            SupportsPortrait = patch.SupportsPortrait ?? existing?.SupportsPortrait,
+            SupportsRenderScale = patch.SupportsRenderScale ?? existing?.SupportsRenderScale,
         };
     }
 
@@ -577,6 +581,8 @@ public sealed class PanelDeviceRegistry
                 record.TextColorMode = patch.TextColorMode;
             if (patch.TextColor is not null)
                 record.TextColor = patch.TextColor;
+            if (patch.Font is not null)
+                record.Font = NullIfEmpty(patch.Font);
             if (patch.ThemeSyncWithDesktop.HasValue)
                 record.ThemeSyncWithDesktop = patch.ThemeSyncWithDesktop.Value;
             if (patch.AccentSyncWithDesktop.HasValue)
@@ -603,6 +609,10 @@ public sealed class PanelDeviceRegistry
                 record.LcdBrightness = Math.Clamp(patch.LcdBrightness.Value, 0, 100);
             if (patch.SecondaryMonitor.HasValue)
                 record.SecondaryMonitor = patch.SecondaryMonitor.Value;
+            if (patch.Portrait.HasValue)
+                record.Portrait = patch.Portrait.Value;
+            if (patch.HighResolution.HasValue)
+                record.HighResolution = patch.HighResolution.Value;
             // Capabilities on display-bound records are owned by the topology
             // sync (rebuilt from OS facts); a client value would ping-pong
             // with the next sync pass.
@@ -631,7 +641,7 @@ public sealed class PanelDeviceRegistry
     /// <summary>
     /// Personalization reset: layout (including single-widget configs),
     /// theme, background, and widget fields all clear, so defaults reseed on
-    /// the next read. Identity and hardware-scoped state survive - id, name,
+    /// the next read; a streamed strip stores its strip seed instead. Identity and hardware-scoped state survive - id, name,
     /// display binding, capabilities, enabled state, monitor behavior
     /// (ReserveMonitor/AutoOrient/KeepCursorOff - see <see cref="ResetHardwareSettings"/>),
     /// and the persisted orientation / Xeneon DDC record. Uploaded media is
@@ -649,7 +659,7 @@ public sealed class PanelDeviceRegistry
         {
             if (!s.PanelDevices.TryGetValue(id, out var record))
                 return;
-            record.Layout = null;
+            record.Layout = PanelLayoutDefaults.StripSeedFor(record);
             record.ThemeMode = null;
             record.AccentColor = null;
             record.BackgroundColor = null;
@@ -676,6 +686,7 @@ public sealed class PanelDeviceRegistry
             record.WidgetPadding = null;
             record.TextColorMode = null;
             record.TextColor = null;
+            record.Font = null;
             record.ThemeSyncWithDesktop = null;
             record.AccentSyncWithDesktop = null;
             // Presets are personalization too, and they reference the media
@@ -717,6 +728,8 @@ public sealed class PanelDeviceRegistry
             record.Mirror = null;
             record.LcdBrightness = null;
             record.SecondaryMonitor = null;
+            record.Portrait = null;
+            record.HighResolution = null;
             record.XeneonEdgeSettings = null;
             record.LastSeenAt = now;
             snapshot = Clone(record);
@@ -984,6 +997,7 @@ public sealed class PanelDeviceRegistry
             WidgetPadding = r.WidgetPadding,
             TextColorMode = r.TextColorMode,
             TextColor = r.TextColor,
+            Font = r.Font,
             ThemeSyncWithDesktop = r.ThemeSyncWithDesktop,
             AccentSyncWithDesktop = r.AccentSyncWithDesktop,
             FirstSeenAt = r.FirstSeenAt,
@@ -997,6 +1011,8 @@ public sealed class PanelDeviceRegistry
             Mirror = r.Mirror,
             LcdBrightness = r.LcdBrightness,
             SecondaryMonitor = r.SecondaryMonitor,
+            Portrait = r.Portrait,
+            HighResolution = r.HighResolution,
             XeneonEdgeSettings = r.XeneonEdgeSettings is null
                 ? null
                 : new XeneonEdgeSettingsDto

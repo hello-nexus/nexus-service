@@ -28,6 +28,36 @@ public class DiagnosticsEventLogTests
     private const string AppErrorXml =
         "<Event xmlns='http://schemas.microsoft.com/win/2004/08/events/event'><System><Provider Name='Application Error' Guid='{a0e9b465-b939-57d7-b27d-95d8e925ff57}'/><EventID>1000</EventID><Version>0</Version><Level>2</Level><Task>100</Task><Opcode>0</Opcode><Keywords>0x8000000000000000</Keywords><TimeCreated SystemTime='2026-07-07T00:47:21.2335600Z'/><EventRecordID>90259</EventRecordID><Correlation/><Execution ProcessID='42484' ThreadID='40528'/><Channel>Application</Channel><Computer>HyteY70</Computer><Security UserID='S-1-5-18'/></System><EventData><Data Name='AppName'>adb.exe</Data><Data Name='AppVersion'>0.0.0.0</Data><Data Name='AppTimeStamp'>0bf586cc</Data><Data Name='ModuleName'>ucrtbase.dll</Data><Data Name='ModuleVersion'>10.0.26100.8521</Data><Data Name='ModuleTimeStamp'>ac13ff6d</Data><Data Name='ExceptionCode'>c0000409</Data><Data Name='FaultingOffset'>0002da71</Data><Data Name='ProcessId'>0x3ef8</Data><Data Name='ProcessCreationTime'>0x1dd0da2d4239567</Data><Data Name='AppPath'>C:\\Program Files\\Nexus\\tools\\adb\\adb.exe</Data><Data Name='ModulePath'>C:\\WINDOWS\\System32\\ucrtbase.dll</Data><Data Name='IntegratorReportId'>718aedf8-a6d5-4e22-9e6c-5087dcdb03fc</Data><Data Name='PackageFullName'></Data><Data Name='PackageRelativeAppId'></Data></EventData></Event>";
 
+    // AppErrorXml with the app, faulting module and exception code swapped.
+    private static string AppError(string app, string module) => AppErrorXml
+        .Replace("<Data Name='AppName'>adb.exe</Data>", $"<Data Name='AppName'>{app}</Data>")
+        .Replace("<Data Name='ModuleName'>ucrtbase.dll</Data>", $"<Data Name='ModuleName'>{module}</Data>")
+        .Replace("<Data Name='ExceptionCode'>c0000409</Data>", "<Data Name='ExceptionCode'>c0000005</Data>");
+
+    [Fact]
+    public void A_Nexus_fault_in_nvml_is_an_info_driver_restart_not_an_app_crash()
+    {
+        var incident = EventXmlParser.Parse(AppError("Nexus.exe", "nvml.dll"));
+
+        Assert.NotNull(incident);
+        Assert.Equal("driverRestart", incident!.Source);
+        Assert.Equal("info", incident.Severity);
+        Assert.Equal("Nexus restarted during an NVIDIA driver update", incident.Title);
+        Assert.Equal("Nexus.exe", incident.App!.Name);
+    }
+
+    [Theory]
+    [InlineData("Nexus.exe", "ucrtbase.dll")]
+    [InlineData("game.exe", "nvml.dll")]
+    public void Other_crashes_stay_app_crash_warnings(string app, string module)
+    {
+        var incident = EventXmlParser.Parse(AppError(app, module));
+
+        Assert.NotNull(incident);
+        Assert.Equal("appCrash", incident!.Source);
+        Assert.Equal("warning", incident.Severity);
+    }
+
     private const string Wer1001LiveKernelXml =
         @"<Event xmlns='http://schemas.microsoft.com/win/2004/08/events/event'><System><Provider Name='Windows Error Reporting' Guid='{0ead09bd-2157-539a-8d6d-c87f95b64d70}'/><EventID>1001</EventID><Version>0</Version><Level>4</Level><Task>0</Task><Opcode>0</Opcode><Keywords>0x8000000000000000</Keywords><TimeCreated SystemTime='2026-07-08T04:42:03.2990784Z'/><EventRecordID>90573</EventRecordID><Correlation/><Execution ProcessID='24752' ThreadID='42724'/><Channel>Application</Channel><Computer>HyteY70</Computer><Security UserID='S-1-5-18'/></System><EventData><Data Name='Bucket'></Data><Data Name='BucketType'>0</Data><Data Name='EventName'>LiveKernelEvent</Data><Data Name='Response'>Not available</Data><Data Name='CabId'>0</Data><Data Name='P1'>1b8</Data><Data Name='P2'>a</Data><Data Name='P3'>0</Data><Data Name='P4'>0</Data><Data Name='P5'>0</Data><Data Name='P6'>10_0_26200</Data><Data Name='P7'>0_0</Data><Data Name='P8'>768_1</Data><Data Name='P9'></Data><Data Name='P10'></Data><Data Name='AttachedFiles'>
 \\?\C:\WINDOWS\LiveKernelReports\WATCHDOG4400\WATCHDOG4400-20260704-1846.dmp

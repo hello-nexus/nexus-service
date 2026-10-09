@@ -321,7 +321,10 @@ public static class PanelRoutes
             // the client posts an edit. Falls back to the y70 seed when the
             // device record has no capabilities yet (pre-handshake GETs).
             if (record.Layout is null)
-                record.Layout = PanelLayoutDefaults.ForSurface(record.Capabilities?.Surface ?? "y70");
+            {
+                record.Layout = PanelLayoutDefaults.StripSeedFor(record)
+                    ?? PanelLayoutDefaults.ForSurface(record.Capabilities?.Surface ?? "y70");
+            }
             registry.Touch(id);
             return Results.Json(record, AppJsonContext.Default.PanelDeviceRecord);
         }).AllowPanel();
@@ -350,6 +353,8 @@ public static class PanelRoutes
                 streams.ApplyBrightness(updated.Id);
             if (body.SecondaryMonitor.HasValue)
                 streams.ApplySecondaryMonitor(updated.Id);
+            if (body.HighResolution.HasValue)
+                streams.Wake();
             BroadcastDeviceChanged(hub, id);
             return Results.Json(updated, AppJsonContext.Default.PanelDeviceRecord);
         }).AllowPanel();

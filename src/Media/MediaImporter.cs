@@ -220,7 +220,7 @@ public static class MediaImporter
     // decoder must not park an import forever.
     private const int FfmpegTimeoutSeconds = 120;
 
-    internal static Task RunFfmpeg(params string[] args) =>
+    internal static Task<string> RunFfmpeg(params string[] args) =>
         RunFfmpeg(FfmpegTimeoutSeconds, CancellationToken.None, args);
 
     /// <summary>
@@ -230,7 +230,8 @@ public static class MediaImporter
     /// RequestAborted means an abandoned fetch kills the child process instead
     /// of leaving it to burn a core.
     /// </summary>
-    internal static async Task RunFfmpeg(int timeoutSeconds, CancellationToken ct, string[] args)
+    /// <returns>ffmpeg's stderr, where it reports the input's duration and streams.</returns>
+    internal static async Task<string> RunFfmpeg(int timeoutSeconds, CancellationToken ct, string[] args)
     {
         var ffmpegPath = FfmpegResolver.Path
             ?? throw new InvalidOperationException("ffmpeg not found");
@@ -276,6 +277,7 @@ public static class MediaImporter
             var tail = stderr.Length > 400 ? stderr[^400..] : stderr;
             throw new InvalidOperationException($"ffmpeg exit {proc.ExitCode}: {tail.Trim()}");
         }
+        return stderr;
     }
 
     // IDs become directory names, file names, ffmpeg arguments, and URL path

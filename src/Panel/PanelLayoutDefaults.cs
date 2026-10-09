@@ -32,6 +32,32 @@ public static class PanelLayoutDefaults
             "q60" => layouts.Q60,
             _ => layouts.Y70,
         };
+        return Build(src, surface);
+    }
+
+    /// <summary>Starter page for a panel on a 4:1 strip, where the surface's own seed would fill a quarter of the glass.</summary>
+    public static PanelLayoutDto ForStrip(string surface) =>
+        Build((InstallDefaults.Panel.Layouts ?? new PanelLayoutsDefaults()).Strip, surface);
+
+    /// <summary>A monitor-surface panel at least three times as long as it is wide.</summary>
+    public static bool IsStrip(string? surface, int width, int height) =>
+        surface == Models.Panel.PanelSurfaces.Monitor
+        && Math.Min(width, height) > 0
+        && Math.Max(width, height) >= 3 * Math.Min(width, height);
+
+    /// <summary>
+    /// The strip seed for a streamed strip panel's record, else null. Display-bound monitors
+    /// (a Xeneon Edge) keep the desktop seed.
+    /// </summary>
+    public static PanelLayoutDto? StripSeedFor(PanelDeviceRecord record) =>
+        string.IsNullOrEmpty(record.DisplayId)
+        && record.Capabilities is { } caps
+        && IsStrip(caps.Surface, caps.CssWidth ?? 0, caps.CssHeight ?? 0)
+            ? ForStrip(caps.Surface!)
+            : null;
+
+    private static PanelLayoutDto Build(PanelLayoutDefault src, string surface)
+    {
         return new PanelLayoutDto
         {
             LayoutSchemaVersion = src.LayoutSchemaVersion,

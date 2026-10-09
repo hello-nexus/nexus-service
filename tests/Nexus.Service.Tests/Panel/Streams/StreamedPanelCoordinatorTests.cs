@@ -24,6 +24,7 @@ public sealed class StreamedPanelCoordinatorTests : IDisposable
     private readonly StreamedPanelStore _store;
     private readonly FakeDiscovery _discovery = new();
     private long _nowMs = 1_000_000;
+    private readonly List<string> _panelChanges = new();
     private StreamedPanelCoordinator? _coordinator;
 
     public StreamedPanelCoordinatorTests()
@@ -56,7 +57,8 @@ public sealed class StreamedPanelCoordinatorTests : IDisposable
             _registry,
             _gate,
             notifyOverlay: null,
-            nowMs: () => _nowMs);
+            nowMs: () => _nowMs,
+            notifyPanelChanged: _panelChanges.Add);
         return _coordinator;
     }
 
@@ -119,6 +121,9 @@ public sealed class StreamedPanelCoordinatorTests : IDisposable
         public List<FakeBrightnessTransport> BrightnessTransports { get; } = new();
         public bool UseBrightnessTransport { get; set; }
         public bool FailOpen { get; set; }
+        public bool Withheld { get; set; }
+        public bool ListedWhileWithheld { get; set; }
+        public string? WithheldSerial => Withheld ? Devices.FirstOrDefault()?.Serial : null;
 
         public IReadOnlyList<StreamedPanelDeviceInfo> Discover() => Devices.ToList();
 
@@ -134,6 +139,56 @@ public sealed class StreamedPanelCoordinatorTests : IDisposable
             Transports.Add(t);
             return t;
         }
+    }
+
+    [Fact]
+    public void A_new_strip_panel_is_seeded_with_a_page_that_spans_the_strip()
+    {
+        _discovery.Devices.Add(new StreamedPanelDeviceInfo
+        {
+            Serial = "strip",
+            Profile = new StreamedPanelProfile { Kind = "strip", DisplayName = "Strip", Surface = "monitor", CssWidth = 1920, CssHeight = 480 },
+        });
+        var coordinator = Coordinator();
+
+        coordinator.TickOnce();
+
+        var layout = _registry.Get(Assert.Single(coordinator.GetAssignments().Assignments).PanelDeviceId)!.Layout;
+        Assert.NotNull(layout);
+        Assert.Equal("monitor", layout!.Surface);
+        var widgets = Assert.Single(layout.Pages).Widgets;
+        Assert.Equal(4, widgets.Count);
+        Assert.All(widgets, w => Assert.Equal("4x4", w.Size));
+        Assert.Equal(new[] { 0, 4, 8, 12 }, widgets.Select(w => w.Col).OrderBy(c => c).ToArray());
+    }
+
+    [Fact]
+    public void A_known_strip_panel_with_no_stored_layout_gets_the_strip_seed_at_session_start()
+    {
+        var caps = new PanelDeviceCapabilities { Surface = "monitor", CssWidth = 1920, CssHeight = 480 };
+        var record = _registry.Allocate("Strip", caps);
+        _store.Save(new Dictionary<string, StreamedPanelRecord>(StringComparer.Ordinal) { ["strip"] = new() { PanelDeviceId = record.Id } });
+        _discovery.Devices.Add(new StreamedPanelDeviceInfo
+        {
+            Serial = "strip",
+            Profile = new StreamedPanelProfile { Kind = "strip", DisplayName = "Strip", Surface = "monitor", CssWidth = 1920, CssHeight = 480 },
+        });
+
+        Coordinator().TickOnce();
+
+        var widgets = Assert.Single(_registry.Get(record.Id)!.Layout!.Pages).Widgets;
+        Assert.Contains(widgets, w => w.Type == "weather" && w.Size == "4x4");
+    }
+
+    [Fact]
+    public void A_new_panel_of_ordinary_shape_keeps_the_client_seed()
+    {
+        _discovery.Devices.Add(Device());
+        var coordinator = Coordinator();
+
+        coordinator.TickOnce();
+
+        Assert.Null(_registry.Get(Assert.Single(coordinator.GetAssignments().Assignments).PanelDeviceId)!.Layout);
     }
 
     [Fact]
@@ -192,6 +247,65 @@ public sealed class StreamedPanelCoordinatorTests : IDisposable
     }
 
     [Fact]
+    public void A_withheld_screen_closes_immediately_and_returns_when_released()
+    {
+        _discovery.Devices.Add(Device());
+        var coordinator = Coordinator();
+        coordinator.TickOnce();
+        Assert.Single(coordinator.GetAssignments().Assignments);
+
+        _discovery.Withheld = true;
+        coordinator.TickOnce();
+        Assert.Empty(coordinator.GetAssignments().Assignments);
+
+        _discovery.Withheld = false;
+        coordinator.TickOnce();
+        Assert.Single(coordinator.GetAssignments().Assignments);
+    }
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public void A_withheld_panel_stays_listed_only_when_its_discovery_asks(bool listed)
+    {
+        _discovery.Devices.Add(Device());
+        _discovery.ListedWhileWithheld = listed;
+        var coordinator = Coordinator();
+        coordinator.TickOnce();
+        var panelId = Assert.Single(coordinator.LivePanelDeviceIds());
+
+        _discovery.Withheld = true;
+        coordinator.TickOnce();
+        Assert.Empty(coordinator.GetAssignments().Assignments);
+        Assert.Equal(listed, coordinator.LivePanelDeviceIds().Contains(panelId));
+
+        _discovery.Withheld = false;
+        _discovery.Devices.Clear();
+        coordinator.TickOnce();
+        Assert.Empty(coordinator.LivePanelDeviceIds());
+    }
+
+    [Fact]
+    public void A_panel_withheld_before_any_session_after_a_restart_is_still_listed()
+    {
+        _discovery.Devices.Add(Device());
+        _discovery.ListedWhileWithheld = true;
+        Coordinator().TickOnce();
+        var panelId = Assert.Single(_coordinator!.LivePanelDeviceIds());
+
+        _discovery.Withheld = true;
+        var restarted = new StreamedPanelCoordinator(
+            new[] { _discovery }, _store, _registry, _gate,
+            notifyOverlay: null, nowMs: () => _nowMs, notifyPanelChanged: _panelChanges.Add);
+        _panelChanges.Clear();
+        restarted.TickOnce();
+
+        Assert.Empty(restarted.GetAssignments().Assignments);
+        Assert.Contains(panelId, restarted.LivePanelDeviceIds());
+        Assert.Contains(panelId, _panelChanges);
+    }
+
+    [Fact]
     public void Gate_off_closes_immediately_without_linger()
     {
         _discovery.Devices.Add(Device());
@@ -203,6 +317,21 @@ public sealed class StreamedPanelCoordinatorTests : IDisposable
         coordinator.TickOnce();
 
         Assert.Empty(coordinator.GetAssignments().Assignments);
+    }
+
+    [Fact]
+    public void Session_start_and_close_tell_clients_the_panel_list_changed()
+    {
+        _discovery.Devices.Add(Device());
+        var coordinator = Coordinator();
+        coordinator.TickOnce();
+        var id = Assert.Single(coordinator.GetAssignments().Assignments).PanelDeviceId;
+        Assert.Equal(new[] { id }, _panelChanges);
+
+        _gate.SetEnabled("fake-panel", false);
+        coordinator.TickOnce();
+
+        Assert.Equal(new[] { id, id }, _panelChanges);
     }
 
     [Fact]
@@ -221,6 +350,99 @@ public sealed class StreamedPanelCoordinatorTests : IDisposable
         Assert.NotEqual(first.SessionId, second.SessionId);
         Assert.Equal(60, second.Fps);
         Assert.Equal(first.PanelDeviceId, second.PanelDeviceId);
+    }
+
+    private static StreamedPanelDeviceInfo Sized(int width, int height, StreamCodec codec = StreamCodec.RawBgra) => new()
+    {
+        Serial = "sized",
+        Profile = new StreamedPanelProfile { Kind = "sized", DisplayName = "Sized", Surface = "lcd-wide", CssWidth = width, CssHeight = height, Codec = codec },
+    };
+
+    [Fact]
+    public void A_raw_panel_over_1000_px_renders_lower_until_its_record_asks_for_high_resolution()
+    {
+        _discovery.Devices.Add(Sized(2288, 1080));
+        var coordinator = Coordinator();
+        coordinator.TickOnce();
+        var half = Assert.Single(coordinator.GetAssignments().Assignments);
+
+        Assert.Equal(0.5, half.Dpr);
+        Assert.Equal(2288, half.CssWidth);
+        Assert.Equal(1080, half.CssHeight);
+        var caps = _registry.Get(half.PanelDeviceId)!.Capabilities!;
+        Assert.True(caps.SupportsRenderScale);
+        Assert.Equal(1.0, caps.Dpr);
+
+        _registry.Patch(half.PanelDeviceId, new PanelDevicePatch { HighResolution = true });
+        coordinator.TickOnce();
+        var full = Assert.Single(coordinator.GetAssignments().Assignments);
+
+        Assert.Equal(1.0, full.Dpr);
+        Assert.NotEqual(half.SessionId, full.SessionId);
+        Assert.Equal(half.PanelDeviceId, full.PanelDeviceId);
+
+        _registry.Patch(half.PanelDeviceId, new PanelDevicePatch { HighResolution = false });
+        coordinator.TickOnce();
+
+        Assert.Equal(0.5, Assert.Single(coordinator.GetAssignments().Assignments).Dpr);
+    }
+
+    [Fact]
+    public void A_record_that_asks_for_high_resolution_renders_native_from_the_first_session()
+    {
+        _discovery.Devices.Add(Sized(1920, 480));
+        var coordinator = Coordinator();
+        coordinator.TickOnce();
+        var panelId = Assert.Single(coordinator.GetAssignments().Assignments).PanelDeviceId;
+        Assert.Equal(2.0 / 3, Assert.Single(coordinator.GetAssignments().Assignments).Dpr);
+        _registry.Patch(panelId, new PanelDevicePatch { HighResolution = true });
+        _discovery.Devices.Clear();
+        _nowMs += 120_000;
+        coordinator.TickOnce();
+        Assert.Empty(coordinator.GetAssignments().Assignments);
+
+        _discovery.Devices.Add(Sized(1920, 480));
+        coordinator.TickOnce();
+
+        Assert.Equal(1.0, Assert.Single(coordinator.GetAssignments().Assignments).Dpr);
+    }
+
+    [Theory]
+    [InlineData(1000, 1000, StreamCodec.RawBgra)]
+    [InlineData(640, 480, StreamCodec.RawBgra)]
+    [InlineData(1024, 600, StreamCodec.H264)]
+    public void Other_panels_always_render_at_native(int width, int height, StreamCodec codec)
+    {
+        _discovery.Devices.Add(Sized(width, height, codec));
+        var coordinator = Coordinator();
+        coordinator.TickOnce();
+
+        var assignment = Assert.Single(coordinator.GetAssignments().Assignments);
+
+        Assert.Equal(1.0, assignment.Dpr);
+        Assert.Null(_registry.Get(assignment.PanelDeviceId)!.Capabilities!.SupportsRenderScale);
+    }
+
+    [Fact]
+    public void A_profile_change_tells_clients_only_once_the_new_session_is_live()
+    {
+        var liveAtNotify = new List<bool>();
+        StreamedPanelCoordinator? coordinator = null;
+        _coordinator = coordinator = new StreamedPanelCoordinator(
+            new[] { _discovery }, _store, _registry, _gate,
+            notifyOverlay: null,
+            nowMs: () => _nowMs,
+            notifyPanelChanged: id => liveAtNotify.Add(coordinator!.LivePanelDeviceIds().Contains(id)));
+        _discovery.Devices.Add(Device(fps: 30));
+        coordinator.TickOnce();
+        liveAtNotify.Clear();
+
+        _discovery.Devices.Clear();
+        _discovery.Devices.Add(Device(fps: 60));
+        coordinator.TickOnce();
+
+        Assert.Equal(60, Assert.Single(coordinator.GetAssignments().Assignments).Fps);
+        Assert.Equal(new[] { true }, liveAtNotify);
     }
 
     [Fact]

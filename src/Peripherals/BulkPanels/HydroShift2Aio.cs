@@ -35,6 +35,7 @@ public sealed class HydroShift2Aio : BackgroundService
     private readonly BulkPanelHub _hub;
     private readonly HydroShift2LcdDriver _driver;
     private readonly Func<string?, bool> _wirelessOwns;
+    private readonly Func<string, bool> _nexusWidgets;
 
     private readonly object _lock = new();
     private HydroShift2Params? _params;
@@ -56,19 +57,42 @@ public sealed class HydroShift2Aio : BackgroundService
     private bool _wirelessHeld;
     private bool _wasAvailable;
     private bool _driving;
+    private volatile bool _overlayClear;
+
+    /// <summary>Whether the glass showed the AIO's own screen at the last check; null until a reading after connect names the unit.</summary>
+    private bool? _ownScreen;
 
     /// <param name="wirelessOwns">True while a wireless dongle Nexus drives has this unit (by radio MAC; null before the first reading) bound; that link then owns pump, fans and ring.</param>
-    public HydroShift2Aio(BulkPanelHub hub, HydroShift2LcdDriver driver, Func<string?, bool> wirelessOwns)
+    /// <param name="nexusWidgets">False for a unit (by radio MAC) whose glass the user gave to its own wireless screen; null keeps Nexus widgets on every unit.</param>
+    public HydroShift2Aio(BulkPanelHub hub, HydroShift2LcdDriver driver, Func<string?, bool> wirelessOwns, Func<string, bool>? nexusWidgets = null)
     {
         _hub = hub;
         _driver = driver;
         _wirelessOwns = wirelessOwns;
+        _nexusWidgets = nexusWidgets ?? (_ => true);
     }
+
+    /// <summary>The wireless link owns this unit and the user chose its own screen over Nexus widgets, so the glass is not streamed.</summary>
+    public bool ShowsOwnScreen => Params?.Mac is { } mac && _wirelessOwns(mac) && !_nexusWidgets(mac);
+
+    /// <summary>
+    /// Raised from the loop with the unit's MAC and <see cref="ShowsOwnScreen"/> after a connect
+    /// and on every change, so the panel stream stops or starts at once. The AIO's own screen
+    /// then needs a switch to RF control sent after the stream stopped: the connect handshake
+    /// and the frames wiped what an earlier switch drew.
+    /// </summary>
+    public event Action<string, bool>? ScreenOwnerChanged;
+
+    /// <summary>Wipes what the firmware drew over the glass once the unit is read, unless it shows its own screen by then.</summary>
+    public void ClearScreenOverlay() => _overlayClear = true;
 
     /// <summary>Connected over USB and not handed to the wireless link.</summary>
     public bool IsAvailable => _hub.IsConnected && !_wirelessOwns(Params?.Mac);
 
     public HydroShift2Params? Params { get { lock (_lock) { return _params; } } }
+
+    /// <summary>The connected head is the round LCD-C.</summary>
+    public bool Round => _driver.Round;
 
     /// <summary>Raised from the loop when <see cref="IsAvailable"/> flips.</summary>
     public event Action? AvailabilityChanged;
@@ -152,6 +176,14 @@ public sealed class HydroShift2Aio : BackgroundService
             _ringHoldUntil = 0;
             _ringRetryMs = 0;
             _wirelessHeld = false;
+            _overlayClear = false;
+            _ownScreen = null;
+            // A reconnect reads the unit again, even while the dongle owns it and OnDisconnected is skipped.
+            lock (_lock)
+            {
+                _params = null;
+            }
+            _lastParamsAt = 0;
             if (_wasAvailable)
             {
                 OnDisconnected();
@@ -173,6 +205,29 @@ public sealed class HydroShift2Aio : BackgroundService
                     {
                         _fanSeen[i] |= reading.FanRpm[i] > 0;
                     }
+                }
+            }
+        }
+
+        if (Params is { } current)
+        {
+            var own = ShowsOwnScreen;
+            if (own != _ownScreen)
+            {
+                // Nexus widgets taking the glass back wipe the AIO's screen; after a connect the handshake already did.
+                if (!own && _ownScreen is not null)
+                {
+                    _overlayClear = true;
+                }
+                _ownScreen = own;
+                RaiseScreenOwnerChanged(current.Mac, own);
+            }
+            if (_overlayClear)
+            {
+                _overlayClear = false;
+                if (!own)
+                {
+                    _hub.Exchange(pipe => _driver.ClearOverlay(pipe), false);
                 }
             }
         }
@@ -227,7 +282,7 @@ public sealed class HydroShift2Aio : BackgroundService
                 if (!_pumpFanDirty && now - _lastPumpFanAt < PumpFanResendMs) return;
                 _driving = true;
                 _pumpFanDirty = false;
-                pumpRpm = _pumpDuty is { } pump ? HydroShift2Protocol.PumpRpmForDuty(pump) : HydroShift2Protocol.DefaultPumpRpm;
+                pumpRpm = _pumpDuty is { } pump ? HydroShift2Protocol.PumpRpmForDuty(pump, _driver.Round) : HydroShift2Protocol.DefaultPumpRpm;
                 for (int i = 0; i < fans.Length; i++)
                 {
                     fans[i] = _fanDuty[i] is { } duty ? (byte)(Math.Clamp(duty, 0, 100) * 255 / 100) : HydroShift2Protocol.DefaultFanByte;
@@ -284,6 +339,18 @@ public sealed class HydroShift2Aio : BackgroundService
         catch (Exception ex)
         {
             ServiceLog.Warn($"[{HydroShift2LcdDriver.Id}] availability subscriber failed: {ex.Message}");
+        }
+    }
+
+    private void RaiseScreenOwnerChanged(string mac, bool ownScreen)
+    {
+        try
+        {
+            ScreenOwnerChanged?.Invoke(mac, ownScreen);
+        }
+        catch (Exception ex)
+        {
+            ServiceLog.Warn($"[{HydroShift2LcdDriver.Id}] screen owner subscriber failed: {ex.Message}");
         }
     }
 

@@ -52,6 +52,7 @@ public sealed class DeviceManager
                 FirmwareType = h.FirmwareType,
                 SupportsNexusControl = supportsControl,
                 Experimental = supportsControl && DeviceControlPolicy.IsExperimental(h.Id),
+                RequiresBeta = supportsControl && DeviceControlPolicy.RequiresBeta(h.Id),
                 NexusControlEnabled = _gate.IsChosenOn(h.Id),
                 Warning = h.GetWarning(usbDevices),
                 ConflictAppId = DeviceControlPolicy.ConflictAppFor(h.Id),

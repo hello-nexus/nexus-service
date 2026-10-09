@@ -165,6 +165,7 @@ namespace Nexus.Service.Serialization;
 [JsonSerializable(typeof(Nexus.Service.Routes.TelemetryConsentBody))]
 [JsonSerializable(typeof(Nexus.Service.Routes.TelemetryConsentDto))]
 [JsonSerializable(typeof(Nexus.Service.Routes.OnboardingStatusDto))]
+[JsonSerializable(typeof(Nexus.Service.Routes.OnboardingConflictsStepBody))]
 [JsonSerializable(typeof(Nexus.Service.Routes.PanelSwipeOnboardingDto))]
 [JsonSerializable(typeof(Nexus.Service.Routes.DashboardBannerDto))]
 [JsonSerializable(typeof(Nexus.Service.Routes.Nexus2MigrationStatusDto))]
@@ -1034,6 +1035,7 @@ namespace Nexus.Service.Serialization;
 [JsonSerializable(typeof(Nexus.Service.Helper.Domains.OpenUrlPayload))]
 [JsonSerializable(typeof(Nexus.Service.Helper.Domains.SystemThemePayload))]
 [JsonSerializable(typeof(Nexus.Service.Helper.Domains.OpenFilePayload))]
+[JsonSerializable(typeof(Nexus.Service.Helper.Domains.FocusWindowPayload))]
 // Per-app audio mixer (Core Audio session walk runs in the user-session helper)
 [JsonSerializable(typeof(Nexus.Service.Helper.Domains.AudioMixerSnapshotPayload))]
 [JsonSerializable(typeof(Nexus.Service.Helper.Domains.AudioMixerStreamPayload))]
@@ -1230,6 +1232,13 @@ namespace Nexus.Service.Serialization;
 [JsonSerializable(typeof(Nexus.Service.Routes.HydroShift2LightingResponse))]
 [JsonSerializable(typeof(Nexus.Service.Routes.HydroShift2LightingRequest))]
 [JsonSerializable(typeof(Nexus.Service.Routes.HydroShift2ModeDto[]))]
+[JsonSerializable(typeof(Nexus.Service.Routes.HydroShift2CurveHeadResponse))]
+[JsonSerializable(typeof(Nexus.Service.Routes.HydroShift2CurveHeadRequest))]
+[JsonSerializable(typeof(Nexus.Service.Routes.HydroShift2CurveSettingsResponse))]
+[JsonSerializable(typeof(Nexus.Service.Routes.HydroShift2CurveSettingsRequest))]
+[JsonSerializable(typeof(Nexus.Service.Routes.HydroShift2CurveMediaResponse))]
+[JsonSerializable(typeof(Nexus.Service.Routes.HydroShift2CurveMediaUploadResponse))]
+[JsonSerializable(typeof(Nexus.Service.Routes.HydroShift2CurveMediaDeleteRequest))]
 [JsonSerializable(typeof(Nexus.Service.Routes.Galahad2LightingRequest))]
 [JsonSerializable(typeof(Nexus.Service.Routes.Galahad2ModeInfoDto))]
 [JsonSerializable(typeof(Nexus.Service.Routes.Galahad2ModeInfoDto[]))]
@@ -1347,6 +1356,9 @@ namespace Nexus.Service.Serialization;
 [JsonSerializable(typeof(Nexus.Service.Models.Peripherals.StreamDeck.StreamDeckPendingEditDto))]
 [JsonSerializable(typeof(Nexus.Service.Models.Peripherals.StreamDeck.StreamDeckPendingEditResponse))]
 [JsonSerializable(typeof(Nexus.Service.Models.Peripherals.StreamDeck.StreamDeckSimPressBody))]
+[JsonSerializable(typeof(Nexus.Service.Models.Peripherals.StreamDeck.StreamDeckSimInputBody))]
+[JsonSerializable(typeof(Nexus.Service.Models.Peripherals.StreamDeck.StreamDeckInjectReportBody))]
+[JsonSerializable(typeof(Nexus.Service.Models.Peripherals.StreamDeck.StreamDeckScreenDto))]
 [JsonSerializable(typeof(Nexus.Service.Models.Peripherals.StreamDeck.StreamDeckSimulateBody))]
 [JsonSerializable(typeof(Nexus.Service.Models.Peripherals.StreamDeck.StreamDeckNavBody))]
 [JsonSerializable(typeof(Nexus.Service.Models.Peripherals.StreamDeck.StreamDeckDevModelDto))]
@@ -1365,6 +1377,9 @@ namespace Nexus.Service.Serialization;
 [JsonSerializable(typeof(Nexus.Service.Deck.DeckNexusAction))]
 [JsonSerializable(typeof(Nexus.Service.Deck.DeckToggleState))]
 [JsonSerializable(typeof(Nexus.Service.Deck.DeckSequenceStep))]
+[JsonSerializable(typeof(Nexus.Service.Deck.DeckDial))]
+[JsonSerializable(typeof(List<Nexus.Service.Deck.DeckDial>))]
+[JsonSerializable(typeof(Nexus.Service.Deck.DeckDialAction))]
 [JsonSerializable(typeof(List<Nexus.Service.Deck.DeckSequenceStep>))]
 // Deck key icon image store (POST/GET /deck/images)
 [JsonSerializable(typeof(Nexus.Service.Models.Deck.DeckImageUploadResponse))]
@@ -1494,6 +1509,8 @@ namespace Nexus.Service.Serialization;
 [JsonSerializable(typeof(AssistantPullProgressDto))]
 [JsonSerializable(typeof(SmartPollResponse))]
 [JsonSerializable(typeof(SmartPollDriveDto))]
+// Results.Problem bodies; without it every Problem response throws instead of returning its 500.
+[JsonSerializable(typeof(Microsoft.AspNetCore.Mvc.ProblemDetails))]
 
 // Metadata-only: skips the per-type generated fast-path writer, a large AOT
 // code cost across this context's roots; serialization runs through the

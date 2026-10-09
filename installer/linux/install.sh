@@ -174,10 +174,11 @@ sudo systemctl enable nexus.service
 # upgrade would keep serving the old binary until the next boot.
 sudo systemctl restart nexus.service
 
-# Preflight the two runtime dependencies Nexus cannot bundle. Both fail
-# silently at the far end otherwise - openrgb-headless exits before it opens
-# its port (RGB just never appears), and the panel kiosk has nothing to spawn -
-# so say it here, once, while the user is still looking at a terminal.
+# Preflight the runtime dependencies Nexus cannot bundle. Each fails silently
+# at the far end otherwise - openrgb-headless exits before it opens its port
+# (RGB just never appears), libSkiaSharp does not load (device screens stay
+# blank), and the panel kiosk has nothing to spawn - so say it here, once,
+# while the user is still looking at a terminal.
 echo
 MISSING_LIBS="$(ldd "$APP_DIR/openrgb/openrgb-headless" 2>/dev/null | awk '/not found/ {print $1}' | sort -u || true)"
 if [ -n "$MISSING_LIBS" ]; then
@@ -186,6 +187,14 @@ if [ -n "$MISSING_LIBS" ]; then
   echo "  Debian/Ubuntu/Mint: sudo apt install libhidapi-hidraw0 libusb-1.0-0"
   echo "  Fedora/Bazzite:     sudo dnf install hidapi libusb1"
   echo "  Arch:               sudo pacman -S hidapi libusb"
+fi
+MISSING_RENDER_LIBS="$(ldd "$APP_DIR/libSkiaSharp.so" 2>/dev/null | awk '/not found/ {print $1}' | sort -u || true)"
+if [ -n "$MISSING_RENDER_LIBS" ]; then
+  echo "WARNING: the device-screen renderer is missing shared libraries, so Stream Deck keys and LCD screens will not draw:"
+  printf '  %s\n' $MISSING_RENDER_LIBS
+  echo "  Debian/Ubuntu/Mint: sudo apt install libfontconfig1"
+  echo "  Fedora/Bazzite:     sudo dnf install fontconfig"
+  echo "  Arch:               sudo pacman -S fontconfig"
 fi
 
 # Mirrors LinuxBrowsers.SearchDirs/BinaryNames/FirefoxNames: a narrower list

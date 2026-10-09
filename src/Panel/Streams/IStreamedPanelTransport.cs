@@ -26,6 +26,18 @@ public interface IStreamedPanelDiscovery
 
     IReadOnlyList<StreamedPanelDeviceInfo> Discover();
 
+    /// <summary>
+    /// True while a present device's screen is handed to something other than Nexus, so its
+    /// session closes at once instead of lingering as a detach.
+    /// </summary>
+    bool Withheld => false;
+
+    /// <summary>A withheld panel stays listed, because its device page holds the switch that hands the screen back.</summary>
+    bool ListedWhileWithheld => false;
+
+    /// <summary>The serial <see cref="Discover"/> would report for the device whose screen is withheld, or null.</summary>
+    string? WithheldSerial => null;
+
     IStreamedPanelTransport CreateTransport(StreamedPanelDeviceInfo info);
 }
 

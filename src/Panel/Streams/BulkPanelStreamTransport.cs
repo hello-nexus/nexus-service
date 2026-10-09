@@ -17,6 +17,10 @@ public sealed class BulkPanelStreamTransport : IStreamedPanelTransport, IOrienta
 
     private readonly BulkPanelHub _hub;
     private readonly byte[] _frame;
+    // The geometry the overlay renders for. A renegotiated hub (a portrait toggle) runs at
+    // another one, with the same byte count, until the coordinator re-mints the session.
+    private readonly int _width;
+    private readonly int _height;
     private int _filled;
     private volatile bool _disposed;
     private bool _dropLogged;
@@ -55,6 +59,8 @@ public sealed class BulkPanelStreamTransport : IStreamedPanelTransport, IOrienta
         // Fixed at construction from the geometry the driver negotiated; discovery only
         // reports a panel once that is known.
         _frame = new byte[Math.Max(0, hub.FrameBytes)];
+        _width = hub.Width;
+        _height = hub.Height;
     }
 
     public bool IsOpen => !_disposed && _hub.IsConnected;
@@ -285,7 +291,11 @@ public sealed class BulkPanelStreamTransport : IStreamedPanelTransport, IOrienta
     {
         lock (_pushLock)
         {
-            if (_hub.SendFrame(_orientation.Apply(frame, _hub.Width, _hub.Height)))
+            if (_hub.Width != _width || _hub.Height != _height)
+            {
+                return false;
+            }
+            if (_hub.SendFrame(_orientation.Apply(frame, _width, _height), _width, _height))
             {
                 Volatile.Write(ref _lastSendMs, Environment.TickCount64);
                 _dropLogged = false;

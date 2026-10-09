@@ -126,6 +126,7 @@ namespace Nexus.Service.Serialization;
 [JsonSerializable(typeof(Dictionary<string, NollieStandaloneSettings>))]
 [JsonSerializable(typeof(Galahad2LightingSettings))]
 [JsonSerializable(typeof(HydroShift2LightingSettings))]
+[JsonSerializable(typeof(HydroShift2CurveSettings))]
 [JsonSerializable(typeof(List<string>))]
 [JsonSerializable(typeof(CoolingPreset))]
 [JsonSerializable(typeof(List<CoolingPreset>))]
@@ -156,6 +157,9 @@ namespace Nexus.Service.Serialization;
 [JsonSerializable(typeof(DeckNexusAction))]
 [JsonSerializable(typeof(DeckToggleState))]
 [JsonSerializable(typeof(DeckSequenceStep))]
+[JsonSerializable(typeof(DeckDial))]
+[JsonSerializable(typeof(List<DeckDial>))]
+[JsonSerializable(typeof(DeckDialAction))]
 [JsonSerializable(typeof(List<DeckSequenceStep>))]
 // Metadata-only for the same reason as AppJsonContext: settings writes are
 // rare, so the generated fast-path writer is pure AOT size.

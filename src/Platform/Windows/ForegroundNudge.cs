@@ -21,6 +21,18 @@ namespace Nexus.Service.Platform.Windows;
 [SupportedOSPlatform("windows")]
 public static class ForegroundNudge
 {
+    /// <summary>The elevated <c>--focus-window</c> one-shot: focuses <paramref name="hwnd"/> only while <paramref name="expectedForeground"/> still has focus.</summary>
+    public static bool FocusWindow(IntPtr hwnd, IntPtr expectedForeground)
+    {
+        if (!IsWindow(hwnd) || !IsWindowVisible(hwnd) || IsIconic(hwnd) || GetForegroundWindow() != expectedForeground)
+        {
+            return false;
+        }
+
+        TryForeground(hwnd);
+        return GetForegroundWindow() == hwnd;
+    }
+
     public static void TryForeground(IntPtr hwnd)
     {
         if (hwnd == IntPtr.Zero)
@@ -72,6 +84,7 @@ public static class ForegroundNudge
         {
             Directory.CreateDirectory(dir);
             var before = SnapshotExplorerWindows();
+            LaunchFocus.Arm();
             Process.Start(new ProcessStartInfo
             {
                 FileName = "explorer.exe",
@@ -111,6 +124,7 @@ public static class ForegroundNudge
         try
         {
             var before = SnapshotExplorerWindows();
+            LaunchFocus.Arm();
             Process.Start(new ProcessStartInfo
             {
                 FileName = "explorer.exe",
@@ -180,6 +194,7 @@ public static class ForegroundNudge
         try
         {
             var before = SnapshotWindowsByClass("ApplicationFrameWindow");
+            LaunchFocus.Arm();
             Process.Start(new ProcessStartInfo("ms-settings:") { UseShellExecute = true });
 
             ThreadPool.QueueUserWorkItem(_ =>
@@ -211,6 +226,7 @@ public static class ForegroundNudge
     {
         try
         {
+            LaunchFocus.Arm();
             var proc = Process.Start(new ProcessStartInfo(url) { UseShellExecute = true });
             if (proc is null)
             {
@@ -230,6 +246,7 @@ public static class ForegroundNudge
     {
         try
         {
+            LaunchFocus.Arm();
             var proc = Process.Start(new ProcessStartInfo(path) { UseShellExecute = true });
             if (proc is null)
             {
@@ -324,6 +341,9 @@ public static class ForegroundNudge
 
     [DllImport("user32")]
     private static extern bool IsIconic(IntPtr hwnd);
+
+    [DllImport("user32")]
+    private static extern bool IsWindow(IntPtr hwnd);
 
     [DllImport("user32")]
     private static extern bool ShowWindow(IntPtr hwnd, int cmd);

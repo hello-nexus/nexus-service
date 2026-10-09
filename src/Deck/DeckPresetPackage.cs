@@ -263,7 +263,18 @@ public static class DeckPresetPackage
     }
 
     private static IEnumerable<string> ImageIconIds(DeckConfig deck) =>
-        deck.Pages.SelectMany(p => ImageIconIds(p.Slots));
+        deck.Pages.SelectMany(p => ImageIconIds(p.Slots).Concat(ImageIconIds(p.Dials)));
+
+    private static IEnumerable<string> ImageIconIds(List<DeckDial>? dials)
+    {
+        foreach (var dial in DeckDials.Flatten(dials))
+        {
+            if (dial.Icon is { Kind: "image" } icon && icon.Value.Length > 0)
+            {
+                yield return icon.Value;
+            }
+        }
+    }
 
     private static IEnumerable<string> ImageIconIds(List<DeckSlot> slots)
     {
@@ -275,7 +286,7 @@ public static class DeckPresetPackage
             }
             if (slot.Folder is not null)
             {
-                foreach (var id in ImageIconIds(slot.Folder.Slots))
+                foreach (var id in ImageIconIds(slot.Folder.Slots).Concat(ImageIconIds(slot.Folder.Dials)))
                 {
                     yield return id;
                 }

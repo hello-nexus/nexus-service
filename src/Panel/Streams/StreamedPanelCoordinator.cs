@@ -43,6 +43,8 @@ public sealed class StreamedPanelCoordinator : BackgroundService
     private readonly object _lock = new();
     private readonly Dictionary<string, DeviceSession> _bySerial = new(StringComparer.Ordinal);
     private readonly Dictionary<string, DeviceSession> _bySessionId = new(StringComparer.Ordinal);
+    // Panel record ids listed as present while their device holds the glass.
+    private readonly Dictionary<IStreamedPanelDiscovery, string> _heldByDevice = new();
     private readonly IReadOnlyList<IStreamedPanelDiscovery> _discoveries;
     private readonly StreamedPanelStore _store;
     private readonly PanelDeviceRegistry _registry;
@@ -50,6 +52,7 @@ public sealed class StreamedPanelCoordinator : BackgroundService
     private readonly Action? _notifyOverlay;
     private readonly Action<string>? _notifyPanelChanged;
     private readonly Func<long> _nowMs;
+    private readonly SemaphoreSlim _wake = new(0, 1);
 
     public StreamedPanelCoordinator(
         IEnumerable<IStreamedPanelDiscovery> discoveries,
@@ -87,11 +90,18 @@ public sealed class StreamedPanelCoordinator : BackgroundService
                 ServiceLog.Error($"[streamed-panel] tick failed: {ex.GetType().Name}: {ex.Message}");
             }
 
-            try { await Task.Delay(PollInterval, stoppingToken); }
-            catch (TaskCanceledException) { break; }
+            try { await _wake.WaitAsync(PollInterval, stoppingToken); }
+            catch (OperationCanceledException) { break; }
         }
 
         CloseAll("service stopping");
+    }
+
+    /// <summary>Runs the next discovery pass now instead of at the end of the poll interval.</summary>
+    public void Wake()
+    {
+        try { _wake.Release(); }
+        catch (SemaphoreFullException) { }
     }
 
     internal void TickOnce()
@@ -100,8 +110,10 @@ public sealed class StreamedPanelCoordinator : BackgroundService
         foreach (var discovery in _discoveries)
         {
             var enabled = _gate.IsEnabled(discovery.HandlerId);
+            var withheld = enabled && discovery.Withheld;
+            TrackHeld(discovery, withheld);
             IReadOnlyList<StreamedPanelDeviceInfo> devices;
-            if (!enabled)
+            if (!enabled || withheld)
             {
                 devices = Array.Empty<StreamedPanelDeviceInfo>();
             }
@@ -122,15 +134,20 @@ public sealed class StreamedPanelCoordinator : BackgroundService
             var present = new HashSet<string>(StringComparer.Ordinal);
             foreach (var info in devices) present.Add(info.Serial);
 
-            foreach (var info in devices)
+            foreach (var found in devices)
             {
                 DeviceSession? existing;
-                lock (_lock) _bySerial.TryGetValue(info.Serial, out existing);
+                lock (_lock) _bySerial.TryGetValue(found.Serial, out existing);
+                var info = existing is null ? found : WithRenderScale(found, existing.Session.PanelDeviceId);
+                string? remintedPanelId = null;
                 if (existing is not null && !ProfilesEqual(existing.Info.Profile, info.Profile))
                 {
                     // Config changes re-mint the session (fresh sessionId) so
-                    // the overlay's reconcile is a pure spawn/close diff.
-                    CloseSession(existing, "profile changed");
+                    // the overlay's reconcile is a pure spawn/close diff. Clients
+                    // hear about it once the new session is live: a panel list read
+                    // between the two drops the panel and remounts its device page.
+                    CloseSession(existing, "profile changed", notifyClients: false);
+                    remintedPanelId = existing.Session.PanelDeviceId;
                     existing = null;
                     changed = true;
                 }
@@ -146,9 +163,13 @@ public sealed class StreamedPanelCoordinator : BackgroundService
                     if (needsReopen)
                         TryReopenTransport(existing);
                 }
-                else if (StartSession(discovery, info, now))
+                else if (StartSession(discovery, found, now))
                 {
                     changed = true;
+                }
+                else if (remintedPanelId is not null)
+                {
+                    _notifyPanelChanged?.Invoke(remintedPanelId);
                 }
             }
 
@@ -166,6 +187,11 @@ public sealed class StreamedPanelCoordinator : BackgroundService
                     CloseSession(ds, "control gate off");
                     changed = true;
                 }
+                else if (withheld)
+                {
+                    CloseSession(ds, "screen handed to the device");
+                    changed = true;
+                }
                 else if (now - ds.LastPresentAtMs > DetachLinger.TotalMilliseconds)
                 {
                     CloseSession(ds, "detached past linger");
@@ -179,7 +205,8 @@ public sealed class StreamedPanelCoordinator : BackgroundService
     }
 
     /// <summary>
-    /// Panel record ids currently owned by a live stream session. GET /panel/devices
+    /// Panel record ids currently owned by a live stream session, or whose glass their device
+    /// holds (<see cref="IStreamedPanelDiscovery.ListedWhileWithheld"/>). GET /panel/devices
     /// stamps these so the dashboard can list a streamed panel: it is backed by neither a
     /// curated device nor a display, so nothing else marks it as present and editable.
     /// </summary>
@@ -193,6 +220,7 @@ public sealed class StreamedPanelCoordinator : BackgroundService
                 if (!ds.Session.Closed)
                     ids.Add(ds.Session.PanelDeviceId);
             }
+            ids.UnionWith(_heldByDevice.Values);
         }
         return ids;
     }
@@ -287,7 +315,7 @@ public sealed class StreamedPanelCoordinator : BackgroundService
                     PanelDeviceId = ds.Session.PanelDeviceId,
                     CssWidth = p.CssWidth,
                     CssHeight = p.CssHeight,
-                    Dpr = p.Dpr,
+                    Dpr = p.Dpr * p.RenderScale,
                     Fps = p.Fps,
                     BitrateKbps = p.BitrateKbps,
                     Codec = p.Codec == StreamCodec.RawBgra ? "rawBgra" : "h264",
@@ -356,6 +384,7 @@ public sealed class StreamedPanelCoordinator : BackgroundService
             ServiceLog.Error($"[streamed-panel] record allocation failed serial={info.Serial}: {ex.GetType().Name}: {ex.Message}");
             return false;
         }
+        info = WithRenderScale(info, panelDeviceId);
 
         var session = new StreamSession(NewSessionId(), info, panelDeviceId);
         var ds = new DeviceSession
@@ -375,10 +404,44 @@ public sealed class StreamedPanelCoordinator : BackgroundService
         // fps/bitrate hand-tune in streamed-panels.json) is visible at a
         // glance when a device misbehaves on supposedly-fixed defaults.
         ServiceLog.Info($"[streamed-panel] session started serial={info.Serial} session={session.SessionId} "
-            + $"panel={panelDeviceId} profile={info.Profile.Kind} {info.Profile.CssWidth}x{info.Profile.CssHeight}@{info.Profile.Fps} {info.Profile.BitrateKbps}kbps");
+            + $"panel={panelDeviceId} profile={info.Profile.Kind} {info.Profile.CssWidth}x{info.Profile.CssHeight}@{info.Profile.Fps} {info.Profile.BitrateKbps}kbps render={info.Profile.RenderScale}");
+        // A record's `streamed` flag follows the session, so clients re-read the panel list.
+        _notifyPanelChanged?.Invoke(panelDeviceId);
 
         TryReopenTransport(ds);
         return true;
+    }
+
+    /// <summary>
+    /// Keeps a withheld panel listed when its discovery asks, whether the device took the glass
+    /// from a live session or before one ever opened (a restart or replug in that mode).
+    /// </summary>
+    private void TrackHeld(IStreamedPanelDiscovery discovery, bool withheld)
+    {
+        string? held;
+        lock (_lock) _heldByDevice.TryGetValue(discovery, out held);
+        string? now = null;
+        if (withheld && discovery.ListedWhileWithheld)
+        {
+            now = held;
+            if (now is null && discovery.WithheldSerial is { } serial
+                && _store.Load().TryGetValue(serial, out var rec)
+                && !string.IsNullOrEmpty(rec.PanelDeviceId)
+                && _registry.Get(rec.PanelDeviceId) is not null)
+            {
+                now = rec.PanelDeviceId;
+            }
+        }
+        if (now == held)
+        {
+            return;
+        }
+        lock (_lock)
+        {
+            if (now is null) _heldByDevice.Remove(discovery);
+            else _heldByDevice[discovery] = now;
+        }
+        _notifyPanelChanged?.Invoke(now ?? held!);
     }
 
     // The per-serial store keeps the panel record identity stable across
@@ -394,14 +457,23 @@ public sealed class StreamedPanelCoordinator : BackgroundService
             // Re-stamp: the driver can report a different surface than it did when the
             // record was minted (a Thermalright splits square from wide by model), and a
             // reused record would otherwise keep the old one for the life of the install.
-            _registry.Patch(rec.PanelDeviceId, new PanelDevicePatch
+            // A strip with no stored layout (a record older than the strip seed) gets it now.
+            var reused = _registry.Patch(rec.PanelDeviceId, new PanelDevicePatch
             {
                 Capabilities = info.Profile.BuildCapabilities(),
             });
+            if (reused is { Layout: null } && PanelLayoutDefaults.StripSeedFor(reused) is { } seed)
+            {
+                _registry.Patch(rec.PanelDeviceId, new PanelDevicePatch { Layout = seed });
+            }
             return rec.PanelDeviceId;
         }
 
         var record = _registry.Allocate(info.Profile.DisplayName, info.Profile.BuildCapabilities());
+        if (IsStrip(info.Profile))
+        {
+            _registry.Patch(record.Id, new PanelDevicePatch { Layout = PanelLayoutDefaults.ForStrip(info.Profile.Surface) });
+        }
         rec ??= new StreamedPanelRecord();
         rec.PanelDeviceId = record.Id;
         records[info.Serial] = rec;
@@ -494,7 +566,7 @@ public sealed class StreamedPanelCoordinator : BackgroundService
         try { faulted.Dispose(); } catch { }
     }
 
-    private void CloseSession(DeviceSession ds, string reason)
+    private void CloseSession(DeviceSession ds, string reason, bool notifyClients = true)
     {
         IStreamedPanelTransport? transport;
         lock (_lock)
@@ -517,6 +589,10 @@ public sealed class StreamedPanelCoordinator : BackgroundService
             try { ingest.Abort(); } catch { }
         }
         ServiceLog.Info($"[streamed-panel] session closed serial={ds.Info.Serial} session={ds.Session.SessionId} ({reason})");
+        if (notifyClients)
+        {
+            _notifyPanelChanged?.Invoke(ds.Session.PanelDeviceId);
+        }
     }
 
     private void CloseAll(string reason)
@@ -526,12 +602,29 @@ public sealed class StreamedPanelCoordinator : BackgroundService
         foreach (var ds in all) CloseSession(ds, reason);
     }
 
+    internal static bool IsStrip(StreamedPanelProfile p) => PanelLayoutDefaults.IsStrip(p.Surface, p.CssWidth, p.CssHeight);
+
+    // Toggling the record's HighResolution changes the profile, so the session re-mints at the new size.
+    private StreamedPanelDeviceInfo WithRenderScale(StreamedPanelDeviceInfo info, string panelDeviceId)
+    {
+        var profile = info.Profile;
+        if (!profile.SupportsRenderScale)
+        {
+            return info;
+        }
+        var scale = _registry.Get(panelDeviceId)?.HighResolution == true ? 1.0 : profile.PerformanceRenderScale;
+        return scale.Equals(profile.RenderScale)
+            ? info
+            : new StreamedPanelDeviceInfo { Serial = info.Serial, Profile = profile with { RenderScale = scale } };
+    }
+
     internal static bool ProfilesEqual(StreamedPanelProfile a, StreamedPanelProfile b)
         => string.Equals(a.Kind, b.Kind, StringComparison.Ordinal)
            && string.Equals(a.Surface, b.Surface, StringComparison.Ordinal)
            && a.CssWidth == b.CssWidth
            && a.CssHeight == b.CssHeight
            && a.Dpr.Equals(b.Dpr)
+           && a.RenderScale.Equals(b.RenderScale)
            && a.Fps == b.Fps
            && a.BitrateKbps == b.BitrateKbps
            && a.WriteBatchFrames == b.WriteBatchFrames;

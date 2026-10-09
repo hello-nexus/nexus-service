@@ -1,10 +1,7 @@
 using System;
-using System.IO;
 using Nexus.Service.Platform;
 using Nexus.Service.Rendering;
-using SixLabors.ImageSharp;
-using SixLabors.ImageSharp.Formats.Jpeg;
-using SixLabors.ImageSharp.PixelFormats;
+using SkiaSharp;
 
 namespace Nexus.Service.Peripherals.JpegPanels;
 
@@ -17,8 +14,8 @@ namespace Nexus.Service.Peripherals.JpegPanels;
 /// because the overlay has no image library at all (WebView2 only), and adding one to a
 /// native-AOT Windows binary would make this path untestable off Windows.
 ///
-/// libjpeg-turbo (4:2:0, SIMD) drives it where the library loaded, ImageSharp otherwise -
-/// which picks 4:2:0 itself at this quality, so the two produce near-identical output.
+/// libjpeg-turbo (4:2:0, SIMD) drives it where the library loaded, Skia's encoder (4:2:0,
+/// several times slower on x64) otherwise.
 /// Not thread-safe: one instance per stream transport, which is the only caller.
 /// </summary>
 public sealed unsafe class BgraJpegEncoder : IDisposable
@@ -31,13 +28,14 @@ public sealed unsafe class BgraJpegEncoder : IDisposable
 
     private readonly int _width;
     private readonly int _height;
-    private readonly JpegEncoder _encoder;
-    private readonly MemoryStream _buffer;
+    private readonly SKJpegEncoderOptions _options;
+    private byte[] _fallbackOut = Array.Empty<byte>();
     private IntPtr _turbo;
     private readonly byte[] _turboOut;
     private bool _disposed;
 
-    public BgraJpegEncoder(int width, int height)
+    /// <param name="quality">Overrides <see cref="Quality"/> for a panel whose link, not its encoder, sets the frame rate.</param>
+    public BgraJpegEncoder(int width, int height, int quality = Quality)
     {
         if (width <= 0 || height <= 0)
         {
@@ -45,15 +43,13 @@ public sealed unsafe class BgraJpegEncoder : IDisposable
         }
         _width = width;
         _height = height;
-        _encoder = new JpegEncoder { Quality = Quality };
-        // Grows to whatever the busiest frame needs and then stops reallocating.
-        _buffer = new MemoryStream(64 * 1024);
+        _options = new SKJpegEncoderOptions(quality, SKJpegEncoderDownsample.Downsample420, SKJpegEncoderAlphaOption.Ignore);
         _turboOut = Array.Empty<byte>();
         if (TurboJpeg.IsAvailable)
         {
             _turbo = TurboJpeg.tj3Init(TurboJpeg.InitCompress);
             if (_turbo != IntPtr.Zero
-                && (TurboJpeg.tj3Set(_turbo, TurboJpeg.ParamQuality, Quality) != 0
+                && (TurboJpeg.tj3Set(_turbo, TurboJpeg.ParamQuality, quality) != 0
                     || TurboJpeg.tj3Set(_turbo, TurboJpeg.ParamSubsamp, TurboJpeg.Subsamp420) != 0
                     || TurboJpeg.tj3Set(_turbo, TurboJpeg.ParamNoRealloc, 1) != 0))
             {
@@ -70,7 +66,7 @@ public sealed unsafe class BgraJpegEncoder : IDisposable
 
     public int FrameBytes => _width * _height * 4;
 
-    /// <summary>True when frames go through libjpeg-turbo rather than ImageSharp.</summary>
+    /// <summary>True when frames go through libjpeg-turbo rather than Skia.</summary>
     public bool IsNative => _turbo != IntPtr.Zero;
 
     /// <summary>
@@ -103,14 +99,23 @@ public sealed unsafe class BgraJpegEncoder : IDisposable
             // so the panel would freeze rather than reach the managed encoder. Retire the
             // native path for this instance instead and fall through.
             ServiceLog.Warn($"[jpeg] turbojpeg compress failed ({TurboJpeg.ErrorString(_turbo)}); "
-                + "this encoder falls back to the managed path");
+                + "this encoder falls back to the Skia path");
             TurboJpeg.tj3Destroy(_turbo);
             _turbo = IntPtr.Zero;
         }
-        using var image = Image.LoadPixelData<Bgra32>(bgra[..FrameBytes], _width, _height);
-        _buffer.SetLength(0);
-        image.Save(_buffer, _encoder);
-        return _buffer.GetBuffer().AsSpan(0, (int)_buffer.Length);
+        fixed (byte* src = bgra)
+        {
+            using var pixmap = new SKPixmap(new SKImageInfo(_width, _height, SKColorType.Bgra8888, SKAlphaType.Opaque), (IntPtr)src, _width * 4);
+            using var data = pixmap.Encode(_options) ?? throw new InvalidOperationException("Skia JPEG encode failed");
+            var size = (int)data.Size;
+            // Grows to whatever the busiest frame needs and then stops reallocating.
+            if (_fallbackOut.Length < size)
+            {
+                _fallbackOut = new byte[size];
+            }
+            data.AsSpan().CopyTo(_fallbackOut);
+            return _fallbackOut.AsSpan(0, size);
+        }
     }
 
     public void Dispose()
@@ -129,10 +134,6 @@ public sealed unsafe class BgraJpegEncoder : IDisposable
             return;
         }
         _disposed = true;
-        if (disposing)
-        {
-            _buffer.Dispose();
-        }
         if (_turbo != IntPtr.Zero)
         {
             TurboJpeg.tj3Destroy(_turbo);

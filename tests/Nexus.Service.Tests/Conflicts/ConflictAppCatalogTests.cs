@@ -16,6 +16,7 @@ public class ConflictAppCatalogTests
         Assert.Equal("Elgato Stream Deck", def.DisplayName);
         Assert.Equal("peripherals", def.Category);
         Assert.Contains("StreamDeck", def.ProcessNames);
+        Assert.Contains("Stream Deck", def.ProcessNames);
         Assert.Empty(def.WindowsServiceNames);
     }
 

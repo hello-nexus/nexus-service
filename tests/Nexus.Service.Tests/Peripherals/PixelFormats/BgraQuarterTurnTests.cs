@@ -61,4 +61,27 @@ public class BgraQuarterTurnTests
         Assert.Throws<ArgumentException>(() =>
             BgraQuarterTurn.RotateCcw(new byte[4 * 4 * 4], 4, 4, new byte[4 * 4 * 4 - 1]));
     }
+
+    [Theory]
+    [InlineData(4, 3)]
+    [InlineData(65, 64)]
+    [InlineData(70, 130)]
+    public void RotateCw_sends_each_pixel_to_its_turned_position(int width, int height)
+    {
+        var src = Ramp(width, height);
+        var dest = new byte[width * height * 4];
+
+        BgraQuarterTurn.RotateCw(src, width, height, dest);
+
+        // Clockwise: source (x, y) lands at destination (height - 1 - y, x).
+        for (var y = 0; y < height; y++)
+        {
+            for (var x = 0; x < width; x++)
+            {
+                Assert.Equal(
+                    PixelAt(src, width, x, y),
+                    PixelAt(dest, height, height - 1 - y, x));
+            }
+        }
+    }
 }

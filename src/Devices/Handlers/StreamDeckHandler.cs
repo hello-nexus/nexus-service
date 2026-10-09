@@ -25,7 +25,7 @@ public sealed class StreamDeckHandler : IDeviceHandler
     public string Category => "controller";
 
     public IReadOnlyList<UsbId> Identifiers { get; } = StreamDeckModels.All
-        .Select(m => new UsbId(StreamDeckModels.VendorId, m.ProductId))
+        .Select(m => new UsbId(m.VendorId, m.ProductId))
         .ToArray();
 
     public bool IsConnected(IReadOnlyList<UsbDeviceEntry> detectedDevices) =>
@@ -54,7 +54,8 @@ public sealed class StreamDeckHandler : IDeviceHandler
     {
         try
         {
-            return Process.GetProcessesByName("StreamDeck").Length > 0;
+            // macOS names the process "Stream Deck" (with a space).
+            return Process.GetProcessesByName("StreamDeck").Length > 0 || Process.GetProcessesByName("Stream Deck").Length > 0;
         }
         catch
         {

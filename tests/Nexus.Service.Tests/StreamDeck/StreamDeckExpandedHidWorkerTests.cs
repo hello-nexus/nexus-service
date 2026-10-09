@@ -1,0 +1,348 @@
+using System;
+using System.Collections.Generic;
+using System.Linq;
+using System.Text.Json;
+using System.Threading;
+using Nexus.Service.Deck;
+using Nexus.Service.Devices;
+using Nexus.Service.Devices.Detection;
+using Nexus.Service.Peripherals.Hid;
+using Nexus.Service.Peripherals.StreamDeck;
+using Nexus.Service.Persistence;
+using Nexus.Service.Serialization;
+using Nexus.Service.Sockets;
+using Xunit;
+using static Nexus.Service.Tests.StreamDeck.DeckTestHelpers;
+
+namespace Nexus.Service.Tests.StreamDeck;
+
+/// <summary>Records every Open path and serves a mock device for paths it knows, so a test can prove which HID collections the worker touched.</summary>
+internal sealed class RecordingWorkerHidEnumerator : IHidEnumerator
+{
+    public List<HidDeviceInfo> Infos { get; } = new();
+    public Dictionary<string, IHidDevice> Devices { get; } = new();
+    public List<string> OpenedPaths { get; } = new();
+
+    public IReadOnlyList<HidDeviceInfo> Find(int vendorId, int productId) =>
+        Infos.Where(i => i.VendorId == vendorId && i.ProductId == productId).ToList();
+
+    public IReadOnlyList<HidDeviceInfo> FindAll() => Infos;
+
+    public IHidDevice? Open(string path, bool forInput = false)
+    {
+        lock (OpenedPaths) { OpenedPaths.Add(path); }
+        return Devices.TryGetValue(path, out var device) ? device : null;
+    }
+}
+
+/// <summary>The worker against the real HID surface and input reader over mock devices: model matching, the dial report path, and the shutdown path.</summary>
+public sealed class StreamDeckExpandedHidWorkerTests : IDisposable
+{
+    private readonly InMemoryConfigStore _store = new();
+    private readonly FakeDeckActionExecutor _executor = new();
+    private readonly FakeDialValues _values = new();
+    private StreamDeckConnectionWorker? _worker;
+
+    public void Dispose() => _worker?.Dispose();
+
+    private (StreamDeckConnectionWorker Worker, RecordingWorkerHidEnumerator Hid) Build(
+        StreamDeckModel model, string path, string serial, MockStreamDeckHidDevice device, UsbDeviceEntry usb, string? configJson = null)
+    {
+        var hid = new RecordingWorkerHidEnumerator();
+        hid.Infos.Add(new HidDeviceInfo
+        {
+            VendorId = model.VendorId, ProductId = model.ProductId, Path = path, Serial = serial,
+            UsagePage = model.HidUsagePage == 0 ? 0xFF00 : model.HidUsagePage, Usage = model.HidUsage == 0 ? 0x01 : model.HidUsage, FeatureReportByteLength = 32,
+        });
+        hid.Devices[path] = device;
+        var gate = new DeviceControlGate(_store);
+        gate.SetEnabled("streamdeck", true);
+        _worker = new StreamDeckConnectionWorker(
+            hid, new HardwarePresence(new FixedUsbEnumerator(usb)), gate, _store, _executor, NewTestKeyRenderer(),
+            new MultiplexHub(), new FakeSensorProvider(), dialValues: _values);
+        if (configJson is not null)
+        {
+            var config = JsonSerializer.Deserialize(configJson, AppJsonContext.Default.DeckConfig)!;
+            _store.Update(s => s.StreamDeck.Decks[serial] = new PhysicalDeckSettings { LegacyDeck = config });
+            _store.Update(s => ActivateLegacyDeck(s, serial, model.Columns, model.Rows));
+        }
+        return (_worker, hid);
+    }
+
+    private static UsbDeviceEntry Usb(StreamDeckModel model) => new() { VendorId = model.VendorId, ProductId = model.ProductId };
+
+    [Fact]
+    public void Plus_ConnectInitSendsFillBlackAndSleepOff_ThenPushesTheStripAndKeys()
+    {
+        var plus = StreamDeckModels.ByProductId(0x0084)!;
+        var device = new MockStreamDeckHidDevice { ProductId = plus.ProductId };
+        var (worker, _) = Build(plus, "plus-path", "PLUS1", device, Usb(plus), "{\"pages\":[{\"slots\":[{\"action\":{\"type\":\"openUrl\",\"url\":\"https://x\"}}]}]}");
+
+        worker.Tick();
+
+        Assert.Single(worker.Surfaces);
+        Assert.Contains(device.FeatureWrites, w => w[1] == 0x05 && w[2] == 0 && w[3] == 0 && w[4] == 0);
+        Assert.Contains(device.FeatureWrites, w => w[1] == 0x0d);
+        Assert.Contains(device.OutputWrites, w => w[0] == 0x02 && w[1] == 0x07 && w[2] == 0);
+        var strip = device.OutputWrites.Where(w => w[1] == 0x0c).ToList();
+        Assert.NotEmpty(strip);
+        Assert.Equal(new byte[] { 0, 0, 0, 0, 0x20, 0x03, 0x64, 0 }, strip[0][2..10]);
+    }
+
+    [Fact]
+    public void Plus_DialReportsReachTheWorkerThroughTheInputReader()
+    {
+        var plus = StreamDeckModels.ByProductId(0x0084)!;
+        var device = new MockStreamDeckHidDevice { ProductId = plus.ProductId };
+        var (worker, _) = Build(plus, "plus-path", "PLUS1", device, Usb(plus),
+            "{\"pages\":[{\"slots\":[],\"dials\":[{},{},{\"action\":{\"type\":\"volume\",\"deviceId\":\"out\"}}]}]}");
+        _values.Set("volume:out", 50);
+        worker.Tick();
+
+        // Bench capture 2026-10-08: rotate dial 3 by +1.
+        device.PendingReads.Enqueue(new byte[] { 0x01, 0x03, 0x05, 0x00, 0x01, 0x00, 0x00, 0x01, 0x00 });
+
+        Assert.True(SpinWait.SpinUntil(() => _values.Writes.Count > 0, TimeSpan.FromSeconds(3)));
+        Assert.Equal(("volume:out", 52d), _values.Writes.First());
+    }
+
+    [Fact]
+    public void Plus_TouchReportsPageThroughTheInputReader()
+    {
+        var plus = StreamDeckModels.ByProductId(0x0084)!;
+        var device = new MockStreamDeckHidDevice { ProductId = plus.ProductId };
+        var (worker, _) = Build(plus, "plus-path", "PLUS1", device, Usb(plus), "{\"pages\":[{\"slots\":[]},{\"slots\":[]}]}");
+        worker.Tick();
+
+        // Bench capture 2026-10-08: flick left, 535 to 485.
+        device.PendingReads.Enqueue(new byte[] { 0x01, 0x02, 0x0e, 0x00, 0x03, 0x00, 0x17, 0x02, 0x4b, 0x00, 0xe5, 0x01, 0x40, 0x00, 0, 0, 0, 0 });
+
+        Assert.True(SpinWait.SpinUntil(() => worker.GetCurrentPage("PLUS1") == 1, TimeSpan.FromSeconds(3)));
+    }
+
+    [Fact]
+    public void Galleon_OpensOnlyItsStreamDeckCollection_AndPingsKeepAlive()
+    {
+        var galleon = StreamDeckModels.ByProductId(0x2b18)!;
+        var device = new MockStreamDeckHidDevice { ProductId = galleon.ProductId, VendorId = galleon.VendorId };
+        var (worker, hid) = Build(galleon, @"\\?\hid#vid_1b1c&pid_2b18&mi_00#a", "GAL1", device, Usb(galleon),
+            "{\"pages\":[{\"slots\":[],\"dials\":[{\"action\":{\"type\":\"deckBrightness\"}}]}]}");
+        hid.Infos.Add(new HidDeviceInfo { VendorId = galleon.VendorId, ProductId = galleon.ProductId, Path = @"\\?\hid#vid_1b1c&pid_2b18&mi_01#b", Usage = 0x06, UsagePage = 0x01 });
+        hid.Infos.Add(new HidDeviceInfo { VendorId = galleon.VendorId, ProductId = galleon.ProductId, Path = @"\\?\hid#vid_1b1c&pid_2b18&mi_02#c", Usage = 0x01, UsagePage = 0xFF42 });
+
+        worker.Tick();
+
+        Assert.Single(worker.Surfaces);
+        lock (hid.OpenedPaths)
+        {
+            Assert.All(hid.OpenedPaths, p => Assert.Equal(@"\\?\hid#vid_1b1c&pid_2b18&mi_00#a", p));
+        }
+        Assert.True(SpinWait.SpinUntil(() => device.FeatureWrites.Count(w => w[1] == 0x27) >= 1, TimeSpan.FromSeconds(3)));
+        // Commands sent before the settle delay were refused, so the view is repainted once the deck is ready.
+        Assert.True(SpinWait.SpinUntil(() => device.OutputWrites.Any(w => w[1] == 0x0c), TimeSpan.FromSeconds(3)));
+        Assert.True(SpinWait.SpinUntil(() => device.OutputWrites.Any(w => w[1] == 0x07), TimeSpan.FromSeconds(3)));
+    }
+
+    [Fact]
+    public void Galleon_AnAsleepDeckIsBlankedOnceReady()
+    {
+        var galleon = StreamDeckModels.ByProductId(0x2b18)!;
+        var device = new MockStreamDeckHidDevice { ProductId = galleon.ProductId, VendorId = galleon.VendorId };
+        var (worker, _) = Build(galleon, "gal-path", "GAL1", device, Usb(galleon),
+            "{\"pages\":[{\"slots\":[],\"dials\":[{\"action\":{\"type\":\"volume\",\"deviceId\":\"out\"}}]}]}");
+        _values.Set("volume:out", 100);
+
+        worker.Tick();
+        worker.PutAsleep("GAL1");
+
+        Assert.True(SpinWait.SpinUntil(() => device.FeatureWrites.Any(w => w[1] == 0x08 && w[2] == 0), TimeSpan.FromSeconds(3)));
+    }
+
+    [Fact]
+    public void Galleon_RingStateRefusedBeforeReadyIsWrittenAfterwards()
+    {
+        var galleon = StreamDeckModels.ByProductId(0x2b18)!;
+        var device = new MockStreamDeckHidDevice { ProductId = galleon.ProductId, VendorId = galleon.VendorId };
+        var (worker, _) = Build(galleon, "gal-path", "GAL1", device, Usb(galleon),
+            "{\"pages\":[{\"slots\":[],\"dials\":[{\"action\":{\"type\":\"volume\",\"deviceId\":\"out\"}}]}]}");
+        _values.Set("volume:out", 100);
+
+        worker.Tick();
+
+        Assert.True(SpinWait.SpinUntil(
+            () => device.FeatureWrites.Any(w => w[1] == 0x24 && (w[3] > 40 || w[4] > 40 || w[5] > 40)), TimeSpan.FromSeconds(3)));
+    }
+
+    [Fact]
+    public void ASecondCollectionWithTheSameSerial_IsNotOpenedAsASecondSurface()
+    {
+        var galleon = StreamDeckModels.ByProductId(0x2b18)!;
+        var device = new MockStreamDeckHidDevice { ProductId = galleon.ProductId, VendorId = galleon.VendorId };
+        var (worker, hid) = Build(galleon, "gal-a", "GAL1", device, Usb(galleon));
+        hid.Infos.Add(new HidDeviceInfo
+        {
+            VendorId = galleon.VendorId, ProductId = galleon.ProductId, Path = "gal-b", Serial = "GAL1",
+            UsagePage = galleon.HidUsagePage, Usage = galleon.HidUsage, FeatureReportByteLength = 32,
+        });
+        hid.Devices["gal-b"] = new MockStreamDeckHidDevice { ProductId = galleon.ProductId, VendorId = galleon.VendorId };
+
+        worker.Tick();
+        worker.Tick();
+
+        Assert.Single(worker.Surfaces);
+        lock (hid.OpenedPaths)
+        {
+            Assert.DoesNotContain("gal-b", hid.OpenedPaths);
+        }
+    }
+
+    [Fact]
+    public void Studio_ShutdownBlanksTheRingsAndCentreLedsBeforeTheLogo()
+    {
+        var studio = StreamDeckModels.ByProductId(0x00aa)!;
+        var device = new MockStreamDeckHidDevice { ProductId = studio.ProductId };
+        var (worker, _) = Build(studio, "studio-path", "STU1", device, Usb(studio),
+            "{\"pages\":[{\"slots\":[],\"dials\":[{\"action\":{\"type\":\"volume\",\"deviceId\":\"out\"}}]}]}");
+        _values.Set("volume:out", 100);
+        worker.Tick();
+        Assert.Contains(device.OutputWrites, w => w[1] == 0x0f && w[2] == 0 && w[3] > 0);
+        device.OutputWrites.Clear();
+        device.FeatureWrites.Clear();
+
+        worker.ResetConnectedSurfacesForShutdown();
+
+        var rings = device.OutputWrites.Where(w => w[1] == 0x0f).ToList();
+        Assert.Equal(new[] { (byte)0, (byte)1 }, rings.Select(w => w[2]).ToArray());
+        Assert.All(rings, w => Assert.All(w[3..(3 + 72)], b => Assert.Equal(0, b)));
+        Assert.Equal(2, device.OutputWrites.Count(w => w[1] == 0x10));
+        Assert.Contains(device.FeatureWrites, w => w[1] == 0x02);
+    }
+
+    [Fact]
+    public void ALightWriteTheDeckAlwaysRejects_IsNotRetriedEveryTick_AndNeverDropsTheHandle()
+    {
+        var neo = StreamDeckModels.ByProductId(0x009a)!;
+        var device = new MockStreamDeckHidDevice { ProductId = neo.ProductId };
+        var attempts = 0;
+        device.RejectFeature = report =>
+        {
+            if (report[1] != 0x06)
+            {
+                return false;
+            }
+            Interlocked.Increment(ref attempts);
+            return true;
+        };
+        var (worker, _) = Build(neo, "neo-path", "NEO1", device, Usb(neo), "{\"pages\":[{\"slots\":[]},{\"slots\":[]}]}");
+
+        for (var i = 0; i < 12; i++)
+        {
+            worker.Tick();
+        }
+
+        Assert.False(device.Disposed);
+        Assert.True(worker.FindBySerial("NEO1")!.IsConnected);
+        Assert.True(attempts <= 4, $"rejected fills were retried {attempts} times");
+    }
+
+    [Fact]
+    public void RingsThatAreAlwaysRefused_NeverReachTheDropThreshold_EvenAsTheirContentChanges()
+    {
+        var studio = StreamDeckModels.ByProductId(0x00aa)!;
+        var device = new MockStreamDeckHidDevice { ProductId = studio.ProductId };
+        device.RejectOutput = report => report[1] == 0x0f;
+        var (worker, _) = Build(studio, "studio-path", "STU1", device, Usb(studio),
+            "{\"pages\":[{\"slots\":[],\"dials\":[{\"action\":{\"type\":\"volume\",\"deviceId\":\"out\"}},{\"action\":{\"type\":\"volume\",\"deviceId\":\"out\"}}]}]}");
+
+        for (var i = 1; i <= 10; i++)
+        {
+            _values.Set("volume:out", i * 9);
+            worker.Tick();
+        }
+
+        Assert.False(device.Disposed);
+        Assert.True(worker.FindBySerial("STU1")!.IsConnected);
+    }
+
+    [Fact]
+    public void AStudioThatRefusesRingWrites_SurvivesAFullEmptyDialHold()
+    {
+        var studio = StreamDeckModels.ByProductId(0x00aa)!;
+        var device = new MockStreamDeckHidDevice { ProductId = studio.ProductId };
+        device.RejectOutput = report => report[1] == 0x0f;
+        var clock = new ManualTimeProvider(DateTimeOffset.UtcNow);
+        var hid = new RecordingWorkerHidEnumerator();
+        hid.Infos.Add(new HidDeviceInfo { VendorId = studio.VendorId, ProductId = studio.ProductId, Path = "studio-path", Serial = "STU1", UsagePage = 0xFF00, Usage = 1, FeatureReportByteLength = 32 });
+        hid.Devices["studio-path"] = device;
+        var gate = new DeviceControlGate(_store);
+        gate.SetEnabled("streamdeck", true);
+        _worker = new StreamDeckConnectionWorker(
+            hid, new HardwarePresence(new FixedUsbEnumerator(Usb(studio))), gate, _store, _executor, NewTestKeyRenderer(),
+            new MultiplexHub(), new FakeSensorProvider(), clock: clock, dialValues: _values);
+        var config = JsonSerializer.Deserialize("{\"pages\":[{\"slots\":[],\"dials\":[]}]}", AppJsonContext.Default.DeckConfig)!;
+        _store.Update(s => s.StreamDeck.Decks["STU1"] = new PhysicalDeckSettings { LegacyDeck = config });
+        _store.Update(s => ActivateLegacyDeck(s, "STU1", studio.Columns, studio.Rows));
+        _worker.Tick();
+
+        device.PendingReads.Enqueue(new byte[] { 0x01, 0x03, 0x05, 0x00, 0x00, 0x01, 0x00 });
+        Assert.True(SpinWait.SpinUntil(() => _worker.HasActiveDialHold("STU1", 0), TimeSpan.FromSeconds(3)));
+        for (var i = 0; i < 30; i++)
+        {
+            clock.Advance(TimeSpan.FromMilliseconds(40));
+            _worker.AnimateHolds();
+        }
+
+        Assert.False(device.Disposed);
+        Assert.True(_worker.FindBySerial("STU1")!.IsConnected);
+    }
+
+    [Fact]
+    public void ATransientLightWriteFailure_IsRetriedOnTheNextTick()
+    {
+        var neo = StreamDeckModels.ByProductId(0x009a)!;
+        var device = new MockStreamDeckHidDevice { ProductId = neo.ProductId };
+        var attempts = 0;
+        device.RejectFeature = report => report[1] == 0x06 && Interlocked.Increment(ref attempts) == 1;
+        var (worker, _) = Build(neo, "neo-path", "NEO1", device, Usb(neo), "{\"pages\":[{\"slots\":[]},{\"slots\":[]}]}");
+
+        worker.Tick();
+
+        Assert.Equal(1, Volatile.Read(ref attempts) - device.FeatureWrites.Count(w => w[1] == 0x06));
+        Assert.Contains(device.FeatureWrites, w => w[1] == 0x06 && w[2] == 8);
+        Assert.True(worker.FindBySerial("NEO1")!.IsConnected);
+    }
+
+    [Fact]
+    public void Neo_ShutdownDarkensTheTouchKeyBacklights()
+    {
+        var neo = StreamDeckModels.ByProductId(0x009a)!;
+        var device = new MockStreamDeckHidDevice { ProductId = neo.ProductId };
+        var (worker, _) = Build(neo, "neo-path", "NEO1", device, Usb(neo), "{\"pages\":[{\"slots\":[]},{\"slots\":[]}]}");
+        worker.Tick();
+        Assert.Contains(device.FeatureWrites, w => w[1] == 0x06 && w[2] == 9 && w[3] > 0);
+        device.FeatureWrites.Clear();
+
+        worker.ResetConnectedSurfacesForShutdown();
+
+        Assert.Contains(device.FeatureWrites, w => w[1] == 0x06 && w[2] == 8 && w[3] == 0 && w[4] == 0 && w[5] == 0);
+        Assert.Contains(device.FeatureWrites, w => w[1] == 0x06 && w[2] == 9 && w[3] == 0 && w[4] == 0 && w[5] == 0);
+    }
+
+#if DEV_TOOLS
+    [Fact]
+    public void InjectReport_DispatchesADecodedReportForARealDeck_AndRejectsGarbage()
+    {
+        var plus = StreamDeckModels.ByProductId(0x0084)!;
+        var device = new MockStreamDeckHidDevice { ProductId = plus.ProductId };
+        var (worker, _) = Build(plus, "plus-path", "PLUS1", device, Usb(plus),
+            "{\"pages\":[{\"slots\":[],\"dials\":[{},{},{\"action\":{\"type\":\"volume\",\"deviceId\":\"out\"}}]}]}");
+        _values.Set("volume:out", 50);
+        worker.Tick();
+
+        Assert.True(worker.InjectReport("PLUS1", new byte[] { 0x01, 0x03, 0x05, 0x00, 0x01, 0x00, 0x00, 0x01, 0x00 }));
+        Assert.Equal(("volume:out", 52d), _values.Writes.Single());
+        Assert.False(worker.InjectReport("PLUS1", new byte[] { 0x01, 0x09, 0x00, 0x00 }));
+        Assert.False(worker.InjectReport("NOPE", new byte[] { 0x01, 0x03, 0x05, 0x00, 0x01, 0x00, 0x00, 0x01, 0x00 }));
+    }
+#endif
+}

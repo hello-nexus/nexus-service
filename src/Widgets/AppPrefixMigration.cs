@@ -67,7 +67,7 @@ public static class AppPrefixMigration
         {
             return;
         }
-        foreach (var surface in new[] { layouts.Desktop, layouts.Y70, layouts.Phone, layouts.Q60 })
+        foreach (var surface in new[] { layouts.Desktop, layouts.Y70, layouts.Phone, layouts.Q60, layouts.Strip })
         {
             if (surface?.Widgets is not { } widgets)
             {

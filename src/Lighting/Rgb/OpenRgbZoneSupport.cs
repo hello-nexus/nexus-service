@@ -314,7 +314,7 @@ public static class OpenRgbZoneSupport
 
                 prefs.TryGetValue(baseId, out var pref);
                 layouts.TryGetValue(baseId, out var layout);
-                var (dx, dy, dw, dh) = OpenRgbLightingDeviceProvider.DefaultCardLayout(cardSlot);
+                var (dx, dy, dw, dh) = OpenRgbLightingDeviceProvider.DefaultCardLayout(cardSlot, d);
                 result.Add(new LightingDevice
                 {
                     Id = baseId,

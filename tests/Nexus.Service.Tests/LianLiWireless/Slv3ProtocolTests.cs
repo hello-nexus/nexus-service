@@ -588,6 +588,19 @@ public class Slv3ProtocolTests
         Assert.Equal(0, p[12]);
     }
 
+    [Theory]
+    [InlineData(7, 7)]
+    [InlineData(0, 1)]
+    [InlineData(99, Slv3Protocol.AioLcdLoopIntervalMax)]
+    public void Aio_loop_interval_is_clamped_and_written_to_byte_six(int requested, int expected)
+    {
+        var screen = Slv3Protocol.AioScreenFrom(50, 0, "#FFFFFF", "#FFFFFF", "#FFFFFF", true, true, false, false, false, requested);
+
+        var block = Slv3Protocol.BuildAioParamBlock(default, 0, screen, fanRpm: 0);
+
+        Assert.Equal(expected, block[6]);
+    }
+
     [Fact]
     public void A_screen_from_settings_clamps_and_falls_back_to_white()
     {

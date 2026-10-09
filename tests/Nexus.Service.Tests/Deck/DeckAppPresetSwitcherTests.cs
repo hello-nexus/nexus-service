@@ -74,7 +74,7 @@ public sealed class DeckAppPresetSwitcherTests : IDisposable
                     : null,
             });
             s.StreamDeck.Presets.Add(new DeckPreset { Id = other, Name = "Desk", Cols = 2, Rows = 2 });
-            s.StreamDeck.Instances[instanceId] = new DeckInstance { Mode = "appAware", ActivePresetId = other };
+            s.StreamDeck.Instances[instanceId] = new DeckInstance { Mode = "custom", ActivePresetId = other };
         });
         return (bound, other);
     }
@@ -123,15 +123,26 @@ public sealed class DeckAppPresetSwitcherTests : IDisposable
     }
 
     [Fact]
-    public void CustomModeInstance_IsNeverTouched()
+    public void RecentAppsModeInstance_IsNeverTouched()
     {
         var (bound, other) = SeedPresets(withBinding: true);
-        Store.Update(s => s.StreamDeck.Instances["widget:w1"] = new DeckInstance { Mode = "custom", ActivePresetId = other });
+        Store.Update(s => s.StreamDeck.Instances["widget:w1"] = new DeckInstance { Mode = "recentApps", ActivePresetId = other });
 
         Focus("chrome");
 
         Assert.Equal(other, Store.Load().StreamDeck.Instances["widget:w1"].ActivePresetId);
         Assert.NotEqual(bound, Store.Load().StreamDeck.Instances["widget:w1"].ActivePresetId);
+    }
+
+    [Fact]
+    public void LegacyAppAwareModeInstance_StillSwitches()
+    {
+        var (bound, other) = SeedPresets(withBinding: true);
+        Store.Update(s => s.StreamDeck.Instances["widget:w1"] = new DeckInstance { Mode = "appAware", ActivePresetId = other });
+
+        Focus("chrome");
+
+        Assert.Equal(bound, Store.Load().StreamDeck.Instances["widget:w1"].ActivePresetId);
     }
 
     [Fact]

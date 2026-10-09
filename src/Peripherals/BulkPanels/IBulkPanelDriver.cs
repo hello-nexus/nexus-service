@@ -63,6 +63,18 @@ public interface IBulkPanelDriver
     /// <summary>Sets the backlight, 0-100.</summary>
     bool SetBrightness(IBulkUsbPipe pipe, IHidDevice? hid, int percent) => false;
 
-    /// <summary>The glass can show a Windows virtual monitor, with touch read off <see cref="ReadPipeId"/>.</summary>
+    /// <summary>The glass can show a Windows virtual monitor.</summary>
     bool SupportsSecondaryMonitor => false;
+
+    /// <summary>The glass reports touch on <see cref="ReadPipeId"/>; elsewhere that pipe carries command replies.</summary>
+    bool HasTouch => false;
+
+    /// <summary>The glass mounts either way up; <see cref="Connect"/> reports tall geometry when its record asks for portrait.</summary>
+    bool SupportsPortrait => false;
+
+    /// <summary>Physical px/inch of the glass, for panels whose surface estimate is far off; null keeps the estimate.</summary>
+    double? Dpi => null;
+
+    /// <summary>The geometry <see cref="Connect"/> negotiated no longer matches the panel's settings, so the handshake must run again.</summary>
+    bool GeometryStale => false;
 }

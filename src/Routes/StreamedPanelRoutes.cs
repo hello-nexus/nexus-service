@@ -61,7 +61,9 @@ public static class StreamedPanelRoutes
                             if (lastFrameTicks != 0)
                                 session.RecordIngestGap((now - lastFrameTicks) * 1000 / System.Diagnostics.Stopwatch.Frequency);
                             lastFrameTicks = now;
-                            session.Enqueue(frame);
+                            var native = session.Upscaler is { } upscaler ? upscaler.Apply(frame) : frame;
+                            if (native is not null)
+                                session.Enqueue(native);
                         }
                     }
                     reader.AdvanceTo(buffer.Start, buffer.End);

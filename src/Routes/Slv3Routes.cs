@@ -98,6 +98,8 @@ public sealed class Slv3AioScreenDto
     public bool ShowGpuTemp { get; set; }
     public bool ShowGpuLoad { get; set; }
     public bool ShowFanSpeed { get; set; }
+    public int LoopInterval { get; set; }
+    public bool NexusWidgets { get; set; }
 }
 
 /// <summary>Patch for a HydroShift II screen; null fields keep their value.</summary>
@@ -113,6 +115,8 @@ public sealed class Slv3AioScreenRequest
     public bool? ShowGpuTemp { get; set; }
     public bool? ShowGpuLoad { get; set; }
     public bool? ShowFanSpeed { get; set; }
+    public int? LoopInterval { get; set; }
+    public bool? NexusWidgets { get; set; }
 }
 
 /// <summary>
@@ -127,7 +131,7 @@ public static partial class Slv3Routes
         app.MapGet("/devices/lianli-wireless/state", (Slv3Hub hub) =>
             Results.Json(hub.State, AppJsonContext.Default.Slv3State));
 
-        // GET /devices/lianli-wireless/aio-screen/{mac} - what a HydroShift II screen shows while Nexus drives its pump.
+        // GET /devices/lianli-wireless/aio-screen/{mac} - a HydroShift II screen's saved settings.
         app.MapGet("/devices/lianli-wireless/aio-screen/{mac}", (string mac, Slv3Hub hub, IConfigStore store) =>
         {
             if (!MacHex().IsMatch(mac))
@@ -164,7 +168,18 @@ public static partial class Slv3Routes
             {
                 return Results.BadRequest(ApiResponse.Fail("unknown theme"));
             }
+            if (body.LoopInterval is int interval && (interval < 1 || interval > Slv3Protocol.AioLcdLoopIntervalMax))
+            {
+                return Results.BadRequest(ApiResponse.Fail("interval out of range"));
+            }
             var key = mac.ToUpperInvariant();
+            var current = store.Load().Devices.LianLiWireless.AioScreens.GetValueOrDefault(key) ?? new LianLiAioScreenSettings();
+            if (!((body.ShowCpuTemp ?? current.ShowCpuTemp) || (body.ShowCpuLoad ?? current.ShowCpuLoad)
+                || (body.ShowGpuTemp ?? current.ShowGpuTemp) || (body.ShowGpuLoad ?? current.ShowGpuLoad)
+                || (body.ShowFanSpeed ?? current.ShowFanSpeed)))
+            {
+                return Results.BadRequest(ApiResponse.Fail("at least one reading must stay on"));
+            }
             // The hub reads these settings outside the store lock, so the patched entry and its map are swapped in by reference.
             store.Update(s =>
             {
@@ -185,6 +200,8 @@ public static partial class Slv3Routes
                         ShowGpuTemp = body.ShowGpuTemp ?? old.ShowGpuTemp,
                         ShowGpuLoad = body.ShowGpuLoad ?? old.ShowGpuLoad,
                         ShowFanSpeed = body.ShowFanSpeed ?? old.ShowFanSpeed,
+                        LoopInterval = body.LoopInterval ?? old.LoopInterval,
+                        NexusWidgets = body.NexusWidgets ?? old.NexusWidgets,
                     },
                 };
             });
@@ -335,6 +352,8 @@ public static partial class Slv3Routes
         ShowGpuTemp = s.ShowGpuTemp,
         ShowGpuLoad = s.ShowGpuLoad,
         ShowFanSpeed = s.ShowFanSpeed,
+        LoopInterval = s.LoopInterval,
+        NexusWidgets = s.NexusWidgets,
     };
 
     [GeneratedRegex("^[0-9A-Fa-f]{12}$")]

@@ -14,18 +14,29 @@ public sealed class BulkPanelDiscovery : IStreamedPanelDiscovery
 {
     private readonly BulkPanelHub _hub;
     private readonly IVirtualMonitorHost? _monitors;
+    private readonly Func<bool>? _withheld;
 
-    public BulkPanelDiscovery(BulkPanelHub hub, IVirtualMonitorHost? monitors = null)
+    /// <param name="withheld">True while the panel's glass shows something other than Nexus.</param>
+    /// <param name="listedWhileWithheld">See <see cref="IStreamedPanelDiscovery.ListedWhileWithheld"/>.</param>
+    public BulkPanelDiscovery(BulkPanelHub hub, IVirtualMonitorHost? monitors = null, Func<bool>? withheld = null, bool listedWhileWithheld = false)
     {
         _hub = hub;
         _monitors = monitors;
+        _withheld = withheld;
+        ListedWhileWithheld = listedWhileWithheld;
     }
+
+    public bool ListedWhileWithheld { get; }
+
+    public string? WithheldSerial => _hub.IsConnected && Withheld ? _hub.Serial ?? _hub.Driver.HandlerId : null;
 
     public string HandlerId => _hub.Driver.HandlerId;
 
+    public bool Withheld => _withheld?.Invoke() == true;
+
     public IReadOnlyList<StreamedPanelDeviceInfo> Discover()
     {
-        if (!_hub.IsConnected || _hub.Width <= 0 || _hub.Height <= 0)
+        if (!_hub.IsConnected || _hub.Width <= 0 || _hub.Height <= 0 || Withheld)
         {
             return Array.Empty<StreamedPanelDeviceInfo>();
         }
@@ -47,6 +58,8 @@ public sealed class BulkPanelDiscovery : IStreamedPanelDiscovery
                     Fps = driver.Fps,
                     SupportsBrightness = driver.SupportsBrightness,
                     SupportsSecondaryMonitor = driver.SupportsSecondaryMonitor && _monitors is { IsAvailable: true },
+                    SupportsPortrait = driver.SupportsPortrait,
+                    Dpi = driver.Dpi,
                     // The driver owns compression - JPEG for most, raw pixels for the
                     // Ryujin - so the overlay hands back whole frames either way.
                     Codec = StreamCodec.RawBgra,

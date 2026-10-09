@@ -375,4 +375,64 @@ public class ErrorReporterTests : IDisposable
         _store.Update(s => s.Telemetry.InstallId = "other");
         Assert.Equal(1, r.PendingCount);
     }
+    [Fact]
+    public async Task Crash_file_carries_the_recent_log_lines_scrubbed()
+    {
+        var r = Reporter();
+        // Letters only: ScrubLog replaces digit-bearing tokens such as a GUID.
+        var marker = "crash-log-marker-zebra-quokka";
+        Nexus.Service.Platform.ServiceLog.Info($"{marker} opened C:\\Users\\alice\\x.json");
+        ErrorReporter.WriteCrashFile(Thrown("crash"), CrashFile);
+
+        await r.FlushAsync(default);
+
+        var crash = Assert.Single(Assert.Single(_transport.Sent).Errors, e => e.Kind == ErrorKinds.Crash);
+        Assert.Contains(marker, crash.Log);
+        Assert.DoesNotContain("alice", crash.Log);
+    }
+
+    [Fact]
+    public async Task Status_500_is_keyed_on_route_and_repeats_raise_the_count()
+    {
+        var r = Reporter();
+        r.ReportStatus(500, "/devices/np50/firmware-animation");
+        r.ReportStatus(500, "/devices/np50/firmware-animation");
+        r.ReportStatus(500, "/devices/qseries/control-mode");
+
+        await r.FlushAsync(default);
+
+        var items = Assert.Single(_transport.Sent).Errors;
+        Assert.Equal(2, items.Count);
+        var np50 = Assert.Single(items, e => e.Context == "/devices/np50/firmware-animation");
+        Assert.Equal(2, np50.Count);
+        Assert.Equal("HTTP 500", np50.Type);
+        Assert.Equal(ErrorKinds.Request, np50.Kind);
+        Assert.Null(np50.Log);
+    }
+    [Theory]
+    [InlineData("[apk-flash] R5CT1234ABC: install phase budget spent", "[apk-flash] <id>: install phase budget spent")]
+    [InlineData("[np50] connected to COM3 (serial=0123456789ABCDEF)", "[np50] connected to COM3 (serial=<id>)")]
+    [InlineData("[ibp] connected km7 (serial=1A2B3C4D, path=x)", "[ibp] connected km7 (serial=<id>, path=x)")]
+    [InlineData("[usb] serial 1234567890", "[usb] serial <id>")]
+    [InlineData("[hue] bridge 00:17:88:AB:CD:EF up", "[hue] bridge <mac> up")]
+    [InlineData("[net] peer fe80::1:2:3:4 joined", "[net] peer <ip> joined")]
+    [InlineData("[net] peer 2001:db8::abcd:1234 joined", "[net] peer <ip> joined")]
+    [InlineData("2026-10-08T12:00:00.000Z WRN [cnvs] pid=0x0C00 took 1500ms", "2026-10-08T12:00:00.000Z WRN [cnvs] pid=0x0C00 took 1500ms")]
+    [InlineData("[panel] token=aB3_dE5fG7hI9kL", "[panel] token=<id>")]
+    [InlineData("[usb] serial ABC-123-XYZ", "[usb] serial <id>")]
+    [InlineData("[helper] session 3f2a9c1d-4b1e-ab2c-8d3e-1a2b3c4d5e6f open", "[helper] session <id> open")]
+    [InlineData("[usb] serial abcdefabcdef", "[usb] serial <id>")]
+    [InlineData("[display] 1920x1080 at 144Hz", "[display] 1920x1080 at 144Hz")]
+    [InlineData("[lianli-wireless-lcd] opened fan-hub", "[lianli-wireless-lcd] opened fan-hub")]
+    public void ScrubLog_hides_serials_and_addresses_but_keeps_timestamps_literals_and_durations(string input, string expected)
+    {
+        Assert.Equal(expected, ErrorReporter.ScrubLog(input, "test-host-name", "testuser"));
+    }
+
+    [Fact]
+    public void ScrubLog_hides_the_machine_and_user_names()
+    {
+        Assert.Equal("[mdns] advertising <host>.local for <user>",
+            ErrorReporter.ScrubLog("[mdns] advertising Nicolas-MacBook-Pro.local for nicola", "Nicolas-MacBook-Pro", "nicola"));
+    }
 }

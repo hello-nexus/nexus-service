@@ -35,6 +35,15 @@ public interface IFanControlProvider
         return result;
     }
 
+    /// <summary>Pump heads on an external device. The composite overrides it to skip the motherboard provider.</summary>
+    IReadOnlyList<FanChannel> GetDevicePumpChannels()
+    {
+        var result = new List<FanChannel>();
+        foreach (var c in GetFanChannels())
+            if (c.Kind == FanKinds.Pump && !string.IsNullOrEmpty(c.DeviceId)) result.Add(c);
+        return result;
+    }
+
     /// <summary>Read current temperature by sensor ID. Returns null if sensor not found.</summary>
     float? ReadTemperature(string sensorId);
 

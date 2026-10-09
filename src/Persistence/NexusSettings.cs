@@ -273,6 +273,9 @@ public sealed class TelemetrySettings
     /// <summary>Hash of the specs summary last delivered to nexus-api; a changed hash triggers a re-send.</summary>
     public string FleetSpecsHash { get; set; } = "";
 
+    /// <summary>Latched true by SystemProfileService the first time the Y70 handler reports connected; sent in fleet specs as y70Seen.</summary>
+    public bool FleetY70Seen { get; set; }
+
     /// <summary>"opt_out"/"opt_in" fleet event awaiting delivery, persisted before CollectAnonymousData flips so a crash recovers on the next retry pass.</summary>
     public string FleetPendingConsentEvent { get; set; } = "";
 
@@ -1293,6 +1296,8 @@ public sealed class DevicesSettings
     public List<string> NexusControlDisabled { get; set; } = new();
     /// <summary>Handler ids the user explicitly opted into (Nexus Control on). Overrides the brand default; a handler that defaults off stays off while absent here.</summary>
     public List<string> NexusControlEnabled { get; set; } = new();
+    /// <summary>Conflict apps a stable build put on the whitelist because every device they compete for is locked to beta builds (<see cref="Nexus.Service.Conflicts.ConflictWhitelistMigration.ReconcileBetaLock"/>); an unlocked build takes them off again.</summary>
+    public List<string> BetaLockWhitelisted { get; set; } = new();
     public Dictionary<string, LightingDevicePreference> LightingDevicePrefs { get; set; } = new();
     /// <summary>
     /// Firmware animation last written to each NZXT Kraken RGB channel, keyed by zone id.
@@ -1355,6 +1360,7 @@ public sealed class DevicesSettings
     public StrimerLightingSettings StrimerLighting { get; set; } = new();
     public Galahad2LightingSettings Galahad2Lighting { get; set; } = new();
     public HydroShift2LightingSettings HydroShift2Lighting { get; set; } = new();
+    public HydroShift2CurveSettings HydroShift2Curve { get; set; } = new();
     public CorsairSettings Corsair { get; set; } = new();
     public NollieSettings Nollie { get; set; } = new();
     /// <summary>
@@ -1395,6 +1401,9 @@ public sealed class DevicesSettings
 
     /// <summary>"{device name}#{same-name ordinal}" -> the "openrgb-N" id a serial- and location-less OpenRGB device first had, kept for good so its settings stay put when the list reorders.</summary>
     public Dictionary<string, string> OpenRgbPinnedIds { get; set; } = new();
+
+    /// <summary>Detector names from <see cref="Nexus.Service.Lighting.Rgb.OpenRgbGamepadDefaults"/> the user turned on; every other one stays disabled.</summary>
+    public List<string> OpenRgbGamepadDetectorsAllowed { get; set; } = new();
 
     /// <summary>Devices OpenRGB cannot auto-detect and only finds through a user registration in its own config; written into the daemon's OpenRGB.json at launch.</summary>
     public OpenRgbManualDevices OpenRgbManualDevices { get; set; } = new();
@@ -1612,6 +1621,10 @@ public sealed class LianLiAioScreenSettings
     public bool ShowGpuLoad { get; set; } = true;
     /// <summary>Shows the radiator fans' speed.</summary>
     public bool ShowFanSpeed { get; set; }
+    /// <summary>How long each shown reading stays up before the screen moves to the next.</summary>
+    public int LoopInterval { get; set; } = Nexus.Service.Peripherals.LianLiWireless.Slv3Protocol.AioLcdLoopInterval;
+    /// <summary>With the AIO's USB cable also connected, Nexus widgets own the glass; false gives it to this screen instead.</summary>
+    public bool NexusWidgets { get; set; } = true;
 }
 
 /// <summary>
@@ -1678,6 +1691,8 @@ public sealed class PhysicalDeckSettings
     public int SleepAfterSeconds { get; set; }
     /// <summary>Blank the display while the desktop session is locked; input at the lock screen brings it back for a while.</summary>
     public bool SleepWhenLocked { get; set; } = true;
+    /// <summary>Neo info screen content: clock | page | off.</summary>
+    public string InfoScreen { get; set; } = "clock";
     /// <summary>Last-known StreamDeckModel.ProductId, so a disconnected deck can still report its layout via StreamDeckModels.ByProductId.</summary>
     public int ProductId { get; set; }
 
@@ -1870,6 +1885,33 @@ public sealed class HydroShift2LightingSettings
     public int Brightness { get; set; } = 4;
     /// <summary>"#RRGGBB" palette; missing entries fall back to the effect's defaults.</summary>
     public List<string> Colors { get; set; } = new();
+}
+
+/// <summary>The HydroShift II OLED Curved head position Nexus last drove; the motors have no position readback.</summary>
+public sealed class HydroShift2CurveSettings
+{
+    /// <summary>Degrees.</summary>
+    public int Tilt { get; set; }
+    /// <summary>0 is the middle of the slide's range.</summary>
+    public int Slide { get; set; }
+    /// <summary>A recalibration was under way; Tilt and Slide are unknown until it runs again.</summary>
+    public bool Recalibrating { get; set; }
+
+    public const string ScreenNexus = "nexus";
+    public const string ScreenVideo = "video";
+
+    /// <summary><see cref="ScreenNexus"/> streams the Nexus panel; <see cref="ScreenVideo"/> loops <see cref="Video"/> on the glass's own decoder.</summary>
+    public string ScreenMode { get; set; } = ScreenNexus;
+    /// <summary>Media library item played in video mode.</summary>
+    public string? Video { get; set; }
+    /// <summary>Minutes between screen-saver plays; 0 is off.</summary>
+    public int ScreenSaverMinutes { get; set; }
+    public string? ScreenSaverVideo { get; set; }
+    /// <summary>Backlight percent while the screen saver plays.</summary>
+    public int ScreenSaverBrightness { get; set; } = 50;
+    /// <summary>When Nexus is not driving the pump: true follows the motherboard header, false runs the
+    /// power-on speed, null leaves the board as found.</summary>
+    public bool? PumpFollowsMotherboard { get; set; }
 }
 
 public sealed class Galahad2LightingSettings

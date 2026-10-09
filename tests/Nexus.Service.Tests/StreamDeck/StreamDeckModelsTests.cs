@@ -11,9 +11,9 @@ namespace Nexus.Service.Tests.StreamDeck;
 public class StreamDeckModelsTests
 {
     [Fact]
-    public void All_HasFourteenModels()
+    public void All_HasEighteenModels()
     {
-        Assert.Equal(14, StreamDeckModels.All.Count);
+        Assert.Equal(18, StreamDeckModels.All.Count);
     }
 
     [Fact]
@@ -43,6 +43,15 @@ public class StreamDeckModelsTests
         var model = StreamDeckModels.ByProductId(0x0063);
         Assert.NotNull(model);
         Assert.Equal("Mini", model!.Name);
+    }
+
+    [Fact]
+    public void DisplayName_PrefixesTheBrand()
+    {
+        Assert.Equal("Elgato Stream Deck Mini", StreamDeckModels.ByProductId(0x0063)!.DisplayName);
+        Assert.Equal("Elgato Stream Deck +", StreamDeckModels.ByProductId(0x0084)!.DisplayName);
+        Assert.Equal("Elgato Stream Deck + XL", StreamDeckModels.ByProductId(0x00c6)!.DisplayName);
+        Assert.Equal("Corsair Galleon K100 SD", StreamDeckModels.ByProductId(0x2b18)!.DisplayName);
     }
 
     [Fact]

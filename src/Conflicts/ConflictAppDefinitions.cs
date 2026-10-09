@@ -464,7 +464,8 @@ public static class ConflictAppCatalog
             Vendors = new[] { "Elgato" },
             DisplayName = "Elgato Stream Deck",
             Category = "peripherals",
-            ProcessNames = new[] { "StreamDeck" },
+            // macOS runs it as "Stream Deck" (with a space).
+            ProcessNames = new[] { "StreamDeck", "Stream Deck" },
         },
 
         // ── Other peripheral / lighting vendors ────────────────────────────

@@ -8,7 +8,7 @@ using Nexus.Service.Platform;
 namespace Nexus.Service.Peripherals.BulkPanels;
 
 /// <summary>
-/// The HydroShift II LCD-S pump head. The glass, pump, fan headers and ring all share
+/// The HydroShift II LCD-S or LCD-C pump head. The glass, pump, fan headers and ring all share
 /// this one WinUSB pipe, so <see cref="HydroShift2Aio"/> drives the AIO half through
 /// <see cref="BulkPanelHub.Exchange{T}"/> between frames.
 /// </summary>
@@ -29,11 +29,19 @@ public sealed class HydroShift2LcdDriver : IBulkPanelDriver
     /// <summary>The last pump/fan write was a Nexus-driven target, so disconnecting must hand back the defaults.</summary>
     private bool _handBack;
 
+    private volatile bool _round;
+
+    /// <summary>Set by the first connect; until then the device row cannot tell the heads apart.</summary>
+    private volatile bool _identified;
+
     public string HandlerId => Id;
-    public string Name => "Lian Li HydroShift II LCD-S";
+    public string Name => !_identified ? "Lian Li HydroShift II" : _round ? "Lian Li HydroShift II LCD-C" : "Lian Li HydroShift II LCD-S";
     public int VendorId => 0x1CBE;
-    public IReadOnlyList<int> ProductIds { get; } = new[] { HydroShift2Protocol.ProductIdSquare };
-    public string Surface => Models.Panel.PanelSurfaces.LcdSquare;
+    public IReadOnlyList<int> ProductIds { get; } = new[] { HydroShift2Protocol.ProductIdSquare, HydroShift2Protocol.ProductIdCircle };
+    public string Surface => _round ? Models.Panel.PanelSurfaces.LcdRound : Models.Panel.PanelSurfaces.LcdSquare;
+
+    /// <summary>The connected head is the round LCD-C, set at connect.</summary>
+    public bool Round => _round;
     public int Fps => FrameRate;
     public byte WritePipeId => 0x01;
     public byte ReadPipeId => 0x81;
@@ -53,6 +61,8 @@ public sealed class HydroShift2LcdDriver : IBulkPanelDriver
 
     public (int Width, int Height)? Connect(IBulkUsbPipe pipe, IHidDevice? hid)
     {
+        _round = pipe.ProductId == HydroShift2Protocol.ProductIdCircle;
+        _identified = true;
         _clock.Restart();
         _lastTimestamp = 0;
 
@@ -71,8 +81,7 @@ public sealed class HydroShift2LcdDriver : IBulkPanelDriver
         Command(pipe, HydroShift2Protocol.CommandFrameRate, stackalloc byte[] { FrameRate });
         Exchange(pipe, HydroShift2Protocol.CommandSetClock, HydroShift2Protocol.EncodeSetClock(DateTime.Now, NextTimestamp()));
         Command(pipe, HydroShift2Protocol.CommandStopClock, stackalloc byte[] { 0 });
-        Exchange(pipe, HydroShift2Protocol.CommandPushPng, HydroShift2Protocol.EncodeImage(
-            HydroShift2Protocol.CommandPushPng, HydroShift2Protocol.EmptyOverlayPng(), NextTimestamp()));
+        ClearOverlay(pipe);
 
         _jpeg?.Dispose();
         _jpeg = new BgraJpegEncoder(HydroShift2Protocol.Width, HydroShift2Protocol.Height);
@@ -125,7 +134,7 @@ public sealed class HydroShift2LcdDriver : IBulkPanelDriver
     public bool SyncPumpFan(IBulkUsbPipe pipe, int pumpRpm, ReadOnlySpan<byte> fans, bool driven)
     {
         var answered = Exchange(pipe, HydroShift2Protocol.CommandSyncPumpFan,
-            HydroShift2Protocol.EncodeSyncPumpFan(pumpRpm, fans, NextTimestamp())) is not null;
+            HydroShift2Protocol.EncodeSyncPumpFan(pumpRpm, fans, NextTimestamp(), _round)) is not null;
         // A driven target is assumed latched even unanswered; a hand-back only counts once answered.
         if (driven || answered)
         {
@@ -133,6 +142,15 @@ public sealed class HydroShift2LcdDriver : IBulkPanelDriver
         }
         return answered;
     }
+
+    /// <summary>
+    /// Pushes a transparent overlay, which wipes what the firmware draws over the frames: its
+    /// coolant readout, or its own wireless screen after a switch to RF control. Call only
+    /// under the hub's lock.
+    /// </summary>
+    public bool ClearOverlay(IBulkUsbPipe pipe) =>
+        Exchange(pipe, HydroShift2Protocol.CommandPushPng, HydroShift2Protocol.EncodeImage(
+            HydroShift2Protocol.CommandPushPng, HydroShift2Protocol.EmptyOverlayPng(), NextTimestamp())) is not null;
 
     /// <summary>Uploads a ring animation (packed RGB frames) for the firmware to loop. Call only under the hub's lock.</summary>
     public bool PushRing(IBulkUsbPipe pipe, ReadOnlySpan<byte> frames, int frameCount, byte intervalTicks) =>

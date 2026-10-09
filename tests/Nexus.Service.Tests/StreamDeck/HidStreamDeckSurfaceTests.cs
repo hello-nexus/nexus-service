@@ -26,7 +26,11 @@ internal sealed class MockStreamDeckHidDevice : IHidDevice
     public ConcurrentQueue<byte[]> PendingReads { get; } = new();
     public Func<byte[], byte[]>? FeatureReplyBuilder { get; set; }
     public bool FailNextFeatureWrite { get; set; }
+    /// <summary>When set and true for a feature report, the write is rejected every time.</summary>
+    public Func<byte[], bool>? RejectFeature { get; set; }
     public bool FailNextOutputWrite { get; set; }
+    /// <summary>When set and true for an output report, the write is rejected every time.</summary>
+    public Func<byte[], bool>? RejectOutput { get; set; }
     public bool FailNextRead { get; set; }
     public bool Disposed { get; private set; }
 
@@ -40,6 +44,7 @@ internal sealed class MockStreamDeckHidDevice : IHidDevice
     public bool SetFeature(ReadOnlySpan<byte> report)
     {
         if (FailNextFeatureWrite) { FailNextFeatureWrite = false; return false; }
+        if (RejectFeature?.Invoke(report.ToArray()) == true) { return false; }
         FeatureWrites.Add(report.ToArray());
         return true;
     }
@@ -54,6 +59,7 @@ internal sealed class MockStreamDeckHidDevice : IHidDevice
     public bool Write(ReadOnlySpan<byte> report)
     {
         if (FailNextOutputWrite) { FailNextOutputWrite = false; return false; }
+        if (RejectOutput?.Invoke(report.ToArray()) == true) { return false; }
         OutputWrites.Add(report.ToArray());
         return true;
     }
@@ -227,7 +233,7 @@ public class HidStreamDeckSurfaceTests
         var (dev, surface) = Connect(Mini);
         dev.PendingReads.Enqueue(new byte[] { 0x01, 0, 1, 0, 0, 0, 0 });
 
-        var states = surface.ReadInput(10);
+        var states = surface.ReadInput(10)?.Keys;
 
         Assert.Equal(new[] { false, true, false, false, false, false }, states);
     }
@@ -320,7 +326,7 @@ public class HidStreamDeckSurfaceTests
         report[4 + 9] = 1;
         dev.PendingReads.Enqueue(report);
 
-        var states = surface.ReadInput(10);
+        var states = surface.ReadInput(10)?.Keys;
 
         Assert.NotNull(states);
         Assert.True(states![9]);
@@ -370,7 +376,7 @@ public class HidStreamDeckSurfaceTests
         report[4 + 2] = 1;
         dev.PendingReads.Enqueue(report);
 
-        var states = surface.ReadInput(10);
+        var states = surface.ReadInput(10)?.Keys;
 
         Assert.Equal(new[] { false, false, true }, states);
     }

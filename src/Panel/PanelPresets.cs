@@ -56,6 +56,7 @@ public static class PanelPresets
         to.WidgetPadding = from.WidgetPadding;
         to.TextColorMode = from.TextColorMode;
         to.TextColor = from.TextColor;
+        to.Font = from.Font;
         to.ThemeSyncWithDesktop = from.ThemeSyncWithDesktop;
         to.AccentSyncWithDesktop = from.AccentSyncWithDesktop;
     }

@@ -4,6 +4,7 @@ using System.IO;
 using System.Runtime.Versioning;
 using Microsoft.Win32;
 using Nexus.Service.Models.Conflicts;
+using Nexus.Service.Platform;
 
 namespace Nexus.Service.Conflicts;
 
@@ -95,7 +96,15 @@ public static class ConflictAutostart
         var disabled = 0;
         foreach (var entry in entries)
         {
-            if (Disable(def, entry)) disabled++;
+            if (Disable(def, entry))
+            {
+                disabled++;
+                ServiceLog.Info($"[conflicts] autostart off for {def.Id}: {entry.Kind}:{entry.EntryName}");
+            }
+            else
+            {
+                ServiceLog.Warn($"[conflicts] autostart still on for {def.Id}: {entry.Kind}:{entry.EntryName}");
+            }
         }
         return disabled;
     }

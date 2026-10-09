@@ -74,6 +74,15 @@ public static class UsbTopologyFilter
         return arrivals;
     }
 
+    /// <summary>"VVVV:PPPP:..." -> vid, pid.</summary>
+    public static bool TryParseVidPid(string key, out int vid, out int pid)
+    {
+        var ok = TryVidPid(key, out var id);
+        vid = (id >> 16) & 0xFFFF;
+        pid = id & 0xFFFF;
+        return ok;
+    }
+
     /// <summary>"VVVV:PPPP:..." -> (vid &lt;&lt; 16) | pid, the shape of <see cref="Nexus.Service.Peripherals.LightingDevicesCatalog.OpenRgbUsbIds"/>.</summary>
     private static bool TryVidPid(string key, out int id)
     {
