@@ -234,6 +234,8 @@ public static class NexusServiceCollectionExtensions
             new CompositeFanControlProvider.FanSource(
                 Nexus.Service.Cooling.HydroShift2CoolingProvider.IsHydroShift2Id, sp.GetRequiredService<Nexus.Service.Cooling.HydroShift2CoolingProvider>()),
             new CompositeFanControlProvider.FanSource(
+                Nexus.Service.Cooling.HydroShift2CurveCoolingProvider.IsHydroShift2CurveId, sp.GetRequiredService<Nexus.Service.Cooling.HydroShift2CurveCoolingProvider>()),
+            new CompositeFanControlProvider.FanSource(
                 Nexus.Service.Cooling.Galahad2LcdCoolingProvider.IsGalahad2LcdId, sp.GetRequiredService<Nexus.Service.Cooling.Galahad2LcdCoolingProvider>()),
             new CompositeFanControlProvider.FanSource(
                 Nexus.Service.Cooling.CorsairLinkCoolingProvider.IsCorsairId, sp.GetRequiredService<Nexus.Service.Cooling.CorsairLinkCoolingProvider>()),
@@ -262,6 +264,8 @@ public static class NexusServiceCollectionExtensions
                 Nexus.Service.Cooling.KrakenCoolingProvider.IsKrakenId, sp.GetRequiredService<Nexus.Service.Cooling.KrakenCoolingProvider>()),
             new CompositeFanControlProvider.FanSource(
                 Nexus.Service.Cooling.HydroShift2CoolingProvider.IsHydroShift2Id, sp.GetRequiredService<Nexus.Service.Cooling.HydroShift2CoolingProvider>()),
+            new CompositeFanControlProvider.FanSource(
+                Nexus.Service.Cooling.HydroShift2CurveCoolingProvider.IsHydroShift2CurveId, sp.GetRequiredService<Nexus.Service.Cooling.HydroShift2CurveCoolingProvider>()),
             new CompositeFanControlProvider.FanSource(
                 Nexus.Service.Cooling.Galahad2LcdCoolingProvider.IsGalahad2LcdId, sp.GetRequiredService<Nexus.Service.Cooling.Galahad2LcdCoolingProvider>()),
             new CompositeFanControlProvider.FanSource(
@@ -300,6 +304,8 @@ public static class NexusServiceCollectionExtensions
             new CompositeFanControlProvider.FanSource(
                 Nexus.Service.Cooling.HydroShift2CoolingProvider.IsHydroShift2Id, sp.GetRequiredService<Nexus.Service.Cooling.HydroShift2CoolingProvider>()),
             new CompositeFanControlProvider.FanSource(
+                Nexus.Service.Cooling.HydroShift2CurveCoolingProvider.IsHydroShift2CurveId, sp.GetRequiredService<Nexus.Service.Cooling.HydroShift2CurveCoolingProvider>()),
+            new CompositeFanControlProvider.FanSource(
                 Nexus.Service.Cooling.Galahad2LcdCoolingProvider.IsGalahad2LcdId, sp.GetRequiredService<Nexus.Service.Cooling.Galahad2LcdCoolingProvider>()),
             new CompositeFanControlProvider.FanSource(
                 Nexus.Service.Cooling.CorsairLinkCoolingProvider.IsCorsairId, sp.GetRequiredService<Nexus.Service.Cooling.CorsairLinkCoolingProvider>()),
@@ -327,6 +333,8 @@ public static class NexusServiceCollectionExtensions
                 Nexus.Service.Cooling.KrakenCoolingProvider.IsKrakenId, sp.GetRequiredService<Nexus.Service.Cooling.KrakenCoolingProvider>()),
             new CompositeFanControlProvider.FanSource(
                 Nexus.Service.Cooling.HydroShift2CoolingProvider.IsHydroShift2Id, sp.GetRequiredService<Nexus.Service.Cooling.HydroShift2CoolingProvider>()),
+            new CompositeFanControlProvider.FanSource(
+                Nexus.Service.Cooling.HydroShift2CurveCoolingProvider.IsHydroShift2CurveId, sp.GetRequiredService<Nexus.Service.Cooling.HydroShift2CurveCoolingProvider>()),
             new CompositeFanControlProvider.FanSource(
                 Nexus.Service.Cooling.Galahad2LcdCoolingProvider.IsGalahad2LcdId, sp.GetRequiredService<Nexus.Service.Cooling.Galahad2LcdCoolingProvider>()),
             new CompositeFanControlProvider.FanSource(
@@ -1139,6 +1147,7 @@ public static class NexusServiceCollectionExtensions
             new Nexus.Service.Peripherals.BulkPanels.UniversalScreen88Driver(),
             new Nexus.Service.Peripherals.BulkPanels.ZMatricesPanelDriver(),
             new Nexus.Service.Peripherals.BulkPanels.HydroShift2LcdDriver(),
+            new Nexus.Service.Peripherals.BulkPanels.HydroShift2CurveLcdDriver(),
         })
         {
             var bulkPanelHub = new Nexus.Service.Peripherals.BulkPanels.BulkPanelHub(bulkPanelDriver);
@@ -1153,18 +1162,29 @@ public static class NexusServiceCollectionExtensions
                     sp.GetRequiredService<Nexus.Service.Devices.Detection.HardwarePresence>()));
             services.AddSingleton<Nexus.Service.Panel.Streams.IStreamedPanelDiscovery>(sp =>
             {
-                // A HydroShift II the user gave to its own wireless screen streams nothing.
-                Func<bool>? withheld = bulkPanelDriver is Nexus.Service.Peripherals.BulkPanels.HydroShift2LcdDriver
-                    ? () => sp.GetService<Nexus.Service.Peripherals.BulkPanels.HydroShift2Aio>()?.ShowsOwnScreen == true
-                    : null;
+                // A HydroShift II the user gave to its own wireless screen streams nothing, nor
+                // does a Curve while its glass plays a video.
+                Func<bool>? withheld = bulkPanelDriver switch
+                {
+                    Nexus.Service.Peripherals.BulkPanels.HydroShift2LcdDriver =>
+                        () => sp.GetService<Nexus.Service.Peripherals.BulkPanels.HydroShift2Aio>()?.ShowsOwnScreen == true,
+                    Nexus.Service.Peripherals.BulkPanels.HydroShift2CurveLcdDriver =>
+                        () => sp.GetService<Nexus.Service.Peripherals.BulkPanels.HydroShift2CurvePlayer>()?.OwnsGlass == true,
+                    _ => null,
+                };
                 return new Nexus.Service.Panel.Streams.BulkPanelDiscovery(
-                    bulkPanelHub, sp.GetService<Nexus.Service.Panel.Streams.IVirtualMonitorHost>(), withheld);
+                    bulkPanelHub, sp.GetService<Nexus.Service.Panel.Streams.IVirtualMonitorHost>(), withheld,
+                    listedWhileWithheld: bulkPanelDriver is Nexus.Service.Peripherals.BulkPanels.HydroShift2CurveLcdDriver);
             });
             services.AddSingleton<IDeviceHandler>(
                 _ => new Nexus.Service.Devices.Handlers.BulkPanelHandler(bulkPanelHub));
             if (bulkPanelDriver is Nexus.Service.Peripherals.BulkPanels.HydroShift2LcdDriver hydroShift2)
             {
                 AddHydroShift2Aio(services, bulkPanelHub, hydroShift2);
+            }
+            if (bulkPanelDriver is Nexus.Service.Peripherals.BulkPanels.HydroShift2CurveLcdDriver curve)
+            {
+                AddHydroShift2Curve(services, bulkPanelHub, curve);
             }
         }
 
@@ -1253,6 +1273,7 @@ public static class NexusServiceCollectionExtensions
                 sp.GetRequiredService<Nexus.Service.Lighting.NollieLightingDeviceProvider>(),
                 sp.GetRequiredService<Nexus.Service.Lighting.KrakenLightingDeviceProvider>(),
                 sp.GetRequiredService<Nexus.Service.Lighting.HydroShift2LightingDeviceProvider>(),
+                sp.GetRequiredService<Nexus.Service.Lighting.HydroShift2CurveLightingDeviceProvider>(),
                 sp.GetRequiredService<Nexus.Service.Lighting.Galahad2LcdLightingProvider>(),
                 sp.GetRequiredService<Nexus.Service.Lighting.Smart.SmartLightProvider>(),
                 sp.GetRequiredService<Nexus.Service.Persistence.IConfigStore>(),
@@ -1277,6 +1298,7 @@ public static class NexusServiceCollectionExtensions
                 sp.GetRequiredService<Nexus.Service.Lighting.NollieLightingDeviceProvider>(),
                 sp.GetRequiredService<Nexus.Service.Lighting.KrakenLightingDeviceProvider>(),
                 sp.GetRequiredService<Nexus.Service.Lighting.HydroShift2LightingDeviceProvider>(),
+                sp.GetRequiredService<Nexus.Service.Lighting.HydroShift2CurveLightingDeviceProvider>(),
                 sp.GetRequiredService<Nexus.Service.Lighting.Galahad2LcdLightingProvider>(),
                 sp.GetRequiredService<Nexus.Service.Lighting.Smart.SmartLightProvider>(),
                 sp.GetRequiredService<Nexus.Service.Persistence.IConfigStore>(),
@@ -1565,6 +1587,35 @@ public static class NexusServiceCollectionExtensions
         services.AddSingleton<Nexus.Service.Lighting.Zones.IDeviceStructureSource>(
             sp => sp.GetRequiredService<Nexus.Service.Lighting.HydroShift2LightingDeviceProvider>());
         services.AddHostedService<Nexus.Service.Lighting.HydroShift2LightingFrameWriter>();
+    }
+
+    /// <summary>The HydroShift II OLED Curved's LED, pump and head-motor board, a USB function of its own beside the glass.</summary>
+    private static void AddHydroShift2Curve(
+        IServiceCollection services,
+        Nexus.Service.Peripherals.BulkPanels.BulkPanelHub hub,
+        Nexus.Service.Peripherals.BulkPanels.HydroShift2CurveLcdDriver driver)
+    {
+        services.AddSingleton<Nexus.Service.Peripherals.BulkPanels.HydroShift2CurveMedia>();
+        services.AddSingleton(sp =>
+        {
+            var player = new Nexus.Service.Peripherals.BulkPanels.HydroShift2CurvePlayer(
+                hub, driver,
+                sp.GetRequiredService<Nexus.Service.Peripherals.BulkPanels.HydroShift2CurveMedia>(),
+                sp.GetRequiredService<Nexus.Service.Persistence.IConfigStore>(),
+                sp.GetRequiredService<Nexus.Service.Panel.PanelDeviceRegistry>());
+            player.GlassOwnerChanged += () => sp.GetService<Nexus.Service.Panel.Streams.StreamedPanelCoordinator>()?.Wake();
+            return player;
+        });
+        services.AddHostedService(sp => sp.GetRequiredService<Nexus.Service.Peripherals.BulkPanels.HydroShift2CurvePlayer>());
+        services.AddSingleton<Nexus.Service.Peripherals.BulkPanels.HydroShift2CurveBoard>();
+        services.AddHostedService(sp => sp.GetRequiredService<Nexus.Service.Peripherals.BulkPanels.HydroShift2CurveBoard>());
+        services.AddSingleton<Nexus.Service.Cooling.HydroShift2CurveCoolingProvider>();
+        services.AddSingleton<Nexus.Service.Lighting.HydroShift2CurveLightingDeviceProvider>();
+        services.AddSingleton<Nexus.Service.Lighting.ILightingFrameContributor>(
+            sp => sp.GetRequiredService<Nexus.Service.Lighting.HydroShift2CurveLightingDeviceProvider>());
+        services.AddSingleton<Nexus.Service.Lighting.Zones.IDeviceStructureSource>(
+            sp => sp.GetRequiredService<Nexus.Service.Lighting.HydroShift2CurveLightingDeviceProvider>());
+        services.AddHostedService<Nexus.Service.Lighting.HydroShift2CurveLightingFrameWriter>();
     }
 
     public static IServiceCollection AddNexusWeather(this IServiceCollection services)
