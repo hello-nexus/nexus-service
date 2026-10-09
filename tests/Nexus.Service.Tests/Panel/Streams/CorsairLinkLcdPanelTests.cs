@@ -18,7 +18,9 @@ public class CorsairLinkLcdPanelTests
     {
         var hub = new CorsairLinkHub();
         var (lcd, _) = AttachLcd();
-        var discovery = new CorsairLinkPanelDiscovery(hub, lcd);
+        var hubs = new CorsairLinkHubs();
+        hubs.Add(hub);
+        var discovery = new CorsairLinkPanelDiscovery(hubs, lcd);
 
         // Hub down, LCD open: the chain is what carries the topology, so nothing to offer.
         Assert.Empty(discovery.Discover());
@@ -37,7 +39,9 @@ public class CorsairLinkLcdPanelTests
         hub.State.IsConnected = true;
         hub.State.HasLcd = true;
         var (lcd, _) = AttachLcd();
-        var discovery = new CorsairLinkPanelDiscovery(hub, lcd);
+        var hubs = new CorsairLinkHubs();
+        hubs.Add(hub);
+        var discovery = new CorsairLinkPanelDiscovery(hubs, lcd);
 
         var info = Assert.Single(discovery.Discover());
 

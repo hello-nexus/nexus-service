@@ -18,7 +18,7 @@ public sealed class CorsairLinkLcdWorker : BackgroundService
     private readonly CorsairLinkLcd _lcd;
     private readonly CorsairLinkLcdMediaLibrary _library;
     private readonly IConfigStore _store;
-    private readonly CorsairLinkHub _hub;
+    private readonly CorsairLinkHubs _hubs;
     private readonly DeviceControlGate _gate;
 
     private string? _loadedMediaId;
@@ -32,13 +32,13 @@ public sealed class CorsairLinkLcdWorker : BackgroundService
         CorsairLinkLcd lcd,
         CorsairLinkLcdMediaLibrary library,
         IConfigStore store,
-        CorsairLinkHub hub,
+        CorsairLinkHubs hubs,
         DeviceControlGate gate)
     {
         _lcd = lcd;
         _library = library;
         _store = store;
-        _hub = hub;
+        _hubs = hubs;
         _gate = gate;
     }
 
@@ -50,7 +50,7 @@ public sealed class CorsairLinkLcdWorker : BackgroundService
             {
                 // Same switch the panel stream rides: until the user claims the glass,
                 // nothing here writes to it.
-                if (!_gate.IsEnabled(CorsairLinkLcd.DeviceId) || !_hub.State.IsConnected || !_hub.State.HasLcd)
+                if (!_gate.IsEnabled(CorsairLinkLcd.DeviceId) || _hubs.LcdHub is null)
                 {
                     await Task.Delay(1000, ct).ConfigureAwait(false);
                     continue;

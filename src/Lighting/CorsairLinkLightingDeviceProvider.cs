@@ -24,7 +24,7 @@ namespace Nexus.Service.Lighting;
 public sealed class CorsairLinkLightingDeviceProvider :
     ILightingDeviceProvider, ILightingFrameContributor, IDeviceStructureSource, IOpenRgbDeviceOwner
 {
-    private readonly CorsairLinkHub _hub;
+    private readonly CorsairLinkHubs _hubs;
     private readonly IConfigStore _store;
     private readonly Np50IdentifyTracker _identify;
 
@@ -34,14 +34,14 @@ public sealed class CorsairLinkLightingDeviceProvider :
 
     private readonly Dictionary<string, DeviceFrame> _frameCache = new();
 
-    public CorsairLinkLightingDeviceProvider(CorsairLinkHub hub, IConfigStore store, Np50IdentifyTracker identify)
+    public CorsairLinkLightingDeviceProvider(CorsairLinkHubs hubs, IConfigStore store, Np50IdentifyTracker identify)
     {
-        _hub = hub;
+        _hubs = hubs;
         _store = store;
         _identify = identify;
     }
 
-    public bool IsConnected => _hub.IsConnected;
+    public bool IsConnected => _hubs.AnyConnected;
 
     /// <summary>
     /// OpenRGB enumerates this hub as "Corsair iCUE Link System Hub". Claiming
@@ -68,12 +68,16 @@ public sealed class CorsairLinkLightingDeviceProvider :
 
     private string BuildSignature()
     {
-        if (!_hub.IsConnected) return "disconnected";
+        if (!_hubs.AnyConnected) return "disconnected";
         var sb = new StringBuilder("connected");
-        foreach (var dev in _hub.State.Devices)
+        foreach (var hub in _hubs.All)
         {
-            if (dev.LedCount <= 0) continue;
-            sb.Append('|').Append(dev.Channel).Append(':').Append(dev.LedCount);
+            if (!hub.IsConnected) continue;
+            foreach (var dev in hub.State.Devices)
+            {
+                if (dev.LedCount <= 0) continue;
+                sb.Append('|').Append(hub.IdPrefix).Append(dev.Channel).Append(':').Append(dev.LedCount);
+            }
         }
         return sb.ToString();
     }
@@ -83,18 +87,20 @@ public sealed class CorsairLinkLightingDeviceProvider :
     public GetLightingDevicesResponse GetAll()
     {
         var resp = new GetLightingDevicesResponse { IsInit = true };
-        if (!_hub.IsConnected) return resp;
-        var hubId = _hub.DeviceId;
+        if (!_hubs.AnyConnected) return resp;
         var settings = _store.Load();
         var slot = 0;
-        foreach (var dev in _hub.State.Devices)
+        foreach (var hub in _hubs.All)
         {
-            if (dev.LedCount <= 0) continue;
-            var id = $"corsair:ch{dev.Channel}";
-            var structure = BuildStructure(id, dev);
-            foreach (var zone in ZoneResolution.Resolve(structure, settings))
+            if (!hub.IsConnected) continue;
+            foreach (var dev in hub.State.Devices)
             {
-                resp.Devices.Add(BuildCard(hubId, structure, zone, slot++, settings));
+                if (dev.LedCount <= 0) continue;
+                var structure = BuildStructure(hub, dev);
+                foreach (var zone in ZoneResolution.Resolve(structure, settings))
+                {
+                    resp.Devices.Add(BuildCard(hub.DeviceId, structure, zone, slot++, settings));
+                }
             }
         }
         return resp;
@@ -209,12 +215,15 @@ public sealed class CorsairLinkLightingDeviceProvider :
 
     public IReadOnlyList<DeviceStructure> GetStructures()
     {
-        if (!_hub.IsConnected) return Array.Empty<DeviceStructure>();
         var structures = new List<DeviceStructure>();
-        foreach (var dev in _hub.State.Devices)
+        foreach (var hub in _hubs.All)
         {
-            if (dev.LedCount <= 0) continue;
-            structures.Add(BuildStructure($"corsair:ch{dev.Channel}", dev));
+            if (!hub.IsConnected) continue;
+            foreach (var dev in hub.State.Devices)
+            {
+                if (dev.LedCount <= 0) continue;
+                structures.Add(BuildStructure(hub, dev));
+            }
         }
         return structures;
     }
@@ -227,20 +236,23 @@ public sealed class CorsairLinkLightingDeviceProvider :
     // a black-out tick.
     public IReadOnlyList<DeviceFrame> BuildFrames(int startingIndex)
     {
-        if (!_hub.IsConnected) return Array.Empty<DeviceFrame>();
+        if (!_hubs.AnyConnected) return Array.Empty<DeviceFrame>();
         var settings = _store.Load();
         var layouts = settings.Lighting.DeviceLayouts;
         var frames = new List<DeviceFrame>();
         var idx = startingIndex;
         var slot = 0;
-        foreach (var dev in _hub.State.Devices)
+        foreach (var hub in _hubs.All)
         {
-            if (dev.LedCount <= 0) continue;
-            var id = $"corsair:ch{dev.Channel}";
-            var structure = BuildStructure(id, dev);
-            foreach (var zone in ZoneResolution.Resolve(structure, settings))
+            if (!hub.IsConnected) continue;
+            foreach (var dev in hub.State.Devices)
             {
-                frames.Add(BuildOrReuseFrame(zone.Id, zone.FrameLedCount, slot++, layouts, ref idx));
+                if (dev.LedCount <= 0) continue;
+                var structure = BuildStructure(hub, dev);
+                foreach (var zone in ZoneResolution.Resolve(structure, settings))
+                {
+                    frames.Add(BuildOrReuseFrame(zone.Id, zone.FrameLedCount, slot++, layouts, ref idx));
+                }
             }
         }
         if (_frameCache.Count > frames.Count)
@@ -296,11 +308,13 @@ public sealed class CorsairLinkLightingDeviceProvider :
     /// <see cref="GetStructures"/> and <see cref="CorsairLinkLightingFrameWriter"/>
     /// (which rebuilds structures each tick to resolve the current zone partition).
     /// </summary>
-    internal static DeviceStructure BuildStructure(string id, CorsairLinkDevice dev)
+    internal static DeviceStructure BuildStructure(CorsairLinkHub hub, CorsairLinkDevice dev)
     {
-        var name = $"{dev.Name} (Fan {dev.Channel})";
+        var id = hub.ChannelId(dev.Channel);
+        // Not every LINK device is a fan; the chain position tells identical models apart.
+        var name = $"{dev.Name} ({hub.PortLabel(dev.Channel)})";
         var key = DeviceKeyComputer.ForFirstParty(
-            CorsairLinkProtocol.VendorId, CorsairLinkProtocol.ProductId, $"ch{dev.Channel}");
+            CorsairLinkProtocol.VendorId, CorsairLinkProtocol.ProductId, id.Substring("corsair:".Length));
         var structure = new DeviceStructure { DeviceId = id, Name = name, DeviceKey = key };
         var model = CorsairLinkModels.Lookup(dev.Type, dev.Model);
         var hasLayout = model.LedU?.Length == dev.LedCount;

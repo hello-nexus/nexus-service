@@ -13,10 +13,10 @@ using RgbColor = Nexus.Service.Peripherals.Hyte.Np50.RgbColor;
 namespace Nexus.Service.Lighting;
 
 /// <summary>
-/// Pushes per-frame engine output to the iCUE LINK System Hub at 30 Hz.
-/// Builds one contiguous RGB byte buffer from all LED-bearing devices in
+/// Pushes per-frame engine output to every iCUE LINK System Hub at 30 Hz.
+/// Builds one contiguous RGB byte buffer per hub from its LED-bearing devices in
 /// ascending channel order and calls <see cref="CorsairLinkHub.SendColors"/>
-/// once per tick. The hub handles chunked endpoint writes internally.
+/// once per hub per tick. The hub handles chunked endpoint writes internally.
 ///
 /// Wire color order is R,G,B (no swap) per the protocol spec.
 /// </summary>
@@ -26,7 +26,7 @@ public sealed class CorsairLinkLightingFrameWriter : IHostedService, IDisposable
     private const int TickPeriodMs = 33;
 
     private readonly LightingEngine _engine;
-    private readonly CorsairLinkHub _hub;
+    private readonly CorsairLinkHubs _hubs;
     private readonly IConfigStore _store;
     private readonly Np50IdentifyTracker _identify;
     private CancellationTokenSource? _cts;
@@ -48,10 +48,10 @@ public sealed class CorsairLinkLightingFrameWriter : IHostedService, IDisposable
     private readonly FeatureGates _gates;
 
     public CorsairLinkLightingFrameWriter(
-        LightingEngine engine, CorsairLinkHub hub, IConfigStore store, Np50IdentifyTracker identify, FeatureGates? gates = null)
+        LightingEngine engine, CorsairLinkHubs hubs, IConfigStore store, Np50IdentifyTracker identify, FeatureGates? gates = null)
     {
         _engine = engine;
-        _hub = hub;
+        _hubs = hubs;
         _store = store;
         _identify = identify;
         _gates = gates ?? FeatureGates.AllEnabled;
@@ -100,19 +100,27 @@ public sealed class CorsairLinkLightingFrameWriter : IHostedService, IDisposable
     private void Tick()
     {
         if (!_gates.Lighting) return;
-        if (!_hub.IsConnected) return;
+        if (!_hubs.AnyConnected) return;
         var devices = _engine.Devices;
         if (devices.Length == 0) return;
 
         var settings = _store.Load();
+        var nowTicks = DateTime.UtcNow.Ticks;
+        foreach (var hub in _hubs.All)
+        {
+            if (hub.IsConnected) TickHub(hub, devices, settings, nowTicks);
+        }
+    }
+
+    private void TickHub(CorsairLinkHub hub, DeviceFrame[] devices, NexusSettings settings, long nowTicks)
+    {
         var disabled = settings.Devices.DisabledLightingDevices;
         var uncontrolled = settings.Devices.UncontrolledLightingDevices;
         var prefs = settings.Devices.LightingDevicePrefs;
         var globalBrightness = MasterBrightness.Effective(settings.Lighting);
-        var nowTicks = DateTime.UtcNow.Ticks;
 
-        var hubDevices = _hub.State.Devices;
-        var hubHasLcd = _hub.State.HasLcd;
+        var hubDevices = hub.State.Devices;
+        var hubHasLcd = hub.State.HasLcd;
         var portCap = ComputePortCapFactor(hubDevices);
         var effectiveBrightness = Math.Min(globalBrightness, portCap);
 
@@ -126,8 +134,7 @@ public sealed class CorsairLinkLightingFrameWriter : IHostedService, IDisposable
             if (dev.LedCount <= 0) continue;
             totalLeds += dev.LedCount;
             anyChannel = true;
-            var id = $"corsair:ch{dev.Channel}";
-            var structure = CorsairLinkLightingDeviceProvider.BuildStructure(id, dev);
+            var structure = CorsairLinkLightingDeviceProvider.BuildStructure(hub, dev);
             var zones = ZoneResolution.Resolve(structure, settings);
             _tickStructures.Add(structure);
             _tickZones.Add(zones);
@@ -170,7 +177,7 @@ public sealed class CorsairLinkLightingFrameWriter : IHostedService, IDisposable
             }
         }
 
-        _hub.SendColors(new ReadOnlySpan<byte>(_wireBuf, 0, wireOffset));
+        hub.SendColors(new ReadOnlySpan<byte>(_wireBuf, 0, wireOffset));
     }
 
     /// <summary>

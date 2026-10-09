@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Threading;
+using System.Threading.Tasks;
 using Nexus.Service.Peripherals.Hid;
 using Nexus.Service.Platform;
 
@@ -47,9 +48,47 @@ public sealed class CorsairLinkHub : IDisposable
     private long _colorReopenAfterMs;
     internal const int ColorReopenBackoffMs = 1000;
     internal Func<long> NowMs { get; set; } = () => Environment.TickCount64;
+    internal int DetectionPollMs { get; set; } = CorsairLinkProtocol.DetectionPollMs;
     private bool _disposed;
+    // A re-detection owns the hub: colour, duty and telemetry I/O stand down.
+    private bool _redetecting;
+    private volatile bool _redetectRequested;
 
+    /// <param name="idPrefix">"corsair:" keeps the single-hub ids; other hubs carry their serial.</param>
+    /// <param name="number">1-based display number; 1 for the hub holding the unqualified ids.</param>
+    public CorsairLinkHub(string idPrefix = "corsair:", int number = 1)
+    {
+        IdPrefix = idPrefix;
+        Number = number;
+    }
+
+    /// <summary>The Nexus Control / device-row id every hub shares.</summary>
     public string DeviceId => "corsair";
+
+    public string IdPrefix { get; }
+    public int Number { get; }
+
+    /// <summary>"corsair" for the first hub, "corsair:&lt;serial&gt;" for the others.</summary>
+    public string HubId => IdPrefix.TrimEnd(':');
+
+    public string ChannelId(int channel) => $"{IdPrefix}ch{channel}";
+
+    public string PortLabel(int channel) => Number == 1 ? $"Port {channel}" : $"Hub {Number} Port {channel}";
+
+    public bool Redetecting
+    {
+        get { lock (_lock) return _redetecting; }
+    }
+
+    public bool RedetectRequested => _redetectRequested;
+
+    /// <summary>Queues a re-detection; the hub's connection worker runs it on its next poll.</summary>
+    public bool RequestRedetect()
+    {
+        if (!IsConnected || Redetecting || _redetectRequested) return false;
+        _redetectRequested = true;
+        return true;
+    }
 
     public CorsairLinkState State { get; } = new();
 
@@ -75,6 +114,8 @@ public sealed class CorsairLinkHub : IDisposable
             _firmwareMajor = 0;
             _colorPrimed = false;
             _colorReopenDue = false;
+            _redetecting = false;
+            _redetectRequested = false;
         }
     }
 
@@ -97,6 +138,7 @@ public sealed class CorsairLinkHub : IDisposable
             State.IsConnected = false;
             State.Firmware = "";
             State.Devices = Array.Empty<CorsairLinkDevice>();
+            State.UnmappedChannels = Array.Empty<int>();
             _softwareMode = false;
             _colorPrimed = false;
         }
@@ -152,8 +194,59 @@ public sealed class CorsairLinkHub : IDisposable
     {
         lock (_lock)
         {
-            if (_device == null) return false;
+            if (_device == null || _redetecting) return false;
             return RefreshLocked();
+        }
+    }
+
+    /// <summary>
+    /// Re-maps the daisy chain (see <see cref="CorsairLinkProtocol.CmdStartDetection"/>)
+    /// and re-reads it. False when the hub refused, never finished, or went away.
+    /// </summary>
+    public async Task<bool> RedetectAsync(CancellationToken ct)
+    {
+        lock (_lock)
+        {
+            _redetectRequested = false;
+            if (_device == null || _redetecting) return false;
+            _redetecting = true;
+            var n = Transfer(CorsairLinkProtocol.CmdStartDetection);
+            // A timed-out read may still have started detection; the pings below tell.
+            if (n < 0 || (n > CorsairLinkProtocol.ResponseStatusOffset && Refused(CorsairLinkProtocol.CmdStartDetection)))
+            {
+                // Drain a late 1a echo while it still counts as ours, or it reads as another host.
+                for (var i = 0; i < DrainReads && ReadStrippedLocked() > 0; i++) { }
+                _redetecting = false;
+                return false;
+            }
+        }
+        try
+        {
+            var finished = false;
+            for (var i = 0; i < CorsairLinkProtocol.DetectionMaxPolls && !finished; i++)
+            {
+                await Task.Delay(DetectionPollMs, ct).ConfigureAwait(false);
+                lock (_lock)
+                {
+                    if (_device == null) return false;
+                    var n = Transfer(CorsairLinkProtocol.CmdPing);
+                    finished = n > CorsairLinkProtocol.ResponseStatusOffset
+                        && _read[CorsairLinkProtocol.ResponseCommandOffset] == CorsairLinkProtocol.CmdPing[0]
+                        && _read[CorsairLinkProtocol.ResponseBusyOffset] == 0;
+                }
+            }
+            lock (_lock)
+            {
+                if (_device == null) return false;
+                // The chain re-powered under the colour handle; reopen it on the next frame.
+                _colorReopenDue = true;
+                _colorReopenAfterMs = 0;
+                return RefreshLocked() && finished;
+            }
+        }
+        finally
+        {
+            lock (_lock) _redetecting = false;
         }
     }
 
@@ -162,7 +255,7 @@ public sealed class CorsairLinkHub : IDisposable
     {
         lock (_lock)
         {
-            if (_device == null || items.Count == 0) return false;
+            if (_device == null || _redetecting || items.Count == 0) return false;
             var count = Math.Min(items.Count, CorsairLinkProtocol.MaxChannels);
             Span<byte> payload = stackalloc byte[1 + CorsairLinkProtocol.MaxChannels * 4];
             payload[0] = (byte)count;
@@ -189,7 +282,7 @@ public sealed class CorsairLinkHub : IDisposable
     {
         lock (_lock)
         {
-            if (_device == null || !_colorPrimed) return false;
+            if (_device == null || !_colorPrimed || _redetecting) return false;
 
             if (_colorReopenDue)
             {
@@ -285,10 +378,17 @@ public sealed class CorsairLinkHub : IDisposable
 
         var hasLcd = false;
         var list = new List<CorsairLinkDevice>(discovered.Count);
+        var unmapped = new List<int>();
         foreach (var d in discovered)
         {
             var meta = CorsairLinkModels.Lookup(d.Type, d.Model);
             if (d.Type == 6 || d.Type == 14) hasLcd = true;
+            // A hot-plugged device stays listed without a sensor/LED slot until the
+            // chain is re-mapped; its speed sensor is the one slot readable for it.
+            if (spResp != null && meta.HasSpeed && d.Channel < speeds.Length && speeds[d.Channel] < 0)
+            {
+                unmapped.Add(d.Channel);
+            }
             var dynamicLeds = d.Channel < ledCounts.Length ? ledCounts[d.Channel] : 0;
             var dev = new CorsairLinkDevice
             {
@@ -309,6 +409,7 @@ public sealed class CorsairLinkHub : IDisposable
         }
         State.Devices = list;
         State.HasLcd = hasLcd;
+        State.UnmappedChannels = unmapped;
         return true;
     }
 
@@ -375,7 +476,9 @@ public sealed class CorsairLinkHub : IDisposable
     // 02 13, whose reply can arrive late after a timed-out read; iCUE probes (09)
     // every file it opens.
     private bool IsOwnCommand(byte cmd) =>
-        cmd is 0x01 or 0x05 or 0x06 or 0x07 or 0x08 or 0x0D || (cmd == 0x02 && !_colorPrimed);
+        cmd is 0x01 or 0x05 or 0x06 or 0x07 or 0x08 or 0x0D
+        || (cmd == 0x02 && !_colorPrimed)
+        || (cmd is 0x12 or 0x1A && _redetecting);
 
     private void NoteEcho(byte sent)
     {

@@ -2,6 +2,8 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Text;
+using System.Threading;
+using System.Threading.Tasks;
 using Nexus.Service.Peripherals.CorsairLink;
 using Nexus.Service.Peripherals.Hid;
 using Xunit;
@@ -22,6 +24,11 @@ public class CorsairLinkHubHandleTests
         public readonly List<byte[]> Commands = new();
         public int AcceptedColourFrames;
         public Action<byte>? AfterClose;
+        /// <summary>Pings answered busy before the chain counts as re-mapped.</summary>
+        public int BusyPings;
+        public Action? OnPing;
+        /// <summary>Channel 1 stays listed but has no speed slot, as after a hot-plug.</summary>
+        public bool Ch1Unmapped;
         private readonly Queue<byte[]> _responses = new();
 
         public int VendorId => CorsairLinkProtocol.VendorId;
@@ -40,6 +47,12 @@ public class CorsairLinkHubHandleTests
             resp[1 + CorsairLinkProtocol.ResponseCommandOffset] = cmd[0];
             resp[1 + CorsairLinkProtocol.ResponseStatusOffset] = (byte)status;
             payload.CopyTo(resp, 1 + 4);
+            if (cmd[0] == 0x12)
+            {
+                resp[1 + CorsairLinkProtocol.ResponseBusyOffset] = (byte)(BusyPings > 0 ? 1 : 0);
+                if (BusyPings > 0) BusyPings--;
+                OnPing?.Invoke();
+            }
             _responses.Enqueue(resp);
             return true;
         }
@@ -110,7 +123,7 @@ public class CorsairLinkHubHandleTests
             _ => false,
         };
 
-        private static byte[] ReadResource(byte resource)
+        private byte[] ReadResource(byte resource)
         {
             switch (resource)
             {
@@ -119,7 +132,7 @@ public class CorsairLinkHubHandleTests
                     return new byte[] { 0x21, 0x00, 1, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x05, (byte)serial.Length }
                         .Concat(serial).ToArray();
                 case 0x17:
-                    return new byte[] { 0x25, 0x00, 2, 1, 0, 0, 0, 0xe0, 0x01 };
+                    return new byte[] { 0x25, 0x00, 2, 1, 0, 0, (byte)(Ch1Unmapped ? 1 : 0), 0xe0, 0x01 };
                 case 0x21:
                     return new byte[] { 0x10, 0x00, 2, 1, 0, 0, 0, 0x0c, 0x01 };
                 default:
@@ -315,5 +328,97 @@ public class CorsairLinkHubHandleTests
         Assert.False(CorsairLinkHub.HearsAnotherHost(quiet, 10));
         Assert.True(CorsairLinkHub.HearsAnotherHost(busy, 10));
         Assert.Empty(busy.Commands);
+    }
+
+    [Fact]
+    public async Task Redetect_starts_detection_then_pings_until_the_hub_is_idle()
+    {
+        var (hub, device) = Connected();
+        hub.DetectionPollMs = 1;
+        device.BusyPings = 3;
+        device.Commands.Clear();
+
+        Assert.True(await hub.RedetectAsync(CancellationToken.None));
+
+        Assert.Equal(0x1A, device.Commands[0][0]);
+        Assert.Equal(0x01, device.Commands[0][1]);
+        Assert.Equal(4, device.Commands.Count(c => c[0] == 0x12));
+        Assert.False(hub.ForeignHostSeen);
+        Assert.Single(hub.State.Devices);
+        Assert.False(hub.Redetecting);
+    }
+
+    [Fact]
+    public async Task Colour_and_duty_writes_stand_down_while_redetecting()
+    {
+        var (hub, device) = Connected();
+        hub.DetectionPollMs = 1;
+        device.BusyPings = 1;
+        bool? colours = null;
+        bool? duties = null;
+        device.OnPing = () =>
+        {
+            colours ??= hub.SendColors(Frame);
+            duties ??= hub.SetDuties(new[] { (1, 50) });
+        };
+
+        Assert.True(await hub.RedetectAsync(CancellationToken.None));
+
+        Assert.False(colours);
+        Assert.False(duties);
+        // The colour handle reopens on the first frame after the chain re-powered.
+        Assert.True(hub.SendColors(Frame));
+        Assert.Equal(Colour, device.Handles[0]);
+    }
+
+    [Fact]
+    public async Task A_late_detection_reply_is_not_read_as_another_host()
+    {
+        var (hub, device) = Connected();
+        hub.DetectionPollMs = 1;
+        device.BusyPings = 2;
+        // The 1a reply arrives after its read timed out, ahead of the first ping's.
+        device.TimedOutReads = 1;
+
+        Assert.True(await hub.RedetectAsync(CancellationToken.None));
+
+        Assert.False(hub.ForeignHostSeen);
+        Assert.Single(hub.State.Devices);
+    }
+
+    [Fact]
+    public async Task Redetect_gives_up_when_the_hub_stays_busy()
+    {
+        var (hub, device) = Connected();
+        hub.DetectionPollMs = 1;
+        device.BusyPings = CorsairLinkProtocol.DetectionMaxPolls + 5;
+
+        Assert.False(await hub.RedetectAsync(CancellationToken.None));
+        Assert.False(hub.Redetecting);
+    }
+
+    [Fact]
+    public void A_listed_fan_without_a_speed_slot_is_reported_unmapped()
+    {
+        var (hub, device) = Connected();
+        Assert.Empty(hub.State.UnmappedChannels);
+
+        device.Ch1Unmapped = true;
+        Assert.True(hub.Poll());
+
+        Assert.Equal(new[] { 1 }, hub.State.UnmappedChannels);
+        Assert.Single(hub.State.Devices);
+    }
+
+    [Fact]
+    public void RequestRedetect_needs_a_connected_hub()
+    {
+        Assert.False(new CorsairLinkHub().RequestRedetect());
+
+        var (hub, _) = Connected();
+        Assert.True(hub.RequestRedetect());
+        Assert.True(hub.RedetectRequested);
+        // A second request before the worker picks the first up is refused, not queued twice.
+        Assert.False(hub.RequestRedetect());
     }
 }

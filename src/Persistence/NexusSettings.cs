@@ -1955,6 +1955,8 @@ public sealed class CorsairSettings
     public byte LcdBrightness { get; set; } = 100;
     /// <summary>LCD rotation: 0 = 0 deg, 1 = 90 deg, 2 = 180 deg, 3 = 270 deg.</summary>
     public byte LcdRotation { get; set; }
+    /// <summary>USB serial (or HID path) of the LINK hub that owns the unqualified "corsair:ch{N}" ids.</summary>
+    public string? PrimaryHubKey { get; set; }
 }
 
 /// <summary>
