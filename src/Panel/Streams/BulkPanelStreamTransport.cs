@@ -295,7 +295,7 @@ public sealed class BulkPanelStreamTransport : IStreamedPanelTransport, IOrienta
             {
                 return false;
             }
-            if (_hub.SendFrame(_orientation.Apply(frame, _width, _height)))
+            if (_hub.SendFrame(_orientation.Apply(frame, _width, _height), _width, _height))
             {
                 Volatile.Write(ref _lastSendMs, Environment.TickCount64);
                 _dropLogged = false;

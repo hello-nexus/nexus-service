@@ -87,6 +87,19 @@ public sealed class BulkPanelHub : IDisposable
         }
     }
 
+    /// <summary>Pushes a frame rendered at the given size; false once the panel runs another geometry.</summary>
+    public bool SendFrame(ReadOnlySpan<byte> bgra, int width, int height)
+    {
+        lock (_lock)
+        {
+            if (!_attached || _pipe is null || _width != width || _height != height)
+            {
+                return false;
+            }
+            return _driver.SendFrame(_pipe, _hid, bgra);
+        }
+    }
+
     public bool SendFrame(ReadOnlySpan<byte> bgra)
     {
         lock (_lock)
