@@ -126,6 +126,10 @@ public sealed class DeckStripRenderer
         return image;
     }
 
+    /// <summary>The hold-to-edit progress ring centred on an empty segment's background. Caller disposes.</summary>
+    public Image<Rgba32> RenderHoldPrompt(float fraction, int width, int height) =>
+        DeckHoldPromptRenderer.Render(fraction, width, height, Background);
+
     /// <summary>All segments side by side in one image, thin dividers between them. Caller disposes.</summary>
     public Image<Rgba32> RenderStrip(IReadOnlyList<DialSegmentInput> segments, int width, int height)
     {

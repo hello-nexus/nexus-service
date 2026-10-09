@@ -3009,6 +3009,14 @@ public sealed partial class StreamDeckConnectionWorker : BackgroundService, IDec
                 {
                     var hold = holds[physicalIndex];
                     var fraction = (float)Math.Clamp((now - hold.StartedAt).TotalMilliseconds / HoldToEditMs, 0.0, 1.0);
+                    if (physicalIndex < 0)
+                    {
+                        if (AdvanceDialHold(surface, DialIndexOfHoldKey(physicalIndex), hold, fraction))
+                        {
+                            holds.Remove(physicalIndex);
+                        }
+                        continue;
+                    }
                     if (fraction >= 1f)
                     {
                         FireHoldEdit(surface, hold);

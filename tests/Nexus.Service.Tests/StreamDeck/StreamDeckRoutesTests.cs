@@ -649,6 +649,24 @@ public sealed class StreamDeckRoutesTests : IClassFixture<StreamDeckRouteHostFac
     }
 
     [Fact]
+    public async Task SimInput_DialDownOnAnEmptyDial_StartsTheHoldSpinner_AndDialUpCancelsIt()
+    {
+        var (factory, client) = Boot();
+        using (factory)
+        {
+            var summary = await Simulate(client, 0x0084);
+            var serial = summary.GetProperty("serial").GetString()!;
+            var worker = factory.Services.GetRequiredService<StreamDeckConnectionWorker>();
+
+            await client.PostAsync("/streamdeck/dev/sim-input", Json($"{{\"serial\":\"{serial}\",\"kind\":\"dialDown\",\"index\":2}}"));
+            Assert.True(worker.HasActiveDialHold(serial, 2));
+
+            await client.PostAsync("/streamdeck/dev/sim-input", Json($"{{\"serial\":\"{serial}\",\"kind\":\"dialUp\",\"index\":2}}"));
+            Assert.False(worker.HasActiveDialHold(serial, 2));
+        }
+    }
+
+    [Fact]
     public async Task SimInput_TouchKey_PagesTheNeo()
     {
         var (factory, client) = Boot();

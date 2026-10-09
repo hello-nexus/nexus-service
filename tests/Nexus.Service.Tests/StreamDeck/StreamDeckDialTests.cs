@@ -10,6 +10,7 @@ using Nexus.Service.Devices;
 using Nexus.Service.Devices.Detection;
 using Nexus.Service.Peripherals.StreamDeck;
 using Nexus.Service.Persistence;
+using Nexus.Service.Rendering;
 using Nexus.Service.Serialization;
 using Nexus.Service.Sockets;
 using Xunit;
@@ -631,6 +632,217 @@ public sealed class StreamDeckDialTests : IDisposable
         var folderSegment = _sim.ScreenRegions.Skip(before).Last();
         var pageSegment = _sim.ScreenRegions.Take(before).Last(r => r.Width == 800);
         Assert.NotEqual(folderSegment.Bytes.Length, pageSegment.Bytes.Length);
+    }
+
+    // ── Hold to edit on an empty dial ──
+
+    private byte[] EmptySegmentWire(StreamDeckModel model, int width, int height)
+    {
+        using var image = new DeckStripRenderer(NewTestKeyRenderer()).RenderSegment(new DialSegmentInput(), width, height);
+        return DeckWireImageEncoder.EncodeScreen(image, model);
+    }
+
+    [Fact]
+    public void EmptyDialHold_CompletesIntoThePendingEditWithTheDialIndex_AndReleaseFiresNothing()
+    {
+        Build(Plus, Dials(Volume("a")));
+        _values.Set("volume:a", 30);
+        var before = _sim!.ScreenRegions.Count;
+
+        _sim.PokeDialPress(3, true);
+        Drain();
+
+        Assert.True(_worker!.HasActiveDialHold(Serial, 3));
+        Assert.Equal((600, 0, 200, 100), LastRegion());
+        Assert.Equal(before + 1, _sim.ScreenRegions.Count);
+        var spinnerStart = _sim.ScreenRegions.Last().Bytes;
+
+        _clock.Advance(TimeSpan.FromMilliseconds(350));
+        _worker.AnimateHolds();
+        Assert.True(_sim.ScreenRegions.Count > before + 1);
+        Assert.NotEqual(spinnerStart, _sim.ScreenRegions.Last().Bytes);
+        Assert.False(_worker.TryGetPendingEdit(out _));
+
+        _clock.Advance(TimeSpan.FromSeconds(1));
+        _worker.AnimateHolds();
+
+        Assert.True(_worker.TryGetPendingEdit(out var edit));
+        Assert.Equal(3, edit.DialIndex);
+        Assert.Equal(Serial, edit.Serial);
+        Assert.False(_worker.HasActiveDialHold(Serial, 3));
+        Assert.Equal(EmptySegmentWire(Plus, 200, 100), _sim.ScreenRegions.Last().Bytes);
+        var token = edit.Token;
+
+        _sim.PokeDialPress(3, false);
+        Drain();
+
+        Assert.Empty(_executor.Calls);
+        Assert.Empty(_values.Mutes);
+        Assert.True(_worker.TryGetPendingEdit(out var after));
+        Assert.Equal(token, after.Token);
+    }
+
+    [Fact]
+    public void EmptyDialHold_ReleasedEarlyRestoresTheSegment_WithoutAnEdit()
+    {
+        Build(Plus, Dials(Volume("a")));
+        _sim!.PokeDialPress(2, true);
+        Drain();
+        _clock.Advance(TimeSpan.FromMilliseconds(300));
+        _worker!.AnimateHolds();
+
+        _sim.PokeDialPress(2, false);
+        Drain();
+
+        Assert.False(_worker.HasActiveDialHold(Serial, 2));
+        Assert.Equal((400, 0, 200, 100), LastRegion());
+        Assert.Equal(EmptySegmentWire(Plus, 200, 100), _sim.ScreenRegions.Last().Bytes);
+        _clock.Advance(TimeSpan.FromSeconds(2));
+        _worker.AnimateHolds();
+        Assert.False(_worker.TryGetPendingEdit(out _));
+    }
+
+    [Fact]
+    public void EmptyDialHold_TurningTheDialCancelsIt()
+    {
+        Build(Plus, Dials(Volume("a")));
+        _sim!.PokeDialPress(1, true);
+        Drain();
+
+        _sim.PokeRotate(1, 1);
+        Drain();
+
+        Assert.False(_worker!.HasActiveDialHold(Serial, 1));
+        Assert.Equal(EmptySegmentWire(Plus, 200, 100), _sim.ScreenRegions.Last().Bytes);
+        _clock.Advance(TimeSpan.FromSeconds(2));
+        _worker.AnimateHolds();
+        Assert.False(_worker.TryGetPendingEdit(out _));
+        _sim.PokeDialPress(1, false);
+        Drain();
+        Assert.Empty(_executor.Calls);
+    }
+
+    [Fact]
+    public void EmptyDialHold_APageChangeCancelsIt()
+    {
+        const string pageDials = "\"dials\":[{\"action\":{\"type\":\"volume\",\"deviceId\":\"a\"}}]";
+        Build(Plus, "{\"pages\":[{\"slots\":[]," + pageDials + "},{\"slots\":[]}]}");
+        _sim!.PokeDialPress(2, true);
+        Drain();
+        Assert.True(_worker!.HasActiveDialHold(Serial, 2));
+
+        _sim.PokeTouch(StreamDeckTouchKind.Flick, 535, 75, 485, 64);
+        Drain();
+
+        Assert.Equal(1, _worker.GetCurrentPage(Serial));
+        Assert.False(_worker.HasActiveDialHold(Serial, 2));
+        _clock.Advance(TimeSpan.FromSeconds(2));
+        _worker.AnimateHolds();
+        Assert.False(_worker.TryGetPendingEdit(out _));
+    }
+
+    [Fact]
+    public void BoundDial_HeldHasNoHoldToEdit_AndStillPressesOnRelease()
+    {
+        Build(Plus, Dials(Volume("a")));
+        _values.Set("volume:a", 30);
+
+        _sim!.PokeDialPress(0, true);
+        Drain();
+        Assert.False(_worker!.HasActiveDialHold(Serial, 0));
+        _clock.Advance(TimeSpan.FromSeconds(2));
+        _worker.AnimateHolds();
+        Assert.False(_worker.TryGetPendingEdit(out _));
+
+        _sim.PokeDialPress(0, false);
+        Drain();
+        Assert.Equal(("volume:a", true), _values.Mutes.Single());
+    }
+
+    [Fact]
+    public void StackedDial_CountsAsBound_NoHoldToEdit()
+    {
+        Build(Plus, Dials(StackedDial));
+
+        _sim!.PokeDialPress(0, true);
+        Drain();
+
+        Assert.False(_worker!.HasActiveDialHold(Serial, 0));
+    }
+
+    [Fact]
+    public void EmptyDialHold_RecentAppsModeIsANoOp()
+    {
+        Build(Plus, Dials(Volume("a")));
+        _store.Update(s => s.StreamDeck.Instances[DeckInstanceResolver.PhysicalInstanceId(Serial)].Mode = "recentApps");
+        _worker!.RefreshView(Serial);
+
+        _sim!.PokeDialPress(2, true);
+        Drain();
+        _clock.Advance(TimeSpan.FromSeconds(2));
+        _worker.AnimateHolds();
+
+        Assert.False(_worker.HasActiveDialHold(Serial, 2));
+        Assert.False(_worker.TryGetPendingEdit(out _));
+    }
+
+    [Fact]
+    public void EmptyDialHold_OnASleepingDeckWakesItAndStartsFromThatPress()
+    {
+        Build(Plus, Dials(Volume("a")));
+        _worker!.PutAsleep(Serial);
+
+        _sim!.PokeDialPress(3, true);
+        Drain();
+
+        Assert.False(_worker.IsAsleep(Serial));
+        Assert.True(_worker.HasActiveDialHold(Serial, 3));
+    }
+
+    [Fact]
+    public void EmptyDialHold_StudioAnimatesTheDialsRingAsAFillingProgressRing()
+    {
+        Build(Studio, Dials(Volume("a")));
+        _values.Set("volume:a", 50);
+        _worker!.Tick();
+
+        _sim!.PokeDialPress(1, true);
+        Drain();
+        _clock.Advance(TimeSpan.FromMilliseconds(350));
+        _worker.AnimateHolds();
+
+        static int Lit(byte[] ring) => Enumerable.Range(0, 24).Count(i => ring[i * 3] > 40 || ring[i * 3 + 1] > 40 || ring[i * 3 + 2] > 40);
+        var halfway = Lit(_sim.PeekRing(1)!);
+        Assert.InRange(halfway, 1, 23);
+
+        _clock.Advance(TimeSpan.FromMilliseconds(200));
+        _worker.AnimateHolds();
+        Assert.True(Lit(_sim.PeekRing(1)!) > halfway);
+
+        _clock.Advance(TimeSpan.FromSeconds(1));
+        _worker.AnimateHolds();
+
+        Assert.True(_worker.TryGetPendingEdit(out var edit));
+        Assert.Equal(1, edit.DialIndex);
+        Assert.All(_sim.PeekRing(1)!, b => Assert.Equal(0, b));
+        Assert.Empty(_sim.ScreenRegions);
+    }
+
+    [Fact]
+    public void EmptyDialHold_StudioReleasedEarlyDarkensTheRingAgain()
+    {
+        Build(Studio, Dials(Volume("a")));
+        _sim!.PokeDialPress(1, true);
+        Drain();
+        _clock.Advance(TimeSpan.FromMilliseconds(400));
+        _worker!.AnimateHolds();
+        Assert.Contains(_sim.PeekRing(1)!, b => b > 40);
+
+        _sim.PokeDialPress(1, false);
+        Drain();
+
+        Assert.All(_sim.PeekRing(1)!, b => Assert.Equal(0, b));
+        Assert.False(_worker.TryGetPendingEdit(out _));
     }
 
     // ── Touch ──

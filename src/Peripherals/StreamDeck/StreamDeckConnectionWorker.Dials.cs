@@ -243,9 +243,14 @@ public sealed partial class StreamDeckConnectionWorker
                 WakeIfAsleep(surface);
                 runtime.Down = true;
                 runtime.TurnedWhileHeld = false;
+                StartDialHold(surface, i);
                 continue;
             }
             runtime.Down = false;
+            if (TryEndHoldEdit(surface.Serial, DialHoldKey(i)))
+            {
+                RestoreDialVisuals(surface, i);
+            }
             if (!runtime.TurnedWhileHeld)
             {
                 ActivateDial(surface, i, fromTouch: false);
@@ -273,6 +278,10 @@ public sealed partial class StreamDeckConnectionWorker
             if (runtime.Down)
             {
                 runtime.TurnedWhileHeld = true;
+            }
+            if (TryEndHoldEdit(surface.Serial, DialHoldKey(i)))
+            {
+                RestoreDialVisuals(surface, i);
             }
             TurnDial(surface, i, ticks[i], runtime);
         }
@@ -696,6 +705,130 @@ public sealed partial class StreamDeckConnectionWorker
         });
     }
 
+    // ── Hold to edit on an empty dial ──
+
+    // Dial holds share _activeHolds with key holds; dial i is stored under the negative key -(i + 1).
+    private static int DialHoldKey(int dialIndex) => -(dialIndex + 1);
+
+    private static int DialIndexOfHoldKey(int key) => -key - 1;
+
+    /// <summary>Test seam: true if an empty-dial hold is animating on this dial.</summary>
+    internal bool HasActiveDialHold(string serial, int dialIndex)
+    {
+        lock (_lock)
+        {
+            return _activeHolds.TryGetValue(serial, out var holds) && holds.ContainsKey(DialHoldKey(dialIndex));
+        }
+    }
+
+    /// <summary>The deck can show a dial hold: on the dial's own segment, or as a progress ring on a screenless deck with LED rings.</summary>
+    private static bool ShowsDialHold(StreamDeckModel model) =>
+        model.Encoders > 0 && (model.Screen is { Kind: not StreamDeckScreenKind.InfoScreen } || model.Screen is null && model.RingKind == StreamDeckRingKind.StudioReport);
+
+    /// <summary>Begins the hold spinner on an empty dial pressed down; bound dials, Recent Apps mode and decks with nothing to show are left alone. Caller holds _lock.</summary>
+    private void StartDialHold(IStreamDeckSurface surface, int dialIndex)
+    {
+        if (!ShowsDialHold(surface.Model) || IsRecentAppsMode(surface.Serial))
+        {
+            return;
+        }
+        var state = DialStateLocked(surface);
+        var dials = VisibleDialsLocked(surface, out _, out _, out _);
+        if (!IsDialEmpty(EffectiveDial(dials[dialIndex], state.Dials[dialIndex])))
+        {
+            return;
+        }
+        var serial = surface.Serial;
+        if (!_activeHolds.TryGetValue(serial, out var holds))
+        {
+            holds = new Dictionary<int, HoldEditState>();
+            _activeHolds[serial] = holds;
+        }
+        holds[DialHoldKey(dialIndex)] = new HoldEditState { StartedAt = _clock.GetUtcNow(), LastFrameIndex = 0 };
+        _anyHoldActive = true;
+        PushDialHoldFrame(surface, dialIndex, 0);
+    }
+
+    /// <summary>One animation frame of a dial hold. True when the hold completed and fired the editor intent.</summary>
+    private bool AdvanceDialHold(IStreamDeckSurface surface, int dialIndex, HoldEditState hold, float fraction)
+    {
+        if (fraction >= 1f)
+        {
+            // The hold took over the press: nothing else fires on release.
+            DialStateLocked(surface).Dials[dialIndex].TurnedWhileHeld = true;
+            StartDialEdit(surface, dialIndex);
+            RestoreDialVisuals(surface, dialIndex);
+            return true;
+        }
+        var frameIndex = (int)(fraction * HoldRingSteps);
+        if (frameIndex != hold.LastFrameIndex)
+        {
+            PushDialHoldFrame(surface, dialIndex, frameIndex);
+            hold.LastFrameIndex = frameIndex;
+        }
+        return false;
+    }
+
+    private void PushDialHoldFrame(IStreamDeckSurface surface, int dialIndex, int frameIndex)
+    {
+        var model = surface.Model;
+        var fraction = (float)frameIndex / HoldRingSteps;
+        if (model.Screen is { Kind: not StreamDeckScreenKind.InfoScreen } screen)
+        {
+            var segmentWidth = screen.Width / model.Encoders;
+            using var image = _strip.RenderHoldPrompt(fraction, segmentWidth, screen.Height);
+            surface.SetScreenRegion(dialIndex * segmentWidth, 0, segmentWidth, screen.Height, DeckWireImageEncoder.EncodeScreen(image, model));
+            return;
+        }
+        var ring = new byte[model.EncoderRingLeds * 3];
+        var accent = ParseRgb(DefaultDialAccentHex);
+        var lit = Math.Clamp((int)Math.Round(fraction * model.EncoderRingLeds), 0, model.EncoderRingLeds);
+        for (var i = 0; i < model.EncoderRingLeds; i++)
+        {
+            var (r, g, b) = i < lit ? accent : Scale(accent, 0.08);
+            ring[i * 3] = r;
+            ring[i * 3 + 1] = g;
+            ring[i * 3 + 2] = b;
+        }
+        surface.SetRing(dialIndex, ring);
+    }
+
+    /// <summary>Puts the dial's normal (empty) segment or ring back after a hold ended without a view repaint.</summary>
+    private void RestoreDialVisuals(IStreamDeckSurface surface, int dialIndex)
+    {
+        var model = surface.Model;
+        var state = DialStateLocked(surface);
+        var frames = BuildDialFramesLocked(surface, sampleHistory: false);
+        if (model.Screen is { Kind: not StreamDeckScreenKind.InfoScreen })
+        {
+            state.SegmentKeys[dialIndex] = frames[dialIndex].Input.StateKey();
+            PushDialSegmentLocked(surface, dialIndex, frames[dialIndex].Input, 0f);
+            return;
+        }
+        state.RingKeys[dialIndex] = null;
+        SyncAuxLightsLocked(surface, frames);
+    }
+
+    /// <summary>Drops every dial hold of a deck whose whole view is being repainted (page change, swipe); the ring of a screenless deck is rewritten.</summary>
+    private void CancelDialHolds(IStreamDeckSurface surface)
+    {
+        if (!_activeHolds.TryGetValue(surface.Serial, out var holds))
+        {
+            return;
+        }
+        var state = DialStateLocked(surface);
+        foreach (var key in holds.Keys.Where(k => k < 0).ToList())
+        {
+            holds.Remove(key);
+            state.RingKeys[DialIndexOfHoldKey(key)] = null;
+        }
+        if (holds.Count == 0)
+        {
+            _activeHolds.Remove(surface.Serial);
+        }
+        _anyHoldActive = _activeHolds.Count > 0;
+    }
+
     // ── Dial resolution ──
 
     /// <summary>
@@ -1065,6 +1198,10 @@ public sealed partial class StreamDeckConnectionWorker
             return;
         }
         var state = DialStateLocked(surface);
+        if (viewChanged)
+        {
+            CancelDialHolds(surface);
+        }
         var frames = BuildDialFramesLocked(surface, sampleHistory: viewChanged);
         var hasSegments = model.Screen is { Kind: not StreamDeckScreenKind.InfoScreen } && model.Encoders > 0;
         if (hasSegments && viewChanged)
