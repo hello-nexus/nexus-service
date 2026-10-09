@@ -6,16 +6,15 @@ namespace Nexus.Service.Rendering;
 
 /// <summary>
 /// libjpeg-turbo's TurboJPEG 3 API: the SIMD baseline JPEG encoder behind every
-/// server-rendered device bitmap. The library ships next to the service binary
-/// (<c>Bundled/&lt;rid&gt;/turbojpeg</c>).
+/// server-rendered device bitmap. It is compiled into the bundled libSkiaSharp
+/// (<c>Bundled/skia</c>), whose JPEG codec uses the same copy.
 ///
-/// Several times faster than Skia's encoder on x64 at the same quality (Skia's
-/// bundled libjpeg-turbo carries no x86 SIMD). Every caller keeps the Skia
-/// fallback, so nothing here throws on load.
+/// Faster than Skia's encoder at the same quality: Skia's sets optimize_coding, a second
+/// Huffman pass. Every caller keeps the Skia fallback, so nothing here throws on load.
 /// </summary>
 internal static unsafe class TurboJpeg
 {
-    private const string Library = "turbojpeg";
+    private const string Library = "libSkiaSharp";
 
     // enum TJINIT / TJPARAM / TJPF / TJSAMP, turbojpeg.h 3.x.
     public const int InitCompress = 0;
@@ -55,7 +54,7 @@ internal static unsafe class TurboJpeg
                 catch (Exception ex) when (ex is DllNotFoundException or EntryPointNotFoundException or BadImageFormatException)
                 {
                     ServiceLog.Warn($"[jpeg] turbojpeg unavailable, falling back to the Skia encoder ({ex.GetType().Name}). "
-                        + "Device bitmaps will encode 3-5x slower; check that turbojpeg is beside the service binary.");
+                        + "Device bitmaps will encode through the slower Skia encoder; check that the bundled libSkiaSharp is beside the service binary.");
                     _available = 0;
                 }
             }

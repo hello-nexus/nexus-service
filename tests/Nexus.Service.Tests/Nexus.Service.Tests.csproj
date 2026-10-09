@@ -31,6 +31,12 @@
     <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.14.1" />
     <PackageReference Include="xunit" Version="2.9.3" />
     <PackageReference Include="xunit.runner.visualstudio" Version="3.1.4" />
+    <!-- SkiaSharp pulls these in transitively; excluded so the tests load the bundled
+         libSkiaSharp the service ships, never the NuGet build. -->
+    <PackageReference Include="SkiaSharp.NativeAssets.Win32" Version="4.153.1" ExcludeAssets="all" />
+    <PackageReference Include="SkiaSharp.NativeAssets.macOS" Version="4.153.1" ExcludeAssets="all" />
+    <PackageReference Include="HarfBuzzSharp.NativeAssets.Win32" Version="14.2.1.301" ExcludeAssets="all" />
+    <PackageReference Include="HarfBuzzSharp.NativeAssets.macOS" Version="14.2.1.301" ExcludeAssets="all" />
   </ItemGroup>
 
   <ItemGroup>

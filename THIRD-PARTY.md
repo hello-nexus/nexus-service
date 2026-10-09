@@ -45,17 +45,25 @@ licenses. Their respective license texts ship alongside the bundled binaries.
 - **Usage**: consumed unmodified as the official NuGet package; provides the
   Windows sensor backend (CPU / GPU / motherboard / fan / temperature)
 
-## Skia, SkiaSharp and HarfBuzz
+## Skia, SkiaSharp, HarfBuzz and libjpeg-turbo
 
-- **Projects**: Skia, SkiaSharp, HarfBuzz, HarfBuzzSharp
-- **Upstream**: https://skia.org, https://github.com/mono/SkiaSharp,
-  https://github.com/harfbuzz/harfbuzz
-- **License**: Skia BSD-3-Clause; SkiaSharp and HarfBuzzSharp MIT; HarfBuzz
-  Old MIT
-- **Usage**: consumed unmodified as the official NuGet packages; the native
-  `libSkiaSharp` and `libHarfBuzzSharp` ship beside the service binary and draw
-  every device-screen bitmap (Stream Deck keys and dials, LCD screens) and shape
-  its text
+- **Projects**: Skia (the mono/skia fork SkiaSharp builds from), SkiaSharp,
+  HarfBuzz, HarfBuzzSharp, libjpeg-turbo, and the libraries Skia builds in:
+  skcms, libpng, zlib, libwebp, Wuffs, FreeType (Linux only)
+- **Upstream**: https://skia.org, https://github.com/mono/skia,
+  https://github.com/mono/SkiaSharp, https://github.com/harfbuzz/harfbuzz,
+  https://libjpeg-turbo.org
+- **License**: Skia and skcms BSD-3-Clause; SkiaSharp and HarfBuzzSharp MIT;
+  HarfBuzz Old MIT; libjpeg-turbo BSD-3-Clause, IJG and zlib (texts in
+  `Bundled/turbojpeg-LICENSE.md` and `Bundled/turbojpeg-README.ijg`); libpng
+  PNG Reference Library License v2; zlib zlib; libwebp BSD-3-Clause; Wuffs
+  Apache-2.0; FreeType FreeType License
+- **Usage**: the managed SkiaSharp and HarfBuzzSharp assemblies are the
+  official NuGet packages, unmodified. The native `libSkiaSharp` is built from
+  source (`Bundled/skia`, provenance in `Bundled/skia/NOTES.md`) as one
+  raster-only library carrying HarfBuzz and libjpeg-turbo; it ships beside the
+  service binary, draws every device-screen bitmap (Stream Deck keys and dials,
+  LCD screens), shapes its text and encodes its JPEGs
 
 ## PawnIO
 

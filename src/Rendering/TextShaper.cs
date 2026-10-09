@@ -25,6 +25,10 @@ internal sealed unsafe class TextShaper
 
     private readonly HarfBuzzSharp.Font _font;
 
+    // HarfBuzz is compiled into the bundled libSkiaSharp (Bundled/skia); no libHarfBuzzSharp ships.
+    static TextShaper() => NativeLibrary.SetDllImportResolver(typeof(Blob).Assembly, static (name, _, searchPath) =>
+        name == "libHarfBuzzSharp" ? NativeLibrary.Load("libSkiaSharp", typeof(SKObject).Assembly, searchPath) : IntPtr.Zero);
+
     private TextShaper(HarfBuzzSharp.Font font) => _font = font;
 
     /// <summary>A shaper for the typeface, or null when Skia exposes no character map for it (shaping would map every character to the missing glyph).</summary>

@@ -342,7 +342,7 @@ internal static class RenderKit
         }
         catch (Exception ex)
         {
-            ServiceLog.Warn($"[render] text shaping unavailable for {typeface.FamilyName}, drawing unshaped: {ex.Message}");
+            ServiceLog.Warn($"[render] text shaping unavailable for {typeface.FamilyName}, drawing unshaped: {ex.InnerException?.Message ?? ex.Message}");
             return null;
         }
     }
@@ -443,8 +443,8 @@ internal static class RenderKit
 
     public static byte[] EncodeJpeg(SKBitmap image)
     {
-        // libjpeg-turbo where it loaded; Skia's encoder is several times slower on x64
-        // (its bundled libjpeg-turbo carries no x86 SIMD), so it is the fallback only.
+        // TurboJPEG where it loaded; Skia's encoder runs a second Huffman pass
+        // (optimize_coding), so it is the fallback only.
         // The pixels are premultiplied RGBA, hence TJPF_RGBX straight off the bitmap:
         // a translucent pixel encodes as composited over black, the key's bezel.
         if (image.RowBytes == image.Width * 4
