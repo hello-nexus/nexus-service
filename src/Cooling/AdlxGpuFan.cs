@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using System.Runtime.InteropServices;
+using System.Threading;
 using Nexus.Service.Persistence;
 using Nexus.Service.Platform;
 
@@ -143,6 +144,7 @@ internal sealed unsafe class AdlxGpuFan
     private bool? _savedZeroRpm;
     private int? _duty;
     private long? _releaseRetryAtMs;
+    private volatile bool _releaseRequested; // set without Sync by a TryRelease that timed out
 
     private AdlxGpuFan(nint fan, nint fan1, string name, string pnp, AdlxFanCurve.Range speed, AdlxFanCurve.Range temp, bool zeroRpmSupported)
     {
@@ -216,6 +218,7 @@ internal sealed unsafe class AdlxGpuFan
             if (!_takenOver && !TakeOver()) return false;
             _duty = duty;
             _releaseRetryAtMs = null;
+            _releaseRequested = false;
 
             // Zero RPM stops the fan below the driver's threshold whatever the curve says.
             var ok = !_zeroRpmSupported || WriteZeroRpm(duty == 0);
@@ -282,6 +285,18 @@ internal sealed unsafe class AdlxGpuFan
         }
     }
 
+    /// <summary><see cref="Release"/> that gives up after <paramref name="wait"/> when another ADLX call holds the lock, leaving it to <see cref="RetryRelease"/>.</summary>
+    public bool TryRelease(TimeSpan wait)
+    {
+        if (!Monitor.TryEnter(AdlxGpuFans.Sync, wait))
+        {
+            _releaseRequested = true;
+            return false;
+        }
+        try { return Release(); }
+        finally { Monitor.Exit(AdlxGpuFans.Sync); }
+    }
+
     private void Forget()
     {
         _takenOver = false;
@@ -298,7 +313,11 @@ internal sealed unsafe class AdlxGpuFan
     {
         lock (AdlxGpuFans.Sync)
         {
-            if (_releaseRetryAtMs is long at && Environment.TickCount64 >= at) Release();
+            if (_releaseRequested || (_releaseRetryAtMs is long at && Environment.TickCount64 >= at))
+            {
+                _releaseRequested = false;
+                Release();
+            }
         }
     }
 

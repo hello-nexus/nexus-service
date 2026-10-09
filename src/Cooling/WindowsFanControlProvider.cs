@@ -61,6 +61,7 @@ public sealed class WindowsFanControlProvider : IFanControlProvider, ICoolingPro
     private const int AmdMaxAttempts = 5;
     private const int AmdRetryMs = 30_000;
     private const int AmdHealthyMs = 600_000;
+    private static readonly TimeSpan AmdReleaseWait = TimeSpan.FromSeconds(2);
 
     public WindowsFanControlProvider(LhmComputer lhm, IConfigStore config)
     {
@@ -218,9 +219,14 @@ public sealed class WindowsFanControlProvider : IFanControlProvider, ICoolingPro
         // The last discovery, not a new one: discovery waits on the LHM update lock, and the
         // watchdog calls this while that update may be the thing that is stuck.
         var mappings = Volatile.Read(ref _channels) ?? EnsureDiscovered();
-        foreach (var m in mappings)
+        // Board and NVIDIA fans first, and a bounded wait for ADLX: the watchdog must not hang behind a stuck driver call.
+        foreach (var m in mappings.OrderBy(m => m.AmdFan is not null))
         {
-            try { WriteDefault(m); }
+            try
+            {
+                if (m.AmdFan is not { } amd) m.ControlSensor.Control.SetDefault();
+                else if (!amd.TryRelease(AmdReleaseWait)) ServiceLog.Warn($"[fan-control] {m.Id}: ADLX busy, release skipped");
+            }
             catch { /* swallow */ }
         }
         _softwareControlled.Clear();
