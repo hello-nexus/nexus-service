@@ -2159,8 +2159,8 @@ public sealed class UpdateSettings
     public string UpdateMode { get; set; } = "always";
 
     /// <summary>"production" or "beta". Production maps to the GitHub latest-release
-    /// endpoint (excludes prereleases); beta picks the newest release regardless of
-    /// the prerelease flag.</summary>
+    /// endpoint (excludes prereleases); beta picks the highest prerelease and never
+    /// a stable.</summary>
     public string UpdateChannel { get; set; } = "production";
 
     /// <summary>
