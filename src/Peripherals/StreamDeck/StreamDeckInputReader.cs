@@ -39,7 +39,7 @@ internal sealed class StreamDeckInputReader : IDisposable
     private readonly IHidEnumerator _hid;
     private readonly string _path;
     private readonly StreamDeckModel _model;
-    private readonly Action<bool[]> _onReport;
+    private readonly Action<StreamDeckInput> _onReport;
     private readonly int _readTimeoutMs;
     private readonly int _retryDelayMs;
     private readonly CancellationTokenSource _cts = new();
@@ -47,7 +47,7 @@ internal sealed class StreamDeckInputReader : IDisposable
     private int _rawReportsLogged;
 
     public StreamDeckInputReader(
-        IHidEnumerator hid, string path, StreamDeckModel model, Action<bool[]> onReport,
+        IHidEnumerator hid, string path, StreamDeckModel model, Action<StreamDeckInput> onReport,
         int readTimeoutMs = DefaultReadTimeoutMs, int retryDelayMs = DefaultRetryDelayMs)
     {
         _hid = hid;
@@ -96,10 +96,11 @@ internal sealed class StreamDeckInputReader : IDisposable
                     ServiceLog.Info($"[streamdeck] raw input len={n} bytes={HexPreview(buf.AsSpan(0, n))}");
                 }
 
-                var states = _model.Protocol == StreamDeckProtocolGeneration.Gen1
-                    ? StreamDeckProtocol.DecodeGen1Input(buf.AsSpan(0, n), _model)
-                    : StreamDeckProtocol.DecodeGen2Input(buf.AsSpan(0, n), _model);
-                _onReport(states);
+                var input = StreamDeckProtocol.DecodeInput(buf.AsSpan(0, n), _model);
+                if (input is not null)
+                {
+                    _onReport(input);
+                }
             }
             catch (OperationCanceledException) { break; }
             catch (Exception ex)

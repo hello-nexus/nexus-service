@@ -25,7 +25,7 @@ public sealed class StreamDeckHandler : IDeviceHandler
     public string Category => "controller";
 
     public IReadOnlyList<UsbId> Identifiers { get; } = StreamDeckModels.All
-        .Select(m => new UsbId(StreamDeckModels.VendorId, m.ProductId))
+        .Select(m => new UsbId(m.VendorId, m.ProductId))
         .ToArray();
 
     public bool IsConnected(IReadOnlyList<UsbDeviceEntry> detectedDevices) =>

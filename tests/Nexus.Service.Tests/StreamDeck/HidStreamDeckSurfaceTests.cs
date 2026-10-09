@@ -227,7 +227,7 @@ public class HidStreamDeckSurfaceTests
         var (dev, surface) = Connect(Mini);
         dev.PendingReads.Enqueue(new byte[] { 0x01, 0, 1, 0, 0, 0, 0 });
 
-        var states = surface.ReadInput(10);
+        var states = surface.ReadInput(10)?.Keys;
 
         Assert.Equal(new[] { false, true, false, false, false, false }, states);
     }
@@ -320,7 +320,7 @@ public class HidStreamDeckSurfaceTests
         report[4 + 9] = 1;
         dev.PendingReads.Enqueue(report);
 
-        var states = surface.ReadInput(10);
+        var states = surface.ReadInput(10)?.Keys;
 
         Assert.NotNull(states);
         Assert.True(states![9]);
@@ -370,7 +370,7 @@ public class HidStreamDeckSurfaceTests
         report[4 + 2] = 1;
         dev.PendingReads.Enqueue(report);
 
-        var states = surface.ReadInput(10);
+        var states = surface.ReadInput(10)?.Keys;
 
         Assert.Equal(new[] { false, false, true }, states);
     }

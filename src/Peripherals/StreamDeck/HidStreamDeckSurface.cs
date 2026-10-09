@@ -1,4 +1,5 @@
 using System;
+using System.Threading;
 using Nexus.Service.Peripherals.Hid;
 using Nexus.Service.Platform;
 
@@ -25,6 +26,8 @@ public sealed class HidStreamDeckSurface : IStreamDeckSurface
     private IHidDevice? _device;
     private readonly byte[] _inputBuf;
     private int _consecutiveWriteFailures;
+    private int _featureReportLength = StreamDeckProtocol.FeatureReportBufferLength;
+    private Timer? _keepAlive;
 
     public StreamDeckModel Model { get; }
     public string Serial { get; private set; } = "";
@@ -56,7 +59,25 @@ public sealed class HidStreamDeckSurface : IStreamDeckSurface
             _device = dev;
             Serial = !string.IsNullOrWhiteSpace(info.Serial) ? info.Serial! : StableIdFromPath(info.Path);
             _consecutiveWriteFailures = 0;
+            if (Model.HasExpandedInput)
+            {
+                _featureReportLength = info.FeatureReportByteLength > 0
+                    ? info.FeatureReportByteLength
+                    : StreamDeckProtocol.FeatureReportBufferLength;
+            }
+            if (Model.OpenSettleMs > 0)
+            {
+                // The Galleon ignores commands sent right after open (node-elgato-stream-deck waits 200 ms).
+                Thread.Sleep(Model.OpenSettleMs);
+            }
             ReadFirmwareVersionLocked();
+            if (Model.HasExpandedInput)
+            {
+                // Elgato's init: black fill, then firmware sleep off (bench capture 2026-10-08).
+                _device.SetFeature(StreamDeckProtocol.BuildGen2FillScreenFeature(0, 0, 0, _featureReportLength));
+                _device.SetFeature(StreamDeckProtocol.BuildGen2SleepDurationFeature(0, _featureReportLength));
+            }
+            StartKeepAliveLocked();
             return true;
         }
     }
@@ -65,8 +86,43 @@ public sealed class HidStreamDeckSurface : IStreamDeckSurface
     {
         lock (_io)
         {
+            StopKeepAliveLocked();
             try { _device?.Dispose(); } catch { /* best effort */ }
             _device = null;
+        }
+    }
+
+    private void StartKeepAliveLocked()
+    {
+        if (Model.KeepAliveIntervalMs <= 0 || _keepAlive is not null)
+        {
+            return;
+        }
+        // Galleon drops back to its keyboard mode without a 0x27 ping every 500 ms (node-elgato-stream-deck).
+        _keepAlive = new Timer(_ => SendKeepAlive(), null, 0, Model.KeepAliveIntervalMs);
+    }
+
+    private void StopKeepAliveLocked()
+    {
+        _keepAlive?.Dispose();
+        _keepAlive = null;
+    }
+
+    private void SendKeepAlive()
+    {
+        lock (_io)
+        {
+            if (_device is null)
+            {
+                StopKeepAliveLocked();
+                return;
+            }
+            if (!_device.SetFeature(StreamDeckProtocol.BuildGalleonKeepAliveFeature(_featureReportLength)))
+            {
+                // node stops pinging on the first error; the write-failure path drops the handle.
+                StopKeepAliveLocked();
+                RecordWriteFailureLocked("keep-alive");
+            }
         }
     }
 
@@ -152,7 +208,116 @@ public sealed class HidStreamDeckSurface : IStreamDeckSurface
         return SetKeyImage(keyIndex, StreamDeckProtocol.BuildBlankBmp(Model.KeyPixelSize));
     }
 
-    public bool[]? ReadInput(int timeoutMs)
+    public bool SetScreenRegion(int x, int y, int width, int height, ReadOnlyMemory<byte> wireBytes)
+    {
+        lock (_io)
+        {
+            var screen = Model.Screen;
+            if (_device is null || screen is null || wireBytes.IsEmpty
+                || x < 0 || y < 0 || width <= 0 || height <= 0
+                || x + width > screen.Width || y + height > screen.Height)
+            {
+                return false;
+            }
+            return WritePagesLocked(StreamDeckProtocol.BuildRegionImagePages(wireBytes.Span, x, y, width, height), "screen-region");
+        }
+    }
+
+    public bool SetInfoScreen(ReadOnlyMemory<byte> wireBytes)
+    {
+        lock (_io)
+        {
+            if (_device is null || Model.Screen?.Kind != StreamDeckScreenKind.InfoScreen || wireBytes.IsEmpty)
+            {
+                return false;
+            }
+            return WritePagesLocked(StreamDeckProtocol.BuildNeoInfoScreenPages(wireBytes.Span), "info-screen");
+        }
+    }
+
+    public bool FillScreen(byte r, byte g, byte b) =>
+        SetFeatureLocked(Model.HasExpandedInput, StreamDeckProtocol.BuildGen2FillScreenFeature(r, g, b, _featureReportLength), "fill-screen");
+
+    public bool FillKey(int keyIndex, byte r, byte g, byte b) =>
+        SetFeatureLocked(
+            Model.HasExpandedInput && keyIndex >= 0 && keyIndex < Model.KeyCount + Model.TouchKeys,
+            StreamDeckProtocol.BuildGen2FillKeyFeature(keyIndex, r, g, b, _featureReportLength), "fill-key");
+
+    public bool SetSleepDuration(int seconds) =>
+        SetFeatureLocked(Model.HasExpandedInput, StreamDeckProtocol.BuildGen2SleepDurationFeature(seconds, _featureReportLength), "sleep-duration");
+
+    public bool SetRing(int dial, ReadOnlySpan<byte> rgbTriplets)
+    {
+        lock (_io)
+        {
+            if (_device is null || dial < 0 || dial >= Model.Encoders || rgbTriplets.Length < Model.EncoderRingLeds * 3)
+            {
+                return false;
+            }
+            switch (Model.RingKind)
+            {
+                case StreamDeckRingKind.StudioReport:
+                    return WritePagesLocked(new() { StreamDeckProtocol.BuildStudioRingReport(Model, dial, rgbTriplets) }, "ring");
+                case StreamDeckRingKind.GalleonFeature:
+                    foreach (var report in StreamDeckProtocol.BuildGalleonRingFeatures(Model, dial, rgbTriplets, _featureReportLength))
+                    {
+                        if (!_device.SetFeature(report))
+                        {
+                            return RecordWriteFailureLocked("ring");
+                        }
+                    }
+                    _consecutiveWriteFailures = 0;
+                    return true;
+                default:
+                    return false;
+            }
+        }
+    }
+
+    public bool SetCenterLed(int dial, byte r, byte g, byte b)
+    {
+        lock (_io)
+        {
+            if (_device is null || Model.RingKind != StreamDeckRingKind.StudioReport || dial < 0 || dial >= Model.Encoders)
+            {
+                return false;
+            }
+            return WritePagesLocked(new() { StreamDeckProtocol.BuildStudioCenterLedReport(dial, r, g, b) }, "center-led");
+        }
+    }
+
+    private bool SetFeatureLocked(bool supported, byte[] report, string where)
+    {
+        lock (_io)
+        {
+            if (_device is null || !supported)
+            {
+                return false;
+            }
+            if (_device.SetFeature(report))
+            {
+                _consecutiveWriteFailures = 0;
+                return true;
+            }
+            return RecordWriteFailureLocked(where);
+        }
+    }
+
+    // Caller holds _io.
+    private bool WritePagesLocked(System.Collections.Generic.List<byte[]> pages, string where)
+    {
+        foreach (var page in pages)
+        {
+            if (!_device!.Write(page))
+            {
+                return RecordWriteFailureLocked(where);
+            }
+        }
+        _consecutiveWriteFailures = 0;
+        return true;
+    }
+
+    public StreamDeckInput? ReadInput(int timeoutMs)
     {
         lock (_io)
         {
@@ -172,9 +337,7 @@ public sealed class HidStreamDeckSurface : IStreamDeckSurface
             {
                 return null;
             }
-            return Model.Protocol == StreamDeckProtocolGeneration.Gen1
-                ? StreamDeckProtocol.DecodeGen1Input(_inputBuf.AsSpan(0, n), Model)
-                : StreamDeckProtocol.DecodeGen2Input(_inputBuf.AsSpan(0, n), Model);
+            return StreamDeckProtocol.DecodeInput(_inputBuf.AsSpan(0, n), Model);
         }
     }
 
@@ -208,6 +371,7 @@ public sealed class HidStreamDeckSurface : IStreamDeckSurface
         {
             ServiceLog.Error($"[streamdeck] {Model.Name} (serial={Serial}): {n} consecutive write failures ({where}) - dropping interface");
             _consecutiveWriteFailures = 0;
+            StopKeepAliveLocked();
             try { _device?.Dispose(); } catch { /* best effort */ }
             _device = null;
         }

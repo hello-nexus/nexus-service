@@ -297,6 +297,315 @@ public static class StreamDeckProtocol
         return states;
     }
 
+    // Expanded gen2 family: Plus, Plus XL, Neo, Studio, Galleon K100 SD.
+    // Sources: Elgato HID docs (general, stream-deck-plus, stream-deck-plus-xl,
+    // stream-deck-neo, fetched 2026-10-08), node-elgato-stream-deck core
+    // (77c379f; the only source for Studio and Galleon), and a capture of
+    // Elgato 7.6.0 driving the bench Plus (2026-10-08).
+    private const byte Gen2FillScreenCommand = 0x05;
+    private const byte Gen2FillKeyCommand = 0x06;
+    private const byte Gen2SleepDurationCommand = 0x0D;
+    private const byte GalleonRingPixelCommand = 0x24;
+    private const byte GalleonKeepAliveCommand = 0x27;
+
+    private const byte NeoInfoScreenCommand = 0x0B;
+    private const byte RegionImageCommand = 0x0C;
+    private const byte RingColorsCommand = 0x0F;
+    private const byte RingCenterCommand = 0x10;
+
+    /// <summary>Output report length for the expanded family (HID caps maxOut, bench-confirmed on the Plus).</summary>
+    public const int OutputReportLength = 1024;
+
+    /// <summary>Region image (0x0C) page header length.</summary>
+    public const int RegionPageHeaderLength = 16;
+
+    private const byte InputTypeKeys = 0x00;
+    private const byte InputTypeTouch = 0x02;
+    private const byte InputTypeDials = 0x03;
+
+    private const int TouchTypeOffset = 4;
+    private const int DialSubtypeOffset = 4;
+    private const int DialPayloadOffset = 5;
+
+    /// <summary>0x03 0x05 R G B: fills the whole LCD with a colour (docs: Fill LCD with Color).</summary>
+    public static byte[] BuildGen2FillScreenFeature(byte r, byte g, byte b, int featureReportLength = FeatureReportBufferLength)
+    {
+        var buf = new byte[featureReportLength];
+        buf[0] = Gen2FeatureReportId;
+        buf[1] = Gen2FillScreenCommand;
+        buf[2] = r;
+        buf[3] = g;
+        buf[4] = b;
+        return buf;
+    }
+
+    /// <summary>0x03 0x06 key R G B: fills one key or Neo touch key backlight (touch keys are indices 8 and 9).</summary>
+    public static byte[] BuildGen2FillKeyFeature(int key, byte r, byte g, byte b, int featureReportLength = FeatureReportBufferLength)
+    {
+        var buf = new byte[featureReportLength];
+        buf[0] = Gen2FeatureReportId;
+        buf[1] = Gen2FillKeyCommand;
+        buf[2] = (byte)key;
+        buf[3] = r;
+        buf[4] = g;
+        buf[5] = b;
+        return buf;
+    }
+
+    /// <summary>0x03 0x0D INT32 LE: idle seconds before firmware sleep, 0 disables (bench capture 2026-10-08: Elgato sends 0).</summary>
+    public static byte[] BuildGen2SleepDurationFeature(int seconds, int featureReportLength = FeatureReportBufferLength)
+    {
+        var buf = new byte[featureReportLength];
+        buf[0] = Gen2FeatureReportId;
+        buf[1] = Gen2SleepDurationCommand;
+        BinaryPrimitives.WriteInt32LittleEndian(buf.AsSpan(2), Math.Max(0, seconds));
+        return buf;
+    }
+
+    /// <summary>Galleon 0x03 0x24 idx R G B: one ring LED (node GalleonK100EncoderLedService).</summary>
+    public static byte[] BuildGalleonRingPixelFeature(int index, byte r, byte g, byte b, int featureReportLength = FeatureReportBufferLength)
+    {
+        var buf = new byte[featureReportLength];
+        buf[0] = Gen2FeatureReportId;
+        buf[1] = GalleonRingPixelCommand;
+        buf[2] = (byte)index;
+        buf[3] = r;
+        buf[4] = g;
+        buf[5] = b;
+        return buf;
+    }
+
+    /// <summary>Galleon 0x03 0x27 keep-alive ping, sent every 500 ms (node GalleonK100StreamDeck).</summary>
+    public static byte[] BuildGalleonKeepAliveFeature(int featureReportLength = FeatureReportBufferLength)
+    {
+        var buf = new byte[featureReportLength];
+        buf[0] = Gen2FeatureReportId;
+        buf[1] = GalleonKeepAliveCommand;
+        return buf;
+    }
+
+    /// <summary>
+    /// Splits a JPEG into 0x0B pages for the whole Neo info screen: 8-byte
+    /// header (0x02 0x0B, reserved 0, last flag, LE length, LE index).
+    /// </summary>
+    public static List<byte[]> BuildNeoInfoScreenPages(ReadOnlySpan<byte> jpeg) =>
+        BuildGen2Pages(NeoInfoScreenCommand, 0, jpeg);
+
+    /// <summary>
+    /// Splits a JPEG into 0x0C pages for one screen region (logical,
+    /// pre-rotation coordinates). 16-byte header: 0x02 0x0C, LE x, y, w, h,
+    /// last flag, LE page index, LE chunk length, reserved 0. Matches the
+    /// bench capture of Elgato 7.6.0 on the Plus.
+    /// </summary>
+    public static List<byte[]> BuildRegionImagePages(ReadOnlySpan<byte> jpeg, int x, int y, int width, int height)
+    {
+        var payloadLength = OutputReportLength - RegionPageHeaderLength;
+        var pages = new List<byte[]>();
+        var offset = 0;
+        var pageNumber = 0;
+        while (offset < jpeg.Length)
+        {
+            var thisLength = Math.Min(jpeg.Length - offset, payloadLength);
+            var isLast = offset + thisLength == jpeg.Length;
+            var page = new byte[OutputReportLength];
+            page[0] = Gen2ImageReportId;
+            page[1] = RegionImageCommand;
+            BinaryPrimitives.WriteUInt16LittleEndian(page.AsSpan(2), (ushort)x);
+            BinaryPrimitives.WriteUInt16LittleEndian(page.AsSpan(4), (ushort)y);
+            BinaryPrimitives.WriteUInt16LittleEndian(page.AsSpan(6), (ushort)width);
+            BinaryPrimitives.WriteUInt16LittleEndian(page.AsSpan(8), (ushort)height);
+            page[10] = (byte)(isLast ? 1 : 0);
+            BinaryPrimitives.WriteUInt16LittleEndian(page.AsSpan(11), (ushort)pageNumber);
+            BinaryPrimitives.WriteUInt16LittleEndian(page.AsSpan(13), (ushort)thisLength);
+            jpeg.Slice(offset, thisLength).CopyTo(page.AsSpan(RegionPageHeaderLength));
+            pages.Add(page);
+            offset += thisLength;
+            pageNumber++;
+        }
+        return pages;
+    }
+
+    /// <summary>
+    /// Studio 0x02 0x0F ring report: dial, then ledCount RGB triplets from
+    /// offset 3. colors is the visual order starting at the ring's top; the
+    /// dial's ring rotation (model.RingColorOffset) is applied here as node's
+    /// StudioEncoderLedService does.
+    /// </summary>
+    public static byte[] BuildStudioRingReport(StreamDeckModel model, int dial, ReadOnlySpan<byte> rgbTriplets)
+    {
+        var buf = new byte[OutputReportLength];
+        buf[0] = Gen2ImageReportId;
+        buf[1] = RingColorsCommand;
+        buf[2] = (byte)dial;
+        WriteRotatedRing(model, dial, rgbTriplets, buf.AsSpan(3));
+        return buf;
+    }
+
+    /// <summary>Studio 0x02 0x10 centre LED report: dial, then RGB at offset 3.</summary>
+    public static byte[] BuildStudioCenterLedReport(int dial, byte r, byte g, byte b)
+    {
+        var buf = new byte[OutputReportLength];
+        buf[0] = Gen2ImageReportId;
+        buf[1] = RingCenterCommand;
+        buf[2] = (byte)dial;
+        buf[3] = r;
+        buf[4] = g;
+        buf[5] = b;
+        return buf;
+    }
+
+    /// <summary>
+    /// Galleon ring as one 0x24 feature report per LED, absolute index
+    /// (1 - dial) * ledCount + led, with the dial's rotation applied
+    /// (node GalleonK100EncoderLedService.setEncoderRingColors).
+    /// </summary>
+    public static List<byte[]> BuildGalleonRingFeatures(StreamDeckModel model, int dial, ReadOnlySpan<byte> rgbTriplets, int featureReportLength = FeatureReportBufferLength)
+    {
+        var leds = model.EncoderRingLeds;
+        var rotated = new byte[leds * 3];
+        WriteRotatedRing(model, dial, rgbTriplets, rotated);
+        var baseIndex = (1 - dial) * leds;
+        var reports = new List<byte[]>(leds);
+        for (var i = 0; i < leds; i++)
+        {
+            reports.Add(BuildGalleonRingPixelFeature(baseIndex + i, rotated[i * 3], rotated[i * 3 + 1], rotated[i * 3 + 2], featureReportLength));
+        }
+        return reports;
+    }
+
+    // Left-rotates by the dial's ring offset: out = in[offset..] ++ in[..offset].
+    private static void WriteRotatedRing(StreamDeckModel model, int dial, ReadOnlySpan<byte> rgbTriplets, Span<byte> dest)
+    {
+        var leds = model.EncoderRingLeds;
+        var total = leds * 3;
+        if (rgbTriplets.Length < total)
+        {
+            return;
+        }
+        var shift = model.RingColorOffset(dial) * 3;
+        rgbTriplets.Slice(shift, total - shift).CopyTo(dest);
+        rgbTriplets[..shift].CopyTo(dest[(total - shift)..]);
+    }
+
+    private static List<byte[]> BuildGen2Pages(byte command, byte target, ReadOnlySpan<byte> payload)
+    {
+        var payloadLength = OutputReportLength - Gen2PageHeaderLength;
+        var pages = new List<byte[]>();
+        var offset = 0;
+        var pageNumber = 0;
+        while (offset < payload.Length)
+        {
+            var thisLength = Math.Min(payload.Length - offset, payloadLength);
+            var page = new byte[OutputReportLength];
+            page[0] = Gen2ImageReportId;
+            page[1] = command;
+            page[2] = target;
+            page[3] = (byte)(offset + thisLength == payload.Length ? 1 : 0);
+            BinaryPrimitives.WriteUInt16LittleEndian(page.AsSpan(4), (ushort)thisLength);
+            BinaryPrimitives.WriteUInt16LittleEndian(page.AsSpan(6), (ushort)pageNumber);
+            payload.Slice(offset, thisLength).CopyTo(page.AsSpan(Gen2PageHeaderLength));
+            pages.Add(page);
+            offset += thisLength;
+            pageNumber++;
+        }
+        return pages;
+    }
+
+    /// <summary>
+    /// Decodes any input report for the model into a typed event, or null for
+    /// an unknown or ignored report (Studio NFC, a truncated payload). Gen1
+    /// reports are always key snapshots. Gen2 byte 1 selects keys (0x00),
+    /// touch (0x02) or dials (0x03); offsets include the report id byte.
+    /// </summary>
+    public static StreamDeckInput? DecodeInput(ReadOnlySpan<byte> report, StreamDeckModel model)
+    {
+        if (model.Protocol == StreamDeckProtocolGeneration.Gen1)
+        {
+            return StreamDeckInput.ForKeys(DecodeGen1Input(report, model), Array.Empty<bool>());
+        }
+        if (!model.HasExpandedInput)
+        {
+            return StreamDeckInput.ForKeys(DecodeGen2Input(report, model), Array.Empty<bool>());
+        }
+        if (report.Length < 2)
+        {
+            return null;
+        }
+        return report[1] switch
+        {
+            InputTypeKeys => StreamDeckInput.ForKeys(DecodeGen2Input(report, model), DecodeGen2TouchKeys(report, model)),
+            InputTypeTouch when model.Screen is not null => DecodeTouch(report),
+            InputTypeDials when model.Encoders > 0 => DecodeDials(report, model),
+            _ => null,
+        };
+    }
+
+    /// <summary>Neo's capacitive touch keys, appended after the LCD keys in the key report.</summary>
+    public static bool[] DecodeGen2TouchKeys(ReadOnlySpan<byte> report, StreamDeckModel model)
+    {
+        var states = new bool[model.TouchKeys];
+        for (var i = 0; i < model.TouchKeys; i++)
+        {
+            var offset = Gen2InputHeaderLength + model.KeyCount + i;
+            states[i] = offset < report.Length && report[offset] != 0;
+        }
+        return states;
+    }
+
+    private static StreamDeckInput? DecodeTouch(ReadOnlySpan<byte> report)
+    {
+        // Elgato sends payload length 14 for every touch type, so a tap is as long as a flick.
+        if (report.Length < 10)
+        {
+            return null;
+        }
+        var x = BinaryPrimitives.ReadUInt16LittleEndian(report[6..]);
+        var y = BinaryPrimitives.ReadUInt16LittleEndian(report[8..]);
+        switch (report[TouchTypeOffset])
+        {
+            case 1:
+                return StreamDeckInput.ForTouch(StreamDeckTouchKind.Tap, x, y, x, y);
+            case 2:
+                return StreamDeckInput.ForTouch(StreamDeckTouchKind.Long, x, y, x, y);
+            case 3:
+                if (report.Length < 14)
+                {
+                    return null;
+                }
+                return StreamDeckInput.ForTouch(
+                    StreamDeckTouchKind.Flick, x, y,
+                    BinaryPrimitives.ReadUInt16LittleEndian(report[10..]),
+                    BinaryPrimitives.ReadUInt16LittleEndian(report[12..]));
+            default:
+                return null;
+        }
+    }
+
+    private static StreamDeckInput? DecodeDials(ReadOnlySpan<byte> report, StreamDeckModel model)
+    {
+        switch (report[DialSubtypeOffset])
+        {
+            case 0:
+                var down = new bool[model.Encoders];
+                for (var i = 0; i < down.Length; i++)
+                {
+                    var offset = DialPayloadOffset + i;
+                    down[i] = offset < report.Length && report[offset] != 0;
+                }
+                return StreamDeckInput.ForDialPress(down);
+            case 1:
+                var ticks = new int[model.Encoders];
+                for (var i = 0; i < ticks.Length; i++)
+                {
+                    var offset = DialPayloadOffset + i;
+                    ticks[i] = offset < report.Length ? (sbyte)report[offset] : 0;
+                }
+                return StreamDeckInput.ForDialRotate(ticks);
+            default:
+                return null;
+        }
+    }
+
     /// <summary>
     /// Decodes a gen1 input report: byte 0 is the report id, one byte per key
     /// from offset 1 (nonzero = pressed), in the model's raw hardware key

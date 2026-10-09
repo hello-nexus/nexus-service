@@ -11,6 +11,16 @@ public enum StreamDeckRotation { Rot0, Rot90, Rot180, Rot270 }
 
 public enum StreamDeckMirror { None, X, Y, Both }
 
+public enum StreamDeckDialPlacement { None, Below, Above, Sides }
+
+public enum StreamDeckScreenKind { TouchStrip, InfoScreen, DialScreen }
+
+/// <summary>How a model lights its dial rings: Studio takes one 0x0F report per ring, Galleon one 0x24 feature report per LED.</summary>
+public enum StreamDeckRingKind { None, StudioReport, GalleonFeature }
+
+/// <summary>A drawable screen beyond the keys, in logical (pre-rotation) pixels.</summary>
+public sealed record StreamDeckScreen(int Width, int Height, StreamDeckScreenKind Kind);
+
 /// <summary>
 /// Per-model capability row: layout, key image shape, wire protocol
 /// generation, and quirks. Verified=true means bench-confirmed (Mini only,
@@ -30,6 +40,70 @@ public sealed class StreamDeckModel
     public StreamDeckMirror Mirror { get; }
     public StreamDeckProtocolGeneration Protocol { get; }
     public bool Verified { get; }
+
+    public int VendorId { get; private init; } = StreamDeckModels.VendorId;
+
+    /// <summary>Key bitmap width; equals <see cref="KeyPixelSize"/> except on Studio.</summary>
+    public int KeyWidth { get; private init; }
+
+    /// <summary>Key bitmap height; equals <see cref="KeyPixelSize"/> except on Studio.</summary>
+    public int KeyHeight { get; private init; }
+
+    public int Encoders { get; private init; }
+    public StreamDeckDialPlacement DialPlacement { get; private init; }
+    public StreamDeckScreen? Screen { get; private init; }
+
+    /// <summary>Capacitive touch keys reported after the LCD keys (Neo).</summary>
+    public int TouchKeys { get; private init; }
+
+    public int EncoderRingLeds { get; private init; }
+    public StreamDeckRingKind RingKind { get; private init; }
+
+    /// <summary>Pixel transform for screen images, same vocabulary as <see cref="Transform"/>.</summary>
+    public string ScreenTransform { get; private init; } = "none";
+
+    /// <summary>Required HID usage of the collection to open; 0 matches any collection.</summary>
+    public int HidUsage { get; private init; }
+
+    /// <summary>Interval of the 0x03 0x27 keep-alive feature report; 0 sends none (Galleon).</summary>
+    public int KeepAliveIntervalMs { get; private init; }
+
+    /// <summary>Delay between open and the first command (Galleon).</summary>
+    public int OpenSettleMs { get; private init; }
+
+    /// <summary>
+    /// How many LEDs a dial's ring colour list is rotated by before it hits
+    /// the wire: Studio's second ring is mounted 12 LEDs round, Galleon's
+    /// rings start 3 and 1 LEDs in (node-elgato-stream-deck ledRingOffset).
+    /// </summary>
+    public int RingColorOffset(int dial) => RingKind switch
+    {
+        StreamDeckRingKind.StudioReport => dial == 1 ? 12 : 0,
+        StreamDeckRingKind.GalleonFeature => dial == 0 ? 3 : 1,
+        _ => 0,
+    };
+
+    /// <summary>
+    /// Whether a HID collection is the Stream Deck interface for this model.
+    /// Galleon shares a VID/PID across its keyboard collections, so only the
+    /// Stream Deck usage on interface 0 (Windows paths carry mi_NN) opens.
+    /// </summary>
+    public bool AcceptsCollection(Hid.HidDeviceInfo info)
+    {
+        if (HidUsage == 0)
+        {
+            return true;
+        }
+        if (info.Usage != HidUsage)
+        {
+            return false;
+        }
+        var mi = info.Path.IndexOf("mi_", System.StringComparison.OrdinalIgnoreCase);
+        return mi < 0 || info.Path.AsSpan(mi + 3).StartsWith("00");
+    }
+
+    /// <summary>True for models whose input reports carry dial, touch or touch-key payloads.</summary>
+    public bool HasExpandedInput => Encoders > 0 || TouchKeys > 0 || Screen is not null;
 
     /// <summary>
     /// Gen1 image report length in bytes (report id + header + payload pages).
@@ -71,6 +145,8 @@ public sealed class StreamDeckModel
         Rows = rows;
         Columns = columns;
         KeyPixelSize = keyPixelSize;
+        KeyWidth = keyPixelSize;
+        KeyHeight = keyPixelSize;
         ImageFormat = imageFormat;
         Rotation = rotation;
         Mirror = mirror;
@@ -97,7 +173,16 @@ public sealed class StreamDeckModel
     /// </summary>
     public int InputReportBufferLength => Protocol == StreamDeckProtocolGeneration.Gen1
         ? 1 + KeyCount
-        : StreamDeckProtocol.Gen2InputHeaderLength + KeyCount;
+        : HasExpandedInput
+            ? ExpandedInputBufferLength
+            : StreamDeckProtocol.Gen2InputHeaderLength + KeyCount;
+
+    /// <summary>
+    /// Caller buffer for models with dial or touch reports: the Windows and
+    /// macOS Read paths copy from caps-sized internal buffers, so a smaller
+    /// buffer truncates a 512 byte input report.
+    /// </summary>
+    public const int ExpandedInputBufferLength = 512;
 
     /// <summary>Standard BITMAPFILEHEADER+BITMAPINFOHEADER size (matches StreamDeckProtocol.BuildBlankBmp).</summary>
     private const int BmpHeaderLength = 54;
@@ -120,7 +205,7 @@ public sealed class StreamDeckModel
     /// <summary>
     /// The /streamdeck/decks DTO's wire transform (nexus-web's
     /// deckKeyTransform.ts DeckKeyTransform: "none" | "flipBoth" |
-    /// "mirrorXRot90"), the pixel transform a rendered key bitmap needs
+    /// "mirrorXRot90" | "rot90Ccw"), the pixel transform a rendered key bitmap needs
     /// before it matches what this model expects on the wire.
     /// </summary>
     public string Transform =>
@@ -128,7 +213,11 @@ public sealed class StreamDeckModel
             ? "none"
             : Mirror == StreamDeckMirror.X && Rotation == StreamDeckRotation.Rot90
                 ? "mirrorXRot90"
-                : "flipBoth";
+                : Mirror == StreamDeckMirror.None && Rotation == StreamDeckRotation.Rot90
+                    ? "rot90Ccw"
+                    : Mirror == StreamDeckMirror.None && Rotation == StreamDeckRotation.Rot0
+                        ? "none"
+                        : "flipBoth";
 
     internal static StreamDeckModel Gen1(
         string name, int productId, int keyCount, int rows, int columns, int keyPixelSize,
@@ -147,6 +236,37 @@ public sealed class StreamDeckModel
         StreamDeckImageFormat.Jpeg, StreamDeckRotation.Rot0, StreamDeckMirror.Both,
         StreamDeckProtocolGeneration.Gen2, verified: false);
 
+    /// <summary>
+    /// A gen2 model with dials, a screen beyond the keys, or touch keys
+    /// (Plus, Plus XL, Neo, Studio, Galleon). Keys are non-mirrored unless
+    /// the caller says otherwise; keyWidth differs from keyPixelSize only on Studio.
+    /// </summary>
+    internal static StreamDeckModel Expanded(
+        string name, int productId, int keyCount, int rows, int columns, int keyPixelSize,
+        StreamDeckRotation rotation = StreamDeckRotation.Rot0, StreamDeckMirror mirror = StreamDeckMirror.None,
+        int keyWidth = 0, int encoders = 0, StreamDeckDialPlacement dialPlacement = StreamDeckDialPlacement.None,
+        StreamDeckScreen? screen = null, string screenTransform = "none", int touchKeys = 0,
+        int ringLeds = 0, StreamDeckRingKind ringKind = StreamDeckRingKind.None,
+        int vendorId = StreamDeckModels.VendorId, int hidUsage = 0, int keepAliveIntervalMs = 0,
+        int openSettleMs = 0) => new(
+        name, productId, keyCount, rows, columns, keyPixelSize,
+        StreamDeckImageFormat.Jpeg, rotation, mirror,
+        StreamDeckProtocolGeneration.Gen2, verified: false)
+    {
+        VendorId = vendorId,
+        KeyWidth = keyWidth > 0 ? keyWidth : keyPixelSize,
+        Encoders = encoders,
+        DialPlacement = dialPlacement,
+        Screen = screen,
+        TouchKeys = touchKeys,
+        EncoderRingLeds = ringLeds,
+        RingKind = ringKind,
+        ScreenTransform = screenTransform,
+        HidUsage = hidUsage,
+        KeepAliveIntervalMs = keepAliveIntervalMs,
+        OpenSettleMs = openSettleMs,
+    };
+
     internal static StreamDeckModel InputOnly(string name, int productId, int keyCount, int rows, int columns) => new(
         name, productId, keyCount, rows, columns, keyPixelSize: 0,
         StreamDeckImageFormat.None, StreamDeckRotation.Rot0, StreamDeckMirror.None,
@@ -157,12 +277,14 @@ public sealed class StreamDeckModel
 /// The button-only Stream Deck capability table, cross-verified against the
 /// MIT elgato-streamdeck crate
 /// (src/info.rs, fetched 2026-07-10) and python-elgato-streamdeck
-/// (StreamDeckMini.py / StreamDeckOriginal.py). Dials/touchscreen models
-/// (Plus, Plus XL) are out of scope.
+/// (StreamDeckMini.py / StreamDeckOriginal.py), plus the dial and screen
+/// models (Plus, Plus XL, Neo, Studio, Galleon K100 SD).
 /// </summary>
 public static class StreamDeckModels
 {
     public const int VendorId = 0x0FD9;
+
+    public const int CorsairVendorId = 0x1B1C;
 
     public static readonly IReadOnlyList<StreamDeckModel> All = new List<StreamDeckModel>
     {
@@ -187,15 +309,31 @@ public static class StreamDeckModels
         StreamDeckModel.Gen2("XL", 0x006c, 32, 4, 8, 96),
         StreamDeckModel.Gen2("XL V2", 0x008f, 32, 4, 8, 96),
         StreamDeckModel.Gen2("XL V2 Module", 0x00ba, 32, 4, 8, 96),
-        // Neo's 8 LED keys use the standard gen2 key-image path. Its 2
-        // capacitive touch keys report at input offsets KeyCount and
-        // KeyCount+1 (documented in both MIT references), but KeyCount stays
-        // 8 here (Rows*Columns) rather than 10 - wiring them as bindable
-        // input needs the KeyCount/grid-layout invariant every other model
-        // relies on to grow past Rows*Columns, which is out of this pass;
-        // StreamDeckProtocol.DecodeGen2Input only decodes the first KeyCount
-        // states. The 248x58 info screen stays out of v1 scope entirely.
-        StreamDeckModel.Gen2("Neo", 0x009a, 8, 2, 4, 96),
+        // Expanded gen2: dials, strips, info screens, touch keys. Plus has no
+        // key transform; Plus XL rotates keys and strip 90 CCW; Neo flips both
+        // for keys and the info screen. KeyCount stays Rows*Columns; Neo's 2
+        // touch keys report after the LCD keys and are TouchKeys, not keys.
+        StreamDeckModel.Expanded("Plus", 0x0084, 8, 2, 4, 120,
+            encoders: 4, dialPlacement: StreamDeckDialPlacement.Below,
+            screen: new StreamDeckScreen(800, 100, StreamDeckScreenKind.TouchStrip)),
+        StreamDeckModel.Expanded("Plus XL", 0x00c6, 36, 4, 9, 112,
+            rotation: StreamDeckRotation.Rot90, encoders: 6, dialPlacement: StreamDeckDialPlacement.Below,
+            screen: new StreamDeckScreen(1200, 100, StreamDeckScreenKind.TouchStrip), screenTransform: "rot90Ccw"),
+        StreamDeckModel.Expanded("Neo", 0x009a, 8, 2, 4, 96,
+            mirror: StreamDeckMirror.Both,
+            screen: new StreamDeckScreen(248, 58, StreamDeckScreenKind.InfoScreen), screenTransform: "flipBoth",
+            touchKeys: 2),
+        // Studio and Galleon come from the node-elgato-stream-deck definitions
+        // only (no Elgato HID doc covers them).
+        StreamDeckModel.Expanded("Studio", 0x00aa, 32, 2, 16, 112, keyWidth: 144,
+            encoders: 2, dialPlacement: StreamDeckDialPlacement.Sides, ringLeds: 24,
+            ringKind: StreamDeckRingKind.StudioReport),
+        StreamDeckModel.Expanded("Galleon K100 SD", 0x2b18, 12, 4, 3, 160,
+            encoders: 2, dialPlacement: StreamDeckDialPlacement.Above,
+            screen: new StreamDeckScreen(720, 384, StreamDeckScreenKind.DialScreen),
+            ringLeds: 4, ringKind: StreamDeckRingKind.GalleonFeature,
+            vendorId: StreamDeckModels.CorsairVendorId, hidUsage: 0x01,
+            keepAliveIntervalMs: 500, openSettleMs: 200),
 
         // Input-only: no key screens, buttons drive input dispatch only.
         StreamDeckModel.InputOnly("Pedal", 0x0086, 3, 1, 3),

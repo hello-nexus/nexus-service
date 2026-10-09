@@ -92,7 +92,7 @@ public class StreamDeckInputReaderTests
         var hid = new RecordingHidEnumerator { OpenFactory = _ => device };
         var reports = new ConcurrentQueue<bool[]>();
         using var reader = new StreamDeckInputReader(
-            hid, "path-1", Mini, states => reports.Enqueue(states), readTimeoutMs: 20, retryDelayMs: 20);
+            hid, "path-1", Mini, input => reports.Enqueue(input.Keys), readTimeoutMs: 20, retryDelayMs: 20);
 
         device.Enqueue(new byte[] { 0x01, 1, 0, 0, 0, 0, 0 }); // key 0 down
         device.Enqueue(new byte[] { 0x01, 0, 0, 0, 0, 0, 0 }); // key 0 up
@@ -122,7 +122,7 @@ public class StreamDeckInputReaderTests
         var hid = new RecordingHidEnumerator { OpenFactory = _ => device };
         var reports = new ConcurrentQueue<bool[]>();
         using var reader = new StreamDeckInputReader(
-            hid, "path-xl", Xl, states => reports.Enqueue(states), readTimeoutMs: 20, retryDelayMs: 20);
+            hid, "path-xl", Xl, input => reports.Enqueue(input.Keys), readTimeoutMs: 20, retryDelayMs: 20);
 
         var report = new byte[4 + Xl.KeyCount];
         report[4 + 9] = 1; // key 9 pressed
@@ -166,7 +166,7 @@ public class StreamDeckInputReaderTests
         var hid = new RecordingHidEnumerator { OpenFactory = _ => Interlocked.Increment(ref attempts) < 3 ? null : device };
         var reports = new ConcurrentQueue<bool[]>();
         using var reader = new StreamDeckInputReader(
-            hid, "path-1", Mini, states => reports.Enqueue(states), readTimeoutMs: 20, retryDelayMs: 20);
+            hid, "path-1", Mini, input => reports.Enqueue(input.Keys), readTimeoutMs: 20, retryDelayMs: 20);
 
         for (var i = 0; i < 200 && attempts < 3; i++)
         {

@@ -11,9 +11,9 @@ namespace Nexus.Service.Tests.StreamDeck;
 public class StreamDeckModelsTests
 {
     [Fact]
-    public void All_HasFourteenModels()
+    public void All_HasEighteenModels()
     {
-        Assert.Equal(14, StreamDeckModels.All.Count);
+        Assert.Equal(18, StreamDeckModels.All.Count);
     }
 
     [Fact]

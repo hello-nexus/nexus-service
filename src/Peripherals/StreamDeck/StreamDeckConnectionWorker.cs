@@ -745,29 +745,34 @@ public sealed class StreamDeckConnectionWorker : BackgroundService, IDeckSurface
     {
         var seenPaths = new HashSet<string>();
 
-        if (_presence.UsbPresent(StreamDeckModels.VendorId))
+        foreach (var model in StreamDeckModels.All)
         {
-            foreach (var model in StreamDeckModels.All)
+            if (!_presence.UsbPresent(model.VendorId))
             {
-                foreach (var info in _hid.Find(StreamDeckModels.VendorId, model.ProductId))
+                continue;
+            }
+            foreach (var info in _hid.Find(model.VendorId, model.ProductId))
+            {
+                if (!model.AcceptsCollection(info))
                 {
-                    seenPaths.Add(info.Path);
-                    if (_surfaces.TryGetValue(info.Path, out var existing) && existing.IsConnected)
-                    {
-                        continue;
-                    }
-
-                    var surface = new HidStreamDeckSurface(_hid, model);
-                    if (!surface.Connect(info))
-                    {
-                        continue;
-                    }
-                    _surfaces[info.Path] = surface;
-                    _lastKeyStates[info.Path] = new bool[model.KeyCount];
-                    ServiceLog.Info($"[streamdeck] connected {model.Name} (serial={surface.Serial})");
-                    OnSurfaceConnected(surface);
-                    StartInputReader(info.Path, surface);
+                    continue;
                 }
+                seenPaths.Add(info.Path);
+                if (_surfaces.TryGetValue(info.Path, out var existing) && existing.IsConnected)
+                {
+                    continue;
+                }
+
+                var surface = new HidStreamDeckSurface(_hid, model);
+                if (!surface.Connect(info))
+                {
+                    continue;
+                }
+                _surfaces[info.Path] = surface;
+                _lastKeyStates[info.Path] = new bool[model.KeyCount];
+                ServiceLog.Info($"[streamdeck] connected {model.Name} (serial={surface.Serial})");
+                OnSurfaceConnected(surface);
+                StartInputReader(info.Path, surface);
             }
         }
 
@@ -807,7 +812,7 @@ public sealed class StreamDeckConnectionWorker : BackgroundService, IDeckSurface
         {
             return;
         }
-        _inputReaders[key] = new StreamDeckInputReader(_hid, key, surface.Model, states => OnInputReport(key, states));
+        _inputReaders[key] = new StreamDeckInputReader(_hid, key, surface.Model, input => OnInputReport(key, input));
     }
 
     /// <summary>Signals a surface's dedicated reader thread to stop. Non-blocking; see StreamDeckInputReader.Dispose.</summary>
@@ -908,10 +913,10 @@ public sealed class StreamDeckConnectionWorker : BackgroundService, IDeckSurface
         {
             return;
         }
-        bool[]? states;
-        while ((states = surface.ReadInput(0)) is not null)
+        StreamDeckInput? input;
+        while ((input = surface.ReadInput(0)) is not null)
         {
-            ProcessKeyStates(SimulatedKey, surface, states);
+            DispatchInput(SimulatedKey, surface, input);
         }
     }
 
@@ -1260,7 +1265,7 @@ public sealed class StreamDeckConnectionWorker : BackgroundService, IDeckSurface
     /// (unlike the tick-driven helpers, which assume it is already held) and
     /// never runs while a blocking wire read is pending.
     /// </summary>
-    private void OnInputReport(string key, bool[] states)
+    private void OnInputReport(string key, StreamDeckInput input)
     {
         lock (_lock)
         {
@@ -1268,7 +1273,16 @@ public sealed class StreamDeckConnectionWorker : BackgroundService, IDeckSurface
             {
                 return;
             }
-            ProcessKeyStates(key, surface, states);
+            DispatchInput(key, surface, input);
+        }
+    }
+
+    /// <summary>Routes one decoded report by kind. Caller holds _lock.</summary>
+    private void DispatchInput(string key, IStreamDeckSurface surface, StreamDeckInput input)
+    {
+        if (input.Kind == StreamDeckInputKind.Keys)
+        {
+            ProcessKeyStates(key, surface, input.Keys);
         }
     }
 
