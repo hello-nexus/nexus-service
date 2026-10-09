@@ -581,6 +581,8 @@ public sealed class PanelDeviceRegistry
                 record.TextColorMode = patch.TextColorMode;
             if (patch.TextColor is not null)
                 record.TextColor = patch.TextColor;
+            if (patch.Font is not null)
+                record.Font = NullIfEmpty(patch.Font);
             if (patch.ThemeSyncWithDesktop.HasValue)
                 record.ThemeSyncWithDesktop = patch.ThemeSyncWithDesktop.Value;
             if (patch.AccentSyncWithDesktop.HasValue)
@@ -684,6 +686,7 @@ public sealed class PanelDeviceRegistry
             record.WidgetPadding = null;
             record.TextColorMode = null;
             record.TextColor = null;
+            record.Font = null;
             record.ThemeSyncWithDesktop = null;
             record.AccentSyncWithDesktop = null;
             // Presets are personalization too, and they reference the media
@@ -994,6 +997,7 @@ public sealed class PanelDeviceRegistry
             WidgetPadding = r.WidgetPadding,
             TextColorMode = r.TextColorMode,
             TextColor = r.TextColor,
+            Font = r.Font,
             ThemeSyncWithDesktop = r.ThemeSyncWithDesktop,
             AccentSyncWithDesktop = r.AccentSyncWithDesktop,
             FirstSeenAt = r.FirstSeenAt,

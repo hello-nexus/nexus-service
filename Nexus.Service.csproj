@@ -848,6 +848,7 @@
     <Compile Remove="src/Sensors/LibreHardwareSensorProvider.cs" />
     <Compile Remove="src/Sensors/Astral/AstralNvApiClient.cs" />
     <Compile Remove="src/Cooling/WindowsFanControlProvider.cs" />
+    <Compile Remove="src/Cooling/AdlxGpuFan.cs" />
     <Compile Remove="src/Cooling/FanCalibrator.cs" />
     <Compile Remove="src/Activity/WindowsScreenTimeProvider.cs" />
     <Compile Remove="src/Activity/WindowsMediaProvider.cs" />

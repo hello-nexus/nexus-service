@@ -120,6 +120,21 @@ public sealed class PanelDeviceRegistryTests : IDisposable
         Assert.Equal("#ff8800", _registry.Get(record.Id)!.TextColor);
     }
 
+    [Fact]
+    public void Patch_Font_RoundTripsAndSurvivesOmission()
+    {
+        var record = _registry.Allocate(null, Caps(PanelSurfaces.Phone));
+        Assert.Null(record.Font);
+
+        _registry.Patch(record.Id, new PanelDevicePatch { Font = "oswald" });
+        var patched = _registry.Patch(record.Id, new PanelDevicePatch { DisplayName = "Renamed" });
+
+        Assert.Equal("oswald", patched!.Font);
+        Assert.Equal("oswald", _registry.Get(record.Id)!.Font);
+
+        Assert.Null(_registry.Patch(record.Id, new PanelDevicePatch { Font = "" })!.Font);
+    }
+
     /// <summary>
     /// The service stores null until explicitly patched, same as WidgetOpacity/
     /// WidgetLabels; the default percent is applied client-side.
@@ -418,6 +433,7 @@ public sealed class PanelDeviceRegistryTests : IDisposable
             WidgetOpacity = 0.7,
             WidgetLabels = true,
             WidgetPadding = 25,
+            Font = "tektur",
             ThemeSyncWithDesktop = false,
             AccentSyncWithDesktop = false,
         });
@@ -452,6 +468,7 @@ public sealed class PanelDeviceRegistryTests : IDisposable
         Assert.Null(reset.WidgetOpacity);
         Assert.Null(reset.WidgetLabels);
         Assert.Null(reset.WidgetPadding);
+        Assert.Null(reset.Font);
         Assert.Null(reset.ThemeSyncWithDesktop);
         Assert.Null(reset.AccentSyncWithDesktop);
         Assert.Null(_registry.Get(record.Id)!.Layout);
@@ -648,7 +665,7 @@ public sealed class PanelDeviceRegistryTests : IDisposable
         var desk = _registry.CreatePreset(record.Id, "Desk", out _)!.ActiveId!;
         var game = _registry.CreatePreset(record.Id, "Game", out _)!.ActiveId!;
         // Edits while Game is loaded belong to Game.
-        _registry.Patch(record.Id, new PanelDevicePatch { Layout = Layout("gallery"), AccentColor = "#ff0000", ThemeMode = "dark", TextColorMode = "custom", TextColor = "#00ff00" });
+        _registry.Patch(record.Id, new PanelDevicePatch { Layout = Layout("gallery"), AccentColor = "#ff0000", ThemeMode = "dark", TextColorMode = "custom", TextColor = "#00ff00", Font = "jura" });
 
         var afterDesk = _registry.ActivatePreset(record.Id, desk);
 
@@ -659,6 +676,7 @@ public sealed class PanelDeviceRegistryTests : IDisposable
         // Null in the snapshot resets the field rather than leaving Game's accent.
         Assert.Null(live.AccentColor);
         Assert.Null(live.TextColor);
+        Assert.Null(live.Font);
 
         _registry.ActivatePreset(record.Id, game);
         live = _registry.Get(record.Id)!;
@@ -666,6 +684,7 @@ public sealed class PanelDeviceRegistryTests : IDisposable
         Assert.Equal("#ff0000", live.AccentColor);
         Assert.Equal("dark", live.ThemeMode);
         Assert.Equal("#00ff00", live.TextColor);
+        Assert.Equal("jura", live.Font);
     }
 
     [Fact]

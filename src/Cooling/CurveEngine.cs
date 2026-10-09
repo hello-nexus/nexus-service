@@ -51,6 +51,9 @@ public sealed class CurveEngine : BackgroundService
     private readonly Dictionary<string, (int Duty, long TickCountMs)> _lastWrite = new();
     private const int MinChannelWriteIntervalMs = 250;
 
+    // Last failure message per channel, so SafeDrive logs a persistent refusal once.
+    private readonly Dictionary<string, string> _driveErrors = new(StringComparer.Ordinal);
+
     // Ids whose persisted manual duty has been replayed onto hardware this
     // run. An id is dropped while its channel is absent so a hub reconnect
     // (which resets the hub's duty state) replays the saved value when the
@@ -495,11 +498,25 @@ public sealed class CurveEngine : BackgroundService
             ForgetWrite(channelId);
             return;
         }
-        try { _fans.DriveFanSpeed(channelId, duty); }
+        try
+        {
+            _fans.DriveFanSpeed(channelId, duty);
+            lock (_driveErrors)
+            {
+                _driveErrors.Remove(channelId);
+            }
+        }
         catch (Exception ex)
         {
             ForgetWrite(channelId);
-            Console.Error.WriteLine($"[curve-engine] write to {channelId} failed: {ex.Message}");
+            // Retried every tick, so a refusal that persists is logged once until it changes.
+            bool repeat;
+            lock (_driveErrors)
+            {
+                repeat = _driveErrors.TryGetValue(channelId, out var last) && last == ex.Message;
+                _driveErrors[channelId] = ex.Message;
+            }
+            if (!repeat) Console.Error.WriteLine($"[curve-engine] write to {channelId} failed: {ex.Message}");
         }
     }
 
