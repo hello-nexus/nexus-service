@@ -17,6 +17,13 @@ internal static class RenderKit
 {
     private const int JpegQuality = 85;
 
+    /// <summary>
+    /// Decode ceiling. Stored deck images cap their encoded size, not their pixel count,
+    /// and a 512 KB PNG can describe a multi-gigabyte bitmap; every surface draws at
+    /// 480 px or less.
+    /// </summary>
+    private const long MaxDecodePixels = 4096L * 4096L;
+
     private static readonly string[] PreferredFontFamilies =
     {
         "Segoe UI", "Arial", "Helvetica Neue", "Helvetica", "DejaVu Sans", "Liberation Sans", "Verdana", "Tahoma",
@@ -307,10 +314,10 @@ internal static class RenderKit
         }
     }
 
-    /// <summary>The rect of src as its own bitmap. Caller disposes.</summary>
+    /// <summary>The rect of src as its own bitmap, transparent where it falls outside src. Caller disposes.</summary>
     public static SKBitmap Crop(SKBitmap src, SKRectI rect)
     {
-        var image = new SKBitmap(Info(rect.Width, rect.Height));
+        var image = NewImage(rect.Width, rect.Height);
         using var pixmap = src.PeekPixels();
         pixmap.ReadPixels(image.Info, image.GetPixels(), image.RowBytes, rect.Left, rect.Top);
         return image;
@@ -318,7 +325,7 @@ internal static class RenderKit
 
     /// <summary>
     /// Decodes PNG, JPEG, WebP, GIF (first frame), BMP or ICO bytes, or null when they
-    /// are none of these or corrupt. Caller disposes.
+    /// are none of these, corrupt, or larger than <see cref="MaxDecodePixels"/>. Caller disposes.
     /// </summary>
     public static SKBitmap? Decode(ReadOnlySpan<byte> bytes)
     {
@@ -332,14 +339,28 @@ internal static class RenderKit
         return data is null ? null : Decode(data);
     }
 
+    /// <summary>A decode for a process-wide cache: immutable, so concurrent renders only ever read it.</summary>
+    public static SKBitmap? DecodeShared(Stream stream)
+    {
+        var image = Decode(stream);
+        image?.SetImmutable();
+        return image;
+    }
+
     private static SKBitmap? Decode(SKData data)
     {
         using var codec = SKCodec.Create(data);
-        if (codec is null || codec.Info.Width <= 0 || codec.Info.Height <= 0)
+        if (codec is null || codec.Info.Width <= 0 || codec.Info.Height <= 0
+            || (long)codec.Info.Width * codec.Info.Height > MaxDecodePixels)
         {
             return null;
         }
         var image = new SKBitmap(Info(codec.Info.Width, codec.Info.Height));
+        if (image.GetPixels() == IntPtr.Zero)
+        {
+            image.Dispose();
+            return null;
+        }
         var result = codec.GetPixels(image.Info, image.GetPixels());
         if (result is SKCodecResult.Success or SKCodecResult.IncompleteInput)
         {

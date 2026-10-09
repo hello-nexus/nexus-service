@@ -361,7 +361,7 @@ public sealed class DeckKeyRenderer
     {
         var asm = Assembly.GetExecutingAssembly();
         using var stream = asm.GetManifestResourceStream($"deck-icon-{key}.png");
-        return stream is null ? null : RenderKit.Decode(stream);
+        return stream is null ? null : RenderKit.DecodeShared(stream);
     });
 
     /// <summary>

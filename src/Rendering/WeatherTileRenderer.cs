@@ -141,6 +141,6 @@ internal static class WeatherTileRenderer
     {
         var asm = Assembly.GetExecutingAssembly();
         using var stream = asm.GetManifestResourceStream($"weather-icon-{key}.png");
-        return stream is null ? null : RenderKit.Decode(stream);
+        return stream is null ? null : RenderKit.DecodeShared(stream);
     });
 }
