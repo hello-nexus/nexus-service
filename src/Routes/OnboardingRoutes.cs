@@ -2,7 +2,9 @@ using Microsoft.AspNetCore.Builder;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.AspNetCore.Http;
 using Nexus.Service.Auth;
+using Nexus.Service.Conflicts;
 using Nexus.Service.Persistence;
+using Nexus.Service.Platform;
 using Nexus.Service.Sockets;
 
 namespace Nexus.Service.Routes;
@@ -16,6 +18,7 @@ namespace Nexus.Service.Routes;
 ///   POST /onboarding/complete           -> set completed, return status
 ///   POST /onboarding/features-complete  -> set featuresCompleted, return status
 ///   POST /onboarding/lighting-complete  -> set lightingCompleted, return status
+///   POST /onboarding/conflicts-step     -> log how the user left the conflict step, return status
 /// The touch-panel swipe-up hint's flag is .AllowPanel() and not loopback-bound,
 /// since a paired phone is a touch panel too:
 ///   GET  /onboarding/panel-swipe           -> { completed, immersiveCompleted }
@@ -72,6 +75,15 @@ internal static class OnboardingRoutes
             return Results.Ok(Status(store));
         }).LocalhostOnly();
 
+        // Log-only, so a support bundle tells a Resolve all from a Skip. Each
+        // app it ended, whitelisted or took off startup logs from its own route.
+        app.MapPost("/onboarding/conflicts-step", (OnboardingConflictsStepBody body, IConfigStore store) =>
+        {
+            if (!ConflictStepActions.Contains(body?.Action ?? "")) return Results.BadRequest();
+            ServiceLog.Info(ConflictStepLine(body!));
+            return Results.Ok(Status(store));
+        }).LocalhostOnly();
+
         app.MapGet("/onboarding/panel-swipe", (IConfigStore store) =>
             Results.Ok(PanelSwipeStatus(store))).AllowPanel();
 
@@ -124,6 +136,23 @@ internal static class OnboardingRoutes
         }).LocalhostOnly();
     }
 
+    private static readonly string[] ConflictStepActions = { "resolveAll", "skip", "skipOnboarding" };
+
+    internal static string ConflictStepLine(OnboardingConflictsStepBody body)
+        => $"[onboarding] conflicts step: {body.Action} listed={CatalogIds(body.Listed)} "
+            + $"whitelisted={CatalogIds(body.Whitelisted)} alreadyEnded={CatalogIds(body.AlreadyEnded)}";
+
+    // Catalog ids only, so a request cannot write arbitrary text into the log.
+    private static string CatalogIds(List<string>? ids)
+    {
+        var known = (ids ?? new List<string>())
+            .Select(id => ConflictWatcher.FindById(id)?.Id)
+            .OfType<string>()
+            .Distinct()
+            .ToList();
+        return known.Count == 0 ? "-" : string.Join(",", known);
+    }
+
     private static OnboardingStatusDto Status(IConfigStore store)
     {
         var s = store.Load();
@@ -151,6 +180,16 @@ public sealed class PanelSwipeOnboardingDto
 public sealed class DashboardBannerDto
 {
     public string DismissedKey { get; set; } = "";
+}
+
+public sealed class OnboardingConflictsStepBody
+{
+    /// <summary>"resolveAll", "skip" or "skipOnboarding".</summary>
+    public string Action { get; set; } = "";
+    public List<string> Listed { get; set; } = new();
+    public List<string> Whitelisted { get; set; } = new();
+    /// <summary>Rows already gone when the user chose: ended here, closed elsewhere, or exited.</summary>
+    public List<string> AlreadyEnded { get; set; } = new();
 }
 
 public sealed class OnboardingStatusDto

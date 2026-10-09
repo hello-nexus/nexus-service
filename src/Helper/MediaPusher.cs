@@ -39,15 +39,26 @@ public sealed class MediaPusher : IDisposable
     private readonly object _mapLock = new();
     private readonly Dictionary<string, string> _friendlyToSessionId = new(StringComparer.OrdinalIgnoreCase);
     private int _pushScheduled;
+    // One sequence across sessions, so a reopened session never repeats a version.
+    private readonly ConcurrentDictionary<string, long> _artVersions = new(StringComparer.Ordinal);
+    private long _artVersionSeq;
 
     public MediaPusher(HelperOutbound outbound)
     {
         _outbound = outbound;
         _manager = new MediaManager();
         _manager.OnAnySessionOpened += _ => SchedulePush();
-        _manager.OnAnySessionClosed += _ => SchedulePush();
+        _manager.OnAnySessionClosed += s =>
+        {
+            _artVersions.TryRemove(s.Id, out _);
+            SchedulePush();
+        };
         _manager.OnFocusedSessionChanged += _ => SchedulePush();
-        _manager.OnAnyMediaPropertyChanged += (_, __) => SchedulePush();
+        _manager.OnAnyMediaPropertyChanged += (s, _) =>
+        {
+            _artVersions[s.Id] = Interlocked.Increment(ref _artVersionSeq);
+            SchedulePush();
+        };
         _manager.OnAnyPlaybackStateChanged += (_, __) => SchedulePush();
         try { _manager.Start(); }
         catch (Exception ex) { Console.Error.WriteLine($"[media-pusher] MediaManager.Start failed: {ex.Message}"); }
@@ -135,6 +146,7 @@ public sealed class MediaPusher : IDisposable
                         Title = props.Title ?? string.Empty,
                         Artist = props.Artist ?? string.Empty,
                         Album = props.AlbumTitle ?? string.Empty,
+                        ArtVersion = _artVersions.TryGetValue(session.Id, out var artVersion) ? artVersion : 0,
                     },
                     Playback = new MediaPlayback
                     {

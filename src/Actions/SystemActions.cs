@@ -345,6 +345,20 @@ public sealed class SystemActions
         if (OperatingSystem.IsWindows())
         {
 #if WINDOWS
+            // Through the helper like every other launch, so its window comes to the front.
+            var registry = _sp.GetService<Nexus.Service.Helper.HelperRegistry>();
+            if (registry?.GetAny() is not null)
+            {
+                try
+                {
+                    Nexus.Service.Helper.Domains.SystemCommands.OpenFileAsync(registry, "taskmgr.exe").GetAwaiter().GetResult();
+                    return true;
+                }
+                catch (Exception ex)
+                {
+                    Nexus.Service.Platform.ServiceLog.Warn($"[system-actions] task manager launch via helper failed: {ex.Message}");
+                }
+            }
             // The service runs as LocalSystem in Session 0, where a directly
             // spawned taskmgr.exe has no interactive desktop to draw on - run
             // it in the active console user's session instead, same mechanism

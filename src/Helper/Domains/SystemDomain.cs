@@ -21,6 +21,13 @@ public sealed class OpenFilePayload
     public string Path { get; set; } = "";
 }
 
+/// <summary>Helper-to-service push: a window the helper could not focus because it runs elevated.</summary>
+public sealed class FocusWindowPayload
+{
+    public long Hwnd { get; set; }
+    public long ExpectedForeground { get; set; }
+}
+
 /// <summary>Helper-to-service push: the Windows apps light/dark setting.</summary>
 public sealed class SystemThemePayload
 {
@@ -34,6 +41,7 @@ public static class SystemCommands
     public const string OpenUrlType = "system.openUrl";
     public const string OpenFileType = "system.openFile";
     public const string ThemeChangedType = "system.themeChanged";
+    public const string FocusWindowElevatedType = "system.focusWindowElevated";
 
     public static Task OpenSettingsAsync(HelperRegistry registry, CancellationToken ct = default)
     {

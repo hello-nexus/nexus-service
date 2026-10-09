@@ -110,6 +110,23 @@ public sealed class MediaTopicPublisherTests
     }
 
     [Fact]
+    public void Poll_LateArtOnSameTrack_SendsFrame()
+    {
+        var (publisher, media, hub, frames) = Rig();
+        using var sub = hub.AddTestSubscription(PanelTopics.Media);
+        media.Sessions["Spotify"] = Session(playing: true);
+        publisher.Publish(force: false);
+
+        var withArt = Session(playing: true);
+        withArt.Song.ArtVersion = 1;
+        media.Sessions = new(StringComparer.OrdinalIgnoreCase) { ["Spotify"] = withArt };
+        publisher.Publish(force: false);
+
+        Assert.Equal(2, frames.Count);
+        Assert.Contains("\"artVersion\":1", frames[1]);
+    }
+
+    [Fact]
     public void Poll_SessionGone_SendsEmptySet()
     {
         var (publisher, media, hub, frames) = Rig();

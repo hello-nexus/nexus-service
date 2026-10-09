@@ -124,6 +124,8 @@ public class MediaSong
     public string Title { get; set; } = "";
     public string Artist { get; set; } = "";
     public string Album { get; set; } = "";
+    /// <summary>Bumps per media-properties event, the only signal for a thumbnail set after the title. 0 off Windows.</summary>
+    public long ArtVersion { get; set; }
 }
 
 public class MediaPlayback
