@@ -275,6 +275,144 @@ public class Slv3HubTests
         Assert.False(hub.Bind(Convert.ToHexString(FanMac)));
     }
 
+    private static readonly byte[] OtherMasterMac = Convert.FromHexString("0102030405FF");
+
+    // Hub plus a saved owned list the test can inspect; the clock is injected for backoff.
+    private static (Slv3Hub Hub, FakeSlv3Network Net, FakeTxTransport Tx, Dictionary<string, int> Saved, ManualClock Clock) CreateOwnershipHub(
+        Dictionary<string, int>? initial = null)
+    {
+        var clock = new ManualClock();
+        var (hub, net, tx, _) = CreateConnectedHub(clock.NowMs);
+        var saved = new Dictionary<string, int>(initial ?? new());
+        hub.OwnedDevicesLoad = () => new Dictionary<string, int>(saved);
+        hub.OwnedDevicesSave = owned =>
+        {
+            saved.Clear();
+            foreach (var (mac, slot) in owned)
+            {
+                saved[mac] = slot;
+            }
+        };
+        return (hub, net, tx, saved, clock);
+    }
+
+    private static void Ticks(Slv3Hub hub, int count)
+    {
+        for (var i = 0; i < count; i++)
+        {
+            Assert.True(hub.DriveTick());
+        }
+    }
+
+    [Fact]
+    public void Devices_seen_bound_to_our_master_seed_the_owned_list_with_their_slot()
+    {
+        var (hub, net, _, saved, _) = CreateOwnershipHub();
+        net.Fans.Add(new SimulatedFan { Mac = FanMac, MasterMac = net.MasterMac, RxType = 4 });
+        net.Fans.Add(new SimulatedFan { Mac = Convert.FromHexString("A1A2A3A4A5A6"), MasterMac = OtherMasterMac, RxType = 2 });
+
+        Ticks(hub, 1);
+
+        Assert.Equal(new Dictionary<string, int> { [Convert.ToHexString(FanMac)] = 4 }, saved);
+    }
+
+    [Fact]
+    public void Owned_device_that_loses_its_binding_is_bound_back_into_its_slot()
+    {
+        var mac = Convert.ToHexString(FanMac);
+        var (hub, net, tx, _, _) = CreateOwnershipHub(new() { [mac] = 6 });
+        net.Fans.Add(new SimulatedFan { Mac = FanMac, RxType = 0 });
+
+        Ticks(hub, 2);
+        Assert.True(hub.State.Fans[0].BoundToUs);
+        Assert.Equal(6, hub.State.Fans[0].Slot);
+        Assert.Equal(6, LastBindFrame(tx, FanMac)[18]);
+    }
+
+    [Fact]
+    public void Owned_device_falls_back_to_the_first_free_slot_when_its_slot_is_taken()
+    {
+        var mac = Convert.ToHexString(FanMac);
+        var (hub, net, _, _, _) = CreateOwnershipHub(new() { [mac] = 3 });
+        net.Fans.Add(new SimulatedFan { Mac = Convert.FromHexString("A1A2A3A4A5A6"), MasterMac = net.MasterMac, RxType = 3 });
+        net.Fans.Add(new SimulatedFan { Mac = FanMac });
+
+        Ticks(hub, 2);
+
+        Assert.Equal(1, Array.Find(hub.State.Fans, f => f.Mac == mac)!.Slot);
+    }
+
+    [Fact]
+    public void Explicit_unbind_removes_the_device_and_it_is_not_rebound()
+    {
+        var (hub, net, tx, saved, _) = CreateOwnershipHub();
+        net.Fans.Add(new SimulatedFan { Mac = FanMac, MasterMac = net.MasterMac, RxType = 2 });
+        Ticks(hub, 1);
+        Assert.Single(saved);
+
+        Assert.True(hub.Unbind(Convert.ToHexString(FanMac)));
+        Ticks(hub, 3);
+        tx.SentFrames.Clear();
+        Ticks(hub, 3);
+
+        Assert.Empty(saved);
+        Assert.False(hub.State.Fans[0].BoundToUs);
+        Assert.Equal(0, CountBindFrames(tx));
+    }
+
+    [Fact]
+    public void Owned_device_bound_to_another_master_is_never_touched()
+    {
+        var mac = Convert.ToHexString(FanMac);
+        var (hub, net, tx, saved, _) = CreateOwnershipHub(new() { [mac] = 2 });
+        net.Fans.Add(new SimulatedFan { Mac = FanMac, MasterMac = OtherMasterMac, RxType = 5 });
+
+        Ticks(hub, 3);
+
+        Assert.Equal(0, CountBindFrames(tx));
+        Assert.Equal(Convert.ToHexString(OtherMasterMac), hub.State.Fans[0].MasterMac);
+        Assert.Contains(mac, saved.Keys);
+    }
+
+    [Fact]
+    public void Unowned_unbound_device_is_not_bound()
+    {
+        var (hub, net, tx, _, _) = CreateOwnershipHub();
+        net.Fans.Add(new SimulatedFan { Mac = FanMac });
+
+        Ticks(hub, 3);
+
+        Assert.Equal(0, CountBindFrames(tx));
+    }
+
+    [Fact]
+    public void Auto_rebind_is_rate_limited_and_gives_up_after_repeated_failures()
+    {
+        var mac = Convert.ToHexString(FanMac);
+        var (hub, net, tx, _, clock) = CreateOwnershipHub(new() { [mac] = 2 });
+        net.Fans.Add(new SimulatedFan { Mac = FanMac, IgnoresBind = true });
+
+        for (var attempt = 1; attempt <= Slv3Hub.AutoRebindMaxFailures; attempt++)
+        {
+            var before = CountBindFrames(tx);
+            Ticks(hub, 1);
+            Assert.True(CountBindFrames(tx) > before, $"attempt {attempt} sent no bind frame");
+
+            // The pending op spends its budget, then the interval holds the next attempt back.
+            Ticks(hub, PendingOpTickBudget + 2);
+            var settled = CountBindFrames(tx);
+            Ticks(hub, 5);
+            Assert.Equal(settled, CountBindFrames(tx));
+            clock.AdvanceMs(Slv3Hub.AutoRebindIntervalMs + 1);
+        }
+
+        var final = CountBindFrames(tx);
+        Ticks(hub, 5);
+        clock.AdvanceMs(10 * Slv3Hub.AutoRebindIntervalMs);
+        Ticks(hub, 5);
+        Assert.Equal(final, CountBindFrames(tx));
+    }
+
     [Fact]
     public void ResetChain_sends_one_reboot_frame_and_stops_once_the_chain_echoes_the_seq()
     {
@@ -1526,6 +1664,8 @@ public class Slv3HubTests
     private sealed class SimulatedFan
     {
         public required byte[] Mac { get; init; }
+        /// <summary>A fan that never applies a bind frame.</summary>
+        public bool IgnoresBind { get; set; }
         public byte[] MasterMac { get; set; } = new byte[6];
         public byte Channel { get; set; } = Slv3Protocol.DefaultChannel;
         public byte RxType { get; set; }
@@ -1595,6 +1735,10 @@ public class Slv3HubTests
                     if (!Slv3Protocol.MacEquals(fan.Mac, fanMac))
                     {
                         continue;
+                    }
+                    if (fan.IgnoresBind)
+                    {
+                        break;
                     }
                     fan.RxType = targetRx;
                     fan.Channel = targetChannel;

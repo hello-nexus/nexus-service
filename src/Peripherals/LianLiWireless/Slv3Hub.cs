@@ -77,6 +77,25 @@ public sealed class Slv3Hub : IDisposable
     /// </summary>
     public event Action<string>? AioSwitched;
 
+    /// <summary>Persisted MAC hex to last slot of the devices Nexus owns; read once, outside the hub lock.</summary>
+    public Func<IReadOnlyDictionary<string, int>>? OwnedDevicesLoad { get; set; }
+
+    /// <summary>Persists the owned-device list; invoked outside the hub lock after the list changes.</summary>
+    public Action<IReadOnlyDictionary<string, int>>? OwnedDevicesSave { get; set; }
+
+    // Devices Nexus bound to its master, by MAC hex, with the slot each last held.
+    private readonly Dictionary<string, int> _owned = new(StringComparer.Ordinal);
+    private bool _ownedLoaded;
+    private bool _ownedDirty;
+    // Explicitly unbound through Nexus this session; never re-seeded as owned.
+    private readonly HashSet<string> _userUnbound = new(StringComparer.Ordinal);
+
+    // An owned device found unbound is bound back at most this often, and
+    // only until it has failed to converge this many times in a row.
+    internal const long AutoRebindIntervalMs = 30_000;
+    internal const int AutoRebindMaxFailures = 3;
+    private readonly Dictionary<string, AutoRebindState> _rebind = new(StringComparer.Ordinal);
+
     private ISlv3Transport? _tx;
     private ISlv3Transport? _rx;
     private byte[] _masterMac = new byte[Slv3Protocol.MacLength];
@@ -435,9 +454,17 @@ public sealed class Slv3Hub : IDisposable
     public bool PollTick()
     {
         _usbAioMac = ReadUsbAioMac();
-        lock (_lock)
+        EnsureOwnedLoaded();
+        try
         {
-            return PollLocked();
+            lock (_lock)
+            {
+                return PollLocked();
+            }
+        }
+        finally
+        {
+            FlushOwned();
         }
     }
 
@@ -453,6 +480,19 @@ public sealed class Slv3Hub : IDisposable
         var aio = _anyAioControlled || _anyAioBound;
         var aioSensors = aio ? ReadAioSensors() : default;
         var aioScreens = aio ? ReadAioScreens() : null;
+        EnsureOwnedLoaded();
+        try
+        {
+            return DriveLocked(aioSensors, aioScreens);
+        }
+        finally
+        {
+            FlushOwned();
+        }
+    }
+
+    private bool DriveLocked(Slv3AioSensors aioSensors, IReadOnlyDictionary<string, Slv3AioScreen>? aioScreens)
+    {
         lock (_lock)
         {
             if (!PollLocked())
@@ -497,8 +537,134 @@ public sealed class Slv3Hub : IDisposable
             return true;
         }
         ResolvePendingLocked();
+        TrackOwnedLocked();
+        AutoRebindLocked();
         SyncControlLocked();
         return true;
+    }
+
+    private void EnsureOwnedLoaded()
+    {
+        if (_ownedLoaded)
+        {
+            return;
+        }
+        IReadOnlyDictionary<string, int>? saved = null;
+        try
+        {
+            saved = OwnedDevicesLoad?.Invoke();
+        }
+        catch (Exception ex)
+        {
+            ServiceLog.Warn($"[lianli-wireless] owned device list read failed: {ex.Message}");
+        }
+        lock (_lock)
+        {
+            if (_ownedLoaded)
+            {
+                return;
+            }
+            if (saved is not null)
+            {
+                foreach (var (mac, slot) in saved)
+                {
+                    _owned.TryAdd(mac.ToUpperInvariant(), slot);
+                }
+            }
+            _ownedLoaded = true;
+        }
+    }
+
+    private void FlushOwned()
+    {
+        Dictionary<string, int> snapshot;
+        lock (_lock)
+        {
+            if (!_ownedDirty)
+            {
+                return;
+            }
+            _ownedDirty = false;
+            snapshot = new Dictionary<string, int>(_owned, StringComparer.Ordinal);
+        }
+        try
+        {
+            OwnedDevicesSave?.Invoke(snapshot);
+        }
+        catch (Exception ex)
+        {
+            ServiceLog.Warn($"[lianli-wireless] owned device list save failed: {ex.Message}");
+        }
+    }
+
+    // Any device seen bound to our master is ours, which also seeds the list on upgrade.
+    private void TrackOwnedLocked()
+    {
+        foreach (var record in _lastFanRecords)
+        {
+            if (!IsBoundToUsLocked(record))
+            {
+                continue;
+            }
+            var key = Convert.ToHexString(record.Mac);
+            if (_userUnbound.Contains(key) || (_pending.TryGetValue(key, out var op) && op.Unbind))
+            {
+                continue;
+            }
+            if (!_owned.TryGetValue(key, out var slot) || slot != record.RxType)
+            {
+                _owned[key] = record.RxType;
+                _ownedDirty = true;
+            }
+        }
+    }
+
+    // Binds an owned device back when it reports no master, as L-Connect does
+    // on start. A device bound to another master is never touched.
+    private void AutoRebindLocked()
+    {
+        if (Slv3Protocol.MacIsZero(_masterMac) || _owned.Count == 0)
+        {
+            return;
+        }
+        var now = _nowMs();
+        foreach (var record in _lastFanRecords)
+        {
+            var key = Convert.ToHexString(record.Mac);
+            if (!_owned.TryGetValue(key, out var lastSlot))
+            {
+                continue;
+            }
+            var unbound = Slv3Protocol.MacIsZero(record.MasterMac);
+            if (!unbound || !_knownChains.TryGetValue(key, out var chain) || now - chain.LastSeenMs > ChainStaleMs)
+            {
+                if (!unbound)
+                {
+                    _rebind.Remove(key);
+                }
+                continue;
+            }
+            if (record.Channel != _channel || _pending.ContainsKey(key))
+            {
+                continue;
+            }
+            _rebind.TryGetValue(key, out var state);
+            if (state.Failures >= AutoRebindMaxFailures
+                || (state.Attempts > 0 && now - state.LastAttemptMs < AutoRebindIntervalMs))
+            {
+                continue;
+            }
+            var slot = lastSlot >= Slv3Protocol.MinSlot && lastSlot <= Slv3Protocol.MaxSlot && !SlotInUseLocked(lastSlot)
+                ? lastSlot
+                : FirstFreeSlotLocked();
+            if (slot < 0)
+            {
+                continue;
+            }
+            _rebind[key] = new AutoRebindState(now, state.Failures, state.Attempts + 1);
+            ServiceLog.Info($"[lianli-wireless] auto-rebind {key} unbound, binding to slot {slot} (attempt {state.Attempts + 1})");
+            StartBindLocked(record, (byte)slot, auto: true);
+        }
     }
 
     // Re-send every pending bind/unbind frame and sequenced command, and one
@@ -771,6 +937,11 @@ public sealed class Slv3Hub : IDisposable
                 {
                     (resolved ??= new List<string>()).Add(key);
                     bindConfirmed |= !op.Unbind;
+                    if (op.Auto)
+                    {
+                        ServiceLog.Info($"[lianli-wireless] auto-rebind {key} bound to slot {record.RxType}");
+                    }
+                    _rebind.Remove(key);
                     continue;
                 }
             }
@@ -809,6 +980,12 @@ public sealed class Slv3Hub : IDisposable
             foreach (var key in expired)
             {
                 ServiceLog.Warn($"[lianli-wireless] bind/unbind for {key} did not converge in {PendingOpTickBudget} polls, dropping");
+                if (_pending.TryGetValue(key, out var droppedOp) && droppedOp.Auto)
+                {
+                    var prior = _rebind.GetValueOrDefault(key);
+                    _rebind[key] = prior with { Failures = prior.Failures + 1 };
+                    ServiceLog.Warn($"[lianli-wireless] auto-rebind {key} failed ({prior.Failures + 1}/{AutoRebindMaxFailures})");
+                }
                 _pending.Remove(key);
             }
         }
@@ -955,6 +1132,7 @@ public sealed class Slv3Hub : IDisposable
             {
                 ServiceLog.Info($"[lianli-wireless] chain {key} dropped ({ChainExpiryMs / 1000}s unseen)");
                 _knownChains.Remove(key);
+                _rebind.Remove(key);
                 if (_aioControl.TryGetValue(key, out var control))
                 {
                     control.Switched = false;
@@ -1246,12 +1424,18 @@ public sealed class Slv3Hub : IDisposable
             {
                 return false;
             }
-            _pending[key] = new Slv3PendingOp(mac, (byte)slot, Unbind: false, PendingOpTickBudget);
-            // First frame goes out now; the poll re-sends until the device list
-            // confirms, so a request does not wait up to a full tick to start.
-            SendBindFrameLocked(existing, (byte)slot, unbind: false);
+            _userUnbound.Remove(key);
+            StartBindLocked(existing, (byte)slot, auto: false);
         }
         return true;
+    }
+
+    private void StartBindLocked(Slv3DeviceRecord record, byte slot, bool auto)
+    {
+        _pending[Convert.ToHexString(record.Mac)] = new Slv3PendingOp(record.Mac, slot, Unbind: false, PendingOpTickBudget, auto);
+        // First frame goes out now; the poll re-sends until the device list
+        // confirms, so a request does not wait up to a full tick to start.
+        SendBindFrameLocked(record, slot, unbind: false);
     }
 
     /// <summary>
@@ -1272,14 +1456,23 @@ public sealed class Slv3Hub : IDisposable
                 return false;
             }
             var key = Convert.ToHexString(mac);
+            _userUnbound.Add(key);
+            _rebind.Remove(key);
+            if (_owned.Remove(key))
+            {
+                _ownedDirty = true;
+            }
             if (!IsBoundToUsLocked(existing))
             {
                 _pending.Remove(key);
-                return true;
             }
-            _pending[key] = new Slv3PendingOp(mac, 0, Unbind: true, PendingOpTickBudget);
-            SendBindFrameLocked(existing, 0, unbind: true);
+            else
+            {
+                _pending[key] = new Slv3PendingOp(mac, 0, Unbind: true, PendingOpTickBudget);
+                SendBindFrameLocked(existing, 0, unbind: true);
+            }
         }
+        FlushOwned();
         return true;
     }
 
@@ -1828,6 +2021,25 @@ public sealed class Slv3Hub : IDisposable
 
     // Slots already used by a fan bound to us, or already claimed by an in-flight
     // bind, are excluded. Caller holds _lock.
+    private bool SlotInUseLocked(int slot)
+    {
+        foreach (var record in _lastFanRecords)
+        {
+            if (IsBoundToUsLocked(record) && record.RxType == slot)
+            {
+                return true;
+            }
+        }
+        foreach (var op in _pending.Values)
+        {
+            if (!op.Unbind && op.TargetSlot == slot)
+            {
+                return true;
+            }
+        }
+        return false;
+    }
+
     private int FirstFreeSlotLocked()
     {
         var used = new HashSet<int>();
@@ -1891,7 +2103,9 @@ public sealed class Slv3Hub : IDisposable
         }
     }
 
-    private readonly record struct Slv3PendingOp(byte[] Mac, byte TargetSlot, bool Unbind, int TicksRemaining);
+    private readonly record struct Slv3PendingOp(byte[] Mac, byte TargetSlot, bool Unbind, int TicksRemaining, bool Auto = false);
+
+    private readonly record struct AutoRebindState(long LastAttemptMs, int Failures, int Attempts);
 
     private readonly record struct Slv3PendingCommand(byte[] Mac, byte RfCmd, byte TargetSeq, int SendsRemaining, byte Arg = 0);
 

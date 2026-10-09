@@ -1603,6 +1603,9 @@ public sealed class LianLiWirelessSettings
 
     /// <summary>HydroShift II screen settings, keyed by the AIO's MAC hex (uppercase).</summary>
     public Dictionary<string, LianLiAioScreenSettings> AioScreens { get; set; } = new();
+
+    /// <summary>Devices Nexus bound to its dongle, by MAC hex (uppercase), with the slot each last held; an unbound one is bound back.</summary>
+    public Dictionary<string, int> OwnedDevices { get; set; } = new();
 }
 
 /// <summary>What a HydroShift II's screen shows while Nexus drives its pump.</summary>

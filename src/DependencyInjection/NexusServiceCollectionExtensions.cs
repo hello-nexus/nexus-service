@@ -1016,6 +1016,9 @@ public static class NexusServiceCollectionExtensions
                 }
                 return screens;
             };
+            hub.OwnedDevicesLoad = () => store.Load().Devices.LianLiWireless.OwnedDevices;
+            hub.OwnedDevicesSave = owned => store.Update(settings =>
+                settings.Devices.LianLiWireless.OwnedDevices = new Dictionary<string, int>(owned, StringComparer.Ordinal));
             // Resolved on first use: the USB AIO service itself depends on this hub.
             var usbAio = new Lazy<Nexus.Service.Peripherals.BulkPanels.HydroShift2Aio?>(
                 () => sp.GetService<Nexus.Service.Peripherals.BulkPanels.HydroShift2Aio>());
