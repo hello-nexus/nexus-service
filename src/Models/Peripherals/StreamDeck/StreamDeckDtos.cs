@@ -173,6 +173,13 @@ public sealed class StreamDeckSimInputBody
     public int? Y2 { get; set; }
 }
 
+/// <summary>POST /streamdeck/dev/inject-report body: one raw input report (hex, report id first) fed to a real deck's input path.</summary>
+public sealed class StreamDeckInjectReportBody
+{
+    public string Serial { get; set; } = "";
+    public string Hex { get; set; } = "";
+}
+
 /// <summary>POST /streamdeck/dev/simulate body: picks the model the simulated deck presents as.</summary>
 public sealed class StreamDeckSimulateBody
 {

@@ -115,6 +115,31 @@ public sealed partial class StreamDeckConnectionWorker
         }
     }
 
+#if DEV_TOOLS
+    /// <summary>Bench hook: decodes a raw input report for a connected deck and dispatches it as if its reader had read it. False when the serial is unknown or the report does not decode.</summary>
+    public bool InjectReport(string serial, ReadOnlySpan<byte> report)
+    {
+        lock (_lock)
+        {
+            foreach (var (key, surface) in _surfaces)
+            {
+                if (!string.Equals(surface.Serial, serial, StringComparison.OrdinalIgnoreCase))
+                {
+                    continue;
+                }
+                var input = StreamDeckProtocol.DecodeInput(report, surface.Model);
+                if (input is null)
+                {
+                    return false;
+                }
+                DispatchInput(key, surface, input);
+                return true;
+            }
+            return false;
+        }
+    }
+#endif
+
     // ── Input ──
 
     /// <summary>Routes one decoded report by kind. Caller holds _lock.</summary>

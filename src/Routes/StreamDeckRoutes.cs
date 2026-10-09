@@ -295,6 +295,16 @@ public static class StreamDeckRoutes
             return ApiResponse.Fail("simulator not available");
         }).LocalhostOnly();
 
+#if DEV_TOOLS
+        app.MapPost("/streamdeck/dev/inject-report", (StreamDeckInjectReportBody body, StreamDeckConnectionWorker worker) =>
+        {
+            byte[] report;
+            try { report = Convert.FromHexString(body.Hex.Replace(" ", "")); }
+            catch (FormatException) { return ApiResponse.Fail("hex"); }
+            return worker.InjectReport(body.Serial, report) ? ApiResponse.Ok() : ApiResponse.Fail("no deck or undecodable report");
+        }).LocalhostOnly();
+#endif
+
         app.MapPost("/streamdeck/dev/sim-input", (StreamDeckSimInputBody body, StreamDeckConnectionWorker worker) =>
         {
             var surface = worker.FindBySerial(body.Serial);
