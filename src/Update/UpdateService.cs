@@ -585,8 +585,9 @@ public sealed class UpdateService : BackgroundService
             // launched; status reverts to "ready" and the user re-triggers.
             lock (_adoptLock)
             {
-                // A channel switch cancelling this stage owns it now.
-                if (!_updateReady && _progress.Active && !IsCancelRequested(_installCts))
+                // Only a background stage is adopted: a channel switch holding the gate
+                // installs another version, and one cancelling this stage owns it now.
+                if (_installIsBackground && !_updateReady && _progress.Active && !IsCancelRequested(_installCts))
                 {
                     _launchAfterStageReopen = reopenAfter;
                     _launchAfterStage = true;
@@ -614,11 +615,7 @@ public sealed class UpdateService : BackgroundService
 
     internal static bool IsValidChannel(string? channel) => channel is "beta" or "production";
 
-    private static bool IsCancelRequested(CancellationTokenSource? cts)
-    {
-        try { return cts?.IsCancellationRequested ?? false; }
-        catch (ObjectDisposedException) { return true; }
-    }
+    private static bool IsCancelRequested(CancellationTokenSource? cts) => cts?.IsCancellationRequested ?? false;
 
     /// <summary>
     /// Whether the build now running completes the install a marker recorded. A
