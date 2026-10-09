@@ -120,6 +120,12 @@ public sealed class DeckActionExecutor : IDeckActionExecutor
             var result = await DispatchAsync(action, serial, latchKey, ct).ConfigureAwait(false);
             outcome = result == DispatchOutcome.Unknown ? "unknown" : "ok";
         }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            LastOutcome = ("cancelled", null);
+            ServiceLog.Info($"[streamdeck] dispatch serial={serial} key={keyIndex} type={action.Type} outcome=cancelled");
+            return;
+        }
         catch (Exception ex)
         {
             LastOutcome = ("failed", ex.Message);
@@ -396,6 +402,16 @@ public sealed class DeckActionExecutor : IDeckActionExecutor
             case "openSettings":
                 await _system.OpenSettingsAsync().ConfigureAwait(false);
                 return;
+            case "screenshot":
+            case "screenRecord":
+            {
+                var response = await _system.OpenScreenCaptureAsync(sa.Op == "screenRecord").ConfigureAwait(false);
+                if (response.Error)
+                {
+                    throw new InvalidOperationException(response.Msg);
+                }
+                return;
+            }
             case "mediaPlayPause":
             case "mediaNext":
             case "mediaPrev":

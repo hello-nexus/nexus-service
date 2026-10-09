@@ -30,7 +30,6 @@ public class DeviceControlPolicyTests
     [InlineData("lianli-wireless")]
     [InlineData("lianli-aio")]
     [InlineData("strimer")]
-    [InlineData("nollie")]
     public void IsExperimental_ThirdPartyHardware_IsTrue(string handlerId)
     {
         Assert.True(DeviceControlPolicy.IsExperimental(handlerId));
@@ -41,6 +40,7 @@ public class DeviceControlPolicyTests
     [InlineData("streamdeck")]
     [InlineData("tryx")]
     [InlineData("zmatrices-lcd")]
+    [InlineData("nollie")]
     public void IsExperimental_StableThirdPartyHardware_IsFalse(string handlerId)
     {
         Assert.False(DeviceControlPolicy.IsExperimental(handlerId));

@@ -244,6 +244,10 @@ internal static class WindowsUserHelper
             }).Register(handlerRegistry);
         new MediaHandler(media.Control, media.Seek, media.GetAlbumArt).Register(handlerRegistry);
         new BrightnessHandler(brightness).Register(handlerRegistry);
+        Platform.Windows.LaunchFocus.Start((hwnd, focusedAtArm) => _ = outbound.SendAsync(
+            SystemCommands.FocusWindowElevatedType,
+            new FocusWindowPayload { Hwnd = hwnd.ToInt64(), ExpectedForeground = focusedAtArm.ToInt64() },
+            Nexus.Service.Serialization.AppJsonContext.Default.FocusWindowPayload));
         new ShortcutsHandler(new Nexus.Service.Activity.WindowsShortcutsProvider()).Register(handlerRegistry);
         new ProcessIconHandler(new Nexus.Service.Activity.WindowsIconExtractor()).Register(handlerRegistry);
         new ProcessActionsHandler().Register(handlerRegistry);

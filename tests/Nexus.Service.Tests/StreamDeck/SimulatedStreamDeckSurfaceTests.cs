@@ -14,7 +14,7 @@ public class SimulatedStreamDeckSurfaceTests
         var deck = Mini();
         deck.Poke(2, true);
 
-        var states = deck.ReadInput(0);
+        var states = deck.ReadInput(0)?.Keys;
 
         Assert.NotNull(states);
         Assert.Equal(new[] { false, false, true, false, false, false }, states);
@@ -37,11 +37,11 @@ public class SimulatedStreamDeckSurfaceTests
         deck.Poke(0, true);
         deck.Poke(0, false);
 
-        var first = deck.ReadInput(0);
+        var first = deck.ReadInput(0)?.Keys;
         Assert.NotNull(first);
         Assert.True(first![0]);
 
-        var second = deck.ReadInput(0);
+        var second = deck.ReadInput(0)?.Keys;
         Assert.NotNull(second);
         Assert.False(second![0]);
 
@@ -56,7 +56,7 @@ public class SimulatedStreamDeckSurfaceTests
         deck.ReadInput(0);
 
         deck.Poke(1, false);
-        var states = deck.ReadInput(0);
+        var states = deck.ReadInput(0)?.Keys;
 
         Assert.NotNull(states);
         Assert.False(states![1]);

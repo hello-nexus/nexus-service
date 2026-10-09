@@ -24,6 +24,10 @@ internal static class CommandLineEntry
                 Nexus.Service.Platform.Windows.TrayIcon.OpenLocalWindow();
                 return 0;
             },
+            // One-shot the service runs elevated via schtasks to focus an elevated window for the helper.
+            ["--focus-window"] = static a =>
+                a.Length > 2 && long.TryParse(a[1], out var hwnd) && long.TryParse(a[2], out var expected)
+                && Nexus.Service.Platform.Windows.ForegroundNudge.FocusWindow(new IntPtr(hwnd), new IntPtr(expected)) ? 0 : 1,
             // One-shot invoked by the service via schtasks to switch the default
             // audio endpoint in the user session (per-user setting; IPolicyConfig
             // can't change it from Session 0).

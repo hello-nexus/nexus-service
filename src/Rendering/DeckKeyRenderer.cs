@@ -109,6 +109,40 @@ public sealed class DeckKeyRenderer
         return render;
     }
 
+    /// <summary>
+    /// A square icon glyph on a transparent canvas for the dial screens: an
+    /// uploaded image cover-fit, an emoji, or the named lucide glyph (also the
+    /// fallback for an app icon, which the screens do not resolve). Null when
+    /// nothing renders. Caller disposes.
+    /// </summary>
+    public Image<Rgba32>? RenderIconGlyph(DeckIcon? icon, string fallbackLucide, int size)
+    {
+        if (size <= 0)
+        {
+            return null;
+        }
+        var canvas = new Image<Rgba32>(size, size);
+        if (icon is { Kind: "image" } && _imageStore.TryLoad(icon.Value) is { } loaded)
+        {
+            using var source = Image.Load<Rgba32>(loaded.Bytes);
+            DrawCover(canvas, source, size);
+            return canvas;
+        }
+        if (icon is { Kind: "emoji" })
+        {
+            PaintEmoji(canvas, icon.Value, size, size);
+            return canvas;
+        }
+        var lucide = LoadLucide(icon is { Kind: "lucide" } ? icon.Value : fallbackLucide);
+        if (lucide is null)
+        {
+            canvas.Dispose();
+            return null;
+        }
+        DrawCentered(canvas, lucide, size / 2f, size / 2f, size);
+        return canvas;
+    }
+
     private void Touch(string key)
     {
         _cacheLru.Remove(key);

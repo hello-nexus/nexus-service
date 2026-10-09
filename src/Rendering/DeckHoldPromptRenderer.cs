@@ -17,22 +17,26 @@ namespace Nexus.Service.Rendering;
 /// </summary>
 internal static class DeckHoldPromptRenderer
 {
-    private static readonly Color Background = Color.Black;
+    private static readonly Color DefaultBackground = Color.Black;
     private static readonly Color Track = Color.FromPixel(new Rgba32(255, 255, 255, 45));
     private static readonly Color Accent = Color.ParseHex("#4DA3FF");
 
-    public static Image<Rgba32> Render(float fraction, int pixelSize)
+    public static Image<Rgba32> Render(float fraction, int pixelSize) => Render(fraction, pixelSize, pixelSize, DefaultBackground);
+
+    /// <summary>The same ring centred on a width x height canvas (a dial segment), sized by the shorter edge.</summary>
+    public static Image<Rgba32> Render(float fraction, int width, int height, Color background)
     {
         var clamped = Math.Clamp(fraction, 0f, 1f);
-        var image = new Image<Rgba32>(pixelSize, pixelSize);
-        var center = new PointF(pixelSize / 2f, pixelSize / 2f);
+        var pixelSize = Math.Min(width, height);
+        var image = new Image<Rgba32>(width, height);
+        var center = new PointF(width / 2f, height / 2f);
         var outerRadius = pixelSize * 0.40f;
         var thickness = pixelSize * 0.13f;
         var innerRadius = outerRadius - thickness;
 
         image.Mutate(ctx =>
         {
-            ctx.Fill(Background);
+            ctx.Fill(background);
             ctx.Fill(Track, RenderKit.BuildRingSegment(center, innerRadius, outerRadius, 0f, 360f));
             if (clamped > 0f)
             {

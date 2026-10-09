@@ -23,6 +23,14 @@ internal static class ElgatoActionTypes
     public const string LhmReading = "com.moeilijk.lhm.reading";
     public const string Weather = "com.elgato.weather.weather";
     public const string PlayAudio = "com.elgato.streamdeck.soundboard.playaudio";
+    public const string PageGoto = "com.elgato.streamdeck.page.goto";
+    public const string KeyBrightness = "com.elgato.streamdeck.system.keybrightness";
+    /// <summary>Dial-only: a key action per input, Actions[] ordered rotate CCW, press, rotate CW.</summary>
+    public const string KeysAdaptor = "com.elgato.streamdeck.keys.adaptor";
+    /// <summary>Dial-only: Actions[] are dial actions, one shown at a time.</summary>
+    public const string DialStack = "com.elgato.streamdeck.dial.stack";
+    public const string VolumeOutput = "com.elgato.volume-controller.output-device-control";
+    public const string VolumeInput = "com.elgato.volume-controller.input-device-control";
     public const string TutorialPrefix = "com.elgato.tutorial.";
     public const string BuiltinPrefix = "com.elgato.streamdeck.";
 
@@ -69,11 +77,11 @@ public sealed class ElgatoProfile
     public int MaxRowSeen { get; set; }
 }
 
-/// <summary>One page or folder manifest's Keypad controller, keyed by (col, row).</summary>
+/// <summary>One page or folder manifest's Keypad controller, keyed by (col, row), and its Encoder controller, keyed by dial index.</summary>
 public sealed class ElgatoPageData
 {
     public Dictionary<(int Col, int Row), ElgatoActionData> Actions { get; } = new();
-    public bool HasEncoderController { get; set; }
+    public Dictionary<int, ElgatoActionData> Dials { get; } = new();
 }
 
 public sealed class ElgatoActionData
@@ -86,6 +94,10 @@ public sealed class ElgatoActionData
     public JsonElement? ActionsGroup { get; set; }
     public int ActiveState { get; set; }
     public List<ElgatoActionStateData> States { get; } = new();
+    /// <summary>Dial actions only: the Encoder.Icon image, null when absent, hidden, or outside the page dir.</summary>
+    public string? EncoderIconPath { get; set; }
+    /// <summary>The parsed Actions[] of a keys.adaptor or dial.stack, in manifest order.</summary>
+    public List<ElgatoActionData> Children { get; } = new();
 }
 
 public sealed class ElgatoActionStateData
@@ -234,6 +246,13 @@ public static class ElgatoProfileReader
                 }
             }
         }
+        foreach (var dial in page.Dials.Values)
+        {
+            if (!ElgatoActionTypes.IsSkippable(dial.Uuid))
+            {
+                count++;
+            }
+        }
         return count;
     }
 
@@ -316,12 +335,7 @@ public static class ElgatoProfileReader
                     continue;
                 }
                 var type = ElgatoJson.GetString(controller, "Type");
-                if (type == "Encoder")
-                {
-                    page.HasEncoderController = true;
-                    continue;
-                }
-                if (type != "Keypad" ||
+                if (type is not ("Keypad" or "Encoder") ||
                     !controller.TryGetProperty("Actions", out var actionsEl) ||
                     actionsEl.ValueKind != JsonValueKind.Object)
                 {
@@ -334,9 +348,17 @@ public static class ElgatoProfileReader
                         continue;
                     }
                     var action = ParsePageAction(prop.Value, pageDir);
-                    if (action is not null)
+                    if (action is null)
+                    {
+                        continue;
+                    }
+                    if (type == "Keypad")
                     {
                         page.Actions[(col, row)] = action;
+                    }
+                    else if (row == 0)
+                    {
+                        page.Dials[col] = action;
                     }
                 }
             }
@@ -370,32 +392,49 @@ public static class ElgatoProfileReader
             }
         }
 
+        if (actionEl.TryGetProperty("Encoder", out var encoderEl) &&
+            ElgatoJson.GetBool(encoderEl, "IconVisible", true))
+        {
+            action.EncoderIconPath = ResolveImagePath(pageDir, ElgatoJson.GetString(encoderEl, "Icon"));
+        }
+
+        if (action.Uuid is ElgatoActionTypes.KeysAdaptor or ElgatoActionTypes.DialStack
+            && action.ActionsGroup is { } children)
+        {
+            foreach (var childEl in children.EnumerateArray())
+            {
+                if (childEl.ValueKind == JsonValueKind.Object && ParsePageAction(childEl, pageDir) is { } child)
+                {
+                    action.Children.Add(child);
+                }
+            }
+        }
+
         return action;
     }
 
     private static ElgatoActionStateData ParseActionState(JsonElement stateEl, string pageDir)
     {
-        string? imagePath = null;
-        var rel = ElgatoJson.GetString(stateEl, "Image");
-        if (!string.IsNullOrEmpty(rel))
-        {
-            var normalizedPageDir = Path.GetFullPath(pageDir) + Path.DirectorySeparatorChar;
-            var candidate = Path.GetFullPath(Path.Combine(pageDir, rel.Replace('/', Path.DirectorySeparatorChar)));
-            // A relative path in a corrupt or hand-edited manifest must not resolve outside the page dir.
-            if (candidate.StartsWith(normalizedPageDir, StringComparison.Ordinal))
-            {
-                imagePath = candidate;
-            }
-        }
-
         return new ElgatoActionStateData
         {
-            ImagePath = imagePath,
+            ImagePath = ResolveImagePath(pageDir, ElgatoJson.GetString(stateEl, "Image")),
             Title = ElgatoJson.GetString(stateEl, "Title"),
             ShowTitle = ElgatoJson.GetBool(stateEl, "ShowTitle", true),
             TitleAlignment = ElgatoJson.GetString(stateEl, "TitleAlignment"),
             TitleColor = ElgatoJson.GetString(stateEl, "TitleColor"),
         };
+    }
+
+    private static string? ResolveImagePath(string pageDir, string? rel)
+    {
+        if (string.IsNullOrEmpty(rel))
+        {
+            return null;
+        }
+        var normalizedPageDir = Path.GetFullPath(pageDir) + Path.DirectorySeparatorChar;
+        var candidate = Path.GetFullPath(Path.Combine(pageDir, rel.Replace('/', Path.DirectorySeparatorChar)));
+        // A relative path in a corrupt or hand-edited manifest must not resolve outside the page dir.
+        return candidate.StartsWith(normalizedPageDir, StringComparison.Ordinal) ? candidate : null;
     }
 
     private static bool TryParseColRow(string key, out int col, out int row)

@@ -555,6 +555,259 @@ public sealed class StreamDeckRoutesTests : IClassFixture<StreamDeckRouteHostFac
         }
     }
 
+    private async Task<JsonElement> Simulate(HttpClient client, int productId)
+    {
+        var post = await client.PostAsync("/streamdeck/dev/simulate", Json($"{{\"productId\":{productId}}}"));
+        Assert.True(post.IsSuccessStatusCode);
+        using var doc = JsonDocument.Parse(await post.Content.ReadAsStringAsync());
+        return doc.RootElement.Clone();
+    }
+
+    [Fact]
+    public async Task Simulated_Plus_SummaryCarriesTheDialAndScreenFields()
+    {
+        var (factory, client) = Boot();
+        using (factory)
+        {
+            var summary = await Simulate(client, 0x0084);
+
+            Assert.Equal(4, summary.GetProperty("encoders").GetInt32());
+            Assert.Equal("below", summary.GetProperty("dialPlacement").GetString());
+            var screen = summary.GetProperty("screen");
+            Assert.Equal(800, screen.GetProperty("width").GetInt32());
+            Assert.Equal(100, screen.GetProperty("height").GetInt32());
+            Assert.Equal("touchStrip", screen.GetProperty("kind").GetString());
+            Assert.Equal(0, summary.GetProperty("touchKeys").GetInt32());
+            Assert.Equal(120, summary.GetProperty("keyWidth").GetInt32());
+            Assert.Equal(120, summary.GetProperty("keyHeight").GetInt32());
+            Assert.Equal("none", summary.GetProperty("transform").GetString());
+            Assert.False(summary.TryGetProperty("infoScreen", out _));
+        }
+    }
+
+    [Theory]
+    [InlineData(0x00c6, "rot90Ccw", "below", 6, 0, 0)]
+    [InlineData(0x00aa, "none", "sides", 2, 24, 0)]
+    [InlineData(0x2b18, "none", "above", 2, 4, 0)]
+    [InlineData(0x009a, "flipBoth", null, 0, 0, 2)]
+    public async Task Simulated_ExpandedModels_SummaryMatchesTheCapabilityRow(
+        int productId, string transform, string? placement, int encoders, int ringLeds, int touchKeys)
+    {
+        var (factory, client) = Boot();
+        using (factory)
+        {
+            var summary = await Simulate(client, productId);
+
+            Assert.Equal(transform, summary.GetProperty("transform").GetString());
+            Assert.Equal(encoders, summary.GetProperty("encoders").GetInt32());
+            Assert.Equal(ringLeds, summary.GetProperty("encoderRingLeds").GetInt32());
+            Assert.Equal(touchKeys, summary.GetProperty("touchKeys").GetInt32());
+            var placementEl = summary.GetProperty("dialPlacement");
+            Assert.Equal(placement, placementEl.ValueKind == JsonValueKind.Null ? null : placementEl.GetString());
+        }
+    }
+
+    [Fact]
+    public async Task Simulated_Studio_ReportsNoScreenAsNull_AndWideKeys()
+    {
+        var (factory, client) = Boot();
+        using (factory)
+        {
+            var summary = await Simulate(client, 0x00aa);
+
+            Assert.Equal(JsonValueKind.Null, summary.GetProperty("screen").ValueKind);
+            Assert.Equal(144, summary.GetProperty("keyWidth").GetInt32());
+            Assert.Equal(112, summary.GetProperty("keyHeight").GetInt32());
+            Assert.Equal(112, summary.GetProperty("keyPixels").GetInt32());
+        }
+    }
+
+    [Fact]
+    public async Task ButtonOnlyDeck_SummaryHasZeroEncodersAndNullPlacement()
+    {
+        var (factory, client) = Boot();
+        using (factory)
+        {
+            var summary = await Simulate(client, 0x0063);
+
+            Assert.Equal(0, summary.GetProperty("encoders").GetInt32());
+            Assert.Equal(JsonValueKind.Null, summary.GetProperty("dialPlacement").ValueKind);
+            Assert.Equal(JsonValueKind.Null, summary.GetProperty("screen").ValueKind);
+        }
+    }
+
+    [Fact]
+    public async Task Neo_InfoScreenSettingDefaultsToClock_AndPostUpdatesIt()
+    {
+        var (factory, client) = Boot();
+        using (factory)
+        {
+            var summary = await Simulate(client, 0x009a);
+            var serial = summary.GetProperty("serial").GetString()!;
+            Assert.Equal("clock", summary.GetProperty("infoScreen").GetString());
+            Assert.Equal("infoScreen", summary.GetProperty("screen").GetProperty("kind").GetString());
+
+            var set = await client.PostAsync($"/streamdeck/decks/{serial}", Json("{\"infoScreen\":\"page\"}"));
+            Assert.True(set.IsSuccessStatusCode);
+            var store = factory.Services.GetRequiredService<IConfigStore>();
+            Assert.Equal("page", store.Load().StreamDeck.Decks[serial].InfoScreen);
+
+            await client.PostAsync($"/streamdeck/decks/{serial}", Json("{\"infoScreen\":\"bogus\"}"));
+            Assert.Equal("page", store.Load().StreamDeck.Decks[serial].InfoScreen);
+
+            var list = await client.GetStringAsync("/streamdeck/decks");
+            using var doc = JsonDocument.Parse(list);
+            var entry = doc.RootElement.GetProperty("decks").EnumerateArray().Single(d => d.GetProperty("serial").GetString() == serial);
+            Assert.Equal("page", entry.GetProperty("infoScreen").GetString());
+        }
+    }
+
+    [Fact]
+    public async Task DevModels_CarryEncodersScreenAndTouchKeys()
+    {
+        var (factory, client) = Boot();
+        using (factory)
+        {
+            using var doc = JsonDocument.Parse(await client.GetStringAsync("/streamdeck/dev/models"));
+            var models = doc.RootElement.GetProperty("models").EnumerateArray().ToList();
+
+            var plus = models.Single(m => m.GetProperty("productId").GetInt32() == 0x0084);
+            Assert.Equal(4, plus.GetProperty("encoders").GetInt32());
+            Assert.Equal("touchStrip", plus.GetProperty("screen").GetProperty("kind").GetString());
+            var neo = models.Single(m => m.GetProperty("productId").GetInt32() == 0x009a);
+            Assert.Equal(2, neo.GetProperty("touchKeys").GetInt32());
+            var mini = models.Single(m => m.GetProperty("productId").GetInt32() == 0x0063);
+            Assert.Equal(JsonValueKind.Null, mini.GetProperty("screen").ValueKind);
+        }
+    }
+
+    [Fact]
+    public async Task SimInput_DrivesTheHardwareInputPath_ForDialsAndTouch()
+    {
+        var (factory, client) = Boot();
+        using (factory)
+        {
+            var summary = await Simulate(client, 0x0084);
+            var serial = summary.GetProperty("serial").GetString()!;
+            var worker = factory.Services.GetRequiredService<StreamDeckConnectionWorker>();
+            var store = factory.Services.GetRequiredService<IConfigStore>();
+            store.Update(s =>
+            {
+                var preset = s.StreamDeck.Presets.First(p => p.Id == s.StreamDeck.Instances[DeckInstanceResolver.PhysicalInstanceId(serial)].ActivePresetId);
+                preset.Deck.Pages.Add(new DeckPage());
+                preset.Deck.Pages.Add(new DeckPage());
+            });
+
+            var swipe = await client.PostAsync("/streamdeck/dev/sim-input",
+                Json($"{{\"serial\":\"{serial}\",\"kind\":\"swipe\",\"x\":600,\"y\":50,\"x2\":500,\"y2\":50}}"));
+            Assert.True(swipe.IsSuccessStatusCode);
+            Assert.Equal(1, worker.GetCurrentPage(serial));
+
+            var longTouch = await client.PostAsync("/streamdeck/dev/sim-input",
+                Json($"{{\"serial\":\"{serial}\",\"kind\":\"longTouch\",\"x\":50,\"y\":50}}"));
+            Assert.True(longTouch.IsSuccessStatusCode);
+            using var pending = JsonDocument.Parse(await client.GetStringAsync("/streamdeck/pending-edit"));
+            var edit = pending.RootElement.GetProperty("edit");
+            Assert.Equal(0, edit.GetProperty("dialIndex").GetInt32());
+            Assert.Equal(serial, edit.GetProperty("serial").GetString());
+            Assert.Equal(1, edit.GetProperty("page").GetInt32());
+
+            foreach (var body in new[]
+            {
+                $"{{\"serial\":\"{serial}\",\"kind\":\"rotate\",\"index\":2,\"ticks\":3}}",
+                $"{{\"serial\":\"{serial}\",\"kind\":\"dialDown\",\"index\":1}}",
+                $"{{\"serial\":\"{serial}\",\"kind\":\"dialUp\",\"index\":1}}",
+                $"{{\"serial\":\"{serial}\",\"kind\":\"tap\",\"x\":300,\"y\":40}}",
+            })
+            {
+                var res = await client.PostAsync("/streamdeck/dev/sim-input", Json(body));
+                Assert.True(res.IsSuccessStatusCode);
+                Assert.Contains("\"error\":false", (await res.Content.ReadAsStringAsync()).Replace(" ", ""));
+            }
+        }
+    }
+
+    [Fact]
+    public async Task SimInput_DialDownOnAnEmptyDial_StartsTheHoldSpinner_AndDialUpCancelsIt()
+    {
+        var (factory, client) = Boot();
+        using (factory)
+        {
+            var summary = await Simulate(client, 0x0084);
+            var serial = summary.GetProperty("serial").GetString()!;
+            var worker = factory.Services.GetRequiredService<StreamDeckConnectionWorker>();
+
+            await client.PostAsync("/streamdeck/dev/sim-input", Json($"{{\"serial\":\"{serial}\",\"kind\":\"dialDown\",\"index\":2}}"));
+            Assert.True(worker.HasActiveDialHold(serial, 2));
+
+            await client.PostAsync("/streamdeck/dev/sim-input", Json($"{{\"serial\":\"{serial}\",\"kind\":\"dialUp\",\"index\":2}}"));
+            Assert.False(worker.HasActiveDialHold(serial, 2));
+        }
+    }
+
+    [Fact]
+    public async Task SimInput_TouchKey_PagesTheNeo()
+    {
+        var (factory, client) = Boot();
+        using (factory)
+        {
+            var summary = await Simulate(client, 0x009a);
+            var serial = summary.GetProperty("serial").GetString()!;
+            var worker = factory.Services.GetRequiredService<StreamDeckConnectionWorker>();
+            factory.Services.GetRequiredService<IConfigStore>().Update(s =>
+            {
+                var preset = s.StreamDeck.Presets.First(p => p.Id == s.StreamDeck.Instances[DeckInstanceResolver.PhysicalInstanceId(serial)].ActivePresetId);
+                preset.Deck.Pages.Add(new DeckPage());
+            });
+
+            foreach (var pressed in new[] { "true", "false" })
+            {
+                var res = await client.PostAsync("/streamdeck/dev/sim-input",
+                    Json($"{{\"serial\":\"{serial}\",\"kind\":\"touchKey\",\"index\":1,\"pressed\":{pressed}}}"));
+                Assert.Contains("\"error\":false", (await res.Content.ReadAsStringAsync()).Replace(" ", ""));
+            }
+            Assert.Equal(1, worker.GetCurrentPage(serial));
+
+            var bad = await client.PostAsync("/streamdeck/dev/sim-input",
+                Json($"{{\"serial\":\"{serial}\",\"kind\":\"touchKey\",\"index\":2,\"pressed\":true}}"));
+            Assert.Contains("\"error\":true", (await bad.Content.ReadAsStringAsync()).Replace(" ", ""));
+        }
+    }
+
+    [Theory]
+    [InlineData(0x0063, "{\"kind\":\"rotate\",\"index\":0,\"ticks\":1}")]
+    [InlineData(0x0084, "{\"kind\":\"rotate\",\"index\":4,\"ticks\":1}")]
+    [InlineData(0x0084, "{\"kind\":\"rotate\",\"index\":0}")]
+    [InlineData(0x0084, "{\"kind\":\"tap\",\"x\":10}")]
+    [InlineData(0x0084, "{\"kind\":\"swipe\",\"x\":10,\"y\":10}")]
+    [InlineData(0x0084, "{\"kind\":\"nonsense\"}")]
+    public async Task SimInput_RejectsInputTheModelCannotProduce(int productId, string partialBody)
+    {
+        var (factory, client) = Boot();
+        using (factory)
+        {
+            var summary = await Simulate(client, productId);
+            var serial = summary.GetProperty("serial").GetString()!;
+            var body = "{\"serial\":\"" + serial + "\"," + partialBody[1..];
+
+            var res = await client.PostAsync("/streamdeck/dev/sim-input", Json(body));
+
+            Assert.Contains("\"error\":true", (await res.Content.ReadAsStringAsync()).Replace(" ", ""));
+        }
+    }
+
+    [Fact]
+    public async Task SimInput_WithoutASimulatedDeck_Fails()
+    {
+        var (factory, client) = Boot();
+        using (factory)
+        {
+            var res = await client.PostAsync("/streamdeck/dev/sim-input", Json("{\"serial\":\"nope\",\"kind\":\"dialDown\",\"index\":0}"));
+
+            Assert.Contains("\"error\":true", (await res.Content.ReadAsStringAsync()).Replace(" ", ""));
+        }
+    }
+
     [Fact]
     public void ResolveConflictAppId_NoWarning_ReturnsNull()
     {

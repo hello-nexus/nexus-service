@@ -44,8 +44,24 @@ public class CorsairLinkHubHandleTests
             return true;
         }
 
+        /// <summary>Queues a reply another program's command produced; every open handle receives it.</summary>
+        public void InjectReply(byte echo)
+        {
+            var resp = new byte[CorsairLinkProtocol.WriteBufferLength];
+            resp[1 + CorsairLinkProtocol.ResponseCommandOffset] = echo;
+            _responses.Enqueue(resp);
+        }
+
+        /// <summary>Reads that time out while their reply stays queued, as a late reply does.</summary>
+        public int TimedOutReads;
+
         public int Read(Span<byte> buffer, int timeoutMs)
         {
+            if (TimedOutReads > 0)
+            {
+                TimedOutReads--;
+                return 0;
+            }
             if (_responses.Count == 0) return 0;
             var resp = _responses.Dequeue();
             resp.CopyTo(buffer);
@@ -229,5 +245,75 @@ public class CorsairLinkHubHandleTests
         Assert.False(hub.SendColors(Frame));
 
         Assert.Equal(attempts, device.Commands.Count);
+    }
+
+    [Theory]
+    [InlineData(0x09)]
+    [InlineData(0x02)]
+    [InlineData(0x0C)]
+    public void A_reply_to_another_programs_command_stops_every_write(byte echo)
+    {
+        var (hub, device) = Connected();
+        device.InjectReply(echo);
+        hub.SendColors(Frame);
+        var sent = device.Commands.Count;
+
+        Assert.True(hub.ForeignHostSeen);
+        Assert.False(hub.SendColors(Frame));
+        Assert.False(hub.SetDuties(new[] { (1, 50) }));
+        Assert.False(hub.Poll());
+        hub.Detach(handBack: true);
+
+        Assert.Equal(sent, device.Commands.Count);
+    }
+
+    [Fact]
+    public void Nexus_own_commands_do_not_read_as_another_program()
+    {
+        var (hub, _) = Connected();
+
+        for (var i = 0; i < 5; i++) Assert.True(hub.SendColors(Frame));
+        Assert.True(hub.Poll());
+        Assert.True(hub.SetDuties(new[] { (1, 50) }));
+
+        Assert.False(hub.ForeignHostSeen);
+    }
+
+    [Fact]
+    public void A_late_reply_to_the_firmware_read_is_not_another_program()
+    {
+        var device = new FakeLinkHub { TimedOutReads = 1 };
+        var hub = new CorsairLinkHub();
+        hub.Attach(device);
+
+        hub.Initialize();
+
+        Assert.False(hub.ForeignHostSeen);
+    }
+
+    [Fact]
+    public void Attach_clears_a_previous_sessions_foreign_host()
+    {
+        var (hub, device) = Connected();
+        device.InjectReply(0x09);
+        hub.SendColors(Frame);
+        hub.Detach(handBack: false);
+
+        hub.Attach(new FakeLinkHub());
+
+        Assert.False(hub.ForeignHostSeen);
+        Assert.True(hub.Initialize());
+    }
+
+    [Fact]
+    public void HearsAnotherHost_is_true_only_when_a_report_arrives_unprompted()
+    {
+        var quiet = new FakeLinkHub();
+        var busy = new FakeLinkHub();
+        busy.InjectReply(0x08);
+
+        Assert.False(CorsairLinkHub.HearsAnotherHost(quiet, 10));
+        Assert.True(CorsairLinkHub.HearsAnotherHost(busy, 10));
+        Assert.Empty(busy.Commands);
     }
 }

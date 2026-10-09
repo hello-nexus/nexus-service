@@ -254,6 +254,81 @@ public sealed class SystemActions
         }
     }
 
+    /// <summary>
+    /// Opens the OS capture UI for the deck Screen Shot / Screen Record keys.
+    /// Windows hands the Snipping Tool capture or record overlay URI to the
+    /// user session; macOS runs an interactive screencapture for a still and
+    /// opens the Screenshot toolbar for a recording; Linux tries the common
+    /// capture tools for a still and has no recorder to open.
+    /// </summary>
+    public async Task<ApiResponse> OpenScreenCaptureAsync(bool record)
+    {
+        if (OperatingSystem.IsWindows())
+        {
+            return await LaunchUrlAsync(record ? "ms-screenclip://capture/video" : "ms-screenclip://capture/image").ConfigureAwait(false);
+        }
+        try
+        {
+            if (OperatingSystem.IsMacOS())
+            {
+                if (record)
+                {
+                    return Nexus.Service.Platform.ShellExecutor.RunExit("open", 5000, "-a", "Screenshot") == 0
+                        ? ApiResponse.Ok("opened")
+                        : ApiResponse.Fail("failed to open Screenshot");
+                }
+                var psi = new ProcessStartInfo("/usr/sbin/screencapture") { UseShellExecute = false };
+                psi.ArgumentList.Add("-i");
+                psi.ArgumentList.Add(MacScreenshotPath());
+                Process.Start(psi);
+                return ApiResponse.Ok("opened");
+            }
+#if LINUX
+            if (OperatingSystem.IsLinux())
+            {
+                string[][] candidates = record
+                    ? Array.Empty<string[]>()
+                    : [["gnome-screenshot", "-i"], ["spectacle", "-r"], ["flameshot", "gui"]];
+                foreach (var candidate in candidates)
+                {
+                    if (!LinuxToolExists(candidate[0]))
+                    {
+                        continue;
+                    }
+                    try
+                    {
+                        var (file, args) = Nexus.Service.Platform.Linux.LinuxSession.WrapSpawnAsSessionUser(
+                            candidate[0], new List<string>(candidate[1..]));
+                        var linuxPsi = new ProcessStartInfo(file) { UseShellExecute = false };
+                        foreach (var a in args)
+                            linuxPsi.ArgumentList.Add(a);
+                        Process.Start(linuxPsi);
+                        return ApiResponse.Ok("opened");
+                    }
+                    catch { /* launcher not installed - try the next */ }
+                }
+            }
+#endif
+            var message = record ? "no screen recorder available on this platform" : "no screenshot tool found";
+            Nexus.Service.Platform.ServiceLog.Warn($"[system-actions] {message}");
+            return ApiResponse.Fail(message);
+        }
+        catch (Exception ex)
+        {
+            return ApiResponse.Fail($"failed to open screen capture: {ex.Message}");
+        }
+    }
+
+    // macOS's own naming, in the configured screenshot folder or the Desktop.
+    private static string MacScreenshotPath()
+    {
+        var configured = Nexus.Service.Platform.ShellExecutor.Run("defaults", "read", "com.apple.screencapture", "location").Trim();
+        var folder = !string.IsNullOrEmpty(configured) && System.IO.Directory.Exists(configured)
+            ? configured
+            : Environment.GetFolderPath(Environment.SpecialFolder.Desktop);
+        return System.IO.Path.Combine(folder, $"Screenshot {DateTime.Now:yyyy-MM-dd} at {DateTime.Now:HH.mm.ss}.png");
+    }
+
     /// <summary>LAN-only in the route (denied on the relay) - opens arbitrary local files.</summary>
     public async Task<ApiResponse> OpenPathAsync(string path)
     {
@@ -262,7 +337,7 @@ public sealed class SystemActions
         {
             return ApiResponse.Fail("path is required");
         }
-        if (!File.Exists(trimmed) && !Directory.Exists(trimmed))
+        if (!File.Exists(trimmed) && !Directory.Exists(trimmed) && !IsWindowsCommandName(trimmed))
         {
             return ApiResponse.Fail("path does not exist");
         }
@@ -321,6 +396,10 @@ public sealed class SystemActions
         }
     }
 
+    /// <summary>A bare command such as "calc" or "mspaint" (Elgato's Open action stores these): ShellExecute resolves it through the user's PATH and App Paths, which the service's own File.Exists cannot see.</summary>
+    private static bool IsWindowsCommandName(string path) =>
+        OperatingSystem.IsWindows() && path.IndexOfAny(['\\', '/', ':']) < 0 && path.Trim('.').Length > 0;
+
     public bool Lock() => _power.Lock();
     public bool Sleep() => _power.Sleep();
     public bool Shutdown() => _power.Shutdown();
@@ -345,6 +424,20 @@ public sealed class SystemActions
         if (OperatingSystem.IsWindows())
         {
 #if WINDOWS
+            // Through the helper like every other launch, so its window comes to the front.
+            var registry = _sp.GetService<Nexus.Service.Helper.HelperRegistry>();
+            if (registry?.GetAny() is not null)
+            {
+                try
+                {
+                    Nexus.Service.Helper.Domains.SystemCommands.OpenFileAsync(registry, "taskmgr.exe").GetAwaiter().GetResult();
+                    return true;
+                }
+                catch (Exception ex)
+                {
+                    Nexus.Service.Platform.ServiceLog.Warn($"[system-actions] task manager launch via helper failed: {ex.Message}");
+                }
+            }
             // The service runs as LocalSystem in Session 0, where a directly
             // spawned taskmgr.exe has no interactive desktop to draw on - run
             // it in the active console user's session instead, same mechanism

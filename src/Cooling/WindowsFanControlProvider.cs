@@ -204,7 +204,9 @@ public sealed class WindowsFanControlProvider : IFanControlProvider, ICoolingPro
         // and profile switch, where every fan must end on BIOS control. Revoking
         // also stops an in-flight ramp from re-driving a fan after it is released.
         EndCalibrationLease(restorePriorState: false);
-        var mappings = EnsureDiscovered();
+        // The last discovery, not a new one: discovery waits on the LHM update lock, and the
+        // watchdog calls this while that update may be the thing that is stuck.
+        var mappings = Volatile.Read(ref _channels) ?? EnsureDiscovered();
         foreach (var m in mappings)
         {
             try { m.ControlSensor.Control.SetDefault(); }

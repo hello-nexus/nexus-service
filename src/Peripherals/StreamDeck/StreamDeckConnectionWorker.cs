@@ -50,7 +50,7 @@ namespace Nexus.Service.Peripherals.StreamDeck;
 /// Opens every model in <see cref="StreamDeckModels.All"/>, gen1 and gen2
 /// alike; only the Mini is bench-verified (StreamDeckModel.Verified).
 /// </summary>
-public sealed class StreamDeckConnectionWorker : BackgroundService, IDeckSurfaceControl
+public sealed partial class StreamDeckConnectionWorker : BackgroundService, IDeckSurfaceControl
 {
     private const int TickMs = 1000;
 
@@ -196,7 +196,7 @@ public sealed class StreamDeckConnectionWorker : BackgroundService, IDeckSurface
     }
 
     /// <summary>A fired blank-key hold-to-edit intent. Token is the creation epoch ms; the web dedupes the live frame against the boot GET on it.</summary>
-    internal readonly record struct DeckPendingEdit(string Serial, int Page, IReadOnlyList<int> FolderPath, int SlotIndex, long Token, DateTimeOffset CreatedAt);
+    internal readonly record struct DeckPendingEdit(string Serial, int Page, IReadOnlyList<int> FolderPath, int SlotIndex, long Token, DateTimeOffset CreatedAt, int? DialIndex = null);
 
     /// <summary>Per "{serial}:{page}:{slotPath}" monitoring key sample history, oldest first, capped at MonitoringHistoryLength. Page-qualified because BuildSlotPath is not itself unique across a deck's pages.</summary>
     private readonly Dictionary<string, List<float>> _monitoringHistory = new(StringComparer.Ordinal);
@@ -273,7 +273,8 @@ public sealed class StreamDeckConnectionWorker : BackgroundService, IDeckSurface
         Nexus.Service.Cooling.IFanControlProvider? fans = null,
         SessionLockListener? sessionLock = null,
         Nexus.Service.Deck.RecentAppsState? recentAppsState = null,
-        Nexus.Service.Deck.RecentAppsActivator? recentAppsActivator = null)
+        Nexus.Service.Deck.RecentAppsActivator? recentAppsActivator = null,
+        IDeckDialValues? dialValues = null)
     {
         _hid = hid;
         _presence = presence;
@@ -291,6 +292,8 @@ public sealed class StreamDeckConnectionWorker : BackgroundService, IDeckSurface
         _sessionLock = sessionLock;
         _recentAppsState = recentAppsState;
         _recentAppsActivator = recentAppsActivator;
+        _dialValues = dialValues;
+        _strip = new DeckStripRenderer(keyRenderer);
         _hub.OnTopicFirstSubscriber += OnStreamDeckTilesFirstSubscriber;
         _sessionLock?.LockChanged += OnSessionLockChanged;
     }
@@ -335,11 +338,18 @@ public sealed class StreamDeckConnectionWorker : BackgroundService, IDeckSurface
         lock (_lock)
         {
             _tileBroadcastHash.Clear();
-            // Static keys only broadcast from a view push, so the editor that
-            // just opened needs one; monitoring/weather catch up on their tick.
+            // Static keys and dial segments only broadcast from a view push, so
+            // the editor that just opened needs one; monitoring/weather catch up on their tick.
             foreach (var surface in _surfaces.Values.ToList())
             {
-                PushCurrentView(surface, viewChanged: false);
+                try
+                {
+                    PushCurrentView(surface, viewChanged: false);
+                }
+                catch (Exception ex)
+                {
+                    ServiceLog.Warn($"[streamdeck] tile replay failed serial={surface.Serial}: {ex.Message}");
+                }
             }
         }
     }
@@ -462,6 +472,7 @@ public sealed class StreamDeckConnectionWorker : BackgroundService, IDeckSurface
             CancelBrightnessRampLocked(surface.Serial);
             surface.SetBrightness(0);
             _asleep[surface.Serial] = true;
+            SyncAuxLightsLocked(surface);
         }
     }
 
@@ -567,6 +578,11 @@ public sealed class StreamDeckConnectionWorker : BackgroundService, IDeckSurface
             {
                 Console.Error.WriteLine($"[streamdeck-conn] hold animation exception: {ex.GetType().Name}: {ex.Message}");
             }
+            try { if (_anyDialFeedback) { AnimateDialFeedback(); } }
+            catch (Exception ex)
+            {
+                Console.Error.WriteLine($"[streamdeck-conn] dial feedback exception: {ex.GetType().Name}: {ex.Message}");
+            }
             try { if (_anyRampActive) { AnimateBrightnessRamps(); } }
             catch (Exception ex)
             {
@@ -604,6 +620,7 @@ public sealed class StreamDeckConnectionWorker : BackgroundService, IDeckSurface
                 ApplySleepAfterIdle();
                 RefreshMonitoringKeys();
                 RefreshWeatherKeys();
+                RefreshDialSegments();
                 wantFps = _monitoringFpsDemandThisTick;
             }
         }
@@ -679,6 +696,7 @@ public sealed class StreamDeckConnectionWorker : BackgroundService, IDeckSurface
             _brightnessRamps.Clear();
             _anyRampActive = false;
             _heldKeysBySerial.Clear();
+            ClearDialStatesLocked();
             _activeHolds.Clear();
             _monitoringHistory.Clear();
             _monitoringLastHash.Clear();
@@ -708,6 +726,7 @@ public sealed class StreamDeckConnectionWorker : BackgroundService, IDeckSurface
         CancelBrightnessRampLocked(existing.Serial);
         _currentPageBySerial.Remove(existing.Serial);
         _heldKeysBySerial.Remove(existing.Serial);
+        RemoveDialStateForSerial(existing.Serial);
         RemoveAllHoldsForSerial(existing.Serial);
         RemoveMonitoringStateForSerial(existing.Serial);
         BroadcastDecksChanged(existing.Serial);
@@ -741,35 +760,62 @@ public sealed class StreamDeckConnectionWorker : BackgroundService, IDeckSurface
         }
     }
 
+    /// <summary>Collection paths already reported as duplicates of a connected surface, so the warning is not repeated every tick.</summary>
+    private readonly HashSet<string> _duplicateCollectionsLogged = new(StringComparer.Ordinal);
+
     private void ReconcileHidSurfaces()
     {
         var seenPaths = new HashSet<string>();
+        var collectionPaths = new HashSet<string>(StringComparer.Ordinal);
 
-        if (_presence.UsbPresent(StreamDeckModels.VendorId))
+        foreach (var model in StreamDeckModels.All)
         {
-            foreach (var model in StreamDeckModels.All)
+            if (!_presence.UsbPresent(model.VendorId))
             {
-                foreach (var info in _hid.Find(StreamDeckModels.VendorId, model.ProductId))
+                continue;
+            }
+            foreach (var info in _hid.Find(model.VendorId, model.ProductId))
+            {
+                if (!model.AcceptsCollection(info))
                 {
-                    seenPaths.Add(info.Path);
-                    if (_surfaces.TryGetValue(info.Path, out var existing) && existing.IsConnected)
-                    {
-                        continue;
-                    }
-
-                    var surface = new HidStreamDeckSurface(_hid, model);
-                    if (!surface.Connect(info))
-                    {
-                        continue;
-                    }
-                    _surfaces[info.Path] = surface;
-                    _lastKeyStates[info.Path] = new bool[model.KeyCount];
-                    ServiceLog.Info($"[streamdeck] connected {model.Name} (serial={surface.Serial})");
-                    OnSurfaceConnected(surface);
-                    StartInputReader(info.Path, surface);
+                    continue;
                 }
+                seenPaths.Add(info.Path);
+                collectionPaths.Add(info.Path);
+                if (_surfaces.TryGetValue(info.Path, out var existing) && existing.IsConnected)
+                {
+                    continue;
+                }
+
+                if (!string.IsNullOrWhiteSpace(info.Serial)
+                    && _surfaces.Values.Any(s => s.IsConnected && s.Model == model && string.Equals(s.Serial, info.Serial, StringComparison.Ordinal)))
+                {
+                    if (_duplicateCollectionsLogged.Add(info.Path))
+                    {
+                        ServiceLog.Warn($"[streamdeck] ignoring a second {model.Name} collection with serial {info.Serial} ({info.Path})");
+                    }
+                    seenPaths.Remove(info.Path);
+                    continue;
+                }
+
+                var surface = new HidStreamDeckSurface(_hid, model);
+                if (model.OpenSettleMs > 0)
+                {
+                    surface.Ready += () => OnSurfaceReady(surface);
+                }
+                if (!surface.Connect(info))
+                {
+                    continue;
+                }
+                _surfaces[info.Path] = surface;
+                _lastKeyStates[info.Path] = new bool[model.KeyCount];
+                ServiceLog.Info($"[streamdeck] connected {model.Name} (serial={surface.Serial})");
+                OnSurfaceConnected(surface);
+                StartInputReader(info.Path, surface);
             }
         }
+
+        _duplicateCollectionsLogged.RemoveWhere(path => !collectionPaths.Contains(path));
 
         foreach (var key in _surfaces.Keys.ToList())
         {
@@ -794,9 +840,38 @@ public sealed class StreamDeckConnectionWorker : BackgroundService, IDeckSurface
             CancelBrightnessRampLocked(serial);
             _currentPageBySerial.Remove(serial);
             _heldKeysBySerial.Remove(serial);
+            RemoveDialStateForSerial(serial);
             RemoveAllHoldsForSerial(serial);
             RemoveMonitoringStateForSerial(serial);
             BroadcastDecksChanged(serial);
+        }
+    }
+
+    /// <summary>A surface that waits out an open settle delay accepts commands now: apply brightness and repaint everything the earlier push could not write.</summary>
+    private void OnSurfaceReady(HidStreamDeckSurface surface)
+    {
+        lock (_lock)
+        {
+            if (!_surfaces.ContainsValue(surface) || !surface.IsConnected)
+            {
+                return;
+            }
+            try
+            {
+                if (_asleep.TryGetValue(surface.Serial, out var asleep) && asleep)
+                {
+                    surface.SetBrightness(0);
+                }
+                else
+                {
+                    ApplyPersistedBrightness(surface);
+                }
+                PushCurrentView(surface, viewChanged: true);
+            }
+            catch (Exception ex)
+            {
+                ServiceLog.Warn($"[streamdeck] ready repaint failed serial={surface.Serial}: {ex.Message}");
+            }
         }
     }
 
@@ -807,7 +882,7 @@ public sealed class StreamDeckConnectionWorker : BackgroundService, IDeckSurface
         {
             return;
         }
-        _inputReaders[key] = new StreamDeckInputReader(_hid, key, surface.Model, states => OnInputReport(key, states));
+        _inputReaders[key] = new StreamDeckInputReader(_hid, key, surface.Model, input => OnInputReport(key, input));
     }
 
     /// <summary>Signals a surface's dedicated reader thread to stop. Non-blocking; see StreamDeckInputReader.Dispose.</summary>
@@ -879,6 +954,7 @@ public sealed class StreamDeckConnectionWorker : BackgroundService, IDeckSurface
         }
         _folderPathsBySerial[surface.Serial] = new List<int>();
         _currentPageBySerial[surface.Serial] = 0;
+        RemoveDialStateForSerial(surface.Serial);
         PushCurrentView(surface, viewChanged: true);
         BroadcastDecksChanged(surface.Serial);
     }
@@ -908,10 +984,10 @@ public sealed class StreamDeckConnectionWorker : BackgroundService, IDeckSurface
         {
             return;
         }
-        bool[]? states;
-        while ((states = surface.ReadInput(0)) is not null)
+        StreamDeckInput? input;
+        while ((input = surface.ReadInput(0)) is not null)
         {
-            ProcessKeyStates(SimulatedKey, surface, states);
+            DispatchInput(SimulatedKey, surface, input);
         }
     }
 
@@ -949,6 +1025,7 @@ public sealed class StreamDeckConnectionWorker : BackgroundService, IDeckSurface
             CancelBrightnessRampLocked(surface.Serial);
             surface.SetBrightness(0);
             _asleep[surface.Serial] = true;
+            SyncAuxLightsLocked(surface);
             ServiceLog.Info($"[streamdeck] deck asleep after {deck.SleepAfterSeconds}s idle (serial={surface.Serial})");
         }
     }
@@ -967,6 +1044,7 @@ public sealed class StreamDeckConnectionWorker : BackgroundService, IDeckSurface
         }
         _asleep[surface.Serial] = false;
         ApplyPersistedBrightness(surface);
+        SyncAuxLightsLocked(surface);
         ServiceLog.Info($"[streamdeck] deck woken by key input (serial={surface.Serial})");
     }
 
@@ -1145,6 +1223,7 @@ public sealed class StreamDeckConnectionWorker : BackgroundService, IDeckSurface
         var from = _brightnessRamps.TryGetValue(serial, out var running)
             ? running.LastSent
             : to == 0 ? PersistedBrightness(serial) : 0;
+        SyncAuxLightsLocked(surface);
         if (from == to)
         {
             _brightnessRamps.Remove(serial);
@@ -1260,7 +1339,7 @@ public sealed class StreamDeckConnectionWorker : BackgroundService, IDeckSurface
     /// (unlike the tick-driven helpers, which assume it is already held) and
     /// never runs while a blocking wire read is pending.
     /// </summary>
-    private void OnInputReport(string key, bool[] states)
+    private void OnInputReport(string key, StreamDeckInput input)
     {
         lock (_lock)
         {
@@ -1268,7 +1347,7 @@ public sealed class StreamDeckConnectionWorker : BackgroundService, IDeckSurface
             {
                 return;
             }
-            ProcessKeyStates(key, surface, states);
+            DispatchInput(key, surface, input);
         }
     }
 
@@ -2143,16 +2222,18 @@ public sealed class StreamDeckConnectionWorker : BackgroundService, IDeckSurface
     /// aggregate, so falling back to a per-adapter reading here would paint a
     /// number the touch tile shows as "--".
     /// </summary>
-    private SensorSnapshotSources GatherMonitoringSources(List<MonitoringKeyRef> keys)
+    private SensorSnapshotSources GatherMonitoringSources(List<MonitoringKeyRef> keys) =>
+        GatherMonitoringSources(keys.Select(k => k.Slot.Action?.Category ?? ""));
+
+    private SensorSnapshotSources GatherMonitoringSources(IEnumerable<string> categories)
     {
         var needExtras = false;
         var needFps = false;
         var needNetwork = false;
         // The only two categories that can hold a fan tach sensor.
         var needFanNames = false;
-        for (var i = 0; i < keys.Count; i++)
+        foreach (var category in categories)
         {
-            var category = keys[i].Slot.Action?.Category ?? "";
             needFanNames |= category is "motherboard" or "gpu";
             if (SensorSnapshotResolver.CategoryUsesExtras(category))
             {
@@ -2703,6 +2784,8 @@ public sealed class StreamDeckConnectionWorker : BackgroundService, IDeckSurface
             PushMonitoringKey(keyRef, sensor, tempUnit, numberFormat);
             _monitoringPaintedThisTick.Add(keyRef.HistoryKey);
         }
+
+        PushScreens(surface, effectiveViewChanged);
     }
 
     private void PushBackKey(IStreamDeckSurface surface, PhysicalDeckSettings? deck)
@@ -2785,6 +2868,8 @@ public sealed class StreamDeckConnectionWorker : BackgroundService, IDeckSurface
             _recentAppsLastHash[hashKey] = hash;
             surface.SetKeyImage(i, bytes);
         }
+
+        PushScreens(surface, viewChanged);
     }
 
     /// <summary>
@@ -2924,6 +3009,14 @@ public sealed class StreamDeckConnectionWorker : BackgroundService, IDeckSurface
                 {
                     var hold = holds[physicalIndex];
                     var fraction = (float)Math.Clamp((now - hold.StartedAt).TotalMilliseconds / HoldToEditMs, 0.0, 1.0);
+                    if (physicalIndex < 0)
+                    {
+                        if (AdvanceDialHold(surface, DialIndexOfHoldKey(physicalIndex), hold, fraction))
+                        {
+                            holds.Remove(physicalIndex);
+                        }
+                        continue;
+                    }
                     if (fraction >= 1f)
                     {
                         FireHoldEdit(surface, hold);
@@ -3076,7 +3169,7 @@ public sealed class StreamDeckConnectionWorker : BackgroundService, IDeckSurface
         }
     }
 
-    private void BroadcastEditRequest(string serial, int page, List<int> folderPath, int keyIndex, long token) =>
+    private void BroadcastEditRequest(string serial, int page, List<int> folderPath, int keyIndex, long token, int? dialIndex = null) =>
         PanelTopics.BroadcastStreamDeck(_hub, new StreamDeckChangedFrame
         {
             Kind = "editRequest",
@@ -3085,6 +3178,7 @@ public sealed class StreamDeckConnectionWorker : BackgroundService, IDeckSurface
             FolderPath = new List<int>(folderPath),
             KeyIndex = keyIndex,
             Token = token,
+            DialIndex = dialIndex,
         });
 
     private void BroadcastDecksChanged(string? serial) =>
@@ -3130,6 +3224,7 @@ public sealed class StreamDeckConnectionWorker : BackgroundService, IDeckSurface
             _anyRampActive = false;
             _currentPageBySerial.Clear();
             _heldKeysBySerial.Clear();
+            ClearDialStatesLocked();
             _activeHolds.Clear();
             _anyHoldActive = false;
             _monitoringHistory.Clear();
@@ -3160,6 +3255,7 @@ public sealed class StreamDeckConnectionWorker : BackgroundService, IDeckSurface
         settings.Decks.TryGetValue(surface.Serial, out var deck);
         var brightness = Math.Clamp(deck?.Brightness ?? PhysicalDeckSettings.DefaultBrightness, MinDisconnectBrightness, 100);
         surface.SetBrightness(brightness);
+        BlankAuxLights(surface);
         surface.Reset();
         ServiceLog.Info($"[streamdeck] reset before disconnect (serial={surface.Serial})");
     }

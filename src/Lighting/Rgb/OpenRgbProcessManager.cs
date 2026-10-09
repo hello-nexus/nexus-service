@@ -774,12 +774,21 @@ public sealed class OpenRgbProcessManager : IDisposable
 
     private async Task SupervisorAsync(Process proc, CancellationToken ct)
     {
+        int exitCode;
         try
         {
             await proc.WaitForExitAsync(ct).ConfigureAwait(false);
+            exitCode = proc.ExitCode;
         }
         catch (OperationCanceledException)
         {
+            return;
+        }
+        catch (Exception ex)
+        {
+            // Stop() or Start() disposed this Process between its exit and these
+            // reads (Stop cancels only after cleanup); that path owns the restart.
+            ServiceLog.Info($"[openrgb-proc] supervisor ended: {ex.GetType().Name}: {ex.Message}");
             return;
         }
 
@@ -789,7 +798,7 @@ public sealed class OpenRgbProcessManager : IDisposable
         }
 
         var uptime = DateTime.UtcNow - _startedUtc;
-        ServiceLog.Warn($"[openrgb-proc] subprocess exited code={proc.ExitCode} after {uptime.TotalSeconds:F0}s");
+        ServiceLog.Warn($"[openrgb-proc] subprocess exited code={exitCode} after {uptime.TotalSeconds:F0}s");
 
         // Reset backoff if it lived long enough to be considered "stable"
         TimeSpan backoff;

@@ -41,7 +41,7 @@ internal sealed partial class ErrorReporter
     internal const int MaxCrashFileBytes = 64 * 1024;
     internal static readonly TimeSpan ResendWindow = TimeSpan.FromHours(1);
 
-    private const int KindMax = 32, FingerprintMax = 64, TypeMax = 128, MessageMax = 1000, StackMax = 4000, ContextMax = 500;
+    private const int KindMax = 32, FingerprintMax = 64, TypeMax = 128, MessageMax = 1000, StackMax = 4000, ContextMax = 500, LogMax = 4000;
     private const int FrameCount = 5;
     private const int OsVersionMax = 32;
 
@@ -152,6 +152,29 @@ internal sealed partial class ErrorReporter
             return;
         }
         Enqueue(new RawReport { Exception = ex, Kind = kind, Context = context, At = _clock.GetUtcNow() });
+    }
+
+    /// <summary>Records a 500 response no exception explained (a route returning Results.Problem); keyed on route, so repeats only raise the count.</summary>
+    public void ReportStatus(int status, string route)
+    {
+        if (!_capture || !_enabled || !_serviceBucket.TryTake())
+        {
+            CountDrop();
+            return;
+        }
+        var type = $"HTTP {status}";
+        var now = _clock.GetUtcNow();
+        Add(new ErrorReportItem
+        {
+            Source = "service",
+            Kind = ErrorKinds.Request,
+            Fingerprint = Hash("service\n" + type + "\n" + route),
+            Type = type,
+            Message = Cap($"{type} from {route}", MessageMax),
+            Context = Cap(route, ContextMax),
+            FirstSeen = now,
+            LastSeen = now,
+        });
     }
 
     /// <summary>Records an error the browser already serialized (source "web"); same cost profile as <see cref="Report"/>.</summary>
@@ -285,7 +308,9 @@ internal sealed partial class ErrorReporter
         t_inReport = true;
         try
         {
-            var json = JsonSerializer.Serialize(BuildItem(ex, ErrorKinds.Crash, null, DateTimeOffset.UtcNow), AppJsonContext.Default.ErrorReportItem);
+            var item = BuildItem(ex, ErrorKinds.Crash, null, DateTimeOffset.UtcNow);
+            item.Log = CapTail(ScrubLog(Platform.ServiceLog.RecentLines()), LogMax);
+            var json = JsonSerializer.Serialize(item, AppJsonContext.Default.ErrorReportItem);
             if (Encoding.UTF8.GetByteCount(json) > MaxCrashFileBytes)
                 return;
             Directory.CreateDirectory(Path.GetDirectoryName(path)!);
@@ -455,8 +480,26 @@ internal sealed partial class ErrorReporter
     internal static string Fingerprint(string source, string type, string stack)
     {
         var frames = FrameRegex().Matches(stack).Take(FrameCount).Select(m => m.Groups[1].Value);
-        var input = source + "\n" + type + "\n" + string.Join("\n", frames);
-        return Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(input))).ToLowerInvariant()[..32];
+        return Hash(source + "\n" + type + "\n" + string.Join("\n", frames));
+    }
+
+    private static string Hash(string input) =>
+        Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(input))).ToLowerInvariant()[..32];
+
+    /// <summary>Log lines interpolate device serials, session ids, hardware addresses and the PC's own names that exception text does not, so they get these on top of <see cref="Scrub"/>. Best effort: free text such as a file name can still pass.</summary>
+    internal static string ScrubLog(string text) => ScrubLog(text, Environment.MachineName, Environment.UserName);
+
+    internal static string ScrubLog(string text, string machineName, string userName)
+    {
+        text = Scrub(text);
+        if (machineName.Length >= 3)
+            text = text.Replace(machineName, "<host>", StringComparison.OrdinalIgnoreCase);
+        if (userName.Length >= 3)
+            text = text.Replace(userName, "<user>", StringComparison.OrdinalIgnoreCase);
+        text = MacAddressRegex().Replace(text, "<mac>");
+        text = Ipv6Regex().Replace(text, "<ip>");
+        text = GuidRegex().Replace(text, "<id>");
+        return OpaqueIdRegex().Replace(text, "<id>");
     }
 
     internal static string Scrub(string text)
@@ -479,6 +522,9 @@ internal sealed partial class ErrorReporter
 
     private static string Cap(string s, int max) => s.Length <= max ? s : s[..max];
 
+    // Keeps the end: the lines closest to the crash.
+    private static string CapTail(string s, int max) => s.Length <= max ? s : s[^max..];
+
     [GeneratedRegex(@"[A-Za-z]:[\\/]Users[\\/][^\\/\s]+")]
     private static partial Regex WindowsUserPathRegex();
 
@@ -496,4 +542,20 @@ internal sealed partial class ErrorReporter
 
     [GeneratedRegex(@"\b(?:\d{1,3}\.){3}\d{1,3}\b")]
     private static partial Regex Ipv4Regex();
+
+    [GeneratedRegex(@"\b(?:[0-9A-Fa-f]{2}[:-]){5}[0-9A-Fa-f]{2}\b")]
+    private static partial Regex MacAddressRegex();
+
+    // Full form, or a compressed "::" form; clock times never contain "::".
+    [GeneratedRegex(@"\b(?:[0-9A-Fa-f]{1,4}:){3,7}[0-9A-Fa-f]{1,4}\b|\b(?:[0-9A-Fa-f]{1,4}:){1,7}:(?:[0-9A-Fa-f]{1,4}(?::[0-9A-Fa-f]{1,4}){0,6})?")]
+    private static partial Regex Ipv6Regex();
+
+    [GeneratedRegex(@"(?<![A-Za-z0-9_-])[0-9A-Fa-f]{8}(?:-[0-9A-Fa-f]{4}){3}-[0-9A-Fa-f]{12}(?![A-Za-z0-9_-])")]
+    private static partial Regex GuidRegex();
+
+    // One token is a run of [A-Za-z0-9_-] (base64url, hyphen-grouped serials). It is an id when it has 6+ chars with a
+    // digit and a letter, is 8+ digits, or is 12+ hex letters; a 0x literal, a number with a unit, a WxH
+    // resolution and the ISO timestamp that starts each log line are kept.
+    [GeneratedRegex(@"(?<![A-Za-z0-9_-])(?:(?!0x[0-9A-Fa-f]+(?![A-Za-z0-9_-]))(?!\d+[A-Za-z]{1,3}(?![A-Za-z0-9_-]))(?!\d{2,5}x\d{2,5}(?![A-Za-z0-9_-]))(?!\d{4}-\d{2}-\d{2}T)(?=[A-Za-z0-9_-]*\d)(?=[A-Za-z0-9_-]*[A-Za-z])[A-Za-z0-9_-]{6,}|\d{8,}|[A-Fa-f]{12,})(?![A-Za-z0-9_-])")]
+    private static partial Regex OpaqueIdRegex();
 }

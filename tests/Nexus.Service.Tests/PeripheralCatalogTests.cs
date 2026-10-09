@@ -15,6 +15,18 @@ public class PeripheralCatalogTests
     }
 
     [Fact]
+    public void SupportedDevicesCatalog_ListsEveryStreamDeckModelByVidAndPid()
+    {
+        foreach (var model in Nexus.Service.Peripherals.StreamDeck.StreamDeckModels.All)
+        {
+            var vid = $"0x{model.VendorId:X4}";
+            var pid = $"0x{model.ProductId:X4}";
+            Assert.Contains(SupportedDevicesCatalog.All, d =>
+                d.VendorId.Equals(vid, System.StringComparison.OrdinalIgnoreCase) && d.ProductId.Equals(pid, System.StringComparison.OrdinalIgnoreCase));
+        }
+    }
+
+    [Fact]
     public void SupportedDevicesCatalog_ClaimsOnlyNativelyDrivenDevices()
     {
         // A row here is a support claim. Devices Nexus only detects, or only

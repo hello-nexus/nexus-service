@@ -16,8 +16,9 @@ public static class SupportedDevicesCatalog
 {
     public static readonly IReadOnlyList<SupportedDeviceDto> All = new List<SupportedDeviceDto>
     {
-        // Elgato Stream Deck - button-only models (dials/touchscreen Plus
-        // family out of scope), driven by src/Peripherals/StreamDeck/.
+        // Elgato Stream Deck family (button decks, Plus/Plus XL dials and touch
+        // strip, Neo info screen, Studio rings) and the Corsair Galleon K100 SD
+        // screen and dials, driven by src/Peripherals/StreamDeck/.
         Deck("Elgato", "Stream Deck Original",            "0x0FD9", "0x0060", Caps("keys", "brightness", "screen")),
         Deck("Elgato", "Stream Deck Mini",                "0x0FD9", "0x0063", Caps("keys", "brightness", "screen")),
         Deck("Elgato", "Stream Deck Mini MK.2",            "0x0FD9", "0x0090", Caps("keys", "brightness", "screen")),
@@ -31,6 +32,10 @@ public static class SupportedDevicesCatalog
         Deck("Elgato", "Stream Deck XL V2",                "0x0FD9", "0x008F", Caps("keys", "brightness", "screen")),
         Deck("Elgato", "Stream Deck XL V2 Module",         "0x0FD9", "0x00BA", Caps("keys", "brightness", "screen")),
         Deck("Elgato", "Stream Deck Neo",                  "0x0FD9", "0x009A", Caps("keys", "brightness", "screen")),
+        Deck("Elgato", "Stream Deck +",                    "0x0FD9", "0x0084", Caps("keys", "brightness", "screen", "dials")),
+        Deck("Elgato", "Stream Deck + XL",                 "0x0FD9", "0x00C6", Caps("keys", "brightness", "screen", "dials")),
+        Deck("Elgato", "Stream Deck Studio",               "0x0FD9", "0x00AA", Caps("keys", "brightness", "screen", "dials")),
+        Deck("Corsair", "Galleon K100 SD",                 "0x1B1C", "0x2B18", Caps("keys", "brightness", "screen", "dials")),
         Deck("Elgato", "Stream Deck Pedal",                "0x0FD9", "0x0086", Caps("keys")),
     };
 

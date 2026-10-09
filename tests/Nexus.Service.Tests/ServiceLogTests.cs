@@ -13,6 +13,21 @@ namespace Nexus.Service.Tests;
 /// </summary>
 public class ServiceLogTests
 {
+    [Fact]
+    public void RecentLines_keeps_the_newest_lines_oldest_first()
+    {
+        var tag = "recent-" + Guid.NewGuid().ToString("N");
+        for (var i = 0; i <= ServiceLog.RecentLineCount; i++)
+            ServiceLog.Info($"{tag}-{i:D2}");
+
+        var recent = ServiceLog.RecentLines();
+
+        Assert.DoesNotContain($"{tag}-00", recent);
+        var last = recent.IndexOf($"{tag}-{ServiceLog.RecentLineCount:D2}", StringComparison.Ordinal);
+        var previous = recent.IndexOf($"{tag}-{ServiceLog.RecentLineCount - 1:D2}", StringComparison.Ordinal);
+        Assert.True(previous >= 0 && last > previous);
+    }
+
     [NonWindowsFact]
     public void Console_write_after_init_appears_in_log_file()
     {

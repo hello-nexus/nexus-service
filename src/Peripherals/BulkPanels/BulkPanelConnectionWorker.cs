@@ -19,8 +19,11 @@ namespace Nexus.Service.Peripherals.BulkPanels;
 /// </summary>
 public sealed class BulkPanelConnectionWorker : BackgroundService
 {
-    private const int ConnectPollMs = 5000;
-    private const int PresencePollMs = 2000;
+    /// <summary>Missed presence scans in a row that end a session; one incomplete bus scan must not.</summary>
+    private const int MissesToDetach = 2;
+
+    private readonly int _connectPollMs;
+    private readonly int _presencePollMs;
 
     private readonly IHidEnumerator _hid;
     private readonly IBulkUsbPipeFactory _pipes;
@@ -29,8 +32,11 @@ public sealed class BulkPanelConnectionWorker : BackgroundService
     private readonly HardwarePresence _presence;
 
     public BulkPanelConnectionWorker(
-        IHidEnumerator hid, IBulkUsbPipeFactory pipes, BulkPanelHub hub, DeviceControlGate gate, HardwarePresence presence)
+        IHidEnumerator hid, IBulkUsbPipeFactory pipes, BulkPanelHub hub, DeviceControlGate gate, HardwarePresence presence,
+        int connectPollMs = 5000, int presencePollMs = 2000)
     {
+        _connectPollMs = connectPollMs;
+        _presencePollMs = presencePollMs;
         _hid = hid;
         _pipes = pipes;
         _hub = hub;
@@ -47,37 +53,48 @@ public sealed class BulkPanelConnectionWorker : BackgroundService
             {
                 if (!_gate.IsEnabled(driver.HandlerId))
                 {
-                    await Task.Delay(ConnectPollMs, stoppingToken).ConfigureAwait(false);
+                    await Task.Delay(_connectPollMs, stoppingToken).ConfigureAwait(false);
                     continue;
                 }
 
                 if (!_presence.UsbPresent(driver.VendorId, driver.ProductIds))
                 {
-                    await Task.Delay(ConnectPollMs, stoppingToken).ConfigureAwait(false);
+                    await Task.Delay(_connectPollMs, stoppingToken).ConfigureAwait(false);
                     continue;
                 }
 
                 if (!TryOpen(out var pipe, out var hid) || pipe is null)
                 {
                     hid?.Dispose();
-                    await Task.Delay(ConnectPollMs, stoppingToken).ConfigureAwait(false);
+                    await Task.Delay(_connectPollMs, stoppingToken).ConfigureAwait(false);
                     continue;
                 }
 
                 if (!_hub.Attach(pipe, hid))
                 {
-                    await Task.Delay(ConnectPollMs, stoppingToken).ConfigureAwait(false);
+                    await Task.Delay(_connectPollMs, stoppingToken).ConfigureAwait(false);
                     continue;
                 }
 
                 ServiceLog.Info($"[{driver.HandlerId}] connected: {driver.Name}, {_hub.Width}x{_hub.Height}");
                 try
                 {
+                    // The hub never detaches on a failed transfer, so presence is what ends the session after an unplug.
+                    int misses = 0;
                     while (!stoppingToken.IsCancellationRequested
                         && _gate.IsEnabled(driver.HandlerId)
                         && _hub.IsConnected)
                     {
-                        await Task.Delay(PresencePollMs, stoppingToken).ConfigureAwait(false);
+                        misses = _presence.UsbPresent(driver.VendorId, driver.ProductIds) ? 0 : misses + 1;
+                        if (misses >= MissesToDetach)
+                        {
+                            break;
+                        }
+                        if (driver.GeometryStale && _hub.Renegotiate())
+                        {
+                            ServiceLog.Info($"[{driver.HandlerId}] renegotiated at {_hub.Width}x{_hub.Height}");
+                        }
+                        await Task.Delay(_presencePollMs, stoppingToken).ConfigureAwait(false);
                     }
                 }
                 finally
@@ -93,7 +110,7 @@ public sealed class BulkPanelConnectionWorker : BackgroundService
             catch (Exception ex)
             {
                 ServiceLog.Error($"[{driver.HandlerId}] worker error: {ex.Message}");
-                await Task.Delay(ConnectPollMs, stoppingToken).ConfigureAwait(false);
+                await Task.Delay(_connectPollMs, stoppingToken).ConfigureAwait(false);
             }
         }
         _hub.Detach();

@@ -106,7 +106,7 @@ public sealed class DeckSystemAction
     /// <summary>
     /// volumeUp | volumeDown | volumeSet | muteToggle | mediaPlayPause |
     /// mediaNext | mediaPrev | brightnessUp | brightnessDown | brightnessSet |
-    /// openSettings.
+    /// openSettings | screenshot | screenRecord.
     /// </summary>
     public string Op { get; set; } = "";
 
@@ -202,12 +202,70 @@ public sealed class DeckTitleStyle
 public sealed class DeckFolder
 {
     public List<DeckSlot> Slots { get; set; } = new();
+    /// <summary>Dials shown while inside this folder; null keeps the page's dials.</summary>
+    [JsonConverter(typeof(DeckDialListConverter))]
+    public List<DeckDial>? Dials { get; set; }
 }
 
 /// <summary>One page's grid. Folders still nest within a page via DeckSlot.Folder.</summary>
 public sealed class DeckPage
 {
     public List<DeckSlot> Slots { get; set; } = new();
+    /// <summary>Dial i of the deck's encoders; null or short lists leave the remaining dials empty.</summary>
+    [JsonConverter(typeof(DeckDialListConverter))]
+    public List<DeckDial>? Dials { get; set; }
+}
+
+/// <summary>
+/// One encoder binding. A dial whose <see cref="Stack"/> has 2+ entries shows
+/// one entry at a time and ignores its own Label/Icon/Color/Action.
+/// </summary>
+public sealed class DeckDial
+{
+    /// <summary>Segment title; unset falls back to the action's default title.</summary>
+    public string? Label { get; set; }
+    public DeckIcon? Icon { get; set; }
+    /// <summary>Accent hex for bar, ring and feedback; unset falls back to the theme accent.</summary>
+    public string? Color { get; set; }
+    public DeckDialAction? Action { get; set; }
+    /// <summary>Entries never nest another stack.</summary>
+    public List<DeckDial>? Stack { get; set; }
+}
+
+/// <summary>
+/// Flat mirror of nexus-web's DeckDialAction union, keyed by <see cref="Type"/>:
+/// volume | micVolume | appVolume | displayBrightness | deckBrightness |
+/// lightingBrightness | y70Brightness | page | monitoring | custom.
+/// </summary>
+public sealed class DeckDialAction
+{
+    public string Type { get; set; } = "";
+
+    /// <summary>volume / micVolume: endpoint id; unset is the default device.</summary>
+    public string? DeviceId { get; set; }
+    /// <summary>Percent points per tick; unset uses the worker default. Fractions are tolerated on read.</summary>
+    public double? Step { get; set; }
+    /// <summary>appVolume: AudioMixerService session id.</summary>
+    public string? AppId { get; set; }
+    public string? AppName { get; set; }
+    /// <summary>displayBrightness: target display id.</summary>
+    public string? DisplayId { get; set; }
+
+    /// <summary>monitoring: quick | cpu | gpu | memory | motherboard | storage.</summary>
+    public string? Category { get; set; }
+    public string? Sensor { get; set; }
+    /// <summary>monitoring: none | taskManager | monitoringPage.</summary>
+    public string? Press { get; set; }
+    public string? LabelText { get; set; }
+
+    /// <summary>custom: run once per clockwise tick.</summary>
+    public DeckAction? TurnRight { get; set; }
+    /// <summary>custom: run once per counter-clockwise tick.</summary>
+    public DeckAction? TurnLeft { get; set; }
+    /// <summary>custom: run on dial press release.</summary>
+    public DeckAction? Push { get; set; }
+    /// <summary>custom: run on touch tap; falls back to <see cref="Push"/>.</summary>
+    public DeckAction? Touch { get; set; }
 }
 
 /// <summary>

@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using Nexus.Service.Devices.Handlers;
 
 namespace Nexus.Service.Devices;
@@ -15,8 +16,8 @@ namespace Nexus.Service.Devices;
 /// re-enable), and shared buses (whose monitoring nothing else provides)
 /// default on, as does any handler in neither ConflictAppByHandler nor
 /// UnverifiedHandlers. One source of truth for both facts. A device the user
-/// has on waits while its app runs only when that app is whitelisted
-/// (<see cref="VendorAppControlPause"/>).
+/// has on waits while its app runs only when that app is whitelisted, or when
+/// the device is in YieldsWhileAppRuns (<see cref="VendorAppControlPause"/>).
 /// </summary>
 public static class DeviceControlPolicy
 {
@@ -33,6 +34,7 @@ public static class DeviceControlPolicy
         ["strimer"] = "lian-li-l-connect",
         ["lianli-screen88"] = "lian-li-l-connect",
         ["lianli-hydroshift2"] = "lian-li-l-connect",
+        ["lianli-hydroshift2-curve"] = "lian-li-l-connect",
         ["lianli-galahad2-lcd"] = "lian-li-l-connect",
         ["corsair"] = "icue",
         ["corsair-link-lcd"] = "icue",
@@ -49,7 +51,7 @@ public static class DeviceControlPolicy
 
     private static readonly HashSet<string> StableThirdPartyHandlers = new(StringComparer.OrdinalIgnoreCase)
     {
-        "nzxt-kraken", "streamdeck", "tryx", "zmatrices-lcd",
+        "nzxt-kraken", "streamdeck", "tryx", "zmatrices-lcd", "nollie",
     };
 
     /// <summary>
@@ -75,10 +77,27 @@ public static class DeviceControlPolicy
         ["streamdeck"] = StreamDeckHandler.ElgatoConflictAppId,
     };
 
+    /// <summary>Waits while its app runs, whitelisted or not: the LINK hub shares its file handles across hosts, so Nexus frames land in iCUE's open profile files and are stored (fw 4.1.656).</summary>
+    private static readonly HashSet<string> YieldsWhileAppRuns = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "corsair",
+    };
+
     private static readonly Dictionary<string, string> BusByHandler = new(StringComparer.OrdinalIgnoreCase)
     {
         [SmbusDramHandler.HandlerId] = "smbus",
     };
+
+    /// <summary>Prerelease and dev-tools builds may control experimental hardware; a stable release lists it locked off. Settable for tests only.</summary>
+    internal static bool ExperimentalUnlocked { get; set; } =
+#if DEV_TOOLS
+        true;
+#else
+        Update.VersionCompare.IsPrerelease(BuildInfo.Version);
+#endif
+
+    /// <summary>True for experimental hardware on a stable build: Nexus never controls it and the conflict system ignores it.</summary>
+    public static bool RequiresBeta(string handlerId) => !ExperimentalUnlocked && IsExperimental(handlerId);
 
     public static bool DefaultOn(string handlerId) =>
         !ConflictAppByHandler.ContainsKey(handlerId)
@@ -89,12 +108,21 @@ public static class DeviceControlPolicy
     /// <summary>Every handler with a competing app, from both maps.</summary>
     public static IEnumerable<string> HandlersWithConflictApp()
     {
-        foreach (var handler in ConflictAppByHandler.Keys) yield return handler;
-        foreach (var handler in HintOnlyConflictAppByHandler.Keys) yield return handler;
+        foreach (var handler in ConflictAppByHandler.Keys)
+        {
+            if (!RequiresBeta(handler)) yield return handler;
+        }
+        foreach (var handler in HintOnlyConflictAppByHandler.Keys)
+        {
+            if (!RequiresBeta(handler)) yield return handler;
+        }
     }
 
+    public static bool YieldsToRunningApp(string handlerId) => YieldsWhileAppRuns.Contains(handlerId);
+
     public static string? ConflictAppFor(string handlerId)
-        => ConflictAppByHandler.TryGetValue(handlerId, out var id) ? id
+        => RequiresBeta(handlerId) ? null
+            : ConflictAppByHandler.TryGetValue(handlerId, out var id) ? id
             : HintOnlyConflictAppByHandler.TryGetValue(handlerId, out var hintApp) ? hintApp
             : null;
 
@@ -102,16 +130,17 @@ public static class DeviceControlPolicy
     public static List<string> HandlersFor(string appId)
     {
         var handlers = new List<string>();
-        foreach (var (handler, app) in ConflictAppByHandler)
+        foreach (var handler in HandlersWithConflictApp())
         {
-            if (string.Equals(app, appId, StringComparison.OrdinalIgnoreCase)) handlers.Add(handler);
-        }
-        foreach (var (handler, app) in HintOnlyConflictAppByHandler)
-        {
-            if (string.Equals(app, appId, StringComparison.OrdinalIgnoreCase)) handlers.Add(handler);
+            if (string.Equals(ConflictAppFor(handler), appId, StringComparison.OrdinalIgnoreCase)) handlers.Add(handler);
         }
         return handlers;
     }
+
+    /// <summary>Each conflict app's handlers from both maps, locked or not.</summary>
+    internal static IEnumerable<IGrouping<string, string>> AllHandlersByApp() =>
+        ConflictAppByHandler.Concat(HintOnlyConflictAppByHandler)
+            .GroupBy(kv => kv.Value, kv => kv.Key, StringComparer.OrdinalIgnoreCase);
 
     /// <summary>"usb" for every USB handler, "smbus" for the chipset-bus pseudo-device.</summary>
     public static string BusFor(string handlerId)

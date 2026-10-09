@@ -42,6 +42,8 @@ public sealed class ZMatricesPanelDriver : IBulkPanelDriver
 
     public bool SupportsSecondaryMonitor => true;
 
+    public bool HasTouch => true;
+
     public (int Width, int Height)? Connect(IBulkUsbPipe pipe, IHidDevice? hid)
     {
         if (!pipe.Write(ZMatricesProtocol.CommandPipe, ZMatricesProtocol.EncodePictureModeCommand()))

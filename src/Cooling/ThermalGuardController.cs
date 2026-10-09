@@ -66,6 +66,9 @@ public sealed class ThermalGuardController
     // Stalls this many times within the window mean the engine cannot be trusted with the fans.
     private const int WatchdogLatchFires = 3;
     private const long WatchdogLatchWindowMs = 10 * 60_000;
+    // A latched engine that ticks this long without a gap a hot stall would fire on takes the fans back,
+    // once per run: a second latch holds until a restart or a guard toggle.
+    internal const long WatchdogResumeMs = 5 * 60_000;
     private const long CpuLimitRefreshMs = 60_000;
     private const long TachZeroSustainMs = 60_000;
     private const int TachConsecutiveTicks = 3;
@@ -106,6 +109,10 @@ public sealed class ThermalGuardController
     private long _lastTickMs;
     private readonly List<long> _watchdogFires = new();
     private bool _watchdogLatched;
+    private long _steadySinceMs;
+    private bool _watchdogResumed;
+    private long? _lastLatchAlertMs;
+    private Func<string>? _engineStep;
     private string _cpuModel = "";
     private long? _cpuLimitAtMs;
     private bool _cpuInfoFailureLogged;
@@ -154,9 +161,14 @@ public sealed class ThermalGuardController
 
     // ── Engine hooks ──
 
-    public void StartWatchdog()
+    /// <param name="engineStep">What the engine's tick is doing, named in the stall log.</param>
+    public void StartWatchdog(Func<string>? engineStep = null)
     {
-        lock (_gate) { _lastTickMs = MonotonicMs(); }
+        lock (_gate)
+        {
+            _lastTickMs = MonotonicMs();
+            _engineStep = engineStep;
+        }
         _watchdog ??= new Timer(_ => WatchdogCheck(MonotonicMs()), null, WatchdogPollMs, WatchdogPollMs);
     }
 
@@ -168,23 +180,53 @@ public sealed class ThermalGuardController
 
     public void TickCompleted()
     {
+        var resumed = false;
         lock (_gate)
         {
-            _lastTickMs = MonotonicMs();
+            var now = MonotonicMs();
+            if (_watchdogLatched && !_watchdogResumed)
+            {
+                if (now - _lastTickMs >= WatchdogHotStallMs)
+                {
+                    _steadySinceMs = now;
+                }
+                else if (now - _steadySinceMs >= WatchdogResumeMs)
+                {
+                    _watchdogLatched = false;
+                    _watchdogResumed = true;
+                    _watchdogFires.Clear();
+                    // The engine forgets what it wrote, so the next tick re-drives every fan.
+                    _watchdogPending = true;
+                    resumed = true;
+                }
+            }
+            _lastTickMs = now;
             _watchdogFired = false;
+        }
+        if (resumed)
+        {
+            Console.Error.WriteLine("[thermal-guard] curve engine steady again: Nexus fan writes resume");
+            if (_hub is not null)
+            {
+                PanelTopics.BroadcastCooling(_hub);
+            }
         }
     }
 
     internal void WatchdogCheck(long nowMs)
     {
         var latchedNow = false;
+        var resumes = false;
+        var alert = false;
+        long stalled;
+        Func<string>? engineStep;
         lock (_gate)
         {
             if (!_watchdogArmed || _watchdogFired || _watchdogLatched)
             {
                 return;
             }
-            var stalled = nowMs - _lastTickMs;
+            stalled = nowMs - _lastTickMs;
             var hot = _guardTemp is { } temp && temp >= _limit.LimitC - _thresholds.FloorStartBelowLimitC;
             // A stalled engine is not managing fans, so the BIOS is the safe owner whatever the temperature.
             if (stalled < (hot ? WatchdogHotStallMs : WatchdogStallMs))
@@ -198,18 +240,35 @@ public sealed class ThermalGuardController
             {
                 // Repeated stalls: stop handing fans back and forth, the BIOS keeps them.
                 _watchdogLatched = true;
+                _steadySinceMs = nowMs;
                 latchedNow = true;
+                resumes = !_watchdogResumed;
+                // A latch that resumes and recurs alerts at most once per cooldown; the banner shows every latch.
+                alert = _lastLatchAlertMs is not { } last || nowMs - last >= TripAlertCooldownMs;
+                if (alert)
+                {
+                    _lastLatchAlertMs = nowMs;
+                }
             }
+            engineStep = _engineStep;
         }
-        Console.Error.WriteLine("[thermal-guard] curve engine stalled: releasing all fans to BIOS");
+        string step;
+        try { step = engineStep?.Invoke() ?? "unknown"; }
+        catch { step = "unknown"; }
+        Console.Error.WriteLine($"[thermal-guard] curve engine stalled for {stalled / 1000} s at: {step}; releasing all fans to BIOS");
         try { _fans.ReleaseAll(); }
         catch { /* the fans are already in an unknown state; nothing more to do */ }
         // Only now may the engine re-drive: it can never run ahead of a release still in flight.
         lock (_gate) { _watchdogPending = true; }
         if (latchedNow)
         {
-            Console.Error.WriteLine("[thermal-guard] repeated engine stalls: Nexus fan writes stopped until restart or a guard toggle");
-            Raise(ThermalGuardNotices.LatchedTitle, ThermalGuardNotices.LatchedText);
+            Console.Error.WriteLine(resumes
+                ? $"[thermal-guard] repeated engine stalls: Nexus fan writes stopped until the engine runs steadily for {WatchdogResumeMs / 60_000} min, a restart or a guard toggle"
+                : "[thermal-guard] repeated engine stalls again: Nexus fan writes stopped until restart or a guard toggle");
+            if (alert)
+            {
+                Raise(ThermalGuardNotices.LatchedTitle, ThermalGuardNotices.LatchedText);
+            }
             if (_hub is not null)
             {
                 PanelTopics.BroadcastCooling(_hub);
@@ -228,7 +287,16 @@ public sealed class ThermalGuardController
         }
     }
 
-    /// <summary>True after repeated engine stalls: Nexus writes no fan until restart or a guard toggle. The guard still evaluates and reports.</summary>
+    /// <summary>True while a latch will clear itself after steady ticks; false once this run has used its one resume.</summary>
+    public bool WatchdogResumes
+    {
+        get
+        {
+            lock (_gate) { return !_watchdogResumed; }
+        }
+    }
+
+    /// <summary>True after repeated engine stalls: Nexus writes no fan until the latch clears. The guard still evaluates and reports.</summary>
     public bool WatchdogLatched
     {
         get
@@ -260,6 +328,7 @@ public sealed class ThermalGuardController
             // Leaving a latch means the fans were released: the next tick must write everything again.
             _watchdogPending |= _watchdogLatched;
             _watchdogLatched = false;
+            _watchdogResumed = false;
             _watchdogFires.Clear();
             _cpu.Reset();
             _guardTemp = null;
@@ -1149,6 +1218,7 @@ public sealed class ThermalGuardController
             Hazards = SavedConfigHazards(cooling),
             Heal = BuildHealState(cooling),
             WatchdogLatched = WatchdogLatched,
+            WatchdogResumes = WatchdogResumes,
         };
         lock (_gate)
         {

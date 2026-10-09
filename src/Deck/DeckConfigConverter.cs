@@ -61,11 +61,16 @@ public sealed class DeckConfigConverter : JsonConverter<DeckConfig>
         {
             return new DeckPage();
         }
+        var page = new DeckPage();
         if (pageEl.TryGetProperty("slots", out var slotsEl) && slotsEl.ValueKind == JsonValueKind.Array)
         {
-            return new DeckPage { Slots = slotsEl.Deserialize(GetTypeInfo<List<DeckSlot>>(options)) ?? new() };
+            page.Slots = slotsEl.Deserialize(GetTypeInfo<List<DeckSlot>>(options)) ?? new();
         }
-        return new DeckPage();
+        if (pageEl.TryGetProperty("dials", out var dialsEl) && dialsEl.ValueKind == JsonValueKind.Array)
+        {
+            page.Dials = DeckDialListConverter.ReadList(dialsEl, options);
+        }
+        return page;
     }
 
     public override void Write(Utf8JsonWriter writer, DeckConfig value, JsonSerializerOptions options)
@@ -78,6 +83,11 @@ public sealed class DeckConfigConverter : JsonConverter<DeckConfig>
             writer.WriteStartObject();
             writer.WritePropertyName("slots");
             JsonSerializer.Serialize(writer, page.Slots, GetTypeInfo<List<DeckSlot>>(options));
+            if (page.Dials is not null)
+            {
+                writer.WritePropertyName("dials");
+                JsonSerializer.Serialize(writer, page.Dials, GetTypeInfo<List<DeckDial>>(options));
+            }
             writer.WriteEndObject();
         }
         writer.WriteEndArray();

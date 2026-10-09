@@ -27,6 +27,12 @@ public sealed class FleetEventSpecs
 
     /// <summary>Attached USB peripherals; nexus-api stores these relationally, not inside the specs blob.</summary>
     public System.Collections.Generic.List<FleetEventDevice> Devices { get; set; } = new();
+
+    /// <summary>A Y70 has been connected on this install at least once, per the device handler (serial link, EDID or USB); GW / Ina / Y70ti panels never appear in <see cref="Devices"/>.</summary>
+    public bool Y70Seen { get; set; }
+
+    /// <summary>SMBIOS system manufacturer is iBUYPOWER - the same match that unlocks the iBUYPOWER app.</summary>
+    public bool IbuypowerSystem { get; set; }
 }
 
 /// <summary>

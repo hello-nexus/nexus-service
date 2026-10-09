@@ -281,9 +281,10 @@ internal static class UserHelperBootstrapper
     /// <summary>
     /// Run an arbitrary command in the active console user's session via a
     /// one-shot scheduled task. Used for actions that no-op from Session 0
-    /// (e.g. LockWorkStation). Returns true if the task ran.
+    /// (e.g. LockWorkStation). Returns true if the task ran. <paramref name="elevated"/>
+    /// runs it with the user's full token (an administrator gets it without a UAC prompt).
     /// </summary>
-    public static bool RunInUserSession(string command, string logTag, string taskPrefix)
+    public static bool RunInUserSession(string command, string logTag, string taskPrefix, bool elevated = false)
     {
         var username = ResolveActiveConsoleUsername();
         if (string.IsNullOrEmpty(username))
@@ -293,7 +294,36 @@ internal static class UserHelperBootstrapper
         }
 
         var taskName = $"{taskPrefix}_{Environment.ProcessId}_{DateTime.UtcNow.Ticks}";
-        return CreateRunDelete(taskName, username, command);
+        return CreateRunDelete(taskName, username, command, elevated);
+    }
+
+    // One elevated focus per user launch; the gap keeps a chatty pipe client from streaming elevated spawns.
+    private static readonly TimeSpan FocusSpawnGap = TimeSpan.FromSeconds(1);
+    private static readonly object s_focusLock = new();
+    private static long s_lastFocusSpawn = long.MinValue / 2;
+
+    /// <summary>
+    /// Focuses a window for the console session's helper from an elevated one-shot,
+    /// since only an elevated process can focus an elevated window.
+    /// </summary>
+    public static void FocusWindowElevated(int helperSessionId, long hwnd, long expectedForeground)
+    {
+        // A window handle names a window only inside its own session.
+        if (hwnd <= 0 || helperSessionId != (int)WTSGetActiveConsoleSessionId())
+        {
+            return;
+        }
+        lock (s_focusLock)
+        {
+            var now = Environment.TickCount64;
+            if (now - s_lastFocusSpawn < (long)FocusSpawnGap.TotalMilliseconds)
+            {
+                return;
+            }
+            s_lastFocusSpawn = now;
+        }
+        var exe = Path.Combine(AppContext.BaseDirectory, "Nexus.exe");
+        RunInUserSession($"\"{exe}\" --focus-window {hwnd} {expectedForeground}", "focus-window", "NexusFocusWindow", elevated: true);
     }
 
     /// <summary>
@@ -301,9 +331,9 @@ internal static class UserHelperBootstrapper
     /// and deletes it. The task carries no trigger, so a leftover one (when the
     /// /Delete fails) can only ever be started by an explicit /Run.
     /// </summary>
-    private static bool CreateRunDelete(string taskName, string username, string command)
+    private static bool CreateRunDelete(string taskName, string username, string command, bool elevated = false)
     {
-        try { return CreateAndRun(taskName, username, command); }
+        try { return CreateAndRun(taskName, username, command, elevated); }
         finally { Schtasks("/Delete", "/TN", taskName, "/F"); }
     }
 
@@ -311,13 +341,13 @@ internal static class UserHelperBootstrapper
     /// Registers and runs the task; the caller owns the /Delete, so a launch
     /// that must be verified first can keep the task alive while it waits.
     /// </summary>
-    private static bool CreateAndRun(string taskName, string username, string command)
+    private static bool CreateAndRun(string taskName, string username, string command, bool elevated = false)
     {
         var (userId, runAs) = UserSessionTaskXml.TaskPrincipal(
             username, Environment.MachineName, ConsoleSessionAccount.TryResolve);
         try
         {
-            if (CreateFromXml(taskName, userId, command))
+            if (CreateFromXml(taskName, userId, command, elevated))
             {
                 return Schtasks("/Run", "/TN", taskName);
             }
@@ -332,8 +362,9 @@ internal static class UserHelperBootstrapper
         // helper and overlay, so the legacy command line stands behind it.
         // /ST 00:00 is already past, so a leftover task has a spent trigger.
         Console.Error.WriteLine($"[user-session-task] {taskName}: XML registration failed, using schedule-type form");
-        if (!Schtasks("/Create", "/TN", taskName, "/TR", command,
-                      "/SC", "ONCE", "/ST", "00:00", "/RU", runAs, "/IT", "/F"))
+        string[] create = ["/Create", "/TN", taskName, "/TR", command,
+                           "/SC", "ONCE", "/ST", "00:00", "/RU", runAs, "/IT", "/F"];
+        if (!Schtasks(elevated ? [.. create, "/RL", "HIGHEST"] : create))
         {
             return false;
         }
@@ -342,9 +373,9 @@ internal static class UserHelperBootstrapper
 
     // Registers taskName from a trigger-less task XML. False when the XML could
     // not be staged or schtasks rejected it.
-    private static bool CreateFromXml(string taskName, string username, string command)
+    private static bool CreateFromXml(string taskName, string username, string command, bool elevated)
     {
-        var xmlPath = UserSessionTaskXml.WriteTempFile(UserSessionTaskXml.Build(username, command));
+        var xmlPath = UserSessionTaskXml.WriteTempFile(UserSessionTaskXml.Build(username, command, elevated));
         try
         {
             return Schtasks("/Create", "/TN", taskName, "/XML", xmlPath, "/F");

@@ -19,6 +19,8 @@ public sealed class DeviceListItem
     public bool SupportsNexusControl { get; set; }
     /// <summary>True for a Nexus Control device whose support is experimental (<see cref="Nexus.Service.Devices.DeviceControlPolicy.IsExperimental"/>). Drives the "Experimental" badge in the UI. Always false when SupportsNexusControl is false.</summary>
     public bool Experimental { get; set; }
+    /// <summary>True for an experimental device on a stable build (<see cref="Nexus.Service.Devices.DeviceControlPolicy.RequiresBeta"/>): Nexus Control stays off and cannot be turned on. Always false when SupportsNexusControl is false.</summary>
+    public bool RequiresBeta { get; set; }
     /// <summary>Short code for a partial-detection issue (e.g. "usb-disconnected"), or null when there is nothing to flag.</summary>
     public string? Warning { get; set; }
     /// <summary>ConflictAppCatalog id of the third-party app that competes with this device (e.g. "icue", "lian-li-l-connect"), or null when none maps. Drives the device page's "close the app first" gate.</summary>
