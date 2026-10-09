@@ -39,6 +39,17 @@ public sealed class HidStreamDeckSurface : IStreamDeckSurface
     public string FirmwareVersion { get; private set; } = "";
     public bool IsConnected => _device is not null;
 
+    public bool IsReady
+    {
+        get
+        {
+            lock (_io)
+            {
+                return _device is not null && _ready;
+            }
+        }
+    }
+
     [System.Diagnostics.CodeAnalysis.MemberNotNullWhen(false, nameof(_device))]
     private bool Unavailable => _device is null || !_ready;
 

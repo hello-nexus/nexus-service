@@ -120,6 +120,12 @@ public sealed class DeckActionExecutor : IDeckActionExecutor
             var result = await DispatchAsync(action, serial, latchKey, ct).ConfigureAwait(false);
             outcome = result == DispatchOutcome.Unknown ? "unknown" : "ok";
         }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            LastOutcome = ("cancelled", null);
+            ServiceLog.Info($"[streamdeck] dispatch serial={serial} key={keyIndex} type={action.Type} outcome=cancelled");
+            return;
+        }
         catch (Exception ex)
         {
             LastOutcome = ("failed", ex.Message);

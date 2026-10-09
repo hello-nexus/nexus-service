@@ -25,8 +25,8 @@ public sealed partial class StreamDeckConnectionWorker
 {
     private const int DefaultDialStep = 2;
     private const int DefaultRestoreLevel = 50;
-    /// <summary>Queued reports of one dial's custom actions; more are dropped so a slow action cannot build a backlog.</summary>
-    private const int MaxPendingDialDispatches = 8;
+    /// <summary>Custom-turn ticks waiting behind a slow action, per dial; the oldest beyond this are dropped.</summary>
+    private const int MaxPendingTurnTicks = 24;
     /// <summary>Turning a dial while it is held moves this many times the step.</summary>
     private const int HeldStepMultiplier = 5;
     /// <summary>Cap on custom key actions fired by one report; a fast spin reports up to +-10 ticks.</summary>
@@ -54,7 +54,14 @@ public sealed partial class StreamDeckConnectionWorker
         /// <summary>Restore value for a zero toggle, per controlled target.</summary>
         public readonly Dictionary<string, double> LastNonZero = new();
         public Task Dispatch = Task.CompletedTask;
-        public int PendingDispatch;
+        /// <summary>Guards the pending custom-turn counters below.</summary>
+        public readonly object TurnGate = new();
+        public int PendingRight;
+        public int PendingLeft;
+        public DeckAction? RightAction;
+        public DeckAction? LeftAction;
+        public bool TurnDrainQueued;
+        public bool BacklogWarned;
         public DateTimeOffset FeedbackStartedAt;
         public bool FeedbackActive;
         public int FeedbackStep;
@@ -104,6 +111,7 @@ public sealed partial class StreamDeckConnectionWorker
         if (_dialStates.Remove(serial, out var removed))
         {
             removed.Cancel.Cancel();
+            removed.Cancel.Dispose();
         }
         _anyDialFeedback = _dialStates.Values.Any(s => s.Dials.Any(d => d.FeedbackActive));
     }
@@ -113,6 +121,7 @@ public sealed partial class StreamDeckConnectionWorker
         foreach (var state in _dialStates.Values)
         {
             state.Cancel.Cancel();
+            state.Cancel.Dispose();
         }
         _dialStates.Clear();
         _anyDialFeedback = false;
@@ -266,7 +275,7 @@ public sealed partial class StreamDeckConnectionWorker
             case DeckDialTypes.Custom:
             {
                 var run = ticks > 0 ? action.TurnRight : action.TurnLeft;
-                RunDialKeyAction(surface.Serial, dialIndex, run, ticks > 0 ? "right" : "left", Math.Min(Math.Abs(ticks), MaxCustomTicksPerReport));
+                RunDialTurnAction(surface.Serial, dialIndex, runtime, run, ticks > 0, Math.Min(Math.Abs(ticks), MaxCustomTicksPerReport));
                 BeginFeedback(surface, dialIndex, runtime);
                 return;
             }
@@ -365,8 +374,8 @@ public sealed partial class StreamDeckConnectionWorker
         }
     }
 
-    /// <summary>Runs a custom dial's key action the way a key press would: a page action navigates here, anything else goes to the executor off this thread.</summary>
-    private void RunDialKeyAction(string serial, int dialIndex, DeckAction? action, string kind, int repeat = 1)
+    /// <summary>Runs a custom dial's push, touch or press action the way a key press would; a page action navigates here, anything else queues behind the dial's earlier actions.</summary>
+    private void RunDialKeyAction(string serial, int dialIndex, DeckAction? action, string kind)
     {
         if (action is null || string.IsNullOrEmpty(action.Type))
         {
@@ -374,57 +383,144 @@ public sealed partial class StreamDeckConnectionWorker
         }
         if (action.Type == "page")
         {
-            for (var n = 0; n < repeat; n++)
-            {
-                HandlePageAction(serial, LoadConfig(serial), action);
-            }
+            HandlePageAction(serial, LoadConfig(serial), action);
             return;
         }
         if (action.Type == "pageIndicator")
         {
             return;
         }
+        var token = DialToken(serial);
+        QueueDialAction(serial, dialIndex, () => ExecuteDialActionAsync(serial, dialIndex, action, kind, 1, token));
+    }
+
+    /// <summary>
+    /// A custom turn. Ticks wait in per-direction counters while an earlier
+    /// action runs: a reverse turn cancels waiting ticks of the other
+    /// direction, and beyond the cap the oldest are dropped, so a slow action
+    /// never builds an unbounded backlog and never delays a push or touch.
+    /// </summary>
+    private void RunDialTurnAction(string serial, int dialIndex, DialRuntime runtime, DeckAction? action, bool right, int ticks)
+    {
+        if (action is null || string.IsNullOrEmpty(action.Type) || action.Type == "pageIndicator")
+        {
+            return;
+        }
+        if (action.Type == "page")
+        {
+            for (var n = 0; n < ticks; n++)
+            {
+                HandlePageAction(serial, LoadConfig(serial), action);
+            }
+            return;
+        }
+        bool queueDrain;
+        lock (runtime.TurnGate)
+        {
+            if (right)
+            {
+                var cancelled = Math.Min(runtime.PendingLeft, ticks);
+                runtime.PendingLeft -= cancelled;
+                runtime.PendingRight += ticks - cancelled;
+                runtime.RightAction = action;
+            }
+            else
+            {
+                var cancelled = Math.Min(runtime.PendingRight, ticks);
+                runtime.PendingRight -= cancelled;
+                runtime.PendingLeft += ticks - cancelled;
+                runtime.LeftAction = action;
+            }
+            if (runtime.PendingRight > MaxPendingTurnTicks || runtime.PendingLeft > MaxPendingTurnTicks)
+            {
+                runtime.PendingRight = Math.Min(runtime.PendingRight, MaxPendingTurnTicks);
+                runtime.PendingLeft = Math.Min(runtime.PendingLeft, MaxPendingTurnTicks);
+                if (!runtime.BacklogWarned)
+                {
+                    runtime.BacklogWarned = true;
+                    ServiceLog.Warn($"[streamdeck] dial {dialIndex} turn actions are backing up, dropping the oldest serial={serial}");
+                }
+            }
+            queueDrain = !runtime.TurnDrainQueued && runtime.PendingRight + runtime.PendingLeft > 0;
+            runtime.TurnDrainQueued |= queueDrain;
+        }
+        if (queueDrain)
+        {
+            var token = DialToken(serial);
+            QueueDialAction(serial, dialIndex, () => DrainTurnsAsync(serial, dialIndex, runtime, token));
+        }
+    }
+
+    private CancellationToken DialToken(string serial) => DialStateForSerialLocked(serial)?.Cancel.Token ?? CancellationToken.None;
+
+    private async Task DrainTurnsAsync(string serial, int dialIndex, DialRuntime runtime, CancellationToken token)
+    {
+        while (true)
+        {
+            DeckAction? action;
+            int count;
+            bool right;
+            lock (runtime.TurnGate)
+            {
+                if (token.IsCancellationRequested)
+                {
+                    runtime.PendingRight = 0;
+                    runtime.PendingLeft = 0;
+                }
+                right = runtime.PendingRight > 0;
+                count = right ? runtime.PendingRight : runtime.PendingLeft;
+                action = right ? runtime.RightAction : runtime.LeftAction;
+                if (count == 0 || action is null)
+                {
+                    runtime.TurnDrainQueued = false;
+                    runtime.BacklogWarned = false;
+                    runtime.PendingRight = 0;
+                    runtime.PendingLeft = 0;
+                    return;
+                }
+                if (right)
+                {
+                    runtime.PendingRight = 0;
+                }
+                else
+                {
+                    runtime.PendingLeft = 0;
+                }
+            }
+            await ExecuteDialActionAsync(serial, dialIndex, action, right ? "right" : "left", count, token).ConfigureAwait(false);
+        }
+    }
+
+    private async Task ExecuteDialActionAsync(string serial, int dialIndex, DeckAction action, string kind, int repeat, CancellationToken token)
+    {
         var latchKey = $"{serial}:dial{dialIndex}:{kind}";
-        var state = DialStateForSerialLocked(serial);
-        var runtime = state?.Dials[dialIndex];
-        var token = state?.Cancel.Token ?? CancellationToken.None;
-        async Task RunAsync()
+        for (var n = 0; n < repeat && !token.IsCancellationRequested; n++)
         {
             try
             {
-                for (var n = 0; n < repeat && !token.IsCancellationRequested; n++)
-                {
-                    try
-                    {
-                        await _executor.ExecuteAsync(action, serial, -(dialIndex + 1), latchKey, token).ConfigureAwait(false);
-                    }
-                    catch (Exception ex)
-                    {
-                        ServiceLog.Error($"[streamdeck] dial dispatch crashed serial={serial} dial={dialIndex}: {ex.Message}");
-                    }
-                }
+                await _executor.ExecuteAsync(action, serial, -(dialIndex + 1), latchKey, token).ConfigureAwait(false);
             }
-            finally
+            catch (OperationCanceledException) when (token.IsCancellationRequested)
             {
-                if (runtime is not null)
-                {
-                    Interlocked.Decrement(ref runtime.PendingDispatch);
-                }
+                return;
+            }
+            catch (Exception ex)
+            {
+                ServiceLog.Error($"[streamdeck] dial dispatch crashed serial={serial} dial={dialIndex}: {ex.Message}");
             }
         }
+    }
+
+    /// <summary>Appends work to the dial's chain so its actions run in the order they were made, never interleaved.</summary>
+    private void QueueDialAction(string serial, int dialIndex, Func<Task> work)
+    {
+        var runtime = DialStateForSerialLocked(serial)?.Dials[dialIndex];
         if (runtime is null)
         {
-            LastDispatchTask = Task.Run(RunAsync);
+            LastDispatchTask = Task.Run(work);
             return;
         }
-        // One dial's actions run in the order they were turned, never interleaved; a backlog beyond the cap is dropped.
-        if (Interlocked.Increment(ref runtime.PendingDispatch) > MaxPendingDialDispatches)
-        {
-            Interlocked.Decrement(ref runtime.PendingDispatch);
-            ServiceLog.Warn($"[streamdeck] dial {dialIndex} action backlog full, dropping serial={serial}");
-            return;
-        }
-        LastDispatchTask = runtime.Dispatch = runtime.Dispatch.ContinueWith(_ => RunAsync(), TaskScheduler.Default).Unwrap();
+        LastDispatchTask = runtime.Dispatch = runtime.Dispatch.ContinueWith(_ => work(), TaskScheduler.Default).Unwrap();
     }
 
     private DialDeckState? DialStateForSerialLocked(string serial) =>
@@ -1082,7 +1178,8 @@ public sealed partial class StreamDeckConnectionWorker
                     var (r, g, b) = asleep || !frames[i].Bound ? ((byte)0, (byte)0, (byte)0) : Scale(ParseRgb(frames[i].AccentHex), frames[i].Muted ? 0.15 : 1.0);
                     written &= surface.SetCenterLed(i, r, g, b);
                 }
-                if (written)
+                // A refusal while the deck is not ready is retried; a failure on a ready deck is counted once and not retried until the state changes.
+                if (written || surface.IsReady)
                 {
                     state.RingKeys[i] = key;
                 }
@@ -1102,7 +1199,7 @@ public sealed partial class StreamDeckConnectionWorker
                 {
                     continue;
                 }
-                if (surface.FillKey(model.KeyCount + k, color.R, color.G, color.B))
+                if (surface.FillKey(model.KeyCount + k, color.R, color.G, color.B) || surface.IsReady)
                 {
                     state.TouchKeyLights[k] = key;
                 }

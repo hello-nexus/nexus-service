@@ -185,6 +185,19 @@ public sealed class DeckDialValueService : IDeckDialValues
             }
         }
 
+        /// <summary>Marks the target unreadable unless a write landed since the read started.</summary>
+        public void ApplyFailure(DateTimeOffset now, int startedAtVersion)
+        {
+            lock (_gate)
+            {
+                if (_version == startedAtVersion)
+                {
+                    _reading = DialReading.Unsupported;
+                    _readAt = now;
+                }
+            }
+        }
+
         public void Update(Func<DialReading, DialReading> change, DateTimeOffset? writtenAt = null, DateTimeOffset? readAt = null)
         {
             lock (_gate)
@@ -252,15 +265,15 @@ public sealed class DeckDialValueService : IDeckDialValues
 
     private void Refresh(DeckDialAction action, Entry entry)
     {
+        var version = entry.Version;
         try
         {
-            var version = entry.Version;
             entry.ApplyRead(ReadLive(action), _clock.GetUtcNow(), OptimisticFor, version);
         }
         catch (Exception ex)
         {
             ServiceLog.Warn($"[streamdeck] dial read failed ({action.Type}): {ex.Message}");
-            entry.Update(_ => DialReading.Unsupported, readAt: _clock.GetUtcNow());
+            entry.ApplyFailure(_clock.GetUtcNow(), version);
         }
         finally
         {

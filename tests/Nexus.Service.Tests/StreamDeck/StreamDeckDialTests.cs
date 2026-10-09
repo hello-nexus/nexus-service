@@ -322,6 +322,7 @@ public sealed class StreamDeckDialTests : IDisposable
 
         _sim!.PokeRotate(0, 3);
         Drain();
+        WaitForCalls(3);
         _sim.PokeRotate(0, -2);
         Drain();
 
@@ -442,34 +443,79 @@ public sealed class StreamDeckDialTests : IDisposable
             _values.Writes.ToArray());
     }
 
-    [Fact]
-    public async Task CustomTurn_RunsItsRepetitionsInOrderOnOneChain()
+    private const string PushAndTurnDial =
+        "{\"action\":{\"type\":\"custom\",\"turnRight\":{\"type\":\"text\",\"text\":\"r\"},\"turnLeft\":{\"type\":\"text\",\"text\":\"l\"},\"push\":{\"type\":\"text\",\"text\":\"p\"}}}";
+
+    private GateExecutor BuildGated()
     {
-        var order = new List<string>();
-        var gate = new object();
-        var executor = new OrderedExecutor(order, gate);
+        var executor = new GateExecutor();
         _sim = new SimulatedStreamDeckSurface(Plus, Serial);
         var gateDev = new DeviceControlGate(_store);
         gateDev.SetEnabled("streamdeck", true);
         _worker = new StreamDeckConnectionWorker(
             new FakeWorkerHidEnumerator(), new HardwarePresence(new FixedUsbEnumerator()), gateDev, _store, executor,
             NewTestKeyRenderer(), _hub, _sensors, _sim, _clock, dialValues: _values);
-        var config = JsonSerializer.Deserialize(Dials(
-            "{\"action\":{\"type\":\"custom\",\"turnRight\":{\"type\":\"text\",\"text\":\"r\"},\"turnLeft\":{\"type\":\"text\",\"text\":\"l\"}}}"),
-            AppJsonContext.Default.DeckConfig)!;
+        var config = JsonSerializer.Deserialize(Dials(PushAndTurnDial), AppJsonContext.Default.DeckConfig)!;
         _store.Update(s => s.StreamDeck.Decks[Serial] = new PhysicalDeckSettings { LegacyDeck = config });
         _store.Update(s => ActivateLegacyDeck(s, Serial, Plus.Columns, Plus.Rows));
         _worker.Tick();
+        return executor;
+    }
 
-        _sim.PokeRotate(0, 3);
-        _sim.PokeRotate(0, -2);
+    [Fact]
+    public async Task SlowTurnAction_ReverseTurnNetsOutWaitingTicks_AndPushIsNeverDropped()
+    {
+        var executor = BuildGated();
+        _sim!.PokeRotate(0, 1);
         Drain();
-        await _worker.LastDispatchTask!.WaitAsync(TimeSpan.FromSeconds(5));
+        Assert.True(SpinWait.SpinUntil(() => executor.Started >= 1, TimeSpan.FromSeconds(3)));
 
-        lock (gate)
+        _sim.PokeRotate(0, 5);
+        _sim.PokeRotate(0, -3);
+        Drain();
+        Press(0);
+        executor.Release();
+        await _worker!.LastDispatchTask!.WaitAsync(TimeSpan.FromSeconds(5));
+
+        Assert.Equal(new[] { "r", "r", "r", "p" }, executor.Texts.ToArray());
+    }
+
+    [Fact]
+    public async Task SlowTurnAction_WaitingTicksAreBounded_AndThePushStillRuns()
+    {
+        var executor = BuildGated();
+        _sim!.PokeRotate(0, 1);
+        Drain();
+        Assert.True(SpinWait.SpinUntil(() => executor.Started >= 1, TimeSpan.FromSeconds(3)));
+
+        for (var i = 0; i < 6; i++)
         {
-            Assert.Equal(new[] { "r", "r", "r", "l", "l" }, order);
+            _sim.PokeRotate(0, 10);
         }
+        Drain();
+        Press(0);
+        executor.Release();
+        await _worker!.LastDispatchTask!.WaitAsync(TimeSpan.FromSeconds(5));
+
+        var texts = executor.Texts.ToArray();
+        Assert.Equal("p", texts[^1]);
+        Assert.Equal(25, texts.Count(t => t == "r"));
+    }
+
+    private sealed class GateExecutor : IDeckActionExecutor
+    {
+        private readonly TaskCompletionSource _gate = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public readonly System.Collections.Concurrent.ConcurrentQueue<string> Texts = new();
+        public int Started;
+        public void Release() => _gate.TrySetResult();
+        public async Task ExecuteAsync(DeckAction? action, string serial, int keyIndex, string latchKey, CancellationToken ct)
+        {
+            Interlocked.Increment(ref Started);
+            await _gate.Task;
+            Texts.Enqueue(action!.Text!);
+        }
+        public bool IsToggleOn(DeckToggleState? state, string latchKey) => false;
+        public void OpenApp() { }
     }
 
     [Fact]
@@ -508,20 +554,6 @@ public sealed class StreamDeckDialTests : IDisposable
         {
             Interlocked.Increment(ref Started);
             await Task.Delay(Timeout.Infinite, ct);
-        }
-        public bool IsToggleOn(DeckToggleState? state, string latchKey) => false;
-        public void OpenApp() { }
-    }
-
-    private sealed class OrderedExecutor : IDeckActionExecutor
-    {
-        private readonly List<string> _order;
-        private readonly object _gate;
-        public OrderedExecutor(List<string> order, object gate) { _order = order; _gate = gate; }
-        public async Task ExecuteAsync(DeckAction? action, string serial, int keyIndex, string latchKey, CancellationToken ct)
-        {
-            await Task.Yield();
-            lock (_gate) { _order.Add(action!.Text!); }
         }
         public bool IsToggleOn(DeckToggleState? state, string latchKey) => false;
         public void OpenApp() { }

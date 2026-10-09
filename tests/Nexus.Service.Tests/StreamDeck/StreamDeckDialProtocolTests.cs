@@ -480,7 +480,7 @@ public class StreamDeckDialProtocolTests
     public void Galleon_AFailedPingKeepsPinging_UntilTheFailureThresholdDropsTheHandle()
     {
         var (dev, surface) = Connect(Galleon);
-        SpinWait.SpinUntil(() => dev.FeatureWrites.Count(w => w[1] == 0x27) >= 1, TimeSpan.FromSeconds(3));
+        Assert.True(SpinWait.SpinUntil(() => dev.FeatureWrites.Count(w => w[1] == 0x27) >= 1, TimeSpan.FromSeconds(3)));
 
         dev.FailNextFeatureWrite = true;
         var before = dev.FeatureWrites.Count(w => w[1] == 0x27);

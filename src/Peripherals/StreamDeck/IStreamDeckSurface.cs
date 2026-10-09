@@ -15,6 +15,9 @@ public interface IStreamDeckSurface : IDisposable
     string FirmwareVersion { get; }
     bool IsConnected { get; }
 
+    /// <summary>True once the surface accepts commands; a connected surface can be briefly not ready after open.</summary>
+    bool IsReady { get; }
+
     /// <summary>Sets display brightness, 0-100 (clamped).</summary>
     bool SetBrightness(int percent);
 

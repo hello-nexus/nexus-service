@@ -766,6 +766,7 @@ public sealed partial class StreamDeckConnectionWorker : BackgroundService, IDec
     private void ReconcileHidSurfaces()
     {
         var seenPaths = new HashSet<string>();
+        var collectionPaths = new HashSet<string>(StringComparer.Ordinal);
 
         foreach (var model in StreamDeckModels.All)
         {
@@ -780,6 +781,7 @@ public sealed partial class StreamDeckConnectionWorker : BackgroundService, IDec
                     continue;
                 }
                 seenPaths.Add(info.Path);
+                collectionPaths.Add(info.Path);
                 if (_surfaces.TryGetValue(info.Path, out var existing) && existing.IsConnected)
                 {
                     continue;
@@ -812,6 +814,8 @@ public sealed partial class StreamDeckConnectionWorker : BackgroundService, IDec
                 StartInputReader(info.Path, surface);
             }
         }
+
+        _duplicateCollectionsLogged.RemoveWhere(path => !collectionPaths.Contains(path));
 
         foreach (var key in _surfaces.Keys.ToList())
         {

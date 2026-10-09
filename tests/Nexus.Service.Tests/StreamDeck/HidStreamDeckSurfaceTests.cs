@@ -26,6 +26,8 @@ internal sealed class MockStreamDeckHidDevice : IHidDevice
     public ConcurrentQueue<byte[]> PendingReads { get; } = new();
     public Func<byte[], byte[]>? FeatureReplyBuilder { get; set; }
     public bool FailNextFeatureWrite { get; set; }
+    /// <summary>When set and true for a feature report, the write is rejected every time.</summary>
+    public Func<byte[], bool>? RejectFeature { get; set; }
     public bool FailNextOutputWrite { get; set; }
     public bool FailNextRead { get; set; }
     public bool Disposed { get; private set; }
@@ -40,6 +42,7 @@ internal sealed class MockStreamDeckHidDevice : IHidDevice
     public bool SetFeature(ReadOnlySpan<byte> report)
     {
         if (FailNextFeatureWrite) { FailNextFeatureWrite = false; return false; }
+        if (RejectFeature?.Invoke(report.ToArray()) == true) { return false; }
         FeatureWrites.Add(report.ToArray());
         return true;
     }

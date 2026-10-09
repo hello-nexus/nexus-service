@@ -31,6 +31,7 @@ public sealed class SimulatedStreamDeckSurface : IStreamDeckSurface
     public string Serial { get; }
     public string FirmwareVersion => "sim-1.0";
     public bool IsConnected => _connected;
+    public bool IsReady => _connected;
     public int Brightness { get; private set; } = 100;
     public int ResetCount { get; private set; }
     /// <summary>Test hook: total successful SetKeyImage calls, so a test can prove a hash-unchanged push was skipped rather than merely re-rendering the same bytes.</summary>
