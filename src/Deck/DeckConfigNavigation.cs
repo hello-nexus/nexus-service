@@ -187,7 +187,7 @@ public static class DeckConfigNavigation
             foreach (var chunk in ChunkRoot(trimmed, targetKeyCount))
             {
                 var fitted = chunk.Select(slot => FitSlot(slot, kind, targetKeyCount, depth: 0)).ToList();
-                outPages.Add(new DeckPage { Slots = PadTo(fitted, targetKeyCount), Dials = page.Dials });
+                outPages.Add(new DeckPage { Slots = PadTo(fitted, targetKeyCount), Dials = CopyDials(page.Dials) });
             }
         }
         if (outPages.Count == 0)
@@ -196,6 +196,8 @@ public static class DeckConfigNavigation
         }
         return new DeckConfig { Pages = outPages, DefaultTitleStyle = presetDeck.DefaultTitleStyle };
     }
+
+    private static List<DeckDial>? CopyDials(List<DeckDial>? dials) => dials is null ? null : new List<DeckDial>(dials);
 
     /// <summary>Removes trailing slots with no content (SlotHasContent false); interior gaps are kept.</summary>
     private static List<DeckSlot> TrimTrailingEmpty(List<DeckSlot> slots)
@@ -300,7 +302,7 @@ public static class DeckConfigNavigation
             Title = slot.Title,
             Action = slot.Action,
             Auto = slot.Auto,
-            Folder = new DeckFolder { Slots = PadTo(limited, capacity), Dials = slot.Folder.Dials },
+            Folder = new DeckFolder { Slots = PadTo(limited, capacity), Dials = CopyDials(slot.Folder.Dials) },
         };
     }
 

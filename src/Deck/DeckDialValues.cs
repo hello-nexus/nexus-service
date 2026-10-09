@@ -35,6 +35,9 @@ public static class DeckDialTypes
     /// <summary>Types that read and write a 0-100 value through <see cref="IDeckDialValues"/> (deckBrightness is the worker's own).</summary>
     public static bool IsServiceValueType(string type) => IsMuteType(type) || IsZeroToggleType(type);
 
+    /// <summary>Targets whose read is a slow bus transaction (DDC/CI, serial).</summary>
+    public static bool IsSlowType(string type) => type is DisplayBrightness or Y70Brightness;
+
     public static bool IsValueType(string type) => IsServiceValueType(type) || type == DeckBrightness;
 }
 
@@ -119,8 +122,9 @@ internal sealed class LatestValueWriter
 public sealed class DeckDialValueService : IDeckDialValues
 {
     private static readonly TimeSpan RefreshAfter = TimeSpan.FromMilliseconds(800);
+    /// <summary>DDC/CI and the Y70 serial link are read rarely; a write schedules the confirming read.</summary>
+    private static readonly TimeSpan SlowRefreshAfter = TimeSpan.FromSeconds(30);
     private static readonly TimeSpan OptimisticFor = TimeSpan.FromMilliseconds(1500);
-    private static readonly TimeSpan FirstReadWait = TimeSpan.FromMilliseconds(250);
     private static readonly TimeSpan DefaultInputTtl = TimeSpan.FromSeconds(5);
 
     private readonly IVolumeProvider _volume;
@@ -134,14 +138,42 @@ public sealed class DeckDialValueService : IDeckDialValues
 
     private readonly ConcurrentDictionary<string, Entry> _cache = new(StringComparer.Ordinal);
     private readonly ConcurrentDictionary<string, LatestValueWriter> _writers = new(StringComparer.Ordinal);
+    private readonly object _inputLock = new();
     private (string Id, DateTimeOffset At)? _defaultInput;
 
     private sealed class Entry
     {
-        public DialReading Reading;
-        public DateTimeOffset ReadAt;
-        public DateTimeOffset WrittenAt = DateTimeOffset.MinValue;
+        private readonly object _gate = new();
+        private DialReading _reading;
+        private DateTimeOffset _readAt;
+        private DateTimeOffset _writtenAt = DateTimeOffset.MinValue;
         public int Refreshing;
+
+        public Entry(DialReading reading, DateTimeOffset readAt)
+        {
+            _reading = reading;
+            _readAt = readAt;
+        }
+
+        public DialReading Reading
+        {
+            get { lock (_gate) { return _reading; } }
+        }
+
+        public (DateTimeOffset ReadAt, DateTimeOffset WrittenAt) Times
+        {
+            get { lock (_gate) { return (_readAt, _writtenAt); } }
+        }
+
+        public void Update(Func<DialReading, DialReading> change, DateTimeOffset? writtenAt = null, DateTimeOffset? readAt = null)
+        {
+            lock (_gate)
+            {
+                _reading = change(_reading);
+                _writtenAt = writtenAt ?? _writtenAt;
+                _readAt = readAt ?? _readAt;
+            }
+        }
     }
 
     public DeckDialValueService(
@@ -174,39 +206,39 @@ public sealed class DeckDialValueService : IDeckDialValues
         var now = _clock.GetUtcNow();
         if (_cache.TryGetValue(key, out var entry))
         {
-            if (now - entry.WrittenAt > OptimisticFor && now - entry.ReadAt > RefreshAfter
+            var (readAt, writtenAt) = entry.Times;
+            var refreshAfter = DeckDialTypes.IsSlowType(action.Type) ? SlowRefreshAfter : RefreshAfter;
+            if (now - writtenAt > OptimisticFor && now - readAt > refreshAfter
                 && Interlocked.CompareExchange(ref entry.Refreshing, 1, 0) == 0)
             {
-                _ = Task.Run(() => Refresh(key, action, entry));
+                _ = Task.Run(() => Refresh(action, entry));
             }
             return entry.Reading;
         }
 
-        var fresh = new Entry { Reading = DialReading.PendingRead, ReadAt = now, Refreshing = 1 };
+        // The first read never blocks the caller (the input thread holds the worker lock); the next state-key diff repaints.
+        var fresh = new Entry(DialReading.PendingRead, now) { Refreshing = 1 };
         if (!_cache.TryAdd(key, fresh))
         {
             return _cache[key].Reading;
         }
-        var first = Task.Run(() => Refresh(key, action, fresh));
-        return first.Wait(FirstReadWait) ? fresh.Reading : DialReading.PendingRead;
+        _ = Task.Run(() => Refresh(action, fresh));
+        return DialReading.PendingRead;
     }
 
-    private void Refresh(string key, DeckDialAction action, Entry entry)
+    private void Refresh(DeckDialAction action, Entry entry)
     {
         try
         {
             var live = ReadLive(action);
-            if (_clock.GetUtcNow() - entry.WrittenAt > OptimisticFor)
-            {
-                entry.Reading = live;
-            }
-            entry.ReadAt = _clock.GetUtcNow();
+            var now = _clock.GetUtcNow();
+            var written = entry.Times.WrittenAt;
+            entry.Update(current => now - written > OptimisticFor ? live : current, readAt: now);
         }
         catch (Exception ex)
         {
             ServiceLog.Warn($"[streamdeck] dial read failed ({action.Type}): {ex.Message}");
-            entry.Reading = DialReading.Unsupported;
-            entry.ReadAt = _clock.GetUtcNow();
+            entry.Update(_ => DialReading.Unsupported, readAt: _clock.GetUtcNow());
         }
         finally
         {
@@ -261,12 +293,18 @@ public sealed class DeckDialValueService : IDeckDialValues
             return action.DeviceId;
         }
         var now = _clock.GetUtcNow();
-        if (_defaultInput is { } cached && now - cached.At < DefaultInputTtl)
+        lock (_inputLock)
         {
-            return cached.Id;
+            if (_defaultInput is { } cached && now - cached.At < DefaultInputTtl)
+            {
+                return cached.Id;
+            }
         }
         var id = _devices.ListDevices().Inputs.FirstOrDefault(d => d.IsDefault)?.Id ?? "";
-        _defaultInput = (id, now);
+        lock (_inputLock)
+        {
+            _defaultInput = (id, now);
+        }
         return id;
     }
 
@@ -278,9 +316,10 @@ public sealed class DeckDialValueService : IDeckDialValues
         }
         var clamped = Math.Clamp(percent, 0, 100);
         var key = TargetKey(action);
-        var entry = _cache.GetOrAdd(key, _ => new Entry { Reading = new DialReading(true, false, clamped, false) });
-        entry.Reading = entry.Reading with { Supported = true, Pending = false, Percent = clamped };
-        entry.WrittenAt = _clock.GetUtcNow();
+        var now = _clock.GetUtcNow();
+        var entry = _cache.GetOrAdd(key, _ => new Entry(new DialReading(true, false, clamped, false), now));
+        // ReadAt resets so a read confirms the write once the optimistic window ends.
+        entry.Update(r => r with { Supported = true, Pending = false, Percent = clamped }, writtenAt: now, readAt: DateTimeOffset.MinValue);
         _writers.GetOrAdd(key, _ => new LatestValueWriter(value => WriteLiveAsync(action, value))).Submit(clamped);
     }
 
@@ -342,8 +381,7 @@ public sealed class DeckDialValueService : IDeckDialValues
         var key = TargetKey(action);
         if (_cache.TryGetValue(key, out var entry))
         {
-            entry.Reading = entry.Reading with { Muted = muted };
-            entry.WrittenAt = _clock.GetUtcNow();
+            entry.Update(r => r with { Muted = muted }, writtenAt: _clock.GetUtcNow());
         }
         _ = Task.Run(() =>
         {

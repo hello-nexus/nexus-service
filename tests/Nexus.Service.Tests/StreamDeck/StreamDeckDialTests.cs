@@ -420,6 +420,127 @@ public sealed class StreamDeckDialTests : IDisposable
         Assert.Equal(0, _worker.DialStackIndexForTests(Serial, 0));
     }
 
+    [Fact]
+    public void ZeroToggle_RestoresPerStackEntry()
+    {
+        Build(Plus, Dials("{\"stack\":[{\"action\":{\"type\":\"lightingBrightness\"}},{\"action\":{\"type\":\"displayBrightness\",\"displayId\":\"d1\"}}]}"));
+        _values.Set("lightingBrightness:", 40);
+        _values.Set("displayBrightness:d1", 70);
+
+        _sim!.PokeTouch(StreamDeckTouchKind.Tap, 100, 50);
+        Drain();
+        Press(0);
+        _sim.PokeTouch(StreamDeckTouchKind.Tap, 100, 50);
+        Drain();
+        _sim.PokeTouch(StreamDeckTouchKind.Tap, 100, 50);
+        Drain();
+        Press(0);
+        _sim.PokeTouch(StreamDeckTouchKind.Tap, 100, 50);
+        Drain();
+
+        Assert.Equal(new[] { ("lightingBrightness:", 0d), ("displayBrightness:d1", 0d), ("displayBrightness:d1", 70d), ("lightingBrightness:", 40d) },
+            _values.Writes.ToArray());
+    }
+
+    [Fact]
+    public async Task CustomTurn_RunsItsRepetitionsInOrderOnOneChain()
+    {
+        var order = new List<string>();
+        var gate = new object();
+        var executor = new OrderedExecutor(order, gate);
+        _sim = new SimulatedStreamDeckSurface(Plus, Serial);
+        var gateDev = new DeviceControlGate(_store);
+        gateDev.SetEnabled("streamdeck", true);
+        _worker = new StreamDeckConnectionWorker(
+            new FakeWorkerHidEnumerator(), new HardwarePresence(new FixedUsbEnumerator()), gateDev, _store, executor,
+            NewTestKeyRenderer(), _hub, _sensors, _sim, _clock, dialValues: _values);
+        var config = JsonSerializer.Deserialize(Dials(
+            "{\"action\":{\"type\":\"custom\",\"turnRight\":{\"type\":\"text\",\"text\":\"r\"},\"turnLeft\":{\"type\":\"text\",\"text\":\"l\"}}}"),
+            AppJsonContext.Default.DeckConfig)!;
+        _store.Update(s => s.StreamDeck.Decks[Serial] = new PhysicalDeckSettings { LegacyDeck = config });
+        _store.Update(s => ActivateLegacyDeck(s, Serial, Plus.Columns, Plus.Rows));
+        _worker.Tick();
+
+        _sim.PokeRotate(0, 3);
+        _sim.PokeRotate(0, -2);
+        Drain();
+        await _worker.LastDispatchTask!.WaitAsync(TimeSpan.FromSeconds(5));
+
+        lock (gate)
+        {
+            Assert.Equal(new[] { "r", "r", "r", "l", "l" }, order);
+        }
+    }
+
+    private sealed class OrderedExecutor : IDeckActionExecutor
+    {
+        private readonly List<string> _order;
+        private readonly object _gate;
+        public OrderedExecutor(List<string> order, object gate) { _order = order; _gate = gate; }
+        public async Task ExecuteAsync(DeckAction? action, string serial, int keyIndex, string latchKey, CancellationToken ct)
+        {
+            await Task.Yield();
+            lock (_gate) { _order.Add(action!.Text!); }
+        }
+        public bool IsToggleOn(DeckToggleState? state, string latchKey) => false;
+        public void OpenApp() { }
+    }
+
+    [Fact]
+    public void RecentAppsMode_LongTouchDoesNotOpenTheEditor()
+    {
+        Build(Plus, Dials(Volume("a")));
+        _store.Update(s => s.StreamDeck.Instances[DeckInstanceResolver.PhysicalInstanceId(Serial)].Mode = "recentApps");
+        _worker!.RefreshView(Serial);
+
+        _sim!.PokeTouch(StreamDeckTouchKind.Long, 650, 50);
+        Drain();
+
+        Assert.False(_worker.TryGetPendingEdit(out _));
+        Assert.Equal(0, _executor.OpenAppCount);
+    }
+
+    [Fact]
+    public void SameViewRefresh_DoesNotRewriteTheStripOrAddASparklineSample()
+    {
+        Build(Plus, Dials(Volume("a"), "{\"action\":{\"type\":\"deckBrightness\"}}"));
+        _values.Set("volume:a", 30);
+        _worker!.Tick();
+        var writes = _sim!.ScreenRegions.Count;
+
+        _worker.RefreshView(Serial);
+        _worker.RefreshView(Serial);
+
+        Assert.Equal(writes, _sim.ScreenRegions.Count);
+
+        _values.Set("volume:a", 31);
+        _worker.RefreshView(Serial);
+        Assert.Equal(writes + 1, _sim.ScreenRegions.Count);
+        Assert.Equal((0, 0, 200, 100), LastRegion());
+    }
+
+    [Fact]
+    public void MonitoringHistory_IsKeptSeparatePerFolderLevel()
+    {
+        const string mon = "{\"action\":{\"type\":\"monitoring\",\"category\":\"cpu\",\"sensor\":\"cpu/core0\"}}";
+        Build(Plus, "{\"pages\":[{\"slots\":[{\"folder\":{\"slots\":[{}],\"dials\":[" + mon + "]}}],\"dials\":[" + mon + "]}]}");
+        _sensors.CpuSensors = new[] { new Nexus.Service.Models.Sensors.HardwareSensor { Id = "cpu/core0", Name = "Core 0", Type = "Load", Value = 10 } };
+        _worker!.Tick();
+        _worker.Tick();
+        _worker.Tick();
+        var before = _sim!.ScreenRegions.Count;
+
+        _sim.Poke(0, true);
+        _sim.Poke(0, false);
+        Drain();
+        _worker.Tick();
+
+        // Entering the folder starts a fresh history (one sample), not the page dial's three.
+        var folderSegment = _sim.ScreenRegions.Skip(before).Last();
+        var pageSegment = _sim.ScreenRegions.Take(before).Last(r => r.Width == 800);
+        Assert.NotEqual(folderSegment.Bytes.Length, pageSegment.Bytes.Length);
+    }
+
     // ── Touch ──
 
     [Fact]
@@ -557,6 +678,43 @@ public sealed class StreamDeckDialTests : IDisposable
         _sim.Poke(0, false);
         Drain();
         Assert.Contains("0.dial:0", Paths());
+    }
+
+    [Fact]
+    public void Tiles_FirstSubscriberGetsEveryStaticDialSegment_AndUnchangedOnesAreNotResent()
+    {
+        Build(Plus, Dials(Volume("a"), "{\"action\":{\"type\":\"deckBrightness\"}}", "{\"action\":{\"type\":\"page\"}}"));
+        _values.Set("volume:a", 30);
+        _worker!.Tick();
+        var captured = new List<(string Topic, byte[] Payload)>();
+        _hub.OnBroadcastForTest += (topic, payload) => captured.Add((topic, payload.ToArray()));
+
+        using var sub = _hub.AddTestSubscription(PanelTopics.StreamDeckTiles);
+
+        string[] Paths() => captured.Where(c => c.Topic == PanelTopics.StreamDeckTiles)
+            .Select(c => { using var doc = JsonDocument.Parse(c.Payload); return doc.RootElement.GetProperty("d").GetProperty("slotPath").GetString()!; })
+            .ToArray();
+        Assert.Equal(new[] { "dial:0", "dial:1", "dial:2", "dial:3" }, Paths().OrderBy(p => p).ToArray());
+
+        captured.Clear();
+        _worker.Tick();
+        _worker.Tick();
+        Assert.Empty(Paths());
+    }
+
+    [Fact]
+    public void Tiles_NeoInfoTileIsBroadcastToAFirstSubscriber()
+    {
+        Build(Neo, "{\"pages\":[{\"slots\":[]}]}");
+        var captured = new List<(string Topic, byte[] Payload)>();
+        _hub.OnBroadcastForTest += (topic, payload) => captured.Add((topic, payload.ToArray()));
+
+        using var sub = _hub.AddTestSubscription(PanelTopics.StreamDeckTiles);
+
+        var paths = captured.Where(c => c.Topic == PanelTopics.StreamDeckTiles)
+            .Select(c => { using var doc = JsonDocument.Parse(c.Payload); return doc.RootElement.GetProperty("d").GetProperty("slotPath").GetString(); })
+            .ToList();
+        Assert.Contains("info", paths);
     }
 
     // ── Feedback ──

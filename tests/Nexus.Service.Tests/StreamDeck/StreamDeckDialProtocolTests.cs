@@ -89,12 +89,33 @@ public class StreamDeckDialProtocolTests
     [Fact]
     public void Galleon_OnlyAcceptsTheStreamDeckCollectionOnInterfaceZero()
     {
-        HidDeviceInfo Info(int usage, string path) => new() { VendorId = 0x1B1C, ProductId = 0x2b18, Usage = usage, Path = path };
+        HidDeviceInfo Info(int page, int usage, string path) => new() { VendorId = 0x1B1C, ProductId = 0x2b18, UsagePage = page, Usage = usage, Path = path };
 
-        Assert.True(Galleon.AcceptsCollection(Info(0x01, @"\\?\hid#vid_1b1c&pid_2b18&mi_00#7&abc")));
-        Assert.False(Galleon.AcceptsCollection(Info(0x01, @"\\?\hid#vid_1b1c&pid_2b18&mi_02#7&abc")));
-        Assert.False(Galleon.AcceptsCollection(Info(0x06, @"\\?\hid#vid_1b1c&pid_2b18&mi_00#7&abc")));
-        Assert.True(Plus.AcceptsCollection(Info(0x06, "any")));
+        Assert.True(Galleon.AcceptsCollection(Info(0x0C, 0x01, @"\\?\hid#vid_1b1c&pid_2b18&mi_00#7&abc")));
+        Assert.False(Galleon.AcceptsCollection(Info(0x0C, 0x01, @"\\?\hid#vid_1b1c&pid_2b18&mi_02#7&abc")));
+        Assert.False(Galleon.AcceptsCollection(Info(0x01, 0x06, @"\\?\hid#vid_1b1c&pid_2b18&mi_00#7&abc")));
+        Assert.True(Plus.AcceptsCollection(Info(0x01, 0x06, "any")));
+    }
+
+    [Theory]
+    [InlineData("iokit:1000766e2")]
+    [InlineData("/dev/hidraw4")]
+    public void Galleon_OffWindows_NeedsTheStreamDeckUsagePageBecausePathsCarryNoInterface(string path)
+    {
+        HidDeviceInfo Info(int page, int usage) => new() { VendorId = 0x1B1C, ProductId = 0x2b18, UsagePage = page, Usage = usage, Path = path };
+
+        Assert.True(Galleon.AcceptsCollection(Info(0x0C, 0x01)));
+        Assert.False(Galleon.AcceptsCollection(Info(0xFF42, 0x01)));
+        Assert.False(Galleon.AcceptsCollection(Info(0x01, 0x06)));
+        Assert.False(Galleon.AcceptsCollection(Info(0x0C, 0x02)));
+    }
+
+    [Fact]
+    public void ShortDialAndTouchReportsAreIgnored()
+    {
+        Assert.Null(StreamDeckProtocol.DecodeInput(Hex("01 03"), Plus));
+        Assert.Null(StreamDeckProtocol.DecodeInput(Hex("01 03 05 00"), Plus));
+        Assert.Null(StreamDeckProtocol.DecodeInput(Hex("01 02 0e 00 03"), Plus));
     }
 
     // ── Input vectors (bench capture 2026-10-08) ──
@@ -343,11 +364,17 @@ public class StreamDeckDialProtocolTests
     {
         var dev = new MockStreamDeckHidDevice { ProductId = model.ProductId, VendorId = model.VendorId };
         var surface = new HidStreamDeckSurface(new FakeStreamDeckHidEnumerator { DeviceToOpen = dev }, model);
+        using var ready = new ManualResetEventSlim();
+        surface.Ready += ready.Set;
         Assert.True(surface.Connect(new HidDeviceInfo
         {
             VendorId = model.VendorId, ProductId = model.ProductId, Path = "p", Serial = "S1",
             FeatureReportByteLength = featureLen,
         }));
+        if (model.OpenSettleMs > 0)
+        {
+            Assert.True(ready.Wait(TimeSpan.FromSeconds(3)));
+        }
         return (dev, surface);
     }
 
@@ -425,6 +452,46 @@ public class StreamDeckDialProtocolTests
         Assert.True(galleon.SetRing(1, RampRing(4)));
         Assert.Equal(4, galleonDev.FeatureWrites.Count(w => w[1] == 0x24));
         Assert.False(galleon.SetCenterLed(0, 1, 2, 3));
+    }
+
+    [Fact]
+    public void Galleon_RefusesWritesUntilTheSettleDelayHasPassed_WithoutBlockingConnect()
+    {
+        var dev = new MockStreamDeckHidDevice { ProductId = Galleon.ProductId, VendorId = Galleon.VendorId };
+        var surface = new HidStreamDeckSurface(new FakeStreamDeckHidEnumerator { DeviceToOpen = dev }, Galleon);
+        using var ready = new ManualResetEventSlim();
+        surface.Ready += ready.Set;
+
+        var watch = System.Diagnostics.Stopwatch.StartNew();
+        Assert.True(surface.Connect(new HidDeviceInfo { VendorId = Galleon.VendorId, ProductId = Galleon.ProductId, Path = "p", Serial = "S" }));
+        watch.Stop();
+
+        Assert.True(watch.ElapsedMilliseconds < Galleon.OpenSettleMs);
+        Assert.False(surface.SetBrightness(50));
+        Assert.Empty(dev.FeatureWrites);
+        Assert.True(ready.Wait(TimeSpan.FromSeconds(3)));
+        Assert.True(surface.SetBrightness(50));
+        Assert.Contains(dev.FeatureWrites, w => w[1] == 0x05 && w[2] == 0);
+    }
+
+    [Fact]
+    public async Task Galleon_AFailedPingKeepsPinging_UntilTheFailureThresholdDropsTheHandle()
+    {
+        var (dev, surface) = Connect(Galleon);
+        for (var i = 0; i < 100 && dev.FeatureWrites.Count(w => w[1] == 0x27) < 1; i++)
+        {
+            await Task.Delay(20);
+        }
+
+        dev.FailNextFeatureWrite = true;
+        var before = dev.FeatureWrites.Count(w => w[1] == 0x27);
+        for (var i = 0; i < 150 && dev.FeatureWrites.Count(w => w[1] == 0x27) < before + 2; i++)
+        {
+            await Task.Delay(20);
+        }
+
+        Assert.True(dev.FeatureWrites.Count(w => w[1] == 0x27) >= before + 2, "pings continue after one failure");
+        Assert.True(surface.IsConnected);
     }
 
     [Fact]

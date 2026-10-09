@@ -648,6 +648,35 @@ public sealed class StreamDeckRoutesTests : IClassFixture<StreamDeckRouteHostFac
         }
     }
 
+    [Fact]
+    public async Task SimInput_TouchKey_PagesTheNeo()
+    {
+        var (factory, client) = Boot();
+        using (factory)
+        {
+            var summary = await Simulate(client, 0x009a);
+            var serial = summary.GetProperty("serial").GetString()!;
+            var worker = factory.Services.GetRequiredService<StreamDeckConnectionWorker>();
+            factory.Services.GetRequiredService<IConfigStore>().Update(s =>
+            {
+                var preset = s.StreamDeck.Presets.First(p => p.Id == s.StreamDeck.Instances[DeckInstanceResolver.PhysicalInstanceId(serial)].ActivePresetId);
+                preset.Deck.Pages.Add(new DeckPage());
+            });
+
+            foreach (var pressed in new[] { "true", "false" })
+            {
+                var res = await client.PostAsync("/streamdeck/dev/sim-input",
+                    Json($"{{\"serial\":\"{serial}\",\"kind\":\"touchKey\",\"index\":1,\"pressed\":{pressed}}}"));
+                Assert.Contains("\"error\":false", (await res.Content.ReadAsStringAsync()).Replace(" ", ""));
+            }
+            Assert.Equal(1, worker.GetCurrentPage(serial));
+
+            var bad = await client.PostAsync("/streamdeck/dev/sim-input",
+                Json($"{{\"serial\":\"{serial}\",\"kind\":\"touchKey\",\"index\":2,\"pressed\":true}}"));
+            Assert.Contains("\"error\":true", (await bad.Content.ReadAsStringAsync()).Replace(" ", ""));
+        }
+    }
+
     [Theory]
     [InlineData(0x0063, "{\"kind\":\"rotate\",\"index\":0,\"ticks\":1}")]
     [InlineData(0x0084, "{\"kind\":\"rotate\",\"index\":4,\"ticks\":1}")]

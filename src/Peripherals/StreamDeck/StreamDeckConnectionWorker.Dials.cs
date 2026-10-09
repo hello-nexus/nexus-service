@@ -24,6 +24,7 @@ namespace Nexus.Service.Peripherals.StreamDeck;
 public sealed partial class StreamDeckConnectionWorker
 {
     private const int DefaultDialStep = 2;
+    private const int DefaultRestoreLevel = 50;
     /// <summary>Turning a dial while it is held moves this many times the step.</summary>
     private const int HeldStepMultiplier = 5;
     /// <summary>Cap on custom key actions fired by one report; a fast spin reports up to +-10 ticks.</summary>
@@ -48,7 +49,9 @@ public sealed partial class StreamDeckConnectionWorker
         public bool Down;
         public bool TurnedWhileHeld;
         public int StackIndex;
-        public double LastNonZero = 50;
+        /// <summary>Restore value for a zero toggle, per stack entry.</summary>
+        public readonly Dictionary<int, double> LastNonZero = new();
+        public Task Dispatch = Task.CompletedTask;
         public DateTimeOffset FeedbackStartedAt;
         public bool FeedbackActive;
         public int FeedbackStep;
@@ -142,8 +145,20 @@ public sealed partial class StreamDeckConnectionWorker
 
     // ── Input ──
 
-    /// <summary>Routes one decoded report by kind. Caller holds _lock.</summary>
+    /// <summary>Routes one decoded report by kind. A failure is logged and dropped so it cannot tear down the reader thread or leave edge state half-updated. Caller holds _lock.</summary>
     private void DispatchInput(string key, IStreamDeckSurface surface, StreamDeckInput input)
+    {
+        try
+        {
+            DispatchInputCore(key, surface, input);
+        }
+        catch (Exception ex)
+        {
+            ServiceLog.Error($"[streamdeck] input dispatch failed serial={surface.Serial} kind={input.Kind}: {ex.GetType().Name}: {ex.Message}");
+        }
+    }
+
+    private void DispatchInputCore(string key, IStreamDeckSurface surface, StreamDeckInput input)
     {
         switch (input.Kind)
         {
@@ -233,10 +248,7 @@ public sealed partial class StreamDeckConnectionWorker
             case DeckDialTypes.Custom:
             {
                 var run = ticks > 0 ? action.TurnRight : action.TurnLeft;
-                for (var n = 0; n < Math.Min(Math.Abs(ticks), MaxCustomTicksPerReport); n++)
-                {
-                    RunDialKeyAction(surface.Serial, dialIndex, run, ticks > 0 ? "right" : "left");
-                }
+                RunDialKeyAction(surface.Serial, dialIndex, run, ticks > 0 ? "right" : "left", Math.Min(Math.Abs(ticks), MaxCustomTicksPerReport));
                 BeginFeedback(surface, dialIndex, runtime);
                 return;
             }
@@ -261,7 +273,7 @@ public sealed partial class StreamDeckConnectionWorker
         var target = Math.Clamp(reading.Percent + step, 0, 100);
         if (target > 0)
         {
-            runtime.LastNonZero = target;
+            runtime.LastNonZero[runtime.StackIndex] = target;
         }
         _dialValues.Write(action, target);
         BeginFeedback(surface, dialIndex, runtime);
@@ -326,17 +338,17 @@ public sealed partial class StreamDeckConnectionWorker
         }
         if (reading.Percent > 0)
         {
-            runtime.LastNonZero = reading.Percent;
+            runtime.LastNonZero[runtime.StackIndex] = reading.Percent;
             _dialValues.Write(action, 0);
         }
         else
         {
-            _dialValues.Write(action, runtime.LastNonZero > 0 ? runtime.LastNonZero : 50);
+            _dialValues.Write(action, runtime.LastNonZero.TryGetValue(runtime.StackIndex, out var last) && last > 0 ? last : DefaultRestoreLevel);
         }
     }
 
     /// <summary>Runs a custom dial's key action the way a key press would: a page action navigates here, anything else goes to the executor off this thread.</summary>
-    private void RunDialKeyAction(string serial, int dialIndex, DeckAction? action, string kind)
+    private void RunDialKeyAction(string serial, int dialIndex, DeckAction? action, string kind, int repeat = 1)
     {
         if (action is null || string.IsNullOrEmpty(action.Type))
         {
@@ -344,7 +356,10 @@ public sealed partial class StreamDeckConnectionWorker
         }
         if (action.Type == "page")
         {
-            HandlePageAction(serial, LoadConfig(serial), action);
+            for (var n = 0; n < repeat; n++)
+            {
+                HandlePageAction(serial, LoadConfig(serial), action);
+            }
             return;
         }
         if (action.Type == "pageIndicator")
@@ -352,18 +367,29 @@ public sealed partial class StreamDeckConnectionWorker
             return;
         }
         var latchKey = $"{serial}:dial{dialIndex}:{kind}";
-        LastDispatchTask = Task.Run(async () =>
+        async Task RunAsync()
         {
-            try
+            for (var n = 0; n < repeat; n++)
             {
-                await _executor.ExecuteAsync(action, serial, -(dialIndex + 1), latchKey, CancellationToken.None).ConfigureAwait(false);
+                try
+                {
+                    await _executor.ExecuteAsync(action, serial, -(dialIndex + 1), latchKey, CancellationToken.None).ConfigureAwait(false);
+                }
+                catch (Exception ex)
+                {
+                    ServiceLog.Error($"[streamdeck] dial dispatch crashed serial={serial} dial={dialIndex}: {ex.Message}");
+                }
             }
-            catch (Exception ex)
-            {
-                ServiceLog.Error($"[streamdeck] dial dispatch crashed serial={serial} dial={dialIndex}: {ex.Message}");
-            }
-        });
+        }
+        // One dial's actions run in the order they were turned, never interleaved.
+        var runtime = DialStateForSerialLocked(serial)?.Dials[dialIndex];
+        LastDispatchTask = runtime is null
+            ? Task.Run(RunAsync)
+            : runtime.Dispatch = runtime.Dispatch.ContinueWith(_ => RunAsync(), TaskScheduler.Default).Unwrap();
     }
+
+    private DialDeckState? DialStateForSerialLocked(string serial) =>
+        _dialStates.TryGetValue(serial, out var state) ? state : null;
 
     private void ApplyDeckBrightnessLocked(string serial, int percent)
     {
@@ -471,6 +497,10 @@ public sealed partial class StreamDeckConnectionWorker
     private void StartDialEdit(IStreamDeckSurface surface, int dialIndex)
     {
         var serial = surface.Serial;
+        if (IsRecentAppsMode(serial))
+        {
+            return;
+        }
         var page = GetCurrentPageLocked(serial);
         var folderPath = _folderPathsBySerial.TryGetValue(serial, out var fp) ? new List<int>(fp) : new List<int>();
         var now = _clock.GetUtcNow();
@@ -663,19 +693,16 @@ public sealed partial class StreamDeckConnectionWorker
 
     private SensorSnapshotSources? GatherDialMonitoringSources(DeckDial?[] dials, DialDeckState state)
     {
-        List<MonitoringKeyRef>? refs = null;
+        List<string>? categories = null;
         for (var i = 0; i < dials.Length; i++)
         {
             var action = EffectiveDial(dials[i], state.Dials[i])?.Action;
-            if (action is not { Type: DeckDialTypes.Monitoring })
+            if (action is { Type: DeckDialTypes.Monitoring })
             {
-                continue;
+                (categories ??= new List<string>()).Add(action.Category ?? "");
             }
-            refs ??= new List<MonitoringKeyRef>();
-            refs.Add(new MonitoringKeyRef(
-                null!, i, "", new DeckSlot { Action = new DeckAction { Type = "monitoring", Category = action.Category, Sensor = action.Sensor } }, 0, 0, ""));
         }
-        return refs is null ? null : GatherMonitoringSources(refs);
+        return categories is null ? null : GatherMonitoringSources(categories);
     }
 
     private DialFrame BuildDialFrame(
@@ -767,7 +794,8 @@ public sealed partial class StreamDeckConnectionWorker
         DialDeckState state, int page, NexusSettings snapshot, SensorSnapshotSources? sources, bool sampleHistory, string accent)
     {
         var sensor = SensorSnapshotResolver.ResolveOrDefault(_sensors, action.Category ?? "", action.Sensor ?? "", sources ?? default);
-        var historyKey = $"{page}:{index}:{runtime.StackIndex}";
+        var folderPath = _folderPathsBySerial.TryGetValue(surface.Serial, out var fp) ? string.Join('.', fp) : "";
+        var historyKey = $"{page}:{folderPath}:{index}:{runtime.StackIndex}";
         if (!state.History.TryGetValue(historyKey, out var history))
         {
             history = new List<float>(DialHistoryLength);
@@ -847,9 +875,11 @@ public sealed partial class StreamDeckConnectionWorker
             return;
         }
         var state = DialStateLocked(surface);
-        var frames = BuildDialFramesLocked(surface, sampleHistory: true);
-        if (model.Screen is { Kind: not StreamDeckScreenKind.InfoScreen } screen && model.Encoders > 0)
+        var frames = BuildDialFramesLocked(surface, sampleHistory: viewChanged);
+        var hasSegments = model.Screen is { Kind: not StreamDeckScreenKind.InfoScreen } && model.Encoders > 0;
+        if (hasSegments && viewChanged)
         {
+            var screen = model.Screen!;
             using var strip = _strip.RenderStrip(frames.Select(f => f.Input).ToList(), screen.Width, screen.Height);
             surface.SetScreenRegion(0, 0, screen.Width, screen.Height, DeckWireImageEncoder.EncodeScreen(strip, model));
             var segmentWidth = screen.Width / model.Encoders;
@@ -861,7 +891,32 @@ public sealed partial class StreamDeckConnectionWorker
                 BroadcastDialTile(surface, i, tile);
             }
         }
-        PushInfoScreenLocked(surface, state, force: true);
+        else if (hasSegments)
+        {
+            // Same view: write only segments whose content changed; the editor still gets every tile.
+            var watched = _hub.TopicHasSubscribers(Sockets.PanelTopics.StreamDeckTiles);
+            var screen = model.Screen!;
+            var segmentWidth = screen.Width / model.Encoders;
+            for (var i = 0; i < frames.Count; i++)
+            {
+                if (state.Dials[i].FeedbackActive)
+                {
+                    continue;
+                }
+                var key = frames[i].Input.StateKey();
+                if (key != state.SegmentKeys[i])
+                {
+                    state.SegmentKeys[i] = key;
+                    PushDialSegmentLocked(surface, i, frames[i].Input, 0f);
+                }
+                else if (watched)
+                {
+                    using var tile = _strip.RenderSegment(frames[i].Input, segmentWidth, screen.Height);
+                    BroadcastDialTile(surface, i, tile);
+                }
+            }
+        }
+        PushInfoScreenLocked(surface, state, force: viewChanged);
         SyncAuxLightsLocked(surface, frames);
     }
 
@@ -888,14 +943,19 @@ public sealed partial class StreamDeckConnectionWorker
         }
         var input = BuildInfoScreenInput(surface);
         var key = input.StateKey();
-        if (!force && key == state.InfoKey)
+        var changed = force || key != state.InfoKey;
+        var watched = _hub.TopicHasSubscribers(Sockets.PanelTopics.StreamDeckTiles);
+        if (!changed && !watched)
         {
             return;
         }
         state.InfoKey = key;
         using var image = _strip.RenderInfoScreen(input, screen.Width, screen.Height);
-        surface.SetInfoScreen(DeckWireImageEncoder.EncodeScreen(image, surface.Model));
-        if (_hub.TopicHasSubscribers(Sockets.PanelTopics.StreamDeckTiles))
+        if (changed)
+        {
+            surface.SetInfoScreen(DeckWireImageEncoder.EncodeScreen(image, surface.Model));
+        }
+        if (watched)
         {
             BroadcastPreviewTile(surface.Serial, GetCurrentPageLocked(surface.Serial), "info", RenderKit.EncodeJpeg(image));
         }

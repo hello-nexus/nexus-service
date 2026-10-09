@@ -61,9 +61,8 @@ public sealed class InfoScreenInput
 /// <summary>
 /// Draws the dial screens: per-dial segments of a touch strip or Galleon
 /// screen at any segment size, the full strip, and the Neo info screen. Pure
-/// ImageSharp over <see cref="RenderKit"/>; layouts are designed on a 200x100
-/// segment and scaled to fit (the Plus capture's geometry: icon 48 at 16,40;
-/// value 108 wide at 76,40; bar 108x12 at 76,74).
+/// ImageSharp over <see cref="RenderKit"/>; layouts are designed on the Plus
+/// capture's segment geometry (DesignWidth x DesignHeight) and scaled to fit.
 /// </summary>
 public sealed class DeckStripRenderer
 {
@@ -146,7 +145,7 @@ public sealed class DeckStripRenderer
         return strip;
     }
 
-    /// <summary>The Neo 248x58 info screen. Caller disposes.</summary>
+    /// <summary>The Neo info screen. Caller disposes.</summary>
     public Image<Rgba32> RenderInfoScreen(InfoScreenInput input, int width, int height)
     {
         var image = new Image<Rgba32>(width, height);

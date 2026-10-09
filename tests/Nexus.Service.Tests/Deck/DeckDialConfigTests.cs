@@ -93,6 +93,36 @@ public sealed class DeckDialConfigTests
     }
 
     [Fact]
+    public void MalformedFolderDialEntry_BecomesAnEmptyDial_AndNeverFailsTheLoad()
+    {
+        var config = Read(
+            "{\"pages\":[{\"slots\":[{\"folder\":{\"slots\":[],\"dials\":[{\"label\":\"a\"},\"junk\",{\"action\":5},{\"label\":\"d\"}]}}," +
+            "{\"folder\":{\"slots\":[],\"dials\":\"nope\"}}]}]}");
+
+        var dials = config.Pages[0].Slots[0].Folder!.Dials!;
+        Assert.Equal(4, dials.Count);
+        Assert.Equal("a", dials[0].Label);
+        Assert.Null(dials[1].Label);
+        Assert.Null(dials[2].Action);
+        Assert.Equal("d", dials[3].Label);
+        Assert.Null(config.Pages[0].Slots[1].Folder!.Dials);
+    }
+
+    [Fact]
+    public void FitToGrid_GivesEachChunkAndFolderItsOwnDialsList()
+    {
+        var preset = Read("{\"pages\":[{\"slots\":[{\"label\":\"0\"},{\"label\":\"1\"},{\"label\":\"2\"},{\"label\":\"3\"}]," +
+            "\"dials\":[{\"label\":\"d\"}]}]}");
+
+        var fitted = DeckConfigNavigation.FitToGrid(2, 2, preset, 1, 3, DeckTargetKind.Physical);
+
+        Assert.Equal(2, fitted.Pages.Count);
+        Assert.NotSame(fitted.Pages[0].Dials, fitted.Pages[1].Dials);
+        Assert.NotSame(preset.Pages[0].Dials, fitted.Pages[0].Dials);
+        Assert.Equal("d", fitted.Pages[1].Dials![0].Label);
+    }
+
+    [Fact]
     public void FolderDials_RoundTrip_AndAbsentMeansInheritPageDials()
     {
         var config = Read(

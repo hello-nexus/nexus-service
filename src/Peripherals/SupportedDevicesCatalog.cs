@@ -34,7 +34,7 @@ public static class SupportedDevicesCatalog
         Deck("Elgato", "Stream Deck Neo",                  "0x0FD9", "0x009A", Caps("keys", "brightness", "screen")),
         Deck("Elgato", "Stream Deck +",                    "0x0FD9", "0x0084", Caps("keys", "brightness", "screen", "dials")),
         Deck("Elgato", "Stream Deck + XL",                 "0x0FD9", "0x00C6", Caps("keys", "brightness", "screen", "dials")),
-        Deck("Elgato", "Stream Deck Studio",               "0x0FD9", "0x00AA", Caps("keys", "brightness", "dials")),
+        Deck("Elgato", "Stream Deck Studio",               "0x0FD9", "0x00AA", Caps("keys", "brightness", "screen", "dials")),
         Deck("Corsair", "Galleon K100 SD",                 "0x1B1C", "0x2B18", Caps("keys", "brightness", "screen", "dials")),
         Deck("Elgato", "Stream Deck Pedal",                "0x0FD9", "0x0086", Caps("keys")),
     };

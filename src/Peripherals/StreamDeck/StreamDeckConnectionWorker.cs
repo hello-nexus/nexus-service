@@ -338,11 +338,18 @@ public sealed partial class StreamDeckConnectionWorker : BackgroundService, IDec
         lock (_lock)
         {
             _tileBroadcastHash.Clear();
-            // Static keys only broadcast from a view push, so the editor that
-            // just opened needs one; monitoring/weather catch up on their tick.
+            // Static keys and dial segments only broadcast from a view push, so
+            // the editor that just opened needs one; monitoring/weather catch up on their tick.
             foreach (var surface in _surfaces.Values.ToList())
             {
-                PushCurrentView(surface, viewChanged: false);
+                try
+                {
+                    PushCurrentView(surface, viewChanged: false);
+                }
+                catch (Exception ex)
+                {
+                    ServiceLog.Warn($"[streamdeck] tile replay failed serial={surface.Serial}: {ex.Message}");
+                }
             }
         }
     }
@@ -782,6 +789,10 @@ public sealed partial class StreamDeckConnectionWorker : BackgroundService, IDec
                     continue;
                 }
                 _surfaces[info.Path] = surface;
+                if (model.OpenSettleMs > 0)
+                {
+                    surface.Ready += () => OnSurfaceReady(surface);
+                }
                 _lastKeyStates[info.Path] = new bool[model.KeyCount];
                 ServiceLog.Info($"[streamdeck] connected {model.Name} (serial={surface.Serial})");
                 OnSurfaceConnected(surface);
@@ -816,6 +827,23 @@ public sealed partial class StreamDeckConnectionWorker : BackgroundService, IDec
             RemoveAllHoldsForSerial(serial);
             RemoveMonitoringStateForSerial(serial);
             BroadcastDecksChanged(serial);
+        }
+    }
+
+    /// <summary>A surface that waits out an open settle delay accepts commands now: apply brightness and repaint everything the earlier push could not write.</summary>
+    private void OnSurfaceReady(HidStreamDeckSurface surface)
+    {
+        lock (_lock)
+        {
+            if (!_surfaces.ContainsValue(surface) || !surface.IsConnected)
+            {
+                return;
+            }
+            if (!(_asleep.TryGetValue(surface.Serial, out var asleep) && asleep))
+            {
+                ApplyPersistedBrightness(surface);
+            }
+            PushCurrentView(surface, viewChanged: true);
         }
     }
 
@@ -2166,16 +2194,18 @@ public sealed partial class StreamDeckConnectionWorker : BackgroundService, IDec
     /// aggregate, so falling back to a per-adapter reading here would paint a
     /// number the touch tile shows as "--".
     /// </summary>
-    private SensorSnapshotSources GatherMonitoringSources(List<MonitoringKeyRef> keys)
+    private SensorSnapshotSources GatherMonitoringSources(List<MonitoringKeyRef> keys) =>
+        GatherMonitoringSources(keys.Select(k => k.Slot.Action?.Category ?? ""));
+
+    private SensorSnapshotSources GatherMonitoringSources(IEnumerable<string> categories)
     {
         var needExtras = false;
         var needFps = false;
         var needNetwork = false;
         // The only two categories that can hold a fan tach sensor.
         var needFanNames = false;
-        for (var i = 0; i < keys.Count; i++)
+        foreach (var category in categories)
         {
-            var category = keys[i].Slot.Action?.Category ?? "";
             needFanNames |= category is "motherboard" or "gpu";
             if (SensorSnapshotResolver.CategoryUsesExtras(category))
             {

@@ -281,10 +281,8 @@ public static class StreamDeckProtocol
     /// from offset 4 (nonzero = pressed), in hardware order (python
     /// StreamDeckOriginalV2/XL/Neo/Pedal._read_control_states: `states[4:]`;
     /// Rust util::read_button_states catch-all arm: `states[4..]`). No gen2
-    /// model remaps key order. Neo's 2 capacitive touch keys land at report
-    /// offsets model.KeyCount and model.KeyCount+1 per both references, but
-    /// are not decoded here - see StreamDeckModels.cs for why they are not
-    /// wired as bindable keys in this pass.
+    /// model remaps key order. Neo's touch keys follow the LCD keys and are
+    /// decoded separately by <see cref="DecodeGen2TouchKeys"/>.
     /// </summary>
     public static bool[] DecodeGen2Input(ReadOnlySpan<byte> report, StreamDeckModel model)
     {
@@ -583,6 +581,10 @@ public static class StreamDeckProtocol
 
     private static StreamDeckInput? DecodeDials(ReadOnlySpan<byte> report, StreamDeckModel model)
     {
+        if (report.Length <= DialSubtypeOffset)
+        {
+            return null;
+        }
         switch (report[DialSubtypeOffset])
         {
             case 0:

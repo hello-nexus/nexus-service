@@ -76,10 +76,15 @@ public sealed class DeckDialValueServiceTests
     {
         public readonly Dictionary<string, VolumeState> States = new() { [""] = new VolumeState { Supported = true, Volume = 0.4 } };
         public readonly List<(string Device, double Volume)> Sets = new();
+        public Action? BeforeRead;
         public readonly List<(string Device, bool Muted)> Mutes = new();
 
         public VolumeState GetState() => GetState("");
-        public VolumeState GetState(string deviceId) => States.TryGetValue(deviceId, out var s) ? s : new VolumeState { Supported = false };
+        public VolumeState GetState(string deviceId)
+        {
+            BeforeRead?.Invoke();
+            return States.TryGetValue(deviceId, out var s) ? s : new VolumeState { Supported = false };
+        }
         public void SetVolume(double volume) => SetVolume("", volume);
         public void SetVolume(string deviceId, double volume)
         {
@@ -125,7 +130,12 @@ public sealed class DeckDialValueServiceTests
         public readonly List<(string Id, int Percent)> Writes = new();
         public string Hint => "";
         public IReadOnlyList<DisplayDto> Enumerate(IReadOnlyCollection<string>? excludedIds = null) => Array.Empty<DisplayDto>();
-        public int? GetBrightness(string id) => Levels.TryGetValue(id, out var v) ? v : null;
+        public int Reads;
+        public int? GetBrightness(string id)
+        {
+            Interlocked.Increment(ref Reads);
+            return Levels.TryGetValue(id, out var v) ? v : null;
+        }
         public DisplayBrightnessDto SetBrightness(string id, int percent)
         {
             lock (Writes) { Writes.Add((id, percent)); }
@@ -182,6 +192,62 @@ public sealed class DeckDialValueServiceTests
             new() { Type = type, DeviceId = device, AppId = app, DisplayId = display };
 
         public bool WaitFor(Func<bool> condition) => SpinWait.SpinUntil(condition, TimeSpan.FromSeconds(3));
+
+        /// <summary>The first read returns Pending at once; this waits for the background read to land.</summary>
+        public DialReading Read(DeckDialAction action)
+        {
+            var reading = Service.Read(action);
+            for (var i = 0; i < 300 && reading.Pending; i++)
+            {
+                Thread.Yield();
+                SpinWait.SpinUntil(() => false, 5);
+                reading = Service.Read(action);
+            }
+            return reading;
+        }
+    }
+
+    [Fact]
+    public void FirstRead_ReturnsPendingWithoutBlocking_ThenTheLiveValue()
+    {
+        var rig = new Rig();
+        var gate = new ManualResetEventSlim();
+        rig.Volume.BeforeRead = () => gate.Wait(TimeSpan.FromSeconds(5));
+        var action = Rig.Action("volume");
+
+        var watch = System.Diagnostics.Stopwatch.StartNew();
+        var first = rig.Service.Read(action);
+        watch.Stop();
+
+        Assert.True(first.Pending);
+        Assert.True(watch.ElapsedMilliseconds < 1000);
+        gate.Set();
+        Assert.Equal(40, rig.Read(action).Percent, 3);
+    }
+
+    [Fact]
+    public void SlowTargets_AreReadOnceAndConfirmedAfterAWrite_NotEveryTick()
+    {
+        var rig = new Rig();
+        var clock = new ManualTimeProvider(DateTimeOffset.UtcNow);
+        var service = new DeckDialValueService(
+            rig.Volume, rig.Devices, new AudioMixerService(rig.Sessions, rig.Volume, rig.Devices, rig.Store, new MultiplexHub()),
+            new DisplayBrightnessController(rig.Displays), rig.Store, rig.Y70, new MultiplexHub(), clock);
+        var action = Rig.Action("displayBrightness", display: "d1");
+        service.Read(action);
+        Assert.True(rig.WaitFor(() => rig.Displays.Reads >= 1));
+
+        for (var tick = 0; tick < 5; tick++)
+        {
+            clock.Advance(TimeSpan.FromSeconds(1));
+            service.Read(action);
+        }
+        Assert.Equal(1, rig.Displays.Reads);
+
+        service.Write(action, 40);
+        clock.Advance(TimeSpan.FromSeconds(2));
+        service.Read(action);
+        Assert.True(rig.WaitFor(() => rig.Displays.Reads >= 2));
     }
 
     [Fact]
@@ -190,12 +256,12 @@ public sealed class DeckDialValueServiceTests
         var rig = new Rig();
         var action = Rig.Action("volume");
 
-        var reading = rig.Service.Read(action);
+        var reading = rig.Read(action);
         Assert.True(reading.Supported);
         Assert.Equal(40, reading.Percent, 3);
 
         rig.Service.Write(action, 55);
-        Assert.Equal(55, rig.Service.Read(action).Percent);
+        Assert.Equal(55, rig.Read(action).Percent);
         Assert.True(rig.WaitFor(() => { lock (rig.Volume.Sets) { return rig.Volume.Sets.Count > 0; } }));
         Assert.Equal(("", 0.55), rig.Volume.Sets.Last());
     }
@@ -207,14 +273,14 @@ public sealed class DeckDialValueServiceTests
         rig.Volume.States["out-b"] = new VolumeState { Supported = true, Volume = 0.9, Muted = true };
         var action = Rig.Action("volume", device: "out-b");
 
-        var reading = rig.Service.Read(action);
+        var reading = rig.Read(action);
         Assert.Equal(90, reading.Percent, 3);
         Assert.True(reading.Muted);
 
         rig.Service.SetMuted(action, false);
         Assert.True(rig.WaitFor(() => { lock (rig.Volume.Mutes) { return rig.Volume.Mutes.Count > 0; } }));
         Assert.Equal(("out-b", false), rig.Volume.Mutes.Single());
-        Assert.False(rig.Service.Read(action).Muted);
+        Assert.False(rig.Read(action).Muted);
     }
 
     [Fact]
@@ -222,7 +288,7 @@ public sealed class DeckDialValueServiceTests
     {
         var rig = new Rig();
 
-        Assert.False(rig.Service.Read(Rig.Action("volume", device: "gone")).Supported);
+        Assert.False(rig.Read(Rig.Action("volume", device: "gone")).Supported);
     }
 
     [Fact]
@@ -231,7 +297,7 @@ public sealed class DeckDialValueServiceTests
         var rig = new Rig();
         rig.Volume.States["mic-default"] = new VolumeState { Supported = true, Volume = 0.25 };
 
-        var reading = rig.Service.Read(Rig.Action("micVolume"));
+        var reading = rig.Read(Rig.Action("micVolume"));
 
         if (OperatingSystem.IsWindows())
         {
@@ -252,7 +318,7 @@ public sealed class DeckDialValueServiceTests
         rig.Sessions.Sessions.Add(new AudioSessionDto { Id = "spotify", Name = "Spotify", Volume = 0.6, Muted = false, Active = true });
         var action = Rig.Action("appVolume", app: "spotify");
 
-        Assert.Equal(60, rig.Service.Read(action).Percent, 3);
+        Assert.Equal(60, rig.Read(action).Percent, 3);
         rig.Service.Write(action, 20);
         Assert.True(rig.WaitFor(() => rig.Sessions.VolumeWrites.Count > 0));
         Assert.Equal(("spotify", 0.2), rig.Sessions.VolumeWrites.Last());
@@ -267,7 +333,7 @@ public sealed class DeckDialValueServiceTests
     {
         var rig = new Rig();
 
-        Assert.False(rig.Service.Read(Rig.Action("appVolume", app: "nope")).Supported);
+        Assert.False(rig.Read(Rig.Action("appVolume", app: "nope")).Supported);
     }
 
     [Fact]
@@ -276,12 +342,12 @@ public sealed class DeckDialValueServiceTests
         var rig = new Rig();
         var action = Rig.Action("displayBrightness", display: "d1");
 
-        Assert.Equal(70, rig.Service.Read(action).Percent);
+        Assert.Equal(70, rig.Read(action).Percent);
         rig.Service.Write(action, 35.4);
 
         Assert.True(rig.WaitFor(() => { lock (rig.Displays.Writes) { return rig.Displays.Writes.Count > 0; } }));
         Assert.Equal(("d1", 35), rig.Displays.Writes.Last());
-        Assert.False(rig.Service.Read(Rig.Action("displayBrightness", display: "gone")).Supported);
+        Assert.False(rig.Read(Rig.Action("displayBrightness", display: "gone")).Supported);
     }
 
     [Fact]
@@ -291,7 +357,7 @@ public sealed class DeckDialValueServiceTests
         rig.Store.Update(s => s.Lighting.GlobalBrightness = 0.5f);
         var action = Rig.Action("lightingBrightness");
 
-        Assert.Equal(50, rig.Service.Read(action).Percent, 3);
+        Assert.Equal(50, rig.Read(action).Percent, 3);
         rig.Service.Write(action, 80);
 
         Assert.True(rig.WaitFor(() => Math.Abs(rig.Store.Load().Lighting.GlobalBrightness - 0.8f) < 0.001f));
@@ -303,13 +369,15 @@ public sealed class DeckDialValueServiceTests
         var rig = new Rig();
         var action = Rig.Action("y70Brightness");
 
-        Assert.Equal(30, rig.Service.Read(action).Percent);
+        Assert.Equal(30, rig.Read(action).Percent);
         rig.Service.Write(action, 64);
         Assert.True(rig.WaitFor(() => rig.Y70.Brightness == 64));
 
         rig.Y70.Connected = false;
-        Assert.False(new DeckDialValueService(rig.Volume, rig.Devices, new AudioMixerService(rig.Sessions, rig.Volume, rig.Devices, rig.Store, new MultiplexHub()),
-            new DisplayBrightnessController(rig.Displays), rig.Store, rig.Y70, new MultiplexHub()).Read(action).Supported);
+        var fresh = new DeckDialValueService(rig.Volume, rig.Devices, new AudioMixerService(rig.Sessions, rig.Volume, rig.Devices, rig.Store, new MultiplexHub()),
+            new DisplayBrightnessController(rig.Displays), rig.Store, rig.Y70, new MultiplexHub());
+        Assert.True(rig.WaitFor(() => !fresh.Read(action).Pending));
+        Assert.False(fresh.Read(action).Supported);
     }
 
     [Fact]
@@ -317,8 +385,8 @@ public sealed class DeckDialValueServiceTests
     {
         var rig = new Rig();
 
-        Assert.False(rig.Service.Read(Rig.Action("page")).Supported);
-        Assert.False(rig.Service.Read(Rig.Action("deckBrightness")).Supported);
+        Assert.False(rig.Read(Rig.Action("page")).Supported);
+        Assert.False(rig.Read(Rig.Action("deckBrightness")).Supported);
         rig.Service.Write(Rig.Action("custom"), 10);
         rig.Service.SetMuted(Rig.Action("displayBrightness", display: "d1"), true);
         Assert.Empty(rig.Volume.Sets);
@@ -328,11 +396,11 @@ public sealed class DeckDialValueServiceTests
     public void TwoDialsOnOneTarget_ShareTheOptimisticValue()
     {
         var rig = new Rig();
-        rig.Service.Read(Rig.Action("volume"));
+        rig.Read(Rig.Action("volume"));
 
         rig.Service.Write(Rig.Action("volume"), 77);
 
-        Assert.Equal(77, rig.Service.Read(Rig.Action("volume")).Percent);
+        Assert.Equal(77, rig.Read(Rig.Action("volume")).Percent);
     }
 
     [Fact]

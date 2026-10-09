@@ -386,6 +386,9 @@ public static class StreamDeckRoutes
             case "rotate" when dial >= 0 && dial < model.Encoders && body.Ticks is { } ticks and not 0:
                 sim.PokeRotate(dial, ticks);
                 return true;
+            case "touchKey" when body.Index is { } key && key >= 0 && key < model.TouchKeys && body.Pressed is { } pressed:
+                sim.PokeTouchKey(key, pressed);
+                return true;
             case "dialDown" when dial >= 0 && dial < model.Encoders:
                 sim.PokeDialPress(dial, true);
                 return true;

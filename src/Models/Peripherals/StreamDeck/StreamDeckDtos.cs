@@ -23,7 +23,7 @@ public sealed class StreamDeckSummaryDto
     public string Format { get; set; } = "";
     /// <summary>"none" | "flipBoth" | "mirrorXRot90" | "rot90Ccw" - see StreamDeckModel.Transform.</summary>
     public string Transform { get; set; } = "";
-    /// <summary>Dial count: 0, 2, 4 or 6.</summary>
+    /// <summary>Dial count; 0 without dials.</summary>
     public int Encoders { get; set; }
     /// <summary>"below" | "above" | "sides"; always serialized, null on a model without dials.</summary>
     [JsonIgnore(Condition = JsonIgnoreCondition.Never)]
@@ -33,7 +33,7 @@ public sealed class StreamDeckSummaryDto
     public StreamDeckScreenDto? Screen { get; set; }
     /// <summary>Capacitive touch keys after the LCD keys (Neo).</summary>
     public int TouchKeys { get; set; }
-    /// <summary>LEDs per dial ring (Studio 24, Galleon 4); 0 without rings.</summary>
+    /// <summary>LEDs per dial ring; 0 without rings.</summary>
     public int EncoderRingLeds { get; set; }
     /// <summary>Key bitmap size; KeyPixels stays the smaller edge.</summary>
     public int KeyWidth { get; set; }
@@ -157,9 +157,9 @@ public sealed class StreamDeckSimPressBody
 
 /// <summary>
 /// POST /streamdeck/dev/sim-input body. Kind: rotate | dialDown | dialUp |
-/// tap | longTouch | swipe. Index is the dial for rotate/dialDown/dialUp;
-/// Ticks is signed (positive clockwise); X/Y is the touch point and X2/Y2 the
-/// swipe end.
+/// tap | longTouch | swipe | touchKey. Index is the dial for rotate/dialDown/
+/// dialUp and the touch key for touchKey (with Pressed); Ticks is signed
+/// (positive clockwise); X/Y is the touch point and X2/Y2 the swipe end.
 /// </summary>
 public sealed class StreamDeckSimInputBody
 {
@@ -167,6 +167,7 @@ public sealed class StreamDeckSimInputBody
     public string Kind { get; set; } = "";
     public int? Index { get; set; }
     public int? Ticks { get; set; }
+    public bool? Pressed { get; set; }
     public int? X { get; set; }
     public int? Y { get; set; }
     public int? X2 { get; set; }

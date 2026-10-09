@@ -68,30 +68,9 @@ public sealed class DeckConfigConverter : JsonConverter<DeckConfig>
         }
         if (pageEl.TryGetProperty("dials", out var dialsEl) && dialsEl.ValueKind == JsonValueKind.Array)
         {
-            page.Dials = ReadDials(dialsEl, options);
+            page.Dials = DeckDialListConverter.ReadList(dialsEl, options);
         }
         return page;
-    }
-
-    // Dials are positional, so a malformed entry becomes an empty dial rather
-    // than shifting its neighbours or failing the whole settings load.
-    private static List<DeckDial> ReadDials(JsonElement dialsEl, JsonSerializerOptions options)
-    {
-        var dials = new List<DeckDial>();
-        foreach (var dialEl in dialsEl.EnumerateArray())
-        {
-            try
-            {
-                dials.Add(dialEl.ValueKind == JsonValueKind.Object
-                    ? dialEl.Deserialize(GetTypeInfo<DeckDial>(options)) ?? new DeckDial()
-                    : new DeckDial());
-            }
-            catch (JsonException)
-            {
-                dials.Add(new DeckDial());
-            }
-        }
-        return dials;
     }
 
     public override void Write(Utf8JsonWriter writer, DeckConfig value, JsonSerializerOptions options)

@@ -52,7 +52,7 @@ public sealed class StreamDeckExpandedHidWorkerTests : IDisposable
         hid.Infos.Add(new HidDeviceInfo
         {
             VendorId = model.VendorId, ProductId = model.ProductId, Path = path, Serial = serial,
-            UsagePage = 0xFF00, Usage = model.HidUsage == 0 ? 0x01 : model.HidUsage, FeatureReportByteLength = 32,
+            UsagePage = model.HidUsagePage == 0 ? 0xFF00 : model.HidUsagePage, Usage = model.HidUsage == 0 ? 0x01 : model.HidUsage, FeatureReportByteLength = 32,
         });
         hid.Devices[path] = device;
         var gate = new DeviceControlGate(_store);
@@ -125,7 +125,8 @@ public sealed class StreamDeckExpandedHidWorkerTests : IDisposable
     {
         var galleon = StreamDeckModels.ByProductId(0x2b18)!;
         var device = new MockStreamDeckHidDevice { ProductId = galleon.ProductId, VendorId = galleon.VendorId };
-        var (worker, hid) = Build(galleon, @"\\?\hid#vid_1b1c&pid_2b18&mi_00#a", "GAL1", device, Usb(galleon));
+        var (worker, hid) = Build(galleon, @"\\?\hid#vid_1b1c&pid_2b18&mi_00#a", "GAL1", device, Usb(galleon),
+            "{\"pages\":[{\"slots\":[],\"dials\":[{\"action\":{\"type\":\"deckBrightness\"}}]}]}");
         hid.Infos.Add(new HidDeviceInfo { VendorId = galleon.VendorId, ProductId = galleon.ProductId, Path = @"\\?\hid#vid_1b1c&pid_2b18&mi_01#b", Usage = 0x06, UsagePage = 0x01 });
         hid.Infos.Add(new HidDeviceInfo { VendorId = galleon.VendorId, ProductId = galleon.ProductId, Path = @"\\?\hid#vid_1b1c&pid_2b18&mi_02#c", Usage = 0x01, UsagePage = 0xFF42 });
 
@@ -137,6 +138,9 @@ public sealed class StreamDeckExpandedHidWorkerTests : IDisposable
             Assert.All(hid.OpenedPaths, p => Assert.Equal(@"\\?\hid#vid_1b1c&pid_2b18&mi_00#a", p));
         }
         Assert.True(SpinWait.SpinUntil(() => device.FeatureWrites.Count(w => w[1] == 0x27) >= 1, TimeSpan.FromSeconds(3)));
+        // Commands sent before the settle delay were refused, so the view is repainted once the deck is ready.
+        Assert.True(SpinWait.SpinUntil(() => device.OutputWrites.Any(w => w[1] == 0x0c), TimeSpan.FromSeconds(3)));
+        Assert.True(SpinWait.SpinUntil(() => device.OutputWrites.Any(w => w[1] == 0x07), TimeSpan.FromSeconds(3)));
     }
 
     [Fact]
@@ -176,4 +180,22 @@ public sealed class StreamDeckExpandedHidWorkerTests : IDisposable
         Assert.Contains(device.FeatureWrites, w => w[1] == 0x06 && w[2] == 8 && w[3] == 0 && w[4] == 0 && w[5] == 0);
         Assert.Contains(device.FeatureWrites, w => w[1] == 0x06 && w[2] == 9 && w[3] == 0 && w[4] == 0 && w[5] == 0);
     }
+
+#if DEV_TOOLS
+    [Fact]
+    public void InjectReport_DispatchesADecodedReportForARealDeck_AndRejectsGarbage()
+    {
+        var plus = StreamDeckModels.ByProductId(0x0084)!;
+        var device = new MockStreamDeckHidDevice { ProductId = plus.ProductId };
+        var (worker, _) = Build(plus, "plus-path", "PLUS1", device, Usb(plus),
+            "{\"pages\":[{\"slots\":[],\"dials\":[{},{},{\"action\":{\"type\":\"volume\",\"deviceId\":\"out\"}}]}]}");
+        _values.Set("volume:out", 50);
+        worker.Tick();
+
+        Assert.True(worker.InjectReport("PLUS1", new byte[] { 0x01, 0x03, 0x05, 0x00, 0x01, 0x00, 0x00, 0x01, 0x00 }));
+        Assert.Equal(("volume:out", 52d), _values.Writes.Single());
+        Assert.False(worker.InjectReport("PLUS1", new byte[] { 0x01, 0x09, 0x00, 0x00 }));
+        Assert.False(worker.InjectReport("NOPE", new byte[] { 0x01, 0x03, 0x05, 0x00, 0x01, 0x00, 0x00, 0x01, 0x00 }));
+    }
+#endif
 }

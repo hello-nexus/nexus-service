@@ -203,6 +203,7 @@ public sealed class DeckFolder
 {
     public List<DeckSlot> Slots { get; set; } = new();
     /// <summary>Dials shown while inside this folder; null keeps the page's dials.</summary>
+    [JsonConverter(typeof(DeckDialListConverter))]
     public List<DeckDial>? Dials { get; set; }
 }
 
@@ -211,6 +212,7 @@ public sealed class DeckPage
 {
     public List<DeckSlot> Slots { get; set; } = new();
     /// <summary>Dial i of the deck's encoders; null or short lists leave the remaining dials empty.</summary>
+    [JsonConverter(typeof(DeckDialListConverter))]
     public List<DeckDial>? Dials { get; set; }
 }
 
@@ -241,7 +243,7 @@ public sealed class DeckDialAction
 
     /// <summary>volume / micVolume: endpoint id; unset is the default device.</summary>
     public string? DeviceId { get; set; }
-    /// <summary>Percent points per tick; unset is 2. Fractions are tolerated on read.</summary>
+    /// <summary>Percent points per tick; unset uses the worker default. Fractions are tolerated on read.</summary>
     public double? Step { get; set; }
     /// <summary>appVolume: AudioMixerService session id.</summary>
     public string? AppId { get; set; }

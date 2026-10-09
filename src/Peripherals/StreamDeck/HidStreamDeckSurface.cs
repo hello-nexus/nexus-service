@@ -28,11 +28,19 @@ public sealed class HidStreamDeckSurface : IStreamDeckSurface
     private int _consecutiveWriteFailures;
     private int _featureReportLength = StreamDeckProtocol.FeatureReportBufferLength;
     private Timer? _keepAlive;
+    private Timer? _settle;
+    private bool _ready;
+
+    /// <summary>Raised on a timer thread once a model with an open settle delay accepts commands; never raised for models without one.</summary>
+    public event Action? Ready;
 
     public StreamDeckModel Model { get; }
     public string Serial { get; private set; } = "";
     public string FirmwareVersion { get; private set; } = "";
     public bool IsConnected => _device is not null;
+
+    [System.Diagnostics.CodeAnalysis.MemberNotNullWhen(false, nameof(_device))]
+    private bool Unavailable => _device is null || !_ready;
 
     public HidStreamDeckSurface(IHidEnumerator hid, StreamDeckModel model)
     {
@@ -67,25 +75,52 @@ public sealed class HidStreamDeckSurface : IStreamDeckSurface
             }
             if (Model.OpenSettleMs > 0)
             {
-                // The Galleon ignores commands sent right after open (node-elgato-stream-deck waits 200 ms).
-                Thread.Sleep(Model.OpenSettleMs);
+                // The Galleon ignores commands right after open (node-elgato-stream-deck waits for it); writes are refused until the timer fires.
+                _ready = false;
+                _settle = new Timer(_ => FinishOpen(), null, Model.OpenSettleMs, Timeout.Infinite);
             }
-            ReadFirmwareVersionLocked();
-            if (Model.HasExpandedInput)
+            else
             {
-                // Elgato's init: black fill, then firmware sleep off (bench capture 2026-10-08).
-                _device.SetFeature(StreamDeckProtocol.BuildGen2FillScreenFeature(0, 0, 0, _featureReportLength));
-                _device.SetFeature(StreamDeckProtocol.BuildGen2SleepDurationFeature(0, _featureReportLength));
+                _ready = true;
+                InitLocked();
             }
-            StartKeepAliveLocked();
             return true;
         }
+    }
+
+    // Elgato's init: firmware read, black fill, firmware sleep off (bench capture 2026-10-08).
+    private void InitLocked()
+    {
+        ReadFirmwareVersionLocked();
+        if (Model.HasExpandedInput)
+        {
+            _device!.SetFeature(StreamDeckProtocol.BuildGen2FillScreenFeature(0, 0, 0, _featureReportLength));
+            _device.SetFeature(StreamDeckProtocol.BuildGen2SleepDurationFeature(0, _featureReportLength));
+        }
+        StartKeepAliveLocked();
+    }
+
+    private void FinishOpen()
+    {
+        lock (_io)
+        {
+            if (_device is null)
+            {
+                return;
+            }
+            _ready = true;
+            InitLocked();
+        }
+        Ready?.Invoke();
     }
 
     public void Disconnect()
     {
         lock (_io)
         {
+            _settle?.Dispose();
+            _settle = null;
+            _ready = false;
             StopKeepAliveLocked();
             try { _device?.Dispose(); } catch { /* best effort */ }
             _device = null;
@@ -119,8 +154,7 @@ public sealed class HidStreamDeckSurface : IStreamDeckSurface
             }
             if (!_device.SetFeature(StreamDeckProtocol.BuildGalleonKeepAliveFeature(_featureReportLength)))
             {
-                // node stops pinging on the first error; the write-failure path drops the handle.
-                StopKeepAliveLocked();
+                // A silent keep-alive drops the Galleon back to keyboard mode, so keep pinging; the failure threshold drops the handle and a reconnect restarts the timer.
                 RecordWriteFailureLocked("keep-alive");
             }
         }
@@ -134,7 +168,7 @@ public sealed class HidStreamDeckSurface : IStreamDeckSurface
             // StreamDeckPedal.set_brightness is a no-op) - ImageFormat.None
             // is unique to it among the button-only catalog, so it also
             // serves as the "does this deck have a screen" check.
-            if (_device is null || Model.ImageFormat == StreamDeckImageFormat.None)
+            if (Unavailable || Model.ImageFormat == StreamDeckImageFormat.None)
             {
                 return false;
             }
@@ -154,7 +188,7 @@ public sealed class HidStreamDeckSurface : IStreamDeckSurface
     {
         lock (_io)
         {
-            if (_device is null || Model.ImageFormat == StreamDeckImageFormat.None)
+            if (Unavailable || Model.ImageFormat == StreamDeckImageFormat.None)
             {
                 return false;
             }
@@ -174,7 +208,7 @@ public sealed class HidStreamDeckSurface : IStreamDeckSurface
     {
         lock (_io)
         {
-            if (_device is null || Model.ImageFormat == StreamDeckImageFormat.None
+            if (Unavailable || Model.ImageFormat == StreamDeckImageFormat.None
                 || keyIndex < 0 || keyIndex >= Model.KeyCount
                 || !Model.IsValidWireImageLength(wireBytes.Length))
             {
@@ -227,7 +261,7 @@ public sealed class HidStreamDeckSurface : IStreamDeckSurface
         lock (_io)
         {
             var screen = Model.Screen;
-            if (_device is null || screen is null || wireBytes.IsEmpty
+            if (Unavailable || screen is null || wireBytes.IsEmpty
                 || x < 0 || y < 0 || width <= 0 || height <= 0
                 || x + width > screen.Width || y + height > screen.Height)
             {
@@ -241,7 +275,7 @@ public sealed class HidStreamDeckSurface : IStreamDeckSurface
     {
         lock (_io)
         {
-            if (_device is null || Model.Screen?.Kind != StreamDeckScreenKind.InfoScreen || wireBytes.IsEmpty)
+            if (Unavailable || Model.Screen?.Kind != StreamDeckScreenKind.InfoScreen || wireBytes.IsEmpty)
             {
                 return false;
             }
@@ -264,7 +298,7 @@ public sealed class HidStreamDeckSurface : IStreamDeckSurface
     {
         lock (_io)
         {
-            if (_device is null || dial < 0 || dial >= Model.Encoders || rgbTriplets.Length < Model.EncoderRingLeds * 3)
+            if (Unavailable || dial < 0 || dial >= Model.Encoders || rgbTriplets.Length < Model.EncoderRingLeds * 3)
             {
                 return false;
             }
@@ -292,7 +326,7 @@ public sealed class HidStreamDeckSurface : IStreamDeckSurface
     {
         lock (_io)
         {
-            if (_device is null || Model.RingKind != StreamDeckRingKind.StudioReport || dial < 0 || dial >= Model.Encoders)
+            if (Unavailable || Model.RingKind != StreamDeckRingKind.StudioReport || dial < 0 || dial >= Model.Encoders)
             {
                 return false;
             }
@@ -304,7 +338,7 @@ public sealed class HidStreamDeckSurface : IStreamDeckSurface
     {
         lock (_io)
         {
-            if (_device is null || !supported)
+            if (Unavailable || !supported)
             {
                 return false;
             }

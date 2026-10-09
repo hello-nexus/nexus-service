@@ -65,6 +65,9 @@ public sealed class StreamDeckModel
     /// <summary>Required HID usage of the collection to open; 0 matches any collection.</summary>
     public int HidUsage { get; private init; }
 
+    /// <summary>Required HID usage page of the collection to open; 0 matches any page.</summary>
+    public int HidUsagePage { get; private init; }
+
     /// <summary>Interval of the 0x03 0x27 keep-alive feature report; 0 sends none (Galleon).</summary>
     public int KeepAliveIntervalMs { get; private init; }
 
@@ -73,8 +76,8 @@ public sealed class StreamDeckModel
 
     /// <summary>
     /// How many LEDs a dial's ring colour list is rotated by before it hits
-    /// the wire: Studio's second ring is mounted 12 LEDs round, Galleon's
-    /// rings start 3 and 1 LEDs in (node-elgato-stream-deck ledRingOffset).
+    /// the wire, per the ring's physical start point (node-elgato-stream-deck
+    /// ledRingOffset).
     /// </summary>
     public int RingColorOffset(int dial) => RingKind switch
     {
@@ -85,8 +88,10 @@ public sealed class StreamDeckModel
 
     /// <summary>
     /// Whether a HID collection is the Stream Deck interface for this model.
-    /// Galleon shares a VID/PID across its keyboard collections, so only the
-    /// Stream Deck usage on interface 0 (Windows paths carry mi_NN) opens.
+    /// Galleon shares a VID/PID across its keyboard and vendor collections, so
+    /// it must match the Stream Deck usage and usage page, and on Windows
+    /// (paths carry mi_NN) interface 0. Off Windows the enumerators expose no
+    /// interface number, so the usage page is the discriminator.
     /// </summary>
     public bool AcceptsCollection(Hid.HidDeviceInfo info)
     {
@@ -94,7 +99,7 @@ public sealed class StreamDeckModel
         {
             return true;
         }
-        if (info.Usage != HidUsage)
+        if (info.Usage != HidUsage || HidUsagePage != 0 && info.UsagePage != HidUsagePage)
         {
             return false;
         }
@@ -247,7 +252,7 @@ public sealed class StreamDeckModel
         int keyWidth = 0, int encoders = 0, StreamDeckDialPlacement dialPlacement = StreamDeckDialPlacement.None,
         StreamDeckScreen? screen = null, string screenTransform = "none", int touchKeys = 0,
         int ringLeds = 0, StreamDeckRingKind ringKind = StreamDeckRingKind.None,
-        int vendorId = StreamDeckModels.VendorId, int hidUsage = 0, int keepAliveIntervalMs = 0,
+        int vendorId = StreamDeckModels.VendorId, int hidUsage = 0, int hidUsagePage = 0, int keepAliveIntervalMs = 0,
         int openSettleMs = 0) => new(
         name, productId, keyCount, rows, columns, keyPixelSize,
         StreamDeckImageFormat.Jpeg, rotation, mirror,
@@ -263,6 +268,7 @@ public sealed class StreamDeckModel
         RingKind = ringKind,
         ScreenTransform = screenTransform,
         HidUsage = hidUsage,
+        HidUsagePage = hidUsagePage,
         KeepAliveIntervalMs = keepAliveIntervalMs,
         OpenSettleMs = openSettleMs,
     };
@@ -332,7 +338,7 @@ public static class StreamDeckModels
             encoders: 2, dialPlacement: StreamDeckDialPlacement.Above,
             screen: new StreamDeckScreen(720, 384, StreamDeckScreenKind.DialScreen),
             ringLeds: 4, ringKind: StreamDeckRingKind.GalleonFeature,
-            vendorId: StreamDeckModels.CorsairVendorId, hidUsage: 0x01,
+            vendorId: StreamDeckModels.CorsairVendorId, hidUsage: 0x01, hidUsagePage: 0x0C,
             keepAliveIntervalMs: 500, openSettleMs: 200),
 
         // Input-only: no key screens, buttons drive input dispatch only.
