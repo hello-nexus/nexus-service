@@ -220,12 +220,13 @@
 
   <!-- Skia (MIT) for every host-rendered device bitmap: deck keys, dial strips,
        monitoring/weather tiles, SL-LCD frames, image decode and PNG. Native
-       libSkiaSharp ships beside the binary per RID; Linux takes the
-       NoDependencies build (no fontconfig). JPEG goes through libjpeg-turbo
-       below, Skia's encoder is only its fallback. -->
+       libSkiaSharp ships beside the binary per RID. Linux takes the fontconfig
+       build: the NoDependencies one finds no system font, so every label draws
+       empty. JPEG goes through libjpeg-turbo below, Skia's encoder is only its
+       fallback. -->
   <ItemGroup>
     <PackageReference Include="SkiaSharp" Version="4.153.1" />
-    <PackageReference Include="SkiaSharp.NativeAssets.Linux.NoDependencies" Version="4.153.1" />
+    <PackageReference Include="SkiaSharp.NativeAssets.Linux" Version="4.153.1" />
   </ItemGroup>
 
   <!-- AOT publish strips native assets from `runtimes/<rid>/native/` that aren't
