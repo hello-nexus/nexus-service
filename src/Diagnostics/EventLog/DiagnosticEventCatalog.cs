@@ -46,6 +46,8 @@ public static class DiagnosticEventCatalog
     public const string SourceTdr = "tdr";
     public const string SourceGpuDriver = "gpuDriver";
     public const string SourceAppCrash = "appCrash";
+    /// <summary>Nexus itself faulting in nvml.dll: an NVIDIA driver reload pulled the library out from under it, and the service restarts.</summary>
+    public const string SourceDriverRestart = "driverRestart";
     public const string SourceLiveKernel = "liveKernel";
     public const string SourceMemDiag = "memDiag";
 
