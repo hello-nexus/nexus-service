@@ -135,7 +135,11 @@ public sealed class MediaTopicPublisher : BackgroundService
         {
             if (!prev.TryGetValue(key, out var p)) return false;
             if (p.IsFocused != n.IsFocused) return false;
-            if (p.Song.Title != n.Song.Title || p.Song.Artist != n.Song.Artist || p.Song.Album != n.Song.Album) return false;
+            if (p.Song.Title != n.Song.Title || p.Song.Artist != n.Song.Artist || p.Song.Album != n.Song.Album
+                || p.Song.ArtVersion != n.Song.ArtVersion)
+            {
+                return false;
+            }
 
             var pp = p.Playback;
             var np = n.Playback;

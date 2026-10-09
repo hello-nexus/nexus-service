@@ -96,4 +96,39 @@ public class HubCoolerSensorsTests
     {
         Assert.Empty(HubCoolerSensors.Build(new List<TemperatureSource>()));
     }
+
+    [Fact]
+    public void A_device_pump_joins_its_coolant_probe_as_an_rpm_sensor()
+    {
+        var component = Assert.Single(HubCoolerSensors.Build(
+            new[] { Src("lianli-galahad2-lcd:coolant", "Liquid", 31.4f, "lianli-galahad2-lcd", "Lian Li Galahad II LCD") },
+            new[]
+            {
+                new FanChannel
+                {
+                    Id = "lianli-galahad2-lcd:pump", Name = "Galahad II LCD Pump", Rpm = 3580, Kind = FanKinds.Pump,
+                    DeviceId = "lianli-galahad2-lcd", DeviceName = "Lian Li Galahad II LCD",
+                },
+            }));
+
+        Assert.Equal(new[] { "Liquid", "Galahad II LCD Pump" }, component.Sensors.Select(s => s.Name));
+        var pump = component.Sensors[1];
+        Assert.Equal("lianli-galahad2-lcd:pump", pump.Id);
+        Assert.Equal("Fan", pump.Type);
+        Assert.Equal("RPM", pump.Units);
+        Assert.Equal(3580f, pump.Value);
+        Assert.Equal("3580 RPM", pump.Formatted);
+    }
+
+    [Fact]
+    public void A_pump_without_a_device_or_a_readable_speed_is_skipped()
+    {
+        Assert.Empty(HubCoolerSensors.Build(
+            new List<TemperatureSource>(),
+            new[]
+            {
+                new FanChannel { Id = "/lpc/nct6687d/control/1", Name = "Pump Fan #1", Rpm = 2127, Kind = FanKinds.Pump },
+                new FanChannel { Id = "minihub:pump", Name = "Pump", Kind = FanKinds.Pump, DeviceId = "minihub", RpmUnavailable = true },
+            }));
+    }
 }

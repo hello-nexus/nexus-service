@@ -156,6 +156,18 @@ public sealed class CompositeFanControlProvider : IFanControlProvider, ICoolingP
         return combined;
     }
 
+    public IReadOnlyList<FanChannel> GetDevicePumpChannels()
+    {
+        var combined = new List<FanChannel>(_np50.GetFanChannels());
+        combined.AddRange(_miniHub.GetFanChannels());
+        foreach (var e in Extras())
+            combined.AddRange(e.Provider.GetFanChannels());
+        foreach (var ch in combined)
+            InferPumpKind(ch);
+        combined.RemoveAll(c => c.Kind != FanKinds.Pump || string.IsNullOrEmpty(c.DeviceId));
+        return combined;
+    }
+
     public float? ReadTemperature(string sensorId)
     {
         var source = Route(sensorId);

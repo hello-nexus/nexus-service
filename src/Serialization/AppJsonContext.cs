@@ -165,6 +165,7 @@ namespace Nexus.Service.Serialization;
 [JsonSerializable(typeof(Nexus.Service.Routes.TelemetryConsentBody))]
 [JsonSerializable(typeof(Nexus.Service.Routes.TelemetryConsentDto))]
 [JsonSerializable(typeof(Nexus.Service.Routes.OnboardingStatusDto))]
+[JsonSerializable(typeof(Nexus.Service.Routes.OnboardingConflictsStepBody))]
 [JsonSerializable(typeof(Nexus.Service.Routes.PanelSwipeOnboardingDto))]
 [JsonSerializable(typeof(Nexus.Service.Routes.DashboardBannerDto))]
 [JsonSerializable(typeof(Nexus.Service.Routes.Nexus2MigrationStatusDto))]
