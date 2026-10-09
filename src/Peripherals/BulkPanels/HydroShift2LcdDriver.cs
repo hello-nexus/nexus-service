@@ -8,7 +8,7 @@ using Nexus.Service.Platform;
 namespace Nexus.Service.Peripherals.BulkPanels;
 
 /// <summary>
-/// The HydroShift II LCD-S pump head. The glass, pump, fan headers and ring all share
+/// The HydroShift II LCD-S or LCD-C pump head. The glass, pump, fan headers and ring all share
 /// this one WinUSB pipe, so <see cref="HydroShift2Aio"/> drives the AIO half through
 /// <see cref="BulkPanelHub.Exchange{T}"/> between frames.
 /// </summary>
@@ -29,11 +29,16 @@ public sealed class HydroShift2LcdDriver : IBulkPanelDriver
     /// <summary>The last pump/fan write was a Nexus-driven target, so disconnecting must hand back the defaults.</summary>
     private bool _handBack;
 
+    private volatile bool _round;
+
     public string HandlerId => Id;
-    public string Name => "Lian Li HydroShift II LCD-S";
+    public string Name => _round ? "Lian Li HydroShift II LCD-C" : "Lian Li HydroShift II LCD-S";
     public int VendorId => 0x1CBE;
-    public IReadOnlyList<int> ProductIds { get; } = new[] { HydroShift2Protocol.ProductIdSquare };
-    public string Surface => Models.Panel.PanelSurfaces.LcdSquare;
+    public IReadOnlyList<int> ProductIds { get; } = new[] { HydroShift2Protocol.ProductIdSquare, HydroShift2Protocol.ProductIdCircle };
+    public string Surface => _round ? Models.Panel.PanelSurfaces.LcdRound : Models.Panel.PanelSurfaces.LcdSquare;
+
+    /// <summary>The connected head is the round LCD-C, set at connect.</summary>
+    public bool Round => _round;
     public int Fps => FrameRate;
     public byte WritePipeId => 0x01;
     public byte ReadPipeId => 0x81;
@@ -53,6 +58,7 @@ public sealed class HydroShift2LcdDriver : IBulkPanelDriver
 
     public (int Width, int Height)? Connect(IBulkUsbPipe pipe, IHidDevice? hid)
     {
+        _round = pipe.ProductId == HydroShift2Protocol.ProductIdCircle;
         _clock.Restart();
         _lastTimestamp = 0;
 
@@ -124,7 +130,7 @@ public sealed class HydroShift2LcdDriver : IBulkPanelDriver
     public bool SyncPumpFan(IBulkUsbPipe pipe, int pumpRpm, ReadOnlySpan<byte> fans, bool driven)
     {
         var answered = Exchange(pipe, HydroShift2Protocol.CommandSyncPumpFan,
-            HydroShift2Protocol.EncodeSyncPumpFan(pumpRpm, fans, NextTimestamp())) is not null;
+            HydroShift2Protocol.EncodeSyncPumpFan(pumpRpm, fans, NextTimestamp(), _round)) is not null;
         // A driven target is assumed latched even unanswered; a hand-back only counts once answered.
         if (driven || answered)
         {
