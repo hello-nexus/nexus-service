@@ -1358,6 +1358,7 @@ public sealed class DevicesSettings
     public StrimerLightingSettings StrimerLighting { get; set; } = new();
     public Galahad2LightingSettings Galahad2Lighting { get; set; } = new();
     public HydroShift2LightingSettings HydroShift2Lighting { get; set; } = new();
+    public HydroShift2CurveSettings HydroShift2Curve { get; set; } = new();
     public CorsairSettings Corsair { get; set; } = new();
     public NollieSettings Nollie { get; set; } = new();
     /// <summary>
@@ -1880,6 +1881,33 @@ public sealed class HydroShift2LightingSettings
     public int Brightness { get; set; } = 4;
     /// <summary>"#RRGGBB" palette; missing entries fall back to the effect's defaults.</summary>
     public List<string> Colors { get; set; } = new();
+}
+
+/// <summary>The HydroShift II OLED Curved head position Nexus last drove; the motors have no position readback.</summary>
+public sealed class HydroShift2CurveSettings
+{
+    /// <summary>Degrees.</summary>
+    public int Tilt { get; set; }
+    /// <summary>0 is the middle of the slide's range.</summary>
+    public int Slide { get; set; }
+    /// <summary>A recalibration was under way; Tilt and Slide are unknown until it runs again.</summary>
+    public bool Recalibrating { get; set; }
+
+    public const string ScreenNexus = "nexus";
+    public const string ScreenVideo = "video";
+
+    /// <summary><see cref="ScreenNexus"/> streams the Nexus panel; <see cref="ScreenVideo"/> loops <see cref="Video"/> on the glass's own decoder.</summary>
+    public string ScreenMode { get; set; } = ScreenNexus;
+    /// <summary>Media library item played in video mode.</summary>
+    public string? Video { get; set; }
+    /// <summary>Minutes between screen-saver plays; 0 is off.</summary>
+    public int ScreenSaverMinutes { get; set; }
+    public string? ScreenSaverVideo { get; set; }
+    /// <summary>Backlight percent while the screen saver plays.</summary>
+    public int ScreenSaverBrightness { get; set; } = 50;
+    /// <summary>When Nexus is not driving the pump: true follows the motherboard header, false runs the
+    /// power-on speed, null leaves the board as found.</summary>
+    public bool? PumpFollowsMotherboard { get; set; }
 }
 
 public sealed class Galahad2LightingSettings

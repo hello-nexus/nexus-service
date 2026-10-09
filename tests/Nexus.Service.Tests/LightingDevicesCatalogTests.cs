@@ -43,6 +43,7 @@ public class LightingDevicesCatalogTests
     [InlineData("Lian Li", "Galahad II Trinity", "0x0416", "0x7373")]
     [InlineData("Lian Li", "SL-LCD", "0x1CBE", "0x0005")]
     [InlineData("Lian Li", "HydroShift II LCD-S", "0x1CBE", "0xA034")]
+    [InlineData("Lian Li", "HydroShift II OLED Curved", "0x1CBE", "0xA068")]
     [InlineData("Lian Li", "Strimer Wireless", "-", "-")]
     [InlineData("Tryx", "Panorama", "0x391A", "0x1011")]
     [InlineData("Aftershock", "Glacier Matrix 360", "0x38C1", "0x0026")]

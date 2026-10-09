@@ -33,6 +33,7 @@ public static class DeviceControlPolicy
         ["strimer"] = "lian-li-l-connect",
         ["lianli-screen88"] = "lian-li-l-connect",
         ["lianli-hydroshift2"] = "lian-li-l-connect",
+        ["lianli-hydroshift2-curve"] = "lian-li-l-connect",
         ["lianli-galahad2-lcd"] = "lian-li-l-connect",
         ["corsair"] = "icue",
         ["corsair-link-lcd"] = "icue",

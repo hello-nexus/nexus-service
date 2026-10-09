@@ -34,6 +34,7 @@ public sealed class CompositeLightingDeviceProvider : ILightingDeviceProvider
     private readonly NollieLightingDeviceProvider _nollie;
     private readonly KrakenLightingDeviceProvider _kraken;
     private readonly HydroShift2LightingDeviceProvider _hydroShift2;
+    private readonly HydroShift2CurveLightingDeviceProvider _hydroShift2Curve;
     private readonly Galahad2LcdLightingProvider _galahad2Lcd;
     private readonly Nexus.Service.Lighting.Smart.SmartLightProvider _smart;
     private readonly IConfigStore _store;
@@ -56,6 +57,7 @@ public sealed class CompositeLightingDeviceProvider : ILightingDeviceProvider
         NollieLightingDeviceProvider nollie,
         KrakenLightingDeviceProvider kraken,
         HydroShift2LightingDeviceProvider hydroShift2,
+        HydroShift2CurveLightingDeviceProvider hydroShift2Curve,
         Galahad2LcdLightingProvider galahad2Lcd,
         Nexus.Service.Lighting.Smart.SmartLightProvider smart,
         IConfigStore store,
@@ -77,6 +79,7 @@ public sealed class CompositeLightingDeviceProvider : ILightingDeviceProvider
         _nollie   = nollie;
         _kraken   = kraken;
         _hydroShift2 = hydroShift2;
+        _hydroShift2Curve = hydroShift2Curve;
         _galahad2Lcd = galahad2Lcd;
         _smart    = smart;
         _store    = store;
@@ -92,7 +95,7 @@ public sealed class CompositeLightingDeviceProvider : ILightingDeviceProvider
         }
     }
 
-    public bool IsConnected => _openRgb.IsConnected || _np50.IsConnected || _miniHub.IsConnected || _smartHub.IsConnected || _cnvs.IsConnected || _qseries.IsConnected || _keeb.IsConnected || _ibp.IsConnected || _lianLi.IsConnected || _lianLiWireless.IsConnected || _corsair.IsConnected || _strimer.IsConnected || _galahad2.IsConnected || _nollie.IsConnected || _kraken.IsConnected || _hydroShift2.IsConnected || _galahad2Lcd.IsConnected || _smart.IsConnected;
+    public bool IsConnected => _openRgb.IsConnected || _np50.IsConnected || _miniHub.IsConnected || _smartHub.IsConnected || _cnvs.IsConnected || _qseries.IsConnected || _keeb.IsConnected || _ibp.IsConnected || _lianLi.IsConnected || _lianLiWireless.IsConnected || _corsair.IsConnected || _strimer.IsConnected || _galahad2.IsConnected || _nollie.IsConnected || _kraken.IsConnected || _hydroShift2.IsConnected || _hydroShift2Curve.IsConnected || _galahad2Lcd.IsConnected || _smart.IsConnected;
 
     public GetLightingDevicesResponse GetAll()
     {
@@ -290,6 +293,13 @@ public sealed class CompositeLightingDeviceProvider : ILightingDeviceProvider
             TagControlHandler(hydroShift2.Devices, Peripherals.BulkPanels.HydroShift2LcdDriver.Id);
             rgb.Devices.AddRange(hydroShift2.Devices);
         }
+        var hydroShift2Curve = _hydroShift2Curve.GetAll();
+        if (hydroShift2Curve.Devices.Count > 0)
+        {
+            rgb.IsInit = rgb.IsInit || hydroShift2Curve.IsInit;
+            TagControlHandler(hydroShift2Curve.Devices, Peripherals.BulkPanels.HydroShift2CurveLcdDriver.Id);
+            rgb.Devices.AddRange(hydroShift2Curve.Devices);
+        }
         var galahad2Lcd = _galahad2Lcd.GetAll();
         if (galahad2Lcd.Devices.Count > 0)
         {
@@ -371,6 +381,7 @@ public sealed class CompositeLightingDeviceProvider : ILightingDeviceProvider
         var galahad2Ids   = new List<string>(ids.Count);
         var krakenIds     = new List<string>(ids.Count);
         var hydroShift2Ids = new List<string>(ids.Count);
+        var hydroShift2CurveIds = new List<string>(ids.Count);
         var galahad2LcdIds = new List<string>(ids.Count);
         var smartLightIds = new List<string>(ids.Count);
         foreach (var id in ids)
@@ -389,6 +400,7 @@ public sealed class CompositeLightingDeviceProvider : ILightingDeviceProvider
             else if (IsGalahad2Id(id))  galahad2Ids.Add(id);
             else if (IsKrakenId(id))    krakenIds.Add(id);
             else if (HydroShift2LightingDeviceProvider.IsHydroShift2Id(id)) hydroShift2Ids.Add(id);
+            else if (HydroShift2CurveLightingDeviceProvider.IsHydroShift2CurveId(id)) hydroShift2CurveIds.Add(id);
             else if (Galahad2LcdLightingProvider.IsGalahad2LcdId(id)) galahad2LcdIds.Add(id);
             else if (_smart.Owns(id))   smartLightIds.Add(id);
             else                        rgbIds.Add(id);
@@ -408,6 +420,7 @@ public sealed class CompositeLightingDeviceProvider : ILightingDeviceProvider
         if (galahad2Ids.Count > 0)   _galahad2.SetDisabled(galahad2Ids);
         if (krakenIds.Count > 0)     _kraken.SetDisabled(krakenIds);
         if (hydroShift2Ids.Count > 0) _hydroShift2.SetDisabled(hydroShift2Ids);
+        if (hydroShift2CurveIds.Count > 0) _hydroShift2Curve.SetDisabled(hydroShift2CurveIds);
         if (galahad2LcdIds.Count > 0) _galahad2Lcd.SetDisabled(galahad2LcdIds);
         if (smartLightIds.Count > 0) _smart.SetDisabled(smartLightIds);
     }
@@ -435,6 +448,7 @@ public sealed class CompositeLightingDeviceProvider : ILightingDeviceProvider
         : IsNollieId(id)     ? _nollie
         : IsKrakenId(id)     ? _kraken
         : HydroShift2LightingDeviceProvider.IsHydroShift2Id(id) ? _hydroShift2
+        : HydroShift2CurveLightingDeviceProvider.IsHydroShift2CurveId(id) ? _hydroShift2Curve
         : Galahad2LcdLightingProvider.IsGalahad2LcdId(id) ? _galahad2Lcd
         : _smart.Owns(id)    ? _smart
         : _openRgb;

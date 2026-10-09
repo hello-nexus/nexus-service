@@ -896,6 +896,8 @@ static void FastServiceShutdown(WebApplication app)
         }),
         Task.Run(() => { try { sp.GetService<Nexus.Service.Peripherals.StreamDeck.StreamDeckConnectionWorker>()?.ResetConnectedSurfacesForShutdown(); } catch { } }),
         Task.Run(() => { try { sp.GetService<Nexus.Service.Peripherals.Nollie.NollieConnectionWorker>()?.ReleaseAllForShutdown(); } catch { } }),
+        Task.Run(() => { try { sp.GetService<Nexus.Service.Peripherals.BulkPanels.HydroShift2CurvePlayer>()?.ReleaseForShutdown(); } catch { } }),
+        Task.Run(() => { try { sp.GetService<Nexus.Service.Peripherals.BulkPanels.HydroShift2CurveBoard>()?.ReleaseForShutdown(TimeSpan.FromSeconds(1)); } catch { } }),
         Task.Run(() => { try { sp.GetService<Nexus.Service.Common.ExternalTools.ExternalToolManager>()?.TerminateAll(); } catch { } }),
 #if DEV_TOOLS
         Task.Run(() => { try { sp.GetService<Nexus.Service.Mcp.Assistant.OllamaRuntimeManager>()?.StopChildForShutdown(); } catch { } }),
