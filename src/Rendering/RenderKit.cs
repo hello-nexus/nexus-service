@@ -4,6 +4,7 @@ using System.Collections.Generic;
 using System.Globalization;
 using System.IO;
 using SkiaSharp;
+using SkiaSharp.HarfBuzz;
 
 namespace Nexus.Service.Rendering;
 
@@ -19,8 +20,7 @@ internal static class RenderKit
 
     /// <summary>
     /// Decode ceiling. Stored deck images cap their encoded size, not their pixel count,
-    /// and a 512 KB PNG can describe a multi-gigabyte bitmap; every surface draws at
-    /// 480 px or less.
+    /// and a small PNG can describe a multi-gigabyte bitmap; no device surface comes close.
     /// </summary>
     private const long MaxDecodePixels = 4096L * 4096L;
 
@@ -32,6 +32,9 @@ internal static class RenderKit
     private static SKTypeface? _fontFamily;
     private static readonly ConcurrentDictionary<string, SKTypeface?> Families = new(StringComparer.OrdinalIgnoreCase);
     private static readonly ConcurrentDictionary<(string Family, bool Bold, bool Italic), SKTypeface> Faces = new();
+
+    /// <summary>One per typeface: each holds the font's tables in native memory. Shape calls lock it.</summary>
+    private static readonly ConcurrentDictionary<SKTypeface, SKShaper> Shapers = new();
 
     /// <summary>Every bitmap here is RGBA8888 premultiplied, so pixel bytes are R,G,B,A in memory.</summary>
     public static SKImageInfo Info(int width, int height) => new(width, height, SKColorType.Rgba8888, SKAlphaType.Premul);
@@ -133,9 +136,11 @@ internal static class RenderKit
     /// <summary>Fills and then disposes the path, so a builder call can be passed inline.</summary>
     public static void FillPath(SKCanvas canvas, SKColor color, SKPath path)
     {
-        using var paint = Fill(color);
-        canvas.DrawPath(path, paint);
-        path.Dispose();
+        using (path)
+        using (var paint = Fill(color))
+        {
+            canvas.DrawPath(path, paint);
+        }
     }
 
     public static void FillRect(SKCanvas canvas, SKColor color, SKRect rect)
@@ -259,22 +264,60 @@ internal static class RenderKit
     }
 
     /// <summary>Advance width of a single line at this font.</summary>
-    public static float MeasureWidth(string text, SKFont font) => font.MeasureText(text);
-
-    public static void DrawCentered(SKCanvas canvas, string text, SKFont font, SKColor color, SKPoint center)
+    public static float MeasureWidth(string text, SKFont font)
     {
-        var metrics = font.Metrics;
-        using var paint = Fill(color);
-        canvas.DrawText(text, center.X, center.Y - (metrics.Ascent + metrics.Descent) / 2f, SKTextAlign.Center, font, paint);
+        if (!NeedsShaping(text))
+        {
+            return font.MeasureText(text);
+        }
+        var shaper = Shaper(font.Typeface);
+        lock (shaper)
+        {
+            return shaper.Shape(text, font).Width;
+        }
     }
+
+    public static void DrawCentered(SKCanvas canvas, string text, SKFont font, SKColor color, SKPoint center) =>
+        DrawLine(canvas, text, font, color, center.X, center.Y, SKTextAlign.Center);
 
     /// <summary>Draws text with its left edge at x and its line centered on centerY.</summary>
-    public static void DrawLeft(SKCanvas canvas, string text, SKFont font, SKColor color, float x, float centerY)
+    public static void DrawLeft(SKCanvas canvas, string text, SKFont font, SKColor color, float x, float centerY) =>
+        DrawLine(canvas, text, font, color, x, centerY, SKTextAlign.Left);
+
+    private static void DrawLine(SKCanvas canvas, string text, SKFont font, SKColor color, float x, float centerY, SKTextAlign align)
     {
         var metrics = font.Metrics;
+        var baseline = centerY - (metrics.Ascent + metrics.Descent) / 2f;
         using var paint = Fill(color);
-        canvas.DrawText(text, x, centerY - (metrics.Ascent + metrics.Descent) / 2f, SKTextAlign.Left, font, paint);
+        if (!NeedsShaping(text))
+        {
+            canvas.DrawText(text, x, baseline, align, font, paint);
+            return;
+        }
+        var shaper = Shaper(font.Typeface);
+        lock (shaper)
+        {
+            canvas.DrawShapedText(shaper, text, x, baseline, align, font, paint);
+        }
     }
+
+    /// <summary>
+    /// Latin draws glyph by glyph; anything past Latin Extended (emoji sequences and
+    /// variation selectors, complex scripts) needs HarfBuzz to form its glyphs.
+    /// </summary>
+    private static bool NeedsShaping(string text)
+    {
+        foreach (var c in text)
+        {
+            if (c > '\u024f')
+            {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private static SKShaper Shaper(SKTypeface typeface) => Shapers.GetOrAdd(typeface, static face => new SKShaper(face));
 
     /// <summary>Composites src at (x, y) at its own size.</summary>
     public static void DrawImage(SKCanvas canvas, SKBitmap src, int x, int y, float opacity = 1f)
@@ -372,9 +415,10 @@ internal static class RenderKit
 
     public static byte[] EncodeJpeg(SKBitmap image)
     {
-        // libjpeg-turbo where it loaded; Skia's encoder is 3-5x slower on x64 (its
-        // bundled libjpeg-turbo carries no x86 SIMD), so it is the fallback only.
-        // The pixels are premultiplied RGBA, hence TJPF_RGBX straight off the bitmap.
+        // libjpeg-turbo where it loaded; Skia's encoder is several times slower on x64
+        // (its bundled libjpeg-turbo carries no x86 SIMD), so it is the fallback only.
+        // The pixels are premultiplied RGBA, hence TJPF_RGBX straight off the bitmap:
+        // a translucent pixel encodes as composited over black, the key's bezel.
         if (image.RowBytes == image.Width * 4
             && TurboJpegOneShot.TryCompress(image.GetPixelSpan(), image.Width, image.Height, TurboJpeg.PixelFormatRgbx, JpegQuality) is { } native)
         {
@@ -392,16 +436,24 @@ internal static class RenderKit
         return data?.ToArray() ?? Array.Empty<byte>();
     }
 
-    /// <summary>Extracts a top-down RGB888 buffer from an RGBA image, dropping alpha, for <see cref="BmpEncoder"/>.</summary>
+    /// <summary>
+    /// Extracts a top-down RGB888 buffer for <see cref="BmpEncoder"/>, composited over
+    /// black like <see cref="EncodeJpeg"/>, so BMP and JPEG decks show the same key.
+    /// </summary>
     public static byte[] ToRgb24(SKBitmap image)
     {
-        var rgba = ToRgba32Bytes(image);
+        var pixels = image.GetPixelSpan();
         var buffer = new byte[image.Width * image.Height * 3];
-        for (int src = 0, dst = 0; dst < buffer.Length; src += 4, dst += 3)
+        var dst = 0;
+        for (var y = 0; y < image.Height; y++)
         {
-            buffer[dst] = rgba[src];
-            buffer[dst + 1] = rgba[src + 1];
-            buffer[dst + 2] = rgba[src + 2];
+            var row = pixels.Slice(y * image.RowBytes, image.Width * 4);
+            for (var src = 0; src < row.Length; src += 4)
+            {
+                buffer[dst++] = row[src];
+                buffer[dst++] = row[src + 1];
+                buffer[dst++] = row[src + 2];
+            }
         }
         return buffer;
     }

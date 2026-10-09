@@ -15,7 +15,7 @@ namespace Nexus.Service.Peripherals.JpegPanels;
 /// native-AOT Windows binary would make this path untestable off Windows.
 ///
 /// libjpeg-turbo (4:2:0, SIMD) drives it where the library loaded, Skia's encoder (4:2:0,
-/// 3-5x slower on x64) otherwise.
+/// several times slower on x64) otherwise.
 /// Not thread-safe: one instance per stream transport, which is the only caller.
 /// </summary>
 public sealed unsafe class BgraJpegEncoder : IDisposable
@@ -99,7 +99,7 @@ public sealed unsafe class BgraJpegEncoder : IDisposable
             // so the panel would freeze rather than reach the managed encoder. Retire the
             // native path for this instance instead and fall through.
             ServiceLog.Warn($"[jpeg] turbojpeg compress failed ({TurboJpeg.ErrorString(_turbo)}); "
-                + "this encoder falls back to the managed path");
+                + "this encoder falls back to the Skia path");
             TurboJpeg.tj3Destroy(_turbo);
             _turbo = IntPtr.Zero;
         }

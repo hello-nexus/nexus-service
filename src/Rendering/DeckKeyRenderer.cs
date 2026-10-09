@@ -8,6 +8,7 @@ using System.Text.RegularExpressions;
 using Nexus.Service.Activity;
 using Nexus.Service.Deck;
 using Nexus.Service.Peripherals.StreamDeck;
+using Nexus.Service.Platform;
 using Nexus.Service.Serialization;
 using SkiaSharp;
 
@@ -122,13 +123,16 @@ public sealed class DeckKeyRenderer
             return null;
         }
         var canvas = RenderKit.NewImage(size, size);
-        if (icon is { Kind: "image" } && _imageStore.TryLoad(icon.Value) is { } loaded && RenderKit.Decode(loaded.Bytes) is { } source)
+        if (icon is { Kind: "image" } && _imageStore.TryLoad(icon.Value) is { } loaded)
         {
-            using (source)
+            if (DecodeStored(icon.Value, loaded.Bytes) is { } source)
             {
-                DrawCover(canvas, source, size);
+                using (source)
+                {
+                    DrawCover(canvas, source, size);
+                }
+                return canvas;
             }
-            return canvas;
         }
         if (icon is { Kind: "emoji" })
         {
@@ -143,6 +147,19 @@ public sealed class DeckKeyRenderer
         }
         DrawGlyph(canvas, lucide, size / 2f, size / 2f);
         return canvas;
+    }
+
+    private static readonly ConcurrentDictionary<string, byte> UndecodableWarned = new(StringComparer.Ordinal);
+
+    /// <summary>A stored deck image's bitmap, or null (warned once per image) when it does not decode and the key falls back to its default icon.</summary>
+    private static SKBitmap? DecodeStored(string id, byte[] bytes)
+    {
+        var image = RenderKit.Decode(bytes);
+        if (image is null && UndecodableWarned.TryAdd(id, 0))
+        {
+            ServiceLog.Warn($"[deck] stored image {id} does not decode (corrupt or too large); the key shows its default icon");
+        }
+        return image;
     }
 
     private void Touch(string key)
@@ -216,7 +233,7 @@ public sealed class DeckKeyRenderer
         var iconPending = false;
         if (shouldPaintIcon && display.Icon is { Kind: "image" } && _imageStore.TryLoad(display.Icon.Value) is { } loaded)
         {
-            customImage = RenderKit.Decode(loaded.Bytes);
+            customImage = DecodeStored(display.Icon.Value, loaded.Bytes);
         }
         else if (shouldPaintIcon && display.Icon is not { Kind: "emoji" })
         {

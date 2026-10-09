@@ -71,7 +71,7 @@ public sealed class DeckStripRenderer
     private static readonly SKColor TitleColor = new(0xc7, 0xd0, 0xdc);
     private static readonly SKColor TrackColor = new(255, 255, 255, 40);
     private static readonly SKColor DotColor = new(255, 255, 255, 70);
-    private static readonly SKColor DefaultAccent = new(0x4d, 0xa3, 0xff);
+    private static readonly SKColor DefaultAccent = RenderKit.ParseColor(DefaultAccentHex, SKColors.White);
 
     private readonly DeckKeyRenderer _icons;
 

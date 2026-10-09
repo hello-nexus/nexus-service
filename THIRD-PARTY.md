@@ -45,6 +45,18 @@ licenses. Their respective license texts ship alongside the bundled binaries.
 - **Usage**: consumed unmodified as the official NuGet package; provides the
   Windows sensor backend (CPU / GPU / motherboard / fan / temperature)
 
+## Skia, SkiaSharp and HarfBuzz
+
+- **Projects**: Skia, SkiaSharp, HarfBuzz, HarfBuzzSharp
+- **Upstream**: https://skia.org, https://github.com/mono/SkiaSharp,
+  https://github.com/harfbuzz/harfbuzz
+- **License**: Skia BSD-3-Clause; SkiaSharp and HarfBuzzSharp MIT; HarfBuzz
+  Old MIT
+- **Usage**: consumed unmodified as the official NuGet packages; the native
+  `libSkiaSharp` and `libHarfBuzzSharp` ship beside the service binary and draw
+  every device-screen bitmap (Stream Deck keys and dials, LCD screens) and shape
+  its text
+
 ## PawnIO
 
 - **Project**: PawnIO (signed kernel I/O driver + module loader)

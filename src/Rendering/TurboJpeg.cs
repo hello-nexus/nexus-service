@@ -9,9 +9,9 @@ namespace Nexus.Service.Rendering;
 /// server-rendered device bitmap. The library ships next to the service binary
 /// (<c>Bundled/&lt;rid&gt;/turbojpeg</c>).
 ///
-/// 3-5x faster than Skia's encoder on x64 at the same quality (Skia's bundled
-/// libjpeg-turbo carries no x86 SIMD). Every caller keeps the Skia fallback, so
-/// nothing here throws on load.
+/// Several times faster than Skia's encoder on x64 at the same quality (Skia's
+/// bundled libjpeg-turbo carries no x86 SIMD). Every caller keeps the Skia
+/// fallback, so nothing here throws on load.
 /// </summary>
 internal static unsafe class TurboJpeg
 {

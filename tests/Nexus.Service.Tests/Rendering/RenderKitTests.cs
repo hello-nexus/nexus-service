@@ -43,7 +43,7 @@ public class RenderKitTests
     [Fact]
     public void Decode_refuses_a_header_past_the_pixel_ceiling_without_allocating_it()
     {
-        // A valid PNG header for 20000x20000 RGBA: 1.6 GB decoded from a few dozen bytes.
+        // A valid PNG header describing gigabytes of RGBA from a few dozen bytes.
         Assert.Null(RenderKit.Decode(PngHeaderOnly(20000, 20000)));
     }
 
@@ -83,6 +83,24 @@ public class RenderKitTests
         using var crop = RenderKit.Crop(src, SKRectI.Create(10, 10, 3, 3));
 
         Assert.Equal(0, crop.GetPixel(1, 1).Alpha);
+    }
+
+    /// <summary>Unshaped, a ZWJ family draws as its three people side by side; shaped, as the one family glyph.</summary>
+    [Fact]
+    public void Emoji_zwj_sequence_shapes_to_a_single_glyph()
+    {
+        var face = RenderKit.TryFamily("Apple Color Emoji") ?? RenderKit.TryFamily("Segoe UI Emoji") ?? RenderKit.TryFamily("Noto Color Emoji");
+        if (face is null)
+        {
+            return;
+        }
+        using var font = RenderKit.CreateFont(face, 48);
+
+        var person = RenderKit.MeasureWidth("\U0001F468", font);
+        var family = RenderKit.MeasureWidth("\U0001F468\u200D\U0001F469\u200D\U0001F467", font);
+
+        Assert.True(person > 0);
+        Assert.True(family < person * 1.5f, $"family measured {family} against one person's {person}");
     }
 
     private static byte[] PngHeaderOnly(int width, int height)
