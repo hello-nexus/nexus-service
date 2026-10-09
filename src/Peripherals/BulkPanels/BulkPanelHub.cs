@@ -67,6 +67,26 @@ public sealed class BulkPanelHub : IDisposable
         }
     }
 
+    /// <summary>Re-runs the handshake on the open pipe for new geometry, without the release a detach sends; false detaches.</summary>
+    public bool Renegotiate()
+    {
+        lock (_lock)
+        {
+            if (!_attached || _pipe is null)
+            {
+                return false;
+            }
+            var geometry = _driver.Connect(_pipe, _hid);
+            if (geometry is not { Width: > 0, Height: > 0 })
+            {
+                DetachLocked();
+                return false;
+            }
+            (_width, _height) = geometry.Value;
+            return true;
+        }
+    }
+
     public bool SendFrame(ReadOnlySpan<byte> bgra)
     {
         lock (_lock)

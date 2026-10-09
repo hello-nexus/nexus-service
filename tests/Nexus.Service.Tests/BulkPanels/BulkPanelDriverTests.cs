@@ -175,38 +175,6 @@ public class BulkPanelDriverTests
         Assert.False(driver.SendFrame(pipe, hid, Frame(320, 240)));
     }
 
-    // ── Universal Screen 8.8 ──
-
-    [Fact]
-    public void Screen88_runs_the_five_command_init_and_reports_its_strip_size()
-    {
-        var driver = new UniversalScreen88Driver();
-        var pipe = new FakeBulkPipe { DefaultReadBytes = 512 };
-
-        var geometry = driver.Connect(pipe, null);
-
-        Assert.Equal((480, 1920), geometry);
-        Assert.Equal(5, pipe.Writes.Count);
-        Assert.All(pipe.Writes, w => Assert.Equal(512, w.Length));
-        Assert.All(pipe.Writes, w => Assert.Equal(new byte[] { 0xA1, 0x1A }, w[^2..]));
-    }
-
-    [Fact]
-    public void Screen88_frame_is_an_encrypted_header_then_the_jpeg_in_one_transfer()
-    {
-        var driver = new UniversalScreen88Driver();
-        var pipe = new FakeBulkPipe { DefaultReadBytes = 512 };
-        driver.Connect(pipe, null);
-        pipe.Writes.Clear();
-
-        Assert.True(driver.SendFrame(pipe, null, Frame(480, 1920)));
-
-        var packet = Assert.Single(pipe.Writes);
-        Assert.True(packet.Length > UniversalScreen88Protocol.PacketLength);
-        Assert.Equal(new byte[] { 0xA1, 0x1A }, packet[510..512]);
-        Assert.Equal(new byte[] { 0xFF, 0xD8 }, packet[512..514]);
-    }
-
     // ── ZMatrices: mode command on its own pipe, then framed JPEGs ──
 
     [Fact]

@@ -142,6 +142,38 @@ public sealed class StreamedPanelCoordinatorTests : IDisposable
     }
 
     [Fact]
+    public void A_new_strip_panel_is_seeded_with_a_page_that_spans_the_strip()
+    {
+        _discovery.Devices.Add(new StreamedPanelDeviceInfo
+        {
+            Serial = "strip",
+            Profile = new StreamedPanelProfile { Kind = "strip", DisplayName = "Strip", Surface = "monitor", CssWidth = 1920, CssHeight = 480 },
+        });
+        var coordinator = Coordinator();
+
+        coordinator.TickOnce();
+
+        var layout = _registry.Get(Assert.Single(coordinator.GetAssignments().Assignments).PanelDeviceId)!.Layout;
+        Assert.NotNull(layout);
+        Assert.Equal("monitor", layout!.Surface);
+        var widgets = Assert.Single(layout.Pages).Widgets;
+        Assert.Equal(4, widgets.Count);
+        Assert.All(widgets, w => Assert.Equal("4x4", w.Size));
+        Assert.Equal(new[] { 0, 4, 8, 12 }, widgets.Select(w => w.Col).OrderBy(c => c).ToArray());
+    }
+
+    [Fact]
+    public void A_new_panel_of_ordinary_shape_keeps_the_client_seed()
+    {
+        _discovery.Devices.Add(Device());
+        var coordinator = Coordinator();
+
+        coordinator.TickOnce();
+
+        Assert.Null(_registry.Get(Assert.Single(coordinator.GetAssignments().Assignments).PanelDeviceId)!.Layout);
+    }
+
+    [Fact]
     public void Attach_mints_session_and_publishes_assignment()
     {
         _discovery.Devices.Add(Device());

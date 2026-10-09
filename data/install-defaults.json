@@ -152,6 +152,36 @@
             "row": 0
           }
         ]
+      },
+      "strip": {
+        "layoutSchemaVersion": 2,
+        "surface": "monitor",
+        "widgets": [
+          {
+            "type": "clock",
+            "size": "4x4",
+            "col": 0,
+            "row": 0
+          },
+          {
+            "type": "monitoring",
+            "size": "4x4",
+            "col": 4,
+            "row": 0
+          },
+          {
+            "type": "calendar",
+            "size": "4x4",
+            "col": 8,
+            "row": 0
+          },
+          {
+            "type": "weather",
+            "size": "4x4",
+            "col": 12,
+            "row": 0
+          }
+        ]
       }
     }
   },

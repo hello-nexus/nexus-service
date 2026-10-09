@@ -46,6 +46,12 @@ public sealed class StreamedPanelProfile
     /// <summary>The panel's transport can hand the glass to Windows as a secondary monitor.</summary>
     public bool SupportsSecondaryMonitor { get; init; }
 
+    /// <summary>The panel renders tall when its record's Portrait is on.</summary>
+    public bool SupportsPortrait { get; init; }
+
+    /// <summary>Physical px/inch, which sizes the widget grid; null leaves the surface's estimate.</summary>
+    public double? Dpi { get; init; }
+
     public required int CssWidth { get; init; }
     public required int CssHeight { get; init; }
     public double Dpr { get; init; } = 1.0;
@@ -79,6 +85,8 @@ public sealed class StreamedPanelProfile
         Family = Family,
         SupportsBrightness = SupportsBrightness ? true : null,
         SupportsSecondaryMonitor = SupportsSecondaryMonitor ? true : null,
+        SupportsPortrait = SupportsPortrait ? true : null,
+        Dpi = Dpi,
         Touch = false,
         CssWidth = CssWidth,
         CssHeight = CssHeight,

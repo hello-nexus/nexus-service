@@ -11,6 +11,10 @@ public static class LedUvComputer
         {
             return (Array.Empty<float>(), Array.Empty<float>());
         }
+        if (UniversalScreenRing.Matches(device))
+        {
+            return UniversalScreenRing.Positions();
+        }
 
         var ledU = new float[device.LedCount];
         var ledV = new float[device.LedCount];

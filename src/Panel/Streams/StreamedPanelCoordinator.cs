@@ -455,6 +455,10 @@ public sealed class StreamedPanelCoordinator : BackgroundService
         }
 
         var record = _registry.Allocate(info.Profile.DisplayName, info.Profile.BuildCapabilities());
+        if (IsStrip(info.Profile))
+        {
+            _registry.Patch(record.Id, new PanelDevicePatch { Layout = PanelLayoutDefaults.ForStrip(info.Profile.Surface) });
+        }
         rec ??= new StreamedPanelRecord();
         rec.PanelDeviceId = record.Id;
         records[info.Serial] = rec;
@@ -579,6 +583,11 @@ public sealed class StreamedPanelCoordinator : BackgroundService
         lock (_lock) all = _bySerial.Values.ToList();
         foreach (var ds in all) CloseSession(ds, reason);
     }
+
+    /// <summary>A multi-widget panel at least three times as long as it is wide.</summary>
+    internal static bool IsStrip(StreamedPanelProfile p) =>
+        p.Surface == PanelSurfaces.Monitor
+        && Math.Max(p.CssWidth, p.CssHeight) >= 3 * Math.Min(p.CssWidth, p.CssHeight);
 
     internal static bool ProfilesEqual(StreamedPanelProfile a, StreamedPanelProfile b)
         => string.Equals(a.Kind, b.Kind, StringComparison.Ordinal)

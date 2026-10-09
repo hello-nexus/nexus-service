@@ -1154,12 +1154,20 @@ public static class NexusServiceCollectionExtensions
             services.AddSingleton(bulkPanelHub);
             // Same de-duplication as the JPEG panel loop above.
             services.AddSingleton<Microsoft.Extensions.Hosting.IHostedService>(sp =>
-                new Nexus.Service.Peripherals.BulkPanels.BulkPanelConnectionWorker(
+            {
+                if (bulkPanelDriver is Nexus.Service.Peripherals.BulkPanels.UniversalScreen88Driver screen88)
+                {
+                    var registry = sp.GetRequiredService<Nexus.Service.Panel.PanelDeviceRegistry>();
+                    screen88.BindPortrait(() => System.Linq.Enumerable.Any(registry.List(), r =>
+                        r.Capabilities?.Family == Nexus.Service.Peripherals.BulkPanels.UniversalScreen88Driver.Id && r.Portrait == true));
+                }
+                return new Nexus.Service.Peripherals.BulkPanels.BulkPanelConnectionWorker(
                     sp.GetRequiredService<Nexus.Service.Peripherals.Hid.IHidEnumerator>(),
                     sp.GetRequiredService<Nexus.Service.Peripherals.BulkPanels.IBulkUsbPipeFactory>(),
                     bulkPanelHub,
                     sp.GetRequiredService<Nexus.Service.Devices.DeviceControlGate>(),
-                    sp.GetRequiredService<Nexus.Service.Devices.Detection.HardwarePresence>()));
+                    sp.GetRequiredService<Nexus.Service.Devices.Detection.HardwarePresence>());
+            });
             services.AddSingleton<Nexus.Service.Panel.Streams.IStreamedPanelDiscovery>(sp =>
             {
                 // A HydroShift II the user gave to its own wireless screen streams nothing, nor

@@ -90,6 +90,10 @@ public sealed class BulkPanelConnectionWorker : BackgroundService
                         {
                             break;
                         }
+                        if (driver.GeometryStale && _hub.Renegotiate())
+                        {
+                            ServiceLog.Info($"[{driver.HandlerId}] renegotiated at {_hub.Width}x{_hub.Height}");
+                        }
                         await Task.Delay(_presencePollMs, stoppingToken).ConfigureAwait(false);
                     }
                 }

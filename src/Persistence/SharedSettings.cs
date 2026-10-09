@@ -116,6 +116,8 @@ public sealed class PanelLayoutsDefaults
     public PanelLayoutDefault Y70 { get; set; } = new();
     public PanelLayoutDefault Phone { get; set; } = new();
     public PanelLayoutDefault Q60 { get; set; } = new();
+    /// <summary>A monitor-surface panel on a 4:1 strip (Universal Screen 8.8), where the desktop seed fills a quarter.</summary>
+    public PanelLayoutDefault Strip { get; set; } = new();
 }
 
 public sealed class PanelLayoutDefault
