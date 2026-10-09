@@ -22,6 +22,8 @@ public sealed class StagedInstallMarker
     [JsonPropertyName("state")] public string State { get; set; } = "pending";
     /// <summary>When true, the new instance opens the dashboard after confirming the version advanced.</summary>
     [JsonPropertyName("reopen_dashboard")] public bool ReopenDashboard { get; set; }
+    /// <summary>Channel switch: success means the running build equals <see cref="Version"/> exactly, since the target may be older. False keeps the "at or beyond" rule.</summary>
+    [JsonPropertyName("exactVersion")] public bool ExactVersion { get; set; }
 }
 
 /// <summary>

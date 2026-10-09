@@ -25,7 +25,8 @@ public enum RuntimePlatform
 ///
 /// Production channel: GET /repos/{owner}/{repo}/releases/latest (excludes
 /// prereleases by design). Beta channel: GET /repos/{owner}/{repo}/releases
-/// and picks the newest item (betas and stables, whichever is newest).
+/// and picks the highest-semver non-draft prerelease that carries this
+/// platform's installer asset; stables are never offered to a beta install.
 ///
 /// SHA-256: prefers the "SHA256SUMS" release asset; falls back to the
 /// asset-level "digest" field ("sha256:{hex}") if SHA256SUMS is absent.
@@ -37,20 +38,25 @@ public sealed class GitHubReleaseProvider : IUpdateSource
     public const string DefaultOwnerRepo = "hello-nexus/nexus";
 
     private readonly IHttpClientFactory _http;
-    private readonly string _ownerRepo;
+    private readonly string _apiBase;
 
-    public GitHubReleaseProvider(IHttpClientFactory http, string ownerRepo = DefaultOwnerRepo)
+    /// <param name="apiBase">Releases API root without a trailing slash. Null uses the
+    /// build-time <c>NexusUpdateApiBase</c> when set, else the public GitHub repo.</param>
+    public GitHubReleaseProvider(IHttpClientFactory http, string ownerRepo = DefaultOwnerRepo, string? apiBase = null)
     {
         _http = http;
-        _ownerRepo = ownerRepo;
+        _apiBase = (string.IsNullOrEmpty(apiBase) ? DefaultApiBase(ownerRepo) : apiBase).TrimEnd('/');
     }
+
+    private static string DefaultApiBase(string ownerRepo) =>
+        BuildInfo.UpdateApiBase.Length > 0 ? BuildInfo.UpdateApiBase : $"https://api.github.com/repos/{ownerRepo}";
 
     public async Task<UpdateManifest?> GetLatestAsync(string channel, CancellationToken ct)
     {
         using var client = BuildClient();
 
         GitHubRelease? release = channel == "beta"
-            ? await GetNewestBetaOrStableAsync(client, ct)
+            ? await GetNewestBetaAsync(client, ct)
             : await GetLatestProductionAsync(client, ct);
 
         if (release is null) return null;
@@ -74,7 +80,7 @@ public sealed class GitHubReleaseProvider : IUpdateSource
 
     private async Task<GitHubRelease?> GetLatestProductionAsync(HttpClient client, CancellationToken ct)
     {
-        var url = $"https://api.github.com/repos/{_ownerRepo}/releases/latest";
+        var url = $"{_apiBase}/releases/latest";
         using var resp = await client.GetAsync(url, ct);
         // 404: the repo has no stable release yet.
         if (resp.StatusCode == HttpStatusCode.NotFound) return null;
@@ -83,14 +89,46 @@ public sealed class GitHubReleaseProvider : IUpdateSource
         return await resp.Content.ReadFromJsonAsync(AppJsonContext.Default.GitHubRelease, ct);
     }
 
-    private async Task<GitHubRelease?> GetNewestBetaOrStableAsync(HttpClient client, CancellationToken ct)
+    private async Task<GitHubRelease?> GetNewestBetaAsync(HttpClient client, CancellationToken ct)
     {
-        var url = $"https://api.github.com/repos/{_ownerRepo}/releases";
+        var url = $"{_apiBase}/releases?per_page=100";
         using var resp = await client.GetAsync(url, ct);
         resp.EnsureSuccessStatusCode();
         var releases = await resp.Content.ReadFromJsonAsync(AppJsonContext.Default.ListGitHubRelease, ct);
-        // Newest by published date regardless of prerelease flag.
-        return releases?.OrderByDescending(r => r.PublishedAt).FirstOrDefault();
+        return SelectNewestBeta(releases, CurrentRuntimePlatform());
+    }
+
+    /// <summary>
+    /// Highest-semver published prerelease with an installer for <paramref name="platform"/>.
+    /// Publish date is ignored so a re-published older tag cannot win; drafts,
+    /// stables, unparseable tags and releases without this platform's asset are skipped.
+    /// </summary>
+    internal static GitHubRelease? SelectNewestBeta(IEnumerable<GitHubRelease>? releases, RuntimePlatform platform)
+    {
+        GitHubRelease? best = null;
+        foreach (var r in releases ?? Enumerable.Empty<GitHubRelease>())
+        {
+            if (!r.Prerelease || r.Draft || string.IsNullOrEmpty(r.TagName))
+            {
+                continue;
+            }
+
+            if (SelectInstallerAsset(r.Assets, platform) is null)
+            {
+                continue;
+            }
+
+            if (!VersionCompare.TryParseSemver(r.TagName, out _))
+            {
+                continue;
+            }
+
+            if (best is null || VersionCompare.IsNewer(r.TagName, best.TagName!))
+            {
+                best = r;
+            }
+        }
+        return best;
     }
 
     private static async Task<(string? Hash, bool FromSumsFile)> ResolveHashAsync(
@@ -204,6 +242,9 @@ public sealed class GitHubRelease
 
     [JsonPropertyName("prerelease")]
     public bool Prerelease { get; set; }
+
+    [JsonPropertyName("draft")]
+    public bool Draft { get; set; }
 
     [JsonPropertyName("published_at")]
     public DateTimeOffset? PublishedAt { get; set; }

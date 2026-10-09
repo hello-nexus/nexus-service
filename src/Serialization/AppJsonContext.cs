@@ -1108,6 +1108,8 @@ namespace Nexus.Service.Serialization;
 [JsonSerializable(typeof(UpdateProgressResponse))]
 [JsonSerializable(typeof(UpdateStartResponse))]
 [JsonSerializable(typeof(UpdateStartRequest))]
+[JsonSerializable(typeof(ChannelTargetResponse))]
+[JsonSerializable(typeof(SwitchChannelRequest))]
 [JsonSerializable(typeof(UpdateStatusChangedFrame))]
 [JsonSerializable(typeof(GitHubRelease))]
 [JsonSerializable(typeof(List<GitHubRelease>))]

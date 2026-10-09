@@ -64,6 +64,31 @@ public sealed class UpdateStartRequest
     public bool ReopenAfter { get; set; }
 }
 
+/// <summary>GET /update/channel-target response.</summary>
+public sealed class ChannelTargetResponse
+{
+    public string Channel { get; set; } = "";
+    public string CurrentVersion { get; set; } = "";
+    /// <summary>Latest release on the channel; empty when none or the fetch failed.</summary>
+    public string Version { get; set; } = "";
+    /// <summary>"upgrade" | "downgrade" | "none"</summary>
+    public string Direction { get; set; } = "none";
+    public bool CanAutoInstall { get; set; }
+    public string DownloadUrl { get; set; } = "";
+    public string ReleaseNotes { get; set; } = "";
+    /// <summary>Empty on success.</summary>
+    public string Error { get; set; } = "";
+}
+
+/// <summary>POST /update/switch-channel request body.</summary>
+public sealed class SwitchChannelRequest
+{
+    /// <summary>"beta" | "production"</summary>
+    public string Channel { get; set; } = "";
+    /// <summary>The version the user confirmed from the preview.</summary>
+    public string Version { get; set; } = "";
+}
+
 /// <summary>
 /// Multiplex frame: the OTA status transitioned to update-available or
 /// update-ready. Subscribers refetch <c>GET /update/status</c> so the sidebar

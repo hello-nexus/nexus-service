@@ -1127,6 +1127,16 @@
     </ItemGroup>
   </Target>
 
+  <!-- Lab-only update source override (-p:NexusUpdateApiBase=http://127.0.0.1:8790/repos/test/nexus).
+       Baked as a const like the credential; empty means the public GitHub repo, and no
+       runtime or env override exists, so a shipped build cannot be redirected. -->
+  <Target Name="SetUpdateApiBase" BeforeTargets="CoreCompile">
+    <WriteLinesToFile File="$(IntermediateOutputPath)UpdateApiBase.g.cs" Lines="namespace Nexus.Service { internal static partial class BuildInfo { public const string UpdateApiBase = &quot;$(NexusUpdateApiBase)&quot;%3B } }" Overwrite="true" WriteOnlyWhenDifferent="true" />
+    <ItemGroup>
+      <Compile Include="$(IntermediateOutputPath)UpdateApiBase.g.cs" />
+    </ItemGroup>
+  </Target>
+
   <!-- Declared last so it runs after this file's other publish steps, the overlay's included. -->
   <Target Name="RejectPublishedPdbs" AfterTargets="Publish">
     <ItemGroup>
