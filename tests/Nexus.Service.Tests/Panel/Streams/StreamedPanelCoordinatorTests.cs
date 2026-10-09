@@ -334,6 +334,77 @@ public sealed class StreamedPanelCoordinatorTests : IDisposable
         Assert.Equal(first.PanelDeviceId, second.PanelDeviceId);
     }
 
+    private static StreamedPanelDeviceInfo Sized(int width, int height, StreamCodec codec = StreamCodec.RawBgra) => new()
+    {
+        Serial = "sized",
+        Profile = new StreamedPanelProfile { Kind = "sized", DisplayName = "Sized", Surface = "lcd-wide", CssWidth = width, CssHeight = height, Codec = codec },
+    };
+
+    [Fact]
+    public void A_raw_panel_over_1000_px_renders_lower_until_its_record_asks_for_high_resolution()
+    {
+        _discovery.Devices.Add(Sized(2288, 1080));
+        var coordinator = Coordinator();
+        coordinator.TickOnce();
+        var half = Assert.Single(coordinator.GetAssignments().Assignments);
+
+        Assert.Equal(0.5, half.Dpr);
+        Assert.Equal(2288, half.CssWidth);
+        Assert.Equal(1080, half.CssHeight);
+        var caps = _registry.Get(half.PanelDeviceId)!.Capabilities!;
+        Assert.True(caps.SupportsRenderScale);
+        Assert.Equal(1.0, caps.Dpr);
+
+        _registry.Patch(half.PanelDeviceId, new PanelDevicePatch { HighResolution = true });
+        coordinator.TickOnce();
+        var full = Assert.Single(coordinator.GetAssignments().Assignments);
+
+        Assert.Equal(1.0, full.Dpr);
+        Assert.NotEqual(half.SessionId, full.SessionId);
+        Assert.Equal(half.PanelDeviceId, full.PanelDeviceId);
+
+        _registry.Patch(half.PanelDeviceId, new PanelDevicePatch { HighResolution = false });
+        coordinator.TickOnce();
+
+        Assert.Equal(0.5, Assert.Single(coordinator.GetAssignments().Assignments).Dpr);
+    }
+
+    [Fact]
+    public void A_record_that_asks_for_high_resolution_renders_native_from_the_first_session()
+    {
+        _discovery.Devices.Add(Sized(1920, 480));
+        var coordinator = Coordinator();
+        coordinator.TickOnce();
+        var panelId = Assert.Single(coordinator.GetAssignments().Assignments).PanelDeviceId;
+        Assert.Equal(2.0 / 3, Assert.Single(coordinator.GetAssignments().Assignments).Dpr);
+        _registry.Patch(panelId, new PanelDevicePatch { HighResolution = true });
+        _discovery.Devices.Clear();
+        _nowMs += 120_000;
+        coordinator.TickOnce();
+        Assert.Empty(coordinator.GetAssignments().Assignments);
+
+        _discovery.Devices.Add(Sized(1920, 480));
+        coordinator.TickOnce();
+
+        Assert.Equal(1.0, Assert.Single(coordinator.GetAssignments().Assignments).Dpr);
+    }
+
+    [Theory]
+    [InlineData(1000, 1000, StreamCodec.RawBgra)]
+    [InlineData(640, 480, StreamCodec.RawBgra)]
+    [InlineData(1024, 600, StreamCodec.H264)]
+    public void Other_panels_always_render_at_native(int width, int height, StreamCodec codec)
+    {
+        _discovery.Devices.Add(Sized(width, height, codec));
+        var coordinator = Coordinator();
+        coordinator.TickOnce();
+
+        var assignment = Assert.Single(coordinator.GetAssignments().Assignments);
+
+        Assert.Equal(1.0, assignment.Dpr);
+        Assert.Null(_registry.Get(assignment.PanelDeviceId)!.Capabilities!.SupportsRenderScale);
+    }
+
     [Fact]
     public void Failed_transport_open_still_publishes_and_retries_next_tick()
     {

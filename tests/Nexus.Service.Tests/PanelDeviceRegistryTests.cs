@@ -497,6 +497,17 @@ public sealed class PanelDeviceRegistryTests : IDisposable
     }
 
     [Fact]
+    public void HighResolution_persists_and_hardware_reset_clears_it()
+    {
+        var record = _registry.Allocate("Screen", Caps(PanelSurfaces.Monitor));
+
+        Assert.True(_registry.Patch(record.Id, new PanelDevicePatch { HighResolution = true })!.HighResolution);
+        Assert.True(_registry.Patch(record.Id, new PanelDevicePatch { DisplayName = "Renamed" })!.HighResolution);
+
+        Assert.Null(_registry.ResetHardwareSettings(record.Id)!.HighResolution);
+    }
+
+    [Fact]
     public void ResetToDefaults_UnknownId_ReturnsNull()
     {
         Assert.Null(_registry.ResetToDefaults("nope"));
