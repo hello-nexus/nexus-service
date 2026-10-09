@@ -25,8 +25,10 @@ public sealed partial class StreamDeckConnectionWorker
 {
     private const int DefaultDialStep = 2;
     private const int DefaultRestoreLevel = 50;
-    /// <summary>Refused writes of one light's content before it is left alone until the content changes; two lights per tick keep the surface's own failure threshold out of reach.</summary>
+    /// <summary>Refused writes of one light's content before it is left alone until the content changes.</summary>
     private const int MaxLightWriteAttempts = 2;
+    /// <summary>Light writes pause while the surface has this many consecutive write failures outstanding, which stays below the surface's drop threshold.</summary>
+    private const int LightWriteFailureBudget = 3;
     /// <summary>Custom-turn ticks waiting behind a slow action, per dial; the oldest beyond this are dropped.</summary>
     private const int MaxPendingTurnTicks = 24;
     /// <summary>Turning a dial while it is held moves this many times the step.</summary>
@@ -55,6 +57,8 @@ public sealed partial class StreamDeckConnectionWorker
         public int Left;
         public DeckAction? RightAction;
         public DeckAction? LeftAction;
+        /// <summary>The backlog warning is logged once per segment.</summary>
+        public bool BacklogWarned;
     }
 
     private sealed class DialRuntime
@@ -69,7 +73,6 @@ public sealed partial class StreamDeckConnectionWorker
         public readonly object TurnGate = new();
         /// <summary>The turn segment still accepting ticks; a push or touch closes it so later turns queue behind that action.</summary>
         public TurnSegment? OpenSegment;
-        public bool BacklogWarned;
         public DateTimeOffset FeedbackStartedAt;
         public bool FeedbackActive;
         public int FeedbackStep;
@@ -423,7 +426,8 @@ public sealed partial class StreamDeckConnectionWorker
     /// A custom turn. Ticks wait in per-direction counters while an earlier
     /// action runs: a reverse turn cancels waiting ticks of the other
     /// direction, and beyond the cap the oldest are dropped, so a slow action
-    /// never builds an unbounded backlog and never delays a push or touch.
+    /// holds at most one capped segment per push made behind it and never
+    /// delays a push or touch.
     /// </summary>
     private void RunDialTurnAction(string serial, int dialIndex, DialRuntime runtime, DeckAction? action, bool right, int ticks)
     {
@@ -465,9 +469,9 @@ public sealed partial class StreamDeckConnectionWorker
             {
                 segment.Right = Math.Min(segment.Right, MaxPendingTurnTicks);
                 segment.Left = Math.Min(segment.Left, MaxPendingTurnTicks);
-                if (!runtime.BacklogWarned)
+                if (!segment.BacklogWarned)
                 {
-                    runtime.BacklogWarned = true;
+                    segment.BacklogWarned = true;
                     ServiceLog.Warn($"[streamdeck] dial {dialIndex} turn actions are backing up, dropping the oldest serial={serial}");
                 }
             }
@@ -506,7 +510,6 @@ public sealed partial class StreamDeckConnectionWorker
                         if (ReferenceEquals(runtime.OpenSegment, segment))
                         {
                             runtime.OpenSegment = null;
-                            runtime.BacklogWarned = false;
                         }
                         return;
                     }
@@ -1215,6 +1218,10 @@ public sealed partial class StreamDeckConnectionWorker
                 {
                     continue;
                 }
+                if (surface.ConsecutiveWriteFailures >= LightWriteFailureBudget)
+                {
+                    continue;
+                }
                 // Readiness is read before the write: the settle timer may flip it in between.
                 var ready = surface.IsReady;
                 var written = surface.SetRing(i, ring);
@@ -1243,6 +1250,10 @@ public sealed partial class StreamDeckConnectionWorker
                 {
                     continue;
                 }
+                if (surface.ConsecutiveWriteFailures >= LightWriteFailureBudget)
+                {
+                    continue;
+                }
                 var ready = surface.IsReady;
                 var written = surface.FillKey(model.KeyCount + k, color.R, color.G, color.B);
                 if (LightSettled(written, ready, key, ref state.TouchKeyFailures[k], ref state.TouchKeyFailureKeys[k]))
@@ -1257,8 +1268,9 @@ public sealed partial class StreamDeckConnectionWorker
     /// Whether a light's content should be recorded as handled. A write
     /// refused by a deck that was not ready is retried; a refusal by a ready
     /// deck is retried until it repeats, then left alone until the content
-    /// changes, so a deck that always rejects a light cannot trip the
-    /// surface's consecutive-failure drop.
+    /// changes. Callers also pause light writes while the surface has
+    /// <see cref="LightWriteFailureBudget"/> failures outstanding, so lights
+    /// alone cannot reach the surface's consecutive-failure drop.
     /// </summary>
     private static bool LightSettled(bool written, bool readyBeforeWrite, string key, ref int failures, ref string? failureKey)
     {

@@ -39,6 +39,17 @@ public sealed class HidStreamDeckSurface : IStreamDeckSurface
     public string FirmwareVersion { get; private set; } = "";
     public bool IsConnected => _device is not null;
 
+    public int ConsecutiveWriteFailures
+    {
+        get
+        {
+            lock (_io)
+            {
+                return _consecutiveWriteFailures;
+            }
+        }
+    }
+
     public bool IsReady
     {
         get

@@ -29,6 +29,8 @@ internal sealed class MockStreamDeckHidDevice : IHidDevice
     /// <summary>When set and true for a feature report, the write is rejected every time.</summary>
     public Func<byte[], bool>? RejectFeature { get; set; }
     public bool FailNextOutputWrite { get; set; }
+    /// <summary>When set and true for an output report, the write is rejected every time.</summary>
+    public Func<byte[], bool>? RejectOutput { get; set; }
     public bool FailNextRead { get; set; }
     public bool Disposed { get; private set; }
 
@@ -57,6 +59,7 @@ internal sealed class MockStreamDeckHidDevice : IHidDevice
     public bool Write(ReadOnlySpan<byte> report)
     {
         if (FailNextOutputWrite) { FailNextOutputWrite = false; return false; }
+        if (RejectOutput?.Invoke(report.ToArray()) == true) { return false; }
         OutputWrites.Add(report.ToArray());
         return true;
     }

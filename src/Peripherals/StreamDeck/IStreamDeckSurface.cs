@@ -18,6 +18,9 @@ public interface IStreamDeckSurface : IDisposable
     /// <summary>True once the surface accepts commands; a connected surface can be briefly not ready after open.</summary>
     bool IsReady { get; }
 
+    /// <summary>Consecutive refused writes not yet cleared by a success; the surface drops its handle at its own threshold.</summary>
+    int ConsecutiveWriteFailures { get; }
+
     /// <summary>Sets display brightness, 0-100 (clamped).</summary>
     bool SetBrightness(int percent);
 

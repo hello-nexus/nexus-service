@@ -246,6 +246,25 @@ public sealed class StreamDeckExpandedHidWorkerTests : IDisposable
     }
 
     [Fact]
+    public void RingsThatAreAlwaysRefused_NeverReachTheDropThreshold_EvenAsTheirContentChanges()
+    {
+        var studio = StreamDeckModels.ByProductId(0x00aa)!;
+        var device = new MockStreamDeckHidDevice { ProductId = studio.ProductId };
+        device.RejectOutput = report => report[1] == 0x0f;
+        var (worker, _) = Build(studio, "studio-path", "STU1", device, Usb(studio),
+            "{\"pages\":[{\"slots\":[],\"dials\":[{\"action\":{\"type\":\"volume\",\"deviceId\":\"out\"}},{\"action\":{\"type\":\"volume\",\"deviceId\":\"out\"}}]}]}");
+
+        for (var i = 1; i <= 10; i++)
+        {
+            _values.Set("volume:out", i * 9);
+            worker.Tick();
+        }
+
+        Assert.False(device.Disposed);
+        Assert.True(worker.FindBySerial("STU1")!.IsConnected);
+    }
+
+    [Fact]
     public void ATransientLightWriteFailure_IsRetriedOnTheNextTick()
     {
         var neo = StreamDeckModels.ByProductId(0x009a)!;

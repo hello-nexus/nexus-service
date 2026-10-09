@@ -462,14 +462,25 @@ public class StreamDeckDialProtocolTests
         var dev = new MockStreamDeckHidDevice { ProductId = Galleon.ProductId, VendorId = Galleon.VendorId };
         var surface = new HidStreamDeckSurface(new FakeStreamDeckHidEnumerator { DeviceToOpen = dev }, Galleon);
         using var ready = new ManualResetEventSlim();
-        surface.Ready += ready.Set;
+        var connectReturned = 0;
+        var readyAfterConnect = false;
+        surface.Ready += () =>
+        {
+            readyAfterConnect = Volatile.Read(ref connectReturned) == 1;
+            ready.Set();
+        };
 
         Assert.True(surface.Connect(new HidDeviceInfo { VendorId = Galleon.VendorId, ProductId = Galleon.ProductId, Path = "p", Serial = "S" }));
+        Volatile.Write(ref connectReturned, 1);
         var accepted = surface.SetBrightness(50);
 
-        // The settle timer may fire between Connect and the write on a loaded box; a write is only accepted once the surface is ready.
-        Assert.True(!accepted || ready.IsSet || surface.IsReady);
+        if (!surface.IsReady)
+        {
+            Assert.False(accepted);
+            Assert.DoesNotContain(dev.FeatureWrites, w => w.Length > 1 && w[0] == 0x03 && w[1] == 0x08);
+        }
         Assert.True(ready.Wait(TimeSpan.FromSeconds(3)));
+        Assert.True(readyAfterConnect, "Connect returns before the settle delay ends");
         Assert.True(surface.SetBrightness(50));
         Assert.Contains(dev.FeatureWrites, w => w[1] == 0x05 && w[2] == 0);
     }
