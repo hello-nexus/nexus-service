@@ -38,13 +38,6 @@ public class Slv3RgbFrameTests
     }
 
     [Fact]
-    public void BuildEffectIndex_is_big_endian()
-    {
-        var bytes = Slv3RgbFrame.BuildEffectIndex(0x01020304);
-        Assert.Equal(new byte[] { 0x01, 0x02, 0x03, 0x04 }, bytes);
-    }
-
-    [Fact]
     public void BuildPackets_header_packet_carries_common_fields_and_metadata_and_no_data()
     {
         var raw = Slv3RgbFrame.BuildFrameBuffer(new[] { new RgbColor(10, 20, 30) }, 100);

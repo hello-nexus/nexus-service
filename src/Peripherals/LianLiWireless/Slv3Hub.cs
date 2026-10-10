@@ -204,6 +204,7 @@ public sealed class Slv3Hub : IDisposable
     // shows it).
     private const int RgbHeaderRepeats = 4;
     private const int RgbHeaderGapMs = 20;
+    internal int HeaderGapMs { get; set; } = RgbHeaderGapMs;
 
     // Rolling-window uploads. The chain pauses playback while an upload
     // addressed to it is in flight, so the headers go back to back under one
@@ -225,6 +226,7 @@ public sealed class Slv3Hub : IDisposable
 
     // Seeded so a restart does not replay the index a chain last reported.
     private byte _effectCounter = (byte)Environment.TickCount64;
+    private readonly Dictionary<string, byte[]> _lastSentEffectIndex = new(StringComparer.Ordinal);
 
     // Device-list records span more than one page once enough chains are bound
     // (up to MaxSlot, plus non-fan devices), so the poll requests
@@ -351,6 +353,7 @@ public sealed class Slv3Hub : IDisposable
         _lastFanRecords = new List<Slv3DeviceRecord>();
         _anyAioBound = false;
         _knownChains.Clear();
+        _rescueStartMs = -1;
         _unconfirmedChains.Clear();
         _pending.Clear();
         _pendingCommands.Clear();
@@ -611,6 +614,7 @@ public sealed class Slv3Hub : IDisposable
             RefreshMasterMacLocked();
             SendClockHeartbeatLocked();
             RunSaveCfgScheduleLocked();
+            RescueStrandedChainLocked();
             return true;
         }
     }
@@ -1727,6 +1731,165 @@ public sealed class Slv3Hub : IDisposable
         return true;
     }
 
+    // One-off for one customer build: their CPU Strimer left the dongle at
+    // 2026-10-08 ~02:00:15Z, when a live upload's timestamp effect index began
+    // 0x19 0x3D; a chain misreading that upload as RF_Bind takes [14]/[15] as
+    // its rx/channel. Binds it back from the misread pipes near that moment.
+    private static readonly byte[] StrandedMac = Convert.FromHexString("B041BC7A4EE0");
+    private const byte StrandedRx = 0x19;
+    private const byte StrandedChannel = 0x3D;
+    private const int RescueChannelSpread = 3;
+    private const int RescuePipesPerTick = 12;
+    private const long RescueSettleMs = 15_000;
+    // Counted across reconnects so a flapping link cannot keep it sending.
+    private const int RescueTickBudget = 300;
+    private List<(byte Channel, byte Rx)>? _rescuePipes;
+    private int _rescueCursor;
+    private long _rescueStartMs = -1;
+    private bool _rescueSent;
+    private int _rescueTicks;
+    private bool _rescueStopped;
+    private bool _rescueDone;
+
+    private void RescueStrandedChainLocked()
+    {
+        if (_rescueDone || _tx is null)
+        {
+            return;
+        }
+        var now = _nowMs();
+        if (_knownChains.TryGetValue(Convert.ToHexString(StrandedMac), out var back))
+        {
+            // Only a binding to us is persisted; one that came back anywhere else is left alone.
+            if (_rescueSent && IsBoundToUsLocked(back.Record))
+            {
+                ServiceLog.Info($"[lianli-wireless] rescue: B041BC7A4EE0 is back on the dongle at rx {back.Record.RxType}");
+                _saveCfgBurstRemaining = SaveCfgBurstSends;
+                NoteConfigChangedLocked();
+            }
+            _rescueDone = true;
+            return;
+        }
+        if (_rescueStopped)
+        {
+            return;
+        }
+        // The settle restarts with every connection (DisconnectLocked clears the
+        // start) and waits for chains to report, so occupied slots are known.
+        if (_knownChains.Count == 0)
+        {
+            _rescueStartMs = -1;
+            return;
+        }
+        if (_rescueStartMs < 0)
+        {
+            _rescueStartMs = now;
+        }
+        if (now - _rescueStartMs < RescueSettleMs)
+        {
+            return;
+        }
+        if (_rescueTicks >= RescueTickBudget)
+        {
+            ServiceLog.Info("[lianli-wireless] rescue: B041BC7A4EE0 did not answer, giving up");
+            _rescueStopped = true;
+            return;
+        }
+        var slot = HighestFreeSlotLocked();
+        if (slot < 0)
+        {
+            return;
+        }
+        _rescuePipes ??= BuildRescuePipes(_channel);
+        var payload = Slv3Protocol.BuildBind(StrandedMac, _masterMac, targetRx: (byte)slot, targetChannel: _channel,
+            slot: BindOrdinalLocked(StrandedMac), Slv3Protocol.BuildPwmTuple(DefaultDutyTargets, 0));
+        _rescueTicks++;
+        if (!_rescueSent)
+        {
+            ServiceLog.Info($"[lianli-wireless] rescue: binding B041BC7A4EE0 to rx {slot} ch {_channel} over {_rescuePipes.Count} pipes");
+            _rescueSent = true;
+        }
+        // The two likeliest pipes go out every tick, the rest rotate; a failed
+        // write ends the tick so a stuck TX holds the lock for one timeout only.
+        if (!SendRfPayloadLocked(_rescuePipes[0].Channel, _rescuePipes[0].Rx, payload)
+            || !SendRfPayloadLocked(_rescuePipes[1].Channel, _rescuePipes[1].Rx, payload))
+        {
+            return;
+        }
+        for (var i = 0; i < RescuePipesPerTick - 2; i++)
+        {
+            var pipe = _rescuePipes[2 + _rescueCursor];
+            _rescueCursor = (_rescueCursor + 1) % (_rescuePipes.Count - 2);
+            if (!SendRfPayloadLocked(pipe.Channel, pipe.Rx, payload))
+            {
+                return;
+            }
+        }
+    }
+
+    // Searched from the top: the customer's chains hold the low slots, and a
+    // chain still within its expiry keeps its slot even if a poll missed it.
+    private int HighestFreeSlotLocked()
+    {
+        var used = new HashSet<int>();
+        foreach (var chain in _knownChains.Values)
+        {
+            if (IsBoundToUsLocked(chain.Record))
+            {
+                used.Add(chain.Record.RxType);
+            }
+        }
+        foreach (var record in _lastFanRecords)
+        {
+            if (IsBoundToUsLocked(record))
+            {
+                used.Add(record.RxType);
+            }
+        }
+        foreach (var op in _pending.Values)
+        {
+            if (!op.Unbind)
+            {
+                used.Add(op.TargetSlot);
+            }
+        }
+        for (var slot = Slv3Protocol.MaxSlot; slot >= Slv3Protocol.MinSlot; slot--)
+        {
+            if (!used.Contains(slot))
+            {
+                return slot;
+            }
+        }
+        return -1;
+    }
+
+    // Misread channels nearest the drop first at the misread rx, then the misread
+    // rx on our channel, then every slot rx on those channels (a chain that moved
+    // only its channel).
+    private static List<(byte Channel, byte Rx)> BuildRescuePipes(byte ourChannel)
+    {
+        var channels = new List<byte> { StrandedChannel };
+        for (var d = 1; d <= RescueChannelSpread; d++)
+        {
+            channels.Add((byte)(StrandedChannel - d));
+            channels.Add((byte)(StrandedChannel + d));
+        }
+        var pipes = new List<(byte Channel, byte Rx)>();
+        foreach (var ch in channels)
+        {
+            pipes.Add((ch, StrandedRx));
+        }
+        pipes.Add((ourChannel, StrandedRx));
+        foreach (var ch in channels)
+        {
+            for (var rx = Slv3Protocol.MinSlot; rx <= Slv3Protocol.MaxSlot; rx++)
+            {
+                pipes.Add((ch, (byte)rx));
+            }
+        }
+        return pipes;
+    }
+
     private bool SendSequencedCommandLocked(Slv3DeviceRecord record, byte rfCmd, byte cmdSeq, byte arg = 0)
     {
         if (_tx is null)
@@ -2072,13 +2235,13 @@ public sealed class Slv3Hub : IDisposable
     /// <summary>
     /// <see cref="SendRgbAnimation"/> for one rolling playback window, re-sent
     /// every fraction of a second while the chain keeps playing: uploaded with
-    /// the window profile and a chain-safe effect index.
+    /// the window profile.
     /// </summary>
     public async Task<bool> SendRgbWindowAsync(
         string macHex, byte[] frames, int ledCount, int frameCount, double intervalTicks, int brightnessPercent)
     {
         var raw = Slv3RgbFrame.BuildFrameBuffer(frames, brightnessPercent);
-        if (!TryPrepareUpload(macHex, raw, ledCount, frameCount, intervalTicks, window: true, out var channel, out var rxType, out var packets, out _))
+        if (!TryPrepareUpload(macHex, raw, ledCount, frameCount, intervalTicks, out var channel, out var rxType, out var packets, out var effectIndex))
         {
             return false;
         }
@@ -2105,6 +2268,7 @@ public sealed class Slv3Hub : IDisposable
                     }
                 }
             }
+            NoteEffectIndexSentLocked(macHex, effectIndex);
             NoteConfigChangedLocked();
         }
         // The late passes' cost is booked at decision time so a concurrent
@@ -2144,9 +2308,11 @@ public sealed class Slv3Hub : IDisposable
     // A chain can misparse effect-index bytes as a bind target and re-bind off
     // our pipe, so the first three bytes are its own rx/channel/ordinal (a
     // misparse re-binds it in place). A chain ignores an upload carrying the
-    // index it already reports, so the counter skips that value.
+    // index it already shows, so the counter skips the reported and the last
+    // sent value (the report lags an upload that landed after the poll).
     private byte[] NextSafeEffectIndexLocked(Slv3DeviceRecord record)
     {
+        _lastSentEffectIndex.TryGetValue(Convert.ToHexString(record.Mac), out var lastSent);
         byte[] idx;
         do
         {
@@ -2157,12 +2323,21 @@ public sealed class Slv3Hub : IDisposable
             }
             idx = new byte[] { record.RxType, record.Channel, BindOrdinalLocked(record.Mac), _effectCounter };
         }
-        while (record.EffectIndex is { Length: 4 } && idx.AsSpan().SequenceEqual(record.EffectIndex));
+        while ((record.EffectIndex is { Length: 4 } && idx.AsSpan().SequenceEqual(record.EffectIndex))
+            || (lastSent is not null && idx.AsSpan().SequenceEqual(lastSent)));
         return idx;
     }
 
+    private void NoteEffectIndexSentLocked(string macHex, byte[] effectIndex)
+    {
+        if (TryParseMac(macHex, out var mac))
+        {
+            _lastSentEffectIndex[Convert.ToHexString(mac)] = effectIndex;
+        }
+    }
+
     private bool TryPrepareUpload(
-        string macHex, byte[] raw, int ledCount, int frameCount, double intervalMs, bool window,
+        string macHex, byte[] raw, int ledCount, int frameCount, double intervalMs,
         out byte channel, out byte rxType, out byte[][] packets, out byte[] effectIndex)
     {
         channel = 0;
@@ -2190,9 +2365,7 @@ public sealed class Slv3Hub : IDisposable
                 return false;
             }
 
-            effectIndex = window
-                ? NextSafeEffectIndexLocked(record)
-                : Slv3RgbFrame.BuildEffectIndex(DateTimeOffset.UtcNow.ToUnixTimeMilliseconds());
+            effectIndex = NextSafeEffectIndexLocked(record);
             packets = Slv3RgbFrame.BuildPackets(
                 record.Mac, _masterMac, effectIndex, compressed, ledCount, frameCount, intervalMs);
             channel = record.Channel;
@@ -2207,7 +2380,7 @@ public sealed class Slv3Hub : IDisposable
         string macHex, byte[] raw, int ledCount, int frameCount, double intervalMs, int dataPasses, out string effectIndexHex)
     {
         effectIndexHex = "";
-        if (!TryPrepareUpload(macHex, raw, ledCount, frameCount, intervalMs, window: false, out var channel, out var rxType, out var packets, out var effectIndex))
+        if (!TryPrepareUpload(macHex, raw, ledCount, frameCount, intervalMs, out var channel, out var rxType, out var packets, out var effectIndex))
         {
             return false;
         }
@@ -2219,7 +2392,7 @@ public sealed class Slv3Hub : IDisposable
         {
             if (i > 0)
             {
-                Thread.Sleep(RgbHeaderGapMs);
+                Thread.Sleep(HeaderGapMs);
             }
             if (!SendRfPayload(channel, rxType, packets[0]))
             {
@@ -2245,6 +2418,7 @@ public sealed class Slv3Hub : IDisposable
                     }
                 }
             }
+            NoteEffectIndexSentLocked(macHex, effectIndex);
             NoteConfigChangedLocked();
         }
 
