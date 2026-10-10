@@ -1,4 +1,3 @@
-#if WINDOWS
 using System;
 using System.Runtime.InteropServices;
 using System.Runtime.Versioning;
@@ -71,4 +70,3 @@ internal static class WindowsScreenOffTimeout
         }
     }
 }
-#endif
