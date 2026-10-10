@@ -5,6 +5,7 @@ using System.Threading;
 using System.Threading.Tasks;
 using Nexus.Service.Auth;
 using Nexus.Service.Deck;
+using Nexus.Service.Devices;
 using Nexus.Service.Devices.Detection;
 using Nexus.Service.Devices.Handlers;
 using Nexus.Service.Models;
@@ -33,10 +34,11 @@ public static class StreamDeckRoutes
     public static void MapStreamDeckEndpoints(this WebApplication app)
     {
         app.MapGet("/streamdeck/decks", (
-            StreamDeckConnectionWorker worker, IConfigStore store, StreamDeckHandler handler, IUsbEnumerator usb) =>
+            StreamDeckConnectionWorker worker, IConfigStore store, StreamDeckHandler handler, IUsbEnumerator usb, DeviceControlGate gate) =>
         {
             var settings = store.Load().StreamDeck;
-            var warning = handler.GetWarning(usb.Enumerate());
+            var usbDevices = usb.Enumerate();
+            var warning = handler.GetWarning(usbDevices);
             var conflictAppId = ResolveConflictAppId(warning);
             var response = new GetStreamDecksResponse();
             var seenSerials = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
@@ -60,39 +62,23 @@ public static class StreamDeckRoutes
                 {
                     continue;
                 }
-                response.Decks.Add(new StreamDeckSummaryDto
+                seenSerials.Add(serial);
+                response.Decks.Add(BuildOfflineSummary(worker, serial, model, deck, null, null));
+            }
+
+            // A plugged-in deck Nexus has never driven has no surface or record
+            // while Nexus Control is off; list it so the UI can offer the toggle.
+            // A Windows instance id with '&' is synthetic, not the HID serial.
+            foreach (var entry in gate.IsEnabled("streamdeck") ? new List<UsbDeviceEntry>() : usbDevices)
+            {
+                if (StreamDeckModels.ByProductId(entry.ProductId) is not { } model || entry.VendorId != model.VendorId
+                    || string.IsNullOrEmpty(entry.Serial) || entry.Serial.Contains('&')
+                    || !seenSerials.Add(entry.Serial))
                 {
-                    Serial = serial,
-                    Model = model.Name,
-                    DisplayName = model.DisplayName,
-                    Name = string.IsNullOrEmpty(deck.Name) ? model.DisplayName : deck.Name,
-                    Connected = false,
-                    Verified = model.Verified,
-                    Rows = model.Rows,
-                    Columns = model.Columns,
-                    KeyCount = model.KeyCount,
-                    KeyPixels = model.KeyPixelSize,
-                    Format = FormatName(model.ImageFormat),
-                    Transform = model.Transform,
-                    Encoders = model.Encoders,
-                    DialPlacement = DialPlacementName(model.DialPlacement),
-                    Screen = ScreenDto(model),
-                    TouchKeys = model.TouchKeys,
-                    EncoderRingLeds = model.EncoderRingLeds,
-                    KeyWidth = model.KeyWidth,
-                    KeyHeight = model.KeyHeight,
-                    InfoScreen = InfoScreenFor(model, deck),
-                    Brightness = deck.Brightness,
-                    Orientation = deck.Orientation,
-                    SleepAfterSeconds = deck.SleepAfterSeconds,
-                    SleepWhenLocked = deck.SleepWhenLocked,
-                    FirmwareVersion = "",
-                    Warning = null,
-                    ConflictAppId = null,
-                    CurrentPage = worker.GetCurrentPage(serial),
-                    FolderPath = worker.GetFolderPath(serial).ToList(),
-                    InstanceId = DeckInstanceResolver.PhysicalInstanceId(serial),
-                });
+                    continue;
+                }
+                var record = settings.Decks.TryGetValue(entry.Serial, out var saved) ? saved : new PhysicalDeckSettings();
+                response.Decks.Add(BuildOfflineSummary(worker, entry.Serial, model, record, warning, conflictAppId));
             }
             return response;
         }).LocalhostOnly();
@@ -376,6 +362,42 @@ public static class StreamDeckRoutes
             return ApiResponse.Ok();
         }).LocalhostOnly();
     }
+
+    private static StreamDeckSummaryDto BuildOfflineSummary(
+        StreamDeckConnectionWorker worker, string serial, StreamDeckModel model, PhysicalDeckSettings deck,
+        string? warning, string? conflictAppId) => new()
+    {
+        Serial = serial,
+        Model = model.Name,
+        DisplayName = model.DisplayName,
+        Name = string.IsNullOrEmpty(deck.Name) ? model.DisplayName : deck.Name,
+        Connected = false,
+        Verified = model.Verified,
+        Rows = model.Rows,
+        Columns = model.Columns,
+        KeyCount = model.KeyCount,
+        KeyPixels = model.KeyPixelSize,
+        Format = FormatName(model.ImageFormat),
+        Transform = model.Transform,
+        Encoders = model.Encoders,
+        DialPlacement = DialPlacementName(model.DialPlacement),
+        Screen = ScreenDto(model),
+        TouchKeys = model.TouchKeys,
+        EncoderRingLeds = model.EncoderRingLeds,
+        KeyWidth = model.KeyWidth,
+        KeyHeight = model.KeyHeight,
+        InfoScreen = InfoScreenFor(model, deck),
+        Brightness = deck.Brightness,
+        Orientation = deck.Orientation,
+        SleepAfterSeconds = deck.SleepAfterSeconds,
+        SleepWhenLocked = deck.SleepWhenLocked,
+        FirmwareVersion = "",
+        Warning = warning,
+        ConflictAppId = conflictAppId,
+        CurrentPage = worker.GetCurrentPage(serial),
+        FolderPath = worker.GetFolderPath(serial).ToList(),
+        InstanceId = DeckInstanceResolver.PhysicalInstanceId(serial),
+    };
 
     /// <summary>Queues one simulated dial or touch report; false when the model lacks the control or the body is malformed.</summary>
     private static bool TrySimulateInput(SimulatedStreamDeckSurface sim, StreamDeckSimInputBody body)
