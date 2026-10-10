@@ -268,7 +268,8 @@ public sealed class DisplayTopologyService
                     info.Manufacturer, info.Model, info.Name,
                     info.ResolutionWidth, info.ResolutionHeight,
                     info.Scale, info.IsTouch, info.Orientation,
-                    info.Dpi);
+                    // A failed EDID read must not drop the grid to the default density.
+                    info.Dpi ?? record.Capabilities?.Dpi);
                 // Grid is kiosk-reported on self-registered panels; carry any
                 // stored value so the rebuild never clears it.
                 caps.Grid = record.Capabilities?.Grid;

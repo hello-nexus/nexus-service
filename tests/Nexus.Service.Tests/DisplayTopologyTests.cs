@@ -417,6 +417,10 @@ public sealed class DisplayTopologyTests : IDisposable
         service.GetTopology();
 
         Assert.Equal(94.1, _registry.FindByDisplayId(display.Id)!.Capabilities?.Dpi);
+
+        display.Dpi = null;
+        service.GetTopology();
+        Assert.Equal(94.1, _registry.FindByDisplayId(display.Id)!.Capabilities?.Dpi);
     }
 
     private static byte[] BuildEdid(string mfg, ushort product, uint serial, int widthCm, int heightCm, string modelName)
