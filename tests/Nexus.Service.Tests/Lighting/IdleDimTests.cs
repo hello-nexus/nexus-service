@@ -343,3 +343,28 @@ public sealed class IdleTimeSourceSelectorTests
         Assert.Null(await sel.GetIdleMsAsync());
     }
 }
+
+public sealed class ProbeThrottleTests
+{
+    [Fact]
+    public void First_call_runs_even_at_a_clock_of_zero_or_a_huge_negative()
+    {
+        Assert.True(new ProbeThrottle(TimeSpan.FromSeconds(30), () => 0).TryBegin());
+        Assert.True(new ProbeThrottle(TimeSpan.FromSeconds(30), () => long.MinValue).TryBegin());
+    }
+
+    [Fact]
+    public void Reruns_after_the_interval_and_is_throttled_within_it()
+    {
+        long now = 1_000;
+        var t = new ProbeThrottle(TimeSpan.FromSeconds(30), () => now);
+
+        Assert.True(t.TryBegin());
+        now += 29_999;
+        Assert.False(t.TryBegin());
+        now += 1;
+        Assert.True(t.TryBegin());
+        now += 1_000;
+        Assert.False(t.TryBegin());
+    }
+}

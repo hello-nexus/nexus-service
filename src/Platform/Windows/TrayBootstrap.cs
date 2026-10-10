@@ -524,9 +524,12 @@ internal static class TrayBootstrap
             // can report the user back.
             helperRegistry.Disconnected += _ =>
             {
-                if (helperRegistry.IsAnyConnected) return;
+                // Clear regardless: under fast user switching the helper that
+                // went may have been the armed one. A remaining helper reports
+                // its own state when re-armed.
                 idleDim.OnInputIdle(false);
                 idleDim.OnDisplayOff(false);
+                if (helperRegistry.IsAnyConnected && idleWatch.Armed) idleWatch.Push();
             };
             helperRegistry.InboundEnvelope += (_, env) =>
             {

@@ -122,12 +122,10 @@ internal sealed class X11IdleTimeSource : IIdleTimeSource
 internal sealed class LinuxIdleDimWatch : IIdleDimWatch, IHostedService, IDisposable
 {
     private const int PollPeriodMs = 1000;
-    private static readonly TimeSpan ReprobeInterval = TimeSpan.FromSeconds(30);
 
     private readonly IdleDimController _controller;
     private readonly IdleTimeSourceSelector _selector;
     private readonly DBusConnection? _dbus;
-    private readonly Func<long> _nowMs;
     private readonly object _gate = new();
     // The selector and the X11 source are not thread-safe: every access takes this.
     private readonly SemaphoreSlim _selectorGate = new(1, 1);
@@ -135,7 +133,7 @@ internal sealed class LinuxIdleDimWatch : IIdleDimWatch, IHostedService, IDispos
     private int _threshold;
     private bool? _reported;
     private int _polling;
-    private long _lastProbeMs = long.MinValue;
+    private readonly ProbeThrottle _reprobeThrottle;
 
     public LinuxIdleDimWatch(IdleDimController controller, DBusConnection dbus)
         : this(controller, new IdleTimeSourceSelector(new IIdleTimeSource[]
@@ -152,12 +150,13 @@ internal sealed class LinuxIdleDimWatch : IIdleDimWatch, IHostedService, IDispos
         _controller = controller;
         _selector = selector;
         _dbus = dbus;
-        _nowMs = nowMs ?? (() => Environment.TickCount64);
+        _reprobeThrottle = new ProbeThrottle(TimeSpan.FromSeconds(30), nowMs);
     }
 
     public async Task StartAsync(CancellationToken cancellationToken)
     {
-        // Probe before binding, so the first poll cannot race it.
+        // Probe before binding, so the first poll cannot race it. Stamps the throttle.
+        _reprobeThrottle.TryBegin();
         await ProbeAsync();
         _controller.Reprobe = () => _ = ReprobeAsync();
         _controller.Watch = this;
@@ -171,29 +170,19 @@ internal sealed class LinuxIdleDimWatch : IIdleDimWatch, IHostedService, IDispos
 
     // Lets GET /lighting/idle-dim recover from a probe that ran before the bus
     // or the login was up, at most once per interval.
-    private async Task ReprobeAsync()
+    internal async Task ReprobeAsync()
     {
-        var now = _nowMs();
-        lock (_gate)
+        if (_reprobeThrottle.TryBegin())
         {
-            if (now - _lastProbeMs < ReprobeInterval.TotalMilliseconds)
-            {
-                return;
-            }
-            _lastProbeMs = now;
+            await ProbeAsync();
         }
-        await ProbeAsync();
     }
 
     private async Task ProbeAsync()
     {
         try
         {
-            if (_dbus is not null)
-            {
-                try { await _dbus.StartAsync(); }
-                catch { /* the sources that need the bus simply will not answer */ }
-            }
+            await EnsureBusAsync();
             long? ms;
             await _selectorGate.WaitAsync();
             try { ms = await _selector.GetIdleMsAsync(); }
@@ -207,6 +196,17 @@ internal sealed class LinuxIdleDimWatch : IIdleDimWatch, IHostedService, IDispos
         {
             Console.Error.WriteLine($"[idle-dim] idle-time probe failed: {ex.Message}");
         }
+    }
+
+    // Idempotent: reconnects a bus that dropped (logout/login, a KDE restart).
+    private async Task EnsureBusAsync()
+    {
+        if (_dbus is null)
+        {
+            return;
+        }
+        try { await _dbus.StartAsync(); }
+        catch { /* the sources that need the bus simply will not answer */ }
     }
 
     public void SetInputWatch(int thresholdSeconds)
@@ -245,6 +245,7 @@ internal sealed class LinuxIdleDimWatch : IIdleDimWatch, IHostedService, IDispos
             {
                 return;
             }
+            await EnsureBusAsync();
             long? ms;
             await _selectorGate.WaitAsync();
             try { ms = await _selector.GetIdleMsAsync(); }

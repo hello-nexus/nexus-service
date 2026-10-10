@@ -465,6 +465,9 @@ public static class TrayIcon
                 _iconDataReady = false;
                 _hwnd = IntPtr.Zero;
                 _thread = null;
+                // The window and its power registration die together.
+                _displayWatchHandle = IntPtr.Zero;
+                _lastDisplayOff = false;
             }
         }
         catch
@@ -477,6 +480,9 @@ public static class TrayIcon
                 _retryTimerArmed = false;
                 _hwnd = IntPtr.Zero;
                 _thread = null;
+                // The window and its power registration die together.
+                _displayWatchHandle = IntPtr.Zero;
+                _lastDisplayOff = false;
             }
         }
     }
@@ -490,6 +496,9 @@ public static class TrayIcon
             _retryTimerArmed = false;
             _hwnd = IntPtr.Zero;
             _thread = null;
+            // The window and its power registration die together.
+            _displayWatchHandle = IntPtr.Zero;
+            _lastDisplayOff = false;
         }
     }
 

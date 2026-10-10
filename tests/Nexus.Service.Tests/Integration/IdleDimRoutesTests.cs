@@ -151,7 +151,7 @@ public sealed class IdleDimFramePathTests : IClassFixture<StubDeviceHostFactory>
     }
 
     [Fact]
-    public async Task A_dimmed_controller_caps_the_one_argument_Effective_and_release_restores_it()
+    public void A_dimmed_controller_caps_the_one_argument_Effective_and_release_restores_it()
     {
         var store = _factory.Services.GetRequiredService<IConfigStore>();
         var controller = _factory.Services.GetRequiredService<IdleDimController>();
@@ -165,13 +165,19 @@ public sealed class IdleDimFramePathTests : IClassFixture<StubDeviceHostFactory>
                 s.Lighting.IdleDim = new() { Enabled = true, TimeoutSeconds = 300, Level = 0 };
             });
 
+            // Read the ramp at a future instant instead of sleeping: past the
+            // ramp's length it is at its target.
+            var past = Environment.TickCount64 + 5000;
+            var lighting = store.Load().Lighting;
+
             controller.OnInputIdle(true);
-            await Task.Delay(400);
-            Assert.True(MasterBrightness.Effective(store.Load().Lighting) < 0.9f);
+            Assert.Equal(0f, MasterBrightness.IdleRamp.Cap(past));
+            Assert.Equal(0f, MasterBrightness.Effective(lighting, TimeSpan.Zero, MasterBrightness.IdleRamp.Cap(past)));
+            Assert.True(MasterBrightness.Effective(lighting) <= 1f);
 
             controller.OnInputIdle(false);
-            await Task.Delay(1000);
-            Assert.Equal(1f, MasterBrightness.Effective(store.Load().Lighting));
+            Assert.Equal(1f, MasterBrightness.IdleRamp.Cap(past));
+            Assert.Equal(1f, MasterBrightness.Effective(lighting, TimeSpan.Zero, MasterBrightness.IdleRamp.Cap(past)));
         }
         finally
         {
