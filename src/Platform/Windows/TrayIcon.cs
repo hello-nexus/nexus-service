@@ -453,6 +453,7 @@ public static class TrayIcon
                 DispatchMessage(ref msg);
             }
 
+            bool wasOff;
             lock (_sync)
             {
                 StopIconRetry();
@@ -465,12 +466,14 @@ public static class TrayIcon
                 _iconDataReady = false;
                 _hwnd = IntPtr.Zero;
                 _thread = null;
+                wasOff = DropDisplayWatchLocked();
             }
-            DropDisplayWatch();
+            ReleaseHeldDisplayOff(wasOff);
         }
         catch
         {
             // Silently fail - tray is non-critical
+            bool wasOff;
             lock (_sync)
             {
                 _visible = false;
@@ -478,22 +481,27 @@ public static class TrayIcon
                 _retryTimerArmed = false;
                 _hwnd = IntPtr.Zero;
                 _thread = null;
+                wasOff = DropDisplayWatchLocked();
             }
-            DropDisplayWatch();
+            ReleaseHeldDisplayOff(wasOff);
         }
     }
 
-    /// <summary>The power registration dies with the window; an "off" the service still holds is released, since no "on" can arrive.</summary>
-    private static void DropDisplayWatch()
+    /// <summary>The power registration dies with the window. Cleared in the same lock that publishes <c>_thread = null</c>, so a replacement pump never races it.</summary>
+    private static bool DropDisplayWatchLocked()
     {
         var wasOff = _lastDisplayOff;
         _displayWatchHandle = IntPtr.Zero;
         _lastDisplayOff = false;
-        if (wasOff)
-        {
-            try { DisplayStateChanged?.Invoke(false); }
-            catch (Exception ex) { DiagFile($"display watch release failed: {ex.Message}"); }
-        }
+        return wasOff;
+    }
+
+    /// <summary>An "off" the service still holds is released, since the dead registration can never deliver the "on".</summary>
+    private static void ReleaseHeldDisplayOff(bool wasOff)
+    {
+        if (!wasOff) return;
+        try { DisplayStateChanged?.Invoke(false); }
+        catch (Exception ex) { DiagFile($"display watch release failed: {ex.Message}"); }
     }
 
     private static void ResetThreadState()
