@@ -73,9 +73,7 @@ public sealed class LinuxDisplayTopologyProvider : IDisplayTopologyProvider
             ? identity.ModelName
             : (identity.Mfg.Length > 0 ? $"{identity.Mfg} {identity.Product:X4}" : connector);
 
-        double? dpi = identity.WidthCm > 0 && width > 0
-            ? Math.Round(width / (identity.WidthCm / 2.54), 1)
-            : null;
+        var dpi = DisplayDensity.FromEdid(edid, width, height);
 
         return new RawDisplayInfo
         {

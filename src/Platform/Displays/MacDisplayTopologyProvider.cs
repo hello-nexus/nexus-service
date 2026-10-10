@@ -51,9 +51,7 @@ public sealed class MacDisplayTopologyProvider : IDisplayTopologyProvider
                     : null;
 
                 var sizeMm = CGDisplayScreenSize(handle.DisplayId);
-                double? dpi = sizeMm.Width > 0
-                    ? Math.Round(pixelWidth / (sizeMm.Width / 25.4), 1)
-                    : null;
+                var dpi = DisplayDensity.FromPhysicalMm(sizeMm.Width, sizeMm.Height, pixelWidth, pixelHeight);
 
                 results.Add(new RawDisplayInfo
                 {

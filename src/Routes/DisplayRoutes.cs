@@ -230,7 +230,8 @@ public static class DisplayRoutes
             var capabilities = DisplayTopologyService.BuildPromotedCapabilities(
                 display.Manufacturer, display.Model, display.Name,
                 display.Resolution.Width, display.Resolution.Height,
-                display.ScaleFactor, display.IsTouch, display.Orientation);
+                display.ScaleFactor, display.IsTouch, display.Orientation,
+                DisplayTopologyService.MeasuredDpiFor(registry.FindByDisplayId(id), display.Dpi));
             var (record, activated) = registry.AllocateForDisplay(id, body?.DisplayName ?? display.Name, capabilities);
             if (!activated)
                 return Results.Conflict(ApiResponse.Fail("display is already a panel"));
