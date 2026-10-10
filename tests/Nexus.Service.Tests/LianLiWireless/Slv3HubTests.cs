@@ -926,12 +926,51 @@ public class Slv3HubTests
         Assert.True(entered.Wait(TimeSpan.FromSeconds(10)));
         var before = tx.SentFrames.Count;
 
-        hub.OnSystemSuspending();
+        await hub.OnSystemSuspending();
         var duringHold = tx.SentFrames.Count;
         release.Set();
 
         Assert.Equal(before, duringHold);
         Assert.True(await holder);
+    }
+
+    [Fact]
+    public void A_manual_bind_that_expires_does_not_leave_a_confirmed_sighting_count_behind()
+    {
+        var mac = Convert.ToHexString(FanMac);
+        var (hub, net, tx, _, _) = CreateOwnershipHub(new() { [mac] = 2 });
+        net.Fans.Add(new SimulatedFan { Mac = FanMac, IgnoresBind = true });
+        Ticks(hub, Slv3Hub.RebindConfirmPolls - 1);
+        Assert.Equal(0, CountBindFrames(tx));
+
+        Assert.True(hub.Bind(mac));
+        Ticks(hub, PendingOpTickBudget - 1);
+        tx.SentFrames.Clear();
+        Ticks(hub, 1);
+        Assert.Equal(0, CountBindFrames(tx));
+        Ticks(hub, Slv3Hub.RebindConfirmPolls - 2);
+        Assert.Equal(0, CountBindFrames(tx));
+
+        Ticks(hub, 1);
+        Assert.True(CountBindFrames(tx) > 0);
+    }
+
+    [Fact]
+    public void Sightings_only_count_after_the_backoff_has_elapsed()
+    {
+        var mac = Convert.ToHexString(FanMac);
+        var (hub, net, tx, _, clock) = CreateOwnershipHub(new() { [mac] = 2 });
+        net.Fans.Add(new SimulatedFan { Mac = FanMac, IgnoresBind = true });
+        Ticks(hub, Slv3Hub.RebindConfirmPolls);
+        Ticks(hub, PendingOpTickBudget + 2);
+        Ticks(hub, 10);
+        clock.AdvanceMs(Slv3Hub.AutoRebindIntervalMs + 1);
+        tx.SentFrames.Clear();
+
+        Ticks(hub, Slv3Hub.RebindConfirmPolls - 1);
+        Assert.Equal(0, CountBindFrames(tx));
+        Ticks(hub, 1);
+        Assert.True(CountBindFrames(tx) > 0);
     }
 
     [Fact]
@@ -1058,7 +1097,7 @@ public class Slv3HubTests
     }
 
     [Fact]
-    public void Suspend_never_holds_the_hub_lock_while_waiting_between_sends()
+    public async System.Threading.Tasks.Task Suspend_never_holds_the_hub_lock_while_waiting_between_sends()
     {
         var net = new FakeSlv3Network();
         var tx = new FakeTxTransport(net);
@@ -1073,13 +1112,13 @@ public class Slv3HubTests
         hubRef = hub;
         Assert.True(hub.EnsureConnected());
 
-        hub.OnSystemSuspending();
+        await hub.OnSystemSuspending();
 
         Assert.Equal(new[] { true, true }, lockFreeDuringWait);
     }
 
     [Fact]
-    public void Suspend_sends_three_savecfg_frames_200ms_apart()
+    public async System.Threading.Tasks.Task Suspend_sends_three_savecfg_frames_200ms_apart()
     {
         var net = new FakeSlv3Network();
         var tx = new FakeTxTransport(net);
@@ -1089,19 +1128,40 @@ public class Slv3HubTests
         Assert.True(hub.EnsureConnected());
         tx.SentFrames.Clear();
 
-        hub.OnSystemSuspending();
+        var rest = hub.OnSystemSuspending();
 
+        // The first send is out before the call returns; only the retries are in the background.
+        Assert.True(tx.SentFrames.Count > 0);
+        await rest;
         Assert.Equal(3, tx.SentFrames.FindAll(f => f.Length >= 6 && f[1] == 0 && f[5] == Slv3Protocol.RfSaveCfg).Count);
         Assert.Equal(new[] { 200, 200 }, sleeps);
     }
 
     [Fact]
-    public void Suspend_does_nothing_with_the_link_down()
+    public async System.Threading.Tasks.Task A_failing_savecfg_frame_stops_that_send_after_one_write()
+    {
+        var net = new FakeSlv3Network();
+        var tx = new FakeTxTransport(net);
+        var rx = new FakeRxTransport(net);
+        var hub = new Slv3Hub(new FakeDiscovery(), port => port.Role == Slv3DongleRole.Tx ? tx : rx) { ConfirmNewChains = false, SleepMs = _ => { } };
+        Assert.True(hub.EnsureConnected());
+        tx.SentFrames.Clear();
+        tx.FailSaveCfg = true;
+
+        var rest = hub.OnSystemSuspending();
+        Assert.Single(tx.SentFrames);
+        await rest;
+
+        Assert.Equal(3, tx.SentFrames.Count);
+    }
+
+    [Fact]
+    public async System.Threading.Tasks.Task Suspend_does_nothing_with_the_link_down()
     {
         var sleeps = new List<int>();
         var hub = new Slv3Hub(new RoleDiscovery(), _ => new SilentTransport(Slv3DongleRole.Tx)) { SleepMs = sleeps.Add };
 
-        hub.OnSystemSuspending();
+        await hub.OnSystemSuspending();
 
         Assert.Empty(sleeps);
     }
@@ -2521,11 +2581,18 @@ public class Slv3HubTests
         /// <summary>Runs inside every send; lets a test hold the hub lock from the sending thread.</summary>
         public Action<byte[]>? OnSend { get; set; }
 
+        /// <summary>SaveCfg frames are recorded, then reported as failed writes.</summary>
+        public bool FailSaveCfg { get; set; }
+
         public bool RfSend(ReadOnlySpan<byte> frame)
         {
             var copy = frame.ToArray();
             SentFrames.Add(copy);
             OnSend?.Invoke(copy);
+            if (FailSaveCfg && copy.Length >= 6 && copy[0] == Slv3Protocol.UsbSendRf && copy[5] == Slv3Protocol.RfSaveCfg)
+            {
+                return false;
+            }
             if (copy.Length >= 2 && copy[0] == Slv3Protocol.UsbGetMac)
             {
                 // GetMac and video-start share USB_CMD 0x11; byte [1] is the

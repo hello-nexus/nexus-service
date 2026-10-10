@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Threading;
+using System.Threading.Tasks;
 using Nexus.Service.Platform;
 using RgbColor = Nexus.Service.Peripherals.Hyte.Np50.RgbColor;
 
@@ -836,7 +837,6 @@ public sealed class Slv3Hub : IDisposable
                 continue;
             }
             _rebind[key] = new AutoRebindState(now, state.Attempts + 1);
-            _rebindSeen.Remove(key);
             ServiceLog.Info($"[lianli-wireless] auto-rebind {key} {(drift ? "off our channel" : "unbound")}, binding to slot {slot} (attempt {state.Attempts + 1})");
             StartBindLocked(record, (byte)slot, auto: true);
         }
@@ -1317,17 +1317,22 @@ public sealed class Slv3Hub : IDisposable
         SendSaveCfgLocked();
     }
 
-    private void SendSaveCfgLocked()
+    // Stops at the first frame that fails to write, so a stalled TX costs one write timeout.
+    private bool SendSaveCfgLocked()
     {
         if (_tx is null)
         {
-            return;
+            return false;
         }
         var payload = Slv3Protocol.BuildSaveCfg(_masterMac);
         foreach (var frame in Slv3Protocol.BuildUsbSendRf(_channel, 0xFF, payload))
         {
-            _tx.RfSend(frame);
+            if (!_tx.RfSend(frame))
+            {
+                return false;
+            }
         }
+        return true;
     }
 
     // Pages needed to hold recordCount records at RecordsPerPage each, >=1 and
@@ -1795,6 +1800,7 @@ public sealed class Slv3Hub : IDisposable
 
     private void StartBindLocked(Slv3DeviceRecord record, byte slot, bool auto)
     {
+        _rebindSeen.Remove(Convert.ToHexString(record.Mac));
         _pending[Convert.ToHexString(record.Mac)] = new Slv3PendingOp(record.Mac, slot, Unbind: false, PendingOpTickBudget, auto);
         // First frame goes out now; the poll re-sends until the device list
         // confirms, so a request does not wait up to a full tick to start.
@@ -2394,41 +2400,58 @@ public sealed class Slv3Hub : IDisposable
 
     /// <summary>
     /// System suspend: SaveCfg repeated at MasterDevice.SaveConfig's cadence so the
-    /// bindings reach device flash before power drops. Meant for a background task:
-    /// it waits for the hub lock a bounded time per send, skips a send when the lock
-    /// stays busy, never sleeps holding it, and returns at once with the link down or
-    /// the hub disposed.
+    /// bindings reach device flash before power drops. The first send goes out before
+    /// this returns, with a bounded wait for the hub lock; the remaining sends run on
+    /// the returned background task, best effort. The lock is never held across a
+    /// wait, a send that finds it busy is skipped, and a down link or disposed hub
+    /// ends the sequence at once.
     /// </summary>
-    public void OnSystemSuspending()
+    public Task OnSystemSuspending()
     {
-        var sent = 0;
-        for (var i = 0; i < SuspendSaveCfgSends; i++)
+        var first = TrySuspendSaveCfg(1);
+        if (first == SuspendSend.Down)
         {
-            if (i > 0)
+            return Task.CompletedTask;
+        }
+        return Task.Run(() =>
+        {
+            var sent = first == SuspendSend.Sent ? 1 : 0;
+            for (var i = 2; i <= SuspendSaveCfgSends; i++)
             {
                 // Gap between tries per MasterDevice.SaveConfig, outside the lock.
                 SleepMs(SuspendSaveCfgGapMs);
-            }
-            if (!Monitor.TryEnter(_lock, SuspendLockWaitMs))
-            {
-                ServiceLog.Warn($"[lianli-wireless] suspend SaveCfg {i + 1} skipped, hub busy");
-                continue;
-            }
-            try
-            {
-                if (_disposed || !IsConnected || _tx is not { IsOpen: true })
+                var result = TrySuspendSaveCfg(i);
+                if (result == SuspendSend.Down)
                 {
-                    return;
+                    break;
                 }
-                SendSaveCfgLocked();
-                sent++;
+                sent += result == SuspendSend.Sent ? 1 : 0;
             }
-            finally
-            {
-                Monitor.Exit(_lock);
-            }
+            ServiceLog.Info($"[lianli-wireless] suspend SaveCfg sent {sent}/{SuspendSaveCfgSends}");
+        });
+    }
+
+    private enum SuspendSend { Sent, Skipped, Failed, Down }
+
+    private SuspendSend TrySuspendSaveCfg(int number)
+    {
+        if (!Monitor.TryEnter(_lock, SuspendLockWaitMs))
+        {
+            ServiceLog.Warn($"[lianli-wireless] suspend SaveCfg {number} skipped, hub busy");
+            return SuspendSend.Skipped;
         }
-        ServiceLog.Info($"[lianli-wireless] suspend SaveCfg sent {sent}/{SuspendSaveCfgSends}");
+        try
+        {
+            if (_disposed || !IsConnected || _tx is not { IsOpen: true })
+            {
+                return SuspendSend.Down;
+            }
+            return SendSaveCfgLocked() ? SuspendSend.Sent : SuspendSend.Failed;
+        }
+        finally
+        {
+            Monitor.Exit(_lock);
+        }
     }
 
     internal int SuspendLockWaitMs { get; init; } = 300;
