@@ -465,10 +465,8 @@ public static class TrayIcon
                 _iconDataReady = false;
                 _hwnd = IntPtr.Zero;
                 _thread = null;
-                // The window and its power registration die together.
-                _displayWatchHandle = IntPtr.Zero;
-                _lastDisplayOff = false;
             }
+            DropDisplayWatch();
         }
         catch
         {
@@ -480,10 +478,21 @@ public static class TrayIcon
                 _retryTimerArmed = false;
                 _hwnd = IntPtr.Zero;
                 _thread = null;
-                // The window and its power registration die together.
-                _displayWatchHandle = IntPtr.Zero;
-                _lastDisplayOff = false;
             }
+            DropDisplayWatch();
+        }
+    }
+
+    /// <summary>The power registration dies with the window; an "off" the service still holds is released, since no "on" can arrive.</summary>
+    private static void DropDisplayWatch()
+    {
+        var wasOff = _lastDisplayOff;
+        _displayWatchHandle = IntPtr.Zero;
+        _lastDisplayOff = false;
+        if (wasOff)
+        {
+            try { DisplayStateChanged?.Invoke(false); }
+            catch (Exception ex) { DiagFile($"display watch release failed: {ex.Message}"); }
         }
     }
 

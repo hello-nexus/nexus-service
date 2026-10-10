@@ -173,7 +173,9 @@ public sealed class IdleDimFramePathTests : IClassFixture<StubDeviceHostFactory>
             controller.OnInputIdle(true);
             Assert.Equal(0f, MasterBrightness.IdleRamp.Cap(past));
             Assert.Equal(0f, MasterBrightness.Effective(lighting, TimeSpan.Zero, MasterBrightness.IdleRamp.Cap(past)));
-            Assert.True(MasterBrightness.Effective(lighting) <= 1f);
+            // The one-argument Effective every frame writer calls reads the shared ramp.
+            MasterBrightness.IdleRamp.RampTo(0.25f, TimeSpan.Zero);
+            Assert.Equal(0.25f, MasterBrightness.Effective(lighting));
 
             controller.OnInputIdle(false);
             Assert.Equal(1f, MasterBrightness.IdleRamp.Cap(past));

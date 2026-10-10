@@ -1,5 +1,6 @@
 using System;
 using Nexus.Service.Persistence;
+using Nexus.Service.Platform;
 
 namespace Nexus.Service.Lighting.IdleDim;
 
@@ -180,6 +181,7 @@ public sealed class IdleDimController
                 _dimmed = true;
                 _target = level;
                 _ramp.RampTo(level, SleepBlackoutCoordinator.LockFadeDuration);
+                ServiceLog.Info($"[idle-dim] dimming to {settings.Level}% ({(_armedDisplay ? "display off" : $"input idle {_armedThreshold}s")})");
             }
         }
     }
@@ -194,5 +196,6 @@ public sealed class IdleDimController
         _dimmed = false;
         _target = 1f;
         _ramp.RampTo(1f, SleepBlackoutCoordinator.UnlockFadeDuration);
+        ServiceLog.Info("[idle-dim] released");
     }
 }
