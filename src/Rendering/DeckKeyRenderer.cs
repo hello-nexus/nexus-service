@@ -415,10 +415,9 @@ public sealed class DeckKeyRenderer
 
     /// <summary>
     /// The slot's app icon (shortcut, then the exe's process icon), or null
-    /// when the slot has none or it is not available. An empty shortcut icon
-    /// is what the Windows helper proxy returns while no helper is connected
-    /// (boot, before the user session exists), indistinguishable from a real
-    /// miss, so a miss without an exe fallback marks the render transient.
+    /// when the slot has none or it is not available. A null (helper not
+    /// connected) or empty shortcut icon falls through to the exe; a miss
+    /// without an exe fallback marks the render transient.
     /// pending is true when the process icon is still being extracted (one
     /// provider call per render; the caller leaves the face blank, uncached).
     /// </summary>
@@ -432,7 +431,7 @@ public sealed class DeckKeyRenderer
             return null;
         }
         var appIcon = _shortcuts.GetIcon(appId);
-        if (appIcon.Length > 0)
+        if (appIcon is { Length: > 0 })
         {
             return RenderKit.Decode(appIcon);
         }

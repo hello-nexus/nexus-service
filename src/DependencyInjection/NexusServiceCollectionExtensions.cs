@@ -626,6 +626,12 @@ public static class NexusServiceCollectionExtensions
             sp.GetService<Nexus.Service.Lighting.Rgb.RgbBridge>(),
             sp.GetRequiredService<Nexus.Service.Lifecycle.FeatureGates>()));
 
+        // Idle dim: the ramp is the one MasterBrightness reads on every frame;
+        // the platform bootstrap binds the controller's watch.
+        services.AddSingleton(Nexus.Service.Lighting.MasterBrightness.IdleRamp);
+        services.AddSingleton<Nexus.Service.Lighting.IdleDim.IdleDimController>();
+        services.AddHostedService<Nexus.Service.Lighting.IdleDim.IdleDimHost>();
+
         if (OperatingSystem.IsWindows())
             services.AddHostedService<Nexus.Service.Lighting.Rgb.PowerEventListener>();
 
@@ -891,10 +897,16 @@ public static class NexusServiceCollectionExtensions
                 recentAppsActivator: sp.GetRequiredService<Nexus.Service.Deck.RecentAppsActivator>(),
                 dialValues: sp.GetRequiredService<Nexus.Service.Deck.IDeckDialValues>());
 #if WINDOWS
-            // App icons come from the user-session helper; keys painted before
-            // it connects carry the generic fallback until this repaint.
+            // App icons come from the user-session helper; keys painted and
+            // Deck widget icons fetched before it connects carry the generic
+            // fallback until this repaint and the "icons" refetch.
             var helperRegistry = sp.GetService<Nexus.Service.Helper.HelperRegistry>();
-            helperRegistry?.Connected += _ => worker.OnHelperConnected();
+            var deckHub = sp.GetRequiredService<Nexus.Service.Sockets.MultiplexHub>();
+            helperRegistry?.Connected += _ =>
+            {
+                worker.OnHelperConnected();
+                Nexus.Service.Sockets.PanelTopics.BroadcastDeck(deckHub, new Nexus.Service.Models.Deck.DeckChangedFrame { Kind = "icons" });
+            };
 #endif
             return worker;
         });
@@ -2285,6 +2297,7 @@ public static class NexusServiceCollectionExtensions
         services.AddSingleton<Nexus.Service.Platform.Linux.DBus.DBusConnection>();
         services.AddHostedService<Nexus.Service.Platform.Linux.LinuxTrayService>();
         services.AddHostedService<Nexus.Service.Platform.Linux.LinuxResumeListener>();
+        services.AddHostedService<Nexus.Service.Platform.Linux.LinuxIdleDimWatch>();
 #endif
         return services;
     }

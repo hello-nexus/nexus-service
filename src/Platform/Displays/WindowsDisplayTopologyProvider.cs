@@ -2,6 +2,7 @@
 using System;
 using System.Collections.Generic;
 using System.Runtime.InteropServices;
+using Microsoft.Win32;
 using Nexus.Service.Devices.Detection.Native;
 using Nexus.Service.Models.Displays;
 
@@ -86,6 +87,8 @@ public sealed class WindowsDisplayTopologyProvider : IDisplayTopologyProvider
                         entry.Scale = Math.Round(dpiX / 96.0, 2);
                     }
 
+                    entry.Dpi = DisplayDensity.FromEdid(ReadEdid(entry.RawHardwareId), entry.ResolutionWidth, entry.ResolutionHeight);
+
                     results.Add(entry);
                 }
                 catch (Exception ex)
@@ -105,6 +108,29 @@ public sealed class WindowsDisplayTopologyProvider : IDisplayTopologyProvider
             RestoreThreadDpiContext(previousContext);
         }
         return results;
+    }
+
+    /// <summary>
+    /// The monitor's EDID from its devnode (\\?\DISPLAY#DELA0B8#5&amp;...#{guid}
+    /// maps to Enum\DISPLAY\DELA0B8\5&amp;...); empty when unreadable.
+    /// </summary>
+    private static byte[] ReadEdid(string monitorInterfacePath)
+    {
+        try
+        {
+            const string prefix = @"\\?\";
+            if (!monitorInterfacePath.StartsWith(prefix, StringComparison.Ordinal)) return Array.Empty<byte>();
+            var parts = monitorInterfacePath[prefix.Length..].Split('#');
+            if (parts.Length < 3 || !parts[0].Equals("DISPLAY", StringComparison.OrdinalIgnoreCase)) return Array.Empty<byte>();
+            using var key = Registry.LocalMachine.OpenSubKey(
+                $@"SYSTEM\CurrentControlSet\Enum\DISPLAY\{parts[1]}\{parts[2]}\Device Parameters");
+            return key?.GetValue("EDID") as byte[] ?? Array.Empty<byte>();
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine($"[displays-win] EDID read failed: {ex.Message}");
+            return Array.Empty<byte>();
+        }
     }
 
     /// <summary>

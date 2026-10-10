@@ -1,10 +1,14 @@
 using System;
+using System.Collections.Generic;
 using System.IO;
+using System.Linq;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.TestHost;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
 using Nexus.Service.Deck;
+using Nexus.Service.Devices;
+using Nexus.Service.Devices.Detection;
 using Nexus.Service.Tests.Integration;
 
 namespace Nexus.Service.Tests.StreamDeck;
@@ -34,6 +38,8 @@ public sealed class StreamDeckRouteHostFactory : NexusAppFactory
 
     internal SpyDeckActionExecutor Executor { get; } = new();
 
+    internal ListUsbEnumerator Usb { get; } = new();
+
     protected override void ConfigureWebHost(IWebHostBuilder builder)
     {
         base.ConfigureWebHost(builder);
@@ -44,6 +50,8 @@ public sealed class StreamDeckRouteHostFactory : NexusAppFactory
             s.AddSingleton(new DeckImageStore(DeckImagesDir));
             s.RemoveAll<IDeckActionExecutor>();
             s.AddSingleton<IDeckActionExecutor>(Executor);
+            s.RemoveAll<IUsbEnumerator>();
+            s.AddSingleton<IUsbEnumerator>(Usb);
         });
     }
 
@@ -82,4 +90,13 @@ public sealed class DeckRoutesHostFactory : NexusAppFactory
             try { Directory.Delete(DeckImagesDir, recursive: true); } catch { /* best effort */ }
         }
     }
+}
+
+internal sealed class ListUsbEnumerator : IUsbEnumerator
+{
+    private volatile UsbDeviceEntry[] _devices = Array.Empty<UsbDeviceEntry>();
+
+    public void Set(params UsbDeviceEntry[] devices) => _devices = devices;
+
+    public List<UsbDeviceEntry> Enumerate() => _devices.ToList();
 }

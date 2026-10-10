@@ -264,6 +264,9 @@ public sealed class OpenRgbProcessManager : IDisposable
         "Nollie 32CH", "Nollie 16CH", "Nollie 8CH", "Nollie 1CH", "Nollie 28 12", "Nollie 28 L1",
         "Nollie 28 L2", "Nollie 32_OS2", "Nollie 16_OS2", "Nollie 8_OS2", "Nollie 1_OS2",
         "Nollie 32_OS2_1", "Nollie 16_OS2_1", "Nollie 8_OS2_1", "Prism8 8_OS2_1", "Nollie 1_OS2_1",
+        // StreamDeckConnectionWorker drives the deck's keys over the same HID
+        // interface; OpenRGB painting them as LEDs overwrites the key images.
+        "Elgato Stream Deck MK.2",
     };
 
     private static readonly string[] DisabledDetectors = BuildDisabledDetectors(OperatingSystem.IsMacOS());

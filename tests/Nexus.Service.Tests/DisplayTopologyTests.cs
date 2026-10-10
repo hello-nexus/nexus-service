@@ -256,7 +256,7 @@ public sealed class DisplayTopologyTests : IDisposable
         Assert.Null(KnownPanelDisplays.Match("XMD", "0001", "XMD 0001"));
 
         var caps = DisplayTopologyService.BuildPromotedCapabilities(
-            "XMD", "00EA", "XMD 00EA", 720, 1280, 1.0, isTouch: false, orientation: "LandscapeFlipped");
+            "XMD", "00EA", "XMD 00EA", 720, 1280, 1.0, isTouch: false, orientation: "LandscapeFlipped", measuredDpi: null);
         Assert.Equal(294, caps.Dpi);
         Assert.Equal("icue-link-lcd5", caps.Family);
         Assert.False(caps.Touch);
@@ -266,7 +266,7 @@ public sealed class DisplayTopologyTests : IDisposable
     public void Promoted_capabilities_carry_density_for_known_displays()
     {
         var caps = DisplayTopologyService.BuildPromotedCapabilities(
-            "CRX", "ED00", "CRX ED00", 2560, 720, 1.5, isTouch: true, orientation: "Landscape");
+            "CRX", "ED00", "CRX ED00", 2560, 720, 1.5, isTouch: true, orientation: "Landscape", measuredDpi: null);
 
         Assert.Equal(PanelSurfaces.Monitor, caps.Surface);
         Assert.Equal(183, caps.Dpi);
@@ -277,7 +277,7 @@ public sealed class DisplayTopologyTests : IDisposable
         Assert.True(caps.Touch);
 
         var generic = DisplayTopologyService.BuildPromotedCapabilities(
-            "DEL", "41B7", "DEL 41B7", 3840, 2160, null, isTouch: false, orientation: "");
+            "DEL", "41B7", "DEL 41B7", 3840, 2160, null, isTouch: false, orientation: "", measuredDpi: null);
         Assert.Null(generic.Dpi);
         Assert.Null(generic.Family);
         Assert.Equal(3840, generic.CssWidth);
@@ -291,7 +291,7 @@ public sealed class DisplayTopologyTests : IDisposable
         // The Windows pointer-device association misses some panels; a curated
         // touch strip stays interactive regardless.
         var caps = DisplayTopologyService.BuildPromotedCapabilities(
-            "CRX", "ED00", "CRX ED00", 2560, 720, 1.5, isTouch: false, orientation: "Landscape");
+            "CRX", "ED00", "CRX ED00", 2560, 720, 1.5, isTouch: false, orientation: "Landscape", measuredDpi: null);
 
         Assert.True(caps.Touch);
     }
@@ -353,6 +353,74 @@ public sealed class DisplayTopologyTests : IDisposable
         service.GetTopology();
 
         Assert.Null(_registry.FindByDisplayId(display.Id)!.Capabilities?.Dpi);
+    }
+
+    // A Dell U2415 EDID with its detailed timing descriptor filled in.
+    private static byte[] U2415Edid()
+    {
+        var edid = BuildEdid("DEL", 0xA0B8, 1, 52, 32, "DELL U2415");
+        edid[54] = 0x28;
+        edid[55] = 0x3C;
+        edid[56] = 1920 & 0xFF;
+        edid[58] = (1920 >> 8) << 4;
+        edid[59] = 1200 & 0xFF;
+        edid[61] = (1200 >> 8) << 4;
+        edid[66] = 518 & 0xFF;
+        edid[67] = 324 & 0xFF;
+        edid[68] = ((518 >> 8) << 4) | (324 >> 8);
+        return edid;
+    }
+
+    [Fact]
+    public void Edid_density_reads_the_timing_size_in_either_orientation()
+    {
+        Assert.Equal(94.1, DisplayDensity.FromEdid(U2415Edid(), 1920, 1200));
+        Assert.Equal(94.1, DisplayDensity.FromEdid(U2415Edid(), 1200, 1920));
+        // No timing descriptor: the base block's cm.
+        Assert.Equal(94.2, DisplayDensity.FromEdid(BuildEdid("DEL", 1, 1, 52, 32, "X"), 1920, 1200));
+    }
+
+    [Fact]
+    public void Edid_density_is_null_for_a_missing_or_implausible_size()
+    {
+        Assert.Null(DisplayDensity.FromEdid(BuildEdid("DEL", 1, 1, 0, 0, "X"), 1920, 1200));
+        Assert.Null(DisplayDensity.FromEdid(new byte[128], 1920, 1200));
+        Assert.Null(DisplayDensity.FromEdid(ReadOnlySpan<byte>.Empty, 1920, 1200));
+        // A 16:9 TV size on a 4:1 bar.
+        Assert.Null(DisplayDensity.FromEdid(BuildEdid("XXX", 1, 1, 160, 90, "X"), 1920, 480));
+        // An aspect-ratio code read as mm.
+        Assert.Null(DisplayDensity.FromPhysicalMm(16, 9, 1920, 1080));
+        Assert.Equal(188.0, DisplayDensity.FromPhysicalMm(108, 65, 800, 480));
+    }
+
+    [Fact]
+    public void Promoted_capabilities_take_the_measured_density_unless_the_model_is_curated()
+    {
+        var generic = DisplayTopologyService.BuildPromotedCapabilities(
+            "DEL", "A0B8", "DEL A0B8", 1920, 1200, 1.0, isTouch: false, orientation: "Landscape", measuredDpi: 94.1);
+        Assert.Equal(94.1, generic.Dpi);
+
+        var known = DisplayTopologyService.BuildPromotedCapabilities(
+            "CRX", "ED00", "CRX ED00", 2560, 720, 1.0, isTouch: true, orientation: "Landscape", measuredDpi: 177);
+        Assert.Equal(183, known.Dpi);
+    }
+
+    [Fact]
+    public void Topology_read_gives_a_promoted_monitor_its_measured_density()
+    {
+        var display = Monitor("DELA0B8-1");
+        display.Dpi = 94.1;
+        var provider = new FakeProvider { Displays = new List<RawDisplayInfo> { display } };
+        var service = new DisplayTopologyService(provider, _registry);
+        _registry.AllocateForDisplay(display.Id, display.Name, new PanelDeviceCapabilities { Surface = PanelSurfaces.Monitor });
+
+        service.GetTopology();
+
+        Assert.Equal(94.1, _registry.FindByDisplayId(display.Id)!.Capabilities?.Dpi);
+
+        display.Dpi = null;
+        service.GetTopology();
+        Assert.Equal(94.1, _registry.FindByDisplayId(display.Id)!.Capabilities?.Dpi);
     }
 
     private static byte[] BuildEdid(string mfg, ushort product, uint serial, int widthCm, int heightCm, string modelName)

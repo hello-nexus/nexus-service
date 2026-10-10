@@ -267,7 +267,9 @@ public sealed class DisplayTopologyService
                 var caps = BuildPromotedCapabilities(
                     info.Manufacturer, info.Model, info.Name,
                     info.ResolutionWidth, info.ResolutionHeight,
-                    info.Scale, info.IsTouch, info.Orientation);
+                    info.Scale, info.IsTouch, info.Orientation,
+                    // A failed EDID read must not drop the grid to the default density.
+                    info.Dpi ?? record.Capabilities?.Dpi);
                 // Grid is kiosk-reported on self-registered panels; carry any
                 // stored value so the rebuild never clears it.
                 caps.Grid = record.Capabilities?.Grid;
@@ -296,7 +298,8 @@ public sealed class DisplayTopologyService
         int resolutionHeight,
         double? scaleFactor,
         bool isTouch,
-        string? orientation)
+        string? orientation,
+        double? measuredDpi)
     {
         var scale = scaleFactor is > 0 ? scaleFactor.Value : 1.0;
         var known = KnownPanelDisplays.Match(manufacturer, model, name);
@@ -313,7 +316,7 @@ public sealed class DisplayTopologyService
             CssWidth = (int)Math.Round(resolutionWidth / scale),
             CssHeight = (int)Math.Round(resolutionHeight / scale),
             Dpr = scale,
-            Dpi = known?.Dpi,
+            Dpi = known?.Dpi ?? measuredDpi,
             Family = known?.Family,
         };
     }

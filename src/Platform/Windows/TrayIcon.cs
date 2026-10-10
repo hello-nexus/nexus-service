@@ -65,6 +65,15 @@ public static class TrayIcon
     // Wake posted to the window thread to arm the NIM_ADD retry when an add
     // fails off-thread (the service's cross-thread SetVisible push).
     private const int WM_ARM_ICON_RETRY = WM_USER + 90;
+    private const int WM_SET_DISPLAY_WATCH = WM_USER + 91;
+    private const uint WM_POWERBROADCAST = 0x0218;
+    private const int PBT_POWERSETTINGCHANGE = 0x8013;
+    private const int DEVICE_NOTIFY_WINDOW_HANDLE = 0;
+    /// <summary>GUID_CONSOLE_DISPLAY_STATE: 0 off, 1 on, 2 dimmed.</summary>
+    private static readonly Guid GuidConsoleDisplayState = new("6FE69556-704A-47A0-8F24-C28D936FDA47");
+    // What decides the screen-off timeout: VIDEOIDLE itself, the AC/DC source picking its index, and the active plan.
+    private static readonly Guid GuidAcDcPowerSource = new("5D3E9A59-E9D5-4B00-A6BD-FF34FF516548");
+    private static readonly Guid GuidActivePowerScheme = new("31F9F286-5084-42FE-B720-2B0264993763");
     // NIM_ADD retry poll (see StartIconRetry): timer id, interval, attempt cap.
     private const int IconRetryTimerId = 0xBEEF;
     private const uint IconRetryIntervalMs = 1000;
@@ -92,6 +101,67 @@ public static class TrayIcon
     /// accent change), same broadcast source and threading as DisplayChanged.
     /// </summary>
     public static event Action? SystemThemeChanged;
+
+    /// <summary>
+    /// Raised with true when the console display turns off and false when it
+    /// is on or dimmed, while <see cref="SetDisplayStateWatch"/> is armed. The
+    /// helper's window is the receiver because it lives in the user session
+    /// and already owns a message pump. Fired on the pump thread.
+    /// </summary>
+    public static event Action<bool>? DisplayStateChanged;
+
+    /// <summary>Raised when a power setting that decides the screen-off timeout may have changed, including once per setting at registration. Fired on the pump thread.</summary>
+    public static event Action? ScreenOffTimeoutMayHaveChanged;
+
+    private static volatile bool _displayWatchWanted;
+    // Last state the system reported while registered; resent on every arm so
+    // a service that missed a change (pipe drop) converges. Window thread only.
+    private static bool _lastDisplayOff;
+    private static IntPtr _displayWatchHandle;
+
+    /// <summary>
+    /// Arm or disarm the display power-state notification. Registration itself
+    /// happens on the window thread, so this is safe from any thread.
+    /// </summary>
+    public static void SetDisplayStateWatch(bool armed)
+    {
+        _displayWatchWanted = armed;
+        Thread.MemoryBarrier();
+        lock (_sync)
+        {
+            EnsureThreadStartedLocked();
+        }
+        var hwnd = _hwnd;
+        if (hwnd != IntPtr.Zero)
+        {
+            PostMessage(hwnd, (uint)WM_SET_DISPLAY_WATCH, IntPtr.Zero, IntPtr.Zero);
+        }
+    }
+
+    // Window thread only.
+    private static void ApplyDisplayWatch()
+    {
+        try
+        {
+            if (_displayWatchWanted && _displayWatchHandle == IntPtr.Zero && _hwnd != IntPtr.Zero)
+            {
+                var guid = GuidConsoleDisplayState;
+                _displayWatchHandle = RegisterPowerSettingNotification(_hwnd, ref guid, DEVICE_NOTIFY_WINDOW_HANDLE);
+            }
+            else if (!_displayWatchWanted && _displayWatchHandle != IntPtr.Zero)
+            {
+                UnregisterPowerSettingNotification(_displayWatchHandle);
+                _displayWatchHandle = IntPtr.Zero;
+                // Unregistered, the cache would go stale: assume on until told.
+                _lastDisplayOff = false;
+            }
+            if (_displayWatchWanted && _displayWatchHandle != IntPtr.Zero)
+            {
+                DisplayStateChanged?.Invoke(_lastDisplayOff);
+            }
+        }
+        catch (Exception ex) { DiagFile($"display watch apply failed: {ex.Message}"); }
+    }
 
     private static int _port;
     private static Action? _onExit;
@@ -332,6 +402,9 @@ public static class TrayIcon
                 return;
             }
             _hwnd = hwnd;
+            Thread.MemoryBarrier();
+            ApplyDisplayWatch();
+            RegisterScreenOffTimeoutWatch(hwnd);
             _taskbarCreatedMsg = RegisterWindowMessage("TaskbarCreated");
 
             // Opt the process into Windows 11 immersive theming so the
@@ -387,6 +460,7 @@ public static class TrayIcon
                 DispatchMessage(ref msg);
             }
 
+            bool wasOff;
             lock (_sync)
             {
                 StopIconRetry();
@@ -399,11 +473,14 @@ public static class TrayIcon
                 _iconDataReady = false;
                 _hwnd = IntPtr.Zero;
                 _thread = null;
+                wasOff = DropDisplayWatchLocked();
             }
+            ReleaseHeldDisplayOff(wasOff);
         }
         catch
         {
             // Silently fail - tray is non-critical
+            bool wasOff;
             lock (_sync)
             {
                 _visible = false;
@@ -411,8 +488,40 @@ public static class TrayIcon
                 _retryTimerArmed = false;
                 _hwnd = IntPtr.Zero;
                 _thread = null;
+                wasOff = DropDisplayWatchLocked();
+            }
+            ReleaseHeldDisplayOff(wasOff);
+        }
+    }
+
+    /// <summary>Window thread only. Always registered, so an open client's label stays current; the registrations die with the window.</summary>
+    private static void RegisterScreenOffTimeoutWatch(IntPtr hwnd)
+    {
+        foreach (var setting in new[] { WindowsScreenOffTimeout.VideoIdle, GuidAcDcPowerSource, GuidActivePowerScheme })
+        {
+            var guid = setting;
+            if (RegisterPowerSettingNotification(hwnd, ref guid, DEVICE_NOTIFY_WINDOW_HANDLE) == IntPtr.Zero)
+            {
+                DiagFile($"screen-off timeout watch: register {setting} failed ({Marshal.GetLastWin32Error()})");
             }
         }
+    }
+
+    /// <summary>The power registration dies with the window. Cleared in the same lock that publishes <c>_thread = null</c>, so a replacement pump never races it.</summary>
+    private static bool DropDisplayWatchLocked()
+    {
+        var wasOff = _lastDisplayOff;
+        _displayWatchHandle = IntPtr.Zero;
+        _lastDisplayOff = false;
+        return wasOff;
+    }
+
+    /// <summary>An "off" the service still holds is released, since the dead registration can never deliver the "on".</summary>
+    private static void ReleaseHeldDisplayOff(bool wasOff)
+    {
+        if (!wasOff) return;
+        try { DisplayStateChanged?.Invoke(false); }
+        catch (Exception ex) { DiagFile($"display watch release failed: {ex.Message}"); }
     }
 
     private static void ResetThreadState()
@@ -424,6 +533,9 @@ public static class TrayIcon
             _retryTimerArmed = false;
             _hwnd = IntPtr.Zero;
             _thread = null;
+            // The window and its power registration die together.
+            _displayWatchHandle = IntPtr.Zero;
+            _lastDisplayOff = false;
         }
     }
 
@@ -564,6 +676,26 @@ public static class TrayIcon
                         OpenLocalWindow();
                     }
                 }
+            }
+            else if (msg == WM_SET_DISPLAY_WATCH)
+            {
+                ApplyDisplayWatch();
+            }
+            else if (msg == WM_POWERBROADCAST && (int)wParam == PBT_POWERSETTINGCHANGE && lParam != IntPtr.Zero)
+            {
+                // POWERBROADCAST_SETTING: GUID, DWORD length, then the data.
+                var setting = Marshal.PtrToStructure<Guid>(lParam);
+                if (setting == GuidConsoleDisplayState && Marshal.ReadInt32(lParam, 16) >= 4)
+                {
+                    _lastDisplayOff = Marshal.ReadInt32(lParam, 20) == 0;
+                    DisplayStateChanged?.Invoke(_lastDisplayOff);
+                }
+                else if (setting == WindowsScreenOffTimeout.VideoIdle || setting == GuidAcDcPowerSource || setting == GuidActivePowerScheme)
+                {
+                    try { ScreenOffTimeoutMayHaveChanged?.Invoke(); }
+                    catch (Exception ex) { DiagFile($"screen-off timeout hint failed: {ex.Message}"); }
+                }
+                return new IntPtr(1);
             }
             else if (msg == WM_DISPLAYCHANGE)
             {
@@ -1511,6 +1643,8 @@ public static class TrayIcon
     // Imports
     [DllImport("kernel32")] private static extern IntPtr GetModuleHandle(string? name);
     [DllImport("user32", CharSet = CharSet.Unicode)] private static extern ushort RegisterClassEx(ref WNDCLASSEX cls);
+    [DllImport("user32", SetLastError = true)] private static extern IntPtr RegisterPowerSettingNotification(IntPtr recipient, ref Guid powerSetting, int flags);
+    [DllImport("user32", SetLastError = true)] private static extern bool UnregisterPowerSettingNotification(IntPtr handle);
     [DllImport("user32", CharSet = CharSet.Unicode)] private static extern IntPtr CreateWindowEx(int exStyle, string className, string windowName, int style, int x, int y, int w, int h, IntPtr parent, IntPtr menu, IntPtr instance, IntPtr param);
     [DllImport("user32")] private static extern IntPtr DefWindowProc(IntPtr hwnd, uint msg, IntPtr wParam, IntPtr lParam);
     [DllImport("user32")] private static extern bool GetMessage(out MSG msg, IntPtr hwnd, uint min, uint max);

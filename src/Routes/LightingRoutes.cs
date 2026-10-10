@@ -260,6 +260,43 @@ public static class LightingRoutes
             PanelTopics.BroadcastLighting(hub);
             return Results.Ok(ApiResponse.Ok());
         }).AllowPanel();
+        // Dim to a user-set level while the PC is idle. The controller picks the
+        // change up from the store, so a POST applies at once (a dimmed room
+        // releases on the unlock ramp when it is turned off).
+        app.MapGet("/lighting/idle-dim", (Nexus.Service.Persistence.IConfigStore store,
+            Nexus.Service.Lighting.IdleDim.IdleDimController idleDim) =>
+        {
+            var s = store.Load().Lighting.IdleDim ?? new();
+            if (!idleDim.Supported)
+            {
+                idleDim.RequestReprobe();
+            }
+            return new Models.Lighting.IdleDimStatus
+            {
+                Enabled = s.Enabled,
+                TimeoutSeconds = s.TimeoutSeconds,
+                Level = Math.Clamp(s.Level, 0, 100),
+                Supported = idleDim.Supported,
+                ScreenOffSupported = idleDim.ScreenOffSupported,
+                OsScreenOffSeconds = idleDim.ScreenOffSupported ? Nexus.Service.Lighting.IdleDim.OsScreenOffTimeout.ReadSeconds() : null,
+            };
+        }).AllowPanel();
+        app.MapPost("/lighting/idle-dim", (Models.Lighting.IdleDimBody body,
+            Nexus.Service.Persistence.IConfigStore store, MultiplexHub hub) =>
+        {
+            var timeout = body.TimeoutSeconds;
+            if (timeout != 0
+                && (timeout < Nexus.Service.Lighting.IdleDim.IdleDimController.MinTimeoutSeconds
+                    || timeout > Nexus.Service.Lighting.IdleDim.IdleDimController.MaxTimeoutSeconds))
+            {
+                return Results.BadRequest(ApiResponse.Fail($"timeoutSeconds must be 0 or {Nexus.Service.Lighting.IdleDim.IdleDimController.MinTimeoutSeconds}..{Nexus.Service.Lighting.IdleDim.IdleDimController.MaxTimeoutSeconds}"));
+            }
+            var level = Math.Clamp(body.Level, 0, 100);
+            // Replace the object, never mutate it: the controller reads a snapshot.
+            store.Update(s => s.Lighting.IdleDim = new() { Enabled = body.Enabled, TimeoutSeconds = timeout, Level = level });
+            PanelTopics.BroadcastLighting(hub);
+            return Results.Ok(ApiResponse.Ok());
+        }).AllowPanel();
         // Render-GPU selection (which card runs the lighting shaders). Host-only
         // (LocalhostOnly) -- a paired phone must not flip the host's GPU. The POST
         // persists + writes the OS preference; applying it needs a service restart

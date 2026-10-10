@@ -72,7 +72,7 @@ public sealed class PanelAutoPromotion
                 var capabilities = DisplayTopologyService.BuildPromotedCapabilities(
                     display.Manufacturer, display.Model, display.Name,
                     display.Resolution?.Width ?? 0, display.Resolution?.Height ?? 0,
-                    display.ScaleFactor, display.IsTouch, display.Orientation);
+                    display.ScaleFactor, display.IsTouch, display.Orientation, display.Dpi);
                 var (record, _) = _registry.AllocateForDisplay(display.Id, display.Name, capabilities);
                 (markSeen ??= new List<string>()).Add(identity);
                 (promoted ??= new List<string>()).Add(record.Id);
