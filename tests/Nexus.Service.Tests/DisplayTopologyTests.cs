@@ -406,33 +406,17 @@ public sealed class DisplayTopologyTests : IDisposable
     }
 
     [Fact]
-    public void Measured_density_reaches_only_records_promoted_with_one()
-    {
-        Assert.Equal(94.1, DisplayTopologyService.MeasuredDpiFor(null, 94.1));
-        var legacy = new PanelDeviceRecord { Capabilities = new PanelDeviceCapabilities { Surface = PanelSurfaces.Monitor } };
-        Assert.Null(DisplayTopologyService.MeasuredDpiFor(legacy, 94.1));
-        var measured = new PanelDeviceRecord { Capabilities = new PanelDeviceCapabilities { Surface = PanelSurfaces.Monitor, Dpi = 94.1 } };
-        Assert.Equal(120, DisplayTopologyService.MeasuredDpiFor(measured, 120));
-        Assert.Equal(94.1, DisplayTopologyService.MeasuredDpiFor(measured, null));
-    }
-
-    [Fact]
-    public void Topology_read_keeps_a_legacy_monitor_record_on_the_default_density()
+    public void Topology_read_gives_a_promoted_monitor_its_measured_density()
     {
         var display = Monitor("DELA0B8-1");
         display.Dpi = 94.1;
         var provider = new FakeProvider { Displays = new List<RawDisplayInfo> { display } };
         var service = new DisplayTopologyService(provider, _registry);
         _registry.AllocateForDisplay(display.Id, display.Name, new PanelDeviceCapabilities { Surface = PanelSurfaces.Monitor });
-        _registry.AllocateForDisplay("DELA0B8-2", "DEL A0B8", new PanelDeviceCapabilities { Surface = PanelSurfaces.Monitor, Dpi = 100 });
-        var second = Monitor("DELA0B8-2", x: 3840);
-        second.Dpi = 94.1;
-        provider.Displays.Add(second);
 
         service.GetTopology();
 
-        Assert.Null(_registry.FindByDisplayId("DELA0B8-1")!.Capabilities?.Dpi);
-        Assert.Equal(94.1, _registry.FindByDisplayId("DELA0B8-2")!.Capabilities?.Dpi);
+        Assert.Equal(94.1, _registry.FindByDisplayId(display.Id)!.Capabilities?.Dpi);
     }
 
     private static byte[] BuildEdid(string mfg, ushort product, uint serial, int widthCm, int heightCm, string modelName)

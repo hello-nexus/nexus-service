@@ -268,7 +268,7 @@ public sealed class DisplayTopologyService
                     info.Manufacturer, info.Model, info.Name,
                     info.ResolutionWidth, info.ResolutionHeight,
                     info.Scale, info.IsTouch, info.Orientation,
-                    MeasuredDpiFor(record, info.Dpi));
+                    info.Dpi);
                 // Grid is kiosk-reported on self-registered panels; carry any
                 // stored value so the rebuild never clears it.
                 caps.Grid = record.Capabilities?.Grid;
@@ -319,16 +319,6 @@ public sealed class DisplayTopologyService
             Family = known?.Family,
         };
     }
-
-    /// <summary>
-    /// The measured density reaches only a new record or one promoted with a
-    /// density: a panel laid out on the default density keeps its grid, since
-    /// a denser reading can shrink it and stack the stored widgets.
-    /// </summary>
-    internal static double? MeasuredDpiFor(PanelDeviceRecord? record, double? measured) =>
-        record is null ? measured
-        : record.Capabilities?.Dpi is { } stored ? measured ?? stored
-        : null;
 
     internal static bool IsY70Display(string rawHardwareId)
     {
