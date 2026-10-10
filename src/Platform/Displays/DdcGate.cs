@@ -2,6 +2,7 @@
 using System;
 using System.Runtime.InteropServices;
 using System.Runtime.Versioning;
+using System.Threading;
 
 namespace Nexus.Service.Platform.Displays;
 
@@ -21,38 +22,63 @@ namespace Nexus.Service.Platform.Displays;
 /// DisplayPort and confirmed by A/B - our traffic removed, no hang; restored,
 /// the hang returns.
 ///
-/// Lock state is queried rather than tracked from transitions: this runs in the
-/// helper, which can ask WTS about its own session directly, and the query
-/// costs nothing next to the DDC round-trip it guards.
+/// Lock state is queried per call from WTS for this process's own session.
+/// Unlocks arrive as session notifications through
+/// <see cref="OnSessionLockChanged"/>, so one is seen even when no transaction
+/// was asking at the time, and helper start counts as one.
 /// </summary>
 [SupportedOSPlatform("windows")]
 internal static class DdcGate
 {
     /// <summary>
-    /// How long after an observed unlock to stay quiet. The desktop is back
-    /// before the panels have finished re-training their links, and a
-    /// transaction landing in that window is the same hazard as one landing
-    /// during the blank.
+    /// How long after an unlock to stay quiet. The desktop is back before the
+    /// panels have finished re-training their links, and a transaction landing
+    /// in that window is the same hazard as one landing during the blank.
     /// </summary>
     private static readonly TimeSpan UnlockSettle = TimeSpan.FromSeconds(5);
 
     /// <summary>
-    /// How long a gap between calls makes the previous observation worthless.
-    /// Nothing polls the gate while the session is locked with no dashboard
-    /// and no Displays widget up, and a helper restart during a lock starts
-    /// with no history at all - in both cases the first call after the unlock
-    /// would otherwise probe with no settle, which is exactly the hazard.
-    /// A stale observation is therefore treated as "just unlocked".
+    /// Without session notifications, a gap this long between calls may hide
+    /// an unlock nobody was asking about, so it is treated as one.
     /// </summary>
     private static readonly TimeSpan ObservationStale = TimeSpan.FromSeconds(30);
 
     private static readonly object Gate = new();
-    private static bool _observed;
     private static bool _lastLocked;
     // Monotonic (Environment.TickCount64), not wall clock: a backward clock
     // correction must not extend the closed window arbitrarily.
     private static long _unlockedAtMs = -1;
     private static long _lastSeenMs = -1;
+    private static Func<bool> _notificationsActive = () => false;
+    private static Timer? _settleTimer;
+
+    /// <summary>Raised on a timer thread when a settle window ends with the session unlocked.</summary>
+    public static event Action? Opened;
+
+    /// <summary>
+    /// Called once at helper start, which counts as an unlock: the logon that
+    /// started the helper is one no notification reports.
+    /// <paramref name="notificationsActive"/> says whether
+    /// <see cref="OnSessionLockChanged"/> is currently being fed.
+    /// </summary>
+    public static void Start(Func<bool> notificationsActive)
+    {
+        lock (Gate)
+        {
+            _notificationsActive = notificationsActive;
+            MarkUnlockedLocked(Environment.TickCount64);
+        }
+    }
+
+    /// <summary>WTS_SESSION_LOCK (true) / WTS_SESSION_UNLOCK (false) for the helper's session.</summary>
+    public static void OnSessionLockChanged(bool locked)
+    {
+        lock (Gate)
+        {
+            if (!locked) MarkUnlockedLocked(Environment.TickCount64);
+            _lastLocked = locked;
+        }
+    }
 
     /// <summary>
     /// True when no DDC transaction should be issued right now.
@@ -66,12 +92,10 @@ internal static class DdcGate
         long unlockedAtMs;
         lock (Gate)
         {
-            // A lock->unlock transition opens the settle window, and so does a
-            // gap long enough that we cannot know whether one happened while
-            // nobody was asking.
-            var stale = !_observed || nowMs - _lastSeenMs > (long)ObservationStale.TotalMilliseconds;
-            if (!locked && (stale || _lastLocked)) _unlockedAtMs = nowMs;
-            _observed = true;
+            // An unlock this query sees before its notification is delivered,
+            // or, with no notifications, one a long gap may have hidden.
+            var unseen = !_notificationsActive() && nowMs - _lastSeenMs > (long)ObservationStale.TotalMilliseconds;
+            if (!locked && (_lastLocked || unseen)) MarkUnlockedLocked(nowMs);
             _lastLocked = locked;
             _lastSeenMs = nowMs;
             unlockedAtMs = _unlockedAtMs;
@@ -91,6 +115,37 @@ internal static class DdcGate
 
         reason = "";
         return false;
+    }
+
+    private static void MarkUnlockedLocked(long nowMs)
+    {
+        _unlockedAtMs = nowMs;
+        _settleTimer ??= new Timer(_ => OnSettleElapsed());
+        _settleTimer.Change(UnlockSettle, Timeout.InfiniteTimeSpan);
+    }
+
+    // An exception escaping a Timer callback is process-fatal.
+    private static void OnSettleElapsed()
+    {
+        try
+        {
+            lock (Gate)
+            {
+                var remainingMs = _unlockedAtMs + (long)UnlockSettle.TotalMilliseconds - Environment.TickCount64;
+                if (remainingMs > 0)
+                {
+                    _settleTimer?.Change(remainingMs, Timeout.Infinite);
+                    return;
+                }
+            }
+            // Locked again: the next unlock re-arms the timer.
+            if (ShouldSkip(out _)) return;
+            Opened?.Invoke();
+        }
+        catch (Exception ex)
+        {
+            Nexus.Service.Platform.HelperLog.Write($"[ddc] settle callback failed: {ex.Message}");
+        }
     }
 
     /// <summary>

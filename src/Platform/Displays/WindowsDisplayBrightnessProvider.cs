@@ -43,6 +43,21 @@ public sealed class WindowsDisplayBrightnessProvider : IDisplayBrightnessProvide
     /// than seven hundred.</summary>
     private string _lastSkipReason = "";
 
+    // Writes the gate held back: the latest value per target, applied in the
+    // order first held, so a Y70 Touch preset still lands before its gains.
+    private readonly object _writeGate = new();
+    private readonly List<HeldWrite> _held = new();
+
+    /// <summary>A null <see cref="Code"/> is a <see cref="SetBrightness"/> percent.</summary>
+    private readonly record struct HeldWrite(string Id, byte? Code, int Value, int Attempts = 0);
+
+    // A held write already reported success, so its caller never retries it
+    // (Y70Provider latches the Touch preset on that success); one that fails
+    // on replay stays held and goes out again ahead of the next write.
+    private const int HeldWriteMaxAttempts = 3;
+
+    public WindowsDisplayBrightnessProvider() => DdcGate.Opened += ApplyHeldWrites;
+
     private bool Skip(string op, string id)
     {
         if (!DdcGate.ShouldSkip(out var reason))
@@ -56,6 +71,51 @@ public sealed class WindowsDisplayBrightnessProvider : IDisplayBrightnessProvide
             Log($"skipping transactions: {reason} (first was {op} id={id})");
         }
         return true;
+    }
+
+    /// <summary>
+    /// Caller holds <see cref="_writeGate"/>. True when the gate is closed and
+    /// the write was held for <see cref="ApplyHeldWrites"/>; otherwise applies
+    /// anything still held first, so writes reach the monitor in order.
+    /// </summary>
+    private bool HoldIfGated(HeldWrite write, string op)
+    {
+        if (Skip(op, write.Id))
+        {
+            var i = _held.FindIndex(h => h.Id == write.Id && h.Code == write.Code);
+            if (i >= 0) _held[i] = write;
+            else _held.Add(write);
+            return true;
+        }
+        _held.RemoveAll(h => h.Id == write.Id && h.Code == write.Code);
+        ApplyHeldLocked();
+        return false;
+    }
+
+    private void ApplyHeldWrites()
+    {
+        lock (_writeGate)
+        {
+            if (_held.Count == 0 || DdcGate.ShouldSkip(out _)) return;
+            ApplyHeldLocked();
+        }
+    }
+
+    private void ApplyHeldLocked()
+    {
+        if (_held.Count == 0) return;
+        var writes = _held.ToArray();
+        _held.Clear();
+        var applied = 0;
+        foreach (var w in writes)
+        {
+            var ok = w.Code is byte code
+                ? WriteVcp(w.Id, code, w.Value)
+                : WriteBrightness(w.Id, w.Value).Status == DisplayBrightnessWriteStatuses.Applied;
+            if (ok) applied++;
+            else if (w.Attempts + 1 < HeldWriteMaxAttempts) _held.Add(w with { Attempts = w.Attempts + 1 });
+        }
+        Log($"applied {applied}/{writes.Length} held write(s), {_held.Count} kept for retry");
     }
 
     public IReadOnlyList<DisplayDto> Enumerate(IReadOnlyCollection<string>? excludedIds = null)
@@ -186,10 +246,19 @@ public sealed class WindowsDisplayBrightnessProvider : IDisplayBrightnessProvide
     public DisplayBrightnessDto SetBrightness(string id, int percent)
     {
         var requested = ClampPercent(percent);
-        if (Skip("set", id))
+        lock (_writeGate)
         {
-            return FailedBrightness(id, requested, "Brightness control is paused while the session is locked.");
+            if (HoldIfGated(new HeldWrite(id, null, requested), "set"))
+            {
+                UpdateCachedBrightness(id, requested);
+                return AppliedBrightness(id, requested, requested);
+            }
+            return WriteBrightness(id, requested);
         }
+    }
+
+    private DisplayBrightnessDto WriteBrightness(string id, int requested)
+    {
         if (!TryOpenById(id, out var phys))
         {
             return FailedBrightness(id, requested, "Display not found or brightness control unavailable.");
@@ -290,7 +359,16 @@ public sealed class WindowsDisplayBrightnessProvider : IDisplayBrightnessProvide
     public bool SetVcp(string id, byte code, int value)
     {
         if (value < 0) return false;
-        if (Skip($"setVcp 0x{code:X2}", id)) return false;
+        lock (_writeGate)
+        {
+            // A held write reports success: it reaches the monitor once the gate opens.
+            if (HoldIfGated(new HeldWrite(id, code, value), $"setVcp 0x{code:X2}")) return true;
+            return WriteVcp(id, code, value);
+        }
+    }
+
+    private bool WriteVcp(string id, byte code, int value)
+    {
         if (!TryOpenById(id, out var phys)) return false;
         try
         {

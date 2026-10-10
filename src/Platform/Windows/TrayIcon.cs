@@ -67,6 +67,10 @@ public static class TrayIcon
     private const int WM_ARM_ICON_RETRY = WM_USER + 90;
     private const int WM_SET_DISPLAY_WATCH = WM_USER + 91;
     private const uint WM_POWERBROADCAST = 0x0218;
+    private const uint WM_WTSSESSION_CHANGE = 0x02B1;
+    private const int WTS_SESSION_LOCK = 0x7;
+    private const int WTS_SESSION_UNLOCK = 0x8;
+    private const int NOTIFY_FOR_THIS_SESSION = 0;
     private const int PBT_POWERSETTINGCHANGE = 0x8013;
     private const int DEVICE_NOTIFY_WINDOW_HANDLE = 0;
     /// <summary>GUID_CONSOLE_DISPLAY_STATE: 0 off, 1 on, 2 dimmed.</summary>
@@ -112,6 +116,14 @@ public static class TrayIcon
 
     /// <summary>Raised when a power setting that decides the screen-off timeout may have changed, including once per setting at registration. Fired on the pump thread.</summary>
     public static event Action? ScreenOffTimeoutMayHaveChanged;
+
+    /// <summary>Raised with true when this session locks and false when it unlocks. Fired on the pump thread.</summary>
+    public static event Action<bool>? SessionLockChanged;
+
+    private static volatile bool _sessionWatchActive;
+
+    /// <summary>True while the window is registered for <see cref="SessionLockChanged"/>.</summary>
+    public static bool SessionLockWatchActive => _sessionWatchActive;
 
     private static volatile bool _displayWatchWanted;
     // Last state the system reported while registered; resent on every arm so
@@ -405,6 +417,9 @@ public static class TrayIcon
             Thread.MemoryBarrier();
             ApplyDisplayWatch();
             RegisterScreenOffTimeoutWatch(hwnd);
+            var sessionWatch = WTSRegisterSessionNotification(hwnd, NOTIFY_FOR_THIS_SESSION);
+            if (!sessionWatch) DiagFile($"session lock watch: register failed ({Marshal.GetLastWin32Error()})");
+            _sessionWatchActive = sessionWatch;
             _taskbarCreatedMsg = RegisterWindowMessage("TaskbarCreated");
 
             // Opt the process into Windows 11 immersive theming so the
@@ -459,6 +474,8 @@ public static class TrayIcon
                 TranslateMessage(ref msg);
                 DispatchMessage(ref msg);
             }
+            _sessionWatchActive = false;
+            if (sessionWatch) WTSUnRegisterSessionNotification(hwnd);
 
             bool wasOff;
             lock (_sync)
@@ -480,6 +497,7 @@ public static class TrayIcon
         catch
         {
             // Silently fail - tray is non-critical
+            _sessionWatchActive = false;
             bool wasOff;
             lock (_sync)
             {
@@ -700,6 +718,10 @@ public static class TrayIcon
             else if (msg == WM_DISPLAYCHANGE)
             {
                 DisplayChanged?.Invoke();
+            }
+            else if (msg == WM_WTSSESSION_CHANGE && (int)wParam is WTS_SESSION_LOCK or WTS_SESSION_UNLOCK)
+            {
+                SessionLockChanged?.Invoke((int)wParam == WTS_SESSION_LOCK);
             }
             else if (msg == WM_SETTINGCHANGE && lParam != IntPtr.Zero
                 && Marshal.PtrToStringUni(lParam) == "ImmersiveColorSet")
@@ -1645,6 +1667,8 @@ public static class TrayIcon
     [DllImport("user32", CharSet = CharSet.Unicode)] private static extern ushort RegisterClassEx(ref WNDCLASSEX cls);
     [DllImport("user32", SetLastError = true)] private static extern IntPtr RegisterPowerSettingNotification(IntPtr recipient, ref Guid powerSetting, int flags);
     [DllImport("user32", SetLastError = true)] private static extern bool UnregisterPowerSettingNotification(IntPtr handle);
+    [DllImport("wtsapi32", SetLastError = true)] private static extern bool WTSRegisterSessionNotification(IntPtr hwnd, int flags);
+    [DllImport("wtsapi32")] private static extern bool WTSUnRegisterSessionNotification(IntPtr hwnd);
     [DllImport("user32", CharSet = CharSet.Unicode)] private static extern IntPtr CreateWindowEx(int exStyle, string className, string windowName, int style, int x, int y, int w, int h, IntPtr parent, IntPtr menu, IntPtr instance, IntPtr param);
     [DllImport("user32")] private static extern IntPtr DefWindowProc(IntPtr hwnd, uint msg, IntPtr wParam, IntPtr lParam);
     [DllImport("user32")] private static extern bool GetMessage(out MSG msg, IntPtr hwnd, uint min, uint max);

@@ -189,6 +189,8 @@ internal static class WindowsUserHelper
         // Idle until the service arms it, which it does only while a keyboard has key reactions on.
         using var keyPresses = new Helper.KeyPressWatcher(outbound);
         var brightness = new Platform.Displays.WindowsDisplayBrightnessProvider();
+        Platform.Windows.TrayIcon.SessionLockChanged += Platform.Displays.DdcGate.OnSessionLockChanged;
+        Platform.Displays.DdcGate.Start(() => Platform.Windows.TrayIcon.SessionLockWatchActive);
 
         // Each domain registers its own envelope handler against this
         // registry. Adding a new domain = create the handler class in
