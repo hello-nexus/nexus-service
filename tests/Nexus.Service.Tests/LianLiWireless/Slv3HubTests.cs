@@ -2621,7 +2621,7 @@ public class Slv3HubTests
         foreach (var frame in tx.SentFrames)
         {
             if (frame.Length >= 6 && frame[0] == Slv3Protocol.UsbSendRf && frame[1] == 0
-                && frame[4] == Slv3Protocol.RfFrameType && frame[5] == Slv3Protocol.RfBind)
+                && frame[4] == Slv3Protocol.RfFrameType && frame[5] == Slv3Protocol.RfBind && !IsRescueBind(frame))
             {
                 count++;
             }
