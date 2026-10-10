@@ -8,7 +8,7 @@ using Nexus.Service.Peripherals.BulkPanels;
 namespace Nexus.Service.Cooling;
 
 /// <summary>
-/// Bridges the HydroShift II LCD-S over USB into the fan-control subsystem: the pump, each
+/// Bridges the HydroShift II LCD-S or LCD-C over USB into the fan-control subsystem: the pump, each
 /// fan header that has reported a speed, and the coolant probe as a curve source.
 /// </summary>
 public sealed class HydroShift2CoolingProvider : IFanControlProvider, ICoolingProvider
@@ -44,7 +44,7 @@ public sealed class HydroShift2CoolingProvider : IFanControlProvider, ICoolingPr
             {
                 Id = PumpChannelId,
                 Name = "HydroShift II Pump",
-                DutyPercent = pumpDuty ?? PumpDutyForRpm(reading.PumpRpm),
+                DutyPercent = pumpDuty ?? PumpDutyForRpm(reading.PumpRpm, _aio.Round),
                 Rpm = reading.PumpRpm,
                 Mode = pumpDuty is null ? FanModes.Auto : FanModes.Manual,
                 Kind = FanKinds.Pump,
@@ -185,9 +185,9 @@ public sealed class HydroShift2CoolingProvider : IFanControlProvider, ICoolingPr
     }
 
     /// <summary>Inverse of <see cref="HydroShift2Protocol.PumpRpmForDuty"/>, for showing the firmware's own speed as a duty.</summary>
-    private static int PumpDutyForRpm(int rpm) =>
+    private static int PumpDutyForRpm(int rpm, bool round) =>
         Math.Clamp((rpm - HydroShift2Protocol.PumpMinRpm) * 100
-            / (HydroShift2Protocol.PumpMaxRpm - HydroShift2Protocol.PumpMinRpm), 0, 100);
+            / (HydroShift2Protocol.PumpMaxRpmFor(round) - HydroShift2Protocol.PumpMinRpm), 0, 100);
 
     private static int Clamp(string channelId, int dutyPercent) =>
         Math.Clamp(dutyPercent, channelId == PumpChannelId ? HydroShift2Protocol.PumpDutyFloor : 0, 100);

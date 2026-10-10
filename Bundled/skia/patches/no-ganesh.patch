@@ -1,0 +1,35 @@
+diff --git a/src/c/gr_context.cpp b/src/c/gr_context.cpp
+index ecbc161..d2b2447 100644
+--- a/src/c/gr_context.cpp
++++ b/src/c/gr_context.cpp
+@@ -58,7 +58,7 @@ int gr_recording_context_max_render_target_size(gr_recording_context_t* context)
+ }
+ 
+ gr_direct_context_t* gr_recording_context_get_direct_context(gr_recording_context_t* context) {
+-    return SK_ONLY_GPU(ToGrDirectContext(GrAsDirectContext(AsGrRecordingContext(context))));
++    return SK_ONLY_GPU(ToGrDirectContext(GrAsDirectContext(AsGrRecordingContext(context))), nullptr);
+ }
+ 
+ // GrDirectContext
+diff --git a/src/c/sk_image.cpp b/src/c/sk_image.cpp
+index 02ed99a..4c385bc 100644
+--- a/src/c/sk_image.cpp
++++ b/src/c/sk_image.cpp
+@@ -124,7 +124,7 @@ bool sk_image_is_valid(const sk_image_t* image, gr_recording_context_t* context)
+     // Convert via GrRecordingContext::asRecorder() so GPU-backed images can
+     // be validated against their owning context. Passing nullptr only tests
+     // raster validity, which always returns false for texture-backed images.
+-    SkRecorder* recorder = context ? AsGrRecordingContext(context)->asRecorder() : nullptr;
++    SkRecorder* recorder = SK_ONLY_GPU(context ? AsGrRecordingContext(context)->asRecorder() : nullptr, nullptr);
+     return AsImage(image)->isValid(recorder);
+ }
+ 
+@@ -193,7 +193,7 @@ sk_image_t* sk_image_make_subset(const sk_image_t* cimage, gr_direct_context_t*
+     // Convert via GrRecordingContext::asRecorder() so GPU-backed images can
+     // be subsetted on their owning context — passing nullptr makes the GPU
+     // override return null because it can't access a direct context.
+-    SkRecorder* recorder = context ? AsGrDirectContext(context)->asRecorder() : nullptr;
++    SkRecorder* recorder = SK_ONLY_GPU(context ? AsGrDirectContext(context)->asRecorder() : nullptr, nullptr);
+     return ToImage(AsImage(cimage)->makeSubset(recorder, *AsIRect(subset), {}).release());
+ }
+ 

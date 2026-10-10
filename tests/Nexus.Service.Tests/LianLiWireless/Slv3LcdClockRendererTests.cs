@@ -1,6 +1,5 @@
 using System;
 using Nexus.Service.Peripherals.LianLiWireless;
-using SixLabors.ImageSharp;
 
 namespace Nexus.Service.Tests.LianLiWireless;
 
@@ -20,7 +19,7 @@ public class Slv3LcdClockRendererTests
         var jpeg = Slv3LcdClockRenderer.Render(face, FixedNow, "#00D1FF", "#FFFFFF");
 
         Assert.NotEmpty(jpeg);
-        var info = Image.Identify(jpeg);
+        var info = TestImages.Identify(jpeg);
         Assert.NotNull(info);
         Assert.Equal(400, info!.Width);
         Assert.Equal(400, info.Height);
@@ -35,7 +34,7 @@ public class Slv3LcdClockRendererTests
         var jpeg = Slv3LcdClockRenderer.Render("analogClassic", new DateTime(2026, 1, 1, hour, minute, second), null, null);
 
         Assert.NotEmpty(jpeg);
-        var info = Image.Identify(jpeg);
+        var info = TestImages.Identify(jpeg);
         Assert.Equal(400, info!.Width);
         Assert.Equal(400, info.Height);
     }
@@ -46,7 +45,7 @@ public class Slv3LcdClockRendererTests
         var jpeg = Slv3LcdClockRenderer.Render("digital", FixedNow, "nope", "#zzzzzz");
 
         Assert.NotEmpty(jpeg);
-        var info = Image.Identify(jpeg);
+        var info = TestImages.Identify(jpeg);
         Assert.Equal(400, info!.Width);
     }
 }

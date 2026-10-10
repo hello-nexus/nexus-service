@@ -130,6 +130,8 @@ public class CorsairLinkProtocolTests
     [InlineData(1, 0, "iCUE LINK QX RGB", 34, CorsairLinkClass.Fan, true, true)]
     [InlineData(3, 0, "iCUE LINK RX RGB MAX", 8, CorsairLinkClass.Fan, true, false)]
     [InlineData(12, 0, "iCUE LINK XD5 Elite", 22, CorsairLinkClass.Pump, true, true)]
+    [InlineData(26, 1, "iCUE LINK TITAN II", 20, CorsairLinkClass.Aio, true, true)]
+    [InlineData(26, 8, "iCUE LINK 5\" LCD Screen Module", 32, CorsairLinkClass.Fan, true, true)]
     public void Models_lookup_known_devices(int type, int model, string name, int leds, CorsairLinkClass cls, bool speed, bool temp)
     {
         var m = CorsairLinkModels.Lookup(type, model);
@@ -145,6 +147,45 @@ public class CorsairLinkProtocolTests
     {
         var m = CorsairLinkModels.Lookup(0xEE, 0x00);
         Assert.Equal(CorsairLinkClass.Other, m.Class);
+    }
+
+    [Fact]
+    public void Type26_layouts_follow_wire_order()
+    {
+        var titan = CorsairLinkModels.Lookup(26, 1);
+        Assert.Equal(20, titan.LedU!.Length);
+        // Ring first, inner four last.
+        Assert.Equal((60f / 66, 44f / 66), (titan.LedU[0], titan.LedV![0]));
+        Assert.Equal((36f / 66, 25f / 66), (titan.LedU[16], titan.LedV[16]));
+
+        var lcd = CorsairLinkModels.Lookup(26, 8);
+        Assert.Equal(32, lcd.LedU!.Length);
+        // Portrait: wire 0 top centre, wire 14 bottom-right corner.
+        Assert.Equal((40f / 80, 10f / 130), (lcd.LedU[0], lcd.LedV![0]));
+        Assert.Equal((70f / 80, 120f / 130), (lcd.LedU[14], lcd.LedV[14]));
+
+        var rx = CorsairLinkModels.Lookup(26, 0);
+        Assert.Equal(24, rx.LedU!.Length);
+        // Three 8-LED rings left to right, each starting at 3 o'clock.
+        Assert.Equal((81f / 360, 60f / 120), (rx.LedU[0], rx.LedV![0]));
+        Assert.Equal((201f / 360, 60f / 120), (rx.LedU[8], rx.LedV[8]));
+        Assert.Equal((321f / 360, 60f / 120), (rx.LedU[16], rx.LedV[16]));
+
+        var qx = CorsairLinkModels.Lookup(1, 0);
+        Assert.Equal(34, qx.LedU!.Length);
+        // Front rim starts at 1:30 (upper right) and runs clockwise: LED 4 is at 4:30.
+        Assert.True(qx.LedU[0] > 0.5f && qx.LedV![0] < 0.5f);
+        Assert.True(qx.LedU[3] > 0.5f && qx.LedV[3] > 0.5f);
+        // Back rim starts on the front rim's third LED and runs the other way.
+        Assert.Equal(qx.LedU[2], qx.LedU[12], 3);
+        Assert.Equal(qx.LedV[2], qx.LedV[12], 3);
+        Assert.Equal(qx.LedU[1], qx.LedU[13], 3);
+        // Front hub starts in the same direction as the back rim.
+        Assert.True(qx.LedU[24] > 0.5f && qx.LedV[24] > 0.5f);
+
+        // Type 26 is a product family: an unknown model never borrows model 0's layout.
+        Assert.Equal("iCUE LINK Device 26.2", CorsairLinkModels.Lookup(26, 2).Name);
+        Assert.Null(CorsairLinkModels.Lookup(26, 2).LedU);
     }
 
     [Fact]

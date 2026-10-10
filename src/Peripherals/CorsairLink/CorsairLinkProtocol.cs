@@ -67,6 +67,18 @@ public static class CorsairLinkProtocol
     public static ReadOnlySpan<byte> CmdWriteSubColor => new byte[] { 0x07, 0x00 };
     public static ReadOnlySpan<byte> CmdRead => new byte[] { 0x08, 0x01 };
 
+    // Subdevice re-detection, captured from iCUE 5.52.93's "Device Enumeration" on
+    // fw 4.1.656 (also answers on 3.10.636): 1a 01 starts it, then each 12 (ping)
+    // answers busy at ResponseBusyOffset until the chain is re-mapped; the poll
+    // cadence and try budget mirror iCUE's.
+    // The chain re-powers meanwhile, and it re-maps a hot-plugged device the hub
+    // still lists without a sensor/LED slot.
+    public static ReadOnlySpan<byte> CmdStartDetection => new byte[] { 0x1A, 0x01 };
+    public static ReadOnlySpan<byte> CmdPing => new byte[] { 0x12 };
+    public const int ResponseBusyOffset = 1;
+    public const int DetectionPollMs = 1000;
+    public const int DetectionMaxPolls = 20;
+
     // Endpoint (mode) addresses, passed as the payload of close/open/read.
     public const byte ModeGetDevices = 0x36;
     public const byte ModeGetLeds = 0x20;

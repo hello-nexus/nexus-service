@@ -1205,7 +1205,7 @@ public static class NexusServiceCollectionExtensions
 
         // Corsair iCUE LINK System Hub: HID connection worker + lighting + cooling.
         // Auto-detects the daisy chain; no composition (each device is one fixed zone).
-        services.AddSingleton<Nexus.Service.Peripherals.CorsairLink.CorsairLinkHub>();
+        services.AddSingleton<Nexus.Service.Peripherals.CorsairLink.CorsairLinkHubs>();
         services.AddSingleton<Nexus.Service.Cooling.CorsairLinkCoolingProvider>();
         services.AddSingleton<Nexus.Service.Lighting.CorsairLinkLightingDeviceProvider>();
         services.AddSingleton<Nexus.Service.Lighting.ILightingFrameContributor>(
@@ -1227,7 +1227,7 @@ public static class NexusServiceCollectionExtensions
         // still/GIF worker above takes it back whenever no panel session holds it.
         services.AddSingleton<Nexus.Service.Panel.Streams.IStreamedPanelDiscovery>(sp =>
             new Nexus.Service.Panel.Streams.CorsairLinkPanelDiscovery(
-                sp.GetRequiredService<Nexus.Service.Peripherals.CorsairLink.CorsairLinkHub>(),
+                sp.GetRequiredService<Nexus.Service.Peripherals.CorsairLink.CorsairLinkHubs>(),
                 sp.GetRequiredService<Nexus.Service.Peripherals.CorsairLink.CorsairLinkLcd>()));
 
         // Lian Li Strimer Plus: HID connection worker + lighting.

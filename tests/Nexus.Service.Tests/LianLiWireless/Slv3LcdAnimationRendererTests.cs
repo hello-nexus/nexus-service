@@ -1,5 +1,4 @@
 using Nexus.Service.Peripherals.LianLiWireless;
-using SixLabors.ImageSharp;
 
 namespace Nexus.Service.Tests.LianLiWireless;
 
@@ -19,7 +18,7 @@ public class Slv3LcdAnimationRendererTests
         var jpeg = Slv3LcdAnimationRenderer.Render(animationId, elapsedSeconds, "#00D1FF", "#9B5DE5");
 
         Assert.NotEmpty(jpeg);
-        var info = Image.Identify(jpeg);
+        var info = TestImages.Identify(jpeg);
         Assert.NotNull(info);
         Assert.Equal(400, info!.Width);
         Assert.Equal(400, info.Height);
@@ -31,7 +30,7 @@ public class Slv3LcdAnimationRendererTests
         var jpeg = Slv3LcdAnimationRenderer.Render("spin", 2.0, "nope", null);
 
         Assert.NotEmpty(jpeg);
-        var info = Image.Identify(jpeg);
+        var info = TestImages.Identify(jpeg);
         Assert.Equal(400, info!.Width);
     }
 

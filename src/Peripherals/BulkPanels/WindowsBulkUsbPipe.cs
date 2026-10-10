@@ -36,9 +36,12 @@ public sealed unsafe class WindowsBulkUsbPipe : IBulkUsbPipe
     private readonly object _readLock = new();
     private bool _disposed;
 
-    public WindowsBulkUsbPipe(string devicePath, byte writePipeId, byte readPipeId)
+    public int ProductId { get; }
+
+    public WindowsBulkUsbPipe(string devicePath, byte writePipeId, byte readPipeId, int productId = 0)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(devicePath);
+        ProductId = productId;
         _writePipeId = writePipeId;
         _readPipeId = readPipeId;
 
@@ -209,7 +212,7 @@ public sealed class WindowsBulkUsbPipeFactory : IBulkUsbPipeFactory
         }
         try
         {
-            return new WindowsBulkUsbPipe(path, writePipeId, readPipeId);
+            return new WindowsBulkUsbPipe(path, writePipeId, readPipeId, productId);
         }
         catch (IOException ex)
         {

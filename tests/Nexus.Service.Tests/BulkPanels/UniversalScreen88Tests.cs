@@ -6,8 +6,7 @@ using Nexus.Service.Lighting.Rgb;
 using Nexus.Service.Models.Panel;
 using Nexus.Service.Panel.Streams;
 using Nexus.Service.Peripherals.BulkPanels;
-using SixLabors.ImageSharp;
-using SixLabors.ImageSharp.PixelFormats;
+using SkiaSharp;
 using Xunit;
 
 namespace Nexus.Service.Tests.BulkPanels;
@@ -52,7 +51,7 @@ public class UniversalScreen88Tests
         Assert.True(driver.SendFrame(pipe, null, Quadrants(480, 1920)));
         var shown = DecodeJpeg(pipe.Payloads.Single());
         Assert.Equal((480, 1920), (shown.Width, shown.Height));
-        Assert.True(IsRed(shown[10, 10]));
+        Assert.True(IsRed(shown.GetPixel(10, 10)));
     }
 
     [Fact]
@@ -76,8 +75,8 @@ public class UniversalScreen88Tests
         var shown = DecodeJpeg(pipe.Payloads.Single());
         Assert.Equal((480, 1920), (shown.Width, shown.Height));
         // The landscape top-left (red) lands top-right once turned clockwise: upright on the glass (camera-checked).
-        Assert.True(IsRed(shown[469, 10]));
-        Assert.False(IsRed(shown[10, 10]));
+        Assert.True(IsRed(shown.GetPixel(469, 10)));
+        Assert.False(IsRed(shown.GetPixel(10, 10)));
     }
 
     [Theory]
@@ -236,9 +235,9 @@ public class UniversalScreen88Tests
         return frame;
     }
 
-    private static Image<Rgba32> DecodeJpeg(byte[] jpeg) => Image.Load<Rgba32>(jpeg);
+    private static SKBitmap DecodeJpeg(byte[] jpeg) => TestImages.Decode(jpeg);
 
-    private static bool IsRed(Rgba32 p) => p.R > 200 && p.G < 60 && p.B < 60;
+    private static bool IsRed(SKColor p) => p.Red > 200 && p.Green < 60 && p.Blue < 60;
 
     /// <summary>Decrypts each command header, answers it like the glass does, and keeps any payload after the header.</summary>
     private sealed class GlassPipe : IBulkUsbPipe

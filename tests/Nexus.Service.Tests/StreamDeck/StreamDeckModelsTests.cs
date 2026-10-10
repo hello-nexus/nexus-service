@@ -46,6 +46,15 @@ public class StreamDeckModelsTests
     }
 
     [Fact]
+    public void DisplayName_PrefixesTheBrand()
+    {
+        Assert.Equal("Elgato Stream Deck Mini", StreamDeckModels.ByProductId(0x0063)!.DisplayName);
+        Assert.Equal("Elgato Stream Deck +", StreamDeckModels.ByProductId(0x0084)!.DisplayName);
+        Assert.Equal("Elgato Stream Deck + XL", StreamDeckModels.ByProductId(0x00c6)!.DisplayName);
+        Assert.Equal("Corsair Galleon K100 SD", StreamDeckModels.ByProductId(0x2b18)!.DisplayName);
+    }
+
+    [Fact]
     public void ByProductId_UnknownReturnsNull()
     {
         Assert.Null(StreamDeckModels.ByProductId(0xDEAD));

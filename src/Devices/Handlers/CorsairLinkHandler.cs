@@ -6,11 +6,11 @@ namespace Nexus.Service.Devices.Handlers;
 
 public sealed class CorsairLinkHandler : IDeviceHandler
 {
-    private readonly CorsairLinkHub _hub;
+    private readonly CorsairLinkHubs _hubs;
 
-    public CorsairLinkHandler(CorsairLinkHub hub)
+    public CorsairLinkHandler(CorsairLinkHubs hubs)
     {
-        _hub = hub;
+        _hubs = hubs;
     }
 
     public string Id => "corsair";
@@ -24,10 +24,10 @@ public sealed class CorsairLinkHandler : IDeviceHandler
 
     public bool IsConnected(IReadOnlyList<UsbDeviceEntry> detectedDevices)
     {
-        if (_hub.IsConnected) return true;
+        if (_hubs.AnyConnected) return true;
         return detectedDevices.Any(d =>
             Identifiers.Any(id => id.VendorId == d.VendorId && id.ProductId == d.ProductId));
     }
 
-    public string GetFirmwareVersion() => _hub.State.Firmware;
+    public string GetFirmwareVersion() => _hubs.FirstConnected?.State.Firmware ?? "";
 }

@@ -4,8 +4,7 @@ using System.IO;
 using System.Runtime.InteropServices;
 using System.Runtime.Versioning;
 using System.Threading;
-using SixLabors.ImageSharp;
-using SixLabors.ImageSharp.PixelFormats;
+using SkiaSharp;
 
 namespace Nexus.Service.Activity;
 
@@ -335,10 +334,12 @@ public sealed unsafe class WindowsIconExtractor : IWindowsIconExtractor, IDispos
 
             BgraToRgba(pixels);
 
-            using var image = Image.LoadPixelData<Rgba32>(pixels, width, height);
-            using var ms = new MemoryStream();
-            image.SaveAsPng(ms);
-            return ms.ToArray();
+            fixed (byte* rgba = pixels)
+            {
+                using var image = new SKPixmap(new SKImageInfo(width, height, SKColorType.Rgba8888, SKAlphaType.Unpremul), (IntPtr)rgba, width * 4);
+                using var png = image.Encode(SKPngEncoderOptions.Default);
+                return png?.ToArray() ?? Array.Empty<byte>();
+            }
         }
         finally
         {

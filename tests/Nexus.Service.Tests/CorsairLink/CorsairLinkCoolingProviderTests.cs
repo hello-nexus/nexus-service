@@ -17,7 +17,9 @@ public class CorsairLinkCoolingProviderTests
         {
             new CorsairLinkDevice { Channel = 1, Type = type, Class = cls, HasSpeed = true, Name = "dev" },
         };
-        return new CorsairLinkCoolingProvider(hub);
+        var hubs = new CorsairLinkHubs();
+        hubs.Add(hub);
+        return new CorsairLinkCoolingProvider(hubs);
     }
 
     private static int CurveDutyOf(CorsairLinkCoolingProvider p)

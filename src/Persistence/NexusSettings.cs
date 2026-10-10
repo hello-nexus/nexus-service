@@ -1955,6 +1955,8 @@ public sealed class CorsairSettings
     public byte LcdBrightness { get; set; } = 100;
     /// <summary>LCD rotation: 0 = 0 deg, 1 = 90 deg, 2 = 180 deg, 3 = 270 deg.</summary>
     public byte LcdRotation { get; set; }
+    /// <summary>USB serial (or HID path) of the LINK hub that owns the unqualified "corsair:ch{N}" ids.</summary>
+    public string? PrimaryHubKey { get; set; }
 }
 
 /// <summary>
@@ -2159,8 +2161,8 @@ public sealed class UpdateSettings
     public string UpdateMode { get; set; } = "always";
 
     /// <summary>"production" or "beta". Production maps to the GitHub latest-release
-    /// endpoint (excludes prereleases); beta picks the newest release regardless of
-    /// the prerelease flag.</summary>
+    /// endpoint (excludes prereleases); beta picks the highest prerelease and never
+    /// a stable.</summary>
     public string UpdateChannel { get; set; } = "production";
 
     /// <summary>

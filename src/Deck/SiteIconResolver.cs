@@ -25,7 +25,7 @@ public interface ISiteIconResolver
 /// <c>/favicon.ico</c>. Keyed per ORIGIN, so every key on one site shares a fetch.
 ///
 /// Bytes are served verbatim: every consumer is a Chromium surface that decodes
-/// ico/svg/webp natively, and ImageSharp has no ICO decoder.
+/// ico/svg/webp natively.
 ///
 /// Private ranges are not blocked: a LAN address is a valid deck key. The route
 /// takes ?url= verbatim, so the real bound is "any authenticated panel session",

@@ -1,8 +1,6 @@
 using System;
-using System.IO;
 using Nexus.Service.Peripherals.JpegPanels;
-using SixLabors.ImageSharp;
-using SixLabors.ImageSharp.PixelFormats;
+using SkiaSharp;
 using Xunit;
 
 namespace Nexus.Service.Tests.JpegPanels;
@@ -39,7 +37,7 @@ public class BgraJpegEncoderTests
         Assert.Equal(new byte[] { 0xFF, 0xD8 }, jpeg[0..2]);
         Assert.Equal(new byte[] { 0xFF, 0xD9 }, jpeg[^2..]);
 
-        using var decoded = Image.Load<Rgb24>(new MemoryStream(jpeg));
+        using var decoded = TestImages.Decode(jpeg);
         Assert.Equal(240, decoded.Width);
         Assert.Equal(240, decoded.Height);
     }
@@ -56,13 +54,13 @@ public class BgraJpegEncoderTests
 
         var jpeg = encoder.Encode(SolidBgra(64, 64, (byte)r, (byte)g, (byte)b)).ToArray();
 
-        using var decoded = Image.Load<Rgb24>(new MemoryStream(jpeg));
-        var centre = decoded[32, 32];
+        using var decoded = TestImages.Decode(jpeg);
+        var centre = decoded.GetPixel(32, 32);
         // JPEG is lossy and chroma-subsampled, so compare with a tolerance rather than
         // exactly; a swapped channel is off by far more than this.
-        Assert.InRange(centre.R, r - 12, r + 12);
-        Assert.InRange(centre.G, g - 12, g + 12);
-        Assert.InRange(centre.B, b - 12, b + 12);
+        Assert.InRange(centre.Red, r - 12, r + 12);
+        Assert.InRange(centre.Green, g - 12, g + 12);
+        Assert.InRange(centre.Blue, b - 12, b + 12);
     }
 
     [Fact]
@@ -86,9 +84,9 @@ public class BgraJpegEncoderTests
 
         var jpeg = encoder.Encode(frame).ToArray();
 
-        using var decoded = Image.Load<Rgb24>(new MemoryStream(jpeg));
-        Assert.True(decoded[8, 32].R > 200, "left half should decode red");
-        Assert.True(decoded[56, 32].B > 200, "right half should decode blue");
+        using var decoded = TestImages.Decode(jpeg);
+        Assert.True(decoded.GetPixel(8, 32).Red > 200, "left half should decode red");
+        Assert.True(decoded.GetPixel(56, 32).Blue > 200, "right half should decode blue");
     }
 
     [Fact]
@@ -134,22 +132,15 @@ public class BgraJpegEncoderTests
 
     /// <summary>
     /// Without this the channel-order tests above would pass while silently exercising only
-    /// the ImageSharp fallback - the exact false green that would hide a wrong TJPF_* value.
-    /// The bundled library is copied next to the test binary by the csproj, so on a build
-    /// that shipped it this must be the native path.
+    /// the Skia fallback - the exact false green that would hide a wrong TJPF_* value.
+    /// TurboJPEG is compiled into the bundled libSkiaSharp the csproj copies next to the
+    /// test binary, so this must be the native path.
     /// </summary>
     [Fact]
-    public void Bundled_turbojpeg_is_the_active_encoder()
+    public void Bundled_libjpeg_turbo_is_the_active_encoder()
     {
-        var bundled = File.Exists(Path.Combine(AppContext.BaseDirectory, "turbojpeg.dll"))
-            || File.Exists(Path.Combine(AppContext.BaseDirectory, "libturbojpeg.dylib"))
-            || File.Exists(Path.Combine(AppContext.BaseDirectory, "libturbojpeg.so"));
-        if (!bundled)
-        {
-            return;
-        }
         using var encoder = new BgraJpegEncoder(64, 64);
-        Assert.True(encoder.IsNative, "turbojpeg is bundled next to the test binary but the encoder fell back to ImageSharp");
+        Assert.True(encoder.IsNative, "the bundled libSkiaSharp carries TurboJPEG but the encoder fell back to Skia");
     }
 
     [Fact]
@@ -160,7 +151,7 @@ public class BgraJpegEncoderTests
 
         var jpeg = encoder.Encode(frame).ToArray();
 
-        using var decoded = Image.Load<Rgba32>(jpeg);
+        using var decoded = TestImages.Decode(jpeg);
         Assert.Equal(160, decoded.Width);
         Assert.Equal(96, decoded.Height);
         // Whichever encoder is active: 4:2:0 at quality 85 on a flat fill lands well

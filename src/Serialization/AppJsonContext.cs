@@ -1246,6 +1246,10 @@ namespace Nexus.Service.Serialization;
 [JsonSerializable(typeof(Nexus.Service.Routes.CorsairStateResponse))]
 [JsonSerializable(typeof(Nexus.Service.Routes.CorsairDeviceDto))]
 [JsonSerializable(typeof(Nexus.Service.Routes.CorsairDeviceDto[]))]
+[JsonSerializable(typeof(Nexus.Service.Routes.CorsairHubDto))]
+[JsonSerializable(typeof(Nexus.Service.Routes.CorsairHubDto[]))]
+[JsonSerializable(typeof(Nexus.Service.Routes.CorsairRescanRequest))]
+[JsonSerializable(typeof(Nexus.Service.Routes.CorsairRescanResponse))]
 // Corsair iCUE LINK LCD.
 [JsonSerializable(typeof(Nexus.Service.Peripherals.CorsairLink.LcdMediaItem))]
 [JsonSerializable(typeof(Nexus.Service.Peripherals.CorsairLink.LcdMediaItem[]))]

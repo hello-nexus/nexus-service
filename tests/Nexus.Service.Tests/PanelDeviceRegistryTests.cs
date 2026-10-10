@@ -120,6 +120,21 @@ public sealed class PanelDeviceRegistryTests : IDisposable
         Assert.Equal("#ff8800", _registry.Get(record.Id)!.TextColor);
     }
 
+    [Fact]
+    public void Patch_Font_RoundTripsAndSurvivesOmission()
+    {
+        var record = _registry.Allocate(null, Caps(PanelSurfaces.Phone));
+        Assert.Null(record.Font);
+
+        _registry.Patch(record.Id, new PanelDevicePatch { Font = "oswald" });
+        var patched = _registry.Patch(record.Id, new PanelDevicePatch { DisplayName = "Renamed" });
+
+        Assert.Equal("oswald", patched!.Font);
+        Assert.Equal("oswald", _registry.Get(record.Id)!.Font);
+
+        Assert.Null(_registry.Patch(record.Id, new PanelDevicePatch { Font = "" })!.Font);
+    }
+
     /// <summary>
     /// The service stores null until explicitly patched, same as WidgetOpacity/
     /// WidgetLabels; the default percent is applied client-side.
@@ -418,6 +433,7 @@ public sealed class PanelDeviceRegistryTests : IDisposable
             WidgetOpacity = 0.7,
             WidgetLabels = true,
             WidgetPadding = 25,
+            Font = "tektur",
             ThemeSyncWithDesktop = false,
             AccentSyncWithDesktop = false,
         });
@@ -452,6 +468,7 @@ public sealed class PanelDeviceRegistryTests : IDisposable
         Assert.Null(reset.WidgetOpacity);
         Assert.Null(reset.WidgetLabels);
         Assert.Null(reset.WidgetPadding);
+        Assert.Null(reset.Font);
         Assert.Null(reset.ThemeSyncWithDesktop);
         Assert.Null(reset.AccentSyncWithDesktop);
         Assert.Null(_registry.Get(record.Id)!.Layout);
@@ -494,6 +511,44 @@ public sealed class PanelDeviceRegistryTests : IDisposable
         // Personalization is the other scope; hardware reset keeps it.
         Assert.Equal(25, reset.BackgroundFrostLevel);
         Assert.Equal("DISPLAY-1", reset.DisplayId);
+    }
+
+    [Fact]
+    public void HighResolution_persists_and_hardware_reset_clears_it()
+    {
+        var record = _registry.Allocate("Screen", Caps(PanelSurfaces.Monitor));
+
+        Assert.True(_registry.Patch(record.Id, new PanelDevicePatch { HighResolution = true })!.HighResolution);
+        Assert.True(_registry.Patch(record.Id, new PanelDevicePatch { DisplayName = "Renamed" })!.HighResolution);
+
+        Assert.Null(_registry.ResetHardwareSettings(record.Id)!.HighResolution);
+    }
+
+    [Fact]
+    public void WidgetSize_takes_only_known_values_and_survives_a_hardware_reset()
+    {
+        var record = _registry.Allocate("Q-series", Caps(PanelSurfaces.Q60));
+
+        Assert.Equal("small", _registry.Patch(record.Id, new PanelDevicePatch { WidgetSize = "small" })!.WidgetSize);
+        Assert.Equal("small", _registry.Patch(record.Id, new PanelDevicePatch { WidgetSize = "huge" })!.WidgetSize);
+        Assert.Equal("small", _registry.Patch(record.Id, new PanelDevicePatch { DisplayName = "Renamed" })!.WidgetSize);
+        Assert.Equal("large", _registry.Patch(record.Id, new PanelDevicePatch { WidgetSize = "large" })!.WidgetSize);
+
+        // A layout choice: the hardware reset leaves the layout, so it leaves the size too.
+        Assert.Equal("large", _registry.ResetHardwareSettings(record.Id)!.WidgetSize);
+    }
+
+    [Fact]
+    public void ResetToDefaults_reseeds_a_streamed_strip_and_clears_a_display_bound_one()
+    {
+        var strip = new PanelDeviceCapabilities { Surface = PanelSurfaces.Monitor, CssWidth = 1920, CssHeight = 480 };
+        var streamed = _registry.Allocate("Strip", strip);
+        var (bound, _) = _registry.AllocateForDisplay("DISPLAY-1", "Edge", strip);
+
+        var reseeded = _registry.ResetToDefaults(streamed.Id)!.Layout;
+
+        Assert.Contains(Assert.Single(reseeded!.Pages).Widgets, w => w.Type == "weather" && w.Size == "4x4");
+        Assert.Null(_registry.ResetToDefaults(bound.Id)!.Layout);
     }
 
     [Fact]
@@ -624,7 +679,7 @@ public sealed class PanelDeviceRegistryTests : IDisposable
         var desk = _registry.CreatePreset(record.Id, "Desk", out _)!.ActiveId!;
         var game = _registry.CreatePreset(record.Id, "Game", out _)!.ActiveId!;
         // Edits while Game is loaded belong to Game.
-        _registry.Patch(record.Id, new PanelDevicePatch { Layout = Layout("gallery"), AccentColor = "#ff0000", ThemeMode = "dark", TextColorMode = "custom", TextColor = "#00ff00" });
+        _registry.Patch(record.Id, new PanelDevicePatch { Layout = Layout("gallery"), AccentColor = "#ff0000", ThemeMode = "dark", TextColorMode = "custom", TextColor = "#00ff00", Font = "jura" });
 
         var afterDesk = _registry.ActivatePreset(record.Id, desk);
 
@@ -635,6 +690,7 @@ public sealed class PanelDeviceRegistryTests : IDisposable
         // Null in the snapshot resets the field rather than leaving Game's accent.
         Assert.Null(live.AccentColor);
         Assert.Null(live.TextColor);
+        Assert.Null(live.Font);
 
         _registry.ActivatePreset(record.Id, game);
         live = _registry.Get(record.Id)!;
@@ -642,6 +698,7 @@ public sealed class PanelDeviceRegistryTests : IDisposable
         Assert.Equal("#ff0000", live.AccentColor);
         Assert.Equal("dark", live.ThemeMode);
         Assert.Equal("#00ff00", live.TextColor);
+        Assert.Equal("jura", live.Font);
     }
 
     [Fact]

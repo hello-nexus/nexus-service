@@ -20,6 +20,9 @@ public interface IBulkUsbPipe : IDisposable
     /// or -1 when the pipe is gone.
     /// </summary>
     int Read(Span<byte> buffer, int timeoutMs);
+
+    /// <summary>USB product id of the opened device, for a driver that claims several; 0 when unknown.</summary>
+    int ProductId => 0;
 }
 
 /// <summary>

@@ -4,8 +4,7 @@ using Nexus.Service.Deck;
 using Nexus.Service.Peripherals.Hid;
 using Nexus.Service.Peripherals.StreamDeck;
 using Nexus.Service.Rendering;
-using SixLabors.ImageSharp;
-using SixLabors.ImageSharp.PixelFormats;
+using SkiaSharp;
 using Xunit;
 
 namespace Nexus.Service.Tests.StreamDeck;
@@ -20,7 +19,7 @@ public sealed class DeckStripRendererTests
 
     private readonly DeckStripRenderer _renderer = new(DeckTestHelpers.NewTestKeyRenderer());
 
-    private static readonly Rgba32 Accent = new(0x22, 0xd3, 0xee, 255);
+    private static readonly SKColor Accent = new(0x22, 0xd3, 0xee);
 
     private static DialSegmentInput Value(double fraction, bool muted = false, int stack = 0, int stackIndex = 0) => new()
     {
@@ -35,16 +34,16 @@ public sealed class DeckStripRendererTests
         StackIndex = stackIndex,
     };
 
-    private static bool IsAccent(Rgba32 p) => Math.Abs(p.R - Accent.R) < 24 && Math.Abs(p.G - Accent.G) < 24 && Math.Abs(p.B - Accent.B) < 24;
+    private static bool IsAccent(SKColor p) => Math.Abs(p.Red - Accent.Red) < 24 && Math.Abs(p.Green - Accent.Green) < 24 && Math.Abs(p.Blue - Accent.Blue) < 24;
 
-    private static int AccentPixels(Image<Rgba32> image, Rectangle area)
+    private static int AccentPixels(SKBitmap image, SKRectI area)
     {
         var count = 0;
         for (var y = area.Top; y < area.Bottom; y++)
         {
             for (var x = area.Left; x < area.Right; x++)
             {
-                if (IsAccent(image[x, y]))
+                if (IsAccent(image.GetPixel(x, y)))
                 {
                     count++;
                 }
@@ -71,7 +70,7 @@ public sealed class DeckStripRendererTests
         using var full = _renderer.RenderSegment(Value(1.0), 200, 100);
         using var half = _renderer.RenderSegment(Value(0.5), 200, 100);
         using var none = _renderer.RenderSegment(Value(0.0), 200, 100);
-        var bar = new Rectangle(76, 74, 108, 12);
+        var bar = SKRectI.Create(76, 74, 108, 12);
 
         Assert.True(AccentPixels(full, bar) > AccentPixels(half, bar));
         Assert.True(AccentPixels(half, bar) > AccentPixels(none, bar));
@@ -83,7 +82,7 @@ public sealed class DeckStripRendererTests
     {
         using var muted = _renderer.RenderSegment(Value(0.8, muted: true), 200, 100);
 
-        Assert.Equal(0, AccentPixels(muted, new Rectangle(76, 74, 108, 12)));
+        Assert.Equal(0, AccentPixels(muted, SKRectI.Create(76, 74, 108, 12)));
     }
 
     [Fact]
@@ -91,12 +90,12 @@ public sealed class DeckStripRendererTests
     {
         using var empty = _renderer.RenderSegment(new DialSegmentInput(), 200, 100);
 
-        var first = empty[0, 0];
+        var first = empty.GetPixel(0, 0);
         for (var y = 0; y < empty.Height; y += 7)
         {
             for (var x = 0; x < empty.Width; x += 7)
             {
-                Assert.Equal(first, empty[x, y]);
+                Assert.Equal(first, empty.GetPixel(x, y));
             }
         }
     }
@@ -106,8 +105,8 @@ public sealed class DeckStripRendererTests
     {
         using var first = _renderer.RenderSegment(Value(0.5, stack: 3, stackIndex: 0), 200, 100);
         using var last = _renderer.RenderSegment(Value(0.5, stack: 3, stackIndex: 2), 200, 100);
-        var leftDot = new Rectangle(80, 91, 10, 6);
-        var rightDot = new Rectangle(110, 91, 10, 6);
+        var leftDot = SKRectI.Create(80, 91, 10, 6);
+        var rightDot = SKRectI.Create(110, 91, 10, 6);
 
         Assert.True(AccentPixels(first, leftDot) > 0);
         Assert.Equal(0, AccentPixels(first, rightDot));
@@ -115,13 +114,17 @@ public sealed class DeckStripRendererTests
     }
 
     [Fact]
-    public void Segment_FeedbackAddsAnAccentBorder_ThatFadesOut()
+    public void Segment_FeedbackTintsTheBackground_WithNoBorder()
     {
         using var plain = _renderer.RenderSegment(Value(0.5), 200, 100);
         using var lit = _renderer.RenderSegment(Value(0.5), 200, 100, feedback: 1f);
 
-        Assert.True(AccentPixels(lit, new Rectangle(0, 0, 200, 3)) > 100);
-        Assert.Equal(0, AccentPixels(plain, new Rectangle(0, 0, 200, 3)));
+        var corner = plain.GetPixel(0, 0);
+        var tinted = lit.GetPixel(0, 0);
+        Assert.True(tinted.Blue > corner.Blue && tinted.Green > corner.Green);
+        Assert.Equal(0, AccentPixels(lit, SKRectI.Create(0, 0, 200, 3)));
+        var bar = SKRectI.Create(76, 74, 108, 12);
+        Assert.Equal(AccentPixels(plain, bar), AccentPixels(lit, bar));
     }
 
     [Fact]
@@ -137,21 +140,21 @@ public sealed class DeckStripRendererTests
         };
         using var withHistory = _renderer.RenderSegment(input, 200, 100);
         using var without = _renderer.RenderSegment(new DialSegmentInput { Kind = DialSegmentKind.Monitoring, Title = "CPU", ValueText = "63%" }, 200, 100);
-        var band = new Rectangle(16, 62, 168, 28);
+        var band = SKRectI.Create(16, 62, 168, 28);
 
         var tinted = 0;
         for (var y = band.Top; y < band.Bottom; y++)
         {
             for (var x = band.Left; x < band.Right; x++)
             {
-                if (withHistory[x, y].B > withHistory[x, y].R + 20)
+                if (withHistory.GetPixel(x, y).Blue > withHistory.GetPixel(x, y).Red + 20)
                 {
                     tinted++;
                 }
             }
         }
         Assert.True(tinted > 500);
-        Assert.NotEqual(withHistory[100, 85], without[100, 85]);
+        Assert.NotEqual(withHistory.GetPixel(100, 85), without.GetPixel(100, 85));
     }
 
     [Fact]
@@ -162,21 +165,21 @@ public sealed class DeckStripRendererTests
         using var strip = _renderer.RenderStrip(inputs, 800, 100);
 
         Assert.Equal((800, 100), (strip.Width, strip.Height));
-        Assert.True(AccentPixels(strip, new Rectangle(76, 74, 108, 12)) > 600);
-        Assert.Equal(0, AccentPixels(strip, new Rectangle(276, 74, 108, 12)));
-        Assert.True(AccentPixels(strip, new Rectangle(476, 74, 108, 12)) > 600);
+        Assert.True(AccentPixels(strip, SKRectI.Create(76, 74, 108, 12)) > 600);
+        Assert.Equal(0, AccentPixels(strip, SKRectI.Create(276, 74, 108, 12)));
+        Assert.True(AccentPixels(strip, SKRectI.Create(476, 74, 108, 12)) > 600);
     }
 
     [Fact]
     public void InfoScreen_OffIsBlack_ClockAndPageDrawText()
     {
-        static bool AnyLit(Image<Rgba32> image)
+        static bool AnyLit(SKBitmap image)
         {
             for (var y = 0; y < image.Height; y++)
             {
                 for (var x = 0; x < image.Width; x++)
                 {
-                    if (image[x, y].R > 128)
+                    if (image.GetPixel(x, y).Red > 128)
                     {
                         return true;
                     }
@@ -217,83 +220,83 @@ public sealed class DeckStripRendererTests
     public void EncodeScreen_AppliesTheModelsScreenTransform(int pid, int w, int h, int wireW, int wireH)
     {
         var model = StreamDeckModels.ByProductId(pid)!;
-        using var image = new Image<Rgba32>(w, h, new Rgba32(10, 20, 30, 255));
+        using var image = TestImages.Solid(w, h, new SKColor(10, 20, 30));
 
         var wire = DeckWireImageEncoder.EncodeScreen(image, model);
 
-        var info = Image.Identify(wire);
-        Assert.Equal((wireW, wireH), (info.Width, info.Height));
+        var info = TestImages.Identify(wire);
+        Assert.Equal((wireW, wireH), (info!.Width, info.Height));
     }
 
     [Fact]
     public void EncodeScreen_Rot90Ccw_PutsTheTopLeftCornerAtTheBottomLeft()
     {
-        using var image = new Image<Rgba32>(200, 100, new Rgba32(0, 0, 0, 255));
+        using var image = TestImages.Solid(200, 100, new SKColor(0, 0, 0));
         for (var y = 0; y < 30; y++)
         {
             for (var x = 0; x < 30; x++)
             {
-                image[x, y] = new Rgba32(255, 255, 255, 255);
+                image.SetPixel(x, y, SKColors.White);
             }
         }
 
-        using var decoded = Image.Load<Rgba32>(DeckWireImageEncoder.EncodeScreen(image, PlusXl));
+        using var decoded = TestImages.Decode(DeckWireImageEncoder.EncodeScreen(image, PlusXl));
 
-        Assert.True(decoded[10, 190].R > 200);
-        Assert.True(decoded[10, 10].R < 60);
+        Assert.True(decoded.GetPixel(10, 190).Red > 200);
+        Assert.True(decoded.GetPixel(10, 10).Red < 60);
     }
 
     [Fact]
     public void KeyEncode_PlusXl_RotatesTheSquareNinetyCcw()
     {
-        using var square = new Image<Rgba32>(112, 112, new Rgba32(0, 0, 0, 255));
+        using var square = TestImages.Solid(112, 112, new SKColor(0, 0, 0));
         for (var y = 0; y < 30; y++)
         {
             for (var x = 0; x < 30; x++)
             {
-                square[x, y] = new Rgba32(255, 255, 255, 255);
+                square.SetPixel(x, y, SKColors.White);
             }
         }
 
         var wire = DeckWireImageEncoder.Encode(square, PlusXl, orientation: 0)!;
-        using var decoded = Image.Load<Rgba32>(wire);
+        using var decoded = TestImages.Decode(wire);
 
         Assert.Equal((112, 112), (decoded.Width, decoded.Height));
-        Assert.True(decoded[10, 100].R > 200);
-        Assert.True(decoded[10, 10].R < 60);
+        Assert.True(decoded.GetPixel(10, 100).Red > 200);
+        Assert.True(decoded.GetPixel(10, 10).Red < 60);
     }
 
     [Fact]
     public void KeyEncode_Studio_LetterboxesTheSquareOntoA144x112Key()
     {
-        using var square = new Image<Rgba32>(112, 112, new Rgba32(200, 40, 40, 255));
+        using var square = TestImages.Solid(112, 112, new SKColor(200, 40, 40));
 
         var wire = DeckWireImageEncoder.Encode(square, Studio, orientation: 0)!;
-        using var decoded = Image.Load<Rgba32>(wire);
+        using var decoded = TestImages.Decode(wire);
 
         Assert.Equal((144, 112), (decoded.Width, decoded.Height));
-        Assert.True(decoded[4, 56].R < 40, "left bar is black");
-        Assert.True(decoded[140, 56].R < 40, "right bar is black");
-        Assert.True(decoded[72, 56].R > 150, "the square sits in the middle");
+        Assert.True(decoded.GetPixel(4, 56).Red < 40, "left bar is black");
+        Assert.True(decoded.GetPixel(140, 56).Red < 40, "right bar is black");
+        Assert.True(decoded.GetPixel(72, 56).Red > 150, "the square sits in the middle");
     }
 
     [Fact]
     public void KeyEncode_Plus_IsUnchangedByTheTransform()
     {
-        using var square = new Image<Rgba32>(120, 120, new Rgba32(0, 0, 0, 255));
-        square[5, 5] = new Rgba32(255, 255, 255, 255);
+        using var square = TestImages.Solid(120, 120, new SKColor(0, 0, 0));
+        square.SetPixel(5, 5, SKColors.White);
         for (var y = 0; y < 20; y++)
         {
             for (var x = 0; x < 20; x++)
             {
-                square[x, y] = new Rgba32(255, 255, 255, 255);
+                square.SetPixel(x, y, SKColors.White);
             }
         }
 
-        using var decoded = Image.Load<Rgba32>(DeckWireImageEncoder.Encode(square, Plus, orientation: 0)!);
+        using var decoded = TestImages.Decode(DeckWireImageEncoder.Encode(square, Plus, orientation: 0)!);
 
-        Assert.True(decoded[5, 5].R > 200);
-        Assert.True(decoded[110, 110].R < 60);
+        Assert.True(decoded.GetPixel(5, 5).Red > 200);
+        Assert.True(decoded.GetPixel(110, 110).Red < 60);
     }
 
     [Fact]
@@ -309,8 +312,8 @@ public sealed class DeckStripRendererTests
         var page = dev.OutputWrites.First();
         Assert.Equal(new byte[] { 0x02, 0x07, 3 }, page[..3]);
         var length = page[4] | (page[5] << 8);
-        using var decoded = Image.Load<Rgba32>(page.AsSpan(8, length).ToArray());
+        using var decoded = TestImages.Decode(page.AsSpan(8, length).ToArray());
         Assert.Equal((144, 112), (decoded.Width, decoded.Height));
-        Assert.True(decoded[72, 56].R < 10);
+        Assert.True(decoded.GetPixel(72, 56).Red < 10);
     }
 }

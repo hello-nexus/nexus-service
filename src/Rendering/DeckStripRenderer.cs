@@ -2,12 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Globalization;
 using Nexus.Service.Deck;
-using SixLabors.Fonts;
-using SixLabors.ImageSharp;
-using SixLabors.ImageSharp.Drawing;
-using SixLabors.ImageSharp.Drawing.Processing;
-using SixLabors.ImageSharp.PixelFormats;
-using SixLabors.ImageSharp.Processing;
+using SkiaSharp;
 
 namespace Nexus.Service.Rendering;
 
@@ -61,7 +56,7 @@ public sealed class InfoScreenInput
 /// <summary>
 /// Draws the dial screens: per-dial segments of a touch strip or Galleon
 /// screen at any segment size, the full strip, and the Neo info screen. Pure
-/// ImageSharp over <see cref="RenderKit"/>; layouts are designed on the Plus
+/// Skia over <see cref="RenderKit"/>; layouts are designed on the Plus
 /// capture's segment geometry (DesignWidth x DesignHeight) and scaled to fit.
 /// </summary>
 public sealed class DeckStripRenderer
@@ -71,114 +66,107 @@ public sealed class DeckStripRenderer
     private const float DesignWidth = 200f;
     private const float DesignHeight = 100f;
 
-    private static readonly Color Background = Color.ParseHex("0b0e13");
-    private static readonly Color DividerColor = Color.ParseHex("1c222b");
-    private static readonly Color TitleColor = Color.ParseHex("c7d0dc");
-    private static readonly Color TrackColor = Color.FromPixel(new Rgba32(255, 255, 255, 40));
-    private static readonly Color DotColor = Color.FromPixel(new Rgba32(255, 255, 255, 70));
+    private static readonly SKColor Background = new(0x0b, 0x0e, 0x13);
+    private static readonly SKColor DividerColor = new(0x1c, 0x22, 0x2b);
+    private static readonly SKColor TitleColor = new(0xc7, 0xd0, 0xdc);
+    private static readonly SKColor TrackColor = new(255, 255, 255, 40);
+    private static readonly SKColor DotColor = new(255, 255, 255, 70);
+    private static readonly SKColor DefaultAccent = RenderKit.ParseColor(DefaultAccentHex, SKColors.White);
 
     private readonly DeckKeyRenderer _icons;
 
     public DeckStripRenderer(DeckKeyRenderer icons) => _icons = icons;
 
     /// <summary>One segment on a dark background. Caller disposes.</summary>
-    public Image<Rgba32> RenderSegment(DialSegmentInput input, int width, int height, float feedback = 0f)
+    public SKBitmap RenderSegment(DialSegmentInput input, int width, int height, float feedback = 0f)
     {
-        var image = new Image<Rgba32>(width, height);
-        image.Mutate(ctx => ctx.Fill(Background));
+        var image = RenderKit.NewImage(width, height, Background);
         if (input.Kind == DialSegmentKind.Empty)
         {
             return image;
         }
 
-        var accent = RenderKit.ParseColor(input.AccentHex, Color.ParseHex(DefaultAccentHex));
+        var accent = RenderKit.ParseColor(input.AccentHex, DefaultAccent);
         var scale = MathF.Min(width / DesignWidth, height / DesignHeight);
-        var origin = new PointF((width - DesignWidth * scale) / 2f, (height - DesignHeight * scale) / 2f);
-        PointF P(float x, float y) => new(origin.X + x * scale, origin.Y + y * scale);
+        var origin = new SKPoint((width - DesignWidth * scale) / 2f, (height - DesignHeight * scale) / 2f);
+        SKPoint P(float x, float y) => new(origin.X + x * scale, origin.Y + y * scale);
 
-        image.Mutate(ctx =>
+        using var canvas = new SKCanvas(image);
+        if (feedback > 0f)
         {
-            DrawTitle(ctx, input.Title, P(100, 16), scale);
-            switch (input.Kind)
-            {
-                case DialSegmentKind.Value:
-                    DrawValueBody(ctx, image, input, accent, P, scale);
-                    break;
-                case DialSegmentKind.Page:
-                    DrawIcon(ctx, input, P(16, 40), 48 * scale, dim: false);
-                    DrawValueText(ctx, input.ValueText, P(76, 56), 26 * scale, Color.White);
-                    break;
-                case DialSegmentKind.Monitoring:
-                    DrawMonitoringBody(ctx, input, accent, P, scale);
-                    break;
-                case DialSegmentKind.Custom:
-                    DrawIcon(ctx, input, P(72, 36), 56 * scale, dim: false);
-                    break;
-            }
-            DrawStackDots(ctx, input, accent, P, scale);
-            if (feedback > 0f)
-            {
-                var glow = accent.ToPixel<Rgba32>();
-                ctx.Fill(Color.FromPixel(new Rgba32(glow.R, glow.G, glow.B, (byte)Math.Clamp(feedback * 80f, 0f, 255f))));
-                ctx.Draw(accent, MathF.Max(2f, 3f * scale), new RectangleF(0, 0, width, height));
-            }
-        });
+            RenderKit.FillRect(canvas, accent.WithAlpha((byte)Math.Clamp(feedback * 80f, 0f, 255f)), SKRect.Create(width, height));
+        }
+        DrawTitle(canvas, input.Title, P(100, 16), scale);
+        switch (input.Kind)
+        {
+            case DialSegmentKind.Value:
+                DrawValueBody(canvas, input, accent, P, scale);
+                break;
+            case DialSegmentKind.Page:
+                DrawIcon(canvas, input, P(16, 40), 48 * scale, dim: false);
+                DrawValueText(canvas, input.ValueText, P(76, 56), 26 * scale, SKColors.White);
+                break;
+            case DialSegmentKind.Monitoring:
+                DrawMonitoringBody(canvas, input, accent, P, scale);
+                break;
+            case DialSegmentKind.Custom:
+                DrawIcon(canvas, input, P(72, 36), 56 * scale, dim: false);
+                break;
+        }
+        DrawStackDots(canvas, input, accent, P, scale);
         return image;
     }
 
     /// <summary>The hold-to-edit progress ring centred on an empty segment's background. Caller disposes.</summary>
-    public Image<Rgba32> RenderHoldPrompt(float fraction, int width, int height) =>
+    public SKBitmap RenderHoldPrompt(float fraction, int width, int height) =>
         DeckHoldPromptRenderer.Render(fraction, width, height, Background);
 
     /// <summary>All segments side by side in one image, thin dividers between them. Caller disposes.</summary>
-    public Image<Rgba32> RenderStrip(IReadOnlyList<DialSegmentInput> segments, int width, int height)
+    public SKBitmap RenderStrip(IReadOnlyList<DialSegmentInput> segments, int width, int height)
     {
-        var strip = new Image<Rgba32>(width, height);
-        strip.Mutate(ctx => ctx.Fill(Background));
+        var strip = RenderKit.NewImage(width, height, Background);
+        using var canvas = new SKCanvas(strip);
         var count = Math.Max(segments.Count, 1);
         var segmentWidth = width / count;
         for (var i = 0; i < segments.Count; i++)
         {
             using var segment = RenderSegment(segments[i], segmentWidth, height);
-            strip.Mutate(ctx => ctx.DrawImage(segment, new Point(i * segmentWidth, 0), 1f));
+            RenderKit.DrawImage(canvas, segment, i * segmentWidth, 0);
             if (i > 0)
             {
-                strip.Mutate(ctx => ctx.Fill(DividerColor, new RectangleF(i * segmentWidth, 0, 1, height)));
+                RenderKit.FillRect(canvas, DividerColor, SKRect.Create(i * segmentWidth, 0, 1, height));
             }
         }
         return strip;
     }
 
     /// <summary>The Neo info screen. Caller disposes.</summary>
-    public Image<Rgba32> RenderInfoScreen(InfoScreenInput input, int width, int height)
+    public SKBitmap RenderInfoScreen(InfoScreenInput input, int width, int height)
     {
-        var image = new Image<Rgba32>(width, height);
-        image.Mutate(ctx =>
+        var image = RenderKit.NewImage(width, height, input.Mode == "off" ? SKColors.Black : Background);
+        using var canvas = new SKCanvas(image);
+        switch (input.Mode)
         {
-            ctx.Fill(input.Mode == "off" ? Color.Black : Background);
-            switch (input.Mode)
-            {
-                case "clock":
-                    DrawValueText(ctx, input.LocalTime.ToString("HH:mm", CultureInfo.InvariantCulture), new PointF(width / 2f, height / 2f), height * 0.62f, Color.White, centered: true);
-                    break;
-                case "page":
-                    DrawValueText(ctx, $"{input.Page + 1} / {Math.Max(input.PageCount, 1)}", new PointF(width / 2f, height / 2f), height * 0.62f, Color.White, centered: true);
-                    break;
-            }
-        });
+            case "clock":
+                DrawValueText(canvas, input.LocalTime.ToString("HH:mm", CultureInfo.InvariantCulture), new SKPoint(width / 2f, height / 2f), height * 0.62f, SKColors.White, centered: true);
+                break;
+            case "page":
+                DrawValueText(canvas, $"{input.Page + 1} / {Math.Max(input.PageCount, 1)}", new SKPoint(width / 2f, height / 2f), height * 0.62f, SKColors.White, centered: true);
+                break;
+        }
         return image;
     }
 
-    private static void DrawTitle(IImageProcessingContext ctx, string title, PointF center, float scale)
+    private static void DrawTitle(SKCanvas canvas, string title, SKPoint center, float scale)
     {
         if (string.IsNullOrEmpty(title))
         {
             return;
         }
-        var font = RenderKit.ResolveFont().CreateFont(MathF.Max(8f, 14f * scale), FontStyle.Regular);
+        using var font = RenderKit.CreateFont(RenderKit.ResolveFont(), MathF.Max(8f, 14f * scale));
         var maxWidth = 184f * scale;
         var text = title;
-        while (text.Length > 1 && TextMeasurer.MeasureSize(text, new TextOptions(font)).Width > maxWidth)
+        while (text.Length > 1 && RenderKit.MeasureWidth(text, font) > maxWidth)
         {
             text = text[..^1];
         }
@@ -186,28 +174,28 @@ public sealed class DeckStripRenderer
         {
             text = text[..^1] + "…";
         }
-        RenderKit.DrawCentered(ctx, text, font, TitleColor, center);
+        RenderKit.DrawCentered(canvas, text, font, TitleColor, center);
     }
 
-    private void DrawValueBody(IImageProcessingContext ctx, Image<Rgba32> image, DialSegmentInput input, Color accent, Func<float, float, PointF> p, float scale)
+    private void DrawValueBody(SKCanvas canvas, DialSegmentInput input, SKColor accent, Func<float, float, SKPoint> p, float scale)
     {
-        DrawIcon(ctx, input, p(16, 40), 48 * scale, dim: input.Muted);
-        DrawValueText(ctx, input.ValueText, p(76, 56), 26 * scale, input.Muted ? TitleColor : Color.White);
+        DrawIcon(canvas, input, p(16, 40), 48 * scale, dim: input.Muted);
+        DrawValueText(canvas, input.ValueText, p(76, 56), 26 * scale, input.Muted ? TitleColor : SKColors.White);
         var barOrigin = p(76, 74);
-        var bar = new RectangleF(barOrigin.X, barOrigin.Y, 108 * scale, 12 * scale);
-        DrawPill(ctx, bar, TrackColor);
+        var bar = SKRect.Create(barOrigin.X, barOrigin.Y, 108 * scale, 12 * scale);
+        DrawPill(canvas, bar, TrackColor);
         var fill = input.Muted ? 0 : Math.Clamp(input.Fraction, 0, 1);
         if (fill > 0)
         {
-            DrawPill(ctx, new RectangleF(bar.X, bar.Y, MathF.Max(bar.Height, (float)(bar.Width * fill)), bar.Height), accent);
+            DrawPill(canvas, SKRect.Create(bar.Left, bar.Top, MathF.Max(bar.Height, (float)(bar.Width * fill)), bar.Height), accent);
         }
     }
 
-    private static void DrawMonitoringBody(IImageProcessingContext ctx, DialSegmentInput input, Color accent, Func<float, float, PointF> p, float scale)
+    private static void DrawMonitoringBody(SKCanvas canvas, DialSegmentInput input, SKColor accent, Func<float, float, SKPoint> p, float scale)
     {
-        DrawValueText(ctx, input.ValueText, p(100, 44), 30 * scale, Color.White, centered: true);
+        DrawValueText(canvas, input.ValueText, p(100, 44), 30 * scale, SKColors.White, centered: true);
         var topLeft = p(16, 62);
-        var band = new RectangleF(topLeft.X, topLeft.Y, 168 * scale, 28 * scale);
+        var band = SKRect.Create(topLeft.X, topLeft.Y, 168 * scale, 28 * scale);
         if (input.History.Count == 0)
         {
             return;
@@ -225,45 +213,42 @@ public sealed class DeckStripRenderer
         {
             normalized[i] = span < 1e-6f ? 0.5f : (input.History[i] - min) / span;
         }
-        var fillColor = accent.ToPixel<Rgba32>();
-        ctx.Fill(Color.FromPixel(new Rgba32(fillColor.R, fillColor.G, fillColor.B, 100)), RenderKit.BuildFilledSeries(band, normalized));
+        RenderKit.FillPath(canvas, accent.WithAlpha(100), RenderKit.BuildFilledSeries(band, normalized));
     }
 
-    private void DrawIcon(IImageProcessingContext ctx, DialSegmentInput input, PointF topLeft, float size, bool dim)
+    private void DrawIcon(SKCanvas canvas, DialSegmentInput input, SKPoint topLeft, float size, bool dim)
     {
         using var glyph = _icons.RenderIconGlyph(input.Icon, input.IconName, Math.Max(1, (int)MathF.Round(size)));
         if (glyph is null)
         {
             return;
         }
-        ctx.DrawImage(glyph, new Point((int)MathF.Round(topLeft.X), (int)MathF.Round(topLeft.Y)), dim ? 0.4f : 1f);
+        RenderKit.DrawImage(canvas, glyph, (int)MathF.Round(topLeft.X), (int)MathF.Round(topLeft.Y), dim ? 0.4f : 1f);
     }
 
-    private static void DrawValueText(IImageProcessingContext ctx, string text, PointF anchor, float fontPx, Color color, bool centered = false)
+    private static void DrawValueText(SKCanvas canvas, string text, SKPoint anchor, float fontPx, SKColor color, bool centered = false)
     {
         if (string.IsNullOrEmpty(text))
         {
             return;
         }
-        var font = RenderKit.ResolveFont().CreateFont(MathF.Max(8f, fontPx), FontStyle.Bold);
+        using var font = RenderKit.CreateFont(RenderKit.ResolveFont(), MathF.Max(8f, fontPx), bold: true);
         if (centered)
         {
-            RenderKit.DrawCentered(ctx, text, font, color, anchor);
+            RenderKit.DrawCentered(canvas, text, font, color, anchor);
             return;
         }
-        var size = TextMeasurer.MeasureSize(text, new TextOptions(font));
-        ctx.DrawText(text, font, color, new PointF(anchor.X, anchor.Y - size.Height / 2f));
+        RenderKit.DrawLeft(canvas, text, font, color, anchor.X, anchor.Y);
     }
 
-    private static void DrawPill(IImageProcessingContext ctx, RectangleF rect, Color color)
+    private static void DrawPill(SKCanvas canvas, SKRect rect, SKColor color)
     {
         var radius = rect.Height / 2f;
-        ctx.Fill(color, new RectangleF(rect.X + radius, rect.Y, MathF.Max(0f, rect.Width - rect.Height), rect.Height));
-        ctx.Fill(color, RenderKit.BuildCircle(new PointF(rect.X + radius, rect.Y + radius), radius, 24));
-        ctx.Fill(color, RenderKit.BuildCircle(new PointF(rect.Right - radius, rect.Y + radius), radius, 24));
+        using var paint = RenderKit.Fill(color);
+        canvas.DrawRoundRect(rect, radius, radius, paint);
     }
 
-    private static void DrawStackDots(IImageProcessingContext ctx, DialSegmentInput input, Color accent, Func<float, float, PointF> p, float scale)
+    private static void DrawStackDots(SKCanvas canvas, DialSegmentInput input, SKColor accent, Func<float, float, SKPoint> p, float scale)
     {
         if (input.StackCount < 2)
         {
@@ -273,7 +258,7 @@ public sealed class DeckStripRenderer
         var first = 100f - (input.StackCount - 1) * spacing / 2f;
         for (var i = 0; i < input.StackCount; i++)
         {
-            ctx.Fill(i == input.StackIndex ? accent : DotColor, RenderKit.BuildCircle(p(first + i * spacing, 94), 3f * scale, 16));
+            RenderKit.FillCircle(canvas, i == input.StackIndex ? accent : DotColor, p(first + i * spacing, 94), 3f * scale);
         }
     }
 }

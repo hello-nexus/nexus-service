@@ -88,6 +88,8 @@ public sealed class PanelDeviceRecord : IPanelPersonalization
     public string? TextColorMode { get; set; }
     /// <summary>Hex colour for every widget text in "custom" mode, accent-coloured text included.</summary>
     public string? TextColor { get; set; }
+    /// <summary>Font id for every widget on this panel. Null follows the app font; a patch of "" clears it.</summary>
+    public string? Font { get; set; }
     public bool? ThemeSyncWithDesktop { get; set; }
     public bool? AccentSyncWithDesktop { get; set; }
     public long FirstSeenAt { get; set; }
@@ -135,6 +137,12 @@ public sealed class PanelDeviceRecord : IPanelPersonalization
     /// <summary>The glass is mounted on its short side, so the panel renders tall. Panels whose
     /// capabilities carry SupportsPortrait; null = landscape.</summary>
     public bool? Portrait { get; set; }
+    /// <summary>Render at the glass's native resolution instead of a lower one. Panels whose
+    /// capabilities carry SupportsRenderScale; null = lower (high performance).</summary>
+    public bool? HighResolution { get; set; }
+    /// <summary>"large" (fewer, bigger widgets) or "small" (a denser grid); null = the panel's
+    /// default. Which panels offer it, and what each value lays out, is decided by the web.</summary>
+    public string? WidgetSize { get; set; }
     /// <summary>
     /// Last known Corsair Xeneon Edge native display settings (vendor HID),
     /// applied/read through /displays/{id}/xeneon-settings. Display-bound
@@ -228,6 +236,7 @@ public interface IPanelPersonalization
     double? WidgetPadding { get; set; }
     string? TextColorMode { get; set; }
     string? TextColor { get; set; }
+    string? Font { get; set; }
     bool? ThemeSyncWithDesktop { get; set; }
     bool? AccentSyncWithDesktop { get; set; }
 }
@@ -271,6 +280,7 @@ public sealed class PanelPreset : IAppBoundPreset, IPanelPersonalization
     public double? WidgetPadding { get; set; }
     public string? TextColorMode { get; set; }
     public string? TextColor { get; set; }
+    public string? Font { get; set; }
     public bool? ThemeSyncWithDesktop { get; set; }
     public bool? AccentSyncWithDesktop { get; set; }
 
@@ -332,6 +342,8 @@ public sealed class PanelDeviceCapabilities
     public bool? SupportsSecondaryMonitor { get; set; }
     /// <summary>The glass can be mounted either way up and the record's Portrait picks the render shape.</summary>
     public bool? SupportsPortrait { get; set; }
+    /// <summary>The stream can render below native and scale back up, so the record's HighResolution applies.</summary>
+    public bool? SupportsRenderScale { get; set; }
 }
 
 /// <summary>
@@ -390,6 +402,7 @@ public sealed class PanelDevicePatch
     public double? WidgetPadding { get; set; }
     public string? TextColorMode { get; set; }
     public string? TextColor { get; set; }
+    public string? Font { get; set; }
     public bool? ThemeSyncWithDesktop { get; set; }
     public bool? AccentSyncWithDesktop { get; set; }
     /// <summary>Display-bound records only; ignored for other panels.</summary>
@@ -413,6 +426,12 @@ public sealed class PanelDevicePatch
     /// <summary>The glass is mounted on its short side, so the panel renders tall. Panels whose
     /// capabilities carry SupportsPortrait; null = landscape.</summary>
     public bool? Portrait { get; set; }
+    /// <summary>Render at the glass's native resolution instead of a lower one. Panels whose
+    /// capabilities carry SupportsRenderScale; null = lower (high performance).</summary>
+    public bool? HighResolution { get; set; }
+    /// <summary>"large" (fewer, bigger widgets) or "small" (a denser grid); null = the panel's
+    /// default. Which panels offer it, and what each value lays out, is decided by the web.</summary>
+    public string? WidgetSize { get; set; }
     public PanelDeviceCapabilities? Capabilities { get; set; }
 }
 

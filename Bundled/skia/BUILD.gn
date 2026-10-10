@@ -1,0 +1,107 @@
+# Copied to //nexus/BUILD.gn inside the mono/skia checkout by build.sh / build.ps1.
+#
+# One libSkiaSharp per RID: Skia's raster backend, HarfBuzz and libjpeg-turbo
+# (with SIMD, linked in as the system libjpeg) in a single library that exports
+# only the entry points listed in exports.txt. Everything the export list does
+# not reach is dead-stripped at link time.
+
+import("//gn/skia.gni")
+
+declare_args() {
+  # Absolute path to the platform export file generated from exports.txt.
+  nexus_exports = ""
+}
+
+config("harfbuzz_config") {
+  include_dirs = [
+    "//third_party/harfbuzz",
+    "//third_party/externals/harfbuzz/src",
+  ]
+
+  # The first two match the official HarfBuzzSharp target in //BUILD.gn. The
+  # HB_NO_* set drops APIs TextShaper never reaches (drawing, painting, buffer
+  # serialization, name/math/meta tables); none of them changes shaping output.
+  defines = [
+    "HAVE_CONFIG_OVERRIDE_H",
+    "HB_NO_FALLBACK_SHAPE",
+    "HB_NO_ATEXIT",
+    "HB_NO_BITMAP",
+    "HB_NO_BUFFER_MESSAGE",
+    "HB_NO_BUFFER_SERIALIZE",
+    "HB_NO_BUFFER_VERIFY",
+    "HB_NO_COLOR",
+    "HB_NO_DRAW",
+    "HB_NO_ERRNO",
+    "HB_NO_FACE_COLLECT_UNICODES",
+    "HB_NO_GETENV",
+    "HB_NO_LAYOUT_COLLECT_GLYPHS",
+    "HB_NO_LAYOUT_FEATURE_PARAMS",
+    "HB_NO_MATH",
+    "HB_NO_META",
+    "HB_NO_MMAP",
+    "HB_NO_NAME",
+    "HB_NO_OPEN",
+    "HB_NO_OT_FONT_GLYPH_NAMES",
+    "HB_NO_PAINT",
+    "HB_NO_STYLE",
+  ]
+  if (is_win) {
+    cflags_cc = [ "/Zc:threadSafeInit-" ]
+  } else {
+    defines += [ "HB_EXTERN=extern __attribute__((visibility(\"default\")))" ]
+    cflags_cc = [ "-fno-threadsafe-statics" ]
+  }
+}
+
+source_set("harfbuzz") {
+  configs += [ ":harfbuzz_config" ]
+  sources = [ "//third_party/externals/harfbuzz/src/harfbuzz.cc" ]
+}
+
+shared_library("SkiaSharp") {
+  # //:SkiaSharp (the official target) owns libSkiaSharp.*; the scripts rename.
+  output_name = "SkiaSharpNexus"
+  configs += [
+    "//:skia_public",
+    "//:skia_private",
+    "//:skia_library",
+  ]
+
+  # SkiaKeeper.c is left out on purpose: it references every C API entry
+  # point to keep them alive in static builds.
+  sources = [
+    "//src/xamarin/SkCompatPaint.cpp",
+    "//src/xamarin/SkManagedStream.cpp",
+    "//src/xamarin/sk_compatpaint.cpp",
+    "//src/xamarin/sk_managedstream.cpp",
+    "//src/xamarin/sk_xamarin.cpp",
+    "stubs.cpp",
+  ]
+
+  deps = [
+    ":harfbuzz",
+    "//:skia",
+  ]
+
+  # The .def file is the export list; dllexport would add every xamarin entry point.
+  if (is_win) {
+    defines = [ "SK_X_API=" ]
+  }
+
+  assert(nexus_exports != "", "nexus_exports must name the export file")
+  inputs = [ nexus_exports ]
+  if (is_win) {
+    ldflags = [ "/DEF:" + rebase_path(nexus_exports, root_build_dir) ]
+  } else if (is_mac) {
+    ldflags = [
+      "-Wl,-exported_symbols_list," + rebase_path(nexus_exports, root_build_dir),
+      "-Wl,-dead_strip_dylibs",
+    ]
+  } else {
+    ldflags = [
+      rebase_path(nexus_exports, root_build_dir),
+      "-static-libgcc",
+      "-static-libstdc++",
+    ]
+  }
+}

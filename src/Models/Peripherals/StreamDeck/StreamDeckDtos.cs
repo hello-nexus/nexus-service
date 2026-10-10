@@ -9,7 +9,9 @@ public sealed class StreamDeckSummaryDto
 {
     public string Serial { get; set; } = "";
     public string Model { get; set; } = "";
-    /// <summary>Persisted display name; falls back to the model name when unset.</summary>
+    /// <summary>Brand-prefixed product name; <see cref="Model"/> stays the bare model for matching.</summary>
+    public string DisplayName { get; set; } = "";
+    /// <summary>Persisted display name; falls back to <see cref="DisplayName"/> when unset.</summary>
     public string Name { get; set; } = "";
     public bool Connected { get; set; }
     public bool Verified { get; set; }

@@ -6,17 +6,15 @@ namespace Nexus.Service.Rendering;
 
 /// <summary>
 /// libjpeg-turbo's TurboJPEG 3 API: the SIMD baseline JPEG encoder behind every
-/// server-rendered device bitmap. The library ships next to the service binary
-/// (<c>Bundled/&lt;rid&gt;/turbojpeg</c>).
+/// server-rendered device bitmap. It is compiled into the bundled libSkiaSharp
+/// (<c>Bundled/skia</c>), whose JPEG codec uses the same copy.
 ///
-/// Several times faster than ImageSharp's managed encoder at the same quality, for
-/// output of the same size; the ratio grows as the bitmap shrinks, because ImageSharp
-/// carries a fixed per-call cost. Every caller keeps a managed fallback, so nothing
-/// here throws on load.
+/// Faster than Skia's encoder at the same quality: Skia's sets optimize_coding, a second
+/// Huffman pass. Every caller keeps the Skia fallback, so nothing here throws on load.
 /// </summary>
 internal static unsafe class TurboJpeg
 {
-    private const string Library = "turbojpeg";
+    private const string Library = "libSkiaSharp";
 
     // enum TJINIT / TJPARAM / TJPF / TJSAMP, turbojpeg.h 3.x.
     public const int InitCompress = 0;
@@ -50,13 +48,13 @@ internal static unsafe class TurboJpeg
                     }
                     else
                     {
-                        ServiceLog.Warn("[jpeg] turbojpeg loaded but tj3Init failed; using the managed encoder");
+                        ServiceLog.Warn("[jpeg] turbojpeg loaded but tj3Init failed; using the Skia encoder");
                     }
                 }
                 catch (Exception ex) when (ex is DllNotFoundException or EntryPointNotFoundException or BadImageFormatException)
                 {
-                    ServiceLog.Warn($"[jpeg] turbojpeg unavailable, falling back to the managed encoder ({ex.GetType().Name}). "
-                        + "Device bitmaps will encode 3-4x slower; check that turbojpeg is beside the service binary.");
+                    ServiceLog.Warn($"[jpeg] turbojpeg unavailable, falling back to the Skia encoder ({ex.GetType().Name}). "
+                        + "Device bitmaps will encode through the slower Skia encoder; check that the bundled libSkiaSharp is beside the service binary.");
                     _available = 0;
                 }
             }

@@ -44,4 +44,7 @@ public sealed class CorsairLinkState
 
     /// <summary>True when a pump-LCD device (type 6 or 14) is present in the chain.</summary>
     public bool HasLcd { get; set; }
+
+    /// <summary>Listed speed-capable channels the hub has no sensor slot for (dark until re-detected).</summary>
+    public IReadOnlyList<int> UnmappedChannels { get; set; } = Array.Empty<int>();
 }

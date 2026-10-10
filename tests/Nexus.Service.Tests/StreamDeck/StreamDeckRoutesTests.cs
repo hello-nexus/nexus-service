@@ -155,7 +155,7 @@ public sealed class StreamDeckRoutesTests : IClassFixture<StreamDeckRouteHostFac
             Assert.Equal("NEVER-DRIVEN", entry.GetProperty("serial").GetString());
             Assert.False(entry.GetProperty("connected").GetBoolean());
             Assert.Equal(mk2.Name, entry.GetProperty("model").GetString());
-            Assert.Equal(mk2.Name, entry.GetProperty("name").GetString());
+            Assert.Equal(mk2.DisplayName, entry.GetProperty("name").GetString());
         }
     }
 
@@ -229,6 +229,8 @@ public sealed class StreamDeckRoutesTests : IClassFixture<StreamDeckRouteHostFac
             var entry = decks.EnumerateArray().Single(d => d.GetProperty("model").GetString() == "XL");
 
             Assert.True(entry.GetProperty("connected").GetBoolean());
+            Assert.Equal("Elgato Stream Deck XL", entry.GetProperty("displayName").GetString());
+            Assert.Equal("Elgato Stream Deck XL", entry.GetProperty("name").GetString());
             Assert.Equal(xl.Rows, entry.GetProperty("rows").GetInt32());
             Assert.Equal(xl.Columns, entry.GetProperty("cols").GetInt32());
             Assert.Equal(xl.KeyCount, entry.GetProperty("keyCount").GetInt32());
@@ -253,7 +255,7 @@ public sealed class StreamDeckRoutesTests : IClassFixture<StreamDeckRouteHostFac
 
             var mini = StreamDeckModels.ByProductId(0x0063)!;
             var entry = models.EnumerateArray().Single(m => m.GetProperty("productId").GetInt32() == mini.ProductId);
-            Assert.Equal(mini.Name, entry.GetProperty("name").GetString());
+            Assert.Equal(mini.DisplayName, entry.GetProperty("name").GetString());
             Assert.Equal(mini.Rows, entry.GetProperty("rows").GetInt32());
             Assert.Equal(mini.Columns, entry.GetProperty("cols").GetInt32());
             Assert.Equal(mini.KeyCount, entry.GetProperty("keyCount").GetInt32());
