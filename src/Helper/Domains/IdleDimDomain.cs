@@ -29,6 +29,11 @@ public sealed class IdleStatePayload
     public bool Idle { get; set; }
 }
 
+/// <summary>Payload for <c>lighting.screenOffTimeoutChanged</c>. Helper-to-service: a power setting that decides the screen-off timeout may have changed.</summary>
+public sealed class ScreenOffTimeoutChangedPayload
+{
+}
+
 /// <summary>Payload for <c>lighting.displayState</c>. Helper-to-service. Off is true only when the console display is off; dimmed counts as on.</summary>
 public sealed class DisplayStatePayload
 {
@@ -41,6 +46,7 @@ public static class IdleDimCommands
     public const string WatchType = "lighting.idleDimWatch";
     public const string IdleStateType = "lighting.idleState";
     public const string DisplayStateType = "lighting.displayState";
+    public const string ScreenOffTimeoutChangedType = "lighting.screenOffTimeoutChanged";
 
     public static Task SetWatchAsync(HelperRegistry registry, int thresholdSeconds, bool displayWatch, CancellationToken ct = default)
     {

@@ -515,6 +515,14 @@ internal static class TrayBootstrap
         {
             var idleWatch = new Nexus.Service.Platform.Windows.HelperIdleDimWatch(helperRegistry);
             idleDim.Watch = idleWatch;
+            // Clients show the OS timeout beside "when my screen turns off"; refresh them when it changes.
+            var screenOffWatch = new Nexus.Service.Lighting.IdleDim.ScreenOffTimeoutWatch(
+                Nexus.Service.Lighting.IdleDim.OsScreenOffTimeout.ReadSeconds,
+                seconds =>
+                {
+                    ServiceLog.Info($"[idle-dim] OS screen-off timeout now {(seconds is null ? "unknown" : $"{seconds}s")}");
+                    PanelTopics.BroadcastLighting(hub);
+                });
             // The push is dropped when no helper is connected; re-assert on connect.
             helperRegistry.Connected += _ =>
             {
@@ -544,6 +552,10 @@ internal static class TrayBootstrap
                     {
                         var p = System.Text.Json.JsonSerializer.Deserialize(env.Payload.Value, Nexus.Service.Serialization.AppJsonContext.Default.DisplayStatePayload);
                         if (p is not null) idleDim.OnDisplayOff(p.Off);
+                    }
+                    else if (env.Type == Nexus.Service.Helper.Domains.IdleDimCommands.ScreenOffTimeoutChangedType)
+                    {
+                        screenOffWatch.OnHint();
                     }
                 }
                 catch (Exception ex) { Console.Error.WriteLine($"[idle-dim] envelope failed: {ex.Message}"); }

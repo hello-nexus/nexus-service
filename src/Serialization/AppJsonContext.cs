@@ -962,6 +962,7 @@ namespace Nexus.Service.Serialization;
 [JsonSerializable(typeof(Nexus.Service.Helper.Domains.IdleDimWatchPayload))]
 [JsonSerializable(typeof(Nexus.Service.Helper.Domains.IdleStatePayload))]
 [JsonSerializable(typeof(Nexus.Service.Helper.Domains.DisplayStatePayload))]
+[JsonSerializable(typeof(Nexus.Service.Helper.Domains.ScreenOffTimeoutChangedPayload))]
 [JsonSerializable(typeof(Nexus.Service.Helper.Domains.KeyWatchPayload))]
 [JsonSerializable(typeof(Nexus.Service.Helper.Domains.KeyPressedPayload))]
 // Diagnostics

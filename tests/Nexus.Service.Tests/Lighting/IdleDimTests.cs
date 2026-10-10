@@ -368,3 +368,36 @@ public sealed class ProbeThrottleTests
         Assert.False(t.TryBegin());
     }
 }
+
+public sealed class ScreenOffTimeoutWatchTests
+{
+    [Fact]
+    public void Hints_that_leave_the_timeout_unchanged_notify_nothing()
+    {
+        var notified = new List<int?>();
+        var watch = new ScreenOffTimeoutWatch(() => 3600, notified.Add);
+
+        watch.OnHint();
+        watch.OnHint();
+
+        Assert.Empty(notified);
+    }
+
+    [Fact]
+    public void Each_change_notifies_once_with_the_new_value()
+    {
+        int? current = 3600;
+        var notified = new List<int?>();
+        var watch = new ScreenOffTimeoutWatch(() => current, notified.Add);
+
+        current = 1800;
+        watch.OnHint();
+        watch.OnHint();
+        current = null;
+        watch.OnHint();
+        current = 0;
+        watch.OnHint();
+
+        Assert.Equal(new int?[] { 1800, null, 0 }, notified);
+    }
+}

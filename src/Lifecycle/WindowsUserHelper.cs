@@ -224,6 +224,10 @@ internal static class WindowsUserHelper
             IdleDimCommands.DisplayStateType,
             new DisplayStatePayload { Off = off },
             Nexus.Service.Serialization.AppJsonContext.Default.DisplayStatePayload);
+        Platform.Windows.TrayIcon.ScreenOffTimeoutMayHaveChanged += () => _ = outbound.SendAsync(
+            IdleDimCommands.ScreenOffTimeoutChangedType,
+            new ScreenOffTimeoutChangedPayload(),
+            Nexus.Service.Serialization.AppJsonContext.Default.ScreenOffTimeoutChangedPayload);
         new KeyReactiveHandler(keyPresses.SetArmed).Register(handlerRegistry);
         new LifecycleHandler(
             onShutdown: () =>
