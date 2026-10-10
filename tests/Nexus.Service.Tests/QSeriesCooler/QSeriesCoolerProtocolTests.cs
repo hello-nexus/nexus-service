@@ -204,12 +204,33 @@ public class QSeriesCoolerProtocolTests
     }
 
     [Theory]
-    [InlineData(19)]                 // one byte short
+    [InlineData(13)]                 // one byte short of the base telemetry shape
     public void TryParsePort0PumpRpm_rejects_short_response(int length)
     {
         var resp = new byte[length];
         resp[0] = 0xFF; resp[1] = 0xCC;
         Assert.False(QSeriesCoolerProtocol.TryParsePort0PumpRpm(resp, out _));
+    }
+
+    [Fact]
+    public void Port0_parsers_accept_Q60_firmware_1_0_6_1_14_byte_response()
+    {
+        // Captured from a real Q60 on Linux. This firmware stops before the
+        // turbo/animation extension, but all cooling telemetry is present.
+        var resp = new byte[]
+        {
+            0xFF, 0xCC, 0x00, 0x00, 0x00, 0x1F, 0x34,
+            0x1F, 0x3F, 0x00, 0x25, 0x02, 0x03, 0x00,
+        };
+
+        Assert.True(QSeriesCoolerProtocol.TryParsePort0PumpRpm(resp, out var rpm));
+        Assert.Equal(4054, rpm);
+        Assert.Equal(QSeriesCoolerProtocol.ControlModeFirmware, QSeriesCoolerProtocol.ControlModeOf(resp));
+        Assert.False(QSeriesCoolerProtocol.TurboOnOf(resp));
+        var (inC, outC) = QSeriesCoolerProtocol.CoolantTempsOf(resp);
+        Assert.NotNull(inC);
+        Assert.NotNull(outC);
+        Assert.False(QSeriesCoolerProtocol.TryParseFirmwareAnimation(resp, out _));
     }
 
     [Fact]

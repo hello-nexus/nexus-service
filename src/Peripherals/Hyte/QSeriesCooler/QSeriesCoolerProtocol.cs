@@ -90,7 +90,14 @@ public static class QSeriesCoolerProtocol
     public const int FirmwareVersionResponseLength = 7;
     public const int SerialResponseLength = 37;
 
-    /// <summary>Length of the Port-0 status response (pump tach in bytes [9..10]).</summary>
+    /// <summary>
+    /// Minimum length of the Port-0 status response. Q60 firmware 1.0.6.1
+    /// stops after byte [13]; pump tach, temperatures, and control mode are all
+    /// present, but turbo and firmware-animation state are not.
+    /// </summary>
+    public const int Port0TelemetryResponseLength = 14;
+
+    /// <summary>Length of the extended Port-0 status response (includes turbo and firmware animation).</summary>
     public const int Port0ResponseLength = 20;
 
     /// <summary>Length of the Q80 second-pump response (tach in bytes [3..4]).</summary>
@@ -307,13 +314,15 @@ public static class QSeriesCoolerProtocol
     }
 
     /// <summary>
-    /// Parse the pump RPM from the 20-byte Port-0 status response (tach in
-    /// bytes [9..10]). Returns false on a short or mis-echoed reply.
+    /// Parse the pump RPM from a Port-0 status response (tach in bytes [9..10]).
+    /// Q60 firmware 1.0.6.1 returns 14 bytes; extended responses append turbo
+    /// and firmware-animation state through byte [19]. Returns false on a response
+    /// shorter than the base telemetry shape or with a mis-echoed header.
     /// </summary>
     public static bool TryParsePort0PumpRpm(ReadOnlySpan<byte> response, out int pumpRpm)
     {
         pumpRpm = 0;
-        if (response.Length < Port0ResponseLength) return false;
+        if (response.Length < Port0TelemetryResponseLength) return false;
         if (response[0] != Frame0 || response[1] != OpCooler) return false;
         pumpRpm = DecodeRpm(response[9], response[10]);
         return true;
@@ -329,13 +338,13 @@ public static class QSeriesCoolerProtocol
         HyteThermistor.NearestTempC(HyteThermistor.VoltageFromAdc(high, low), fan: false);
 
     /// <summary>
-    /// Coolant temperatures from the 20-byte Port-0 status response: inlet in bytes [5..6],
+    /// Coolant temperatures from the Port-0 status response: inlet in bytes [5..6],
     /// outlet in [7..8]. Null per side when the response is short or the probe reads out of
     /// range. Mirrors HYTE PQSeriesPumpHead.PumpTempIn / PumpTempOut.
     /// </summary>
     public static (float? inC, float? outC) CoolantTempsOf(ReadOnlySpan<byte> port0)
     {
-        if (port0.Length < Port0ResponseLength) return (null, null);
+        if (port0.Length < Port0TelemetryResponseLength) return (null, null);
         return (TryDecodeLiveTempC(port0[5], port0[6]), TryDecodeLiveTempC(port0[7], port0[8]));
     }
 
@@ -471,7 +480,7 @@ public static class QSeriesCoolerProtocol
 
     /// <summary>The hub control mode the last Port-0 poll reported (byte [12]).</summary>
     public static byte ControlModeOf(ReadOnlySpan<byte> port0) =>
-        port0.Length >= Port0ResponseLength ? port0[12] : ControlModeMotherboard;
+        port0.Length >= Port0TelemetryResponseLength ? port0[12] : ControlModeMotherboard;
 
     /// <summary>True when the last Port-0 poll reports turbo on (byte [14] == 0x00).</summary>
     public static bool TurboOnOf(ReadOnlySpan<byte> port0) =>
