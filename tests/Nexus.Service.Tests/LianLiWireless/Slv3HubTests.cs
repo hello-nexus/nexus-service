@@ -396,10 +396,11 @@ public class Slv3HubTests
         var (hub, net, tx, _, clock) = CreateOwnershipHub(new() { [mac] = 2 });
         net.Fans.Add(new SimulatedFan { Mac = FanMac, IgnoresBind = true });
 
-        Ticks(hub, Slv3Hub.RebindConfirmPolls - 1);
         long[] waitsMs = { 30_000, 60_000, 120_000, 240_000, 300_000, 300_000, 300_000 };
         foreach (var wait in waitsMs)
         {
+            // Every attempt needs its own run of fresh sightings.
+            Ticks(hub, Slv3Hub.RebindConfirmPolls - 1);
             var before = CountBindFrames(tx);
             Ticks(hub, 1);
             Assert.True(CountBindFrames(tx) > before, "attempt sent no bind frame");
@@ -852,6 +853,88 @@ public class Slv3HubTests
     }
 
     [Fact]
+    public void A_chain_seen_every_fifth_poll_confirms_on_its_third_sighting()
+    {
+        var mac = Convert.ToHexString(FanMac);
+        var (hub, net, tx, _, _) = CreateOwnershipHub(new() { [mac] = 2 });
+        var fan = new SimulatedFan { Mac = FanMac, MasterMac = net.MasterMac, RxType = 2 };
+        net.Fans.Add(fan);
+        Ticks(hub, 4);
+        tx.SentFrames.Clear();
+        fan.MasterMac = new byte[6];
+
+        for (var sighting = 1; sighting <= Slv3Hub.RebindConfirmPolls; sighting++)
+        {
+            net.Fans.Add(fan);
+            Ticks(hub, 1);
+            net.Fans.Clear();
+            Ticks(hub, 4);
+            Assert.Equal(sighting == Slv3Hub.RebindConfirmPolls, CountBindFrames(tx) > 0);
+        }
+    }
+
+    [Fact]
+    public void A_retry_after_a_failed_attempt_needs_its_own_fresh_sightings_and_a_lone_corrupt_record_never_sends()
+    {
+        var mac = Convert.ToHexString(FanMac);
+        var (hub, net, tx, _, clock) = CreateOwnershipHub(new() { [mac] = 2 });
+        var fan = new SimulatedFan { Mac = FanMac, IgnoresBind = true };
+        net.Fans.Add(fan);
+        Ticks(hub, Slv3Hub.RebindConfirmPolls);
+        Ticks(hub, PendingOpTickBudget + 2);
+        Assert.True(CountBindFrames(tx) > 0);
+
+        // Backoff elapsed, but the device now shows a foreign master except for one corrupt zero-master record.
+        clock.AdvanceMs(Slv3Hub.AutoRebindIntervalMs + 1);
+        fan.MasterMac = OtherMasterMac;
+        Ticks(hub, 3);
+        tx.SentFrames.Clear();
+        fan.MasterMac = new byte[6];
+        Ticks(hub, 1);
+        fan.MasterMac = OtherMasterMac;
+        Ticks(hub, 5);
+
+        Assert.Equal(0, CountBindFrames(tx));
+    }
+
+    [Fact]
+    public async System.Threading.Tasks.Task Suspend_skips_a_send_while_the_hub_lock_is_held_elsewhere()
+    {
+        var net = new FakeSlv3Network();
+        var tx = new FakeTxTransport(net);
+        var rx = new FakeRxTransport(net);
+        var hub = new Slv3Hub(new FakeDiscovery(), port => port.Role == Slv3DongleRole.Tx ? tx : rx)
+        {
+            ConfirmNewChains = false,
+            SleepMs = _ => { },
+            SuspendLockWaitMs = 20,
+        };
+        Assert.True(hub.EnsureConnected());
+        using var entered = new System.Threading.ManualResetEventSlim();
+        using var release = new System.Threading.ManualResetEventSlim();
+        var armed = true;
+        tx.OnSend = _ =>
+        {
+            if (armed)
+            {
+                armed = false;
+                entered.Set();
+                release.Wait(TimeSpan.FromSeconds(10));
+            }
+        };
+        var holder = System.Threading.Tasks.Task.Run(() => hub.DriveTick());
+        Assert.True(entered.Wait(TimeSpan.FromSeconds(10)));
+        var before = tx.SentFrames.Count;
+
+        hub.OnSystemSuspending();
+        var duringHold = tx.SentFrames.Count;
+        release.Set();
+
+        Assert.Equal(before, duringHold);
+        Assert.True(await holder);
+    }
+
+    [Fact]
     public void A_pending_auto_bind_stops_resending_once_the_device_shows_a_foreign_master()
     {
         var mac = Convert.ToHexString(FanMac);
@@ -996,7 +1079,7 @@ public class Slv3HubTests
     }
 
     [Fact]
-    public void Suspend_sends_three_savecfg_frames_with_short_gaps()
+    public void Suspend_sends_three_savecfg_frames_200ms_apart()
     {
         var net = new FakeSlv3Network();
         var tx = new FakeTxTransport(net);
@@ -1009,7 +1092,7 @@ public class Slv3HubTests
         hub.OnSystemSuspending();
 
         Assert.Equal(3, tx.SentFrames.FindAll(f => f.Length >= 6 && f[1] == 0 && f[5] == Slv3Protocol.RfSaveCfg).Count);
-        Assert.Equal(new[] { 100, 100 }, sleeps);
+        Assert.Equal(new[] { 200, 200 }, sleeps);
     }
 
     [Fact]
@@ -2435,10 +2518,14 @@ public class Slv3HubTests
         // default so a hub that never scans still connects on the first probe.
         public byte MasterChannel { get; set; } = Slv3Protocol.DefaultChannel;
 
+        /// <summary>Runs inside every send; lets a test hold the hub lock from the sending thread.</summary>
+        public Action<byte[]>? OnSend { get; set; }
+
         public bool RfSend(ReadOnlySpan<byte> frame)
         {
             var copy = frame.ToArray();
             SentFrames.Add(copy);
+            OnSend?.Invoke(copy);
             if (copy.Length >= 2 && copy[0] == Slv3Protocol.UsbGetMac)
             {
                 // GetMac and video-start share USB_CMD 0x11; byte [1] is the

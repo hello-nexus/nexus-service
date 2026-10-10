@@ -77,9 +77,15 @@ public sealed class PowerEventListener : IHostedService, IDisposable
         if (e.Mode == PowerModes.Suspend)
         {
             _blackout.OnSuspending();
-            // After the blackout, so the lights are dark before the SaveCfg writes; bounded by the hub.
-            try { _slv3?.OnSystemSuspending(); }
-            catch (Exception ex) { ServiceLog.Warn($"[lianli-wireless] suspend SaveCfg failed: {ex.Message}"); }
+            // After the blackout, handed to a background task so this shared pump never waits on the USB writes.
+            if (_slv3 is { } slv3)
+            {
+                _ = Task.Run(() =>
+                {
+                    try { slv3.OnSystemSuspending(); }
+                    catch (Exception ex) { ServiceLog.Warn($"[lianli-wireless] suspend SaveCfg failed: {ex.Message}"); }
+                });
+            }
         }
         else if (e.Mode == PowerModes.Resume)
         {

@@ -802,8 +802,17 @@ public sealed class Slv3Hub : IDisposable
                 _rebindSeen.Remove(key);
                 continue;
             }
-            // A corrupt record can show a zero master once, so the state must repeat in fresh
-            // sightings within the window. A poll that misses the chain is an RF gap and counts for nothing.
+            if (_pending.ContainsKey(key))
+            {
+                continue;
+            }
+            _rebind.TryGetValue(key, out var state);
+            if (state.Attempts > 0 && now - state.LastAttemptMs < RebindWaitMs(state.Attempts))
+            {
+                continue;
+            }
+            // A corrupt record can show a zero master once, so every attempt, retries included, needs its own
+            // run of fresh abnormal sightings. A poll that misses the chain is an RF gap and counts for nothing.
             if (!_knownChains.TryGetValue(key, out var chain) || chain.Poll != _devicePolls)
             {
                 continue;
@@ -811,18 +820,10 @@ public sealed class Slv3Hub : IDisposable
             _rebindSeen.TryGetValue(key, out var seen);
             if (seen.LastPoll != _devicePolls)
             {
-                // Once confirmed the state stays confirmed until a contradicting sighting or expiry.
-                seen = seen.Count == 0 || (seen.Count < RebindConfirmPolls && _devicePolls - seen.FirstPoll >= ChainConfirmWindowPolls)
-                    ? new RebindSighting(_devicePolls, _devicePolls, 1)
-                    : seen with { LastPoll = _devicePolls, Count = seen.Count + 1 };
+                seen = new RebindSighting(_devicePolls, seen.Count + 1);
                 _rebindSeen[key] = seen;
             }
-            if (seen.Count < RebindConfirmPolls || _pending.ContainsKey(key))
-            {
-                continue;
-            }
-            _rebind.TryGetValue(key, out var state);
-            if (state.Attempts > 0 && now - state.LastAttemptMs < RebindWaitMs(state.Attempts))
+            if (seen.Count < RebindConfirmPolls)
             {
                 continue;
             }
@@ -835,6 +836,7 @@ public sealed class Slv3Hub : IDisposable
                 continue;
             }
             _rebind[key] = new AutoRebindState(now, state.Attempts + 1);
+            _rebindSeen.Remove(key);
             ServiceLog.Info($"[lianli-wireless] auto-rebind {key} {(drift ? "off our channel" : "unbound")}, binding to slot {slot} (attempt {state.Attempts + 1})");
             StartBindLocked(record, (byte)slot, auto: true);
         }
@@ -2392,8 +2394,10 @@ public sealed class Slv3Hub : IDisposable
 
     /// <summary>
     /// System suspend: SaveCfg repeated at MasterDevice.SaveConfig's cadence so the
-    /// bindings reach device flash before power drops. The lock is never held across
-    /// a wait and a busy lock skips that send. No-op with the link down.
+    /// bindings reach device flash before power drops. Meant for a background task:
+    /// it waits for the hub lock a bounded time per send, skips a send when the lock
+    /// stays busy, never sleeps holding it, and returns at once with the link down or
+    /// the hub disposed.
     /// </summary>
     public void OnSystemSuspending()
     {
@@ -2402,6 +2406,7 @@ public sealed class Slv3Hub : IDisposable
         {
             if (i > 0)
             {
+                // Gap between tries per MasterDevice.SaveConfig, outside the lock.
                 SleepMs(SuspendSaveCfgGapMs);
             }
             if (!Monitor.TryEnter(_lock, SuspendLockWaitMs))
@@ -2411,7 +2416,7 @@ public sealed class Slv3Hub : IDisposable
             }
             try
             {
-                if (!IsConnected || _tx is not { IsOpen: true })
+                if (_disposed || !IsConnected || _tx is not { IsOpen: true })
                 {
                     return;
                 }
@@ -2426,12 +2431,9 @@ public sealed class Slv3Hub : IDisposable
         ServiceLog.Info($"[lianli-wireless] suspend SaveCfg sent {sent}/{SuspendSaveCfgSends}");
     }
 
-    // Worst case is every lock wait plus every gap, kept near a third of a second so
-    // it fits behind the blackout. L-Connect's SaveConfig tries are 200 ms apart
-    // (MasterDevice.SaveConfig); the gap is shortened to fit the suspend window.
-    private const int SuspendLockWaitMs = 50;
+    internal int SuspendLockWaitMs { get; init; } = 300;
     private const int SuspendSaveCfgSends = 3;
-    private const int SuspendSaveCfgGapMs = 100;
+    private const int SuspendSaveCfgGapMs = 200;
 
     // Slots already used by a fan bound to us, or already claimed by an in-flight
     // bind, are excluded. Caller holds _lock.
@@ -2521,7 +2523,7 @@ public sealed class Slv3Hub : IDisposable
 
     private readonly record struct AutoRebindState(long LastAttemptMs, int Attempts);
 
-    private readonly record struct RebindSighting(long FirstPoll, long LastPoll, int Count);
+    private readonly record struct RebindSighting(long LastPoll, int Count);
 
     private readonly record struct Slv3PendingCommand(byte[] Mac, byte RfCmd, byte TargetSeq, int SendsRemaining, byte Arg = 0);
 
