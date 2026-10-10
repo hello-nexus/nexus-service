@@ -1746,6 +1746,7 @@ public sealed class Slv3Hub : IDisposable
     private List<(byte Channel, byte Rx)>? _rescuePipes;
     private int _rescueCursor;
     private long _rescueStartMs = -1;
+    private long _rescuePoll = -1;
     private bool _rescueSent;
     private int _rescueTicks;
     private bool _rescueStopped;
@@ -1767,6 +1768,10 @@ public sealed class Slv3Hub : IDisposable
                 _saveCfgBurstRemaining = SaveCfgBurstSends;
                 NoteConfigChangedLocked();
             }
+            else if (_rescueSent)
+            {
+                ServiceLog.Info($"[lianli-wireless] rescue: B041BC7A4EE0 is back but not bound to us (master {Convert.ToHexString(back.Record.MasterMac)}, ch {back.Record.Channel}, rx {back.Record.RxType})");
+            }
             _rescueDone = true;
             return;
         }
@@ -1774,6 +1779,18 @@ public sealed class Slv3Hub : IDisposable
         {
             return;
         }
+        // Slots are picked from a live device list only: a recovering link
+        // restarts the settle, a tick without a fresh GetDev sends nothing.
+        if (_tx is not { IsOpen: true } || _rx is not { IsOpen: true } || State.LinkStatus != Slv3LinkStatus.Ok)
+        {
+            _rescueStartMs = -1;
+            return;
+        }
+        if (_devicePolls == _rescuePoll)
+        {
+            return;
+        }
+        _rescuePoll = _devicePolls;
         // The settle restarts with every connection (DisconnectLocked clears the
         // start) and waits for chains to report, so occupied slots are known.
         if (_knownChains.Count == 0)
@@ -1851,6 +1868,14 @@ public sealed class Slv3Hub : IDisposable
             if (!op.Unbind)
             {
                 used.Add(op.TargetSlot);
+            }
+        }
+        // An owned chain that is missing or unbound goes back to its persisted slot.
+        foreach (var (key, slot) in _owned)
+        {
+            if (!key.Equals(Convert.ToHexString(StrandedMac), StringComparison.Ordinal))
+            {
+                used.Add(slot);
             }
         }
         for (var slot = Slv3Protocol.MaxSlot; slot >= Slv3Protocol.MinSlot; slot--)

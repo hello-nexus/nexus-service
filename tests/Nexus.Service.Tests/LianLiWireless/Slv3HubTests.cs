@@ -1777,6 +1777,60 @@ public class Slv3HubTests
         Assert.DoesNotContain(tx.SentFrames, IsRescueBind);
     }
 
+    [Fact]
+    public void The_strimer_rescue_never_targets_an_owned_chains_slot()
+    {
+        var (hub, net, tx, _, clock) = CreateOwnershipHub(new() { ["A1A2A3A4A5A6"] = Slv3Protocol.MaxSlot });
+        net.Fans.Add(new SimulatedFan { Mac = FanMac, MasterMac = net.MasterMac, RxType = 1 });
+        Assert.True(hub.DriveTick());
+        clock.AdvanceMs(16_000);
+        tx.SentFrames.Clear();
+        Assert.True(hub.DriveTick());
+
+        var first = tx.SentFrames.Find(IsRescueBind);
+        Assert.NotNull(first);
+        Assert.Equal(Slv3Protocol.MaxSlot - 1, first![18]);
+    }
+
+    [Fact]
+    public void The_strimer_rescue_sends_only_on_a_fresh_device_list_and_waits_out_a_recovery()
+    {
+        var clock = new ManualClock();
+        var (hub, net, tx, rx) = CreateConnectedHub(clock.NowMs);
+        net.Fans.Add(new SimulatedFan { Mac = FanMac, MasterMac = net.MasterMac, RxType = 1 });
+        Assert.True(hub.DriveTick());
+        clock.AdvanceMs(16_000);
+
+        rx.FailReads = true;
+        tx.SentFrames.Clear();
+        hub.DriveTick();
+        Assert.DoesNotContain(tx.SentFrames, IsRescueBind);
+
+        for (var i = 0; i < 6; i++)
+        {
+            clock.AdvanceMs(1_000);
+            hub.DriveTick();
+        }
+        Assert.Equal(Slv3LinkStatus.Recovering, hub.State.LinkStatus);
+        Assert.DoesNotContain(tx.SentFrames, IsRescueBind);
+
+        // The first good poll after a recovery starts a fresh settle.
+        rx.FailReads = false;
+        for (var i = 0; i < 30 && hub.State.LinkStatus != Slv3LinkStatus.Ok; i++)
+        {
+            clock.AdvanceMs(1_000);
+            hub.DriveTick();
+        }
+        Assert.Equal(Slv3LinkStatus.Ok, hub.State.LinkStatus);
+        clock.AdvanceMs(10_000);
+        hub.DriveTick();
+        Assert.DoesNotContain(tx.SentFrames, IsRescueBind);
+
+        clock.AdvanceMs(6_000);
+        Assert.True(hub.DriveTick());
+        Assert.Contains(tx.SentFrames, IsRescueBind);
+    }
+
     private static readonly byte[] StrandedMac = Convert.FromHexString("B041BC7A4EE0");
 
     private static bool IsRescueBind(byte[] f) => f.Length >= 24 && f[0] == Slv3Protocol.UsbSendRf && f[1] == 0
