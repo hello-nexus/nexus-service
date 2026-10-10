@@ -89,6 +89,9 @@ public sealed class Slv3Hub : IDisposable
     // Devices Nexus bound to its master, by MAC hex, with the slot each last held.
     private readonly Dictionary<string, int> _owned = new(StringComparer.Ordinal);
     private bool _ownedLoaded;
+    private int _ownedLoadFailures;
+    private string _ownedLoadError = "";
+    private long _nextOwnedLoadLogMs;
     private readonly object _ownedSaveLock = new();
     private bool _ownedDirty;
     // Explicitly unbound through Nexus this session; never re-seeded as owned.
@@ -661,7 +664,13 @@ public sealed class Slv3Hub : IDisposable
             catch (Exception ex)
             {
                 // Not marked loaded, so the next poll retries and no save overwrites the persisted list.
-                ServiceLog.Warn($"[lianli-wireless] owned device list read failed: {ex.Message}");
+                var nowMs = _nowMs();
+                if (_ownedLoadFailures++ == 0 || ex.Message != _ownedLoadError || nowMs >= _nextOwnedLoadLogMs)
+                {
+                    ServiceLog.Warn($"[lianli-wireless] owned device list read failed ({_ownedLoadFailures}): {ex.Message}");
+                    _ownedLoadError = ex.Message;
+                    _nextOwnedLoadLogMs = nowMs + RecoveryBackoffFor(_ownedLoadFailures);
+                }
                 return;
             }
         }
@@ -683,6 +692,7 @@ public sealed class Slv3Hub : IDisposable
                 }
             }
             _ownedLoaded = true;
+            _ownedLoadFailures = 0;
             _ownedDirty |= saved is not null && _owned.Count != saved.Count;
         }
     }
@@ -769,6 +779,13 @@ public sealed class Slv3Hub : IDisposable
             return;
         }
         var now = _nowMs();
+        foreach (var key in new List<string>(_rebindSeen.Keys))
+        {
+            if (!_owned.ContainsKey(key))
+            {
+                _rebindSeen.Remove(key);
+            }
+        }
         foreach (var record in _lastFanRecords)
         {
             var key = Convert.ToHexString(record.Mac);
@@ -785,16 +802,19 @@ public sealed class Slv3Hub : IDisposable
                 _rebindSeen.Remove(key);
                 continue;
             }
-            // A corrupt record can show a zero master once, so the state must repeat in consecutive fresh polls.
+            // A corrupt record can show a zero master once, so the state must repeat in fresh
+            // sightings within the window. A poll that misses the chain is an RF gap and counts for nothing.
             if (!_knownChains.TryGetValue(key, out var chain) || chain.Poll != _devicePolls)
             {
-                _rebindSeen.Remove(key);
                 continue;
             }
             _rebindSeen.TryGetValue(key, out var seen);
-            if (seen.Poll != _devicePolls)
+            if (seen.LastPoll != _devicePolls)
             {
-                seen = new RebindSighting(_devicePolls, seen.Count + 1);
+                // Once confirmed the state stays confirmed until a contradicting sighting or expiry.
+                seen = seen.Count == 0 || (seen.Count < RebindConfirmPolls && _devicePolls - seen.FirstPoll >= ChainConfirmWindowPolls)
+                    ? new RebindSighting(_devicePolls, _devicePolls, 1)
+                    : seen with { LastPoll = _devicePolls, Count = seen.Count + 1 };
                 _rebindSeen[key] = seen;
             }
             if (seen.Count < RebindConfirmPolls || _pending.ContainsKey(key))
@@ -1432,6 +1452,7 @@ public sealed class Slv3Hub : IDisposable
                 ServiceLog.Info($"[lianli-wireless] chain {key} dropped ({ChainExpiryMs / 1000}s unseen)");
                 _knownChains.Remove(key);
                 _rebind.Remove(key);
+                _rebindSeen.Remove(key);
                 if (_aioControl.TryGetValue(key, out var control))
                 {
                     control.Switched = false;
@@ -1798,6 +1819,7 @@ public sealed class Slv3Hub : IDisposable
             var key = Convert.ToHexString(mac);
             _userUnbound.Add(key);
             _rebind.Remove(key);
+            _rebindSeen.Remove(key);
             if (_owned.Remove(key))
             {
                 _ownedDirty = true;
@@ -2375,15 +2397,16 @@ public sealed class Slv3Hub : IDisposable
     /// </summary>
     public void OnSystemSuspending()
     {
+        var sent = 0;
         for (var i = 0; i < SuspendSaveCfgSends; i++)
         {
             if (i > 0)
             {
-                // 200 ms between sends per MasterDevice.SaveConfig tryCnt loop, outside the lock.
                 SleepMs(SuspendSaveCfgGapMs);
             }
             if (!Monitor.TryEnter(_lock, SuspendLockWaitMs))
             {
+                ServiceLog.Warn($"[lianli-wireless] suspend SaveCfg {i + 1} skipped, hub busy");
                 continue;
             }
             try
@@ -2393,17 +2416,22 @@ public sealed class Slv3Hub : IDisposable
                     return;
                 }
                 SendSaveCfgLocked();
+                sent++;
             }
             finally
             {
                 Monitor.Exit(_lock);
             }
         }
+        ServiceLog.Info($"[lianli-wireless] suspend SaveCfg sent {sent}/{SuspendSaveCfgSends}");
     }
 
-    private const int SuspendLockWaitMs = 100;
+    // Worst case is every lock wait plus every gap, kept near a third of a second so
+    // it fits behind the blackout. L-Connect's SaveConfig tries are 200 ms apart
+    // (MasterDevice.SaveConfig); the gap is shortened to fit the suspend window.
+    private const int SuspendLockWaitMs = 50;
     private const int SuspendSaveCfgSends = 3;
-    private const int SuspendSaveCfgGapMs = 200;
+    private const int SuspendSaveCfgGapMs = 100;
 
     // Slots already used by a fan bound to us, or already claimed by an in-flight
     // bind, are excluded. Caller holds _lock.
@@ -2493,7 +2521,7 @@ public sealed class Slv3Hub : IDisposable
 
     private readonly record struct AutoRebindState(long LastAttemptMs, int Attempts);
 
-    private readonly record struct RebindSighting(long Poll, int Count);
+    private readonly record struct RebindSighting(long FirstPoll, long LastPoll, int Count);
 
     private readonly record struct Slv3PendingCommand(byte[] Mac, byte RfCmd, byte TargetSeq, int SendsRemaining, byte Arg = 0);
 

@@ -28,7 +28,6 @@ public sealed class PowerEventListener : IHostedService, IDisposable
     private readonly SleepBlackoutCoordinator _blackout;
     private readonly Nexus.Service.Peripherals.LianLi.LianLiHubSet? _lianLi;
     private readonly Nexus.Service.Peripherals.LianLiWireless.Slv3Hub? _slv3;
-    private const int SaveCfgJoinMs = 600;
 #if WINDOWS
     private bool _subscribed;
 #endif
@@ -77,14 +76,10 @@ public sealed class PowerEventListener : IHostedService, IDisposable
         // cannot hold this shared pump thread open.
         if (e.Mode == PowerModes.Suspend)
         {
-            // SaveCfg runs beside the blackout so it adds no latency to it; the join is bounded.
-            var saveCfg = _slv3 is null ? null : Task.Run(() =>
-            {
-                try { _slv3.OnSystemSuspending(); }
-                catch (Exception ex) { ServiceLog.Warn($"[lianli-wireless] suspend SaveCfg failed: {ex.Message}"); }
-            });
             _blackout.OnSuspending();
-            saveCfg?.Wait(SaveCfgJoinMs);
+            // After the blackout, so the lights are dark before the SaveCfg writes; bounded by the hub.
+            try { _slv3?.OnSystemSuspending(); }
+            catch (Exception ex) { ServiceLog.Warn($"[lianli-wireless] suspend SaveCfg failed: {ex.Message}"); }
         }
         else if (e.Mode == PowerModes.Resume)
         {

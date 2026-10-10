@@ -802,6 +802,56 @@ public class Slv3HubTests
     }
 
     [Fact]
+    public void An_owned_fan_reported_in_only_some_polls_still_confirms_within_the_window()
+    {
+        var mac = Convert.ToHexString(FanMac);
+        var (hub, net, tx, _, _) = CreateOwnershipHub(new() { [mac] = 2 });
+        var fan = new SimulatedFan { Mac = FanMac, MasterMac = net.MasterMac, RxType = 2 };
+        net.Fans.Add(fan);
+        Ticks(hub, 4);
+        tx.SentFrames.Clear();
+
+        fan.MasterMac = new byte[6];
+        Ticks(hub, 1);
+        net.Fans.Clear();
+        Ticks(hub, 1);
+        net.Fans.Add(fan);
+        Ticks(hub, 1);
+        net.Fans.Clear();
+        Ticks(hub, 1);
+        Assert.Equal(0, CountBindFrames(tx));
+
+        net.Fans.Add(fan);
+        Ticks(hub, 1);
+
+        Assert.True(CountBindFrames(tx) > 0);
+    }
+
+    [Fact]
+    public void A_chain_that_expires_and_returns_needs_a_fresh_confirmation()
+    {
+        var mac = Convert.ToHexString(FanMac);
+        var (hub, net, tx, _, clock) = CreateOwnershipHub(new() { [mac] = 2 });
+        var fan = new SimulatedFan { Mac = FanMac, MasterMac = net.MasterMac, RxType = 2 };
+        net.Fans.Add(fan);
+        Ticks(hub, 4);
+        fan.MasterMac = new byte[6];
+        Ticks(hub, Slv3Hub.RebindConfirmPolls - 1);
+
+        net.Fans.Clear();
+        clock.AdvanceMs(31_000);
+        Ticks(hub, 1);
+        Assert.Empty(hub.State.Fans);
+        tx.SentFrames.Clear();
+        net.Fans.Add(fan);
+        Ticks(hub, Slv3Hub.RebindConfirmPolls - 1);
+        Assert.Equal(0, CountBindFrames(tx));
+
+        Ticks(hub, 1);
+        Assert.True(CountBindFrames(tx) > 0);
+    }
+
+    [Fact]
     public void A_pending_auto_bind_stops_resending_once_the_device_shows_a_foreign_master()
     {
         var mac = Convert.ToHexString(FanMac);
@@ -864,7 +914,7 @@ public class Slv3HubTests
     {
         var mac = Convert.ToHexString(FanMac);
         var clock = new ManualClock();
-        var (hub, net, _, _) = CreateConnectedHub(clock.NowMs);
+        var (hub, net, tx, _) = CreateConnectedHub(clock.NowMs);
         var saves = new List<Dictionary<string, int>>();
         using var entered = new System.Threading.ManualResetEventSlim();
         using var release = new System.Threading.ManualResetEventSlim();
@@ -885,9 +935,11 @@ public class Slv3HubTests
         var worker = System.Threading.Tasks.Task.Run(() => hub.DriveTick());
         Assert.True(entered.Wait(TimeSpan.FromSeconds(10)));
 
+        var framesBefore = tx.SentFrames.Count;
         var unbind = System.Threading.Tasks.Task.Run(() => hub.Unbind(mac));
-        var winner = await System.Threading.Tasks.Task.WhenAny(unbind, System.Threading.Tasks.Task.Delay(300));
-        Assert.NotSame(unbind, winner);
+        // The unbind frame goes out inside the hub lock, before Unbind reaches its save.
+        Assert.True(System.Threading.SpinWait.SpinUntil(() => tx.SentFrames.Count > framesBefore, TimeSpan.FromSeconds(10)));
+        Assert.False(unbind.IsCompleted);
         release.Set();
         Assert.True(await worker);
         Assert.True(await unbind);
@@ -944,7 +996,7 @@ public class Slv3HubTests
     }
 
     [Fact]
-    public void Suspend_sends_three_savecfg_frames_200ms_apart()
+    public void Suspend_sends_three_savecfg_frames_with_short_gaps()
     {
         var net = new FakeSlv3Network();
         var tx = new FakeTxTransport(net);
@@ -957,7 +1009,7 @@ public class Slv3HubTests
         hub.OnSystemSuspending();
 
         Assert.Equal(3, tx.SentFrames.FindAll(f => f.Length >= 6 && f[1] == 0 && f[5] == Slv3Protocol.RfSaveCfg).Count);
-        Assert.Equal(new[] { 200, 200 }, sleeps);
+        Assert.Equal(new[] { 100, 100 }, sleeps);
     }
 
     [Fact]
