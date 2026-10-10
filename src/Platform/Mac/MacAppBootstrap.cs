@@ -154,6 +154,10 @@ internal static class MacAppBootstrap
             sentry?.LockInputWatch = demand.Consumer(Nexus.Service.Lighting.LockInputWatchConsumer.Sentry);
         }
 
+        // Idle dim: polled only while the setting is on (see MacIdleDimWatch).
+        var idleDim = app.Services.GetService<Nexus.Service.Lighting.IdleDim.IdleDimController>();
+        idleDim?.Watch = new MacIdleDimWatch(idleDim);
+
         store.OnChanged += () =>
         {
             try { MacStatusBar.SetVisible(store.Load().Monitoring.ShowMacStatusBarIcon); }

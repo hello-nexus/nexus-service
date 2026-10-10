@@ -166,4 +166,37 @@ public sealed class MasterBrightnessTests
 
         Assert.True(float.IsNaN(MasterBrightness.Effective(lighting, At(12))));
     }
+
+    [Theory]
+    [InlineData(0.6f, 0.1f, 0.1f)]
+    [InlineData(0.05f, 0.1f, 0.05f)]
+    [InlineData(1f, 1f, 1f)]
+    [InlineData(0.6f, 0f, 0f)]
+    public void Idle_cap_is_a_minimum_never_a_boost(float slider, float idleCap, float expected)
+    {
+        var lighting = new LightingSettings { GlobalBrightness = slider };
+
+        Assert.Equal(expected, MasterBrightness.Effective(lighting, At(12), idleCap));
+    }
+
+    [Fact]
+    public void Idle_cap_stacks_under_the_schedule()
+    {
+        var lighting = new LightingSettings
+        {
+            GlobalBrightness = 1f,
+            BrightnessSchedule = new() { Enabled = true, Points = Points((0, 20), (12, 20)) },
+        };
+
+        Assert.Equal(0.1f, MasterBrightness.Effective(lighting, At(6), 0.1f));
+        Assert.Equal(0.2f, MasterBrightness.Effective(lighting, At(6), 0.5f));
+    }
+
+    [Fact]
+    public void Without_an_idle_cap_the_two_argument_overload_is_unchanged()
+    {
+        var lighting = new LightingSettings { GlobalBrightness = 0.6f };
+
+        Assert.Equal(0.6f, MasterBrightness.Effective(lighting, At(12)));
+    }
 }
