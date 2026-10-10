@@ -71,8 +71,8 @@ public static class StreamDeckRoutes
             // A Windows instance id with '&' is synthetic, not the HID serial.
             foreach (var entry in gate.IsEnabled("streamdeck") ? new List<UsbDeviceEntry>() : usbDevices)
             {
-                if (entry.VendorId != StreamDeckModels.VendorId || string.IsNullOrEmpty(entry.Serial)
-                    || entry.Serial.Contains('&') || StreamDeckModels.ByProductId(entry.ProductId) is not { } model
+                if (StreamDeckModels.ByProductId(entry.ProductId) is not { } model || entry.VendorId != model.VendorId
+                    || string.IsNullOrEmpty(entry.Serial) || entry.Serial.Contains('&')
                     || !seenSerials.Add(entry.Serial))
                 {
                     continue;

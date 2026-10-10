@@ -160,6 +160,27 @@ public sealed class StreamDeckRoutesTests : IClassFixture<StreamDeckRouteHostFac
     }
 
     [Fact]
+    public async Task GetDecks_ListsANeverDrivenDeckByItsModelVendor()
+    {
+        var (factory, client) = Boot();
+        using (factory)
+        {
+            var galleon = StreamDeckModels.ByProductId(0x2b18)!;
+            _host.Usb.Set(
+                new UsbDeviceEntry { VendorId = StreamDeckModels.CorsairVendorId, ProductId = galleon.ProductId, Serial = "GALLEON-1" },
+                new UsbDeviceEntry { VendorId = StreamDeckModels.VendorId, ProductId = galleon.ProductId, Serial = "WRONG-VID" });
+
+            var res = await client.GetAsync("/streamdeck/decks");
+            Assert.True(res.IsSuccessStatusCode);
+            using var doc = JsonDocument.Parse(await res.Content.ReadAsStringAsync());
+            var entry = Assert.Single(doc.RootElement.GetProperty("decks").EnumerateArray());
+
+            Assert.Equal("GALLEON-1", entry.GetProperty("serial").GetString());
+            Assert.Equal(galleon.Name, entry.GetProperty("model").GetString());
+        }
+    }
+
+    [Fact]
     public async Task GetDecks_PluggedInDeckWithAPersistedRecord_ListsOnce()
     {
         var (factory, client) = Boot();
