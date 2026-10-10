@@ -148,12 +148,35 @@ public class BulkPanelDriverTests
     }
 
     [Fact]
+    public void Ryujin_connect_switches_the_panel_to_live_mode()
+    {
+        var driver = new RyujinPanelDriver();
+        var hid = new FakeHid();
+
+        driver.Connect(new FakeBulkPipe(), hid);
+
+        Assert.Equal(3, hid.Writes.Count);
+        Assert.Equal(new byte[] { 0xEC, 0xD0, 0x00 }, hid.Writes[0][0..3]);
+        Assert.Equal(new byte[] { 0xEC, 0x51, 0x20, 0x00 }, hid.Writes[1][0..4]);
+        Assert.Equal(RyujinProtocol.EncodeCommit(), hid.Writes[2]);
+    }
+
+    [Fact]
+    public void Ryujin_connect_fails_when_live_mode_is_refused()
+    {
+        var driver = new RyujinPanelDriver();
+
+        Assert.Null(driver.Connect(new FakeBulkPipe(), new FakeHid { FailWrites = true }));
+    }
+
+    [Fact]
     public void Ryujin_chunks_the_frame_then_commits_over_hid()
     {
         var driver = new RyujinPanelDriver();
         var pipe = new FakeBulkPipe();
         var hid = new FakeHid();
         driver.Connect(pipe, hid);
+        hid.Writes.Clear();
 
         Assert.True(driver.SendFrame(pipe, hid, Frame(320, 240)));
 
@@ -169,10 +192,33 @@ public class BulkPanelDriverTests
     {
         var driver = new RyujinPanelDriver();
         var pipe = new FakeBulkPipe();
-        var hid = new FakeHid { FailWrites = true };
+        var hid = new FakeHid();
         driver.Connect(pipe, hid);
+        hid.FailWrites = true;
 
         Assert.False(driver.SendFrame(pipe, hid, Frame(320, 240)));
+    }
+
+    [Fact]
+    public void Ryujin_keepalive_resends_the_last_frame_and_its_commit()
+    {
+        var driver = new RyujinPanelDriver();
+        var pipe = new FakeBulkPipe();
+        var hid = new FakeHid();
+        driver.Connect(pipe, hid);
+        hid.Writes.Clear();
+
+        Assert.True(driver.Resend(pipe, hid));
+        Assert.Empty(pipe.Writes);
+
+        driver.SendFrame(pipe, hid, Frame(320, 240));
+        var sent = pipe.Writes.Select(w => w.ToArray()).ToList();
+        pipe.Writes.Clear();
+        hid.Writes.Clear();
+
+        Assert.True(driver.Resend(pipe, hid));
+        Assert.Equal(sent, pipe.Writes);
+        Assert.Equal(RyujinProtocol.EncodeCommit(), Assert.Single(hid.Writes));
     }
 
     // ── ZMatrices: mode command on its own pipe, then framed JPEGs ──

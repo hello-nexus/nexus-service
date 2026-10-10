@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Threading;
 using Nexus.Service.Peripherals.Hid;
 
 namespace Nexus.Service.Peripherals.BulkPanels;
@@ -12,6 +13,7 @@ namespace Nexus.Service.Peripherals.BulkPanels;
 public sealed class RyujinPanelDriver : IBulkPanelDriver
 {
     private readonly byte[] _bgr = new byte[RyujinProtocol.FrameBytes];
+    private bool _hasFrame;
 
     public string HandlerId => "asus-ryujin-lcd";
     public string Name => "ASUS Ryujin LCD";
@@ -29,9 +31,27 @@ public sealed class RyujinPanelDriver : IBulkPanelDriver
     public byte ReadPipeId => 0x00;
     public bool NeedsHidChannel => true;
 
+    /// <summary>A starved panel falls back to its stored animation.</summary>
+    public int KeepaliveMs => 100;
+
     /// <summary>Fixed geometry: this panel neither reports nor negotiates a size.</summary>
-    public (int Width, int Height)? Connect(IBulkUsbPipe pipe, IHidDevice? hid) =>
-        hid is null ? null : (RyujinProtocol.Width, RyujinProtocol.Height);
+    public (int Width, int Height)? Connect(IBulkUsbPipe pipe, IHidDevice? hid)
+    {
+        if (hid is null)
+        {
+            return null;
+        }
+        _hasFrame = false;
+        foreach (var command in RyujinProtocol.EncodeLiveStart())
+        {
+            if (!hid.Write(command))
+            {
+                return null;
+            }
+            Thread.Sleep(RyujinProtocol.StartCommandGapMs);
+        }
+        return (RyujinProtocol.Width, RyujinProtocol.Height);
+    }
 
     public bool SendFrame(IBulkUsbPipe pipe, IHidDevice? hid, ReadOnlySpan<byte> bgra)
     {
@@ -40,7 +60,14 @@ public sealed class RyujinPanelDriver : IBulkPanelDriver
             return false;
         }
         RyujinProtocol.EncodeFrame(bgra, _bgr);
+        _hasFrame = true;
+        return Push(pipe, hid);
+    }
 
+    public bool Resend(IBulkUsbPipe pipe, IHidDevice? hid) => !_hasFrame || (hid is not null && Push(pipe, hid));
+
+    private bool Push(IBulkUsbPipe pipe, IHidDevice hid)
+    {
         for (int offset = 0; offset < _bgr.Length; offset += RyujinProtocol.ChunkBytes)
         {
             int length = Math.Min(RyujinProtocol.ChunkBytes, _bgr.Length - offset);

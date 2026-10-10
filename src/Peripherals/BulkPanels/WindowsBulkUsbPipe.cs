@@ -1,8 +1,10 @@
 #if WINDOWS
 using System;
+using System.Collections.Generic;
 using System.Globalization;
 using System.IO;
 using System.Runtime.InteropServices;
+using Microsoft.Win32;
 using Microsoft.Win32.SafeHandles;
 using Nexus.Service.Peripherals.LianLiWireless;
 using Nexus.Service.Platform;
@@ -16,8 +18,9 @@ namespace Nexus.Service.Peripherals.BulkPanels;
 ///
 /// The Kraken finds its interface by a model-specific GUID published in the cooler's own
 /// MS OS descriptors. None of these panels publishes one we know, so this enumerates the
-/// generic USB device interface class and matches VID/PID out of the device path, then
-/// lets <c>WinUsb_Initialize</c> decide: it succeeds only where WinUSB is actually bound.
+/// interface GUIDs the registry records for the device's interfaces plus the generic USB
+/// device interface class, matches VID/PID out of the device path, then lets
+/// <c>WinUsb_Initialize</c> decide: it succeeds only where WinUSB is actually bound.
 /// </summary>
 public sealed unsafe class WindowsBulkUsbPipe : IBulkUsbPipe
 {
@@ -205,33 +208,100 @@ public sealed class WindowsBulkUsbPipeFactory : IBulkUsbPipeFactory
 
     public IBulkUsbPipe? Open(int vendorId, int productId, byte writePipeId, byte readPipeId)
     {
-        var path = FindDevicePath(vendorId, productId);
-        if (path == null)
+        var failures = new List<string>();
+        foreach (var path in FindDevicePaths(vendorId, productId))
         {
-            return null;
+            try
+            {
+                return new WindowsBulkUsbPipe(path, writePipeId, readPipeId, productId);
+            }
+            catch (IOException ex)
+            {
+                failures.Add(ex.Message);
+            }
         }
-        try
-        {
-            return new WindowsBulkUsbPipe(path, writePipeId, readPipeId, productId);
-        }
-        catch (IOException ex)
+        if (failures.Count > 0)
         {
             // Overwhelmingly the normal case for a cooler still owned by its vendor driver:
             // it enumerates, and WinUSB is not bound, so it can never be opened here.
             ServiceLog.Info(
-                $"[bulk-panel] {vendorId:X4}:{productId:X4} is present but not WinUSB-bound: {ex.Message}");
-            return null;
+                $"[bulk-panel] {vendorId:X4}:{productId:X4} is present but not WinUSB-bound: {string.Join("; ", failures)}");
         }
+        return null;
     }
 
-    private static string? FindDevicePath(int vendorId, int productId)
+    /// <summary>
+    /// WinUSB interfaces of a composite device first: the generic interface class names
+    /// only the composite parent there, which WinUsb_Initialize always refuses.
+    /// </summary>
+    private static List<string> FindDevicePaths(int vendorId, int productId)
     {
-        var guid = UsbDeviceInterface;
+        var paths = new List<string>();
+        foreach (var guid in WinUsbInterfaceGuids(vendorId, productId))
+        {
+            AddDevicePaths(guid, vendorId, productId, paths);
+        }
+        AddDevicePaths(UsbDeviceInterface, vendorId, productId, paths);
+        return paths;
+    }
+
+    /// <summary>
+    /// The interface GUIDs WinUSB publishes for each interface of the device. Only the
+    /// device's registry key records them; they come from its MS OS descriptors or its INF.
+    /// </summary>
+    private static List<Guid> WinUsbInterfaceGuids(int vendorId, int productId)
+    {
+        var guids = new List<Guid>();
+        var prefix = $"VID_{vendorId:X4}&PID_{productId:X4}&MI_";
+        try
+        {
+            using var usb = Registry.LocalMachine.OpenSubKey(@"SYSTEM\CurrentControlSet\Enum\USB");
+            if (usb == null)
+            {
+                return guids;
+            }
+            foreach (var name in usb.GetSubKeyNames())
+            {
+                if (!name.StartsWith(prefix, StringComparison.OrdinalIgnoreCase))
+                {
+                    continue;
+                }
+                using var iface = usb.OpenSubKey(name);
+                foreach (var instance in iface?.GetSubKeyNames() ?? Array.Empty<string>())
+                {
+                    using var parameters = iface!.OpenSubKey(instance + @"\Device Parameters");
+                    var values = parameters?.GetValue("DeviceInterfaceGUIDs") switch
+                    {
+                        string[] many => many,
+                        string one => new[] { one },
+                        _ => parameters?.GetValue("DeviceInterfaceGUID") is string single
+                            ? new[] { single }
+                            : Array.Empty<string>(),
+                    };
+                    foreach (var value in values)
+                    {
+                        if (Guid.TryParse(value, out var guid) && !guids.Contains(guid))
+                        {
+                            guids.Add(guid);
+                        }
+                    }
+                }
+            }
+        }
+        catch (Exception ex) when (ex is System.Security.SecurityException or UnauthorizedAccessException or IOException)
+        {
+        }
+        return guids;
+    }
+
+    private static void AddDevicePaths(Guid interfaceGuid, int vendorId, int productId, List<string> paths)
+    {
+        var guid = interfaceGuid;
         var devInfo = Slv3WinUsbInterop.SetupDiGetClassDevs(ref guid, null, IntPtr.Zero,
             Slv3WinUsbInterop.DIGCF_PRESENT | Slv3WinUsbInterop.DIGCF_DEVICEINTERFACE);
         if (devInfo == (IntPtr)(-1))
         {
-            return null;
+            return;
         }
         try
         {
@@ -242,12 +312,11 @@ public sealed class WindowsBulkUsbPipeFactory : IBulkUsbPipeFactory
             {
                 idx++;
                 var path = ReadDevicePath(devInfo, ref ifaceData);
-                if (!string.IsNullOrEmpty(path) && Matches(path, vendorId, productId))
+                if (!string.IsNullOrEmpty(path) && Matches(path, vendorId, productId) && !paths.Contains(path))
                 {
-                    return path;
+                    paths.Add(path);
                 }
             }
-            return null;
         }
         finally
         {

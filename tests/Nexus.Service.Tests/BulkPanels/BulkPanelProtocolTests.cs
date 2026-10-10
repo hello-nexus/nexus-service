@@ -159,6 +159,18 @@ public class BulkPanelProtocolTests
         Assert.Equal(new byte[] { 0xEC, 0x7F, 0x03, 0x00, 0x84, 0x03, 0x00, 0x00 }, report[0..8]);
     }
 
+    [Fact]
+    public void Ryujin_live_start_is_reset_then_live_source_then_the_first_announce()
+    {
+        var reports = RyujinProtocol.EncodeLiveStart();
+
+        Assert.Equal(3, reports.Length);
+        Assert.All(reports, r => Assert.Equal(65, r.Length));
+        Assert.Equal(new byte[] { 0xEC, 0xD0, 0x00 }, reports[0][0..3]);
+        Assert.Equal(new byte[] { 0xEC, 0x51, 0x20, 0x00, 0x00 }, reports[1][0..5]);
+        Assert.Equal(RyujinProtocol.EncodeCommit(), reports[2]);
+    }
+
     // ── Lian Li Universal Screen 8.8 ──
 
     [Fact]

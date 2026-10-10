@@ -5,7 +5,9 @@ namespace Nexus.Service.Peripherals.BulkPanels;
 /// <summary>
 /// The ASUS Ryujin III's 320x240 LCD. Frames are raw BGR888 on the bulk pipe in 4 KB
 /// chunks, then a commit over HID - the panel holds the pixels until it is told to show
-/// them. Reconstructed from third-party documentation; no unit has been run against it.
+/// them. Live mode has to be switched on first, or the panel keeps playing its stored
+/// animation. Reconstructed from third-party documentation of the Ryujin II, which shares
+/// the controller; no unit has been run against it.
 ///
 /// Only product id 0x1AA2 carries the screen; the other documented Ryujin ids are the same
 /// controller without one.
@@ -22,9 +24,25 @@ public static class RyujinProtocol
     /// <summary>Documented chunk size; the panel is not known to accept larger.</summary>
     public const int ChunkBytes = 4096;
 
+    /// <summary>Gap the documented live-mode start leaves after each of its commands.</summary>
+    public const int StartCommandGapMs = 100;
+
+    /// <summary>Resets the panel, selects the live source, then announces the first frame.</summary>
+    public static byte[][] EncodeLiveStart()
+    {
+        var reset = new byte[65];
+        reset[0] = 0xEC;
+        reset[1] = 0xD0;
+        var live = new byte[65];
+        live[0] = 0xEC;
+        live[1] = 0x51;
+        live[2] = 0x20;
+        return new[] { reset, live, EncodeCommit() };
+    }
+
     /// <summary>
-    /// Tells the panel to display what was just uploaded. Rides the HID control channel,
-    /// not the bulk pipe.
+    /// Tells the panel to display what was just uploaded and announces the next frame of
+    /// <see cref="FrameBytes"/>. Rides the HID control channel, not the bulk pipe.
     /// </summary>
     public static byte[] EncodeCommit()
     {
