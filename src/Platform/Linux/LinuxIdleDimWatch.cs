@@ -43,12 +43,13 @@ internal sealed class MutterIdleTimeSource : IIdleTimeSource
 /// <summary>
 /// X11 fallback through the MIT-SCREEN-SAVER extension (libXss). Only offered
 /// on an X11 session; the libraries are loaded lazily, so a machine without
-/// them simply does not answer.
+/// them simply does not answer. The display is opened and closed per query: a
+/// held connection to an X server that later goes away makes Xlib's default
+/// IO error handler exit the whole process, and at one query a second the
+/// open costs nothing.
 /// </summary>
 internal sealed class X11IdleTimeSource : IIdleTimeSource
 {
-    private IntPtr _display;
-    private IntPtr _info;
     public string Name => "x11-screensaver";
 
     public Task<long?> TryGetIdleMsAsync()
@@ -58,35 +59,49 @@ internal sealed class X11IdleTimeSource : IIdleTimeSource
         {
             return Task.FromResult<long?>(null);
         }
+        var display = IntPtr.Zero;
+        var info = IntPtr.Zero;
         try
         {
-            if (_display == IntPtr.Zero)
+            display = XOpenDisplay(IntPtr.Zero);
+            if (display == IntPtr.Zero)
             {
-                _display = XOpenDisplay(IntPtr.Zero);
-                if (_display == IntPtr.Zero)
-                {
-                    return Task.FromResult<long?>(null);
-                }
-                _info = XScreenSaverAllocInfo();
+                return Task.FromResult<long?>(null);
             }
-            if (_info == IntPtr.Zero || XScreenSaverQueryInfo(_display, XDefaultRootWindow(_display), _info) == 0)
+            info = XScreenSaverAllocInfo();
+            if (info == IntPtr.Zero || XScreenSaverQueryInfo(display, XDefaultRootWindow(display), info) == 0)
             {
                 return Task.FromResult<long?>(null);
             }
             // XScreenSaverInfo: window, state, kind, til_or_since, idle (unsigned long, ms).
-            return Task.FromResult<long?>(Marshal.ReadIntPtr(_info, AlignedIdleOffset()).ToInt64());
+            return Task.FromResult<long?>(Marshal.ReadIntPtr(info, IdleOffset).ToInt64());
         }
         catch (Exception ex) when (ex is DllNotFoundException or EntryPointNotFoundException)
         {
             return Task.FromResult<long?>(null);
         }
+        finally
+        {
+            try
+            {
+                if (info != IntPtr.Zero) XFree(info);
+                if (display != IntPtr.Zero) XCloseDisplay(display);
+            }
+            catch (Exception ex) when (ex is DllNotFoundException or EntryPointNotFoundException) { }
+        }
     }
 
-    // Window (8) + state (4) + kind (4) + til_or_since (8) puts idle at 24 on LP64.
-    private static int AlignedIdleOffset() => IntPtr.Size + 4 + 4 + IntPtr.Size;
+    // Window, state, kind, til_or_since: the idle field follows them.
+    private static readonly int IdleOffset = IntPtr.Size + 4 + 4 + IntPtr.Size;
 
     [DllImport("libX11.so.6")]
     private static extern IntPtr XOpenDisplay(IntPtr name);
+
+    [DllImport("libX11.so.6")]
+    private static extern int XCloseDisplay(IntPtr display);
+
+    [DllImport("libX11.so.6")]
+    private static extern int XFree(IntPtr data);
 
     [DllImport("libX11.so.6")]
     private static extern IntPtr XDefaultRootWindow(IntPtr display);
@@ -102,20 +117,25 @@ internal sealed class X11IdleTimeSource : IIdleTimeSource
 /// Linux source for idle dim: polls session idle time once a second, only while
 /// a fixed timeout is armed. It reads the desktop's idle counter and nothing
 /// else; there is no /dev/input, evdev or other device read, so nothing here
-/// can see which key was pressed. No display-off source exists on Linux, so
-/// "when my screen turns off" never engages.
+/// can see which key was pressed. No display-off source exists on Linux.
 /// </summary>
 internal sealed class LinuxIdleDimWatch : IIdleDimWatch, IHostedService, IDisposable
 {
     private const int PollPeriodMs = 1000;
+    private static readonly TimeSpan ReprobeInterval = TimeSpan.FromSeconds(30);
 
     private readonly IdleDimController _controller;
     private readonly IdleTimeSourceSelector _selector;
+    private readonly DBusConnection? _dbus;
+    private readonly Func<long> _nowMs;
     private readonly object _gate = new();
+    // The selector and the X11 source are not thread-safe: every access takes this.
+    private readonly SemaphoreSlim _selectorGate = new(1, 1);
     private Timer? _timer;
     private int _threshold;
     private bool? _reported;
     private int _polling;
+    private long _lastProbeMs = long.MinValue;
 
     public LinuxIdleDimWatch(IdleDimController controller, DBusConnection dbus)
         : this(controller, new IdleTimeSourceSelector(new IIdleTimeSource[]
@@ -123,23 +143,61 @@ internal sealed class LinuxIdleDimWatch : IIdleDimWatch, IHostedService, IDispos
             new KdeIdleTimeSource(dbus),
             new MutterIdleTimeSource(dbus),
             new X11IdleTimeSource(),
-        }))
+        }), dbus)
     {
     }
 
-    internal LinuxIdleDimWatch(IdleDimController controller, IdleTimeSourceSelector selector)
+    internal LinuxIdleDimWatch(IdleDimController controller, IdleTimeSourceSelector selector, DBusConnection? dbus = null, Func<long>? nowMs = null)
     {
         _controller = controller;
         _selector = selector;
+        _dbus = dbus;
+        _nowMs = nowMs ?? (() => Environment.TickCount64);
     }
 
     public async Task StartAsync(CancellationToken cancellationToken)
     {
+        // Probe before binding, so the first poll cannot race it.
+        await ProbeAsync();
+        _controller.Reprobe = () => _ = ReprobeAsync();
         _controller.Watch = this;
-        // One probe so GET /lighting/idle-dim can say whether the fixed times work here.
+    }
+
+    public Task StopAsync(CancellationToken cancellationToken)
+    {
+        Dispose();
+        return Task.CompletedTask;
+    }
+
+    // Lets GET /lighting/idle-dim recover from a probe that ran before the bus
+    // or the login was up, at most once per interval.
+    private async Task ReprobeAsync()
+    {
+        var now = _nowMs();
+        lock (_gate)
+        {
+            if (now - _lastProbeMs < ReprobeInterval.TotalMilliseconds)
+            {
+                return;
+            }
+            _lastProbeMs = now;
+        }
+        await ProbeAsync();
+    }
+
+    private async Task ProbeAsync()
+    {
         try
         {
-            var ms = await _selector.GetIdleMsAsync();
+            if (_dbus is not null)
+            {
+                try { await _dbus.StartAsync(); }
+                catch { /* the sources that need the bus simply will not answer */ }
+            }
+            long? ms;
+            await _selectorGate.WaitAsync();
+            try { ms = await _selector.GetIdleMsAsync(); }
+            finally { _selectorGate.Release(); }
             _controller.InputSourceAvailable = ms is not null;
             Console.Error.WriteLine(ms is null
                 ? "[idle-dim] no idle-time source answered; idle dim unsupported"
@@ -149,12 +207,6 @@ internal sealed class LinuxIdleDimWatch : IIdleDimWatch, IHostedService, IDispos
         {
             Console.Error.WriteLine($"[idle-dim] idle-time probe failed: {ex.Message}");
         }
-    }
-
-    public Task StopAsync(CancellationToken cancellationToken)
-    {
-        Dispose();
-        return Task.CompletedTask;
     }
 
     public void SetInputWatch(int thresholdSeconds)
@@ -193,14 +245,13 @@ internal sealed class LinuxIdleDimWatch : IIdleDimWatch, IHostedService, IDispos
             {
                 return;
             }
-            var ms = await _selector.GetIdleMsAsync();
-            if (ms is null)
-            {
-                _controller.InputSourceAvailable = false;
-                return;
-            }
-            _controller.InputSourceAvailable = true;
-            var idle = ms.Value / 1000 >= threshold;
+            long? ms;
+            await _selectorGate.WaitAsync();
+            try { ms = await _selector.GetIdleMsAsync(); }
+            finally { _selectorGate.Release(); }
+            _controller.InputSourceAvailable = ms is not null;
+            // A source that stops answering must not hold a dim: report active.
+            var idle = ms is { } v && v / 1000 >= threshold;
             lock (_gate)
             {
                 if (_threshold != threshold || _reported == idle)

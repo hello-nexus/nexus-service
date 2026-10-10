@@ -67,12 +67,12 @@ public sealed class BrightnessScheduleBody
 }
 
 /// <summary>POST body for /lighting/idle-dim. TimeoutSeconds 0 means "when my
-/// screen turns off"; otherwise 60..86400. Level is a percent, clamped.</summary>
+/// screen turns off"; otherwise within the controller's timeout range. Level is a percent, clamped.</summary>
 public sealed class IdleDimBody
 {
     public bool Enabled { get; set; }
     public int TimeoutSeconds { get; set; }
-    public int Level { get; set; } = 10;
+    public int Level { get; set; } = Nexus.Service.Persistence.IdleDimSettings.DefaultLevel;
 }
 
 /// <summary>GET response for /lighting/idle-dim. OsScreenOffSeconds is the OS

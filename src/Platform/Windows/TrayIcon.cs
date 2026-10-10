@@ -108,6 +108,9 @@ public static class TrayIcon
     public static event Action<bool>? DisplayStateChanged;
 
     private static volatile bool _displayWatchWanted;
+    // Last state the system reported while registered; resent on every arm so
+    // a service that missed a change (pipe drop) converges. Window thread only.
+    private static bool _lastDisplayOff;
     private static IntPtr _displayWatchHandle;
 
     /// <summary>
@@ -143,6 +146,12 @@ public static class TrayIcon
             {
                 UnregisterPowerSettingNotification(_displayWatchHandle);
                 _displayWatchHandle = IntPtr.Zero;
+                // Unregistered, the cache would go stale: assume on until told.
+                _lastDisplayOff = false;
+            }
+            if (_displayWatchWanted && _displayWatchHandle != IntPtr.Zero)
+            {
+                DisplayStateChanged?.Invoke(_lastDisplayOff);
             }
         }
         catch (Exception ex) { DiagFile($"display watch apply failed: {ex.Message}"); }
@@ -631,7 +640,8 @@ public static class TrayIcon
                 // POWERBROADCAST_SETTING: GUID, DWORD length, then the data.
                 if (Marshal.PtrToStructure<Guid>(lParam) == GuidConsoleDisplayState && Marshal.ReadInt32(lParam, 16) >= 4)
                 {
-                    DisplayStateChanged?.Invoke(Marshal.ReadInt32(lParam, 20) == 0);
+                    _lastDisplayOff = Marshal.ReadInt32(lParam, 20) == 0;
+                    DisplayStateChanged?.Invoke(_lastDisplayOff);
                 }
                 return new IntPtr(1);
             }

@@ -267,6 +267,10 @@ public static class LightingRoutes
             Nexus.Service.Lighting.IdleDim.IdleDimController idleDim) =>
         {
             var s = store.Load().Lighting.IdleDim ?? new();
+            if (!idleDim.Supported)
+            {
+                idleDim.RequestReprobe();
+            }
             return new Models.Lighting.IdleDimStatus
             {
                 Enabled = s.Enabled,
@@ -285,7 +289,7 @@ public static class LightingRoutes
                 && (timeout < Nexus.Service.Lighting.IdleDim.IdleDimController.MinTimeoutSeconds
                     || timeout > Nexus.Service.Lighting.IdleDim.IdleDimController.MaxTimeoutSeconds))
             {
-                return Results.BadRequest(ApiResponse.Fail("timeoutSeconds must be 0 or 60..86400"));
+                return Results.BadRequest(ApiResponse.Fail($"timeoutSeconds must be 0 or {Nexus.Service.Lighting.IdleDim.IdleDimController.MinTimeoutSeconds}..{Nexus.Service.Lighting.IdleDim.IdleDimController.MaxTimeoutSeconds}"));
             }
             var level = Math.Clamp(body.Level, 0, 100);
             // Replace the object, never mutate it: the controller reads a snapshot.

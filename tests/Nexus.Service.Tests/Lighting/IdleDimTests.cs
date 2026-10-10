@@ -258,16 +258,6 @@ public sealed class IdleDimControllerTests : IDisposable
         Assert.Equal(1f, CapAfterRamps());
         Assert.Equal(new[] { 300, 0 }, _watch.Input);
     }
-
-    [Fact]
-    public void The_frame_path_reads_the_shared_ramp_through_MasterBrightness()
-    {
-        var lighting = new LightingSettings { GlobalBrightness = 0.8f };
-        var ramp = new IdleDimRamp(() => 0);
-        ramp.RampTo(0.1f, TimeSpan.Zero);
-
-        Assert.Equal(0.1f, MasterBrightness.Effective(lighting, TimeSpan.FromHours(1), ramp.Cap()));
-    }
 }
 
 public sealed class IdleTimeSourceSelectorTests

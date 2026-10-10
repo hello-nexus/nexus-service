@@ -60,6 +60,12 @@ public sealed class IdleDimController
     /// <summary>True when at least the fixed-time options can work on this machine.</summary>
     public bool Supported => InputSourceAvailable;
 
+    /// <summary>Set by the Linux watch: asks it to look for an idle-time source again (throttled on its side).</summary>
+    public Action? Reprobe { get; set; }
+
+    /// <summary>Called by a reader that found <see cref="Supported"/> false, so a late login or bus start can recover.</summary>
+    public void RequestReprobe() => Reprobe?.Invoke();
+
     /// <summary>Bound by the platform bootstrap; setting it re-applies the stored settings.</summary>
     public IIdleDimWatch? Watch
     {
@@ -136,9 +142,10 @@ public sealed class IdleDimController
 
     private void Reconcile()
     {
-        var settings = _store.Load().Lighting.IdleDim ?? new IdleDimSettings();
         lock (_gate)
         {
+            // Read inside the gate: two concurrent reconciles must apply in the order they read.
+            var settings = _store.Load().Lighting.IdleDim ?? new IdleDimSettings();
             var enabled = settings.Enabled && _watch is not null && _started;
             var timeout = settings.TimeoutSeconds == 0 && !_screenOffSupported
                 ? NoScreenOffFallbackSeconds

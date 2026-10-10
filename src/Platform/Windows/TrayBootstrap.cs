@@ -520,6 +520,14 @@ internal static class TrayBootstrap
             {
                 if (idleWatch.Armed) idleWatch.Push();
             };
+            // A dead helper must never hold the dim: with none left, nothing
+            // can report the user back.
+            helperRegistry.Disconnected += _ =>
+            {
+                if (helperRegistry.IsAnyConnected) return;
+                idleDim.OnInputIdle(false);
+                idleDim.OnDisplayOff(false);
+            };
             helperRegistry.InboundEnvelope += (_, env) =>
             {
                 try

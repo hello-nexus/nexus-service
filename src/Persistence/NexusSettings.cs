@@ -698,10 +698,11 @@ public sealed class BrightnessSchedule
 public sealed class IdleDimSettings
 {
     public bool Enabled { get; set; }
-    /// <summary>0 follows the OS screen-off; otherwise seconds of input idle, 60..86400.</summary>
+    /// <summary>0 follows the OS screen-off; otherwise seconds of input idle, within the controller's timeout range.</summary>
     public int TimeoutSeconds { get; set; }
     /// <summary>Master brightness cap while idle, percent 0..100.</summary>
-    public int Level { get; set; } = 10;
+    public int Level { get; set; } = DefaultLevel;
+    public const int DefaultLevel = 10;
 }
 
 public sealed class BrightnessSchedulePoint

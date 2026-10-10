@@ -26,24 +26,24 @@ internal static partial class MacScreenOffTimeout
         var key = CFStringCreateWithCString(IntPtr.Zero, "Display Sleep Timer", Utf8);
         try
         {
-            var count = (int)CFDictionaryGetCount(prefs);
-            if (count < 1 || key == IntPtr.Zero)
+            // The preferences are keyed by power source; read the one in use.
+            var source = IOPSGetProvidingPowerSourceType(IntPtr.Zero);
+            if (key == IntPtr.Zero || source == IntPtr.Zero)
             {
                 return null;
             }
-            var keys = new IntPtr[count];
-            var values = new IntPtr[count];
-            CFDictionaryGetKeysAndValues(prefs, keys, values);
-            foreach (var source in values)
+            var entry = CFDictionaryGetValue(prefs, source);
+            if (entry == IntPtr.Zero || CFGetTypeID(entry) != CFDictionaryGetTypeID())
             {
-                var number = CFDictionaryGetValue(source, key);
-                long minutes = 0;
-                if (number != IntPtr.Zero && CFNumberGetValue(number, SInt64Type, ref minutes))
-                {
-                    return (int)Math.Clamp(minutes * 60, 0, int.MaxValue);
-                }
+                return null;
             }
-            return null;
+            var number = CFDictionaryGetValue(entry, key);
+            long minutes = 0;
+            if (number == IntPtr.Zero || CFGetTypeID(number) != CFNumberGetTypeID() || !CFNumberGetValue(number, SInt64Type, ref minutes))
+            {
+                return null;
+            }
+            return (int)Math.Clamp(minutes * 60, 0, int.MaxValue);
         }
         finally
         {
@@ -55,17 +55,23 @@ internal static partial class MacScreenOffTimeout
         }
     }
 
+    [LibraryImport(IOKit, EntryPoint = "IOPSGetProvidingPowerSourceType")]
+    private static partial IntPtr IOPSGetProvidingPowerSourceType(IntPtr snapshot);
+
+    [LibraryImport(CoreFoundation, EntryPoint = "CFGetTypeID")]
+    private static partial nuint CFGetTypeID(IntPtr obj);
+
+    [LibraryImport(CoreFoundation, EntryPoint = "CFDictionaryGetTypeID")]
+    private static partial nuint CFDictionaryGetTypeID();
+
+    [LibraryImport(CoreFoundation, EntryPoint = "CFNumberGetTypeID")]
+    private static partial nuint CFNumberGetTypeID();
+
     [LibraryImport(IOKit, EntryPoint = "IOPMCopyActivePMPreferences")]
     private static partial IntPtr IOPMCopyActivePMPreferences();
 
     [LibraryImport(CoreFoundation, EntryPoint = "CFStringCreateWithCString", StringMarshalling = StringMarshalling.Utf8)]
     private static partial IntPtr CFStringCreateWithCString(IntPtr allocator, string str, uint encoding);
-
-    [LibraryImport(CoreFoundation, EntryPoint = "CFDictionaryGetCount")]
-    private static partial nint CFDictionaryGetCount(IntPtr dict);
-
-    [LibraryImport(CoreFoundation, EntryPoint = "CFDictionaryGetKeysAndValues")]
-    private static partial void CFDictionaryGetKeysAndValues(IntPtr dict, [Out] IntPtr[] keys, [Out] IntPtr[] values);
 
     [LibraryImport(CoreFoundation, EntryPoint = "CFDictionaryGetValue")]
     private static partial IntPtr CFDictionaryGetValue(IntPtr dict, IntPtr key);
