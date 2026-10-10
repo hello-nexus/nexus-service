@@ -1197,7 +1197,7 @@ public class Slv3HubTests
 
         var sequence = hub.OnSystemSuspending();
 
-        Assert.True(entered.IsSet);
+        Assert.True(entered.Wait(TimeSpan.FromSeconds(5)));
         Assert.False(sequence.IsCompleted);
         tx.OnSend = null;
         release.Set();

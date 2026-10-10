@@ -2429,11 +2429,15 @@ public sealed class Slv3Hub : IDisposable
                     firstAttempted.TrySetResult();
                     if (result == SuspendSend.Down)
                     {
-                        return;
+                        break;
                     }
                     sent += result == SuspendSend.Sent ? 1 : 0;
                 }
                 ServiceLog.Info($"[lianli-wireless] suspend SaveCfg sent {sent}/{SuspendSaveCfgSends}");
+            }
+            catch (Exception ex)
+            {
+                ServiceLog.Warn($"[lianli-wireless] suspend SaveCfg failed: {ex.Message}");
             }
             finally
             {
