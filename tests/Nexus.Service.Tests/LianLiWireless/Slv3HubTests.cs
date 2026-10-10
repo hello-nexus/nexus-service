@@ -1224,9 +1224,9 @@ public class Slv3HubTests
     // ── GetDev failure escalation / RX reset ──
 
     [Fact]
-    public void Five_consecutive_getdev_failures_reset_the_rx_and_keep_the_list()
+    public void Five_consecutive_getdev_failures_reset_the_rx_via_the_tx_and_keep_the_list()
     {
-        var (hub, net, _, rx) = CreateConnectedHub();
+        var (hub, net, tx, rx) = CreateConnectedHub();
         net.Fans.Add(new SimulatedFan { Mac = FanMac });
         Assert.True(hub.DriveTick());
 
@@ -1239,38 +1239,128 @@ public class Slv3HubTests
         }
         rx.FailReads = false;
 
-        var resetFrame = Assert.Single(rx.SentFrames, f => f.Length >= 1 && f[0] == Slv3Protocol.UsbResetAnother);
+        var resetFrame = Assert.Single(tx.SentFrames, f => f.Length >= 1 && f[0] == Slv3Protocol.UsbResetAnother);
         Assert.Equal(0x15, resetFrame[0]);
+        Assert.DoesNotContain(rx.SentFrames, f => f.Length >= 1 && f[0] == Slv3Protocol.UsbResetAnother);
 
         Assert.True(hub.DriveTick());
         Assert.Single(hub.State.Fans);
     }
 
     [Fact]
-    public void Getdev_failures_past_the_reset_budget_make_drivetick_fail()
+    public void Getdev_failures_never_fail_the_tick_and_resets_back_off_5_10_20_seconds()
     {
-        var (hub, net, _, rx) = CreateConnectedHub();
+        var clock = new ManualClock();
+        var (hub, net, tx, rx) = CreateConnectedHub(clock.NowMs);
         net.Fans.Add(new SimulatedFan { Mac = FanMac });
         Assert.True(hub.DriveTick());
+        int Resets() => tx.SentFrames.FindAll(f => f.Length >= 1 && f[0] == Slv3Protocol.UsbResetAnother).Count;
 
         rx.FailReads = true;
-        // 3 resets x a 5-fail streak each = 15 ticks; a 4th streak of 5 fails
-        // then exhausts MaxRxResetsPerConnection and DriveTick starts failing.
-        var results = new bool[20];
-        for (var i = 0; i < results.Length; i++)
+        for (var i = 0; i < 40; i++)
         {
-            results[i] = hub.DriveTick();
+            Assert.True(hub.DriveTick());
         }
+        Assert.Equal(1, Resets());
+        Assert.Single(hub.State.Fans);
 
-        Assert.True(results[18]);
-        Assert.False(results[19]);
-        Assert.Equal(3, rx.SentFrames.FindAll(f => f.Length >= 1 && f[0] == Slv3Protocol.UsbResetAnother).Count);
+        clock.AdvanceMs(5_000);
+        for (var i = 0; i < 6; i++) Assert.True(hub.DriveTick());
+        Assert.Equal(2, Resets());
+
+        clock.AdvanceMs(9_000);
+        for (var i = 0; i < 6; i++) Assert.True(hub.DriveTick());
+        Assert.Equal(2, Resets());
+        clock.AdvanceMs(1_000);
+        for (var i = 0; i < 6; i++) Assert.True(hub.DriveTick());
+        Assert.Equal(3, Resets());
+        Assert.Single(hub.State.Fans);
     }
 
     [Fact]
-    public void A_good_reply_between_failure_streaks_refills_the_reset_budget()
+    public void A_wedged_rx_is_reset_through_the_tx_then_reopened_in_place_without_clearing_the_list()
     {
-        var (hub, net, _, rx) = CreateConnectedHub();
+        var (hub, net, tx, rx, rxOpens) = CreateConnectedHubCountingRxOpens();
+        net.Fans.Add(new SimulatedFan { Mac = FanMac });
+        Assert.True(hub.DriveTick());
+        rx.FailReads = true;
+        for (var i = 0; i < 5; i++) Assert.True(hub.DriveTick());
+        Assert.Single(tx.SentFrames, f => f.Length >= 1 && f[0] == Slv3Protocol.UsbResetAnother);
+        Assert.Equal(Slv3LinkStatus.Recovering, hub.State.LinkStatus);
+        Assert.Equal(1, rxOpens());
+
+        rx.FailReads = false;
+        Assert.True(hub.DriveTick());
+
+        Assert.Equal(2, rxOpens());
+        Assert.Single(hub.State.Fans);
+        Assert.True(hub.DriveTick());
+        Assert.Equal(Slv3LinkStatus.Ok, hub.State.LinkStatus);
+    }
+
+    [Fact]
+    public void An_rx_that_has_not_enumerated_yet_is_retried_every_tick()
+    {
+        var net = new FakeSlv3Network();
+        var tx = new FakeTxTransport(net);
+        var rx = new FakeRxTransport(net);
+        var discovery = new ToggleDiscovery();
+        var hub = new Slv3Hub(discovery, port => port.Role == Slv3DongleRole.Tx ? tx : rx) { ConfirmNewChains = false };
+        Assert.True(hub.EnsureConnected());
+        net.Fans.Add(new SimulatedFan { Mac = FanMac });
+        Assert.True(hub.DriveTick());
+        rx.FailReads = true;
+        for (var i = 0; i < 5; i++) Assert.True(hub.DriveTick());
+
+        discovery.RxPresent = false;
+        for (var i = 0; i < 3; i++) Assert.True(hub.DriveTick());
+        Assert.Single(hub.State.Fans);
+
+        rx.FailReads = false;
+        discovery.RxPresent = true;
+        Assert.True(hub.DriveTick());
+        Assert.True(hub.DriveTick());
+        Assert.False(hub.State.Fans[0].Stale);
+    }
+
+    [Fact]
+    public void A_tx_that_keeps_failing_to_reopen_is_reset_through_the_rx_after_five_attempts()
+    {
+        var net = new FakeSlv3Network();
+        var rx = new FakeRxTransport(net);
+        var failTx = true;
+        var opened = 0;
+        FakeTxTransport? firstTx = null;
+        var hub = new Slv3Hub(new FakeDiscovery(), port =>
+        {
+            if (port.Role != Slv3DongleRole.Tx) return rx;
+            opened++;
+            var tx = new FakeTxTransport(net) { MasterChannel = failTx && opened > 1 ? (byte)99 : Slv3Protocol.DefaultChannel };
+            firstTx ??= tx;
+            return tx;
+        }) { ConfirmNewChains = false };
+        Assert.True(hub.EnsureConnected());
+        net.Fans.Add(new SimulatedFan { Mac = FanMac });
+        Assert.True(hub.DriveTick());
+        firstTx!.Dead = true;
+
+        for (var i = 0; i < 4; i++) Assert.True(hub.PollTick());
+        Assert.DoesNotContain(rx.SentFrames, f => f.Length >= 1 && f[0] == Slv3Protocol.UsbResetAnother);
+        Assert.True(hub.PollTick());
+        Assert.Single(rx.SentFrames, f => f.Length >= 1 && f[0] == Slv3Protocol.UsbResetAnother);
+        Assert.Single(hub.State.Fans);
+
+        failTx = false;
+        Assert.True(hub.PollTick());
+        Assert.True(hub.PollTick());
+        Assert.True(hub.State.IsConnected);
+        Assert.Single(hub.State.Fans);
+    }
+
+    [Fact]
+    public void A_good_reply_between_failure_streaks_clears_the_reset_backoff()
+    {
+        var (hub, net, tx, rx) = CreateConnectedHub();
         net.Fans.Add(new SimulatedFan { Mac = FanMac });
         Assert.True(hub.DriveTick());
 
@@ -1287,7 +1377,7 @@ public class Slv3HubTests
             Assert.True(hub.DriveTick());
         }
 
-        Assert.Equal(4, rx.SentFrames.FindAll(f => f.Length >= 1 && f[0] == Slv3Protocol.UsbResetAnother).Count);
+        Assert.Equal(4, tx.SentFrames.FindAll(f => f.Length >= 1 && f[0] == Slv3Protocol.UsbResetAnother).Count);
     }
 
     [Fact]
@@ -1331,22 +1421,35 @@ public class Slv3HubTests
     }
 
     [Fact]
-    public void A_busy_rx_past_its_reopen_budget_keeps_failing_so_the_worker_reconnects()
+    public void A_busy_rx_is_reopened_with_backoff_and_never_fails_the_poll()
     {
-        var (hub, net, _, rx, rxOpens) = CreateConnectedHubCountingRxOpens();
+        var clock = new ManualClock();
+        var net = new FakeSlv3Network();
+        var tx = new FakeTxTransport(net);
+        var rx = new FakeRxTransport(net);
+        var rxOpens = 0;
+        var hub = new Slv3Hub(new FakeDiscovery(), port =>
+        {
+            if (port.Role == Slv3DongleRole.Tx) return tx;
+            rxOpens++;
+            return rx;
+        }, clock.NowMs) { ConfirmNewChains = false };
+        Assert.True(hub.EnsureConnected());
         net.Fans.Add(new SimulatedFan { Mac = FanMac });
         Assert.True(hub.DriveTick());
 
         rx.BusyReads = true;
-        var results = new List<bool>();
-        for (var i = 0; i < 4 * 60 + 2; i++)
+        for (var i = 0; i < 4 * 60; i++)
         {
-            results.Add(hub.PollTick());
+            Assert.True(hub.PollTick());
         }
+        Assert.Equal(2, rxOpens);
 
-        Assert.Equal(1 + 3, rxOpens());
+        clock.AdvanceMs(5_000);
+        for (var i = 0; i < 60; i++) Assert.True(hub.PollTick());
+        Assert.Equal(3, rxOpens);
         Assert.DoesNotContain(rx.SentFrames, f => f.Length >= 1 && f[0] == Slv3Protocol.UsbResetAnother);
-        Assert.Equal(new[] { false, false, false }, results.GetRange(results.Count - 3, 3));
+        Assert.Single(hub.State.Fans);
     }
 
     [Fact]
@@ -1392,7 +1495,7 @@ public class Slv3HubTests
     [Fact]
     public void An_rx_alternating_between_no_reply_and_busy_still_gets_reset()
     {
-        var (hub, net, _, rx) = CreateConnectedHub();
+        var (hub, net, tx, rx) = CreateConnectedHub();
         net.Fans.Add(new SimulatedFan { Mac = FanMac });
         Assert.True(hub.DriveTick());
 
@@ -1403,7 +1506,7 @@ public class Slv3HubTests
             Assert.True(hub.PollTick());
         }
 
-        Assert.Single(rx.SentFrames, f => f.Length >= 1 && f[0] == Slv3Protocol.UsbResetAnother);
+        Assert.Single(tx.SentFrames, f => f.Length >= 1 && f[0] == Slv3Protocol.UsbResetAnother);
     }
 
     [Fact]
@@ -1423,18 +1526,19 @@ public class Slv3HubTests
     }
 
     [Fact]
-    public void Getdev_send_failure_fails_the_tick_immediately_without_a_reset()
+    public void Getdev_send_failures_count_toward_the_rx_reset_streak_without_failing_the_tick()
     {
-        var (hub, net, _, rx) = CreateConnectedHub();
+        var (hub, net, tx, rx) = CreateConnectedHub();
         net.Fans.Add(new SimulatedFan { Mac = FanMac });
         Assert.True(hub.DriveTick());
 
-        // A dead USB handle (the write itself fails) is fatal for the tick;
-        // it must not be folded into the wedged-MCU reset streak.
         rx.FailSend = true;
-        Assert.False(hub.DriveTick());
+        for (var i = 0; i < 4; i++) Assert.True(hub.DriveTick());
+        Assert.DoesNotContain(tx.SentFrames, f => f.Length >= 1 && f[0] == Slv3Protocol.UsbResetAnother);
+        Assert.True(hub.DriveTick());
 
-        Assert.DoesNotContain(rx.SentFrames, f => f.Length >= 1 && f[0] == Slv3Protocol.UsbResetAnother);
+        Assert.Single(tx.SentFrames, f => f.Length >= 1 && f[0] == Slv3Protocol.UsbResetAnother);
+        Assert.Single(hub.State.Fans);
     }
 
     [Fact]
@@ -1464,41 +1568,52 @@ public class Slv3HubTests
     }
 
     [Fact]
-    public void A_tx_that_never_comes_back_fails_the_poll_once_the_reopen_budget_runs_out()
+    public void Chains_go_stale_then_the_link_drops_only_after_both_dongles_are_absent_for_ten_seconds()
     {
+        var clock = new ManualClock();
         var net = new FakeSlv3Network();
-        var rx = new FakeRxTransport(net);
         var tx = new FakeTxTransport(net);
-        var discovery = new SwitchableDiscovery();
-        var hub = new Slv3Hub(discovery, port => port.Role == Slv3DongleRole.Tx ? tx : rx) { ConfirmNewChains = false };
+        var rx = new FakeRxTransport(net);
+        var discovery = new ToggleDiscovery();
+        var hub = new Slv3Hub(discovery, port => port.Role == Slv3DongleRole.Tx ? tx : rx, clock.NowMs) { ConfirmNewChains = false };
         Assert.True(hub.EnsureConnected());
         net.Fans.Add(new SimulatedFan { Mac = FanMac });
         Assert.True(hub.DriveTick());
 
         tx.Dead = true;
+        rx.Dead = true;
         discovery.TxPresent = false;
-        var results = new List<bool>();
-        for (var i = 0; i < 10; i++)
-        {
-            results.Add(hub.PollTick());
-        }
+        discovery.RxPresent = false;
+        Assert.True(hub.PollTick());
+        clock.AdvanceMs(9_000);
+        Assert.True(hub.PollTick());
+        Assert.True(Assert.Single(hub.State.Fans).Stale);
 
-        Assert.All(results.GetRange(0, 9), Assert.True);
-        Assert.False(results[9]);
+        discovery.TxPresent = true;
+        clock.AdvanceMs(5_000);
+        Assert.True(hub.PollTick());
+        discovery.TxPresent = false;
+        Assert.True(hub.PollTick());
+        clock.AdvanceMs(9_999);
+        Assert.True(hub.PollTick());
+        clock.AdvanceMs(1);
+        Assert.False(hub.PollTick());
     }
 
-    private sealed class SwitchableDiscovery : ISlv3Discovery
+    private sealed class ToggleDiscovery : ISlv3Discovery
     {
         public bool TxPresent { get; set; } = true;
+        public bool RxPresent { get; set; } = true;
 
-        public IReadOnlyList<Slv3PortInfo> Discover() => TxPresent
-            ? new[]
-            {
-                new Slv3PortInfo { PortName = "fake-tx", Role = Slv3DongleRole.Tx },
-                new Slv3PortInfo { PortName = "fake-rx", Role = Slv3DongleRole.Rx },
-            }
-            : new[] { new Slv3PortInfo { PortName = "fake-rx", Role = Slv3DongleRole.Rx } };
+        public IReadOnlyList<Slv3PortInfo> Discover()
+        {
+            var ports = new List<Slv3PortInfo>();
+            if (TxPresent) ports.Add(new Slv3PortInfo { PortName = "fake-tx", Role = Slv3DongleRole.Tx });
+            if (RxPresent) ports.Add(new Slv3PortInfo { PortName = "fake-rx", Role = Slv3DongleRole.Rx });
+            return ports;
+        }
     }
+
 
     // ── Channel scan (MasterInitLocked) ──
 
@@ -1992,7 +2107,9 @@ public class Slv3HubTests
             _net = net;
         }
 
-        public bool IsOpen => true;
+        public bool Dead { get; set; }
+
+        public bool IsOpen => !Dead;
         public Slv3DongleRole Role => Slv3DongleRole.Rx;
         public string PortName => "fake-rx";
         public List<byte[]> SentFrames { get; } = new();

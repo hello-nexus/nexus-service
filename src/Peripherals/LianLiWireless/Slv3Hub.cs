@@ -129,32 +129,37 @@ public sealed class Slv3Hub : IDisposable
     // Unseen this long = telemetry is last-known, surfaced as Stale.
     private const long ChainStaleMs = 3_500;
 
-    // GetDev failure escalation (lian-li-linux controller.rs): 5 consecutive
-    // USB-level failures -> UsbResetAnother to the RX MCU (a handle reopen does
-    // not reset a wedged radio). A good reply refills the reset budget, so only
-    // resets that fail back to back hand the worker its disconnect/reconnect.
+    // GetDev failure escalation (L-Connect MasterDevice.ResetRx): 5 consecutive
+    // RX failures -> UsbResetAnother written on the TX handle, which resets the
+    // RX half (written on the RX it would reset the TX instead). Recoverable
+    // faults never tear the link down; consecutive recoveries are spaced by a
+    // doubling backoff, and a good reply clears it.
     private const int RxFailStreakForReset = 5;
-    private const int MaxRxResetsPerConnection = 3;
-    // Post-reset settle per the reference's 500 ms sleep after USB_ResetAnother.
-    private const int RxResetSettleMs = 500;
+    private const long RecoveryBackoffMs = 5_000;
+    private const long RecoveryBackoffMaxMs = 60_000;
     private int _rxFailStreak;
-    private int _rxResetCount;
+    private int _rxRecoveries;
+    private long _nextRxRecoveryMs;
 
     // A reply opening with 0 is the RX's "no device list this cycle". It does
     // this on its own every ~17 s for a few seconds and recovers without help,
     // so only a busy spell this long is treated as a wedge. A wedge gets a fresh
-    // RX handle, not UsbResetAnother: the reset re-enumerates the TX, and the RX
-    // reopen is the step a full reconnect adds over it.
+    // RX handle, not UsbResetAnother.
     private const int RxBusyPollsBeforeReset = 60;
-    private const int MaxRxReopens = 3;
     private int _rxBusyStreak;
-    private int _rxReopenCount;
     private byte[]? _firstBusyReply;
 
-    // Polls a TX that went away (it re-enumerates about a second after an RX
-    // reset) may take to come back before the link is torn down and rebuilt.
-    private const int TxReopenPollBudget = 10;
-    private int _txMissingPolls;
+    // L-Connect MasterDevice.ResetTx: 5 consecutive TX reopen failures ->
+    // UsbResetAnother written on the RX handle, then the TX keeps reopening.
+    private const int TxFailsBeforeReset = 5;
+    private int _txOpenFails;
+    private int _txRecoveries;
+    private long _nextTxRecoveryMs;
+
+    // Neither dongle enumerating this long means it was unplugged: the only
+    // fault that ends the connection.
+    internal const long LinkAbsentDisconnectMs = 10_000;
+    private long _bothAbsentSinceMs;
 
     // SaveCfg after a confirmed bind: L-Connect broadcasts one on every loop
     // pass for a few seconds after Bind() (lastBindTime); here one per poll
@@ -232,6 +237,9 @@ public sealed class Slv3Hub : IDisposable
     /// </summary>
     public bool IsConnected => State.IsConnected && _rx is { IsOpen: true };
 
+    // The link is up even while a half is being recovered in place.
+    private bool LinkUp => State.IsConnected;
+
     /// <summary>Opens the TX + RX dongles and learns our master MAC. Both must open for the link to be usable.</summary>
     public bool EnsureConnected()
     {
@@ -239,13 +247,13 @@ public sealed class Slv3Hub : IDisposable
         {
             return false;
         }
-        if (IsConnected)
+        if (LinkUp)
         {
             return true;
         }
         lock (_lock)
         {
-            if (IsConnected)
+            if (LinkUp)
             {
                 return true;
             }
@@ -323,7 +331,7 @@ public sealed class Slv3Hub : IDisposable
         State.IsConnected = false;
         // A failure path sets its own reason just before tearing down; only an
         // 'ok' from a link that was live outlives its meaning here.
-        if (State.LinkStatus == Slv3LinkStatus.Ok)
+        if (State.LinkStatus is Slv3LinkStatus.Ok or Slv3LinkStatus.Recovering)
         {
             State.LinkStatus = Slv3LinkStatus.Unknown;
         }
@@ -343,34 +351,72 @@ public sealed class Slv3Hub : IDisposable
         }
         _rxFailStreak = 0;
         _rxBusyStreak = 0;
-        _rxResetCount = 0;
-        _rxReopenCount = 0;
-        _txMissingPolls = 0;
+        _rxRecoveries = 0;
+        _nextRxRecoveryMs = 0;
+        _txOpenFails = 0;
+        _txRecoveries = 0;
+        _nextTxRecoveryMs = 0;
+        _bothAbsentSinceMs = 0;
         _saveCfgBurstRemaining = 0;
         _saveCfgDueMs = 0;
         _videoModeActive = false;
         _videoModePreppedCount = 0;
     }
 
-    // Reopens a TX whose handle died with its device, keeping the device list
-    // so nothing downstream sees the link drop. The new handle must answer
-    // GetMac: a dying instance can still be listed for a moment.
-    private bool TryReopenTxLocked()
+    // Reopens whichever half lost its handle, keeping the device list, pending
+    // ops and owned state. Returns false only once neither dongle has enumerated
+    // for LinkAbsentDisconnectMs.
+    private bool RecoverHandlesLocked(long nowMs)
     {
-        try { _tx?.Dispose(); } catch { /* best effort */ }
-        _tx = null;
         Slv3PortInfo? txPort = null;
+        Slv3PortInfo? rxPort = null;
         foreach (var port in _discovery.Discover())
         {
             if (port.Role == Slv3DongleRole.Tx)
             {
-                txPort = port;
-                break;
+                txPort ??= port;
+            }
+            else if (port.Role == Slv3DongleRole.Rx)
+            {
+                rxPort ??= port;
             }
         }
+        if (txPort is null && rxPort is null)
+        {
+            if (_bothAbsentSinceMs == 0)
+            {
+                _bothAbsentSinceMs = nowMs;
+            }
+            if (nowMs - _bothAbsentSinceMs >= LinkAbsentDisconnectMs)
+            {
+                ServiceLog.Warn($"[lianli-wireless] neither dongle enumerated for {LinkAbsentDisconnectMs / 1000}s, link down");
+                return false;
+            }
+        }
+        else
+        {
+            _bothAbsentSinceMs = 0;
+        }
+        State.LinkStatus = Slv3LinkStatus.Recovering;
+        if (_tx is not { IsOpen: true })
+        {
+            ReopenTxLocked(txPort, nowMs);
+        }
+        if (_rx is not { IsOpen: true })
+        {
+            ReopenRxLocked(rxPort);
+        }
+        return true;
+    }
+
+    // The new handle must answer GetMac: a dying instance can still be listed for a moment.
+    private void ReopenTxLocked(Slv3PortInfo? txPort, long nowMs)
+    {
+        try { _tx?.Dispose(); } catch { /* best effort */ }
+        _tx = null;
         if (txPort is null)
         {
-            return false;
+            return;
         }
         try
         {
@@ -378,20 +424,43 @@ public sealed class Slv3Hub : IDisposable
         }
         catch (Exception)
         {
-            return false;
+            NoteTxOpenFailureLocked(nowMs);
+            return;
         }
         if (!TryGetMacOnChannelLocked(_channel))
         {
             try { _tx.Dispose(); } catch { /* best effort */ }
             _tx = null;
-            return false;
+            NoteTxOpenFailureLocked(nowMs);
+            return;
         }
+        _txOpenFails = 0;
+        _txRecoveries = 0;
+        _nextTxRecoveryMs = 0;
         // The restarted TX lost the LCD video arming; the LCD loop re-arms it.
         _videoModeActive = false;
         _videoModePreppedCount = 0;
         ServiceLog.Info("[lianli-wireless] TX reopened");
-        return true;
     }
+
+    // L-Connect ResetTx: UsbResetAnother on the RX handle restarts the TX.
+    private void NoteTxOpenFailureLocked(long nowMs)
+    {
+        if (++_txOpenFails < TxFailsBeforeReset || nowMs < _nextTxRecoveryMs)
+        {
+            return;
+        }
+        _txOpenFails = 0;
+        _txRecoveries++;
+        _nextTxRecoveryMs = nowMs + RecoveryBackoffFor(_txRecoveries);
+        if (_rx is { IsOpen: true } && _rx.RfSend(Slv3Protocol.BuildResetAnother()))
+        {
+            ServiceLog.Warn($"[lianli-wireless] {TxFailsBeforeReset} consecutive TX open failures, resetting TX via RX ({_txRecoveries})");
+        }
+    }
+
+    private static long RecoveryBackoffFor(int recoveries) =>
+        Math.Min(RecoveryBackoffMs << Math.Min(recoveries - 1, 4), RecoveryBackoffMaxMs);
 
     private bool MasterInitLocked()
     {
@@ -524,22 +593,25 @@ public sealed class Slv3Hub : IDisposable
 
     private bool PollLocked()
     {
-        if (!IsConnected)
+        if (!LinkUp)
         {
             return false;
         }
-        if (_tx is { IsOpen: true } || TryReopenTxLocked())
-        {
-            _txMissingPolls = 0;
-        }
-        else if (++_txMissingPolls >= TxReopenPollBudget)
+        var nowMs = _nowMs();
+        if ((_tx is not { IsOpen: true } || _rx is not { IsOpen: true }) && !RecoverHandlesLocked(nowMs))
         {
             return false;
+        }
+        if (_rx is not { IsOpen: true })
+        {
+            AgeChainsLocked(nowMs);
+            return true;
         }
         if (!RefreshDeviceListLocked())
         {
             return false;
         }
+
         // Pending binds, commands and saves keep their budgets while the TX is
         // away instead of spending them on sends that cannot go out.
         if (_tx is not { IsOpen: true })
@@ -1166,9 +1238,8 @@ public sealed class Slv3Hub : IDisposable
         var pageCount = DeviceListPagesFor(_lastRecordCount);
         if (!_rx.RfSend(Slv3Protocol.BuildGetDev(pageCount)))
         {
-            // A failed USB write means the handle itself is dead (replug,
-            // suspend); fail the tick so the worker reopens promptly.
-            return false;
+            // A failed write counts toward the same streak as an unreadable reply.
+            return HandleGetDevFailureLocked();
         }
         var reply = _rx.RfRead(Slv3Protocol.PageLength * pageCount);
         // A missing/invalid GetDev echo with a healthy handle is a wedged RX
@@ -1184,8 +1255,12 @@ public sealed class Slv3Hub : IDisposable
         }
         _rxFailStreak = 0;
         _rxBusyStreak = 0;
-        _rxResetCount = 0;
-        _rxReopenCount = 0;
+        _rxRecoveries = 0;
+        _nextRxRecoveryMs = 0;
+        if (State.LinkStatus == Slv3LinkStatus.Recovering && _tx is { IsOpen: true })
+        {
+            State.LinkStatus = Slv3LinkStatus.Ok;
+        }
 
         State.MotherboardPwmPercent = Slv3Protocol.ParseGetDevMoboDuty(reply);
 
@@ -1226,6 +1301,18 @@ public sealed class Slv3Hub : IDisposable
             }
         }
 
+        ExpireChainsLocked(nowMs);
+
+        // Page estimate follows the larger of the reply's count and the tracked
+        // set, so a partial report can't shrink the next read below the full list.
+        _lastRecordCount = Math.Max(count, _knownChains.Count);
+        PublishFansLocked(nowMs);
+        return true;
+    }
+
+    // Chains age on their own timers whether or not the RX answered.
+    private void ExpireChainsLocked(long nowMs)
+    {
         List<string>? gone = null;
         foreach (var (key, unconfirmed) in _unconfirmedChains)
         {
@@ -1260,12 +1347,12 @@ public sealed class Slv3Hub : IDisposable
                 }
             }
         }
+    }
 
-        // Page estimate follows the larger of the reply's count and the tracked
-        // set, so a partial report can't shrink the next read below the full list.
-        _lastRecordCount = Math.Max(count, _knownChains.Count);
+    private void AgeChainsLocked(long nowMs)
+    {
+        ExpireChainsLocked(nowMs);
         PublishFansLocked(nowMs);
-        return true;
     }
 
     // Surfaces the known chains, flagging any unseen for longer than
@@ -1320,7 +1407,7 @@ public sealed class Slv3Hub : IDisposable
     // The RX answered but has no list: keep the last-known one.
     private bool HandleRxBusyLocked(byte[] reply)
     {
-        PublishFansLocked(_nowMs());
+        AgeChainsLocked(_nowMs());
         if (++_rxBusyStreak == 1)
         {
             _firstBusyReply = reply;
@@ -1329,37 +1416,69 @@ public sealed class Slv3Hub : IDisposable
         {
             return true;
         }
-        if (_rxReopenCount >= MaxRxReopens)
-        {
-            // Out of reopens: the streak stays past its threshold, so every
-            // further busy poll fails and the worker reconnects.
-            return false;
-        }
-        _rxBusyStreak = 0;
-        _rxReopenCount++;
         var first = _firstBusyReply is { } b ? Convert.ToHexString(b, 0, Math.Min(b.Length, Slv3Protocol.UsbPacketSize)) : "";
-        ServiceLog.Warn($"[lianli-wireless] {RxBusyPollsBeforeReset} consecutive busy GetDev replies (first {first}), reopening RX ({_rxReopenCount}/{MaxRxReopens})");
-        return TryReopenRxLocked();
+        return BeginRxRecoveryLocked($"{RxBusyPollsBeforeReset} consecutive busy GetDev replies (first {first})", resetViaTx: false);
     }
 
-    // Reopens the RX handle, keeping the device list.
-    private bool TryReopenRxLocked()
+    // Only a good reply clears the busy and failure streaks, so an RX that
+    // alternates between the two still escalates.
+    private bool HandleGetDevFailureLocked()
+    {
+        AgeChainsLocked(_nowMs());
+        _rxFailStreak++;
+        if (_rxFailStreak < RxFailStreakForReset)
+        {
+            // Transient: keep the last-known list and let the next tick retry.
+            return true;
+        }
+        return BeginRxRecoveryLocked($"{RxFailStreakForReset} consecutive GetDev failures", resetViaTx: true);
+    }
+
+    // Resets the RX half by writing UsbResetAnother on the TX handle, or just
+    // reopens the RX handle when asked to or when the TX is unavailable. The
+    // reopen retries each tick until the RX enumerates. Never ends the link.
+    private bool BeginRxRecoveryLocked(string reason, bool resetViaTx)
+    {
+        var nowMs = _nowMs();
+        if (nowMs < _nextRxRecoveryMs)
+        {
+            return true;
+        }
+        _rxFailStreak = 0;
+        _rxBusyStreak = 0;
+        _rxRecoveries++;
+        _nextRxRecoveryMs = nowMs + RecoveryBackoffFor(_rxRecoveries);
+        State.LinkStatus = Slv3LinkStatus.Recovering;
+        var reset = resetViaTx && _tx is { IsOpen: true } && _tx.RfSend(Slv3Protocol.BuildResetAnother());
+        ServiceLog.Warn($"[lianli-wireless] {reason}, {(reset ? "resetting RX via TX" : "reopening RX")} ({_rxRecoveries})");
+        try { _rx?.Dispose(); } catch { /* best effort */ }
+        _rx = null;
+        if (!reset)
+        {
+            ReopenRxLocked(FindPortLocked(Slv3DongleRole.Rx));
+        }
+        return true;
+    }
+
+    private Slv3PortInfo? FindPortLocked(Slv3DongleRole role)
+    {
+        foreach (var port in _discovery.Discover())
+        {
+            if (port.Role == role)
+            {
+                return port;
+            }
+        }
+        return null;
+    }
+
+    private void ReopenRxLocked(Slv3PortInfo? rxPort)
     {
         try { _rx?.Dispose(); } catch { /* best effort */ }
         _rx = null;
-        Slv3PortInfo? rxPort = null;
-        foreach (var port in _discovery.Discover())
-        {
-            if (port.Role == Slv3DongleRole.Rx)
-            {
-                rxPort = port;
-                break;
-            }
-        }
         if (rxPort is null)
         {
-            ServiceLog.Warn("[lianli-wireless] RX reopen failed: RX not enumerated");
-            return false;
+            return;
         }
         try
         {
@@ -1368,46 +1487,9 @@ public sealed class Slv3Hub : IDisposable
         catch (Exception ex)
         {
             ServiceLog.Warn($"[lianli-wireless] RX reopen failed: {ex.GetType().Name}: {ex.Message}");
-            return false;
+            return;
         }
         ServiceLog.Info("[lianli-wireless] RX reopened");
-        return true;
-    }
-
-    // Only a good reply clears the busy and failure streaks, so an RX that
-    // alternates between the two still escalates.
-    private bool HandleGetDevFailureLocked()
-    {
-        PublishFansLocked(_nowMs());
-        _rxFailStreak++;
-        if (_rxFailStreak < RxFailStreakForReset)
-        {
-            // Transient: keep the last-known list and let the next tick retry.
-            return true;
-        }
-        return ResetRxLocked($"{RxFailStreakForReset} consecutive GetDev failures");
-    }
-
-    private bool ResetRxLocked(string reason)
-    {
-        if (_rxResetCount >= MaxRxResetsPerConnection)
-        {
-            // Out of resets. The streak stays past its threshold, so every
-            // further failed or busy poll lands here and the worker's
-            // consecutive-failure path gets its disconnect/reopen.
-            return false;
-        }
-        _rxFailStreak = 0;
-        _rxBusyStreak = 0;
-        _rxResetCount++;
-        ServiceLog.Warn($"[lianli-wireless] {reason}, resetting RX MCU ({_rxResetCount}/{MaxRxResetsPerConnection})");
-        if (_rx is not null && _rx.RfSend(Slv3Protocol.BuildResetAnother()))
-        {
-            _rx.RfRead(Slv3Protocol.UsbPacketSize);
-        }
-        // Reference sleeps 500 ms after USB_ResetAnother before the next poll.
-        Thread.Sleep(RxResetSettleMs);
-        return true;
     }
 
     // Bound to us = our master MAC and a valid slot. A release clears both in

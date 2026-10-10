@@ -51,6 +51,8 @@ public static class Slv3LinkStatus
     public const string OpenFailed = "openFailed";
     /// <summary>Both dongles opened, but the master-MAC handshake got no reply.</summary>
     public const string NoResponse = "noResponse";
+    /// <summary>The link is up and one dongle half is being reset or reopened in place.</summary>
+    public const string Recovering = "recovering";
 }
 
 /// <summary>One wireless fan as last reported by the RX device-list poll.</summary>
