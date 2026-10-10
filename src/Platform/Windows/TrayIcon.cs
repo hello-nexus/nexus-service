@@ -72,7 +72,6 @@ public static class TrayIcon
     /// <summary>GUID_CONSOLE_DISPLAY_STATE: 0 off, 1 on, 2 dimmed.</summary>
     private static readonly Guid GuidConsoleDisplayState = new("6FE69556-704A-47A0-8F24-C28D936FDA47");
     // What decides the screen-off timeout: VIDEOIDLE itself, the AC/DC source picking its index, and the active plan.
-    private static readonly Guid GuidVideoPowerdownTimeout = new("3C0BC021-C8A8-4E07-A973-6B14CBCB2B7E");
     private static readonly Guid GuidAcDcPowerSource = new("5D3E9A59-E9D5-4B00-A6BD-FF34FF516548");
     private static readonly Guid GuidActivePowerScheme = new("31F9F286-5084-42FE-B720-2B0264993763");
     // NIM_ADD retry poll (see StartIconRetry): timer id, interval, attempt cap.
@@ -498,7 +497,7 @@ public static class TrayIcon
     /// <summary>Window thread only. Always registered, so an open client's label stays current; the registrations die with the window.</summary>
     private static void RegisterScreenOffTimeoutWatch(IntPtr hwnd)
     {
-        foreach (var setting in new[] { GuidVideoPowerdownTimeout, GuidAcDcPowerSource, GuidActivePowerScheme })
+        foreach (var setting in new[] { WindowsScreenOffTimeout.VideoIdle, GuidAcDcPowerSource, GuidActivePowerScheme })
         {
             var guid = setting;
             if (RegisterPowerSettingNotification(hwnd, ref guid, DEVICE_NOTIFY_WINDOW_HANDLE) == IntPtr.Zero)
@@ -691,7 +690,7 @@ public static class TrayIcon
                     _lastDisplayOff = Marshal.ReadInt32(lParam, 20) == 0;
                     DisplayStateChanged?.Invoke(_lastDisplayOff);
                 }
-                else if (setting == GuidVideoPowerdownTimeout || setting == GuidAcDcPowerSource || setting == GuidActivePowerScheme)
+                else if (setting == WindowsScreenOffTimeout.VideoIdle || setting == GuidAcDcPowerSource || setting == GuidActivePowerScheme)
                 {
                     try { ScreenOffTimeoutMayHaveChanged?.Invoke(); }
                     catch (Exception ex) { DiagFile($"screen-off timeout hint failed: {ex.Message}"); }

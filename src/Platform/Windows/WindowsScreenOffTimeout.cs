@@ -14,7 +14,7 @@ namespace Nexus.Service.Platform.Windows;
 internal static class WindowsScreenOffTimeout
 {
     private static readonly Guid VideoSubgroup = new("7516b95f-f776-4464-8c53-06167f40cc99");
-    private static readonly Guid VideoIdle = new("3c0bc021-c8a8-4e07-a973-6b14cbcb2b7e");
+    internal static readonly Guid VideoIdle = new("3c0bc021-c8a8-4e07-a973-6b14cbcb2b7e");
 
     [StructLayout(LayoutKind.Sequential)]
     private struct SYSTEM_POWER_STATUS
