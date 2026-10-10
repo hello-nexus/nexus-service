@@ -2022,7 +2022,7 @@ public class Slv3HubTests
     }
 
     [Fact]
-    public void A_busy_rx_is_reopened_with_backoff_and_never_fails_the_poll()
+    public void A_busy_rx_that_a_reopen_does_not_clear_is_reset_via_tx_on_the_backoff()
     {
         var clock = new ManualClock();
         var net = new FakeSlv3Network();
@@ -2045,18 +2045,23 @@ public class Slv3HubTests
             Assert.True(hub.PollTick());
         }
         Assert.Equal(2, rxOpens);
+        Assert.DoesNotContain(tx.SentFrames, f => f.Length >= 1 && f[0] == Slv3Protocol.UsbResetAnother);
 
         clock.AdvanceMs(5_000);
         for (var i = 0; i < 60; i++) Assert.True(hub.PollTick());
-        Assert.Equal(3, rxOpens);
-        Assert.DoesNotContain(rx.SentFrames, f => f.Length >= 1 && f[0] == Slv3Protocol.UsbResetAnother);
+        Assert.Single(tx.SentFrames, f => f.Length >= 1 && f[0] == Slv3Protocol.UsbResetAnother);
         Assert.Single(hub.State.Fans);
+
+        rx.BusyReads = false;
+        Assert.True(hub.PollTick());
+        Assert.Equal(3, rxOpens);
+        Assert.False(Assert.Single(hub.State.Fans).Stale);
     }
 
     [Fact]
     public void A_good_reply_between_busy_spells_refills_the_reopen_budget()
     {
-        var (hub, net, _, rx, rxOpens) = CreateConnectedHubCountingRxOpens();
+        var (hub, net, tx, rx, rxOpens) = CreateConnectedHubCountingRxOpens();
         net.Fans.Add(new SimulatedFan { Mac = FanMac });
         Assert.True(hub.DriveTick());
 
@@ -2072,6 +2077,7 @@ public class Slv3HubTests
         }
 
         Assert.Equal(1 + 4, rxOpens());
+        Assert.DoesNotContain(tx.SentFrames, f => f.Length >= 1 && f[0] == Slv3Protocol.UsbResetAnother);
     }
 
     private static (Slv3Hub Hub, FakeSlv3Network Net, FakeTxTransport Tx, FakeRxTransport Rx, Func<int> RxOpens) CreateConnectedHubCountingRxOpens()
