@@ -1124,15 +1124,24 @@ public class Slv3HubTests
         var tx = new FakeTxTransport(net);
         var rx = new FakeRxTransport(net);
         var sleeps = new List<int>();
-        var hub = new Slv3Hub(new FakeDiscovery(), port => port.Role == Slv3DongleRole.Tx ? tx : rx) { ConfirmNewChains = false, SleepMs = sleeps.Add };
+        var framesAtFirstGap = -1;
+        var hub = new Slv3Hub(new FakeDiscovery(), port => port.Role == Slv3DongleRole.Tx ? tx : rx)
+        {
+            ConfirmNewChains = false,
+            SleepMs = gap =>
+            {
+                if (framesAtFirstGap < 0) framesAtFirstGap = tx.SentFrames.Count;
+                sleeps.Add(gap);
+            },
+        };
         Assert.True(hub.EnsureConnected());
         tx.SentFrames.Clear();
 
         var rest = hub.OnSystemSuspending();
-
-        // The first send is out before the call returns; only the retries are in the background.
-        Assert.True(tx.SentFrames.Count > 0);
         await rest;
+
+        // The first send is complete before the first gap begins.
+        Assert.True(framesAtFirstGap > 0);
         Assert.Equal(3, tx.SentFrames.FindAll(f => f.Length >= 6 && f[1] == 0 && f[5] == Slv3Protocol.RfSaveCfg).Count);
         Assert.Equal(new[] { 200, 200 }, sleeps);
     }
@@ -1143,16 +1152,56 @@ public class Slv3HubTests
         var net = new FakeSlv3Network();
         var tx = new FakeTxTransport(net);
         var rx = new FakeRxTransport(net);
-        var hub = new Slv3Hub(new FakeDiscovery(), port => port.Role == Slv3DongleRole.Tx ? tx : rx) { ConfirmNewChains = false, SleepMs = _ => { } };
+        var framesAtFirstGap = -1;
+        var hub = new Slv3Hub(new FakeDiscovery(), port => port.Role == Slv3DongleRole.Tx ? tx : rx)
+        {
+            ConfirmNewChains = false,
+            SleepMs = _ =>
+            {
+                if (framesAtFirstGap < 0) framesAtFirstGap = tx.SentFrames.Count;
+            },
+        };
         Assert.True(hub.EnsureConnected());
         tx.SentFrames.Clear();
         tx.FailSaveCfg = true;
 
-        var rest = hub.OnSystemSuspending();
-        Assert.Single(tx.SentFrames);
-        await rest;
+        await hub.OnSystemSuspending();
 
+        Assert.Equal(1, framesAtFirstGap);
         Assert.Equal(3, tx.SentFrames.Count);
+    }
+
+    [Fact]
+    public async System.Threading.Tasks.Task Suspend_returns_at_the_cap_when_a_write_blocks_and_finishes_cleanly_after_release()
+    {
+        var net = new FakeSlv3Network();
+        var tx = new FakeTxTransport(net);
+        var rx = new FakeRxTransport(net);
+        var hub = new Slv3Hub(new FakeDiscovery(), port => port.Role == Slv3DongleRole.Tx ? tx : rx)
+        {
+            ConfirmNewChains = false,
+            SleepMs = _ => { },
+            SuspendFirstSendCapMs = 50,
+        };
+        Assert.True(hub.EnsureConnected());
+        using var entered = new System.Threading.ManualResetEventSlim();
+        using var release = new System.Threading.ManualResetEventSlim();
+        tx.OnSend = frame =>
+        {
+            if (frame.Length >= 6 && frame[0] == Slv3Protocol.UsbSendRf && frame[5] == Slv3Protocol.RfSaveCfg)
+            {
+                entered.Set();
+                release.Wait(TimeSpan.FromSeconds(10));
+            }
+        };
+
+        var sequence = hub.OnSystemSuspending();
+
+        Assert.True(entered.IsSet);
+        Assert.False(sequence.IsCompleted);
+        tx.OnSend = null;
+        release.Set();
+        await sequence;
     }
 
     [Fact]

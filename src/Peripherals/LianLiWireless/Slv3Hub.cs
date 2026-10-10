@@ -2400,35 +2400,48 @@ public sealed class Slv3Hub : IDisposable
 
     /// <summary>
     /// System suspend: SaveCfg repeated at MasterDevice.SaveConfig's cadence so the
-    /// bindings reach device flash before power drops. The first send goes out before
-    /// this returns, with a bounded wait for the hub lock; the remaining sends run on
-    /// the returned background task, best effort. The lock is never held across a
-    /// wait, a send that finds it busy is skipped, and a down link or disposed hub
-    /// ends the sequence at once.
+    /// bindings reach device flash before power drops. The whole sequence runs on the
+    /// returned background task; the call waits only for the first attempt, and at
+    /// most <see cref="SuspendFirstSendCapMs"/>, so a stuck write cannot hold the
+    /// caller. The lock is never held across a wait, a send that finds it busy is
+    /// skipped, and a down link or disposed hub ends the sequence at once.
     /// </summary>
     public Task OnSystemSuspending()
     {
-        var first = TrySuspendSaveCfg(1);
-        if (first == SuspendSend.Down)
+        if (_disposed || !IsConnected)
         {
             return Task.CompletedTask;
         }
-        return Task.Run(() =>
+        var firstAttempted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var sequence = Task.Run(() =>
         {
-            var sent = first == SuspendSend.Sent ? 1 : 0;
-            for (var i = 2; i <= SuspendSaveCfgSends; i++)
+            var sent = 0;
+            try
             {
-                // Gap between tries per MasterDevice.SaveConfig, outside the lock.
-                SleepMs(SuspendSaveCfgGapMs);
-                var result = TrySuspendSaveCfg(i);
-                if (result == SuspendSend.Down)
+                for (var i = 1; i <= SuspendSaveCfgSends; i++)
                 {
-                    break;
+                    if (i > 1)
+                    {
+                        // Gap between tries per MasterDevice.SaveConfig, outside the lock.
+                        SleepMs(SuspendSaveCfgGapMs);
+                    }
+                    var result = TrySuspendSaveCfg(i);
+                    firstAttempted.TrySetResult();
+                    if (result == SuspendSend.Down)
+                    {
+                        return;
+                    }
+                    sent += result == SuspendSend.Sent ? 1 : 0;
                 }
-                sent += result == SuspendSend.Sent ? 1 : 0;
+                ServiceLog.Info($"[lianli-wireless] suspend SaveCfg sent {sent}/{SuspendSaveCfgSends}");
             }
-            ServiceLog.Info($"[lianli-wireless] suspend SaveCfg sent {sent}/{SuspendSaveCfgSends}");
+            finally
+            {
+                firstAttempted.TrySetResult();
+            }
         });
+        firstAttempted.Task.Wait(SuspendFirstSendCapMs);
+        return sequence;
     }
 
     private enum SuspendSend { Sent, Skipped, Failed, Down }
@@ -2454,7 +2467,12 @@ public sealed class Slv3Hub : IDisposable
         }
     }
 
-    internal int SuspendLockWaitMs { get; init; } = 300;
+    // One lock wait, one TX write timeout (the transport's pipe timeout) and a margin.
+    private const int SuspendLockWaitDefaultMs = 300;
+    private const int SuspendWriteTimeoutMs = 500;
+    private const int SuspendCapMarginMs = 100;
+    internal int SuspendLockWaitMs { get; init; } = SuspendLockWaitDefaultMs;
+    internal int SuspendFirstSendCapMs { get; init; } = SuspendLockWaitDefaultMs + SuspendWriteTimeoutMs + SuspendCapMarginMs;
     private const int SuspendSaveCfgSends = 3;
     private const int SuspendSaveCfgGapMs = 200;
 

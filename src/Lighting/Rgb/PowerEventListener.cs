@@ -74,12 +74,12 @@ public sealed class PowerEventListener : IHostedService, IDisposable
         // returns, so a blackout dispatched to the thread pool loses the race,
         // while a resume has no deadline. OnSuspending is budget-capped so it
         // cannot hold this shared pump thread open. The Lian Li wireless SaveCfg
-        // follows the blackout: its first send inline, its retries in the background.
+        // follows the blackout: the pump waits only for its first attempt, capped.
         if (e.Mode == PowerModes.Suspend)
         {
             _blackout.OnSuspending();
-            // The first SaveCfg goes out inline after the blackout, bounded by a short lock wait and one
-            // write timeout; the hub runs the retries on a background task this pump does not wait on.
+            // The SaveCfg sequence runs on a hub background task; this pump waits only for its first
+            // attempt, hard-capped by the hub, so a stuck USB write cannot hold it.
             try { _ = _slv3?.OnSystemSuspending(); }
             catch (Exception ex) { ServiceLog.Warn($"[lianli-wireless] suspend SaveCfg failed: {ex.Message}"); }
         }
