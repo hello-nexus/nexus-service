@@ -1780,7 +1780,7 @@ public sealed class Slv3Hub : IDisposable
             return;
         }
         // Slots are picked from a live device list only: a recovering link
-        // restarts the settle, a tick without a fresh GetDev sends nothing.
+        // restarts the settle, and a pass sends only after a GetDev succeeded since the last one.
         if (_tx is not { IsOpen: true } || _rx is not { IsOpen: true } || State.LinkStatus != Slv3LinkStatus.Ok)
         {
             _rescueStartMs = -1;
