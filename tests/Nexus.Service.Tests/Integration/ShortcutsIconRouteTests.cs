@@ -48,11 +48,11 @@ public sealed class ShortcutsIconRouteTests : IDisposable
 
     private sealed class FakeShortcutsProvider : IShortcutsProvider
     {
-        public byte[] IconBytes = Array.Empty<byte>();
+        public byte[]? IconBytes = Array.Empty<byte>();
 
         public IReadOnlyList<Shortcut> GetAll() => Array.Empty<Shortcut>();
         public Shortcut? GetById(string targetId) => null;
-        public byte[] GetIcon(string targetId) => IconBytes;
+        public byte[]? GetIcon(string targetId) => IconBytes;
         public bool Launch(string targetId) => false;
         public string ResolveProcessName(string targetId) => "";
     }
@@ -73,6 +73,16 @@ public sealed class ShortcutsIconRouteTests : IDisposable
         var res = await Client().GetAsync("/shortcuts/icon?targetId=missing-app");
 
         Assert.Equal(HttpStatusCode.NotFound, res.StatusCode);
+    }
+
+    [Fact]
+    public async Task ExtractionUnavailable_Is503_Not404()
+    {
+        _shortcuts.IconBytes = null;
+
+        var res = await Client().GetAsync("/shortcuts/icon?targetId=app-1");
+
+        Assert.Equal(HttpStatusCode.ServiceUnavailable, res.StatusCode);
     }
 
     [Fact]

@@ -87,7 +87,8 @@ public interface IShortcutsProvider
 {
     IReadOnlyList<Shortcut> GetAll();
     Shortcut? GetById(string targetId);
-    byte[] GetIcon(string targetId);
+    /// <summary>Null when extraction could not run (Windows helper not connected, RPC failed), which is transient; empty when it ran and found no icon.</summary>
+    byte[]? GetIcon(string targetId);
     bool Launch(string targetId);
 
     /// <summary>Process name (no extension) the shortcut's executable runs

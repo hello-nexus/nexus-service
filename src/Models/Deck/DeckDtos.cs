@@ -108,7 +108,7 @@ public sealed class UpdateDeckInstanceRequest
 public sealed class DeckChangedFrame
 {
     public long Revision { get; set; }
-    /// <summary>"preset" | "presets" | "active" | "recents".</summary>
+    /// <summary>"preset" | "presets" | "active" | "recents" | "icons" (the helper connected; refetch missing app icons, no other fields).</summary>
     public string Kind { get; set; } = "";
     /// <summary>preset.</summary>
     public string? PresetId { get; set; }

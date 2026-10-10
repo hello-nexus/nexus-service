@@ -26,7 +26,7 @@ public sealed class HelperShortcutsProxy : IShortcutsProvider
     public Shortcut? GetById(string targetId)
         => ShortcutsCommands.GetByIdAsync(_registry, targetId).GetAwaiter().GetResult();
 
-    public byte[] GetIcon(string targetId)
+    public byte[]? GetIcon(string targetId)
         => ShortcutsCommands.GetIconAsync(_registry, targetId).GetAwaiter().GetResult();
 
     public bool Launch(string targetId)

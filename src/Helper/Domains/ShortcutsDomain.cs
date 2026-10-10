@@ -34,9 +34,16 @@ public static class ShortcutsCommands
     public static async Task<Shortcut?> GetByIdAsync(HelperRegistry r, string id, CancellationToken ct = default)
         => Read(await InvokeAsync(r, "shortcuts.getById", new ShortcutsRequest { TargetId = id }, ct), AppJsonContext.Default.ShortcutOneResult)?.Shortcut;
 
-    public static async Task<byte[]> GetIconAsync(HelperRegistry r, string id, CancellationToken ct = default)
-        => Read(await InvokeAsync(r, "shortcuts.icon", new ShortcutsRequest { TargetId = id }, ct), AppJsonContext.Default.ShortcutIconResult)?.Bytes
-           ?? Array.Empty<byte>();
+    /// <summary>Null when the helper is not connected or the round trip failed; empty when it ran extraction and found no icon.</summary>
+    public static async Task<byte[]?> GetIconAsync(HelperRegistry r, string id, CancellationToken ct = default)
+    {
+        var result = await InvokeAsync(r, "shortcuts.icon", new ShortcutsRequest { TargetId = id }, ct);
+        if (result is null || !result.Ok)
+        {
+            return null;
+        }
+        return Read(result, AppJsonContext.Default.ShortcutIconResult)?.Bytes ?? Array.Empty<byte>();
+    }
 
     public static async Task<bool> LaunchAsync(HelperRegistry r, string id, CancellationToken ct = default)
         => Read(await InvokeAsync(r, "shortcuts.launch", new ShortcutsRequest { TargetId = id }, ct), AppJsonContext.Default.ShortcutBoolResult)?.Ok ?? false;
@@ -79,7 +86,7 @@ public sealed class ShortcutsHandler
         registry.Register("shortcuts.getById", (env, _) => Reply(env,
             new ShortcutOneResult { Shortcut = _provider.GetById(ReadReq(env).TargetId) }, AppJsonContext.Default.ShortcutOneResult));
         registry.Register("shortcuts.icon", (env, _) => Reply(env,
-            new ShortcutIconResult { Bytes = _provider.GetIcon(ReadReq(env).TargetId) }, AppJsonContext.Default.ShortcutIconResult));
+            new ShortcutIconResult { Bytes = _provider.GetIcon(ReadReq(env).TargetId) ?? Array.Empty<byte>() }, AppJsonContext.Default.ShortcutIconResult));
         registry.Register("shortcuts.launch", (env, _) => Reply(env,
             new ShortcutBoolResult { Ok = _provider.Launch(ReadReq(env).TargetId) }, AppJsonContext.Default.ShortcutBoolResult));
         registry.Register("shortcuts.processName", (env, _) => Reply(env,

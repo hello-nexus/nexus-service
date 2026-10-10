@@ -891,10 +891,16 @@ public static class NexusServiceCollectionExtensions
                 recentAppsActivator: sp.GetRequiredService<Nexus.Service.Deck.RecentAppsActivator>(),
                 dialValues: sp.GetRequiredService<Nexus.Service.Deck.IDeckDialValues>());
 #if WINDOWS
-            // App icons come from the user-session helper; keys painted before
-            // it connects carry the generic fallback until this repaint.
+            // App icons come from the user-session helper; keys painted and
+            // Deck widget icons fetched before it connects carry the generic
+            // fallback until this repaint and the "icons" refetch.
             var helperRegistry = sp.GetService<Nexus.Service.Helper.HelperRegistry>();
-            helperRegistry?.Connected += _ => worker.OnHelperConnected();
+            var deckHub = sp.GetRequiredService<Nexus.Service.Sockets.MultiplexHub>();
+            helperRegistry?.Connected += _ =>
+            {
+                worker.OnHelperConnected();
+                Nexus.Service.Sockets.PanelTopics.BroadcastDeck(deckHub, new Nexus.Service.Models.Deck.DeckChangedFrame { Kind = "icons" });
+            };
 #endif
             return worker;
         });

@@ -151,6 +151,11 @@ public static class ActivityRoutes
             }
 
             var bytes = s.GetIcon(targetId);
+            if (bytes is null)
+            {
+                // The panel settles on a 404 and retries a 503.
+                return Results.StatusCode(StatusCodes.Status503ServiceUnavailable);
+            }
             if (bytes.Length == 0)
             {
                 return Results.NotFound();
