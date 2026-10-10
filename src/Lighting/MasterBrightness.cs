@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using Nexus.Service.Lighting.IdleDim;
 using Nexus.Service.Persistence;
 
 namespace Nexus.Service.Lighting;
@@ -7,21 +8,25 @@ namespace Nexus.Service.Lighting;
 /// <summary>
 /// The master brightness every frame writer caps its LEDs with: the slider
 /// (<see cref="LightingSettings.GlobalBrightness"/>) capped again by the
-/// time-of-day schedule while that is on. One evaluation site, so the schedule
-/// reaches every device family the same way the slider does.
+/// time-of-day schedule while that is on and by the idle-dim ramp while the PC
+/// is idle. One evaluation site, so each cap reaches every device family the
+/// same way the slider does.
 /// </summary>
 public static class MasterBrightness
 {
+    /// <summary>The idle-dim cap every frame writer reads; the controller ramps it.</summary>
+    public static readonly IdleDimRamp IdleRamp = new();
+
     /// <summary>Effective master level, 0..1, for the local clock right now.</summary>
     public static float Effective(LightingSettings lighting) =>
-        Effective(lighting, DateTime.Now.TimeOfDay);
+        Effective(lighting, DateTime.Now.TimeOfDay, IdleRamp.Cap());
 
     /// <summary>Effective master level, 0..1, at <paramref name="timeOfDay"/>.
     /// The slider is clamped, not sanitised: a non-finite level propagates,
     /// which the POST route guards against upstream.</summary>
-    public static float Effective(LightingSettings lighting, TimeSpan timeOfDay)
+    public static float Effective(LightingSettings lighting, TimeSpan timeOfDay, float idleCap = 1f)
     {
-        var global = Math.Clamp(lighting.GlobalBrightness, 0f, 1f);
+        var global = Math.Min(Math.Clamp(lighting.GlobalBrightness, 0f, 1f), idleCap);
         var schedule = lighting.BrightnessSchedule;
         if (schedule is null || !schedule.Enabled)
         {

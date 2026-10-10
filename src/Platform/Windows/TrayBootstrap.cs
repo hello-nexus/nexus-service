@@ -508,6 +508,37 @@ internal static class TrayBootstrap
             };
         }
 
+        // Idle dim: the helper reads session idle time and the user's display
+        // state (the Session 0 service can read neither) while it is armed.
+        var idleDim = app.Services.GetService<Nexus.Service.Lighting.IdleDim.IdleDimController>();
+        if (idleDim is not null)
+        {
+            var idleWatch = new Nexus.Service.Platform.Windows.HelperIdleDimWatch(helperRegistry);
+            idleDim.Watch = idleWatch;
+            // The push is dropped when no helper is connected; re-assert on connect.
+            helperRegistry.Connected += _ =>
+            {
+                if (idleWatch.Armed) idleWatch.Push();
+            };
+            helperRegistry.InboundEnvelope += (_, env) =>
+            {
+                try
+                {
+                    if (env.Type == Nexus.Service.Helper.Domains.IdleDimCommands.IdleStateType && env.Payload is not null)
+                    {
+                        var p = System.Text.Json.JsonSerializer.Deserialize(env.Payload.Value, Nexus.Service.Serialization.AppJsonContext.Default.IdleStatePayload);
+                        if (p is not null) idleDim.OnInputIdle(p.Idle);
+                    }
+                    else if (env.Type == Nexus.Service.Helper.Domains.IdleDimCommands.DisplayStateType && env.Payload is not null)
+                    {
+                        var p = System.Text.Json.JsonSerializer.Deserialize(env.Payload.Value, Nexus.Service.Serialization.AppJsonContext.Default.DisplayStatePayload);
+                        if (p is not null) idleDim.OnDisplayOff(p.Off);
+                    }
+                }
+                catch (Exception ex) { Console.Error.WriteLine($"[idle-dim] envelope failed: {ex.Message}"); }
+            };
+        }
+
         // Key reactions: the helper's Raw Input watcher runs only while some
         // keyboard has reactions on. Re-asserted on connect, like the lock watch.
         var keyReactive = app.Services.GetService<Nexus.Service.Lighting.KeyReactive.KeyReactiveOverlay>();

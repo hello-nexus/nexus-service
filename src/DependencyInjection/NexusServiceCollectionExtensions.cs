@@ -626,6 +626,12 @@ public static class NexusServiceCollectionExtensions
             sp.GetService<Nexus.Service.Lighting.Rgb.RgbBridge>(),
             sp.GetRequiredService<Nexus.Service.Lifecycle.FeatureGates>()));
 
+        // Idle dim: the ramp is the one MasterBrightness reads on every frame;
+        // the platform bootstrap binds the controller's watch.
+        services.AddSingleton(Nexus.Service.Lighting.MasterBrightness.IdleRamp);
+        services.AddSingleton<Nexus.Service.Lighting.IdleDim.IdleDimController>();
+        services.AddHostedService<Nexus.Service.Lighting.IdleDim.IdleDimHost>();
+
         if (OperatingSystem.IsWindows())
             services.AddHostedService<Nexus.Service.Lighting.Rgb.PowerEventListener>();
 
@@ -2282,6 +2288,7 @@ public static class NexusServiceCollectionExtensions
         services.AddSingleton<Nexus.Service.Platform.Linux.DBus.DBusConnection>();
         services.AddHostedService<Nexus.Service.Platform.Linux.LinuxTrayService>();
         services.AddHostedService<Nexus.Service.Platform.Linux.LinuxResumeListener>();
+        services.AddHostedService<Nexus.Service.Platform.Linux.LinuxIdleDimWatch>();
 #endif
         return services;
     }

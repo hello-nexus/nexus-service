@@ -66,6 +66,27 @@ public sealed class BrightnessScheduleBody
     public List<Nexus.Service.Persistence.BrightnessSchedulePoint>? Defaults { get; set; }
 }
 
+/// <summary>POST body for /lighting/idle-dim. TimeoutSeconds 0 means "when my
+/// screen turns off"; otherwise 60..86400. Level is a percent, clamped.</summary>
+public sealed class IdleDimBody
+{
+    public bool Enabled { get; set; }
+    public int TimeoutSeconds { get; set; }
+    public int Level { get; set; } = 10;
+}
+
+/// <summary>GET response for /lighting/idle-dim. OsScreenOffSeconds is the OS
+/// screen-off timeout for the active power source: 0 is Never, null unreadable.</summary>
+public sealed class IdleDimStatus
+{
+    public bool Enabled { get; set; }
+    public int TimeoutSeconds { get; set; }
+    public int Level { get; set; }
+    public bool Supported { get; set; }
+    public bool ScreenOffSupported { get; set; }
+    public int? OsScreenOffSeconds { get; set; }
+}
+
 /// <summary>GET response / POST body for /lighting/render-gpu. "auto" or a GPU
 /// model name (matches GpuReadout.Name). Restart-to-apply.</summary>
 public class RenderGpuBody

@@ -363,6 +363,14 @@ public sealed class DBusReader
         return v;
     }
 
+    public ulong ReadUInt64()
+    {
+        AlignTo(8);
+        var v = BitConverter.ToUInt64(_data, _pos);
+        _pos += 8;
+        return v;
+    }
+
     public bool ReadBool() => ReadUInt32() != 0;
 
     public string ReadString()
