@@ -57,7 +57,9 @@ public static partial class DevicesRoutes
                     await file.CopyToAsync(stream);
                 }
 
-                var result = await library.ImportAsync(tempPath, file.FileName);
+                // A missing or unparseable crop falls back to a centre square, not an error.
+                CropRect? crop = CropRect.TryParse(form["crop"].ToString(), out var c) ? c : null;
+                var result = await library.ImportAsync(tempPath, file.FileName, crop);
                 if (!result.Ok)
                 {
                     return Results.Json(

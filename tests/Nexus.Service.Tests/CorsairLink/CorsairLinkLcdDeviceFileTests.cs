@@ -104,8 +104,21 @@ public class CorsairLinkLcdDeviceFileTests
         var file = CorsairLinkLcdDeviceFile.Build(frames, 40)!;
 
         Assert.True(file.Length <= CorsairLinkLcdDeviceFile.MaxFileBytes);
+        // 40 frames of 100 KB need every 2nd frame to fit; a third of them would not be needed.
         Assert.Equal(20, BinaryPrimitives.ReadUInt16LittleEndian(file.AsSpan(5)));
         Assert.Equal(80, BinaryPrimitives.ReadUInt16LittleEndian(file.AsSpan(7)));
+    }
+
+    [Fact]
+    public void Build_takes_the_smallest_stride_that_fits()
+    {
+        // Every second frame is still too large; every third fits.
+        var frames = Enumerable.Range(0, 90).Select(i => Jpeg(90_000, (byte)i)).ToList();
+
+        var file = CorsairLinkLcdDeviceFile.Build(frames, 50)!;
+
+        Assert.Equal(30, BinaryPrimitives.ReadUInt16LittleEndian(file.AsSpan(5)));
+        Assert.Equal(150, BinaryPrimitives.ReadUInt16LittleEndian(file.AsSpan(7)));
     }
 
     [Fact]
@@ -142,5 +155,24 @@ public class CorsairLinkLcdDeviceFileTests
         Assert.Equal(CorsairLinkLcdDeviceFile.StillFrameMs, CorsairLinkLcdDeviceFile.FrameMs(Array.Empty<int>(), 1));
         Assert.Equal(40, CorsairLinkLcdDeviceFile.FrameMs(new[] { 30, 40, 40, 500 }, 4));
         Assert.Equal(100, CorsairLinkLcdDeviceFile.FrameMs(new[] { 0, 0 }, 2));
+    }
+}
+
+public class CorsairLinkLcdImportFilterTests
+{
+    [Fact]
+    public void An_uncropped_source_is_centre_cropped_to_a_square_not_stretched()
+    {
+        Assert.Equal("crop='min(iw,ih)':'min(iw,ih)',scale=480:480", CorsairLinkLcdMediaLibrary.ImportFilter(null, video: false));
+    }
+
+    [Fact]
+    public void A_cropper_rect_is_applied_and_video_is_sampled()
+    {
+        var crop = new Nexus.Service.Media.CropRect(0.25, 0, 0.5, 1);
+
+        Assert.Equal(
+            $"crop=iw*0.5:ih*1:iw*0.25:ih*0,fps={CorsairLinkLcdMediaLibrary.VideoFps},scale=480:480",
+            CorsairLinkLcdMediaLibrary.ImportFilter(crop, video: true));
     }
 }

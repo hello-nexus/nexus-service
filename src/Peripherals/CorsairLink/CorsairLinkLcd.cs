@@ -56,6 +56,9 @@ public sealed class CorsairLinkLcd
     /// <summary>True when a usable LCD HID device is open.</summary>
     public bool HasDevice => _attached;
 
+    /// <summary>True when the open screen is the AIO pump LCD, not the XD5's.</summary>
+    public bool IsAioLcd => _device?.ProductId == AioPid;
+
     /// <summary>Chain serial of the attached LCD, or null when nothing is attached.</summary>
     public string? Serial => _serial;
 

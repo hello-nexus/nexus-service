@@ -41,22 +41,24 @@ public static class CorsairLinkLcdDeviceFile
     internal const int DefaultFrameMs = 100;
 
     /// <summary>
-    /// Builds the stored file from 480x480 baseline JPEG frames, dropping every other frame
-    /// (and doubling the frame time to keep the speed) until it fits. Null when even one
+    /// Builds the stored file from 480x480 baseline JPEG frames, keeping every n-th frame for
+    /// the smallest n that fits (frame time scaled by n to keep the speed). Null when even one
     /// frame does not fit.
     /// </summary>
     public static byte[]? Build(IReadOnlyList<byte[]> frames, int frameMs)
     {
         if (frames.Count == 0) return null;
-        var kept = new List<byte[]>(frames);
-        while (Size(kept) > MaxFileBytes)
+        List<byte[]> kept;
+        var stride = 1;
+        while (true)
         {
+            kept = new List<byte[]>((frames.Count + stride - 1) / stride);
+            for (var i = 0; i < frames.Count; i += stride) kept.Add(frames[i]);
+            if (Size(kept) <= MaxFileBytes) break;
             if (kept.Count == 1) return null;
-            var thinned = new List<byte[]>((kept.Count + 1) / 2);
-            for (var i = 0; i < kept.Count; i += 2) thinned.Add(kept[i]);
-            kept = thinned;
-            frameMs *= 2;
+            stride++;
         }
+        frameMs *= stride;
 
         var file = new byte[Size(kept)];
         var span = file.AsSpan();

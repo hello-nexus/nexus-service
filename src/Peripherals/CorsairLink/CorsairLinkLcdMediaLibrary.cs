@@ -21,6 +21,15 @@ public sealed class CorsairLinkLcdMediaLibrary
     private static readonly string[] StillExtensions =
         { ".jpg", ".jpeg", ".png", ".bmp", ".webp" };
 
+    // Klipy hands its GIFs over as mp4 clips, so video imports like an animated GIF.
+    private static readonly string[] VideoExtensions = { ".mp4", ".webm", ".mov" };
+
+    internal const int VideoFps = 20;
+
+    // Every frame is held in memory and the cooler's flash keeps a few MB, so a long GIF or
+    // clip is cut.
+    internal const int MaxClipSeconds = 10;
+
     private readonly string _rootDir;
 
     public CorsairLinkLcdMediaLibrary()
@@ -130,11 +139,11 @@ public sealed class CorsairLinkLcdMediaLibrary
     }
 
     /// <summary>
-    /// Imports a still image (JPEG/PNG/BMP/WebP) or animated GIF as 480x480 LCD JPEG frames.
-    /// Uses ffmpeg for conversion. GIF frame delays are parsed from the raw file bytes;
-    /// no C# pixel decoding is performed.
+    /// Imports a still image (JPEG/PNG/BMP/WebP), animated GIF or video clip as 480x480 LCD
+    /// JPEG frames, cut to <paramref name="crop"/> when given. Uses ffmpeg for conversion. GIF
+    /// frame delays are parsed from the raw file bytes; video is sampled at a fixed rate.
     /// </summary>
-    public async Task<LcdImportResult> ImportAsync(string sourcePath, string originalName)
+    public async Task<LcdImportResult> ImportAsync(string sourcePath, string originalName, CropRect? crop = null)
     {
         if (FfmpegResolver.Path is null)
         {
@@ -144,11 +153,13 @@ public sealed class CorsairLinkLcdMediaLibrary
         var ext = Path.GetExtension(originalName).ToLowerInvariant();
         var isStill = Array.Exists(StillExtensions, e => e == ext);
         var isGif = ext == ".gif";
+        var isVideo = Array.Exists(VideoExtensions, e => e == ext);
 
-        if (!isStill && !isGif)
+        if (!isStill && !isGif && !isVideo)
         {
-            return LcdImportResult.Failure("Unsupported format. Use JPEG, PNG, BMP, WebP, or GIF.");
+            return LcdImportResult.Failure("Unsupported format. Use JPEG, PNG, BMP, WebP, GIF, or MP4.");
         }
+        var filter = ImportFilter(crop, isVideo);
 
         var baseName = Path.GetFileNameWithoutExtension(originalName);
         var id = MediaImporter.SanitizeId($"{DateTimeOffset.UtcNow.ToUnixTimeMilliseconds():x}-{baseName}");
@@ -162,7 +173,7 @@ public sealed class CorsairLinkLcdMediaLibrary
             {
                 await MediaImporter.RunFfmpeg(
                     "-y", "-i", sourcePath,
-                    "-vf", "scale=480:480",
+                    "-vf", filter,
                     // The LCD decodes only 4:2:0 JPEG; ffmpeg keeps an RGB source at 4:4:4.
                     "-pix_fmt", "yuvj420p",
                     "-frames:v", "1",
@@ -173,7 +184,8 @@ public sealed class CorsairLinkLcdMediaLibrary
             {
                 await MediaImporter.RunFfmpeg(
                     "-y", "-i", sourcePath,
-                    "-vf", "scale=480:480",
+                    "-t", MaxClipSeconds.ToString(System.Globalization.CultureInfo.InvariantCulture),
+                    "-vf", filter,
                     // The LCD decodes only 4:2:0 JPEG; ffmpeg keeps an RGB source at 4:4:4.
                     "-pix_fmt", "yuvj420p",
                     "-vsync", "0",
@@ -196,6 +208,11 @@ public sealed class CorsairLinkLcdMediaLibrary
                 var gifBytes = await File.ReadAllBytesAsync(sourcePath).ConfigureAwait(false);
                 delays = ParseGifFrameDelays(gifBytes);
             }
+            else if (isVideo)
+            {
+                delays = new int[frameCount];
+                Array.Fill(delays, 1000 / VideoFps);
+            }
 
             var item = new LcdMediaItem
             {
@@ -215,6 +232,16 @@ public sealed class CorsairLinkLcdMediaLibrary
             try { Directory.Delete(dir, recursive: true); } catch { }
             return LcdImportResult.Failure(ex.Message);
         }
+    }
+
+    /// <summary>
+    /// The glass is a circle in a square frame: a source is cut to the cropper's square, or
+    /// centre-cropped to one when no crop came with it, and never stretched.
+    /// </summary>
+    internal static string ImportFilter(CropRect? crop, bool video)
+    {
+        var cut = crop is { IsIdentity: false } c ? c.ToFfmpegCrop() : "crop='min(iw,ih)':'min(iw,ih)'";
+        return video ? $"{cut},fps={VideoFps},scale=480:480" : $"{cut},scale=480:480";
     }
 
     private static int CountFrameFiles(string dir)

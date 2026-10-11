@@ -116,7 +116,8 @@ public sealed class CorsairLinkLcdWorker : BackgroundService
                 }
 
                 var image = _loadedImage;
-                await StreamImageAsync(image, mem => _lcd.SendFrame(mem.Span), ct).ConfigureAwait(false);
+                var stillResendMs = _lcd.IsAioLcd ? AioStillResendMs : Xd5StillResendMs;
+                await StreamImageAsync(image, mem => _lcd.SendFrame(mem.Span), ct, stillResendMs).ConfigureAwait(false);
             }
             catch (OperationCanceledException)
             {
@@ -130,29 +131,42 @@ public sealed class CorsairLinkLcdWorker : BackgroundService
         }
     }
 
+    // The AIO LCD holds a frame 30-40 s before its own screen takes over, so a still
+    // re-sent faster only floods the pipe. The XD5 LCD's hold was never measured and keeps
+    // OpenLinkHub's re-send (lsh.go:5071).
+    internal const int AioStillResendMs = 1000;
+    internal const int Xd5StillResendMs = 10;
+
+    // Frames sent back to back fill the LCD's buffer and stall a chunk for hundreds of ms;
+    // this gap between frames measured clean (TITAN RX LCD).
+    internal const int MinFrameGapMs = 25;
+
     /// <summary>
-    /// Executes one image display cycle. Static images send one frame followed by
-    /// the hardware keep-alive delay (lsh.go:5071). Animated images send all frames
-    /// in order, each followed by its GIF delay clamped to the 10ms minimum.
+    /// Executes one image display cycle. A still sends one frame and waits
+    /// <paramref name="stillResendMs"/>; an animation sends every frame, each holding its
+    /// delay minus the time the send took.
     /// </summary>
     internal static async Task StreamImageAsync(
         LcdImageData image,
         Action<ReadOnlyMemory<byte>> sendFrame,
-        CancellationToken ct)
+        CancellationToken ct,
+        int stillResendMs = AioStillResendMs)
     {
         if (image.Frames.Length == 1)
         {
             sendFrame(image.Frames[0].JpegBytes);
-            // Firmware clears the panel if frames stop arriving; 10ms matches lsh.go:5071.
-            await Task.Delay(10, ct).ConfigureAwait(false);
+            await Task.Delay(stillResendMs, ct).ConfigureAwait(false);
             return;
         }
 
         foreach (var frame in image.Frames)
         {
             if (ct.IsCancellationRequested) break;
+            // The send itself takes tens of ms for a large frame; it counts toward the frame's time.
+            var started = System.Diagnostics.Stopwatch.GetTimestamp();
             sendFrame(frame.JpegBytes);
-            await Task.Delay(Math.Max(10, frame.DelayMs), ct).ConfigureAwait(false);
+            var sendMs = (int)System.Diagnostics.Stopwatch.GetElapsedTime(started).TotalMilliseconds;
+            await Task.Delay(Math.Max(MinFrameGapMs, frame.DelayMs - sendMs), ct).ConfigureAwait(false);
         }
     }
 }
