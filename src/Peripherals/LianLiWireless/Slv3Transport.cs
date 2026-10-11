@@ -91,6 +91,9 @@ public sealed class Slv3Transport : ISlv3Transport
     // fewer, and the read of the missing one then runs to this timeout, so it
     // is L-Connect's short one (Y70 USBPcap 2026-09-04).
     private const uint RxPipeTimeoutMs = 100;
+    private const uint DrainTimeoutMs = 5;
+    private const int MaxDrainPackets = 16;
+    private const long DrainLogIntervalMs = 60_000;
 
     private readonly Microsoft.Win32.SafeHandles.SafeFileHandle _fileHandle;
     private readonly IntPtr _winUsbHandle;
@@ -99,6 +102,8 @@ public sealed class Slv3Transport : ISlv3Transport
     private readonly object _ioLock = new();
     private bool _disposed;
     private bool _dead;
+    private int _drainedUnlogged;
+    private long _nextDrainLogMs;
 
     public Slv3Transport(string devicePath, Slv3DongleRole role)
     {
@@ -164,6 +169,7 @@ public sealed class Slv3Transport : ISlv3Transport
                 // packet) would otherwise head the next reply and fail its
                 // command-echo check. L-Connect flushes before every poll.
                 Slv3WinUsbInterop.WinUsb_FlushPipe(_winUsbHandle, Slv3Protocol.ReadPipeId);
+                DrainRxLocked();
             }
             if (Slv3WinUsbInterop.WinUsb_WritePipe(
                 _winUsbHandle, Slv3Protocol.WritePipeId, buffer, (uint)buffer.Length, out _, IntPtr.Zero))
@@ -182,6 +188,44 @@ public sealed class Slv3Transport : ISlv3Transport
                     $"[lianli-wireless] TX write failed ({err}), reopening it");
             }
             return false;
+        }
+    }
+
+    // FlushPipe drops only what WinUSB buffered; packets a cut-short read left
+    // on the dongle stay queued and would head every later reply, so read them
+    // off first (LinuxSlv3Transport and L-Connect's ReadAll drain the same way).
+    private void DrainRxLocked()
+    {
+        var timeout = DrainTimeoutMs;
+        if (!Slv3WinUsbInterop.WinUsb_SetPipePolicy(_winUsbHandle, Slv3Protocol.ReadPipeId,
+            Slv3WinUsbInterop.PIPE_TRANSFER_TIMEOUT, sizeof(uint), ref timeout))
+        {
+            return;
+        }
+        var stale = new byte[Slv3Protocol.UsbPacketSize];
+        var drained = 0;
+        while (drained < MaxDrainPackets
+            && Slv3WinUsbInterop.WinUsb_ReadPipe(_winUsbHandle, Slv3Protocol.ReadPipeId, stale, (uint)stale.Length, out var read, IntPtr.Zero)
+            && read > 0)
+        {
+            drained++;
+        }
+        timeout = RxPipeTimeoutMs;
+        if (!Slv3WinUsbInterop.WinUsb_SetPipePolicy(_winUsbHandle, Slv3Protocol.ReadPipeId,
+            Slv3WinUsbInterop.PIPE_TRANSFER_TIMEOUT, sizeof(uint), ref timeout) && !_dead)
+        {
+            // Reads would keep the drain timeout and cut pages short; a reopen restores the policy.
+            _dead = true;
+            Nexus.Service.Platform.ServiceLog.Warn(
+                $"[lianli-wireless] SetPipePolicy (read timeout restore) failed for {PortName}: {Marshal.GetLastWin32Error()}, reopening it");
+        }
+        _drainedUnlogged += drained;
+        var nowMs = Environment.TickCount64;
+        if (_drainedUnlogged > 0 && nowMs >= _nextDrainLogMs)
+        {
+            Nexus.Service.Platform.ServiceLog.Info($"[lianli-wireless] RX drained {_drainedUnlogged} stale packet(s) before requests");
+            _drainedUnlogged = 0;
+            _nextDrainLogMs = nowMs + DrainLogIntervalMs;
         }
     }
 

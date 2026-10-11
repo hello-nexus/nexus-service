@@ -134,9 +134,17 @@ public sealed class Slv3Hub : IDisposable
 
     // A chain unseen this long is treated as gone (powered off / out of range)
     // and dropped; until then it stays listed so downstream devices are stable.
+    // Only time the RX was answering counts: a busy, failing or closed RX can
+    // not see anyone, while the TX keeps driving the chains.
     private const long ChainExpiryMs = 30_000;
     // Unseen this long = telemetry is last-known, surfaced as Stale.
     private const long ChainStaleMs = 3_500;
+    private long? _blindSinceMs;
+    private long _blindTotalMs;
+    // PWM frames to a chain whose record cannot confirm them (RX blind, or the
+    // chain absent from the last list) repeat a target only this often.
+    private const long UnconfirmedPwmResendMs = 5_000;
+    private readonly Dictionary<string, (byte[] Pwm, long SentMs)> _unconfirmedPwm = new(StringComparer.Ordinal);
 
     // GetDev failure escalation (L-Connect MasterDevice.ResetRx): consecutive
     // RX failures -> UsbResetAnother written on the TX handle, which resets the
@@ -366,6 +374,9 @@ public sealed class Slv3Hub : IDisposable
         _txAbsentSinceMs = 0;
         _nextRxOpenMs = 0;
         _rxOpenFailures = 0;
+        _blindSinceMs = null;
+        _blindTotalMs = 0;
+        _unconfirmedPwm.Clear();
         foreach (var control in _aioControl.Values)
         {
             control.Switched = false;
@@ -1051,10 +1062,27 @@ public sealed class Slv3Hub : IDisposable
                 continue;
             }
             var pwm = Slv3Protocol.BuildPwmTuple(targets, record.FanCount, record.Family);
-            if (Slv3Protocol.NeedSyncPwm(record.Pwm, pwm))
+            if (!Slv3Protocol.NeedSyncPwm(record.Pwm, pwm))
             {
-                SendBindFrameLocked(record, record.RxType, unbind: false);
+                _unconfirmedPwm.Remove(key);
+                continue;
             }
+            var confirmable = _blindSinceMs is null && _knownChains.TryGetValue(key, out var chain) && chain.Poll == _devicePolls;
+            if (confirmable)
+            {
+                _unconfirmedPwm.Remove(key);
+            }
+            else
+            {
+                var nowMs = _nowMs();
+                if (_unconfirmedPwm.TryGetValue(key, out var sent) && sent.Pwm.AsSpan().SequenceEqual(pwm)
+                    && nowMs - sent.SentMs < UnconfirmedPwmResendMs)
+                {
+                    continue;
+                }
+                _unconfirmedPwm[key] = (pwm, nowMs);
+            }
+            SendBindFrameLocked(record, record.RxType, unbind: false);
         }
     }
 
@@ -1393,6 +1421,11 @@ public sealed class Slv3Hub : IDisposable
 
         var count = Slv3Protocol.RecordCount(reply);
         var nowMs = _nowMs();
+        if (_blindSinceMs is { } blindSince)
+        {
+            _blindTotalMs += nowMs - blindSince;
+            _blindSinceMs = null;
+        }
         _devicePolls++;
         for (var i = 0; i < count; i++)
         {
@@ -1428,7 +1461,7 @@ public sealed class Slv3Hub : IDisposable
                     ServiceLog.Info(line);
                 }
                 var sightings = (_knownChains.TryGetValue(key, out var prior) ? prior.Sightings : 0) + 1;
-                _knownChains[key] = new Slv3KnownChain(record, nowMs, _devicePolls, sightings);
+                _knownChains[key] = new Slv3KnownChain(record, nowMs, _devicePolls, sightings, _blindTotalMs);
             }
         }
 
@@ -1441,9 +1474,9 @@ public sealed class Slv3Hub : IDisposable
         return true;
     }
 
-    // Chains age on their own timers whether or not the RX answered.
     private void ExpireChainsLocked(long nowMs)
     {
+        var blindMs = _blindTotalMs + (_blindSinceMs is { } since ? nowMs - since : 0);
         List<string>? gone = null;
         foreach (var (key, unconfirmed) in _unconfirmedChains)
         {
@@ -1459,7 +1492,7 @@ public sealed class Slv3Hub : IDisposable
         }
         foreach (var (key, chain) in _knownChains)
         {
-            if (nowMs - chain.LastSeenMs > ChainExpiryMs)
+            if (nowMs - chain.LastSeenMs - (blindMs - chain.BlindMsAtSeen) > ChainExpiryMs)
             {
                 (gone ??= new List<string>()).Add(key);
             }
@@ -1473,6 +1506,7 @@ public sealed class Slv3Hub : IDisposable
                 _rebind.Remove(key);
                 _rebindSeen.Remove(key);
                 _bindingLogs.Remove(key);
+                _unconfirmedPwm.Remove(key);
                 if (_aioControl.TryGetValue(key, out var control))
                 {
                     control.Switched = false;
@@ -1482,8 +1516,10 @@ public sealed class Slv3Hub : IDisposable
         }
     }
 
+    // A poll that got no device list from the RX.
     private void AgeChainsLocked(long nowMs)
     {
+        _blindSinceMs ??= nowMs;
         ExpireChainsLocked(nowMs);
         PublishFansLocked(nowMs);
     }
@@ -2628,7 +2664,8 @@ public sealed class Slv3Hub : IDisposable
 
     private readonly record struct Slv3PendingCommand(byte[] Mac, byte RfCmd, byte TargetSeq, int SendsRemaining, byte Arg = 0);
 
-    private readonly record struct Slv3KnownChain(Slv3DeviceRecord Record, long LastSeenMs, long Poll, int Sightings);
+    // BlindMsAtSeen = the hub's blind total at that sighting, so expiry can leave out later blind time.
+    private readonly record struct Slv3KnownChain(Slv3DeviceRecord Record, long LastSeenMs, long Poll, int Sightings, long BlindMsAtSeen);
 
     private readonly record struct Slv3Unconfirmed(long FirstPoll, long LastPoll, int Sightings);
 

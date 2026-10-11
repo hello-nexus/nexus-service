@@ -2117,6 +2117,88 @@ public class Slv3HubTests
     }
 
     [Fact]
+    public void A_busy_spell_past_the_expiry_keeps_the_device_list()
+    {
+        var clock = new ManualClock();
+        var (hub, net, _, rx) = CreateConnectedHub(clock.NowMs);
+        net.Fans.Add(new SimulatedFan { Mac = FanMac });
+        Assert.True(hub.DriveTick());
+
+        rx.BusyReads = true;
+        for (var i = 0; i < 600; i++)
+        {
+            clock.AdvanceMs(500);
+            Assert.True(hub.PollTick());
+        }
+        Assert.True(Assert.Single(hub.State.Fans).Stale);
+
+        rx.BusyReads = false;
+        Assert.True(hub.PollTick());
+        Assert.False(Assert.Single(hub.State.Fans).Stale);
+    }
+
+    [Fact]
+    public void A_chain_absent_after_a_busy_spell_expires_on_answered_time_only()
+    {
+        var clock = new ManualClock();
+        var (hub, net, _, rx) = CreateConnectedHub(clock.NowMs);
+        net.Fans.Add(new SimulatedFan { Mac = FanMac });
+        Assert.True(hub.DriveTick());
+
+        rx.BusyReads = true;
+        clock.AdvanceMs(500);
+        Assert.True(hub.PollTick());
+        clock.AdvanceMs(60_000);
+        Assert.True(hub.PollTick());
+        Assert.Single(hub.State.Fans);
+
+        rx.BusyReads = false;
+        net.Fans.Clear();
+        clock.AdvanceMs(500);
+        Assert.True(hub.PollTick());
+        clock.AdvanceMs(28_000);
+        Assert.True(hub.PollTick());
+        Assert.Single(hub.State.Fans);
+
+        clock.AdvanceMs(2_000);
+        Assert.True(hub.PollTick());
+        Assert.Empty(hub.State.Fans);
+    }
+
+    [Fact]
+    public void A_busy_spell_repeats_a_pwm_target_only_every_few_seconds()
+    {
+        var clock = new ManualClock();
+        var (hub, net, tx, rx) = CreateConnectedHub(clock.NowMs);
+        net.Fans.Add(new SimulatedFan { Mac = FanMac, MasterMac = net.MasterMac, RxType = 1 });
+        Assert.True(hub.DriveTick());
+        Assert.True(hub.DriveTick());
+
+        rx.BusyReads = true;
+        Assert.True(hub.DriveTick());
+        tx.SentFrames.Clear();
+        Assert.True(hub.SetPortDuty(Convert.ToHexString(FanMac), 0, 50));
+        for (var i = 0; i < 4; i++)
+        {
+            clock.AdvanceMs(1_000);
+            Assert.True(hub.DriveTick());
+        }
+        Assert.Equal(1, CountBindFrames(tx));
+
+        clock.AdvanceMs(2_000);
+        Assert.True(hub.DriveTick());
+        Assert.Equal(2, CountBindFrames(tx));
+
+        Assert.True(hub.SetPortDuty(Convert.ToHexString(FanMac), 0, 80));
+        Assert.True(hub.DriveTick());
+        Assert.Equal(3, CountBindFrames(tx));
+
+        rx.BusyReads = false;
+        Ticks(hub, 3);
+        Assert.Equal(3, CountBindFrames(tx));
+    }
+
+    [Fact]
     public void A_chain_unseen_through_a_busy_spell_is_reported_stale()
     {
         var clock = new ManualClock();
