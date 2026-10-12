@@ -476,7 +476,7 @@ public sealed class EventLogMonitor : BackgroundService
         return count;
     }
 
-    private static string? Render(WevtApi.SafeEvtHandle eventHandle)
+    internal static string? Render(WevtApi.SafeEvtHandle eventHandle)
     {
         // First call is expected to fail with ERROR_INSUFFICIENT_BUFFER; it
         // still reports the required buffer size (bytes, including the

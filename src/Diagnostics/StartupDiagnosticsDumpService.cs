@@ -94,6 +94,11 @@ public sealed class StartupDiagnosticsDumpService : BackgroundService
             Emit($"network: {specs.NetworkCard}");
         }
 
+#if WINDOWS
+        try { Emit($"boot: {BootTypeProbe.Describe()}"); }
+        catch (Exception ex) { Emit($"boot read failed: {ex.Message}"); }
+#endif
+
         try
         {
             // Which vendor app is on the box is the first question a "Nexus stopped

@@ -116,6 +116,19 @@ public class RgbBridgeDeviceSetChangedTests : IDisposable
         Assert.Equal(new[] { 1, 2 }, FramesAtEvent());
     }
 
+    [Fact]
+    public async Task Fires_again_when_a_restart_finds_the_same_set()
+    {
+        _hub.Ids = new[] { "hub:a" };
+        _bridge.Activate();
+        Assert.True(await _setChanged.WaitAsync(TimeSpan.FromSeconds(5)));
+
+        _bridge.Deactivate();
+        _bridge.Activate();
+        Assert.True(await _setChanged.WaitAsync(TimeSpan.FromSeconds(5)));
+        Assert.Equal(new[] { 1, 1 }, FramesAtEvent());
+    }
+
     private int[] FramesAtEvent()
     {
         lock (_framesAtEvent)
