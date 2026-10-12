@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Diagnostics;
+using System.Globalization;
 using System.IO;
 using System.Linq;
 using System.Net.Sockets;
@@ -147,8 +148,8 @@ public sealed class QSeriesPortWatcher : BackgroundService
     // Registry is keyed by package name, so one panel per host is tracked; null when unregistered.
     private string? _registeredSerial;
 
-    /// <summary>Serials with an applied reverse, so the steady-state path stays quiet.</summary>
-    private readonly Dictionary<string, bool> _reverseAppliedBySerial = new(StringComparer.Ordinal);
+    /// <summary>When each serial's standing reverse was applied; keeps the steady-state path quiet and anchors the tunnel-silence check.</summary>
+    private readonly Dictionary<string, DateTimeOffset> _reverseAppliedAtBySerial = new(StringComparer.Ordinal);
 
     /// <summary>
     /// Serials whose reverse was force-refreshed (remove + re-add) this run. The
@@ -765,7 +766,7 @@ public sealed class QSeriesPortWatcher : BackgroundService
             // adb-server is dead. AdvancedSharpAdbClient talks to an existing server
             // over TCP and won't spawn one; shell out to `adb start-server` and retry
             // once (a still-failing start is picked up next tick).
-            _reverseAppliedBySerial.Clear();
+            _reverseAppliedAtBySerial.Clear();
             _reverseRefreshedThisRun.Clear();
             _lanIpUnavailableLogged.Clear();
             ClearAdbInvisibleState();
@@ -788,7 +789,7 @@ public sealed class QSeriesPortWatcher : BackgroundService
         }
         catch
         {
-            _reverseAppliedBySerial.Clear();
+            _reverseAppliedAtBySerial.Clear();
             _reverseRefreshedThisRun.Clear();
             _lanIpUnavailableLogged.Clear();
             ClearAdbInvisibleState();
@@ -797,11 +798,9 @@ public sealed class QSeriesPortWatcher : BackgroundService
 
         var deviceList = devices.ToList();
 
-        var repairForced = TakeLinkRepairRequest();
-
         // Recovery pass first so a successful USB-reset's re-enumeration is visible
         // to the reverse-port pass below.
-        await TryRecoverOfflineQSeriesDevicesAsync(deviceList, repairForced, ct);
+        await TryRecoverOfflineQSeriesDevicesAsync(deviceList, LinkRepairPending(), ct);
 
         // One-shot `adb connect` per persisted promotion not already in the device
         // list. Cheap, and self-heals a transient TCP drop without a USB attach.
@@ -890,13 +889,14 @@ public sealed class QSeriesPortWatcher : BackgroundService
 
         LogAdbVisibility(deviceList, seenSerials);
         PublishLinkStatus(deviceList, seenSerials);
-        TryRecoverInvisibleQSeries(seenSerials, repairForced);
+        // Re-read: a reset in the offline pass consumed any repair, which must not force a second one.
+        TryRecoverInvisibleQSeries(seenSerials, LinkRepairPending());
 
         // Per-serial state for serials that left the adb list. A re-attach re-logs
         // the applied reverse and force-refreshes it again.
-        foreach (var key in _reverseAppliedBySerial.Keys.Where(k => !seenSerials.Contains(k)).ToList())
+        foreach (var key in _reverseAppliedAtBySerial.Keys.Where(k => !seenSerials.Contains(k)).ToList())
         {
-            _reverseAppliedBySerial.Remove(key);
+            _reverseAppliedAtBySerial.Remove(key);
         }
         foreach (var key in _reverseRefreshedThisRun.Where(k => !seenSerials.Contains(k)).ToList())
         {
@@ -1066,6 +1066,7 @@ public sealed class QSeriesPortWatcher : BackgroundService
             if (_lastQshellRebootBySerial.TryGetValue(serial, out var lastReboot)
                 && now - lastReboot < QshellRebootCooldown)
             {
+                if (force) NoteLinkRepairDeferred(serial, QshellRebootCooldown - (now - lastReboot));
                 continue;
             }
 
@@ -1090,6 +1091,7 @@ public sealed class QSeriesPortWatcher : BackgroundService
                 continue;
             }
 
+            ConsumeLinkRepair();
             ServiceLog.Info(
                 $"[qseries-port-watcher] {serial}: present on USB but absent from adb for {invisibleFor.TotalSeconds:F0}s, resetting USB {instanceId}");
             _lastRecoveryByInstanceId[instanceId] = now;
@@ -1194,6 +1196,7 @@ public sealed class QSeriesPortWatcher : BackgroundService
                 continue;
             }
 
+            ConsumeLinkRepair();
             ServiceLog.Info(
                 $"[qseries-port-watcher] {device.Serial}: offline for {offlineFor.TotalSeconds:F0}s, resetting USB {instanceId}");
             _lastRecoveryByInstanceId[instanceId] = now;
@@ -1787,13 +1790,6 @@ public sealed class QSeriesPortWatcher : BackgroundService
     private readonly TickChangeSignal _displayChange = new();
 
     /// <summary>
-    /// Raised by POST /qseries/link/repair. A tick that takes it runs the USB
-    /// reset immediately, ignoring the offline threshold and the per-instance
-    /// cooldown.
-    /// </summary>
-    private readonly TickChangeSignal _linkRepair = new();
-
-    /// <summary>
     /// Snapshot of the panel link for GET /qseries/link, written by the tick
     /// thread and read by request threads. Replaced whole rather than mutated,
     /// so a reader always sees one consistent tick's view.
@@ -1834,23 +1830,81 @@ public sealed class QSeriesPortWatcher : BackgroundService
     /// </summary>
     internal bool RequestLinkRepair()
     {
+        // Both reset paths are Windows APIs; elsewhere a stamp would only block the route.
+        if (!OperatingSystem.IsWindows()) return false;
         var now = DateTimeOffset.UtcNow;
         lock (_linkRepairLock)
         {
+            if (_linkRepairRequestedAt is not null) return false;
             if (_lastLinkRepairAt is { } last && now - last < LinkRepairMinInterval) return false;
             _lastLinkRepairAt = now;
+            _linkRepairRequestedAt = now;
         }
-        _linkRepair.Announce();
         try { _wake.Release(); }
         catch (SemaphoreFullException) { }
         return true;
     }
 
-    /// <summary>Guards <see cref="_lastLinkRepairAt"/>, written from request
-    /// threads.</summary>
+    /// <summary>Guards the link-repair stamps, written from request threads.</summary>
     private readonly object _linkRepairLock = new();
     private DateTimeOffset? _lastLinkRepairAt;
     private static readonly TimeSpan LinkRepairMinInterval = TimeSpan.FromSeconds(30);
+
+    /// <summary>
+    /// The queued repair; held until a reset runs, the panel is online, or
+    /// <see cref="LinkRepairWindow"/> passes, so a safety gate defers it instead
+    /// of dropping it.
+    /// </summary>
+    private DateTimeOffset? _linkRepairRequestedAt;
+
+    /// <summary>The longest <see cref="QshellRebootCooldown"/> can hold a repair, plus the tick that runs it.</summary>
+    private static TimeSpan LinkRepairWindow => QshellRebootCooldown + PollInterval;
+
+    /// <summary>Tick-thread only; one deferral line per queued repair.</summary>
+    private bool _linkRepairDeferralLogged;
+
+    /// <summary>Whether a repair is queued; drops one past <see cref="LinkRepairWindow"/>.</summary>
+    private bool LinkRepairPending()
+    {
+        TimeSpan age;
+        lock (_linkRepairLock)
+        {
+            if (_linkRepairRequestedAt is not { } at) return false;
+            age = DateTimeOffset.UtcNow - at;
+            if (age <= LinkRepairWindow) return true;
+        }
+        DropLinkRepair();
+        ServiceLog.Info($"[qseries-port-watcher] link repair dropped {age.TotalSeconds:F0}s after the request; no USB reset could run");
+        return false;
+    }
+
+    /// <summary>
+    /// Called before every reset, forced or not, so a queued repair is answered
+    /// once and cannot force a second reset into this one's re-enumeration. The
+    /// request also retests the host-restart latch.
+    /// </summary>
+    private void ConsumeLinkRepair()
+    {
+        DateTimeOffset? at;
+        lock (_linkRepairLock) at = _linkRepairRequestedAt;
+        if (at is not { } requestedAt) return;
+        DropLinkRepair();
+        _hostRebootPending = false;
+        ServiceLog.Info($"[qseries-port-watcher] link repair requested {(DateTimeOffset.UtcNow - requestedAt).TotalSeconds:F0}s ago; running USB reset now");
+    }
+
+    private void NoteLinkRepairDeferred(string serial, TimeSpan remaining)
+    {
+        if (_linkRepairDeferralLogged) return;
+        _linkRepairDeferralLogged = true;
+        ServiceLog.Info($"[qseries-port-watcher] {serial}: link repair waits {remaining.TotalSeconds:F0}s for the panel's reboot to settle");
+    }
+
+    private void DropLinkRepair()
+    {
+        lock (_linkRepairLock) _linkRepairRequestedAt = null;
+        _linkRepairDeferralLogged = false;
+    }
 
     /// <summary>Current panel link state for GET /qseries/link.</summary>
     internal QSeriesLinkStatus GetLinkStatus() => _link;
@@ -1884,6 +1938,7 @@ public sealed class QSeriesPortWatcher : BackgroundService
         {
             _hostRebootPending = false;
             _linkDownSince = null;
+            DropLinkRepair();
         }
         else if (usbPresent)
         {
@@ -1910,21 +1965,6 @@ public sealed class QSeriesPortWatcher : BackgroundService
             SleepingForSessionLock = SleepingForSessionLock(),
             Serial = serial,
         };
-    }
-
-    /// <summary>
-    /// Takes a queued repair request. The wait timers are left alone - each
-    /// recovery pass takes this as a per-tick bypass instead, so the logged
-    /// "offline for Ns" stays truthful and an unrelated MediaTek phone keeps its
-    /// own cooldown.
-    /// </summary>
-    private bool TakeLinkRepairRequest()
-    {
-        if (!_linkRepair.Take()) return false;
-        ServiceLog.Info("[qseries-port-watcher] link repair requested; running USB reset now");
-        // The user is also asking us to re-test the claim that only a reboot helps.
-        _hostRebootPending = false;
-        return true;
     }
 
     /// <summary>
@@ -2142,15 +2182,35 @@ public sealed class QSeriesPortWatcher : BackgroundService
     private static readonly TimeSpan QshellRebootCooldown = TimeSpan.FromMinutes(2);
 
     /// <summary>
-    /// Grace after first sighting this run before the liveness-gated escalation
-    /// reboot. Must exceed the slowest legitimate reconnect: a cold qshell
-    /// bootstrap pulls the SPA + ~56 assets over the marginal USB-FFS link and
-    /// takes ~2 min (per the panel recovery guide), far longer than the soft
-    /// case (qshell stays up, socket reconnects in seconds). Sized above that so
-    /// a cold boot / relaunch is never preempted; only a panel still silent past
-    /// it is rebooted.
+    /// Grace after first sighting before an escalation reboot when the panel cannot
+    /// be proven stranded sooner (<see cref="StrandedBeforeGrace"/>): the record's
+    /// <c>LastSeenAt</c> moves only once a cold bootstrap has loaded the SPA over
+    /// USB-FFS, which takes ~2 min.
     /// </summary>
     private static readonly TimeSpan EscalationGrace = TimeSpan.FromSeconds(180);
+
+    /// <summary>
+    /// Tunnel silence that proves a running qshell is stranded: its bootstrap pings
+    /// every 2 s and a loaded wired page redials every 500 ms, so either reaches the
+    /// tunnel within seconds of it opening.
+    /// </summary>
+    internal static readonly TimeSpan TunnelSilenceGrace = TimeSpan.FromSeconds(30);
+
+    /// <summary>
+    /// qshell process age past which its bootstrap is pinging or spent; a Q60 just
+    /// out of boot loaded the panel page 17 s after <c>am start</c>.
+    /// </summary>
+    internal static readonly TimeSpan QshellBootstrapStartBound = TimeSpan.FromSeconds(60);
+
+    /// <summary>
+    /// Whether a panel silent since first sighting is stranded before
+    /// <see cref="EscalationGrace"/>: qshell 0.1.4 pings for ~2 min after launch,
+    /// then pairs once and never retries, so a qshell that predates the tunnel
+    /// can never reach it without a reboot. An open socket rules it out: an idle
+    /// connected page sends only a keepalive pong per interval.
+    /// </summary>
+    internal static bool StrandedBeforeGrace(TimeSpan? tunnelOpenFor, TimeSpan? qshellUptime, int openSockets) =>
+        openSockets == 0 && tunnelOpenFor >= TunnelSilenceGrace && qshellUptime >= QshellBootstrapStartBound;
 
     /// <summary>Serial → last reboot time (anti-loop cooldown). NOT cleared on detach,
     /// so it survives the reboot's own re-enumeration.</summary>
@@ -3126,8 +3186,9 @@ public sealed class QSeriesPortWatcher : BackgroundService
     /// desktop dashboard cannot mask a stranded panel. Legacy
     /// fallback (tunnel port unbound): the record's <c>LastSeenAt</c>, which any
     /// local client's GET bumps - that variant risks a missed reboot while the
-    /// dashboard is open, never a spurious one. Only a panel still silent past
-    /// <see cref="EscalationGrace"/> is rebooted.
+    /// dashboard is open, never a spurious one. A panel still silent past
+    /// <see cref="EscalationGrace"/> is rebooted, or sooner once
+    /// <see cref="StrandedBeforeGrace"/> holds.
     ///
     /// One transitional spurious reboot is possible on the first run after the
     /// host-side tunnel port changes: a panel whose SPA reconnected through the
@@ -3155,7 +3216,10 @@ public sealed class QSeriesPortWatcher : BackgroundService
 
         var now = DateTimeOffset.UtcNow;
         var sinceFirstSeen = now - firstSeenAt;
-        if (sinceFirstSeen < EscalationGrace) return;
+        var beforeGrace = sinceFirstSeen < EscalationGrace;
+        // Only inbound tunnel bytes are fine-grained enough to prove a strand early.
+        var tunnelOpenFor = _tunnelMonitor?.IsActive == true ? TunnelOpenFor(device.Serial, firstSeenAt, now) : null;
+        if (beforeGrace && !(tunnelOpenFor >= TunnelSilenceGrace)) return;
 
         // Backstop for a probe that never resolves: "Activity class ... does not exist"
         // is the field-observed signal for an uninstalled qshell, and the classifier's
@@ -3194,10 +3258,18 @@ public sealed class QSeriesPortWatcher : BackgroundService
             return;
         }
 
+        var silence = $"panel never contacted the service {sinceFirstSeen.TotalSeconds:F0}s after first sighting";
+        if (beforeGrace)
+        {
+            var qshellUptime = await ReadQshellUptimeAsync(device, ct);
+            if (!StrandedBeforeGrace(tunnelOpenFor, qshellUptime, _tunnelMonitor!.AuthenticatedSockets)) return;
+            silence += $", qshell up {qshellUptime!.Value.TotalSeconds:F0}s";
+        }
+
         try
         {
             ServiceLog.Info(
-                $"[qseries-port-watcher] {device.Serial}: panel never contacted the service {sinceFirstSeen.TotalSeconds:F0}s after first sighting; rebooting to clear a hard USB-FFS wedge or a stranded qshell (attempt {rebootCount + 1}/{MaxEscalationRebootsPerRun})");
+                $"[qseries-port-watcher] {device.Serial}: {silence}; rebooting to clear a hard USB-FFS wedge or a stranded qshell (attempt {rebootCount + 1}/{MaxEscalationRebootsPerRun})");
             await _client.RebootAsync(device, ct);
             ClearStaleSessionState();
             // Record the reboot only after it's issued; if RebootAsync throws (stale
@@ -3212,6 +3284,66 @@ public sealed class QSeriesPortWatcher : BackgroundService
             ServiceLog.Info(
                 $"[qseries-port-watcher] {device.Serial}: escalation reboot failed: {ex.GetType().Name}: {ex.Message}; will retry next tick");
         }
+    }
+
+    /// <summary>
+    /// How long a foreground qshell has had a working tunnel: since the latest of
+    /// first sighting, the standing reverse and our last <c>am start</c>. Null
+    /// while no reverse stands.
+    /// </summary>
+    private TimeSpan? TunnelOpenFor(string serial, DateTimeOffset firstSeenAt, DateTimeOffset now)
+    {
+        if (!_reverseAppliedAtBySerial.TryGetValue(serial, out var openedAt)) return null;
+        if (firstSeenAt > openedAt) openedAt = firstSeenAt;
+        if (_lastQshellStartBySerial.TryGetValue(serial, out var startedAt) && startedAt > openedAt) openedAt = startedAt;
+        return now - openedAt;
+    }
+
+    private const string QshellUptimeCommand = "cat /proc/uptime /proc/$(pidof -s " + QshellPackage + ")/stat";
+
+    /// <summary>Kernel USER_HZ, the unit of <c>/proc/&lt;pid&gt;/stat</c> starttime; fixed by the kernel ABI on arm and arm64.</summary>
+    private const double UserHz = 100;
+
+    /// <summary>How long the qshell process has run; null when it is not running or the read fails.</summary>
+    private async Task<TimeSpan?> ReadQshellUptimeAsync(DeviceData device, CancellationToken ct)
+    {
+        var receiver = new ConsoleOutputReceiver();
+        try
+        {
+            await _client.ExecuteShellCommandAsync(device, QshellUptimeCommand, receiver, ct);
+        }
+        catch (Exception ex) when (!ct.IsCancellationRequested)
+        {
+            ServiceLog.Info($"[qseries-port-watcher] {device.Serial}: qshell uptime read failed: {ex.GetType().Name}");
+            return null;
+        }
+        return ParseProcessUptime(receiver.ToString());
+    }
+
+    /// <summary>
+    /// Process age from <c>/proc/uptime</c> followed by <c>/proc/&lt;pid&gt;/stat</c>;
+    /// null unless both parse to an age within the uptime.
+    /// </summary>
+    internal static TimeSpan? ParseProcessUptime(string output)
+    {
+        var lines = output.Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        if (lines.Length < 2
+            || !double.TryParse(lines[0].Split(' ')[0], NumberStyles.Float, CultureInfo.InvariantCulture, out var uptime))
+        {
+            return null;
+        }
+        // comm (field 2) may hold spaces or parens, so fields are counted from its
+        // closing paren: state is field 3, starttime field 22.
+        var close = lines[1].LastIndexOf(')');
+        if (close < 0) return null;
+        var fields = lines[1][(close + 1)..].Split(' ', StringSplitOptions.RemoveEmptyEntries);
+        if (fields.Length < 20
+            || !long.TryParse(fields[19], NumberStyles.None, CultureInfo.InvariantCulture, out var startTicks))
+        {
+            return null;
+        }
+        var age = uptime - startTicks / UserHz;
+        return age >= 0 && age <= uptime ? TimeSpan.FromSeconds(age) : null;
     }
 
     /// <summary>
@@ -3281,7 +3413,7 @@ public sealed class QSeriesPortWatcher : BackgroundService
         if (!_reverseRefreshedThisRun.Contains(device.Serial))
         {
             _reverseRefreshedThisRun.Add(device.Serial);
-            _reverseAppliedBySerial.Remove(device.Serial); // re-log the apply below
+            _reverseAppliedAtBySerial.Remove(device.Serial); // re-log the apply below
             try
             {
                 await _client.RemoveReverseForwardAsync(device, _deviceSpec, ct);
@@ -3302,17 +3434,17 @@ public sealed class QSeriesPortWatcher : BackgroundService
         try
         {
             await _client.CreateReverseForwardAsync(device, _deviceSpec, _hostSpec, true, ct);
-            if (!_reverseAppliedBySerial.TryGetValue(device.Serial, out _))
+            if (!_reverseAppliedAtBySerial.ContainsKey(device.Serial))
             {
                 ServiceLog.Info(
                     $"[qseries-port-watcher] reverse applied: {device.Serial} ({device.Model}) device {_deviceSpec} -> host {_hostSpec}");
-                _reverseAppliedBySerial[device.Serial] = true;
+                _reverseAppliedAtBySerial[device.Serial] = DateTimeOffset.UtcNow;
             }
         }
         catch (Exception ex)
         {
             // Re-apply runs next tick; forget the applied flag so the recovery re-logs.
-            _reverseAppliedBySerial.Remove(device.Serial);
+            _reverseAppliedAtBySerial.Remove(device.Serial);
             ServiceLog.Info(
                 $"[qseries-port-watcher] reverse apply failed for {device.Serial}: {ex.GetType().Name}: {ex.Message}");
         }
