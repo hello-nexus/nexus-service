@@ -27,6 +27,7 @@ using Nexus.Service.Persistence;
 using Nexus.Service.Platform;
 #if WINDOWS
 using Microsoft.Win32;
+using Nexus.Service.Devices.Detection.Native;
 #endif
 
 namespace Nexus.Service.QSeries;
@@ -101,6 +102,18 @@ public sealed class QSeriesPortWatcher : BackgroundService
     /// (the escalation reboot's own re-enumeration must not trip this).
     /// </summary>
     private static readonly TimeSpan AdbInvisibleRecoveryThreshold = TimeSpan.FromSeconds(90);
+
+    /// <summary>
+    /// Wait before each reset of the Q-series unit's hub while its cooler is on USB
+    /// with no panel, from the absence (first) or the previous reset. Each reset also
+    /// drops the cooler's COM port for a few seconds; the count bounds a panel that
+    /// is truly gone.
+    /// </summary>
+    internal static readonly TimeSpan[] AbsentPanelResetDelays =
+        [TimeSpan.FromSeconds(60), TimeSpan.FromMinutes(4), TimeSpan.FromMinutes(10)];
+
+    /// <summary>A cooler missing this soon after a hub reset is still re-enumerating (Y70: back in 3.4 s).</summary>
+    private static readonly TimeSpan HubResetReturn = TimeSpan.FromSeconds(30);
 
     /// <summary>
     /// After a host resume, how long a changed transport id is treated as the USB
@@ -743,6 +756,7 @@ public sealed class QSeriesPortWatcher : BackgroundService
         if (!_gate.IsEnabled("qseries"))
         {
             ClearAdbInvisibleState();
+            EndAbsentPanelSpell(DateTimeOffset.UtcNow);
             PublishLinkStatus([], []);
             return;
         }
@@ -757,6 +771,7 @@ public sealed class QSeriesPortWatcher : BackgroundService
             && !_presence.UsbPresent(MediaTekAdbVendorId))
         {
             ClearAdbInvisibleState();
+            EndAbsentPanelSpell(DateTimeOffset.UtcNow);
             PublishLinkStatus([], []);
             return;
         }
@@ -896,6 +911,7 @@ public sealed class QSeriesPortWatcher : BackgroundService
         PublishLinkStatus(deviceList, seenSerials);
         // Re-read: a reset in the offline pass consumed any repair, which must not force a second one.
         TryRecoverInvisibleQSeries(seenSerials, LinkRepairPending());
+        TryRecoverAbsentPanel(seenSerials);
 
         // Per-serial state for serials that left the adb list. A re-attach re-logs
         // the applied reverse and force-refreshes it again.
@@ -1312,6 +1328,104 @@ public sealed class QSeriesPortWatcher : BackgroundService
             $"[qseries-port-watcher] {serial}: the devnode is queued for a host restart; "
             + "suspending USB-reset recovery until the host reboots");
     }
+
+    /// <summary>
+    /// The cooler and panel share the unit's internal hub, so a cooler on USB with no
+    /// panel is a panel whose USB never attached; a host restart re-attaches it.
+    /// Cycling the hub's upstream port re-enumerates both without rebooting the panel.
+    /// An empty port cannot be cycled (ERROR_NO_SUCH_DEVICE), so the hub is the unit.
+    /// </summary>
+    private void TryRecoverAbsentPanel(HashSet<string> onlineQSeries)
+    {
+        if (!OperatingSystem.IsWindows()) return;
+
+        var now = DateTimeOffset.UtcNow;
+        if (onlineQSeries.Count > 0 || _presence.UsbEntriesFor(MediaTekAdbVendorId).Count > 0)
+        {
+            if (_lastAbsentPanelResetAt is { } resetAt)
+            {
+                ServiceLog.Info(
+                    $"[qseries-port-watcher] panel on USB {(now - resetAt).TotalSeconds:F0}s after hub reset {_absentPanelResets}/{AbsentPanelResetDelays.Length}");
+            }
+            _lastAbsentPanelResetAt = null;
+            EndAbsentPanelSpell(now);
+            return;
+        }
+
+        // A flash takes the panel off USB on purpose.
+        if (FlashActive || _deviceRegistry?.TryGet(QshellPackage)?.InstallInProgress == true) return;
+
+        var cooler = _presence.UsbEntriesFor(QSeriesCoolerProtocol.VendorId).FirstOrDefault(e =>
+            e.ProductId is QSeriesCoolerProtocol.Q60ProductId or QSeriesCoolerProtocol.Q80ProductId
+            && LooksLikeDeviceSerial(e.Serial));
+        if (cooler is null)
+        {
+            EndAbsentPanelSpell(now);
+            return;
+        }
+
+        _panelAbsentSince ??= now;
+        if (_absentPanelResets >= AbsentPanelResetDelays.Length) return;
+        var anchor = _lastAbsentPanelResetAt ?? _panelAbsentSince.Value;
+        if (now - anchor < AbsentPanelResetDelays[_absentPanelResets]) return;
+        // Our own panel reboot is off USB on purpose until it re-enumerates.
+        if (_lastQshellRebootBySerial.Values.Any(at => now - at < QshellRebootCooldown)) return;
+
+        _absentPanelResets++;
+        _lastAbsentPanelResetAt = now;
+#if WINDOWS
+        ResetQSeriesHub(cooler, now - _panelAbsentSince.Value);
+#endif
+    }
+
+    /// <summary>Ends the spell, unless the cooler is away only for our own hub reset.</summary>
+    private void EndAbsentPanelSpell(DateTimeOffset now)
+    {
+        if (_lastAbsentPanelResetAt is { } resetAt && now - resetAt < HubResetReturn) return;
+        _panelAbsentSince = null;
+        _lastAbsentPanelResetAt = null;
+        _absentPanelResets = 0;
+    }
+
+    /// <summary>
+    /// True when no port other than the cooler's holds an enumerated device that is
+    /// not the panel, so a reset touches nothing outside the Q-series unit.
+    /// </summary>
+    internal static bool HubServesOnlyQSeries(IReadOnlyList<QSeriesHubPort> ports, uint coolerPort) =>
+        ports.Any(p => p.Port == coolerPort)
+        && ports.All(p => p.Port == coolerPort
+            || (p.Status != QSeriesHubPort.DeviceConnected && p.Status != QSeriesHubPort.Unreadable)
+            || p.VendorId == MediaTekAdbVendorId);
+
+#if WINDOWS
+    private void ResetQSeriesHub(UsbDeviceEntry cooler, TimeSpan absentFor)
+    {
+        var attempt = $"{_absentPanelResets}/{AbsentPanelResetDelays.Length}";
+        var coolerId = $@"USB\VID_{cooler.VendorId:X4}&PID_{cooler.ProductId:X4}\{cooler.Serial}";
+        if (!CfgMgr32.TryGetUsbHubPort(coolerId, out var hubId, out var coolerPort))
+        {
+            ServiceLog.Info($"[qseries-port-watcher] no panel on USB for {absentFor.TotalSeconds:F0}s; no hub port for cooler {coolerId} ({attempt})");
+            return;
+        }
+        if (!QSeriesUsbPortCycle.TryReadHubPorts(hubId, out var ports, out var readDetail))
+        {
+            ServiceLog.Info($"[qseries-port-watcher] no panel on USB for {absentFor.TotalSeconds:F0}s; {readDetail} ({attempt})");
+            return;
+        }
+        var table = string.Join(' ', ports);
+        if (!HubServesOnlyQSeries(ports, coolerPort))
+        {
+            _absentPanelResets = AbsentPanelResetDelays.Length;
+            ServiceLog.Info($"[qseries-port-watcher] no panel on USB for {absentFor.TotalSeconds:F0}s; hub {hubId} also serves other devices (ports {table}), not resetting it");
+            return;
+        }
+        ServiceLog.Info(
+            $"[qseries-port-watcher] no panel on USB for {absentFor.TotalSeconds:F0}s with the cooler on {hubId} port {coolerPort} (ports {table}); resetting the hub ({attempt})");
+        ServiceLog.Info(QSeriesUsbPortCycle.TryCycle(hubId, out var cycle)
+            ? $"[qseries-port-watcher] hub reset: cycled {cycle}"
+            : $"[qseries-port-watcher] hub reset failed: {cycle}");
+    }
+#endif
 
     /// <summary>
     /// True while the reset is pointless: Windows has the devnode queued for a
@@ -2259,6 +2373,11 @@ public sealed class QSeriesPortWatcher : BackgroundService
         _adbInvisibleSince = null;
         _lastInvisibleLookupBySerial.Clear();
     }
+
+    /// <summary>Start of the current cooler-on-USB, no-panel spell; survives the cooler's drop during a hub reset.</summary>
+    private DateTimeOffset? _panelAbsentSince;
+    private DateTimeOffset? _lastAbsentPanelResetAt;
+    private int _absentPanelResets;
 
     /// <summary>
     /// Time a serial was first seen this run; anchors <see cref="EscalationGrace"/>.
