@@ -1103,7 +1103,7 @@ public class ThermalGuardEngineTests
     }
 
     [Fact]
-    public void Watchdog_ReleasesAfterTenSecondsWhenHot_ThirtyWhenCool()
+    public void Watchdog_ReleasesAfterTenSecondsWhenHot_OnlyOnceTheReadingIsStaleWhenCool()
     {
         var (_, fans, store, _) = Build();
         var (e, guard, mono) = WatchdogRig(fans, store);
@@ -1120,9 +1120,9 @@ public class ThermalGuardEngineTests
         fans2.CpuTemp = 50f;
         e2.Tick();
         guard2.TickCompleted();
-        guard2.WatchdogCheck(mono2[0] + 11_000);
+        guard2.WatchdogCheck(mono2[0] + 119_000);
         Assert.Equal(0, fans2.ReleaseAllCalls);
-        guard2.WatchdogCheck(mono2[0] + 31_000);
+        guard2.WatchdogCheck(mono2[0] + 121_000);
         Assert.Equal(1, fans2.ReleaseAllCalls);
     }
 

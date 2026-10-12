@@ -1,7 +1,11 @@
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.Globalization;
 using System.Linq;
+#if WINDOWS
+using System.Runtime.InteropServices;
+#endif
 using System.Threading;
 using Nexus.Service.Diagnostics;
 using Nexus.Service.Models.Cooling;
@@ -62,7 +66,8 @@ public sealed class ThermalGuardController
 {
     private const long CpuInfoRefreshMs = 5000;
     private const long WatchdogHotStallMs = 10_000;
-    private const long WatchdogStallMs = 30_000;
+    // A cool stall is left alone until the last temperature reading is too old to trust.
+    private const long WatchdogStaleStallMs = 2 * 60_000;
     // Stalls this many times within the window mean the engine cannot be trusted with the fans.
     private const int WatchdogLatchFires = 3;
     private const long WatchdogLatchWindowMs = 10 * 60_000;
@@ -157,7 +162,18 @@ public sealed class ThermalGuardController
     }
 
     /// <summary>Monotonic millisecond clock for the watchdog; tests substitute it.</summary>
-    internal Func<long> MonotonicMs { get; set; } = () => Environment.TickCount64;
+    internal Func<long> MonotonicMs { get; set; } = AwakeMs;
+
+    // Must stop while the machine sleeps, or a resume reads as a stall; TickCount64 does not on Windows.
+    private static long AwakeMs()
+    {
+#if WINDOWS
+        ThermalGuardNativeMethods.QueryUnbiasedInterruptTime(out var hundredNs);
+        return (long)(hundredNs / 10_000);
+#else
+        return (long)Stopwatch.GetElapsedTime(0).TotalMilliseconds;
+#endif
+    }
 
     // ── Engine hooks ──
 
@@ -228,8 +244,7 @@ public sealed class ThermalGuardController
             }
             stalled = nowMs - _lastTickMs;
             var hot = _guardTemp is { } temp && temp >= _limit.LimitC - _thresholds.FloorStartBelowLimitC;
-            // A stalled engine is not managing fans, so the BIOS is the safe owner whatever the temperature.
-            if (stalled < (hot ? WatchdogHotStallMs : WatchdogStallMs))
+            if (stalled < (hot ? WatchdogHotStallMs : WatchdogStaleStallMs))
             {
                 return;
             }
@@ -1267,3 +1282,12 @@ public sealed class ThermalGuardController
         return response;
     }
 }
+
+#if WINDOWS
+internal static partial class ThermalGuardNativeMethods
+{
+    [LibraryImport("kernel32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    internal static partial bool QueryUnbiasedInterruptTime(out ulong unbiasedTime);
+}
+#endif
