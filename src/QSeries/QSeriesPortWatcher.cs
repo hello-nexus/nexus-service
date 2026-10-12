@@ -112,7 +112,7 @@ public sealed class QSeriesPortWatcher : BackgroundService
     internal static readonly TimeSpan[] AbsentPanelResetDelays =
         [TimeSpan.FromSeconds(60), TimeSpan.FromMinutes(4), TimeSpan.FromMinutes(10)];
 
-    /// <summary>A cooler missing this soon after a hub reset is still re-enumerating (Y70: back in 3.4 s).</summary>
+    /// <summary>A cooler missing this soon after a hub reset is still re-enumerating.</summary>
     private static readonly TimeSpan HubResetReturn = TimeSpan.FromSeconds(30);
 
     /// <summary>
@@ -1340,7 +1340,8 @@ public sealed class QSeriesPortWatcher : BackgroundService
         if (!OperatingSystem.IsWindows()) return;
 
         var now = DateTimeOffset.UtcNow;
-        if (onlineQSeries.Count > 0 || _presence.UsbEntriesFor(MediaTekAdbVendorId).Count > 0)
+        // By name: 0x0E8D alone also matches a MediaTek Bluetooth adapter or phone.
+        if (onlineQSeries.Count > 0 || _presence.UsbEntriesFor(MediaTekAdbVendorId).Any(IsQSeriesUsbEntry))
         {
             if (_lastAbsentPanelResetAt is { } resetAt)
             {
@@ -1355,9 +1356,9 @@ public sealed class QSeriesPortWatcher : BackgroundService
         // A flash takes the panel off USB on purpose.
         if (FlashActive || _deviceRegistry?.TryGet(QshellPackage)?.InstallInProgress == true) return;
 
+        // Q60 only: its hub layout is the one measured.
         var cooler = _presence.UsbEntriesFor(QSeriesCoolerProtocol.VendorId).FirstOrDefault(e =>
-            e.ProductId is QSeriesCoolerProtocol.Q60ProductId or QSeriesCoolerProtocol.Q80ProductId
-            && LooksLikeDeviceSerial(e.Serial));
+            e.ProductId == QSeriesCoolerProtocol.Q60ProductId && LooksLikeDeviceSerial(e.Serial));
         if (cooler is null)
         {
             EndAbsentPanelSpell(now);
@@ -1368,6 +1369,8 @@ public sealed class QSeriesPortWatcher : BackgroundService
         if (_absentPanelResets >= AbsentPanelResetDelays.Length) return;
         var anchor = _lastAbsentPanelResetAt ?? _panelAbsentSince.Value;
         if (now - anchor < AbsentPanelResetDelays[_absentPanelResets]) return;
+        // A resume re-enumerates USB on its own, and the delay above ran across the sleep.
+        if (WithinResumeSettleWindow(now)) return;
         // Our own panel reboot is off USB on purpose until it re-enumerates.
         if (_lastQshellRebootBySerial.Values.Any(at => now - at < QshellRebootCooldown)) return;
 
