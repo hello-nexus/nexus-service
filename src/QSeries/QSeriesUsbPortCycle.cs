@@ -1,4 +1,5 @@
 #if WINDOWS
+using System.Buffers.Binary;
 using System.Runtime.InteropServices;
 using Nexus.Service.Devices.Detection.Native;
 
@@ -43,9 +44,82 @@ internal static partial class QSeriesUsbPortCycle
     private static partial bool DeviceIoControl(nint device, uint code, ref UsbCyclePortParams inBuffer, int inSize,
         ref UsbCyclePortParams outBuffer, int outSize, out uint returned, nint overlapped);
 
+    [LibraryImport("kernel32.dll", EntryPoint = "DeviceIoControl", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static unsafe partial bool DeviceIoControl(nint device, uint code, byte* inBuffer, int inSize,
+        byte* outBuffer, int outSize, out uint returned, nint overlapped);
+
     [LibraryImport("kernel32.dll", EntryPoint = "CloseHandle", SetLastError = true)]
     [return: MarshalAs(UnmanagedType.Bool)]
     private static partial bool CloseHandle(nint handle);
+
+    // usbioctl.h: IOCTL_USB_GET_NODE_INFORMATION, IOCTL_USB_GET_NODE_CONNECTION_INFORMATION_EX
+    private const uint IoctlUsbGetNodeInformation = 0x220408;
+    private const uint IoctlUsbGetNodeConnectionInformationEx = 0x220448;
+
+    // USB_NODE_INFORMATION: NodeType (4) + USB_HUB_DESCRIPTOR (71) + HubIsBusPowered (1).
+    private const int NodeInformationSize = 76;
+    private const int HubPortCountOffset = 6;
+
+    // USB_NODE_CONNECTION_INFORMATION_EX is packed: ConnectionIndex at 0, the device
+    // descriptor at 4 (idVendor 12, idProduct 14), ConnectionStatus at 31, then the
+    // open pipes, room for 30 of them.
+    private const int ConnectionInformationSize = 512;
+    private const int VendorIdOffset = 12;
+    private const int ProductIdOffset = 14;
+    private const int ConnectionStatusOffset = 31;
+
+    /// <summary>Every downstream port of a hub with its connection status; <paramref name="detail"/> names a failed step.</summary>
+    internal static unsafe bool TryReadHubPorts(string hubInstanceId, out List<QSeriesHubPort> ports, out string detail)
+    {
+        ports = [];
+        var hubPath = CfgMgr32.GetInterfacePath(hubInstanceId, UsbHubInterfaceClass);
+        if (hubPath.Length == 0)
+        {
+            detail = $"no hub interface on {hubInstanceId}";
+            return false;
+        }
+        var handle = CreateFile(hubPath, GenericReadWrite, FileShareReadWrite, 0, OpenExisting, 0, 0);
+        if (handle == -1 || handle == 0)
+        {
+            detail = $"open {hubInstanceId} failed: error {Marshal.GetLastPInvokeError()}";
+            return false;
+        }
+        try
+        {
+            var node = stackalloc byte[NodeInformationSize];
+            if (!DeviceIoControl(handle, IoctlUsbGetNodeInformation, node, NodeInformationSize, node, NodeInformationSize, out _, 0))
+            {
+                detail = $"hub information on {hubInstanceId} failed: error {Marshal.GetLastPInvokeError()}";
+                return false;
+            }
+            var count = node[HubPortCountOffset];
+            var connection = stackalloc byte[ConnectionInformationSize];
+            var info = new Span<byte>(connection, ConnectionInformationSize);
+            for (uint port = 1; port <= count; port++)
+            {
+                info.Clear();
+                BinaryPrimitives.WriteUInt32LittleEndian(info, port);
+                if (!DeviceIoControl(handle, IoctlUsbGetNodeConnectionInformationEx, connection, ConnectionInformationSize,
+                        connection, ConnectionInformationSize, out _, 0))
+                {
+                    ports.Add(new QSeriesHubPort(port, QSeriesHubPort.Unreadable, 0, 0));
+                    continue;
+                }
+                ports.Add(new QSeriesHubPort(
+                    port,
+                    BinaryPrimitives.ReadUInt32LittleEndian(info[ConnectionStatusOffset..]),
+                    BinaryPrimitives.ReadUInt16LittleEndian(info[VendorIdOffset..]),
+                    BinaryPrimitives.ReadUInt16LittleEndian(info[ProductIdOffset..])));
+            }
+        }
+        finally
+        {
+            CloseHandle(handle);
+        }
+        detail = "";
+        return true;
+    }
 
     /// <summary>True once the device left or re-arrived after the cycle; <paramref name="detail"/> names the port or the failed step.</summary>
     internal static bool TryCycle(string instanceId, out string detail)
