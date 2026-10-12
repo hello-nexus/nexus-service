@@ -114,7 +114,6 @@ public sealed class Np50Hub : IDisposable, IDfuFlashTarget
 
     // ── IDfuFlashTarget ──
     string IDfuFlashTarget.FirmwareType => IsConnected ? "np50" : "";
-    bool IDfuFlashTarget.CanFlash(string firmwareType) => firmwareType == "np50";
 
     /// <summary>
     /// Drop the NP50 into DFU: write the OTA key + magic over the serial port,

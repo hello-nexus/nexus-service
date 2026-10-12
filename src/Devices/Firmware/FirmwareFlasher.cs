@@ -59,25 +59,22 @@ public sealed class FirmwareFlasher
     public bool IsFlashing => _flashGate.IsFlashing;
 
     /// <summary>
-    /// Every image the connected device for <paramref name="connectedFirmwareType"/>
-    /// can be flashed with, including sibling-variant images (a Gen1 CNVS can also
-    /// take the Gen2 image). Powers the dev-only cross-branch picker. Empty if no
-    /// connected target handles that key.
+    /// Every bundled image of the connected variant <paramref name="connectedFirmwareType"/>,
+    /// for the dev-only re-flash / downgrade picker. Empty if no connected target runs it.
     /// </summary>
     public IReadOnlyList<FlashableImage> FlashableImages(string connectedFirmwareType)
     {
-        var result = new List<FlashableImage>();
-        if (string.IsNullOrEmpty(connectedFirmwareType)) return result;
-        var target = AllTargets.FirstOrDefault(t => t.IsConnected && t.FirmwareType == connectedFirmwareType);
-        if (target is null) return result;
-        foreach (var key in _catalog.DeviceIds)
-        {
-            if (!target.CanFlash(key)) continue;
-            foreach (var v in _catalog.GetAvailableVersions(key))
-                result.Add(new FlashableImage { FirmwareType = key, Version = v });
-        }
-        return result;
+        if (ConnectedTarget(connectedFirmwareType) is null) return Array.Empty<FlashableImage>();
+        return _catalog.GetAvailableVersions(connectedFirmwareType)
+            .Select(v => new FlashableImage { FirmwareType = connectedFirmwareType, Version = v })
+            .ToList();
     }
+
+    /// <summary>The connected target running exactly this variant; a sibling variant's image (Q80 on a Q60) is never compatible.</summary>
+    private IDfuFlashTarget? ConnectedTarget(string firmwareType) =>
+        string.IsNullOrEmpty(firmwareType)
+            ? null
+            : AllTargets.FirstOrDefault(t => t.IsConnected && t.FirmwareType == firmwareType);
 
     /// <summary>
     /// Begin a flash on a background task. Returns false (with a reason) if one
@@ -96,7 +93,7 @@ public sealed class FirmwareFlasher
             error = $"No bundled firmware for {deviceType} {version}.";
             return false;
         }
-        var target = AllTargets.FirstOrDefault(t => t.IsConnected && t.CanFlash(deviceType));
+        var target = ConnectedTarget(deviceType);
         if (target is null)
         {
             error = $"No connected device can flash {deviceType}.";
@@ -105,13 +102,7 @@ public sealed class FirmwareFlasher
 
 #if !DEV_TOOLS
         // Release builds permit upgrades only: the connected variant's latest
-        // bundled image. Cross-variant and downgrade / re-flash are dev-tools-
-        // only (brick risk) and gated out of release - see the DEV_TOOLS define.
-        if (deviceType != target.FirmwareType)
-        {
-            error = "Cross-variant flashing is not permitted in this build.";
-            return false;
-        }
+        // bundled image. Downgrade / re-flash is dev-tools-only (brick risk).
         if (version != _catalog.GetLatestVersion(deviceType))
         {
             error = "Only the latest firmware version can be installed.";
@@ -159,6 +150,11 @@ public sealed class FirmwareFlasher
         if (stranded is null || stranded.State == StrandedDfuState.Identifying)
         {
             error = "No identified device is waiting for recovery.";
+            return false;
+        }
+        if (stranded.Identity is { } identity && identity.FirmwareType != deviceType)
+        {
+            error = "That firmware is not compatible with this device.";
             return false;
         }
 

@@ -65,12 +65,7 @@ public sealed class FirmwareStatusItem
     public bool AvailableUnknown { get; set; }
     /// <summary>All bundled versions for this device's connected variant (newest first).</summary>
     public List<string> AvailableVersions { get; set; } = new();
-    /// <summary>
-    /// Every image the connected device can be flashed with - including
-    /// sibling-variant images (e.g. a Gen1 CNVS can also take the Gen2 image).
-    /// Drives the dev-only picker so cross-branch testing is possible; the prod
-    /// Install path never uses these.
-    /// </summary>
+    /// <summary>Every bundled image of the connected variant, for the dev-only re-flash / downgrade picker.</summary>
     public List<FlashableImage> DevImages { get; set; } = new();
     /// <summary>True on the row for a device stuck in its bootloader after an interrupted update.</summary>
     public bool NeedsRecovery { get; set; }

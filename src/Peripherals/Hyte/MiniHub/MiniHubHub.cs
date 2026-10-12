@@ -50,7 +50,6 @@ public sealed class MiniHubHub : IDisposable, IDfuFlashTarget
 
     // ── IDfuFlashTarget ──
     string IDfuFlashTarget.FirmwareType => IsConnected ? "fan-hub" : "";
-    bool IDfuFlashTarget.CanFlash(string firmwareType) => firmwareType == "fan-hub";
 
     /// <summary>Drop the MiniHub into DFU: write the OTA key + magic over the serial port, then release it for dfu-util.</summary>
     public bool EnterDfuMode()

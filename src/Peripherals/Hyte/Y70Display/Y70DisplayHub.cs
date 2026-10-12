@@ -51,8 +51,6 @@ public sealed class Y70DisplayHub : IDisposable, IDfuFlashTarget
 
     // ── IDfuFlashTarget ──
     string IDfuFlashTarget.FirmwareType => IsConnected ? Variant : "";
-    bool IDfuFlashTarget.CanFlash(string firmwareType) =>
-        !string.IsNullOrEmpty(firmwareType) && firmwareType.StartsWith("y70", StringComparison.Ordinal);
 
     /// <summary>Drop the Y70 display into DFU: write the OTA key + magic over the serial port, then release it.</summary>
     public bool EnterDfuMode()

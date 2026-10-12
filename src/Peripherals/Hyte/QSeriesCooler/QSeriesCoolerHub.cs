@@ -239,8 +239,6 @@ public sealed class QSeriesCoolerHub : IDisposable, IDfuFlashTarget
 
     // ── IDfuFlashTarget ──
     string IDfuFlashTarget.FirmwareType => IsConnected ? Variant : "";
-    bool IDfuFlashTarget.CanFlash(string firmwareType) =>
-        firmwareType == QSeriesCoolerProtocol.VariantQ60 || firmwareType == QSeriesCoolerProtocol.VariantQ80;
 
     /// <summary>Drop the Q-series cooler into DFU: write the OTA key + magic over the serial port, then release it.</summary>
     public bool EnterDfuMode()

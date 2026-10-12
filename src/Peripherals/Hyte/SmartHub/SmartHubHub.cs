@@ -64,7 +64,6 @@ public sealed class SmartHubHub : IDisposable, IDfuFlashTarget
 
     // ── IDfuFlashTarget ──
     string IDfuFlashTarget.FirmwareType => IsConnected ? DeviceType : "";
-    bool IDfuFlashTarget.CanFlash(string firmwareType) => firmwareType == DeviceType;
 
     /// <summary>
     /// Drop the SmartHub into DFU: write the OTA key + magic over the serial

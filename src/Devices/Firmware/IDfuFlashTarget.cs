@@ -13,17 +13,9 @@ public interface IDfuFlashTarget
     /// <summary>
     /// The connected device's firmware-catalog key (its variant, e.g.
     /// "cnvs-left", "q60", "y70-infinite"), or empty when not connected/known.
-    /// This is the key the prod "install latest" path targets.
+    /// The only images this device is ever flashed with.
     /// </summary>
     string FirmwareType { get; }
-
-    /// <summary>
-    /// True if this physical device can be flashed with the given catalog key -
-    /// i.e. the key belongs to this device's family (CNVS handles all cnvs-*,
-    /// Q-series handles q60/q80, Y70 handles y70-*). Lets dev mode flash a
-    /// sibling-variant image through the connected device.
-    /// </summary>
-    bool CanFlash(string firmwareType);
 
     /// <summary>
     /// Release the COM port and send the in-app DFU-entry handshake. After this

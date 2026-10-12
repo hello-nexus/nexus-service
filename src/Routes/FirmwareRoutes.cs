@@ -55,7 +55,7 @@ public static partial class DevicesRoutes
                     UpdateAvailable = BundledFirmwareCatalog.IsNewer(available, d.FirmwareVersion),
                     AvailableVersions = catalog.GetAvailableVersions(d.FirmwareType).ToList(),
 #if DEV_TOOLS
-                    // Cross-branch / downgrade images for the dev-only picker.
+                    // Downgrade / re-flash images for the dev-only picker.
                     // Absent from release builds so the UI can't offer them.
                     DevImages = flasher.FlashableImages(d.FirmwareType).ToList(),
 #else
@@ -185,9 +185,9 @@ public static partial class DevicesRoutes
                 _ => "unsupported",
             },
 #if DEV_TOOLS
-            // Any bundled image, so a device the key cannot identify can still be
-            // forced from the dev picker.
-            DevImages = catalog.DeviceIds
+            // An identified board gets only its own variant; one the key cannot
+            // identify can only be forced from the full catalog.
+            DevImages = (id is null ? catalog.DeviceIds : new[] { id.FirmwareType })
                 .SelectMany(k => catalog.GetAvailableVersions(k).Select(v => new FlashableImage { FirmwareType = k, Version = v }))
                 .ToList(),
 #endif

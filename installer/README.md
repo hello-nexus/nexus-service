@@ -70,7 +70,7 @@ intended (a new bundled feature) or junk; verify which.
   `dfu-driver\`) ship in release - end users flash firmware upgrades
   through them, and they account for the step up in installer size when the
   firmware flasher feature landed. They are *not* junk. `DevTools`
-  only unlocks the brick-risky cross-variant / downgrade paths in
+  only unlocks the brick-risky downgrade / re-flash paths in
   `FirmwareFlasher.cs`, not flashing itself, so don't gate the binaries on it.
 - **Actual junk to strip:** delete any `test-results\` (a `dotnet test` runner
   artifact the Web SDK content glob pulls into publish) and confirm

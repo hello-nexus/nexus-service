@@ -169,7 +169,6 @@ public class PluginProviderRegistryTests
     {
         public bool IsConnected => false;
         public string FirmwareType => "";
-        public bool CanFlash(string firmwareType) => false;
         public bool EnterDfuMode() => false;
     }
 }

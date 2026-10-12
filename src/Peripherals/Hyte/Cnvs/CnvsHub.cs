@@ -75,8 +75,6 @@ public sealed class CnvsHub : IDisposable, IDfuFlashTarget
 
     // ── IDfuFlashTarget ──
     string IDfuFlashTarget.FirmwareType => IsConnected ? Variant : "";
-    bool IDfuFlashTarget.CanFlash(string firmwareType) =>
-        !string.IsNullOrEmpty(firmwareType) && firmwareType.StartsWith("cnvs", StringComparison.Ordinal);
 
     /// <summary>
     /// Drop the CNVS into DFU mode: write the OTA product key + the DFU magic
