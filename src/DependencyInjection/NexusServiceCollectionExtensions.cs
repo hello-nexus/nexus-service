@@ -2190,7 +2190,10 @@ public static class NexusServiceCollectionExtensions
                     sp.GetRequiredService<IConfigStore>(),
                     sp.GetRequiredService<Nexus.Service.Common.ExternalTools.IAdbDeviceRegistry>(),
                     sp.GetService<Nexus.Service.Panel.PanelTunnelMonitor>(),
-                    sp.GetRequiredService<Nexus.Service.Devices.Firmware.FlashGate>()));
+                    sp.GetRequiredService<Nexus.Service.Devices.Firmware.FlashGate>())
+                {
+                    QshellAutoInstaller = sp.GetRequiredService<Nexus.Service.Devices.Firmware.ApkFlasher>(),
+                });
             services.AddHostedService(sp =>
                 sp.GetRequiredService<Nexus.Service.QSeries.QSeriesPortWatcher>());
         }

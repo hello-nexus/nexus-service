@@ -895,6 +895,7 @@ public sealed class QSeriesPortWatcher : BackgroundService
 
             await EnsureReverseAsync(device, ct);
             await EnsureQshellForegroundAsync(device, ct);
+            if (FlashActive) continue;
             await ReassertPanelDisplayAsync(device, ct);
             RegisterDeviceTarget(device.Serial);
             await SyncDeviceClockAsync(device, ct);
@@ -2409,6 +2410,16 @@ public sealed class QSeriesPortWatcher : BackgroundService
     /// </summary>
     private readonly Dictionary<string, int> _qshellVersionCodeBySerial = new(StringComparer.Ordinal);
 
+    /// <summary>Installs the manifest's qshell over an older one on attach; null leaves installs to the user.</summary>
+    internal Nexus.Service.Devices.Firmware.ApkFlasher? QshellAutoInstaller { get; init; }
+
+    /// <summary>Serials checked against the manifest this run; at most one automatic install each, so a failing install cannot loop.</summary>
+    private readonly HashSet<string> _qshellAutoInstallChecked = new(StringComparer.Ordinal);
+
+    /// <summary>qshell's usb-rearm.log lines already copied into this log, per serial.</summary>
+    private readonly Dictionary<string, HashSet<string>> _usbRearmLinesLogged = new(StringComparer.Ordinal);
+    private const string UsbRearmLogPath = "/sdcard/Android/data/" + QshellPackage + "/files/usb-rearm.log";
+
     /// <summary>Serials whose inconclusive-probe line has been logged; re-armed when
     /// the verdict resolves. A boot window re-probes every 15 s.</summary>
     private readonly HashSet<string> _qshellPresenceUnknownLogged = new(StringComparer.Ordinal);
@@ -2450,7 +2461,11 @@ public sealed class QSeriesPortWatcher : BackgroundService
             // EscalationGrace can elapse, and records the app version. The focus
             // check below establishes neither.
             await ProbeQshellPresenceAsync(device, "panel attached", ct);
+            await LogUsbRearmAsync(device, ct);
         }
+
+        // The install uninstalls and relaunches qshell; the focus repair below would race it.
+        if (await TryAutoInstallQshellAsync(device, ct)) return;
 
         // Device-side grep narrows the verbose dumpsys (busybox grep present on
         // Q-series Android 11).
@@ -2625,6 +2640,60 @@ public sealed class QSeriesPortWatcher : BackgroundService
                 break;
         }
         return presence;
+    }
+
+    /// <summary>
+    /// True when an install over the panel's older (or missing) qshell started. Runs every
+    /// pass until a probe has read the installed version, which a panel attached mid-boot
+    /// only answers on a later re-probe.
+    /// </summary>
+    private async Task<bool> TryAutoInstallQshellAsync(DeviceData device, CancellationToken ct)
+    {
+        if (QshellAutoInstaller is null
+            || _qshellAutoInstallChecked.Contains(device.Serial)
+            || !_qshellVersionCodeBySerial.TryGetValue(device.Serial, out var installed))
+        {
+            return false;
+        }
+        var latest = await QshellAutoInstaller.GetLatestCachedAsync(ct);
+        if (latest?.VersionCode is not int target) return false;
+        _qshellAutoInstallChecked.Add(device.Serial);
+        if (installed >= target) return false;
+        // The flasher finds the panel through the registry, which the tick fills only after this pass.
+        RegisterDeviceTarget(device.Serial);
+        if (!QshellAutoInstaller.TryStart(Nexus.Service.Devices.Firmware.ApkFlasher.DeviceTypeKey, latest.Version, out var error))
+        {
+            ServiceLog.Info($"[qseries-port-watcher] {device.Serial}: qshell {latest.Version} install not started: {error}");
+            return false;
+        }
+        ServiceLog.Info($"[qseries-port-watcher] {device.Serial}: installing qshell {latest.Version} (versionCode={target}) over versionCode={installed}");
+        return true;
+    }
+
+    /// <summary>Copies qshell's usb-rearm.log lines this run has not logged yet.</summary>
+    private async Task LogUsbRearmAsync(DeviceData device, CancellationToken ct)
+    {
+        var receiver = new ConsoleOutputReceiver();
+        try
+        {
+            await _client.ExecuteShellCommandAsync(device, $"tail -n 40 {UsbRearmLogPath}", receiver, ct);
+        }
+        catch (Exception ex) when (!ct.IsCancellationRequested)
+        {
+            ServiceLog.Info($"[qseries-port-watcher] {device.Serial}: usb-rearm log read failed: {ex.GetType().Name}");
+            return;
+        }
+        if (!_usbRearmLinesLogged.TryGetValue(device.Serial, out var logged))
+        {
+            _usbRearmLinesLogged[device.Serial] = logged = new HashSet<string>(StringComparer.Ordinal);
+        }
+        foreach (var line in receiver.ToString().Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+        {
+            if (line.StartsWith("boot ", StringComparison.Ordinal) && logged.Add(line))
+            {
+                ServiceLog.Info($"[qseries-port-watcher] {device.Serial}: panel usb-rearm: {line}");
+            }
+        }
     }
 
     /// <summary>
