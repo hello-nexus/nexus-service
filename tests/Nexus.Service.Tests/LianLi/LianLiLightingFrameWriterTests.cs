@@ -353,22 +353,6 @@ public class LianLiLightingFrameWriterTests
     }
 
     [Fact]
-    public void Split_rings_on_a_family_without_ring_effects_play_the_whole_fan_mode()
-    {
-        AttachPorts(0x7750, 1);
-        _store.Update(s =>
-        {
-            s.Devices.LianLiLighting.Mode = "rainbowWave";
-            s.Devices.LianLiLighting.InnerRing = Effect("taichi");
-            s.Devices.LianLiLighting.OuterRing = Effect("reflect");
-        });
-
-        _writer.Tick();
-
-        Assert.All(CommittedEffects().Values, b => Assert.Equal(0x05, b));
-    }
-
-    [Fact]
     public void Split_rings_switch_off_merge()
     {
         AttachMerged(0xA102, "runway");

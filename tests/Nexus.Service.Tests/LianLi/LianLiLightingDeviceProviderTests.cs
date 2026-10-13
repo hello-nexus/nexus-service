@@ -284,8 +284,16 @@ public class LianLiLightingDeviceProviderTests
         Assert.False(_provider.OwnsOpenRgbDevice(device));
     }
 
+    [Fact]
+    public void OwnsOpenRgbDevice_false_for_the_original_uni_hub()
+    {
+        Connect();
+        var device = new Nexus.Service.Lighting.Rgb.RgbDevice { Name = "Lian Li Uni Hub" };
+        Assert.False(_provider.OwnsOpenRgbDevice(device));
+    }
+
     [Theory]
-    [InlineData("Lian Li Uni Hub")]
+    [InlineData("Lian Li Uni Hub - SL Infinity")]
     [InlineData("Lian Li Uni Hub SL-Infinity")]
     [InlineData("lian li uni hub Controller")]
     public void OwnsOpenRgbDevice_true_when_connected_and_name_matches(string name)

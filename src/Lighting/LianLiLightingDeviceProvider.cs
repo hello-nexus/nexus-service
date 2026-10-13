@@ -43,8 +43,12 @@ public sealed class LianLiLightingDeviceProvider :
     /// enumerates the hub we must prevent the bridge from seeding engine frames for
     /// it - otherwise OpenRGB's push overwrites our first-party black/brightness frames.
     /// </summary>
-    public bool OwnsOpenRgbDevice(RgbDevice device) =>
-        IsConnected && device.Name.Contains("Lian Li Uni Hub", StringComparison.OrdinalIgnoreCase);
+    public bool OwnsOpenRgbDevice(RgbDevice device) => IsConnected && IsNativeHubName(device.Name);
+
+    /// <summary>OpenRGB names the original Uni Hub (0x7750), which only OpenRGB drives, exactly "Lian Li Uni Hub".</summary>
+    internal static bool IsNativeHubName(string name) =>
+        name.Contains("Lian Li Uni Hub", StringComparison.OrdinalIgnoreCase)
+        && !name.Equals("Lian Li Uni Hub", StringComparison.OrdinalIgnoreCase);
 
     public event Action? DevicesChanged;
 

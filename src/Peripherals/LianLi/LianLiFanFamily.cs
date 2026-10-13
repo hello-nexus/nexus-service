@@ -104,10 +104,11 @@ public static class LianLiFanProfiles
     // per port, quantity packed into a single byte, colours over interrupt-OUT.
     // SL v2 is one ring per fan on longer chains; AL and AL v2 share the
     // SL-Infinity rings, AL v2 on longer chains with a wider palette. Only
-    // SL-Infinity and SL v1 are bench-verified.
+    // SL-Infinity and SL v1 are bench-verified. The original Uni Hub (0x7750) is
+    // absent: it needs libusb control transfers this HID worker cannot send, so
+    // OpenRGB drives it.
     private static readonly (int Pid, LianLiFanProfile Profile)[] s_table =
     {
-        (0x7750, SlInfinityLayout(new LianLiFanProfile { Family = LianLiFanFamily.Sl,         ProductId = 0x7750, FlooredDuty = false, ManualRegister = 0x31, ArgbRegister = 0x30, QuantityRegister = 0x60, RpmOffset = 1, ModelName = "Uni Hub" })),
         (0xA100, SlLayout(        new LianLiFanProfile { Family = LianLiFanFamily.Sl,         ProductId = 0xA100, FlooredDuty = false, ManualRegister = 0x31, ArgbRegister = 0x30, QuantityRegister = 0x32, RpmOffset = 1, ModelName = "Uni SL" })),
         (0xA101, SlInfinityLayout(new LianLiFanProfile { Family = LianLiFanFamily.Al,         ProductId = 0xA101, FlooredDuty = false, ManualRegister = 0x42, ArgbRegister = 0x41, QuantityRegister = 0x40, RpmOffset = 1, ModelName = "Uni AL" })),
         (0xA102, SlInfinityLayout(new LianLiFanProfile { Family = LianLiFanFamily.SlInfinity, ProductId = 0xA102, FlooredDuty = true,  ManualRegister = 0x62, ArgbRegister = 0x61, QuantityRegister = 0x60, RpmOffset = 1, ModelName = "SL-Infinity" }) with { SupportsMerge = true }),
@@ -169,7 +170,7 @@ public static class LianLiFanProfiles
     /// <summary>All Uni fan PIDs for HID enumeration.</summary>
     public static readonly int[] AllProductIds =
     {
-        0x7750, 0xA100, 0xA101, 0xA102, 0xA103, 0xA104, 0xA105, 0xA106,
+        0xA100, 0xA101, 0xA102, 0xA103, 0xA104, 0xA105, 0xA106,
     };
 
     public static bool TryGet(int productId, out LianLiFanProfile profile)

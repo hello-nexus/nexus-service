@@ -338,7 +338,6 @@ public class LianLiProtocolTests
     // ── LianLiFanProfiles ──
 
     [Theory]
-    [InlineData(0x7750, false, 49, 48, 1)]
     [InlineData(0xA100, false, 49, 48, 1)]
     [InlineData(0xA101, false, 66, 65, 1)]
     [InlineData(0xA102, true,  98, 97, 1)]
@@ -435,11 +434,10 @@ public class LianLiProtocolTests
     }
 
     [Fact]
-    public void LianLiFanProfiles_AllProductIds_contains_all_eight_pids()
+    public void LianLiFanProfiles_AllProductIds_contains_all_seven_pids()
     {
         var ids = LianLiFanProfiles.AllProductIds;
-        Assert.Equal(8, ids.Length);
-        Assert.Contains(0x7750, ids);
+        Assert.Equal(7, ids.Length);
         Assert.Contains(0xA100, ids);
         Assert.Contains(0xA101, ids);
         Assert.Contains(0xA102, ids);
