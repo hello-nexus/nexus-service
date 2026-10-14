@@ -234,6 +234,24 @@ public class JsonConfigStoreMigrationTests : IDisposable
     }
 
     [Fact]
+    public void Load_StudioShowOnAllDevices_DefaultsOffAndReadsStoredValue()
+    {
+        Assert.False(new UiSettings().StudioShowOnAllDevices);
+
+        File.WriteAllText(_settingsPath, $$"""{ "schemaVersion": {{NexusSettings.CurrentSchemaVersion}}, "ui": { "studioShowOnAllDevices": true } }""");
+        var store = new JsonConfigStore(_settingsPath);
+        var s = store.Load();
+        try
+        {
+            Assert.True(s.Ui.StudioShowOnAllDevices);
+        }
+        finally
+        {
+            store.Dispose();
+        }
+    }
+
+    [Fact]
     public void Load_NoSettingsFile_DashboardAutoArrangeOff()
     {
         var store = new JsonConfigStore(_settingsPath);

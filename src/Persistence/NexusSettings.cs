@@ -467,6 +467,8 @@ public sealed class UiSettings
     public string CoolingDashboardMode { get; set; } = "simple";
     /// <summary>True packs the desktop home dashboard's widgets to the window width; false leaves them where the user dragged them. Off by default.</summary>
     public bool DashboardAutoArrange { get; set; }
+    /// <summary>The Effect Studio's Show on all devices button as the user last left it; the Studio reopens in that state. Off by default.</summary>
+    public bool StudioShowOnAllDevices { get; set; }
     /// <summary>
     /// Superseded by the two per-page flags below. Kept, and still written by
     /// the client, so a build that predates the split keeps working and so the
@@ -503,6 +505,7 @@ public sealed class UiSettingsPatch
     public string? LightingDashboardMode { get; set; }
     public string? CoolingDashboardMode { get; set; }
     public bool? DashboardAutoArrange { get; set; }
+    public bool? StudioShowOnAllDevices { get; set; }
     public bool? ShowUncontrolledDevices { get; set; }
     public bool? ShowUncontrolledLightingDevices { get; set; }
     public bool? ShowUncontrolledCoolingDevices { get; set; }
