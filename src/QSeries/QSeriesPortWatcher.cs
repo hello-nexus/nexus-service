@@ -2413,14 +2413,17 @@ public sealed class QSeriesPortWatcher : BackgroundService
     /// <summary>Installs the manifest's qshell over an older one on attach; null leaves installs to the user.</summary>
     internal Nexus.Service.Devices.Firmware.ApkFlasher? QshellAutoInstaller { get; init; }
 
-    /// <summary>Serials whose panel reported the manifest's qshell versionCode; no further automatic installs this run.</summary>
+    /// <summary>Serials needing no further automatic install this run: the panel reported the target, or the attempts ran out.</summary>
     private readonly HashSet<string> _qshellAutoInstallDone = new(StringComparer.Ordinal);
 
-    /// <summary>Serial -> earliest next automatic install check, so a failed download or install retries at this pace.</summary>
+    /// <summary>Serial -> earliest next automatic install check.</summary>
     private readonly Dictionary<string, DateTimeOffset> _qshellAutoInstallNextAt = new(StringComparer.Ordinal);
-    private static readonly TimeSpan QshellAutoInstallRetry = TimeSpan.FromMinutes(1);
 
-    /// <summary>qshell's usb-rearm.log lines already copied into this log, per serial.</summary>
+    /// <summary>Serial -> automatic installs started this run; capped so a persistent failure stops rerunning adb install.</summary>
+    private readonly Dictionary<string, int> _qshellAutoInstallAttempts = new(StringComparer.Ordinal);
+    private const int QshellAutoInstallMaxAttempts = 5;
+
+    /// <summary>Serial -> the lines of qshell's usb-rearm.log at the last read, so a re-read logs only new ones.</summary>
     private readonly Dictionary<string, HashSet<string>> _usbRearmLinesLogged = new(StringComparer.Ordinal);
     private const string UsbRearmLogPath = "/sdcard/Android/data/" + QshellPackage + "/files/usb-rearm.log";
 
@@ -2647,10 +2650,10 @@ public sealed class QSeriesPortWatcher : BackgroundService
     }
 
     /// <summary>
-    /// True when an install over the panel's older (or missing) qshell started. Checks at
-    /// most once per <see cref="QshellAutoInstallRetry"/> until the panel reports the
-    /// manifest's versionCode, so a failed download or install is retried. A retry
-    /// re-probes first: a finished install does not refresh the probe cache.
+    /// True when an install over the panel's older (or missing) qshell started. Retries a
+    /// failed download or install with growing spacing until the panel reports the
+    /// manifest's versionCode, up to <see cref="QshellAutoInstallMaxAttempts"/> starts. A
+    /// retry re-probes first: a finished install does not refresh the probe cache.
     /// </summary>
     private async Task<bool> TryAutoInstallQshellAsync(DeviceData device, CancellationToken ct)
     {
@@ -2664,8 +2667,9 @@ public sealed class QSeriesPortWatcher : BackgroundService
         {
             return false;
         }
+        var attempts = _qshellAutoInstallAttempts.GetValueOrDefault(device.Serial);
         var retry = _qshellAutoInstallNextAt.ContainsKey(device.Serial);
-        _qshellAutoInstallNextAt[device.Serial] = now + QshellAutoInstallRetry;
+        _qshellAutoInstallNextAt[device.Serial] = now + QshellAutoInstallSpacing(attempts);
         if (retry && await ProbeQshellPresenceAsync(device, "auto-install retry", ct) == QshellPresence.Unknown) return false;
         if (!_qshellVersionCodeBySerial.TryGetValue(device.Serial, out var installed)) return false;
         var latest = await QshellAutoInstaller.GetLatestCachedAsync(ct);
@@ -2675,18 +2679,30 @@ public sealed class QSeriesPortWatcher : BackgroundService
             _qshellAutoInstallDone.Add(device.Serial);
             return false;
         }
+        if (attempts >= QshellAutoInstallMaxAttempts)
+        {
+            _qshellAutoInstallDone.Add(device.Serial);
+            ServiceLog.Info($"[qseries-port-watcher] {device.Serial}: qshell {latest.Version} auto-install gave up after {attempts} attempts, panel reports versionCode={installed}");
+            return false;
+        }
+        _qshellAutoInstallAttempts[device.Serial] = ++attempts;
+        _qshellAutoInstallNextAt[device.Serial] = now + QshellAutoInstallSpacing(attempts);
         // The flasher finds the panel through the registry, which the tick fills only after this pass.
         RegisterDeviceTarget(device.Serial);
         if (!QshellAutoInstaller.TryStart(Nexus.Service.Devices.Firmware.ApkFlasher.DeviceTypeKey, latest.Version, out var error))
         {
-            ServiceLog.Info($"[qseries-port-watcher] {device.Serial}: qshell {latest.Version} install not started: {error}");
+            ServiceLog.Info($"[qseries-port-watcher] {device.Serial}: qshell {latest.Version} install not started (attempt {attempts}/{QshellAutoInstallMaxAttempts}): {error}");
             return false;
         }
-        ServiceLog.Info($"[qseries-port-watcher] {device.Serial}: installing qshell {latest.Version} (versionCode={target}) over versionCode={installed}{(retry ? " (retry)" : "")}");
+        ServiceLog.Info($"[qseries-port-watcher] {device.Serial}: installing qshell {latest.Version} (versionCode={target}) over versionCode={installed} (attempt {attempts}/{QshellAutoInstallMaxAttempts})");
         return true;
     }
 
-    /// <summary>Copies qshell's usb-rearm.log lines this run has not logged yet.</summary>
+    /// <summary>Wait before the next auto-install check: doubles per started attempt, capped at the fourth.</summary>
+    internal static TimeSpan QshellAutoInstallSpacing(int attempts)
+        => TimeSpan.FromMinutes(1 << Math.Clamp(attempts - 1, 0, 3));
+
+    /// <summary>Copies the qshell usb-rearm.log lines that the previous read did not have.</summary>
     private async Task LogUsbRearmAsync(DeviceData device, CancellationToken ct)
     {
         var receiver = new ConsoleOutputReceiver();
@@ -2699,17 +2715,16 @@ public sealed class QSeriesPortWatcher : BackgroundService
             ServiceLog.Info($"[qseries-port-watcher] {device.Serial}: usb-rearm log read failed: {ex.GetType().Name}");
             return;
         }
-        if (!_usbRearmLinesLogged.TryGetValue(device.Serial, out var logged))
-        {
-            _usbRearmLinesLogged[device.Serial] = logged = new HashSet<string>(StringComparer.Ordinal);
-        }
+        var previous = _usbRearmLinesLogged.GetValueOrDefault(device.Serial);
+        var current = new HashSet<string>(StringComparer.Ordinal);
         foreach (var line in receiver.ToString().Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
         {
-            if (line.StartsWith("boot ", StringComparison.Ordinal) && logged.Add(line))
+            if (line.StartsWith("boot ", StringComparison.Ordinal) && current.Add(line) && previous?.Contains(line) != true)
             {
                 ServiceLog.Info($"[qseries-port-watcher] {device.Serial}: panel usb-rearm: {line}");
             }
         }
+        _usbRearmLinesLogged[device.Serial] = current;
     }
 
     /// <summary>
