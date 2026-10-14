@@ -23,8 +23,8 @@ internal delegate Task<string?> ApkDownloader(CancellationToken ct);
 /// </summary>
 public sealed class ApkFlasher
 {
-    // Customer build: qshell 0.1.5-marito (platform-signed USB re-arm), never the public manifest.
-    private const string QshellManifestBase = "https://usercontent.hellonexus.com/builds/qshell-0.1.5-marito";
+    // Customer build: qshell 0.1.6-marito (platform-signed USB re-arm and link recorder), never the public manifest.
+    private const string QshellManifestBase = "https://usercontent.hellonexus.com/builds/qshell-0.1.6-marito";
     private const string QshellManifestUrl = QshellManifestBase + "/latest.json";
     private const string QshellDownloadBase = QshellManifestBase;
 

@@ -2413,8 +2413,12 @@ public sealed class QSeriesPortWatcher : BackgroundService
     /// <summary>Installs the manifest's qshell over an older one on attach; null leaves installs to the user.</summary>
     internal Nexus.Service.Devices.Firmware.ApkFlasher? QshellAutoInstaller { get; init; }
 
-    /// <summary>Serials checked against the manifest this run; at most one automatic install each, so a failing install cannot loop.</summary>
-    private readonly HashSet<string> _qshellAutoInstallChecked = new(StringComparer.Ordinal);
+    /// <summary>Serials whose panel reported the manifest's qshell versionCode; no further automatic installs this run.</summary>
+    private readonly HashSet<string> _qshellAutoInstallDone = new(StringComparer.Ordinal);
+
+    /// <summary>Serial -> earliest next automatic install check, so a failed download or install retries at this pace.</summary>
+    private readonly Dictionary<string, DateTimeOffset> _qshellAutoInstallNextAt = new(StringComparer.Ordinal);
+    private static readonly TimeSpan QshellAutoInstallRetry = TimeSpan.FromMinutes(1);
 
     /// <summary>qshell's usb-rearm.log lines already copied into this log, per serial.</summary>
     private readonly Dictionary<string, HashSet<string>> _usbRearmLinesLogged = new(StringComparer.Ordinal);
@@ -2643,22 +2647,34 @@ public sealed class QSeriesPortWatcher : BackgroundService
     }
 
     /// <summary>
-    /// True when an install over the panel's older (or missing) qshell started. Runs every
-    /// pass until a probe has read the installed version, which a panel attached mid-boot
-    /// only answers on a later re-probe.
+    /// True when an install over the panel's older (or missing) qshell started. Checks at
+    /// most once per <see cref="QshellAutoInstallRetry"/> until the panel reports the
+    /// manifest's versionCode, so a failed download or install is retried. A retry
+    /// re-probes first: a finished install does not refresh the probe cache.
     /// </summary>
     private async Task<bool> TryAutoInstallQshellAsync(DeviceData device, CancellationToken ct)
     {
+        var now = DateTimeOffset.UtcNow;
         if (QshellAutoInstaller is null
-            || _qshellAutoInstallChecked.Contains(device.Serial)
-            || !_qshellVersionCodeBySerial.TryGetValue(device.Serial, out var installed))
+            || FlashActive
+            || _qshellAutoInstallDone.Contains(device.Serial)
+            || (_qshellAutoInstallNextAt.TryGetValue(device.Serial, out var nextAt) && now < nextAt)
+            // A panel attached mid-boot only answers the version probe on a later re-probe.
+            || !_qshellVersionCodeBySerial.ContainsKey(device.Serial))
         {
             return false;
         }
+        var retry = _qshellAutoInstallNextAt.ContainsKey(device.Serial);
+        _qshellAutoInstallNextAt[device.Serial] = now + QshellAutoInstallRetry;
+        if (retry && await ProbeQshellPresenceAsync(device, "auto-install retry", ct) == QshellPresence.Unknown) return false;
+        if (!_qshellVersionCodeBySerial.TryGetValue(device.Serial, out var installed)) return false;
         var latest = await QshellAutoInstaller.GetLatestCachedAsync(ct);
         if (latest?.VersionCode is not int target) return false;
-        _qshellAutoInstallChecked.Add(device.Serial);
-        if (installed >= target) return false;
+        if (installed >= target)
+        {
+            _qshellAutoInstallDone.Add(device.Serial);
+            return false;
+        }
         // The flasher finds the panel through the registry, which the tick fills only after this pass.
         RegisterDeviceTarget(device.Serial);
         if (!QshellAutoInstaller.TryStart(Nexus.Service.Devices.Firmware.ApkFlasher.DeviceTypeKey, latest.Version, out var error))
@@ -2666,7 +2682,7 @@ public sealed class QSeriesPortWatcher : BackgroundService
             ServiceLog.Info($"[qseries-port-watcher] {device.Serial}: qshell {latest.Version} install not started: {error}");
             return false;
         }
-        ServiceLog.Info($"[qseries-port-watcher] {device.Serial}: installing qshell {latest.Version} (versionCode={target}) over versionCode={installed}");
+        ServiceLog.Info($"[qseries-port-watcher] {device.Serial}: installing qshell {latest.Version} (versionCode={target}) over versionCode={installed}{(retry ? " (retry)" : "")}");
         return true;
     }
 
@@ -2676,7 +2692,7 @@ public sealed class QSeriesPortWatcher : BackgroundService
         var receiver = new ConsoleOutputReceiver();
         try
         {
-            await _client.ExecuteShellCommandAsync(device, $"tail -n 40 {UsbRearmLogPath}", receiver, ct);
+            await _client.ExecuteShellCommandAsync(device, $"cat {UsbRearmLogPath}", receiver, ct);
         }
         catch (Exception ex) when (!ct.IsCancellationRequested)
         {
