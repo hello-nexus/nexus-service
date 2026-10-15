@@ -855,6 +855,7 @@ if (serviceMode)
         // The OS reclaims sockets/serial/HID/GPU/file handles; the
         // KILL_ON_JOB_CLOSE child job reaps OpenRGB/ffmpeg.
         await app.StartAsync(CancellationToken.None).ConfigureAwait(false);
+        Nexus.Service.Lifecycle.AngleDiag.Start();
         // Wake on either the SCM stop control (ct) or an in-process
         // StopApplication. /service/stop, the tray "Shut down", factory-reset,
         // and the GPU-change restart all stop via IHostApplicationLifetime, not

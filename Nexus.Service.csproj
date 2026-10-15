@@ -474,6 +474,15 @@
       <CopyToPublishDirectory>PreserveNewest</CopyToPublishDirectory>
     </Content>
   </ItemGroup>
+  <!-- ANGLE (libEGL + libGLESv2) for the angle probe diagnostic. Ships under angle/ and
+       is only ever loaded by full path. d3dcompiler_47.dll comes from System32. -->
+  <ItemGroup Condition="'$(RuntimeIdentifier)' == 'win-x64' OR ('$(RuntimeIdentifier)' == '' AND $([MSBuild]::IsOSPlatform('Windows')))">
+    <Content Include="Bundled\win-x64\angle\*.*">
+      <Link>angle\%(Filename)%(Extension)</Link>
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+      <CopyToPublishDirectory>PreserveNewest</CopyToPublishDirectory>
+    </Content>
+  </ItemGroup>
   <ItemGroup Condition="'$(RuntimeIdentifier)' == 'osx-arm64' OR ('$(RuntimeIdentifier)' == '' AND $([MSBuild]::IsOSPlatform('OSX')))">
     <Content Include="Bundled/osx-arm64/skia/libSkiaSharp.dylib">
       <Link>libSkiaSharp.dylib</Link>

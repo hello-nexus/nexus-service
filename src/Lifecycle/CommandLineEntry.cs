@@ -17,6 +17,7 @@ internal static class CommandLineEntry
             // Throwaway render-GPU probe (see GpuProbe): optionally set the
             // GpuPreference class, create a GL context, print the bound renderer.
             ["--gpu-probe"] = GpuProbe.Run,
+            ["--angle-probe"] = AngleProbe.Run,
             // One-shot invoked by the service via schtasks when the desktop
             // widget context menu's "Open dashboard" item is clicked.
             ["--open-app"] = static _ =>
