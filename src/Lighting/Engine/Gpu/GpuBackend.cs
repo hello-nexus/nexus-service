@@ -43,7 +43,8 @@ internal static class GpuBackend
     public static string Resolve(string? requested, bool angleAvailable)
     {
         var r = requested?.Trim();
-        if (string.Equals(r, Wgl, StringComparison.OrdinalIgnoreCase))
+        // Customer test build on the v3.1.2-beta.1 schema: the stored "wgl" was the old default, so it means ANGLE here.
+        if (string.Equals(r, Wgl, StringComparison.OrdinalIgnoreCase) && !angleAvailable)
         {
             return Wgl;
         }
