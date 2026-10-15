@@ -72,10 +72,11 @@ public sealed class GpuDiagSchedule
 
 /// <summary>One stats window, as the summary consumes it.</summary>
 public sealed record GpuDiagWindow(
-    GpuDiagMode Mode, bool Settle, int Frames, double ProcPctOfCore, double[] PhaseCpuMsPerSec);
+    GpuDiagMode Mode, bool Settle, int Frames, double ProcPctOfCore, double[] PhaseCpuMsPerSec, double Seconds = 10);
 
 public sealed record GpuDiagModeSummary(
-    GpuDiagMode Mode, int Windows, double MedianProcPctOfCore, double[] MedianPhaseCpuMsPerSec);
+    GpuDiagMode Mode, int Windows, double MedianProcPctOfCore, double[] MedianPhaseCpuMsPerSec,
+    double MedianProcCpuMsPerFrame = 0, double[]? MedianPhaseCpuMsPerFrame = null);
 
 public static class GpuDiagSummary
 {
@@ -110,10 +111,13 @@ public static class GpuDiagSummary
         foreach (var mode in seen)
         {
             var proc = new List<double>();
+            var procFrame = new List<double>();
+            var phasesFrame = new List<double>[phaseCount];
             var phases = new List<double>[phaseCount];
             for (var p = 0; p < phaseCount; p++)
             {
                 phases[p] = new List<double>();
+                phasesFrame[p] = new List<double>();
             }
             foreach (var w in windows)
             {
@@ -122,17 +126,21 @@ public static class GpuDiagSummary
                     continue;
                 }
                 proc.Add(w.ProcPctOfCore);
+                procFrame.Add(w.ProcPctOfCore / 100.0 * w.Seconds * 1000.0 / w.Frames);
                 for (var p = 0; p < phaseCount && p < w.PhaseCpuMsPerSec.Length; p++)
                 {
                     phases[p].Add(w.PhaseCpuMsPerSec[p]);
+                    phasesFrame[p].Add(w.PhaseCpuMsPerSec[p] * w.Seconds / w.Frames);
                 }
             }
             var med = new double[phaseCount];
+            var medFrame = new double[phaseCount];
             for (var p = 0; p < phaseCount; p++)
             {
                 med[p] = Median(phases[p]);
+                medFrame[p] = Median(phasesFrame[p]);
             }
-            result.Add(new GpuDiagModeSummary(mode, proc.Count, Median(proc), med));
+            result.Add(new GpuDiagModeSummary(mode, proc.Count, Median(proc), med, Median(procFrame), medFrame));
         }
         return result;
     }

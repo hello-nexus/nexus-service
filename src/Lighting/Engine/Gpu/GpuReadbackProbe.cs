@@ -42,6 +42,10 @@ internal sealed class GpuReadbackProbe
     /// <summary>Releases outstanding fences when the sequence leaves the async variant.</summary>
     public void ResetAsync(GL gl)
     {
+        if (!_ringReady)
+        {
+            return;
+        }
         for (var i = 0; i < RingSize; i++)
         {
             if (_fence[i] != 0)
@@ -49,7 +53,13 @@ internal sealed class GpuReadbackProbe
                 gl.DeleteSync(_fence[i]);
                 _fence[i] = 0;
             }
+            if (_pbo[i] != 0)
+            {
+                gl.DeleteBuffer(_pbo[i]);
+                _pbo[i] = 0;
+            }
         }
+        _ringReady = false;
     }
 
     private static void DrainErrors(GL gl)
@@ -72,7 +82,11 @@ internal sealed class GpuReadbackProbe
     {
         var size = w * h * 3;
         var sync = GpuDiag.Begin(GpuDiag.Phase.GlSync);
-        if (!_ringReady || _ringBytes != size)
+        if (_ringReady && _ringBytes != size)
+        {
+            ResetAsync(gl);
+        }
+        if (!_ringReady)
         {
             for (var i = 0; i < RingSize; i++)
             {

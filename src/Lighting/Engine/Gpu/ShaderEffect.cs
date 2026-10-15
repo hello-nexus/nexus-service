@@ -73,6 +73,7 @@ public sealed class ShaderEffect : IEffect
     private CanvasBuffer? _pendingCanvas;
     private double _pendingTick;
     private GpuDiag.FrameContext _pendingDiagCtx;
+    private GpuDiagMode _pendingDiagMode;
     private Action? _cachedRenderDelegate;
 
     public string Name { get; }
@@ -138,13 +139,15 @@ public sealed class ShaderEffect : IEffect
         }
 
         var diagCtx = GpuDiag.CallerContext;
-        if (GpuDiag.ModeFor(diagCtx) == GpuDiagMode.NoRender)
+        var diagMode = GpuDiag.ModeFor(diagCtx);
+        if (diagMode == GpuDiagMode.NoRender)
         {
             GpuDiag.CountFrame(diagCtx);
             return;
         }
 
         _pendingDiagCtx = diagCtx;
+        _pendingDiagMode = diagMode;
         _pendingCanvas = canvas;
         _pendingTick = tickMs;
         _cachedRenderDelegate ??= RenderPending;
@@ -187,7 +190,7 @@ public sealed class ShaderEffect : IEffect
             GpuDiag.OnGlFrame(gl, _ctx.Renderer);
             var diagCtx = _pendingDiagCtx;
             GpuDiag.CountFrame(diagCtx);
-            var mode = GpuDiag.ModeFor(diagCtx);
+            var mode = _pendingDiagMode;
             if (mode != GpuDiagMode.AsyncReadback && _probe is not null
                 && diagCtx == GpuDiag.FrameContext.Main)
             {

@@ -51,6 +51,12 @@ public static class GpuDiag
     private static int _mode;
     private static int _unsupportedMask;
     private static bool _pboSupported;
+#if WINDOWS
+    private static bool _timerHeld;
+#endif
+#if WINDOWS
+    private static Nexus.Service.Sensors.WindowsTimerResolution.Scope _timer;
+#endif
 
     [ThreadStatic]
     private static int t_registeredKinds;
@@ -155,16 +161,16 @@ public static class GpuDiag
                 MarkUnsupported(GpuDiagMode.AsyncReadback, "context below 3.2");
                 MarkUnsupported(GpuDiagMode.SleepWait, "context below 3.2");
             }
+            _enabled = true;
+            var thread = new Thread(() => Run(renderer ?? "?")) { IsBackground = true, Name = "nexus-gpu-diag" };
+            thread.Priority = ThreadPriority.BelowNormal;
+            thread.Start();
         }
         catch (Exception ex)
         {
-            GpuContext.Log($"{Tag} GL query failed: {ex.Message}");
-            return;
+            _enabled = false;
+            GpuContext.Log($"{Tag} start failed: {ex.Message}");
         }
-        _enabled = true;
-        var thread = new Thread(() => Run(renderer ?? "?")) { IsBackground = true, Name = "nexus-gpu-diag" };
-        thread.Priority = ThreadPriority.BelowNormal;
-        thread.Start();
     }
 
     public static void MarkUnsupported(GpuDiagMode mode, string reason)
@@ -195,6 +201,7 @@ public static class GpuDiag
             _aborted = true;
             _abortReason = reason;
             Volatile.Write(ref _mode, (int)GpuDiagMode.Baseline);
+            HoldTimerResolution(false);
         }
         GpuContext.Log($"{Tag} forced to baseline: {reason}");
     }
@@ -206,8 +213,29 @@ public static class GpuDiag
             if (!_aborted)
             {
                 Volatile.Write(ref _mode, (int)mode);
+                HoldTimerResolution(mode == GpuDiagMode.SleepWait && ModeFor(FrameContext.Main) == mode);
             }
         }
+    }
+
+    // sleep-wait polls with Thread.Sleep(1), which rounds to the default tick without a 1 ms timer period.
+    private static void HoldTimerResolution(bool hold)
+    {
+#if WINDOWS
+        if (hold == _timerHeld)
+        {
+            return;
+        }
+        if (hold)
+        {
+            _timer = Nexus.Service.Sensors.WindowsTimerResolution.Elevate();
+        }
+        else
+        {
+            _timer.Dispose();
+        }
+        _timerHeld = hold;
+#endif
     }
 
     public static string ToName(GpuDiagMode m) => m switch
@@ -277,6 +305,10 @@ public static class GpuDiag
         }
         finally
         {
+            lock (StateLock)
+            {
+                HoldTimerResolution(false);
+            }
             _enabled = false;
         }
     }
@@ -382,12 +414,14 @@ public static class GpuDiag
         var cpuPerSec = new double[PhaseCount];
         var wallPerSec = new double[PhaseCount];
         var counts = new long[PhaseCount];
+        var rawCycles = new long[PhaseCount];
         var phaseSum = new double[2];
         for (var i = 0; i < PhaseCount; i++)
         {
             var cyc = Interlocked.Exchange(ref Cycles[i], 0);
             var wall = Interlocked.Exchange(ref WallTicks[i], 0);
             counts[i] = Interlocked.Exchange(ref Counts[i], 0);
+            rawCycles[i] = cyc;
             var kind = i >= FirstGlPhase ? 1 : 0;
             var msPerCycle = kindCycles[kind] > 0 ? kindCpuMs[kind] / kindCycles[kind] : 0;
             cpuPerSec[i] = cyc * msPerCycle / secs;
@@ -421,10 +455,20 @@ public static class GpuDiag
             sb.Append(' ').Append(PhaseNames[i]).Append('=').Append(cpuPerSec[i].ToString("0.0", ci))
                 .Append('/').Append(wallPerSec[i].ToString("0.0", ci));
         }
+        sb.Append(" cycles/s(M):");
+        for (var i = 0; i < PhaseCount; i++)
+        {
+            if (counts[i] != 0)
+            {
+                sb.Append(' ').Append(PhaseNames[i]).Append('=').Append((rawCycles[i] / secs / 1e6).ToString("0.0", ci));
+            }
+        }
+        sb.Append(" kind-cycles/s(M): eng=").Append((kindCycles[0] / secs / 1e6).ToString("0.0", ci))
+            .Append(" gl=").Append((kindCycles[1] / secs / 1e6).ToString("0.0", ci));
         sb.Append(" top-threads:").Append(TopThreads(prevThreadCpu, secs));
         GpuContext.Log(sb.ToString());
 
-        return new GpuDiagWindow(mode, settle, unsupported ? 0 : mainFrames, procPct, cpuPerSec);
+        return new GpuDiagWindow(mode, settle, unsupported ? 0 : mainFrames, procPct, cpuPerSec, secs);
     }
 
     private static string TopThreads(Dictionary<uint, long> prev, double secs)
@@ -525,7 +569,16 @@ public static class GpuDiag
             else
             {
                 sb.Append(" proc=").Append(s.MedianProcPctOfCore.ToString("0.0", ci)).Append("%core (")
-                    .Append((s.MedianProcPctOfCore / Environment.ProcessorCount).ToString("0.00", ci)).Append("% TM)");
+                    .Append((s.MedianProcPctOfCore / Environment.ProcessorCount).ToString("0.00", ci)).Append("% TM)")
+                    .Append(" proc-ms/frame=").Append(s.MedianProcCpuMsPerFrame.ToString("0.00", ci)).Append(" phase-ms/frame:");
+                for (var i = 0; i < PhaseCount; i++)
+                {
+                    if (s.MedianPhaseCpuMsPerFrame is { } pf && pf[i] > 0.005)
+                    {
+                        sb.Append(' ').Append(PhaseNames[i]).Append('=').Append(pf[i].ToString("0.00", ci));
+                    }
+                }
+                sb.Append(" phase-ms/s:");
                 for (var i = 0; i < PhaseCount; i++)
                 {
                     if (s.MedianPhaseCpuMsPerSec[i] > 0.05)

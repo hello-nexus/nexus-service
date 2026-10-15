@@ -97,4 +97,22 @@ public class GpuDiagScheduleTests
         Assert.Equal(new double[] { 20, 3 }, summary[0].MedianPhaseCpuMsPerSec);
         Assert.Equal(0, summary[1].Windows);
     }
+
+    [Fact]
+    public void Summary_reports_cpu_per_main_frame()
+    {
+        var windows = new List<GpuDiagWindow>
+        {
+            new(GpuDiagMode.NoRender, false, 300, 60, new double[] { 30, 6 }, 10),
+            new(GpuDiagMode.NoRender, false, 600, 90, new double[] { 60, 12 }, 10),
+            new(GpuDiagMode.NoRender, false, 300, 150, new double[] { 90, 3 }, 5),
+        };
+
+        var s = GpuDiagSummary.Summarize(windows, 2)[0];
+
+        // 60% of a core over 10 s on 300 frames = 20 ms/frame; 90% over 10 s on 600 = 15; 150% over 5 s on 300 = 25.
+        Assert.Equal(20, s.MedianProcCpuMsPerFrame, 6);
+        // Phase 0: 30*10/300 = 1, 60*10/600 = 1, 90*5/300 = 1.5.
+        Assert.Equal(1, s.MedianPhaseCpuMsPerFrame![0], 6);
+    }
 }
