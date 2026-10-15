@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.Linq;
 using Nexus.Service.Peripherals.Hyte.Np50;
 using Nexus.Service.Peripherals.Hid;
@@ -151,6 +152,35 @@ public class IbpPeripheralHubTests
         hub.Disconnect();
         hub.Reconcile(AllowAll);
         Assert.Equal(id1, hub.Attached.Single().DeviceId);
+    }
+
+    [Fact]
+    public void Mek4_frames_are_capped_to_15_hz_and_other_models_are_not()
+    {
+        var hid = new ScriptedEnumerator();
+        hid.AddUnit(IbpPeripheralProtocol.Mek4Keyboard, "MK1");
+        hid.AddUnit(IbpPeripheralProtocol.Km7Keyboard, "KB1");
+        long now = 1000;
+        using var hub = new IbpPeripheralHub(hid, () => now);
+        hub.Reconcile(AllowAll);
+        var mek = hid.Opened["mek4-keyboard-MK1-vendor"];
+        var km7 = hid.Opened["km7-keyboard-KB1-vendor"];
+        var mekId = hub.Attached.Single(a => a.Model == IbpPeripheralProtocol.Mek4Keyboard).DeviceId;
+        var km7Id = hub.Attached.Single(a => a.Model == IbpPeripheralProtocol.Km7Keyboard).DeviceId;
+        var mekLeds = new RgbColor[IbpPeripheralProtocol.Mek4Keyboard.LedCount];
+        var km7Leds = new RgbColor[24];
+        var step = Stopwatch.Frequency / 30; // the writer's 30 Hz tick
+
+        for (var i = 0; i < 30; i++)
+        {
+            Assert.True(hub.WriteFrame(mekId, mekLeds));
+            Assert.True(hub.WriteFrame(km7Id, km7Leds));
+            now += step;
+        }
+        // Mek4 takes no software-mode report: one report per sent frame, every other tick.
+        Assert.Null(IbpPeripheralProtocol.SoftwareModeReport(IbpPeripheralProtocol.Mek4Keyboard));
+        Assert.Equal(15, mek.Features.Count);
+        Assert.Equal(1 + 30 * 3, km7.Features.Count);
     }
 
     [Fact]

@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.Threading;
 using Nexus.Service.Peripherals.Hid;
 using Nexus.Service.Peripherals.Hyte.Np50;
@@ -53,11 +54,27 @@ public sealed class IbpPeripheralHub : IDisposable
         /// <summary>True once the host has taken the LEDs; reset when handed back to firmware.</summary>
         public bool SoftwareMode { get; set; }
         public int Failures { get; set; }
+        /// <summary>Stopwatch timestamp of the last frame sent; 0 until the first.</summary>
+        public long LastFrameStamp { get; set; }
+        public long LastSlowWarnStamp { get; set; }
+        public long WindowStartStamp { get; set; }
+        public int WindowFrames { get; set; }
+        public int WindowSkipped { get; set; }
+        public int WindowSlow { get; set; }
+        public long WindowTotalStamps { get; set; }
+        public long WindowMaxStamps { get; set; }
     }
 
     private const int ConsecutiveWriteFailureThreshold = 5;
+    // A cap of N Hz sends at most one frame per (1/N - tolerance): the writer
+    // ticks on a jittery timer, so an exact period would drop to half rate.
+    private const double CapToleranceFraction = 0.1;
+    private const double SlowWriteMs = 20;
+    private const double SlowWarnIntervalSec = 10;
+    private const double StatsWindowSec = 60;
 
     private readonly IHidEnumerator _hid;
+    private readonly Func<long> _clock;
     private readonly object _io = new();
     private readonly List<Slot> _slots = new();
     // Paths whose open already failed and was logged; cleared when the path
@@ -67,9 +84,10 @@ public sealed class IbpPeripheralHub : IDisposable
     private int _version;
     private bool _disposed;
 
-    public IbpPeripheralHub(IHidEnumerator hid)
+    public IbpPeripheralHub(IHidEnumerator hid, Func<long>? clock = null)
     {
         _hid = hid;
+        _clock = clock ?? Stopwatch.GetTimestamp;
     }
 
     /// <summary>Currently open units. Immutable snapshot, safe to iterate off-lock.</summary>
@@ -156,6 +174,10 @@ public sealed class IbpPeripheralHub : IDisposable
                 _slots.Add(slot);
                 changed = true;
                 ServiceLog.Info($"[ibp] connected {slot.Info.Model.Id} (serial={slot.Info.Serial}, path={slot.Info.Path})");
+                var cap = slot.Info.Model.MaxFrameRateHz;
+                ServiceLog.Info(cap > 0
+                    ? $"[ibp] lighting rate cap on {slot.Info.Model.Id}: {cap} Hz"
+                    : $"[ibp] lighting rate cap on {slot.Info.Model.Id}: none (writer tick rate)");
             }
             if (changed) RebuildSnapshotLocked();
         }
@@ -180,6 +202,13 @@ public sealed class IbpPeripheralHub : IDisposable
             var slot = FindLocked(deviceId);
             if (slot is null) return false;
             var model = slot.Info.Model;
+            var now = _clock();
+            if (model.MaxFrameRateHz > 0 && slot.LastFrameStamp != 0
+                && (now - slot.LastFrameStamp) < MinFrameStamps(model.MaxFrameRateHz))
+            {
+                slot.WindowSkipped++;
+                return true;
+            }
             try
             {
                 if (!slot.SoftwareMode)
@@ -190,12 +219,16 @@ public sealed class IbpPeripheralHub : IDisposable
                     slot.SoftwareMode = true;
                 }
                 IbpPeripheralProtocol.EncodeFrame(model, leds, slot.Frame);
+                var writeStart = _clock();
                 for (var r = 0; r < model.ReportCount; r++)
                 {
                     if (!slot.Device.SetFeature(slot.Frame.AsSpan(r * model.ReportLength, model.ReportLength)))
                         return RecordFailureLocked(slot, "frame");
                 }
+                var writeEnd = _clock();
                 slot.Failures = 0;
+                slot.LastFrameStamp = writeEnd == 0 ? 1 : writeEnd;
+                RecordWriteTimingLocked(slot, writeEnd - writeStart, writeEnd);
                 return true;
             }
             catch (ObjectDisposedException) { return false; }
@@ -205,6 +238,44 @@ public sealed class IbpPeripheralHub : IDisposable
                 return RecordFailureLocked(slot, ex.GetType().Name);
             }
         }
+    }
+
+    private static long MinFrameStamps(int hz) =>
+        (long)(Stopwatch.Frequency / (double)hz * (1 - CapToleranceFraction));
+
+    private static double StampsToMs(long stamps) => stamps * 1000.0 / Stopwatch.Frequency;
+
+    // Caller must hold _io. Per-unit SetFeature timing: one summary line per
+    // stats window while frames flow, and a rate-limited warning on a slow write.
+    private void RecordWriteTimingLocked(Slot slot, long writeStamps, long now)
+    {
+        if (slot.WindowStartStamp == 0) slot.WindowStartStamp = now;
+        slot.WindowFrames++;
+        slot.WindowTotalStamps += writeStamps;
+        if (writeStamps > slot.WindowMaxStamps) slot.WindowMaxStamps = writeStamps;
+
+        var ms = StampsToMs(writeStamps);
+        if (ms > SlowWriteMs)
+        {
+            slot.WindowSlow++;
+            if (slot.LastSlowWarnStamp == 0 || StampsToMs(now - slot.LastSlowWarnStamp) >= SlowWarnIntervalSec * 1000)
+            {
+                slot.LastSlowWarnStamp = now;
+                ServiceLog.Warn($"[ibp] slow SetFeature on {slot.Info.Model.Id}: {ms:F1} ms for one frame");
+            }
+        }
+
+        var windowMs = StampsToMs(now - slot.WindowStartStamp);
+        if (windowMs < StatsWindowSec * 1000) return;
+        var avg = StampsToMs(slot.WindowTotalStamps) / slot.WindowFrames;
+        ServiceLog.Info($"[ibp] write stats {slot.Info.Model.Id} ({slot.Info.Serial}): frames={slot.WindowFrames} skipped={slot.WindowSkipped} "
+            + $"avg={avg:F2} ms max={StampsToMs(slot.WindowMaxStamps):F2} ms over{(int)SlowWriteMs}ms={slot.WindowSlow} window={windowMs / 1000:F0}s");
+        slot.WindowStartStamp = now;
+        slot.WindowFrames = 0;
+        slot.WindowSkipped = 0;
+        slot.WindowSlow = 0;
+        slot.WindowTotalStamps = 0;
+        slot.WindowMaxStamps = 0;
     }
 
     /// <summary>Return one unit's LEDs to its onboard animation. No-op unless the host holds them.</summary>

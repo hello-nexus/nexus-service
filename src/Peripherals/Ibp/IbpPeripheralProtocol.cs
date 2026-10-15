@@ -80,6 +80,13 @@ public sealed class IbpPeripheralModel
     /// <summary>Bytes one encoded frame occupies (<see cref="ReportCount"/> × <see cref="ReportLength"/>).</summary>
     public int FrameBytes => ReportCount * ReportLength;
 
+    /// <summary>
+    /// Ceiling on lighting frames per second sent to this model; 0 leaves the
+    /// writer's own tick rate in charge. The MEK 4 is capped to test whether
+    /// full-rate feature reports starve its key reports.
+    /// </summary>
+    public int MaxFrameRateHz => Wire == IbpWireFormat.Mek4 ? IbpPeripheralProtocol.Mek4MaxFrameRateHz : 0;
+
     /// <summary>Stock per-LED positions on the unit square, in frame order.</summary>
     public (float[] U, float[] V) ComputeUv()
     {
@@ -126,6 +133,7 @@ public static class IbpPeripheralProtocol
     public const int Mk9ColorOffset = 8;
 
     public const int Mek4ReportLength = 382;
+    public const int Mek4MaxFrameRateHz = 15;
     public const int Mek4WireSlots = 126;
     public const int Mek4ColorOffset = 4;
 
