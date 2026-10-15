@@ -10,9 +10,10 @@ using Silk.NET.OpenGL;
 namespace Nexus.Service.Lighting.Engine.Gpu;
 
 /// <summary>
-/// Throwaway diagnostic: per-phase CPU accounting for the shader render path and an
-/// automatic A/B sequence of render variants. Starts on the first shader frame,
-/// stops after the sequence, and always leaves the render path in baseline.
+/// Throwaway diagnostic: per-phase CPU accounting for the shader render path, GL ICD
+/// thread attribution, and an automatic sequence of GL context lifecycle variants
+/// applied on the GL thread. Starts on the first shader frame, stops after the
+/// sequence, and always leaves the render path in baseline with the main context current.
 /// NEXUS_GPU_DIAG=0 disables everything, NEXUS_GPU_DIAG_SEQUENCE=0 keeps the
 /// accounting but never leaves baseline.
 /// </summary>
@@ -49,14 +50,14 @@ public static class GpuDiag
     private static volatile bool _aborted;
     private static string? _abortReason;
     private static int _mode;
-    private static int _unsupportedMask;
-    private static bool _pboSupported;
+    private static GpuContext? _glCtx;
+
+    // GL thread only: the diagnostic unbound the main context and it has not been rebound yet.
+    private static bool _unbound;
 #if WINDOWS
-    private static bool _timerHeld;
+    private static IntPtr _extraRc;
 #endif
-#if WINDOWS
-    private static Nexus.Service.Sensors.WindowsTimerResolution.Scope _timer;
-#endif
+    private static readonly Dictionary<uint, string> ModuleCache = new();
 
     [ThreadStatic]
     private static int t_registeredKinds;
@@ -71,17 +72,81 @@ public static class GpuDiag
     /// <summary>The calling thread's frame context; only the engine loop's own main-canvas render sets Main.</summary>
     public static FrameContext CallerContext => t_context;
 
-    public static bool PboSupported => _pboSupported;
-
     /// <summary>The variant a frame of this context renders with; only main-canvas frames leave baseline.</summary>
-    public static GpuDiagMode ModeFor(FrameContext ctx)
+    public static GpuDiagMode ModeFor(FrameContext ctx) =>
+        _enabled && ctx == FrameContext.Main ? Mode : GpuDiagMode.Baseline;
+
+    /// <summary>GL thread, before every queued job: rebinds the main context if the diagnostic unbound it.</summary>
+    public static void BeforeJob(GpuContext ctx)
     {
-        if (!_enabled || ctx != FrameContext.Main)
+        if (!_unbound)
         {
-            return GpuDiagMode.Baseline;
+            return;
+        }
+        _unbound = false;
+#if WINDOWS
+        var (dc, rc) = ctx.GlHandles;
+        if (dc != 0 && !WinWglContext.MakeCurrent(dc, rc))
+        {
+            GpuContext.Log($"{Tag} rebind of the main context failed (Win32 {Marshal.GetLastWin32Error()})");
+            ForceBaseline("rebind failed");
+        }
+#endif
+    }
+
+    /// <summary>GL thread, after every queued job: leaves the context not current in the unbound variants.</summary>
+    public static void AfterJob(GpuContext ctx)
+    {
+        if (!_enabled)
+        {
+            return;
         }
         var m = Mode;
-        return (Volatile.Read(ref _unsupportedMask) & (1 << (int)m)) != 0 ? GpuDiagMode.Baseline : m;
+        if (m is not (GpuDiagMode.Unbind or GpuDiagMode.IdleUnbound))
+        {
+            return;
+        }
+#if WINDOWS
+        var (dc, _) = ctx.GlHandles;
+        if (dc != 0 && WinWglContext.MakeCurrent(0, 0))
+        {
+            _unbound = true;
+        }
+#endif
+    }
+
+    /// <summary>GL thread, end of a main-canvas frame: the present or sync variants.</summary>
+    public static void AfterMainFrame(GL gl, FrameContext frameCtx, GpuContext ctx)
+    {
+        if (!_enabled || frameCtx != FrameContext.Main)
+        {
+            return;
+        }
+        var m = Mode;
+        if (m is not (GpuDiagMode.Swap or GpuDiagMode.Finish))
+        {
+            return;
+        }
+        try
+        {
+            if (m == GpuDiagMode.Finish)
+            {
+                gl.Finish();
+                return;
+            }
+            gl.Flush();
+#if WINDOWS
+            var (dc, _) = ctx.GlHandles;
+            if (dc != 0 && !WinWglContext.Swap(dc))
+            {
+                ForceBaseline($"SwapBuffers failed (Win32 {Marshal.GetLastWin32Error()})");
+            }
+#endif
+        }
+        catch (Exception ex)
+        {
+            ForceBaseline($"{ToName(m)}: {ex.Message}");
+        }
     }
 
     public static FrameContext SetContext(FrameContext ctx)
@@ -137,7 +202,7 @@ public static class GpuDiag
     }
 
     /// <summary>Called on the GL thread once per frame; the first call starts the diagnostic.</summary>
-    public static void OnGlFrame(GL gl, string? renderer)
+    public static void OnGlFrame(GL gl, string? renderer, GpuContext ctx)
     {
         if (Volatile.Read(ref _started) != 0 || Interlocked.Exchange(ref _started, 1) != 0)
         {
@@ -153,14 +218,11 @@ public static class GpuDiag
             var version = gl.GetStringS(StringName.Version);
             gl.GetInteger(GetPName.MajorVersion, out int major);
             gl.GetInteger(GetPName.MinorVersion, out int minor);
-            _pboSupported = major > 3 || (major == 3 && minor >= 2);
+            var (dc, rc) = ctx.GlHandles;
             GpuContext.Log($"{Tag} GL_VENDOR='{vendor}' GL_RENDERER='{renderer}' GL_VERSION='{version}' "
-                + $"context={major}.{minor} fence+pbo={_pboSupported} logical-cpus={Environment.ProcessorCount}");
-            if (!_pboSupported)
-            {
-                MarkUnsupported(GpuDiagMode.AsyncReadback, "context below 3.2");
-                MarkUnsupported(GpuDiagMode.SleepWait, "context below 3.2");
-            }
+                + $"context={major}.{minor} backend={(dc != 0 ? "wgl" : "other, wgl variants are no-ops")} "
+                + $"gl-thread={GpuDiagNative.GetCurrentThreadId()} logical-cpus={Environment.ProcessorCount}");
+            _glCtx = ctx;
             _enabled = true;
             var thread = new Thread(() => Run(renderer ?? "?")) { IsBackground = true, Name = "nexus-gpu-diag" };
             thread.Priority = ThreadPriority.BelowNormal;
@@ -170,22 +232,6 @@ public static class GpuDiag
         {
             _enabled = false;
             GpuContext.Log($"{Tag} start failed: {ex.Message}");
-        }
-    }
-
-    public static void MarkUnsupported(GpuDiagMode mode, string reason)
-    {
-        int old;
-        int next;
-        do
-        {
-            old = Volatile.Read(ref _unsupportedMask);
-            next = old | (1 << (int)mode);
-        }
-        while (Interlocked.CompareExchange(ref _unsupportedMask, next, old) != old);
-        if (old != next)
-        {
-            GpuContext.Log($"{Tag} mode {ToName(mode)} unsupported ({reason}); runs as baseline");
         }
     }
 
@@ -201,51 +247,118 @@ public static class GpuDiag
             _aborted = true;
             _abortReason = reason;
             Volatile.Write(ref _mode, (int)GpuDiagMode.Baseline);
-            HoldTimerResolution(false);
         }
         GpuContext.Log($"{Tag} forced to baseline: {reason}");
     }
 
     private static void SetMode(GpuDiagMode mode)
     {
+        GpuDiagMode prev;
         lock (StateLock)
         {
-            if (!_aborted)
+            prev = Mode;
+            if (_aborted || prev == mode)
             {
-                Volatile.Write(ref _mode, (int)mode);
-                HoldTimerResolution(mode == GpuDiagMode.SleepWait && ModeFor(FrameContext.Main) == mode);
+                return;
             }
+            Volatile.Write(ref _mode, (int)mode);
+        }
+        // A job on the GL thread makes the mode take effect at once (unbind after it,
+        // rebind before it) and runs the one-shot context actions of the extra-ctx pair.
+        RunOnGl(() =>
+        {
+            if (mode == GpuDiagMode.ExtraCtx)
+            {
+                CreateExtraContext();
+            }
+            else if (mode == GpuDiagMode.ExtraDeleted)
+            {
+                DeleteExtraContext();
+            }
+        });
+    }
+
+    private static void RunOnGl(Action work)
+    {
+        try
+        {
+            _glCtx?.Invoke(work);
+        }
+        catch (Exception ex)
+        {
+            ForceBaseline($"GL job threw {ex.GetType().Name}: {ex.Message}");
         }
     }
 
-    // sleep-wait polls with Thread.Sleep(1), which rounds to the default tick without a 1 ms timer period.
-    private static void HoldTimerResolution(bool hold)
+    // GL thread. A second context on the same DC and pixel format, made current once and
+    // switched straight back to the main one, so the ICD sees a full context lifecycle
+    // while the main context stays the only one that ever renders.
+    private static void CreateExtraContext()
     {
 #if WINDOWS
-        if (hold == _timerHeld)
+        var (dc, rc) = _glCtx!.GlHandles;
+        if (dc == 0 || _extraRc != 0)
         {
             return;
         }
-        if (hold)
+        var extra = WinWglContext.CreateSecondContext(dc);
+        if (extra == 0)
         {
-            _timer = Nexus.Service.Sensors.WindowsTimerResolution.Elevate();
+            throw new InvalidOperationException($"second wglCreateContext failed (Win32 {Marshal.GetLastWin32Error()})");
         }
-        else
+        _extraRc = extra;
+        GpuContext.Log($"{Tag} extra-ctx created (not current) {IcdSnapshot()}");
+        try
         {
-            _timer.Dispose();
+            if (!WinWglContext.MakeCurrent(dc, extra))
+            {
+                throw new InvalidOperationException($"make-current of the second context failed (Win32 {Marshal.GetLastWin32Error()})");
+            }
+            GpuContext.Log($"{Tag} extra-ctx made current once {IcdSnapshot()}");
         }
-        _timerHeld = hold;
+        finally
+        {
+            if (!WinWglContext.MakeCurrent(dc, rc))
+            {
+                _unbound = true;
+            }
+        }
+        GpuContext.Log($"{Tag} extra-ctx main context current again {IcdSnapshot()}");
 #endif
+    }
+
+    // GL thread. Never deletes the main context.
+    private static void DeleteExtraContext()
+    {
+#if WINDOWS
+        var (dc, rc) = _glCtx!.GlHandles;
+        var extra = _extraRc;
+        if (dc == 0 || extra == 0 || extra == rc)
+        {
+            return;
+        }
+        _extraRc = 0;
+        var ok = WinWglContext.DeleteContext(extra);
+        GpuContext.Log($"{Tag} extra-ctx deleted ok={ok} {IcdSnapshot()}");
+#endif
+    }
+
+    // Leaves the render path as it was: no extra context, main context current.
+    private static void Restore()
+    {
+        RunOnGl(DeleteExtraContext);
     }
 
     public static string ToName(GpuDiagMode m) => m switch
     {
         GpuDiagMode.Baseline => "baseline",
-        GpuDiagMode.AsyncReadback => "async-readback",
-        GpuDiagMode.SleepWait => "sleep-wait",
-        GpuDiagMode.BgraReadback => "bgra-readback",
-        GpuDiagMode.NoReadback => "no-readback",
-        GpuDiagMode.NoRender => "no-render",
+        GpuDiagMode.BaselineStart => "baseline-start",
+        GpuDiagMode.Unbind => "unbind",
+        GpuDiagMode.IdleUnbound => "idle-unbound",
+        GpuDiagMode.Swap => "swap",
+        GpuDiagMode.Finish => "finish",
+        GpuDiagMode.ExtraCtx => "extra-ctx",
+        GpuDiagMode.ExtraDeleted => "extra-deleted",
         _ => m.ToString(),
     };
 
@@ -305,11 +418,9 @@ public static class GpuDiag
         }
         finally
         {
-            lock (StateLock)
-            {
-                HoldTimerResolution(false);
-            }
+            Restore();
             _enabled = false;
+            RunOnGl(() => { });
         }
     }
 
@@ -323,14 +434,15 @@ public static class GpuDiag
         {
             _ = p0.TotalProcessorTime;
         }
-        _ = TopThreads(prevThreadCpu, 1);
+        _ = SampleThreads(prevThreadCpu, 1);
         var lastProc = ProcessCpu();
         DrainCounters();
         var sw = Stopwatch.StartNew();
         var lastElapsed = TimeSpan.Zero;
         var window = 0;
         GpuContext.Log($"{Tag} started; sequence={(sequenceOn ? "on" : "off")}, "
-            + $"warmup then {schedule.TotalWindows * WindowSeconds}s total, window={WindowSeconds}s");
+            + $"{schedule.TotalWindows * WindowSeconds}s total, window={WindowSeconds}s, "
+            + $"order={string.Join(',', Array.ConvertAll(GpuDiagSchedule.DefaultOrder, ToName))} {IcdSnapshot()}");
         while (true)
         {
             var target = TimeSpan.FromSeconds((window + 1) * WindowSeconds);
@@ -344,7 +456,7 @@ public static class GpuDiag
             var mode = Mode;
             var procNow = ProcessCpu();
             var rec = Collect(renderer, mode, secs, procNow - lastProc, prevThreadCpu,
-                sequenceOn && (schedule.IsWarmup(window) || schedule.IsSettleWindow(window)));
+                sequenceOn && schedule.IsSettleWindow(window));
             lastProc = procNow;
             if (sequenceOn)
             {
@@ -432,11 +544,26 @@ public static class GpuDiag
         var pinFrames = Interlocked.Exchange(ref FrameCounts[(int)FrameContext.Pin], 0);
         var aheadFrames = Interlocked.Exchange(ref FrameCounts[(int)FrameContext.Ahead], 0);
         var otherFrames = Interlocked.Exchange(ref FrameCounts[(int)FrameContext.Other], 0);
-        var unsupported = (Volatile.Read(ref _unsupportedMask) & (1 << (int)mode)) != 0;
+
+        var threads = SampleThreads(prevThreadCpu, secs);
+        var icdCount = 0;
+        var icdCpu = 0.0;
+        var icdText = new StringBuilder();
+        foreach (var t in threads)
+        {
+            if (!IsIcd(t.Module))
+            {
+                continue;
+            }
+            icdCount++;
+            icdCpu += t.Ms;
+            icdText.Append(' ').Append(t.Tid.ToString(CultureInfo.InvariantCulture)).Append('=')
+                .Append(t.Ms.ToString("0.0", CultureInfo.InvariantCulture));
+        }
 
         var sb = new StringBuilder(512);
         var ci = CultureInfo.InvariantCulture;
-        sb.Append(Tag).Append(" mode=").Append(ToName(mode)).Append(settle ? "(settle)" : "").Append(unsupported ? "(unsupported)" : "")
+        sb.Append(Tag).Append(" mode=").Append(ToName(mode)).Append(settle ? "(settle)" : "")
             .Append(" renderer='").Append(renderer).Append("' win=").Append(secs.ToString("0.0", ci)).Append("s frames=")
             .Append(mainFrames).Append(" pin=").Append(pinFrames).Append(" ahead=").Append(aheadFrames).Append(" other=").Append(otherFrames)
             .Append(" proc=").Append(procPct.ToString("0.0", ci)).Append("%core (")
@@ -465,23 +592,55 @@ public static class GpuDiag
         }
         sb.Append(" kind-cycles/s(M): eng=").Append((kindCycles[0] / secs / 1e6).ToString("0.0", ci))
             .Append(" gl=").Append((kindCycles[1] / secs / 1e6).ToString("0.0", ci));
-        sb.Append(" top-threads:").Append(TopThreads(prevThreadCpu, secs));
+        sb.Append(" icd-threads=").Append(icdCount).Append(" icd-cpu=").Append(icdCpu.ToString("0.0", ci))
+            .Append(" icd[tid=ms/s]:").Append(icdCount == 0 ? " none" : icdText.ToString());
+        sb.Append(" top-threads:");
+        for (var i = 0; i < Math.Min(5, threads.Count); i++)
+        {
+            sb.Append(' ').Append(threads[i].Tid.ToString(CultureInfo.InvariantCulture)).Append(":'")
+                .Append(ThreadName(threads[i].Tid)).Append("'@").Append(threads[i].Module).Append('=')
+                .Append(threads[i].Ms.ToString("0.0", ci));
+        }
         GpuContext.Log(sb.ToString());
 
-        return new GpuDiagWindow(mode, settle, unsupported ? 0 : mainFrames, procPct, cpuPerSec, secs);
+        return new GpuDiagWindow(mode, settle, mainFrames, procPct, cpuPerSec, secs, icdCount, icdCpu);
     }
 
-    private static string TopThreads(Dictionary<uint, long> prev, double secs)
+    private readonly record struct ThreadRow(uint Tid, double Ms, string Module);
+
+    private static bool IsIcd(string module)
     {
+        var m = module.ToLowerInvariant();
+        return m.Contains("icd", StringComparison.Ordinal) || m.StartsWith("nvoglv", StringComparison.Ordinal)
+            || m.StartsWith("atio6", StringComparison.Ordinal) || m.StartsWith("atig6", StringComparison.Ordinal);
+    }
+
+    // Count of GL ICD threads right now, no CPU figures; logged around the extra-ctx steps.
+    private static string IcdSnapshot()
+    {
+        var n = 0;
+        foreach (var t in SampleThreads(new Dictionary<uint, long>(), 1))
+        {
+            if (IsIcd(t.Module))
+            {
+                n++;
+            }
+        }
+        return $"icd-threads={n}";
+    }
+
+    // Every thread of this process, busiest first, with the file name of the module holding its start address.
+    private static List<ThreadRow> SampleThreads(Dictionary<uint, long> prev, double secs)
+    {
+        var rows = new List<ThreadRow>();
         if (!OperatingSystem.IsWindows())
         {
-            return " n/a";
+            return rows;
         }
-        var rows = new List<(uint Tid, double Ms)>();
         var snap = GpuDiagNative.CreateToolhelp32Snapshot(GpuDiagNative.SnapThread, 0);
         if (snap == -1 || snap == 0)
         {
-            return " n/a";
+            return rows;
         }
         try
         {
@@ -503,7 +662,7 @@ public static class GpuDiag
                     var (cpu, _) = ReadThread(h);
                     prev.TryGetValue(e.ThreadId, out var before);
                     prev[e.ThreadId] = cpu;
-                    rows.Add((e.ThreadId, (cpu - before) / 10_000.0 / secs));
+                    rows.Add(new ThreadRow(e.ThreadId, (cpu - before) / 10_000.0 / secs, ThreadModule(e.ThreadId)));
                 }
                 finally
                 {
@@ -516,13 +675,53 @@ public static class GpuDiag
             GpuDiagNative.CloseHandle(snap);
         }
         rows.Sort((a, b) => b.Ms.CompareTo(a.Ms));
-        var sb = new StringBuilder();
-        for (var i = 0; i < Math.Min(5, rows.Count); i++)
+        return rows;
+    }
+
+    // File name of the module containing the thread's Win32 start address; cached, the address never changes.
+    private static unsafe string ThreadModule(uint tid)
+    {
+        lock (ModuleCache)
         {
-            sb.Append(" ").Append(rows[i].Tid.ToString(CultureInfo.InvariantCulture)).Append(":'")
-                .Append(ThreadName(rows[i].Tid)).Append("'=").Append(rows[i].Ms.ToString("0.0", CultureInfo.InvariantCulture));
+            if (ModuleCache.TryGetValue(tid, out var cached))
+            {
+                return cached;
+            }
         }
-        return sb.ToString();
+        var name = "?";
+        var h = GpuDiagNative.OpenThread(GpuDiagNative.ThreadQueryLimitedInformation | GpuDiagNative.ThreadQueryInformation, 0, tid);
+        if (h != 0)
+        {
+            try
+            {
+                if (GpuDiagNative.NtQueryInformationThread(h, GpuDiagNative.ThreadQuerySetWin32StartAddress,
+                        out var start, nint.Size, out _) == 0 && start != 0
+                    && GpuDiagNative.GetModuleHandleExW(GpuDiagNative.ModuleFromAddress | GpuDiagNative.ModuleUnchangedRefcount,
+                        start, out var module) != 0)
+                {
+                    var buf = stackalloc char[260];
+                    var len = GpuDiagNative.GetModuleFileNameW(module, buf, 260);
+                    if (len > 0)
+                    {
+                        var full = new string(buf, 0, (int)len);
+                        name = full.Substring(full.LastIndexOf('\\') + 1);
+                    }
+                }
+            }
+            catch (Exception)
+            {
+                name = "?";
+            }
+            finally
+            {
+                GpuDiagNative.CloseHandle(h);
+            }
+        }
+        lock (ModuleCache)
+        {
+            ModuleCache[tid] = name;
+        }
+        return name;
     }
 
     private static string ThreadName(uint tid)
@@ -554,31 +753,26 @@ public static class GpuDiag
 
     private static void Finish(string how, List<GpuDiagWindow> windows)
     {
+        Restore();
         GpuContext.Log($"{Tag} {how}; render path is baseline");
         var ci = CultureInfo.InvariantCulture;
         var summary = GpuDiagSummary.Summarize(windows, PhaseCount);
-        GpuContext.Log($"{Tag} summary: median over non-settle windows with frames; proc in % of one core, phases in cpu ms/s");
+        GpuContext.Log($"{Tag} summary: median over non-settle windows; proc in % of one core, icd-cpu in ms/s");
         foreach (var s in summary)
         {
             var sb = new StringBuilder();
             sb.Append(Tag).Append(" summary mode=").Append(ToName(s.Mode)).Append(" windows=").Append(s.Windows);
             if (s.Windows == 0)
             {
-                sb.Append(" (unsupported or no frames)");
+                sb.Append(" (no windows)");
             }
             else
             {
                 sb.Append(" proc=").Append(s.MedianProcPctOfCore.ToString("0.0", ci)).Append("%core (")
                     .Append((s.MedianProcPctOfCore / Environment.ProcessorCount).ToString("0.00", ci)).Append("% TM)")
-                    .Append(" proc-ms/frame=").Append(s.MedianProcCpuMsPerFrame.ToString("0.00", ci)).Append(" phase-ms/frame:");
-                for (var i = 0; i < PhaseCount; i++)
-                {
-                    if (s.MedianPhaseCpuMsPerFrame is { } pf && pf[i] > 0.005)
-                    {
-                        sb.Append(' ').Append(PhaseNames[i]).Append('=').Append(pf[i].ToString("0.00", ci));
-                    }
-                }
-                sb.Append(" phase-ms/s:");
+                    .Append(" icd-threads=").Append(s.MedianIcdThreads.ToString("0.#", ci))
+                    .Append(" icd-cpu=").Append(s.MedianIcdCpuMsPerSec.ToString("0.0", ci))
+                    .Append(" phase-ms/s:");
                 for (var i = 0; i < PhaseCount; i++)
                 {
                     if (s.MedianPhaseCpuMsPerSec[i] > 0.05)
@@ -596,6 +790,10 @@ internal static partial class GpuDiagNative
 {
     public const uint ThreadQueryLimitedInformation = 0x800;
     public const uint SnapThread = 0x4;
+    public const uint ThreadQueryInformation = 0x40;
+    public const int ThreadQuerySetWin32StartAddress = 9;
+    public const uint ModuleFromAddress = 0x4;
+    public const uint ModuleUnchangedRefcount = 0x2;
 
     private const nint CurrentThreadPseudoHandle = -2;
 
@@ -649,4 +847,13 @@ internal static partial class GpuDiagNative
 
     [LibraryImport("kernel32.dll")]
     public static partial nint LocalFree(nint mem);
+
+    [LibraryImport("ntdll.dll")]
+    public static partial int NtQueryInformationThread(nint thread, int infoClass, out nint info, int length, out uint returned);
+
+    [LibraryImport("kernel32.dll")]
+    public static partial int GetModuleHandleExW(uint flags, nint address, out nint module);
+
+    [LibraryImport("kernel32.dll")]
+    public static unsafe partial uint GetModuleFileNameW(nint module, char* buffer, uint size);
 }

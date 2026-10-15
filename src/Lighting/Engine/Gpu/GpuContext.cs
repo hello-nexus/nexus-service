@@ -366,9 +366,24 @@ public sealed class GpuContext : IDisposable
             try
             { work = _workQueue.Take(); }
             catch (InvalidOperationException) { return; }
+            GpuDiag.BeforeJob(this);
             try
             { work(); }
             catch (Exception ex) { Log($"[gpu] work item threw: {ex}"); }
+            GpuDiag.AfterJob(this);
+        }
+    }
+
+    /// <summary>DC and RC of the WGL context (zero off Windows or on the GLFW backend); diagnostic use.</summary>
+    internal (IntPtr Dc, IntPtr Rc) GlHandles
+    {
+        get
+        {
+#if !MACOS && !LINUX
+            return (_wgl.Dc, _wgl.Rc);
+#else
+            return default;
+#endif
         }
     }
 
@@ -538,7 +553,8 @@ public sealed class GpuContext : IDisposable
     /// <summary>True only when the user has pinned the old backend; WGL is the
     /// default (see WinWglContext).</summary>
     private bool UseGlfwBackend() =>
-        string.Equals(BackendOverride ?? _store?.Load().Lighting.RenderBackend, "glfw",
+        string.Equals(Environment.GetEnvironmentVariable("NEXUS_GPU_DIAG_BACKEND")
+            ?? BackendOverride ?? _store?.Load().Lighting.RenderBackend, "glfw",
             StringComparison.OrdinalIgnoreCase);
 
     /// <summary>The pre-WGL path, reachable by setting Lighting.RenderBackend to

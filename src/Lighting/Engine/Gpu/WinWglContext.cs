@@ -124,6 +124,9 @@ internal static class WinWglContext
     [DllImport("opengl32.dll", SetLastError = true)]
     private static extern bool wglMakeCurrent(IntPtr dc, IntPtr rc);
 
+    [DllImport("gdi32.dll", SetLastError = true)]
+    private static extern bool SwapBuffers(IntPtr dc);
+
     [DllImport("opengl32.dll", CharSet = CharSet.Ansi)]
     private static extern IntPtr wglGetProcAddress(string name);
 
@@ -337,6 +340,15 @@ internal static class WinWglContext
         }
         return gotMajor > major || (gotMajor == major && gotMinor >= minor);
     }
+
+    // Diagnostic entry points (GpuDiag): GL thread only.
+    public static bool MakeCurrent(IntPtr dc, IntPtr rc) => wglMakeCurrent(dc, rc);
+
+    public static bool Swap(IntPtr dc) => SwapBuffers(dc);
+
+    public static IntPtr CreateSecondContext(IntPtr dc) => wglCreateContext(dc);
+
+    public static bool DeleteContext(IntPtr rc) => wglDeleteContext(rc);
 
     /// <summary>Release the context and the window that carried it. Runs on the
     /// GL thread, the only one Win32 lets destroy that window.</summary>

@@ -10,58 +10,70 @@ public class GpuDiagScheduleTests
 
     [Theory]
     [InlineData(0)]
-    [InlineData(11)]
-    public void Warmup_windows_are_baseline(int window)
+    [InlineData(2)]
+    public void Warmup_windows_are_baseline_start(int window)
     {
-        Assert.Equal(GpuDiagMode.Baseline, Default.ModeFor(window));
-        Assert.True(Default.IsWarmup(window));
+        Assert.Equal(GpuDiagMode.BaselineStart, Default.ModeFor(window));
     }
 
     [Fact]
-    public void Each_mode_runs_one_block_and_the_list_repeats()
+    public void Each_variant_runs_one_block_in_order()
     {
         var order = GpuDiagSchedule.DefaultOrder;
-        for (var cycle = 0; cycle < 2; cycle++)
+        for (var m = 0; m < order.Length; m++)
         {
-            for (var m = 0; m < order.Length; m++)
+            var first = 3 + m * 4;
+            for (var w = first; w < first + 4; w++)
             {
-                var first = 12 + (cycle * order.Length + m) * 9;
-                for (var w = first; w < first + 9; w++)
-                {
-                    Assert.Equal(order[m], Default.ModeFor(w));
-                }
+                Assert.Equal(order[m], Default.ModeFor(w));
             }
         }
+    }
+
+    [Fact]
+    public void Order_is_the_requested_variants_then_baseline()
+    {
+        Assert.Equal(
+            new[]
+            {
+                GpuDiagMode.Unbind, GpuDiagMode.IdleUnbound, GpuDiagMode.Swap, GpuDiagMode.Finish,
+                GpuDiagMode.ExtraCtx, GpuDiagMode.ExtraDeleted, GpuDiagMode.Baseline,
+            },
+            GpuDiagSchedule.DefaultOrder);
     }
 
     [Fact]
     public void Sequence_ends_in_baseline_and_reports_done()
     {
         var total = Default.TotalWindows;
-        Assert.Equal(12 + 9 * GpuDiagSchedule.DefaultOrder.Length * 2, total);
+        Assert.Equal(3 + 4 * GpuDiagSchedule.DefaultOrder.Length, total);
         Assert.False(Default.IsDone(total - 1));
+        Assert.Equal(GpuDiagMode.Baseline, Default.ModeFor(total - 1));
         Assert.True(Default.IsDone(total));
         Assert.Equal(GpuDiagMode.Baseline, Default.ModeFor(total));
         Assert.Equal(GpuDiagMode.Baseline, Default.ModeFor(total + 500));
     }
 
     [Fact]
-    public void Only_the_first_window_of_a_block_settles()
+    public void First_window_and_the_first_of_each_block_settle()
     {
-        Assert.True(Default.IsSettleWindow(12));
-        Assert.False(Default.IsSettleWindow(13));
-        Assert.True(Default.IsSettleWindow(21));
+        Assert.True(Default.IsSettleWindow(0));
+        Assert.False(Default.IsSettleWindow(1));
+        Assert.False(Default.IsSettleWindow(2));
+        Assert.True(Default.IsSettleWindow(3));
+        Assert.False(Default.IsSettleWindow(4));
+        Assert.True(Default.IsSettleWindow(7));
         Assert.False(Default.IsSettleWindow(Default.TotalWindows));
     }
 
     [Fact]
     public void Custom_order_is_honored()
     {
-        var s = new GpuDiagSchedule(10, 10, 20, 1, new[] { GpuDiagMode.NoRender, GpuDiagMode.SleepWait });
-        Assert.Equal(GpuDiagMode.Baseline, s.ModeFor(0));
-        Assert.Equal(GpuDiagMode.NoRender, s.ModeFor(1));
-        Assert.Equal(GpuDiagMode.NoRender, s.ModeFor(2));
-        Assert.Equal(GpuDiagMode.SleepWait, s.ModeFor(3));
+        var s = new GpuDiagSchedule(10, 10, 20, new[] { GpuDiagMode.Swap, GpuDiagMode.Finish });
+        Assert.Equal(GpuDiagMode.BaselineStart, s.ModeFor(0));
+        Assert.Equal(GpuDiagMode.Swap, s.ModeFor(1));
+        Assert.Equal(GpuDiagMode.Swap, s.ModeFor(2));
+        Assert.Equal(GpuDiagMode.Finish, s.ModeFor(3));
         Assert.True(s.IsDone(5));
     }
 
@@ -76,16 +88,15 @@ public class GpuDiagScheduleTests
     }
 
     [Fact]
-    public void Summary_skips_settle_unsupported_and_frameless_windows()
+    public void Summary_skips_settle_windows_and_keeps_frameless_ones()
     {
         var windows = new List<GpuDiagWindow>
         {
-            new(GpuDiagMode.Baseline, true, 300, 900, new double[] { 900, 1 }),
-            new(GpuDiagMode.Baseline, false, 300, 100, new double[] { 10, 2 }),
-            new(GpuDiagMode.Baseline, false, 300, 120, new double[] { 30, 4 }),
-            new(GpuDiagMode.Baseline, false, 300, 110, new double[] { 20, 3 }),
-            new(GpuDiagMode.Baseline, false, 0, 999, new double[] { 999, 999 }),
-            new(GpuDiagMode.AsyncReadback, false, 0, 50, new double[] { 1, 1 }),
+            new(GpuDiagMode.Baseline, true, 300, 900, new double[] { 900, 1 }, 10, 5, 900),
+            new(GpuDiagMode.Baseline, false, 300, 100, new double[] { 10, 2 }, 10, 1, 90),
+            new(GpuDiagMode.Baseline, false, 300, 120, new double[] { 30, 4 }, 10, 1, 110),
+            new(GpuDiagMode.Baseline, false, 300, 110, new double[] { 20, 3 }, 10, 2, 100),
+            new(GpuDiagMode.IdleUnbound, false, 0, 50, new double[] { 1, 1 }, 10, 0, 0),
         };
 
         var summary = GpuDiagSummary.Summarize(windows, 2);
@@ -95,7 +106,10 @@ public class GpuDiagScheduleTests
         Assert.Equal(3, summary[0].Windows);
         Assert.Equal(110, summary[0].MedianProcPctOfCore);
         Assert.Equal(new double[] { 20, 3 }, summary[0].MedianPhaseCpuMsPerSec);
-        Assert.Equal(0, summary[1].Windows);
+        Assert.Equal(1, summary[0].MedianIcdThreads);
+        Assert.Equal(100, summary[0].MedianIcdCpuMsPerSec);
+        Assert.Equal(1, summary[1].Windows);
+        Assert.Equal(0, summary[1].MedianProcCpuMsPerFrame);
     }
 
     [Fact]
@@ -103,9 +117,9 @@ public class GpuDiagScheduleTests
     {
         var windows = new List<GpuDiagWindow>
         {
-            new(GpuDiagMode.NoRender, false, 300, 60, new double[] { 30, 6 }, 10),
-            new(GpuDiagMode.NoRender, false, 600, 90, new double[] { 60, 12 }, 10),
-            new(GpuDiagMode.NoRender, false, 300, 150, new double[] { 90, 3 }, 5),
+            new(GpuDiagMode.Swap, false, 300, 60, new double[] { 30, 6 }, 10),
+            new(GpuDiagMode.Swap, false, 600, 90, new double[] { 60, 12 }, 10),
+            new(GpuDiagMode.Swap, false, 300, 150, new double[] { 90, 3 }, 5),
         };
 
         var s = GpuDiagSummary.Summarize(windows, 2)[0];
