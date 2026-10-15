@@ -131,7 +131,7 @@ public sealed class HelperScreenFrameSource : IScreenFrameSource, IDisposable
     // restarted helper has no capture running, so re-issue the request on every
     // connect. Dispatched off the registry's thread: Connected is raised before
     // the helper read loop starts.
-    private void OnHelperConnected(HelperConnection _) => _ = Task.Run(ResendStartAsync);
+    private void OnHelperConnected(HelperConnection connection) => _ = Task.Run(ResendStartAsync);
 
     internal async Task ResendStartAsync()
     {
