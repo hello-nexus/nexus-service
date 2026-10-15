@@ -61,10 +61,9 @@ public sealed class HelperScreenFrameSource : IScreenFrameSource, IDisposable
     public void Start(string monitorId, int width, int height)
     {
         EnsureSubscribed();
-        int generation;
         lock (_lock)
         {
-            generation = ++_generation;
+            var generation = ++_generation;
             _expectedW = width;
             _expectedH = height;
             // Drop any frame from a previous capture session - it's the wrong
@@ -81,16 +80,16 @@ public sealed class HelperScreenFrameSource : IScreenFrameSource, IDisposable
                 _connectedHooked = true;
                 _registry.Connected += OnHelperConnected;
             }
+            // Fire-and-forget: the pipe write runs through the helper's
+            // SemaphoreSlim and could stall briefly if other domains are mid-
+            // write. We're called from the engine render thread (via
+            // ScreenMirrorEffect.EnsureStarted), so blocking here would freeze
+            // the lighting loop. Frames start flowing once the helper acks
+            // internally; until then TryAcquireFrame returns null and the
+            // effect renders dark grey, which is the same behavior as
+            // a stalled DXGI/ffmpeg startup.
+            Enqueue(() => SendStartIfCurrentAsync(generation, monitorId, width, height, resend: false));
         }
-        // Fire-and-forget: the pipe write runs through the helper's
-        // SemaphoreSlim and could stall briefly if other domains are mid-
-        // write. We're called from the engine render thread (via
-        // ScreenMirrorEffect.EnsureStarted), so blocking here would freeze
-        // the lighting loop. Frames start flowing once the helper acks
-        // internally; until then TryAcquireFrame returns null and the
-        // effect renders dark grey, which is the same behavior as
-        // a stalled DXGI/ffmpeg startup.
-        Enqueue(() => SendStartIfCurrentAsync(generation, monitorId, width, height, resend: false));
     }
 
     public void Stop()
@@ -111,8 +110,8 @@ public sealed class HelperScreenFrameSource : IScreenFrameSource, IDisposable
             _latest = null;
             _latestW = 0;
             _latestH = 0;
+            Enqueue(_sendStop);
         }
-        Enqueue(_sendStop);
     }
 
     public byte[]? TryAcquireFrame(out int width, out int height)
@@ -160,8 +159,8 @@ public sealed class HelperScreenFrameSource : IScreenFrameSource, IDisposable
             monitorId = _activeMonitorId;
             w = _activeW;
             h = _activeH;
+            return Enqueue(() => SendStartIfCurrentAsync(generation, monitorId, w, h, resend: true));
         }
-        return Enqueue(() => SendStartIfCurrentAsync(generation, monitorId, w, h, resend: true));
     }
 
     private Task Enqueue(Func<Task> send)
@@ -176,7 +175,7 @@ public sealed class HelperScreenFrameSource : IScreenFrameSource, IDisposable
     private static async Task RunSendAsync(Func<Task> send)
     {
         try { await send().ConfigureAwait(false); }
-        catch (Exception ex) { Console.Error.WriteLine($"[screen-mirror] helper send failed: {ex.Message}"); }
+        catch (Exception ex) { ServiceLog.Warn($"[screen-mirror] helper send failed: {ex.Message}"); }
     }
 
     private Task SendStartIfCurrentAsync(int generation, string monitorId, int width, int height, bool resend)
