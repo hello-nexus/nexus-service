@@ -84,14 +84,24 @@ internal static class GpuRenderSelect
         var now = DateTimeOffset.UtcNow;
         var raw = LoadStateText();
         var state = GpuSelectState.Parse(raw);
-        var intelDgpu = GpuSelectPlan.IntelIgpuWithDedicated(adapters.Select(a => (a.VendorId, a.DedicatedVramMb)));
+        var detected = GpuSelectPlan.IntelIgpuWithDedicated(adapters.Select(a => (a.VendorId, a.DedicatedVramMb)));
+        // The marker is written before every dedicated attempt and cleared only
+        // once the dedicated card is working, so a crash, hang or failure
+        // leaves it behind. A crash guard naming the dedicated card is the same
+        // verdict when the attempt that left it was not made under the rule.
+        if (detected && crashed == GpuSelectState.Discrete)
+        {
+            WriteDedicatedMarker(env);
+        }
+        var intelDgpu = GpuSelectPlan.RuleActive(detected, LoadDedicatedMarker(), env);
+        if (detected && !intelDgpu)
+        {
+            GpuContext.Log("[gpu] auto: Intel integrated GPU present, but the dedicated GPU did not come up "
+                + "here before; not retrying until the GPU set or driver changes");
+        }
         var plan = GpuSelectPlan.NextAction(raw, crashed, usable, now, GpuTestSeam.ReprobeOverride, env, intelDgpu);
         GpuContext.Log($"[gpu] select: adapters={usable} env='{env.Fingerprint}@{env.Boot}' state='{state.Format()}' "
             + $"crashguard='{crashed ?? "none"}' -> {plan.Action} ({plan.Reason})");
-        if (plan.PreferDedicated)
-        {
-            GpuContext.Log("[gpu] auto: Intel integrated GPU present, using the dedicated GPU");
-        }
 
         switch (plan.Action)
         {
@@ -118,7 +128,7 @@ internal static class GpuRenderSelect
                 WarmRemembered(gpu, sw, plan.Card, state);
                 return;
             default:
-                ProbeThenWarm(gpu, sw, usable, plan.FreshStreak ? GpuSelectState.Fresh : state, plan.PreferDedicated);
+                ProbeThenWarm(gpu, sw, usable, plan.FreshStreak ? GpuSelectState.Fresh : state, plan.PreferDedicated, env);
                 return;
         }
     }
@@ -159,7 +169,8 @@ internal static class GpuRenderSelect
         return "t" + (booted.ToUnixTimeSeconds() / 60).ToString(System.Globalization.CultureInfo.InvariantCulture);
     }
 
-    private static void ProbeThenWarm(GpuContext gpu, Stopwatch sw, int usable, GpuSelectState state, bool preferDedicated)
+    private static void ProbeThenWarm(GpuContext gpu, Stopwatch sw, int usable, GpuSelectState state, bool preferDedicated,
+        GpuEnvironment env)
     {
         if (usable <= 1)
         {
@@ -176,13 +187,26 @@ internal static class GpuRenderSelect
         GpuContext.Log("[gpu] select: probing GPUs");
         if (preferDedicated)
         {
-            if (ProbeCard(ClassDiscrete) != GpuProbeVerdict.Failed)
+            WriteDedicatedMarker(env);
+            if (ProbeCard(ClassDiscrete) == GpuProbeVerdict.Works)
             {
                 WarmGuarded(gpu, sw, GpuSelectState.Discrete, ClassDiscrete, "probed:discrete");
+                GpuContext.Log(gpu.Available
+                    ? "[gpu] auto: Intel integrated GPU present, using the dedicated GPU"
+                    : "[gpu] auto: Intel integrated GPU present, but the dedicated GPU gave no context yet");
                 AfterWarm(gpu, sw, GpuSelectState.Discrete, ClassDiscrete);
                 return;
             }
-            GpuContext.Log("[gpu] select: discrete probe failed; trying integrated");
+            GpuContext.Log("[gpu] auto: Intel integrated GPU present, but the dedicated GPU did not pass its "
+                + "probe; using the integrated GPU");
+            if (ProbeCard(ClassIntegrated) != GpuProbeVerdict.Failed)
+            {
+                WarmGuarded(gpu, sw, GpuSelectState.Integrated, ClassIntegrated, "probed:integrated");
+                AfterWarm(gpu, sw, GpuSelectState.Integrated, ClassIntegrated);
+                return;
+            }
+            LatchOff(gpu, state, DateTimeOffset.UtcNow, "no GPU produced a working context");
+            return;
         }
         if (ProbeCard(ClassIntegrated) != GpuProbeVerdict.Failed)
         {
@@ -621,8 +645,27 @@ internal static class GpuRenderSelect
         catch { return GpuSelectState.Unprobed; }
     }
 
+    private static string DedicatedMarkerPath => Path.Combine(DataDir, "gpu-dedicated-attempt");
+
+    private static string? LoadDedicatedMarker()
+    {
+        try { return File.Exists(DedicatedMarkerPath) ? File.ReadAllText(DedicatedMarkerPath).Trim() : null; }
+        catch { return null; }
+    }
+
+    private static void WriteDedicatedMarker(GpuEnvironment env)
+    {
+        try { Directory.CreateDirectory(DataDir); File.WriteAllText(DedicatedMarkerPath, env.Fingerprint); }
+        catch { }
+    }
+
     private static void SaveState(GpuSelectState state)
     {
+        if (state.Card == GpuSelectState.Discrete)
+        {
+            try { if (File.Exists(DedicatedMarkerPath)) File.Delete(DedicatedMarkerPath); }
+            catch { }
+        }
         try
         {
             Directory.CreateDirectory(DataDir);
@@ -642,6 +685,8 @@ internal static class GpuRenderSelect
     public static void ClearState()
     {
         try { if (File.Exists(StatePath)) File.Delete(StatePath); }
+        catch { }
+        try { if (File.Exists(DedicatedMarkerPath)) File.Delete(DedicatedMarkerPath); }
         catch { }
     }
 

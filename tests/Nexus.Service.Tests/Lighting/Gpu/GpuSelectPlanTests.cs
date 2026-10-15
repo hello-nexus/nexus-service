@@ -218,11 +218,11 @@ public class GpuSelectPlanTests
     }
 
     [Fact]
-    public void IntelIgpuWithDedicated_RememberedIntegrated_MovesToDedicated()
+    public void IntelIgpuWithDedicated_RememberedIntegrated_ProbesNeverWarmsUnproven()
     {
         var decision = IntelDgpu("integrated");
 
-        Assert.Equal(GpuSelectAction.WarmRemembered, decision.Action);
+        Assert.Equal(GpuSelectAction.Probe, decision.Action);
         Assert.Equal(GpuSelectState.Discrete, decision.Card);
         Assert.True(decision.PreferDedicated);
     }
@@ -244,6 +244,104 @@ public class GpuSelectPlanTests
         Assert.Equal(GpuSelectAction.WarmRemembered, decision.Action);
         Assert.Equal(GpuSelectState.Integrated, decision.Card);
         Assert.False(decision.PreferDedicated);
+    }
+
+    [Fact]
+    public void IntelIgpuWithDedicated_DemotedDedicated_RuleOff()
+    {
+        var decision = IntelDgpu("discrete", "discrete");
+
+        Assert.Equal(GpuSelectAction.Probe, decision.Action);
+        Assert.Equal(GpuSelectState.Unprobed, decision.Card);
+        Assert.False(decision.PreferDedicated);
+    }
+
+    [Fact]
+    public void IntelIgpuWithDedicated_StaleLatch_ProbesDedicatedFirst()
+    {
+        var latched = new GpuSelectState(GpuSelectState.Off, Now.AddMinutes(-5), 2, EnvA.Fingerprint, EnvA.Boot);
+
+        var decision = GpuSelectPlan.NextAction(latched.Format(), null, 2, Now, env: EnvARebooted,
+            intelIgpuWithDedicated: true);
+
+        Assert.Equal(GpuSelectAction.Probe, decision.Action);
+        Assert.Equal(GpuSelectState.Discrete, decision.Card);
+        Assert.True(decision.PreferDedicated);
+        Assert.True(decision.FreshStreak);
+    }
+
+    [Fact]
+    public void IntelIgpuWithDedicated_ExpiredLatch_ProbesDedicatedFirst()
+    {
+        var latched = new GpuSelectState(GpuSelectState.Off, Now.AddHours(-2), 1);
+
+        var decision = IntelDgpu(latched.Format());
+
+        Assert.Equal(GpuSelectAction.Probe, decision.Action);
+        Assert.Equal(GpuSelectState.Discrete, decision.Card);
+        Assert.True(decision.PreferDedicated);
+    }
+
+    [Fact]
+    public void IntelIgpuWithDedicated_GuardUnderOffLatch_Declines()
+    {
+        var latched = new GpuSelectState(GpuSelectState.Off, Now.AddHours(-2), 1);
+
+        var decision = IntelDgpu(latched.Format(), "discrete");
+
+        Assert.Equal(GpuSelectAction.DeclineAndLatch, decision.Action);
+        Assert.False(decision.PreferDedicated);
+    }
+
+    [Fact]
+    public void IntelIgpuWithDedicated_SingleAdapter_Ignored()
+    {
+        var decision = GpuSelectPlan.NextAction("unprobed", null, 1, Now, intelIgpuWithDedicated: true);
+
+        Assert.Equal(GpuSelectAction.Probe, decision.Action);
+        Assert.False(decision.PreferDedicated);
+    }
+
+    // A marker is written before each dedicated attempt and cleared only once the
+    // dedicated card works, so every way of not coming up leaves it for the next boot.
+    [Theory]
+    [InlineData("unprobed")]
+    [InlineData("integrated")]
+    public void MultiBoot_FailedDedicatedAttempt_IsNotRetriedWhileTheEnvironmentHolds(string remembered)
+    {
+        var boot1 = GpuSelectPlan.NextAction(remembered, null, 2, Now,
+            intelIgpuWithDedicated: GpuSelectPlan.RuleActive(true, null, EnvA));
+        Assert.True(boot1.PreferDedicated);
+
+        // The attempt failed, crashed or hung: the marker names this environment,
+        // and integrated was saved.
+        var boot2Active = GpuSelectPlan.RuleActive(true, EnvA.Fingerprint, EnvA);
+        var boot2 = GpuSelectPlan.NextAction("integrated", null, 2, Now, intelIgpuWithDedicated: boot2Active);
+
+        Assert.False(boot2Active);
+        Assert.Equal(GpuSelectAction.WarmRemembered, boot2.Action);
+        Assert.Equal(GpuSelectState.Integrated, boot2.Card);
+    }
+
+    [Fact]
+    public void MultiBoot_CrashGuardOnDedicated_StaysOffAfterTheMarkerIsWritten()
+    {
+        // Boot 2 sees the guard and writes the marker; boot 3 has no guard.
+        var boot2 = GpuSelectPlan.NextAction("integrated", "discrete", 2, Now, intelIgpuWithDedicated: true);
+        var boot3Active = GpuSelectPlan.RuleActive(true, EnvA.Fingerprint, EnvA);
+        var boot3 = GpuSelectPlan.NextAction("integrated", null, 2, Now, intelIgpuWithDedicated: boot3Active);
+
+        Assert.False(boot2.PreferDedicated);
+        Assert.Equal(GpuSelectAction.WarmRemembered, boot3.Action);
+        Assert.Equal(GpuSelectState.Integrated, boot3.Card);
+    }
+
+    [Fact]
+    public void RuleActive_RetriesWhenTheGpuSetOrDriverChanges()
+    {
+        Assert.True(GpuSelectPlan.RuleActive(true, EnvA.Fingerprint, EnvB));
+        Assert.True(GpuSelectPlan.RuleActive(true, "  ", EnvA));
+        Assert.False(GpuSelectPlan.RuleActive(false, null, EnvA));
     }
 
     [Fact]

@@ -37,7 +37,8 @@ internal static class AppBootstrap
                     var gpu = app.Services.GetRequiredService<GpuContext>();
 #if WINDOWS
                     // Windows + "auto": pick a card that yields a working context
-                    // (prefer integrated, fall back to discrete) without ever
+                    // (integrated first, or the dedicated card when an Intel integrated GPU
+                    // shares the PC with one; the other is the fallback) without ever
                     // restarting - see GpuRenderSelect. A user-pinned card skips
                     // this and inits directly on their choice.
                     var choice = app.Services.GetService<Nexus.Service.Persistence.IConfigStore>()

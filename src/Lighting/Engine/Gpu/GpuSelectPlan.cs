@@ -27,8 +27,7 @@ internal enum GpuSelectAction
 /// <param name="FreshStreak">The probe is owed to a stale latch, so a failure
 /// starts a new streak instead of lengthening the old wait.</param>
 /// <param name="PreferDedicated">The Intel-integrated-plus-dedicated rule applies:
-/// the dedicated card is tried first and a remembered integrated card is
-/// replaced by it.</param>
+/// the dedicated card is probed first and the integrated card is the fallback.</param>
 internal readonly record struct GpuSelectDecision(
     GpuSelectAction Action, string Card, string Reason, bool RestampLatch, bool FreshStreak = false,
     bool PreferDedicated = false);
@@ -85,15 +84,20 @@ internal static class GpuSelectPlan
         // next step re-probes instead of repeating the init that crashed.
         var demoted = guard is not null && guard == state.Card;
         // An Intel iGPU spins a core in its OpenGL driver for the life of the
-        // process, so a PC with a dedicated card renders on that. A crash on
-        // the dedicated card last boot lifts the rule for this boot.
+        // process, so a PC with a dedicated card renders on that. The dedicated
+        // card is only ever reached through a probe, never initialized
+        // in-process unproven. A crash on it last boot lifts the rule here, and
+        // the caller records that for later boots.
         var dedicated = intelIgpuWithDedicated && guard != GpuSelectState.Discrete;
         var open = dedicated ? GpuSelectState.Discrete : GpuSelectState.Unprobed;
+        if (!demoted && dedicated && state.Card == GpuSelectState.Integrated)
+        {
+            return new(GpuSelectAction.Probe, GpuSelectState.Discrete,
+                "remembered:integrated; probing the dedicated GPU", false, PreferDedicated: true);
+        }
         if (!demoted && (state.Card == GpuSelectState.Integrated || state.Card == GpuSelectState.Discrete))
         {
-            var card = dedicated ? GpuSelectState.Discrete : state.Card;
-            return new(GpuSelectAction.WarmRemembered, card, $"remembered:{card}", false,
-                PreferDedicated: dedicated);
+            return new(GpuSelectAction.WarmRemembered, state.Card, $"remembered:{state.Card}", false);
         }
         if (demoted)
         {
@@ -112,6 +116,13 @@ internal static class GpuSelectPlan
         return new(GpuSelectAction.Probe, open,
             state.IsOff ? "off latch expired" : "first run", false, PreferDedicated: dedicated);
     }
+
+    /// <summary>Whether the rule runs this boot: the adapter set qualifies and
+    /// the dedicated card has not already failed to come up in this environment
+    /// (the marker holds the adapter fingerprint it failed under, so a driver or
+    /// card change tries again).</summary>
+    public static bool RuleActive(bool detected, string? marker, GpuEnvironment env) =>
+        detected && !string.Equals(marker?.Trim(), env.Fingerprint, StringComparison.Ordinal);
 
     /// <summary>True when the adapter set holds an Intel integrated GPU and at
     /// least one dedicated one. Dedicated means 1 GiB or more of VRAM, the same
