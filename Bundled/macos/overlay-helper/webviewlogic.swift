@@ -11,6 +11,7 @@ struct WebViewSpec: Equatable {
     let rect: CGRect
     let interactive: Bool
     let visible: Bool
+    let zoom: Double
 }
 
 struct WebViewSyncMessage {
@@ -36,6 +37,11 @@ enum WebViewWidgetLogic {
     static let watchdogTimeout: TimeInterval = 3.0
     static let crashBackoff: TimeInterval = 5.0
 
+    static func clampZoom(_ z: Double?) -> Double {
+        guard let z = z, z.isFinite else { return 1 }
+        return min(3, max(0.25, z))
+    }
+
     static func parseSync(_ obj: [String: Any]) -> WebViewSyncMessage? {
         guard let seq = (obj["seq"] as? NSNumber)?.intValue,
               let vp = obj["viewport"] as? [String: Any],
@@ -50,6 +56,7 @@ enum WebViewWidgetLogic {
             let url = (entry["url"] as? String) ?? ""
             let interactive = (entry["interactive"] as? Bool) ?? false
             var visible = (entry["visible"] as? Bool) ?? false
+            let zoom = clampZoom((entry["zoom"] as? NSNumber)?.doubleValue)
             var rect = CGRect.zero
             if let r = entry["rect"] as? [String: Any],
                let x = (r["x"] as? NSNumber)?.doubleValue,
@@ -61,7 +68,7 @@ enum WebViewWidgetLogic {
             } else {
                 visible = false
             }
-            views.append(WebViewSpec(id: id, url: url, rect: rect, interactive: interactive, visible: visible))
+            views.append(WebViewSpec(id: id, url: url, rect: rect, interactive: interactive, visible: visible, zoom: zoom))
         }
         return WebViewSyncMessage(seq: seq, viewport: CGSize(width: vw, height: vh), views: views)
     }

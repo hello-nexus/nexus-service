@@ -379,6 +379,7 @@ final class WebViewWidgetHost: NSObject, WKScriptMessageHandler {
         let shown = frame != nil && spec.visible
         if web.isHidden == shown { web.isHidden = !shown }
         if web.interactive != spec.interactive { web.interactive = spec.interactive }
+        if abs(web.pageZoom - spec.zoom) > 0.0001 { web.pageZoom = CGFloat(spec.zoom) }
         if web.allowsLinkPreview != spec.interactive { web.allowsLinkPreview = spec.interactive }
     }
 

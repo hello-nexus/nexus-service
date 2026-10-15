@@ -2,7 +2,9 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
+using System.Net;
 using System.Text.Json;
+using System.Text.RegularExpressions;
 using Nexus.Service.Deck;
 using Nexus.Service.Models.Panel;
 using Nexus.Service.Panel;
@@ -50,6 +52,12 @@ internal static class Nexus2Y70Translator
                 continue;
             }
             result.Widgets++;
+
+            if (n2Type == "iframe")
+            {
+                TranslateIframe(widget, pages, result);
+                continue;
+            }
 
             if (!TypeMap.TryGetValue(n2Type, out var n3Type))
             {
@@ -100,6 +108,113 @@ internal static class Nexus2Y70Translator
             };
         }
         return result;
+    }
+
+    private const string WebViewType = "web-view";
+    private const string WebViewSize = "4x4";
+    private const string WebViewUrlKey = "url";
+    private const string WebViewZoomKey = "zoom";
+    private const string WebViewRefreshKey = "refreshMinutes";
+    private const double WebViewZoomMin = 0.25;
+    private const double WebViewZoomMax = 3;
+
+    internal const string NoteIframeInvalidUrl = "iframe:invalid-url";
+    internal const string NoteIframeNoSrc = "iframe:no-src";
+    internal const string NoteIframeNoSpace = "iframe:no-space";
+
+    private static readonly Regex IframeSrc = new(
+        "<iframe\\b[^>]*?\\bsrc\\s*=\\s*(?:\"([^\"]*)\"|'([^']*)'|([^\\s>]+))",
+        RegexOptions.IgnoreCase | RegexOptions.CultureInvariant,
+        TimeSpan.FromMilliseconds(250));
+
+    private static void TranslateIframe(JsonElement widget, List<PanelPageDto> pages, Nexus2Y70LayoutResult result)
+    {
+        var code = Nexus2Json.GetString(widget, "mode") == "code";
+        var raw = code ? ExtractIframeSrc(Nexus2Json.GetString(widget, "code")) : Nexus2Json.GetString(widget, "url");
+        if (code && raw is null)
+        {
+            result.Notes.Add(NoteIframeNoSrc);
+            return;
+        }
+        var url = NormalizeWebViewUrl(raw);
+        if (url is null)
+        {
+            result.Notes.Add(NoteIframeInvalidUrl);
+            return;
+        }
+
+        var zoom = Nexus2Json.GetDouble(widget, "zoom");
+        var clamped = zoom is { } z && double.IsFinite(z) ? Math.Clamp(z, WebViewZoomMin, WebViewZoomMax) : 1;
+        var config = new Nexus2ConfigBuilder()
+            .String(WebViewUrlKey, url)
+            .Number(WebViewZoomKey, clamped)
+            .Number(WebViewRefreshKey, 0)
+            .Build();
+        var placed = new PanelWidgetDto
+        {
+            Id = Guid.NewGuid().ToString(),
+            Type = WebViewType,
+            Size = WebViewSize,
+            Config = config,
+        };
+        if (Y70LayoutPlacement.Append(pages, placed, WebViewSize))
+        {
+            result.MappedWidgets++;
+        }
+        else
+        {
+            result.Notes.Add(NoteIframeNoSpace);
+        }
+    }
+
+    private static string? ExtractIframeSrc(string? html)
+    {
+        if (string.IsNullOrEmpty(html))
+        {
+            return null;
+        }
+        try
+        {
+            var m = IframeSrc.Match(html);
+            if (!m.Success)
+            {
+                return null;
+            }
+            var src = WebUtility.HtmlDecode((m.Groups[1].Success ? m.Groups[1] : m.Groups[2].Success ? m.Groups[2] : m.Groups[3]).Value).Trim();
+            return src.StartsWith("http://", StringComparison.OrdinalIgnoreCase)
+                || src.StartsWith("https://", StringComparison.OrdinalIgnoreCase)
+                ? src
+                : null;
+        }
+        catch (RegexMatchTimeoutException)
+        {
+            return null;
+        }
+    }
+
+    /// <summary>Same rule as the Web View widget: bare hosts get https://, only http/https survive.</summary>
+    internal static string? NormalizeWebViewUrl(string? input)
+    {
+        var text = input?.Trim();
+        if (string.IsNullOrEmpty(text))
+        {
+            return null;
+        }
+        if (text.StartsWith("//", StringComparison.Ordinal))
+        {
+            text = "https:" + text;
+        }
+        else if (!text.Contains("://", StringComparison.Ordinal))
+        {
+            text = "https://" + text;
+        }
+        if (!Uri.TryCreate(text, UriKind.Absolute, out var uri)
+            || (uri.Scheme != Uri.UriSchemeHttp && uri.Scheme != Uri.UriSchemeHttps)
+            || string.IsNullOrEmpty(uri.Host))
+        {
+            return null;
+        }
+        return uri.AbsoluteUri;
     }
 
     private const string DockSize = "4x1";

@@ -218,6 +218,103 @@ public sealed class Nexus2Y70TranslatorTests
             a.Row < b.Row + bRows && b.Row < a.Row + aRows;
     }
 
+    private static Nexus2Y70LayoutResult TranslateIframe(string widgetJson)
+    {
+        using var doc = JsonDocument.Parse(
+            "{\"pages\":[{\"id\":\"p1\",\"type\":\"page\",\"widgets\":[" + widgetJson + "]}]}");
+        return Nexus2Y70Translator.TranslateLayout(doc.RootElement);
+    }
+
+    private static Nexus.Service.Models.Panel.PanelWidgetDto OnlyWidget(Nexus2Y70LayoutResult result) =>
+        Assert.Single(Assert.Single(result.Layout!.Pages).Widgets);
+
+    [Fact]
+    public void Iframe_UrlMode_BecomesWebViewWithNormalizedUrl()
+    {
+        var result = TranslateIframe("""{"type":"iframe","size":"4x2","mode":"url","url":"example.com/a","zoom":1.5,"offsetX":9,"offsetY":9}""");
+        var w = OnlyWidget(result);
+        Assert.Equal("web-view", w.Type);
+        Assert.Equal("4x4", w.Size);
+        Assert.Equal("https://example.com/a", w.Config!["url"].GetString());
+        Assert.Equal(1.5, w.Config["zoom"].GetDouble());
+        Assert.Equal(0, w.Config["refreshMinutes"].GetInt32());
+        Assert.False(w.Config.ContainsKey("offsetX"));
+        Assert.Empty(result.DroppedTypes);
+        Assert.Equal(1, result.MappedWidgets);
+    }
+
+    [Fact]
+    public void Iframe_CodeModeWithSrc_UsesFirstIframeSrc()
+    {
+        var result = TranslateIframe("""{"type":"iframe","size":"4x4","mode":"code","code":"<div><iframe width=\"300\" SRC='https://a.example/x?a=1&amp;b=2' ></iframe><iframe src=\"https://b.example\"></iframe></div>"}""");
+        Assert.Equal("https://a.example/x?a=1&b=2", OnlyWidget(result).Config!["url"].GetString());
+    }
+
+    [Theory]
+    [InlineData("<div>no frame</div>")]
+    [InlineData("<iframe></iframe>")]
+    [InlineData("<iframe src=\"javascript:alert(1)\"></iframe>")]
+    [InlineData("<iframe src=\"//cdn.example/x\"></iframe>")]
+    [InlineData("")]
+    public void Iframe_CodeModeWithoutHttpSrc_IsSkippedWithNote(string code)
+    {
+        var json = System.Text.Json.JsonSerializer.Serialize(code);
+        var result = TranslateIframe("{\"type\":\"iframe\",\"size\":\"4x4\",\"mode\":\"code\",\"code\":" + json + "}");
+        Assert.Null(result.Layout);
+        Assert.Equal(1, result.Widgets);
+        Assert.Equal(0, result.MappedWidgets);
+        Assert.Equal(new List<string> { "iframe:no-src" }, result.Notes);
+        Assert.Empty(result.DroppedTypes);
+    }
+
+    [Theory]
+    [InlineData("")]
+    [InlineData("   ")]
+    [InlineData("javascript:alert(1)")]
+    [InlineData("data:text/html,hi")]
+    [InlineData("file:///etc/passwd")]
+    [InlineData("ftp://x.example")]
+    public void Iframe_InvalidUrl_IsSkippedWithNote(string url)
+    {
+        var result = TranslateIframe("{\"type\":\"iframe\",\"size\":\"2x2\",\"mode\":\"url\",\"url\":\"" + url + "\"}");
+        Assert.Null(result.Layout);
+        Assert.Equal(new List<string> { "iframe:invalid-url" }, result.Notes);
+    }
+
+    [Theory]
+    [InlineData(0.1, 0.25)]
+    [InlineData(10, 3)]
+    [InlineData(2, 2)]
+    public void Iframe_ZoomIsClampedToWebViewRange(double zoom, double expected)
+    {
+        var result = TranslateIframe("{\"type\":\"iframe\",\"size\":\"4x4\",\"mode\":\"url\",\"url\":\"https://a.example\",\"zoom\":"
+            + zoom.ToString(System.Globalization.CultureInfo.InvariantCulture) + "}");
+        Assert.Equal(expected, OnlyWidget(result).Config!["zoom"].GetDouble());
+    }
+
+    [Theory]
+    [InlineData("2x2")]
+    [InlineData("4x2")]
+    [InlineData("4x4")]
+    [InlineData("4x8")]
+    public void Iframe_EverySizeBecomes4x4(string size)
+    {
+        var result = TranslateIframe("{\"type\":\"iframe\",\"size\":\"" + size + "\",\"mode\":\"url\",\"url\":\"https://a.example\"}");
+        Assert.Equal("4x4", OnlyWidget(result).Size);
+    }
+
+    [Fact]
+    public void Iframe_WithNoRoomLeft_IsSkippedWithNote()
+    {
+        var widgets = string.Join(",", System.Linq.Enumerable.Repeat(
+            """{"type":"iframe","size":"4x4","mode":"url","url":"https://a.example"}""", Y70LayoutPlacement.MaxPages * 8));
+        var result = TranslateIframe(widgets);
+        Assert.Equal(Y70LayoutPlacement.MaxPages * 8, result.Widgets);
+        Assert.InRange(result.MappedWidgets, 1, result.Widgets - 1);
+        Assert.Equal(result.Widgets - result.MappedWidgets, result.Notes.Count);
+        Assert.All(result.Notes, n => Assert.Equal("iframe:no-space", n));
+    }
+
     private static Nexus2Y70LayoutResult TranslateLayout(JsonElement y70) => Nexus2Y70Translator.TranslateLayout(y70);
 
     private static Nexus.Service.Models.Panel.PanelWidgetDto FindWidget(Nexus2Y70LayoutResult result, string type)

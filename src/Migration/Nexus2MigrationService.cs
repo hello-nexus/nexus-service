@@ -332,6 +332,7 @@ public sealed class Nexus2MigrationService
         cat.Widgets = layout.Widgets;
         cat.MappedWidgets = layout.MappedWidgets;
         cat.DroppedTypes = layout.DroppedTypes;
+        cat.Notes = layout.Notes;
         return cat;
     }
 
