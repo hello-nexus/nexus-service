@@ -93,6 +93,7 @@ internal static class GpuProbe
             {
                 InitTimeout = budget,
                 BackendOverride = backend,
+                IgnoreDiagEnv = true,
             };
             lock (gpu.Lock)
             {

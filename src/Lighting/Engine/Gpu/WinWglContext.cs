@@ -346,6 +346,17 @@ internal static class WinWglContext
 
     public static bool Swap(IntPtr dc) => SwapBuffers(dc);
 
+    /// <summary>wglSwapIntervalEXT(0) on the current context; false when the entry point is missing or refuses.</summary>
+    public static unsafe bool DisableSwapInterval()
+    {
+        var entry = wglGetProcAddress("wglSwapIntervalEXT");
+        if (entry == IntPtr.Zero || entry == (IntPtr)1 || entry == (IntPtr)2 || entry == (IntPtr)3 || entry == (IntPtr)(-1))
+        {
+            return false;
+        }
+        return ((delegate* unmanaged[Stdcall]<int, int>)entry)(0) != 0;
+    }
+
     public static IntPtr CreateSecondContext(IntPtr dc) => wglCreateContext(dc);
 
     public static bool DeleteContext(IntPtr rc) => wglDeleteContext(rc);

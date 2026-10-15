@@ -54,6 +54,12 @@ public sealed class GpuContext : IDisposable
     // thread that created them, so every GL call must marshal to this one
     // thread via Invoke().
     private Thread? _glThread;
+    // GL thread only: set while a job is being skipped because no context could be made current.
+    private bool _skipJob;
+
+    /// <summary>The diagnostic backend env var is ignored when set (the probe child must select like the service did).</summary>
+    public bool IgnoreDiagEnv { get; init; }
+
     private readonly BlockingCollection<Action> _workQueue = new(new ConcurrentQueue<Action>());
     private readonly ManualResetEventSlim _initDone = new(false);
     // Set only when an attempt actually produced a context. _initDone is also
@@ -366,10 +372,14 @@ public sealed class GpuContext : IDisposable
             try
             { work = _workQueue.Take(); }
             catch (InvalidOperationException) { return; }
-            GpuDiag.BeforeJob(this);
+            // A failed diagnostic rebind leaves no current context: the job must not touch GL.
+            // Invoke's wrapper sees the flag and returns without running its work, so the
+            // waiting caller is released through the normal no-context path.
+            _skipJob = !GpuDiag.BeforeJob(this);
             try
             { work(); }
             catch (Exception ex) { Log($"[gpu] work item threw: {ex}"); }
+            _skipJob = false;
             GpuDiag.AfterJob(this);
         }
     }
@@ -431,7 +441,12 @@ public sealed class GpuContext : IDisposable
         _workQueue.Add(() =>
         {
             try
-            { work(); }
+            {
+                if (!_skipJob)
+                {
+                    work();
+                }
+            }
             catch (Exception ex) { caught = ex; }
             finally { done.Set(); }
         });
@@ -550,12 +565,19 @@ public sealed class GpuContext : IDisposable
     // Compiled out entirely unless this is a DEV_TOOLS build, so a release binary
     // carries neither the behaviour nor the variable names.
 #if !MACOS && !LINUX
-    /// <summary>True only when the user has pinned the old backend; WGL is the
-    /// default (see WinWglContext).</summary>
-    private bool UseGlfwBackend() =>
-        string.Equals(Environment.GetEnvironmentVariable("NEXUS_GPU_DIAG_BACKEND")
-            ?? BackendOverride ?? _store?.Load().Lighting.RenderBackend, "glfw",
+    /// <summary>True when the old backend is requested: by the NEXUS_GPU_DIAG_BACKEND
+    /// variable (only the value glfw counts, ignored in the probe child) or by the
+    /// override or stored setting. WGL is the default (see WinWglContext).</summary>
+    private bool UseGlfwBackend()
+    {
+        if (!IgnoreDiagEnv && string.Equals(Environment.GetEnvironmentVariable("NEXUS_GPU_DIAG_BACKEND"), "glfw",
+            StringComparison.OrdinalIgnoreCase))
+        {
+            return true;
+        }
+        return string.Equals(BackendOverride ?? _store?.Load().Lighting.RenderBackend, "glfw",
             StringComparison.OrdinalIgnoreCase);
+    }
 
     /// <summary>The pre-WGL path, reachable by setting Lighting.RenderBackend to
     /// "glfw" if a card ever refuses the direct one.</summary>

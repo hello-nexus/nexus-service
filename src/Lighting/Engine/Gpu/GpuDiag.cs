@@ -51,13 +51,21 @@ public static class GpuDiag
     private static string? _abortReason;
     private static int _mode;
     private static GpuContext? _glCtx;
+#if WINDOWS
+    private static volatile bool _swapUnsupported;
+    private static int _rebindFailLogs;
+#endif
+#pragma warning disable IDE0044
+    private static long _swapStartTicks = 0;
+#pragma warning restore IDE0044
+    private static readonly List<double> SwapMs = new();
 
     // GL thread only: the diagnostic unbound the main context and it has not been rebound yet.
     private static bool _unbound;
 #if WINDOWS
     private static IntPtr _extraRc;
 #endif
-    private static readonly Dictionary<uint, string> ModuleCache = new();
+    private static readonly Dictionary<uint, (long Created, string Name)> ModuleCache = new();
 
     [ThreadStatic]
     private static int t_registeredKinds;
@@ -77,21 +85,27 @@ public static class GpuDiag
         _enabled && ctx == FrameContext.Main ? Mode : GpuDiagMode.Baseline;
 
     /// <summary>GL thread, before every queued job: rebinds the main context if the diagnostic unbound it.</summary>
-    public static void BeforeJob(GpuContext ctx)
+    /// <summary>False when the rebind failed: the job must be skipped, and the next job retries.</summary>
+    public static bool BeforeJob(GpuContext ctx)
     {
         if (!_unbound)
         {
-            return;
+            return true;
         }
-        _unbound = false;
 #if WINDOWS
         var (dc, rc) = ctx.GlHandles;
         if (dc != 0 && !WinWglContext.MakeCurrent(dc, rc))
         {
-            GpuContext.Log($"{Tag} rebind of the main context failed (Win32 {Marshal.GetLastWin32Error()})");
+            if (_rebindFailLogs++ < 3)
+            {
+                GpuContext.Log($"{Tag} rebind of the main context failed (Win32 {Marshal.GetLastWin32Error()}); job skipped");
+            }
             ForceBaseline("rebind failed");
+            return false;
         }
 #endif
+        _unbound = false;
+        return true;
     }
 
     /// <summary>GL thread, after every queued job: leaves the context not current in the unbound variants.</summary>
@@ -137,9 +151,20 @@ public static class GpuDiag
             gl.Flush();
 #if WINDOWS
             var (dc, _) = ctx.GlHandles;
-            if (dc != 0 && !WinWglContext.Swap(dc))
+            if (dc != 0 && !_swapUnsupported)
             {
-                ForceBaseline($"SwapBuffers failed (Win32 {Marshal.GetLastWin32Error()})");
+                var t0 = Stopwatch.GetTimestamp();
+                Volatile.Write(ref _swapStartTicks, t0);
+                var ok = WinWglContext.Swap(dc);
+                Volatile.Write(ref _swapStartTicks, 0);
+                lock (SwapMs)
+                {
+                    SwapMs.Add((Stopwatch.GetTimestamp() - t0) * 1000.0 / Stopwatch.Frequency);
+                }
+                if (!ok)
+                {
+                    ForceBaseline($"SwapBuffers failed (Win32 {Marshal.GetLastWin32Error()})");
+                }
             }
 #endif
         }
@@ -267,7 +292,11 @@ public static class GpuDiag
         // rebind before it) and runs the one-shot context actions of the extra-ctx pair.
         RunOnGl(() =>
         {
-            if (mode == GpuDiagMode.ExtraCtx)
+            if (mode == GpuDiagMode.Swap)
+            {
+                DisableSwapInterval();
+            }
+            else if (mode == GpuDiagMode.ExtraCtx)
             {
                 CreateExtraContext();
             }
@@ -340,6 +369,20 @@ public static class GpuDiag
         _extraRc = 0;
         var ok = WinWglContext.DeleteContext(extra);
         GpuContext.Log($"{Tag} extra-ctx deleted ok={ok} {IcdSnapshot()}");
+#endif
+    }
+
+    // GL thread, main context current. The variant is skipped when swap-interval 0 cannot be set,
+    // since a vsynced SwapBuffers on a hidden window could block the GL thread.
+    private static void DisableSwapInterval()
+    {
+#if WINDOWS
+        var ok = WinWglContext.DisableSwapInterval();
+        if (!ok)
+        {
+            _swapUnsupported = true;
+        }
+        GpuContext.Log($"{Tag} swap interval 0 {(ok ? "set" : "unavailable; swap variant skipped")}");
 #endif
     }
 
@@ -592,6 +635,24 @@ public static class GpuDiag
         }
         sb.Append(" kind-cycles/s(M): eng=").Append((kindCycles[0] / secs / 1e6).ToString("0.0", ci))
             .Append(" gl=").Append((kindCycles[1] / secs / 1e6).ToString("0.0", ci));
+        double[] swaps;
+        lock (SwapMs)
+        {
+            swaps = SwapMs.ToArray();
+            SwapMs.Clear();
+        }
+        var inFlight = Volatile.Read(ref _swapStartTicks);
+        if (swaps.Length > 0 || inFlight != 0)
+        {
+            sb.Append(" swap-ms(n=").Append(swaps.Length).Append(" max=")
+                .Append((swaps.Length > 0 ? Max(swaps) : 0).ToString("0.00", ci)).Append(" med=")
+                .Append(GpuDiagSummary.Median(swaps).ToString("0.00", ci)).Append(')');
+            if (inFlight != 0)
+            {
+                sb.Append(" swap-in-flight-ms=")
+                    .Append(((Stopwatch.GetTimestamp() - inFlight) * 1000.0 / Stopwatch.Frequency).ToString("0", ci));
+            }
+        }
         sb.Append(" icd-threads=").Append(icdCount).Append(" icd-cpu=").Append(icdCpu.ToString("0.0", ci))
             .Append(" icd[tid=ms/s]:").Append(icdCount == 0 ? " none" : icdText.ToString());
         sb.Append(" top-threads:");
@@ -604,6 +665,16 @@ public static class GpuDiag
         GpuContext.Log(sb.ToString());
 
         return new GpuDiagWindow(mode, settle, mainFrames, procPct, cpuPerSec, secs, icdCount, icdCpu);
+    }
+
+    private static double Max(double[] v)
+    {
+        var m = v[0];
+        foreach (var x in v)
+        {
+            m = Math.Max(m, x);
+        }
+        return m;
     }
 
     private readonly record struct ThreadRow(uint Tid, double Ms, string Module);
@@ -660,9 +731,10 @@ public static class GpuDiag
                 try
                 {
                     var (cpu, _) = ReadThread(h);
+                    GpuDiagNative.GetThreadTimes(h, out var created, out _, out _, out _);
                     prev.TryGetValue(e.ThreadId, out var before);
                     prev[e.ThreadId] = cpu;
-                    rows.Add(new ThreadRow(e.ThreadId, (cpu - before) / 10_000.0 / secs, ThreadModule(e.ThreadId)));
+                    rows.Add(new ThreadRow(e.ThreadId, (cpu - before) / 10_000.0 / secs, ThreadModule(e.ThreadId, created)));
                 }
                 finally
                 {
@@ -679,13 +751,13 @@ public static class GpuDiag
     }
 
     // File name of the module containing the thread's Win32 start address; cached, the address never changes.
-    private static unsafe string ThreadModule(uint tid)
+    private static unsafe string ThreadModule(uint tid, long created)
     {
         lock (ModuleCache)
         {
-            if (ModuleCache.TryGetValue(tid, out var cached))
+            if (ModuleCache.TryGetValue(tid, out var cached) && cached.Created == created)
             {
-                return cached;
+                return cached.Name;
             }
         }
         var name = "?";
@@ -719,7 +791,7 @@ public static class GpuDiag
         }
         lock (ModuleCache)
         {
-            ModuleCache[tid] = name;
+            ModuleCache[tid] = (created, name);
         }
         return name;
     }

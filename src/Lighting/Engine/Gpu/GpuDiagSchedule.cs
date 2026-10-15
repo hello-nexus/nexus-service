@@ -27,10 +27,10 @@ public sealed class GpuDiagSchedule
     {
         GpuDiagMode.Unbind,
         GpuDiagMode.IdleUnbound,
-        GpuDiagMode.Swap,
         GpuDiagMode.Finish,
         GpuDiagMode.ExtraCtx,
         GpuDiagMode.ExtraDeleted,
+        GpuDiagMode.Swap,
         GpuDiagMode.Baseline,
     };
 

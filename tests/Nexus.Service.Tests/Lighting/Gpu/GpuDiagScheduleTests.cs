@@ -36,8 +36,8 @@ public class GpuDiagScheduleTests
         Assert.Equal(
             new[]
             {
-                GpuDiagMode.Unbind, GpuDiagMode.IdleUnbound, GpuDiagMode.Swap, GpuDiagMode.Finish,
-                GpuDiagMode.ExtraCtx, GpuDiagMode.ExtraDeleted, GpuDiagMode.Baseline,
+                GpuDiagMode.Unbind, GpuDiagMode.IdleUnbound, GpuDiagMode.Finish, GpuDiagMode.ExtraCtx,
+                GpuDiagMode.ExtraDeleted, GpuDiagMode.Swap, GpuDiagMode.Baseline,
             },
             GpuDiagSchedule.DefaultOrder);
     }
