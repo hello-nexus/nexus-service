@@ -53,6 +53,9 @@ public static class GpuDiag
     private static GpuContext? _glCtx;
 #if WINDOWS
     private static volatile bool _swapUnsupported;
+
+    // GL thread only: true once wglSwapIntervalEXT(0) succeeded for the current Swap stretch.
+    private static bool _swapIntervalZero;
     private static int _rebindFailLogs;
 #endif
 #pragma warning disable IDE0044
@@ -151,7 +154,7 @@ public static class GpuDiag
             gl.Flush();
 #if WINDOWS
             var (dc, _) = ctx.GlHandles;
-            if (dc != 0 && !_swapUnsupported)
+            if (dc != 0 && _swapIntervalZero && !_swapUnsupported)
             {
                 var t0 = Stopwatch.GetTimestamp();
                 Volatile.Write(ref _swapStartTicks, t0);
@@ -292,6 +295,9 @@ public static class GpuDiag
         // rebind before it) and runs the one-shot context actions of the extra-ctx pair.
         RunOnGl(() =>
         {
+#if WINDOWS
+            _swapIntervalZero = false;
+#endif
             if (mode == GpuDiagMode.Swap)
             {
                 DisableSwapInterval();
@@ -378,6 +384,7 @@ public static class GpuDiag
     {
 #if WINDOWS
         var ok = WinWglContext.DisableSwapInterval();
+        _swapIntervalZero = ok;
         if (!ok)
         {
             _swapUnsupported = true;
