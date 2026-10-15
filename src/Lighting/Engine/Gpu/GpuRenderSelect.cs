@@ -84,9 +84,14 @@ internal static class GpuRenderSelect
         var now = DateTimeOffset.UtcNow;
         var raw = LoadStateText();
         var state = GpuSelectState.Parse(raw);
-        var plan = GpuSelectPlan.NextAction(raw, crashed, usable, now, GpuTestSeam.ReprobeOverride, env);
+        var intelDgpu = GpuSelectPlan.IntelIgpuWithDedicated(adapters.Select(a => (a.VendorId, a.DedicatedVramMb)));
+        var plan = GpuSelectPlan.NextAction(raw, crashed, usable, now, GpuTestSeam.ReprobeOverride, env, intelDgpu);
         GpuContext.Log($"[gpu] select: adapters={usable} env='{env.Fingerprint}@{env.Boot}' state='{state.Format()}' "
             + $"crashguard='{crashed ?? "none"}' -> {plan.Action} ({plan.Reason})");
+        if (plan.PreferDedicated)
+        {
+            GpuContext.Log("[gpu] auto: Intel integrated GPU present, using the dedicated GPU");
+        }
 
         switch (plan.Action)
         {
@@ -113,7 +118,7 @@ internal static class GpuRenderSelect
                 WarmRemembered(gpu, sw, plan.Card, state);
                 return;
             default:
-                ProbeThenWarm(gpu, sw, usable, plan.FreshStreak ? GpuSelectState.Fresh : state);
+                ProbeThenWarm(gpu, sw, usable, plan.FreshStreak ? GpuSelectState.Fresh : state, plan.PreferDedicated);
                 return;
         }
     }
@@ -154,7 +159,7 @@ internal static class GpuRenderSelect
         return "t" + (booted.ToUnixTimeSeconds() / 60).ToString(System.Globalization.CultureInfo.InvariantCulture);
     }
 
-    private static void ProbeThenWarm(GpuContext gpu, Stopwatch sw, int usable, GpuSelectState state)
+    private static void ProbeThenWarm(GpuContext gpu, Stopwatch sw, int usable, GpuSelectState state, bool preferDedicated)
     {
         if (usable <= 1)
         {
@@ -169,6 +174,16 @@ internal static class GpuRenderSelect
         }
 
         GpuContext.Log("[gpu] select: probing GPUs");
+        if (preferDedicated)
+        {
+            if (ProbeCard(ClassDiscrete) != GpuProbeVerdict.Failed)
+            {
+                WarmGuarded(gpu, sw, GpuSelectState.Discrete, ClassDiscrete, "probed:discrete");
+                AfterWarm(gpu, sw, GpuSelectState.Discrete, ClassDiscrete);
+                return;
+            }
+            GpuContext.Log("[gpu] select: discrete probe failed; trying integrated");
+        }
         if (ProbeCard(ClassIntegrated) != GpuProbeVerdict.Failed)
         {
             WarmGuarded(gpu, sw, GpuSelectState.Integrated, ClassIntegrated, "probed:integrated");

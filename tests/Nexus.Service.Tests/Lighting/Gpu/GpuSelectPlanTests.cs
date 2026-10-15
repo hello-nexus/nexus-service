@@ -201,4 +201,86 @@ public class GpuSelectPlanTests
     {
         Assert.Equal(GpuSelectAction.Probe, Single("unprobed", "   ").Action);
     }
+
+    private static GpuSelectDecision IntelDgpu(string? state, string? guard = null) =>
+        GpuSelectPlan.NextAction(state, guard, 2, Now, intelIgpuWithDedicated: true);
+
+    [Theory]
+    [InlineData("unprobed")]
+    [InlineData("fresh")]
+    public void IntelIgpuWithDedicated_FirstRun_ProbesDedicatedFirst(string state)
+    {
+        var decision = IntelDgpu(state);
+
+        Assert.Equal(GpuSelectAction.Probe, decision.Action);
+        Assert.Equal(GpuSelectState.Discrete, decision.Card);
+        Assert.True(decision.PreferDedicated);
+    }
+
+    [Fact]
+    public void IntelIgpuWithDedicated_RememberedIntegrated_MovesToDedicated()
+    {
+        var decision = IntelDgpu("integrated");
+
+        Assert.Equal(GpuSelectAction.WarmRemembered, decision.Action);
+        Assert.Equal(GpuSelectState.Discrete, decision.Card);
+        Assert.True(decision.PreferDedicated);
+    }
+
+    [Fact]
+    public void IntelIgpuWithDedicated_CrashOnIntegrated_ProbesDedicatedFirst()
+    {
+        var decision = IntelDgpu("integrated", "integrated");
+
+        Assert.Equal(GpuSelectAction.Probe, decision.Action);
+        Assert.Equal(GpuSelectState.Discrete, decision.Card);
+    }
+
+    [Fact]
+    public void IntelIgpuWithDedicated_CrashOnDedicated_FallsBackToTheRememberedCard()
+    {
+        var decision = IntelDgpu("integrated", "discrete");
+
+        Assert.Equal(GpuSelectAction.WarmRemembered, decision.Action);
+        Assert.Equal(GpuSelectState.Integrated, decision.Card);
+        Assert.False(decision.PreferDedicated);
+    }
+
+    [Fact]
+    public void IntelIgpuWithDedicated_FreshLatch_StillHolds()
+    {
+        var held = new GpuSelectState(GpuSelectState.Off, Now.AddMinutes(-5), 1);
+
+        Assert.Equal(GpuSelectAction.DeclineNoProbe, IntelDgpu(held.Format()).Action);
+    }
+
+    [Fact]
+    public void WithoutTheRule_RememberedIntegratedIsKept()
+    {
+        var decision = GpuSelectPlan.NextAction("integrated", null, 2, Now, intelIgpuWithDedicated: false);
+
+        Assert.Equal(GpuSelectState.Integrated, decision.Card);
+        Assert.False(decision.PreferDedicated);
+    }
+
+    private const uint Intel = 0x8086, Amd = 0x1002, Nvidia = 0x10DE;
+
+    [Theory]
+    [InlineData(Intel, 128L, Nvidia, 32768L, true)]
+    [InlineData(Intel, 128L, Amd, 16384L, true)]
+    [InlineData(Intel, 128L, Intel, 16384L, true)]
+    [InlineData(Amd, 512L, Nvidia, 32768L, false)]
+    [InlineData(Amd, 512L, Amd, 16384L, false)]
+    [InlineData(Intel, 128L, Amd, 512L, false)]
+    [InlineData(Nvidia, 8192L, Nvidia, 8192L, false)]
+    public void IntelIgpuWithDedicated_Detection(uint v1, long m1, uint v2, long m2, bool expected)
+    {
+        Assert.Equal(expected, GpuSelectPlan.IntelIgpuWithDedicated(new[] { (v1, m1), (v2, m2) }));
+    }
+
+    [Fact]
+    public void IntelIgpuWithDedicated_IntelOnly_IsFalse()
+    {
+        Assert.False(GpuSelectPlan.IntelIgpuWithDedicated(new[] { (Intel, 128L) }));
+    }
 }

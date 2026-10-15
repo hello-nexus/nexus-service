@@ -26,8 +26,12 @@ internal enum GpuSelectAction
 /// writes one; the streak does not grow.</param>
 /// <param name="FreshStreak">The probe is owed to a stale latch, so a failure
 /// starts a new streak instead of lengthening the old wait.</param>
+/// <param name="PreferDedicated">The Intel-integrated-plus-dedicated rule applies:
+/// the dedicated card is tried first and a remembered integrated card is
+/// replaced by it.</param>
 internal readonly record struct GpuSelectDecision(
-    GpuSelectAction Action, string Card, string Reason, bool RestampLatch, bool FreshStreak = false);
+    GpuSelectAction Action, string Card, string Reason, bool RestampLatch, bool FreshStreak = false,
+    bool PreferDedicated = false);
 
 /// <summary>
 /// The render-GPU boot decision, with no platform or IO in it so it can be
@@ -38,7 +42,7 @@ internal static class GpuSelectPlan
 {
     public static GpuSelectDecision NextAction(
         string? persistedState, string? crashGuard, int usableAdapters, DateTimeOffset now,
-        TimeSpan? reprobeOverride = null, GpuEnvironment? env = null)
+        TimeSpan? reprobeOverride = null, GpuEnvironment? env = null, bool intelIgpuWithDedicated = false)
     {
         var state = GpuSelectState.Parse(persistedState);
         var guard = string.IsNullOrWhiteSpace(crashGuard) ? null : crashGuard.Trim();
@@ -80,27 +84,57 @@ internal static class GpuSelectPlan
         // A leftover crash guard naming the remembered card demotes it, so the
         // next step re-probes instead of repeating the init that crashed.
         var demoted = guard is not null && guard == state.Card;
+        // An Intel iGPU spins a core in its OpenGL driver for the life of the
+        // process, so a PC with a dedicated card renders on that. A crash on
+        // the dedicated card last boot lifts the rule for this boot.
+        var dedicated = intelIgpuWithDedicated && guard != GpuSelectState.Discrete;
+        var open = dedicated ? GpuSelectState.Discrete : GpuSelectState.Unprobed;
         if (!demoted && (state.Card == GpuSelectState.Integrated || state.Card == GpuSelectState.Discrete))
         {
-            return new(GpuSelectAction.WarmRemembered, state.Card, $"remembered:{state.Card}", false);
+            var card = dedicated ? GpuSelectState.Discrete : state.Card;
+            return new(GpuSelectAction.WarmRemembered, card, $"remembered:{card}", false,
+                PreferDedicated: dedicated);
         }
         if (demoted)
         {
-            return new(GpuSelectAction.Probe, GpuSelectState.Unprobed,
-                $"{state.Card} crashed init last boot; demoting and re-probing", false);
+            return new(GpuSelectAction.Probe, open,
+                $"{state.Card} crashed init last boot; demoting and re-probing", false, PreferDedicated: dedicated);
         }
         if (state.LatchStale(env))
         {
-            return new(GpuSelectAction.Probe, GpuSelectState.Unprobed, StaleReason(state, env), false, true);
+            return new(GpuSelectAction.Probe, open, StaleReason(state, env), false, true, dedicated);
         }
         if (state.IsOff && !state.ReprobeDue(now, reprobeOverride))
         {
             return new(GpuSelectAction.DeclineNoProbe, GpuSelectState.Unprobed,
                 "no card produced a working context", state.OffSince is null);
         }
-        return new(GpuSelectAction.Probe, GpuSelectState.Unprobed,
-            state.IsOff ? "off latch expired" : "first run", false);
+        return new(GpuSelectAction.Probe, open,
+            state.IsOff ? "off latch expired" : "first run", false, PreferDedicated: dedicated);
     }
+
+    /// <summary>True when the adapter set holds an Intel integrated GPU and at
+    /// least one dedicated one. Dedicated means 1 GiB or more of VRAM, the same
+    /// cut the adapter matcher uses.</summary>
+    public static bool IntelIgpuWithDedicated(System.Collections.Generic.IEnumerable<(uint VendorId, long DedicatedVramMb)> adapters)
+    {
+        var intelIgpu = false;
+        var dedicated = false;
+        foreach (var (vendor, vram) in adapters)
+        {
+            if (vram >= 1024)
+            {
+                dedicated = true;
+            }
+            else if (vendor == IntelVendorId)
+            {
+                intelIgpu = true;
+            }
+        }
+        return intelIgpu && dedicated;
+    }
+
+    private const uint IntelVendorId = 0x8086;
 
     private static string StaleReason(GpuSelectState state, GpuEnvironment? env) =>
         state.Fingerprint is null || state.Boot is null ? "off latch names no environment"
