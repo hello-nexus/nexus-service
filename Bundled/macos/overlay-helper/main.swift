@@ -619,6 +619,18 @@ final class KioskController {
         }
     }
 
+    /// Widget views are destroyed before the panel webview and window go away.
+    private func closeKiosk(_ window: NSWindow) {
+        (window as? KioskPanel)?.widgetHost?.shutdown()
+        window.orderOut(nil)
+        window.close()
+    }
+
+    func shutdown() {
+        for entry in kiosks.values { closeKiosk(entry.window) }
+        kiosks.removeAll()
+    }
+
     private func fetchAssignments(_ completion: @escaping ([KioskAssignment]?) -> Void) {
         var c = URLComponents()
         c.scheme = "http"
@@ -659,8 +671,7 @@ final class KioskController {
                 || want!.panelDeviceId != entry.deviceId
                 || entry.window.frame != screen!.frame
             if stale {
-                entry.window.orderOut(nil)
-                entry.window.close()
+                closeKiosk(entry.window)
                 kiosks.removeValue(forKey: displayId)
                 FileHandle.standardError.write("[overlay-helper] kiosk closed display=\(displayId)\n".data(using: .utf8)!)
             }
@@ -683,8 +694,7 @@ final class KioskController {
         // terminates and returns while the display stays therefore reloads
         // the kiosk twice (mouse semantics, then touch again).
         for (displayId, entry) in kiosks where entry.touchViaPointer != routable {
-            entry.window.orderOut(nil)
-            entry.window.close()
+            closeKiosk(entry.window)
             kiosks.removeValue(forKey: displayId)
             FileHandle.standardError.write("[overlay-helper] kiosk closed display=\(displayId) (touch routing changed)\n".data(using: .utf8)!)
         }
@@ -800,7 +810,7 @@ final class KioskController {
         // Non-activating panel for the same reason as the widget overlay:
         // the kiosk must take clicks without ever stealing key/main status
         // from the user's apps (Windows parity: WS_EX_NOACTIVATE).
-        let win = OverlayPanel(
+        let win = KioskPanel(
             contentRect: frame,
             styleMask: [.borderless, .nonactivatingPanel],
             backing: .buffered,
@@ -828,13 +838,24 @@ final class KioskController {
             frame: NSRect(origin: .zero, size: frame.size),
             configuration: cfg)
         webView.autoresizingMask = [.width, .height]
-        webView.navigationDelegate = webViewDelegate
+        let kioskDelegate = KioskNavigationDelegate(inner: webViewDelegate)
+        webView.navigationDelegate = kioskDelegate
+        let widgetHost = WebViewWidgetHost(port: opts.port, mainWebView: webView, panel: win, navigationDelegate: kioskDelegate)
+        cfg.userContentController.add(widgetHost, name: WebViewWidgetHost.handlerName)
+        win.widgetHost = widgetHost
         if #available(macOS 13.3, *) {
             webView.isInspectable = true
         } else {
             webView.setValue(true, forKey: "_developerExtrasEnabled")
         }
-        win.contentView = webView
+        let root = NSView(frame: NSRect(origin: .zero, size: frame.size))
+        root.autoresizesSubviews = true
+        webView.frame = root.bounds
+        root.addSubview(webView)
+        widgetHost.container.frame = root.bounds
+        widgetHost.container.autoresizingMask = [.width, .height]
+        root.addSubview(widgetHost.container, positioned: .above, relativeTo: webView)
+        win.contentView = root
         win.setFrame(frame, display: true)
         win.orderFrontRegardless()
 
@@ -902,7 +923,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationWillTerminate(_ notification: Notification) {
-        // NSWindow cleanup is automatic. Nothing else to flush.
+        kiosk?.shutdown()
     }
 }
 

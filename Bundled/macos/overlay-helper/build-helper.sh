@@ -14,7 +14,7 @@ fi
 
 OUT="${1:-.}"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-SRC=("$SCRIPT_DIR/main.swift" "$SCRIPT_DIR/streamhost.swift")
+SRC=("$SCRIPT_DIR/main.swift" "$SCRIPT_DIR/streamhost.swift" "$SCRIPT_DIR/webviewlogic.swift" "$SCRIPT_DIR/webviewhost.swift")
 
 if ! command -v swiftc >/dev/null 2>&1; then
     echo "[overlay-helper] swiftc not found - install Xcode Command Line Tools" >&2
