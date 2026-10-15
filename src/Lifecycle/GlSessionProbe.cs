@@ -17,11 +17,11 @@ using Silk.NET.OpenGL;
 namespace Nexus.Service.Lifecycle;
 
 /// <summary>
-/// Throwaway diagnostic child: `--gl-session-probe user-session|system-console`.
-/// Creates its own WGL 3.3 core context (hidden window, the service's pixel format),
-/// renders a trivial frame at about 30 Hz for a minute and logs CPU and GL ICD thread
-/// attribution every 10 s to logs/nexus-gpu-session-probe.log (part of the support
-/// bundle). It touches no settings, no render-GPU state and no devices; the parent
+/// Throwaway diagnostic child, started with the probe flag and a variant name.
+/// Creates its own WGL core context (hidden window, the service's pixel format),
+/// renders a trivial frame at a steady rate for a minute and logs CPU and GL ICD thread
+/// attribution every window to a per-account log under the logs dir (picked up by the
+/// support bundle). It touches no settings, no render-GPU state and no devices; the parent
 /// owns the GpuPreference registry value.
 /// </summary>
 [SupportedOSPlatform("windows")]
@@ -32,7 +32,11 @@ internal static class GlSessionProbe
     internal const string SystemConsole = "system-console";
     internal const int RunSeconds = 60;
     internal const int HardKillSeconds = 120;
-    private const string LogFile = "nexus-gpu-session-probe.log";
+    private static int s_failureLogged;
+
+    // One file per writing account: a file first created by SYSTEM may not be writable by the user session.
+    private static string LogFile(string variant) =>
+        variant == SystemConsole ? "nexus-gpu-session-probe-system.log" : "nexus-gpu-session-probe-user.log";
 
     internal static void Write(string variant, string message)
     {
@@ -40,14 +44,26 @@ internal static class GlSessionProbe
         {
             var dir = ServiceLog.LogsDirectory;
             Directory.CreateDirectory(dir);
-            using var fs = new FileStream(Path.Combine(dir, LogFile), FileMode.Append, FileAccess.Write, FileShare.ReadWrite);
+            using var fs = new FileStream(Path.Combine(dir, LogFile(variant)), FileMode.Append, FileAccess.Write, FileShare.ReadWrite);
             var line = $"{DateTime.Now:HH:mm:ss.fff} [{Environment.ProcessId}] [gpu-session-probe] variant={variant} {message}\n";
             var bytes = Encoding.UTF8.GetBytes(line);
             fs.Write(bytes, 0, bytes.Length);
         }
-        catch
+        catch (Exception ex)
         {
-            // Diagnostic only.
+            // Report the first failure once to the writer's normal log; never throw from a diagnostic.
+            if (Interlocked.Exchange(ref s_failureLogged, 1) == 0)
+            {
+                var note = $"[gpu-session-probe] cannot write {LogFile(variant)}: {ex.GetType().Name}: {ex.Message}";
+                if (variant == SystemConsole)
+                {
+                    ServiceLog.Warn(note);
+                }
+                else
+                {
+                    HelperLog.Write(note);
+                }
+            }
         }
     }
 
@@ -218,7 +234,7 @@ internal static class GlSessionProbeLauncher
     private static int _helperStarted;
     private static int _serviceStarted;
 
-    /// <summary>Helper process: about 60 s after start, one user-session child, preference in this user's HKCU.</summary>
+    /// <summary>Helper process: a short delay after start, one user-session child, preference in this user's HKCU.</summary>
     public static void StartHelperSchedule(CancellationToken stop)
     {
         if (Interlocked.Exchange(ref _helperStarted, 1) != 0)
@@ -244,7 +260,7 @@ internal static class GlSessionProbeLauncher
         t.Start();
     }
 
-    /// <summary>Service process: about 150 s after the first shader frame, one SYSTEM child in the console session, preference in the S-1-5-18 hive.</summary>
+    /// <summary>Service process: a longer delay after the first shader frame, one SYSTEM child in the console session, preference in the LocalSystem hive.</summary>
     public static void StartServiceSchedule()
     {
         if (Interlocked.Exchange(ref _serviceStarted, 1) != 0)
