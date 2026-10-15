@@ -36,6 +36,7 @@ public static class GpuDiag
     private const int PhaseCount = 12;
     private const int FirstGlPhase = (int)Phase.GlSetup;
     private const int WindowSeconds = 10;
+    private const int BaselineOnlyWindows = 36;
     private const string Tag = "[gpu-diag]";
 
     private static readonly long[] Cycles = new long[PhaseCount];
@@ -252,6 +253,9 @@ public static class GpuDiag
                 + $"gl-thread={GpuDiagNative.GetCurrentThreadId()} logical-cpus={Environment.ProcessorCount}");
             _glCtx = ctx;
             _enabled = true;
+#if WINDOWS
+            Nexus.Service.Lifecycle.GlSessionProbeLauncher.StartServiceSchedule();
+#endif
             var thread = new Thread(() => Run(renderer ?? "?")) { IsBackground = true, Name = "nexus-gpu-diag" };
             thread.Priority = ThreadPriority.BelowNormal;
             thread.Start();
@@ -476,7 +480,8 @@ public static class GpuDiag
 
     private static void RunInner(string renderer)
     {
-        var sequenceOn = !EnvOff("NEXUS_GPU_DIAG_SEQUENCE");
+        // Off unless NEXUS_GPU_DIAG_SEQUENCE=1: baseline-only windows for a bounded stretch.
+        var sequenceOn = Environment.GetEnvironmentVariable("NEXUS_GPU_DIAG_SEQUENCE") == "1";
         var schedule = new GpuDiagSchedule();
         var windows = new List<GpuDiagWindow>();
         var prevThreadCpu = new Dictionary<uint, long>();
@@ -520,6 +525,11 @@ public static class GpuDiag
             }
             if (!sequenceOn)
             {
+                if (window >= BaselineOnlyWindows)
+                {
+                    GpuContext.Log($"{Tag} baseline-only measurement done");
+                    return;
+                }
                 continue;
             }
             if (schedule.IsDone(window))
@@ -691,6 +701,33 @@ public static class GpuDiag
         var m = module.ToLowerInvariant();
         return m.Contains("icd", StringComparison.Ordinal) || m.StartsWith("nvoglv", StringComparison.Ordinal)
             || m.StartsWith("atio6", StringComparison.Ordinal) || m.StartsWith("atig6", StringComparison.Ordinal);
+    }
+
+    /// <summary>One window of ICD thread attribution for the user-session probe: count, cpu, per-thread ms/s with module, busiest threads.</summary>
+    internal static string IcdReport(Dictionary<uint, long> prev, double secs)
+    {
+        var threads = SampleThreads(prev, secs);
+        var ci = CultureInfo.InvariantCulture;
+        var n = 0;
+        var cpu = 0.0;
+        var detail = new StringBuilder();
+        foreach (var t in threads)
+        {
+            if (!IsIcd(t.Module))
+            {
+                continue;
+            }
+            n++;
+            cpu += t.Ms;
+            detail.Append(' ').Append(t.Tid.ToString(ci)).Append('=').Append(t.Ms.ToString("0.0", ci)).Append('@').Append(t.Module);
+        }
+        var top = new StringBuilder();
+        for (var i = 0; i < Math.Min(5, threads.Count); i++)
+        {
+            top.Append(' ').Append(threads[i].Tid.ToString(ci)).Append(":'").Append(ThreadName(threads[i].Tid)).Append("'@")
+                .Append(threads[i].Module).Append('=').Append(threads[i].Ms.ToString("0.0", ci));
+        }
+        return $"icd-threads={n} icd-cpu={cpu.ToString("0.0", ci)} icd[tid=ms/s@module]:{(n == 0 ? " none" : detail.ToString())} top-threads:{top}";
     }
 
     // Count of GL ICD threads right now, no CPU figures; logged around the extra-ctx steps.
@@ -926,6 +963,9 @@ internal static partial class GpuDiagNative
 
     [LibraryImport("kernel32.dll")]
     public static partial nint LocalFree(nint mem);
+
+    [LibraryImport("kernel32.dll")]
+    public static partial int ProcessIdToSessionId(uint processId, out uint sessionId);
 
     [LibraryImport("ntdll.dll")]
     public static partial int NtQueryInformationThread(nint thread, int infoClass, out nint info, int length, out uint returned);

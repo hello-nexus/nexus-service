@@ -147,6 +147,9 @@ internal static class WindowsUserHelper
         var watchdog = new Thread(WatchdogLoop) { IsBackground = true };
         watchdog.Start();
 
+        // Throwaway GL session probe: one user-session child about a minute from now.
+        GlSessionProbeLauncher.StartHelperSchedule(s_exit.Token);
+
         // UserHelperBootstrapper forwards NEXUS_WINDOW_DIAG as this argv flag
         // instead of the env var itself - a machine env var change on the
         // service side does not reach a process schtasks spawns in another

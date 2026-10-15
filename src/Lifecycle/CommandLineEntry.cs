@@ -17,6 +17,8 @@ internal static class CommandLineEntry
             // Throwaway render-GPU probe (see GpuProbe): optionally set the
             // GpuPreference class, create a GL context, print the bound renderer.
             ["--gpu-probe"] = GpuProbe.Run,
+            // Throwaway GL session probe child (see GlSessionProbe); spawned by the helper and the service.
+            [GlSessionProbe.Flag] = GlSessionProbe.Run,
             // One-shot invoked by the service via schtasks when the desktop
             // widget context menu's "Open dashboard" item is clicked.
             ["--open-app"] = static _ =>
