@@ -133,7 +133,7 @@ public static class IbpPeripheralProtocol
     public const int Mk9ColorOffset = 8;
 
     public const int Mek4ReportLength = 382;
-    public const int Mek4MaxFrameRateHz = 15;
+    public const int Mek4MaxFrameRateHz = 20;
     public const int Mek4WireSlots = 126;
     public const int Mek4ColorOffset = 4;
 

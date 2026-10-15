@@ -155,7 +155,7 @@ public class IbpPeripheralHubTests
     }
 
     [Fact]
-    public void Mek4_frames_are_capped_to_15_hz_and_other_models_are_not()
+    public void Mek4_frames_are_capped_to_20_hz_and_other_models_are_not()
     {
         var hid = new ScriptedEnumerator();
         hid.AddUnit(IbpPeripheralProtocol.Mek4Keyboard, "MK1");
@@ -177,10 +177,45 @@ public class IbpPeripheralHubTests
             Assert.True(hub.WriteFrame(km7Id, km7Leds));
             now += step;
         }
-        // Mek4 takes no software-mode report: one report per sent frame, every other tick.
+        // Mek4 takes no software-mode report: one report per sent frame, 2 of every 3 ticks.
         Assert.Null(IbpPeripheralProtocol.SoftwareModeReport(IbpPeripheralProtocol.Mek4Keyboard));
-        Assert.Equal(15, mek.Features.Count);
+        Assert.InRange(mek.Features.Count, 19, 21);
         Assert.Equal(1 + 30 * 3, km7.Features.Count);
+    }
+
+    [Fact]
+    public void Mek4_cap_averages_20_hz_over_a_long_run_and_never_sends_back_to_back_after_a_stall()
+    {
+        var hid = new ScriptedEnumerator();
+        hid.AddUnit(IbpPeripheralProtocol.Mek4Keyboard, "MK1");
+        long now = 1000;
+        using var hub = new IbpPeripheralHub(hid, () => now);
+        hub.Reconcile(AllowAll);
+        var mek = hid.Opened["mek4-keyboard-MK1-vendor"];
+        var id = hub.Attached.Single().DeviceId;
+        var leds = new RgbColor[IbpPeripheralProtocol.Mek4Keyboard.LedCount];
+        var step = Stopwatch.Frequency / 30;
+        var sentAt = new List<long>();
+
+        void Tick()
+        {
+            var before = mek.Features.Count;
+            Assert.True(hub.WriteFrame(id, leds));
+            if (mek.Features.Count != before) sentAt.Add(now);
+            now += step;
+        }
+
+        for (var i = 0; i < 300; i++) Tick();
+        Assert.InRange(sentAt.Count, 199, 201);
+
+        now += Stopwatch.Frequency * 2; // a stall
+        sentAt.Clear();
+        for (var i = 0; i < 30; i++) Tick();
+        Assert.InRange(sentAt.Count, 19, 21);
+        for (var i = 1; i < sentAt.Count; i++)
+        {
+            Assert.True(sentAt[i] - sentAt[i - 1] >= step - 1);
+        }
     }
 
     [Fact]

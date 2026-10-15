@@ -54,8 +54,8 @@ public sealed class IbpPeripheralHub : IDisposable
         /// <summary>True once the host has taken the LEDs; reset when handed back to firmware.</summary>
         public bool SoftwareMode { get; set; }
         public int Failures { get; set; }
-        /// <summary>Stopwatch timestamp of the last frame sent; 0 until the first.</summary>
-        public long LastFrameStamp { get; set; }
+        /// <summary>Stopwatch timestamp the next capped frame is due; 0 until the first.</summary>
+        public long NextDueStamp { get; set; }
         public long LastSlowWarnStamp { get; set; }
         public long WindowStartStamp { get; set; }
         public int WindowFrames { get; set; }
@@ -66,8 +66,8 @@ public sealed class IbpPeripheralHub : IDisposable
     }
 
     private const int ConsecutiveWriteFailureThreshold = 5;
-    // A cap of N Hz sends at most one frame per (1/N - tolerance): the writer
-    // ticks on a jittery timer, so an exact period would drop to half rate.
+    // A frame may go out this fraction of a period before its due time: the
+    // writer ticks on a jittery timer, so an exact compare would drop a tick.
     private const double CapToleranceFraction = 0.1;
     private const double SlowWriteMs = 20;
     private const double SlowWarnIntervalSec = 10;
@@ -203,8 +203,8 @@ public sealed class IbpPeripheralHub : IDisposable
             if (slot is null) return false;
             var model = slot.Info.Model;
             var now = _clock();
-            if (model.MaxFrameRateHz > 0 && slot.LastFrameStamp != 0
-                && (now - slot.LastFrameStamp) < MinFrameStamps(model.MaxFrameRateHz))
+            if (model.MaxFrameRateHz > 0 && slot.NextDueStamp != 0
+                && now < slot.NextDueStamp - ToleranceStamps(model.MaxFrameRateHz))
             {
                 slot.WindowSkipped++;
                 return true;
@@ -227,7 +227,7 @@ public sealed class IbpPeripheralHub : IDisposable
                 }
                 var writeEnd = _clock();
                 slot.Failures = 0;
-                slot.LastFrameStamp = writeEnd == 0 ? 1 : writeEnd;
+                if (model.MaxFrameRateHz > 0) AdvanceDueLocked(slot, now, model.MaxFrameRateHz);
                 RecordWriteTimingLocked(slot, writeEnd - writeStart, writeEnd);
                 return true;
             }
@@ -240,8 +240,20 @@ public sealed class IbpPeripheralHub : IDisposable
         }
     }
 
-    private static long MinFrameStamps(int hz) =>
-        (long)(Stopwatch.Frequency / (double)hz * (1 - CapToleranceFraction));
+    private static long PeriodStamps(int hz) => (long)(Stopwatch.Frequency / (double)hz);
+
+    private static long ToleranceStamps(int hz) => (long)(PeriodStamps(hz) * CapToleranceFraction);
+
+    // Due-time schedule: stepping by whole periods averages the cap rate even
+    // when the writer tick does not divide it. A frame later than a full period
+    // (a stall) resyncs to now plus one period, so there is no catch-up burst.
+    private static void AdvanceDueLocked(Slot slot, long now, int hz)
+    {
+        var period = PeriodStamps(hz);
+        var next = slot.NextDueStamp == 0 ? now + period : slot.NextDueStamp + period;
+        if (next < now) next = now + period;
+        slot.NextDueStamp = next;
+    }
 
     private static double StampsToMs(long stamps) => stamps * 1000.0 / Stopwatch.Frequency;
 
