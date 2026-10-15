@@ -64,6 +64,7 @@ public sealed class ShaderEffect : IEffect
     private bool _failed;
     private byte[] _readback = Array.Empty<byte>();
     private byte[] _flipBuffer = Array.Empty<byte>();
+    private GpuReadbackProbe? _probe;
 
     // Cached Invoke-callback that reads per-frame args from instance fields.
     // Avoids allocating a fresh lambda (display class) every render frame.
@@ -71,6 +72,7 @@ public sealed class ShaderEffect : IEffect
     // args on the instance is safe.
     private CanvasBuffer? _pendingCanvas;
     private double _pendingTick;
+    private GpuDiag.FrameContext _pendingDiagCtx;
     private Action? _cachedRenderDelegate;
 
     public string Name { get; }
@@ -135,6 +137,14 @@ public sealed class ShaderEffect : IEffect
             return;
         }
 
+        var diagCtx = GpuDiag.CallerContext;
+        if (GpuDiag.ModeFor(diagCtx) == GpuDiagMode.NoRender)
+        {
+            GpuDiag.CountFrame(diagCtx);
+            return;
+        }
+
+        _pendingDiagCtx = diagCtx;
         _pendingCanvas = canvas;
         _pendingTick = tickMs;
         _cachedRenderDelegate ??= RenderPending;
@@ -174,9 +184,21 @@ public sealed class ShaderEffect : IEffect
             int w = _ctx.Width;
             int h = _ctx.Height;
 
+            GpuDiag.OnGlFrame(gl, _ctx.Renderer);
+            var diagCtx = _pendingDiagCtx;
+            GpuDiag.CountFrame(diagCtx);
+            var mode = GpuDiag.ModeFor(diagCtx);
+            if (mode != GpuDiagMode.AsyncReadback && _probe is not null
+                && diagCtx == GpuDiag.FrameContext.Main)
+            {
+                _probe.ResetAsync(gl);
+            }
+            var phase = GpuDiag.Begin(GpuDiag.Phase.GlSetup);
             gl.BindFramebuffer(FramebufferTarget.Framebuffer, _ctx.Fbo);
             gl.Viewport(0, 0, (uint)w, (uint)h);
             gl.UseProgram(_program);
+            phase.End();
+            phase = GpuDiag.Begin(GpuDiag.Phase.GlUniforms);
             if (_uResolution >= 0)
             {
                 gl.Uniform2(_uResolution, (float)w, (float)h);
@@ -314,6 +336,8 @@ public sealed class ShaderEffect : IEffect
                 }
             }
             _setUniforms?.Invoke(gl, (int)_program, tickMs);
+            phase.End();
+            phase = GpuDiag.Begin(GpuDiag.Phase.GlDraw);
 
             gl.Disable(EnableCap.Blend);
             gl.Disable(EnableCap.DepthTest);
@@ -323,7 +347,15 @@ public sealed class ShaderEffect : IEffect
             gl.Disable(EnableCap.CullFace);
             gl.BindVertexArray(_ctx.QuadVao);
             gl.DrawArrays(PrimitiveType.TriangleStrip, 0, 4);
+            phase.End();
 
+            if (mode != GpuDiagMode.Baseline && TryProbeReadback(gl, w, h, mode, canvas))
+            {
+                gl.BindFramebuffer(FramebufferTarget.Framebuffer, 0);
+                return;
+            }
+
+            phase = GpuDiag.Begin(GpuDiag.Phase.GlRead);
             int bytes = w * h * 3;
             if (_readback.Length < bytes)
             {
@@ -339,6 +371,8 @@ public sealed class ShaderEffect : IEffect
                 }
             }
 
+            phase.End();
+            phase = GpuDiag.Begin(GpuDiag.Phase.GlPost);
             // GL origin is bottom-left - flip rows into the top-left convention the
             // rest of the pipeline (and the old CPU effects) use.
             int rowBytes = w * 3;
@@ -356,6 +390,33 @@ public sealed class ShaderEffect : IEffect
             // Canvas resized outside what we rendered: drop this frame silently.
 
             gl.BindFramebuffer(FramebufferTarget.Framebuffer, 0);
+            phase.End();
+        }
+    }
+
+    // True when the variant handled the frame; false means run the baseline readback.
+    private bool TryProbeReadback(GL gl, int w, int h, GpuDiagMode mode, CanvasBuffer canvas)
+    {
+        try
+        {
+            if (mode == GpuDiagMode.NoReadback)
+            {
+                var sync = GpuDiag.Begin(GpuDiag.Phase.GlSync);
+                gl.Flush();
+                sync.End();
+                return true;
+            }
+            _probe ??= new GpuReadbackProbe();
+            _probe.Read(gl, w, h, mode, canvas);
+            return true;
+        }
+        catch (Exception ex)
+        {
+            try
+            { gl.BindBuffer(BufferTargetARB.PixelPackBuffer, 0); }
+            catch { }
+            GpuDiag.ForceBaseline($"{GpuDiag.ToName(mode)}: {ex.Message}");
+            return false;
         }
     }
 

@@ -730,7 +730,17 @@ public sealed class LightingEngine : IDisposable
                         {
                             _lastRenderMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
                             _lastRenderEffect = effect;
-                            effect.RenderFrame(_canvas, _lastRenderMs);
+                            var diagRender = Gpu.GpuDiag.Begin(Gpu.GpuDiag.Phase.EngineRender);
+                            var diagPrev = Gpu.GpuDiag.SetContext(Gpu.GpuDiag.FrameContext.Main);
+                            try
+                            {
+                                effect.RenderFrame(_canvas, _lastRenderMs);
+                            }
+                            finally
+                            {
+                                Gpu.GpuDiag.SetContext(diagPrev);
+                            }
+                            diagRender.End();
                             TrackAheadParams(effect);
                             Volatile.Write(ref _frozenRenderedEpoch, epoch);
                         }
@@ -738,7 +748,10 @@ public sealed class LightingEngine : IDisposable
                         // publish: UpdateDevices swaps the array lock-free,
                         // and the skip mask below is indexed against it.
                         var devices = _devices;
+                        var diagPhase = Gpu.GpuDiag.Begin(Gpu.GpuDiag.Phase.EnginePins);
                         RenderPins(effect, devices);
+                        diagPhase.End();
+                        diagPhase = Gpu.GpuDiag.Begin(Gpu.GpuDiag.Phase.EngineSample);
                         SampleDevicesFromCanvas(devices);
                         ApplyLedColorLocks(devices);
                         if (effect is GameSyncEffect gs)
@@ -758,6 +771,8 @@ public sealed class LightingEngine : IDisposable
                         // Dim as part of publishing, so the ramp is in the one
                         // frame readers see rather than a second write on top of
                         // a published one.
+                        diagPhase.End();
+                        diagPhase = Gpu.GpuDiag.Begin(Gpu.GpuDiag.Phase.EnginePublish);
                         var wakeLevel = CurrentWakeLevel(wakeMs);
                         // One publish per tick, after every pass that paints:
                         // readers never see a frame with the canvas sample on
@@ -773,6 +788,7 @@ public sealed class LightingEngine : IDisposable
                                 dev.Publish();
                             }
                         }
+                        diagPhase.End();
                         if (wakeMs > 0)
                         {
                             CompleteReleaseIfDone();
@@ -818,12 +834,16 @@ public sealed class LightingEngine : IDisposable
                     {
                         PrunePinRenders(_devices);
                     }
+                    var diagBroadcast = Gpu.GpuDiag.Begin(Gpu.GpuDiag.Phase.EngineBroadcast);
                     SerializeAndBroadcast();
                     FramePublished?.Invoke();
+                    diagBroadcast.End();
                     // After the publish, so look-ahead renders never delay this tick's frame.
                     if (aheadDevices is not null)
                     {
+                        var diagAhead = Gpu.GpuDiag.Begin(Gpu.GpuDiag.Phase.EngineAhead);
                         ServiceAheadRequests(effect, aheadDevices);
+                        diagAhead.End();
                     }
                 }
                 catch (Exception ex) { Console.Error.WriteLine($"[lighting-engine] {effect.Name} threw: {ex.Message}"); }
@@ -1006,7 +1026,15 @@ public sealed class LightingEngine : IDisposable
                 {
                     try
                     {
-                        render.Effect.RenderFrame(render.Canvas, nowMs);
+                        var prevCtx = Gpu.GpuDiag.SetContext(Gpu.GpuDiag.FrameContext.Pin);
+                        try
+                        {
+                            render.Effect.RenderFrame(render.Canvas, nowMs);
+                        }
+                        finally
+                        {
+                            Gpu.GpuDiag.SetContext(prevCtx);
+                        }
                         render.Rendered = true;
                     }
                     catch (Exception ex)
@@ -1196,7 +1224,15 @@ public sealed class LightingEngine : IDisposable
             try
             {
                 var shadow = req.NewShadowFrames();
-                effect.RenderFrame(_aheadCanvas, req.TickMs[req.NextFrame]);
+                var prevCtx = Gpu.GpuDiag.SetContext(Gpu.GpuDiag.FrameContext.Ahead);
+                try
+                {
+                    effect.RenderFrame(_aheadCanvas, req.TickMs[req.NextFrame]);
+                }
+                finally
+                {
+                    Gpu.GpuDiag.SetContext(prevCtx);
+                }
                 _sampleCanvas = _aheadCanvas;
                 SampleDevicesFromCanvas(shadow, honorPins: false);
                 ApplyLedColorLocks(shadow);
