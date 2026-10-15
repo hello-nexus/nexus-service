@@ -32,6 +32,8 @@ public sealed class GpuContext : IDisposable
 #else
     // Windows path: WGL owns a hidden window and its context (WinWglContext).
     private WglHandles _wgl;
+    // ANGLE (ES on D3D11) context; the GL thread owns and frees it like _wgl.
+    private AngleHandles _angle;
     // Same, for the GLFW fallback backend. Held as IntPtr so the field needs no
     // unsafe context; cast back at the call sites.
     private IntPtr _glfwWindow;
@@ -48,6 +50,13 @@ public sealed class GpuContext : IDisposable
     private volatile bool _initSuppressed;
     private int _retries;
     private volatile bool _disposed;
+    // Set by ReportContextLost: the GL thread leaves its loop so the context is freed and a fresh one can start.
+    private volatile bool _lostExit;
+    private int _generation;
+#if !MACOS && !LINUX
+    private volatile bool _isEs;
+    private volatile bool _isWarp;
+#endif
 
     // Dedicated GL thread. The engine loop is a Task that hops thread-pool
     // threads between awaits, but GLFW/wgl contexts are sticky to the
@@ -70,6 +79,35 @@ public sealed class GpuContext : IDisposable
     /// <summary>Backend to use in place of the stored one. Set by the probe
     /// child, which runs with no config store.</summary>
     public string? BackendOverride { get; init; }
+
+    /// <summary>ANGLE only: render on this DXGI adapter ("high:low" LUID as GpuAdapterLuids formats it), in place of the render-GPU setting.</summary>
+    public string? AdapterLuid { get; init; }
+
+    /// <summary>ANGLE only: pick the adapter by the selection's class (0 = integrated, 2 = discrete), in place of the render-GPU setting. Settable until init starts.</summary>
+    public int? AdapterClass { get; set; }
+
+    /// <summary>ANGLE only: render on the WARP software rasterizer instead of an adapter. Settable until init starts.</summary>
+    public bool UseWarp { get; set; }
+
+    /// <summary>The bound context is OpenGL ES (ANGLE): shaders take the 3.00 es dialect and readback is RGBA.</summary>
+#if !MACOS && !LINUX
+    public bool IsEs => _isEs;
+
+    /// <summary>The bound context renders on the CPU (WARP), not a GPU.</summary>
+    public bool IsWarp => _isWarp;
+#else
+    public bool IsEs => false;
+    public bool IsWarp => false;
+#endif
+
+    /// <summary>Counts contexts that came up. GL objects belong to one generation; a holder rebuilds them when it moves.</summary>
+    public int Generation => Volatile.Read(ref _generation);
+
+    /// <summary>Raised on a worker thread once a lost context's GL thread has exited, so the owner can re-create it.</summary>
+    public event Action<GpuContext>? ContextLost;
+
+    /// <summary>The backend this context creates, after fallbacks (see <see cref="GpuBackend.Resolve(string?)"/>).</summary>
+    public string ResolvedBackend => GpuBackend.Resolve(BackendOverride ?? _store?.Load().Lighting.RenderBackend);
 
     // GL_RENDERER of the bound context (which physical card was selected), set
     // once init succeeds. Null until then.
@@ -148,6 +186,7 @@ public sealed class GpuContext : IDisposable
             _initDone.Reset();
             _landed.Reset();
             _initStarted = false;
+            _lostExit = false;
             _gl = null;
             Renderer = null;
             _fbo = 0;
@@ -275,6 +314,7 @@ public sealed class GpuContext : IDisposable
             _initDone.Reset();
             _landed.Reset();
             _initStarted = false;
+            _lostExit = false;
             _gl = null;
             Renderer = null;
             _fbo = 0;
@@ -356,11 +396,12 @@ public sealed class GpuContext : IDisposable
             _failed = false;
             _initError = null;
             _ready = true;
+            Interlocked.Increment(ref _generation);
             _landed.Set();
             _initDone.Set();
         }
 
-        while (!_disposed)
+        while (!_disposed && !_lostExit)
         {
             Action work;
             try
@@ -370,6 +411,91 @@ public sealed class GpuContext : IDisposable
             { work(); }
             catch (Exception ex) { Log($"[gpu] work item threw: {ex}"); }
         }
+
+        // A lost context leaves callers parked in Invoke; their items run against
+        // the dead context (each throws or no-ops) so every waiter is released.
+        while (_workQueue.TryTake(out var pending))
+        {
+            try
+            { pending(); }
+            catch (Exception) { }
+        }
+    }
+
+    /// <summary>
+    /// Called on the GL thread when the device behind the context is gone. The
+    /// context is marked failed, the thread leaves its loop (freeing the dead
+    /// context), and <see cref="ContextLost"/> fires once it has exited so the
+    /// owner re-creates through the normal init path.
+    /// </summary>
+    public void ReportContextLost(string reason)
+    {
+        lock (_lock)
+        {
+            if (_disposed || _lostExit || !_ready)
+            {
+                return;
+            }
+            _lostExit = true;
+            _ready = false;
+            _failed = true;
+            _initError = new InvalidOperationException($"GL context lost: {reason}");
+        }
+        Log($"[gpu] context lost ({reason}); re-creating");
+        var thread = _glThread;
+        var handler = ContextLost;
+        new Thread(() =>
+        {
+            if (thread is not null && !thread.Join(TimeSpan.FromSeconds(10)))
+            {
+                // Parked in native code: no second init may run beside it.
+                lock (_lock)
+                {
+                    _abandoned = true;
+                }
+                Log("[gpu] lost context's GL thread did not exit; not re-creating in this process");
+                return;
+            }
+            handler?.Invoke(this);
+        })
+        { IsBackground = true, Name = "nexus-gpu-lost" }.Start();
+    }
+
+    /// <summary>ES only, on the GL thread after a frame: true (and the loss is reported) when ANGLE signals the device is gone, via GL_CONTEXT_LOST or EGL_CONTEXT_LOST.</summary>
+    public bool CheckContextLost()
+    {
+#if WINDOWS
+        if (!_isEs || _gl is null)
+        {
+            return false;
+        }
+        const uint GlContextLost = 0x0507;
+        var lost = false;
+        // GL keeps one error flag per kind; a few reads drain them.
+        for (var i = 0; i < 8; i++)
+        {
+            var err = (uint)_gl.GetError();
+            if (err == 0)
+            {
+                break;
+            }
+            if (err == GlContextLost)
+            {
+                lost = true;
+            }
+        }
+        if (!lost && AngleContext.PendingEglError() == AngleContext.EglContextLost)
+        {
+            lost = true;
+        }
+        if (lost)
+        {
+            ReportContextLost("device removed or reset");
+        }
+        return lost;
+#else
+        return false;
+#endif
     }
 
     /// <summary>
@@ -391,6 +517,16 @@ public sealed class GpuContext : IDisposable
         if (handles.Created)
         {
             WinWglContext.Destroy(handles);
+        }
+        AngleHandles angle;
+        lock (_lock)
+        {
+            angle = _angle;
+            _angle = default;
+        }
+        if (angle.Created)
+        {
+            AngleContext.Destroy(angle);
         }
 #endif
     }
@@ -446,29 +582,38 @@ public sealed class GpuContext : IDisposable
         _eglUsed = true;
         _gl = GL.GetApi(new EglNativeContext());
 #else
-        // Windows: WGL directly (WinWglContext). D3D11CreateDevice screens out a
+        // Windows: ANGLE (ES on D3D11) by default, else WGL directly
+        // (WinWglContext) or the GLFW fallback. D3D11CreateDevice screens out a
         // ghost adapter but does not prove WGL works; the GL verdict is the
         // context creation itself.
-        var preCheckSw = System.Diagnostics.Stopwatch.StartNew();
-        if (!Nexus.Service.Sensors.GpuAdapterLuids.HasUsableHardwareGpu())
+        var backend = ResolvedBackend;
+        if (backend == GpuBackend.Angle)
         {
-            throw new InvalidOperationException("no usable GPU adapter present");
-        }
-        var preCheckMs = preCheckSw.ElapsedMilliseconds;
-        // An impossible version is how the dev seam makes creation fail.
-        var (major, minor) = GpuTestSeam.Mode == GpuForceMode.GlfwError ? (9, 9) : (3, 3);
-        var glSw = System.Diagnostics.Stopwatch.StartNew();
-        if (UseGlfwBackend())
-        {
-            InitViaGlfw(major, minor);
-            Log($"[gpu] context init: adapter pre-check {preCheckMs}ms, GLFW backend {glSw.ElapsedMilliseconds}ms");
+            InitViaAngle();
         }
         else
         {
-            _wgl = WinWglContext.CreateAndMakeCurrent(_width, _height, major, minor);
-            _gl = GL.GetApi(new WglNativeContext());
-            Log($"[gpu] context init: adapter pre-check {preCheckMs}ms, "
-                + $"WGL {major}.{minor} core {glSw.ElapsedMilliseconds}ms");
+            var preCheckSw = System.Diagnostics.Stopwatch.StartNew();
+            if (!Nexus.Service.Sensors.GpuAdapterLuids.HasUsableHardwareGpu())
+            {
+                throw new InvalidOperationException("no usable GPU adapter present");
+            }
+            var preCheckMs = preCheckSw.ElapsedMilliseconds;
+            // An impossible version is how the dev seam makes creation fail.
+            var (major, minor) = GpuTestSeam.Mode == GpuForceMode.GlfwError ? (9, 9) : (3, 3);
+            var glSw = System.Diagnostics.Stopwatch.StartNew();
+            if (backend == GpuBackend.Glfw)
+            {
+                InitViaGlfw(major, minor);
+                Log($"[gpu] context init: adapter pre-check {preCheckMs}ms, GLFW backend {glSw.ElapsedMilliseconds}ms");
+            }
+            else
+            {
+                _wgl = WinWglContext.CreateAndMakeCurrent(_width, _height, major, minor);
+                _gl = GL.GetApi(new WglNativeContext());
+                Log($"[gpu] context init: adapter pre-check {preCheckMs}ms, "
+                    + $"WGL {major}.{minor} core {glSw.ElapsedMilliseconds}ms");
+            }
         }
 #endif
         Log("[gpu] GL ready");
@@ -488,8 +633,9 @@ public sealed class GpuContext : IDisposable
         _gl.BindTexture(TextureTarget.Texture2D, _fboTex);
         unsafe
         {
-            _gl.TexImage2D(TextureTarget.Texture2D, 0, InternalFormat.Rgb8,
-                (uint)_width, (uint)_height, 0, PixelFormat.Rgb, PixelType.UnsignedByte, null);
+            // ES renders to RGBA8 and reads RGBA back (the only readback it guarantees).
+            _gl.TexImage2D(TextureTarget.Texture2D, 0, IsEs ? InternalFormat.Rgba8 : InternalFormat.Rgb8,
+                (uint)_width, (uint)_height, 0, IsEs ? PixelFormat.Rgba : PixelFormat.Rgb, PixelType.UnsignedByte, null);
         }
         _gl.TexParameter(TextureTarget.Texture2D, TextureParameterName.TextureMinFilter, (int)GLEnum.Linear);
         _gl.TexParameter(TextureTarget.Texture2D, TextureParameterName.TextureMagFilter, (int)GLEnum.Linear);
@@ -502,9 +648,12 @@ public sealed class GpuContext : IDisposable
             TextureTarget.Texture2D, _fboTex, 0);
         // Deterministic flat-shading across drivers (some Mesa/Intel paths
         // default to FirstVertexConvention).
-        try
-        { _gl.ProvokingVertex(VertexProvokingMode.LastVertexConvention); }
-        catch { }
+        if (!IsEs)
+        {
+            try
+            { _gl.ProvokingVertex(VertexProvokingMode.LastVertexConvention); }
+            catch { }
+        }
         var status = _gl.CheckFramebufferStatus(FramebufferTarget.Framebuffer);
         if (status != GLEnum.FramebufferComplete)
         {
@@ -535,11 +684,44 @@ public sealed class GpuContext : IDisposable
     // Compiled out entirely unless this is a DEV_TOOLS build, so a release binary
     // carries neither the behaviour nor the variable names.
 #if !MACOS && !LINUX
-    /// <summary>True only when the user has pinned the old backend; WGL is the
-    /// default (see WinWglContext).</summary>
-    private bool UseGlfwBackend() =>
-        string.Equals(BackendOverride ?? _store?.Load().Lighting.RenderBackend, "glfw",
-            StringComparison.OrdinalIgnoreCase);
+    /// <summary>Create the ES context through ANGLE on the adapter the render-GPU choice maps to, or WARP.</summary>
+    [System.Diagnostics.CodeAnalysis.MemberNotNull(nameof(_gl))]
+    private void InitViaAngle()
+    {
+        if (GpuTestSeam.Mode == GpuForceMode.GlfwError)
+        {
+            throw new InvalidOperationException("forced ANGLE context creation failure");
+        }
+        var sw = System.Diagnostics.Stopwatch.StartNew();
+        AngleTarget target;
+        if (UseWarp)
+        {
+            target = AngleTarget.WarpTarget;
+        }
+        else if (!string.IsNullOrEmpty(AdapterLuid))
+        {
+            target = new AngleTarget(AdapterLuid, false, $"luid {AdapterLuid}");
+        }
+        else
+        {
+            var chosen = AngleAdapterSelector.Choose(
+                Nexus.Service.Sensors.GpuAdapterLuids.Enumerate(),
+                _store?.Load().Lighting.RenderGpu, AdapterClass);
+            if (chosen is not { } t)
+            {
+                throw new InvalidOperationException("no usable GPU adapter present");
+            }
+            target = t;
+        }
+        var pickMs = sw.ElapsedMilliseconds;
+        _isEs = true;
+        _isWarp = target.Warp;
+        _angle = AngleContext.CreateAndMakeCurrent(target, _width, _height);
+        _gl = GL.GetApi(new AngleNativeContext());
+        Log($"[gpu] context init: ANGLE D3D11 ES 3.0 on '{target.Description}'"
+            + (target.Warp ? " (WARP software rasterizer, CPU rendering)" : "")
+            + $", adapter pick {pickMs}ms, context {sw.ElapsedMilliseconds - pickMs}ms");
+    }
 
     /// <summary>The pre-WGL path, reachable by setting Lighting.RenderBackend to
     /// "glfw" if a card ever refuses the direct one.</summary>

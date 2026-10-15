@@ -62,6 +62,9 @@ public sealed class ShaderEffect : IEffect
     private readonly System.Collections.Generic.Dictionary<string, int> _uniformCache = new();
     private bool _compiled;
     private bool _failed;
+    // Context generation the program and uniform locations belong to; a re-created
+    // context invalidates every GL object, so they are rebuilt when it moves.
+    private int _generation;
     private byte[] _readback = Array.Empty<byte>();
     private byte[] _flipBuffer = Array.Empty<byte>();
 
@@ -101,6 +104,15 @@ public sealed class ShaderEffect : IEffect
 
     public void RenderFrame(CanvasBuffer canvas, double tickMs)
     {
+        if (_generation != _ctx.Generation)
+        {
+            _generation = _ctx.Generation;
+            _compiled = false;
+            _failed = false;
+            _program = 0;
+            _uniformCache.Clear();
+            ResetUniformLocations();
+        }
         if (_failed)
         {
             // GPU unavailable / shader broken - canvas stays as the caller left it.
@@ -139,6 +151,13 @@ public sealed class ShaderEffect : IEffect
         _pendingTick = tickMs;
         _cachedRenderDelegate ??= RenderPending;
         _ctx.Invoke(_cachedRenderDelegate);
+    }
+
+    private void ResetUniformLocations()
+    {
+        _uResolution = _uTime = _uSpeed = _uIntensity = _uHue = _uColorize = _uSaturation = _uContrast = -1;
+        _uAudioLevel = _uAudioBass = _uAudioMid = _uAudioHigh = _uAudioBeat = _uAudioBoost = -1;
+        _uSpectrum = _uSpectrum64 = _uSpecHist = _uBassPeak = _uMidPeak = _uHighPeak = -1;
     }
 
     private void RenderPending() => RenderOnGlThread(_pendingCanvas!, _pendingTick);
@@ -324,10 +343,18 @@ public sealed class ShaderEffect : IEffect
             gl.BindVertexArray(_ctx.QuadVao);
             gl.DrawArrays(PrimitiveType.TriangleStrip, 0, 4);
 
+            // ES only guarantees RGBA / UNSIGNED_BYTE for glReadPixels, so an ES
+            // context reads four channels and the flip pass drops alpha.
+            bool es = _ctx.IsEs;
+            int srcStride = w * (es ? 4 : 3);
             int bytes = w * h * 3;
-            if (_readback.Length < bytes)
+            int readBytes = srcStride * h;
+            if (_readback.Length < readBytes)
             {
-                _readback = new byte[bytes];
+                _readback = new byte[readBytes];
+            }
+            if (_flipBuffer.Length < bytes)
+            {
                 _flipBuffer = new byte[bytes];
             }
             unsafe
@@ -335,8 +362,13 @@ public sealed class ShaderEffect : IEffect
                 fixed (byte* p = _readback)
                 {
                     gl.PixelStore(PixelStoreParameter.PackAlignment, 1);
-                    gl.ReadPixels(0, 0, (uint)w, (uint)h, PixelFormat.Rgb, PixelType.UnsignedByte, p);
+                    gl.ReadPixels(0, 0, (uint)w, (uint)h, es ? PixelFormat.Rgba : PixelFormat.Rgb, PixelType.UnsignedByte, p);
                 }
+            }
+            if (es && _ctx.CheckContextLost())
+            {
+                gl.BindFramebuffer(FramebufferTarget.Framebuffer, 0);
+                return;
             }
 
             // GL origin is bottom-left - flip rows into the top-left convention the
@@ -344,9 +376,21 @@ public sealed class ShaderEffect : IEffect
             int rowBytes = w * 3;
             for (int y = 0; y < h; y++)
             {
-                int srcRow = (h - 1 - y) * rowBytes;
+                int srcRow = (h - 1 - y) * srcStride;
                 int dstRow = y * rowBytes;
-                System.Buffer.BlockCopy(_readback, srcRow, _flipBuffer, dstRow, rowBytes);
+                if (es)
+                {
+                    for (int x = 0; x < w; x++)
+                    {
+                        _flipBuffer[dstRow + x * 3] = _readback[srcRow + x * 4];
+                        _flipBuffer[dstRow + x * 3 + 1] = _readback[srcRow + x * 4 + 1];
+                        _flipBuffer[dstRow + x * 3 + 2] = _readback[srcRow + x * 4 + 2];
+                    }
+                }
+                else
+                {
+                    System.Buffer.BlockCopy(_readback, srcRow, _flipBuffer, dstRow, rowBytes);
+                }
             }
 
             if (canvas.Width == w && canvas.Height == h)
@@ -378,7 +422,7 @@ public sealed class ShaderEffect : IEffect
             try
             {
                 vs = gl.CreateShader(ShaderType.VertexShader);
-                gl.ShaderSource(vs, VertexShaderSrc);
+                gl.ShaderSource(vs, GlslDialect.For(ctx.IsEs, VertexShaderSrc));
                 gl.CompileShader(vs);
                 gl.GetShader(vs, ShaderParameterName.CompileStatus, out int vsOk);
                 if (vsOk == 0)
@@ -387,7 +431,7 @@ public sealed class ShaderEffect : IEffect
                     return;
                 }
                 fs = gl.CreateShader(ShaderType.FragmentShader);
-                gl.ShaderSource(fs, fragSource);
+                gl.ShaderSource(fs, GlslDialect.For(ctx.IsEs, fragSource));
                 gl.CompileShader(fs);
                 gl.GetShader(fs, ShaderParameterName.CompileStatus, out int fsOk);
                 if (fsOk == 0)
@@ -430,8 +474,8 @@ public sealed class ShaderEffect : IEffect
 
     private void CompileProgram(GL gl)
     {
-        uint vs = CompileShader(gl, ShaderType.VertexShader, VertexShaderSrc);
-        uint fs = CompileShader(gl, ShaderType.FragmentShader, _fragSource);
+        uint vs = CompileShader(gl, ShaderType.VertexShader, GlslDialect.For(_ctx.IsEs, VertexShaderSrc));
+        uint fs = CompileShader(gl, ShaderType.FragmentShader, GlslDialect.For(_ctx.IsEs, _fragSource));
         uint prog = gl.CreateProgram();
         gl.AttachShader(prog, vs);
         gl.AttachShader(prog, fs);
@@ -501,7 +545,7 @@ public sealed class ShaderEffect : IEffect
 
     public void Dispose()
     {
-        if (_program != 0 && _ctx.Available)
+        if (_program != 0 && _ctx.Available && _generation == _ctx.Generation)
         {
             try
             {

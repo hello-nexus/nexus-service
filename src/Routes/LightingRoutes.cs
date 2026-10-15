@@ -330,7 +330,7 @@ public static class LightingRoutes
             return ApiResponse.Ok();
         }).LocalhostOnly();
         // The GL backend Windows creates the lighting context with. No UI: it is
-        // the escape if a driver ever refuses the direct WGL path, and support
+        // the escape (wgl, glfw) if a driver ever refuses ANGLE, and support
         // needs to be able to flip it without hand-editing settings.json as
         // SYSTEM. Restart-to-apply.
         app.MapGet("/lighting/render-backend", (Nexus.Service.Persistence.IConfigStore store) =>
@@ -338,9 +338,10 @@ public static class LightingRoutes
         app.MapPost("/lighting/render-backend", (Models.Lighting.RenderGpuBody body,
             Nexus.Service.Persistence.IConfigStore store) =>
         {
-            var value = string.Equals(body.Value?.Trim(), "glfw", StringComparison.OrdinalIgnoreCase)
-                ? "glfw"
-                : "wgl";
+            var requested = body.Value?.Trim();
+            var value = string.Equals(requested, "glfw", StringComparison.OrdinalIgnoreCase) ? "glfw"
+                : string.Equals(requested, "wgl", StringComparison.OrdinalIgnoreCase) ? "wgl"
+                : "angle";
             store.Update(s => s.Lighting.RenderBackend = value);
             return ApiResponse.Ok();
         }).LocalhostOnly();

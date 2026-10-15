@@ -324,12 +324,12 @@ public class GpuContextInitLatchTests
         Assert.False(gpu.Failed);
     }
 
-    // The Windows GL backend defaults to WGL: GLFW's own init measured 30.1s
-    // under LocalSystem where the WGL calls it wraps took 83ms, and the service
-    // pays context init on every start. "glfw" stays reachable as an escape.
+    // The Windows GL backend defaults to ANGLE: Intel's OpenGL ICD spins a core for
+    // the life of the process under the service account, which ANGLE's D3D11 path
+    // never loads. "wgl" and "glfw" stay reachable as fallbacks.
     [Fact]
-    public void Windows_gl_backend_defaults_to_wgl()
+    public void Windows_gl_backend_defaults_to_angle()
     {
-        Assert.Equal("wgl", new Nexus.Service.Persistence.LightingSettings().RenderBackend);
+        Assert.Equal("angle", new Nexus.Service.Persistence.LightingSettings().RenderBackend);
     }
 }

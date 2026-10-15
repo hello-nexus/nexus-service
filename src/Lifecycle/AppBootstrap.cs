@@ -42,11 +42,12 @@ internal static class AppBootstrap
                     // this and inits directly on their choice.
                     var choice = app.Services.GetService<Nexus.Service.Persistence.IConfigStore>()
                         ?.Load().Lighting.RenderGpu ?? "auto";
+                    // Set for both paths: it decides whether the registry preference or an ANGLE adapter LUID steers the card.
+                    Nexus.Service.Lighting.Engine.Gpu.GpuRenderSelect.Backend =
+                        app.Services.GetService<Nexus.Service.Persistence.IConfigStore>()
+                            ?.Load().Lighting.RenderBackend ?? "";
                     if (string.Equals(choice, "auto", StringComparison.OrdinalIgnoreCase))
                     {
-                        Nexus.Service.Lighting.Engine.Gpu.GpuRenderSelect.Backend =
-                            app.Services.GetService<Nexus.Service.Persistence.IConfigStore>()
-                                ?.Load().Lighting.RenderBackend ?? "";
                         app.Lifetime.ApplicationStopping.Register(
                             Nexus.Service.Lighting.Engine.Gpu.GpuRenderSelect.ClearCrashGuardOnStop);
                         // Pre-login boots have no session; a card that needs one
@@ -58,6 +59,25 @@ internal static class AppBootstrap
                         WatchForLateContext(app, gpu, sw);
                         return;
                     }
+                    // A pinned card skips the selection, so a lost context is re-created here on the same card.
+                    var losses = 0;
+                    gpu.ContextLost += g =>
+                    {
+                        if (Interlocked.Increment(ref losses) > 5)
+                        {
+                            return;
+                        }
+                        Thread.Sleep(2000);
+                        if (!g.RearmAfterLatch())
+                        {
+                            return;
+                        }
+                        lock (g.Lock)
+                        {
+                            g.EnsureInitializedLocked();
+                        }
+                        g.WaitForInit(g.InitTimeout);
+                    };
 #endif
                     lock (gpu.Lock)
                     {
@@ -65,6 +85,12 @@ internal static class AppBootstrap
                     }
                     // Wait outside the lock - the render path takes it per frame.
                     gpu.WaitForInit(gpu.InitTimeout);
+#if WINDOWS
+                    if (gpu.Failed && !gpu.Available)
+                    {
+                        Nexus.Service.Lighting.Engine.Gpu.GpuRenderSelect.TryWarpFallback(gpu, "the pinned GPU produced no context");
+                    }
+#endif
                     GpuContext.Log(gpu.Available
                         ? $"[gpu] warmup: GPU shader engine ready in {sw.ElapsedMilliseconds}ms on '{gpu.Renderer}'"
                         : $"[gpu] warmup: no GPU context after {sw.ElapsedMilliseconds}ms "

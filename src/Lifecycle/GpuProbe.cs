@@ -37,7 +37,9 @@ internal static class GpuProbe
             }
         }
 
-        if (setPref is int pref)
+        // ANGLE is not steered by the registry preference; the class selects the adapter below.
+        var angle = Nexus.Service.Lighting.Engine.Gpu.GpuBackend.IsAngle(backend);
+        if (!angle && setPref is int pref)
         {
             try
             {
@@ -93,6 +95,7 @@ internal static class GpuProbe
             {
                 InitTimeout = budget,
                 BackendOverride = backend,
+                AdapterClass = angle ? setPref : null,
             };
             lock (gpu.Lock)
             {

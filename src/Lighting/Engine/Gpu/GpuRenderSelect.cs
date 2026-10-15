@@ -69,8 +69,63 @@ internal static class GpuRenderSelect
     /// the warmup before the first select.</summary>
     public static string Backend { get; set; } = "";
 
+    /// <summary>The engine renders through ANGLE. The OS GpuPreference registry value does not steer ANGLE, so the card class is passed to the context as an adapter LUID instead.</summary>
+    private static bool UsesAngle => GpuBackend.IsAngle(Backend);
+
+    private static readonly System.Runtime.CompilerServices.ConditionalWeakTable<GpuContext, object> LossHooked = new();
+
+    /// <summary>Re-create the context through the normal selection when its device is lost. Safe to call more than once per context.</summary>
+    private static void HookContextLoss(GpuContext gpu)
+    {
+        if (!LossHooked.TryAdd(gpu, new object()))
+        {
+            return;
+        }
+        gpu.ContextLost += g =>
+        {
+            ClearCrashGuardOnStop();
+            Reselect(g, "the GL context was lost", ref _reprobeTimer);
+        };
+    }
+
+    /// <summary>
+    /// No hardware adapter produced a context: render on ANGLE's WARP software
+    /// rasterizer so shader lighting is not dark. False when the backend is not
+    /// ANGLE, the context cannot start a new attempt, or WARP failed too.
+    /// </summary>
+    public static bool TryWarpFallback(GpuContext gpu, string reason)
+    {
+        if (!UsesAngle || gpu.IsDisposed || gpu.Available || gpu.InitAbandoned || gpu.Initializing)
+        {
+            return false;
+        }
+        if (gpu.Failed && !gpu.RearmAfterLatch())
+        {
+            return false;
+        }
+        GpuContext.Log($"[gpu] select: {reason}; falling back to ANGLE WARP (CPU rendering)");
+        try
+        {
+            lock (gpu.Lock)
+            {
+                gpu.UseWarp = true;
+                gpu.EnsureInitializedLocked();
+            }
+            gpu.WaitForInit(gpu.InitTimeout);
+        }
+        catch (Exception ex) { GpuContext.Log($"[gpu] WARP fallback threw: {ex.Message}"); }
+        if (gpu.Available)
+        {
+            GpuContext.Log($"[gpu] select: shader lighting running on WARP ('{gpu.Renderer}'); restart to retry hardware");
+            return true;
+        }
+        GpuContext.Log("[gpu] select: WARP did not produce a context either");
+        return false;
+    }
+
     public static void SelectAndWarm(GpuContext gpu, Stopwatch sw)
     {
+        HookContextLoss(gpu);
         var seam = GpuTestSeam.Describe();
         if (seam.Length > 0)
         {
@@ -106,7 +161,10 @@ internal static class GpuRenderSelect
                     WriteCrashGuard(crashed);
                 }
                 GpuContext.Log($"[gpu] select: {plan.Reason}; GPU off until a display adapter appears");
-                gpu.DeclineInit($"GPU rendering off: {plan.Reason}");
+                if (!TryWarpFallback(gpu, plan.Reason))
+                {
+                    gpu.DeclineInit($"GPU rendering off: {plan.Reason}");
+                }
                 ScheduleAdapterWatch(gpu, AdapterWatchMin, null);
                 return;
             case GpuSelectAction.WarmRemembered:
@@ -248,7 +306,16 @@ internal static class GpuRenderSelect
             // previous card and outruns the crash guard.
             lock (gpu.Lock)
             {
-                SetPref(cls);
+                if (UsesAngle)
+                {
+                    // ANGLE ignores the registry preference; the class picks the adapter LUID.
+                    gpu.UseWarp = false;
+                    gpu.AdapterClass = cls;
+                }
+                else
+                {
+                    SetPref(cls);
+                }
                 WriteCrashGuard(stateName);
                 gpu.EnsureInitializedLocked();
             }
@@ -350,7 +417,10 @@ internal static class GpuRenderSelect
         SaveState(latched);
         var wait = GpuSelectState.ReprobeDelay(latched.OffStreak, GpuTestSeam.ReprobeOverride);
         GpuContext.Log($"[gpu] select: {reason}; GPU off; next re-probe in {wait.TotalMinutes:0}m");
-        gpu.DeclineInit($"GPU rendering off: {reason}");
+        if (!TryWarpFallback(gpu, reason))
+        {
+            gpu.DeclineInit($"GPU rendering off: {reason}");
+        }
         ScheduleReprobe(gpu, wait);
         ScheduleAdapterWatch(gpu, AdapterWatchMax, latched);
     }
@@ -366,7 +436,10 @@ internal static class GpuRenderSelect
         var wait = held.ReprobeIn(now, GpuTestSeam.ReprobeOverride);
         GpuContext.Log($"[gpu] select: {reason}; GPU off; next re-probe in {wait.TotalMinutes:0}m "
             + "(picking a render GPU makes the next start re-probe)");
-        gpu.DeclineInit($"GPU rendering off: {reason}");
+        if (!TryWarpFallback(gpu, reason))
+        {
+            gpu.DeclineInit($"GPU rendering off: {reason}");
+        }
         ScheduleReprobe(gpu, wait);
         ScheduleAdapterWatch(gpu, AdapterWatchMax, held);
     }
