@@ -46,6 +46,10 @@ internal static partial class AngleDiagThreads
                     var cpu = kernel + user;
                     prev.TryGetValue(e.ThreadId, out var before);
                     prev[e.ThreadId] = cpu;
+                    if (cpu < before)
+                    {
+                        continue;
+                    }
                     rows.Add(new Row(e.ThreadId, (cpu - before) / 10_000.0 / secs,
                         StartModule(e.ThreadId, created), ThreadName(h)));
                 }

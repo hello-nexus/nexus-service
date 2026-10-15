@@ -16,7 +16,7 @@ internal static unsafe partial class AngleProbe
     private const int FrameHz = 30;
     private const int Width = 160;
     private const int Height = 90;
-    private const int WorkerWaitMs = 80_000;
+    private const int WorkerWaitMs = 100_000;
     private const uint IntelVendorId = 0x8086;
     private const uint MicrosoftVendorId = 0x1414;
 
@@ -467,14 +467,20 @@ internal static unsafe partial class AngleProbe
                 + $"intel-driver-threads={intelRows.Count} intel-driver-ms/s={intelMs.ToString("0.0", ci)} icd-loaded={Yes(icd)} "
                 + $"intel-modules=[{string.Join(", ", modules)}] top-threads:{AngleDiagThreads.Top(rows, 5)}");
             windowFrames = 0;
+            Log(SummaryLine("partial-summary"));
         }
-        var medProc = Median(windows.Select(w => w.Proc));
-        var medIntel = Median(windows.Select(w => w.IntelMs));
-        Log($"summary adapter={label} renderer='{renderer}' windows={windows.Count} "
-            + $"median-proc={medProc.ToString("0.0", ci)}%core intel-driver-ms/s={medIntel.ToString("0.0", ci)} "
-            + $"icd-loaded={Yes(anyIcd)} avg-fps={(frames / Math.Max(wall.Elapsed.TotalSeconds, 0.001)).ToString("0.0", ci)} "
-            + $"intel-modules=[{string.Join(", ", intelModulesSeen)}]");
+        Log(SummaryLine("summary"));
         return 0;
+
+        string SummaryLine(string kind)
+        {
+            var medProc = Median(windows.Select(w => w.Proc));
+            var medIntel = Median(windows.Select(w => w.IntelMs));
+            return $"{kind} adapter={label} renderer='{renderer}' windows={windows.Count} "
+                + $"median-proc={medProc.ToString("0.0", ci)}%core intel-driver-ms/s={medIntel.ToString("0.0", ci)} "
+                + $"icd-loaded={Yes(anyIcd)} avg-fps={(frames / Math.Max(wall.Elapsed.TotalSeconds, 0.001)).ToString("0.0", ci)} "
+                + $"intel-modules=[{string.Join(", ", intelModulesSeen)}]";
+        }
     }
 
     private static TimeSpan CpuTime()

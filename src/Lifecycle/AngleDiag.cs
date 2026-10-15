@@ -9,7 +9,7 @@ namespace Nexus.Service.Lifecycle;
 internal static class AngleDiag
 {
     private static readonly TimeSpan ProbeDelay = TimeSpan.FromSeconds(120);
-    private static readonly TimeSpan ProbeKillAfter = TimeSpan.FromSeconds(180);
+    private static readonly TimeSpan ProbeKillAfter = TimeSpan.FromSeconds(240);
     private static readonly TimeSpan CheckInterval = TimeSpan.FromSeconds(30);
     private const int CheckSamples = 12;
     private static int _started;
@@ -34,6 +34,12 @@ internal static class AngleDiag
             {
                 return;
             }
+            var marker = MarkerPath(exe);
+            if (File.Exists(marker))
+            {
+                ServiceLog.Info("[angle-probe] already ran for this version, skipped");
+                return;
+            }
             var psi = new ProcessStartInfo
             {
                 FileName = exe,
@@ -48,6 +54,7 @@ internal static class AngleDiag
                 ServiceLog.Warn("[angle-probe] child did not start");
                 return;
             }
+            ChildProcessJob.Assign(p);
             ServiceLog.Info($"[angle-probe] child started pid={p.Id}, results in nexus-angle-probe.log");
             using var cts = new CancellationTokenSource(ProbeKillAfter);
             try
@@ -66,11 +73,28 @@ internal static class AngleDiag
                 }
                 ServiceLog.Warn("[angle-probe] child killed after the time limit");
             }
+            try
+            {
+                File.WriteAllText(marker, DateTime.UtcNow.ToString("o", CultureInfo.InvariantCulture));
+            }
+            catch (Exception)
+            {
+            }
         }
         catch (Exception ex)
         {
             ServiceLog.Warn($"[angle-probe] launch failed: {ex.Message}");
         }
+    }
+
+    private static string MarkerPath(string exe)
+    {
+        var version = FileVersionInfo.GetVersionInfo(exe).ProductVersion ?? "unknown";
+        foreach (var c in Path.GetInvalidFileNameChars())
+        {
+            version = version.Replace(c, '_');
+        }
+        return Path.Combine(ServiceLog.LogsDirectory, $"angle-probe-done-{version}");
     }
 
     private static async Task RunGpuCheckAsync()
