@@ -315,7 +315,7 @@ public class GpuSelectPlanTests
 
         // The attempt failed, crashed or hung: the marker names this environment,
         // and integrated was saved.
-        var boot2Active = GpuSelectPlan.RuleActive(true, EnvA.Fingerprint, EnvA);
+        var boot2Active = GpuSelectPlan.RuleActive(true, GpuSelectPlan.DedicatedMarker(EnvA), EnvA);
         var boot2 = GpuSelectPlan.NextAction("integrated", null, 2, Now, intelIgpuWithDedicated: boot2Active);
 
         Assert.False(boot2Active);
@@ -328,7 +328,7 @@ public class GpuSelectPlanTests
     {
         // Boot 2 sees the guard and writes the marker; boot 3 has no guard.
         var boot2 = GpuSelectPlan.NextAction("integrated", "discrete", 2, Now, intelIgpuWithDedicated: true);
-        var boot3Active = GpuSelectPlan.RuleActive(true, EnvA.Fingerprint, EnvA);
+        var boot3Active = GpuSelectPlan.RuleActive(true, GpuSelectPlan.DedicatedMarker(EnvA), EnvA);
         var boot3 = GpuSelectPlan.NextAction("integrated", null, 2, Now, intelIgpuWithDedicated: boot3Active);
 
         Assert.False(boot2.PreferDedicated);
@@ -336,10 +336,33 @@ public class GpuSelectPlanTests
         Assert.Equal(GpuSelectState.Integrated, boot3.Card);
     }
 
+    [Theory]
+    [InlineData(1, true)]
+    [InlineData(2, true)]
+    [InlineData(GpuSelectPlan.MaxInconclusiveAttempts, false)]
+    public void RuleActive_ToleratesInconclusiveProbesUpToTheCap(int count, bool active)
+    {
+        var marker = GpuSelectPlan.DedicatedMarker(EnvA, count);
+
+        Assert.Equal(count, GpuSelectPlan.InconclusiveCount(marker, EnvA));
+        Assert.Equal(active, GpuSelectPlan.RuleActive(true, marker, EnvA));
+    }
+
+    [Fact]
+    public void RuleActive_FailureMarkerDisablesAtOnce_AndOtherEnvironmentsRetry()
+    {
+        var failed = GpuSelectPlan.DedicatedMarker(EnvA);
+
+        Assert.False(GpuSelectPlan.RuleActive(true, failed, EnvA));
+        Assert.Equal(0, GpuSelectPlan.InconclusiveCount(failed, EnvA));
+        Assert.True(GpuSelectPlan.RuleActive(true, failed, EnvB));
+        Assert.Equal(0, GpuSelectPlan.InconclusiveCount(GpuSelectPlan.DedicatedMarker(EnvA, 2), EnvB));
+    }
+
     [Fact]
     public void RuleActive_RetriesWhenTheGpuSetOrDriverChanges()
     {
-        Assert.True(GpuSelectPlan.RuleActive(true, EnvA.Fingerprint, EnvB));
+        Assert.True(GpuSelectPlan.RuleActive(true, GpuSelectPlan.DedicatedMarker(EnvA), EnvB));
         Assert.True(GpuSelectPlan.RuleActive(true, "  ", EnvA));
         Assert.False(GpuSelectPlan.RuleActive(false, null, EnvA));
     }

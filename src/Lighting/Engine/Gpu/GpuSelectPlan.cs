@@ -117,23 +117,64 @@ internal static class GpuSelectPlan
             state.IsOff ? "off latch expired" : "first run", false, PreferDedicated: dedicated);
     }
 
+    /// <summary>Probes the dedicated card may time out across boots before the
+    /// rule gives up for the current environment.</summary>
+    public const int MaxInconclusiveAttempts = 3;
+
     /// <summary>Whether the rule runs this boot: the adapter set qualifies and
-    /// the dedicated card has not already failed to come up in this environment
-    /// (the marker holds the adapter fingerprint it failed under, so a driver or
-    /// card change tries again).</summary>
-    public static bool RuleActive(bool detected, string? marker, GpuEnvironment env) =>
-        detected && !string.Equals(marker?.Trim(), env.Fingerprint, StringComparison.Ordinal);
+    /// the dedicated card has not failed here. The marker holds the adapter
+    /// fingerprint it was written under, so a driver or card change tries again.
+    /// A failure, crash or hang disables the rule at once; inconclusive probes
+    /// (timeout, spawn failure) are counted and tolerated up to the cap.</summary>
+    public static bool RuleActive(bool detected, string? marker, GpuEnvironment env)
+    {
+        if (!detected)
+        {
+            return false;
+        }
+        var parts = (marker ?? string.Empty).Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries);
+        if (parts.Length == 0 || !string.Equals(parts[0], env.Fingerprint, StringComparison.Ordinal))
+        {
+            return true;
+        }
+        var count = InconclusiveCount(marker, env);
+        return count > 0 && count < MaxInconclusiveAttempts;
+    }
+
+    /// <summary>The inconclusive probes recorded for this environment, 0 when
+    /// the marker is absent, from another environment, or records a failure.</summary>
+    public static int InconclusiveCount(string? marker, GpuEnvironment env)
+    {
+        var parts = (marker ?? string.Empty).Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries);
+        if (parts.Length < 2 || !string.Equals(parts[0], env.Fingerprint, StringComparison.Ordinal)
+            || !parts[1].StartsWith(InconclusiveKey, StringComparison.Ordinal))
+        {
+            return 0;
+        }
+        return int.TryParse(parts[1][InconclusiveKey.Length..], System.Globalization.NumberStyles.Integer,
+            System.Globalization.CultureInfo.InvariantCulture, out var n) && n > 0 ? n : 0;
+    }
+
+    /// <summary>The marker text: a failure (the default, so a crash or hang
+    /// mid-attempt leaves it) or a count of inconclusive probes.</summary>
+    public static string DedicatedMarker(GpuEnvironment env, int inconclusive = 0) =>
+        inconclusive > 0
+            ? string.Create(System.Globalization.CultureInfo.InvariantCulture,
+                $"{env.Fingerprint} {InconclusiveKey}{inconclusive}")
+            : $"{env.Fingerprint} failed";
+
+    private const string InconclusiveKey = "inconclusive=";
 
     /// <summary>True when the adapter set holds an Intel integrated GPU and at
-    /// least one dedicated one. Dedicated means 1 GiB or more of VRAM, the same
-    /// cut the adapter matcher uses.</summary>
+    /// least one dedicated one, by the same video memory cut the adapter matcher
+    /// uses.</summary>
     public static bool IntelIgpuWithDedicated(System.Collections.Generic.IEnumerable<(uint VendorId, long DedicatedVramMb)> adapters)
     {
         var intelIgpu = false;
         var dedicated = false;
         foreach (var (vendor, vram) in adapters)
         {
-            if (vram >= 1024)
+            if (vram >= Nexus.Service.Sensors.GpuAdapterLuids.DedicatedVramMinMb)
             {
                 dedicated = true;
             }

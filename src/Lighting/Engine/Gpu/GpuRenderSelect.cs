@@ -187,20 +187,30 @@ internal static class GpuRenderSelect
         GpuContext.Log("[gpu] select: probing GPUs");
         if (preferDedicated)
         {
+            // Pessimistic first: a crash or hang inside the attempt leaves
+            // this, which turns the rule off for this environment.
+            var prior = GpuSelectPlan.InconclusiveCount(LoadDedicatedMarker(), env);
             WriteDedicatedMarker(env);
-            if (ProbeCard(ClassDiscrete) == GpuProbeVerdict.Works)
+            var dedicated = ProbeCard(ClassDiscrete);
+            if (dedicated == GpuProbeVerdict.Works)
             {
                 WarmGuarded(gpu, sw, GpuSelectState.Discrete, ClassDiscrete, "probed:discrete");
                 GpuContext.Log(gpu.Available
                     ? "[gpu] auto: Intel integrated GPU present, using the dedicated GPU"
-                    : "[gpu] auto: Intel integrated GPU present, but the dedicated GPU gave no context yet");
+                    : gpu.Failed
+                        ? "[gpu] auto: Intel integrated GPU present, but the dedicated GPU failed to create a context"
+                        : "[gpu] auto: Intel integrated GPU present, dedicated GPU still initializing");
                 AfterWarm(gpu, sw, GpuSelectState.Discrete, ClassDiscrete);
                 return;
             }
-            GpuContext.Log("[gpu] auto: Intel integrated GPU present, but the dedicated GPU did not pass its "
-                + "probe; using the integrated GPU");
+            if (dedicated == GpuProbeVerdict.Inconclusive)
+            {
+                WriteDedicatedMarker(env, prior + 1);
+            }
             if (ProbeCard(ClassIntegrated) != GpuProbeVerdict.Failed)
             {
+                GpuContext.Log("[gpu] auto: Intel integrated GPU present, but the dedicated GPU did not pass its "
+                    + "probe; using the integrated GPU");
                 WarmGuarded(gpu, sw, GpuSelectState.Integrated, ClassIntegrated, "probed:integrated");
                 AfterWarm(gpu, sw, GpuSelectState.Integrated, ClassIntegrated);
                 return;
@@ -653,9 +663,21 @@ internal static class GpuRenderSelect
         catch { return null; }
     }
 
-    private static void WriteDedicatedMarker(GpuEnvironment env)
+    private static void WriteDedicatedMarker(GpuEnvironment env, int inconclusive = 0) =>
+        WriteDurable(DedicatedMarkerPath, GpuSelectPlan.DedicatedMarker(env, inconclusive));
+
+    // Flushed to disk: the attempt this records can bugcheck the machine, and a
+    // marker still in the cache would be lost with it.
+    private static void WriteDurable(string path, string text)
     {
-        try { Directory.CreateDirectory(DataDir); File.WriteAllText(DedicatedMarkerPath, env.Fingerprint); }
+        try
+        {
+            Directory.CreateDirectory(DataDir);
+            using var fs = new FileStream(path, FileMode.Create, FileAccess.Write, FileShare.Read);
+            var bytes = Encoding.UTF8.GetBytes(text);
+            fs.Write(bytes, 0, bytes.Length);
+            fs.Flush(true);
+        }
         catch { }
     }
 
@@ -692,8 +714,7 @@ internal static class GpuRenderSelect
 
     private static void WriteCrashGuard(string card)
     {
-        try { Directory.CreateDirectory(DataDir); File.WriteAllText(CrashGuardPath, card); }
-        catch { }
+        WriteDurable(CrashGuardPath, card);
     }
 
     private static void ClearCrashGuard()

@@ -22,6 +22,9 @@ internal static class GpuAdapterLuids
 {
     /// <param name="UmdVersion">The user-mode driver version DXGI reports, 0
     /// when the adapter has none; a driver update changes it.</param>
+    /// <summary>Video memory at or above this marks an adapter as dedicated.</summary>
+    internal const long DedicatedVramMinMb = 1024;
+
     public readonly record struct Adapter(
         string Luid, string Description, uint VendorId, long DedicatedVramMb,
         uint DeviceId = 0, uint SubSysId = 0, uint Revision = 0, long UmdVersion = 0);
@@ -170,7 +173,7 @@ internal static class GpuAdapterLuids
         {
             if (g.AdapterLuid.Length > 0) continue;
             if (PickAdapter(adapters, used, kernelLuids,
-                    x => VendorMatches(g.Vendor, x.VendorId) && (x.DedicatedVramMb >= 1024) == !g.Integrated) is { } a)
+                    x => VendorMatches(g.Vendor, x.VendorId) && (x.DedicatedVramMb >= DedicatedVramMinMb) == !g.Integrated) is { } a)
             { g.AdapterLuid = a.Luid; used.Add(a.Luid); }
         }
     }
