@@ -109,6 +109,42 @@ public sealed class BenchComboResult
     public double DurationMs { get; set; }
     public List<BenchEffectResult> Effects { get; set; } = new();
     public BenchLedSpaceCombo? LedSpace { get; set; }
+    public BenchD3dFlagSection? D3dFlag { get; set; }
+}
+
+public sealed class BenchThreadCpu
+{
+    public string Module { get; set; } = "";
+    public int ThreadId { get; set; }
+    public double CpuMsPerSec { get; set; }
+}
+
+/// <summary>One scenario on one device configuration: cadence of the live ticks and where the CPU went.</summary>
+public sealed class BenchD3dRun
+{
+    public string Effect { get; set; } = "";
+
+    /// <summary>live, live+P0 windows, or live+P2 windows.</summary>
+    public string Scenario { get; set; } = "";
+    public bool PreventThreading { get; set; }
+    public int Ticks { get; set; }
+    public Percentiles? IntervalMs { get; set; }
+    public Percentiles? WorkMs { get; set; }
+
+    /// <summary>Time from a window starting to its last frame being sampled.</summary>
+    public Percentiles? WindowMs { get; set; }
+    public double ProcessCpuMsPerSec { get; set; }
+    public double DriverCpuMsPerSec { get; set; }
+    public List<BenchThreadCpu> Threads { get; set; } = new();
+    public bool WindowBytesEqual { get; set; }
+}
+
+public sealed class BenchD3dFlagSection
+{
+    public string Extensions { get; set; } = "";
+    public bool DeviceCreationAvailable { get; set; }
+    public string? Detail { get; set; }
+    public List<BenchD3dRun> Runs { get; set; } = new();
 }
 
 /// <summary>Cost of one 30-frame window on one path.</summary>
@@ -259,7 +295,7 @@ internal sealed class BenchOptions
         options = new BenchOptions();
         if (args.Length < 2 || args[1].StartsWith("--", StringComparison.Ordinal))
         {
-            return "usage: --lighting-bench <out.json> [--backends angle,wgl] [--adapters integrated,dedicated,warp] [--seconds N] [--effects a,b] [--section ledspace]";
+            return "usage: --lighting-bench <out.json> [--backends angle,wgl] [--adapters integrated,dedicated,warp] [--seconds N] [--effects a,b] [--section ledspace|d3dflag]";
         }
         options.OutPath = args[1];
         for (var i = 2; i < args.Length; i++)
@@ -295,9 +331,9 @@ internal sealed class BenchOptions
                     break;
                 case "--section":
                     options.Section = val.ToLowerInvariant();
-                    if (options.Section != "ledspace")
+                    if (options.Section is not ("ledspace" or "d3dflag"))
                     {
-                        return "--section must be ledspace";
+                        return "--section must be ledspace or d3dflag";
                     }
                     break;
                 case "--seconds":
@@ -416,6 +452,10 @@ internal static class BenchReport
 
     public static string FormatTable(BenchRun run)
     {
+        if (run.Results.Any(static c => c.D3dFlag is not null))
+        {
+            return BenchLedSpaceReport.FormatD3d(run);
+        }
         if (run.Results.Any(static c => c.LedSpace is not null))
         {
             return BenchLedSpaceReport.Format(run);

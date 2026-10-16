@@ -218,6 +218,11 @@ internal static partial class LightingBench
             RunLedSpace(o, ctx, result);
             return;
         }
+        if (o.Section == "d3dflag")
+        {
+            RunD3dFlag(o, ctx, result);
+            return;
+        }
 
         var names = new List<string>((IEnumerable<string>?)o.Effects ?? ShaderLibrary.AllEffectKeys);
         var cyclesPerMs = CalibrateCyclesPerMs();

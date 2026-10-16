@@ -27,6 +27,44 @@ internal static class BenchLedSpaceReport
         return sb.ToString();
     }
 
+    public static string FormatD3d(BenchRun run)
+    {
+        var sb = new StringBuilder();
+        sb.AppendLine($"D3D11 threading flag A/B  {run.StartedUtc}  v{run.ServiceVersion}  {run.Machine.Host}");
+        foreach (var c in run.Results)
+        {
+            sb.AppendLine();
+            sb.AppendLine($"{BenchReport.Label(c)}  {c.Status}  {c.GlRenderer} {c.Detail}");
+            if (c.D3dFlag is not { } d)
+            {
+                continue;
+            }
+            sb.AppendLine($"EGL client extensions: {d.Extensions}");
+            sb.AppendLine($"device creation available: {d.DeviceCreationAvailable} {d.Detail}");
+            sb.AppendLine("effect       scenario            flag  interval p50/p99/max   work p50/p99/max       window p50/max   cpu ms/s  driver ms/s  equal");
+            foreach (var r in d.Runs)
+            {
+                var i = r.IntervalMs;
+                var w = r.WorkMs;
+                var wn = r.WindowMs;
+                sb.AppendLine(
+                    $"{r.Effect,-12} {r.Scenario,-19} {(r.PreventThreading ? "on " : "off")}   "
+                    + $"{F(i?.P50 ?? 0)}/{F(i?.P99 ?? 0)}/{F(i?.Max ?? 0)}".PadRight(23)
+                    + $"{F(w?.P50 ?? 0)}/{F(w?.P99 ?? 0)}/{F(w?.Max ?? 0)}".PadRight(23)
+                    + (wn is null ? "-" : $"{F(wn.P50)}/{F(wn.Max)}").PadRight(17)
+                    + $"{F(r.ProcessCpuMsPerSec),-10}{F(r.DriverCpuMsPerSec),-13}{r.WindowBytesEqual}");
+            }
+            sb.AppendLine();
+            sb.AppendLine("busiest threads per run (module tid ms/s)");
+            foreach (var r in d.Runs)
+            {
+                sb.AppendLine($"  {r.Effect} {r.Scenario} flag {(r.PreventThreading ? "on" : "off")}: "
+                    + string.Join("; ", r.Threads.Take(6).Select(static t => $"{t.Module} {t.ThreadId} {F(t.CpuMsPerSec)}")));
+            }
+        }
+        return sb.ToString();
+    }
+
     public static double Median(IEnumerable<double> values)
     {
         var a = values.OrderBy(static v => v).ToArray();

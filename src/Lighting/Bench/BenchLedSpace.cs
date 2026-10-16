@@ -36,6 +36,27 @@ internal static partial class LightingBench
         return c;
     }
 
+    private interface ILsGl
+    {
+        GL Gl { get; }
+        uint Quad { get; }
+        int CanvasH { get; }
+        void Invoke(Action work);
+    }
+
+    private sealed class LsGpuAdapter : ILsGl
+    {
+        private readonly GpuContext _ctx;
+
+        public LsGpuAdapter(GpuContext ctx) => _ctx = ctx;
+
+        public GL Gl => _ctx.Gl;
+        public uint Quad => _ctx.QuadVao;
+        public int CanvasH => _ctx.Height;
+
+        public void Invoke(Action work) => _ctx.Invoke(work);
+    }
+
     private sealed record LsPlacementDef(string Name, float X, float Y, float W, float H, int Rotation, bool Timed);
 
     private static readonly LsPlacementDef[] LsPlacementDefs =
@@ -150,7 +171,7 @@ internal static partial class LightingBench
         return p;
     }
 
-    private static unsafe void LsCreatePlacementGl(GpuContext ctx, LsPlacementState s)
+    private static unsafe void LsCreatePlacementGl(ILsGl ctx, LsPlacementState s)
     {
         var layout = s.Layout;
         s.Width = layout.TotalTaps;
@@ -161,7 +182,7 @@ internal static partial class LightingBench
             for (var i = 0; i < s.Width; i++)
             {
                 data[i * 4] = layout.TapX[i] + 0.5f;
-                data[i * 4 + 1] = ctx.Height - layout.TapY[i] - 0.5f;
+                data[i * 4 + 1] = ctx.CanvasH - layout.TapY[i] - 0.5f;
                 data[i * 4 + 3] = 1f;
             }
             s.TapTex = gl.GenTexture();
@@ -193,7 +214,7 @@ internal static partial class LightingBench
         });
     }
 
-    private static void LsDestroyPlacementGl(GpuContext ctx, LsPlacementState s)
+    private static void LsDestroyPlacementGl(ILsGl ctx, LsPlacementState s)
     {
         ctx.Invoke(() =>
         {
@@ -207,7 +228,7 @@ internal static partial class LightingBench
     /// <summary>Draws the LED taps of one placement for a number of frame rows and optionally reads them back; GL thread work behind one Invoke.</summary>
     private sealed class LsLedDraw
     {
-        private readonly GpuContext _ctx;
+        private readonly ILsGl _ctx;
         private readonly Action _run;
         public LsProgram Prog = null!;
         public LsPlacementState Place = null!;
@@ -216,7 +237,7 @@ internal static partial class LightingBench
         public bool Read;
         public byte[] Pixels = Array.Empty<byte>();
 
-        public LsLedDraw(GpuContext ctx)
+        public LsLedDraw(ILsGl ctx)
         {
             _ctx = ctx;
             _run = Run;
@@ -239,7 +260,7 @@ internal static partial class LightingBench
 
         public unsafe void Draw(GL gl)
         {
-            LsRasterState(gl, _ctx);
+            LsRasterState(gl, _ctx.Quad);
             gl.BindFramebuffer(FramebufferTarget.Framebuffer, Place.Fbo);
             gl.Viewport(0, 0, (uint)Place.Width, (uint)Rows);
             gl.UseProgram(Prog.Handle);
@@ -264,12 +285,12 @@ internal static partial class LightingBench
         }
     }
 
-    private static void LsRasterState(GL gl, GpuContext ctx)
+    private static void LsRasterState(GL gl, uint quad)
     {
         gl.Disable(EnableCap.Blend);
         gl.Disable(EnableCap.DepthTest);
         gl.Disable(EnableCap.CullFace);
-        gl.BindVertexArray(ctx.QuadVao);
+        gl.BindVertexArray(quad);
     }
 
     /// <summary>GPU elapsed-time query through the timer-query entry points; the EXT names on an ES context.</summary>
@@ -373,7 +394,7 @@ internal static partial class LightingBench
         result.LedSpace = ls;
         result.Status = "partial";
         using var engine = new LightingEngine();
-        var lc = new LsCtx { Gpu = ctx, Engine = engine, CyclesPerMs = CalibrateCyclesPerMs(), Draw = new LsLedDraw(ctx) };
+        var lc = new LsCtx { Gpu = ctx, Engine = engine, CyclesPerMs = CalibrateCyclesPerMs(), Draw = new LsLedDraw(new LsGpuAdapter(ctx)) };
         var start = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
         for (var i = 0; i < LsWindow; i++)
         {
@@ -386,7 +407,7 @@ internal static partial class LightingBench
             var d = LsPlacementDefs[i];
             var dev = new DeviceFrame(0, "ls-strimer", u.Length, d.X, d.Y, d.W, d.H, d.Rotation) { LedU = u, LedV = v };
             var s = new LsPlacementState { Def = d, Device = dev, Layout = LedSpaceCore.BuildTaps(dev, ctx.Width, ctx.Height) };
-            LsCreatePlacementGl(ctx, s);
+            LsCreatePlacementGl(new LsGpuAdapter(ctx), s);
             places.Add(s);
             ls.PlacementNames.Add($"{d.Name} ({s.Layout.TotalTaps} taps)");
         }
@@ -413,7 +434,7 @@ internal static partial class LightingBench
         }
         foreach (var p in places)
         {
-            LsDestroyPlacementGl(ctx, p);
+            LsDestroyPlacementGl(new LsGpuAdapter(ctx), p);
         }
         result.Status = "ok";
     }
@@ -748,7 +769,7 @@ internal static partial class LightingBench
             {
                 e.P0!.GpuMsPerWindow = orig is null ? null : LsGpuMs(lc, gl =>
                 {
-                    LsRasterState(gl, ctx);
+                    LsRasterState(gl, ctx.QuadVao);
                     gl.BindFramebuffer(FramebufferTarget.Framebuffer, ctx.Fbo);
                     gl.Viewport(0, 0, (uint)ctx.Width, (uint)ctx.Height);
                     gl.UseProgram(orig.Handle);
