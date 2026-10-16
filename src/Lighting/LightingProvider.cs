@@ -1088,6 +1088,14 @@ public sealed partial class LightingProvider : ILightingProvider, IDisposable
             }
             _pinnedLooksSeq = mediaSeq;
             _pinnedLooks = next;
+            // A render key no pin uses any more must not keep its source tag for the life of the process.
+            foreach (var builtKey in _pinBuiltSource.Keys)
+            {
+                if (!next.ContainsKey(builtKey))
+                {
+                    _pinBuiltSource.TryRemove(builtKey, out _);
+                }
+            }
             audioChanged = _pinnedAudio != audio;
             _pinnedAudio = audio;
         }

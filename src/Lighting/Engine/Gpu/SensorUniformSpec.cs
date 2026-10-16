@@ -23,7 +23,7 @@ public readonly partial record struct SensorUniformSpec(string Name, SensorBindi
     /// <summary>Whether any line could carry the annotation, so the common case skips the per-line scan.</summary>
     private static bool MayHaveAnnotation(string source) => source.Contains("// sensor", StringComparison.Ordinal);
 
-    /// <summary>The lines left once block comments and `#if 0` regions are gone; a line comment stays, since the annotation is one.</summary>
+    /// <summary>The lines left once block comments are gone; a line comment stays, since the annotation is one.</summary>
     private static List<string> LiveLines(string source)
     {
         var sb = new System.Text.StringBuilder(source.Length);
@@ -55,30 +55,7 @@ public readonly partial record struct SensorUniformSpec(string Name, SensorBindi
                 sb.Append(c);
             }
         }
-        var lines = new List<string>();
-        var dead = 0;
-        foreach (var line in sb.ToString().Split('\n'))
-        {
-            var t = line.Trim();
-            if (dead > 0)
-            {
-                if (t.StartsWith("#if", StringComparison.Ordinal))
-                {
-                    dead++;
-                }
-                else if (t.StartsWith("#endif", StringComparison.Ordinal))
-                {
-                    dead--;
-                }
-                continue;
-            }
-            if (t.StartsWith("#if", StringComparison.Ordinal) && t.Replace(" ", "") == "#if0")
-            {
-                dead = 1;
-                continue;
-            }
-            lines.Add(line);
-        }
+        var lines = new List<string>(sb.ToString().Split('\n'));
         return lines;
     }
 

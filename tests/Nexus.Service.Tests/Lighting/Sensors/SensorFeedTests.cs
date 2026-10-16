@@ -226,8 +226,8 @@ public sealed class SensorFeedTests
 
         Assert.True(await WaitFor(() => ((ThrowingSensors)(object)provider).Walks >= 2));
         var walks = ((ThrowingSensors)(object)provider).Walks;
-        // Passes come one per poll gap, not back to back: at 50 ms a 200 ms window holds a handful, never hundreds.
-        await WaitFor(() => ((ThrowingSensors)(object)provider).Walks >= walks + 3);
+        // Passes come one per poll gap, not back to back, so a few more take several gaps and the count stays small.
+        Assert.True(await WaitFor(() => ((ThrowingSensors)(object)provider).Walks >= walks + 3));
         Assert.InRange(((ThrowingSensors)(object)provider).Walks, 2, 40);
         Assert.True(feed.IsPolling);
         // The clock never moved, so the rate limit lets one line through however many passes ran.

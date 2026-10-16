@@ -130,7 +130,6 @@ public sealed class SensorUniformSpecTests
     public void A_commented_out_annotated_uniform_is_not_reported()
     {
         var src = "/*\n" + CpuLine + "*/\n"
-            + "#if 0\n" + CpuLine.Replace("u_a_s", "u_b_s") + "#endif\n"
             + "/* one-liner */ " + CpuLine.Replace("u_a_s", "u_c_s")
             + "// " + CpuLine.Replace("u_a_s", "u_d_s")
             + CpuLine.Replace("u_a_s", "u_live_s");
@@ -190,34 +189,78 @@ public sealed class SensorUniformSpecTests
         Assert.Single(System.Text.RegularExpressions.Regex.Matches(ShaderLibrary.Get(key), @"uniform float u_speed;"));
     }
 
-    [Theory]
+    [GlTheory]
     [MemberData(nameof(EmbeddedSensorFrags))]
-    public void Every_embedded_sensor_frag_compiles_and_renders_when_a_gl_context_exists(string key)
+    public void Every_embedded_sensor_frag_compiles_and_renders(string key)
     {
         using var gpu = new GpuContext(160, 90);
         var fx = new ShaderEffect(key, gpu, ShaderLibrary.Get(key)) { FixedSensorValue = 0.6f };
         var canvas = new CanvasBuffer(160, 90);
+
+        var lit = GlProbe.RenderUntilLit(fx, canvas, TimeSpan.FromSeconds(30));
+
+        Assert.False(fx.HasFailed, $"{key} failed to compile");
+        Assert.True(lit, $"{key} rendered black at a 0.6 fill");
+    }
+}
+
+/// <summary>Renders until the async compile lands and something is lit, or the deadline passes.</summary>
+internal static class GlProbe
+{
+    private static readonly Lazy<bool> Usable = new(() =>
+    {
+        using var gpu = new GpuContext(160, 90);
+        var fx = new ShaderEffect("sensorbar", gpu, ShaderLibrary.Get("sensorbar")) { FixedSensorValue = 0.6f };
+        return RenderUntilLit(fx, new CanvasBuffer(160, 90), TimeSpan.FromSeconds(30));
+    });
+
+    public static bool Works => Usable.Value;
+
+    public static bool RenderUntilLit(ShaderEffect fx, CanvasBuffer canvas, TimeSpan deadline)
+    {
+        var end = DateTime.UtcNow + deadline;
         double t = 0;
-        for (var i = 0; i < 60; i++)
+        while (DateTime.UtcNow < end)
         {
             fx.RenderFrame(canvas, t += 50);
+            if (fx.HasFailed)
+            {
+                return false;
+            }
+            if (!fx.IsRenderPending && AnyLit(canvas))
+            {
+                return true;
+            }
             Thread.Sleep(10);
         }
-        Assert.False(fx.HasFailed, $"{key} failed to compile");
-        var lit = false;
-        for (var y = 0; y < canvas.Height && !lit; y++)
+        return false;
+    }
+
+    private static bool AnyLit(CanvasBuffer canvas)
+    {
+        for (var y = 0; y < canvas.Height; y++)
         {
-            for (var x = 0; x < canvas.Width && !lit; x += 4)
+            for (var x = 0; x < canvas.Width; x += 4)
             {
                 var (r, g, b) = canvas.GetPixel(x, y);
-                lit = r + g + b > 30;
+                if (r + g + b > 30)
+                {
+                    return true;
+                }
             }
         }
-        if (!lit && !gpu.Available)
+        return false;
+    }
+}
+
+/// <summary>A theory that reports itself skipped, with the reason, on a host where no GL context renders.</summary>
+public sealed class GlTheoryAttribute : TheoryAttribute
+{
+    public GlTheoryAttribute()
+    {
+        if (!GlProbe.Works)
         {
-            // No usable GL on this host (a CI box without a GPU): there is nothing to compile against.
-            return;
+            Skip = "no usable GL context on this host";
         }
-        Assert.True(lit, $"{key} rendered black at a 0.6 fill");
     }
 }

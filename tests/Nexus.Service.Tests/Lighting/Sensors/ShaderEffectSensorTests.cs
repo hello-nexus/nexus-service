@@ -87,8 +87,10 @@ public sealed class ShaderEffectSensorTests : IDisposable
         _ = fx.NextSensorValue(0, 32);
         _feed.Tick(_now);
 
-        // The first reading of the new pick is taken as is, with no dip through zero.
-        Assert.Equal(0.9f, fx.NextSensorValue(0, 48), 3);
+        // The new pick glides in from the old value, with no dip through zero.
+        var next = fx.NextSensorValue(0, 48);
+        Assert.InRange(next, 0.2f, 0.9f);
+        Assert.NotEqual(0.9f, next);
     }
 
     [Fact]
@@ -167,7 +169,7 @@ public sealed class ShaderEffectSensorTests : IDisposable
     }
 
     [Fact]
-    public void Switching_to_a_pick_not_yet_polled_holds_the_value_then_takes_the_first_reading_without_a_dip()
+    public void Switching_to_a_pick_not_yet_polled_holds_then_glides_to_its_first_reading_without_a_dip()
     {
         _readings["quick/summary/cpu-usage"] = 60f;
         _readings["quick/summary/memory-usage"] = 80f;
@@ -183,11 +185,15 @@ public sealed class ShaderEffectSensorTests : IDisposable
 
         _feed.Tick(_now);
 
-        Assert.Equal(0.8f, fx.NextSensorValue(0, 816), 3);
+        var first = fx.NextSensorValue(0, 816);
+        Assert.InRange(first, 0.6f, 0.8f);
+        Assert.NotEqual(0.8f, first);
+        Assert.NotEqual(0.6f, first);
+        Assert.True(fx.NextSensorValue(0, 832) > first);
     }
 
     [Fact]
-    public void A_stale_idle_channel_is_not_glided_toward_until_it_is_polled_again()
+    public void A_stale_idle_channel_is_held_until_polled_again_then_glided_to()
     {
         _readings["quick/summary/cpu-usage"] = 90f;
         var fx = Effect();
@@ -200,7 +206,9 @@ public sealed class ShaderEffectSensorTests : IDisposable
 
         Assert.Equal(0.9f, fx.NextSensorValue(0, 5_000), 3);
         _feed.Tick(_now);
-        Assert.Equal(0.1f, fx.NextSensorValue(0, 5_016), 3);
+        var next = fx.NextSensorValue(0, 5_016);
+        Assert.InRange(next, 0.1f, 0.9f);
+        Assert.NotEqual(0.1f, next);
     }
 
     [Fact]

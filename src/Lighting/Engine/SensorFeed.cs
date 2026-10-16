@@ -121,9 +121,9 @@ public sealed class SensorFeed : IDisposable
                 }
                 catch (Exception ex)
                 {
-                    // Never end the loop on a failure: restarting would retry with no gap.
+                    // A failure does not end the loop (a restart would retry with no gap), but an idle feed still stops.
                     LogFailure(ex);
-                    wanted = true;
+                    wanted = AnyWanted(_clockMs());
                 }
                 if (!wanted)
                 {
