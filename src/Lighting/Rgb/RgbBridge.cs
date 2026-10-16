@@ -1340,6 +1340,12 @@ public sealed class RgbBridge : IDisposable
             var existingFrames = _engine.Devices;
             var framesList = new List<DeviceFrame>(devices.Count);
             var layouts = settingsSnapshot.Lighting.DeviceLayouts;
+            // Read under the store lock: preset load and batch layouts Clear() and refill DeviceLayouts in place.
+            HashSet<string>? placedIds = null;
+            if (settingsSnapshot.MaximizedCanvasDefaults)
+            {
+                _store.Read(s => placedIds = new HashSet<string>(s.Lighting.DeviceLayouts.Keys, StringComparer.Ordinal));
+            }
             int logicalOrdinal = 0;
             int cardSlot = 0;
             int stripSlot = 0;
@@ -1465,9 +1471,9 @@ public sealed class RgbBridge : IDisposable
             }
 
             var frames = framesList.ToArray();
-            if (settingsSnapshot.MaximizedCanvasDefaults)
+            if (placedIds is not null)
             {
-                CanvasGridLayout.MaximizeUnplaced(frames, layouts);
+                CanvasGridLayout.MaximizeUnplaced(frames, placedIds);
             }
             var liveIds = new List<string>(frames.Length);
             foreach (var f in frames) liveIds.Add(f.Id);

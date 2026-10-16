@@ -96,13 +96,12 @@ public sealed class MaximizedCanvasDefaultsTests : IDisposable
     }
 
     [Fact]
-    public void MaximizeUnplaced_skips_frames_with_a_persisted_layout()
+    public void MaximizeUnplaced_skips_placed_frames()
     {
-        var layouts = new Dictionary<string, DeviceLayout> { ["placed"] = new DeviceLayout() };
         var placed = new DeviceFrame(0, "placed", 4, x: 10, y: 20, w: 140, h: 120);
         var unplaced = new DeviceFrame(1, "unplaced", 4, x: 10, y: 20, w: 140, h: 120);
 
-        CanvasGridLayout.MaximizeUnplaced(new[] { placed, unplaced }, layouts);
+        CanvasGridLayout.MaximizeUnplaced(new[] { placed, unplaced }, new HashSet<string> { "placed" });
 
         Assert.Equal((10f, 20f, 140f, 120f), (placed.X, placed.Y, placed.W, placed.H));
         Assert.Equal((0f, 0f, 1000f, 600f), (unplaced.X, unplaced.Y, unplaced.W, unplaced.H));
