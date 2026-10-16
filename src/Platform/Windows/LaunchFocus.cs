@@ -169,8 +169,19 @@ public static class LaunchFocus
         }
         try
         {
-            using var proc = Process.GetProcessById((int)pid);
-            return proc.StartTime >= s_armedAt;
+            var entries = new System.Collections.Generic.List<Nexus.Service.Activity.Native.ProcessSnapshotEntry>(512);
+            if (!Nexus.Service.Activity.Native.WindowsProcessSnapshot.TryRead(entries))
+            {
+                return false;
+            }
+            foreach (var e in entries)
+            {
+                if (e.Pid == (int)pid)
+                {
+                    return DateTime.FromFileTime(e.CreateFileTime) >= s_armedAt;
+                }
+            }
+            return false;
         }
         catch
         {

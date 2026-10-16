@@ -22,19 +22,18 @@ public static class CoolingRoutes
         // Curves
         app.MapGet("/cooling/curves", (Nexus.Service.Persistence.IConfigStore store) =>
         {
-            var settings = store.Load();
-            var docs = settings.Cooling.Curves;
-            var curves = docs.Select(d =>
+            var response = new GetCurvesResponse();
+            store.Read(settings =>
             {
-                var wire = CurveWireMapper.ToWire(d);
-                wire.IsDefault = d.Preset is null ? null : FanProfiles.IsPresetCurveAtDefaults(d);
-                return wire;
-            }).ToList();
-            return new GetCurvesResponse
-            {
-                GlobalSpeedModifier = settings.Cooling.GlobalSpeedModifier,
-                Curves = curves,
-            };
+                response.GlobalSpeedModifier = settings.Cooling.GlobalSpeedModifier;
+                response.Curves = settings.Cooling.Curves.Select(d =>
+                {
+                    var wire = CurveWireMapper.ToWire(d);
+                    wire.IsDefault = d.Preset is null ? null : FanProfiles.IsPresetCurveAtDefaults(d);
+                    return wire;
+                }).ToList();
+            });
+            return response;
         }).AllowPanel();
 
         app.MapPost("/cooling/curves/set", (SetCurvesBody body, ICurveProvider c, IFanControlProvider f, IConfigStore store, MultiplexHub hub, FeatureGates gates) =>
@@ -541,12 +540,13 @@ public static class CoolingRoutes
         app.MapGet("/cooling/status", (IFanControlProvider f, CalibrationRunner runner, Nexus.Service.Persistence.IConfigStore store) =>
         {
             var channels = f.GetFanChannels();
-            var curves = store.Load().Cooling.Curves;
+            var curveCount = 0;
+            store.Read(settings => curveCount = settings.Cooling.Curves.Count);
             return new CoolingStatusResponse
             {
                 Calibrating = runner.State == CalibrationState.Running,
                 CalibrationState = runner.State.ToString().ToLowerInvariant(),
-                ActiveCurves = curves.Count,
+                ActiveCurves = curveCount,
                 FanCount = channels.Count,
                 ManualFans = channels.Count(c => c.Mode == Nexus.Service.Models.Cooling.FanModes.Manual),
                 ActiveCurveFanCount = channels.Count(c => c.Mode == Nexus.Service.Models.Cooling.FanModes.Curve),
