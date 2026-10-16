@@ -100,6 +100,7 @@ public sealed class DevicePinTracker
         !string.IsNullOrEmpty(key)
         && ((AnimateTemplateDefaults.All.ContainsKey(key) && !StaticEffectCatalog.Contains(key))
             || Nexus.Service.Lighting.Engine.Gpu.ShaderLibrary.IsSweepEffect(key)
+            || Nexus.Service.Lighting.Engine.Gpu.ShaderLibrary.IsSensorEffect(key)
             || (Nexus.Service.Lighting.Engine.Gpu.ShaderLibrary.IsCustomKey(key)
                 && Nexus.Service.Lighting.Engine.Gpu.ShaderLibrary.IsKnownKey(key)));
 

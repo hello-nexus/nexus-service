@@ -17,7 +17,8 @@ vec3 hsv2rgb(vec3 c) {
 
 void main() {
   vec2 uv = gl_FragCoord.xy / u_resolution;
-  float height = uv.y;
+  uv.y = 1.0 - uv.y;
+  float height = 1.0 - uv.y;
   float level = clamp(u_sensorbar_level_s, 0.0, 1.0);
   float edge = max(u_sensorbar_edge, 0.001);
   float lit = 1.0 - smoothstep(level - edge * 0.5, level + edge * 0.5, height);

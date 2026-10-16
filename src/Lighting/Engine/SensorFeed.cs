@@ -54,6 +54,7 @@ public sealed class SensorFeed : IDisposable
     private readonly Func<long> _clockMs;
     private readonly ConcurrentDictionary<string, Channel> _channels = new(StringComparer.Ordinal);
     private readonly CancellationTokenSource _cts = new();
+    private readonly int _pollMs;
     private int _running;
     private int _disposed;
 
@@ -62,8 +63,9 @@ public sealed class SensorFeed : IDisposable
     {
     }
 
-    internal SensorFeed(ISensorProvider? sensors, Func<string, string, float>? resolve, Func<long>? clockMs)
+    internal SensorFeed(ISensorProvider? sensors, Func<string, string, float>? resolve, Func<long>? clockMs, int pollMs = PollMs)
     {
+        _pollMs = pollMs;
         _sensors = sensors;
         _resolve = resolve;
         _clockMs = clockMs ?? (() => Environment.TickCount64);
@@ -97,7 +99,7 @@ public sealed class SensorFeed : IDisposable
                 {
                     break;
                 }
-                await Task.Delay(PollMs, _cts.Token).ConfigureAwait(false);
+                await Task.Delay(_pollMs, _cts.Token).ConfigureAwait(false);
             }
         }
         catch (OperationCanceledException)

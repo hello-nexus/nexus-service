@@ -66,10 +66,33 @@ public sealed partial class ShaderEffect
     private void PushSensors(GL gl, Dictionary<string, int> cache, uint program, double tickMs)
     {
         var specs = SensorSpecs;
-        if (specs.Count == 0)
+        for (var i = 0; i < specs.Count; i++)
         {
-            return;
+            var name = specs[i].Name;
+            int loc;
+            if (!cache.TryGetValue(name, out loc))
+            {
+                loc = gl.GetUniformLocation(program, name);
+                cache[name] = loc;
+            }
+            // Optimized out: nothing reads it, so nothing asks the feed.
+            if (loc >= 0)
+            {
+                gl.Uniform1(loc, NextSensorValue(i, tickMs));
+            }
         }
+    }
+
+    /// <summary>The binding a sensor uniform follows: the user's pick when usable, else the shader's own.</summary>
+    internal static SensorBinding ResolveBinding(SensorUniformSpec spec, IReadOnlyDictionary<string, SensorBinding>? overrides) =>
+        overrides is not null && overrides.TryGetValue(spec.Name, out var picked) && picked is { IsUsable: true }
+            ? picked
+            : spec.Default;
+
+    /// <summary>The smoothed 0..1 value of the index-th sensor uniform for this frame. Render thread.</summary>
+    internal float NextSensorValue(int index, double tickMs)
+    {
+        var specs = SensorSpecs;
         var slots = _sensorSlots;
         if (slots is null)
         {
@@ -80,53 +103,34 @@ public sealed partial class ShaderEffect
             }
             _sensorSlots = slots;
         }
-        var overrides = _sensorOverrides;
-        for (var i = 0; i < specs.Count; i++)
+        var slot = slots[index];
+        if (FixedSensorValue is { } pinned)
         {
-            var spec = specs[i];
-            int loc;
-            if (!cache.TryGetValue(spec.Name, out loc))
-            {
-                loc = gl.GetUniformLocation(program, spec.Name);
-                cache[spec.Name] = loc;
-            }
-            if (loc < 0)
-            {
-                // Optimized out: nothing reads it, so nothing asks the feed.
-                continue;
-            }
-            var slot = slots[i];
-            if (FixedSensorValue is { } pinned)
-            {
-                slot.Smoothed = pinned;
-                gl.Uniform1(loc, slot.Smoothed);
-                continue;
-            }
-            var binding = overrides is not null && overrides.TryGetValue(spec.Name, out var picked) && picked is { IsUsable: true }
-                ? picked
-                : spec.Default;
-            if (!ReferenceEquals(slot.Binding, binding))
-            {
-                slot.Binding = binding;
-                slot.Channel = SensorFeed?.Acquire(binding);
-            }
-            var raw = slot.Channel?.Read() ?? float.NaN;
-            var target = binding.Normalize(raw);
-            if (!slot.Seeded)
-            {
-                // Nothing to glide from until a real reading lands; until then the uniform is 0.
-                if (float.IsFinite(raw))
-                {
-                    slot.Smoothed = target;
-                    slot.Seeded = true;
-                }
-            }
-            else
-            {
-                slot.Smoothed = SensorSmoothing.Step(slot.Smoothed, target, tickMs - slot.LastTick);
-            }
-            slot.LastTick = tickMs;
-            gl.Uniform1(loc, slot.Smoothed);
+            slot.Smoothed = pinned;
+            return pinned;
         }
+        var binding = ResolveBinding(specs[index], _sensorOverrides);
+        if (!ReferenceEquals(slot.Binding, binding))
+        {
+            slot.Binding = binding;
+            slot.Channel = SensorFeed?.Acquire(binding);
+        }
+        var raw = slot.Channel?.Read() ?? float.NaN;
+        var target = binding.Normalize(raw);
+        if (!slot.Seeded)
+        {
+            // Nothing to glide from until a real reading lands; until then the uniform is 0.
+            if (float.IsFinite(raw))
+            {
+                slot.Smoothed = target;
+                slot.Seeded = true;
+            }
+        }
+        else
+        {
+            slot.Smoothed = SensorSmoothing.Step(slot.Smoothed, target, tickMs - slot.LastTick);
+        }
+        slot.LastTick = tickMs;
+        return slot.Smoothed;
     }
 }
