@@ -34,6 +34,7 @@ public sealed unsafe class WindowsAudioSessionEnumerator : IDisposable
     // The notification sinks make a change visible within a pass; the interval
     // is a backstop for a missed callback.
     private const long SafetyRebuildMs = 1500;
+    private const long SlowBuildMs = 100;
     private readonly List<CachedSession> _sessions = new();
     private readonly List<IntPtr> _managers = new();
     private readonly HashSet<IntPtr> _registeredManagers = new();
@@ -142,10 +143,13 @@ public sealed unsafe class WindowsAudioSessionEnumerator : IDisposable
     private void ApplyCore(string id, double? volume, bool? muted)
     {
         if (volume is null && muted is null) return;
-        // A write through a cached interface can fail after a wake or device
-        // reset; rebuild and retry once so a user's change is never dropped.
+        // Writes always walk a fresh enumeration, as before the cache: a session
+        // that appeared since the last rebuild must receive the level too, or the
+        // strip (which shows the loudest session) reads back unchanged. A failed
+        // Set* gets one more fresh walk so a user's change is never dropped.
         for (var attempt = 0; attempt < 2; attempt++)
         {
+            _staleSeen = true;
             EnsureTopology();
             var failed = false;
             foreach (var s in _sessions)
@@ -163,7 +167,7 @@ public sealed unsafe class WindowsAudioSessionEnumerator : IDisposable
                 if (muted is bool m && SetSessionMute(s.Volume, m, IntPtr.Zero) < 0) failed = true;
             }
             if (!failed) return;
-            _staleSeen = true;
+            Diag($"apply to '{id}' failed on attempt {attempt + 1}");
         }
     }
 
@@ -188,8 +192,10 @@ public sealed unsafe class WindowsAudioSessionEnumerator : IDisposable
         _staleSeen = false;
         _builtGeneration = generation;
         _builtAtMs = Environment.TickCount64;
+        var sw = Stopwatch.StartNew();
         BuildTopology();
         _topologyBuilt = true;
+        if (sw.ElapsedMilliseconds >= SlowBuildMs) Diag($"topology rebuild took {sw.ElapsedMilliseconds} ms");
     }
 
     private void BuildTopology()
@@ -426,14 +432,23 @@ public sealed unsafe class WindowsAudioSessionEnumerator : IDisposable
         var hr = CoInitializeEx(IntPtr.Zero, 0x0); // COINIT_MULTITHREADED
         if (hr < 0)
         {
-            Console.Error.WriteLine($"[audio-sessions] CoInitializeEx failed: 0x{hr:X8}");
+            Diag($"CoInitializeEx failed: 0x{hr:X8}");
         }
         foreach (var work in _queue.GetConsumingEnumerable())
         {
             try { work(); }
-            catch (Exception ex) { Console.Error.WriteLine($"[audio-sessions] work item failed: {ex.Message}"); }
+            catch (Exception ex) { Diag($"work item failed: {ex.Message}"); }
         }
         try { ReleaseTopology(); } catch { }
+    }
+
+    /// <summary>The helper's stderr goes nowhere visible; the helper log is the record.</summary>
+    private static void Diag(string message)
+    {
+        Console.Error.WriteLine($"[audio-sessions] {message}");
+#if WINDOWS
+        Nexus.Service.Platform.HelperLog.Write($"[audio-sessions] {message}");
+#endif
     }
 
     private T RunOnComThread<T>(Func<T> work, T fallback, string op)
@@ -456,12 +471,12 @@ public sealed unsafe class WindowsAudioSessionEnumerator : IDisposable
         }
         if (!done.Wait(2000))
         {
-            Console.Error.WriteLine($"[audio-sessions] {op} timed out after 2 s");
+            Diag($"{op} timed out after 2 s");
             return fallback;
         }
         if (err != null)
         {
-            Console.Error.WriteLine($"[audio-sessions] {op} failed: {err.Message}");
+            Diag($"{op} failed: {err.Message}");
             return fallback;
         }
         return result;
