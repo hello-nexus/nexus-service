@@ -17,7 +17,7 @@ namespace Nexus.Service.Activity;
 /// connections to a non-loopback peer (loopback PIDs are dropped so the web
 /// client / panel kiosk talking to nexus-service over localhost do not
 /// appear as network users), then reads cumulative I/O byte counters via
-/// <c>GetProcessIoCounters</c>. Only samples when subscribers exist.
+/// the kernel process snapshot. Only samples when subscribers exist.
 /// </summary>
 public sealed class WindowsNetworkProvider : BackgroundService, INetworkProvider
 {
@@ -66,25 +66,24 @@ public sealed class WindowsNetworkProvider : BackgroundService, INetworkProvider
             return;
         }
 
-        // Step 2: Resolve PIDs to process names and get cumulative I/O counters
+        // Step 2: Resolve PIDs to process names and cumulative I/O counters from
+        // one kernel snapshot, so no process handle is opened.
         var current = new Dictionary<string, (long bytesIn, long bytesOut)>(StringComparer.OrdinalIgnoreCase);
-        foreach (var pid in activePids)
+        var entries = new List<ProcessSnapshotEntry>(512);
+        if (!WindowsProcessSnapshot.TryRead(entries))
         {
-            try
+            return;
+        }
+        foreach (var e in entries)
+        {
+            if (!activePids.Contains(e.Pid))
             {
-                using var proc = Process.GetProcessById(pid);
-                var name = proc.ProcessName;
-                if (GetProcessIoCounters(proc.Handle, out var counters))
-                {
-                    var read = (long)counters.ReadTransferCount;
-                    var write = (long)counters.WriteTransferCount;
-                    if (current.TryGetValue(name, out var prev))
-                        current[name] = (prev.bytesIn + read, prev.bytesOut + write);
-                    else
-                        current[name] = (read, write);
-                }
+                continue;
             }
-            catch { } // Process may have exited or access denied
+            if (current.TryGetValue(e.Name, out var prev))
+                current[e.Name] = (prev.bytesIn + e.ReadTransferBytes, prev.bytesOut + e.WriteTransferBytes);
+            else
+                current[e.Name] = (e.ReadTransferBytes, e.WriteTransferBytes);
         }
 
         // Step 3: Store cumulative snapshot (frontend calculates rates from deltas)
@@ -99,19 +98,4 @@ public sealed class WindowsNetworkProvider : BackgroundService, INetworkProvider
             })
             .ToList();
     }
-
-    // Win32 P/Invoke for process I/O counters
-    [StructLayout(LayoutKind.Sequential)]
-    private struct IO_COUNTERS
-    {
-        public ulong ReadOperationCount;
-        public ulong WriteOperationCount;
-        public ulong OtherOperationCount;
-        public ulong ReadTransferCount;
-        public ulong WriteTransferCount;
-        public ulong OtherTransferCount;
-    }
-
-    [DllImport("kernel32.dll", SetLastError = true)]
-    private static extern bool GetProcessIoCounters(IntPtr hProcess, out IO_COUNTERS lpIoCounters);
 }
