@@ -237,23 +237,71 @@ public sealed class CorsairLinkLcdMediaLibrary
     }
 
     /// <summary>
-    /// Parses GIF Graphic Control Extension (GCE) blocks to extract per-frame delays.
-    /// GCE marker: 0x21 0xF9 0x04, then [packed, delay_lo, delay_hi, transparent, 0x00].
-    /// Delay in GIF is centiseconds; result is milliseconds with a 10ms minimum per lsh.go GIF handling.
+    /// One delay per image of a GIF, from the Graphic Control Extension before it
+    /// ([packed, delay_lo, delay_hi, transparent]). The file is walked block by block, so the
+    /// bytes 0x21 0xF9 0x04 inside compressed image data are not read as a delay: scanning for
+    /// them found extra "frames" with delays of minutes. Delay in GIF is centiseconds; result is
+    /// milliseconds with a 10ms minimum per lsh.go GIF handling. A truncated file yields the
+    /// images read so far.
     /// </summary>
     internal static int[] ParseGifFrameDelays(byte[] data)
     {
         var delays = new List<int>();
-        for (var i = 0; i < data.Length - 7; i++)
+        // Header (6) and logical screen descriptor (7); a global colour table follows if flagged.
+        if (data.Length < 13 || data[0] != (byte)'G' || data[1] != (byte)'I' || data[2] != (byte)'F')
         {
-            if (data[i] == 0x21 && data[i + 1] == 0xF9 && data[i + 2] == 0x04)
+            return delays.ToArray();
+        }
+        var pos = 13 + ColourTableLength(data[10]);
+        var pendingDelay = 0;
+        while (pos < data.Length)
+        {
+            var block = data[pos++];
+            if (block == 0x21 && pos < data.Length)
             {
-                var centiseconds = data[i + 4] | (data[i + 5] << 8);
-                delays.Add(Math.Max(10, centiseconds * 10));
-                i += 7; // skip past this GCE; loop i++ makes net advance i+8
+                var label = data[pos++];
+                if (label == 0xF9 && pos + 4 < data.Length && data[pos] == 4)
+                {
+                    pendingDelay = data[pos + 2] | (data[pos + 3] << 8);
+                }
+                pos = SkipSubBlocks(data, pos);
+            }
+            else if (block == 0x2C && pos + 9 <= data.Length)
+            {
+                // Image descriptor (9), local colour table, LZW code size (1), then the image data.
+                pos += 9 + ColourTableLength(data[pos + 8]) + 1;
+                if (pos > data.Length)
+                {
+                    break;
+                }
+                pos = SkipSubBlocks(data, pos);
+                delays.Add(Math.Max(10, pendingDelay * 10));
+                pendingDelay = 0;
+            }
+            else
+            {
+                // 0x3B trailer, or something that is not a GIF block.
+                break;
             }
         }
         return delays.ToArray();
+
+        static int ColourTableLength(byte packed) => (packed & 0x80) != 0 ? 3 * (1 << ((packed & 0x07) + 1)) : 0;
+
+        // Data sub-blocks: a length byte and that many bytes, until a zero length.
+        static int SkipSubBlocks(byte[] data, int pos)
+        {
+            while (pos < data.Length)
+            {
+                var length = data[pos++];
+                if (length == 0)
+                {
+                    break;
+                }
+                pos += length;
+            }
+            return pos;
+        }
     }
 }
 
