@@ -10,11 +10,11 @@ public sealed class SensorFeedTests
     private readonly Dictionary<string, float> _readings = new();
     private int _resolves;
 
-    private SensorFeed NewFeed(int pollMs = SensorFeed.PollMs) => new(null, (category, sensor) =>
+    private SensorFeed NewFeed(int pollMs = SensorFeed.PollMs, bool background = false) => new(null, (category, sensor) =>
     {
         Interlocked.Increment(ref _resolves);
         return _readings.TryGetValue(category + "/" + sensor, out var v) ? v : float.NaN;
-    }, () => Interlocked.Read(ref _now), pollMs);
+    }, () => Interlocked.Read(ref _now), pollMs, background);
 
     private static SensorBinding Bind(string sensor = "summary/cpu-usage", float min = 0f, float max = 100f) =>
         new() { Category = "quick", Sensor = sensor, Min = min, Max = max };
@@ -22,7 +22,7 @@ public sealed class SensorFeedTests
     [Fact]
     public void Nothing_is_polled_until_a_channel_is_read()
     {
-        using var feed = NewFeed();
+        using var feed = NewFeed(background: true);
         _ = feed.Acquire(Bind());
 
         Assert.False(feed.IsPolling);
@@ -61,7 +61,7 @@ public sealed class SensorFeedTests
     [Fact]
     public void A_resolver_that_throws_is_a_missing_reading_not_a_failure()
     {
-        using var feed = new SensorFeed(null, (_, _) => throw new InvalidOperationException("boom"), () => _now);
+        using var feed = new SensorFeed(null, (_, _) => throw new InvalidOperationException("boom"), () => _now, background: false);
         var channel = feed.Acquire(Bind());
         _ = channel.Read();
 
@@ -142,7 +142,7 @@ public sealed class SensorFeedTests
     public async Task The_background_poller_starts_on_a_read_and_exits_by_itself_when_reads_stop()
     {
         _readings["quick/summary/cpu-usage"] = 33f;
-        using var feed = NewFeed(pollMs: 10);
+        using var feed = NewFeed(pollMs: 10, background: true);
         var channel = feed.Acquire(Bind());
         Assert.False(feed.IsPolling);
 
@@ -162,7 +162,7 @@ public sealed class SensorFeedTests
     public async Task A_later_read_restarts_a_stopped_poller()
     {
         _readings["quick/summary/cpu-usage"] = 5f;
-        using var feed = NewFeed(pollMs: 10);
+        using var feed = NewFeed(pollMs: 10, background: true);
         var channel = feed.Acquire(Bind());
         _ = channel.Read();
         Assert.True(await WaitFor(() => channel.Read() == 5f));

@@ -19,7 +19,7 @@ public sealed class ShaderEffectSensorTests : IDisposable
     public ShaderEffectSensorTests()
     {
         _feed = new SensorFeed(null, (category, sensor) => _readings.TryGetValue(category + "/" + sensor, out var v) ? v : float.NaN,
-            () => Interlocked.Read(ref _now));
+            () => Interlocked.Read(ref _now), background: false);
     }
 
     public void Dispose()
@@ -153,12 +153,13 @@ public sealed class ShaderEffectSensorTests : IDisposable
     [Fact]
     public void An_effect_without_sensor_uniforms_never_touches_the_feed()
     {
-        var fx = new ShaderEffect("t", _gpu, CustomFrags.Frag()) { SensorFeed = _feed };
+        using var live = new SensorFeed(null, (_, _) => 1f, () => _now);
+        var fx = new ShaderEffect("t", _gpu, CustomFrags.Frag()) { SensorFeed = live };
 
         Assert.False(fx.ReadsSensors);
         Assert.Empty(fx.SensorSpecs);
-        Assert.False(_feed.IsPolling);
-        Assert.False(_feed.Tick(_now));
+        Assert.False(live.IsPolling);
+        Assert.False(live.Tick(_now));
     }
 
     [Fact]

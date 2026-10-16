@@ -55,6 +55,8 @@ public sealed class SensorFeed : IDisposable
     private readonly ConcurrentDictionary<string, Channel> _channels = new(StringComparer.Ordinal);
     private readonly CancellationTokenSource _cts = new();
     private readonly int _pollMs;
+    // Tests drive Tick by hand and keep the poller thread out of the count.
+    private readonly bool _background;
     private int _running;
     private int _disposed;
 
@@ -63,9 +65,10 @@ public sealed class SensorFeed : IDisposable
     {
     }
 
-    internal SensorFeed(ISensorProvider? sensors, Func<string, string, float>? resolve, Func<long>? clockMs, int pollMs = PollMs)
+    internal SensorFeed(ISensorProvider? sensors, Func<string, string, float>? resolve, Func<long>? clockMs, int pollMs = PollMs, bool background = true)
     {
         _pollMs = pollMs;
+        _background = background;
         _sensors = sensors;
         _resolve = resolve;
         _clockMs = clockMs ?? (() => Environment.TickCount64);
@@ -79,7 +82,7 @@ public sealed class SensorFeed : IDisposable
 
     private void Wake()
     {
-        if (Volatile.Read(ref _running) != 0 || Volatile.Read(ref _disposed) != 0)
+        if (!_background || Volatile.Read(ref _running) != 0 || Volatile.Read(ref _disposed) != 0)
         {
             return;
         }
