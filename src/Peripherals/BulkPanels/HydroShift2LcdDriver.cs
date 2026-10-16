@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Diagnostics;
+using System.Threading;
 using Nexus.Service.Peripherals.Hid;
 using Nexus.Service.Peripherals.JpegPanels;
 using Nexus.Service.Platform;
@@ -19,10 +20,14 @@ public sealed class HydroShift2LcdDriver : IBulkPanelDriver
     private const int ReplyTimeoutMs = 1000;
     private const int FrameRate = 30;
 
+    /// <summary>A booting display raises its own overlay seconds in, over any wipe sent before it (the Curve's measured settle).</summary>
+    private const long BootSettleMs = 12_000;
+
     /// <summary>Larger than one 512-byte reply, so the zero-length packet that ends it completes the same read.</summary>
     private readonly byte[] _reply = new byte[1024];
 
     private readonly Stopwatch _clock = new();
+    private readonly Func<long> _now;
     private uint _lastTimestamp;
     private BgraJpegEncoder? _jpeg;
 
@@ -33,6 +38,28 @@ public sealed class HydroShift2LcdDriver : IBulkPanelDriver
 
     /// <summary>Set by the first connect; until then the device row cannot tell the heads apart.</summary>
     private volatile bool _identified;
+
+    private long _settledAt;
+    private int _resumed;
+    private int _connects;
+
+    public HydroShift2LcdDriver(Func<long>? now = null)
+    {
+        _now = now ?? (() => Environment.TickCount64);
+    }
+
+    /// <summary>A unit that lost power in Fast Startup or sleep reboots to its own overlay behind a pipe that stays open.</summary>
+    public void OnSystemResumed()
+    {
+        Volatile.Write(ref _settledAt, _now() + BootSettleMs);
+        Volatile.Write(ref _resumed, 1);
+        ServiceLog.Info($"[{HandlerId}] resumed; handshake again once the display settles");
+    }
+
+    public bool GeometryStale => Volatile.Read(ref _resumed) == 1 && _now() >= Volatile.Read(ref _settledAt);
+
+    /// <summary>Counts completed connects, so the AIO loop can time a second overlay wipe from each.</summary>
+    public int Connects => Volatile.Read(ref _connects);
 
     public string HandlerId => Id;
     public string Name => !_identified ? "Lian Li HydroShift II" : _round ? "Lian Li HydroShift II LCD-C" : "Lian Li HydroShift II LCD-S";
@@ -81,7 +108,12 @@ public sealed class HydroShift2LcdDriver : IBulkPanelDriver
         Command(pipe, HydroShift2Protocol.CommandFrameRate, stackalloc byte[] { FrameRate });
         Exchange(pipe, HydroShift2Protocol.CommandSetClock, HydroShift2Protocol.EncodeSetClock(DateTime.Now, NextTimestamp()));
         Command(pipe, HydroShift2Protocol.CommandStopClock, stackalloc byte[] { 0 });
-        ClearOverlay(pipe);
+        if (!ClearOverlay(pipe))
+        {
+            ServiceLog.Warn($"[{HandlerId}] overlay wipe unanswered");
+        }
+        Interlocked.Exchange(ref _resumed, 0);
+        Interlocked.Increment(ref _connects);
 
         _jpeg?.Dispose();
         _jpeg = new BgraJpegEncoder(HydroShift2Protocol.Width, HydroShift2Protocol.Height);

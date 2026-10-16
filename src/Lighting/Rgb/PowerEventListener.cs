@@ -29,12 +29,14 @@ public sealed class PowerEventListener : IHostedService, IDisposable
     private readonly Nexus.Service.Peripherals.LianLi.LianLiHubSet? _lianLi;
     private readonly Nexus.Service.Peripherals.LianLiWireless.Slv3Hub? _slv3;
     private readonly Nexus.Service.Peripherals.BulkPanels.HydroShift2CurveLcdDriver? _curve;
+    private readonly Nexus.Service.Peripherals.BulkPanels.HydroShift2LcdDriver? _hydroShift2;
 #if WINDOWS
     private bool _subscribed;
 #endif
 
-    public PowerEventListener(RgbBridge bridge, SleepBlackoutCoordinator blackout, Nexus.Service.Peripherals.LianLi.LianLiHubSet? lianLi = null, Nexus.Service.Peripherals.LianLiWireless.Slv3Hub? slv3 = null, Nexus.Service.Peripherals.BulkPanels.HydroShift2CurveLcdDriver? curve = null)
+    public PowerEventListener(RgbBridge bridge, SleepBlackoutCoordinator blackout, Nexus.Service.Peripherals.LianLi.LianLiHubSet? lianLi = null, Nexus.Service.Peripherals.LianLiWireless.Slv3Hub? slv3 = null, Nexus.Service.Peripherals.BulkPanels.HydroShift2CurveLcdDriver? curve = null, Nexus.Service.Peripherals.BulkPanels.HydroShift2LcdDriver? hydroShift2 = null)
     {
+        _hydroShift2 = hydroShift2;
         _curve = curve;
         _slv3 = slv3;
         _bridge = bridge;
@@ -92,6 +94,7 @@ public sealed class PowerEventListener : IHostedService, IDisposable
             _bridge.OnSystemResume();
             _lianLi?.OnSystemResumed();
             _curve?.OnSystemResumed();
+            _hydroShift2?.OnSystemResumed();
         }
     }
 #endif

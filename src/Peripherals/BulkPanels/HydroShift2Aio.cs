@@ -29,6 +29,7 @@ public sealed class HydroShift2Aio : BackgroundService
     private const int RingAfterWirelessHoldMs = 20_000;
 
     /// <summary>First retry after an unanswered ring upload, past the few-second stall it causes (measured); doubles up to the cap.</summary>
+    private const int OverlayRewipeMs = 10_000;
     private const int RingRetryMs = 5000;
     private const int RingRetryMaxMs = 40_000;
 
@@ -58,6 +59,8 @@ public sealed class HydroShift2Aio : BackgroundService
     private bool _wasAvailable;
     private bool _driving;
     private volatile bool _overlayClear;
+    private int _seenConnects;
+    private long _rewipeAt;
 
     /// <summary>Whether the glass showed the AIO's own screen at the last check; null until a reading after connect names the unit.</summary>
     private bool? _ownScreen;
@@ -177,6 +180,7 @@ public sealed class HydroShift2Aio : BackgroundService
             _ringRetryMs = 0;
             _wirelessHeld = false;
             _overlayClear = false;
+            _rewipeAt = 0;
             _ownScreen = null;
             // A reconnect reads the unit again, even while the dongle owns it and OnDisconnected is skipped.
             lock (_lock)
@@ -221,6 +225,17 @@ public sealed class HydroShift2Aio : BackgroundService
                 }
                 _ownScreen = own;
                 RaiseScreenOwnerChanged(current.Mac, own);
+            }
+            // A wipe sent while the firmware was still booting is drawn over, so each connect gets one more.
+            if (_driver.Connects != _seenConnects)
+            {
+                _seenConnects = _driver.Connects;
+                _rewipeAt = now + OverlayRewipeMs;
+            }
+            if (_rewipeAt != 0 && now >= _rewipeAt)
+            {
+                _rewipeAt = 0;
+                _overlayClear = true;
             }
             if (_overlayClear)
             {

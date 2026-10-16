@@ -581,6 +581,43 @@ public class HydroShift2Tests
         Assert.Equal(1, pipe.Commands.Count(c => c == HydroShift2Protocol.CommandPushPng));
     }
 
+    [Fact]
+    public void After_a_resume_the_settled_unit_is_handshaken_again_and_its_overlay_wiped()
+    {
+        long now = 1_000;
+        var driver = new HydroShift2LcdDriver(() => now);
+        var hub = new BulkPanelHub(driver);
+        var pipe = new FirmwarePipe();
+        Assert.True(hub.Attach(pipe, null));
+        Assert.False(driver.GeometryStale);
+
+        driver.OnSystemResumed();
+        now += 11_999;
+        Assert.False(driver.GeometryStale);
+        now += 1;
+        Assert.True(driver.GeometryStale);
+
+        pipe.Writes.Clear();
+        Assert.True(hub.Renegotiate());
+        Assert.Contains(HydroShift2Protocol.CommandPushPng, pipe.Commands);
+        Assert.DoesNotContain(HydroShift2Protocol.CommandSyncPumpFan, pipe.Commands);
+        Assert.False(driver.GeometryStale);
+    }
+
+    [Fact]
+    public void Each_connect_wipes_the_overlay_once_more_after_the_firmware_has_booted()
+    {
+        var (aio, pipe) = Attached();
+        aio.Tick(1_000);
+        aio.Tick(10_999);
+        Assert.DoesNotContain(HydroShift2Protocol.CommandPushPng, pipe.Commands);
+
+        aio.Tick(11_000);
+        Assert.Equal(1, pipe.Commands.Count(c => c == HydroShift2Protocol.CommandPushPng));
+        aio.Tick(30_000);
+        Assert.Equal(1, pipe.Commands.Count(c => c == HydroShift2Protocol.CommandPushPng));
+    }
+
     private static (HydroShift2Aio Aio, FirmwarePipe Pipe) Attached(
         Func<string?, bool>? wirelessOwns = null, Func<string, bool>? nexusWidgets = null,
         int productId = HydroShift2Protocol.ProductIdSquare)
