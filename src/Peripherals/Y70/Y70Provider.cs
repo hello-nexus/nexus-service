@@ -1,5 +1,6 @@
 using System;
 using System.Threading;
+using Nexus.Service.Devices.Detection;
 using Nexus.Service.Peripherals.Hyte.Y70Display;
 using Nexus.Service.Persistence;
 using Nexus.Service.Platform;
@@ -49,20 +50,47 @@ public sealed class Y70Provider : IY70Provider, IDisposable
     private readonly IConfigStore _store;
     private readonly IDisplayOrientationProvider _orientation;
     private readonly IDisplayBrightnessProvider _ddc;
+    private readonly HardwarePresence? _presence;
+
+    // A DDC lookup enumerates every display (i2c transactions on Linux); the 3 s heartbeat must not repeat it; the service has no display hotplug signal, so a TTL bounds staleness.
+    private static readonly long DdcLookupTtlMs = 60_000;
+    private readonly object _ddcIdLock = new();
+    private string? _ddcId;
+    private long _ddcIdCheckedAt;
+    private bool _ddcIdChecked;
+
+    /// <summary>Linux only: gate IsConnected on USB presence and cache DDC lookups.</summary>
+    internal bool LimitDdcScans { get; init; } = OperatingSystem.IsLinux();
 
     public Y70Provider(
         Y70DisplayHub hub,
         IConfigStore store,
         IDisplayOrientationProvider orientation,
-        IDisplayBrightnessProvider ddc)
+        IDisplayBrightnessProvider ddc,
+        HardwarePresence? presence = null)
     {
+        _presence = presence;
         _hub = hub;
         _store = store;
         _orientation = orientation;
         _ddc = ddc;
     }
 
-    public bool IsConnected() => _hub.IsConnected || DdcDisplayId() is not null;
+    public bool IsConnected()
+    {
+        if (_hub.IsConnected)
+            return true;
+        // The serial controller's USB id is proof of a Y70, so no display scan is needed.
+        if (LimitDdcScans && _presence is not null && _presence.UsbPresent(
+                Y70DisplayProtocol.VendorId,
+                Y70DisplayProtocol.Y70TouchProductId,
+                Y70DisplayProtocol.Y70InfiniteProductId,
+                Y70DisplayProtocol.Y70TrulyProductId))
+        {
+            return true;
+        }
+        return DdcDisplayId(reuseMiss: true) is not null;
+    }
 
     public string GetOrientation() => _store.Load().Y70.Orientation;
 
@@ -411,7 +439,24 @@ public sealed class Y70Provider : IY70Provider, IDisposable
         ServiceLog.Info($"[y70-display] apply {detail}");
     }
 
-    private string? DdcDisplayId() => _ddc.FindDisplayIdByHardwareName(Y70DisplayProtocol.DdcPanelHardwareNames);
+    private string? DdcDisplayId(bool reuseMiss = false)
+    {
+        if (!LimitDdcScans)
+            return _ddc.FindDisplayIdByHardwareName(Y70DisplayProtocol.DdcPanelHardwareNames);
+        lock (_ddcIdLock)
+        {
+            var now = Environment.TickCount64;
+            // A cached miss serves only the heartbeat; a write retries so a freshly attached display is reachable at once.
+            var reusable = _ddcIdChecked && now - _ddcIdCheckedAt < DdcLookupTtlMs && (_ddcId is not null || reuseMiss);
+            if (!reusable)
+            {
+                _ddcId = _ddc.FindDisplayIdByHardwareName(Y70DisplayProtocol.DdcPanelHardwareNames);
+                _ddcIdCheckedAt = now;
+                _ddcIdChecked = true;
+            }
+            return _ddcId;
+        }
+    }
 
     public void Dispose()
     {
