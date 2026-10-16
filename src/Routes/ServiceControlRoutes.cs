@@ -8,19 +8,25 @@ using Microsoft.AspNetCore.Http;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Nexus.Service.Auth;
+using Nexus.Service.Diagnostics;
 using Nexus.Service.Lifecycle;
 using Nexus.Service.Models;
+using Nexus.Service.Platform;
 
 namespace Nexus.Service.Routes;
 
 /// <summary>
-/// Service-control surface. Five operations:
+/// Service-control surface. Seven operations:
 ///   GET  /service/startup-mode   -> current autostart state: Windows reads
 ///                                   the SCM start type (auto/demand); mac
 ///                                   and Linux read IStartupProvider
 ///                                   (launchd agent / systemd unit)
 ///   POST /service/startup-mode   -> change autostart state for next boot,
 ///                                   same per-platform split as GET
+///   GET  /service/fast-startup   -> Windows Fast Startup state (HiberbootEnabled,
+///                                   policy override, hibernation availability)
+///   POST /service/fast-startup   -> set HiberbootEnabled; 409 when policy-managed
+///                                   or hibernation is off, 404 off Windows
 ///   POST /service/stop           -> graceful self-stop
 ///   POST /service/factory-reset  -> wipe all data dirs and restart fresh
 ///   POST /service/open-app       -> ensure dashboard is open
@@ -59,6 +65,30 @@ internal static class ServiceControlRoutes
 #endif
             return ok ? Results.Ok(new StartupModeDto { AutoStart = ReadAutoStart(startupProvider) })
                       : Results.Problem(failureDetail, statusCode: failureStatus);
+        }).LocalhostOnly();
+
+        app.MapGet("/service/fast-startup", () => Results.Ok(FastStartupDto.From(FastStartup.Read()))).LocalhostOnly();
+
+        app.MapPost("/service/fast-startup", (FastStartupBody body) =>
+        {
+            var state = FastStartup.Read();
+            if (!state.Supported)
+            {
+                return Results.Json(new ApiResponse { Error = true, Msg = "Fast Startup is only available on Windows." },
+                    Nexus.Service.Serialization.AppJsonContext.Default.ApiResponse, statusCode: 404);
+            }
+            if (state.PolicyManaged || !state.HibernateAvailable)
+            {
+                var why = state.PolicyManaged ? "Fast Startup is managed by group policy." : "Hibernation is off, so Fast Startup is unavailable.";
+                return Results.Json(new ApiResponse { Error = true, Msg = why },
+                    Nexus.Service.Serialization.AppJsonContext.Default.ApiResponse, statusCode: 409);
+            }
+            if (!FastStartup.Write(body.Enabled))
+            {
+                return Results.Problem("could not open the power key for writing", statusCode: 500);
+            }
+            ServiceLog.Info($"[service-control] fast startup set to {(body.Enabled ? "on" : "off")}");
+            return Results.Ok(FastStartupDto.From(FastStartup.Read()));
         }).LocalhostOnly();
 
         app.MapPost("/service/stop", (IHostApplicationLifetime lifetime,
@@ -248,4 +278,25 @@ public sealed class StartupModeBody
 public sealed class StartupModeDto
 {
     public bool AutoStart { get; set; }
+}
+
+public sealed class FastStartupBody
+{
+    public bool Enabled { get; set; }
+}
+
+public sealed class FastStartupDto
+{
+    public bool Supported { get; set; }
+    public bool Enabled { get; set; }
+    public bool PolicyManaged { get; set; }
+    public bool HibernateAvailable { get; set; }
+
+    internal static FastStartupDto From(FastStartupState s) => new()
+    {
+        Supported = s.Supported,
+        Enabled = s.Enabled,
+        PolicyManaged = s.PolicyManaged,
+        HibernateAvailable = s.HibernateAvailable,
+    };
 }
