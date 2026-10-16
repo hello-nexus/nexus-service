@@ -30,6 +30,21 @@ public sealed unsafe class WindowsAudioSessionEnumerator : IDisposable
     // it is done once per pid and pruned when the pid stops showing up.
     private readonly Dictionary<int, ProcessIdentity> _identities = new();
 
+    // Core Audio interfaces cached across passes; touched only on the COM thread.
+    // The notification sinks make a change visible within a pass; the interval
+    // is a backstop for a missed callback.
+    private const long SafetyRebuildMs = 1500;
+    private readonly List<CachedSession> _sessions = new();
+    private readonly List<IntPtr> _managers = new();
+    private readonly HashSet<IntPtr> _registeredManagers = new();
+    private IntPtr _enumPtr;
+    private bool _topologyBuilt;
+    private bool _notificationsOk;
+    private bool _clientRegistered;
+    private bool _staleSeen;
+    private int _builtGeneration;
+    private long _builtAtMs;
+
     public WindowsAudioSessionEnumerator()
     {
         _comThread = new Thread(RunComLoop)
@@ -58,58 +73,57 @@ public sealed unsafe class WindowsAudioSessionEnumerator : IDisposable
 
     private List<AudioSessionDto> SnapshotCore()
     {
+        EnsureTopology();
         var strips = new Dictionary<string, AudioSessionDto>(StringComparer.OrdinalIgnoreCase);
         var seenPids = new HashSet<int>();
 
-        ForEachSession((ctl, pid, isSystem, endpointId, isDefaultEndpoint) =>
+        foreach (var s in _sessions)
         {
-            seenPids.Add(pid);
-            var identity = ResolveIdentity(pid, isSystem);
-            if (identity.Key.Length == 0) return;
+            // Expired = the app is gone and the session is a tombstone; it has
+            // no level worth showing.
+            if (GetState(s.Ctl, out var state) == 0 && state == SessionStateExpired) continue;
+            seenPids.Add(s.Pid);
+            var identity = ResolveIdentity(s.Pid, s.IsSystem);
+            if (identity.Key.Length == 0) continue;
 
-            var volumePtr = QueryInterface(ctl, IID_ISimpleAudioVolume);
-            var meterPtr = QueryInterface(ctl, IID_IAudioMeterInformation);
-            try
+            if (s.Volume == IntPtr.Zero) continue;
+            if (GetSessionVolume(s.Volume, out var level) != 0)
             {
-                if (volumePtr == IntPtr.Zero) return;
-                if (GetSessionVolume(volumePtr, out var level) != 0) return;
-                GetSessionMute(volumePtr, out var isMuted);
-                var peak = 0f;
-                if (meterPtr != IntPtr.Zero) GetPeakValue(meterPtr, out peak);
-                var active = GetState(ctl, out var state) == 0 && state == SessionStateActive;
+                // A cached interface can go stale (device reset, wake); rebuild on the next pass.
+                _staleSeen = true;
+                continue;
+            }
+            GetSessionMute(s.Volume, out var isMuted);
+            var peak = 0f;
+            if (s.Meter != IntPtr.Zero) GetPeakValue(s.Meter, out peak);
+            var active = GetState(s.Ctl, out var activeState) == 0 && activeState == SessionStateActive;
 
-                if (!strips.TryGetValue(identity.Key, out var strip))
-                {
-                    strip = new AudioSessionDto
-                    {
-                        Id = identity.Key,
-                        Name = identity.Name,
-                        Volume = Math.Clamp(level, 0f, 1f),
-                        Muted = isMuted,
-                        Peak = Math.Clamp(peak, 0f, 1f),
-                        Active = active,
-                        OnDefault = false,
-                    };
-                    strips[identity.Key] = strip;
-                }
-                else
-                {
-                    // Sessions of one process can disagree (one stream ducked);
-                    // the strip shows the loudest.
-                    strip.Volume = Math.Max(strip.Volume, Math.Clamp(level, 0f, 1f));
-                    strip.Peak = Math.Max(strip.Peak, Math.Clamp(peak, 0f, 1f));
-                    strip.Muted = strip.Muted && isMuted;
-                    strip.Active = strip.Active || active;
-                }
-                if (!strip.DeviceIds.Contains(endpointId)) strip.DeviceIds.Add(endpointId);
-                if (isDefaultEndpoint) strip.OnDefault = true;
-            }
-            finally
+            if (!strips.TryGetValue(identity.Key, out var strip))
             {
-                Release(volumePtr);
-                Release(meterPtr);
+                strip = new AudioSessionDto
+                {
+                    Id = identity.Key,
+                    Name = identity.Name,
+                    Volume = Math.Clamp(level, 0f, 1f),
+                    Muted = isMuted,
+                    Peak = Math.Clamp(peak, 0f, 1f),
+                    Active = active,
+                    OnDefault = false,
+                };
+                strips[identity.Key] = strip;
             }
-        });
+            else
+            {
+                // Sessions of one process can disagree (one stream ducked);
+                // the strip shows the loudest.
+                strip.Volume = Math.Max(strip.Volume, Math.Clamp(level, 0f, 1f));
+                strip.Peak = Math.Max(strip.Peak, Math.Clamp(peak, 0f, 1f));
+                strip.Muted = strip.Muted && isMuted;
+                strip.Active = strip.Active || active;
+            }
+            if (!strip.DeviceIds.Contains(s.EndpointId)) strip.DeviceIds.Add(s.EndpointId);
+            if (s.IsDefaultEndpoint) strip.OnDefault = true;
+        }
 
         PruneIdentities(seenPids);
 
@@ -121,107 +135,164 @@ public sealed unsafe class WindowsAudioSessionEnumerator : IDisposable
     private void ApplyCore(string id, double? volume, bool? muted)
     {
         if (volume is null && muted is null) return;
-        ForEachSession((ctl, pid, isSystem, endpointId, isDefaultEndpoint) =>
+        EnsureTopology();
+        foreach (var s in _sessions)
         {
-            var identity = ResolveIdentity(pid, isSystem);
-            if (!string.Equals(identity.Key, id, StringComparison.OrdinalIgnoreCase)) return;
-
-            var volumePtr = QueryInterface(ctl, IID_ISimpleAudioVolume);
-            if (volumePtr == IntPtr.Zero) return;
-            try
-            {
-                if (volume is double v) SetSessionVolume(volumePtr, (float)Math.Clamp(v, 0, 1), IntPtr.Zero);
-                if (muted is bool m) SetSessionMute(volumePtr, m, IntPtr.Zero);
-            }
-            finally { Release(volumePtr); }
-        });
+            if (GetState(s.Ctl, out var state) == 0 && state == SessionStateExpired) continue;
+            var identity = ResolveIdentity(s.Pid, s.IsSystem);
+            if (!string.Equals(identity.Key, id, StringComparison.OrdinalIgnoreCase)) continue;
+            if (s.Volume == IntPtr.Zero) continue;
+            if (volume is double v) SetSessionVolume(s.Volume, (float)Math.Clamp(v, 0, 1), IntPtr.Zero);
+            if (muted is bool m) SetSessionMute(s.Volume, m, IntPtr.Zero);
+        }
     }
 
     /// <summary>
-    /// Walks every ACTIVE render endpoint (not just the default one), and on
-    /// each one its session enumerator, releasing every interface on the way
-    /// out. The callback gets the session control (still owned by this
-    /// method), the owning pid, whether it is the system-sounds session, the
-    /// endpoint id the session lives on, and whether that endpoint is the
-    /// default eConsole render device.
+    /// Keeps the endpoint enumerator, per-endpoint session managers and
+    /// per-session control, volume and meter interfaces alive between passes.
+    /// Rebuilt only when Core Audio reports a device or session change (or on
+    /// the safety interval), so a steady-state pass is just reads on cached
+    /// interfaces. COM-thread only.
     /// </summary>
-    private static void ForEachSession(Action<IntPtr, int, bool, string, bool> visit)
+    private void EnsureTopology()
+    {
+        var generation = AudioTopologyNotifier.Generation;
+        var due = !_topologyBuilt
+            || !_notificationsOk
+            || generation != _builtGeneration
+            || _staleSeen
+            || Environment.TickCount64 - _builtAtMs >= SafetyRebuildMs;
+        if (!due) return;
+
+        ReleaseTopology();
+        _staleSeen = false;
+        _builtGeneration = generation;
+        _builtAtMs = Environment.TickCount64;
+        BuildTopology();
+        _topologyBuilt = true;
+    }
+
+    private void BuildTopology()
     {
         var clsid = MMDeviceEnumeratorClsid;
         var enumIid = IID_IMMDeviceEnumerator;
-        Marshal.ThrowExceptionForHR(CoCreateInstance(ref clsid, IntPtr.Zero, ClsCtxInprocServer, ref enumIid, out var enumPtr));
+        Marshal.ThrowExceptionForHR(CoCreateInstance(ref clsid, IntPtr.Zero, ClsCtxInprocServer, ref enumIid, out _enumPtr));
+
+        // Register before walking so a change between the two is not missed.
+        _notificationsOk = RegisterEndpointNotificationCallback(_enumPtr, AudioTopologyNotifier.ClientObject) >= 0;
+        _clientRegistered = _notificationsOk;
+
+        var defaultId = "";
+        if (GetDefaultAudioEndpoint(_enumPtr, EDataFlow.eRender, ERole.eConsole, out var defaultDevicePtr) >= 0
+            && defaultDevicePtr != IntPtr.Zero)
+        {
+            try { defaultId = GetDeviceId(defaultDevicePtr); }
+            finally { Release(defaultDevicePtr); }
+        }
+
+        if (EnumAudioEndpoints(_enumPtr, EDataFlow.eRender, DeviceStateActive, out var collPtr) < 0 || collPtr == IntPtr.Zero)
+            return;
         try
         {
-            var defaultId = "";
-            if (GetDefaultAudioEndpoint(enumPtr, EDataFlow.eRender, ERole.eConsole, out var defaultDevicePtr) >= 0
-                && defaultDevicePtr != IntPtr.Zero)
+            if (GetDeviceCollectionCount(collPtr, out var deviceCount) < 0) return;
+            for (uint d = 0; d < deviceCount; d++)
             {
-                try { defaultId = GetDeviceId(defaultDevicePtr); }
-                finally { Release(defaultDevicePtr); }
-            }
-
-            if (EnumAudioEndpoints(enumPtr, EDataFlow.eRender, DeviceStateActive, out var collPtr) < 0 || collPtr == IntPtr.Zero)
-                return;
-            try
-            {
-                if (GetDeviceCollectionCount(collPtr, out var deviceCount) < 0) return;
-                for (uint d = 0; d < deviceCount; d++)
+                if (GetDeviceCollectionItem(collPtr, d, out var devicePtr) != 0 || devicePtr == IntPtr.Zero) continue;
+                try
                 {
-                    if (GetDeviceCollectionItem(collPtr, d, out var devicePtr) != 0 || devicePtr == IntPtr.Zero) continue;
-                    try
-                    {
-                        var endpointId = GetDeviceId(devicePtr);
-                        if (endpointId.Length == 0) continue;
-                        WalkEndpointSessions(devicePtr, endpointId, string.Equals(endpointId, defaultId, StringComparison.Ordinal), visit);
-                    }
-                    finally { Release(devicePtr); }
+                    var endpointId = GetDeviceId(devicePtr);
+                    if (endpointId.Length == 0) continue;
+                    CacheEndpointSessions(devicePtr, endpointId, string.Equals(endpointId, defaultId, StringComparison.Ordinal));
                 }
+                finally { Release(devicePtr); }
             }
-            finally { Release(collPtr); }
         }
-        finally { Release(enumPtr); }
+        finally { Release(collPtr); }
     }
 
-    private static void WalkEndpointSessions(IntPtr devicePtr, string endpointId, bool isDefaultEndpoint, Action<IntPtr, int, bool, string, bool> visit)
+    private void CacheEndpointSessions(IntPtr devicePtr, string endpointId, bool isDefaultEndpoint)
     {
         var mgrIid = IID_IAudioSessionManager2;
         if (Activate(devicePtr, ref mgrIid, ClsCtxInprocServer, IntPtr.Zero, out var mgrPtr) < 0 || mgrPtr == IntPtr.Zero) return;
+        // Held for the notification registration; released with the topology.
+        _managers.Add(mgrPtr);
+        if (RegisterSessionNotification(mgrPtr, AudioTopologyNotifier.SessionObject) >= 0)
+        {
+            _registeredManagers.Add(mgrPtr);
+        }
+        else
+        {
+            _notificationsOk = false;
+        }
+
+        if (GetSessionEnumerator(mgrPtr, out var sessEnumPtr) < 0 || sessEnumPtr == IntPtr.Zero) return;
         try
         {
-            if (GetSessionEnumerator(mgrPtr, out var sessEnumPtr) < 0 || sessEnumPtr == IntPtr.Zero) return;
-            try
+            if (GetCount(sessEnumPtr, out var count) < 0) return;
+            for (var i = 0; i < count; i++)
             {
-                if (GetCount(sessEnumPtr, out var count) < 0) return;
-                for (var i = 0; i < count; i++)
+                if (GetSession(sessEnumPtr, i, out var ctl) != 0 || ctl == IntPtr.Zero) continue;
+                var ctl2 = QueryInterface(ctl, IID_IAudioSessionControl2);
+                var keep = false;
+                try
                 {
-                    if (GetSession(sessEnumPtr, i, out var ctl) != 0 || ctl == IntPtr.Zero) continue;
-                    var ctl2 = QueryInterface(ctl, IID_IAudioSessionControl2);
-                    try
-                    {
-                        if (ctl2 == IntPtr.Zero) continue;
-                        // Expired = the app is gone and the session is a
-                        // tombstone; it has no level worth showing.
-                        if (GetState(ctl, out var state) == 0 && state == SessionStateExpired) continue;
-                        // Packaged apps span several processes and answer
-                        // AUDCLNT_S_NO_SINGLE_PROCESS (a success code) with the initial pid.
-                        var pidHr = GetProcessId(ctl2, out var pid);
-                        if (pidHr != 0 && pidHr != AudclntSNoSingleProcess) continue;
-                        // S_OK true, S_FALSE false - a plain HR test would read both as success.
-                        var isSystem = IsSystemSoundsSession(ctl2) == 0;
-                        // Only the system-sounds session may map to pid 0 (ResolveIdentity folds pid 0 into it).
-                        if (pid == 0 && !isSystem) continue;
-                        visit(ctl, pid, isSystem, endpointId, isDefaultEndpoint);
-                    }
-                    finally
-                    {
-                        Release(ctl2);
-                        Release(ctl);
-                    }
+                    if (ctl2 == IntPtr.Zero) continue;
+                    if (GetState(ctl, out var state) == 0 && state == SessionStateExpired) continue;
+                    // Packaged apps span several processes and answer
+                    // AUDCLNT_S_NO_SINGLE_PROCESS (a success code) with the initial pid.
+                    var pidHr = GetProcessId(ctl2, out var pid);
+                    if (pidHr != 0 && pidHr != AudclntSNoSingleProcess) continue;
+                    // S_OK true, S_FALSE false - a plain HR test would read both as success.
+                    var isSystem = IsSystemSoundsSession(ctl2) == 0;
+                    // Only the system-sounds session may map to pid 0 (ResolveIdentity folds pid 0 into it).
+                    if (pid == 0 && !isSystem) continue;
+                    _sessions.Add(new CachedSession(
+                        ctl,
+                        QueryInterface(ctl, IID_ISimpleAudioVolume),
+                        QueryInterface(ctl, IID_IAudioMeterInformation),
+                        pid,
+                        isSystem,
+                        endpointId,
+                        isDefaultEndpoint));
+                    keep = true;
+                }
+                finally
+                {
+                    Release(ctl2);
+                    if (!keep) Release(ctl);
                 }
             }
-            finally { Release(sessEnumPtr); }
         }
-        finally { Release(mgrPtr); }
+        finally { Release(sessEnumPtr); }
+    }
+
+    private void ReleaseTopology()
+    {
+        foreach (var s in _sessions)
+        {
+            Release(s.Volume);
+            Release(s.Meter);
+            Release(s.Ctl);
+        }
+        _sessions.Clear();
+        foreach (var mgr in _managers)
+        {
+            if (_registeredManagers.Contains(mgr))
+            {
+                UnregisterSessionNotification(mgr, AudioTopologyNotifier.SessionObject);
+            }
+            Release(mgr);
+        }
+        _managers.Clear();
+        _registeredManagers.Clear();
+        if (_enumPtr != IntPtr.Zero)
+        {
+            if (_clientRegistered) UnregisterEndpointNotificationCallback(_enumPtr, AudioTopologyNotifier.ClientObject);
+            Release(_enumPtr);
+            _enumPtr = IntPtr.Zero;
+        }
+        _clientRegistered = false;
+        _topologyBuilt = false;
     }
 
     private ProcessIdentity ResolveIdentity(int pid, bool isSystem)
@@ -296,6 +367,7 @@ public sealed unsafe class WindowsAudioSessionEnumerator : IDisposable
             try { work(); }
             catch (Exception ex) { Console.Error.WriteLine($"[audio-sessions] work item failed: {ex.Message}"); }
         }
+        try { ReleaseTopology(); } catch { }
     }
 
     private T RunOnComThread<T>(Func<T> work, T fallback, string op)
@@ -331,6 +403,9 @@ public sealed unsafe class WindowsAudioSessionEnumerator : IDisposable
 
     private readonly record struct ProcessIdentity(string Key, string Name);
 
+    private readonly record struct CachedSession(
+        IntPtr Ctl, IntPtr Volume, IntPtr Meter, int Pid, bool IsSystem, string EndpointId, bool IsDefaultEndpoint);
+
     // IMMDeviceEnumerator vtable[4] = GetDefaultAudioEndpoint(this, dataFlow, role, &device)
     private static int GetDefaultAudioEndpoint(IntPtr enumeratorPtr, EDataFlow dataFlow, ERole role, out IntPtr device)
     {
@@ -343,6 +418,32 @@ public sealed unsafe class WindowsAudioSessionEnumerator : IDisposable
     {
         var fn = (delegate* unmanaged[Stdcall]<IntPtr, EDataFlow, int, out IntPtr, int>)GetVTableSlot(enumeratorPtr, 3);
         return fn(enumeratorPtr, dataFlow, stateMask, out devices);
+    }
+
+    // IMMDeviceEnumerator vtable[6] = RegisterEndpointNotificationCallback, [7] = Unregister
+    private static int RegisterEndpointNotificationCallback(IntPtr enumeratorPtr, IntPtr client)
+    {
+        var fn = (delegate* unmanaged[Stdcall]<IntPtr, IntPtr, int>)GetVTableSlot(enumeratorPtr, 6);
+        return fn(enumeratorPtr, client);
+    }
+
+    private static int UnregisterEndpointNotificationCallback(IntPtr enumeratorPtr, IntPtr client)
+    {
+        var fn = (delegate* unmanaged[Stdcall]<IntPtr, IntPtr, int>)GetVTableSlot(enumeratorPtr, 7);
+        return fn(enumeratorPtr, client);
+    }
+
+    // IAudioSessionManager2: RegisterSessionNotification [6], UnregisterSessionNotification [7]
+    private static int RegisterSessionNotification(IntPtr mgrPtr, IntPtr sink)
+    {
+        var fn = (delegate* unmanaged[Stdcall]<IntPtr, IntPtr, int>)GetVTableSlot(mgrPtr, 6);
+        return fn(mgrPtr, sink);
+    }
+
+    private static int UnregisterSessionNotification(IntPtr mgrPtr, IntPtr sink)
+    {
+        var fn = (delegate* unmanaged[Stdcall]<IntPtr, IntPtr, int>)GetVTableSlot(mgrPtr, 7);
+        return fn(mgrPtr, sink);
     }
 
     // IMMDeviceCollection: GetCount [3], Item [4]

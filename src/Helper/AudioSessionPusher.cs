@@ -16,9 +16,8 @@ namespace Nexus.Service.Helper;
 /// Helper-side per-app audio bridge: owns the Core Audio session enumerator in
 /// the user's session and pushes <c>audioMixer.snapshot</c> on change.
 ///
-/// Polls rather than subscribes because IAudioSessionNotification /
-/// IAudioSessionEvents are inbound COM interfaces, which under AOT would mean
-/// hand-building a native vtable for a managed object.
+/// Polls levels and meters; device and session membership changes come from the
+/// enumerator's cached topology and its Core Audio notification sinks.
 /// </summary>
 [SupportedOSPlatform("windows")]
 public sealed class AudioSessionPusher : IDisposable
