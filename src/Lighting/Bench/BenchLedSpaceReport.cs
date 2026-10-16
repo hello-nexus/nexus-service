@@ -66,7 +66,10 @@ internal static class BenchLedSpaceReport
                 .Select(e => e.Placements[idx].P1!.CpuMsPerWindow / Math.Max(1e-9, e.P0!.CpuMsPerWindow));
             var r2 = ok.Where(e => e.P0 is not null && idx < e.Placements.Count && e.Placements[idx].P2 is not null)
                 .Select(e => e.Placements[idx].P2!.CpuMsPerWindow / Math.Max(1e-9, e.P0!.CpuMsPerWindow));
-            sb.AppendLine($"  {ls.PlacementNames[pi],-24} P1 {F(Median(r1))}  P2 {F(Median(r2))}");
+            if (r1.Any())
+            {
+                sb.AppendLine($"  {ls.PlacementNames[pi],-24} P1 {F(Median(r1))}  P2 {F(Median(r2))}");
+            }
         }
         sb.AppendLine();
         sb.AppendLine("equality against P0 (LED level, then tap level)");
