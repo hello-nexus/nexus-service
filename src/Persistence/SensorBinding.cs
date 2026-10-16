@@ -17,6 +17,7 @@ public sealed class SensorBinding
     public float Max { get; set; } = 100f;
 
     /// <summary>True when the binding names a sensor and a finite, non-empty range.</summary>
+    [System.Text.Json.Serialization.JsonIgnore]
     public bool IsUsable =>
         Category.Length > 0 && Sensor.Length > 0 && float.IsFinite(Min) && float.IsFinite(Max) && Max > Min;
 

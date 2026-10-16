@@ -175,4 +175,19 @@ public sealed class SensorBindingTests
 
         Assert.Contains("\"sensors\":[{\"uniform\":\"u_a_s\",\"binding\":{\"category\":\"quick\"", json);
     }
+
+    [Fact]
+    public void IsUsable_is_never_written_and_old_json_carrying_it_still_reads()
+    {
+        var json = JsonSerializer.Serialize(Bind(), AppJsonContext.Default.SensorBinding);
+        var persisted = JsonSerializer.Serialize(Bind(), PersistenceJsonContext.Default.SensorBinding);
+
+        Assert.DoesNotContain("sUsable", json);
+        Assert.DoesNotContain("sUsable", persisted);
+        var back = JsonSerializer.Deserialize(
+            "{\"category\":\"quick\",\"sensor\":\"summary/cpu-usage\",\"min\":0,\"max\":100,\"isUsable\":true}",
+            PersistenceJsonContext.Default.SensorBinding)!;
+        Assert.Equal("summary/cpu-usage", back.Sensor);
+        Assert.True(back.IsUsable);
+    }
 }

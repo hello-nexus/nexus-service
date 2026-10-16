@@ -6577,5 +6577,1237 @@
     }
    }
   ]
+ },
+ "sensorbar": {
+  "selected": 0,
+  "slots": [
+   {
+    "speed": 50,
+    "intensity": 1,
+    "hue": 0,
+    "colorize": 0,
+    "saturation": 1,
+    "contrast": 1,
+    "params": {
+     "u_fill_level": 0.0,
+     "u_fill_level_m": 1.0,
+     "u_fill_angle": 0.0,
+     "u_fill_flip": 0.0,
+     "u_fill_softness": 0.06,
+     "u_col_low": 0.55,
+     "u_col_shade": 1.0,
+     "u_col_c1r": 0.1,
+     "u_col_c1g": 1.0,
+     "u_col_c1b": 0.4,
+     "u_col_c2r": 0.6,
+     "u_col_c2g": 1.0,
+     "u_col_c2b": 0.2,
+     "u_col_c3r": 1.0,
+     "u_col_c3g": 0.85,
+     "u_col_c3b": 0.1,
+     "u_col_c4r": 1.0,
+     "u_col_c4g": 0.15,
+     "u_col_c4b": 0.1
+    },
+    "sensors": {
+     "u_fill_level_s": {
+      "category": "quick",
+      "sensor": "summary/cpu-usage",
+      "min": 0,
+      "max": 100
+     }
+    }
+   },
+   {
+    "speed": 50,
+    "intensity": 1,
+    "hue": 0,
+    "colorize": 0,
+    "saturation": 1,
+    "contrast": 1,
+    "params": {
+     "u_fill_level": 0.0,
+     "u_fill_level_m": 1.0,
+     "u_fill_angle": 0.0,
+     "u_fill_flip": 0.0,
+     "u_fill_softness": 0.06,
+     "u_col_low": 0.55,
+     "u_col_shade": 1.0,
+     "u_col_c1r": 0.1,
+     "u_col_c1g": 1.0,
+     "u_col_c1b": 0.4,
+     "u_col_c2r": 0.6,
+     "u_col_c2g": 1.0,
+     "u_col_c2b": 0.2,
+     "u_col_c3r": 1.0,
+     "u_col_c3g": 0.85,
+     "u_col_c3b": 0.1,
+     "u_col_c4r": 1.0,
+     "u_col_c4g": 0.15,
+     "u_col_c4b": 0.1
+    },
+    "sensors": {
+     "u_fill_level_s": {
+      "category": "quick",
+      "sensor": "summary/gpu-usage",
+      "min": 0,
+      "max": 100
+     }
+    }
+   },
+   {
+    "speed": 50,
+    "intensity": 1,
+    "hue": 0,
+    "colorize": 0,
+    "saturation": 1,
+    "contrast": 1,
+    "params": {
+     "u_fill_level": 0.0,
+     "u_fill_level_m": 1.0,
+     "u_fill_angle": 0.0,
+     "u_fill_flip": 0.0,
+     "u_fill_softness": 0.06,
+     "u_col_low": 0.55,
+     "u_col_shade": 1.0,
+     "u_col_c1r": 0.1,
+     "u_col_c1g": 1.0,
+     "u_col_c1b": 0.4,
+     "u_col_c2r": 0.6,
+     "u_col_c2g": 1.0,
+     "u_col_c2b": 0.2,
+     "u_col_c3r": 1.0,
+     "u_col_c3g": 0.85,
+     "u_col_c3b": 0.1,
+     "u_col_c4r": 1.0,
+     "u_col_c4g": 0.15,
+     "u_col_c4b": 0.1
+    },
+    "sensors": {
+     "u_fill_level_s": {
+      "category": "quick",
+      "sensor": "summary/memory-usage",
+      "min": 0,
+      "max": 100
+     }
+    }
+   },
+   {
+    "speed": 50,
+    "intensity": 1,
+    "hue": 0,
+    "colorize": 0,
+    "saturation": 1,
+    "contrast": 1,
+    "params": {
+     "u_fill_level": 0.0,
+     "u_fill_level_m": 1.0,
+     "u_fill_angle": 0.0,
+     "u_fill_flip": 0.0,
+     "u_fill_softness": 0.06,
+     "u_col_low": 0.55,
+     "u_col_shade": 1.0,
+     "u_col_c1r": 0.1,
+     "u_col_c1g": 1.0,
+     "u_col_c1b": 0.4,
+     "u_col_c2r": 0.6,
+     "u_col_c2g": 1.0,
+     "u_col_c2b": 0.2,
+     "u_col_c3r": 1.0,
+     "u_col_c3g": 0.85,
+     "u_col_c3b": 0.1,
+     "u_col_c4r": 1.0,
+     "u_col_c4g": 0.15,
+     "u_col_c4b": 0.1
+    },
+    "sensors": {
+     "u_fill_level_s": {
+      "category": "quick",
+      "sensor": "summary/cpu-temp",
+      "min": 30,
+      "max": 95
+     }
+    }
+   }
+  ]
+ },
+ "sensorcenter": {
+  "selected": 0,
+  "slots": [
+   {
+    "speed": 50,
+    "intensity": 1,
+    "hue": 0,
+    "colorize": 0,
+    "saturation": 1,
+    "contrast": 1,
+    "params": {
+     "u_fill_level": 0.0,
+     "u_fill_level_m": 1.0,
+     "u_fill_angle": 0.0,
+     "u_fill_flip": 0.0,
+     "u_fill_softness": 0.06,
+     "u_col_low": 0.55,
+     "u_col_shade": 1.0,
+     "u_col_c1r": 0.15,
+     "u_col_c1g": 0.35,
+     "u_col_c1b": 1.0,
+     "u_col_c2r": 0.1,
+     "u_col_c2g": 0.95,
+     "u_col_c2b": 0.55,
+     "u_col_c3r": 1.0,
+     "u_col_c3g": 0.85,
+     "u_col_c3b": 0.1,
+     "u_col_c4r": 1.0,
+     "u_col_c4g": 0.15,
+     "u_col_c4b": 0.1
+    },
+    "sensors": {
+     "u_fill_level_s": {
+      "category": "quick",
+      "sensor": "summary/gpu-temp",
+      "min": 30,
+      "max": 90
+     }
+    }
+   },
+   {
+    "speed": 50,
+    "intensity": 1,
+    "hue": 0,
+    "colorize": 0,
+    "saturation": 1,
+    "contrast": 1,
+    "params": {
+     "u_fill_level": 0.0,
+     "u_fill_level_m": 1.0,
+     "u_fill_angle": 0.0,
+     "u_fill_flip": 0.0,
+     "u_fill_softness": 0.06,
+     "u_col_low": 0.55,
+     "u_col_shade": 1.0,
+     "u_col_c1r": 0.15,
+     "u_col_c1g": 0.35,
+     "u_col_c1b": 1.0,
+     "u_col_c2r": 0.1,
+     "u_col_c2g": 0.95,
+     "u_col_c2b": 0.55,
+     "u_col_c3r": 1.0,
+     "u_col_c3g": 0.85,
+     "u_col_c3b": 0.1,
+     "u_col_c4r": 1.0,
+     "u_col_c4g": 0.15,
+     "u_col_c4b": 0.1
+    },
+    "sensors": {
+     "u_fill_level_s": {
+      "category": "quick",
+      "sensor": "summary/cpu-temp",
+      "min": 30,
+      "max": 95
+     }
+    }
+   },
+   {
+    "speed": 50,
+    "intensity": 1,
+    "hue": 0,
+    "colorize": 0,
+    "saturation": 1,
+    "contrast": 1,
+    "params": {
+     "u_fill_level": 0.0,
+     "u_fill_level_m": 1.0,
+     "u_fill_angle": 0.0,
+     "u_fill_flip": 0.0,
+     "u_fill_softness": 0.06,
+     "u_col_low": 0.55,
+     "u_col_shade": 1.0,
+     "u_col_c1r": 0.15,
+     "u_col_c1g": 0.35,
+     "u_col_c1b": 1.0,
+     "u_col_c2r": 0.1,
+     "u_col_c2g": 0.95,
+     "u_col_c2b": 0.55,
+     "u_col_c3r": 1.0,
+     "u_col_c3g": 0.85,
+     "u_col_c3b": 0.1,
+     "u_col_c4r": 1.0,
+     "u_col_c4g": 0.15,
+     "u_col_c4b": 0.1
+    },
+    "sensors": {
+     "u_fill_level_s": {
+      "category": "quick",
+      "sensor": "summary/cpu-usage",
+      "min": 0,
+      "max": 100
+     }
+    }
+   },
+   {
+    "speed": 50,
+    "intensity": 1,
+    "hue": 0,
+    "colorize": 0,
+    "saturation": 1,
+    "contrast": 1,
+    "params": {
+     "u_fill_level": 0.0,
+     "u_fill_level_m": 1.0,
+     "u_fill_angle": 0.0,
+     "u_fill_flip": 0.0,
+     "u_fill_softness": 0.06,
+     "u_col_low": 0.55,
+     "u_col_shade": 1.0,
+     "u_col_c1r": 0.15,
+     "u_col_c1g": 0.35,
+     "u_col_c1b": 1.0,
+     "u_col_c2r": 0.1,
+     "u_col_c2g": 0.95,
+     "u_col_c2b": 0.55,
+     "u_col_c3r": 1.0,
+     "u_col_c3g": 0.85,
+     "u_col_c3b": 0.1,
+     "u_col_c4r": 1.0,
+     "u_col_c4g": 0.15,
+     "u_col_c4b": 0.1
+    },
+    "sensors": {
+     "u_fill_level_s": {
+      "category": "quick",
+      "sensor": "summary/gpu-usage",
+      "min": 0,
+      "max": 100
+     }
+    }
+   }
+  ]
+ },
+ "sensorclock": {
+  "selected": 0,
+  "slots": [
+   {
+    "speed": 50,
+    "intensity": 1,
+    "hue": 0,
+    "colorize": 0,
+    "saturation": 1,
+    "contrast": 1,
+    "params": {
+     "u_fill_level": 0.0,
+     "u_fill_level_m": 1.0,
+     "u_fill_angle": 0.0,
+     "u_fill_flip": 0.0,
+     "u_fill_softness": 0.04,
+     "u_col_low": 0.55,
+     "u_col_shade": 1.0,
+     "u_col_c1r": 0.15,
+     "u_col_c1g": 0.35,
+     "u_col_c1b": 1.0,
+     "u_col_c2r": 0.1,
+     "u_col_c2g": 0.95,
+     "u_col_c2b": 0.55,
+     "u_col_c3r": 1.0,
+     "u_col_c3g": 0.85,
+     "u_col_c3b": 0.1,
+     "u_col_c4r": 1.0,
+     "u_col_c4g": 0.15,
+     "u_col_c4b": 0.1
+    },
+    "sensors": {
+     "u_fill_level_s": {
+      "category": "quick",
+      "sensor": "summary/cpu-temp",
+      "min": 30,
+      "max": 95
+     }
+    }
+   },
+   {
+    "speed": 50,
+    "intensity": 1,
+    "hue": 0,
+    "colorize": 0,
+    "saturation": 1,
+    "contrast": 1,
+    "params": {
+     "u_fill_level": 0.0,
+     "u_fill_level_m": 1.0,
+     "u_fill_angle": 0.0,
+     "u_fill_flip": 0.0,
+     "u_fill_softness": 0.04,
+     "u_col_low": 0.55,
+     "u_col_shade": 1.0,
+     "u_col_c1r": 0.15,
+     "u_col_c1g": 0.35,
+     "u_col_c1b": 1.0,
+     "u_col_c2r": 0.1,
+     "u_col_c2g": 0.95,
+     "u_col_c2b": 0.55,
+     "u_col_c3r": 1.0,
+     "u_col_c3g": 0.85,
+     "u_col_c3b": 0.1,
+     "u_col_c4r": 1.0,
+     "u_col_c4g": 0.15,
+     "u_col_c4b": 0.1
+    },
+    "sensors": {
+     "u_fill_level_s": {
+      "category": "quick",
+      "sensor": "summary/gpu-temp",
+      "min": 30,
+      "max": 90
+     }
+    }
+   },
+   {
+    "speed": 50,
+    "intensity": 1,
+    "hue": 0,
+    "colorize": 0,
+    "saturation": 1,
+    "contrast": 1,
+    "params": {
+     "u_fill_level": 0.0,
+     "u_fill_level_m": 1.0,
+     "u_fill_angle": 0.0,
+     "u_fill_flip": 0.0,
+     "u_fill_softness": 0.04,
+     "u_col_low": 0.55,
+     "u_col_shade": 1.0,
+     "u_col_c1r": 0.15,
+     "u_col_c1g": 0.35,
+     "u_col_c1b": 1.0,
+     "u_col_c2r": 0.1,
+     "u_col_c2g": 0.95,
+     "u_col_c2b": 0.55,
+     "u_col_c3r": 1.0,
+     "u_col_c3g": 0.85,
+     "u_col_c3b": 0.1,
+     "u_col_c4r": 1.0,
+     "u_col_c4g": 0.15,
+     "u_col_c4b": 0.1
+    },
+    "sensors": {
+     "u_fill_level_s": {
+      "category": "quick",
+      "sensor": "summary/cpu-usage",
+      "min": 0,
+      "max": 100
+     }
+    }
+   },
+   {
+    "speed": 50,
+    "intensity": 1,
+    "hue": 0,
+    "colorize": 0,
+    "saturation": 1,
+    "contrast": 1,
+    "params": {
+     "u_fill_level": 0.0,
+     "u_fill_level_m": 1.0,
+     "u_fill_angle": 0.0,
+     "u_fill_flip": 0.0,
+     "u_fill_softness": 0.04,
+     "u_col_low": 0.55,
+     "u_col_shade": 1.0,
+     "u_col_c1r": 0.15,
+     "u_col_c1g": 0.35,
+     "u_col_c1b": 1.0,
+     "u_col_c2r": 0.1,
+     "u_col_c2g": 0.95,
+     "u_col_c2b": 0.55,
+     "u_col_c3r": 1.0,
+     "u_col_c3g": 0.85,
+     "u_col_c3b": 0.1,
+     "u_col_c4r": 1.0,
+     "u_col_c4g": 0.15,
+     "u_col_c4b": 0.1
+    },
+    "sensors": {
+     "u_fill_level_s": {
+      "category": "quick",
+      "sensor": "summary/gpu-usage",
+      "min": 0,
+      "max": 100
+     }
+    }
+   }
+  ]
+ },
+ "sensorgauge": {
+  "selected": 0,
+  "slots": [
+   {
+    "speed": 50,
+    "intensity": 1,
+    "hue": 0,
+    "colorize": 0,
+    "saturation": 1,
+    "contrast": 1,
+    "params": {
+     "u_fill_level": 0.0,
+     "u_fill_level_m": 1.0,
+     "u_fill_angle": 0.0,
+     "u_fill_flip": 0.0,
+     "u_fill_span": 240.0,
+     "u_fill_radius": 0.65,
+     "u_fill_width": 0.4,
+     "u_fill_track": 0.1,
+     "u_col_low": 0.55,
+     "u_col_shade": 1.0,
+     "u_col_c1r": 0.1,
+     "u_col_c1g": 1.0,
+     "u_col_c1b": 0.4,
+     "u_col_c2r": 0.6,
+     "u_col_c2g": 1.0,
+     "u_col_c2b": 0.2,
+     "u_col_c3r": 1.0,
+     "u_col_c3g": 0.85,
+     "u_col_c3b": 0.1,
+     "u_col_c4r": 1.0,
+     "u_col_c4g": 0.15,
+     "u_col_c4b": 0.1
+    },
+    "sensors": {
+     "u_fill_level_s": {
+      "category": "quick",
+      "sensor": "summary/gpu-usage",
+      "min": 0,
+      "max": 100
+     }
+    }
+   },
+   {
+    "speed": 50,
+    "intensity": 1,
+    "hue": 0,
+    "colorize": 0,
+    "saturation": 1,
+    "contrast": 1,
+    "params": {
+     "u_fill_level": 0.0,
+     "u_fill_level_m": 1.0,
+     "u_fill_angle": 0.0,
+     "u_fill_flip": 0.0,
+     "u_fill_span": 240.0,
+     "u_fill_radius": 0.65,
+     "u_fill_width": 0.4,
+     "u_fill_track": 0.1,
+     "u_col_low": 0.55,
+     "u_col_shade": 1.0,
+     "u_col_c1r": 0.1,
+     "u_col_c1g": 1.0,
+     "u_col_c1b": 0.4,
+     "u_col_c2r": 0.6,
+     "u_col_c2g": 1.0,
+     "u_col_c2b": 0.2,
+     "u_col_c3r": 1.0,
+     "u_col_c3g": 0.85,
+     "u_col_c3b": 0.1,
+     "u_col_c4r": 1.0,
+     "u_col_c4g": 0.15,
+     "u_col_c4b": 0.1
+    },
+    "sensors": {
+     "u_fill_level_s": {
+      "category": "quick",
+      "sensor": "summary/cpu-usage",
+      "min": 0,
+      "max": 100
+     }
+    }
+   },
+   {
+    "speed": 50,
+    "intensity": 1,
+    "hue": 0,
+    "colorize": 0,
+    "saturation": 1,
+    "contrast": 1,
+    "params": {
+     "u_fill_level": 0.0,
+     "u_fill_level_m": 1.0,
+     "u_fill_angle": 0.0,
+     "u_fill_flip": 0.0,
+     "u_fill_span": 240.0,
+     "u_fill_radius": 0.65,
+     "u_fill_width": 0.4,
+     "u_fill_track": 0.1,
+     "u_col_low": 0.55,
+     "u_col_shade": 1.0,
+     "u_col_c1r": 0.1,
+     "u_col_c1g": 1.0,
+     "u_col_c1b": 0.4,
+     "u_col_c2r": 0.6,
+     "u_col_c2g": 1.0,
+     "u_col_c2b": 0.2,
+     "u_col_c3r": 1.0,
+     "u_col_c3g": 0.85,
+     "u_col_c3b": 0.1,
+     "u_col_c4r": 1.0,
+     "u_col_c4g": 0.15,
+     "u_col_c4b": 0.1
+    },
+    "sensors": {
+     "u_fill_level_s": {
+      "category": "quick",
+      "sensor": "summary/memory-usage",
+      "min": 0,
+      "max": 100
+     }
+    }
+   },
+   {
+    "speed": 50,
+    "intensity": 1,
+    "hue": 0,
+    "colorize": 0,
+    "saturation": 1,
+    "contrast": 1,
+    "params": {
+     "u_fill_level": 0.0,
+     "u_fill_level_m": 1.0,
+     "u_fill_angle": 0.0,
+     "u_fill_flip": 0.0,
+     "u_fill_span": 240.0,
+     "u_fill_radius": 0.65,
+     "u_fill_width": 0.4,
+     "u_fill_track": 0.1,
+     "u_col_low": 0.55,
+     "u_col_shade": 1.0,
+     "u_col_c1r": 0.1,
+     "u_col_c1g": 1.0,
+     "u_col_c1b": 0.4,
+     "u_col_c2r": 0.6,
+     "u_col_c2g": 1.0,
+     "u_col_c2b": 0.2,
+     "u_col_c3r": 1.0,
+     "u_col_c3g": 0.85,
+     "u_col_c3b": 0.1,
+     "u_col_c4r": 1.0,
+     "u_col_c4g": 0.15,
+     "u_col_c4b": 0.1
+    },
+    "sensors": {
+     "u_fill_level_s": {
+      "category": "quick",
+      "sensor": "summary/cpu-temp",
+      "min": 30,
+      "max": 95
+     }
+    }
+   }
+  ]
+ },
+ "sensorheat": {
+  "selected": 0,
+  "slots": [
+   {
+    "speed": 50,
+    "intensity": 1,
+    "hue": 0,
+    "colorize": 0,
+    "saturation": 1,
+    "contrast": 1,
+    "params": {
+     "u_grad_angle": 90.0,
+     "u_grad_spread": 1.0,
+     "u_grad_speed": 0.0,
+     "u_col_low": 0.95,
+     "u_col_low_m": -1.0,
+     "u_col_shade": 0.0,
+     "u_col_c1r": 0.15,
+     "u_col_c1g": 0.35,
+     "u_col_c1b": 1.0,
+     "u_col_c2r": 0.1,
+     "u_col_c2g": 0.95,
+     "u_col_c2b": 0.55,
+     "u_col_c3r": 1.0,
+     "u_col_c3g": 0.85,
+     "u_col_c3b": 0.1,
+     "u_col_c4r": 1.0,
+     "u_col_c4g": 0.15,
+     "u_col_c4b": 0.1
+    },
+    "sensors": {
+     "u_col_low_s": {
+      "category": "quick",
+      "sensor": "summary/cpu-temp",
+      "min": 30,
+      "max": 90
+     }
+    }
+   },
+   {
+    "speed": 50,
+    "intensity": 1,
+    "hue": 0,
+    "colorize": 0,
+    "saturation": 1,
+    "contrast": 1,
+    "params": {
+     "u_grad_angle": 90.0,
+     "u_grad_spread": 1.0,
+     "u_grad_speed": 0.0,
+     "u_col_low": 0.95,
+     "u_col_low_m": -1.0,
+     "u_col_shade": 0.0,
+     "u_col_c1r": 0.15,
+     "u_col_c1g": 0.35,
+     "u_col_c1b": 1.0,
+     "u_col_c2r": 0.1,
+     "u_col_c2g": 0.95,
+     "u_col_c2b": 0.55,
+     "u_col_c3r": 1.0,
+     "u_col_c3g": 0.85,
+     "u_col_c3b": 0.1,
+     "u_col_c4r": 1.0,
+     "u_col_c4g": 0.15,
+     "u_col_c4b": 0.1
+    },
+    "sensors": {
+     "u_col_low_s": {
+      "category": "quick",
+      "sensor": "summary/gpu-temp",
+      "min": 30,
+      "max": 90
+     }
+    }
+   },
+   {
+    "speed": 50,
+    "intensity": 1,
+    "hue": 0,
+    "colorize": 0,
+    "saturation": 1,
+    "contrast": 1,
+    "params": {
+     "u_grad_angle": 90.0,
+     "u_grad_spread": 1.0,
+     "u_grad_speed": 0.0,
+     "u_col_low": 0.95,
+     "u_col_low_m": -1.0,
+     "u_col_shade": 0.0,
+     "u_col_c1r": 0.15,
+     "u_col_c1g": 0.35,
+     "u_col_c1b": 1.0,
+     "u_col_c2r": 0.1,
+     "u_col_c2g": 0.95,
+     "u_col_c2b": 0.55,
+     "u_col_c3r": 1.0,
+     "u_col_c3g": 0.85,
+     "u_col_c3b": 0.1,
+     "u_col_c4r": 1.0,
+     "u_col_c4g": 0.15,
+     "u_col_c4b": 0.1
+    },
+    "sensors": {
+     "u_col_low_s": {
+      "category": "quick",
+      "sensor": "summary/cpu-usage",
+      "min": 0,
+      "max": 100
+     }
+    }
+   },
+   {
+    "speed": 50,
+    "intensity": 1,
+    "hue": 0,
+    "colorize": 0,
+    "saturation": 1,
+    "contrast": 1,
+    "params": {
+     "u_grad_angle": 90.0,
+     "u_grad_spread": 1.0,
+     "u_grad_speed": 0.0,
+     "u_col_low": 0.95,
+     "u_col_low_m": -1.0,
+     "u_col_shade": 0.0,
+     "u_col_c1r": 0.15,
+     "u_col_c1g": 0.35,
+     "u_col_c1b": 1.0,
+     "u_col_c2r": 0.1,
+     "u_col_c2g": 0.95,
+     "u_col_c2b": 0.55,
+     "u_col_c3r": 1.0,
+     "u_col_c3g": 0.85,
+     "u_col_c3b": 0.1,
+     "u_col_c4r": 1.0,
+     "u_col_c4g": 0.15,
+     "u_col_c4b": 0.1
+    },
+    "sensors": {
+     "u_col_low_s": {
+      "category": "quick",
+      "sensor": "summary/gpu-usage",
+      "min": 0,
+      "max": 100
+     }
+    }
+   }
+  ]
+ },
+ "sensorliquid": {
+  "selected": 0,
+  "slots": [
+   {
+    "speed": 50,
+    "intensity": 1,
+    "hue": 0,
+    "colorize": 0,
+    "saturation": 1,
+    "contrast": 1,
+    "params": {
+     "u_fill_level": 0.0,
+     "u_fill_level_m": 1.0,
+     "u_fill_angle": 0.0,
+     "u_fill_flip": 0.0,
+     "u_fill_wave": 0.6,
+     "u_fill_speed": 1.0,
+     "u_fill_softness": 0.05,
+     "u_col_low": 0.5,
+     "u_col_shade": 1.0,
+     "u_col_c1r": 0.0,
+     "u_col_c1g": 0.3,
+     "u_col_c1b": 0.8,
+     "u_col_c2r": 0.05,
+     "u_col_c2g": 0.6,
+     "u_col_c2b": 1.0,
+     "u_col_c3r": 0.2,
+     "u_col_c3g": 1.0,
+     "u_col_c3b": 0.9,
+     "u_col_c4r": 0.8,
+     "u_col_c4g": 1.0,
+     "u_col_c4b": 0.95
+    },
+    "sensors": {
+     "u_fill_level_s": {
+      "category": "quick",
+      "sensor": "summary/memory-usage",
+      "min": 0,
+      "max": 100
+     }
+    }
+   },
+   {
+    "speed": 50,
+    "intensity": 1,
+    "hue": 0,
+    "colorize": 0,
+    "saturation": 1,
+    "contrast": 1,
+    "params": {
+     "u_fill_level": 0.0,
+     "u_fill_level_m": 1.0,
+     "u_fill_angle": 0.0,
+     "u_fill_flip": 0.0,
+     "u_fill_wave": 0.6,
+     "u_fill_speed": 1.0,
+     "u_fill_softness": 0.05,
+     "u_col_low": 0.5,
+     "u_col_shade": 1.0,
+     "u_col_c1r": 0.0,
+     "u_col_c1g": 0.3,
+     "u_col_c1b": 0.8,
+     "u_col_c2r": 0.05,
+     "u_col_c2g": 0.6,
+     "u_col_c2b": 1.0,
+     "u_col_c3r": 0.2,
+     "u_col_c3g": 1.0,
+     "u_col_c3b": 0.9,
+     "u_col_c4r": 0.8,
+     "u_col_c4g": 1.0,
+     "u_col_c4b": 0.95
+    },
+    "sensors": {
+     "u_fill_level_s": {
+      "category": "quick",
+      "sensor": "summary/cpu-usage",
+      "min": 0,
+      "max": 100
+     }
+    }
+   },
+   {
+    "speed": 50,
+    "intensity": 1,
+    "hue": 0,
+    "colorize": 0,
+    "saturation": 1,
+    "contrast": 1,
+    "params": {
+     "u_fill_level": 0.0,
+     "u_fill_level_m": 1.0,
+     "u_fill_angle": 0.0,
+     "u_fill_flip": 0.0,
+     "u_fill_wave": 0.6,
+     "u_fill_speed": 1.0,
+     "u_fill_softness": 0.05,
+     "u_col_low": 0.5,
+     "u_col_shade": 1.0,
+     "u_col_c1r": 0.0,
+     "u_col_c1g": 0.3,
+     "u_col_c1b": 0.8,
+     "u_col_c2r": 0.05,
+     "u_col_c2g": 0.6,
+     "u_col_c2b": 1.0,
+     "u_col_c3r": 0.2,
+     "u_col_c3g": 1.0,
+     "u_col_c3b": 0.9,
+     "u_col_c4r": 0.8,
+     "u_col_c4g": 1.0,
+     "u_col_c4b": 0.95
+    },
+    "sensors": {
+     "u_fill_level_s": {
+      "category": "quick",
+      "sensor": "summary/gpu-usage",
+      "min": 0,
+      "max": 100
+     }
+    }
+   },
+   {
+    "speed": 50,
+    "intensity": 1,
+    "hue": 0,
+    "colorize": 0,
+    "saturation": 1,
+    "contrast": 1,
+    "params": {
+     "u_fill_level": 0.0,
+     "u_fill_level_m": 1.0,
+     "u_fill_angle": 0.0,
+     "u_fill_flip": 0.0,
+     "u_fill_wave": 0.6,
+     "u_fill_speed": 1.0,
+     "u_fill_softness": 0.05,
+     "u_col_low": 0.5,
+     "u_col_shade": 1.0,
+     "u_col_c1r": 0.0,
+     "u_col_c1g": 0.3,
+     "u_col_c1b": 0.8,
+     "u_col_c2r": 0.05,
+     "u_col_c2g": 0.6,
+     "u_col_c2b": 1.0,
+     "u_col_c3r": 0.2,
+     "u_col_c3g": 1.0,
+     "u_col_c3b": 0.9,
+     "u_col_c4r": 0.8,
+     "u_col_c4g": 1.0,
+     "u_col_c4b": 0.95
+    },
+    "sensors": {
+     "u_fill_level_s": {
+      "category": "quick",
+      "sensor": "summary/cpu-temp",
+      "min": 30,
+      "max": 95
+     }
+    }
+   }
+  ]
+ },
+ "sensorsegments": {
+  "selected": 0,
+  "slots": [
+   {
+    "speed": 50,
+    "intensity": 1,
+    "hue": 0,
+    "colorize": 0,
+    "saturation": 1,
+    "contrast": 1,
+    "params": {
+     "u_fill_level": 0.0,
+     "u_fill_level_m": 1.0,
+     "u_fill_angle": 0.0,
+     "u_fill_flip": 0.0,
+     "u_fill_count": 10.0,
+     "u_fill_size": 0.8,
+     "u_col_low": 0.5,
+     "u_col_shade": 1.0,
+     "u_col_c1r": 0.1,
+     "u_col_c1g": 0.8,
+     "u_col_c1b": 1.0,
+     "u_col_c2r": 0.4,
+     "u_col_c2g": 0.5,
+     "u_col_c2b": 1.0,
+     "u_col_c3r": 0.7,
+     "u_col_c3g": 0.3,
+     "u_col_c3b": 1.0,
+     "u_col_c4r": 1.0,
+     "u_col_c4g": 0.3,
+     "u_col_c4b": 0.8
+    },
+    "sensors": {
+     "u_fill_level_s": {
+      "category": "quick",
+      "sensor": "summary/memory-usage",
+      "min": 0,
+      "max": 100
+     }
+    }
+   },
+   {
+    "speed": 50,
+    "intensity": 1,
+    "hue": 0,
+    "colorize": 0,
+    "saturation": 1,
+    "contrast": 1,
+    "params": {
+     "u_fill_level": 0.0,
+     "u_fill_level_m": 1.0,
+     "u_fill_angle": 0.0,
+     "u_fill_flip": 0.0,
+     "u_fill_count": 10.0,
+     "u_fill_size": 0.8,
+     "u_col_low": 0.5,
+     "u_col_shade": 1.0,
+     "u_col_c1r": 0.1,
+     "u_col_c1g": 0.8,
+     "u_col_c1b": 1.0,
+     "u_col_c2r": 0.4,
+     "u_col_c2g": 0.5,
+     "u_col_c2b": 1.0,
+     "u_col_c3r": 0.7,
+     "u_col_c3g": 0.3,
+     "u_col_c3b": 1.0,
+     "u_col_c4r": 1.0,
+     "u_col_c4g": 0.3,
+     "u_col_c4b": 0.8
+    },
+    "sensors": {
+     "u_fill_level_s": {
+      "category": "quick",
+      "sensor": "summary/cpu-usage",
+      "min": 0,
+      "max": 100
+     }
+    }
+   },
+   {
+    "speed": 50,
+    "intensity": 1,
+    "hue": 0,
+    "colorize": 0,
+    "saturation": 1,
+    "contrast": 1,
+    "params": {
+     "u_fill_level": 0.0,
+     "u_fill_level_m": 1.0,
+     "u_fill_angle": 0.0,
+     "u_fill_flip": 0.0,
+     "u_fill_count": 10.0,
+     "u_fill_size": 0.8,
+     "u_col_low": 0.5,
+     "u_col_shade": 1.0,
+     "u_col_c1r": 0.1,
+     "u_col_c1g": 0.8,
+     "u_col_c1b": 1.0,
+     "u_col_c2r": 0.4,
+     "u_col_c2g": 0.5,
+     "u_col_c2b": 1.0,
+     "u_col_c3r": 0.7,
+     "u_col_c3g": 0.3,
+     "u_col_c3b": 1.0,
+     "u_col_c4r": 1.0,
+     "u_col_c4g": 0.3,
+     "u_col_c4b": 0.8
+    },
+    "sensors": {
+     "u_fill_level_s": {
+      "category": "quick",
+      "sensor": "summary/gpu-usage",
+      "min": 0,
+      "max": 100
+     }
+    }
+   },
+   {
+    "speed": 50,
+    "intensity": 1,
+    "hue": 0,
+    "colorize": 0,
+    "saturation": 1,
+    "contrast": 1,
+    "params": {
+     "u_fill_level": 0.0,
+     "u_fill_level_m": 1.0,
+     "u_fill_angle": 0.0,
+     "u_fill_flip": 0.0,
+     "u_fill_count": 10.0,
+     "u_fill_size": 0.8,
+     "u_col_low": 0.5,
+     "u_col_shade": 1.0,
+     "u_col_c1r": 0.1,
+     "u_col_c1g": 0.8,
+     "u_col_c1b": 1.0,
+     "u_col_c2r": 0.4,
+     "u_col_c2g": 0.5,
+     "u_col_c2b": 1.0,
+     "u_col_c3r": 0.7,
+     "u_col_c3g": 0.3,
+     "u_col_c3b": 1.0,
+     "u_col_c4r": 1.0,
+     "u_col_c4g": 0.3,
+     "u_col_c4b": 0.8
+    },
+    "sensors": {
+     "u_fill_level_s": {
+      "category": "quick",
+      "sensor": "summary/cpu-temp",
+      "min": 30,
+      "max": 95
+     }
+    }
+   }
+  ]
+ },
+ "sensorshift": {
+  "selected": 0,
+  "slots": [
+   {
+    "speed": 50,
+    "intensity": 1,
+    "hue": 0,
+    "colorize": 0,
+    "saturation": 1,
+    "contrast": 1,
+    "params": {
+     "u_hot_level": 0.0,
+     "u_hot_level_m": 1.0,
+     "u_col_low": 0.0,
+     "u_col_shade": 0.0,
+     "u_col_c1r": 0.15,
+     "u_col_c1g": 0.35,
+     "u_col_c1b": 1.0,
+     "u_col_c2r": 0.1,
+     "u_col_c2g": 0.95,
+     "u_col_c2b": 0.55,
+     "u_col_c3r": 1.0,
+     "u_col_c3g": 0.85,
+     "u_col_c3b": 0.1,
+     "u_col_c4r": 1.0,
+     "u_col_c4g": 0.15,
+     "u_col_c4b": 0.1
+    },
+    "sensors": {
+     "u_hot_level_s": {
+      "category": "quick",
+      "sensor": "summary/cpu-temp",
+      "min": 30,
+      "max": 90
+     }
+    }
+   },
+   {
+    "speed": 50,
+    "intensity": 1,
+    "hue": 0,
+    "colorize": 0,
+    "saturation": 1,
+    "contrast": 1,
+    "params": {
+     "u_hot_level": 0.0,
+     "u_hot_level_m": 1.0,
+     "u_col_low": 0.0,
+     "u_col_shade": 0.0,
+     "u_col_c1r": 0.15,
+     "u_col_c1g": 0.35,
+     "u_col_c1b": 1.0,
+     "u_col_c2r": 0.1,
+     "u_col_c2g": 0.95,
+     "u_col_c2b": 0.55,
+     "u_col_c3r": 1.0,
+     "u_col_c3g": 0.85,
+     "u_col_c3b": 0.1,
+     "u_col_c4r": 1.0,
+     "u_col_c4g": 0.15,
+     "u_col_c4b": 0.1
+    },
+    "sensors": {
+     "u_hot_level_s": {
+      "category": "quick",
+      "sensor": "summary/gpu-temp",
+      "min": 30,
+      "max": 90
+     }
+    }
+   },
+   {
+    "speed": 50,
+    "intensity": 1,
+    "hue": 0,
+    "colorize": 0,
+    "saturation": 1,
+    "contrast": 1,
+    "params": {
+     "u_hot_level": 0.0,
+     "u_hot_level_m": 1.0,
+     "u_col_low": 0.0,
+     "u_col_shade": 0.0,
+     "u_col_c1r": 0.15,
+     "u_col_c1g": 0.35,
+     "u_col_c1b": 1.0,
+     "u_col_c2r": 0.1,
+     "u_col_c2g": 0.95,
+     "u_col_c2b": 0.55,
+     "u_col_c3r": 1.0,
+     "u_col_c3g": 0.85,
+     "u_col_c3b": 0.1,
+     "u_col_c4r": 1.0,
+     "u_col_c4g": 0.15,
+     "u_col_c4b": 0.1
+    },
+    "sensors": {
+     "u_hot_level_s": {
+      "category": "quick",
+      "sensor": "summary/cpu-usage",
+      "min": 0,
+      "max": 100
+     }
+    }
+   },
+   {
+    "speed": 50,
+    "intensity": 1,
+    "hue": 0,
+    "colorize": 0,
+    "saturation": 1,
+    "contrast": 1,
+    "params": {
+     "u_hot_level": 0.0,
+     "u_hot_level_m": 1.0,
+     "u_col_low": 0.0,
+     "u_col_shade": 0.0,
+     "u_col_c1r": 0.15,
+     "u_col_c1g": 0.35,
+     "u_col_c1b": 1.0,
+     "u_col_c2r": 0.1,
+     "u_col_c2g": 0.95,
+     "u_col_c2b": 0.55,
+     "u_col_c3r": 1.0,
+     "u_col_c3g": 0.85,
+     "u_col_c3b": 0.1,
+     "u_col_c4r": 1.0,
+     "u_col_c4g": 0.15,
+     "u_col_c4b": 0.1
+    },
+    "sensors": {
+     "u_hot_level_s": {
+      "category": "quick",
+      "sensor": "summary/gpu-usage",
+      "min": 0,
+      "max": 100
+     }
+    }
+   }
+  ]
  }
 }

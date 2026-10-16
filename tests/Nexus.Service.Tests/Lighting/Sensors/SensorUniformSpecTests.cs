@@ -1,3 +1,4 @@
+using Nexus.Service.Lighting;
 using Nexus.Service.Lighting.CustomEffects;
 using Nexus.Service.Lighting.Engine;
 using Nexus.Service.Lighting.Engine.Gpu;
@@ -169,6 +170,32 @@ public sealed class SensorUniformSpecTests
 
         Assert.Null(CustomEffectStore.Validate("abc", "Name", "", frag));
         Assert.Null(CustomEffectStore.ValidateLoops(frag));
+    }
+
+    [Theory]
+    [MemberData(nameof(EmbeddedSensorFrags))]
+    public void Every_embedded_sensor_frag_has_four_distinct_default_presets_over_its_own_sensor_uniforms(string key)
+    {
+        Assert.True(AnimateTemplateDefaults.All.TryGetValue(key, out var bundle));
+        Assert.Equal(4, bundle.Slots.Count);
+        var names = ShaderLibrary.SensorUniforms(key).Select(x => x.Name).ToHashSet();
+        var specs = ShaderLibrary.Params(key);
+        foreach (var slot in bundle.Slots)
+        {
+            var (uniform, binding) = Assert.Single(slot!.Sensors!);
+            Assert.Contains(uniform, names);
+            Assert.True(binding.IsUsable);
+            Assert.Equal("quick", binding.Category);
+            foreach (var (name, value) in slot.Params)
+            {
+                Assert.True(specs.TryGetValue(name, out var spec), $"{key}: {name} is not a param");
+                Assert.InRange(value, spec.Min, spec.Max);
+            }
+        }
+        Assert.Equal(4, bundle.Slots.Select(x => x!.Sensors!.Values.Single().Sensor).Distinct().Count());
+        var own = ShaderLibrary.SensorUniforms(key)[0].Default;
+        Assert.Equal(own.Sensor, bundle.Slots[0]!.Sensors!.Values.Single().Sensor);
+        Assert.Equal(own.Max, bundle.Slots[0]!.Sensors!.Values.Single().Max);
     }
 
     [Theory]
