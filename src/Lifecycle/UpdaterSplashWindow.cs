@@ -4,6 +4,7 @@ using System.Diagnostics;
 using System.IO;
 using System.Runtime.InteropServices;
 using System.Runtime.Versioning;
+using System.Threading;
 
 namespace Nexus.Service.Lifecycle;
 
@@ -21,6 +22,21 @@ internal static class UpdaterSplashWindow
     private const string CopyName = "NexusUpdater.exe";
     private const uint TimeoutMs = 300_000;
     private const int W = 330, H = 220;
+    private const int MinStaleAgeSeconds = 10;
+    private const string CopyMutexName = @"Local\NexusUpdaterCopy";
+    private const int ExStyleTopmost = 0x00000008, ExStyleToolWindow = 0x00000080;
+    private const int StylePopup = unchecked((int)0x80000000);
+    private const int SwShow = 5;
+    private const int CursorArrow = 32512;
+    private const int LogPixelsX = 88;
+    private const uint SrcCopy = 0x00CC0020;
+    private const uint DiNormal = 3;
+    private const uint DtCenterSingleLineNoPrefix = 0x0001 | 0x0020 | 0x0800;
+    private const uint ClearTypeQuality = 5;
+    private const int DefaultCharset = 1;
+    private const int TransparentBk = 1;
+    private const uint WmErase = 0x0014, WmPaint = 0x000F, WmTimer = 0x0113, WmClose = 0x0010, WmDestroy = 0x0002;
+    private const ulong TimeoutTimerId = 2;
 
     /// <summary>Copies this exe aside and starts the splash from the copy. Returns the pid, or 0.</summary>
     public static int Spawn(string fromVersion, string toVersion)
@@ -30,23 +46,71 @@ internal static class UpdaterSplashWindow
         var dir = CopyDir();
         Directory.CreateDirectory(dir);
         var copy = Path.Combine(dir, CopyName);
-        // A running splash locks its own copy; reusing it is fine for a window.
-        try { File.Copy(self, copy, overwrite: true); }
-        catch (IOException) when (File.Exists(copy)) { }
-        var psi = new ProcessStartInfo(copy)
+        // Held across copy and start so a helper's startup cleanup cannot delete the copy in between.
+        using var gate = new Mutex(false, CopyMutexName);
+        gate.WaitOne(TimeSpan.FromSeconds(5));
+        try
         {
-            UseShellExecute = false,
-            CreateNoWindow = true,
-            WorkingDirectory = dir,
-        };
-        psi.ArgumentList.Add(UpdaterSplashArgs.Flag);
-        psi.ArgumentList.Add(fromVersion);
-        psi.ArgumentList.Add(toVersion);
-        return Process.Start(psi)?.Id ?? 0;
+            if (!SameFile(self, copy))
+            {
+                // A running splash locks its own copy; reusing it is fine for a window.
+                try { File.Copy(self, copy, overwrite: true); }
+                catch (IOException) when (File.Exists(copy)) { }
+            }
+            var psi = new ProcessStartInfo(copy)
+            {
+                UseShellExecute = false,
+                CreateNoWindow = true,
+                WorkingDirectory = dir,
+            };
+            psi.ArgumentList.Add(UpdaterSplashArgs.Flag);
+            psi.ArgumentList.Add(fromVersion);
+            psi.ArgumentList.Add(toVersion);
+            return Process.Start(psi)?.Id ?? 0;
+        }
+        finally
+        {
+            try { gate.ReleaseMutex(); } catch (ApplicationException) { }
+        }
     }
 
-    /// <summary>Removes the copy once no splash is running from it. Best-effort.</summary>
-    public static void TryDeleteCopy()
+    private static bool SameFile(string a, string b)
+    {
+        var fa = new FileInfo(a);
+        var fb = new FileInfo(b);
+        return fb.Exists && fa.Length == fb.Length && fa.LastWriteTimeUtc == fb.LastWriteTimeUtc;
+    }
+
+    /// <summary>
+    /// Helper startup: closes a splash left from an earlier install, waits for it to
+    /// exit, then removes the exe copy. A splash younger than the stale age belongs to
+    /// the launcher that just started this helper and is left alone.
+    /// </summary>
+    public static void CloseStale()
+    {
+        using var gate = new Mutex(false, CopyMutexName);
+        gate.WaitOne(TimeSpan.FromSeconds(5));
+        try
+        {
+            var hwnd = FindWindow(null, UpdaterSplashArgs.Title);
+            if (hwnd != IntPtr.Zero)
+            {
+                GetWindowThreadProcessId(hwnd, out var pid);
+                using var proc = Process.GetProcessById((int)pid);
+                if (DateTime.Now - proc.StartTime < TimeSpan.FromSeconds(MinStaleAgeSeconds)) return;
+                PostMessage(hwnd, WmClose, IntPtr.Zero, IntPtr.Zero);
+                if (!proc.WaitForExit(5000)) return;
+            }
+            TryDeleteCopy();
+        }
+        catch { /* best-effort */ }
+        finally
+        {
+            try { gate.ReleaseMutex(); } catch (ApplicationException) { }
+        }
+    }
+
+    private static void TryDeleteCopy()
     {
         try
         {
@@ -59,7 +123,7 @@ internal static class UpdaterSplashWindow
     private static string CopyDir() => Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Nexus", "updater");
 
-    // Colors are COLORREF (0x00BBGGRR). Dark and light match the old page palette.
+    // Colors are COLORREF (0x00BBGGRR).
     private readonly record struct Palette(uint Bg, uint Title, uint Ver, uint Bar, uint Shine, uint Note);
 
     private static readonly Palette Dark = new(Rgb(0x20, 0x20, 0x24), Rgb(0xe8, 0xe8, 0xea), Rgb(0x9a, 0x9a, 0x9e), Rgb(0x5a, 0x5a, 0x5e), Rgb(0xa6, 0xa6, 0xaa), Rgb(0x76, 0x76, 0x7a));
@@ -71,11 +135,25 @@ internal static class UpdaterSplashWindow
     private static Palette s_pal;
     private static string s_versionLine = "";
     private static IntPtr s_icon;
+    private static IntPtr s_titleFont, s_verFont, s_noteFont;
     private static int s_dpi = 96;
     private static int s_tick;
 
     /// <summary>Entry for <c>--updater-window</c>. Blocks until the window closes.</summary>
     public static int Run(string[] args)
+    {
+        try
+        {
+            return RunWindow(args);
+        }
+        catch (Exception ex)
+        {
+            LogExit($"failed: {ex.GetType().Name}: {ex.Message}");
+            return 1;
+        }
+    }
+
+    private static int RunWindow(string[] args)
     {
         if (!UpdaterSplashArgs.TryParse(args, out var from, out var to)) return 1;
         // One splash at a time: a second request leaves the first on screen.
@@ -83,10 +161,13 @@ internal static class UpdaterSplashWindow
 
         SetProcessDPIAware();
         var hdc = GetDC(IntPtr.Zero);
-        s_dpi = GetDeviceCaps(hdc, 88);
+        s_dpi = GetDeviceCaps(hdc, LogPixelsX);
         ReleaseDC(IntPtr.Zero, hdc);
         s_pal = IsLightTheme() ? Light : Dark;
         s_versionLine = UpdaterSplashArgs.VersionLine(from, to);
+        s_titleFont = MakeFont(16, 600);
+        s_verFont = MakeFont(12, 400);
+        s_noteFont = MakeFont(11, 400);
 
         var inst = GetModuleHandle(null);
         s_icon = ExtractIcon(inst, Environment.ProcessPath ?? "", 0);
@@ -97,29 +178,50 @@ internal static class UpdaterSplashWindow
             lpfnWndProc = s_proc,
             lpszClassName = "NexusUpdaterSplash",
             hInstance = inst,
-            hCursor = LoadCursor(IntPtr.Zero, new IntPtr(32512)),
+            hCursor = LoadCursor(IntPtr.Zero, new IntPtr(CursorArrow)),
         };
-        if (RegisterClassEx(ref cls) == 0) return 1;
+        if (RegisterClassEx(ref cls) == 0)
+        {
+            LogExit($"RegisterClassEx failed ({Marshal.GetLastWin32Error()})");
+            return 1;
+        }
 
         int w = Scale(W), h = Scale(H);
         var x = (GetSystemMetrics(0) - w) / 2;
         var y = (GetSystemMetrics(1) - h) / 2;
-        // WS_POPUP, topmost tool window: borderless and absent from the taskbar.
-        var hwnd = CreateWindowEx(0x00000008 | 0x00000080, cls.lpszClassName, UpdaterSplashArgs.Title,
-            unchecked((int)0x80000000), x, y, w, h, IntPtr.Zero, IntPtr.Zero, inst, IntPtr.Zero);
-        if (hwnd == IntPtr.Zero) return 1;
+        // Popup, topmost tool window: borderless and absent from the taskbar.
+        var hwnd = CreateWindowEx(ExStyleTopmost | ExStyleToolWindow, cls.lpszClassName, UpdaterSplashArgs.Title,
+            StylePopup, x, y, w, h, IntPtr.Zero, IntPtr.Zero, inst, IntPtr.Zero);
+        if (hwnd == IntPtr.Zero)
+        {
+            LogExit($"CreateWindowEx failed ({Marshal.GetLastWin32Error()})");
+            return 1;
+        }
 
         SetTimer(hwnd, new UIntPtr(1), 16, IntPtr.Zero);
-        SetTimer(hwnd, new UIntPtr(2), TimeoutMs, IntPtr.Zero);
-        ShowWindow(hwnd, 5);
+        SetTimer(hwnd, new UIntPtr(TimeoutTimerId), TimeoutMs, IntPtr.Zero);
+        ShowWindow(hwnd, SwShow);
         SetForegroundWindow(hwnd);
         while (GetMessage(out var msg, IntPtr.Zero, 0, 0))
         {
             TranslateMessage(ref msg);
             DispatchMessage(ref msg);
         }
+        DeleteObject(s_titleFont);
+        DeleteObject(s_verFont);
+        DeleteObject(s_noteFont);
         return 0;
     }
+
+    // One line next to the exe copy so a failed splash can be diagnosed.
+    private static void LogExit(string reason)
+    {
+        try { File.WriteAllText(Path.Combine(CopyDir(), "splash.log"), $"{DateTime.Now:O} {reason}{Environment.NewLine}"); }
+        catch { /* diagnostics only */ }
+    }
+
+    private static IntPtr MakeFont(int px, int weight)
+        => CreateFont(-Scale(px), 0, 0, 0, weight, 0, 0, 0, DefaultCharset, 0, 0, ClearTypeQuality, 0, "Segoe UI");
 
     private static int Scale(int v) => v * s_dpi / 96;
 
@@ -138,13 +240,13 @@ internal static class UpdaterSplashWindow
     {
         switch (msg)
         {
-            case 0x0014: // WM_ERASEBKGND
+            case WmErase:
                 return new IntPtr(1);
-            case 0x000F: // WM_PAINT
+            case WmPaint:
                 Paint(hwnd);
                 return IntPtr.Zero;
-            case 0x0113: // WM_TIMER
-                if (wParam.ToInt64() == 2)
+            case WmTimer:
+                if ((ulong)wParam.ToInt64() == TimeoutTimerId)
                 {
                     DestroyWindow(hwnd);
                 }
@@ -154,10 +256,10 @@ internal static class UpdaterSplashWindow
                     InvalidateRect(hwnd, IntPtr.Zero, false);
                 }
                 return IntPtr.Zero;
-            case 0x0010: // WM_CLOSE
+            case WmClose:
                 DestroyWindow(hwnd);
                 return IntPtr.Zero;
-            case 0x0002: // WM_DESTROY
+            case WmDestroy:
                 PostQuitMessage(0);
                 return IntPtr.Zero;
         }
@@ -175,11 +277,11 @@ internal static class UpdaterSplashWindow
         FillColor(mem, new RECT { L = 0, T = 0, R = w, B = h }, s_pal.Bg);
         if (s_icon != IntPtr.Zero)
         {
-            int iw = Scale(34), ih = Scale(36);
-            DrawIconEx(mem, (w - iw) / 2, Scale(44), s_icon, iw, ih, 0, IntPtr.Zero, 3);
+            int icon = Scale(36);
+            DrawIconEx(mem, (w - icon) / 2, Scale(44), s_icon, icon, icon, 0, IntPtr.Zero, DiNormal);
         }
-        DrawLine(mem, "Updating Nexus", 16, 600, s_pal.Title, Scale(94), w);
-        DrawLine(mem, s_versionLine, 12, 400, s_pal.Ver, Scale(122), w);
+        DrawLine(mem, "Updating Nexus", s_titleFont, 16, s_pal.Title, Scale(94), w);
+        DrawLine(mem, s_versionLine, s_verFont, 12, s_pal.Ver, Scale(122), w);
 
         // Track with a highlight sweeping left to right, clipped to the track.
         int tw = Scale(220), th = Scale(5);
@@ -191,9 +293,9 @@ internal static class UpdaterSplashWindow
         var shine = new RECT { L = Math.Max(sl, tx), T = ty, R = Math.Min(sl + sw, tx + tw), B = ty + th };
         if (shine.R > shine.L) FillColor(mem, shine, s_pal.Shine);
 
-        DrawLine(mem, "Nexus will reopen automatically.", 11, 400, s_pal.Note, Scale(172), w);
+        DrawLine(mem, "Nexus will reopen automatically.", s_noteFont, 11, s_pal.Note, Scale(172), w);
 
-        BitBlt(hdc, 0, 0, w, h, mem, 0, 0, 0x00CC0020);
+        BitBlt(hdc, 0, 0, w, h, mem, 0, 0, SrcCopy);
         SelectObject(mem, oldBmp);
         DeleteObject(bmp);
         DeleteDC(mem);
@@ -207,17 +309,14 @@ internal static class UpdaterSplashWindow
         DeleteObject(brush);
     }
 
-    private static void DrawLine(IntPtr dc, string text, int px, int weight, uint color, int top, int width)
+    private static void DrawLine(IntPtr dc, string text, IntPtr font, int px, uint color, int top, int width)
     {
-        var font = CreateFont(-Scale(px), 0, 0, 0, weight, 0, 0, 0, 1, 0, 0, 5, 0, "Segoe UI");
         var old = SelectObject(dc, font);
-        SetBkMode(dc, 1);
+        SetBkMode(dc, TransparentBk);
         SetTextColor(dc, color);
         var r = new RECT { L = 0, T = top, R = width, B = top + Scale(px * 2) };
-        // DT_CENTER | DT_SINGLELINE | DT_NOPREFIX
-        DrawText(dc, text, -1, ref r, 0x0001 | 0x0020 | 0x0800);
+        DrawText(dc, text, -1, ref r, DtCenterSingleLineNoPrefix);
         SelectObject(dc, old);
-        DeleteObject(font);
     }
 
     [UnmanagedFunctionPointer(CallingConvention.StdCall)]
@@ -260,12 +359,14 @@ internal static class UpdaterSplashWindow
     }
 
     [DllImport("kernel32")] private static extern IntPtr GetModuleHandle(string? name);
-    [DllImport("user32", CharSet = CharSet.Unicode)] private static extern ushort RegisterClassEx(ref WNDCLASSEX cls);
-    [DllImport("user32", CharSet = CharSet.Unicode)] private static extern IntPtr CreateWindowEx(int exStyle, string className, string windowName, int style, int x, int y, int w, int h, IntPtr parent, IntPtr menu, IntPtr instance, IntPtr param);
-    [DllImport("user32")] private static extern IntPtr DefWindowProc(IntPtr hwnd, uint msg, IntPtr wParam, IntPtr lParam);
-    [DllImport("user32")] private static extern bool GetMessage(out MSG msg, IntPtr hwnd, uint min, uint max);
+    [DllImport("user32", CharSet = CharSet.Unicode, EntryPoint = "RegisterClassExW", SetLastError = true)] private static extern ushort RegisterClassEx(ref WNDCLASSEX cls);
+    [DllImport("user32", CharSet = CharSet.Unicode, EntryPoint = "CreateWindowExW", SetLastError = true)] private static extern IntPtr CreateWindowEx(int exStyle, string className, string windowName, int style, int x, int y, int w, int h, IntPtr parent, IntPtr menu, IntPtr instance, IntPtr param);
+    [DllImport("user32", EntryPoint = "DefWindowProcW")] private static extern IntPtr DefWindowProc(IntPtr hwnd, uint msg, IntPtr wParam, IntPtr lParam);
+    [DllImport("user32", EntryPoint = "GetMessageW")] private static extern bool GetMessage(out MSG msg, IntPtr hwnd, uint min, uint max);
     [DllImport("user32")] private static extern bool TranslateMessage(ref MSG msg);
-    [DllImport("user32")] private static extern IntPtr DispatchMessage(ref MSG msg);
+    [DllImport("user32", EntryPoint = "DispatchMessageW")] private static extern IntPtr DispatchMessage(ref MSG msg);
+    [DllImport("user32")] private static extern uint GetWindowThreadProcessId(IntPtr hwnd, out uint pid);
+    [DllImport("user32", EntryPoint = "PostMessageW")] private static extern bool PostMessage(IntPtr hwnd, uint msg, IntPtr wParam, IntPtr lParam);
     [DllImport("user32")] private static extern bool DestroyWindow(IntPtr hwnd);
     [DllImport("user32")] private static extern void PostQuitMessage(int code);
     [DllImport("user32")] private static extern bool ShowWindow(IntPtr hwnd, int cmd);
@@ -275,9 +376,9 @@ internal static class UpdaterSplashWindow
     [DllImport("user32")] private static extern IntPtr BeginPaint(IntPtr hwnd, out PAINTSTRUCT ps);
     [DllImport("user32")] private static extern bool EndPaint(IntPtr hwnd, ref PAINTSTRUCT ps);
     [DllImport("user32")] private static extern int FillRect(IntPtr dc, ref RECT rect, IntPtr brush);
-    [DllImport("user32", CharSet = CharSet.Unicode)] private static extern int DrawText(IntPtr dc, string text, int count, ref RECT rect, uint format);
+    [DllImport("user32", CharSet = CharSet.Unicode, EntryPoint = "DrawTextW")] private static extern int DrawText(IntPtr dc, string text, int count, ref RECT rect, uint format);
     [DllImport("user32")] private static extern bool DrawIconEx(IntPtr dc, int x, int y, IntPtr icon, int cx, int cy, uint step, IntPtr flicker, uint flags);
-    [DllImport("user32")] private static extern IntPtr LoadCursor(IntPtr inst, IntPtr name);
+    [DllImport("user32", EntryPoint = "LoadCursorW")] private static extern IntPtr LoadCursor(IntPtr inst, IntPtr name);
     [DllImport("user32")] private static extern int GetSystemMetrics(int index);
     [DllImport("user32")] private static extern bool SetProcessDPIAware();
     [DllImport("user32")] private static extern IntPtr GetDC(IntPtr hwnd);

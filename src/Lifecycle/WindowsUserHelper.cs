@@ -120,10 +120,7 @@ internal static class WindowsUserHelper
         // stale splash from a failed install is also dismissed.
         _ = Task.Run(() =>
         {
-            try { CloseUpdaterWindow(); } catch { /* best-effort */ }
-            // The splash exits on that close; remove its copy of the exe.
-            Thread.Sleep(2000);
-            UpdaterSplashWindow.TryDeleteCopy();
+            try { UpdaterSplashWindow.CloseStale(); } catch { /* best-effort */ }
         });
 
         // If a reopen flag was written before the installer launched (or by a
@@ -514,9 +511,6 @@ internal static class WindowsUserHelper
 
     [DllImport("user32.dll", SetLastError = true)]
     private static extern bool PostMessageW(IntPtr hWnd, uint Msg, IntPtr wParam, IntPtr lParam);
-
-    [DllImport("user32.dll", SetLastError = true)]
-    private static extern bool SetWindowPos(IntPtr hWnd, IntPtr hWndInsertAfter, int X, int Y, int cx, int cy, uint uFlags);
 
     private static void Diag(string msg) => Nexus.Service.Platform.HelperLog.Write(msg);
 }
