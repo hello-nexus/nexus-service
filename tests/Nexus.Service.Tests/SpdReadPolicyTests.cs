@@ -1,4 +1,6 @@
 using System;
+using System.Collections.Generic;
+using System.Threading;
 using Nexus.Service.Persistence;
 using Nexus.Service.Sensors;
 using Xunit;
@@ -60,4 +62,42 @@ public class SpdReadPolicyTests
     [Fact]
     public void Decide_GateToggleWhileSettingOff_ChangesNothing() =>
         Assert.False(SpdReadPolicy.Decide(gateEnabled: true, readRamTemperatures: false, currentlyActive: false).Changed);
+
+    [Fact]
+    public void ResetRunner_Inactive_IsNoOp()
+    {
+        var called = false;
+        var count = SpdPageResetRunner.Run(false, () => { called = true; return 3; }, TimeSpan.FromSeconds(1), _ => { });
+        Assert.Equal(0, count);
+        Assert.False(called);
+    }
+
+    [Fact]
+    public void ResetRunner_Active_RunsAndLogsCount()
+    {
+        var lines = new List<string>();
+        var count = SpdPageResetRunner.Run(true, () => 4, TimeSpan.FromSeconds(5), lines.Add);
+        Assert.Equal(4, count);
+        Assert.Contains("4 DIMM", Assert.Single(lines));
+    }
+
+    [Fact]
+    public void ResetRunner_Throwing_DoesNotThrow()
+    {
+        var lines = new List<string>();
+        var count = SpdPageResetRunner.Run(true, () => throw new InvalidOperationException("bus gone"), TimeSpan.FromSeconds(5), lines.Add);
+        Assert.Equal(0, count);
+        Assert.Contains("bus gone", Assert.Single(lines));
+    }
+
+    [Fact]
+    public void ResetRunner_WedgedBus_ReturnsWithinBudget()
+    {
+        var release = new ManualResetEventSlim();
+        var sw = System.Diagnostics.Stopwatch.StartNew();
+        var count = SpdPageResetRunner.Run(true, () => { release.Wait(); return 1; }, TimeSpan.FromMilliseconds(100), _ => { });
+        release.Set();
+        Assert.Equal(0, count);
+        Assert.True(sw.ElapsedMilliseconds < 3000);
+    }
 }

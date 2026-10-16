@@ -1,6 +1,14 @@
 using System;
+using System.Threading.Tasks;
 
 namespace Nexus.Service.Sensors;
+
+/// <summary>Resets every DIMM SPD hub to page 0 so a reboot never starts with the hub on a non-zero page.</summary>
+public interface ISpdPageReset
+{
+    /// <summary>Synchronous and bounded by <paramref name="budget"/>; never throws. Returns the DIMM count reset, 0 when SPD reading was never active.</summary>
+    int ResetSpdPages(TimeSpan budget);
+}
 
 /// <summary>The outcome of comparing the wanted SPD state with the applied one.</summary>
 public readonly record struct SpdDecision(bool Wanted, bool Changed, string Reason);
@@ -22,5 +30,33 @@ public static class SpdReadPolicy
             _ => "Nexus Control for the memory device and the monitoring RAM temperature setting are off",
         };
         return new SpdDecision(wanted, wanted != currentlyActive, reason);
+    }
+}
+
+/// <summary>Runs an SPD page reset as a no-op when inactive, within a time budget, and without ever throwing.</summary>
+public static class SpdPageResetRunner
+{
+    public static int Run(bool active, Func<int> reset, TimeSpan budget, Action<string> log)
+    {
+        if (!active)
+        {
+            return 0;
+        }
+        try
+        {
+            var task = Task.Factory.StartNew(reset, default, TaskCreationOptions.LongRunning, TaskScheduler.Default);
+            if (!task.Wait(budget))
+            {
+                log($"[lhm] DIMM SPD page reset timed out after {(int)budget.TotalMilliseconds}ms");
+                return 0;
+            }
+            log($"[lhm] DIMM SPD page reset to 0 on {task.Result} DIMM(s)");
+            return task.Result;
+        }
+        catch (Exception ex)
+        {
+            log($"[lhm] DIMM SPD page reset failed: {(ex is AggregateException a && a.InnerException is not null ? a.InnerException.Message : ex.Message)}");
+            return 0;
+        }
     }
 }

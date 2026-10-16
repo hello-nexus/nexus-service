@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Diagnostics;
+using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 using LibreHardwareMonitor.Hardware;
@@ -10,6 +11,8 @@ using Nexus.Service.Devices.Handlers;
 using Nexus.Service.Lifecycle;
 using Nexus.Service.Persistence;
 using Nexus.Service.Platform;
+using RAMSPDToolkit.I2CSMBus;
+using RAMSPDToolkit.SPD;
 using RAMSPDToolkit.Windows.Driver;
 using RAMSPDToolkit.Windows.Driver.Interfaces;
 
@@ -37,7 +40,7 @@ namespace Nexus.Service.Sensors;
 /// preset (via SignalLhmOpened), and CurveEngine re-drives channels as they
 /// appear, so the delayed open never strands fan control.
 /// </summary>
-public sealed class LhmComputer : IDisposable
+public sealed class LhmComputer : IDisposable, ISpdPageReset
 {
     private readonly Computer _computer;
     private readonly Task _openTask;
@@ -174,6 +177,11 @@ public sealed class LhmComputer : IDisposable
                 {
                     return;
                 }
+                // Page reset runs while the real driver is still seated.
+                if (!decision.Wanted)
+                {
+                    ResetSpdPages(SpdLiveResetBudget);
+                }
                 // Group first (cancels its retry task, closes its DIMMs), then
                 // the driver swap. Re-enabling probes eight addresses
                 // synchronously under the lock.
@@ -195,6 +203,29 @@ public sealed class LhmComputer : IDisposable
         {
             Console.Error.WriteLine($"[lhm] DIMM SPD gate apply failed: {ex.Message}");
         }
+    }
+
+    private static readonly TimeSpan SpdLiveResetBudget = TimeSpan.FromSeconds(2);
+
+    /// <inheritdoc />
+    public int ResetSpdPages(TimeSpan budget) => SpdPageResetRunner.Run(_spdActive, ResetAllDimmPages, budget, Console.WriteLine);
+
+    // Bus calls take the toolkit's world SMBus mutex per operation. DDR5 is identified by MR0/MR1 (unpaged) before any write so a DDR3 SPD is never written; both IsAvailable probes write page 0 as a side effect.
+    private static int ResetAllDimmPages()
+    {
+        var reset = 0;
+        foreach (var bus in SMBusManager.RegisteredSMBuses.ToArray())
+        {
+            for (byte address = 0x50; address <= 0x57; address++)
+            {
+                var isDdr5 = bus.i2c_smbus_read_byte_data(address, 0) == 0x51 && bus.i2c_smbus_read_byte_data(address, 1) == 0x18;
+                if (isDdr5 ? DDR5Accessor.IsAvailable(bus, address) : DDR4Accessor.IsAvailable(bus, address))
+                {
+                    reset++;
+                }
+            }
+        }
+        return reset;
     }
 
     /// <summary>A RAMSPDToolkit driver that reports open so MemoryGroup keeps it instead of installing its PawnIO one, and fails to load because it is none of the three kinds DriverManager accepts, so no bus is ever detected.</summary>
@@ -371,6 +402,7 @@ public sealed class LhmComputer : IDisposable
         // Open(), and Dispose() is only called at service shutdown so the
         // wait is rare and not on any user-visible path.
         try { _openTask.Wait(); } catch { /* shutdown best-effort */ }
+        ResetSpdPages(SpdLiveResetBudget);
         _computer.Close();
     }
 }
