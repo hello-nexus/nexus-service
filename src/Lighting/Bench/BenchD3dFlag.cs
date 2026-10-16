@@ -19,7 +19,7 @@ namespace Nexus.Service.Lighting.Bench;
 /// </summary>
 internal static partial class LightingBench
 {
-    private const uint D3dPreventThreading = 0x200;
+    private const uint D3dPreventThreading = 0x8;
     private const int D3dTicks30 = 14;
     private const int D3dSliceFrames = 8;
 
