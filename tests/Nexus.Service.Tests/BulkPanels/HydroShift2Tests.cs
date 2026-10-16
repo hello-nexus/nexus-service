@@ -618,6 +618,111 @@ public class HydroShift2Tests
         Assert.Equal(1, pipe.Commands.Count(c => c == HydroShift2Protocol.CommandPushPng));
     }
 
+    private static (HydroShift2Aio Aio, BulkPanelHub Hub, HydroShift2LcdDriver Driver, FirmwarePipe Pipe, Action Resume) Resumable(
+        Func<string?, bool>? wirelessOwns = null, Func<string, bool>? nexusWidgets = null)
+    {
+        long now = 1_000;
+        var driver = new HydroShift2LcdDriver(() => now);
+        var hub = new BulkPanelHub(driver);
+        var pipe = new FirmwarePipe();
+        Assert.True(hub.Attach(pipe, null));
+        var aio = new HydroShift2Aio(hub, driver, wirelessOwns ?? (_ => false), nexusWidgets);
+        return (aio, hub, driver, pipe, () =>
+        {
+            driver.OnSystemResumed();
+            now += 12_000;
+            Assert.True(driver.GeometryStale);
+            Assert.True(hub.Renegotiate());
+        });
+    }
+
+    [Fact]
+    public void A_renegotiate_arms_another_delayed_wipe()
+    {
+        var (aio, _, _, pipe, resume) = Resumable();
+        aio.Tick(1_000);
+        aio.Tick(11_000);
+        Assert.Equal(2, pipe.Commands.Count(c => c == HydroShift2Protocol.CommandPushPng));
+
+        resume();
+        pipe.Writes.Clear();
+        aio.Tick(20_000);
+        aio.Tick(29_999);
+        Assert.DoesNotContain(HydroShift2Protocol.CommandPushPng, pipe.Commands);
+        aio.Tick(30_000);
+        Assert.Equal(1, pipe.Commands.Count(c => c == HydroShift2Protocol.CommandPushPng));
+    }
+
+    [Fact]
+    public void A_disconnect_drops_a_pending_delayed_wipe()
+    {
+        var (aio, hub, _, _, _) = Resumable();
+        aio.Tick(1_000);
+        hub.Detach();
+        aio.Tick(5_000);
+        var pipe = new FirmwarePipe();
+        Assert.True(hub.Attach(pipe, null));
+        pipe.Writes.Clear();
+        aio.Tick(5_250);
+        aio.Tick(11_000);
+        Assert.DoesNotContain(HydroShift2Protocol.CommandPushPng, pipe.Commands);
+    }
+
+    [Fact]
+    public void The_delayed_wipe_leaves_a_unit_showing_its_own_screen_alone()
+    {
+        var (aio, _, _, pipe, _) = Resumable(_ => true, _ => false);
+        aio.Tick(1_000);
+        pipe.Writes.Clear();
+        aio.Tick(11_000);
+        Assert.DoesNotContain(HydroShift2Protocol.CommandPushPng, pipe.Commands);
+    }
+
+    [Fact]
+    public void A_renegotiate_reports_the_screen_owner_again_so_its_own_screen_is_switched_back()
+    {
+        var (aio, _, _, _, resume) = Resumable(_ => true, _ => false);
+        var owners = new List<(string Mac, bool Own)>();
+        aio.ScreenOwnerChanged += (mac, own) => owners.Add((mac, own));
+        aio.Tick(1_000);
+        Assert.Single(owners);
+
+        resume();
+        aio.Tick(2_250);
+        Assert.Equal(2, owners.Count);
+        Assert.True(owners[^1].Own);
+    }
+
+    [Fact]
+    public void A_renegotiate_restores_the_backlight_the_boot_reset()
+    {
+        var (_, hub, driver, pipe, resume) = Resumable();
+        driver.SetBrightness(pipe, null, 60);
+
+        pipe.Writes.Clear();
+        resume();
+        Assert.Equal(HydroShift2Protocol.CommandBrightness, pipe.Commands[^1]);
+
+        pipe.Writes.Clear();
+        Assert.True(hub.Renegotiate());
+        Assert.DoesNotContain(HydroShift2Protocol.CommandBrightness, pipe.Commands);
+    }
+
+    [Fact]
+    public void A_renegotiate_uploads_the_ring_again()
+    {
+        var (aio, _, _, pipe, resume) = Resumable();
+        aio.SetRing(Solid(10, 20, 30));
+        aio.Tick(3_000);
+        aio.Tick(3_250);
+        Assert.Equal(1, pipe.Commands.Count(c => c == HydroShift2Protocol.CommandPushRgb));
+
+        resume();
+        aio.Tick(6_000);
+        aio.Tick(6_250);
+        Assert.Equal(2, pipe.Commands.Count(c => c == HydroShift2Protocol.CommandPushRgb));
+    }
+
     private static (HydroShift2Aio Aio, FirmwarePipe Pipe) Attached(
         Func<string?, bool>? wirelessOwns = null, Func<string, bool>? nexusWidgets = null,
         int productId = HydroShift2Protocol.ProductIdSquare)

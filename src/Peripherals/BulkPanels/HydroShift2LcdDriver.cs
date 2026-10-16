@@ -42,6 +42,7 @@ public sealed class HydroShift2LcdDriver : IBulkPanelDriver
     private long _settledAt;
     private int _resumed;
     private int _connects;
+    private int _brightness = -1;
 
     public HydroShift2LcdDriver(Func<long>? now = null)
     {
@@ -112,7 +113,11 @@ public sealed class HydroShift2LcdDriver : IBulkPanelDriver
         {
             ServiceLog.Warn($"[{HandlerId}] overlay wipe unanswered");
         }
-        Interlocked.Exchange(ref _resumed, 0);
+        if (Interlocked.Exchange(ref _resumed, 0) == 1 && _brightness >= 0)
+        {
+            // The streamed panel only sends a backlight that changed, and the boot reset it.
+            SetBrightness(pipe, hid, _brightness);
+        }
         Interlocked.Increment(ref _connects);
 
         _jpeg?.Dispose();
@@ -137,8 +142,11 @@ public sealed class HydroShift2LcdDriver : IBulkPanelDriver
         return true;
     }
 
-    public bool SetBrightness(IBulkUsbPipe pipe, IHidDevice? hid, int percent) =>
-        Command(pipe, HydroShift2Protocol.CommandBrightness, stackalloc byte[] { (byte)Math.Clamp(percent, 0, 100) });
+    public bool SetBrightness(IBulkUsbPipe pipe, IHidDevice? hid, int percent)
+    {
+        _brightness = Math.Clamp(percent, 0, 100);
+        return Command(pipe, HydroShift2Protocol.CommandBrightness, stackalloc byte[] { (byte)_brightness });
+    }
 
     public void Disconnect(IBulkUsbPipe pipe, IHidDevice? hid)
     {

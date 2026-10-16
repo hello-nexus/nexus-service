@@ -28,8 +28,10 @@ public sealed class HydroShift2Aio : BackgroundService
     /// </summary>
     private const int RingAfterWirelessHoldMs = 20_000;
 
-    /// <summary>First retry after an unanswered ring upload, past the few-second stall it causes (measured); doubles up to the cap.</summary>
+    /// <summary>Delay after each connect before the overlay is wiped once more.</summary>
     private const int OverlayRewipeMs = 10_000;
+
+    /// <summary>First retry after an unanswered ring upload, past the few-second stall it causes (measured); doubles up to the cap.</summary>
     private const int RingRetryMs = 5000;
     private const int RingRetryMaxMs = 40_000;
 
@@ -215,6 +217,19 @@ public sealed class HydroShift2Aio : BackgroundService
 
         if (Params is { } current)
         {
+            // A renegotiate wiped the glass and may have rebooted the unit: read the owner afresh
+            // so its own screen is switched back, and resend the ring loop it lost.
+            // A wipe sent while the firmware was still booting is drawn over, so each connect gets one more.
+            if (_driver.Connects != _seenConnects)
+            {
+                _seenConnects = _driver.Connects;
+                _rewipeAt = now + OverlayRewipeMs;
+                _ownScreen = null;
+                lock (_lock)
+                {
+                    _ringDirty = _ring is not null;
+                }
+            }
             var own = ShowsOwnScreen;
             if (own != _ownScreen)
             {
@@ -225,12 +240,6 @@ public sealed class HydroShift2Aio : BackgroundService
                 }
                 _ownScreen = own;
                 RaiseScreenOwnerChanged(current.Mac, own);
-            }
-            // A wipe sent while the firmware was still booting is drawn over, so each connect gets one more.
-            if (_driver.Connects != _seenConnects)
-            {
-                _seenConnects = _driver.Connects;
-                _rewipeAt = now + OverlayRewipeMs;
             }
             if (_rewipeAt != 0 && now >= _rewipeAt)
             {
