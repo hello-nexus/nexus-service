@@ -25,6 +25,9 @@ public sealed class OemInfo
     public string? Serial => _fields.Value.Serial;
     public string? Family => _fields.Value.Family;
 
+    /// <summary>Baseboard manufacturer (SMBIOS Type 2, or the Linux board_vendor node); the system manufacturer in <see cref="Manufacturer"/> is the PC brand on a prebuilt.</summary>
+    public string? BoardManufacturer => _fields.Value.BoardManufacturer;
+
     /// <summary>Case-insensitive, trimmed match against the detected manufacturer.</summary>
     public bool Matches(IEnumerable<string> candidates) => Matches(Manufacturer, candidates);
 
@@ -54,6 +57,16 @@ public sealed class OemInfo
             Console.Error.WriteLine($"[oem-info] SMBIOS read failed: {ex.Message}");
             return default;
         }
+#elif LINUX
+        try
+        {
+            var vendor = System.IO.File.ReadAllText("/sys/class/dmi/id/board_vendor").Trim();
+            return new Type1Fields { BoardManufacturer = vendor.Length == 0 ? null : vendor };
+        }
+        catch
+        {
+            return default;
+        }
 #else
         return default;
 #endif
@@ -68,6 +81,9 @@ public sealed class OemInfo
     private const int OffsetProductName = 0x05;
     private const int OffsetSerialNumber = 0x07;
     private const int OffsetFamily = 0x1A;
+
+    // Type 2 (Baseboard Information) manufacturer string index, SMBIOS spec section 7.3.
+    private const int OffsetBoardManufacturer = 0x04;
 
     [SupportedOSPlatform("windows")]
     private static Type1Fields ReadWindows()
@@ -96,6 +112,9 @@ public sealed class OemInfo
         var tableLength = BitConverter.ToInt32(buffer, 4);
         var offset = 8;
         var end = Math.Min(buffer.Length, 8 + tableLength);
+        var fields = default(Type1Fields);
+        var sawType1 = false;
+        var sawType2 = false;
 
         while (offset + 4 <= end)
         {
@@ -113,19 +132,34 @@ public sealed class OemInfo
             if (type == 1)
             {
                 var strings = SplitStrings(buffer, formattedEnd, structEnd);
-                return new Type1Fields
+                fields = new Type1Fields
                 {
                     Manufacturer = ResolveString(buffer, offset, length, OffsetManufacturer, strings),
                     Model = ResolveString(buffer, offset, length, OffsetProductName, strings),
                     Serial = ResolveString(buffer, offset, length, OffsetSerialNumber, strings),
                     Family = ResolveString(buffer, offset, length, OffsetFamily, strings),
+                    BoardManufacturer = fields.BoardManufacturer,
                 };
+                sawType1 = true;
             }
-            if (type == 127) break; // end-of-table marker
+            else if (type == 2)
+            {
+                var strings = SplitStrings(buffer, formattedEnd, structEnd);
+                fields = new Type1Fields
+                {
+                    Manufacturer = fields.Manufacturer,
+                    Model = fields.Model,
+                    Serial = fields.Serial,
+                    Family = fields.Family,
+                    BoardManufacturer = ResolveString(buffer, offset, length, OffsetBoardManufacturer, strings),
+                };
+                sawType2 = true;
+            }
+            if ((sawType1 && sawType2) || type == 127) break; // end-of-table marker
 
             offset = structEnd;
         }
-        return default;
+        return fields;
     }
 
     private static string? ResolveString(byte[] buffer, int structOffset, int structLength, int fieldOffset, List<string> strings)
@@ -159,6 +193,7 @@ internal readonly struct Type1Fields
     public string? Model { get; init; }
     public string? Serial { get; init; }
     public string? Family { get; init; }
+    public string? BoardManufacturer { get; init; }
 }
 
 #if WINDOWS

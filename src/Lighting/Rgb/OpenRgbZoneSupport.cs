@@ -295,7 +295,7 @@ public static class OpenRgbZoneSupport
             if (!fromSnapshot && exclusions.Count > 0 && exclusions.ContainsKey(baseId))
                 continue;
             var baseKey = DeviceKeyComputer.ForOpenRgbDevice(d);
-            var conflictAppIds = Conflicts.ConflictDeviceOwnership.AppIdsForVendor(d.Vendor);
+            var conflictAppIds = Conflicts.ConflictDeviceOwnership.AppIdsForCard(d.Vendor, d.Location);
             var isSplitMotherboard = IsSplitMotherboard(d);
             var structure = BuildStructure(d, settings);
             var zones = ZoneResolution.Resolve(structure, settings);
@@ -505,7 +505,7 @@ public static class OpenRgbZoneSupport
                     CanvasRotation = NormalizeRotation(layout?.Rotation ?? 0),
                     DeviceId = key,
                     ZoneCustomizable = false,
-                    ConflictAppIds = Conflicts.ConflictDeviceOwnership.AppIdsForVendor(snap.Vendor),
+                    ConflictAppIds = Conflicts.ConflictDeviceOwnership.AppIdsForCard(snap.Vendor, snap.Location),
                 });
                 cardSlot++;
             }

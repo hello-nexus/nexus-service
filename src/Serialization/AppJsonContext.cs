@@ -1143,6 +1143,8 @@ namespace Nexus.Service.Serialization;
 // Conflict warning system - sidebar alarm for competing third-party apps.
 [JsonSerializable(typeof(Nexus.Service.Models.Conflicts.DetectedConflict))]
 [JsonSerializable(typeof(List<Nexus.Service.Models.Conflicts.DetectedConflict>))]
+[JsonSerializable(typeof(Nexus.Service.Models.Conflicts.ConflictDevice))]
+[JsonSerializable(typeof(List<Nexus.Service.Models.Conflicts.ConflictDevice>))]
 [JsonSerializable(typeof(Nexus.Service.Models.Conflicts.GetConflictsResponse))]
 [JsonSerializable(typeof(Nexus.Service.Models.Conflicts.KillConflictBody))]
 [JsonSerializable(typeof(Nexus.Service.Models.Conflicts.KillConflictResponse))]

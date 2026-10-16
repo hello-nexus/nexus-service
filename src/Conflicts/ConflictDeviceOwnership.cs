@@ -20,6 +20,12 @@ public static class ConflictDeviceOwnership
         || def.Vendors.Length > 0
         || Devices.DeviceControlPolicy.AllHandlersByApp().Any(g => string.Equals(g.Key, def.Id, StringComparison.OrdinalIgnoreCase));
 
+    /// <summary>Catalog ids competing for an OpenRGB card: by the VID:PID in its HID path when it carries one, else by <see cref="AppIdsForVendor"/>.</summary>
+    public static List<string> AppIdsForCard(string? vendor, string? location) =>
+        ConflictRelevance.ParseHidPath(location) is { } id
+            ? ConflictRelevance.AppIdsForUsbId(ConflictAppCatalog.All, id.VendorId, id.ProductId)
+            : AppIdsForVendor(vendor);
+
     /// <summary>Catalog ids competing for an OpenRGB device with this vendor string. Empty for an empty vendor.</summary>
     public static List<string> AppIdsForVendor(string? vendor)
     {

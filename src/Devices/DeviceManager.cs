@@ -62,6 +62,26 @@ public sealed class DeviceManager
         }).ToList();
     }
 
+    /// <summary>Connected USB devices by numeric id, for the conflict relevance rule.</summary>
+    public List<Conflicts.ConnectedUsb> ConnectedUsbIds() =>
+        _enumerator.Enumerate().Select(e => new Conflicts.ConnectedUsb(e.VendorId, e.ProductId, e.Name)).ToList();
+
+    /// <summary>Every handler USB id that has a competing catalog app, with that app.</summary>
+    public List<Conflicts.CuratedUsbMapping> CuratedConflictMappings()
+    {
+        var result = new List<Conflicts.CuratedUsbMapping>();
+        foreach (var h in AllHandlers)
+        {
+            var app = DeviceControlPolicy.ConflictAppFor(h.Id);
+            if (app is null) continue;
+            foreach (var id in h.Identifiers)
+            {
+                result.Add(new Conflicts.CuratedUsbMapping(app, id.VendorId, id.ProductId, h.Name));
+            }
+        }
+        return result;
+    }
+
     /// <summary>True when the handler exists, Nexus Control is on for it, and a connected device has a display it drives.</summary>
     public bool IsDisplayInUse(string handlerId) => InUse(handlerId, displayOnly: true);
 

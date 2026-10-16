@@ -24,6 +24,27 @@ public sealed class DetectedConflict
 
     /// <summary>True for a universal RGB app, which competes for every RGB device Nexus controls whatever its vendor.</summary>
     public bool ClaimsAllRgb { get; set; }
+
+    /// <summary>
+    /// Connected devices that make this app a conflict: the hardware Nexus found that the app also drives.
+    /// Empty only for an always-ended app with no attributed device.
+    /// </summary>
+    public List<ConflictDevice> Devices { get; set; } = new();
+}
+
+/// <summary>One connected device attributed to a conflicting app.</summary>
+public sealed class ConflictDevice
+{
+    public string Name { get; set; } = "";
+
+    /// <summary>"0x1038" form; empty for the motherboard.</summary>
+    public string VendorId { get; set; } = "";
+
+    /// <summary>"0x161A" form; empty for the motherboard.</summary>
+    public string ProductId { get; set; } = "";
+
+    /// <summary>"curated" (a first-party handler), "usb" (a supported OpenRGB device by vendor id) or "board".</summary>
+    public string Source { get; set; } = "";
 }
 
 /// <summary>One enabled autostart entry of a conflicting app, as the UI names it back on disable.</summary>

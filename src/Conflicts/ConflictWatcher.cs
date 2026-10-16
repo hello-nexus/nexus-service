@@ -56,6 +56,8 @@ public sealed class ConflictWatcher : BackgroundService, IConflictDetector
     private readonly Func<string, bool>? _displayInUse;
     private readonly Func<string, bool>? _handlerInUse;
     private readonly Func<Dictionary<string, List<(int Pid, string? Path)>>>? _processIndex;
+    private readonly ConflictDeviceInventory? _inventory;
+    private string _lastAttributionLine = "";
 
     internal static readonly TimeSpan PollInterval = TimeSpan.FromSeconds(5);
 
@@ -103,8 +105,8 @@ public sealed class ConflictWatcher : BackgroundService, IConflictDetector
     private readonly object _scanLock = new();
     private long _lastScanTicks = long.MinValue / 2;
 
-    public ConflictWatcher(MultiplexHub hub, OpenRgbProcessManager? openRgb = null, FeatureGates? gates = null, Func<string, bool>? displayInUse = null, Func<string, bool>? handlerInUse = null)
-        : this(hub, openRgb, gates, displayInUse, null, handlerInUse)
+    public ConflictWatcher(MultiplexHub hub, OpenRgbProcessManager? openRgb = null, FeatureGates? gates = null, Func<string, bool>? displayInUse = null, Func<string, bool>? handlerInUse = null, ConflictDeviceInventory? inventory = null)
+        : this(hub, openRgb, gates, displayInUse, null, handlerInUse, inventory)
     {
     }
 
@@ -114,8 +116,10 @@ public sealed class ConflictWatcher : BackgroundService, IConflictDetector
         FeatureGates? gates,
         Func<string, bool>? displayInUse,
         Func<Dictionary<string, List<(int Pid, string? Path)>>>? processIndex,
-        Func<string, bool>? handlerInUse = null)
+        Func<string, bool>? handlerInUse = null,
+        ConflictDeviceInventory? inventory = null)
     {
+        _inventory = inventory;
         _handlerInUse = handlerInUse;
         _hub = hub;
         _openRgb = openRgb;
@@ -181,6 +185,7 @@ public sealed class ConflictWatcher : BackgroundService, IConflictDetector
             // Handler state only matters while a pillar is off; with both on nothing is filtered.
             var handlers = lighting && cooling ? null : HandlerSnapshot();
             var all = _all;
+            var relevance = _inventory?.Current();
             var kept = new List<DetectedConflict>(all.Count);
             foreach (var d in all)
             {
@@ -190,12 +195,31 @@ public sealed class ConflictWatcher : BackgroundService, IConflictDetector
                         h => handlers is not null && handlers.TryGetValue("d:" + h, out var inUse) && inUse,
                         h => handlers is not null && handlers.TryGetValue("h:" + h, out var inUse) && inUse))
                 {
-                    kept.Add(d);
+                    if (relevance is null)
+                    {
+                        kept.Add(d);
+                    }
+                    else if (relevance.Apps.TryGetValue(d.Id, out var attributed) && attributed.Qualifies)
+                    {
+                        kept.Add(WithDevices(d, attributed.Devices));
+                    }
                 }
             }
             return kept;
         }
     }
+
+    private static DetectedConflict WithDevices(DetectedConflict d, List<Models.Conflicts.ConflictDevice> devices) => new()
+    {
+        Id = d.Id,
+        DisplayName = d.DisplayName,
+        Category = d.Category,
+        ProcessName = d.ProcessName,
+        Pid = d.Pid,
+        DeviceOverlapKnown = d.DeviceOverlapKnown,
+        ClaimsAllRgb = d.ClaimsAllRgb,
+        Devices = new List<Models.Conflicts.ConflictDevice>(devices),
+    };
 
     /// <summary>Rescans and republishes under the current pillars; called on a pillar change so subscribers and the next reader see the new list before the change returns.</summary>
     public void PillarsChanged()
@@ -330,6 +354,7 @@ public sealed class ConflictWatcher : BackgroundService, IConflictDetector
         var ids = ChangeKey(visible);
 
         LogTransitions(detected, first: !_detectionReady);
+        LogAttribution(detected);
 
         bool changed = !ArraysEqual(ids, _lastDetectedIds);
         _lastDetectedIds = ids;
@@ -517,7 +542,11 @@ public sealed class ConflictWatcher : BackgroundService, IConflictDetector
     {
         var ids = new string[detected.Count];
         for (int i = 0; i < detected.Count; i++)
+        {
             ids[i] = $"{detected[i].Id}:{detected[i].Pid}";
+            if (detected[i].Devices.Count > 0)
+                ids[i] += ":" + string.Join(",", detected[i].Devices.Select(x => $"{x.VendorId}{x.ProductId}"));
+        }
         Array.Sort(ids, StringComparer.Ordinal);
         return ids;
     }
@@ -560,6 +589,42 @@ public sealed class ConflictWatcher : BackgroundService, IConflictDetector
         {
             LogTransition(id, message);
         }
+    }
+
+    /// <summary>One line per change of the running apps' device attribution, so a support bundle shows why an app was listed or left alone.</summary>
+    private void LogAttribution(IReadOnlyList<DetectedConflict> detected)
+    {
+        var relevance = _inventory?.Current();
+        if (relevance is null || detected.Count == 0)
+        {
+            return;
+        }
+        var line = AttributionLine(detected, relevance);
+        if (line == _lastAttributionLine)
+        {
+            return;
+        }
+        _lastAttributionLine = line;
+        ServiceLog.Info(line);
+    }
+
+    internal static string AttributionLine(IReadOnlyList<DetectedConflict> detected, ConflictRelevanceResult relevance)
+    {
+        var parts = new List<string>(detected.Count);
+        foreach (var d in detected)
+        {
+            if (relevance.Apps.TryGetValue(d.Id, out var r) && r.Devices.Count > 0)
+            {
+                var devices = r.Devices.Select(x => x.VendorId.Length == 0 ? x.Name : $"{x.Name} {x.VendorId[2..]}:{x.ProductId[2..]}");
+                parts.Add($"{d.Id} -> {string.Join("; ", devices)}");
+            }
+            else
+            {
+                parts.Add($"{d.Id} -> " + (relevance.Qualifies(d.Id) ? "always ended" : "no attributed device, left alone"));
+            }
+        }
+        parts.Sort(StringComparer.Ordinal);
+        return $"[conflicts] attribution: {string.Join(" | ", parts)}";
     }
 
     /// <summary>Ids of the detected set, sorted, for diffing one scan against the next.</summary>

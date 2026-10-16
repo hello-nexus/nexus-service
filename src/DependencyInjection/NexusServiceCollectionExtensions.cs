@@ -69,7 +69,11 @@ public static class NexusServiceCollectionExtensions
                 sp.GetService<Nexus.Service.Lighting.Rgb.OpenRgbProcessManager>(),
                 sp.GetRequiredService<Nexus.Service.Lifecycle.FeatureGates>(),
                 handler => sp.GetService<Nexus.Service.Devices.DeviceManager>()?.IsDisplayInUse(handler) == true,
-                handler => sp.GetService<Nexus.Service.Devices.DeviceManager>()?.IsHandlerInUse(handler) == true));
+                handler => sp.GetService<Nexus.Service.Devices.DeviceManager>()?.IsHandlerInUse(handler) == true,
+                new Nexus.Service.Conflicts.ConflictDeviceInventory(
+                    () => sp.GetService<Nexus.Service.Devices.DeviceManager>()?.ConnectedUsbIds() ?? new(),
+                    () => sp.GetService<Nexus.Service.Devices.DeviceManager>()?.CuratedConflictMappings() ?? new(),
+                    () => sp.GetService<Nexus.Service.Sensors.OemInfo>()?.BoardManufacturer)));
         services.AddHostedService(sp => sp.GetRequiredService<Nexus.Service.Conflicts.ConflictWatcher>());
         services.AddSingleton<Nexus.Service.Conflicts.IConflictDetector>(
             sp => sp.GetRequiredService<Nexus.Service.Conflicts.ConflictWatcher>());

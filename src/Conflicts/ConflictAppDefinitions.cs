@@ -73,6 +73,15 @@ public sealed class ConflictAppDefinition
     /// <summary>OpenRGB vendor strings (substring, case-insensitive) whose devices this app drives. Empty for apps that map to no OpenRGB device.</summary>
     public string[] Vendors { get; init; } = Array.Empty<string>();
 
+    /// <summary>USB vendor ids whose supported devices (<c>openrgb-supported-devices.json</c>) this app drives. Left empty for an app tied to one product family or to a vendor id shared with unrelated hardware; those list <see cref="UsbIds"/> or rely on a curated device handler.</summary>
+    public int[] VendorIds { get; init; } = Array.Empty<int>();
+
+    /// <summary>Exact VID:PID pairs, packed as <c>(vid &lt;&lt; 16) | pid</c> (see <see cref="ConflictAppCatalog.Usb"/>), for an app whose vendor id is shared.</summary>
+    public int[] UsbIds { get; init; } = Array.Empty<int>();
+
+    /// <summary>Normalized motherboard vendor ("ASUS", "MSI", "Gigabyte", "ASRock") whose onboard hardware, which has no USB id, this app drives.</summary>
+    public string BoardVendor { get; init; } = "";
+
     /// <summary>True for universal RGB apps that drive every OpenRGB device regardless of vendor.</summary>
     public bool ClaimsAllRgb { get; init; }
 
@@ -88,6 +97,9 @@ public sealed class ConflictAppDefinition
 
 public static class ConflictAppCatalog
 {
+    /// <summary>Packs a VID:PID pair for <see cref="ConflictAppDefinition.UsbIds"/>.</summary>
+    public static int Usb(int vendorId, int productId) => (vendorId << 16) | productId;
+
     /// <summary>
     /// Apps that contend with Nexus for hardware control when run alongside it.
     /// ProcessNames are the Windows
@@ -123,6 +135,7 @@ public static class ConflictAppCatalog
         new()
         {
             Id = "nzxt-cam",
+            VendorIds = new[] { 0x1E71 },
             DefaultWhitelisted = true,
             Vendors = new[] { "NZXT" },
             DisplayName = "NZXT CAM",
@@ -149,6 +162,7 @@ public static class ConflictAppCatalog
         new()
         {
             Id = "nzxt-kraken",
+            VendorIds = new[] { 0x1E71 },
             DisplayName = "NZXT Kraken",
             Category = "cooling",
             AlsoCategory = "lighting",
@@ -197,6 +211,7 @@ public static class ConflictAppCatalog
         new()
         {
             Id = "asus-ai-suite-3",
+            BoardVendor = "ASUS",
             DisplayName = "ASUS AI Suite 3",
             Category = "cooling",
             // AISuite3 = real binary. AlSuite3 is a propagated typo from the
@@ -206,6 +221,8 @@ public static class ConflictAppCatalog
         new()
         {
             Id = "armoury-crate",
+            VendorIds = new[] { 0x0B05, 0x195D },
+            BoardVendor = "ASUS",
             Vendors = new[] { "ASUS" },
             DisplayName = "ASUS Armoury Crate",
             Category = "lighting",
@@ -216,6 +233,8 @@ public static class ConflictAppCatalog
         new()
         {
             Id = "asus-lighting-service",
+            VendorIds = new[] { 0x0B05, 0x195D },
+            BoardVendor = "ASUS",
             Vendors = new[] { "ASUS" },
             DisplayName = "ASUS Lighting Service",
             Category = "lighting",
@@ -224,6 +243,8 @@ public static class ConflictAppCatalog
         new()
         {
             Id = "aura-sync",
+            VendorIds = new[] { 0x0B05, 0x195D },
+            BoardVendor = "ASUS",
             Vendors = new[] { "ASUS" },
             DisplayName = "ASUS Aura Sync",
             Category = "lighting",
@@ -232,6 +253,7 @@ public static class ConflictAppCatalog
         new()
         {
             Id = "asus-fan-xpert",
+            BoardVendor = "ASUS",
             DisplayName = "ASUS Fan Xpert",
             Category = "cooling",
             ProcessNames = new[] { "FanXpert" },
@@ -241,6 +263,8 @@ public static class ConflictAppCatalog
         new()
         {
             Id = "asrock-rgb-sync",
+            VendorIds = new[] { 0x26CE },
+            BoardVendor = "ASRock",
             Vendors = new[] { "ASRock" },
             DisplayName = "ASRock RGB Sync",
             Category = "lighting",
@@ -249,6 +273,8 @@ public static class ConflictAppCatalog
         new()
         {
             Id = "asrock-polychrome",
+            VendorIds = new[] { 0x26CE },
+            BoardVendor = "ASRock",
             Vendors = new[] { "ASRock" },
             DisplayName = "ASRock Polychrome RGB",
             Category = "lighting",
@@ -266,6 +292,8 @@ public static class ConflictAppCatalog
         new()
         {
             Id = "msi-mystic-light",
+            VendorIds = new[] { 0x1462, 0x0DB0 },
+            BoardVendor = "MSI",
             Vendors = new[] { "MSI" },
             DisplayName = "MSI Mystic Light",
             Category = "lighting",
@@ -274,6 +302,8 @@ public static class ConflictAppCatalog
         new()
         {
             Id = "msi-center",
+            VendorIds = new[] { 0x1462, 0x0DB0 },
+            BoardVendor = "MSI",
             Vendors = new[] { "MSI" },
             DisplayName = "MSI Center",
             Category = "lighting",
@@ -283,6 +313,7 @@ public static class ConflictAppCatalog
         new()
         {
             Id = "msi-control-center",
+            BoardVendor = "MSI",
             DisplayName = "MSI Control Center",
             Category = "monitoring",
             ProcessNames = new[] { "ControlCenter" },
@@ -290,6 +321,8 @@ public static class ConflictAppCatalog
         new()
         {
             Id = "msi-led-keeper",
+            VendorIds = new[] { 0x1462, 0x0DB0 },
+            BoardVendor = "MSI",
             Vendors = new[] { "MSI" },
             DisplayName = "MSI LED Keeper",
             Category = "lighting",
@@ -324,6 +357,8 @@ public static class ConflictAppCatalog
         new()
         {
             Id = "gigabyte-rgb-fusion",
+            VendorIds = new[] { 0x1044, 0x0414 },
+            BoardVendor = "Gigabyte",
             Vendors = new[] { "Gigabyte" },
             DisplayName = "Gigabyte RGB Fusion",
             Category = "lighting",
@@ -333,6 +368,8 @@ public static class ConflictAppCatalog
         {
             // Id keeps its old MSI name: Ui.ConflictAutoKillExclusions persists it.
             Id = "msi-gaming-center",
+            VendorIds = new[] { 0x1044, 0x0414 },
+            BoardVendor = "Gigabyte",
             Vendors = new[] { "Gigabyte" },
             DisplayName = "GIGABYTE Control Center",
             Category = "lighting",
@@ -349,6 +386,7 @@ public static class ConflictAppCatalog
         new()
         {
             Id = "gigabyte-smart-fan",
+            BoardVendor = "Gigabyte",
             DisplayName = "Gigabyte Smart Fan",
             Category = "cooling",
             ProcessNames = new[] { "SmartFan" },
@@ -358,6 +396,7 @@ public static class ConflictAppCatalog
         new()
         {
             Id = "icue",
+            VendorIds = new[] { 0x1B1C },
             DefaultWhitelisted = true,
             Vendors = new[] { "Corsair" },
             DisplayName = "Corsair iCUE",
@@ -401,6 +440,7 @@ public static class ConflictAppCatalog
         new()
         {
             Id = "razer-synapse",
+            VendorIds = new[] { 0x1532 },
             Vendors = new[] { "Razer" },
             DisplayName = "Razer Synapse",
             Category = "peripherals",
@@ -419,6 +459,7 @@ public static class ConflictAppCatalog
         new()
         {
             Id = "razer-chroma-sdk",
+            VendorIds = new[] { 0x1532 },
             Vendors = new[] { "Razer" },
             DisplayName = "Razer Chroma SDK",
             Category = "lighting",
@@ -429,6 +470,7 @@ public static class ConflictAppCatalog
         new()
         {
             Id = "logitech-ghub",
+            VendorIds = new[] { 0x046D },
             Vendors = new[] { "Logitech" },
             DisplayName = "Logitech G HUB",
             Category = "peripherals",
@@ -439,6 +481,18 @@ public static class ConflictAppCatalog
         new()
         {
             Id = "lian-li-l-connect",
+            UsbIds = new[]
+            {
+                Usb(0x0416, 0x7373),
+                Usb(0x0416, 0x7371),
+                Usb(0x0CF2, 0xA200),
+                Usb(0x0CF2, 0xA101),
+                Usb(0x0CF2, 0xA104),
+                Usb(0x0CF2, 0xA100),
+                Usb(0x0CF2, 0xA102),
+                Usb(0x0CF2, 0xA103),
+                Usb(0x0CF2, 0xA105),
+            },
             DefaultWhitelisted = true,
             Vendors = new[] { "Lian Li" },
             DisplayName = "Lian Li L-Connect",
@@ -512,6 +566,16 @@ public static class ConflictAppCatalog
         new()
         {
             Id = "glorious-core",
+            UsbIds = new[]
+            {
+                Usb(0x22D4, 0x1503),
+                Usb(0x258A, 0x0033),
+                Usb(0x258A, 0x2023),
+                Usb(0x258A, 0x2012),
+                Usb(0x258A, 0x0036),
+                Usb(0x258A, 0x2022),
+                Usb(0x258A, 0x2011),
+            },
             Vendors = new[] { "Glorious" },
             DisplayName = "Glorious Core",
             Category = "peripherals",
@@ -520,6 +584,7 @@ public static class ConflictAppCatalog
         new()
         {
             Id = "fnatic-op",
+            VendorIds = new[] { 0x2F0E },
             DisplayName = "Fnatic OP",
             Category = "peripherals",
             ProcessNames = new[] { "Fnatic OP" },
@@ -527,6 +592,7 @@ public static class ConflictAppCatalog
         new()
         {
             Id = "steelseries-engine",
+            VendorIds = new[] { 0x1038 },
             Vendors = new[] { "SteelSeries" },
             DisplayName = "SteelSeries Engine",
             Category = "peripherals",
@@ -535,6 +601,7 @@ public static class ConflictAppCatalog
         new()
         {
             Id = "steelseries-gg",
+            VendorIds = new[] { 0x1038 },
             Vendors = new[] { "SteelSeries" },
             DisplayName = "SteelSeries GG",
             Category = "peripherals",
@@ -543,6 +610,7 @@ public static class ConflictAppCatalog
         new()
         {
             Id = "steelseries-prism",
+            VendorIds = new[] { 0x1038 },
             Vendors = new[] { "SteelSeries" },
             DisplayName = "SteelSeries Prism",
             Category = "lighting",
@@ -551,6 +619,7 @@ public static class ConflictAppCatalog
         new()
         {
             Id = "roccat-swarm",
+            VendorIds = new[] { 0x1E7D },
             Vendors = new[] { "ROCCAT" },
             DisplayName = "ROCCAT Swarm",
             Category = "peripherals",
@@ -559,6 +628,7 @@ public static class ConflictAppCatalog
         new()
         {
             Id = "xpg-prime",
+            VendorIds = new[] { 0x125F },
             Vendors = new[] { "XPG", "ADATA" },
             DisplayName = "XPG Prime",
             Category = "lighting",
@@ -595,6 +665,7 @@ public static class ConflictAppCatalog
         new()
         {
             Id = "thermaltake-itake",
+            VendorIds = new[] { 0x264A },
             Vendors = new[] { "Thermaltake" },
             DisplayName = "Thermaltake iTAKE Engine",
             Category = "lighting",
@@ -603,6 +674,7 @@ public static class ConflictAppCatalog
         new()
         {
             Id = "thermaltake-rgb-plus",
+            VendorIds = new[] { 0x264A },
             Vendors = new[] { "Thermaltake" },
             DisplayName = "Thermaltake RGB Plus",
             Category = "lighting",
@@ -623,6 +695,7 @@ public static class ConflictAppCatalog
         new()
         {
             Id = "cooler-master-plus",
+            VendorIds = new[] { 0x2516 },
             Vendors = new[] { "Cooler Master" },
             DisplayName = "Cooler Master MasterPlus+",
             Category = "lighting",
