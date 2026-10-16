@@ -305,16 +305,20 @@ public sealed class AppDataStore
         foreach (var appId in AppIdsFor(profileId))
         {
             var docs = new Dictionary<string, JsonElement>(StringComparer.Ordinal);
-            var keys = Directory.EnumerateFiles(AppDir(profileId, appId), "*.json")
-                .Select(Path.GetFileNameWithoutExtension)
-                .Where(k => AppDataKeys.IsValid(k))
-                .OrderBy(k => k, StringComparer.Ordinal);
-            foreach (var key in keys)
+            // Same per-app lock as Put, so a backup read cannot make File.Replace fail and the key drop out.
+            lock (AppLock(profileId, appId))
             {
-                var doc = TryReadUnlocked(FilePath(profileId, appId, key!));
-                if (doc is not null && IsStorable(doc.Data))
+                var keys = Directory.EnumerateFiles(AppDir(profileId, appId), "*.json")
+                    .Select(Path.GetFileNameWithoutExtension)
+                    .Where(k => AppDataKeys.IsValid(k))
+                    .OrderBy(k => k, StringComparer.Ordinal);
+                foreach (var key in keys)
                 {
-                    docs[key!] = doc.Data;
+                    var doc = TryReadUnlocked(FilePath(profileId, appId, key!));
+                    if (doc is not null && IsStorable(doc.Data))
+                    {
+                        docs[key!] = doc.Data;
+                    }
                 }
             }
             if (docs.Count > 0)
@@ -504,6 +508,8 @@ public sealed class AppDataStore
         }
     }
 
+    private const int ReplaceRetryDelayMs = 50;
+
     private static void WriteFile(string appDir, string path, AppDataFile file)
     {
         Directory.CreateDirectory(appDir);
@@ -518,8 +524,8 @@ public sealed class AppDataStore
         }
         catch (IOException)
         {
-            // Windows refuses File.Replace while another handle (scanner, backup) briefly holds the target.
-            Thread.Sleep(50);
+            // A foreign handle (scanner, backup tool) has no event to wait on, so back off once, bounded.
+            Thread.Sleep(ReplaceRetryDelayMs);
             AtomicJsonFile.Write(path, json);
         }
     }

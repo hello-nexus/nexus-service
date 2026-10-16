@@ -425,14 +425,22 @@ internal sealed partial class ErrorReporter
         };
 
         // A crash is stamped with the build that died, which can predate an update applied since.
-        if (crash is not null)
+        // Same build (the common case) rides the one batch; only a differing version needs its own POST.
+        var crashVersion = crash is null || string.IsNullOrWhiteSpace(crash.Version) ? BuildInfo.Version : crash.Version;
+        crash?.Version = null;
+        if (crash is not null && crashVersion == BuildInfo.Version)
         {
-            var crashVersion = string.IsNullOrWhiteSpace(crash.Version) ? BuildInfo.Version : crash.Version;
-            crash.Version = null;
-            if (await _transport.SendAsync(Payload(crashVersion, new List<ErrorReportItem> { crash }), ct).ConfigureAwait(false))
+            batch.Insert(0, crash);
+            if (await _transport.SendAsync(Payload(BuildInfo.Version, batch), ct).ConfigureAwait(false))
             {
                 try { File.Delete(_crashFile); } catch { /* best-effort */ }
             }
+            return;
+        }
+        if (crash is not null
+            && await _transport.SendAsync(Payload(crashVersion, new List<ErrorReportItem> { crash }), ct).ConfigureAwait(false))
+        {
+            try { File.Delete(_crashFile); } catch { /* best-effort */ }
         }
         if (batch.Count > 0)
             await _transport.SendAsync(Payload(BuildInfo.Version, batch), ct).ConfigureAwait(false);

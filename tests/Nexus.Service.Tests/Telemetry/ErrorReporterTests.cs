@@ -248,6 +248,38 @@ public class ErrorReporterTests : IDisposable
     }
 
     [Fact]
+    public async Task Crash_from_the_same_build_shares_one_payload_with_pending_items()
+    {
+        ErrorReporter.WriteCrashFile(Thrown("dying"), CrashFile);
+        var r = Reporter();
+        r.ReportClient("render", "fp", "T", "m", "s", null, 1);
+        await r.FlushAsync(default);
+
+        var sent = Assert.Single(_transport.Sent);
+        Assert.Equal(BuildInfo.Version, sent.Version);
+        Assert.Equal(2, sent.Errors.Count);
+        Assert.All(sent.Errors, e => Assert.Null(e.Version));
+        Assert.False(File.Exists(CrashFile));
+    }
+
+    [Fact]
+    public async Task Crash_file_without_a_version_falls_back_to_the_running_build_in_one_payload()
+    {
+        ErrorReporter.WriteCrashFile(Thrown("dying"), CrashFile);
+        var node = System.Text.Json.Nodes.JsonNode.Parse(File.ReadAllText(CrashFile))!.AsObject();
+        node.Remove("version");
+        File.WriteAllText(CrashFile, node.ToJsonString());
+
+        var r = Reporter();
+        r.ReportClient("render", "fp", "T", "m", "s", null, 1);
+        await r.FlushAsync(default);
+
+        var sent = Assert.Single(_transport.Sent);
+        Assert.Equal(BuildInfo.Version, sent.Version);
+        Assert.Contains(sent.Errors, e => e.Kind == "crash");
+    }
+
+    [Fact]
     public async Task Crash_file_survives_a_failed_send()
     {
         ErrorReporter.WriteCrashFile(Thrown(), CrashFile);
