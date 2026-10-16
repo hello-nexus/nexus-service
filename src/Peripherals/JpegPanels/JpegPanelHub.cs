@@ -68,6 +68,12 @@ public sealed class JpegPanelHub : IDisposable
         }
     }
 
+    /// <summary>USB product id of the attached panel, or 0 while nothing is attached; one model row spans several products.</summary>
+    public int AttachedProductId
+    {
+        get { lock (_lock) { return _device != null && _attached ? _device.ProductId : 0; } }
+    }
+
     /// <summary>USB serial of the attached panel, or null when nothing is attached.</summary>
     public string? Serial
     {
