@@ -30,6 +30,14 @@ public sealed class DevSimActiveDto
     public long StartedAtUtcMs { get; set; }
 }
 
+/// <summary>Dev tools: pin (1-6) reads amps for seconds.</summary>
+public sealed class PowerDetectorSimBody
+{
+    public int Pin { get; set; } = 1;
+    public float Amps { get; set; }
+    public int Seconds { get; set; } = 60;
+}
+
 public sealed class DevSimEventsResponse
 {
     public List<DevSimCatalogDto> Catalog { get; set; } = new();
@@ -68,6 +76,14 @@ public static class DevSimRoutes
             }
             return Results.Json(Describe(sim), AppJsonContext.Default.DevSimEventsResponse);
         });
+
+        // ROG Astral Power Detector: a pin reads the given current for a while (amps 0 or
+        // seconds 0 ends it). Its alerts and countdowns run for real; no shutdown follows.
+        app.MapPost("/dev/sim/power-detector", (PowerDetectorSimBody body, IServiceProvider sp) =>
+            sp.GetService<Nexus.Service.Sensors.Astral.AstralPowerDetectorService>() is { } detector
+                ? Results.Json(detector.Simulate(body.Pin, body.Amps, TimeSpan.FromSeconds(Math.Clamp(body.Seconds, 0, 3600))),
+                    AppJsonContext.Default.PowerDetectorStateDto)
+                : Results.NotFound());
 
         app.MapPost("/dev/sim/clear", (DevSimEvents sim) =>
         {

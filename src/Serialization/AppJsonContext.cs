@@ -981,6 +981,9 @@ namespace Nexus.Service.Serialization;
 // Conflict launch notice + End task
 [JsonSerializable(typeof(Nexus.Service.Helper.Domains.ConflictLaunchNoticePayload))]
 [JsonSerializable(typeof(Nexus.Service.Helper.Domains.ConflictEndPayload))]
+// ROG Astral Power Detector notice + Cancel shutdown
+[JsonSerializable(typeof(Nexus.Service.Helper.Domains.PowerDetectorNoticePayload))]
+[JsonSerializable(typeof(Nexus.Service.Helper.Domains.PowerDetectorCancelPayload))]
 // Clipboard
 [JsonSerializable(typeof(Nexus.Service.Helper.Domains.ClipboardSetTextPayload))]
 // Screen-time
@@ -1303,6 +1306,7 @@ namespace Nexus.Service.Serialization;
 #if DEV_TOOLS
 [JsonSerializable(typeof(Nexus.Service.Routes.DevPanelVariantDto))]
 [JsonSerializable(typeof(Nexus.Service.Routes.DevSimEventsResponse))]
+[JsonSerializable(typeof(Nexus.Service.Routes.PowerDetectorSimBody))]
 [JsonSerializable(typeof(Nexus.Service.Telemetry.AppTelemetryRequest))]
 [JsonSerializable(typeof(Nexus.Service.Telemetry.AppPageClosedRequest))]
 #endif
@@ -1322,6 +1326,14 @@ namespace Nexus.Service.Serialization;
 [JsonSerializable(typeof(Nexus.Service.Diagnostics.Gpu.GpuThrottleInfo))]
 [JsonSerializable(typeof(Nexus.Service.Routes.GpuInfoWire))]
 [JsonSerializable(typeof(Nexus.Service.Routes.GpuHealthResponse))]
+[JsonSerializable(typeof(Nexus.Service.Routes.LevelSenseCalibrateBody))]
+[JsonSerializable(typeof(Nexus.Service.Routes.LevelSenseCalibrateResponse))]
+[JsonSerializable(typeof(Nexus.Service.Models.Sensors.PowerDetectorStateDto))]
+[JsonSerializable(typeof(Nexus.Service.Models.Sensors.PowerDetectorConfigBody))]
+[JsonSerializable(typeof(Nexus.Service.Models.Sensors.PowerDetectorActionResponse))]
+[JsonSerializable(typeof(Nexus.Service.Persistence.AstralPowerDetectorSettings))]
+[JsonSerializable(typeof(Nexus.Service.Routes.LevelSenseResponse))]
+[JsonSerializable(typeof(Nexus.Service.Models.Sensors.GpuLevelSenseState))]
 [JsonSerializable(typeof(Nexus.Service.Diagnostics.Cooling.CoolingStallSnapshot))]
 [JsonSerializable(typeof(Nexus.Service.Diagnostics.Cooling.CoolingStallDevice))]
 [JsonSerializable(typeof(Nexus.Service.Diagnostics.Memory.MemoryModuleInfo))]

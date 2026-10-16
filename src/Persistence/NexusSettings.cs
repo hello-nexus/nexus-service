@@ -57,6 +57,10 @@ public sealed class NexusSettings
     public SentrySettings Sentry { get; set; } = new();
     /// <summary>Registered panel devices keyed by opaque deviceId. Each record carries the per-device layout + theme overrides + capabilities. NOT profile-scoped: device identity is hardware-level and survives profile switches.</summary>
     public Dictionary<string, Nexus.Service.Models.Panel.PanelDeviceRecord> PanelDevices { get; set; } = new();
+    /// <summary>ROG Astral Level Sense calibrations keyed by AstralGpuSupplement.LevelSenseKey (adapter index + PCI subsystem id): the tilt each card had when calibrated, which its level is measured against. Written by the service; a card without one calibrates itself on its first readings. NOT profile-scoped: it describes how the card sits in this case.</summary>
+    public Dictionary<string, AstralLevelSenseCalibration> AstralLevelSense { get; set; } = new();
+    /// <summary>ROG Astral Power Detector (GPU Tweak III's "Power detector +"): how Nexus warns about and acts on overcurrent through the card's 12V-2x6 pins. NOT profile-scoped: it protects this PC's hardware.</summary>
+    public AstralPowerDetectorSettings AstralPowerDetector { get; set; } = new();
 
     /// <summary>EDID model identities ("CRX:ED00") panel auto-promotion has already acted on (or first observed as user-managed). A listed model is never auto-promoted again, so deleting an auto-created panel record sticks across port changes. NOT profile-scoped.</summary>
     public List<string> AutoPromotedPanelModels { get; set; } = new();
@@ -2223,6 +2227,35 @@ public sealed class SentrySettings
 
     /// <summary>Epoch ms of the last alert the cloud accepted or rate-limited. Null until one has gone out. Drives the one-alert-per-hour cooldown.</summary>
     public long? LastAlertAt { get; set; }
+}
+
+/// <summary>One ROG Astral card's Level Sense calibration: its smoothed X, Y and Z angles in degrees, and when it was taken (Unix ms). A calibration without Z is taken again.</summary>
+public sealed class AstralLevelSenseCalibration
+{
+    public float X { get; set; }
+    public float Y { get; set; }
+    public float? Z { get; set; }
+    public long CalibratedAtMs { get; set; }
+}
+
+/// <summary>The ROG Astral Power Detector's choices, as GPU Tweak III's "Power detector +" page offers them. The limits are fixed (see AstralPowerDetector); a ROG Equalizer cable raises them. Both shutdowns are off until the user turns them on.</summary>
+public sealed class AstralPowerDetectorSettings
+{
+    /// <summary>A Windows notification when a pin goes over its limit.</summary>
+    public bool TrayAlerts { get; set; } = true;
+    /// <summary>A pop-up in the Nexus app when a pin goes over its limit.</summary>
+    public bool InAppAlerts { get; set; } = true;
+    /// <summary>A ROG Equalizer cable feeds the card: the limits rise from 12.5 A and 17 A to 18 A and 20 A.</summary>
+    public bool Equalizer { get; set; }
+    /// <summary>Leaves the ROG Equalizer reminder out of overcurrent alerts.</summary>
+    public bool HideEqualizerReminder { get; set; }
+    /// <summary>Counts down to a shutdown once a pin stays over the overcurrent limit for <see cref="OvercurrentSeconds"/>.</summary>
+    public bool OvercurrentShutdown { get; set; }
+    public int OvercurrentSeconds { get; set; } = 60;
+    /// <summary>How long the overcurrent countdown gives the user to save their work or cancel.</summary>
+    public int CountdownSeconds { get; set; } = 60;
+    /// <summary>Shuts down after a 10 second countdown once a pin reaches the critical limit.</summary>
+    public bool CriticalShutdown { get; set; }
 }
 
 /// <summary>Where a phone's Sentry alerts are pushed, as the phone's panel page registered it. Title and body are already translated; <c>{pc}</c> is filled at send time.</summary>

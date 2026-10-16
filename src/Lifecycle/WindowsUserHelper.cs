@@ -211,6 +211,7 @@ internal static class WindowsUserHelper
             ShowUpdaterWindow,
             CloseUpdaterWindow).Register(handlerRegistry);
         new ConflictNoticeHandler(p => ShowConflictLaunchNotice(p, outbound)).Register(handlerRegistry);
+        new PowerDetectorNoticeHandler(p => ShowPowerDetectorNotice(p, outbound)).Register(handlerRegistry);
         // Runs in the user session, so this set lands on the clipboard the
         // user actually pastes from (the service's Session-0 one is invisible).
         new ClipboardHandler(new Platform.Clipboard.WindowsClipboardProvider().SetText).Register(handlerRegistry);
@@ -446,6 +447,25 @@ internal static class WindowsUserHelper
                 type: ConflictNoticeCommands.EndType,
                 payload: new ConflictEndPayload { AppId = appId },
                 payloadType: AppJsonContext.Default.ConflictEndPayload));
+        if (!shown) Platform.Windows.TrayIcon.ShowNoticeBalloon(p.Title, p.Text, null, p.WindowPath);
+    }
+
+    /// <summary>
+    /// A ROG Astral Power Detector alert or shutdown countdown. Cancel goes back
+    /// to the service, which owns the countdown. The balloon fallback has no
+    /// button; a click opens the card's page, where the countdown can be cancelled.
+    /// </summary>
+    [SupportedOSPlatform("windows10.0.19041.0")]
+    private static void ShowPowerDetectorNotice(PowerDetectorNoticePayload p, HelperOutbound outbound)
+    {
+        Action? onCancel = p.CancelsShutdown
+            ? () => _ = outbound.SendAsync(
+                type: PowerDetectorCommands.CancelType,
+                payload: new PowerDetectorCancelPayload(),
+                payloadType: AppJsonContext.Default.PowerDetectorCancelPayload)
+            : null;
+        var shown = Platform.Windows.ToastNotifications.TryShowPowerDetectorToast(
+            p.Title, p.Text, p.ButtonLabel, string.IsNullOrEmpty(p.WindowPath) ? "/" : p.WindowPath, onCancel);
         if (!shown) Platform.Windows.TrayIcon.ShowNoticeBalloon(p.Title, p.Text, null, p.WindowPath);
     }
 

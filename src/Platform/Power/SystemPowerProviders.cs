@@ -15,6 +15,15 @@ public interface ISystemPowerProvider
     bool Shutdown();
     bool Restart();
     bool Logout();
+
+    /// <summary>
+    /// Shuts down even if an app with unsaved work would hold it up, for a
+    /// shutdown that protects the hardware once the user had a countdown to
+    /// save or cancel; <paramref name="reason"/> goes to the system log where
+    /// the OS keeps one. Falls back to <see cref="Shutdown"/> where there is no
+    /// forced variant.
+    /// </summary>
+    bool ForceShutdown(string reason) => Shutdown();
 }
 
 /// <summary>Windows: LockWorkStation / SetSuspendState P/Invoke + shutdown.exe.</summary>
@@ -38,6 +47,8 @@ public sealed class WindowsSystemPowerProvider : ISystemPowerProvider
     }
     public bool Sleep() => OperatingSystem.IsWindows() && SetSuspendState(false, false, false);
     public bool Shutdown() => Run("/s", "/t", "0");
+    // /f closes apps without waiting on them; /c lands in the System log (event 1074).
+    public bool ForceShutdown(string reason) => Run("/s", "/f", "/t", "0", "/c", reason);
     public bool Restart() => Run("/r", "/t", "0");
     public bool Logout() => Run("/l");
 

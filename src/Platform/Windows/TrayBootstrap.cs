@@ -32,6 +32,8 @@ internal static class TrayBootstrap
     private const string ConflictNoticeButton = "Open Settings";
 
     private const string ConflictLaunchEndButton = "End task";
+    private const string PowerCancelButton = "Cancel shutdown";
+    private const string PowerOpenButton = "Open Nexus";
 
     private static string ConflictLaunchTitle(Nexus.Service.Models.Conflicts.DetectedConflict app) => $"{app.DisplayName} opened";
 
@@ -100,6 +102,14 @@ internal static class TrayBootstrap
         {
             try { TrayIcon.ShowNoticeBalloon(ConflictSurvivorTitle(survivor), ConflictLaunchText(survivor), null, ConflictSettingsPath); }
             catch (Exception ex) { Console.Error.WriteLine($"[conflict-notify] interactive survivor notice failed: {ex.Message}"); }
+        };
+        // Power Detector: a balloon here too; its click opens the card's page,
+        // where a countdown can be cancelled.
+        var interactivePower = app.Services.GetService<Nexus.Service.Sensors.Astral.AstralPowerDetectorService>();
+        interactivePower?.NoticeRaised += notice =>
+        {
+            try { TrayIcon.ShowNoticeBalloon(notice.Title, notice.Text, null, notice.Path); }
+            catch (Exception ex) { Console.Error.WriteLine($"[power-detector] interactive notice failed: {ex.Message}"); }
         };
 
         var hub = app.Services.GetRequiredService<MultiplexHub>();
@@ -344,6 +354,41 @@ internal static class TrayBootstrap
         // End task on a launch notice. Ended here, not in the helper: the
         // service runs as LocalSystem and can end an elevated vendor app.
         helperRegistry.InboundEnvelope += (_, env) => EndConflictFromNotice(env);
+
+        // ROG Astral Power Detector: alerts and shutdown countdowns as toasts,
+        // never held by the notification gate. A countdown's Cancel comes back
+        // here; a helper that connects mid-countdown gets it again.
+        var powerDetector = app.Services.GetService<Nexus.Service.Sensors.Astral.AstralPowerDetectorService>();
+        if (powerDetector is not null)
+        {
+            void SendPowerNotice(Nexus.Service.Sensors.Astral.PowerDetectorNotice notice)
+            {
+                try
+                {
+                    _ = PowerDetectorCommands.NoticeAsync(helperRegistry, new PowerDetectorNoticePayload
+                    {
+                        Title = notice.Title,
+                        Text = notice.Text,
+                        WindowPath = notice.Path ?? "",
+                        ButtonLabel = notice.CancelsShutdown ? PowerCancelButton : PowerOpenButton,
+                        CancelsShutdown = notice.CancelsShutdown,
+                    });
+                }
+                catch (Exception ex) { Console.Error.WriteLine($"[power-detector] notice failed: {ex.Message}"); }
+            }
+
+            powerDetector.NoticeRaised += SendPowerNotice;
+            helperRegistry.Connected += _ =>
+            {
+                if (powerDetector.CurrentCountdownNotice() is { } running) SendPowerNotice(running);
+            };
+            helperRegistry.InboundEnvelope += (_, env) =>
+            {
+                if (env.Type != PowerDetectorCommands.CancelType) return;
+                try { powerDetector.Cancel(); }
+                catch (Exception ex) { ServiceLog.Warn($"[power-detector] cancel from notice failed: {ex.Message}"); }
+            };
+        }
 
         // Synced panels follow Theme.ResolvedThemeMode; with the app theme on
         // "system" the helper's Windows light/dark keeps it current while the

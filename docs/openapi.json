@@ -9557,6 +9557,146 @@
         }
       }
     },
+    "/diagnostics/gpu/level-sense": {
+      "get": {
+        "tags": [
+          "Nexus"
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LevelSenseResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/diagnostics/gpu/level-sense/calibrate": {
+      "post": {
+        "tags": [
+          "Nexus"
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "oneOf": [
+                  {
+                    "type": "null"
+                  },
+                  {
+                    "$ref": "#/components/schemas/LevelSenseCalibrateBody"
+                  }
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LevelSenseCalibrateResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/diagnostics/gpu/power-detector": {
+      "get": {
+        "tags": [
+          "Nexus"
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PowerDetectorStateDto"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/diagnostics/gpu/power-detector/config": {
+      "post": {
+        "tags": [
+          "Nexus"
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PowerDetectorConfigBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PowerDetectorStateDto"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/diagnostics/gpu/power-detector/cancel": {
+      "post": {
+        "tags": [
+          "Nexus"
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PowerDetectorActionResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/diagnostics/gpu/power-detector/shutdown-now": {
+      "post": {
+        "tags": [
+          "Nexus"
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PowerDetectorActionResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/diagnostics/cooling": {
       "get": {
         "tags": [
@@ -19625,6 +19765,71 @@
           }
         }
       },
+      "GpuLevelSenseState": {
+        "required": [
+          "gpuId",
+          "name",
+          "calibrating",
+          "calibratedAtMs"
+        ],
+        "type": "object",
+        "properties": {
+          "gpuId": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "calibrating": {
+            "type": "boolean"
+          },
+          "calibratedAtMs": {
+            "pattern": "^-?(?:0|[1-9]\\d*)$",
+            "type": [
+              "null",
+              "integer",
+              "string"
+            ],
+            "format": "int64"
+          },
+          "sag": {
+            "pattern": "^-?(?:0|[1-9]\\d*)(?:\\.\\d+)?(?:[eE][+-]?\\d+)?$",
+            "type": [
+              "null",
+              "number",
+              "string"
+            ],
+            "format": "float"
+          },
+          "lean": {
+            "pattern": "^-?(?:0|[1-9]\\d*)(?:\\.\\d+)?(?:[eE][+-]?\\d+)?$",
+            "type": [
+              "null",
+              "number",
+              "string"
+            ],
+            "format": "float"
+          },
+          "x": {
+            "pattern": "^-?(?:0|[1-9]\\d*)(?:\\.\\d+)?(?:[eE][+-]?\\d+)?$",
+            "type": [
+              "null",
+              "number",
+              "string"
+            ],
+            "format": "float"
+          },
+          "y": {
+            "pattern": "^-?(?:0|[1-9]\\d*)(?:\\.\\d+)?(?:[eE][+-]?\\d+)?$",
+            "type": [
+              "null",
+              "number",
+              "string"
+            ],
+            "format": "float"
+          }
+        }
+      },
       "GpuThrottleInfo": {
         "required": [
           "active",
@@ -20674,6 +20879,39 @@
         "properties": {
           "pattern": {
             "type": "string"
+          }
+        }
+      },
+      "LevelSenseCalibrateBody": {
+        "type": "object",
+        "properties": {
+          "gpuId": {
+            "type": [
+              "null",
+              "string"
+            ]
+          }
+        }
+      },
+      "LevelSenseCalibrateResponse": {
+        "type": "object",
+        "properties": {
+          "gpus": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        }
+      },
+      "LevelSenseResponse": {
+        "type": "object",
+        "properties": {
+          "gpus": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/GpuLevelSenseState"
+            }
           }
         }
       },
@@ -29645,6 +29883,255 @@
               "string"
             ],
             "format": "int32"
+          }
+        }
+      },
+      "AstralPowerDetectorSettings": {
+        "type": "object",
+        "properties": {
+          "trayAlerts": {
+            "type": "boolean"
+          },
+          "inAppAlerts": {
+            "type": "boolean"
+          },
+          "equalizer": {
+            "type": "boolean"
+          },
+          "hideEqualizerReminder": {
+            "type": "boolean"
+          },
+          "overcurrentShutdown": {
+            "type": "boolean"
+          },
+          "overcurrentSeconds": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "countdownSeconds": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "criticalShutdown": {
+            "type": "boolean"
+          }
+        }
+      },
+      "PowerDetectorActionResponse": {
+        "type": "object",
+        "properties": {
+          "ok": {
+            "type": "boolean"
+          }
+        }
+      },
+      "PowerDetectorAlertDto": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "level": {
+            "type": "string"
+          },
+          "title": {
+            "type": "string"
+          },
+          "text": {
+            "type": "string"
+          },
+          "atMs": {
+            "type": "integer",
+            "format": "int64"
+          }
+        }
+      },
+      "PowerDetectorConfigBody": {
+        "type": "object",
+        "properties": {
+          "trayAlerts": {
+            "type": [
+              "null",
+              "boolean"
+            ]
+          },
+          "inAppAlerts": {
+            "type": [
+              "null",
+              "boolean"
+            ]
+          },
+          "equalizer": {
+            "type": [
+              "null",
+              "boolean"
+            ]
+          },
+          "hideEqualizerReminder": {
+            "type": [
+              "null",
+              "boolean"
+            ]
+          },
+          "overcurrentShutdown": {
+            "type": [
+              "null",
+              "boolean"
+            ]
+          },
+          "overcurrentSeconds": {
+            "type": [
+              "null",
+              "integer"
+            ],
+            "format": "int32"
+          },
+          "countdownSeconds": {
+            "type": [
+              "null",
+              "integer"
+            ],
+            "format": "int32"
+          },
+          "criticalShutdown": {
+            "type": [
+              "null",
+              "boolean"
+            ]
+          }
+        }
+      },
+      "PowerDetectorCountdownDto": {
+        "type": "object",
+        "properties": {
+          "reason": {
+            "type": "string"
+          },
+          "startedAtMs": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "endsAtMs": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "text": {
+            "type": "string"
+          }
+        }
+      },
+      "PowerDetectorGpuDto": {
+        "type": "object",
+        "properties": {
+          "gpuId": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "pinAmps": {
+            "type": "array",
+            "items": {
+              "type": "number",
+              "format": "float"
+            }
+          },
+          "readAtMs": {
+            "type": "integer",
+            "format": "int64"
+          }
+        }
+      },
+      "PowerDetectorPinDto": {
+        "type": "object",
+        "properties": {
+          "gpuId": {
+            "type": "string"
+          },
+          "pin": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "amps": {
+            "type": "number",
+            "format": "float"
+          }
+        }
+      },
+      "PowerDetectorStateDto": {
+        "type": "object",
+        "properties": {
+          "supported": {
+            "type": "boolean"
+          },
+          "gpus": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/PowerDetectorGpuDto"
+            }
+          },
+          "level": {
+            "type": "string"
+          },
+          "worst": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/PowerDetectorPinDto"
+              }
+            ]
+          },
+          "overcurrentAmps": {
+            "type": "number",
+            "format": "float"
+          },
+          "criticalAmps": {
+            "type": "number",
+            "format": "float"
+          },
+          "pinWarnAmps": {
+            "type": "number",
+            "format": "float"
+          },
+          "pinLowAmps": {
+            "type": "number",
+            "format": "float"
+          },
+          "pinCautionAmps": {
+            "type": "number",
+            "format": "float"
+          },
+          "countdown": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/PowerDetectorCountdownDto"
+              }
+            ]
+          },
+          "shuttingDown": {
+            "type": "boolean"
+          },
+          "heldOff": {
+            "type": "boolean"
+          },
+          "alert": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/PowerDetectorAlertDto"
+              }
+            ]
+          },
+          "settings": {
+            "$ref": "#/components/schemas/AstralPowerDetectorSettings"
           }
         }
       }

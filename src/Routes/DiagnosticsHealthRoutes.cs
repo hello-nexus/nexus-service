@@ -18,6 +18,7 @@ using Nexus.Service.Diagnostics.Temperature;
 using Nexus.Service.Lifecycle;
 using Nexus.Service.Lighting;
 using Nexus.Service.Models;
+using Nexus.Service.Models.Sensors;
 using Nexus.Service.Monitoring.History;
 using Nexus.Service.Platform;
 using Nexus.Service.Sensors;
@@ -105,6 +106,45 @@ public static class DiagnosticsHealthRoutes
 
         app.MapGet("/diagnostics/gpu", (string? refresh, GpuHealthMonitor gpu, EventLogMonitor events) =>
             BuildGpuResponse(gpu, events, IsRefresh(refresh)));
+
+        // ROG Astral Level Sense: each card with a G-sensor, its calibration and
+        // its latest reading against it.
+        app.MapGet("/diagnostics/gpu/level-sense", (ISensorProvider sensors) =>
+            new LevelSenseResponse { Gpus = sensors.GetGpuLevelSenseStates() });
+
+        // The card's next few G-sensor readings become its new level. GpuId is a
+        // GpuReadout id; without one every GPU with a G-sensor recalibrates. A
+        // calibration already running is left to finish: starting it over on
+        // every press would keep it from ever completing.
+        app.MapPost("/diagnostics/gpu/level-sense/calibrate", (LevelSenseCalibrateBody? body, ISensorProvider sensors) =>
+        {
+            var running = sensors.GetGpuLevelSenseStates()
+                .Where(s => s.Calibrating && (body?.GpuId is null || s.GpuId == body.GpuId))
+                .Select(s => s.GpuId)
+                .ToList();
+            return new LevelSenseCalibrateResponse
+            {
+                Gpus = running.Count > 0 ? running : sensors.RecalibrateGpuLevelSense(body?.GpuId),
+            };
+        });
+
+        // ROG Astral Power Detector (Windows only; elsewhere it reports unsupported):
+        // its state, a settings change, and cancelling a shutdown countdown.
+        app.MapGet("/diagnostics/gpu/power-detector", (IServiceProvider sp) =>
+            sp.GetService<Nexus.Service.Sensors.Astral.AstralPowerDetectorService>()?.GetState() ?? new PowerDetectorStateDto());
+
+        app.MapPost("/diagnostics/gpu/power-detector/config", (PowerDetectorConfigBody body, IServiceProvider sp) =>
+            sp.GetService<Nexus.Service.Sensors.Astral.AstralPowerDetectorService>() is { } detector
+                ? Results.Ok(detector.SetConfig(body))
+                : Results.NotFound());
+
+        app.MapPost("/diagnostics/gpu/power-detector/cancel", (IServiceProvider sp) =>
+            new PowerDetectorActionResponse { Ok = sp.GetService<Nexus.Service.Sensors.Astral.AstralPowerDetectorService>()?.Cancel() ?? false });
+
+        // Shuts down now instead of at the end of the running countdown. It can
+        // only cut a countdown short, never start a shutdown; false when none runs.
+        app.MapPost("/diagnostics/gpu/power-detector/shutdown-now", (IServiceProvider sp) =>
+            new PowerDetectorActionResponse { Ok = sp.GetService<Nexus.Service.Sensors.Astral.AstralPowerDetectorService>()?.ShutdownNow() ?? false });
 
         app.MapGet("/diagnostics/cooling", (CoolingStallDetector cooling) => cooling.Snapshot()).AllowPanel();
 
@@ -606,6 +646,23 @@ public sealed record GpuHealthResponse
 {
     public bool Supported { get; init; }
     public IReadOnlyList<GpuInfoWire> Gpus { get; init; } = Array.Empty<GpuInfoWire>();
+}
+
+public sealed record LevelSenseCalibrateBody
+{
+    public string? GpuId { get; init; }
+}
+
+public sealed record LevelSenseCalibrateResponse
+{
+    /// <summary>Ids of the GPUs now calibrating; empty when none has a G-sensor.</summary>
+    public IReadOnlyList<string> Gpus { get; init; } = Array.Empty<string>();
+}
+
+public sealed record LevelSenseResponse
+{
+    /// <summary>Every GPU with a G-sensor; empty when there is none.</summary>
+    public IReadOnlyList<GpuLevelSenseState> Gpus { get; init; } = Array.Empty<GpuLevelSenseState>();
 }
 
 public sealed record MemoryHealthResponse

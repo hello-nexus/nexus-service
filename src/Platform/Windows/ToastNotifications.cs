@@ -208,6 +208,46 @@ public static class ToastNotifications
         }
     }
 
+    /// <summary>
+    /// Raises a ROG Astral Power Detector toast. With <paramref name="onCancel"/>
+    /// (a shutdown countdown) the button cancels the shutdown and the toast stays
+    /// on screen until the user acts on it; without (an alert) the button and
+    /// the body open <paramref name="windowPath"/>. False when Windows would not
+    /// take it, so the caller can fall back to the balloon.
+    /// </summary>
+    public static bool TryShowPowerDetectorToast(string title, string text, string buttonLabel, string windowPath, Action? onCancel)
+    {
+        try
+        {
+            EnsureAppUserModelId();
+
+            var countdown = onCancel is not null;
+            var xml = new XmlDocument();
+            xml.LoadXml(
+                (countdown ? "<toast activationType='foreground' launch='open' scenario='reminder'>" : "<toast activationType='foreground' launch='open'>") +
+                  "<visual><binding template='ToastGeneric'>" +
+                    $"<text>{Escape(title)}</text>" +
+                    $"<text>{Escape(text)}</text>" +
+                  "</binding></visual>" +
+                  "<actions>" +
+                    $"<action content='{Escape(buttonLabel)}' arguments='{(countdown ? "cancel" : "open")}' activationType='foreground'/>" +
+                  "</actions>" +
+                "</toast>");
+
+            Show(xml, arguments =>
+            {
+                if (arguments == "cancel") onCancel?.Invoke();
+                else TrayIcon.OpenLocalWindow(path: windowPath);
+            });
+            return true;
+        }
+        catch (Exception ex)
+        {
+            HelperLog.Write($"[toast] power detector toast failed, falling back to balloon: {ex.Message}");
+            return false;
+        }
+    }
+
     /// <summary>Shows <paramref name="xml"/>; <paramref name="onActivated"/> gets the activation arguments (the action's, or the toast's launch value for a body click).</summary>
     private static void Show(XmlDocument xml, Action<string> onActivated)
     {
