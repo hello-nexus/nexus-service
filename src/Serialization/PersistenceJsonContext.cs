@@ -98,6 +98,7 @@ namespace Nexus.Service.Serialization;
 [JsonSerializable(typeof(System.Text.Json.JsonElement))]
 // MachineCaseStore: this machine's PC case pick and its pending-sync flag.
 [JsonSerializable(typeof(MachineCaseFile))]
+[JsonSerializable(typeof(SystemPreviewMeta))]
 [JsonSerializable(typeof(Nexus.Service.Lighting.Scene.LightingSceneDoc))]
 [JsonSerializable(typeof(Nexus.Service.Lighting.CustomEffects.CustomEffectsDoc))]
 // QSeriesTransportStore: (USB-serial → TCP transport record). Lets the
