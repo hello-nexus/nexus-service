@@ -397,18 +397,8 @@ public sealed class CompositeLightingDeviceProvider : ILightingDeviceProvider
             dev.Controlled = uncontrolled.Count == 0 || !uncontrolled.Contains(dev.Id);
         }
 
-        // Spread every device without a persisted layout across the grid. totalCount counts persisted devices too so the
-        // slot for any one device is stable across calls (resetting one card doesn't shuffle the others). Must run
-        // AFTER the CNVS / NP50 / MiniHub merges so newly-added hub devices also pick up a default slot.
-        var layouts = settings.Lighting.DeviceLayouts;
-        var total = rgb.Devices.Count;
-        for (var i = 0; i < total; i++)
-        {
-            var dev = rgb.Devices[i];
-            if (layouts.ContainsKey(dev.Id)) continue;
-            var (x, y, w, h) = CanvasGridLayout.Slot(i, total);
-            dev.CanvasX = x; dev.CanvasY = y; dev.CanvasW = w; dev.CanvasH = h;
-        }
+        // Must run AFTER the CNVS / NP50 / MiniHub merges so newly-added hub devices also pick up a default slot.
+        ApplyDefaultLayouts(rgb.Devices, settings);
 
         // Mirror into engine frames so running effects sample from the same rectangles. Without this, RgbBridge's
         // existing-frame-wins rule would pin pre-grid coordinates in memory. O(N²), trivial for typical N (<30).
@@ -423,6 +413,25 @@ public sealed class CompositeLightingDeviceProvider : ILightingDeviceProvider
             }
         }
         return rgb;
+    }
+
+    /// <summary>
+    /// Gives every device without a persisted layout its default rect: the whole canvas on a
+    /// <see cref="NexusSettings.MaximizedCanvasDefaults"/> install, else a grid slot. The grid's totalCount counts
+    /// persisted devices too so the slot for any one device is stable across calls (resetting one card doesn't
+    /// shuffle the others).
+    /// </summary>
+    internal static void ApplyDefaultLayouts(List<LightingDevice> devices, NexusSettings settings)
+    {
+        var layouts = settings.Lighting.DeviceLayouts;
+        var total = devices.Count;
+        for (var i = 0; i < total; i++)
+        {
+            var dev = devices[i];
+            if (layouts.ContainsKey(dev.Id)) continue;
+            var (x, y, w, h) = settings.MaximizedCanvasDefaults ? CanvasGridLayout.Full : CanvasGridLayout.Slot(i, total);
+            dev.CanvasX = x; dev.CanvasY = y; dev.CanvasW = w; dev.CanvasH = h;
+        }
     }
 
     public void SetDisabled(IReadOnlyList<string> ids)
