@@ -101,7 +101,8 @@ public sealed class MaximizedCanvasDefaultsTests : IDisposable
         var placed = new DeviceFrame(0, "placed", 4, x: 10, y: 20, w: 140, h: 120);
         var unplaced = new DeviceFrame(1, "unplaced", 4, x: 10, y: 20, w: 140, h: 120);
 
-        CanvasGridLayout.MaximizeUnplaced(new[] { placed, unplaced }, new HashSet<string> { "placed" });
+        CanvasGridLayout.MaximizeUnplaced(
+            new[] { placed, unplaced }, new Dictionary<string, DeviceLayout> { ["placed"] = new DeviceLayout() });
 
         Assert.Equal((10f, 20f, 140f, 120f), (placed.X, placed.Y, placed.W, placed.H));
         Assert.Equal((0f, 0f, 1000f, 600f), (unplaced.X, unplaced.Y, unplaced.W, unplaced.H));

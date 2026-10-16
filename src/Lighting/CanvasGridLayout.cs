@@ -32,12 +32,12 @@ internal static class CanvasGridLayout
     /// <summary>The whole canvas: the default rect on a <see cref="NexusSettings.MaximizedCanvasDefaults"/> install. Equals the rect nexus-web's Maximize (DeviceCanvas.tsx setMaximized) writes for an unturned frame; change both together.</summary>
     public static (float x, float y, float w, float h) Full => (0f, 0f, CanvasW, CanvasH);
 
-    /// <summary>Puts every frame whose id is not in <paramref name="placedIds"/> on <see cref="Full"/>.</summary>
-    public static void MaximizeUnplaced(IReadOnlyList<DeviceFrame> frames, IReadOnlySet<string> placedIds)
+    /// <summary>Puts every frame with no persisted layout on <see cref="Full"/>.</summary>
+    public static void MaximizeUnplaced(IReadOnlyList<DeviceFrame> frames, IReadOnlyDictionary<string, DeviceLayout> layouts)
     {
         foreach (var frame in frames)
         {
-            if (placedIds.Contains(frame.Id)) continue;
+            if (layouts.ContainsKey(frame.Id)) continue;
             (frame.X, frame.Y, frame.W, frame.H) = Full;
         }
     }
