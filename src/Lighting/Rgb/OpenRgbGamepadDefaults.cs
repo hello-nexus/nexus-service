@@ -5,20 +5,26 @@ using Nexus.Service.Persistence;
 namespace Nexus.Service.Lighting.Rgb;
 
 /// <summary>
-/// Game controllers whose OpenRGB detectors stay disabled until the user turns
-/// the controller's card on: the Sony detectors open the gamepad's own HID
+/// Game controllers and mice whose OpenRGB detectors stay disabled until the user turns
+/// the device's card on: the Sony detectors open the gamepad's own HID
 /// interface and write its output report, which fights games and Steam Input
-/// for the controller. A present controller shows as a detector-excluded card
+/// for the controller. The mouse detectors put the mouse in a software or host
+/// control mode in which its buttons or DPI stop working until it re-enumerates.
+/// A present held-off device shows as a detector-excluded card
 /// keyed by <see cref="KeyOf"/>; turning that card on records the detector in
 /// <see cref="DevicesSettings.OpenRgbGamepadDetectorsAllowed"/>.
 /// </summary>
 public static class OpenRgbGamepadDefaults
 {
     /// <param name="Detector">REGISTER_*_DETECTOR name in nexus-rgb/openrgb-headless, verbatim.</param>
-    public sealed record Entry(string Detector, string Vendor, int VendorId, int ProductId);
+    /// <param name="Type">OpenRGB device type of the synthesized card.</param>
+    public sealed record Entry(string Detector, string Vendor, int VendorId, int ProductId, uint Type = GamepadType);
 
     /// <summary>OpenRGB DEVICE_TYPE_GAMEPAD.</summary>
     private const uint GamepadType = 10;
+
+    /// <summary>OpenRGB DEVICE_TYPE_MOUSE.</summary>
+    private const uint MouseType = 6;
 
     private const string KeyPrefix = "openrgb-gamepad-";
 
@@ -30,7 +36,32 @@ public static class OpenRgbGamepadDefaults
         new("Sony DualSense", "Sony", 0x054C, 0x0CE6),
         new("Sony DualSense Edge", "Sony", 0x054C, 0x0DF2),
         new("GameSir Nova 2 Lite", "GameSir", 0x3537, 0x100F),
+        // Mice: OpenRGB control mode breaks their buttons or DPI.
+        new("Corsair Katar Pro", "Corsair", 0x1B1C, 0x1B93, MouseType),
+        new("Corsair Katar Pro V2", "Corsair", 0x1B1C, 0x1BBA, MouseType),
+        new("Corsair Katar Pro XT", "Corsair", 0x1B1C, 0x1BAC, MouseType),
+        new("Corsair M55 RGB PRO", "Corsair", 0x1B1C, 0x1B70, MouseType),
+        new("Corsair M65 RGB Ultra Wired", "Corsair", 0x1B1C, 0x1B9E, MouseType),
+        new("Corsair Scimitar PRO RGB", "Corsair", 0x1B1C, 0x1B3E, MouseType),
+        // One detector name over both VID/PID pairs, so the denylist covers every registration.
+        new("HyperX Pulsefire Haste", "HyperX", 0x0951, 0x1727, MouseType),
+        new("HyperX Pulsefire Haste", "HyperX", 0x03F0, 0x0F8F, MouseType),
     };
+
+    /// <summary>
+    /// Opts an existing install's mice into OpenRGB so only new installs hold them off.
+    /// A mouse whose held-off card already exists stays held off.
+    /// </summary>
+    public static void KeepMiceOn(NexusSettings s)
+    {
+        var allowed = new List<string>(s.Devices.OpenRgbGamepadDetectorsAllowed);
+        foreach (var e in Entries)
+        {
+            if (e.Type == MouseType && !allowed.Contains(e.Detector) && !s.Devices.OpenRgbDetectorExclusions.ContainsKey(KeyOf(e.Detector)))
+                allowed.Add(e.Detector);
+        }
+        s.Devices.OpenRgbGamepadDetectorsAllowed = allowed;
+    }
 
     /// <summary>Exclusion key of a detector's synthesized card.</summary>
     public static string KeyOf(string detector) =>
@@ -62,7 +93,7 @@ public static class OpenRgbGamepadDefaults
         return false;
     }
 
-    /// <summary>True when (vid, pid) belongs to a held-off controller, which no re-detect can find.</summary>
+    /// <summary>True when (vid, pid) belongs to a held-off device, which no re-detect can find.</summary>
     public static bool IsHeldOff(NexusSettings s, int vendorId, int productId)
     {
         foreach (var e in Entries)
@@ -131,7 +162,7 @@ public static class OpenRgbGamepadDefaults
                     DeviceName = detector,
                     Vendor = VendorOf(detector),
                     LedCount = 1,
-                    Type = GamepadType,
+                    Type = TypeOf(detector),
                 };
                 if (!nextUncontrolled.Contains(key))
                     nextUncontrolled.Add(key);
@@ -161,6 +192,16 @@ public static class OpenRgbGamepadDefaults
             s.Devices.OpenRgbGamepadDetectorsAllowed = new List<string>(s.Devices.OpenRgbGamepadDetectorsAllowed) { e.Detector };
             return;
         }
+    }
+
+    private static uint TypeOf(string detector)
+    {
+        foreach (var e in Entries)
+        {
+            if (e.Detector == detector)
+                return e.Type;
+        }
+        return GamepadType;
     }
 
     private static string VendorOf(string detector)

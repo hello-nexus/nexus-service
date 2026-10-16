@@ -215,6 +215,56 @@ public class JsonConfigStoreMigrationTests : IDisposable
         }
     }
 
+    private static readonly string[] Mice =
+    {
+        "Corsair Katar Pro", "Corsair Katar Pro V2", "Corsair Katar Pro XT", "Corsair M55 RGB PRO",
+        "Corsair M65 RGB Ultra Wired", "Corsair Scimitar PRO RGB", "HyperX Pulsefire Haste",
+    };
+
+    private static readonly string[] Gamepads = { "GameSir Nova 2 Lite", "Sony DualSense", "Sony DualSense Edge", "Sony DualShock 4" };
+
+    private SortedSet<string> HeldOffAfterLoad(string? json)
+    {
+        if (json is not null)
+        {
+            File.WriteAllText(_settingsPath, json);
+        }
+        using var store = new JsonConfigStore(_settingsPath);
+        return Nexus.Service.Lighting.Rgb.OpenRgbGamepadDefaults.HeldOffDetectors(store.Load());
+    }
+
+    [Fact]
+    public void Load_FreshInstall_HoldsMiceAndGamepadsOff()
+    {
+        var held = HeldOffAfterLoad(null);
+
+        Assert.All(Mice, m => Assert.Contains(m, held));
+        Assert.All(Gamepads, g => Assert.Contains(g, held));
+    }
+
+    [Theory]
+    [InlineData("""{ "schemaVersion": 21, "ui": { "sidebarCollapsed": true } }""")]
+    [InlineData("""{ "ui": { "sidebarCollapsed": true } }""")]
+    public void Load_ExistingInstall_KeepsMiceOnAndGamepadsHeldOff(string json)
+    {
+        var held = HeldOffAfterLoad(json);
+
+        Assert.All(Mice, m => Assert.DoesNotContain(m, held));
+        Assert.All(Gamepads, g => Assert.Contains(g, held));
+    }
+
+    [Fact]
+    public void Load_ExistingInstall_KeepsAKatarCardAlreadyHeldOff()
+    {
+        var held = HeldOffAfterLoad("""
+        { "schemaVersion": 21, "devices": { "openRgbDetectorExclusions": {
+          "openrgb-gamepad-corsair-katar-pro-xt": { "detectorName": "Corsair Katar Pro XT", "deviceName": "Corsair Katar Pro XT" } } } }
+        """);
+
+        Assert.Contains("Corsair Katar Pro XT", held);
+        Assert.DoesNotContain("Corsair M55 RGB PRO", held);
+    }
+
     [Fact]
     public void Load_ExistingInstall_DashboardAutoArrangeDefaultsOff()
     {

@@ -321,7 +321,7 @@ public sealed class Nexus2MigrationService
 
     private static Nexus2PreviewCategoryDto BuildY70LayoutCategory(JsonElement? y70)
     {
-        var cat = new Nexus2PreviewCategoryDto { Id = "y70Layout", DroppedTypes = new List<string>() };
+        var cat = new Nexus2PreviewCategoryDto { Id = "y70Layout", DroppedTypes = new List<string>(), Notes = new List<string>() };
         if (y70 is not { } y)
         {
             return cat;
@@ -332,6 +332,7 @@ public sealed class Nexus2MigrationService
         cat.Widgets = layout.Widgets;
         cat.MappedWidgets = layout.MappedWidgets;
         cat.DroppedTypes = layout.DroppedTypes;
+        cat.Notes = layout.Notes;
         return cat;
     }
 

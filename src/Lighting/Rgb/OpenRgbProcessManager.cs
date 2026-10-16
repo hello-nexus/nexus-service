@@ -300,7 +300,7 @@ public sealed class OpenRgbProcessManager : IDisposable
 
     /// <summary>
     /// Detector names the user excluded by turning Nexus Control off for every
-    /// card of the device, plus every held-off game controller
+    /// card of the device, plus every held-off device
     /// (<see cref="OpenRgbGamepadDefaults"/>): disabled in the denylist, and recorded in
     /// <c>placeholder_only</c> so a lifted exclusion knows what to re-enable.
     /// Null when settings could not be read - the caller then leaves the

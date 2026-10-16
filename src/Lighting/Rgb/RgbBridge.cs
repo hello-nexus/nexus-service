@@ -2222,7 +2222,7 @@ public sealed class RgbBridge : IDisposable
         }
     }
 
-    /// <summary>Shows or drops the off card of each held-off controller (<see cref="OpenRgbGamepadDefaults"/>) as it comes and goes. HID enumeration sees Bluetooth pads too and opens at most query-only, never sending a report.</summary>
+    /// <summary>Shows or drops the off card of each held-off device (<see cref="OpenRgbGamepadDefaults"/>) as it comes and goes. HID enumeration sees Bluetooth pads too and opens at most query-only, never sending a report.</summary>
     private void CheckHeldOffGamepads()
     {
         if (_hid is null)
@@ -2259,7 +2259,7 @@ public sealed class RgbBridge : IDisposable
         _store.Update(s => changed = OpenRgbGamepadDefaults.ApplyPresence(s, present));
         if (changed)
         {
-            ServiceLog.Info($"[rgb-bridge] held-off controllers present: {(present.Count == 0 ? "none" : string.Join(", ", present))}");
+            ServiceLog.Info($"[rgb-bridge] held-off devices present: {(present.Count == 0 ? "none" : string.Join(", ", present))}");
             RequestTopologyRefresh();
         }
     }

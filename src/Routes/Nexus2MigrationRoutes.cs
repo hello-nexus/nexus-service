@@ -136,6 +136,7 @@ public sealed class Nexus2PreviewCategoryDto
     public int? Widgets { get; set; }
     public int? MappedWidgets { get; set; }
     public List<string>? DroppedTypes { get; set; }
+    public List<string>? Notes { get; set; }
     // q60Face
     public string? Face { get; set; }
     public int? StashedFaces { get; set; }

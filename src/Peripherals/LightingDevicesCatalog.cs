@@ -3,6 +3,7 @@ using System.IO;
 using System.Reflection;
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using System.Text.RegularExpressions;
 using Nexus.Service.Models.Peripherals;
 using Nexus.Service.Serialization;
 
@@ -194,7 +195,7 @@ public static class LightingDevicesCatalog
             {
                 Vendor = vendor,
                 Model = model,
-                Category = CategoryFromController(d.Controller, d.Kind),
+                Category = ResolveCategory(detector, d.Controller, d.Kind, d.Type),
                 VendorId = d.Vid ?? "-",
                 ProductId = d.Pid ?? "-",
                 Capabilities = new List<string> { "rgb" },
@@ -426,6 +427,119 @@ public static class LightingDevicesCatalog
         return (name.Substring(0, sp), name.Substring(sp + 1));
     }
 
+    /// <summary>
+    /// The type OpenRGB declares wins, except where it is coarse (light, accessory,
+    /// motherboard) and the name says something more specific. Rows the extractor could
+    /// not resolve statically (runtime-typed controllers) use the device name; the
+    /// controller class is the last resort. Mirrored in nexus-site
+    /// scripts/export-devices.mjs (resolveCategory); change both together.
+    /// </summary>
+    internal static string ResolveCategory(string? name, string? controller, string? kind, string? openRgbType)
+    {
+        var n = name ?? "";
+        if (openRgbType is not null && CategoryByOpenRgbType.TryGetValue(openRgbType, out var declared))
+        {
+            if (declared == "cooler")
+            {
+                return AioName.IsMatch(n) ? "aio" : "fan";
+            }
+            if (declared is "light" or "accessory" or "motherboard")
+            {
+                return SpecificCategoryFromName(n) ?? declared;
+            }
+            return declared;
+        }
+        return CategoryFromName(n) ?? SpecificCategoryFromName(n) ?? CategoryFromController(controller, kind);
+    }
+
+    private static readonly Dictionary<string, string> CategoryByOpenRgbType = new()
+    {
+        ["keyboard"] = "keyboard",
+        ["keypad"] = "keyboard",
+        ["mouse"] = "mouse",
+        ["mousemat"] = "mousemat",
+        ["headset"] = "headset",
+        ["microphone"] = "headset",
+        ["headset_stand"] = "headset stand",
+        ["gpu"] = "gpu",
+        ["dram"] = "memory",
+        ["motherboard"] = "motherboard",
+        ["monitor"] = "monitor",
+        ["gamepad"] = "gamepad",
+        ["case"] = "case",
+        ["ledstrip"] = "light",
+        ["light"] = "light",
+        ["laptop"] = "laptop",
+        ["storage"] = "storage",
+        ["speaker"] = "speaker",
+        ["accessory"] = "accessory",
+        ["cooler"] = "cooler",
+    };
+
+    private static readonly Regex AioName = new(
+        @"\b(AIO|Hydro|Kraken|Ryuo|Ryujin|LC|H\d{2,3}i|Galahad|Waterforce|Hanbo|Elite|Liquid)\b",
+        RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+
+    private static readonly Regex AioStrictName = NameRule(
+        @"\b(AIO|Hydro|Kraken|Ryuo|Ryujin|LC|Galahad|Waterforce|Hanbo)\b");
+
+    // Fan hubs register as generic LED strips; the name says what they are.
+    private static readonly Regex FanHubName = NameRule(@"\bFan\b|Smart Device");
+
+    private static readonly Regex MonitorName = NameRule(@"\bOptix\b|\bMonitor\b(?! Light)");
+
+    private static readonly Regex MotherboardName = NameRule(@"\bMotherboard\b");
+
+    private static string? SpecificCategoryFromName(string name)
+    {
+        if (MonitorName.IsMatch(name))
+        {
+            return "monitor";
+        }
+        if (MotherboardName.IsMatch(name))
+        {
+            return "motherboard";
+        }
+        if (AioStrictName.IsMatch(name))
+        {
+            return "aio";
+        }
+        return FanHubName.IsMatch(name) ? "fan" : null;
+    }
+
+    // Ordered: the first match wins, so the specific shapes (mat, headset, light bar)
+    // come before the broad ones.
+    private static readonly (Regex Pattern, string Category)[] NameRules =
+    {
+        (NameRule(@"mouse ?pad|mouse ?mat|powerplay mat|\bMM\d{3}\b"), "mousemat"),
+        (NameRule(@"headset|headphone|kraken (7|kitty)"), "headset"),
+        (NameRule(@"light ?bar|lightboard|RGB HUB|kasasmart"), "light"),
+        (NameRule(@"\bDial\b"), "accessory"),
+        (NameRule(@"\bBloody MP\b"), "mousemat"),
+        (NameRule(@"\bBloody W\d"), "mouse"),
+        (NameRule(@"keyboard|\bK\d{2,3}\b|\bStrafe\b|keyrox"), "keyboard"),
+        (NameRule(@"\bmouse\b|\b(Glaive|Harpoon|Ironclaw|Nightsword|Sabre|Scimitar|Aerox|Rival|Katar|Dark Core)\b|\bM\d{2}\b|\bG(203|303|403|502|703|900|903)\b"), "mouse"),
+        (NameRule(@"\bST100\b"), "headset stand"),
+        (NameRule(@"\bLegion\b|laptop"), "laptop"),
+        (NameRule(@"receiver"), "accessory"),
+    };
+
+    private static Regex NameRule(string pattern) => new(
+        pattern,
+        RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+
+    private static string? CategoryFromName(string name)
+    {
+        foreach (var (pattern, category) in NameRules)
+        {
+            if (pattern.IsMatch(name))
+            {
+                return category;
+            }
+        }
+        return null;
+    }
+
     private static string CategoryFromController(string? controller, string? kind)
     {
         var c = controller ?? "";
@@ -476,4 +590,5 @@ public sealed class OpenRgbSupportedDeviceEntry
     [JsonPropertyName("pid")] public string? Pid { get; set; }
     [JsonPropertyName("controller")] public string? Controller { get; set; }
     [JsonPropertyName("kind")] public string? Kind { get; set; }
+    [JsonPropertyName("type")] public string? Type { get; set; }
 }

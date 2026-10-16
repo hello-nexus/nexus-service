@@ -16,7 +16,7 @@ public class OpenRgbGamepadDefaultsTests
     {
         var held = OpenRgbGamepadDefaults.HeldOffDetectors(new NexusSettings());
 
-        Assert.Equal(new[] { "GameSir Nova 2 Lite", "Sony DualSense", "Sony DualSense Edge", "Sony DualShock 4" }, held);
+        Assert.Equal(new[] { "Corsair Katar Pro", "Corsair Katar Pro V2", "Corsair Katar Pro XT", "Corsair M55 RGB PRO", "Corsair M65 RGB Ultra Wired", "Corsair Scimitar PRO RGB", "GameSir Nova 2 Lite", "HyperX Pulsefire Haste", "Sony DualSense", "Sony DualSense Edge", "Sony DualShock 4" }, held);
     }
 
     [Fact]
@@ -142,5 +142,60 @@ public class OpenRgbGamepadDefaultsTests
     {
         Assert.True(UsbTopologyFilter.TryParseVidPid("054C:0CE6:serial", out var vid, out var pid));
         Assert.True(OpenRgbGamepadDefaults.IsHeldOff(new NexusSettings(), vid, pid));
+    }
+
+    [Theory]
+    [InlineData("Corsair Katar Pro", 0x1B93)]
+    [InlineData("Corsair Katar Pro V2", 0x1BBA)]
+    [InlineData("Corsair Katar Pro XT", 0x1BAC)]
+    [InlineData("Corsair M55 RGB PRO", 0x1B70)]
+    [InlineData("Corsair M65 RGB Ultra Wired", 0x1B9E)]
+    [InlineData("Corsair Scimitar PRO RGB", 0x1B3E)]
+    public void Mouse_is_held_off_for_a_settings_file_that_never_opted_in(string detector, int pid)
+    {
+        var settings = new NexusSettings();
+
+        Assert.Contains(detector, OpenRgbGamepadDefaults.HeldOffDetectors(settings));
+        Assert.True(OpenRgbGamepadDefaults.IsHeldOff(settings, 0x1B1C, pid));
+    }
+
+    [Fact]
+    public void Katar_card_renders_as_an_off_mouse_and_opt_in_survives_a_reload()
+    {
+        var settings = new NexusSettings();
+        var key = OpenRgbGamepadDefaults.KeyOf("Corsair Katar Pro XT");
+        OpenRgbGamepadDefaults.ApplyPresence(settings, Present("Corsair Katar Pro XT"));
+
+        var card = Assert.Single(OpenRgbZoneSupport.BuildCards(Array.Empty<RgbDevice>(), settings, isInit: false).Devices);
+        Assert.Equal("mouse", card.Type);
+        Assert.Contains(key, settings.Devices.UncontrolledLightingDevices);
+
+        OpenRgbGamepadDefaults.AllowFor(settings, key);
+        Assert.DoesNotContain("Corsair Katar Pro XT", OpenRgbGamepadDefaults.HeldOffDetectors(settings));
+        Assert.False(OpenRgbGamepadDefaults.IsHeldOff(settings, 0x1B1C, 0x1BAC));
+        Assert.False(OpenRgbGamepadDefaults.ApplyPresence(settings, Present("Corsair Katar Pro XT")));
+    }
+
+    [Theory]
+    [InlineData(0x0951, 0x1727)]
+    [InlineData(0x03F0, 0x0F8F)]
+    public void Haste_is_held_off_under_either_vid_pid(int vid, int pid)
+    {
+        Assert.True(OpenRgbGamepadDefaults.IsHeldOff(new NexusSettings(), vid, pid));
+    }
+
+    [Theory]
+    [InlineData("Corsair M55 RGB PRO")]
+    [InlineData("Corsair M65 RGB Ultra Wired")]
+    [InlineData("Corsair Scimitar PRO RGB")]
+    [InlineData("HyperX Pulsefire Haste")]
+    public void Held_off_mouse_card_is_an_uncontrolled_mouse(string detector)
+    {
+        var settings = new NexusSettings();
+        OpenRgbGamepadDefaults.ApplyPresence(settings, Present(detector));
+
+        var card = Assert.Single(OpenRgbZoneSupport.BuildCards(Array.Empty<RgbDevice>(), settings, isInit: false).Devices);
+        Assert.Equal("mouse", card.Type);
+        Assert.Contains(OpenRgbGamepadDefaults.KeyOf(detector), settings.Devices.UncontrolledLightingDevices);
     }
 }
