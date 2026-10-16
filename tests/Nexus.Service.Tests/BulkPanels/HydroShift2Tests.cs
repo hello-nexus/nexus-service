@@ -654,21 +654,6 @@ public class HydroShift2Tests
     }
 
     [Fact]
-    public void A_disconnect_drops_a_pending_delayed_wipe()
-    {
-        var (aio, hub, _, _, _) = Resumable();
-        aio.Tick(1_000);
-        hub.Detach();
-        aio.Tick(5_000);
-        var pipe = new FirmwarePipe();
-        Assert.True(hub.Attach(pipe, null));
-        pipe.Writes.Clear();
-        aio.Tick(5_250);
-        aio.Tick(11_000);
-        Assert.DoesNotContain(HydroShift2Protocol.CommandPushPng, pipe.Commands);
-    }
-
-    [Fact]
     public void The_delayed_wipe_leaves_a_unit_showing_its_own_screen_alone()
     {
         var (aio, _, _, pipe, _) = Resumable(_ => true, _ => false);

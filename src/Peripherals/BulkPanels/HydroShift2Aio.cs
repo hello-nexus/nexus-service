@@ -182,7 +182,6 @@ public sealed class HydroShift2Aio : BackgroundService
             _ringRetryMs = 0;
             _wirelessHeld = false;
             _overlayClear = false;
-            _rewipeAt = 0;
             _ownScreen = null;
             // A reconnect reads the unit again, even while the dongle owns it and OnDisconnected is skipped.
             lock (_lock)
@@ -217,9 +216,7 @@ public sealed class HydroShift2Aio : BackgroundService
 
         if (Params is { } current)
         {
-            // A renegotiate wiped the glass and may have rebooted the unit: read the owner afresh
-            // so its own screen is switched back, and resend the ring loop it lost.
-            // A wipe sent while the firmware was still booting is drawn over, so each connect gets one more.
+            // Every connect wipes the glass: wipe again once the firmware has booted, re-read the owner so its own screen is switched back, and resend the ring.
             if (_driver.Connects != _seenConnects)
             {
                 _seenConnects = _driver.Connects;
