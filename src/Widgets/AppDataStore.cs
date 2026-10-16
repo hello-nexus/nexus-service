@@ -108,7 +108,10 @@ public sealed class AppDataStore
     public AppDataFile? TryRead(string profileId, string appId, string key)
     {
         EnsureValid(profileId, appId, key);
-        return TryReadUnlocked(FilePath(profileId, appId, key));
+        lock (AppLock(profileId, appId))
+        {
+            return TryReadUnlocked(FilePath(profileId, appId, key));
+        }
     }
 
     /// <summary>Wire-shape read: revision 0 / null data when absent.</summary>
@@ -509,6 +512,15 @@ public sealed class AppDataStore
         // JsonConfigStore.WriteAtomic - a crash-stranded temp file must never
         // keep whatever the umask gave it.
         NexusDataPaths.CreateRestricted(AtomicJsonFile.TempPathFor(path));
-        AtomicJsonFile.Write(path, json);
+        try
+        {
+            AtomicJsonFile.Write(path, json);
+        }
+        catch (IOException)
+        {
+            // Windows refuses File.Replace while another handle (scanner, backup) briefly holds the target.
+            Thread.Sleep(50);
+            AtomicJsonFile.Write(path, json);
+        }
     }
 }

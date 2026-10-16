@@ -1214,7 +1214,8 @@ public sealed class RelayConnectionService : BackgroundService
             }
             finally
             {
-                _inFlight.Release();
+                // Fire-and-forget: can finish after Dispose.
+                try { _inFlight.Release(); } catch (ObjectDisposedException) { }
             }
         }
 
@@ -1246,7 +1247,7 @@ public sealed class RelayConnectionService : BackgroundService
             }
             finally
             {
-                _sendLock.Release();
+                ReleaseSendLock();
             }
         }
 

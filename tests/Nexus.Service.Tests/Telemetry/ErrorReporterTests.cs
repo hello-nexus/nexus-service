@@ -228,6 +228,26 @@ public class ErrorReporterTests : IDisposable
     }
 
     [Fact]
+    public async Task Crash_is_sent_alone_under_the_version_that_wrote_it()
+    {
+        ErrorReporter.WriteCrashFile(Thrown("dying"), CrashFile);
+        var json = File.ReadAllText(CrashFile).Replace(BuildInfo.Version, "0.0.1-old");
+        File.WriteAllText(CrashFile, json);
+
+        var r = Reporter();
+        r.ReportClient("render", "fp", "T", "m", "s", null, 1);
+        await r.FlushAsync(default);
+
+        Assert.Equal(2, _transport.Sent.Count);
+        var crash = Assert.Single(_transport.Sent, p => p.Errors.Any(e => e.Kind == "crash"));
+        Assert.Equal("0.0.1-old", crash.Version);
+        Assert.Single(crash.Errors);
+        Assert.Null(crash.Errors[0].Version);
+        var other = Assert.Single(_transport.Sent, p => p != crash);
+        Assert.Equal(BuildInfo.Version, other.Version);
+    }
+
+    [Fact]
     public async Task Crash_file_survives_a_failed_send()
     {
         ErrorReporter.WriteCrashFile(Thrown(), CrashFile);

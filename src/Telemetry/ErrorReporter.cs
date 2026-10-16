@@ -310,6 +310,7 @@ internal sealed partial class ErrorReporter
         {
             var item = BuildItem(ex, ErrorKinds.Crash, null, DateTimeOffset.UtcNow);
             item.Log = CapTail(ScrubLog(Platform.ServiceLog.RecentLines()), LogMax);
+            item.Version = BuildInfo.Version;
             var json = JsonSerializer.Serialize(item, AppJsonContext.Default.ErrorReportItem);
             if (Encoding.UTF8.GetByteCount(json) > MaxCrashFileBytes)
                 return;
@@ -379,8 +380,6 @@ internal sealed partial class ErrorReporter
         var now = _clock.GetUtcNow();
         var batch = new List<ErrorReportItem>();
         var crash = ReadCrashFile();
-        if (crash is not null)
-            batch.Add(crash);
 
         lock (_lock)
         {
@@ -403,29 +402,40 @@ internal sealed partial class ErrorReporter
         }
 
         // One malformed item would 400 the whole batch at nexus-api; drop it instead.
-        batch.RemoveAll(i => string.IsNullOrWhiteSpace(i.Kind) || string.IsNullOrWhiteSpace(i.Fingerprint) || string.IsNullOrWhiteSpace(i.Type));
-        if (batch.Count == 0)
+        static bool Malformed(ErrorReportItem i) => string.IsNullOrWhiteSpace(i.Kind) || string.IsNullOrWhiteSpace(i.Fingerprint) || string.IsNullOrWhiteSpace(i.Type);
+        batch.RemoveAll(Malformed);
+        if (crash is not null && Malformed(crash))
+            crash = null;
+        if (batch.Count == 0 && crash is null)
             return;
         var installId = InstallIdentity.Resolve(_store);
         if (installId is null)
             return;
 
-        var payload = new ErrorReportPayload
+        ErrorReportPayload Payload(string version, List<ErrorReportItem> errors) => new()
         {
             InstallId = installId,
-            Version = BuildInfo.Version,
+            Version = version,
             Os = TelemetryPlatform.OsTag(),
             OsVersion = Cap(RuntimeInformation.OSDescription, OsVersionMax),
 #if DEV_TOOLS
             DevTools = true,
 #endif
-            Errors = batch,
+            Errors = errors,
         };
-        var ok = await _transport.SendAsync(payload, ct).ConfigureAwait(false);
-        if (ok && crash is not null)
+
+        // A crash is stamped with the build that died, which can predate an update applied since.
+        if (crash is not null)
         {
-            try { File.Delete(_crashFile); } catch { /* best-effort */ }
+            var crashVersion = string.IsNullOrWhiteSpace(crash.Version) ? BuildInfo.Version : crash.Version;
+            crash.Version = null;
+            if (await _transport.SendAsync(Payload(crashVersion, new List<ErrorReportItem> { crash }), ct).ConfigureAwait(false))
+            {
+                try { File.Delete(_crashFile); } catch { /* best-effort */ }
+            }
         }
+        if (batch.Count > 0)
+            await _transport.SendAsync(Payload(BuildInfo.Version, batch), ct).ConfigureAwait(false);
     }
 
     private ErrorReportItem? ReadCrashFile()

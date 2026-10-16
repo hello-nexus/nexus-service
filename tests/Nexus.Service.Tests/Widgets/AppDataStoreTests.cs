@@ -30,6 +30,29 @@ public sealed class AppDataStoreTests : IDisposable
     private static JsonElement Json(string raw) => JsonDocument.Parse(raw).RootElement.Clone();
 
     [Fact]
+    public async Task Get_waits_for_an_in_flight_Put_on_the_same_app()
+    {
+        Task<(int Revision, string UpdatedAt, JsonElement? Data)>? reader = null;
+        var completedWhileHeld = true;
+        _store.DocumentChanged += (_, _, _) =>
+        {
+            // Raised inside Put's per-app lock: a reader on another thread must not get through yet.
+            using var done = new System.Threading.ManualResetEventSlim();
+            reader = Task.Run(() =>
+            {
+                try { return _store.Get(P, "com.test.app", "save"); }
+                finally { done.Set(); }
+            });
+            completedWhileHeld = done.Wait(200);
+        };
+
+        _store.Put(P, "com.test.app", "save", 0, Json("""{"a":1}"""));
+
+        Assert.False(completedWhileHeld);
+        Assert.Equal(1, (await reader!).Revision);
+    }
+
+    [Fact]
     public void Get_on_an_absent_document_returns_revision_zero_and_null_data()
     {
         var (revision, updatedAt, data) = _store.Get(P, "com.test.app", "save");
