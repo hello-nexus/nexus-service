@@ -81,7 +81,14 @@ public sealed unsafe class WindowsAudioSessionEnumerator : IDisposable
         {
             // Expired = the app is gone and the session is a tombstone; it has
             // no level worth showing.
-            if (GetState(s.Ctl, out var state) == 0 && state == SessionStateExpired) continue;
+            var stateHr = GetState(s.Ctl, out var state);
+            if (stateHr == 0 && state == SessionStateExpired) continue;
+            // Cached while expired but live again: identity was never read.
+            if (s.Tombstone)
+            {
+                _staleSeen = true;
+                continue;
+            }
             seenPids.Add(s.Pid);
             var identity = ResolveIdentity(s.Pid, s.IsSystem);
             if (identity.Key.Length == 0) continue;
@@ -135,15 +142,28 @@ public sealed unsafe class WindowsAudioSessionEnumerator : IDisposable
     private void ApplyCore(string id, double? volume, bool? muted)
     {
         if (volume is null && muted is null) return;
-        EnsureTopology();
-        foreach (var s in _sessions)
+        // A write through a cached interface can fail after a wake or device
+        // reset; rebuild and retry once so a user's change is never dropped.
+        for (var attempt = 0; attempt < 2; attempt++)
         {
-            if (GetState(s.Ctl, out var state) == 0 && state == SessionStateExpired) continue;
-            var identity = ResolveIdentity(s.Pid, s.IsSystem);
-            if (!string.Equals(identity.Key, id, StringComparison.OrdinalIgnoreCase)) continue;
-            if (s.Volume == IntPtr.Zero) continue;
-            if (volume is double v) SetSessionVolume(s.Volume, (float)Math.Clamp(v, 0, 1), IntPtr.Zero);
-            if (muted is bool m) SetSessionMute(s.Volume, m, IntPtr.Zero);
+            EnsureTopology();
+            var failed = false;
+            foreach (var s in _sessions)
+            {
+                if (GetState(s.Ctl, out var state) == 0 && state == SessionStateExpired) continue;
+                if (s.Tombstone)
+                {
+                    failed = true;
+                    continue;
+                }
+                var identity = ResolveIdentity(s.Pid, s.IsSystem);
+                if (!string.Equals(identity.Key, id, StringComparison.OrdinalIgnoreCase)) continue;
+                if (s.Volume == IntPtr.Zero) continue;
+                if (volume is double v && SetSessionVolume(s.Volume, (float)Math.Clamp(v, 0, 1), IntPtr.Zero) < 0) failed = true;
+                if (muted is bool m && SetSessionMute(s.Volume, m, IntPtr.Zero) < 0) failed = true;
+            }
+            if (!failed) return;
+            _staleSeen = true;
         }
     }
 
@@ -191,17 +211,32 @@ public sealed unsafe class WindowsAudioSessionEnumerator : IDisposable
         }
 
         if (EnumAudioEndpoints(_enumPtr, EDataFlow.eRender, DeviceStateActive, out var collPtr) < 0 || collPtr == IntPtr.Zero)
+        {
+            _staleSeen = true;
             return;
+        }
         try
         {
-            if (GetDeviceCollectionCount(collPtr, out var deviceCount) < 0) return;
+            if (GetDeviceCollectionCount(collPtr, out var deviceCount) < 0)
+            {
+                _staleSeen = true;
+                return;
+            }
             for (uint d = 0; d < deviceCount; d++)
             {
-                if (GetDeviceCollectionItem(collPtr, d, out var devicePtr) != 0 || devicePtr == IntPtr.Zero) continue;
+                if (GetDeviceCollectionItem(collPtr, d, out var devicePtr) != 0 || devicePtr == IntPtr.Zero)
+                {
+                    _staleSeen = true;
+                    continue;
+                }
                 try
                 {
                     var endpointId = GetDeviceId(devicePtr);
-                    if (endpointId.Length == 0) continue;
+                    if (endpointId.Length == 0)
+                    {
+                        _staleSeen = true;
+                        continue;
+                    }
                     CacheEndpointSessions(devicePtr, endpointId, string.Equals(endpointId, defaultId, StringComparison.Ordinal));
                 }
                 finally { Release(devicePtr); }
@@ -213,7 +248,11 @@ public sealed unsafe class WindowsAudioSessionEnumerator : IDisposable
     private void CacheEndpointSessions(IntPtr devicePtr, string endpointId, bool isDefaultEndpoint)
     {
         var mgrIid = IID_IAudioSessionManager2;
-        if (Activate(devicePtr, ref mgrIid, ClsCtxInprocServer, IntPtr.Zero, out var mgrPtr) < 0 || mgrPtr == IntPtr.Zero) return;
+        if (Activate(devicePtr, ref mgrIid, ClsCtxInprocServer, IntPtr.Zero, out var mgrPtr) < 0 || mgrPtr == IntPtr.Zero)
+        {
+            _staleSeen = true;
+            return;
+        }
         // Held for the notification registration; released with the topology.
         _managers.Add(mgrPtr);
         if (RegisterSessionNotification(mgrPtr, AudioTopologyNotifier.SessionObject) >= 0)
@@ -225,23 +264,49 @@ public sealed unsafe class WindowsAudioSessionEnumerator : IDisposable
             _notificationsOk = false;
         }
 
-        if (GetSessionEnumerator(mgrPtr, out var sessEnumPtr) < 0 || sessEnumPtr == IntPtr.Zero) return;
+        if (GetSessionEnumerator(mgrPtr, out var sessEnumPtr) < 0 || sessEnumPtr == IntPtr.Zero)
+        {
+            _staleSeen = true;
+            return;
+        }
         try
         {
-            if (GetCount(sessEnumPtr, out var count) < 0) return;
+            if (GetCount(sessEnumPtr, out var count) < 0)
+            {
+                _staleSeen = true;
+                return;
+            }
             for (var i = 0; i < count; i++)
             {
-                if (GetSession(sessEnumPtr, i, out var ctl) != 0 || ctl == IntPtr.Zero) continue;
+                if (GetSession(sessEnumPtr, i, out var ctl) != 0 || ctl == IntPtr.Zero)
+                {
+                    _staleSeen = true;
+                    continue;
+                }
                 var ctl2 = QueryInterface(ctl, IID_IAudioSessionControl2);
                 var keep = false;
                 try
                 {
-                    if (ctl2 == IntPtr.Zero) continue;
-                    if (GetState(ctl, out var state) == 0 && state == SessionStateExpired) continue;
+                    if (ctl2 == IntPtr.Zero)
+                    {
+                        _staleSeen = true;
+                        continue;
+                    }
+                    if (GetState(ctl, out var state) == 0 && state == SessionStateExpired)
+                    {
+                        // Kept so visibility follows live state; identity is read if it ever revives.
+                        _sessions.Add(new CachedSession(ctl, IntPtr.Zero, IntPtr.Zero, 0, false, endpointId, isDefaultEndpoint, true));
+                        keep = true;
+                        continue;
+                    }
                     // Packaged apps span several processes and answer
                     // AUDCLNT_S_NO_SINGLE_PROCESS (a success code) with the initial pid.
                     var pidHr = GetProcessId(ctl2, out var pid);
-                    if (pidHr != 0 && pidHr != AudclntSNoSingleProcess) continue;
+                    if (pidHr != 0 && pidHr != AudclntSNoSingleProcess)
+                    {
+                        _staleSeen = true;
+                        continue;
+                    }
                     // S_OK true, S_FALSE false - a plain HR test would read both as success.
                     var isSystem = IsSystemSoundsSession(ctl2) == 0;
                     // Only the system-sounds session may map to pid 0 (ResolveIdentity folds pid 0 into it).
@@ -253,7 +318,8 @@ public sealed unsafe class WindowsAudioSessionEnumerator : IDisposable
                         pid,
                         isSystem,
                         endpointId,
-                        isDefaultEndpoint));
+                        isDefaultEndpoint,
+                        false));
                     keep = true;
                 }
                 finally
@@ -404,7 +470,7 @@ public sealed unsafe class WindowsAudioSessionEnumerator : IDisposable
     private readonly record struct ProcessIdentity(string Key, string Name);
 
     private readonly record struct CachedSession(
-        IntPtr Ctl, IntPtr Volume, IntPtr Meter, int Pid, bool IsSystem, string EndpointId, bool IsDefaultEndpoint);
+        IntPtr Ctl, IntPtr Volume, IntPtr Meter, int Pid, bool IsSystem, string EndpointId, bool IsDefaultEndpoint, bool Tombstone);
 
     // IMMDeviceEnumerator vtable[4] = GetDefaultAudioEndpoint(this, dataFlow, role, &device)
     private static int GetDefaultAudioEndpoint(IntPtr enumeratorPtr, EDataFlow dataFlow, ERole role, out IntPtr device)
