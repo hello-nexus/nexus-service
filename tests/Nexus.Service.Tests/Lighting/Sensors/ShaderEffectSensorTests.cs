@@ -87,10 +87,8 @@ public sealed class ShaderEffectSensorTests : IDisposable
         _ = fx.NextSensorValue(0, 32);
         _feed.Tick(_now);
 
-        // Glides from the old value rather than jumping.
-        var next = fx.NextSensorValue(0, 48);
-        Assert.InRange(next, 0.2f, 0.9f);
-        Assert.NotEqual(0.9f, next);
+        // The first reading of the new pick is taken as is, with no dip through zero.
+        Assert.Equal(0.9f, fx.NextSensorValue(0, 48), 3);
     }
 
     [Fact]
@@ -166,5 +164,57 @@ public sealed class ShaderEffectSensorTests : IDisposable
     public void An_annotated_effect_reports_it_reads_sensors()
     {
         Assert.True(Effect().ReadsSensors);
+    }
+
+    [Fact]
+    public void Switching_to_a_pick_not_yet_polled_holds_the_value_then_takes_the_first_reading_without_a_dip()
+    {
+        _readings["quick/summary/cpu-usage"] = 60f;
+        _readings["quick/summary/memory-usage"] = 80f;
+        var fx = Effect();
+        _ = fx.NextSensorValue(0, 0);
+        _feed.Tick(_now);
+        Assert.Equal(0.6f, fx.NextSensorValue(0, 16), 3);
+
+        fx.SensorOverrides = new Dictionary<string, SensorBinding> { ["u_a_s"] = Bind("summary/memory-usage") };
+        // The new channel has no reading yet: every frame holds.
+        Assert.Equal(0.6f, fx.NextSensorValue(0, 32), 3);
+        Assert.Equal(0.6f, fx.NextSensorValue(0, 800), 3);
+
+        _feed.Tick(_now);
+
+        Assert.Equal(0.8f, fx.NextSensorValue(0, 816), 3);
+    }
+
+    [Fact]
+    public void A_stale_idle_channel_is_not_glided_toward_until_it_is_polled_again()
+    {
+        _readings["quick/summary/cpu-usage"] = 90f;
+        var fx = Effect();
+        _ = fx.NextSensorValue(0, 0);
+        _feed.Tick(_now);
+        Assert.Equal(0.9f, fx.NextSensorValue(0, 16), 3);
+
+        _readings["quick/summary/cpu-usage"] = 10f;
+        _now += SensorFeed.IdleMs + 1;
+
+        Assert.Equal(0.9f, fx.NextSensorValue(0, 5_000), 3);
+        _feed.Tick(_now);
+        Assert.Equal(0.1f, fx.NextSensorValue(0, 5_016), 3);
+    }
+
+    [Fact]
+    public void A_polled_missing_sensor_still_glides_to_zero()
+    {
+        _readings["quick/summary/cpu-usage"] = 100f;
+        var fx = Effect();
+        _ = fx.NextSensorValue(0, 0);
+        _feed.Tick(_now);
+        Assert.Equal(1f, fx.NextSensorValue(0, 16));
+
+        _readings.Clear();
+        _feed.Tick(_now);
+
+        Assert.InRange(fx.NextSensorValue(0, 32), 0.9f, 0.999f);
     }
 }

@@ -1341,7 +1341,7 @@ public sealed partial class LightingEngine : IDisposable
                 _pinHashes.Clear();
                 foreach (var (id, pin) in pins!)
                 {
-                    _pinHashes[id] = HashCode.Combine(pin.Kind, Nexus.Service.Lighting.DevicePinLook.StaticKey(pin));
+                    _pinHashes[id] = HashCode.Combine(pin.Kind, Nexus.Service.Lighting.DevicePinLook.StaticKey(pin), Nexus.Service.Persistence.SensorBinding.MapKey(pin.Sensors));
                 }
             }
             var matched = 0;

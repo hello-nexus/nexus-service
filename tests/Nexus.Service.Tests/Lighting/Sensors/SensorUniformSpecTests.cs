@@ -1,4 +1,5 @@
 using Nexus.Service.Lighting.CustomEffects;
+using Nexus.Service.Lighting.Engine;
 using Nexus.Service.Lighting.Engine.Gpu;
 using Nexus.Service.Tests.Lighting.CustomEffects;
 
@@ -112,7 +113,7 @@ public sealed class SensorUniformSpecTests
         Assert.Single(System.Text.RegularExpressions.Regex.Matches(src, @"uniform float u_speed;"));
 
         var spec = Assert.Single(ShaderLibrary.SensorUniforms("sensorbar"));
-        Assert.Equal("u_sensorbar_level_s", spec.Name);
+        Assert.Equal("u_fill_level_s", spec.Name);
         Assert.Equal("summary/cpu-usage", spec.Default.Sensor);
         Assert.False(ShaderLibrary.Params("sensorbar").ContainsKey(spec.Name));
     }
@@ -123,5 +124,100 @@ public sealed class SensorUniformSpecTests
         Assert.False(ShaderLibrary.IsSensorEffect("plasma"));
         Assert.Empty(ShaderLibrary.SensorUniforms("plasma"));
         Assert.Contains("audioPresence", ShaderLibrary.Get("plasma"));
+    }
+
+    [Fact]
+    public void A_commented_out_annotated_uniform_is_not_reported()
+    {
+        var src = "/*\n" + CpuLine + "*/\n"
+            + "#if 0\n" + CpuLine.Replace("u_a_s", "u_b_s") + "#endif\n"
+            + "/* one-liner */ " + CpuLine.Replace("u_a_s", "u_c_s")
+            + "// " + CpuLine.Replace("u_a_s", "u_d_s")
+            + CpuLine.Replace("u_a_s", "u_live_s");
+
+        var names = SensorUniformSpec.Parse(src).Select(s => s.Name).ToArray();
+
+        Assert.Equal(new[] { "u_c_s", "u_live_s" }, names);
+    }
+
+    [Fact]
+    public void A_block_comment_marker_inside_a_line_comment_does_not_open_a_block()
+    {
+        var src = "// note /*\n" + CpuLine;
+
+        Assert.Single(SensorUniformSpec.Parse(src));
+    }
+
+    public static IEnumerable<object[]> EmbeddedSensorFrags() =>
+        ShaderLibrary.AllEffectKeys.Where(ShaderLibrary.IsSensorEffect).Select(k => new object[] { k });
+
+    [Fact]
+    public void The_premade_set_is_embedded()
+    {
+        var keys = ShaderLibrary.AllEffectKeys.Where(ShaderLibrary.IsSensorEffect).ToHashSet();
+
+        foreach (var k in new[] { "sensorbar", "sensorclock", "sensorsegments", "sensorliquid", "sensorcenter", "sensorgauge", "sensorshift", "sensorheat" })
+        {
+            Assert.Contains(k, keys);
+        }
+    }
+
+    [Theory]
+    [MemberData(nameof(EmbeddedSensorFrags))]
+    public void Every_embedded_sensor_frag_passes_the_custom_effect_validator(string key)
+    {
+        var frag = ShaderLibrary.Get(key);
+
+        Assert.Null(CustomEffectStore.Validate("abc", "Name", "", frag));
+        Assert.Null(CustomEffectStore.ValidateLoops(frag));
+    }
+
+    [Theory]
+    [MemberData(nameof(EmbeddedSensorFrags))]
+    public void Every_embedded_sensor_frag_declares_a_usable_default_binding_and_no_slider_for_it(string key)
+    {
+        var specs = ShaderLibrary.SensorUniforms(key);
+
+        Assert.NotEmpty(specs);
+        foreach (var spec in specs)
+        {
+            Assert.EndsWith("_s", spec.Name);
+            Assert.True(spec.Default.IsUsable);
+            Assert.Equal("quick", spec.Default.Category);
+            Assert.StartsWith("summary/", spec.Default.Sensor);
+            Assert.False(ShaderLibrary.Params(key).ContainsKey(spec.Name));
+        }
+        Assert.Single(System.Text.RegularExpressions.Regex.Matches(ShaderLibrary.Get(key), @"uniform float u_speed;"));
+    }
+
+    [Theory]
+    [MemberData(nameof(EmbeddedSensorFrags))]
+    public void Every_embedded_sensor_frag_compiles_and_renders_when_a_gl_context_exists(string key)
+    {
+        using var gpu = new GpuContext(160, 90);
+        var fx = new ShaderEffect(key, gpu, ShaderLibrary.Get(key)) { FixedSensorValue = 0.6f };
+        var canvas = new CanvasBuffer(160, 90);
+        double t = 0;
+        for (var i = 0; i < 60; i++)
+        {
+            fx.RenderFrame(canvas, t += 50);
+            Thread.Sleep(10);
+        }
+        Assert.False(fx.HasFailed, $"{key} failed to compile");
+        var lit = false;
+        for (var y = 0; y < canvas.Height && !lit; y++)
+        {
+            for (var x = 0; x < canvas.Width && !lit; x += 4)
+            {
+                var (r, g, b) = canvas.GetPixel(x, y);
+                lit = r + g + b > 30;
+            }
+        }
+        if (!lit && !gpu.Available)
+        {
+            // No usable GL on this host (a CI box without a GPU): there is nothing to compile against.
+            return;
+        }
+        Assert.True(lit, $"{key} rendered black at a 0.6 fill");
     }
 }

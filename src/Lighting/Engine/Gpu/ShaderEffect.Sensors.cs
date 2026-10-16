@@ -38,6 +38,7 @@ public sealed partial class ShaderEffect
         public float Smoothed;
         public double LastTick;
         public bool Seeded;
+        public bool Reseed;
     }
 
     private IReadOnlyList<SensorUniformSpec>? _sensorSpecs;
@@ -115,20 +116,27 @@ public sealed partial class ShaderEffect
             slot.Binding = binding;
             slot.Channel = SensorFeed?.Acquire(binding);
         }
-        var raw = slot.Channel?.Read() ?? float.NaN;
-        var target = binding.Normalize(raw);
-        if (!slot.Seeded)
+        // No feed reads as a sensor that is not there: 0.
+        var raw = slot.Channel is null ? SensorFeed.Missing : slot.Channel.Read();
+        if (float.IsNaN(raw))
         {
-            // Nothing to glide from until a real reading lands; until then the uniform is 0.
-            if (float.IsFinite(raw))
-            {
-                slot.Smoothed = target;
-                slot.Seeded = true;
-            }
+            // No current reading yet (a pick just switched to a channel not polled, or one gone stale):
+            // hold the value instead of gliding toward 0, and take the first reading as is.
+            slot.Reseed = true;
         }
         else
         {
-            slot.Smoothed = SensorSmoothing.Step(slot.Smoothed, target, tickMs - slot.LastTick);
+            var target = binding.Normalize(raw);
+            if (!slot.Seeded || slot.Reseed)
+            {
+                slot.Smoothed = target;
+                slot.Seeded = true;
+                slot.Reseed = false;
+            }
+            else
+            {
+                slot.Smoothed = SensorSmoothing.Step(slot.Smoothed, target, tickMs - slot.LastTick);
+            }
         }
         slot.LastTick = tickMs;
         return slot.Smoothed;

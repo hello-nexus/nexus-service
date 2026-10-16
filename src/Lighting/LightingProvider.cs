@@ -1190,6 +1190,7 @@ public sealed partial class LightingProvider : ILightingProvider, IDisposable
         }
         var look = pinned.State;
         // The engine's key may carry the pin's sensor picks; the shader is the effect's own.
+        var renderKey = effect;
         effect = pinned.Effect;
         var speed = (float)(look.Speed / 50.0);
         var intensity = look.Intensity > 0 ? look.Intensity : 1f;
@@ -1200,7 +1201,7 @@ public sealed partial class LightingProvider : ILightingProvider, IDisposable
         var custom = ShaderLibrary.IsCustomKey(effect);
         var sourceTag = custom ? ShaderLibrary.SourceTag(effect) : null;
         if (existing is ShaderEffect cur && cur.Name == effect
-            && (!custom || (_pinBuiltSource.TryGetValue(effect, out var builtFrom) && builtFrom == sourceTag)))
+            && (!custom || (_pinBuiltSource.TryGetValue(renderKey, out var builtFrom) && builtFrom == sourceTag)))
         {
             cur.Speed = effect == "pulse" ? speed * 0.5f : speed;
             cur.Intensity = intensity;
@@ -1214,7 +1215,7 @@ public sealed partial class LightingProvider : ILightingProvider, IDisposable
         }
         if (custom)
         {
-            _pinBuiltSource[effect] = sourceTag!;
+            _pinBuiltSource[renderKey] = sourceTag!;
         }
         return BuildAnimateEffect(effect, speed, intensity, look.Hue, look.Colorize, look.Saturation, look.Contrast, extras, look.Sensors);
     }

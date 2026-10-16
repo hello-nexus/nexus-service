@@ -40,7 +40,7 @@ public sealed class SensorStateRoutingTests : IDisposable
     private static SensorBinding Bind(string sensor, string category = "quick", float min = 0f, float max = 100f) =>
         new() { Category = category, Sensor = sensor, Min = min, Max = max };
 
-    private static Dictionary<string, SensorBinding> Picks(string sensor) => new() { ["u_sensorbar_level_s"] = Bind(sensor) };
+    private static Dictionary<string, SensorBinding> Picks(string sensor) => new() { ["u_fill_level_s"] = Bind(sensor) };
 
     private static AnimateHeadlessStart Start(string effect, Dictionary<string, SensorBinding>? sensors) => new()
     {
@@ -70,9 +70,9 @@ public sealed class SensorStateRoutingTests : IDisposable
         _provider.StartAnimate(Start("sensorbar", Picks("summary/memory-usage")));
 
         var shader = Assert.IsType<ShaderEffect>(_engine.CurrentEffect);
-        Assert.Equal("summary/memory-usage", shader.SensorOverrides!["u_sensorbar_level_s"].Sensor);
+        Assert.Equal("summary/memory-usage", shader.SensorOverrides!["u_fill_level_s"].Sensor);
         var saved = _config.Load().Lighting.Animate.States["sensorbar"];
-        Assert.Equal("summary/memory-usage", saved.Sensors!["u_sensorbar_level_s"].Sensor);
+        Assert.Equal("summary/memory-usage", saved.Sensors!["u_fill_level_s"].Sensor);
     }
 
     [Fact]
@@ -84,7 +84,7 @@ public sealed class SensorStateRoutingTests : IDisposable
         _provider.StartAnimate(Start("sensorbar", Picks("summary/cpu-temp")));
 
         Assert.Same(first, _engine.CurrentEffect);
-        Assert.Equal("summary/cpu-temp", ((ShaderEffect)first!).SensorOverrides!["u_sensorbar_level_s"].Sensor);
+        Assert.Equal("summary/cpu-temp", ((ShaderEffect)first!).SensorOverrides!["u_fill_level_s"].Sensor);
     }
 
     [Fact]
@@ -104,9 +104,9 @@ public sealed class SensorStateRoutingTests : IDisposable
         var body = Picks("summary/memory-usage");
         _provider.StartAnimate(Start("sensorbar", body));
 
-        body["u_sensorbar_level_s"].Sensor = "tampered";
+        body["u_fill_level_s"].Sensor = "tampered";
 
-        Assert.Equal("summary/memory-usage", ((ShaderEffect)_engine.CurrentEffect!).SensorOverrides!["u_sensorbar_level_s"].Sensor);
+        Assert.Equal("summary/memory-usage", ((ShaderEffect)_engine.CurrentEffect!).SensorOverrides!["u_fill_level_s"].Sensor);
     }
 
     [Fact]
@@ -123,7 +123,7 @@ public sealed class SensorStateRoutingTests : IDisposable
             Sensors = saved.Sensors,
         });
 
-        Assert.Equal("summary/gpu-temp", ((ShaderEffect)_engine.CurrentEffect!).SensorOverrides!["u_sensorbar_level_s"].Sensor);
+        Assert.Equal("summary/gpu-temp", ((ShaderEffect)_engine.CurrentEffect!).SensorOverrides!["u_fill_level_s"].Sensor);
     }
 
     [Fact]
@@ -142,8 +142,8 @@ public sealed class SensorStateRoutingTests : IDisposable
         });
 
         var slot = _config.Load().Lighting.Animate.Templates["sensorbar"].Slots[0]!;
-        Assert.Equal("summary/memory-usage", slot.Sensors!["u_sensorbar_level_s"].Sensor);
-        Assert.Equal("summary/memory-usage", shader.SensorOverrides!["u_sensorbar_level_s"].Sensor);
+        Assert.Equal("summary/memory-usage", slot.Sensors!["u_fill_level_s"].Sensor);
+        Assert.Equal("summary/memory-usage", shader.SensorOverrides!["u_fill_level_s"].Sensor);
     }
 
     [Fact]
@@ -165,9 +165,9 @@ public sealed class SensorStateRoutingTests : IDisposable
         lighting.Animate.States["sensorbar"] = new AnimateEffectState { Sensors = Picks("summary/cpu-usage") };
 
         var look = LightingPresetLooks.Capture(lighting);
-        lighting.Animate.States["sensorbar"].Sensors!["u_sensorbar_level_s"].Sensor = "changed";
+        lighting.Animate.States["sensorbar"].Sensors!["u_fill_level_s"].Sensor = "changed";
 
-        Assert.Equal("summary/cpu-usage", look.AnimateState!.Sensors!["u_sensorbar_level_s"].Sensor);
+        Assert.Equal("summary/cpu-usage", look.AnimateState!.Sensors!["u_fill_level_s"].Sensor);
     }
 
     [Fact]
@@ -184,7 +184,6 @@ public sealed class SensorStateRoutingTests : IDisposable
         Assert.NotEqual(plainKey, pickedKey);
         Assert.NotEqual(pickedKey, DevicePinLook.AnimateRenderKey(other));
         Assert.Equal(pickedKey, DevicePinLook.AnimateRenderKey(picked.Copy()));
-        Assert.NotEqual(DevicePinLook.StaticKey(plain), DevicePinLook.StaticKey(picked));
     }
 
     [Fact]
@@ -195,7 +194,7 @@ public sealed class SensorStateRoutingTests : IDisposable
         {
             Kind = DevicePinKinds.Animate,
             Effect = "sensorbar",
-            Sensors = new() { ["u_sensorbar_level_s"] = Bind("summary/memory-usage") },
+            Sensors = new() { ["u_fill_level_s"] = Bind("summary/memory-usage") },
         };
         _config.Update(s =>
         {
@@ -204,7 +203,7 @@ public sealed class SensorStateRoutingTests : IDisposable
                 Selected = 0,
                 Slots = new List<AnimateEffectState?>
                 {
-                    new() { Sensors = new() { ["u_sensorbar_level_s"] = Bind("summary/cpu-temp"), ["u_other_s"] = Bind("summary/gpu-temp") } },
+                    new() { Sensors = new() { ["u_fill_level_s"] = Bind("summary/cpu-temp"), ["u_other_s"] = Bind("summary/gpu-temp") } },
                 },
             };
             s.Lighting.DevicePins["a"] = plain;
@@ -216,8 +215,8 @@ public sealed class SensorStateRoutingTests : IDisposable
 
         Assert.Equal("sensorbar", plainFx.Name);
         Assert.Equal("sensorbar", pickedFx.Name);
-        Assert.Equal("summary/cpu-temp", plainFx.SensorOverrides!["u_sensorbar_level_s"].Sensor);
-        Assert.Equal("summary/memory-usage", pickedFx.SensorOverrides!["u_sensorbar_level_s"].Sensor);
+        Assert.Equal("summary/cpu-temp", plainFx.SensorOverrides!["u_fill_level_s"].Sensor);
+        Assert.Equal("summary/memory-usage", pickedFx.SensorOverrides!["u_fill_level_s"].Sensor);
         Assert.Equal("summary/gpu-temp", pickedFx.SensorOverrides["u_other_s"].Sensor);
         Assert.NotEqual(_engine.PinLookTag!(DevicePinLook.AnimateRenderKey(plain)), _engine.PinLookTag!(DevicePinLook.AnimateRenderKey(picked)));
     }
@@ -251,7 +250,7 @@ public sealed class SensorStateRoutingTests : IDisposable
         Assert.Null(DevicePinTracker.Validate(pin));
         var normalized = DevicePinTracker.Normalize(pin);
 
-        Assert.Equal("summary/memory-usage", normalized.Sensors!["u_sensorbar_level_s"].Sensor);
+        Assert.Equal("summary/memory-usage", normalized.Sensors!["u_fill_level_s"].Sensor);
         Assert.Null(normalized.Hue);
         Assert.NotSame(pin.Sensors, normalized.Sensors);
     }
@@ -270,8 +269,8 @@ public sealed class SensorStateRoutingTests : IDisposable
         tracker.Set("dev", new DevicePin { Kind = DevicePinKinds.Animate, Effect = "sensorbar", Sensors = Picks("summary/memory-usage") });
 
         Assert.True(tracker.TryGet("dev", out var live));
-        Assert.Equal("summary/memory-usage", live.Sensors!["u_sensorbar_level_s"].Sensor);
-        Assert.Equal("summary/memory-usage", _config.Load().Lighting.DevicePins["dev"].Sensors!["u_sensorbar_level_s"].Sensor);
+        Assert.Equal("summary/memory-usage", live.Sensors!["u_fill_level_s"].Sensor);
+        Assert.Equal("summary/memory-usage", _config.Load().Lighting.DevicePins["dev"].Sensors!["u_fill_level_s"].Sensor);
     }
 
     [Fact]
@@ -325,5 +324,78 @@ public sealed class SensorStateRoutingTests : IDisposable
 
         Assert.True(sensor.ReadsSensors);
         Assert.False(plain.ReadsSensors);
+    }
+
+    private const string AnnotatedLine =
+        "uniform float u_a_s; // sensor {\"category\":\"quick\",\"sensor\":\"summary/cpu-usage\",\"min\":0,\"max\":100}\n";
+
+    [Fact]
+    public void A_pin_whose_only_change_is_its_picks_is_rehydrated_by_the_tracker()
+    {
+        var tracker = new DevicePinTracker(_config);
+        _config.Update(s => s.Lighting.DevicePins["dev"] = new DevicePin { Kind = DevicePinKinds.Animate, Effect = "sensorbar", Sensors = Picks("summary/memory-usage") });
+        Assert.Equal("summary/memory-usage", Sensor(tracker));
+        var version = tracker.Version;
+
+        _config.Update(s => s.Lighting.DevicePins["dev"] = new DevicePin { Kind = DevicePinKinds.Animate, Effect = "sensorbar", Sensors = Picks("summary/gpu-temp") });
+
+        Assert.Equal("summary/gpu-temp", Sensor(tracker));
+        Assert.NotEqual(version, tracker.Version);
+
+        static string Sensor(DevicePinTracker t)
+        {
+            Assert.True(t.TryGet("dev", out var pin));
+            return pin.Sensors!["u_fill_level_s"].Sensor;
+        }
+    }
+
+    [Fact]
+    public void A_custom_source_edit_rebuilds_every_pin_render_of_that_effect_not_only_one()
+    {
+        var key = "custom:" + _id;
+        ShaderLibrary.RegisterCustom(_id, CustomFrags.Frag(extra: AnnotatedLine));
+        var withPicks = new DevicePin { Kind = DevicePinKinds.Animate, Effect = key, Sensors = new() { ["u_a_s"] = Bind("summary/memory-usage") } };
+        var plain = new DevicePin { Kind = DevicePinKinds.Animate, Effect = key };
+        _config.Update(s =>
+        {
+            s.Lighting.DevicePins["a"] = withPicks;
+            s.Lighting.DevicePins["b"] = plain;
+        });
+        var keyA = DevicePinLook.AnimateRenderKey(withPicks);
+        var keyB = DevicePinLook.AnimateRenderKey(plain);
+        var a = _engine.PinEffectFactory!(keyA, null);
+        var b = _engine.PinEffectFactory!(keyB, null);
+        Assert.Same(a, _engine.PinEffectFactory!(keyA, a));
+        Assert.Same(b, _engine.PinEffectFactory!(keyB, b));
+
+        ShaderLibrary.RegisterCustom(_id, CustomFrags.Frag(gainDefault: 1.5f, extra: AnnotatedLine));
+        _provider.ReloadCustomEffect(key);
+
+        Assert.NotSame(a, _engine.PinEffectFactory!(keyA, a));
+        Assert.NotSame(b, _engine.PinEffectFactory!(keyB, b));
+    }
+
+    [Fact]
+    public void A_static_pin_drops_stray_picks_so_identical_static_pins_stay_identical()
+    {
+        var plain = new DevicePin { Kind = DevicePinKinds.Static, Effect = "simplered" };
+        var stray = new DevicePin { Kind = DevicePinKinds.Static, Effect = "simplered", Sensors = Picks("summary/cpu-usage") };
+
+        Assert.Null(DevicePinTracker.Normalize(stray).Sensors);
+        Assert.Equal(DevicePinLook.StaticKey(plain), DevicePinLook.StaticKey(DevicePinTracker.Normalize(stray)));
+    }
+
+    [Fact]
+    public void Unusable_picks_do_not_split_the_render()
+    {
+        var plain = new DevicePin { Kind = DevicePinKinds.Animate, Effect = "sensorbar" };
+        var broken = new DevicePin
+        {
+            Kind = DevicePinKinds.Animate,
+            Effect = "sensorbar",
+            Sensors = new() { ["u_fill_level_s"] = Bind("summary/cpu-usage", min: 5f, max: 5f) },
+        };
+
+        Assert.Equal(DevicePinLook.AnimateRenderKey(plain), DevicePinLook.AnimateRenderKey(broken));
     }
 }

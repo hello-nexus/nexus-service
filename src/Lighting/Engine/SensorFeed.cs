@@ -24,6 +24,12 @@ public sealed class SensorFeed : IDisposable
     /// <summary>No frame asked for this long and the poller exits.</summary>
     internal const int IdleMs = 5000;
 
+    /// <summary>Published for a sensor the poll could not find; unlike NaN it is a current answer.</summary>
+    public const float Missing = float.NegativeInfinity;
+
+    /// <summary>Shortest gap between two logged poll failures.</summary>
+    private const int LogGapMs = 60_000;
+
     /// <summary>One reading, shared by every shader bound to the same category and sensor.</summary>
     public sealed class Channel
     {
@@ -40,10 +46,20 @@ public sealed class SensorFeed : IDisposable
 
         internal void Publish(float value) => Volatile.Write(ref _value, value);
 
-        /// <summary>The latest reading in the sensor's units, NaN while none has arrived or the sensor is missing. Marks the channel as wanted.</summary>
+        /// <summary>
+        /// The latest reading in the sensor's units. NaN while no current reading has arrived (never polled, or the
+        /// channel sat unread long enough to go stale); <see cref="Missing"/> when it was polled and the sensor is
+        /// not there. Marks the channel as wanted.
+        /// </summary>
         public float Read()
         {
-            Volatile.Write(ref _lastAskMs, _feed._clockMs());
+            var now = _feed._clockMs();
+            var previous = Interlocked.Exchange(ref _lastAskMs, now);
+            if (previous == 0 || now - previous >= IdleMs)
+            {
+                // Nobody was polling it, so what it holds is old; wait for a fresh reading.
+                Volatile.Write(ref _value, float.NaN);
+            }
             _feed.Wake();
             return Volatile.Read(ref _value);
         }
@@ -98,7 +114,18 @@ public sealed class SensorFeed : IDisposable
         {
             while (!_cts.IsCancellationRequested)
             {
-                if (!Tick(_clockMs()))
+                bool wanted;
+                try
+                {
+                    wanted = Tick(_clockMs());
+                }
+                catch (Exception ex)
+                {
+                    // Never end the loop on a failure: restarting would retry with no gap.
+                    LogFailure(ex);
+                    wanted = true;
+                }
+                if (!wanted)
                 {
                     break;
                 }
@@ -107,10 +134,6 @@ public sealed class SensorFeed : IDisposable
         }
         catch (OperationCanceledException)
         {
-        }
-        catch (Exception ex)
-        {
-            ServiceLog.Error($"[sensor-feed] poller stopped: {ex.GetType().Name}: {ex.Message}");
         }
         finally
         {
@@ -121,6 +144,23 @@ public sealed class SensorFeed : IDisposable
         {
             Wake();
         }
+    }
+
+    private long _lastLogMs = long.MinValue;
+
+    /// <summary>Failures that reached the log rather than being rate-limited away.</summary>
+    internal int LoggedFailures;
+
+    private void LogFailure(Exception ex)
+    {
+        var now = _clockMs();
+        if (_lastLogMs != long.MinValue && now - _lastLogMs < LogGapMs)
+        {
+            return;
+        }
+        _lastLogMs = now;
+        Interlocked.Increment(ref LoggedFailures);
+        ServiceLog.Error($"[sensor-feed] poll failed: {ex.GetType().Name}: {ex.Message}");
     }
 
     private bool AnyWanted(long nowMs)
@@ -152,6 +192,7 @@ public sealed class SensorFeed : IDisposable
             return false;
         }
         SensorSnapshotSources sources = default;
+        var extrasFailed = false;
         if (_resolve is null && _sensors is not null)
         {
             foreach (var kv in wanted)
@@ -159,8 +200,16 @@ public sealed class SensorFeed : IDisposable
                 var category = kv.Key[..kv.Key.IndexOf('\n')];
                 if (SensorSnapshotResolver.CategoryUsesExtras(category))
                 {
-                    // One walk for every extras-backed binding.
-                    sources = new SensorSnapshotSources(Extras: _sensors.GetSensorExtras());
+                    // One walk for every extras-backed binding. A walk that throws leaves those readings missing.
+                    try
+                    {
+                        sources = new SensorSnapshotSources(Extras: _sensors.GetSensorExtras());
+                    }
+                    catch (Exception ex)
+                    {
+                        LogFailure(ex);
+                        extrasFailed = true;
+                    }
                     break;
                 }
             }
@@ -173,15 +222,17 @@ public sealed class SensorFeed : IDisposable
             float value;
             try
             {
-                value = _resolve is not null
-                    ? _resolve(category, sensor)
-                    : SensorSnapshotResolver.Resolve(_sensors!, category, sensor, sources)?.Value ?? float.NaN;
+                value = extrasFailed && SensorSnapshotResolver.CategoryUsesExtras(category)
+                    ? float.NaN
+                    : _resolve is not null
+                        ? _resolve(category, sensor)
+                        : SensorSnapshotResolver.Resolve(_sensors!, category, sensor, sources)?.Value ?? float.NaN;
             }
             catch (Exception)
             {
                 value = float.NaN;
             }
-            kv.Value.Publish(value);
+            kv.Value.Publish(float.IsNaN(value) ? Missing : value);
         }
         return true;
     }

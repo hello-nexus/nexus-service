@@ -23,6 +23,65 @@ public readonly partial record struct SensorUniformSpec(string Name, SensorBindi
     /// <summary>Whether any line could carry the annotation, so the common case skips the per-line scan.</summary>
     private static bool MayHaveAnnotation(string source) => source.Contains("// sensor", StringComparison.Ordinal);
 
+    /// <summary>The lines left once block comments and `#if 0` regions are gone; a line comment stays, since the annotation is one.</summary>
+    private static List<string> LiveLines(string source)
+    {
+        var sb = new System.Text.StringBuilder(source.Length);
+        for (var i = 0; i < source.Length; i++)
+        {
+            var c = source[i];
+            if (c == '/' && i + 1 < source.Length && source[i + 1] == '/')
+            {
+                var end = source.IndexOf('\n', i);
+                end = end < 0 ? source.Length : end;
+                sb.Append(source, i, end - i);
+                i = end - 1;
+            }
+            else if (c == '/' && i + 1 < source.Length && source[i + 1] == '*')
+            {
+                var end = source.IndexOf("*/", i + 2, StringComparison.Ordinal);
+                var stop = end < 0 ? source.Length : end + 2;
+                for (var k = i; k < stop; k++)
+                {
+                    if (source[k] == '\n')
+                    {
+                        sb.Append('\n');
+                    }
+                }
+                i = stop - 1;
+            }
+            else
+            {
+                sb.Append(c);
+            }
+        }
+        var lines = new List<string>();
+        var dead = 0;
+        foreach (var line in sb.ToString().Split('\n'))
+        {
+            var t = line.Trim();
+            if (dead > 0)
+            {
+                if (t.StartsWith("#if", StringComparison.Ordinal))
+                {
+                    dead++;
+                }
+                else if (t.StartsWith("#endif", StringComparison.Ordinal))
+                {
+                    dead--;
+                }
+                continue;
+            }
+            if (t.StartsWith("#if", StringComparison.Ordinal) && t.Replace(" ", "") == "#if0")
+            {
+                dead = 1;
+                continue;
+            }
+            lines.Add(line);
+        }
+        return lines;
+    }
+
     /// <summary>Every well-formed annotation in source order. A line whose JSON is malformed or names no usable binding is skipped, so its uniform stays an ordinary one.</summary>
     public static IReadOnlyList<SensorUniformSpec> Parse(string source)
     {
@@ -31,7 +90,7 @@ public readonly partial record struct SensorUniformSpec(string Name, SensorBindi
             return None;
         }
         List<SensorUniformSpec>? found = null;
-        foreach (var line in source.Split('\n'))
+        foreach (var line in LiveLines(source))
         {
             var m = LineRegex().Match(line.TrimEnd('\r'));
             if (!m.Success)

@@ -27,7 +27,6 @@ public static class DevicePinLook
             keys.Sort(StringComparer.Ordinal);
             foreach (var k in keys) sb.Append('|').Append(k).Append('=').Append(pin.Params[k].ToString("R"));
         }
-        sb.Append(SensorBinding.MapKey(pin.Sensors));
         return sb.ToString();
     }
 
@@ -38,7 +37,19 @@ public static class DevicePinLook
     public static string AnimateRenderKey(DevicePin pin)
     {
         var effect = pin.Effect ?? "";
-        var picks = SensorBinding.MapKey(pin.Sensors);
+        // Only picks the shader would act on key the render; an unusable one falls back to the default anyway.
+        Dictionary<string, SensorBinding>? usable = null;
+        if (pin.Sensors is not null)
+        {
+            foreach (var kv in pin.Sensors)
+            {
+                if (kv.Value is { IsUsable: true })
+                {
+                    (usable ??= new Dictionary<string, SensorBinding>(StringComparer.Ordinal))[kv.Key] = kv.Value;
+                }
+            }
+        }
+        var picks = SensorBinding.MapKey(usable);
         return picks.Length == 0 || Nexus.Service.Lighting.Engine.Gpu.ShaderLibrary.IsSweepEffect(effect)
             ? effect
             : effect + "\u001f" + picks;
@@ -146,6 +157,8 @@ public sealed class DevicePinTracker
                 return new DevicePin { Kind = pin.Kind };
             case DevicePinKinds.Static:
                 var copy = pin.Copy();
+                // A static look has no sensor uniform; a stray field must not split identical pins.
+                copy.Sensors = null;
                 if (string.IsNullOrEmpty(copy.Effect)
                     || !Nexus.Service.Lighting.Engine.Gpu.ShaderLibrary.AllEffectKeys.Contains(copy.Effect))
                 {
@@ -248,6 +261,7 @@ public sealed class DevicePinTracker
             if (!string.Equals(m.Effect, pin.Effect, StringComparison.Ordinal)) return false;
             if (pin.Kind == DevicePinKinds.Static && DevicePinLook.StaticKey(m) != DevicePinLook.StaticKey(pin)) return false;
             if (m.Slot != pin.Slot) return false;
+            if (pin.Kind == DevicePinKinds.Animate && !SensorBinding.MapEquals(m.Sensors, pin.Sensors)) return false;
         }
         return true;
     }

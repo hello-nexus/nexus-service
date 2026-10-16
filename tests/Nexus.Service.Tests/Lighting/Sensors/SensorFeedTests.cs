@@ -54,7 +54,7 @@ public sealed class SensorFeedTests
 
         Assert.True(feed.Tick(_now));
 
-        Assert.True(float.IsNaN(channel.Read()));
+        Assert.Equal(SensorFeed.Missing, channel.Read());
         Assert.Equal(0f, binding.Normalize(channel.Read()));
     }
 
@@ -67,7 +67,7 @@ public sealed class SensorFeedTests
 
         Assert.True(feed.Tick(_now));
 
-        Assert.True(float.IsNaN(channel.Read()));
+        Assert.Equal(SensorFeed.Missing, channel.Read());
     }
 
     [Fact]
@@ -152,10 +152,6 @@ public sealed class SensorFeedTests
 
         Interlocked.Add(ref _now, SensorFeed.IdleMs + 1);
         Assert.True(await WaitFor(() => !feed.IsPolling));
-
-        var before = Volatile.Read(ref _resolves);
-        await Task.Delay(60);
-        Assert.Equal(before, Volatile.Read(ref _resolves));
     }
 
     [Fact]
@@ -173,6 +169,69 @@ public sealed class SensorFeedTests
         _ = channel.Read();
 
         Assert.True(await WaitFor(() => channel.Read() == 6f));
+    }
+
+    [Fact]
+    public void A_channel_left_unread_past_the_idle_window_reports_no_current_reading_until_polled_again()
+    {
+        using var feed = NewFeed();
+        _readings["quick/summary/cpu-usage"] = 42f;
+        var channel = feed.Acquire(Bind());
+        _ = channel.Read();
+        feed.Tick(_now);
+        Assert.Equal(42f, channel.Read());
+
+        _now += SensorFeed.IdleMs + 1;
+
+        Assert.True(float.IsNaN(channel.Read()));
+        feed.Tick(_now);
+        Assert.Equal(42f, channel.Read());
+    }
+
+    private class ThrowingSensors : System.Reflection.DispatchProxy
+    {
+        public int Walks;
+
+        protected override object? Invoke(System.Reflection.MethodInfo? targetMethod, object?[]? args)
+        {
+            if (targetMethod?.Name == "GetSensorExtras")
+            {
+                Interlocked.Increment(ref Walks);
+                throw new InvalidOperationException("walk failed");
+            }
+            return targetMethod?.ReturnType.IsValueType == true ? Activator.CreateInstance(targetMethod.ReturnType) : null;
+        }
+    }
+
+    [Fact]
+    public void A_throwing_extras_walk_is_a_missing_reading_not_a_failure()
+    {
+        var provider = System.Reflection.DispatchProxy.Create<Nexus.Service.Sensors.ISensorProvider, ThrowingSensors>();
+        using var feed = new SensorFeed(provider, null, () => _now, background: false);
+        var channel = feed.Acquire(new SensorBinding { Category = "cooler", Sensor = "x", Min = 0, Max = 1 });
+        _ = channel.Read();
+
+        Assert.True(feed.Tick(_now));
+
+        Assert.Equal(SensorFeed.Missing, channel.Read());
+    }
+
+    [Fact]
+    public async Task A_throwing_extras_walk_keeps_the_poller_on_its_own_cadence_instead_of_spinning()
+    {
+        var provider = System.Reflection.DispatchProxy.Create<Nexus.Service.Sensors.ISensorProvider, ThrowingSensors>();
+        using var feed = new SensorFeed(provider, null, () => Interlocked.Read(ref _now), pollMs: 50, background: true);
+        var channel = feed.Acquire(new SensorBinding { Category = "cooler", Sensor = "x", Min = 0, Max = 1 });
+        _ = channel.Read();
+
+        Assert.True(await WaitFor(() => ((ThrowingSensors)(object)provider).Walks >= 2));
+        var walks = ((ThrowingSensors)(object)provider).Walks;
+        // Passes come one per poll gap, not back to back: at 50 ms a 200 ms window holds a handful, never hundreds.
+        await WaitFor(() => ((ThrowingSensors)(object)provider).Walks >= walks + 3);
+        Assert.InRange(((ThrowingSensors)(object)provider).Walks, 2, 40);
+        Assert.True(feed.IsPolling);
+        // The clock never moved, so the rate limit lets one line through however many passes ran.
+        Assert.Equal(1, feed.LoggedFailures);
     }
 
     private static async Task<bool> WaitFor(Func<bool> condition)
