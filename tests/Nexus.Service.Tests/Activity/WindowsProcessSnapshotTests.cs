@@ -37,6 +37,43 @@ public class WindowsProcessSnapshotTests
         }
     }
 
+    [Fact]
+    public void Parse_NamePointerOutsideTheBuffer_YieldsEmptyName()
+    {
+        var buffer = new byte[EntrySize * 3 + 256];
+        var handle = GCHandle.Alloc(buffer, GCHandleType.Pinned);
+        try
+        {
+            WriteEntry(buffer, handle.AddrOfPinnedObject().ToInt64(), 0, nextOffset: 0, pid: 7, name: "x", workingSet: 1, cpu: (0, 0), create: 0, io: (0, 0));
+            BitConverter.TryWriteBytes(buffer.AsSpan(64), 0x10L);
+            var entries = new List<ProcessSnapshotEntry>();
+            WindowsProcessSnapshot.Parse(buffer, entries);
+            Assert.Equal("", Assert.Single(entries).Name);
+        }
+        finally
+        {
+            handle.Free();
+        }
+    }
+
+    [Fact]
+    public void Parse_ChainRunningPastTheBuffer_StopsAtTheLastCompleteEntry()
+    {
+        var buffer = new byte[EntrySize * 3 + 256];
+        var handle = GCHandle.Alloc(buffer, GCHandleType.Pinned);
+        try
+        {
+            WriteEntry(buffer, handle.AddrOfPinnedObject().ToInt64(), 0, nextOffset: EntrySize * 10, pid: 7, name: "a", workingSet: 1, cpu: (0, 0), create: 0, io: (0, 0));
+            var entries = new List<ProcessSnapshotEntry>();
+            WindowsProcessSnapshot.Parse(buffer, entries);
+            Assert.Equal(7, Assert.Single(entries).Pid);
+        }
+        finally
+        {
+            handle.Free();
+        }
+    }
+
     private static void WriteEntry(byte[] buffer, long baseAddress, int offset, int nextOffset, int pid, string name, long workingSet, (long user, long kernel) cpu, long create, (long read, long write) io)
     {
         var span = buffer.AsSpan(offset);

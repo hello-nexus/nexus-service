@@ -46,15 +46,16 @@ internal static class WindowsProcessSnapshot
                 uint needed;
                 unsafe
                 {
+                    // Parsed inside the pinned block: ImageName pointers are absolute.
                     fixed (byte* p = s_buffer)
                     {
                         status = NtQuerySystemInformation(SystemProcessInformation, p, (uint)s_buffer.Length, out needed);
+                        if (status >= 0)
+                        {
+                            ParseAt(p, s_buffer.Length, into);
+                            return true;
+                        }
                     }
-                }
-                if (status >= 0)
-                {
-                    Parse(s_buffer, into);
-                    return true;
                 }
                 if (status != StatusInfoLengthMismatch)
                 {
@@ -69,11 +70,18 @@ internal static class WindowsProcessSnapshot
     /// <summary>Walks the SYSTEM_PROCESS_INFORMATION chain. The image name pointers inside <paramref name="buffer"/> are absolute, so the array must be the one the kernel filled, at its current address.</summary>
     internal static unsafe void Parse(byte[] buffer, List<ProcessSnapshotEntry> into)
     {
-        into.Clear();
         fixed (byte* basePtr = buffer)
         {
+            ParseAt(basePtr, buffer.Length, into);
+        }
+    }
+
+    private static unsafe void ParseAt(byte* basePtr, int length, List<ProcessSnapshotEntry> into)
+    {
+        into.Clear();
+        {
             long offset = 0;
-            while (offset + MinEntrySize <= buffer.Length)
+            while (offset + MinEntrySize <= length)
             {
                 var e = basePtr + offset;
                 var pid = (int)*(long*)(e + OffsetPid);
@@ -81,7 +89,7 @@ internal static class WindowsProcessSnapshot
                 {
                     var nameBytes = *(ushort*)(e + OffsetImageNameLength);
                     var namePtr = *(byte**)(e + OffsetImageNameBuffer);
-                    var name = namePtr >= basePtr && namePtr + nameBytes <= basePtr + buffer.Length
+                    var name = namePtr >= basePtr && namePtr + nameBytes <= basePtr + length
                         ? new string((char*)namePtr, 0, nameBytes / 2)
                         : "";
                     if (name.Length > 4 && name.EndsWith(".exe", StringComparison.OrdinalIgnoreCase))

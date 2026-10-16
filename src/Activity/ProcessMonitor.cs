@@ -703,13 +703,14 @@ public sealed class ProcessMonitor : BackgroundService
 
     // CPU time, working set, start time and IO counters all come from one
     // NtQuerySystemInformation snapshot, so no process is ever opened. The
-    // pid-0 idle entry is absent, matching the old open failure that skipped it.
-    private void SampleWindowsSnapshot(DateTime now, List<ProcessInfo> result, HashSet<int> seen)
+    // pid-0 idle entry is excluded. Returns false when the snapshot fails, so
+    // the caller keeps the previous state.
+    private bool SampleWindowsSnapshot(DateTime now, List<ProcessInfo> result, HashSet<int> seen)
     {
         var entries = new List<ProcessSnapshotEntry>(512);
         if (!WindowsProcessSnapshot.TryRead(entries))
         {
-            return;
+            return false;
         }
         foreach (var e in entries)
         {
@@ -780,6 +781,7 @@ public sealed class ProcessMonitor : BackgroundService
                 StorageWriteBytesPerSec = Math.Round(storageWrite, 1),
             });
         }
+        return true;
     }
 
     /// <summary>
@@ -797,7 +799,10 @@ public sealed class ProcessMonitor : BackgroundService
         var seen = new HashSet<int>();
         if (onWindows)
         {
-            SampleWindowsSnapshot(now, result, seen);
+            if (!SampleWindowsSnapshot(now, result, seen))
+            {
+                return;
+            }
         }
 
         foreach (var proc in processes)
