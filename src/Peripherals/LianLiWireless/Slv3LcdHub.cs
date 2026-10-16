@@ -37,6 +37,14 @@ public sealed class Slv3LcdHub : IDisposable
     private readonly Dictionary<string, byte> _rotation = new(StringComparer.OrdinalIgnoreCase);
     // Screens whose handle a failed write dropped; only their next open replays the above.
     private readonly HashSet<string> _dropped = new(StringComparer.OrdinalIgnoreCase);
+    // USB product id of each screen opened so far, which tells the TL-LCD from the SL-LCD.
+    private readonly Dictionary<string, int> _productIds = new(StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>The TL-LCD Wireless screens show up to 60 frames a second.</summary>
+    public const int TlMaxFps = 60;
+
+    /// <summary>What the other screens, and any not opened yet, are held to.</summary>
+    public const int DefaultMaxFps = 30;
 
     public Slv3LcdHub(
         ISlv3LcdDiscovery discovery,
@@ -93,6 +101,20 @@ public sealed class Slv3LcdHub : IDisposable
 
     /// <summary>Lists the currently enumerable LCD screens (serial + device path).</summary>
     public IReadOnlyList<Slv3LcdPortInfo> Discover() => _discovery.Discover();
+
+    /// <summary>
+    /// The fastest frame rate to send a screen: <see cref="TlMaxFps"/> for a TL-LCD, else
+    /// <see cref="DefaultMaxFps"/>, which is also what a screen gets until it has been opened.
+    /// </summary>
+    public int MaxFps(string serial)
+    {
+        lock (_lock)
+        {
+            return _productIds.TryGetValue(serial, out var productId) && productId == Slv3LcdProtocol.ProductIdTl
+                ? TlMaxFps
+                : DefaultMaxFps;
+        }
+    }
 
     public bool PushImageToSerial(string serial, byte[] jpeg)
     {
@@ -261,6 +283,7 @@ public sealed class Slv3LcdHub : IDisposable
                 return null;
             }
             _open[serial] = transport;
+            _productIds[serial] = port.ProductId;
             _reopenAfter.Remove(serial);
             ServiceLog.Info($"[lianli-wireless-lcd] opened {serial}");
             if (_dropped.Remove(serial))
