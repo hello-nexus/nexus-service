@@ -39,18 +39,28 @@ public sealed class SystemPreviewStore
         _metaPath = Path.Combine(dir, "system-preview.json");
     }
 
-    public void Save(string caseId, byte[] png)
+    /// <summary>Writes the pair; false when the disk write failed (logged), leaving any earlier preview as it was or torn-and-ignored.</summary>
+    public bool Save(string caseId, byte[] png)
     {
         var sha = Convert.ToHexStringLower(SHA256.HashData(png));
         lock (_lock)
         {
-            var dir = Path.GetDirectoryName(_pngPath);
-            if (!string.IsNullOrEmpty(dir))
+            try
             {
-                Directory.CreateDirectory(dir);
+                var dir = Path.GetDirectoryName(_pngPath);
+                if (!string.IsNullOrEmpty(dir))
+                {
+                    Directory.CreateDirectory(dir);
+                }
+                AtomicJsonFile.Write(_pngPath, png);
+                AtomicJsonFile.Write(_metaPath, JsonSerializer.Serialize(new SystemPreviewMeta { CaseId = caseId, Sha256 = sha }, PersistenceJsonContext.Default.SystemPreviewMeta));
+                return true;
             }
-            AtomicJsonFile.Write(_pngPath, png);
-            AtomicJsonFile.Write(_metaPath, JsonSerializer.Serialize(new SystemPreviewMeta { CaseId = caseId, Sha256 = sha }, PersistenceJsonContext.Default.SystemPreviewMeta));
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+            {
+                Console.Error.WriteLine($"[system-preview] save failed: {ex.GetType().Name}: {ex.Message}");
+                return false;
+            }
         }
     }
 

@@ -172,6 +172,48 @@ public sealed class SystemPreviewRoutesTests : IClassFixture<SystemPreviewAppFac
     }
 
     [Fact]
+    public async Task Put_over_two_megabytes_without_content_length_is_413()
+    {
+        var content = new StreamContent(new MemoryStream(Png(2 * 1024 * 1024)));
+        content.Headers.ContentType = new MediaTypeHeaderValue("image/png");
+        var req = new HttpRequestMessage(HttpMethod.Put, "/system/preview?caseId=case-a") { Content = content };
+        req.Headers.TransferEncodingChunked = true;
+
+        var res = await Desktop().SendAsync(req);
+
+        Assert.Equal(HttpStatusCode.RequestEntityTooLarge, res.StatusCode);
+    }
+
+    [Fact]
+    public async Task A_panel_session_gets_403_on_both_verbs()
+    {
+        var panel = TestPhoneSession.CreateClient(_factory);
+
+        Assert.Equal(HttpStatusCode.Forbidden, (await panel.GetAsync("/system/preview")).StatusCode);
+        Assert.Equal(HttpStatusCode.Forbidden, (await panel.PutAsync("/system/preview?caseId=case-a", Body(Png()))).StatusCode);
+    }
+
+    [Fact]
+    public async Task A_png_that_no_longer_matches_its_sidecar_hash_reads_as_404()
+    {
+        var client = Desktop();
+        await client.PutAsync("/system/preview?caseId=case-a", Body(Png()));
+        File.WriteAllBytes(Path.Combine(_factory.Dir, "system-preview.png"), Png(40));
+
+        Assert.Equal(HttpStatusCode.NotFound, (await client.GetAsync("/system/preview")).StatusCode);
+    }
+
+    [Fact]
+    public void Save_returns_false_instead_of_throwing_when_the_disk_write_fails()
+    {
+        var blocker = Path.Combine(_factory.Dir, "blocker-" + Guid.NewGuid().ToString("N"));
+        File.WriteAllText(blocker, "x");
+        var store = new SystemPreviewStore(Path.Combine(blocker, "sub"));
+
+        Assert.False(store.Save("case-a", Png()));
+    }
+
+    [Fact]
     public void Desktop_default_layout_seeds_the_build_widget_beside_lighting()
     {
         var layout = Nexus.Service.Panel.PanelLayoutDefaults.ForSurface("desktop");

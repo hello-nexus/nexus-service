@@ -78,7 +78,10 @@ public static class SystemRoutes
             {
                 return Results.BadRequest(ApiResponse.Fail("Body must be a PNG image."));
             }
-            previews.Save(caseId, bytes);
+            if (!previews.Save(caseId, bytes))
+            {
+                return Results.Json(ApiResponse.Fail("The preview could not be saved."), AppJsonContext.Default.ApiResponse, statusCode: StatusCodes.Status500InternalServerError);
+            }
             return Results.NoContent();
         });
 
