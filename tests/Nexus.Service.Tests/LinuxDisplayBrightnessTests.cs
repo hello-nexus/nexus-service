@@ -103,4 +103,61 @@ public class LinuxDisplayBrightnessTests
     [Fact]
     public void DecodePnpId_InvalidHeaderReturnsEmpty()
         => Assert.Equal("", LinuxDisplayBrightnessProvider.DecodePnpId(new byte[128]));
+
+    private static void Connector(TempDir t, string name, string status, string? ddcBus = null, string? childBus = null)
+    {
+        t.Write($"drm/{name}/status", status + "\n");
+        if (ddcBus is not null)
+            t.Symlink($"drm/{name}/ddc", t.Dir($"devices/{ddcBus}"));
+        if (childBus is not null)
+            t.Dir($"drm/{name}/{childBus}");
+    }
+
+    [Fact]
+    public void SelectDdcBuses_ReturnsOnlyConnectedConnectorBuses()
+    {
+        using var t = new TempDir();
+        Connector(t, "card1-DP-1", "connected", ddcBus: "i2c-7");
+        Connector(t, "card1-DP-2", "disconnected", ddcBus: "i2c-8");
+        Connector(t, "card1-HDMI-A-1", "connected", ddcBus: "i2c-3");
+        t.Dir("drm/card1"); // GPU node, not a connector
+        t.Dir("devices/i2c-0"); // buses without a connector are never listed
+
+        Assert.Equal(new[] { 3, 7 }, LinuxDisplayBrightnessProvider.SelectDdcBuses(t.At("drm")));
+    }
+
+    [Fact]
+    public void SelectDdcBuses_FallsBackToI2cChildDir()
+    {
+        using var t = new TempDir();
+        Connector(t, "card0-DP-1", "connected", childBus: "i2c-5");
+
+        Assert.Equal(new[] { 5 }, LinuxDisplayBrightnessProvider.SelectDdcBuses(t.At("drm")));
+    }
+
+    [Fact]
+    public void SelectDdcBuses_ConnectedWithoutDdcLinkYieldsNothing()
+    {
+        using var t = new TempDir();
+        Connector(t, "card0-eDP-1", "connected");
+
+        Assert.Empty(LinuxDisplayBrightnessProvider.SelectDdcBuses(t.At("drm")));
+    }
+
+    [Fact]
+    public void SelectDdcBuses_MissingRootYieldsNothing()
+    {
+        using var t = new TempDir();
+
+        Assert.Empty(LinuxDisplayBrightnessProvider.SelectDdcBuses(t.At("absent")));
+    }
+
+    [Fact]
+    public void SelectDdcBuses_IgnoresNonI2cLinkTarget()
+    {
+        using var t = new TempDir();
+        Connector(t, "card0-DP-1", "connected", ddcBus: "aux-0");
+
+        Assert.Empty(LinuxDisplayBrightnessProvider.SelectDdcBuses(t.At("drm")));
+    }
 }
