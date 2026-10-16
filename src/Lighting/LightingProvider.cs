@@ -78,10 +78,12 @@ public sealed partial class LightingProvider : ILightingProvider, IDisposable
     private readonly PostProcessState _mediaPP = new();
 
     private readonly FeatureGates _gates;
+    private readonly SensorFeed? _sensorFeed;
 
-    public LightingProvider(IConfigStore store, LightingEngine engine, LightingOutputHub hub, GpuContext gpu, MediaLibrary media, IMonitorEnumerator monitors, IScreenFrameSource? frameSource = null, RgbBridge? rgb = null, IBeatsProvider? beats = null, FeatureGates? gates = null, Nexus.Service.Lighting.CustomEffects.CustomEffectStore? customEffects = null, MultiplexHub? panelHub = null, ScreenPreviewHub? previewHub = null)
+    public LightingProvider(IConfigStore store, LightingEngine engine, LightingOutputHub hub, GpuContext gpu, MediaLibrary media, IMonitorEnumerator monitors, IScreenFrameSource? frameSource = null, RgbBridge? rgb = null, IBeatsProvider? beats = null, FeatureGates? gates = null, Nexus.Service.Lighting.CustomEffects.CustomEffectStore? customEffects = null, MultiplexHub? panelHub = null, ScreenPreviewHub? previewHub = null, SensorFeed? sensorFeed = null)
     {
         _panelHub = panelHub;
+        _sensorFeed = sensorFeed;
         _gates = gates ?? FeatureGates.AllEnabled;
         _store = store;
         _engine = engine;
@@ -357,6 +359,7 @@ public sealed partial class LightingProvider : ILightingProvider, IDisposable
         var saturation = body.Saturation;
         var contrast = body.Contrast;
         var extras = ParamsToDict(body.Params);
+        var sensors = Nexus.Service.Persistence.SensorBinding.CopyMap(body.Sensors);
         var effectSpeed = name == "pulse" ? speed * 0.5f : speed;
         // A sweep is meant to read end to end on every device at once, so the
         // engine stops treating the canvas as a shared scene for these.
@@ -376,6 +379,7 @@ public sealed partial class LightingProvider : ILightingProvider, IDisposable
             cur.Saturation = saturation;
             cur.Contrast = contrast;
             cur.ExtraParams = extras;
+            cur.SensorOverrides = sensors;
             // Reusing the running shader skips SetEffect, which is what clears
             // the hold. Leaving it set after a static->animate switch freezes
             // the animation on its first frame and keeps GetSync reporting
@@ -386,7 +390,7 @@ public sealed partial class LightingProvider : ILightingProvider, IDisposable
         {
             // BuildAnimateEffect applies its own pulse scaling, so pass the
             // pre-scaling value here to avoid scaling twice.
-            _engine.SetEffect(BuildAnimateEffect(name, speed, intensity, hue, colorize, saturation, contrast, extras));
+            _engine.SetEffect(BuildAnimateEffect(name, speed, intensity, hue, colorize, saturation, contrast, extras, sensors));
         }
         // Skip the settings write while the user is still dragging a slider.
         // The UI sends Persist=false during drag (updates go to the engine
@@ -407,6 +411,7 @@ public sealed partial class LightingProvider : ILightingProvider, IDisposable
             Params = extras is not null
                 ? new System.Collections.Generic.Dictionary<string, float>(extras)
                 : new(),
+            Sensors = sensors,
         };
         _store.Update(s =>
         {
@@ -432,6 +437,7 @@ public sealed partial class LightingProvider : ILightingProvider, IDisposable
                     Saturation = baseline.Saturation,
                     Contrast = baseline.Contrast,
                     Params = baseline.Params,
+                    Sensors = baseline.Sensors,
                 };
             }
             if (baseline is not null && AnimateTemplateDefaults.StateEquals(incoming, baseline))
@@ -579,9 +585,11 @@ public sealed partial class LightingProvider : ILightingProvider, IDisposable
         return d;
     }
 
-    private ShaderEffect MakeShader(string name, string src, float speed, float intensity, float hue, float colorize, float saturation, float contrast, System.Collections.Generic.Dictionary<string, float>? extras) =>
+    private ShaderEffect MakeShader(string name, string src, float speed, float intensity, float hue, float colorize, float saturation, float contrast, System.Collections.Generic.Dictionary<string, float>? extras, System.Collections.Generic.IReadOnlyDictionary<string, Nexus.Service.Persistence.SensorBinding>? sensors = null) =>
         new ShaderEffect(name, _gpu, src)
         {
+            SensorFeed = _sensorFeed,
+            SensorOverrides = sensors,
             Speed = speed,
             Intensity = intensity,
             Hue = hue,
@@ -689,6 +697,10 @@ public sealed partial class LightingProvider : ILightingProvider, IDisposable
         var canvas = new Engine.CanvasBuffer(ThumbnailWidth, ThumbnailHeight);
         var generation = _gpu.Generation;
         var effect = BuildThumbnailEffect(name, defaults, state, frozen);
+        if (effect is ShaderEffect thumbShader)
+        {
+            thumbShader.FixedSensorValue = ThumbnailSensorValue;
+        }
         // Thumbnails ride the GL thread's background lane so a page full of them cannot stall the live frame.
         using var background = Engine.Gpu.GpuContext.BeginBackground();
         try
@@ -836,7 +848,7 @@ public sealed partial class LightingProvider : ILightingProvider, IDisposable
             ShaderEffect fresh;
             try
             {
-                fresh = MakeShader(key, ShaderLibrary.Get(key), cur.Speed, cur.Intensity, cur.Hue, cur.Colorize, cur.Saturation, cur.Contrast, extras);
+                fresh = MakeShader(key, ShaderLibrary.Get(key), cur.Speed, cur.Intensity, cur.Hue, cur.Colorize, cur.Saturation, cur.Contrast, extras, cur.SensorOverrides);
             }
             catch (System.IO.FileNotFoundException)
             {
@@ -937,7 +949,7 @@ public sealed partial class LightingProvider : ILightingProvider, IDisposable
 
     // Immutable look per pinned Animate effect, resolved off the engine thread and
     // published by reference swap; the engine only ever reads this.
-    private sealed record PinnedLook(Nexus.Service.Persistence.AnimateEffectState State, string Tag);
+    private sealed record PinnedLook(string Effect, Nexus.Service.Persistence.AnimateEffectState State, string Tag);
     private volatile System.Collections.Generic.Dictionary<string, PinnedLook> _pinnedLooks = new();
     private volatile bool _pinnedAudio;
     private long _pinnedLooksSeq;
@@ -1003,7 +1015,13 @@ public sealed partial class LightingProvider : ILightingProvider, IDisposable
             foreach (var pin in s.Lighting.DevicePins.Values)
             {
                 var key = pin?.Kind == Nexus.Service.Persistence.DevicePinKinds.Animate ? pin.Effect : null;
-                if (string.IsNullOrEmpty(key) || next.ContainsKey(key))
+                if (string.IsNullOrEmpty(key))
+                {
+                    continue;
+                }
+                // Pins that differ in their sensor picks render apart; the rest of the look is the effect's.
+                var renderKey = DevicePinLook.AnimateRenderKey(pin!);
+                if (next.ContainsKey(renderKey))
                 {
                     continue;
                 }
@@ -1021,7 +1039,7 @@ public sealed partial class LightingProvider : ILightingProvider, IDisposable
                         ? persisted
                         : new Nexus.Service.Persistence.AnimateEffectState();
                 }
-                if (slot is null && ShaderLibrary.IsCustomKey(key))
+                if (slot is null && (ShaderLibrary.IsCustomKey(key) || ShaderLibrary.IsSensorEffect(key)))
                 {
                     // A custom effect with no saved preset runs as a fresh start of it does: its last
                     // activation state, else the install defaults.
@@ -1044,6 +1062,7 @@ public sealed partial class LightingProvider : ILightingProvider, IDisposable
                     Params = slot.Params is null
                         ? new()
                         : new System.Collections.Generic.Dictionary<string, float>(slot.Params),
+                    Sensors = Nexus.Service.Persistence.SensorBinding.Merge(slot.Sensors, pin!.Sensors),
                 };
                 // A custom effect's source can change under the same look, so the tag carries it.
                 var tag = HashSlot(copy);
@@ -1051,13 +1070,13 @@ public sealed partial class LightingProvider : ILightingProvider, IDisposable
                 {
                     tag += "|" + ShaderLibrary.SourceTag(key);
                 }
-                next[key] = new PinnedLook(copy, tag);
+                next[renderKey] = new PinnedLook(key, copy, tag);
             }
         });
         var audio = false;
-        foreach (var key in next.Keys)
+        foreach (var look in next.Values)
         {
-            audio |= ShaderLibrary.IsAudioEffect(key);
+            audio |= ShaderLibrary.IsAudioEffect(look.Effect);
         }
         bool audioChanged;
         lock (_mediaLoadLock)
@@ -1170,6 +1189,8 @@ public sealed partial class LightingProvider : ILightingProvider, IDisposable
             return null;
         }
         var look = pinned.State;
+        // The engine's key may carry the pin's sensor picks; the shader is the effect's own.
+        effect = pinned.Effect;
         var speed = (float)(look.Speed / 50.0);
         var intensity = look.Intensity > 0 ? look.Intensity : 1f;
         var extras = look.Params is { Count: > 0 }
@@ -1188,13 +1209,14 @@ public sealed partial class LightingProvider : ILightingProvider, IDisposable
             cur.Saturation = look.Saturation;
             cur.Contrast = look.Contrast;
             cur.ExtraParams = extras;
+            cur.SensorOverrides = look.Sensors;
             return cur;
         }
         if (custom)
         {
             _pinBuiltSource[effect] = sourceTag!;
         }
-        return BuildAnimateEffect(effect, speed, intensity, look.Hue, look.Colorize, look.Saturation, look.Contrast, extras);
+        return BuildAnimateEffect(effect, speed, intensity, look.Hue, look.Colorize, look.Saturation, look.Contrast, extras, look.Sensors);
     }
 
     // Source tag each pinned custom instance was compiled from; only the engine thread writes it.
@@ -1263,6 +1285,7 @@ public sealed partial class LightingProvider : ILightingProvider, IDisposable
         cur.ExtraParams = slot.Params is not null && slot.Params.Count > 0
             ? new System.Collections.Generic.Dictionary<string, float>(slot.Params)
             : null;
+        cur.SensorOverrides = Nexus.Service.Persistence.SensorBinding.CopyMap(slot.Sensors);
     }
 
     /// <summary>Stable content tag over a slot's render-affecting fields (FNV-1a, base16).</summary>
@@ -1282,6 +1305,7 @@ public sealed partial class LightingProvider : ILightingProvider, IDisposable
                 sb.Append(';').Append(k).Append('=').Append(R(slot.Params[k]));
             }
         }
+        sb.Append(Nexus.Service.Persistence.SensorBinding.MapKey(slot.Sensors));
         uint h = 2166136261;
         foreach (var c in sb.ToString())
         {
@@ -1290,6 +1314,9 @@ public sealed partial class LightingProvider : ILightingProvider, IDisposable
         }
         return h.ToString("x8");
     }
+
+    // A thumbnail is one frame with no live reading behind it; sensor uniforms sit at this fill so the tile shows the effect partway.
+    private const float ThumbnailSensorValue = 0.65f;
 
     /// <summary>
     /// Build the effect whose single frame becomes the thumbnail. Renders the
@@ -1482,7 +1509,17 @@ public sealed partial class LightingProvider : ILightingProvider, IDisposable
         return result;
     }
 
-    private IEffect BuildAnimateEffect(string name, float speed, float intensity, float hue, float colorize, float saturation, float contrast, System.Collections.Generic.Dictionary<string, float>? extras)
+    private IEffect BuildAnimateEffect(string name, float speed, float intensity, float hue, float colorize, float saturation, float contrast, System.Collections.Generic.Dictionary<string, float>? extras, System.Collections.Generic.IReadOnlyDictionary<string, Nexus.Service.Persistence.SensorBinding>? sensors = null)
+    {
+        var effect = BuildAnimateEffectCore(name, speed, intensity, hue, colorize, saturation, contrast, extras);
+        if (effect is ShaderEffect shader)
+        {
+            shader.SensorOverrides = sensors;
+        }
+        return effect;
+    }
+
+    private IEffect BuildAnimateEffectCore(string name, float speed, float intensity, float hue, float colorize, float saturation, float contrast, System.Collections.Generic.Dictionary<string, float>? extras)
     {
         // Every animate mode is a fragment-only GLSL shader. GPU-only - if
         // the context can't initialise, the canvas stays dark. Pulse gets
@@ -1513,6 +1550,12 @@ public sealed partial class LightingProvider : ILightingProvider, IDisposable
         // static patterns below - the switch has no arm for them and its
         // rainbow default would render them all identically.
         if (ShaderLibrary.IsSweepEffect(name))
+        {
+            return MakeShader(name, ShaderLibrary.Get(name), effectSpeed, intensity, hue, colorize, saturation, contrast, extras);
+        }
+        // A built-in sensor effect is a self-contained baked fragment loaded by its own name; the
+        // switch below has no arm for it and would run rainbow in its place.
+        if (ShaderLibrary.IsSensorEffect(name))
         {
             return MakeShader(name, ShaderLibrary.Get(name), effectSpeed, intensity, hue, colorize, saturation, contrast, extras);
         }

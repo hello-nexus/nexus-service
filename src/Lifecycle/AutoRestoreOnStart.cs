@@ -221,6 +221,7 @@ internal sealed class AutoRestoreOnStart : BackgroundService
                     Saturation = saved.Saturation,
                     Contrast = saved.Contrast,
                     Params = AnimateParamsToList(saved.Params),
+                    Sensors = saved.Sensors,
                 });
                 Console.WriteLine($"[auto-restore] lighting: animate/{effect}");
                 return true;

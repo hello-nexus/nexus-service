@@ -27,7 +27,21 @@ public static class DevicePinLook
             keys.Sort(StringComparer.Ordinal);
             foreach (var k in keys) sb.Append('|').Append(k).Append('=').Append(pin.Params[k].ToString("R"));
         }
+        sb.Append(SensorBinding.MapKey(pin.Sensors));
         return sb.ToString();
+    }
+
+    /// <summary>
+    /// The key an animate pin's render runs under. Pins on one effect share a render, except that a pin carrying
+    /// sensor picks gets its own, since two picks cannot share one canvas. A sweep never reads a sensor.
+    /// </summary>
+    public static string AnimateRenderKey(DevicePin pin)
+    {
+        var effect = pin.Effect ?? "";
+        var picks = SensorBinding.MapKey(pin.Sensors);
+        return picks.Length == 0 || Nexus.Service.Lighting.Engine.Gpu.ShaderLibrary.IsSweepEffect(effect)
+            ? effect
+            : effect + "\u001f" + picks;
     }
 
     public static float Intensity(DevicePin pin) => pin.Intensity is > 0f ? pin.Intensity.Value : 1f;
@@ -112,7 +126,7 @@ public sealed class DevicePinTracker
     private static bool HasNoFields(DevicePin pin) =>
         pin.Effect is null && pin.Color is null && pin.Intensity is null && pin.Hue is null
         && pin.Colorize is null && pin.Saturation is null && pin.Contrast is null
-        && pin.Params is null && pin.Slot is null;
+        && pin.Params is null && pin.Sensors is null && pin.Slot is null;
 
     /// <summary>
     /// A copy holding only the fields the pin's kind reads: animate keeps its
@@ -125,7 +139,7 @@ public sealed class DevicePinTracker
         switch (pin.Kind)
         {
             case DevicePinKinds.Animate:
-                return new DevicePin { Kind = pin.Kind, Effect = pin.Effect };
+                return new DevicePin { Kind = pin.Kind, Effect = pin.Effect, Sensors = SensorBinding.CopyMap(pin.Sensors) };
             case DevicePinKinds.Mirror:
             case DevicePinKinds.Media:
                 return new DevicePin { Kind = pin.Kind };

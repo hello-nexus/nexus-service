@@ -164,11 +164,11 @@ public static class LightingRoutes
                 var entry = custom.Get(name[ShaderLibrary.CustomPrefix.Length..]);
                 return entry is null
                     ? Results.NotFound()
-                    : Results.Json(new ShaderSourceResponse { Frag = entry.Frag }, AppJsonContext.Default.ShaderSourceResponse);
+                    : Results.Json(ToShaderSource(entry.Frag, Nexus.Service.Lighting.Engine.Gpu.SensorUniformSpec.Parse(entry.Frag)), AppJsonContext.Default.ShaderSourceResponse);
             }
             if (!ShaderLibrary.AllEffectKeys.Contains(name))
                 return Results.NotFound();
-            return Results.Json(new ShaderSourceResponse { Frag = ShaderLibrary.Get(name) }, AppJsonContext.Default.ShaderSourceResponse);
+            return Results.Json(ToShaderSource(ShaderLibrary.Get(name), ShaderLibrary.SensorUniforms(name)), AppJsonContext.Default.ShaderSourceResponse);
         }).AllowPanel();
         MapCustomEffects(app);
         MapStudioLive(app);
@@ -433,6 +433,16 @@ public static class LightingRoutes
             PanelTopics.BroadcastLighting(hub);
             return ApiResponse.Ok();
         }).AllowPanel();
+    }
+
+    private static ShaderSourceResponse ToShaderSource(string frag, IReadOnlyList<Nexus.Service.Lighting.Engine.Gpu.SensorUniformSpec> sensors)
+    {
+        var response = new ShaderSourceResponse { Frag = frag };
+        foreach (var spec in sensors)
+        {
+            response.Sensors.Add(new SensorUniformInfo { Uniform = spec.Name, Binding = spec.Default.Copy() });
+        }
+        return response;
     }
 
     private static Nexus.Service.Models.Lighting.CustomEffectResponse ToResponse(Nexus.Service.Lighting.CustomEffects.CustomEffectEntry e) => new()

@@ -966,7 +966,7 @@ public sealed partial class LightingEngine : IDisposable
     {
         if (pin.Kind == Nexus.Service.Persistence.DevicePinKinds.Animate && !string.IsNullOrEmpty(pin.Effect))
         {
-            return pin.Effect;
+            return Nexus.Service.Lighting.DevicePinLook.AnimateRenderKey(pin);
         }
         if (pin.Kind == Nexus.Service.Persistence.DevicePinKinds.Mirror)
         {
@@ -1257,7 +1257,7 @@ public sealed partial class LightingEngine : IDisposable
     // Shaders that read no audio and the clock-only effects depend on the clock and their settings alone.
     // A shader that failed leaves its canvas as it was, so it is not a source to pre-render.
     private static bool IsTimePure(IEffect? effect) =>
-        effect is Effects.IClockOnlyEffect or Gpu.ShaderEffect { ReadsAudio: false, HasFailed: false };
+        effect is Effects.IClockOnlyEffect or Gpu.ShaderEffect { ReadsAudio: false, ReadsSensors: false, HasFailed: false };
 
     // A pinned source that failed to build or render shows the base canvas, as it does live. A shader that failed
     // without throwing keeps its stale canvas live, so IsTimePure rejects it and the chain stays live.
@@ -1290,11 +1290,11 @@ public sealed partial class LightingEngine : IDisposable
                 usesGlobal = true;
                 break;
             case Nexus.Service.Persistence.DevicePinKinds.Animate:
-                if (string.Equals(active.Name, pin.Effect, StringComparison.Ordinal))
+                if (string.Equals(active.Name, PinRenderKey(pin), StringComparison.Ordinal))
                 {
                     usesGlobal = true;
                 }
-                else if (_pinRenders.TryGetValue(pin.Effect!, out var render) && PinSourceRendering(render, out var fx))
+                else if (PinRenderKey(pin) is { } renderKey && _pinRenders.TryGetValue(renderKey, out var render) && PinSourceRendering(render, out var fx))
                 {
                     ok = IsTimePure(fx);
                     animates = ok;
@@ -1715,7 +1715,7 @@ public sealed partial class LightingEngine : IDisposable
         {
             return AheadPinKind.Base;
         }
-        key = pin.Effect;
+        key = PinRenderKey(pin)!;
         sweep = Gpu.ShaderLibrary.IsSweepEffect(key);
         if (string.Equals(active.Name, key, StringComparison.Ordinal))
         {

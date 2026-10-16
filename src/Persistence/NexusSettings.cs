@@ -583,6 +583,8 @@ public sealed class DevicePin
     public float? Saturation { get; set; }
     public float? Contrast { get; set; }
     public Dictionary<string, float>? Params { get; set; }
+    /// <summary>Animate: per sensor uniform, the user's pick over the preset look's binding. Unused by the other kinds.</summary>
+    public Dictionary<string, SensorBinding>? Sensors { get; set; }
     /// <summary>Static: the template slot the look came from, carried for the UI.</summary>
     public int? Slot { get; set; }
 
@@ -597,6 +599,7 @@ public sealed class DevicePin
         Saturation = Saturation,
         Contrast = Contrast,
         Params = Params is null ? null : new Dictionary<string, float>(Params),
+        Sensors = SensorBinding.CopyMap(Sensors),
         Slot = Slot,
     };
 }
@@ -864,6 +867,8 @@ public sealed class AnimateEffectState
     public float Saturation { get; set; } = InstallDefaults.Lighting.Animate.State.Saturation;
     public float Contrast { get; set; } = InstallDefaults.Lighting.Animate.State.Contrast;
     public Dictionary<string, float> Params { get; set; } = new();
+    /// <summary>Per sensor uniform, the user's pick over the shader's default binding; absent keys keep the default. Null when nothing is overridden.</summary>
+    public Dictionary<string, SensorBinding>? Sensors { get; set; }
 }
 
 public sealed class AnimateEffectTemplates

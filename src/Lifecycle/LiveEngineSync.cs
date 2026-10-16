@@ -145,6 +145,7 @@ public static class LiveEngineSync
                         Saturation = saved.Saturation,
                         Contrast = saved.Contrast,
                         Params = AnimateParamsToList(saved.Params),
+                        Sensors = saved.Sensors,
                     });
                     break;
             }
