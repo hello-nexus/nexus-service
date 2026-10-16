@@ -52,8 +52,6 @@ public sealed class MonitoringSettings
     public int SmartPollDefaultSeconds { get; set; } = MonitoringSettings.DefaultSmartPollSeconds;
     /// <summary>False: SmartPollDefaultSeconds governs every drive. True: each drive uses its own SmartPollSeconds entry, falling back to its media type's default.</summary>
     public bool SmartPollPerDrive { get; set; }
-    /// <summary>False stops LHM from reading DIMM SPD temperatures, independent of the memory device's Nexus Control toggle. RAM usage sensors and OpenRGB DRAM RGB are unaffected.</summary>
-    public bool ReadRamTemperatures { get; set; } = true;
 
     public const int DefaultSmartPollSeconds = 30;
 }
@@ -158,6 +156,7 @@ public sealed class Preferences
     public DiagnosticsSettings Diagnostics { get; set; } = new();
     public int StartupDelaySeconds { get; set; }
     public bool DisableGpuMonitoring { get; set; }
+    public bool ReadRamTemperatures { get; set; } = true;
     public FeaturesSettings Features { get; set; } = new();
 }
 
@@ -286,6 +285,7 @@ public sealed class PreferencesPatch
     public DiagnosticsSettingsPatch? Diagnostics { get; set; }
     public int? StartupDelaySeconds { get; set; }
     public bool? DisableGpuMonitoring { get; set; }
+    public bool? ReadRamTemperatures { get; set; }
     public FeaturesSettingsPatch? Features { get; set; }
 }
 
@@ -351,7 +351,6 @@ public sealed class MonitoringSettingsPatch
     public Dictionary<string, int>? SmartPollSeconds { get; set; }
     public int? SmartPollDefaultSeconds { get; set; }
     public bool? SmartPollPerDrive { get; set; }
-    public bool? ReadRamTemperatures { get; set; }
 }
 
 public sealed class UpdatePrefs

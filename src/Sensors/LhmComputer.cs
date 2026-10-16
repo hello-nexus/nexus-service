@@ -56,6 +56,8 @@ public sealed class LhmComputer : IDisposable, ISpdPageReset
     private readonly SmartActiveFlip _smartActive;
     private readonly HashSet<string> _smartSeeded = new(StringComparer.Ordinal);
     private volatile bool _spdActive;
+    private volatile bool _settingSeen;
+    private volatile bool _disposed;
     private readonly Dictionary<string, bool?> _rotational = new(StringComparer.Ordinal);
 
     // Hard cap of one hardware walk per second. Measured from the walk's START,
@@ -81,7 +83,8 @@ public sealed class LhmComputer : IDisposable, ISpdPageReset
         // Open and reads each DIMM thermal sensor per walk, which knocks iCUE
         // off the same bus. Seated before Open, the stub keeps the group's
         // RAM-usage sensors and skips the DIMM path.
-        var startup = SpdReadPolicy.Decide(_gate.IsEnabled(SmbusDramHandler.HandlerId), config.Load().Monitoring.ReadRamTemperatures, currentlyActive: false);
+        var startup = SpdReadPolicy.Decide(_gate.IsEnabled(SmbusDramHandler.HandlerId), config.Load().ReadRamTemperatures, currentlyActive: false);
+        _settingSeen = config.Load().ReadRamTemperatures;
         var spdDisabled = !startup.Wanted;
         _spdActive = startup.Wanted;
         if (spdDisabled)
@@ -157,7 +160,16 @@ public sealed class LhmComputer : IDisposable, ISpdPageReset
         ScheduleSpdApply();
     }
 
-    private void OnConfigChanged() => ScheduleSpdApply();
+    private void OnConfigChanged()
+    {
+        var setting = _config.Load().ReadRamTemperatures;
+        if (setting == _settingSeen)
+        {
+            return;
+        }
+        _settingSeen = setting;
+        ScheduleSpdApply();
+    }
 
     // The swap needs Open() finished; the open task never faults, so the
     // continuation always runs. State is re-read under the lock rather than
@@ -172,15 +184,15 @@ public sealed class LhmComputer : IDisposable, ISpdPageReset
             SpdDecision decision;
             lock (_updateLock)
             {
-                decision = SpdReadPolicy.Decide(_gate.IsEnabled(SmbusDramHandler.HandlerId), _config.Load().Monitoring.ReadRamTemperatures, _spdActive);
-                if (!decision.Changed)
+                decision = SpdReadPolicy.Decide(_gate.IsEnabled(SmbusDramHandler.HandlerId), _config.Load().ReadRamTemperatures, _spdActive);
+                if (_disposed || !decision.Changed)
                 {
                     return;
                 }
                 // Page reset runs while the real driver is still seated.
                 if (!decision.Wanted)
                 {
-                    ResetSpdPages(SpdLiveResetBudget);
+                    ResetLocked(SpdLiveResetBudget);
                 }
                 // Group first (cancels its retry task, closes its DIMMs), then
                 // the driver swap. Re-enabling probes eight addresses
@@ -205,27 +217,72 @@ public sealed class LhmComputer : IDisposable, ISpdPageReset
         }
     }
 
-    private static readonly TimeSpan SpdLiveResetBudget = TimeSpan.FromSeconds(2);
+    private static readonly TimeSpan SpdDisposeBudget = TimeSpan.FromSeconds(2);
+    private static readonly TimeSpan SpdLiveResetBudget = TimeSpan.FromMilliseconds(750);
 
     /// <inheritdoc />
-    public int ResetSpdPages(TimeSpan budget) => SpdPageResetRunner.Run(_spdActive, ResetAllDimmPages, budget, Console.WriteLine);
-
-    // Bus calls take the toolkit's world SMBus mutex per operation. DDR5 is identified by MR0/MR1 (unpaged) before any write so a DDR3 SPD is never written; both IsAvailable probes write page 0 as a side effect.
-    private static int ResetAllDimmPages()
+    public int ResetSpdPages(TimeSpan budget)
     {
-        var reset = 0;
-        foreach (var bus in SMBusManager.RegisteredSMBuses.ToArray())
+        if (!_spdActive)
         {
-            for (byte address = 0x50; address <= 0x57; address++)
-            {
-                var isDdr5 = bus.i2c_smbus_read_byte_data(address, 0) == 0x51 && bus.i2c_smbus_read_byte_data(address, 1) == 0x18;
-                if (isDdr5 ? DDR5Accessor.IsAvailable(bus, address) : DDR4Accessor.IsAvailable(bus, address))
-                {
-                    reset++;
-                }
-            }
+            return 0;
         }
-        return reset;
+        var clock = Stopwatch.StartNew();
+        // Open() and ApplySpdGate rebuild the bus list and the DIMM set under these.
+        if (!_openTask.Wait(budget) || !Monitor.TryEnter(_updateLock, budget > clock.Elapsed ? budget - clock.Elapsed : TimeSpan.Zero))
+        {
+            Console.WriteLine("[lhm] DIMM SPD page reset skipped: LHM busy past the shutdown budget");
+            return 0;
+        }
+        try
+        {
+            return ResetLocked(budget - clock.Elapsed);
+        }
+        finally
+        {
+            Monitor.Exit(_updateLock);
+        }
+    }
+
+    private int ResetLocked(TimeSpan budget) =>
+        SpdPageResetRunner.Run(_spdActive, expired => ResetDetectedDimms(expired), budget, Console.WriteLine);
+
+    private int ResetDetectedDimms(Func<bool> expired)
+    {
+        var addresses = new List<byte>();
+        CollectDimmAddresses(_computer.Hardware, addresses);
+        if (addresses.Count == 0)
+        {
+            return 0;
+        }
+        var buses = SMBusManager.RegisteredSMBuses.Select(b => (ISpdBus)new ToolkitSpdBus(b)).ToArray();
+        return SpdPageReset.Run(buses, addresses, expired);
+    }
+
+    private static void CollectDimmAddresses(IEnumerable<IHardware> hardware, List<byte> addresses)
+    {
+        const string DimmPrefix = "/memory/dimm/";
+        foreach (var h in hardware)
+        {
+            var id = h.Identifier.ToString();
+            if (id.StartsWith(DimmPrefix, StringComparison.Ordinal)
+                && int.TryParse(id.AsSpan(DimmPrefix.Length), out var index)
+                && index is >= 0 and < 8
+                && !addresses.Contains((byte)(0x50 + index)))
+            {
+                addresses.Add((byte)(0x50 + index));
+            }
+            CollectDimmAddresses(h.SubHardware, addresses);
+        }
+    }
+
+    private sealed class ToolkitSpdBus : ISpdBus
+    {
+        private readonly SMBusInterface _bus;
+        public ToolkitSpdBus(SMBusInterface bus) => _bus = bus;
+        public int ReadByte(byte address, byte register) => _bus.i2c_smbus_read_byte_data(address, register);
+        public bool ResetDdr5Page(byte address) => DDR5Accessor.IsAvailable(_bus, address);
+        public void SelectDdr4Page0() => _bus.i2c_smbus_write_byte_data(0x36, 0, byte.MaxValue);
     }
 
     /// <summary>A RAMSPDToolkit driver that reports open so MemoryGroup keeps it instead of installing its PawnIO one, and fails to load because it is none of the three kinds DriverManager accepts, so no bus is ever detected.</summary>
@@ -402,7 +459,8 @@ public sealed class LhmComputer : IDisposable, ISpdPageReset
         // Open(), and Dispose() is only called at service shutdown so the
         // wait is rare and not on any user-visible path.
         try { _openTask.Wait(); } catch { /* shutdown best-effort */ }
-        ResetSpdPages(SpdLiveResetBudget);
+        ResetSpdPages(SpdDisposeBudget);
+        _disposed = true;
         _computer.Close();
     }
 }

@@ -232,6 +232,7 @@ public static class ProfileRoutes
                 Diagnostics = s.Diagnostics,
                 StartupDelaySeconds = s.StartupDelaySeconds,
                 DisableGpuMonitoring = s.DisableGpuMonitoring,
+                ReadRamTemperatures = s.ReadRamTemperatures,
                 Features = s.Features,
             };
         }).AllowPanel();
@@ -522,7 +523,6 @@ public static class ProfileRoutes
                     if (monitoring.SmartPollDefaultSeconds.HasValue)
                         s.Monitoring.SmartPollDefaultSeconds = SmartPollPolicy.ClampSeconds(monitoring.SmartPollDefaultSeconds.Value);
                     if (monitoring.SmartPollPerDrive.HasValue) s.Monitoring.SmartPollPerDrive = monitoring.SmartPollPerDrive.Value;
-                    if (monitoring.ReadRamTemperatures.HasValue) s.Monitoring.ReadRamTemperatures = monitoring.ReadRamTemperatures.Value;
                 }
                 if (body.Cooling is { } cooling)
                 {
@@ -586,6 +586,10 @@ public static class ProfileRoutes
                 if (body.DisableGpuMonitoring is { } disableGpu)
                 {
                     s.DisableGpuMonitoring = disableGpu;
+                }
+                if (body.ReadRamTemperatures is { } readRam)
+                {
+                    s.ReadRamTemperatures = readRam;
                 }
                 if (body.Features is { } features)
                 {

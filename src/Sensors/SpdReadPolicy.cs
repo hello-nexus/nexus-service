@@ -1,4 +1,7 @@
 using System;
+using System.Collections.Generic;
+using System.Diagnostics;
+using System.Threading;
 using System.Threading.Tasks;
 
 namespace Nexus.Service.Sensors;
@@ -33,10 +36,74 @@ public static class SpdReadPolicy
     }
 }
 
+/// <summary>One SMBus as the page reset sees it.</summary>
+public interface ISpdBus
+{
+    /// <summary>Negative on a failed transaction.</summary>
+    int ReadByte(byte address, byte register);
+    /// <summary>Writes MR11 page 0 when the hub is off it; true when the DDR5 hub answered.</summary>
+    bool ResetDdr5Page(byte address);
+    /// <summary>The broadcast SPA0 write that selects DDR4 page 0 on every module of the bus.</summary>
+    void SelectDdr4Page0();
+}
+
+public static class SpdPageReset
+{
+    private const byte Ddr5Id0 = 0x51;
+    private const byte Ddr5Id1 = 0x18;
+
+    /// <summary>Touches only the given detected addresses; MR0/MR1 are unpaged so they identify DDR5 before any write. A failed read skips the address; at most one SPA0 write per bus, and only for a bus with a non-DDR5 responder.</summary>
+    public static int Run(IReadOnlyList<ISpdBus> buses, IReadOnlyCollection<byte> addresses, Func<bool> expired)
+    {
+        var reset = 0;
+        foreach (var bus in buses)
+        {
+            var ddr4Seen = false;
+            foreach (var address in addresses)
+            {
+                if (expired())
+                {
+                    return reset;
+                }
+                var id0 = bus.ReadByte(address, 0);
+                if (id0 < 0 || expired())
+                {
+                    continue;
+                }
+                var id1 = bus.ReadByte(address, 1);
+                if (id1 < 0)
+                {
+                    continue;
+                }
+                if (id0 == Ddr5Id0 && id1 == Ddr5Id1)
+                {
+                    if (bus.ResetDdr5Page(address))
+                    {
+                        reset++;
+                    }
+                }
+                else
+                {
+                    ddr4Seen = true;
+                    reset++;
+                }
+            }
+            if (ddr4Seen && !expired())
+            {
+                bus.SelectDdr4Page0();
+            }
+        }
+        return reset;
+    }
+}
+
 /// <summary>Runs an SPD page reset as a no-op when inactive, within a time budget, and without ever throwing.</summary>
 public static class SpdPageResetRunner
 {
-    public static int Run(bool active, Func<int> reset, TimeSpan budget, Action<string> log)
+    private static readonly TimeSpan Grace = TimeSpan.FromMilliseconds(250);
+
+    /// <summary>The reset gets an expiry probe it must poll between bus transactions; past the budget the probe turns true so an abandoned thread stops touching the bus.</summary>
+    public static int Run(bool active, Func<Func<bool>, int> reset, TimeSpan budget, Action<string> log)
     {
         if (!active)
         {
@@ -44,9 +111,15 @@ public static class SpdPageResetRunner
         }
         try
         {
-            var task = Task.Factory.StartNew(reset, default, TaskCreationOptions.LongRunning, TaskScheduler.Default);
+            var clock = Stopwatch.StartNew();
+            var abandoned = false;
+            bool Expired() => Volatile.Read(ref abandoned) || clock.Elapsed >= budget;
+            var task = Task.Factory.StartNew(() => reset(Expired), default, TaskCreationOptions.LongRunning, TaskScheduler.Default);
+            _ = task.ContinueWith(t => _ = t.Exception, TaskContinuationOptions.OnlyOnFaulted);
             if (!task.Wait(budget))
             {
+                Volatile.Write(ref abandoned, true);
+                task.Wait(Grace);
                 log($"[lhm] DIMM SPD page reset timed out after {(int)budget.TotalMilliseconds}ms");
                 return 0;
             }
