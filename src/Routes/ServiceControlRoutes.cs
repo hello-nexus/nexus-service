@@ -85,7 +85,8 @@ internal static class ServiceControlRoutes
             }
             if (!FastStartup.Write(body.Enabled))
             {
-                return Results.Problem("could not open the power key for writing", statusCode: 500);
+                return Results.Json(new ApiResponse { Error = true, Msg = "Could not update the Fast Startup setting." },
+                    Nexus.Service.Serialization.AppJsonContext.Default.ApiResponse, statusCode: 500);
             }
             ServiceLog.Info($"[service-control] fast startup set to {(body.Enabled ? "on" : "off")}");
             return Results.Ok(FastStartupDto.From(FastStartup.Read()));
