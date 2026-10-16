@@ -232,6 +232,9 @@ public sealed class FlexScreens : IFanLcdScreens
 
     public int PanelFps => 25;
 
+    /// <summary>From the Flex screen hub: the Flex screens (A018/A019) get its default rate.</summary>
+    public int MaxFps(string serial) => _lcd.Hub.MaxFps(serial);
+
     public string PanelName(string serial)
     {
         foreach (var u in _flex.Units)
