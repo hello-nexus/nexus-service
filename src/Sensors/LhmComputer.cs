@@ -236,7 +236,13 @@ public sealed class LhmComputer : IDisposable, ISpdPageReset
         }
         try
         {
-            return ResetLocked(budget - clock.Elapsed);
+            var remaining = budget - clock.Elapsed;
+            if (remaining <= TimeSpan.Zero)
+            {
+                Console.WriteLine("[lhm] DIMM SPD page reset skipped: shutdown budget spent waiting for LHM");
+                return 0;
+            }
+            return ResetLocked(remaining);
         }
         finally
         {
@@ -459,8 +465,8 @@ public sealed class LhmComputer : IDisposable, ISpdPageReset
         // Open(), and Dispose() is only called at service shutdown so the
         // wait is rare and not on any user-visible path.
         try { _openTask.Wait(); } catch { /* shutdown best-effort */ }
-        ResetSpdPages(SpdDisposeBudget);
         _disposed = true;
+        ResetSpdPages(SpdDisposeBudget);
         _computer.Close();
     }
 }

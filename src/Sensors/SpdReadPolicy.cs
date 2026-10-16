@@ -58,7 +58,7 @@ public static class SpdPageReset
         var reset = 0;
         foreach (var bus in buses)
         {
-            var ddr4Seen = false;
+            var ddr4Seen = 0;
             foreach (var address in addresses)
             {
                 if (expired())
@@ -84,13 +84,13 @@ public static class SpdPageReset
                 }
                 else
                 {
-                    ddr4Seen = true;
-                    reset++;
+                    ddr4Seen++;
                 }
             }
-            if (ddr4Seen && !expired())
+            if (ddr4Seen > 0 && !expired())
             {
                 bus.SelectDdr4Page0();
+                reset += ddr4Seen;
             }
         }
         return reset;
