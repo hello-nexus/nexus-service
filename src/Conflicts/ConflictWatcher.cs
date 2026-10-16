@@ -488,8 +488,7 @@ public sealed class ConflictWatcher : BackgroundService, IConflictDetector
 
         try
         {
-            using var proc = Process.GetProcessById(pid);
-            var modulePath = proc.MainModule?.FileName;
+            var modulePath = OwnNexusExe.ImagePathOf(pid);
             if (string.IsNullOrEmpty(modulePath))
                 return false;
             return string.Equals(

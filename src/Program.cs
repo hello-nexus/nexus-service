@@ -1087,7 +1087,7 @@ static void WaitForSiblingInstancesToExit()
         {
             try
             {
-                if (proc.Id != Environment.ProcessId && string.Equals(proc.MainModule?.FileName, self, StringComparison.Ordinal))
+                if (proc.Id != Environment.ProcessId && string.Equals(Nexus.Service.Lifecycle.OwnNexusExe.ImagePathOf(proc.Id), self, StringComparison.Ordinal))
                     Nexus.Service.Lifecycle.FactoryReset.WaitForProcessExit(proc.Id, TimeSpan.FromSeconds(30));
             }
             catch
