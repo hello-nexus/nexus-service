@@ -35,7 +35,7 @@ public static class LianLiZoneSupport
     private const float InnerRadius = 0.24f;
 
     // A lone ring per fan (SL v1) fills its column; no outer strip to clear.
-    private const float SingleRingRadius = 0.4f;
+    internal const float SingleRingRadius = 0.4f;
 
     /// <summary>
     /// The hub's composition. Lian Li never mirrors, so Mirror is forced false
@@ -277,7 +277,7 @@ public static class LianLiZoneSupport
     // radius/fans in u keeps each ring round inside its column.
     // indexRunsDown: from 9 o'clock the index goes down through 6 first. True
     // for the SL-Infinity inner ring; the SL v1 ring order is unverified.
-    private static (float[] u, float[] v) BuildFanRingUV(int fans, int ledsPerFan, float radius, bool indexRunsDown)
+    internal static (float[] u, float[] v) BuildFanRingUV(int fans, int ledsPerFan, float radius, bool indexRunsDown)
     {
         var ledCount = fans * ledsPerFan;
         var u = new float[ledCount];
