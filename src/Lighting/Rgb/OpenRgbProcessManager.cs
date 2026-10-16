@@ -203,12 +203,16 @@ public sealed class OpenRgbProcessManager : IDisposable
     /// <see cref="AlwaysDisabledDetectors"/>. Static initializers
     /// run in declaration order, so <see cref="DisabledDetectors"/> is declared
     /// after the array it reads.</summary>
-    internal static string[] BuildDisabledDetectors(bool macOS)
+    internal static string[] BuildDisabledDetectors(bool macOS, bool linux = false)
     {
         var list = new System.Collections.Generic.List<string>(AlwaysDisabledDetectors);
         if (!macOS)
         {
             list.Insert(1, "HYTE Nexus");
+        }
+        if (linux)
+        {
+            list.AddRange(OpenRgbGpuI2cDetectors.Names);
         }
         return list.ToArray();
     }
@@ -244,6 +248,8 @@ public sealed class OpenRgbProcessManager : IDisposable
     /// Q-series discovery, so the detector stays enabled there.
     /// Unknown names in this list are ignored, so disabling the iCUE Link detector
     /// is a safe no-op on bundled builds that predate that controller.
+    /// On Linux every GPU I2C detector joins the list: probing the card's buses
+    /// can hang the amdgpu ring and reset the GPU.
     ///
     /// "HID LampArray Device" is disabled for a different reason: it is a generic
     /// detector matching the standard LampArray HID usage on any vendor, so a
@@ -269,7 +275,7 @@ public sealed class OpenRgbProcessManager : IDisposable
         "Elgato Stream Deck MK.2",
     };
 
-    private static readonly string[] DisabledDetectors = BuildDisabledDetectors(OperatingSystem.IsMacOS());
+    private static readonly string[] DisabledDetectors = BuildDisabledDetectors(OperatingSystem.IsMacOS(), OperatingSystem.IsLinux());
 
     /// <summary>
     /// Every detector in the bundled fork that reaches a DIMM over the chipset
@@ -280,7 +286,10 @@ public sealed class OpenRgbProcessManager : IDisposable
     /// walk DIMM addresses outside that gate. Names are the registration
     /// strings verbatim: "Corsair Vengeance RGB DRAM" is DDR4, "Corsair DRAM"
     /// DDR5, and each Patriot file defines its own PATRIOT_CONTROLLER_NAME.
-    /// Motherboard and GPU I2C detectors share the bus and stay enabled.
+    /// Motherboard I2C detectors share the bus and stay enabled. GPU I2C
+    /// detectors stay enabled too, except on Linux where
+    /// <see cref="OpenRgbGpuI2cDetectors"/> holds them off in
+    /// <see cref="DisabledDetectors"/>.
     /// </summary>
     internal static readonly string[] SmbusDramDetectors =
     {
