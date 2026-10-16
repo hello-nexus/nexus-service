@@ -9557,6 +9557,60 @@
         }
       }
     },
+    "/diagnostics/gpu/level-sense": {
+      "get": {
+        "tags": [
+          "Nexus"
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LevelSenseResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/diagnostics/gpu/level-sense/calibrate": {
+      "post": {
+        "tags": [
+          "Nexus"
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "oneOf": [
+                  {
+                    "type": "null"
+                  },
+                  {
+                    "$ref": "#/components/schemas/LevelSenseCalibrateBody"
+                  }
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LevelSenseCalibrateResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/diagnostics/cooling": {
       "get": {
         "tags": [
@@ -19625,6 +19679,71 @@
           }
         }
       },
+      "GpuLevelSenseState": {
+        "required": [
+          "gpuId",
+          "name",
+          "calibrating",
+          "calibratedAtMs"
+        ],
+        "type": "object",
+        "properties": {
+          "gpuId": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "calibrating": {
+            "type": "boolean"
+          },
+          "calibratedAtMs": {
+            "pattern": "^-?(?:0|[1-9]\\d*)$",
+            "type": [
+              "null",
+              "integer",
+              "string"
+            ],
+            "format": "int64"
+          },
+          "sag": {
+            "pattern": "^-?(?:0|[1-9]\\d*)(?:\\.\\d+)?(?:[eE][+-]?\\d+)?$",
+            "type": [
+              "null",
+              "number",
+              "string"
+            ],
+            "format": "float"
+          },
+          "lean": {
+            "pattern": "^-?(?:0|[1-9]\\d*)(?:\\.\\d+)?(?:[eE][+-]?\\d+)?$",
+            "type": [
+              "null",
+              "number",
+              "string"
+            ],
+            "format": "float"
+          },
+          "x": {
+            "pattern": "^-?(?:0|[1-9]\\d*)(?:\\.\\d+)?(?:[eE][+-]?\\d+)?$",
+            "type": [
+              "null",
+              "number",
+              "string"
+            ],
+            "format": "float"
+          },
+          "y": {
+            "pattern": "^-?(?:0|[1-9]\\d*)(?:\\.\\d+)?(?:[eE][+-]?\\d+)?$",
+            "type": [
+              "null",
+              "number",
+              "string"
+            ],
+            "format": "float"
+          }
+        }
+      },
       "GpuThrottleInfo": {
         "required": [
           "active",
@@ -20674,6 +20793,39 @@
         "properties": {
           "pattern": {
             "type": "string"
+          }
+        }
+      },
+      "LevelSenseCalibrateBody": {
+        "type": "object",
+        "properties": {
+          "gpuId": {
+            "type": [
+              "null",
+              "string"
+            ]
+          }
+        }
+      },
+      "LevelSenseCalibrateResponse": {
+        "type": "object",
+        "properties": {
+          "gpus": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        }
+      },
+      "LevelSenseResponse": {
+        "type": "object",
+        "properties": {
+          "gpus": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/GpuLevelSenseState"
+            }
           }
         }
       },
