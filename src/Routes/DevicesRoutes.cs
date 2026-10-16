@@ -39,6 +39,7 @@ public static partial class DevicesRoutes
         MapStrimerEndpoints(app);
         MapNollieEndpoints(app);
         MapAsiahorseUmbraEndpoints(app);
+        MapLogitechSpeakerEndpoints(app);
     }
 
     /// <summary>

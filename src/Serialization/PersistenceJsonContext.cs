@@ -89,6 +89,8 @@ namespace Nexus.Service.Serialization;
 [JsonSerializable(typeof(DiagnosticsComponents))]
 [JsonSerializable(typeof(FeaturesSettings))]
 [JsonSerializable(typeof(SentrySettings))]
+[JsonSerializable(typeof(LogitechSpeakerSettings))]
+[JsonSerializable(typeof(LogitechEqPreset))]
 [JsonSerializable(typeof(PanelPhonePushTarget))]
 [JsonSerializable(typeof(PanelLayoutsDefaults))]
 [JsonSerializable(typeof(PanelLayoutDefault))]
