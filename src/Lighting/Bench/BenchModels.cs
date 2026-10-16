@@ -108,6 +108,64 @@ public sealed class BenchComboResult
     public long PrivateBytesEnd { get; set; }
     public double DurationMs { get; set; }
     public List<BenchEffectResult> Effects { get; set; } = new();
+    public BenchLedSpaceCombo? LedSpace { get; set; }
+}
+
+/// <summary>Cost of one 30-frame window on one path.</summary>
+public sealed class BenchLsPath
+{
+    public double CpuMsPerWindow { get; set; }
+    public double WallMsPerWindow { get; set; }
+    public double? GpuMsPerWindow { get; set; }
+}
+
+/// <summary>Byte comparison of a path against the full-canvas path, per LED and per tap.</summary>
+public sealed class BenchLsEquality
+{
+    public int Leds { get; set; }
+    public int ExactLeds { get; set; }
+    public int MaxChannelDelta { get; set; }
+    public int Taps { get; set; }
+    public int ExactTaps { get; set; }
+    public int TapMaxChannelDelta { get; set; }
+    public string? FirstDiff { get; set; }
+}
+
+public sealed class BenchLsPlacement
+{
+    public string Name { get; set; } = "";
+    public int Taps { get; set; }
+    public BenchLsPath? P1 { get; set; }
+    public BenchLsPath? P2 { get; set; }
+    public BenchLsEquality? EqP1 { get; set; }
+    public BenchLsEquality? EqP2 { get; set; }
+    public bool P1P2Identical { get; set; }
+}
+
+public sealed class BenchLsEffect
+{
+    public string Name { get; set; } = "";
+    public bool Audio { get; set; }
+
+    /// <summary>pointwise, needs-canvas, or error.</summary>
+    public string Class { get; set; } = "";
+    public string? Detail { get; set; }
+    public List<string> Flags { get; set; } = new();
+    public BenchLsPath? P0 { get; set; }
+    public BenchLsPath? P0Batched { get; set; }
+    public List<BenchLsPlacement> Placements { get; set; } = new();
+}
+
+public sealed class BenchLedSpaceCombo
+{
+    public string LayoutSource { get; set; } = "";
+    public int Leds { get; set; }
+    public int Window { get; set; }
+    public string CanvasSize { get; set; } = "";
+    public string GpuTimer { get; set; } = "";
+    public bool BatchReadback { get; set; }
+    public List<string> PlacementNames { get; set; } = new();
+    public List<BenchLsEffect> Effects { get; set; } = new();
 }
 
 public sealed class BenchEffectDelta
@@ -186,6 +244,9 @@ internal sealed class BenchOptions
     public int Seconds { get; set; } = 10;
     public string[]? Effects { get; set; }
 
+    /// <summary>Empty for the standard run, or the name of a probe section that replaces it.</summary>
+    public string Section { get; set; } = "";
+
     // Child only.
     public string Backend { get; set; } = "";
     public string Adapter { get; set; } = "auto";
@@ -198,7 +259,7 @@ internal sealed class BenchOptions
         options = new BenchOptions();
         if (args.Length < 2 || args[1].StartsWith("--", StringComparison.Ordinal))
         {
-            return "usage: --lighting-bench <out.json> [--backends angle,wgl] [--adapters integrated,dedicated,warp] [--seconds N] [--effects a,b]";
+            return "usage: --lighting-bench <out.json> [--backends angle,wgl] [--adapters integrated,dedicated,warp] [--seconds N] [--effects a,b] [--section ledspace]";
         }
         options.OutPath = args[1];
         for (var i = 2; i < args.Length; i++)
@@ -231,6 +292,13 @@ internal sealed class BenchOptions
                     break;
                 case "--effects":
                     options.Effects = Split(val);
+                    break;
+                case "--section":
+                    options.Section = val.ToLowerInvariant();
+                    if (options.Section != "ledspace")
+                    {
+                        return "--section must be ledspace";
+                    }
                     break;
                 case "--seconds":
                     if (!int.TryParse(val, NumberStyles.None, CultureInfo.InvariantCulture, out var s) || s < 1 || s > 600)
@@ -348,6 +416,10 @@ internal static class BenchReport
 
     public static string FormatTable(BenchRun run)
     {
+        if (run.Results.Any(static c => c.LedSpace is not null))
+        {
+            return BenchLedSpaceReport.Format(run);
+        }
         var sb = new StringBuilder();
         var ci = CultureInfo.InvariantCulture;
         sb.AppendLine($"Lighting bench  {run.StartedUtc}  v{run.ServiceVersion}  {run.Seconds}s/effect @ {run.TargetHz} Hz  {run.Machine.Host} session {run.Machine.SessionId}");

@@ -213,6 +213,12 @@ internal static partial class LightingBench
             return;
         }
 
+        if (o.Section == "ledspace")
+        {
+            RunLedSpace(o, ctx, result);
+            return;
+        }
+
         var names = new List<string>((IEnumerable<string>?)o.Effects ?? ShaderLibrary.AllEffectKeys);
         var cyclesPerMs = CalibrateCyclesPerMs();
         using var engine = new LightingEngine();

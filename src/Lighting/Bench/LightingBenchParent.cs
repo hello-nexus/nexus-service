@@ -157,6 +157,11 @@ internal static partial class LightingBench
             childArgs.Add("--adapter-name");
             childArgs.Add(adapterName);
         }
+        if (o.Section.Length > 0)
+        {
+            childArgs.Add("--section");
+            childArgs.Add(o.Section);
+        }
         if (o.Effects is not null)
         {
             childArgs.Add("--effects");
