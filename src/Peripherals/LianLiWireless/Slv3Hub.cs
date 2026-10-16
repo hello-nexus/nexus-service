@@ -2160,25 +2160,41 @@ public sealed class Slv3Hub : IDisposable
     // Sent addressed at the fan's CURRENT (channel, rxType) pipe from the last
     // device-list report, so the dongle steers to it regardless of which master
     // it is presently bound to; the payload's target fields carry what to
-    // reconfigure to. A record whose pipe is out of range is garbled, so the pipe
-    // it last reported bound to us is used, else our channel and its owned slot.
-    // Caller holds _lock.
+    // reconfigure to. A record's own pipe always gets the frame, since a chain that
+    // took a misread bind listens on exactly that pipe. A record whose pipe is out of
+    // range may instead be a damaged read of a chain still on its real pipe, so that
+    // pipe (the last one it reported bound to us, else our channel and its owned
+    // slot) gets the frame too. Caller holds _lock.
     private bool SendBindFrameLocked(Slv3DeviceRecord record, byte targetSlot, bool unbind)
     {
         if (_tx is null)
         {
             return false;
         }
-        var (pipeChannel, pipeRx) = BindPipeLocked(record);
         // A duty set on a HydroShift II through the cooling route would land in its pump slot.
         var targets = record.IsHydroShift ? DefaultDutyTargets : DutyTargetsLocked(record.Mac);
         var pwm = Slv3Protocol.BuildPwmTuple(targets, record.FanCount, record.Family);
         var payload = unbind
             ? Slv3Protocol.BuildUnbind(record.Mac, _channel, pwm)
             : Slv3Protocol.BuildBind(record.Mac, _masterMac, targetRx: targetSlot, targetChannel: _channel, slot: BindOrdinalLocked(record.Mac), pwm);
-        foreach (var frame in Slv3Protocol.BuildUsbSendRf(pipeChannel, pipeRx, payload))
+        if (!SendOnPipeLocked(record.Channel, record.RxType, payload))
         {
-            if (!_tx.RfSend(frame))
+            return false;
+        }
+        if (PlausiblePipe(record.Channel, record.RxType))
+        {
+            return true;
+        }
+        var (fallbackChannel, fallbackRx) = FallbackPipeLocked(record);
+        return (fallbackChannel == record.Channel && fallbackRx == record.RxType)
+            || SendOnPipeLocked(fallbackChannel, fallbackRx, payload);
+    }
+
+    private bool SendOnPipeLocked(byte channel, byte rx, byte[] payload)
+    {
+        foreach (var frame in Slv3Protocol.BuildUsbSendRf(channel, rx, payload))
+        {
+            if (!_tx!.RfSend(frame))
             {
                 return false;
             }
@@ -2186,12 +2202,8 @@ public sealed class Slv3Hub : IDisposable
         return true;
     }
 
-    private (byte Channel, byte Rx) BindPipeLocked(Slv3DeviceRecord record)
+    private (byte Channel, byte Rx) FallbackPipeLocked(Slv3DeviceRecord record)
     {
-        if (PlausiblePipe(record.Channel, record.RxType))
-        {
-            return (record.Channel, record.RxType);
-        }
         var key = Convert.ToHexString(record.Mac);
         if (_goodPipe.TryGetValue(key, out var good))
         {

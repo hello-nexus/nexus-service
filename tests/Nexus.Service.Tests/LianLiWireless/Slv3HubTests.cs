@@ -1078,7 +1078,6 @@ public class Slv3HubTests
 
         Ticks(hub, Slv3Hub.RebindConfirmPolls);
 
-        Assert.Empty(BindFramesAt(tx, 229, 229));
         Assert.NotEmpty(BindFramesAt(tx, Slv3Protocol.DefaultChannel, 2));
         Ticks(hub, 2);
         Assert.True(hub.State.Fans[0].BoundToUs);
@@ -1100,7 +1099,94 @@ public class Slv3HubTests
         Ticks(hub, Slv3Hub.RebindConfirmPolls);
 
         Assert.NotEmpty(BindFramesAt(tx, Slv3Protocol.DefaultChannel | 0x40, 5));
-        Assert.Empty(BindFramesAt(tx, 0xFF, 0xFF));
+    }
+
+    // A chain that took a misread bind listens only on the pipe it now reports, however
+    // out of range that pipe is, so the retake must be addressed there as well.
+    private static (Slv3Hub Hub, FakeSlv3Network Net, FakeTxTransport Tx, SimulatedFan Fan) StuckOnGarbledPipe(
+        int ownedSlot, byte[]? garbledMaster, byte channel, byte rx)
+    {
+        var mac = Convert.ToHexString(FanMac);
+        var (hub, net, tx, _, _) = CreateOwnershipHub(new() { [mac] = ownedSlot });
+        var fan = new SimulatedFan { Mac = FanMac, MasterMac = net.MasterMac, RxType = (byte)ownedSlot, ListensOnItsPipeOnly = true };
+        net.Fans.Add(fan);
+        Ticks(hub, Established);
+        Assert.True(hub.State.Fans[0].BoundToUs);
+        fan.MasterMac = garbledMaster ?? net.MasterMac;
+        fan.Channel = channel;
+        fan.RxType = rx;
+        tx.SentFrames.Clear();
+        return (hub, net, tx, fan);
+    }
+
+    [Theory]
+    [InlineData(61, 75)]
+    [InlineData(62, 161)]
+    [InlineData(64, 203)]
+    [InlineData(65, 66)]
+    [InlineData(66, 21)]
+    public void A_chain_that_took_a_misread_bind_is_bound_again_through_its_garbled_pipe(int rx, int channel)
+    {
+        var (hub, _, tx, _) = StuckOnGarbledPipe(4, garbledMaster: null, (byte)channel, (byte)rx);
+
+        Ticks(hub, Slv3Hub.RebindConfirmPolls + 3);
+
+        Assert.NotEmpty(BindFramesAt(tx, (byte)channel, (byte)rx));
+        Assert.True(hub.State.Fans[0].BoundToUs);
+        Assert.Equal(4, hub.State.Fans[0].Slot);
+        Assert.Equal(Slv3Protocol.DefaultChannel, hub.State.Fans[0].Channel);
+    }
+
+    [Fact]
+    public void A_bound_chain_reported_on_our_master_at_slot_69_channel_152_is_rebound_within_the_confirm_window()
+    {
+        var (hub, _, tx, _) = StuckOnGarbledPipe(1, garbledMaster: null, channel: 152, rx: 69);
+
+        Ticks(hub, Slv3Hub.RebindConfirmPolls + 2);
+
+        Assert.NotEmpty(BindFramesAt(tx, 152, 69));
+        Assert.True(hub.State.Fans[0].BoundToUs);
+        Assert.Equal(1, hub.State.Fans[0].Slot);
+    }
+
+    [Fact]
+    public void A_chain_on_a_garbled_foreign_master_at_slot_11_channel_46_is_retaken_through_its_garbled_pipe()
+    {
+        var garbled = new byte[] { 0xAA, 0xBB, 0xCC, 0x65, 0xE1, 0xFC };
+        var (hub, _, tx, _) = StuckOnGarbledPipe(3, garbled, channel: 46, rx: 11);
+
+        Ticks(hub, Slv3Hub.RebindConfirmPolls + 2);
+
+        Assert.NotEmpty(BindFramesAt(tx, 46, 11));
+        Assert.True(hub.State.Fans[0].BoundToUs);
+        Assert.Equal(3, hub.State.Fans[0].Slot);
+    }
+
+    [Fact]
+    public void A_manual_bind_of_a_chain_on_a_garbled_pipe_reaches_it_through_that_pipe()
+    {
+        var (hub, _, tx, _) = StuckOnGarbledPipe(1, garbledMaster: null, channel: 152, rx: 69);
+        Ticks(hub, 1);
+        Assert.False(hub.State.Fans[0].BoundToUs);
+        Assert.Empty(BindFramesAt(tx, 152, 69));
+
+        Assert.True(hub.Bind(Convert.ToHexString(FanMac)));
+        Assert.NotEmpty(BindFramesAt(tx, 152, 69));
+        Ticks(hub, 2);
+
+        Assert.True(hub.State.Fans[0].BoundToUs);
+    }
+
+    [Fact]
+    public void A_garbled_pipe_that_is_only_a_damaged_read_still_gets_the_fallback_pipe_frame()
+    {
+        var (hub, _, tx, fan) = StuckOnGarbledPipe(2, garbledMaster: Convert.FromHexString("AABBCCE5E5E5"), channel: 229, rx: 229);
+        fan.ListensOnItsPipeOnly = false;
+
+        Ticks(hub, Slv3Hub.RebindConfirmPolls);
+
+        Assert.NotEmpty(BindFramesAt(tx, Slv3Protocol.DefaultChannel, 2));
+        Assert.NotEmpty(BindFramesAt(tx, 229, 229));
     }
 
     [Fact]
@@ -3729,6 +3815,8 @@ public class Slv3HubTests
         public required byte[] Mac { get; init; }
         /// <summary>A fan that never applies a bind frame.</summary>
         public bool IgnoresBind { get; set; }
+        /// <summary>A fan that only hears a bind frame addressed at its current channel and rx pipe.</summary>
+        public bool ListensOnItsPipeOnly { get; set; }
         public byte[] MasterMac { get; set; } = new byte[6];
         public byte Channel { get; set; } = Slv3Protocol.DefaultChannel;
         public byte RxType { get; set; }
@@ -3819,7 +3907,7 @@ public class Slv3HubTests
                     {
                         continue;
                     }
-                    if (fan.IgnoresBind)
+                    if (fan.IgnoresBind || (fan.ListensOnItsPipeOnly && (copy[2] != fan.Channel || copy[3] != fan.RxType)))
                     {
                         break;
                     }
