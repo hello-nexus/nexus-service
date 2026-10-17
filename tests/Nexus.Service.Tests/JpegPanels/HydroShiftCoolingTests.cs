@@ -366,12 +366,18 @@ public class HydroShiftCoolingTests
         // all frames finish first and the interleaving this test checks never happens.
         var frames = Task.Factory.StartNew(() =>
         {
-            writerStarted.Wait();
-            for (int i = 0; i < 200; i++)
+            try
             {
-                rig.Hub.SendFrame(jpeg);
+                Assert.True(writerStarted.Wait(TimeSpan.FromSeconds(5)), "writer never started");
+                for (int i = 0; i < 200; i++)
+                {
+                    rig.Hub.SendFrame(jpeg);
+                }
             }
-            Volatile.Write(ref done, true);
+            finally
+            {
+                Volatile.Write(ref done, true);
+            }
         }, TaskCreationOptions.LongRunning);
         var cooling = Task.Factory.StartNew(() =>
         {

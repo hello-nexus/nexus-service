@@ -178,12 +178,18 @@ public class HydroShiftFanLedsTests
         // all frames finish first and the interleaving this test checks never happens.
         var frames = Task.Factory.StartNew(() =>
         {
-            writerStarted.Wait();
-            for (int i = 0; i < 200; i++)
+            try
             {
-                hub.SendFrame(jpeg);
+                Assert.True(writerStarted.Wait(TimeSpan.FromSeconds(5)), "writer never started");
+                for (int i = 0; i < 200; i++)
+                {
+                    hub.SendFrame(jpeg);
+                }
             }
-            Volatile.Write(ref done, true);
+            finally
+            {
+                Volatile.Write(ref done, true);
+            }
         }, TaskCreationOptions.LongRunning);
         var lighting = Task.Factory.StartNew(() =>
         {
