@@ -100,6 +100,9 @@ public sealed class NexusSettings
     /// NOT profile-scoped: workstation-level.</summary>
     public bool DisableGpuMonitoring { get; set; }
 
+    /// <summary>False stops LHM from reading DIMM SPD temperatures, independent of the memory device's Nexus Control toggle. Applies live. NOT profile-scoped: workstation-level.</summary>
+    public bool ReadRamTemperatures { get; set; } = true;
+
     /// <summary>True once the desktop first-run welcome screen has been shown and
     /// dismissed. Install-scoped, not cloud profile synced: excluded from
     /// <see cref="Nexus.Service.Persistence.ProfileManager"/>'s CloneSettings
@@ -123,6 +126,9 @@ public sealed class NexusSettings
     /// <see cref="OnboardingCompleted"/>: install-scoped, never profile-synced,
     /// wiped by factory reset so the screen reappears.</summary>
     public bool LightingOnboardingCompleted { get; set; }
+
+    /// <summary>Set only when <see cref="JsonConfigStore"/> creates settings.json: a lighting device with no stored layout then covers the whole canvas instead of a grid slot. Install-scoped like <see cref="OnboardingCompleted"/>, never profile-synced.</summary>
+    public bool MaximizedCanvasDefaults { get; set; }
 
     /// <summary>Backs a one-release "removed" notice in the lighting tabs; deleted together with that notice after the next production release.</summary>
     public bool GameSyncRemovedNotice { get; set; }
@@ -498,6 +504,8 @@ public sealed class UiSettings
     public bool? ShowUncontrolledLightingDevices { get; set; }
     /// <inheritdoc cref="ShowUncontrolledLightingDevices"/>
     public bool? ShowUncontrolledCoolingDevices { get; set; }
+    /// <summary>Sidebar DEVICES row keys the user hid. A row is omitted only while its Nexus Control is also off. Workstation-level: no profile category carries it. Non-null so the client always receives a list.</summary>
+    public List<string> HiddenSidebarDevices { get; set; } = new();
 }
 
 /// <summary>
@@ -521,6 +529,7 @@ public sealed class UiSettingsPatch
     public bool? ShowUncontrolledDevices { get; set; }
     public bool? ShowUncontrolledLightingDevices { get; set; }
     public bool? ShowUncontrolledCoolingDevices { get; set; }
+    public List<string>? HiddenSidebarDevices { get; set; }
 }
 
 /// <summary>
@@ -583,6 +592,8 @@ public sealed class DevicePin
     public float? Saturation { get; set; }
     public float? Contrast { get; set; }
     public Dictionary<string, float>? Params { get; set; }
+    /// <summary>Animate: per sensor uniform, the user's pick over the preset look's binding. Unused by the other kinds.</summary>
+    public Dictionary<string, SensorBinding>? Sensors { get; set; }
     /// <summary>Static: the template slot the look came from, carried for the UI.</summary>
     public int? Slot { get; set; }
 
@@ -597,6 +608,7 @@ public sealed class DevicePin
         Saturation = Saturation,
         Contrast = Contrast,
         Params = Params is null ? null : new Dictionary<string, float>(Params),
+        Sensors = SensorBinding.CopyMap(Sensors),
         Slot = Slot,
     };
 }
@@ -712,6 +724,8 @@ public sealed class LightingSettings
     public string AudioOutputDeviceId { get; set; } = "";
     /// <summary>Name captured with the pick, shown while the device is unplugged.</summary>
     public string AudioOutputDeviceName { get; set; } = "";
+    /// <summary>"output" or "input"; empty means "output". Windows capture only.</summary>
+    public string AudioOutputDeviceDirection { get; set; } = "";
     /// <summary>Post-process applied to the Screen Mirror frame stream (hue / colorize / saturation / contrast). Persists across sessions so the user's tweak survives a service restart.</summary>
     public PostProcessSettings ScreenEffect { get; set; } = new();
     /// <summary>Screen the global Mirror mode captures; empty is the default screen. Mirror pins capture the same one, so the two agree after a restart.</summary>
@@ -864,6 +878,8 @@ public sealed class AnimateEffectState
     public float Saturation { get; set; } = InstallDefaults.Lighting.Animate.State.Saturation;
     public float Contrast { get; set; } = InstallDefaults.Lighting.Animate.State.Contrast;
     public Dictionary<string, float> Params { get; set; } = new();
+    /// <summary>Per sensor uniform, the user's pick over the shader's default binding; absent keys keep the default. Null when nothing is overridden.</summary>
+    public Dictionary<string, SensorBinding>? Sensors { get; set; }
 }
 
 public sealed class AnimateEffectTemplates

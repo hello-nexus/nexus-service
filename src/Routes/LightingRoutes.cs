@@ -106,20 +106,31 @@ public static class LightingRoutes
         app.MapGet("/lighting/audio-output", (Nexus.Service.Persistence.IConfigStore store) =>
         {
             var l = store.Load().Lighting;
-            return new Models.Lighting.AudioOutputBody { DeviceId = l.AudioOutputDeviceId, DeviceName = l.AudioOutputDeviceName };
+            return new Models.Lighting.AudioOutputBody
+            {
+                DeviceId = l.AudioOutputDeviceId,
+                DeviceName = l.AudioOutputDeviceName,
+                Direction = l.AudioOutputDeviceDirection == "input" ? "input" : "output",
+            };
         }).AllowPanel();
         app.MapPost("/lighting/audio-output", (Models.Lighting.AudioOutputBody body,
             Nexus.Service.Persistence.IConfigStore store,
             MultiplexHub hub) =>
         {
+            var direction = string.IsNullOrEmpty(body.Direction) ? "output" : body.Direction;
+            if (direction != "output" && direction != "input")
+            {
+                return Results.Json(ApiResponse.Fail("direction must be output or input"), AppJsonContext.Default.ApiResponse, statusCode: StatusCodes.Status400BadRequest);
+            }
             store.Update(s =>
             {
                 s.Lighting.AudioOutputDeviceId = body.DeviceId ?? "";
                 s.Lighting.AudioOutputDeviceName = body.DeviceName ?? "";
+                s.Lighting.AudioOutputDeviceDirection = direction;
             });
             // Settings and the lighting canvas each show the pick; the bump makes the other re-read it.
             PanelTopics.BroadcastLighting(hub);
-            return ApiResponse.Ok();
+            return Results.Json(ApiResponse.Ok(), AppJsonContext.Default.ApiResponse);
         }).AllowPanel();
         // Blank lighting while the host sleeps. Host-only: this is a property of
         // the machine going to sleep, not something a paired phone should flip.
@@ -164,11 +175,11 @@ public static class LightingRoutes
                 var entry = custom.Get(name[ShaderLibrary.CustomPrefix.Length..]);
                 return entry is null
                     ? Results.NotFound()
-                    : Results.Json(new ShaderSourceResponse { Frag = entry.Frag }, AppJsonContext.Default.ShaderSourceResponse);
+                    : Results.Json(ToShaderSource(entry.Frag, Nexus.Service.Lighting.Engine.Gpu.SensorUniformSpec.Parse(entry.Frag)), AppJsonContext.Default.ShaderSourceResponse);
             }
             if (!ShaderLibrary.AllEffectKeys.Contains(name))
                 return Results.NotFound();
-            return Results.Json(new ShaderSourceResponse { Frag = ShaderLibrary.Get(name) }, AppJsonContext.Default.ShaderSourceResponse);
+            return Results.Json(ToShaderSource(ShaderLibrary.Get(name), ShaderLibrary.SensorUniforms(name)), AppJsonContext.Default.ShaderSourceResponse);
         }).AllowPanel();
         MapCustomEffects(app);
         MapStudioLive(app);
@@ -433,6 +444,16 @@ public static class LightingRoutes
             PanelTopics.BroadcastLighting(hub);
             return ApiResponse.Ok();
         }).AllowPanel();
+    }
+
+    private static ShaderSourceResponse ToShaderSource(string frag, IReadOnlyList<Nexus.Service.Lighting.Engine.Gpu.SensorUniformSpec> sensors)
+    {
+        var response = new ShaderSourceResponse { Frag = frag };
+        foreach (var spec in sensors)
+        {
+            response.Sensors.Add(new SensorUniformInfo { Uniform = spec.Name, Binding = spec.Default.Copy() });
+        }
+        return response;
     }
 
     private static Nexus.Service.Models.Lighting.CustomEffectResponse ToResponse(Nexus.Service.Lighting.CustomEffects.CustomEffectEntry e) => new()

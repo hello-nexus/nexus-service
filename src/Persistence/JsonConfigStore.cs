@@ -66,6 +66,7 @@ public sealed class JsonConfigStore : IConfigStore, IDisposable
                 // Written in the free-rotation layout convention from the start;
                 // only a document from before it needs the v17 unswap.
                 _cached.Lighting.FreeRotationLayouts = true;
+                _cached.MaximizedCanvasDefaults = true;
                 Persist(_cached);
                 return _cached;
             }

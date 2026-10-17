@@ -187,7 +187,11 @@ public static class TrayCommands
     public static Task CloseUpdaterWindowAsync(HelperRegistry registry, CancellationToken ct = default)
     {
         var conn = registry.GetAny();
-        if (conn is null) return Task.CompletedTask;
+        return conn is null ? Task.CompletedTask : CloseUpdaterWindowAsync(conn, ct);
+    }
+
+    public static Task CloseUpdaterWindowAsync(HelperConnection conn, CancellationToken ct = default)
+    {
         return conn.SendAsync(
             type: "trayIcon.closeUpdaterWindow",
             payload: new TrayCloseUpdaterWindowPayload(),

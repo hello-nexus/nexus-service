@@ -450,7 +450,8 @@ public sealed class PanelDeviceRegistry
             if (newest is null) return;
             id = newest.Id;
 
-            var layout = newest.Layout ?? PanelLayoutDefaults.ForSurface(PanelSurfaces.Y70);
+            var layout = newest.Layout
+                ?? PanelLayoutDefaults.WithStableIds(PanelLayoutDefaults.ForSurface(PanelSurfaces.Y70), newest.Id);
             foreach (var page in layout.Pages)
             {
                 foreach (var widget in page.Widgets)

@@ -1,6 +1,8 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Security.Cryptography;
+using System.Text;
 using Nexus.Service.Defaults;
 using Nexus.Service.Models.Panel;
 using Nexus.Service.Persistence;
@@ -34,6 +36,25 @@ public static class PanelLayoutDefaults
         };
         return Build(src, surface);
     }
+
+    /// <summary>
+    /// Rewrites every page and widget id from <paramref name="seed"/> and its position. Ids must
+    /// be stable across reads because clients key open widgets on them.
+    /// </summary>
+    public static PanelLayoutDto WithStableIds(PanelLayoutDto layout, string seed)
+    {
+        for (var p = 0; p < layout.Pages.Count; p++)
+        {
+            var page = layout.Pages[p];
+            page.Id = StableId(seed, $"page{p}");
+            for (var w = 0; w < page.Widgets.Count; w++)
+                page.Widgets[w].Id = StableId(seed, $"page{p}/widget{w}");
+        }
+        return layout;
+    }
+
+    private static string StableId(string seed, string path) =>
+        new Guid(MD5.HashData(Encoding.UTF8.GetBytes($"{seed}/{path}"))).ToString();
 
     /// <summary>Starter page for a panel on a 4:1 strip, where the surface's own seed would fill a quarter of the glass.</summary>
     public static PanelLayoutDto ForStrip(string surface) =>

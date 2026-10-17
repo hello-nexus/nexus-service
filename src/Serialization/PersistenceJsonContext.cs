@@ -69,6 +69,8 @@ namespace Nexus.Service.Serialization;
 [JsonSerializable(typeof(List<SegmentLedOverride>))]
 [JsonSerializable(typeof(Dictionary<string, List<SegmentLedOverride>>))]
 [JsonSerializable(typeof(Dictionary<string, float>))]
+[JsonSerializable(typeof(SensorBinding))]
+[JsonSerializable(typeof(Dictionary<string, SensorBinding>))]
 // Per-hub channel composition (mirror / combine rings).
 [JsonSerializable(typeof(HubCompositionSettings))]
 [JsonSerializable(typeof(Dictionary<string, HubCompositionSettings>))]

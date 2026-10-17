@@ -1,5 +1,6 @@
 #if WINDOWS
 using System;
+using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
 using System.Runtime.InteropServices;
@@ -14,15 +15,17 @@ namespace Nexus.Service.Lifecycle;
 /// service image), including the helper that would host a window, so the splash
 /// runs from a copy of the exe named NexusUpdater.exe outside the install folder:
 /// a different image name and path, which the installer's selection leaves alone.
-/// Ends on WM_CLOSE (helper startup or install failure), or a timeout.
+/// Ends on WM_CLOSE or a kill from Dismiss (the new service after an install, or
+/// the failure paths), from CloseStale at helper startup, or on its own timeout.
 /// </summary>
 [SupportedOSPlatform("windows")]
 internal static class UpdaterSplashWindow
 {
     private const string CopyName = "NexusUpdater.exe";
-    private const uint TimeoutMs = 300_000;
+    internal const uint TimeoutMs = 300_000;
     private const int W = 330, H = 220;
     private const int MinStaleAgeSeconds = 10;
+    private const int CloseGraceMs = 3000;
     private const string CopyMutexName = @"Local\NexusUpdaterCopy";
     private const int ExStyleTopmost = 0x00000008, ExStyleToolWindow = 0x00000080;
     private const int StylePopup = unchecked((int)0x80000000);
@@ -108,6 +111,85 @@ internal static class UpdaterSplashWindow
         {
             try { gate.ReleaseMutex(); } catch (ApplicationException) { }
         }
+    }
+
+    /// <summary>
+    /// Closes every splash window, native or the earlier mshta one, then ends the owners
+    /// still alive after one shared grace period. <paramref name="trackedPid"/> is the
+    /// splash this process spawned: one with no window yet has nothing to lose and is
+    /// ended at once. No age check: callers run it once the install is known to be over.
+    /// </summary>
+    public static void Dismiss(int trackedPid = 0)
+    {
+        var owners = new Dictionary<int, Process>();
+        try
+        {
+            // Collected up front: a destroyed window is no valid FindWindowEx anchor.
+            var windows = new List<IntPtr>();
+            for (var h = FindWindow(null, UpdaterSplashArgs.Title); h != IntPtr.Zero && windows.Count < 16;
+                 h = FindWindowEx(IntPtr.Zero, h, null, UpdaterSplashArgs.Title))
+            {
+                windows.Add(h);
+            }
+            foreach (var hwnd in windows)
+            {
+                GetWindowThreadProcessId(hwnd, out var pid);
+                PostMessage(hwnd, WmClose, IntPtr.Zero, IntPtr.Zero);
+                if (owners.ContainsKey((int)pid)) continue;
+                // Only our own splash hosts; a foreign window with this title is left running.
+                var proc = TryOpenOwned((int)pid, "NexusUpdater", "mshta");
+                if (proc is not null) owners[(int)pid] = proc;
+            }
+            if (trackedPid != 0 && !owners.ContainsKey(trackedPid))
+            {
+                using var windowless = TryOpenOwned(trackedPid, "NexusUpdater");
+                try { windowless?.Kill(); } catch { /* already gone */ }
+            }
+
+            var deadline = Environment.TickCount64 + CloseGraceMs;
+            foreach (var proc in owners.Values)
+            {
+                try
+                {
+                    var left = (int)Math.Max(0, deadline - Environment.TickCount64);
+                    if (!proc.WaitForExit(left)) proc.Kill();
+                }
+                catch { /* already gone */ }
+            }
+        }
+        finally
+        {
+            foreach (var proc in owners.Values) proc.Dispose();
+        }
+        DeleteCopyUnderGate();
+    }
+
+    private static Process? TryOpenOwned(int pid, params string[] imageNames)
+    {
+        try
+        {
+            var proc = Process.GetProcessById(pid);
+            foreach (var n in imageNames)
+            {
+                if (proc.ProcessName.Equals(n, StringComparison.OrdinalIgnoreCase)) return proc;
+            }
+            proc.Dispose();
+        }
+        catch { /* not running */ }
+        return null;
+    }
+
+    private static void DeleteCopyUnderGate()
+    {
+        try
+        {
+            using var gate = new Mutex(false, CopyMutexName);
+            // Never block the helper read loop: a held gate means a Spawn or CloseStale is mid-copy.
+            if (!gate.WaitOne(0)) return;
+            try { TryDeleteCopy(); }
+            finally { gate.ReleaseMutex(); }
+        }
+        catch { /* best-effort */ }
     }
 
     private static void TryDeleteCopy()
@@ -384,6 +466,7 @@ internal static class UpdaterSplashWindow
     [DllImport("user32")] private static extern IntPtr GetDC(IntPtr hwnd);
     [DllImport("user32")] private static extern int ReleaseDC(IntPtr hwnd, IntPtr dc);
     [DllImport("user32", CharSet = CharSet.Unicode, EntryPoint = "FindWindowW")] private static extern IntPtr FindWindow(string? cls, string? title);
+    [DllImport("user32", CharSet = CharSet.Unicode, EntryPoint = "FindWindowExW")] private static extern IntPtr FindWindowEx(IntPtr parent, IntPtr after, string? cls, string? title);
     [DllImport("shell32", CharSet = CharSet.Unicode, EntryPoint = "ExtractIconW")] private static extern IntPtr ExtractIcon(IntPtr inst, string file, int index);
     [DllImport("gdi32")] private static extern int GetDeviceCaps(IntPtr dc, int index);
     [DllImport("gdi32")] private static extern IntPtr CreateCompatibleDC(IntPtr dc);

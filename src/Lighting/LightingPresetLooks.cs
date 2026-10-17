@@ -202,6 +202,7 @@ public static class LightingPresetLooks
             Params = state.Params is null
                 ? new Dictionary<string, float>()
                 : new Dictionary<string, float>(state.Params),
+            Sensors = SensorBinding.CopyMap(state.Sensors),
         };
     }
 }

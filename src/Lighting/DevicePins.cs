@@ -30,6 +30,31 @@ public static class DevicePinLook
         return sb.ToString();
     }
 
+    /// <summary>
+    /// The key an animate pin's render runs under. Pins on one effect share a render, except that a pin carrying
+    /// sensor picks gets its own, since two picks cannot share one canvas. A sweep never reads a sensor.
+    /// </summary>
+    public static string AnimateRenderKey(DevicePin pin)
+    {
+        var effect = pin.Effect ?? "";
+        // Only picks the shader would act on key the render; an unusable one falls back to the default anyway.
+        Dictionary<string, SensorBinding>? usable = null;
+        if (pin.Sensors is not null)
+        {
+            foreach (var kv in pin.Sensors)
+            {
+                if (kv.Value is { IsUsable: true })
+                {
+                    (usable ??= new Dictionary<string, SensorBinding>(StringComparer.Ordinal))[kv.Key] = kv.Value;
+                }
+            }
+        }
+        var picks = SensorBinding.MapKey(usable);
+        return picks.Length == 0 || Nexus.Service.Lighting.Engine.Gpu.ShaderLibrary.IsSweepEffect(effect)
+            ? effect
+            : effect + "\u001f" + picks;
+    }
+
     public static float Intensity(DevicePin pin) => pin.Intensity is > 0f ? pin.Intensity.Value : 1f;
     public static float Saturation(DevicePin pin) => pin.Saturation ?? 1f;
     public static float Contrast(DevicePin pin) => pin.Contrast is > 0f ? pin.Contrast.Value : 1f;
@@ -86,6 +111,7 @@ public sealed class DevicePinTracker
         !string.IsNullOrEmpty(key)
         && ((AnimateTemplateDefaults.All.ContainsKey(key) && !StaticEffectCatalog.Contains(key))
             || Nexus.Service.Lighting.Engine.Gpu.ShaderLibrary.IsSweepEffect(key)
+            || Nexus.Service.Lighting.Engine.Gpu.ShaderLibrary.IsSensorEffect(key)
             || (Nexus.Service.Lighting.Engine.Gpu.ShaderLibrary.IsCustomKey(key)
                 && Nexus.Service.Lighting.Engine.Gpu.ShaderLibrary.IsKnownKey(key)));
 
@@ -112,7 +138,7 @@ public sealed class DevicePinTracker
     private static bool HasNoFields(DevicePin pin) =>
         pin.Effect is null && pin.Color is null && pin.Intensity is null && pin.Hue is null
         && pin.Colorize is null && pin.Saturation is null && pin.Contrast is null
-        && pin.Params is null && pin.Slot is null;
+        && pin.Params is null && pin.Sensors is null && pin.Slot is null;
 
     /// <summary>
     /// A copy holding only the fields the pin's kind reads: animate keeps its
@@ -125,12 +151,14 @@ public sealed class DevicePinTracker
         switch (pin.Kind)
         {
             case DevicePinKinds.Animate:
-                return new DevicePin { Kind = pin.Kind, Effect = pin.Effect };
+                return new DevicePin { Kind = pin.Kind, Effect = pin.Effect, Sensors = SensorBinding.CopyMap(pin.Sensors) };
             case DevicePinKinds.Mirror:
             case DevicePinKinds.Media:
                 return new DevicePin { Kind = pin.Kind };
             case DevicePinKinds.Static:
                 var copy = pin.Copy();
+                // A static look has no sensor uniform; a stray field must not split identical pins.
+                copy.Sensors = null;
                 if (string.IsNullOrEmpty(copy.Effect)
                     || !Nexus.Service.Lighting.Engine.Gpu.ShaderLibrary.AllEffectKeys.Contains(copy.Effect))
                 {
@@ -233,6 +261,7 @@ public sealed class DevicePinTracker
             if (!string.Equals(m.Effect, pin.Effect, StringComparison.Ordinal)) return false;
             if (pin.Kind == DevicePinKinds.Static && DevicePinLook.StaticKey(m) != DevicePinLook.StaticKey(pin)) return false;
             if (m.Slot != pin.Slot) return false;
+            if (pin.Kind == DevicePinKinds.Animate && !SensorBinding.MapEquals(m.Sensors, pin.Sensors)) return false;
         }
         return true;
     }

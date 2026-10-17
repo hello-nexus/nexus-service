@@ -32,10 +32,11 @@ internal static class WindowsUserHelper
 {
     private const int DefaultPort = 9400;
     internal const string SessionMutexName = @"Local\NexusHelper";
-    private const uint WM_CLOSE = 0x0010;
-    private const string UpdaterWindowTitle = UpdaterSplashArgs.Title;
 
     private static readonly CancellationTokenSource s_exit = new();
+
+    // Splash this process spawned; a close that beats the splash window still ends it.
+    private static int s_splashPid;
 
     // Immutable snapshot of the latest profiles.list push. Written by the pipe
     // handler thread; read on the tray message-pump thread. Volatile reference
@@ -461,6 +462,7 @@ internal static class WindowsUserHelper
             try { Platform.Windows.TrayIcon.CloseAppWindow(); } catch { /* best-effort */ }
 
             var pid = UpdaterSplashWindow.Spawn(fromVersion, toVersion);
+            if (pid != 0) Volatile.Write(ref s_splashPid, pid);
             Diag($"ShowUpdaterWindow: native splash started pid={pid}");
         }
         catch (Exception ex) { Diag($"ShowUpdaterWindow failed: {ex.Message}"); }
@@ -469,14 +471,7 @@ internal static class WindowsUserHelper
     [SupportedOSPlatform("windows")]
     internal static void CloseUpdaterWindow()
     {
-        try
-        {
-            var hwnd = FindWindowW(null, UpdaterWindowTitle);
-            if (hwnd != IntPtr.Zero)
-            {
-                PostMessageW(hwnd, WM_CLOSE, IntPtr.Zero, IntPtr.Zero);
-            }
-        }
+        try { UpdaterSplashWindow.Dismiss(Interlocked.Exchange(ref s_splashPid, 0)); }
         catch { /* best-effort */ }
     }
 

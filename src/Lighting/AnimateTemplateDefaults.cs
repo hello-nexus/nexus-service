@@ -207,7 +207,7 @@ public static class AnimateTemplateDefaults
                 return false;
             }
         }
-        return true;
+        return SensorBinding.MapEquals(a.Sensors, b.Sensors);
     }
 
     private static AnimateEffectState CloneState(AnimateEffectState s) => new()
@@ -219,6 +219,7 @@ public static class AnimateTemplateDefaults
         Saturation = s.Saturation,
         Contrast = s.Contrast,
         Params = s.Params is not null ? new Dictionary<string, float>(s.Params) : new(),
+        Sensors = SensorBinding.CopyMap(s.Sensors),
     };
 
     private static (Dictionary<string, AnimateEffectTemplates>, byte[], string) Load()

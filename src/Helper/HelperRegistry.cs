@@ -28,6 +28,8 @@ public sealed class HelperRegistry
     /// </summary>
     public event Action<HelperConnection, HelperEnvelope>? InboundEnvelope;
 
+    public System.Collections.Generic.ICollection<HelperConnection> GetAll() => _bySession.Values;
+
     public bool IsAnyConnected => !_bySession.IsEmpty;
 
     public HelperConnection? GetForSession(int sessionId)

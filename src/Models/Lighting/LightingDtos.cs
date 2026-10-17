@@ -17,6 +17,15 @@ public sealed class AudioStateSnapshot
 public sealed class ShaderSourceResponse
 {
     public string Frag { get; set; } = "";
+    /// <summary>The sensor uniforms the source declares with their authored default bindings; empty for an effect with none.</summary>
+    public List<SensorUniformInfo> Sensors { get; set; } = new();
+}
+
+/// <summary>One sensor uniform of a shader: its GLSL name and the binding the author picked.</summary>
+public sealed class SensorUniformInfo
+{
+    public string Uniform { get; set; } = "";
+    public Nexus.Service.Persistence.SensorBinding Binding { get; set; } = new();
 }
 
 public class CurrentSyncResponse : ApiResponse
@@ -125,12 +134,14 @@ public sealed class MusicReactiveBody
     public bool Enabled { get; set; }
 }
 
-/// <summary>GET/POST body for /lighting/audio-output: the render endpoint
-/// audio-reactive capture listens to. Empty id follows the system default.</summary>
+/// <summary>GET/POST body for /lighting/audio-output: the endpoint audio-reactive
+/// capture listens to. Empty id follows the system default of the direction.</summary>
 public sealed class AudioOutputBody
 {
     public string DeviceId { get; set; } = "";
     public string DeviceName { get; set; } = "";
+    /// <summary>"output" (loopback of a render endpoint) or "input" (microphone / line-in). Null or empty means "output".</summary>
+    public string? Direction { get; set; }
 }
 
 /// <summary>GET/POST body for /lighting/sleep-blackout: blank lighting while
@@ -174,6 +185,8 @@ public class AnimateHeadlessStart
     public float Contrast { get; set; } = 1f;
     /// <summary>Per-effect uniforms keyed by GLSL name (e.g. u_zoom, u_warp).</summary>
     public List<ShaderParam> Params { get; set; } = new();
+    /// <summary>Per sensor uniform, the user's pick over the shader's default binding. Null or absent keeps the defaults.</summary>
+    public Dictionary<string, Nexus.Service.Persistence.SensorBinding>? Sensors { get; set; }
     /// <summary>
     /// False while the user is actively dragging a slider -- updates the live
     /// engine uniforms but skips the settings.json write. True (default) on

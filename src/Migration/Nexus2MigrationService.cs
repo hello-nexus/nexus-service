@@ -869,7 +869,8 @@ public sealed class Nexus2MigrationService
             return new Nexus2ApplyResultDto { Id = id, Status = "needsConfirm", Detail = "layout-customized" };
         }
 
-        var layout = q60Record.Layout ?? PanelLayoutDefaults.ForSurface(PanelSurfaces.Q60);
+        var layout = q60Record.Layout
+            ?? PanelLayoutDefaults.WithStableIds(PanelLayoutDefaults.ForSurface(PanelSurfaces.Q60), q60Record.Id);
         if (face.ActiveWidgetType is not null)
         {
             if (layout.Pages.Count == 0)
