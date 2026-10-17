@@ -124,6 +124,9 @@ public sealed class NexusSettings
     /// wiped by factory reset so the screen reappears.</summary>
     public bool LightingOnboardingCompleted { get; set; }
 
+    /// <summary>Set only when <see cref="JsonConfigStore"/> creates settings.json: a lighting device with no stored layout then covers the whole canvas instead of a grid slot. Install-scoped like <see cref="OnboardingCompleted"/>, never profile-synced.</summary>
+    public bool MaximizedCanvasDefaults { get; set; }
+
     /// <summary>Backs a one-release "removed" notice in the lighting tabs; deleted together with that notice after the next production release.</summary>
     public bool GameSyncRemovedNotice { get; set; }
 
