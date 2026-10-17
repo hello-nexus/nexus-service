@@ -1,5 +1,6 @@
 #if WINDOWS
 using System;
+using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
 using System.Runtime.InteropServices;
@@ -24,6 +25,7 @@ internal static class UpdaterSplashWindow
     private const int W = 330, H = 220;
     private const int MinStaleAgeSeconds = 10;
     private const int CloseGraceMs = 3000;
+    private const int WindowWaitMs = 3000;
     private const string CopyMutexName = @"Local\NexusUpdaterCopy";
     private const int ExStyleTopmost = 0x00000008, ExStyleToolWindow = 0x00000080;
     private const int StylePopup = unchecked((int)0x80000000);
@@ -118,8 +120,14 @@ internal static class UpdaterSplashWindow
     /// </summary>
     public static void Dismiss()
     {
-        var hwnd = FindWindow(null, UpdaterSplashArgs.Title);
-        while (hwnd != IntPtr.Zero)
+        // Collected up front: a destroyed window is no valid FindWindowEx anchor.
+        var windows = new List<IntPtr>();
+        for (var h = FindWindow(null, UpdaterSplashArgs.Title); h != IntPtr.Zero && windows.Count < 16;
+             h = FindWindowEx(IntPtr.Zero, h, null, UpdaterSplashArgs.Title))
+        {
+            windows.Add(h);
+        }
+        foreach (var hwnd in windows)
         {
             GetWindowThreadProcessId(hwnd, out var pid);
             PostMessage(hwnd, WmClose, IntPtr.Zero, IntPtr.Zero);
@@ -133,7 +141,20 @@ internal static class UpdaterSplashWindow
                 if (ours && !proc.WaitForExit(CloseGraceMs)) proc.Kill();
             }
             catch { /* already gone */ }
-            hwnd = FindWindowEx(IntPtr.Zero, hwnd, null, UpdaterSplashArgs.Title);
+        }
+    }
+
+    /// <summary>
+    /// Spawn returns once the process starts, before its window exists, so a close that
+    /// follows at once would find nothing. Bounded so a splash that never appears cannot
+    /// hold the caller.
+    /// </summary>
+    public static void WaitForWindow()
+    {
+        var deadline = Environment.TickCount64 + WindowWaitMs;
+        while (FindWindow(null, UpdaterSplashArgs.Title) == IntPtr.Zero && Environment.TickCount64 < deadline)
+        {
+            Thread.Sleep(50);
         }
     }
 

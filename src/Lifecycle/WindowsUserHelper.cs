@@ -459,6 +459,7 @@ internal static class WindowsUserHelper
             try { Platform.Windows.TrayIcon.CloseAppWindow(); } catch { /* best-effort */ }
 
             var pid = UpdaterSplashWindow.Spawn(fromVersion, toVersion);
+            if (pid != 0) UpdaterSplashWindow.WaitForWindow();
             Diag($"ShowUpdaterWindow: native splash started pid={pid}");
         }
         catch (Exception ex) { Diag($"ShowUpdaterWindow failed: {ex.Message}"); }
