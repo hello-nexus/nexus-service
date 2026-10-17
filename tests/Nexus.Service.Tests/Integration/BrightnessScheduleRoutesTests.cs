@@ -8,6 +8,7 @@ using Nexus.Service.Persistence;
 
 namespace Nexus.Service.Tests.Integration;
 
+[Collection("SunShift")]
 public sealed class BrightnessScheduleRoutesTests : IClassFixture<StubDeviceHostFactory>
 {
     private readonly StubDeviceHostFactory _factory;
@@ -180,6 +181,8 @@ public sealed class BrightnessScheduleRoutesTests : IClassFixture<StubDeviceHost
         Nexus.Service.Lighting.Sun.SunShift.ResetForTests();
         _factory.Services.GetRequiredService<Nexus.Service.Tests.Integration.FakeWeatherProvider>().Approximate =
             new() { Lat = 59.9139, Lon = 10.7522, Label = "Oslo, Norway", Cc = "NO" };
+        var resolver = _factory.Services.GetRequiredService<Nexus.Service.Lighting.Sun.SunLocationResolver>();
+        await resolver.StartAsync(default);
         try
         {
             await _client.PostAsync("/lighting/brightness-schedule", Json(
@@ -193,15 +196,61 @@ public sealed class BrightnessScheduleRoutesTests : IClassFixture<StubDeviceHost
                 status = doc.RootElement.GetProperty("sun").GetProperty("status").GetString()!;
             }
             Assert.Equal("ok", status);
+            using var done = await GetDoc();
+            Assert.Equal("Oslo, Norway", done.RootElement.GetProperty("sun").GetProperty("autoLocation").GetProperty("label").GetString());
         }
         finally
         {
+            await resolver.StopAsync(default);
             Nexus.Service.Lighting.Sun.SunShift.ResetForTests();
             _factory.Services.GetRequiredService<Nexus.Service.Tests.Integration.FakeWeatherProvider>().Approximate = null;
         }
     }
 
+    [Fact]
+    public async Task No_ip_lookup_runs_while_the_schedule_is_off()
+    {
+        Nexus.Service.Lighting.Sun.SunShift.ResetForTests();
+        var weather = _factory.Services.GetRequiredService<Nexus.Service.Tests.Integration.FakeWeatherProvider>();
+        weather.Approximate = new() { Lat = 1, Lon = 2, Label = "X", Cc = "" };
+        var resolver = _factory.Services.GetRequiredService<Nexus.Service.Lighting.Sun.SunLocationResolver>();
+        await resolver.StartAsync(default);
+        try
+        {
+            await _client.PostAsync("/lighting/brightness-schedule", Json(
+                "{\"enabled\":false,\"sunShift\":true,\"points\":" + TwoPoints + ",\"location\":null}"));
+            await Task.Delay(300);
+
+            Assert.Null(Nexus.Service.Lighting.Sun.SunShift.AutoLocation);
+        }
+        finally
+        {
+            await resolver.StopAsync(default);
+            weather.Approximate = null;
+        }
+    }
+
+    [Fact]
+    public async Task Get_reports_the_resolved_default_for_an_unchosen_sun_shift()
+    {
+        Store.Update(s => s.Lighting.BrightnessSchedule = new() { Points = new() { new() { Hour = 0, Brightness = 5 }, new() { Hour = 12, Brightness = 50 } } });
+
+        using var custom = await GetDoc();
+
+        Assert.False(custom.RootElement.GetProperty("sunShift").GetBoolean());
+    }
+
+    [Fact]
+    public async Task Editing_the_curve_does_not_flip_an_unchosen_sun_shift()
+    {
+        await _client.PostAsync("/lighting/brightness-schedule", Json("{\"enabled\":true,\"points\":" + TwoPoints + "}"));
+
+        Assert.True(Store.Load().Lighting.BrightnessSchedule.SunShift);
+    }
+
     [Theory]
+    [InlineData("""{"lon":0,"label":"x"}""")]
+    [InlineData("""{"lat":0,"label":"x"}""")]
     [InlineData("""{"lat":91,"lon":0,"label":"x","cc":""}""")]
     [InlineData("""{"lat":-91,"lon":0,"label":"x","cc":""}""")]
     [InlineData("""{"lat":0,"lon":181,"label":"x","cc":""}""")]

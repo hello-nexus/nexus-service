@@ -564,6 +564,7 @@ namespace Nexus.Service.Serialization;
 [JsonSerializable(typeof(Nexus.Service.Models.Lighting.BrightnessScheduleBody))]
 [JsonSerializable(typeof(Nexus.Service.Models.Lighting.BrightnessScheduleSun))]
 [JsonSerializable(typeof(Nexus.Service.Models.Lighting.BrightnessSunPoint))]
+[JsonSerializable(typeof(Nexus.Service.Models.Lighting.SunLocationDto))]
 [JsonSerializable(typeof(Nexus.Service.Models.Lighting.IdleDimBody))]
 [JsonSerializable(typeof(Nexus.Service.Models.Lighting.IdleDimStatus))]
 [JsonSerializable(typeof(Nexus.Service.Models.Lighting.RenderGpuBody))]

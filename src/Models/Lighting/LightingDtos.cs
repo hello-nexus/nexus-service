@@ -79,7 +79,7 @@ public class GlobalBrightnessBody
 /// IP location; <see cref="LocationSpecified"/> tells the two nulls apart.</summary>
 public sealed class BrightnessScheduleBody
 {
-    private Nexus.Service.Models.Weather.WeatherSavedLocationDto? _location;
+    private SunLocationDto? _location;
 
     public bool Enabled { get; set; }
     public List<Nexus.Service.Persistence.BrightnessSchedulePoint> Points { get; set; } = new();
@@ -87,7 +87,7 @@ public sealed class BrightnessScheduleBody
     public bool? SunShift { get; set; }
 
     [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.Never)]
-    public Nexus.Service.Models.Weather.WeatherSavedLocationDto? Location
+    public SunLocationDto? Location
     {
         get => _location;
         set
@@ -120,7 +120,20 @@ public sealed class BrightnessScheduleSun
     public List<BrightnessSunPoint> SunPoints { get; set; } = new();
 
     [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.Never)]
-    public Nexus.Service.Models.Weather.WeatherSavedLocationDto? ResolvedLocation { get; set; }
+    public SunLocationDto? ResolvedLocation { get; set; }
+
+    /// <summary>The IP-resolved place whenever known, whichever place is chosen.</summary>
+    [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.Never)]
+    public SunLocationDto? AutoLocation { get; set; }
+}
+
+/// <summary>A place on the schedule's wire. Lat and Lon are nullable so a POST that omits one can be refused instead of reading as 0.</summary>
+public sealed class SunLocationDto
+{
+    public double? Lat { get; set; }
+    public double? Lon { get; set; }
+    public string? Label { get; set; }
+    public string? Cc { get; set; }
 }
 
 public sealed class BrightnessSunPoint

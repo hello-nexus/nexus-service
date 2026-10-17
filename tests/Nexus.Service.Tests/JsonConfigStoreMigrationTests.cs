@@ -898,27 +898,6 @@ public class JsonConfigStoreMigrationTests : IDisposable
         }
     }
 
-    /// <summary>v25: sun shift defaults on; an existing document keeps a hand-drawn curve running by turning it off.</summary>
-    [Theory]
-    [InlineData("{ \"schemaVersion\": 24 }", true)]
-    [InlineData("{ \"schemaVersion\": 24, \"lighting\": { \"brightnessSchedule\": { \"enabled\": true, \"points\": [ {\"hour\":5,\"brightness\":10}, {\"hour\":7,\"brightness\":30}, {\"hour\":10,\"brightness\":100}, {\"hour\":17,\"brightness\":100}, {\"hour\":20,\"brightness\":30}, {\"hour\":22,\"brightness\":10} ] } } }", true)]
-    [InlineData("{ \"schemaVersion\": 24, \"lighting\": { \"brightnessSchedule\": { \"enabled\": true, \"points\": [ {\"hour\":0,\"brightness\":10}, {\"hour\":12,\"brightness\":100} ] } } }", false)]
-    [InlineData("{ \"schemaVersion\": 25, \"lighting\": { \"brightnessSchedule\": { \"enabled\": true, \"points\": [ {\"hour\":0,\"brightness\":10}, {\"hour\":12,\"brightness\":100} ] } } }", true)]
-    public void Load_SunShift_FollowsWhetherTheCurveWasCustomized(string json, bool expected)
-    {
-        File.WriteAllText(_settingsPath, json);
-
-        var store = new JsonConfigStore(_settingsPath);
-        try
-        {
-            Assert.Equal(expected, store.Load().Lighting.BrightnessSchedule.SunShift);
-        }
-        finally
-        {
-            store.Dispose();
-        }
-    }
-
     /// <summary>A v22 file runs both the Game Sync removal (v23) and the render backend move (v24).</summary>
     [Fact]
     public void Load_V22File_RunsBothMigrations()

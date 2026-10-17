@@ -24,7 +24,9 @@ public static class MasterBrightness
 
     /// <summary>Effective master level at <paramref name="localNow"/>. With the
     /// schedule's sun shift on and today's sun times known, the generated daylight
-    /// curve replaces the user's points; otherwise the user's curve applies.</summary>
+    /// curve replaces the user's points; otherwise the user's curve applies.
+    /// The slider is clamped, not sanitised: a non-finite level propagates,
+    /// which the POST route guards against upstream.</summary>
     public static float Effective(LightingSettings lighting, DateTime localNow, float idleCap = 1f)
     {
         var global = Math.Min(Math.Clamp(lighting.GlobalBrightness, 0f, 1f), idleCap);
@@ -33,7 +35,7 @@ public static class MasterBrightness
         {
             return global;
         }
-        if (schedule.SunShift
+        if (schedule.SunShiftOn
             && SunShift.PlanFor(SunShift.Effective(schedule), DateOnly.FromDateTime(localNow)) is { Day.Status: SunStatus.Ok } plan)
         {
             return Math.Min(global, ScheduledSun(plan, localNow.TimeOfDay));
@@ -46,27 +48,8 @@ public static class MasterBrightness
     public static float ScheduledSun(SunPlan plan, TimeSpan timeOfDay)
     {
         var minute = ((int)timeOfDay.TotalMinutes % MinutesPerDay + MinutesPerDay) % MinutesPerDay;
-        Span<double> xs = stackalloc double[plan.Minutes.Length];
-        for (var i = 0; i < xs.Length; i++)
-        {
-            xs[i] = plan.Minutes[i] / 60.0;
-        }
-        var level = CurveEasing.Interpolate(xs, plan.Levels, minute / 60.0, smooth: false, wrapMin: 0, wrapSpan: HoursPerDay);
+        var level = CurveEasing.Interpolate(plan.Hours, plan.Levels, minute / 60.0, smooth: false, wrapMin: 0, wrapSpan: HoursPerDay);
         return (float)Math.Clamp(level / 100.0, 0.0, 1.0);
-    }
-
-    /// <summary>Effective master level, 0..1, at <paramref name="timeOfDay"/>.
-    /// The slider is clamped, not sanitised: a non-finite level propagates,
-    /// which the POST route guards against upstream.</summary>
-    public static float Effective(LightingSettings lighting, TimeSpan timeOfDay, float idleCap = 1f)
-    {
-        var global = Math.Min(Math.Clamp(lighting.GlobalBrightness, 0f, 1f), idleCap);
-        var schedule = lighting.BrightnessSchedule;
-        if (schedule is null || !schedule.Enabled)
-        {
-            return global;
-        }
-        return Math.Min(global, Scheduled(schedule.Points, timeOfDay));
     }
 
     /// <summary>The schedule's level, 0..1, at <paramref name="timeOfDay"/>:
@@ -113,6 +96,25 @@ public static class MasterBrightness
             xs[j + 1] = x;
             ys[j + 1] = y;
         }
+    }
+
+    /// <summary>True when <paramref name="points"/> are the out-of-box curve, whatever order they were saved in.</summary>
+    public static bool IsDefaultSchedule(List<BrightnessSchedulePoint>? points)
+    {
+        var defaults = DefaultSchedule();
+        if (points is null || points.Count != defaults.Count)
+        {
+            return false;
+        }
+        var sorted = points.OrderBy(p => p.Hour).ToList();
+        for (var i = 0; i < defaults.Count; i++)
+        {
+            if (sorted[i].Hour != defaults[i].Hour || sorted[i].Brightness != defaults[i].Brightness)
+            {
+                return false;
+            }
+        }
+        return true;
     }
 
     /// <summary>The out-of-box curve follows daylight: a dim night floor, a

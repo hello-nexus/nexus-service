@@ -3,10 +3,13 @@ using Nexus.Service.Persistence;
 
 namespace Nexus.Service.Tests.Lighting;
 
+[Collection("SunShift")]
 public sealed class MasterBrightnessTests
 {
     private static List<BrightnessSchedulePoint> Points(params (int hour, int brightness)[] pts) =>
         pts.Select(p => new BrightnessSchedulePoint { Hour = p.hour, Brightness = p.brightness }).ToList();
+
+    private static DateTime Day(int hour, int minute = 0, int second = 0) => new DateTime(2026, 6, 21).Add(At(hour, minute, second));
 
     private static TimeSpan At(int hour, int minute = 0, int second = 0) => new(hour, minute, second);
 
@@ -17,7 +20,7 @@ public sealed class MasterBrightnessTests
         lighting.BrightnessSchedule.Enabled = false;
         lighting.BrightnessSchedule.Points = Points((0, 10), (12, 10));
 
-        Assert.Equal(0.6f, MasterBrightness.Effective(lighting, At(12)));
+        Assert.Equal(0.6f, MasterBrightness.Effective(lighting, Day(12)));
     }
 
     [Fact]
@@ -29,8 +32,8 @@ public sealed class MasterBrightnessTests
             BrightnessSchedule = new() { Enabled = true, Points = Points((0, 20), (12, 100)) },
         };
 
-        Assert.Equal(0.6f, MasterBrightness.Effective(lighting, At(12)));
-        Assert.Equal(0.2f, MasterBrightness.Effective(lighting, At(0)));
+        Assert.Equal(0.6f, MasterBrightness.Effective(lighting, Day(12)));
+        Assert.Equal(0.2f, MasterBrightness.Effective(lighting, Day(0)));
     }
 
     // Vectors shared with nexus-web's brightnessSchedule.test.ts: both sides
@@ -155,7 +158,7 @@ public sealed class MasterBrightnessTests
     {
         var lighting = new LightingSettings { GlobalBrightness = 0.4f, BrightnessSchedule = null! };
 
-        Assert.Equal(0.4f, MasterBrightness.Effective(lighting, At(12)));
+        Assert.Equal(0.4f, MasterBrightness.Effective(lighting, Day(12)));
     }
 
     [Fact]
@@ -164,7 +167,7 @@ public sealed class MasterBrightnessTests
         var lighting = new LightingSettings { GlobalBrightness = float.NaN };
         lighting.BrightnessSchedule.Enabled = false;
 
-        Assert.True(float.IsNaN(MasterBrightness.Effective(lighting, At(12))));
+        Assert.True(float.IsNaN(MasterBrightness.Effective(lighting, Day(12))));
     }
 
     [Theory]
@@ -176,7 +179,7 @@ public sealed class MasterBrightnessTests
     {
         var lighting = new LightingSettings { GlobalBrightness = slider };
 
-        Assert.Equal(expected, MasterBrightness.Effective(lighting, At(12), idleCap));
+        Assert.Equal(expected, MasterBrightness.Effective(lighting, Day(12), idleCap));
     }
 
     [Fact]
@@ -188,8 +191,8 @@ public sealed class MasterBrightnessTests
             BrightnessSchedule = new() { Enabled = true, Points = Points((0, 20), (12, 20)) },
         };
 
-        Assert.Equal(0.1f, MasterBrightness.Effective(lighting, At(6), 0.1f));
-        Assert.Equal(0.2f, MasterBrightness.Effective(lighting, At(6), 0.5f));
+        Assert.Equal(0.1f, MasterBrightness.Effective(lighting, Day(6), 0.1f));
+        Assert.Equal(0.2f, MasterBrightness.Effective(lighting, Day(6), 0.5f));
     }
 
     [Fact]
@@ -197,6 +200,6 @@ public sealed class MasterBrightnessTests
     {
         var lighting = new LightingSettings { GlobalBrightness = 0.6f };
 
-        Assert.Equal(0.6f, MasterBrightness.Effective(lighting, At(12)));
+        Assert.Equal(0.6f, MasterBrightness.Effective(lighting, Day(12)));
     }
 }

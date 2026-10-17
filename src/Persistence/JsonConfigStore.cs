@@ -231,7 +231,6 @@ public sealed class JsonConfigStore : IConfigStore, IDisposable
     /// v20: ConflictWhitelistMigration.KeepThirdPartyDevicesOn.
     /// v23: the removed Game Sync mode becomes static; an upgrade sets GameSyncRemovedNotice.
     /// v24: Lighting.RenderBackend "wgl" (the old default, always persisted) becomes "angle".
-    /// v25: BrightnessSchedule.SunShift defaults on; a hand-drawn curve keeps running, so it is turned off for one that differs from the default.
     /// </summary>
     private static void Migrate(NexusSettings doc)
     {
@@ -338,29 +337,7 @@ public sealed class JsonConfigStore : IConfigStore, IDisposable
         {
             lighting.RenderBackend = "angle";
         }
-        if (doc.SchemaVersion < 25 && doc.Lighting?.BrightnessSchedule is { } schedule)
-        {
-            schedule.SunShift = IsDefaultSchedule(schedule.Points);
-        }
         doc.SchemaVersion = NexusSettings.CurrentSchemaVersion;
-    }
-
-    private static bool IsDefaultSchedule(List<BrightnessSchedulePoint>? points)
-    {
-        var defaults = Nexus.Service.Lighting.MasterBrightness.DefaultSchedule();
-        if (points is null || points.Count != defaults.Count)
-        {
-            return false;
-        }
-        var sorted = points.OrderBy(p => p.Hour).ToList();
-        for (var i = 0; i < defaults.Count; i++)
-        {
-            if (sorted[i].Hour != defaults[i].Hour || sorted[i].Brightness != defaults[i].Brightness)
-            {
-                return false;
-            }
-        }
-        return true;
     }
 
     /// <summary>Rewrites any persisted "fixed" instance mode (the pre-rename name) to "custom"; true when it changed anything. Runs on every load, independently of SchemaVersion, since this is a value rename rather than a structural migration.</summary>

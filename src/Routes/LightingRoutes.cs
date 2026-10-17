@@ -26,7 +26,7 @@ public static class LightingRoutes
         Nexus.Service.Persistence.BrightnessSchedule schedule, Nexus.Service.Lighting.Sun.SunLocationResolver resolver, bool forceResolve = false)
     {
         // The lookup runs in the background; this response reports no-location until it lands.
-        if (schedule.SunShift && schedule.SunLocation is null)
+        if (Nexus.Service.Lighting.Sun.SunShift.NeedsAutoLocation(schedule))
         {
             resolver.Request(forceResolve);
         }
@@ -46,6 +46,7 @@ public static class LightingRoutes
             SunriseMin = plan?.Day.SunriseMin,
             SunsetMin = plan?.Day.SunsetMin,
             ResolvedLocation = location is null ? null : ToDto(location),
+            AutoLocation = Nexus.Service.Lighting.Sun.SunShift.AutoLocation is { } auto ? ToDto(auto) : null,
         };
         if (plan is not null)
         {
@@ -59,13 +60,13 @@ public static class LightingRoutes
             Enabled = schedule.Enabled,
             Points = schedule.Points ?? new(),
             Defaults = Nexus.Service.Lighting.MasterBrightness.DefaultSchedule(),
-            SunShift = schedule.SunShift,
+            SunShift = schedule.SunShiftOn,
             Location = schedule.SunLocation is null ? null : ToDto(schedule.SunLocation),
             Sun = sun,
         };
     }
 
-    private static Models.Weather.WeatherSavedLocationDto ToDto(Nexus.Service.Persistence.WeatherSavedLocation l) =>
+    private static Models.Lighting.SunLocationDto ToDto(Nexus.Service.Persistence.WeatherSavedLocation l) =>
         new() { Lat = l.Lat, Lon = l.Lon, Label = l.Label, Cc = l.Cc };
 
     public static void MapLightingEndpoints(this WebApplication app)
@@ -318,7 +319,11 @@ public static class LightingRoutes
             Nexus.Service.Persistence.WeatherSavedLocation? location = null;
             if (body.LocationSpecified && body.Location is { } l)
             {
-                if (!double.IsFinite(l.Lat) || !double.IsFinite(l.Lon) || l.Lat < -90 || l.Lat > 90 || l.Lon < -180 || l.Lon > 180)
+                if (l.Lat is not { } lat || l.Lon is not { } lon)
+                {
+                    return Results.BadRequest(ApiResponse.Fail("location needs lat and lon"));
+                }
+                if (!double.IsFinite(lat) || !double.IsFinite(lon) || lat < -90 || lat > 90 || lon < -180 || lon > 180)
                 {
                     return Results.BadRequest(ApiResponse.Fail("location out of range"));
                 }
@@ -332,7 +337,7 @@ public static class LightingRoutes
                 {
                     cc = cc.Substring(0, 3);
                 }
-                location = new() { Lat = l.Lat, Lon = l.Lon, Label = label, Cc = cc };
+                location = new() { Lat = lat, Lon = lon, Label = label, Cc = cc };
             }
             var byHour = new SortedDictionary<int, Nexus.Service.Persistence.BrightnessSchedulePoint>();
             foreach (var p in body.Points)
@@ -350,11 +355,14 @@ public static class LightingRoutes
             store.Update(s =>
             {
                 var current = s.Lighting.BrightnessSchedule;
+                // Pin the resolved choice on first save so editing the curve
+                // cannot flip an unchosen sun shift from on to off.
+                var sunShift = body.SunShift ?? current?.SunShiftOn ?? true;
                 s.Lighting.BrightnessSchedule = new()
                 {
                     Enabled = body.Enabled,
                     Points = points,
-                    SunShift = body.SunShift ?? current?.SunShift ?? false,
+                    SunShift = sunShift,
                     SunLocation = body.LocationSpecified ? location : current?.SunLocation,
                 };
             });

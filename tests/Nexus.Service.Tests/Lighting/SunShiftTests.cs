@@ -4,6 +4,7 @@ using Nexus.Service.Persistence;
 
 namespace Nexus.Service.Tests.Lighting;
 
+[Collection("SunShift")]
 public sealed class SunShiftTests
 {
     // Mirrored by nexus-web: sunrise, sunset, generated points, sampled levels.
@@ -162,3 +163,7 @@ public sealed class SunShiftTests
         Assert.NotSame(first, SunShift.PlanFor(Oslo, date.AddDays(1)));
     }
 }
+
+/// <summary>The sun-shift tests share process-wide state (the resolved place and the day plan), so they run one at a time.</summary>
+[CollectionDefinition("SunShift", DisableParallelization = true)]
+public sealed class SunShiftCollection;

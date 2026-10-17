@@ -19,6 +19,11 @@ public sealed class SunPlan
             Sunrise = day.SunriseMin!.Value;
             Sunset = day.SunsetMin!.Value;
             (Minutes, Levels) = SunShift.GeneratePoints(Sunrise, Sunset);
+            Hours = new double[Minutes.Length];
+            for (var i = 0; i < Hours.Length; i++)
+            {
+                Hours[i] = Minutes[i] / 60.0;
+            }
         }
     }
 
@@ -30,6 +35,8 @@ public sealed class SunPlan
     public double Sunset { get; }
     /// <summary>Generated curve points, minutes of day ascending. Empty unless the status is ok.</summary>
     public double[] Minutes { get; } = Array.Empty<double>();
+    /// <summary><see cref="Minutes"/> as fractional hours, the axis the curve is evaluated on.</summary>
+    public double[] Hours { get; } = Array.Empty<double>();
     /// <summary>Brightness percent per entry of <see cref="Minutes"/>.</summary>
     public double[] Levels { get; } = Array.Empty<double>();
 }
@@ -47,6 +54,10 @@ public static class SunShift
         get => _auto;
         set => _auto = value;
     }
+
+    /// <summary>True when the schedule is in use and follows the IP location, the only case that needs a lookup.</summary>
+    public static bool NeedsAutoLocation(BrightnessSchedule? schedule) =>
+        schedule is { Enabled: true, SunLocation: null } && schedule.SunShiftOn;
 
     /// <summary>The place the schedule shifts for: the chosen one, else the resolved IP location.</summary>
     public static WeatherSavedLocation? Effective(BrightnessSchedule schedule) => schedule.SunLocation ?? _auto;
