@@ -332,8 +332,10 @@ public static class PanelRoutes
             // device record has no capabilities yet (pre-handshake GETs).
             if (record.Layout is null)
             {
-                record.Layout = PanelLayoutDefaults.StripSeedFor(record)
-                    ?? PanelLayoutDefaults.ForSurface(record.Capabilities?.Surface ?? "y70");
+                record.Layout = PanelLayoutDefaults.WithStableIds(
+                    PanelLayoutDefaults.StripSeedFor(record)
+                        ?? PanelLayoutDefaults.ForSurface(record.Capabilities?.Surface ?? "y70"),
+                    record.Id);
             }
             registry.Touch(id);
             return Results.Json(record, AppJsonContext.Default.PanelDeviceRecord);
