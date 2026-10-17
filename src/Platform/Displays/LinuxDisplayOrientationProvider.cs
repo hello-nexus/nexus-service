@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Text.RegularExpressions;
+using System.Threading.Tasks;
 using Nexus.Service.Platform.Linux;
 
 namespace Nexus.Service.Platform.Displays;
@@ -16,7 +17,7 @@ namespace Nexus.Service.Platform.Displays;
 /// </summary>
 public sealed partial class LinuxDisplayOrientationProvider : IDisplayOrientationProvider
 {
-    private const int ToolTimeoutMs = 8000;
+    private const int ToolTimeoutMs = 3000;
     private const int NoSessionExit = -3;
     private const int NoWaylandExit = -4;
 
@@ -24,6 +25,11 @@ public sealed partial class LinuxDisplayOrientationProvider : IDisplayOrientatio
     private readonly Func<string[], (int Exit, string Output)> _run;
     private readonly object _gate = new();
     private string? _pendingOrientation;
+    private bool _retrying;
+
+    // Backoff for a session that logind reports before KWin or its Wayland
+    // socket is up (autologin); about thirty seconds in total.
+    private static readonly int[] RetryDelaysMs = [1000, 2000, 4000, 8000, 15000];
 
     public LinuxDisplayOrientationProvider(Func<string> y70Connector)
         : this(y70Connector, RunKScreenDoctor)
@@ -61,14 +67,13 @@ public sealed partial class LinuxDisplayOrientationProvider : IDisplayOrientatio
         lock (_gate)
         {
             var (exit, listing) = _run(["-o"]);
-            if (exit == NoSessionExit)
-            {
-                _pendingOrientation = orientation;
-                return (false, listing);
-            }
             if (exit != 0)
             {
-                return (false, ToolFailure(exit, listing));
+                // Remember the latest request and retry in the background;
+                // a newer explicit apply overwrites it, so it always wins.
+                _pendingOrientation = orientation;
+                StartRetry();
+                return (false, exit == NoSessionExit ? listing : ToolFailure(exit, listing));
             }
             _pendingOrientation = null;
             var output = SelectOutput(ParseOutputs(listing), connector);
@@ -84,6 +89,8 @@ public sealed partial class LinuxDisplayOrientationProvider : IDisplayOrientatio
             var (setExit, setOut) = _run([$"output.{output.Value.Name}.rotation.{rotation.Name}"]);
             if (setExit != 0)
             {
+                _pendingOrientation = orientation;
+                StartRetry();
                 return (false, ToolFailure(setExit, setOut));
             }
             var (checkExit, after) = _run(["-o"]);
@@ -96,17 +103,62 @@ public sealed partial class LinuxDisplayOrientationProvider : IDisplayOrientatio
 
     private void OnSessionAdopted()
     {
-        string? pending;
         lock (_gate)
         {
-            pending = _pendingOrientation;
+            if (_pendingOrientation is null)
+            {
+                return;
+            }
+            StartRetry();
         }
-        if (pending is null)
+    }
+
+    // Caller holds _gate. One background loop at a time; each attempt reads and
+    // applies the pending value under the gate, so a concurrent explicit apply
+    // is never overwritten by a stale one.
+    private void StartRetry()
+    {
+        if (_retrying)
         {
             return;
         }
-        var (ok, detail) = SetY70Orientation(pending);
-        Console.Error.WriteLine($"[y70-orient] session adopted, replayed '{pending}' ok={ok} detail='{detail}'");
+        _retrying = true;
+        _ = Task.Run(async () =>
+        {
+            try
+            {
+                foreach (var delay in RetryDelaysMs)
+                {
+                    await Task.Delay(delay);
+                    lock (_gate)
+                    {
+                        if (_pendingOrientation is not { } pending)
+                        {
+                            return;
+                        }
+                        var connector = _y70Connector();
+                        if (string.IsNullOrEmpty(connector))
+                        {
+                            _pendingOrientation = null;
+                            return;
+                        }
+                        var (ok, detail) = Rotate(connector, pending);
+                        if (ok)
+                        {
+                            Console.Error.WriteLine($"[y70-orient] deferred apply of '{pending}' ok: {detail}");
+                            return;
+                        }
+                    }
+                }
+            }
+            finally
+            {
+                lock (_gate)
+                {
+                    _retrying = false;
+                }
+            }
+        });
     }
 
     private static string ToolFailure(int exit, string output) => exit switch
@@ -190,14 +242,17 @@ public sealed partial class LinuxDisplayOrientationProvider : IDisplayOrientatio
         }
         try
         {
-            var psi = new ProcessStartInfo("kscreen-doctor")
+            // Run as the session user: root would leave root-owned Qt and cache
+            // files in their home.
+            var (file, argv) = LinuxSession.WrapSpawnAsSessionUser("kscreen-doctor", new List<string>(args));
+            var psi = new ProcessStartInfo(file)
             {
                 RedirectStandardOutput = true,
                 RedirectStandardError = true,
                 UseShellExecute = false,
                 CreateNoWindow = true,
             };
-            foreach (var a in args)
+            foreach (var a in argv)
             {
                 psi.ArgumentList.Add(a);
             }
@@ -217,9 +272,9 @@ public sealed partial class LinuxDisplayOrientationProvider : IDisplayOrientatio
             }
             return (proc.ExitCode, stdout.GetAwaiter().GetResult());
         }
-        catch
+        catch (Exception ex)
         {
-            return (-1, "");
+            return (NoWaylandExit, $"kscreen-doctor could not run: {ex.Message}");
         }
     }
 }
