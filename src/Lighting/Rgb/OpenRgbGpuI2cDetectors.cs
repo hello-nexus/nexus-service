@@ -564,6 +564,7 @@ internal static class OpenRgbGpuI2cDetectors
         "MSI GeForce RTX 3060 Ti Gaming X Trio LHR",
         "MSI GeForce RTX 3060 Ti SUPER 3X OC",
         "MSI GeForce RTX 3070 Gaming Trio",
+        "MSI GeForce RTX 3070 Gaming Trio Plus",
         "MSI GeForce RTX 3070 Gaming X Trio",
         "MSI GeForce RTX 3070 Suprim",
         "MSI GeForce RTX 3070 Suprim LHR",
