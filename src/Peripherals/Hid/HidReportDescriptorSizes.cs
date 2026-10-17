@@ -6,8 +6,9 @@ namespace Nexus.Service.Peripherals.Hid;
 /// <summary>
 /// Max input, output and feature report lengths from a raw HID report descriptor,
 /// in the same convention as the Windows <c>HidP_GetCaps</c> fields: bytes INCLUDING
-/// the leading report-ID byte, which is counted even when the descriptor declares no
-/// report IDs. A kind with no reports is 0.
+/// the leading report-ID byte, counted even when no report IDs are declared. Scoped to
+/// the first top-level collection, the one LinuxHidEnumerator.ParseTopUsage reports.
+/// A kind with no reports is 0.
 /// </summary>
 internal static class HidReportDescriptorSizes
 {
@@ -33,6 +34,8 @@ internal static class HidReportDescriptorSizes
         var stack = new Stack<(long Size, long Count, int Id)>();
         long size = 0, count = 0;
         var id = 0;
+        var depth = 0;
+        var seenCollection = false;
 
         var i = 0;
         while (i < desc.Length)
@@ -97,18 +100,39 @@ internal static class HidReportDescriptorSizes
                         break;
                 }
             }
-            else if (type == 0 && (tag == 0x8 || tag == 0x9 || tag == 0xB))
+            else if (type == 0 && tag == 0xA)
             {
-                var kind = tag == 0x8 ? 0 : tag == 0x9 ? 1 : 2;
-                var add = size * count;
-                if (size < 0 || count < 0 || add > MaxBits)
+                depth++;
+                seenCollection = true;
+            }
+            else if (type == 0 && tag == 0xC)
+            {
+                if (--depth < 0)
                 {
                     return (0, 0, 0);
                 }
+                if (depth == 0)
+                {
+                    break;
+                }
+            }
+            else if (depth > 0 && type == 0 && (tag == 0x8 || tag == 0x9 || tag == 0xB))
+            {
+                var kind = tag == 0x8 ? 0 : tag == 0x9 ? 1 : 2;
+                if (size > MaxBits || count > MaxBits || size * count > MaxBits)
+                {
+                    return (0, 0, 0);
+                }
+                var add = size * count;
                 var key = (kind, id);
                 bits.TryGetValue(key, out var cur);
                 bits[key] = cur + add;
             }
+        }
+
+        if (!seenCollection)
+        {
+            return (0, 0, 0);
         }
 
         var max = new int[3];

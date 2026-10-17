@@ -91,7 +91,7 @@ public sealed class HidStreamDeckSurface : IStreamDeckSurface
             _consecutiveWriteFailures = 0;
             if (Model.HasExpandedInput)
             {
-                _featureReportLength = info.FeatureReportByteLength > 0
+                _featureReportLength = !OperatingSystem.IsLinux() && info.FeatureReportByteLength > 0
                     ? info.FeatureReportByteLength
                     : StreamDeckProtocol.FeatureReportBufferLength;
             }
