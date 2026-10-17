@@ -32,8 +32,6 @@ internal static class WindowsUserHelper
 {
     private const int DefaultPort = 9400;
     internal const string SessionMutexName = @"Local\NexusHelper";
-    private const uint WM_CLOSE = 0x0010;
-    private const string UpdaterWindowTitle = UpdaterSplashArgs.Title;
 
     private static readonly CancellationTokenSource s_exit = new();
 
@@ -469,14 +467,7 @@ internal static class WindowsUserHelper
     [SupportedOSPlatform("windows")]
     internal static void CloseUpdaterWindow()
     {
-        try
-        {
-            var hwnd = FindWindowW(null, UpdaterWindowTitle);
-            if (hwnd != IntPtr.Zero)
-            {
-                PostMessageW(hwnd, WM_CLOSE, IntPtr.Zero, IntPtr.Zero);
-            }
-        }
+        try { UpdaterSplashWindow.Dismiss(); }
         catch { /* best-effort */ }
     }
 

@@ -23,6 +23,7 @@ internal static class UpdaterSplashWindow
     private const uint TimeoutMs = 300_000;
     private const int W = 330, H = 220;
     private const int MinStaleAgeSeconds = 10;
+    private const int CloseGraceMs = 3000;
     private const string CopyMutexName = @"Local\NexusUpdaterCopy";
     private const int ExStyleTopmost = 0x00000008, ExStyleToolWindow = 0x00000080;
     private const int StylePopup = unchecked((int)0x80000000);
@@ -107,6 +108,32 @@ internal static class UpdaterSplashWindow
         finally
         {
             try { gate.ReleaseMutex(); } catch (ApplicationException) { }
+        }
+    }
+
+    /// <summary>
+    /// Closes every splash window, native or the earlier mshta one, and ends its
+    /// process if it has not exited after the close. No age check: callers run it
+    /// once the install is known to be over.
+    /// </summary>
+    public static void Dismiss()
+    {
+        var hwnd = FindWindow(null, UpdaterSplashArgs.Title);
+        while (hwnd != IntPtr.Zero)
+        {
+            GetWindowThreadProcessId(hwnd, out var pid);
+            PostMessage(hwnd, WmClose, IntPtr.Zero, IntPtr.Zero);
+            try
+            {
+                using var proc = Process.GetProcessById((int)pid);
+                // Only our own splash hosts; a foreign window with this title is left running.
+                var name = proc.ProcessName;
+                var ours = name.Equals("NexusUpdater", StringComparison.OrdinalIgnoreCase)
+                    || name.Equals("mshta", StringComparison.OrdinalIgnoreCase);
+                if (ours && !proc.WaitForExit(CloseGraceMs)) proc.Kill();
+            }
+            catch { /* already gone */ }
+            hwnd = FindWindowEx(IntPtr.Zero, hwnd, null, UpdaterSplashArgs.Title);
         }
     }
 
@@ -384,6 +411,7 @@ internal static class UpdaterSplashWindow
     [DllImport("user32")] private static extern IntPtr GetDC(IntPtr hwnd);
     [DllImport("user32")] private static extern int ReleaseDC(IntPtr hwnd, IntPtr dc);
     [DllImport("user32", CharSet = CharSet.Unicode, EntryPoint = "FindWindowW")] private static extern IntPtr FindWindow(string? cls, string? title);
+    [DllImport("user32", CharSet = CharSet.Unicode, EntryPoint = "FindWindowExW")] private static extern IntPtr FindWindowEx(IntPtr parent, IntPtr after, string? cls, string? title);
     [DllImport("shell32", CharSet = CharSet.Unicode, EntryPoint = "ExtractIconW")] private static extern IntPtr ExtractIcon(IntPtr inst, string file, int index);
     [DllImport("gdi32")] private static extern int GetDeviceCaps(IntPtr dc, int index);
     [DllImport("gdi32")] private static extern IntPtr CreateCompatibleDC(IntPtr dc);

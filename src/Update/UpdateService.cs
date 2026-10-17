@@ -60,6 +60,12 @@ public sealed class UpdateService : BackgroundService
     private long _justUpdatedToSetAtTicks;
     private const long JustUpdatedToTimeoutTicks = 60L * TimeSpan.TicksPerSecond;
 
+#if WINDOWS
+    // Set when this start resolves an install attempt (advanced or failed): any
+    // "Updating Nexus" splash still on screen belongs to it and must go.
+    private int _dismissUpdaterSplash;
+#endif
+
     // Gate: 0 = idle, 1 = in progress.
     private int _installing;
     private CancellationTokenSource? _installCts;
@@ -187,6 +193,9 @@ public sealed class UpdateService : BackgroundService
 
         // Apply or diagnose a staged install marker from a prior run.
         ApplyPendingOnStartup(stoppingToken);
+#if WINDOWS
+        DismissUpdaterSplashOnHelperConnect();
+#endif
 
         // ApplyPendingOnStartup no longer self-stops; fall through to the poll
         // loop, which the installer's net stop cancels when an install proceeds.
@@ -380,6 +389,9 @@ public sealed class UpdateService : BackgroundService
             Volatile.Write(ref _justUpdatedTo, BuildInfo.Version);
             StagedInstallMarkerStore.Delete();
             UnixUpdateApplier.DeleteExtractedPayload();
+#if WINDOWS
+            Volatile.Write(ref _dismissUpdaterSplash, 1);
+#endif
             return;
         }
 
@@ -409,6 +421,9 @@ public sealed class UpdateService : BackgroundService
         // launched but the version did not advance. Boot-loop guard.
         Console.Error.WriteLine($"[update] staged install of {marker.Version} did not advance version; treating as failed");
         StagedInstallMarkerStore.Delete();
+#if WINDOWS
+        Volatile.Write(ref _dismissUpdaterSplash, 1);
+#endif
 
         _status = new UpdateStatusResponse
         {
@@ -428,6 +443,32 @@ public sealed class UpdateService : BackgroundService
             CanStage = true,
         };
     }
+
+#if WINDOWS
+    /// <summary>
+    /// The outgoing build closes the splash only on a failed install, and the incoming
+    /// helper's one-shot startup check skips a fresh splash and swallows errors. The new
+    /// service is the party that knows the install is over, so it asks the first helper
+    /// that connects to close the splash, whichever version spawned it.
+    /// </summary>
+    private void DismissUpdaterSplashOnHelperConnect()
+    {
+        if (Volatile.Read(ref _dismissUpdaterSplash) == 0) return;
+
+        var sent = 0;
+        void Send()
+        {
+            if (Interlocked.Exchange(ref sent, 1) != 0) return;
+            _helperRegistry.Connected -= OnConnected;
+            try { TrayCommands.CloseUpdaterWindowAsync(_helperRegistry).ObserveFaults(); } catch { }
+        }
+        void OnConnected(HelperConnection _) => Send();
+
+        _helperRegistry.Connected += OnConnected;
+        // A helper that connected before this ran never raises Connected again.
+        if (_helperRegistry.IsAnyConnected) Send();
+    }
+#endif
 
     private void ApplyPendingInstall(StagedInstallMarker marker, NexusSettings s, CancellationToken ct)
     {
