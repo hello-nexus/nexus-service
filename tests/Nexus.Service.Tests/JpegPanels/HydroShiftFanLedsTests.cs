@@ -333,6 +333,110 @@ public class HydroShiftFanLedsTests
         Assert.Equal(new byte[] { 0, 0, 255 }, device.Writes[^1][12..15]);
     }
 
+    private const int FrameBytesStart = 12;
+
+    private static (HydroShiftLcdLightingFrameWriter Writer, DeviceFrame Frame, FakeDevice Device, InMemoryConfigStore Store, Func<long> Now, Action<long> Advance) CappedWriter()
+    {
+        var (leds, _, device) = Attached();
+        var store = new InMemoryConfigStore();
+        var engine = new LightingEngine();
+        var frame = new DeviceFrame(0, HydroShiftLcdLightingProvider.FansZoneId, 24);
+        engine.UpdateDevices(new[] { frame });
+        long now = 1000;
+        var cap = new LightingFrameCap(store, () => now);
+        var writer = new HydroShiftLcdLightingFrameWriter(engine, leds, store, new Np50IdentifyTracker(), cap: cap);
+        return (writer, frame, device, store, () => now, ms => now += ms);
+    }
+
+    [Fact]
+    public void An_uncapped_writer_with_a_cap_service_writes_exactly_what_it_wrote_without_one()
+    {
+        var (plain, plainFrame, plainDevice, _) = WriterWithStore();
+        var (capped, cappedFrame, cappedDevice, _, _, advance) = CappedWriter();
+
+        for (var i = 0; i < 60; i++)
+        {
+            var shade = (byte)(i * 4);
+            plainFrame.Fill(shade, 0, 0);
+            plainFrame.Publish();
+            cappedFrame.Fill(shade, 0, 0);
+            cappedFrame.Publish();
+            plain.Tick(1000 + (i * 50L));
+            capped.Tick(1000 + (i * 50L));
+            advance(50);
+        }
+
+        Assert.Equal(plainDevice.Writes.Count, cappedDevice.Writes.Count);
+        for (var i = 0; i < plainDevice.Writes.Count; i++)
+        {
+            Assert.Equal(plainDevice.Writes[i], cappedDevice.Writes[i]);
+        }
+    }
+
+    [Fact]
+    public void A_one_hertz_cap_steps_a_fast_animation_to_about_one_write_per_second()
+    {
+        var (writer, frame, device, store, _, advance) = CappedWriter();
+        store.Update(s => s.Devices.LightingMaxRates[HydroShiftLcdLightingProvider.DeviceId] = 1);
+
+        for (var i = 0; i < 100; i++)
+        {
+            frame.Fill((byte)(i + 1), 0, 0);
+            frame.Publish();
+            writer.Tick(1000 + (i * 50L));
+            advance(50);
+        }
+
+        // Five seconds of a frame that changes every tick.
+        Assert.InRange(device.Writes.Count(w => w[1] == 0x14), 4, 6);
+    }
+
+    [Fact]
+    public void A_held_frame_is_replaced_by_the_latest_one_within_one_cap_interval()
+    {
+        var (writer, frame, device, store, _, advance) = CappedWriter();
+        store.Update(s => s.Devices.LightingMaxRates[HydroShiftLcdLightingProvider.DeviceId] = 1);
+        frame.Fill(10, 0, 0);
+        frame.Publish();
+        writer.Tick(1000);
+        advance(50);
+
+        // Two changes land inside the hold, then the effect stops changing.
+        frame.Fill(20, 0, 0);
+        frame.Publish();
+        writer.Tick(1050);
+        advance(50);
+        frame.Fill(0, 0, 200);
+        frame.Publish();
+        writer.Tick(1100);
+        Assert.Single(device.Writes, w => w[1] == 0x14);
+
+        for (var elapsed = 100; elapsed <= 1100; elapsed += 50)
+        {
+            advance(50);
+            writer.Tick(1000 + elapsed + 50);
+        }
+
+        var last = device.Writes.Last(w => w[1] == 0x14);
+        Assert.Equal(new byte[] { 0, 0, 200 }, last[FrameBytesStart..(FrameBytesStart + 3)]);
+        Assert.Equal(2, device.Writes.Count(w => w[1] == 0x14));
+    }
+
+    [Fact]
+    public void The_slow_reassert_of_an_unchanged_frame_is_not_held_by_the_cap()
+    {
+        var (writer, frame, device, store, _, _) = CappedWriter();
+        store.Update(s => s.Devices.LightingMaxRates[HydroShiftLcdLightingProvider.DeviceId] = 1);
+        frame.Fill(255, 0, 0);
+        frame.Publish();
+        writer.Tick(1000);
+        Assert.Single(device.Writes, w => w[1] == 0x14);
+
+        // The cap clock stays put, so a changed frame would still be held; the heal write goes anyway.
+        writer.Tick(1000 + HydroShiftLcdLightingFrameWriter.ReassertMs);
+        Assert.Equal(2, device.Writes.Count(w => w[1] == 0x14));
+    }
+
     [Fact]
     public void Writer_goes_dark_when_switched_off_and_leaves_an_uncontrolled_device_alone()
     {

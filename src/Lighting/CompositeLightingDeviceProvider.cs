@@ -150,6 +150,21 @@ public sealed class CompositeLightingDeviceProvider : ILightingDeviceProvider
         };
     }
 
+    /// <summary>
+    /// OpenRGB cards set the cap flag themselves. Every first-party LED writer consults the same cap, keyed by the
+    /// owning device (the card's ParentDeviceId, else its id); LCD content and network lamps are left without one.
+    /// </summary>
+    internal static void MarkRateCap(LightingDevice dev, IReadOnlySet<string> uncappable, IReadOnlyDictionary<string, int> maxRates)
+    {
+        if (dev.RateCapSupported || uncappable.Contains(dev.Id))
+        {
+            return;
+        }
+        dev.RateCapSupported = true;
+        var capKey = string.IsNullOrEmpty(dev.ParentDeviceId) ? dev.Id : dev.ParentDeviceId;
+        dev.MaxRateHz = maxRates.TryGetValue(capKey, out var capHz) ? capHz : null;
+    }
+
     public bool IsConnected => _openRgb.IsConnected || _np50.IsConnected || _miniHub.IsConnected || _smartHub.IsConnected || _cnvs.IsConnected || _qseries.IsConnected || _keeb.IsConnected || _ibp.IsConnected || _lianLi.IsConnected || _lianLiWireless.IsConnected || _corsair.IsConnected || _strimer.IsConnected || _galahad2.IsConnected || _nollie.IsConnected || _kraken.IsConnected || _hydroShift2.IsConnected || _hydroShift2Curve.IsConnected || _galahad2Lcd.IsConnected || _hydroShiftLcd.IsConnected || _umbra.IsConnected || _smart.IsConnected;
 
     public GetLightingDevicesResponse GetAll()
@@ -355,9 +370,11 @@ public sealed class CompositeLightingDeviceProvider : ILightingDeviceProvider
             TagControlHandler(hydroShift2Curve.Devices, Peripherals.BulkPanels.HydroShift2CurveLcdDriver.Id);
             rgb.Devices.AddRange(hydroShift2Curve.Devices);
         }
+        var uncappable = new HashSet<string>(StringComparer.Ordinal);
         var galahad2Lcd = _galahad2Lcd.GetAll();
         if (galahad2Lcd.Devices.Count > 0)
         {
+            foreach (var card in galahad2Lcd.Devices) uncappable.Add(card.Id);
             rgb.IsInit = rgb.IsInit || galahad2Lcd.IsInit;
             TagControlHandler(galahad2Lcd.Devices, Galahad2LcdLightingProvider.DeviceId);
             rgb.Devices.AddRange(galahad2Lcd.Devices);
@@ -379,11 +396,13 @@ public sealed class CompositeLightingDeviceProvider : ILightingDeviceProvider
         if (BuildTlCard(_tl.IsConnected, _tl.Snapshot, _store.Load()) is { } tlCard)
         {
             rgb.Devices.Add(tlCard);
+            uncappable.Add(tlCard.Id);
         }
         var smartLights = _smart.GetAll();
         if (smartLights.Devices.Count > 0)
         {
             rgb.IsInit = rgb.IsInit || smartLights.IsInit;
+            foreach (var card in smartLights.Devices) uncappable.Add(card.Id);
             rgb.Devices.AddRange(smartLights.Devices);
         }
 
@@ -405,6 +424,7 @@ public sealed class CompositeLightingDeviceProvider : ILightingDeviceProvider
                     structure: null, zone: null, dev.Id, dev.LedCount, zoneHint: 0, settings);
             }
             dev.Controlled = uncontrolled.Count == 0 || !uncontrolled.Contains(dev.Id);
+            MarkRateCap(dev, uncappable, settings.Devices.LightingMaxRates);
         }
 
         // Spread every device without a persisted layout across the grid. totalCount counts persisted devices too so the

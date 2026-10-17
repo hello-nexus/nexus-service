@@ -781,6 +781,8 @@ public static class NexusServiceCollectionExtensions
             sp => sp.GetRequiredService<Nexus.Service.Lighting.Np50LightingDeviceProvider>());
         services.AddSingleton<Nexus.Service.Lighting.Zones.IDeviceStructureSource>(
             sp => sp.GetRequiredService<Nexus.Service.Lighting.Np50LightingDeviceProvider>());
+        // Shared per-device frame cap the first-party LED writers consult before each frame write.
+        services.AddSingleton<Nexus.Service.Lighting.LightingFrameCap>();
         services.AddSingleton<Nexus.Service.Lighting.Np50LightingFrameWriter>();
         services.AddHostedService(sp => sp.GetRequiredService<Nexus.Service.Lighting.Np50LightingFrameWriter>());
 
@@ -1048,7 +1050,8 @@ public static class NexusServiceCollectionExtensions
                 sp.GetRequiredService<Nexus.Service.Peripherals.LianLi.LianLiHubSet>().Hubs[hubSlot],
                 sp.GetRequiredService<IConfigStore>(),
                 sp.GetRequiredService<Nexus.Service.Lighting.Np50IdentifyTracker>(),
-                sp.GetService<Nexus.Service.Lifecycle.FeatureGates>()));
+                sp.GetService<Nexus.Service.Lifecycle.FeatureGates>(),
+                sp.GetService<Nexus.Service.Lighting.LightingFrameCap>()));
         }
         services.AddHostedService<Nexus.Service.Peripherals.LianLi.LianLiConnectionWorker>();
 

@@ -25,18 +25,21 @@ public sealed class HydroShift2CurveLightingFrameWriter : BackgroundService
     private readonly IConfigStore _store;
     private readonly Np50IdentifyTracker _identify;
     private readonly FeatureGates _gates;
+    private readonly LightingFrameCap? _cap;
     private readonly DeviceStructure _structure = HydroShift2CurveLightingDeviceProvider.BuildStructure();
     private readonly byte[] _rgb = new byte[HydroShift2CurveProtocol.LedCount * 3];
+    private readonly byte[] _lastStaged = new byte[HydroShift2CurveProtocol.LedCount * 3];
     private RgbColor[][] _segBuf = Array.Empty<RgbColor[]>();
 
     public HydroShift2CurveLightingFrameWriter(
-        LightingEngine engine, HydroShift2CurveBoard board, IConfigStore store, Np50IdentifyTracker identify, FeatureGates? gates = null)
+        LightingEngine engine, HydroShift2CurveBoard board, IConfigStore store, Np50IdentifyTracker identify, FeatureGates? gates = null, LightingFrameCap? cap = null)
     {
         _engine = engine;
         _board = board;
         _store = store;
         _identify = identify;
         _gates = gates ?? FeatureGates.AllEnabled;
+        _cap = cap;
     }
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
@@ -87,6 +90,12 @@ public sealed class HydroShift2CurveLightingFrameWriter : BackgroundService
             _rgb[i * 3] = leds[i].R;
             _rgb[(i * 3) + 1] = leds[i].G;
             _rgb[(i * 3) + 2] = leds[i].B;
+        }
+        // The board drops an unchanged frame itself, so only a changed one may spend the pass.
+        if (_cap is not null && !_rgb.AsSpan().SequenceEqual(_lastStaged))
+        {
+            if (!_cap.TryWrite(HydroShift2CurveLcdDriver.Id, 0, settings)) return;
+            _rgb.CopyTo(_lastStaged, 0);
         }
         _board.SetLeds(_rgb);
     }

@@ -120,14 +120,16 @@ public sealed class LianLiLightingFrameWriter : IHostedService, IDisposable
     private bool _highResTimer;
 
     private readonly FeatureGates _gates;
+    private readonly LightingFrameCap? _cap;
 
-    public LianLiLightingFrameWriter(LightingEngine engine, LianLiHub hub, IConfigStore store, Np50IdentifyTracker identify, FeatureGates? gates = null)
+    public LianLiLightingFrameWriter(LightingEngine engine, LianLiHub hub, IConfigStore store, Np50IdentifyTracker identify, FeatureGates? gates = null, LightingFrameCap? cap = null)
     {
         _engine = engine;
         _hub = hub;
         _store = store;
         _identify = identify;
         _gates = gates ?? FeatureGates.AllEnabled;
+        _cap = cap;
     }
 
     public Task StartAsync(CancellationToken cancellationToken)
@@ -462,11 +464,20 @@ public sealed class LianLiLightingFrameWriter : IHostedService, IDisposable
             if (!ZoneResolution.IsFullyUncontrolled(zones, uncontrolled)) ports++;
         }
         var paced = profile.Family == LianLiFanFamily.SlInfinity;
+        var previousFrameMs = _lastCustomFrameMs;
         if (paced)
         {
             var nowMs = NowMs();
             if (nowMs - _lastCustomFrameMs < SlInfinityFrameIntervalMs(ports) - PacingSlackMs) return;
             _lastCustomFrameMs = nowMs;
+        }
+
+        // One decision per tick for the whole hub. A skipped tick hands the pacing slot back so the next
+        // tick is not also held by it. Channel commits, frame syncs and init are not part of this gate.
+        if (ports > 0 && _cap is not null && !_cap.TryWrite(_hub.DeviceId, 0, settings))
+        {
+            _lastCustomFrameMs = previousFrameMs;
+            return;
         }
 
         for (var d = 0; d < composed.Count; d++)

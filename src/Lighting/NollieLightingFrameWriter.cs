@@ -28,6 +28,7 @@ public sealed class NollieLightingFrameWriter : IHostedService, IDisposable
     private readonly IConfigStore _store;
     private readonly Np50IdentifyTracker _identify;
     private readonly FeatureGates _gates;
+    private readonly LightingFrameCap? _cap;
     private CancellationTokenSource? _cts;
     private Task? _loop;
 
@@ -40,13 +41,14 @@ public sealed class NollieLightingFrameWriter : IHostedService, IDisposable
     // back to last tick's zones rather than dropping the frame.
     private readonly Dictionary<string, IReadOnlyList<ResolvedZone>> _zoneCache = new(StringComparer.Ordinal);
 
-    public NollieLightingFrameWriter(LightingEngine engine, NollieHub hub, IConfigStore store, Np50IdentifyTracker identify, FeatureGates? gates = null)
+    public NollieLightingFrameWriter(LightingEngine engine, NollieHub hub, IConfigStore store, Np50IdentifyTracker identify, FeatureGates? gates = null, LightingFrameCap? cap = null)
     {
         _engine = engine;
         _hub = hub;
         _store = store;
         _identify = identify;
         _gates = gates ?? FeatureGates.AllEnabled;
+        _cap = cap;
     }
 
     public Task StartAsync(CancellationToken cancellationToken)
@@ -115,6 +117,11 @@ public sealed class NollieLightingFrameWriter : IHostedService, IDisposable
             // Every port of this controller left uncontrolled: don't touch it
             // at all, so it keeps whatever its firmware is doing.
             if (uncontrolled.Count > 0 && AllPortsUncontrolled(portZones, uncontrolled))
+            {
+                continue;
+            }
+
+            if (_cap is not null && !_cap.TryWrite(controller.DeviceId, 0, settings))
             {
                 continue;
             }

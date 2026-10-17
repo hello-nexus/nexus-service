@@ -40,6 +40,9 @@ public sealed class StrimerLightingFrameWriter : IHostedService, IDisposable
     private long _argbRetryAtMs;
 
     private readonly FeatureGates _gates;
+    private readonly LightingFrameCap? _cap;
+    // The cards' shared ParentDeviceId, which is what LightingMaxRates is keyed by.
+    private const string CapKey = "strimer";
 
     public StrimerLightingFrameWriter(
         LightingEngine engine,
@@ -47,7 +50,7 @@ public sealed class StrimerLightingFrameWriter : IHostedService, IDisposable
         IConfigStore store,
         Np50IdentifyTracker identify,
         StrimerLightingDeviceProvider provider,
-        FeatureGates? gates = null)
+        FeatureGates? gates = null, LightingFrameCap? cap = null)
     {
         _engine   = engine;
         _hub      = hub;
@@ -55,6 +58,7 @@ public sealed class StrimerLightingFrameWriter : IHostedService, IDisposable
         _identify = identify;
         _provider = provider;
         _gates    = gates ?? FeatureGates.AllEnabled;
+        _cap = cap;
     }
 
     public Task StartAsync(CancellationToken cancellationToken)
@@ -151,6 +155,9 @@ public sealed class StrimerLightingFrameWriter : IHostedService, IDisposable
 
     internal void TickCustom(NexusSettings settings, DeviceFrame[] devices, float globalBrightness)
     {
+        // Streams only in custom mode; the firmware modes commit once on change and are never gated.
+        if (_cap is not null && !_cap.TryWrite(CapKey, 0, settings)) return;
+
         var ls           = settings.Devices.StrimerLighting;
         var speedByte    = StrimerLightingModes.SpeedCodes[Math.Clamp(ls.Speed, 0, 4)];
         var dirByte      = StrimerLightingModes.DirectionByte(ls.Direction);

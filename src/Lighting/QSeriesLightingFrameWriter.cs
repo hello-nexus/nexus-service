@@ -49,11 +49,13 @@ public sealed class QSeriesLightingFrameWriter : IHostedService, IDisposable
     private string _link2Prefix = "";
 
     private readonly FeatureGates _gates;
+    private readonly LightingFrameCap? _cap;
 
-    public QSeriesLightingFrameWriter(LightingEngine engine, QSeriesCoolerHub hub, IConfigStore store, Np50IdentifyTracker identify, FeatureGates? gates = null)
+    public QSeriesLightingFrameWriter(LightingEngine engine, QSeriesCoolerHub hub, IConfigStore store, Np50IdentifyTracker identify, FeatureGates? gates = null, LightingFrameCap? cap = null)
     {
         _engine = engine; _hub = hub; _store = store; _identify = identify;
         _gates = gates ?? FeatureGates.AllEnabled;
+        _cap = cap;
     }
 
     public Task StartAsync(CancellationToken cancellationToken)
@@ -142,6 +144,9 @@ public sealed class QSeriesLightingFrameWriter : IHostedService, IDisposable
         var prefs = settings.Devices.LightingDevicePrefs;
         var globalBrightness = MasterBrightness.Effective(settings.Lighting);
         var nowTicks = DateTime.UtcNow.Ticks;
+
+        // Panel and both link channels are one cooler write set per tick.
+        if (_cap is not null && !_cap.TryWrite(id, 0, settings)) return;
 
         if (panelFrame is null)
         {

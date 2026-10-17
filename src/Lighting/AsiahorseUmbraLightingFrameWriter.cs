@@ -22,6 +22,7 @@ public sealed class AsiahorseUmbraLightingFrameWriter : IHostedService, IDisposa
     private readonly UmbraHub _hub;
     private readonly IConfigStore _store;
     private readonly FeatureGates _gates;
+    private readonly LightingFrameCap? _cap;
     private CancellationTokenSource? _cts;
     private Task? _loop;
 
@@ -34,12 +35,13 @@ public sealed class AsiahorseUmbraLightingFrameWriter : IHostedService, IDisposa
     private byte[] _lastSent = Array.Empty<byte>();
     private long _lastSendTimestamp;
 
-    public AsiahorseUmbraLightingFrameWriter(LightingEngine engine, UmbraHub hub, IConfigStore store, FeatureGates? gates = null)
+    public AsiahorseUmbraLightingFrameWriter(LightingEngine engine, UmbraHub hub, IConfigStore store, FeatureGates? gates = null, LightingFrameCap? cap = null)
     {
         _engine = engine;
         _hub = hub;
         _store = store;
         _gates = gates ?? FeatureGates.AllEnabled;
+        _cap = cap;
     }
 
     public Task StartAsync(CancellationToken cancellationToken)
@@ -186,6 +188,11 @@ public sealed class AsiahorseUmbraLightingFrameWriter : IHostedService, IDisposa
         // The packet count bounds the frame rate so the stream stays under the report budget.
         var packets = UmbraProtocol.StreamPacketCount(total);
         if (changed && sinceSend * MaxReportsPerSecond < packets * 1000L)
+        {
+            return;
+        }
+        // Only a changed frame is held back: the unchanged re-send above is the device keepalive and never throttled.
+        if (changed && _cap is not null && !_cap.TryWrite(AsiahorseUmbraLightingDeviceProvider.DeviceId, 0, settings))
         {
             return;
         }

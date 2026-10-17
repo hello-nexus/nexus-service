@@ -38,6 +38,7 @@ public sealed class KrakenLightingFrameWriter : IHostedService, IDisposable
     private readonly IConfigStore _store;
     private readonly Np50IdentifyTracker _identify;
     private readonly FeatureGates _gates;
+    private readonly LightingFrameCap? _cap;
     private CancellationTokenSource? _cts;
     private Task? _loop;
 
@@ -53,13 +54,14 @@ public sealed class KrakenLightingFrameWriter : IHostedService, IDisposable
     private readonly Dictionary<string, IReadOnlyList<ResolvedZone>> _zoneCache = new();
 
     public KrakenLightingFrameWriter(
-        LightingEngine engine, KrakenHub hub, IConfigStore store, Np50IdentifyTracker identify, FeatureGates? gates = null)
+        LightingEngine engine, KrakenHub hub, IConfigStore store, Np50IdentifyTracker identify, FeatureGates? gates = null, LightingFrameCap? cap = null)
     {
         _engine = engine;
         _hub = hub;
         _store = store;
         _identify = identify;
         _gates = gates ?? FeatureGates.AllEnabled;
+        _cap = cap;
     }
 
     public Task StartAsync(CancellationToken cancellationToken)
@@ -120,6 +122,7 @@ public sealed class KrakenLightingFrameWriter : IHostedService, IDisposable
         var globalBrightness = MasterBrightness.Effective(settings.Lighting);
         var nowTicks = DateTime.UtcNow.Ticks;
 
+        var capTick = new FrameCapTick(_cap, KrakenHub.DeviceId, 0, settings);
         var channels = _hub.Snapshot.Channels;
         for (int i = 0; i < channels.Count; i++)
         {
@@ -136,7 +139,7 @@ public sealed class KrakenLightingFrameWriter : IHostedService, IDisposable
                 continue;
             }
 
-            PushChannel(devices, channelId, zones, channels[i], disabled, uncontrolled, prefs, globalBrightness, nowTicks);
+            PushChannel(devices, channelId, zones, channels[i], disabled, uncontrolled, prefs, globalBrightness, nowTicks, ref capTick);
         }
     }
 
@@ -166,7 +169,7 @@ public sealed class KrakenLightingFrameWriter : IHostedService, IDisposable
         IReadOnlyList<string> disabled,
         IReadOnlyList<string> uncontrolled,
         IReadOnlyDictionary<string, LightingDevicePreference> prefs,
-        float globalBrightness, long nowTicks)
+        float globalBrightness, long nowTicks, ref FrameCapTick capTick)
     {
         var total = 0;
         for (var i = 0; i < zones.Count; i++) total += Math.Max(0, zones[i].LedCount);
@@ -211,11 +214,19 @@ public sealed class KrakenLightingFrameWriter : IHostedService, IDisposable
         }
 
         var nowMs = nowTicks / TimeSpan.TicksPerMillisecond;
-        if (_lastPushed.TryGetValue(channelId, out var previous)
+        var unchanged = _lastPushed.TryGetValue(channelId, out var previous)
             && previous.Length == payload.Length
-            && previous.AsSpan().SequenceEqual(payload)
+            && previous.AsSpan().SequenceEqual(payload);
+        if (unchanged
             && _lastPushedAtMs.TryGetValue(channelId, out var sentAt)
             && nowMs - sentAt < ReassertPeriodMs)
+        {
+            return;
+        }
+
+        // After the dedupe so an unchanged channel never spends the pass, and a held frame is re-offered next tick.
+        // The periodic re-assert of an unchanged payload is the cooler's keepalive and is never throttled.
+        if (!unchanged && !capTick.Allow())
         {
             return;
         }

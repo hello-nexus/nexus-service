@@ -31,14 +31,18 @@ public sealed class Galahad2LightingFrameWriter : IHostedService, IDisposable
     private int? _lastFirmwareSig;
 
     private readonly FeatureGates _gates;
+    private readonly LightingFrameCap? _cap;
+    // The ring cards' shared ParentDeviceId, which is what LightingMaxRates is keyed by.
+    private const string CapKey = "lianli-aio";
 
-    public Galahad2LightingFrameWriter(LightingEngine engine, Galahad2Hub hub, IConfigStore store, Galahad2LightingDeviceProvider provider, FeatureGates? gates = null)
+    public Galahad2LightingFrameWriter(LightingEngine engine, Galahad2Hub hub, IConfigStore store, Galahad2LightingDeviceProvider provider, FeatureGates? gates = null, LightingFrameCap? cap = null)
     {
         _engine   = engine;
         _hub      = hub;
         _store    = store;
         _provider = provider;
         _gates    = gates ?? FeatureGates.AllEnabled;
+        _cap = cap;
     }
 
     public Task StartAsync(CancellationToken cancellationToken)
@@ -121,7 +125,7 @@ public sealed class Galahad2LightingFrameWriter : IHostedService, IDisposable
         if (ls.Mode == "canvas")
         {
             _lastFirmwareSig = null;
-            TickCanvas(brightnessRaw, zones, uncontrolled);
+            TickCanvas(brightnessRaw, zones, uncontrolled, settings);
             return;
         }
 
@@ -142,7 +146,7 @@ public sealed class Galahad2LightingFrameWriter : IHostedService, IDisposable
         _lastFirmwareSig = sig;
     }
 
-    private void TickCanvas(byte brightnessRaw, System.Collections.Generic.IReadOnlyList<ResolvedZone> zones, System.Collections.Generic.IReadOnlyList<string> uncontrolled)
+    private void TickCanvas(byte brightnessRaw, System.Collections.Generic.IReadOnlyList<ResolvedZone> zones, System.Collections.Generic.IReadOnlyList<string> uncontrolled, NexusSettings settings)
     {
         var devices = _engine.Devices;
         byte innerR = 0, innerG = 0, innerB = 0;
@@ -175,6 +179,9 @@ public sealed class Galahad2LightingFrameWriter : IHostedService, IDisposable
         {
             return;
         }
+
+        // After the dedupe above, so an unchanged colour never spends the pass and a held one is re-offered next tick.
+        if (_cap is not null && !_cap.TryWrite(CapKey, 0, settings)) return;
 
         // One R_BOTH (ring=2) packet: slot0=inner, slot1=outer. Matches OpenRGB SetMode_StaticColor.
         var bothColors = new byte[] { innerR, innerG, innerB, outerR, outerG, outerB };

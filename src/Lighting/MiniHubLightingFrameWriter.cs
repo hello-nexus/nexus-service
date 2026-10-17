@@ -33,6 +33,7 @@ public sealed class MiniHubLightingFrameWriter : IHostedService, IDisposable
     private readonly MiniHubColor[]?[] _portBuffers = new MiniHubColor[MiniHubProtocol.LedPortCount][];
 
     private readonly FeatureGates _gates;
+    private readonly LightingFrameCap? _cap;
 
     // Last resolved zones per chainable port, keyed by port id. Resolve reads
     // ZonePartitions/PortChains/ZoneLedCounts lock-free while routes mutate
@@ -40,8 +41,9 @@ public sealed class MiniHubLightingFrameWriter : IHostedService, IDisposable
     // back to last tick's zones rather than dropping the frame.
     private readonly System.Collections.Generic.Dictionary<string, System.Collections.Generic.IReadOnlyList<ResolvedZone>> _zoneCache = new();
 
-    public MiniHubLightingFrameWriter(LightingEngine engine, MiniHubHub hub, IConfigStore store, Np50IdentifyTracker identify, FeatureGates? gates = null)
+    public MiniHubLightingFrameWriter(LightingEngine engine, MiniHubHub hub, IConfigStore store, Np50IdentifyTracker identify, FeatureGates? gates = null, LightingFrameCap? cap = null)
     {
+        _cap = cap;
         _engine = engine; _hub = hub; _store = store; _identify = identify;
         _gates = gates ?? FeatureGates.AllEnabled;
     }
@@ -117,6 +119,8 @@ public sealed class MiniHubLightingFrameWriter : IHostedService, IDisposable
         // MiniHubProtocol.BuildLightingStream, so each WriteLighting call
         // emits exactly 307 bytes (channel 4) or 157 bytes (channels 1-3)
         // regardless of how many LEDs the user has wired.
+        if (_cap is not null && !_cap.TryWrite(hubId, 0, settings)) return;
+
         TryPushZone(devices, $"{hubId}:port1", channel: 1, disabled, uncontrolled, prefs, globalBrightness, nowTicks);
         TryPushZone(devices, $"{hubId}:port2", channel: 2, disabled, uncontrolled, prefs, globalBrightness, nowTicks);
         PushPort(devices, port3Zones, channel: 3, disabled, uncontrolled, prefs, globalBrightness, nowTicks);

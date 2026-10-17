@@ -78,7 +78,7 @@ public sealed class Slv3LightingFrameWriter : IHostedService, IDisposable
 
     public Slv3LightingFrameWriter(
         LightingEngine engine, Slv3Hub hub, IConfigStore store, Np50IdentifyTracker identify, Slv3LightingDeviceProvider provider,
-        Func<long>? nowTicks = null, FeatureGates? gates = null)
+        Func<long>? nowTicks = null, FeatureGates? gates = null, LightingFrameCap? cap = null)
     {
         _engine = engine;
         _hub = hub;
@@ -87,10 +87,12 @@ public sealed class Slv3LightingFrameWriter : IHostedService, IDisposable
         _provider = provider;
         _nowTicks = nowTicks ?? (() => DateTime.UtcNow.Ticks);
         _gates = gates ?? FeatureGates.AllEnabled;
+        _cap = cap;
     }
 
     private readonly Func<long> _nowTicks;
     private readonly FeatureGates _gates;
+    private readonly LightingFrameCap? _cap;
 
     public Task StartAsync(CancellationToken cancellationToken)
     {
@@ -168,6 +170,10 @@ public sealed class Slv3LightingFrameWriter : IHostedService, IDisposable
         var liveMacs = new HashSet<string>(structures.Count);
 
         var minPushIntervalMs = MinPushIntervalMs * Math.Max(1, structures.Count);
+        // One user cap covers every chain (the cards share a parent). A capped group streams live frames,
+        // which the cap can pace; rendered-ahead windows play on the fan at a rate the host cannot throttle.
+        var capped = _cap is not null && _cap.IsCapped(Slv3LightingDeviceProvider.GroupId, settings);
+        var capTick = new FrameCapTick(_cap, Slv3LightingDeviceProvider.GroupId, 0, settings);
         var nowMs = UtcNowMs();
         AdvanceSharedWindow(nowMs);
         _rollingIds.Clear();
@@ -202,7 +208,7 @@ public sealed class Slv3LightingFrameWriter : IHostedService, IDisposable
                 continue;
             }
 
-            if (TickRolling(macHex, structure, zones, disabled, uncontrolled, prefs, globalBrightness, nowTicks, nowMs))
+            if (TickRolling(macHex, structure, zones, disabled, uncontrolled, prefs, globalBrightness, nowTicks, nowMs, capped))
             {
                 continue;
             }
@@ -233,6 +239,13 @@ public sealed class Slv3LightingFrameWriter : IHostedService, IDisposable
             }
 
             if (sinceLastPushMs < minPushIntervalMs)
+            {
+                continue;
+            }
+
+            // After every dedupe and floor so a chain with nothing to send never spends the pass.
+            // A drift re-send of an unchanged frame is recovery traffic and is never throttled.
+            if (last.Hash != hash && !capTick.Allow())
             {
                 continue;
             }
@@ -513,7 +526,7 @@ public sealed class Slv3LightingFrameWriter : IHostedService, IDisposable
     private bool TickRolling(
         string macHex, DeviceStructure structure, IReadOnlyList<ResolvedZone> zones,
         List<string> disabled, List<string> uncontrolled, Dictionary<string, LightingDevicePreference> prefs,
-        float globalBrightness, long nowTicks, double nowMs)
+        float globalBrightness, long nowTicks, double nowMs, bool capped)
     {
         if (!_rolling.TryGetValue(macHex, out var st))
         {
@@ -539,7 +552,7 @@ public sealed class Slv3LightingFrameWriter : IHostedService, IDisposable
             st.StateSig = sig;
             st.LiveUntilMs = nowMs + StateSettleMs;
         }
-        if (nowMs < st.LiveUntilMs || !_engine.CanRenderAhead(ids))
+        if (capped || nowMs < st.LiveUntilMs || !_engine.CanRenderAhead(ids))
         {
             st.WindowFirstFrame = long.MinValue;
             return false;

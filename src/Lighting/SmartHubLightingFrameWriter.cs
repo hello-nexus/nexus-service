@@ -33,11 +33,13 @@ public sealed class SmartHubLightingFrameWriter : IHostedService, IDisposable
     private readonly SmartHubColor[]?[] _portBuffers = new SmartHubColor[SmartHubProtocol.ArgbPortCount][];
 
     private readonly FeatureGates _gates;
+    private readonly LightingFrameCap? _cap;
 
-    public SmartHubLightingFrameWriter(LightingEngine engine, SmartHubHub hub, IConfigStore store, Np50IdentifyTracker identify, FeatureGates? gates = null)
+    public SmartHubLightingFrameWriter(LightingEngine engine, SmartHubHub hub, IConfigStore store, Np50IdentifyTracker identify, FeatureGates? gates = null, LightingFrameCap? cap = null)
     {
         _engine = engine; _hub = hub; _store = store; _identify = identify;
         _gates = gates ?? FeatureGates.AllEnabled;
+        _cap = cap;
     }
 
     public Task StartAsync(CancellationToken cancellationToken)
@@ -127,6 +129,7 @@ public sealed class SmartHubLightingFrameWriter : IHostedService, IDisposable
         // Push every port every tick - even ports with zero declared LEDs get
         // a zero-length frame, which the hub honours by keeping the strip dark
         // and stops it falling back to the firmware animation.
+        if (_cap is not null && !_cap.TryWrite(hubId, 0, settings)) return;
         for (var channel = 1; channel <= SmartHubProtocol.ArgbPortCount; channel++)
         {
             PushPort(devices, _portZones[channel - 1]!, channel, disabled, uncontrolled, prefs, globalBrightness, nowTicks);

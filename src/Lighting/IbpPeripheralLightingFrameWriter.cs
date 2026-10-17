@@ -31,6 +31,7 @@ public sealed class IbpPeripheralLightingFrameWriter : IHostedService, IDisposab
     private readonly IConfigStore _store;
     private readonly Np50IdentifyTracker _identify;
     private readonly FeatureGates _gates;
+    private readonly LightingFrameCap? _cap;
     private CancellationTokenSource? _cts;
     private Task? _loop;
     private bool _wasStreaming;
@@ -38,8 +39,9 @@ public sealed class IbpPeripheralLightingFrameWriter : IHostedService, IDisposab
     // Per-unit segment buffers, keyed by device id; pruned when a unit leaves.
     private readonly Dictionary<string, RgbColor[][]> _buffers = new();
 
-    public IbpPeripheralLightingFrameWriter(LightingEngine engine, IbpPeripheralHub hub, IConfigStore store, Np50IdentifyTracker identify, FeatureGates? gates = null)
+    public IbpPeripheralLightingFrameWriter(LightingEngine engine, IbpPeripheralHub hub, IConfigStore store, Np50IdentifyTracker identify, FeatureGates? gates = null, LightingFrameCap? cap = null)
     {
+        _cap = cap;
         _engine = engine;
         _hub = hub;
         _store = store;
@@ -140,7 +142,8 @@ public sealed class IbpPeripheralLightingFrameWriter : IHostedService, IDisposab
 
             var touched = SegmentFrameComposer.Compose(
                 structure, zones, devices, disabled, uncontrolled, prefs, globalBrightness, 1.0, nowTicks, _identify, buffers);
-            if (touched[IbpPeripheralLightingDeviceProvider.LedsSegment])
+            if (touched[IbpPeripheralLightingDeviceProvider.LedsSegment]
+                && (_cap is null || _cap.TryWrite(unit.DeviceId, unit.Model.MaxFrameRateHz, settings)))
             {
                 _hub.WriteFrame(unit.DeviceId, buffers[IbpPeripheralLightingDeviceProvider.LedsSegment]);
             }

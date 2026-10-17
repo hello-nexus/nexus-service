@@ -47,13 +47,15 @@ public sealed class Np50LightingFrameWriter : IHostedService, IDisposable
     private CancellationTokenSource? _cts;
     private Task? _loop;
     private readonly FeatureGates _gates;
+    private readonly LightingFrameCap? _cap;
 
     // Per-port pending buffers, allocated lazily on first write so we don't
     // hold storage for empty ports.
     private readonly RgbColor[]?[] _portBuffers = new RgbColor[Np50Protocol.PortCount][];
 
-    public Np50LightingFrameWriter(LightingEngine engine, Np50Hub hub, IConfigStore store, Np50IdentifyTracker identify, FeatureGates? gates = null)
+    public Np50LightingFrameWriter(LightingEngine engine, Np50Hub hub, IConfigStore store, Np50IdentifyTracker identify, FeatureGates? gates = null, LightingFrameCap? cap = null)
     {
+        _cap = cap;
         _engine = engine;
         _hub = hub;
         _store = store;
@@ -146,6 +148,9 @@ public sealed class Np50LightingFrameWriter : IHostedService, IDisposable
         // Every zone uncontrolled: leave the hub alone entirely so firmware /
         // vendor lighting can take over. No port writes at all this tick.
         if (anyNp50Frame && hubFullyUncontrolled) return;
+
+        // The whole port cycle is one unit: a skipped tick skips every port.
+        if (anyNp50Frame && _cap is not null && !_cap.TryWrite(_hub.DeviceId, 0, settings)) return;
 
         // Always emit the full 4-port cycle (HYTE's CoolingHubBaseController.SendToHardware
         // iterates devicePort 0..3 regardless of which channels are populated).

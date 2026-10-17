@@ -57,9 +57,11 @@ public sealed class KeebLightingFrameWriter : IHostedService, IDisposable
     private RgbColor[][] _segmentBuffers = Array.Empty<RgbColor[]>();
 
     private readonly FeatureGates _gates;
+    private readonly LightingFrameCap? _cap;
 
-    public KeebLightingFrameWriter(LightingEngine engine, KeebHub hub, IConfigStore store, Np50IdentifyTracker identify, KeebSettingsApplier applier, Nexus.Service.Lighting.KeyReactive.KeyReactiveOverlay keyReactive, FeatureGates? gates = null)
+    public KeebLightingFrameWriter(LightingEngine engine, KeebHub hub, IConfigStore store, Np50IdentifyTracker identify, KeebSettingsApplier applier, Nexus.Service.Lighting.KeyReactive.KeyReactiveOverlay keyReactive, FeatureGates? gates = null, LightingFrameCap? cap = null)
     {
+        _cap = cap;
         _engine = engine;
         _hub = hub;
         _store = store;
@@ -223,13 +225,24 @@ public sealed class KeebLightingFrameWriter : IHostedService, IDisposable
         // segment simply isn't written this tick. Checked against the live
         // resolved zones (not the default card ids) so a custom partition's
         // zone ids still gate the write correctly.
-        if (touched[KeebZoneSupport.KeysSegment]
-            && !Nexus.Service.Lighting.Zones.ZoneResolution.IsSegmentFullyUncontrolled(zones, KeebZoneSupport.KeysSegment, uncontrolled))
+        var writeKeys = touched[KeebZoneSupport.KeysSegment]
+            && !Nexus.Service.Lighting.Zones.ZoneResolution.IsSegmentFullyUncontrolled(zones, KeebZoneSupport.KeysSegment, uncontrolled);
+        var writeUnderglow = touched[KeebZoneSupport.UnderglowSegment]
+            && !Nexus.Service.Lighting.Zones.ZoneResolution.IsSegmentFullyUncontrolled(zones, KeebZoneSupport.UnderglowSegment, uncontrolled);
+        if (!writeKeys && !writeUnderglow)
+        {
+            return;
+        }
+        // One decision per tick for the whole board so both segments step together.
+        if (_cap is not null && !_cap.TryWrite(hubId, 0, settings))
+        {
+            return;
+        }
+        if (writeKeys)
         {
             _hub.WriteKeyboard(_segmentBuffers[KeebZoneSupport.KeysSegment]);
         }
-        if (touched[KeebZoneSupport.UnderglowSegment]
-            && !Nexus.Service.Lighting.Zones.ZoneResolution.IsSegmentFullyUncontrolled(zones, KeebZoneSupport.UnderglowSegment, uncontrolled))
+        if (writeUnderglow)
         {
             _hub.WriteSurround(_segmentBuffers[KeebZoneSupport.UnderglowSegment]);
         }

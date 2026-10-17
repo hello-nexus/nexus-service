@@ -47,11 +47,13 @@ public sealed class CnvsLightingFrameWriter : IHostedService, IDisposable
     private bool _fwAnimSilenced;
 
     private readonly FeatureGates _gates;
+    private readonly LightingFrameCap? _cap;
 
-    public CnvsLightingFrameWriter(LightingEngine engine, CnvsHub hub, IConfigStore store, Np50IdentifyTracker identify, FeatureGates? gates = null)
+    public CnvsLightingFrameWriter(LightingEngine engine, CnvsHub hub, IConfigStore store, Np50IdentifyTracker identify, FeatureGates? gates = null, LightingFrameCap? cap = null)
     {
         _engine = engine; _hub = hub; _store = store; _identify = identify;
         _gates = gates ?? FeatureGates.AllEnabled;
+        _cap = cap;
     }
 
     public Task StartAsync(CancellationToken cancellationToken)
@@ -175,11 +177,13 @@ public sealed class CnvsLightingFrameWriter : IHostedService, IDisposable
         // owned by us, no firmware residue.
         for (var i = ledCount; i < CnvsHub.LedCount; i++) dst[i] = default;
 
+        if (_cap is not null && !_cap.TryWrite(_hub.DeviceId, 0, settings)) return;
         _hub.WriteLighting(new ReadOnlySpan<CnvsColor>(dst, 0, CnvsHub.LedCount));
     }
 
     private void PushBlank()
     {
+        if (_cap is not null && !_cap.TryWrite(_hub.DeviceId)) return;
         EnsureCapacity(CnvsHub.LedCount);
         var dst = _buffer!;
         for (var i = 0; i < CnvsHub.LedCount; i++) dst[i] = default;

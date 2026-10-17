@@ -47,15 +47,17 @@ public sealed class CorsairLinkLightingFrameWriter : IHostedService, IDisposable
     private readonly List<CorsairLinkDevice> _wireOrder = new();
 
     private readonly FeatureGates _gates;
+    private readonly LightingFrameCap? _cap;
 
     public CorsairLinkLightingFrameWriter(
-        LightingEngine engine, CorsairLinkHubs hubs, IConfigStore store, Np50IdentifyTracker identify, FeatureGates? gates = null)
+        LightingEngine engine, CorsairLinkHubs hubs, IConfigStore store, Np50IdentifyTracker identify, FeatureGates? gates = null, LightingFrameCap? cap = null)
     {
         _engine = engine;
         _hubs = hubs;
         _store = store;
         _identify = identify;
         _gates = gates ?? FeatureGates.AllEnabled;
+        _cap = cap;
     }
 
     public Task StartAsync(CancellationToken cancellationToken)
@@ -178,6 +180,7 @@ public sealed class CorsairLinkLightingFrameWriter : IHostedService, IDisposable
             }
         }
 
+        if (_cap is not null && !_cap.TryWrite(hub.DeviceId, 0, settings)) return;
         hub.SendColors(new ReadOnlySpan<byte>(_wireBuf, 0, wireOffset));
     }
 

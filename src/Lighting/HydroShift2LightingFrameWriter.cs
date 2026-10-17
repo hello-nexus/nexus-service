@@ -46,6 +46,7 @@ public sealed class HydroShift2LightingFrameWriter : BackgroundService
     private readonly IConfigStore _store;
     private readonly Np50IdentifyTracker _identify;
     private readonly FeatureGates _gates;
+    private readonly LightingFrameCap? _cap;
     private readonly byte[] _ring = new byte[HydroShift2Protocol.RingLedCount * 3];
     private string? _effectSignature;
     private AheadRequest? _loopRequest;
@@ -53,13 +54,14 @@ public sealed class HydroShift2LightingFrameWriter : BackgroundService
     private string? _loopContext;
 
     public HydroShift2LightingFrameWriter(
-        LightingEngine engine, HydroShift2Aio aio, IConfigStore store, Np50IdentifyTracker identify, FeatureGates? gates = null)
+        LightingEngine engine, HydroShift2Aio aio, IConfigStore store, Np50IdentifyTracker identify, FeatureGates? gates = null, LightingFrameCap? cap = null)
     {
         _engine = engine;
         _aio = aio;
         _store = store;
         _identify = identify;
         _gates = gates ?? FeatureGates.AllEnabled;
+        _cap = cap;
     }
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
@@ -147,6 +149,8 @@ public sealed class HydroShift2LightingFrameWriter : BackgroundService
         {
             ToRing(settings, id, frame.LedBytes, _ring);
         }
+        // Per-frame streaming only: the rendered-ahead loop and firmware effects are one-shot uploads and never gated.
+        if (_cap is not null && !_cap.TryWrite(HydroShift2LcdDriver.Id, 0, settings)) return;
         _aio.SetRing(_ring);
     }
 

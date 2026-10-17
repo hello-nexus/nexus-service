@@ -32,14 +32,16 @@ public sealed class HydroShiftLcdLightingFrameWriter : BackgroundService
     private readonly IConfigStore _store;
     private readonly Np50IdentifyTracker _identify;
     private readonly FeatureGates _gates;
+    private readonly LightingFrameCap? _cap;
     private readonly byte[] _payload = new byte[LedBytes];
     private readonly byte[] _last = new byte[LedBytes];
     private long _lastSentMs = long.MinValue / 2;
     private bool _haveLast;
 
     public HydroShiftLcdLightingFrameWriter(
-        LightingEngine engine, HydroShiftFanLeds leds, IConfigStore store, Np50IdentifyTracker identify, FeatureGates? gates = null)
+        LightingEngine engine, HydroShiftFanLeds leds, IConfigStore store, Np50IdentifyTracker identify, FeatureGates? gates = null, LightingFrameCap? cap = null)
     {
+        _cap = cap;
         _engine = engine;
         _leds = leds;
         _store = store;
@@ -114,7 +116,13 @@ public sealed class HydroShiftLcdLightingFrameWriter : BackgroundService
                 _payload[i + 2] = b;
             }
         }
-        if (_haveLast && nowMs - _lastSentMs < ReassertMs && _payload.AsSpan().SequenceEqual(_last))
+        var unchanged = _haveLast && _payload.AsSpan().SequenceEqual(_last);
+        if (unchanged && nowMs - _lastSentMs < ReassertMs)
+        {
+            return;
+        }
+        // Only a changed frame is held back; the slow reassert of an unchanged one is the heal for a dropped write.
+        if (!unchanged && _cap is not null && !_cap.TryWrite(HydroShiftLcdLightingProvider.DeviceId, 0, settings))
         {
             return;
         }
