@@ -615,6 +615,13 @@ public sealed class XeneonEdgeOrientationWorkerTests
 
         await WaitForOrientationCalls(f.Orientation, 2);
         Assert.Equal(DisplayOrientations.Portrait, f.Orientation.Calls[1].Orientation);
+        // The provider call returns before the worker records the result on the registry.
+        var deadline = DateTime.UtcNow.AddSeconds(5);
+        while (f.Registry.FindByDisplayId(DisplayId)!.Capabilities!.Orientation != DisplayOrientations.Portrait
+            && DateTime.UtcNow < deadline)
+        {
+            await Task.Delay(5);
+        }
         Assert.Equal(DisplayOrientations.Portrait, f.Registry.FindByDisplayId(DisplayId)!.Capabilities!.Orientation);
     }
 

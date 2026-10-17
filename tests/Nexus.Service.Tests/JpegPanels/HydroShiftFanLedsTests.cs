@@ -172,22 +172,27 @@ public class HydroShiftFanLedsTests
         var jpeg = new byte[1013 * 6];
         Array.Fill(jpeg, (byte)0xAB);
         var done = false;
+        using var writerStarted = new ManualResetEventSlim();
 
-        var frames = Task.Run(() =>
+        // The writer must be running before the first frame, else a starved thread pool lets
+        // all frames finish first and the interleaving this test checks never happens.
+        var frames = Task.Factory.StartNew(() =>
         {
+            writerStarted.Wait();
             for (int i = 0; i < 200; i++)
             {
                 hub.SendFrame(jpeg);
             }
             Volatile.Write(ref done, true);
-        });
-        var lighting = Task.Run(() =>
+        }, TaskCreationOptions.LongRunning);
+        var lighting = Task.Factory.StartNew(() =>
         {
             while (!Volatile.Read(ref done))
             {
                 leds.Write(Colors());
+                writerStarted.Set();
             }
-        });
+        }, TaskCreationOptions.LongRunning);
         await Task.WhenAll(frames, lighting);
 
         var writes = device.Snapshot();

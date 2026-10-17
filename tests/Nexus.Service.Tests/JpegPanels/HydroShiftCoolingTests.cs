@@ -360,16 +360,20 @@ public class HydroShiftCoolingTests
         var jpeg = new byte[1013 * 6];
         Array.Fill(jpeg, (byte)0xAB);
         var done = false;
+        using var writerStarted = new ManualResetEventSlim();
 
-        var frames = Task.Run(() =>
+        // The writer must be running before the first frame, else a starved thread pool lets
+        // all frames finish first and the interleaving this test checks never happens.
+        var frames = Task.Factory.StartNew(() =>
         {
+            writerStarted.Wait();
             for (int i = 0; i < 200; i++)
             {
                 rig.Hub.SendFrame(jpeg);
             }
             Volatile.Write(ref done, true);
-        });
-        var cooling = Task.Run(() =>
+        }, TaskCreationOptions.LongRunning);
+        var cooling = Task.Factory.StartNew(() =>
         {
             int n = 0;
             while (!Volatile.Read(ref done))
@@ -377,8 +381,9 @@ public class HydroShiftCoolingTests
                 rig.Aio.SetPumpDuty(10 + (n % 80));
                 rig.Aio.SetFanDuty(10 + (n % 80));
                 n++;
+                writerStarted.Set();
             }
-        });
+        }, TaskCreationOptions.LongRunning);
         await Task.WhenAll(frames, cooling);
 
         int expectedChunk = 0;

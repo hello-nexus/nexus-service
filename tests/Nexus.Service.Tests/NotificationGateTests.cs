@@ -5,6 +5,11 @@ using Xunit;
 
 namespace Nexus.Service.Tests;
 
+// Other tests (onboarding and focus mode routes) drive the same static gate, so this
+// collection runs with nothing else in flight.
+[CollectionDefinition("NotificationGate", DisableParallelization = true)]
+public class NotificationGateCollection;
+
 [Collection("NotificationGate")]
 public class NotificationGateTests
 {
