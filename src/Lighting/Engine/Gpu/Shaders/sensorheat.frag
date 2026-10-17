@@ -20,6 +20,7 @@ uniform float u_col_low; // hint_range(0.0, 0.95, 0.01) = 0.95
 uniform float u_col_low_m; // hint_range(-1.0, 1.0, 0.01) = -1.0
 uniform float u_col_low_s; // sensor {"category":"quick","sensor":"summary/cpu-temp","min":30,"max":90}
 uniform float u_col_shade; // hint_range(0.0, 1.0, 0.01) = 0.0
+uniform float u_col_reverse; // hint_range(0.0, 1.0, 1.0) = 0.0
 vec2 uvCentered() {
   vec2 u = gl_FragCoord.xy / u_resolution;
   u.y = 1.0 - u.y;
@@ -51,6 +52,7 @@ void main() {
     v = f; }
   {
     float k = fieldPos >= 0.0 ? clamp(fieldPos, 0.0, 1.0) : clamp((v - (clamp(u_col_low + u_col_low_m * 0.95 * u_col_low_s, 0.0, 0.95))) / (1.0 - (clamp(u_col_low + u_col_low_m * 0.95 * u_col_low_s, 0.0, 0.95))), 0.0, 1.0);
+    if ((u_col_reverse) > 0.5) k = 1.0 - k;
     float span = 1.0 - clamp(u_colorize + S_COLORIZE, 0.0, 1.0);
     col = hsv2rgb(vec3(hue + (0.5 - k) * span, 1.0, 1.0)) * mix(1.0, v, (u_col_shade));
   }
