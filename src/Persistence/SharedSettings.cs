@@ -156,6 +156,7 @@ public sealed class Preferences
     public DiagnosticsSettings Diagnostics { get; set; } = new();
     public int StartupDelaySeconds { get; set; }
     public bool DisableGpuMonitoring { get; set; }
+    public bool ReadRamTemperatures { get; set; } = true;
     public FeaturesSettings Features { get; set; } = new();
 }
 
@@ -284,6 +285,7 @@ public sealed class PreferencesPatch
     public DiagnosticsSettingsPatch? Diagnostics { get; set; }
     public int? StartupDelaySeconds { get; set; }
     public bool? DisableGpuMonitoring { get; set; }
+    public bool? ReadRamTemperatures { get; set; }
     public FeaturesSettingsPatch? Features { get; set; }
 }
 

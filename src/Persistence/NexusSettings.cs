@@ -100,6 +100,9 @@ public sealed class NexusSettings
     /// NOT profile-scoped: workstation-level.</summary>
     public bool DisableGpuMonitoring { get; set; }
 
+    /// <summary>False stops LHM from reading DIMM SPD temperatures, independent of the memory device's Nexus Control toggle. Applies live. NOT profile-scoped: workstation-level.</summary>
+    public bool ReadRamTemperatures { get; set; } = true;
+
     /// <summary>True once the desktop first-run welcome screen has been shown and
     /// dismissed. Install-scoped, not cloud profile synced: excluded from
     /// <see cref="Nexus.Service.Persistence.ProfileManager"/>'s CloneSettings
