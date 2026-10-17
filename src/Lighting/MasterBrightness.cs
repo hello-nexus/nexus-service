@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using Nexus.Service.Lighting.IdleDim;
+using Nexus.Service.Lighting.Sun;
 using Nexus.Service.Persistence;
 
 namespace Nexus.Service.Lighting;
@@ -19,7 +20,40 @@ public static class MasterBrightness
 
     /// <summary>Effective master level, 0..1, for the local clock right now.</summary>
     public static float Effective(LightingSettings lighting) =>
-        Effective(lighting, DateTime.Now.TimeOfDay, IdleRamp.Cap());
+        Effective(lighting, DateTime.Now, IdleRamp.Cap());
+
+    /// <summary>Effective master level at <paramref name="localNow"/>. With the
+    /// schedule's sun shift on and today's sun times known, the generated daylight
+    /// curve replaces the user's points; otherwise the user's curve applies.</summary>
+    public static float Effective(LightingSettings lighting, DateTime localNow, float idleCap = 1f)
+    {
+        var global = Math.Min(Math.Clamp(lighting.GlobalBrightness, 0f, 1f), idleCap);
+        var schedule = lighting.BrightnessSchedule;
+        if (schedule is null || !schedule.Enabled)
+        {
+            return global;
+        }
+        if (schedule.SunShift
+            && SunShift.PlanFor(SunShift.Effective(schedule), DateOnly.FromDateTime(localNow)) is { Day.Status: SunStatus.Ok } plan)
+        {
+            return Math.Min(global, ScheduledSun(plan, localNow.TimeOfDay));
+        }
+        return Math.Min(global, Scheduled(schedule.Points, localNow.TimeOfDay));
+    }
+
+    /// <summary>The generated sun curve's level, 0..1, at <paramref name="timeOfDay"/>,
+    /// read from the plan's cached points.</summary>
+    public static float ScheduledSun(SunPlan plan, TimeSpan timeOfDay)
+    {
+        var minute = ((int)timeOfDay.TotalMinutes % MinutesPerDay + MinutesPerDay) % MinutesPerDay;
+        Span<double> xs = stackalloc double[plan.Minutes.Length];
+        for (var i = 0; i < xs.Length; i++)
+        {
+            xs[i] = plan.Minutes[i] / 60.0;
+        }
+        var level = CurveEasing.Interpolate(xs, plan.Levels, minute / 60.0, smooth: false, wrapMin: 0, wrapSpan: HoursPerDay);
+        return (float)Math.Clamp(level / 100.0, 0.0, 1.0);
+    }
 
     /// <summary>Effective master level, 0..1, at <paramref name="timeOfDay"/>.
     /// The slider is clamped, not sanitised: a non-finite level propagates,

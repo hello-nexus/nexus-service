@@ -92,6 +92,11 @@ public class NexusAppFactory : WebApplicationFactory<Program>
             // timing nondeterminism - so strip them all.
             services.RemoveAll<IHostedService>();
 
+            // The IP location lookup would otherwise reach the network from a route.
+            services.RemoveAll<Nexus.Service.Platform.Weather.IWeatherProvider>();
+            services.AddSingleton<FakeWeatherProvider>();
+            services.AddSingleton<Nexus.Service.Platform.Weather.IWeatherProvider>(sp => sp.GetRequiredService<FakeWeatherProvider>());
+
             // Isolate config (the auth token + all settings) to a per-factory
             // temp file so integration tests never read or mutate the
             // developer's real settings.json.
