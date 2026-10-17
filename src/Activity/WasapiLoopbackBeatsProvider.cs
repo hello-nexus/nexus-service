@@ -44,6 +44,8 @@ public sealed class WasapiLoopbackBeatsProvider : IBeatsProvider
 
     public void Start()
     {
+        CancellationTokenSource cts;
+        CancellationToken token;
         lock (_lock)
         {
             if (_running)
@@ -52,16 +54,10 @@ public sealed class WasapiLoopbackBeatsProvider : IBeatsProvider
             }
 
             _running = true;
-            _cts = new CancellationTokenSource();
-        }
-
-        CancellationTokenSource cts;
-        CancellationToken token;
-        lock (_lock)
-        {
-            cts = _cts!;
+            cts = _cts = new CancellationTokenSource();
             token = cts.Token;
         }
+
         try
         {
             // Dedicated thread so the WASAPI COM objects are accessed from a
