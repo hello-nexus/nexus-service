@@ -33,7 +33,8 @@ public interface IDisplayOrientationProvider
 
 public sealed class NoopDisplayOrientationProvider : IDisplayOrientationProvider
 {
-    public (bool Ok, string Error) SetY70Orientation(string orientation) => (true, "");
+    public (bool Ok, string Error) SetY70Orientation(string orientation)
+        => (false, "display rotation is not supported on this platform");
     public (bool Ok, string Error) SetDisplayOrientation(string displayId, string orientation, string coverColorHex)
         => (false, "display rotation is not supported on this platform");
 }
