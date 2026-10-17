@@ -111,7 +111,12 @@ public sealed class KeebLightingFrameWriter : IHostedService, IDisposable
     private void Tick()
     {
         if (!_gates.Lighting) return;
-        if (!_hub.IsConnected) return;
+        if (!_hub.IsConnected)
+        {
+            // A new connection starts from a clean schedule, so its first frame is not held.
+            _cap?.Reset(_hub.DeviceId);
+            return;
+        }
 
         var settings = _store.Load();
         var hubId = _hub.DeviceId;

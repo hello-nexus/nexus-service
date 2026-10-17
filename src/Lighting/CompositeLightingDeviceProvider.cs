@@ -152,7 +152,7 @@ public sealed class CompositeLightingDeviceProvider : ILightingDeviceProvider
 
     /// <summary>
     /// OpenRGB cards set the cap flag themselves. Every first-party LED writer consults the same cap, keyed by the
-    /// owning device (the card's ParentDeviceId, else its id); LCD content and network lamps are left without one.
+    /// owning device (the card's ParentDeviceId, else its id); the Galahad II LCD, the TL controller and network lamps are left without one.
     /// </summary>
     internal static void MarkRateCap(LightingDevice dev, IReadOnlySet<string> uncappable, IReadOnlyDictionary<string, int> maxRates)
     {

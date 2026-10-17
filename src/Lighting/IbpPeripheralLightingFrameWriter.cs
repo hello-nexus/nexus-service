@@ -94,6 +94,10 @@ public sealed class IbpPeripheralLightingFrameWriter : IHostedService, IDisposab
         if (attached.Count == 0)
         {
             _wasStreaming = false;
+            if (_cap is not null)
+            {
+                foreach (var gone in _buffers.Keys) _cap.Reset(gone);
+            }
             if (_buffers.Count > 0) _buffers.Clear();
             return;
         }
@@ -107,6 +111,10 @@ public sealed class IbpPeripheralLightingFrameWriter : IHostedService, IDisposab
             {
                 _wasStreaming = false;
                 _hub.ReleaseAllToFirmware();
+                if (_cap is not null)
+                {
+                    foreach (var unit in attached) _cap.Reset(unit.DeviceId);
+                }
             }
             return;
         }
@@ -161,7 +169,11 @@ public sealed class IbpPeripheralLightingFrameWriter : IHostedService, IDisposab
                 }
                 if (!live) stale.Add(key);
             }
-            foreach (var key in stale) _buffers.Remove(key);
+            foreach (var key in stale)
+            {
+                _buffers.Remove(key);
+                _cap?.Reset(key);
+            }
         }
     }
 }

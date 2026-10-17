@@ -96,6 +96,7 @@ public sealed class CnvsLightingFrameWriter : IHostedService, IDisposable
         if (!_gates.Lighting) return;
         if (!_hub.IsConnected)
         {
+            _cap?.Reset(_hub.DeviceId);
             _fwAnimSilenced = false;
             _lastConnectedSerial = "";
             return;
@@ -181,9 +182,9 @@ public sealed class CnvsLightingFrameWriter : IHostedService, IDisposable
         _hub.WriteLighting(new ReadOnlySpan<CnvsColor>(dst, 0, CnvsHub.LedCount));
     }
 
+    // A constant black frame keeps the mat owned and has nothing to pace, so the cap never holds it.
     private void PushBlank()
     {
-        if (_cap is not null && !_cap.TryWrite(_hub.DeviceId)) return;
         EnsureCapacity(CnvsHub.LedCount);
         var dst = _buffer!;
         for (var i = 0; i < CnvsHub.LedCount; i++) dst[i] = default;

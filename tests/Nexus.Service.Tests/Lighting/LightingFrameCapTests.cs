@@ -196,6 +196,107 @@ public class LightingFrameCapTests
     }
 
     [Fact]
+    public void A_changed_cap_starts_a_fresh_schedule()
+    {
+        var (cap, store, _, advance) = Make();
+        SetCap(store, Key, 1);
+        Assert.True(cap.TryWrite(Key));
+        advance(50);
+        Assert.False(cap.TryWrite(Key));
+
+        // Lowered: the old due time must not hold the first frame under the new cap.
+        SetCap(store, Key, 5);
+        Assert.True(cap.TryWrite(Key));
+    }
+
+    [Fact]
+    public void A_cleared_then_restored_cap_does_not_inherit_the_old_schedule()
+    {
+        var (cap, store, _, advance) = Make();
+        SetCap(store, Key, 1);
+        Assert.True(cap.TryWrite(Key));
+        store.Update(s => s.Devices.LightingMaxRates.Remove(Key));
+        Assert.True(cap.TryWrite(Key));
+        advance(10);
+        SetCap(store, Key, 1);
+        Assert.True(cap.TryWrite(Key));
+    }
+
+    [Fact]
+    public void Reset_lets_the_first_frame_of_a_new_connection_through()
+    {
+        var (cap, store, _, advance) = Make();
+        SetCap(store, Key, 1);
+        Assert.True(cap.TryWrite(Key));
+        advance(50);
+        Assert.False(cap.TryWrite(Key));
+
+        cap.Reset(Key);
+
+        Assert.True(cap.TryWrite(Key));
+    }
+
+    [Fact]
+    public void Reset_with_no_cap_in_use_is_a_no_op()
+    {
+        var (cap, _, _, _) = Make();
+        cap.Reset(Key);
+        Assert.True(cap.TryWrite(Key));
+    }
+
+    [Fact]
+    public void Held_window_times_are_untouched_when_off()
+    {
+        var ticks = new long[] { 1_000_003, 1_000_036, 1_000_069 };
+        Assert.Same(ticks, LightingFrameCap.HoldTicks(ticks, 0));
+    }
+
+    [Fact]
+    public void Held_window_times_snap_to_the_cap_grid_and_step_at_the_cap_rate()
+    {
+        // The exact window the wireless writer asks for: one render time per frame of the window.
+        var ticks = Slv3LightingFrameWriter.WindowTickTimes(0, 1.6, 1_000_000);
+        var held = LightingFrameCap.HoldTicks(ticks, 5);
+
+        Assert.Equal(ticks.Length, held.Length);
+        Assert.All(held, t => Assert.Equal(0, t % 200));
+        for (var i = 0; i < ticks.Length; i++)
+        {
+            Assert.InRange(ticks[i] - held[i], 0, 199);
+            if (i > 0)
+            {
+                Assert.True(held[i] >= held[i - 1]);
+            }
+        }
+        // 30 frames span about 0.9 s, so a 5 Hz hold shows about 5 distinct looks.
+        Assert.InRange(held.Distinct().Count(), 4, 6);
+    }
+
+    [Fact]
+    public void Consecutive_held_windows_agree_on_the_grid()
+    {
+        var a = LightingFrameCap.HoldTicks(new long[] { 1_000_150, 1_000_199 }, 5);
+        var b = LightingFrameCap.HoldTicks(new long[] { 1_000_199, 1_000_200 }, 5);
+        Assert.Equal(a[1], b[0]);
+        Assert.Equal(1_000_200, b[1]);
+    }
+
+    [Fact]
+    public void The_hydroshift_loop_times_hold_at_the_cap_rate()
+    {
+        var start = 5_000_000L;
+        var ticks = new long[HydroShift2LightingFrameWriter.LoopMatchFrames + HydroShift2LightingFrameWriter.LoopMaxFrames];
+        for (var k = 0; k < ticks.Length; k++)
+        {
+            ticks[k] = start + (long)(k * HydroShift2LightingFrameWriter.LoopIntervalTicks * Nexus.Service.Peripherals.BulkPanels.HydroShift2Protocol.RingTickMs);
+        }
+        var held = LightingFrameCap.HoldTicks(ticks, 1);
+        Assert.All(held, t => Assert.Equal(0, t % 1000));
+        Assert.True(held.Distinct().Count() < ticks.Length);
+        Assert.Same(ticks, LightingFrameCap.HoldTicks(ticks, 0));
+    }
+
+    [Fact]
     public void IsCapped_reports_only_a_positive_cap_for_the_key()
     {
         var (cap, store, _, _) = Make();

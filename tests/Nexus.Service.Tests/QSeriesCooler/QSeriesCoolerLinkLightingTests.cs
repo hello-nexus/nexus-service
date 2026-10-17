@@ -196,6 +196,53 @@ public class QSeriesCoolerLinkLightingTests
         public IReadOnlyList<QSeriesCoolerPort> Discover() => _ports;
     }
 
+    [Fact]
+    public void The_blank_keep_owned_push_is_never_held_by_a_frame_cap()
+    {
+        var hub = NewConnectedHub(out var transport);
+        var store = new InMemoryConfigStore();
+        store.Update(s => s.Devices.LightingMaxRates[hub.DeviceId] = 1);
+        long now = 1000;
+        var cap = new Nexus.Service.Lighting.LightingFrameCap(store, () => now);
+        var capped = new QSeriesLightingFrameWriter(new LightingEngine(), hub, store, new Np50IdentifyTracker(), cap: cap);
+
+        // No panel frame in the engine: every tick is the blank push that keeps the cooler owned.
+        capped.Tick();
+        capped.Tick();
+        var afterTwo = transport.Writes.Count;
+        capped.Tick();
+        var perTick = transport.Writes.Count - afterTwo;
+        Assert.True(perTick > 0);
+        for (var i = 0; i < 3; i++)
+        {
+            capped.Tick();
+        }
+
+        Assert.Equal(afterTwo + (perTick * 4), transport.Writes.Count);
+    }
+
+    [Fact]
+    public void A_real_panel_frame_is_paced_by_the_cap()
+    {
+        var hub = NewConnectedHub(out var transport);
+        var store = new InMemoryConfigStore();
+        store.Update(s => s.Devices.LightingMaxRates[hub.DeviceId] = 1);
+        long now = 1000;
+        var cap = new Nexus.Service.Lighting.LightingFrameCap(store, () => now);
+        var engine = new LightingEngine();
+        engine.UpdateDevices(new[] { new DeviceFrame(0, hub.DeviceId, QSeriesCoolerHub.LedCount) });
+        var writer = new QSeriesLightingFrameWriter(engine, hub, store, new Np50IdentifyTracker(), cap: cap);
+
+        writer.Tick();
+        var first = transport.Writes.Count;
+        Assert.True(first > 0);
+        writer.Tick();
+        Assert.Equal(first, transport.Writes.Count);
+        now += 1000;
+        writer.Tick();
+        Assert.True(transport.Writes.Count > first);
+    }
+
     private sealed class FakeTransport : INp50Transport
     {
         public readonly List<byte[]> Writes = new();

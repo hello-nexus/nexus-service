@@ -235,7 +235,7 @@ public class LightingDevice
     public int Brightness { get; set; }
     public float Hue { get; set; }
     public float Saturation { get; set; }
-    /// <summary>True when the device honors a user update-rate cap. Every LED lighting device except LCD content and network lamps.</summary>
+    /// <summary>True when the device honors a user update-rate cap. Every LED lighting device except LCD content (the Galahad II LCD), the TL controller and network lamps.</summary>
     public bool RateCapSupported { get; set; }
     /// <summary>The user's cap in updates per second. Null means no cap.</summary>
     public int? MaxRateHz { get; set; }

@@ -41,8 +41,7 @@ public sealed class StrimerLightingFrameWriter : IHostedService, IDisposable
 
     private readonly FeatureGates _gates;
     private readonly LightingFrameCap? _cap;
-    // The cards' shared ParentDeviceId, which is what LightingMaxRates is keyed by.
-    private const string CapKey = "strimer";
+    private const string CapKey = StrimerLightingDeviceProvider.GroupId;
 
     public StrimerLightingFrameWriter(
         LightingEngine engine,
@@ -106,6 +105,7 @@ public sealed class StrimerLightingFrameWriter : IHostedService, IDisposable
         if (!_gates.Lighting) return;
         if (!_hub.IsConnected)
         {
+            _cap?.Reset(CapKey);
             _lastFirmwareSig = null;
             _argbSyncSent = false;
             _argbRetryAtMs = 0;

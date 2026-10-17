@@ -82,6 +82,7 @@ public sealed class HydroShiftLcdLightingFrameWriter : BackgroundService
         if (!_gates.Lighting || !_leds.IsConnected || settings.Devices.UncontrolledLightingDevices.Contains(id))
         {
             _haveLast = false;
+            _cap?.Reset(HydroShiftLcdLightingProvider.DeviceId);
             return;
         }
         DeviceFrame? frame = null;
@@ -122,7 +123,8 @@ public sealed class HydroShiftLcdLightingFrameWriter : BackgroundService
             return;
         }
         // Only a changed frame is held back; the slow reassert of an unchanged one is the heal for a dropped write.
-        if (!unchanged && _cap is not null && !_cap.TryWrite(HydroShiftLcdLightingProvider.DeviceId, 0, settings))
+        if (!unchanged && _cap is not null && !_cap.TryWrite(HydroShiftLcdLightingProvider.DeviceId, 0, settings)
+            && nowMs - _lastSentMs < ReassertMs)
         {
             return;
         }

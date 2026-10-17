@@ -14,6 +14,9 @@ namespace Nexus.Service.Lighting;
 public sealed class StrimerLightingDeviceProvider :
     ILightingDeviceProvider, ILightingFrameContributor, IDeviceStructureSource, IOpenRgbDeviceOwner
 {
+    /// <summary>The cards' shared ParentDeviceId, which is also the frame cap key.</summary>
+    public const string GroupId = "strimer";
+
     private readonly StrimerHub _hub;
     private readonly IConfigStore _store;
     private readonly Np50IdentifyTracker _identify;
@@ -99,7 +102,7 @@ public sealed class StrimerLightingDeviceProvider :
             CanvasW           = layout?.W ?? defW,
             CanvasH           = layout?.H ?? defH,
             CanvasRotation    = ((((layout?.Rotation ?? 0) % 360) + 360) % 360),
-            ParentDeviceId    = "strimer",
+            ParentDeviceId    = GroupId,
             ZoneIndex         = zone.Ordinal,
             ZoneType          = "linear",
             ZoneResizable     = false,

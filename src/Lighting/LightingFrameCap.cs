@@ -20,6 +20,7 @@ public sealed class LightingFrameCap
     private readonly IConfigStore _store;
     private readonly Func<long> _nowMs;
     private readonly PushRateLimiter<string> _limiter = new();
+    private readonly System.Collections.Concurrent.ConcurrentDictionary<string, int> _seenHz = new();
 
     public LightingFrameCap(IConfigStore store, Func<long>? nowMs = null)
     {
@@ -53,12 +54,56 @@ public sealed class LightingFrameCap
     public bool TryWrite(string capKey, int builtInMaxHz = 0, NexusSettings? settings = null)
     {
         var rates = (settings ?? _store.Load()).Devices.LightingMaxRates;
-        if (rates.Count == 0 || !rates.TryGetValue(capKey, out var userHz))
+        if (rates.Count == 0 || !rates.TryGetValue(capKey, out var userHz) || userHz <= 0)
         {
+            // Cleared: forget the old schedule so a later cap starts fresh. Nothing is tracked while Off.
+            if (!_seenHz.IsEmpty && _seenHz.TryRemove(capKey, out _))
+            {
+                _limiter.Forget(capKey);
+            }
             return true;
+        }
+        // A changed cap starts a fresh schedule, so the first frame under it is never held by the old one.
+        if (!_seenHz.TryGetValue(capKey, out var seen) || seen != userHz)
+        {
+            _seenHz[capKey] = userHz;
+            _limiter.Forget(capKey);
         }
         var hz = EffectiveHz(userHz, builtInMaxHz);
         return hz <= 0 || _limiter.TryPass(capKey, hz, _nowMs());
+    }
+
+    /// <summary>The user's cap for <paramref name="capKey"/>, or zero when none is set.</summary>
+    public static int UserHz(string capKey, NexusSettings settings)
+        => settings.Devices.LightingMaxRates.TryGetValue(capKey, out var hz) && hz > 0 ? hz : 0;
+
+    /// <summary>
+    /// Sample-and-hold for rendered-ahead windows: each render time snaps down to the cap interval on the
+    /// shared epoch grid, so frames inside one interval show the same look and consecutive windows agree.
+    /// Returns the input untouched when <paramref name="capHz"/> is zero.
+    /// </summary>
+    public static long[] HoldTicks(long[] tickMs, int capHz)
+    {
+        if (capHz <= 0)
+        {
+            return tickMs;
+        }
+        var period = PushRateLimiter<string>.PeriodMs(capHz);
+        var held = new long[tickMs.Length];
+        for (var i = 0; i < tickMs.Length; i++)
+        {
+            held[i] = tickMs[i] - (tickMs[i] % period);
+        }
+        return held;
+    }
+
+    /// <summary>Forgets a key's pacing, so its next frame is not held by a schedule from an earlier cap or connection.</summary>
+    public void Reset(string capKey)
+    {
+        if (!_seenHz.IsEmpty)
+        {
+            _limiter.Forget(capKey);
+        }
     }
 
     /// <summary>True when the user has set a cap for <paramref name="capKey"/>.</summary>

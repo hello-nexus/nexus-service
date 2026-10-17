@@ -112,6 +112,7 @@ public sealed class CorsairLinkLightingFrameWriter : IHostedService, IDisposable
         foreach (var hub in _hubs.All)
         {
             if (hub.IsConnected) TickHub(hub, devices, settings, nowTicks);
+            else _cap?.Reset(hub.DeviceId);
         }
     }
 

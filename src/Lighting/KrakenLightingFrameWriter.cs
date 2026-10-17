@@ -106,6 +106,7 @@ public sealed class KrakenLightingFrameWriter : IHostedService, IDisposable
         if (!_gates.Lighting) return;
         if (!_hub.IsConnected)
         {
+            _cap?.Reset(KrakenHub.DeviceId);
             // Drop the de-dupe cache: after a re-attach the cooler is showing whatever its
             // firmware kept, so an unchanged payload still has to be written once.
             _lastPushed.Clear();
@@ -217,16 +218,16 @@ public sealed class KrakenLightingFrameWriter : IHostedService, IDisposable
         var unchanged = _lastPushed.TryGetValue(channelId, out var previous)
             && previous.Length == payload.Length
             && previous.AsSpan().SequenceEqual(payload);
-        if (unchanged
-            && _lastPushedAtMs.TryGetValue(channelId, out var sentAt)
-            && nowMs - sentAt < ReassertPeriodMs)
+        var haveSentAt = _lastPushedAtMs.TryGetValue(channelId, out var sentAt);
+        if (unchanged && haveSentAt && nowMs - sentAt < ReassertPeriodMs)
         {
             return;
         }
 
         // After the dedupe so an unchanged channel never spends the pass, and a held frame is re-offered next tick.
-        // The periodic re-assert of an unchanged payload is the cooler's keepalive and is never throttled.
-        if (!unchanged && !capTick.Allow())
+        // The periodic re-assert of an unchanged payload is the cooler's keepalive and is never throttled, and a
+        // changed frame is not held past that window either.
+        if (!unchanged && !capTick.Allow() && !(haveSentAt && nowMs - sentAt >= ReassertPeriodMs))
         {
             return;
         }

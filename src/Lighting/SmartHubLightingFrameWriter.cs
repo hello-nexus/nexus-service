@@ -80,7 +80,12 @@ public sealed class SmartHubLightingFrameWriter : IHostedService, IDisposable
     private void Tick()
     {
         if (!_gates.Lighting) return;
-        if (!_hub.IsConnected) return;
+        if (!_hub.IsConnected)
+        {
+            // A new connection starts from a clean schedule, so its first frame is not held.
+            _cap?.Reset(_hub.DeviceId);
+            return;
+        }
         var devices = _engine.Devices;
         if (devices.Length == 0) return;
         var settings = _store.Load();

@@ -842,4 +842,36 @@ public class LianLiLightingFrameWriterTests
         Assert.Equal(3, commits);
     }
 
+    [Fact]
+    public void A_skipped_custom_tick_hands_the_sl_infinity_pacing_slot_back()
+    {
+        Attach(0xA102, port: 0, fans: 2);
+        SetMode("custom");
+        var cap = new LightingFrameCap(_store, () => _now);
+        var writer = new LianLiLightingFrameWriter(_engine, _hub, _store, new Np50IdentifyTracker(), cap: cap);
+        writer.NowMs = () => _now;
+        _now = 10_000;
+
+        writer.Tick();
+        var first = Calls.Count;
+        Assert.True(first > 0);
+
+        _store.Update(s => s.Devices.LightingMaxRates[_hub.DeviceId] = 1);
+        Advance(100);
+        writer.Tick();
+        // Held by the cap: the first pass was spent before the cap existed, so this tick is the first under it and goes.
+        var afterFirstCapped = Calls.Count;
+
+        Advance(100);
+        writer.Tick();
+        // Now held (schedule just started), and the pacing slot must not be consumed by the skipped tick.
+        Assert.Equal(afterFirstCapped, Calls.Count);
+
+        _store.Update(s => s.Devices.LightingMaxRates.Remove(_hub.DeviceId));
+        Advance(1);
+        writer.Tick();
+
+        // Off again one millisecond later: only a handed-back slot lets the frame through the pacing floor.
+        Assert.True(Calls.Count > afterFirstCapped, "the skipped tick must not have consumed the pacing slot");
+    }
 }

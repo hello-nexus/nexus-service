@@ -96,7 +96,11 @@ public sealed class QSeriesLightingFrameWriter : IHostedService, IDisposable
     internal void Tick()
     {
         if (!_gates.Lighting) return;
-        if (!_hub.IsReadyForStreaming) return;
+        if (!_hub.IsReadyForStreaming)
+        {
+            _cap?.Reset(_hub.DeviceId);
+            return;
+        }
 
         var settings = _store.Load();
         var id = _hub.DeviceId;
@@ -145,8 +149,9 @@ public sealed class QSeriesLightingFrameWriter : IHostedService, IDisposable
         var globalBrightness = MasterBrightness.Effective(settings.Lighting);
         var nowTicks = DateTime.UtcNow.Ticks;
 
-        // Panel and both link channels are one cooler write set per tick.
-        if (_cap is not null && !_cap.TryWrite(id, 0, settings)) return;
+        // Panel and both link channels are one cooler write set per tick. Without a panel frame the tick only
+        // keeps the cooler owned with a black panel, which has nothing to pace and is never held.
+        if (panelFrame is not null && _cap is not null && !_cap.TryWrite(id, 0, settings)) return;
 
         if (panelFrame is null)
         {

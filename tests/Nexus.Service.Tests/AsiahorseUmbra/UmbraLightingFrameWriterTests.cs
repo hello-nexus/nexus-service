@@ -223,4 +223,36 @@ public class UmbraLightingFrameWriterTests
 
         Assert.DoesNotContain(_fake.Writes, IsStream);
     }
+
+    [Fact]
+    public void A_one_hertz_cap_cannot_hold_a_changed_frame_past_the_keepalive_window()
+    {
+        long now = 1000;
+        var cap = new LightingFrameCap(_store, () => now);
+        _store.Update(s => s.Devices.LightingMaxRates[AsiahorseUmbraLightingDeviceProvider.DeviceId] = 1);
+        _fake.Ports[9][0] = 6;
+        _hub.Attach(_fake);
+        Assert.True(_hub.Connect());
+        _engine.UpdateDevices(new[] { _frame });
+        var writer = new AsiahorseUmbraLightingFrameWriter(_engine, _hub, _store, cap: cap);
+        for (var i = 0; i < 6; i++)
+        {
+            Set(_frame, i, 0x10, 0x20, 0x30);
+        }
+        writer.Tick();
+        _fake.Writes.Clear();
+
+        // The cap clock never advances, so the gate keeps refusing; a changed frame is held at first.
+        for (var i = 0; i < 6; i++)
+        {
+            Set(_frame, i, 0x40, 0x50, 0x60);
+        }
+        writer.Tick();
+        Assert.DoesNotContain(_fake.Writes, IsStream);
+
+        // Real time passes the keepalive window: the frame goes out although the gate still refuses.
+        System.Threading.Thread.Sleep(1100);
+        writer.Tick();
+        Assert.Equal(new byte[] { 0x40, 0x50, 0x60 }, _fake.Writes.Single(IsStream)[3..6]);
+    }
 }

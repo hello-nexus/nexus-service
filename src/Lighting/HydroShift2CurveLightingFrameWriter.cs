@@ -68,7 +68,11 @@ public sealed class HydroShift2CurveLightingFrameWriter : BackgroundService
 
     private void Tick()
     {
-        if (!_gates.Lighting || !_board.IsAvailable) return;
+        if (!_gates.Lighting || !_board.IsAvailable)
+        {
+            _cap?.Reset(HydroShift2CurveLcdDriver.Id);
+            return;
+        }
         var devices = _engine.Devices;
         if (devices.Length == 0) return;
 

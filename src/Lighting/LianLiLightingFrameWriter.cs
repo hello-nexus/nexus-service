@@ -367,6 +367,7 @@ public sealed class LianLiLightingFrameWriter : IHostedService, IDisposable
     // re-asserts for the same reason.
     private void ForgetHubState()
     {
+        _cap?.Reset(_hub.DeviceId);
         _lastFirmwareSig = null;
         _pendingFirmwareSig = null;
         _hubInitialised = false;
@@ -473,7 +474,7 @@ public sealed class LianLiLightingFrameWriter : IHostedService, IDisposable
         }
 
         // One decision per tick for the whole hub. A skipped tick hands the pacing slot back so the next
-        // tick is not also held by it. Channel commits, frame syncs and init are not part of this gate.
+        // tick is not also held by it. The per-frame channel writes, commits and syncs of the tick all sit behind this gate; init, merge and firmware-mode commits do not.
         if (ports > 0 && _cap is not null && !_cap.TryWrite(_hub.DeviceId, 0, settings))
         {
             _lastCustomFrameMs = previousFrameMs;

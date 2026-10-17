@@ -146,6 +146,7 @@ public sealed class Slv3LightingFrameWriter : IHostedService, IDisposable
         }
         if (!_hub.IsConnected)
         {
+            _cap?.Reset(Slv3LightingDeviceProvider.GroupId);
             _lastSent.Clear();
             _lastPushTicks.Clear();
             _clock.Clear();
@@ -170,9 +171,10 @@ public sealed class Slv3LightingFrameWriter : IHostedService, IDisposable
         var liveMacs = new HashSet<string>(structures.Count);
 
         var minPushIntervalMs = MinPushIntervalMs * Math.Max(1, structures.Count);
-        // One user cap covers every chain (the cards share a parent). A capped group streams live frames,
-        // which the cap can pace; rendered-ahead windows play on the fan at a rate the host cannot throttle.
-        var capped = _cap is not null && _cap.IsCapped(Slv3LightingDeviceProvider.GroupId, settings);
+        // One user cap covers every chain (the cards share a parent). Live frames are paced by the gate;
+        // rendered-ahead windows hold each look for the cap interval, so the fans step at the cap rate while
+        // the upload cadence and RF traffic stay as they are.
+        _holdHz = _cap is null ? 0 : LightingFrameCap.UserHz(Slv3LightingDeviceProvider.GroupId, settings);
         var capTick = new FrameCapTick(_cap, Slv3LightingDeviceProvider.GroupId, 0, settings);
         var nowMs = UtcNowMs();
         AdvanceSharedWindow(nowMs);
@@ -208,7 +210,7 @@ public sealed class Slv3LightingFrameWriter : IHostedService, IDisposable
                 continue;
             }
 
-            if (TickRolling(macHex, structure, zones, disabled, uncontrolled, prefs, globalBrightness, nowTicks, nowMs, capped))
+            if (TickRolling(macHex, structure, zones, disabled, uncontrolled, prefs, globalBrightness, nowTicks, nowMs))
             {
                 continue;
             }
@@ -342,6 +344,8 @@ public sealed class Slv3LightingFrameWriter : IHostedService, IDisposable
 
     // One look-ahead render per window serves every chain: all chains play on
     // the same RX clock and frame grid.
+    // User cap in Hz for the sample-and-hold of rendered windows; zero leaves the render times untouched.
+    private int _holdHz;
     private AheadRequest? _windowPending;
     private long _windowPendingFirstFrame;
     private double _windowRequestedAtMs;
@@ -484,7 +488,7 @@ public sealed class Slv3LightingFrameWriter : IHostedService, IDisposable
         _nextWindowRequestMs = nowMs + WindowPeriodMs;
         var ids = new string[_rollingIds.Count];
         _rollingIds.CopyTo(ids);
-        _windowPending = _engine.RequestAhead(ids, WindowTickTimes(a, b, _windowPendingFirstFrame));
+        _windowPending = _engine.RequestAhead(ids, LightingFrameCap.HoldTicks(WindowTickTimes(a, b, _windowPendingFirstFrame), _holdHz));
     }
 
     private void DropSharedWindow()
@@ -526,7 +530,7 @@ public sealed class Slv3LightingFrameWriter : IHostedService, IDisposable
     private bool TickRolling(
         string macHex, DeviceStructure structure, IReadOnlyList<ResolvedZone> zones,
         List<string> disabled, List<string> uncontrolled, Dictionary<string, LightingDevicePreference> prefs,
-        float globalBrightness, long nowTicks, double nowMs, bool capped)
+        float globalBrightness, long nowTicks, double nowMs)
     {
         if (!_rolling.TryGetValue(macHex, out var st))
         {
@@ -552,7 +556,7 @@ public sealed class Slv3LightingFrameWriter : IHostedService, IDisposable
             st.StateSig = sig;
             st.LiveUntilMs = nowMs + StateSettleMs;
         }
-        if (capped || nowMs < st.LiveUntilMs || !_engine.CanRenderAhead(ids))
+        if (nowMs < st.LiveUntilMs || !_engine.CanRenderAhead(ids))
         {
             st.WindowFirstFrame = long.MinValue;
             return false;

@@ -84,6 +84,7 @@ public sealed class AsiahorseUmbraLightingFrameWriter : IHostedService, IDisposa
         if (!_gates.Lighting) return;
         if (!_hub.IsConnected)
         {
+            _cap?.Reset(AsiahorseUmbraLightingDeviceProvider.DeviceId);
             _planSignature = null;
             return;
         }
@@ -191,8 +192,11 @@ public sealed class AsiahorseUmbraLightingFrameWriter : IHostedService, IDisposa
         {
             return;
         }
-        // Only a changed frame is held back: the unchanged re-send above is the device keepalive and never throttled.
-        if (changed && _cap is not null && !_cap.TryWrite(AsiahorseUmbraLightingDeviceProvider.DeviceId, 0, settings))
+        // Only a changed frame is held back, and never past the keepalive window: once it has elapsed the frame
+        // goes out even if the cap would hold it, so a long cap interval cannot let the device time out.
+        if (changed && _cap is not null
+            && !_cap.TryWrite(AsiahorseUmbraLightingDeviceProvider.DeviceId, 0, settings)
+            && sinceSend < KeepAliveMs)
         {
             return;
         }

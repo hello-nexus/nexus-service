@@ -14,6 +14,9 @@ namespace Nexus.Service.Lighting;
 public sealed class Galahad2LightingDeviceProvider :
     ILightingDeviceProvider, ILightingFrameContributor, IDeviceStructureSource, IOpenRgbDeviceOwner
 {
+    /// <summary>The cards' shared ParentDeviceId, which is also the frame cap key.</summary>
+    public const string GroupId = "lianli-aio";
+
     internal const int InnerSegment = 0;
     internal const int OuterSegment = 1;
 
@@ -100,7 +103,7 @@ public sealed class Galahad2LightingDeviceProvider :
             CanvasW          = layout?.W ?? defW,
             CanvasH          = layout?.H ?? defH,
             CanvasRotation   = ((((layout?.Rotation ?? 0) % 360) + 360) % 360),
-            ParentDeviceId   = "lianli-aio",
+            ParentDeviceId   = GroupId,
             ZoneIndex        = zone.Ordinal,
             ZoneType         = "point",
             ZoneResizable    = false,

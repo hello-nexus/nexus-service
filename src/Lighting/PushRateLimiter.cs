@@ -59,4 +59,6 @@ public sealed class PushRateLimiter<TKey> where TKey : notnull
     }
 
     public void Reset() => _schedules.Clear();
+
+    public void Forget(TKey key) => _schedules.TryRemove(key, out _);
 }

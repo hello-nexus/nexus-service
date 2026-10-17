@@ -94,6 +94,7 @@ public sealed class HydroShift2LightingFrameWriter : BackgroundService
         {
             _effectSignature = null;
             DropLoop();
+            _cap?.Reset(HydroShift2LcdDriver.Id);
             return;
         }
         var settings = _store.Load();
@@ -149,7 +150,7 @@ public sealed class HydroShift2LightingFrameWriter : BackgroundService
         {
             ToRing(settings, id, frame.LedBytes, _ring);
         }
-        // Per-frame streaming only: the rendered-ahead loop and firmware effects are one-shot uploads and never gated.
+        // Per-frame streaming only. The rendered-ahead loop holds frames at the cap rate when it is rendered; firmware effects are one-shot uploads.
         if (_cap is not null && !_cap.TryWrite(HydroShift2LcdDriver.Id, 0, settings)) return;
         _aio.SetRing(_ring);
     }
@@ -208,7 +209,7 @@ public sealed class HydroShift2LightingFrameWriter : BackgroundService
         {
             ticks[k] = start + (long)(k * LoopFrameMs);
         }
-        _loopRequest = _engine.RequestAhead(ids, ticks);
+        _loopRequest = _engine.RequestAhead(ids, LightingFrameCap.HoldTicks(ticks, _cap is null ? 0 : LightingFrameCap.UserHz(HydroShift2LcdDriver.Id, settings)));
         _loopRequestContext = context;
     }
 
@@ -225,6 +226,11 @@ public sealed class HydroShift2LightingFrameWriter : BackgroundService
         var hc = new HashCode();
         hc.Add(System.Runtime.CompilerServices.RuntimeHelpers.GetHashCode(_engine.CurrentEffect));
         hc.Add(LoopMasterBrightness(settings));
+        // Only a capped loop carries the cap, so the loop of an uncapped ring is rendered and kept as before.
+        if (_cap is not null && LightingFrameCap.UserHz(HydroShift2LcdDriver.Id, settings) is > 0 and var holdHz)
+        {
+            hc.Add(holdHz);
+        }
         // The LED map (editor save, mapping, import). Hashed by value: bridge rebuilds hand the
         // frame fresh arrays even when nothing in them changed.
         if (Array.Find(_engine.Devices, d => d.Id == id) is { } live)

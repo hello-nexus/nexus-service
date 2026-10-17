@@ -32,8 +32,7 @@ public sealed class Galahad2LightingFrameWriter : IHostedService, IDisposable
 
     private readonly FeatureGates _gates;
     private readonly LightingFrameCap? _cap;
-    // The ring cards' shared ParentDeviceId, which is what LightingMaxRates is keyed by.
-    private const string CapKey = "lianli-aio";
+    private const string CapKey = Galahad2LightingDeviceProvider.GroupId;
 
     public Galahad2LightingFrameWriter(LightingEngine engine, Galahad2Hub hub, IConfigStore store, Galahad2LightingDeviceProvider provider, FeatureGates? gates = null, LightingFrameCap? cap = null)
     {
@@ -93,6 +92,7 @@ public sealed class Galahad2LightingFrameWriter : IHostedService, IDisposable
         if (!_gates.Lighting) return;
         if (!_hub.IsConnected)
         {
+            _cap?.Reset(CapKey);
             _lastFirmwareSig = null;
             _lastWasCanvas   = false;
             return;
@@ -180,7 +180,7 @@ public sealed class Galahad2LightingFrameWriter : IHostedService, IDisposable
             return;
         }
 
-        // After the dedupe above, so an unchanged colour never spends the pass and a held one is re-offered next tick.
+        // After the dedupe above, so an unchanged color never spends the pass and a held one is re-offered next tick.
         if (_cap is not null && !_cap.TryWrite(CapKey, 0, settings)) return;
 
         // One R_BOTH (ring=2) packet: slot0=inner, slot1=outer. Matches OpenRGB SetMode_StaticColor.
