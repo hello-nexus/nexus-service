@@ -45,16 +45,18 @@ void main() {
   float t = mod(u_time, 3600.0) * u_speed * S_SPEED;
   float hue = u_hue + S_HUE;
   float v = 0.0;
+  float fieldPos = -1.0;
   vec3 col = vec3(0.0);
   { float f = 0.0;
     float ang = fract(atan(p.y, p.x) / 6.2831853 + 0.25 - (u_fill_angle) / 360.0);
     if ((u_fill_flip) > 0.5) ang = 1.0 - ang;
     float lv = (clamp(u_fill_level + u_fill_level_m * 1.0 * u_fill_level_s, 0.0, 1.0)) * (1.0 + (u_fill_softness));
     float lit = 1.0 - smoothstep(lv - (u_fill_softness), lv, ang);
-    f = lit * (0.55 + 0.45 * clamp(ang, 0.0, 1.0));
+    fieldPos = clamp(ang, 0.0, 1.0);
+    f = lit * (0.55 + 0.45 * fieldPos);
     v = f; }
   {
-    float k = clamp((v - (u_col_low)) / (1.0 - (u_col_low)), 0.0, 1.0);
+    float k = fieldPos >= 0.0 ? clamp(fieldPos, 0.0, 1.0) : clamp((v - (u_col_low)) / (1.0 - (u_col_low)), 0.0, 1.0);
     float span = 1.0 - clamp(u_colorize + S_COLORIZE, 0.0, 1.0);
     col = hsv2rgb(vec3(hue + (0.5 - k) * span, 1.0, 1.0)) * mix(1.0, v, (u_col_shade));
   }

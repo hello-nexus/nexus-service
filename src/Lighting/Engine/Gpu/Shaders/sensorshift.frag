@@ -42,12 +42,13 @@ void main() {
   float t = mod(u_time, 3600.0) * u_speed * S_SPEED;
   float hue = u_hue + S_HUE;
   float v = 0.0;
+  float fieldPos = -1.0;
   vec3 col = vec3(0.0);
   { float f = 0.0;
     f = (clamp(u_hot_level + u_hot_level_m * 1.0 * u_hot_level_s, 0.0, 1.0));
     v = f; }
   {
-    float k = clamp((v - (u_col_low)) / (1.0 - (u_col_low)), 0.0, 1.0);
+    float k = fieldPos >= 0.0 ? clamp(fieldPos, 0.0, 1.0) : clamp((v - (u_col_low)) / (1.0 - (u_col_low)), 0.0, 1.0);
     float span = 1.0 - clamp(u_colorize + S_COLORIZE, 0.0, 1.0);
     col = hsv2rgb(vec3(hue + (0.5 - k) * span, 1.0, 1.0)) * mix(1.0, v, (u_col_shade));
   }
