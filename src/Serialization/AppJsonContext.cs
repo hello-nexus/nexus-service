@@ -162,6 +162,8 @@ namespace Nexus.Service.Serialization;
 [JsonSerializable(typeof(ApplyProfileResponse))]
 [JsonSerializable(typeof(StartupModeBody))]
 [JsonSerializable(typeof(StartupModeDto))]
+[JsonSerializable(typeof(FastStartupBody))]
+[JsonSerializable(typeof(FastStartupDto))]
 [JsonSerializable(typeof(Nexus.Service.Routes.TelemetryConsentBody))]
 [JsonSerializable(typeof(Nexus.Service.Routes.TelemetryConsentDto))]
 [JsonSerializable(typeof(Nexus.Service.Routes.OnboardingStatusDto))]

@@ -59,18 +59,20 @@ internal static class BootTypeProbe
     private static string Raw(int? value) => value?.ToString(CultureInfo.InvariantCulture) ?? "unset";
 
 #if WINDOWS
-    private const string PowerKey = @"SYSTEM\CurrentControlSet\Control\Power";
+    internal const string PowerKey = @"SYSTEM\CurrentControlSet\Control\Power";
+    internal const string HiberbootKey = @"SYSTEM\CurrentControlSet\Control\Session Manager\Power";
+    internal const string HiberbootPolicyKey = @"SOFTWARE\Policies\Microsoft\Windows\System";
     private const string BootEventQuery =
         "*[System[Provider[@Name='Microsoft-Windows-Kernel-Boot'] and EventID=27]]";
 
     internal static string Describe() => Describe(
         LastBoot(),
-        ReadDword(@"SYSTEM\CurrentControlSet\Control\Session Manager\Power", "HiberbootEnabled"),
-        ReadDword(@"SOFTWARE\Policies\Microsoft\Windows\System", "HiberbootEnabled"),
+        ReadDword(HiberbootKey, "HiberbootEnabled"),
+        ReadDword(HiberbootPolicyKey, "HiberbootEnabled"),
         ReadDword(PowerKey, "HibernateEnabled"),
         ReadDword(PowerKey, "HibernateEnabledDefault"));
 
-    private static int? ReadDword(string keyPath, string name)
+    internal static int? ReadDword(string keyPath, string name)
     {
         using var key = Registry.LocalMachine.OpenSubKey(keyPath);
         return key?.GetValue(name) is int value ? value : null;
