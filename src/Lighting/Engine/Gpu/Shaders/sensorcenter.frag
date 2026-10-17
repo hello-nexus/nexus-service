@@ -20,18 +20,18 @@ uniform float u_fill_flip; // hint_range(0.0, 1.0, 1.0) = 0.0
 uniform float u_fill_softness; // hint_range(0.01, 0.5, 0.01) = 0.06
 uniform float u_col_low; // hint_range(0.0, 0.95, 0.01) = 0.55
 uniform float u_col_shade; // hint_range(0.0, 1.0, 0.01) = 1.0
-uniform float u_col_c1r; // hint_range(0.0, 1.0, 0.001) = 0.15
-uniform float u_col_c1g; // hint_range(0.0, 1.0, 0.001) = 0.35
-uniform float u_col_c1b; // hint_range(0.0, 1.0, 0.001) = 1.0
-uniform float u_col_c2r; // hint_range(0.0, 1.0, 0.001) = 0.1
-uniform float u_col_c2g; // hint_range(0.0, 1.0, 0.001) = 0.95
-uniform float u_col_c2b; // hint_range(0.0, 1.0, 0.001) = 0.55
-uniform float u_col_c3r; // hint_range(0.0, 1.0, 0.001) = 1.0
-uniform float u_col_c3g; // hint_range(0.0, 1.0, 0.001) = 0.85
-uniform float u_col_c3b; // hint_range(0.0, 1.0, 0.001) = 0.1
-uniform float u_col_c4r; // hint_range(0.0, 1.0, 0.001) = 1.0
-uniform float u_col_c4g; // hint_range(0.0, 1.0, 0.001) = 0.15
-uniform float u_col_c4b; // hint_range(0.0, 1.0, 0.001) = 0.1
+uniform float u_col_aHue; // hint_range(0.0, 1.0, 0.01) = 0.63
+uniform float u_col_aSat; // hint_range(0.0, 1.0, 0.01) = 0.85
+uniform float u_col_aVal; // hint_range(0.0, 1.0, 0.01) = 1.0
+uniform float u_col_bHue; // hint_range(0.0, 1.0, 0.01) = 0.42
+uniform float u_col_bSat; // hint_range(0.0, 1.0, 0.01) = 0.89
+uniform float u_col_bVal; // hint_range(0.0, 1.0, 0.01) = 0.95
+uniform float u_col_cHue; // hint_range(0.0, 1.0, 0.01) = 0.14
+uniform float u_col_cSat; // hint_range(0.0, 1.0, 0.01) = 0.9
+uniform float u_col_cVal; // hint_range(0.0, 1.0, 0.01) = 1.0
+uniform float u_col_dHue; // hint_range(0.0, 1.0, 0.01) = 0.01
+uniform float u_col_dSat; // hint_range(0.0, 1.0, 0.01) = 0.9
+uniform float u_col_dVal; // hint_range(0.0, 1.0, 0.01) = 1.0
 vec2 uvCentered() {
   vec2 u = gl_FragCoord.xy / u_resolution;
   u.y = 1.0 - u.y;
@@ -68,10 +68,12 @@ void main() {
     f = lit * (0.55 + 0.45 * clamp(x, 0.0, 1.0));
     v = f; }
   {
+    vec3 c1 = hsv2rgb(vec3((u_col_aHue), (u_col_aSat), (u_col_aVal))); vec3 c2 = hsv2rgb(vec3((u_col_bHue), (u_col_bSat), (u_col_bVal)));
+    vec3 c3 = hsv2rgb(vec3((u_col_cHue), (u_col_cSat), (u_col_cVal))); vec3 c4 = hsv2rgb(vec3((u_col_dHue), (u_col_dSat), (u_col_dVal)));
     float k = clamp((v - (u_col_low)) / (1.0 - (u_col_low)), 0.0, 1.0);
-    vec3 g = mix((vec3(u_col_c1r, u_col_c1g, u_col_c1b)), (vec3(u_col_c2r, u_col_c2g, u_col_c2b)), smoothstep(0.0, 0.3333, k));
-    g = mix(g, (vec3(u_col_c3r, u_col_c3g, u_col_c3b)), smoothstep(0.3333, 0.6667, k));
-    g = mix(g, (vec3(u_col_c4r, u_col_c4g, u_col_c4b)), smoothstep(0.6667, 1.0, k));
+    vec3 g = mix(c1, c2, smoothstep(0.0, 0.3333, k));
+    g = mix(g, c3, smoothstep(0.3333, 0.6667, k));
+    g = mix(g, c4, smoothstep(0.6667, 1.0, k));
     col = g * mix(1.0, v, (u_col_shade));
   }
   fragColor = vec4(finalize(col, hue), 1.0);

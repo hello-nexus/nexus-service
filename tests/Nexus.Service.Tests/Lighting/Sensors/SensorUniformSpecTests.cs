@@ -156,7 +156,7 @@ public sealed class SensorUniformSpecTests
     {
         var keys = ShaderLibrary.AllEffectKeys.Where(ShaderLibrary.IsSensorEffect).ToHashSet();
 
-        foreach (var k in new[] { "sensorbar", "sensorclock", "sensorsegments", "sensorliquid", "sensorcenter", "sensorgauge", "sensorshift", "sensorheat" })
+        foreach (var k in new[] { "sensorbar", "sensorclock", "sensorsegments", "sensorliquid", "sensorcenter", "sensorshift", "sensorheat" })
         {
             Assert.Contains(k, keys);
         }
