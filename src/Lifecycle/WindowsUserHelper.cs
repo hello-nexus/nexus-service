@@ -35,6 +35,9 @@ internal static class WindowsUserHelper
 
     private static readonly CancellationTokenSource s_exit = new();
 
+    // Splash this process spawned; a close that beats the splash window still ends it.
+    private static int s_splashPid;
+
     // Immutable snapshot of the latest profiles.list push. Written by the pipe
     // handler thread; read on the tray message-pump thread. Volatile reference
     // swap to an immutable object is the safe cross-thread publish pattern.
@@ -459,7 +462,7 @@ internal static class WindowsUserHelper
             try { Platform.Windows.TrayIcon.CloseAppWindow(); } catch { /* best-effort */ }
 
             var pid = UpdaterSplashWindow.Spawn(fromVersion, toVersion);
-            if (pid != 0) UpdaterSplashWindow.WaitForWindow();
+            if (pid != 0) Volatile.Write(ref s_splashPid, pid);
             Diag($"ShowUpdaterWindow: native splash started pid={pid}");
         }
         catch (Exception ex) { Diag($"ShowUpdaterWindow failed: {ex.Message}"); }
@@ -468,7 +471,7 @@ internal static class WindowsUserHelper
     [SupportedOSPlatform("windows")]
     internal static void CloseUpdaterWindow()
     {
-        try { UpdaterSplashWindow.Dismiss(); }
+        try { UpdaterSplashWindow.Dismiss(Volatile.Read(ref s_splashPid)); }
         catch { /* best-effort */ }
     }
 

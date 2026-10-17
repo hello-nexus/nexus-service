@@ -15,7 +15,8 @@ namespace Nexus.Service.Lifecycle;
 /// service image), including the helper that would host a window, so the splash
 /// runs from a copy of the exe named NexusUpdater.exe outside the install folder:
 /// a different image name and path, which the installer's selection leaves alone.
-/// Ends on WM_CLOSE (helper startup or install failure), or a timeout.
+/// Ends on WM_CLOSE or a kill from Dismiss (the new service after an install, or
+/// the failure paths), from CloseStale at helper startup, or on its own timeout.
 /// </summary>
 [SupportedOSPlatform("windows")]
 internal static class UpdaterSplashWindow
@@ -25,7 +26,6 @@ internal static class UpdaterSplashWindow
     private const int W = 330, H = 220;
     private const int MinStaleAgeSeconds = 10;
     private const int CloseGraceMs = 3000;
-    private const int WindowWaitMs = 3000;
     private const string CopyMutexName = @"Local\NexusUpdaterCopy";
     private const int ExStyleTopmost = 0x00000008, ExStyleToolWindow = 0x00000080;
     private const int StylePopup = unchecked((int)0x80000000);
@@ -114,48 +114,84 @@ internal static class UpdaterSplashWindow
     }
 
     /// <summary>
-    /// Closes every splash window, native or the earlier mshta one, and ends its
-    /// process if it has not exited after the close. No age check: callers run it
-    /// once the install is known to be over.
+    /// Closes every splash window, native or the earlier mshta one, then ends the owners
+    /// still alive after one shared grace period. <paramref name="trackedPid"/> is the
+    /// splash this process spawned: one with no window yet has nothing to lose and is
+    /// ended at once. No age check: callers run it once the install is known to be over.
     /// </summary>
-    public static void Dismiss()
+    public static void Dismiss(int trackedPid = 0)
     {
-        // Collected up front: a destroyed window is no valid FindWindowEx anchor.
-        var windows = new List<IntPtr>();
-        for (var h = FindWindow(null, UpdaterSplashArgs.Title); h != IntPtr.Zero && windows.Count < 16;
-             h = FindWindowEx(IntPtr.Zero, h, null, UpdaterSplashArgs.Title))
+        var owners = new Dictionary<int, Process>();
+        try
         {
-            windows.Add(h);
-        }
-        foreach (var hwnd in windows)
-        {
-            GetWindowThreadProcessId(hwnd, out var pid);
-            PostMessage(hwnd, WmClose, IntPtr.Zero, IntPtr.Zero);
-            try
+            // Collected up front: a destroyed window is no valid FindWindowEx anchor.
+            var windows = new List<IntPtr>();
+            for (var h = FindWindow(null, UpdaterSplashArgs.Title); h != IntPtr.Zero && windows.Count < 16;
+                 h = FindWindowEx(IntPtr.Zero, h, null, UpdaterSplashArgs.Title))
             {
-                using var proc = Process.GetProcessById((int)pid);
-                // Only our own splash hosts; a foreign window with this title is left running.
-                var name = proc.ProcessName;
-                var ours = name.Equals("NexusUpdater", StringComparison.OrdinalIgnoreCase)
-                    || name.Equals("mshta", StringComparison.OrdinalIgnoreCase);
-                if (ours && !proc.WaitForExit(CloseGraceMs)) proc.Kill();
+                windows.Add(h);
             }
-            catch { /* already gone */ }
+            foreach (var hwnd in windows)
+            {
+                GetWindowThreadProcessId(hwnd, out var pid);
+                PostMessage(hwnd, WmClose, IntPtr.Zero, IntPtr.Zero);
+                if (owners.ContainsKey((int)pid)) continue;
+                // Only our own splash hosts; a foreign window with this title is left running.
+                var proc = TryOpenOwned((int)pid, "NexusUpdater", "mshta");
+                if (proc is not null) owners[(int)pid] = proc;
+            }
+            if (trackedPid != 0 && !owners.ContainsKey(trackedPid))
+            {
+                using var windowless = TryOpenOwned(trackedPid, "NexusUpdater");
+                try { windowless?.Kill(); } catch { /* already gone */ }
+            }
+
+            var deadline = Environment.TickCount64 + CloseGraceMs;
+            foreach (var proc in owners.Values)
+            {
+                try
+                {
+                    var left = (int)Math.Max(0, deadline - Environment.TickCount64);
+                    if (!proc.WaitForExit(left)) proc.Kill();
+                }
+                catch { /* already gone */ }
+            }
         }
+        finally
+        {
+            foreach (var proc in owners.Values) proc.Dispose();
+        }
+        DeleteCopyUnderGate();
     }
 
-    /// <summary>
-    /// Spawn returns once the process starts, before its window exists, so a close that
-    /// follows at once would find nothing. Bounded so a splash that never appears cannot
-    /// hold the caller.
-    /// </summary>
-    public static void WaitForWindow()
+    private static Process? TryOpenOwned(int pid, params string[] imageNames)
     {
-        var deadline = Environment.TickCount64 + WindowWaitMs;
-        while (FindWindow(null, UpdaterSplashArgs.Title) == IntPtr.Zero && Environment.TickCount64 < deadline)
+        try
         {
-            Thread.Sleep(50);
+            var proc = Process.GetProcessById(pid);
+            foreach (var n in imageNames)
+            {
+                if (proc.ProcessName.Equals(n, StringComparison.OrdinalIgnoreCase)) return proc;
+            }
+            proc.Dispose();
         }
+        catch { /* not running */ }
+        return null;
+    }
+
+    private static void DeleteCopyUnderGate()
+    {
+        try
+        {
+            using var gate = new Mutex(false, CopyMutexName);
+            gate.WaitOne(TimeSpan.FromSeconds(5));
+            try { TryDeleteCopy(); }
+            finally
+            {
+                try { gate.ReleaseMutex(); } catch (ApplicationException) { }
+            }
+        }
+        catch { /* best-effort */ }
     }
 
     private static void TryDeleteCopy()

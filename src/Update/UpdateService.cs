@@ -446,27 +446,25 @@ public sealed class UpdateService : BackgroundService
 
 #if WINDOWS
     /// <summary>
-    /// The outgoing build closes the splash only on a failed install, and the incoming
-    /// helper's one-shot startup check skips a fresh splash and swallows errors. The new
-    /// service is the party that knows the install is over, so it asks the first helper
-    /// that connects to close the splash, whichever version spawned it.
+    /// The new service closes the splash once the install resolves; the helper's
+    /// startup check skips a fresh splash. Every helper that connects within the
+    /// splash's own timeout gets one close, plus those already connected.
     /// </summary>
     private void DismissUpdaterSplashOnHelperConnect()
     {
         if (Volatile.Read(ref _dismissUpdaterSplash) == 0) return;
 
-        var sent = 0;
-        void Send()
+        var sentTo = new System.Collections.Concurrent.ConcurrentDictionary<HelperConnection, byte>();
+        void Send(HelperConnection conn)
         {
-            if (Interlocked.Exchange(ref sent, 1) != 0) return;
-            _helperRegistry.Connected -= OnConnected;
-            try { TrayCommands.CloseUpdaterWindowAsync(_helperRegistry).ObserveFaults(); } catch { }
+            if (!sentTo.TryAdd(conn, 0)) return;
+            try { TrayCommands.CloseUpdaterWindowAsync(conn).ObserveFaults(); } catch { }
         }
-        void OnConnected(HelperConnection _) => Send();
 
-        _helperRegistry.Connected += OnConnected;
-        // A helper that connected before this ran never raises Connected again.
-        if (_helperRegistry.IsAnyConnected) Send();
+        _helperRegistry.Connected += Send;
+        foreach (var conn in _helperRegistry.GetAll()) Send(conn);
+        _ = Task.Delay(TimeSpan.FromMinutes(5)).ContinueWith(
+            _ => _helperRegistry.Connected -= Send, TaskScheduler.Default);
     }
 #endif
 
