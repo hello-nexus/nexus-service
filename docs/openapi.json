@@ -28245,6 +28245,9 @@
               "null",
               "boolean"
             ]
+          },
+          "showUncontrolledSidebarDevices": {
+            "type": "boolean"
           }
         }
       },
@@ -28345,6 +28348,12 @@
             ]
           },
           "showUncontrolledCoolingDevices": {
+            "type": [
+              "null",
+              "boolean"
+            ]
+          },
+          "showUncontrolledSidebarDevices": {
             "type": [
               "null",
               "boolean"

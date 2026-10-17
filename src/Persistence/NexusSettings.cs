@@ -504,6 +504,10 @@ public sealed class UiSettings
     public bool? ShowUncontrolledLightingDevices { get; set; }
     /// <inheritdoc cref="ShowUncontrolledLightingDevices"/>
     public bool? ShowUncontrolledCoolingDevices { get; set; }
+    /// <summary>
+    /// False omits devices with Nexus Control off from the sidebar DEVICES list.
+    /// </summary>
+    public bool ShowUncontrolledSidebarDevices { get; set; } = true;
 }
 
 /// <summary>
@@ -527,6 +531,7 @@ public sealed class UiSettingsPatch
     public bool? ShowUncontrolledDevices { get; set; }
     public bool? ShowUncontrolledLightingDevices { get; set; }
     public bool? ShowUncontrolledCoolingDevices { get; set; }
+    public bool? ShowUncontrolledSidebarDevices { get; set; }
 }
 
 /// <summary>
