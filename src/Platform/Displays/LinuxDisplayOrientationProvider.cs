@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Text.RegularExpressions;
+using System.Threading;
 using System.Threading.Tasks;
 using Nexus.Service.Platform.Linux;
 
@@ -24,9 +25,14 @@ public sealed partial class LinuxDisplayOrientationProvider : IDisplayOrientatio
     private readonly Func<string> _y70Connector;
     private readonly Func<string[], (int Exit, string Output)> _run;
     private readonly LinuxY70TouchMapper.BusRunner? _bus;
+    private readonly LinuxY70TouchMapper.CompanionLookup _companions;
     private readonly object _gate = new();
     private string? _pendingOrientation;
     private bool _touchPending;
+    private readonly object _touchGate = new();
+    private string? _lastTouchLog;
+    private int _topologyQueued;
+    internal int TopologyDebounceMs { get; init; } = 3000;
     private bool _retrying;
 
     // Backoff for a session that logind reports before KWin or its Wayland
@@ -39,13 +45,16 @@ public sealed partial class LinuxDisplayOrientationProvider : IDisplayOrientatio
         // A root daemon that booted before login has no session to rotate in;
         // the orientation is applied once on detection, so replay it here.
         LinuxSession.SessionAdopted += OnSessionAdopted;
+        Nexus.Service.Lighting.Rgb.RgbBridge.UsbTopologyChanged += OnUsbTopologyChanged;
     }
 
     internal LinuxDisplayOrientationProvider(
         Func<string> y70Connector,
         Func<string[], (int Exit, string Output)> run,
-        LinuxY70TouchMapper.BusRunner? bus = null)
+        LinuxY70TouchMapper.BusRunner? bus = null,
+        LinuxY70TouchMapper.CompanionLookup? companions = null)
     {
+        _companions = companions ?? (name => LinuxY70TouchMapper.ReadCompanions(name));
         _y70Connector = y70Connector;
         _run = run;
         _bus = bus;
@@ -59,29 +68,59 @@ public sealed partial class LinuxDisplayOrientationProvider : IDisplayOrientatio
             return (true, "y70 panel not attached");
         }
         var result = Rotate(connector, orientation);
-        MapTouch(connector);
+        // Off the caller's thread: routes and the Y70 heartbeat must not wait on busctl.
+        _ = Task.Run(() => MapTouch(connector));
         return result;
     }
 
     // Idempotent and independent of the rotation result: touch routing must
     // hold even when the orientation was already right. A session that is not
     // up yet is retried by the session-adopted replay.
-    private void MapTouch(string connector)
+    internal void MapTouch(string connector)
     {
         if (_bus is null)
         {
             return;
         }
-        var (ok, detail) = LinuxY70TouchMapper.Apply(connector, _bus);
-        Console.Error.WriteLine(ok ? $"[y70-touch] {detail}" : $"[y70-touch] not mapped: {detail}");
+        LinuxY70TouchMapper.TouchMapResult result;
+        lock (_touchGate)
+        {
+            result = LinuxY70TouchMapper.Apply(connector, _bus, _companions);
+            // Repeated applies are routine; log only when the outcome changes.
+            var line = result.Ok ? $"[y70-touch] {result.Detail}" : $"[y70-touch] not mapped: {result.Detail}";
+            if (line != _lastTouchLog)
+            {
+                _lastTouchLog = line;
+                Console.Error.WriteLine(line);
+            }
+        }
         lock (_gate)
         {
-            _touchPending = !ok;
-            if (!ok)
+            _touchPending = result.Status == LinuxY70TouchMapper.TouchMapStatus.Retry;
+            if (_touchPending)
             {
                 StartRetry();
             }
         }
+    }
+
+    // Debounced: a re-enumerating digitizer produces a burst of topology edges.
+    internal void OnUsbTopologyChanged()
+    {
+        if (Interlocked.Exchange(ref _topologyQueued, 1) == 1)
+        {
+            return;
+        }
+        _ = Task.Run(async () =>
+        {
+            await Task.Delay(TopologyDebounceMs);
+            Interlocked.Exchange(ref _topologyQueued, 0);
+            var connector = _y70Connector();
+            if (!string.IsNullOrEmpty(connector))
+            {
+                MapTouch(connector);
+            }
+        });
     }
 
     public (bool Ok, string Error) SetDisplayOrientation(string displayId, string orientation, string coverColorHex)
@@ -188,6 +227,8 @@ public sealed partial class LinuxDisplayOrientationProvider : IDisplayOrientatio
                             if (ok)
                             {
                                 Console.Error.WriteLine($"[y70-orient] deferred apply of '{pending}' ok: {detail}");
+                                // The compositor just came up; a final "not KDE" verdict from before it was up is stale.
+                                touch = true;
                             }
                         }
                     }
@@ -317,13 +358,15 @@ public sealed partial class LinuxDisplayOrientationProvider : IDisplayOrientatio
                 return (-1, "");
             }
             var stdout = proc.StandardOutput.ReadToEndAsync();
-            _ = proc.StandardError.ReadToEndAsync();
+            var stderr = proc.StandardError.ReadToEndAsync();
             if (!proc.WaitForExit(ToolTimeoutMs))
             {
                 try { proc.Kill(entireProcessTree: true); } catch { }
                 return (-2, "");
             }
-            return (proc.ExitCode, stdout.GetAwaiter().GetResult());
+            var text = stdout.GetAwaiter().GetResult();
+            // A failure's reason is on stderr; callers classify it (busctl: not on the bus).
+            return (proc.ExitCode, proc.ExitCode == 0 ? text : text + stderr.GetAwaiter().GetResult());
         }
         catch (Exception ex)
         {
