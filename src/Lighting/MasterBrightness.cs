@@ -98,18 +98,30 @@ public static class MasterBrightness
         }
     }
 
-    /// <summary>True when <paramref name="points"/> are the out-of-box curve, whatever order they were saved in.</summary>
+    private static readonly (int Hour, int Brightness)[] DefaultPoints =
+    {
+        (5, 10), (7, 30), (10, 100), (17, 100), (20, 30), (22, 10),
+    };
+
+    /// <summary>True when <paramref name="points"/> are the out-of-box curve,
+    /// whatever order they were saved in. Allocation-free for the sorted list
+    /// the route persists: this runs on the frame path while the choice is unset.</summary>
     public static bool IsDefaultSchedule(List<BrightnessSchedulePoint>? points)
     {
-        var defaults = DefaultSchedule();
-        if (points is null || points.Count != defaults.Count)
+        if (points is null || points.Count != DefaultPoints.Length)
         {
             return false;
         }
-        var sorted = points.OrderBy(p => p.Hour).ToList();
-        for (var i = 0; i < defaults.Count; i++)
+        for (var i = 1; i < points.Count; i++)
         {
-            if (sorted[i].Hour != defaults[i].Hour || sorted[i].Brightness != defaults[i].Brightness)
+            if (points[i].Hour < points[i - 1].Hour)
+            {
+                return IsDefaultSchedule(points.OrderBy(p => p.Hour).ToList());
+            }
+        }
+        for (var i = 0; i < DefaultPoints.Length; i++)
+        {
+            if (points[i].Hour != DefaultPoints[i].Hour || points[i].Brightness != DefaultPoints[i].Brightness)
             {
                 return false;
             }
@@ -120,15 +132,8 @@ public static class MasterBrightness
     /// <summary>The out-of-box curve follows daylight: a dim night floor, a
     /// dawn that starts slow and then climbs to full, full through the day,
     /// and the same shape mirrored through dusk back to the floor.</summary>
-    public static List<BrightnessSchedulePoint> DefaultSchedule() => new()
-    {
-        new() { Hour = 5, Brightness = 10 },
-        new() { Hour = 7, Brightness = 30 },
-        new() { Hour = 10, Brightness = 100 },
-        new() { Hour = 17, Brightness = 100 },
-        new() { Hour = 20, Brightness = 30 },
-        new() { Hour = 22, Brightness = 10 },
-    };
+    public static List<BrightnessSchedulePoint> DefaultSchedule() =>
+        DefaultPoints.Select(p => new BrightnessSchedulePoint { Hour = p.Hour, Brightness = p.Brightness }).ToList();
 
     private const int MinutesPerDay = 24 * 60;
     private const double HoursPerDay = 24;

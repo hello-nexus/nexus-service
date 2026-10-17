@@ -352,23 +352,30 @@ public static class LightingRoutes
             var points = new List<Nexus.Service.Persistence.BrightnessSchedulePoint>(byHour.Values);
             // Replace the object, never mutate the list: frame writers walk the
             // reference they read, unlocked.
+            var changed = false;
             store.Update(s =>
             {
                 var current = s.Lighting.BrightnessSchedule;
                 // Pin the resolved choice on first save so editing the curve
                 // cannot flip an unchosen sun shift from on to off.
                 var sunShift = body.SunShift ?? current?.SunShiftOn ?? true;
+                var newLocation = body.LocationSpecified ? location : current?.SunLocation;
+                var old = current?.SunLocation;
+                changed = body.Enabled != (current?.Enabled ?? false)
+                    || sunShift != (current?.SunShiftOn ?? true)
+                    || old?.Lat != newLocation?.Lat
+                    || old?.Lon != newLocation?.Lon;
                 s.Lighting.BrightnessSchedule = new()
                 {
                     Enabled = body.Enabled,
                     Points = points,
                     SunShift = sunShift,
-                    SunLocation = body.LocationSpecified ? location : current?.SunLocation,
+                    SunLocation = newLocation,
                 };
             });
             var saved = store.Load().Lighting.BrightnessSchedule;
             PanelTopics.BroadcastLighting(hub);
-            return Results.Ok(BuildBrightnessScheduleBody(saved, sunResolver, forceResolve: true));
+            return Results.Ok(BuildBrightnessScheduleBody(saved, sunResolver, forceResolve: changed));
         }).AllowPanel();
         // Dim to a user-set level while the PC is idle. The controller picks the
         // change up from the store, so a POST applies at once (a dimmed room

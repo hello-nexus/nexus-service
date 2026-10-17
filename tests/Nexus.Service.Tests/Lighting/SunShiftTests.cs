@@ -152,6 +152,33 @@ public sealed class SunShiftTests
     }
 
     [Fact]
+    public void The_frame_path_does_not_allocate_with_an_unchosen_or_chosen_sun_shift()
+    {
+        SunShift.ResetForTests();
+        var at = new DateTime(2026, 6, 21, 12, 0, 0);
+        var unchosenDefault = new LightingSettings { BrightnessSchedule = new() { Enabled = true } };
+        var unchosenCustom = Lighting(true, null);
+        unchosenCustom.BrightnessSchedule.SunShift = null;
+        var withPlan = Lighting(true, Oslo);
+        var all = new[] { unchosenDefault, unchosenCustom, withPlan };
+        foreach (var l in all)
+        {
+            MasterBrightness.Effective(l, at);
+        }
+
+        var before = GC.GetAllocatedBytesForCurrentThread();
+        for (var i = 0; i < 1000; i++)
+        {
+            foreach (var l in all)
+            {
+                MasterBrightness.Effective(l, at);
+            }
+        }
+
+        Assert.Equal(0, GC.GetAllocatedBytesForCurrentThread() - before);
+    }
+
+    [Fact]
     public void Plan_is_cached_per_date_and_place()
     {
         SunShift.ResetForTests();

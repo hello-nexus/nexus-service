@@ -8,11 +8,7 @@ using Nexus.Service.Sockets;
 
 namespace Nexus.Service.Lighting.Sun;
 
-/// <summary>Resolves the IP location for a schedule that follows it, so the
-/// frame path only ever reads the cached result. The loop looks the place up
-/// while the schedule is in use and no place is known, backing off after each
-/// failure, and refreshes a known place now and then. Routes poke it through
-/// <see cref="Request"/> when the settings change.</summary>
+/// <summary>Resolves the IP location for a schedule that follows it, off the frame path.</summary>
 public sealed class SunLocationResolver : IHostedService
 {
     private static readonly TimeSpan FirstRetry = TimeSpan.FromSeconds(30);
@@ -27,6 +23,7 @@ public sealed class SunLocationResolver : IHostedService
     private CancellationTokenSource? _cts;
     private Task _loop = Task.CompletedTask;
     private int _forced;
+    private TaskCompletionSource _pass = new(TaskCreationOptions.RunContinuationsAsynchronously);
 
     public SunLocationResolver(IWeatherProvider weather, IConfigStore store, MultiplexHub hub)
     {
@@ -59,6 +56,9 @@ public sealed class SunLocationResolver : IHostedService
         _cts.Dispose();
         _cts = null;
     }
+
+    /// <summary>Completes once the loop has finished its next evaluation pass; lets a test wait for one deterministically.</summary>
+    public Task NextPass => _pass.Task;
 
     /// <summary>Wakes the loop. A forced request also skips the backoff wait, for a setting the user just changed.</summary>
     public void Request(bool force = false)
@@ -96,7 +96,9 @@ public sealed class SunLocationResolver : IHostedService
                 {
                     if (now >= nextAttempt)
                     {
-                        if (await TryResolveAsync().ConfigureAwait(false))
+                        var resolved = await TryResolveAsync().ConfigureAwait(false);
+                        now = Environment.TickCount64;
+                        if (resolved)
                         {
                             retry = FirstRetry;
                             nextAttempt = now + (long)Refresh.TotalMilliseconds;
@@ -109,6 +111,9 @@ public sealed class SunLocationResolver : IHostedService
                     }
                     wait = TimeSpan.FromMilliseconds(Math.Max(nextAttempt - Environment.TickCount64, 0));
                 }
+                var passed = _pass;
+                _pass = new(TaskCreationOptions.RunContinuationsAsynchronously);
+                passed.TrySetResult();
                 await _wake.WaitAsync(wait, ct).ConfigureAwait(false);
                 if (Interlocked.Exchange(ref _forced, 0) == 1)
                 {

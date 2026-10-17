@@ -777,8 +777,7 @@ public sealed class BrightnessSchedule
 {
     public bool Enabled { get; set; }
     public List<BrightnessSchedulePoint> Points { get; set; } = Nexus.Service.Lighting.MasterBrightness.DefaultSchedule();
-    /// <summary>Replaces <see cref="Points"/> with a curve generated from today's sunrise and sunset while the sun times are known; the stored points are left untouched.
-    /// Null (never chosen) follows <see cref="SunShiftOn"/>'s default: on for the stock curve, off for a customized one. Resolved at read time because profile files and imports skip the settings migrations.</summary>
+    /// <summary>Generated sun curve replaces <see cref="Points"/> while on; null follows <see cref="SunShiftOn"/>, resolved at read time because profiles and imports skip migrations.</summary>
     public bool? SunShift { get; set; }
     [System.Text.Json.Serialization.JsonIgnore]
     public bool SunShiftOn => SunShift ?? Nexus.Service.Lighting.MasterBrightness.IsDefaultSchedule(Points);
