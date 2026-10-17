@@ -56,6 +56,20 @@ public class ProfileSharingTests
     }
 
     [Fact]
+    public void Dashboard_LeavesTheWorkstationHiddenSidebarDevicesAlone()
+    {
+        var source = new NexusSettings();
+        var target = new NexusSettings();
+        target.Ui.HiddenSidebarDevices = new List<string> { "curated:keeb" };
+
+        ProfileSharing.ApplyCategory(target, source, ProfileSharing.Dashboard);
+        Assert.Equal(new[] { "curated:keeb" }, target.Ui.HiddenSidebarDevices);
+
+        ProfileSharing.ResetCategory(target, ProfileSharing.Dashboard);
+        Assert.Equal(new[] { "curated:keeb" }, target.Ui.HiddenSidebarDevices);
+    }
+
+    [Fact]
     public void ApplyCategory_Device_ReplacesTargetStreamDeckWithSources()
     {
         var source = new NexusSettings();

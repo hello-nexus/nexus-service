@@ -28246,8 +28246,11 @@
               "boolean"
             ]
           },
-          "showUncontrolledSidebarDevices": {
-            "type": "boolean"
+          "hiddenSidebarDevices": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
           }
         }
       },
@@ -28353,11 +28356,14 @@
               "boolean"
             ]
           },
-          "showUncontrolledSidebarDevices": {
+          "hiddenSidebarDevices": {
             "type": [
               "null",
-              "boolean"
-            ]
+              "array"
+            ],
+            "items": {
+              "type": "string"
+            }
           }
         }
       },
