@@ -457,13 +457,13 @@ public sealed class UpdateService : BackgroundService
         var sentTo = new System.Collections.Concurrent.ConcurrentDictionary<HelperConnection, byte>();
         void Send(HelperConnection conn)
         {
-            if (!sentTo.TryAdd(conn, 0)) return;
+            if (Volatile.Read(ref _dismissUpdaterSplash) == 0 || !sentTo.TryAdd(conn, 0)) return;
             try { TrayCommands.CloseUpdaterWindowAsync(conn).ObserveFaults(); } catch { }
         }
 
         _helperRegistry.Connected += Send;
         foreach (var conn in _helperRegistry.GetAll()) Send(conn);
-        _ = Task.Delay(TimeSpan.FromMinutes(5)).ContinueWith(
+        _ = Task.Delay(TimeSpan.FromMilliseconds(UpdaterSplashWindow.TimeoutMs)).ContinueWith(
             _ => _helperRegistry.Connected -= Send, TaskScheduler.Default);
     }
 #endif
@@ -1117,6 +1117,8 @@ public sealed class UpdateService : BackgroundService
 
             try
             {
+                // A new install owns the splash from here: stop the post-install dismissal.
+                Volatile.Write(ref _dismissUpdaterSplash, 0);
                 await TrayCommands.ShowUpdaterWindowAsync(
                     _helperRegistry,
                     fromVersion: BuildInfo.Version,
@@ -1269,6 +1271,8 @@ public sealed class UpdateService : BackgroundService
 
             try
             {
+                // A new install owns the splash from here: stop the post-install dismissal.
+                Volatile.Write(ref _dismissUpdaterSplash, 0);
                 await TrayCommands.ShowUpdaterWindowAsync(
                     _helperRegistry,
                     fromVersion: BuildInfo.Version,

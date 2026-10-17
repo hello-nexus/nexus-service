@@ -471,7 +471,7 @@ internal static class WindowsUserHelper
     [SupportedOSPlatform("windows")]
     internal static void CloseUpdaterWindow()
     {
-        try { UpdaterSplashWindow.Dismiss(Volatile.Read(ref s_splashPid)); }
+        try { UpdaterSplashWindow.Dismiss(Interlocked.Exchange(ref s_splashPid, 0)); }
         catch { /* best-effort */ }
     }
 

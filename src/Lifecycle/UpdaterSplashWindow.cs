@@ -22,7 +22,7 @@ namespace Nexus.Service.Lifecycle;
 internal static class UpdaterSplashWindow
 {
     private const string CopyName = "NexusUpdater.exe";
-    private const uint TimeoutMs = 300_000;
+    internal const uint TimeoutMs = 300_000;
     private const int W = 330, H = 220;
     private const int MinStaleAgeSeconds = 10;
     private const int CloseGraceMs = 3000;
@@ -184,12 +184,10 @@ internal static class UpdaterSplashWindow
         try
         {
             using var gate = new Mutex(false, CopyMutexName);
-            gate.WaitOne(TimeSpan.FromSeconds(5));
+            // Never block the helper read loop: a held gate means a Spawn or CloseStale is mid-copy.
+            if (!gate.WaitOne(0)) return;
             try { TryDeleteCopy(); }
-            finally
-            {
-                try { gate.ReleaseMutex(); } catch (ApplicationException) { }
-            }
+            finally { gate.ReleaseMutex(); }
         }
         catch { /* best-effort */ }
     }
