@@ -23,8 +23,10 @@ public sealed partial class LinuxDisplayOrientationProvider : IDisplayOrientatio
 
     private readonly Func<string> _y70Connector;
     private readonly Func<string[], (int Exit, string Output)> _run;
+    private readonly LinuxY70TouchMapper.BusRunner? _bus;
     private readonly object _gate = new();
     private string? _pendingOrientation;
+    private bool _touchPending;
     private bool _retrying;
 
     // Backoff for a session that logind reports before KWin or its Wayland
@@ -32,17 +34,21 @@ public sealed partial class LinuxDisplayOrientationProvider : IDisplayOrientatio
     private static readonly int[] RetryDelaysMs = [1000, 2000, 4000, 8000, 15000];
 
     public LinuxDisplayOrientationProvider(Func<string> y70Connector)
-        : this(y70Connector, RunKScreenDoctor)
+        : this(y70Connector, RunKScreenDoctor, args => RunSessionTool("busctl", ["--user", .. args]))
     {
         // A root daemon that booted before login has no session to rotate in;
         // the orientation is applied once on detection, so replay it here.
         LinuxSession.SessionAdopted += OnSessionAdopted;
     }
 
-    internal LinuxDisplayOrientationProvider(Func<string> y70Connector, Func<string[], (int Exit, string Output)> run)
+    internal LinuxDisplayOrientationProvider(
+        Func<string> y70Connector,
+        Func<string[], (int Exit, string Output)> run,
+        LinuxY70TouchMapper.BusRunner? bus = null)
     {
         _y70Connector = y70Connector;
         _run = run;
+        _bus = bus;
     }
 
     public (bool Ok, string Error) SetY70Orientation(string orientation)
@@ -52,7 +58,30 @@ public sealed partial class LinuxDisplayOrientationProvider : IDisplayOrientatio
         {
             return (true, "y70 panel not attached");
         }
-        return Rotate(connector, orientation);
+        var result = Rotate(connector, orientation);
+        MapTouch(connector);
+        return result;
+    }
+
+    // Idempotent and independent of the rotation result: touch routing must
+    // hold even when the orientation was already right. A session that is not
+    // up yet is retried by the session-adopted replay.
+    private void MapTouch(string connector)
+    {
+        if (_bus is null)
+        {
+            return;
+        }
+        var (ok, detail) = LinuxY70TouchMapper.Apply(connector, _bus);
+        Console.Error.WriteLine(ok ? $"[y70-touch] {detail}" : $"[y70-touch] not mapped: {detail}");
+        lock (_gate)
+        {
+            _touchPending = !ok;
+            if (!ok)
+            {
+                StartRetry();
+            }
+        }
     }
 
     public (bool Ok, string Error) SetDisplayOrientation(string displayId, string orientation, string coverColorHex)
@@ -103,6 +132,11 @@ public sealed partial class LinuxDisplayOrientationProvider : IDisplayOrientatio
 
     private void OnSessionAdopted()
     {
+        var connector = _y70Connector();
+        if (!string.IsNullOrEmpty(connector))
+        {
+            _ = Task.Run(() => MapTouch(connector));
+        }
         lock (_gate)
         {
             if (_pendingOrientation is null)
@@ -130,26 +164,43 @@ public sealed partial class LinuxDisplayOrientationProvider : IDisplayOrientatio
                 foreach (var delay in RetryDelaysMs)
                 {
                     await Task.Delay(delay);
+                    string connector;
+                    string? pending;
+                    bool touch;
                     lock (_gate)
                     {
-                        if (_pendingOrientation is not { } pending)
+                        pending = _pendingOrientation;
+                        touch = _touchPending;
+                        if (pending is null && !touch)
                         {
                             return;
                         }
-                        var connector = _y70Connector();
+                        connector = _y70Connector();
                         if (string.IsNullOrEmpty(connector))
                         {
                             _pendingOrientation = null;
+                            _touchPending = false;
                             return;
                         }
-                        var (ok, detail) = Rotate(connector, pending);
-                        if (ok)
+                        if (pending is not null)
                         {
-                            Console.Error.WriteLine($"[y70-orient] deferred apply of '{pending}' ok: {detail}");
-                            return;
+                            var (ok, detail) = Rotate(connector, pending);
+                            if (ok)
+                            {
+                                Console.Error.WriteLine($"[y70-orient] deferred apply of '{pending}' ok: {detail}");
+                            }
                         }
                     }
+                    // Outside the gate: MapTouch re-takes it to record the result.
+                    if (touch)
+                    {
+                        MapTouch(connector);
+                    }
                 }
+            }
+            catch (Exception ex)
+            {
+                Console.Error.WriteLine($"[y70-orient] retry loop stopped: {ex.Message}");
             }
             finally
             {
@@ -224,7 +275,9 @@ public sealed partial class LinuxDisplayOrientationProvider : IDisplayOrientatio
     [GeneratedRegex("\u001b\\[[0-9;]*m")]
     private static partial Regex AnsiRegex();
 
-    private static (int Exit, string Output) RunKScreenDoctor(string[] args)
+    private static (int Exit, string Output) RunKScreenDoctor(string[] args) => RunSessionTool("kscreen-doctor", args);
+
+    private static (int Exit, string Output) RunSessionTool(string tool, string[] args)
     {
         var runtimeDir = Environment.GetEnvironmentVariable("XDG_RUNTIME_DIR");
         if (string.IsNullOrEmpty(runtimeDir) && LinuxSession.SessionUid is { } uid)
@@ -244,7 +297,7 @@ public sealed partial class LinuxDisplayOrientationProvider : IDisplayOrientatio
         {
             // Run as the session user: root would leave root-owned Qt and cache
             // files in their home.
-            var (file, argv) = LinuxSession.WrapSpawnAsSessionUser("kscreen-doctor", new List<string>(args));
+            var (file, argv) = LinuxSession.WrapSpawnAsSessionUser(tool, new List<string>(args));
             var psi = new ProcessStartInfo(file)
             {
                 RedirectStandardOutput = true,
@@ -274,7 +327,7 @@ public sealed partial class LinuxDisplayOrientationProvider : IDisplayOrientatio
         }
         catch (Exception ex)
         {
-            return (NoWaylandExit, $"kscreen-doctor could not run: {ex.Message}");
+            return (NoWaylandExit, $"{tool} could not run: {ex.Message}");
         }
     }
 }
