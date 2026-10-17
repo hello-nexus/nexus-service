@@ -186,10 +186,13 @@ public sealed class SensorUniformSpecTests
             Assert.Contains(uniform, names);
             Assert.True(binding.IsUsable);
             Assert.Equal("quick", binding.Category);
+            // A rebake that adds, drops or re-defaults a uniform must regenerate the JSON.
+            var declared = specs.Where(kv => kv.Value.Declared && !ShaderEffect.BaseParamNames.Contains(kv.Key))
+                .ToDictionary(kv => kv.Key, kv => kv.Value.Default);
+            Assert.Equal(declared.Keys.OrderBy(k => k, StringComparer.Ordinal), slot.Params.Keys.OrderBy(k => k, StringComparer.Ordinal));
             foreach (var (name, value) in slot.Params)
             {
-                Assert.True(specs.TryGetValue(name, out var spec), $"{key}: {name} is not a param");
-                Assert.InRange(value, spec.Min, spec.Max);
+                Assert.Equal(declared[name], value, 4);
             }
         }
         Assert.Equal(4, bundle.Slots.Select(x => x!.Sensors!.Values.Single().Sensor).Distinct().Count());
