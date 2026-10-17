@@ -105,7 +105,7 @@ internal static class LinuxY70TouchMapper
     /// is told apart only by the Corsair endpoint on its hub, exactly as
     /// <see cref="TouchPanelCatalog"/> does on Windows).
     /// </summary>
-    internal static bool IsY70Touch(InputDeviceInfo d, IReadOnlyList<string> companions)
+    internal static bool IsY70Touch(InputDeviceInfo d, Func<IReadOnlyList<string>> companions)
     {
         if (!d.Touch || !Y70Handler.TouchDigitizers.Any(t => t.VendorId == d.Vendor && t.ProductId == d.Product))
         {
@@ -114,7 +114,7 @@ internal static class LinuxY70TouchMapper
         var info = new TouchMapDigitizerInfo
         {
             InterfacePath = $"VID_{d.Vendor:X4}&PID_{d.Product:X4}",
-            CompanionHardwareIds = companions.ToList(),
+            CompanionHardwareIds = companions().ToList(),
         };
         return !TouchPanelCatalog.IsClaimedByCompanionScopedEntry(info);
     }
@@ -143,7 +143,7 @@ internal static class LinuxY70TouchMapper
                 unreadable++;
                 continue;
             }
-            if (IsY70Touch(device, companions("event" + path[DevicePrefix.Length..])))
+            if (IsY70Touch(device, () => companions("event" + path[DevicePrefix.Length..])))
             {
                 candidates.Add((path, device));
             }
@@ -193,46 +193,34 @@ internal static class LinuxY70TouchMapper
             : new(TouchMapStatus.Retry, "session bus not reachable yet");
     }
 
-    /// <summary>
-    /// USB hub siblings of an input node's digitizer, read from sysfs: walk up
-    /// to the USB device, then list the other USB devices under the same hub.
-    /// Empty when the node has no USB ancestor (virtual or I2C devices).
-    /// </summary>
+    /// <summary>Hub-sibling hardware ids for an input node, read from sysfs.</summary>
     internal static IReadOnlyList<string> ReadCompanions(string sysName, string sysRoot = "/sys")
+        => LinuxSysfsInput.HubSiblings(sysName, sysRoot);
+
+    /// <summary>
+    /// Event nodes whose VID:PID is a known Y70 digitizer, read from sysfs without
+    /// spawning anything. A change in this set means a digitizer was replugged.
+    /// </summary>
+    internal static string SnapshotDigitizers(string sysRoot = "/sys")
     {
-        var result = new List<string>();
+        var nodes = new List<string>();
         try
         {
-            var link = new DirectoryInfo(Path.Combine(sysRoot, "class", "input", sysName));
-            var dir = (link.ResolveLinkTarget(true) as DirectoryInfo) ?? link;
-            while (dir is not null && !File.Exists(Path.Combine(dir.FullName, "idVendor")))
+            foreach (var dir in new DirectoryInfo(Path.Combine(sysRoot, "class", "input")).EnumerateDirectories("event*"))
             {
-                dir = dir.Parent;
-            }
-            if (dir?.Parent is null)
-            {
-                return result;
-            }
-            foreach (var sibling in dir.Parent.EnumerateDirectories())
-            {
-                if (sibling.FullName == dir.FullName)
+                var vid = LinuxSysfsInput.ReadHex(Path.Combine(dir.FullName, "device", "id", "vendor"));
+                var pid = LinuxSysfsInput.ReadHex(Path.Combine(dir.FullName, "device", "id", "product"));
+                if (vid is not null && pid is not null && Y70Handler.TouchDigitizers.Any(t => t.VendorId == vid && t.ProductId == pid))
                 {
-                    continue;
-                }
-                var vid = ReadFile(Path.Combine(sibling.FullName, "idVendor"));
-                var pid = ReadFile(Path.Combine(sibling.FullName, "idProduct"));
-                if (vid is not null && pid is not null)
-                {
-                    result.Add($"VID_{vid.ToUpperInvariant()}&PID_{pid.ToUpperInvariant()}");
+                    nodes.Add(dir.Name);
                 }
             }
         }
         catch (Exception)
         {
-            // A failed walk yields no companions, the same fail-open the Windows snapshot has for the Y70 entry.
+            // No sysfs input class (not Linux): an empty set never changes.
         }
-        return result;
+        nodes.Sort(StringComparer.Ordinal);
+        return string.Join(',', nodes);
     }
-
-    private static string? ReadFile(string path) => File.Exists(path) ? File.ReadAllText(path).Trim() : null;
 }

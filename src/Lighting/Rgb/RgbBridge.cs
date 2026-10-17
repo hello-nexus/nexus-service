@@ -2315,9 +2315,6 @@ public sealed class RgbBridge : IDisposable
         }
     }
 
-    /// <summary>Raised when the USB device set changed between two polls; consumers must be cheap and debounce.</summary>
-    public static event Action? UsbTopologyChanged;
-
     private void CheckUsbTopology()
     {
         Dictionary<string, int> current;
@@ -2343,8 +2340,6 @@ public sealed class RgbBridge : IDisposable
         {
             return;
         }
-        try { UsbTopologyChanged?.Invoke(); }
-        catch (Exception ex) { Console.Error.WriteLine($"[rgb-bridge] usb topology subscriber failed: {ex.Message}"); }
         // Every detection pass walks every HID device on the bus, which USB
         // audio devices have been seen to choke on, so one is spent only on a
         // known RGB device the daemon's own hotplug did not pick up.

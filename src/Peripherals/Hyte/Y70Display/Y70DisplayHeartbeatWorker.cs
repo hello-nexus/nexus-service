@@ -61,6 +61,10 @@ public sealed class Y70DisplayHeartbeatWorker : BackgroundService
         // Read before the gate: the panel kiosk is a display surface, not
         // device control, so it must still open when Nexus Control is off.
         Detected = _y70.IsConnected();
+        if (OperatingSystem.IsLinux())
+        {
+            Nexus.Service.Platform.Displays.LinuxDisplayOrientationProvider.PollDigitizers();
+        }
 
         if (!_gate.IsEnabled(Y70Handler.HandlerId))
         {

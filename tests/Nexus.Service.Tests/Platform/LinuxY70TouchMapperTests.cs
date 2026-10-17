@@ -100,7 +100,7 @@ public class LinuxY70TouchMapperTests
     [InlineData(1133, 2373, true, false)]
     public void IsY70Touch_requires_touch_capability_and_a_known_digitizer(int vendor, int product, bool touch, bool expected)
     {
-        Assert.Equal(expected, LinuxY70TouchMapper.IsY70Touch(new("d", vendor, product, touch, ""), NoCompanions("event7")));
+        Assert.Equal(expected, LinuxY70TouchMapper.IsY70Touch(new("d", vendor, product, touch, ""), () => NoCompanions("event7")));
     }
 
     [Fact]
@@ -270,7 +270,8 @@ public class LinuxY70TouchMapperTests
             File.WriteAllText(Path.Combine(sibling, "idVendor"), "1b1c\n");
             File.WriteAllText(Path.Combine(sibling, "idProduct"), "1d0d\n");
             Directory.CreateDirectory(Path.Combine(root, "class", "input"));
-            Directory.CreateSymbolicLink(Path.Combine(root, "class", "input", "event7"), node);
+            // Real sysfs links are relative to the link's own directory.
+            Directory.CreateSymbolicLink(Path.Combine(root, "class", "input", "event7"), Path.GetRelativePath(Path.Combine(root, "class", "input"), node));
 
             Assert.Equal(new[] { "VID_1B1C&PID_1D0D" }, LinuxY70TouchMapper.ReadCompanions("event7", root));
         }
@@ -289,33 +290,74 @@ public class LinuxY70TouchMapperTests
     private static int CountSets(FakeBus bus) => bus.Calls.FindAll(c => c.StartsWith("set-property")).Count;
 
     [Fact]
-    public void Final_verdict_is_not_retried_and_nonfinal_is_()
+    public void Final_verdict_is_not_retried()
     {
         var bus = Box();
-        bus.Devices.Remove("/org/kde/KWin/InputDevice/event7");
         bus.Devices["/org/kde/KWin/InputDevice/event7"] = ("Other", 1, 2, true, "");
-        var provider = new LinuxDisplayOrientationProvider(() => "DP-1", _ => (0, "Output: 2 DP-1 u\n\tRotation: 8\n"), bus.Run, NoCompanions);
+        var provider = new LinuxDisplayOrientationProvider(() => "DP-1", _ => (0, ""), bus.Run, NoCompanions);
 
         provider.MapTouch("DP-1");
-        var callsAfterFirst = bus.Calls.Count;
-        Thread.Sleep(1500);
 
-        Assert.Equal(callsAfterFirst, bus.Calls.Count);
+        Assert.False(provider.TouchRetryPending);
     }
 
     [Fact]
-    public void Usb_topology_change_remaps_a_replugged_digitizer()
+    public void Session_not_ready_is_retried()
     {
         var bus = Box();
-        var provider = new LinuxDisplayOrientationProvider(
-            () => "DP-1", _ => (0, "Output: 2 DP-1 u\n\tRotation: 8\n"), bus.Run, NoCompanions)
-        { TopologyDebounceMs = 20 };
-        provider.MapTouch("DP-1");
-        // Replug: KWin recreates the node with no mapping.
-        bus.Devices["/org/kde/KWin/InputDevice/event7"] = ("wch.cn TouchScreen", 0x27c0, 0x0859, true, "");
+        bus.TreeExit = 1;
+        var provider = new LinuxDisplayOrientationProvider(() => "DP-1", _ => (0, ""), bus.Run, NoCompanions);
 
-        provider.OnUsbTopologyChanged();
-        provider.OnUsbTopologyChanged();
+        provider.MapTouch("DP-1");
+
+        Assert.True(provider.TouchRetryPending);
+    }
+
+    [Fact]
+    public void SnapshotDigitizers_lists_only_known_digitizer_nodes()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "sysfs-" + Guid.NewGuid().ToString("N"));
+        try
+        {
+            void Node(string name, string vid, string pid)
+            {
+                var id = Path.Combine(root, "class", "input", name, "device", "id");
+                Directory.CreateDirectory(id);
+                File.WriteAllText(Path.Combine(id, "vendor"), vid + "\n");
+                File.WriteAllText(Path.Combine(id, "product"), pid + "\n");
+            }
+            Node("event7", "27c0", "0859");
+            Node("event3", "046d", "0945");
+            Node("event12", "222a", "0001");
+
+            Assert.Equal("event12,event7", LinuxY70TouchMapper.SnapshotDigitizers(root));
+            Assert.Equal("", LinuxY70TouchMapper.SnapshotDigitizers(Path.Combine(root, "missing")));
+        }
+        finally
+        {
+            Directory.Delete(root, true);
+        }
+    }
+
+    [Fact]
+    public void Digitizer_set_change_remaps_a_replugged_digitizer()
+    {
+        var bus = Box();
+        var snapshot = "event7";
+        var provider = new LinuxDisplayOrientationProvider(
+            () => "DP-1", _ => (0, "Output: 2 DP-1 u\n\tRotation: 8\n"), bus.Run, NoCompanions, () => snapshot)
+        { TopologyDebounceMs = 20 };
+        provider.OnDigitizerPoll();
+        provider.MapTouch("DP-1");
+        // Unchanged set: no work.
+        provider.OnDigitizerPoll();
+        Assert.Equal(1, CountSets(bus));
+
+        // Replug: KWin recreates the node with no mapping and the node number changes.
+        bus.Devices["/org/kde/KWin/InputDevice/event7"] = ("wch.cn TouchScreen", 0x27c0, 0x0859, true, "");
+        snapshot = "event11";
+        provider.OnDigitizerPoll();
+        provider.OnDigitizerPoll();
 
         Assert.True(WaitFor(() => bus.Devices["/org/kde/KWin/InputDevice/event7"].Output == "DP-1"));
         Assert.Equal(2, CountSets(bus));
