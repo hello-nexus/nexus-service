@@ -26,6 +26,34 @@ public sealed partial class LinuxDisplayOrientationProvider : IDisplayOrientatio
     private readonly Func<string[], (int Exit, string Output)> _run;
     private readonly LinuxY70TouchMapper.BusRunner? _bus;
     private readonly LinuxY70TouchMapper.CompanionLookup _companions;
+    private readonly Func<string> _digitizerSnapshot;
+    private string? _lastDigitizers;
+
+    private static event Action? DigitizerPoll;
+
+    /// <summary>Called on each Y70 heartbeat tick; remaps touch when the digitizer node set changed. Reads sysfs only.</summary>
+    public static void PollDigitizers() => DigitizerPoll?.Invoke();
+
+    internal bool TouchRetryPending
+    {
+        get
+        {
+            lock (_gate)
+            {
+                return _touchPending;
+            }
+        }
+    }
+
+    internal void OnDigitizerPoll()
+    {
+        var now = _digitizerSnapshot();
+        var previous = Interlocked.Exchange(ref _lastDigitizers, now);
+        if (previous is not null && previous != now)
+        {
+            OnUsbTopologyChanged();
+        }
+    }
     private readonly object _gate = new();
     private string? _pendingOrientation;
     private bool _touchPending;
@@ -45,15 +73,17 @@ public sealed partial class LinuxDisplayOrientationProvider : IDisplayOrientatio
         // A root daemon that booted before login has no session to rotate in;
         // the orientation is applied once on detection, so replay it here.
         LinuxSession.SessionAdopted += OnSessionAdopted;
-        Nexus.Service.Lighting.Rgb.RgbBridge.UsbTopologyChanged += OnUsbTopologyChanged;
+        DigitizerPoll += OnDigitizerPoll;
     }
 
     internal LinuxDisplayOrientationProvider(
         Func<string> y70Connector,
         Func<string[], (int Exit, string Output)> run,
         LinuxY70TouchMapper.BusRunner? bus = null,
-        LinuxY70TouchMapper.CompanionLookup? companions = null)
+        LinuxY70TouchMapper.CompanionLookup? companions = null,
+        Func<string>? digitizerSnapshot = null)
     {
+        _digitizerSnapshot = digitizerSnapshot ?? (() => LinuxY70TouchMapper.SnapshotDigitizers());
         _companions = companions ?? (name => LinuxY70TouchMapper.ReadCompanions(name));
         _y70Connector = y70Connector;
         _run = run;
@@ -93,13 +123,13 @@ public sealed partial class LinuxDisplayOrientationProvider : IDisplayOrientatio
                 _lastTouchLog = line;
                 Console.Error.WriteLine(line);
             }
-        }
-        lock (_gate)
-        {
-            _touchPending = result.Status == LinuxY70TouchMapper.TouchMapStatus.Retry;
-            if (_touchPending)
+            lock (_gate)
             {
-                StartRetry();
+                _touchPending = result.Status == LinuxY70TouchMapper.TouchMapStatus.Retry;
+                if (_touchPending)
+                {
+                    StartRetry();
+                }
             }
         }
     }
