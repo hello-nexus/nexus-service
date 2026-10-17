@@ -11,7 +11,8 @@ namespace Nexus.Service.Activity;
 /// Windows-only audio provider that captures via WASAPI the endpoint picked in
 /// Lighting settings while it is plugged in, otherwise the default of the picked
 /// direction: loopback of a render endpoint (whatever is playing) or a capture
-/// endpoint (microphone / line-in).
+/// endpoint (microphone / line-in). An input pick falls back to the default
+/// output loopback on the first open when no input endpoint opens.
 ///
 /// Windows path; <see cref="BeatsProvider"/> is the Linux ffmpeg fallback.
 /// WASAPI is built into Windows (Vista+) and needs no extra binary, driver
@@ -51,16 +52,23 @@ public sealed class WasapiLoopbackBeatsProvider : IBeatsProvider
             }
 
             _running = true;
+            _cts = new CancellationTokenSource();
         }
 
+        CancellationTokenSource cts;
+        CancellationToken token;
+        lock (_lock)
+        {
+            cts = _cts!;
+            token = cts.Token;
+        }
         try
         {
-            _cts = new CancellationTokenSource();
             // Dedicated thread so the WASAPI COM objects are accessed from a
             // single, deterministic thread the whole time (Task.Run would
             // thread-hop on every await and the COM pointers are apartment-
             // affine). Background so it doesn't block CLR shutdown.
-            _captureThread = new Thread(() => CaptureLoop(_cts.Token))
+            _captureThread = new Thread(() => CaptureLoop(cts, token))
             {
                 IsBackground = true,
                 Name = "wasapi-loopback-capture",
@@ -71,12 +79,18 @@ public sealed class WasapiLoopbackBeatsProvider : IBeatsProvider
         {
             Nexus.Service.Lighting.Engine.Gpu.GpuContext.Log($"[wasapi] failed to start: {ex.Message}");
             lock (_lock)
-            { _running = false; }
+            {
+                if (ReferenceEquals(_cts, cts))
+                {
+                    _running = false;
+                }
+            }
         }
     }
 
     public void Stop()
     {
+        CancellationTokenSource? cts;
         lock (_lock)
         {
             if (!_running)
@@ -85,34 +99,42 @@ public sealed class WasapiLoopbackBeatsProvider : IBeatsProvider
             }
 
             _running = false;
+            cts = _cts;
+            _cts = null;
         }
 
         try
-        { _cts?.Cancel(); }
+        { cts?.Cancel(); }
         catch { }
         try
-        { _cts?.Dispose(); }
+        { cts?.Dispose(); }
         catch { }
-        _cts = null;
 
         AudioState.Reset();
     }
 
     public void Dispose() => Stop();
 
-    private void CaptureLoop(CancellationToken ct)
+    private void CaptureLoop(CancellationTokenSource owner, CancellationToken ct)
     {
         var (initialInput, initial) = PreferredTarget();
         var cap = OpenWithFallback(initialInput, initial, fallbackToOutput: true, sameDirectionDefault: true, out var openError);
         if (cap is null)
         {
             Nexus.Service.Lighting.Engine.Gpu.GpuContext.Log($"[wasapi] open failed: {openError}");
-            // Nothing opened: let a later Start() retry instead of leaving a dead thread marked running.
+            // Nothing opened: let a later Start() retry, unless a newer run already replaced this one.
             lock (_lock)
-            { _running = false; }
+            {
+                if (ReferenceEquals(_cts, owner))
+                {
+                    _running = false;
+                }
+            }
             return;
         }
-        Nexus.Service.Lighting.Engine.Gpu.GpuContext.Log($"[wasapi] opened: {cap.SampleRate} Hz, {cap.Channels} ch");
+        Nexus.Service.Lighting.Engine.Gpu.GpuContext.Log(
+            $"[wasapi] opened {(cap.Input ? "input" : "output")} {cap.DeviceId}: {cap.SampleRate} Hz, {cap.Channels} ch"
+            + (openError is null ? "" : $" (fell back after: {openError})"));
 
         try
         {
@@ -252,7 +274,7 @@ public sealed class WasapiLoopbackBeatsProvider : IBeatsProvider
 
     /// <summary>
     /// Opens the pick, then (optionally) the same-direction default, then (optionally) the default output so
-    /// capture keeps running when no microphone resolves. Null with the first failure message when all fail.
+    /// capture keeps running when no microphone resolves. Error joins every failed attempt, in order.
     /// </summary>
     private static WasapiCapturer? OpenWithFallback(bool input, string id, bool fallbackToOutput, bool sameDirectionDefault, out string? error)
     {
@@ -271,7 +293,7 @@ public sealed class WasapiLoopbackBeatsProvider : IBeatsProvider
             try
             { return WasapiCapturer.Open(tryInput, tryId); }
             catch (Exception ex)
-            { error ??= ex.Message; }
+            { error = error is null ? ex.Message : $"{error} | {ex.Message}"; }
         }
         return null;
     }
@@ -380,7 +402,7 @@ internal sealed unsafe class WasapiCapturer : IDisposable
                 Nexus.Service.Lighting.Engine.Gpu.GpuContext.Log($"[wasapi] non-float format detected (bits={bitsPerSample}); will read raw");
             }
 
-            // The capture loop sleeps 10ms between drained packets, well
+            // The capture loop sleeps briefly between drained packets, well
             // below this buffer's overflow window.
             long hnsBuffer = 200 * ReftimesPerMs;
             // IAudioClient.Initialize (slot 3).
