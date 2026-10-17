@@ -219,12 +219,12 @@ public sealed class BrightnessScheduleRoutesTests : IClassFixture<StubDeviceHost
         await resolver.StartAsync(default);
         try
         {
-            await firstPass;
+            await firstPass.WaitAsync(TimeSpan.FromSeconds(10));
             await _client.PostAsync("/lighting/brightness-schedule", Json(
                 "{\"enabled\":false,\"sunShift\":true,\"points\":" + TwoPoints + ",\"location\":null}"));
             var next = resolver.NextPass;
             resolver.Request(force: true);
-            await next;
+            await next.WaitAsync(TimeSpan.FromSeconds(10));
 
             Assert.Equal(baseline, weather.ApproximateCalls);
             Assert.Null(Nexus.Service.Lighting.Sun.SunShift.AutoLocation);

@@ -179,6 +179,26 @@ public sealed class SunShiftTests
     }
 
     [Fact]
+    public void Default_schedule_check_accepts_the_stock_points_in_any_order()
+    {
+        var reversed = MasterBrightness.DefaultSchedule();
+        reversed.Reverse();
+
+        Assert.True(MasterBrightness.IsDefaultSchedule(MasterBrightness.DefaultSchedule()));
+        Assert.True(MasterBrightness.IsDefaultSchedule(reversed));
+    }
+
+    [Fact]
+    public void Default_schedule_check_refuses_a_reordered_list_with_one_changed_level()
+    {
+        var reordered = MasterBrightness.DefaultSchedule();
+        reordered.Reverse();
+        reordered[2].Brightness += 1;
+
+        Assert.False(MasterBrightness.IsDefaultSchedule(reordered));
+    }
+
+    [Fact]
     public void Plan_is_cached_per_date_and_place()
     {
         SunShift.ResetForTests();
