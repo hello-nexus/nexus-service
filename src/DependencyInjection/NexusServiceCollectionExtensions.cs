@@ -1950,6 +1950,13 @@ public static class NexusServiceCollectionExtensions
 #if MACOS
         services.AddSingleton<Nexus.Service.Platform.Displays.IDisplayOrientationProvider,
             Nexus.Service.Platform.Displays.MacDisplayOrientationProvider>();
+#elif LINUX
+        // Rotation is a KDE compositor setting; the connector comes from the
+        // topology so no output name is hardcoded.
+        services.AddSingleton<Nexus.Service.Platform.Displays.IDisplayOrientationProvider>(sp =>
+            new Nexus.Service.Platform.Displays.LinuxDisplayOrientationProvider(() =>
+                Nexus.Service.Platform.Linux.LinuxX11Outputs.ConnectorFromDisplayId(
+                    sp.GetRequiredService<Nexus.Service.Platform.Displays.DisplayTopologyService>().Y70DisplayId())));
 #else
         services.AddSingleton<Nexus.Service.Platform.Displays.IDisplayOrientationProvider,
             Nexus.Service.Platform.Displays.NoopDisplayOrientationProvider>();
