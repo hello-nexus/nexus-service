@@ -294,7 +294,7 @@ public static class CloudRoutes
             {
                 return CloudApiFailure(result.StatusCode, result.ErrorCode, result.ErrorMessage, result.Offline);
             }
-            return Results.Text(result.Value!.Body, result.Value.ContentType, statusCode: result.StatusCode);
+            return RawPassthrough(result.Value!, result.StatusCode);
         });
 
         // Removes the caller's own leaderboard entry. The body carries the
@@ -314,7 +314,7 @@ public static class CloudRoutes
             {
                 return CloudApiFailure(result.StatusCode, result.ErrorCode, result.ErrorMessage, result.Offline);
             }
-            return Results.Text(result.Value!.Body, result.Value.ContentType, statusCode: result.StatusCode);
+            return RawPassthrough(result.Value!, result.StatusCode);
         });
 
         // Thin forwarder for the panel games' score submission, same raw
@@ -342,7 +342,7 @@ public static class CloudRoutes
             {
                 return CloudApiFailure(result.StatusCode, result.ErrorCode, result.ErrorMessage, result.Offline);
             }
-            return Results.Text(result.Value!.Body, result.Value.ContentType, statusCode: result.StatusCode);
+            return RawPassthrough(result.Value!, result.StatusCode);
         }).AllowPanel();
 
         // Read side of the same two boards. The browser cannot attach the build
@@ -388,7 +388,7 @@ public static class CloudRoutes
             {
                 return CloudApiFailure(result.StatusCode, result.ErrorCode, result.ErrorMessage, result.Offline);
             }
-            return Results.Text(result.Value!.Body, result.Value.ContentType, statusCode: result.StatusCode);
+            return RawPassthrough(result.Value!, result.StatusCode);
         });
 
         app.MapPut("/cloud/account/devices/{installId}", async (string installId, HttpRequest req, CloudAccountService accounts, ICloudApiClient api, CancellationToken ct) =>
@@ -406,7 +406,7 @@ public static class CloudRoutes
             {
                 return CloudApiFailure(result.StatusCode, result.ErrorCode, result.ErrorMessage, result.Offline);
             }
-            return Results.Text(result.Value!.Body, result.Value.ContentType, statusCode: result.StatusCode);
+            return RawPassthrough(result.Value!, result.StatusCode);
         });
 
         app.MapDelete("/cloud/account/devices/{installId}", async (string installId, CloudAccountService accounts, ICloudApiClient api, CancellationToken ct) =>
@@ -417,7 +417,7 @@ public static class CloudRoutes
             {
                 return CloudApiFailure(result.StatusCode, result.ErrorCode, result.ErrorMessage, result.Offline);
             }
-            return Results.Text(result.Value!.Body, result.Value.ContentType, statusCode: result.StatusCode);
+            return RawPassthrough(result.Value!, result.StatusCode);
         });
     }
 
@@ -488,7 +488,15 @@ public static class CloudRoutes
         {
             return CloudApiFailure(result.StatusCode, result.ErrorCode, result.ErrorMessage, result.Offline);
         }
-        return Results.Text(result.Value!.Body, result.Value.ContentType, statusCode: result.StatusCode);
+        return RawPassthrough(result.Value!, result.StatusCode);
+    }
+
+    /// <summary>Kestrel throws if a body is written under 204/205/304, so those relay bodyless.</summary>
+    private static IResult RawPassthrough(CloudRawResponse raw, int statusCode)
+    {
+        return statusCode is 204 or 205 or 304
+            ? Results.StatusCode(statusCode)
+            : Results.Text(raw.Body, raw.ContentType, statusCode: statusCode);
     }
 
     private static IResult CloudApiFailure(int statusCode, string? errorCode, string? errorMessage, bool offline, string? retryAt = null, string? email = null)

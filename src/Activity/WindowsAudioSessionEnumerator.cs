@@ -5,6 +5,7 @@ using System.Diagnostics;
 using System.Runtime.InteropServices;
 using System.Runtime.Versioning;
 using System.Threading;
+using Nexus.Service.Lifecycle;
 using Nexus.Service.Models.Activity;
 
 namespace Nexus.Service.Activity;
@@ -256,7 +257,7 @@ public sealed unsafe class WindowsAudioSessionEnumerator : IDisposable
     {
         try
         {
-            var path = proc.MainModule?.FileName;
+            var path = OwnNexusExe.ImagePathOf(proc.Id);
             if (!string.IsNullOrEmpty(path))
             {
                 var description = FileVersionInfo.GetVersionInfo(path).FileDescription;
@@ -265,7 +266,7 @@ public sealed unsafe class WindowsAudioSessionEnumerator : IDisposable
         }
         catch
         {
-            // MainModule throws for processes at a higher integrity level.
+            // Unreadable image: fall back to the process name.
         }
         // InvariantGlobalization is on, so no culture-aware title casing.
         return char.ToUpperInvariant(key[0]) + key[1..];

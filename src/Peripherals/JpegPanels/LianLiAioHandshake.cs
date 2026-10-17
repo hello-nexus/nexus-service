@@ -67,6 +67,9 @@ public sealed class LianLiAioHandshake : IJpegPanelHandshake, IJpegPanelBrightne
 
     private const int KeepaliveIntervalMs = 1000;
 
+    /// <summary>Reads a keepalive spends looking for the status reply behind queued acks.</summary>
+    private const int ObservedMaxReads = 4;
+
     /// <summary>Consecutive failed status writes before the handle counts as dead.</summary>
     private const int DeadHandleTicks = 3;
     private const int HandshakeTimeoutMs = 1000;
@@ -103,6 +106,9 @@ public sealed class LianLiAioHandshake : IJpegPanelHandshake, IJpegPanelBrightne
     private int _tickWriteFailures;
     private readonly Func<long> _clock;
     private byte[]? _report;
+
+    private Action<IHidDevice, byte[], LianLiAioStatus?>? _keepaliveObserver;
+    private int _observedProductId;
 
     private long _lastKeepaliveMs = NeverMs;
     private long _lastRecoveryMs = NeverMs;
@@ -165,6 +171,16 @@ public sealed class LianLiAioHandshake : IJpegPanelHandshake, IJpegPanelBrightne
             }
         }
         _cancel.ThrowIfCancellationRequested();
+    }
+
+    /// <summary>
+    /// Hands the observer the status reply of each keepalive on <paramref name="productId"/>, under the
+    /// hub lock. Other products keep the single drained read.
+    /// </summary>
+    public void SetKeepaliveObserver(int productId, Action<IHidDevice, byte[], LianLiAioStatus?> observer)
+    {
+        _observedProductId = productId;
+        _keepaliveObserver = observer;
     }
 
     public int SettleMs => _referenceSession ? SettleDelayMs : 0;
@@ -313,11 +329,21 @@ public sealed class LianLiAioHandshake : IJpegPanelHandshake, IJpegPanelBrightne
         if (nowMs - _lastKeepaliveMs >= KeepaliveIntervalMs)
         {
             _lastKeepaliveMs = nowMs;
-            _tickWriteFailures = SendHandshake(device, report, readReply: false) ? 0 : _tickWriteFailures + 1;
+            var observer = _keepaliveObserver;
+            bool observed = observer != null && device.ProductId == _observedProductId;
+            LianLiAioStatus? status = null;
+            bool sent = observed
+                ? SendObservedHandshake(device, report, out status)
+                : SendHandshake(device, report, readReply: false);
+            _tickWriteFailures = sent ? 0 : _tickWriteFailures + 1;
             if (_tickWriteFailures >= DeadHandleTicks)
             {
                 ServiceLog.Warn($"[{_handlerId}] status writes keep failing; dropping the handle to re-attach");
                 return false;
+            }
+            if (observed && sent)
+            {
+                observer!(device, report, status);
             }
         }
 
@@ -451,6 +477,33 @@ public sealed class LianLiAioHandshake : IJpegPanelHandshake, IJpegPanelBrightne
             }
         }
         return false;
+    }
+
+    /// <summary>The keepalive for an observed product: frame acks can queue ahead of the status reply, so a few reads look for it.</summary>
+    private bool SendObservedHandshake(IHidDevice device, byte[] report, out LianLiAioStatus? status)
+    {
+        status = null;
+        LianLiAioProtocol.FillACommand(report, CmdHandshake, ReadOnlySpan<byte>.Empty);
+        if (!device.Write(report))
+        {
+            return false;
+        }
+        Span<byte> reply = stackalloc byte[64];
+        for (int i = 0; i < ObservedMaxReads; i++)
+        {
+            reply.Clear();
+            int read = device.Read(reply, AckTimeoutMs);
+            if (read <= 0)
+            {
+                break;
+            }
+            status = LianLiAioProtocol.ParseStatus(reply[..read]);
+            if (status != null)
+            {
+                break;
+            }
+        }
+        return true;
     }
 
     private static void DrainAck(IHidDevice device)

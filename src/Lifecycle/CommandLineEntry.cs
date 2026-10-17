@@ -14,6 +14,9 @@ internal static class CommandLineEntry
             ["--uninstall"] = WindowsServiceInstaller.RunUninstall,
             ["--start-service"] = static _ => WindowsServiceInstaller.RunStartService(),
             ["--helper"] = WindowsUserHelper.Run,
+            // Updater splash, run from a NexusUpdater.exe copy so the installer's
+            // Nexus.exe kill leaves it on screen (see UpdaterSplashWindow).
+            [UpdaterSplashArgs.Flag] = UpdaterSplashWindow.Run,
             // Throwaway render-GPU probe (see GpuProbe): optionally set the
             // GpuPreference class, create a GL context, print the bound renderer.
             ["--gpu-probe"] = GpuProbe.Run,

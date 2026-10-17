@@ -34,6 +34,19 @@ internal static partial class OwnNexusExe
     public static bool IsOwnCommand(string? command, IEnumerable<string?> ownExes)
         => !string.IsNullOrWhiteSpace(command) && IsOwn(ConflictAutostart.ExecutablePath(command), ownExes);
 
+    /// <summary>Full image path of <paramref name="pid"/>, or null when unreadable. Windows asks for the limited-query right only; Process.MainModule would request VM_READ.</summary>
+    public static string? ImagePathOf(int pid)
+    {
+#if WINDOWS
+        if (OperatingSystem.IsWindows())
+        {
+            return ImagePath(pid);
+        }
+#endif
+        using var proc = System.Diagnostics.Process.GetProcessById(pid);
+        return proc.MainModule?.FileName;
+    }
+
     private static string Normalize(string? path)
         => path is null ? "" : path.Trim().Trim('"').Replace('/', '\\');
 

@@ -130,6 +130,70 @@ public sealed class AuthMiddlewareIntegrationTests : IClassFixture<NexusAppFacto
         Assert.Equal(StatusCodes.Status200OK, ctx.Response.StatusCode);
     }
 
+    [Theory]
+    [InlineData("GET")]
+    [InlineData("POST")]
+    public async Task Fast_startup_route_404s_from_lan(string method)
+    {
+        var ctx = await _factory.Server.SendAsync(c =>
+        {
+            c.Request.Method = method;
+            c.Request.Path = "/service/fast-startup";
+            c.Request.Headers.Authorization = "Bearer " + Token;
+            c.Connection.RemoteIpAddress = IPAddress.Parse("192.168.1.50");
+        });
+
+        Assert.Equal(StatusCodes.Status404NotFound, ctx.Response.StatusCode);
+    }
+
+    [Fact]
+    public async Task Fast_startup_route_401s_from_loopback_without_token()
+    {
+        var ctx = await _factory.Server.SendAsync(c =>
+        {
+            c.Request.Method = "GET";
+            c.Request.Path = "/service/fast-startup";
+            c.Connection.RemoteIpAddress = IPAddress.Loopback;
+        });
+
+        Assert.Equal(StatusCodes.Status401Unauthorized, ctx.Response.StatusCode);
+    }
+
+#if !WINDOWS
+    [Fact]
+    public async Task Fast_startup_get_reports_unsupported_off_windows()
+    {
+        var ctx = await _factory.Server.SendAsync(c =>
+        {
+            c.Request.Method = "GET";
+            c.Request.Path = "/service/fast-startup";
+            c.Request.Headers.Authorization = "Bearer " + Token;
+            c.Connection.RemoteIpAddress = IPAddress.Loopback;
+        });
+
+        Assert.Equal(StatusCodes.Status200OK, ctx.Response.StatusCode);
+        using var reader = new System.IO.StreamReader(ctx.Response.Body);
+        Assert.Equal("{\"supported\":false,\"enabled\":false,\"policyManaged\":false,\"hibernateAvailable\":false}",
+            await reader.ReadToEndAsync());
+    }
+
+    [Fact]
+    public async Task Fast_startup_post_404s_off_windows()
+    {
+        var client = _factory.CreateClient();
+        using var req = new HttpRequestMessage(HttpMethod.Post, "/service/fast-startup")
+        {
+            Content = new StringContent("{\"enabled\":true}", System.Text.Encoding.UTF8, "application/json"),
+        };
+        req.Headers.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", Token);
+        req.Headers.Add("Sec-Fetch-Site", "same-origin");
+
+        var res = await client.SendAsync(req);
+
+        Assert.Equal(System.Net.HttpStatusCode.NotFound, res.StatusCode);
+    }
+#endif
+
     // ── CORS ─────────────────────────────────────────────────────────────────
 
     [Fact]

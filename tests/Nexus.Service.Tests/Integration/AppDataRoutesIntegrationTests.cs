@@ -140,6 +140,21 @@ public sealed class AppDataRoutesIntegrationTests : IClassFixture<AppDataRoutesF
     }
 
     [Fact]
+    public async Task Put_maps_a_persistent_IOException_to_503()
+    {
+        var client = AuthedClient();
+        var seed = await client.PutAsJsonAsync($"/apps-api/data/{AppDataRoutesFactory.AppId}/seed-io", new { baseRevision = 0, data = 1 });
+        Assert.Equal(HttpStatusCode.OK, seed.StatusCode);
+        var appDir = Path.GetDirectoryName(Directory.GetFiles(_factory.DataRoot, "seed-io.json", SearchOption.AllDirectories).Single())!;
+        // A directory squatting on the target path makes the atomic move fail on every platform.
+        Directory.CreateDirectory(Path.Combine(appDir, "blocked-io.json"));
+
+        var res = await client.PutAsJsonAsync($"/apps-api/data/{AppDataRoutesFactory.AppId}/blocked-io", new { baseRevision = 0, data = 2 });
+
+        Assert.Equal(HttpStatusCode.ServiceUnavailable, res.StatusCode);
+    }
+
+    [Fact]
     public async Task Put_with_a_stale_baseRevision_returns_409_with_the_current_document()
     {
         var client = AuthedClient();
