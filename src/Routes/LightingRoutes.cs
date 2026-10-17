@@ -106,20 +106,31 @@ public static class LightingRoutes
         app.MapGet("/lighting/audio-output", (Nexus.Service.Persistence.IConfigStore store) =>
         {
             var l = store.Load().Lighting;
-            return new Models.Lighting.AudioOutputBody { DeviceId = l.AudioOutputDeviceId, DeviceName = l.AudioOutputDeviceName };
+            return new Models.Lighting.AudioOutputBody
+            {
+                DeviceId = l.AudioOutputDeviceId,
+                DeviceName = l.AudioOutputDeviceName,
+                Direction = l.AudioOutputDeviceDirection == "input" ? "input" : "output",
+            };
         }).AllowPanel();
         app.MapPost("/lighting/audio-output", (Models.Lighting.AudioOutputBody body,
             Nexus.Service.Persistence.IConfigStore store,
             MultiplexHub hub) =>
         {
+            var direction = string.IsNullOrEmpty(body.Direction) ? "output" : body.Direction;
+            if (direction != "output" && direction != "input")
+            {
+                return Results.Json(ApiResponse.Fail("direction must be output or input"), AppJsonContext.Default.ApiResponse, statusCode: StatusCodes.Status400BadRequest);
+            }
             store.Update(s =>
             {
                 s.Lighting.AudioOutputDeviceId = body.DeviceId ?? "";
                 s.Lighting.AudioOutputDeviceName = body.DeviceName ?? "";
+                s.Lighting.AudioOutputDeviceDirection = direction;
             });
             // Settings and the lighting canvas each show the pick; the bump makes the other re-read it.
             PanelTopics.BroadcastLighting(hub);
-            return ApiResponse.Ok();
+            return Results.Json(ApiResponse.Ok(), AppJsonContext.Default.ApiResponse);
         }).AllowPanel();
         // Blank lighting while the host sleeps. Host-only: this is a property of
         // the machine going to sleep, not something a paired phone should flip.

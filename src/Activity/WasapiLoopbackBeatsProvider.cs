@@ -102,10 +102,10 @@ public sealed class WasapiLoopbackBeatsProvider : IBeatsProvider
     private void CaptureLoop(CancellationToken ct)
     {
         WasapiCapturer? cap = null;
-        var initial = PreferredDeviceId();
+        var (initialInput, initial) = PreferredTarget();
         try
         {
-            cap = WasapiCapturer.Open(initial);
+            cap = WasapiCapturer.Open(initialInput, initial);
             Nexus.Service.Lighting.Engine.Gpu.GpuContext.Log($"[wasapi] opened: {cap.SampleRate} Hz, {cap.Channels} ch");
         }
         catch (Exception ex)
@@ -119,7 +119,7 @@ public sealed class WasapiLoopbackBeatsProvider : IBeatsProvider
             // default meanwhile and let the target check retry the pick.
             try
             {
-                cap = WasapiCapturer.Open("");
+                cap = WasapiCapturer.Open(initialInput, "");
                 Nexus.Service.Lighting.Engine.Gpu.GpuContext.Log($"[wasapi] opened default instead: {cap.SampleRate} Hz, {cap.Channels} ch");
             }
             catch (Exception fallbackEx)
@@ -155,15 +155,15 @@ public sealed class WasapiLoopbackBeatsProvider : IBeatsProvider
                 if (Environment.TickCount64 - lastTargetTick >= TargetCheckMs)
                 {
                     lastTargetTick = Environment.TickCount64;
-                    var preferred = PreferredDeviceId();
-                    var target = cap.TargetId(preferred);
+                    var (preferredInput, preferred) = PreferredTarget();
+                    var target = cap.TargetId(preferredInput, preferred);
                     // Invalidated covers a replug of the same endpoint (same id)
                     // and a format change in Sound settings.
-                    if (target.Length > 0 && (target != cap.DeviceId || cap.Invalidated))
+                    if (target.Length > 0 && (target != cap.DeviceId || preferredInput != cap.Input || cap.Invalidated))
                     {
                         try
                         {
-                            var next = WasapiCapturer.Open(preferred);
+                            var next = WasapiCapturer.Open(preferredInput, preferred);
                             cap.Dispose();
                             cap = next;
                             channels = cap.Channels;
@@ -263,7 +263,11 @@ public sealed class WasapiLoopbackBeatsProvider : IBeatsProvider
         }
     }
 
-    private string PreferredDeviceId() => _store.Load().Lighting.AudioOutputDeviceId ?? "";
+    private (bool Input, string Id) PreferredTarget()
+    {
+        var l = _store.Load().Lighting;
+        return (l.AudioOutputDeviceDirection == "input", l.AudioOutputDeviceId ?? "");
+    }
 }
 
 /// <summary>
@@ -278,6 +282,8 @@ internal sealed unsafe class WasapiCapturer : IDisposable
     public int Channels { get; private set; }
     /// <summary>IMMDevice id of the endpoint this capturer is bound to.</summary>
     public string DeviceId { get; private set; } = "";
+    /// <summary>True when bound to a capture endpoint (microphone / line-in), false for render loopback.</summary>
+    public bool Input { get; private set; }
     /// <summary>The stream died under us (endpoint removed or reformatted); only a reopen recovers it.</summary>
     public bool Invalidated { get; private set; }
 
@@ -301,6 +307,7 @@ internal sealed unsafe class WasapiCapturer : IDisposable
     private const uint AUDCLNT_STREAMFLAGS_LOOPBACK = 0x00020000;
     private const int COINIT_MULTITHREADED = 0;
     private const int eRender = 0;
+    private const int eCapture = 1;
     private const int eConsole = 0;
     private const uint DEVICE_STATE_ACTIVE = 0x1;
     private const int AUDCLNT_E_DEVICE_INVALIDATED = unchecked((int)0x88890004);
@@ -316,22 +323,22 @@ internal sealed unsafe class WasapiCapturer : IDisposable
     [DllImport("ole32", ExactSpelling = true)]
     private static extern void CoTaskMemFree(IntPtr ptr);
 
-    /// <summary>Opens <paramref name="preferredId"/> when it is plugged in, else the default output.</summary>
-    public static WasapiCapturer Open(string preferredId)
+    /// <summary>Opens <paramref name="preferredId"/> when it is plugged in, else the default endpoint of the same direction.</summary>
+    public static WasapiCapturer Open(bool input, string preferredId)
     {
         // COINIT_MULTITHREADED is safe to call repeatedly; COM tolerates it
         // returning RPC_E_CHANGED_MODE if something else already initialised
         // the apartment, and our usage doesn't care which apartment it lands in.
         _ = CoInitializeEx(IntPtr.Zero, COINIT_MULTITHREADED);
 
-        var cap = new WasapiCapturer();
+        var cap = new WasapiCapturer { Input = input };
         try
         {
             int hr = CoCreateInstance(CLSID_MMDeviceEnumerator, IntPtr.Zero, CLSCTX_ALL,
                 IID_IMMDeviceEnumerator, out cap._enumerator);
             ThrowOnHr(hr, "CoCreateInstance(MMDeviceEnumerator)");
 
-            cap._device = cap.ResolveDevice(preferredId);
+            cap._device = cap.ResolveDevice(input, preferredId);
             cap.DeviceId = GetId(cap._device);
 
             // IMMDevice.Activate (slot 3 after IUnknown).
@@ -366,7 +373,7 @@ internal sealed unsafe class WasapiCapturer : IDisposable
             // IAudioClient.Initialize (slot 3).
             var initialize = (delegate* unmanaged[Stdcall]<IntPtr, int, uint, long, long, IntPtr, IntPtr, int>)acVtbl[3];
             hr = initialize(cap._audioClient, AUDCLNT_SHAREMODE_SHARED,
-                AUDCLNT_STREAMFLAGS_LOOPBACK, hnsBuffer, 0, cap._mixFormat, IntPtr.Zero);
+                input ? 0u : AUDCLNT_STREAMFLAGS_LOOPBACK, hnsBuffer, 0, cap._mixFormat, IntPtr.Zero);
             ThrowOnHr(hr, "IAudioClient.Initialize");
 
             // IAudioClient.GetService (slot 14) - get IAudioCaptureClient.
@@ -408,11 +415,11 @@ internal sealed unsafe class WasapiCapturer : IDisposable
     }
 
     /// <summary>Id of the endpoint <see cref="Open"/> would bind right now; empty when none resolves.</summary>
-    public string TargetId(string preferredId)
+    public string TargetId(bool input, string preferredId)
     {
         try
         {
-            var dev = ResolveDevice(preferredId);
+            var dev = ResolveDevice(input, preferredId);
             try
             { return GetId(dev); }
             finally
@@ -424,7 +431,7 @@ internal sealed unsafe class WasapiCapturer : IDisposable
         }
     }
 
-    private IntPtr ResolveDevice(string preferredId)
+    private IntPtr ResolveDevice(bool input, string preferredId)
     {
         var enumVtbl = *(IntPtr**)_enumerator;
         if (preferredId.Length > 0)
@@ -453,7 +460,7 @@ internal sealed unsafe class WasapiCapturer : IDisposable
         // IMMDeviceEnumerator.GetDefaultAudioEndpoint (vtable slot 4 after
         // 3 IUnknown entries).
         var getDefault = (delegate* unmanaged[Stdcall]<IntPtr, int, int, out IntPtr, int>)enumVtbl[4];
-        int hr = getDefault(_enumerator, eRender, eConsole, out var device);
+        int hr = getDefault(_enumerator, input ? eCapture : eRender, eConsole, out var device);
         ThrowOnHr(hr, "GetDefaultAudioEndpoint");
         return device;
     }

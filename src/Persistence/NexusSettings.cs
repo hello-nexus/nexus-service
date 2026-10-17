@@ -721,6 +721,8 @@ public sealed class LightingSettings
     public string AudioOutputDeviceId { get; set; } = "";
     /// <summary>Name captured with the pick, shown while the device is unplugged.</summary>
     public string AudioOutputDeviceName { get; set; } = "";
+    /// <summary>"output" or "input"; empty means "output". Windows capture only.</summary>
+    public string AudioOutputDeviceDirection { get; set; } = "";
     /// <summary>Post-process applied to the Screen Mirror frame stream (hue / colorize / saturation / contrast). Persists across sessions so the user's tweak survives a service restart.</summary>
     public PostProcessSettings ScreenEffect { get; set; } = new();
     /// <summary>Screen the global Mirror mode captures; empty is the default screen. Mirror pins capture the same one, so the two agree after a restart.</summary>

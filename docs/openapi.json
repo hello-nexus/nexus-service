@@ -15825,6 +15825,11 @@
           },
           "deviceName": {
             "type": "string"
+          },
+          "direction": {
+            "type": "string",
+            "nullable": true,
+            "description": "output (loopback of a render endpoint) or input (microphone / line-in); null or empty means output"
           }
         }
       },
