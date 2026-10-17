@@ -104,6 +104,7 @@ is called out here:
 | Static assets and SPA shell | HTTP(S) GET | desktop/panel -> service | Load the bundled web app, panel app, and media/icons. |
 | `/ws?token=...` | WebSocket text JSON | desktop/panel <-> service | One multiplexed topic socket per app surface. |
 | `/lighting/output?token=...` | WebSocket binary | desktop -> service | Dedicated live lighting frame stream for the Lighting view. |
+| `/lighting/screen/preview?token=...` | WebSocket binary | desktop -> service | Live capture of the selected mirror monitor for the Mirror tab, in the `/lighting/output` frame layout at about 10 frames/s. Capture runs only while a client is connected. Closes with code 4503 when no capture source exists. |
 | `127.0.0.1:6742` | TCP binary | service -> OpenRGB | RGB device discovery, mode changes, zone resize, and LED frame pushes. |
 | OBS endpoint, default `ws://127.0.0.1:4455` | WebSocket JSON | service -> OBS | OBS status and controls when OBS widget/actions are used. |
 | Steam Web API | HTTPS | service -> internet | Steam profile, games, friends, achievements when Steam widget/API routes run. |
@@ -119,6 +120,7 @@ is called out here:
 - The multiplex WebSocket reconnects after `2000 ms` on close/error and resends
   all active subscriptions on reconnect.
 - `/lighting/output` reconnects after `2000 ms` on close/error.
+- `/lighting/screen/preview` reconnects after `2000 ms` on close/error, except close code 4503 (no capture source), which ends it.
 - Phone panel pairing uses `POST /panel/phone/claim` once per QR token and then
   stores a 30-day idle phone session token. The QR URL and claim response also
   include the service machine name so the native app can label paired
@@ -318,6 +320,7 @@ Mounted Lighting view traffic:
 |---|---:|---:|---|
 | `WS /lighting/output` | one socket, reconnect `2000 ms` | 1 socket | Live canvas/device colors. |
 | binary lighting frame | active effect frame interval | about `30-60 frames/s` | Live preview frames. |
+| `WS /lighting/screen/preview` | one socket while the Mirror tab is open over another global mode and the page is visible, reconnect `2000 ms` | 0-1 sockets | Live capture of the selected monitor, about `10 frames/s`. Close code 4503 means unavailable: no reconnect, the page keeps the output stream. |
 | `GET /lighting/current` | every `1000 ms` | `1 req/s` | Current lighting sync mode. |
 | `GET /devices/lighting-devices/all` | on mount and profile change, then push-driven refetch on the `lighting` and `devices` WS topics | event + push | Lighting device layout and power state. No longer a `3000 ms` poll. |
 | `GET /devices/usb/all` | every `5000 ms` | `0.2 req/s` | VID/PID detection for lighting device support. Not individually re-verified against the `devices` topic migration described in the Devices view section below; may also now be push-driven. |

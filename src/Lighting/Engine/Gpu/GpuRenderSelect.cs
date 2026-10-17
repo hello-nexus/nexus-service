@@ -25,9 +25,9 @@ namespace Nexus.Service.Lighting.Engine.Gpu;
 ///
 /// A crash-guard marker is written before every direct init and cleared after it
 /// returns; a boot that finds the marker still present knows the previous boot
-/// died initializing that card. There is no CPU fallback: if no card works the
-/// GPU is latched off (shader effects don't render; static colours, LED
-/// highlight, game sync and firmware-owned lighting are unaffected) and the
+/// died initializing that card. On the ANGLE backend a CPU fallback (WARP) covers
+/// the case where no card works; on WGL the GPU is latched off (shader effects don't render; static colours, LED
+/// highlight and firmware-owned lighting are unaffected) and the
 /// service stays up. The latch always carries a re-probe time, because the
 /// driver behind it can fail context creation intermittently and a permanent
 /// latch would turn "sometimes" into "never".
@@ -38,9 +38,7 @@ internal static class GpuRenderSelect
     // child pins on itself (see GpuProbe) so a working-but-slow card finishes on
     // its own and the parent only kills a truly wedged child.
     private static TimeSpan ProbeWait =>
-        string.Equals(Backend, "glfw", StringComparison.OrdinalIgnoreCase)
-            ? TimeSpan.FromSeconds(45)
-            : TimeSpan.FromSeconds(15);
+        UsesAngle ? TimeSpan.FromSeconds(30) : TimeSpan.FromSeconds(15);
 
     // A card slower than every budget still has to be remembered, or later boots
     // re-pay the probe for a card that works.
@@ -69,8 +67,75 @@ internal static class GpuRenderSelect
     /// the warmup before the first select.</summary>
     public static string Backend { get; set; } = "";
 
+    /// <summary>The engine renders through ANGLE. The OS GpuPreference registry value does not steer ANGLE, so the card class is passed to the context as an adapter LUID instead.</summary>
+    private static bool UsesAngle => GpuBackend.IsAngle(Backend);
+
+    private static int _lossRecreates;
+
+    private static readonly System.Runtime.CompilerServices.ConditionalWeakTable<GpuContext, object> LossHooked = new();
+
+    /// <summary>Re-create the context through the normal selection when its device is lost. Safe to call more than once per context.</summary>
+    private static void HookContextLoss(GpuContext gpu)
+    {
+        if (!LossHooked.TryAdd(gpu, new object()))
+        {
+            return;
+        }
+        gpu.ContextLost += g =>
+        {
+            if (Interlocked.Increment(ref _lossRecreates) > GpuInitRetry.MaxContextLossRecreates)
+            {
+                GpuContext.Log("[gpu] context lost again; the re-create budget for this session is spent");
+                return;
+            }
+            Reselect(g, "the GL context was lost", ref _reprobeTimer);
+        };
+    }
+
+    /// <summary>
+    /// No hardware adapter produced a context: render on ANGLE's WARP software
+    /// rasterizer so shader lighting is not dark. Hardware is retried by the
+    /// normal reprobe paths while WARP runs (see <see cref="UpgradeFromWarp"/>).
+    /// False when the backend is not ANGLE, the context cannot start a new
+    /// attempt, or WARP failed too.
+    /// </summary>
+    public static bool TryWarpFallback(GpuContext gpu, string reason)
+    {
+        if (!UsesAngle || gpu.IsDisposed || gpu.Available || gpu.InitAbandoned || gpu.Initializing)
+        {
+            return false;
+        }
+        GpuContext.Log($"[gpu] select: {reason}; falling back to ANGLE WARP (CPU rendering)");
+        try
+        {
+            // One critical section: the render loop starts an init under this lock whenever
+            // the context is unavailable and not suppressed, so a gap after the rearm would
+            // let it bring up hardware beside WARP.
+            lock (gpu.Lock)
+            {
+                if (gpu.Failed && !gpu.RearmAfterLatch())
+                {
+                    return false;
+                }
+                gpu.ReleaseUpgradeGate();
+                gpu.UseWarp = true;
+                gpu.EnsureInitializedLocked();
+            }
+            gpu.WaitForInit(gpu.InitTimeout);
+        }
+        catch (Exception ex) { GpuContext.Log($"[gpu] WARP fallback threw: {ex.Message}"); }
+        if (gpu.Available)
+        {
+            GpuContext.Log($"[gpu] select: shader lighting running on WARP ('{gpu.Renderer}'); hardware is re-probed on the usual schedule");
+            return true;
+        }
+        GpuContext.Log("[gpu] select: WARP did not produce a context either");
+        return false;
+    }
+
     public static void SelectAndWarm(GpuContext gpu, Stopwatch sw)
     {
+        HookContextLoss(gpu);
         var seam = GpuTestSeam.Describe();
         if (seam.Length > 0)
         {
@@ -84,22 +149,7 @@ internal static class GpuRenderSelect
         var now = DateTimeOffset.UtcNow;
         var raw = LoadStateText();
         var state = GpuSelectState.Parse(raw);
-        var detected = GpuSelectPlan.IntelIgpuWithDedicated(adapters.Select(a => (a.VendorId, a.DedicatedVramMb)));
-        // The marker is written before every dedicated attempt and cleared only
-        // once the dedicated card is working, so a crash, hang or failure
-        // leaves it behind. A crash guard naming the dedicated card is the same
-        // verdict when the attempt that left it was not made under the rule.
-        if (detected && crashed == GpuSelectState.Discrete)
-        {
-            WriteDedicatedMarker(env);
-        }
-        var intelDgpu = GpuSelectPlan.RuleActive(detected, LoadDedicatedMarker(), env);
-        if (detected && !intelDgpu)
-        {
-            GpuContext.Log("[gpu] auto: Intel integrated GPU present, but the dedicated GPU did not come up "
-                + "here before; not retrying until the GPU set or driver changes");
-        }
-        var plan = GpuSelectPlan.NextAction(raw, crashed, usable, now, GpuTestSeam.ReprobeOverride, env, intelDgpu);
+        var plan = GpuSelectPlan.NextAction(raw, crashed, usable, now, GpuTestSeam.ReprobeOverride, env);
         GpuContext.Log($"[gpu] select: adapters={usable} env='{env.Fingerprint}@{env.Boot}' state='{state.Format()}' "
             + $"crashguard='{crashed ?? "none"}' -> {plan.Action} ({plan.Reason})");
 
@@ -121,16 +171,55 @@ internal static class GpuRenderSelect
                     WriteCrashGuard(crashed);
                 }
                 GpuContext.Log($"[gpu] select: {plan.Reason}; GPU off until a display adapter appears");
-                gpu.DeclineInit($"GPU rendering off: {plan.Reason}");
+                if (!TryWarpFallback(gpu, plan.Reason))
+                {
+                    gpu.DeclineInit($"GPU rendering off: {plan.Reason}");
+                }
                 ScheduleAdapterWatch(gpu, AdapterWatchMin, null);
                 return;
             case GpuSelectAction.WarmRemembered:
                 WarmRemembered(gpu, sw, plan.Card, state);
                 return;
             default:
-                ProbeThenWarm(gpu, sw, usable, plan.FreshStreak ? GpuSelectState.Fresh : state, plan.PreferDedicated, env);
+                ProbeThenWarm(gpu, sw, usable, plan.FreshStreak ? GpuSelectState.Fresh : state);
                 return;
         }
+    }
+
+    // While WARP renders, a reprobe must find out whether hardware works now without
+    // disturbing the running context: the probe child answers that. Only a card that
+    // passes retires WARP and re-enters the normal selection.
+    private static bool UpgradeFromWarp(GpuContext gpu)
+    {
+        var adapters = UsableAdapters();
+        // The off latch (and a crash guard) still decide when hardware may be touched again;
+        // a reprobe that fires inside one must not retire the working WARP context.
+        var raw = LoadStateText();
+        var crashGuardLive = File.Exists(CrashGuardPath);
+        var plan = GpuSelectPlan.NextAction(raw, null, GpuTestSeam.AdapterCount ?? adapters.Count,
+            DateTimeOffset.UtcNow, GpuTestSeam.ReprobeOverride, CurrentEnvironment(adapters));
+        if (crashGuardLive || plan.Action is GpuSelectAction.DeclineAndLatch or GpuSelectAction.DeclineNoProbe
+            or GpuSelectAction.WaitForAdapter)
+        {
+            GpuContext.Log($"[gpu] select: hardware is still held off ({(crashGuardLive ? "crash guard" : plan.Reason)}); staying on WARP");
+            ScheduleReprobe(gpu, TimeSpan.FromMinutes(30));
+            return false;
+        }
+        var ok = GpuProbeExit.AllowsWarpUpgrade(ProbeCard(ClassIntegrated))
+            || (adapters.Count > 1 && GpuProbeExit.AllowsWarpUpgrade(ProbeCard(ClassDiscrete)));
+        if (!ok)
+        {
+            GpuContext.Log("[gpu] select: hardware does not pass its probe; staying on WARP");
+            ScheduleReprobe(gpu, TimeSpan.FromMinutes(30));
+            return false;
+        }
+        if (!gpu.RetireWarp())
+        {
+            GpuContext.Log("[gpu] select: WARP context did not stop; staying on it");
+            return false;
+        }
+        GpuContext.Log("[gpu] select: hardware passes its probe; leaving WARP");
+        return true;
     }
 
     private static System.Collections.Generic.IReadOnlyList<Nexus.Service.Sensors.GpuAdapterLuids.Adapter> UsableAdapters() =>
@@ -169,8 +258,7 @@ internal static class GpuRenderSelect
         return "t" + (booted.ToUnixTimeSeconds() / 60).ToString(System.Globalization.CultureInfo.InvariantCulture);
     }
 
-    private static void ProbeThenWarm(GpuContext gpu, Stopwatch sw, int usable, GpuSelectState state, bool preferDedicated,
-        GpuEnvironment env)
+    private static void ProbeThenWarm(GpuContext gpu, Stopwatch sw, int usable, GpuSelectState state)
     {
         if (usable <= 1)
         {
@@ -185,39 +273,6 @@ internal static class GpuRenderSelect
         }
 
         GpuContext.Log("[gpu] select: probing GPUs");
-        if (preferDedicated)
-        {
-            // Pessimistic first: a crash or hang inside the attempt leaves
-            // this, which turns the rule off for this environment.
-            var prior = GpuSelectPlan.InconclusiveCount(LoadDedicatedMarker(), env);
-            WriteDedicatedMarker(env);
-            var dedicated = ProbeCard(ClassDiscrete);
-            if (dedicated == GpuProbeVerdict.Works)
-            {
-                WarmGuarded(gpu, sw, GpuSelectState.Discrete, ClassDiscrete, "probed:discrete");
-                GpuContext.Log(gpu.Available
-                    ? "[gpu] auto: Intel integrated GPU present, using the dedicated GPU"
-                    : gpu.Failed
-                        ? "[gpu] auto: Intel integrated GPU present, but the dedicated GPU failed to create a context"
-                        : "[gpu] auto: Intel integrated GPU present, dedicated GPU still initializing");
-                AfterWarm(gpu, sw, GpuSelectState.Discrete, ClassDiscrete);
-                return;
-            }
-            if (dedicated == GpuProbeVerdict.Inconclusive)
-            {
-                WriteDedicatedMarker(env, prior + 1);
-            }
-            if (ProbeCard(ClassIntegrated) != GpuProbeVerdict.Failed)
-            {
-                GpuContext.Log("[gpu] auto: Intel integrated GPU present, but the dedicated GPU did not pass its "
-                    + "probe; using the integrated GPU");
-                WarmGuarded(gpu, sw, GpuSelectState.Integrated, ClassIntegrated, "probed:integrated");
-                AfterWarm(gpu, sw, GpuSelectState.Integrated, ClassIntegrated);
-                return;
-            }
-            LatchOff(gpu, state, DateTimeOffset.UtcNow, "no GPU produced a working context");
-            return;
-        }
         if (ProbeCard(ClassIntegrated) != GpuProbeVerdict.Failed)
         {
             WarmGuarded(gpu, sw, GpuSelectState.Integrated, ClassIntegrated, "probed:integrated");
@@ -283,7 +338,7 @@ internal static class GpuRenderSelect
     // card. Persists the state only once the context is actually available.
     private static void WarmGuarded(GpuContext gpu, Stopwatch sw, string stateName, int cls, string why)
     {
-        if (gpu.InitSuppressed)
+        if (gpu.InitSuppressed && !gpu.UpgradeGated)
         {
             GpuContext.Log($"[gpu] warmup: declined ({why}); the GPU is off this session");
             return;
@@ -297,7 +352,17 @@ internal static class GpuRenderSelect
             // previous card and outruns the crash guard.
             lock (gpu.Lock)
             {
-                SetPref(cls);
+                if (UsesAngle)
+                {
+                    // ANGLE ignores the registry preference; the class picks the adapter LUID.
+                    gpu.ReleaseUpgradeGate();
+                    gpu.UseWarp = false;
+                    gpu.AdapterClass = cls;
+                }
+                else
+                {
+                    SetPref(cls);
+                }
                 WriteCrashGuard(stateName);
                 gpu.EnsureInitializedLocked();
             }
@@ -310,15 +375,16 @@ internal static class GpuRenderSelect
             ? $"[gpu] warmup: GPU shader engine ready in {sw.ElapsedMilliseconds}ms on '{gpu.Renderer}'"
             : $"[gpu] warmup: no GPU context after {sw.ElapsedMilliseconds}ms "
               + $"({(gpu.Failed ? "init failed" : "still initializing")}; shader effects stay dark until it "
-              + "lands, static colours, LED highlight, game sync and firmware-owned lighting are unaffected)");
-        if (gpu.Available)
+              + "lands, static colours, LED highlight and firmware-owned lighting are unaffected)");
+        // A WARP context says nothing about the card, so it never becomes the remembered one.
+        if (gpu.Available && !gpu.IsWarp)
         {
             SaveState(GpuSelectState.Working(stateName));
         }
     }
 
     // In-process retry for an init that THREW. An abandoned attempt is excluded
-    // upstream: its thread is still parked in native GLFW.
+    // upstream: its thread is still parked in native GL code.
     private static void ScheduleRetry(GpuContext gpu, Stopwatch sw, string card, int cls, int attempt)
     {
         var delay = GpuInitRetry.DelayFor(attempt);
@@ -379,6 +445,10 @@ internal static class GpuRenderSelect
             {
                 return;
             }
+            if (gpu.IsWarp)
+            {
+                return;
+            }
             SaveState(GpuSelectState.Working(card));
             GpuContext.Log($"[gpu] select: '{card}' landed late on '{gpu.Renderer}'; remembered");
         })
@@ -399,7 +469,10 @@ internal static class GpuRenderSelect
         SaveState(latched);
         var wait = GpuSelectState.ReprobeDelay(latched.OffStreak, GpuTestSeam.ReprobeOverride);
         GpuContext.Log($"[gpu] select: {reason}; GPU off; next re-probe in {wait.TotalMinutes:0}m");
-        gpu.DeclineInit($"GPU rendering off: {reason}");
+        if (!TryWarpFallback(gpu, reason))
+        {
+            gpu.DeclineInit($"GPU rendering off: {reason}");
+        }
         ScheduleReprobe(gpu, wait);
         ScheduleAdapterWatch(gpu, AdapterWatchMax, latched);
     }
@@ -415,7 +488,10 @@ internal static class GpuRenderSelect
         var wait = held.ReprobeIn(now, GpuTestSeam.ReprobeOverride);
         GpuContext.Log($"[gpu] select: {reason}; GPU off; next re-probe in {wait.TotalMinutes:0}m "
             + "(picking a render GPU makes the next start re-probe)");
-        gpu.DeclineInit($"GPU rendering off: {reason}");
+        if (!TryWarpFallback(gpu, reason))
+        {
+            gpu.DeclineInit($"GPU rendering off: {reason}");
+        }
         ScheduleReprobe(gpu, wait);
         ScheduleAdapterWatch(gpu, AdapterWatchMax, held);
     }
@@ -437,7 +513,7 @@ internal static class GpuRenderSelect
 
     private static void RunAdapterWatch(GpuContext gpu, TimeSpan wait, GpuSelectState? latched)
     {
-        if (gpu.IsDisposed || gpu.Available || gpu.InitAbandoned)
+        if (gpu.IsDisposed || (gpu.Available && !gpu.IsWarp) || gpu.InitAbandoned)
         {
             return;
         }
@@ -472,7 +548,7 @@ internal static class GpuRenderSelect
     {
         // Initializing: an attempt is already running and will answer on its
         // own; rearming under it is refused anyway (GpuContext.RearmAfterLatch).
-        if (gpu.Available || gpu.InitAbandoned || gpu.Initializing)
+        if ((gpu.Available && !gpu.IsWarp) || gpu.InitAbandoned || gpu.Initializing)
         {
             return;
         }
@@ -493,6 +569,10 @@ internal static class GpuRenderSelect
         }
         try
         {
+            if (gpu.Available && gpu.IsWarp && !UpgradeFromWarp(gpu))
+            {
+                return;
+            }
             if (!gpu.RearmAfterLatch())
             {
                 GpuContext.Log($"[gpu] select: {why}, but the context cannot be rearmed in this process");
@@ -532,7 +612,7 @@ internal static class GpuRenderSelect
 
     private static void RunReprobe(GpuContext gpu)
     {
-        if (gpu.IsDisposed || gpu.Available || gpu.InitAbandoned)
+        if (gpu.IsDisposed || (gpu.Available && !gpu.IsWarp) || gpu.InitAbandoned)
         {
             return;
         }
@@ -555,7 +635,7 @@ internal static class GpuRenderSelect
     // Spawn `Nexus.exe --gpu-probe --set-pref <cls>` and wait; kill on timeout (a
     // wedged driver). Both output streams are drained concurrently so a chatty
     // child can't fill a pipe buffer and deadlock. WorkingDirectory is pinned to
-    // the exe dir so the bundled GLFW native libs resolve (same loader-search
+    // the exe dir so the bundled native libs resolve (same loader-search
     // gotcha as the bundled adb).
     private static GpuProbeVerdict ProbeCard(int cls)
     {
@@ -576,7 +656,7 @@ internal static class GpuRenderSelect
             psi.ArgumentList.Add("--set-pref");
             psi.ArgumentList.Add(cls.ToString());
             // The child has no config store, so the engine's backend is handed
-            // to it; probing WGL for an engine pinned to GLFW answers nothing.
+            // to it; probing WGL for an engine pinned to ANGLE answers nothing.
             if (Backend.Length > 0)
             {
                 psi.ArgumentList.Add("--backend");
@@ -655,39 +735,8 @@ internal static class GpuRenderSelect
         catch { return GpuSelectState.Unprobed; }
     }
 
-    private static string DedicatedMarkerPath => Path.Combine(DataDir, "gpu-dedicated-attempt");
-
-    private static string? LoadDedicatedMarker()
-    {
-        try { return File.Exists(DedicatedMarkerPath) ? File.ReadAllText(DedicatedMarkerPath).Trim() : null; }
-        catch { return null; }
-    }
-
-    private static void WriteDedicatedMarker(GpuEnvironment env, int inconclusive = 0) =>
-        WriteDurable(DedicatedMarkerPath, GpuSelectPlan.DedicatedMarker(env, inconclusive));
-
-    // Flushed to disk: the attempt this records can bugcheck the machine, and a
-    // marker still in the cache would be lost with it.
-    private static void WriteDurable(string path, string text)
-    {
-        try
-        {
-            Directory.CreateDirectory(DataDir);
-            using var fs = new FileStream(path, FileMode.Create, FileAccess.Write, FileShare.Read);
-            var bytes = Encoding.UTF8.GetBytes(text);
-            fs.Write(bytes, 0, bytes.Length);
-            fs.Flush(true);
-        }
-        catch { }
-    }
-
     private static void SaveState(GpuSelectState state)
     {
-        if (state.Card == GpuSelectState.Discrete)
-        {
-            try { if (File.Exists(DedicatedMarkerPath)) File.Delete(DedicatedMarkerPath); }
-            catch { }
-        }
         try
         {
             Directory.CreateDirectory(DataDir);
@@ -708,13 +757,12 @@ internal static class GpuRenderSelect
     {
         try { if (File.Exists(StatePath)) File.Delete(StatePath); }
         catch { }
-        try { if (File.Exists(DedicatedMarkerPath)) File.Delete(DedicatedMarkerPath); }
-        catch { }
     }
 
     private static void WriteCrashGuard(string card)
     {
-        WriteDurable(CrashGuardPath, card);
+        try { Directory.CreateDirectory(DataDir); File.WriteAllText(CrashGuardPath, card); }
+        catch { }
     }
 
     private static void ClearCrashGuard()

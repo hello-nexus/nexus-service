@@ -160,15 +160,9 @@
 
   <!-- Cross-platform OpenGL for GPU-rendered lighting effects. Silk.NET binds to
        the native GL driver via P/Invoke (AOT-safe). Windows creates its context
-       against WGL directly (WinWglContext); GLFW stays for the RenderBackend
-       escape, and is what the pre-3.0.15 path used. OpenTK.redist.glfw ships the
-       GLFW native blob - referenced with GeneratePathProperty so the
-       CopyGlfwNative target below finds the per-RID dll/dylib without
-       hard-coding a version in the path. -->
+       against WGL directly (WinWglContext). -->
   <ItemGroup>
-    <PackageReference Include="Silk.NET.GLFW" Version="2.22.0" />
     <PackageReference Include="Silk.NET.OpenGL" Version="2.22.0" />
-    <PackageReference Include="OpenTK.redist.glfw" Version="3.3.0-pre20200830200122" GeneratePathProperty="true" />
   </ItemGroup>
 
   <!-- System.IO.Ports: serial-port IO for HYTE NP50 (CDC virtual COM). The
@@ -185,11 +179,12 @@
 
   <!-- OpenAPI document generation for docs/openapi.json (the REST-route
        inventory). The .NET 10 stack is AOT-compatible; the doc is produced by
-       the emit-openapi CLI path, and MapOpenApi() is DEBUG-only so a release
-       build exposes no endpoint. AspNetCore.OpenApi tracks the ASP.NET runtime;
+       the emit-openapi CLI path. The generator, MapOpenApi() and both packages
+       are Debug-only, so a release build carries none of them.
+       AspNetCore.OpenApi tracks the ASP.NET runtime;
        Microsoft.OpenApi is pinned directly to 2.7.5 (overriding the 2.0.0 the
        former pulls transitively) to clear advisory GHSA-v5pm-xwqc-g5wc. -->
-  <ItemGroup>
+  <ItemGroup Condition="'$(Configuration)' == 'Debug'">
     <PackageReference Include="Microsoft.AspNetCore.OpenApi" Version="10.0.8" />
     <PackageReference Include="Microsoft.OpenApi" Version="2.7.5" />
   </ItemGroup>
@@ -203,6 +198,14 @@
     <PackageReference Include="SIPSorcery" Version="10.0.16" />
     <TrimmerRootDescriptor Include="TrimmerRoots.xml" />
   </ItemGroup>
+  <!-- Drops SIPSorcery's embedded sample media NativeAOT runs
+       no ILLink pass, and the SDK has no item for ILC substitution files, so
+       the flag is added to the ILC response file directly. -->
+  <Target Name="AddIlcSubstitutions" BeforeTargets="WriteIlcRspFileForCompilation">
+    <ItemGroup>
+      <IlcArg Include="--substitution:$(MSBuildThisFileDirectory)ILLink.Substitutions.SIPSorcery.xml" />
+    </ItemGroup>
+  </Target>
 
   <!-- DPAPI at-rest protection for small secrets (Steam API key, Discord
        client secret). Cross-platform package; throws PlatformNotSupportedException
@@ -234,23 +237,6 @@
     <PackageReference Include="HarfBuzzSharp.NativeAssets.Win32" Version="14.2.1.301" ExcludeAssets="all" />
     <PackageReference Include="HarfBuzzSharp.NativeAssets.macOS" Version="14.2.1.301" ExcludeAssets="all" />
   </ItemGroup>
-
-  <!-- AOT publish strips native assets from `runtimes/<rid>/native/` that aren't
-       statically referenced. Silk.NET loads GLFW via dynamic P/Invoke, so we
-       manually copy the native into the publish dir. -->
-  <Target Name="CopyGlfwNative" AfterTargets="Publish">
-    <ItemGroup>
-      <_GlfwWin Include="$(PkgOpenTK_redist_glfw)\runtimes\win-x64\native\glfw3.dll" />
-      <_GlfwMac Include="$(PkgOpenTK_redist_glfw)\runtimes\osx\native\libglfw.3.dylib" />
-      <_GlfwLinux Include="$(PkgOpenTK_redist_glfw)\runtimes\linux-x64\native\libglfw.so.3" />
-    </ItemGroup>
-    <Copy SourceFiles="@(_GlfwWin)" DestinationFolder="$(PublishDir)"
-          Condition="$(RuntimeIdentifier.StartsWith('win')) AND Exists('@(_GlfwWin)')" />
-    <Copy SourceFiles="@(_GlfwMac)" DestinationFolder="$(PublishDir)"
-          Condition="$(RuntimeIdentifier.StartsWith('osx')) AND Exists('@(_GlfwMac)')" />
-    <Copy SourceFiles="@(_GlfwLinux)" DestinationFolder="$(PublishDir)"
-          Condition="$(RuntimeIdentifier.StartsWith('linux')) AND Exists('@(_GlfwLinux)')" />
-  </Target>
 
   <!-- icon.ico is embedded in the exe via <ApplicationIcon> above (Win32
        resource ID 32512). TrayIcon.cs and the OS taskbar load it from there;
@@ -353,10 +339,69 @@
     <_NexusFirmwareDir Condition="'$(_NexusFirmwareDir)' == '' AND Exists('$(MSBuildThisFileDirectory)..\..\firmware')">$(MSBuildThisFileDirectory)..\..\firmware</_NexusFirmwareDir>
   </PropertyGroup>
   <ItemGroup Condition="'$(_NexusFirmwareDir)' != ''">
-    <EmbeddedResource Include="$(_NexusFirmwareDir)\**\*.hex">
+    <!-- y70-truly ships the same bytes as y70-infinite; BundledFirmwareCatalog
+         serves it from that one resource. -->
+    <EmbeddedResource Include="$(_NexusFirmwareDir)\**\*.hex" Exclude="$(_NexusFirmwareDir)\y70-truly\*.hex">
       <LogicalName>firmware/%(RecursiveDir)%(Filename)%(Extension)</LogicalName>
     </EmbeddedResource>
   </ItemGroup>
+  <!-- The alias is only valid while the two images are the same bytes. -->
+  <Target Name="CheckSharedY70Firmware" BeforeTargets="CoreCompile" Condition="'$(_NexusFirmwareDir)' != '' AND Exists('$(_NexusFirmwareDir)\y70-truly') AND Exists('$(_NexusFirmwareDir)\y70-infinite')">
+    <ItemGroup>
+      <_Y70TrulyHex Include="$(_NexusFirmwareDir)\y70-truly\*.hex" />
+    </ItemGroup>
+    <GetFileHash Files="@(_Y70TrulyHex)" Algorithm="SHA256">
+      <Output TaskParameter="Items" ItemName="_Y70TrulyHash" />
+    </GetFileHash>
+    <GetFileHash Files="@(_Y70TrulyHex->'$(_NexusFirmwareDir)\y70-infinite\%(Filename)%(Extension)')" Algorithm="SHA256">
+      <Output TaskParameter="Items" ItemName="_Y70InfiniteHash" />
+    </GetFileHash>
+    <Error Condition="'@(_Y70TrulyHash->'%(FileHash)')' != '@(_Y70InfiniteHash->'%(FileHash)')'"
+           Text="y70-truly firmware differs from y70-infinite; BundledFirmwareCatalog aliases them. Embed y70-truly separately and drop the alias." />
+  </Target>
+  <!-- Release flashes only the newest image per device (FirmwareFlasher), so
+       older images are embedded for the dev-tools downgrade picker alone. -->
+  <UsingTask TaskName="SelectOlderFirmware" TaskFactory="RoslynCodeTaskFactory"
+             AssemblyFile="$(MSBuildToolsPath)\Microsoft.Build.Tasks.Core.dll">
+    <ParameterGroup>
+      <Images ParameterType="Microsoft.Build.Framework.ITaskItem[]" Required="true" />
+      <Older ParameterType="Microsoft.Build.Framework.ITaskItem[]" Output="true" />
+    </ParameterGroup>
+    <Task>
+      <Using Namespace="System.Linq" />
+      <Using Namespace="System.Collections.Generic" />
+      <Code Type="Fragment" Language="cs"><![CDATA[
+        // Same ordering as BundledFirmwareCatalog.CompareVersions: dotted numeric parts, missing or non-numeric count as 0.
+        int[] V(Microsoft.Build.Framework.ITaskItem i) =>
+            System.IO.Path.GetFileNameWithoutExtension(i.ItemSpec).Split('.')
+                .Select(p => int.TryParse(p, out var n) ? n : 0).ToArray();
+        int Cmp(int[] x, int[] y)
+        {
+            for (var k = 0; k < Math.Max(x.Length, y.Length); k++)
+            {
+                var d = (k < x.Length ? x[k] : 0).CompareTo(k < y.Length ? y[k] : 0);
+                if (d != 0) return d;
+            }
+            return 0;
+        }
+        Older = Images
+            .GroupBy(i => System.IO.Path.GetDirectoryName(i.ItemSpec))
+            .SelectMany(g => g.OrderBy(i => V(i), Comparer<int[]>.Create(Cmp)).Reverse().Skip(1))
+            .ToArray();
+      ]]></Code>
+    </Task>
+  </UsingTask>
+  <Target Name="TrimOlderFirmware" BeforeTargets="AssignTargetPaths" Condition="'$(DevTools)' != 'true' AND '$(_NexusFirmwareDir)' != ''">
+    <ItemGroup>
+      <_FirmwareImage Include="@(EmbeddedResource)" Condition="$([System.String]::Copy('%(LogicalName)').StartsWith('firmware/'))" />
+    </ItemGroup>
+    <SelectOlderFirmware Images="@(_FirmwareImage)">
+      <Output TaskParameter="Older" ItemName="_OlderFirmware" />
+    </SelectOlderFirmware>
+    <ItemGroup>
+      <EmbeddedResource Remove="@(_OlderFirmware)" />
+    </ItemGroup>
+  </Target>
 
   <Target Name="ReportFirmwareBundle" BeforeTargets="CoreCompile" Condition="'$(DesignTimeBuild)' != 'true'">
     <Error Condition="'$(NexusFirmwareDir)' != '' AND !Exists('$(NexusFirmwareDir)')"
@@ -433,7 +478,7 @@
        Publish if the per-RID bundle was deleted. -->
   <Target Name="EnsureAdbBundle" BeforeTargets="Publish">
     <Error Condition="$(RuntimeIdentifier.StartsWith('win')) AND !Exists('Bundled\win-x64\adb\adb.exe')"
-           Text="adb bundle missing at Bundled\win-x64\adb\adb.exe. Restore from platform-tools-latest-windows.zip (adb.exe + AdbWinApi.dll + AdbWinUsbApi.dll + libwinpthread-1.dll + NOTICE.txt)." />
+           Text="adb bundle missing at Bundled\win-x64\adb\adb.exe. Restore from platform-tools-latest-windows.zip (adb.exe + AdbWinApi.dll + AdbWinUsbApi.dll + NOTICE.txt)." />
     <Error Condition="$(RuntimeIdentifier.StartsWith('osx')) AND !Exists('Bundled/osx-arm64/adb/adb')"
            Text="adb bundle missing at Bundled/osx-arm64/adb/adb. Restore from platform-tools-latest-darwin.zip: lipo -thin arm64 adb." />
     <Error Condition="$(RuntimeIdentifier.StartsWith('linux')) AND !Exists('Bundled/linux-x64/adb/adb')"
@@ -457,7 +502,7 @@
   </Target>
 
   <ItemGroup Condition="($([MSBuild]::IsOSPlatform('Windows')) OR $(RuntimeIdentifier.StartsWith('win'))) AND Exists('Bundled\win-x64\bench')">
-    <Content Include="Bundled\win-x64\bench\**\*.*">
+    <Content Include="Bundled\win-x64\bench\**\*.*" Exclude="Bundled\win-x64\bench\stream\stream.c;Bundled\win-x64\bench\stream\BUILD.md">
       <Link>tools\%(RecursiveDir)%(Filename)%(Extension)</Link>
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
       <CopyToPublishDirectory>PreserveNewest</CopyToPublishDirectory>
@@ -470,6 +515,15 @@
   <ItemGroup Condition="'$(RuntimeIdentifier)' == 'win-x64' OR ('$(RuntimeIdentifier)' == '' AND $([MSBuild]::IsOSPlatform('Windows')))">
     <Content Include="Bundled\win-x64\skia\libSkiaSharp.dll">
       <Link>libSkiaSharp.dll</Link>
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+      <CopyToPublishDirectory>PreserveNewest</CopyToPublishDirectory>
+    </Content>
+  </ItemGroup>
+  <!-- ANGLE (libEGL + libGLESv2), the default Windows lighting renderer. Ships under angle/ and
+       is only ever loaded by full path. d3dcompiler_47.dll comes from System32. win-x64 only. -->
+  <ItemGroup Condition="'$(RuntimeIdentifier)' == 'win-x64' OR ('$(RuntimeIdentifier)' == '' AND $([MSBuild]::IsOSPlatform('Windows')))">
+    <Content Include="Bundled\win-x64\angle\*.*" Exclude="Bundled\win-x64\angle\BUILD.md">
+      <Link>angle\%(Filename)%(Extension)</Link>
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
       <CopyToPublishDirectory>PreserveNewest</CopyToPublishDirectory>
     </Content>
@@ -503,6 +557,7 @@
       <Using Namespace="System.Collections.Generic" />
       <Using Namespace="System.IO" />
       <Using Namespace="System.Linq" />
+      <Using Namespace="System.Collections.Generic" />
       <Using Namespace="System.Text.RegularExpressions" />
       <Code Type="Fragment" Language="cs"><![CDATA[
         var latin1 = System.Text.Encoding.GetEncoding(28591);
@@ -630,22 +685,6 @@
     </Content>
   </ItemGroup>
 
-  <!-- Nexus Game Sync shim DLLs produced by the nexus-gamesync component.
-       build.bat / build32.bat place them under Bundled/win-x64/gamesync/x64/
-       (RzChromaSDK64.dll, RzChromatic64.dll, LightFX.dll,
-        LogitechLedEnginesWrapper.dll, LogitechLed.dll) and x86/ (same names
-       except the Chroma pair uses the 32-bit names without the 64 suffix;
-       LightFX/Logitech share the same filenames across arches). x64 -> System32,
-       x86 -> SysWOW64. GameSyncShimInstaller copies them at enable-time.
-       Absence is tolerated at build time so Mac/CI builds are unaffected. -->
-  <ItemGroup Condition="$([MSBuild]::IsOSPlatform('Windows')) AND Exists('Bundled\win-x64\gamesync')">
-    <Content Include="Bundled\win-x64\gamesync\**\*.*" Exclude="Bundled\win-x64\gamesync\**\.gitkeep">
-      <Link>tools\gamesync\%(RecursiveDir)%(Filename)%(Extension)</Link>
-      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
-      <CopyToPublishDirectory>PreserveNewest</CopyToPublishDirectory>
-    </Content>
-  </ItemGroup>
-
   <!-- dfu-util (statically linked, ~1.8 MB) used by the firmware flasher to
        write images to devices in DFU mode. Unlike openrgb/ffmpeg this binary
        IS committed to the repo (Bundled/win-x64/dfu-util/). Copied to
@@ -720,7 +759,7 @@
        Q-series watchers shell out to it via AdbLocator, which resolves this
        bundled copy first. Committed (unlike openrgb/ffmpeg) so the service
        runs on a host with no Android SDK. Slimmed to adb + its direct deps
-       (Windows: AdbWinApi/AdbWinUsbApi/libwinpthread; macOS thinned to arm64);
+       (Windows: AdbWinApi/AdbWinUsbApi; macOS thinned to arm64);
        fastboot and the other tools are dropped. -->
   <ItemGroup Condition="$([MSBuild]::IsOSPlatform('Windows')) AND Exists('Bundled\win-x64\adb')">
     <Content Include="Bundled\win-x64\adb\**\*.*">

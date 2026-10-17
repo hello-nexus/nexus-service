@@ -1,4 +1,5 @@
 using System;
+using System.Threading;
 using Nexus.Service.Peripherals.Hid;
 using Nexus.Service.Platform;
 
@@ -22,7 +23,12 @@ public sealed class JpegPanelHub : IDisposable
     // kilobyte per chunk and roughly 30 chunks per frame.
     private readonly byte[] _report;
 
+    /// <summary>Failures worth a log line are rate limited so a wedged panel cannot spam.</summary>
+    private const long FailureLogIntervalMs = 10_000;
+
     private IHidDevice? _device;
+    private long _frameFailures;
+    private long _lastFailureLogMs = long.MinValue / 2;
     private volatile bool _attached;
     private bool _disposed;
 
@@ -36,6 +42,38 @@ public sealed class JpegPanelHub : IDisposable
 
     public bool IsConnected => _attached;
 
+    /// <summary>Tick clock; replaced in tests.</summary>
+    internal Func<long> Clock { get; set; } = () => Environment.TickCount64;
+
+    /// <summary>Frames that did not reach the panel since this hub was created: a rejected report or a refused pre-frame step.</summary>
+    public long FrameFailures => Interlocked.Read(ref _frameFailures);
+
+    /// <summary>Delay the worker waits on an open handle before <see cref="Attach"/>; 0 when the model has none.</summary>
+    public int SettleMs => _model.Handshake is IJpegPanelSession session ? session.SettleMs : 0;
+
+    /// <summary>Period of <see cref="Tick"/>; 0 when the model has no session traffic.</summary>
+    public int TickIntervalMs => _model.Handshake is IJpegPanelSession session ? session.TickIntervalMs : 0;
+
+    /// <summary>Runs the model's periodic session exchange (keepalive, availability check) on the attached handle.</summary>
+    public void Tick()
+    {
+        lock (_lock)
+        {
+            if (_device != null && _attached && _model.Handshake is IJpegPanelSession session
+                && !session.Tick(_device, _model.ReportLength, Clock()))
+            {
+                // Marked detached so the connection worker closes this handle and runs a full attach.
+                _attached = false;
+            }
+        }
+    }
+
+    /// <summary>USB product id of the attached panel, or 0 while nothing is attached; one model row spans several products.</summary>
+    public int AttachedProductId
+    {
+        get { lock (_lock) { return _device != null && _attached ? _device.ProductId : 0; } }
+    }
+
     /// <summary>USB serial of the attached panel, or null when nothing is attached.</summary>
     public string? Serial
     {
@@ -46,7 +84,7 @@ public sealed class JpegPanelHub : IDisposable
     /// Takes ownership of an open HID handle and runs the model's init sequence. Returns
     /// false when the init writes fail, which is the worker's signal to drop the handle.
     /// </summary>
-    public bool Attach(IHidDevice device)
+    public bool Attach(IHidDevice device, CancellationToken cancel = default)
     {
         lock (_lock)
         {
@@ -54,11 +92,27 @@ public sealed class JpegPanelHub : IDisposable
             _device = device;
             _attached = false;
 
-            if (_model.Handshake is { } handshake && !handshake.OnAttach(device, _model.ReportLength))
+            if (_model.Handshake is { } handshake)
             {
-                _device?.Dispose();
-                _device = null;
-                return false;
+                bool ok;
+                try
+                {
+                    // A session releases the lock across its pauses, so the handle may be
+                    // detached or disposed meanwhile; only the same handle may go live.
+                    ok = handshake is IJpegPanelSession session
+                        ? session.Attach(device, _model.ReportLength, _lock, cancel)
+                        : handshake.OnAttach(device, _model.ReportLength);
+                }
+                catch
+                {
+                    DropIfCurrentLocked(device);
+                    throw;
+                }
+                if (!ok || !ReferenceEquals(_device, device))
+                {
+                    DropIfCurrentLocked(device);
+                    return false;
+                }
             }
 
             if (_model.InitReports is { } inits)
@@ -78,6 +132,15 @@ public sealed class JpegPanelHub : IDisposable
             _attached = true;
             return true;
         }
+    }
+
+    private void DropIfCurrentLocked(IHidDevice device)
+    {
+        if (ReferenceEquals(_device, device))
+        {
+            _device = null;
+        }
+        device.Dispose();
     }
 
     public void Detach()
@@ -153,6 +216,7 @@ public sealed class JpegPanelHub : IDisposable
             if (_model.Handshake is { } handshake
                 && !handshake.BeforeFrame(_device, _model.ReportLength, Environment.TickCount64))
             {
+                NoteFailureLocked("pre-frame step refused the frame (panel not ready or handle dead)");
                 return false;
             }
             int offset = 0;
@@ -167,6 +231,7 @@ public sealed class JpegPanelHub : IDisposable
                 }
                 if (!_device.Write(_report))
                 {
+                    NoteFailureLocked($"report write rejected at chunk {chunkIndex} ({offset} of {jpeg.Length} bytes sent)");
                     return false;
                 }
                 offset += written;
@@ -174,6 +239,27 @@ public sealed class JpegPanelHub : IDisposable
             }
             return true;
         }
+    }
+
+    /// <summary>True at most once per interval; the first call always wins.</summary>
+    internal bool TryClaimFailureLog(long nowMs)
+    {
+        if (nowMs - _lastFailureLogMs < FailureLogIntervalMs)
+        {
+            return false;
+        }
+        _lastFailureLogMs = nowMs;
+        return true;
+    }
+
+    private void NoteFailureLocked(string reason)
+    {
+        Interlocked.Increment(ref _frameFailures);
+        if (!TryClaimFailureLog(Environment.TickCount64))
+        {
+            return;
+        }
+        ServiceLog.Warn($"[{_model.HandlerId}] frame failed: {reason}; failures so far {FrameFailures}");
     }
 
     /// <summary>Best-effort last write on the handle as it detaches, under the hub lock with the report buffer.</summary>

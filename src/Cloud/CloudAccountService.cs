@@ -22,6 +22,7 @@ public sealed class CloudActionResult
 
     /// <summary>ISO timestamp from the upstream error body's retryAt field (e.g. username_cooldown). Null unless the server sent one.</summary>
     public string? ErrorRetryAt { get; init; }
+    public string? ErrorEmail { get; init; }
     public bool Offline { get; init; }
 
     public static CloudActionResult Ok() => new() { Success = true, StatusCode = 200 };
@@ -36,6 +37,7 @@ public sealed class CloudActionResult
         ErrorCode = result.ErrorCode,
         ErrorMessage = result.ErrorMessage,
         ErrorRetryAt = result.ErrorRetryAt,
+        ErrorEmail = result.ErrorEmail,
         Offline = result.Offline,
     };
 }
@@ -157,6 +159,12 @@ public sealed class CloudAccountService
     {
         var result = await _api.RegisterAsync(new CloudRegisterRequest { Email = email, Password = password, Username = username }, ct)
             .ConfigureAwait(false);
+        return result.Success ? CloudActionResult.Ok() : CloudActionResult.FromError(result);
+    }
+
+    public async Task<CloudActionResult> ResendVerificationAsync(string email, CancellationToken ct)
+    {
+        var result = await _api.ResendVerificationAsync(new CloudResendVerificationRequest { Email = email }, ct).ConfigureAwait(false);
         return result.Success ? CloudActionResult.Ok() : CloudActionResult.FromError(result);
     }
 

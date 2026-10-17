@@ -91,7 +91,7 @@ public sealed record JpegPanelModel(
         Surface: Models.Panel.PanelSurfaces.LcdSquare)
     {
         Fps = HydroShiftFps,
-        Handshake = new LianLiAioHandshake("lianli-hydroshift-lcd", HydroShiftFps),
+        Handshake = new LianLiAioHandshake("lianli-hydroshift-lcd", HydroShiftFps, referenceSession: true),
         // Measured on a 360S (firmware N9,01,HS,SQ,HydroShift,V3.A.008,0.3): a pushed frame
         // lands a quarter turn clockwise, while the panel draws its own boot logo upright.
         // The LCD-control rotation byte is ignored by this firmware - 0, 1, 2 and 3 all

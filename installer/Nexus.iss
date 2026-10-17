@@ -112,8 +112,15 @@ ErrorRenamingTemp=Setup could not save this file. {#AntivirusCause}%n%n{#Antivir
 ErrorReplacingExistingFile=Setup could not replace this file. {#AntivirusCause}%n%n{#AntivirusFix}, then click Try again.%n%nMore information: {#AntivirusDocsUrl}%n%nDetails:
 ErrorExecutingProgram=Setup could not run this file:%n%1%n%n{#AntivirusCause}%n%n{#AntivirusFix}, then run Setup again.%n%nMore information: {#AntivirusDocsUrl}
 
+[InstallDelete]
+Type: filesandordirs; Name: "{app}\tools\gamesync"
+
 [Files]
 Source: "{#PublishDir}\*"; DestDir: "{app}"; Flags: recursesubdirs createallsubdirs ignoreversion; BeforeInstall: UnlockTarget
+
+[UninstallDelete]
+; GPU shader-program and thumbnail caches the service writes beside the exe.
+Type: filesandordirs; Name: "{app}\cache"
 
 [Icons]
 ; Launch shortcut -> Nexus.exe (no args; routes through WindowsLauncher.Run to
@@ -392,7 +399,7 @@ begin
   //      DETACHES its own daemon - net stop does not reap it. That daemon (and
   //      any transient adb client) keeps the whole {app}\tools\adb folder locked
   //      (its own image, the sibling DLLs it LoadLibrary'd - AdbWinApi/
-  //      AdbWinUsbApi/libwinpthread - and a CWD lock, since the service pins
+  //      AdbWinUsbApi - and a CWD lock, since the service pins
   //      WorkingDirectory there), so [Files] fails to replace adb.exe with
   //      "DeleteFile ... Access is denied". Kill ONLY the adb whose image is our
   //      bundled copy (matched by exact ExecutablePath, -ieq since Windows paths

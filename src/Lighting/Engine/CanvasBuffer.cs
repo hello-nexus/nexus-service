@@ -6,7 +6,11 @@ public sealed class CanvasBuffer
 {
     private readonly byte[] _pixels;
 
-    public CanvasBuffer(int width = 160, int height = 90)
+    /// <summary>The engine's render canvas size; the output stream and the screen preview share it.</summary>
+    public const int DefaultWidth = 160;
+    public const int DefaultHeight = 90;
+
+    public CanvasBuffer(int width = DefaultWidth, int height = DefaultHeight)
     {
         Width = width;
         Height = height;
@@ -58,6 +62,19 @@ public sealed class CanvasBuffer
             return;
         }
         src.CopyTo(_pixels);
+    }
+
+    /// <summary>
+    /// Bulk write from a bottom-up glReadPixels block (RGBA when <paramref name="rgba"/>, else RGB) sized
+    /// Width * Height pixels. Flips the rows and drops alpha in one pass.
+    /// </summary>
+    internal void WriteFromGl(ReadOnlySpan<byte> src, bool rgba)
+    {
+        if (src.Length < Width * Height * (rgba ? 4 : 3))
+        {
+            return;
+        }
+        Gpu.GlReadbackConvert.FlipRows(src, _pixels, Width, Height, rgba);
     }
 
     /// <summary>

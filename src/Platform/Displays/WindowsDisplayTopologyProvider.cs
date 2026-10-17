@@ -87,7 +87,10 @@ public sealed class WindowsDisplayTopologyProvider : IDisplayTopologyProvider
                         entry.Scale = Math.Round(dpiX / 96.0, 2);
                     }
 
-                    entry.Dpi = DisplayDensity.FromEdid(ReadEdid(entry.RawHardwareId), entry.ResolutionWidth, entry.ResolutionHeight);
+                    var edid = ReadEdid(entry.RawHardwareId);
+                    entry.Dpi = DisplayDensity.FromEdid(edid, entry.ResolutionWidth, entry.ResolutionHeight);
+                    entry.Fingerprint = EdidFingerprint.FromEdid(edid)
+                        ?? EdidFingerprint.FromParts(entry.Manufacturer, entry.Model);
 
                     results.Add(entry);
                 }

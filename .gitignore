@@ -29,9 +29,6 @@ Bundled/*/ffmpeg/
 Bundled/win-x64/vcam/
 Bundled/win-x64/vdd/
 Bundled/windows/nexus-vdd/build/
-# Chroma shim DLLs produced by nexus-gamesync build.bat/build32.bat. Build
-# artifacts; .gitkeep placeholders keep the x64/ and x86/ dirs tracked.
-Bundled/win-x64/chroma/**/*.dll
 
 # OS
 .DS_Store

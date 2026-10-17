@@ -39,6 +39,11 @@ public sealed class CloudRegisterRequest
     public string Username { get; set; } = "";
 }
 
+public sealed class CloudResendVerificationRequest
+{
+    public string Email { get; set; } = "";
+}
+
 public sealed class CloudLoginRequest
 {
     public string Identifier { get; set; } = "";
@@ -208,4 +213,7 @@ public sealed class CloudErrorBody
     public string? Code { get; set; }
     public string? Message { get; set; }
     public string? RetryAt { get; set; }
+
+    /// <summary>Set only on email_unverified after a correct password, so a username sign-in can offer a resend.</summary>
+    public string? Email { get; set; }
 }

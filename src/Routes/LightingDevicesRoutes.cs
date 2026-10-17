@@ -47,15 +47,15 @@ public static partial class DevicesRoutes
     }
 
     // LiveEngineSync covers every mode a profile switch can restore; a preset
-    // can additionally carry Off or Game Sync, which it has no arm for.
+    // can additionally carry Off, which it has no arm for.
     private static void EngageLook(
         Nexus.Service.Persistence.LightingPresetLook look,
         Nexus.Service.Persistence.IConfigStore store,
         Nexus.Service.Lighting.ILightingProvider lighting)
     {
-        // Runs for every mode, including the Off / Game Sync arms below that
-        // never reach LiveEngineSync, so a later switch to Mirror or Media picks
-        // up this preset's filter rather than the outgoing one.
+        // Runs for every mode, including the Off arm below that never reaches
+        // LiveEngineSync, so a later switch to Mirror or Media picks up this
+        // preset's filter rather than the outgoing one.
         Nexus.Service.Lifecycle.LiveEngineSync.ApplyPostProcess(store, lighting);
 
         var sync = (look.Sync ?? "").ToLowerInvariant();
@@ -67,11 +67,6 @@ public static partial class DevicesRoutes
         if (sync == "none")
         {
             lighting.StopAll();
-            return;
-        }
-        if (sync == "gamesync")
-        {
-            lighting.StartGameSync();
             return;
         }
         Nexus.Service.Lifecycle.LiveEngineSync.ApplyLighting(store, lighting);

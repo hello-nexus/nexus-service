@@ -60,7 +60,7 @@ public static class LightingPresetLooks
     /// <summary>Restore a captured selection. The caller engages the engine after.</summary>
     public static void Apply(LightingSettings lighting, LightingPresetLook look)
     {
-        lighting.Sync = look.Sync ?? "";
+        lighting.Sync = RemovedSyncModes.Normalize(look.Sync);
         // A non-finite level propagates through RgbBridge.OnFrame and zeroes
         // every LED, the same hazard POST /lighting/global-brightness guards.
         if (look.GlobalBrightness is { } brightness && float.IsFinite(brightness))

@@ -24,6 +24,16 @@ public sealed class SharedScreenFrameSource
 
     public IScreenFrameSource CreateHandle() => new Handle(this);
 
+    /// <summary>Whether the underlying source can deliver frames at all.</summary>
+    public bool Available => _inner.Available;
+
+    /// <summary>
+    /// A read-only consumer for previews. It starts the capture only while no other
+    /// consumer holds it, and never restarts or retargets a capture a device effect
+    /// holds, so a preview can not change what the devices show.
+    /// </summary>
+    public IScreenFrameSource CreateObserver() => new Observer(this);
+
     private void StartShared(string monitorId, int width, int height)
     {
         lock (_gate)
@@ -91,5 +101,53 @@ public sealed class SharedScreenFrameSource
         public byte[]? TryAcquireFrame(out int width, out int height) => _owner._inner.TryAcquireFrame(out width, out height);
 
         public void Reselect() => _owner._inner.Reselect();
+    }
+
+    private sealed class Observer : IScreenFrameSource
+    {
+        private readonly SharedScreenFrameSource _owner;
+        private bool _holding;
+        private bool _closed;
+
+        public Observer(SharedScreenFrameSource owner) => _owner = owner;
+
+        public bool Available => _owner._inner.Available;
+
+        /// <summary>Idempotent: call every tick. Follows the monitor only while it is the sole consumer.</summary>
+        public void Start(string monitorId, int width, int height)
+        {
+            lock (_owner._gate)
+            {
+                if (_closed) return;
+                if (!_holding)
+                {
+                    if (_owner._refs != 0) return;
+                    _owner.StartShared(monitorId, width, height);
+                    _holding = true;
+                }
+                else if (_owner._refs == 1
+                    && (!string.Equals(monitorId, _owner._monitor, StringComparison.Ordinal) || width != _owner._w || height != _owner._h))
+                {
+                    _owner._inner.Stop();
+                    _owner._inner.Start(monitorId, width, height);
+                    _owner._monitor = monitorId;
+                    _owner._w = width;
+                    _owner._h = height;
+                }
+            }
+        }
+
+        public void Stop()
+        {
+            lock (_owner._gate)
+            {
+                _closed = true;
+                if (!_holding) return;
+                _holding = false;
+                _owner.StopShared();
+            }
+        }
+
+        public byte[]? TryAcquireFrame(out int width, out int height) => _owner._inner.TryAcquireFrame(out width, out height);
     }
 }

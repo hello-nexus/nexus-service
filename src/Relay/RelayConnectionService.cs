@@ -1179,6 +1179,12 @@ public sealed class RelayConnectionService : BackgroundService
             try { _sendLock.Release(); } catch (ObjectDisposedException) { }
         }
 
+        // Fire-and-forget dispatch can finish after Dispose.
+        private void ReleaseInFlight()
+        {
+            try { _inFlight.Release(); } catch (ObjectDisposedException) { }
+        }
+
         private async Task SendHoldingLockAsync(byte[] frame)
         {
             try
@@ -1214,7 +1220,7 @@ public sealed class RelayConnectionService : BackgroundService
             }
             finally
             {
-                _inFlight.Release();
+                ReleaseInFlight();
             }
         }
 
@@ -1246,7 +1252,7 @@ public sealed class RelayConnectionService : BackgroundService
             }
             finally
             {
-                _sendLock.Release();
+                ReleaseSendLock();
             }
         }
 

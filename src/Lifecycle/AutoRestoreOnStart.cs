@@ -160,11 +160,6 @@ internal sealed class AutoRestoreOnStart : BackgroundService
                 // "gif" from falling through to the shader-name default below.
                 return false;
 
-            case "gamesync":
-                _lighting.StartGameSync();
-                Console.WriteLine("[auto-restore] lighting: gamesync");
-                return true;
-
             case "static":
             {
                 var staticEffect = StaticEffectCatalog.Coerce(s.Static.Effect);

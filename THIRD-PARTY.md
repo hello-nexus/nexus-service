@@ -65,6 +65,20 @@ licenses. Their respective license texts ship alongside the bundled binaries.
   service binary, draws every device-screen bitmap (Stream Deck keys and dials,
   LCD screens), shapes its text and encodes its JPEGs
 
+## ANGLE
+
+- **Project**: ANGLE (OpenGL ES on Direct3D 11), https://github.com/google/angle
+- **License**: BSD-3-Clause, Copyright 2018 The ANGLE Project Authors
+- **License text**: `Bundled/win-x64/angle/ANGLE-LICENSE.txt`, shipped beside the
+  binaries in the `angle/` folder
+- **Usage**: `libEGL.dll` and `libGLESv2.dll` (ANGLE 2.1.28016, built from
+  upstream sources with only the Direct3D 11 backend, recipe in
+  `Bundled/win-x64/angle/BUILD.md`; the license file also covers the statically
+  linked Abseil, ASTC Encoder, zlib, ceval and Chromium-authored sources) are
+  the default Windows lighting renderer. They are loaded by full path from
+  `angle/` only and render the shader effects through Direct3D 11. win-x64 only; win-arm64 renders through
+  the system OpenGL driver
+
 ## PawnIO
 
 - **Project**: PawnIO (signed kernel I/O driver + module loader)
@@ -105,8 +119,8 @@ licenses. Their respective license texts ship alongside the bundled binaries.
 - **License**: Apache License 2.0
 - **License text**: shipped with the bundled binaries as `adb/NOTICE.txt` under
   each runtime identifier
-- **Files**: `adb` (linux-x64, osx-arm64), `adb.exe` plus `AdbWinApi.dll`,
-  `AdbWinUsbApi.dll` and `libwinpthread-1.dll` (win-x64) - redistributed
+- **Files**: `adb` (linux-x64, osx-arm64), `adb.exe` plus `AdbWinApi.dll`
+  and `AdbWinUsbApi.dll` (win-x64) - redistributed
   unmodified from Google's `sdk-repo-*-platform-tools` archive, which is what
   the bundled `NOTICE.txt` covers
 - **Communication boundary**: spawned as a child process to reach Android-based

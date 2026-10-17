@@ -37,7 +37,9 @@ internal static class GpuProbe
             }
         }
 
-        if (setPref is int pref)
+        // ANGLE is not steered by the registry preference; the class selects the adapter below.
+        var angle = Nexus.Service.Lighting.Engine.Gpu.GpuBackend.IsAngle(backend);
+        if (!angle && setPref is int pref)
         {
             try
             {
@@ -82,17 +84,14 @@ internal static class GpuProbe
             // "does this card hang?", and an inconclusive verdict condemns
             // nothing (GpuProbeExit.Verdict). GpuRenderSelect.ProbeWait outlasts
             // it. A healthy context takes tens of milliseconds.
-            // Sized to the backend under test: WGL lands in tens of
-            // milliseconds, while GLFW's own init is the slow thing the WGL
-            // path exists to avoid, and a budget below it would time out every
-            // probe and answer nothing.
-            var budget = string.Equals(backend, "glfw", StringComparison.OrdinalIgnoreCase)
-                ? TimeSpan.FromSeconds(35)
-                : TimeSpan.FromSeconds(6);
+            // ANGLE brings up a D3D11 device and a shader compiler stack, which a cold
+            // driver takes seconds over; its own budget, still under the parent's wait.
+            var budget = angle ? TimeSpan.FromSeconds(20) : TimeSpan.FromSeconds(6);
             var gpu = new Nexus.Service.Lighting.Engine.Gpu.GpuContext(160, 90)
             {
                 InitTimeout = budget,
                 BackendOverride = backend,
+                AdapterClass = angle ? setPref : null,
             };
             lock (gpu.Lock)
             {

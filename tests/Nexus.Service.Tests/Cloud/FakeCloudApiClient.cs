@@ -15,6 +15,7 @@ namespace Nexus.Service.Tests.Cloud;
 public sealed class FakeCloudApiClient : ICloudApiClient
 {
     public int RegisterCalls;
+    public int ResendVerificationCalls;
     public int LoginCalls;
     public int RefreshCalls;
     public int LogoutCalls;
@@ -39,6 +40,7 @@ public sealed class FakeCloudApiClient : ICloudApiClient
     public int PutAppDataCalls;
     public int DeleteAppDataCalls;
 
+    public Func<CloudResendVerificationRequest, CloudApiResult<CloudVoid>> OnResendVerification = _ => CloudApiResult<CloudVoid>.NetworkError("not wired");
     public Func<CloudRegisterRequest, CloudApiResult<CloudVoid>> OnRegister = _ => CloudApiResult<CloudVoid>.NetworkError("not wired");
     public Func<CloudLoginRequest, CloudApiResult<CloudAuthSession>> OnLogin = _ => CloudApiResult<CloudAuthSession>.NetworkError("not wired");
     public Func<string, CloudApiResult<CloudAuthSession>> OnRefresh = _ => CloudApiResult<CloudAuthSession>.NetworkError("not wired");
@@ -70,6 +72,9 @@ public sealed class FakeCloudApiClient : ICloudApiClient
         (_, body, _) => CloudApiResult<CloudRawResponse>.Ok(new CloudRawResponse { Body = body });
     public Func<HttpMethod, string, string?, string?, CloudApiResult<CloudRawResponse>> OnSendRaw =
         (_, _, body, _) => CloudApiResult<CloudRawResponse>.Ok(new CloudRawResponse { Body = body ?? "" });
+
+    public Task<CloudApiResult<CloudVoid>> ResendVerificationAsync(CloudResendVerificationRequest body, CancellationToken ct)
+    { ResendVerificationCalls++; return Task.FromResult(OnResendVerification(body)); }
 
     public Task<CloudApiResult<CloudVoid>> RegisterAsync(CloudRegisterRequest body, CancellationToken ct)
     { RegisterCalls++; return Task.FromResult(OnRegister(body)); }

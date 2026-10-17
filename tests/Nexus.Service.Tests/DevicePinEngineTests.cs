@@ -133,30 +133,6 @@ public class DevicePinEngineTests : IDisposable
     }
 
     [Fact]
-    public async Task Game_sync_skips_a_device_with_an_animate_pin()
-    {
-        const int cols = 4, rows = 4, count = cols * rows;
-        var dev = new DeviceFrame(0, "dev-a", count, x: 100, y: 100, w: 250, h: 90)
-        {
-            Archetype = "keyboard",
-            LedU = Enumerable.Range(0, count).Select(i => (i % cols) / (float)(cols - 1)).ToArray(),
-            LedV = Enumerable.Range(0, count).Select(i => (i / cols) / (float)(rows - 1)).ToArray(),
-        };
-        var gs = new GameSyncEffect();
-        gs.IngestAuthoredFill(255, 255, 255, "test");
-        gs.IngestFrame("keyboard", "CHROMA_CUSTOM", rows, cols, new int[count]);   // all black grid
-
-        var pins = new DevicePinTracker();
-        pins.Set("dev-a", new DevicePin { Kind = DevicePinKinds.Animate, Effect = "red" });
-        using var engine = Engine(pins, dev, (_, _) => new Fill("red", 255, 0, 0));
-        engine.SetEffect(gs);
-
-        var leds = await WaitFor(dev, l => l[0] == 255);
-        Assert.Equal(255, leds[0]);
-        Assert.Equal(0, leds[1]);
-    }
-
-    [Fact]
     public async Task A_pin_cleared_returns_the_device_and_disposes_the_instance()
     {
         var pins = new DevicePinTracker();

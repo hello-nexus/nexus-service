@@ -39,6 +39,10 @@ public sealed class JpegPanelStreamTransport : IStreamedPanelTransport, IOrienta
 
     private readonly byte[] _turned;
 
+    private const long FailureStatsIntervalMs = 30_000;
+    private long _statsWindowStartMs;
+    private long _statsFailuresSeen;
+
     public JpegPanelStreamTransport(JpegPanelHub hub, string serial)
     {
         _hub = hub;
@@ -196,6 +200,24 @@ public sealed class JpegPanelStreamTransport : IStreamedPanelTransport, IOrienta
             _dropLogged = true;
             ServiceLog.Warn($"[{_hub.Model.HandlerId}] frame rejected; retrying on the next frame");
         }
+        LogFailureStats();
+    }
+
+    /// <summary>One line per interval, and only when frames failed in it, so a healthy stream stays silent.</summary>
+    private void LogFailureStats()
+    {
+        long nowMs = Environment.TickCount64;
+        if (nowMs - _statsWindowStartMs < FailureStatsIntervalMs)
+        {
+            return;
+        }
+        long failures = _hub.FrameFailures;
+        if (_statsWindowStartMs != 0 && failures > _statsFailuresSeen)
+        {
+            ServiceLog.Info($"[{_hub.Model.HandlerId}] stats failedFrames={failures - _statsFailuresSeen} total={failures}");
+        }
+        _statsFailuresSeen = failures;
+        _statsWindowStartMs = nowMs;
     }
 
     public void Dispose()

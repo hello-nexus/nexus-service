@@ -33,8 +33,15 @@ public static class LightingActions
             if (string.IsNullOrEmpty(mode))
                 return Task.FromResult<JsonElement?>(Ack(false, "missing mode"));
             var l = services.GetRequiredService<ILightingProvider>();
-            if (mode is "none" or "off") l.StopAll();
-            else l.SetSync(mode!);
+            if (mode is "none" or "off")
+            {
+                l.StopAll();
+            }
+            else
+            {
+                mode = Nexus.Service.Lighting.RemovedSyncModes.Normalize(mode);
+                l.SetSync(mode);
+            }
             return Task.FromResult<JsonElement?>(Ack(true, applied: mode));
         });
 

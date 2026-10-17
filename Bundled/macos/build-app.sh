@@ -37,21 +37,21 @@ bash "$SCRIPT_DIR/audio-helper/build-helper.sh" "$APP/Contents/MacOS"
 # widget is unpinned.
 bash "$SCRIPT_DIR/overlay-helper/build-helper.sh" "$APP/Contents/MacOS"
 
-# Build and copy the camera helper (VideoToolbox decode + CMIO sink feed) and
-# the activation dylib the service P/Invokes for OSSystemExtensionRequest.
-bash "$SCRIPT_DIR/camera-helper/build.sh" "$APP/Contents/MacOS"
-
-# Embed the CMIO camera extension. Activation additionally requires the app
+# Camera: the helper (VideoToolbox decode + CMIO sink feed), the activation
+# dylib the service P/Invokes for OSSystemExtensionRequest, and the CMIO
+# extension itself. The helper and activator are useless without the extension,
+# so all three are skipped together. Activation additionally requires the app
 # to be signed with a real identity and installed in /Applications.
 # NEXUS_SKIP_CAMERA_EXTENSION builds a notarizable bundle without the extension
 # (the extension needs xcodebuild provisioning that headless CI can't do yet).
 if [ -z "${NEXUS_SKIP_CAMERA_EXTENSION:-}" ]; then
+    bash "$SCRIPT_DIR/camera-helper/build.sh" "$APP/Contents/MacOS"
     bash "$SCRIPT_DIR/camera-extension/build-extension.sh" "$APP/Contents/Library/SystemExtensions"
 else
-    echo "Skipping camera system extension (NEXUS_SKIP_CAMERA_EXTENSION set)"
+    echo "Skipping camera helper, activator and system extension (NEXUS_SKIP_CAMERA_EXTENSION set)"
 fi
 
-# Native dylibs (libe_sqlite3, libglfw, etc) are dlopen'd at runtime from
+# Native dylibs (libe_sqlite3, etc) are dlopen'd at runtime from
 # AppContext.BaseDirectory. Publish drops them at the staging root next to
 # the exe; mirror that placement inside the bundle. Single-level glob is
 # deliberate - openrgb/*.dylib must stay alongside the openrgb binary, not

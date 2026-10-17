@@ -3263,88 +3263,6 @@
         }
       }
     },
-    "/lighting/game-sync/start": {
-      "post": {
-        "tags": [
-          "Nexus"
-        ],
-        "responses": {
-          "200": {
-            "description": "OK"
-          }
-        }
-      }
-    },
-    "/lighting/game-sync/frame": {
-      "post": {
-        "tags": [
-          "Nexus"
-        ],
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/GameSyncFrameBody"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "200": {
-            "description": "OK"
-          }
-        }
-      }
-    },
-    "/lighting/game-sync/games": {
-      "get": {
-        "tags": [
-          "Nexus"
-        ],
-        "responses": {
-          "200": {
-            "description": "OK"
-          }
-        }
-      }
-    },
-    "/lighting/game-sync/games/scan": {
-      "post": {
-        "tags": [
-          "Nexus"
-        ],
-        "responses": {
-          "200": {
-            "description": "OK"
-          }
-        }
-      }
-    },
-    "/lighting/game-sync/gsi": {
-      "post": {
-        "tags": [
-          "Nexus"
-        ],
-        "responses": {
-          "200": {
-            "description": "OK"
-          }
-        }
-      }
-    },
-    "/lighting/game-sync/state": {
-      "get": {
-        "tags": [
-          "Nexus"
-        ],
-        "responses": {
-          "200": {
-            "description": "OK"
-          }
-        }
-      }
-    },
     "/webcam/start": {
       "post": {
         "tags": [
@@ -16791,6 +16709,9 @@
           "paused": {
             "type": "boolean"
           },
+          "gameSyncRemovedNotice": {
+            "type": "boolean"
+          },
           "error": {
             "type": "boolean"
           },
@@ -19340,47 +19261,6 @@
             "items": {
               "$ref": "#/components/schemas/GallerySource"
             }
-          }
-        }
-      },
-      "GameSyncFrameBody": {
-        "type": "object",
-        "properties": {
-          "device": {
-            "type": "string"
-          },
-          "effect": {
-            "type": "string"
-          },
-          "rows": {
-            "pattern": "^-?(?:0|[1-9]\\d*)$",
-            "type": [
-              "integer",
-              "string"
-            ],
-            "format": "int32"
-          },
-          "cols": {
-            "pattern": "^-?(?:0|[1-9]\\d*)$",
-            "type": [
-              "integer",
-              "string"
-            ],
-            "format": "int32"
-          },
-          "colors": {
-            "type": "array",
-            "items": {
-              "pattern": "^-?(?:0|[1-9]\\d*)$",
-              "type": [
-                "integer",
-                "string"
-              ],
-              "format": "int32"
-            }
-          },
-          "app": {
-            "type": "string"
           }
         }
       },

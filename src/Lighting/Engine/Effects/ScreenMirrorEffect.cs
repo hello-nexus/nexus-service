@@ -211,7 +211,7 @@ public sealed class ScreenMirrorEffect : IEffect
         }
     }
 
-    private static void BlitToCanvas(CanvasBuffer canvas, byte[] src, int srcW, int srcH)
+    internal static void BlitToCanvas(CanvasBuffer canvas, byte[] src, int srcW, int srcH)
     {
         for (int y = 0; y < canvas.Height; y++)
         {

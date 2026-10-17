@@ -16,8 +16,7 @@ public class GpuTestSeamTests
     [InlineData("HANG", "Hang")]
     [InlineData(" crash ", "Crash")]
     [InlineData("crash-early", "CrashEarly")]
-    [InlineData("glfw", "GlfwError")]
-    [InlineData("glfw-error", "GlfwError")]
+    [InlineData("context-error", "ContextError")]
     public void RecognisedModesParse(string value, string expected)
     {
         Assert.Equal(expected, GpuTestSeam.ParseMode(value).ToString());

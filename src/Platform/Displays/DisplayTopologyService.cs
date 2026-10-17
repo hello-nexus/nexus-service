@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using Nexus.Service.Models.Displays;
 using Nexus.Service.Models.Panel;
 using Nexus.Service.Panel;
@@ -14,7 +15,7 @@ namespace Nexus.Service.Platform.Displays;
 /// assignments). Also keeps a short-lived attached-id cache so record
 /// serialization can stamp displayAttached without a helper RPC per request.
 /// </summary>
-public sealed class DisplayTopologyService
+public sealed class DisplayTopologyService : IDisposable
 {
     /// <summary>Kiosk hosting: nexus-overlay on Windows, the overlay-helper
     /// sidecar on macOS, a user-session Chromium kiosk on Linux.</summary>
@@ -232,8 +233,80 @@ public sealed class DisplayTopologyService
             _attachedIdsAtMs = Environment.TickCount64;
             _attachedIdsValid = true;
         }
-        if (raw is not null) SyncPromotedPanelCapabilities(raw);
+        if (raw is not null)
+        {
+            RelinkPanelDisplays(raw);
+            SyncPromotedPanelCapabilities(raw);
+        }
         return ids;
+    }
+
+    private const int RelinkRecheckDelayMs = 6000;
+    private const int RelinkRecheckMax = 5;
+    private readonly object _recheckLock = new();
+    private System.Threading.Timer? _recheckTimer;
+    private int _relinkRechecks;
+    private bool _disposed;
+
+    public void Dispose()
+    {
+        lock (_recheckLock)
+        {
+            _disposed = true;
+            _recheckTimer?.Dispose();
+            _recheckTimer = null;
+        }
+    }
+
+    /// <summary>
+    /// A model-only relink waits for a second matching scan, but topology scans
+    /// only fire on display events, so a rescan is scheduled while one is
+    /// pending (capped, and reset once nothing is pending).
+    /// </summary>
+    private void ScheduleRelinkRecheck()
+    {
+        lock (_recheckLock)
+        {
+            if (_disposed || _recheckTimer is not null || _relinkRechecks >= RelinkRecheckMax) return;
+            _relinkRechecks++;
+            _recheckTimer = new System.Threading.Timer(_ =>
+            {
+                lock (_recheckLock)
+                {
+                    _recheckTimer?.Dispose();
+                    _recheckTimer = null;
+                }
+                try { CacheAttachedIds(_provider.Enumerate()); }
+                catch (Exception ex) { Console.Error.WriteLine($"[displays] relink recheck failed: {ex.Message}"); }
+            }, null, RelinkRecheckDelayMs, System.Threading.Timeout.Infinite);
+        }
+    }
+
+    /// <summary>
+    /// Runs before auto-promotion and the capability sync so both see the
+    /// re-linked record. Best-effort like the sync: a store fault must not
+    /// fail the topology read it rides on.
+    /// </summary>
+    private void RelinkPanelDisplays(IReadOnlyList<RawDisplayInfo> raw)
+    {
+        try
+        {
+            var attached = new List<RelinkDisplay>(raw.Count);
+            foreach (var info in raw)
+            {
+                if (IsY70Display(info.RawHardwareId)) continue;
+                attached.Add(new RelinkDisplay(info.Id, info.Fingerprint, info.IsPrimary));
+            }
+            var (applied, pending) = _panelRegistry.ReconcileDisplayFingerprints(attached);
+            if (applied.Count > 0)
+                PromotedPanelCapabilitiesChanged?.Invoke(applied.Select(a => a.RecordId).ToList());
+            if (pending) ScheduleRelinkRecheck();
+            else lock (_recheckLock) _relinkRechecks = 0;
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine($"[displays] panel display relink failed: {ex.Message}");
+        }
     }
 
     /// <summary>

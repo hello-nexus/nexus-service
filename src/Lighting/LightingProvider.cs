@@ -6,7 +6,6 @@ using Nexus.Service.Activity;
 using Nexus.Service.Lifecycle;
 using Nexus.Service.Lighting.Engine;
 using Nexus.Service.Lighting.Engine.Effects;
-using Nexus.Service.Lighting.GameSync;
 using Nexus.Service.Lighting.Engine.Gpu;
 using Nexus.Service.Lighting.Rgb;
 using Nexus.Service.Lighting.Capture;
@@ -60,7 +59,6 @@ public sealed partial class LightingProvider : ILightingProvider, IDisposable
     private readonly MediaLibrary _media;
     private readonly IMonitorEnumerator _monitors;
     private readonly IScreenFrameSource? _frameSource;
-    private readonly GameSyncGameScanner? _scanner;
     private readonly IBeatsProvider? _beats;
 
     // Serializes audio-capture reconcile so two near-simultaneous effect
@@ -79,13 +77,9 @@ public sealed partial class LightingProvider : ILightingProvider, IDisposable
     private readonly PostProcessState _screenPP = new();
     private readonly PostProcessState _mediaPP = new();
 
-    // Shared GameSyncEffect instance. Kept alive across StartGameSync calls so
-    // frames that arrive while the effect is already running are not dropped.
-    private GameSyncEffect? _gameSyncEffect;
-
     private readonly FeatureGates _gates;
 
-    public LightingProvider(IConfigStore store, LightingEngine engine, LightingOutputHub hub, GpuContext gpu, MediaLibrary media, IMonitorEnumerator monitors, IScreenFrameSource? frameSource = null, RgbBridge? rgb = null, GameSyncGameScanner? scanner = null, IBeatsProvider? beats = null, FeatureGates? gates = null, Nexus.Service.Lighting.CustomEffects.CustomEffectStore? customEffects = null, MultiplexHub? panelHub = null)
+    public LightingProvider(IConfigStore store, LightingEngine engine, LightingOutputHub hub, GpuContext gpu, MediaLibrary media, IMonitorEnumerator monitors, IScreenFrameSource? frameSource = null, RgbBridge? rgb = null, IBeatsProvider? beats = null, FeatureGates? gates = null, Nexus.Service.Lighting.CustomEffects.CustomEffectStore? customEffects = null, MultiplexHub? panelHub = null, ScreenPreviewHub? previewHub = null)
     {
         _panelHub = panelHub;
         _gates = gates ?? FeatureGates.AllEnabled;
@@ -99,13 +93,18 @@ public sealed partial class LightingProvider : ILightingProvider, IDisposable
         _engine.PinLookTag = PinTag;
         _engine.PinEffectFactory = BuildPinnedEffect;
         _sharedSource = frameSource is null ? null : new SharedScreenFrameSource(frameSource);
+        if (previewHub is not null && _sharedSource is not null)
+        {
+            var shared = _sharedSource;
+            previewHub.IsAvailable = () => shared.Available;
+            _previewStreamer = new ScreenPreviewStreamer(previewHub, shared.CreateObserver, () => _mirrorMonitor, _screenPP);
+        }
         _hub = hub;
         _rgb = rgb;
         _gpu = gpu;
         _media = media;
         _monitors = monitors;
         _frameSource = frameSource;
-        _scanner = scanner;
         _beats = beats;
 
         var s = _store.Load().Lighting;
@@ -118,7 +117,6 @@ public sealed partial class LightingProvider : ILightingProvider, IDisposable
         // Any settings write can move a pinned effect's look, the pin set, or the mirrored screen.
         _store.OnChanged += RefreshPinnedLooks;
         RefreshPinnedLooks();
-        _scanner?.OnScanComplete = OnGameScanComplete;
         // A store that was unreadable at boot registers its sources late; a custom effect
         // restored meanwhile is running the rainbow stand-in until this rebuilds it.
         customEffects?.Recovered += () =>
@@ -156,7 +154,7 @@ public sealed partial class LightingProvider : ILightingProvider, IDisposable
         return _engine.Frozen ? "static" : _engine.CurrentEffectName;
     }
 
-    public void SetSync(string sync) => _store.Update(s => s.Lighting.Sync = sync);
+    public void SetSync(string sync) => _store.Update(s => s.Lighting.Sync = RemovedSyncModes.Normalize(sync));
 
     public bool IsPaused => _engine.Paused;
 
@@ -618,15 +616,42 @@ public sealed partial class LightingProvider : ILightingProvider, IDisposable
         }
     }
 
+    // Identity of this exact build (release version plus the executable's size and write time), folded into every disk key so no build serves another build's images.
+    private static readonly string ThumbnailDiskVersion = BuildIdentity();
+
+    private static string BuildIdentity()
+    {
+        var version = System.Reflection.CustomAttributeExtensions.GetCustomAttribute<System.Reflection.AssemblyInformationalVersionAttribute>(typeof(LightingProvider).Assembly)?.InformationalVersion
+            ?? typeof(LightingProvider).Assembly.GetName().Version?.ToString()
+            ?? "0";
+        try
+        {
+            if (Environment.ProcessPath is { } exe)
+            {
+                var info = new System.IO.FileInfo(exe);
+                return string.Create(System.Globalization.CultureInfo.InvariantCulture, $"{version}|{info.Length}|{info.LastWriteTimeUtc.Ticks}");
+            }
+        }
+        catch
+        {
+        }
+        return version;
+    }
+
+    // Thumbnails are fixed-size BMPs, so a stored file of any other length is damaged.
+    private const int ThumbnailWidth = 160;
+    private const int ThumbnailHeight = 90;
+    private const int ThumbnailBmpBytes = 54 + (ThumbnailWidth * 3 + (4 - ThumbnailWidth * 3 % 4) % 4) * ThumbnailHeight;
+    private const long ThumbnailDiskCapBytes = 64L * 1024 * 1024;
+
+    // Rendered thumbnails survive a restart. Shared by every provider and created on first use, which starts its background init.
+    private static readonly Lazy<Engine.Gpu.DiskBlobCache> ThumbnailDiskLazy = new(() => new Engine.Gpu.DiskBlobCache(
+        System.IO.Path.Combine(Engine.Gpu.BlobCachePolicy.CacheRoot(), "lighting-thumbnails"),
+        ThumbnailDiskCapBytes, Engine.Gpu.BlobCachePolicy.Allowed));
+
     private (byte[] Bytes, string Tag)? CaptureAnimateThumbnailCore(string key, int slot, bool skipCache, bool frozen)
     {
-        // Shader thumbnails are GPU-rendered; with no usable GPU the render is a
-        // no-op and the frame stays black, so skip it and let the caller 404 -
-        // the UI shows a placeholder instead of a grid of black tiles.
-        if (!_gpu.Available)
-        {
-            return null;
-        }
+        var sw = System.Diagnostics.Stopwatch.StartNew();
         var name = (key ?? "").ToLowerInvariant();
         if (!ShaderLibrary.IsKnownKey(name))
         {
@@ -646,9 +671,26 @@ public sealed partial class LightingProvider : ILightingProvider, IDisposable
         {
             return (cached.Bytes, tag);
         }
+        // Shader thumbnails are GPU-rendered; with no usable GPU the render is a
+        // no-op and the frame stays black, so skip it and let the caller 404 -
+        // the UI shows a placeholder instead of a grid of black tiles.
+        if (!_gpu.Available)
+        {
+            return null;
+        }
+        var diskName = Engine.Gpu.DiskBlobCache.ThumbnailName(name, slot, frozen, tag, ThumbnailDiskVersion);
+        if (!skipCache && ThumbnailDiskLazy.Value.TryGet(diskName) is { Length: ThumbnailBmpBytes } onDisk)
+        {
+            _thumbnailCache[cacheKey] = (tag, onDisk);
+            Engine.Gpu.GpuContext.Log($"[thumb] {cacheKey} disk {sw.Elapsed.TotalMilliseconds:0}ms");
+            return (onDisk, tag);
+        }
 
-        var canvas = new Engine.CanvasBuffer(160, 90);
+        var canvas = new Engine.CanvasBuffer(ThumbnailWidth, ThumbnailHeight);
+        var generation = _gpu.Generation;
         var effect = BuildThumbnailEffect(name, defaults, state, frozen);
+        // Thumbnails ride the GL thread's background lane so a page full of them cannot stall the live frame.
+        using var background = Engine.Gpu.GpuContext.BeginBackground();
         try
         {
             if (!frozen && TimeLapseWindowMs(name) is var (start, span))
@@ -668,6 +710,12 @@ public sealed partial class LightingProvider : ILightingProvider, IDisposable
         }
         var bytes = BmpEncoder.Encode(canvas.Pixels, canvas.Width, canvas.Height);
         _thumbnailCache[cacheKey] = (tag, bytes);
+        // A failed compile or a lost context leaves a black frame: serve it, but never persist it.
+        if (_gpu.Available && _gpu.Generation == generation && effect is not ShaderEffect { HasFailed: true })
+        {
+            ThumbnailDiskLazy.Value.Put(diskName, bytes);
+        }
+        Engine.Gpu.GpuContext.Log($"[thumb] {cacheKey} render {sw.Elapsed.TotalMilliseconds:0}ms");
         return (bytes, tag);
     }
 
@@ -897,6 +945,7 @@ public sealed partial class LightingProvider : ILightingProvider, IDisposable
     // The one screen capture. The global Mirror effect and the mirror-pin effect
     // each take a handle, so the capture runs once and closes with its last user.
     private readonly SharedScreenFrameSource? _sharedSource;
+    private readonly ScreenPreviewStreamer? _previewStreamer;
     // Monitor and its pin tag change together, so a reader never sees one
     // without the other and the per-tick tag lookup allocates nothing.
     private sealed record MirrorSelection(string Monitor, string Tag);
@@ -1682,102 +1731,6 @@ public sealed partial class LightingProvider : ILightingProvider, IDisposable
         });
     }
 
-    // Fires on the scanner's background thread after each scan completes.
-    // Ensures the GSI cfg is present when Game Sync is active and a supported
-    // GSI game was found, without requiring the user to re-toggle.
-    private void OnGameScanComplete(IReadOnlyList<DetectedGame> games)
-    {
-        if (!string.Equals(GetSync(), "gamesync", StringComparison.OrdinalIgnoreCase))
-        {
-            return;
-        }
-
-        var hasGsiGame = false;
-        foreach (var g in games)
-        {
-            if (g.EmitsGsi)
-            {
-                hasGsiGame = true;
-                break;
-            }
-        }
-
-        if (!hasGsiGame)
-        {
-            return;
-        }
-
-        var token = _store.Load().Auth?.Token ?? "";
-        if (token.Length > 0)
-        {
-            GsiConfigInstaller.EnsureInstalled(token);
-        }
-    }
-
-    public void StartGameSync()
-    {
-        if (!_gates.Lighting)
-        {
-            return;
-        }
-        EnsureRgbActive();
-        // Reuse the existing effect instance so frames ingested before the
-        // mode selection round-trip arrives are not lost.
-        if (_gameSyncEffect is null || _engine.CurrentEffect != _gameSyncEffect)
-        {
-            _gameSyncEffect = new GameSyncEffect();
-            _engine.SetEffect(_gameSyncEffect);
-        }
-        // Clear per-session signal so a stale app name or last-seen time
-        // from a previous Game Sync session does not bleed into the new one.
-        _gameSyncEffect.Reset();
-        _store.Update(s =>
-        {
-            s.Lighting.Sync = "gamesync";
-            LightingPresetLooks.CaptureIntoActive(s);
-        });
-
-        // Deploy shim DLLs into System32/SysWOW64. Idempotent and guarded by
-        // an elevation check; skipped on macOS/Linux (NotApplicable).
-        var shimResult = GameSyncShimInstaller.EnsureInstalled();
-        switch (shimResult)
-        {
-            case ChromaShimInstallResult.Installed:
-                ServiceLog.Info("[chroma-shim] shim DLLs installed");
-                break;
-            case ChromaShimInstallResult.AlreadyCurrent:
-                ServiceLog.Info("[chroma-shim] shim DLLs already current");
-                break;
-            case ChromaShimInstallResult.SynapseConflict:
-                ServiceLog.Warn("[chroma-shim] Razer Chroma SDK present; shim not installed");
-                break;
-            case ChromaShimInstallResult.NotElevated:
-                ServiceLog.Warn("[chroma-shim] not elevated; shim install skipped");
-                break;
-            case ChromaShimInstallResult.BundleMissing:
-                ServiceLog.Info("[chroma-shim] bundled shim DLLs not found; Game Sync stays inactive");
-                break;
-            case ChromaShimInstallResult.Failed:
-                ServiceLog.Error("[chroma-shim] shim install failed");
-                break;
-        }
-
-        var token = _store.Load().Auth?.Token ?? "";
-        if (token.Length > 0)
-        {
-            GsiConfigInstaller.EnsureInstalled(token);
-        }
-    }
-
-    public GameSyncEffect? ActiveGameSyncEffect()
-    {
-        if (_engine.CurrentEffect is GameSyncEffect eff)
-        {
-            return eff;
-        }
-        return null;
-    }
-
     public bool StartMedia(string mediaId)
     {
         if (!_gates.Lighting)
@@ -1851,6 +1804,7 @@ public sealed partial class LightingProvider : ILightingProvider, IDisposable
     public void Dispose()
     {
         _studioTimer?.Dispose();
+        _previewStreamer?.Dispose();
         _rgb?.Dispose();
         _engine.Dispose();
     }

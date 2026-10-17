@@ -383,7 +383,7 @@ internal static class FactoryReset
                 try
                 {
                     if (proc.Id == Environment.ProcessId) continue;
-                    if (!string.Equals(proc.MainModule?.FileName, selfPath, StringComparison.Ordinal)) continue;
+                    if (!string.Equals(OwnNexusExe.ImagePathOf(proc.Id), selfPath, StringComparison.Ordinal)) continue;
                     proc.Kill();
                     Console.Error.WriteLine($"[factory-reset] killed surviving instance pid {proc.Id}");
                 }

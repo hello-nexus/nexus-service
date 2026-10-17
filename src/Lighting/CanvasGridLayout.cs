@@ -1,4 +1,7 @@
 using System;
+using System.Collections.Generic;
+using Nexus.Service.Lighting.Engine;
+using Nexus.Service.Persistence;
 
 namespace Nexus.Service.Lighting;
 
@@ -7,8 +10,8 @@ namespace Nexus.Service.Lighting;
 /// scales with the total device count so every card lands in a distinct,
 /// guaranteed-on-canvas cell.
 ///
-/// nexus-web mirrors this in DeviceCanvas.tsx's defaultSlot(), which the canvas
-/// Minimize action uses so a minimized frame lands where a reset would put it.
+/// nexus-web mirrors <see cref="Slot"/> in DeviceCanvas.tsx's defaultSlot(), which
+/// the canvas Minimize action uses so a minimized frame lands on its grid slot.
 /// Change both together.
 /// </summary>
 internal static class CanvasGridLayout
@@ -25,6 +28,19 @@ internal static class CanvasGridLayout
     /// stack every name onto that line and long names overlap.
     /// </summary>
     private const float ColumnStaggerY = 24f;
+
+    /// <summary>The whole canvas: the default rect on a <see cref="NexusSettings.MaximizedCanvasDefaults"/> install. Equals the rect nexus-web's Maximize (DeviceCanvas.tsx setMaximized) writes for an unturned frame; change both together.</summary>
+    public static (float x, float y, float w, float h) Full => (0f, 0f, CanvasW, CanvasH);
+
+    /// <summary>Puts every frame with no persisted layout on <see cref="Full"/>.</summary>
+    public static void MaximizeUnplaced(IReadOnlyList<DeviceFrame> frames, IReadOnlyDictionary<string, DeviceLayout> layouts)
+    {
+        foreach (var frame in frames)
+        {
+            if (layouts.ContainsKey(frame.Id)) continue;
+            (frame.X, frame.Y, frame.W, frame.H) = Full;
+        }
+    }
 
     public static (float x, float y, float w, float h) Slot(int index, int totalCount)
     {

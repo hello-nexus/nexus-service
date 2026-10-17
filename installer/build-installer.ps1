@@ -205,29 +205,6 @@ if (-not (Test-Path (Join-Path $PublishDir "Nexus.exe"))) {
     throw "AOT publish not found at $PublishDir. Run dotnet publish first."
 }
 
-# Game Sync shim DLLs (produced by the nexus-gamesync component) ship under
-# tools\gamesync\, where GameSyncShimInstaller stages them at enable-time. The
-# runtime tolerates a missing bundle (Game Sync stays inactive), so a release
-# could ship without them unnoticed. A signed build is a release and fails
-# instead; an unsigned local build only warns, so a lab-PC installer still
-# builds without MSVC.
-$shimX64 = @("RzChromaSDK64.dll", "RzChromatic64.dll", "LightFX.dll", "LogitechLedEnginesWrapper.dll", "LogitechLed.dll")
-$shimX86 = @("RzChromaSDK.dll", "RzChromatic.dll", "LightFX.dll", "LogitechLedEnginesWrapper.dll", "LogitechLed.dll")
-$shimX64Dir = Join-Path $PublishDir "tools\gamesync\x64"
-$shimX86Dir = Join-Path $PublishDir "tools\gamesync\x86"
-$missingShims = @()
-foreach ($dll in $shimX64) {
-    if (-not (Test-Path (Join-Path $shimX64Dir $dll))) { $missingShims += "tools\gamesync\x64\$dll" }
-}
-foreach ($dll in $shimX86) {
-    if (-not (Test-Path (Join-Path $shimX86Dir $dll))) { $missingShims += "tools\gamesync\x86\$dll" }
-}
-if ($missingShims.Count -gt 0) {
-    $shimMsg = "Game Sync shim DLLs not bundled; the build ships with Game Sync inactive. Missing:`n  $($missingShims -join "`n  ")`nTo include them, build nexus-gamesync (build.bat + build32.bat), stage into Bundled\win-x64\gamesync and re-publish."
-    if ($Sign) { throw $shimMsg }
-    Write-Warning $shimMsg
-}
-
 # Strip any leftover macOS AppleDouble files from the publish dir (they slip in
 # through scp/tar from a Mac dev machine and break Inno's compressor).
 [System.IO.Directory]::EnumerateFiles($PublishDir, "._*", "AllDirectories") |

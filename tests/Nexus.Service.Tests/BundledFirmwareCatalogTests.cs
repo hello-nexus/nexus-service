@@ -16,7 +16,7 @@ public class BundledFirmwareCatalogTests
     [Fact]
     public void Scans_the_embedded_firmware_for_every_bundled_device()
     {
-        Assert.Equal(new[] { "np50", "q60" }, _catalog.DeviceIds.OrderBy(x => x, StringComparer.Ordinal));
+        Assert.Equal(new[] { "np50", "q60", "y70-infinite", "y70-truly" }, _catalog.DeviceIds.OrderBy(x => x, StringComparer.Ordinal));
     }
 
     [Fact]
@@ -25,6 +25,21 @@ public class BundledFirmwareCatalogTests
         Assert.Equal("2.0.5.1", _catalog.GetLatestVersion("np50"));
         Assert.Equal("2.0.9.1", _catalog.GetLatestVersion("q60"));
         Assert.Equal(new[] { "2.0.5.1", "2.0.3.1" }, _catalog.GetAvailableVersions("np50"));
+    }
+
+    [Fact]
+    public void A_device_sharing_an_image_serves_the_source_resource()
+    {
+        Assert.Equal("1.0.3.1", _catalog.GetLatestVersion("y70-truly"));
+        using var source = _catalog.OpenFirmware("y70-infinite", "1.0.3.1");
+        using var shared = _catalog.OpenFirmware("y70-truly", "1.0.3.1");
+        Assert.NotNull(source);
+        Assert.NotNull(shared);
+        using var a = new MemoryStream();
+        using var b = new MemoryStream();
+        source!.CopyTo(a);
+        shared!.CopyTo(b);
+        Assert.Equal(a.ToArray(), b.ToArray());
     }
 
     [Fact]

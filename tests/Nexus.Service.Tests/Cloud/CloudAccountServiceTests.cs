@@ -61,6 +61,18 @@ public sealed class CloudAccountServiceTests
     }
 
     [Fact]
+    public async Task LoginAsync_carries_the_email_from_an_unverified_error()
+    {
+        var (svc, api, _) = Make();
+        api.OnLogin = _ => CloudApiResult<CloudAuthSession>.Fail(403, "email_unverified", "Verify your email first.", email: "nicola@example.com");
+
+        var (result, _) = await svc.LoginAsync("nicola", "password1", CancellationToken.None);
+
+        Assert.Equal("email_unverified", result.ErrorCode);
+        Assert.Equal("nicola@example.com", result.ErrorEmail);
+    }
+
+    [Fact]
     public async Task First_login_fires_activated_only_second_account_fires_switching_then_activated()
     {
         var (svc, api, _) = Make();
@@ -526,6 +538,36 @@ public sealed class CloudAccountServiceTests
         Assert.Equal(2, seenTokens.Count);
         Assert.Equal("token-gen-0", seenTokens[0]);
         Assert.Equal("token-gen-1", seenTokens[1]);
+    }
+
+    [Fact]
+    public async Task ResendVerificationAsync_relays_the_email_to_the_cloud()
+    {
+        var (svc, api, _) = Make();
+        CloudResendVerificationRequest? sent = null;
+        api.OnResendVerification = body =>
+        {
+            sent = body;
+            return CloudApiResult<CloudVoid>.Ok(CloudVoid.Instance);
+        };
+
+        var result = await svc.ResendVerificationAsync("nicola@example.com", CancellationToken.None);
+
+        Assert.True(result.Success);
+        Assert.Equal(1, api.ResendVerificationCalls);
+        Assert.Equal("nicola@example.com", sent?.Email);
+    }
+
+    [Fact]
+    public async Task ResendVerificationAsync_relays_a_throttled_refusal()
+    {
+        var (svc, api, _) = Make();
+        api.OnResendVerification = _ => CloudApiResult<CloudVoid>.Fail(429, "too_many_requests", "Slow down.");
+
+        var result = await svc.ResendVerificationAsync("nicola@example.com", CancellationToken.None);
+
+        Assert.False(result.Success);
+        Assert.Equal(429, result.StatusCode);
     }
 
     [Fact]

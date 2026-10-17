@@ -253,5 +253,18 @@ public sealed class CloudAccountDevicesIntegrationTests : IClassFixture<CloudAcc
         Assert.Equal("", await res.Content.ReadAsStringAsync());
     }
 
+    [Fact]
+    public async Task Delete_benchmark_relays_upstream_204_bodyless()
+    {
+        SignOut();
+        _factory.Api.OnSendRaw = (_, _, _, _) =>
+            CloudApiResult<CloudRawResponse>.Ok(new CloudRawResponse { Body = "", ContentType = "application/json" }, 204);
+
+        var res = await DesktopClient().DeleteAsync("/cloud/benchmarks/run-1");
+
+        Assert.Equal(HttpStatusCode.NoContent, res.StatusCode);
+        Assert.Equal("", await res.Content.ReadAsStringAsync());
+    }
+
     private static CloudRawResponse CloudVoidRaw() => new() { Body = "{}", ContentType = "application/json" };
 }

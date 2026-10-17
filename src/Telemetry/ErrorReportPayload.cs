@@ -27,6 +27,9 @@ public sealed class ErrorReportItem
 
     /// <summary>Recent service log lines; set only on a crash, null (omitted) otherwise.</summary>
     public string? Log { get; set; }
+
+    /// <summary>Build that wrote the crash file; crash file only, cleared before send because nexus-api rejects unknown item fields.</summary>
+    public string? Version { get; set; }
     public int Count { get; set; } = 1;
     public DateTimeOffset FirstSeen { get; set; }
     public DateTimeOffset LastSeen { get; set; }

@@ -13,7 +13,7 @@ dashboard, the on-device panels, the phone companions, and
 | --- | --- |
 | **Monitoring** | CPU, GPU, RAM, disk, network, fan, temperature, FPS and battery sensors (LibreHardwareMonitor on Windows, IOKit on macOS, sysfs on Linux), 1 Hz history, a timeline of system events, per-drive SMART health. |
 | **Cooling** | Fan curves, pump and AIO control across the first-party and vendor hubs the service drives, with calibration, safety limits and a CPU thermal guard (on by default) that raises fans near the part's own temperature limit and repairs curve configs that can stall them. |
-| **Lighting** | RGB for the whole OpenRGB catalog through a bundled headless child process, plus first-party protocols. Effects engine, screen and audio sync, key-press reactions on per-key keyboards, LAN smart lights (Hue, Nanoleaf, Govee), game sync (Razer Chroma, LightFX and Logitech capture shims, CS2 Game State Integration). |
+| **Lighting** | RGB for the whole OpenRGB catalog through a bundled headless child process, plus first-party protocols. Effects engine, screen and audio sync, key-press reactions on per-key keyboards, LAN smart lights (Hue, Nanoleaf, Govee). |
 | **Devices** | Native USB drivers: HYTE (Y70, Q-series, Keeb, CNVS, hubs), Lian Li (Uni Fan, Galahad II, HydroShift LCD, HydroShift II, Strimer, wireless), Corsair iCUE LINK, Xeneon Edge and Galleon K100 SD (screen and dials), NZXT Kraken, iBUYPOWER (AW5, keyboards, mice), Tryx Panorama, Elgato Stream Deck (keys, dials, touch strip), Nollie, Asiahorse Umbra V2. Firmware updates, and detection of competing vendor software. |
 | **Panels** | Pairs and serves the React panel UIs for the Y70 touch panel, Q-series screens and the phone companion, and streams off-screen rendered panels (H.264 or raw frames) to USB display devices on Windows and macOS. |
 | **Apps** | Host for `nexus.app/1` SDK apps (sandboxed Web Worker runtime, sensor bindings) and the cloud app store. |
@@ -68,6 +68,8 @@ service runs as LocalSystem and cannot see user-scope variables):
 | `NEXUS_OPENRGB_VERBOSITY` | `verbose` or `trace` raises what the OpenRGB child prints into the service log. Applies at launch. |
 | `NEXUS_STOP_SETTLE_MS` | How long turning lighting off waits after the final black frame before the OpenRGB child is killed (default 300, max 5000). |
 | `NEXUS_DISCORD_PRESENCE_CLIENT_ID` | Discord application used for Rich Presence, to test against a scratch application. |
+| `NEXUS_LED_SPACE` | Windows only. `0` closes the LED-space look-ahead window path so every window renders through the canvas path. |
+| `NEXUS_D3D_PREVENT_THREADING` | Windows only. `1` creates the ANGLE renderer's D3D11 device with the driver's internal threading off. |
 | `NEXUS_API_BASE`, `NEXUS_CLOUD_API` | Cloud API base override for the account and LED-mapping clients, and for the store catalog proxy respectively. |
 
 ## Source layout
@@ -82,7 +84,7 @@ src/
   Monitoring/          # 1 Hz history store, timeline events, broadcaster
   Cooling/             # curve engine, thermal guard, calibration, safety, per-hub cooling providers
   QSeries/             # persisted adb transport to Q-series screens
-  Lighting/            # Engine/ effects + canvas, Rgb/ OpenRGB bridge, Zones/, Mappings/, Capture/, Smart/, GameSync/, Scene/ 3D placement, KeyReactive/ key-press reactions
+  Lighting/            # Engine/ effects + canvas, Rgb/ OpenRGB bridge, Zones/, Mappings/, Capture/, Smart/, Scene/ 3D placement, KeyReactive/ key-press reactions
   Devices/             # device manager, USB detection, per-device handlers, firmware
   Peripherals/         # protocol drivers per vendor (Hyte, LianLi*, Corsair*, Nzxt, Ibp, Tryx, StreamDeck, Keeb, Y70, ...)
   Conflicts/           # competing vendor-software detection, device ownership, opt-in shutdown
@@ -116,7 +118,7 @@ docs/
   shader-benchmark.md  # Q-series shader performance baseline
 data/                  # shipped defaults: install defaults, animate templates, OpenRGB device catalog,
                        # built-in ARGB product LED mappings (embedded; the picker works offline)
-Bundled/               # per-RID third-party binaries (adb, dfu-util, pawnio, gamesync, bench CLIs, skia), openrgb + ffmpeg added at publish; macos/ linux/ windows/ = first-party helpers, icons, macOS build scripts
+Bundled/               # per-RID third-party binaries (adb, dfu-util, pawnio, bench CLIs, skia), openrgb + ffmpeg added at publish; macos/ linux/ windows/ = first-party helpers, icons, macOS build scripts
 installer/             # Windows Inno Setup + web installer, MSIX, Linux tarball packager
 tests/
   Nexus.Service.Tests       # xUnit, AOT-safe
@@ -142,6 +144,13 @@ dotnet publish -c Release -r linux-x64 -o publish-linux
   configuration, compiled by `scripts/build-ffmpeg-minimal.sh`. It is optional
   at build time: `bash scripts/fetch-ffmpeg.sh all` (or `mac | win | linux`)
   produces it once per RID.
+- `Bundled/win-x64/angle/` holds the ANGLE `libEGL.dll` and `libGLESv2.dll`
+  (a Direct3D 11 only build, recipe in `BUILD.md`; licenses in
+  `ANGLE-LICENSE.txt`) and publishes to `<publish>/angle/`. They are the default
+  Windows lighting renderer (`Lighting.RenderBackend` = `angle`, OpenGL ES 3 on
+  Direct3D 11); `wgl` remains as a fallback and win-arm64 uses `wgl`.
+  Setting `Lighting.RenderGpu` to `software` (ANGLE only) renders shaders on the
+  CPU through ANGLE WARP, with no hardware probe; it applies after a restart.
 - `Bundled/<rid>/skia/libSkiaSharp` is a raster-only Skia build with HarfBuzz
   and libjpeg-turbo linked in, committed per RID and rebuilt with
   `Bundled/skia/build.sh` / `build.ps1` (see `Bundled/skia/NOTES.md`). It
@@ -176,8 +185,10 @@ it whenever a route is added, removed or renamed:
 dotnet run -- --emit-openapi docs/openapi.json
 ```
 
-The flag starts the host only far enough to register endpoints. A `DEBUG`
-build also serves the document at `/openapi/v1.json`. The committed copy is
+The flag starts the host only far enough to register endpoints. The
+generator exists only in `Debug` builds (the default for `dotnet run`); a
+release build neither accepts `--emit-openapi` nor ships the OpenAPI packages.
+A `DEBUG` build also serves the document at `/openapi/v1.json`. The committed copy is
 the release flavour; dev-tools-only routes appear only when regenerated with
 `-p:DevTools=true`.
 
@@ -194,7 +205,8 @@ the release flavour; dev-tools-only routes appear only when regenerated with
 - **macOS**: `Bundled/macos/build-app.sh` wraps the publish output into
   `Nexus.app`; `Bundled/macos/sign-notarize.sh` deep-signs it, packages
   `Nexus.dmg`, notarizes and staples. `NEXUS_SKIP_CAMERA_EXTENSION=1` omits the
-  camera system extension (CI cannot provision it headlessly). For a local
+  camera system extension and its helper and activator (CI cannot provision
+  the extension headlessly; the other two do nothing without it). For a local
   build, `Bundled/macos/sign-local.sh <Nexus.app> <identity>` seals the bundle
   with a stable identity so macOS privacy grants (Input Monitoring for touch
   routing, Screen Recording) survive rebuilds.
@@ -214,6 +226,22 @@ those hot paths, outside the solution and the publish:
 ```sh
 dotnet run -c Release -p:BuildWeb=false --project tests/Nexus.Service.Benchmarks -- --filter '*'
 ```
+
+On Windows, `Nexus.exe --lighting-bench <out.json> [--backends angle,wgl]
+[--adapters integrated,dedicated,warp] [--seconds N] [--effects a,b]` renders every built-in
+shader effect at the 30 Hz cadence in one child process per backend and
+adapter, and writes timing, CPU, memory and output-fingerprint results as JSON
+plus a summary table, with timestamped `.json` and `.txt` copies in the logs
+directory. `--section ledspace|gate|d3dflag` replaces the standard run with a
+probe of the look-ahead window path (LED-space probe, exactness gate, D3D11
+threading flag).
+
+Look-ahead windows render through one LED-space draw per window once an
+exactness gate has proven a shader byte-identical to the canvas render on the
+running GPU; any other case uses the canvas path. The window path is
+Windows-only, and `NEXUS_LED_SPACE=0` closes it. `NEXUS_D3D_PREVENT_THREADING=1`
+(Windows-only) creates the ANGLE D3D11 device with the driver's internal
+threading off (off by default).
 
 ## Releases
 

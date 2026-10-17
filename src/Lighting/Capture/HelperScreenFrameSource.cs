@@ -114,6 +114,8 @@ public sealed class HelperScreenFrameSource : IScreenFrameSource, IDisposable
         }
     }
 
+    public bool Available => _registry.IsAnyConnected;
+
     public byte[]? TryAcquireFrame(out int width, out int height)
     {
         lock (_lock)

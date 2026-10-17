@@ -24,4 +24,7 @@ public interface IScreenFrameSource
     /// per-monitor choice there); default no-op for sources that pick directly.
     /// </summary>
     void Reselect() { }
+
+    /// <summary>False while the source cannot deliver frames at all (no capture helper connected).</summary>
+    bool Available => true;
 }

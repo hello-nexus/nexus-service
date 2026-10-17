@@ -874,6 +874,7 @@ public sealed partial class ProfileManager : IDisposable
             // profile saved before free rotation unswaps its quarter-turned
             // layouts here, under the store lock (idempotent).
             Nexus.Service.Lighting.LayoutRotationMigration.Apply(s.Lighting);
+            Nexus.Service.Lighting.RemovedSyncModes.Apply(s.Lighting);
             s.Cooling = data.Cooling ?? new CoolingSettings();
 
             // Theme + Dashboard categories now live in dedicated top-level
@@ -1099,6 +1100,7 @@ public sealed partial class ProfileManager : IDisposable
                         _store.Update(s =>
                         {
                             ProfileSharing.ApplyCategory(s, primaryData, normalized);
+                            Nexus.Service.Lighting.RemovedSyncModes.Apply(s.Lighting);
                             // ReadProfileFile bypasses JsonConfigStore.Migrate, so a
                             // pre-v11 primary can carry legacy marketplace: widget
                             // types into live settings; rewrite them (idempotent).

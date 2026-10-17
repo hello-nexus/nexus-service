@@ -4,6 +4,7 @@ using System.Linq;
 using System.Security.Cryptography;
 using Nexus.Service.Models.Panel;
 using Nexus.Service.Persistence;
+using Nexus.Service.Platform;
 
 namespace Nexus.Service.Panel;
 
@@ -147,6 +148,93 @@ public sealed class PanelDeviceRegistry
         _store.FlushNow();
         if (activated) DisplayRecordReady?.Invoke(result!);
         return (result!, activated);
+    }
+
+    /// <summary>Minimum gap between two identical weak plans before the second applies.</summary>
+    internal const long WeakRelinkConfirmMs = 5000;
+
+    internal Func<long> ClockMs { get; init; } = () => Environment.TickCount64;
+
+    private readonly object _pendingLock = new();
+    // In memory only: record id -> (target display id, first time this exact plan was seen).
+    private Dictionary<string, (string Target, long FirstSeenMs)> _pendingWeak = new(StringComparer.Ordinal);
+
+    /// <summary>
+    /// Keeps display-bound records attached to their physical monitor: stamps a
+    /// hardware fingerprint on records that lack one, and rewrites the
+    /// DisplayId of a record whose display id no longer exists when its
+    /// hardware is the single unclaimed attached monitor. A serial-backed match
+    /// applies at once; a model-only match applies once the identical plan has
+    /// been seen on two scans at least <see cref="WeakRelinkConfirmMs"/> apart,
+    /// so a transient partial scan cannot hand a record to a lookalike.
+    /// Ambiguity changes nothing. <c>PendingWeak</c> tells the caller to rescan.
+    /// </summary>
+    internal (IReadOnlyList<(string RecordId, string OldDisplayId, string NewDisplayId)> Applied, bool PendingWeak) ReconcileDisplayFingerprints(
+        IReadOnlyList<RelinkDisplay> attached)
+    {
+        static List<RelinkRecord> Snapshot(IEnumerable<PanelDeviceRecord> records)
+            => records
+                .Where(r => !string.IsNullOrEmpty(r.DisplayId))
+                .Select(r => new RelinkRecord(r.Id, r.DisplayId!, r.DisplayFingerprint, r.SiblingDisplayIds?.ToList()))
+                .ToList();
+
+        RelinkPlan precheck = null!;
+        _store.Read(s => precheck = PanelDisplayRelink.Plan(Snapshot(s.PanelDevices.Values), attached));
+        var allowed = new HashSet<(string, string)>();
+        bool pending;
+        lock (_pendingLock)
+        {
+            var now = ClockMs();
+            var next = new Dictionary<string, (string Target, long FirstSeenMs)>(StringComparer.Ordinal);
+            foreach (var move in precheck.Moves)
+            {
+                if (!move.Weak)
+                {
+                    allowed.Add((move.RecordId, move.NewDisplayId));
+                    continue;
+                }
+                if (_pendingWeak.TryGetValue(move.RecordId, out var seen)
+                    && string.Equals(seen.Target, move.NewDisplayId, StringComparison.Ordinal))
+                {
+                    if (now - seen.FirstSeenMs >= WeakRelinkConfirmMs) allowed.Add((move.RecordId, move.NewDisplayId));
+                    else next[move.RecordId] = seen;
+                }
+                else
+                {
+                    next[move.RecordId] = (move.NewDisplayId, now);
+                }
+            }
+            _pendingWeak = next;
+            pending = next.Count > 0;
+        }
+        if (precheck.Backfills.Count == 0 && precheck.SiblingUpdates.Count == 0 && allowed.Count == 0)
+            return (Array.Empty<(string, string, string)>(), pending);
+
+        var applied = new List<(string RecordId, string OldDisplayId, string NewDisplayId)>();
+        _store.Update(s =>
+        {
+            var plan = PanelDisplayRelink.Plan(Snapshot(s.PanelDevices.Values), attached);
+            foreach (var (recordId, fingerprint) in plan.Backfills)
+            {
+                if (s.PanelDevices.TryGetValue(recordId, out var record)) record.DisplayFingerprint = fingerprint;
+            }
+            foreach (var (recordId, siblings) in plan.SiblingUpdates)
+            {
+                if (s.PanelDevices.TryGetValue(recordId, out var record)) record.SiblingDisplayIds = siblings;
+            }
+            foreach (var move in plan.Moves)
+            {
+                if (!allowed.Contains((move.RecordId, move.NewDisplayId))) continue;
+                if (!s.PanelDevices.TryGetValue(move.RecordId, out var record)) continue;
+                record.DisplayId = move.NewDisplayId;
+                record.DisplayFingerprint = move.Fingerprint;
+                applied.Add((move.RecordId, move.OldDisplayId, move.NewDisplayId));
+                ServiceLog.Info($"[panel-relink] record {move.RecordId} display '{move.OldDisplayId}' -> '{move.NewDisplayId}' "
+                    + $"(fingerprint {move.Fingerprint.Manufacturer}:{move.Fingerprint.Product} serial {move.Fingerprint.Serial})");
+            }
+        });
+        if (applied.Count > 0) _store.FlushNow();
+        return (applied, pending);
     }
 
     /// <summary>
@@ -995,6 +1083,7 @@ public sealed class PanelDeviceRegistry
         return copy;
     }
 
+    // The response clone: DisplayFingerprint and SiblingDisplayIds stay in the store, off the wire.
     private static PanelDeviceRecord Clone(PanelDeviceRecord r)
     {
         return new PanelDeviceRecord

@@ -71,6 +71,7 @@ public sealed class MacDisplayTopologyProvider : IDisplayTopologyProvider
                     IsPrimary = CGDisplayIsMain(handle.DisplayId) != 0,
                     IsInternal = handle.IsInternal,
                     Orientation = DisplayOrientations.FromMacDegrees(CGDisplayRotation(handle.DisplayId)),
+                    Fingerprint = EdidFingerprint.FromParts(handle.Manufacturer, handle.Model, handle.SerialNumber),
                 });
             }
         }

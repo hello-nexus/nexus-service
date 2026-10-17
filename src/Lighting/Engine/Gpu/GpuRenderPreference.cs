@@ -38,7 +38,7 @@ internal static class GpuRenderPreference
                 return;
             }
 
-            if (string.IsNullOrWhiteSpace(renderGpu) || renderGpu == "auto")
+            if (string.IsNullOrWhiteSpace(renderGpu) || renderGpu == "auto" || GpuBackend.IsSoftwareChoice(renderGpu))
             {
                 key.DeleteValue(exe, throwOnMissingValue: false);
                 return;

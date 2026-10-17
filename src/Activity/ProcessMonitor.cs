@@ -7,6 +7,8 @@ using System.Linq;
 using System.Runtime.InteropServices;
 using System.Threading;
 using System.Threading.Tasks;
+using Nexus.Service.Activity.Native;
+using Nexus.Service.Lifecycle;
 using Nexus.Service.Monitoring.History;
 using Nexus.Service.Sockets;
 using Microsoft.Extensions.Hosting;
@@ -173,8 +175,7 @@ public sealed class ProcessMonitor : BackgroundService
         string? path = null;
         try
         {
-            using var proc = Process.GetProcessById(pid.Value);
-            path = proc.MainModule?.FileName;
+            path = OwnNexusExe.ImagePathOf(pid.Value);
         }
         catch { }
 
@@ -700,8 +701,91 @@ public sealed class ProcessMonitor : BackgroundService
     }
 #endif
 
+    // CPU time, working set, start time and IO counters all come from one
+    // NtQuerySystemInformation snapshot, so no process is ever opened. The
+    // pid-0 idle entry is excluded. Returns false when the snapshot fails, so
+    // the caller keeps the previous state.
+    private bool SampleWindowsSnapshot(DateTime now, List<ProcessInfo> result, HashSet<int> seen)
+    {
+        var entries = new List<ProcessSnapshotEntry>(512);
+        if (!WindowsProcessSnapshot.TryRead(entries))
+        {
+            return false;
+        }
+        foreach (var e in entries)
+        {
+            var pid = e.Pid;
+            seen.Add(pid);
+            var cpuTime = TimeSpan.FromTicks(e.CpuTime100ns);
+
+            double cpuPercent = 0;
+            if (_winPrev.TryGetValue(pid, out var prev))
+            {
+                var elapsed = (now - prev.when).TotalMilliseconds;
+                if (elapsed > 50)
+                {
+                    var delta = (cpuTime - prev.cpuTime).TotalMilliseconds;
+                    cpuPercent = Math.Clamp(delta / elapsed / ProcessorCount * 100.0, 0, 100);
+                }
+            }
+            _winPrev[pid] = (cpuTime, now);
+
+            double storage = 0, storageRead = 0, storageWrite = 0;
+            if (_winStoragePrev.TryGetValue(pid, out var prevStorage))
+            {
+                var elapsedStorage = (now - prevStorage.when).TotalMilliseconds;
+                if (elapsedStorage > 50)
+                {
+                    var seconds = elapsedStorage / 1000.0;
+                    var total = e.ReadTransferBytes + e.WriteTransferBytes;
+                    var prevTotal = prevStorage.readBytes + prevStorage.writeBytes;
+                    if (total >= prevTotal)
+                    {
+                        storage = (total - prevTotal) / seconds;
+                    }
+                    if (e.ReadTransferBytes >= prevStorage.readBytes)
+                    {
+                        storageRead = (e.ReadTransferBytes - prevStorage.readBytes) / seconds;
+                    }
+                    if (e.WriteTransferBytes >= prevStorage.writeBytes)
+                    {
+                        storageWrite = (e.WriteTransferBytes - prevStorage.writeBytes) / seconds;
+                    }
+                }
+            }
+            _winStoragePrev[pid] = (e.ReadTransferBytes, e.WriteTransferBytes, now);
+
+            long startedAtMs;
+            try
+            {
+                startedAtMs = e.CreateFileTime > 0
+                    ? new DateTimeOffset(DateTime.FromFileTimeUtc(e.CreateFileTime)).ToUnixTimeMilliseconds()
+                    : AnchorFirstSeenMs(pid, now);
+            }
+            catch
+            {
+                startedAtMs = AnchorFirstSeenMs(pid, now);
+            }
+
+            result.Add(new ProcessInfo
+            {
+                Pid = pid,
+                Name = e.Name,
+                CpuPercent = Math.Round(cpuPercent, 1),
+                MemoryMb = Math.Round(e.WorkingSetBytes / (1024.0 * 1024.0), 1),
+                CpuTimeSeconds = Math.Round(cpuTime.TotalSeconds, 1),
+                StartedAtMs = startedAtMs,
+                HasWindow = _windowSet?.IsWindowed(pid) ?? false,
+                StorageBytesPerSec = Math.Round(storage, 1),
+                StorageReadBytesPerSec = Math.Round(storageRead, 1),
+                StorageWriteBytesPerSec = Math.Round(storageWrite, 1),
+            });
+        }
+        return true;
+    }
+
     /// <summary>
-    /// Windows: Process.TotalProcessorTime works reliably via perf counters.
+    /// Windows reads one kernel process snapshot (no per-process handles); other hosts use Process.
     /// Delta-based CPU% normalized by elapsed time and core count. Internal
     /// (not private) so tests can drive the real sampling path directly,
     /// same seam as WaitForNextSampleAsync.
@@ -709,9 +793,17 @@ public sealed class ProcessMonitor : BackgroundService
     internal void SampleWindows()
     {
         var now = DateTime.UtcNow;
-        var processes = Process.GetProcesses();
+        var onWindows = OperatingSystem.IsWindows();
+        var processes = onWindows ? Array.Empty<Process>() : Process.GetProcesses();
         var result = new List<ProcessInfo>();
         var seen = new HashSet<int>();
+        if (onWindows)
+        {
+            if (!SampleWindowsSnapshot(now, result, seen))
+            {
+                return;
+            }
+        }
 
         foreach (var proc in processes)
         {
@@ -743,49 +835,10 @@ public sealed class ProcessMonitor : BackgroundService
                 }
                 _winPrev[pid] = (cpuTime, now);
 
-                // Reuses the handle proc.TotalProcessorTime/WorkingSet64 already
-                // opened above rather than a second OpenProcess call. A pid whose
-                // handle lacks the access GetProcessIoCounters needs (rare given
-                // the reads above already succeeded) simply reports 0 this tick,
-                // not an exception.
                 double storageBytesPerSec = 0;
                 double storageReadBytesPerSec = 0;
                 double storageWriteBytesPerSec = 0;
-                if (OperatingSystem.IsWindows())
-                {
-                    try
-                    {
-                        if (GetProcessIoCounters(proc.Handle, out var io))
-                        {
-                            var readBytes = (long)io.ReadTransferCount;
-                            var writeBytes = (long)io.WriteTransferCount;
-                            if (_winStoragePrev.TryGetValue(pid, out var prevStorage))
-                            {
-                                var elapsedStorage = (now - prevStorage.when).TotalMilliseconds;
-                                if (elapsedStorage > 50)
-                                {
-                                    var storageBytes = readBytes + writeBytes;
-                                    var prevStorageBytes = prevStorage.readBytes + prevStorage.writeBytes;
-                                    if (storageBytes >= prevStorageBytes)
-                                    {
-                                        storageBytesPerSec = (storageBytes - prevStorageBytes) / (elapsedStorage / 1000.0);
-                                    }
-                                    if (readBytes >= prevStorage.readBytes)
-                                    {
-                                        storageReadBytesPerSec = (readBytes - prevStorage.readBytes) / (elapsedStorage / 1000.0);
-                                    }
-                                    if (writeBytes >= prevStorage.writeBytes)
-                                    {
-                                        storageWriteBytesPerSec = (writeBytes - prevStorage.writeBytes) / (elapsedStorage / 1000.0);
-                                    }
-                                }
-                            }
-                            _winStoragePrev[pid] = (readBytes, writeBytes, now);
-                        }
-                    }
-                    catch { }
-                }
-                else if (OperatingSystem.IsLinux())
+                if (OperatingSystem.IsLinux())
                 {
                     try
                     {
@@ -974,22 +1027,6 @@ public sealed class ProcessMonitor : BackgroundService
         }
         return found;
     }
-
-    // Win32 P/Invoke for cumulative per-process I/O byte counters, same
-    // struct/import shape as WindowsNetworkProvider's copy of this call.
-    [StructLayout(LayoutKind.Sequential)]
-    private struct IO_COUNTERS
-    {
-        public ulong ReadOperationCount;
-        public ulong WriteOperationCount;
-        public ulong OtherOperationCount;
-        public ulong ReadTransferCount;
-        public ulong WriteTransferCount;
-        public ulong OtherTransferCount;
-    }
-
-    [DllImport("kernel32.dll", SetLastError = true)]
-    private static extern bool GetProcessIoCounters(IntPtr hProcess, out IO_COUNTERS lpIoCounters);
 }
 
 public class ProcessInfo

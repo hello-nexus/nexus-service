@@ -48,6 +48,24 @@ public sealed class RawDisplayInfo
     /// for Y70 controller-name matching. Never sent to clients.
     /// </summary>
     public string RawHardwareId { get; set; } = "";
+    /// <summary>EDID-derived hardware identity that survives a changed <see cref="Id"/>; null when unreadable.</summary>
+    public DisplayFingerprint? Fingerprint { get; set; }
+}
+
+/// <summary>
+/// Hardware identity of a monitor independent of its OS display id (which
+/// embeds the connection instance on Windows and falls back to an index).
+/// Manufacturer is the three-letter EISA id and Product the hex product
+/// code, the same text the display id carries.
+/// </summary>
+public sealed class DisplayFingerprint
+{
+    public string Manufacturer { get; set; } = "";
+    public string Product { get; set; } = "";
+    /// <summary>Numeric EDID serial; 0 when the monitor reports none.</summary>
+    public long Serial { get; set; }
+    /// <summary>EDID serial descriptor string; null when absent.</summary>
+    public string? SerialText { get; set; }
 }
 
 public sealed class DisplayBoundsDto

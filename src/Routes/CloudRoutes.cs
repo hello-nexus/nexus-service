@@ -52,6 +52,16 @@ public static class CloudRoutes
             return CloudResult(result);
         });
 
+        app.MapPost("/cloud/resend-verification", async (CloudResendVerificationBody body, CloudAccountService accounts, CancellationToken ct) =>
+        {
+            if (string.IsNullOrWhiteSpace(body.Email))
+            {
+                return Results.BadRequest(ApiResponse.Fail("email is required."));
+            }
+            var result = await accounts.ResendVerificationAsync(body.Email, ct).ConfigureAwait(false);
+            return CloudResult(result);
+        });
+
         app.MapPost("/cloud/login", async (CloudLoginBody body, CloudAccountService accounts, CancellationToken ct) =>
         {
             if (string.IsNullOrWhiteSpace(body.Identifier) || string.IsNullOrWhiteSpace(body.Password))
@@ -284,7 +294,7 @@ public static class CloudRoutes
             {
                 return CloudApiFailure(result.StatusCode, result.ErrorCode, result.ErrorMessage, result.Offline);
             }
-            return Results.Text(result.Value!.Body, result.Value.ContentType, statusCode: result.StatusCode);
+            return RawPassthrough(result.Value!, result.StatusCode);
         });
 
         // Removes the caller's own leaderboard entry. The body carries the
@@ -304,7 +314,7 @@ public static class CloudRoutes
             {
                 return CloudApiFailure(result.StatusCode, result.ErrorCode, result.ErrorMessage, result.Offline);
             }
-            return Results.Text(result.Value!.Body, result.Value.ContentType, statusCode: result.StatusCode);
+            return RawPassthrough(result.Value!, result.StatusCode);
         });
 
         // Thin forwarder for the panel games' score submission, same raw
@@ -332,7 +342,7 @@ public static class CloudRoutes
             {
                 return CloudApiFailure(result.StatusCode, result.ErrorCode, result.ErrorMessage, result.Offline);
             }
-            return Results.Text(result.Value!.Body, result.Value.ContentType, statusCode: result.StatusCode);
+            return RawPassthrough(result.Value!, result.StatusCode);
         }).AllowPanel();
 
         // Read side of the same two boards. The browser cannot attach the build
@@ -378,7 +388,7 @@ public static class CloudRoutes
             {
                 return CloudApiFailure(result.StatusCode, result.ErrorCode, result.ErrorMessage, result.Offline);
             }
-            return Results.Text(result.Value!.Body, result.Value.ContentType, statusCode: result.StatusCode);
+            return RawPassthrough(result.Value!, result.StatusCode);
         });
 
         app.MapPut("/cloud/account/devices/{installId}", async (string installId, HttpRequest req, CloudAccountService accounts, ICloudApiClient api, CancellationToken ct) =>
@@ -396,7 +406,7 @@ public static class CloudRoutes
             {
                 return CloudApiFailure(result.StatusCode, result.ErrorCode, result.ErrorMessage, result.Offline);
             }
-            return Results.Text(result.Value!.Body, result.Value.ContentType, statusCode: result.StatusCode);
+            return RawPassthrough(result.Value!, result.StatusCode);
         });
 
         app.MapDelete("/cloud/account/devices/{installId}", async (string installId, CloudAccountService accounts, ICloudApiClient api, CancellationToken ct) =>
@@ -407,7 +417,7 @@ public static class CloudRoutes
             {
                 return CloudApiFailure(result.StatusCode, result.ErrorCode, result.ErrorMessage, result.Offline);
             }
-            return Results.Text(result.Value!.Body, result.Value.ContentType, statusCode: result.StatusCode);
+            return RawPassthrough(result.Value!, result.StatusCode);
         });
     }
 
@@ -458,7 +468,7 @@ public static class CloudRoutes
         {
             return Results.Ok(ApiResponse.Ok());
         }
-        return CloudApiFailure(result.StatusCode, result.ErrorCode, result.ErrorMessage, result.Offline, result.ErrorRetryAt);
+        return CloudApiFailure(result.StatusCode, result.ErrorCode, result.ErrorMessage, result.Offline, result.ErrorRetryAt, result.ErrorEmail);
     }
 
     private static IResult CloudResult<T>(CloudApiResult<T> result)
@@ -467,7 +477,7 @@ public static class CloudRoutes
         {
             return Results.Ok(ApiResponse.Ok());
         }
-        return CloudApiFailure(result.StatusCode, result.ErrorCode, result.ErrorMessage, result.Offline, result.ErrorRetryAt);
+        return CloudApiFailure(result.StatusCode, result.ErrorCode, result.ErrorMessage, result.Offline, result.ErrorRetryAt, result.ErrorEmail);
     }
 
     /// <summary>Anonymous GET passthrough: upstream status and body relayed verbatim.</summary>
@@ -478,10 +488,18 @@ public static class CloudRoutes
         {
             return CloudApiFailure(result.StatusCode, result.ErrorCode, result.ErrorMessage, result.Offline);
         }
-        return Results.Text(result.Value!.Body, result.Value.ContentType, statusCode: result.StatusCode);
+        return RawPassthrough(result.Value!, result.StatusCode);
     }
 
-    private static IResult CloudApiFailure(int statusCode, string? errorCode, string? errorMessage, bool offline, string? retryAt = null)
+    /// <summary>Kestrel throws if a body is written under 204/205/304, so those relay bodyless.</summary>
+    private static IResult RawPassthrough(CloudRawResponse raw, int statusCode)
+    {
+        return statusCode is 204 or 205 or 304
+            ? Results.StatusCode(statusCode)
+            : Results.Text(raw.Body, raw.ContentType, statusCode: statusCode);
+    }
+
+    private static IResult CloudApiFailure(int statusCode, string? errorCode, string? errorMessage, bool offline, string? retryAt = null, string? email = null)
     {
         var msg = offline
             ? "Could not reach the Nexus cloud."
@@ -489,9 +507,9 @@ public static class CloudRoutes
             : !string.IsNullOrEmpty(errorMessage) ? errorMessage
             : "Request failed.";
         var status = statusCode is >= 400 and < 600 ? statusCode : StatusCodes.Status502BadGateway;
-        if (!string.IsNullOrEmpty(retryAt))
+        if (!string.IsNullOrEmpty(retryAt) || !string.IsNullOrEmpty(email))
         {
-            return Results.Json(new CloudFailureResponse { Error = true, Msg = msg, RetryAt = retryAt }, AppJsonContext.Default.CloudFailureResponse, statusCode: status);
+            return Results.Json(new CloudFailureResponse { Error = true, Msg = msg, RetryAt = retryAt, Email = email }, AppJsonContext.Default.CloudFailureResponse, statusCode: status);
         }
         return Results.Json(ApiResponse.Fail(msg), AppJsonContext.Default.ApiResponse, statusCode: status);
     }

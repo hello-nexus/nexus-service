@@ -432,7 +432,15 @@ public static class AppRoutes
                     AppJsonContext.Default.AppDataProfileSwitchedResponse, statusCode: 409);
             }
 
-            var result = appDataStore.Put(profileId, appId, key, body.BaseRevision, body.Data);
+            AppDataStore.PutResult result;
+            try
+            {
+                result = appDataStore.Put(profileId, appId, key, body.BaseRevision, body.Data);
+            }
+            catch (IOException)
+            {
+                return Results.Json(ApiResponse.Fail("data store busy, retry"), AppJsonContext.Default.ApiResponse, statusCode: 503);
+            }
             switch (result.Outcome)
             {
                 case AppDataStore.PutOutcome.TooLarge:

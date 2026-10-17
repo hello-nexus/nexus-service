@@ -5,7 +5,7 @@ namespace Nexus.Service.Lighting.Engine.Gpu;
 
 /// <summary>
 /// Offscreen OpenGL 4.1 core context on macOS via CGL (Apple's low-level GL
-/// API). Unlike GLFW's path, CGL does not need a window, an AppKit NSApp, or
+/// API). CGL does not need a window, an AppKit NSApp, or
 /// the main thread - exactly what we need for a headless service. The
 /// resulting context can be made current on the dedicated GL worker thread
 /// the rest of GpuContext already owns.

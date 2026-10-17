@@ -107,6 +107,18 @@ public sealed class PanelDeviceRecord : IPanelPersonalization
     /// </summary>
     public string? DisplayId { get; set; }
     /// <summary>
+    /// Hardware identity of the monitor <see cref="DisplayId"/> named when last
+    /// seen attached. Lets the record follow its monitor when the OS display id
+    /// changes (port, driver, reinstall). Written only by the display relink and
+    /// persisted only: the registry's response clone leaves it null.
+    /// </summary>
+    public Nexus.Service.Models.Displays.DisplayFingerprint? DisplayFingerprint { get; set; }
+    /// <summary>
+    /// Display ids seen attached in the same scan as <see cref="DisplayId"/>, newest last and
+    /// bounded. A relink never targets one of them: they are other monitors. Persisted only.
+    /// </summary>
+    public List<string>? SiblingDisplayIds { get; set; }
+    /// <summary>
     /// Per-panel "keep panel clear of other windows": the overlay evicts
     /// foreign windows from this panel's monitor while its kiosk is up.
     /// Display-bound (monitor) records only; null = default (true). The Y70
