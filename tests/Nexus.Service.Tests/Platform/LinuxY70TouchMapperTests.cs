@@ -1,4 +1,7 @@
+using System;
 using System.Collections.Generic;
+using System.IO;
+using System.Threading;
 using Nexus.Service.Platform.Displays;
 using Xunit;
 
@@ -10,6 +13,7 @@ namespace Nexus.Service.Tests.Platform;
 /// </summary>
 public class LinuxY70TouchMapperTests
 {
+
     private const string Tree = """
 /org/kde/KWin/InputDevice
 /org/kde/KWin/InputDevice/event3
@@ -17,11 +21,15 @@ public class LinuxY70TouchMapperTests
 /org/kde/KWin/InputDevice/event8
 """;
 
+    private static IReadOnlyList<string> NoCompanions(string sysName) => Array.Empty<string>();
+
     private sealed class FakeBus
     {
         public readonly Dictionary<string, (string Name, int Vendor, int Product, bool Touch, string Output)> Devices = new();
         public readonly List<string> Calls = new();
         public bool RejectSet;
+        public string ExtraTree = "";
+        public readonly HashSet<string> Unreadable = new();
         public int TreeExit;
 
         public (int Exit, string Output) Run(string[] args)
@@ -29,9 +37,13 @@ public class LinuxY70TouchMapperTests
             Calls.Add(string.Join(' ', args));
             if (args[0] == "tree")
             {
-                return (TreeExit, TreeExit == 0 ? Tree : "");
+                return (TreeExit, TreeExit == 0 ? Tree + ExtraTree : "");
             }
             var path = args[2];
+            if (Unreadable.Contains(path))
+            {
+                return (1, "unreadable");
+            }
             var d = Devices[path];
             if (args[0] == "set-property")
             {
@@ -88,7 +100,7 @@ public class LinuxY70TouchMapperTests
     [InlineData(1133, 2373, true, false)]
     public void IsY70Touch_requires_touch_capability_and_a_known_digitizer(int vendor, int product, bool touch, bool expected)
     {
-        Assert.Equal(expected, LinuxY70TouchMapper.IsY70Touch(new("d", vendor, product, touch, "")));
+        Assert.Equal(expected, LinuxY70TouchMapper.IsY70Touch(new("d", vendor, product, touch, ""), NoCompanions("event7")));
     }
 
     [Fact]
@@ -96,9 +108,9 @@ public class LinuxY70TouchMapperTests
     {
         var bus = Box();
 
-        var (ok, detail) = LinuxY70TouchMapper.Apply("DP-1", bus.Run);
+        var (status, detail) = LinuxY70TouchMapper.Apply("DP-1", bus.Run, NoCompanions);
 
-        Assert.True(ok, detail);
+        Assert.Equal(LinuxY70TouchMapper.TouchMapStatus.Mapped, status);
         Assert.Equal("DP-1", bus.Devices["/org/kde/KWin/InputDevice/event7"].Output);
         Assert.Equal("", bus.Devices["/org/kde/KWin/InputDevice/event8"].Output);
         Assert.Equal("", bus.Devices["/org/kde/KWin/InputDevice/event3"].Output);
@@ -108,10 +120,10 @@ public class LinuxY70TouchMapperTests
     public void Apply_is_idempotent_and_writes_nothing_when_already_mapped()
     {
         var bus = Box();
-        LinuxY70TouchMapper.Apply("DP-1", bus.Run);
+        LinuxY70TouchMapper.Apply("DP-1", bus.Run, NoCompanions);
         bus.Calls.Clear();
 
-        Assert.True(LinuxY70TouchMapper.Apply("DP-1", bus.Run).Ok);
+        Assert.True(LinuxY70TouchMapper.Apply("DP-1", bus.Run, NoCompanions).Ok);
         Assert.DoesNotContain(bus.Calls, c => c.StartsWith("set-property"));
     }
 
@@ -119,9 +131,9 @@ public class LinuxY70TouchMapperTests
     public void Apply_remaps_when_the_connector_changes()
     {
         var bus = Box();
-        LinuxY70TouchMapper.Apply("DP-1", bus.Run);
+        LinuxY70TouchMapper.Apply("DP-1", bus.Run, NoCompanions);
 
-        Assert.True(LinuxY70TouchMapper.Apply("DP-2", bus.Run).Ok);
+        Assert.True(LinuxY70TouchMapper.Apply("DP-2", bus.Run, NoCompanions).Ok);
         Assert.Equal("DP-2", bus.Devices["/org/kde/KWin/InputDevice/event7"].Output);
     }
 
@@ -132,9 +144,9 @@ public class LinuxY70TouchMapperTests
         bus.Devices.Remove("/org/kde/KWin/InputDevice/event7");
         bus.Devices["/org/kde/KWin/InputDevice/event7"] = ("Other", 1, 2, true, "");
 
-        var (ok, detail) = LinuxY70TouchMapper.Apply("DP-1", bus.Run);
+        var (status, detail) = LinuxY70TouchMapper.Apply("DP-1", bus.Run, NoCompanions);
 
-        Assert.False(ok);
+        Assert.Equal(LinuxY70TouchMapper.TouchMapStatus.Final, status);
         Assert.Contains("no Y70 touch digitizer", detail);
     }
 
@@ -144,9 +156,9 @@ public class LinuxY70TouchMapperTests
         var bus = Box();
         bus.RejectSet = true;
 
-        var (ok, detail) = LinuxY70TouchMapper.Apply("DP-1", bus.Run);
+        var (status, detail) = LinuxY70TouchMapper.Apply("DP-1", bus.Run, NoCompanions);
 
-        Assert.False(ok);
+        Assert.Equal(LinuxY70TouchMapper.TouchMapStatus.Retry, status);
         Assert.Contains("denied", detail);
     }
 
@@ -156,10 +168,9 @@ public class LinuxY70TouchMapperTests
         var bus = Box();
         bus.TreeExit = 1;
 
-        var (ok, detail) = LinuxY70TouchMapper.Apply("DP-1", bus.Run);
+        var (status, detail) = LinuxY70TouchMapper.Apply("DP-1", bus.Run, NoCompanions);
 
-        Assert.False(ok);
-        Assert.Contains("KDE Plasma", detail);
+        Assert.Equal(LinuxY70TouchMapper.TouchMapStatus.Retry, status);
         Assert.Single(bus.Calls);
     }
 
@@ -174,6 +185,139 @@ public class LinuxY70TouchMapperTests
 
         provider.SetY70Orientation("PortraitFlipped");
 
-        Assert.Equal("DP-1", bus.Devices["/org/kde/KWin/InputDevice/event7"].Output);
+        Assert.True(WaitFor(() => bus.Devices["/org/kde/KWin/InputDevice/event7"].Output == "DP-1"));
+    }
+
+    private static bool WaitFor(Func<bool> condition)
+    {
+        for (var i = 0; i < 200; i++)
+        {
+            if (condition())
+            {
+                return true;
+            }
+            Thread.Sleep(10);
+        }
+        return condition();
+    }
+
+    [Fact]
+    public void Apply_skips_as_ambiguous_when_two_touch_nodes_match()
+    {
+        var bus = Box();
+        bus.ExtraTree = "\n/org/kde/KWin/InputDevice/event9";
+        bus.Devices["/org/kde/KWin/InputDevice/event9"] = ("wch.cn TouchScreen", 0x27c0, 0x0859, true, "");
+
+        var (status, detail) = LinuxY70TouchMapper.Apply("DP-1", bus.Run, NoCompanions);
+
+        Assert.Equal(LinuxY70TouchMapper.TouchMapStatus.Final, status);
+        Assert.Contains("ambiguous", detail);
+        Assert.DoesNotContain(bus.Calls, c => c.StartsWith("set-property"));
+    }
+
+    [Fact]
+    public void Apply_ignores_a_digitizer_whose_hub_carries_the_xeneon_edge_endpoint()
+    {
+        var bus = Box();
+
+        var (status, _) = LinuxY70TouchMapper.Apply("DP-1", bus.Run, _ => new[] { "VID_1B1C&PID_1D0D" });
+
+        Assert.Equal(LinuxY70TouchMapper.TouchMapStatus.Final, status);
+        Assert.DoesNotContain(bus.Calls, c => c.StartsWith("set-property"));
+    }
+
+    [Theory]
+    [InlineData(-1, "", 2)]
+    [InlineData(1, "Failed to introspect object / of service org.kde.KWin: The name is not activatable", 2)]
+    [InlineData(1, "Failed to connect to bus", 1)]
+    [InlineData(-2, "", 1)]
+    [InlineData(-3, "no graphical session yet", 1)]
+    [InlineData(-4, "no Wayland session", 1)]
+    public void Apply_classifies_bus_failures_as_final_or_retryable(int exit, string output, int expected)
+    {
+        var result = LinuxY70TouchMapper.Apply("DP-1", _ => (exit, output), NoCompanions);
+
+        Assert.Equal((LinuxY70TouchMapper.TouchMapStatus)expected, result.Status);
+    }
+
+    [Fact]
+    public void Apply_keeps_going_to_report_an_unreadable_node_as_retryable()
+    {
+        var bus = Box();
+        bus.Devices.Remove("/org/kde/KWin/InputDevice/event7");
+        bus.Unreadable.Add("/org/kde/KWin/InputDevice/event7");
+
+        var (status, detail) = LinuxY70TouchMapper.Apply("DP-1", bus.Run, NoCompanions);
+
+        Assert.Equal(LinuxY70TouchMapper.TouchMapStatus.Retry, status);
+        Assert.Contains("unreadable", detail);
+    }
+
+    [Fact]
+    public void ReadCompanions_lists_the_other_usb_devices_under_the_same_hub()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "sysfs-" + Guid.NewGuid().ToString("N"));
+        try
+        {
+            var hub = Path.Combine(root, "devices", "1-2");
+            var digitizer = Path.Combine(hub, "1-2.1");
+            var sibling = Path.Combine(hub, "1-2.3");
+            var node = Path.Combine(digitizer, "1-2.1:1.0", "input", "input9", "event7");
+            Directory.CreateDirectory(node);
+            Directory.CreateDirectory(sibling);
+            File.WriteAllText(Path.Combine(digitizer, "idVendor"), "27c0\n");
+            File.WriteAllText(Path.Combine(digitizer, "idProduct"), "0859\n");
+            File.WriteAllText(Path.Combine(sibling, "idVendor"), "1b1c\n");
+            File.WriteAllText(Path.Combine(sibling, "idProduct"), "1d0d\n");
+            Directory.CreateDirectory(Path.Combine(root, "class", "input"));
+            Directory.CreateSymbolicLink(Path.Combine(root, "class", "input", "event7"), node);
+
+            Assert.Equal(new[] { "VID_1B1C&PID_1D0D" }, LinuxY70TouchMapper.ReadCompanions("event7", root));
+        }
+        finally
+        {
+            Directory.Delete(root, true);
+        }
+    }
+
+    [Fact]
+    public void ReadCompanions_is_empty_for_a_node_without_a_usb_ancestor()
+    {
+        Assert.Empty(LinuxY70TouchMapper.ReadCompanions("event404", Path.GetTempPath()));
+    }
+
+    private static int CountSets(FakeBus bus) => bus.Calls.FindAll(c => c.StartsWith("set-property")).Count;
+
+    [Fact]
+    public void Final_verdict_is_not_retried_and_nonfinal_is_()
+    {
+        var bus = Box();
+        bus.Devices.Remove("/org/kde/KWin/InputDevice/event7");
+        bus.Devices["/org/kde/KWin/InputDevice/event7"] = ("Other", 1, 2, true, "");
+        var provider = new LinuxDisplayOrientationProvider(() => "DP-1", _ => (0, "Output: 2 DP-1 u\n\tRotation: 8\n"), bus.Run, NoCompanions);
+
+        provider.MapTouch("DP-1");
+        var callsAfterFirst = bus.Calls.Count;
+        Thread.Sleep(1500);
+
+        Assert.Equal(callsAfterFirst, bus.Calls.Count);
+    }
+
+    [Fact]
+    public void Usb_topology_change_remaps_a_replugged_digitizer()
+    {
+        var bus = Box();
+        var provider = new LinuxDisplayOrientationProvider(
+            () => "DP-1", _ => (0, "Output: 2 DP-1 u\n\tRotation: 8\n"), bus.Run, NoCompanions)
+        { TopologyDebounceMs = 20 };
+        provider.MapTouch("DP-1");
+        // Replug: KWin recreates the node with no mapping.
+        bus.Devices["/org/kde/KWin/InputDevice/event7"] = ("wch.cn TouchScreen", 0x27c0, 0x0859, true, "");
+
+        provider.OnUsbTopologyChanged();
+        provider.OnUsbTopologyChanged();
+
+        Assert.True(WaitFor(() => bus.Devices["/org/kde/KWin/InputDevice/event7"].Output == "DP-1"));
+        Assert.Equal(2, CountSets(bus));
     }
 }
