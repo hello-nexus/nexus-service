@@ -38,10 +38,8 @@ public static class PanelLayoutDefaults
     }
 
     /// <summary>
-    /// Rewrites every page and widget id from <paramref name="seed"/> and its position, so the
-    /// starter a record shows until its first edit has the same ids on every read. Fresh ids per
-    /// read made a client that refetched the record (any panel/device frame) see its open widget
-    /// vanish.
+    /// Rewrites every page and widget id from <paramref name="seed"/> and its position. Ids must
+    /// be stable across reads because clients key open widgets on them.
     /// </summary>
     public static PanelLayoutDto WithStableIds(PanelLayoutDto layout, string seed)
     {
