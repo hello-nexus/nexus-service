@@ -4,7 +4,7 @@ namespace Nexus.Service.Peripherals.BulkPanels;
 
 /// <summary>
 /// A USB bulk endpoint pair for one panel. Kept behind an interface so the driver logic
-/// and its tests build and run everywhere; the transports are WinUSB and macOS IOUSBHost.
+/// and its tests build and run everywhere; the transports are WinUSB, macOS IOUSBHost and Linux usbfs.
 /// </summary>
 public interface IBulkUsbPipe : IDisposable
 {
@@ -39,7 +39,7 @@ public interface IBulkUsbPipeFactory
     IBulkUsbPipe? Open(int vendorId, int productId, byte writePipeId, byte readPipeId);
 }
 
-/// <summary>Stands in on Linux, which has no bulk-pipe transport, so the rest of the graph still resolves.</summary>
+/// <summary>Stands in on builds with no bulk-pipe transport, so the rest of the graph still resolves.</summary>
 public sealed class NullBulkUsbPipeFactory : IBulkUsbPipeFactory
 {
     public IBulkUsbPipe? Open(int vendorId, int productId, byte writePipeId, byte readPipeId) => null;
