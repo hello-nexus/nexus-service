@@ -28250,6 +28250,12 @@
               "null",
               "boolean"
             ]
+          },
+          "hiddenSidebarDevices": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
           }
         }
       },
@@ -28354,6 +28360,15 @@
               "null",
               "boolean"
             ]
+          },
+          "hiddenSidebarDevices": {
+            "type": [
+              "null",
+              "array"
+            ],
+            "items": {
+              "type": "string"
+            }
           }
         }
       },

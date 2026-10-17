@@ -551,6 +551,13 @@ public static class ProfileRoutes
                     if (ui.ShowUncontrolledDevices.HasValue) s.Ui.ShowUncontrolledDevices = ui.ShowUncontrolledDevices.Value;
                     if (ui.ShowUncontrolledLightingDevices.HasValue) s.Ui.ShowUncontrolledLightingDevices = ui.ShowUncontrolledLightingDevices.Value;
                     if (ui.ShowUncontrolledCoolingDevices.HasValue) s.Ui.ShowUncontrolledCoolingDevices = ui.ShowUncontrolledCoolingDevices.Value;
+                    if (ui.HiddenSidebarDevices is not null)
+                    {
+                        s.Ui.HiddenSidebarDevices = ui.HiddenSidebarDevices
+                            .Where(id => !string.IsNullOrWhiteSpace(id))
+                            .Distinct(StringComparer.Ordinal)
+                            .ToList();
+                    }
                     if (ui.LightingDashboardMode is "simple" or "advanced")
                     {
                         if (!string.Equals(s.Ui.LightingDashboardMode, ui.LightingDashboardMode, StringComparison.Ordinal))

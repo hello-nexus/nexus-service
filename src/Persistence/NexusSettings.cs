@@ -504,6 +504,8 @@ public sealed class UiSettings
     public bool? ShowUncontrolledLightingDevices { get; set; }
     /// <inheritdoc cref="ShowUncontrolledLightingDevices"/>
     public bool? ShowUncontrolledCoolingDevices { get; set; }
+    /// <summary>Sidebar DEVICES row keys the user hid. A row is omitted only while its Nexus Control is also off. Workstation-level: no profile category carries it. Non-null so the client always receives a list.</summary>
+    public List<string> HiddenSidebarDevices { get; set; } = new();
 }
 
 /// <summary>
@@ -527,6 +529,7 @@ public sealed class UiSettingsPatch
     public bool? ShowUncontrolledDevices { get; set; }
     public bool? ShowUncontrolledLightingDevices { get; set; }
     public bool? ShowUncontrolledCoolingDevices { get; set; }
+    public List<string>? HiddenSidebarDevices { get; set; }
 }
 
 /// <summary>
