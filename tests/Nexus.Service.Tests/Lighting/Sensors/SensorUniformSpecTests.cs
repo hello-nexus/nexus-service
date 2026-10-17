@@ -174,7 +174,7 @@ public sealed class SensorUniformSpecTests
 
     [Theory]
     [MemberData(nameof(EmbeddedSensorFrags))]
-    public void Every_embedded_sensor_frag_has_four_distinct_default_presets_over_its_own_sensor_uniforms(string key)
+    public void Every_embedded_sensor_frag_has_four_distinct_default_looks_on_its_own_default_sensor(string key)
     {
         Assert.True(AnimateTemplateDefaults.All.TryGetValue(key, out var bundle));
         Assert.Equal(4, bundle.Slots.Count);
@@ -186,19 +186,30 @@ public sealed class SensorUniformSpecTests
             Assert.Contains(uniform, names);
             Assert.True(binding.IsUsable);
             Assert.Equal("quick", binding.Category);
-            // A rebake that adds, drops or re-defaults a uniform must regenerate the JSON.
+            // A rebake that adds or drops a uniform must regenerate the JSON.
             var declared = specs.Where(kv => kv.Value.Declared && !ShaderEffect.BaseParamNames.Contains(kv.Key))
                 .ToDictionary(kv => kv.Key, kv => kv.Value.Default);
             Assert.Equal(declared.Keys.OrderBy(k => k, StringComparer.Ordinal), slot.Params.Keys.OrderBy(k => k, StringComparer.Ordinal));
             foreach (var (name, value) in slot.Params)
             {
-                Assert.Equal(declared[name], value, 4);
+                // A look may move a param off its default, but never out of its range.
+                Assert.InRange(value, specs[name].Min, specs[name].Max);
             }
         }
-        Assert.Equal(4, bundle.Slots.Select(x => x!.Sensors!.Values.Single().Sensor).Distinct().Count());
-        var own = ShaderLibrary.SensorUniforms(key)[0].Default;
-        Assert.Equal(own.Sensor, bundle.Slots[0]!.Sensors!.Values.Single().Sensor);
-        Assert.Equal(own.Max, bundle.Slots[0]!.Sensors!.Values.Single().Max);
+        // The presets are looks: every slot keeps the frag's own default binding and they differ by wheel range or params.
+        var own = ShaderLibrary.SensorUniforms(key)[0];
+        foreach (var slot in bundle.Slots)
+        {
+            var (uniform, binding) = Assert.Single(slot!.Sensors!);
+            Assert.Equal(own.Name, uniform);
+            Assert.Equal(own.Default.Sensor, binding.Sensor);
+            Assert.Equal(own.Default.Min, binding.Min);
+            Assert.Equal(own.Default.Max, binding.Max);
+            Assert.InRange(slot.Hue, specs["u_hue"].Min, specs["u_hue"].Max);
+            Assert.InRange(slot.Colorize, specs["u_colorize"].Min, specs["u_colorize"].Max);
+        }
+        var looks = bundle.Slots.Select(x => $"{x!.Hue}|{x.Colorize}|{string.Join(",", x.Params.OrderBy(k => k.Key, StringComparer.Ordinal).Select(k => k.Key + "=" + k.Value))}").Distinct().Count();
+        Assert.Equal(4, looks);
     }
 
     [Theory]

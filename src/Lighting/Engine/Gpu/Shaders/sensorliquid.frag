@@ -12,6 +12,7 @@ const float S_SPEED = 1.0;
 const float S_HUE = 0.0;
 const float S_SAT = 1.0;
 const float S_CON = 1.0;
+const float S_COLORIZE = 0.0;
 uniform float u_fill_level; // hint_range(0.0, 1.0, 0.01) = 0.0
 uniform float u_fill_level_m; // hint_range(-1.0, 1.0, 0.01) = 1.0
 uniform float u_fill_level_s; // sensor {"category":"quick","sensor":"summary/memory-usage","min":0,"max":100}
@@ -22,18 +23,6 @@ uniform float u_fill_speed; // hint_range(0.0, 3.0, 0.01) = 1.0
 uniform float u_fill_softness; // hint_range(0.01, 0.3, 0.01) = 0.05
 uniform float u_col_low; // hint_range(0.0, 0.95, 0.01) = 0.5
 uniform float u_col_shade; // hint_range(0.0, 1.0, 0.01) = 1.0
-uniform float u_col_aHue; // hint_range(0.0, 1.0, 0.01) = 0.6
-uniform float u_col_aSat; // hint_range(0.0, 1.0, 0.01) = 1.0
-uniform float u_col_aVal; // hint_range(0.0, 1.0, 0.01) = 0.8
-uniform float u_col_bHue; // hint_range(0.0, 1.0, 0.01) = 0.57
-uniform float u_col_bSat; // hint_range(0.0, 1.0, 0.01) = 0.95
-uniform float u_col_bVal; // hint_range(0.0, 1.0, 0.01) = 1.0
-uniform float u_col_cHue; // hint_range(0.0, 1.0, 0.01) = 0.48
-uniform float u_col_cSat; // hint_range(0.0, 1.0, 0.01) = 0.8
-uniform float u_col_cVal; // hint_range(0.0, 1.0, 0.01) = 1.0
-uniform float u_col_dHue; // hint_range(0.0, 1.0, 0.01) = 0.46
-uniform float u_col_dSat; // hint_range(0.0, 1.0, 0.01) = 0.2
-uniform float u_col_dVal; // hint_range(0.0, 1.0, 0.01) = 1.0
 vec2 uvCentered() {
   vec2 u = gl_FragCoord.xy / u_resolution;
   u.y = 1.0 - u.y;
@@ -47,10 +36,8 @@ vec3 hsv2rgb(vec3 c) {
   return c.z * mix(K.xxx, clamp(p - K.xxx, 0.0, 1.0), c.y);
 }
 vec3 finalize(vec3 col, float hue) {
-  float luma = dot(max(col, 0.0), vec3(0.2126, 0.7152, 0.0722));
-  vec3 blended = mix(col, luma * hsv2rgb(vec3(hue, 1.0, 1.0)) * 1.4, clamp(u_colorize, 0.0, 1.0));
-  float bl = dot(max(blended, 0.0), vec3(0.2126, 0.7152, 0.0722));
-  blended = mix(vec3(bl), blended, clamp(u_saturation * S_SAT, 0.0, 4.0));
+  float bl = dot(max(col, 0.0), vec3(0.2126, 0.7152, 0.0722));
+  vec3 blended = mix(vec3(bl), col, clamp(u_saturation * S_SAT, 0.0, 4.0));
   blended = (blended - 0.5) * clamp(u_contrast * S_CON, 0.0, 4.0) + 0.5;
   return max(blended, 0.0);
 }
@@ -73,13 +60,9 @@ void main() {
     f = smoothstep(0.0, (u_fill_softness), d) * mix(1.0, 0.5, clamp(d * 2.0, 0.0, 1.0));
     v = f; }
   {
-    vec3 c1 = hsv2rgb(vec3((u_col_aHue), (u_col_aSat), (u_col_aVal))); vec3 c2 = hsv2rgb(vec3((u_col_bHue), (u_col_bSat), (u_col_bVal)));
-    vec3 c3 = hsv2rgb(vec3((u_col_cHue), (u_col_cSat), (u_col_cVal))); vec3 c4 = hsv2rgb(vec3((u_col_dHue), (u_col_dSat), (u_col_dVal)));
     float k = clamp((v - (u_col_low)) / (1.0 - (u_col_low)), 0.0, 1.0);
-    vec3 g = mix(c1, c2, smoothstep(0.0, 0.3333, k));
-    g = mix(g, c3, smoothstep(0.3333, 0.6667, k));
-    g = mix(g, c4, smoothstep(0.6667, 1.0, k));
-    col = g * mix(1.0, v, (u_col_shade));
+    float span = 1.0 - clamp(u_colorize + S_COLORIZE, 0.0, 1.0);
+    col = hsv2rgb(vec3(hue + (0.5 - k) * span, 1.0, 1.0)) * mix(1.0, v, (u_col_shade));
   }
   fragColor = vec4(finalize(col, hue), 1.0);
 }
