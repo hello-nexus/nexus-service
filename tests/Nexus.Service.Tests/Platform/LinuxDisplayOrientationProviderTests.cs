@@ -180,6 +180,23 @@ public class LinuxDisplayOrientationProviderTests
     }
 
     [Fact]
+    public async System.Threading.Tasks.Task SetY70Orientation_retries_in_the_background_until_the_compositor_is_up()
+    {
+        var kscreen = new FakeKScreen { Rotation = 8 };
+        var up = false;
+        var provider = new LinuxDisplayOrientationProvider(() => "DP-1", args => up ? kscreen.Run(args) : (134, ""));
+
+        Assert.False(provider.SetY70Orientation("Landscape").Ok);
+        up = true;
+        for (var i = 0; i < 60 && kscreen.Rotation != 1; i++)
+        {
+            await System.Threading.Tasks.Task.Delay(100);
+        }
+
+        Assert.Equal(1, kscreen.Rotation);
+    }
+
+    [Fact]
     public void NoopProvider_reports_failure_instead_of_faking_success()
     {
         var (ok, detail) = new NoopDisplayOrientationProvider().SetY70Orientation("Portrait");

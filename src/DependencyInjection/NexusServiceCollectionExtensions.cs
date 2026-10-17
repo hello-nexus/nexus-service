@@ -2356,8 +2356,8 @@ public static class NexusServiceCollectionExtensions
         // Corsair Xeneon Edge auto-orientation + native settings: reads the
         // panel's hardware orientation sensor over vendor HID and applies the
         // matching OS display rotation (Windows and macOS). Cross-platform HID
-        // read like the Keeb workers; the apply side is a no-op on Linux via
-        // NoopDisplayOrientationProvider. Registered as a plain singleton
+        // read like the Keeb workers; the apply side on Linux is
+        // LinuxDisplayOrientationProvider (KDE only). Registered as a plain singleton
         // (in addition to IHostedService below) so the /displays/{id}/xeneon-
         // settings routes can resolve it directly to reach
         // ReadSettingsAsync/SetControlAsync - it is the single owner of the
