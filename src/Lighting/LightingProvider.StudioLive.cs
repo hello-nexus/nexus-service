@@ -86,7 +86,7 @@ public sealed partial class LightingProvider
             ShaderEffect live;
             try
             {
-                live = MakeShader(StudioLiveKey, frag, speed, intensity, body.Hue, body.Colorize, body.Saturation, body.Contrast, extras);
+                live = MakeShader(StudioLiveKey, frag, speed, intensity, body.Hue, body.Colorize, body.Saturation, body.Contrast, extras, Nexus.Service.Persistence.SensorBinding.CopyMap(body.Sensors));
             }
             catch (Exception ex)
             {
@@ -119,12 +119,13 @@ public sealed partial class LightingProvider
             cur.Saturation = body.Saturation;
             cur.Contrast = body.Contrast;
             cur.ExtraParams = extras;
+            cur.SensorOverrides = Nexus.Service.Persistence.SensorBinding.CopyMap(body.Sensors);
             return true;
         }
         ShaderEffect fresh;
         try
         {
-            fresh = MakeShader(StudioLiveKey, frag, speed, intensity, body.Hue, body.Colorize, body.Saturation, body.Contrast, extras);
+            fresh = MakeShader(StudioLiveKey, frag, speed, intensity, body.Hue, body.Colorize, body.Saturation, body.Contrast, extras, Nexus.Service.Persistence.SensorBinding.CopyMap(body.Sensors));
         }
         catch (Exception ex)
         {

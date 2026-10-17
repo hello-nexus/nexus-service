@@ -30,6 +30,7 @@ internal static class ShaderLibrary
     private static readonly ConcurrentDictionary<string, string> Cache = new();
     private static readonly ConcurrentDictionary<string, IReadOnlyDictionary<string, ShaderParamSpec>> ParamsCache = new();
     private static readonly ConcurrentDictionary<string, string> SourceTagCache = new();
+    private static readonly ConcurrentDictionary<string, IReadOnlyList<SensorUniformSpec>> SensorCache = new();
     private static readonly string Prelude = LoadRaw(PreludeResource);
 
     /// <summary>Key prefix of a user-made effect; the rest is the store id.</summary>
@@ -148,7 +149,8 @@ internal static class ShaderLibrary
                 : key == "sweepbreathing" ? "breathing"
                 : key;
             var body = LoadRaw(ResourcePrefix + file + ".frag");
-            return Prelude + "\n" + body;
+            // A sensor effect is a baked Studio fragment that declares everything itself; the prelude would redeclare it.
+            return IsSensorEffect(key) ? body : Prelude + "\n" + body;
         });
     }
 
@@ -158,6 +160,12 @@ internal static class ShaderLibrary
         IsCustomKey(effectName)
             ? Derived(effectName).Tag
             : SourceTagCache.GetOrAdd(effectName, key => Fnv(Get(key)));
+
+    /// <summary>Sensor uniforms with their authored default bindings, parsed from the effect's source, cached like Get.</summary>
+    public static IReadOnlyList<SensorUniformSpec> SensorUniforms(string effectName) =>
+        IsCustomKey(effectName)
+            ? SensorUniformSpec.Parse(Get(effectName))
+            : SensorCache.GetOrAdd(effectName, key => SensorUniformSpec.Parse(Get(key)));
 
     /// <summary>hint_range specs parsed from the effect's composed source, cached like Get.</summary>
     public static IReadOnlyDictionary<string, ShaderParamSpec> Params(string effectName) =>
@@ -265,6 +273,22 @@ internal static class ShaderLibrary
 
     public static bool IsSweepEffect(string key) => SweepEffectKeys.Contains(key);
 
+    /// <summary>Key prefix of a built-in sensor effect: a self-contained baked Studio fragment, shipped as
+    /// Shaders/sensor&lt;name&gt;.frag and registered by that file alone.</summary>
+    public const string SensorPrefix = "sensor";
+
+    /// <summary>Every embedded Shaders/sensor*.frag, found by name so a new file needs no code change.</summary>
+    private static readonly string[] SensorEffectKeys = Asm.GetManifestResourceNames()
+        .Where(n => n.StartsWith(ResourcePrefix + SensorPrefix, System.StringComparison.Ordinal)
+            && n.EndsWith(".frag", System.StringComparison.Ordinal))
+        .Select(n => n[ResourcePrefix.Length..^".frag".Length])
+        .OrderBy(n => n, System.StringComparer.Ordinal)
+        .ToArray();
+
+    private static readonly HashSet<string> SensorEffectKeySet = new(SensorEffectKeys, System.StringComparer.Ordinal);
+
+    public static bool IsSensorEffect(string key) => SensorEffectKeySet.Contains(key);
+
     /// <summary>
     /// Every key with its own .frag, animate plus the static catalog. The client
     /// fetches sources through /lighting/shaders/{name}, which gates on this, so
@@ -272,7 +296,7 @@ internal static class ShaderLibrary
     /// back to the streamed canvas.
     /// </summary>
     public static IReadOnlyList<string> AllEffectKeys { get; } =
-        AnimateEffectKeys.Concat(Nexus.Service.Lighting.StaticEffectCatalog.Patterns).ToArray();
+        AnimateEffectKeys.Concat(SensorEffectKeys).Concat(Nexus.Service.Lighting.StaticEffectCatalog.Patterns).ToArray();
 
     // Mirrors the audio-reactive block of AllEffectKeys above; keep the two in sync.
     public static readonly HashSet<string> AudioEffectKeys = new(System.StringComparer.Ordinal)

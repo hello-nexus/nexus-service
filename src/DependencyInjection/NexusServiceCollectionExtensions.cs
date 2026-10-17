@@ -39,6 +39,7 @@ public static class NexusServiceCollectionExtensions
     {
 #if WINDOWS
         services.AddSingleton<LhmComputer>();
+        services.AddSingleton<ISpdPageReset>(sp => sp.GetRequiredService<LhmComputer>());
         services.AddSingleton<IPerformanceProvider, Nexus.Service.Platform.Windows.WindowsPerformanceProvider>();
 #else
         services.AddSingleton<IPerformanceProvider>(_ => PerformanceProviderFactory.Create());
@@ -96,6 +97,8 @@ public static class NexusServiceCollectionExtensions
 #else
 #error No ISensorProvider for this target - wire one when adding a platform.
 #endif
+        // Idle until a lighting shader reads a sensor uniform; see SensorFeed.
+        services.AddSingleton(sp => new Nexus.Service.Lighting.Engine.SensorFeed(sp.GetRequiredService<ISensorProvider>()));
         services.AddSingleton<ProcessMonitor>();
         services.AddHostedService(sp => sp.GetRequiredService<ProcessMonitor>());
         services.AddSingleton<Nexus.Service.Activity.GpuProcessMonitor>();

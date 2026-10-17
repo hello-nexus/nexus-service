@@ -191,6 +191,7 @@ public sealed partial class ShaderEffect
                 }
             }
         }
+        PushSensors(gl, cache, program, tickMs);
         // A declared, annotated uniform the caller never sent (a preset
         // predating the param) would otherwise stay at GL's post-link 0,
         // not the shader's authored default.

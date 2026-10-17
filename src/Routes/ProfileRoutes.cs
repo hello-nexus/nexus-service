@@ -232,6 +232,7 @@ public static class ProfileRoutes
                 Diagnostics = s.Diagnostics,
                 StartupDelaySeconds = s.StartupDelaySeconds,
                 DisableGpuMonitoring = s.DisableGpuMonitoring,
+                ReadRamTemperatures = s.ReadRamTemperatures,
                 Features = s.Features,
             };
         }).AllowPanel();
@@ -585,6 +586,10 @@ public static class ProfileRoutes
                 if (body.DisableGpuMonitoring is { } disableGpu)
                 {
                     s.DisableGpuMonitoring = disableGpu;
+                }
+                if (body.ReadRamTemperatures is { } readRam)
+                {
+                    s.ReadRamTemperatures = readRam;
                 }
                 if (body.Features is { } features)
                 {

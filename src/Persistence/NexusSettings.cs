@@ -100,6 +100,9 @@ public sealed class NexusSettings
     /// NOT profile-scoped: workstation-level.</summary>
     public bool DisableGpuMonitoring { get; set; }
 
+    /// <summary>False stops LHM from reading DIMM SPD temperatures, independent of the memory device's Nexus Control toggle. Applies live. NOT profile-scoped: workstation-level.</summary>
+    public bool ReadRamTemperatures { get; set; } = true;
+
     /// <summary>True once the desktop first-run welcome screen has been shown and
     /// dismissed. Install-scoped, not cloud profile synced: excluded from
     /// <see cref="Nexus.Service.Persistence.ProfileManager"/>'s CloneSettings
@@ -123,6 +126,9 @@ public sealed class NexusSettings
     /// <see cref="OnboardingCompleted"/>: install-scoped, never profile-synced,
     /// wiped by factory reset so the screen reappears.</summary>
     public bool LightingOnboardingCompleted { get; set; }
+
+    /// <summary>Set only when <see cref="JsonConfigStore"/> creates settings.json: a lighting device with no stored layout then covers the whole canvas instead of a grid slot. Install-scoped like <see cref="OnboardingCompleted"/>, never profile-synced.</summary>
+    public bool MaximizedCanvasDefaults { get; set; }
 
     /// <summary>Backs a one-release "removed" notice in the lighting tabs; deleted together with that notice after the next production release.</summary>
     public bool GameSyncRemovedNotice { get; set; }
@@ -583,6 +589,8 @@ public sealed class DevicePin
     public float? Saturation { get; set; }
     public float? Contrast { get; set; }
     public Dictionary<string, float>? Params { get; set; }
+    /// <summary>Animate: per sensor uniform, the user's pick over the preset look's binding. Unused by the other kinds.</summary>
+    public Dictionary<string, SensorBinding>? Sensors { get; set; }
     /// <summary>Static: the template slot the look came from, carried for the UI.</summary>
     public int? Slot { get; set; }
 
@@ -597,6 +605,7 @@ public sealed class DevicePin
         Saturation = Saturation,
         Contrast = Contrast,
         Params = Params is null ? null : new Dictionary<string, float>(Params),
+        Sensors = SensorBinding.CopyMap(Sensors),
         Slot = Slot,
     };
 }
@@ -864,6 +873,8 @@ public sealed class AnimateEffectState
     public float Saturation { get; set; } = InstallDefaults.Lighting.Animate.State.Saturation;
     public float Contrast { get; set; } = InstallDefaults.Lighting.Animate.State.Contrast;
     public Dictionary<string, float> Params { get; set; } = new();
+    /// <summary>Per sensor uniform, the user's pick over the shader's default binding; absent keys keep the default. Null when nothing is overridden.</summary>
+    public Dictionary<string, SensorBinding>? Sensors { get; set; }
 }
 
 public sealed class AnimateEffectTemplates
