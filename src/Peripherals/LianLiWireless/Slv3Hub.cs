@@ -102,6 +102,9 @@ public sealed class Slv3Hub : IDisposable
     private readonly HashSet<string> _unboundHere = new(StringComparer.Ordinal);
     // L-Connect's cap on chains adopted from our master at first sight.
     internal const int AdoptionCap = 12;
+    /// <summary>Refusal text for a manual Bind or Unbind while the lock is on.</summary>
+    public const string LockedError = "locked";
+
     // L-Connect Bind caps (RFController.Bind): all devices, Strimers, and HydroShift IIs per dev_type.
     internal const int BindCapDevices = 10;
     internal const int BindCapStrimers = 3;
@@ -2166,11 +2169,17 @@ public sealed class Slv3Hub : IDisposable
     /// reconciling it from the poll ticks. Refused, with nothing changed and the reason in
     /// <paramref name="error"/>, for an unknown MAC, a fan a live neighbor master holds, a
     /// full device cap (devices, Strimers, or HydroShift IIs of one model, per the Bind cap constants) or no free slot.
+    /// Also refused with <see cref="LockedError"/> while the lock is on.
     /// A fan already bound to us keeps its slot.
     /// </summary>
     public bool Bind(string macHex, out string error)
     {
         error = "";
+        if (_lockBound)
+        {
+            error = LockedError;
+            return false;
+        }
         if (!TryParseMac(macHex, out var mac))
         {
             error = "invalid mac";
@@ -2253,11 +2262,16 @@ public sealed class Slv3Hub : IDisposable
     /// <summary>
     /// Releases a fan: a zero-master frame goes to the pipe it reports on every poll until its record
     /// shows no master, whoever holds it now. Refused for an unknown MAC or a fan a live neighbor master
-    /// holds. Allowed with the lock on: the fan is dropped from the owned list and never retaken.
+    /// holds. Refused with <see cref="LockedError"/> while the lock is on. Otherwise the fan is dropped from the owned list and never retaken.
     /// </summary>
     public bool Unbind(string macHex, out string error)
     {
         error = "";
+        if (_lockBound)
+        {
+            error = LockedError;
+            return false;
+        }
         if (!TryParseMac(macHex, out var mac))
         {
             error = "invalid mac";

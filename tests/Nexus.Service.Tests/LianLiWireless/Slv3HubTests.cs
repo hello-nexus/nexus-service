@@ -205,7 +205,7 @@ public partial class Slv3HubTests
         Assert.True(hub.DriveTick());
 
         // Bind() sends the first bind frame itself; the next poll confirms.
-        Assert.True(hub.Bind(Convert.ToHexString(FanMac)));
+        Assert.True(ManualBind(hub, Convert.ToHexString(FanMac)));
         Assert.True(hub.DriveTick());
         Assert.True(hub.State.Fans[0].BoundToUs);
         Assert.Equal(1, hub.State.Fans[0].Slot);
@@ -223,7 +223,7 @@ public partial class Slv3HubTests
         // still carries it, so Bind() is accepted, but the immediate frame is
         // lost (nothing on the fake network to apply it to).
         net.Fans.Clear();
-        Assert.True(hub.Bind(Convert.ToHexString(FanMac)));
+        Assert.True(ManualBind(hub, Convert.ToHexString(FanMac)));
         Assert.True(hub.DriveTick());
         Assert.False(hub.State.Fans[0].BoundToUs);
 
@@ -243,7 +243,7 @@ public partial class Slv3HubTests
         Assert.True(hub.DriveTick());
         Assert.True(hub.State.Fans[0].BoundToUs);
 
-        Assert.True(hub.Unbind(Convert.ToHexString(FanMac)));
+        Assert.True(ManualUnbind(hub, Convert.ToHexString(FanMac)));
         Assert.True(hub.DriveTick());
         Assert.True(hub.DriveTick());
 
@@ -259,7 +259,7 @@ public partial class Slv3HubTests
         Assert.True(hub.DriveTick());
         Assert.Equal(5, hub.State.Fans[0].Slot);
 
-        Assert.True(hub.Bind(Convert.ToHexString(FanMac)));
+        Assert.True(ManualBind(hub, Convert.ToHexString(FanMac)));
         Assert.True(hub.DriveTick());
         Assert.True(hub.DriveTick());
 
@@ -270,7 +270,7 @@ public partial class Slv3HubTests
     public void Bind_rejects_mac_never_seen_in_device_list()
     {
         var (hub, _, _, _) = CreateConnectedHub();
-        Assert.False(hub.Bind(Convert.ToHexString(FanMac)));
+        Assert.False(ManualBind(hub, Convert.ToHexString(FanMac)));
     }
 
     private static readonly byte[] OtherMasterMac = Convert.FromHexString("0102030405FF");
@@ -324,7 +324,7 @@ public partial class Slv3HubTests
         Ticks(hub, SettledPolls);
         Assert.Single(saved);
 
-        Assert.True(hub.Unbind(Convert.ToHexString(FanMac)));
+        Assert.True(ManualUnbind(hub, Convert.ToHexString(FanMac)));
         Ticks(hub, 3);
         tx.SentFrames.Clear();
         Ticks(hub, 3);
@@ -381,7 +381,7 @@ public partial class Slv3HubTests
         net.Fans.Add(new SimulatedFan { Mac = FanMac, IgnoresBind = true });
         Ticks(hub, 1);
 
-        Assert.True(hub.Bind(Convert.ToHexString(FanMac)));
+        Assert.True(ManualBind(hub, Convert.ToHexString(FanMac)));
 
         Assert.Equal(1, saved[Convert.ToHexString(FanMac)]);
     }
@@ -690,7 +690,7 @@ public partial class Slv3HubTests
         Assert.True(entered.Wait(TimeSpan.FromSeconds(10)));
 
         var framesBefore = tx.SentFrames.Count;
-        var unbind = System.Threading.Tasks.Task.Run(() => hub.Unbind(mac));
+        var unbind = System.Threading.Tasks.Task.Run(() => ManualUnbind(hub, mac));
         // The unbind frame goes out inside the hub lock, before Unbind reaches its save.
         Assert.True(System.Threading.SpinWait.SpinUntil(() => tx.SentFrames.Count > framesBefore, TimeSpan.FromSeconds(10)));
         Assert.False(unbind.IsCompleted);
@@ -947,7 +947,7 @@ public partial class Slv3HubTests
         Assert.True(hub.DriveTick());
         Assert.True(hub.SetPortDuty(Convert.ToHexString(FanMac), 3, 50));
 
-        Assert.True(hub.Unbind(Convert.ToHexString(FanMac)));
+        Assert.True(ManualUnbind(hub, Convert.ToHexString(FanMac)));
 
         var frame = LastBindFrame(tx, FanMac);
         Assert.All(frame.AsSpan(21, 4).ToArray(), b => Assert.Equal(Slv3Protocol.PwmFollowMotherboard, b));
@@ -2371,7 +2371,7 @@ public partial class Slv3HubTests
         var (hub, net, tx, _) = CreateConnectedHub();
         net.Fans.Add(new SimulatedFan { Mac = FanMac });
         Assert.True(hub.DriveTick());
-        Assert.True(hub.Bind(Convert.ToHexString(FanMac)));
+        Assert.True(ManualBind(hub, Convert.ToHexString(FanMac)));
         Assert.True(hub.DriveTick());
         Assert.True(hub.State.Fans[0].BoundToUs);
 
@@ -2391,7 +2391,7 @@ public partial class Slv3HubTests
         var (hub, net, tx, _) = CreateConnectedHub();
         net.Fans.Add(new SimulatedFan { Mac = FanMac });
         Assert.True(hub.DriveTick());
-        Assert.True(hub.Bind(Convert.ToHexString(FanMac)));
+        Assert.True(ManualBind(hub, Convert.ToHexString(FanMac)));
         Assert.True(hub.DriveTick());
 
         // The chain stops echoing the tuple (L-Connect NeedSyncPwm: a port
@@ -2413,7 +2413,7 @@ public partial class Slv3HubTests
         Assert.True(hub.DriveTick());
         tx.SentFrames.Clear();
 
-        Assert.True(hub.Unbind(Convert.ToHexString(FanMac)));
+        Assert.True(ManualUnbind(hub, Convert.ToHexString(FanMac)));
 
         var frame = LastBindFrame(tx, FanMac);
         Assert.Equal(new byte[6], frame.AsSpan(12, 6).ToArray());
@@ -2435,7 +2435,7 @@ public partial class Slv3HubTests
         Assert.True(hub.DriveTick());
         tx.SentFrames.Clear();
 
-        Assert.True(hub.Bind(Convert.ToHexString(second)));
+        Assert.True(ManualBind(hub, Convert.ToHexString(second)));
 
         var frame = LastBindFrame(tx, second);
         Assert.Equal(4, frame[18]);   // next slot above the highest one held
@@ -2471,7 +2471,7 @@ public partial class Slv3HubTests
         var (hub, net, tx, _) = CreateConnectedHub();
         net.Fans.Add(new SimulatedFan { Mac = FanMac });
         Assert.True(hub.DriveTick());
-        Assert.True(hub.Bind(Convert.ToHexString(FanMac)));
+        Assert.True(ManualBind(hub, Convert.ToHexString(FanMac)));
         Assert.True(hub.DriveTick());
         var settled = CountBindFrames(tx);
 
