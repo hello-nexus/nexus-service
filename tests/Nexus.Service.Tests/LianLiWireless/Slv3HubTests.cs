@@ -294,7 +294,7 @@ public partial class Slv3HubTests
         return (hub, net, tx, saved, clock);
     }
 
-    private const int Established = Slv3Hub.EstablishedChainPolls;
+    private const int Established = 20;
 
     private static void Ticks(Slv3Hub hub, int count)
     {
@@ -779,7 +779,7 @@ public partial class Slv3HubTests
     }
 
     [Fact]
-    public async System.Threading.Tasks.Task A_failing_savecfg_frame_stops_that_send_after_one_write()
+    public async System.Threading.Tasks.Task A_failing_savecfg_frame_still_attempts_every_chunk()
     {
         var net = new FakeSlv3Network();
         var tx = new FakeTxTransport(net);
@@ -799,8 +799,8 @@ public partial class Slv3HubTests
 
         await hub.OnSystemSuspending();
 
-        Assert.Equal(1, framesAtFirstGap);
-        Assert.Equal(3, tx.SentFrames.Count);
+        Assert.Equal(4, framesAtFirstGap);
+        Assert.Equal(12, tx.SentFrames.Count);
     }
 
     [Fact]

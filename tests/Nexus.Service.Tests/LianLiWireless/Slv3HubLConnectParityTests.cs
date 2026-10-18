@@ -292,48 +292,6 @@ public partial class Slv3HubTests
     }
 
     [Fact]
-    public void A_chain_pulled_back_to_the_master_it_was_retaken_from_is_stood_down_from_until_the_mark_lapses()
-    {
-        var (hub, _, tx, fan, _, clock) = Stranded(FarMaster, 3, Slv3Protocol.DefaultChannel);
-        Ticks(hub, 3);
-        Assert.True(hub.State.Fans[0].BoundToUs);
-
-        fan.MasterMac = FarMaster;
-        fan.RxType = 3;
-        tx.SentFrames.Clear();
-        Ticks(hub, Slv3Hub.NeighborConfirmPolls + 5);
-
-        Assert.Empty(AllBindFrames(tx));
-
-        clock.AdvanceMs(Slv3Hub.NeighborMarkMs + 1);
-        Ticks(hub, 2);
-        Assert.NotEmpty(AllBindFrames(tx));
-        Assert.True(hub.State.Fans[0].BoundToUs);
-    }
-
-    [Fact]
-    public void A_foreign_master_that_keeps_a_chain_through_every_retake_is_stood_down_from()
-    {
-        var (hub, _, tx, fan, _, _) = Stranded(FarMaster, 3, Slv3Protocol.DefaultChannel);
-        fan.IgnoresBind = true;
-
-        Ticks(hub, Slv3Hub.UnconfirmedRetakePolls + 20);
-
-        Assert.Equal(Slv3Hub.UnconfirmedRetakePolls - 1, AllBindFrames(tx).Count);
-    }
-
-    [Fact]
-    public void A_garbled_foreign_master_is_never_stood_down_from()
-    {
-        var (hub, _, tx, fan, _, _) = Stranded(Convert.FromHexString("E5E5E5E5E5E5"), 229, 229);
-        fan.IgnoresBind = true;
-
-        Ticks(hub, Slv3Hub.UnconfirmedRetakePolls + 20);
-
-        Assert.Equal(Slv3Hub.UnconfirmedRetakePolls + 20, AllBindFrames(tx).Count);
-    }
-
-    [Fact]
     public void Bind_sends_the_first_frame_at_once_to_the_current_pipe_and_takes_the_next_slot_above_the_highest()
     {
         var other = Convert.FromHexString("A1A2A3A4A5A6");
@@ -403,21 +361,6 @@ public partial class Slv3HubTests
         tx.SentFrames.Clear();
         Ticks(hub, 5);
         Assert.Empty(AllBindFrames(tx));
-    }
-
-    [Fact]
-    public void Two_chains_on_one_slot_with_the_lock_on_move_one_to_an_unused_slot()
-    {
-        var first = Convert.FromHexString("111111111111");
-        var second = Convert.FromHexString("222222222222");
-        var (hub, net, _, _, _) = CreateOwnershipHub();
-        net.Fans.Add(new SimulatedFan { Mac = first, MasterMac = net.MasterMac, RxType = 4, Pwm = new byte[] { 6, 6, 6, 6 } });
-        net.Fans.Add(new SimulatedFan { Mac = second, MasterMac = net.MasterMac, RxType = 4, Pwm = new byte[] { 6, 6, 6, 6 } });
-
-        Ticks(hub, Slv3Hub.SlotConflictLimit + 4);
-
-        Assert.All(hub.State.Fans, f => Assert.True(f.BoundToUs));
-        Assert.Equal(2, hub.State.Fans.Select(f => f.Slot).Distinct().Count());
     }
 
     [Fact]
@@ -607,5 +550,50 @@ public partial class Slv3HubTests
         Ticks(hub, 2);
 
         Assert.True(hub.State.Fans[0].BoundToUs);
+    }
+
+    [Fact]
+    public void A_chain_on_a_non_live_foreign_master_is_retaken_every_time_with_the_lock_on_and_never_given_up_on()
+    {
+        var (hub, _, tx, fan, _, _) = Stranded(Convert.FromHexString("A27CD726C6D3"), 3, Slv3Protocol.DefaultChannel);
+
+        for (var round = 0; round < 5; round++)
+        {
+            Ticks(hub, 3);
+            Assert.True(hub.State.Fans[0].BoundToUs);
+            fan.MasterMac = Convert.FromHexString("A27CD726C6D3");
+            fan.RxType = 3;
+        }
+        tx.SentFrames.Clear();
+        fan.IgnoresBind = true;
+        Ticks(hub, 600);
+
+        Assert.Equal(600, AllBindFrames(tx).Count);
+    }
+
+    [Fact]
+    public void With_the_lock_on_two_chains_on_one_slot_are_steered_back_to_their_targets_not_unbound()
+    {
+        var first = Convert.FromHexString("111111111111");
+        var second = Convert.FromHexString("222222222222");
+        var (hub, net, _, _, _) = CreateOwnershipHub();
+        net.Fans.Add(new SimulatedFan { Mac = first, MasterMac = net.MasterMac, RxType = 4, Pwm = new byte[] { 6, 6, 6, 6 } });
+        net.Fans.Add(new SimulatedFan { Mac = second, MasterMac = net.MasterMac, RxType = 4, Pwm = new byte[] { 6, 6, 6, 6 } });
+
+        Ticks(hub, Slv3Hub.SlotConflictLimit + 6);
+
+        Assert.All(hub.State.Fans, f => Assert.True(f.BoundToUs));
+    }
+
+    [Fact]
+    public void A_bind_attempts_all_four_chunks_even_when_every_write_fails()
+    {
+        var (hub, net, tx, _, _, _) = Stranded(new byte[6], 0, Slv3Protocol.DefaultChannel);
+        net.TxWedged = true;
+
+        hub.DriveTick();
+
+        var chunks = tx.SentFrames.Count(f => f.Length > 3 && f[0] == Slv3Protocol.UsbSendRf && f[2] == Slv3Protocol.DefaultChannel && f[3] == 0);
+        Assert.Equal(4, chunks);
     }
 }
