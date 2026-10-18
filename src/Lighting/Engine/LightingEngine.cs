@@ -255,7 +255,7 @@ public sealed partial class LightingEngine : IDisposable
     private DeviceFrame[]? _assignPruneDevices;
     internal const long AssignRetryBaseMs = 1000;
     internal const long AssignRetryMaxMs = 60000;
-    // One build runs up to this many phases (compile, link, fallback compile, fallback link), each forced after DefaultForceAfterMs.
+    // The longest build is compile, fallback compile, then link (three phases), each forced after DefaultForceAfterMs; four is deliberate headroom.
     private const int AssignBuildPhases = 4;
     private const long AssignBudgetMarginMs = 5000;
     /// <summary>A compile that has drawn nothing for this long is abandoned and handed to the retry backoff; it outlasts the build's own force timeouts.</summary>
