@@ -556,6 +556,41 @@ public sealed class OpenRgbManualDevicesResponse : ApiResponse
     public bool ImportSourceAvailable { get; set; }
 }
 
+/// <summary>OpenRGB devices that have at least one user-sizable zone.</summary>
+public sealed class OpenRgbZonesResponse : ApiResponse
+{
+    public List<OpenRgbZoneDeviceDto> Devices { get; set; } = new();
+}
+
+public sealed class OpenRgbZoneDeviceDto
+{
+    /// <summary>Stable OpenRGB device id (the card id of an unsplit device).</summary>
+    public string DeviceId { get; set; } = "";
+    public string Name { get; set; } = "";
+    public List<OpenRgbZoneDto> Zones { get; set; } = new();
+}
+
+public sealed class OpenRgbZoneDto
+{
+    /// <summary>Zone index within the device, the value the size POST takes.</summary>
+    public int Index { get; set; }
+    public string Name { get; set; } = "";
+    public int LedCount { get; set; }
+    public int LedsMin { get; set; }
+    public int LedsMax { get; set; }
+    /// <summary>True when the controller allows a size and advertises a range (leds_min != leds_max).</summary>
+    public bool Resizable { get; set; }
+    /// <summary>OpenRGB's Zone Initialization rule: sizable and never sized by a user yet.</summary>
+    public bool NeedsSize { get; set; }
+}
+
+public sealed class SetOpenRgbZoneSizeBody
+{
+    public string DeviceId { get; set; } = "";
+    public int ZoneIndex { get; set; }
+    public int LedCount { get; set; }
+}
+
 public sealed class QmkDeviceDto
 {
     public string Name { get; set; } = "";

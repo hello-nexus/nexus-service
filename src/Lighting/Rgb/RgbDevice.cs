@@ -103,6 +103,14 @@ public sealed class RgbZone
     public const uint FlagConfigurableSize = 1u << 1;
     /// <summary>ZONE_FLAG_MANUALLY_CONFIGURED_SIZE: set by a resize.</summary>
     public const uint FlagConfiguredSize = 1u << 12;
+    /// <summary>ZONE_FLAG_MANUALLY_CONFIGURABLE_SIZE_EFFECTS_ONLY.</summary>
+    public const uint FlagConfigurableSizeEffectsOnly = 1u << 0;
+    /// <summary>The daemon only honors a resize when the controller set one of the configurable-size flags.</summary>
+    public bool IsConfigurableSize => (Flags & (FlagConfigurableSize | FlagConfigurableSizeEffectsOnly)) != 0;
+    /// <summary>A zone the user can resize: the controller allows it and advertises room to.</summary>
+    public bool IsResizable => IsConfigurableSize && LedsMin != LedsMax;
+    /// <summary>OpenRGB's Zone Initialization rule: configurable size that no resize has set yet.</summary>
+    public bool NeedsSize => IsConfigurableSize && (Flags & FlagConfiguredSize) == 0;
     /// <summary>True when the count is the user's to set and is still unset or came from a resize, never from the hardware (NZXT Hue+ reads its own).</summary>
     public bool IsUserSized => (Flags & FlagConfigurableSize) != 0 && (LedCount == 0 || (Flags & FlagConfiguredSize) != 0);
     /// <summary>Matrix width in columns, or 0 when the zone is a linear strip.</summary>

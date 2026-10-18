@@ -713,6 +713,8 @@ namespace Nexus.Service.Serialization;
 [JsonSerializable(typeof(SetLightingDeviceSaturation))]
 [JsonSerializable(typeof(SetZoneLedCountBody))]
 [JsonSerializable(typeof(OpenRgbManualDevicesResponse))]
+[JsonSerializable(typeof(OpenRgbZonesResponse))]
+[JsonSerializable(typeof(SetOpenRgbZoneSizeBody))]
 [JsonSerializable(typeof(AddQmkDeviceBody))]
 [JsonSerializable(typeof(AddE131DeviceBody))]
 [JsonSerializable(typeof(RemoveManualDeviceBody))]

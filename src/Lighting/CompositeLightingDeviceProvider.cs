@@ -199,55 +199,6 @@ public sealed class CompositeLightingDeviceProvider : ILightingDeviceProvider
             {
                 rgb.Devices.RemoveAll(d => string.Equals(d.Id, qseriesZombieId, StringComparison.OrdinalIgnoreCase));
             }
-            if (_keeb.IsConnected)
-            {
-                // We disable the "HYTE Keeb TKL" detector in openrgb-headless so
-                // OpenRGB never claims the board, but strip by name too so a stale
-                // entry can never shadow our direct card.
-                rgb.Devices.RemoveAll(d =>
-                    d.Name.Contains("HYTE Keeb", StringComparison.OrdinalIgnoreCase) ||
-                    d.Name.Contains("Keeb TKL", StringComparison.OrdinalIgnoreCase));
-            }
-            if (_lianLi.IsConnected)
-            {
-                // Every HID Uni Hub detector is disabled in openrgb-headless;
-                // strip by name too so a stale OpenRGB entry
-                // (the "detected but not drivable" zombie) can't shadow our cards.
-                rgb.Devices.RemoveAll(d =>
-                    d.Name.Contains("Lian Li Uni Hub", StringComparison.OrdinalIgnoreCase));
-            }
-            if (_corsair.IsConnected)
-            {
-                // The iCUE Link System Hub detector is disabled in openrgb-headless;
-                // strip by name too so a stale OpenRGB zombie can't shadow our cards.
-                rgb.Devices.RemoveAll(d =>
-                    d.Name.Contains("iCUE Link", StringComparison.OrdinalIgnoreCase));
-            }
-            if (_strimer.IsConnected)
-            {
-                rgb.Devices.RemoveAll(d =>
-                    d.Name.Contains("Lian Li Strimer", StringComparison.OrdinalIgnoreCase));
-            }
-            if (_galahad2.IsConnected)
-            {
-                // OpenRGB names this device "Lian Li GAII Trinity".
-                rgb.Devices.RemoveAll(d =>
-                    d.Name.Contains("GAII", StringComparison.OrdinalIgnoreCase));
-            }
-            if (_nollie.IsConnected)
-            {
-                // Nollie detectors are disabled in openrgb-headless; strip by
-                // name too so a stale entry can't shadow the native cards. The
-                // Prism8 shares the firmware and OpenRGB's naming.
-                rgb.Devices.RemoveAll(d =>
-                    d.Name.Contains("Nollie", StringComparison.OrdinalIgnoreCase) ||
-                    d.Name.Contains("Prism8", StringComparison.OrdinalIgnoreCase));
-            }
-            if (_kraken.IsConnected)
-            {
-                rgb.Devices.RemoveAll(d =>
-                    d.Name.Contains("Kraken", StringComparison.OrdinalIgnoreCase));
-            }
         }
 
         var hub = _np50.GetAll();

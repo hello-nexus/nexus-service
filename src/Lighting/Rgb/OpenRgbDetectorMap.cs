@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Text.Json.Nodes;
+using System.Threading;
 using Nexus.Service.Platform;
 
 namespace Nexus.Service.Lighting.Rgb;
@@ -15,6 +16,8 @@ namespace Nexus.Service.Lighting.Rgb;
 /// </summary>
 public static class OpenRgbDetectorMap
 {
+    private static readonly Dictionary<string, string> EmptyMap = new(StringComparer.Ordinal);
+
     /// <summary>Loads the map, or an empty one when the file is absent or
     /// unreadable; a daemon predating the map never writes it.</summary>
     public static IReadOnlyDictionary<string, string> Load(string configDir)
@@ -37,6 +40,47 @@ public static class OpenRgbDetectorMap
                 ServiceLog.Warn($"[openrgb] detector map read failed: {ex.Message}");
             }
             return EmptyMap;
+        }
+    }
+
+    private static IReadOnlyDictionary<string, string>? _override;
+
+    /// <summary>Test seam: replaces the on-disk map for the process until set back to null.</summary>
+    internal static IReadOnlyDictionary<string, string>? OverrideForTests
+    {
+        set => Volatile.Write(ref _override, value);
+    }
+
+    private static readonly object CacheLock = new();
+    private static string? _cachedPath;
+    private static DateTime _cachedWriteUtc;
+    private static IReadOnlyDictionary<string, string> _cached = EmptyMap;
+
+    /// <summary>The map for the service config dir, re-read only when the daemon rewrites the file.</summary>
+    public static IReadOnlyDictionary<string, string> Current
+    {
+        get
+        {
+            if (Volatile.Read(ref _override) is { } forced)
+            {
+                return forced;
+            }
+            var dir = OpenRgbProcessManager.ResolveConfigDir();
+            var path = Path.Combine(dir, "detector-map.json");
+            DateTime writeUtc;
+            try
+            { writeUtc = File.Exists(path) ? File.GetLastWriteTimeUtc(path) : DateTime.MinValue; }
+            catch { return EmptyMap; }
+            lock (CacheLock)
+            {
+                if (_cachedPath != path || _cachedWriteUtc != writeUtc)
+                {
+                    _cached = Load(dir);
+                    _cachedPath = path;
+                    _cachedWriteUtc = writeUtc;
+                }
+                return _cached;
+            }
         }
     }
 
@@ -68,6 +112,5 @@ public static class OpenRgbDetectorMap
     public static string Resolve(IReadOnlyDictionary<string, string>? map, string deviceName)
         => map is not null && map.TryGetValue(deviceName, out var detector) ? detector : deviceName;
 
-    private static readonly Dictionary<string, string> EmptyMap = new(StringComparer.Ordinal);
     private static bool _readFailureLogged;
 }

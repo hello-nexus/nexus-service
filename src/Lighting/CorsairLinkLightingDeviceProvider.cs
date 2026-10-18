@@ -49,7 +49,7 @@ public sealed class CorsairLinkLightingDeviceProvider :
     /// natively-streamed LEDs, which would overwrite per-device disable/brightness.
     /// </summary>
     public bool OwnsOpenRgbDevice(RgbDevice device) =>
-        IsConnected && device.Name.Contains("iCUE Link", StringComparison.OrdinalIgnoreCase);
+        IsConnected && Rgb.NativeDetectorClaims.Owns(Rgb.NativeDetectorClaims.Corsair, device);
 
     public event Action? DevicesChanged;
 

@@ -72,12 +72,9 @@ public class OpenRgbExcludedCardsTests
     }
 
     [Fact]
-    public void Placeholder_dummy_is_replaced_even_when_latched_drivable()
+    public void Placeholder_dummy_is_replaced_by_the_snapshot_card()
     {
-        // The device latched drivable before it was excluded; the latch must not
-        // resurrect the zero-LED placeholder as a second card.
-        var latched = new HashSet<string> { "openrgb-s-K70A" };
-        var resp = OpenRgbZoneSupport.BuildCards(new[] { Placeholder() }, ExcludedSettings(), isInit: true, latched);
+        var resp = OpenRgbZoneSupport.BuildCards(new[] { Placeholder() }, ExcludedSettings(), isInit: true);
 
         var card = Assert.Single(resp.Devices);
         Assert.Equal("openrgb-s-K70A", card.Id);

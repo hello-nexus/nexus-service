@@ -284,15 +284,25 @@ public class LianLiLightingDeviceProviderTests
         Assert.False(_provider.OwnsOpenRgbDevice(device));
     }
 
-    [Theory]
-    [InlineData("Lian Li Uni Hub")]
-    [InlineData("Lian Li Uni Hub SL-Infinity")]
-    [InlineData("lian li uni hub Controller")]
-    public void OwnsOpenRgbDevice_true_when_connected_and_name_matches(string name)
+    [Fact]
+    public void OwnsOpenRgbDevice_follows_the_detector_that_produced_the_row()
     {
         Connect();
-        var device = new Nexus.Service.Lighting.Rgb.RgbDevice { Name = name };
-        Assert.True(_provider.OwnsOpenRgbDevice(device));
+        Nexus.Service.Lighting.Rgb.OpenRgbDetectorMap.OverrideForTests = new Dictionary<string, string>
+        {
+            ["Lian Li Uni Hub SL-Infinity"] = "Lian Li Uni Hub - SL Infinity",
+            ["Lian Li Uni Hub"] = "Lian Li Uni Hub",
+        };
+        try
+        {
+            Assert.True(_provider.OwnsOpenRgbDevice(new Nexus.Service.Lighting.Rgb.RgbDevice { Name = "Lian Li Uni Hub SL-Infinity" }));
+            Assert.False(_provider.OwnsOpenRgbDevice(new Nexus.Service.Lighting.Rgb.RgbDevice { Name = "Lian Li Uni Hub" }));
+            Assert.False(_provider.OwnsOpenRgbDevice(new Nexus.Service.Lighting.Rgb.RgbDevice { Name = "Lian Li Uni Hub Unmapped" }));
+        }
+        finally
+        {
+            Nexus.Service.Lighting.Rgb.OpenRgbDetectorMap.OverrideForTests = null;
+        }
     }
 
     private static int ZoneLedCount(Nexus.Service.Lighting.Zones.DefaultZoneDef zone)

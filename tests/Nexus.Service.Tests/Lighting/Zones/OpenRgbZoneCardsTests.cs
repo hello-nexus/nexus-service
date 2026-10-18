@@ -142,34 +142,11 @@ public class OpenRgbZoneCardsTests
     }
 
     [Fact]
-    public void Zero_led_whole_device_card_is_dropped()
+    public void Zero_led_whole_device_card_is_shown()
     {
         var resp = OpenRgbZoneSupport.BuildCards(new[] { PhantomDevice(), Mouse() }, new NexusSettings(), isInit: true);
-        Assert.Single(resp.Devices);
-        Assert.Equal("openrgb-s-MS01", resp.Devices[0].Id);
-        // Dropped phantom must not consume slot 0: the surviving Mouse keeps the
-        // same default layout it gets when emitted alone.
-        var soloMouse = OpenRgbZoneSupport.BuildCards(new[] { Mouse() }, new NexusSettings(), isInit: true).Devices[0];
-        Assert.Equal(soloMouse.CanvasX, resp.Devices[0].CanvasX);
-        Assert.Equal(soloMouse.CanvasY, resp.Devices[0].CanvasY);
-    }
-
-    [Fact]
-    public void Zero_led_device_stays_shown_when_latched_drivable()
-    {
-        // A device that settled drivable is latched by StableId; a later fetch
-        // that transiently reports 0 LEDs must not hide it. The hide errs toward
-        // showing real hardware, never toward hiding it.
-        var flapped = Mouse();
-        flapped.LedCount = 0;
-
-        var dropped = OpenRgbZoneSupport.BuildCards(new[] { flapped }, new NexusSettings(), isInit: true);
-        Assert.Empty(dropped.Devices);
-
-        var latched = new HashSet<string> { "openrgb-s-MS01" };
-        var shown = OpenRgbZoneSupport.BuildCards(new[] { flapped }, new NexusSettings(), isInit: true, latched);
-        Assert.Single(shown.Devices);
-        Assert.Equal("openrgb-s-MS01", shown.Devices[0].Id);
+        Assert.Equal(2, resp.Devices.Count);
+        Assert.Contains(resp.Devices, d => d.LedCount == 0);
     }
 
     [Fact]
