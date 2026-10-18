@@ -168,8 +168,8 @@ public class StaticPinPendingCompileTests
         {
             _provider.Dispose();
             Gpu.Dispose();
-            Assert.Empty(_mismatches);
             try { Directory.Delete(_dir, recursive: true); } catch { }
+            Assert.Empty(_mismatches);
         }
     }
 
@@ -410,5 +410,52 @@ public class StaticPinPendingCompileTests
             canvas.Fill(0, 255, 0);
         }
         public void Dispose() { }
+    }
+
+    [Fact]
+    public void The_default_pending_budget_outlasts_every_phase_of_a_forced_build()
+    {
+        // A build forces each of its phases after DefaultForceAfterMs; the budget must not cut it off first.
+        Assert.True(LightingEngine.DefaultAssignPendingBudgetMs > AsyncProgramBuild.DefaultForceAfterMs * 3);
+        using var engine = new LightingEngine();
+        Assert.Equal(LightingEngine.DefaultAssignPendingBudgetMs, engine.AssignPendingBudgetMs);
+    }
+
+    [Fact]
+    public void A_build_that_lands_late_but_inside_the_budget_is_not_abandoned()
+    {
+        using var rig = new Rig();
+        rig.Engine.AssignPendingBudgetMs = 1500;
+        rig.Tracker.Set(DeviceId, Pin("gradientlinear"));
+        rig.Start();
+        Assert.True(rig.WaitFor(() => rig.Built.Count == 1));
+        Assert.False(rig.WaitFor(() => rig.Built[0].DisposeCount > 0, 700));
+
+        rig.Gate("gradientlinear").Set();
+        Assert.True(rig.WaitFor(() => Rig.Led(rig.Device) == Red));
+        Assert.Single(rig.Built);
+    }
+
+    [Fact]
+    public void Time_with_nothing_polling_does_not_count_against_the_budget()
+    {
+        using var rig = new Rig();
+        rig.Engine.AssignPendingBudgetMs = 400;
+        rig.Engine.AssignPollGapMs = 100;
+        rig.Tracker.Set(DeviceId, Pin("gradientlinear"));
+        rig.Start();
+        Assert.True(rig.WaitFor(() => rig.Built.Count == 1));
+
+        // A blackout stops the pins being polled for longer than the whole budget.
+        rig.Engine.SetBlackout(true);
+        Assert.True(rig.Engine.WaitForBlackout(TimeSpan.FromSeconds(5)));
+        Assert.False(rig.WaitFor(() => false, 900));
+        rig.Engine.SetBlackout(false);
+        rig.WaitFrames(5);
+
+        Assert.Equal(0, rig.Built[0].DisposeCount);
+        rig.Gate("gradientlinear").Set();
+        Assert.True(rig.WaitFor(() => Rig.Led(rig.Device) == Red));
+        Assert.Single(rig.Built);
     }
 }

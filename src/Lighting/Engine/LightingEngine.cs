@@ -255,9 +255,15 @@ public sealed partial class LightingEngine : IDisposable
     private DeviceFrame[]? _assignPruneDevices;
     internal const long AssignRetryBaseMs = 1000;
     internal const long AssignRetryMaxMs = 60000;
-    // A compile that has drawn nothing for this long is abandoned and handed to the retry backoff.
-    internal long AssignPendingBudgetMs { get; set; } = 15000;
-    private readonly Dictionary<string, long> _assignPendingSince = new(StringComparer.Ordinal);
+    // One build runs up to this many phases (compile, link, fallback compile, fallback link), each forced after DefaultForceAfterMs.
+    private const int AssignBuildPhases = 4;
+    private const long AssignBudgetMarginMs = 5000;
+    /// <summary>A compile that has drawn nothing for this long is abandoned and handed to the retry backoff; it outlasts the build's own force timeouts.</summary>
+    internal static readonly long DefaultAssignPendingBudgetMs = (long)Gpu.AsyncProgramBuild.DefaultForceAfterMs * AssignBuildPhases + AssignBudgetMarginMs;
+    internal long AssignPendingBudgetMs { get; set; } = DefaultAssignPendingBudgetMs;
+    /// <summary>A gap between polls longer than this means nothing was polling (blackout, sleep, pause), so the budget starts over.</summary>
+    internal long AssignPollGapMs { get; set; } = 2000;
+    private readonly Dictionary<string, (long Since, long Polled)> _assignPendingSince = new(StringComparer.Ordinal);
     // Reused per-frame scratch: which devices ApplyTestOverlays painted. Valid
     // for the rest of the tick after SampleDevicesFromCanvas returns.
     private bool[] _overlaid = Array.Empty<bool>();
@@ -2413,19 +2419,23 @@ public sealed partial class LightingEngine : IDisposable
             {
                 if (shader.HasFailed)
                 {
-                    ScheduleAssignRetry(key, assignment.Effect, retry.Attempts, nowTick, null);
+                    ScheduleAssignRetry(key, assignment.Effect, retry.Attempts, nowTick, "render failed", null);
                     return fallback;
                 }
                 if (!shader.DrewFrame)
                 {
-                    var since = _assignPendingSince.TryGetValue(key, out var started) ? started : nowTick;
+                    var since = nowTick;
+                    if (_assignPendingSince.TryGetValue(key, out var track) && nowTick - track.Polled <= AssignPollGapMs)
+                    {
+                        since = track.Since;
+                    }
                     if (nowTick - since > AssignPendingBudgetMs)
                     {
                         // Never drew and never failed: give the compile up and retry on the backoff.
-                        ScheduleAssignRetry(key, assignment.Effect, retry.Attempts, nowTick, null);
+                        ScheduleAssignRetry(key, assignment.Effect, retry.Attempts, nowTick, "no frame drawn within the pending budget", null);
                         return fallback;
                     }
-                    _assignPendingSince[key] = since;
+                    _assignPendingSince[key] = (since, nowTick);
                     _assignPending[key] = effect;
                     keep = true;
                     return fallback;
@@ -2440,7 +2450,7 @@ public sealed partial class LightingEngine : IDisposable
         catch (Exception ex)
         {
             // A look that cannot render must not take the whole frame down.
-            ScheduleAssignRetry(key, assignment.Effect, retry.Attempts, nowTick, ex);
+            ScheduleAssignRetry(key, assignment.Effect, retry.Attempts, nowTick, "render failed", ex);
             return fallback;
         }
         finally
@@ -2454,11 +2464,11 @@ public sealed partial class LightingEngine : IDisposable
         }
     }
 
-    private void ScheduleAssignRetry(string key, string? effectName, int attempts, long nowTick, Exception? ex)
+    private void ScheduleAssignRetry(string key, string? effectName, int attempts, long nowTick, string reason, Exception? ex)
     {
         if (attempts == 0)
         {
-            Gpu.GpuContext.Log($"[static-pin] render failed for {effectName}, retrying with backoff{(ex is null ? "" : $": {ex.GetType().Name}: {ex.Message}")}");
+            Gpu.GpuContext.Log($"[static-pin] {reason} for {effectName}, retrying with backoff{(ex is null ? "" : $": {ex.GetType().Name}: {ex.Message}")}");
         }
         var delay = Math.Min(AssignRetryMaxMs, AssignRetryBaseMs << Math.Min(attempts, 10));
         _assignRetry[key] = (nowTick + delay, attempts + 1);

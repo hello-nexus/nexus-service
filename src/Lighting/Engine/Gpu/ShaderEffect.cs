@@ -88,7 +88,7 @@ public sealed partial class ShaderEffect : IEffect
     internal Func<CanvasBuffer, double, bool>? TestRender;
     /// <summary>True while the last frame was skipped because the program is still compiling; the canvas then holds whatever the caller left.</summary>
     public bool IsRenderPending => _renderPending;
-    /// <summary>False while the context is down, where another render would only re-arm its init.</summary>
+    /// <summary>False while the context is down; a render then cannot draw.</summary>
     internal bool CanPoll => TestRender is not null || _ctx.Available;
     private volatile bool _drewFrame;
     /// <summary>True only when the last RenderFrame wrote a finished frame into the canvas; false for every skipped, deferred, failed or dropped render.</summary>
