@@ -201,14 +201,11 @@ public sealed class OpenRgbProcessManager : IDisposable
 
     /// <summary>The detectors held off with Nexus Control on everywhere and no native lock.</summary>
     internal static string[] BuildDisabledDetectors(bool macOS)
-        => NativeDetectorClaims.ResolveDisabled(_ => true, _ => false, macOS).ToArray();
+        => NativeDetectorClaims.ResolveDisabled(_ => true, macOS).ToArray();
 
-    /// <summary>Detectors held off by the Nexus Control choice and native availability (<see cref="NativeDetectorClaims.ResolveDisabled"/>). Reads the user's choice, so a running vendor app's pause does not move the set.</summary>
+    /// <summary>Detectors held off by the Nexus Control choice (<see cref="NativeDetectorClaims.ResolveDisabled"/>). Reads the choice and the build lock, so a running vendor app's pause does not move the set; without a gate nothing is on.</summary>
     internal System.Collections.Generic.List<string> ResolveNativeDisabledDetectors()
-        => NativeDetectorClaims.ResolveDisabled(
-            handler => _gate is null || _gate.IsControlOn(handler),
-            Nexus.Service.Devices.DeviceControlPolicy.RequiresBeta,
-            OperatingSystem.IsMacOS());
+        => NativeDetectorClaims.ResolveDisabled(handler => _gate?.IsChosenOn(handler) == true, OperatingSystem.IsMacOS());
 
     private string _appliedNativeSignature = "";
 

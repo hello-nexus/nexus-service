@@ -178,7 +178,16 @@ public sealed class RgbBridge : IDisposable
     internal static void PartitionPendingResizes(IReadOnlyList<RgbDevice> devices, IEnumerable<PendingIdResize> pending, long nowTicks,
         List<(int physIdx, int zoneIdx, int newSize)> resolved, List<PendingIdResize> waiting, List<PendingIdResize> expired)
     {
+        // Newest request per zone wins; an older one for the same zone would only resize it twice.
+        var newest = new Dictionary<(string, int), PendingIdResize>();
         foreach (var p in pending)
+        {
+            if (!newest.TryGetValue((p.DeviceId, p.ZoneIdx), out var seen) || p.EnqueuedTicks >= seen.EnqueuedTicks)
+            {
+                newest[(p.DeviceId, p.ZoneIdx)] = p;
+            }
+        }
+        foreach (var p in newest.Values)
         {
             var address = AddressOfDevice(devices, p.DeviceId);
             if (address >= 0)
@@ -894,20 +903,27 @@ public sealed class RgbBridge : IDisposable
         Interlocked.Exchange(ref _redetectRequestedTicks, 0);
         Interlocked.Exchange(ref _detectionActivityTicks, 0);
         Volatile.Write(ref _detectionStartedSeen, 0);
+        OpenRgbDetectorMap.EndHold();
         return true;
     }
 
-    private void MarkDetectionActivity() => Interlocked.Exchange(ref _detectionActivityTicks, DateTime.UtcNow.Ticks);
+    private void MarkDetectionActivity()
+    {
+        OpenRgbDetectorMap.BeginHold();
+        Interlocked.Exchange(ref _detectionActivityTicks, DateTime.UtcNow.Ticks);
+    }
 
     /// <summary>True while detection is visibly running, so a commit would show a half-detected list.</summary>
     private bool DetectionInProgress()
     {
         var last = Interlocked.Read(ref _detectionActivityTicks);
-        if (last == 0)
+        var holds = last != 0
+            && DetectionHolds(TimeSpan.FromTicks(DateTime.UtcNow.Ticks - last), Volatile.Read(ref _detectionStartedSeen) != 0, _controller.IsConnected);
+        if (!holds && OpenRgbDetectorMap.HoldActive)
         {
-            return false;
+            OpenRgbDetectorMap.EndHold();
         }
-        return DetectionHolds(TimeSpan.FromTicks(DateTime.UtcNow.Ticks - last), Volatile.Read(ref _detectionStartedSeen) != 0, _controller.IsConnected);
+        return holds;
     }
 
     /// <summary>A detector can run long with no progress packet, so a seen STARTED holds until COMPLETE (or the stall limit); without one only the quiet window holds.</summary>
@@ -936,7 +952,7 @@ public sealed class RgbBridge : IDisposable
             return;
         }
         Volatile.Write(ref _detectionStartedSeen, 0);
-        OpenRgbDetectorMap.Invalidate();
+        OpenRgbDetectorMap.EndHold();
         Interlocked.Exchange(ref _detectionActivityTicks, 0);
         Interlocked.Exchange(ref _redetectRequestedTicks, 0);
         string? deferred;
@@ -1100,7 +1116,11 @@ public sealed class RgbBridge : IDisposable
     /// fire several in quick succession (one per detected plugin result); we
     /// only want to query the device list once per burst.
     /// </summary>
-    private void OnDeviceListChanged() => ScheduleRefresh();
+    private void OnDeviceListChanged()
+    {
+        OpenRgbDetectorMap.Invalidate();
+        ScheduleRefresh();
+    }
 
     /// <summary>
     /// Schedule a debounced device refresh. Coalesces using a 0/1 flag: the
@@ -1647,6 +1667,12 @@ public sealed class RgbBridge : IDisposable
         return names;
     }
 
+    /// <summary>A device Nexus drives through OpenRGB: not claimed by a native provider, not detector-excluded and not left uncontrolled.</summary>
+    internal bool IsSizableDevice(RgbDevice d, NexusSettings settings)
+        => !IsOwnedByFirstParty(d)
+            && !settings.Devices.OpenRgbDetectorExclusions.ContainsKey(d.StableId)
+            && !OpenRgbZoneSupport.IsFullyUncontrolled(d, settings);
+
     internal bool IsOwnedByFirstParty(RgbDevice d)
     {
         for (int i = 0; i < _deviceOwners.Count; i++)
@@ -1979,8 +2005,15 @@ public sealed class RgbBridge : IDisposable
             var waiting = new List<PendingIdResize>();
             var expired = new List<PendingIdResize>();
             PartitionPendingResizes(devices, drained, DateTime.UtcNow.Ticks, resolved, waiting, expired);
+            var settings = _store.Load();
             foreach (var r in resolved)
             {
+                var target = FindDevice(devices, r.physIdx);
+                if (target is null || !IsSizableDevice(target, settings))
+                {
+                    ServiceLog.Warn($"[rgb-bridge] resize of controller {r.physIdx} zone {r.zoneIdx} dropped: the device is no longer sizable through OpenRGB");
+                    continue;
+                }
                 _pendingZoneResizes.Enqueue(r);
             }
             foreach (var w in waiting)

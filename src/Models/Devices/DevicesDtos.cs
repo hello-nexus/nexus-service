@@ -19,7 +19,7 @@ public sealed class DeviceListItem
     public bool SupportsNexusControl { get; set; }
     /// <summary>True for a Nexus Control device whose support is experimental (<see cref="Nexus.Service.Devices.DeviceControlPolicy.IsExperimental"/>). Drives the "Experimental" badge in the UI. Always false when SupportsNexusControl is false.</summary>
     public bool Experimental { get; set; }
-    /// <summary>True for an experimental device on a stable build (<see cref="Nexus.Service.Devices.DeviceControlPolicy.RequiresBeta"/>): the native driver stays off, and with Nexus Control on the device is driven through OpenRGB instead. Always false when SupportsNexusControl is false.</summary>
+    /// <summary>True for an experimental device on a stable build (<see cref="Nexus.Service.Devices.DeviceControlPolicy.RequiresBeta"/>): Nexus Control stays off and cannot be turned on. Always false when SupportsNexusControl is false.</summary>
     public bool RequiresBeta { get; set; }
     /// <summary>Short code for a partial-detection issue (e.g. "usb-disconnected"), or null when there is nothing to flag.</summary>
     public string? Warning { get; set; }

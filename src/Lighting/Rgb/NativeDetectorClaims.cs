@@ -77,33 +77,23 @@ public static class NativeDetectorClaims
     }
 
     /// <summary>
-    /// The detectors to hold off. With Nexus Control off for a claim's every handler nothing drives the
-    /// device, so OpenRGB must not either. With it on, the native driver drives the device where it is
-    /// available and the detector is held off; where it is not (locked on this build, absent on this OS)
-    /// OpenRGB drives it and the detector keeps its default.
+    /// The detectors to hold off. With Nexus Control off for every handler of a claim nothing drives the
+    /// device, so OpenRGB must not either. With it on, the native driver drives the device and the
+    /// detector is held off, except where the native driver does not exist on this OS (HYTE Nexus on
+    /// macOS), where OpenRGB drives it and the detector keeps its default.
     /// </summary>
-    /// <param name="controlOn">The user's Nexus Control choice for a handler, or its default.</param>
-    /// <param name="nativeLocked">True when the handler's native driver is locked off on this build.</param>
-    public static List<string> ResolveDisabled(Func<string, bool> controlOn, Func<string, bool> nativeLocked, bool macOS)
+    /// <param name="controlOn">Whether a handler's native driver is on: the user's choice or default, false while the build locks it.</param>
+    public static List<string> ResolveDisabled(Func<string, bool> controlOn, bool macOS)
     {
         var disabled = new List<string>(AlwaysOff);
         foreach (var claim in All)
         {
             var anyOn = false;
-            var nativeDrives = false;
             foreach (var handler in claim.Handlers)
             {
-                if (!controlOn(handler))
-                {
-                    continue;
-                }
-                anyOn = true;
-                if (!nativeLocked(handler) && !(macOS && claim.NotOnMac))
-                {
-                    nativeDrives = true;
-                }
+                anyOn |= controlOn(handler);
             }
-            if (!anyOn || nativeDrives)
+            if (!anyOn || !(macOS && claim.NotOnMac))
             {
                 disabled.AddRange(claim.Detectors);
             }

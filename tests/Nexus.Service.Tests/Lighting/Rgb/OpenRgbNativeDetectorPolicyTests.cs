@@ -28,74 +28,44 @@ public class OpenRgbNativeDetectorPolicyTests : IDisposable
 
     private static readonly string[] AllClaimed = NativeDetectorClaims.All.SelectMany(c => c.Detectors).ToArray();
 
-    private static List<string> Resolve(Func<string, bool> controlOn, Func<string, bool>? locked = null, bool macOS = false)
-        => NativeDetectorClaims.ResolveDisabled(controlOn, locked ?? (_ => false), macOS);
+    private static List<string> Resolve(Func<string, bool> controlOn, bool macOS = false)
+        => NativeDetectorClaims.ResolveDisabled(controlOn, macOS);
 
     [Fact]
-    public void Control_off_holds_every_claimed_detector_off()
+    public void Control_off_holds_every_claimed_detector_off_on_every_os()
     {
-        var held = Resolve(_ => false);
-        foreach (var detector in AllClaimed)
+        foreach (var macOS in new[] { false, true })
         {
-            Assert.Contains(detector, held);
+            var held = Resolve(_ => false, macOS);
+            foreach (var detector in AllClaimed)
+            {
+                Assert.Contains(detector, held);
+            }
         }
     }
 
     [Fact]
-    public void Control_off_holds_them_off_even_where_the_native_driver_is_locked_or_absent()
-    {
-        var held = Resolve(_ => false, _ => true, macOS: true);
-        foreach (var detector in AllClaimed)
-        {
-            Assert.Contains(detector, held);
-        }
-    }
-
-    [Fact]
-    public void Control_on_with_the_native_driver_available_holds_the_detector_off()
+    public void Control_on_with_a_native_driver_holds_the_detector_off()
     {
         var held = Resolve(_ => true);
-        foreach (var detector in AllClaimed.Where(d => d != "HYTE Nexus"))
+        foreach (var detector in AllClaimed)
         {
             Assert.Contains(detector, held);
         }
     }
 
     [Fact]
-    public void Control_on_with_the_native_driver_locked_leaves_the_detector_on()
+    public void Only_the_handlers_that_are_on_matter_to_a_claim()
     {
-        var held = Resolve(_ => true, _ => true);
-        foreach (var detector in AllClaimed)
-        {
-            Assert.DoesNotContain(detector, held);
-        }
-    }
-
-    [Fact]
-    public void Only_the_chosen_on_drivers_detectors_are_decided_by_availability()
-    {
-        var held = Resolve(h => h == "keeb");
+        var held = Resolve(h => h == "keeb", macOS: true);
         Assert.Contains("HYTE Keeb TKL", held);
         Assert.Contains("Corsair iCUE Link System Hub", held);
-        Assert.DoesNotContain("HYTE Keeb TKL", Resolve(h => h == "keeb", h => h == "keeb"));
-    }
-
-    [Theory]
-    [InlineData("lianli")]
-    [InlineData("lianli2")]
-    [InlineData("lianli4")]
-    public void Any_lian_li_hub_slot_decides_the_hid_hubs_but_never_the_original_uni_hub(string handler)
-    {
-        var onOpenRgb = Resolve(h => h == handler, _ => true);
-        Assert.DoesNotContain("Lian Li Uni Hub - SL V2", onOpenRgb);
-        Assert.DoesNotContain("Lian Li Uni Hub", Resolve(_ => false));
-        Assert.DoesNotContain("Lian Li Uni Hub", Resolve(_ => true));
     }
 
     [Theory]
     [InlineData("np50")]
     [InlineData("qseries")]
-    public void Hyte_nexus_detector_is_on_for_mac_where_neither_native_driver_exists(string handler)
+    public void Hyte_nexus_detector_is_on_only_where_control_is_on_and_no_native_driver_exists(string handler)
     {
         Assert.Contains("HYTE Nexus", Resolve(h => h == handler, macOS: false));
         Assert.DoesNotContain("HYTE Nexus", Resolve(h => h == handler, macOS: true));
@@ -103,11 +73,18 @@ public class OpenRgbNativeDetectorPolicyTests : IDisposable
     }
 
     [Fact]
+    public void The_original_uni_hub_detector_is_never_claimed()
+    {
+        Assert.DoesNotContain("Lian Li Uni Hub", Resolve(_ => false));
+        Assert.DoesNotContain("Lian Li Uni Hub", Resolve(_ => true));
+    }
+
+    [Fact]
     public void Lamp_array_detector_is_always_held_off()
     {
         Assert.Contains("HID LampArray Device", Resolve(_ => true));
         Assert.Contains("HID LampArray Device", Resolve(_ => false));
-        Assert.Contains("HID LampArray Device", Resolve(_ => true, _ => true, macOS: true));
+        Assert.Contains("HID LampArray Device", Resolve(_ => true, macOS: true));
         Assert.Contains("HID LampArray Device", OpenRgbProcessManager.BuildDisabledDetectors(macOS: false));
     }
 
@@ -168,29 +145,36 @@ public class OpenRgbNativeDetectorPolicyTests : IDisposable
 
         Assert.Contains("HYTE Keeb TKL", proc.ResolveNativeDisabledDetectors());
         gate.SetEnabled("keeb", false);
-        // Control off: nothing drives the keyboard, so OpenRGB must not either.
         Assert.Contains("HYTE Keeb TKL", proc.ResolveNativeDisabledDetectors());
     }
 
     [Fact]
-    public void A_locked_native_driver_is_driven_through_openrgb_once_the_user_turns_control_on()
+    public void Without_a_gate_every_claimed_detector_stays_off()
+    {
+        var held = new OpenRgbProcessManager("missing-exe").ResolveNativeDisabledDetectors();
+        foreach (var detector in AllClaimed)
+        {
+            Assert.Contains(detector, held);
+        }
+    }
+
+    [Fact]
+    public void A_locked_native_driver_keeps_its_detector_off_even_with_control_chosen_on_and_the_app_whitelisted()
     {
         var store = new InMemoryConfigStore();
+        store.Update(s =>
+        {
+            s.Devices.NexusControlEnabled = new List<string> { "lianli", "corsair" };
+            s.Ui.ConflictAutoKillExclusions = new List<string> { "lian-li-l-connect", "icue" };
+        });
         var gate = new DeviceControlGate(store);
         var proc = new OpenRgbProcessManager("missing-exe", store, gate);
         Nexus.Service.Devices.DeviceControlPolicy.ExperimentalUnlocked = false;
         try
         {
-            // Default off for a vendor-app conflict: nothing drives it.
-            Assert.Contains("Corsair iCUE Link System Hub", proc.ResolveNativeDisabledDetectors());
-
-            gate.SetEnabled("corsair", true);
-            Assert.True(gate.IsControlOn("corsair"));
-            Assert.False(gate.IsEnabled("corsair"));
-            Assert.DoesNotContain("Corsair iCUE Link System Hub", proc.ResolveNativeDisabledDetectors());
-
-            gate.SetEnabled("corsair", false);
-            Assert.Contains("Corsair iCUE Link System Hub", proc.ResolveNativeDisabledDetectors());
+            var held = proc.ResolveNativeDisabledDetectors();
+            Assert.Contains("Corsair iCUE Link System Hub", held);
+            Assert.Contains("Lian Li Uni Hub - SL V2", held);
         }
         finally
         {
@@ -325,8 +309,20 @@ public class OpenRgbNativeDetectorPolicyTests : IDisposable
         OpenRgbDetectorMap.OverrideForTests = null;
         OpenRgbDetectorMap.Remember(new Dictionary<string, string> { ["Held Kraken Unit"] = "NZXT Kraken 2024 ELITE Series RGB" });
 
-        Assert.True(NativeDetectorClaims.Owns(NativeDetectorClaims.Kraken, Row("Held Kraken Unit")));
-        Assert.False(NativeDetectorClaims.Owns(NativeDetectorClaims.Kraken, Row("Never Mapped Unit")));
+        OpenRgbDetectorMap.EndHold();
+        Assert.False(NativeDetectorClaims.Owns(NativeDetectorClaims.Kraken, Row("Held Kraken Unit")));
+
+        OpenRgbDetectorMap.Remember(new Dictionary<string, string> { ["Held Kraken Unit"] = "NZXT Kraken 2024 ELITE Series RGB" });
+        OpenRgbDetectorMap.BeginHold();
+        try
+        {
+            Assert.True(NativeDetectorClaims.Owns(NativeDetectorClaims.Kraken, Row("Held Kraken Unit")));
+            Assert.False(NativeDetectorClaims.Owns(NativeDetectorClaims.Kraken, Row("Never Mapped Unit")));
+        }
+        finally
+        {
+            OpenRgbDetectorMap.EndHold();
+        }
     }
 
     [Fact]
@@ -349,6 +345,27 @@ public class OpenRgbNativeDetectorPolicyTests : IDisposable
         Assert.Equal((3, 1, 12), Assert.Single(resolved));
         Assert.Equal("openrgb-s-SERIAL-B", Assert.Single(waiting).DeviceId);
         Assert.Equal("openrgb-s-SERIAL-C", Assert.Single(expired).DeviceId);
+    }
+
+    [Fact]
+    public void Queued_resizes_for_one_zone_coalesce_to_the_newest()
+    {
+        var now = DateTime.UtcNow.Ticks;
+        var devices = new List<RgbDevice> { CommanderCore(3, "SERIAL-A") };
+        var id = devices[0].StableId;
+        var pending = new[]
+        {
+            new RgbBridge.PendingIdResize(id, 1, 12, now),
+            new RgbBridge.PendingIdResize(id, 1, 34, now + 5),
+            new RgbBridge.PendingIdResize(id, 2, 8, now + 1),
+        };
+        var resolved = new List<(int physIdx, int zoneIdx, int newSize)>();
+
+        RgbBridge.PartitionPendingResizes(devices, pending, now, resolved, new(), new());
+
+        Assert.Equal(2, resolved.Count);
+        Assert.Contains((3, 1, 34), resolved);
+        Assert.Contains((3, 2, 8), resolved);
     }
 
     [Fact]

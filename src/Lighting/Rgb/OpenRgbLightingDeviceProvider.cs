@@ -189,7 +189,7 @@ public sealed class OpenRgbLightingDeviceProvider : ILightingDeviceProvider, IDe
         var settings = _store.Load();
         foreach (var d in _bridge.Devices)
         {
-            if (!IsSizableDevice(d, settings))
+            if (!_bridge.IsSizableDevice(d, settings))
                 continue;
             OpenRgbZoneDeviceDto? dto = null;
             for (var z = 0; z < d.Zones.Count; z++)
@@ -215,12 +215,6 @@ public sealed class OpenRgbLightingDeviceProvider : ILightingDeviceProvider, IDe
         return result;
     }
 
-    /// <summary>A device Nexus drives through OpenRGB: not claimed by a native provider, not detector-excluded and not left uncontrolled.</summary>
-    private bool IsSizableDevice(RgbDevice d, NexusSettings settings)
-        => !_bridge.IsOwnedByFirstParty(d)
-            && !settings.Devices.OpenRgbDetectorExclusions.ContainsKey(d.StableId)
-            && !OpenRgbZoneSupport.IsFullyUncontrolled(d, settings);
-
     /// <summary>
     /// Sizes any user-sizable zone through the SDK resize, clamped to the zone's range. The daemon
     /// persists the size itself and reapplies it on registration; a split motherboard or port
@@ -234,7 +228,7 @@ public sealed class OpenRgbLightingDeviceProvider : ILightingDeviceProvider, IDe
                 continue;
             if (zoneIndex < 0 || zoneIndex >= d.Zones.Count)
                 return "unknown zone";
-            if (!IsSizableDevice(d, _store.Load()))
+            if (!_bridge.IsSizableDevice(d, _store.Load()))
                 return "device is not controlled through OpenRGB";
             var zone = d.Zones[zoneIndex];
             if (!zone.IsResizable)

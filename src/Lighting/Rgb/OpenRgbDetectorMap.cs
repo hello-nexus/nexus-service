@@ -107,7 +107,26 @@ public static class OpenRgbDetectorMap
         {
             return detector;
         }
-        return Volatile.Read(ref _override) is null && LastKnown.TryGetValue(deviceName, out var remembered) ? remembered : null;
+        return Volatile.Read(ref _override) is null && Volatile.Read(ref _holdActive) != 0 && LastKnown.TryGetValue(deviceName, out var remembered) ? remembered : null;
+    }
+
+    private static int _holdActive;
+
+    /// <summary>True while a detection pass holds the service's list, the only time a name the map no longer carries is still claimed.</summary>
+    internal static bool HoldActive => Volatile.Read(ref _holdActive) != 0;
+
+    /// <summary>Marks a detection pass starting; the rescan empties the daemon's map while the service still shows the old list.</summary>
+    internal static void BeginHold() => Volatile.Write(ref _holdActive, 1);
+
+    /// <summary>Ends the hold: the fresh map is read next and the remembered names are dropped.</summary>
+    internal static void EndHold()
+    {
+        Volatile.Write(ref _holdActive, 0);
+        lock (CacheLock)
+        {
+            _loadedAtMs = long.MinValue;
+            LastKnown.Clear();
+        }
     }
 
     /// <summary>Parses the document body. Separate from the read so the shape
