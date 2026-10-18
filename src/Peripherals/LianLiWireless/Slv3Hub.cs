@@ -124,8 +124,6 @@ public sealed class Slv3Hub : IDisposable
     private bool _pollSendsActive;
     private int _reconcileCursor;
     private bool _txStalledThisPoll;
-    // Chains with an RGB upload being sent right now; their bind and PWM frames wait for the next poll.
-    private readonly Dictionary<string, int> _uploadsInFlight = new(StringComparer.Ordinal);
     private readonly object _lockSettingGate = new();
     private int _lockVersion;
 
@@ -460,7 +458,6 @@ public sealed class Slv3Hub : IDisposable
         _unconfirmedChains.Clear();
         _bindingLogs.Clear();
         _intents.Clear();
-        _uploadsInFlight.Clear();
         _unboundHere.Clear();
         _pollRecords = new List<Slv3DeviceRecord>();
         _liveMasters.Clear();
@@ -1109,7 +1106,7 @@ public sealed class Slv3Hub : IDisposable
 
     private void ReconcileBindLocked(string key, BindIntent intent, Slv3DeviceRecord record)
     {
-        if (!NeedsBind(intent, record) || _uploadsInFlight.ContainsKey(key))
+        if (!NeedsBind(intent, record))
         {
             intent.Sends = 0;
             return;
@@ -1315,10 +1312,6 @@ public sealed class Slv3Hub : IDisposable
             }
             var key = Convert.ToHexString(record.Mac);
             if (_intents.TryGetValue(key, out var intent) && (intent.Unbinding || NeedsBind(intent, record)))
-            {
-                continue;
-            }
-            if (_uploadsInFlight.ContainsKey(key))
             {
                 continue;
             }
@@ -2535,23 +2528,6 @@ public sealed class Slv3Hub : IDisposable
     public async Task<bool> SendRgbWindowAsync(
         string macHex, byte[] frames, int ledCount, int frameCount, double intervalTicks, int brightnessPercent)
     {
-        if (!BeginUpload(macHex, out var key))
-        {
-            return false;
-        }
-        try
-        {
-            return await SendRgbWindowCoreAsync(macHex, frames, ledCount, frameCount, intervalTicks, brightnessPercent).ConfigureAwait(false);
-        }
-        finally
-        {
-            EndUpload(key);
-        }
-    }
-
-    private async Task<bool> SendRgbWindowCoreAsync(
-        string macHex, byte[] frames, int ledCount, int frameCount, double intervalTicks, int brightnessPercent)
-    {
         var raw = Slv3RgbFrame.BuildFrameBuffer(frames, brightnessPercent);
         if (!TryPrepareUpload(macHex, raw, ledCount, frameCount, intervalTicks, window: true, out var channel, out var rxType, out var packets, out _))
         {
@@ -2679,54 +2655,6 @@ public sealed class Slv3Hub : IDisposable
 
     // A lost data packet fails the whole upload and multi-frame loops run to dozens of packets, so animations send each part twice.
     private bool SendRgbData(
-        string macHex, byte[] raw, int ledCount, int frameCount, double intervalMs, int dataPasses, out string effectIndexHex)
-    {
-        effectIndexHex = "";
-        if (!BeginUpload(macHex, out var key))
-        {
-            return false;
-        }
-        try
-        {
-            return SendRgbDataCore(macHex, raw, ledCount, frameCount, intervalMs, dataPasses, out effectIndexHex);
-        }
-        finally
-        {
-            EndUpload(key);
-        }
-    }
-
-    private bool BeginUpload(string macHex, out string key)
-    {
-        key = "";
-        if (!TryParseMac(macHex, out var mac))
-        {
-            return false;
-        }
-        key = Convert.ToHexString(mac);
-        lock (_lock)
-        {
-            _uploadsInFlight[key] = _uploadsInFlight.GetValueOrDefault(key) + 1;
-        }
-        return true;
-    }
-
-    private void EndUpload(string key)
-    {
-        lock (_lock)
-        {
-            if (_uploadsInFlight.GetValueOrDefault(key) <= 1)
-            {
-                _uploadsInFlight.Remove(key);
-            }
-            else
-            {
-                _uploadsInFlight[key]--;
-            }
-        }
-    }
-
-    private bool SendRgbDataCore(
         string macHex, byte[] raw, int ledCount, int frameCount, double intervalMs, int dataPasses, out string effectIndexHex)
     {
         effectIndexHex = "";
@@ -2922,7 +2850,11 @@ public sealed class Slv3Hub : IDisposable
             _channel = (byte)channel;
             State.Channel = channel;
             // L-Connect SwitchChannel: every chain kept bound reports the old channel and is walked over by the reconcile.
-            ReconcileLocked();
+            RunPassLocked(() =>
+            {
+                ReconcileLocked();
+                return true;
+            });
         }
         return true;
     }
