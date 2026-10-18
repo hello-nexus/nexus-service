@@ -73,12 +73,77 @@ public class GlobalBrightnessBody
 /// <summary>GET response / POST body for /lighting/brightness-schedule: the
 /// time-of-day cap on master brightness. Points are whole hours 0..23 holding
 /// 0..100%. The GET also carries the out-of-box curve so the editor's reset
-/// needs no second copy of it; a POST leaves it null.</summary>
+/// needs no second copy of it; a POST leaves it null. SunShift swaps the curve
+/// for one generated from today's sunrise and sunset. On a POST an absent
+/// SunShift or Location keeps the stored value and a null Location selects the
+/// IP location; <see cref="LocationSpecified"/> tells the two nulls apart.</summary>
 public sealed class BrightnessScheduleBody
 {
+    private SunLocationDto? _location;
+
     public bool Enabled { get; set; }
     public List<Nexus.Service.Persistence.BrightnessSchedulePoint> Points { get; set; } = new();
     public List<Nexus.Service.Persistence.BrightnessSchedulePoint>? Defaults { get; set; }
+    public bool? SunShift { get; set; }
+
+    /// <summary>Night and day levels of the generated curve, percent. GET returns the resolved values; on a POST absent keeps the stored ones.</summary>
+    public int? SunNight { get; set; }
+    public int? SunDay { get; set; }
+
+    [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.Never)]
+    public SunLocationDto? Location
+    {
+        get => _location;
+        set
+        {
+            _location = value;
+            LocationSpecified = true;
+        }
+    }
+
+    [System.Text.Json.Serialization.JsonIgnore]
+    public bool LocationSpecified { get; private set; }
+
+    public BrightnessScheduleSun? Sun { get; set; }
+}
+
+/// <summary>Today's sun times for the schedule's place, PC-local minutes since
+/// midnight. Status is ok, polar-day, polar-night or no-location; SunPoints is
+/// the generated curve and is empty unless the status is ok.</summary>
+public sealed class BrightnessScheduleSun
+{
+    public string Status { get; set; } = "no-location";
+    public string Date { get; set; } = "";
+
+    [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.Never)]
+    public double? SunriseMin { get; set; }
+
+    [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.Never)]
+    public double? SunsetMin { get; set; }
+
+    public List<BrightnessSunPoint> SunPoints { get; set; } = new();
+
+    [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.Never)]
+    public SunLocationDto? ResolvedLocation { get; set; }
+
+    /// <summary>The IP-resolved place whenever known, whichever place is chosen.</summary>
+    [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.Never)]
+    public SunLocationDto? AutoLocation { get; set; }
+}
+
+/// <summary>A place on the schedule's wire. Lat and Lon are nullable so a POST that omits one can be refused instead of reading as 0.</summary>
+public sealed class SunLocationDto
+{
+    public double? Lat { get; set; }
+    public double? Lon { get; set; }
+    public string? Label { get; set; }
+    public string? Cc { get; set; }
+}
+
+public sealed class BrightnessSunPoint
+{
+    public double Min { get; set; }
+    public double Brightness { get; set; }
 }
 
 /// <summary>POST body for /lighting/idle-dim. TimeoutSeconds 0 means "when my

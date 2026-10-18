@@ -777,6 +777,22 @@ public sealed class BrightnessSchedule
 {
     public bool Enabled { get; set; }
     public List<BrightnessSchedulePoint> Points { get; set; } = Nexus.Service.Lighting.MasterBrightness.DefaultSchedule();
+    /// <summary>Generated sun curve replaces <see cref="Points"/> while on; null follows <see cref="SunShiftOn"/>, resolved at read time because profiles and imports skip migrations.</summary>
+    public bool? SunShift { get; set; }
+    /// <summary>Floor of the generated sun curve, percent; null is the stock level.</summary>
+    public int? SunNight { get; set; }
+    /// <summary>Daytime plateau of the generated sun curve, percent; null is the stock level.</summary>
+    public int? SunDay { get; set; }
+    [System.Text.Json.Serialization.JsonIgnore]
+    public int SunNightLevel => Math.Clamp(SunNight ?? DefaultSunNight, 0, 100);
+    [System.Text.Json.Serialization.JsonIgnore]
+    public int SunDayLevel => Math.Clamp(SunDay ?? DefaultSunDay, SunNightLevel, 100);
+    public const int DefaultSunNight = 10;
+    public const int DefaultSunDay = 100;
+    [System.Text.Json.Serialization.JsonIgnore]
+    public bool SunShiftOn => SunShift ?? Nexus.Service.Lighting.MasterBrightness.IsDefaultSchedule(Points);
+    /// <summary>Place the sun times are computed for; null follows the IP location.</summary>
+    public WeatherSavedLocation? SunLocation { get; set; }
 }
 
 public sealed class IdleDimSettings

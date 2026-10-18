@@ -1827,6 +1827,8 @@ public static class NexusServiceCollectionExtensions
     public static IServiceCollection AddNexusWeather(this IServiceCollection services)
     {
         services.AddSingleton<Nexus.Service.Platform.Weather.IWeatherProvider, Nexus.Service.Platform.Weather.OpenMeteoWeatherProvider>();
+        services.AddSingleton<Nexus.Service.Lighting.Sun.SunLocationResolver>();
+        services.AddHostedService(sp => sp.GetRequiredService<Nexus.Service.Lighting.Sun.SunLocationResolver>());
         return services;
     }
 

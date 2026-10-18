@@ -20,6 +20,57 @@ public static class LightingRoutes
         return s.Length == 0 || !(s is "0" or "false" or "False" or "FALSE");
     }
 
+    private const int MaxSunLabelLength = 80;
+
+    private static Models.Lighting.BrightnessScheduleBody BuildBrightnessScheduleBody(
+        Nexus.Service.Persistence.BrightnessSchedule schedule, Nexus.Service.Lighting.Sun.SunLocationResolver resolver, bool forceResolve = false)
+    {
+        // The lookup runs in the background; this response reports no-location until it lands.
+        if (Nexus.Service.Lighting.Sun.SunShift.NeedsAutoLocation(schedule))
+        {
+            resolver.Request(forceResolve);
+        }
+        var location = Nexus.Service.Lighting.Sun.SunShift.Effective(schedule);
+        var today = DateOnly.FromDateTime(DateTime.Now);
+        var plan = Nexus.Service.Lighting.Sun.SunShift.PlanFor(location, today, schedule.SunNightLevel, schedule.SunDayLevel);
+        var sun = new Models.Lighting.BrightnessScheduleSun
+        {
+            Date = today.ToString("yyyy-MM-dd", System.Globalization.CultureInfo.InvariantCulture),
+            Status = plan is null ? "no-location" : plan.Day.Status switch
+            {
+                Nexus.Service.Lighting.Sun.SunStatus.Ok => "ok",
+                Nexus.Service.Lighting.Sun.SunStatus.PolarDay => "polar-day",
+                Nexus.Service.Lighting.Sun.SunStatus.PolarNight => "polar-night",
+                _ => "no-location",
+            },
+            SunriseMin = plan?.Day.SunriseMin,
+            SunsetMin = plan?.Day.SunsetMin,
+            ResolvedLocation = location is null ? null : ToDto(location),
+            AutoLocation = Nexus.Service.Lighting.Sun.SunShift.AutoLocation is { } auto ? ToDto(auto) : null,
+        };
+        if (plan is not null)
+        {
+            for (var i = 0; i < plan.Minutes.Length; i++)
+            {
+                sun.SunPoints.Add(new() { Min = plan.Minutes[i], Brightness = plan.Levels[i] });
+            }
+        }
+        return new Models.Lighting.BrightnessScheduleBody
+        {
+            Enabled = schedule.Enabled,
+            Points = schedule.Points ?? new(),
+            Defaults = Nexus.Service.Lighting.MasterBrightness.DefaultSchedule(),
+            SunShift = schedule.SunShiftOn,
+            SunNight = schedule.SunNightLevel,
+            SunDay = schedule.SunDayLevel,
+            Location = schedule.SunLocation is null ? null : ToDto(schedule.SunLocation),
+            Sun = sun,
+        };
+    }
+
+    private static Models.Lighting.SunLocationDto ToDto(Nexus.Service.Persistence.WeatherSavedLocation l) =>
+        new() { Lat = l.Lat, Lon = l.Lon, Label = l.Label, Cc = l.Cc };
+
     public static void MapLightingEndpoints(this WebApplication app)
     {
         app.MapPost("/lighting/stop", (ILightingProvider l, MultiplexHub hub) => { l.StopAll(); ResetEffectSignature(); PanelTopics.BroadcastLighting(hub); return ApiResponse.Ok(); }).AllowPanel();
@@ -252,18 +303,12 @@ public static class LightingRoutes
         // Time-of-day cap on master brightness. Read live by every frame writer
         // through MasterBrightness.Effective, so a POST lands on the next push.
         // AllowPanel like the slider: a paired phone toggles it from bed.
-        app.MapGet("/lighting/brightness-schedule", (Nexus.Service.Persistence.IConfigStore store) =>
-        {
-            var schedule = store.Load().Lighting.BrightnessSchedule ?? new();
-            return new Models.Lighting.BrightnessScheduleBody
-            {
-                Enabled = schedule.Enabled,
-                Points = schedule.Points ?? new(),
-                Defaults = Nexus.Service.Lighting.MasterBrightness.DefaultSchedule(),
-            };
-        }).AllowPanel();
+        app.MapGet("/lighting/brightness-schedule", (Nexus.Service.Persistence.IConfigStore store,
+            Nexus.Service.Lighting.Sun.SunLocationResolver sunResolver) =>
+            BuildBrightnessScheduleBody(store.Load().Lighting.BrightnessSchedule ?? new(), sunResolver)).AllowPanel();
         app.MapPost("/lighting/brightness-schedule", (Models.Lighting.BrightnessScheduleBody body,
-            Nexus.Service.Persistence.IConfigStore store, MultiplexHub hub) =>
+            Nexus.Service.Persistence.IConfigStore store, MultiplexHub hub,
+            Nexus.Service.Lighting.Sun.SunLocationResolver sunResolver) =>
         {
             // Below the editor's floor there is no curve to interpolate. Values
             // are clamped rather than refused so an out-of-range hand edit still
@@ -272,6 +317,37 @@ public static class LightingRoutes
             if (body.Points is null || body.Points.Count < 2)
             {
                 return Results.BadRequest(ApiResponse.Fail("at least two points"));
+            }
+            Nexus.Service.Persistence.WeatherSavedLocation? location = null;
+            if (body.LocationSpecified && body.Location is { } l)
+            {
+                if (l.Lat is not { } lat || l.Lon is not { } lon)
+                {
+                    return Results.BadRequest(ApiResponse.Fail("location needs lat and lon"));
+                }
+                if (!double.IsFinite(lat) || !double.IsFinite(lon) || lat < -90 || lat > 90 || lon < -180 || lon > 180)
+                {
+                    return Results.BadRequest(ApiResponse.Fail("location out of range"));
+                }
+                var label = (l.Label ?? "").Trim();
+                if (label.Length > MaxSunLabelLength)
+                {
+                    label = label.Substring(0, MaxSunLabelLength);
+                }
+                var cc = (l.Cc ?? "").Trim().ToUpperInvariant();
+                if (cc.Length > 3)
+                {
+                    cc = cc.Substring(0, 3);
+                }
+                location = new() { Lat = lat, Lon = lon, Label = label, Cc = cc };
+            }
+            if (body.SunNight is < 0 or > 100)
+            {
+                return Results.BadRequest(ApiResponse.Fail("sunNight must be within 0..100"));
+            }
+            if (body.SunDay is < 0 or > 100)
+            {
+                return Results.BadRequest(ApiResponse.Fail("sunDay must be within 0..100"));
             }
             var byHour = new SortedDictionary<int, Nexus.Service.Persistence.BrightnessSchedulePoint>();
             foreach (var p in body.Points)
@@ -286,9 +362,53 @@ public static class LightingRoutes
             var points = new List<Nexus.Service.Persistence.BrightnessSchedulePoint>(byHour.Values);
             // Replace the object, never mutate the list: frame writers walk the
             // reference they read, unlocked.
-            store.Update(s => s.Lighting.BrightnessSchedule = new() { Enabled = body.Enabled, Points = points });
+            var changed = false;
+            string? levelError = null;
+            store.Update(s =>
+            {
+                var current = s.Lighting.BrightnessSchedule;
+                // Checked against the stored pair under the store's update, and both
+                // resolved values saved, so the saved pair is the checked pair.
+                int? savedNight = current?.SunNight;
+                int? savedDay = current?.SunDay;
+                if (body.SunNight is not null || body.SunDay is not null)
+                {
+                    var night = body.SunNight ?? current?.SunNightLevel ?? Nexus.Service.Persistence.BrightnessSchedule.DefaultSunNight;
+                    var day = body.SunDay ?? current?.SunDayLevel ?? Nexus.Service.Persistence.BrightnessSchedule.DefaultSunDay;
+                    if (night > day)
+                    {
+                        levelError = "sunNight must not be above sunDay";
+                        return;
+                    }
+                    savedNight = night;
+                    savedDay = day;
+                }
+                // Pin the resolved choice on first save so editing the curve
+                // cannot flip an unchosen sun shift from on to off.
+                var sunShift = body.SunShift ?? current?.SunShiftOn ?? true;
+                var newLocation = body.LocationSpecified ? location : current?.SunLocation;
+                var old = current?.SunLocation;
+                changed = body.Enabled != (current?.Enabled ?? false)
+                    || sunShift != (current?.SunShiftOn ?? true)
+                    || old?.Lat != newLocation?.Lat
+                    || old?.Lon != newLocation?.Lon;
+                s.Lighting.BrightnessSchedule = new()
+                {
+                    Enabled = body.Enabled,
+                    Points = points,
+                    SunShift = sunShift,
+                    SunNight = savedNight,
+                    SunDay = savedDay,
+                    SunLocation = newLocation,
+                };
+            });
+            if (levelError is not null)
+            {
+                return Results.BadRequest(ApiResponse.Fail(levelError));
+            }
+            var saved = store.Load().Lighting.BrightnessSchedule;
             PanelTopics.BroadcastLighting(hub);
-            return Results.Ok(ApiResponse.Ok());
+            return Results.Ok(BuildBrightnessScheduleBody(saved, sunResolver, forceResolve: changed));
         }).AllowPanel();
         // Dim to a user-set level while the PC is idle. The controller picks the
         // change up from the store, so a POST applies at once (a dimmed room

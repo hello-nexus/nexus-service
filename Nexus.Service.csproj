@@ -986,6 +986,7 @@
     <Compile Remove="src/Peripherals/LianLiWireless/LinuxSlv3Discovery.cs" />
     <Compile Remove="src/Peripherals/LianLiWireless/LinuxSlv3Transport.cs" />
     <Compile Remove="src/Platform/Displays/LinuxDisplayBrightnessProvider.cs" />
+    <Compile Remove="src/Platform/Displays/LinuxDisplayOrientationProvider.cs" />
     <Compile Remove="src/Platform/Displays/LinuxDisplayTopologyProvider.cs" />
     <Compile Remove="src/Platform/Displays/LinuxDisplayOrientationProvider.cs" />
     <Compile Remove="src/Platform/Linux/DBus/DBusConnection.cs" />

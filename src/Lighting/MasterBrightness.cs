@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using Nexus.Service.Lighting.IdleDim;
+using Nexus.Service.Lighting.Sun;
 using Nexus.Service.Persistence;
 
 namespace Nexus.Service.Lighting;
@@ -19,12 +20,14 @@ public static class MasterBrightness
 
     /// <summary>Effective master level, 0..1, for the local clock right now.</summary>
     public static float Effective(LightingSettings lighting) =>
-        Effective(lighting, DateTime.Now.TimeOfDay, IdleRamp.Cap());
+        Effective(lighting, DateTime.Now, IdleRamp.Cap());
 
-    /// <summary>Effective master level, 0..1, at <paramref name="timeOfDay"/>.
+    /// <summary>Effective master level at <paramref name="localNow"/>. With the
+    /// schedule's sun shift on and today's sun times known, the generated daylight
+    /// curve replaces the user's points; otherwise the user's curve applies.
     /// The slider is clamped, not sanitised: a non-finite level propagates,
     /// which the POST route guards against upstream.</summary>
-    public static float Effective(LightingSettings lighting, TimeSpan timeOfDay, float idleCap = 1f)
+    public static float Effective(LightingSettings lighting, DateTime localNow, float idleCap = 1f)
     {
         var global = Math.Min(Math.Clamp(lighting.GlobalBrightness, 0f, 1f), idleCap);
         var schedule = lighting.BrightnessSchedule;
@@ -32,7 +35,21 @@ public static class MasterBrightness
         {
             return global;
         }
-        return Math.Min(global, Scheduled(schedule.Points, timeOfDay));
+        if (schedule.SunShiftOn
+            && SunShift.PlanFor(SunShift.Effective(schedule), DateOnly.FromDateTime(localNow), schedule.SunNightLevel, schedule.SunDayLevel) is { Day.Status: SunStatus.Ok } plan)
+        {
+            return Math.Min(global, ScheduledSun(plan, localNow.TimeOfDay));
+        }
+        return Math.Min(global, Scheduled(schedule.Points, localNow.TimeOfDay));
+    }
+
+    /// <summary>The generated sun curve's level, 0..1, at <paramref name="timeOfDay"/>,
+    /// read from the plan's cached points.</summary>
+    public static float ScheduledSun(SunPlan plan, TimeSpan timeOfDay)
+    {
+        var minute = ((int)timeOfDay.TotalMinutes % MinutesPerDay + MinutesPerDay) % MinutesPerDay;
+        var level = CurveEasing.Interpolate(plan.Hours, plan.Levels, minute / 60.0, smooth: false, wrapMin: 0, wrapSpan: HoursPerDay);
+        return (float)Math.Clamp(level / 100.0, 0.0, 1.0);
     }
 
     /// <summary>The schedule's level, 0..1, at <paramref name="timeOfDay"/>:
@@ -81,18 +98,42 @@ public static class MasterBrightness
         }
     }
 
+    private static readonly (int Hour, int Brightness)[] DefaultPoints =
+    {
+        (5, 10), (7, 30), (10, 100), (17, 100), (20, 30), (22, 10),
+    };
+
+    /// <summary>True when <paramref name="points"/> are the out-of-box curve,
+    /// whatever order they were saved in. Allocation-free for the sorted list
+    /// the route persists: this runs on the frame path while the choice is unset.</summary>
+    public static bool IsDefaultSchedule(List<BrightnessSchedulePoint>? points)
+    {
+        if (points is null || points.Count != DefaultPoints.Length)
+        {
+            return false;
+        }
+        for (var i = 1; i < points.Count; i++)
+        {
+            if (points[i].Hour < points[i - 1].Hour)
+            {
+                return IsDefaultSchedule(points.OrderBy(p => p.Hour).ToList());
+            }
+        }
+        for (var i = 0; i < DefaultPoints.Length; i++)
+        {
+            if (points[i].Hour != DefaultPoints[i].Hour || points[i].Brightness != DefaultPoints[i].Brightness)
+            {
+                return false;
+            }
+        }
+        return true;
+    }
+
     /// <summary>The out-of-box curve follows daylight: a dim night floor, a
     /// dawn that starts slow and then climbs to full, full through the day,
     /// and the same shape mirrored through dusk back to the floor.</summary>
-    public static List<BrightnessSchedulePoint> DefaultSchedule() => new()
-    {
-        new() { Hour = 5, Brightness = 10 },
-        new() { Hour = 7, Brightness = 30 },
-        new() { Hour = 10, Brightness = 100 },
-        new() { Hour = 17, Brightness = 100 },
-        new() { Hour = 20, Brightness = 30 },
-        new() { Hour = 22, Brightness = 10 },
-    };
+    public static List<BrightnessSchedulePoint> DefaultSchedule() =>
+        DefaultPoints.Select(p => new BrightnessSchedulePoint { Hour = p.Hour, Brightness = p.Brightness }).ToList();
 
     private const int MinutesPerDay = 24 * 60;
     private const double HoursPerDay = 24;

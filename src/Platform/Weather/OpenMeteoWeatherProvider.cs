@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using System.Net.Http;
 using System.Text.Json.Serialization;
 using System.Threading;
@@ -147,6 +148,17 @@ public sealed class OpenMeteoWeatherProvider : IWeatherProvider
         {
             _lock.Release();
         }
+    }
+
+    public async Task<Nexus.Service.Persistence.WeatherSavedLocation?> GetApproximateLocationAsync()
+    {
+        var loc = await GetLocationAsync().ConfigureAwait(false);
+        if (loc is null || loc.Latitude is not { } lat || loc.Longitude is not { } lon)
+        {
+            return null;
+        }
+        var label = string.Join(", ", new[] { loc.City, loc.Country }.Where(v => !string.IsNullOrWhiteSpace(v)));
+        return new Nexus.Service.Persistence.WeatherSavedLocation { Lat = lat, Lon = lon, Label = label, Cc = loc.CountryCode ?? "" };
     }
 
     private async Task<IpLocation?> GetLocationAsync()
