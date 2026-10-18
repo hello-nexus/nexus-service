@@ -1955,6 +1955,13 @@ public static class NexusServiceCollectionExtensions
 #if MACOS
         services.AddSingleton<Nexus.Service.Platform.Displays.IDisplayOrientationProvider,
             Nexus.Service.Platform.Displays.MacDisplayOrientationProvider>();
+#elif LINUX
+        // Rotation is a KDE compositor setting; the connector comes from the
+        // topology so no output name is hardcoded.
+        services.AddSingleton<Nexus.Service.Platform.Displays.IDisplayOrientationProvider>(sp =>
+            new Nexus.Service.Platform.Displays.LinuxDisplayOrientationProvider(() =>
+                Nexus.Service.Platform.Linux.LinuxX11Outputs.ConnectorFromDisplayId(
+                    sp.GetRequiredService<Nexus.Service.Platform.Displays.DisplayTopologyService>().Y70DisplayId())));
 #else
         services.AddSingleton<Nexus.Service.Platform.Displays.IDisplayOrientationProvider,
             Nexus.Service.Platform.Displays.NoopDisplayOrientationProvider>();
@@ -2354,8 +2361,8 @@ public static class NexusServiceCollectionExtensions
         // Corsair Xeneon Edge auto-orientation + native settings: reads the
         // panel's hardware orientation sensor over vendor HID and applies the
         // matching OS display rotation (Windows and macOS). Cross-platform HID
-        // read like the Keeb workers; the apply side is a no-op on Linux via
-        // NoopDisplayOrientationProvider. Registered as a plain singleton
+        // read like the Keeb workers; the apply side on Linux is
+        // LinuxDisplayOrientationProvider (KDE only). Registered as a plain singleton
         // (in addition to IHostedService below) so the /displays/{id}/xeneon-
         // settings routes can resolve it directly to reach
         // ReadSettingsAsync/SetControlAsync - it is the single owner of the
