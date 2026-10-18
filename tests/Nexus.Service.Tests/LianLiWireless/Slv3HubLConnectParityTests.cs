@@ -906,7 +906,7 @@ public partial class Slv3HubTests
     }
 
     [Fact]
-    public void A_bind_due_while_an_upload_is_in_flight_waits_for_the_next_poll()
+    public void A_bind_due_mid_upload_goes_out_at_once()
     {
         var (hub, _, tx, fan, _, _) = Stranded(Ours, 1, Slv3Protocol.DefaultChannel);
         Ticks(hub, 2);
@@ -925,26 +925,7 @@ public partial class Slv3HubTests
 
         Assert.True(hub.SendRgbFrame(FanKey, new[] { new Nexus.Service.Peripherals.Hyte.Np50.RgbColor(1, 2, 3) }, 100, 100, out _));
 
-        Assert.Equal(0, during);
-        tx.SentFrames.Clear();
-        Ticks(hub, 1);
-        Assert.NotEmpty(AllBindFrames(tx));
-    }
-
-    [Fact]
-    public void An_upload_that_fails_still_ends_the_hold_on_its_chain()
-    {
-        var (hub, net, tx, fan, _, _) = Stranded(Ours, 1, Slv3Protocol.DefaultChannel);
-        Ticks(hub, 2);
-        net.TxFailFast = true;
-        Assert.False(hub.SendRgbFrame(FanKey, new[] { new Nexus.Service.Peripherals.Hyte.Np50.RgbColor(1, 2, 3) }, 100, 100, out _));
-        net.TxFailFast = false;
-        fan.RxType = 7;
-        tx.SentFrames.Clear();
-
-        Ticks(hub, 1);
-
-        Assert.NotEmpty(AllBindFrames(tx));
+        Assert.Equal(1, during);
     }
 
     [Fact]
@@ -962,7 +943,15 @@ public partial class Slv3HubTests
         Assert.True(await hub.SendRgbWindowAsync(FanKey, frames, 40, 30, 53, 100));
         await hub.OnSystemSuspending();
 
-        Assert.Contains(tx.SentFrames, f => f.Length > 5 && f[4] == Slv3Protocol.RfFrameType && f[5] == Slv3Protocol.RfRgbSync);
+        // Chunk 0 of each RF payload carries the packet index at [22] and the count at [23]; each data part goes out
+        // in the upload's passes and again in the late passes, four times in all.
+        var parts = tx.SentFrames.FindAll(f => f.Length >= 24 && f[1] == 0 && f[4] == Slv3Protocol.RfFrameType && f[5] == Slv3Protocol.RfRgbSync);
+        var total = parts[0][23];
+        Assert.True(total >= 2);
+        for (var p = 1; p < total; p++)
+        {
+            Assert.Equal(4, parts.Count(f => f[22] == p));
+        }
         Assert.Equal(3, SaveCfgFrames(tx).Count);
     }
 
@@ -1043,6 +1032,7 @@ public partial class Slv3HubTests
         lockOn = true;
         tx.SentFrames.Clear();
         Ticks(hub, 2);
+        Assert.NotEmpty(AllBindFrames(tx));
         Assert.All(AllBindFrames(tx), f => Assert.Equal(net.MasterMac, f.AsSpan(12, 6).ToArray()));
 
         net.Fans.Single(f => f.Mac.SequenceEqual(low)).IgnoresBind = true;
