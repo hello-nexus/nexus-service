@@ -93,11 +93,7 @@ public static class SunShift
         _auto = null;
     }
 
-    /// <summary>Today's generated curve: the night level before dawn, climbing
-    /// through the midway level at sunrise to the day level a couple of hours
-    /// later, holding until a couple of hours before sunset, then back down. A short day folds both full points
-    /// into solar noon, a short night folds both floor points into solar
-    /// midnight. Sorted by minute.</summary>
+    /// <summary>Today's day/night points, sorted by minute; short days and nights fold theirs together.</summary>
     public static (double[] Minutes, double[] Levels) GeneratePoints(double sunrise, double sunset, int night, int day)
     {
         var mid = (night + day + 1) / 2;

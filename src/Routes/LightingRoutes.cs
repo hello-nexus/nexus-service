@@ -341,12 +341,13 @@ public static class LightingRoutes
                 }
                 location = new() { Lat = lat, Lon = lon, Label = label, Cc = cc };
             }
-            var stored = store.Load().Lighting.BrightnessSchedule;
-            var night = body.SunNight ?? stored?.SunNightLevel ?? Nexus.Service.Persistence.BrightnessSchedule.DefaultSunNight;
-            var day = body.SunDay ?? stored?.SunDayLevel ?? Nexus.Service.Persistence.BrightnessSchedule.DefaultSunDay;
-            if (night < 0 || night > 100 || day < 0 || day > 100 || night > day)
+            if (body.SunNight is < 0 or > 100)
             {
-                return Results.BadRequest(ApiResponse.Fail("sun night must be within 0..100 and not above sun day"));
+                return Results.BadRequest(ApiResponse.Fail("sunNight must be within 0..100"));
+            }
+            if (body.SunDay is < 0 or > 100)
+            {
+                return Results.BadRequest(ApiResponse.Fail("sunDay must be within 0..100"));
             }
             var byHour = new SortedDictionary<int, Nexus.Service.Persistence.BrightnessSchedulePoint>();
             foreach (var p in body.Points)
@@ -362,9 +363,26 @@ public static class LightingRoutes
             // Replace the object, never mutate the list: frame writers walk the
             // reference they read, unlocked.
             var changed = false;
+            string? levelError = null;
             store.Update(s =>
             {
                 var current = s.Lighting.BrightnessSchedule;
+                // Checked against the stored pair under the store's update, and both
+                // resolved values saved, so the saved pair is the checked pair.
+                int? savedNight = current?.SunNight;
+                int? savedDay = current?.SunDay;
+                if (body.SunNight is not null || body.SunDay is not null)
+                {
+                    var night = body.SunNight ?? current?.SunNightLevel ?? Nexus.Service.Persistence.BrightnessSchedule.DefaultSunNight;
+                    var day = body.SunDay ?? current?.SunDayLevel ?? Nexus.Service.Persistence.BrightnessSchedule.DefaultSunDay;
+                    if (night > day)
+                    {
+                        levelError = "sunNight must not be above sunDay";
+                        return;
+                    }
+                    savedNight = night;
+                    savedDay = day;
+                }
                 // Pin the resolved choice on first save so editing the curve
                 // cannot flip an unchosen sun shift from on to off.
                 var sunShift = body.SunShift ?? current?.SunShiftOn ?? true;
@@ -379,11 +397,15 @@ public static class LightingRoutes
                     Enabled = body.Enabled,
                     Points = points,
                     SunShift = sunShift,
-                    SunNight = body.SunNight ?? current?.SunNight,
-                    SunDay = body.SunDay ?? current?.SunDay,
+                    SunNight = savedNight,
+                    SunDay = savedDay,
                     SunLocation = newLocation,
                 };
             });
+            if (levelError is not null)
+            {
+                return Results.BadRequest(ApiResponse.Fail(levelError));
+            }
             var saved = store.Load().Lighting.BrightnessSchedule;
             PanelTopics.BroadcastLighting(hub);
             return Results.Ok(BuildBrightnessScheduleBody(saved, sunResolver, forceResolve: changed));

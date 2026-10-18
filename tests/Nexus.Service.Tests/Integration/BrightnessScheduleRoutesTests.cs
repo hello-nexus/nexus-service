@@ -340,4 +340,18 @@ public sealed class BrightnessScheduleRoutesTests : IClassFixture<StubDeviceHost
         Assert.Equal(HttpStatusCode.BadRequest, res.StatusCode);
         Assert.False(Store.Load().Lighting.BrightnessSchedule.Enabled);
     }
+
+    [Fact]
+    public async Task Post_names_the_offending_level_and_saves_the_resolved_pair()
+    {
+        var bad = await _client.PostAsync("/lighting/brightness-schedule", Json(
+            "{\"enabled\":true,\"points\":" + TwoPoints + ",\"sunDay\":150}"));
+        Assert.Contains("sunDay", await bad.Content.ReadAsStringAsync());
+
+        await _client.PostAsync("/lighting/brightness-schedule", Json(
+            "{\"enabled\":true,\"points\":" + TwoPoints + ",\"sunNight\":40}"));
+        var saved = Store.Load().Lighting.BrightnessSchedule;
+        Assert.Equal(40, saved.SunNight);
+        Assert.Equal(100, saved.SunDay);
+    }
 }
