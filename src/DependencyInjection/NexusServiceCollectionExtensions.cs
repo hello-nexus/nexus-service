@@ -166,6 +166,15 @@ public static class NexusServiceCollectionExtensions
 #endif
         services.AddSingleton<Nexus.Service.Telemetry.PostHogOptions>();
         services.AddSingleton<Nexus.Service.Telemetry.ITelemetrySink, Nexus.Service.Telemetry.PostHogSink>();
+        // Parallel sink: the same events (minus $identify, plus a profile event) to nexus-api /telemetry/usage.
+        services.AddSingleton(new Nexus.Service.Telemetry.UsageTelemetrySink(Nexus.Service.Common.ClientCredential.IsOfficial));
+        services.AddSingleton<Nexus.Service.Telemetry.ITelemetrySink>(
+            sp => sp.GetRequiredService<Nexus.Service.Telemetry.UsageTelemetrySink>());
+        if (Nexus.Service.Common.ClientCredential.IsOfficial)
+        {
+            services.AddSingleton<Nexus.Service.Telemetry.IUsageTransport, Nexus.Service.Telemetry.UsageTransport>();
+            services.AddHostedService<Nexus.Service.Telemetry.UsageTelemetryWorker>();
+        }
         services.AddHostedService<Nexus.Service.Telemetry.TelemetryFlushService>();
         // Attaches the hardware/system profile (specs + recognized connected
         // devices) to the anonymous person via $set. Post-boot, refreshed.

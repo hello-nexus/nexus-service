@@ -20,6 +20,8 @@ internal sealed class FleetEventService
     // Opted-out box: an undelivered opt_out this old is abandoned rather than retried forever.
     private static readonly TimeSpan OptOutRetryExpiry = TimeSpan.FromDays(7);
 
+    internal static readonly TimeSpan SpecsMinResend = TimeSpan.FromHours(24);
+
     private readonly IConfigStore _store;
     private readonly IFleetEventTransport _transport;
     private readonly ITelemetry _telemetry;
@@ -221,6 +223,17 @@ internal sealed class FleetEventService
         if (hash == _store.Load().Telemetry.FleetSpecsHash)
             return; // unchanged since the last successful send.
 
+        // A hash that keeps flipping (hot-plugged USB devices, a degraded boot-time
+        // enumeration) must not resend on every flip; the change is still sent
+        // once the interval passes, because the stored hash stays on the old value.
+        var lastSentHash = _store.Load().Telemetry.FleetSpecsHash;
+        if (lastSentHash.Length > 0
+            && DateTimeOffset.TryParse(_store.Load().Telemetry.FleetSpecsSentAt, CultureInfo.InvariantCulture, DateTimeStyles.RoundtripKind, out var sentAt)
+            && _clock.GetUtcNow() - sentAt < SpecsMinResend)
+        {
+            return;
+        }
+
         var payload = BuildEnvelope(TelemetryEvents.Specs, installId);
         payload.Specs = new FleetEventSpecs
         {
@@ -236,7 +249,12 @@ internal sealed class FleetEventService
         if (!await _transport.SendAsync(payload, ct).ConfigureAwait(false))
             return;
 
-        _store.Update(s => s.Telemetry.FleetSpecsHash = hash);
+        var sentAtIso = _clock.GetUtcNow().ToString("O", CultureInfo.InvariantCulture);
+        _store.Update(s =>
+        {
+            s.Telemetry.FleetSpecsHash = hash;
+            s.Telemetry.FleetSpecsSentAt = sentAtIso;
+        });
         _telemetry.Capture(TelemetryEvents.Specs,
             ("cpu", specs.Processor), ("gpu", gpu), ("ram_bytes", ramBytes), ("motherboard", specs.Motherboard));
     }

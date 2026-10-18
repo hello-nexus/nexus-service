@@ -34,6 +34,7 @@ internal sealed class SystemProfileService : BackgroundService
     private static readonly TimeSpan InitialDelay = TimeSpan.FromSeconds(30);
     private static readonly TimeSpan WarmupInterval = TimeSpan.FromSeconds(30);
     private static readonly TimeSpan SteadyInterval = TimeSpan.FromMinutes(15);
+    internal static readonly TimeSpan ProfileMinResend = TimeSpan.FromHours(6);
     private const int MaxDevices = 80;
     private static readonly TimeSpan LayoutSnapshotInterval = TimeSpan.FromHours(24);
     private const int MaxWidgetTypes = 200;
@@ -45,7 +46,6 @@ internal sealed class SystemProfileService : BackgroundService
     private readonly DeviceManager _devices;
     private readonly ILightingDeviceProvider _lighting;
     private readonly IFanControlProvider _fans;
-    private string? _lastSignature;
     private DateTimeOffset _lastLayoutSnapshot = DateTimeOffset.MinValue;
 
     public SystemProfileService(ITelemetry telemetry, IConfigStore store,
@@ -159,11 +159,37 @@ internal sealed class SystemProfileService : BackgroundService
 
         // Dedupe: only emit when the profile actually changed.
         var signature = string.Join("|", props.Select(p => p.Item1 + "=" + Stringify(p.Item2)));
-        if (signature != _lastSignature)
-        {
-            _lastSignature = signature;
+        if (TryClaimProfileSend(_store, signature, DateTimeOffset.UtcNow))
             _telemetry.Identify(props.ToArray());
+        return true;
+    }
+
+    /// <summary>
+    /// Persisted dedupe for the profile send. The signature used to live in
+    /// process memory, so every service start sent a fresh $identify (the
+    /// measured count tracks app_started); it now survives restarts. A changed
+    /// signature after a recent send waits out <see cref="ProfileMinResend"/>,
+    /// because the profile is last-write-wins and a flapping input (hot-plugged
+    /// USB names, counts) would otherwise resend on every flap.
+    /// </summary>
+    /// <returns>True when the caller should send now; the new signature is recorded.</returns>
+    internal static bool TryClaimProfileSend(IConfigStore store, string signature, DateTimeOffset now)
+    {
+        var hash = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(signature)));
+        var t = store.Load().Telemetry;
+        if (t.ProfileSignature == hash)
+            return false;
+        if (t.ProfileSignature.Length > 0
+            && DateTimeOffset.TryParse(t.ProfileSentAt, CultureInfo.InvariantCulture, DateTimeStyles.RoundtripKind, out var sentAt)
+            && now - sentAt < ProfileMinResend)
+        {
+            return false;
         }
+        store.Update(s =>
+        {
+            s.Telemetry.ProfileSignature = hash;
+            s.Telemetry.ProfileSentAt = now.ToString("O", CultureInfo.InvariantCulture);
+        });
         return true;
     }
 

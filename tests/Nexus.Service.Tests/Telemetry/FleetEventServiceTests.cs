@@ -70,6 +70,13 @@ public class FleetEventServiceTests
         public Task ReadyAsync(CancellationToken ct = default) => Task.CompletedTask;
     }
 
+    private sealed class ManualClock : TimeProvider
+    {
+        private DateTimeOffset _now = new(2026, 1, 1, 0, 0, 0, TimeSpan.Zero);
+        public override DateTimeOffset GetUtcNow() => _now;
+        public void Advance(TimeSpan by) => _now += by;
+    }
+
     private static FleetEventService MakeService(
         IConfigStore store,
         FakeFleetEventTransport transport,
@@ -158,7 +165,8 @@ public class FleetEventServiceTests
         var transport = new FakeFleetEventTransport();
         var cpuA = new StubSensors { Cpu = "CPU A", GpuModels = new[] { "GPU A" }, MemoryFormatted = "32 GB", Motherboard = "Board A" };
 
-        var svc1 = MakeService(store, transport, sensors: cpuA);
+        var clock = new ManualClock();
+        var svc1 = MakeService(store, transport, sensors: cpuA, clock: clock);
         await svc1.RunPendingRetriesAsync(CancellationToken.None);
         Assert.Single(transport.Sent, p => p.Type == TelemetryEvents.Specs);
         var hash1 = store.Load().Telemetry.FleetSpecsHash;
@@ -170,7 +178,8 @@ public class FleetEventServiceTests
 
         // Next boot with different hardware - hash differs, resend.
         var cpuB = new StubSensors { Cpu = "CPU B", GpuModels = new[] { "GPU A" }, MemoryFormatted = "32 GB", Motherboard = "Board A" };
-        var svc2 = MakeService(store, transport, sensors: cpuB);
+        clock.Advance(FleetEventService.SpecsMinResend);
+        var svc2 = MakeService(store, transport, sensors: cpuB, clock: clock);
         await svc2.RunPendingRetriesAsync(CancellationToken.None);
 
         Assert.Equal(2, transport.Sent.Count(p => p.Type == TelemetryEvents.Specs));
@@ -181,6 +190,37 @@ public class FleetEventServiceTests
         Assert.Equal("CPU B", specsPayload!.Cpu);
         Assert.Equal(32L * 1024 * 1024 * 1024, specsPayload.RamBytes);
         Assert.Equal("Board A", specsPayload.Motherboard);
+    }
+
+    [Fact]
+    public async Task Specs_hash_that_flips_inside_the_interval_is_held_then_sent_once_it_passes()
+    {
+        var store = OptedInStore();
+        var transport = new FakeFleetEventTransport();
+        var clock = new ManualClock();
+        var usb = new StubUsbEnumerator();
+        var sensors = new StubSensors { Cpu = "CPU A", GpuModels = new[] { "GPU A" }, MemoryFormatted = "32 GB", Motherboard = "Board A" };
+        var svc = MakeService(store, transport, sensors: sensors, clock: clock, usb: usb);
+
+        await svc.RunPendingRetriesAsync(CancellationToken.None);
+        Assert.Single(transport.Sent, p => p.Type == TelemetryEvents.Specs);
+
+        // A peripheral is hot-plugged: the hash changes, but the last send was moments ago.
+        usb.Entries.Add(new UsbDeviceEntry { VendorId = 0x1234, ProductId = 0x5678, Name = "Dongle" });
+        clock.Advance(TimeSpan.FromHours(1));
+        await svc.RunPendingRetriesAsync(CancellationToken.None);
+        Assert.Single(transport.Sent, p => p.Type == TelemetryEvents.Specs);
+
+        // Unplugged again before the interval ends: back to the delivered hash, nothing ever sent.
+        usb.Entries.Clear();
+        clock.Advance(TimeSpan.FromHours(30));
+        await svc.RunPendingRetriesAsync(CancellationToken.None);
+        Assert.Single(transport.Sent, p => p.Type == TelemetryEvents.Specs);
+
+        // A change that is still there once the interval has passed is sent.
+        usb.Entries.Add(new UsbDeviceEntry { VendorId = 0x1234, ProductId = 0x5678, Name = "Dongle" });
+        await svc.RunPendingRetriesAsync(CancellationToken.None);
+        Assert.Equal(2, transport.Sent.Count(p => p.Type == TelemetryEvents.Specs));
     }
 
     [Fact]
@@ -215,12 +255,14 @@ public class FleetEventServiceTests
         var store = OptedInStore();
         var transport = new FakeFleetEventTransport();
         var sensors = new StubSensors { Cpu = "CPU A", GpuModels = new[] { "GPU A" }, MemoryFormatted = "32 GB", Motherboard = "Board A" };
-        var svc = MakeService(store, transport, sensors: sensors);
+        var clock = new ManualClock();
+        var svc = MakeService(store, transport, sensors: sensors, clock: clock);
 
         await svc.RunPendingRetriesAsync(CancellationToken.None);
         Assert.False(transport.Sent.Single(p => p.Type == TelemetryEvents.Specs).Specs!.Y70Seen);
 
         store.Update(s => s.Telemetry.FleetY70Seen = true);
+        clock.Advance(FleetEventService.SpecsMinResend);
         await svc.RunPendingRetriesAsync(CancellationToken.None);
         Assert.Equal(2, transport.Sent.Count(p => p.Type == TelemetryEvents.Specs));
         Assert.True(transport.Sent.Last(p => p.Type == TelemetryEvents.Specs).Specs!.Y70Seen);
