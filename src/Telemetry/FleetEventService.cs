@@ -20,8 +20,6 @@ internal sealed class FleetEventService
     // Opted-out box: an undelivered opt_out this old is abandoned rather than retried forever.
     private static readonly TimeSpan OptOutRetryExpiry = TimeSpan.FromDays(7);
 
-    internal static readonly TimeSpan SpecsMinResend = TimeSpan.FromHours(24);
-
     private readonly IConfigStore _store;
     private readonly IFleetEventTransport _transport;
     private readonly ITelemetry _telemetry;
@@ -31,6 +29,9 @@ internal sealed class FleetEventService
     private readonly Func<bool> _ibuypowerSystem;
     private readonly TimeProvider _clock;
     private readonly SemaphoreSlim _gate = new(1, 1);
+
+    // Not persisted: the USB set is read once per process (the first ready pass) and reused. Later hourly passes re-enumerated live, so any hot-plugged controller, phone or hub changed the hash and resent the whole specs event.
+    private List<FleetEventDevice>? _bootDevices;
 
     // Not persisted: caps the install event's PostHog leg to one attempt per process lifetime, independent of nexus-api retries.
     private bool _postHogInstallAttempted;
@@ -212,27 +213,25 @@ internal sealed class FleetEventService
         if (string.IsNullOrWhiteSpace(specs.Processor) && string.IsNullOrWhiteSpace(specs.GraphicsCard))
             return; // not ready yet (cold boot) - retry next pass.
 
+        // Sorted: the GPU enumeration order is not stable across boots.
         var gpu = specs.GraphicsCard.Split(
-            " + ", StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
-        var ramBytes = SystemProfileService.ParseRamGb(specs.Memory) is int gb ? (long)gb * 1024 * 1024 * 1024 : 0;
+                " + ", StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .OrderBy(g => g, StringComparer.Ordinal)
+            .ToArray();
+        if (gpu.Length == 0)
+            return; // GPU inventory not ready; an empty list would flip the hash against the populated one.
 
-        var devices = FleetDeviceCollector.Collect(_usb.Enumerate());
+        var ramBytes = RamBytesFor(specs.Memory, OperatingSystem.IsWindows());
+        if (ramBytes == 0)
+            return; // RAM not ready (or only the OS-usable total); never send or hash 0.
+
+        _bootDevices ??= FleetDeviceCollector.Collect(_usb.Enumerate());
+        var devices = _bootDevices;
         var y70Seen = _store.Load().Telemetry.FleetY70Seen;
         var ibuypowerSystem = _ibuypowerSystem();
         var hash = ComputeSpecsHash(specs.Processor, gpu, ramBytes, specs.Motherboard, devices, y70Seen, ibuypowerSystem);
         if (hash == _store.Load().Telemetry.FleetSpecsHash)
             return; // unchanged since the last successful send.
-
-        // A hash that keeps flipping (hot-plugged USB devices, a degraded boot-time
-        // enumeration) must not resend on every flip; the change is still sent
-        // once the interval passes, because the stored hash stays on the old value.
-        var lastSentHash = _store.Load().Telemetry.FleetSpecsHash;
-        if (lastSentHash.Length > 0
-            && DateTimeOffset.TryParse(_store.Load().Telemetry.FleetSpecsSentAt, CultureInfo.InvariantCulture, DateTimeStyles.RoundtripKind, out var sentAt)
-            && _clock.GetUtcNow() - sentAt < SpecsMinResend)
-        {
-            return;
-        }
 
         var payload = BuildEnvelope(TelemetryEvents.Specs, installId);
         payload.Specs = new FleetEventSpecs
@@ -249,14 +248,22 @@ internal sealed class FleetEventService
         if (!await _transport.SendAsync(payload, ct).ConfigureAwait(false))
             return;
 
-        var sentAtIso = _clock.GetUtcNow().ToString("O", CultureInfo.InvariantCulture);
-        _store.Update(s =>
-        {
-            s.Telemetry.FleetSpecsHash = hash;
-            s.Telemetry.FleetSpecsSentAt = sentAtIso;
-        });
+        _store.Update(s => s.Telemetry.FleetSpecsHash = hash);
         _telemetry.Capture(TelemetryEvents.Specs,
             ("cpu", specs.Processor), ("gpu", gpu), ("ram_bytes", ramBytes), ("motherboard", specs.Motherboard));
+    }
+
+    /// <summary>
+    /// Installed-RAM bytes, or 0 when not trustworthy. On Windows the DIMM query
+    /// writes a stick layout in parentheses; without it the string is the
+    /// OS-usable total from the sensor fallback (32 GB installed reads as 31),
+    /// which would alternate with the DIMM figure across starts.
+    /// </summary>
+    internal static long RamBytesFor(string memory, bool requireDimmDetail)
+    {
+        if (requireDimmDetail && !memory.Contains('('))
+            return 0;
+        return SystemProfileService.ParseRamGb(memory) is int gb and > 0 ? (long)gb * 1024 * 1024 * 1024 : 0;
     }
 
     private static FleetEventPayload BuildEnvelope(string type, string installId) => new()

@@ -178,7 +178,6 @@ public class FleetEventServiceTests
 
         // Next boot with different hardware - hash differs, resend.
         var cpuB = new StubSensors { Cpu = "CPU B", GpuModels = new[] { "GPU A" }, MemoryFormatted = "32 GB", Motherboard = "Board A" };
-        clock.Advance(FleetEventService.SpecsMinResend);
         var svc2 = MakeService(store, transport, sensors: cpuB, clock: clock);
         await svc2.RunPendingRetriesAsync(CancellationToken.None);
 
@@ -192,36 +191,101 @@ public class FleetEventServiceTests
         Assert.Equal("Board A", specsPayload.Motherboard);
     }
 
+    private static StubSensors Sensors(string gpu = "GPU A", string mem = "32 GB") =>
+        new() { Cpu = "CPU A", GpuModels = gpu.Length == 0 ? Array.Empty<string>() : gpu.Split('+'), MemoryFormatted = mem, Motherboard = "Board A" };
+
     [Fact]
-    public async Task Specs_hash_that_flips_inside_the_interval_is_held_then_sent_once_it_passes()
+    public async Task Hourly_passes_reuse_the_boot_usb_snapshot_so_hot_plugging_does_not_resend()
     {
         var store = OptedInStore();
         var transport = new FakeFleetEventTransport();
-        var clock = new ManualClock();
         var usb = new StubUsbEnumerator();
-        var sensors = new StubSensors { Cpu = "CPU A", GpuModels = new[] { "GPU A" }, MemoryFormatted = "32 GB", Motherboard = "Board A" };
-        var svc = MakeService(store, transport, sensors: sensors, clock: clock, usb: usb);
+        var svc = MakeService(store, transport, sensors: Sensors(), usb: usb);
 
         await svc.RunPendingRetriesAsync(CancellationToken.None);
         Assert.Single(transport.Sent, p => p.Type == TelemetryEvents.Specs);
 
-        // A peripheral is hot-plugged: the hash changes, but the last send was moments ago.
-        usb.Entries.Add(new UsbDeviceEntry { VendorId = 0x1234, ProductId = 0x5678, Name = "Dongle" });
-        clock.Advance(TimeSpan.FromHours(1));
+        usb.Entries.Add(new UsbDeviceEntry { VendorId = 0x045e, ProductId = 0x028e, Name = "Controller" });
         await svc.RunPendingRetriesAsync(CancellationToken.None);
-        Assert.Single(transport.Sent, p => p.Type == TelemetryEvents.Specs);
-
-        // Unplugged again before the interval ends: back to the delivered hash, nothing ever sent.
         usb.Entries.Clear();
-        clock.Advance(TimeSpan.FromHours(30));
         await svc.RunPendingRetriesAsync(CancellationToken.None);
-        Assert.Single(transport.Sent, p => p.Type == TelemetryEvents.Specs);
 
-        // A change that is still there once the interval has passed is sent.
-        usb.Entries.Add(new UsbDeviceEntry { VendorId = 0x1234, ProductId = 0x5678, Name = "Dongle" });
-        await svc.RunPendingRetriesAsync(CancellationToken.None);
+        Assert.Single(transport.Sent, p => p.Type == TelemetryEvents.Specs);
+    }
+
+    [Fact]
+    public async Task A_new_process_reads_a_fresh_usb_snapshot_at_its_boot_pass()
+    {
+        var store = OptedInStore();
+        var transport = new FakeFleetEventTransport();
+        var usb = new StubUsbEnumerator();
+        await MakeService(store, transport, sensors: Sensors(), usb: usb).RunPendingRetriesAsync(CancellationToken.None);
+
+        usb.Entries.Add(new UsbDeviceEntry { VendorId = 0x045e, ProductId = 0x028e, Name = "Controller" });
+        await MakeService(store, transport, sensors: Sensors(), usb: usb).RunPendingRetriesAsync(CancellationToken.None);
+
         Assert.Equal(2, transport.Sent.Count(p => p.Type == TelemetryEvents.Specs));
     }
+
+    [Fact]
+    public async Task Y70_flip_resends_with_the_boot_snapshot_devices_not_a_live_scan()
+    {
+        var store = OptedInStore();
+        var transport = new FakeFleetEventTransport();
+        var usb = new StubUsbEnumerator();
+        var svc = MakeService(store, transport, sensors: Sensors(), usb: usb);
+        await svc.RunPendingRetriesAsync(CancellationToken.None);
+
+        usb.Entries.Add(new UsbDeviceEntry { VendorId = 0x045e, ProductId = 0x028e, Name = "Controller" });
+        store.Update(s => s.Telemetry.FleetY70Seen = true);
+        await svc.RunPendingRetriesAsync(CancellationToken.None);
+
+        Assert.Equal(2, transport.Sent.Count(p => p.Type == TelemetryEvents.Specs));
+        var last = transport.Sent.Last(p => p.Type == TelemetryEvents.Specs).Specs!;
+        Assert.True(last.Y70Seen);
+        Assert.Empty(last.Devices);
+    }
+
+    [Fact]
+    public async Task Gpu_order_does_not_change_the_hash()
+    {
+        var store = OptedInStore();
+        var transport = new FakeFleetEventTransport();
+        await MakeService(store, transport, sensors: Sensors("GPU A+GPU B")).RunPendingRetriesAsync(CancellationToken.None);
+        await MakeService(store, transport, sensors: Sensors("GPU B+GPU A")).RunPendingRetriesAsync(CancellationToken.None);
+
+        Assert.Single(transport.Sent, p => p.Type == TelemetryEvents.Specs);
+    }
+
+    [Fact]
+    public async Task Empty_gpu_list_is_not_ready_and_sends_nothing()
+    {
+        var store = OptedInStore();
+        var transport = new FakeFleetEventTransport();
+        await MakeService(store, transport, sensors: Sensors(gpu: "")).RunPendingRetriesAsync(CancellationToken.None);
+
+        Assert.DoesNotContain(transport.Sent, p => p.Type == TelemetryEvents.Specs);
+        Assert.Equal("", store.Load().Telemetry.FleetSpecsHash);
+    }
+
+    [Fact]
+    public async Task Zero_ram_is_not_ready_and_sends_nothing()
+    {
+        var store = OptedInStore();
+        var transport = new FakeFleetEventTransport();
+        await MakeService(store, transport, sensors: Sensors(mem: "")).RunPendingRetriesAsync(CancellationToken.None);
+
+        Assert.DoesNotContain(transport.Sent, p => p.Type == TelemetryEvents.Specs);
+    }
+
+    [Theory]
+    [InlineData("32 GB DDR5-6000 (2 × 16 GB)", true, 32)]
+    [InlineData("31.4 GB", true, 0)]
+    [InlineData("31.4 GB", false, 31)]
+    [InlineData("", false, 0)]
+    [InlineData("0 GB", false, 0)]
+    public void Ram_bytes_ignore_zero_and_the_os_usable_fallback_on_windows(string memory, bool requireDimm, int expectedGb) =>
+        Assert.Equal((long)expectedGb * 1024 * 1024 * 1024, FleetEventService.RamBytesFor(memory, requireDimm));
 
     [Fact]
     public async Task Specs_delivery_that_fails_at_boot_retries_on_a_later_pass_then_stops()
@@ -262,7 +326,6 @@ public class FleetEventServiceTests
         Assert.False(transport.Sent.Single(p => p.Type == TelemetryEvents.Specs).Specs!.Y70Seen);
 
         store.Update(s => s.Telemetry.FleetY70Seen = true);
-        clock.Advance(FleetEventService.SpecsMinResend);
         await svc.RunPendingRetriesAsync(CancellationToken.None);
         Assert.Equal(2, transport.Sent.Count(p => p.Type == TelemetryEvents.Specs));
         Assert.True(transport.Sent.Last(p => p.Type == TelemetryEvents.Specs).Specs!.Y70Seen);
