@@ -4,10 +4,14 @@ using Nexus.Service.Lighting.Rgb;
 
 namespace Nexus.Service.Tests.Lighting.Rgb;
 
+[CollectionDefinition("DetectorMap", DisableParallelization = true)]
+public class DetectorMapCollection;
+
 /// <summary>
 /// An OpenRGB detector is held off only while a Nexus native driver is enabled for the same
 /// hardware; every other detector keeps OpenRGB's own default (enabled).
 /// </summary>
+[Collection("DetectorMap")]
 public class OpenRgbNativeDetectorPolicyTests : IDisposable
 {
     private readonly string _dir = Directory.CreateTempSubdirectory("openrgb-native-").FullName;
@@ -222,6 +226,44 @@ public class OpenRgbNativeDetectorPolicyTests : IDisposable
     public void Needs_size_ignores_led_count_and_range()
     {
         Assert.True(Zone(1u << 1, min: 5, max: 5, leds: 12).NeedsSize);
+    }
+
+    [Fact]
+    public void An_inverted_range_is_not_resizable()
+    {
+        Assert.False(Zone(1u << 1, min: 40, max: 34).IsResizable);
+    }
+
+    [Fact]
+    public void A_remembered_detector_keeps_the_row_claimed_while_a_rescan_empties_the_map()
+    {
+        OpenRgbDetectorMap.OverrideForTests = null;
+        OpenRgbDetectorMap.Remember(new Dictionary<string, string> { ["Held Kraken Unit"] = "NZXT Kraken 2024 ELITE Series RGB" });
+
+        Assert.True(NativeDetectorClaims.Owns(NativeDetectorClaims.Kraken, Row("Held Kraken Unit")));
+        Assert.False(NativeDetectorClaims.Owns(NativeDetectorClaims.Kraken, Row("Never Mapped Unit")));
+    }
+
+    [Fact]
+    public void Resizes_wait_for_their_device_then_expire()
+    {
+        var now = DateTime.UtcNow.Ticks;
+        var devices = new List<RgbDevice> { CommanderCore(3, "SERIAL-A") };
+        var pending = new[]
+        {
+            new RgbBridge.PendingIdResize(devices[0].StableId, 1, 12, now),
+            new RgbBridge.PendingIdResize("openrgb-s-SERIAL-B", 2, 12, now),
+            new RgbBridge.PendingIdResize("openrgb-s-SERIAL-C", 2, 12, now - RgbBridge.PendingResizeLifetime.Ticks - 1),
+        };
+        var resolved = new List<(int physIdx, int zoneIdx, int newSize)>();
+        var waiting = new List<RgbBridge.PendingIdResize>();
+        var expired = new List<RgbBridge.PendingIdResize>();
+
+        RgbBridge.PartitionPendingResizes(devices, pending, now, resolved, waiting, expired);
+
+        Assert.Equal((3, 1, 12), Assert.Single(resolved));
+        Assert.Equal("openrgb-s-SERIAL-B", Assert.Single(waiting).DeviceId);
+        Assert.Equal("openrgb-s-SERIAL-C", Assert.Single(expired).DeviceId);
     }
 
     [Fact]

@@ -138,7 +138,14 @@ public static class NativeDetectorClaims
         return false;
     }
 
-    /// <inheritdoc cref="Owns(string, RgbDevice, IReadOnlyDictionary{string, string})"/>
+    /// <summary>Claim check against the daemon's map, remembering the last detector a name came from so a rescan hold does not release the row.</summary>
     public static bool Owns(string claimKey, RgbDevice device)
-        => Owns(claimKey, device, OpenRgbDetectorMap.Current);
+    {
+        var detector = OpenRgbDetectorMap.DetectorFor(device.Name);
+        if (detector is null)
+        {
+            return false;
+        }
+        return Owns(claimKey, device, new Dictionary<string, string>(1) { [device.Name] = detector });
+    }
 }

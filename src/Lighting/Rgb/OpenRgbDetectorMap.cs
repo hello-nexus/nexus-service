@@ -52,11 +52,21 @@ public static class OpenRgbDetectorMap
     }
 
     private static readonly object CacheLock = new();
-    private static string? _cachedPath;
-    private static DateTime _cachedWriteUtc;
     private static IReadOnlyDictionary<string, string> _cached = EmptyMap;
+    private static long _loadedAtMs = long.MinValue;
+    private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, string> LastKnown = new(StringComparer.Ordinal);
 
-    /// <summary>The map for the service config dir, re-read only when the daemon rewrites the file.</summary>
+    /// <summary>Longest a loaded map is reused before the file is read again.</summary>
+    private const long ReloadAfterMs = 2000;
+
+    /// <summary>Drops the cached map so the next read sees what the daemon just wrote.</summary>
+    public static void Invalidate()
+    {
+        lock (CacheLock)
+        { _loadedAtMs = long.MinValue; }
+    }
+
+    /// <summary>The map for the service config dir, re-read at most every <see cref="ReloadAfterMs"/> and on <see cref="Invalidate"/>.</summary>
     public static IReadOnlyDictionary<string, string> Current
     {
         get
@@ -65,23 +75,39 @@ public static class OpenRgbDetectorMap
             {
                 return forced;
             }
-            var dir = OpenRgbProcessManager.ResolveConfigDir();
-            var path = Path.Combine(dir, "detector-map.json");
-            DateTime writeUtc;
-            try
-            { writeUtc = File.Exists(path) ? File.GetLastWriteTimeUtc(path) : DateTime.MinValue; }
-            catch { return EmptyMap; }
             lock (CacheLock)
             {
-                if (_cachedPath != path || _cachedWriteUtc != writeUtc)
+                var now = Environment.TickCount64;
+                if (_loadedAtMs == long.MinValue || now - _loadedAtMs >= ReloadAfterMs)
                 {
-                    _cached = Load(dir);
-                    _cachedPath = path;
-                    _cachedWriteUtc = writeUtc;
+                    _cached = Load(OpenRgbProcessManager.ResolveConfigDir());
+                    _loadedAtMs = now;
+                    Remember(_cached);
                 }
                 return _cached;
             }
         }
+    }
+
+    internal static void Remember(IReadOnlyDictionary<string, string> map)
+    {
+        foreach (var kv in map)
+        {
+            LastKnown[kv.Key] = kv.Value;
+        }
+    }
+
+    /// <summary>
+    /// The detector for a device name: the current map, else the last map that named it. The daemon
+    /// rewrites the map when a rescan empties its list while the service holds the old list.
+    /// </summary>
+    public static string? DetectorFor(string deviceName)
+    {
+        if (Current.TryGetValue(deviceName, out var detector))
+        {
+            return detector;
+        }
+        return Volatile.Read(ref _override) is null && LastKnown.TryGetValue(deviceName, out var remembered) ? remembered : null;
     }
 
     /// <summary>Parses the document body. Separate from the read so the shape

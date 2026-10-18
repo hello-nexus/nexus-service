@@ -31,7 +31,6 @@ public sealed class Galahad2LightingDeviceProvider :
 
     public bool IsConnected => _hub.IsConnected;
 
-    // OpenRGB names this device "Lian Li GAII Trinity" (RGBController_LianLiGAIITrinity.cpp).
     public bool OwnsOpenRgbDevice(RgbDevice device) =>
         IsConnected && Rgb.NativeDetectorClaims.Owns(Rgb.NativeDetectorClaims.Galahad2, device);
 

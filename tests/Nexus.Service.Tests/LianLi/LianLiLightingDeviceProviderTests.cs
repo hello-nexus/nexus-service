@@ -6,6 +6,7 @@ using Nexus.Service.Persistence;
 
 namespace Nexus.Service.Tests.LianLi;
 
+[Collection("DetectorMap")]
 public class LianLiLightingDeviceProviderTests
 {
     private readonly LianLiHubSet _hubs = new();
@@ -280,8 +281,16 @@ public class LianLiLightingDeviceProviderTests
     public void OwnsOpenRgbDevice_false_when_name_does_not_match()
     {
         Connect();
-        var device = new Nexus.Service.Lighting.Rgb.RgbDevice { Name = "HYTE NP50" };
-        Assert.False(_provider.OwnsOpenRgbDevice(device));
+        Nexus.Service.Lighting.Rgb.OpenRgbDetectorMap.OverrideForTests = new Dictionary<string, string>();
+        try
+        {
+            var device = new Nexus.Service.Lighting.Rgb.RgbDevice { Name = "HYTE NP50" };
+            Assert.False(_provider.OwnsOpenRgbDevice(device));
+        }
+        finally
+        {
+            Nexus.Service.Lighting.Rgb.OpenRgbDetectorMap.OverrideForTests = null;
+        }
     }
 
     [Fact]

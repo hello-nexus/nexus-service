@@ -312,8 +312,8 @@ public sealed class OpenRgbProcessManager : IDisposable
     /// are also recorded in the <c>Detectors.placeholder_only</c> array, which
     /// only the service reads: names dropped from it since the last write get
     /// their detector re-enabled. Best-effort: a failure here just
-    /// means OpenRGB might surface a zombie entry, which
-    /// CompositeLightingDeviceProvider also strips.
+    /// means OpenRGB might surface a zombie entry, which native providers drop
+    /// by the detector that produced it.
     /// </summary>
     /// <param name="nativeDisabledDetectors">Detectors held off for an enabled native driver; null holds every native-claimed detector. A claimed detector outside it and outside the other lists is returned to OpenRGB's default by dropping its entry.</param>
     /// <param name="busDisabledDetectors">Detectors held off because their shared bus is toggled off (<see cref="SmbusDramDetectors"/>). Tracked in the service-owned <c>Detectors.bus_disabled</c> array with the same drop-to-re-enable rule as user exclusions.</param>

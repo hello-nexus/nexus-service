@@ -167,7 +167,34 @@ public sealed class RgbBridge : IDisposable
     // refresh semaphore so it never races with the frame push path.
     private readonly ConcurrentQueue<(int physIdx, int zoneIdx, int newSize)> _pendingZoneResizes = new();
     // Resolved to a controller address only at drain, so a daemon restart between request and drain cannot aim it at another unit.
-    private readonly ConcurrentQueue<(string deviceId, int zoneIdx, int newSize)> _pendingIdZoneResizes = new();
+    private readonly ConcurrentQueue<PendingIdResize> _pendingIdZoneResizes = new();
+
+    /// <summary>How long a resize waits for its device to be in the list before it is discarded.</summary>
+    internal static readonly TimeSpan PendingResizeLifetime = TimeSpan.FromSeconds(60);
+
+    internal readonly record struct PendingIdResize(string DeviceId, int ZoneIdx, int NewSize, long EnqueuedTicks);
+
+    /// <summary>Splits queued resizes into those whose device is listed, those still waiting for it, and those past their lifetime.</summary>
+    internal static void PartitionPendingResizes(IReadOnlyList<RgbDevice> devices, IEnumerable<PendingIdResize> pending, long nowTicks,
+        List<(int physIdx, int zoneIdx, int newSize)> resolved, List<PendingIdResize> waiting, List<PendingIdResize> expired)
+    {
+        foreach (var p in pending)
+        {
+            var address = AddressOfDevice(devices, p.DeviceId);
+            if (address >= 0)
+            {
+                resolved.Add((address, p.ZoneIdx, p.NewSize));
+            }
+            else if (nowTicks - p.EnqueuedTicks > PendingResizeLifetime.Ticks)
+            {
+                expired.Add(p);
+            }
+            else
+            {
+                waiting.Add(p);
+            }
+        }
+    }
     // Per-physical-device colour buffers. When a motherboard is split into zones
     // in the engine, each zone's DeviceFrame writes its slice into this buffer
     // at the zone's LED offset; the whole physical device is then pushed once.
@@ -681,7 +708,7 @@ public sealed class RgbBridge : IDisposable
     {
         if (string.IsNullOrEmpty(deviceId) || zoneIndex < 0 || newSize < 0)
             return;
-        _pendingIdZoneResizes.Enqueue((deviceId, zoneIndex, newSize));
+        _pendingIdZoneResizes.Enqueue(new PendingIdResize(deviceId, zoneIndex, newSize, DateTime.UtcNow.Ticks));
         if (IsActive && _controller.IsConnected)
         {
             _ = Task.Run(async () =>
@@ -909,6 +936,7 @@ public sealed class RgbBridge : IDisposable
             return;
         }
         Volatile.Write(ref _detectionStartedSeen, 0);
+        OpenRgbDetectorMap.Invalidate();
         Interlocked.Exchange(ref _detectionActivityTicks, 0);
         Interlocked.Exchange(ref _redetectRequestedTicks, 0);
         string? deferred;
@@ -1940,16 +1968,28 @@ public sealed class RgbBridge : IDisposable
     {
         var attempts = new List<ZoneResizeAttempt>();
 
+        var drained = new List<PendingIdResize>();
         while (_pendingIdZoneResizes.TryDequeue(out var byId))
         {
-            var address = AddressOfDevice(devices, byId.deviceId);
-            if (address >= 0)
+            drained.Add(byId);
+        }
+        if (drained.Count > 0)
+        {
+            var resolved = new List<(int physIdx, int zoneIdx, int newSize)>();
+            var waiting = new List<PendingIdResize>();
+            var expired = new List<PendingIdResize>();
+            PartitionPendingResizes(devices, drained, DateTime.UtcNow.Ticks, resolved, waiting, expired);
+            foreach (var r in resolved)
             {
-                _pendingZoneResizes.Enqueue((address, byId.zoneIdx, byId.newSize));
+                _pendingZoneResizes.Enqueue(r);
             }
-            else
+            foreach (var w in waiting)
             {
-                ServiceLog.Warn($"[rgb-bridge] resize of {byId.deviceId} zone {byId.zoneIdx} dropped: device not in the list");
+                _pendingIdZoneResizes.Enqueue(w);
+            }
+            foreach (var e in expired)
+            {
+                ServiceLog.Warn($"[rgb-bridge] resize of {e.DeviceId} zone {e.ZoneIdx} to {e.NewSize} discarded: the device did not appear within {PendingResizeLifetime.TotalSeconds:0}s");
             }
         }
 
