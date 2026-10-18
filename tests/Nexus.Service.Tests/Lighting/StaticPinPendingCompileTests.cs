@@ -37,6 +37,7 @@ public class StaticPinPendingCompileTests
         private readonly ConcurrentDictionary<string, ManualResetEventSlim> _gates = new();
         private readonly List<(byte, byte, byte)> _seenA = new();
         private int _frames;
+        private readonly ConcurrentQueue<string> _mismatches = new();
 
         public readonly LightingEngine Engine = new();
         public readonly DeviceFrame Device = new(0, DeviceId, 5, x: 100, y: 100, w: 250, h: 40, rotation: 0);
@@ -62,7 +63,10 @@ public class StaticPinPendingCompileTests
             Engine.StaticPinEffectFactory = pin =>
             {
                 var fx = (ShaderEffect)real(pin)!;
-                Assert.Equal(pin.Effect, fx.Name);
+                if (pin.Effect != fx.Name)
+                {
+                    _mismatches.Enqueue($"{pin.Effect} built as {fx.Name}");
+                }
                 if (UseTestRender)
                 {
                     var build = Built.Count;
@@ -164,6 +168,7 @@ public class StaticPinPendingCompileTests
         {
             _provider.Dispose();
             Gpu.Dispose();
+            Assert.Empty(_mismatches);
             try { Directory.Delete(_dir, recursive: true); } catch { }
         }
     }
@@ -206,21 +211,25 @@ public class StaticPinPendingCompileTests
     }
 
     [Fact]
-    public void A_render_that_draws_nothing_without_pending_or_failed_is_not_cached()
+    public void A_render_that_draws_nothing_without_pending_or_failed_is_not_cached_and_is_given_up_on()
     {
         // Context unavailable: the real ShaderEffect skips the frame with neither flag set.
         using var rig = new Rig { UseTestRender = false };
+        rig.Engine.AssignPendingBudgetMs = 200;
         rig.Gpu.OpenUpgradeGateForTest();
         rig.Tracker.Set(DeviceId, Pin("gradientlinear"));
         rig.Start();
 
         Assert.True(rig.WaitFor(() => Rig.Led(rig.Device) == Green));
-        rig.WaitFrames(10);
-        var built = rig.Built;
-        Assert.False(built[0].IsRenderPending);
-        Assert.False(built[0].HasFailed);
-        Assert.False(built[0].DrewFrame);
-        Assert.Equal(0, built[0].DisposeCount);
+        var first = rig.Built[0];
+        Assert.False(first.IsRenderPending);
+        Assert.False(first.HasFailed);
+        Assert.False(first.DrewFrame);
+
+        // Bounded: the never-drawing effect is dropped after its budget and rebuilt on the backoff, not polled forever.
+        Assert.True(rig.WaitFor(() => first.DisposeCount == 1));
+        Assert.True(rig.WaitFor(() => rig.Built.Count >= 2));
+        Assert.Equal(Green, Rig.Led(rig.Device));
         Assert.DoesNotContain(Black, rig.Seen());
     }
 
@@ -273,8 +282,8 @@ public class StaticPinPendingCompileTests
         rig.Tracker.Set(DeviceId, Pin("gradientlinear"));
         rig.Start();
 
-        // Builds are due at 0s, 1s, 3s; a fixed 1s retry would make a fourth by 3.5s.
-        Assert.False(rig.WaitFor(() => rig.Built.Count > 3, 3500));
+        // Exponential builds land at 0, base and 3x base; a fixed-interval retry would make a fourth within the window.
+        Assert.False(rig.WaitFor(() => rig.Built.Count > 3, (int)(LightingEngine.AssignRetryBaseMs * 3 + 500)));
         Assert.InRange(rig.Built.Count, 1, 3);
         Assert.DoesNotContain(Black, rig.Seen());
         Assert.Equal(Green, Rig.Led(rig.Device));
@@ -371,18 +380,35 @@ public class StaticPinPendingCompileTests
     }
 
     [Fact]
-    public void A_paused_engine_still_converges_when_the_compile_lands()
+    public void A_paused_engine_converges_without_rendering_the_main_effect_again()
     {
         using var rig = new Rig();
         rig.Tracker.Set(DeviceId, Pin("gradientlinear"));
-        rig.Start();
+        var main = new CountingFill();
+        rig.Engine.SetEffect(main);
         Assert.True(rig.WaitFor(() => rig.Built.Count == 1));
         rig.Engine.SetPaused(true);
         Assert.True(rig.WaitFor(() => rig.Engine.Paused));
-        rig.WaitFrames(5);
+        rig.WaitFrames(3);
+        var rendersAtPause = main.Renders;
+        rig.WaitFrames(10);
         Assert.Equal(Green, Rig.Led(rig.Device));
 
         rig.Gate("gradientlinear").Set();
         Assert.True(rig.WaitFor(() => Rig.Led(rig.Device) == Red), "a pending look must finish while paused");
+        Assert.Equal(rendersAtPause, main.Renders);
+    }
+
+    private sealed class CountingFill : IEffect
+    {
+        private int _renders;
+        public int Renders => Volatile.Read(ref _renders);
+        public string Name => "counting";
+        public void RenderFrame(CanvasBuffer canvas, double tickMs)
+        {
+            Interlocked.Increment(ref _renders);
+            canvas.Fill(0, 255, 0);
+        }
+        public void Dispose() { }
     }
 }

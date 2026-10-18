@@ -253,8 +253,11 @@ public sealed partial class LightingEngine : IDisposable
     private readonly HashSet<string> _assignRefDevices = new(StringComparer.Ordinal);
     private int _assignPruneVersion = -1;
     private DeviceFrame[]? _assignPruneDevices;
-    private const long AssignRetryBaseMs = 1000;
-    private const long AssignRetryMaxMs = 60000;
+    internal const long AssignRetryBaseMs = 1000;
+    internal const long AssignRetryMaxMs = 60000;
+    // A compile that has drawn nothing for this long is abandoned and handed to the retry backoff.
+    internal long AssignPendingBudgetMs { get; set; } = 15000;
+    private readonly Dictionary<string, long> _assignPendingSince = new(StringComparer.Ordinal);
     // Reused per-frame scratch: which devices ApplyTestOverlays painted. Valid
     // for the rest of the tick after SampleDevicesFromCanvas returns.
     private bool[] _overlaid = Array.Empty<bool>();
@@ -884,13 +887,20 @@ public sealed partial class LightingEngine : IDisposable
                         }
                         aheadDevices = devices;
                     }
-                    else if ((_studioOverlay is not null || _resampleOnce || _assignPending.Count > 0) && wakeMs <= 0)
+                    else if ((_studioOverlay is not null || _resampleOnce || AnyAssignPollable()) && wakeMs <= 0)
                     {
                         // Paused: the effect holds, the studio overlay keeps animating over it, and once it clears the effect's paused frame is repainted onto the devices.
                         var devices = _devices;
                         if (_studioOverlay is not null)
                         {
                             ApplyTestOverlays(devices);
+                        }
+                        else if (!_resampleOnce)
+                        {
+                            // Only a pending static look holds this branch open: the main effect is not rendered again (input-driven
+                            // effects must not animate while paused), only the pins are polled and painted.
+                            ApplyTestOverlays(devices);
+                            ApplyLedColorLocks(devices);
                         }
                         else
                         {
@@ -2367,7 +2377,7 @@ public sealed partial class LightingEngine : IDisposable
     /// Only a frame the shader actually drew is cached. While the program is still
     /// compiling, or the draw was skipped or dropped, the effect stays alive for the
     /// next tick and the device keeps its last finished look (or, with none, the
-    /// shared canvas via null). A failed build backs off 1s doubling to 60s and the
+    /// shared canvas via null). A failed or overdue build backs off from AssignRetryBaseMs up to AssignRetryMaxMs and the
     /// device keeps the same fallback: unlike an animate pin, which holds black, a
     /// static look has no live frame to lose, so black would only hide the fault.
     /// </summary>
@@ -2408,6 +2418,14 @@ public sealed partial class LightingEngine : IDisposable
                 }
                 if (!shader.DrewFrame)
                 {
+                    var since = _assignPendingSince.TryGetValue(key, out var started) ? started : nowTick;
+                    if (nowTick - since > AssignPendingBudgetMs)
+                    {
+                        // Never drew and never failed: give the compile up and retry on the backoff.
+                        ScheduleAssignRetry(key, assignment.Effect, retry.Attempts, nowTick, null);
+                        return fallback;
+                    }
+                    _assignPendingSince[key] = since;
                     _assignPending[key] = effect;
                     keep = true;
                     return fallback;
@@ -2430,6 +2448,7 @@ public sealed partial class LightingEngine : IDisposable
             if (!keep)
             {
                 _assignPending.Remove(key);
+                _assignPendingSince.Remove(key);
                 try { effect?.Dispose(); } catch { /* best-effort */ }
             }
         }
@@ -2439,7 +2458,6 @@ public sealed partial class LightingEngine : IDisposable
     {
         if (attempts == 0)
         {
-            // Once per look: the retries after it stay quiet.
             Gpu.GpuContext.Log($"[static-pin] render failed for {effectName}, retrying with backoff{(ex is null ? "" : $": {ex.GetType().Name}: {ex.Message}")}");
         }
         var delay = Math.Min(AssignRetryMaxMs, AssignRetryBaseMs << Math.Min(attempts, 10));
@@ -2454,6 +2472,8 @@ public sealed partial class LightingEngine : IDisposable
     /// </summary>
     private void PruneAssignments(DeviceFrame[] devices)
     {
+        // Look-ahead passes a fresh shadow array every frame; only the live device array defines what is referenced.
+        if (!ReferenceEquals(devices, _devices)) return;
         var pins = Pins;
         var version = pins?.Version ?? -1;
         if (version == _assignPruneVersion && ReferenceEquals(devices, _assignPruneDevices)) return;
@@ -2481,8 +2501,22 @@ public sealed partial class LightingEngine : IDisposable
         {
             try { _assignPending[k].Dispose(); } catch { /* best-effort */ }
             _assignPending.Remove(k);
+            _assignPendingSince.Remove(k);
         }
         foreach (var d in _assignLastGood.Keys.Where(d => !_assignRefDevices.Contains(d)).ToList()) _assignLastGood.Remove(d);
+    }
+
+    /// <summary>True while a pending static look can still make progress: its context is up, so polling it is not a no-op.</summary>
+    private bool AnyAssignPollable()
+    {
+        foreach (var e in _assignPending.Values)
+        {
+            if (e is Gpu.ShaderEffect { CanPoll: true })
+            {
+                return true;
+            }
+        }
+        return false;
     }
 
     private void DisposeAssignState()
@@ -2492,6 +2526,7 @@ public sealed partial class LightingEngine : IDisposable
             try { e.Dispose(); } catch { /* best-effort */ }
         }
         _assignPending.Clear();
+        _assignPendingSince.Clear();
         _assignRenders.Clear();
         _assignRetry.Clear();
         _assignLastGood.Clear();
