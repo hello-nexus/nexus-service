@@ -56,7 +56,7 @@ internal sealed class TelemetryFlushService : BackgroundService
     public override async Task StopAsync(CancellationToken cancellationToken)
     {
         await base.StopAsync(cancellationToken).ConfigureAwait(false);
-        if (_sinks.Count == 0)
+        if (_sinks.Count == 0 || Nexus.Service.FocusModes.FocusNetworkGate.IsHeld)
             return;
         using var cts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         cts.CancelAfter(StopFlushTimeout);

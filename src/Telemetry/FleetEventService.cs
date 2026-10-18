@@ -28,6 +28,7 @@ internal sealed class FleetEventService
     private readonly IUsbEnumerator _usb;
     private readonly Func<bool> _ibuypowerSystem;
     private readonly TimeProvider _clock;
+    // USB devices can enumerate late on a cold boot; specs snapshot the bus only after this delay.
     internal static readonly TimeSpan UsbSettleDelay = TimeSpan.FromMinutes(2);
 
     private readonly SemaphoreSlim _gate = new(1, 1);

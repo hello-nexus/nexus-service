@@ -84,6 +84,8 @@ internal sealed class UsageTelemetryWorker : BackgroundService
     public override async Task StopAsync(CancellationToken cancellationToken)
     {
         await base.StopAsync(cancellationToken).ConfigureAwait(false);
+        if (Nexus.Service.FocusModes.FocusNetworkGate.IsHeld)
+            return;
         using var cts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         cts.CancelAfter(StopFlushTimeout);
         try { await FlushAsync(cts.Token).ConfigureAwait(false); }

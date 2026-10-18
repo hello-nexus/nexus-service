@@ -241,6 +241,28 @@ public class UsageTelemetryTests
     }
 
     [Fact]
+    public async Task A_posthog_send_cancelled_by_the_stop_timeout_does_not_lose_the_batch_for_the_usage_sink()
+    {
+        var store = Store(true);
+        var client = new TelemetryClient(store);
+        client.Capture("fan_curve_applied");
+        var usage = new UsageTelemetrySink(true);
+        var flush = new TelemetryFlushService(client, store, new ITelemetrySink[] { usage, new HangingSink() });
+        using var cts = new CancellationTokenSource(TimeSpan.FromMilliseconds(100));
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => flush.FlushAsync(cts.Token));
+
+        Assert.Equal(new[] { "fan_curve_applied" }, usage.Take(10).Select(e => e.Name));
+    }
+
+    private sealed class HangingSink : ITelemetrySink
+    {
+        public bool Enabled => true;
+        public Task SendAsync(string distinctId, IReadOnlyList<TelemetryEvent> batch, CancellationToken ct) =>
+            Task.Delay(Timeout.Infinite, ct);
+    }
+
+    [Fact]
     public async Task Repeated_drop_with_the_same_status_is_logged_once()
     {
         var sink = new UsageTelemetrySink(true);

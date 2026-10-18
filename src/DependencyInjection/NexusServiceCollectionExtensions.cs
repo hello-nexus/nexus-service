@@ -165,11 +165,11 @@ public static class NexusServiceCollectionExtensions
             sp => sp.GetRequiredService<Nexus.Service.Telemetry.TelemetryClient>());
 #endif
         services.AddSingleton<Nexus.Service.Telemetry.PostHogOptions>();
-        services.AddSingleton<Nexus.Service.Telemetry.ITelemetrySink, Nexus.Service.Telemetry.PostHogSink>();
-        // Parallel sink: the same events (minus $identify, plus a profile event) to nexus-api /telemetry/usage.
+        // Usage sink first: it only enqueues, so a slow or cancelled PostHog send after it cannot lose the drained batch.
         services.AddSingleton(new Nexus.Service.Telemetry.UsageTelemetrySink(Nexus.Service.Common.ClientCredential.IsOfficial));
         services.AddSingleton<Nexus.Service.Telemetry.ITelemetrySink>(
             sp => sp.GetRequiredService<Nexus.Service.Telemetry.UsageTelemetrySink>());
+        services.AddSingleton<Nexus.Service.Telemetry.ITelemetrySink, Nexus.Service.Telemetry.PostHogSink>();
         if (Nexus.Service.Common.ClientCredential.IsOfficial)
         {
             services.AddSingleton<Nexus.Service.Telemetry.IUsageTransport, Nexus.Service.Telemetry.UsageTransport>();

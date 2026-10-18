@@ -72,7 +72,7 @@ internal sealed class UsageTelemetrySink : ITelemetrySink
         Props = FitProps(props),
     };
 
-    // nexus-api rejects a batch holding an event whose props exceed its byte cap.
+    // Keeps each event under nexus-api's per-event props size cap, which otherwise drops the whole event.
     internal const int MaxPropsBytes = 6000;
     private const int MaxStringChars = 256;
 
