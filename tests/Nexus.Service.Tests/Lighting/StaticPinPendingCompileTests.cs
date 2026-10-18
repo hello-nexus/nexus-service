@@ -1,97 +1,170 @@
+using System.Collections.Concurrent;
 using Nexus.Service.Lighting;
 using Nexus.Service.Lighting.Engine;
-using Nexus.Service.Lighting.Engine.Effects;
 using Nexus.Service.Lighting.Engine.Gpu;
+using Nexus.Service.Media;
 using Nexus.Service.Persistence;
+using Nexus.Service.Sockets;
 
 namespace Nexus.Service.Tests.Lighting;
 
 /// <summary>
 /// A static pin on one device renders its design through a shader. While that
-/// shader is still compiling the render is skipped; the pin must not cache that
-/// blank canvas as the look. Real engine loop and real ShaderEffect; only the GL
-/// render is replaced by ShaderEffect.TestRender, so the live ANGLE compile
-/// itself is not exercised.
+/// shader has not drawn its frame the pin must not cache the blank canvas, must
+/// keep the compile alive, and must never show black. Real engine loop, real
+/// LightingProvider shader builder and real ShaderEffect; only the GL render is
+/// replaced by ShaderEffect.TestRender (except the context-unavailable test,
+/// which runs the real no-draw path), so a live ANGLE compile is not exercised.
 /// </summary>
 public class StaticPinPendingCompileTests
 {
     private const string DeviceId = "corsair-link:fan";
+    private const string OtherId = "corsair-link:other";
+
+    private static readonly (byte, byte, byte) Green = (0, 255, 0);
+    private static readonly (byte, byte, byte) Red = (255, 0, 0);
+    private static readonly (byte, byte, byte) Blue = (0, 0, 255);
+    private static readonly (byte, byte, byte) Black = (0, 0, 0);
 
     public static IEnumerable<object[]> EveryStaticDesign() =>
         StaticEffectCatalog.Fills.Concat(StaticEffectCatalog.Patterns).Select(k => new object[] { k });
 
     private sealed class Rig : IDisposable
     {
+        private readonly string _dir = Path.Combine(Path.GetTempPath(), "nexus-staticpin-" + Guid.NewGuid().ToString("N")[..8]);
+        private readonly object _sync = new();
+        private readonly List<ShaderEffect> _built = new();
+        private readonly ConcurrentDictionary<string, ManualResetEventSlim> _gates = new();
+        private readonly List<(byte, byte, byte)> _seenA = new();
+        private int _frames;
+
         public readonly LightingEngine Engine = new();
         public readonly DeviceFrame Device = new(0, DeviceId, 5, x: 100, y: 100, w: 250, h: 40, rotation: 0);
+        public readonly DeviceFrame Other = new(1, OtherId, 5, x: 100, y: 200, w: 250, h: 40, rotation: 0);
         public readonly DevicePinTracker Tracker = new();
-        public readonly GpuContext Gpu = new(16, 9, null, () => { });
-        public readonly List<ShaderEffect> Built = new();
-        public readonly ManualResetEventSlim Gate = new(false);
-        public int FailBuilds; // the first N built effects throw on render
+        public readonly GpuContext Gpu = new(160, 90);
+        private readonly LightingProvider _provider;
+        private readonly JsonConfigStore _store;
 
-        public Rig(DevicePin pin)
+        /// <summary>The first N builds throw when rendered.</summary>
+        public int FailBuilds;
+        /// <summary>False runs the real ShaderEffect render, which on a gated context draws nothing.</summary>
+        public bool UseTestRender = true;
+        /// <summary>Colors a landed design draws; red unless set.</summary>
+        public readonly ConcurrentDictionary<string, (byte, byte, byte)> Colors = new();
+
+        public Rig()
         {
-            Tracker.Set(DeviceId, pin);
-            Engine.Pins = Tracker;
-            Engine.StaticPinEffectFactory = _ =>
+            Directory.CreateDirectory(_dir);
+            _store = new JsonConfigStore(Path.Combine(_dir, "settings.json"));
+            _provider = new LightingProvider(_store, Engine, new LightingOutputHub(), Gpu, new MediaLibrary(), new Nexus.Service.Platform.DefaultMonitorEnumerator());
+            var real = Engine.StaticPinEffectFactory!;
+            Engine.StaticPinEffectFactory = pin =>
             {
-                var build = Built.Count;
-                var fx = new ShaderEffect("static-test", Gpu, "")
+                var fx = (ShaderEffect)real(pin)!;
+                Assert.Equal(pin.Effect, fx.Name);
+                if (UseTestRender)
                 {
-                    TestRender = (canvas, _) =>
+                    var build = Built.Count;
+                    fx.TestRender = (canvas, _) =>
                     {
                         if (build < FailBuilds)
                         {
                             throw new InvalidOperationException("compile failed");
                         }
-                        if (!Gate.IsSet)
+                        if (!Gate(fx.Name).IsSet)
                         {
                             return false;
                         }
-                        for (var y = 0; y < canvas.Height; y++)
-                        {
-                            for (var x = 0; x < canvas.Width; x++)
-                            {
-                                canvas.SetPixel(x, y, 255, 0, 0);
-                            }
-                        }
+                        var (r, g, b) = Colors.TryGetValue(fx.Name, out var c) ? c : Red;
+                        canvas.Fill(r, g, b);
                         return true;
-                    },
-                };
-                Built.Add(fx);
+                    };
+                }
+                lock (_sync)
+                {
+                    _built.Add(fx);
+                }
                 return fx;
             };
-            Engine.UpdateDevices(new[] { Device });
+            Engine.Pins = Tracker;
+            Engine.UpdateDevices(new[] { Device, Other });
             Engine.FrameIntervalMs = 10;
+            Engine.OnFrame += _ =>
+            {
+                lock (_sync)
+                {
+                    _frames++;
+                    _seenA.Add(Led(Device));
+                    Monitor.PulseAll(_sync);
+                }
+            };
+        }
+
+        public ManualResetEventSlim Gate(string design) => _gates.GetOrAdd(design, _ => new ManualResetEventSlim(false));
+
+        public List<ShaderEffect> Built
+        {
+            get
+            {
+                lock (_sync)
+                {
+                    return new List<ShaderEffect>(_built);
+                }
+            }
+        }
+
+        /// <summary>Every state device A showed on a published frame.</summary>
+        public List<(byte, byte, byte)> Seen()
+        {
+            lock (_sync)
+            {
+                return new List<(byte, byte, byte)>(_seenA);
+            }
         }
 
         public void Start() => Engine.SetEffect(new Fill(0, 255, 0)); // shared canvas = green
 
-        public (byte R, byte G, byte B) Led0()
+        public static (byte, byte, byte) Led(DeviceFrame d)
         {
-            var b = Device.LedBytes;
+            var b = d.LedBytes;
             return (b[0], b[1], b[2]);
         }
 
-        public bool WaitFor(Func<bool> cond, int ms = 4000)
+        /// <summary>Waits on engine frames, not the clock, until the condition holds.</summary>
+        public bool WaitFor(Func<bool> cond, int ms = 6000)
         {
             var end = Environment.TickCount64 + ms;
-            while (Environment.TickCount64 < end)
+            lock (_sync)
             {
-                if (cond())
+                while (!cond())
                 {
-                    return true;
+                    var left = end - Environment.TickCount64;
+                    if (left <= 0)
+                    {
+                        return false;
+                    }
+                    Monitor.Wait(_sync, (int)Math.Min(left, 50));
                 }
-                Thread.Sleep(5);
             }
-            return cond();
+            return true;
+        }
+
+        public void WaitFrames(int n)
+        {
+            int target;
+            lock (_sync)
+            {
+                target = _frames + n;
+            }
+            Assert.True(WaitFor(() => _frames >= target));
         }
 
         public void Dispose()
         {
-            Engine.Dispose();
+            _provider.Dispose();
             Gpu.Dispose();
+            try { Directory.Delete(_dir, recursive: true); } catch { }
         }
     }
 
@@ -110,72 +183,206 @@ public class StaticPinPendingCompileTests
     [MemberData(nameof(EveryStaticDesign))]
     public void A_static_pin_never_caches_a_frame_from_a_shader_that_is_still_compiling(string design)
     {
-        using var rig = new Rig(Pin(design));
-        var seen = new List<(byte, byte, byte)>();
-        rig.Engine.OnFrame += _ =>
-        {
-            lock (seen)
-            {
-                seen.Add(rig.Led0());
-            }
-        };
+        using var rig = new Rig();
+        rig.Tracker.Set(DeviceId, Pin(design));
         rig.Start();
 
         // Pending: the device holds the shared canvas (green), never black.
-        Assert.True(rig.WaitFor(() => rig.Led0() == ((byte)0, (byte)255, (byte)0)), "device should show the canvas while the program compiles");
-        Thread.Sleep(100);
-        Assert.Single(rig.Built);
-        Assert.Equal(0, rig.Built[0].DisposeCount);
-        Assert.True(rig.Built[0].IsRenderPending);
+        Assert.True(rig.WaitFor(() => Rig.Led(rig.Device) == Green), "device should show the canvas while the program compiles");
+        rig.WaitFrames(5);
+        var built = rig.Built;
+        Assert.Single(built);
+        Assert.Equal(design, built[0].Name);
+        Assert.Equal(0, built[0].DisposeCount);
 
         // The program lands: same pin, same version, the real look appears.
         var version = rig.Tracker.Version;
-        rig.Gate.Set();
-        Assert.True(rig.WaitFor(() => rig.Led0() == ((byte)255, (byte)0, (byte)0)), "device should show the design once the program lands");
+        rig.Gate(design).Set();
+        Assert.True(rig.WaitFor(() => Rig.Led(rig.Device) == Red), "device should show the design once the program lands");
         Assert.Equal(version, rig.Tracker.Version);
-        lock (seen)
-        {
-            Assert.DoesNotContain(((byte)0, (byte)0, (byte)0), seen);
-        }
-        Assert.Equal(1, rig.Built[0].DisposeCount); // disposed once, after the real frame was cached
+        Assert.DoesNotContain(Black, rig.Seen());
+        Assert.True(rig.WaitFor(() => built[0].DisposeCount == 1));
         Assert.Single(rig.Built);
     }
 
     [Fact]
-    public void A_failed_compile_does_not_cache_black_and_a_later_retry_recovers()
+    public void A_render_that_draws_nothing_without_pending_or_failed_is_not_cached()
     {
-        using var rig = new Rig(Pin("gradientlinear")) { FailBuilds = 1 };
-        rig.Gate.Set();
+        // Context unavailable: the real ShaderEffect skips the frame with neither flag set.
+        using var rig = new Rig { UseTestRender = false };
+        rig.Gpu.OpenUpgradeGateForTest();
+        rig.Tracker.Set(DeviceId, Pin("gradientlinear"));
         rig.Start();
 
-        Assert.True(rig.WaitFor(() => rig.Built.Count == 1));
-        // The failed build leaves the device on the canvas, not black.
-        Thread.Sleep(100);
-        Assert.Equal(((byte)0, (byte)255, (byte)0), rig.Led0());
-        Assert.True(rig.Built[0].HasFailed);
+        Assert.True(rig.WaitFor(() => Rig.Led(rig.Device) == Green));
+        rig.WaitFrames(10);
+        var built = rig.Built;
+        Assert.False(built[0].IsRenderPending);
+        Assert.False(built[0].HasFailed);
+        Assert.False(built[0].DrewFrame);
+        Assert.Equal(0, built[0].DisposeCount);
+        Assert.DoesNotContain(Black, rig.Seen());
+    }
 
-        // The retry builds a second effect that works; the result is not stuck black.
-        Assert.True(rig.WaitFor(() => rig.Led0() == ((byte)255, (byte)0, (byte)0), 6000), "a failed look must be retried, not cached as black");
+    [Fact]
+    public void DrewFrame_is_set_only_by_a_render_that_wrote_the_canvas()
+    {
+        using var gpu = new GpuContext(16, 9);
+        using var fx = new ShaderEffect("x", gpu, "");
+        var canvas = new CanvasBuffer(16, 9);
+        var lands = false;
+        fx.TestRender = (c, _) =>
+        {
+            if (lands)
+            {
+                c.Fill(1, 2, 3);
+            }
+            return lands;
+        };
+        fx.RenderFrame(canvas, 0);
+        Assert.False(fx.DrewFrame);
+        lands = true;
+        fx.RenderFrame(canvas, 0);
+        Assert.True(fx.DrewFrame);
+        lands = false;
+        fx.RenderFrame(canvas, 0);
+        Assert.False(fx.DrewFrame);
+    }
+
+    [Fact]
+    public void A_failed_compile_keeps_the_canvas_not_black_and_a_later_retry_recovers()
+    {
+        using var rig = new Rig { FailBuilds = 1 };
+        rig.Gate("gradientlinear").Set();
+        rig.Tracker.Set(DeviceId, Pin("gradientlinear"));
+        rig.Start();
+
+        Assert.True(rig.WaitFor(() => rig.Built.Count == 1 && rig.Built[0].HasFailed));
+        rig.WaitFrames(5);
+        Assert.Equal(Green, Rig.Led(rig.Device));
+
+        Assert.True(rig.WaitFor(() => Rig.Led(rig.Device) == Red), "a failed look must be retried, not cached as black");
         Assert.Equal(2, rig.Built.Count);
+        Assert.DoesNotContain(Black, rig.Seen());
+    }
+
+    [Fact]
+    public void A_shader_that_always_fails_backs_off_instead_of_rebuilding_every_second()
+    {
+        using var rig = new Rig { FailBuilds = int.MaxValue };
+        rig.Tracker.Set(DeviceId, Pin("gradientlinear"));
+        rig.Start();
+
+        // Builds are due at 0s, 1s, 3s; a fixed 1s retry would make a fourth by 3.5s.
+        Assert.False(rig.WaitFor(() => rig.Built.Count > 3, 3500));
+        Assert.InRange(rig.Built.Count, 1, 3);
+        Assert.DoesNotContain(Black, rig.Seen());
+        Assert.Equal(Green, Rig.Led(rig.Device));
     }
 
     [Fact]
     public void A_flat_color_pin_paints_without_building_any_shader()
     {
-        using var rig = new Rig(new DevicePin { Kind = DevicePinKinds.Static, Color = "#0000ff" });
+        using var rig = new Rig();
+        rig.Tracker.Set(DeviceId, new DevicePin { Kind = DevicePinKinds.Static, Color = "#0000ff" });
         rig.Start();
-        Assert.True(rig.WaitFor(() => rig.Led0() == ((byte)0, (byte)0, (byte)255)));
+        Assert.True(rig.WaitFor(() => Rig.Led(rig.Device) == Blue));
         Assert.Empty(rig.Built);
     }
 
     [Fact]
-    public void Changing_the_pin_while_a_compile_is_pending_disposes_the_abandoned_effect_and_builds_the_new_one()
+    public void Changing_the_pin_while_a_compile_is_pending_frees_the_abandoned_effect_and_keeps_the_new_one_alive()
     {
-        using var rig = new Rig(Pin("gradientlinear"));
+        using var rig = new Rig();
+        rig.Tracker.Set(DeviceId, Pin("gradientlinear"));
         rig.Start();
         Assert.True(rig.WaitFor(() => rig.Built.Count == 1));
+        rig.WaitFrames(5);
+        Assert.Equal(0, rig.Built[0].DisposeCount);
+        Assert.True(rig.Built[0].IsRenderPending);
+
         rig.Tracker.Set(DeviceId, Pin("stripes"));
         Assert.True(rig.WaitFor(() => rig.Built.Count == 2));
         Assert.True(rig.WaitFor(() => rig.Built[0].DisposeCount == 1));
+        rig.WaitFrames(5);
+        Assert.Equal(0, rig.Built[1].DisposeCount);
+        Assert.True(rig.Built[1].IsRenderPending);
+    }
+
+    [Fact]
+    public void A_pin_change_on_another_device_leaves_a_cached_look_alone()
+    {
+        using var rig = new Rig();
+        rig.Gate("gradientlinear").Set();
+        rig.Tracker.Set(DeviceId, Pin("gradientlinear"));
+        rig.Start();
+        Assert.True(rig.WaitFor(() => Rig.Led(rig.Device) == Red));
+
+        // Another device's pin is pending, then edited repeatedly: each edit bumps the tracker version.
+        rig.Tracker.Set(OtherId, Pin("stripes"));
+        for (var hue = 1; hue <= 5; hue++)
+        {
+            rig.Tracker.Set(OtherId, new DevicePin { Kind = DevicePinKinds.Static, Effect = "stripes", Hue = hue / 10f });
+            rig.WaitFrames(3);
+        }
+        rig.WaitFrames(5);
+
+        // Device A never left its look and its effect was built exactly once.
+        var seen = rig.Seen();
+        var firstRed = seen.IndexOf(Red);
+        Assert.DoesNotContain(seen.Skip(firstRed), c => c != Red);
+        Assert.Single(rig.Built, b => b.Name == "gradientlinear");
+    }
+
+    [Fact]
+    public void A_key_change_holds_the_last_finished_look_until_the_new_compile_lands()
+    {
+        using var rig = new Rig();
+        rig.Colors["stripes"] = Blue;
+        rig.Gate("gradientlinear").Set();
+        rig.Tracker.Set(DeviceId, Pin("gradientlinear"));
+        rig.Start();
+        Assert.True(rig.WaitFor(() => Rig.Led(rig.Device) == Red));
+
+        rig.Tracker.Set(DeviceId, Pin("stripes")); // gate closed: pending
+        Assert.True(rig.WaitFor(() => rig.Built.Any(b => b.Name == "stripes")));
+        rig.WaitFrames(10);
+        Assert.Equal(Red, Rig.Led(rig.Device)); // old look, not the global green and not black
+
+        rig.Gate("stripes").Set();
+        Assert.True(rig.WaitFor(() => Rig.Led(rig.Device) == Blue));
+        var seen = rig.Seen();
+        Assert.DoesNotContain(Black, seen);
+        Assert.DoesNotContain(seen.Skip(seen.IndexOf(Red)), c => c == Green);
+    }
+
+    [Fact]
+    public void A_device_removed_while_its_compile_is_pending_frees_the_effect()
+    {
+        using var rig = new Rig();
+        rig.Tracker.Set(DeviceId, Pin("gradientlinear"));
+        rig.Start();
+        Assert.True(rig.WaitFor(() => rig.Built.Count == 1));
+        rig.WaitFrames(3);
+        Assert.Equal(0, rig.Built[0].DisposeCount);
+
+        rig.Engine.UpdateDevices(new[] { rig.Other });
+        Assert.True(rig.WaitFor(() => rig.Built[0].DisposeCount == 1));
+    }
+
+    [Fact]
+    public void A_paused_engine_still_converges_when_the_compile_lands()
+    {
+        using var rig = new Rig();
+        rig.Tracker.Set(DeviceId, Pin("gradientlinear"));
+        rig.Start();
+        Assert.True(rig.WaitFor(() => rig.Built.Count == 1));
+        rig.Engine.SetPaused(true);
+        Assert.True(rig.WaitFor(() => rig.Engine.Paused));
+        rig.WaitFrames(5);
+        Assert.Equal(Green, Rig.Led(rig.Device));
+
+        rig.Gate("gradientlinear").Set();
+        Assert.True(rig.WaitFor(() => Rig.Led(rig.Device) == Red), "a pending look must finish while paused");
     }
 }

@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 using Nexus.Service.Lighting.Engine.Effects;
@@ -242,10 +243,18 @@ public sealed partial class LightingEngine : IDisposable
     // rendered only when its key changes, not per frame.
     private CanvasBuffer? _assignCanvas;
     private readonly Dictionary<string, byte[]> _assignRenders = new(StringComparer.Ordinal);
-    private int _assignVersionSeen = -1;
-    // Static-pin shaders whose first compile has not landed, kept alive so it can finish.
+    // Static-pin shaders whose first frame has not been drawn, kept alive so the compile can finish. Loop thread only.
     private readonly Dictionary<string, IEffect> _assignPending = new(StringComparer.Ordinal);
-    private readonly Dictionary<string, long> _assignRetryAt = new(StringComparer.Ordinal);
+    // Failed builds per look: when to try again and how many attempts so far.
+    private readonly Dictionary<string, (long At, int Attempts)> _assignRetry = new(StringComparer.Ordinal);
+    // The last finished look each device painted, held while its next look compiles.
+    private readonly Dictionary<string, byte[]> _assignLastGood = new(StringComparer.Ordinal);
+    private readonly HashSet<string> _assignRefKeys = new(StringComparer.Ordinal);
+    private readonly HashSet<string> _assignRefDevices = new(StringComparer.Ordinal);
+    private int _assignPruneVersion = -1;
+    private DeviceFrame[]? _assignPruneDevices;
+    private const long AssignRetryBaseMs = 1000;
+    private const long AssignRetryMaxMs = 60000;
     // Reused per-frame scratch: which devices ApplyTestOverlays painted. Valid
     // for the rest of the tick after SampleDevicesFromCanvas returns.
     private bool[] _overlaid = Array.Empty<bool>();
@@ -875,7 +884,7 @@ public sealed partial class LightingEngine : IDisposable
                         }
                         aheadDevices = devices;
                     }
-                    else if ((_studioOverlay is not null || _resampleOnce) && wakeMs <= 0)
+                    else if ((_studioOverlay is not null || _resampleOnce || _assignPending.Count > 0) && wakeMs <= 0)
                     {
                         // Paused: the effect holds, the studio overlay keeps animating over it, and once it clears the effect's paused frame is repainted onto the devices.
                         var devices = _devices;
@@ -946,6 +955,7 @@ public sealed partial class LightingEngine : IDisposable
         finally
         {
             DisposePinRenders();
+            DisposeAssignState();
             _canvas.Clear();
             foreach (var dev in _devices)
             {
@@ -2134,6 +2144,7 @@ public sealed partial class LightingEngine : IDisposable
         if (_overlaid.Length < devices.Length) _overlaid = new bool[devices.Length];
         var owned = _overlaid;
         Array.Clear(owned, 0, devices.Length);
+        PruneAssignments(devices);
         var studio = _studioOverlay;
         if (studio is not null)
         {
@@ -2187,7 +2198,7 @@ public sealed partial class LightingEngine : IDisposable
                     owned[di] = true;
                     continue;
                 }
-                var render = RenderAssignment(assignment);
+                var render = RenderAssignment(dev.Id, assignment);
                 if (render is not null)
                 {
                     PaintFromAssignment(dev, previewCount, render);
@@ -2353,27 +2364,27 @@ public sealed partial class LightingEngine : IDisposable
     /// <summary>
     /// Rendered pixels for an assignment, rendering it if this look has not been
     /// seen. Runs on the engine thread, which is where the GL context lives.
-    /// A shader still compiling (or one that failed) caches nothing and returns
-    /// null so the device keeps the shared canvas for that tick; the effect stays
-    /// alive across ticks so its compile lands and the real frame is cached then.
+    /// Only a frame the shader actually drew is cached. While the program is still
+    /// compiling, or the draw was skipped or dropped, the effect stays alive for the
+    /// next tick and the device keeps its last finished look (or, with none, the
+    /// shared canvas via null). A failed build backs off 1s doubling to 60s and the
+    /// device keeps the same fallback: unlike an animate pin, which holds black, a
+    /// static look has no live frame to lose, so black would only hide the fault.
     /// </summary>
-    private byte[]? RenderAssignment(Nexus.Service.Persistence.DevicePin assignment)
+    private byte[]? RenderAssignment(string deviceId, Nexus.Service.Persistence.DevicePin assignment)
     {
-        var tracker = Pins;
         var factory = StaticPinEffectFactory;
-        if (tracker is null || factory is null) return null;
-        if (tracker.Version != _assignVersionSeen)
-        {
-            // A control moved: every cached look is potentially stale.
-            _assignVersionSeen = tracker.Version;
-            _assignRenders.Clear();
-            DisposeAssignPending();
-            _assignRetryAt.Clear();
-        }
+        if (Pins is null || factory is null) return null;
         var key = Nexus.Service.Lighting.DevicePinLook.StaticKey(assignment);
-        if (_assignRenders.TryGetValue(key, out var cached)) return cached;
+        if (_assignRenders.TryGetValue(key, out var cached))
+        {
+            _assignLastGood[deviceId] = cached;
+            return cached;
+        }
+        _assignLastGood.TryGetValue(deviceId, out var fallback);
         var nowTick = Environment.TickCount64;
-        if (_assignRetryAt.TryGetValue(key, out var retryAt) && nowTick < retryAt) return null;
+        _assignRetry.TryGetValue(key, out var retry);
+        if (retry.Attempts > 0 && nowTick < retry.At) return fallback;
 
         var keep = false;
         IEffect? effect = null;
@@ -2392,27 +2403,27 @@ public sealed partial class LightingEngine : IDisposable
             {
                 if (shader.HasFailed)
                 {
-                    // Black is the failure, not the look: do not pin it, retry later.
-                    _assignRetryAt[key] = nowTick + PinRetryMs;
-                    return null;
+                    ScheduleAssignRetry(key, assignment.Effect, retry.Attempts, nowTick, null);
+                    return fallback;
                 }
-                if (shader.IsRenderPending)
+                if (!shader.DrewFrame)
                 {
                     _assignPending[key] = effect;
                     keep = true;
-                    return null;
+                    return fallback;
                 }
             }
             var pixels = _assignCanvas.Pixels.ToArray();
             _assignRenders[key] = pixels;
+            _assignLastGood[deviceId] = pixels;
+            _assignRetry.Remove(key);
             return pixels;
         }
         catch (Exception ex)
         {
-            // A look that cannot render must not take the whole frame down; the
-            // device falls through to the shared canvas.
-            Gpu.GpuContext.Log($"[static-pin] render failed for {assignment.Effect}: {ex.GetType().Name}: {ex.Message}");
-            return null;
+            // A look that cannot render must not take the whole frame down.
+            ScheduleAssignRetry(key, assignment.Effect, retry.Attempts, nowTick, ex);
+            return fallback;
         }
         finally
         {
@@ -2424,13 +2435,68 @@ public sealed partial class LightingEngine : IDisposable
         }
     }
 
-    private void DisposeAssignPending()
+    private void ScheduleAssignRetry(string key, string? effectName, int attempts, long nowTick, Exception? ex)
+    {
+        if (attempts == 0)
+        {
+            // Once per look: the retries after it stay quiet.
+            Gpu.GpuContext.Log($"[static-pin] render failed for {effectName}, retrying with backoff{(ex is null ? "" : $": {ex.GetType().Name}: {ex.Message}")}");
+        }
+        var delay = Math.Min(AssignRetryMaxMs, AssignRetryBaseMs << Math.Min(attempts, 10));
+        _assignRetry[key] = (nowTick + delay, attempts + 1);
+    }
+
+    /// <summary>
+    /// Drops cached looks, pending compiles, retries and held pixels that no current
+    /// device pin references. A look is keyed by every control, so a pin change on
+    /// one device leaves every other device's look alone. Runs when the pin set or
+    /// the device array changes.
+    /// </summary>
+    private void PruneAssignments(DeviceFrame[] devices)
+    {
+        var pins = Pins;
+        var version = pins?.Version ?? -1;
+        if (version == _assignPruneVersion && ReferenceEquals(devices, _assignPruneDevices)) return;
+        _assignPruneVersion = version;
+        _assignPruneDevices = devices;
+        if (_assignRenders.Count + _assignPending.Count + _assignRetry.Count + _assignLastGood.Count == 0) return;
+        _assignRefKeys.Clear();
+        _assignRefDevices.Clear();
+        if (pins is not null)
+        {
+            foreach (var dev in devices)
+            {
+                if (pins.TryGet(dev.Id, out var a)
+                    && a.Kind == Nexus.Service.Persistence.DevicePinKinds.Static
+                    && !Nexus.Service.Lighting.StaticColorHex.TryParse(a.Color, out _, out _, out _))
+                {
+                    _assignRefKeys.Add(Nexus.Service.Lighting.DevicePinLook.StaticKey(a));
+                    _assignRefDevices.Add(dev.Id);
+                }
+            }
+        }
+        foreach (var k in _assignRenders.Keys.Where(k => !_assignRefKeys.Contains(k)).ToList()) _assignRenders.Remove(k);
+        foreach (var k in _assignRetry.Keys.Where(k => !_assignRefKeys.Contains(k)).ToList()) _assignRetry.Remove(k);
+        foreach (var k in _assignPending.Keys.Where(k => !_assignRefKeys.Contains(k)).ToList())
+        {
+            try { _assignPending[k].Dispose(); } catch { /* best-effort */ }
+            _assignPending.Remove(k);
+        }
+        foreach (var d in _assignLastGood.Keys.Where(d => !_assignRefDevices.Contains(d)).ToList()) _assignLastGood.Remove(d);
+    }
+
+    private void DisposeAssignState()
     {
         foreach (var e in _assignPending.Values)
         {
             try { e.Dispose(); } catch { /* best-effort */ }
         }
         _assignPending.Clear();
+        _assignRenders.Clear();
+        _assignRetry.Clear();
+        _assignLastGood.Clear();
+        _assignPruneVersion = -1;
+        _assignPruneDevices = null;
     }
 
     /// <summary>
@@ -2488,7 +2554,6 @@ public sealed partial class LightingEngine : IDisposable
         }
         _disposed = true;
         Stop();
-        DisposeAssignPending();
         try { _cts?.Dispose(); } catch { }
         _cts = null;
         _blackoutApplied.Dispose();

@@ -88,6 +88,9 @@ public sealed partial class ShaderEffect : IEffect
     internal Func<CanvasBuffer, double, bool>? TestRender;
     /// <summary>True while the last frame was skipped because the program is still compiling; the canvas then holds whatever the caller left.</summary>
     public bool IsRenderPending => _renderPending;
+    private volatile bool _drewFrame;
+    /// <summary>True only when the last RenderFrame wrote a finished frame into the canvas; false for every skipped, deferred, failed or dropped render.</summary>
+    internal bool DrewFrame => _drewFrame;
     /// <summary>True once the compiled program reads a live audio uniform, so a frame depends on more than time.</summary>
     public bool ReadsAudio =>
         _u.AudioLevel >= 0 || _u.AudioBass >= 0 || _u.AudioMid >= 0 || _u.AudioHigh >= 0 || _u.AudioBeat >= 0
@@ -109,6 +112,7 @@ public sealed partial class ShaderEffect : IEffect
 
     public void RenderFrame(CanvasBuffer canvas, double tickMs)
     {
+        _drewFrame = false;
         if (_generation != _ctx.Generation)
         {
             _generation = _ctx.Generation;
@@ -157,6 +161,7 @@ public sealed partial class ShaderEffect : IEffect
         {
             _renderPending = !test(canvas, tickMs);
             _compiled = !_renderPending;
+            _drewFrame = !_renderPending;
             return;
         }
         if (!_ctx.Available)
@@ -300,6 +305,7 @@ public sealed partial class ShaderEffect : IEffect
             if (canvas.Width == w && canvas.Height == h)
             {
                 canvas.WriteFromGl(_readback.AsSpan(0, readBytes), es);
+                _drewFrame = true;
             }
             // Canvas resized outside what we rendered: drop this frame silently.
 
