@@ -399,4 +399,19 @@ public class OpenRgbNativeDetectorPolicyTests : IDisposable
         Assert.Equal(0, RgbBridge.AddressOfDevice(restarted, b.StableId));
         Assert.Equal(-1, RgbBridge.AddressOfDevice(new List<RgbDevice> { CommanderCore(0, "SERIAL-A") }, b.StableId));
     }
+
+    [Fact]
+    public void A_resize_counts_as_applied_only_when_the_reread_shows_the_new_count()
+    {
+        var d = CommanderCore(3, "SERIAL-A");
+        d.Zones.Add(new RgbZone { Name = "Fan 1", LedCount = 12 });
+        var devices = new List<RgbDevice> { d };
+
+        var took = new[] { new RgbBridge.ZoneResizeAttempt(3, 0, "Fan 1", 0, 12, "queued") };
+        var missed = new[] { new RgbBridge.ZoneResizeAttempt(3, 0, "Fan 1", 0, 20, "queued") };
+
+        Assert.True(RgbBridge.AnyResizeTook(took, devices));
+        Assert.False(RgbBridge.AnyResizeTook(missed, devices));
+        Assert.False(RgbBridge.AnyResizeTook(Array.Empty<RgbBridge.ZoneResizeAttempt>(), devices));
+    }
 }

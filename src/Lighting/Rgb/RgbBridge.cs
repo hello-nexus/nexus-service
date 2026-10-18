@@ -248,6 +248,9 @@ public sealed class RgbBridge : IDisposable
     /// <summary>Raised when the engine's frame set changes (a device or zone appears, goes away, or gains its LEDs), under the refresh lock, and after a contributor change even when the frame set did not change, outside the lock; handlers must not block.</summary>
     public event Action? DeviceSetChanged;
 
+    /// <summary>Raised once per refresh pass after a resize it sent shows its new count in the re-read, so views recount even though the device set did not change.</summary>
+    public event Action? ZoneResizeApplied;
+
     private readonly IReadOnlyList<ILightingFrameContributor> _frameContributors;
     private readonly Nexus.Service.Lighting.Mappings.ContributorFrameLayouts _contributorLayouts;
     // Contributors that also implement IOpenRgbDeviceOwner. Cached at construction;
@@ -1306,6 +1309,10 @@ public sealed class RgbBridge : IDisposable
                 if (refetched && devices.Count > 0)
                 {
                     LogZoneResizeOutcomes(resizeAttempts, devices);
+                    if (AnyResizeTook(resizeAttempts, devices))
+                    {
+                        ZoneResizeApplied?.Invoke();
+                    }
                 }
             }
 
@@ -2124,7 +2131,7 @@ public sealed class RgbBridge : IDisposable
     }
 
     /// <summary>One RESIZEZONE we sent, carried to the post-refetch pass that reports whether it took.</summary>
-    private readonly record struct ZoneResizeAttempt(int PhysIdx, int ZoneIdx, string ZoneName, int From, int To, string Source);
+    internal readonly record struct ZoneResizeAttempt(int PhysIdx, int ZoneIdx, string ZoneName, int From, int To, string Source);
 
     /// <summary>
     /// RESIZEZONE has no reply, so a re-read is the only confirmation. Both totals
@@ -2162,6 +2169,19 @@ public sealed class RgbBridge : IDisposable
                 ServiceLog.Warn($"[rgb-bridge] resize did not take: {what}, zone still reports {observed}; {totals}");
             }
         }
+    }
+
+    /// <summary>True when any attempted resize now reads back as its requested count.</summary>
+    internal static bool AnyResizeTook(IReadOnlyList<ZoneResizeAttempt> attempts, IReadOnlyList<RgbDevice> devices)
+    {
+        foreach (var a in attempts)
+        {
+            if (DescribeZone(devices, a.PhysIdx, a.ZoneIdx).Current == a.To)
+            {
+                return true;
+            }
+        }
+        return false;
     }
 
     private static RgbDevice? FindDevice(IReadOnlyList<RgbDevice> devices, int address)
