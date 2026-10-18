@@ -852,11 +852,20 @@ public partial class Slv3HubTests
     }
 
     [Fact]
-    public void The_worker_runs_one_drive_tick_for_every_three_ticks_at_the_measured_poll_period()
+    public void The_worker_runs_the_drive_pass_once_per_group_of_polls()
     {
-        Assert.Equal(336, Slv3ConnectionWorker.PollPeriodMs);
-        var drives = Enumerable.Range(0, 9).Where(Slv3ConnectionWorker.IsDriveTick).ToArray();
-        Assert.Equal(new[] { 0, 3, 6 }, drives);
+        var (hub, _, tx, _) = CreateConnectedHub();
+        tx.SentFrames.Clear();
+        var tick = 0;
+
+        for (var i = 0; i < 3 * Slv3ConnectionWorker.DriveEveryTicks; i++)
+        {
+            Assert.True(Slv3ConnectionWorker.RunTick(hub, ref tick));
+        }
+
+        var clockSyncs = tx.SentFrames.Count(f => f.Length > 5 && f[0] == Slv3Protocol.UsbSendRf && f[1] == 0
+            && f[4] == Slv3Protocol.RfFrameType && f[5] == Slv3Protocol.RfClockSync);
+        Assert.Equal(3, clockSyncs);
     }
 
     [Fact]
@@ -894,5 +903,153 @@ public partial class Slv3HubTests
         hub.LockBoundDevices = () => false;
 
         Assert.False(hub.State.LockBoundDevices);
+    }
+
+    [Fact]
+    public void A_bind_due_while_an_upload_is_in_flight_waits_for_the_next_poll()
+    {
+        var (hub, _, tx, fan, _, _) = Stranded(Ours, 1, Slv3Protocol.DefaultChannel);
+        Ticks(hub, 2);
+        fan.RxType = 7;
+        var during = -1;
+        tx.OnSend = f =>
+        {
+            if (during >= 0 || f.Length < 6 || f[4] != Slv3Protocol.RfFrameType || f[5] != Slv3Protocol.RfRgbSync)
+            {
+                return;
+            }
+            var before = AllBindFrames(tx).Count;
+            hub.PollTick();
+            during = AllBindFrames(tx).Count - before;
+        };
+
+        Assert.True(hub.SendRgbFrame(FanKey, new[] { new Nexus.Service.Peripherals.Hyte.Np50.RgbColor(1, 2, 3) }, 100, 100, out _));
+
+        Assert.Equal(0, during);
+        tx.SentFrames.Clear();
+        Ticks(hub, 1);
+        Assert.NotEmpty(AllBindFrames(tx));
+    }
+
+    [Fact]
+    public void An_upload_that_fails_still_ends_the_hold_on_its_chain()
+    {
+        var (hub, net, tx, fan, _, _) = Stranded(Ours, 1, Slv3Protocol.DefaultChannel);
+        Ticks(hub, 2);
+        net.TxFailFast = true;
+        Assert.False(hub.SendRgbFrame(FanKey, new[] { new Nexus.Service.Peripherals.Hyte.Np50.RgbColor(1, 2, 3) }, 100, 100, out _));
+        net.TxFailFast = false;
+        fan.RxType = 7;
+        tx.SentFrames.Clear();
+
+        Ticks(hub, 1);
+
+        Assert.NotEmpty(AllBindFrames(tx));
+    }
+
+    [Fact]
+    public async System.Threading.Tasks.Task A_late_pass_and_the_suspend_save_still_send_after_a_poll_timed_out()
+    {
+        var (hub, net, tx, _, _, _) = Stranded(Ours, 1, Slv3Protocol.DefaultChannel);
+        Ticks(hub, 2);
+        net.TxWedged = true;
+        hub.DriveTick();
+        net.TxWedged = false;
+        tx.SentFrames.Clear();
+
+        var frames = new byte[30 * 40 * 3];
+        new Random(7).NextBytes(frames);
+        Assert.True(await hub.SendRgbWindowAsync(FanKey, frames, 40, 30, 53, 100));
+        await hub.OnSystemSuspending();
+
+        Assert.Contains(tx.SentFrames, f => f.Length > 5 && f[4] == Slv3Protocol.RfFrameType && f[5] == Slv3Protocol.RfRgbSync);
+        Assert.Equal(3, SaveCfgFrames(tx).Count);
+    }
+
+    [Fact]
+    public void A_slow_tx_gets_each_chain_an_attempt_in_turn_not_just_the_first()
+    {
+        var (hub, net, tx, _) = CreateConnectedHub();
+        var owned = new Dictionary<string, int>();
+        for (var i = 0; i < 3; i++)
+        {
+            owned[Convert.ToHexString(ChainMac(i))] = i + 1;
+            net.Fans.Add(new SimulatedFan { Mac = ChainMac(i), Pwm = new byte[] { 6, 6, 6, 6 } });
+        }
+        hub.OwnedDevicesLoad = () => owned;
+        Ticks(hub, 1);
+        net.TxWedged = true;
+        foreach (var fan in net.Fans)
+        {
+            fan.IgnoresBind = true;
+            fan.MasterMac = new byte[6];
+            fan.RxType = 0;
+        }
+        tx.SentFrames.Clear();
+
+        Ticks(hub, 3);
+
+        var tried = AllBindFrames(tx).Select(f => Convert.ToHexString(f.AsSpan(6, 6))).Distinct().Count();
+        Assert.Equal(3, tried);
+    }
+
+    [Fact]
+    public void With_the_lock_on_owned_chains_are_never_unbound_by_the_adoption_cap_whatever_their_mac_order()
+    {
+        var (hub, net, _, _, _) = CreateOwnershipHub(new() { [Convert.ToHexString(ChainMac(40))] = 13 });
+        for (var i = 0; i < Slv3Hub.AdoptionCap; i++)
+        {
+            net.Fans.Add(new SimulatedFan { Mac = ChainMac(i), MasterMac = net.MasterMac, RxType = (byte)(i + 1), Pwm = new byte[] { 6, 6, 6, 6 } });
+        }
+        net.Fans.Add(new SimulatedFan { Mac = ChainMac(40), MasterMac = net.MasterMac, RxType = 13, Pwm = new byte[] { 6, 6, 6, 6 } });
+
+        Ticks(hub, 8);
+
+        Assert.True(net.Fans.Single(f => f.Mac.SequenceEqual(ChainMac(40))).MasterMac.SequenceEqual(net.MasterMac));
+    }
+
+    [Fact]
+    public void The_chain_past_the_adoption_cap_is_the_last_newcomer_in_record_order()
+    {
+        var (hub, net, _, _) = CreateConnectedHub();
+        // Reported highest MAC first, so the last reported is the lowest MAC.
+        for (var i = Slv3Hub.AdoptionCap; i >= 0; i--)
+        {
+            net.Fans.Add(new SimulatedFan { Mac = ChainMac(i), MasterMac = net.MasterMac, RxType = (byte)(i + 1), Pwm = new byte[] { 6, 6, 6, 6 } });
+        }
+
+        Ticks(hub, 8);
+
+        var loser = net.Fans.Single(f => !f.MasterMac.SequenceEqual(net.MasterMac));
+        Assert.Equal(ChainMac(0), loser.Mac);
+    }
+
+    [Fact]
+    public void Locking_back_on_turns_a_slot_conflict_unbind_back_into_a_bind_but_not_a_user_unbind()
+    {
+        var low = Convert.FromHexString("111111111111");
+        var high = Convert.FromHexString("222222222222");
+        var (hub, net, tx, _, _) = CreateOwnershipHub();
+        var lockOn = false;
+        hub.LockBoundDevices = () => lockOn;
+        var loser = new SimulatedFan { Mac = high, MasterMac = net.MasterMac, RxType = 4, Pwm = new byte[] { 6, 6, 6, 6 } };
+        net.Fans.Add(loser);
+        net.Fans.Add(new SimulatedFan { Mac = low, MasterMac = net.MasterMac, RxType = 4, Pwm = new byte[] { 6, 6, 6, 6 } });
+        loser.IgnoresBind = true;
+        Ticks(hub, Slv3Hub.SlotConflictLimit + 3);
+        Assert.Contains(AllBindFrames(tx), f => f.AsSpan(12, 6).SequenceEqual(new byte[6]));
+        Assert.Equal(new byte[6], AllBindFrames(tx).Last().AsSpan(12, 6).ToArray());
+
+        lockOn = true;
+        tx.SentFrames.Clear();
+        Ticks(hub, 2);
+        Assert.All(AllBindFrames(tx), f => Assert.Equal(net.MasterMac, f.AsSpan(12, 6).ToArray()));
+
+        net.Fans.Single(f => f.Mac.SequenceEqual(low)).IgnoresBind = true;
+        Assert.True(hub.Unbind("111111111111"));
+        tx.SentFrames.Clear();
+        Ticks(hub, 2);
+        Assert.Contains(AllBindFrames(tx), f => f.AsSpan(6, 6).SequenceEqual(low));
+        Assert.All(AllBindFrames(tx).Where(f => f.AsSpan(6, 6).SequenceEqual(low)), f => Assert.Equal(new byte[6], f.AsSpan(12, 6).ToArray()));
     }
 }
