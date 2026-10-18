@@ -49,6 +49,28 @@ public sealed class Slv3LockBoundDevicesTests : IDisposable
         Assert.True(store.Load().Devices.LianLiWireless.LockBoundDevices);
     }
 
+    [Theory]
+    [InlineData("bind")]
+    [InlineData("unbind")]
+    public async Task Bind_and_unbind_routes_answer_locked_while_the_lock_is_on_and_not_after(string action)
+    {
+        var url = "/devices/lianli-wireless/" + action;
+        var body = new { mac = "0A0B0C0D0E0F" };
+
+        var locked = await _client.PostAsJsonAsync(url, body);
+        Assert.Equal(System.Net.HttpStatusCode.OK, locked.StatusCode);
+        using (var doc = JsonDocument.Parse(await locked.Content.ReadAsStringAsync()))
+        {
+            Assert.True(doc.RootElement.GetProperty("error").GetBoolean());
+            Assert.Equal("locked", doc.RootElement.GetProperty("msg").GetString());
+        }
+
+        Assert.True((await _client.PutAsJsonAsync("/devices/lianli-wireless/lock", new { enabled = false })).IsSuccessStatusCode);
+        var open = await _client.PostAsJsonAsync(url, body);
+        using var after = JsonDocument.Parse(await open.Content.ReadAsStringAsync());
+        Assert.NotEqual("locked", after.RootElement.GetProperty("msg").GetString());
+    }
+
     [Fact]
     public async Task A_put_without_enabled_is_a_bad_request_and_changes_nothing()
     {

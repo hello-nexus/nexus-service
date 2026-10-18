@@ -10,6 +10,77 @@ namespace Nexus.Service.Tests.LianLiWireless;
 public partial class Slv3HubTests
 {
     private static string FanKey => Convert.ToHexString(FanMac);
+
+    // Manual bind and unbind are refused while the lock is on, so these open it for the call and restore it.
+    private static bool ManualBind(Slv3Hub hub, string mac) => ManualBind(hub, mac, out _);
+
+    private static bool ManualBind(Slv3Hub hub, string mac, out string error)
+    {
+        var was = hub.State.LockBoundDevices;
+        hub.SetLockBoundDevices(false);
+        try
+        {
+            return hub.Bind(mac, out error);
+        }
+        finally
+        {
+            hub.SetLockBoundDevices(was);
+        }
+    }
+
+    private static bool ManualUnbind(Slv3Hub hub, string mac) => ManualUnbind(hub, mac, out _);
+
+    private static bool ManualUnbind(Slv3Hub hub, string mac, out string error)
+    {
+        var was = hub.State.LockBoundDevices;
+        hub.SetLockBoundDevices(false);
+        try
+        {
+            return hub.Unbind(mac, out error);
+        }
+        finally
+        {
+            hub.SetLockBoundDevices(was);
+        }
+    }
+
+    [Fact]
+    public void Manual_bind_and_unbind_are_refused_with_the_lock_on_and_send_nothing()
+    {
+        var (hub, net, tx, _, saved, _) = Stranded(Ours, 1, Slv3Protocol.DefaultChannel);
+        net.Fans.Add(new SimulatedFan { Mac = Convert.FromHexString("0A0B0C0D0E0F"), RxType = 0 });
+        Ticks(hub, 2);
+        Assert.True(hub.State.LockBoundDevices);
+        var savedBefore = saved.ToDictionary(e => e.Key, e => e.Value);
+        tx.SentFrames.Clear();
+
+        Assert.False(hub.Bind("0A0B0C0D0E0F", out var bindError));
+        Assert.Equal(Slv3Hub.LockedError, bindError);
+        Assert.False(hub.Unbind(FanKey, out var unbindError));
+        Assert.Equal(Slv3Hub.LockedError, unbindError);
+
+        Assert.Empty(tx.SentFrames);
+        Assert.Equal(savedBefore, saved);
+        Ticks(hub, 3);
+        Assert.True(hub.State.Fans.Single(f => f.Mac == FanKey).BoundToUs);
+    }
+
+    [Fact]
+    public void Manual_bind_and_unbind_work_with_the_lock_off()
+    {
+        var (hub, net, tx, _, _, _) = Stranded(Ours, 1, Slv3Protocol.DefaultChannel, lockOn: false);
+        net.Fans.Add(new SimulatedFan { Mac = Convert.FromHexString("0A0B0C0D0E0F"), RxType = 0 });
+        Ticks(hub, 2);
+        Assert.False(hub.State.LockBoundDevices);
+        tx.SentFrames.Clear();
+
+        Assert.True(hub.Bind("0A0B0C0D0E0F", out _));
+        Assert.NotEmpty(AllBindFrames(tx));
+        tx.SentFrames.Clear();
+        Assert.True(hub.Unbind(FanKey, out _));
+        Assert.Contains(AllBindFrames(tx), f => f.AsSpan(12, 6).SequenceEqual(new byte[6]));
+    }
+
     private static readonly byte[] FarMaster = Convert.FromHexString("0102030405FF");
 
     private static (Slv3Hub Hub, FakeSlv3Network Net, FakeTxTransport Tx, SimulatedFan Fan, Dictionary<string, int> Saved, ManualClock Clock) Stranded(
@@ -231,7 +302,7 @@ public partial class Slv3HubTests
         Ticks(hub, 2);
         fan.IgnoresBind = true;
 
-        Assert.True(hub.Unbind(FanKey));
+        Assert.True(ManualUnbind(hub, FanKey));
         tx.SentFrames.Clear();
         Ticks(hub, 100);
 
@@ -259,7 +330,7 @@ public partial class Slv3HubTests
         var (hub, _, tx, fan, _, _) = Stranded(FarMaster, 3, Slv3Protocol.DefaultChannel, ownedFan: false);
         Ticks(hub, 1);
 
-        Assert.True(hub.Unbind(FanKey));
+        Assert.True(ManualUnbind(hub, FanKey));
         Ticks(hub, 3);
 
         var frames = AllBindFrames(tx);
@@ -278,9 +349,9 @@ public partial class Slv3HubTests
         net.Fans.Add(new SimulatedFan { Mac = FarMaster, DevType = 0xFF });
         Ticks(hub, 1);
 
-        Assert.False(hub.Bind(FanKey, out var bindError));
+        Assert.False(ManualBind(hub, FanKey, out var bindError));
         Assert.Equal("held by a live master", bindError);
-        Assert.False(hub.Unbind(FanKey, out var unbindError));
+        Assert.False(ManualUnbind(hub, FanKey, out var unbindError));
         Assert.Equal("held by a live master", unbindError);
         Ticks(hub, 3);
 
@@ -311,7 +382,7 @@ public partial class Slv3HubTests
         Assert.True(hub.DriveTick());
         tx.SentFrames.Clear();
 
-        Assert.True(hub.Bind(FanKey));
+        Assert.True(ManualBind(hub, FanKey));
 
         var frame = AllBindFrames(tx).Single();
         Assert.Equal(33, frame[2]);
@@ -332,7 +403,7 @@ public partial class Slv3HubTests
         net.Fans.Add(new SimulatedFan { Mac = FanMac });
         Assert.True(hub.DriveTick());
 
-        Assert.True(hub.Bind(FanKey));
+        Assert.True(ManualBind(hub, FanKey));
         Assert.True(hub.DriveTick());
 
         Assert.Equal(1, hub.State.Fans.Single(f => f.Mac == FanKey).Slot);
@@ -345,10 +416,10 @@ public partial class Slv3HubTests
         net.Fans.Add(new SimulatedFan { Mac = FanMac });
         Ticks(hub, 1);
 
-        Assert.True(hub.Bind(FanKey));
+        Assert.True(ManualBind(hub, FanKey));
         Ticks(hub, 2);
         Assert.Equal(1, saved[FanKey]);
-        Assert.True(hub.Unbind(FanKey));
+        Assert.True(ManualUnbind(hub, FanKey));
         Assert.Empty(saved);
     }
 
@@ -405,7 +476,7 @@ public partial class Slv3HubTests
         var (hub, net, tx, _) = CreateConnectedHub(clock.NowMs);
         net.Fans.Add(new SimulatedFan { Mac = FanMac });
         Assert.True(hub.DriveTick());
-        Assert.True(hub.Bind(FanKey));
+        Assert.True(ManualBind(hub, FanKey));
         tx.SentFrames.Clear();
 
         for (var i = 0; i < 14; i++)
@@ -440,7 +511,7 @@ public partial class Slv3HubTests
         Assert.True(hub.DriveTick());
         Assert.True(hub.State.Fans[0].BoundToUs);
 
-        Assert.True(hub.Unbind(FanKey));
+        Assert.True(ManualUnbind(hub, FanKey));
         for (var i = 0; i < 40; i++)
         {
             clock.AdvanceMs(500);
@@ -557,7 +628,7 @@ public partial class Slv3HubTests
         Ticks(hub, 1);
         Assert.Empty(AllBindFrames(tx));
 
-        Assert.True(hub.Bind(FanKey));
+        Assert.True(ManualBind(hub, FanKey));
         Assert.NotEmpty(BindFramesAt(tx, 152, 69));
         Ticks(hub, 2);
 
@@ -701,11 +772,11 @@ public partial class Slv3HubTests
         }
         net.Fans.Add(new SimulatedFan { Mac = FanMac, MasterMac = FarMaster, RxType = 3, Pwm = new byte[] { 6, 6, 6, 6 } });
         Ticks(hub, 2);
-        Assert.True(hub.Unbind(FanKey));
+        Assert.True(ManualUnbind(hub, FanKey));
         Ticks(hub, 3);
         tx.SentFrames.Clear();
 
-        Assert.False(hub.Bind(FanKey, out var error));
+        Assert.False(ManualBind(hub, FanKey, out var error));
 
         Assert.Contains("limit", error);
         Assert.DoesNotContain(FanKey, saved.Keys);
@@ -727,7 +798,7 @@ public partial class Slv3HubTests
         Ticks(hub, 2);
         tx.SentFrames.Clear();
 
-        Assert.False(hub.Bind(FanKey, out _));
+        Assert.False(ManualBind(hub, FanKey, out _));
         Ticks(hub, 2);
 
         Assert.True(AllBindFrames(tx).Count >= 2);
@@ -750,11 +821,11 @@ public partial class Slv3HubTests
         net.Fans.Add(new SimulatedFan { Mac = otherModel, DevType = 11 });
         Ticks(hub, 1);
 
-        Assert.False(hub.Bind(Convert.ToHexString(fourthStrimer), out var strimerError));
+        Assert.False(ManualBind(hub, Convert.ToHexString(fourthStrimer), out var strimerError));
         Assert.Contains("Strimers", strimerError);
-        Assert.False(hub.Bind(Convert.ToHexString(secondHydro), out var hydroError));
+        Assert.False(ManualBind(hub, Convert.ToHexString(secondHydro), out var hydroError));
         Assert.Contains("HydroShift", hydroError);
-        Assert.True(hub.Bind(Convert.ToHexString(otherModel), out _));
+        Assert.True(ManualBind(hub, Convert.ToHexString(otherModel), out _));
     }
 
     [Fact]
@@ -768,7 +839,7 @@ public partial class Slv3HubTests
         net.Fans.Add(new SimulatedFan { Mac = FanMac });
         Ticks(hub, 2);
 
-        Assert.False(hub.Bind(FanKey, out var error));
+        Assert.False(ManualBind(hub, FanKey, out var error));
         Assert.Equal("limit of 10 bound devices reached", error);
     }
 
@@ -812,7 +883,7 @@ public partial class Slv3HubTests
     {
         var (hub, net, tx, fan, _, clock) = Stranded(Ours, 1, Slv3Protocol.DefaultChannel);
         Ticks(hub, 2);
-        Assert.True(hub.Unbind(FanKey));
+        Assert.True(ManualUnbind(hub, FanKey));
         Ticks(hub, 3);
         net.Fans.Clear();
         clock.AdvanceMs(40_000);
@@ -1036,7 +1107,7 @@ public partial class Slv3HubTests
         Assert.All(AllBindFrames(tx), f => Assert.Equal(net.MasterMac, f.AsSpan(12, 6).ToArray()));
 
         net.Fans.Single(f => f.Mac.SequenceEqual(low)).IgnoresBind = true;
-        Assert.True(hub.Unbind("111111111111"));
+        Assert.True(ManualUnbind(hub, "111111111111"));
         tx.SentFrames.Clear();
         Ticks(hub, 2);
         Assert.Contains(AllBindFrames(tx), f => f.AsSpan(6, 6).SequenceEqual(low));
