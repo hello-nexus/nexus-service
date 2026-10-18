@@ -21,6 +21,9 @@ public sealed class Slv3State
     }
     public Slv3FanInfo[] Fans { get; set; } = Array.Empty<Slv3FanInfo>();
 
+    /// <summary>Lock bound devices (L-Connect's device lock): fans Nexus owns are bound back from any state. Persisted, default on.</summary>
+    public bool LockBoundDevices { get; set; } = true;
+
     /// <summary>
     /// Why the link is down, for the device page's disconnected state. One of
     /// <see cref="Slv3LinkStatus"/>. Only a connect attempt writes it, so it
