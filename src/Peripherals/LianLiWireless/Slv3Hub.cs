@@ -121,9 +121,6 @@ public sealed class Slv3Hub : IDisposable
     private Func<bool>? _lockRead;
     private volatile bool _lockBound = true;
     private bool _txStalledThisPoll;
-    // Effect index last uploaded to a chain; bind and PWM frames wait for its echo (L-Connect changingEffect).
-    private readonly Dictionary<string, (byte[] Index, long SentMs)> _effectUploads = new(StringComparer.Ordinal);
-    internal const long EffectEchoWaitMs = 30_000;
     private readonly object _lockSettingGate = new();
     private int _lockVersion;
 
@@ -458,7 +455,6 @@ public sealed class Slv3Hub : IDisposable
         _unconfirmedChains.Clear();
         _bindingLogs.Clear();
         _intents.Clear();
-        _effectUploads.Clear();
         _unboundHere.Clear();
         _pollRecords = new List<Slv3DeviceRecord>();
         _liveMasters.Clear();
@@ -1050,7 +1046,7 @@ public sealed class Slv3Hub : IDisposable
 
     private void ReconcileBindLocked(string key, BindIntent intent, Slv3DeviceRecord record)
     {
-        if (!NeedsBind(intent, record) || ChangingEffectLocked(key, record))
+        if (!NeedsBind(intent, record))
         {
             intent.Sends = 0;
             return;
@@ -1061,17 +1057,6 @@ public sealed class Slv3Hub : IDisposable
         }
         SendBindFrameLocked(record, intent.TargetRx, unbind: false);
         NoteSendLocked(key, intent, "bind", record);
-    }
-
-    // True from an upload until the chain echoes its effect_index, while it reports our master. A lost upload stops
-    // holding frames after EffectEchoWaitMs, which L-Connect has no limit for.
-    private bool ChangingEffectLocked(string key, Slv3DeviceRecord record)
-    {
-        if (!_effectUploads.TryGetValue(key, out var upload) || !Slv3Protocol.MacEquals(record.MasterMac, _masterMac))
-        {
-            return false;
-        }
-        return !record.EffectIndex.AsSpan().SequenceEqual(upload.Index) && _nowMs() - upload.SentMs < EffectEchoWaitMs;
     }
 
     private bool NeedsBind(BindIntent intent, Slv3DeviceRecord record) =>
@@ -1267,10 +1252,6 @@ public sealed class Slv3Hub : IDisposable
             }
             var key = Convert.ToHexString(record.Mac);
             if (_intents.TryGetValue(key, out var intent) && (intent.Unbinding || NeedsBind(intent, record)))
-            {
-                continue;
-            }
-            if (ChangingEffectLocked(key, record))
             {
                 continue;
             }
@@ -1780,7 +1761,6 @@ public sealed class Slv3Hub : IDisposable
                 ServiceLog.Info($"[lianli-wireless] chain {key} dropped ({ChainExpiryMs / 1000}s unseen)");
                 _knownChains.Remove(key);
                 _intents.Remove(key);
-                _effectUploads.Remove(key);
                 _unboundHere.Remove(key);
                 _conflictCounts.Remove(key);
                 _bindingLogs.Remove(key);
@@ -2238,7 +2218,6 @@ public sealed class Slv3Hub : IDisposable
             }
             _userUnbound.Add(key);
             _unboundHere.Add(key);
-            _effectUploads.Remove(key);
             if (_owned.Remove(key))
             {
                 _ownedDirty = true;
@@ -2490,8 +2469,7 @@ public sealed class Slv3Hub : IDisposable
         string macHex, byte[] frames, int ledCount, int frameCount, double intervalTicks, int brightnessPercent)
     {
         var raw = Slv3RgbFrame.BuildFrameBuffer(frames, brightnessPercent);
-        if (!TryParseMac(macHex, out var windowMac)
-            || !TryPrepareUpload(macHex, raw, ledCount, frameCount, intervalTicks, window: true, out var channel, out var rxType, out var packets, out var windowIndex))
+        if (!TryPrepareUpload(macHex, raw, ledCount, frameCount, intervalTicks, window: true, out var channel, out var rxType, out var packets, out _))
         {
             return false;
         }
@@ -2519,7 +2497,6 @@ public sealed class Slv3Hub : IDisposable
                 }
             }
             NoteConfigChangedLocked();
-            _effectUploads[Convert.ToHexString(windowMac)] = (windowIndex, _nowMs());
         }
         // The late passes' cost is booked at decision time so a concurrent
         // upload's check already sees it; the passes themselves are not re-counted.
@@ -2663,20 +2640,7 @@ public sealed class Slv3Hub : IDisposable
         }
 
         effectIndexHex = Convert.ToHexString(effectIndex);
-        NoteEffectUpload(macHex, effectIndex);
         return true;
-    }
-
-    private void NoteEffectUpload(string macHex, byte[] effectIndex)
-    {
-        if (!TryParseMac(macHex, out var mac))
-        {
-            return;
-        }
-        lock (_lock)
-        {
-            _effectUploads[Convert.ToHexString(mac)] = (effectIndex, _nowMs());
-        }
     }
 
     // Same as SendRfPayloadLocked but takes _lock itself, for callers that pace

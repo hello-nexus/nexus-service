@@ -630,30 +630,63 @@ public partial class Slv3HubTests
         Assert.True(tx.SentFrames.Count <= 2, $"{tx.SentFrames.Count} writes in one stalled poll");
     }
 
-    [Fact]
-    public void A_chain_waiting_for_its_effect_echo_gets_no_bind_or_pwm_frame_until_it_echoes()
+    private static void StreamWindow(Slv3Hub hub)
     {
-        var (hub, _, tx, fan, _, clock) = Stranded(Ours, 1, Slv3Protocol.DefaultChannel);
+        var frames = new byte[30 * 40 * 3];
+        new Random(7).NextBytes(frames);
+        hub.SendRgbWindowAsync(FanKey, frames, 40, 30, 53, 100).GetAwaiter().GetResult();
+    }
+
+    [Theory]
+    [InlineData(255, 0)]
+    [InlineData(1, 152)]
+    public void A_stranded_chain_is_sent_a_bind_every_poll_while_windows_stream_and_binds_once_it_listens(int rx, int channel)
+    {
+        var (hub, _, tx, fan, _, _) = Stranded(Ours, (byte)rx, (byte)channel);
+        fan.IgnoresBind = true;
+
+        for (var poll = 0; poll < 4; poll++)
+        {
+            StreamWindow(hub);
+            tx.SentFrames.Clear();
+            Ticks(hub, 1);
+            Assert.Single(AllBindFrames(tx));
+        }
+
+        fan.IgnoresBind = false;
+        StreamWindow(hub);
         Ticks(hub, 2);
-        Assert.True(hub.SendRgbFrame(FanKey, new[] { new Nexus.Service.Peripherals.Hyte.Np50.RgbColor(1, 2, 3) }, 100, 100, out var index));
-        fan.RxType = 5;
-        fan.Pwm = new byte[] { 0, 0, 0, 0 };
+        Assert.True(hub.State.Fans[0].BoundToUs);
+        Assert.Equal(Slv3Protocol.DefaultChannel, hub.State.Fans[0].Channel);
+    }
+
+    [Fact]
+    public void A_pwm_change_goes_out_within_one_poll_while_windows_stream_every_poll()
+    {
+        var (hub, _, tx, fan, _, _) = Stranded(Ours, 1, Slv3Protocol.DefaultChannel);
+        Ticks(hub, 2);
+        StreamWindow(hub);
         tx.SentFrames.Clear();
 
-        Ticks(hub, 3);
-        Assert.Empty(AllBindFrames(tx));
-
-        fan.EffectIndex = Convert.FromHexString(index);
+        Assert.True(hub.SetPortDuty(FanKey, 0, 60));
+        StreamWindow(hub);
         Ticks(hub, 1);
+
         Assert.NotEmpty(AllBindFrames(tx));
+        Assert.Equal(Slv3Protocol.EncodeDuty(60), fan.Pwm[0]);
+    }
 
-        fan.RxType = 6;
-        fan.EffectIndex = new byte[4];
+    [Fact]
+    public void A_chain_on_its_pipe_mid_upload_is_not_held_back_from_a_bind()
+    {
+        var (hub, _, tx, fan, _, _) = Stranded(Ours, 1, Slv3Protocol.DefaultChannel);
+        Ticks(hub, 2);
+        StreamWindow(hub);
+        fan.RxType = 5;
         tx.SentFrames.Clear();
+
         Ticks(hub, 1);
-        Assert.Empty(AllBindFrames(tx));
-        clock.AdvanceMs(Slv3Hub.EffectEchoWaitMs + 1);
-        Ticks(hub, 1);
+
         Assert.NotEmpty(AllBindFrames(tx));
     }
 
