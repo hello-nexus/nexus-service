@@ -53,7 +53,7 @@ public sealed class DeviceManager
                 SupportsNexusControl = supportsControl,
                 Experimental = supportsControl && DeviceControlPolicy.IsExperimental(h.Id),
                 RequiresBeta = supportsControl && DeviceControlPolicy.RequiresBeta(h.Id),
-                NexusControlEnabled = _gate.IsChosenOn(h.Id),
+                NexusControlEnabled = _gate.IsControlOn(h.Id),
                 Warning = h.GetWarning(usbDevices),
                 ConflictAppId = DeviceControlPolicy.ConflictAppFor(h.Id),
                 HasPage = h.HasPage,

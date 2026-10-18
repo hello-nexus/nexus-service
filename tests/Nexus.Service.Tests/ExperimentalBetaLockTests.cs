@@ -63,7 +63,7 @@ public class ExperimentalBetaLockTests : IDisposable
     }
 
     [Fact]
-    public void Gate_SetEnabledOnLockedHandler_LeavesSettingsUntouched()
+    public void Gate_SetEnabledOnLockedHandler_RecordsTheChoiceWithoutEnablingTheNativeDriver()
     {
         var store = new InMemoryConfigStore();
         var gate = new DeviceControlGate(store);
@@ -71,8 +71,9 @@ public class ExperimentalBetaLockTests : IDisposable
 
         gate.SetEnabled("lianli-tl", true);
 
-        Assert.Empty(store.Load().Devices.NexusControlEnabled);
+        Assert.Contains("lianli-tl", store.Load().Devices.NexusControlEnabled);
         Assert.Equal(whitelist, store.Load().Ui.ConflictAutoKillExclusions);
+        Assert.True(gate.IsControlOn("lianli-tl"));
         Assert.False(gate.IsEnabled("lianli-tl"));
     }
 
@@ -101,7 +102,7 @@ public class ExperimentalBetaLockTests : IDisposable
     }
 
     [Fact]
-    public void GetAll_LockedHandler_ReportsRequiresBetaOffWithNoConflictApp()
+    public void GetAll_LockedHandler_ReportsRequiresBetaWithTheUsersChoiceAndNoConflictApp()
     {
         var store = new InMemoryConfigStore();
         store.Update(s => s.Devices.NexusControlEnabled = new List<string> { "lianli-tl" });
@@ -116,7 +117,7 @@ public class ExperimentalBetaLockTests : IDisposable
         var locked = items.Single(i => i.Id == "lianli-tl");
         Assert.True(locked.RequiresBeta);
         Assert.True(locked.Experimental);
-        Assert.False(locked.NexusControlEnabled);
+        Assert.True(locked.NexusControlEnabled);
         Assert.Null(locked.ConflictAppId);
         Assert.False(items.Single(i => i.Id == "cnvs").RequiresBeta);
     }

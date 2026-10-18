@@ -199,14 +199,16 @@ public sealed class OpenRgbProcessManager : IDisposable
         return Path.Combine(baseDir, "Nexus", "openrgb-config");
     }
 
-    /// <summary>Every native-claimed detector, held off while all their native drivers are enabled.</summary>
+    /// <summary>The detectors held off with Nexus Control on everywhere and no native lock.</summary>
     internal static string[] BuildDisabledDetectors(bool macOS)
-        => NativeDetectorClaims.ResolveDisabled(_ => true, macOS).ToArray();
+        => NativeDetectorClaims.ResolveDisabled(_ => true, _ => false, macOS).ToArray();
 
-    /// <summary>Detectors held off because a Nexus native driver is enabled for the same hardware; a detector whose native driver is off keeps OpenRGB's default. Reads the user's choice, so a running vendor app's pause does not move the set.</summary>
+    /// <summary>Detectors held off by the Nexus Control choice and native availability (<see cref="NativeDetectorClaims.ResolveDisabled"/>). Reads the user's choice, so a running vendor app's pause does not move the set.</summary>
     internal System.Collections.Generic.List<string> ResolveNativeDisabledDetectors()
         => NativeDetectorClaims.ResolveDisabled(
-            handler => _gate is null || _gate.IsChosenOn(handler), OperatingSystem.IsMacOS());
+            handler => _gate is null || _gate.IsControlOn(handler),
+            Nexus.Service.Devices.DeviceControlPolicy.RequiresBeta,
+            OperatingSystem.IsMacOS());
 
     private string _appliedNativeSignature = "";
 
@@ -347,8 +349,7 @@ public sealed class OpenRgbProcessManager : IDisposable
             }
 
             var changed = false;
-            var macOS = OperatingSystem.IsMacOS();
-            var nativeDisabled = nativeDisabledDetectors ?? BuildDisabledDetectors(macOS);
+            var nativeDisabled = nativeDisabledDetectors ?? BuildDisabledDetectors(OperatingSystem.IsMacOS());
             var nativeSet = new System.Collections.Generic.HashSet<string>(nativeDisabled, StringComparer.Ordinal);
             foreach (var name in nativeDisabled)
             {
@@ -466,7 +467,7 @@ public sealed class OpenRgbProcessManager : IDisposable
                 {
                     held.UnionWith(busDisabledDetectors);
                 }
-                foreach (var name in NativeDetectorClaims.Universe(macOS))
+                foreach (var name in NativeDetectorClaims.Universe())
                 {
                     if (!nativeSet.Contains(name) && !held.Contains(name) && map[name] is System.Text.Json.Nodes.JsonValue v
                         && v.TryGetValue<bool>(out var b) && b == false)

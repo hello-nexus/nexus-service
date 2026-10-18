@@ -57,44 +57,55 @@ public static class NativeDetectorClaims
     };
 
     /// <summary>
-    /// Detector names earlier builds always disabled that now follow upstream's default. They stay in the
-    /// cleanup universe so an install that already has them written as off gets them back.
+    /// "HID LampArray Device" is always off: it is a generic detector matching the standard LampArray HID
+    /// usage on any vendor, so a board that exposes both a vendor protocol and a LampArray collection is
+    /// detected twice, once by its real controller with full zones and once as a near-empty duplicate on
+    /// the other HID interface. Upstream registers it unconditionally with no check for an existing
+    /// controller, so the dedupe has to happen here.
     /// </summary>
-    private static readonly string[] RetiredForcedOff = { "HID LampArray Device" };
+    public static readonly string[] AlwaysOff = { "HID LampArray Device" };
 
-    /// <summary>Every detector a past or present claim could have written as disabled.</summary>
-    public static IReadOnlyCollection<string> Universe(bool macOS)
+    /// <summary>Every detector a claim could have written as disabled, which the cleanup pass may release.</summary>
+    public static IReadOnlyCollection<string> Universe()
     {
         var all = new List<string>();
         foreach (var claim in All)
         {
-            if (macOS && claim.NotOnMac)
-            {
-                continue;
-            }
             all.AddRange(claim.Detectors);
         }
-        all.AddRange(RetiredForcedOff);
         return all;
     }
 
-    /// <summary>The detectors to hold off: those whose native handler is enabled.</summary>
-    public static List<string> ResolveDisabled(Func<string, bool> handlerEnabled, bool macOS)
+    /// <summary>
+    /// The detectors to hold off. With Nexus Control off for a claim's every handler nothing drives the
+    /// device, so OpenRGB must not either. With it on, the native driver drives the device where it is
+    /// available and the detector is held off; where it is not (locked on this build, absent on this OS)
+    /// OpenRGB drives it and the detector keeps its default.
+    /// </summary>
+    /// <param name="controlOn">The user's Nexus Control choice for a handler, or its default.</param>
+    /// <param name="nativeLocked">True when the handler's native driver is locked off on this build.</param>
+    public static List<string> ResolveDisabled(Func<string, bool> controlOn, Func<string, bool> nativeLocked, bool macOS)
     {
-        var disabled = new List<string>();
+        var disabled = new List<string>(AlwaysOff);
         foreach (var claim in All)
         {
-            if (macOS && claim.NotOnMac)
-            {
-                continue;
-            }
+            var anyOn = false;
+            var nativeDrives = false;
             foreach (var handler in claim.Handlers)
             {
-                if (handlerEnabled(handler))
+                if (!controlOn(handler))
                 {
-                    disabled.AddRange(claim.Detectors);
-                    break;
+                    continue;
                 }
+                anyOn = true;
+                if (!nativeLocked(handler) && !(macOS && claim.NotOnMac))
+                {
+                    nativeDrives = true;
+                }
+            }
+            if (!anyOn || nativeDrives)
+            {
+                disabled.AddRange(claim.Detectors);
             }
         }
         return disabled;

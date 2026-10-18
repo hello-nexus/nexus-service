@@ -78,12 +78,14 @@ public sealed class DeviceControlGate
         }
     }
 
+    /// <summary>The user's Nexus Control choice (or the default) even where the native driver is locked off on this build; a locked device is then driven through OpenRGB.</summary>
+    public bool IsControlOn(string handlerId) => ChosenOn(_store.Load().Devices, handlerId);
+
     private static bool IsEnabled(DevicesSettings devices, string handlerId)
+        => !DeviceControlPolicy.RequiresBeta(handlerId) && ChosenOn(devices, handlerId);
+
+    private static bool ChosenOn(DevicesSettings devices, string handlerId)
     {
-        if (DeviceControlPolicy.RequiresBeta(handlerId))
-        {
-            return false;
-        }
         if (devices.NexusControlDisabled.Contains(handlerId, StringComparer.OrdinalIgnoreCase))
         {
             return false;
@@ -95,7 +97,7 @@ public sealed class DeviceControlGate
         // A Uni hub past the first follows the first hub's choice until it has one of its own.
         if (Nexus.Service.Peripherals.LianLi.LianLiHubSet.SlotOf(handlerId) > 0)
         {
-            return IsEnabled(devices, Nexus.Service.Peripherals.LianLi.LianLiHubSet.PrimaryId);
+            return ChosenOn(devices, Nexus.Service.Peripherals.LianLi.LianLiHubSet.PrimaryId);
         }
         return DeviceControlPolicy.DefaultOn(handlerId);
     }
@@ -103,11 +105,6 @@ public sealed class DeviceControlGate
     /// <summary>Persists the choice and, in the same mutation, takes the device's competing app off the conflict whitelist (on) or puts it on once none of that app's devices is still Nexus-controlled (off).</summary>
     public void SetEnabled(string handlerId, bool enabled)
     {
-        // Leaves the stored choice alone, so it applies again on a beta build.
-        if (DeviceControlPolicy.RequiresBeta(handlerId))
-        {
-            return;
-        }
         _store.Update(s =>
         {
             var devices = s.Devices;

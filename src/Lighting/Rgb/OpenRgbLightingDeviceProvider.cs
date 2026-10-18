@@ -197,7 +197,7 @@ public sealed class OpenRgbLightingDeviceProvider : ILightingDeviceProvider, IDe
                 var zone = d.Zones[z];
                 if (!zone.IsConfigurableSize)
                     continue;
-                dto ??= new OpenRgbZoneDeviceDto { DeviceId = d.StableId, Name = d.Name };
+                dto ??= new OpenRgbZoneDeviceDto { DeviceId = d.StableId, Name = d.Name, SplitOwned = OpenRgbZoneSupport.IsSplitMotherboard(d) };
                 dto.Zones.Add(new OpenRgbZoneDto
                 {
                     Index = z,
