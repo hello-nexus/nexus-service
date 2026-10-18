@@ -414,4 +414,22 @@ public class OpenRgbNativeDetectorPolicyTests : IDisposable
         Assert.False(RgbBridge.AnyResizeTook(missed, devices));
         Assert.False(RgbBridge.AnyResizeTook(Array.Empty<RgbBridge.ZoneResizeAttempt>(), devices));
     }
+
+    [Fact]
+    public void A_stale_end_does_not_clear_a_newer_hold()
+    {
+        var observed = OpenRgbDetectorMap.HoldGeneration;
+        OpenRgbDetectorMap.BeginHold();
+        try
+        {
+            OpenRgbDetectorMap.EndHold(observed);
+            Assert.True(OpenRgbDetectorMap.HoldActive);
+            OpenRgbDetectorMap.EndHold(OpenRgbDetectorMap.HoldGeneration);
+            Assert.False(OpenRgbDetectorMap.HoldActive);
+        }
+        finally
+        {
+            OpenRgbDetectorMap.EndHold();
+        }
+    }
 }

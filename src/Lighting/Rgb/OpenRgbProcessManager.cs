@@ -199,7 +199,7 @@ public sealed class OpenRgbProcessManager : IDisposable
         return Path.Combine(baseDir, "Nexus", "openrgb-config");
     }
 
-    /// <summary>The detectors held off with Nexus Control on everywhere and no native lock.</summary>
+    /// <summary>The detectors held off with Nexus Control on everywhere.</summary>
     internal static string[] BuildDisabledDetectors(bool macOS)
         => NativeDetectorClaims.ResolveDisabled(_ => true, macOS).ToArray();
 

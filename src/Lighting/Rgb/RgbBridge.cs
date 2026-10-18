@@ -912,19 +912,20 @@ public sealed class RgbBridge : IDisposable
 
     private void MarkDetectionActivity()
     {
-        OpenRgbDetectorMap.BeginHold();
         Interlocked.Exchange(ref _detectionActivityTicks, DateTime.UtcNow.Ticks);
+        OpenRgbDetectorMap.BeginHold();
     }
 
     /// <summary>True while detection is visibly running, so a commit would show a half-detected list.</summary>
     private bool DetectionInProgress()
     {
+        var holdGeneration = OpenRgbDetectorMap.HoldGeneration;
         var last = Interlocked.Read(ref _detectionActivityTicks);
         var holds = last != 0
             && DetectionHolds(TimeSpan.FromTicks(DateTime.UtcNow.Ticks - last), Volatile.Read(ref _detectionStartedSeen) != 0, _controller.IsConnected);
         if (!holds && OpenRgbDetectorMap.HoldActive)
         {
-            OpenRgbDetectorMap.EndHold();
+            OpenRgbDetectorMap.EndHold(holdGeneration);
         }
         return holds;
     }

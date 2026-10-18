@@ -6,9 +6,8 @@ namespace Nexus.Service.Lighting.Rgb;
 
 /// <summary>
 /// Which OpenRGB detectors overlap a Nexus native driver, and which native
-/// handlers drive them. A detector is held off only while one of its handlers
-/// is enabled; otherwise OpenRGB keeps its own default (enabled), so a device
-/// with a disabled native driver still works through OpenRGB.
+/// handlers drive them. With Nexus Control off for every handler of a claim
+/// the detector is off too, so OpenRGB never takes a device the user kept from Nexus.
 /// </summary>
 public static class NativeDetectorClaims
 {
@@ -24,8 +23,8 @@ public static class NativeDetectorClaims
 
     /// <param name="Key">Claim name a lighting provider asks about.</param>
     /// <param name="Detectors">REGISTER_*_DETECTOR names in nexus-rgb/openrgb-headless, verbatim.</param>
-    /// <param name="Handlers">Device-control handler ids; the detector is held off while any is enabled.</param>
-    /// <param name="NotOnMac">True where the native stack does not exist on macOS, so the detector stays on there.</param>
+    /// <param name="Handlers">Device-control handler ids; the detector is held off unless one is on and no native driver exists on this OS.</param>
+    /// <param name="NotOnMac">True where the native stack does not exist on macOS, so the detector is on there while control is on.</param>
     public sealed record Claim(string Key, string[] Detectors, string[] Handlers, bool NotOnMac = false);
 
     public static readonly IReadOnlyList<Claim> All = new Claim[]
