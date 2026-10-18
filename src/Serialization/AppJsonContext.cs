@@ -1210,6 +1210,7 @@ namespace Nexus.Service.Serialization;
 [JsonSerializable(typeof(Nexus.Service.Peripherals.LianLiWireless.Slv3FanInfo))]
 [JsonSerializable(typeof(Nexus.Service.Peripherals.LianLiWireless.Slv3FanInfo[]))]
 [JsonSerializable(typeof(Nexus.Service.Routes.Slv3MacRequest))]
+[JsonSerializable(typeof(Nexus.Service.Routes.Slv3LockRequest))]
 [JsonSerializable(typeof(Nexus.Service.Routes.Slv3LightingResponse))]
 [JsonSerializable(typeof(Nexus.Service.Routes.Slv3ChainLightingDto))]
 [JsonSerializable(typeof(Nexus.Service.Routes.Slv3ChainLightingDto[]))]

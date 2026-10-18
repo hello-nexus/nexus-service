@@ -15,6 +15,11 @@ public sealed class Slv3MacRequest
     public string Mac { get; set; } = "";
 }
 
+public sealed class Slv3LockRequest
+{
+    public bool Enabled { get; set; }
+}
+
 public sealed class Slv3LightingModeDto
 {
     public string Key { get; set; } = "";
@@ -138,7 +143,7 @@ public static partial class Slv3Routes
         {
             if (!MacHex().IsMatch(mac))
             {
-                return Results.BadRequest(ApiResponse.Fail("invalid mac"));
+                return Results.BadRequest(ApiResponse.Fail("invalid mac or held by a live master"));
             }
             if (!IsKnownHydroShift(hub, mac))
             {
@@ -153,7 +158,7 @@ public static partial class Slv3Routes
         {
             if (!MacHex().IsMatch(mac))
             {
-                return Results.BadRequest(ApiResponse.Fail("invalid mac"));
+                return Results.BadRequest(ApiResponse.Fail("invalid mac or held by a live master"));
             }
             if (!IsKnownHydroShift(hub, mac))
             {
@@ -218,7 +223,7 @@ public static partial class Slv3Routes
         {
             if (!hub.Bind(body.Mac))
             {
-                return Results.Json(ApiResponse.Fail("invalid mac or no free slot"), AppJsonContext.Default.ApiResponse);
+                return Results.Json(ApiResponse.Fail("invalid mac, no free slot, or held by a live master"), AppJsonContext.Default.ApiResponse);
             }
             return Results.Json(ApiResponse.Ok(), AppJsonContext.Default.ApiResponse);
         });
@@ -228,8 +233,16 @@ public static partial class Slv3Routes
         {
             if (!hub.Unbind(body.Mac))
             {
-                return Results.Json(ApiResponse.Fail("invalid mac"), AppJsonContext.Default.ApiResponse);
+                return Results.Json(ApiResponse.Fail("invalid mac or held by a live master"), AppJsonContext.Default.ApiResponse);
             }
+            return Results.Json(ApiResponse.Ok(), AppJsonContext.Default.ApiResponse);
+        });
+
+        // PUT /devices/lianli-wireless/lock - persist the lock-bound-devices setting; no RF is sent.
+        app.MapPut("/devices/lianli-wireless/lock", (Slv3LockRequest body, Slv3Hub hub, IConfigStore store) =>
+        {
+            store.Update(settings => settings.Devices.LianLiWireless.LockBoundDevices = body.Enabled);
+            hub.State.LockBoundDevices = body.Enabled;
             return Results.Json(ApiResponse.Ok(), AppJsonContext.Default.ApiResponse);
         });
 
@@ -265,7 +278,7 @@ public static partial class Slv3Routes
         {
             if (!MacHex().IsMatch(mac))
             {
-                return Results.BadRequest(ApiResponse.Fail("invalid mac"));
+                return Results.BadRequest(ApiResponse.Fail("invalid mac or held by a live master"));
             }
             var chain = FindLightingChain(hub, mac);
             if (chain is null)

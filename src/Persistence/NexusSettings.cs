@@ -1729,6 +1729,9 @@ public sealed class LianLiWirelessSettings
 
     /// <summary>Devices Nexus bound to its dongle, by MAC hex (uppercase), with the slot each last held; an unbound one is bound back.</summary>
     public Dictionary<string, int> OwnedDevices { get; set; } = new();
+
+    /// <summary>L-Connect's device lock: owned devices are bound back from any state, including another master. A missing value reads as on.</summary>
+    public bool LockBoundDevices { get; set; } = true;
 }
 
 /// <summary>What a HydroShift II's screen shows while Nexus drives its pump.</summary>
