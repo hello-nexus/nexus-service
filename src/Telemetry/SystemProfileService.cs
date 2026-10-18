@@ -35,6 +35,7 @@ internal sealed class SystemProfileService : BackgroundService
     private static readonly TimeSpan WarmupInterval = TimeSpan.FromSeconds(30);
     private static readonly TimeSpan SteadyInterval = TimeSpan.FromMinutes(15);
     internal static readonly TimeSpan ProfileMinResend = TimeSpan.FromHours(6);
+    internal static readonly TimeSpan ProfileRefresh = TimeSpan.FromHours(24);
     private const int MaxDevices = 80;
     private static readonly TimeSpan LayoutSnapshotInterval = TimeSpan.FromHours(24);
     private const int MaxWidgetTypes = 200;
@@ -164,24 +165,19 @@ internal sealed class SystemProfileService : BackgroundService
         return true;
     }
 
-    /// <summary>
-    /// Persisted dedupe for the profile send. The signature used to live in
-    /// process memory, so every service start sent a fresh $identify (the
-    /// measured count tracks app_started); it now survives restarts. A changed
-    /// signature after a recent send waits out <see cref="ProfileMinResend"/>,
-    /// because the profile is last-write-wins and a flapping input (hot-plugged
-    /// USB names, counts) would otherwise resend on every flap.
-    /// </summary>
+    /// <summary>Persisted dedupe: a changed signature waits out <see cref="ProfileMinResend"/>, an unchanged one is resent after <see cref="ProfileRefresh"/> so a lost send heals.</summary>
     /// <returns>True when the caller should send now; the new signature is recorded.</returns>
     internal static bool TryClaimProfileSend(IConfigStore store, string signature, DateTimeOffset now)
     {
         var hash = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(signature)));
         var t = store.Load().Telemetry;
+        var hasSentAt = DateTimeOffset.TryParse(t.ProfileSentAt, CultureInfo.InvariantCulture, DateTimeStyles.RoundtripKind, out var sentAt);
         if (t.ProfileSignature == hash)
-            return false;
-        if (t.ProfileSignature.Length > 0
-            && DateTimeOffset.TryParse(t.ProfileSentAt, CultureInfo.InvariantCulture, DateTimeStyles.RoundtripKind, out var sentAt)
-            && now - sentAt < ProfileMinResend)
+        {
+            if (!hasSentAt || now - sentAt < ProfileRefresh)
+                return false;
+        }
+        else if (t.ProfileSignature.Length > 0 && hasSentAt && now - sentAt < ProfileMinResend)
         {
             return false;
         }

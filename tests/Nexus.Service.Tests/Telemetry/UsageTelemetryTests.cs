@@ -18,10 +18,11 @@ public class UsageTelemetryTests
         public List<(string InstallId, string Version, List<UsageEvent> Batch)> Sent { get; } = new();
         public Queue<UsageDelivery> Results { get; } = new();
 
-        public Task<UsageDelivery> SendAsync(string installId, string version, IReadOnlyList<UsageEvent> batch, CancellationToken ct)
+        public Task<UsageSendResult> SendAsync(string installId, string version, IReadOnlyList<UsageEvent> batch, CancellationToken ct)
         {
             Sent.Add((installId, version, batch.ToList()));
-            return Task.FromResult(Results.Count > 0 ? Results.Dequeue() : UsageDelivery.Delivered);
+            var d = Results.Count > 0 ? Results.Dequeue() : UsageDelivery.Delivered;
+            return Task.FromResult(new UsageSendResult(d, d == UsageDelivery.Drop ? 400 : 200));
         }
     }
 
@@ -166,6 +167,7 @@ public class UsageTelemetryTests
     [InlineData(HttpStatusCode.Unauthorized, "Drop")]
     [InlineData(HttpStatusCode.RequestEntityTooLarge, "Drop")]
     [InlineData(HttpStatusCode.TooManyRequests, "Retry")]
+    [InlineData(HttpStatusCode.RequestTimeout, "Retry")]
     [InlineData(HttpStatusCode.InternalServerError, "Retry")]
     [InlineData(HttpStatusCode.BadGateway, "Retry")]
     public void Status_codes_map_to_the_delivery_rules(HttpStatusCode status, string expected) =>
@@ -198,6 +200,62 @@ public class UsageTelemetryTests
         var sent = Assert.Single(transport.Sent);
         Assert.Equal("stored-id", sent.InstallId);
         Assert.Equal(new[] { "opt_out" }, sent.Batch.Select(e => e.Name));
+    }
+
+    [Fact]
+    public async Task Oversized_props_are_trimmed_to_fit_the_cap()
+    {
+        var sink = new UsageTelemetrySink(true);
+        var huge = Enumerable.Range(0, 400).Select(i => "widget-type-number-" + i + new string('x', 60)).ToArray();
+        await Feed(sink, Ev("layout_snapshot", null, ("widget_types", huge), ("widget_count", 400), ("note", new string('n', 5000))));
+
+        var e = Assert.Single(sink.Take(10));
+        var buffer = new ArrayBufferWriter<byte>();
+        UsageTransport.WriteBody(buffer, "i", "v", new List<UsageEvent> { e });
+        using var doc = JsonDocument.Parse(buffer.WrittenMemory);
+        var props = doc.RootElement.GetProperty("events")[0].GetProperty("props");
+        Assert.True(System.Text.Encoding.UTF8.GetByteCount(props.GetRawText()) <= UsageTelemetrySink.MaxPropsBytes);
+        Assert.Equal(400, props.GetProperty("widget_count").GetInt32());
+        Assert.True(props.GetProperty("widget_types").GetArrayLength() is > 0 and < 400);
+    }
+
+    private sealed class ThrowingSink : ITelemetrySink
+    {
+        public bool Enabled => true;
+        public Task SendAsync(string distinctId, IReadOnlyList<TelemetryEvent> batch, CancellationToken ct) =>
+            throw new System.Net.Http.HttpRequestException("blocked");
+    }
+
+    [Fact]
+    public async Task A_throwing_posthog_sink_does_not_stop_the_usage_mirror()
+    {
+        var store = Store(true);
+        var client = new TelemetryClient(store);
+        client.Capture("fan_curve_applied");
+        var usage = new UsageTelemetrySink(true);
+        var flush = new TelemetryFlushService(client, store, new ITelemetrySink[] { new ThrowingSink(), usage });
+
+        await flush.FlushAsync(CancellationToken.None);
+
+        Assert.Equal(new[] { "fan_curve_applied" }, usage.Take(10).Select(e => e.Name));
+    }
+
+    [Fact]
+    public async Task Repeated_drop_with_the_same_status_is_logged_once()
+    {
+        var sink = new UsageTelemetrySink(true);
+        await Feed(sink, Ev("a"));
+        var transport = new FakeUsageTransport();
+        transport.Results.Enqueue(UsageDelivery.Drop);
+        var lines = new List<string>();
+        var worker = new UsageTelemetryWorker(sink, transport, Store(true), lines.Add);
+
+        await worker.FlushAsync(CancellationToken.None);
+        await Feed(sink, Ev("b"));
+        transport.Results.Enqueue(UsageDelivery.Drop);
+        await worker.FlushAsync(CancellationToken.None);
+
+        Assert.Single(lines); // same status twice logs once
     }
 
     [Fact]

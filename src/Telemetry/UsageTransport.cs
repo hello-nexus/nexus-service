@@ -20,7 +20,7 @@ internal sealed class UsageTransport : IUsageTransport
 
     public UsageTransport(IHttpClientFactory http) => _http = http;
 
-    public async Task<UsageDelivery> SendAsync(string installId, string version, IReadOnlyList<UsageEvent> batch, CancellationToken ct)
+    public async Task<UsageSendResult> SendAsync(string installId, string version, IReadOnlyList<UsageEvent> batch, CancellationToken ct)
     {
         try
         {
@@ -33,16 +33,16 @@ internal sealed class UsageTransport : IUsageTransport
             using var content = new ReadOnlyMemoryContent(buffer.WrittenMemory);
             content.Headers.ContentType = new MediaTypeHeaderValue("application/json");
             using var res = await client.PostAsync(Endpoint, content, ct).ConfigureAwait(false);
-            return Classify(res.StatusCode);
+            return new UsageSendResult(Classify(res.StatusCode), (int)res.StatusCode);
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested)
         {
-            return UsageDelivery.Retry;
+            return new UsageSendResult(UsageDelivery.Retry, 0);
         }
         catch (Exception ex)
         {
             Console.Error.WriteLine($"[usage] send failed: {ex.GetType().Name}: {ex.Message}");
-            return UsageDelivery.Retry;
+            return new UsageSendResult(UsageDelivery.Retry, 0);
         }
     }
 
@@ -51,7 +51,7 @@ internal sealed class UsageTransport : IUsageTransport
         var code = (int)status;
         if (code is >= 200 and < 300)
             return UsageDelivery.Delivered;
-        if (status == HttpStatusCode.TooManyRequests)
+        if (status is HttpStatusCode.TooManyRequests or HttpStatusCode.RequestTimeout)
             return UsageDelivery.Retry;
         return code is >= 400 and < 500 ? UsageDelivery.Drop : UsageDelivery.Retry;
     }

@@ -4,6 +4,9 @@ using System.Threading.Tasks;
 
 namespace Nexus.Service.Telemetry;
 
+/// <summary>Outcome plus the HTTP status (0 when no response arrived).</summary>
+internal readonly record struct UsageSendResult(UsageDelivery Delivery, int Status);
+
 internal enum UsageDelivery
 {
     /// <summary>2xx: the server has the batch.</summary>
@@ -19,5 +22,5 @@ internal enum UsageDelivery
 /// <summary>Delivers one batch to nexus-api; abstracted so the worker is testable without HTTP. Never throws.</summary>
 internal interface IUsageTransport
 {
-    Task<UsageDelivery> SendAsync(string installId, string version, IReadOnlyList<UsageEvent> batch, CancellationToken ct);
+    Task<UsageSendResult> SendAsync(string installId, string version, IReadOnlyList<UsageEvent> batch, CancellationToken ct);
 }

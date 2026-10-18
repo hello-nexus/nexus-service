@@ -68,8 +68,60 @@ internal sealed class UsageTelemetrySink : ITelemetrySink
         Id = Guid.NewGuid().ToString(),
         Name = name,
         Timestamp = ts,
-        Props = props,
+        Props = FitProps(props),
     };
+
+    // nexus-api rejects a batch holding an event whose props exceed its byte cap.
+    internal const int MaxPropsBytes = 6000;
+    private const int MaxStringChars = 256;
+
+    /// <summary>Truncates long strings, then halves the largest list (or drops the largest value) until the serialized props fit.</summary>
+    internal static KeyValuePair<string, object?>[] FitProps(IReadOnlyList<KeyValuePair<string, object?>> props)
+    {
+        var list = props.Select(p => new KeyValuePair<string, object?>(p.Key, Clamp(p.Value))).ToList();
+        while (list.Count > 0 && Measure(list) > MaxPropsBytes)
+        {
+            var largest = 0;
+            var largestSize = -1;
+            for (var i = 0; i < list.Count; i++)
+            {
+                var size = Measure(new[] { list[i] });
+                if (size > largestSize)
+                {
+                    largest = i;
+                    largestSize = size;
+                }
+            }
+            if (list[largest].Value is string[] arr && arr.Length > 1)
+                list[largest] = new(list[largest].Key, arr[..(arr.Length / 2)]);
+            else
+                list.RemoveAt(largest);
+        }
+        return list.ToArray();
+    }
+
+    private static object? Clamp(object? v) => v switch
+    {
+        string s when s.Length > MaxStringChars => s[..MaxStringChars],
+        string[] a => a.Select(x => x.Length > MaxStringChars ? x[..MaxStringChars] : x).ToArray(),
+        _ => v,
+    };
+
+    private static int Measure(IReadOnlyList<KeyValuePair<string, object?>> props)
+    {
+        var buffer = new System.Buffers.ArrayBufferWriter<byte>();
+        using (var w = new System.Text.Json.Utf8JsonWriter(buffer))
+        {
+            w.WriteStartObject();
+            foreach (var p in props)
+            {
+                w.WritePropertyName(p.Key);
+                PostHogSink.WriteValue(w, p.Value);
+            }
+            w.WriteEndObject();
+        }
+        return buffer.WrittenCount;
+    }
 
     private void Enqueue(UsageEvent e)
     {

@@ -16,19 +16,29 @@ internal sealed class FleetTelemetryWorker : BackgroundService
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
+        await PassAsync(stoppingToken).ConfigureAwait(false);
+
+        // Specs wait for the USB bus to settle, so they get a pass just after that window instead of an hour later.
+        try { await Task.Delay(FleetEventService.UsbSettleDelay + TimeSpan.FromSeconds(15), stoppingToken).ConfigureAwait(false); }
+        catch (OperationCanceledException) { return; }
+        await PassAsync(stoppingToken).ConfigureAwait(false);
+
         using var timer = new PeriodicTimer(Interval);
-        do
+        while (await WaitAsync(timer, stoppingToken).ConfigureAwait(false))
+            await PassAsync(stoppingToken).ConfigureAwait(false);
+    }
+
+    private async Task PassAsync(CancellationToken ct)
+    {
+        try
         {
-            try
-            {
-                if (!Nexus.Service.FocusModes.FocusNetworkGate.IsHeld)
-                    await _fleet.RunPendingRetriesAsync(stoppingToken).ConfigureAwait(false);
-            }
-            catch (Exception ex)
-            {
-                Console.Error.WriteLine($"[fleet-event] retry pass failed: {ex.GetType().Name}: {ex.Message}");
-            }
-        } while (await WaitAsync(timer, stoppingToken).ConfigureAwait(false));
+            if (!Nexus.Service.FocusModes.FocusNetworkGate.IsHeld)
+                await _fleet.RunPendingRetriesAsync(ct).ConfigureAwait(false);
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine($"[fleet-event] retry pass failed: {ex.GetType().Name}: {ex.Message}");
+        }
     }
 
     private static async Task<bool> WaitAsync(PeriodicTimer timer, CancellationToken ct)

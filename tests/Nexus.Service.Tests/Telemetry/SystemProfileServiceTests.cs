@@ -49,7 +49,7 @@ public class SystemProfileServiceTests
 
         // A restarted process has no in-memory state; only the store carries over.
         Assert.False(SystemProfileService.TryClaimProfileSend(store, "version=1|cpu=A", t0.AddMinutes(2)));
-        Assert.False(SystemProfileService.TryClaimProfileSend(store, "version=1|cpu=A", t0.AddDays(3)));
+        Assert.False(SystemProfileService.TryClaimProfileSend(store, "version=1|cpu=A", t0.AddHours(20)));
     }
 
     [Fact]
@@ -64,5 +64,17 @@ public class SystemProfileServiceTests
         // Still changed after the interval: sent, and recorded.
         Assert.True(SystemProfileService.TryClaimProfileSend(store, "cpu=A|devices=x,y", t0.Add(SystemProfileService.ProfileMinResend)));
         Assert.False(SystemProfileService.TryClaimProfileSend(store, "cpu=A|devices=x,y", t0.Add(SystemProfileService.ProfileMinResend).AddMinutes(1)));
+    }
+
+    [Fact]
+    public void Unchanged_profile_is_resent_after_the_refresh_interval_so_a_lost_send_heals()
+    {
+        var store = new InMemoryConfigStore();
+        var t0 = new System.DateTimeOffset(2026, 1, 1, 0, 0, 0, System.TimeSpan.Zero);
+        Assert.True(SystemProfileService.TryClaimProfileSend(store, "cpu=A", t0));
+
+        Assert.False(SystemProfileService.TryClaimProfileSend(store, "cpu=A", t0.AddHours(23)));
+        Assert.True(SystemProfileService.TryClaimProfileSend(store, "cpu=A", t0.Add(SystemProfileService.ProfileRefresh)));
+        Assert.False(SystemProfileService.TryClaimProfileSend(store, "cpu=A", t0.Add(SystemProfileService.ProfileRefresh).AddHours(1)));
     }
 }

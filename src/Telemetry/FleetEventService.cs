@@ -28,10 +28,14 @@ internal sealed class FleetEventService
     private readonly IUsbEnumerator _usb;
     private readonly Func<bool> _ibuypowerSystem;
     private readonly TimeProvider _clock;
+    internal static readonly TimeSpan UsbSettleDelay = TimeSpan.FromMinutes(2);
+
     private readonly SemaphoreSlim _gate = new(1, 1);
 
-    // Not persisted: the USB set is read once per process (the first ready pass) and reused. Later hourly passes re-enumerated live, so any hot-plugged controller, phone or hub changed the hash and resent the whole specs event.
+    // Not persisted: USB set captured once per process after the bus settles; later passes reuse it so hot-plugging never changes the hash.
     private List<FleetEventDevice>? _bootDevices;
+    private readonly DateTimeOffset _startedAt;
+    private readonly TimeSpan _usbSettle;
 
     // Not persisted: caps the install event's PostHog leg to one attempt per process lifetime, independent of nexus-api retries.
     private bool _postHogInstallAttempted;
@@ -60,8 +64,11 @@ internal sealed class FleetEventService
         SystemSpecsCollector specs,
         IUsbEnumerator usb,
         Func<bool> ibuypowerSystem,
-        TimeProvider clock)
+        TimeProvider clock,
+        TimeSpan? usbSettle = null)
     {
+        _startedAt = clock.GetUtcNow();
+        _usbSettle = usbSettle ?? UsbSettleDelay;
         _store = store;
         _transport = transport;
         _telemetry = telemetry;
@@ -213,7 +220,10 @@ internal sealed class FleetEventService
         if (string.IsNullOrWhiteSpace(specs.Processor) && string.IsNullOrWhiteSpace(specs.GraphicsCard))
             return; // not ready yet (cold boot) - retry next pass.
 
-        // Sorted: the GPU enumeration order is not stable across boots.
+        // Devices enumerate late on a cold boot; wait for the bus before taking the one snapshot.
+        if (_bootDevices is null && _clock.GetUtcNow() - _startedAt < _usbSettle)
+            return;
+
         var gpu = specs.GraphicsCard.Split(
                 " + ", StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
             .OrderBy(g => g, StringComparer.Ordinal)
@@ -227,7 +237,7 @@ internal sealed class FleetEventService
         var gpuJoined = string.Join(" + ", gpu);
         if (ramBytes != persisted.FleetRamBytes || gpuJoined != persisted.FleetGpu)
         {
-            // Only non-empty reads reach here, so a transient bad read never overwrites a good value.
+            // Persist only DIMM-detail RAM and a non-empty GPU list.
             var keepGpu = gpu.Length > 0 ? gpuJoined : persisted.FleetGpu;
             var dimm = HasDimmDetail(specs.Memory, OperatingSystem.IsWindows());
             _store.Update(s =>
@@ -265,7 +275,7 @@ internal sealed class FleetEventService
             ("cpu", specs.Processor), ("gpu", gpu), ("ram_bytes", ramBytes), ("motherboard", specs.Motherboard));
     }
 
-    // On Windows the DIMM query writes a stick layout in parentheses; without it the string is the OS-usable total from the sensor fallback (32 GB installed reads as 31). Other platforms have no DIMM notion, so any figure counts.
+    // On Windows the DIMM query appends a parenthesized stick layout; without it the string is the OS-usable total from the sensor fallback. Other platforms accept any figure.
     internal static bool HasDimmDetail(string memory, bool requireDimmDetail) =>
         !requireDimmDetail || memory.Contains('(');
 

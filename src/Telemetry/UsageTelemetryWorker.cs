@@ -13,15 +13,18 @@ internal sealed class UsageTelemetryWorker : BackgroundService
     internal const int MaxBatch = 200;
 
     private static readonly TimeSpan InitialDelay = TimeSpan.FromSeconds(45);
+    private static readonly TimeSpan StopFlushTimeout = TimeSpan.FromSeconds(3);
     private static readonly TimeSpan Interval = TimeSpan.FromMinutes(5);
 
     private readonly UsageTelemetrySink _sink;
     private readonly IUsageTransport _transport;
     private readonly IConfigStore _store;
-    private bool _dropLogged;
+    private readonly Action<string> _log;
+    private int _lastDropStatus;
 
-    public UsageTelemetryWorker(UsageTelemetrySink sink, IUsageTransport transport, IConfigStore store)
+    public UsageTelemetryWorker(UsageTelemetrySink sink, IUsageTransport transport, IConfigStore store, Action<string>? log = null)
     {
+        _log = log ?? Console.Error.WriteLine;
         _sink = sink;
         _transport = transport;
         _store = store;
@@ -64,18 +67,27 @@ internal sealed class UsageTelemetryWorker : BackgroundService
         List<UsageEvent> batch;
         while ((batch = _sink.Take(MaxBatch)).Count > 0)
         {
-            var result = await _transport.SendAsync(installId, BuildInfo.Version, batch, ct).ConfigureAwait(false);
-            if (result == UsageDelivery.Retry)
+            var (delivery, status) = await _transport.SendAsync(installId, BuildInfo.Version, batch, ct).ConfigureAwait(false);
+            if (delivery == UsageDelivery.Retry)
             {
                 _sink.Requeue(batch);
                 return;
             }
-            if (result == UsageDelivery.Drop && !_dropLogged)
+            if (delivery == UsageDelivery.Drop && status != _lastDropStatus)
             {
-                _dropLogged = true;
-                Console.Error.WriteLine($"[usage] batch of {batch.Count} rejected by nexus-api, dropped");
+                _lastDropStatus = status;
+                _log($"[usage] batch of {batch.Count} rejected by nexus-api ({status}), dropped");
             }
         }
+    }
+
+    public override async Task StopAsync(CancellationToken cancellationToken)
+    {
+        await base.StopAsync(cancellationToken).ConfigureAwait(false);
+        using var cts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        cts.CancelAfter(StopFlushTimeout);
+        try { await FlushAsync(cts.Token).ConfigureAwait(false); }
+        catch (Exception ex) { Console.Error.WriteLine($"[usage] final flush failed: {ex.GetType().Name}: {ex.Message}"); }
     }
 
     private static async Task<bool> WaitAsync(PeriodicTimer timer, CancellationToken ct)

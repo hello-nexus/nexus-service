@@ -85,11 +85,12 @@ public class FleetEventServiceTests
         StubSensors? sensors = null,
         TimeProvider? clock = null,
         IUsbEnumerator? usb = null,
-        bool ibuypowerSystem = false) =>
+        bool ibuypowerSystem = false,
+        TimeSpan? usbSettle = null) =>
         new(store, transport, telemetry ?? new TelemetryClient(store),
             sinks ?? Array.Empty<ITelemetrySink>(), new SystemSpecsCollector(sensors ?? new StubSensors()),
             usb ?? new StubUsbEnumerator(), () => ibuypowerSystem,
-            clock ?? TimeProvider.System);
+            clock ?? TimeProvider.System, usbSettle ?? TimeSpan.Zero);
 
     private sealed class StubUsbEnumerator : IUsbEnumerator
     {
@@ -193,6 +194,45 @@ public class FleetEventServiceTests
 
     private static StubSensors Sensors(string gpu = "GPU A", string mem = "32 GB") =>
         new() { Cpu = "CPU A", GpuModels = gpu.Length == 0 ? Array.Empty<string>() : gpu.Split('+'), MemoryFormatted = mem, Motherboard = "Board A" };
+
+    [Fact]
+    public async Task Specs_wait_for_the_usb_bus_to_settle_then_snapshot_once()
+    {
+        var store = OptedInStore(installDelivered: false);
+        var transport = new FakeFleetEventTransport();
+        var clock = new ManualClock();
+        var usb = new StubUsbEnumerator();
+        var svc = MakeService(store, transport, sensors: Sensors(), clock: clock, usb: usb, usbSettle: TimeSpan.FromMinutes(2));
+
+        await svc.RunPendingRetriesAsync(CancellationToken.None);
+        Assert.Equal(0, SpecsSent(transport)); // too early: devices may still be enumerating
+        Assert.Single(transport.Sent, p => p.Type == TelemetryEvents.Install);
+
+        usb.Entries.Add(new UsbDeviceEntry { VendorId = 0x045e, ProductId = 0x028e, Name = "Controller" });
+        clock.Advance(TimeSpan.FromMinutes(3));
+        await svc.RunPendingRetriesAsync(CancellationToken.None);
+
+        var specs = transport.Sent.Single(p => p.Type == TelemetryEvents.Specs).Specs!;
+        Assert.Single(specs.Devices);
+    }
+
+    [Fact]
+    public async Task Opt_out_reaches_the_usage_sink_through_the_sink_list()
+    {
+        var store = new InMemoryConfigStore();
+        store.Update(s =>
+        {
+            s.Telemetry.CollectAnonymousData = false;
+            s.Telemetry.InstallId = "install-1";
+            s.Telemetry.FleetPendingConsentEvent = TelemetryEvents.OptOut;
+        });
+        var usage = new UsageTelemetrySink(true);
+        var svc = MakeService(store, new FakeFleetEventTransport(), new TelemetryClient(store), new ITelemetrySink[] { usage });
+
+        await svc.DeliverConsentTransitionAsync(TelemetryEvents.OptOut, CancellationToken.None);
+
+        Assert.Equal(new[] { "opt_out" }, usage.Take(10).Select(e => e.Name));
+    }
 
     [Fact]
     public async Task Hourly_passes_reuse_the_boot_usb_snapshot_so_hot_plugging_does_not_resend()
