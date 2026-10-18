@@ -243,6 +243,9 @@ public sealed partial class LightingEngine : IDisposable
     private CanvasBuffer? _assignCanvas;
     private readonly Dictionary<string, byte[]> _assignRenders = new(StringComparer.Ordinal);
     private int _assignVersionSeen = -1;
+    // Static-pin shaders whose first compile has not landed, kept alive so it can finish.
+    private readonly Dictionary<string, IEffect> _assignPending = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, long> _assignRetryAt = new(StringComparer.Ordinal);
     // Reused per-frame scratch: which devices ApplyTestOverlays painted. Valid
     // for the rest of the tick after SampleDevicesFromCanvas returns.
     private bool[] _overlaid = Array.Empty<bool>();
@@ -2350,6 +2353,9 @@ public sealed partial class LightingEngine : IDisposable
     /// <summary>
     /// Rendered pixels for an assignment, rendering it if this look has not been
     /// seen. Runs on the engine thread, which is where the GL context lives.
+    /// A shader still compiling (or one that failed) caches nothing and returns
+    /// null so the device keeps the shared canvas for that tick; the effect stays
+    /// alive across ticks so its compile lands and the real frame is cached then.
     /// </summary>
     private byte[]? RenderAssignment(Nexus.Service.Persistence.DevicePin assignment)
     {
@@ -2361,19 +2367,42 @@ public sealed partial class LightingEngine : IDisposable
             // A control moved: every cached look is potentially stale.
             _assignVersionSeen = tracker.Version;
             _assignRenders.Clear();
+            DisposeAssignPending();
+            _assignRetryAt.Clear();
         }
         var key = Nexus.Service.Lighting.DevicePinLook.StaticKey(assignment);
         if (_assignRenders.TryGetValue(key, out var cached)) return cached;
+        var nowTick = Environment.TickCount64;
+        if (_assignRetryAt.TryGetValue(key, out var retryAt) && nowTick < retryAt) return null;
 
+        var keep = false;
         IEffect? effect = null;
         try
         {
-            effect = factory(assignment);
+            if (!_assignPending.TryGetValue(key, out effect))
+            {
+                effect = factory(assignment);
+            }
             if (effect is null) return null;
             _assignCanvas ??= new CanvasBuffer(_canvas.Width, _canvas.Height);
             _assignCanvas.Clear();
             // Static holds a frame, so one render at tick 0 is the whole look.
             effect.RenderFrame(_assignCanvas, 0);
+            if (effect is Gpu.ShaderEffect shader)
+            {
+                if (shader.HasFailed)
+                {
+                    // Black is the failure, not the look: do not pin it, retry later.
+                    _assignRetryAt[key] = nowTick + PinRetryMs;
+                    return null;
+                }
+                if (shader.IsRenderPending)
+                {
+                    _assignPending[key] = effect;
+                    keep = true;
+                    return null;
+                }
+            }
             var pixels = _assignCanvas.Pixels.ToArray();
             _assignRenders[key] = pixels;
             return pixels;
@@ -2387,8 +2416,21 @@ public sealed partial class LightingEngine : IDisposable
         }
         finally
         {
-            try { effect?.Dispose(); } catch { /* best-effort */ }
+            if (!keep)
+            {
+                _assignPending.Remove(key);
+                try { effect?.Dispose(); } catch { /* best-effort */ }
+            }
         }
+    }
+
+    private void DisposeAssignPending()
+    {
+        foreach (var e in _assignPending.Values)
+        {
+            try { e.Dispose(); } catch { /* best-effort */ }
+        }
+        _assignPending.Clear();
     }
 
     /// <summary>
@@ -2446,6 +2488,7 @@ public sealed partial class LightingEngine : IDisposable
         }
         _disposed = true;
         Stop();
+        DisposeAssignPending();
         try { _cts?.Dispose(); } catch { }
         _cts = null;
         _blackoutApplied.Dispose();
