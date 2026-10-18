@@ -198,13 +198,10 @@ public sealed class JsonConfigStoreCorruptLoadTests : IDisposable
         Assert.Equal(1f, store.Load().Lighting.GlobalBrightness);
     }
 
-    [Fact]
+    [UnprivilegedUnixFact]
+    [System.Runtime.Versioning.UnsupportedOSPlatform("windows")]
     public void Unreadable_primary_for_a_non_parse_reason_does_not_recover_from_bak()
     {
-        if (OperatingSystem.IsWindows())
-        {
-            return;
-        }
         File.WriteAllText(_path, "{ \"lighting\": { \"globalBrightness\": 0.9 } }");
         File.SetUnixFileMode(_path, UnixFileMode.None);
         const string bakJson = "{ \"lighting\": { \"globalBrightness\": 0.4 } }";

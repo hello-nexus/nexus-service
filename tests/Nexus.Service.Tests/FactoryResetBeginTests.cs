@@ -38,4 +38,25 @@ public class FactoryResetBeginTests : IDisposable
         Assert.Contains("PawnIO", FactoryReset.PreservedProgramDataEntries);
         Assert.Contains("gpu-render-state", FactoryReset.PreservedProgramDataEntries);
     }
+
+    [Fact]
+    public void DeleteSettingsFiles_removes_the_bak_and_settings()
+    {
+        var dir = Path.Combine(Path.GetTempPath(), "nexus-fr-" + Guid.NewGuid().ToString("N")[..8]);
+        Directory.CreateDirectory(dir);
+        try
+        {
+            File.WriteAllText(Path.Combine(dir, "settings.json"), "{}");
+            File.WriteAllText(Path.Combine(dir, "settings.json.bak"), "{}");
+
+            FactoryReset.DeleteSettingsFiles(dir);
+
+            Assert.False(File.Exists(Path.Combine(dir, "settings.json")));
+            Assert.False(File.Exists(Path.Combine(dir, "settings.json.bak")));
+        }
+        finally
+        {
+            Directory.Delete(dir, recursive: true);
+        }
+    }
 }

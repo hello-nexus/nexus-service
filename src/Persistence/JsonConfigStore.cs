@@ -57,7 +57,7 @@ public sealed class JsonConfigStore : IConfigStore, IDisposable
 
             if (!File.Exists(SettingsPath))
             {
-                // A failed Replace can leave only the .bak behind; a fresh install has none and a factory reset wipes it.
+                // A failed Replace can leave only the .bak behind; a fresh install has none and a factory reset deletes it before settings.json.
                 if (TryRecoverFromBackup(null))
                 {
                     return _cached!;
