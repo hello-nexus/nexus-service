@@ -50,6 +50,15 @@ public sealed class Slv3LockBoundDevicesTests : IDisposable
     }
 
     [Fact]
+    public async Task A_put_without_enabled_is_a_bad_request_and_changes_nothing()
+    {
+        var empty = await _client.PutAsJsonAsync("/devices/lianli-wireless/lock", new { });
+
+        Assert.Equal(System.Net.HttpStatusCode.BadRequest, empty.StatusCode);
+        Assert.True(_factory.Services.GetRequiredService<IConfigStore>().Load().Devices.LianLiWireless.LockBoundDevices);
+    }
+
+    [Fact]
     public void A_settings_file_without_the_value_reads_on_and_a_saved_off_survives_a_restart()
     {
         var dir = Path.Combine(Path.GetTempPath(), "nexus-test-lock-" + Guid.NewGuid().ToString("N")[..8]);
