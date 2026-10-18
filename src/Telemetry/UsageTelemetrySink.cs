@@ -64,13 +64,20 @@ internal sealed class UsageTelemetrySink : ITelemetrySink
         return New(e.Name, e.Timestamp, e.Properties);
     }
 
-    private static UsageEvent New(string name, DateTimeOffset ts, IReadOnlyList<KeyValuePair<string, object?>> props) => new()
+    private const int EnvelopeBytes = 128;
+
+    private static UsageEvent New(string name, DateTimeOffset ts, IReadOnlyList<KeyValuePair<string, object?>> props)
     {
-        Id = Guid.NewGuid().ToString(),
-        Name = name,
-        Timestamp = ts,
-        Props = FitProps(props),
-    };
+        var fitted = FitProps(props);
+        return new()
+        {
+            Id = Guid.NewGuid().ToString(),
+            Name = name,
+            Timestamp = ts,
+            Props = fitted,
+            Bytes = Measure(fitted) + name.Length + EnvelopeBytes,
+        };
+    }
 
     // Keeps each event under nexus-api's per-event props size cap, which otherwise drops the whole event.
     internal const int MaxPropsBytes = 6000;

@@ -11,6 +11,7 @@ namespace Nexus.Service.Telemetry;
 internal sealed class UsageTelemetryWorker : BackgroundService
 {
     internal const int MaxBatch = 200;
+    internal const int MaxRequestBytes = 512 * 1024;
 
     private static readonly TimeSpan InitialDelay = TimeSpan.FromSeconds(45);
     private static readonly TimeSpan StopFlushTimeout = TimeSpan.FromSeconds(3);
@@ -64,21 +65,48 @@ internal sealed class UsageTelemetryWorker : BackgroundService
             }
         }
 
+        var limit = MaxBatch;
         List<UsageEvent> batch;
-        while ((batch = _sink.Take(MaxBatch)).Count > 0)
+        while ((batch = _sink.Take(limit)).Count > 0)
         {
+            // The request body must stay under nexus-api's size limit; the tail goes back for the next request.
+            var fit = FitBytes(batch);
+            if (fit < batch.Count)
+            {
+                _sink.Requeue(batch.GetRange(fit, batch.Count - fit));
+                batch = batch.GetRange(0, fit);
+            }
+
             var (delivery, status) = await _transport.SendAsync(installId, BuildInfo.Version, batch, ct).ConfigureAwait(false);
             if (delivery == UsageDelivery.Retry)
             {
                 _sink.Requeue(batch);
                 return;
             }
-            if (delivery == UsageDelivery.Drop && status != _lastDropStatus)
+            if (delivery == UsageDelivery.TooLarge && batch.Count > 1)
+            {
+                _sink.Requeue(batch);
+                limit = Math.Max(1, batch.Count / 2);
+                continue;
+            }
+            if (delivery is UsageDelivery.Drop or UsageDelivery.TooLarge && status != _lastDropStatus)
             {
                 _lastDropStatus = status;
                 _log($"[usage] batch of {batch.Count} rejected by nexus-api ({status}), dropped");
             }
         }
+    }
+
+    private static int FitBytes(List<UsageEvent> batch)
+    {
+        long total = 0;
+        for (var i = 0; i < batch.Count; i++)
+        {
+            total += batch[i].Bytes;
+            if (total > MaxRequestBytes && i > 0)
+                return i;
+        }
+        return batch.Count;
     }
 
     public override async Task StopAsync(CancellationToken cancellationToken)

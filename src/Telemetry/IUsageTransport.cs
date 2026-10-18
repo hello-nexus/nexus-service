@@ -15,6 +15,9 @@ internal enum UsageDelivery
     /// <summary>5xx, 429 or a network failure: keep the batch for the next flush.</summary>
     Retry,
 
+    /// <summary>413: the body was too large; the caller splits the batch and retries.</summary>
+    TooLarge,
+
     /// <summary>A 4xx other than 429: the server will never accept this batch.</summary>
     Drop,
 }

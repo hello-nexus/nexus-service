@@ -165,7 +165,7 @@ public class UsageTelemetryTests
     [InlineData(HttpStatusCode.Accepted, "Delivered")]
     [InlineData(HttpStatusCode.BadRequest, "Drop")]
     [InlineData(HttpStatusCode.Unauthorized, "Drop")]
-    [InlineData(HttpStatusCode.RequestEntityTooLarge, "Drop")]
+    [InlineData(HttpStatusCode.RequestEntityTooLarge, "TooLarge")]
     [InlineData(HttpStatusCode.TooManyRequests, "Retry")]
     [InlineData(HttpStatusCode.RequestTimeout, "Retry")]
     [InlineData(HttpStatusCode.InternalServerError, "Retry")]
@@ -260,6 +260,64 @@ public class UsageTelemetryTests
         public bool Enabled => true;
         public Task SendAsync(string distinctId, IReadOnlyList<TelemetryEvent> batch, CancellationToken ct) =>
             Task.Delay(Timeout.Infinite, ct);
+    }
+
+    private static async Task FeedMaxSize(UsageTelemetrySink sink, int n)
+    {
+        for (var i = 0; i < n; i++)
+            await Feed(sink, Ev("layout_snapshot", null, ("note", new string('n', 200)), ("types", Enumerable.Range(0, 400).Select(j => "widget-" + j + new string('x', 20)).ToArray())));
+    }
+
+    [Fact]
+    public async Task Two_hundred_maximum_size_events_are_split_so_no_request_exceeds_the_byte_cap()
+    {
+        var sink = new UsageTelemetrySink(true);
+        await FeedMaxSize(sink, 200);
+        var transport = new FakeUsageTransport();
+        var worker = new UsageTelemetryWorker(sink, transport, Store(true));
+
+        await worker.FlushAsync(CancellationToken.None);
+
+        Assert.True(transport.Sent.Count > 1);
+        Assert.Equal(200, transport.Sent.Sum(s => s.Batch.Count));
+        foreach (var s in transport.Sent)
+        {
+            var buffer = new ArrayBufferWriter<byte>();
+            UsageTransport.WriteBody(buffer, s.InstallId, s.Version, s.Batch);
+            Assert.True(buffer.WrittenCount <= UsageTelemetryWorker.MaxRequestBytes, "request " + buffer.WrittenCount);
+        }
+        Assert.Equal(0, sink.Count);
+    }
+
+    [Fact]
+    public async Task Payload_too_large_halves_the_batch_and_retries_instead_of_dropping()
+    {
+        var sink = new UsageTelemetrySink(true);
+        for (var i = 0; i < 8; i++)
+            await Feed(sink, Ev("e" + i));
+        var transport = new FakeUsageTransport();
+        transport.Results.Enqueue(UsageDelivery.TooLarge);
+        var worker = new UsageTelemetryWorker(sink, transport, Store(true));
+
+        await worker.FlushAsync(CancellationToken.None);
+
+        Assert.Equal(new[] { 8, 4, 4 }, transport.Sent.Select(s => s.Batch.Count));
+        Assert.Equal(0, sink.Count);
+    }
+
+    [Fact]
+    public async Task Payload_too_large_on_a_single_event_drops_it()
+    {
+        var sink = new UsageTelemetrySink(true);
+        await Feed(sink, Ev("a"));
+        var transport = new FakeUsageTransport();
+        transport.Results.Enqueue(UsageDelivery.TooLarge);
+        var worker = new UsageTelemetryWorker(sink, transport, Store(true), _ => { });
+
+        await worker.FlushAsync(CancellationToken.None);
+
+        Assert.Single(transport.Sent);
+        Assert.Equal(0, sink.Count);
     }
 
     [Fact]

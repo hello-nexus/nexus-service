@@ -9,6 +9,8 @@ internal sealed class UsageEvent
     public string Id { get; init; } = "";
     public string Name { get; init; } = "";
     public DateTimeOffset Timestamp { get; init; }
+    /// <summary>Approximate serialized size, used to keep a request under the api body limit.</summary>
+    public int Bytes { get; init; }
     public IReadOnlyList<KeyValuePair<string, object?>> Props { get; init; }
         = Array.Empty<KeyValuePair<string, object?>>();
 }

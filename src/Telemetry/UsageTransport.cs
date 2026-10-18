@@ -51,6 +51,8 @@ internal sealed class UsageTransport : IUsageTransport
         var code = (int)status;
         if (code is >= 200 and < 300)
             return UsageDelivery.Delivered;
+        if (status == HttpStatusCode.RequestEntityTooLarge)
+            return UsageDelivery.TooLarge;
         if (status is HttpStatusCode.TooManyRequests or HttpStatusCode.RequestTimeout)
             return UsageDelivery.Retry;
         return code is >= 400 and < 500 ? UsageDelivery.Drop : UsageDelivery.Retry;
