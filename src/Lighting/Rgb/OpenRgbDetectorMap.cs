@@ -118,30 +118,40 @@ public static class OpenRgbDetectorMap
     /// <summary>Marks a detection pass starting; the rescan empties the daemon's map while the service still shows the old list.</summary>
     internal static int BeginHold()
     {
-        Volatile.Write(ref _holdActive, 1);
-        return Interlocked.Increment(ref _holdGeneration);
+        lock (CacheLock)
+        {
+            _holdGeneration++;
+            _holdActive = 1;
+            return _holdGeneration;
+        }
     }
 
     private static int _holdGeneration;
 
     /// <summary>The generation of the latest hold; read it before the activity state a later <see cref="EndHold(int)"/> is decided from.</summary>
-    internal static int HoldGeneration => Volatile.Read(ref _holdGeneration);
+    internal static int HoldGeneration
+    {
+        get { lock (CacheLock) { return _holdGeneration; } }
+    }
 
     /// <summary>Ends the hold only if no newer one began since <paramref name="observed"/> was read.</summary>
     internal static void EndHold(int observed)
     {
-        if (Volatile.Read(ref _holdGeneration) == observed)
+        lock (CacheLock)
         {
-            EndHold();
+            if (_holdGeneration == observed)
+            {
+                EndHold();
+            }
         }
     }
 
     /// <summary>Ends the hold: the fresh map is read next and the remembered names are dropped.</summary>
     internal static void EndHold()
     {
-        Volatile.Write(ref _holdActive, 0);
         lock (CacheLock)
         {
+            Volatile.Write(ref _holdActive, 0);
             _loadedAtMs = long.MinValue;
             LastKnown.Clear();
         }

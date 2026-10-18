@@ -1292,6 +1292,7 @@ public sealed class RgbBridge : IDisposable
             // device list becomes the engine's source of truth. Re-fetch the
             // list afterwards so zone LED counts reflect the new sizes.
             var resizeAttempts = await ApplyZoneResizesAsync(devices).ConfigureAwait(false);
+            var resizeTook = false;
             if (resizeAttempts.Count > 0)
             {
                 var refetched = false;
@@ -1310,10 +1311,7 @@ public sealed class RgbBridge : IDisposable
                 if (refetched && devices.Count > 0)
                 {
                     LogZoneResizeOutcomes(resizeAttempts, devices);
-                    if (AnyResizeTook(resizeAttempts, devices))
-                    {
-                        ZoneResizeApplied?.Invoke();
-                    }
+                    resizeTook = AnyResizeTook(resizeAttempts, devices);
                 }
             }
 
@@ -1370,6 +1368,11 @@ public sealed class RgbBridge : IDisposable
                 _directModeApplied.IntersectWith(addresses);
             }
             Interlocked.Exchange(ref _listCommitted, new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously)).TrySetResult();
+            // After the commit, so the refetch this triggers reads the new count.
+            if (resizeTook)
+            {
+                ZoneResizeApplied?.Invoke();
+            }
 
             // Move any legacy per-device state on a split motherboard onto its
             // ARGB header ids before this refresh resolves partitions and

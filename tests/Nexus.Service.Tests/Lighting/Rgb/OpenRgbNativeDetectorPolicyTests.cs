@@ -426,6 +426,10 @@ public class OpenRgbNativeDetectorPolicyTests : IDisposable
             Assert.True(OpenRgbDetectorMap.HoldActive);
             OpenRgbDetectorMap.EndHold(OpenRgbDetectorMap.HoldGeneration);
             Assert.False(OpenRgbDetectorMap.HoldActive);
+
+            var second = OpenRgbDetectorMap.BeginHold();
+            Assert.True(second > observed);
+            Assert.True(OpenRgbDetectorMap.HoldActive);
         }
         finally
         {
