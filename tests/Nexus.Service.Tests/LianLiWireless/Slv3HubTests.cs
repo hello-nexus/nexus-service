@@ -275,7 +275,7 @@ public partial class Slv3HubTests
 
     private static readonly byte[] OtherMasterMac = Convert.FromHexString("0102030405FF");
 
-    // Hub plus a saved owned list the test can inspect; the clock is injected for backoff.
+    // Hub plus a saved owned list the test can inspect; the clock is injected for expiry.
     private static (Slv3Hub Hub, FakeSlv3Network Net, FakeTxTransport Tx, Dictionary<string, int> Saved, ManualClock Clock) CreateOwnershipHub(
         Dictionary<string, int>? initial = null)
     {
@@ -294,7 +294,7 @@ public partial class Slv3HubTests
         return (hub, net, tx, saved, clock);
     }
 
-    private const int Established = 20;
+    private const int SettledPolls = 20;
 
     private static void Ticks(Slv3Hub hub, int count)
     {
@@ -321,7 +321,7 @@ public partial class Slv3HubTests
     {
         var (hub, net, tx, saved, _) = CreateOwnershipHub();
         net.Fans.Add(new SimulatedFan { Mac = FanMac, MasterMac = net.MasterMac, RxType = 2 });
-        Ticks(hub, Established);
+        Ticks(hub, SettledPolls);
         Assert.Single(saved);
 
         Assert.True(hub.Unbind(Convert.ToHexString(FanMac)));
@@ -387,7 +387,7 @@ public partial class Slv3HubTests
     }
 
     [Fact]
-    public void Phantom_zeroed_copy_of_a_real_strimer_is_never_listed_owned_or_moved()
+    public void Phantom_zeroed_copy_of_a_real_strimer_is_never_listed_or_owned()
     {
         var real = Convert.FromHexString("64F271E566E1");
         var phantom = Convert.FromHexString("6400000066E1");
@@ -403,11 +403,11 @@ public partial class Slv3HubTests
         };
         Assert.True(hub.EnsureConnected());
         net.Fans.Add(new SimulatedFan { Mac = real, MasterMac = net.MasterMac, RxType = 1, DevType = 2, FanCount = 0 });
-        Ticks(hub, Established);
+        Ticks(hub, SettledPolls);
         net.Fans.Add(new SimulatedFan { Mac = phantom, MasterMac = net.MasterMac, RxType = 1, DevType = 2, FanCount = 0 });
         tx.SentFrames.Clear();
 
-        Ticks(hub, Established);
+        Ticks(hub, SettledPolls);
 
         Assert.Single(hub.State.Fans);
         Assert.Equal(new Dictionary<string, int> { [Convert.ToHexString(real)] = 1 }, saved);
@@ -717,7 +717,7 @@ public partial class Slv3HubTests
         hub.OwnedDevicesSave = owned => saves.Add(new Dictionary<string, int>(owned));
         net.Fans.Add(new SimulatedFan { Mac = FanMac, MasterMac = net.MasterMac, RxType = 2 });
 
-        Ticks(hub, Established + 2);
+        Ticks(hub, SettledPolls + 2);
         Assert.Empty(saves);
 
         failing = false;
@@ -1675,9 +1675,9 @@ public partial class Slv3HubTests
             return tx;
         }, clock.NowMs) { ConfirmNewChains = false };
         Assert.True(hub.EnsureConnected());
-        net.Fans.Add(new SimulatedFan { Mac = FanMac });
+        net.Fans.Add(new SimulatedFan { Mac = FanMac, MasterMac = net.MasterMac, RxType = 1 });
         Assert.True(hub.DriveTick());
-        Assert.True(hub.Bind(Convert.ToHexString(FanMac)));
+        Assert.True(hub.SendRgbFrame(Convert.ToHexString(FanMac), new[] { new RgbColor(1, 2, 3) }, 100, 100, out _));
         Assert.True(hub.DriveTick());
 
         net.TxWedged = true;
@@ -2315,8 +2315,6 @@ public partial class Slv3HubTests
         f.Length >= 18 && f[0] == Slv3Protocol.UsbSendRf && f[1] == 0
         && f[4] == Slv3Protocol.RfFrameType && f[5] == Slv3Protocol.RfSaveCfg);
 
-    // ── Pending bind/unbind drop after PendingOpTickBudget ──
-
     // ── EnsureVideoMode ──
 
     [Fact]
@@ -2823,6 +2821,7 @@ public partial class Slv3HubTests
         // The chain echoes the last bind-frame duty tuple (fans_pwm) and the
         // last sequenced command's seq (cmd_seq), as the Y70 firmware does.
         public byte[] Pwm { get; set; } = new byte[4];
+        public byte[] EffectIndex { get; set; } = new byte[4];
         public byte CmdSeq { get; set; }
     }
 
@@ -2838,6 +2837,8 @@ public partial class Slv3HubTests
         public bool TxWedged { get; set; }
         // A TX that takes writes and never replies; the RX's reset restarts it too.
         public bool TxMute { get; set; }
+        // Every TX write fails at once, with no timeout.
+        public bool TxFailFast { get; set; }
     }
 
     // Models the TX dongle: records every USB frame sent, and applies an
@@ -2858,6 +2859,7 @@ public partial class Slv3HubTests
         public bool Dead { get; set; }
 
         public bool IsOpen => !Dead;
+        public bool LastWriteTimedOut => _net.TxWedged;
         public Slv3DongleRole Role => Slv3DongleRole.Tx;
         public string PortName => "fake-tx";
         public List<byte[]> SentFrames { get; } = new();
@@ -2877,7 +2879,7 @@ public partial class Slv3HubTests
             var copy = frame.ToArray();
             SentFrames.Add(copy);
             OnSend?.Invoke(copy);
-            if (_net.TxWedged)
+            if (_net.TxWedged || _net.TxFailFast)
             {
                 return false;
             }
@@ -3029,6 +3031,7 @@ public partial class Slv3HubTests
                 rec[13] = fan.RxType;
                 rec[18] = fan.DevType;
                 rec[19] = fan.FanCount;
+                fan.EffectIndex.CopyTo(rec.Slice(20, 4));
                 fan.Pwm.CopyTo(rec.Slice(36, 4));
                 rec[40] = fan.CmdSeq;
                 rec[41] = Slv3Protocol.RecordValidator;
