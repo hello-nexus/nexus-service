@@ -6,7 +6,7 @@ namespace Nexus.Service.Persistence;
 /// <summary>
 /// Crash-safe text/JSON writer. Writes the payload to "&lt;path&gt;.tmp",
 /// flushes it to disk, then renames it onto the target. If the target already
-/// exists, uses File.Replace (preserves ACLs on Windows) and keeps the
+/// exists, uses File.Replace (preserves ACLs on Windows), optionally keeping the
 /// previous version at "&lt;path&gt;.bak". If not, falls back to File.Move.
 ///
 /// The flush matters: NTFS journals metadata, not file data, so without it a
@@ -22,22 +22,27 @@ public static class AtomicJsonFile
 
     public static string BackupPathFor(string path) => path + ".bak";
 
-    public static void Write(string path, string contents)
+    /// <param name="keepBackup">Keeps the replaced version at <see cref="BackupPathFor"/>.</param>
+    /// <param name="flushToDisk">False only for rebuildable caches.</param>
+    public static void Write(string path, string contents, bool keepBackup = false, bool flushToDisk = true)
     {
-        Write(path, new UTF8Encoding(encoderShouldEmitUTF8Identifier: false).GetBytes(contents));
+        Write(path, new UTF8Encoding(encoderShouldEmitUTF8Identifier: false).GetBytes(contents), keepBackup, flushToDisk);
     }
 
-    public static void Write(string path, byte[] contents)
+    public static void Write(string path, byte[] contents, bool keepBackup = false, bool flushToDisk = true)
     {
         var tmp = TempPathFor(path);
         // FileMode.Create truncates an existing tmp in place, keeping any ACL set on it beforehand.
         using (var fs = new FileStream(tmp, FileMode.Create, FileAccess.Write, FileShare.None))
         {
             fs.Write(contents, 0, contents.Length);
-            fs.Flush(flushToDisk: true);
+            if (flushToDisk)
+            {
+                fs.Flush(flushToDisk: true);
+            }
         }
         if (File.Exists(path))
-            File.Replace(tmp, path, BackupPathFor(path));
+            File.Replace(tmp, path, keepBackup ? BackupPathFor(path) : null);
         else
             File.Move(tmp, path);
     }

@@ -85,7 +85,7 @@ public class AtomicJsonFileTests : IDisposable
     {
         var path = Path.Combine(_tempDir, "e.json");
         File.WriteAllText(path, "v1");
-        AtomicJsonFile.Write(path, "v2");
+        AtomicJsonFile.Write(path, "v2", keepBackup: true);
         Assert.Equal("v2", File.ReadAllText(path));
         Assert.Equal("v1", File.ReadAllText(path + ".bak"));
         Assert.False(File.Exists(path + ".tmp"));
@@ -96,17 +96,27 @@ public class AtomicJsonFileTests : IDisposable
     {
         var path = Path.Combine(_tempDir, "f.json");
         AtomicJsonFile.Write(path, "v1");
-        AtomicJsonFile.Write(path, "v2");
-        AtomicJsonFile.Write(path, "v3");
+        AtomicJsonFile.Write(path, "v2", keepBackup: true);
+        AtomicJsonFile.Write(path, "v3", keepBackup: true);
         Assert.Equal("v3", File.ReadAllText(path));
         Assert.Equal("v2", File.ReadAllText(path + ".bak"));
+    }
+
+    [Fact]
+    public void Write_keeps_no_bak_by_default()
+    {
+        var path = Path.Combine(_tempDir, "j.json");
+        File.WriteAllText(path, "v1");
+        AtomicJsonFile.Write(path, "v2");
+        AtomicJsonFile.Write(path, new byte[] { 1 }, flushToDisk: false);
+        Assert.False(File.Exists(path + ".bak"));
     }
 
     [Fact]
     public void Write_first_save_creates_no_bak()
     {
         var path = Path.Combine(_tempDir, "g.json");
-        AtomicJsonFile.Write(path, "v1");
+        AtomicJsonFile.Write(path, "v1", keepBackup: true);
         Assert.False(File.Exists(path + ".bak"));
     }
 

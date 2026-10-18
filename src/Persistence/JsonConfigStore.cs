@@ -57,6 +57,11 @@ public sealed class JsonConfigStore : IConfigStore, IDisposable
 
             if (!File.Exists(SettingsPath))
             {
+                // A failed Replace can leave only the .bak behind; a fresh install has none and a factory reset wipes it.
+                if (TryRecoverFromBackup(null))
+                {
+                    return _cached!;
+                }
                 // Fresh install only: anonymous telemetry defaults on here
                 // (opt-out model). Every other path (existing file, migrated
                 // file, corrupt-file fallback) keeps the field's own default
@@ -79,7 +84,7 @@ public sealed class JsonConfigStore : IConfigStore, IDisposable
             }
             catch (Exception ex)
             {
-                Console.Error.WriteLine($"[nexus-service] settings.json corrupted, starting fresh: {ex.Message}");
+                Console.Error.WriteLine($"[nexus-service] settings.json unreadable: {ex.Message}");
                 // Preserve the unreadable file before overwriting it with
                 // defaults, so a single bad byte doesn't silently destroy the
                 // user's config with no recovery copy.
@@ -90,10 +95,12 @@ public sealed class JsonConfigStore : IConfigStore, IDisposable
                     Console.Error.WriteLine($"[nexus-service] preserved corrupt settings at {backup}");
                 }
                 catch { /* best-effort backup; never block startup on it */ }
-                if (TryRecoverFromBackup())
+                // Only a document that failed to parse is replaced from the backup; an IO or migration failure may leave a valid newer file.
+                if (ex is UnparseableSettingsException && TryRecoverFromBackup(json))
                 {
                     return _cached!;
                 }
+                Console.Error.WriteLine("[nexus-service] starting fresh");
                 // The file existed but couldn't be read: not a fresh install
                 // for the v8 OnboardingCompleted migration, so route through
                 // Migrate() the same as any other pre-v8 document.
@@ -114,11 +121,18 @@ public sealed class JsonConfigStore : IConfigStore, IDisposable
     /// <summary>Deserializes and migrates <paramref name="json"/> into <c>_cached</c>, persisting when a migration changed it. Throws on unreadable JSON.</summary>
     private void ParseAndMigrate(string json)
     {
-        _cached = JsonSerializer.Deserialize(json, PersistenceJsonContext.Default.NexusSettings);
-        // Valid JSON (e.g. a literal "null") but no data: the file
-        // still existed, so this is not a fresh install for the v8
-        // OnboardingCompleted migration below.
-        _cached ??= new NexusSettings { SchemaVersion = 0 };
+        try
+        {
+            _cached = JsonSerializer.Deserialize(json, PersistenceJsonContext.Default.NexusSettings);
+        }
+        catch (JsonException ex)
+        {
+            throw new UnparseableSettingsException(ex);
+        }
+        if (_cached is null)
+        {
+            throw new UnparseableSettingsException(null);
+        }
         // Pre-pin per-device locks and fan locks fold into pins before
         // anything reads the document; a no-op once migrated.
         var pinsMigrated = Nexus.Service.Lighting.PinMigration.Apply(_cached);
@@ -172,8 +186,10 @@ public sealed class JsonConfigStore : IConfigStore, IDisposable
         }
     }
 
-    /// <summary>Loads the previous version AtomicJsonFile kept next to a settings.json that failed to parse. Never called for a missing settings.json, so a deliberate reset is not undone.</summary>
-    private bool TryRecoverFromBackup()
+    private sealed class UnparseableSettingsException(Exception? inner) : Exception("settings.json did not parse", inner);
+
+    /// <summary>Restores the previous version AtomicJsonFile kept, once it parses in memory. <paramref name="primaryJson"/> is the unparseable settings.json text, whose sign-ins win over the backup's possibly rotated ones.</summary>
+    private bool TryRecoverFromBackup(string? primaryJson)
     {
         var backup = AtomicJsonFile.BackupPathFor(SettingsPath);
         try
@@ -183,11 +199,19 @@ public sealed class JsonConfigStore : IConfigStore, IDisposable
                 return false;
             }
             var json = File.ReadAllText(backup);
-            // Copy first so any Replace inside the migration keeps this good copy as the new .bak, not the corrupt file.
-            File.Copy(backup, SettingsPath, overwrite: true);
+            if (JsonSerializer.Deserialize(json, PersistenceJsonContext.Default.NexusSettings) is null)
+            {
+                return false;
+            }
+            // No backup kept here: the Replace would otherwise overwrite the good .bak with the corrupt file.
+            WriteAtomic(json, keepBackup: false);
             ParseAndMigrate(json);
-            Persist(_cached!);
-            Console.Error.WriteLine($"[nexus-service] ERR settings.json was corrupt; recovered from {backup}");
+            if (TryReadAuth(primaryJson) is { } auth)
+            {
+                _cached!.Auth = auth;
+                Persist(_cached);
+            }
+            Console.Error.WriteLine($"[nexus-service] ERR settings.json was unusable; recovered from {backup}");
             return true;
         }
         catch (Exception ex)
@@ -485,21 +509,19 @@ public sealed class JsonConfigStore : IConfigStore, IDisposable
 
     private void Persist(NexusSettings doc)
     {
-        // Used only for the first-run synchronous write (Load sees no settings
-        // file and writes defaults immediately). Runtime updates go through the
-        // debounced flush path.
+        // Synchronous write for Load-time defaults, migrations and recovery; runtime updates go through the debounced flush path.
         var json = JsonSerializer.Serialize(doc, PersistenceJsonContext.Default.NexusSettings);
         WriteAtomic(json);
     }
 
-    private void WriteAtomic(string json)
+    private void WriteAtomic(string json, bool keepBackup = true)
     {
         var dir = Path.GetDirectoryName(SettingsPath)!;
         Directory.CreateDirectory(dir);
         // Restrict the temp file BEFORE the token-bearing JSON goes into it; the
         // rename then carries 0600 onto settings.json every write.
         NexusDataPaths.CreateRestricted(AtomicJsonFile.TempPathFor(SettingsPath));
-        AtomicJsonFile.Write(SettingsPath, json);
+        AtomicJsonFile.Write(SettingsPath, json, keepBackup);
     }
 
     public void Dispose()
