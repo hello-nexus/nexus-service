@@ -195,6 +195,8 @@ public sealed class IconDiskCache
     {
         try { File.Delete(PngPath(key)); } catch { }
         try { File.Delete(MetaPath(key)); } catch { }
+        try { File.Delete(AtomicJsonFile.BackupPathFor(PngPath(key))); } catch { }
+        try { File.Delete(AtomicJsonFile.BackupPathFor(MetaPath(key))); } catch { }
     }
 
     private string PngPath(string key) => Path.Combine(_root, key + ".png");

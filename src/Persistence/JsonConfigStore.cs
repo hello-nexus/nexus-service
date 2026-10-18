@@ -75,62 +75,7 @@ public sealed class JsonConfigStore : IConfigStore, IDisposable
             try
             {
                 json = File.ReadAllText(SettingsPath);
-                _cached = JsonSerializer.Deserialize(json, PersistenceJsonContext.Default.NexusSettings);
-                // Valid JSON (e.g. a literal "null") but no data: the file
-                // still existed, so this is not a fresh install for the v8
-                // OnboardingCompleted migration below.
-                _cached ??= new NexusSettings { SchemaVersion = 0 };
-                // Pre-pin per-device locks and fan locks fold into pins before
-                // anything reads the document; a no-op once migrated.
-                var pinsMigrated = Nexus.Service.Lighting.PinMigration.Apply(_cached);
-                // A file with no schemaVersion key deserializes to the current
-                // version and would skip Migrate(), yet it is not a fresh install.
-                if (!HasTopLevelSchemaVersion(json))
-                {
-                    _cached.FeaturesOnboardingCompleted = true;
-                    Nexus.Service.Lighting.Rgb.OpenRgbGamepadDefaults.KeepMiceOn(_cached);
-                    _cached.GameSyncRemovedNotice = true;
-                    pinsMigrated = true;
-                }
-                if (_cached.SchemaVersion < NexusSettings.CurrentSchemaVersion)
-                {
-                    Migrate(_cached);
-                    Nexus.Service.Conflicts.ConflictWhitelistMigration.ReconcileBetaLock(_cached);
-                    Persist(_cached);
-                }
-                else
-                {
-                    var recovered = pinsMigrated;
-                    if (NeedsDeckModesRecovery(_cached))
-                    {
-                        // A downgrade to a pre-deck-modes build (then a re-upgrade)
-                        // leaves SchemaVersion already at 18 - the schema-gated
-                        // migration above never runs again - while the old build's
-                        // own writes repopulated PhysicalDeckSettings.Legacy* with
-                        // nothing hoisted into Presets/Instances. Recover
-                        // independently of SchemaVersion whenever that exact
-                        // stranded shape shows up.
-                        Nexus.Service.Deck.DeckModesMigration.Apply(_cached);
-                        recovered = true;
-                    }
-                    if (NormalizeDeckInstanceModes(_cached))
-                    {
-                        recovered = true;
-                    }
-                    // A downgrade to an older build can write the removed mode back at the current schema version.
-                    if (Nexus.Service.Lighting.RemovedSyncModes.Apply(_cached.Lighting))
-                    {
-                        recovered = true;
-                    }
-                    if (Nexus.Service.Conflicts.ConflictWhitelistMigration.ReconcileBetaLock(_cached))
-                    {
-                        recovered = true;
-                    }
-                    if (recovered)
-                    {
-                        Persist(_cached);
-                    }
-                }
+                ParseAndMigrate(json);
             }
             catch (Exception ex)
             {
@@ -145,6 +90,10 @@ public sealed class JsonConfigStore : IConfigStore, IDisposable
                     Console.Error.WriteLine($"[nexus-service] preserved corrupt settings at {backup}");
                 }
                 catch { /* best-effort backup; never block startup on it */ }
+                if (TryRecoverFromBackup())
+                {
+                    return _cached!;
+                }
                 // The file existed but couldn't be read: not a fresh install
                 // for the v8 OnboardingCompleted migration, so route through
                 // Migrate() the same as any other pre-v8 document.
@@ -158,7 +107,94 @@ public sealed class JsonConfigStore : IConfigStore, IDisposable
                 Persist(_cached);
             }
 
-            return _cached;
+            return _cached!;
+        }
+    }
+
+    /// <summary>Deserializes and migrates <paramref name="json"/> into <c>_cached</c>, persisting when a migration changed it. Throws on unreadable JSON.</summary>
+    private void ParseAndMigrate(string json)
+    {
+        _cached = JsonSerializer.Deserialize(json, PersistenceJsonContext.Default.NexusSettings);
+        // Valid JSON (e.g. a literal "null") but no data: the file
+        // still existed, so this is not a fresh install for the v8
+        // OnboardingCompleted migration below.
+        _cached ??= new NexusSettings { SchemaVersion = 0 };
+        // Pre-pin per-device locks and fan locks fold into pins before
+        // anything reads the document; a no-op once migrated.
+        var pinsMigrated = Nexus.Service.Lighting.PinMigration.Apply(_cached);
+        // A file with no schemaVersion key deserializes to the current
+        // version and would skip Migrate(), yet it is not a fresh install.
+        if (!HasTopLevelSchemaVersion(json))
+        {
+            _cached.FeaturesOnboardingCompleted = true;
+            Nexus.Service.Lighting.Rgb.OpenRgbGamepadDefaults.KeepMiceOn(_cached);
+            _cached.GameSyncRemovedNotice = true;
+            pinsMigrated = true;
+        }
+        if (_cached.SchemaVersion < NexusSettings.CurrentSchemaVersion)
+        {
+            Migrate(_cached);
+            Nexus.Service.Conflicts.ConflictWhitelistMigration.ReconcileBetaLock(_cached);
+            Persist(_cached);
+        }
+        else
+        {
+            var recovered = pinsMigrated;
+            if (NeedsDeckModesRecovery(_cached))
+            {
+                // A downgrade to a pre-deck-modes build (then a re-upgrade)
+                // leaves SchemaVersion already at 18 - the schema-gated
+                // migration above never runs again - while the old build's
+                // own writes repopulated PhysicalDeckSettings.Legacy* with
+                // nothing hoisted into Presets/Instances. Recover
+                // independently of SchemaVersion whenever that exact
+                // stranded shape shows up.
+                Nexus.Service.Deck.DeckModesMigration.Apply(_cached);
+                recovered = true;
+            }
+            if (NormalizeDeckInstanceModes(_cached))
+            {
+                recovered = true;
+            }
+            // A downgrade to an older build can write the removed mode back at the current schema version.
+            if (Nexus.Service.Lighting.RemovedSyncModes.Apply(_cached.Lighting))
+            {
+                recovered = true;
+            }
+            if (Nexus.Service.Conflicts.ConflictWhitelistMigration.ReconcileBetaLock(_cached))
+            {
+                recovered = true;
+            }
+            if (recovered)
+            {
+                Persist(_cached);
+            }
+        }
+    }
+
+    /// <summary>Loads the previous version AtomicJsonFile kept next to a settings.json that failed to parse. Never called for a missing settings.json, so a deliberate reset is not undone.</summary>
+    private bool TryRecoverFromBackup()
+    {
+        var backup = AtomicJsonFile.BackupPathFor(SettingsPath);
+        try
+        {
+            if (!File.Exists(backup))
+            {
+                return false;
+            }
+            var json = File.ReadAllText(backup);
+            // Copy first so any Replace inside the migration keeps this good copy as the new .bak, not the corrupt file.
+            File.Copy(backup, SettingsPath, overwrite: true);
+            ParseAndMigrate(json);
+            Persist(_cached!);
+            Console.Error.WriteLine($"[nexus-service] ERR settings.json was corrupt; recovered from {backup}");
+            return true;
+        }
+        catch (Exception ex)
+        {
+            _cached = null;
+            Console.Error.WriteLine($"[nexus-service] settings backup unusable: {ex.Message}");
+            return false;
         }
     }
 

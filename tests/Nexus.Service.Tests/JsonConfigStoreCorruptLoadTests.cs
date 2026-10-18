@@ -130,4 +130,47 @@ public sealed class JsonConfigStoreCorruptLoadTests : IDisposable
         using var reopened = new JsonConfigStore(_path);
         Assert.Equal(0.25f, reopened.Load().Lighting.GlobalBrightness);
     }
+
+    [Fact]
+    public void Zero_filled_settings_recovers_from_bak()
+    {
+        File.WriteAllText(_path, "{ \"lighting\": { \"globalBrightness\": 0.4 } }");
+        File.Move(_path, _path + ".bak");
+        File.WriteAllBytes(_path, new byte[256]);
+
+        using var store = new JsonConfigStore(_path);
+        var settings = store.Load();
+
+        Assert.Equal(0.4f, settings.Lighting.GlobalBrightness);
+        Assert.True(File.Exists(_path + ".corrupt"));
+        Assert.Equal(new byte[256], File.ReadAllBytes(_path + ".corrupt"));
+        using var reopened = new JsonConfigStore(_path);
+        Assert.Equal(0.4f, reopened.Load().Lighting.GlobalBrightness);
+        Assert.Contains("0.4", File.ReadAllText(_path + ".bak"));
+    }
+
+    [Fact]
+    public void Corrupt_settings_and_corrupt_bak_load_defaults()
+    {
+        File.WriteAllText(_path, "{ nope");
+        File.WriteAllBytes(_path + ".bak", new byte[64]);
+
+        using var store = new JsonConfigStore(_path);
+        var settings = store.Load();
+
+        Assert.Equal(1f, settings.Lighting.GlobalBrightness);
+        Assert.Contains("nope", File.ReadAllText(_path + ".corrupt"));
+    }
+
+    [Fact]
+    public void Missing_settings_with_bak_present_does_not_restore()
+    {
+        File.WriteAllText(_path + ".bak", "{ \"lighting\": { \"globalBrightness\": 0.4 } }");
+
+        using var store = new JsonConfigStore(_path);
+        var settings = store.Load();
+
+        Assert.NotEqual(0.4f, settings.Lighting.GlobalBrightness);
+        Assert.False(File.Exists(_path + ".corrupt"));
+    }
 }
