@@ -12,12 +12,14 @@ namespace Nexus.Service.Peripherals.LianLiWireless;
 /// Connects the SLV3 dongles and drives the hub on L-Connect's cadence
 /// (MasterDevice.Run): <see cref="Slv3Hub.PollTick"/> every
 /// <see cref="PollPeriodMs"/> and <see cref="Slv3Hub.DriveTick"/> on every
-/// other one.
+/// <see cref="DriveEveryTicks"/>th one.
 /// </summary>
 public sealed class Slv3ConnectionWorker : BackgroundService
 {
     private const int ConnectPollMs = 5000;
-    private const int PollPeriodMs = 500;
+    // GetDev period measured on L-Connect 2.1.29; DriveEveryTicks of them is its once-a-second block.
+    private const int PollPeriodMs = 336;
+    private const int DriveEveryTicks = 3;
     private const int MaxConsecutiveFailures = 3;
 
     private readonly Slv3Hub _hub;
@@ -51,11 +53,10 @@ public sealed class Slv3ConnectionWorker : BackgroundService
                     try
                     {
                         var failures = 0;
-                        var halfTick = false;
+                        var tick = 0;
                         while (!stoppingToken.IsCancellationRequested && _gate.IsEnabled("lianli-wireless"))
                         {
-                            var ok = halfTick ? _hub.PollTick() : _hub.DriveTick();
-                            halfTick = !halfTick;
+                            var ok = tick++ % DriveEveryTicks != 0 ? _hub.PollTick() : _hub.DriveTick();
                             if (ok)
                             {
                                 failures = 0;

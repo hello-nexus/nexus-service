@@ -14,7 +14,7 @@ namespace Nexus.Service.Peripherals.LianLiWireless;
 /// transports, the master identity, the bind/unbind state machine, the
 /// device-list poll, RGB pushes, and the PWM sync. The cadence and every
 /// frame mirror L-Connect's MasterDevice loop as captured on the Y70 with
-/// USBPcap (2026-09-04): <see cref="PollTick"/> is its 500 ms RefreshList +
+/// USBPcap (2026-09-04): <see cref="PollTick"/> is its RefreshList +
 /// SyncControlInfo pass, <see cref="DriveTick"/> adds the once-a-second
 /// SyncPwm, QuerryMasterMac, SyncMasterClock and SaveConfig work.
 /// All hardware I/O and shared state are guarded by one lock: the connection
@@ -51,8 +51,6 @@ public sealed class Slv3Hub : IDisposable
     private long _devicePolls;
     internal const int ChainConfirmWindowPolls = 10;
     internal const int ChainConfirmSightings = 3;
-    // Polls a chain must have been seen in before it counts as owned or can take part in a slot conflict.
-    internal const int EstablishedChainPolls = 20;
 
     /// <summary>False lists a new chain on first sight.</summary>
     internal bool ConfirmNewChains { get; init; } = true;
@@ -115,21 +113,6 @@ public sealed class Slv3Hub : IDisposable
     // Per-chain count of polls reporting its slot on another chain of ours (L-Connect ConflictCnt).
     internal const int SlotConflictLimit = 4;
     private readonly Dictionary<string, int> _conflictCounts = new(StringComparer.Ordinal);
-    // Foreign-master polls spent steering one chain with no change, before the master is treated as a neighbor's.
-    internal const int UnconfirmedRetakePolls = 120;
-    private readonly Dictionary<string, (byte[] Master, int Polls)> _unconfirmedRetakes = new(StringComparer.Ordinal);
-
-    // Neighbor guard: consecutive fresh sightings on the retaken-from master that mark it a neighbor's.
-    internal const int NeighborConfirmPolls = 3;
-    // A chain back on the master it was retaken from within this window is held by a live master.
-    internal const long PullBackWindowMs = 600_000;
-    // A neighbor mark lapses after this, so a wrong mark heals and a real neighbor is tugged once per lapse.
-    internal const long NeighborMarkMs = 3_600_000;
-    private readonly Dictionary<string, byte[]> _retakeFrom = new(StringComparer.Ordinal);
-    private readonly Dictionary<string, Retaken> _retaken = new(StringComparer.Ordinal);
-    private readonly Dictionary<string, Retaken> _neighborMaster = new(StringComparer.Ordinal);
-    private readonly Dictionary<string, RebindSighting> _pullSeen = new(StringComparer.Ordinal);
-
     internal Action<int> SleepMs { get; init; } = Thread.Sleep;
 
     private ISlv3Transport? _tx;
@@ -442,7 +425,6 @@ public sealed class Slv3Hub : IDisposable
         _pollRecords = new List<Slv3DeviceRecord>();
         _liveMasters.Clear();
         _conflictCounts.Clear();
-        _unconfirmedRetakes.Clear();
         _pendingCommands.Clear();
         _lastIssuedSeq.Clear();
         _rxAbsentSinceMs = 0;
@@ -684,7 +666,7 @@ public sealed class Slv3Hub : IDisposable
     }
 
     /// <summary>
-    /// The 500 ms pass (L-Connect RefreshList + SyncControlInfo): refresh the
+    /// The per-poll pass (L-Connect RefreshList + SyncControlInfo): refresh the
     /// device list, reconcile every kept-bound chain against the fresh
     /// report, and re-send pending select/reboot commands. Returns false only when
     /// the link is down; a faulty dongle half is recovered in place.
@@ -888,9 +870,6 @@ public sealed class Slv3Hub : IDisposable
         }
     }
 
-    private bool EstablishedLocked(string key) =>
-        _knownChains.TryGetValue(key, out var chain) && chain.Sightings >= EstablishedChainPolls;
-
     // Two chains bound to us reporting one slot: the owned slot is kept until the conflict resolves.
     private bool SlotSharedLocked(Slv3DeviceRecord record)
     {
@@ -912,118 +891,6 @@ public sealed class Slv3Hub : IDisposable
             && _devicePolls - poll < LiveMasterPolls;
     }
 
-    // A record a real neighbor dongle does not write: an out-of-range pipe, or a master whose differing
-    // bytes are one repeated fill byte. A near copy of ours (one byte or two bits off) is garbled unless
-    // an established unowned chain reports the same master, which makes it a live neighbor's.
-    private bool GarbledRecordLocked(Slv3DeviceRecord record)
-    {
-        if (!PlausiblePipe(record.Channel, record.RxType))
-        {
-            return true;
-        }
-        var bits = 0;
-        var diffBytes = 0;
-        var fillOnly = true;
-        byte fill = 0;
-        for (var i = 0; i < Slv3Protocol.MacLength && i < record.MasterMac.Length && i < _masterMac.Length; i++)
-        {
-            var diff = record.MasterMac[i] ^ _masterMac[i];
-            bits += System.Numerics.BitOperations.PopCount((uint)diff);
-            if (diff == 0)
-            {
-                continue;
-            }
-            if (diffBytes++ == 0)
-            {
-                fill = record.MasterMac[i];
-            }
-            fillOnly &= record.MasterMac[i] == fill;
-        }
-        if (diffBytes >= 2 && fillOnly)
-        {
-            return true;
-        }
-        return (diffBytes == 1 || bits <= 2) && !SharedWithUnownedChainLocked(record);
-    }
-
-    private bool SharedWithUnownedChainLocked(Slv3DeviceRecord record)
-    {
-        foreach (var other in _lastFanRecords)
-        {
-            if (!Slv3Protocol.MacEquals(other.Mac, record.Mac)
-                && Slv3Protocol.MacEquals(other.MasterMac, record.MasterMac)
-                && !Slv3Protocol.MacEquals(other.MasterMac, _masterMac)
-                && !_owned.ContainsKey(Convert.ToHexString(other.Mac))
-                && EstablishedLocked(Convert.ToHexString(other.Mac)))
-            {
-                return true;
-            }
-        }
-        return false;
-    }
-
-    private void MarkNeighborLocked(string key, byte[] master, string why)
-    {
-        _retaken.Remove(key);
-        _pullSeen.Remove(key);
-        _neighborMaster[key] = new Retaken(master, _nowMs());
-        _unconfirmedRetakes.Remove(key);
-        ServiceLog.Info($"[lianli-wireless] chain {key} {why} {Convert.ToHexString(master)}, treating it as a neighbor and standing down");
-    }
-
-    // A chain that keeps returning to the master it was retaken from is held by a live master.
-    private void NotePullBackLocked(string key, Slv3DeviceRecord record)
-    {
-        if (GarbledRecordLocked(record))
-        {
-            _pullSeen.Remove(key);
-            return;
-        }
-        if (!_retaken.TryGetValue(key, out var retaken) || !Slv3Protocol.MacEquals(retaken.Master, record.MasterMac))
-        {
-            _pullSeen.Remove(key);
-            return;
-        }
-        if (!_knownChains.TryGetValue(key, out var chain) || chain.Poll != _devicePolls)
-        {
-            return;
-        }
-        _pullSeen.TryGetValue(key, out var seen);
-        if (seen.LastPoll != _devicePolls)
-        {
-            seen = new RebindSighting(_devicePolls, seen.Count + 1);
-            _pullSeen[key] = seen;
-        }
-        if (seen.Count < NeighborConfirmPolls)
-        {
-            return;
-        }
-        MarkNeighborLocked(key, retaken.Master, "pulled back after retake to");
-    }
-
-    private void ExpireNeighborStateLocked(long now)
-    {
-        foreach (var (key, retaken) in new List<KeyValuePair<string, Retaken>>(_retaken))
-        {
-            if (now - retaken.AtMs > PullBackWindowMs)
-            {
-                _retaken.Remove(key);
-                _pullSeen.Remove(key);
-            }
-        }
-        foreach (var (key, mark) in new List<KeyValuePair<string, Retaken>>(_neighborMaster))
-        {
-            if (now - mark.AtMs >= NeighborMarkMs)
-            {
-                _neighborMaster.Remove(key);
-            }
-        }
-    }
-
-    private bool StandingDownLocked(string key, Slv3DeviceRecord record) =>
-        _neighborMaster.TryGetValue(key, out var near)
-        && Slv3Protocol.MacEquals(near.Master, record.MasterMac) && _nowMs() - near.AtMs < NeighborMarkMs;
-
     // L-Connect SyncControlInfo: every poll, each chain this hub keeps bound (bind_to_master) whose reported
     // slot, channel or master differs from its target gets one bind frame at the pipe it reports.
     private void ReconcileLocked()
@@ -1032,7 +899,6 @@ public sealed class Slv3Hub : IDisposable
         {
             return;
         }
-        ExpireNeighborStateLocked(_nowMs());
         var merged = new Dictionary<string, Slv3DeviceRecord>(StringComparer.Ordinal);
         foreach (var record in _lastFanRecords)
         {
@@ -1125,58 +991,19 @@ public sealed class Slv3Hub : IDisposable
 
     private void ReconcileBindLocked(string key, BindIntent intent, Slv3DeviceRecord record)
     {
-        var ours = Slv3Protocol.MacEquals(record.MasterMac, _masterMac);
-        var foreign = !ours && !Slv3Protocol.MacIsZero(record.MasterMac);
-        if (ours && IsBoundToUsLocked(record))
+        // A chain held by a master heard recently is a live neighbor's, left alone as L-Connect hides it.
+        if (!Slv3Protocol.MacEquals(record.MasterMac, _masterMac) && IsLiveMasterLocked(record.MasterMac))
         {
-            _neighborMaster.Remove(key);
-            _pullSeen.Remove(key);
-            _unconfirmedRetakes.Remove(key);
-        }
-        if (foreign)
-        {
-            if (IsLiveMasterLocked(record.MasterMac))
-            {
-                return;
-            }
-            NotePullBackLocked(key, record);
-            if (_retaken.TryGetValue(key, out var live) && Slv3Protocol.MacEquals(live.Master, record.MasterMac)
-                && !GarbledRecordLocked(record))
-            {
-                return;
-            }
-            if (StandingDownLocked(key, record))
-            {
-                return;
-            }
+            return;
         }
         if (!NeedsBind(intent, record))
         {
-            if (ours && _retakeFrom.Remove(key, out var from))
-            {
-                _retaken[key] = new Retaken(from, _nowMs());
-                ServiceLog.Info($"[lianli-wireless] chain {key} retaken from {Convert.ToHexString(from)} ({DescribeBinding(record, _masterMac)})");
-            }
             intent.Sends = 0;
             return;
         }
         if (!ValidSlot(intent.TargetRx))
         {
             intent.TargetRx = OwnedSlotOrUnusedLocked(key);
-        }
-        if (foreign)
-        {
-            _retakeFrom.TryAdd(key, record.MasterMac);
-            if (!GarbledRecordLocked(record))
-            {
-                var polls = _unconfirmedRetakes.TryGetValue(key, out var u) && Slv3Protocol.MacEquals(u.Master, record.MasterMac) ? u.Polls + 1 : 1;
-                _unconfirmedRetakes[key] = (record.MasterMac, polls);
-                if (polls >= UnconfirmedRetakePolls)
-                {
-                    MarkNeighborLocked(key, record.MasterMac, $"kept its master through {polls} polls of retake frames,");
-                    return;
-                }
-            }
         }
         SendBindFrameLocked(record, intent.TargetRx, unbind: false);
         NoteSendLocked(key, intent, "bind", record);
@@ -1196,9 +1023,14 @@ public sealed class Slv3Hub : IDisposable
     }
 
     // L-Connect RX-slot conflict: a chain reporting a slot that another chain of ours reports too, for more than
-    // SlotConflictLimit polls. Lock off unbinds it as L-Connect does; lock on moves it to an unused slot.
+    // SlotConflictLimit polls. Unbinds it as L-Connect does; off while the lock is on.
     private void ResolveSlotConflictsLocked()
     {
+        if (_lockBound)
+        {
+            _conflictCounts.Clear();
+            return;
+        }
         var any = false;
         foreach (var record in _lastFanRecords)
         {
@@ -1224,17 +1056,9 @@ public sealed class Slv3Hub : IDisposable
                     continue;
                 }
                 _conflictCounts[key] = 0;
-                if (_lockBound)
-                {
-                    intent.TargetRx = GetRxUnusedLocked();
-                    ServiceLog.Info($"[lianli-wireless] slot {record.RxType} reported by two chains, moving {key} to slot {intent.TargetRx}");
-                }
-                else
-                {
-                    intent.Unbinding = true;
-                    intent.TargetRx = 0;
-                    ServiceLog.Info($"[lianli-wireless] slot {record.RxType} reported by two chains, unbinding {key}");
-                }
+                intent.Unbinding = true;
+                intent.TargetRx = 0;
+                ServiceLog.Info($"[lianli-wireless] slot {record.RxType} reported by two chains, unbinding {key}");
                 return;
             }
         }
@@ -1722,7 +1546,6 @@ public sealed class Slv3Hub : IDisposable
         SendSaveCfgLocked();
     }
 
-    // Stops at the first frame that fails to write, so a stalled TX costs one write timeout.
     private bool SendSaveCfgLocked()
     {
         if (_tx is null)
@@ -1730,15 +1553,7 @@ public sealed class Slv3Hub : IDisposable
             return false;
         }
         _lastSaveMs = _nowMs();
-        var payload = Slv3Protocol.BuildSaveCfg(_masterMac);
-        foreach (var frame in Slv3Protocol.BuildUsbSendRf(_channel, 0xFF, payload))
-        {
-            if (!_tx.RfSend(frame))
-            {
-                return false;
-            }
-        }
-        return true;
+        return WriteRfPayloadLocked(_channel, 0xFF, Slv3Protocol.BuildSaveCfg(_masterMac));
     }
 
     // Pages needed to hold recordCount records at RecordsPerPage each, >=1 and
@@ -1890,7 +1705,6 @@ public sealed class Slv3Hub : IDisposable
                 _knownChains.Remove(key);
                 _intents.Remove(key);
                 _conflictCounts.Remove(key);
-                _unconfirmedRetakes.Remove(key);
                 _bindingLogs.Remove(key);
                 _unconfirmedPwm.Remove(key);
                 if (_aioControl.TryGetValue(key, out var control))
@@ -2177,14 +1991,6 @@ public sealed class Slv3Hub : IDisposable
         return (byte)Math.Max(1, ordinal + 1);
     }
 
-    // Used only to tell a damaged record from a neighbor's: channels are odd up to 39, the default, or any of those with the 0x40 flag; rx is a slot or 0.
-    private static bool PlausiblePipe(byte channel, byte rx)
-    {
-        var ch = channel & ~0x40;
-        return rx <= Slv3Protocol.MaxSlot
-            && (ch == Slv3Protocol.DefaultChannel || (ch >= 1 && ch <= 39 && ch % 2 == 1));
-    }
-
     // Addressed at the chain's CURRENT (channel, rx) exactly as its record reports it, garbled or not,
     // as L-Connect does; the payload's target fields carry what to reconfigure to. Caller holds _lock.
     private bool SendBindFrameLocked(Slv3DeviceRecord record, byte targetSlot, bool unbind)
@@ -2258,10 +2064,6 @@ public sealed class Slv3Hub : IDisposable
             {
                 return false;
             }
-            _neighborMaster.Remove(key);
-            _retaken.Remove(key);
-            _pullSeen.Remove(key);
-            _unconfirmedRetakes.Remove(key);
             _userUnbound.Remove(key);
             if (IsBoundToUsLocked(existing))
             {
@@ -2309,9 +2111,6 @@ public sealed class Slv3Hub : IDisposable
                 return false;
             }
             _userUnbound.Add(key);
-            _unconfirmedRetakes.Remove(key);
-            _retakeFrom.Remove(key);
-            _retaken.Remove(key);
             if (_owned.Remove(key))
             {
                 _ownedDirty = true;
@@ -2761,14 +2560,13 @@ public sealed class Slv3Hub : IDisposable
 
     private bool WriteRfPayloadLocked(byte channel, byte rxType, byte[] payload)
     {
+        // L-Connect SendRfData attempts every chunk whatever an earlier one returned.
+        var sent = true;
         foreach (var frame in Slv3Protocol.BuildUsbSendRf(channel, rxType, payload))
         {
-            if (!_tx!.RfSend(frame))
-            {
-                return false;
-            }
+            sent &= _tx!.RfSend(frame);
         }
-        return true;
+        return sent;
     }
 
     /// <summary>RF payloads handed to the TX over the last <see cref="AirRateWindowMs"/>; drops older entries.</summary>
@@ -2993,9 +2791,6 @@ public sealed class Slv3Hub : IDisposable
             DisconnectLocked();
         }
     }
-
-    private readonly record struct Retaken(byte[] Master, long AtMs);
-    private readonly record struct RebindSighting(long LastPoll, int Count);
 
     // L-Connect bind_to_master with its target_rx_type; Unbinding aims the chain at a zero master.
     private sealed class BindIntent
