@@ -30,6 +30,9 @@ public static class TelemetryEvents
     /// which seeded every pre-existing install to "advanced".</summary>
     public const string DashboardModeChanged = "dashboard_mode_changed";
 
+    /// <summary>Unchanged-profile refresh; delivered to nexus-api only, never PostHog.</summary>
+    public const string ProfileRefresh = "profile";
+
     public const string OnboardingCompleted = "onboarding_completed";
 
     /// <summary>An installed SDK app opened a link in the user's browser.</summary>

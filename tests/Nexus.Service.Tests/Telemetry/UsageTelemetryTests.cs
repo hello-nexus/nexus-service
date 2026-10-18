@@ -296,6 +296,22 @@ public class UsageTelemetryTests
     }
 
     [Fact]
+    public async Task Profile_refresh_reaches_the_usage_sink_but_not_posthog()
+    {
+        var refresh = Ev(TelemetryEvents.ProfileRefresh, null, ("cpu", "Ryzen"), ("os_build", "Windows 11"), ("widget_count", 2));
+        var usage = new UsageTelemetrySink(true);
+        await Feed(usage, refresh);
+        var e = Assert.Single(usage.Take(10));
+        Assert.Equal("profile", e.Name);
+        Assert.Equal(new[] { "os_build", "widget_count" }, e.Props.Select(p => p.Key));
+
+        var handler = new CapturingHandler();
+        var posthog = new PostHogSink(new SingleClientFactory(handler), new PostHogOptions { ProjectApiKey = "k" });
+        await posthog.SendAsync("id", new[] { refresh }, CancellationToken.None);
+        Assert.Empty(handler.Bodies);
+    }
+
+    [Fact]
     public async Task PostHog_sink_drops_app_started_but_sends_the_rest()
     {
         var handler = new CapturingHandler();

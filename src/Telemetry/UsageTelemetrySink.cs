@@ -16,7 +16,7 @@ namespace Nexus.Service.Telemetry;
 internal sealed class UsageTelemetrySink : ITelemetrySink
 {
     internal const int MaxQueued = 2000;
-    internal const string ProfileEvent = "profile";
+    internal const string ProfileEvent = TelemetryEvents.ProfileRefresh;
 
     // Profile fields that reach PostHog only through the $identify $set. The
     // specs fleet event already carries cpu / gpu / ram / motherboard.
@@ -53,11 +53,12 @@ internal sealed class UsageTelemetrySink : ITelemetrySink
 
     private static UsageEvent? Map(TelemetryEvent e)
     {
-        if (e.Name == "$identify")
+        if (e.Name is "$identify" or TelemetryEvents.ProfileRefresh)
         {
-            if (e.Set is null)
+            var source = e.Name == "$identify" ? e.Set : e.Properties;
+            if (source is null)
                 return null;
-            var props = e.Set.Where(p => ProfileFields.Contains(p.Key)).ToArray();
+            var props = source.Where(p => ProfileFields.Contains(p.Key)).ToArray();
             return props.Length == 0 ? null : New(ProfileEvent, e.Timestamp, props);
         }
         return New(e.Name, e.Timestamp, e.Properties);

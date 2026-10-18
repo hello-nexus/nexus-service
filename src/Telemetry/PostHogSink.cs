@@ -39,9 +39,8 @@ internal sealed class PostHogSink : ITelemetrySink
         if (!Enabled)
             return;
 
-        // app_started is delivered to nexus-api only (UsageTelemetrySink).
-        if (batch.Any(e => e.Name == TelemetryEvents.AppStarted))
-            batch = batch.Where(e => e.Name != TelemetryEvents.AppStarted).ToArray();
+        if (batch.Any(IsUsageOnly))
+            batch = batch.Where(e => !IsUsageOnly(e)).ToArray();
         if (batch.Count == 0)
             return;
 
@@ -59,6 +58,10 @@ internal sealed class PostHogSink : ITelemetrySink
         if (!res.IsSuccessStatusCode)
             Console.Error.WriteLine($"[telemetry] {(int)res.StatusCode} from PostHog");
     }
+
+    // Delivered to nexus-api only (UsageTelemetrySink).
+    private static bool IsUsageOnly(TelemetryEvent e) =>
+        e.Name is TelemetryEvents.AppStarted or TelemetryEvents.ProfileRefresh;
 
     // internal + static for testability: deterministic body from inputs alone.
     internal static void WriteBody(IBufferWriter<byte> buffer, string apiKey, string distinctId, IReadOnlyList<TelemetryEvent> batch)
