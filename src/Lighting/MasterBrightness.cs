@@ -36,7 +36,7 @@ public static class MasterBrightness
             return global;
         }
         if (schedule.SunShiftOn
-            && SunShift.PlanFor(SunShift.Effective(schedule), DateOnly.FromDateTime(localNow)) is { Day.Status: SunStatus.Ok } plan)
+            && SunShift.PlanFor(SunShift.Effective(schedule), DateOnly.FromDateTime(localNow), schedule.SunNightLevel, schedule.SunDayLevel) is { Day.Status: SunStatus.Ok } plan)
         {
             return Math.Min(global, ScheduledSun(plan, localNow.TimeOfDay));
         }

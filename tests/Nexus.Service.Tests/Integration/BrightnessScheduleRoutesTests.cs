@@ -278,4 +278,66 @@ public sealed class BrightnessScheduleRoutesTests : IClassFixture<StubDeviceHost
 
         Assert.Equal(80, Store.Load().Lighting.BrightnessSchedule.SunLocation!.Label.Length);
     }
+
+    [Fact]
+    public async Task Get_reports_the_stock_night_and_day_levels()
+    {
+        using var doc = await GetDoc();
+
+        Assert.Equal(10, doc.RootElement.GetProperty("sunNight").GetInt32());
+        Assert.Equal(100, doc.RootElement.GetProperty("sunDay").GetInt32());
+    }
+
+    [Fact]
+    public async Task Post_sets_the_levels_and_the_sun_points_follow()
+    {
+        var res = await _client.PostAsync("/lighting/brightness-schedule", Json(
+            "{\"enabled\":true,\"points\":" + TwoPoints + ",\"sunNight\":30,\"sunDay\":70,"
+            + "\"location\":{\"lat\":59.9139,\"lon\":10.7522,\"label\":\"Oslo\",\"cc\":\"NO\"}}"));
+        Assert.Equal(HttpStatusCode.OK, res.StatusCode);
+
+        using var doc = JsonDocument.Parse(await res.Content.ReadAsStringAsync());
+        Assert.Equal(30, doc.RootElement.GetProperty("sunNight").GetInt32());
+        Assert.Equal(70, doc.RootElement.GetProperty("sunDay").GetInt32());
+        var levels = doc.RootElement.GetProperty("sun").GetProperty("sunPoints").EnumerateArray()
+            .Select(p => p.GetProperty("brightness").GetDouble()).Order().Distinct().ToArray();
+        Assert.Equal(new[] { 30.0, 50.0, 70.0 }, levels);
+    }
+
+    [Fact]
+    public async Task Post_absent_levels_keep_the_stored_ones_and_a_lone_level_is_checked_against_them()
+    {
+        await _client.PostAsync("/lighting/brightness-schedule", Json(
+            "{\"enabled\":true,\"points\":" + TwoPoints + ",\"sunNight\":30,\"sunDay\":70}"));
+
+        await _client.PostAsync("/lighting/brightness-schedule", Json("{\"enabled\":true,\"points\":" + TwoPoints + "}"));
+        var kept = Store.Load().Lighting.BrightnessSchedule;
+        Assert.Equal(30, kept.SunNightLevel);
+        Assert.Equal(70, kept.SunDayLevel);
+
+        var over = await _client.PostAsync("/lighting/brightness-schedule", Json(
+            "{\"enabled\":true,\"points\":" + TwoPoints + ",\"sunNight\":80}"));
+        Assert.Equal(HttpStatusCode.BadRequest, over.StatusCode);
+        var under = await _client.PostAsync("/lighting/brightness-schedule", Json(
+            "{\"enabled\":true,\"points\":" + TwoPoints + ",\"sunDay\":20}"));
+        Assert.Equal(HttpStatusCode.BadRequest, under.StatusCode);
+        Assert.Equal(70, Store.Load().Lighting.BrightnessSchedule.SunDayLevel);
+
+        var equal = await _client.PostAsync("/lighting/brightness-schedule", Json(
+            "{\"enabled\":true,\"points\":" + TwoPoints + ",\"sunNight\":70}"));
+        Assert.Equal(HttpStatusCode.OK, equal.StatusCode);
+    }
+
+    [Theory]
+    [InlineData(-1, 100)]
+    [InlineData(10, 101)]
+    [InlineData(60, 50)]
+    public async Task Post_refuses_levels_out_of_range_or_inverted(int night, int day)
+    {
+        var res = await _client.PostAsync("/lighting/brightness-schedule", Json(
+            "{\"enabled\":true,\"points\":" + TwoPoints + ",\"sunNight\":" + night + ",\"sunDay\":" + day + "}"));
+
+        Assert.Equal(HttpStatusCode.BadRequest, res.StatusCode);
+        Assert.False(Store.Load().Lighting.BrightnessSchedule.Enabled);
+    }
 }

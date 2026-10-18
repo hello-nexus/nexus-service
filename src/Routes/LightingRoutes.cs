@@ -32,7 +32,7 @@ public static class LightingRoutes
         }
         var location = Nexus.Service.Lighting.Sun.SunShift.Effective(schedule);
         var today = DateOnly.FromDateTime(DateTime.Now);
-        var plan = Nexus.Service.Lighting.Sun.SunShift.PlanFor(location, today);
+        var plan = Nexus.Service.Lighting.Sun.SunShift.PlanFor(location, today, schedule.SunNightLevel, schedule.SunDayLevel);
         var sun = new Models.Lighting.BrightnessScheduleSun
         {
             Date = today.ToString("yyyy-MM-dd", System.Globalization.CultureInfo.InvariantCulture),
@@ -61,6 +61,8 @@ public static class LightingRoutes
             Points = schedule.Points ?? new(),
             Defaults = Nexus.Service.Lighting.MasterBrightness.DefaultSchedule(),
             SunShift = schedule.SunShiftOn,
+            SunNight = schedule.SunNightLevel,
+            SunDay = schedule.SunDayLevel,
             Location = schedule.SunLocation is null ? null : ToDto(schedule.SunLocation),
             Sun = sun,
         };
@@ -339,6 +341,13 @@ public static class LightingRoutes
                 }
                 location = new() { Lat = lat, Lon = lon, Label = label, Cc = cc };
             }
+            var stored = store.Load().Lighting.BrightnessSchedule;
+            var night = body.SunNight ?? stored?.SunNightLevel ?? Nexus.Service.Persistence.BrightnessSchedule.DefaultSunNight;
+            var day = body.SunDay ?? stored?.SunDayLevel ?? Nexus.Service.Persistence.BrightnessSchedule.DefaultSunDay;
+            if (night < 0 || night > 100 || day < 0 || day > 100 || night > day)
+            {
+                return Results.BadRequest(ApiResponse.Fail("sun night must be within 0..100 and not above sun day"));
+            }
             var byHour = new SortedDictionary<int, Nexus.Service.Persistence.BrightnessSchedulePoint>();
             foreach (var p in body.Points)
             {
@@ -370,6 +379,8 @@ public static class LightingRoutes
                     Enabled = body.Enabled,
                     Points = points,
                     SunShift = sunShift,
+                    SunNight = body.SunNight ?? current?.SunNight,
+                    SunDay = body.SunDay ?? current?.SunDay,
                     SunLocation = newLocation,
                 };
             });

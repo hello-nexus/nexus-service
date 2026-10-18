@@ -86,6 +86,10 @@ public sealed class BrightnessScheduleBody
     public List<Nexus.Service.Persistence.BrightnessSchedulePoint>? Defaults { get; set; }
     public bool? SunShift { get; set; }
 
+    /// <summary>Night and day levels of the generated curve, percent. GET returns the resolved values; on a POST absent keeps the stored ones.</summary>
+    public int? SunNight { get; set; }
+    public int? SunDay { get; set; }
+
     [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.Never)]
     public SunLocationDto? Location
     {

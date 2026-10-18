@@ -8,22 +8,26 @@ namespace Nexus.Service.Tests.Lighting;
 public sealed class SunShiftTests
 {
     // Mirrored by nexus-web: sunrise, sunset, generated points, sampled levels.
-    public sealed record Vector(int Sunrise, int Sunset, (double Min, double Level)[] Expected, (int Minute, double Level)[] EvalAt);
+    public sealed record Vector(int Sunrise, int Sunset, int Night, int Day, (double Min, double Level)[] Expected, (int Minute, double Level)[] EvalAt);
 
     public static readonly Vector[] Vectors =
     {
-        new(420, 1140, new (double, double)[] { (360.0, 10.0), (420.0, 30.0), (540.0, 100.0), (1020.0, 100.0), (1140.0, 30.0), (1200.0, 10.0) }, new (int, double)[] { (0, 10.0), (30, 10.0), (360, 10.0), (420, 30.0), (540, 100.0), (720, 100.0), (780, 100.0), (1020, 100.0), (1080, 65.0), (1140, 30.0), (1200, 10.0), (1380, 10.0), (1439, 10.0) }),
-        new(300, 1290, new (double, double)[] { (240.0, 10.0), (300.0, 30.0), (420.0, 100.0), (1170.0, 100.0), (1290.0, 30.0), (1350.0, 10.0) }, new (int, double)[] { (0, 10.0), (30, 10.0), (240, 10.0), (300, 30.0), (360, 65.0), (420, 100.0), (720, 100.0), (795, 100.0), (1080, 100.0), (1170, 100.0), (1290, 30.0), (1350, 10.0), (1380, 10.0), (1439, 10.0) }),
-        new(660, 840, new (double, double)[] { (600.0, 10.0), (660.0, 30.0), (750.0, 100.0), (750.0, 100.0), (840.0, 30.0), (900.0, 10.0) }, new (int, double)[] { (0, 10.0), (30, 10.0), (360, 10.0), (600, 10.0), (660, 30.0), (720, 76.6667), (750, 100.0), (840, 30.0), (900, 10.0), (1080, 10.0), (1380, 10.0), (1439, 10.0) }),
-        new(90, 1410, new (double, double)[] { (30.0, 10.0), (30.0, 10.0), (90.0, 30.0), (210.0, 100.0), (1290.0, 100.0), (1410.0, 30.0) }, new (int, double)[] { (0, 20.0), (30, 10.0), (90, 30.0), (210, 100.0), (360, 100.0), (720, 100.0), (750, 100.0), (1080, 100.0), (1290, 100.0), (1380, 47.5), (1410, 30.0), (1439, 20.3333) }),
-        new(60, 1430, new (double, double)[] { (25.0, 10.0), (25.0, 10.0), (60.0, 30.0), (180.0, 100.0), (1310.0, 100.0), (1430.0, 30.0) }, new (int, double)[] { (0, 24.2857), (25, 10.0), (30, 12.8571), (60, 30.0), (180, 100.0), (360, 100.0), (720, 100.0), (745, 100.0), (1080, 100.0), (1310, 100.0), (1380, 59.1667), (1430, 30.0), (1439, 24.8571) }),
-        new(325, 1231, new (double, double)[] { (265.0, 10.0), (325.0, 30.0), (445.0, 100.0), (1111.0, 100.0), (1231.0, 30.0), (1291.0, 10.0) }, new (int, double)[] { (0, 10.0), (30, 10.0), (265, 10.0), (325, 30.0), (360, 50.4167), (445, 100.0), (720, 100.0), (778, 100.0), (1080, 100.0), (1111, 100.0), (1231, 30.0), (1291, 10.0), (1380, 10.0), (1439, 10.0) }),
+        new(420, 1140, 10, 100, new (double, double)[] { (360.0, 10.0), (420.0, 55.0), (540.0, 100.0), (1020.0, 100.0), (1140.0, 55.0), (1200.0, 10.0) }, new (int, double)[] { (0, 10.0), (30, 10.0), (360, 10.0), (420, 55.0), (540, 100.0), (720, 100.0), (780, 100.0), (1020, 100.0), (1080, 77.5), (1140, 55.0), (1200, 10.0), (1380, 10.0), (1439, 10.0) }),
+        new(300, 1290, 10, 100, new (double, double)[] { (240.0, 10.0), (300.0, 55.0), (420.0, 100.0), (1170.0, 100.0), (1290.0, 55.0), (1350.0, 10.0) }, new (int, double)[] { (0, 10.0), (30, 10.0), (240, 10.0), (300, 55.0), (360, 77.5), (420, 100.0), (720, 100.0), (795, 100.0), (1080, 100.0), (1170, 100.0), (1290, 55.0), (1350, 10.0), (1380, 10.0), (1439, 10.0) }),
+        new(660, 840, 10, 100, new (double, double)[] { (600.0, 10.0), (660.0, 55.0), (750.0, 100.0), (750.0, 100.0), (840.0, 55.0), (900.0, 10.0) }, new (int, double)[] { (0, 10.0), (30, 10.0), (360, 10.0), (600, 10.0), (660, 55.0), (720, 85.0), (750, 100.0), (840, 55.0), (900, 10.0), (1080, 10.0), (1380, 10.0), (1439, 10.0) }),
+        new(90, 1410, 10, 100, new (double, double)[] { (30.0, 10.0), (30.0, 10.0), (90.0, 55.0), (210.0, 100.0), (1290.0, 100.0), (1410.0, 55.0) }, new (int, double)[] { (0, 32.5), (30, 10.0), (90, 55.0), (210, 100.0), (360, 100.0), (720, 100.0), (750, 100.0), (1080, 100.0), (1290, 100.0), (1380, 66.25), (1410, 55.0), (1439, 33.25) }),
+        new(60, 1430, 10, 100, new (double, double)[] { (25.0, 10.0), (25.0, 10.0), (60.0, 55.0), (180.0, 100.0), (1310.0, 100.0), (1430.0, 55.0) }, new (int, double)[] { (0, 42.1429), (25, 10.0), (30, 16.4286), (60, 55.0), (180, 100.0), (360, 100.0), (720, 100.0), (745, 100.0), (1080, 100.0), (1310, 100.0), (1380, 73.75), (1430, 55.0), (1439, 43.4286) }),
+        new(325, 1231, 10, 100, new (double, double)[] { (265.0, 10.0), (325.0, 55.0), (445.0, 100.0), (1111.0, 100.0), (1231.0, 55.0), (1291.0, 10.0) }, new (int, double)[] { (0, 10.0), (30, 10.0), (265, 10.0), (325, 55.0), (360, 68.125), (445, 100.0), (720, 100.0), (778, 100.0), (1080, 100.0), (1111, 100.0), (1231, 55.0), (1291, 10.0), (1380, 10.0), (1439, 10.0) }),
+        new(420, 1140, 30, 70, new (double, double)[] { (360.0, 30.0), (420.0, 50.0), (540.0, 70.0), (1020.0, 70.0), (1140.0, 50.0), (1200.0, 30.0) }, new (int, double)[] { (0, 30.0), (30, 30.0), (360, 30.0), (420, 50.0), (540, 70.0), (720, 70.0), (780, 70.0), (1020, 70.0), (1080, 60.0), (1140, 50.0), (1200, 30.0), (1380, 30.0), (1439, 30.0) }),
+        new(660, 840, 30, 70, new (double, double)[] { (600.0, 30.0), (660.0, 50.0), (750.0, 70.0), (750.0, 70.0), (840.0, 50.0), (900.0, 30.0) }, new (int, double)[] { (0, 30.0), (30, 30.0), (360, 30.0), (600, 30.0), (660, 50.0), (720, 63.3333), (750, 70.0), (840, 50.0), (900, 30.0), (1080, 30.0), (1380, 30.0), (1439, 30.0) }),
+        new(420, 1140, 50, 50, new (double, double)[] { (360.0, 50.0), (420.0, 50.0), (540.0, 50.0), (1020.0, 50.0), (1140.0, 50.0), (1200.0, 50.0) }, new (int, double)[] { (0, 50.0), (30, 50.0), (360, 50.0), (420, 50.0), (540, 50.0), (720, 50.0), (780, 50.0), (1020, 50.0), (1080, 50.0), (1140, 50.0), (1200, 50.0), (1380, 50.0), (1439, 50.0) }),
+        new(420, 1140, 0, 100, new (double, double)[] { (360.0, 0.0), (420.0, 50.0), (540.0, 100.0), (1020.0, 100.0), (1140.0, 50.0), (1200.0, 0.0) }, new (int, double)[] { (0, 0.0), (30, 0.0), (360, 0.0), (420, 50.0), (540, 100.0), (720, 100.0), (780, 100.0), (1020, 100.0), (1080, 75.0), (1140, 50.0), (1200, 0.0), (1380, 0.0), (1439, 0.0) }),
     };
 
-    public static TheoryData<int> VectorIndexes() => new() { 0, 1, 2, 3, 4, 5 };
+    public static TheoryData<int> VectorIndexes() => new() { 0, 1, 2, 3, 4, 5, 6, 7, 8, 9 };
 
-    private static SunPlan PlanOf(int sunrise, int sunset) =>
-        new(new DateOnly(2026, 6, 21), 0, 0, new SunDay(SunStatus.Ok, sunrise, sunset));
+    private static SunPlan PlanOf(int sunrise, int sunset, int night = 10, int day = 100) =>
+        new(new DateOnly(2026, 6, 21), 0, 0, new SunDay(SunStatus.Ok, sunrise, sunset), night, day);
 
     [Theory]
     [MemberData(nameof(VectorIndexes))]
@@ -31,7 +35,7 @@ public sealed class SunShiftTests
     {
         var v = Vectors[index];
 
-        var plan = PlanOf(v.Sunrise, v.Sunset);
+        var plan = PlanOf(v.Sunrise, v.Sunset, v.Night, v.Day);
 
         Assert.Equal(v.Expected.Length, plan.Minutes.Length);
         for (var i = 0; i < v.Expected.Length; i++)
@@ -46,7 +50,7 @@ public sealed class SunShiftTests
     public void Evaluation_matches_the_shared_vectors(int index)
     {
         var v = Vectors[index];
-        var plan = PlanOf(v.Sunrise, v.Sunset);
+        var plan = PlanOf(v.Sunrise, v.Sunset, v.Night, v.Day);
 
         foreach (var (minute, level) in v.EvalAt)
         {
@@ -199,15 +203,31 @@ public sealed class SunShiftTests
     }
 
     [Fact]
+    public void Custom_levels_drive_the_frame_path_and_a_change_recomputes_the_plan()
+    {
+        SunShift.ResetForTests();
+        var date = new DateOnly(2026, 6, 21);
+        var noon = SolarNoon(SunTimes.ForLocalDate(Oslo.Lat, Oslo.Lon, date, TimeZoneInfo.Local));
+        var at = date.ToDateTime(TimeOnly.MinValue).AddMinutes(noon);
+        var lighting = Lighting(true, Oslo);
+
+        Assert.Equal(1f, MasterBrightness.Effective(lighting, at));
+        lighting.BrightnessSchedule.SunNight = 20;
+        lighting.BrightnessSchedule.SunDay = 60;
+        Assert.Equal(0.6f, MasterBrightness.Effective(lighting, at));
+    }
+
+    [Fact]
     public void Plan_is_cached_per_date_and_place()
     {
         SunShift.ResetForTests();
         var date = new DateOnly(2026, 6, 21);
 
-        var first = SunShift.PlanFor(Oslo, date);
+        var first = SunShift.PlanFor(Oslo, date, 10, 100);
 
-        Assert.Same(first, SunShift.PlanFor(Oslo, date));
-        Assert.NotSame(first, SunShift.PlanFor(Oslo, date.AddDays(1)));
+        Assert.Same(first, SunShift.PlanFor(Oslo, date, 10, 100));
+        Assert.NotSame(first, SunShift.PlanFor(Oslo, date.AddDays(1), 10, 100));
+        Assert.NotSame(first, SunShift.PlanFor(Oslo, date, 20, 100));
     }
 }
 

@@ -8,8 +8,10 @@ namespace Nexus.Service.Lighting.Sun;
 /// Immutable, so the frame path reads it with one volatile load.</summary>
 public sealed class SunPlan
 {
-    public SunPlan(DateOnly date, double lat, double lon, SunDay day)
+    public SunPlan(DateOnly date, double lat, double lon, SunDay day, int night, int dayLevel)
     {
+        Night = night;
+        DayLevel = dayLevel;
         Date = date;
         Lat = lat;
         Lon = lon;
@@ -18,7 +20,7 @@ public sealed class SunPlan
         {
             Sunrise = day.SunriseMin!.Value;
             Sunset = day.SunsetMin!.Value;
-            (Minutes, Levels) = SunShift.GeneratePoints(Sunrise, Sunset);
+            (Minutes, Levels) = SunShift.GeneratePoints(Sunrise, Sunset, night, dayLevel);
             Hours = new double[Minutes.Length];
             for (var i = 0; i < Hours.Length; i++)
             {
@@ -28,6 +30,8 @@ public sealed class SunPlan
     }
 
     public DateOnly Date { get; }
+    public int Night { get; }
+    public int DayLevel { get; }
     public double Lat { get; }
     public double Lon { get; }
     public SunDay Day { get; }
@@ -65,19 +69,20 @@ public static class SunShift
     /// <summary>The cached plan for <paramref name="localDate"/> at <paramref name="location"/>,
     /// computed once per date and place (microseconds of arithmetic, no I/O).
     /// Null when there is no location.</summary>
-    public static SunPlan? PlanFor(WeatherSavedLocation? location, DateOnly localDate)
+    public static SunPlan? PlanFor(WeatherSavedLocation? location, DateOnly localDate, int night, int dayLevel)
     {
         if (location is null)
         {
             return null;
         }
         var cached = Volatile.Read(ref _plan);
-        if (cached is not null && cached.Date == localDate && cached.Lat == location.Lat && cached.Lon == location.Lon)
+        if (cached is not null && cached.Date == localDate && cached.Lat == location.Lat && cached.Lon == location.Lon
+            && cached.Night == night && cached.DayLevel == dayLevel)
         {
             return cached;
         }
         var plan = new SunPlan(localDate, location.Lat, location.Lon,
-            SunTimes.ForLocalDate(location.Lat, location.Lon, localDate, TimeZoneInfo.Local));
+            SunTimes.ForLocalDate(location.Lat, location.Lon, localDate, TimeZoneInfo.Local), night, dayLevel);
         Volatile.Write(ref _plan, plan);
         return plan;
     }
@@ -88,15 +93,16 @@ public static class SunShift
         _auto = null;
     }
 
-    /// <summary>Today's generated curve: dim before dawn, climbing to full a
-    /// couple of hours after sunrise, full until a couple of hours before
-    /// sunset, then down to the night floor. A short day folds both full points
+    /// <summary>Today's generated curve: the night level before dawn, climbing
+    /// through the midway level at sunrise to the day level a couple of hours
+    /// later, holding until a couple of hours before sunset, then back down. A short day folds both full points
     /// into solar noon, a short night folds both floor points into solar
     /// midnight. Sorted by minute.</summary>
-    public static (double[] Minutes, double[] Levels) GeneratePoints(double sunrise, double sunset)
+    public static (double[] Minutes, double[] Levels) GeneratePoints(double sunrise, double sunset, int night, int day)
     {
-        var day = ((sunset - sunrise) % 1440 + 1440) % 1440;
-        var s = sunrise + day;
+        var mid = (night + day + 1) / 2;
+        var dayLength = ((sunset - sunrise) % 1440 + 1440) % 1440;
+        var s = sunrise + dayLength;
         var noon = (sunrise + s) / 2;
         var rise100 = sunrise + 120;
         var set100 = s - 120;
@@ -111,7 +117,7 @@ public static class SunShift
             dusk = predawn = (s + sunrise + 1440) / 2;
         }
         double[] mins = { predawn, sunrise + 1440, rise100 + 1440, set100 + 1440, s + 1440, dusk + 1440 };
-        double[] levels = { 10, 30, 100, 100, 30, 10 };
+        double[] levels = { night, mid, day, day, mid, night };
         for (var i = 0; i < mins.Length; i++)
         {
             mins[i] = ((mins[i] - 1440) % 1440 + 1440) % 1440;
