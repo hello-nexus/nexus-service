@@ -988,7 +988,6 @@
     <Compile Remove="src/Platform/Displays/LinuxDisplayBrightnessProvider.cs" />
     <Compile Remove="src/Platform/Displays/LinuxDisplayOrientationProvider.cs" />
     <Compile Remove="src/Platform/Displays/LinuxDisplayTopologyProvider.cs" />
-    <Compile Remove="src/Platform/Displays/LinuxDisplayOrientationProvider.cs" />
     <Compile Remove="src/Platform/Linux/DBus/DBusConnection.cs" />
     <Compile Remove="src/Platform/Linux/DBus/DBusTypes.cs" />
     <Compile Remove="src/Platform/Linux/LinuxBrowsers.cs" />
