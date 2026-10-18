@@ -297,6 +297,12 @@ public sealed class TelemetrySettings
     /// <summary>Round-trip UTC timestamp of the last profile send; a changed signature waits out a minimum interval after it.</summary>
     public string ProfileSentAt { get; set; } = "";
 
+    /// <summary>Last installed-RAM total seen with DIMM detail; bridges reads that fall back to the OS-usable figure so specs do not alternate between the two.</summary>
+    public long FleetRamBytes { get; set; }
+
+    /// <summary>Last non-empty GPU list (sorted, " + " joined); bridges reads where GPU enumeration came back empty.</summary>
+    public string FleetGpu { get; set; } = "";
+
     /// <summary>Latched true by SystemProfileService the first time the Y70 handler reports connected; sent in fleet specs as y70Seen.</summary>
     public bool FleetY70Seen { get; set; }
 

@@ -218,12 +218,24 @@ internal sealed class FleetEventService
                 " + ", StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
             .OrderBy(g => g, StringComparer.Ordinal)
             .ToArray();
-        if (gpu.Length == 0)
-            return; // GPU inventory not ready; an empty list would flip the hash against the populated one.
-
-        var ramBytes = RamBytesFor(specs.Memory, OperatingSystem.IsWindows());
+        var persisted = _store.Load().Telemetry;
+        var gpuList = ResolveGpu(gpu, persisted.FleetGpu);
+        gpu = gpuList;
+        var ramBytes = ResolveRam(specs.Memory, OperatingSystem.IsWindows(), persisted.FleetRamBytes);
         if (ramBytes == 0)
-            return; // RAM not ready (or only the OS-usable total); never send or hash 0.
+            return; // no RAM figure of any kind yet; never send or hash 0.
+        var gpuJoined = string.Join(" + ", gpu);
+        if (ramBytes != persisted.FleetRamBytes || gpuJoined != persisted.FleetGpu)
+        {
+            // Only non-empty reads reach here, so a transient bad read never overwrites a good value.
+            var keepGpu = gpu.Length > 0 ? gpuJoined : persisted.FleetGpu;
+            var dimm = HasDimmDetail(specs.Memory, OperatingSystem.IsWindows());
+            _store.Update(s =>
+            {
+                if (gpu.Length > 0) s.Telemetry.FleetGpu = keepGpu;
+                if (dimm) s.Telemetry.FleetRamBytes = ramBytes;
+            });
+        }
 
         _bootDevices ??= FleetDeviceCollector.Collect(_usb.Enumerate());
         var devices = _bootDevices;
@@ -253,18 +265,31 @@ internal sealed class FleetEventService
             ("cpu", specs.Processor), ("gpu", gpu), ("ram_bytes", ramBytes), ("motherboard", specs.Motherboard));
     }
 
+    // On Windows the DIMM query writes a stick layout in parentheses; without it the string is the OS-usable total from the sensor fallback (32 GB installed reads as 31). Other platforms have no DIMM notion, so any figure counts.
+    internal static bool HasDimmDetail(string memory, bool requireDimmDetail) =>
+        !requireDimmDetail || memory.Contains('(');
+
+    internal static long ParseRamBytes(string memory) =>
+        SystemProfileService.ParseRamGb(memory) is int gb and > 0 ? (long)gb * 1024 * 1024 * 1024 : 0;
+
     /// <summary>
-    /// Installed-RAM bytes, or 0 when not trustworthy. On Windows the DIMM query
-    /// writes a stick layout in parentheses; without it the string is the
-    /// OS-usable total from the sensor fallback (32 GB installed reads as 31),
-    /// which would alternate with the DIMM figure across starts.
+    /// The RAM figure to send. A DIMM total wins and is remembered; a read without DIMM detail reuses the remembered
+    /// total so it cannot alternate with the OS-usable figure; with nothing remembered the usable figure is used as-is.
+    /// 0 means no figure at all.
     /// </summary>
-    internal static long RamBytesFor(string memory, bool requireDimmDetail)
+    internal static long ResolveRam(string memory, bool requireDimmDetail, long persistedDimmBytes)
     {
-        if (requireDimmDetail && !memory.Contains('('))
-            return 0;
-        return SystemProfileService.ParseRamGb(memory) is int gb and > 0 ? (long)gb * 1024 * 1024 * 1024 : 0;
+        var current = ParseRamBytes(memory);
+        if (current > 0 && HasDimmDetail(memory, requireDimmDetail))
+            return current;
+        return persistedDimmBytes > 0 ? persistedDimmBytes : current;
     }
+
+    /// <summary>A non-empty read wins; an empty one reuses the remembered list, else stays empty.</summary>
+    internal static string[] ResolveGpu(string[] current, string persisted) =>
+        current.Length > 0
+            ? current
+            : persisted.Split(" + ", StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
 
     private static FleetEventPayload BuildEnvelope(string type, string installId) => new()
     {

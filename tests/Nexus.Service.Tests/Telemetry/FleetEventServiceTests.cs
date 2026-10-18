@@ -257,35 +257,95 @@ public class FleetEventServiceTests
         Assert.Single(transport.Sent, p => p.Type == TelemetryEvents.Specs);
     }
 
+    private static int SpecsSent(FakeFleetEventTransport t) => t.Sent.Count(p => p.Type == TelemetryEvents.Specs);
+
     [Fact]
-    public async Task Empty_gpu_list_is_not_ready_and_sends_nothing()
+    public async Task Transient_empty_gpu_read_reuses_the_persisted_list_without_a_resend()
+    {
+        var store = OptedInStore();
+        var transport = new FakeFleetEventTransport();
+        await MakeService(store, transport, sensors: Sensors("GPU A+GPU B")).RunPendingRetriesAsync(CancellationToken.None);
+        await MakeService(store, transport, sensors: Sensors(gpu: "")).RunPendingRetriesAsync(CancellationToken.None);
+
+        Assert.Equal(1, SpecsSent(transport));
+        Assert.Equal("GPU A + GPU B", store.Load().Telemetry.FleetGpu);
+    }
+
+    [Fact]
+    public async Task Install_that_never_reports_a_gpu_still_sends_an_empty_list()
     {
         var store = OptedInStore();
         var transport = new FakeFleetEventTransport();
         await MakeService(store, transport, sensors: Sensors(gpu: "")).RunPendingRetriesAsync(CancellationToken.None);
 
-        Assert.DoesNotContain(transport.Sent, p => p.Type == TelemetryEvents.Specs);
-        Assert.Equal("", store.Load().Telemetry.FleetSpecsHash);
+        var specs = transport.Sent.Single(p => p.Type == TelemetryEvents.Specs).Specs!;
+        Assert.Empty(specs.Gpu);
     }
 
     [Fact]
-    public async Task Zero_ram_is_not_ready_and_sends_nothing()
+    public async Task Real_gpu_change_sends_once_and_updates_the_persisted_list()
+    {
+        var store = OptedInStore();
+        var transport = new FakeFleetEventTransport();
+        await MakeService(store, transport, sensors: Sensors("GPU A")).RunPendingRetriesAsync(CancellationToken.None);
+        await MakeService(store, transport, sensors: Sensors("GPU B")).RunPendingRetriesAsync(CancellationToken.None);
+        await MakeService(store, transport, sensors: Sensors("GPU B")).RunPendingRetriesAsync(CancellationToken.None);
+
+        Assert.Equal(2, SpecsSent(transport));
+        Assert.Equal("GPU B", store.Load().Telemetry.FleetGpu);
+    }
+
+    [Fact]
+    public async Task Zero_ram_with_nothing_persisted_sends_nothing_and_stores_nothing()
     {
         var store = OptedInStore();
         var transport = new FakeFleetEventTransport();
         await MakeService(store, transport, sensors: Sensors(mem: "")).RunPendingRetriesAsync(CancellationToken.None);
 
-        Assert.DoesNotContain(transport.Sent, p => p.Type == TelemetryEvents.Specs);
+        Assert.Equal(0, SpecsSent(transport));
+        Assert.Equal(0, store.Load().Telemetry.FleetRamBytes);
+    }
+
+    [Fact]
+    public async Task Zero_ram_read_never_overwrites_the_persisted_total_and_does_not_resend()
+    {
+        var store = OptedInStore();
+        var transport = new FakeFleetEventTransport();
+        await MakeService(store, transport, sensors: Sensors()).RunPendingRetriesAsync(CancellationToken.None);
+        var persisted = store.Load().Telemetry.FleetRamBytes;
+        Assert.True(persisted > 0);
+
+        await MakeService(store, transport, sensors: Sensors(mem: "")).RunPendingRetriesAsync(CancellationToken.None);
+
+        Assert.Equal(1, SpecsSent(transport));
+        Assert.Equal(persisted, store.Load().Telemetry.FleetRamBytes);
+    }
+
+    [Fact]
+    public async Task Real_ram_change_sends_once()
+    {
+        var store = OptedInStore();
+        var transport = new FakeFleetEventTransport();
+        await MakeService(store, transport, sensors: Sensors(mem: "32 GB")).RunPendingRetriesAsync(CancellationToken.None);
+        await MakeService(store, transport, sensors: Sensors(mem: "64 GB")).RunPendingRetriesAsync(CancellationToken.None);
+        await MakeService(store, transport, sensors: Sensors(mem: "64 GB")).RunPendingRetriesAsync(CancellationToken.None);
+
+        Assert.Equal(2, SpecsSent(transport));
+        Assert.Equal(64L * 1024 * 1024 * 1024, store.Load().Telemetry.FleetRamBytes);
     }
 
     [Theory]
-    [InlineData("32 GB DDR5-6000 (2 × 16 GB)", true, 32)]
-    [InlineData("31.4 GB", true, 0)]
-    [InlineData("31.4 GB", false, 31)]
-    [InlineData("", false, 0)]
-    [InlineData("0 GB", false, 0)]
-    public void Ram_bytes_ignore_zero_and_the_os_usable_fallback_on_windows(string memory, bool requireDimm, int expectedGb) =>
-        Assert.Equal((long)expectedGb * 1024 * 1024 * 1024, FleetEventService.RamBytesFor(memory, requireDimm));
+    [InlineData("32 GB DDR5-6000 (2 × 16 GB)", true, 0, 32)]
+    [InlineData("31.4 GB", true, 0, 31)]
+    [InlineData("31.4 GB", true, 32, 32)]
+    [InlineData("32 GB DDR5-6000 (2 × 16 GB)", true, 16, 32)]
+    [InlineData("", true, 32, 32)]
+    [InlineData("0 GB", false, 0, 0)]
+    [InlineData("", false, 0, 0)]
+    public void Ram_resolves_to_dimm_then_persisted_then_usable(string memory, bool requireDimm, int persistedGb, int expectedGb) =>
+        Assert.Equal(
+            (long)expectedGb * 1024 * 1024 * 1024,
+            FleetEventService.ResolveRam(memory, requireDimm, (long)persistedGb * 1024 * 1024 * 1024));
 
     [Fact]
     public async Task Specs_delivery_that_fails_at_boot_retries_on_a_later_pass_then_stops()
