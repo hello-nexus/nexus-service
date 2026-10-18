@@ -2821,7 +2821,6 @@ public partial class Slv3HubTests
         // The chain echoes the last bind-frame duty tuple (fans_pwm) and the
         // last sequenced command's seq (cmd_seq), as the Y70 firmware does.
         public byte[] Pwm { get; set; } = new byte[4];
-        public byte[] EffectIndex { get; set; } = new byte[4];
         public byte CmdSeq { get; set; }
     }
 
@@ -3031,7 +3030,6 @@ public partial class Slv3HubTests
                 rec[13] = fan.RxType;
                 rec[18] = fan.DevType;
                 rec[19] = fan.FanCount;
-                fan.EffectIndex.CopyTo(rec.Slice(20, 4));
                 fan.Pwm.CopyTo(rec.Slice(36, 4));
                 rec[40] = fan.CmdSeq;
                 rec[41] = Slv3Protocol.RecordValidator;

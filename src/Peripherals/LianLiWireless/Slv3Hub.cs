@@ -102,7 +102,7 @@ public sealed class Slv3Hub : IDisposable
     private readonly HashSet<string> _unboundHere = new(StringComparer.Ordinal);
     // L-Connect's cap on chains adopted from our master at first sight.
     internal const int AdoptionCap = 12;
-    // L-Connect Bind caps (RFController.Bind): all devices, Strimers, and HydroShift IIs per model.
+    // L-Connect Bind caps (RFController.Bind): all devices, Strimers, and HydroShift IIs per dev_type.
     internal const int BindCapDevices = 10;
     internal const int BindCapStrimers = 3;
     internal const int BindCapHydroShiftPerType = 1;
@@ -120,7 +120,12 @@ public sealed class Slv3Hub : IDisposable
 
     private Func<bool>? _lockRead;
     private volatile bool _lockBound = true;
+    // Set only while a poll or drive pass is sending: a timed-out write then ends that pass's sends. Every other caller always writes.
+    private bool _pollSendsActive;
+    private int _reconcileCursor;
     private bool _txStalledThisPoll;
+    // Chains with an RGB upload being sent right now; their bind and PWM frames wait for the next poll.
+    private readonly Dictionary<string, int> _uploadsInFlight = new(StringComparer.Ordinal);
     private readonly object _lockSettingGate = new();
     private int _lockVersion;
 
@@ -455,6 +460,7 @@ public sealed class Slv3Hub : IDisposable
         _unconfirmedChains.Clear();
         _bindingLogs.Clear();
         _intents.Clear();
+        _uploadsInFlight.Clear();
         _unboundHere.Clear();
         _pollRecords = new List<Slv3DeviceRecord>();
         _liveMasters.Clear();
@@ -714,7 +720,7 @@ public sealed class Slv3Hub : IDisposable
         {
             lock (_lock)
             {
-                return PollLocked();
+                return RunPassLocked(PollLocked);
             }
         }
         finally
@@ -751,26 +757,44 @@ public sealed class Slv3Hub : IDisposable
     {
         lock (_lock)
         {
-            if (!PollLocked())
+            return RunPassLocked(() =>
             {
-                return false;
-            }
-            if (_tx is not { IsOpen: true })
-            {
+                if (!PollLocked())
+                {
+                    return false;
+                }
+                if (_tx is not { IsOpen: true })
+                {
+                    return true;
+                }
+                SyncPwmLocked();
+                SyncAioLocked(aioSensors, aioScreens);
+                RefreshMasterMacLocked();
+                SendClockHeartbeatLocked();
+                RunSaveCfgScheduleLocked();
                 return true;
-            }
-            SyncPwmLocked();
-            SyncAioLocked(aioSensors, aioScreens);
-            RefreshMasterMacLocked();
-            SendClockHeartbeatLocked();
-            RunSaveCfgScheduleLocked();
-            return true;
+            });
+        }
+    }
+
+    // Caller holds _lock.
+    private bool RunPassLocked(Func<bool> pass)
+    {
+        _pollSendsActive = true;
+        _txStalledThisPoll = false;
+        try
+        {
+            return pass();
+        }
+        finally
+        {
+            _pollSendsActive = false;
+            _txStalledThisPoll = false;
         }
     }
 
     private bool PollLocked()
     {
-        _txStalledThisPoll = false;
         if (!IsConnected)
         {
             return false;
@@ -947,19 +971,58 @@ public sealed class Slv3Hub : IDisposable
                 merged[key] = record;
             }
         }
-        var keys = new List<string>(merged.Keys);
-        keys.Sort(StringComparer.Ordinal);
-        foreach (var key in keys)
+        // Adoption is deterministic: owned chains first, then newcomers in the order the RX reported them.
+        var adoptionOrder = new List<string>(merged.Count);
+        var seen = new HashSet<string>(StringComparer.Ordinal);
+        var sorted = new List<string>(merged.Keys);
+        sorted.Sort(StringComparer.Ordinal);
+        foreach (var key in sorted)
         {
-            var record = merged[key];
+            if (_owned.ContainsKey(key) && seen.Add(key))
+            {
+                adoptionOrder.Add(key);
+            }
+        }
+        foreach (var record in _pollRecords)
+        {
+            var key = Convert.ToHexString(record.Mac);
+            if (merged.ContainsKey(key) && seen.Add(key))
+            {
+                adoptionOrder.Add(key);
+            }
+        }
+        foreach (var key in sorted)
+        {
+            if (seen.Add(key))
+            {
+                adoptionOrder.Add(key);
+            }
+        }
+        foreach (var key in adoptionOrder)
+        {
+            if (!_intents.TryGetValue(key, out var existing))
+            {
+                AdoptLocked(key, merged[key]);
+            }
+            else if (_lockBound && existing.Unbinding && _owned.ContainsKey(key) && !_userUnbound.Contains(key))
+            {
+                // Locking back on turns this hub's own unbinds (slot conflict, adoption cap) on owned chains back into binds.
+                _unboundHere.Remove(key);
+                _intents[key] = new BindIntent(OwnedSlotOrUnusedLocked(key));
+            }
+        }
+
+        // The send pass starts one chain further along each poll, so a slow TX cannot starve the later chains.
+        var count = sorted.Count;
+        var first = count == 0 ? 0 : _reconcileCursor++ % count;
+        for (var i = 0; i < count; i++)
+        {
+            var key = sorted[(first + i) % count];
             if (!_intents.TryGetValue(key, out var intent))
             {
-                intent = AdoptLocked(key, record);
-                if (intent is null)
-                {
-                    continue;
-                }
+                continue;
             }
+            var record = merged[key];
             if (intent.Unbinding)
             {
                 ReconcileUnbindLocked(key, intent, record);
@@ -1046,7 +1109,7 @@ public sealed class Slv3Hub : IDisposable
 
     private void ReconcileBindLocked(string key, BindIntent intent, Slv3DeviceRecord record)
     {
-        if (!NeedsBind(intent, record))
+        if (!NeedsBind(intent, record) || _uploadsInFlight.ContainsKey(key))
         {
             intent.Sends = 0;
             return;
@@ -1252,6 +1315,10 @@ public sealed class Slv3Hub : IDisposable
             }
             var key = Convert.ToHexString(record.Mac);
             if (_intents.TryGetValue(key, out var intent) && (intent.Unbinding || NeedsBind(intent, record)))
+            {
+                continue;
+            }
+            if (_uploadsInFlight.ContainsKey(key))
             {
                 continue;
             }
@@ -2105,7 +2172,7 @@ public sealed class Slv3Hub : IDisposable
     /// Binds a discovered fan to our master into L-Connect's next unused slot and keeps
     /// reconciling it from the poll ticks. Refused, with nothing changed and the reason in
     /// <paramref name="error"/>, for an unknown MAC, a fan a live neighbor master holds, a
-    /// full device cap (10 devices, 3 Strimers, 1 HydroShift II per model) or no free slot.
+    /// full device cap (devices, Strimers, or HydroShift IIs of one model, per the Bind cap constants) or no free slot.
     /// A fan already bound to us keeps its slot.
     /// </summary>
     public bool Bind(string macHex, out string error)
@@ -2186,7 +2253,7 @@ public sealed class Slv3Hub : IDisposable
             return $"limit of {BindCapStrimers} bound Strimers reached";
         }
         return target.IsHydroShift && sameHydroShift >= BindCapHydroShiftPerType
-            ? "limit of 1 bound HydroShift II of this model reached"
+            ? $"limit of {BindCapHydroShiftPerType} bound HydroShift II of this model reached"
             : null;
     }
 
@@ -2468,6 +2535,23 @@ public sealed class Slv3Hub : IDisposable
     public async Task<bool> SendRgbWindowAsync(
         string macHex, byte[] frames, int ledCount, int frameCount, double intervalTicks, int brightnessPercent)
     {
+        if (!BeginUpload(macHex, out var key))
+        {
+            return false;
+        }
+        try
+        {
+            return await SendRgbWindowCoreAsync(macHex, frames, ledCount, frameCount, intervalTicks, brightnessPercent).ConfigureAwait(false);
+        }
+        finally
+        {
+            EndUpload(key);
+        }
+    }
+
+    private async Task<bool> SendRgbWindowCoreAsync(
+        string macHex, byte[] frames, int ledCount, int frameCount, double intervalTicks, int brightnessPercent)
+    {
         var raw = Slv3RgbFrame.BuildFrameBuffer(frames, brightnessPercent);
         if (!TryPrepareUpload(macHex, raw, ledCount, frameCount, intervalTicks, window: true, out var channel, out var rxType, out var packets, out _))
         {
@@ -2598,6 +2682,54 @@ public sealed class Slv3Hub : IDisposable
         string macHex, byte[] raw, int ledCount, int frameCount, double intervalMs, int dataPasses, out string effectIndexHex)
     {
         effectIndexHex = "";
+        if (!BeginUpload(macHex, out var key))
+        {
+            return false;
+        }
+        try
+        {
+            return SendRgbDataCore(macHex, raw, ledCount, frameCount, intervalMs, dataPasses, out effectIndexHex);
+        }
+        finally
+        {
+            EndUpload(key);
+        }
+    }
+
+    private bool BeginUpload(string macHex, out string key)
+    {
+        key = "";
+        if (!TryParseMac(macHex, out var mac))
+        {
+            return false;
+        }
+        key = Convert.ToHexString(mac);
+        lock (_lock)
+        {
+            _uploadsInFlight[key] = _uploadsInFlight.GetValueOrDefault(key) + 1;
+        }
+        return true;
+    }
+
+    private void EndUpload(string key)
+    {
+        lock (_lock)
+        {
+            if (_uploadsInFlight.GetValueOrDefault(key) <= 1)
+            {
+                _uploadsInFlight.Remove(key);
+            }
+            else
+            {
+                _uploadsInFlight[key]--;
+            }
+        }
+    }
+
+    private bool SendRgbDataCore(
+        string macHex, byte[] raw, int ledCount, int frameCount, double intervalMs, int dataPasses, out string effectIndexHex)
+    {
+        effectIndexHex = "";
         if (!TryPrepareUpload(macHex, raw, ledCount, frameCount, intervalMs, window: false, out var channel, out var rxType, out var packets, out var effectIndex))
         {
             return false;
@@ -2669,7 +2801,7 @@ public sealed class Slv3Hub : IDisposable
     // times out ends the frame and the rest of the poll's sends, so a stalled TX costs one timeout under the lock.
     private bool WriteRfPayloadLocked(byte channel, byte rxType, byte[] payload)
     {
-        if (_txStalledThisPoll)
+        if (_pollSendsActive && _txStalledThisPoll)
         {
             return false;
         }
@@ -2683,7 +2815,7 @@ public sealed class Slv3Hub : IDisposable
             sent = false;
             if (_tx.LastWriteTimedOut)
             {
-                _txStalledThisPoll = true;
+                _txStalledThisPoll = _pollSendsActive;
                 break;
             }
         }

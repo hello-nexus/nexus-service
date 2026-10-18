@@ -17,12 +17,12 @@ namespace Nexus.Service.Peripherals.LianLiWireless;
 public sealed class Slv3ConnectionWorker : BackgroundService
 {
     private const int ConnectPollMs = 5000;
-    // L-Connect 2.1.29 sends GetDev about every 336 ms and its GetMac/ClockSync block about every 1.04 s (Y70 USBPcap capture).
+    // The GetDev period of L-Connect 2.1.29 and a drive pass on every DriveEveryTicks-th poll to match its GetMac/ClockSync block (Y70 USBPcap capture).
     internal const int PollPeriodMs = 336;
     internal const int DriveEveryTicks = 3;
 
-    /// <summary>True for the tick that runs the once-a-second drive pass instead of a plain poll.</summary>
-    internal static bool IsDriveTick(int tick) => tick % DriveEveryTicks == 0;
+    /// <summary>Runs the next tick: the drive pass on every DriveEveryTicks-th, a plain poll otherwise.</summary>
+    internal static bool RunTick(Slv3Hub hub, ref int tick) => tick++ % DriveEveryTicks == 0 ? hub.DriveTick() : hub.PollTick();
     private const int MaxConsecutiveFailures = 3;
 
     private readonly Slv3Hub _hub;
@@ -59,7 +59,7 @@ public sealed class Slv3ConnectionWorker : BackgroundService
                         var tick = 0;
                         while (!stoppingToken.IsCancellationRequested && _gate.IsEnabled("lianli-wireless"))
                         {
-                            var ok = IsDriveTick(tick++) ? _hub.DriveTick() : _hub.PollTick();
+                            var ok = RunTick(_hub, ref tick);
                             if (ok)
                             {
                                 failures = 0;
