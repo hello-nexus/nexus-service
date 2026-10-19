@@ -2816,6 +2816,8 @@ public partial class Slv3HubTests
         public byte[] MasterMac { get; set; } = new byte[6];
         public byte Channel { get; set; } = Slv3Protocol.DefaultChannel;
         public byte RxType { get; set; }
+        /// <summary>A garbled record: the slot the poll reports in place of the one the fan holds.</summary>
+        public byte? ReportedRx { get; set; }
         public byte DevType { get; set; } = 25;
         public byte FanCount { get; set; } = 1;
         // The chain echoes the last bind-frame duty tuple (fans_pwm) and the
@@ -3027,7 +3029,7 @@ public partial class Slv3HubTests
                 fan.Mac.CopyTo(rec);
                 fan.MasterMac.CopyTo(rec.Slice(6));
                 rec[12] = fan.Channel;
-                rec[13] = fan.RxType;
+                rec[13] = fan.ReportedRx ?? fan.RxType;
                 rec[18] = fan.DevType;
                 rec[19] = fan.FanCount;
                 fan.Pwm.CopyTo(rec.Slice(36, 4));

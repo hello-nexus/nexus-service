@@ -77,6 +77,11 @@ public sealed class Slv3LockBoundDevicesTests : IDisposable
         var empty = await _client.PutAsJsonAsync("/devices/lianli-wireless/lock", new { });
 
         Assert.Equal(System.Net.HttpStatusCode.BadRequest, empty.StatusCode);
+        using (var doc = JsonDocument.Parse(await empty.Content.ReadAsStringAsync()))
+        {
+            Assert.True(doc.RootElement.GetProperty("error").GetBoolean());
+            Assert.Equal("enabled is required", doc.RootElement.GetProperty("msg").GetString());
+        }
         Assert.True(_factory.Services.GetRequiredService<IConfigStore>().Load().Devices.LianLiWireless.LockBoundDevices);
     }
 
