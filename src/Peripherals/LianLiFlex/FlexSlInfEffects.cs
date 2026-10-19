@@ -22,39 +22,39 @@ public static class FlexSlInfEffects
         "disco", "electricCurrent", "reflect", "gradientRibbon", "wing", "drumming", "boomerang", "candyBox",
     };
 
-    private static Func<int, double> Fixed(double v) => _ => v;
+    private static Func<int, double> Fixed(double value) => _ => value;
 
-    private static Func<int, double> ByFans(double f1, double f2, double f3, double f4) =>
-        fans => fans switch { 1 => f1, 2 => f2, 3 => f3, _ => f4 };
+    private static Func<int, double> ByFans(double oneFan, double twoFans, double threeFans, double fourFans) =>
+        fans => fans switch { 1 => oneFan, 2 => twoFans, 3 => threeFans, _ => fourFans };
 
     private static readonly Dictionary<string, Entry> Table = new(StringComparer.Ordinal)
     {
-        ["rainbow"] = new((m, z, f, b, d, a) => m.InfRainbow(z, f, b, d, a), Fixed(20)),
-        ["rainbowMorph"] = new((m, z, f, b, d, a) => m.InfRainbowMorph(z, f, b, d, a), Fixed(11)),
-        ["static"] = new((m, z, f, b, d, a) => m.InfStaticColor(z, f, b, d, a), Fixed(11)),
-        ["breathing"] = new((m, z, f, b, d, a) => m.InfBreathing(z, f, b, d, a), Fixed(11)),
-        ["runway"] = new((m, z, f, b, d, a) => m.InfRunway(z, f, b, d, a), Fixed(20)),
-        ["meteor"] = new((m, z, f, b, d, a) => m.InfMeteor(z, f, b, d, a), Fixed(20)),
-        ["twinkle"] = new((m, z, f, b, d, a) => m.InfTwinkle(z, f, b, d, a), Fixed(20)),
-        ["taichi"] = new((m, z, f, b, d, a) => m.InfTaichi(z, f, b, d, a), Fixed(20)),
-        ["mopUp"] = new((m, z, f, b, d, a) => m.InfMopUp(z, f, b, d, a), Fixed(20)),
-        ["meteorRainbow"] = new((m, z, f, b, d, a) => m.InfMeteorRainbow(z, f, b, d, a), Fixed(20)),
-        ["warning"] = new((m, z, f, b, d, a) => m.InfWarning(z, f, b, d, a), Fixed(20)),
-        ["voice"] = new((m, z, f, b, d, a) => m.InfVoice(z, f, b, d, a), Fixed(20)),
-        ["mixing"] = new((m, z, f, b, d, a) => m.InfMixing(z, f, b, d, a), Fixed(20)),
-        ["tide"] = new((m, z, f, b, d, a) => m.InfTide(z, f, b, d, a), Fixed(20)),
-        ["scan"] = new((m, z, f, b, d, a) => m.InfScan(z, f, b, d, a), Fixed(20)),
-        ["door"] = new((m, z, f, b, d, a) => m.InfDoor(z, f, b, d, a), Fixed(30)),
-        ["heartBeat"] = new((m, z, f, b, d, a) => m.InfHeartBeat(z, f, b, d, a), Fixed(20)),
-        ["heartBeatRunway"] = new((m, z, f, b, d, a) => m.InfHeartBeatRunway(z, f, b, d, a), Fixed(10)),
-        ["disco"] = new((m, z, f, b, d, a) => m.InfDisco(z, f, b, d, a), Fixed(20)),
-        ["electricCurrent"] = new((m, z, f, b, d, a) => m.InfElectricCurrent(z, f, b, d, a), ByFans(40, 20, 15, 10)),
-        ["reflect"] = new((m, z, f, b, d, a) => m.InfReflect(z, f, b, d, a), Fixed(20)),
-        ["gradientRibbon"] = new((m, z, f, b, d, a) => m.InfGradientRibbon(z, f, b, d, a), Fixed(20)),
-        ["wing"] = new((m, z, f, b, d, a) => m.InfWing(z, f, b, d, a), ByFans(50, 30, 20, 18)),
-        ["drumming"] = new((m, z, f, b, d, a) => m.InfDrumming(z, f, b, d, a), Fixed(20)),
-        ["boomerang"] = new((m, z, f, b, d, a) => m.InfBoomerang(z, f, b, d, a), ByFans(50, 35, 20, 20)),
-        ["candyBox"] = new((m, z, f, b, d, a) => m.InfCandyBox(z, f, b, d, a), Fixed(20)),
+        ["rainbow"] = new((modes, zone, fans, brightness, direction, attach) => modes.InfRainbow(zone, fans, brightness, direction, attach), Fixed(20)),
+        ["rainbowMorph"] = new((modes, zone, fans, brightness, direction, attach) => modes.InfRainbowMorph(zone, fans, brightness, direction, attach), Fixed(11)),
+        ["static"] = new((modes, zone, fans, brightness, direction, attach) => modes.InfStaticColor(zone, fans, brightness, direction, attach), Fixed(11)),
+        ["breathing"] = new((modes, zone, fans, brightness, direction, attach) => modes.InfBreathing(zone, fans, brightness, direction, attach), Fixed(11)),
+        ["runway"] = new((modes, zone, fans, brightness, direction, attach) => modes.InfRunway(zone, fans, brightness, direction, attach), Fixed(20)),
+        ["meteor"] = new((modes, zone, fans, brightness, direction, attach) => modes.InfMeteor(zone, fans, brightness, direction, attach), Fixed(20)),
+        ["twinkle"] = new((modes, zone, fans, brightness, direction, attach) => modes.InfTwinkle(zone, fans, brightness, direction, attach), Fixed(20)),
+        ["taichi"] = new((modes, zone, fans, brightness, direction, attach) => modes.InfTaichi(zone, fans, brightness, direction, attach), Fixed(20)),
+        ["mopUp"] = new((modes, zone, fans, brightness, direction, attach) => modes.InfMopUp(zone, fans, brightness, direction, attach), Fixed(20)),
+        ["meteorRainbow"] = new((modes, zone, fans, brightness, direction, attach) => modes.InfMeteorRainbow(zone, fans, brightness, direction, attach), Fixed(20)),
+        ["warning"] = new((modes, zone, fans, brightness, direction, attach) => modes.InfWarning(zone, fans, brightness, direction, attach), Fixed(20)),
+        ["voice"] = new((modes, zone, fans, brightness, direction, attach) => modes.InfVoice(zone, fans, brightness, direction, attach), Fixed(20)),
+        ["mixing"] = new((modes, zone, fans, brightness, direction, attach) => modes.InfMixing(zone, fans, brightness, direction, attach), Fixed(20)),
+        ["tide"] = new((modes, zone, fans, brightness, direction, attach) => modes.InfTide(zone, fans, brightness, direction, attach), Fixed(20)),
+        ["scan"] = new((modes, zone, fans, brightness, direction, attach) => modes.InfScan(zone, fans, brightness, direction, attach), Fixed(20)),
+        ["door"] = new((modes, zone, fans, brightness, direction, attach) => modes.InfDoor(zone, fans, brightness, direction, attach), Fixed(30)),
+        ["heartBeat"] = new((modes, zone, fans, brightness, direction, attach) => modes.InfHeartBeat(zone, fans, brightness, direction, attach), Fixed(20)),
+        ["heartBeatRunway"] = new((modes, zone, fans, brightness, direction, attach) => modes.InfHeartBeatRunway(zone, fans, brightness, direction, attach), Fixed(10)),
+        ["disco"] = new((modes, zone, fans, brightness, direction, attach) => modes.InfDisco(zone, fans, brightness, direction, attach), Fixed(20)),
+        ["electricCurrent"] = new((modes, zone, fans, brightness, direction, attach) => modes.InfElectricCurrent(zone, fans, brightness, direction, attach), ByFans(40, 20, 15, 10)),
+        ["reflect"] = new((modes, zone, fans, brightness, direction, attach) => modes.InfReflect(zone, fans, brightness, direction, attach), Fixed(20)),
+        ["gradientRibbon"] = new((modes, zone, fans, brightness, direction, attach) => modes.InfGradientRibbon(zone, fans, brightness, direction, attach), Fixed(20)),
+        ["wing"] = new((modes, zone, fans, brightness, direction, attach) => modes.InfWing(zone, fans, brightness, direction, attach), ByFans(50, 30, 20, 18)),
+        ["drumming"] = new((modes, zone, fans, brightness, direction, attach) => modes.InfDrumming(zone, fans, brightness, direction, attach), Fixed(20)),
+        ["boomerang"] = new((modes, zone, fans, brightness, direction, attach) => modes.InfBoomerang(zone, fans, brightness, direction, attach), ByFans(50, 35, 20, 20)),
+        ["candyBox"] = new((modes, zone, fans, brightness, direction, attach) => modes.InfCandyBox(zone, fans, brightness, direction, attach), Fixed(20)),
     };
 
     public static bool IsImplemented(string key) => Table.ContainsKey(key);
@@ -97,13 +97,13 @@ public static class FlexSlInfEffects
             FlexScope.Center => 2,
             _ => throw new ArgumentException($"SL-INF scope {req.Scope} is not a zone.", nameof(req)),
         };
-        var z = RenderZone(entry, zone, fans, req);
+        var single = RenderZone(entry, zone, fans, req);
         return new FlexRawAnimation
         {
-            Frames = FlexPalette.Flatten(z.Frames, z.FrameCount, leds),
-            FrameCount = z.FrameCount,
+            Frames = FlexPalette.Flatten(single.Frames, single.FrameCount, leds),
+            FrameCount = single.FrameCount,
             Leds = leds,
-            IntervalBaseMs = z.IntervalBase,
+            IntervalBaseMs = single.IntervalBase,
         };
     }
 

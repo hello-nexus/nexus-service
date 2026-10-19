@@ -22,8 +22,8 @@ public class FlexMergeEffectsTests
     public static IEnumerable<object[]> StripKeys() =>
         FlexMergeEffects.MergeKeys(FlexFamily.TlFlex).Where(k => !FlexMergeEffects.IsPerReceiver(k)).Select(k => new object[] { k });
 
-    public static IEnumerable<object[]> RecordedCases() =>
-        Vectors.Value.RootElement.GetProperty("recorded").EnumerateArray().Select((_, i) => new object[] { i });
+    public static IEnumerable<object[]> ExpectedCases() =>
+        Vectors.Value.RootElement.GetProperty("expected").EnumerateArray().Select((_, i) => new object[] { i });
 
     private static (string Mac, FlexFamily Family, int Fans) Tl(string mac, int fans = 1) => (mac, FlexFamily.TlFlex, fans);
 
@@ -34,10 +34,10 @@ public class FlexMergeEffectsTests
         FlexMergeEffects.Render(key, p, speed, direction, brightness, Palette);
 
     [Theory]
-    [MemberData(nameof(RecordedCases))]
-    public void Recorded_merge_vector_is_byte_exact(int index)
+    [MemberData(nameof(ExpectedCases))]
+    public void Expected_merge_vector_is_byte_exact(int index)
     {
-        var v = Vectors.Value.RootElement.GetProperty("recorded")[index];
+        var v = Vectors.Value.RootElement.GetProperty("expected")[index];
         var participants = v.GetProperty("participants").EnumerateArray()
             .Select(p => (p.GetProperty("mac").GetString()!, p.GetProperty("family").GetString() == "tl" ? FlexFamily.TlFlex : FlexFamily.SlInfFlex, p.GetProperty("fans").GetInt32()))
             .ToList();

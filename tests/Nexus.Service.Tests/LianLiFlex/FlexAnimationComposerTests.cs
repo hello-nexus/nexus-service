@@ -27,7 +27,7 @@ public class FlexAnimationComposerTests
 
     [Theory]
     [MemberData(nameof(WholeFanIds))]
-    public void Whole_fan_look_matches_recorded_package(string id)
+    public void Whole_fan_look_matches_expected_package(string id)
     {
         var v = FlexEffectVector.Get(id);
         var look = new FlexZoneLook(v.Key, 7 - v.SpeedMultiplier, v.Direction, BrightnessIndex(v.BrightnessPercent), v.Colors);
@@ -37,7 +37,7 @@ public class FlexAnimationComposerTests
 
     [Theory]
     [MemberData(nameof(ComposedIds))]
-    public void Zone_looks_compose_to_recorded_package(string id)
+    public void Zone_looks_compose_to_expected_package(string id)
     {
         var v = FlexEffectVector.Get(id);
         AssertMatches(v, FlexAnimationComposer.Compose(v.Family, 1, v.Zones!, v.UpDownSwap));

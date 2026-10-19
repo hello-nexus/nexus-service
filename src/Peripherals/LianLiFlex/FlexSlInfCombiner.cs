@@ -23,59 +23,59 @@ internal static class FlexSlInfCombiner
         var ledCount = fans * LedsPerFan;
         var baseMs = center.IntervalBase > 0.0 ? center.IntervalBase : Math.Max(outer.IntervalBase, inner.IntervalBase);
         var interval = inner.SpeedMultiplier * baseMs;
-        var centerInterval = center.Interval;
+        var centerIntervalMs = center.Interval;
 
-        var inA = inner.Frames;
-        var outA = outer.Frames;
-        var ceA = center.Frames;
-        int nIn = inner.FrameCount, nOut = outer.FrameCount, nCe = center.FrameCount;
+        var innerFrames = inner.Frames;
+        var outerFrames = outer.Frames;
+        var centerFrames = center.Frames;
+        int innerCount = inner.FrameCount, outerCount = outer.FrameCount, centerCount = center.FrameCount;
 
         byte[,,] target;
         int total;
         double result;
-        if (nIn >= nOut && nIn >= nCe)
+        if (innerCount >= outerCount && innerCount >= centerCount)
         {
-            total = nIn;
-            if (total / 2 >= nOut)
+            total = innerCount;
+            if (total / 2 >= outerCount)
             {
-                (nOut, outA) = FillArr(outA, total, nOut, ledCount);
+                (outerCount, outerFrames) = TileFrames(outerFrames, total, outerCount, ledCount);
             }
-            if (total / 2 >= nCe)
+            if (total / 2 >= centerCount)
             {
-                (nCe, ceA) = FillArr(ceA, total, nCe, ledCount);
+                (centerCount, centerFrames) = TileFrames(centerFrames, total, centerCount, ledCount);
             }
-            Merge(inA, total, interval, ledCount, (outA, nOut, 18, 8), (outA, nOut, 36, 8), (ceA, nCe, 0, 8));
-            target = inA;
-            result = centerInterval != 0.0 ? centerInterval * nCe / total : interval;
+            Merge(innerFrames, total, interval, ledCount, (outerFrames, outerCount, 18, 8), (outerFrames, outerCount, 36, 8), (centerFrames, centerCount, 0, 8));
+            target = innerFrames;
+            result = centerIntervalMs != 0.0 ? centerIntervalMs * centerCount / total : interval;
         }
-        else if (nOut >= nIn && nOut >= nCe)
+        else if (outerCount >= innerCount && outerCount >= centerCount)
         {
-            total = nOut;
-            if (total / 2 >= nIn)
+            total = outerCount;
+            if (total / 2 >= innerCount)
             {
-                (nIn, inA) = FillArr(inA, total, nIn, ledCount);
+                (innerCount, innerFrames) = TileFrames(innerFrames, total, innerCount, ledCount);
             }
-            if (total / 2 >= nCe)
+            if (total / 2 >= centerCount)
             {
-                (nCe, ceA) = FillArr(ceA, total, nCe, ledCount);
+                (centerCount, centerFrames) = TileFrames(centerFrames, total, centerCount, ledCount);
             }
-            Merge(outA, total, interval, ledCount, (inA, nIn, 8, 10), (inA, nIn, 26, 10), (ceA, nCe, 0, 8));
-            target = outA;
-            result = centerInterval != 0.0 ? Math.Ceiling(centerInterval * nCe / total) : interval;
+            Merge(outerFrames, total, interval, ledCount, (innerFrames, innerCount, 8, 10), (innerFrames, innerCount, 26, 10), (centerFrames, centerCount, 0, 8));
+            target = outerFrames;
+            result = centerIntervalMs != 0.0 ? Math.Ceiling(centerIntervalMs * centerCount / total) : interval;
         }
         else
         {
-            total = nCe;
-            if (total / 2 >= nIn)
+            total = centerCount;
+            if (total / 2 >= innerCount)
             {
-                (nIn, inA) = FillArr(inA, total, nIn, ledCount);
+                (innerCount, innerFrames) = TileFrames(innerFrames, total, innerCount, ledCount);
             }
-            if (total / 2 >= nOut)
+            if (total / 2 >= outerCount)
             {
-                (nOut, outA) = FillArr(outA, total, nOut, ledCount);
+                (outerCount, outerFrames) = TileFrames(outerFrames, total, outerCount, ledCount);
             }
-            Merge(ceA, total, interval, ledCount, (outA, nOut, 18, 8), (outA, nOut, 36, 8), (inA, nIn, 8, 10), (inA, nIn, 26, 10));
-            target = ceA;
+            Merge(centerFrames, total, interval, ledCount, (outerFrames, outerCount, 18, 8), (outerFrames, outerCount, 36, 8), (innerFrames, innerCount, 8, 10), (innerFrames, innerCount, 26, 10));
+            target = centerFrames;
             result = interval;
         }
         return (target, total, result);
@@ -110,15 +110,15 @@ internal static class FlexSlInfCombiner
         }
     }
 
-    private static (int, byte[,,]) FillArr(byte[,,] minData, int maxFrames, int minFrames, int ledCount)
+    private static (int, byte[,,]) TileFrames(byte[,,] shortFrames, int totalFrames, int shortCount, int ledCount)
     {
-        var times = maxFrames / minFrames;
-        var arr = new byte[maxFrames, 3, ledCount];
-        var block = 3 * ledCount * minFrames;
-        for (var i = 0; i < times; i++)
+        var repeats = totalFrames / shortCount;
+        var tiled = new byte[totalFrames, 3, ledCount];
+        var block = 3 * ledCount * shortCount;
+        for (var i = 0; i < repeats; i++)
         {
-            Array.Copy(minData, 0, arr, i * block, block);
+            Array.Copy(shortFrames, 0, tiled, i * block, block);
         }
-        return (times * minFrames, arr);
+        return (repeats * shortCount, tiled);
     }
 }

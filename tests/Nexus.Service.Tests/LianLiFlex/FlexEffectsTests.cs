@@ -67,7 +67,7 @@ public class FlexEffectsTests
 
     [Theory]
     [MemberData(nameof(WholeFanIds))]
-    public void Whole_fan_render_matches_recorded_frames(string id)
+    public void Whole_fan_render_matches_expected_frames(string id)
     {
         var v = FlexEffectVector.Get(id);
         var anim = RenderVector(v, FlexScope.All);
@@ -79,7 +79,7 @@ public class FlexEffectsTests
 
     [Theory]
     [MemberData(nameof(ZoneIds))]
-    public void Zone_render_matches_recorded_frames_inside_the_zone(string id)
+    public void Zone_render_matches_expected_frames_inside_the_zone(string id)
     {
         var v = FlexEffectVector.Get(id);
         var scope = v.Scope switch

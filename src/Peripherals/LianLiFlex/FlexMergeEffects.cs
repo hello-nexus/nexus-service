@@ -6,7 +6,7 @@ namespace Nexus.Service.Peripherals.LianLiFlex;
 
 /// <summary>One receiver taking part in a merged effect. Order in the list is the light sequence.</summary>
 /// <param name="SliceDirection">1 mirrors this receiver's slice of the strip; 0 leaves it.</param>
-/// <param name="InfRightAttach">SL-INF only: the receiver reports a fan count of 10 or more (right-attached cable).</param>
+/// <param name="InfRightAttach">SL-INF only: the receiver reports a right-attached cable.</param>
 public readonly record struct FlexMergeParticipant(
     string Mac, FlexFamily Family, int Fans, int SliceDirection = 0, bool InfRightAttach = false);
 
@@ -25,7 +25,7 @@ public sealed class FlexMergeSlice
     public required double IntervalMs { get; init; }
 }
 
-/// <summary>One effect over a virtual strip (13 dots per TL fan, 8 per SL-INF fan, at least 24) that each receiver slices; brightness is baked in and only the input colors are power-capped.</summary>
+/// <summary>One effect over a virtual strip that each receiver slices; brightness is baked in and only the input colors are power-capped.</summary>
 public static class FlexMergeEffects
 {
     public const int TlDotsPerFan = 13;
@@ -60,7 +60,7 @@ public static class FlexMergeEffects
 
     private static readonly int[] BrightnessBytes = { 0, 64, 128, 192, 255 };
 
-    /// <summary>The merge effect list in UI order. The same twelve apply to both families.</summary>
+    /// <summary>The merge effect list in UI order, shared by both families.</summary>
     public static IReadOnlyList<string> MergeKeys(FlexFamily family) => OrderedKeys;
 
     public static bool IsMergeable(FlexFamily family, string key) => Modes.ContainsKey(key);
@@ -68,11 +68,9 @@ public static class FlexMergeEffects
     /// <summary>Rainbow Morph and Twinkle play per receiver as a whole-fan single effect; <see cref="Render"/> refuses them.</summary>
     public static bool IsPerReceiver(string key) => key is "rainbowMorph" or "twinkle";
 
-    /// <summary>Speed level 0..4 (slowest to fastest) to the interval multiplier 7..3.</summary>
-    public static int SpeedMultiplier(int speedLevel) => 7 - Math.Clamp(speedLevel, 0, 4);
+        public static int SpeedMultiplier(int speedLevel) => 7 - Math.Clamp(speedLevel, 0, 4);
 
-    /// <summary>Brightness level 0..4 to the generator byte 0, 64, 128, 192, 255.</summary>
-    public static byte BrightnessByte(int brightnessLevel) => (byte)BrightnessBytes[Math.Clamp(brightnessLevel, 0, 4)];
+        public static byte BrightnessByte(int brightnessLevel) => (byte)BrightnessBytes[Math.Clamp(brightnessLevel, 0, 4)];
 
     public static int DotsOf(FlexMergeParticipant p) =>
         p.Fans * (p.Family == FlexFamily.SlInfFlex ? SlInfDotsPerFan : TlDotsPerFan);
@@ -144,7 +142,7 @@ public static class FlexMergeEffects
 
     private static byte[,] CapColors(IReadOnlyList<RgbColor> colors)
     {
-        var c = new byte[ColorSlots, 3];
+        var capped = new byte[ColorSlots, 3];
         for (var i = 0; i < Math.Min(colors.Count, ColorSlots); i++)
         {
             var r = colors[i].R;
@@ -156,14 +154,14 @@ public static class FlexMergeEffects
                 g = (byte)(g * 0.95);
                 b = (byte)(b * 0.95);
             }
-            c[i, 0] = r;
-            c[i, 1] = g;
-            c[i, 2] = b;
+            capped[i, 0] = r;
+            capped[i, 1] = g;
+            capped[i, 2] = b;
         }
-        return c;
+        return capped;
     }
 
-    /// <summary>Frames of a strip, each 3 planes (R, G, B) of Leds entries.</summary>
+    /// <summary>Frames of a strip, each laid out as R, G, B planes of Leds entries.</summary>
     private sealed class Strip
     {
         private readonly List<byte[]> _frames = new();
@@ -176,9 +174,9 @@ public static class FlexMergeEffects
 
         public byte[] Add()
         {
-            var f = new byte[3 * Leds];
-            _frames.Add(f);
-            return f;
+            var frame = new byte[3 * Leds];
+            _frames.Add(frame);
+            return frame;
         }
 
         public byte Get(int frame, int channel, int led) => _frames[frame][(channel * Leds) + led];
@@ -520,7 +518,7 @@ public static class FlexMergeEffects
         return strip;
     }
 
-    /// <summary>Each fan's 13 dots fill both halves of its 26-LED ring; slice direction 1 reads the receiver's dots back to front.</summary>
+    /// <summary>Each fan's dots fill both halves of its ring; slice direction 1 reads the receiver's dots back to front.</summary>
     private static byte[] SliceTl(Strip strip, int start, int stop, int sliceDirection)
     {
         var fans = (stop + 1 - start) / TlDotsPerFan;
@@ -540,10 +538,10 @@ public static class FlexMergeEffects
                             dot = stop + start - dot;
                         }
                         var led = (k * FlexProtocol.TlLedsPerFan) + (half * TlDotsPerFan) + n;
-                        var o = ((frame * leds) + led) * 3;
-                        output[o] = strip.Get(frame, 0, dot);
-                        output[o + 1] = strip.Get(frame, 1, dot);
-                        output[o + 2] = strip.Get(frame, 2, dot);
+                        var offset = ((frame * leds) + led) * 3;
+                        output[offset] = strip.Get(frame, 0, dot);
+                        output[offset + 1] = strip.Get(frame, 1, dot);
+                        output[offset + 2] = strip.Get(frame, 2, dot);
                     }
                 }
             }
@@ -554,13 +552,13 @@ public static class FlexMergeEffects
     private static readonly byte[] InfLeftOrder = { 3, 4, 2, 5, 1, 6, 8, 7 };
     private static readonly byte[] InfRightOrder = { 7, 8, 6, 1, 5, 2, 4, 3 };
 
-    /// <summary>Each fan's 8 dots feed the permuted centre, then inner (two dots doubled), outer, inner, outer rings.</summary>
+    /// <summary>Each fan's dots feed the permuted center, then inner (two dots doubled), outer, inner, outer rings.</summary>
     private static byte[] SliceInf(Strip strip, int start, int stop, int sliceDirection, int rightAttach)
     {
         var fans = (stop + 1 - start) / SlInfDotsPerFan;
         var leds = fans * FlexProtocol.SlInfLedsPerFan;
         var output = new byte[strip.Count * leds * 3];
-        var pn = rightAttach == 0 ? 1 : 0;
+        var attachFlag = rightAttach == 0 ? 1 : 0;
         var dots = new byte[3, 8];
         for (var frame = 0; frame < strip.Count; frame++)
         {
@@ -583,10 +581,10 @@ public static class FlexMergeEffects
 
                 void Write(int led, int dotIndex)
                 {
-                    var o = ((frame * leds) + led) * 3;
-                    output[o] = dots[0, dotIndex];
-                    output[o + 1] = dots[1, dotIndex];
-                    output[o + 2] = dots[2, dotIndex];
+                    var offset = ((frame * leds) + led) * 3;
+                    output[offset] = dots[0, dotIndex];
+                    output[offset + 1] = dots[1, dotIndex];
+                    output[offset + 2] = dots[2, dotIndex];
                 }
 
                 var baseLed = k * FlexProtocol.SlInfLedsPerFan;
@@ -598,7 +596,7 @@ public static class FlexMergeEffects
                     {
                         dot = stop + start - dot;
                     }
-                    var at = (pn == 0 ? InfLeftOrder[j] : InfRightOrder[j]) - 1;
+                    var at = (attachFlag == 0 ? InfLeftOrder[j] : InfRightOrder[j]) - 1;
                     dots[0, at] = strip.Get(frame, 0, dot);
                     dots[1, at] = strip.Get(frame, 1, dot);
                     dots[2, at] = strip.Get(frame, 2, dot);
@@ -614,7 +612,7 @@ public static class FlexMergeEffects
                     var n = 0;
                     for (var j = baseLed + from; j < baseLed + to; j++)
                     {
-                        var src = pn == 0 ? 8 - n - 1 : n;
+                        var src = attachFlag == 0 ? 8 - n - 1 : n;
                         Write(j, src);
                         if (doubled && (n == 2 || n == 6))
                         {

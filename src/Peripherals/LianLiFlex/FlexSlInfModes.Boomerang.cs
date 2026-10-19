@@ -4,16 +4,16 @@ namespace Nexus.Service.Peripherals.LianLiFlex;
 
 internal sealed partial class FlexSlInfModes
 {
-    internal int InfBoomerang(int ie, int fans, int bright, int direction, int pn)
+    internal int InfBoomerang(int zone, int fans, int bright, int direction, int attach)
     {
-        byte[,,] array = new byte[5, 3, 40];
-        byte[,] array2 = new byte[3, 4]
+        byte[,,] ringColors = new byte[5, 3, 40];
+        byte[,] zoneLedCountByFans = new byte[3, 4]
         {
             { 8, 16, 24, 32 },
             { 10, 20, 30, 40 },
             { 8, 16, 24, 32 }
         };
-        byte[,] array3 = new byte[9, 8]
+        byte[,] maskFan1 = new byte[9, 8]
         {
             { 0, 0, 0, 1, 0, 0, 0, 2 },
             { 0, 0, 0, 1, 0, 0, 0, 2 },
@@ -25,7 +25,7 @@ internal sealed partial class FlexSlInfModes
             { 2, 2, 0, 1, 1, 1, 0, 2 },
             { 0, 0, 0, 0, 0, 0, 0, 0 }
         };
-        byte[,] array4 = new byte[9, 8]
+        byte[,] maskFan1RightAttach = new byte[9, 8]
         {
             { 0, 0, 0, 2, 0, 0, 0, 1 },
             { 0, 0, 0, 2, 0, 0, 0, 1 },
@@ -37,7 +37,7 @@ internal sealed partial class FlexSlInfModes
             { 1, 1, 0, 2, 2, 2, 0, 1 },
             { 0, 0, 0, 0, 0, 0, 0, 0 }
         };
-        byte[,] array5 = new byte[19, 16]
+        byte[,] maskFan2 = new byte[19, 16]
         {
             {
                 0, 0, 0, 1, 0, 0, 0, 0, 0, 0,
@@ -116,7 +116,7 @@ internal sealed partial class FlexSlInfModes
                 0, 0, 0, 0, 0, 0
             }
         };
-        byte[,] array6 = new byte[19, 16]
+        byte[,] maskFan2RightAttach = new byte[19, 16]
         {
             {
                 0, 0, 0, 0, 0, 0, 0, 1, 0, 2,
@@ -195,7 +195,7 @@ internal sealed partial class FlexSlInfModes
                 0, 0, 0, 0, 0, 0
             }
         };
-        byte[,] array7 = new byte[29, 24]
+        byte[,] maskFan3 = new byte[29, 24]
         {
             {
                 0, 0, 0, 1, 0, 0, 0, 0, 0, 0,
@@ -343,7 +343,7 @@ internal sealed partial class FlexSlInfModes
                 0, 0, 0, 0
             }
         };
-        byte[,] array8 = new byte[29, 24]
+        byte[,] maskFan3RightAttach = new byte[29, 24]
         {
             {
                 0, 0, 0, 0, 0, 0, 0, 1, 0, 0,
@@ -491,7 +491,7 @@ internal sealed partial class FlexSlInfModes
                 0, 0, 0, 0
             }
         };
-        byte[,] array9 = new byte[39, 32]
+        byte[,] maskFan4 = new byte[39, 32]
         {
             {
                 0, 0, 0, 1, 0, 0, 0, 0, 0, 0,
@@ -728,7 +728,7 @@ internal sealed partial class FlexSlInfModes
                 0, 0
             }
         };
-        byte[,] array10 = new byte[39, 32]
+        byte[,] maskFan4RightAttach = new byte[39, 32]
         {
             {
                 0, 0, 0, 0, 0, 0, 0, 1, 0, 0,
@@ -965,9 +965,9 @@ internal sealed partial class FlexSlInfModes
                 0, 0
             }
         };
-        if (ie > 2)
+        if (zone > 2)
         {
-            ie = 0;
+            zone = 0;
         }
         if (fans == 0 || fans > 4)
         {
@@ -977,300 +977,300 @@ internal sealed partial class FlexSlInfModes
         {
             direction = 0;
         }
-        if (pn > 1)
+        if (attach > 1)
         {
-            pn = 0;
+            attach = 0;
         }
-        byte b = array2[0, fans - 1];
-        byte b2 = array2[1, fans - 1];
-        int num = 0;
-        for (int i = 0; i < 2; i++)
+        byte centerOuterLeds = zoneLedCountByFans[0, fans - 1];
+        byte innerLeds = zoneLedCountByFans[1, fans - 1];
+        int frame = 0;
+        for (int pass = 0; pass < 2; pass++)
         {
-            int num2 = 0;
-            int num3 = 0;
-            while (num3 < b + fans + fans - 1)
+            int innerHead = 0;
+            int head = 0;
+            while (head < centerOuterLeds + fans + fans - 1)
             {
-                for (int j = 0; j < b; j++)
+                for (int led = 0; led < centerOuterLeds; led++)
                 {
-                    byte b3 = array9[num3, j];
+                    byte maskValue = maskFan4[head, led];
                     if (fans == 1)
                     {
-                        b3 = array3[num3, j];
+                        maskValue = maskFan1[head, led];
                     }
                     if (fans == 2)
                     {
-                        b3 = array5[num3, j];
+                        maskValue = maskFan2[head, led];
                     }
                     if (fans == 3)
                     {
-                        b3 = array7[num3, j];
+                        maskValue = maskFan3[head, led];
                     }
-                    if (pn == 1)
+                    if (attach == 1)
                     {
-                        b3 = array10[num3, j];
+                        maskValue = maskFan4RightAttach[head, led];
                         if (fans == 1)
                         {
-                            b3 = array4[num3, j];
+                            maskValue = maskFan1RightAttach[head, led];
                         }
                         if (fans == 2)
                         {
-                            b3 = array6[num3, j];
+                            maskValue = maskFan2RightAttach[head, led];
                         }
                         if (fans == 3)
                         {
-                            b3 = array8[num3, j];
+                            maskValue = maskFan3RightAttach[head, led];
                         }
                     }
-                    byte b4 = 0;
-                    if (b3 == 2)
+                    byte paletteRow = 0;
+                    if (maskValue == 2)
                     {
-                        b4 = 1;
+                        paletteRow = 1;
                     }
-                    if (i == 1)
+                    if (pass == 1)
                     {
-                        b4 = 1;
-                        if (b3 == 2)
+                        paletteRow = 1;
+                        if (maskValue == 2)
                         {
-                            b4 = 0;
+                            paletteRow = 0;
                         }
                     }
-                    byte b5 = 0;
-                    byte b6 = 0;
-                    byte b7 = 0;
-                    if (b3 != 0)
+                    byte red = 0;
+                    byte green = 0;
+                    byte blue = 0;
+                    if (maskValue != 0)
                     {
-                        b5 = palette[0, b4, 0];
-                        b6 = palette[0, b4, 1];
-                        b7 = palette[0, b4, 2];
+                        red = palette[0, paletteRow, 0];
+                        green = palette[0, paletteRow, 1];
+                        blue = palette[0, paletteRow, 2];
                     }
-                    array[0, 0, j] = (byte)(b5 * bright >> 8);
-                    array[0, 1, j] = (byte)(b6 * bright >> 8);
-                    array[0, 2, j] = (byte)(b7 * bright >> 8);
+                    ringColors[0, 0, led] = (byte)(red * bright >> 8);
+                    ringColors[0, 1, led] = (byte)(green * bright >> 8);
+                    ringColors[0, 2, led] = (byte)(blue * bright >> 8);
                 }
-                for (int j = 0; j < b; j++)
+                for (int led = 0; led < centerOuterLeds; led++)
                 {
-                    if (i == 1)
+                    if (pass == 1)
                     {
                         break;
                     }
-                    byte b5 = 0;
-                    byte b6 = 0;
-                    byte b7 = 0;
-                    if (j <= num3 && j + fans > num3)
+                    byte red = 0;
+                    byte green = 0;
+                    byte blue = 0;
+                    if (led <= head && led + fans > head)
                     {
-                        b5 = palette[0, 0, 0];
-                        b6 = palette[0, 0, 1];
-                        b7 = palette[0, 0, 2];
+                        red = palette[0, 0, 0];
+                        green = palette[0, 0, 1];
+                        blue = palette[0, 0, 2];
                     }
-                    array[2, 0, j] = (byte)(b5 * bright >> 8);
-                    array[2, 1, j] = (byte)(b6 * bright >> 8);
-                    array[2, 2, j] = (byte)(b7 * bright >> 8);
-                    array[4, 0, j] = array[2, 0, j];
-                    array[4, 1, j] = array[2, 1, j];
-                    array[4, 2, j] = array[2, 2, j];
+                    ringColors[2, 0, led] = (byte)(red * bright >> 8);
+                    ringColors[2, 1, led] = (byte)(green * bright >> 8);
+                    ringColors[2, 2, led] = (byte)(blue * bright >> 8);
+                    ringColors[4, 0, led] = ringColors[2, 0, led];
+                    ringColors[4, 1, led] = ringColors[2, 1, led];
+                    ringColors[4, 2, led] = ringColors[2, 2, led];
                 }
-                for (int j = 0; j < b; j++)
+                for (int led = 0; led < centerOuterLeds; led++)
                 {
-                    if (i == 0)
+                    if (pass == 0)
                     {
                         break;
                     }
-                    byte b5 = 0;
-                    byte b6 = 0;
-                    byte b7 = 0;
-                    if (j <= num3 && j + fans > num3)
+                    byte red = 0;
+                    byte green = 0;
+                    byte blue = 0;
+                    if (led <= head && led + fans > head)
                     {
-                        b5 = palette[0, 0, 0];
-                        b6 = palette[0, 0, 1];
-                        b7 = palette[0, 0, 2];
+                        red = palette[0, 0, 0];
+                        green = palette[0, 0, 1];
+                        blue = palette[0, 0, 2];
                     }
-                    int num4 = b - j - 1;
-                    array[2, 0, num4] = (byte)(b5 * bright >> 8);
-                    array[2, 1, num4] = (byte)(b6 * bright >> 8);
-                    array[2, 2, num4] = (byte)(b7 * bright >> 8);
-                    array[4, 0, num4] = array[2, 0, num4];
-                    array[4, 1, num4] = array[2, 1, num4];
-                    array[4, 2, num4] = array[2, 2, num4];
+                    int mirrorIdx = centerOuterLeds - led - 1;
+                    ringColors[2, 0, mirrorIdx] = (byte)(red * bright >> 8);
+                    ringColors[2, 1, mirrorIdx] = (byte)(green * bright >> 8);
+                    ringColors[2, 2, mirrorIdx] = (byte)(blue * bright >> 8);
+                    ringColors[4, 0, mirrorIdx] = ringColors[2, 0, mirrorIdx];
+                    ringColors[4, 1, mirrorIdx] = ringColors[2, 1, mirrorIdx];
+                    ringColors[4, 2, mirrorIdx] = ringColors[2, 2, mirrorIdx];
                 }
-                if (num3 == 2 || num3 == 6 || num3 == 10 || num3 == 14 || num3 == 18 || num3 == 22 || num3 == 26 || num3 == 30)
+                if (head == 2 || head == 6 || head == 10 || head == 14 || head == 18 || head == 22 || head == 26 || head == 30)
                 {
-                    num2++;
+                    innerHead++;
                 }
-                for (int j = 0; j < b2; j++)
+                for (int led = 0; led < innerLeds; led++)
                 {
-                    if (i == 1)
+                    if (pass == 1)
                     {
                         break;
                     }
-                    byte b5 = 0;
-                    byte b6 = 0;
-                    byte b7 = 0;
-                    if (j <= num2 && j + fans > num2)
+                    byte red = 0;
+                    byte green = 0;
+                    byte blue = 0;
+                    if (led <= innerHead && led + fans > innerHead)
                     {
-                        b5 = palette[0, 1, 0];
-                        b6 = palette[0, 1, 1];
-                        b7 = palette[0, 1, 2];
+                        red = palette[0, 1, 0];
+                        green = palette[0, 1, 1];
+                        blue = palette[0, 1, 2];
                     }
-                    int num4 = b2 - j - 1;
-                    array[1, 0, num4] = (byte)(b5 * bright >> 8);
-                    array[1, 1, num4] = (byte)(b6 * bright >> 8);
-                    array[1, 2, num4] = (byte)(b7 * bright >> 8);
-                    array[3, 0, num4] = array[1, 0, num4];
-                    array[3, 1, num4] = array[1, 1, num4];
-                    array[3, 2, num4] = array[1, 2, num4];
+                    int mirrorIdx = innerLeds - led - 1;
+                    ringColors[1, 0, mirrorIdx] = (byte)(red * bright >> 8);
+                    ringColors[1, 1, mirrorIdx] = (byte)(green * bright >> 8);
+                    ringColors[1, 2, mirrorIdx] = (byte)(blue * bright >> 8);
+                    ringColors[3, 0, mirrorIdx] = ringColors[1, 0, mirrorIdx];
+                    ringColors[3, 1, mirrorIdx] = ringColors[1, 1, mirrorIdx];
+                    ringColors[3, 2, mirrorIdx] = ringColors[1, 2, mirrorIdx];
                 }
-                for (int j = 0; j < b2; j++)
+                for (int led = 0; led < innerLeds; led++)
                 {
-                    if (i == 0)
+                    if (pass == 0)
                     {
                         break;
                     }
-                    byte b5 = 0;
-                    byte b6 = 0;
-                    byte b7 = 0;
-                    if (j <= num2 && j + fans > num2)
+                    byte red = 0;
+                    byte green = 0;
+                    byte blue = 0;
+                    if (led <= innerHead && led + fans > innerHead)
                     {
-                        b5 = palette[0, 1, 0];
-                        b6 = palette[0, 1, 1];
-                        b7 = palette[0, 1, 2];
+                        red = palette[0, 1, 0];
+                        green = palette[0, 1, 1];
+                        blue = palette[0, 1, 2];
                     }
-                    array[1, 0, j] = (byte)(b5 * bright >> 8);
-                    array[1, 1, j] = (byte)(b6 * bright >> 8);
-                    array[1, 2, j] = (byte)(b7 * bright >> 8);
-                    array[3, 0, j] = array[1, 0, j];
-                    array[3, 1, j] = array[1, 1, j];
-                    array[3, 2, j] = array[1, 2, j];
+                    ringColors[1, 0, led] = (byte)(red * bright >> 8);
+                    ringColors[1, 1, led] = (byte)(green * bright >> 8);
+                    ringColors[1, 2, led] = (byte)(blue * bright >> 8);
+                    ringColors[3, 0, led] = ringColors[1, 0, led];
+                    ringColors[3, 1, led] = ringColors[1, 1, led];
+                    ringColors[3, 2, led] = ringColors[1, 2, led];
                 }
-                int num5 = num;
-                for (int k = 0; k < fans; k++)
+                int frameOut = frame;
+                for (int fan = 0; fan < fans; fan++)
                 {
-                    int num6 = k * 44;
-                    int num4 = k * 8;
-                    for (int j = num6; j < num6 + 8; j++)
+                    int fanBase = fan * 44;
+                    int ringIdx = fan * 8;
+                    for (int led = fanBase; led < fanBase + 8; led++)
                     {
-                        frames[num5, 0, j] = 0;
-                        frames[num5, 1, j] = 0;
-                        frames[num5, 2, j] = 0;
-                        if (ie == 2)
+                        frames[frameOut, 0, led] = 0;
+                        frames[frameOut, 1, led] = 0;
+                        frames[frameOut, 2, led] = 0;
+                        if (zone == 2)
                         {
-                            frames[num5, 0, j] = array[0, 0, num4];
-                            frames[num5, 1, j] = array[0, 1, num4];
-                            frames[num5, 2, j] = array[0, 2, num4];
-                            num4++;
+                            frames[frameOut, 0, led] = ringColors[0, 0, ringIdx];
+                            frames[frameOut, 1, led] = ringColors[0, 1, ringIdx];
+                            frames[frameOut, 2, led] = ringColors[0, 2, ringIdx];
+                            ringIdx++;
                         }
                     }
-                    num4 = k * 10;
-                    if (pn == 0)
+                    ringIdx = fan * 10;
+                    if (attach == 0)
                     {
-                        num4 = num4 + 10 - 1;
+                        ringIdx = ringIdx + 10 - 1;
                     }
-                    for (int j = num6 + 8; j < num6 + 18; j++)
+                    for (int led = fanBase + 8; led < fanBase + 18; led++)
                     {
-                        frames[num5, 0, j] = 0;
-                        frames[num5, 1, j] = 0;
-                        frames[num5, 2, j] = 0;
-                        if (ie == 1)
+                        frames[frameOut, 0, led] = 0;
+                        frames[frameOut, 1, led] = 0;
+                        frames[frameOut, 2, led] = 0;
+                        if (zone == 1)
                         {
-                            frames[num5, 0, j] = array[1, 0, num4];
-                            frames[num5, 1, j] = array[1, 1, num4];
-                            frames[num5, 2, j] = array[1, 2, num4];
-                            if (pn == 1)
+                            frames[frameOut, 0, led] = ringColors[1, 0, ringIdx];
+                            frames[frameOut, 1, led] = ringColors[1, 1, ringIdx];
+                            frames[frameOut, 2, led] = ringColors[1, 2, ringIdx];
+                            if (attach == 1)
                             {
-                                num4++;
+                                ringIdx++;
                             }
                             else
                             {
-                                num4--;
+                                ringIdx--;
                             }
                         }
                     }
-                    num4 = k * 8;
-                    if (pn == 0)
+                    ringIdx = fan * 8;
+                    if (attach == 0)
                     {
-                        num4 = num4 + 8 - 1;
+                        ringIdx = ringIdx + 8 - 1;
                     }
-                    for (int j = num6 + 18; j < num6 + 26; j++)
+                    for (int led = fanBase + 18; led < fanBase + 26; led++)
                     {
-                        frames[num5, 0, j] = 0;
-                        frames[num5, 1, j] = 0;
-                        frames[num5, 2, j] = 0;
-                        if (ie == 0)
+                        frames[frameOut, 0, led] = 0;
+                        frames[frameOut, 1, led] = 0;
+                        frames[frameOut, 2, led] = 0;
+                        if (zone == 0)
                         {
-                            frames[num5, 0, j] = array[2, 0, num4];
-                            frames[num5, 1, j] = array[2, 1, num4];
-                            frames[num5, 2, j] = array[2, 2, num4];
-                            if (pn == 1)
+                            frames[frameOut, 0, led] = ringColors[2, 0, ringIdx];
+                            frames[frameOut, 1, led] = ringColors[2, 1, ringIdx];
+                            frames[frameOut, 2, led] = ringColors[2, 2, ringIdx];
+                            if (attach == 1)
                             {
-                                num4++;
+                                ringIdx++;
                             }
                             else
                             {
-                                num4--;
+                                ringIdx--;
                             }
                         }
                     }
-                    num4 = k * 10;
-                    if (pn == 0)
+                    ringIdx = fan * 10;
+                    if (attach == 0)
                     {
-                        num4 = num4 + 10 - 1;
+                        ringIdx = ringIdx + 10 - 1;
                     }
-                    for (int j = num6 + 26; j < num6 + 36; j++)
+                    for (int led = fanBase + 26; led < fanBase + 36; led++)
                     {
-                        frames[num5, 0, j] = 0;
-                        frames[num5, 1, j] = 0;
-                        frames[num5, 2, j] = 0;
-                        if (ie == 1)
+                        frames[frameOut, 0, led] = 0;
+                        frames[frameOut, 1, led] = 0;
+                        frames[frameOut, 2, led] = 0;
+                        if (zone == 1)
                         {
-                            frames[num5, 0, j] = array[3, 0, num4];
-                            frames[num5, 1, j] = array[3, 1, num4];
-                            frames[num5, 2, j] = array[3, 2, num4];
-                            if (pn == 1)
+                            frames[frameOut, 0, led] = ringColors[3, 0, ringIdx];
+                            frames[frameOut, 1, led] = ringColors[3, 1, ringIdx];
+                            frames[frameOut, 2, led] = ringColors[3, 2, ringIdx];
+                            if (attach == 1)
                             {
-                                num4++;
+                                ringIdx++;
                             }
                             else
                             {
-                                num4--;
+                                ringIdx--;
                             }
                         }
                     }
-                    num4 = k * 8;
-                    if (pn == 0)
+                    ringIdx = fan * 8;
+                    if (attach == 0)
                     {
-                        num4 = num4 + 8 - 1;
+                        ringIdx = ringIdx + 8 - 1;
                     }
-                    for (int j = num6 + 36; j < num6 + 44; j++)
+                    for (int led = fanBase + 36; led < fanBase + 44; led++)
                     {
-                        frames[num5, 0, j] = 0;
-                        frames[num5, 1, j] = 0;
-                        frames[num5, 2, j] = 0;
-                        if (ie == 0)
+                        frames[frameOut, 0, led] = 0;
+                        frames[frameOut, 1, led] = 0;
+                        frames[frameOut, 2, led] = 0;
+                        if (zone == 0)
                         {
-                            frames[num5, 0, j] = array[4, 0, num4];
-                            frames[num5, 1, j] = array[4, 1, num4];
-                            frames[num5, 2, j] = array[4, 2, num4];
-                            if (pn == 1)
+                            frames[frameOut, 0, led] = ringColors[4, 0, ringIdx];
+                            frames[frameOut, 1, led] = ringColors[4, 1, ringIdx];
+                            frames[frameOut, 2, led] = ringColors[4, 2, ringIdx];
+                            if (attach == 1)
                             {
-                                num4++;
+                                ringIdx++;
                             }
                             else
                             {
-                                num4--;
+                                ringIdx--;
                             }
                         }
                     }
                 }
-                num++;
-                num3++;
-                num2++;
+                frame++;
+                head++;
+                innerHead++;
             }
         }
-        return num;
+        return frame;
     }
-    internal int InfCandyBox(int ie, int fans, int bright, int direction, int pn)
+    internal int InfCandyBox(int zone, int fans, int bright, int direction, int attach)
     {
-        byte[,,] array = new byte[5, 3, 40];
-        byte[,,] array2 = new byte[2, 4, 3]
+        byte[,,] ringColors = new byte[5, 3, 40];
+        byte[,,] outerColors = new byte[2, 4, 3]
         {
             {
                 { 127, 0, 255 },
@@ -1285,7 +1285,7 @@ internal sealed partial class FlexSlInfModes
                 { 0, 255, 0 }
             }
         };
-        byte[,,] array3 = new byte[2, 4, 3]
+        byte[,,] innerColors = new byte[2, 4, 3]
         {
             {
                 { 0, 255, 0 },
@@ -1300,7 +1300,7 @@ internal sealed partial class FlexSlInfModes
                 { 207, 255, 0 }
             }
         };
-        byte[,,] array4 = new byte[2, 4, 3]
+        byte[,,] centerColors = new byte[2, 4, 3]
         {
             {
                 { 255, 0, 47 },
@@ -1315,9 +1315,9 @@ internal sealed partial class FlexSlInfModes
                 { 255, 0, 255 }
             }
         };
-        if (ie > 2)
+        if (zone > 2)
         {
-            ie = 0;
+            zone = 0;
         }
         if (fans == 0 || fans > 4)
         {
@@ -1327,166 +1327,166 @@ internal sealed partial class FlexSlInfModes
         {
             direction = 0;
         }
-        if (pn > 1)
+        if (attach > 1)
         {
-            pn = 0;
+            attach = 0;
         }
-        int num = 0;
-        for (byte b = 0; b < 2; b++)
+        int frame = 0;
+        for (byte pass = 0; pass < 2; pass++)
         {
-            for (int i = 0; i < 170; i++)
+            for (int step = 0; step < 170; step++)
             {
-                byte b2 = ((i > 85) ? ((byte)((170 - i) * 3)) : ((byte)(i * 3)));
-                for (int j = 0; j < fans; j++)
+                byte pulse = ((step > 85) ? ((byte)((170 - step) * 3)) : ((byte)(step * 3)));
+                for (int fan = 0; fan < fans; fan++)
                 {
-                    int num2 = j * 8;
-                    for (int k = 0; k < 8; k++)
+                    int ringBase = fan * 8;
+                    for (int led = 0; led < 8; led++)
                     {
-                        byte b3 = (byte)(array4[b, j, 0] * b2 >> 8);
-                        byte b4 = (byte)(array4[b, j, 1] * b2 >> 8);
-                        byte b5 = (byte)(array4[b, j, 2] * b2 >> 8);
-                        array[0, 0, num2 + k] = (byte)(b3 * bright >> 8);
-                        array[0, 1, num2 + k] = (byte)(b4 * bright >> 8);
-                        array[0, 2, num2 + k] = (byte)(b5 * bright >> 8);
+                        byte red = (byte)(centerColors[pass, fan, 0] * pulse >> 8);
+                        byte green = (byte)(centerColors[pass, fan, 1] * pulse >> 8);
+                        byte blue = (byte)(centerColors[pass, fan, 2] * pulse >> 8);
+                        ringColors[0, 0, ringBase + led] = (byte)(red * bright >> 8);
+                        ringColors[0, 1, ringBase + led] = (byte)(green * bright >> 8);
+                        ringColors[0, 2, ringBase + led] = (byte)(blue * bright >> 8);
                     }
-                    num2 = j * 10;
-                    for (int k = 0; k < 10; k++)
+                    ringBase = fan * 10;
+                    for (int led = 0; led < 10; led++)
                     {
-                        byte b3 = (byte)(array3[b, j, 0] * b2 >> 8);
-                        byte b4 = (byte)(array3[b, j, 1] * b2 >> 8);
-                        byte b5 = (byte)(array3[b, j, 2] * b2 >> 8);
-                        array[1, 0, num2 + k] = (byte)(b3 * bright >> 8);
-                        array[1, 1, num2 + k] = (byte)(b4 * bright >> 8);
-                        array[1, 2, num2 + k] = (byte)(b5 * bright >> 8);
-                        array[3, 0, num2 + k] = array[1, 0, num2 + k];
-                        array[3, 1, num2 + k] = array[1, 1, num2 + k];
-                        array[3, 2, num2 + k] = array[1, 2, num2 + k];
+                        byte red = (byte)(innerColors[pass, fan, 0] * pulse >> 8);
+                        byte green = (byte)(innerColors[pass, fan, 1] * pulse >> 8);
+                        byte blue = (byte)(innerColors[pass, fan, 2] * pulse >> 8);
+                        ringColors[1, 0, ringBase + led] = (byte)(red * bright >> 8);
+                        ringColors[1, 1, ringBase + led] = (byte)(green * bright >> 8);
+                        ringColors[1, 2, ringBase + led] = (byte)(blue * bright >> 8);
+                        ringColors[3, 0, ringBase + led] = ringColors[1, 0, ringBase + led];
+                        ringColors[3, 1, ringBase + led] = ringColors[1, 1, ringBase + led];
+                        ringColors[3, 2, ringBase + led] = ringColors[1, 2, ringBase + led];
                     }
-                    num2 = j * 8;
-                    for (int k = 0; k < 8; k++)
+                    ringBase = fan * 8;
+                    for (int led = 0; led < 8; led++)
                     {
-                        byte b3 = (byte)(array2[b, j, 0] * b2 >> 8);
-                        byte b4 = (byte)(array2[b, j, 1] * b2 >> 8);
-                        byte b5 = (byte)(array2[b, j, 2] * b2 >> 8);
-                        array[2, 0, num2 + k] = (byte)(b3 * bright >> 8);
-                        array[2, 1, num2 + k] = (byte)(b4 * bright >> 8);
-                        array[2, 2, num2 + k] = (byte)(b5 * bright >> 8);
-                        array[4, 0, num2 + k] = array[2, 0, num2 + k];
-                        array[4, 1, num2 + k] = array[2, 1, num2 + k];
-                        array[4, 2, num2 + k] = array[2, 2, num2 + k];
+                        byte red = (byte)(outerColors[pass, fan, 0] * pulse >> 8);
+                        byte green = (byte)(outerColors[pass, fan, 1] * pulse >> 8);
+                        byte blue = (byte)(outerColors[pass, fan, 2] * pulse >> 8);
+                        ringColors[2, 0, ringBase + led] = (byte)(red * bright >> 8);
+                        ringColors[2, 1, ringBase + led] = (byte)(green * bright >> 8);
+                        ringColors[2, 2, ringBase + led] = (byte)(blue * bright >> 8);
+                        ringColors[4, 0, ringBase + led] = ringColors[2, 0, ringBase + led];
+                        ringColors[4, 1, ringBase + led] = ringColors[2, 1, ringBase + led];
+                        ringColors[4, 2, ringBase + led] = ringColors[2, 2, ringBase + led];
                     }
                 }
-                int num3 = num;
-                for (int j = 0; j < fans; j++)
+                int frameOut = frame;
+                for (int fan = 0; fan < fans; fan++)
                 {
-                    int num4 = j * 44;
-                    int num2 = j * 8;
-                    if (pn == 0)
+                    int fanBase = fan * 44;
+                    int ringIdx = fan * 8;
+                    if (attach == 0)
                     {
-                        num2 = num2 + 8 - 1;
+                        ringIdx = ringIdx + 8 - 1;
                     }
-                    for (int k = num4; k < num4 + 8; k++)
+                    for (int led = fanBase; led < fanBase + 8; led++)
                     {
-                        frames[num3, 0, k] = 0;
-                        frames[num3, 1, k] = 0;
-                        frames[num3, 2, k] = 0;
-                        if (ie == 2)
+                        frames[frameOut, 0, led] = 0;
+                        frames[frameOut, 1, led] = 0;
+                        frames[frameOut, 2, led] = 0;
+                        if (zone == 2)
                         {
-                            frames[num3, 0, k] = array[0, 0, num2];
-                            frames[num3, 1, k] = array[0, 1, num2];
-                            frames[num3, 2, k] = array[0, 2, num2];
-                            num2 = ((pn != 1) ? (num2 - 1) : (num2 + 1));
+                            frames[frameOut, 0, led] = ringColors[0, 0, ringIdx];
+                            frames[frameOut, 1, led] = ringColors[0, 1, ringIdx];
+                            frames[frameOut, 2, led] = ringColors[0, 2, ringIdx];
+                            ringIdx = ((attach != 1) ? (ringIdx - 1) : (ringIdx + 1));
                         }
                     }
-                    num2 = j * 10;
-                    if (pn == 0)
+                    ringIdx = fan * 10;
+                    if (attach == 0)
                     {
-                        num2 = num2 + 10 - 1;
+                        ringIdx = ringIdx + 10 - 1;
                     }
-                    for (int k = num4 + 8; k < num4 + 18; k++)
+                    for (int led = fanBase + 8; led < fanBase + 18; led++)
                     {
-                        frames[num3, 0, k] = 0;
-                        frames[num3, 1, k] = 0;
-                        frames[num3, 2, k] = 0;
-                        if (ie == 1)
+                        frames[frameOut, 0, led] = 0;
+                        frames[frameOut, 1, led] = 0;
+                        frames[frameOut, 2, led] = 0;
+                        if (zone == 1)
                         {
-                            frames[num3, 0, k] = array[1, 0, num2];
-                            frames[num3, 1, k] = array[1, 1, num2];
-                            frames[num3, 2, k] = array[1, 2, num2];
-                            num2 = ((pn != 1) ? (num2 - 1) : (num2 + 1));
+                            frames[frameOut, 0, led] = ringColors[1, 0, ringIdx];
+                            frames[frameOut, 1, led] = ringColors[1, 1, ringIdx];
+                            frames[frameOut, 2, led] = ringColors[1, 2, ringIdx];
+                            ringIdx = ((attach != 1) ? (ringIdx - 1) : (ringIdx + 1));
                         }
                     }
-                    num2 = j * 8;
-                    if (pn == 0)
+                    ringIdx = fan * 8;
+                    if (attach == 0)
                     {
-                        num2 = num2 + 8 - 1;
+                        ringIdx = ringIdx + 8 - 1;
                     }
-                    for (int k = num4 + 18; k < num4 + 26; k++)
+                    for (int led = fanBase + 18; led < fanBase + 26; led++)
                     {
-                        frames[num3, 0, k] = 0;
-                        frames[num3, 1, k] = 0;
-                        frames[num3, 2, k] = 0;
-                        if (ie == 0)
+                        frames[frameOut, 0, led] = 0;
+                        frames[frameOut, 1, led] = 0;
+                        frames[frameOut, 2, led] = 0;
+                        if (zone == 0)
                         {
-                            frames[num3, 0, k] = array[2, 0, num2];
-                            frames[num3, 1, k] = array[2, 1, num2];
-                            frames[num3, 2, k] = array[2, 2, num2];
-                            num2 = ((pn != 1) ? (num2 - 1) : (num2 + 1));
+                            frames[frameOut, 0, led] = ringColors[2, 0, ringIdx];
+                            frames[frameOut, 1, led] = ringColors[2, 1, ringIdx];
+                            frames[frameOut, 2, led] = ringColors[2, 2, ringIdx];
+                            ringIdx = ((attach != 1) ? (ringIdx - 1) : (ringIdx + 1));
                         }
                     }
-                    num2 = j * 10;
-                    if (pn == 0)
+                    ringIdx = fan * 10;
+                    if (attach == 0)
                     {
-                        num2 = num2 + 10 - 1;
+                        ringIdx = ringIdx + 10 - 1;
                     }
-                    for (int k = num4 + 26; k < num4 + 36; k++)
+                    for (int led = fanBase + 26; led < fanBase + 36; led++)
                     {
-                        frames[num3, 0, k] = 0;
-                        frames[num3, 1, k] = 0;
-                        frames[num3, 2, k] = 0;
-                        if (ie == 1)
+                        frames[frameOut, 0, led] = 0;
+                        frames[frameOut, 1, led] = 0;
+                        frames[frameOut, 2, led] = 0;
+                        if (zone == 1)
                         {
-                            frames[num3, 0, k] = array[3, 0, num2];
-                            frames[num3, 1, k] = array[3, 1, num2];
-                            frames[num3, 2, k] = array[3, 2, num2];
-                            num2 = ((pn != 1) ? (num2 - 1) : (num2 + 1));
+                            frames[frameOut, 0, led] = ringColors[3, 0, ringIdx];
+                            frames[frameOut, 1, led] = ringColors[3, 1, ringIdx];
+                            frames[frameOut, 2, led] = ringColors[3, 2, ringIdx];
+                            ringIdx = ((attach != 1) ? (ringIdx - 1) : (ringIdx + 1));
                         }
                     }
-                    num2 = j * 8;
-                    if (pn == 0)
+                    ringIdx = fan * 8;
+                    if (attach == 0)
                     {
-                        num2 = num2 + 8 - 1;
+                        ringIdx = ringIdx + 8 - 1;
                     }
-                    for (int k = num4 + 36; k < num4 + 44; k++)
+                    for (int led = fanBase + 36; led < fanBase + 44; led++)
                     {
-                        frames[num3, 0, k] = 0;
-                        frames[num3, 1, k] = 0;
-                        frames[num3, 2, k] = 0;
-                        if (ie == 0)
+                        frames[frameOut, 0, led] = 0;
+                        frames[frameOut, 1, led] = 0;
+                        frames[frameOut, 2, led] = 0;
+                        if (zone == 0)
                         {
-                            frames[num3, 0, k] = array[4, 0, num2];
-                            frames[num3, 1, k] = array[4, 1, num2];
-                            frames[num3, 2, k] = array[4, 2, num2];
-                            num2 = ((pn != 1) ? (num2 - 1) : (num2 + 1));
+                            frames[frameOut, 0, led] = ringColors[4, 0, ringIdx];
+                            frames[frameOut, 1, led] = ringColors[4, 1, ringIdx];
+                            frames[frameOut, 2, led] = ringColors[4, 2, ringIdx];
+                            ringIdx = ((attach != 1) ? (ringIdx - 1) : (ringIdx + 1));
                         }
                     }
                 }
-                num++;
+                frame++;
             }
         }
-        int num5 = num / 2;
-        byte[,,] array5 = new byte[num5, 3, ledCount];
-        for (int l = 0; l < num5; l++)
+        int outFrames = frame / 2;
+        byte[,,] halved = new byte[outFrames, 3, ledCount];
+        for (int frameIdx = 0; frameIdx < outFrames; frameIdx++)
         {
-            for (int m = 0; m < 3; m++)
+            for (int channel = 0; channel < 3; channel++)
             {
-                for (int n = 0; n < ledCount; n++)
+                for (int ledIdx = 0; ledIdx < ledCount; ledIdx++)
                 {
-                    array5[l, m, n] = frames[l * 2, m, n];
+                    halved[frameIdx, channel, ledIdx] = frames[frameIdx * 2, channel, ledIdx];
                 }
             }
         }
-        frames = array5;
-        return num5;
+        frames = halved;
+        return outFrames;
     }
 }

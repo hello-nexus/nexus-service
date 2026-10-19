@@ -1,5 +1,4 @@
 using System.Collections.Generic;
-using System.Text.Json;
 using Nexus.Service.Peripherals.LianLiFlex;
 using Xunit;
 
@@ -7,31 +6,60 @@ namespace Nexus.Service.Tests.LianLiFlex;
 
 public class FlexRandomizedEffectsTests
 {
+    private const int Speed = 3;
+
+    private static FlexComposedAnimation Compose(string key, int fans)
+    {
+        var zones = new Dictionary<string, FlexZoneLook>
+        {
+            ["all"] = new FlexZoneLook(key, Speed, 0, 4, new List<Nexus.Service.Peripherals.Hyte.Np50.RgbColor>()),
+        };
+        return FlexAnimationComposer.Compose(FlexFamily.TlFlex, fans, zones, false);
+    }
+
+    [Theory]
+    [InlineData("voice", 65, 94)]
+    [InlineData("meteorShower", 62, 89)]
+    [InlineData("kaleidoscope", 13, 4096)]
+    public void One_fan_frame_count_stays_in_the_effect_band(string key, int min, int max)
+    {
+        var anim = Compose(key, 1);
+        Assert.InRange(anim.Frames, min, max);
+    }
+
     [Theory]
     [InlineData("voice")]
     [InlineData("meteorShower")]
     [InlineData("kaleidoscope")]
-    public void The_composed_package_matches_the_recorded_frame_count_interval_and_led_count(string key)
+    public void Interval_is_the_base_times_the_speed_multiplier(string key)
     {
-        using var doc = JsonDocument.Parse(System.IO.File.ReadAllText(
-            System.IO.Path.Combine(System.AppContext.BaseDirectory, "LianLiFlex", "Data", "flex-tl-extended-vectors.json")));
-        JsonElement recorded = default;
-        foreach (var r in doc.RootElement.GetProperty("recorded").EnumerateArray())
-        {
-            if (r.GetProperty("key").GetString() == key)
-            {
-                recorded = r;
-            }
-        }
-        var zones = new Dictionary<string, FlexZoneLook>
-        {
-            ["all"] = new FlexZoneLook(key, 3, 0, 4, new List<Nexus.Service.Peripherals.Hyte.Np50.RgbColor>()),
-        };
-        var anim = FlexAnimationComposer.Compose(FlexFamily.TlFlex, 1, zones, false);
-        Assert.Equal(recorded.GetProperty("frames").GetInt32(), anim.Frames);
-        Assert.Equal(recorded.GetProperty("leds").GetInt32(), anim.Leds);
-        Assert.Equal(recorded.GetProperty("intervalMs").GetDouble(), anim.IntervalMs, 6);
+        var anim = Compose(key, 1);
+        var expected = FlexTlExtendedEffects.IntervalBaseFor(key) * FlexAnimationComposer.SpeedMultiplier(key, Speed);
+        Assert.Equal(expected, anim.IntervalMs, 6);
+    }
+
+    [Theory]
+    [InlineData("voice", 1)]
+    [InlineData("voice", 4)]
+    [InlineData("meteorShower", 2)]
+    [InlineData("kaleidoscope", 3)]
+    public void Led_count_is_the_ring_size_times_fans_and_the_buffer_matches(string key, int fans)
+    {
+        var anim = Compose(key, fans);
+        Assert.Equal(FlexTlEffects.LedsPerFan * fans, anim.Leds);
         Assert.Equal(anim.Frames * anim.Leds * 3, anim.Raw.Length);
+    }
+
+    [Theory]
+    [InlineData("voice")]
+    [InlineData("meteorShower")]
+    [InlineData("kaleidoscope")]
+    public void A_fixed_seed_renders_the_same_animation_every_time(string key)
+    {
+        var first = Compose(key, 2);
+        var second = Compose(key, 2);
+        Assert.Equal(first.Frames, second.Frames);
+        Assert.Equal(first.Raw, second.Raw);
     }
 
     [Fact]

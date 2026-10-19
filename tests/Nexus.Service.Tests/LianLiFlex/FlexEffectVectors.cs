@@ -8,7 +8,7 @@ using RgbColor = Nexus.Service.Peripherals.Hyte.Np50.RgbColor;
 
 namespace Nexus.Service.Tests.LianLiFlex;
 
-/// <summary>One recorded effect animation with the settings that produced it.</summary>
+/// <summary>One expected effect animation with the settings that produced it.</summary>
 public sealed class FlexEffectVector
 {
     public required string Id { get; init; }
