@@ -508,6 +508,16 @@ public sealed class FlexHub : IDisposable
     /// <summary>The effect index this process last uploaded to the unit, or empty.</summary>
     public string SentEffectIndex(string mac) => LinkOf(mac)?.SentEffectIndex ?? "";
 
+    /// <summary>Ends a restart window once the screen is back.</summary>
+    public void EndLcdRestart(string mac)
+    {
+        if (LinkOf(mac) is { } link)
+        {
+            link.LcdRestartUntilMs = 0;
+            Publish();
+        }
+    }
+
     /// <summary>Reboots the screen controller through the receiver; the caller re-attaches the screen.</summary>
     public bool RebootLcd(string mac, int holdMs)
     {

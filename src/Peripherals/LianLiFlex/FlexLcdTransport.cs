@@ -13,6 +13,7 @@ namespace Nexus.Service.Peripherals.LianLiFlex;
 public sealed class FlexLcdTransport : ISlv3LcdTransport, IFlexScreenVersion
 {
     private const uint WriteTimeoutMs = 3000;
+    private const int FlexLayer3Size = 360;
 
     private readonly Microsoft.Win32.SafeHandles.SafeFileHandle _file;
     private readonly IntPtr _usb;
@@ -56,6 +57,7 @@ public sealed class FlexLcdTransport : ISlv3LcdTransport, IFlexScreenVersion
         WriteHeader(Slv3LcdProtocol.CmdType.CheckNewLcd, 0);
         var clear = FlexPng.TransparentSquare(Slv3LcdProtocol.PanelWidth);
         WritePayload(Slv3LcdProtocol.CmdType.PushPng, clear, 0, 0);
+        WritePayload(Slv3LcdProtocol.CmdType.PushLayer3, FlexPng.TransparentSquare(FlexLayer3Size), 0, 0);
     }
 
     public bool IsOpen => !_disposed && !_file.IsInvalid && !_file.IsClosed;

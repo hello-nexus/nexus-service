@@ -56,17 +56,27 @@ public sealed class FlexScreens : IFanLcdScreens
     private readonly FlexHub _flex;
     private readonly FanLcdPanelOwnership _panelOwnership = new();
     private readonly System.Func<long> _nowMs;
-    private readonly System.Collections.Concurrent.ConcurrentDictionary<string, long> _restartUntil = new(StringComparer.OrdinalIgnoreCase);
+    private sealed class RestartState
+    {
+        public required string Mac { get; init; }
+        public required long StartedMs { get; init; }
+        public bool SawGone;
+    }
+
+    private readonly System.Collections.Concurrent.ConcurrentDictionary<string, RestartState> _restarts = new(StringComparer.OrdinalIgnoreCase);
     private const int VersionRetryMs = 30_000;
     private readonly System.Collections.Concurrent.ConcurrentDictionary<string, long> _versionTried = new(StringComparer.OrdinalIgnoreCase);
     private readonly System.Collections.Concurrent.ConcurrentDictionary<string, string> _versions = new(StringComparer.OrdinalIgnoreCase);
 
     /// <summary>
-    /// How long a restarting screen is left alone: it drops off the bus about a second after the
-    /// reboot command and is back about two seconds later. Its content loop is stopped for this
-    /// long, so the new loop opens the screen once and applies brightness and rotation first.
+    /// A restarting screen is hidden from the content loops, and nothing is written to it, until
+    /// discovery has seen it leave the bus and come back. Discovery polls slower than the reboot
+    /// takes, so after <see cref="RestartQuietMs"/> a screen that is listed again also counts as
+    /// back; <see cref="RestartGiveUpMs"/> ends the wait whatever happens. The new content loop
+    /// then opens the screen once and applies brightness and rotation first.
     /// </summary>
     public const int RestartQuietMs = 3500;
+    public const int RestartGiveUpMs = 20_000;
 
     public FlexScreens(FlexLcdHub lcd, FlexHub flex, System.Func<long>? nowMs = null)
     {
@@ -75,7 +85,27 @@ public sealed class FlexScreens : IFanLcdScreens
         _nowMs = nowMs ?? (() => Environment.TickCount64);
     }
 
-    private bool Restarting(string serial) => _restartUntil.TryGetValue(serial, out var until) && _nowMs() < until;
+    private bool Restarting(string serial)
+    {
+        if (!_restarts.TryGetValue(serial, out var state))
+        {
+            return false;
+        }
+        var now = _nowMs();
+        var listed = _lcd.Hub.Screens.Any(s => string.Equals(s.Serial, serial, StringComparison.OrdinalIgnoreCase));
+        if (!listed)
+        {
+            state.SawGone = true;
+        }
+        var back = listed && (state.SawGone || now - state.StartedMs >= RestartQuietMs);
+        if (back || now - state.StartedMs >= RestartGiveUpMs)
+        {
+            _restarts.TryRemove(serial, out _);
+            _flex.EndLcdRestart(state.Mac);
+            return false;
+        }
+        return true;
+    }
 
     /// <summary>The screen's firmware string once read; empty before.</summary>
     public string VersionOf(string serial) => _versions.TryGetValue(serial, out var v) ? v : "";
@@ -113,6 +143,10 @@ public sealed class FlexScreens : IFanLcdScreens
 
     public IReadOnlyList<string> AttachedSerials()
     {
+        foreach (var serial in _restarts.Keys)
+        {
+            Restarting(serial);
+        }
         var serials = new List<string>();
         foreach (var s in _lcd.Hub.Screens)
         {
@@ -178,11 +212,11 @@ public sealed class FlexScreens : IFanLcdScreens
         {
             return false;
         }
-        if (!_flex.RebootLcd(mac, 15_000))
+        if (!_flex.RebootLcd(mac, RestartGiveUpMs))
         {
             return false;
         }
-        _restartUntil[unit.ScreenSerial] = _nowMs() + RestartQuietMs;
+        _restarts[unit.ScreenSerial] = new RestartState { Mac = unit.Mac, StartedMs = _nowMs() };
         _versions.TryRemove(unit.ScreenSerial, out _);
         _versionTried.TryRemove(unit.ScreenSerial, out _);
         _lcd.Hub.Forget(unit.ScreenSerial, "restart");

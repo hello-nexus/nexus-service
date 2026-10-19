@@ -16,20 +16,6 @@ public sealed partial class WindowsFlexDiscovery : IFlexDiscovery
 
     public IReadOnlyList<FlexUnitPort> Discover() => FlexDiscoveryParser.Pair(EnumeratePaths(), ParentHub);
 
-    /// <summary>The screens as the shared screen hub models them.</summary>
-    public IReadOnlyList<Slv3LcdPortInfo> DiscoverScreens()
-    {
-        var result = new List<Slv3LcdPortInfo>();
-        foreach (var unit in Discover())
-        {
-            if (unit.ScreenPath.Length > 0 && unit.ScreenSerial.Length > 0)
-            {
-                result.Add(new Slv3LcdPortInfo { PortName = unit.ScreenPath, Serial = unit.ScreenSerial, ProductId = unit.ScreenPid });
-            }
-        }
-        return result;
-    }
-
     private static List<string> EnumeratePaths()
     {
         var paths = new List<string>();

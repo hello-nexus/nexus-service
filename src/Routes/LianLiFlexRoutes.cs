@@ -178,6 +178,10 @@ public static partial class LianLiFlexRoutes
                 {
                     [key] = Patch(old, body, unit.Family),
                 };
+                if (body.SortIndex is { } position)
+                {
+                    Nexus.Service.Lighting.FlexStoredLook.MoveSortIndex(next, key, position);
+                }
                 s.Devices.FlexUnits = next;
             });
             Nexus.Service.Sockets.PanelTopics.BroadcastLighting(mux);
@@ -189,7 +193,11 @@ public static partial class LianLiFlexRoutes
             var unit = hub.Find(body.Mac);
             if (unit is null)
             {
-                return Results.Json(ApiResponse.Fail("fan not found"), AppJsonContext.Default.ApiResponse);
+                return Results.NotFound(ApiResponse.Fail("fan not found"));
+            }
+            if (!unit.Controllable)
+            {
+                return Results.Json(ApiResponse.Fail("fan is bound to a wireless controller"), AppJsonContext.Default.ApiResponse, statusCode: 409);
             }
             var key = unit.Mac.ToUpperInvariant();
             store.Update(s =>
@@ -221,11 +229,15 @@ public static partial class LianLiFlexRoutes
 
         app.MapPost("/devices/lianli-flex/identify", (Slv3MacRequest body, Nexus.Service.Lighting.FlexLightingFrameWriter writer, FlexHub hub) =>
         {
-            if (hub.Find(body.Mac) is null)
+            if (hub.Find(body.Mac) is not { } unit)
             {
-                return Results.Json(ApiResponse.Fail("fan not found"), AppJsonContext.Default.ApiResponse);
+                return Results.NotFound(ApiResponse.Fail("fan not found"));
             }
-            writer.Identify(body.Mac);
+            if (!unit.Controllable)
+            {
+                return Results.Json(ApiResponse.Fail("fan is bound to a wireless controller"), AppJsonContext.Default.ApiResponse, statusCode: 409);
+            }
+            writer.Identify(unit.Mac);
             return Results.Json(ApiResponse.Ok(), AppJsonContext.Default.ApiResponse);
         });
 
@@ -410,7 +422,7 @@ public static partial class LianLiFlexRoutes
                 HasSpeed = info?.HasSpeed ?? true,
                 HasDirection = info?.HasDirection ?? false,
                 ColorsMin = 0,
-                ColorsMax = Math.Min(MaxColors, Math.Max(info?.ColorsMax ?? 0, defaults.Length)),
+                ColorsMax = defaults.Length == 0 ? 0 : Math.Min(MaxColors, Math.Max(info?.ColorsMax ?? 0, defaults.Length)),
                 Mergeable = FlexMergeEffects.IsMergeable(family, keys[i]),
                 DefaultColors = defaults,
             };
@@ -504,6 +516,10 @@ public static partial class LianLiFlexRoutes
                 return error;
             }
         }
+        if (body.SortIndex is < 0)
+        {
+            return "sortIndex must not be negative";
+        }
         if (body.UpDownSwap is not null && family != FlexFamily.TlFlex)
         {
             return "up/down swap is not supported";
@@ -565,7 +581,6 @@ public static partial class LianLiFlexRoutes
         next.Colors = body.Colors is not null ? new List<string>(body.Colors) : old.Colors;
         next.Merge = body.Merge ?? old.Merge;
         next.UpDownSwap = body.UpDownSwap ?? old.UpDownSwap;
-        next.SortIndex = body.SortIndex ?? old.SortIndex;
         next.Zones = zones;
         return next;
     }

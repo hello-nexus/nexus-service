@@ -24,7 +24,7 @@ public static class FlexStoredLook
     {
         if (hex.Count == 0)
         {
-            return FlexDefaultPalettes.For(family, key);
+            return FlexDefaultPalettes.RendersFromTable(family, key) ? Array.Empty<RgbColor>() : FlexDefaultPalettes.For(family, key);
         }
         var list = new List<RgbColor>(hex.Count);
         foreach (var h in hex)
@@ -65,6 +65,14 @@ public static class FlexStoredLook
         public required LianLiFlexUnitSettings Leader { get; init; }
         public required string LeaderMac { get; init; }
         public required IReadOnlyList<FlexMergeParticipant> Participants { get; init; }
+        public required FlexFamily LeaderFamily { get; init; }
+    }
+
+    /// <summary>The colors of a merged effect, resolved once from the leader so every slice uses the same palette.</summary>
+    public static IReadOnlyList<RgbColor> MergeColors(MergeGroup group)
+    {
+        var colors = ColorsOf(group.LeaderFamily, group.Leader.Mode, group.Leader.Colors);
+        return colors.Count > 0 ? colors : FlexDefaultPalettes.MergeFallback;
     }
 
     private static bool Merges(LianLiFlexUnitSettings look, FlexFamily family) =>
@@ -97,7 +105,7 @@ public static class FlexStoredLook
         {
             participants.Add(new FlexMergeParticipant(u.Mac, u.Family, u.Fans, Math.Clamp(l.MergeDirection, 0, 1), u.Family == FlexFamily.SlInfFlex && u.Info.FanNum >= 10));
         }
-        return new MergeGroup { Leader = members[0].Look, LeaderMac = members[0].Unit.Mac, Participants = participants };
+        return new MergeGroup { Leader = members[0].Look, LeaderMac = members[0].Unit.Mac, Participants = participants, LeaderFamily = members[0].Unit.Family };
     }
 
     public static bool InGroup(MergeGroup? group, string mac)
@@ -125,7 +133,7 @@ public static class FlexStoredLook
             var g = group!;
             sb.Append("merge|").Append(g.Leader.Mode).Append('|').Append(g.Leader.Speed).Append('|').Append(g.Leader.Direction)
                 .Append('|').Append(g.Leader.Brightness);
-            foreach (var c in ColorsOf(unit.Family, g.Leader.Mode, g.Leader.Colors))
+            foreach (var c in MergeColors(g))
             {
                 sb.Append(':').Append(c.R).Append(',').Append(c.G).Append(',').Append(c.B);
             }
@@ -158,7 +166,7 @@ public static class FlexStoredLook
                 var g = group!;
                 var slices = FlexMergeEffects.Render(
                     g.Leader.Mode, g.Participants, Math.Clamp(g.Leader.Speed, 0, 4), g.Leader.Direction != 0 ? 1 : 0,
-                    Math.Clamp(g.Leader.Brightness, 0, 4), ColorsOf(unit.Family, g.Leader.Mode, g.Leader.Colors));
+                    Math.Clamp(g.Leader.Brightness, 0, 4), MergeColors(g));
                 foreach (var slice in slices)
                 {
                     if (slice.Mac == unit.Mac)
@@ -187,6 +195,24 @@ public static class FlexStoredLook
         {
             Nexus.Service.Platform.ServiceLog.Warn($"[lianli-flex] package build failed for {unit.Mac}: {ex.Message}");
             return null;
+        }
+    }
+
+    /// <summary>
+    /// Puts <paramref name="mac"/> at <paramref name="position"/> in the light sequence and renumbers every
+    /// stored unit, present or not, so positions stay 0..n-1 and unique.
+    /// </summary>
+    public static void MoveSortIndex(Dictionary<string, LianLiFlexUnitSettings> units, string mac, int position)
+    {
+        var order = new List<string>(units.Keys);
+        order.Sort((a, b) => units[a].SortIndex != units[b].SortIndex
+            ? units[a].SortIndex.CompareTo(units[b].SortIndex)
+            : string.CompareOrdinal(a, b));
+        order.Remove(mac);
+        order.Insert(Math.Clamp(position, 0, order.Count), mac);
+        for (var i = 0; i < order.Count; i++)
+        {
+            units[order[i]] = WithSortIndex(units[order[i]], i);
         }
     }
 

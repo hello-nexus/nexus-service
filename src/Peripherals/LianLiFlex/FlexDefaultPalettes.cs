@@ -30,9 +30,34 @@ public static class FlexDefaultPalettes
         [(FlexFamily.TlFlex, "meteor")] = new RgbColor[] { new(255, 0, 150), new(0, 215, 255), new(0, 255, 0), new(255, 215, 0) },
         [(FlexFamily.TlFlex, "runway")] = new RgbColor[] { new(255, 255, 255), new(255, 0, 150) },
         [(FlexFamily.TlFlex, "static")] = new RgbColor[] { new(170, 0, 255), new(0, 215, 255), new(0, 255, 0), new(255, 216, 0) },
+        [(FlexFamily.TlFlex, "stack")] = new RgbColor[] { new(255, 0, 0), new(0, 0, 255), new(0, 255, 0), new(255, 255, 0) },
+        [(FlexFamily.TlFlex, "twinkle")] = new RgbColor[] { new(255, 0, 0), new(0, 0, 255), new(0, 255, 0), new(255, 255, 0) },
+        [(FlexFamily.SlInfFlex, "twinkle")] = new RgbColor[] { new(255, 0, 0), new(255, 255, 0), new(255, 0, 255), new(255, 255, 0) },
+        [(FlexFamily.SlInfFlex, "scan")] = new RgbColor[] { new(255, 0, 0), new(0, 0, 255), new(0, 255, 0), new(255, 255, 0) },
+        [(FlexFamily.SlInfFlex, "heartBeat")] = new RgbColor[] { new(255, 0, 0), new(0, 0, 255), new(0, 255, 0), new(255, 255, 0) },
+        [(FlexFamily.SlInfFlex, "heartBeatRunway")] = new RgbColor[] { new(255, 0, 0), new(0, 0, 255), new(0, 255, 0), new(255, 255, 0) },
+    };
+
+    /// <summary>
+    /// Effects whose built-in colors differ per half of a fan, so one list cannot stand for them: with no
+    /// user colors they render straight from the generator's table, and the list above is only what a
+    /// color picker starts from.
+    /// </summary>
+    public static bool RendersFromTable(FlexFamily family, string key) => family == FlexFamily.TlFlex && key == "twinkle";
+
+    /// <summary>Colors for merged effects that read a palette when the leader has none and the effect has no default of its own.</summary>
+    public static readonly IReadOnlyList<RgbColor> MergeFallback = new RgbColor[]
+    {
+        new(170, 0, 255), new(0, 215, 255), new(0, 255, 0), new(255, 216, 0),
     };
 
     /// <summary>The effect's default colors; empty when the generator's own table applies.</summary>
-    public static IReadOnlyList<RgbColor> For(FlexFamily family, string key) =>
-        Sets.TryGetValue((family, key), out var set) ? set : System.Array.Empty<RgbColor>();
+    public static IReadOnlyList<RgbColor> For(FlexFamily family, string key)
+    {
+        if (Sets.TryGetValue((family, key), out var set))
+        {
+            return set;
+        }
+        return family == FlexFamily.TlFlex ? FlexTlExtendedEffects.DefaultColors(key) : System.Array.Empty<RgbColor>();
+    }
 }
