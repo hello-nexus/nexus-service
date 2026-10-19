@@ -1202,6 +1202,19 @@ public static class NexusServiceCollectionExtensions
             sp => sp.GetRequiredService<Nexus.Service.Lighting.FlexLightingDeviceProvider>());
         services.AddSingleton<Nexus.Service.Lighting.FlexLightingFrameWriter>();
         services.AddHostedService(sp => sp.GetRequiredService<Nexus.Service.Lighting.FlexLightingFrameWriter>());
+        services.AddSingleton<Nexus.Service.Lighting.IFlexAlertSink>(sp => sp.GetRequiredService<Nexus.Service.Lighting.FlexLightingFrameWriter>());
+        services.AddSingleton<Nexus.Service.Lighting.FlexThermalAlert>();
+        services.AddHostedService<Nexus.Service.Lighting.FlexThermalAlertWorker>();
+        services.AddSingleton<Nexus.Service.Lighting.FlexGroupLighting>();
+        services.AddSingleton<Nexus.Service.Cooling.FlexFanProfileService>();
+        services.AddSingleton(sp =>
+        {
+            var profiles = sp.GetRequiredService<Nexus.Service.Cooling.FlexFanProfileService>();
+            return new Nexus.Service.Lighting.FlexApplyAll(
+                sp.GetRequiredService<Nexus.Service.Peripherals.LianLiFlex.FlexHub>(),
+                sp.GetRequiredService<Nexus.Service.Persistence.IConfigStore>(),
+                profiles.Apply);
+        });
 
         // SLV3 wireless RGB: one lighting device per bound fan chain (inner/outer
         // ring zones), streamed to the engine as a live single-frame RF_RgbSync

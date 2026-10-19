@@ -18,7 +18,7 @@ namespace Nexus.Service.Lighting;
 /// other mode the unit's stored animation is built from its settings and uploaded once the
 /// settings have settled. Streaming never schedules a flash save; an upload does.
 /// </summary>
-public sealed class FlexLightingFrameWriter : IHostedService, IDisposable
+public sealed class FlexLightingFrameWriter : IHostedService, IDisposable, IFlexAlertSink
 {
     private const int TickPeriodMs = 33;
     private const int MinStreamIntervalMs = 33;
@@ -35,6 +35,7 @@ public sealed class FlexLightingFrameWriter : IHostedService, IDisposable
     private readonly Np50IdentifyTracker _identify;
     private readonly FlexLightingDeviceProvider _provider;
     private readonly Func<long> _nowMs;
+    private readonly Func<Func<bool>, Task<bool>> _runUpload;
     private readonly FeatureGates _gates;
     private CancellationTokenSource? _cts;
     private Task? _loop;
@@ -42,6 +43,49 @@ public sealed class FlexLightingFrameWriter : IHostedService, IDisposable
     private RgbColor[][] _segmentBuffers = Array.Empty<RgbColor[]>();
     private byte[] _wire = Array.Empty<byte>();
     private readonly Dictionary<string, UnitState> _state = new(StringComparer.OrdinalIgnoreCase);
+
+    private volatile IReadOnlyDictionary<string, (byte R, byte G, byte B)> _alert =
+        new Dictionary<string, (byte R, byte G, byte B)>();
+
+    public void SetAlert(IReadOnlyDictionary<string, (byte R, byte G, byte B)> colors) => _alert = colors;
+
+    // Alert color level: speed and brightness level 3 of the vendor look, 128 of 255.
+    private const int AlertScale = 128;
+    private const int AlertRefreshMs = 1000;
+
+    private bool TickAlert(FlexUnit unit, UnitState st, long now)
+    {
+        if (!_alert.TryGetValue(unit.Mac, out var c))
+        {
+            if (st.AlertActive)
+            {
+                st.AlertActive = false;
+                st.RestoreWithoutSave = true;
+                st.RestoreSignature = st.UploadedSignature;
+                st.UploadedSignature = "";
+                st.PendingSignature = "";
+                st.Streaming = false;
+            }
+            return false;
+        }
+        st.AlertActive = true;
+        if (now - st.LastAlertMs < AlertRefreshMs)
+        {
+            return true;
+        }
+        var frame = new byte[unit.LedCount * 3];
+        for (var i = 0; i < frame.Length; i += 3)
+        {
+            frame[i] = (byte)((c.R * AlertScale) >> 8);
+            frame[i + 1] = (byte)((c.G * AlertScale) >> 8);
+            frame[i + 2] = (byte)((c.B * AlertScale) >> 8);
+        }
+        if (_hub.SendLive(unit.Mac, frame))
+        {
+            st.LastAlertMs = now;
+        }
+        return true;
+    }
 
     private readonly object _identifyLock = new();
     private readonly Dictionary<string, long> _identifyUntil = new(StringComparer.OrdinalIgnoreCase);
@@ -69,6 +113,8 @@ public sealed class FlexLightingFrameWriter : IHostedService, IDisposable
             if (now >= until)
             {
                 _identifyUntil.Remove(unit.Mac);
+                st.RestoreWithoutSave = true;
+                st.RestoreSignature = st.UploadedSignature;
                 st.UploadedSignature = "";
                 st.PendingSignature = "";
                 st.Streaming = false;
@@ -96,12 +142,21 @@ public sealed class FlexLightingFrameWriter : IHostedService, IDisposable
         public long LastUploadAttemptMs = long.MinValue / 2;
         public long UploadedAtMs;
         public int DriftRetries;
+        public bool AlertActive;
+        public Task<bool>? Upload;
+        public string UploadSignature = "";
+        public long UploadStartedMs;
+        public bool RestoreWithoutSave;
+        public string RestoreSignature = "";
+        public long LastAlertMs = long.MinValue / 2;
     }
 
     public FlexLightingFrameWriter(
         LightingEngine engine, FlexHub hub, IConfigStore store, Np50IdentifyTracker identify,
-        FlexLightingDeviceProvider provider, Func<long>? nowMs = null, FeatureGates? gates = null)
+        FlexLightingDeviceProvider provider, Func<long>? nowMs = null, FeatureGates? gates = null,
+        Func<Func<bool>, Task<bool>>? runUpload = null)
     {
+        _runUpload = runUpload ?? (work => Task.Run(work));
         _engine = engine;
         _hub = hub;
         _store = store;
@@ -189,7 +244,7 @@ public sealed class FlexLightingFrameWriter : IHostedService, IDisposable
                 st = new UnitState();
                 _state[unit.Mac] = st;
             }
-            if (TickIdentify(unit, st, now))
+            if (TickIdentify(unit, st, now) || TickAlert(unit, st, now))
             {
                 continue;
             }
@@ -304,6 +359,10 @@ public sealed class FlexLightingFrameWriter : IHostedService, IDisposable
 
     private void TickStored(FlexUnit unit, UnitState st, LianLiFlexUnitSettings look, long now, FlexStoredLook.MergeGroup? group)
     {
+        if (CollectUpload(unit, st))
+        {
+            return;
+        }
         var signature = FlexStoredLook.Signature(unit, look, group);
         if (signature != st.PendingSignature)
         {
@@ -315,13 +374,14 @@ public sealed class FlexLightingFrameWriter : IHostedService, IDisposable
             && now - st.UploadedAtMs >= DriftConfirmMs
             && _hub.SentEffectIndex(unit.Mac).Length > 0
             && !string.Equals(unit.Info.EffectIndex, _hub.SentEffectIndex(unit.Mac), StringComparison.OrdinalIgnoreCase);
-        var inSync = st.UploadedSignature == signature && !drifted;
+        var liveSince = _hub.LiveSinceUpload(unit.Mac);
+        var inSync = st.UploadedSignature == signature && !drifted && !liveSince;
         if (inSync)
         {
             return;
         }
         // First sight after a restart: a receiver already holding the persisted package needs nothing.
-        if (st.UploadedSignature.Length == 0 && look.PackageSignature == signature
+        if (!liveSince && st.UploadedSignature.Length == 0 && look.PackageSignature == signature
             && string.Equals(look.PackageEffectIndex, unit.Info.EffectIndex, StringComparison.OrdinalIgnoreCase))
         {
             st.UploadedSignature = signature;
@@ -339,22 +399,47 @@ public sealed class FlexLightingFrameWriter : IHostedService, IDisposable
         {
             return;
         }
-        if (_hub.UploadPackage(unit.Mac, package.Compressed, package.Frames, package.Leds, package.IntervalMs))
+        // The packets take a while to send; running them off the tick keeps the other units' frames flowing.
+        var mac = unit.Mac;
+        var save = !(st.RestoreWithoutSave && signature == st.RestoreSignature);
+        st.UploadSignature = signature;
+        st.UploadStartedMs = now;
+        st.Upload = _runUpload(() => _hub.UploadPackage(mac, package.Compressed, package.Frames, package.Leds, package.IntervalMs, save));
+    }
+
+    // Applies a finished upload's result; true while one is still running.
+    private bool CollectUpload(FlexUnit unit, UnitState st)
+    {
+        if (st.Upload is null)
         {
-            st.UploadedSignature = signature;
-            st.UploadedAtMs = now;
-            var sent = _hub.SentEffectIndex(unit.Mac);
-            _store.Update(s =>
-            {
-                if (s.Devices.FlexUnits.TryGetValue(unit.Mac, out var u))
-                {
-                    var next = new Dictionary<string, LianLiFlexUnitSettings>(s.Devices.FlexUnits, StringComparer.Ordinal)
-                    {
-                        [unit.Mac] = FlexStoredLook.WithPackage(u, signature, sent),
-                    };
-                    s.Devices.FlexUnits = next;
-                }
-            });
+            return false;
         }
+        if (!st.Upload.IsCompleted)
+        {
+            return true;
+        }
+        var ok = st.Upload.IsCompletedSuccessfully && st.Upload.Result;
+        st.Upload = null;
+        if (!ok)
+        {
+            return false;
+        }
+        var signature = st.UploadSignature;
+        st.UploadedSignature = signature;
+        st.UploadedAtMs = st.UploadStartedMs;
+        st.RestoreWithoutSave = false;
+        var sent = _hub.SentEffectIndex(unit.Mac);
+        _store.Update(s =>
+        {
+            if (s.Devices.FlexUnits.TryGetValue(unit.Mac, out var u))
+            {
+                var next = new Dictionary<string, LianLiFlexUnitSettings>(s.Devices.FlexUnits, StringComparer.Ordinal)
+                {
+                    [unit.Mac] = FlexStoredLook.WithPackage(u, signature, sent),
+                };
+                s.Devices.FlexUnits = next;
+            }
+        });
+        return false;
     }
 }

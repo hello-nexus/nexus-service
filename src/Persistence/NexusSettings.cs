@@ -1880,6 +1880,10 @@ public sealed class LianLiFlexFanProfileSettings
     public Dictionary<string, List<LianLiFlexCurvePoint>> Custom { get; set; } = new();
     /// <summary>Id of the cooling curve this profile owns.</summary>
     public string CurveId { get; set; } = "";
+    /// <summary>The profile that was active before the global MB RPM Sync took over, restored when it is switched off.</summary>
+    public string BeforeSync { get; set; } = "";
+
+    public LianLiFlexFanProfileSettings Clone() => (LianLiFlexFanProfileSettings)MemberwiseClone();
 }
 
 public sealed class LianLiFlexThermalAlertSettings

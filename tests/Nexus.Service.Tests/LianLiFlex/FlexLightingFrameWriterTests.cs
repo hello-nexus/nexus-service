@@ -43,7 +43,7 @@ public class FlexLightingFrameWriterTests
         var frames = new List<DeviceFrame>(provider.BuildFrames(0));
         var engine = new LightingEngine();
         engine.UpdateDevices(frames.ToArray());
-        var writer = new FlexLightingFrameWriter(engine, hub, store, identify, provider, clock.Func);
+        var writer = new FlexLightingFrameWriter(engine, hub, store, identify, provider, clock.Func, runUpload: work => System.Threading.Tasks.Task.FromResult(work()));
         return new Setup { Hub = hub, Tx = tx, Clock = clock, Store = store, Provider = provider, Engine = engine, Writer = writer, Frames = frames };
     }
 
@@ -239,7 +239,7 @@ public class FlexLightingFrameWriterTests
         s.Tx.Info[22] = Convert.FromHexString(look.PackageEffectIndex!)[1];
         s.Tx.Info[23] = Convert.FromHexString(look.PackageEffectIndex!)[2];
         s.Tx.Info[24] = Convert.FromHexString(look.PackageEffectIndex!)[3];
-        var restarted = new FlexLightingFrameWriter(s.Engine, s.Hub, s.Store, new Np50IdentifyTracker(), s.Provider, s.Clock.Func);
+        var restarted = new FlexLightingFrameWriter(s.Engine, s.Hub, s.Store, new Np50IdentifyTracker(), s.Provider, s.Clock.Func, runUpload: work => System.Threading.Tasks.Task.FromResult(work()));
         var before = s.Tx.Of(FlexProtocol.CmdEnable).Count();
         for (var i = 0; i < 20; i++)
         {
@@ -306,7 +306,7 @@ public class FlexLightingFrameWriterTests
         var provider = new FlexLightingDeviceProvider(hub, store, identify);
         var engine = new LightingEngine();
         engine.UpdateDevices(provider.BuildFrames(0).ToArray());
-        var writer = new FlexLightingFrameWriter(engine, hub, store, identify, provider, clock.Func);
+        var writer = new FlexLightingFrameWriter(engine, hub, store, identify, provider, clock.Func, runUpload: work => System.Threading.Tasks.Task.FromResult(work()));
         store.Update(x =>
         {
             x.Devices.FlexUnits[Mac] = new LianLiFlexUnitSettings { Mode = "rainbow", Merge = true, SortIndex = 0 };

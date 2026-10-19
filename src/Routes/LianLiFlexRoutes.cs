@@ -140,6 +140,8 @@ public static partial class LianLiFlexRoutes
 
     public static void MapLianLiFlexEndpoints(this WebApplication app)
     {
+        MapRound2Endpoints(app);
+
         app.MapGet("/devices/lianli-flex/state", (FlexHub hub, FlexScreens screens, IConfigStore store) =>
             Results.Json(BuildState(hub, store.Load(), screens), AppJsonContext.Default.LianLiFlexStateResponse));
 

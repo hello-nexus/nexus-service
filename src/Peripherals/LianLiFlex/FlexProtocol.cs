@@ -301,7 +301,7 @@ public sealed class FlexReceiverInfo
 
     public int Fans => FanNum >= 10 ? FanNum - 10 : FanNum;
 
-    public bool RfBound => RxType != FlexProtocol.UnboundRxType;
+    public bool RfBound => RxType != FlexProtocol.UnboundRxType || MasterMac.Trim('0').Length > 0;
 
     public bool PwmLinePresent => PortFlags.Length > 0 && (PortFlags[0] & 0x2) != 0;
 }

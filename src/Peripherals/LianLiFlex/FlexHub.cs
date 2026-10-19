@@ -42,6 +42,8 @@ internal sealed class FlexUnitLink : IDisposable
     public int DesiredDuty = -2;
     public int AppliedDuty = -3;
     public string SentEffectIndex = "";
+    // Live frames went out after the last stored upload, so the receiver shows them, not the stored look.
+    public bool LiveSinceUpload;
     public bool SaveDirty;
     public long LastUploadMs;
     public long LcdRestartUntilMs;
@@ -138,6 +140,7 @@ public sealed class FlexHub : IDisposable
         }
         var present = new HashSet<string>(ports.Select(p => p.ReceiverPath), StringComparer.OrdinalIgnoreCase);
         var changed = false;
+        var toOpen = new List<FlexUnitPort>();
         lock (_linksLock)
         {
             foreach (var mac in _links.Where(kv => !present.Contains(kv.Value.Port.ReceiverPath)).Select(kv => kv.Key).ToList())
@@ -160,13 +163,23 @@ public sealed class FlexHub : IDisposable
                 {
                     continue;
                 }
-                if (TryOpen(port) is { } link && link.Info is { } info)
+                toOpen.Add(port);
+            }
+        }
+        // Opening talks to the device, so it runs outside the lock the other threads read links under.
+        foreach (var port in toOpen)
+        {
+            var link = TryOpen(port);
+            lock (_linksLock)
+            {
+                if (link?.Info is { } info && !_links.ContainsKey(info.Mac))
                 {
                     _links[info.Mac] = link;
                     changed = true;
                 }
                 else
                 {
+                    link?.Dispose();
                     _failedPaths[port.ReceiverPath] = _nowMs();
                 }
             }
@@ -249,22 +262,44 @@ public sealed class FlexHub : IDisposable
         return link.Transport.Write(frame);
     }
 
+    // Skips the pass while an upload or another exchange holds the receiver.
+    private void TryPoll(FlexUnitLink link)
+    {
+        if (!Monitor.TryEnter(link.Io))
+        {
+            return;
+        }
+        try
+        {
+            PollOnce(link);
+        }
+        finally
+        {
+            Monitor.Exit(link.Io);
+        }
+    }
+
     private void PollLocked(FlexUnitLink link)
     {
         lock (link.Io)
         {
-            var reply = Exchange(link, FlexProtocol.BuildGetInfo(), FlexProtocol.CmdGetInfo);
-            var info = reply is null ? null : FlexProtocol.ParseInfo(reply);
-            link.LastPollMs = _nowMs();
-            if (info is null)
-            {
-                link.Missed++;
-                return;
-            }
-            link.Missed = 0;
-            link.Info = info;
-            link.LastInfoMs = link.LastPollMs;
+            PollOnce(link);
         }
+    }
+
+    private void PollOnce(FlexUnitLink link)
+    {
+        var reply = Exchange(link, FlexProtocol.BuildGetInfo(), FlexProtocol.CmdGetInfo);
+        var info = reply is null ? null : FlexProtocol.ParseInfo(reply);
+        link.LastPollMs = _nowMs();
+        if (info is null)
+        {
+            link.Missed++;
+            return;
+        }
+        link.Missed = 0;
+        link.Info = info;
+        link.LastInfoMs = link.LastPollMs;
     }
 
     /// <summary>One worker pass: poll, clock sync, duty, flash save, and a republish when anything changed.</summary>
@@ -279,10 +314,9 @@ public sealed class FlexHub : IDisposable
         var dropped = false;
         foreach (var link in links)
         {
-            if (now - link.LastPollMs >= PollPeriodMs && Monitor.TryEnter(link.Io))
+            if (now - link.LastPollMs >= PollPeriodMs)
             {
-                Monitor.Exit(link.Io);
-                PollLocked(link);
+                TryPoll(link);
             }
             if (link.Missed >= MissedBeforeDrop)
             {
@@ -297,7 +331,7 @@ public sealed class FlexHub : IDisposable
                 dropped = true;
                 continue;
             }
-            if (now - link.LastClockMs >= ClockPeriodMs && now - link.LastLiveMs >= LiveQuietForClockMs && Monitor.TryEnter(link.Io))
+            if (link.Info is { RfBound: false } && now - link.LastClockMs >= ClockPeriodMs && now - link.LastLiveMs >= LiveQuietForClockMs && Monitor.TryEnter(link.Io))
             {
                 try
                 {
@@ -310,7 +344,7 @@ public sealed class FlexHub : IDisposable
                 }
             }
             ApplyDuty(link);
-            TrySave(link, now);
+            TrySave(link);
         }
         Publish();
         if (dropped)
@@ -339,14 +373,19 @@ public sealed class FlexHub : IDisposable
         }
     }
 
-    private void TrySave(FlexUnitLink link, long now)
+    private void TrySave(FlexUnitLink link)
     {
-        if (!link.SaveDirty || now - link.LastUploadMs < SaveSettleMs)
+        if (!link.SaveDirty)
         {
             return;
         }
         lock (link.Io)
         {
+            // Checked again under the lock: another pass may have saved, or an upload may have restarted the wait.
+            if (!link.SaveDirty || _nowMs() - link.LastUploadMs < SaveSettleMs)
+            {
+                return;
+            }
             link.SaveDirty = false;
             Send(link, FlexProtocol.BuildSave());
         }
@@ -416,6 +455,7 @@ public sealed class FlexHub : IDisposable
         try
         {
             link.LastLiveMs = _nowMs();
+            link.LiveSinceUpload = true;
             foreach (var packet in FlexProtocol.BuildLivePackets(rgb))
             {
                 if (!Send(link, packet))
@@ -431,8 +471,8 @@ public sealed class FlexHub : IDisposable
         }
     }
 
-    /// <summary>Uploads a stored animation and arms the flash save. False when any packet fails.</summary>
-    public bool UploadPackage(string mac, byte[] compressed, int frames, int ledCount, double intervalMs)
+    /// <summary>Uploads a stored animation and, unless <paramref name="saveToFlash"/> is off (the receiver already holds it), arms the flash save. False when any packet fails.</summary>
+    public bool UploadPackage(string mac, byte[] compressed, int frames, int ledCount, double intervalMs, bool saveToFlash = true)
     {
         if (LinkOf(mac) is not { } link || link.Info is not { RfBound: false })
         {
@@ -456,10 +496,14 @@ public sealed class FlexHub : IDisposable
             }
             link.SentEffectIndex = Convert.ToHexString(index);
             link.LastUploadMs = _nowMs();
-            link.SaveDirty = true;
+            link.SaveDirty = saveToFlash;
+            link.LiveSinceUpload = false;
         }
         return true;
     }
+
+    /// <summary>True when live frames were sent after the unit's last stored upload.</summary>
+    public bool LiveSinceUpload(string mac) => LinkOf(mac)?.LiveSinceUpload ?? false;
 
     /// <summary>The effect index this process last uploaded to the unit, or empty.</summary>
     public string SentEffectIndex(string mac) => LinkOf(mac)?.SentEffectIndex ?? "";

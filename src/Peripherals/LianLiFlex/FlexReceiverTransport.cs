@@ -73,17 +73,34 @@ public sealed class FlexReceiverTransport : IFlexReceiverTransport
 
     public bool IsOpen => !_disposed && !_file.IsInvalid && !_file.IsClosed;
 
+    private const int ErrorSemTimeout = 121;
+    private const int MaxConsecutiveReadFailures = 40;
+
+    // A read timeout is normal (nothing to say); any other failure backs off and ends the loop when it persists, so a vanished device does not spin a core.
     private void DrainLoop()
     {
         var buf = new byte[FlexProtocol.FrameSize];
+        var failures = 0;
         while (!_stop)
         {
-            if (LianLiWireless.Slv3WinUsbInterop.WinUsb_ReadPipe(_usb, FlexProtocol.ReadPipeId, buf, (uint)buf.Length, out var n, IntPtr.Zero) && n > 0)
+            if (LianLiWireless.Slv3WinUsbInterop.WinUsb_ReadPipe(_usb, FlexProtocol.ReadPipeId, buf, (uint)buf.Length, out var n, IntPtr.Zero))
             {
-                var frame = buf[..(int)n];
-                while (!_stop && !_replies.TryAdd(frame) && _replies.TryTake(out _))
+                failures = 0;
+                if (n > 0)
                 {
+                    var frame = buf[..(int)n];
+                    while (!_stop && !_replies.TryAdd(frame) && _replies.TryTake(out _))
+                    {
+                    }
                 }
+            }
+            else if (System.Runtime.InteropServices.Marshal.GetLastWin32Error() != ErrorSemTimeout)
+            {
+                if (++failures >= MaxConsecutiveReadFailures)
+                {
+                    break;
+                }
+                System.Threading.Thread.Sleep(25);
             }
         }
     }

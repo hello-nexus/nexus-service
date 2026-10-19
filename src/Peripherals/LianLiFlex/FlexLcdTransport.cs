@@ -62,12 +62,28 @@ public sealed class FlexLcdTransport : ISlv3LcdTransport, IFlexScreenVersion
 
     public string PortName { get; }
 
+    private const int ErrorSemTimeout = 121;
+    private const int MaxConsecutiveReadFailures = 40;
+
+    // Acks are never waited on; the pipe is only kept from backing up. A timeout is normal, other failures back off and end the loop when they persist.
     private void DrainLoop()
     {
         var buf = new byte[1024];
+        var failures = 0;
         while (!_stop)
         {
-            Slv3WinUsbInterop.WinUsb_ReadPipe(_usb, Slv3LcdProtocol.ReadPipeId, buf, (uint)buf.Length, out _, IntPtr.Zero);
+            if (Slv3WinUsbInterop.WinUsb_ReadPipe(_usb, Slv3LcdProtocol.ReadPipeId, buf, (uint)buf.Length, out _, IntPtr.Zero))
+            {
+                failures = 0;
+            }
+            else if (System.Runtime.InteropServices.Marshal.GetLastWin32Error() != ErrorSemTimeout)
+            {
+                if (++failures >= MaxConsecutiveReadFailures)
+                {
+                    break;
+                }
+                System.Threading.Thread.Sleep(25);
+            }
         }
     }
 

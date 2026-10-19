@@ -93,9 +93,9 @@ public static class FlexStoredLook
             ? a.Look.SortIndex.CompareTo(b.Look.SortIndex)
             : string.CompareOrdinal(a.Unit.Mac, b.Unit.Mac));
         var participants = new List<FlexMergeParticipant>(members.Count);
-        foreach (var (u, _) in members)
+        foreach (var (u, l) in members)
         {
-            participants.Add(new FlexMergeParticipant(u.Mac, u.Family, u.Fans, 0, u.Family == FlexFamily.SlInfFlex && u.Info.FanNum >= 10));
+            participants.Add(new FlexMergeParticipant(u.Mac, u.Family, u.Fans, Math.Clamp(l.MergeDirection, 0, 1), u.Family == FlexFamily.SlInfFlex && u.Info.FanNum >= 10));
         }
         return new MergeGroup { Leader = members[0].Look, LeaderMac = members[0].Unit.Mac, Participants = participants };
     }
@@ -131,7 +131,7 @@ public static class FlexStoredLook
             }
             foreach (var p in g.Participants)
             {
-                sb.Append('|').Append(p.Mac).Append(':').Append(p.Fans).Append(':').Append(p.InfRightAttach);
+                sb.Append('|').Append(p.Mac).Append(':').Append(p.Fans).Append(':').Append(p.InfRightAttach).Append(':').Append(p.SliceDirection);
             }
             return sb.ToString();
         }
