@@ -1,5 +1,6 @@
 using System;
 using System.IO;
+using System.Linq;
 using Nexus.Service.Lighting.Capture;
 using Nexus.Service.Peripherals.LianLiFlex;
 using Nexus.Service.Peripherals.LianLiWireless;
@@ -57,13 +58,13 @@ public class FlexScreenExtrasTests : IDisposable
         var (sprite, error) = lib.Import(SpritePng(), "dot.png");
         Assert.Null(error);
         Assert.Equal(40, sprite!.Width);
-        Assert.Single(lib.List());
+        Assert.Single(lib.List(), x => !x.Builtin);
         using (var loaded = lib.Load(sprite.Id))
         {
             Assert.NotNull(loaded);
         }
         Assert.True(lib.Delete(sprite.Id));
-        Assert.Empty(lib.List());
+        Assert.DoesNotContain(lib.List(), x => !x.Builtin);
         Assert.Null(lib.Load("../x"));
         Assert.NotNull(lib.Import(new byte[] { 1, 2, 3 }, "x.png").Error);
     }
@@ -179,6 +180,40 @@ public class FlexScreenExtrasTests : IDisposable
         var loaded = library.LoadFrames(item.Id)!;
         Assert.Equal(frames.Count, loaded.Frames.Length);
         Assert.All(loaded.Frames, f => Assert.Equal(LianLiFlexRoutes.RecordFrameMs, f.DelayMs));
+        Assert.True(source.Stopped);
+    }
+
+    [Fact]
+    public void Built_in_sprites_are_listed_load_and_cannot_be_deleted()
+    {
+        var lib = new FlexSpriteLibrary(Path.Combine(_dir, "s"));
+        var builtins = lib.List().Where(x => x.Builtin).ToList();
+        Assert.Equal(4, builtins.Count);
+        foreach (var b in builtins)
+        {
+            Assert.True(lib.Exists(b.Id));
+            using var bmp = lib.Load(b.Id);
+            Assert.NotNull(bmp);
+            Assert.NotNull(lib.PngBytes(b.Id));
+            Assert.False(lib.Delete(b.Id));
+        }
+        Assert.False(lib.Exists("builtin-nope"));
+        var ok = new Slv3LcdContentRequest { Serial = "S", ContentType = "animation2d", Overlay = new LianLiFlexOverlaySettings { SpriteMediaId = "builtin-heart" } };
+        Assert.Null(LianLiFlexRoutes.ValidateExtraContent(ok, lib));
+    }
+
+    [Fact]
+    public void The_preview_is_the_whole_display_and_follows_the_requested_one()
+    {
+        var source = new FakeSource();
+        var capture = new FlexScreenCapture(() => source, () => "0");
+        var jpeg = capture.RenderPreviewJpeg("1");
+        Assert.NotNull(jpeg);
+        Assert.Equal("1", source.Monitor);
+        using var decoded = RenderKit.Decode(jpeg!);
+        Assert.Equal(source.W, decoded!.Width);
+        Assert.Equal(source.H, decoded.Height);
+        capture.Dispose();
         Assert.True(source.Stopped);
     }
 }

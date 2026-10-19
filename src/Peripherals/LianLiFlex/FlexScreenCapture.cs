@@ -47,6 +47,7 @@ public sealed class FlexScreenCapture : IDisposable
     /// <summary>A 400x400 JPEG of the selected square, or null while no frame has arrived.</summary>
     public byte[]? RenderJpeg(string serial, LianLiFlexScreenSource? source)
     {
+        ReleaseIdlePreview();
         IScreenFrameSource? handle;
         lock (_gate)
         {
@@ -87,6 +88,65 @@ public sealed class FlexScreenCapture : IDisposable
         }
         using var scaled = edge == FlexOverlayRenderer.FrameSize ? null : RenderKit.Resize(frame, FlexOverlayRenderer.FrameSize, FlexOverlayRenderer.FrameSize);
         return RenderKit.EncodeJpeg(scaled ?? frame);
+    }
+
+    private const int PreviewWidth = 640;
+    private const int PreviewIdleMs = 5000;
+    private const string PreviewKey = "\u0001preview";
+    private long _previewLastMs;
+
+    /// <summary>
+    /// The whole display as a JPEG for the region picker, in the display's own aspect. The handle is held
+    /// while previews keep coming and dropped after they stop.
+    /// </summary>
+    public byte[]? RenderPreviewJpeg(string? displayId)
+    {
+        IScreenFrameSource? handle;
+        lock (_gate)
+        {
+            _previewLastMs = Environment.TickCount64;
+            if (!_handles.TryGetValue(PreviewKey, out handle))
+            {
+                handle = _open();
+                if (handle is null)
+                {
+                    return null;
+                }
+                _handles[PreviewKey] = handle;
+            }
+        }
+        var monitor = string.IsNullOrEmpty(displayId) ? _defaultMonitor() : displayId;
+        var height = _nativeSize(monitor) is { } n ? Math.Max(2, (int)Math.Round(PreviewWidth * (double)n.Height / n.Width)) : CaptureHeight;
+        handle.Start(monitor, PreviewWidth, height);
+        var rgb = handle.TryAcquireFrame(out var width, out var h);
+        if (rgb is null || width <= 0 || h <= 0 || rgb.Length < width * h * 3)
+        {
+            return null;
+        }
+        using var frame = new SKBitmap(RenderKit.Info(width, h));
+        var pixels = frame.GetPixelSpan();
+        for (var i = 0; i < width * h; i++)
+        {
+            pixels[i * 4] = rgb[i * 3];
+            pixels[(i * 4) + 1] = rgb[(i * 3) + 1];
+            pixels[(i * 4) + 2] = rgb[(i * 3) + 2];
+            pixels[(i * 4) + 3] = 255;
+        }
+        return RenderKit.EncodeJpeg(frame);
+    }
+
+    /// <summary>Drops the preview handle once previews stopped; called from the content loop and the preview route.</summary>
+    public void ReleaseIdlePreview()
+    {
+        bool idle;
+        lock (_gate)
+        {
+            idle = _handles.ContainsKey(PreviewKey) && Environment.TickCount64 - _previewLastMs > PreviewIdleMs;
+        }
+        if (idle)
+        {
+            Release(PreviewKey);
+        }
     }
 
     /// <summary>The square to cut: the normalized crop when it fits, else the largest centered one.</summary>

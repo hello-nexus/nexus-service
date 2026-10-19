@@ -16,6 +16,7 @@ public sealed class LianLiFlexSpriteDto
     public string Name { get; set; } = "";
     public int Width { get; set; }
     public int Height { get; set; }
+    public bool Builtin { get; set; }
 }
 
 public sealed class LianLiFlexCaptureRequest
@@ -92,7 +93,7 @@ public static partial class LianLiFlexRoutes
         {
             return "invalid overlay params";
         }
-        if (!Nexus.Service.Media.MediaLibrary.IsValidId(o.SpriteMediaId) || sprites.PngPath(o.SpriteMediaId) is null)
+        if (!Nexus.Service.Media.MediaLibrary.IsValidId(o.SpriteMediaId) || !sprites.Exists(o.SpriteMediaId))
         {
             return "unknown sprite";
         }
@@ -226,11 +227,17 @@ public static partial class LianLiFlexRoutes
         app.MapGet("/devices/lianli-flex/sprites", (FlexSpriteLibrary sprites) =>
             Results.Json(new LianLiFlexSpritesResponse
             {
-                Sprites = sprites.List().Select(s => new LianLiFlexSpriteDto { Id = s.Id, Name = s.Name, Width = s.Width, Height = s.Height }).ToArray(),
+                Sprites = sprites.List().Select(s => new LianLiFlexSpriteDto { Id = s.Id, Name = s.Name, Width = s.Width, Height = s.Height, Builtin = s.Builtin }).ToArray(),
             }, AppJsonContext.Default.LianLiFlexSpritesResponse));
 
         app.MapGet("/devices/lianli-flex/sprites/{id}/image", (string id, FlexSpriteLibrary sprites) =>
-            sprites.PngPath(id) is { } path ? Results.File(path, "image/png") : Results.NotFound());
+            sprites.PngBytes(id) is { } png ? Results.File(png, "image/png") : Results.NotFound());
+
+        // The whole chosen display, for the region picker; the web polls it while the picker is open.
+        app.MapGet("/devices/lianli-flex/screen/preview", (string? displayId, FlexScreenCapture capture) =>
+            capture.RenderPreviewJpeg(displayId) is { } jpeg
+                ? Results.File(jpeg, "image/jpeg")
+                : Results.StatusCode(StatusCodes.Status204NoContent));
 
         app.MapPost("/devices/lianli-flex/sprites", async (HttpContext ctx, FlexSpriteLibrary sprites) =>
         {
