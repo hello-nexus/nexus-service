@@ -13,6 +13,7 @@ public sealed class FanLcdPanelOwnership
     private readonly object _locksLock = new();
     private readonly Dictionary<string, object> _locks = new(StringComparer.OrdinalIgnoreCase);
     private readonly HashSet<string> _owned = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<string, byte[]> _last = new(StringComparer.OrdinalIgnoreCase);
 
     public void Set(string serial, bool owned)
     {
@@ -25,6 +26,7 @@ public sealed class FanLcdPanelOwnership
             else
             {
                 _owned.Remove(serial);
+                _last.Remove(serial);
             }
         }
     }
@@ -35,6 +37,33 @@ public sealed class FanLcdPanelOwnership
         lock (LockFor(serial))
         {
             return _owned.Contains(serial) && push();
+        }
+    }
+
+    /// <summary>As <see cref="Push(string, Func{bool})"/>, remembering the frame the screen now shows.</summary>
+    public bool Push(string serial, byte[] jpeg, Func<bool> push)
+    {
+        lock (LockFor(serial))
+        {
+            if (!_owned.Contains(serial) || !push())
+            {
+                return false;
+            }
+            _last[serial] = jpeg;
+            return true;
+        }
+    }
+
+    /// <summary>
+    /// Sends the last panel frame again. The screen turns a frame as it arrives, so a rotation change
+    /// leaves the picture on the glass as it was until the next frame; a panel whose layout is still
+    /// sends none.
+    /// </summary>
+    public bool Repush(string serial, Func<byte[], bool> push)
+    {
+        lock (LockFor(serial))
+        {
+            return _owned.Contains(serial) && _last.TryGetValue(serial, out var jpeg) && push(jpeg);
         }
     }
 
