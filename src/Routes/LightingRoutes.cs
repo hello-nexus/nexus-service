@@ -778,10 +778,7 @@ public static class LightingRoutes
             // a change to ReferenceEquals would silently stop deduping.
             var seen = signature == persistedBefore
                 || (_lastCaptured.Persisted == persistedBefore && _lastCaptured.Signature == signature);
-            // A request that persisted its look is covered by the persisted compare
-            // from here on; keeping the pair would swallow the same change after an
-            // outside write (Deck, profile, MCP) restored the old look. Known edge:
-            // an unpersisted drag whose release is lost, then picking the persisted look.
+            // Persisting clears the pair: an outside restore must not swallow the next pick.
             _lastCaptured = persistedAfter == signature ? (null, "") : (persistedBefore, signature);
             if (seen) return;
         }
