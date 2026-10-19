@@ -515,8 +515,8 @@ end;
 
 // Process ids whose image name is Name, from a ToolHelp snapshot. The entry is
 // a PROCESSENTRY32W held in a string buffer (Pascal Script records cannot hold
-// the inline name array): the structure size is the first dword, the pid the
-// third, and the image name starts at the tenth.
+// the inline name array); the size, pid and name are read at their fixed
+// offsets in that layout.
 function ProcessIdsByName(const Name: String): array of Cardinal;
 var
   Snap, Size: Cardinal;
@@ -628,13 +628,16 @@ begin
   Result := FileExists(ExtractFilePath(Path) + 'overlay\nexus-overlay.exe');
 end;
 
-procedure KillPid(Pid: Cardinal; Tree: Boolean);
+// Image is the name the pid is expected to still have, so a recycled pid that
+// now belongs to another program is not killed.
+procedure KillPid(Pid: Cardinal; Tree: Boolean; const Image: String);
 var
   ResultCode: Integer;
   Args: String;
 begin
   Args := '/F ';
   if Tree then Args := Args + '/T ';
+  if Image <> '' then Args := Args + '/FI "IMAGENAME eq ' + Image + '" ';
   Exec(ExpandConstant('{sys}\taskkill.exe'), Args + '/PID ' + IntToStr(Pid), '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
 end;
 
@@ -654,7 +657,7 @@ begin
   begin
     if IsOwnNexus(All[I], Own, H) then
     begin
-      KillPid(All[I], False);
+      KillPid(All[I], False, '{#MyAppExeName}');
       N := GetArrayLength(Result);
       SetArrayLength(Result, N + 1);
       Result[N] := All[I];
@@ -681,7 +684,7 @@ begin
       Hit := SameName(HandleImagePath(H), Path)
     else
       Hit := Pos(AnsiLowercase(CmdPart), AnsiLowercase(HandleCommandLine(H))) > 0;
-    if Hit then KillPid(Pids[I], Tree);
+    if Hit then KillPid(Pids[I], Tree, '');
     NxCloseHandle(H);
   end;
 end;
