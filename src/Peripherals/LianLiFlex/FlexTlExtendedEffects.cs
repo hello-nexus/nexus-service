@@ -5,9 +5,9 @@ using RgbColor = Nexus.Service.Peripherals.Hyte.Np50.RgbColor;
 namespace Nexus.Service.Peripherals.LianLiFlex;
 
 /// <summary>
-/// 20 position-model TL effects; frame count is data driven. Output already has brightness applied
-/// (palette scaled by the level, and a second scaling for the effects flagged ScalesOutput), so the
-/// shared brightness step must not run over it. Voice, meteorShower and kaleidoscope draw seeded random numbers.
+/// Position-model TL effects. Output already has brightness applied (palette scaled by the level, and a
+/// second scaling for the effects flagged ScalesOutput), so the shared brightness step must not run over it.
+/// Voice, meteorShower and kaleidoscope draw seeded random numbers.
 /// </summary>
 public static class FlexTlExtendedEffects
 {
@@ -58,11 +58,7 @@ public static class FlexTlExtendedEffects
 
     public static bool IsImplemented(string key) => Table.ContainsKey(key);
 
-    /// <summary>
-    /// The seed used for the three randomized effects. Their frame count depends on the seed
-    /// (voice 65..94, meteorShower 62..89); these seeds give the counts of the recorded
-    /// default packages (87, 76, 36), so frame count and interval match them.
-    /// </summary>
+    /// <summary>The seed for the randomized effects; their frame count depends on it, so it is fixed per effect.</summary>
     public static int SeedFor(string key) => key switch
     {
         "voice" => 117,
@@ -77,7 +73,7 @@ public static class FlexTlExtendedEffects
     public static double IntervalBaseFor(string key) =>
         string.Equals(key, "collide", StringComparison.Ordinal) ? CollideIntervalBase : DefaultIntervalBase;
 
-    /// <summary>Scope Up keeps LED 0..12 of each fan, Down keeps 13..25; the effect is computed on all 26 first, so the halves are cuts of one animation.</summary>
+    /// <summary>Scope Up keeps the first half of each fan, Down the second; the effect is computed on the full ring first, so the halves are cuts of one animation.</summary>
     public static FlexRawAnimation Render(string key, FlexEffectRequest req, int seed = DefaultSeed)
     {
         if (!Table.TryGetValue(key, out var entry))
@@ -97,9 +93,9 @@ public static class FlexTlExtendedEffects
 
         var leds = fans * TlGenerator.PerFan;
         var buf = new byte[frames.Count * leds * 3];
-        for (var f = 0; f < frames.Count; f++)
+        for (var frameIndex = 0; frameIndex < frames.Count; frameIndex++)
         {
-            var frame = frames[f];
+            var frame = frames[frameIndex];
             for (var k = 0; k < leds; k++)
             {
                 var half = k % TlGenerator.PerFan < TlGenerator.PerFan / 2;
@@ -108,11 +104,11 @@ public static class FlexTlExtendedEffects
                 {
                     continue;
                 }
-                var o = (f * leds + k) * 3;
-                var c = frame[k];
-                buf[o] = entry.ScalesOutput ? (byte)(c.R * level >> 8) : c.R;
-                buf[o + 1] = entry.ScalesOutput ? (byte)(c.G * level >> 8) : c.G;
-                buf[o + 2] = entry.ScalesOutput ? (byte)(c.B * level >> 8) : c.B;
+                var offset = (frameIndex * leds + k) * 3;
+                var pixel = frame[k];
+                buf[offset] = entry.ScalesOutput ? (byte)(pixel.R * level >> 8) : pixel.R;
+                buf[offset + 1] = entry.ScalesOutput ? (byte)(pixel.G * level >> 8) : pixel.G;
+                buf[offset + 2] = entry.ScalesOutput ? (byte)(pixel.B * level >> 8) : pixel.B;
             }
         }
         return new FlexRawAnimation
@@ -134,16 +130,16 @@ public static class FlexTlExtendedEffects
         var count = Math.Max(requested.Count, Math.Max(entry.MinColors, requested.Count == 0 ? entry.Defaults.Length : 0));
         for (var i = 0; i < count; i++)
         {
-            RgbColor c;
+            RgbColor source;
             if (i < requested.Count)
             {
-                c = requested[i];
+                source = requested[i];
             }
             else
             {
-                c = entry.Defaults[Math.Min(i, entry.Defaults.Length - 1)];
+                source = entry.Defaults[Math.Min(i, entry.Defaults.Length - 1)];
             }
-            list.Add(new TlRgb((byte)(c.R * level >> 8), (byte)(c.G * level >> 8), (byte)(c.B * level >> 8)));
+            list.Add(new TlRgb((byte)(source.R * level >> 8), (byte)(source.G * level >> 8), (byte)(source.B * level >> 8)));
         }
         return list;
     }
@@ -233,7 +229,7 @@ public static class FlexTlExtendedEffects
         private int maxStep;
         private int fanIndex;
         private bool isInit;
-        private int mWidth;
+        private int electricWidth;
         private bool running;
 
         public TlGenerator(int mode, int fanCount, bool anticlockwise, List<TlRgb> colors, int seed)
@@ -397,11 +393,11 @@ public static class FlexTlExtendedEffects
             var list = new List<TlRgb>();
             for (var i = 0; i <= steps; i++)
             {
-                var num = i / (float)steps;
+                var fraction = i / (float)steps;
                 list.Add(new TlRgb(
-                    unchecked((byte)(start.R + (int)((end.R - start.R) * num))),
-                    unchecked((byte)(start.G + (int)((end.G - start.G) * num))),
-                    unchecked((byte)(start.B + (int)((end.B - start.B) * num)))));
+                    unchecked((byte)(start.R + (int)((end.R - start.R) * fraction))),
+                    unchecked((byte)(start.G + (int)((end.G - start.G) * fraction))),
+                    unchecked((byte)(start.B + (int)((end.B - start.B) * fraction)))));
             }
             return list;
         }
@@ -449,22 +445,22 @@ public static class FlexTlExtendedEffects
 
         private void InitBlend()
         {
-            var num = (maxX - minX) / 6;
-            step = -(num / 2);
+            var segLen = (maxX - minX) / 6;
+            step = -(segLen / 2);
             ribbon1.Clear();
             ribbon2.Clear();
             ribbon3.Clear();
-            var c1 = ColorOr(0, Black);
-            var c2 = ColorOr(1, Black);
-            var mix = Blend(c1, c2);
-            var n2 = num / 5 * 2;
-            ribbon1.AddRange(Gradient(Black, c1, n2));
-            ribbon1.AddRange(Gradient(c1, c1, num - n2));
-            ribbon2.AddRange(Gradient(Black, c2, n2));
-            ribbon2.AddRange(Gradient(c2, c2, num - n2));
-            n2 = num * 4 / 5 * 2;
-            ribbon3.AddRange(Gradient(mix, mix, num * 4 - n2));
-            ribbon3.AddRange(Gradient(mix, Black, n2));
+            var colorA = ColorOr(0, Black);
+            var colorB = ColorOr(1, Black);
+            var mix = Blend(colorA, colorB);
+            var fadeLen = segLen / 5 * 2;
+            ribbon1.AddRange(Gradient(Black, colorA, fadeLen));
+            ribbon1.AddRange(Gradient(colorA, colorA, segLen - fadeLen));
+            ribbon2.AddRange(Gradient(Black, colorB, fadeLen));
+            ribbon2.AddRange(Gradient(colorB, colorB, segLen - fadeLen));
+            fadeLen = segLen * 4 / 5 * 2;
+            ribbon3.AddRange(Gradient(mix, mix, segLen * 4 - fadeLen));
+            ribbon3.AddRange(Gradient(mix, Black, fadeLen));
         }
 
         private void InitGather()
@@ -556,15 +552,15 @@ public static class FlexTlExtendedEffects
             {
                 return;
             }
-            var num = 40 * fans.Count;
-            var c1 = colors[0];
-            var c2 = colors[1];
-            var n2 = num / 5 * 2;
-            ribbon1.AddRange(Gradient(Black, c1, n2));
-            ribbon1.AddRange(Gradient(c1, c1, num - n2));
-            ribbon2.AddRange(Gradient(Black, c2, n2));
-            ribbon2.AddRange(Gradient(c2, c2, num - n2));
-            step = anticlockwise ? maxX : num;
+            var trailLen = 40 * fans.Count;
+            var colorA = colors[0];
+            var colorB = colors[1];
+            var fadeLen = trailLen / 5 * 2;
+            ribbon1.AddRange(Gradient(Black, colorA, fadeLen));
+            ribbon1.AddRange(Gradient(colorA, colorA, trailLen - fadeLen));
+            ribbon2.AddRange(Gradient(Black, colorB, fadeLen));
+            ribbon2.AddRange(Gradient(colorB, colorB, trailLen - fadeLen));
+            step = anticlockwise ? maxX : trailLen;
         }
 
         private void InitPingPong()
@@ -589,16 +585,16 @@ public static class FlexTlExtendedEffects
             {
                 return;
             }
-            var num = 50 + 20 * fans.Count;
+            var trailLen = 50 + 20 * fans.Count;
             if (colorIndex >= colors.Count)
             {
                 colorIndex = 0;
             }
-            var c = colors[colorIndex];
+            var color = colors[colorIndex];
             ribbon1.Clear();
-            var n2 = num / 5 * 2;
-            ribbon1.AddRange(Gradient(Black, c, n2));
-            ribbon1.AddRange(Gradient(c, c, num - n2));
+            var fadeLen = trailLen / 5 * 2;
+            ribbon1.AddRange(Gradient(Black, color, fadeLen));
+            ribbon1.AddRange(Gradient(color, color, trailLen - fadeLen));
         }
 
         private void MirrorX(List<Fan> list)
@@ -631,10 +627,10 @@ public static class FlexTlExtendedEffects
             foreach (var fan in fanList)
             {
                 fan.Colors.Clear();
-                var c = colors.Count > 0 ? colors[colors.Count - 1] : Black;
+                var fillColor = colors.Count > 0 ? colors[colors.Count - 1] : Black;
                 foreach (var unused in fan.Points)
                 {
-                    fan.Colors.Add(c);
+                    fan.Colors.Add(fillColor);
                 }
             }
         }
@@ -691,24 +687,24 @@ public static class FlexTlExtendedEffects
             {
                 return;
             }
-            var num = 30 + 25 * fans.Count;
+            var trailLen = 30 + 25 * fans.Count;
             if (colorIndex >= colors.Count)
             {
                 colorIndex = 0;
             }
-            var c = colors[colorIndex];
+            var color = colors[colorIndex];
             ribbon1.Clear();
-            var n2 = num / 5 * 2;
-            ribbon1.AddRange(Gradient(Black, c, n2));
-            ribbon1.AddRange(Gradient(c, c, num - n2));
+            var fadeLen = trailLen / 5 * 2;
+            ribbon1.AddRange(Gradient(Black, color, fadeLen));
+            ribbon1.AddRange(Gradient(color, color, trailLen - fadeLen));
         }
 
         private void InitRacing()
         {
-            var num = 30 + 25 * fans.Count;
+            var trailLen = 30 + 25 * fans.Count;
             if (anticlockwise)
             {
-                step = maxX + num + num / 2;
+                step = maxX + trailLen + trailLen / 2;
                 isBack = true;
             }
             else
@@ -731,13 +727,13 @@ public static class FlexTlExtendedEffects
             }
             ribbon1.Clear();
             ribbon2.Clear();
-            var c1 = colors[0];
-            var c2 = colors[1];
-            var n2 = num / 5 * 2;
-            ribbon1.AddRange(Gradient(Black, c1, n2));
-            ribbon1.AddRange(Gradient(c1, c1, num - n2));
-            ribbon2.AddRange(Gradient(Black, c2, n2));
-            ribbon2.AddRange(Gradient(c2, c2, num - n2));
+            var colorA = colors[0];
+            var colorB = colors[1];
+            var fadeLen = trailLen / 5 * 2;
+            ribbon1.AddRange(Gradient(Black, colorA, fadeLen));
+            ribbon1.AddRange(Gradient(colorA, colorA, trailLen - fadeLen));
+            ribbon2.AddRange(Gradient(Black, colorB, fadeLen));
+            ribbon2.AddRange(Gradient(colorB, colorB, trailLen - fadeLen));
         }
 
         private void InitLottery()
@@ -747,15 +743,15 @@ public static class FlexTlExtendedEffects
                 return;
             }
             ribbon1.Clear();
-            var num = fans.Count * 4;
-            var c1 = colors[0];
-            var c2 = colors.Count > 1 ? colors[1] : Black;
-            for (var i = 0; i < num; i++)
+            var stripeCount = fans.Count * 4;
+            var colorA = colors[0];
+            var colorB = colors.Count > 1 ? colors[1] : Black;
+            for (var i = 0; i < stripeCount; i++)
             {
-                var c = i % 2 == 0 ? c1 : c2;
+                var stripeColor = i % 2 == 0 ? colorA : colorB;
                 for (var j = 0; j < 60; j++)
                 {
-                    ribbon1.Add(c);
+                    ribbon1.Add(stripeColor);
                 }
             }
         }
@@ -770,38 +766,38 @@ public static class FlexTlExtendedEffects
             }
             ribbon1.Clear();
             ribbon2.Clear();
-            var num = 30 + 20 * fans.Count;
-            var c1 = colors[0];
-            var c2 = colors[1];
-            var n2 = num / 5 * 2;
-            ribbon1.AddRange(Gradient(Black, c1, n2));
-            ribbon1.AddRange(Gradient(c1, c1, num - n2));
-            ribbon2.AddRange(Gradient(Black, c2, n2));
-            ribbon2.AddRange(Gradient(c2, c2, num - n2));
+            var trailLen = 30 + 20 * fans.Count;
+            var colorA = colors[0];
+            var colorB = colors[1];
+            var fadeLen = trailLen / 5 * 2;
+            ribbon1.AddRange(Gradient(Black, colorA, fadeLen));
+            ribbon1.AddRange(Gradient(colorA, colorA, trailLen - fadeLen));
+            ribbon2.AddRange(Gradient(Black, colorB, fadeLen));
+            ribbon2.AddRange(Gradient(colorB, colorB, trailLen - fadeLen));
         }
 
-        private Track NewShowerTrack(int i, int num)
+        private Track NewShowerTrack(int i, int spacing)
         {
-            var t = new Track { Step = anticlockwise ? maxX + i * num : -(i * num) };
-            t.Speed = random!.Next(10, 23) + 0.3f;
-            t.Width = random.Next(40, 80);
-            t.Color = WheelColors[random.Next(0, WheelColors.Length)];
-            return t;
+            var track = new Track { Step = anticlockwise ? maxX + i * spacing : -(i * spacing) };
+            track.Speed = random!.Next(10, 23) + 0.3f;
+            track.Width = random.Next(40, 80);
+            track.Color = WheelColors[random.Next(0, WheelColors.Length)];
+            return track;
         }
 
         private void InitMeteorShower()
         {
             random ??= new Random(seed);
-            var num = (maxX - minX) / 8;
+            var spacing = (maxX - minX) / 8;
             tracks1.Clear();
             for (var i = 0; i < 4; i++)
             {
-                tracks1.Add(NewShowerTrack(i, num));
+                tracks1.Add(NewShowerTrack(i, spacing));
             }
             tracks2.Clear();
             for (var j = 0; j < 4; j++)
             {
-                tracks2.Add(NewShowerTrack(j, num));
+                tracks2.Add(NewShowerTrack(j, spacing));
             }
         }
 
@@ -825,31 +821,31 @@ public static class FlexTlExtendedEffects
             if (width <= 0)
             {
                 width = 25 + 15 * fans.Count;
-                mWidth = width;
+                electricWidth = width;
             }
             if (colorIndex >= colors.Count)
             {
                 colorIndex = 0;
             }
             ribbon1.Clear();
-            var c = colors[colorIndex];
-            var num = width / 5 * 2;
-            ribbon1.AddRange(Gradient(Black, c, num));
-            ribbon1.AddRange(Gradient(c, c, width - num));
+            var color = colors[colorIndex];
+            var fadeLen = width / 5 * 2;
+            ribbon1.AddRange(Gradient(Black, color, fadeLen));
+            ribbon1.AddRange(Gradient(color, color, width - fadeLen));
         }
 
         private void InitKaleidoscope()
         {
             random ??= new Random(seed);
-            var num = (maxX - minX) / 5;
+            var cellWidth = (maxX - minX) / 5;
             tracks1.Clear();
             for (var i = 0; i < 5; i++)
             {
                 tracks1.Add(new Track
                 {
-                    Step = num * i,
+                    Step = cellWidth * i,
                     Speed = 13f,
-                    Width = num,
+                    Width = cellWidth,
                     Color = WheelColors[random.Next(0, WheelColors.Length)],
                 });
             }
@@ -902,11 +898,11 @@ public static class FlexTlExtendedEffects
             {
                 colorIndex = 0;
             }
-            var item = colors[colorIndex];
+            var activeColor = colors[colorIndex];
             if (counter < 5)
             {
-                var num = (counter * 40 + 1f) / 255f;
-                item = new TlRgb((byte)(int)(item.R * num), (byte)(int)(item.G * num), (byte)(int)(item.B * num));
+                var fade = (counter * 40 + 1f) / 255f;
+                activeColor = new TlRgb((byte)(int)(activeColor.R * fade), (byte)(int)(activeColor.G * fade), (byte)(int)(activeColor.B * fade));
             }
             for (var i = 0; i < fanList.Count; i++)
             {
@@ -916,7 +912,7 @@ public static class FlexTlExtendedEffects
                 {
                     var left = p.X < centerX;
                     var lit = i % 2 == 0 ? (isBack ? !left : left) : (isBack ? left : !left);
-                    fan.Colors.Add(lit ? item : Black);
+                    fan.Colors.Add(lit ? activeColor : Black);
                 }
             }
             ShareColors();
@@ -937,7 +933,7 @@ public static class FlexTlExtendedEffects
                     return;
                 }
             }
-            var num = maxX - minX;
+            var totalWidth = maxX - minX;
             if (colorIndex >= colors.Count)
             {
                 colorIndex = 0;
@@ -948,7 +944,7 @@ public static class FlexTlExtendedEffects
                 for (var i = 0; i < fan.Points.Length; i++)
                 {
                     var x = fan.Points[i].X;
-                    if (x <= step + 15f || x >= num - step - 15f)
+                    if (x <= step + 15f || x >= totalWidth - step - 15f)
                     {
                         fan.Colors[i] = value;
                     }
@@ -960,15 +956,15 @@ public static class FlexTlExtendedEffects
 
         private void ExecMixing()
         {
-            var num = (maxX - minX) / 4;
-            if (!isBack && step > centerX - num / 2)
+            var blobWidth = (maxX - minX) / 4;
+            if (!isBack && step > centerX - blobWidth / 2)
             {
-                step = centerX + num / 3 * 2;
+                step = centerX + blobWidth / 3 * 2;
                 isBack = true;
             }
-            if (step < -(num * 4))
+            if (step < -(blobWidth * 4))
             {
-                step = -num;
+                step = -blobWidth;
                 isBack = false;
                 running = false;
                 return;
@@ -982,7 +978,7 @@ public static class FlexTlExtendedEffects
                     {
                         if (p.X < centerX)
                         {
-                            if (p.X > step && p.X < step + num * 8)
+                            if (p.X > step && p.X < step + blobWidth * 8)
                             {
                                 var i = Clamp((int)(p.X - step), ribbon3.Count);
                                 fan.Colors.Add(ribbon3[i]);
@@ -992,7 +988,7 @@ public static class FlexTlExtendedEffects
                                 fan.Colors.Add(Black);
                             }
                         }
-                        else if (p.X < maxX - step && p.X > maxX - step - num * 8)
+                        else if (p.X < maxX - step && p.X > maxX - step - blobWidth * 8)
                         {
                             var i = Clamp((int)(maxX - p.X - step), ribbon3.Count);
                             fan.Colors.Add(ribbon3[i]);
@@ -1004,7 +1000,7 @@ public static class FlexTlExtendedEffects
                     }
                     else if (p.X < centerX)
                     {
-                        if (p.X > step && p.X < step + num)
+                        if (p.X > step && p.X < step + blobWidth)
                         {
                             var i = Clamp((int)(p.X - step), ribbon1.Count);
                             fan.Colors.Add(ribbon1[i]);
@@ -1014,7 +1010,7 @@ public static class FlexTlExtendedEffects
                             fan.Colors.Add(Black);
                         }
                     }
-                    else if (p.X < maxX - step && p.X > maxX - step - num)
+                    else if (p.X < maxX - step && p.X > maxX - step - blobWidth)
                     {
                         var i = Clamp((int)(maxX - p.X - step), ribbon2.Count);
                         fan.Colors.Add(ribbon2[i]);
@@ -1055,7 +1051,7 @@ public static class FlexTlExtendedEffects
                 }
                 counter++;
             }
-            var item = WheelColors[colorIndex];
+            var activeColor = WheelColors[colorIndex];
             foreach (var fan in fans)
             {
                 fan.Colors.Clear();
@@ -1072,7 +1068,7 @@ public static class FlexTlExtendedEffects
                     {
                         lit = p.X > centerX ? !(p.X >= centerX + step) : p.X > centerX - step;
                     }
-                    fan.Colors.Add(lit ? item : Black);
+                    fan.Colors.Add(lit ? activeColor : Black);
                 }
             }
             PushFrame();
@@ -1108,14 +1104,14 @@ public static class FlexTlExtendedEffects
             {
                 colorIndex = 0;
             }
-            var item = colors[colorIndex];
+            var activeColor = colors[colorIndex];
             foreach (var fan in fans)
             {
                 fan.Colors.Clear();
                 foreach (var p in fan.Points)
                 {
                     bool lit = p.X > centerX ? p.X > maxX - step : p.X < step;
-                    fan.Colors.Add(lit ? item : Black);
+                    fan.Colors.Add(lit ? activeColor : Black);
                 }
             }
             PushFrame();
@@ -1258,9 +1254,9 @@ public static class FlexTlExtendedEffects
             {
                 colorIndex = 0;
             }
-            var item = colors[colorIndex];
-            var num = 8 * fans.Count;
-            var num2 = 50 * fans.Count;
+            var activeColor = colors[colorIndex];
+            var waveWidth = 8 * fans.Count;
+            var waveSpacing = 50 * fans.Count;
             foreach (var fan in fans)
             {
                 fan.Colors.Clear();
@@ -1271,17 +1267,17 @@ public static class FlexTlExtendedEffects
                     {
                         for (var k = 0; k < 4 && !lit; k++)
                         {
-                            lit = p.X >= centerX + step - num2 * k && p.X < centerX + step + num - num2 * k;
+                            lit = p.X >= centerX + step - waveSpacing * k && p.X < centerX + step + waveWidth - waveSpacing * k;
                         }
                     }
                     else
                     {
                         for (var k = 0; k < 4 && !lit; k++)
                         {
-                            lit = p.X < centerX - step + num2 * k && p.X >= centerX - step - num + num2 * k;
+                            lit = p.X < centerX - step + waveSpacing * k && p.X >= centerX - step - waveWidth + waveSpacing * k;
                         }
                     }
-                    fan.Colors.Add(lit ? item : Black);
+                    fan.Colors.Add(lit ? activeColor : Black);
                 }
             }
             PushFrame();
@@ -1314,7 +1310,7 @@ public static class FlexTlExtendedEffects
                 }
                 InitReflectRibbon();
             }
-            var num = 25 + 15 * fans.Count;
+            var trailLen = 25 + 15 * fans.Count;
             foreach (var fan in fans)
             {
                 fan.Colors.Clear();
@@ -1322,7 +1318,7 @@ public static class FlexTlExtendedEffects
                 {
                     if (p.X > centerX)
                     {
-                        if (p.X > maxX - step && p.X <= maxX - step + num)
+                        if (p.X > maxX - step && p.X <= maxX - step + trailLen)
                         {
                             var i = (int)(p.X - (maxX - step));
                             if (!anticlockwise)
@@ -1336,7 +1332,7 @@ public static class FlexTlExtendedEffects
                             fan.Colors.Add(Black);
                         }
                     }
-                    else if (p.X >= step - num && p.X < step)
+                    else if (p.X >= step - trailLen && p.X < step)
                     {
                         var i = (int)(step - p.X);
                         if (!anticlockwise)
@@ -1369,16 +1365,16 @@ public static class FlexTlExtendedEffects
                 running = false;
                 return;
             }
-            var num = 40 * fans.Count;
+            var trailLen = 40 * fans.Count;
             if (anticlockwise && step < 0f)
             {
                 step = maxX;
                 running = false;
                 return;
             }
-            if (!anticlockwise && step > maxX + num)
+            if (!anticlockwise && step > maxX + trailLen)
             {
-                step = num;
+                step = trailLen;
                 running = false;
                 return;
             }
@@ -1387,7 +1383,7 @@ public static class FlexTlExtendedEffects
                 fan.Colors.Clear();
                 foreach (var p in fan.Points)
                 {
-                    if (p.X < step && p.X >= step - num)
+                    if (p.X < step && p.X >= step - trailLen)
                     {
                         var i = (int)(step - p.X);
                         if (!anticlockwise)
@@ -1396,7 +1392,7 @@ public static class FlexTlExtendedEffects
                         }
                         fan.Colors.Add(ribbon1[Clamp(i, ribbon1.Count)]);
                     }
-                    else if (p.X < centerX + step && p.X >= centerX + step - num)
+                    else if (p.X < centerX + step && p.X >= centerX + step - trailLen)
                     {
                         var i = (int)(centerX + step - p.X);
                         if (!anticlockwise)
@@ -1405,7 +1401,7 @@ public static class FlexTlExtendedEffects
                         }
                         fan.Colors.Add(ribbon2[Clamp(i, ribbon2.Count)]);
                     }
-                    else if (p.X < step - centerX && p.X >= step - centerX - num)
+                    else if (p.X < step - centerX && p.X >= step - centerX - trailLen)
                     {
                         var i = (int)(step - centerX - p.X);
                         if (!anticlockwise)
@@ -1416,8 +1412,8 @@ public static class FlexTlExtendedEffects
                     }
                     else if (step > maxX)
                     {
-                        var num5 = step - maxX;
-                        if (p.X >= 0 && p.X < num5)
+                        var overflow = step - maxX;
+                        if (p.X >= 0 && p.X < overflow)
                         {
                             fan.Colors.Add(ribbon1[Clamp(ribbon1.Count - 1 - p.X, ribbon1.Count)]);
                         }
@@ -1426,9 +1422,9 @@ public static class FlexTlExtendedEffects
                             fan.Colors.Add(Black);
                         }
                     }
-                    else if (step < num)
+                    else if (step < trailLen)
                     {
-                        if (anticlockwise && p.X > maxX - (num - step) && p.X < maxX + num)
+                        if (anticlockwise && p.X > maxX - (trailLen - step) && p.X < maxX + trailLen)
                         {
                             fan.Colors.Add(ribbon1[Clamp(p.X, ribbon1.Count)]);
                         }
@@ -1512,7 +1508,7 @@ public static class FlexTlExtendedEffects
 
         private void ExecPingPong()
         {
-            var num = 50 + 20 * fans.Count;
+            var trailLen = 50 + 20 * fans.Count;
             if (step > maxX)
             {
                 isBack = true;
@@ -1525,7 +1521,7 @@ public static class FlexTlExtendedEffects
                 }
                 InitPingPongRibbon();
             }
-            if (step < -num)
+            if (step < -trailLen)
             {
                 isBack = false;
                 colorIndex++;
@@ -1542,7 +1538,7 @@ public static class FlexTlExtendedEffects
                 fan.Colors.Clear();
                 foreach (var p in fan.Points)
                 {
-                    if (p.X > step && p.X <= step + num)
+                    if (p.X > step && p.X <= step + trailLen)
                     {
                         var i = (int)(p.X - step);
                         if (isBack)
@@ -1603,8 +1599,8 @@ public static class FlexTlExtendedEffects
 
         private void ExecWave()
         {
-            var num = 30 + 25 * fans.Count;
-            if (step > maxX + num)
+            var trailLen = 30 + 25 * fans.Count;
+            if (step > maxX + trailLen)
             {
                 step = 0f;
                 colorIndex++;
@@ -1621,7 +1617,7 @@ public static class FlexTlExtendedEffects
                 fan.Colors.Clear();
                 foreach (var p in fan.Points)
                 {
-                    if (p.X > step - num && p.X < step)
+                    if (p.X > step - trailLen && p.X < step)
                     {
                         var i = Clamp(ribbon1.Count - 1 - (int)(step - p.X), ribbon1.Count);
                         fan.Colors.Add(ribbon1[i]);
@@ -1639,8 +1635,8 @@ public static class FlexTlExtendedEffects
 
         private void ExecRacing()
         {
-            var num = 30 + 25 * fans.Count;
-            if (step > maxX + num + num / 2)
+            var trailLen = 30 + 25 * fans.Count;
+            if (step > maxX + trailLen + trailLen / 2)
             {
                 isBack = true;
                 if (anticlockwise)
@@ -1665,7 +1661,7 @@ public static class FlexTlExtendedEffects
                 {
                     if (p.Y < centerY)
                     {
-                        if (p.X > step - num && p.X < step)
+                        if (p.X > step - trailLen && p.X < step)
                         {
                             var i = ribbon1.Count - 1 - (int)(step - p.X);
                             if (isBack)
@@ -1679,12 +1675,12 @@ public static class FlexTlExtendedEffects
                             fan.Colors.Add(Black);
                         }
                     }
-                    else if (p.X > step - num - num / 2 && p.X < step - num / 2)
+                    else if (p.X > step - trailLen - trailLen / 2 && p.X < step - trailLen / 2)
                     {
-                        var i = ribbon2.Count - 1 - (int)(step - num / 2 - p.X);
+                        var i = ribbon2.Count - 1 - (int)(step - trailLen / 2 - p.X);
                         if (isBack)
                         {
-                            i = (int)(step - num / 2 - p.X);
+                            i = (int)(step - trailLen / 2 - p.X);
                         }
                         fan.Colors.Add(ribbon2[Clamp(i, ribbon2.Count)]);
                     }
@@ -1752,16 +1748,16 @@ public static class FlexTlExtendedEffects
                 running = false;
                 return;
             }
-            var num = 30 + 20 * fans.Count;
-            if (step > maxX + num)
+            var trailLen = 30 + 20 * fans.Count;
+            if (step > maxX + trailLen)
             {
-                step = num;
+                step = trailLen;
                 running = false;
                 return;
             }
-            if (stepBack < -num)
+            if (stepBack < -trailLen)
             {
-                stepBack = maxX - num;
+                stepBack = maxX - trailLen;
                 isInit = false;
             }
             foreach (var fan in fanList)
@@ -1769,16 +1765,16 @@ public static class FlexTlExtendedEffects
                 fan.Colors.Clear();
                 foreach (var p in fan.Points)
                 {
-                    if (p.X > step - num && p.X <= step && p.X >= stepBack && p.X < stepBack + num)
+                    if (p.X > step - trailLen && p.X <= step && p.X >= stepBack && p.X < stepBack + trailLen)
                     {
                         fan.Colors.Add(Blend(ribbon1[^1], ribbon2[^1]));
                     }
-                    else if (p.X > step - num && p.X <= step)
+                    else if (p.X > step - trailLen && p.X <= step)
                     {
-                        var i = Clamp((int)(p.X - (step - num)), ribbon1.Count);
+                        var i = Clamp((int)(p.X - (step - trailLen)), ribbon1.Count);
                         fan.Colors.Add(ribbon1[i]);
                     }
-                    else if (p.X >= stepBack && p.X < stepBack + num)
+                    else if (p.X >= stepBack && p.X < stepBack + trailLen)
                     {
                         if (isInit && p.X > centerX)
                         {
@@ -1815,38 +1811,38 @@ public static class FlexTlExtendedEffects
             stepBack -= speed + 10.3f;
         }
 
-        private void ShowerRespawn(Track t)
+        private void ShowerRespawn(Track track)
         {
-            t.Speed = 10f + (float)random!.NextDouble() * (speed * 1.3f) + 0.3f;
-            t.Width = random.Next(40, 80);
-            t.Color = WheelColors[random.Next(0, WheelColors.Length)];
-            t.Count++;
+            track.Speed = 10f + (float)random!.NextDouble() * (speed * 1.3f) + 0.3f;
+            track.Width = random.Next(40, 80);
+            track.Color = WheelColors[random.Next(0, WheelColors.Length)];
+            track.Count++;
         }
 
         private void ShowerWrap(List<Track> list)
         {
-            foreach (var t in list)
+            foreach (var track in list)
             {
-                if (anticlockwise && t.Step < 0f)
+                if (anticlockwise && track.Step < 0f)
                 {
-                    t.Step = maxX;
-                    ShowerRespawn(t);
+                    track.Step = maxX;
+                    ShowerRespawn(track);
                 }
-                if (!anticlockwise && t.Step > maxX)
+                if (!anticlockwise && track.Step > maxX)
                 {
-                    t.Step = 0f;
-                    ShowerRespawn(t);
+                    track.Step = 0f;
+                    ShowerRespawn(track);
                 }
             }
         }
 
         private TlRgb TrackColor(List<Track> list, Pt p)
         {
-            foreach (var t in list)
+            foreach (var track in list)
             {
-                if (t.Count < 5 && p.X > t.Step - t.Width && p.X <= t.Step)
+                if (track.Count < 5 && p.X > track.Step - track.Width && p.X <= track.Step)
                 {
-                    return t.Color;
+                    return track.Color;
                 }
             }
             return Black;
@@ -1868,9 +1864,9 @@ public static class FlexTlExtendedEffects
             var allBlack = true;
             foreach (var fan in fans)
             {
-                foreach (var c in fan.Colors)
+                foreach (var pixel in fan.Colors)
                 {
-                    if (c != Black)
+                    if (pixel != Black)
                     {
                         allBlack = false;
                     }
@@ -1882,20 +1878,20 @@ public static class FlexTlExtendedEffects
                 return;
             }
             var sign = anticlockwise ? -1f : 1f;
-            foreach (var t in tracks1)
+            foreach (var track in tracks1)
             {
-                t.Step += sign * t.Speed;
+                track.Step += sign * track.Speed;
             }
-            foreach (var t in tracks2)
+            foreach (var track in tracks2)
             {
-                t.Step += sign * t.Speed;
+                track.Step += sign * track.Speed;
             }
         }
 
         private void ExecCollide()
         {
-            var num = 25 + 15 * fans.Count;
-            if (step > centerX + num)
+            var trailLen = 25 + 15 * fans.Count;
+            if (step > centerX + trailLen)
             {
                 isBack = true;
                 colorIndex++;
@@ -1918,16 +1914,16 @@ public static class FlexTlExtendedEffects
                 {
                     if (step > centerX)
                     {
-                        if (p.X < centerX && p.X > step - num)
+                        if (p.X < centerX && p.X > step - trailLen)
                         {
-                            var i = (int)(p.X - (step - num));
+                            var i = (int)(p.X - (step - trailLen));
                             if (isBack)
                             {
-                                i = ribbon1.Count - 1 - (int)(p.X - (step - num));
+                                i = ribbon1.Count - 1 - (int)(p.X - (step - trailLen));
                             }
                             fan.Colors.Add(ribbon1[Clamp(i, ribbon1.Count)]);
                         }
-                        else if (p.X > centerX && p.X < maxX - step + num)
+                        else if (p.X > centerX && p.X < maxX - step + trailLen)
                         {
                             var i = ribbon1.Count - 1 - (int)(p.X - (maxX - step));
                             if (isBack)
@@ -1941,16 +1937,16 @@ public static class FlexTlExtendedEffects
                             fan.Colors.Add(Black);
                         }
                     }
-                    else if (p.X > step - num && p.X < step)
+                    else if (p.X > step - trailLen && p.X < step)
                     {
-                        var i = (int)(p.X - (step - num));
+                        var i = (int)(p.X - (step - trailLen));
                         if (isBack)
                         {
-                            i = ribbon1.Count - 1 - (int)(p.X - (step - num));
+                            i = ribbon1.Count - 1 - (int)(p.X - (step - trailLen));
                         }
                         fan.Colors.Add(ribbon1[Clamp(i, ribbon1.Count)]);
                     }
-                    else if (p.X < maxX - step + num && p.X > maxX - step)
+                    else if (p.X < maxX - step + trailLen && p.X > maxX - step)
                     {
                         var i = ribbon1.Count - 1 - (int)(p.X - (maxX - step));
                         if (isBack)
@@ -1978,17 +1974,17 @@ public static class FlexTlExtendedEffects
 
         private void ExecElectric()
         {
-            if (step > centerX + mWidth)
+            if (step > centerX + electricWidth)
             {
                 isBack = true;
-                mWidth = 30 + 50 * fans.Count;
-                step = centerX + mWidth;
-                InitElectric(mWidth);
+                electricWidth = 30 + 50 * fans.Count;
+                step = centerX + electricWidth;
+                InitElectric(electricWidth);
             }
             if (isBack && step < 0f)
             {
                 isBack = false;
-                mWidth = 25 + 15 * fans.Count;
+                electricWidth = 25 + 15 * fans.Count;
                 colorIndex++;
                 if (colorIndex >= colors.Count)
                 {
@@ -1996,7 +1992,7 @@ public static class FlexTlExtendedEffects
                     running = false;
                     return;
                 }
-                InitElectric(mWidth);
+                InitElectric(electricWidth);
             }
             foreach (var fan in fans)
             {
@@ -2005,16 +2001,16 @@ public static class FlexTlExtendedEffects
                 {
                     if (step > centerX)
                     {
-                        if (p.X < centerX && p.X > step - mWidth)
+                        if (p.X < centerX && p.X > step - electricWidth)
                         {
-                            var i = (int)(p.X - (step - mWidth));
+                            var i = (int)(p.X - (step - electricWidth));
                             if (isBack)
                             {
-                                i = ribbon1.Count - 1 - (int)(p.X - (step - mWidth));
+                                i = ribbon1.Count - 1 - (int)(p.X - (step - electricWidth));
                             }
                             fan.Colors.Add(ribbon1[Clamp(i, ribbon1.Count)]);
                         }
-                        else if (p.X > centerX && p.X < maxX - step + mWidth)
+                        else if (p.X > centerX && p.X < maxX - step + electricWidth)
                         {
                             var i = ribbon1.Count - 1 - (int)(p.X - (maxX - step));
                             if (isBack)
@@ -2028,16 +2024,16 @@ public static class FlexTlExtendedEffects
                             fan.Colors.Add(Black);
                         }
                     }
-                    else if (p.X > step - mWidth && p.X < step)
+                    else if (p.X > step - electricWidth && p.X < step)
                     {
-                        var i = (int)(p.X - (step - mWidth));
+                        var i = (int)(p.X - (step - electricWidth));
                         if (isBack)
                         {
-                            i = ribbon1.Count - 1 - (int)(p.X - (step - mWidth));
+                            i = ribbon1.Count - 1 - (int)(p.X - (step - electricWidth));
                         }
                         fan.Colors.Add(ribbon1[Clamp(i, ribbon1.Count)]);
                     }
-                    else if (p.X < maxX - step + mWidth && p.X > maxX - step)
+                    else if (p.X < maxX - step + electricWidth && p.X > maxX - step)
                     {
                         var i = ribbon1.Count - 1 - (int)(p.X - (maxX - step));
                         if (isBack)
@@ -2070,12 +2066,12 @@ public static class FlexTlExtendedEffects
                 running = false;
                 return;
             }
-            foreach (var t in tracks1)
+            foreach (var track in tracks1)
             {
-                if (t.Step < -t.Width - centerX % t.Width)
+                if (track.Step < -track.Width - centerX % track.Width)
                 {
-                    t.Step = centerX;
-                    t.Color = WheelColors[random!.Next(0, WheelColors.Length)];
+                    track.Step = centerX;
+                    track.Color = WheelColors[random!.Next(0, WheelColors.Length)];
                     counter++;
                 }
             }
@@ -2084,22 +2080,22 @@ public static class FlexTlExtendedEffects
                 for (var i = 0; i < fan.Points.Length; i++)
                 {
                     var p = fan.Points[i];
-                    foreach (var t in tracks1)
+                    foreach (var track in tracks1)
                     {
-                        if (p.X > t.Step - 13f && p.X < t.Step + t.Width + 13f && p.X < centerX)
+                        if (p.X > track.Step - 13f && p.X < track.Step + track.Width + 13f && p.X < centerX)
                         {
-                            fan.Colors[i] = t.Color;
+                            fan.Colors[i] = track.Color;
                         }
-                        if (p.X > maxX - t.Step - t.Width - 13f && p.X < maxX - t.Step + 13f && p.X > centerX)
+                        if (p.X > maxX - track.Step - track.Width - 13f && p.X < maxX - track.Step + 13f && p.X > centerX)
                         {
-                            fan.Colors[i] = t.Color;
+                            fan.Colors[i] = track.Color;
                         }
                     }
                 }
             }
-            foreach (var t in tracks1)
+            foreach (var track in tracks1)
             {
-                t.Step -= t.Speed;
+                track.Step -= track.Speed;
             }
             PushFrame();
         }

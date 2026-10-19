@@ -3,7 +3,7 @@ using System.Collections.Generic;
 
 namespace Nexus.Service.Peripherals.LianLiFlex;
 
-/// <summary>Effect generators for the 26-LED TL fan. Keys not in the renderer table are catalog-only.</summary>
+/// <summary>Effect generators for the TL fan. Keys not in the renderer table are catalog-only.</summary>
 public static class FlexTlEffects
 {
     public const int LedsPerFan = 26;
@@ -37,10 +37,7 @@ public static class FlexTlEffects
 
     public static double IntervalBaseFor(string key) => IntervalBase;
 
-    /// <summary>
-    /// Scope Up fills LED 0..12 of each fan and Down fills 13..25, the other half stays black.
-    /// All fills both halves with the same effect.
-    /// </summary>
+    /// <summary>Scope Up fills the first half of each fan and Down the second, the other half stays black; All fills both.</summary>
     public static FlexRawAnimation Render(string key, FlexEffectRequest req)
     {
         if (!Renderers.TryGetValue(key, out var fn))
