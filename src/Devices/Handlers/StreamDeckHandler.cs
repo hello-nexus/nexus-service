@@ -56,17 +56,18 @@ public sealed class StreamDeckHandler : IDeviceHandler
         {
             // macOS names the process "Stream Deck" (with a space).
             var def = Nexus.Service.Conflicts.ConflictWatcher.FindById(ElgatoConflictAppId);
+            var running = false;
             foreach (var name in new[] { "StreamDeck", "Stream Deck" })
             {
                 foreach (var p in Process.GetProcessesByName(name))
                 {
                     using (p)
                     {
-                        if (def is null || Nexus.Service.Conflicts.ConflictSignerGate.Default.Matches(def, p.Id)) return true;
+                        running |= def is null || Nexus.Service.Conflicts.ConflictSignerGate.Default.Matches(def, p.Id);
                     }
                 }
             }
-            return false;
+            return running;
         }
         catch
         {

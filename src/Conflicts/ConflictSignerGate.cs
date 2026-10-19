@@ -24,19 +24,29 @@ public sealed class ConflictSignerGate
     private readonly Func<string, Identity> _identityOf;
     private readonly ConcurrentDictionary<(int Pid, string Path), Identity> _cache = new();
 
-    public ConflictSignerGate(Func<int, string?> pathOf, Func<string, Identity> identityOf)
+    private readonly bool _hasIdentitySource;
+
+    /// <param name="hasIdentitySource">False where the platform cannot read an exe identity at all; a gated entry then passes on its name alone, as before signers existed.</param>
+    public ConflictSignerGate(Func<int, string?> pathOf, Func<string, Identity> identityOf, bool hasIdentitySource = true)
     {
         _pathOf = pathOf;
         _identityOf = identityOf;
+        _hasIdentitySource = hasIdentitySource;
     }
 
     /// <summary>The gate the service uses: image path from the limited-query right, identity from the file on disk.</summary>
-    public static ConflictSignerGate Default { get; } = new(ReadPath, ReadIdentity);
+    public static ConflictSignerGate Default { get; } = new(ReadPath, ReadIdentity, HasPlatformIdentity);
+
+#if WINDOWS
+    private const bool HasPlatformIdentity = true;
+#else
+    private const bool HasPlatformIdentity = false;
+#endif
 
     /// <summary>Whether the running process <paramref name="pid"/> counts as <paramref name="def"/>. Always true for an entry with no Signers.</summary>
     public bool Matches(ConflictAppDefinition def, int pid, string? knownPath = null)
     {
-        if (def.Signers.Length == 0)
+        if (def.Signers.Length == 0 || !_hasIdentitySource)
         {
             return true;
         }
@@ -58,7 +68,7 @@ public sealed class ConflictSignerGate
 
     /// <summary>Same decision for an executable that is not (yet) a running process, such as a Run value's target.</summary>
     public bool MatchesPath(ConflictAppDefinition def, string path)
-        => def.Signers.Length == 0 || (!string.IsNullOrWhiteSpace(path) && Decide(def.Signers, IdentityFor(0, path)));
+        => def.Signers.Length == 0 || !_hasIdentitySource || (!string.IsNullOrWhiteSpace(path) && Decide(def.Signers, IdentityFor(0, path)));
 
     /// <summary>The signer decides when the file is signed; the company name is consulted only for an unsigned file.</summary>
     internal static bool Decide(string[] signers, Identity identity)

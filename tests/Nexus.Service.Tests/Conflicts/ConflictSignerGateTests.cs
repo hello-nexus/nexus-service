@@ -65,6 +65,14 @@ public class ConflictSignerGateTests
     }
 
     [Fact]
+    public void WithoutAnIdentitySource_AGatedEntryPassesOnNameAlone()
+    {
+        var gate = new ConflictSignerGate(_ => null, _ => default, hasIdentitySource: false);
+        Assert.True(gate.Matches(App("msi-control-center"), 10));
+        Assert.True(gate.MatchesPath(App("msi-control-center"), @"C:\x.exe"));
+    }
+
+    [Fact]
     public void ThrowingPathLookup_IsNotFlagged()
     {
         var gate = new ConflictSignerGate(_ => throw new System.UnauthorizedAccessException(), _ => new(MsiSigner, null));

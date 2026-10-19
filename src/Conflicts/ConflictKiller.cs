@@ -46,23 +46,29 @@ public static class ConflictKiller
                 continue;
             }
 
-            // Signer-pinned: only the processes whose exe identity matches.
             var ours = new List<Process>();
-            try
+            Process[] found;
+            try { found = Process.GetProcessesByName(name); }
+            catch { continue; }
+            foreach (var p in found)
             {
-                foreach (var p in Process.GetProcessesByName(name))
+                var keep = false;
+                try
                 {
-                    if (gate.Matches(def, p.Id))
-                    {
-                        ours.Add(p);
-                    }
-                    else
-                    {
-                        p.Dispose();
-                    }
+                    // Holding the handle keeps the pid from being reused between the identity read and the kill.
+                    _ = p.SafeHandle;
+                    keep = gate.Matches(def, p.Id);
+                }
+                catch { /* an unopenable process is not ours to kill */ }
+                if (keep)
+                {
+                    ours.Add(p);
+                }
+                else
+                {
+                    p.Dispose();
                 }
             }
-            catch { /* an unreadable process list kills nothing */ }
             ProcessKiller.KillAllCounted(ours);
         }
 
