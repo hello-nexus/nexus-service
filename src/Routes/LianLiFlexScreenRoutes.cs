@@ -21,6 +21,8 @@ public sealed class LianLiFlexSpriteDto
 public sealed class LianLiFlexCaptureRequest
 {
     public LianLiFlexScreenSource? ScreenSource { get; set; }
+    /// <summary>0 or absent: one still frame. 1..30: record a clip of that many seconds.</summary>
+    public int DurationSeconds { get; set; }
 }
 
 public sealed class LianLiFlexSpritesResponse
@@ -131,6 +133,37 @@ public static partial class LianLiFlexRoutes
             ("fanRpm", "Fan speed", "RPM"),
         }.Select(s => new LianLiFlexModularSourceDto { Key = s.Key, Label = s.Label, Unit = s.Unit, Available = available(s.Key) }).ToArray();
 
+    internal const int MaxRecordSeconds = 30;
+    internal const int RecordFrameMs = 100;
+
+    /// <summary>Samples the capture ten times a second for the duration; frames repeat until a new one arrives.</summary>
+    internal static async System.Threading.Tasks.Task<System.Collections.Generic.List<byte[]>> RecordAsync(
+        FlexScreenCapture capture, string key, LianLiFlexScreenSource? source, int seconds)
+    {
+        var frames = new System.Collections.Generic.List<byte[]>();
+        var total = seconds * 1000 / RecordFrameMs;
+        var started = System.Diagnostics.Stopwatch.StartNew();
+        for (var i = 0; i < total; i++)
+        {
+            var jpeg = capture.RenderJpeg(key, source);
+            if (jpeg is not null)
+            {
+                frames.Add(jpeg);
+            }
+            else if (frames.Count > 0)
+            {
+                frames.Add(frames[^1]);
+            }
+            var wait = (int)(((i + 1) * (long)RecordFrameMs) - started.ElapsedMilliseconds);
+            if (wait > 0)
+            {
+                await System.Threading.Tasks.Task.Delay(wait);
+            }
+        }
+        capture.Release(key);
+        return frames;
+    }
+
     private static void MapScreenExtras(WebApplication app)
     {
         app.MapGet("/devices/lianli-flex/modular-sources", (Nexus.Service.Peripherals.LianLiWireless.Slv3LcdSensorReader reader) =>
@@ -145,6 +178,22 @@ public static partial class LianLiFlexRoutes
         {
             byte[]? jpeg = null;
             var key = "capture-" + Guid.NewGuid().ToString("N");
+            if (body is { DurationSeconds: not 0 })
+            {
+                if (body.DurationSeconds is < 1 or > MaxRecordSeconds)
+                {
+                    return Results.Json(new Slv3LcdImportResponse { Error = true, Msg = "durationSeconds must be 1 to 30" },
+                        AppJsonContext.Default.Slv3LcdImportResponse, statusCode: 400);
+                }
+                var frames = await RecordAsync(capture, key, body.ScreenSource, body.DurationSeconds);
+                if (frames.Count == 0)
+                {
+                    return Results.Json(new Slv3LcdImportResponse { Error = true, Msg = "No screen frame available" },
+                        AppJsonContext.Default.Slv3LcdImportResponse, statusCode: 409);
+                }
+                var clip = library.ImportFrames("Screen recording", frames, RecordFrameMs);
+                return Results.Json(new Slv3LcdImportResponse { MediaId = clip.Id, Name = clip.Name, Kind = clip.Kind }, AppJsonContext.Default.Slv3LcdImportResponse);
+            }
             for (var attempt = 0; attempt < 15 && jpeg is null; attempt++)
             {
                 jpeg = capture.RenderJpeg(key, body?.ScreenSource);

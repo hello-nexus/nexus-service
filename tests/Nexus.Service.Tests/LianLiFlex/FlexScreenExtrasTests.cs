@@ -145,4 +145,40 @@ public class FlexScreenExtrasTests : IDisposable
         Assert.Contains(list, s => s.Key == "cpuTemp" && s.Available);
         Assert.Contains(list, s => s.Key == "gpuTemp" && !s.Available);
     }
+
+    [Theory]
+    [InlineData(0.0, 1920, 1200, 640, 400)]
+    [InlineData(0.5, 1920, 1200, 1280, 800)]
+    [InlineData(0.1, 1920, 1200, 1920, 1200)]
+    [InlineData(1.0, 300, 300, 300, 300)]
+    public void The_capture_size_keeps_the_square_at_least_the_panel_edge_up_to_native(double crop, int nw, int nh, int w, int h) =>
+        Assert.Equal((w, h), FlexScreenCapture.CaptureSizeFor(new LianLiFlexScreenSource { CropSize = crop }, nw, nh));
+
+    [Fact]
+    public void Native_size_comes_from_the_listed_display_name()
+    {
+        var options = new Nexus.Service.Models.Lighting.ScreenSyncOptions();
+        options.Monitors.Add(new Nexus.Service.Models.Lighting.ScreenSyncMonitor { Id = "0", Name = "Display 1 (1920x1200)" });
+        options.Monitors.Add(new Nexus.Service.Models.Lighting.ScreenSyncMonitor { Id = "1", Name = "Display 2 (1100x3840)" });
+        Assert.Equal((1100, 3840), FlexScreenCapture.NativeSizeOf(options, "1"));
+        Assert.Equal((1920, 1200), FlexScreenCapture.NativeSizeOf(options, ""));
+        options.Monitors[0].Name = "Primary";
+        Assert.Null(FlexScreenCapture.NativeSizeOf(options, "0"));
+    }
+
+    [Fact]
+    public async System.Threading.Tasks.Task A_recording_becomes_a_playable_clip_item()
+    {
+        var source = new FakeSource();
+        var capture = new FlexScreenCapture(() => source, () => "0");
+        var frames = await LianLiFlexRoutes.RecordAsync(capture, "k", null, 1);
+        Assert.InRange(frames.Count, 9, 11);
+        var library = new Slv3LcdMediaLibrary(Path.Combine(_dir, "m"));
+        var item = library.ImportFrames("Screen recording", frames, LianLiFlexRoutes.RecordFrameMs);
+        Assert.Equal("video", item.Kind);
+        var loaded = library.LoadFrames(item.Id)!;
+        Assert.Equal(frames.Count, loaded.Frames.Length);
+        Assert.All(loaded.Frames, f => Assert.Equal(LianLiFlexRoutes.RecordFrameMs, f.DelayMs));
+        Assert.True(source.Stopped);
+    }
 }
