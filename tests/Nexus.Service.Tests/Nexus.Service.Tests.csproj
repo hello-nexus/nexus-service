@@ -64,6 +64,11 @@
     </Content>
   </ItemGroup>
 
+  <ItemGroup>
+    <Content Include="LianLiFlex/Data/**/*">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </Content>
+  </ItemGroup>
 
   <ItemGroup>
     <!-- xUnit reads this from the output dir; without the copy the suite falls
