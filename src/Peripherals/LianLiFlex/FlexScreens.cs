@@ -174,7 +174,15 @@ public sealed class FlexScreens : IFanLcdScreens
         }
     }
 
-    public bool SetRotation(string serial, byte rotation) => !Restarting(serial) && _lcd.Hub.SetRotation(serial, HardwareRotation(serial, rotation));
+    public bool SetRotation(string serial, byte rotation)
+    {
+        if (Restarting(serial) || !_lcd.Hub.SetRotation(serial, HardwareRotation(serial, rotation)))
+        {
+            return false;
+        }
+        _panelOwnership.Repush(serial, jpeg => PushImage(serial, jpeg));
+        return true;
+    }
 
     /// <summary>The value written to the panel for a stored rotation: a right-attached SL-INF turns it a half turn.</summary>
     public byte HardwareRotation(string serial, byte rotation)
@@ -200,7 +208,7 @@ public sealed class FlexScreens : IFanLcdScreens
 
     public void SetPanelOwned(string serial, bool owned) => _panelOwnership.Set(serial, owned);
 
-    public bool PushPanelFrame(string serial, byte[] jpeg) => _panelOwnership.Push(serial, () => PushImage(serial, jpeg));
+    public bool PushPanelFrame(string serial, byte[] jpeg) => _panelOwnership.Push(serial, jpeg, () => PushImage(serial, jpeg));
 
     public string PanelFamily => "lianli-flex-lcd";
 

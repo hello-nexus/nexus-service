@@ -48,7 +48,15 @@ public sealed class Slv3LcdScreens : IFanLcdScreens
     public void SyncBrightness(string serial, LianLiWirelessScreenSettings settings, ref int applied, ref bool lockSlept) =>
         _hub.SyncBrightness(serial, settings, ref applied, ref lockSlept);
 
-    public bool SetRotation(string serial, byte rotation) => _hub.SetRotation(serial, rotation);
+    public bool SetRotation(string serial, byte rotation)
+    {
+        var ok = _hub.SetRotation(serial, rotation);
+        if (ok)
+        {
+            _panelOwnership.Repush(serial, jpeg => PushImage(serial, jpeg));
+        }
+        return ok;
+    }
 
     public bool PushImage(string serial, byte[] jpeg) => _hub.PushImageToSerial(serial, jpeg);
 
@@ -59,7 +67,7 @@ public sealed class Slv3LcdScreens : IFanLcdScreens
 
     public void SetPanelOwned(string serial, bool owned) => _panelOwnership.Set(serial, owned);
 
-    public bool PushPanelFrame(string serial, byte[] jpeg) => _panelOwnership.Push(serial, () => PushImage(serial, jpeg));
+    public bool PushPanelFrame(string serial, byte[] jpeg) => _panelOwnership.Push(serial, jpeg, () => PushImage(serial, jpeg));
 
     public string PanelFamily => "lianli-wireless-lcd";
 
