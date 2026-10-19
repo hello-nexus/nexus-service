@@ -6,17 +6,15 @@ namespace Nexus.Service.Tests.Diagnostics;
 public class PnpProblemScannerTests
 {
     [Fact]
-    public void ParseJson_EmptyString_ReturnsEmpty()
+    public void Filter_Empty_ReturnsEmpty()
     {
-        Assert.Empty(PnpProblemScanner.ParseJson(""));
+        Assert.Empty(PnpProblemScanner.Filter(System.Array.Empty<(string, string, uint)>()));
     }
 
     [Fact]
-    public void ParseJson_SingleObject_NotArray()
+    public void Filter_ProblemDevice_CarriesCodeAndLabel()
     {
-        const string json = """{"Name":"Unknown device","DeviceID":"USB\\VID_0000","ConfigManagerErrorCode":43}""";
-
-        var devices = PnpProblemScanner.ParseJson(json);
+        var devices = PnpProblemScanner.Filter(new[] { ("Unknown device", "USB\\VID_0000", 43u) });
 
         Assert.Single(devices);
         Assert.Equal("Unknown device", devices[0].Name);
@@ -25,16 +23,13 @@ public class PnpProblemScannerTests
     }
 
     [Fact]
-    public void ParseJson_Array_MultipleDevices()
+    public void Filter_MultipleDevices_KeepsOrder()
     {
-        const string json = """
-            [
-              {"Name":"Device A","DeviceID":"PCI\\A","ConfigManagerErrorCode":10},
-              {"Name":"Device B","DeviceID":"PCI\\B","ConfigManagerErrorCode":45}
-            ]
-            """;
-
-        var devices = PnpProblemScanner.ParseJson(json);
+        var devices = PnpProblemScanner.Filter(new[]
+        {
+            ("Device A", "PCI\\A", 10u),
+            ("Device B", "PCI\\B", 45u),
+        });
 
         Assert.Equal(2, devices.Count);
         Assert.Equal("CM_PROB_FAILED_START", devices[0].ProblemText);
@@ -42,42 +37,29 @@ public class PnpProblemScannerTests
     }
 
     [Fact]
-    public void ParseJson_DisabledDevice_IsNotReported()
+    public void Filter_DisabledDevice_IsNotReported()
     {
-        const string json = """
-            [
-              {"Name":"Disabled device","DeviceID":"PCI\\A","ConfigManagerErrorCode":22},
-              {"Name":"Device B","DeviceID":"PCI\\B","ConfigManagerErrorCode":45}
-            ]
-            """;
-
-        var devices = PnpProblemScanner.ParseJson(json);
+        var devices = PnpProblemScanner.Filter(new[]
+        {
+            ("Disabled device", "PCI\\A", 22u),
+            ("Device B", "PCI\\B", 45u),
+        });
 
         Assert.Single(devices);
         Assert.Equal("Device B", devices[0].Name);
     }
 
     [Fact]
-    public void ParseJson_UnknownCode_FallsBackToGenericLabel()
+    public void Filter_UnknownCode_FallsBackToGenericLabel()
     {
-        const string json = """{"Name":"Odd device","DeviceID":"X","ConfigManagerErrorCode":999}""";
-
-        var devices = PnpProblemScanner.ParseJson(json);
+        var devices = PnpProblemScanner.Filter(new[] { ("Odd device", "X", 999u) });
 
         Assert.Equal("CM_PROB_999", devices[0].ProblemText);
     }
 
     [Fact]
-    public void ParseJson_MalformedJson_ReturnsEmptyNotThrow()
+    public void Filter_ZeroErrorCode_Skipped()
     {
-        Assert.Empty(PnpProblemScanner.ParseJson("not json"));
-    }
-
-    [Fact]
-    public void ParseJson_ZeroErrorCode_Skipped()
-    {
-        const string json = """{"Name":"Healthy device","DeviceID":"X","ConfigManagerErrorCode":0}""";
-
-        Assert.Empty(PnpProblemScanner.ParseJson(json));
+        Assert.Empty(PnpProblemScanner.Filter(new[] { ("Healthy device", "X", 0u) }));
     }
 }

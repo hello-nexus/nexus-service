@@ -32,7 +32,7 @@ public static partial class MemoryInfoProvider
         return new MemoryInfoSnapshot(true, modules, xmp);
     }
 
-    private static byte[]? ReadRawTable()
+    internal static byte[]? ReadRawTable()
     {
         try
         {
