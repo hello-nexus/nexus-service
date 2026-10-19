@@ -1,4 +1,6 @@
 using System;
+using System.Collections.Generic;
+using System.Diagnostics;
 using Nexus.Service.Activity;
 using Nexus.Service.Platform.Windows;
 
@@ -18,9 +20,11 @@ public static class ConflictKiller
         public bool Killed => RunningBefore && !RunningAfter;
     }
 
-    public static KillOutcome Kill(ConflictAppDefinition def)
+    public static KillOutcome Kill(ConflictAppDefinition def) => Kill(def, ConflictSignerGate.Default);
+
+    internal static KillOutcome Kill(ConflictAppDefinition def, ConflictSignerGate gate)
     {
-        var runningBefore = AnyProcessRunning(def);
+        var runningBefore = AnyProcessRunning(def, gate);
 
         // Services first: these entries exist because the service restarts
         // the app's processes, so killing those first lets a live service
@@ -36,22 +40,52 @@ public static class ConflictKiller
 
         foreach (var name in def.ProcessNames)
         {
-            ProcessKiller.Kill(name);
+            if (def.Signers.Length == 0)
+            {
+                ProcessKiller.Kill(name);
+                continue;
+            }
+
+            // Signer-pinned: only the processes whose exe identity matches.
+            var ours = new List<Process>();
+            try
+            {
+                foreach (var p in Process.GetProcessesByName(name))
+                {
+                    if (gate.Matches(def, p.Id))
+                    {
+                        ours.Add(p);
+                    }
+                    else
+                    {
+                        p.Dispose();
+                    }
+                }
+            }
+            catch { /* an unreadable process list kills nothing */ }
+            ProcessKiller.KillAllCounted(ours);
         }
 
-        return new KillOutcome(runningBefore, AnyProcessRunning(def));
+        return new KillOutcome(runningBefore, AnyProcessRunning(def, gate));
     }
 
     /// <summary>Whether any process this catalog entry names is running; the oracle for whether a kill did anything.</summary>
-    public static bool AnyProcessRunning(ConflictAppDefinition def)
+    public static bool AnyProcessRunning(ConflictAppDefinition def) => AnyProcessRunning(def, ConflictSignerGate.Default);
+
+    internal static bool AnyProcessRunning(ConflictAppDefinition def, ConflictSignerGate gate)
     {
         foreach (var name in def.ProcessNames)
         {
             try
             {
-                var procs = System.Diagnostics.Process.GetProcessesByName(name);
-                foreach (var p in procs) p.Dispose();
-                if (procs.Length > 0) return true;
+                var procs = Process.GetProcessesByName(name);
+                var any = false;
+                foreach (var p in procs)
+                {
+                    if (!any && gate.Matches(def, p.Id)) any = true;
+                    p.Dispose();
+                }
+                if (any) return true;
             }
             catch { /* an unreadable process list is not evidence of absence */ }
         }
