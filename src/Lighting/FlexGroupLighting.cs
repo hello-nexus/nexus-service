@@ -57,19 +57,23 @@ public sealed partial class FlexGroupLighting
         return members;
     }
 
-    /// <summary>The look of the group leader (first member with merge on), or a default look.</summary>
-    public LianLiFlexUnitSettings Leader()
+    /// <summary>The MAC of the unit whose look drives the merged effect (the same pick the writer uses); empty when none merges.</summary>
+    public string LeaderMac()
     {
-        var looks = _store.Load().Devices.FlexUnits;
-        foreach (var m in Members())
-        {
-            if (looks.TryGetValue(m.Mac, out var l) && l.Merge)
-            {
-                return l;
-            }
-        }
-        return new LianLiFlexUnitSettings { Mode = "rainbow" };
+        var group = FlexStoredLook.FindMergeGroup(_hub.Units, _store.Load().Devices.FlexUnits);
+        return group?.LeaderMac ?? "";
     }
+
+    /// <summary>The look of the merge leader, or a default look when no unit merges.</summary>
+    public LianLiFlexUnitSettings Leader() =>
+        FlexStoredLook.FindMergeGroup(_hub.Units, _store.Load().Devices.FlexUnits)?.Leader
+        ?? new LianLiFlexUnitSettings { Mode = DefaultMode };
+
+    public const string DefaultMode = "rainbow";
+
+    /// <summary>A group mode is always one of the shared effects; anything else (custom, per zone, unknown) reads as the default.</summary>
+    public static string SyncModeOf(string? mode) =>
+        mode is not null && FlexMergeEffects.MergeKeys(FlexFamily.TlFlex).Contains(mode) ? mode : DefaultMode;
 
     public bool Enabled => _store.Load().Devices.FlexSyncEnabled;
 
@@ -114,7 +118,11 @@ public sealed partial class FlexGroupLighting
         }
         var enabled = patch.Enabled ?? Enabled;
         var leader = Leader();
-        var mode = patch.Mode ?? (leader.Mode == LianLiWirelessChainLighting.ModeCustom ? "rainbow" : leader.Mode);
+        if (patch.Mode is not null && !FlexMergeEffects.MergeKeys(FlexFamily.TlFlex).Contains(patch.Mode))
+        {
+            return "unknown effect";
+        }
+        var mode = SyncModeOf(patch.Mode ?? leader.Mode);
         if (enabled)
         {
             foreach (var m in members)

@@ -111,6 +111,11 @@ public sealed class FlexFanProfileService
                 _fans.ReleaseFan(channel);
                 _store.Update(s => s.Cooling.ManualSpeeds.Remove(channel));
             }
+            else if (!_store.Load().Cooling.ManualSpeeds.ContainsKey(channel))
+            {
+                // No profile and no manual speed: the fan goes back to following the board header.
+                _fans.ReleaseFan(channel);
+            }
             Broadcast();
             return null;
         }
@@ -140,7 +145,7 @@ public sealed class FlexFanProfileService
             target = new Curve { Id = curveId };
             wire.Add(target);
         }
-        target.Name = $"{FlexLightingNames.Model(unit.Family)} {unit.Mac[^4..]}";
+        target.Name = $"{FlexNames.UnitName(_hub.Units, unit, SortIndexOf())} {FlexNames.ProfileName(profile.Profile)}";
         target.Preset = null;
         target.Outputs = new List<CurveOutput> { new() { Id = channel, Type = "Fan" } };
         if (profile.Profile == "fixed")
@@ -167,6 +172,12 @@ public sealed class FlexFanProfileService
         _store.Update(s => s.Cooling.ActivePreset = derived);
         Broadcast();
         return null;
+    }
+
+    private Func<string, int> SortIndexOf()
+    {
+        var looks = _store.Load().Devices.FlexUnits;
+        return mac => looks.TryGetValue(mac, out var look) ? look.SortIndex : 0;
     }
 
     private void RemoveCurve(string curveId)

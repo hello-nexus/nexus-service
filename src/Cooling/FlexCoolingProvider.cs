@@ -19,11 +19,21 @@ public sealed class FlexCoolingProvider : IFanControlProvider, ICoolingProvider
     private const string PortSuffix = ":port0";
 
     private readonly FlexHub _hub;
+    private readonly Nexus.Service.Persistence.IConfigStore? _store;
 
-    public FlexCoolingProvider(FlexHub hub)
+    public FlexCoolingProvider(FlexHub hub, Nexus.Service.Persistence.IConfigStore? store = null)
     {
         _hub = hub;
+        _store = store;
     }
+
+    private Func<string, int> SortIndexOf()
+    {
+        var looks = _store?.Load().Devices.FlexUnits;
+        return mac => looks is not null && looks.TryGetValue(mac, out var look) ? look.SortIndex : 0;
+    }
+
+    private IReadOnlyList<FlexUnit> Units() => FlexNames.Ordered(_hub.Units, SortIndexOf());
 
     public static bool IsFlexId(string id) =>
         !string.IsNullOrEmpty(id) && id.StartsWith(IdPrefix, StringComparison.Ordinal);
@@ -32,8 +42,6 @@ public sealed class FlexCoolingProvider : IFanControlProvider, ICoolingProvider
 
     private static string DeviceId(string mac) => $"{IdPrefix}{mac}";
 
-    private static string DeviceName(FlexFamily family) =>
-        family == FlexFamily.SlInfFlex ? "Lian Li SL-INF LCD Flex" : "Lian Li TL LCD Flex";
 
     private static int MinDuty(FlexFamily family) => family == FlexFamily.SlInfFlex ? 10 : 11;
 
@@ -48,22 +56,24 @@ public sealed class FlexCoolingProvider : IFanControlProvider, ICoolingProvider
     public IReadOnlyList<FanChannel> GetFanChannels()
     {
         var result = new List<FanChannel>();
-        foreach (var unit in _hub.Units)
+        var order = SortIndexOf();
+        foreach (var unit in Units())
         {
             if (!unit.Controllable)
             {
                 continue;
             }
+            var unitName = FlexNames.UnitName(_hub.Units, unit, order);
             result.Add(new FanChannel
             {
                 Id = ChannelId(unit.Mac),
-                Name = $"{DeviceName(unit.Family)} Fan",
+                Name = "Fan",
                 DutyPercent = Duty(unit),
                 Rpm = Rpm(unit),
                 Mode = Follows(unit) ? FanModes.Auto : FanModes.Manual,
                 MinDuty = MinDuty(unit.Family),
                 DeviceId = DeviceId(unit.Mac),
-                DeviceName = DeviceName(unit.Family),
+                DeviceName = unitName,
                 PortLabel = "Fan 1",
             });
         }
@@ -106,7 +116,8 @@ public sealed class FlexCoolingProvider : IFanControlProvider, ICoolingProvider
     public IReadOnlyList<CoolingComponent> GetAll()
     {
         var components = new List<CoolingComponent>();
-        foreach (var unit in _hub.Units)
+        var order = SortIndexOf();
+        foreach (var unit in Units())
         {
             if (!unit.Controllable)
             {
@@ -115,14 +126,14 @@ public sealed class FlexCoolingProvider : IFanControlProvider, ICoolingProvider
             components.Add(new CoolingComponent
             {
                 Id = DeviceId(unit.Mac),
-                Name = DeviceName(unit.Family),
+                Name = FlexNames.UnitName(_hub.Units, unit, order),
                 Type = "LianLiFlex",
                 Devices = new List<CoolingDevice>
                 {
                     new CoolingDevice
                     {
                         Id = ChannelId(unit.Mac),
-                        Name = $"{DeviceName(unit.Family)} Fan",
+                        Name = "Fan",
                         Type = "Fan",
                         Rpm = Rpm(unit),
                         Pwm = Duty(unit),

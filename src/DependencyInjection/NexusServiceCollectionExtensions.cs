@@ -1207,7 +1207,8 @@ public static class NexusServiceCollectionExtensions
             sp.GetRequiredService<Nexus.Service.Peripherals.LianLiFlex.FlexLcdHub>(),
             sp.GetRequiredService<Nexus.Service.Peripherals.LianLiFlex.FlexHub>(),
             null,
-            sp.GetRequiredService<Nexus.Service.Peripherals.LianLiFlex.FlexExtraContent>()));
+            sp.GetRequiredService<Nexus.Service.Peripherals.LianLiFlex.FlexExtraContent>(),
+            mac => sp.GetRequiredService<Nexus.Service.Persistence.IConfigStore>().Load().Devices.FlexUnits.TryGetValue(mac, out var look) ? look.SortIndex : 0));
         services.AddSingleton<Microsoft.Extensions.Hosting.IHostedService>(sp => NewFanLcdStreamingWorker(
             sp, sp.GetRequiredService<Nexus.Service.Peripherals.LianLiFlex.FlexScreens>()));
         services.AddSingleton<Nexus.Service.Panel.Streams.IStreamedPanelDiscovery>(sp =>

@@ -98,6 +98,15 @@ public sealed class FlexLightingFrameWriter : IHostedService, IDisposable, IFlex
         }
     }
 
+    /// <summary>True while the unit's identify flash is running.</summary>
+    public bool IsIdentifying(string mac)
+    {
+        lock (_identifyLock)
+        {
+            return _identifyUntil.TryGetValue(mac, out var until) && _nowMs() < until;
+        }
+    }
+
     private bool TickIdentify(FlexUnit unit, UnitState st, long now)
     {
         long until;

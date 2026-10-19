@@ -88,6 +88,8 @@ public sealed class LianLiFlexSyncMemberPatch
 public sealed class LianLiFlexSyncDto
 {
     public bool Enabled { get; set; }
+    /// <summary>The unit whose look drives the merged effect; empty when none merges.</summary>
+    public string LeaderMac { get; set; } = "";
     public string Mode { get; set; } = "";
     public int Speed { get; set; }
     public int Direction { get; set; }
@@ -420,7 +422,8 @@ public static partial class LianLiFlexRoutes
         return new LianLiFlexSyncDto
         {
             Enabled = group.Enabled,
-            Mode = leader.Mode,
+            Mode = FlexGroupLighting.SyncModeOf(leader.Mode),
+            LeaderMac = group.LeaderMac(),
             Speed = leader.Speed,
             Direction = leader.Direction,
             Brightness = leader.Brightness,

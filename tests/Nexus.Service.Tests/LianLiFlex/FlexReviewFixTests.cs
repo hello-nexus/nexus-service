@@ -403,4 +403,43 @@ public class FlexReviewFixTests
         Assert.Contains(LightingDevicesCatalog.All, d =>
             d.Source == "nexus" && d.VendorId == vid && d.ProductId == pid && d.Vendor == "Lian Li");
     }
+
+    // ----- naming and identify state -----
+
+    [Fact]
+    public void Unit_names_are_short_numbered_per_family_and_ordered_tl_first()
+    {
+        var (hub, _) = TwoUnits();
+        var units = hub.Units;
+        var tl = units.Single(u => u.Family == FlexFamily.TlFlex);
+        var inf = units.Single(u => u.Family == FlexFamily.SlInfFlex);
+        Assert.Equal("TL Flex", FlexNames.UnitName(units, tl, _ => 0));
+        Assert.Equal("SL-INF Flex", FlexNames.UnitName(units, inf, _ => 0));
+        Assert.Equal(new[] { tl.Mac, inf.Mac }, FlexNames.Ordered(units.Reverse(), mac => mac == tl.Mac ? 5 : 0).Select(u => u.Mac).ToArray());
+        Assert.Equal("Custom 2", FlexNames.ProfileName("custom2"));
+        Assert.Equal("StdSP", FlexNames.ProfileName("stdsp"));
+    }
+
+    [Fact]
+    public void Cooling_channels_are_named_Fan_under_the_short_unit_name()
+    {
+        var (hub, _) = TwoUnits();
+        var provider = new Nexus.Service.Cooling.FlexCoolingProvider(hub);
+        var channels = provider.GetFanChannels();
+        Assert.All(channels, c => Assert.Equal("Fan", c.Name));
+        Assert.Equal(new[] { "TL Flex", "SL-INF Flex" }, channels.Select(c => c.DeviceName).ToArray());
+    }
+
+    [Fact]
+    public void The_state_reports_identify_while_it_runs()
+    {
+        var r = CreateRig();
+        Assert.False(r.Writer.IsIdentifying(Mac));
+        r.Writer.Identify(Mac);
+        Assert.True(r.Writer.IsIdentifying(Mac));
+        var state = LianLiFlexRoutes.BuildState(r.Hub, r.Store.Load(), null, r.Writer.IsIdentifying);
+        Assert.True(state.Fans.Single().Identifying);
+        r.Run(4000);
+        Assert.False(r.Writer.IsIdentifying(Mac));
+    }
 }

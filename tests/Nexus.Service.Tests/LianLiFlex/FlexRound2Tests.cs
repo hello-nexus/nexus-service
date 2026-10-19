@@ -124,6 +124,18 @@ public class FlexRound2Tests
     }
 
     [Fact]
+    public void Clearing_the_profile_removes_the_managed_curve_and_releases_the_fan()
+    {
+        var (_, store, cooling, profiles) = Create();
+        profiles.Apply(Tl, new LianLiFlexFanProfileSettings { Profile = "highsp" });
+        Assert.Single(store.Load().Cooling.Curves);
+        Assert.Null(profiles.Apply(Tl, new LianLiFlexFanProfileSettings { Profile = "" }));
+        Assert.Empty(store.Load().Cooling.Curves);
+        Assert.Contains($"lianli-flex:{Tl}:port0", cooling.Released);
+        Assert.Equal("", store.Load().Devices.FlexUnits[Tl].FanProfile.Profile);
+    }
+
+    [Fact]
     public void Mb_sync_removes_the_curve_and_releases_the_fan_and_restores_the_profile()
     {
         var (_, store, cooling, profiles) = Create();
@@ -186,6 +198,40 @@ public class FlexRound2Tests
     }
 
     // ----- Quick/Sync -----
+
+    [Theory]
+    [InlineData("perZone")]
+    [InlineData("custom")]
+    [InlineData("nonsense")]
+    public void Sync_refuses_a_mode_that_is_not_a_shared_effect(string mode)
+    {
+        var (hub, store, _, _) = Create(both: true);
+        var group = new FlexGroupLighting(hub, store);
+        Assert.NotNull(group.Apply(new FlexSyncPatch { Enabled = true, Mode = mode }));
+        Assert.All(store.Load().Devices.FlexUnits.Values, u => Assert.NotEqual(mode, u.Mode));
+    }
+
+    [Fact]
+    public void The_merge_leader_skips_custom_and_per_zone_units_and_the_group_mode_never_reads_as_one()
+    {
+        var (hub, store, _, _) = Create(both: true);
+        store.Update(s =>
+        {
+            s.Devices.FlexUnits[Tl] = new LianLiFlexUnitSettings { Mode = LianLiFlexUnitSettings.ModePerZone, Merge = true, SortIndex = 0 };
+            s.Devices.FlexUnits[Inf] = new LianLiFlexUnitSettings { Mode = "wave", Merge = true, SortIndex = 1 };
+        });
+        var group = new FlexGroupLighting(hub, store);
+        Assert.Equal(Inf, group.LeaderMac());
+        Assert.Equal("wave", group.Leader().Mode);
+        store.Update(s => s.Devices.FlexUnits[Inf] = new LianLiFlexUnitSettings { Mode = "custom", Merge = true, SortIndex = 1 });
+        Assert.Equal("", group.LeaderMac());
+        Assert.Equal("rainbow", FlexGroupLighting.SyncModeOf(group.Leader().Mode));
+        Assert.Equal("rainbow", FlexGroupLighting.SyncModeOf("perZone"));
+        var lighting = LianLiFlexRoutes.BuildLighting(hub, store.Load());
+        Assert.Equal("", lighting.MergeLeaderMac);
+        store.Update(s => s.Devices.FlexUnits[Inf] = new LianLiFlexUnitSettings { Mode = "wave", Merge = true, SortIndex = 1 });
+        Assert.Equal(Inf, LianLiFlexRoutes.BuildLighting(hub, store.Load()).MergeLeaderMac);
+    }
 
     [Fact]
     public void Sync_writes_one_look_to_every_unit_in_order_with_slice_directions()

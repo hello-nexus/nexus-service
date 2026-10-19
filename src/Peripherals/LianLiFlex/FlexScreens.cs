@@ -56,6 +56,7 @@ public sealed class FlexScreens : IFanLcdScreens, IFanLcdExtraContent
     private readonly FlexHub _flex;
     private readonly FanLcdPanelOwnership _panelOwnership = new();
     private readonly FlexExtraContent? _extra;
+    private readonly System.Func<string, int>? _sortIndexOf;
     private readonly System.Func<long> _nowMs;
     private sealed class RestartState
     {
@@ -79,9 +80,10 @@ public sealed class FlexScreens : IFanLcdScreens, IFanLcdExtraContent
     public const int RestartQuietMs = 3500;
     public const int RestartGiveUpMs = 20_000;
 
-    public FlexScreens(FlexLcdHub lcd, FlexHub flex, System.Func<long>? nowMs = null, FlexExtraContent? extra = null)
+    public FlexScreens(FlexLcdHub lcd, FlexHub flex, System.Func<long>? nowMs = null, FlexExtraContent? extra = null, System.Func<string, int>? sortIndexOf = null)
     {
         _extra = extra;
+        _sortIndexOf = sortIndexOf;
         _lcd = lcd;
         _flex = flex;
         _nowMs = nowMs ?? (() => Environment.TickCount64);
@@ -196,7 +198,7 @@ public sealed class FlexScreens : IFanLcdScreens, IFanLcdExtraContent
         {
             if (string.Equals(u.ScreenSerial, serial, StringComparison.OrdinalIgnoreCase))
             {
-                return u.Family == FlexFamily.SlInfFlex ? "Lian Li SL-INF LCD Flex" : "Lian Li TL LCD Flex";
+                return FlexNames.UnitName(_flex.Units, u, mac => _sortIndexOf?.Invoke(mac) ?? 0);
             }
         }
         return "Lian Li LCD Flex";

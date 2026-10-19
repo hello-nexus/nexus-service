@@ -33,6 +33,8 @@ public sealed class LianLiFlexFanDto
     public string ScreenSerial { get; set; } = "";
     public string LcdFirmware { get; set; } = "";
     public bool LcdRestarting { get; set; }
+    /// <summary>The identify flash is running on this unit.</summary>
+    public bool Identifying { get; set; }
     public bool ReceiverBound { get; set; }
     public int SortIndex { get; set; }
 }
@@ -109,6 +111,8 @@ public sealed class LianLiFlexChainLightingDto
 
 public sealed class LianLiFlexLightingResponse
 {
+    /// <summary>The unit whose look drives the merged effect (never a custom or per-zone unit); empty when none merges.</summary>
+    public string MergeLeaderMac { get; set; } = "";
     public string[] LaneModes { get; set; } = Array.Empty<string>();
     public LianLiFlexChainLightingDto[] Chains { get; set; } = Array.Empty<LianLiFlexChainLightingDto>();
 }
@@ -144,8 +148,8 @@ public static partial class LianLiFlexRoutes
         MapScreenExtras(app);
         MapTemplateEndpoints(app);
 
-        app.MapGet("/devices/lianli-flex/state", (FlexHub hub, FlexScreens screens, IConfigStore store) =>
-            Results.Json(BuildState(hub, store.Load(), screens), AppJsonContext.Default.LianLiFlexStateResponse));
+        app.MapGet("/devices/lianli-flex/state", (FlexHub hub, FlexScreens screens, IConfigStore store, Nexus.Service.Lighting.FlexLightingFrameWriter writer) =>
+            Results.Json(BuildState(hub, store.Load(), screens, writer.IsIdentifying), AppJsonContext.Default.LianLiFlexStateResponse));
 
         app.MapGet("/devices/lianli-flex/lighting", (FlexHub hub, IConfigStore store) =>
             Results.Json(BuildLighting(hub, store.Load()), AppJsonContext.Default.LianLiFlexLightingResponse));
@@ -380,7 +384,7 @@ public static partial class LianLiFlexRoutes
         return screen;
     }
 
-    internal static LianLiFlexStateResponse BuildState(FlexHub hub, NexusSettings settings, FlexScreens? screens = null)
+    internal static LianLiFlexStateResponse BuildState(FlexHub hub, NexusSettings settings, FlexScreens? screens = null, Func<string, bool>? identifying = null)
     {
         var units = hub.Units;
         var fans = new LianLiFlexFanDto[units.Length];
@@ -408,6 +412,7 @@ public static partial class LianLiFlexRoutes
                 ScreenSerial = u.ScreenSerial,
                 LcdFirmware = screens?.VersionOf(u.ScreenSerial) ?? "",
                 LcdRestarting = u.LcdRestarting,
+                Identifying = identifying?.Invoke(u.Mac) ?? false,
                 ReceiverBound = u.Info.RfBound,
                 SortIndex = look?.SortIndex ?? 0,
             };
@@ -527,7 +532,8 @@ public static partial class LianLiFlexRoutes
                 SortIndex = ls.SortIndex,
             });
         }
-        return new LianLiFlexLightingResponse { Chains = chains.ToArray() };
+        var leader = Nexus.Service.Lighting.FlexStoredLook.FindMergeGroup(hub.Units, settings.Devices.FlexUnits)?.LeaderMac ?? "";
+        return new LianLiFlexLightingResponse { Chains = chains.ToArray(), MergeLeaderMac = leader };
     }
 
     internal static string? ValidateLighting(LianLiFlexChainLightingRequest body, FlexFamily family)
