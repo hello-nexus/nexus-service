@@ -77,4 +77,47 @@ public class KeebProviderSettingsTests
         Assert.Equal(new[] { "Bogus" }, r.DroppedKeys);
         Assert.Equal(2, provider.GetMacro(3).Keys.Count);
     }
+
+    private sealed class NoDevices : Nexus.Service.Peripherals.Hid.IHidEnumerator
+    {
+        public IReadOnlyList<Nexus.Service.Peripherals.Hid.HidDeviceInfo> Find(int vendorId, int productId) => System.Array.Empty<Nexus.Service.Peripherals.Hid.HidDeviceInfo>();
+        public IReadOnlyList<Nexus.Service.Peripherals.Hid.HidDeviceInfo> FindAll() => System.Array.Empty<Nexus.Service.Peripherals.Hid.HidDeviceInfo>();
+        public Nexus.Service.Peripherals.Hid.IHidDevice? Open(string path, bool forInput = false) => null;
+    }
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public void Firmware_brightness_slider_never_moves_the_global_master(bool effectRunning)
+    {
+        var store = new InMemoryConfigStore();
+        store.Update(s => s.Lighting.GlobalBrightness = 0.8f);
+        var hub = new Nexus.Service.Peripherals.Hyte.Keeb.KeebHub(new NoDevices());
+        var applier = new Nexus.Service.Peripherals.Hyte.Keeb.KeebSettingsApplier(hub, store, new Nexus.Service.Sockets.MultiplexHub());
+        using var engine = new Nexus.Service.Lighting.Engine.LightingEngine();
+        if (effectRunning) engine.SetEffect(new Nexus.Service.Lighting.Engine.Effects.BlackEffect());
+        var provider = new RealKeebProvider(store, hub, applier, engine);
+
+        provider.SetFirmwareLighting(new SetFirmwareLightingBody
+        {
+            AnimationMode = "Static", Speed = "Standard", Direction = "LeftToRight", Brightness = 30,
+        });
+
+        var s = store.Load();
+        Assert.Equal(30, s.Keeb.FirmwareLighting.Brightness);
+        Assert.Equal(0.8f, s.Lighting.GlobalBrightness);
+    }
+
+    [Theory]
+    [InlineData(100, 1.0)]
+    [InlineData(30, 0.3)]
+    [InlineData(0, 0.0)]
+    [InlineData(250, 1.0)]
+    [InlineData(-5, 0.0)]
+    public void Keeb_stream_is_scaled_by_its_own_firmware_level(int level, double expected)
+    {
+        var store = new InMemoryConfigStore();
+        store.Update(s => s.Keeb.FirmwareLighting.Brightness = level);
+        Assert.Equal(expected, Nexus.Service.Lighting.KeebLightingFrameWriter.KeebStreamLevel(store.Load()), 3);
+    }
 }

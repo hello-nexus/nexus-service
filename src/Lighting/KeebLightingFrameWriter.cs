@@ -195,16 +195,19 @@ public sealed class KeebLightingFrameWriter : IHostedService, IDisposable
         return frames;
     }
 
+    internal static double KeebStreamLevel(NexusSettings settings) =>
+        Math.Clamp(settings.Keeb.FirmwareLighting.Brightness, 0, 100) / 100.0;
+
     private void TickFrames(NexusSettings settings, KeebKeyMap keys, DeviceFrame[] devices)
     {
         var disabled = settings.Devices.DisabledLightingDevices;
         var uncontrolled = settings.Devices.UncontrolledLightingDevices;
         var prefs = settings.Devices.LightingDevicePrefs;
         var globalBrightness = MasterBrightness.Effective(settings.Lighting);
-        // The keeb software stream brightness is min(global, per-zone). The
-        // firmware-brightness level (keeb Settings slider) dims the firmware animation,
-        // not the software stream; the knob drives global brightness while streaming
-        // (see SyncFromDevice), so it never multiplies into this stream (masterMul 1).
+        // The keeb software stream brightness is min(global, per-zone) scaled by the
+        // keeb's own firmware level (Settings slider and knob), which therefore
+        // never touches the global master the other devices follow.
+        var keebLevel = KeebStreamLevel(settings);
         var nowTicks = DateTime.UtcNow.Ticks;
 
         if (devices.Length == 0) return;
@@ -216,7 +219,7 @@ public sealed class KeebLightingFrameWriter : IHostedService, IDisposable
         var zones = Nexus.Service.Lighting.Zones.ZoneResolution.Resolve(structure, settings);
         Nexus.Service.Lighting.Zones.SegmentFrameComposer.EnsureBuffers(structure, ref _segmentBuffers);
         var touched = Nexus.Service.Lighting.Zones.SegmentFrameComposer.Compose(
-            structure, zones, devices, disabled, uncontrolled, prefs, globalBrightness, 1.0, nowTicks, _identify, _segmentBuffers);
+            structure, zones, devices, disabled, uncontrolled, prefs, globalBrightness, keebLevel, nowTicks, _identify, _segmentBuffers);
 
         // Keys and underglow stream over separate HID reports, so each segment
         // can be handed back to firmware independently: a fully uncontrolled

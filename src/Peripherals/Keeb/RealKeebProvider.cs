@@ -361,12 +361,11 @@ public sealed class RealKeebProvider : IKeebProvider
     {
         var brightness = Math.Clamp(body.Brightness, 0, 100);
         // While a software effect streams, the firmware animation is suppressed and
-        // the frame writer caps the stream by the master brightness, so writing the
+        // the frame writer scales the keeb stream by this level, so writing the
         // 0x06 page now would only flash the firmware animation through the live
-        // stream (and a brightness drag flashes repeatedly). Update the master and
-        // let the composer apply it; the frame writer writes the page when streaming
-        // stops. With no effect, write it so the firmware animation reflects the
-        // change immediately.
+        // stream (and a brightness drag flashes repeatedly). Store it and let the
+        // writer apply it; the page is written when streaming stops. With no
+        // effect, write it so the firmware animation reflects the change at once.
         var streaming = _engine.CurrentEffectName != "none";
         _applier.ApplyGated(s =>
         {
@@ -374,11 +373,6 @@ public sealed class RealKeebProvider : IKeebProvider
             s.Keeb.FirmwareLighting.Speed = body.Speed;
             s.Keeb.FirmwareLighting.Direction = body.Direction;
             s.Keeb.FirmwareLighting.Brightness = brightness;
-            // The stream is capped by master brightness, so the slider has to
-            // move that too or it does nothing while an effect is running. This
-            // used to arrive indirectly, via a poll that read the byte back off
-            // the device; that poll stalled LED frames and is gone.
-            if (streaming) s.Lighting.GlobalBrightness = brightness / 100f;
         }, writeDevice: !streaming);
     }
 
