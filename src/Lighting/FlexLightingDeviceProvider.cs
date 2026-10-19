@@ -107,9 +107,14 @@ public sealed class FlexLightingDeviceProvider : ILightingDeviceProvider, ILight
     private string BuildSignature()
     {
         var sb = new System.Text.StringBuilder("units");
+        var stored = _store.Load().Devices.FlexUnits;
         foreach (var u in _hub.Units)
         {
             sb.Append('|').Append(u.Mac).Append(':').Append(u.Fans).Append(':').Append(u.Family).Append(u.Controllable ? "" : ":bound");
+            if (SwapOf(stored, u.Mac, u.Family))
+            {
+                sb.Append(":swap");
+            }
         }
         return sb.ToString();
     }
@@ -331,17 +336,21 @@ public sealed class FlexLightingDeviceProvider : ILightingDeviceProvider, ILight
     internal List<DeviceStructure> BuildStructures()
     {
         var structures = new List<DeviceStructure>();
+        var stored = _store.Load().Devices.FlexUnits;
         foreach (var unit in _hub.Units)
         {
             if (unit.Controllable)
             {
-                structures.Add(BuildStructure(unit.Mac, unit.Family, unit.Fans));
+                structures.Add(BuildStructure(unit.Mac, unit.Family, unit.Fans, SwapOf(stored, unit.Mac, unit.Family)));
             }
         }
         return structures;
     }
 
-    internal static DeviceStructure BuildStructure(string mac, FlexFamily family, int fans)
+    internal static bool SwapOf(IReadOnlyDictionary<string, LianLiFlexUnitSettings> stored, string mac, FlexFamily family) =>
+        family == FlexFamily.TlFlex && stored.TryGetValue(mac, out var look) && look.UpDownSwap;
+
+    internal static DeviceStructure BuildStructure(string mac, FlexFamily family, int fans, bool swap = false)
     {
         var deviceId = DeviceIdFor(mac);
         var pid = family == FlexFamily.SlInfFlex ? FlexProtocol.SlInfReceiverProductId : FlexProtocol.TlReceiverProductId;
@@ -357,7 +366,7 @@ public sealed class FlexLightingDeviceProvider : ILightingDeviceProvider, ILight
             var zone = zones[i];
             var perFan = ZoneLedsPerFan(family, zone);
             var total = perFan * fans;
-            var (u, v) = BuildUV(family, zone, fans);
+            var (u, v) = FlexFanLayout.ZonePositions(family, zone, fans, swap);
             structure.Segments.Add(new StructureSegment
             {
                 Index = i,
@@ -380,36 +389,6 @@ public sealed class FlexLightingDeviceProvider : ILightingDeviceProvider, ILight
             });
         }
         return structure;
-    }
-
-    // Approximate stock positions: fans side by side along u, LEDs around each fan's ring. The
-    // direction of LED 0 is not known from the hardware, so a user layout edit is expected.
-    private static (float[] U, float[] V) BuildUV(FlexFamily family, string zone, int fans)
-    {
-        var perFan = ZoneLedsPerFan(family, zone);
-        var radius = (family, zone) switch
-        {
-            (FlexFamily.TlFlex, _) => 0.42f,
-            (_, "center") => 0.14f,
-            (_, "inner") => 0.30f,
-            _ => 0.44f,
-        };
-        // TL halves cover opposite arcs; SL-INF zones are full rings.
-        var arcStart = family == FlexFamily.TlFlex && zone == "down" ? Math.PI : 0.0;
-        var arcSpan = family == FlexFamily.TlFlex ? Math.PI : 2.0 * Math.PI;
-        var u = new float[perFan * fans];
-        var v = new float[perFan * fans];
-        for (var f = 0; f < fans; f++)
-        {
-            var cu = (f + 0.5f) / fans;
-            for (var i = 0; i < perFan; i++)
-            {
-                var angle = arcStart + (((i + 0.5) / perFan) * arcSpan);
-                u[(f * perFan) + i] = cu + ((radius / fans) * (float)Math.Cos(angle));
-                v[(f * perFan) + i] = 0.5f + (radius * (float)Math.Sin(angle));
-            }
-        }
-        return (u, v);
     }
 
     internal static (float x, float y, float w, float h) DefaultLayout(int slot)
