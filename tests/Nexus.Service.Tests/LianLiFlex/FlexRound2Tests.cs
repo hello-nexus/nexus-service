@@ -353,7 +353,7 @@ public class FlexRound2Tests
     }
 
     [Fact]
-    public void An_active_alert_streams_a_dimmed_flat_color_and_the_stored_look_returns_without_a_flash_save()
+    public void An_active_alert_streams_a_dimmed_flat_color_and_the_stored_look_returns_with_one_flash_save()
     {
         var tx = new FakeFlexTransport(Tl);
         var discovery = new FakeFlexDiscovery();
@@ -390,6 +390,8 @@ public class FlexRound2Tests
         Run(3000);
         Assert.Equal(2, tx.Of(FlexProtocol.CmdEnable).Count());
         Run(FlexHub.SaveSettleMs + 500);
-        Assert.Single(tx.Of(FlexProtocol.CmdSave));
+        Assert.Equal(2, tx.Of(FlexProtocol.CmdSave).Count());
+        Run(10_000);
+        Assert.Equal(2, tx.Of(FlexProtocol.CmdEnable).Count());
     }
 }

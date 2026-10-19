@@ -51,7 +51,6 @@ public sealed class FlexLightingFrameWriter : IHostedService, IDisposable, IFlex
 
     // Alert color level: brightness level 3 of 4.
     private const int AlertScale = 128;
-    private const int AlertRefreshMs = 43;
 
     private bool TickAlert(FlexUnit unit, UnitState st, long now)
     {
@@ -60,7 +59,7 @@ public sealed class FlexLightingFrameWriter : IHostedService, IDisposable, IFlex
             if (st.AlertActive)
             {
                 st.AlertActive = false;
-                st.RestoreWithoutSave = true;
+                st.RestoreWithoutSave = false;
                 st.RestoreSignature = st.UploadedSignature;
                 st.UploadedSignature = "";
                 st.PendingSignature = "";
@@ -69,7 +68,8 @@ public sealed class FlexLightingFrameWriter : IHostedService, IDisposable, IFlex
             return false;
         }
         st.AlertActive = true;
-        if (now - st.LastAlertMs < AlertRefreshMs)
+        // Three of every four ticks send a frame: 22.5 per second at the 33 ms tick, as the vendor streams.
+        if ((st.AlertTicks++ & 3) == 3)
         {
             return true;
         }
@@ -80,10 +80,7 @@ public sealed class FlexLightingFrameWriter : IHostedService, IDisposable, IFlex
             frame[i + 1] = (byte)((c.G * AlertScale) >> 8);
             frame[i + 2] = (byte)((c.B * AlertScale) >> 8);
         }
-        if (_hub.SendLive(unit.Mac, frame))
-        {
-            st.LastAlertMs = now;
-        }
+        _hub.SendLive(unit.Mac, frame);
         return true;
     }
 
@@ -147,8 +144,11 @@ public sealed class FlexLightingFrameWriter : IHostedService, IDisposable, IFlex
         public string UploadSignature = "";
         public long UploadStartedMs;
         public bool RestoreWithoutSave;
+        // The last upload was not flash-saved, so the receiver keeps reporting the saved look and drift checks do not apply.
+        public bool UploadedUnsaved;
+        public bool UploadUnsavedPending;
         public string RestoreSignature = "";
-        public long LastAlertMs = long.MinValue / 2;
+        public int AlertTicks;
     }
 
     public FlexLightingFrameWriter(
@@ -370,6 +370,7 @@ public sealed class FlexLightingFrameWriter : IHostedService, IDisposable, IFlex
             st.PendingSinceMs = now;
         }
         var drifted = st.UploadedSignature == signature
+            && !st.UploadedUnsaved
             && st.DriftRetries < MaxDriftRetries
             && now - st.UploadedAtMs >= DriftConfirmMs
             && _hub.SentEffectIndex(unit.Mac).Length > 0
@@ -403,6 +404,7 @@ public sealed class FlexLightingFrameWriter : IHostedService, IDisposable, IFlex
         var mac = unit.Mac;
         var save = !(st.RestoreWithoutSave && signature == st.RestoreSignature);
         st.UploadSignature = signature;
+        st.UploadUnsavedPending = !save;
         st.UploadStartedMs = now;
         st.Upload = _runUpload(() => _hub.UploadPackage(mac, package.Compressed, package.Frames, package.Leds, package.IntervalMs, save));
     }
@@ -428,6 +430,7 @@ public sealed class FlexLightingFrameWriter : IHostedService, IDisposable, IFlex
         st.UploadedSignature = signature;
         st.UploadedAtMs = st.UploadStartedMs;
         st.RestoreWithoutSave = false;
+        st.UploadedUnsaved = st.UploadUnsavedPending;
         var sent = _hub.SentEffectIndex(unit.Mac);
         _store.Update(s =>
         {
