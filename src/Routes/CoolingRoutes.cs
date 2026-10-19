@@ -243,7 +243,7 @@ public static class CoolingRoutes
             var derivedAfterSpeed = FanProfiles.DerivePresetFromCurves(store, f);
             store.Update(s => s.Cooling.ActivePreset = derivedAfterSpeed);
             PanelTopics.BroadcastCooling(hub);
-            telemetry.Capture(Nexus.Service.Telemetry.TelemetryEvents.FanSpeedSet, ("speed", actual));
+            CaptureFanWrite(telemetry, body, actual);
             return Results.Ok(new SetFanSpeedResponse { ChannelId = id, Speed = actual, Mode = Nexus.Service.Models.Cooling.FanModes.Manual });
         });
 
@@ -395,7 +395,7 @@ public static class CoolingRoutes
                 Active = store.Load().Cooling.ActivePreset,
             }).AllowPanel();
 
-        app.MapPost("/cooling/profile/{name}", (string name, IFanControlProvider f, Nexus.Service.Persistence.IConfigStore store, MultiplexHub hub, Nexus.Service.Telemetry.ITelemetry telemetry, FeatureGates gates) =>
+        app.MapPost("/cooling/profile/{name}", (string name, string? source, IFanControlProvider f, Nexus.Service.Persistence.IConfigStore store, MultiplexHub hub, Nexus.Service.Telemetry.ITelemetry telemetry, FeatureGates gates) =>
         {
             if (!gates.Cooling)
             {
@@ -412,7 +412,10 @@ public static class CoolingRoutes
             var requested = isAutoSynonym ? "off" : profile!.Name;
             var applied = FanProfiles.Apply(requested, f, store);
             PanelTopics.BroadcastCooling(hub);
-            telemetry.Capture(Nexus.Service.Telemetry.TelemetryEvents.FanCurveApplied, ("preset", requested));
+            if (ShouldCapturePreset(source))
+            {
+                telemetry.Capture(Nexus.Service.Telemetry.TelemetryEvents.FanCurveApplied, ("preset", requested));
+            }
             return Results.Ok(new ApplyProfileResponse { Applied = applied });
         }).AllowPanel();
 
@@ -560,4 +563,25 @@ public static class CoolingRoutes
         Name = p.Name,
         Mode = p.Mode,
     };
+
+    // A missing or unrecognized source is a deliberate user pick, so an old
+    // client keeps reporting. Only the named automatic sources change the decision.
+    internal static void CaptureFanWrite(Nexus.Service.Telemetry.ITelemetry telemetry, SetFanSpeedBody body, int actual)
+    {
+        if (CoolingIntentSources.Is(body.Source, CoolingIntentSources.Undo))
+        {
+            return;
+        }
+        if (CoolingIntentSources.Is(body.Source, CoolingIntentSources.Seed))
+        {
+            telemetry.Capture(Nexus.Service.Telemetry.TelemetryEvents.FanControlTaken,
+                ("target", CoolingIntentSources.SafeTarget(body.Target)));
+            return;
+        }
+        telemetry.Capture(Nexus.Service.Telemetry.TelemetryEvents.FanSpeedSet, ("speed", actual));
+    }
+
+    internal static bool ShouldCapturePreset(string? source) =>
+        !CoolingIntentSources.Is(source, CoolingIntentSources.ExitOff)
+        && !CoolingIntentSources.Is(source, CoolingIntentSources.Undo);
 }
