@@ -53,13 +53,12 @@ public static class ConflictKiller
             foreach (var p in found)
             {
                 var keep = false;
-                try
-                {
-                    // Holding the handle keeps the pid from being reused between the identity read and the kill.
-                    _ = p.SafeHandle;
-                    keep = gate.Matches(def, p.Id);
-                }
-                catch { /* an unopenable process is not ours to kill */ }
+                // Holding the handle keeps the pid from being reused between the identity read and the kill.
+                // Full access can be refused where terminate is allowed, so a refusal falls back to the pid.
+                try { _ = p.SafeHandle; }
+                catch { }
+                try { keep = gate.Matches(def, p.Id); }
+                catch { }
                 if (keep)
                 {
                     ours.Add(p);
