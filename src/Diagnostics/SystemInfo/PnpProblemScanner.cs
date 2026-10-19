@@ -59,7 +59,7 @@ public sealed class PnpProblemScanner
     {
         try
         {
-            var present = WindowsDevnodes.EnumeratePresent(friendlyNameFirst: true);
+            var present = WindowsDevnodes.EnumeratePresent(pnpName: true);
             return new PnpProblemSnapshot(true, Filter(present.Select(d => (d.Name, d.InstanceId, d.ProblemCode))));
         }
         catch (Exception ex)

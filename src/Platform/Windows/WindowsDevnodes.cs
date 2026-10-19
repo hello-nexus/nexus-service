@@ -23,7 +23,7 @@ internal static partial class WindowsDevnodes
     private static readonly IntPtr InvalidHandle = new(-1);
 
     /// <summary>Every present devnode of a setup class, or of all classes (optionally under one enumerator such as USB) when none is given.</summary>
-    public static List<PresentDevice> EnumeratePresent(Guid? classGuid = null, string? enumerator = null, bool friendlyNameFirst = false, bool idsOnly = false)
+    public static List<PresentDevice> EnumeratePresent(Guid? classGuid = null, string? enumerator = null, bool pnpName = false, bool idsOnly = false)
     {
         var devices = new List<PresentDevice>();
         IntPtr set;
@@ -47,7 +47,7 @@ internal static partial class WindowsDevnodes
             var data = new SpDevInfoData { Size = (uint)Marshal.SizeOf<SpDevInfoData>() };
             for (uint i = 0; SetupDiEnumDeviceInfo(set, i, ref data); i++)
             {
-                var name = idsOnly ? "" : ReadName(set, ref data, friendlyNameFirst);
+                var name = idsOnly ? "" : ReadName(set, ref data, pnpName);
 
                 var idBuffer = new char[512];
                 var instanceId = "";
@@ -88,12 +88,29 @@ internal static partial class WindowsDevnodes
         return CM_Get_DevNode_Status(out _, out var problem, devInst, 0) == 0 ? (int)problem : null;
     }
 
-    private static string ReadName(IntPtr set, ref SpDevInfoData data, bool friendlyFirst)
+    private static string ReadName(IntPtr set, ref SpDevInfoData data, bool pnpName)
     {
-        var first = friendlyFirst ? SpdrpFriendlyName : SpdrpDeviceDesc;
-        var second = friendlyFirst ? SpdrpDeviceDesc : SpdrpFriendlyName;
+        if (pnpName)
+        {
+            var best = ReadPnpNameProperty(data.DevInst);
+            if (best.Length > 0) return best;
+        }
+        var first = pnpName ? SpdrpFriendlyName : SpdrpDeviceDesc;
+        var second = pnpName ? SpdrpDeviceDesc : SpdrpFriendlyName;
         var name = ReadStringProperty(set, ref data, first);
         return name.Length > 0 ? name : ReadStringProperty(set, ref data, second);
+    }
+
+    // DEVPKEY_NAME: the name Device Manager and Win32_PnPEntity show.
+    private static string ReadPnpNameProperty(uint devInst)
+    {
+        var key = new DevPropKey { Fmtid = new Guid("b725f130-47ef-101a-a5f1-02608c9eebac"), Pid = 10 };
+        var buffer = new byte[1024];
+        var size = (uint)buffer.Length;
+        if (CM_Get_DevNode_Property(devInst, ref key, out _, buffer, ref size, 0) != 0) return "";
+        var text = Encoding.Unicode.GetString(buffer, 0, (int)Math.Min(size, (uint)buffer.Length));
+        var end = text.IndexOf('\0');
+        return (end >= 0 ? text[..end] : text).Trim();
     }
 
     private static string ReadStringProperty(IntPtr set, ref SpDevInfoData data, uint property)
@@ -107,6 +124,13 @@ internal static partial class WindowsDevnodes
         var text = Encoding.Unicode.GetString(buffer, 0, length);
         var end = text.IndexOf('\0');
         return (end >= 0 ? text[..end] : text).Trim();
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct DevPropKey
+    {
+        public Guid Fmtid;
+        public uint Pid;
     }
 
     [StructLayout(LayoutKind.Sequential)]
@@ -131,6 +155,9 @@ internal static partial class WindowsDevnodes
     [LibraryImport("setupapi.dll", EntryPoint = "SetupDiGetDeviceRegistryPropertyW", SetLastError = true)]
     [return: MarshalAs(UnmanagedType.Bool)]
     private static partial bool SetupDiGetDeviceRegistryProperty(IntPtr set, ref SpDevInfoData data, uint property, out uint type, [Out] byte[]? buffer, uint size, out uint required);
+
+    [LibraryImport("cfgmgr32.dll", EntryPoint = "CM_Get_DevNode_PropertyW")]
+    private static partial uint CM_Get_DevNode_Property(uint devInst, ref DevPropKey key, out uint type, [Out] byte[]? buffer, ref uint size, uint flags);
 
     [LibraryImport("setupapi.dll", EntryPoint = "SetupDiGetDeviceInstanceIdW", SetLastError = true)]
     [return: MarshalAs(UnmanagedType.Bool)]
