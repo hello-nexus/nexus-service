@@ -176,7 +176,23 @@ public sealed class FlexScreens : IFanLcdScreens, IFanLcdExtraContent
         }
     }
 
-    public bool SetRotation(string serial, byte rotation) => !Restarting(serial) && _lcd.Hub.SetRotation(serial, rotation);
+    public bool SetRotation(string serial, byte rotation) => !Restarting(serial) && _lcd.Hub.SetRotation(serial, HardwareRotation(serial, rotation));
+
+    /// <summary>The value written to the panel for a stored rotation: a right-attached SL-INF turns it a half turn.</summary>
+    public byte HardwareRotation(string serial, byte rotation)
+    {
+        foreach (var u in _flex.Units)
+        {
+            if (string.Equals(u.ScreenSerial, serial, StringComparison.OrdinalIgnoreCase))
+            {
+                return HardwareRotationFor(u.Family, u.Info.FanNum, rotation);
+            }
+        }
+        return rotation;
+    }
+
+    internal static byte HardwareRotationFor(FlexFamily family, int fanNum, byte rotation) =>
+        family == FlexFamily.SlInfFlex && fanNum >= 10 ? (byte)((rotation + 2) % 4) : rotation;
 
     public bool PushImage(string serial, byte[] jpeg) => !Restarting(serial) && _lcd.Hub.PushImageToSerial(serial, jpeg);
 
