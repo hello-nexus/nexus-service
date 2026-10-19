@@ -176,6 +176,7 @@ public sealed class FlexLightingFrameWriter : IHostedService, IDisposable
         var settings = _store.Load();
         var now = _nowMs();
         var live = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var group = FlexStoredLook.FindMergeGroup(_hub.Units, settings.Devices.FlexUnits);
         foreach (var unit in _hub.Units)
         {
             live.Add(unit.Mac);
@@ -202,7 +203,7 @@ public sealed class FlexLightingFrameWriter : IHostedService, IDisposable
             else
             {
                 st.Streaming = false;
-                TickStored(unit, st, look, now);
+                TickStored(unit, st, look, now, group);
             }
         }
         if (_state.Count > live.Count)
@@ -301,9 +302,9 @@ public sealed class FlexLightingFrameWriter : IHostedService, IDisposable
         return hc.ToHashCode();
     }
 
-    private void TickStored(FlexUnit unit, UnitState st, LianLiFlexUnitSettings look, long now)
+    private void TickStored(FlexUnit unit, UnitState st, LianLiFlexUnitSettings look, long now, FlexStoredLook.MergeGroup? group)
     {
-        var signature = FlexStoredLook.Signature(unit, look);
+        var signature = FlexStoredLook.Signature(unit, look, group);
         if (signature != st.PendingSignature)
         {
             st.PendingSignature = signature;
@@ -333,7 +334,7 @@ public sealed class FlexLightingFrameWriter : IHostedService, IDisposable
         }
         st.LastUploadAttemptMs = now;
         st.DriftRetries = st.UploadedSignature == signature ? st.DriftRetries + 1 : 0;
-        var package = FlexStoredLook.Build(unit, look);
+        var package = FlexStoredLook.Build(unit, look, group);
         if (package is null)
         {
             return;

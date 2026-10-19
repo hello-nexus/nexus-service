@@ -385,7 +385,7 @@ public static partial class LianLiFlexRoutes
                 HasDirection = info?.HasDirection ?? false,
                 ColorsMin = 0,
                 ColorsMax = Math.Min(MaxColors, info?.ColorsMax ?? 0),
-                Mergeable = false,
+                Mergeable = FlexMergeEffects.IsMergeable(family, keys[i]),
             };
         }
         return modes;

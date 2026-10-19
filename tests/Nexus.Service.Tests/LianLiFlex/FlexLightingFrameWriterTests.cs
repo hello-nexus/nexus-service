@@ -289,4 +289,42 @@ public class FlexLightingFrameWriterTests
         Run(s, 500);
         Assert.NotEmpty(s.Tx.Of(FlexProtocol.CmdLive));
     }
+
+    [Fact]
+    public void Merged_units_each_upload_their_slice_of_one_effect_at_the_shared_interval()
+    {
+        var tl = new FakeFlexTransport(Mac);
+        var inf = new FakeFlexTransport("C5D212506CE1", fansType: 0x2B);
+        var discovery = new FakeFlexDiscovery();
+        discovery.Ports.Add(FakeFlexDiscovery.Tl("tl"));
+        discovery.Ports.Add(new FlexUnitPort { ReceiverPath = "inf", ReceiverPid = FlexProtocol.SlInfReceiverProductId });
+        var clock = new FlexClock();
+        var hub = new FlexHub(discovery, p => p.ReceiverPath == "tl" ? tl : inf, clock.Func, () => new DateTime(2026, 10, 19, 12, 0, 0), _ => { });
+        hub.Refresh();
+        var store = new InMemoryConfigStore();
+        var identify = new Np50IdentifyTracker();
+        var provider = new FlexLightingDeviceProvider(hub, store, identify);
+        var engine = new LightingEngine();
+        engine.UpdateDevices(provider.BuildFrames(0).ToArray());
+        var writer = new FlexLightingFrameWriter(engine, hub, store, identify, provider, clock.Func);
+        store.Update(x =>
+        {
+            x.Devices.FlexUnits[Mac] = new LianLiFlexUnitSettings { Mode = "rainbow", Merge = true, SortIndex = 0 };
+            x.Devices.FlexUnits["C5D212506CE1"] = new LianLiFlexUnitSettings { Mode = "rainbow", Merge = true, SortIndex = 1 };
+        });
+        for (var t = 0; t < 1000; t += 100)
+        {
+            clock.Now += 100;
+            writer.Tick();
+            hub.Tick();
+        }
+        var tlHeader = tl.Of(FlexProtocol.CmdPackage).First();
+        var infHeader = inf.Of(FlexProtocol.CmdPackage).First();
+        Assert.Equal(26, tlHeader[29]);
+        Assert.Equal(44, infHeader[29]);
+        Assert.Equal(24, (tlHeader[27] << 8) | tlHeader[28]);
+        Assert.Equal(24, (infHeader[27] << 8) | infHeader[28]);
+        Assert.Equal(48, (tlHeader[34] << 8) | tlHeader[35]);
+        Assert.Equal(48, (infHeader[34] << 8) | infHeader[35]);
+    }
 }
