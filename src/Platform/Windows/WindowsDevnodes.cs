@@ -3,12 +3,13 @@ using System.Collections.Generic;
 using System.Runtime.InteropServices;
 using System.Runtime.Versioning;
 using System.Text;
+using Nexus.Service.Sensors;
 
 namespace Nexus.Service.Platform.Windows;
 
 /// <summary>Present devnodes and their Device Manager problem codes through SetupAPI and cfgmgr32, in-process.</summary>
 [SupportedOSPlatform("windows")]
-internal static partial class WindowsDevnodes
+internal static unsafe partial class WindowsDevnodes
 {
     internal readonly record struct PresentDevice(string InstanceId, string Name, uint ProblemCode);
 
@@ -46,10 +47,12 @@ internal static partial class WindowsDevnodes
 
                 var idBuffer = new char[512];
                 var instanceId = "";
-                if (SetupDiGetDeviceInstanceId(set, ref data, idBuffer, (uint)idBuffer.Length, out _))
+                fixed (char* idPtr = idBuffer)
                 {
-                    var end = Array.IndexOf(idBuffer, '\0');
-                    instanceId = new string(idBuffer, 0, end >= 0 ? end : idBuffer.Length);
+                    if (SetupDiGetDeviceInstanceId(set, ref data, idPtr, (uint)idBuffer.Length, out _))
+                    {
+                        instanceId = new string(idPtr);
+                    }
                 }
 
                 uint problem = 0;
@@ -70,11 +73,14 @@ internal static partial class WindowsDevnodes
             return null;
         }
         var buffer = new char[length];
-        if (CM_Get_Device_ID_List("USB", buffer, length, CmGetIdListFilterEnumerator | CmGetIdListFilterPresent) != 0)
+        fixed (char* ptr = buffer)
         {
-            return null;
+            if (CM_Get_Device_ID_List("USB", ptr, length, CmGetIdListFilterEnumerator | CmGetIdListFilterPresent) != 0)
+            {
+                return null;
+            }
         }
-        return PickUsbInstanceId(SplitMultiSz(buffer), serial);
+        return WindowsSpecsParsers.PickUsbInstanceId(WindowsSpecsParsers.SplitMultiSz(buffer), serial);
     }
 
     /// <summary>DEVPKEY_Device_ProblemCode equivalent, or null when the devnode cannot be located.</summary>
@@ -82,36 +88,6 @@ internal static partial class WindowsDevnodes
     {
         if (CM_Locate_DevNode(out var devInst, instanceId, CmLocateDevnodePhantom) != 0) return null;
         return CM_Get_DevNode_Status(out _, out var problem, devInst, 0) == 0 ? (int)problem : null;
-    }
-
-    /// <summary>The first <c>USB\*\serial</c> id; the case-insensitive suffix match keeps a serial from matching another devnode.</summary>
-    internal static string? PickUsbInstanceId(IEnumerable<string> instanceIds, string serial)
-    {
-        var suffix = "\\" + serial;
-        foreach (var id in instanceIds)
-        {
-            if (id.StartsWith("USB\\", StringComparison.OrdinalIgnoreCase)
-                && id.EndsWith(suffix, StringComparison.OrdinalIgnoreCase)
-                && id.Length > "USB\\".Length + suffix.Length - 1)
-            {
-                return id;
-            }
-        }
-        return null;
-    }
-
-    internal static List<string> SplitMultiSz(char[] buffer)
-    {
-        var items = new List<string>();
-        var start = 0;
-        for (var i = 0; i < buffer.Length; i++)
-        {
-            if (buffer[i] != '\0') continue;
-            if (i == start) break;
-            items.Add(new string(buffer, start, i - start));
-            start = i + 1;
-        }
-        return items;
     }
 
     private static string ReadStringProperty(IntPtr set, ref SpDevInfoData data, uint property)
@@ -152,7 +128,7 @@ internal static partial class WindowsDevnodes
 
     [LibraryImport("setupapi.dll", EntryPoint = "SetupDiGetDeviceInstanceIdW", SetLastError = true)]
     [return: MarshalAs(UnmanagedType.Bool)]
-    private static partial bool SetupDiGetDeviceInstanceId(IntPtr set, ref SpDevInfoData data, [Out] char[] buffer, uint size, out uint required);
+    private static partial bool SetupDiGetDeviceInstanceId(IntPtr set, ref SpDevInfoData data, char* buffer, uint size, out uint required);
 
     [LibraryImport("setupapi.dll", SetLastError = true)]
     [return: MarshalAs(UnmanagedType.Bool)]
@@ -168,5 +144,5 @@ internal static partial class WindowsDevnodes
     private static partial uint CM_Get_Device_ID_List_Size(out uint length, string? filter, uint flags);
 
     [LibraryImport("cfgmgr32.dll", EntryPoint = "CM_Get_Device_ID_ListW", StringMarshalling = StringMarshalling.Utf16)]
-    private static partial uint CM_Get_Device_ID_List(string? filter, [Out] char[] buffer, uint length, uint flags);
+    private static partial uint CM_Get_Device_ID_List(string? filter, char* buffer, uint length, uint flags);
 }

@@ -85,6 +85,28 @@ public class SmbiosParserTests
         Assert.True(modules.Count >= 0);
     }
 
+    [Fact]
+    public void ParseModules_CarriesTheRawMemoryTypeAndSpeedsAlongside()
+    {
+        var table = BuildTable(
+            BuildType17(handle: 0x0001, sizeMb: 16384, memType: MemoryTypeDdr5, speedMts: 6000, configuredMts: 5600,
+                deviceLocator: "DIMM_A1", manufacturer: "Corsair", partNumber: "CMK32GX5M2B6000"),
+            BuildEmptySlotType17(handle: 0x0002, deviceLocator: "DIMM_B1"));
+
+        var modules = SmbiosParser.ParseModules(table);
+
+        var only = Assert.Single(modules);
+        Assert.Equal(MemoryTypeDdr5, only.MemoryType);
+        Assert.Equal(6000, only.Info.MaxSpeedMts);
+        Assert.Equal(5600, only.Info.ConfiguredSpeedMts);
+    }
+
+    [Fact]
+    public void ParseModules_NoTable_ReturnsEmpty()
+    {
+        Assert.Empty(SmbiosParser.ParseModules(null));
+    }
+
     // ── Synthetic SMBIOS table construction ──
 
     private static byte[] BuildTable(params byte[][] structures)

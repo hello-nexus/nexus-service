@@ -1,5 +1,6 @@
 using System;
 using System.Buffers.Binary;
+using System.Collections.Generic;
 using System.Globalization;
 using System.Text;
 
@@ -166,5 +167,36 @@ internal static class WindowsSpecsParsers
             (char)('A' + (word & 0x1F) - 1),
         };
         return new string(chars);
+    }
+
+    /// <summary>The first <c>USB\*\serial</c> id; the case-insensitive suffix match keeps a serial from matching another devnode.</summary>
+    public static string? PickUsbInstanceId(IEnumerable<string> instanceIds, string serial)
+    {
+        var suffix = "\\" + serial;
+        foreach (var id in instanceIds)
+        {
+            if (id.StartsWith("USB\\", StringComparison.OrdinalIgnoreCase)
+                && id.EndsWith(suffix, StringComparison.OrdinalIgnoreCase)
+                && id.Length >= "USB\\".Length + suffix.Length)
+            {
+                return id;
+            }
+        }
+        return null;
+    }
+
+    /// <summary>Splits a double-NUL terminated multi-string buffer.</summary>
+    public static List<string> SplitMultiSz(char[] buffer)
+    {
+        var items = new List<string>();
+        var start = 0;
+        for (var i = 0; i < buffer.Length; i++)
+        {
+            if (buffer[i] != '\0') continue;
+            if (i == start) break;
+            items.Add(new string(buffer, start, i - start));
+            start = i + 1;
+        }
+        return items;
     }
 }

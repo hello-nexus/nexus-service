@@ -67,7 +67,7 @@ internal static partial class WindowsSpecsNative
         var rows = new JsonArray();
         foreach (var (info, memoryType) in SmbiosParser.ParseModules(MemoryInfoProvider.ReadRawTable()))
         {
-            rows.Add(new JsonObject
+            rows.Add((JsonNode)new JsonObject
             {
                 ["Capacity"] = info.SizeBytes ?? 0,
                 ["Speed"] = info.MaxSpeedMts ?? 0,
@@ -105,7 +105,7 @@ internal static partial class WindowsSpecsNative
                      .Where(d => d.BusType != 7)
                      .OrderByDescending(d => d.Size))
         {
-            rows.Add(new JsonObject
+            rows.Add((JsonNode)new JsonObject
             {
                 ["FriendlyName"] = d.FriendlyName,
                 ["MediaType"] = d.MediaType,
@@ -219,7 +219,7 @@ internal static partial class WindowsSpecsNative
         {
             using var key = Registry.LocalMachine.OpenSubKey($@"SYSTEM\CurrentControlSet\Enum\{device.InstanceId}\Device Parameters");
             var edid = key?.GetValue("EDID") as byte[];
-            rows.Add(new JsonObject
+            rows.Add((JsonNode)new JsonObject
             {
                 ["Name"] = WindowsSpecsParsers.EdidMonitorName(edid),
                 ["Mfg"] = WindowsSpecsParsers.EdidManufacturer(edid),
@@ -237,7 +237,7 @@ internal static partial class WindowsSpecsNative
             if ((adapter.StateFlags & DisplayDeviceAttachedToDesktop) == 0) continue;
             var mode = new DevMode { Size = (ushort)Marshal.SizeOf<DevMode>() };
             if (!EnumDisplaySettings(adapter.DeviceName, EnumCurrentSettings, ref mode)) continue;
-            rows.Add(new JsonObject
+            rows.Add((JsonNode)new JsonObject
             {
                 ["CurrentHorizontalResolution"] = (int)mode.PelsWidth,
                 ["CurrentVerticalResolution"] = (int)mode.PelsHeight,
@@ -255,7 +255,7 @@ internal static partial class WindowsSpecsNative
         foreach (var device in WindowsDevnodes.EnumeratePresent(MediaClass))
         {
             if (device.ProblemCode != 0) continue;
-            rows.Add(new JsonObject { ["Name"] = device.Name });
+            rows.Add((JsonNode)new JsonObject { ["Name"] = device.Name });
         }
         return rows;
     }
@@ -302,7 +302,7 @@ internal static partial class WindowsSpecsNative
                         ["Status"] = up ? "Up" : "Disconnected",
                     }));
             }
-            foreach (var adapter in adapters.OrderBy(a => a.Index)) rows.Add(adapter.Row);
+            foreach (var adapter in adapters.OrderBy(a => a.Index)) rows.Add((JsonNode)adapter.Row);
         }
         finally { FreeMibTable(table); }
         return rows;
