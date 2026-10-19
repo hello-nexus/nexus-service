@@ -564,8 +564,8 @@ public static class CoolingRoutes
         Mode = p.Mode,
     };
 
-    // A missing source is a deliberate user pick, so an old client keeps
-    // reporting. Only the named automatic sources change the decision.
+    // A missing or unrecognized source is a deliberate user pick, so an old
+    // client keeps reporting. Only the named automatic sources change the decision.
     internal static void CaptureFanWrite(Nexus.Service.Telemetry.ITelemetry telemetry, SetFanSpeedBody body, int actual)
     {
         if (CoolingIntentSources.Is(body.Source, CoolingIntentSources.Undo))
@@ -582,5 +582,6 @@ public static class CoolingRoutes
     }
 
     internal static bool ShouldCapturePreset(string? source) =>
-        string.IsNullOrWhiteSpace(source) || CoolingIntentSources.Is(source, CoolingIntentSources.User);
+        !CoolingIntentSources.Is(source, CoolingIntentSources.ExitOff)
+        && !CoolingIntentSources.Is(source, CoolingIntentSources.Undo);
 }

@@ -503,9 +503,7 @@ public static class LightingRoutes
             {
                 return Results.Conflict(new FeatureDisabledResponse { Feature = FeatureNames.Lighting });
             }
-            SeedEffectSignature(store.Load().Lighting);
-            l.StartAnimate(body);
-            CaptureEffect(telemetry, "animate", body.Effect);
+            StartAndCapture(telemetry, store, "animate", body.Effect, null, () => l.StartAnimate(body));
             PanelTopics.BroadcastLighting(hub);
             return Results.Ok(ApiResponse.Ok());
         }).AllowPanel();
@@ -515,10 +513,8 @@ public static class LightingRoutes
             {
                 return Results.Conflict(new FeatureDisabledResponse { Feature = FeatureNames.Lighting });
             }
-            SeedEffectSignature(store.Load().Lighting);
-            try { l.StartStatic(body); }
+            try { StartAndCapture(telemetry, store, "static", body.Effect, body.Color, () => l.StartStatic(body)); }
             catch (System.ArgumentException ex) { return Results.Ok(ApiResponse.Fail(ex.Message)); }
-            CaptureEffect(telemetry, "static", body.Effect);
             PanelTopics.BroadcastLighting(hub);
             return Results.Ok(ApiResponse.Ok());
         }).AllowPanel();
@@ -528,11 +524,13 @@ public static class LightingRoutes
             {
                 return Results.Conflict(new FeatureDisabledResponse { Feature = FeatureNames.Lighting });
             }
-            SeedEffectSignature(store.Load().Lighting);
-            l.StartScreen(body);
-            if (!body.KeepMode)
+            if (body.KeepMode)
             {
-                CaptureEffect(telemetry, "screen", null);
+                l.StartScreen(body);
+            }
+            else
+            {
+                StartAndCapture(telemetry, store, "screen", null, null, () => l.StartScreen(body));
             }
             PanelTopics.BroadcastLighting(hub);
             return Results.Ok(ApiResponse.Ok());
@@ -700,18 +698,18 @@ public static class LightingRoutes
     }
 
     // The three headless-start routes are re-posted on every slider move, so
-    // only a changed mode/effect pair is worth an event. One slot, not one per
-    // mode: it tracks what is currently applied, so switching away and back is
-    // two real transitions.
-    private static string _lastEffectSignature = "";
+    // only a changed look is worth an event. Each request compares against the
+    // look persisted BEFORE its start (a local, so no request can change what
+    // another compares against) and against the last look captured under that
+    // same persisted look. The second check covers posts that do not persist
+    // (a slider drag): they leave the persisted look unchanged, so without it
+    // every post of the new look would count. Keying it on the persisted look
+    // keeps a stale entry from swallowing a later real change.
+    private static readonly object _effectLock = new();
+    private static (string? Persisted, string Signature) _lastCaptured = (null, "");
 
-    // The slot is process-local and starts empty, but the running look is
-    // persisted. Re-reading it before each start makes a replay of the look
-    // already running (a page mount after a restart, an auto-restore, a profile
-    // or preset switch) dedupe, while a stop (sync "none") leaves it empty so
-    // the same look started again counts.
-    internal static void SeedEffectSignature(Nexus.Service.Persistence.LightingSettings lighting) =>
-        Interlocked.Exchange(ref _lastEffectSignature, PersistedEffectSignature(lighting));
+    /// <summary>A flat color is one look whatever effect key the client sends alongside it.</summary>
+    internal const string FlatEffect = "flat";
 
     internal static string PersistedEffectSignature(Nexus.Service.Persistence.LightingSettings lighting)
     {
@@ -727,21 +725,48 @@ public static class LightingRoutes
             case "screen":
                 return EffectSignature("screen", null);
             case "static":
-                return EffectSignature("static", lighting.Static.Effect);
+                // A non-flat static start nulls the color; a flat one never writes the effect.
+                return string.IsNullOrEmpty(lighting.Static.Color)
+                    ? EffectSignature("static", lighting.Static.Effect)
+                    : "static:" + FlatEffect;
             default:
                 return EffectSignature("animate", sync);
         }
     }
 
-    internal static void ResetEffectSignature() => Interlocked.Exchange(ref _lastEffectSignature, "");
-
-    internal static void CaptureEffect(Nexus.Service.Telemetry.ITelemetry telemetry, string routeMode, string? effect)
+    internal static void ResetEffectSignature()
     {
-        var (mode, slug) = ResolveEffect(routeMode, effect);
+        lock (_effectLock)
+        {
+            _lastCaptured = (null, "");
+        }
+    }
+
+    /// <summary>Reads the persisted look, runs the start, then captures; the read must come first because the start rewrites it.</summary>
+    internal static void StartAndCapture(Nexus.Service.Telemetry.ITelemetry telemetry,
+        Nexus.Service.Persistence.IConfigStore store, string routeMode, string? effect, string? color, Action start)
+    {
+        var persistedBefore = PersistedEffectSignature(store.Load().Lighting);
+        start();
+        CaptureEffect(telemetry, routeMode, effect, persistedBefore, color);
+    }
+
+    internal static void CaptureEffect(Nexus.Service.Telemetry.ITelemetry telemetry, string routeMode, string? effect,
+        string persistedBefore = "", string? color = null)
+    {
+        var (mode, slug) = routeMode == "static" && !string.IsNullOrEmpty(color)
+            ? ("static", FlatEffect)
+            : ResolveEffect(routeMode, effect);
         var signature = mode + ":" + slug;
-        // Both operands are typed string, so this is ordinal value equality;
-        // a change to ReferenceEquals would silently stop deduping.
-        if (Interlocked.Exchange(ref _lastEffectSignature, signature) == signature) return;
+        lock (_effectLock)
+        {
+            // Both operands are typed string, so this is ordinal value equality;
+            // a change to ReferenceEquals would silently stop deduping.
+            var seen = signature == persistedBefore
+                || (_lastCaptured.Persisted == persistedBefore && _lastCaptured.Signature == signature);
+            _lastCaptured = (persistedBefore, signature);
+            if (seen) return;
+        }
         telemetry.Capture(Nexus.Service.Telemetry.TelemetryEvents.LightingEffectApplied,
             ("mode", mode), ("effect", slug));
     }

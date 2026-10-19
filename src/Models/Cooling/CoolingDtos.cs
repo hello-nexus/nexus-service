@@ -284,7 +284,7 @@ public sealed class GetTemperatureSourcesResponse : ApiResponse
 public sealed class SetFanSpeedBody
 {
     public int Speed { get; set; }
-    /// <summary>What triggered the write: "user" (default, a deliberate speed pick), "seed" (the page handing a BIOS fan to software control), or "undo" (history replay).</summary>
+    /// <summary>What triggered the write: "user" (default, also for an unrecognized value; a deliberate speed pick), "seed" (the page handing a BIOS fan to software control), or "undo" (history replay).</summary>
     public string? Source { get; set; }
     /// <summary>For a "seed" write: the control the user chose, "manual" or "curve".</summary>
     public string? Target { get; set; }
@@ -292,7 +292,6 @@ public sealed class SetFanSpeedBody
 
 public static class CoolingIntentSources
 {
-    public const string User = "user";
     public const string Seed = "seed";
     public const string Undo = "undo";
     public const string ExitOff = "exit-off";

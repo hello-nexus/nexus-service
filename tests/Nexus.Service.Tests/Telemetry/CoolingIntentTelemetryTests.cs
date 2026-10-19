@@ -20,6 +20,7 @@ public class CoolingIntentTelemetryTests
     [InlineData("")]
     [InlineData("user")]
     [InlineData("USER")]
+    [InlineData("unknown")]
     public void A_user_or_missing_source_captures_fan_speed_set(string? source)
     {
         var t = new RecordingTelemetry();
@@ -58,8 +59,8 @@ public class CoolingIntentTelemetryTests
     [InlineData("user", true)]
     [InlineData("exit-off", false)]
     [InlineData("undo", false)]
-    [InlineData("unknown", false)]
-    public void Preset_capture_is_for_user_picks_only(string? source, bool captured)
+    [InlineData("unknown", true)]
+    public void Preset_capture_skips_only_the_automatic_sources(string? source, bool captured)
     {
         Assert.Equal(captured, CoolingRoutes.ShouldCapturePreset(source));
     }
